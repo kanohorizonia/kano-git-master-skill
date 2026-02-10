@@ -84,8 +84,9 @@ MAX_FILE_SIZE_BYTES=$((MAX_FILE_SIZE_MB * 1024 * 1024))
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-declare -A REPO_SET=()
 declare -a REPOS=()
+REPO_LIST_FILE="$TMP_DIR/repos.txt"
+touch "$REPO_LIST_FILE"
 
 add_repo() {
   local repo="$1"
@@ -96,10 +97,11 @@ add_repo() {
     return
   fi
   repo="$(cd "$repo" && pwd)"
-  if [[ -z "${REPO_SET[$repo]+x}" ]]; then
-    REPO_SET["$repo"]=1
-    REPOS+=("$repo")
+  if grep -Fxq "$repo" "$REPO_LIST_FILE" 2>/dev/null; then
+    return
   fi
+  printf '%s\n' "$repo" >>"$REPO_LIST_FILE"
+  REPOS+=("$repo")
 }
 
 ensure_gitignore_entry() {
@@ -443,12 +445,16 @@ for repo in "${REPOS[@]}"; do
   fi
 done
 
-IFS=$'\n' NON_ROOT=($(for r in "${NON_ROOT[@]}"; do printf '%s\n' "$r"; done | awk '{print length, $0}' | sort -rn | cut -d' ' -f2-))
-unset IFS
+if [[ "${#NON_ROOT[@]}" -gt 0 ]]; then
+  IFS=$'\n' NON_ROOT=($(for r in "${NON_ROOT[@]}"; do printf '%s\n' "$r"; done | awk '{print length, $0}' | sort -rn | cut -d' ' -f2-))
+  unset IFS
+fi
 
-for repo in "${NON_ROOT[@]}"; do
-  commit_repo "$repo"
-done
+if [[ "${#NON_ROOT[@]}" -gt 0 ]]; then
+  for repo in "${NON_ROOT[@]}"; do
+    commit_repo "$repo"
+  done
+fi
 
 commit_repo "$ROOT"
 

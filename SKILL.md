@@ -44,3 +44,8 @@ Use this skill to perform safe, repeatable commits across many repos under one w
   - `skills/kano-git-master-skill/scripts/ai-safe-commit-all-repos.sh`
 - Wrapper entrypoint for convenience:
   - `scripts/git/ai-safe-commit-all-repos.sh`
+
+## Related Utilities
+
+- Rebase local branches to latest `origin/main` (root + submodules):
+  - `scripts/git/rebase-to-latest-main.sh --help`
