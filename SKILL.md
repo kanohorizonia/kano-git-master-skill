@@ -1,51 +1,372 @@
 ---
 name: kano-git-master-skill
-description: Multi-repository git hygiene and commit orchestration with static safety checks and AI review gate. Use when preparing commits across root repo, submodules, and nested git repos, especially to prevent secret leaks, enforce .gitignore hygiene, and generate commit messages with Codex/Copilot fallback.
+description: Comprehensive Git automation toolkit for multi-repository workspaces. Manage root repos, submodules, and standalone repos with vendor-agnostic scripts. Quick updates, fork workflows, batch operations, and status reporting.
 ---
 
 # Kano Git Master Skill
 
-Use this skill to perform safe, repeatable commits across many repos under one workspace.
+Comprehensive Git automation scripts for managing multi-repository workspaces. Works with any Git remote provider (GitHub, GitLab, Azure Repos, Bitbucket, self-hosted, etc.).
 
-## Workflow
+## Quick Start
 
-1. Run:
-   - `bash scripts/git/ai-safe-commit-all-repos.sh --help`
-2. Choose AI mode:
-   - Default: `--ai auto` (Codex first, then Copilot)
-   - Fixed provider: `--ai codex` or `--ai copilot`
-   - No AI messaging: `--ai none` (only valid with `--no-ai-review`)
-3. Keep AI gate enabled by default:
-   - `--ai-review` (default)
-   - If both AI providers are unavailable, explicitly choose `--no-ai-review`
-4. Start without push:
-   - `bash scripts/git/ai-safe-commit-all-repos.sh`
-5. Push only when ready:
-   - `bash scripts/git/ai-safe-commit-all-repos.sh -f`
+### Update Repository + Submodules (Most Common)
 
-## What The Script Enforces
+```bash
+cd /path/to/your-repo
+./scripts/update-repo.sh
+```
 
-- Enumerate commit targets:
-  - Root repo
-  - `.gitmodules` submodules
-  - Any nested `.git` repo under workspace (including private repos not listed in `.gitmodules`)
-- Auto-update `.gitignore` for common local-only files and nested-repo folders.
-- Block commit on:
-  - Conflict markers / bad whitespace in staged diff
-  - Secret-like staged content (tokens, keys, passwords)
-  - Secret-like files (`.env*`, `*.pem`, `*.key`, etc.)
-  - Oversized staged files (default 5 MB)
-- Run AI PASS/FAIL safety review (fail-closed by default).
-- Generate commit message via AI provider with deterministic fallback.
+Updates your repository and all submodules to the latest version with smart branch detection and auto-stash.
 
-## Script Location
+### Clone Fork with Upstream
 
-- Main implementation:
-  - `skills/kano-git-master-skill/scripts/ai-safe-commit-all-repos.sh`
-- Wrapper entrypoint for convenience:
-  - `scripts/git/ai-safe-commit-all-repos.sh`
+```bash
+./scripts/clone-with-upstream.sh \
+  https://github.com/yourname/fork.git \
+  https://github.com/original/repo.git
+```
 
-## Related Utilities
+Perfect for contributing to open-source projects.
 
-- Rebase local branches to latest `origin/main` (root + submodules):
-  - `scripts/git/rebase-to-latest-main.sh --help`
+### Manage Multiple Repositories
+
+```bash
+# Discover all repos
+./scripts/discover-repos.sh
+
+# Update all repos
+./scripts/update-workspace-repos.sh
+
+# Check status
+./scripts/status-all-repos.sh
+```
+
+## Core Scripts
+
+| Script | Purpose | Use When |
+|--------|---------|----------|
+| **update-repo.sh** | Update single repo + submodules | Daily sync, quick updates |
+| **clone-with-upstream.sh** | Clone with upstream remote | Fork setup, contribution workflow |
+| **rebase-to-upstream-latest.sh** | Rebase to upstream | Sync with upstream regularly |
+| **discover-repos.sh** | Find all repos in workspace | Multi-repo discovery |
+| **update-workspace-repos.sh** | Update multiple repos | Batch updates |
+| **foreach-repo.sh** | Run commands in all repos | Custom batch operations |
+| **status-all-repos.sh** | Generate status report | Monitoring, CI/CD |
+
+## Common Workflows
+
+### Daily Workspace Sync
+
+```bash
+./scripts/status-all-repos.sh && \
+./scripts/update-workspace-repos.sh && \
+./scripts/foreach-repo.sh "git status --short"
+```
+
+### Fork Contribution Workflow
+
+```bash
+# Initial setup
+./scripts/clone-with-upstream.sh <your-fork> <upstream>
+
+# Regular sync
+cd project
+../scripts/rebase-to-upstream-latest.sh
+
+# Before PR
+../scripts/foreach-repo.sh "git log upstream/main..HEAD --oneline"
+```
+
+### Multi-Repository Management
+
+```bash
+# Create manifest
+./scripts/discover-repos.sh --save workspace-manifest.json
+
+# Update all
+./scripts/update-workspace-repos.sh --manifest workspace-manifest.json
+
+# Check status
+./scripts/status-all-repos.sh --manifest workspace-manifest.json --check-remote
+```
+
+## Key Features
+
+### Vendor-Agnostic Design
+- ✅ Works with any Git remote provider
+- ✅ GitHub, GitLab, Azure Repos, Bitbucket
+- ✅ Gitea, Gogs, self-hosted Git servers
+- ✅ No platform-specific APIs
+
+### Smart Operations
+- ✅ Auto-stash/pop local changes
+- ✅ Smart branch detection (current or default)
+- ✅ Recursive submodule handling
+- ✅ Continue-on-error mode
+- ✅ Dry-run preview
+
+### Flexible Discovery
+- ✅ Root repositories
+- ✅ Git submodules
+- ✅ Standalone repos in workspace
+- ✅ Configurable exclude patterns
+- ✅ Manifest file support
+
+### Multiple Output Formats
+- ✅ Table (terminal viewing)
+- ✅ JSON (CI/CD integration)
+- ✅ Markdown (documentation)
+- ✅ List (simple output)
+
+## Documentation
+
+- **[Complete Documentation](docs/README.md)** - Full reference with all options
+- **[Usage Examples](docs/USAGE-EXAMPLES.md)** - Real-world scenarios and workflows
+- **[Quick Reference](docs/QUICK-REFERENCE.md)** - One-page cheat sheet
+
+## Script Reference
+
+### update-repo.sh (Priority Script)
+
+```bash
+# Update current directory
+./scripts/update-repo.sh
+
+# Update specific repo
+./scripts/update-repo.sh /path/to/repo
+
+# Use different remote
+./scripts/update-repo.sh --remote upstream
+
+# Preview changes
+./scripts/update-repo.sh --dry-run
+```
+
+**Features:** Auto-stash, smart branch detection, recursive submodules, clear progress
+
+### clone-with-upstream.sh
+
+```bash
+# Clone without upstream
+./scripts/clone-with-upstream.sh https://github.com/user/repo.git
+
+# Clone with upstream
+./scripts/clone-with-upstream.sh \
+  https://github.com/user/fork.git \
+  https://github.com/original/repo.git
+
+# Custom directory
+./scripts/clone-with-upstream.sh <url> --dir my-project
+```
+
+**Features:** Auto-detect default branch, setup upstream, pull latest
+
+### rebase-to-upstream-latest.sh
+
+```bash
+# Rebase to upstream/main
+./scripts/rebase-to-upstream-latest.sh
+
+# Rebase to upstream/develop
+./scripts/rebase-to-upstream-latest.sh --branch develop
+
+# Use origin instead
+./scripts/rebase-to-upstream-latest.sh --remote origin
+```
+
+**Features:** Root + submodules, auto-stash, configurable remote/branch
+
+### discover-repos.sh
+
+```bash
+# Discover all repos
+./scripts/discover-repos.sh
+
+# Save to manifest
+./scripts/discover-repos.sh --save repos-manifest.json
+
+# JSON output
+./scripts/discover-repos.sh --format json
+
+# Filter by type
+./scripts/discover-repos.sh --include-types standalone
+```
+
+**Features:** Find root/submodules/standalone, exclude patterns, multiple formats
+
+### update-workspace-repos.sh
+
+```bash
+# Update all repos
+./scripts/update-workspace-repos.sh
+
+# Use manifest
+./scripts/update-workspace-repos.sh --manifest repos-manifest.json
+
+# Continue on errors
+./scripts/update-workspace-repos.sh --continue-on-error
+
+# Filter by type
+./scripts/update-workspace-repos.sh --include-types submodule
+```
+
+**Features:** Batch updates, manifest support, type filtering, error handling
+
+### foreach-repo.sh
+
+```bash
+# Check status
+./scripts/foreach-repo.sh "git status --short"
+
+# Check unpushed commits
+./scripts/foreach-repo.sh "git log origin/main..HEAD --oneline"
+
+# Create branch
+./scripts/foreach-repo.sh "git checkout -b feature/new"
+
+# Fetch all
+./scripts/foreach-repo.sh "git fetch --all --prune"
+```
+
+**Features:** Execute any command, clear output, continue-on-error
+
+### status-all-repos.sh
+
+```bash
+# Table report
+./scripts/status-all-repos.sh
+
+# JSON report
+./scripts/status-all-repos.sh --format json
+
+# Check remote status
+./scripts/status-all-repos.sh --check-remote
+
+# Save to file
+./scripts/status-all-repos.sh --format markdown --output STATUS.md
+```
+
+**Features:** Multiple formats, remote checking, file output, summary stats
+
+## Common Options
+
+All scripts support:
+- `--help` - Show help message
+- `--dry-run` - Preview mode (no changes)
+
+Most scripts support:
+- `--remote <name>` - Remote name (default: origin or upstream)
+- `--manifest <file>` - Use manifest file
+- `--include-types <types>` - Filter by type (root,submodule,standalone)
+- `--exclude <pattern>` - Exclude patterns (repeatable)
+- `--continue-on-error` - Don't stop on failures
+
+## Best Practices
+
+1. **Use dry-run first**: Always preview with `--dry-run`
+2. **Save manifests**: Create reusable manifests with `--save`
+3. **Check status regularly**: Monitor with `status-all-repos.sh`
+4. **Continue on errors**: Use `--continue-on-error` for batch operations
+5. **Combine scripts**: Chain scripts with `&&` for workflows
+
+## Troubleshooting
+
+### Rebase Conflicts
+```bash
+git status                    # Check conflicts
+vim conflicted-file.txt       # Resolve
+git add conflicted-file.txt   # Mark resolved
+git rebase --continue         # Continue
+git stash pop stash@{0}       # Restore stash
+```
+
+### Stash Recovery
+```bash
+git stash list                # List stashes
+git stash show stash@{0}      # Show content
+git stash apply stash@{0}     # Apply
+git stash drop stash@{0}      # Drop after success
+```
+
+### Detached HEAD
+```bash
+git checkout -b recovery-branch  # Create branch
+# or
+git checkout main                # Checkout known branch
+```
+
+## Platform Support
+
+- **Linux/macOS**: Works out of the box (Bash 4.0+)
+- **Windows**: Use Git Bash for Windows
+- **All platforms**: Requires Git 2.x+
+
+## Shared Helper Library
+
+All scripts use `git-helpers.sh` for consistent behavior:
+
+- **Stash management**: Create, pop, check changes
+- **Branch operations**: Get current, get default, check existence
+- **Repository discovery**: Find repos, collect metadata
+- **Remote operations**: Check existence, fetch
+- **Utilities**: Logging, dry-run, exclude patterns
+
+Function prefix: `gith_` (git-helper, not GitHub-specific)
+
+## Getting Help
+
+```bash
+# Script help
+./scripts/update-repo.sh --help
+./scripts/discover-repos.sh --help
+./scripts/update-workspace-repos.sh --help
+
+# Documentation
+cat docs/README.md
+cat docs/USAGE-EXAMPLES.md
+cat docs/QUICK-REFERENCE.md
+```
+
+## Legacy Scripts
+
+### ai-safe-commit-all-repos.sh
+
+Multi-repository commit orchestration with AI review gate and safety checks.
+
+```bash
+bash scripts/ai-safe-commit-all-repos.sh --help
+```
+
+**Features:**
+- Enumerate commit targets (root + submodules + nested repos)
+- Auto-update .gitignore
+- Block on conflicts, secrets, oversized files
+- AI safety review (Codex/Copilot)
+- Generate commit messages
+
+## Summary
+
+The Git Master Skill provides a complete toolkit for multi-repository management:
+
+- **Quick updates**: `update-repo.sh` for fast single-repo updates
+- **Fork workflows**: `clone-with-upstream.sh` and `rebase-to-upstream-latest.sh`
+- **Multi-repo management**: Discovery, batch updates, status reporting
+- **Batch operations**: Execute custom commands across all repos
+- **Vendor-agnostic**: Works with any Git provider
+- **Production-ready**: Error handling, dry-run, logging, stash management
+
+Start with `update-repo.sh` for simple cases, then explore the full suite for complex workflows.
+
+## Quick Reference
+
+| Need | Command |
+|------|---------|
+| Update one repo | `./scripts/update-repo.sh` |
+| Clone fork | `./scripts/clone-with-upstream.sh <fork> <upstream>` |
+| Sync with upstream | `./scripts/rebase-to-upstream-latest.sh` |
+| Find all repos | `./scripts/discover-repos.sh` |
+| Update all repos | `./scripts/update-workspace-repos.sh` |
+| Check status | `./scripts/status-all-repos.sh` |
+| Run command | `./scripts/foreach-repo.sh "command"` |
+
+For detailed examples and workflows, see [docs/README.md](docs/README.md).
