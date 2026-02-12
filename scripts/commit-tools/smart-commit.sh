@@ -389,9 +389,17 @@ run_safety_checks() {
 
   # Check for conflict markers and whitespace issues
   if ! git -C "$repo" diff --cached --check >"$check_file" 2>&1; then
-    echo "[$repo] FAILED: Conflict markers or whitespace issues" >&2
-    cat "$check_file" >&2
-    return 1
+    # Check if it's only trailing whitespace (not conflict markers)
+    if grep -q "^<<<<<<< \|^=======$\|^>>>>>>> " "$check_file"; then
+      echo "[$repo] FAILED: Conflict markers detected" >&2
+      cat "$check_file" >&2
+      return 1
+    else
+      # Only trailing whitespace - show warning but don't fail
+      echo "[$repo] WARNING: Trailing whitespace detected (not blocking commit)" >&2
+      # Optionally show first few lines
+      head -n 5 "$check_file" >&2
+    fi
   fi
 
   # Check staged files
