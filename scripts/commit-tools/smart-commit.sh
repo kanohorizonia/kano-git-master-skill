@@ -242,12 +242,12 @@ if [[ -z "$COMMIT_MESSAGE" ]] || [[ "$AI_REVIEW" -eq 1 ]]; then
     echo "ERROR: --provider is required" >&2
     show_provider_error
   fi
-  
+
   if [[ -z "$AI_MODEL" ]]; then
     echo "ERROR: --model is required" >&2
     show_provider_error
   fi
-  
+
   # Validate provider is available
   case "$AI_PROVIDER" in
     opencode)
@@ -274,7 +274,7 @@ if [[ -z "$COMMIT_MESSAGE" ]] || [[ "$AI_REVIEW" -eq 1 ]]; then
       exit 1
       ;;
   esac
-  
+
   echo "Using Provider: $AI_PROVIDER"
   echo "Using Model: $AI_MODEL"
 fi
@@ -324,11 +324,11 @@ ensure_gitignore_entry() {
   local repo="$1"
   local entry="$2"
   local gitignore="$repo/.gitignore"
-  
+
   if [[ -f "$gitignore" ]] && grep -Fxq "$entry" "$gitignore"; then
     return
   fi
-  
+
   printf '%s\n' "$entry" >>"$gitignore"
 }
 
@@ -395,10 +395,26 @@ run_safety_checks() {
       cat "$check_file" >&2
       return 1
     else
-      # Only trailing whitespace - show warning but don't fail
-      echo "[$repo] WARNING: Trailing whitespace detected (not blocking commit)" >&2
-      # Optionally show first few lines
-      head -n 5 "$check_file" >&2
+      # Only trailing whitespace - auto-fix it
+      echo "[$repo] Auto-fixing trailing whitespace..." >&2
+
+      # Get list of staged files with trailing whitespace
+      local fixed_count=0
+      while IFS= read -r file; do
+        if [[ -f "$repo/$file" ]]; then
+          # Remove trailing whitespace from the file
+          sed -i 's/[[:space:]]*$//' "$repo/$file" 2>/dev/null || \
+            sed -i '' 's/[[:space:]]*$//' "$repo/$file" 2>/dev/null || true
+
+          # Re-stage the fixed file
+          git -C "$repo" add "$file" 2>/dev/null || true
+          ((fixed_count++)) || true
+        fi
+      done < <(git -C "$repo" diff --cached --name-only 2>/dev/null || true)
+
+      if [[ "$fixed_count" -gt 0 ]]; then
+        echo "[$repo] Fixed trailing whitespace in $fixed_count file(s)" >&2
+      fi
     fi
   fi
 
@@ -456,7 +472,7 @@ build_prompt() {
   local stat files
   stat="$(git -C "$repo" diff --cached --shortstat 2>/dev/null || echo "no stats")"
   files="$(git -C "$repo" diff --cached --name-status 2>/dev/null || echo "no files")"
-  
+
   cat <<EOF
 Generate one concise Conventional Commit message for this git change.
 
@@ -476,7 +492,7 @@ EOF
 ai_message_from_provider() {
   local prompt="$1"
   local response=""
-  
+
   response="$(ai_generate_message "$AI_PROVIDER" "$AI_MODEL" "$prompt" || true)"
   printf '%s' "$response"
 }
@@ -506,7 +522,7 @@ generate_message() {
   if [[ -z "$msg" ]]; then
     msg="$(fallback_message "$repo")"
   fi
-  
+
   printf '%s' "$msg"
 }
 
@@ -516,7 +532,7 @@ build_review_prompt() {
   stat="$(git -C "$repo" diff --cached --shortstat 2>/dev/null || echo "no stats")"
   files="$(git -C "$repo" diff --cached --name-status 2>/dev/null || echo "no files")"
   diff_preview="$(git -C "$repo" diff --cached --unified=0 --text 2>/dev/null | head -n 300 || echo "no diff")"
-  
+
   cat <<EOF
 You are a git commit safety reviewer.
 Decide if this staged change is safe to commit.
@@ -555,13 +571,13 @@ run_ai_review() {
 
   prompt="$(build_review_prompt "$repo")"
   raw="$(ai_review_changes "$AI_PROVIDER" "$AI_MODEL" "$prompt" || true)"
-  
+
   if [[ -z "$raw" ]]; then
     echo "[$repo] AI review unavailable, failing closed" >&2
     echo "[$repo] Use --no-ai-review to bypass" >&2
     return 1
   fi
-  
+
   first="$(printf '%s\n' "$raw" | head -n 1 | tr -d '\r')"
   verdict="$(printf '%s\n' "$first" | sed -E 's/^([Pp][Aa][Ss][Ss]|[Ff][Aa][Ii][Ll]).*$/\1/')"
 
@@ -589,7 +605,7 @@ run_ai_review() {
 commit_repo() {
   local repo="$1"
   local msg branch
-  
+
   echo ""
   echo "=== Processing: $repo ==="
 
@@ -598,7 +614,7 @@ commit_repo() {
   merge_head="$(git -C "$repo" rev-parse --git-path MERGE_HEAD 2>/dev/null || true)"
   rebase_merge="$(git -C "$repo" rev-parse --git-path rebase-merge 2>/dev/null || true)"
   rebase_apply="$(git -C "$repo" rev-parse --git-path rebase-apply 2>/dev/null || true)"
-  
+
   if [[ -f "$merge_head" || -d "$rebase_merge" || -d "$rebase_apply" ]]; then
     echo "[$repo] SKIP: Merge/rebase in progress"
     return 0
@@ -606,7 +622,7 @@ commit_repo() {
 
   # Update .gitignore
   maybe_update_gitignore "$repo"
-  
+
   # Stage all changes
   git -C "$repo" add -A 2>/dev/null || true
 
@@ -653,7 +669,7 @@ commit_repo() {
       }
     fi
   fi
-  
+
   return 0
 }
 
