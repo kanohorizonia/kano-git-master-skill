@@ -83,6 +83,8 @@ COMMIT_MESSAGE=""
 DO_PUSH=0
 MAX_FILE_SIZE_MB=5
 AI_REVIEW=1
+CUSTOM_RULES=""
+RULES_FILE=""
 
 #------------------------------------------------------------------------------
 # Functions
@@ -104,6 +106,8 @@ Optional:
   -m, --message <text>        Fixed commit message (skip AI generation)
   -f, --push                  Push after commit with --force-with-lease
   --max-file-size-mb <int>    Block files larger than this (default: 5)
+  --rules <text>              Custom commit rules (inline text)
+  --rules-file <path>         Custom commit rules (from file)
   --list-models [provider]    List available models (all or specific provider)
   --clear-cache [provider]    Clear model cache (all or specific provider)
   -h, --help                  Show help
@@ -126,6 +130,12 @@ Examples:
 
   # Custom message (no AI needed)
   ./smart-commit.sh --provider copilot --model gpt-4o -m "feat: Add feature"
+
+  # With custom rules (inline)
+  ./smart-commit.sh --provider copilot --model gpt-4o --rules "Use emoji prefixes"
+
+  # With custom rules (from file)
+  ./smart-commit.sh --provider copilot --model gpt-4o --rules-file .git/commit-rules.md
 
   # Commit and push
   ./smart-commit.sh --provider opencode --model auto --push
@@ -221,6 +231,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --max-file-size-mb)
       MAX_FILE_SIZE_MB="${2:-}"
+      shift 2
+      ;;
+    --rules)
+      CUSTOM_RULES="${2:-}"
+      shift 2
+      ;;
+    --rules-file)
+      RULES_FILE="${2:-}"
       shift 2
       ;;
     -h|--help)
@@ -469,11 +487,60 @@ sanitize_message() {
 
 build_prompt() {
   local repo="$1"
-  local stat files
+  local stat files custom_rules_text
   stat="$(git -C "$repo" diff --cached --shortstat 2>/dev/null || echo "no stats")"
   files="$(git -C "$repo" diff --cached --name-status 2>/dev/null || echo "no files")"
 
-  cat <<EOF
+  # Load custom rules
+  custom_rules_text=""
+  if [[ -n "$RULES_FILE" ]]; then
+    if [[ -f "$RULES_FILE" ]]; then
+      custom_rules_text="$(cat "$RULES_FILE")"
+    elif [[ -f "$repo/$RULES_FILE" ]]; then
+      custom_rules_text="$(cat "$repo/$RULES_FILE")"
+    else
+      echo "WARNING: Rules file not found: $RULES_FILE" >&2
+    fi
+  elif [[ -n "$CUSTOM_RULES" ]]; then
+    custom_rules_text="$CUSTOM_RULES"
+  else
+    # Auto-detect common rules files
+    local auto_rules_files=(
+      "$repo/.git/commit-rules.md"
+      "$repo/.github/commit-rules.md"
+      "$repo/COMMIT_RULES.md"
+      "$repo/.commit-rules"
+    )
+    for rules_file in "${auto_rules_files[@]}"; do
+      if [[ -f "$rules_file" ]]; then
+        custom_rules_text="$(cat "$rules_file")"
+        echo "[$repo] Using rules from: $rules_file" >&2
+        break
+      fi
+    done
+  fi
+
+  # Build prompt with or without custom rules
+  if [[ -n "$custom_rules_text" ]]; then
+    cat <<EOF
+Generate one concise commit message for this git change.
+
+Custom Rules:
+$custom_rules_text
+
+Default Rules (if not overridden above):
+- Output only one line, no quotes, no markdown
+- Use format: type(scope): summary
+- Choose type from: feat, fix, refactor, chore, docs, test, ci, build, perf, style
+- Keep summary under 72 characters
+
+Repository: $(basename "$repo")
+Stats: $stat
+Files changed:
+$files
+EOF
+  else
+    cat <<EOF
 Generate one concise Conventional Commit message for this git change.
 
 Rules:
@@ -487,6 +554,7 @@ Stats: $stat
 Files changed:
 $files
 EOF
+  fi
 }
 
 ai_message_from_provider() {
