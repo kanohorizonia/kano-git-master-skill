@@ -1,0 +1,9 @@
+# Cherry-pick example (text format)
+# Format: <hash> <optional title>
+
+REPLACE_WITH_ACTUAL_HASH_1 feat: Add new feature
+REPLACE_WITH_ACTUAL_HASH_2 fix: Bug fix
+
+# Or just hashes:
+# REPLACE_WITH_ACTUAL_HASH_1
+# REPLACE_WITH_ACTUAL_HASH_2

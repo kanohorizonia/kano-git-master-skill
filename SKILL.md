@@ -1,9 +1,13 @@
 ---
 name: kano-git-master-skill
 description: Comprehensive Git automation toolkit for multi-repository workspaces. Manage root repos, submodules, and standalone repos with vendor-agnostic scripts. Quick updates, fork workflows, batch operations, and status reporting.
+version: 0.1.0-beta
 ---
 
 # Kano Git Master Skill
+
+**Version**: 0.1.0-beta  
+**Status**: Beta Release
 
 Comprehensive Git automation scripts for managing multi-repository workspaces. Works with any Git remote provider (GitHub, GitLab, Azure Repos, Bitbucket, self-hosted, etc.).
 
@@ -41,53 +45,84 @@ Perfect for contributing to open-source projects.
 ./scripts/status-all-repos.sh
 ```
 
+## Script Organization
+
+Scripts are organized by category in the `scripts/` directory:
+
+```
+scripts/
+├── lib/                      # Shared helper library
+│   └── git-helpers.sh
+├── repo-management/          # Single repository operations
+│   ├── update-repo.sh
+│   ├── clone-with-upstream.sh
+│   └── discover-repos.sh
+├── workspace/                # Multi-repository operations
+│   ├── update-workspace-repos.sh
+│   ├── foreach-repo.sh
+│   └── status-all-repos.sh
+├── branch-operations/        # Branch and commit operations
+│   ├── rebase-to-upstream-latest.sh
+│   ├── compare-branches.sh
+│   └── cherry-pick-batch.sh
+└── commit-tools/             # Commit automation
+    └── smart-commit.sh
+```
+
 ## Core Scripts
 
 | Script | Purpose | Use When |
 |--------|---------|----------|
 | **update-repo.sh** | Update single repo + submodules | Daily sync, quick updates |
 | **clone-with-upstream.sh** | Clone with upstream remote | Fork setup, contribution workflow |
+| **init-empty-repo.sh** | Initialize empty remote repo | Quick repo setup, testing |
 | **rebase-to-upstream-latest.sh** | Rebase to upstream | Sync with upstream regularly |
 | **discover-repos.sh** | Find all repos in workspace | Multi-repo discovery |
 | **update-workspace-repos.sh** | Update multiple repos | Batch updates |
 | **foreach-repo.sh** | Run commands in all repos | Custom batch operations |
 | **status-all-repos.sh** | Generate status report | Monitoring, CI/CD |
+| **compare-branches.sh** | Compare commits between branches | Before merge, PR review |
+| **cherry-pick-batch.sh** | Batch cherry-pick from file | Selective commit porting |
+| **smart-commit.sh** | AI-powered safe commit | Multi-repo commits with AI review |
 
 ## Common Workflows
 
 ### Daily Workspace Sync
 
 ```bash
-./scripts/status-all-repos.sh && \
-./scripts/update-workspace-repos.sh && \
-./scripts/foreach-repo.sh "git status --short"
+./scripts/workspace/status-all-repos.sh && \
+./scripts/workspace/update-workspace-repos.sh && \
+./scripts/workspace/foreach-repo.sh "git status --short"
 ```
 
 ### Fork Contribution Workflow
 
 ```bash
 # Initial setup
-./scripts/clone-with-upstream.sh <your-fork> <upstream>
+./scripts/repo-management/clone-with-upstream.sh <your-fork> <upstream>
 
 # Regular sync
 cd project
-../scripts/rebase-to-upstream-latest.sh
+../scripts/branch-operations/rebase-to-upstream-latest.sh
 
-# Before PR
-../scripts/foreach-repo.sh "git log upstream/main..HEAD --oneline"
+# Compare branches before PR
+../scripts/branch-operations/compare-branches.sh upstream/main HEAD
+
+# Check commits
+../scripts/workspace/foreach-repo.sh "git log upstream/main..HEAD --oneline"
 ```
 
 ### Multi-Repository Management
 
 ```bash
 # Create manifest
-./scripts/discover-repos.sh --save workspace-manifest.json
+./scripts/repo-management/discover-repos.sh --save workspace-manifest.json
 
 # Update all
-./scripts/update-workspace-repos.sh --manifest workspace-manifest.json
+./scripts/workspace/update-workspace-repos.sh --manifest workspace-manifest.json
 
 # Check status
-./scripts/status-all-repos.sh --manifest workspace-manifest.json --check-remote
+./scripts/workspace/status-all-repos.sh --manifest workspace-manifest.json --check-remote
 ```
 
 ## Key Features
@@ -123,6 +158,7 @@ cd project
 - **[Complete Documentation](docs/README.md)** - Full reference with all options
 - **[Usage Examples](docs/USAGE-EXAMPLES.md)** - Real-world scenarios and workflows
 - **[Quick Reference](docs/QUICK-REFERENCE.md)** - One-page cheat sheet
+- **[Testing Guide](TESTING.md)** - Comprehensive testing documentation
 
 ## Script Reference
 
@@ -160,6 +196,43 @@ cd project
 ```
 
 **Features:** Auto-detect default branch, setup upstream, pull latest
+
+### init-empty-repo.sh
+
+```bash
+# Minimal usage - just URL
+./scripts/init-empty-repo.sh git@github.com:user/repo.git
+
+# Custom branch
+./scripts/init-empty-repo.sh git@github.com:user/repo.git --branch develop
+
+# Custom commit message
+./scripts/init-empty-repo.sh git@github.com:user/repo.git \
+  --message "feat: Initial setup"
+
+# Custom file and content
+./scripts/init-empty-repo.sh git@github.com:user/repo.git \
+  --file index.html \
+  --content "<h1>Hello World</h1>"
+
+# Keep local copy for further work
+./scripts/init-empty-repo.sh git@github.com:user/repo.git \
+  --dir ~/my-repo \
+  --keep-local
+
+# Force overwrite (DANGEROUS - destroys existing content!)
+./scripts/init-empty-repo.sh git@github.com:user/repo.git \
+  --force-overwrite-remote
+```
+
+**Features:** AI-friendly (all params optional), sensible defaults, quick initialization, custom content
+
+**Safety Features:**
+- Pre-checks if remote already has content
+- Refuses to push if remote is not empty (unless forced)
+- Verbose flag name (`--force-overwrite-remote`) to prevent accidents
+- 3-second warning delay before destructive operations
+- Rejects old `--force` flag with helpful error message
 
 ### rebase-to-upstream-latest.sh
 
@@ -234,19 +307,87 @@ cd project
 
 ```bash
 # Table report
-./scripts/status-all-repos.sh
+./scripts/workspace/status-all-repos.sh
 
 # JSON report
-./scripts/status-all-repos.sh --format json
+./scripts/workspace/status-all-repos.sh --format json
 
 # Check remote status
-./scripts/status-all-repos.sh --check-remote
+./scripts/workspace/status-all-repos.sh --check-remote
 
 # Save to file
-./scripts/status-all-repos.sh --format markdown --output STATUS.md
+./scripts/workspace/status-all-repos.sh --format markdown --output STATUS.md
 ```
 
 **Features:** Multiple formats, remote checking, file output, summary stats
+
+### compare-branches.sh
+
+```bash
+# Basic comparison
+./scripts/branch-operations/compare-branches.sh main feature/new
+
+# Bidirectional comparison
+./scripts/branch-operations/compare-branches.sh main develop --bidirectional
+
+# Detailed output with file changes
+./scripts/branch-operations/compare-branches.sh main feature/new --detailed
+
+# JSON output
+./scripts/branch-operations/compare-branches.sh main feature/new --format json
+
+# Save to markdown file
+./scripts/branch-operations/compare-branches.sh main feature/new --format markdown --output diff.md
+```
+
+**Features:** Bidirectional comparison, multiple formats (table/JSON/markdown), detailed file changes, commit metadata
+
+### cherry-pick-batch.sh
+
+```bash
+# Cherry-pick from JSON file
+./scripts/branch-operations/cherry-pick-batch.sh commits.json
+
+# Cherry-pick from text file
+./scripts/branch-operations/cherry-pick-batch.sh commits.txt
+
+# Preview without applying
+./scripts/branch-operations/cherry-pick-batch.sh commits.json --dry-run
+
+# Continue after resolving conflicts
+./scripts/branch-operations/cherry-pick-batch.sh commits.json --continue
+
+# Abort operation
+./scripts/branch-operations/cherry-pick-batch.sh commits.json --abort
+```
+
+**File formats:**
+- JSON: Structured format with hash, title, author, date
+- Text: Simple format with hash and optional title
+- One hash per line
+
+**Features:** Batch cherry-pick, structured file support, conflict handling, validation
+
+### smart-commit.sh
+
+```bash
+# Basic usage (free model)
+./scripts/commit-tools/smart-commit.sh
+
+# Use specific model
+./scripts/commit-tools/smart-commit.sh --model gpt-4o
+
+# Custom message
+./scripts/commit-tools/smart-commit.sh -m "feat: Add new feature"
+
+# Commit and push
+./scripts/commit-tools/smart-commit.sh --push
+
+# Skip AI review (only static checks)
+./scripts/commit-tools/smart-commit.sh --no-ai-review
+```
+
+**Features:** AI-generated commit messages, safety checks (secrets, large files), auto .gitignore updates, AI review gate, multi-repo support
 
 ## Common Options
 
@@ -317,9 +458,12 @@ Function prefix: `gith_` (git-helper, not GitHub-specific)
 
 ```bash
 # Script help
-./scripts/update-repo.sh --help
-./scripts/discover-repos.sh --help
-./scripts/update-workspace-repos.sh --help
+./scripts/repo-management/update-repo.sh --help
+./scripts/repo-management/discover-repos.sh --help
+./scripts/workspace/update-workspace-repos.sh --help
+./scripts/branch-operations/compare-branches.sh --help
+./scripts/branch-operations/cherry-pick-batch.sh --help
+./scripts/commit-tools/smart-commit.sh --help
 
 # Documentation
 cat docs/README.md
@@ -327,22 +471,98 @@ cat docs/USAGE-EXAMPLES.md
 cat docs/QUICK-REFERENCE.md
 ```
 
-## Legacy Scripts
+## New Features
 
-### ai-safe-commit-all-repos.sh
+### Branch Comparison (compare-branches.sh)
 
-Multi-repository commit orchestration with AI review gate and safety checks.
+Compare commits between two branches to understand differences before merging or cherry-picking:
 
 ```bash
-bash scripts/ai-safe-commit-all-repos.sh --help
+# See what's in feature branch but not in main
+./scripts/branch-operations/compare-branches.sh main feature/new
+
+# Bidirectional comparison
+./scripts/branch-operations/compare-branches.sh main develop --bidirectional
+
+# Export to markdown for documentation
+./scripts/branch-operations/compare-branches.sh main feature/new \
+  --format markdown \
+  --output branch-diff.md
 ```
 
-**Features:**
-- Enumerate commit targets (root + submodules + nested repos)
-- Auto-update .gitignore
-- Block on conflicts, secrets, oversized files
-- AI safety review (Codex/Copilot)
-- Generate commit messages
+### Batch Cherry-Pick (cherry-pick-batch.sh)
+
+Cherry-pick multiple commits from a structured file:
+
+**Create commits file (JSON):**
+```json
+{
+  "commits": [
+    {
+      "hash": "abc123",
+      "title": "feat: Add new feature",
+      "author": "John Doe",
+      "date": "2024-01-15"
+    },
+    {
+      "hash": "def456",
+      "title": "fix: Bug fix"
+    }
+  ]
+}
+```
+
+**Or simple text format:**
+```
+abc123 feat: Add new feature
+def456 fix: Bug fix
+```
+
+**Execute:**
+```bash
+# Preview first
+./scripts/branch-operations/cherry-pick-batch.sh commits.json --dry-run
+
+# Apply
+./scripts/branch-operations/cherry-pick-batch.sh commits.json
+```
+
+### Smart Commit (smart-commit.sh)
+
+AI-powered commit across all repositories with safety checks:
+
+```bash
+# Commit with AI-generated messages (free tier model)
+./scripts/commit-tools/smart-commit.sh
+
+# Use premium model
+./scripts/commit-tools/smart-commit.sh --model gpt-4o
+
+# Custom message for all repos
+./scripts/commit-tools/smart-commit.sh -m "chore: Update dependencies"
+
+# Commit and push
+./scripts/commit-tools/smart-commit.sh --push
+```
+
+**Safety features:**
+- Detects secrets, API keys, private keys
+- Blocks large files
+- Auto-updates .gitignore
+- AI safety review (optional)
+- Works with GitHub Copilot CLI
+
+## Legacy Scripts
+
+### ai-safe-commit-all-repos.sh (Deprecated)
+
+This script has been replaced by `smart-commit.sh` with improved features:
+- Better Copilot CLI detection
+- Free tier model defaults
+- Clearer error messages
+- Simplified naming
+
+Use `smart-commit.sh` instead.
 
 ## Summary
 
@@ -361,12 +581,31 @@ Start with `update-repo.sh` for simple cases, then explore the full suite for co
 
 | Need | Command |
 |------|---------|
-| Update one repo | `./scripts/update-repo.sh` |
-| Clone fork | `./scripts/clone-with-upstream.sh <fork> <upstream>` |
-| Sync with upstream | `./scripts/rebase-to-upstream-latest.sh` |
-| Find all repos | `./scripts/discover-repos.sh` |
-| Update all repos | `./scripts/update-workspace-repos.sh` |
-| Check status | `./scripts/status-all-repos.sh` |
-| Run command | `./scripts/foreach-repo.sh "command"` |
+| Update one repo | `./scripts/repo-management/update-repo.sh` |
+| Clone fork | `./scripts/repo-management/clone-with-upstream.sh <fork> <upstream>` |
+| Sync with upstream | `./scripts/branch-operations/rebase-to-upstream-latest.sh` |
+| Compare branches | `./scripts/branch-operations/compare-branches.sh <base> <compare>` |
+| Batch cherry-pick | `./scripts/branch-operations/cherry-pick-batch.sh <file>` |
+| Find all repos | `./scripts/repo-management/discover-repos.sh` |
+| Update all repos | `./scripts/workspace/update-workspace-repos.sh` |
+| Check status | `./scripts/workspace/status-all-repos.sh` |
+| Run command | `./scripts/workspace/foreach-repo.sh "command"` |
+| Smart commit | `./scripts/commit-tools/smart-commit.sh` |
 
 For detailed examples and workflows, see [docs/README.md](docs/README.md).
+
+## Testing
+
+Comprehensive test suite available:
+
+```bash
+# Quick smoke test (30 seconds)
+bash scripts/test/quick-test.sh
+
+# Full test suite (5-10 minutes)
+bash scripts/test/run-all-tests.sh \
+  --test-repo git@github.com:dorgonman/kano-git-master-skill-demo.git \
+  --cleanup
+```
+
+See [TESTING.md](TESTING.md) for complete testing documentation.
