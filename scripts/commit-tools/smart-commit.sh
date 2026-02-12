@@ -85,6 +85,7 @@ MAX_FILE_SIZE_MB=5
 AI_REVIEW=1
 CUSTOM_RULES=""
 RULES_FILE=""
+REPO_FILTER=""  # Comma-separated list of repo paths to include
 
 #------------------------------------------------------------------------------
 # Functions
@@ -108,6 +109,7 @@ Optional:
   --max-file-size-mb <int>    Block files larger than this (default: 5)
   --rules <text>              Custom commit rules (inline text)
   --rules-file <path>         Custom commit rules (from file)
+  --repos <paths>             Only process specific repos (comma-separated paths)
   --list-models [provider]    List available models (all or specific provider)
   --clear-cache [provider]    Clear model cache (all or specific provider)
   -h, --help                  Show help
@@ -136,6 +138,9 @@ Examples:
 
   # With custom rules (from file)
   ./smart-commit.sh --provider copilot --model gpt-4o --rules-file .git/commit-rules.md
+
+  # Only process specific repos
+  ./smart-commit.sh --provider copilot --model gpt-4o --repos ".,submodules/my-lib"
 
   # Commit and push
   ./smart-commit.sh --provider opencode --model auto --push
@@ -239,6 +244,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --rules-file)
       RULES_FILE="${2:-}"
+      shift 2
+      ;;
+    --repos)
+      REPO_FILTER="${2:-}"
       shift 2
       ;;
     -h|--help)
@@ -769,6 +778,43 @@ if [[ "${#REPOS[@]}" -eq 0 ]]; then
 fi
 
 echo "Found ${#REPOS[@]} repositories"
+
+# Apply repo filter if specified
+if [[ -n "$REPO_FILTER" ]]; then
+  declare -a FILTERED_REPOS=()
+  IFS=',' read -ra FILTER_PATHS <<< "$REPO_FILTER"
+
+  for filter_path in "${FILTER_PATHS[@]}"; do
+    # Normalize filter path
+    filter_path="${filter_path#./}"  # Remove leading ./
+
+    # Convert to absolute path
+    if [[ "$filter_path" == "." ]]; then
+      filter_abs="$ROOT"
+    elif [[ "$filter_path" == /* ]]; then
+      filter_abs="$filter_path"
+    else
+      filter_abs="$ROOT/$filter_path"
+    fi
+    filter_abs="$(cd "$filter_abs" 2>/dev/null && pwd || echo "$filter_abs")"
+
+    # Check if this repo is in our list
+    for repo in "${REPOS[@]}"; do
+      if [[ "$repo" == "$filter_abs" ]]; then
+        FILTERED_REPOS+=("$repo")
+        break
+      fi
+    done
+  done
+
+  if [[ "${#FILTERED_REPOS[@]}" -eq 0 ]]; then
+    echo "No repositories match filter: $REPO_FILTER"
+    exit 0
+  fi
+
+  REPOS=("${FILTERED_REPOS[@]}")
+  echo "Filtered to ${#REPOS[@]} repositories"
+fi
 
 # Sort repos by depth (deepest first, root last)
 declare -a NON_ROOT=()
