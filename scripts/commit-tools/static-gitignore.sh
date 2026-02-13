@@ -82,6 +82,7 @@ Static Pattern Categories:
   - Logs/Temp: *.log, *.tmp, *.bak, tmp/, .tmp/
   - Cache: .cache/, .pytest_cache/, .mypy_cache/, .ruff_cache/, .turbo/
   - pnpm Specific: .pnpm-workspace-state-v1.json, pnpm-debug.log
+  - Sisyphus Runtime: .sisyphus/boulder.json
 EOF
 }
 
@@ -159,6 +160,7 @@ get_all_patterns() {
 .pnpm-workspace-state-v1.json
 .pytest_cache/
 .ruff_cache/
+.sisyphus/boulder.json
 .tmp/
 .turbo/
 .vscode/
