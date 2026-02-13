@@ -1,51 +1,58 @@
 #!/usr/bin/env bash
 #
-# smart-ignore.sh - Orchestrator for smart .gitignore management
+# smart-ignore.sh - Orchestrator for static and AI-driven .gitignore management
 #
 # Purpose:
-#   Coordinate static and AI-driven gitignore management.
-#   Executes in order: static-gitignore.sh, then ai-gitignore.sh
+#   Coordinates execution of static-gitignore.sh and ai-gitignore.sh in sequence,
+#   propagating flags appropriately and handling exit codes.
 #
 # Features:
-#   - Unified interface for both scripts
-#   - Configurable execution (static only, AI only, or both)
-#   - Verbose mode for debugging
-#   - Dry-run and repo selection support
+#   - Executes static patterns first (deterministic)
+#   - Optionally follows with AI patterns (context-aware)
+#   - Propagates flags to appropriate child scripts
+#   - Combined exit code reporting
+#   - Verbose execution progress tracking
 #
 # Usage:
 #   ./smart-ignore.sh [options]
 #
 # Options:
 #   --repo <path>              Target repository (default: current repo)
-#   --provider <name>          AI provider (opencode, codex, copilot)
-#   --model <name>             AI model name
+#   --provider <name>          AI provider (opencode, codex, copilot) - passed to AI script
+#   --model <name>             AI model name - passed to AI script
 #   --dry-run                  Preview changes without modifying files
-#   --no-ai                    Skip AI analysis, static patterns only
-#   --no-static                Skip static patterns, AI analysis only
-#   --verbose                  Show execution progress
+#   --no-ai                    Skip AI pattern analysis (static only)
+#   --no-static                Skip static patterns (AI only)
+#   --verbose                  Show script execution progress to stderr
 #   -h, --help                 Show this help message
 #
 # Examples:
-#   # Run both static and AI analysis
+#   # Full run with both static and AI patterns
 #   ./smart-ignore.sh --provider copilot --model gpt-4o
 #
 #   # Static patterns only
 #   ./smart-ignore.sh --no-ai
 #
-#   # AI analysis only
-#   ./smart-ignore.sh --no-static --provider copilot --model gpt-4o
+#   # AI patterns only
+#   ./smart-ignore.sh --provider copilot --model gpt-4o --no-static
 #
-#   # Dry-run preview
-#   ./smart-ignore.sh --provider copilot --model gpt-4o --dry-run --verbose
+#   # Dry-run preview for both
+#   ./smart-ignore.sh --provider copilot --model gpt-4o --dry-run
+#
+#   # Verbose output
+#   ./smart-ignore.sh --provider copilot --model gpt-4o --verbose
 #
 
 set -euo pipefail
 
-# Get script directory
+#------------------------------------------------------------------------------
+# Configuration
+#------------------------------------------------------------------------------
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Configuration
-TARGET_REPO="${PWD}"
+# Default values
+TARGET_REPO=""
 AI_PROVIDER=""
 AI_MODEL=""
 DRY_RUN=0
@@ -54,47 +61,68 @@ NO_STATIC=0
 VERBOSE=0
 
 #------------------------------------------------------------------------------
-# Functions
+# Usage function
 #------------------------------------------------------------------------------
 
 usage() {
   cat <<'EOF'
-Usage: smart-ignore.sh [options]
+smart-ignore.sh - Orchestrator for static and AI-driven .gitignore management
 
-Orchestrator for smart .gitignore management with static and AI patterns.
+USAGE:
+  ./smart-ignore.sh [options]
 
-Options:
+OPTIONS:
   --repo <path>              Target repository (default: current repo)
   --provider <name>          AI provider (opencode, codex, copilot)
   --model <name>             AI model name
   --dry-run                  Preview changes without modifying files
-  --no-ai                    Skip AI analysis (static only)
+  --no-ai                    Skip AI pattern analysis (static only)
   --no-static                Skip static patterns (AI only)
-  --verbose                  Show execution progress
+  --verbose                  Show script execution progress to stderr
   -h, --help                 Show this help message
 
-Examples:
-  # Run both static and AI analysis
+EXAMPLES:
+  # Full run with both static and AI patterns
   ./smart-ignore.sh --provider copilot --model gpt-4o
 
   # Static patterns only
   ./smart-ignore.sh --no-ai
 
-  # AI analysis only
-  ./smart-ignore.sh --no-static --provider copilot --model gpt-4o
+  # AI patterns only
+  ./smart-ignore.sh --provider copilot --model gpt-4o --no-static
 
-  # Dry-run preview with verbose output
-  ./smart-ignore.sh --provider copilot --model gpt-4o --dry-run --verbose
+  # Dry-run preview for both
+  ./smart-ignore.sh --provider copilot --model gpt-4o --dry-run
 
-Execution Order:
-  1. Static patterns (if --no-static not specified)
-  2. AI patterns (if --no-ai not specified)
+  # Verbose output showing execution progress
+  ./smart-ignore.sh --provider copilot --model gpt-4o --verbose
 
-Both managed block types can coexist in the same .gitignore file.
+EXECUTION ORDER:
+  1. Static patterns (deterministic rules)
+  2. AI patterns (context-aware, if enabled)
+
+EXIT CODE:
+  0 = Success
+  1 = Both scripts skipped (--no-static + --no-ai)
+  N = Exit code from first failing script
+
 EOF
 }
 
+#------------------------------------------------------------------------------
+# Logging helpers
+#------------------------------------------------------------------------------
+
+log_verbose() {
+  if [[ $VERBOSE -eq 1 ]]; then
+    echo "[smart-ignore.sh] $*" >&2
+  fi
+}
+
+#------------------------------------------------------------------------------
 # Parse arguments
+#------------------------------------------------------------------------------
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --repo)
@@ -108,7 +136,7 @@ while [[ $# -gt 0 ]]; do
     --provider)
       AI_PROVIDER="${2:-}"
       if [[ -z "$AI_PROVIDER" ]]; then
-        echo "ERROR: --provider requires a value" >&2
+        echo "ERROR: --provider requires a provider name argument" >&2
         exit 1
       fi
       shift 2
@@ -116,7 +144,7 @@ while [[ $# -gt 0 ]]; do
     --model)
       AI_MODEL="${2:-}"
       if [[ -z "$AI_MODEL" ]]; then
-        echo "ERROR: --model requires a value" >&2
+        echo "ERROR: --model requires a model name argument" >&2
         exit 1
       fi
       shift 2
@@ -142,79 +170,104 @@ while [[ $# -gt 0 ]]; do
       exit 0
       ;;
     *)
-      echo "ERROR: Unknown argument: $1" >&2
+      echo "ERROR: Unknown option: $1" >&2
       usage >&2
       exit 1
       ;;
   esac
 done
 
-# Validate that we're running at least one script
-if [[ "$NO_STATIC" -eq 1 && "$NO_AI" -eq 1 ]]; then
-  echo "ERROR: Cannot skip both static and AI analysis" >&2
+#------------------------------------------------------------------------------
+# Validate configuration
+#------------------------------------------------------------------------------
+
+# Check if both scripts are disabled
+if [[ $NO_STATIC -eq 1 ]] && [[ $NO_AI -eq 1 ]]; then
+  echo "ERROR: Cannot skip both static and AI patterns (--no-static + --no-ai)" >&2
   exit 1
 fi
 
-# If AI is enabled, validate provider and model are specified
-if [[ "$NO_AI" -eq 0 && (-z "$AI_PROVIDER" || -z "$AI_MODEL") ]]; then
-  echo "ERROR: --provider and --model are required unless --no-ai is specified" >&2
-  usage >&2
-  exit 1
+# If AI is not disabled, validate that provider and model are set
+if [[ $NO_AI -eq 0 ]]; then
+  if [[ -z "$AI_PROVIDER" ]] || [[ -z "$AI_MODEL" ]]; then
+    echo "ERROR: AI patterns enabled but --provider and --model are required" >&2
+    echo "Use --no-ai to skip AI patterns, or provide --provider and --model" >&2
+    exit 1
+  fi
 fi
 
 #------------------------------------------------------------------------------
-# Execution
+# Build argument arrays for child scripts
 #------------------------------------------------------------------------------
 
-STATIC_SCRIPT="$SCRIPT_DIR/static-gitignore.sh"
-AI_SCRIPT="$SCRIPT_DIR/ai-gitignore.sh"
+STATIC_ARGS=()
+AI_ARGS=()
 
-# Verify scripts exist
-if [[ ! -f "$STATIC_SCRIPT" ]]; then
-  echo "ERROR: static-gitignore.sh not found at $STATIC_SCRIPT" >&2
-  exit 1
+# Add --repo to both scripts (if provided)
+if [[ -n "$TARGET_REPO" ]]; then
+  STATIC_ARGS+=(--repo "$TARGET_REPO")
+  AI_ARGS+=(--repo "$TARGET_REPO")
 fi
 
-if [[ ! -f "$AI_SCRIPT" ]]; then
-  echo "ERROR: ai-gitignore.sh not found at $AI_SCRIPT" >&2
-  exit 1
+# Add --dry-run to both scripts (if enabled)
+if [[ $DRY_RUN -eq 1 ]]; then
+  STATIC_ARGS+=(--dry-run)
+  AI_ARGS+=(--dry-run)
 fi
 
-echo "Smart .gitignore Manager"
-echo "======================="
-echo "Target: $TARGET_REPO"
-[[ "$DRY_RUN" -eq 1 ]] && echo "Mode: DRY-RUN"
-echo ""
+# Add AI-specific arguments
+AI_ARGS+=(--provider "$AI_PROVIDER")
+AI_ARGS+=(--model "$AI_MODEL")
 
-# Run static patterns
-if [[ "$NO_STATIC" -eq 0 ]]; then
-  [[ "$VERBOSE" -eq 1 ]] && echo ">>> Running static-gitignore.sh..."
+#------------------------------------------------------------------------------
+# Execute scripts
+#------------------------------------------------------------------------------
+
+EXIT_CODE_STATIC=0
+EXIT_CODE_AI=0
+
+# Execute static patterns first
+if [[ $NO_STATIC -eq 0 ]]; then
+  log_verbose "Executing static-gitignore.sh..."
   
-  STATIC_ARGS=("--repo" "$TARGET_REPO")
-  [[ "$DRY_RUN" -eq 1 ]] && STATIC_ARGS+=("--dry-run")
-  
-  if ! "$STATIC_SCRIPT" "${STATIC_ARGS[@]}"; then
-    echo "WARNING: static-gitignore.sh failed" >&2
+  if "$SCRIPT_DIR/static-gitignore.sh" "${STATIC_ARGS[@]:-}" || EXIT_CODE_STATIC=$?; then
+    log_verbose "static-gitignore.sh completed successfully (exit code: 0)"
+  else
+    log_verbose "static-gitignore.sh failed (exit code: $EXIT_CODE_STATIC)"
   fi
-  
-  [[ "$VERBOSE" -eq 1 ]] && echo "<<< static-gitignore.sh completed"
-  echo ""
+else
+  log_verbose "Skipping static-gitignore.sh (--no-static)"
 fi
 
-# Run AI patterns
-if [[ "$NO_AI" -eq 0 ]]; then
-  [[ "$VERBOSE" -eq 1 ]] && echo ">>> Running ai-gitignore.sh..."
+# Execute AI patterns second (if enabled)
+if [[ $NO_AI -eq 0 ]]; then
+  log_verbose "Executing ai-gitignore.sh..."
   
-  AI_ARGS=("--provider" "$AI_PROVIDER" "--model" "$AI_MODEL" "--repo" "$TARGET_REPO")
-  [[ "$DRY_RUN" -eq 1 ]] && AI_ARGS+=("--dry-run")
-  
-  if ! "$AI_SCRIPT" "${AI_ARGS[@]}"; then
-    echo "WARNING: ai-gitignore.sh failed (provider may not be available)" >&2
+  if "$SCRIPT_DIR/ai-gitignore.sh" "${AI_ARGS[@]:-}" || EXIT_CODE_AI=$?; then
+    log_verbose "ai-gitignore.sh completed successfully (exit code: 0)"
+  else
+    log_verbose "ai-gitignore.sh failed (exit code: $EXIT_CODE_AI)"
   fi
-  
-  [[ "$VERBOSE" -eq 1 ]] && echo "<<< ai-gitignore.sh completed"
-  echo ""
+else
+  log_verbose "Skipping ai-gitignore.sh (--no-ai)"
 fi
 
-echo "=== All done ==="
-exit 0
+#------------------------------------------------------------------------------
+# Determine combined exit code
+#------------------------------------------------------------------------------
+
+# Exit code logic:
+# - If static failed, use its exit code
+# - Otherwise if AI failed, use its exit code
+# - Otherwise success (0)
+
+if [[ $EXIT_CODE_STATIC -ne 0 ]]; then
+  log_verbose "Exiting with static-gitignore.sh exit code: $EXIT_CODE_STATIC"
+  exit $EXIT_CODE_STATIC
+elif [[ $EXIT_CODE_AI -ne 0 ]]; then
+  log_verbose "Exiting with ai-gitignore.sh exit code: $EXIT_CODE_AI"
+  exit $EXIT_CODE_AI
+else
+  log_verbose "Both scripts completed successfully"
+  exit 0
+fi
