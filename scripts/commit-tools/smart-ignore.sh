@@ -20,9 +20,12 @@
 #   --repo <path>              Target repository (default: current repo)
 #   --provider <name>          AI provider (opencode, codex, copilot) - passed to AI script
 #   --model <name>             AI model name - passed to AI script
+#   --scope <type>             File scope for pattern selection (untracked|staged|worktree|all)
 #   --dry-run                  Preview changes without modifying files
 #   --no-ai                    Skip AI pattern analysis (static only)
 #   --no-static                Skip static patterns (AI only)
+#   --consolidate              Run consolidation check after static/AI (default: ON)
+#   --no-consolidate           Skip consolidation check
 #   --verbose                  Show script execution progress to stderr
 #   -h, --help                 Show this help message
 #
@@ -59,6 +62,8 @@ DRY_RUN=0
 NO_AI=0
 NO_STATIC=0
 VERBOSE=0
+SCOPE=""
+CONSOLIDATE=1
 
 #------------------------------------------------------------------------------
 # Usage function
@@ -75,9 +80,13 @@ OPTIONS:
   --repo <path>              Target repository (default: current repo)
   --provider <name>          AI provider (opencode, codex, copilot)
   --model <name>             AI model name
+  --scope <type>             File scope for pattern selection (untracked|staged|worktree|all)
+                             Passed to static-gitignore.sh only
   --dry-run                  Preview changes without modifying files
   --no-ai                    Skip AI pattern analysis (static only)
   --no-static                Skip static patterns (AI only)
+  --consolidate              Run consolidation check after static/AI (default: ON)
+  --no-consolidate           Skip consolidation check
   --verbose                  Show script execution progress to stderr
   -h, --help                 Show this help message
 
@@ -88,6 +97,9 @@ EXAMPLES:
   # Static patterns only
   ./smart-ignore.sh --no-ai
 
+  # Static with specific scope
+  ./smart-ignore.sh --no-ai --scope staged
+
   # AI patterns only
   ./smart-ignore.sh --provider copilot --model gpt-4o --no-static
 
@@ -97,9 +109,18 @@ EXAMPLES:
   # Verbose output showing execution progress
   ./smart-ignore.sh --provider copilot --model gpt-4o --verbose
 
+  # Skip consolidation check
+  ./smart-ignore.sh --provider copilot --model gpt-4o --no-consolidate
+
 EXECUTION ORDER:
   1. Static patterns (deterministic rules)
   2. AI patterns (context-aware, if enabled)
+  3. Consolidation check (unless --no-consolidate is set)
+
+CONSOLIDATION:
+  Detects duplicate patterns across static and AI blocks and reports them.
+  Run with --dry-run or standard mode to see the report.
+  No patterns are automatically modified.
 
 EXIT CODE:
   0 = Success
@@ -133,6 +154,22 @@ while [[ $# -gt 0 ]]; do
       fi
       shift 2
       ;;
+    --scope)
+      SCOPE="${2:-}"
+      if [[ -z "$SCOPE" ]]; then
+        echo "ERROR: --scope requires a value (untracked|staged|worktree|all)" >&2
+        exit 1
+      fi
+      case "$SCOPE" in
+        untracked|staged|worktree|all)
+          ;;
+        *)
+          echo "ERROR: Invalid --scope value: $SCOPE. Must be one of: untracked, staged, worktree, all" >&2
+          exit 1
+          ;;
+      esac
+      shift 2
+      ;;
     --provider)
       AI_PROVIDER="${2:-}"
       if [[ -z "$AI_PROVIDER" ]]; then
@@ -159,6 +196,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-static)
       NO_STATIC=1
+      shift
+      ;;
+    --consolidate)
+      CONSOLIDATE=1
+      shift
+      ;;
+    --no-consolidate)
+      CONSOLIDATE=0
       shift
       ;;
     --verbose)
@@ -209,6 +254,11 @@ if [[ -n "$TARGET_REPO" ]]; then
   AI_ARGS+=(--repo "$TARGET_REPO")
 fi
 
+# Add --scope to static script only (if provided)
+if [[ -n "$SCOPE" ]]; then
+  STATIC_ARGS+=(--scope "$SCOPE")
+fi
+
 # Add --dry-run to both scripts (if enabled)
 if [[ $DRY_RUN -eq 1 ]]; then
   STATIC_ARGS+=(--dry-run)
@@ -220,6 +270,53 @@ AI_ARGS+=(--provider "$AI_PROVIDER")
 AI_ARGS+=(--model "$AI_MODEL")
 
 #------------------------------------------------------------------------------
+# Consolidation function
+#------------------------------------------------------------------------------
+
+consolidate_patterns() {
+  local repo="${1:-.}"
+  local gitignore="$repo/.gitignore"
+
+  if [[ ! -f "$gitignore" ]]; then
+    log_verbose "No .gitignore found, skipping consolidation"
+    return 0
+  fi
+
+  local static_patterns ai_patterns duplicates
+
+  static_patterns=$(sed -n '/^# >>> STATIC-GITIGNORE$/,/^# <<< STATIC-GITIGNORE$/p' "$gitignore" | \
+    grep -v '^#' | grep -v '^[[:space:]]*$' | sort -u)
+
+  ai_patterns=$(sed -n '/^# >>> AI-GITIGNORE$/,/^# <<< AI-GITIGNORE$/p' "$gitignore" | \
+    grep -v '^#' | grep -v '^[[:space:]]*$' | sort -u)
+
+  if [[ -z "$static_patterns" ]] || [[ -z "$ai_patterns" ]]; then
+    log_verbose "Consolidation: at least one block missing or empty, skipping"
+    return 0
+  fi
+
+  duplicates=$(comm -12 <(echo "$static_patterns") <(echo "$ai_patterns"))
+
+  if [[ -n "$duplicates" ]]; then
+    echo ""
+    echo "Consolidation Report:"
+    echo "====================="
+    local dup_count
+    dup_count=$(echo "$duplicates" | wc -l)
+    echo "Found $dup_count duplicate pattern(s) across STATIC and AI blocks:"
+    echo ""
+    echo "$duplicates" | sed 's/^/  /'
+    echo ""
+    echo "Recommendation: Keep patterns in STATIC block as canonical source."
+    echo "Remove duplicates from AI block if they appear there."
+  else
+    log_verbose "Consolidation: no duplicate patterns found"
+  fi
+
+  return 0
+}
+
+#------------------------------------------------------------------------------
 # Execute scripts
 #------------------------------------------------------------------------------
 
@@ -229,7 +326,7 @@ EXIT_CODE_AI=0
 # Execute static patterns first
 if [[ $NO_STATIC -eq 0 ]]; then
   log_verbose "Executing static-gitignore.sh..."
-  
+
   if "$SCRIPT_DIR/static-gitignore.sh" "${STATIC_ARGS[@]:-}" || EXIT_CODE_STATIC=$?; then
     log_verbose "static-gitignore.sh completed successfully (exit code: 0)"
   else
@@ -242,7 +339,7 @@ fi
 # Execute AI patterns second (if enabled)
 if [[ $NO_AI -eq 0 ]]; then
   log_verbose "Executing ai-gitignore.sh..."
-  
+
   if "$SCRIPT_DIR/ai-gitignore.sh" "${AI_ARGS[@]:-}" || EXIT_CODE_AI=$?; then
     log_verbose "ai-gitignore.sh completed successfully (exit code: 0)"
   else
@@ -267,7 +364,18 @@ if [[ $EXIT_CODE_STATIC -ne 0 ]]; then
 elif [[ $EXIT_CODE_AI -ne 0 ]]; then
   log_verbose "Exiting with ai-gitignore.sh exit code: $EXIT_CODE_AI"
   exit $EXIT_CODE_AI
-else
-  log_verbose "Both scripts completed successfully"
-  exit 0
 fi
+
+#------------------------------------------------------------------------------
+# Run consolidation (if enabled and both scripts succeeded)
+#------------------------------------------------------------------------------
+
+if [[ $CONSOLIDATE -eq 1 ]]; then
+  log_verbose "Running consolidation check..."
+  consolidate_patterns "${TARGET_REPO:-.}"
+else
+  log_verbose "Skipping consolidation check (--no-consolidate)"
+fi
+
+log_verbose "Both scripts completed successfully"
+exit 0
