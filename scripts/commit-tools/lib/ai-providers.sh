@@ -41,18 +41,18 @@ get_cache_file() {
 
 is_cache_valid() {
   local cache_file="$1"
-  
+
   if [[ ! -f "$cache_file" ]]; then
     return 1
   fi
-  
+
   local cache_age
   cache_age=$(( $(date +%s) - $(stat -c %Y "$cache_file" 2>/dev/null || stat -f %m "$cache_file" 2>/dev/null || echo 0) ))
-  
+
   if (( cache_age > CACHE_TTL_SECONDS )); then
     return 1
   fi
-  
+
   return 0
 }
 
@@ -60,7 +60,7 @@ write_cache() {
   local provider="$1"
   local content="$2"
   local cache_file
-  
+
   cache_file="$(get_cache_file "$provider")"
   printf '%s\n' "$content" > "$cache_file"
 }
@@ -68,7 +68,7 @@ write_cache() {
 read_cache() {
   local provider="$1"
   local cache_file
-  
+
   cache_file="$(get_cache_file "$provider")"
   if [[ -f "$cache_file" ]]; then
     cat "$cache_file"
@@ -77,7 +77,7 @@ read_cache() {
 
 clear_cache() {
   local provider="${1:-}"
-  
+
   if [[ -n "$provider" ]]; then
     local cache_file
     cache_file="$(get_cache_file "$provider")"
@@ -113,11 +113,11 @@ detect_copilot() {
   if have_cmd copilot; then
     return 0
   fi
-  
+
   if have_cmd gh && gh copilot --version >/dev/null 2>&1; then
     return 0
   fi
-  
+
   return 1
 }
 
@@ -130,7 +130,7 @@ fetch_opencode_models() {
     echo "ERROR: opencode command not found" >&2
     return 1
   fi
-  
+
   # Use native opencode models command
   opencode models 2>/dev/null | grep -v '^$' || true
 }
@@ -144,25 +144,25 @@ fetch_codex_models() {
     echo "ERROR: codex command not found" >&2
     return 1
   fi
-  
+
   # Try CLI command first
   if codex models 2>/dev/null | grep -v '^$'; then
     return 0
   fi
-  
+
   # Fallback: scrape from official docs
   local url="https://developers.openai.com/codex/models"
   local models
-  
+
   models=$(curl -sL "$url" 2>/dev/null | \
     grep -oE 'gpt-[0-9](\.[0-9])?(-[a-z]+)*' | \
     sort -u || true)
-  
+
   if [[ -n "$models" ]]; then
     printf '%s\n' "$models"
     return 0
   fi
-  
+
   # Hardcoded fallback (last resort)
   cat <<'EOF'
 gpt-5.3-codex
@@ -186,28 +186,28 @@ fetch_copilot_models() {
     echo "ERROR: copilot command not found" >&2
     return 1
   fi
-  
+
   # Try CLI help output
   if have_cmd copilot; then
     if copilot --help 2>&1 | grep -oE '(gpt|claude|gemini)-[a-z0-9.-]+' | sort -u; then
       return 0
     fi
   fi
-  
+
   # Scrape from GitHub docs
   local url="https://docs.github.com/en/copilot/reference/ai-models/supported-models"
   local models
-  
+
   models=$(curl -sL "$url" 2>/dev/null | \
     grep -oE '(GPT|Claude|Gemini|Grok)-[A-Za-z0-9.-]+' | \
     tr '[:upper:]' '[:lower:]' | \
     sort -u || true)
-  
+
   if [[ -n "$models" ]]; then
     printf '%s\n' "$models"
     return 0
   fi
-  
+
   # Hardcoded fallback
   cat <<'EOF'
 gpt-5.1-codex
@@ -229,14 +229,14 @@ EOF
 list_available_models() {
   local provider="${1:-}"
   local force_refresh="${2:-false}"
-  
+
   ensure_cache_dir
-  
+
   # If provider specified, list only that provider
   if [[ -n "$provider" ]]; then
     local cache_file
     cache_file="$(get_cache_file "$provider")"
-    
+
     if [[ "$force_refresh" == "true" ]] || ! is_cache_valid "$cache_file"; then
       local models
       case "$provider" in
@@ -254,7 +254,7 @@ list_available_models() {
           return 1
           ;;
       esac
-      
+
       if [[ -n "$models" ]]; then
         write_cache "$provider" "$models"
         printf '%s\n' "$models"
@@ -267,19 +267,19 @@ list_available_models() {
     fi
     return 0
   fi
-  
+
   # List all available providers
   local providers=()
   detect_opencode && providers+=(opencode)
   detect_codex && providers+=(codex)
   detect_copilot && providers+=(copilot)
-  
+
   if [[ "${#providers[@]}" -eq 0 ]]; then
     echo "ERROR: No AI providers detected" >&2
     echo "Install one of: opencode, codex, copilot" >&2
     return 1
   fi
-  
+
   # List models from all providers
   for prov in "${providers[@]}"; do
     echo "=== $prov ==="
@@ -296,7 +296,7 @@ ai_generate_message() {
   local provider="$1"
   local model="$2"
   local prompt="$3"
-  
+
   case "$provider" in
     opencode)
       if ! detect_opencode; then
@@ -305,7 +305,7 @@ ai_generate_message() {
       fi
       opencode run --model "$model" "$prompt" 2>/dev/null | head -n 1 || true
       ;;
-      
+
     codex)
       if ! detect_codex; then
         echo "ERROR: codex not available" >&2
@@ -313,7 +313,7 @@ ai_generate_message() {
       fi
       codex -q --model "$model" "$prompt" 2>/dev/null | head -n 1 || true
       ;;
-      
+
     copilot)
       if ! detect_copilot; then
         echo "ERROR: copilot not available" >&2
@@ -325,7 +325,7 @@ ai_generate_message() {
         gh copilot suggest -t shell "$prompt" 2>/dev/null | head -n 1 || true
       fi
       ;;
-      
+
     *)
       echo "ERROR: Unknown provider: $provider" >&2
       return 1
@@ -334,14 +334,74 @@ ai_generate_message() {
 }
 
 #------------------------------------------------------------------------------
-# AI Review
+# Auto Provider Selection with Fallback
 #------------------------------------------------------------------------------
 
-ai_review_changes() {
-  local provider="$1"
-  local model="$2"
-  local prompt="$3"
-  
-  # Same as ai_generate_message but for review prompts
-  ai_generate_message "$provider" "$model" "$prompt"
+try_providers_in_order() {
+  local prompt="$1"
+  local providers=("copilot" "codex" "opencode")
+  local default_models=("gpt-5-mini" "gpt-5.3-codex" "auto")
+
+  for i in "${!providers[@]}"; do
+    local provider="${providers[$i]}"
+    local model="${default_models[$i]}"
+
+    # Check if provider is available
+    case "$provider" in
+      copilot)
+        if ! detect_copilot; then
+          echo "[$provider] Not available, trying next..." >&2
+          continue
+        fi
+        ;;
+      codex)
+        if ! detect_codex; then
+          echo "[$provider] Not available, trying next..." >&2
+          continue
+        fi
+        ;;
+      opencode)
+        if ! detect_opencode; then
+          echo "[$provider] Not available, trying next..." >&2
+          continue
+        fi
+        ;;
+    esac
+
+    echo "[$provider] Attempting with model: $model" >&2
+
+    # Try to generate message
+    local result
+    result="$(ai_generate_message "$provider" "$model" "$prompt" 2>/dev/null || true)"
+
+    if [[ -n "$result" ]]; then
+      echo "[$provider] Success!" >&2
+      echo "$result"
+      return 0
+    else
+      echo "[$provider] Failed, trying next..." >&2
+    fi
+  done
+
+  # All providers failed
+  echo "[fallback] All AI providers failed" >&2
+  return 1
+}
+
+generate_fallback_message() {
+  local repo="${1:-.}"
+  local scope
+  scope="$(basename "$repo")"
+
+  # Simple fallback: use git diff stats
+  local files_changed
+  files_changed="$(git -C "$repo" diff --cached --name-only 2>/dev/null | wc -l)"
+
+  if [[ "$files_changed" -eq 1 ]]; then
+    local file
+    file="$(git -C "$repo" diff --cached --name-only 2>/dev/null)"
+    printf 'chore(%s): update %s' "$scope" "$(basename "$file")"
+  else
+    printf 'chore(%s): update %d files' "$scope" "$files_changed"
+  fi
 }

@@ -48,9 +48,83 @@ AI-generated commit messages with safety checks.
 ./smart-commit-opencode.sh
 ./smart-commit-codex.sh
 ./smart-commit-copilot.sh
+
+# Auto-select provider (tries Copilot → Codex → OpenCode)
+./smart-commit-auto-with-fallback.sh     # Falls back to basic commit if all fail
+./smart-commit-auto-without-fallback.sh  # Fails if no AI provider available
 ```
 
-#### 2. smart-commit-push.sh
+#### 2. smart-commit-auto-with-fallback.sh
+Auto-select AI provider with guaranteed success.
+
+**Features:**
+- Tries providers in order: Copilot → Codex → OpenCode
+- Falls back to basic commit if all AI providers fail
+- Guarantees commit success
+- Same safety checks as smart-commit.sh
+- Repository filtering support
+
+**Usage:**
+```bash
+# Auto-select provider (guaranteed success)
+./smart-commit-auto-with-fallback.sh
+
+# With push
+./smart-commit-auto-with-fallback.sh --push
+
+# With custom rules
+./smart-commit-auto-with-fallback.sh --rules-file .github/commit-rules.md
+
+# Only specific repos
+./smart-commit-auto-with-fallback.sh --repos ".,submodules/lib"
+```
+
+**Provider Selection:**
+1. Checks Copilot (gpt-5-mini)
+2. If unavailable, checks Codex (gpt-5.3-codex)
+3. If unavailable, checks OpenCode (auto)
+4. If all unavailable, uses fallback (basic commit message from git diff stats)
+
+**Fallback Message Format:**
+- Single file: `chore(repo-name): update filename.ext`
+- Multiple files: `chore(repo-name): update N files`
+
+#### 3. smart-commit-auto-without-fallback.sh
+Auto-select AI provider (AI only, no fallback).
+
+**Features:**
+- Tries providers in order: Copilot → Codex → OpenCode
+- Fails if no AI provider available
+- Requires at least one AI provider
+- Same safety checks as smart-commit.sh
+- Repository filtering support
+
+**Usage:**
+```bash
+# Auto-select provider (AI only)
+./smart-commit-auto-without-fallback.sh
+
+# With push
+./smart-commit-auto-without-fallback.sh --push
+
+# With custom rules
+./smart-commit-auto-without-fallback.sh --rules-file .github/commit-rules.md
+
+# Only specific repos
+./smart-commit-auto-without-fallback.sh --repos ".,submodules/lib"
+```
+
+**Provider Selection:**
+1. Checks Copilot (gpt-5-mini)
+2. If unavailable, checks Codex (gpt-5.3-codex)
+3. If unavailable, checks OpenCode (auto)
+4. If all unavailable, exits with error
+
+**When to Use:**
+- Use `auto-with-fallback` for guaranteed success (CI/CD, automation)
+- Use `auto-without-fallback` when AI quality is required
+
+#### 4. smart-commit-push.sh
 Complete workflow: commit → fetch → rebase → push.
 
 **Features:**
@@ -74,7 +148,7 @@ Complete workflow: commit → fetch → rebase → push.
 ./smart-commit-push.sh --provider copilot --model gpt-4o --dry-run
 ```
 
-#### 3. smart-resolve.sh
+#### 5. smart-resolve.sh
 AI-powered conflict resolution.
 
 **Features:**
@@ -100,6 +174,12 @@ AI-powered conflict resolution.
 
 # Dry run
 ./smart-resolve.sh --provider copilot --model gpt-4o --dry-run
+
+# Auto-select provider (with fallback to manual)
+./smart-resolve-auto-with-fallback.sh
+
+# Auto-select provider (AI only, fails if unavailable)
+./smart-resolve-auto-without-fallback.sh
 ```
 
 **Workflow:**
@@ -111,7 +191,7 @@ AI-powered conflict resolution.
 6. Stages resolved files
 7. Continues merge/rebase operation
 
-#### 4. smart-rebase.sh
+#### 6. smart-rebase.sh
 AI-assisted intelligent rebase.
 
 **Features:**
@@ -139,6 +219,12 @@ AI-assisted intelligent rebase.
 
 # Dry run
 ./smart-rebase.sh --provider copilot --model gpt-4o --dry-run
+
+# Auto-select provider (with fallback to standard rebase)
+./smart-rebase-auto-with-fallback.sh
+
+# Auto-select provider (AI only, fails if unavailable)
+./smart-rebase-auto-without-fallback.sh
 ```
 
 **AI Features:**
@@ -312,11 +398,23 @@ All tools support `--dry-run` to preview operations:
 ### Daily Development
 ```bash
 # 1. Make changes
-# 2. Commit with AI message
+# 2. Commit with AI message (auto-select provider)
+./smart-commit-auto-with-fallback.sh
+
+# Or use specific provider
 ./smart-commit-copilot.sh
 
 # 3. Push with rebase
 ./smart-commit-push.sh --provider copilot --model gpt-4o
+```
+
+### CI/CD Automation
+```bash
+# Use auto-fallback for guaranteed success
+./smart-commit-auto-with-fallback.sh --no-ai-review
+
+# Or fail if AI unavailable (quality gate)
+./smart-commit-auto-without-fallback.sh
 ```
 
 ### Conflict Resolution
@@ -326,7 +424,10 @@ git merge feature-branch
 # or
 git rebase main
 
-# 2. If conflicts occur
+# 2. If conflicts occur (auto-select provider)
+./smart-resolve-auto-with-fallback.sh --interactive
+
+# Or use specific provider
 ./smart-resolve.sh --provider copilot --model gpt-4o --interactive
 
 # 3. Continue operation
@@ -337,7 +438,10 @@ git rebase --continue
 
 ### Clean Up History
 ```bash
-# 1. Interactive rebase with AI suggestions
+# 1. Interactive rebase with AI suggestions (auto-select provider)
+./smart-rebase-auto-with-fallback.sh --interactive --auto-squash
+
+# Or use specific provider
 ./smart-rebase.sh --provider copilot --model gpt-4o --interactive --auto-squash
 
 # 2. Force push safely

@@ -647,7 +647,7 @@ run_ai_review() {
   fi
 
   prompt="$(build_review_prompt "$repo")"
-  raw="$(ai_review_changes "$AI_PROVIDER" "$AI_MODEL" "$prompt" || true)"
+  raw="$(ai_generate_message "$AI_PROVIDER" "$AI_MODEL" "$prompt" || true)"
 
   if [[ -z "$raw" ]]; then
     echo "[$repo] AI review unavailable, failing closed" >&2

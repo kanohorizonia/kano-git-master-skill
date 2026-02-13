@@ -18,7 +18,13 @@ npm install -g @openai/codex                    # Codex
 
 ### Commit
 ```bash
-# Basic commit
+# Auto-select provider (guaranteed success)
+./smart-commit-auto-with-fallback.sh
+
+# Auto-select provider (AI only, fails if unavailable)
+./smart-commit-auto-without-fallback.sh
+
+# Specific provider
 ./smart-commit-copilot.sh
 
 # With custom rules
@@ -39,7 +45,13 @@ npm install -g @openai/codex                    # Codex
 
 ### Resolve Conflicts
 ```bash
-# Auto-resolve
+# Auto-select provider (with fallback)
+./smart-resolve-auto-with-fallback.sh
+
+# Auto-select provider (AI only)
+./smart-resolve-auto-without-fallback.sh
+
+# Specific provider
 ./smart-resolve.sh --provider copilot --model gpt-4o
 
 # Interactive (review each)
@@ -51,7 +63,13 @@ npm install -g @openai/codex                    # Codex
 
 ### Rebase
 ```bash
-# Smart rebase
+# Auto-select provider (with fallback)
+./smart-rebase-auto-with-fallback.sh
+
+# Auto-select provider (AI only)
+./smart-rebase-auto-without-fallback.sh
+
+# Specific provider
 ./smart-rebase.sh --provider copilot --model gpt-4o
 
 # Onto specific branch
@@ -66,9 +84,15 @@ npm install -g @openai/codex                    # Codex
 | Tool | Purpose | Key Features |
 |------|---------|--------------|
 | `smart-commit.sh` | AI commit messages | Safety checks, custom rules, auto-fix whitespace |
+| `smart-commit-auto-with-fallback.sh` | Auto provider + fallback | Tries Copilot→Codex→OpenCode→Basic, guaranteed success |
+| `smart-commit-auto-without-fallback.sh` | Auto provider (AI only) | Tries Copilot→Codex→OpenCode, fails if none available |
 | `smart-commit-push.sh` | Complete workflow | Commit + fetch + rebase + push |
 | `smart-resolve.sh` | Conflict resolution | Auto/interactive modes, backups |
+| `smart-resolve-auto-with-fallback.sh` | Auto resolve + fallback | Tries Copilot→Codex→OpenCode→Manual guide |
+| `smart-resolve-auto-without-fallback.sh` | Auto resolve (AI only) | Tries Copilot→Codex→OpenCode, fails if none available |
 | `smart-rebase.sh` | Intelligent rebase | AI strategy, auto-squash, conflict resolution |
+| `smart-rebase-auto-with-fallback.sh` | Auto rebase + fallback | Tries Copilot→Codex→OpenCode→Standard rebase |
+| `smart-rebase-auto-without-fallback.sh` | Auto rebase (AI only) | Tries Copilot→Codex→OpenCode, fails if none available |
 
 ## Common Flags
 
@@ -111,7 +135,10 @@ npm install -g @openai/codex                    # Codex
 # 1. Make changes
 vim src/main.ts
 
-# 2. Commit
+# 2. Commit (auto-select provider)
+./smart-commit-auto-with-fallback.sh
+
+# Or use specific provider
 ./smart-commit-copilot.sh
 
 # 3. Push
@@ -123,8 +150,8 @@ vim src/main.ts
 # 1. Merge/rebase
 git merge feature
 
-# 2. Resolve conflicts
-./smart-resolve.sh --provider copilot --model gpt-4o --interactive
+# 2. Resolve conflicts (auto-select provider)
+./smart-resolve-auto-with-fallback.sh --interactive
 
 # 3. Continue
 git merge --continue
@@ -132,8 +159,8 @@ git merge --continue
 
 ### Clean History
 ```bash
-# 1. Rebase with AI
-./smart-rebase.sh --provider copilot --model gpt-4o --interactive --auto-squash
+# 1. Rebase with AI (auto-select provider)
+./smart-rebase-auto-with-fallback.sh --interactive --auto-squash
 
 # 2. Force push safely
 git push --force-with-lease
@@ -186,17 +213,23 @@ git cherry-pick --abort
 
 ```
 scripts/commit-tools/
-├── smart-commit.sh              # Main commit tool
-├── smart-commit-push.sh         # Commit + push workflow
-├── smart-resolve.sh             # Conflict resolution
-├── smart-rebase.sh              # Intelligent rebase
-├── smart-commit-copilot.sh      # Copilot wrapper
-├── smart-commit-codex.sh        # Codex wrapper
-├── smart-commit-opencode.sh     # OpenCode wrapper
+├── smart-commit.sh                        # Main commit tool
+├── smart-commit-auto-with-fallback.sh     # Auto provider + fallback
+├── smart-commit-auto-without-fallback.sh  # Auto provider (AI only)
+├── smart-commit-push.sh                   # Commit + push workflow
+├── smart-resolve.sh                       # Conflict resolution
+├── smart-resolve-auto-with-fallback.sh    # Auto resolve + fallback
+├── smart-resolve-auto-without-fallback.sh # Auto resolve (AI only)
+├── smart-rebase.sh                        # Intelligent rebase
+├── smart-rebase-auto-with-fallback.sh     # Auto rebase + fallback
+├── smart-rebase-auto-without-fallback.sh  # Auto rebase (AI only)
+├── smart-commit-copilot.sh                # Copilot wrapper
+├── smart-commit-codex.sh                  # Codex wrapper
+├── smart-commit-opencode.sh               # OpenCode wrapper
 └── lib/
-    ├── ai-providers.sh          # AI abstraction
-    ├── git-helpers.sh           # Git utilities
-    └── conflict-parser.sh       # Conflict parsing
+    ├── ai-providers.sh                    # AI abstraction
+    ├── git-helpers.sh                     # Git utilities
+    └── conflict-parser.sh                 # Conflict parsing
 ```
 
 ## Custom Rules
