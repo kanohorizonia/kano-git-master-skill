@@ -221,7 +221,7 @@ if [[ -n "$SELECTED_PROVIDER" ]]; then
   echo "Using AI provider: $SELECTED_PROVIDER (model: $SELECTED_MODEL)"
   echo ""
 
-  exec "$SCRIPT_DIR/smart-commit.sh" \
+exec bash "$SCRIPT_DIR/smart-commit.sh" \
     --provider "$SELECTED_PROVIDER" \
     --model "$SELECTED_MODEL" \
     "${ARGS[@]}"

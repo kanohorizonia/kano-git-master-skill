@@ -43,7 +43,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --list-models)
       # List models for copilot only
-      exec "$SCRIPT_DIR/smart-commit.sh" --list-models copilot
+exec bash "$SCRIPT_DIR/smart-commit.sh" --list-models copilot
       ;;
     --model)
       MODEL="${2:-}"
@@ -57,7 +57,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Call smart-commit.sh with Copilot provider
-exec "$SCRIPT_DIR/smart-commit.sh" \
+exec bash "$SCRIPT_DIR/smart-commit.sh" \
   --provider copilot \
   --model "$MODEL" \
   "${ARGS[@]}"

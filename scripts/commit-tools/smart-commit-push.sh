@@ -125,7 +125,7 @@ echo "Step 1: Committing changes..."
 if [[ "$DRY_RUN" -eq 1 ]]; then
   echo "[DRY RUN] Would run: $SCRIPT_DIR/smart-commit.sh ${SMART_COMMIT_ARGS[*]}"
 else
-  if ! "$SCRIPT_DIR/smart-commit.sh" "${SMART_COMMIT_ARGS[@]}"; then
+  if ! bash "$SCRIPT_DIR/smart-commit.sh" "${SMART_COMMIT_ARGS[@]}"; then
     echo "ERROR: Commit failed" >&2
     exit 1
   fi
