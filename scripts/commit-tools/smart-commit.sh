@@ -6,7 +6,7 @@
 #   Commit changes across root repo, submodules, and nested repos with:
 #   - AI-generated commit messages (multi-provider support)
 #   - Safety checks (secrets, large files, conflicts)
-#   - Auto .gitignore updates
+#   - Auto .gitignore updates (smart-ignore + legacy fallback)
 #   - Optional AI review gate
 #
 # Supported Providers:
@@ -86,6 +86,7 @@ AI_REVIEW=1
 CUSTOM_RULES=""
 RULES_FILE=""
 REPO_FILTER=""  # Comma-separated list of repo paths to include
+USE_SMART_IGNORE=1
 
 #------------------------------------------------------------------------------
 # Functions
@@ -110,6 +111,8 @@ Optional:
   --rules <text>              Custom commit rules (inline text)
   --rules-file <path>         Custom commit rules (from file)
   --repos <paths>             Only process specific repos (comma-separated paths)
+  --smart-ignore              Use smart-ignore.sh for .gitignore updates (default: on)
+  --no-smart-ignore           Use legacy inline .gitignore updater only
   --list-models [provider]    List available models (all or specific provider)
   --clear-cache [provider]    Clear model cache (all or specific provider)
   -h, --help                  Show help
@@ -250,6 +253,14 @@ while [[ $# -gt 0 ]]; do
       REPO_FILTER="${2:-}"
       shift 2
       ;;
+    --smart-ignore)
+      USE_SMART_IGNORE=1
+      shift
+      ;;
+    --no-smart-ignore)
+      USE_SMART_IGNORE=0
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -361,6 +372,23 @@ ensure_gitignore_entry() {
 
 maybe_update_gitignore() {
   local repo="$1"
+  local smart_ignore_script="$SCRIPT_DIR/smart-ignore.sh"
+
+  if [[ "$USE_SMART_IGNORE" -eq 1 && -x "$smart_ignore_script" ]]; then
+    local smart_ignore_args=(--repo "$repo" --scope untracked)
+    if [[ -n "$AI_PROVIDER" && -n "$AI_MODEL" ]]; then
+      smart_ignore_args+=(--provider "$AI_PROVIDER" --model "$AI_MODEL")
+    else
+      smart_ignore_args+=(--no-ai)
+    fi
+
+    if "$smart_ignore_script" "${smart_ignore_args[@]}" >/dev/null 2>&1; then
+      echo "[$repo] .gitignore updated via smart-ignore"
+      return
+    fi
+    echo "[$repo] WARNING: smart-ignore failed, falling back to legacy updater" >&2
+  fi
+
   local changed=0
   local path=""
 
