@@ -1,9 +1,5 @@
 #!/usr/bin/env bash
 #
-# smart-commit-push.sh - AI-powered commit, rebase, and push workflow
-#
-# Purpose:
-#   Complete workflow: commit → fetch → rebase → resolve conflicts (AI) → push
 #
 # Usage:
 #   ./smart-commit-push.sh --provider <name> --model <name> [options]
@@ -39,8 +35,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Configuration
 DRY_RUN=0
 SMART_COMMIT_ARGS=()
-STEP2_FAILED=0
-STEP2_FAILED_REPOS=()
+SMART_PUSH_ARGS=()
 
 #------------------------------------------------------------------------------
 # Functions
@@ -50,7 +45,7 @@ usage() {
   cat <<'EOF'
 Usage: smart-commit-push.sh --provider <name> --model <name> [options]
 
-Complete AI-powered workflow: commit → fetch → rebase → resolve conflicts → push
+Complete AI-powered workflow: commit → push
 
 Required Options:
   --provider <name>           AI provider (opencode, codex, copilot)
@@ -58,6 +53,10 @@ Required Options:
 
 Optional:
   --repos <paths>             Only process specific repos (comma-separated)
+  --no-root                   Exclude root repo from push
+  --no-submodules             Exclude submodules from push
+  --no-standalone             Exclude standalone repos from push
+  --force-with-lease          Use --force-with-lease when pushing
   --rules <text>              Custom commit rules (inline text)
   --rules-file <path>         Custom commit rules (from file)
   --no-ai-review              Disable AI safety review
@@ -76,16 +75,10 @@ Examples:
 
 Workflow Steps:
   1. Commit changes (using smart-commit.sh)
-  2. Fetch latest from remote
-  3. Rebase onto remote branch
-  4. If conflicts: Use AI to resolve them
-  5. Push with --force-with-lease
+  2. Push changes (using smart-push.sh)
 
 Safety:
-  - Uses --force-with-lease (safe force push)
-  - AI reviews conflict resolution
   - Dry run mode available
-  - Aborts on unresolvable conflicts
 EOF
 }
 
@@ -94,11 +87,21 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run)
       DRY_RUN=1
+      SMART_PUSH_ARGS+=("--dry-run")
       shift
       ;;
     -h|--help)
       usage
       exit 0
+      ;;
+    --repos|--no-root|--no-submodules|--no-standalone|--force-with-lease)
+      SMART_PUSH_ARGS+=("$1")
+      if [[ "$1" == "--repos" ]]; then
+        SMART_PUSH_ARGS+=("${2:-}")
+        shift 2
+      else
+        shift
+      fi
       ;;
     *)
       # Pass through to smart-commit.sh
@@ -134,162 +137,15 @@ else
 fi
 
 echo ""
-echo "Step 2: Fetch and rebase workflow..."
-
-# Get ROOT directory
-ROOT="$(cd "$SCRIPT_DIR/../.." && git rev-parse --show-toplevel 2>/dev/null || true)"
-if [[ -z "$ROOT" ]]; then
-  ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+echo "Step 2: Push workflow..."
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  echo "[DRY RUN] Would run: $SCRIPT_DIR/smart-push.sh ${SMART_PUSH_ARGS[*]}"
+else
+  if ! bash "$SCRIPT_DIR/smart-push.sh" "${SMART_PUSH_ARGS[@]}"; then
+    echo "ERROR: Push step failed. Check smart-push output above for repository-specific failures." >&2
+    exit 1
+  fi
 fi
-
-# Load AI provider library
-LIB_DIR="$SCRIPT_DIR/lib"
-if [[ ! -f "$LIB_DIR/ai-providers.sh" ]]; then
-  echo "ERROR: AI provider library not found: $LIB_DIR/ai-providers.sh" >&2
-  exit 1
-fi
-source "$LIB_DIR/ai-providers.sh"
-
-# Extract provider and model from args
-AI_PROVIDER=""
-AI_MODEL=""
-REPO_FILTER=""
-
-for ((i=0; i<${#SMART_COMMIT_ARGS[@]}; i++)); do
-  case "${SMART_COMMIT_ARGS[$i]}" in
-    --provider)
-      AI_PROVIDER="${SMART_COMMIT_ARGS[$((i+1))]}"
-      ;;
-    --model)
-      AI_MODEL="${SMART_COMMIT_ARGS[$((i+1))]}"
-      ;;
-    --repos)
-      REPO_FILTER="${SMART_COMMIT_ARGS[$((i+1))]}"
-      ;;
-  esac
-done
-
-# Discover repos (same logic as smart-commit.sh)
-declare -a REPOS=()
-
-# Add root repo
-if git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  REPOS+=("$ROOT")
-fi
-
-# Add submodules
-while IFS= read -r line; do
-  [[ -z "$line" ]] && continue
-  if git -C "$ROOT/$line" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    REPOS+=("$(cd "$ROOT/$line" && pwd)")
-  fi
-done < <(git -C "$ROOT" config --file .gitmodules --get-regexp path 2>/dev/null | awk '{print $2}' || true)
-
-# Apply repo filter if specified
-if [[ -n "$REPO_FILTER" ]]; then
-  declare -a FILTERED_REPOS=()
-  IFS=',' read -ra FILTER_PATHS <<< "$REPO_FILTER"
-
-  for filter_path in "${FILTER_PATHS[@]}"; do
-    filter_path="${filter_path#./}"
-
-    if [[ "$filter_path" == "." ]]; then
-      filter_abs="$ROOT"
-    elif [[ "$filter_path" == /* ]]; then
-      filter_abs="$filter_path"
-    else
-      filter_abs="$ROOT/$filter_path"
-    fi
-    filter_abs="$(cd "$filter_abs" 2>/dev/null && pwd || echo "$filter_abs")"
-
-    for repo in "${REPOS[@]}"; do
-      if [[ "$repo" == "$filter_abs" ]]; then
-        FILTERED_REPOS+=("$repo")
-        break
-      fi
-    done
-  done
-
-  REPOS=("${FILTERED_REPOS[@]}")
-fi
-
-# Process each repo
-for repo in "${REPOS[@]}"; do
-  echo ""
-  echo "=== Rebase: $repo ==="
-
-  # Get current branch
-  branch="$(git -C "$repo" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
-  if [[ -z "$branch" ]]; then
-    echo "[$repo] SKIP: Detached HEAD"
-    continue
-  fi
-
-  # Check if branch has upstream
-  if ! git -C "$repo" rev-parse --abbrev-ref "@{upstream}" >/dev/null 2>&1; then
-    echo "[$repo] SKIP: No upstream branch configured"
-    continue
-  fi
-
-  upstream="$(git -C "$repo" rev-parse --abbrev-ref "@{upstream}" 2>/dev/null || true)"
-
-  if [[ "$DRY_RUN" -eq 1 ]]; then
-    echo "[DRY RUN] Would fetch and rebase $branch onto $upstream"
-    continue
-  fi
-
-  # Fetch
-  echo "[$repo] Fetching from remote..."
-  if ! git -C "$repo" fetch origin; then
-    echo "[$repo] ERROR: Fetch failed (check remote/auth/network)." >&2
-    STEP2_FAILED=1
-    STEP2_FAILED_REPOS+=("$repo (fetch)")
-    continue
-  fi
-
-  # Check if rebase is needed
-  local_commit="$(git -C "$repo" rev-parse HEAD)"
-  remote_commit="$(git -C "$repo" rev-parse "$upstream")"
-
-  if [[ "$local_commit" == "$remote_commit" ]]; then
-    echo "[$repo] Already up to date"
-    continue
-  fi
-
-  # Rebase
-  echo "[$repo] Rebasing $branch onto $upstream..."
-  if git -C "$repo" rebase "$upstream"; then
-    echo "[$repo] Rebase successful"
-
-    # Push with --force-with-lease
-    echo "[$repo] Pushing with --force-with-lease..."
-    if git -C "$repo" push --force-with-lease origin "$branch"; then
-      echo "[$repo] Push successful"
-    else
-      echo "[$repo] ERROR: Push failed (likely permission/auth/protection issue)." >&2
-      STEP2_FAILED=1
-      STEP2_FAILED_REPOS+=("$repo (push)")
-    fi
-  else
-    # Rebase failed - conflicts detected
-    echo "[$repo] ERROR: Conflicts detected during rebase"
-    echo "[$repo] AI conflict resolution is not implemented in this script yet"
-    echo "[$repo] Aborting rebase..."
-    git -C "$repo" rebase --abort 2>/dev/null || true
-    echo "[$repo] FAILED: Manual conflict resolution required" >&2
-    STEP2_FAILED=1
-    STEP2_FAILED_REPOS+=("$repo (rebase-conflict)")
-  fi
-done
 
 echo ""
-if [[ "$STEP2_FAILED" -eq 1 ]]; then
-  echo "=== Workflow Complete (with errors) ==="
-  echo "Failed repositories in fetch/rebase/push stage:" >&2
-  for item in "${STEP2_FAILED_REPOS[@]}"; do
-    echo "  - $item" >&2
-  done
-  exit 1
-fi
-
 echo "=== Workflow Complete (success) ==="
