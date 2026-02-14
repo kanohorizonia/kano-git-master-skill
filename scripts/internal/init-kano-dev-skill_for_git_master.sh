@@ -72,7 +72,7 @@ ensure_backlog_repo() {
 REPO_SSH="${REPO_SSH:-git@github.com:dorgonman/kano-agent-skill.git}"
 REPO_HTTPS="${REPO_HTTPS:-https://github.com/dorgonman/kano-agent-skill.git}"
 REPO_DIR="${REPO_DIR:-$SKILL_ROOT/skills/kano}"
-TOOLING_BRANCH="${TOOLING_BRANCH:-dev/kano-agent-skill-tooling}"
+TOOLING_BRANCH="${TOOLING_BRANCH:-dev/kano-git-master-tooling}"
 
 SKILL_1_SSH="${SKILL_1_SSH:-git@github.com:dorgonman/kano-filesystem-safe-ops-skill.git}"
 SKILL_1_HTTPS="${SKILL_1_HTTPS:-https://github.com/dorgonman/kano-filesystem-safe-ops-skill.git}"

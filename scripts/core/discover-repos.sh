@@ -198,10 +198,10 @@ display_summary() {
   
   # Count repos by type
   local total root_count submodule_count standalone_count
-  total="$(echo "$repos_json" | grep -o '"type":"[^"]*"' | wc -l)"
-  root_count="$(echo "$repos_json" | grep -o '"type":"root"' | wc -l)"
-  submodule_count="$(echo "$repos_json" | grep -o '"type":"submodule"' | wc -l)"
-  standalone_count="$(echo "$repos_json" | grep -o '"type":"standalone"' | wc -l)"
+  total="$(echo "$repos_json" | { grep -o '"type":"[^"]*"' || true; } | wc -l | tr -d ' ')"
+  root_count="$(echo "$repos_json" | { grep -o '"type":"root"' || true; } | wc -l | tr -d ' ')"
+  submodule_count="$(echo "$repos_json" | { grep -o '"type":"submodule"' || true; } | wc -l | tr -d ' ')"
+  standalone_count="$(echo "$repos_json" | { grep -o '"type":"standalone"' || true; } | wc -l | tr -d ' ')"
   
   gith_log "INFO" ""
   gith_log "INFO" "Summary:"

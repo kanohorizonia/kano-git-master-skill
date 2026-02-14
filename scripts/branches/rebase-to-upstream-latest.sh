@@ -45,6 +45,7 @@ BRANCH="main"
 REMOTE="upstream"
 DETACHED_MODE="checkout" # checkout|skip
 AUTO_STASH=1
+DRY_RUN=0
 
 #------------------------------------------------------------------------------
 # Functions
@@ -70,11 +71,15 @@ Options:
   --remote <name>              Remote name (default: upstream)
   --detached <checkout|skip>   What to do when HEAD is detached (default: checkout)
   --no-stash                   Fail if there are local changes (no auto-stash)
+  --dry-run                    Show what would happen; no changes are made
   -h, --help                   Show this help
 
 Examples:
   # Rebase to upstream/main
   ./rebase-to-upstream-latest.sh
+
+  # Preview actions
+  ./rebase-to-upstream-latest.sh --dry-run
 
   # Rebase to upstream/develop
   ./rebase-to-upstream-latest.sh --branch develop
@@ -111,6 +116,10 @@ process_repo() {
 
   gith_log "INFO" "Processing: $repo"
 
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    gith_log "INFO" "DRY-RUN: enabled"
+  fi
+
   # Check if remote exists
   if ! gith_has_remote "$REMOTE" "$repo"; then
     gith_log "WARN" "Skip: '$REMOTE' remote not found in $repo"
@@ -119,7 +128,9 @@ process_repo() {
 
   # Fetch from remote
   gith_log "INFO" "Fetching '$REMOTE/$BRANCH'..."
-  if ! gith_fetch_remote "$REMOTE" "$repo"; then
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    gith_log "INFO" "DRY-RUN: would fetch '$REMOTE'"
+  elif ! gith_fetch_remote "$REMOTE" "$repo"; then
     gith_error "Failed to fetch from $REMOTE"
     return 1
   fi
@@ -136,11 +147,17 @@ process_repo() {
       gith_error "Local changes detected; re-run without --no-stash or clean the working tree"
       return 1
     fi
-    
-    gith_log "INFO" "Local changes detected; stashing before rebase..."
-    stash_ref="$(gith_stash_create "$repo" "auto-stash: rebase-to-upstream-latest")"
-    if [[ $? -eq 0 ]] && [[ -n "$stash_ref" ]]; then
-      stash_created=1
+
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      gith_log "INFO" "DRY-RUN: would stash local changes"
+      stash_created=0
+      stash_ref=""
+    else
+      gith_log "INFO" "Local changes detected; stashing before rebase..."
+      stash_ref="$(gith_stash_create "$repo" "auto-stash: rebase-to-upstream-latest")"
+      if [[ $? -eq 0 ]] && [[ -n "$stash_ref" ]]; then
+        stash_created=1
+      fi
     fi
   fi
 
@@ -156,7 +173,9 @@ process_repo() {
     fi
     
     gith_log "INFO" "HEAD is detached; checking out '$BRANCH' at '$REMOTE/$BRANCH'..."
-    if ! (cd "$repo" && git checkout -B "$BRANCH" "refs/remotes/$REMOTE/$BRANCH" 2>&1); then
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      gith_log "INFO" "DRY-RUN: would checkout -B '$BRANCH' 'refs/remotes/$REMOTE/$BRANCH'"
+    elif ! (cd "$repo" && git checkout -B "$BRANCH" "refs/remotes/$REMOTE/$BRANCH" 2>&1); then
       gith_error "Failed to checkout branch"
       if [[ $stash_created -eq 1 ]]; then
         gith_log "INFO" "Stash preserved: $stash_ref"
@@ -166,7 +185,9 @@ process_repo() {
   else
     # On a branch - rebase
     gith_log "INFO" "Rebasing '$start_branch' onto '$REMOTE/$BRANCH'..."
-    if ! (cd "$repo" && git rebase "refs/remotes/$REMOTE/$BRANCH" 2>&1); then
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      gith_log "INFO" "DRY-RUN: would rebase '$start_branch' onto 'refs/remotes/$REMOTE/$BRANCH'"
+    elif ! (cd "$repo" && git rebase "refs/remotes/$REMOTE/$BRANCH" 2>&1); then
       gith_error "Rebase failed"
       if [[ $stash_created -eq 1 ]]; then
         gith_log "INFO" "Stash preserved: $stash_ref"
@@ -181,7 +202,10 @@ process_repo() {
   # Restore stash
   if [[ "$stash_created" -eq 1 ]]; then
     gith_log "INFO" "Restoring stashed local changes..."
-    if ! gith_stash_pop "$repo" "$stash_ref"; then
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      gith_log "INFO" "DRY-RUN: would restore stashed changes from $stash_ref"
+      return 0
+    elif ! gith_stash_pop "$repo" "$stash_ref"; then
       gith_error "Auto stash pop failed"
       gith_error "Resolve conflicts and apply manually from $stash_ref"
       return 1
@@ -213,6 +237,10 @@ main() {
         ;;
       --no-stash)
         AUTO_STASH=0
+        shift
+        ;;
+      --dry-run)
+        DRY_RUN=1
         shift
         ;;
       -h|--help)

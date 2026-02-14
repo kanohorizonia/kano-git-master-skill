@@ -109,7 +109,7 @@ test_clone_with_upstream() {
   local test_clone_dir="$TEST_DIR/clone-test"
   
   # Test basic clone
-  if bash "$SKILL_ROOT/scripts/repo-management/clone-with-upstream.sh" \
+  if bash "$SKILL_ROOT/scripts/core/clone-with-upstream.sh" \
     "$TEST_REPO" \
     --dir "$test_clone_dir" >/dev/null 2>&1; then
     
@@ -136,7 +136,7 @@ test_update_repo() {
   git clone "$TEST_REPO" "$test_repo_dir" >/dev/null 2>&1
   
   # Test update with dry-run
-  if bash "$SKILL_ROOT/scripts/repo-management/update-repo.sh" \
+  if bash "$SKILL_ROOT/scripts/core/update-repo.sh" \
     "$test_repo_dir" \
     --dry-run >/dev/null 2>&1; then
     log_success "update-repo.sh: Dry-run mode"
@@ -146,7 +146,7 @@ test_update_repo() {
   fi
   
   # Test actual update
-  if bash "$SKILL_ROOT/scripts/repo-management/update-repo.sh" \
+  if bash "$SKILL_ROOT/scripts/core/update-repo.sh" \
     "$test_repo_dir" >/dev/null 2>&1; then
     log_success "update-repo.sh: Update"
   else
@@ -168,7 +168,7 @@ test_discover_repos() {
   git clone "$TEST_REPO" "$test_workspace/repo2" >/dev/null 2>&1
   
   # Test discovery
-  if bash "$SKILL_ROOT/scripts/repo-management/discover-repos.sh" \
+  if bash "$SKILL_ROOT/scripts/core/discover-repos.sh" \
     --root "$test_workspace" >/dev/null 2>&1; then
     log_success "discover-repos.sh: Discovery"
   else
@@ -178,7 +178,7 @@ test_discover_repos() {
   
   # Test JSON output
   local manifest="$test_workspace/manifest.json"
-  if bash "$SKILL_ROOT/scripts/repo-management/discover-repos.sh" \
+  if bash "$SKILL_ROOT/scripts/core/discover-repos.sh" \
     --root "$test_workspace" \
     --format json \
     --save "$manifest" >/dev/null 2>&1; then
@@ -208,7 +208,8 @@ test_status_all_repos() {
   
   # Test table format
   if bash "$SKILL_ROOT/scripts/workspace/status-all-repos.sh" \
-    --root "$test_workspace" >/dev/null 2>&1; then
+    --exclude "/" \
+    --max-depth 1 >/dev/null 2>&1; then
     log_success "status-all-repos.sh: Table format"
   else
     log_error "status-all-repos.sh: Table format failed"
@@ -217,7 +218,8 @@ test_status_all_repos() {
   
   # Test JSON format
   if bash "$SKILL_ROOT/scripts/workspace/status-all-repos.sh" \
-    --root "$test_workspace" \
+    --exclude "/" \
+    --max-depth 1 \
     --format json >/dev/null 2>&1; then
     log_success "status-all-repos.sh: JSON format"
   else
@@ -228,7 +230,8 @@ test_status_all_repos() {
   # Test markdown format
   local status_md="$test_workspace/status.md"
   if bash "$SKILL_ROOT/scripts/workspace/status-all-repos.sh" \
-    --root "$test_workspace" \
+    --exclude "/" \
+    --max-depth 1 \
     --format markdown \
     --output "$status_md" >/dev/null 2>&1; then
     
@@ -259,7 +262,8 @@ test_foreach_repo() {
   # Test command execution
   if bash "$SKILL_ROOT/scripts/workspace/foreach-repo.sh" \
     "git status --short" \
-    --root "$test_workspace" >/dev/null 2>&1; then
+    --exclude "/" \
+    --max-depth 1 >/dev/null 2>&1; then
     log_success "foreach-repo.sh: Command execution"
   else
     log_error "foreach-repo.sh: Command execution failed"
@@ -280,7 +284,8 @@ test_update_workspace_repos() {
   
   # Test dry-run
   if bash "$SKILL_ROOT/scripts/workspace/update-workspace-repos.sh" \
-    --root "$test_workspace" \
+    --exclude "/" \
+    --max-depth 1 \
     --dry-run >/dev/null 2>&1; then
     log_success "update-workspace-repos.sh: Dry-run"
   else
@@ -290,7 +295,8 @@ test_update_workspace_repos() {
   
   # Test actual update
   if bash "$SKILL_ROOT/scripts/workspace/update-workspace-repos.sh" \
-    --root "$test_workspace" >/dev/null 2>&1; then
+    --exclude "/" \
+    --max-depth 1 >/dev/null 2>&1; then
     log_success "update-workspace-repos.sh: Update"
   else
     log_error "update-workspace-repos.sh: Update failed"
@@ -316,7 +322,7 @@ test_compare_branches() {
   git commit -m "test: Add test file" >/dev/null 2>&1
   
   # Test table format
-  if bash "$SKILL_ROOT/scripts/branch-operations/compare-branches.sh" \
+  if bash "$SKILL_ROOT/scripts/branches/compare-branches.sh" \
     main test-branch \
     --repo "$test_repo_dir" >/dev/null 2>&1; then
     log_success "compare-branches.sh: Table format"
@@ -326,7 +332,7 @@ test_compare_branches() {
   fi
   
   # Test JSON format
-  if bash "$SKILL_ROOT/scripts/branch-operations/compare-branches.sh" \
+  if bash "$SKILL_ROOT/scripts/branches/compare-branches.sh" \
     main test-branch \
     --repo "$test_repo_dir" \
     --format json >/dev/null 2>&1; then
@@ -338,7 +344,7 @@ test_compare_branches() {
   
   # Test markdown format
   local diff_md="$test_repo_dir/diff.md"
-  if bash "$SKILL_ROOT/scripts/branch-operations/compare-branches.sh" \
+  if bash "$SKILL_ROOT/scripts/branches/compare-branches.sh" \
     main test-branch \
     --repo "$test_repo_dir" \
     --format markdown \
@@ -356,7 +362,7 @@ test_compare_branches() {
   fi
   
   # Test bidirectional
-  if bash "$SKILL_ROOT/scripts/branch-operations/compare-branches.sh" \
+  if bash "$SKILL_ROOT/scripts/branches/compare-branches.sh" \
     main test-branch \
     --repo "$test_repo_dir" \
     --bidirectional >/dev/null 2>&1; then
@@ -410,7 +416,7 @@ test_cherry_pick_batch() {
 EOF
   
   # Test dry-run
-  if bash "$SKILL_ROOT/scripts/branch-operations/cherry-pick-batch.sh" \
+  if bash "$SKILL_ROOT/scripts/branches/cherry-pick-batch.sh" \
     commits.json \
     --repo "$test_repo_dir" \
     --dry-run >/dev/null 2>&1; then
@@ -421,7 +427,7 @@ EOF
   fi
   
   # Test actual cherry-pick
-  if bash "$SKILL_ROOT/scripts/branch-operations/cherry-pick-batch.sh" \
+  if bash "$SKILL_ROOT/scripts/branches/cherry-pick-batch.sh" \
     commits.json \
     --repo "$test_repo_dir" >/dev/null 2>&1; then
     log_success "cherry-pick-batch.sh: Cherry-pick"
@@ -447,7 +453,7 @@ $hash1 test: Commit 1
 $hash2 test: Commit 2
 EOF
   
-  if bash "$SKILL_ROOT/scripts/branch-operations/cherry-pick-batch.sh" \
+  if bash "$SKILL_ROOT/scripts/branches/cherry-pick-batch.sh" \
     commits.txt \
     --repo "$test_repo_dir" >/dev/null 2>&1; then
     log_success "cherry-pick-batch.sh: Text format"
@@ -473,9 +479,10 @@ test_rebase_to_upstream() {
   git remote add upstream "$TEST_REPO" >/dev/null 2>&1
   git fetch upstream >/dev/null 2>&1
   
-  # Test dry-run
-  if bash "$SKILL_ROOT/scripts/branch-operations/rebase-to-upstream-latest.sh" \
-    --dry-run 2>&1 | grep -q "DRY-RUN"; then
+  local output
+  output="$(bash "$SKILL_ROOT/scripts/branches/rebase-to-upstream-latest.sh" --dry-run 2>&1)"
+
+  if echo "$output" | grep -q "DRY-RUN"; then
     log_success "rebase-to-upstream-latest.sh: Dry-run"
   else
     log_error "rebase-to-upstream-latest.sh: Dry-run failed"

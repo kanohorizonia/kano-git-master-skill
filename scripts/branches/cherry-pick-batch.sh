@@ -467,9 +467,9 @@ main() {
     fi
     
     if cherry_pick_commit "$hash" "$title" "$REPO_PATH"; then
-      ((success_count++))
+      ((success_count+=1))
     else
-      ((failed_count++))
+      ((failed_count+=1))
       # Stop on first failure
       break
     fi
