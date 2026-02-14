@@ -11,16 +11,16 @@
 #   5. Add development skills as submodules
 #
 # Usage:
-#   ./init-kano-dev-skill.sh --repo-ssh <url> --repo-https <url> --repo-dir <path> [options]
+#   ./init-kano-dev-skill.sh --repo-dir <path> [--repo-ssh <url>] [--repo-https <url>] [options]
 #
 # Required Options:
-#   --repo-ssh <url>        Repository SSH URL
-#   --repo-https <url>      Repository HTTPS URL
 #   --repo-dir <path>       Local repository directory (e.g., skills/kano)
+#   --repo-ssh <url>        Repository SSH URL (required if --repo-https not provided)
+#   --repo-https <url>      Repository HTTPS URL (required if --repo-ssh not provided)
 #
 # Optional Options:
-#   --tooling-branch <name> Tooling branch name (default: dev/tooling)
-#   --skill <ssh>:<https>:<path>  Skill to add (can be repeated)
+#   --tooling-branch <name> Tooling branch name (default: dev/<repo-name>-tooling)
+#   --skill <ssh>|<https>|<path>  Skill to add (can be repeated, use | as delimiter)
 #   --upstream-ssh <url>    Upstream SSH URL
 #   --upstream-https <url>  Upstream HTTPS URL
 #   --skip-main-init        Skip main branch initialization
@@ -35,12 +35,11 @@
 #     --repo-ssh git@github.com:user/kano-new-skill.git \
 #     --repo-https https://github.com/user/kano-new-skill.git \
 #     --repo-dir skills/new-skill \
-#     --skill "git@github.com:user/skill1.git:https://github.com/user/skill1.git:skills/skill1" \
-#     --skill "git@github.com:user/skill2.git:https://github.com/user/skill2.git:skills/skill2"
+#     --skill "git@github.com:user/skill1.git|https://github.com/user/skill1.git|skills/skill1" \
+#     --skill "git@github.com:user/skill2.git|https://github.com/user/skill2.git|skills/skill2"
 #
 #   # Dry run to preview
 #   ./init-kano-dev-skill.sh \
-#     --repo-ssh git@github.com:user/kano-new-skill.git \
 #     --repo-https https://github.com/user/kano-new-skill.git \
 #     --repo-dir skills/new-skill \
 #     --dry-run
@@ -71,6 +70,8 @@ SKILLS=()
 SKIP_MAIN_INIT=0
 SKIP_TOOLING=0
 SKIP_SKILLS=0
+FORCE_OVERWRITE_TOOLING=0
+UPDATE_TOOLING=0
 DRY_RUN=0
 
 # Workflow state
@@ -84,23 +85,24 @@ REMOTE_IS_EMPTY=0
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") --repo-ssh <url> --repo-https <url> --repo-dir <path> [options]
+Usage: $(basename "$0") --repo-dir <path> [--repo-ssh <url>] [--repo-https <url>] [options]
 
 Initialize a new Kano repository with tooling branch and skills.
 
 Required Options:
-  --repo-ssh <url>        Repository SSH URL
-  --repo-https <url>      Repository HTTPS URL
   --repo-dir <path>       Local repository directory
+  --repo-ssh <url>        Repository SSH URL (required if --repo-https not provided)
+  --repo-https <url>      Repository HTTPS URL (required if --repo-ssh not provided)
 
 Optional Options:
   --tooling-branch <name> Tooling branch name (default: dev/<repo-name>-tooling)
-  --skill <ssh>:<https>:<path>  Skill to add (format: ssh_url:https_url:path)
+  --skill <ssh>|<https>|<path>  Skill to add (format: ssh_url|https_url|path)
   --upstream-ssh <url>    Upstream SSH URL
   --upstream-https <url>  Upstream HTTPS URL
   --skip-main-init        Skip main branch initialization
   --skip-tooling          Skip tooling branch creation
   --skip-skills           Skip skill addition
+  --update-tooling        Update existing tooling branch (rebase onto origin/<tooling-branch>)
   --dry-run               Show what would be done
   -h, --help              Show help
 
@@ -110,7 +112,7 @@ Examples:
     --repo-ssh git@github.com:user/repo.git \\
     --repo-https https://github.com/user/repo.git \\
     --repo-dir skills/kano \\
-    --skill "git@github.com:user/skill1.git:https://github.com/user/skill1.git:skills/skill1"
+    --skill "git@github.com:user/skill1.git|https://github.com/user/skill1.git|skills/skill1"
 
 EOF
 }
@@ -163,6 +165,14 @@ parse_args() {
         SKIP_SKILLS=1
         shift
         ;;
+      --update-tooling)
+        UPDATE_TOOLING=1
+        shift
+        ;;
+      --force-overwrite-tooling)
+        FORCE_OVERWRITE_TOOLING=1
+        shift
+        ;;
       --dry-run)
         DRY_RUN=1
         shift
@@ -178,14 +188,8 @@ parse_args() {
 
 # Validate required arguments
 validate_args() {
-  if [[ -z "$REPO_SSH" ]]; then
-    gith_error "Error: --repo-ssh is required"
-    usage
-    exit 1
-  fi
-  
-  if [[ -z "$REPO_HTTPS" ]]; then
-    gith_error "Error: --repo-https is required"
+  if [[ -z "$REPO_SSH" && -z "$REPO_HTTPS" ]]; then
+    gith_error "Error: --repo-ssh or --repo-https is required"
     usage
     exit 1
   fi
@@ -198,9 +202,12 @@ validate_args() {
   
   # Derive tooling branch name from repo name if not specified
   if [[ -z "$TOOLING_BRANCH" ]]; then
-    # Extract repo name from SSH URL (e.g., git@github.com:user/kano-agent-skill.git -> kano-agent-skill)
     local repo_name
-    repo_name=$(basename "$REPO_SSH" .git)
+    if [[ -n "$REPO_SSH" ]]; then
+      repo_name=$(basename "$REPO_SSH" .git)
+    else
+      repo_name=$(basename "$REPO_HTTPS" .git)
+    fi
     TOOLING_BRANCH="dev/${repo_name}-tooling"
     gith_log "INFO" "Using derived tooling branch name: $TOOLING_BRANCH"
   fi
@@ -209,21 +216,36 @@ validate_args() {
 # Check if remote repository is empty
 check_remote_status() {
   gith_log "INFO" "Checking remote repository status..."
-  
-  if git ls-remote "$REPO_HTTPS" HEAD >/dev/null 2>&1; then
-    local ref_count
-    ref_count=$(git ls-remote "$REPO_HTTPS" 2>/dev/null | wc -l)
-    
-    if [[ "$ref_count" -eq 0 ]]; then
-      REMOTE_IS_EMPTY=1
-      gith_log "INFO" "  Remote repository is empty"
-    else
-      REMOTE_IS_EMPTY=0
-      gith_log "INFO" "  Remote repository has content ($ref_count references)"
+
+  local check_urls=()
+  if [[ -n "$REPO_HTTPS" ]]; then
+    check_urls+=("$REPO_HTTPS")
+  fi
+  if [[ -n "$REPO_SSH" ]]; then
+    check_urls+=("$REPO_SSH")
+  fi
+
+  local check_url=""
+  local ref_count=""
+  for url in "${check_urls[@]}"; do
+    if git ls-remote "$url" HEAD >/dev/null 2>&1; then
+      check_url="$url"
+      ref_count=$(git ls-remote "$url" 2>/dev/null | wc -l)
+      break
     fi
-  else
-    gith_error "Error: Cannot access remote repository: $REPO_HTTPS"
+  done
+
+  if [[ -z "$check_url" ]]; then
+    gith_error "Error: Cannot access remote repository via provided URLs"
     exit 1
+  fi
+
+  if [[ "$ref_count" -eq 0 ]]; then
+    REMOTE_IS_EMPTY=1
+    gith_log "INFO" "  Remote repository is empty"
+  else
+    REMOTE_IS_EMPTY=0
+    gith_log "INFO" "  Remote repository has content ($ref_count references)"
   fi
 }
 
@@ -242,12 +264,19 @@ init_repository() {
     fi
   else
     REPO_EXISTS=0
-    
+
+    local clone_url=""
+    if [[ -n "$REPO_SSH" ]]; then
+      clone_url="$REPO_SSH"
+    elif [[ -n "$REPO_HTTPS" ]]; then
+      clone_url="$REPO_HTTPS"
+    fi
+
     if [[ "$DRY_RUN" -eq 1 ]]; then
-      echo "[DRY-RUN] Would clone: $REPO_HTTPS to $REPO_DIR"
+      echo "[DRY-RUN] Would clone: $clone_url to $REPO_DIR"
     else
       gith_log "INFO" "  Cloning repository..."
-      git clone "$REPO_HTTPS" "$REPO_DIR"
+      git clone "$clone_url" "$REPO_DIR"
       cd "$REPO_DIR"
     fi
   fi
@@ -259,27 +288,124 @@ configure_remotes() {
   
   if [[ "$DRY_RUN" -eq 1 ]]; then
     echo "[DRY-RUN] Would configure remotes:"
-    echo "  origin-ssh: $REPO_SSH"
-    echo "  origin-https: $REPO_HTTPS"
-    if [[ -n "$UPSTREAM_SSH" ]]; then
+    if [[ -n "$REPO_SSH" && -n "$REPO_HTTPS" ]]; then
+      echo "  origin-ssh: $REPO_SSH"
+      echo "  origin-http: $REPO_HTTPS"
+    elif [[ -n "$REPO_SSH" ]]; then
+      echo "  origin: $REPO_SSH"
+    else
+      echo "  origin: $REPO_HTTPS"
+    fi
+
+    if [[ -n "$UPSTREAM_SSH" && -n "$UPSTREAM_HTTPS" ]]; then
       echo "  upstream-ssh: $UPSTREAM_SSH"
-      echo "  upstream-https: $UPSTREAM_HTTPS"
+      echo "  upstream-http: $UPSTREAM_HTTPS"
+    elif [[ -n "$UPSTREAM_SSH" ]]; then
+      echo "  upstream: $UPSTREAM_SSH"
+    elif [[ -n "$UPSTREAM_HTTPS" ]]; then
+      echo "  upstream: $UPSTREAM_HTTPS"
     fi
   else
-    local cmd="$SCRIPT_DIR/../submodules/kog-submodule.sh add --remote origin --ssh \"$REPO_SSH\" --https \"$REPO_HTTPS\""
+    gith_log "INFO" "  Configuring root repo remotes..."
     
+    local setup_cmd=("$SCRIPT_DIR/../core/setup-multi-remote.sh")
+    if [[ -n "$REPO_SSH" ]]; then
+      setup_cmd+=("--origin-ssh" "$REPO_SSH")
+    fi
+    if [[ -n "$REPO_HTTPS" ]]; then
+      setup_cmd+=("--origin-http" "$REPO_HTTPS")
+    fi
+
     if [[ -n "$UPSTREAM_SSH" ]]; then
-      cmd="$cmd --remote upstream --ssh \"$UPSTREAM_SSH\" --https \"$UPSTREAM_HTTPS\""
+      setup_cmd+=("--upstream-ssh" "$UPSTREAM_SSH")
+    fi
+    if [[ -n "$UPSTREAM_HTTPS" ]]; then
+      setup_cmd+=("--upstream-http" "$UPSTREAM_HTTPS")
     fi
     
-    cmd="$cmd --push-remote origin --protocol auto"
+    setup_cmd+=("--dir" "$REPO_DIR")
+    if [[ -n "$REPO_SSH" && -n "$REPO_HTTPS" ]]; then
+      setup_cmd+=("--validate")
+    elif [[ -n "$UPSTREAM_SSH" && -n "$UPSTREAM_HTTPS" ]]; then
+      setup_cmd+=("--validate")
+    fi
     
-    gith_log "INFO" "  Configuring root repo remotes..."
-    eval "$cmd"
+    "${setup_cmd[@]}"
   fi
 }
 
 # Initialize main branch if remote is empty
+push_with_fallback() {
+  local branch="$1"
+  local repo_dir="$2"
+
+  if [[ -z "$branch" ]]; then
+    gith_error "push_with_fallback: branch name is required"
+    return 1
+  fi
+
+  if [[ ! -d "$repo_dir" ]]; then
+    gith_error "push_with_fallback: repository directory does not exist: $repo_dir"
+    return 1
+  fi
+
+  if ! gith_is_git_repo "$repo_dir"; then
+    gith_error "push_with_fallback: not a git repository: $repo_dir"
+    return 1
+  fi
+
+  local ssh_remote=""
+  local http_remote=""
+
+  if (cd "$repo_dir" && git remote get-url origin-ssh >/dev/null 2>&1); then
+    ssh_remote="origin-ssh"
+  elif (cd "$repo_dir" && git remote get-url origin >/dev/null 2>&1); then
+    local origin_url
+    origin_url=$(cd "$repo_dir" && git remote get-url origin)
+    if [[ "$origin_url" =~ ^(git@|file://) ]]; then
+      ssh_remote="origin"
+    fi
+  fi
+
+  if (cd "$repo_dir" && git remote get-url origin-http >/dev/null 2>&1); then
+    http_remote="origin-http"
+  elif (cd "$repo_dir" && git remote get-url origin >/dev/null 2>&1); then
+    local origin_url
+    origin_url=$(cd "$repo_dir" && git remote get-url origin)
+    if [[ "$origin_url" =~ ^https?:// ]]; then
+      http_remote="origin"
+    fi
+  fi
+
+  if [[ -n "$ssh_remote" ]]; then
+    gith_log "INFO" "Attempting push to $ssh_remote..."
+    if (cd "$repo_dir" && git push -u "$ssh_remote" "$branch" >/dev/null 2>&1); then
+      gith_log "INFO" "Successfully pushed to $ssh_remote"
+      return 0
+    else
+      gith_log "WARN" "SSH push failed"
+    fi
+  fi
+
+  if [[ -n "$http_remote" ]]; then
+    gith_log "INFO" "Falling back to $http_remote..."
+    if (cd "$repo_dir" && git push -u "$http_remote" "$branch" >/dev/null 2>&1); then
+      gith_log "INFO" "Successfully pushed to $http_remote"
+      return 0
+    else
+      gith_log "WARN" "HTTP push failed"
+    fi
+  fi
+
+  gith_error "Failed to push branch '$branch' to any remote"
+  if [[ -z "$ssh_remote" && -z "$http_remote" ]]; then
+    gith_error "No suitable remotes found for push operation"
+    gith_error "Expected remotes: origin-ssh, origin-http, or origin"
+  fi
+
+  return 1
+}
+
 init_main_branch() {
   if [[ "$SKIP_MAIN_INIT" -eq 1 ]]; then
     gith_log "INFO" "Step 3: Initialize main branch (SKIPPED)"
@@ -299,7 +425,10 @@ init_main_branch() {
       
       git add README.md
       git commit -m "chore: Initialize repository"
-      git push origin main
+      if ! push_with_fallback "main" "$REPO_DIR"; then
+        gith_error "Failed to push main branch"
+        exit 1
+      fi
       
       gith_log "INFO" "  Main branch initialized and pushed"
     fi
@@ -308,7 +437,27 @@ init_main_branch() {
   fi
 }
 
-# Create tooling branch
+update_tooling_branch() {
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY-RUN] Would update tooling branch via rebase: $TOOLING_BRANCH"
+    return 0
+  fi
+
+  gith_log "INFO" "Updating tooling branch: $TOOLING_BRANCH"
+  (cd "$REPO_DIR" && git fetch origin)
+
+  if (cd "$REPO_DIR" && git show-ref --verify --quiet "refs/heads/$TOOLING_BRANCH"); then
+    (cd "$REPO_DIR" && git checkout "$TOOLING_BRANCH")
+  elif (cd "$REPO_DIR" && git ls-remote --heads origin "$TOOLING_BRANCH" 2>/dev/null | grep -q "$TOOLING_BRANCH"); then
+    (cd "$REPO_DIR" && git checkout -B "$TOOLING_BRANCH" "origin/$TOOLING_BRANCH")
+  else
+    gith_error "Tooling branch not found locally or on origin: $TOOLING_BRANCH"
+    exit 1
+  fi
+
+  (cd "$REPO_DIR" && git rebase "origin/$TOOLING_BRANCH")
+}
+
 create_tooling_branch() {
   if [[ "$SKIP_TOOLING" -eq 1 ]]; then
     gith_log "INFO" "Step 4: Create tooling branch (SKIPPED)"
@@ -317,18 +466,36 @@ create_tooling_branch() {
   
   gith_log "INFO" "Step 4: Create tooling branch: $TOOLING_BRANCH"
   
+  if [[ "$UPDATE_TOOLING" -eq 1 ]]; then
+    update_tooling_branch
+    return 0
+  fi
+
   if [[ "$DRY_RUN" -eq 1 ]]; then
     echo "[DRY-RUN] Would create orphan branch: $TOOLING_BRANCH"
-  else
-    "$SCRIPT_DIR/../core/create-orphan-branch.sh" \
-      --branch "$TOOLING_BRANCH" \
-      --file README.md \
-      --content "# Development Tooling\n\nThis branch contains development tools and skills for this project." \
-      --message "chore: Initialize development tooling branch" \
-      --push
-    
-    gith_log "INFO" "  Tooling branch created and pushed"
+    return 0
   fi
+
+  local create_args=(
+    "$SCRIPT_DIR/../core/create-orphan-branch.sh"
+    --branch "$TOOLING_BRANCH"
+    --file README.md
+    --content "# Development Tooling\n\nThis branch contains development tools and skills for this project."
+    --message "chore: Initialize development tooling branch"
+  )
+
+  if [[ "$FORCE_OVERWRITE_TOOLING" -eq 1 ]]; then
+    create_args+=("--force-overwrite-branch")
+  fi
+
+  "${create_args[@]}"
+
+  if ! push_with_fallback "$TOOLING_BRANCH" "$REPO_DIR"; then
+    gith_error "Failed to push tooling branch"
+    exit 1
+  fi
+  
+  gith_log "INFO" "  Tooling branch created and pushed"
 }
 
 # Add skills as submodules
@@ -351,12 +518,13 @@ add_skills() {
   fi
   
   for skill in "${SKILLS[@]}"; do
-    # Parse skill format: ssh_url:https_url:path
-    IFS=':' read -r skill_ssh skill_https skill_path <<< "$skill"
+    # Parse skill format: ssh_url|https_url|path
+    # Using | delimiter to avoid conflicts with : in git URLs
+    IFS='|' read -r skill_ssh skill_https skill_path <<< "$skill"
     
     if [[ -z "$skill_ssh" || -z "$skill_https" || -z "$skill_path" ]]; then
       gith_error "Error: Invalid skill format: $skill"
-      gith_error "Expected format: ssh_url:https_url:path"
+      gith_error "Expected format: ssh_url|https_url|path"
       continue
     fi
     
@@ -368,6 +536,11 @@ add_skills() {
       echo "  SSH: $skill_ssh"
       echo "  HTTPS: $skill_https"
     else
+      if (cd "$REPO_DIR" && git submodule status -- "$skill_path" >/dev/null 2>&1); then
+        gith_log "INFO" "  Skipping existing submodule: $skill_path"
+        continue
+      fi
+
       "$SCRIPT_DIR/../submodules/kog-submodule.sh" add \
         --path "$skill_path" \
         --remote origin \
@@ -378,16 +551,19 @@ add_skills() {
     fi
   done
   
-  # Commit and push
-  if [[ "$DRY_RUN" -eq 0 && ${#SKILLS[@]} -gt 0 ]]; then
-    git add .gitmodules
-    for skill in "${SKILLS[@]}"; do
-      IFS=':' read -r _ _ skill_path <<< "$skill"
-      git add "$skill_path" 2>/dev/null || true
-    done
+   # Commit and push
+   if [[ "$DRY_RUN" -eq 0 && ${#SKILLS[@]} -gt 0 ]]; then
+     git add .gitmodules
+     for skill in "${SKILLS[@]}"; do
+       IFS='|' read -r _ _ skill_path <<< "$skill"
+       git add "$skill_path" 2>/dev/null || true
+     done
     
     git commit -m "feat: Add development skills as submodules"
-    git push origin "$TOOLING_BRANCH"
+    if ! push_with_fallback "$TOOLING_BRANCH" "$REPO_DIR"; then
+      gith_error "Failed to push tooling branch"
+      exit 1
+    fi
     
     gith_log "INFO" "  Skills added and pushed"
   fi
@@ -400,7 +576,14 @@ generate_summary() {
   echo "Workflow Summary"
   echo "========================================"
   echo "Repository: $REPO_DIR"
-  echo "Remote: $REPO_HTTPS"
+  if [[ -n "$REPO_SSH" && -n "$REPO_HTTPS" ]]; then
+    echo "Remote (ssh): $REPO_SSH"
+    echo "Remote (https): $REPO_HTTPS"
+  elif [[ -n "$REPO_SSH" ]]; then
+    echo "Remote: $REPO_SSH"
+  else
+    echo "Remote: $REPO_HTTPS"
+  fi
   echo "Tooling branch: $TOOLING_BRANCH"
   echo "Skills added: ${#SKILLS[@]}"
   echo ""

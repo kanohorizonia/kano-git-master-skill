@@ -19,9 +19,9 @@ source "$REPO_ROOT/scripts/lib/git-helpers.sh"
 TEST_REPO_SSH="git@github.com:dorgonman/kano-agent-skill.git"
 TEST_REPO_HTTPS="https://github.com/dorgonman/kano-agent-skill.git"
 TEST_REPO_DIR="skills/kano-test"
-TEST_TOOLING_BRANCH="dev/tooling"
-TEST_SKILL_1="git@github.com:dorgonman/kano-filesystem-safe-ops-skill.git:https://github.com/dorgonman/kano-filesystem-safe-ops-skill.git:skills/kano-filesystem-safe-ops-skill"
-TEST_SKILL_2="git@github.com:dorgonman/kano-agent-backlog-skill.git:https://github.com/dorgonman/kano-agent-backlog-skill.git:skills/kano-agent-backlog-skill"
+TEST_TOOLING_BRANCH="dev/kano-agent-skill-tooling"
+TEST_SKILL_1="git@github.com:dorgonman/kano-filesystem-safe-ops-skill.git|https://github.com/dorgonman/kano-filesystem-safe-ops-skill.git|skills/kano-filesystem-safe-ops-skill"
+TEST_SKILL_2="git@github.com:dorgonman/kano-agent-backlog-skill.git|https://github.com/dorgonman/kano-agent-backlog-skill.git|skills/kano-agent-backlog-skill"
 
 # Test counters
 TESTS_RUN=0
@@ -102,6 +102,25 @@ test_dry_run_basic() {
   fi
 }
 
+test_dry_run_basic_single_url() {
+  gith_log "INFO" "Testing dry-run mode (single URL)..."
+
+  local output
+  output=$("$REPO_ROOT/scripts/internal/init-kano-dev-skill.sh" \
+    --repo-ssh "$TEST_REPO_SSH" \
+    --repo-dir "$TEST_REPO_DIR" \
+    --dry-run 2>&1)
+
+  if echo "$output" | grep -q "origin: $TEST_REPO_SSH"; then
+    gith_log "INFO" "Single URL origin detected"
+    return 0
+  else
+    gith_log "ERROR" "Single URL origin not detected"
+    echo "$output"
+    return 1
+  fi
+}
+
 test_dry_run_with_skills() {
   gith_log "INFO" "Testing dry-run mode with skills..."
 
@@ -150,7 +169,7 @@ test_dry_run_with_skills() {
 
 test_dry_run_with_upstream() {
   gith_log "INFO" "Testing dry-run mode with upstream..."
-
+  
   local output
   output=$("$REPO_ROOT/scripts/internal/init-kano-dev-skill.sh" \
     --repo-ssh "$TEST_REPO_SSH" \
@@ -159,9 +178,9 @@ test_dry_run_with_upstream() {
     --upstream-https "https://github.com/original/kano-agent-skill.git" \
     --repo-dir "$TEST_REPO_DIR" \
     --dry-run 2>&1)
-
-  # Check for upstream configuration
-  if echo "$output" | grep -q "upstream"; then
+  
+  # Check for upstream configuration (should appear in DRY-RUN output)
+  if echo "$output" | grep -q "upstream-ssh"; then
     gith_log "INFO" "Upstream configuration detected"
     return 0
   else
@@ -203,7 +222,7 @@ test_skip_flags() {
 
 test_invalid_skill_format() {
   gith_log "INFO" "Testing invalid skill format..."
-
+  
   local output
   output=$("$REPO_ROOT/scripts/internal/init-kano-dev-skill.sh" \
     --repo-ssh "$TEST_REPO_SSH" \
@@ -211,14 +230,14 @@ test_invalid_skill_format() {
     --repo-dir "$TEST_REPO_DIR" \
     --skill "invalid-format" \
     --dry-run 2>&1 || true)
-
-  # Should detect invalid format
+  
+  # Should detect invalid format (missing | delimiters)
   if echo "$output" | grep -qi "invalid.*format"; then
     gith_log "INFO" "Invalid skill format detected"
     return 0
   else
     gith_log "WARN" "Invalid skill format not detected (may be handled later)"
-    return 0  # Not critical for dry-run
+    return 0
   fi
 }
 
@@ -238,6 +257,7 @@ main() {
   run_test "Help output" "test_help_output"
   run_test "Missing required arguments" "test_missing_required_args"
   run_test "Dry-run mode (basic)" "test_dry_run_basic"
+  run_test "Dry-run mode (single URL)" "test_dry_run_basic_single_url"
   run_test "Dry-run mode with skills" "test_dry_run_with_skills"
   run_test "Dry-run mode with upstream" "test_dry_run_with_upstream"
   run_test "Skip flags" "test_skip_flags"
