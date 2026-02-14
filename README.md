@@ -71,7 +71,8 @@ kano-git-master-skill/
     ├── internal/           # Skill maintenance scripts
     │   ├── show-version.sh # Show skill version
     │   ├── bump-version.sh # Bump skill version
-    │   └── create-tag.sh   # Create git tag
+    │   ├── create-tag.sh   # Create git tag
+    │   └── init-kano-dev-skill.sh  # Initialize Kano skill repos for development
     ├── tags/               # Tag management
     │   └── list-tags.sh    # List git tags
     ├── core/               # Core operations
@@ -122,7 +123,27 @@ Initialize a new repository with multi-remote setup, orphan branch, and submodul
   --dry-run
 ```
 
-See [Workflow Examples](./docs/examples/repo-initialization-workflow-examples.md) for more usage patterns.
+**Kano Skill Development Initialization** - Internal tool for setting up Kano skill repositories:
+
+```bash
+# Initialize kano-agent-skill with development skills
+# Tooling branch will be auto-named: dev/kano-agent-skill-tooling
+./scripts/internal/init-kano-dev-skill.sh \
+  --repo-ssh git@github.com:dorgonman/kano-agent-skill.git \
+  --repo-https https://github.com/dorgonman/kano-agent-skill.git \
+  --repo-dir skills/kano \
+  --skill "git@github.com:user/skill1.git:https://github.com/user/skill1.git:skills/skill1" \
+  --skill "git@github.com:user/skill2.git:https://github.com/user/skill2.git:skills/skill2"
+
+# Preview with dry-run
+./scripts/internal/init-kano-dev-skill.sh \
+  --repo-ssh git@github.com:dorgonman/kano-agent-skill.git \
+  --repo-https https://github.com/dorgonman/kano-agent-skill.git \
+  --repo-dir skills/kano \
+  --dry-run
+```
+
+See [Workflow Examples](./docs/examples/repo-initialization-workflow-examples.md) and [Kano Dev Skill Init Examples](./docs/examples/init-kano-dev-skill-example.md) for more usage patterns.
 
 ### Multi-Remote Configuration
 

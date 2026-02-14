@@ -68,7 +68,9 @@ docs/
 │   ├── git-p4.md
 │   └── git-svn.md
 ├── examples/                    # Usage examples
-│   └── repo-initialization-workflow-examples.md
+│   ├── repo-initialization-workflow-examples.md
+│   ├── init-kano-dev-skill-example.md
+│   └── root-repo-multi-remote-examples.md
 ├── comparisons/                 # Comparison guides
 │   ├── submodule-vs-subtree.md
 │   ├── git-p4-vs-git-svn.md

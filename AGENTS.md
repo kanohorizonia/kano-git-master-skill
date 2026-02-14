@@ -1,0 +1,135 @@
+# AGENTS.md — kano-git-master-skill
+
+This repo is a **Bash script toolkit** (plus Bash-based tests) for Git automation.
+
+## 1) Build / Lint / Test commands
+
+### Setup / install
+- No install step in this repo (no `package.json`, no dependency lockfiles).
+- Requirements are documented in `README.md` (Git 2.x+, Bash 4.x+, optional Python/Scalar).
+
+### Build
+- No build step (shell scripts only).
+
+### Lint / format
+- No repo-provided lint/format commands (no shellcheck/shfmt config found).
+
+### Tests (recommended)
+Run from repo root (`skills/kano-git-master-skill/`).
+
+#### Quick smoke test (fast; no external repo required)
+```bash
+bash scripts/test/quick-test.sh
+```
+
+#### Full test suite (clones a real repo; 5–10 min)
+```bash
+bash scripts/test/run-all-tests.sh \
+  --test-repo git@github.com:dorgonman/kano-git-master-skill-demo.git \
+  --cleanup
+```
+
+Options are implemented in `scripts/test/run-all-tests.sh`:
+- `--test-repo <url>`
+- `--cleanup`
+- `--verbose`
+
+#### Run a single test script
+Most tests are standalone executables in `scripts/test/`:
+```bash
+bash scripts/test/test-worktree-scripts.sh
+bash scripts/test/test-revision-offset.sh
+bash scripts/test/test-git-helpers-basic.sh
+bash scripts/test/test-create-orphan-branch-properties.sh
+```
+
+#### Run one specific test *function* from the full suite
+`scripts/test/run-all-tests.sh` defines `test_*` functions. You can source it and call one:
+```bash
+source scripts/test/run-all-tests.sh
+test_compare_branches
+```
+Note: sourcing will also define globals used by those functions (see the script header).
+
+## 2) Code style & conventions (grounded in this repo)
+
+### Bash scripts (primary language)
+
+#### File header + strict mode
+- Use `#!/usr/bin/env bash`.
+- Default to strict mode:
+  ```bash
+  set -euo pipefail
+  ```
+  Exception: some test runners intentionally avoid strict mode to accumulate failures
+  (e.g. `scripts/test/test-input-validation-properties.sh`).
+
+#### Path resolution
+- Common pattern:
+  ```bash
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  ```
+- Prefer `LIB_DIR`/`SKILL_ROOT` computed from `SCRIPT_DIR` and **source** helpers from `scripts/lib/`.
+
+#### Naming
+- Functions: `snake_case`.
+- Shared library functions in `scripts/lib/git-helpers.sh` use the `gith_` prefix (vendor-agnostic; not “GitHub”).
+- Variables:
+  - UPPER_CASE for script-level configuration (e.g. `DRY_RUN`, `REPO_URL`, `ORPHAN_BRANCH`).
+  - `local lower_case` inside functions.
+
+#### CLI / `--help` convention
+- Scripts with CLI flags generally implement `usage()` that prints a heredoc and exits.
+- Argument parsing style:
+  ```bash
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --flag) ... ;;
+      -h|--help) usage; exit 0 ;;
+      *) echo "Unknown argument: $1" >&2; usage >&2; exit 1 ;;
+    esac
+  done
+  ```
+
+#### Dry-run behavior
+- Many scripts support `--dry-run` via `DRY_RUN=0/1`.
+- Prefer using the helper wrapper when appropriate:
+  - `gith_run <cmd> [args...]` prints a shell-escaped command when `DRY_RUN=1`, otherwise executes.
+
+#### Logging + errors
+- Prefer `gith_log LEVEL MESSAGE` / `gith_error MESSAGE` (from `scripts/lib/git-helpers.sh`).
+  - Levels: `INFO`, `WARN`, `ERROR`, `DEBUG`.
+  - `DEBUG` output is gated by `GITH_DEBUG=1`.
+- Error messages should be **actionable** and go to stderr.
+- Validate inputs early (required args, paths exist, “is git repo”, etc.) and return non-zero on failure.
+
+#### Quoting / safety
+- Always quote variable expansions: `"$var"`.
+- Prefer subshell `cd` for repo-scoped operations:
+  ```bash
+  (cd "$repo_path" && git status --porcelain)
+  ```
+- Use arrays for lists (`SCRIPTS=( ... )`) and iterate with `"${arr[@]}"`.
+
+#### Cross-platform intent
+- Scripts are intended to work on Unix shells and Git Bash on Windows.
+- Avoid relying on GNU-only flags unless already used elsewhere in the repo.
+
+### Tests
+- Quick smoke test lives in `scripts/test/quick-test.sh`.
+- Full suite orchestrator is `scripts/test/run-all-tests.sh`.
+- Many test scripts:
+  - create temporary directories via `mktemp -d`
+  - manage cleanup explicitly
+  - print pass/fail counters and exit non-zero if failures occurred
+
+## Cursor / Copilot repository rules
+- No `.cursor/rules/`, `.cursorrules`, or `.github/copilot-instructions.md` found in this repo at time of writing.
+
+## Agent notes (how to make changes that fit)
+- Keep changes **minimal and script-local**; avoid broad refactors unless requested.
+- When adding a new script:
+  - place it under an existing category in `scripts/`
+  - include `--help` and `--dry-run` when it mutates state
+  - source `scripts/lib/git-helpers.sh` for consistent logging + helpers
+- When adding/adjusting behavior, update the relevant docs in `docs/` and add/extend tests in `scripts/test/`.
