@@ -196,4 +196,4 @@ echo ""
 exec bash "$SCRIPT_DIR/smart-commit.sh" \
   --provider "$SELECTED_PROVIDER" \
   --model "$SELECTED_MODEL" \
-  "${ARGS[@]}"
+  ${ARGS[@]+"${ARGS[@]}"}

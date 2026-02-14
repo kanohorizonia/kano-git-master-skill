@@ -22,16 +22,16 @@
 #
 # Examples:
 #   # Rebase onto upstream
-#   ./smart-rebase.sh --provider copilot --model gpt-4o
+#   ./smart-rebase.sh --provider copilot --model gpt-5-mini
 #
 #   # Rebase onto specific branch
-#   ./smart-rebase.sh --provider copilot --model gpt-4o --onto main
+#   ./smart-rebase.sh --provider copilot --model gpt-5-mini --onto main
 #
 #   # Interactive rebase with AI suggestions
-#   ./smart-rebase.sh --provider copilot --model gpt-4o --interactive
+#   ./smart-rebase.sh --provider copilot --model gpt-5-mini --interactive
 #
 #   # Auto-squash fixup commits
-#   ./smart-rebase.sh --provider copilot --model gpt-4o --auto-squash
+#   ./smart-rebase.sh --provider copilot --model gpt-5-mini --auto-squash
 #
 
 set -euo pipefail
@@ -78,16 +78,16 @@ Optional:
 
 Examples:
   # Rebase onto upstream
-  ./smart-rebase.sh --provider copilot --model gpt-4o
+  ./smart-rebase.sh --provider copilot --model gpt-5-mini
 
   # Rebase onto specific branch
-  ./smart-rebase.sh --provider copilot --model gpt-4o --onto main
+  ./smart-rebase.sh --provider copilot --model gpt-5-mini --onto main
 
   # Interactive rebase with AI suggestions
-  ./smart-rebase.sh --provider copilot --model gpt-4o --interactive
+  ./smart-rebase.sh --provider copilot --model gpt-5-mini --interactive
 
   # Auto-squash fixup commits
-  ./smart-rebase.sh --provider copilot --model gpt-4o --auto-squash
+  ./smart-rebase.sh --provider copilot --model gpt-5-mini --auto-squash
 
 Workflow:
   1. Analyze commit history

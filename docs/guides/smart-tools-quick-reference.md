@@ -37,10 +37,10 @@ npm install -g @openai/codex                    # Codex
 ### Commit + Push
 ```bash
 # Full workflow
-./smart-commit-push.sh --provider copilot --model gpt-4o
+./smart-commit-push.sh --provider copilot --model gpt-5-mini
 
 # Dry run
-./smart-commit-push.sh --provider copilot --model gpt-4o --dry-run
+./smart-commit-push.sh --provider copilot --model gpt-5-mini --dry-run
 ```
 
 ### Resolve Conflicts
@@ -52,13 +52,13 @@ npm install -g @openai/codex                    # Codex
 ./smart-resolve-auto-without-fallback.sh
 
 # Specific provider
-./smart-resolve.sh --provider copilot --model gpt-4o
+./smart-resolve.sh --provider copilot --model gpt-5-mini
 
 # Interactive (review each)
-./smart-resolve.sh --provider copilot --model gpt-4o --interactive
+./smart-resolve.sh --provider copilot --model gpt-5-mini --interactive
 
 # Specific file
-./smart-resolve.sh --provider copilot --model gpt-4o --file src/main.ts
+./smart-resolve.sh --provider copilot --model gpt-5-mini --file src/main.ts
 ```
 
 ### Rebase
@@ -70,13 +70,13 @@ npm install -g @openai/codex                    # Codex
 ./smart-rebase-auto-without-fallback.sh
 
 # Specific provider
-./smart-rebase.sh --provider copilot --model gpt-4o
+./smart-rebase.sh --provider copilot --model gpt-5-mini
 
 # Onto specific branch
-./smart-rebase.sh --provider copilot --model gpt-4o --onto main
+./smart-rebase.sh --provider copilot --model gpt-5-mini --onto main
 
 # Interactive with AI
-./smart-rebase.sh --provider copilot --model gpt-4o --interactive
+./smart-rebase.sh --provider copilot --model gpt-5-mini --interactive
 ```
 
 ## Tool Matrix
@@ -99,7 +99,7 @@ npm install -g @openai/codex                    # Codex
 | Flag | Description | Example |
 |------|-------------|---------|
 | `--provider <name>` | AI provider | `--provider copilot` |
-| `--model <name>` | AI model | `--model gpt-4o` |
+| `--model <name>` | AI model | `--model gpt-5-mini` |
 | `--repos <paths>` | Filter repos | `--repos ".,sub/lib"` |
 | `--dry-run` | Preview only | `--dry-run` |
 | `--interactive` | Review mode | `--interactive` |
@@ -117,14 +117,14 @@ npm install -g @openai/codex                    # Codex
 ### Codex (OpenAI)
 ```bash
 --provider codex --model gpt-5.3-codex
---provider codex --model gpt-4o
+--provider codex --model gpt-5-mini
 --provider codex --model o3
 ```
 
 ### Copilot (GitHub)
 ```bash
 --provider copilot --model gpt-5-mini
---provider copilot --model gpt-4o
+--provider copilot --model gpt-5-mini
 --provider copilot --model claude-4.5-sonnet
 ```
 
@@ -142,7 +142,7 @@ vim src/main.ts
 ./smart-commit-copilot.sh
 
 # 3. Push
-./smart-commit-push.sh --provider copilot --model gpt-4o
+./smart-commit-push.sh --provider copilot --model gpt-5-mini
 ```
 
 ### Fix Conflicts

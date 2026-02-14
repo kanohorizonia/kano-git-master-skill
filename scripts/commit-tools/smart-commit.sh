@@ -41,8 +41,8 @@
 #   # Use Codex with specific model
 #   ./smart-commit.sh --provider codex --model gpt-5.3-codex
 #
-#   # Use Copilot with GPT-4o
-#   ./smart-commit.sh --provider copilot --model gpt-4o
+#   # Use Copilot with gpt-5-mini
+#   ./smart-commit.sh --provider copilot --model gpt-5-mini
 #
 #   # Commit and push
 #   ./smart-commit.sh --provider opencode --model auto --push
@@ -53,7 +53,7 @@
 # Wrapper Scripts (Convenience):
 #   ./smart-commit-opencode.sh  # Uses OpenCode with auto model
 #   ./smart-commit-codex.sh     # Uses Codex with gpt-5.3-codex
-#   ./smart-commit-copilot.sh   # Uses Copilot with gpt-4o-mini
+#   ./smart-commit-copilot.sh   # Uses Copilot with gpt-5-mini-mini
 #
 
 set -euo pipefail
@@ -130,20 +130,20 @@ Examples:
   # Use Codex with specific model
   ./smart-commit.sh --provider codex --model gpt-5.3-codex
 
-  # Use Copilot with GPT-4o
-  ./smart-commit.sh --provider copilot --model gpt-4o
+  # Use Copilot with gpt-5-mini
+  ./smart-commit.sh --provider copilot --model gpt-5-mini
 
   # Custom message (no AI needed)
-  ./smart-commit.sh --provider copilot --model gpt-4o -m "feat: Add feature"
+  ./smart-commit.sh --provider copilot --model gpt-5-mini -m "feat: Add feature"
 
   # With custom rules (inline)
-  ./smart-commit.sh --provider copilot --model gpt-4o --rules "Use emoji prefixes"
+  ./smart-commit.sh --provider copilot --model gpt-5-mini --rules "Use emoji prefixes"
 
   # With custom rules (from file)
-  ./smart-commit.sh --provider copilot --model gpt-4o --rules-file .git/commit-rules.md
+  ./smart-commit.sh --provider copilot --model gpt-5-mini --rules-file .git/commit-rules.md
 
   # Only process specific repos
-  ./smart-commit.sh --provider copilot --model gpt-4o --repos ".,submodules/my-lib"
+  ./smart-commit.sh --provider copilot --model gpt-5-mini --repos ".,submodules/my-lib"
 
   # Commit and push
   ./smart-commit.sh --provider opencode --model auto --push
@@ -190,7 +190,7 @@ List available models:
   ./smart-commit.sh --list-models
 
 Or use manual commit message:
-  ./smart-commit.sh --provider copilot --model gpt-4o -m "your message"
+  ./smart-commit.sh --provider copilot --model gpt-5-mini -m "your message"
 
 Or use wrapper scripts:
   ./smart-commit-opencode.sh
@@ -373,6 +373,7 @@ ensure_gitignore_entry() {
 maybe_update_gitignore() {
   local repo="$1"
   local smart_ignore_script="$SCRIPT_DIR/smart-ignore.sh"
+  local smart_err=""
 
   if [[ "$USE_SMART_IGNORE" -eq 1 && -x "$smart_ignore_script" ]]; then
     local smart_ignore_args=(--repo "$repo" --scope untracked)
@@ -382,11 +383,29 @@ maybe_update_gitignore() {
       smart_ignore_args+=(--no-ai)
     fi
 
-    if "$smart_ignore_script" "${smart_ignore_args[@]}" >/dev/null 2>&1; then
+    smart_err="$(mktemp)"
+    if "$smart_ignore_script" "${smart_ignore_args[@]}" >/dev/null 2>"$smart_err"; then
+      rm -f "$smart_err"
       echo "[$repo] .gitignore updated via smart-ignore"
       return
     fi
+
     echo "[$repo] WARNING: smart-ignore failed, falling back to legacy updater" >&2
+    if grep -qiE "auth|login|not logged|unauthorized|forbidden|api key|token" "$smart_err" 2>/dev/null; then
+      echo "[$repo] smart-ignore likely failed due to AI provider authentication" >&2
+      case "$AI_PROVIDER" in
+        copilot)
+          echo "[$repo] Hint: run 'gh auth login' (or pass --no-ai-review for commit review only)." >&2
+          ;;
+        codex)
+          echo "[$repo] Hint: run 'codex login' or export OPENAI_API_KEY." >&2
+          ;;
+        opencode)
+          echo "[$repo] Hint: run 'opencode auth login' and verify provider credentials." >&2
+          ;;
+      esac
+    fi
+    rm -f "$smart_err"
   fi
 
   local changed=0
@@ -432,6 +451,44 @@ maybe_update_gitignore() {
   if [[ "$changed" -eq 1 ]]; then
     echo "[$repo] .gitignore updated"
   fi
+}
+
+provider_auth_hint() {
+  case "$AI_PROVIDER" in
+    copilot)
+      echo "Hint: run 'gh auth login' (and ensure Copilot access is enabled)."
+      ;;
+    codex)
+      echo "Hint: run 'codex login' or export OPENAI_API_KEY."
+      ;;
+    opencode)
+      echo "Hint: run 'opencode auth login' and verify provider credentials."
+      ;;
+    *)
+      echo "Hint: verify provider login/credentials, then retry."
+      ;;
+  esac
+}
+
+provider_auth_likely_missing() {
+  case "$AI_PROVIDER" in
+    copilot)
+      if have_cmd gh && ! gh auth status >/dev/null 2>&1; then
+        return 0
+      fi
+      ;;
+    codex)
+      if [[ -z "${OPENAI_API_KEY:-}" ]]; then
+        return 0
+      fi
+      ;;
+    opencode)
+      if [[ -z "${OPENAI_API_KEY:-}" && -z "${OPENROUTER_API_KEY:-}" && -z "${ANTHROPIC_API_KEY:-}" ]]; then
+        return 0
+      fi
+      ;;
+  esac
+  return 1
 }
 
 #------------------------------------------------------------------------------
@@ -598,7 +655,7 @@ ai_message_from_provider() {
   local prompt="$1"
   local response=""
 
-  response="$(ai_generate_message "$AI_PROVIDER" "$AI_MODEL" "$prompt" || true)"
+  response="$(ai_generate_message_first_line "$AI_PROVIDER" "$AI_MODEL" "$prompt" || true)"
   printf '%s' "$response"
 }
 
@@ -675,10 +732,16 @@ run_ai_review() {
   fi
 
   prompt="$(build_review_prompt "$repo")"
-  raw="$(ai_generate_message "$AI_PROVIDER" "$AI_MODEL" "$prompt" || true)"
+  raw="$(ai_generate_message_first_line "$AI_PROVIDER" "$AI_MODEL" "$prompt" || true)"
 
   if [[ -z "$raw" ]]; then
     echo "[$repo] AI review unavailable, failing closed" >&2
+    if provider_auth_likely_missing; then
+      echo "[$repo] AI provider auth appears missing for: $AI_PROVIDER" >&2
+      echo "[$repo] $(provider_auth_hint)" >&2
+    else
+      echo "[$repo] AI provider returned empty response (provider/model outage or CLI issue)." >&2
+    fi
     echo "[$repo] Use --no-ai-review to bypass" >&2
     return 1
   fi
@@ -858,14 +921,33 @@ if [[ "${#NON_ROOT[@]}" -gt 0 ]]; then
 fi
 
 # Process non-root repos first
+FAILED_COUNT=0
+FAILED_REPOS=()
+
 if [[ "${#NON_ROOT[@]}" -gt 0 ]]; then
   for repo in "${NON_ROOT[@]}"; do
-    commit_repo "$repo" || true
+    if ! commit_repo "$repo"; then
+      ((FAILED_COUNT++)) || true
+      FAILED_REPOS+=("$repo")
+    fi
   done
 fi
 
 # Process root repo last
-commit_repo "$ROOT" || true
+if ! commit_repo "$ROOT"; then
+  ((FAILED_COUNT++)) || true
+  FAILED_REPOS+=("$ROOT")
+fi
 
 echo ""
-echo "=== All done ==="
+if [[ "$FAILED_COUNT" -gt 0 ]]; then
+  echo "=== Completed with failures ==="
+  echo "Failed repositories:"
+  for repo in "${FAILED_REPOS[@]}"; do
+    echo "  - $repo"
+  done
+  echo "Fix the errors above and rerun smart-commit." >&2
+  exit 1
+fi
+
+echo "=== All done (success) ==="

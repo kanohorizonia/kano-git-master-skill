@@ -15,12 +15,12 @@ The script will automatically detect and use it.
 
 ### Option 2: Explicit file path
 ```bash
-./smart-commit.sh --provider copilot --model gpt-4o --rules-file path/to/rules.md
+./smart-commit.sh --provider copilot --model gpt-5-mini --rules-file path/to/rules.md
 ```
 
 ### Option 3: Inline rules
 ```bash
-./smart-commit.sh --provider copilot --model gpt-4o --rules "Use emoji prefixes"
+./smart-commit.sh --provider copilot --model gpt-5-mini --rules "Use emoji prefixes"
 ```
 
 ## Example Rules

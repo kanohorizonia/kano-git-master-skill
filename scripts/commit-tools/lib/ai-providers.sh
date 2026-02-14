@@ -170,7 +170,7 @@ gpt-5.2-codex
 gpt-5.1-codex
 gpt-5.1-codex-mini
 gpt-5-codex
-gpt-4o
+gpt-5-mini
 gpt-4-turbo
 o1-preview
 o3
@@ -213,7 +213,7 @@ fetch_copilot_models() {
 gpt-5.1-codex
 gpt-5.1-codex-mini
 gpt-5-codex
-gpt-4o
+gpt-5-mini
 gpt-4o-mini
 claude-4.5-sonnet
 claude-4-sonnet
@@ -303,7 +303,7 @@ ai_generate_message() {
         echo "ERROR: opencode not available" >&2
         return 1
       fi
-      opencode run --model "$model" "$prompt" 2>/dev/null | head -n 1 || true
+      opencode run --model "$model" "$prompt" || true
       ;;
 
     codex)
@@ -311,7 +311,7 @@ ai_generate_message() {
         echo "ERROR: codex not available" >&2
         return 1
       fi
-      codex -q --model "$model" "$prompt" 2>/dev/null | head -n 1 || true
+      codex -q --model "$model" "$prompt" || true
       ;;
 
     copilot)
@@ -320,15 +320,60 @@ ai_generate_message() {
         return 1
       fi
       if have_cmd copilot; then
-        copilot suggest --model "$model" "$prompt" 2>/dev/null | head -n 1 || true
+        if [[ -n "$model" && "$model" != "auto" ]]; then
+          copilot -s -p "$prompt" --model "$model" --no-color --stream off --no-ask-user || true
+        else
+          copilot -s -p "$prompt" --no-color --stream off --no-ask-user || true
+        fi
       else
-        gh copilot suggest -t shell "$prompt" 2>/dev/null | head -n 1 || true
+        if [[ -n "$model" && "$model" != "auto" ]]; then
+          gh copilot -- -s -p "$prompt" --model "$model" --no-color --stream off --no-ask-user || true
+        else
+          gh copilot -- -s -p "$prompt" --no-color --stream off --no-ask-user || true
+        fi
       fi
       ;;
 
     *)
       echo "ERROR: Unknown provider: $provider" >&2
       return 1
+      ;;
+  esac
+}
+
+#------------------------------------------------------------------------------
+# Output Normalization Helpers
+#------------------------------------------------------------------------------
+
+ai_first_line() {
+  # Extract first non-empty line from stdin.
+  awk 'NF{print; exit}'
+}
+
+ai_strip_copilot_markup() {
+  # Copilot CLI may emit bullets and HTML-like wrappers (e.g. "● <p>PASS</p>").
+  # Normalize to plain text while keeping content.
+  sed -E \
+    -e 's/^●[[:space:]]*//' \
+    -e 's#</?p>##g' \
+    -e 's#</?code>##g' \
+    -e 's#</?pre>##g' \
+    -e 's#</?blockquote>##g'
+}
+
+ai_generate_message_first_line() {
+  # Compatibility layer for scripts expecting a single-line response.
+  # Returns the first non-empty line after provider-specific normalization.
+  local provider="$1"
+  local model="$2"
+  local prompt="$3"
+
+  case "$provider" in
+    copilot)
+      ai_generate_message "$provider" "$model" "$prompt" 2>/dev/null | ai_strip_copilot_markup | ai_first_line || true
+      ;;
+    *)
+      ai_generate_message "$provider" "$model" "$prompt" 2>/dev/null | ai_first_line || true
       ;;
   esac
 }
@@ -372,7 +417,7 @@ try_providers_in_order() {
 
     # Try to generate message
     local result
-    result="$(ai_generate_message "$provider" "$model" "$prompt" 2>/dev/null || true)"
+    result="$(ai_generate_message_first_line "$provider" "$model" "$prompt" || true)"
 
     if [[ -n "$result" ]]; then
       echo "[$provider] Success!" >&2

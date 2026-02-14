@@ -21,16 +21,16 @@
 #
 # Examples:
 #   # Auto-resolve all conflicts
-#   ./smart-resolve.sh --provider copilot --model gpt-4o
+#   ./smart-resolve.sh --provider copilot --model gpt-5-mini
 #
 #   # Interactive mode (review each)
-#   ./smart-resolve.sh --provider copilot --model gpt-4o --interactive
+#   ./smart-resolve.sh --provider copilot --model gpt-5-mini --interactive
 #
 #   # Resolve specific file
-#   ./smart-resolve.sh --provider copilot --model gpt-4o --file src/main.ts
+#   ./smart-resolve.sh --provider copilot --model gpt-5-mini --file src/main.ts
 #
 #   # Dry run
-#   ./smart-resolve.sh --provider copilot --model gpt-4o --dry-run
+#   ./smart-resolve.sh --provider copilot --model gpt-5-mini --dry-run
 #
 
 set -euo pipefail
@@ -74,16 +74,16 @@ Optional:
 
 Examples:
   # Auto-resolve all conflicts
-  ./smart-resolve.sh --provider copilot --model gpt-4o
+  ./smart-resolve.sh --provider copilot --model gpt-5-mini
 
   # Interactive mode (review each)
-  ./smart-resolve.sh --provider copilot --model gpt-4o --interactive
+  ./smart-resolve.sh --provider copilot --model gpt-5-mini --interactive
 
   # Resolve specific file
-  ./smart-resolve.sh --provider copilot --model gpt-4o --file src/main.ts
+  ./smart-resolve.sh --provider copilot --model gpt-5-mini --file src/main.ts
 
   # Dry run
-  ./smart-resolve.sh --provider copilot --model gpt-4o --dry-run
+  ./smart-resolve.sh --provider copilot --model gpt-5-mini --dry-run
 
 Workflow:
   1. Detect conflicted files

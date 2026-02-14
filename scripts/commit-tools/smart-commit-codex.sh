@@ -60,4 +60,4 @@ done
 exec bash "$SCRIPT_DIR/smart-commit.sh" \
   --provider codex \
   --model "$MODEL" \
-  "${ARGS[@]}"
+  ${ARGS[@]+"${ARGS[@]}"}

@@ -22,13 +22,13 @@
 #
 # Examples:
 #   # Full workflow with default settings
-#   ./smart-commit-push.sh --provider copilot --model gpt-4o
+#   ./smart-commit-push.sh --provider copilot --model gpt-5-mini
 #
 #   # Only process root and specific submodule
-#   ./smart-commit-push.sh --provider copilot --model gpt-4o --repos ".,submodules/my-lib"
+#   ./smart-commit-push.sh --provider copilot --model gpt-5-mini --repos ".,submodules/my-lib"
 #
 #   # Dry run to see what would happen
-#   ./smart-commit-push.sh --provider copilot --model gpt-4o --dry-run
+#   ./smart-commit-push.sh --provider copilot --model gpt-5-mini --dry-run
 #
 
 set -euo pipefail
@@ -39,6 +39,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Configuration
 DRY_RUN=0
 SMART_COMMIT_ARGS=()
+STEP2_FAILED=0
+STEP2_FAILED_REPOS=()
 
 #------------------------------------------------------------------------------
 # Functions
@@ -64,13 +66,13 @@ Optional:
 
 Examples:
   # Full workflow with default settings
-  ./smart-commit-push.sh --provider copilot --model gpt-4o
+  ./smart-commit-push.sh --provider copilot --model gpt-5-mini
 
   # Only process root and specific submodule
-  ./smart-commit-push.sh --provider copilot --model gpt-4o --repos ".,submodules/my-lib"
+  ./smart-commit-push.sh --provider copilot --model gpt-5-mini --repos ".,submodules/my-lib"
 
   # Dry run to see what would happen
-  ./smart-commit-push.sh --provider copilot --model gpt-4o --dry-run
+  ./smart-commit-push.sh --provider copilot --model gpt-5-mini --dry-run
 
 Workflow Steps:
   1. Commit changes (using smart-commit.sh)
@@ -126,7 +128,7 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   echo "[DRY RUN] Would run: $SCRIPT_DIR/smart-commit.sh ${SMART_COMMIT_ARGS[*]}"
 else
   if ! bash "$SCRIPT_DIR/smart-commit.sh" "${SMART_COMMIT_ARGS[@]}"; then
-    echo "ERROR: Commit failed" >&2
+    echo "ERROR: Commit step failed. Check smart-commit output above for repository-specific failures." >&2
     exit 1
   fi
 fi
@@ -238,8 +240,10 @@ for repo in "${REPOS[@]}"; do
 
   # Fetch
   echo "[$repo] Fetching from remote..."
-  if ! git -C "$repo" fetch origin 2>/dev/null; then
-    echo "[$repo] WARNING: Fetch failed" >&2
+  if ! git -C "$repo" fetch origin; then
+    echo "[$repo] ERROR: Fetch failed (check remote/auth/network)." >&2
+    STEP2_FAILED=1
+    STEP2_FAILED_REPOS+=("$repo (fetch)")
     continue
   fi
 
@@ -254,25 +258,38 @@ for repo in "${REPOS[@]}"; do
 
   # Rebase
   echo "[$repo] Rebasing $branch onto $upstream..."
-  if git -C "$repo" rebase "$upstream" 2>/dev/null; then
+  if git -C "$repo" rebase "$upstream"; then
     echo "[$repo] Rebase successful"
 
     # Push with --force-with-lease
     echo "[$repo] Pushing with --force-with-lease..."
-    if git -C "$repo" push --force-with-lease origin "$branch" 2>/dev/null; then
+    if git -C "$repo" push --force-with-lease origin "$branch"; then
       echo "[$repo] Push successful"
     else
-      echo "[$repo] WARNING: Push failed" >&2
+      echo "[$repo] ERROR: Push failed (likely permission/auth/protection issue)." >&2
+      STEP2_FAILED=1
+      STEP2_FAILED_REPOS+=("$repo (push)")
     fi
   else
     # Rebase failed - conflicts detected
-    echo "[$repo] Conflicts detected during rebase"
-    echo "[$repo] TODO: Implement AI conflict resolution"
+    echo "[$repo] ERROR: Conflicts detected during rebase"
+    echo "[$repo] AI conflict resolution is not implemented in this script yet"
     echo "[$repo] Aborting rebase..."
     git -C "$repo" rebase --abort 2>/dev/null || true
     echo "[$repo] FAILED: Manual conflict resolution required" >&2
+    STEP2_FAILED=1
+    STEP2_FAILED_REPOS+=("$repo (rebase-conflict)")
   fi
 done
 
 echo ""
-echo "=== Workflow Complete ==="
+if [[ "$STEP2_FAILED" -eq 1 ]]; then
+  echo "=== Workflow Complete (with errors) ==="
+  echo "Failed repositories in fetch/rebase/push stage:" >&2
+  for item in "${STEP2_FAILED_REPOS[@]}"; do
+    echo "  - $item" >&2
+  done
+  exit 1
+fi
+
+echo "=== Workflow Complete (success) ==="

@@ -375,7 +375,7 @@ cd project
 ./scripts/commit-tools/smart-commit.sh
 
 # Use specific model
-./scripts/commit-tools/smart-commit.sh --model gpt-4o
+./scripts/commit-tools/smart-commit.sh --model gpt-5-mini
 
 # Custom message
 ./scripts/commit-tools/smart-commit.sh -m "feat: Add new feature"
@@ -536,7 +536,7 @@ AI-powered commit across all repositories with safety checks:
 ./scripts/commit-tools/smart-commit.sh
 
 # Use premium model
-./scripts/commit-tools/smart-commit.sh --model gpt-4o
+./scripts/commit-tools/smart-commit.sh --model gpt-5-mini
 
 # Custom message for all repos
 ./scripts/commit-tools/smart-commit.sh -m "chore: Update dependencies"

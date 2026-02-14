@@ -31,19 +31,19 @@
 #
 # Examples:
 #   # Full run with both static and AI patterns
-#   ./smart-ignore.sh --provider copilot --model gpt-4o
+#   ./smart-ignore.sh --provider copilot --model gpt-5-mini
 #
 #   # Static patterns only
 #   ./smart-ignore.sh --no-ai
 #
 #   # AI patterns only
-#   ./smart-ignore.sh --provider copilot --model gpt-4o --no-static
+#   ./smart-ignore.sh --provider copilot --model gpt-5-mini --no-static
 #
 #   # Dry-run preview for both
-#   ./smart-ignore.sh --provider copilot --model gpt-4o --dry-run
+#   ./smart-ignore.sh --provider copilot --model gpt-5-mini --dry-run
 #
 #   # Verbose output
-#   ./smart-ignore.sh --provider copilot --model gpt-4o --verbose
+#   ./smart-ignore.sh --provider copilot --model gpt-5-mini --verbose
 #
 
 set -euo pipefail
@@ -92,7 +92,7 @@ OPTIONS:
 
 EXAMPLES:
   # Full run with both static and AI patterns
-  ./smart-ignore.sh --provider copilot --model gpt-4o
+  ./smart-ignore.sh --provider copilot --model gpt-5-mini
 
   # Static patterns only
   ./smart-ignore.sh --no-ai
@@ -101,16 +101,16 @@ EXAMPLES:
   ./smart-ignore.sh --no-ai --scope staged
 
   # AI patterns only
-  ./smart-ignore.sh --provider copilot --model gpt-4o --no-static
+  ./smart-ignore.sh --provider copilot --model gpt-5-mini --no-static
 
   # Dry-run preview for both
-  ./smart-ignore.sh --provider copilot --model gpt-4o --dry-run
+  ./smart-ignore.sh --provider copilot --model gpt-5-mini --dry-run
 
   # Verbose output showing execution progress
-  ./smart-ignore.sh --provider copilot --model gpt-4o --verbose
+  ./smart-ignore.sh --provider copilot --model gpt-5-mini --verbose
 
   # Skip consolidation check
-  ./smart-ignore.sh --provider copilot --model gpt-4o --no-consolidate
+  ./smart-ignore.sh --provider copilot --model gpt-5-mini --no-consolidate
 
 EXECUTION ORDER:
   1. Static patterns (deterministic rules)
@@ -327,9 +327,11 @@ EXIT_CODE_AI=0
 if [[ $NO_STATIC -eq 0 ]]; then
   log_verbose "Executing static-gitignore.sh..."
 
-  if "$SCRIPT_DIR/static-gitignore.sh" "${STATIC_ARGS[@]:-}" || EXIT_CODE_STATIC=$?; then
+  if "$SCRIPT_DIR/static-gitignore.sh" ${STATIC_ARGS[@]+"${STATIC_ARGS[@]}"}; then
+    EXIT_CODE_STATIC=0
     log_verbose "static-gitignore.sh completed successfully (exit code: 0)"
   else
+    EXIT_CODE_STATIC=$?
     log_verbose "static-gitignore.sh failed (exit code: $EXIT_CODE_STATIC)"
   fi
 else
@@ -340,9 +342,11 @@ fi
 if [[ $NO_AI -eq 0 ]]; then
   log_verbose "Executing ai-gitignore.sh..."
 
-  if "$SCRIPT_DIR/ai-gitignore.sh" "${AI_ARGS[@]:-}" || EXIT_CODE_AI=$?; then
+  if "$SCRIPT_DIR/ai-gitignore.sh" ${AI_ARGS[@]+"${AI_ARGS[@]}"}; then
+    EXIT_CODE_AI=0
     log_verbose "ai-gitignore.sh completed successfully (exit code: 0)"
   else
+    EXIT_CODE_AI=$?
     log_verbose "ai-gitignore.sh failed (exit code: $EXIT_CODE_AI)"
   fi
 else

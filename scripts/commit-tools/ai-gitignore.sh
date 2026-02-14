@@ -28,13 +28,13 @@
 #
 # Examples:
 #   # Analyze and add patterns (with prompts for low-confidence)
-#   ./ai-gitignore.sh --provider copilot --model gpt-4o
+#   ./ai-gitignore.sh --provider copilot --model gpt-5-mini
 #
 #   # Auto-add all patterns without prompts
-#   ./ai-gitignore.sh --provider copilot --model gpt-4o --no-prompt
+#   ./ai-gitignore.sh --provider copilot --model gpt-5-mini --no-prompt
 #
 #   # Preview in dry-run mode
-#   ./ai-gitignore.sh --provider copilot --model gpt-4o --dry-run
+#   ./ai-gitignore.sh --provider copilot --model gpt-5-mini --dry-run
 #
 
 set -euo pipefail
@@ -86,13 +86,13 @@ Optional:
 
 Examples:
   # Analyze and add patterns (with prompts for low-confidence)
-  ./ai-gitignore.sh --provider copilot --model gpt-4o
+  ./ai-gitignore.sh --provider copilot --model gpt-5-mini
 
   # Auto-add all patterns without prompts
-  ./ai-gitignore.sh --provider copilot --model gpt-4o --no-prompt
+  ./ai-gitignore.sh --provider copilot --model gpt-5-mini --no-prompt
 
   # Preview in dry-run mode
-  ./ai-gitignore.sh --provider copilot --model gpt-4o --dry-run
+  ./ai-gitignore.sh --provider copilot --model gpt-5-mini --dry-run
 
 Confidence Tiers:
   HIGH (≥0.8):   Auto-add pattern (explains in comment)

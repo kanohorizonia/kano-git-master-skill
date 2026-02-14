@@ -30,13 +30,13 @@ AI-generated commit messages with safety checks.
 **Usage:**
 ```bash
 # Basic usage
-./smart-commit.sh --provider copilot --model gpt-4o
+./smart-commit.sh --provider copilot --model gpt-5-mini
 
 # With custom rules
-./smart-commit.sh --provider copilot --model gpt-4o --rules-file .github/commit-rules.md
+./smart-commit.sh --provider copilot --model gpt-5-mini --rules-file .github/commit-rules.md
 
 # Only specific repos
-./smart-commit.sh --provider copilot --model gpt-4o --repos ".,submodules/lib"
+./smart-commit.sh --provider copilot --model gpt-5-mini --repos ".,submodules/lib"
 
 # List available models
 ./smart-commit.sh --list-models copilot
@@ -139,13 +139,13 @@ Complete workflow: commit → fetch → rebase → push.
 **Usage:**
 ```bash
 # Full workflow
-./smart-commit-push.sh --provider copilot --model gpt-4o
+./smart-commit-push.sh --provider copilot --model gpt-5-mini
 
 # Only specific repos
-./smart-commit-push.sh --provider copilot --model gpt-4o --repos "."
+./smart-commit-push.sh --provider copilot --model gpt-5-mini --repos "."
 
 # Dry run
-./smart-commit-push.sh --provider copilot --model gpt-4o --dry-run
+./smart-commit-push.sh --provider copilot --model gpt-5-mini --dry-run
 ```
 
 #### 5. smart-resolve.sh
@@ -164,16 +164,16 @@ AI-powered conflict resolution.
 **Usage:**
 ```bash
 # Auto-resolve all conflicts
-./smart-resolve.sh --provider copilot --model gpt-4o
+./smart-resolve.sh --provider copilot --model gpt-5-mini
 
 # Interactive mode (review each)
-./smart-resolve.sh --provider copilot --model gpt-4o --interactive
+./smart-resolve.sh --provider copilot --model gpt-5-mini --interactive
 
 # Resolve specific file
-./smart-resolve.sh --provider copilot --model gpt-4o --file src/main.ts
+./smart-resolve.sh --provider copilot --model gpt-5-mini --file src/main.ts
 
 # Dry run
-./smart-resolve.sh --provider copilot --model gpt-4o --dry-run
+./smart-resolve.sh --provider copilot --model gpt-5-mini --dry-run
 
 # Auto-select provider (with fallback to manual)
 ./smart-resolve-auto-with-fallback.sh
@@ -206,19 +206,19 @@ AI-assisted intelligent rebase.
 **Usage:**
 ```bash
 # Rebase onto upstream
-./smart-rebase.sh --provider copilot --model gpt-4o
+./smart-rebase.sh --provider copilot --model gpt-5-mini
 
 # Rebase onto specific branch
-./smart-rebase.sh --provider copilot --model gpt-4o --onto main
+./smart-rebase.sh --provider copilot --model gpt-5-mini --onto main
 
 # Interactive with AI suggestions
-./smart-rebase.sh --provider copilot --model gpt-4o --interactive
+./smart-rebase.sh --provider copilot --model gpt-5-mini --interactive
 
 # Auto-squash fixup commits
-./smart-rebase.sh --provider copilot --model gpt-4o --auto-squash
+./smart-rebase.sh --provider copilot --model gpt-5-mini --auto-squash
 
 # Dry run
-./smart-rebase.sh --provider copilot --model gpt-4o --dry-run
+./smart-rebase.sh --provider copilot --model gpt-5-mini --dry-run
 
 # Auto-select provider (with fallback to standard rebase)
 ./smart-rebase-auto-with-fallback.sh
@@ -309,12 +309,12 @@ Place rules file in one of these locations:
 
 ### Explicit File
 ```bash
-./smart-commit.sh --provider copilot --model gpt-4o --rules-file path/to/rules.md
+./smart-commit.sh --provider copilot --model gpt-5-mini --rules-file path/to/rules.md
 ```
 
 ### Inline Rules
 ```bash
-./smart-commit.sh --provider copilot --model gpt-4o --rules "Use emoji prefixes"
+./smart-commit.sh --provider copilot --model gpt-5-mini --rules "Use emoji prefixes"
 ```
 
 ### Example Rules
@@ -388,9 +388,9 @@ Optional AI safety review before commit:
 ### Dry-Run Mode
 All tools support `--dry-run` to preview operations:
 ```bash
-./smart-commit.sh --provider copilot --model gpt-4o --dry-run
-./smart-resolve.sh --provider copilot --model gpt-4o --dry-run
-./smart-rebase.sh --provider copilot --model gpt-4o --dry-run
+./smart-commit.sh --provider copilot --model gpt-5-mini --dry-run
+./smart-resolve.sh --provider copilot --model gpt-5-mini --dry-run
+./smart-rebase.sh --provider copilot --model gpt-5-mini --dry-run
 ```
 
 ## Common Workflows
@@ -405,7 +405,7 @@ All tools support `--dry-run` to preview operations:
 ./smart-commit-copilot.sh
 
 # 3. Push with rebase
-./smart-commit-push.sh --provider copilot --model gpt-4o
+./smart-commit-push.sh --provider copilot --model gpt-5-mini
 ```
 
 ### CI/CD Automation
@@ -428,7 +428,7 @@ git rebase main
 ./smart-resolve-auto-with-fallback.sh --interactive
 
 # Or use specific provider
-./smart-resolve.sh --provider copilot --model gpt-4o --interactive
+./smart-resolve.sh --provider copilot --model gpt-5-mini --interactive
 
 # 3. Continue operation
 git merge --continue
@@ -442,7 +442,7 @@ git rebase --continue
 ./smart-rebase-auto-with-fallback.sh --interactive --auto-squash
 
 # Or use specific provider
-./smart-rebase.sh --provider copilot --model gpt-4o --interactive --auto-squash
+./smart-rebase.sh --provider copilot --model gpt-5-mini --interactive --auto-squash
 
 # 2. Force push safely
 git push --force-with-lease
@@ -451,10 +451,10 @@ git push --force-with-lease
 ### Multi-Repository Workflow
 ```bash
 # Only commit root and specific submodule
-./smart-commit.sh --provider copilot --model gpt-4o --repos ".,submodules/core"
+./smart-commit.sh --provider copilot --model gpt-5-mini --repos ".,submodules/core"
 
 # Push only those repos
-./smart-commit-push.sh --provider copilot --model gpt-4o --repos ".,submodules/core"
+./smart-commit-push.sh --provider copilot --model gpt-5-mini --repos ".,submodules/core"
 ```
 
 ## Troubleshooting
@@ -482,7 +482,7 @@ npm install -g @openai/codex                    # Codex
 ### Conflict Resolution Failed
 ```bash
 # Try interactive mode
-./smart-resolve.sh --provider copilot --model gpt-4o --interactive
+./smart-resolve.sh --provider copilot --model gpt-5-mini --interactive
 
 # Or resolve manually
 git status
@@ -495,7 +495,7 @@ git rebase --continue
 ```bash
 # Abort and try with different strategy
 git rebase --abort
-./smart-rebase.sh --provider copilot --model gpt-4o --strategy ours
+./smart-rebase.sh --provider copilot --model gpt-5-mini --strategy ours
 ```
 
 ## Best Practices
