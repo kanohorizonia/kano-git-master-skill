@@ -1,6 +1,6 @@
 # Git Master Skill
 
-**Version**: 0.1.0-beta  
+**Version**: 0.1.0-beta
 **Status**: Beta Release
 
 Advanced Git automation scripts for power users and teams.
@@ -17,10 +17,11 @@ cat docs/README.md
 
 ## Features
 
+- **Repository Initialization Workflow** - Automated repository setup with multi-remote, orphan branches, and submodules
 - **Version Information** - Extract version info from git, git-p4, git-svn
 - **Worktree Management** - Manage multiple working trees efficiently
 - **Subtree Management** - Include external repositories as subtrees
-- **Submodule Enhancement** - Enhanced submodule operations
+- **Submodule Enhancement** - Enhanced submodule operations with multi-URL support
 - **Mono-repo Optimization** - Git Scalar for large repositories (10-20x faster)
 - **VCS Bridges** - Integrate with Perforce (git-p4) and Subversion (git-svn)
 
@@ -30,6 +31,9 @@ All documentation is in the `docs/` directory:
 
 - [Documentation Index](./docs/README.md) - Start here
 - [Quick Start Guide](./docs/guides/quick-start.md)
+- [Repository Initialization Workflow Examples](./docs/examples/repo-initialization-workflow-examples.md) - Complete usage examples
+- [Submodule Guide](./docs/guides/submodule.md) - Enhanced submodule management
+- [Common Pitfalls](./docs/guides/common-pitfalls.md) - Troubleshooting guide
 - [Changelog](./docs/status/changelog.md)
 
 ## Installation
@@ -71,15 +75,105 @@ kano-git-master-skill/
     ├── tags/               # Tag management
     │   └── list-tags.sh    # List git tags
     ├── core/               # Core operations
+    │   ├── init-repo-workflow.sh      # Complete initialization workflow
+    │   ├── setup-multi-remote.sh      # Multi-remote configuration
+    │   ├── create-orphan-branch.sh    # Orphan branch creation
+    │   ├── init-empty-repo.sh         # Initialize empty repository
+    │   ├── clone-with-upstream.sh     # Clone with upstream remote
+    │   └── update-repo.sh             # Update repository
     ├── worktree/           # Worktree management
     ├── subtree/            # Subtree management
     ├── submodules/         # Submodule operations
+    │   ├── kog-submodule.sh           # Enhanced submodule management
+    │   ├── add-submodule.sh           # Add submodule
+    │   ├── remove-submodule.sh        # Remove submodule
+    │   ├── update-submodules.sh       # Update all submodules
+    │   └── sync-urls.sh               # Sync submodule URLs
     ├── mono-repo/          # Mono-repo optimization
     ├── vcs-bridges/        # VCS integration (P4, SVN)
     └── lib/                # Helper libraries
 ```
 
 ## Usage Examples
+
+### Repository Initialization Workflow
+
+Initialize a new repository with multi-remote setup, orphan branch, and submodules:
+
+```bash
+# Complete workflow with all features
+./scripts/core/init-repo-workflow.sh \
+  --repo-url git@github.com:myuser/myproject.git \
+  --repo-http-url https://github.com/myuser/myproject.git \
+  --upstream-ssh git@github.com:upstream/myproject.git \
+  --upstream-http https://github.com/upstream/myproject.git \
+  --repo-dir ./myproject \
+  --orphan-branch dev/tools \
+  --submodule "git@github.com:myuser/tool1.git:tools/tool1"
+
+# Simple initialization
+./scripts/core/init-repo-workflow.sh \
+  --repo-url git@github.com:myuser/myproject.git \
+  --repo-dir ./myproject
+
+# Preview with dry-run
+./scripts/core/init-repo-workflow.sh \
+  --repo-url git@github.com:myuser/myproject.git \
+  --dry-run
+```
+
+See [Workflow Examples](./docs/examples/repo-initialization-workflow-examples.md) for more usage patterns.
+
+### Multi-Remote Configuration
+
+Setup multiple remotes with SSH/HTTPS fallback:
+
+```bash
+cd myproject
+./scripts/core/setup-multi-remote.sh \
+  --origin-ssh git@github.com:myuser/myproject.git \
+  --origin-http https://github.com/myuser/myproject.git \
+  --upstream-ssh git@github.com:upstream/myproject.git \
+  --upstream-http https://github.com/upstream/myproject.git
+```
+
+### Orphan Branch Management
+
+Create isolated orphan branches for development tools:
+
+```bash
+# Create orphan branch
+./scripts/core/create-orphan-branch.sh \
+  --branch dev/tools \
+  --push
+
+# Create and return to original branch
+./scripts/core/create-orphan-branch.sh \
+  --branch dev/docs \
+  --return
+```
+
+### Enhanced Submodule Management
+
+Manage submodules with multi-URL support and automatic fallback:
+
+```bash
+# Add submodule with multiple remotes
+./scripts/submodules/kog-submodule.sh add \
+  --path tools/formatter \
+  --remote origin \
+    --ssh git@github.com:myuser/formatter.git \
+    --https https://github.com/myuser/formatter.git \
+  --remote upstream \
+    --ssh git@github.com:original/formatter.git \
+    --https https://github.com/original/formatter.git
+
+# Sync submodule URLs (auto-detect SSH availability)
+./scripts/submodules/kog-submodule.sh sync
+
+# Update with automatic fallback
+./scripts/submodules/kog-submodule.sh update
+```
 
 ### Show Skill Version
 
@@ -163,6 +257,54 @@ This is a beta release. All core features are implemented and functional, but:
 
 **Feedback welcome!** Please report issues or suggestions.
 
+## Troubleshooting
+
+### Common Issues
+
+**Branch Already Exists**
+```bash
+# Use different branch name or force overwrite
+./scripts/core/create-orphan-branch.sh --branch dev/tools-v2
+# OR (DANGEROUS)
+./scripts/core/create-orphan-branch.sh --branch dev/tools --force-overwrite-branch
+```
+
+**SSH Authentication Failure**
+```bash
+# System automatically falls back to HTTPS if provided
+# To fix SSH: check and add SSH key
+ssh-add -l
+ssh-add ~/.ssh/id_rsa
+ssh -T git@github.com
+```
+
+**Remote Not Accessible**
+```bash
+# Check network connectivity
+ping github.com
+# Try HTTPS instead of SSH
+./scripts/core/init-repo-workflow.sh --repo-url https://github.com/myuser/myproject.git
+```
+
+**Submodule Path Conflict**
+```bash
+# Use different path or remove existing directory
+rm -rf tools/formatter
+# OR remove existing submodule
+git submodule deinit tools/formatter
+git rm tools/formatter
+```
+
+**Not in Git Repository**
+```bash
+# Initialize Git repository first
+git init
+# OR use --dir option
+./scripts/core/create-orphan-branch.sh --branch dev/tools --dir /path/to/repo
+```
+
+See [Common Pitfalls Guide](./docs/guides/common-pitfalls.md) and [Workflow Examples](./docs/examples/repo-initialization-workflow-examples.md) for more troubleshooting help.
+
 ## Contributing
 
 See [Contributing Guide](./docs/development/contributing.md) for details.
@@ -179,5 +321,5 @@ See [Contributing Guide](./docs/development/contributing.md) for details.
 
 ---
 
-**Version**: See [VERSION](./VERSION) file  
+**Version**: See [VERSION](./VERSION) file
 **Last Updated**: 2026-02-13

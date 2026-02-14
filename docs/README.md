@@ -17,6 +17,7 @@ This documentation is organized into the following categories:
 ### 📖 User Guides
 
 #### Feature Guides
+- [Repository Initialization Workflow](./guides/repo-initialization-workflow.md) - Automated repository setup
 - [Version Information](./guides/version-info.md) - Extract version information
 - [Worktree Management](./guides/worktree.md) - Manage multiple working trees
 - [Subtree Management](./guides/subtree.md) - Include external repositories
@@ -58,6 +59,7 @@ docs/
 ├── guides/                      # User guides
 │   ├── quick-start.md
 │   ├── new-features.md
+│   ├── repo-initialization-workflow.md
 │   ├── version-info.md
 │   ├── worktree.md
 │   ├── subtree.md
@@ -65,6 +67,8 @@ docs/
 │   ├── scalar.md
 │   ├── git-p4.md
 │   └── git-svn.md
+├── examples/                    # Usage examples
+│   └── repo-initialization-workflow-examples.md
 ├── comparisons/                 # Comparison guides
 │   ├── submodule-vs-subtree.md
 │   ├── git-p4-vs-git-svn.md
@@ -86,10 +90,11 @@ docs/
 
 ### Most Popular
 1. [Quick Start Guide](./guides/quick-start.md)
-2. [Worktree Management](./guides/worktree.md)
-3. [Common Pitfalls](./guides/common-pitfalls.md)
-4. [Submodule vs Subtree](./comparisons/submodule-vs-subtree.md)
-5. [When to Use Scalar](./comparisons/when-to-use-scalar.md)
+2. [Repository Initialization Workflow](./guides/repo-initialization-workflow.md)
+3. [Worktree Management](./guides/worktree.md)
+4. [Common Pitfalls](./guides/common-pitfalls.md)
+5. [Submodule vs Subtree](./comparisons/submodule-vs-subtree.md)
+6. [When to Use Scalar](./comparisons/when-to-use-scalar.md)
 
 ### For Migrations
 1. [Perforce to Git](./migrations/perforce-to-git.md)
@@ -122,6 +127,7 @@ docs/
 ## 🔍 Finding Documentation
 
 ### By Feature
+- **Repository Initialization**: [guides/repo-initialization-workflow.md](./guides/repo-initialization-workflow.md)
 - **Version Info**: [guides/version-info.md](./guides/version-info.md)
 - **Worktrees**: [guides/worktree.md](./guides/worktree.md)
 - **Subtrees**: [guides/subtree.md](./guides/subtree.md)
@@ -132,6 +138,7 @@ docs/
 - **Common Pitfalls**: [guides/common-pitfalls.md](./guides/common-pitfalls.md)
 
 ### By Task
+- **Initialize Repository**: [guides/repo-initialization-workflow.md](./guides/repo-initialization-workflow.md)
 - **Parallel Development**: [guides/worktree.md](./guides/worktree.md)
 - **Vendor Dependencies**: [guides/subtree.md](./guides/subtree.md)
 - **Optimize Large Repo**: [guides/scalar.md](./guides/scalar.md)
