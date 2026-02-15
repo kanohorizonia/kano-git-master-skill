@@ -22,7 +22,7 @@ kano-git-master-skill/
 │   ├── commit-tools/          # AI-powered commit, resolve, rebase
 │   │   ├── smart-commit*.sh   (10 scripts)
 │   │   ├── smart-resolve*.sh  (3 scripts)
-│   │   ├── smart-rebase*.sh   (3 scripts)
+│   │   ├── smart-sync*.sh   (3 scripts)
 │   │   └── lib/               (3 shared libraries)
 │   ├── worktree/              # Worktree management (6 scripts)
 │   ├── subtree/               # Subtree management (5 scripts)
@@ -41,7 +41,7 @@ kano-git-master-skill/
 **Scripts**: 16 total
 - `smart-commit.sh` + 5 variants (auto-fallback, provider-specific)
 - `smart-resolve.sh` + 2 variants (auto-fallback)
-- `smart-rebase.sh` + 2 variants (auto-fallback)
+- `smart-sync.sh` + 2 variants (auto-fallback)
 - `smart-commit-push.sh`
 
 **Key Features**:

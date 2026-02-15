@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# smart-rebase-auto-without-fallback.sh - Auto provider selection (AI only)
+# smart-sync-auto-without-fallback.sh - Auto provider selection (AI only)
 #
 # Purpose:
 #   Try AI providers in order (Copilot → Codex → OpenCode), fail if all unavailable
@@ -11,11 +11,11 @@
 #   3. OpenCode (auto)
 #
 # Usage:
-#   ./smart-rebase-auto-without-fallback.sh [options]
+#   ./smart-sync-auto-without-fallback.sh [options]
 #
 # Options:
-#   --onto <branch>             Rebase onto branch (default: upstream)
-#   --interactive               Interactive rebase with AI suggestions
+#   --onto <branch>             Sync onto branch (default: upstream)
+#   --interactive               Interactive sync with AI suggestions
 #   --auto-squash               Auto-squash fixup commits
 #   --strategy <name>           Rebase strategy (merge, ours, theirs)
 #   --dry-run                   Show what would be done
@@ -36,9 +36,9 @@ source "$SCRIPT_DIR/lib/ai-providers.sh"
 
 usage() {
   cat <<'EOF'
-Usage: smart-rebase-auto-without-fallback.sh [options]
+Usage: smart-sync-auto-without-fallback.sh [options]
 
-Auto-select AI provider for intelligent rebase (AI only, no fallback).
+Auto-select AI provider for intelligent sync (AI only, no fallback).
 
 Provider Order:
   1. Copilot (gpt-5-mini)
@@ -46,29 +46,29 @@ Provider Order:
   3. OpenCode (auto)
 
 Options:
-  --onto <branch>             Rebase onto branch (default: upstream)
-  --interactive               Interactive rebase with AI suggestions
+  --onto <branch>             Sync onto branch (default: upstream)
+  --interactive               Interactive sync with AI suggestions
   --auto-squash               Auto-squash fixup commits
   --strategy <name>           Rebase strategy (merge, ours, theirs)
   --dry-run                   Show what would be done
   -h, --help                  Show help
 
 Examples:
-  # Auto-rebase with provider selection
-  ./smart-rebase-auto-without-fallback.sh
+  # Auto-sync with provider selection
+  ./smart-sync-auto-without-fallback.sh
 
-  # Rebase onto specific branch
-  ./smart-rebase-auto-without-fallback.sh --onto main
+  # Sync onto specific branch
+  ./smart-sync-auto-without-fallback.sh --onto main
 
   # Interactive with AI
-  ./smart-rebase-auto-without-fallback.sh --interactive
+  ./smart-sync-auto-without-fallback.sh --interactive
 
 Note:
   This script REQUIRES at least one AI provider. If all providers are
   unavailable, the script will fail with an error.
 
-  For standard git rebase fallback, use:
-    ./smart-rebase-auto-with-fallback.sh
+  For standard git sync fallback, use:
+    ./smart-sync-auto-with-fallback.sh
 EOF
 }
 
@@ -91,7 +91,7 @@ done
 # Provider Selection
 #------------------------------------------------------------------------------
 
-echo "=== Auto Provider Selection (Rebase - AI only) ==="
+echo "=== Auto Provider Selection (Sync - AI only) ==="
 echo ""
 
 # Try providers in order
@@ -145,13 +145,13 @@ if [[ -z "$SELECTED_PROVIDER" ]]; then
   cat >&2 <<'EOF'
 ERROR: No AI providers available
 
-This script requires at least one AI provider for intelligent rebase:
+This script requires at least one AI provider for intelligent sync:
   - Copilot: npm install -g @githubnext/github-copilot-cli
   - Codex: npm install -g @openai/codex
   - OpenCode: https://opencode.ai/docs/cli/
 
-For standard git rebase fallback, use:
-  ./smart-rebase-auto-with-fallback.sh
+For standard git sync fallback, use:
+  ./smart-sync-auto-with-fallback.sh
 EOF
   exit 1
 fi
@@ -160,7 +160,7 @@ fi
 echo "Using AI provider: $SELECTED_PROVIDER (model: $SELECTED_MODEL)"
 echo ""
 
-exec "$SCRIPT_DIR/smart-rebase.sh" \
+exec "$SCRIPT_DIR/smart-sync.sh" \
   --provider "$SELECTED_PROVIDER" \
   --model "$SELECTED_MODEL" \
   "${ARGS[@]}"

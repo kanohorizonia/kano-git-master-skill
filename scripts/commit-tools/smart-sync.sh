@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 #
-# smart-rebase.sh - AI-powered intelligent rebase
+# smart-sync.sh - AI-powered intelligent sync (rebase-based)
 #
 # Purpose:
-#   Perform smart rebase operations with AI assistance
+#   Synchronize current branch with upstream using AI-powered rebase
 #
 # Usage:
-#   ./smart-rebase.sh --provider <name> --model <name> [options]
+#   ./smart-sync.sh --provider <name> --model <name> [options]
 #
 # Required Options:
 #   --provider <name>           AI provider (opencode, codex, copilot)
 #   --model <name>              AI model name
 #
 # Optional:
-#   --onto <branch>             Rebase onto branch (default: upstream)
+#   --onto <branch>             Sync onto branch (default: upstream)
 #   --interactive               Interactive rebase with AI suggestions
 #   --auto-squash               Auto-squash fixup commits
 #   --strategy <name>           Rebase strategy (merge, ours, theirs)
@@ -21,17 +21,17 @@
 #   -h, --help                  Show help
 #
 # Examples:
-#   # Rebase onto upstream
-#   ./smart-rebase.sh --provider copilot --model gpt-5-mini
+#   # Sync with upstream
+#   ./smart-sync.sh --provider copilot --model gpt-5-mini
 #
-#   # Rebase onto specific branch
-#   ./smart-rebase.sh --provider copilot --model gpt-5-mini --onto main
+#   # Sync onto specific branch
+#   ./smart-sync.sh --provider copilot --model gpt-5-mini --onto main
 #
-#   # Interactive rebase with AI suggestions
-#   ./smart-rebase.sh --provider copilot --model gpt-5-mini --interactive
+#   # Interactive sync with AI suggestions
+#   ./smart-sync.sh --provider copilot --model gpt-5-mini --interactive
 #
 #   # Auto-squash fixup commits
-#   ./smart-rebase.sh --provider copilot --model gpt-5-mini --auto-squash
+#   ./smart-sync.sh --provider copilot --model gpt-5-mini --auto-squash
 #
 
 set -euo pipefail
@@ -60,46 +60,46 @@ REPO="."
 
 usage() {
   cat <<'EOF'
-Usage: smart-rebase.sh --provider <name> --model <name> [options]
+Usage: smart-sync.sh --provider <name> --model <name> [options]
 
-AI-powered intelligent rebase operations.
+AI-powered intelligent sync (rebase) operations.
 
 Required Options:
   --provider <name>           AI provider (opencode, codex, copilot)
   --model <name>              AI model name
 
 Optional:
-  --onto <branch>             Rebase onto branch (default: upstream)
-  --interactive               Interactive rebase with AI suggestions
+  --onto <branch>             Sync onto branch (default: upstream)
+  --interactive               Interactive sync with AI suggestions
   --auto-squash               Auto-squash fixup commits
   --strategy <name>           Rebase strategy (merge, ours, theirs)
   --dry-run                   Show what would be done
   -h, --help                  Show help
 
 Examples:
-  # Rebase onto upstream
-  ./smart-rebase.sh --provider copilot --model gpt-5-mini
+  # Sync with upstream
+  ./smart-sync.sh --provider copilot --model gpt-5-mini
 
-  # Rebase onto specific branch
-  ./smart-rebase.sh --provider copilot --model gpt-5-mini --onto main
+  # Sync onto specific branch
+  ./smart-sync.sh --provider copilot --model gpt-5-mini --onto main
 
-  # Interactive rebase with AI suggestions
-  ./smart-rebase.sh --provider copilot --model gpt-5-mini --interactive
+  # Interactive sync with AI suggestions
+  ./smart-sync.sh --provider copilot --model gpt-5-mini --interactive
 
   # Auto-squash fixup commits
-  ./smart-rebase.sh --provider copilot --model gpt-5-mini --auto-squash
+  ./smart-sync.sh --provider copilot --model gpt-5-mini --auto-squash
 
 Workflow:
   1. Analyze commit history
-  2. AI suggests rebase strategy
-  3. Perform rebase operation
+  2. AI suggests sync strategy
+  3. Perform sync operation
   4. Auto-resolve conflicts (if any)
   5. Verify result
 
 AI Features:
   - Suggests which commits to squash
   - Identifies fixup commits
-  - Recommends rebase strategy
+  - Recommends sync strategy
   - Auto-resolves simple conflicts
   - Generates improved commit messages
 EOF
@@ -109,14 +109,14 @@ analyze_commits() {
   local base="$1"
   local head="${2:-HEAD}"
 
-  echo "Analyzing commits from $base to $head..."
+  echo "Analyzing commits (for sync) from $base to $head..."
 
   # Get commit list
   local commits
   commits="$(git -C "$REPO" log --oneline "$base..$head" 2>/dev/null || true)"
 
   if [[ -z "$commits" ]]; then
-    echo "No commits to rebase"
+    echo "No commits to sync"
     return 1
   fi
 
@@ -140,16 +140,16 @@ build_rebase_prompt() {
 
   cat <<EOF
 You are a Git rebase expert.
-Analyze these commits and suggest a rebase strategy.
+Analyze these commits and suggest a synchronization (rebase) strategy.
 
-Commits to rebase:
+Commits to sync:
 $commits
 
 Instructions:
 1. Identify commits that should be squashed together
 2. Identify fixup/WIP commits
 3. Suggest improved commit messages
-4. Recommend rebase strategy
+4. Recommend sync strategy
 
 Output format:
 STRATEGY: <merge|squash|rebase>
@@ -172,7 +172,7 @@ get_ai_rebase_strategy() {
   local prompt
   prompt="$(build_rebase_prompt "$base" "$head")"
 
-  echo "Requesting AI rebase strategy..."
+  echo "Requesting AI sync strategy..."
   local strategy
   strategy="$(ai_generate_message "$AI_PROVIDER" "$AI_MODEL" "$prompt" || true)"
 
@@ -202,7 +202,7 @@ perform_rebase() {
     rebase_args+=(--interactive)
   fi
 
-  echo "Performing rebase onto $target..."
+  echo "Performing sync (rebase) onto $target..."
 
   if [[ "$DRY_RUN" -eq 1 ]]; then
     echo "[DRY RUN] Would run: git rebase ${rebase_args[*]} $target"
@@ -215,10 +215,10 @@ perform_rebase() {
   fi
 
   if git -C "$REPO" rebase "${rebase_args[@]}" "$target" 2>/dev/null; then
-    echo "Rebase successful"
+    echo "Sync successful"
     return 0
   else
-    echo "Rebase encountered conflicts"
+    echo "Sync encountered conflicts"
 
     # Check if conflicts exist
     if has_conflicts "$REPO"; then
@@ -227,7 +227,7 @@ perform_rebase() {
       # Call smart-resolve if available
       if [[ -f "$SCRIPT_DIR/smart-resolve.sh" ]]; then
         if "$SCRIPT_DIR/smart-resolve.sh" --provider "$AI_PROVIDER" --model "$AI_MODEL" --auto; then
-          echo "Conflicts resolved, continuing rebase..."
+          echo "Conflicts resolved, continuing sync..."
           git -C "$REPO" rebase --continue 2>/dev/null || true
         else
           echo "ERROR: Failed to auto-resolve conflicts" >&2
@@ -301,7 +301,7 @@ fi
 # Main
 #------------------------------------------------------------------------------
 
-echo "=== Smart Rebase ==="
+echo "=== Smart Sync ==="
 echo ""
 
 # Validate repository
@@ -312,7 +312,7 @@ fi
 # Check for clean working tree
 if ! is_clean_working_tree "$REPO"; then
   echo "ERROR: Working tree has uncommitted changes" >&2
-  echo "Commit or stash changes before rebasing" >&2
+  echo "Commit or stash changes before syncing" >&2
   exit 1
 fi
 
@@ -367,5 +367,5 @@ if ! perform_rebase "$target"; then
 fi
 
 echo ""
-echo "=== Rebase Complete ==="
-echo "Branch $current_branch rebased onto $target"
+echo "=== Sync Complete ==="
+echo "Branch $current_branch synced with $target"

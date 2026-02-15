@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# smart-rebase-auto-with-fallback.sh - Auto provider selection for rebase
+# smart-sync-auto-with-fallback.sh - Auto provider selection for sync
 #
 # Purpose:
-#   Try AI providers in order (Copilot → Codex → OpenCode), fall back to standard rebase if all fail
+#   Try AI providers in order (Copilot → Codex → OpenCode), fall back to standard sync if all fail
 #
 # Provider Order:
 #   1. Copilot (gpt-5-mini)
@@ -12,10 +12,10 @@
 #   4. Fallback (standard git rebase)
 #
 # Usage:
-#   ./smart-rebase-auto-with-fallback.sh [options]
+#   ./smart-sync-auto-with-fallback.sh [options]
 #
 # Options:
-#   --onto <branch>             Rebase onto branch (default: upstream)
+#   --onto <branch>             Sync onto branch (default: upstream)
 #   --interactive               Interactive rebase with AI suggestions
 #   --auto-squash               Auto-squash fixup commits
 #   --strategy <name>           Rebase strategy (merge, ours, theirs)
@@ -38,9 +38,9 @@ source "$SCRIPT_DIR/lib/git-helpers.sh"
 
 usage() {
   cat <<'EOF'
-Usage: smart-rebase-auto-with-fallback.sh [options]
+Usage: smart-sync-auto-with-fallback.sh [options]
 
-Auto-select AI provider for intelligent rebase.
+Auto-select AI provider for intelligent sync.
 
 Provider Order:
   1. Copilot (gpt-5-mini)
@@ -57,14 +57,14 @@ Options:
   -h, --help                  Show help
 
 Examples:
-  # Auto-rebase with provider selection
-  ./smart-rebase-auto-with-fallback.sh
+  # Auto-sync with provider selection
+  ./smart-sync-auto-with-fallback.sh
 
-  # Rebase onto specific branch
-  ./smart-rebase-auto-with-fallback.sh --onto main
+  # Sync onto specific branch
+  ./smart-sync-auto-with-fallback.sh --onto main
 
   # Interactive with AI
-  ./smart-rebase-auto-with-fallback.sh --interactive
+  ./smart-sync-auto-with-fallback.sh --interactive
 EOF
 }
 
@@ -120,7 +120,7 @@ done
 # Provider Selection
 #------------------------------------------------------------------------------
 
-echo "=== Auto Provider Selection (Rebase) ==="
+echo "=== Auto Provider Selection (Sync) ==="
 echo ""
 
 # Try providers in order
@@ -174,14 +174,14 @@ if [[ -n "$SELECTED_PROVIDER" ]]; then
   echo "Using AI provider: $SELECTED_PROVIDER (model: $SELECTED_MODEL)"
   echo ""
 
-  exec "$SCRIPT_DIR/smart-rebase.sh" \
+  exec "$SCRIPT_DIR/smart-sync.sh" \
     --provider "$SELECTED_PROVIDER" \
     --model "$SELECTED_MODEL" \
     "${ARGS[@]}"
 fi
 
-# All AI providers failed - use standard git rebase
-echo "⚠ All AI providers unavailable - using standard git rebase"
+# All AI providers failed - use standard git sync (rebase)
+echo "⚠ All AI providers unavailable - using standard git sync (rebase)"
 echo ""
 
 # Validate repository
@@ -192,7 +192,7 @@ fi
 # Check for clean working tree
 if ! is_clean_working_tree "$REPO"; then
   echo "ERROR: Working tree has uncommitted changes" >&2
-  echo "Commit or stash changes before rebasing" >&2
+  echo "Commit or stash changes before syncing" >&2
   exit 1
 fi
 
@@ -235,7 +235,7 @@ if [[ "$INTERACTIVE" -eq 1 ]]; then
   rebase_args+=(--interactive)
 fi
 
-echo "Performing standard rebase..."
+echo "Performing standard sync (rebase)..."
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
   echo "[DRY RUN] Would run: git rebase ${rebase_args[*]} $target"
@@ -249,8 +249,8 @@ fi
 
 if git -C "$REPO" rebase "${rebase_args[@]}" "$target"; then
   echo ""
-  echo "=== Rebase Complete ==="
-  echo "Branch $current_branch rebased onto $target"
+  echo "=== Sync Complete ==="
+  echo "Branch $current_branch synced with $target"
 else
   echo ""
   echo "ERROR: Rebase failed" >&2
