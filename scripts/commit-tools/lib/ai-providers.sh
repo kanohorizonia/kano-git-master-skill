@@ -345,9 +345,28 @@ ai_generate_message() {
 # Output Normalization Helpers
 #------------------------------------------------------------------------------
 
+ai_filter_preamble() {
+  # Filter out conversational preamble from AI responses.
+  # This targets lines that look like "Sure, I can...", "I'll...", etc.
+  grep -vE '^(I[[:space:]]|I'\''ll|I'\''ve|Sure|Certainly|Thinking|Okay|Here|The|This|According|Based)' | \
+  grep -vE '^(I will|I have|Looking|Analyzing|Scanning|Generating)'
+}
+
 ai_first_line() {
-  # Extract first non-empty line from stdin.
-  awk 'NF{print; exit}'
+  # Extract first non-empty line from stdin, prioritizing Conventional Commit patterns.
+  local input
+  input="$(cat)"
+
+  # 1. Try to find a Conventional Commit pattern: type(scope): message
+  local cc_msg
+  cc_msg="$(printf '%s\n' "$input" | grep -m 1 -E '^[a-z]+(\([a-z0-9_-]+\))?!?: .+$' || true)"
+  if [[ -n "$cc_msg" ]]; then
+    printf '%s\n' "$cc_msg"
+    return 0
+  fi
+
+  # 2. Fallback to first non-empty line after filtering preamble
+  printf '%s\n' "$input" | ai_filter_preamble | awk 'NF{print; exit}'
 }
 
 ai_strip_copilot_markup() {
