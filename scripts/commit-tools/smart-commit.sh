@@ -473,9 +473,19 @@ provider_auth_hint() {
 provider_auth_likely_missing() {
   case "$AI_PROVIDER" in
     copilot)
-      if have_cmd gh && ! gh auth status >/dev/null 2>&1; then
-        return 0
+      # Check standalone copilot first (modern installations often use this)
+      if have_cmd copilot \
+         && copilot -p "PASS" --no-color --stream off --no-ask-user 2>/dev/null \
+         | grep -qi "PASS"; then
+        return 1
       fi
+      # Then check gh extension auth
+      if have_cmd gh \
+         && gh auth status >/dev/null 2>&1 \
+         && gh copilot --version >/dev/null 2>&1; then
+        return 1
+      fi
+      return 0
       ;;
     codex)
       if [[ -z "${OPENAI_API_KEY:-}" ]]; then
