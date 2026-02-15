@@ -357,11 +357,14 @@ ai_first_line() {
   local input
   input="$(cat)"
 
-  # 1. Try to find a Conventional Commit pattern: type(scope): message
-  local cc_msg
-  cc_msg="$(printf '%s\n' "$input" | grep -m 1 -E '^[a-z]+(\([a-z0-9_-]+\))?!?: .+$' || true)"
-  if [[ -n "$cc_msg" ]]; then
-    printf '%s\n' "$cc_msg"
+  # 1. Try to find a clear commit pattern (Conventional or Bracketed tags)
+  local commit_msg
+  # Patterns:
+  # - Conventional: type(scope): message
+  # - Tagged: [Tag][SubTag] message
+  commit_msg="$(printf '%s\n' "$input" | grep -m 1 -E '^([a-z]+(\([a-z0-9_-]+\))?!?: |(\[[^\]]+\])+ ).+$' || true)"
+  if [[ -n "$commit_msg" ]]; then
+    printf '%s\n' "$commit_msg"
     return 0
   fi
 

@@ -141,5 +141,6 @@ Note: sourcing will also define globals used by those functions (see the script 
   - This ensures "Git Bash Here" works correctly and provides a stable, context-aware interface for developers.
 - **AI Safety & Authentication**:
   - Scripts like `smart-commit.sh` perform AI safety reviews. Note that **Copilot authentication has two layers**: the standalone CLI (`copilot login`) and the GitHub CLI extension (`gh auth login`).
+  - **Commit Message Filtering**: The system automatically filters AI conversational preamble (e.g., "Certainly!", "I'll inspect..."). It prioritizes lines matching **Conventional Commits** (`type(scope): msg`) or **Bracketed Tags** (`[Tag][SubTag] msg`).
   - **In case of Copilot auth failure, seek human assistance** to resolve credentials. Do not bypass reviews if a reliable safety check is possible.
 - When adding/adjusting behavior, update the relevant docs in `docs/` and add/extend tests in `scripts/test/`.
