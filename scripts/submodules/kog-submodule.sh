@@ -222,18 +222,19 @@ set_kog_field() {
 get_submodule_remotes() {
   local submodule_path="$1"
 
-  # Get all kog-remote-* fields
+  # Get all kog-remote-* fields and extract the remote name
+  # Handles both kog-remote-<name> and kog-remote-<name>-<suffix>
   git config -f .gitmodules --get-regexp "submodule\.$submodule_path\.kog-remote-.*" 2>/dev/null | \
-    sed -E 's/submodule\.[^.]+\.kog-remote-([^-]+)-.*/\1/' | \
-    sort -u
+    sed -E "s|submodule\.$submodule_path\.kog-remote-([^.-]+).*|\1|" | \
+    sort -u || true
 }
 
 # Get all remote names for root repo from kog-root-remote-* fields
 get_root_repo_remotes() {
-  # Get all kog-root-remote sections
-  git config -f .gitmodules --get-regexp "kog-root-remote\..*\.kog-url-.*" 2>/dev/null | \
+  # Get all kog-root-remote sections and extract the remote name
+  git config -f .gitmodules --get-regexp "kog-root-remote\..*" 2>/dev/null | \
     sed -E 's/kog-root-remote\.([^.]+)\..*/\1/' | \
-    sort -u
+    sort -u || true
 }
 
 # Get kog-root-remote-* field from .gitmodules
@@ -358,17 +359,13 @@ cmd_add() {
     exit 1
   fi
 
-  # Validate that each remote has both SSH and HTTPS URLs
-  for remote_name in "${!REMOTE_SSH_URLS[@]}"; do
-    if [[ -z "${REMOTE_HTTPS_URLS[$remote_name]:-}" ]]; then
-      gith_error "Error: Remote '$remote_name' missing HTTPS URL"
-      exit 1
-    fi
-  done
-
-  for remote_name in "${!REMOTE_HTTPS_URLS[@]}"; do
-    if [[ -z "${REMOTE_SSH_URLS[$remote_name]:-}" ]]; then
-      gith_error "Error: Remote '$remote_name' missing SSH URL"
+  # Validate that each remote has at least one URL (SSH or HTTPS)
+  local all_remotes
+  all_remotes=$(echo "${!REMOTE_SSH_URLS[@]} ${!REMOTE_HTTPS_URLS[@]}" | tr ' ' '\n' | sort -u)
+  
+  for remote_name in $all_remotes; do
+    if [[ -z "${REMOTE_SSH_URLS[$remote_name]:-}" && -z "${REMOTE_HTTPS_URLS[$remote_name]:-}" ]]; then
+      gith_error "Error: Remote '$remote_name' missing both SSH and HTTPS URL"
       exit 1
     fi
   done
@@ -672,14 +669,26 @@ cmd_sync_root_repo() {
     ssh_url=$(get_root_kog_field "$remote_name" "kog-url-ssh")
     https_url=$(get_root_kog_field "$remote_name" "kog-url-https")
 
-    if [[ -z "$ssh_url" || -z "$https_url" ]]; then
-      gith_log "WARN" "  Remote '$remote_name' missing SSH or HTTPS URL, skipping"
+    if [[ -z "$ssh_url" && -z "$https_url" ]]; then
+      gith_log "WARN" "  Remote '$remote_name' missing both SSH and HTTPS URL, skipping"
       continue
     fi
 
-    # Select URL based on protocol priority and SSH availability
+    local direct_url
+    direct_url=$(get_root_kog_field "$remote_name" "kog-url")
+
+    # Select URL based on direct URL, protocol priority and SSH availability
     local selected_url
-    selected_url=$(select_url "$ssh_url" "$https_url" "$protocol_priority")
+    if [[ -n "$direct_url" ]]; then
+      selected_url="$direct_url"
+    else
+      selected_url=$(select_url "$ssh_url" "$https_url" "$protocol_priority")
+    fi
+
+    if [[ -z "$selected_url" ]]; then
+      gith_log "WARN" "  Remote '$remote_name' has no valid URL, skipping"
+      continue
+    fi
 
     if [[ "$dry_run" -eq 1 ]]; then
       echo "  [DRY-RUN] Would configure remote '$remote_name' with URL: $selected_url"
@@ -721,6 +730,23 @@ cmd_sync_submodule() {
     return 0
   fi
 
+  # Ensure submodule is on the correct branch (Requirement from USER)
+  local target_branch
+  target_branch=$(git config -f .gitmodules "submodule.$submodule_path.branch" 2>/dev/null || echo "dev")
+  
+  # Determine best tracking remote (prefer upstream)
+  local tracking_remote="origin"
+  if git config -f .gitmodules "submodule.$submodule_path.kog-remote-upstream-https" >/dev/null 2>&1 || \
+     git config -f .gitmodules "submodule.$submodule_path.kog-remote-upstream" >/dev/null 2>&1; then
+    tracking_remote="upstream"
+  fi
+
+  if [[ "$dry_run" -eq 1 ]]; then
+    gith_log "INFO" "  [DRY-RUN] Would ensure branch '$target_branch' in $submodule_path"
+  else
+    gith_checkout_branch "$target_branch" "$submodule_path" "$tracking_remote"
+  fi
+
   # Configure each remote
   while IFS= read -r remote_name; do
     if [[ -z "$remote_name" ]]; then
@@ -732,16 +758,26 @@ cmd_sync_submodule() {
     ssh_url=$(get_kog_field "$submodule_path" "kog-remote-$remote_name-ssh")
     https_url=$(get_kog_field "$submodule_path" "kog-remote-$remote_name-https")
 
-    if [[ -z "$ssh_url" || -z "$https_url" ]]; then
-      gith_log "WARN" "  Remote '$remote_name' missing SSH or HTTPS URL, skipping"
+    if [[ -z "$ssh_url" && -z "$https_url" ]]; then
+      gith_log "WARN" "  Remote '$remote_name' missing both SSH and HTTPS URL, skipping"
       continue
     fi
 
-    # Select URL based on protocol priority and SSH availability
-    local selected_url
-    selected_url=$(select_url "$ssh_url" "$https_url" "$protocol_priority")
+    local direct_url
+    direct_url=$(get_kog_field "$submodule_path" "kog-remote-$remote_name")
 
-    # Configure remote in submodule's .git/config
+    # Select URL based on direct URL, protocol priority and SSH availability
+    local selected_url
+    if [[ -n "$direct_url" ]]; then
+      selected_url="$direct_url"
+    else
+      selected_url=$(select_url "$ssh_url" "$https_url" "$protocol_priority")
+    fi
+
+    if [[ -z "$selected_url" ]]; then
+      gith_log "WARN" "  Remote '$remote_name' has no valid URL, skipping"
+      continue
+    fi
     local submodule_git_dir=".git/modules/$submodule_path"
     if [[ ! -d "$submodule_git_dir" ]]; then
       gith_log "WARN" "  Submodule not initialized: $submodule_path"

@@ -806,6 +806,54 @@ gith_branch_exists() {
   return 1
 }
 
+# Checkout a branch, creating it if necessary from remotes
+# Usage: gith_checkout_branch <branch_name> [repo_path] [tracking_remote]
+# Returns: 0 if successful, 1 if failed
+gith_checkout_branch() {
+  local branch_name="${1}"
+  local repo_path="${2:-.}"
+  local tracking_remote="${3:-}"
+  
+  local current_branch
+  current_branch="$(gith_get_current_branch "$repo_path")"
+  
+  if [[ "$current_branch" == "$branch_name" ]]; then
+    gith_log "DEBUG" "Already on branch '$branch_name' in $repo_path"
+    return 0
+  fi
+
+  gith_log "INFO" "Switching to branch '$branch_name' in $repo_path (current: ${current_branch:-detached})..."
+  
+  # 1. Try simple checkout if it exists locally
+  if (cd "$repo_path" && git show-ref --verify --quiet "refs/heads/$branch_name" 2>/dev/null); then
+    if (cd "$repo_path" && git checkout "$branch_name" 2>/dev/null); then
+      return 0
+    fi
+  fi
+  
+  # 2. Try creating from tracking remote if provided
+  if [[ -n "$tracking_remote" ]] && gith_branch_exists_on_remote "$tracking_remote" "$branch_name" "$repo_path"; then
+    gith_log "INFO" "Creating local branch '$branch_name' tracking $tracking_remote/$branch_name..."
+    if (cd "$repo_path" && git checkout -b "$branch_name" "$tracking_remote/$branch_name" 2>/dev/null); then
+      return 0
+    fi
+  fi
+  
+  # 3. Try automatic detection from common remotes
+  for remote in "upstream" "origin"; do
+    if [[ "$remote" == "$tracking_remote" ]]; then continue; fi
+    if gith_has_remote "$remote" "$repo_path" && gith_branch_exists_on_remote "$remote" "$branch_name" "$repo_path"; then
+      gith_log "INFO" "Creating local branch '$branch_name' tracking $remote/$branch_name..."
+      if (cd "$repo_path" && git checkout -b "$branch_name" "$remote/$branch_name" 2>/dev/null); then
+        return 0
+      fi
+    fi
+  done
+  
+  gith_error "Failed to checkout branch '$branch_name' in $repo_path"
+  return 1
+}
+
 # Validate Git URL format and protocol
 # Usage: gith_validate_url <url>
 # Returns: 0 if valid, 1 if invalid
