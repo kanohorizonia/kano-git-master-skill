@@ -139,4 +139,7 @@ Note: sourcing will also define globals used by those functions (see the script 
 - **Root-Level Wrapper Pattern**:
   - For complex multi-repo tools (e.g., `smart-commit`), provide simple entry-point wrappers in the project root.
   - This ensures "Git Bash Here" works correctly and provides a stable, context-aware interface for developers.
+- **AI Safety & Authentication**:
+  - Scripts like `smart-commit.sh` perform AI safety reviews. If an AI provider (e.g., Copilot) fails due to authentication or authorization issues, **do not bypass the review blindly**.
+  - **In case of Copilot auth failure, seek human assistance** to resolve credentials before proceeding with commits that require safety validation.
 - When adding/adjusting behavior, update the relevant docs in `docs/` and add/extend tests in `scripts/test/`.
