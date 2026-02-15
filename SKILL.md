@@ -22,10 +22,10 @@ cd /path/to/your-repo
 
 Updates your repository and all submodules to the latest version with smart branch detection and auto-stash.
 
-### Clone Fork with Upstream
+### Smart Clone (Clone Fork with Upstream)
 
 ```bash
-./scripts/clone-with-upstream.sh \
+./scripts/smart-clone.sh \
   https://github.com/yourname/fork.git \
   https://github.com/original/repo.git
 ```
@@ -53,9 +53,9 @@ Scripts are organized by category in the `scripts/` directory:
 scripts/
 ├── lib/                      # Shared helper library
 │   └── git-helpers.sh
-├── repo-management/          # Single repository operations
+├── core/                     # Core operations
 │   ├── update-repo.sh
-│   ├── clone-with-upstream.sh
+│   ├── smart-clone.sh
 │   └── discover-repos.sh
 ├── workspace/                # Multi-repository operations
 │   ├── update-workspace-repos.sh
@@ -74,7 +74,7 @@ scripts/
 | Script | Purpose | Use When |
 |--------|---------|----------|
 | **update-repo.sh** | Update single repo + submodules | Daily sync, quick updates |
-| **clone-with-upstream.sh** | Clone with upstream remote | Fork setup, contribution workflow |
+| **smart-clone.sh** | Clone with upstream remote | Fork setup, contribution workflow |
 | **init-empty-repo.sh** | Initialize empty remote repo | Quick repo setup, testing |
 | **rebase-to-upstream-latest.sh** | Rebase to upstream | Sync with upstream regularly |
 | **discover-repos.sh** | Find all repos in workspace | Multi-repo discovery |
@@ -99,7 +99,7 @@ scripts/
 
 ```bash
 # Initial setup
-./scripts/repo-management/clone-with-upstream.sh <your-fork> <upstream>
+./scripts/smart-clone.sh <your-fork> <upstream>
 
 # Regular sync
 cd project
@@ -180,22 +180,22 @@ cd project
 
 **Features:** Auto-stash, smart branch detection, recursive submodules, clear progress
 
-### clone-with-upstream.sh
+### smart-clone.sh
 
 ```bash
 # Clone without upstream
-./scripts/clone-with-upstream.sh https://github.com/user/repo.git
+./scripts/smart-clone.sh https://github.com/user/repo.git
 
 # Clone with upstream
-./scripts/clone-with-upstream.sh \
+./scripts/smart-clone.sh \
   https://github.com/user/fork.git \
   https://github.com/original/repo.git
 
 # Custom directory
-./scripts/clone-with-upstream.sh <url> --dir my-project
+./scripts/smart-clone.sh <url> --dir my-project
 ```
 
-**Features:** Auto-detect default branch, setup upstream, pull latest
+**Features:** Auto-detect default branch, setup upstream, pull latest, **auto-initialize empty remotes**.
 
 ### init-empty-repo.sh
 
@@ -582,7 +582,7 @@ Start with `update-repo.sh` for simple cases, then explore the full suite for co
 | Need | Command |
 |------|---------|
 | Update one repo | `./scripts/repo-management/update-repo.sh` |
-| Clone fork | `./scripts/repo-management/clone-with-upstream.sh <fork> <upstream>` |
+| Clone fork | `./scripts/smart-clone.sh <fork> <upstream>` |
 | Sync with upstream | `./scripts/branch-operations/rebase-to-upstream-latest.sh` |
 | Compare branches | `./scripts/branch-operations/compare-branches.sh <base> <compare>` |
 | Batch cherry-pick | `./scripts/branch-operations/cherry-pick-batch.sh <file>` |

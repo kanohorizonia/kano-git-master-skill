@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 #
-# clone-with-upstream.sh - Clone repository with optional upstream remote
+# smart-clone.sh - Clone repository with optional upstream remote
 #
 # Purpose:
 #   Clone a repository and optionally set up an upstream remote for tracking
 #   the original repository (useful for forks).
+#   Includes automatic initialization of empty remotes.
 #
 # Usage:
-#   ./clone-with-upstream.sh <repo-url> [upstream-url] [options]
+#   ./smart-clone.sh <repo-url> [upstream-url] [options]
 #
 # Arguments:
 #   repo-url          Repository URL to clone (required)
@@ -22,15 +23,15 @@
 #
 # Examples:
 #   # Clone without upstream
-#   ./clone-with-upstream.sh https://github.com/user/repo.git
+#   ./smart-clone.sh https://github.com/user/repo.git
 #
 #   # Clone with upstream
-#   ./clone-with-upstream.sh \
+#   ./smart-clone.sh \
 #     https://github.com/user/fork.git \
 #     https://github.com/original/repo.git
 #
 #   # Clone to custom directory
-#   ./clone-with-upstream.sh https://github.com/user/repo.git --dir my-project
+#   ./smart-clone.sh https://github.com/user/repo.git --dir my-project
 #
 # Works with any Git remote provider (GitHub, GitLab, Azure Repos, Bitbucket, self-hosted, etc.)
 #
@@ -75,15 +76,15 @@ Options:
 
 Examples:
   # Clone without upstream
-  ./clone-with-upstream.sh https://github.com/user/repo.git
+  ./smart-clone.sh https://github.com/user/repo.git
 
   # Clone with upstream
-  ./clone-with-upstream.sh \\
+  ./smart-clone.sh \\
     https://github.com/user/fork.git \\
     https://github.com/original/repo.git
 
   # Clone to custom directory
-  ./clone-with-upstream.sh https://github.com/user/repo.git --dir my-project
+  ./smart-clone.sh https://github.com/user/repo.git --dir my-project
 
 Works with any Git remote provider (GitHub, GitLab, Azure Repos, Bitbucket, self-hosted, etc.)
 EOF

@@ -80,7 +80,7 @@ kano-git-master-skill/
     │   ├── setup-multi-remote.sh      # Multi-remote configuration
     │   ├── create-orphan-branch.sh    # Orphan branch creation
     │   ├── init-empty-repo.sh         # Initialize empty repository
-    │   ├── clone-with-upstream.sh     # Clone with upstream remote
+    │   ├── smart-clone.sh             # Clone with upstream remote
     │   └── update-repo.sh             # Update repository
     ├── worktree/           # Worktree management
     ├── subtree/            # Subtree management
