@@ -15,7 +15,7 @@
 #
 # Options:
 #   --dir <path>      Target directory (default: derived from repo name)
-#   --init            Initialize with a commit if remote is empty
+#   --no-init         Skip initializing if remote is empty
 #   --no-checkout     Skip checkout to default branch
 #   --dry-run         Show what would be done
 #   -h, --help        Show help
@@ -48,7 +48,7 @@ source "$SCRIPT_DIR/../lib/git-helpers.sh"
 REPO_URL=""
 UPSTREAM_URL=""
 TARGET_DIR=""
-INIT_IF_EMPTY=0
+AUTO_INIT=1
 NO_CHECKOUT=0
 DRY_RUN=0
 
@@ -68,7 +68,7 @@ Arguments:
 
 Options:
   --dir <path>      Target directory (default: derived from repo name)
-  --init            Initialize with a commit if remote is empty
+  --no-init         Skip initializing if remote is empty
   --no-checkout     Skip checkout to default branch
   --dry-run         Show what would be done
   -h, --help        Show help
@@ -150,8 +150,8 @@ main() {
         NO_CHECKOUT=1
         shift
         ;;
-      --init)
-        INIT_IF_EMPTY=1
+      --no-init)
+        AUTO_INIT=0
         shift
         ;;
       --dry-run)
@@ -221,7 +221,7 @@ main() {
   fi
 
   if [[ "$is_empty" -eq 1 ]]; then
-    if [[ "$INIT_IF_EMPTY" -eq 1 ]]; then
+    if [[ "$AUTO_INIT" -eq 1 ]]; then
       gith_log "INFO" "Initializing empty repository..."
       if [[ "$DRY_RUN" -eq 1 ]]; then
         gith_log "INFO" "[DRY-RUN] Would initialize: $REPO_URL"
@@ -234,8 +234,19 @@ main() {
         gith_log "INFO" "Initialization completed"
       fi
     else
-      gith_error "Remote repository is empty. Use --init to initialize it."
-      exit 1
+      gith_log "WARN" "Remote repository is empty and --no-init was specified."
+      gith_log "WARN" "Cloning will likely result in an empty directory with no branches."
+
+      # Still attempt clone if user forced --no-init
+      if [[ "$DRY_RUN" -eq 1 ]]; then
+        gith_log "INFO" "[DRY-RUN] Would clone (empty): $REPO_URL to $TARGET_DIR"
+      else
+        if ! git clone "$REPO_URL" "$TARGET_DIR" 2>&1; then
+          gith_error "Failed to clone repository: $REPO_URL"
+          exit 1
+        fi
+        gith_log "INFO" "Clone completed successfully (empty)"
+      fi
     fi
   else
     gith_log "INFO" "Cloning repository: $REPO_URL"
