@@ -65,10 +65,11 @@ Note: sourcing will also define globals used by those functions (see the script 
   (e.g. `scripts/test/test-input-validation-properties.sh`).
 
 #### Path resolution
-- Common pattern:
+- Common pattern for script-relative paths:
   ```bash
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   ```
+- **Robust Root Detection**: When a tool needs the project root, avoid `git rev-parse --show-toplevel` if it might be executed from within a submodule (as it will return the submodule root). Instead, use `BASH_SOURCE` to find the script and traverse up to the expected root.
 - Prefer `LIB_DIR`/`SKILL_ROOT` computed from `SCRIPT_DIR` and **source** helpers from `scripts/lib/`.
 
 #### Naming
@@ -132,4 +133,10 @@ Note: sourcing will also define globals used by those functions (see the script 
   - place it under an existing category in `scripts/`
   - include `--help` and `--dry-run` when it mutates state
   - source `scripts/lib/git-helpers.sh` for consistent logging + helpers
+- **Submodule Management**:
+  - Always align submodules to the branch specified in `.gitmodules` during sync. Use `gith_checkout_branch` to handle detached HEADs and remote tracking safely.
+  - Support flexible remote naming (e.g., `kog-remote-upstream`) without forcing protocol suffixes if a direct URL is provided.
+- **Root-Level Wrapper Pattern**:
+  - For complex multi-repo tools (e.g., `smart-commit`), provide simple entry-point wrappers in the project root.
+  - This ensures "Git Bash Here" works correctly and provides a stable, context-aware interface for developers.
 - When adding/adjusting behavior, update the relevant docs in `docs/` and add/extend tests in `scripts/test/`.
