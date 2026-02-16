@@ -204,7 +204,6 @@ for repo in "${REPOS[@]}"; do
 
   # Auto-sync with upstream if exists
   if [[ "$has_upstream" -eq 1 ]]; then
-    local sync_output sync_exit
     sync_output="$(git -C "$repo" pull --rebase 2>&1 || true)"
     sync_exit=$?
 
@@ -238,7 +237,6 @@ for repo in "${REPOS[@]}"; do
     push_args+=("-u")
   fi
 
-  local push_output push_exit
   push_output="$(git -C "$repo" push "${push_args[@]}" "$primary_remote" "$branch" 2>&1 || true)"
   push_exit=$?
 
