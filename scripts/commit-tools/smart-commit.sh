@@ -376,7 +376,7 @@ maybe_update_gitignore() {
   local smart_err=""
 
   if [[ "$USE_SMART_IGNORE" -eq 1 && -x "$smart_ignore_script" ]]; then
-    local smart_ignore_args=(--repo "$repo" --scope untracked)
+    local smart_ignore_args=(--repo "$repo" --scope untracked --no-consolidate)
     if [[ -n "$AI_PROVIDER" && -n "$AI_MODEL" ]]; then
       smart_ignore_args+=(--provider "$AI_PROVIDER" --model "$AI_MODEL")
     else
