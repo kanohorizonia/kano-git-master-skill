@@ -61,15 +61,15 @@ set -euo pipefail
 # Get script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Find repository root (go up from commit-tools/)
-ROOT="$(cd "$SCRIPT_DIR/../.." && git rev-parse --show-toplevel 2>/dev/null || true)"
+# Find repository root (go up from commit-tools/commit/)
+ROOT="$(cd "$SCRIPT_DIR/../../.." && git rev-parse --show-toplevel 2>/dev/null || true)"
 if [[ -z "$ROOT" ]]; then
-  # Fallback: assume we're in skills/kano-git-master-skill/scripts/commit-tools/
-  ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+  # Fallback: assume we're in skills/kano-git-master-skill/scripts/commit-tools/commit/
+  ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
 fi
 
 # Load AI provider library
-LIB_DIR="$SCRIPT_DIR/lib"
+LIB_DIR="$SCRIPT_DIR/../lib"
 if [[ ! -f "$LIB_DIR/ai-providers.sh" ]]; then
   echo "ERROR: AI provider library not found: $LIB_DIR/ai-providers.sh" >&2
   exit 1
@@ -372,7 +372,7 @@ ensure_gitignore_entry() {
 
 maybe_update_gitignore() {
   local repo="$1"
-  local smart_ignore_script="$SCRIPT_DIR/smart-ignore.sh"
+  local smart_ignore_script="$SCRIPT_DIR/../ignore/smart-ignore.sh"
   local smart_err=""
 
   if [[ "$USE_SMART_IGNORE" -eq 1 && -x "$smart_ignore_script" ]]; then

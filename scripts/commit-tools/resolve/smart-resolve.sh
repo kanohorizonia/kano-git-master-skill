@@ -39,9 +39,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Load libraries
-source "$SCRIPT_DIR/lib/ai-providers.sh"
-source "$SCRIPT_DIR/lib/git-helpers.sh"
-source "$SCRIPT_DIR/lib/conflict-parser.sh"
+source "$SCRIPT_DIR/../lib/ai-providers.sh"
+source "$SCRIPT_DIR/../lib/git-helpers.sh"
+source "$SCRIPT_DIR/../lib/conflict-parser.sh"
 
 # Configuration
 AI_PROVIDER=""

@@ -57,6 +57,8 @@ Optional:
   --no-submodules             Exclude submodules from push
   --no-standalone             Exclude standalone repos from push
   --force-with-lease          Use --force-with-lease when pushing
+  --no-smart-sync             Disable AI-powered sync (use simple git pull --rebase)
+  --no-smart-ignore           Disable AI-powered .gitignore updates
   --rules <text>              Custom commit rules (inline text)
   --rules-file <path>         Custom commit rules (from file)
   --no-ai-review              Disable AI safety review
@@ -94,7 +96,7 @@ while [[ $# -gt 0 ]]; do
       usage
       exit 0
       ;;
-    --repos|--no-root|--no-submodules|--no-standalone|--force-with-lease)
+    --repos|--no-root|--no-submodules|--no-standalone|--force-with-lease|--no-smart-sync)
       SMART_PUSH_ARGS+=("$1")
       if [[ "$1" == "--repos" ]]; then
         SMART_PUSH_ARGS+=("${2:-}")
@@ -102,6 +104,11 @@ while [[ $# -gt 0 ]]; do
       else
         shift
       fi
+      ;;
+    --no-smart-ignore)
+      # Pass to smart-commit.sh
+      SMART_COMMIT_ARGS+=("$1")
+      shift
       ;;
     *)
       # Pass through to smart-commit.sh
@@ -128,9 +135,9 @@ echo ""
 # Step 1: Commit changes
 echo "Step 1: Committing changes..."
 if [[ "$DRY_RUN" -eq 1 ]]; then
-  echo "[DRY RUN] Would run: $SCRIPT_DIR/smart-commit.sh ${SMART_COMMIT_ARGS[*]}"
+  echo "[DRY RUN] Would run: $SCRIPT_DIR/../commit/smart-commit.sh ${SMART_COMMIT_ARGS[*]}"
 else
-  if ! bash "$SCRIPT_DIR/smart-commit.sh" "${SMART_COMMIT_ARGS[@]}"; then
+  if ! bash "$SCRIPT_DIR/../commit/smart-commit.sh" "${SMART_COMMIT_ARGS[@]}"; then
     echo "ERROR: Commit step failed. Check smart-commit output above for repository-specific failures." >&2
     exit 1
   fi
@@ -139,9 +146,9 @@ fi
 echo ""
 echo "Step 2: Push workflow..."
 if [[ "$DRY_RUN" -eq 1 ]]; then
-  echo "[DRY RUN] Would run: $SCRIPT_DIR/smart-push.sh ${SMART_PUSH_ARGS[*]}"
+  echo "[DRY RUN] Would run: $SCRIPT_DIR/../smart-push.sh ${SMART_PUSH_ARGS[*]}"
 else
-  if ! bash "$SCRIPT_DIR/smart-push.sh" "${SMART_PUSH_ARGS[@]}"; then
+  if ! bash "$SCRIPT_DIR/../smart-push.sh" "${SMART_PUSH_ARGS[@]}"; then
     echo "ERROR: Push step failed. Check smart-push output above for repository-specific failures." >&2
     exit 1
   fi

@@ -9,26 +9,37 @@ INCLUDE_ROOT=1
 INCLUDE_SUBMODULES=1
 INCLUDE_STANDALONE=1
 REPO_FILTER=""
+NO_SMART_SYNC=0
 
 usage() {
   cat <<'EOF'
 Usage: smart-push.sh [options]
 
-Push workflow with SSH→HTTP fallback per repo.
+Push workflow with AI-powered sync and SSH→HTTP fallback per repo.
 
 Options:
   --repos <paths>        Only process specific repos (comma-separated)
   --no-root              Exclude root repo
   --no-submodules        Exclude submodules
   --no-standalone        Exclude standalone repos
+  --no-smart-sync        Disable AI-powered sync (use simple git pull --rebase)
   --force-with-lease     Use --force-with-lease on push
   --dry-run              Show what would be done without doing it
   -h, --help             Show help
 
 Examples:
-  smart-push.sh
+  smart-push.sh                    # AI-powered sync + push
+  smart-push.sh --no-smart-sync    # Simple rebase + push
   smart-push.sh --repos ".,skills/kano"
   smart-push.sh --no-standalone
+
+Workflow:
+  1. Sync with upstream (AI-powered rebase by default)
+  2. Push to remote with SSH→HTTP fallback
+
+Note:
+  By default, uses AI (Copilot/Codex/OpenCode) for intelligent sync.
+  Use --no-smart-sync to disable AI and use simple git pull --rebase.
 EOF
 }
 
@@ -48,6 +59,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-standalone)
       INCLUDE_STANDALONE=0
+      shift
+      ;;
+    --no-smart-sync)
+      NO_SMART_SYNC=1
       shift
       ;;
     --force-with-lease)
@@ -152,16 +167,11 @@ for repo in "${REPOS[@]}"; do
   fi
 
   set_upstream=0
+  has_upstream=0
   if ! git -C "$repo" rev-parse --abbrev-ref "@{upstream}" >/dev/null 2>&1; then
     set_upstream=1
-  fi
-
-  push_args=()
-  if [[ "$FORCE_WITH_LEASE" -eq 1 ]]; then
-    push_args+=("--force-with-lease")
-  fi
-  if [[ "$set_upstream" -eq 1 ]]; then
-    push_args+=("-u")
+  else
+    has_upstream=1
   fi
 
   primary_remote=""
@@ -180,6 +190,50 @@ for repo in "${REPOS[@]}"; do
     echo "[$repo] ERROR: No origin remote found" >&2
     FAILED=1
     continue
+  fi
+
+  # Auto-sync with upstream if exists
+  if [[ "$has_upstream" -eq 1 ]]; then
+    if [[ "$NO_SMART_SYNC" -eq 0 ]]; then
+      # Use AI-powered smart-sync
+      echo "[$repo] Syncing with upstream (AI-powered)..."
+
+      # Save current dir and cd to repo
+      pushd "$repo" >/dev/null 2>&1
+
+      # Call smart-sync-with-AI
+      if "$SCRIPT_DIR/smart-sync-with-AI.sh" --no-submodule-branch-sync 2>&1; then
+        echo "[$repo] Smart-sync successful"
+      else
+        sync_exit=$?
+        popd >/dev/null 2>&1
+        echo "[$repo] ERROR: Smart-sync failed (exit code: $sync_exit)" >&2
+        echo "[$repo] Please resolve conflicts manually and retry." >&2
+        FAILED=1
+        continue
+      fi
+
+      popd >/dev/null 2>&1
+    else
+      # Use simple git pull --rebase
+      echo "[$repo] Syncing with upstream (simple rebase)..."
+      if ! git -C "$repo" pull --rebase 2>/dev/null; then
+        echo "[$repo] ERROR: Rebase failed. Aborting rebase..." >&2
+        git -C "$repo" rebase --abort 2>/dev/null || true
+        echo "[$repo] Please resolve conflicts manually and retry." >&2
+        FAILED=1
+        continue
+      fi
+      echo "[$repo] Sync successful"
+    fi
+  fi
+
+  push_args=()
+  if [[ "$FORCE_WITH_LEASE" -eq 1 ]]; then
+    push_args+=("--force-with-lease")
+  fi
+  if [[ "$set_upstream" -eq 1 ]]; then
+    push_args+=("-u")
   fi
 
   echo "[$repo] Pushing to $primary_remote..."

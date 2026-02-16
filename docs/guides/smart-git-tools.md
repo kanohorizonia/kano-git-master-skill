@@ -207,25 +207,25 @@ AI-assisted intelligent rebase.
 **Usage:**
 ```bash
 # Rebase onto upstream
-./smart-sync.sh --provider copilot --model gpt-5-mini
+./smart-sync-without-AI.sh --provider copilot --model gpt-5-mini
 
 # Rebase onto specific branch
-./smart-sync.sh --provider copilot --model gpt-5-mini --onto main
+./smart-sync-without-AI.sh --provider copilot --model gpt-5-mini --onto main
 
 # Interactive with AI suggestions
-./smart-sync.sh --provider copilot --model gpt-5-mini --interactive
+./smart-sync-without-AI.sh --provider copilot --model gpt-5-mini --interactive
 
 # Auto-squash fixup commits
-./smart-sync.sh --provider copilot --model gpt-5-mini --auto-squash
+./smart-sync-without-AI.sh --provider copilot --model gpt-5-mini --auto-squash
 
 # Dry run
-./smart-sync.sh --provider copilot --model gpt-5-mini --dry-run
+./smart-sync-without-AI.sh --provider copilot --model gpt-5-mini --dry-run
 
 # Skip submodule branch sync
-./smart-sync.sh --provider copilot --model gpt-5-mini --no-submodule-branch-sync
+./smart-sync-without-AI.sh --provider copilot --model gpt-5-mini --no-submodule-branch-sync
 
 # Auto-select provider (with fallback to standard rebase)
-./smart-sync-auto-with-fallback.sh
+./smart-sync.sh
 
 # Auto-select provider (AI only, fails if unavailable)
 ./smart-sync-auto-without-fallback.sh
@@ -394,7 +394,7 @@ All tools support `--dry-run` to preview operations:
 ```bash
 ./smart-commit.sh --provider copilot --model gpt-5-mini --dry-run
 ./smart-resolve.sh --provider copilot --model gpt-5-mini --dry-run
-./smart-sync.sh --provider copilot --model gpt-5-mini --dry-run
+./smart-sync-without-AI.sh --provider copilot --model gpt-5-mini --dry-run
 ```
 
 ## Common Workflows
@@ -443,10 +443,10 @@ git rebase --continue
 ### Clean Up History
 ```bash
 # 1. Interactive rebase with AI suggestions (auto-select provider)
-./smart-sync-auto-with-fallback.sh --interactive --auto-squash
+./smart-sync.sh --interactive --auto-squash
 
 # Or use specific provider
-./smart-sync.sh --provider copilot --model gpt-5-mini --interactive --auto-squash
+./smart-sync-without-AI.sh --provider copilot --model gpt-5-mini --interactive --auto-squash
 
 # 2. Force push safely
 git push --force-with-lease
@@ -499,7 +499,7 @@ git rebase --continue
 ```bash
 # Abort and try with different strategy
 git rebase --abort
-./smart-sync.sh --provider copilot --model gpt-5-mini --strategy ours
+./smart-sync-without-AI.sh --provider copilot --model gpt-5-mini --strategy ours
 ```
 
 ## Best Practices

@@ -45,7 +45,7 @@ All auto-fallback scripts try providers in this order:
 
 ### 3. Smart Rebase
 
-#### smart-sync-auto-with-fallback.sh
+#### smart-sync.sh
 - **Fallback**: Standard git rebase
 - **Behavior**: Performs rebase without AI analysis/suggestions
 - **Options**: Supports --no-submodule-branch-sync
@@ -67,7 +67,7 @@ All auto-fallback scripts try providers in this order:
 ./smart-resolve-auto-with-fallback.sh --interactive
 
 # Rebase (falls back to standard rebase)
-./smart-sync-auto-with-fallback.sh --onto main
+./smart-sync.sh --onto main
 ```
 
 ### CI/CD Pipeline (Guaranteed Success)
@@ -76,7 +76,7 @@ All auto-fallback scripts try providers in this order:
 ./smart-commit-auto-with-fallback.sh --no-ai-review --push
 
 # Automated rebase in CI
-./smart-sync-auto-with-fallback.sh --onto main
+./smart-sync.sh --onto main
 ```
 
 ### Quality Gate (Requires AI)
@@ -160,7 +160,7 @@ scripts/commit-tools/
 ├── smart-commit-auto-without-fallback.sh  # Commit: AI only
 ├── smart-resolve-auto-with-fallback.sh    # Resolve: AI → Manual guide
 ├── smart-resolve-auto-without-fallback.sh # Resolve: AI only
-├── smart-sync-auto-with-fallback.sh     # Rebase: AI → Standard
+├── smart-sync.sh                         # Rebase: AI → Standard
 ├── smart-sync-auto-without-fallback.sh  # Rebase: AI only
 └── lib/
     └── ai-providers.sh                    # Shared provider detection

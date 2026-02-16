@@ -40,9 +40,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Load libraries
-source "$SCRIPT_DIR/lib/ai-providers.sh"
-source "$SCRIPT_DIR/lib/git-helpers.sh"
-source "$SCRIPT_DIR/lib/conflict-parser.sh"
+source "$SCRIPT_DIR/../lib/ai-providers.sh"
+source "$SCRIPT_DIR/../lib/git-helpers.sh"
+source "$SCRIPT_DIR/../lib/conflict-parser.sh"
 
 # Configuration
 AI_PROVIDER=""
@@ -227,8 +227,8 @@ perform_rebase() {
       echo "Attempting auto-resolution..."
 
       # Call smart-resolve if available
-      if [[ -f "$SCRIPT_DIR/smart-resolve.sh" ]]; then
-        if "$SCRIPT_DIR/smart-resolve.sh" --provider "$AI_PROVIDER" --model "$AI_MODEL" --auto; then
+      if [[ -f "$SCRIPT_DIR/../resolve/smart-resolve.sh" ]]; then
+        if "$SCRIPT_DIR/../resolve/smart-resolve.sh" --provider "$AI_PROVIDER" --model "$AI_MODEL" --auto; then
           echo "Conflicts resolved, continuing sync..."
           git -C "$REPO" rebase --continue 2>/dev/null || true
         else
