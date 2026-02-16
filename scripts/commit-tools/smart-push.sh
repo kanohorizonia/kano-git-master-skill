@@ -195,27 +195,20 @@ for repo in "${REPOS[@]}"; do
   # Auto-sync with upstream if exists
   if [[ "$has_upstream" -eq 1 ]]; then
     if [[ "$NO_SMART_SYNC" -eq 0 ]]; then
-      # Use AI-powered smart-sync
-      echo "[$repo] Syncing with upstream (AI-powered)..."
+      # Use simple git pull --rebase (AI sync removed - would need provider/model)
+      echo "[$repo] Syncing with upstream (interactive rebase)..."
 
-      # Save current dir and cd to repo
-      pushd "$repo" >/dev/null 2>&1
-
-      # Call smart-sync-with-AI
-      if "$SCRIPT_DIR/smart-sync-with-AI.sh" --no-submodule-branch-sync 2>&1; then
-        echo "[$repo] Smart-sync successful"
+      if git -C "$repo" pull --rebase 2>/dev/null; then
+        echo "[$repo] Sync successful"
       else
         sync_exit=$?
-        popd >/dev/null 2>&1
-        echo "[$repo] ERROR: Smart-sync failed (exit code: $sync_exit)" >&2
-        echo "[$repo] Please resolve conflicts manually and retry." >&2
+        echo "[$repo] Sync failed (exit code: $sync_exit)" >&2
+        echo "[$repo] Please resolve conflicts manually: cd $repo && git rebase --abort (or continue)" >&2
         FAILED=1
         continue
       fi
-
-      popd >/dev/null 2>&1
     else
-      # Use simple git pull --rebase
+      # User explicitly requested simple rebase
       echo "[$repo] Syncing with upstream (simple rebase)..."
       if ! git -C "$repo" pull --rebase 2>/dev/null; then
         echo "[$repo] ERROR: Rebase failed. Aborting rebase..." >&2
