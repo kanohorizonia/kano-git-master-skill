@@ -43,7 +43,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Load AI providers library
-LIB_DIR="$SCRIPT_DIR/../lib"
+LIB_DIR="$SCRIPT_DIR/lib"
 if [[ ! -f "$LIB_DIR/ai-providers.sh" ]]; then
   echo "ERROR: AI provider library not found: $LIB_DIR/ai-providers.sh" >&2
   exit 1

@@ -3,7 +3,7 @@
 # smart-ignore.sh - Orchestrator for static and AI-driven .gitignore management
 #
 # Purpose:
-#   Coordinates execution of static-gitignore.sh and ai-gitignore.sh in sequence,
+#   Coordinates execution of smart-ignore-noai.sh and ai-gitignore.sh in sequence,
 #   propagating flags appropriately and handling exit codes.
 #
 # Features:
@@ -81,7 +81,7 @@ OPTIONS:
   --provider <name>          AI provider (opencode, codex, copilot)
   --model <name>             AI model name
   --scope <type>             File scope for pattern selection (untracked|staged|worktree|all)
-                             Passed to static-gitignore.sh only
+                             Passed to smart-ignore-noai.sh only
   --dry-run                  Preview changes without modifying files
   --no-ai                    Skip AI pattern analysis (static only)
   --no-static                Skip static patterns (AI only)
@@ -295,7 +295,16 @@ consolidate_patterns() {
     return 0
   fi
 
-  duplicates=$(comm -12 <(echo "$static_patterns") <(echo "$ai_patterns"))
+  # Use temporary files to avoid process substitution issues on Windows
+  local tmp_static tmp_ai
+  tmp_static=$(mktemp)
+  tmp_ai=$(mktemp)
+  trap "rm -f '$tmp_static' '$tmp_ai'" RETURN
+
+  echo "$static_patterns" | sort -u > "$tmp_static"
+  echo "$ai_patterns" | sort -u > "$tmp_ai"
+
+  duplicates=$(comm -12 "$tmp_static" "$tmp_ai")
 
   if [[ -n "$duplicates" ]]; then
     echo ""
@@ -303,12 +312,11 @@ consolidate_patterns() {
     echo "====================="
     local dup_count
     dup_count=$(echo "$duplicates" | wc -l)
-    echo "Found $dup_count duplicate pattern(s) across STATIC and AI blocks:"
+    echo "Found $dup_count duplicate pattern(s) across patterns:"
     echo ""
     echo "$duplicates" | sed 's/^/  /'
     echo ""
-    echo "Recommendation: Keep patterns in STATIC block as canonical source."
-    echo "Remove duplicates from AI block if they appear there."
+    echo "Recommendation: Remove duplicate patterns to maintain clean .gitignore."
   else
     log_verbose "Consolidation: no duplicate patterns found"
   fi
@@ -325,24 +333,24 @@ EXIT_CODE_AI=0
 
 # Execute static patterns first
 if [[ $NO_STATIC -eq 0 ]]; then
-  log_verbose "Executing static-gitignore.sh..."
+  log_verbose "Executing smart-ignore-noai.sh..."
 
-  if "$SCRIPT_DIR/static-gitignore.sh" ${STATIC_ARGS[@]+"${STATIC_ARGS[@]}"}; then
+  if "$SCRIPT_DIR/smart-ignore-noai.sh" ${STATIC_ARGS[@]+"${STATIC_ARGS[@]}"}; then
     EXIT_CODE_STATIC=0
-    log_verbose "static-gitignore.sh completed successfully (exit code: 0)"
+    log_verbose "smart-ignore-noai.sh completed successfully (exit code: 0)"
   else
     EXIT_CODE_STATIC=$?
-    log_verbose "static-gitignore.sh failed (exit code: $EXIT_CODE_STATIC)"
+    log_verbose "smart-ignore-noai.sh failed (exit code: $EXIT_CODE_STATIC)"
   fi
 else
-  log_verbose "Skipping static-gitignore.sh (--no-static)"
+  log_verbose "Skipping smart-ignore-noai.sh (--no-static)"
 fi
 
 # Execute AI patterns second (if enabled)
 if [[ $NO_AI -eq 0 ]]; then
   log_verbose "Executing ai-gitignore.sh..."
 
-  if "$SCRIPT_DIR/ai-gitignore.sh" ${AI_ARGS[@]+"${AI_ARGS[@]}"}; then
+  if "$SCRIPT_DIR/../ai-gitignore.sh" ${AI_ARGS[@]+"${AI_ARGS[@]}"}; then
     EXIT_CODE_AI=0
     log_verbose "ai-gitignore.sh completed successfully (exit code: 0)"
   else
