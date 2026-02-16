@@ -380,8 +380,15 @@ maybe_update_gitignore() {
   local repo="$1"
   local smart_ignore_script="$SCRIPT_DIR/../ignore/smart-ignore.sh"
   local smart_err=""
+  local changed=0
 
   if [[ "$USE_SMART_IGNORE" -eq 1 && -x "$smart_ignore_script" ]]; then
+    # Check if .gitignore exists and get its hash before
+    local gitignore_hash_before=""
+    if [[ -f "$repo/.gitignore" ]]; then
+      gitignore_hash_before="$(md5sum "$repo/.gitignore" 2>/dev/null | awk '{print $1}' || true)"
+    fi
+
     local smart_ignore_args=(--repo "$repo" --scope untracked --no-consolidate)
     if [[ -n "$AI_PROVIDER" && -n "$AI_MODEL" ]]; then
       smart_ignore_args+=(--provider "$AI_PROVIDER" --model "$AI_MODEL")
@@ -391,8 +398,17 @@ maybe_update_gitignore() {
 
     smart_err="$(mktemp)"
     if "$smart_ignore_script" "${smart_ignore_args[@]}" >/dev/null 2>"$smart_err"; then
+      # Check if .gitignore actually changed
+      local gitignore_hash_after=""
+      if [[ -f "$repo/.gitignore" ]]; then
+        gitignore_hash_after="$(md5sum "$repo/.gitignore" 2>/dev/null | awk '{print $1}' || true)"
+      fi
+
+      if [[ -n "$gitignore_hash_after" && "$gitignore_hash_before" != "$gitignore_hash_after" ]]; then
+        echo "[$repo] .gitignore updated via smart-ignore"
+        changed=1
+      fi
       rm -f "$smart_err"
-      echo "[$repo] .gitignore updated via smart-ignore"
       return
     fi
 
@@ -414,7 +430,6 @@ maybe_update_gitignore() {
     rm -f "$smart_err"
   fi
 
-  local changed=0
   local path=""
 
   # Check untracked files for common patterns
@@ -455,7 +470,10 @@ maybe_update_gitignore() {
   done < <(find "$repo" -type d -name .git -prune -print -o -type f -name .git -print 2>/dev/null || true)
 
   if [[ "$changed" -eq 1 ]]; then
-    echo "[$repo] .gitignore updated"
+    # Only print .gitignore updated if from legacy method (smart-ignore already printed if it changed)
+    if [[ "$USE_SMART_IGNORE" -ne 1 ]]; then
+      echo "[$repo] .gitignore updated"
+    fi
   fi
 }
 
