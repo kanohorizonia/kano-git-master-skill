@@ -250,7 +250,7 @@ for repo in "${REPOS[@]}"; do
       if [[ "$VERBOSE" -eq 1 ]]; then
         echo "[$repo] Push: Everything up-to-date"
       fi
-      PUSH_STATS+=("$short_repo|$primary_remote|$branch (no changes)")
+      # Don't add to summary if no changes
     else
       if [[ "$VERBOSE" -eq 1 ]]; then
         echo "[$repo] Pushed to $primary_remote"
@@ -272,12 +272,19 @@ for repo in "${REPOS[@]}"; do
 
     if [[ "$push_exit" -eq 0 ]]; then
       short_repo="$(basename "$repo")"
-      if [[ "$VERBOSE" -eq 1 ]]; then
-        echo "[$repo] Pushed to $fallback_remote"
+      if echo "$push_output" | grep -q "Everything up-to-date"; then
+        if [[ "$VERBOSE" -eq 1 ]]; then
+          echo "[$repo] Push: Everything up-to-date"
+        fi
+        # Don't add to summary if no changes
       else
-        echo "[$repo] Pushed"
+        if [[ "$VERBOSE" -eq 1 ]]; then
+          echo "[$repo] Pushed to $fallback_remote"
+        else
+          echo "[$repo] Pushed"
+        fi
+        PUSH_STATS+=("$short_repo|$fallback_remote|$branch")
       fi
-      PUSH_STATS+=("$short_repo|$fallback_remote|$branch")
       continue
     fi
   fi
