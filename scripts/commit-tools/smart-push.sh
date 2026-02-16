@@ -94,9 +94,13 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-ROOT="$(cd "$SCRIPT_DIR/../.." && git rev-parse --show-toplevel 2>/dev/null || true)"
-if [[ -z "$ROOT" ]]; then
-  ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+if [[ -n "${KANO_GIT_MASTER_ROOT:-}" ]]; then
+  ROOT="$(cd "$KANO_GIT_MASTER_ROOT" && pwd)"
+else
+  ROOT="$(cd "$SCRIPT_DIR/../.." && git rev-parse --show-toplevel 2>/dev/null || true)"
+  if [[ -z "$ROOT" ]]; then
+    ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+  fi
 fi
 
 include_types=()

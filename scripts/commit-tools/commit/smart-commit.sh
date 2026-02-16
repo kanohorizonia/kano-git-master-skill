@@ -62,10 +62,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Find repository root (go up from commit-tools/commit/)
-ROOT="$(cd "$SCRIPT_DIR/../../.." && git rev-parse --show-toplevel 2>/dev/null || true)"
-if [[ -z "$ROOT" ]]; then
-  # Fallback: assume we're in skills/kano-git-master-skill/scripts/commit-tools/commit/
-  ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
+if [[ -n "${KANO_GIT_MASTER_ROOT:-}" ]]; then
+  ROOT="$(cd "$KANO_GIT_MASTER_ROOT" && pwd)"
+else
+  ROOT="$(cd "$SCRIPT_DIR/../../.." && git rev-parse --show-toplevel 2>/dev/null || true)"
+  if [[ -z "$ROOT" ]]; then
+    # Fallback: assume we're in skills/kano-git-master-skill/scripts/commit-tools/commit/
+    ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
+  fi
 fi
 
 # Load AI provider library
