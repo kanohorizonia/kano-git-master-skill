@@ -340,6 +340,9 @@ declare -a REPOS=()
 REPO_LIST_FILE="$TMP_DIR/repos.txt"
 touch "$REPO_LIST_FILE"
 
+# Commit statistics: format "repo_name|commit_count|branch"
+declare -a COMMIT_STATS=()
+
 #------------------------------------------------------------------------------
 # Repository Discovery
 #------------------------------------------------------------------------------
@@ -868,6 +871,11 @@ commit_repo() {
     return 1
   }
 
+  # Record statistics
+  local branch="$(git -C "$repo" symbolic-ref --quiet --short HEAD 2>/dev/null || echo "(detached)")"
+  local short_repo="$(basename "$repo")"
+  COMMIT_STATS+=("$short_repo|1|$branch")
+
   # Push if requested
   if [[ "$DO_PUSH" -eq 1 ]]; then
     branch="$(git -C "$repo" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
@@ -999,6 +1007,18 @@ if [[ "$FAILED_COUNT" -gt 0 ]]; then
   fi
   echo "Fix the errors above and rerun smart-commit." >&2
   exit 1
+fi
+
+# Show commit summary
+if [[ "${#COMMIT_STATS[@]}" -gt 0 ]]; then
+  echo ""
+  echo "=== Commit Summary ==="
+  printf "%-35s  Commits  Branch\\n" "Repository"
+  printf "%-35s  -------  ------\\n" "-----------"
+  for stat in "${COMMIT_STATS[@]}"; do
+    IFS='|' read -r repo_name commit_count branch <<< "$stat"
+    printf "%-35s  %-7s  %s\\n" "$repo_name" "$commit_count" "$branch"
+  done
 fi
 
 echo "=== All done (success) ==="

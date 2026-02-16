@@ -156,3 +156,5 @@ fi
 
 echo ""
 echo "=== Workflow Complete (success) ==="
+echo "✓ Commit phase completed"
+echo "✓ Push phase completed"

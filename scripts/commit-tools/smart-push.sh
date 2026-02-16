@@ -12,6 +12,9 @@ REPO_FILTER=""
 NO_SMART_SYNC=0
 VERBOSE=0        # Show all repos (default: show only repos with changes)
 
+# Push statistics: format "repo_name|remote|branch"
+declare -a PUSH_STATS=()
+
 usage() {
   cat <<'EOF'
 Usage: smart-push.sh [options]
@@ -242,16 +245,19 @@ for repo in "${REPOS[@]}"; do
 
   if [[ "$push_exit" -eq 0 ]]; then
     # Push successful
+    local short_repo="$(basename "$repo")"
     if echo "$push_output" | grep -q "Everything up-to-date"; then
       if [[ "$VERBOSE" -eq 1 ]]; then
         echo "[$repo] Push: Everything up-to-date"
       fi
+      PUSH_STATS+=("$short_repo|$primary_remote|$branch (no changes)")
     else
       if [[ "$VERBOSE" -eq 1 ]]; then
         echo "[$repo] Pushed to $primary_remote"
       else
         echo "[$repo] Pushed"
       fi
+      PUSH_STATS+=("$short_repo|$primary_remote|$branch")
     fi
     continue
   fi
@@ -265,11 +271,13 @@ for repo in "${REPOS[@]}"; do
     push_exit=$?
 
     if [[ "$push_exit" -eq 0 ]]; then
+      local short_repo="$(basename "$repo")"
       if [[ "$VERBOSE" -eq 1 ]]; then
         echo "[$repo] Pushed to $fallback_remote"
       else
         echo "[$repo] Pushed"
       fi
+      PUSH_STATS+=("$short_repo|$fallback_remote|$branch")
       continue
     fi
   fi
@@ -279,5 +287,28 @@ for repo in "${REPOS[@]}"; do
 done
 
 if [[ "$FAILED" -eq 1 ]]; then
+  # Show push summary before failure
+  if [[ "${#PUSH_STATS[@]}" -gt 0 ]]; then
+    echo ""
+    echo "=== Push Summary (partial) ==="
+    printf "%-35s  Remote             Branch\\n" "Repository"
+    printf "%-35s  ------             ------\\n" "-----------"
+    for stat in "${PUSH_STATS[@]}"; do
+      IFS='|' read -r repo_name remote branch <<< "$stat"
+      printf "%-35s  %-18s %s\\n" "$repo_name" "$remote" "$branch"
+    done
+  fi
   exit 1
+fi
+
+# Show push summary on success
+if [[ "${#PUSH_STATS[@]}" -gt 0 ]]; then
+  echo ""
+  echo "=== Push Summary ==="
+  printf "%-35s  Remote             Branch\\n" "Repository"
+  printf "%-35s  ------             ------\\n" "-----------"
+  for stat in "${PUSH_STATS[@]}"; do
+    IFS='|' read -r repo_name remote branch <<< "$stat"
+    printf "%-35s  %-18s %s\\n" "$repo_name" "$remote" "$branch"
+  done
 fi
