@@ -48,10 +48,12 @@ All auto-fallback scripts try providers in this order:
 #### smart-sync-auto-with-fallback.sh
 - **Fallback**: Standard git rebase
 - **Behavior**: Performs rebase without AI analysis/suggestions
+- **Options**: Supports --no-submodule-branch-sync
 - **Use case**: Standard rebase workflow with AI enhancement when available
 
 #### smart-sync-auto-without-fallback.sh
 - **Fallback**: None (fails with error)
+- **Options**: Supports --no-submodule-branch-sync
 - **Use case**: Intelligent rebase with AI strategy, requires AI
 
 ## Usage Examples

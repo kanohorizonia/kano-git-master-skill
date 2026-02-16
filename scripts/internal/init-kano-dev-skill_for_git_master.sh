@@ -69,6 +69,30 @@ ensure_backlog_repo() {
   fi
 }
 
+all_skills_present() {
+  if [[ ! -f "$REPO_DIR/.gitmodules" ]]; then
+    return 1
+  fi
+
+  local missing=0
+  local skill_paths=("$SKILL_1_PATH" "$SKILL_2_PATH")
+  local skill_path
+
+  for skill_path in "${skill_paths[@]}"; do
+    if ! git -C "$REPO_DIR" config -f .gitmodules --get "submodule.$skill_path.path" >/dev/null 2>&1; then
+      missing=1
+      break
+    fi
+  done
+
+  if [[ "$missing" -eq 0 ]]; then
+    return 0
+  fi
+
+  return 1
+}
+
+
 REPO_SSH="${REPO_SSH:-git@github.com:dorgonman/kano-agent-skill.git}"
 REPO_HTTPS="${REPO_HTTPS:-https://github.com/dorgonman/kano-agent-skill.git}"
 REPO_DIR="${REPO_DIR:-$SKILL_ROOT/skills/kano}"
@@ -84,6 +108,11 @@ SKILL_2_PATH="${SKILL_2_PATH:-kano-agent-backlog-skill}"
 
 ensure_backlog_repo
 
+extra_args=()
+if all_skills_present; then
+  extra_args+=("--skip-skills")
+fi
+
 "$SCRIPT_DIR/init-kano-dev-skill.sh" \
   --repo-ssh "$REPO_SSH" \
   --repo-https "$REPO_HTTPS" \
@@ -91,4 +120,7 @@ ensure_backlog_repo
   --tooling-branch "$TOOLING_BRANCH" \
   --update-tooling \
   --skill "$SKILL_1_SSH|$SKILL_1_HTTPS|$SKILL_1_PATH" \
-  --skill "$SKILL_2_SSH|$SKILL_2_HTTPS|$SKILL_2_PATH"
+  --skill "$SKILL_2_SSH|$SKILL_2_HTTPS|$SKILL_2_PATH" \
+  "${extra_args[@]}"
+
+gith_sync_submodules_to_branches "$REPO_DIR" "1"

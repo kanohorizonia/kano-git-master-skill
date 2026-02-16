@@ -201,6 +201,7 @@ AI-assisted intelligent rebase.
 - Interactive rebase support
 - Automatic conflict resolution
 - Strategy selection (merge, ours, theirs)
+- Submodule branch sync (disable with --no-submodule-branch-sync)
 - Dry-run mode
 
 **Usage:**
@@ -219,6 +220,9 @@ AI-assisted intelligent rebase.
 
 # Dry run
 ./smart-sync.sh --provider copilot --model gpt-5-mini --dry-run
+
+# Skip submodule branch sync
+./smart-sync.sh --provider copilot --model gpt-5-mini --no-submodule-branch-sync
 
 # Auto-select provider (with fallback to standard rebase)
 ./smart-sync-auto-with-fallback.sh

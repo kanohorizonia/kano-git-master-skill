@@ -53,6 +53,7 @@ Options:
   --interactive               Interactive rebase with AI suggestions
   --auto-squash               Auto-squash fixup commits
   --strategy <name>           Rebase strategy (merge, ours, theirs)
+  --no-submodule-branch-sync  Skip submodule branch sync
   --dry-run                   Show what would be done
   -h, --help                  Show help
 
@@ -76,6 +77,7 @@ AUTO_SQUASH=0
 STRATEGY=""
 DRY_RUN=0
 REPO="."
+NO_SUBMODULE_BRANCH_SYNC=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -98,6 +100,11 @@ while [[ $# -gt 0 ]]; do
       STRATEGY="${2:-}"
       ARGS+=("$1" "$2")
       shift 2
+      ;;
+    --no-submodule-branch-sync)
+      NO_SUBMODULE_BRANCH_SYNC=1
+      ARGS+=("$1")
+      shift
       ;;
     --dry-run)
       DRY_RUN=1
@@ -248,6 +255,11 @@ if [[ "$INTERACTIVE" -eq 0 ]]; then
 fi
 
 if git -C "$REPO" rebase "${rebase_args[@]}" "$target"; then
+  if [[ "$NO_SUBMODULE_BRANCH_SYNC" -eq 0 ]]; then
+    echo ""
+    echo "Syncing submodule branches (if any)..."
+    gith_sync_submodules_to_branches "$REPO" "1"
+  fi
   echo ""
   echo "=== Sync Complete ==="
   echo "Branch $current_branch synced with $target"

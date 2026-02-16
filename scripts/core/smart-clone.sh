@@ -309,6 +309,11 @@ main() {
     gith_log "INFO" "Skipping checkout (--no-checkout specified)"
   fi
 
+  if [[ "$NO_CHECKOUT" -eq 0 ]]; then
+    gith_log "INFO" "Syncing submodule branches (if any)"
+    gith_sync_submodules_to_branches "." "1"
+  fi
+
   # Add upstream remote if provided
   if [[ -n "$UPSTREAM_URL" ]]; then
     gith_log "INFO" "Adding upstream remote: $UPSTREAM_URL"

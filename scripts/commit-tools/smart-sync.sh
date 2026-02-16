@@ -53,6 +53,7 @@ AUTO_SQUASH=0
 STRATEGY=""
 DRY_RUN=0
 REPO="."
+NO_SUBMODULE_BRANCH_SYNC=0
 
 #------------------------------------------------------------------------------
 # Functions
@@ -73,6 +74,7 @@ Optional:
   --interactive               Interactive sync with AI suggestions
   --auto-squash               Auto-squash fixup commits
   --strategy <name>           Rebase strategy (merge, ours, theirs)
+  --no-submodule-branch-sync  Skip submodule branch sync
   --dry-run                   Show what would be done
   -h, --help                  Show help
 
@@ -274,6 +276,10 @@ while [[ $# -gt 0 ]]; do
       STRATEGY="${2:-}"
       shift 2
       ;;
+    --no-submodule-branch-sync)
+      NO_SUBMODULE_BRANCH_SYNC=1
+      shift
+      ;;
     --dry-run)
       DRY_RUN=1
       shift
@@ -364,6 +370,12 @@ fi
 # Perform rebase
 if ! perform_rebase "$target"; then
   exit 1
+fi
+
+if [[ "$NO_SUBMODULE_BRANCH_SYNC" -eq 0 ]]; then
+  echo ""
+  echo "Syncing submodule branches (if any)..."
+  gith_sync_submodules_to_branches "$REPO" "1"
 fi
 
 echo ""

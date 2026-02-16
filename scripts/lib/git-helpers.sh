@@ -854,6 +854,152 @@ gith_checkout_branch() {
   return 1
 }
 
+# Sync submodule branches based on .gitmodules and default branch detection
+# Usage: gith_sync_submodules_to_branches [repo_path] [recursive]
+# Behavior:
+#   - If .gitmodules defines submodule.<path>.branch, checkout that branch
+#   - If detached and HEAD matches remote default branch, set branch in .gitmodules and checkout
+#   - Optionally recurse into nested submodules
+gith_sync_submodules_to_branches() {
+  local repo_path="${1:-.}"
+  local recursive="${2:-1}"
+  local dry_run="${DRY_RUN:-0}"
+
+  if ! gith_is_git_repo "$repo_path"; then
+    gith_error "Not a git repository: $repo_path"
+    return 1
+  fi
+
+  if [[ ! -f "$repo_path/.gitmodules" ]]; then
+    gith_log "DEBUG" "No .gitmodules found in $repo_path"
+    return 0
+  fi
+
+  local sync_args=()
+  if [[ "$recursive" == "1" ]]; then
+    sync_args+=("--recursive")
+  fi
+
+  if [[ "$dry_run" == "1" ]]; then
+    gith_log "INFO" "[DRY-RUN] Would sync/update submodules in $repo_path"
+  else
+    if ! (cd "$repo_path" && git submodule sync "${sync_args[@]}" >/dev/null 2>&1); then
+      gith_log "WARN" "Submodule sync failed in $repo_path"
+    fi
+    if ! (cd "$repo_path" && git submodule update --init "${sync_args[@]}" >/dev/null 2>&1); then
+      gith_log "WARN" "Submodule update failed in $repo_path"
+    fi
+  fi
+
+  local submodule_paths=()
+  while IFS= read -r submodule_path; do
+    if [[ -n "$submodule_path" ]]; then
+      submodule_paths+=("$submodule_path")
+    fi
+  done < <(cd "$repo_path" && git config -f .gitmodules --get-regexp path 2>/dev/null | awk '{ print $2 }')
+
+  if [[ ${#submodule_paths[@]} -eq 0 ]]; then
+    gith_log "DEBUG" "No submodules listed in $repo_path/.gitmodules"
+    return 0
+  fi
+
+  for submodule_path in "${submodule_paths[@]}"; do
+    local full_path="$repo_path/$submodule_path"
+
+    if ! gith_is_git_repo "$full_path"; then
+      gith_log "WARN" "Submodule is not a git repo, skipping: $full_path"
+      continue
+    fi
+
+    local remote_name="origin"
+    if ! gith_has_remote "$remote_name" "$full_path"; then
+      remote_name="upstream"
+    fi
+    if ! gith_has_remote "$remote_name" "$full_path"; then
+      remote_name="$(git -C "$full_path" remote | head -n 1)"
+    fi
+    if [[ -z "$remote_name" ]]; then
+      gith_log "WARN" "No remotes found for submodule, skipping: $full_path"
+      continue
+    fi
+
+    local stash_ref=""
+    local stash_created=0
+    if gith_has_changes "$full_path"; then
+      stash_ref="$(gith_stash_create "$full_path" "auto-stash-submodule-branch")"
+      if [[ -n "$stash_ref" ]]; then
+        stash_created=1
+      fi
+    fi
+
+    local ok=1
+    if ! gith_fetch_remote "$remote_name" "$full_path"; then
+      gith_log "WARN" "Fetch failed for $full_path ($remote_name), skipping"
+      ok=0
+    else
+      local configured_branch
+      configured_branch="$(git config -f "$repo_path/.gitmodules" "submodule.$submodule_path.branch" 2>/dev/null || true)"
+
+      if [[ -n "$configured_branch" ]]; then
+        if [[ "$dry_run" == "1" ]]; then
+          gith_log "INFO" "[DRY-RUN] Would checkout '$configured_branch' in $full_path"
+        else
+          if ! gith_checkout_branch "$configured_branch" "$full_path" "$remote_name"; then
+            gith_log "WARN" "Failed to checkout $configured_branch in $full_path"
+            ok=0
+          fi
+        fi
+      else
+        local current_branch
+        current_branch="$(gith_get_current_branch "$full_path")"
+
+        if [[ -z "$current_branch" ]]; then
+          local default_branch
+          default_branch="$(gith_get_default_branch "$remote_name" "$full_path")"
+
+          if [[ -z "$default_branch" ]]; then
+            gith_log "WARN" "Default branch not detected for $full_path ($remote_name)"
+            ok=0
+          else
+            local head_sha
+            local default_sha
+            head_sha="$(cd "$full_path" && git rev-parse HEAD 2>/dev/null || true)"
+            default_sha="$(cd "$full_path" && git rev-parse "$remote_name/$default_branch" 2>/dev/null || true)"
+
+            if [[ -n "$head_sha" && -n "$default_sha" && "$head_sha" == "$default_sha" ]]; then
+              if [[ "$dry_run" == "1" ]]; then
+                gith_log "INFO" "[DRY-RUN] Would set .gitmodules branch '$default_branch' for $submodule_path"
+                gith_log "INFO" "[DRY-RUN] Would checkout '$default_branch' in $full_path"
+              else
+                git config -f "$repo_path/.gitmodules" "submodule.$submodule_path.branch" "$default_branch"
+                if ! gith_checkout_branch "$default_branch" "$full_path" "$remote_name"; then
+                  gith_log "WARN" "Failed to checkout $default_branch in $full_path"
+                  ok=0
+                fi
+              fi
+            else
+              gith_log "WARN" "Detached HEAD in $full_path not at $remote_name/$default_branch; leaving as-is"
+              ok=0
+            fi
+          fi
+        fi
+      fi
+    fi
+
+    if [[ "$stash_created" -eq 1 ]]; then
+      gith_stash_pop "$full_path" "$stash_ref"
+    fi
+
+    if [[ "$recursive" == "1" && -f "$full_path/.gitmodules" ]]; then
+      gith_sync_submodules_to_branches "$full_path" "$recursive"
+    fi
+
+    if [[ "$ok" -eq 0 ]]; then
+      continue
+    fi
+  done
+}
+
 # Validate Git URL format and protocol
 # Usage: gith_validate_url <url>
 # Returns: 0 if valid, 1 if invalid
