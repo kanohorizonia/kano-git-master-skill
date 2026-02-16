@@ -245,7 +245,7 @@ for repo in "${REPOS[@]}"; do
 
   if [[ "$push_exit" -eq 0 ]]; then
     # Push successful
-    local short_repo="$(basename "$repo")"
+    short_repo="$(basename "$repo")"
     if echo "$push_output" | grep -q "Everything up-to-date"; then
       if [[ "$VERBOSE" -eq 1 ]]; then
         echo "[$repo] Push: Everything up-to-date"
@@ -271,7 +271,7 @@ for repo in "${REPOS[@]}"; do
     push_exit=$?
 
     if [[ "$push_exit" -eq 0 ]]; then
-      local short_repo="$(basename "$repo")"
+      short_repo="$(basename "$repo")"
       if [[ "$VERBOSE" -eq 1 ]]; then
         echo "[$repo] Pushed to $fallback_remote"
       else

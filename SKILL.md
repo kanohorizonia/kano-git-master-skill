@@ -66,7 +66,15 @@ scripts/
 │   ├── compare-branches.sh
 │   └── cherry-pick-batch.sh
 └── commit-tools/             # Commit automation
-    └── smart-commit.sh
+    ├── commit/               # AI-powered commits
+    │   ├── smart-commit.sh
+    │   └── smart-commit-*.sh (provider wrappers)
+    ├── commit-push/          # Complete commit+push workflow
+    │   └── smart-commit-push-*.sh
+    ├── ignore/               # .gitignore management
+    ├── resolve/              # Conflict resolution
+    ├── sync/                 # Repository synchronization
+    └── smart-push.sh         # Multi-repo push
 ```
 
 ## Core Scripts
@@ -83,7 +91,7 @@ scripts/
 | **status-all-repos.sh** | Generate status report | Monitoring, CI/CD |
 | **compare-branches.sh** | Compare commits between branches | Before merge, PR review |
 | **cherry-pick-batch.sh** | Batch cherry-pick from file | Selective commit porting |
-| **smart-commit.sh** | AI-powered safe commit | Multi-repo commits with AI review |
+| **smart-commit-push** | AI commit+push workflow | Multi-repo commits with AI review and auto-push |
 
 ## Common Workflows
 
@@ -409,6 +417,8 @@ Most scripts support:
 3. **Check status regularly**: Monitor with `status-all-repos.sh`
 4. **Continue on errors**: Use `--continue-on-error` for batch operations
 5. **Combine scripts**: Chain scripts with `&&` for workflows
+6. **Use verbose mode for debugging**: Add `--verbose` to see all repos (default shows only changes)
+7. **Review summary tables**: Check commit and push summaries after workflow completion
 
 ## Troubleshooting
 
@@ -532,25 +542,73 @@ def456 fix: Bug fix
 AI-powered commit across all repositories with safety checks:
 
 ```bash
-# Commit with AI-generated messages (free tier model)
-./scripts/commit-tools/smart-commit.sh
+# Use Copilot provider (recommended)
+./scripts/commit-tools/commit/smart-commit-copilot.sh
 
-# Use premium model
-./scripts/commit-tools/smart-commit.sh --model gpt-5-mini
+# Or use with specific provider
+./scripts/commit-tools/commit/smart-commit.sh --provider copilot --model gpt-5-mini
 
 # Custom message for all repos
-./scripts/commit-tools/smart-commit.sh -m "chore: Update dependencies"
+./scripts/commit-tools/commit/smart-commit.sh --provider copilot --model gpt-5-mini -m "chore: Update dependencies"
 
-# Commit and push
-./scripts/commit-tools/smart-commit.sh --push
+# Show detailed output (default: only shows repos with changes)
+./scripts/commit-tools/commit/smart-commit.sh --provider copilot --model gpt-5-mini --verbose
 ```
+
+**Output modes:**
+- **Default (quiet)**: Shows only repos with actual commits
+- **Verbose**: Shows all repos, including those with no changes
 
 **Safety features:**
 - Detects secrets, API keys, private keys
 - Blocks large files
-- Auto-updates .gitignore
-- AI safety review (optional)
+- Auto-updates .gitignore (only prints when file actually changes)
+- AI safety review (optional, skipped when no changes)
 - Works with GitHub Copilot CLI
+
+### Smart Commit-Push (smart-commit-push.sh)
+
+Complete workflow: commit and push all repositories in one step:
+
+```bash
+# Full workflow with Copilot
+./scripts/commit-tools/commit-push/smart-commit-push-copilot.sh
+
+# Or specify provider manually
+./scripts/commit-tools/commit-push/smart-commit-push.sh --provider copilot --model gpt-5-mini
+
+# With verbose output
+./scripts/commit-tools/commit-push/smart-commit-push.sh --provider copilot --model gpt-5-mini --verbose
+```
+
+**Summary tables:**
+After successful completion, displays two summary tables:
+
+1. **Commit Summary**: Shows which repos were committed, how many commits, and branch name
+2. **Push Summary**: Shows which repos were pushed, to which remote, and branch name
+
+Example output:
+```
+=== Commit Summary ===
+Repository                    Commits  Branch
+-----------                   -------  ------
+kano-git-master-skill         1        main
+skills/kano                   1        dev/tooling
+
+=== Push Summary ===
+Repository                    Remote             Branch
+-----------                   ------             ------
+kano-git-master-skill         origin             main
+skills/kano                   origin-http        dev/tooling
+backlog                       origin             main (no changes)
+```
+
+**Features:**
+- Processes root repo, submodules, and nested repos
+- AI-generated commit messages with safety review
+- Automatic sync with upstream before push
+- SSH→HTTP fallback per repository
+- Summary statistics on completion
 
 ## Legacy Scripts
 

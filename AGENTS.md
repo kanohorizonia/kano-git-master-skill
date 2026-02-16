@@ -77,8 +77,7 @@ Note: sourcing will also define globals used by those functions (see the script 
 - Shared library functions in `scripts/lib/git-helpers.sh` use the `gith_` prefix (vendor-agnostic; not “GitHub”).
 - Variables:
   - UPPER_CASE for script-level configuration (e.g. `DRY_RUN`, `REPO_URL`, `ORPHAN_BRANCH`).
-  - `local lower_case` inside functions.
-
+  - `local lower_case` inside functions.  - **CRITICAL**: `local` keyword can **only** be used inside functions. Never use `local` in script-level for loops or main body. This causes runtime errors in Bash.
 #### CLI / `--help` convention
 - Scripts with CLI flags generally implement `usage()` that prints a heredoc and exits.
 - Argument parsing style:
@@ -133,6 +132,22 @@ Note: sourcing will also define globals used by those functions (see the script 
   - place it under an existing category in `scripts/`
   - include `--help` and `--dry-run` when it mutates state
   - source `scripts/lib/git-helpers.sh` for consistent logging + helpers
+- **Bash Variable Scope Rules**:
+  - Use `local` **only inside functions**, never in script-level for loops or main body
+  - In for loops at script level, declare variables without `local` keyword
+  - Common mistake: `local var="$(command)"` in a for loop → runtime error
+  - Correct pattern in loops: `var="$(command)"` (no `local`)
+- **Smart-tools Output Philosophy**:
+  - Default: show only repos with actual changes/operations (quiet mode)
+  - Add `--verbose` flag to show all repos including no-change cases
+  - Prevents noise when processing many repos with few changes
+  - Print status changes (e.g., `.gitignore updated`) only when file actually modified
+  - Use MD5 hash comparison or git diff to detect real changes before printing
+- **Statistics & Summaries**:
+  - Collect operation stats in arrays throughout execution
+  - Display summary tables at completion showing: repo name, operation count, target (branch/remote)
+  - Format tables with `printf` for alignment: `printf "%-35s  %-7s  %s\n"`
+  - Stats format: `"repo_name|count|target"` (pipe-delimited for easy parsing)
 - **Submodule Management**:
   - Always align submodules to the branch specified in `.gitmodules` during sync. Use `gith_checkout_branch` to handle detached HEADs and remote tracking safely.
   - Support flexible remote naming (e.g., `kog-remote-upstream`) without forcing protocol suffixes if a direct URL is provided.
