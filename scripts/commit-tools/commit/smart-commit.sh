@@ -87,6 +87,7 @@ CUSTOM_RULES=""
 RULES_FILE=""
 REPO_FILTER=""  # Comma-separated list of repo paths to include
 USE_SMART_IGNORE=1
+VERBOSE=0        # Show all repos (default: show only repos with changes)
 
 #------------------------------------------------------------------------------
 # Functions
@@ -113,6 +114,7 @@ Optional:
   --repos <paths>             Only process specific repos (comma-separated paths)
   --smart-ignore              Use smart-ignore.sh for .gitignore updates (default: on)
   --no-smart-ignore           Use legacy inline .gitignore updater only
+  --verbose                   Show all repos (default: show only repos with changes)
   --list-models [provider]    List available models (all or specific provider)
   --clear-cache [provider]    Clear model cache (all or specific provider)
   -h, --help                  Show help
@@ -259,6 +261,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-smart-ignore)
       USE_SMART_IGNORE=0
+      shift
+      ;;
+    --verbose)
+      VERBOSE=1
       shift
       ;;
     -h|--help)
@@ -784,9 +790,6 @@ commit_repo() {
   local repo="$1"
   local msg branch
 
-  echo ""
-  echo "=== Processing: $repo ==="
-
   # Check for ongoing merge/rebase
   local merge_head rebase_merge rebase_apply
   merge_head="$(git -C "$repo" rev-parse --git-path MERGE_HEAD 2>/dev/null || true)"
@@ -794,7 +797,9 @@ commit_repo() {
   rebase_apply="$(git -C "$repo" rev-parse --git-path rebase-apply 2>/dev/null || true)"
 
   if [[ -f "$merge_head" || -d "$rebase_merge" || -d "$rebase_apply" ]]; then
-    echo "[$repo] SKIP: Merge/rebase in progress"
+    if [[ "$VERBOSE" -eq 1 ]]; then
+      echo "[$repo] SKIP: Merge/rebase in progress"
+    fi
     return 0
   fi
 
@@ -806,8 +811,18 @@ commit_repo() {
 
   # Check if there are staged changes
   if git -C "$repo" diff --cached --quiet 2>/dev/null; then
-    echo "[$repo] SKIP: No changes"
+    if [[ "$VERBOSE" -eq 1 ]]; then
+      echo "[$repo] SKIP: No changes"
+    fi
     return 0
+  fi
+
+  # Print header only when there's work to do
+  if [[ "$VERBOSE" -eq 1 ]]; then
+    echo ""
+    echo "=== Processing: $repo ==="
+  else
+    echo "[$repo] Processing..."
   fi
 
   # Run safety checks
@@ -816,7 +831,7 @@ commit_repo() {
     return 1
   fi
 
-  # Run AI review
+  # Run AI review (only if we have staged changes)
   if ! run_ai_review "$repo"; then
     echo "[$repo] ABORTED: AI review failed" >&2
     return 1
@@ -856,7 +871,9 @@ commit_repo() {
 #------------------------------------------------------------------------------
 
 # Discover repositories
-echo "Discovering repositories under: $ROOT"
+if [[ "$VERBOSE" -eq 1 ]]; then
+  echo "Discovering repositories under: $ROOT"
+fi
 
 # Add root repo
 add_repo "$ROOT"
@@ -878,7 +895,9 @@ if [[ "${#REPOS[@]}" -eq 0 ]]; then
   exit 0
 fi
 
-echo "Found ${#REPOS[@]} repositories"
+if [[ "$VERBOSE" -eq 1 ]]; then
+  echo "Found ${#REPOS[@]} repositories"
+fi
 
 # Apply repo filter if specified
 if [[ -n "$REPO_FILTER" ]]; then
@@ -914,7 +933,9 @@ if [[ -n "$REPO_FILTER" ]]; then
   fi
 
   REPOS=("${FILTERED_REPOS[@]}")
-  echo "Filtered to ${#REPOS[@]} repositories"
+  if [[ "$VERBOSE" -eq 1 ]]; then
+    echo "Filtered to ${#REPOS[@]} repositories"
+  fi
 fi
 
 # Sort repos by depth (deepest first, root last)
@@ -951,11 +972,13 @@ fi
 
 echo ""
 if [[ "$FAILED_COUNT" -gt 0 ]]; then
-  echo "=== Completed with failures ==="
-  echo "Failed repositories:"
-  for repo in "${FAILED_REPOS[@]}"; do
-    echo "  - $repo"
-  done
+  echo "=== Completed with failures (${FAILED_COUNT} failed) ==="
+  if [[ "$VERBOSE" -eq 1 ]]; then
+    echo "Failed repositories:"
+    for repo in "${FAILED_REPOS[@]}"; do
+      echo "  - $repo"
+    done
+  fi
   echo "Fix the errors above and rerun smart-commit." >&2
   exit 1
 fi

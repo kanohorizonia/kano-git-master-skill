@@ -10,6 +10,7 @@ INCLUDE_SUBMODULES=1
 INCLUDE_STANDALONE=1
 REPO_FILTER=""
 NO_SMART_SYNC=0
+VERBOSE=0        # Show all repos (default: show only repos with changes)
 
 usage() {
   cat <<'EOF'
@@ -24,6 +25,7 @@ Options:
   --no-standalone        Exclude standalone repos
   --no-smart-sync        Disable AI-powered sync (use simple git pull --rebase)
   --force-with-lease     Use --force-with-lease on push
+  --verbose              Show all repos (default: show only repos with changes)
   --dry-run              Show what would be done without doing it
   -h, --help             Show help
 
@@ -67,6 +69,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --force-with-lease)
       FORCE_WITH_LEASE=1
+      shift
+      ;;
+    --verbose)
+      VERBOSE=1
       shift
       ;;
     --dry-run)
@@ -152,17 +158,21 @@ fi
 FAILED=0
 
 for repo in "${REPOS[@]}"; do
-  echo ""
-  echo "=== Push: $repo ==="
-
   branch="$(git -C "$repo" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
   if [[ -z "$branch" ]]; then
-    echo "[$repo] SKIP: Detached HEAD"
+    if [[ "$VERBOSE" -eq 1 ]]; then
+      echo "[$repo] SKIP: Detached HEAD"
+    fi
     continue
   fi
 
+  if [[ "$VERBOSE" -eq 1 ]]; then
+    echo ""
+    echo "=== Push: $repo ==="
+  fi
+
   if [[ "$DRY_RUN" -eq 1 ]]; then
-    echo "[DRY RUN] Would push $branch"
+    echo "[$repo] [DRY RUN] Would push $branch"
     continue
   fi
 
@@ -194,30 +204,29 @@ for repo in "${REPOS[@]}"; do
 
   # Auto-sync with upstream if exists
   if [[ "$has_upstream" -eq 1 ]]; then
-    if [[ "$NO_SMART_SYNC" -eq 0 ]]; then
-      # Use simple git pull --rebase (AI sync removed - would need provider/model)
-      echo "[$repo] Syncing with upstream (interactive rebase)..."
+    local sync_output sync_exit
+    sync_output="$(git -C "$repo" pull --rebase 2>&1 || true)"
+    sync_exit=$?
 
-      if git -C "$repo" pull --rebase 2>/dev/null; then
-        echo "[$repo] Sync successful"
-      else
-        sync_exit=$?
-        echo "[$repo] Sync failed (exit code: $sync_exit)" >&2
-        echo "[$repo] Please resolve conflicts manually: cd $repo && git rebase --abort (or continue)" >&2
-        FAILED=1
-        continue
+    if [[ "$sync_exit" -ne 0 ]]; then
+      echo "[$repo] Sync failed (exit code: $sync_exit)" >&2
+      echo "[$repo] Please resolve conflicts manually: cd $repo && git rebase --abort (or continue)" >&2
+      FAILED=1
+      continue
+    fi
+
+    # Only print output if there's non-trivial change or in verbose mode
+    if echo "$sync_output" | grep -q "Already up to date"; then
+      if [[ "$VERBOSE" -eq 1 ]]; then
+        echo "[$repo] Already up to date"
       fi
     else
-      # User explicitly requested simple rebase
-      echo "[$repo] Syncing with upstream (simple rebase)..."
-      if ! git -C "$repo" pull --rebase 2>/dev/null; then
-        echo "[$repo] ERROR: Rebase failed. Aborting rebase..." >&2
-        git -C "$repo" rebase --abort 2>/dev/null || true
-        echo "[$repo] Please resolve conflicts manually and retry." >&2
-        FAILED=1
-        continue
+      if [[ "$VERBOSE" -eq 1 ]]; then
+        echo "$sync_output" | grep -E "^(Updating|Fast-forward|Already)" || true
+        echo "[$repo] Sync successful"
+      else
+        echo "[$repo] Synced"
       fi
-      echo "[$repo] Sync successful"
     fi
   fi
 
@@ -229,21 +238,45 @@ for repo in "${REPOS[@]}"; do
     push_args+=("-u")
   fi
 
-  echo "[$repo] Pushing to $primary_remote..."
-  if git -C "$repo" push "${push_args[@]}" "$primary_remote" "$branch"; then
-    echo "[$repo] Push successful"
+  local push_output push_exit
+  push_output="$(git -C "$repo" push "${push_args[@]}" "$primary_remote" "$branch" 2>&1 || true)"
+  push_exit=$?
+
+  if [[ "$push_exit" -eq 0 ]]; then
+    # Push successful
+    if echo "$push_output" | grep -q "Everything up-to-date"; then
+      if [[ "$VERBOSE" -eq 1 ]]; then
+        echo "[$repo] Push: Everything up-to-date"
+      fi
+    else
+      if [[ "$VERBOSE" -eq 1 ]]; then
+        echo "[$repo] Pushed to $primary_remote"
+      else
+        echo "[$repo] Pushed"
+      fi
+    fi
     continue
   fi
 
+  # Try fallback remote
   if [[ -n "$fallback_remote" ]]; then
-    echo "[$repo] Falling back to $fallback_remote..."
-    if git -C "$repo" push "${push_args[@]}" "$fallback_remote" "$branch"; then
-      echo "[$repo] Push successful"
+    if [[ "$VERBOSE" -eq 1 ]]; then
+      echo "[$repo] Falling back to $fallback_remote..."
+    fi
+    push_output="$(git -C "$repo" push "${push_args[@]}" "$fallback_remote" "$branch" 2>&1 || true)"
+    push_exit=$?
+
+    if [[ "$push_exit" -eq 0 ]]; then
+      if [[ "$VERBOSE" -eq 1 ]]; then
+        echo "[$repo] Pushed to $fallback_remote"
+      else
+        echo "[$repo] Pushed"
+      fi
       continue
     fi
   fi
 
-  echo "[$repo] ERROR: Push failed" >&2
+  echo "[$repo] Push failed" >&2
   FAILED=1
 done
 
