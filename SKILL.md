@@ -532,6 +532,22 @@ Most scripts support:
 6. **Use verbose mode for debugging**: Add `--verbose` to see all repos (default shows only changes)
 7. **Review summary tables**: Check commit and push summaries after workflow completion
 
+## Root Repo Wrapper Script Recommendation
+
+For workspace root scripts (for example `./smart-commit.sh`, `./smart-commit-push.sh`, `./smart-sync.sh`):
+
+1. Keep wrappers thin: only locate project root and `exec` the git-master skill script.
+2. Always export `KANO_GIT_MASTER_ROOT="$ROOT"` before `exec` so repo discovery is stable.
+3. Put provider choice in wrapper (for example copilot wrapper), but pass through all user args.
+4. Do not duplicate business logic in root wrappers; logic must live in `skills/kano/kano-git-master-skill/scripts/...`.
+5. Wrapper names should stay stable and user-facing; internal script path can evolve.
+
+Recommended root wrapper set:
+- `smart-commit.sh`
+- `smart-commit-push.sh`
+- `smart-sync.sh`
+- `smart-sync-upstream-stable-dev.sh`
+
 ## Troubleshooting
 
 ### Rebase Conflicts
