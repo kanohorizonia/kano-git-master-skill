@@ -179,7 +179,7 @@ Examples:
 
   # File-based auto rules (no args):
   # - kano-git-master-skill repo -> dev.rule.md
-  # - other repos                -> default.rule.md
+  # - other repos                -> commit-convention skill auto-discovery, then default.rule.md
 
   # Prompt mode override
   ./smart-commit.sh --provider copilot --model gpt-5-mini --prompt-mode user
@@ -881,10 +881,8 @@ discover_skill_rules_file() {
 resolve_rules_file_for_repo() {
   local repo="$1"
   local purpose="${2:-commit}"
-  local rule_name=""
+  local default_rule_name=""
   local candidate=""
-  local repo_rule_name=""
-  local auto_rules_files=()
 
   # Inline rules bypass file resolution.
   if [[ -n "$CUSTOM_RULES" ]]; then
@@ -902,44 +900,26 @@ resolve_rules_file_for_repo() {
     return 1
   fi
 
-  # New default routing by repo type.
+  # Git-master repo keeps explicit dev rules first.
   if is_git_master_repo "$repo"; then
-    rule_name="dev.rule.md"
-  else
-    rule_name="default.rule.md"
+    for candidate in "$repo/dev.rule.md" "$ROOT/dev.rule.md" "$SKILL_ROOT/references/dev.rule.md"; do
+      if [[ -f "$candidate" ]]; then
+        printf '%s' "$candidate"
+        return 0
+      fi
+    done
   fi
 
-  # Resolution priority:
-  # 1) repository-local override
-  # 2) workspace-root override
-  # 3) built-in skill default under references/
-  for candidate in "$repo/$rule_name" "$ROOT/$rule_name" "$SKILL_ROOT/references/$rule_name"; do
-    if [[ -f "$candidate" ]]; then
-      printf '%s' "$candidate"
-      return 0
-    fi
-  done
-
-  # Skill-level convention fallback (auto-discovered).
+  # Skill-level convention fallback (auto-discovered) for non-dev repos.
   candidate="$(discover_skill_rules_file "$purpose" || true)"
   if [[ -n "$candidate" && -f "$candidate" ]]; then
     printf '%s' "$candidate"
     return 0
   fi
 
-  # Backward-compatible auto-detection.
-  if [[ "$purpose" == "review" ]]; then
-    repo_rule_name="REVIEW_RULES.md"
-  else
-    repo_rule_name="COMMIT_RULES.md"
-  fi
-  auto_rules_files=(
-    "$repo/.git/commit-rules.md"
-    "$repo/.github/commit-rules.md"
-    "$repo/$repo_rule_name"
-    "$repo/.commit-rules"
-  )
-  for candidate in "${auto_rules_files[@]}"; do
+  # Final default fallback.
+  default_rule_name="default.rule.md"
+  for candidate in "$repo/$default_rule_name" "$ROOT/$default_rule_name" "$SKILL_ROOT/references/$default_rule_name"; do
     if [[ -f "$candidate" ]]; then
       printf '%s' "$candidate"
       return 0
