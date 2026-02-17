@@ -362,18 +362,28 @@ for repo in "${REPOS[@]}"; do
 
   # Auto-sync with upstream if exists (unless --skip-sync)
   if [[ "$SKIP_SYNC" -eq 0 && "$has_upstream" -eq 1 ]]; then
-    sync_output="$(git -C "$repo" pull --rebase 2>&1 || true)"
-    sync_exit=$?
-
-    if [[ "$sync_exit" -ne 0 ]]; then
+    # Pre-sync should not fail the whole workflow when a repo has local changes.
+    # In that case, skip sync for this repo and let commit phase handle changes.
+    if [[ -n "$(git -C "$repo" status --porcelain 2>/dev/null || true)" ]]; then
+      if [[ "$VERBOSE" -eq 1 ]]; then
+        echo "[$repo] Sync skipped: local changes present"
+      fi
+    elif sync_output="$(git -C "$repo" pull --rebase 2>&1)"; then
+      :
+    else
+      sync_exit=$?
       echo "[$repo] Sync failed (exit code: $sync_exit)" >&2
+      echo "[$repo] Sync output:" >&2
+      echo "$sync_output" >&2
       echo "[$repo] Please resolve conflicts manually: cd $repo && git rebase --abort (or continue)" >&2
       FAILED=1
       continue
     fi
 
     # Only print output if there's non-trivial change or in verbose mode
-    if echo "$sync_output" | grep -q "Already up to date"; then
+    if [[ -z "${sync_output:-}" ]]; then
+      :
+    elif echo "$sync_output" | grep -q "Already up to date"; then
       if [[ "$VERBOSE" -eq 1 ]]; then
         echo "[$repo] Already up to date"
       fi
@@ -402,10 +412,7 @@ for repo in "${REPOS[@]}"; do
     push_args+=("-u")
   fi
 
-  push_output="$(git -C "$repo" push "${push_args[@]}" "$primary_remote" "$branch" 2>&1 || true)"
-  push_exit=$?
-
-  if [[ "$push_exit" -eq 0 ]]; then
+  if push_output="$(git -C "$repo" push "${push_args[@]}" "$primary_remote" "$branch" 2>&1)"; then
     # Push successful
     short_repo="$(basename "$repo")"
     if echo "$push_output" | grep -q "Everything up-to-date"; then
@@ -429,10 +436,7 @@ for repo in "${REPOS[@]}"; do
     if [[ "$VERBOSE" -eq 1 ]]; then
       echo "[$repo] Falling back to $fallback_remote..."
     fi
-    push_output="$(git -C "$repo" push "${push_args[@]}" "$fallback_remote" "$branch" 2>&1 || true)"
-    push_exit=$?
-
-    if [[ "$push_exit" -eq 0 ]]; then
+    if push_output="$(git -C "$repo" push "${push_args[@]}" "$fallback_remote" "$branch" 2>&1)"; then
       short_repo="$(basename "$repo")"
       if echo "$push_output" | grep -q "Everything up-to-date"; then
         if [[ "$VERBOSE" -eq 1 ]]; then
@@ -452,6 +456,10 @@ for repo in "${REPOS[@]}"; do
   fi
 
   echo "[$repo] Push failed" >&2
+  if [[ -n "${push_output:-}" ]]; then
+    echo "[$repo] Push output:" >&2
+    echo "$push_output" >&2
+  fi
   FAILED=1
 done
 
