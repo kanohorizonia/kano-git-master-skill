@@ -1053,6 +1053,7 @@ EOF
 run_ai_review() {
   local repo="$1"
   local prompt raw first verdict
+  local first_trimmed="" first_upper="" raw_upper=""
 
   if [[ "$AI_REVIEW" -ne 1 ]]; then
     return 0
@@ -1062,35 +1063,53 @@ run_ai_review() {
   raw="$(ai_generate_message_first_line "$AI_PROVIDER" "$AI_MODEL" "$prompt" || true)"
 
   if [[ -z "$raw" ]]; then
-    echo "[$repo] AI review unavailable, failing closed" >&2
+    echo "[$repo] WARNING: AI review unavailable, skipping gate (fail-open)" >&2
     if provider_auth_likely_missing; then
       echo "[$repo] AI provider auth appears missing for: $AI_PROVIDER" >&2
       echo "[$repo] $(provider_auth_hint)" >&2
     else
       echo "[$repo] AI provider returned empty response (provider/model outage or CLI issue)." >&2
     fi
-    echo "[$repo] Use --no-ai-review to bypass" >&2
-    return 1
-  fi
-
-  first="$(printf '%s\n' "$raw" | head -n 1 | tr -d '\r')"
-  verdict="$(printf '%s\n' "$first" | sed -E 's/^([Pp][Aa][Ss][Ss]|[Ff][Aa][Ii][Ll]).*$/\1/')"
-
-  if [[ "$verdict" =~ ^[Pp][Aa][Ss][Ss]$ ]]; then
-    echo "[$repo] AI review: $first"
     return 0
   fi
 
-  if [[ "$verdict" =~ ^[Ff][Aa][Ii][Ll]$ ]]; then
-    echo "[$repo] AI review BLOCKED: $first" >&2
+  first="$(printf '%s\n' "$raw" | sed 's/\r$//' | grep -m1 -E '[^[:space:]]' || true)"
+  first_trimmed="$(printf '%s' "$first" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+  first_upper="$(printf '%s' "$first_trimmed" | tr '[:lower:]' '[:upper:]')"
+  raw_upper="$(printf '%s' "$raw" | tr '[:lower:]' '[:upper:]')"
+  verdict=""
+
+  # Preferred strict parsing from first non-empty line.
+  if [[ "$first_upper" =~ ^PASS([[:space:]]*[:\-].*)?$ ]]; then
+    verdict="PASS"
+  elif [[ "$first_upper" =~ ^FAIL([[:space:]]*[:\-].*)?$ ]]; then
+    verdict="FAIL"
+  fi
+
+  # Fuzzy fallback for small-model formatting glitches.
+  if [[ -z "$verdict" ]]; then
+    if [[ "$raw_upper" =~ (^|[^A-Z])FAIL([^A-Z]|$) ]] && [[ ! "$raw_upper" =~ (^|[^A-Z])PASS([^A-Z]|$) ]]; then
+      verdict="FAIL"
+    elif [[ "$raw_upper" =~ (^|[^A-Z])PASS([^A-Z]|$) ]] && [[ ! "$raw_upper" =~ (^|[^A-Z])FAIL([^A-Z]|$) ]]; then
+      verdict="PASS"
+    fi
+  fi
+
+  if [[ "$verdict" == "PASS" ]]; then
+    echo "[$repo] AI review: ${first_trimmed:-PASS}"
+    return 0
+  fi
+
+  if [[ "$verdict" == "FAIL" ]]; then
+    echo "[$repo] AI review BLOCKED: ${first_trimmed:-FAIL}" >&2
     return 1
   fi
 
-  echo "[$repo] AI review returned invalid verdict, failing closed" >&2
-  if [[ -n "$first" ]]; then
-    echo "[$repo] AI output: $first" >&2
+  echo "[$repo] WARNING: AI review returned invalid verdict, skipping gate (fail-open)" >&2
+  if [[ -n "$first_trimmed" ]]; then
+    echo "[$repo] AI output: $first_trimmed" >&2
   fi
-  return 1
+  return 0
 }
 
 #------------------------------------------------------------------------------

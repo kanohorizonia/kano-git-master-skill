@@ -13,6 +13,7 @@
 #   --repos <paths>             Only process specific repos (comma-separated)
 #   --rules <text>              Custom commit rules (inline text)
 #   --rules-file <path>         Custom commit rules (from file)
+#   -noai                       Short for --no-ai-review
 #   --no-ai-review              Disable AI safety review
 #   --dry-run                   Show what would be done without doing it
 #   -h, --help                  Show help
@@ -68,6 +69,7 @@ Optional:
   --no-smart-ignore           Disable AI-powered .gitignore updates
   --rules <text>              Custom commit rules (inline text)
   --rules-file <path>         Custom commit rules (from file)
+  -noai                       Short for --no-ai-review
   --no-ai-review              Disable AI safety review
   --dry-run                   Show what would be done without doing it
   -h, --help                  Show help
@@ -81,6 +83,9 @@ Examples:
 
   # Dry run to see what would happen
   ./smart-commit-push.sh --provider copilot --model gpt-5-mini --dry-run
+
+  # Disable AI review with short flag
+  ./smart-commit-push.sh --provider copilot --model gpt-5-mini -noai
 
   # Agent-delegated mode (cost-safe): requires --message, auto-adds --no-ai-review
   ./smart-commit-push.sh --agent codex -m "chore: update workspace"
@@ -131,6 +136,10 @@ while [[ $# -gt 0 ]]; do
     --no-smart-ignore)
       # Pass to smart-commit.sh
       SMART_COMMIT_ARGS+=("$1")
+      shift
+      ;;
+    -noai)
+      SMART_COMMIT_ARGS+=("--no-ai-review")
       shift
       ;;
     *)
