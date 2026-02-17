@@ -273,7 +273,7 @@ cd project
 ./scripts/discover-repos.sh --include-types standalone
 ```
 
-**Features:** Find root/submodules/standalone, exclude patterns, multiple formats
+**Features:** Find root/submodules/standalone (including nested submodules), exclude patterns, multiple formats, stable JSON output for piping into other tools
 
 ### update-workspace-repos.sh
 
@@ -591,6 +591,20 @@ Complete workflow: commit and push all repositories in one step:
 - When `--agent` is not `manual`, delegated mode disables in-script AI review (`--no-ai-review`) to avoid duplicate model usage.
 - If you are modifying this skill itself (`kano-git-master-skill`), commit those edits first before running full `smart-commit-push`.
 - Reason: Step 1 pre-sync now uses auto stash/pop, and ongoing edits in the skill repo can be disrupted by stash-pop conflict handling.
+
+**Workflow (4 steps):**
+1. **Pre-sync**: auto `stash -> sync -> pop` per repo to rebase/pull safely before committing.
+2. **Commit**: runs `smart-commit.sh` across discovered repos.
+3. **Post-sync**: `sync-only` again, but **fails if a repo is dirty** (no stash/pop) to prevent pushing an outdated branch tip.
+4. **Push**: pushes all repos (SSH→HTTP fallback per repo).
+
+**Workspace lock marker (safety):**
+- While running, `smart-commit-push` creates a lock directory: `.git/kano-smart-commit-push.lock`.
+- Treat this as "hands off": do not edit files during the workflow (especially with multiple agents working).
+
+**Pre-push hooks and `--no-verify`:**
+- Some repos/submodules enforce pre-push hooks (e.g. typecheck). If a hook fails, the overall workflow will fail at Step 4 for that repo.
+- If you understand the risk and only need to push, pass `--no-verify` to skip hooks for the `git push` step.
 
 **Summary tables:**
 After successful completion, displays two summary tables:

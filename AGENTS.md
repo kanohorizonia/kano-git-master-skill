@@ -164,3 +164,21 @@ Note: sourcing will also define globals used by those functions (see the script 
 - **Kano Backlog Init Location**:
   - Run `kano backlog admin init` from `_kano/backlog` to generate `.kano/config` for this repo.
 - When adding/adjusting behavior, update the relevant docs in `docs/` and add/extend tests in `scripts/test/`.
+
+## Recent learnings (2026-02)
+
+### `discover-repos.sh` JSON stability
+- Symptom: malformed JSON objects like `{,"type":"submodule"}` caused downstream parsers to warn/skip.
+- Root cause: nested submodules were emitted without parent path prefix (wrong absolute path), and invalid metadata `{}` was later string-appended with `"type"`, producing invalid JSON.
+- Fix pattern:
+  - When recursing `gith_collect_submodules()`, prefix nested paths with `"$parent/$child"` (not child-only).
+  - When emitting JSON in `gith_discover_repos()`, validate each candidate path is a git repo and skip invalid metadata (empty/`{}`) before appending `"type"`.
+- Dev note: treat JSON building as structured, not “string concat on faith”.
+
+### Auto-stash edge case in multi-repo sync
+- `git status --porcelain` can report changes for a repo that are not stashable (common when only the submodule pointer state is “dirty”).
+- `git stash push` may print `No local changes to save` even when the caller considered the repo “dirty”.
+- Fix pattern: only `stash pop` when a stash was actually created (detect via command output or stash list), and keep recovery instructions when pop fails.
+
+### Shell vs PowerShell redirection
+- This toolkit is Bash-first (Git Bash on Windows). If you are debugging from PowerShell, note that `/dev/null` redirection is not valid there (`2>$null` is the PowerShell equivalent).
