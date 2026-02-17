@@ -189,3 +189,11 @@ Note: sourcing will also define globals used by those functions (see the script 
   - `scripts/commit-tools/sync/smart-sync-upstream-force-push.sh`: AI rebase onto upstream default branch, then `git push --force-with-lease` to origin.
   - `scripts/commit-tools/sync/smart-sync-origin-latest.sh`: checkout origin default branch and `git pull --rebase` (no push).
 - Project root provides wrappers (`smart-sync.sh` dispatches by mode) to keep usage stable from the workspace root.
+
+### Prompt templates (AI stages)
+- `smart-commit.sh` now uses file-based prompt templates for `commit-message` and `review` stages.
+- Template layout: `prompts/base/<stage>.md` + optional overlay `prompts/<mode>/<stage>.md`.
+- Mode routing:
+  - `auto` (default): `kano-git-master-skill` repos -> `dev`, others -> `user`
+  - override with `--prompt-mode dev|user`
+- Keep templates short and policy-focused; repo/file stats and diff previews are appended by script runtime.

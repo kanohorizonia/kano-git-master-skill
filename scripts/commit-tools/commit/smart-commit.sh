@@ -61,6 +61,7 @@ set -euo pipefail
 
 # Get script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SKILL_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
 
 # Find repository root (go up from commit-tools/commit/)
 if [[ -n "${KANO_GIT_MASTER_ROOT:-}" ]]; then
@@ -94,6 +95,8 @@ REPO_FILTER=""  # Comma-separated list of repo paths to include
 USE_SMART_IGNORE=1
 VERBOSE=0        # Show all repos (default: show only repos with changes)
 AGENT_ID=""      # Execution identity: manual or agent name
+PROMPT_MODE="auto"   # auto|dev|user
+PROMPT_ROOT="$SKILL_ROOT/prompts"
 
 #------------------------------------------------------------------------------
 # Functions
@@ -118,6 +121,8 @@ Optional:
   --max-file-size-mb <int>    Block files larger than this (default: 5)
   --rules <text>              Custom commit rules (inline text)
   --rules-file <path>         Custom commit rules (from file)
+  --prompt-mode <mode>        Prompt mode: auto|dev|user (default: auto)
+  --prompt-root <path>        Prompt templates root (default: <skill>/prompts)
   --repos <paths>             Only process specific repos (comma-separated paths)
   --smart-ignore              Use smart-ignore.sh for .gitignore updates (default: on)
   --no-smart-ignore           Use legacy inline .gitignore updater only
@@ -153,6 +158,13 @@ Examples:
 
   # With custom rules (from file)
   ./smart-commit.sh --provider copilot --model gpt-5-mini --rules-file .git/commit-rules.md
+
+  # File-based auto rules (no args):
+  # - kano-git-master-skill repo -> dev.rule.md
+  # - other repos                -> default.rule.md
+
+  # Prompt mode override
+  ./smart-commit.sh --provider copilot --model gpt-5-mini --prompt-mode user
 
   # Only process specific repos
   ./smart-commit.sh --provider copilot --model gpt-5-mini --repos ".,submodules/my-lib"
@@ -265,6 +277,14 @@ while [[ $# -gt 0 ]]; do
       RULES_FILE="${2:-}"
       shift 2
       ;;
+    --prompt-mode)
+      PROMPT_MODE="${2:-}"
+      shift 2
+      ;;
+    --prompt-root)
+      PROMPT_ROOT="${2:-}"
+      shift 2
+      ;;
     --repos)
       REPO_FILTER="${2:-}"
       shift 2
@@ -363,6 +383,16 @@ if ! [[ "$MAX_FILE_SIZE_MB" =~ ^[0-9]+$ ]]; then
   echo "ERROR: --max-file-size-mb must be an integer" >&2
   exit 1
 fi
+
+# Validate prompt mode
+case "$PROMPT_MODE" in
+  auto|dev|user)
+    ;;
+  *)
+    echo "ERROR: --prompt-mode must be one of: auto, dev, user" >&2
+    exit 1
+    ;;
+esac
 
 MAX_FILE_SIZE_BYTES=$((MAX_FILE_SIZE_MB * 1024 * 1024))
 
@@ -651,43 +681,176 @@ sanitize_message() {
   printf '%s' "$msg"
 }
 
-build_prompt() {
+is_git_master_repo() {
   local repo="$1"
-  local stat files custom_rules_text
-  stat="$(git -C "$repo" diff --cached --shortstat 2>/dev/null || echo "no stats")"
-  files="$(git -C "$repo" diff --cached --name-status 2>/dev/null || echo "no files")"
+  local name
+  name="$(basename "$repo")"
+  if [[ "$name" == "kano-git-master-skill" ]]; then
+    return 0
+  fi
+  if [[ "$repo" == *"/kano-git-master-skill"* ]]; then
+    return 0
+  fi
+  return 1
+}
 
-  # Load custom rules
-  custom_rules_text=""
-  if [[ -n "$RULES_FILE" ]]; then
-    if [[ -f "$RULES_FILE" ]]; then
-      custom_rules_text="$(cat "$RULES_FILE")"
-    elif [[ -f "$repo/$RULES_FILE" ]]; then
-      custom_rules_text="$(cat "$repo/$RULES_FILE")"
-    else
-      echo "WARNING: Rules file not found: $RULES_FILE" >&2
-    fi
-  elif [[ -n "$CUSTOM_RULES" ]]; then
-    custom_rules_text="$CUSTOM_RULES"
-  else
-    # Auto-detect common rules files
-    local auto_rules_files=(
-      "$repo/.git/commit-rules.md"
-      "$repo/.github/commit-rules.md"
-      "$repo/COMMIT_RULES.md"
-      "$repo/.commit-rules"
-    )
-    for rules_file in "${auto_rules_files[@]}"; do
-      if [[ -f "$rules_file" ]]; then
-        custom_rules_text="$(cat "$rules_file")"
-        echo "[$repo] Using rules from: $rules_file" >&2
-        break
-      fi
-    done
+resolve_rules_file_for_repo() {
+  local repo="$1"
+  local purpose="${2:-commit}"
+  local rule_name=""
+  local candidate=""
+  local repo_rule_name=""
+  local auto_rules_files=()
+
+  # Inline rules bypass file resolution.
+  if [[ -n "$CUSTOM_RULES" ]]; then
+    return 1
   fi
 
-  # Build prompt with or without custom rules
-  if [[ -n "$custom_rules_text" ]]; then
+  # Explicit file takes precedence.
+  if [[ -n "$RULES_FILE" ]]; then
+    for candidate in "$RULES_FILE" "$repo/$RULES_FILE" "$ROOT/$RULES_FILE"; do
+      if [[ -f "$candidate" ]]; then
+        printf '%s' "$candidate"
+        return 0
+      fi
+    done
+    return 1
+  fi
+
+  # New default routing by repo type.
+  if is_git_master_repo "$repo"; then
+    rule_name="dev.rule.md"
+  else
+    rule_name="default.rule.md"
+  fi
+
+  for candidate in "$repo/$rule_name" "$ROOT/$rule_name"; do
+    if [[ -f "$candidate" ]]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+
+  # Backward-compatible auto-detection.
+  if [[ "$purpose" == "review" ]]; then
+    repo_rule_name="REVIEW_RULES.md"
+  else
+    repo_rule_name="COMMIT_RULES.md"
+  fi
+  auto_rules_files=(
+    "$repo/.git/commit-rules.md"
+    "$repo/.github/commit-rules.md"
+    "$repo/$repo_rule_name"
+    "$repo/.commit-rules"
+  )
+  for candidate in "${auto_rules_files[@]}"; do
+    if [[ -f "$candidate" ]]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+load_rules_text_for_repo() {
+  local repo="$1"
+  local purpose="${2:-commit}"
+  local rules_path=""
+
+  if [[ -n "$CUSTOM_RULES" ]]; then
+    printf '%s' "$CUSTOM_RULES"
+    return 0
+  fi
+
+  rules_path="$(resolve_rules_file_for_repo "$repo" "$purpose" || true)"
+  if [[ -z "$rules_path" ]]; then
+    return 1
+  fi
+
+  cat "$rules_path"
+  return 0
+}
+
+resolve_prompt_mode_for_repo() {
+  local repo="$1"
+  if [[ "$PROMPT_MODE" != "auto" ]]; then
+    printf '%s' "$PROMPT_MODE"
+    return 0
+  fi
+  if is_git_master_repo "$repo"; then
+    printf 'dev'
+  else
+    printf 'user'
+  fi
+}
+
+load_prompt_template_for_stage() {
+  local repo="$1"
+  local stage="$2"
+  local mode=""
+  local base_file=""
+  local mode_file=""
+  local combined=""
+
+  mode="$(resolve_prompt_mode_for_repo "$repo")"
+  base_file="$PROMPT_ROOT/base/$stage.md"
+  mode_file="$PROMPT_ROOT/$mode/$stage.md"
+
+  if [[ ! -f "$base_file" ]]; then
+    return 1
+  fi
+
+  combined="$(cat "$base_file")"
+  if [[ -f "$mode_file" ]]; then
+    combined="$combined
+
+--- MODE OVERLAY ($mode) ---
+$(cat "$mode_file")"
+  fi
+
+  printf '%s' "$combined"
+  return 0
+}
+
+build_prompt() {
+  local repo="$1"
+  local stat files custom_rules_text rules_source_path prompt_template prompt_mode
+  stat="$(git -C "$repo" diff --cached --shortstat 2>/dev/null || echo "no stats")"
+  files="$(git -C "$repo" diff --cached --name-status 2>/dev/null || echo "no files")"
+  prompt_mode="$(resolve_prompt_mode_for_repo "$repo")"
+  prompt_template="$(load_prompt_template_for_stage "$repo" "commit-message" || true)"
+
+  custom_rules_text="$(load_rules_text_for_repo "$repo" "commit" || true)"
+  rules_source_path="$(resolve_rules_file_for_repo "$repo" "commit" || true)"
+  if [[ -n "$prompt_template" ]]; then
+    echo "[$repo] Using commit prompt mode: $prompt_mode" >&2
+  fi
+  if [[ -n "$rules_source_path" ]]; then
+    echo "[$repo] Using rules from: $rules_source_path" >&2
+  fi
+
+  # Preferred: file-based prompt template
+  if [[ -n "$prompt_template" ]]; then
+    cat <<EOF
+$prompt_template
+
+$(if [[ -n "$custom_rules_text" ]]; then
+  cat <<RULES
+Commit Rules:
+$custom_rules_text
+
+RULES
+fi)
+
+Repository: $(basename "$repo")
+Stats: $stat
+Files changed:
+$files
+EOF
+  # Fallback: legacy in-script prompt
+  elif [[ -n "$custom_rules_text" ]]; then
     cat <<EOF
 Generate one concise commit message for this git change.
 
@@ -762,14 +925,62 @@ generate_message() {
 
 build_review_prompt() {
   local repo="$1"
-  local stat files diff_preview
+  local stat files diff_preview review_rules_text review_rules_source prompt_template prompt_mode
   stat="$(git -C "$repo" diff --cached --shortstat 2>/dev/null || echo "no stats")"
   files="$(git -C "$repo" diff --cached --name-status 2>/dev/null || echo "no files")"
   diff_preview="$(git -C "$repo" diff --cached --unified=0 --text 2>/dev/null | head -n 300 || echo "no diff")"
+  review_rules_text="$(load_rules_text_for_repo "$repo" "review" || true)"
+  review_rules_source="$(resolve_rules_file_for_repo "$repo" "review" || true)"
+  prompt_mode="$(resolve_prompt_mode_for_repo "$repo")"
+  prompt_template="$(load_prompt_template_for_stage "$repo" "review" || true)"
 
-  cat <<EOF
+  if [[ -n "$prompt_template" ]]; then
+    echo "[$repo] Using review prompt mode: $prompt_mode" >&2
+  fi
+  if [[ -n "$review_rules_source" ]]; then
+    echo "[$repo] Using review rules from: $review_rules_source" >&2
+  fi
+
+  if [[ -n "$prompt_template" ]]; then
+    cat <<EOF
+$prompt_template
+
+$(if [[ -n "$review_rules_text" ]]; then
+  cat <<RULES
+Review Rules:
+$review_rules_text
+
+RULES
+fi)
+
+Repository: $(basename "$repo")
+Stats: $stat
+Files:
+$files
+
+Patch preview (first 300 lines):
+$diff_preview
+EOF
+  else
+    cat <<EOF
 You are a git commit safety reviewer.
 Decide if this staged change is safe to commit.
+
+$(if [[ -n "$review_rules_text" ]]; then
+  cat <<RULES
+Review Rules:
+$review_rules_text
+
+RULES
+fi)
+
+Context:
+- This repository is a Git automation toolkit. It may legitimately add scripts that:
+  - discover repos/submodules in a workspace
+  - sync a fork with upstream
+  - push to origin using --force-with-lease (fork maintenance)
+- Do NOT automatically FAIL solely because the patch contains "git push --force-with-lease".
+  Instead, verify the change is guarded and intentional.
 
 Focus on:
 - Secrets, credentials, tokens, API keys
@@ -777,6 +988,17 @@ Focus on:
 - Accidental binaries or large files
 - Risky unintended changes
 - Generated files that shouldn't be committed
+
+When automation scripts are changed, PASS is reasonable when most of these are true:
+- Force pushes use --force-with-lease (not --force) and target a specific branch (not --mirror).
+- The script is user-invoked (no hidden background execution), and supports --dry-run for preview.
+- The script checks for clean working tree and required remotes before rewriting history or pushing.
+- Multi-repo behavior is opt-in or filtered (e.g., only repos with an upstream remote are affected).
+
+FAIL if you see any of these:
+- Adds or encourages committing secrets/credentials, or exfiltrating data.
+- Uses plain --force / --mirror / pushes to arbitrary remotes/branches without safeguards.
+- Removes safety checks (clean tree, remote checks, dry-run) around destructive Git operations.
 
 Output format (strict):
 PASS: <short reason>
@@ -793,6 +1015,7 @@ $files
 Patch preview (first 300 lines):
 $diff_preview
 EOF
+  fi
 }
 
 run_ai_review() {

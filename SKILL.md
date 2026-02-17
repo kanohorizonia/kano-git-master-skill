@@ -572,6 +572,11 @@ AI-powered commit across all repositories with safety checks:
 - When `--agent` is not `manual`, a fixed commit message (`-m/--message`) is required.
 - Delegated runs disable in-script AI review (`--no-ai-review`) to avoid duplicate model calls.
 
+**Prompt templates (dev/user mode):**
+- AI prompt stages are file-based and mode-aware.
+- Default mode is `auto`: `kano-git-master-skill` changes use `dev` prompts, other repos use `user` prompts.
+- Override with `--prompt-mode dev|user` or custom template root via `--prompt-root <path>`.
+
 **Output modes:**
 - **Default (quiet)**: Shows only repos with actual commits
 - **Verbose**: Shows all repos, including those with no changes
