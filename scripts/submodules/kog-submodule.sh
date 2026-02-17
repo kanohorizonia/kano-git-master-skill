@@ -215,6 +215,12 @@ set_kog_field() {
   local field_name="$2"
   local value="$3"
 
+  # Default behavior: do not persist explicit "auto" for protocol priority.
+  if [[ "$field_name" == "kog-protocol-priority" && "$value" == "auto" ]]; then
+    git config -f .gitmodules --unset-all "submodule.$submodule_path.$field_name" 2>/dev/null || true
+    return 0
+  fi
+
   git config -f .gitmodules "submodule.$submodule_path.$field_name" "$value"
 }
 
@@ -272,6 +278,12 @@ get_root_config_field() {
 set_root_config_field() {
   local field_name="$1"
   local value="$2"
+
+  # Default behavior: do not persist explicit "auto" for protocol priority.
+  if [[ "$field_name" == "protocol-priority" && "$value" == "auto" ]]; then
+    git config -f .gitmodules --unset-all "kog-root-config.$field_name" 2>/dev/null || true
+    return 0
+  fi
 
   # Use kog-root-config section for configuration fields
   git config -f .gitmodules "kog-root-config.$field_name" "$value"

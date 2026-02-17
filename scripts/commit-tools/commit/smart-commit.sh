@@ -472,7 +472,7 @@ print_timing_summary() {
   total_elapsed=$(( $(timer_now) - TIMER_TOTAL_START ))
   echo ""
   echo "=== Timing Summary ==="
-  printf "%-16s  %8s  %s\n" "Phase" "Seconds" "Human"
+  printf "%-16s  %8s  %s\n" "Phase" "Seconds" "Duration"
   printf "%-16s  %8s  %s\n" "-----" "-------" "-----"
   printf "%-16s  %8s  %s\n" "discovery" "$TIMER_DISCOVERY" "$(format_duration "$TIMER_DISCOVERY")"
   printf "%-16s  %8s  %s\n" "commit-process" "$TIMER_PROCESS" "$(format_duration "$TIMER_PROCESS")"
