@@ -269,6 +269,23 @@ Two explicit sync workflows:
 ./scripts/commit-tools/sync/smart-sync-origin-latest.sh
 ```
 
+**Practical usage:**
+- `smart-sync-upstream-force-push` supports auto-detection:
+  - If current repo has `upstream`, operate on current repo.
+  - If current repo has no `upstream`, scan workspace and only process repos/submodules that have `upstream`.
+- Use `--repo <path>` to target a specific submodule from workspace root.
+
+```bash
+# Auto mode from workspace root: only repos with upstream will run
+./smart-sync-upstream-force-push.sh --provider copilot --model gpt-5-mini --verbose
+
+# Target one repo explicitly
+./smart-sync-upstream-force-push.sh --repo src/opencode --provider copilot --model gpt-5-mini
+
+# Origin-latest for one repo (no push)
+./smart-sync-origin-latest.sh --repo src/opencode
+```
+
 ### discover-repos.sh
 
 ```bash
@@ -576,6 +593,24 @@ AI-powered commit across all repositories with safety checks:
 - AI prompt stages are file-based and mode-aware.
 - Default mode is `auto`: `kano-git-master-skill` changes use `dev` prompts, other repos use `user` prompts.
 - Override with `--prompt-mode dev|user` or custom template root via `--prompt-root <path>`.
+- Environment variable defaults are also supported:
+  - `KOG_RULES_TEXT`, `KOG_RULES_FILE`, `KOG_PROMPT_MODE`, `KOG_PROMPT_ROOT`
+  - precedence: CLI args > env vars > built-in defaults
+
+**Rule/prompt customization examples:**
+```bash
+# One-off inline rules
+./scripts/commit-tools/commit/smart-commit.sh --provider copilot --model gpt-5-mini --rules "Use release-note friendly summary"
+
+# Rules from file
+./scripts/commit-tools/commit/smart-commit.sh --provider copilot --model gpt-5-mini --rules-file ./.rules/team-commit.rule.md
+
+# Force prompt mode and prompt root
+./scripts/commit-tools/commit/smart-commit.sh --provider copilot --model gpt-5-mini --prompt-mode user --prompt-root ./skills/kano/kano-git-master-skill/prompts
+
+# Environment variable defaults
+KOG_PROMPT_MODE=user KOG_RULES_FILE=.git/commit-rules.md ./scripts/commit-tools/commit/smart-commit.sh --provider copilot --model gpt-5-mini
+```
 
 **Output modes:**
 - **Default (quiet)**: Shows only repos with actual commits

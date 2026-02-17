@@ -98,6 +98,24 @@ AGENT_ID=""      # Execution identity: manual or agent name
 PROMPT_MODE="auto"   # auto|dev|user
 PROMPT_ROOT="$SKILL_ROOT/prompts"
 
+# Environment variable overrides (CLI args still take precedence):
+#   KOG_RULES_TEXT    -> same as --rules
+#   KOG_RULES_FILE    -> same as --rules-file
+#   KOG_PROMPT_MODE   -> same as --prompt-mode
+#   KOG_PROMPT_ROOT   -> same as --prompt-root
+if [[ -n "${KOG_RULES_TEXT:-}" ]]; then
+  CUSTOM_RULES="$KOG_RULES_TEXT"
+fi
+if [[ -n "${KOG_RULES_FILE:-}" ]]; then
+  RULES_FILE="$KOG_RULES_FILE"
+fi
+if [[ -n "${KOG_PROMPT_MODE:-}" ]]; then
+  PROMPT_MODE="$KOG_PROMPT_MODE"
+fi
+if [[ -n "${KOG_PROMPT_ROOT:-}" ]]; then
+  PROMPT_ROOT="$KOG_PROMPT_ROOT"
+fi
+
 #------------------------------------------------------------------------------
 # Functions
 #------------------------------------------------------------------------------
@@ -192,6 +210,15 @@ Wrapper Scripts:
   - ./smart-commit-opencode.sh
   - ./smart-commit-codex.sh
   - ./smart-commit-copilot.sh
+
+Environment variables (optional):
+  KOG_RULES_TEXT              Default value for --rules
+  KOG_RULES_FILE              Default value for --rules-file
+  KOG_PROMPT_MODE             Default value for --prompt-mode (auto|dev|user)
+  KOG_PROMPT_ROOT             Default value for --prompt-root
+
+Precedence:
+  CLI arguments > environment variables > built-in defaults
 EOF
 }
 
@@ -790,13 +817,18 @@ load_prompt_template_for_stage() {
   local repo="$1"
   local stage="$2"
   local mode=""
+  local prompt_root="$PROMPT_ROOT"
   local base_file=""
   local mode_file=""
   local combined=""
 
+  if [[ -n "$prompt_root" && "$prompt_root" != /* ]]; then
+    prompt_root="$ROOT/$prompt_root"
+  fi
+
   mode="$(resolve_prompt_mode_for_repo "$repo")"
-  base_file="$PROMPT_ROOT/base/$stage.md"
-  mode_file="$PROMPT_ROOT/$mode/$stage.md"
+  base_file="$prompt_root/base/$stage.md"
+  mode_file="$prompt_root/$mode/$stage.md"
 
   if [[ ! -f "$base_file" ]]; then
     return 1
