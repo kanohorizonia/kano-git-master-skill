@@ -762,7 +762,11 @@ resolve_rules_file_for_repo() {
     rule_name="default.rule.md"
   fi
 
-  for candidate in "$repo/$rule_name" "$ROOT/$rule_name"; do
+  # Resolution priority:
+  # 1) repository-local override
+  # 2) workspace-root override
+  # 3) built-in skill default under references/
+  for candidate in "$repo/$rule_name" "$ROOT/$rule_name" "$SKILL_ROOT/references/$rule_name"; do
     if [[ -f "$candidate" ]]; then
       printf '%s' "$candidate"
       return 0

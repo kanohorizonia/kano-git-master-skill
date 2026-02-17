@@ -361,7 +361,7 @@ Two explicit sync workflows:
 - Report formats: `compact` (default), `table`, `tsv`, `json`, `markdown`.
 
 For full operational rules, see:
-- `references/OPS-POLICIES.md`
+- `references/ops-policies.md`
 
 ### discover-repos.sh
 
@@ -695,6 +695,12 @@ AI-powered commit across all repositories with safety checks:
 KOG_PROMPT_MODE=user KOG_RULES_FILE=.git/commit-rules.md ./scripts/commit-tools/commit/smart-commit.sh --provider copilot --model gpt-5-mini
 ```
 
+**Default rules fallback (built-in):**
+- If no explicit `--rules` / `--rules-file` is provided, rule lookup order is:
+  1. `<repo>/dev.rule.md` or `<repo>/default.rule.md`
+  2. `<workspace-root>/dev.rule.md` or `<workspace-root>/default.rule.md`
+  3. built-in defaults in `references/dev.rule.md` and `references/default.rule.md`
+
 **Output modes:**
 - **Default (quiet)**: Shows only repos with actual commits
 - **Verbose**: Shows all repos, including those with no changes
@@ -779,7 +785,7 @@ backlog                       origin             main (no changes)
 - Summary statistics on completion
 
 Detailed policy reference:
-- `references/OPS-POLICIES.md`
+- `references/ops-policies.md`
 
 ## Legacy Scripts
 
