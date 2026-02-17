@@ -176,7 +176,10 @@ sync_force_push_one_repo() {
     return 0
   fi
 
-  bash "${sync_cmd[@]}"
+  (
+    cd "$repo_path"
+    bash "${sync_cmd[@]}"
+  )
   echo "Force-pushing to $ORIGIN_REMOTE/$current_branch (with --force-with-lease)"
   "${push_cmd[@]}"
   return 0
