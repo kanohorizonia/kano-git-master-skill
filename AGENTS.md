@@ -197,3 +197,37 @@ Note: sourcing will also define globals used by those functions (see the script 
   - `auto` (default): `kano-git-master-skill` repos -> `dev`, others -> `user`
   - override with `--prompt-mode dev|user`
 - Keep templates short and policy-focused; repo/file stats and diff previews are appended by script runtime.
+
+### Stable-dev wrapper scope + reporting
+- `smart-sync-upstream-stable-dev.sh` default scope is `src/*` submodules only.
+- Wrapper only executes repos that have `upstream` remote; no-upstream repos are skipped.
+- End-of-run reporting should be aggregated at the bottom (not interleaved across repos).
+- Commit report payload standard:
+  - `current_branch`
+  - `latest_upstream_commit`
+  - `latest_stable_branch_commit`
+  - commit line format: `sha | commit-time | author | title`
+- Report format switch is now wrapper-owned (`--format compact|table|tsv|json|markdown`) and must not leak to inner sync script args.
+
+### Stable-dev branch bookkeeping
+- Stable-dev sync updates superproject `.gitmodules` branch for target submodule branch (for example `branch_v1.2.6`).
+- This keeps future detached-head recovery aligned with intended maintenance branch.
+
+### Multi-remote push semantics
+- `smart-push.sh` now pushes to all available origin remotes:
+  - `origin-ssh`
+  - `origin-http`
+  - `origin`
+- Success policy is "any success": repo push is successful if at least one remote push succeeds.
+- Repo is failed only when all candidate origin remotes fail.
+- Non-verbose mode suppresses partial-remote failure noise; verbose mode prints per-remote failures.
+
+### `kog-protocol-priority` persistence rule
+- `kog-protocol-priority=auto` should not be written by default.
+- Persist `kog-protocol-priority` only when user explicitly chooses non-default value (`ssh` or `https`).
+
+### AI review gate robustness
+- `smart-commit.sh` AI review gate is fail-open for provider/format glitches:
+  - Empty/invalid verdict -> warning + continue
+  - Explicit `FAIL` verdict -> block commit
+- Parsing tolerates common small-model output drift (`PASS - ...`, leading spaces, fuzzy PASS/FAIL tokens).

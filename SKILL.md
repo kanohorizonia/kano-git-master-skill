@@ -334,9 +334,9 @@ Two explicit sync workflows:
   - skip cherry-pick
   - push target branch
 
-**Strict precondition for stable-dev migration:**
-- Must start from a stable-dev branch: `branch_<stable_tag>`.
-- If current branch is not `branch_*` format, script exits with error.
+**Stable-dev precondition (updated):**
+- Working tree must be clean.
+- Script auto-switches to target stable branch `branch_<target-tag>` (creates it from target tag if missing).
 
 **Conflict behavior:**
 - Default: AI auto-resolve during cherry-pick conflicts.
@@ -354,6 +354,14 @@ Two explicit sync workflows:
    - `./smart-sync-origin-latest.sh --repo src/opencode`
 3. Verify summary from step 1:
    - check `target_version_tag` and `maintained_commits_local` in `=== Stable Dev Summary ===`
+
+**Root wrapper (`./smart-sync-upstream-stable-dev.sh`) behavior:**
+- Without `--repo`, wrapper scans `src/*` submodules and processes only repos with `upstream`.
+- End-of-run report is aggregated at the bottom.
+- Report formats: `compact` (default), `table`, `tsv`, `json`, `markdown`.
+
+For full operational rules, see:
+- `references/OPS-POLICIES.md`
 
 ### discover-repos.sh
 
@@ -695,7 +703,9 @@ KOG_PROMPT_MODE=user KOG_RULES_FILE=.git/commit-rules.md ./scripts/commit-tools/
 - Detects secrets, API keys, private keys
 - Blocks large files
 - Auto-updates .gitignore (only prints when file actually changes)
-- AI safety review (optional, skipped when no changes)
+- AI safety review (optional):
+  - explicit `FAIL` blocks commit
+  - invalid/empty review verdicts are treated as warning and fail-open
 - Works with GitHub Copilot CLI
 
 ### Smart Commit-Push (smart-commit-push.sh)
@@ -716,6 +726,7 @@ Complete workflow: commit and push all repositories in one step:
 **Agent delegation note (required contract):**
 - For agent-driven workflows, pass `--agent <name>` and provide a fixed commit message (`-m "..."`).
 - When `--agent` is not `manual`, delegated mode disables in-script AI review (`--no-ai-review`) to avoid duplicate model usage.
+- For human-run workflows, short flag `-noai` is available (same as `--no-ai-review`).
 - If you are modifying this skill itself (`kano-git-master-skill`), commit those edits first before running full `smart-commit-push`.
 - Reason: Step 1 pre-sync now uses auto stash/pop, and ongoing edits in the skill repo can be disrupted by stash-pop conflict handling.
 
@@ -723,7 +734,7 @@ Complete workflow: commit and push all repositories in one step:
 1. **Pre-sync**: auto `stash -> sync -> pop` per repo to rebase/pull safely before committing.
 2. **Commit**: runs `smart-commit.sh` across discovered repos.
 3. **Post-sync**: `sync-only` again, but **fails if a repo is dirty** (no stash/pop) to prevent pushing an outdated branch tip.
-4. **Push**: pushes all repos (SSH→HTTP fallback per repo).
+4. **Push**: pushes all repos to configured origin remotes (`origin-ssh`, `origin-http`, and `origin` when present).
 
 **Workspace lock marker (safety):**
 - While running, `smart-commit-push` creates a lock directory: `.git/kano-smart-commit-push.lock`.
@@ -732,6 +743,11 @@ Complete workflow: commit and push all repositories in one step:
 **Pre-push hooks and `--no-verify`:**
 - Some repos/submodules enforce pre-push hooks (e.g. typecheck). If a hook fails, the overall workflow will fail at Step 4 for that repo.
 - If you understand the risk and only need to push, pass `--no-verify` to skip hooks for the `git push` step.
+
+**Multi-remote push success rule (summary):**
+- Push attempts all configured origin remotes.
+- Repo success = at least one remote succeeds.
+- Repo failure = all candidate remotes fail.
 
 **Summary tables:**
 After successful completion, displays two summary tables:
@@ -759,8 +775,11 @@ backlog                       origin             main (no changes)
 - Processes root repo, submodules, and nested repos
 - AI-generated commit messages with safety review
 - Automatic sync with upstream before push
-- SSH→HTTP fallback per repository
+- Multi-remote push support (`origin-ssh` + `origin-http` + `origin`)
 - Summary statistics on completion
+
+Detailed policy reference:
+- `references/OPS-POLICIES.md`
 
 ## Legacy Scripts
 
