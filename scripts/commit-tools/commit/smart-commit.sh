@@ -437,6 +437,10 @@ declare -a COMMIT_STATS=()
 TIMER_TOTAL_START=0
 TIMER_DISCOVERY=0
 TIMER_PROCESS=0
+DISCOVERED_COMMIT_SKILL_RULES_FILE=""
+DISCOVERED_REVIEW_SKILL_RULES_FILE=""
+DISCOVERED_COMMIT_SKILL_RULES_DONE=0
+DISCOVERED_REVIEW_SKILL_RULES_DONE=0
 
 resolve_revision_count() {
   local repo="$1"
@@ -765,6 +769,115 @@ is_git_master_repo() {
   return 1
 }
 
+# Auto-discover commit/review rules from installed "commit convention" skills.
+# Priority is still lower than explicit --rules/--rules-file and repo/root defaults.
+discover_skill_rules_file() {
+  local purpose="${1:-commit}"
+  local cached_value=""
+  local cached_done=0
+  local skills_root="$ROOT/skills"
+  local skill_md=""
+  local skill_dir=""
+  local skill_name=""
+  local references_dir=""
+  local candidate=""
+  local -a exact_candidates=()
+
+  if [[ "$purpose" == "review" ]]; then
+    cached_done="$DISCOVERED_REVIEW_SKILL_RULES_DONE"
+    cached_value="$DISCOVERED_REVIEW_SKILL_RULES_FILE"
+  else
+    cached_done="$DISCOVERED_COMMIT_SKILL_RULES_DONE"
+    cached_value="$DISCOVERED_COMMIT_SKILL_RULES_FILE"
+  fi
+
+  if [[ "$cached_done" -eq 1 ]]; then
+    if [[ -n "$cached_value" ]]; then
+      printf '%s' "$cached_value"
+      return 0
+    fi
+    return 1
+  fi
+
+  if [[ ! -d "$skills_root" ]]; then
+    if [[ "$purpose" == "review" ]]; then
+      DISCOVERED_REVIEW_SKILL_RULES_DONE=1
+    else
+      DISCOVERED_COMMIT_SKILL_RULES_DONE=1
+    fi
+    return 1
+  fi
+
+  while IFS= read -r skill_md; do
+    skill_dir="$(dirname "$skill_md")"
+    skill_name="$(basename "$skill_dir" | tr '[:upper:]' '[:lower:]')"
+    references_dir="$skill_dir/references"
+
+    # Only consider skills that look like commit-convention providers.
+    if ! [[ "$skill_name" =~ commit.*convention|conventional.*commit ]]; then
+      if ! grep -Eiq 'commit[[:space:]-]*convention|conventional[[:space:]-]*commit|commit message' "$skill_md" 2>/dev/null; then
+        continue
+      fi
+    fi
+
+    if [[ "$purpose" == "review" ]]; then
+      exact_candidates=(
+        "$references_dir/review.rule.md"
+        "$references_dir/review-rules.md"
+        "$references_dir/default.rule.md"
+      )
+    else
+      exact_candidates=(
+        "$references_dir/commit.rule.md"
+        "$references_dir/commit-rules.md"
+        "$references_dir/default.rule.md"
+      )
+    fi
+
+    for candidate in "${exact_candidates[@]}"; do
+      if [[ -f "$candidate" ]]; then
+        if [[ "$purpose" == "review" ]]; then
+          DISCOVERED_REVIEW_SKILL_RULES_FILE="$candidate"
+          DISCOVERED_REVIEW_SKILL_RULES_DONE=1
+        else
+          DISCOVERED_COMMIT_SKILL_RULES_FILE="$candidate"
+          DISCOVERED_COMMIT_SKILL_RULES_DONE=1
+        fi
+        printf '%s' "$candidate"
+        return 0
+      fi
+    done
+
+    if [[ -d "$references_dir" ]]; then
+      if [[ "$purpose" == "review" ]]; then
+        candidate="$(find "$references_dir" -maxdepth 2 -type f \
+          \( -iname "*review*rule*.md" -o -iname "*review*rules*.md" \) | sort | head -n 1)"
+      else
+        candidate="$(find "$references_dir" -maxdepth 2 -type f \
+          \( -iname "*commit*convention*.md" -o -iname "*conventional*commit*.md" -o -iname "*commit*rule*.md" -o -iname "*commit*rules*.md" \) | sort | head -n 1)"
+      fi
+      if [[ -n "$candidate" && -f "$candidate" ]]; then
+        if [[ "$purpose" == "review" ]]; then
+          DISCOVERED_REVIEW_SKILL_RULES_FILE="$candidate"
+          DISCOVERED_REVIEW_SKILL_RULES_DONE=1
+        else
+          DISCOVERED_COMMIT_SKILL_RULES_FILE="$candidate"
+          DISCOVERED_COMMIT_SKILL_RULES_DONE=1
+        fi
+        printf '%s' "$candidate"
+        return 0
+      fi
+    fi
+  done < <(find "$skills_root" -mindepth 2 -maxdepth 4 -type f -name "SKILL.md" | sort)
+
+  if [[ "$purpose" == "review" ]]; then
+    DISCOVERED_REVIEW_SKILL_RULES_DONE=1
+  else
+    DISCOVERED_COMMIT_SKILL_RULES_DONE=1
+  fi
+  return 1
+}
+
 resolve_rules_file_for_repo() {
   local repo="$1"
   local purpose="${2:-commit}"
@@ -806,6 +919,13 @@ resolve_rules_file_for_repo() {
       return 0
     fi
   done
+
+  # Skill-level convention fallback (auto-discovered).
+  candidate="$(discover_skill_rules_file "$purpose" || true)"
+  if [[ -n "$candidate" && -f "$candidate" ]]; then
+    printf '%s' "$candidate"
+    return 0
+  fi
 
   # Backward-compatible auto-detection.
   if [[ "$purpose" == "review" ]]; then
