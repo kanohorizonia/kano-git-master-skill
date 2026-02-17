@@ -82,8 +82,9 @@ Examples:
   ./smart-commit-push.sh --agent codex -m "chore: update workspace"
 
 Workflow Steps:
-  1. Commit changes (using smart-commit.sh)
-  2. Push changes (using smart-push.sh)
+  1. Pre-sync repositories (using smart-push.sh --sync-only)
+  2. Commit changes (using smart-commit.sh)
+  3. Push changes (using smart-push.sh --skip-sync)
 
 Safety:
   - Dry run mode available
@@ -193,8 +194,21 @@ fi
 echo "=== Smart Commit-Push Workflow ==="
 echo ""
 
-# Step 1: Commit changes
-echo "Step 1: Committing changes..."
+# Step 1: Pre-sync changes
+echo "Step 1: Pre-sync workflow..."
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  echo "[DRY RUN] Would run: $SCRIPT_DIR/../smart-push.sh --sync-only ${SMART_PUSH_ARGS[*]}"
+else
+  if ! bash "$SCRIPT_DIR/../smart-push.sh" --sync-only "${SMART_PUSH_ARGS[@]}"; then
+    echo "ERROR: Pre-sync step failed. Check smart-push output above for repository-specific failures." >&2
+    exit 1
+  fi
+fi
+
+echo ""
+
+# Step 2: Commit changes
+echo "Step 2: Committing changes..."
 if [[ "$DRY_RUN" -eq 1 ]]; then
   echo "[DRY RUN] Would run: $SCRIPT_DIR/../commit/smart-commit.sh ${SMART_COMMIT_ARGS[*]}"
 else
@@ -205,11 +219,11 @@ else
 fi
 
 echo ""
-echo "Step 2: Push workflow..."
+echo "Step 3: Push workflow..."
 if [[ "$DRY_RUN" -eq 1 ]]; then
-  echo "[DRY RUN] Would run: $SCRIPT_DIR/../smart-push.sh ${SMART_PUSH_ARGS[*]}"
+  echo "[DRY RUN] Would run: $SCRIPT_DIR/../smart-push.sh --skip-sync ${SMART_PUSH_ARGS[*]}"
 else
-  if ! bash "$SCRIPT_DIR/../smart-push.sh" "${SMART_PUSH_ARGS[@]}"; then
+  if ! bash "$SCRIPT_DIR/../smart-push.sh" --skip-sync "${SMART_PUSH_ARGS[@]}"; then
     echo "ERROR: Push step failed. Check smart-push output above for repository-specific failures." >&2
     exit 1
   fi

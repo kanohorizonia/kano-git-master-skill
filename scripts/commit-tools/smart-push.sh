@@ -10,6 +10,8 @@ INCLUDE_SUBMODULES=1
 INCLUDE_STANDALONE=1
 REPO_FILTER=""
 NO_SMART_SYNC=0
+SYNC_ONLY=0
+SKIP_SYNC=0
 VERBOSE=0        # Show all repos (default: show only repos with changes)
 
 # Push statistics: format "repo_name|remote|branch"
@@ -26,6 +28,8 @@ Options:
   --no-root              Exclude root repo
   --no-submodules        Exclude submodules
   --no-standalone        Exclude standalone repos
+  --sync-only            Sync only (no push)
+  --skip-sync            Push only (skip sync)
   --no-smart-sync        Disable AI-powered sync (use simple git pull --rebase)
   --force-with-lease     Use --force-with-lease on push
   --verbose              Show all repos (default: show only repos with changes)
@@ -66,6 +70,14 @@ while [[ $# -gt 0 ]]; do
       INCLUDE_STANDALONE=0
       shift
       ;;
+    --sync-only)
+      SYNC_ONLY=1
+      shift
+      ;;
+    --skip-sync)
+      SKIP_SYNC=1
+      shift
+      ;;
     --no-smart-sync)
       NO_SMART_SYNC=1
       shift
@@ -93,6 +105,11 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ "$SYNC_ONLY" -eq 1 && "$SKIP_SYNC" -eq 1 ]]; then
+  echo "ERROR: --sync-only and --skip-sync cannot be used together" >&2
+  exit 1
+fi
 
 if [[ -n "${KANO_GIT_MASTER_ROOT:-}" ]]; then
   ROOT="$(cd "$KANO_GIT_MASTER_ROOT" && pwd)"
@@ -192,7 +209,13 @@ for repo in "${REPOS[@]}"; do
   fi
 
   if [[ "$DRY_RUN" -eq 1 ]]; then
-    echo "[$repo] [DRY RUN] Would push $branch"
+    if [[ "$SYNC_ONLY" -eq 1 ]]; then
+      echo "[$repo] [DRY RUN] Would sync $branch"
+    elif [[ "$SKIP_SYNC" -eq 1 ]]; then
+      echo "[$repo] [DRY RUN] Would push $branch (skip sync)"
+    else
+      echo "[$repo] [DRY RUN] Would sync and push $branch"
+    fi
     continue
   fi
 
@@ -222,8 +245,8 @@ for repo in "${REPOS[@]}"; do
     continue
   fi
 
-  # Auto-sync with upstream if exists
-  if [[ "$has_upstream" -eq 1 ]]; then
+  # Auto-sync with upstream if exists (unless --skip-sync)
+  if [[ "$SKIP_SYNC" -eq 0 && "$has_upstream" -eq 1 ]]; then
     sync_output="$(git -C "$repo" pull --rebase 2>&1 || true)"
     sync_exit=$?
 
@@ -247,6 +270,13 @@ for repo in "${REPOS[@]}"; do
         echo "[$repo] Synced"
       fi
     fi
+  fi
+
+  if [[ "$SYNC_ONLY" -eq 1 ]]; then
+    if [[ "$VERBOSE" -eq 1 ]]; then
+      echo "[$repo] Sync-only mode: skipping push"
+    fi
+    continue
   fi
 
   push_args=()
