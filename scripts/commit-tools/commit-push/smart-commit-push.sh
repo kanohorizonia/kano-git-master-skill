@@ -38,6 +38,9 @@ DRY_RUN=0
 SMART_COMMIT_ARGS=()
 SMART_PUSH_ARGS=()
 AGENT_ID=""
+WORKFLOW_ROOT=""
+WORKFLOW_LOCK_DIR=""
+WORKFLOW_LOCKED=0
 
 #------------------------------------------------------------------------------
 # Functions
@@ -60,6 +63,7 @@ Optional:
   --no-submodules             Exclude submodules from push
   --no-standalone             Exclude standalone repos from push
   --force-with-lease          Use --force-with-lease when pushing
+  --no-verify                 Pass --no-verify to git push (skip pre-push hooks)
   --no-smart-sync             Disable AI-powered sync (use simple git pull --rebase)
   --no-smart-ignore           Disable AI-powered .gitignore updates
   --rules <text>              Custom commit rules (inline text)
@@ -82,9 +86,10 @@ Examples:
   ./smart-commit-push.sh --agent codex -m "chore: update workspace"
 
 Workflow Steps:
-  1. Pre-sync repositories (using smart-push.sh --sync-only)
+  1. Pre-sync repositories (stash -> sync -> pop)
   2. Commit changes (using smart-commit.sh)
-  3. Push changes (using smart-push.sh --skip-sync)
+  3. Post-sync repositories (sync-only, no stash/pop)
+  4. Push changes (using smart-push.sh --skip-sync)
 
 Safety:
   - Dry run mode available
@@ -103,7 +108,7 @@ while [[ $# -gt 0 ]]; do
       usage
       exit 0
       ;;
-    --repos|--no-root|--no-submodules|--no-standalone|--force-with-lease|--no-smart-sync)
+    --repos|--no-root|--no-submodules|--no-standalone|--force-with-lease|--no-verify|--no-smart-sync)
       SMART_PUSH_ARGS+=("$1")
       if [[ "$1" == "--repos" ]]; then
         SMART_PUSH_ARGS+=("${2:-}")
@@ -145,6 +150,54 @@ has_commit_arg() {
     fi
   done
   return 1
+}
+
+setup_workflow_root() {
+  if [[ -n "${KANO_GIT_MASTER_ROOT:-}" ]]; then
+    WORKFLOW_ROOT="$(cd "$KANO_GIT_MASTER_ROOT" && pwd)"
+  else
+    WORKFLOW_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+    if [[ -z "$WORKFLOW_ROOT" ]]; then
+      WORKFLOW_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+    fi
+  fi
+  WORKFLOW_LOCK_DIR="$WORKFLOW_ROOT/.git/kano-smart-commit-push.lock"
+}
+
+release_workflow_lock() {
+  if [[ "$WORKFLOW_LOCKED" -eq 1 && -n "$WORKFLOW_LOCK_DIR" ]]; then
+    rm -rf "$WORKFLOW_LOCK_DIR"
+    WORKFLOW_LOCKED=0
+  fi
+}
+
+acquire_workflow_lock() {
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    return 0
+  fi
+  if [[ -z "$WORKFLOW_LOCK_DIR" ]]; then
+    echo "ERROR: workflow lock path is empty" >&2
+    exit 1
+  fi
+  if mkdir "$WORKFLOW_LOCK_DIR" 2>/dev/null; then
+    WORKFLOW_LOCKED=1
+    {
+      echo "pid=$$"
+      echo "agent=${AGENT_ID:-manual}"
+      echo "started_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    } > "$WORKFLOW_LOCK_DIR/owner"
+    echo "INFO: workflow lock acquired: $WORKFLOW_LOCK_DIR"
+    echo "INFO: workflow in progress. Do not edit files until this command completes."
+  else
+    echo "ERROR: another smart-commit-push workflow appears active." >&2
+    echo "Lock path: $WORKFLOW_LOCK_DIR" >&2
+    if [[ -f "$WORKFLOW_LOCK_DIR/owner" ]]; then
+      echo "Lock owner info:" >&2
+      cat "$WORKFLOW_LOCK_DIR/owner" >&2
+    fi
+    echo "If stale, remove lock manually after verification." >&2
+    exit 1
+  fi
 }
 
 has_commit_message_arg() {
@@ -200,15 +253,19 @@ fi
 echo "=== Smart Commit-Push Workflow ==="
 echo ""
 
+setup_workflow_root
+trap release_workflow_lock EXIT INT TERM
+acquire_workflow_lock
+
 # Step 1: Pre-sync changes
 echo "Step 1: Pre-sync workflow..."
 if [[ "$DRY_RUN" -eq 1 ]]; then
-  echo "[DRY RUN] Would run: $SCRIPT_DIR/../smart-push.sh --sync-only ${SMART_PUSH_ARGS[*]}"
+  echo "[DRY RUN] Would run: $SCRIPT_DIR/../smart-push.sh --sync-only --stash-local-changes ${SMART_PUSH_ARGS[*]}"
 else
-  if ! bash "$SCRIPT_DIR/../smart-push.sh" --sync-only "${SMART_PUSH_ARGS[@]}"; then
+  if ! bash "$SCRIPT_DIR/../smart-push.sh" --sync-only --stash-local-changes "${SMART_PUSH_ARGS[@]}"; then
     echo "ERROR: Pre-sync step failed. Check smart-push output above for repository-specific failures." >&2
     echo "Hint: rerun pre-sync with details: ./smart-push.sh --sync-only --verbose" >&2
-    echo "After resolving conflicts, rerun this command to continue the 3-step flow." >&2
+    echo "After resolving conflicts, rerun this command to continue the 4-step flow." >&2
     exit 1
   fi
 fi
@@ -227,7 +284,18 @@ else
 fi
 
 echo ""
-echo "Step 3: Push workflow..."
+echo "Step 3: Post-sync workflow..."
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  echo "[DRY RUN] Would run: $SCRIPT_DIR/../smart-push.sh --sync-only --fail-on-dirty-sync ${SMART_PUSH_ARGS[*]}"
+else
+  if ! bash "$SCRIPT_DIR/../smart-push.sh" --sync-only --fail-on-dirty-sync "${SMART_PUSH_ARGS[@]}"; then
+    echo "ERROR: Post-sync step failed. Check smart-push output above for repository-specific failures." >&2
+    exit 1
+  fi
+fi
+
+echo ""
+echo "Step 4: Push workflow..."
 if [[ "$DRY_RUN" -eq 1 ]]; then
   echo "[DRY RUN] Would run: $SCRIPT_DIR/../smart-push.sh --skip-sync ${SMART_PUSH_ARGS[*]}"
 else

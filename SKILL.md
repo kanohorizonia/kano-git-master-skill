@@ -589,6 +589,8 @@ Complete workflow: commit and push all repositories in one step:
 **Agent delegation note (required contract):**
 - For agent-driven workflows, pass `--agent <name>` and provide a fixed commit message (`-m "..."`).
 - When `--agent` is not `manual`, delegated mode disables in-script AI review (`--no-ai-review`) to avoid duplicate model usage.
+- If you are modifying this skill itself (`kano-git-master-skill`), commit those edits first before running full `smart-commit-push`.
+- Reason: Step 1 pre-sync now uses auto stash/pop, and ongoing edits in the skill repo can be disrupted by stash-pop conflict handling.
 
 **Summary tables:**
 After successful completion, displays two summary tables:

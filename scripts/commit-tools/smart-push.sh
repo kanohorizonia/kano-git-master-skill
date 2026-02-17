@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 DRY_RUN=0
 FORCE_WITH_LEASE=0
+NO_VERIFY=0
 INCLUDE_ROOT=1
 INCLUDE_SUBMODULES=1
 INCLUDE_STANDALONE=1
@@ -12,6 +13,8 @@ REPO_FILTER=""
 NO_SMART_SYNC=0
 SYNC_ONLY=0
 SKIP_SYNC=0
+STASH_LOCAL_CHANGES=0
+FAIL_ON_DIRTY_SYNC=0
 VERBOSE=0        # Show all repos (default: show only repos with changes)
 
 # Push statistics: format "repo_name|remote|branch"
@@ -139,8 +142,11 @@ Options:
   --no-standalone        Exclude standalone repos
   --sync-only            Sync only (no push)
   --skip-sync            Push only (skip sync)
+  --stash-local-changes  When syncing dirty repos, auto stash before sync and pop after
+  --fail-on-dirty-sync   Fail sync if local changes exist (instead of skipping)
   --no-smart-sync        Disable AI-powered sync (use simple git pull --rebase)
   --force-with-lease     Use --force-with-lease on push
+  --no-verify            Pass --no-verify to git push (skip pre-push hooks)
   --verbose              Show all repos (default: show only repos with changes)
   --dry-run              Show what would be done without doing it
   -h, --help             Show help
@@ -187,12 +193,24 @@ while [[ $# -gt 0 ]]; do
       SKIP_SYNC=1
       shift
       ;;
+    --stash-local-changes)
+      STASH_LOCAL_CHANGES=1
+      shift
+      ;;
+    --fail-on-dirty-sync)
+      FAIL_ON_DIRTY_SYNC=1
+      shift
+      ;;
     --no-smart-sync)
       NO_SMART_SYNC=1
       shift
       ;;
     --force-with-lease)
       FORCE_WITH_LEASE=1
+      shift
+      ;;
+    --no-verify)
+      NO_VERIFY=1
       shift
       ;;
     --verbose)
@@ -217,6 +235,10 @@ done
 
 if [[ "$SYNC_ONLY" -eq 1 && "$SKIP_SYNC" -eq 1 ]]; then
   echo "ERROR: --sync-only and --skip-sync cannot be used together" >&2
+  exit 1
+fi
+if [[ "$STASH_LOCAL_CHANGES" -eq 1 && "$FAIL_ON_DIRTY_SYNC" -eq 1 ]]; then
+  echo "ERROR: --stash-local-changes and --fail-on-dirty-sync cannot be used together" >&2
   exit 1
 fi
 
@@ -362,22 +384,76 @@ for repo in "${REPOS[@]}"; do
 
   # Auto-sync with upstream if exists (unless --skip-sync)
   if [[ "$SKIP_SYNC" -eq 0 && "$has_upstream" -eq 1 ]]; then
-    # Pre-sync should not fail the whole workflow when a repo has local changes.
-    # In that case, skip sync for this repo and let commit phase handle changes.
+    local_changes=0
+    had_stash=0
+    sync_output=""
     if [[ -n "$(git -C "$repo" status --porcelain 2>/dev/null || true)" ]]; then
-      if [[ "$VERBOSE" -eq 1 ]]; then
-        echo "[$repo] Sync skipped: local changes present"
+      local_changes=1
+    fi
+
+    if [[ "$local_changes" -eq 1 ]]; then
+      if [[ "$STASH_LOCAL_CHANGES" -eq 1 ]]; then
+        stash_msg="kano-smart-push-autostash $(date +%Y%m%d-%H%M%S)"
+        if stash_output="$(git -C "$repo" stash push -u -m "$stash_msg" 2>&1)"; then
+          if echo "$stash_output" | grep -q "No local changes to save"; then
+            had_stash=0
+            if [[ "$VERBOSE" -eq 1 ]]; then
+              echo "[$repo] Local changes were not stashable (likely submodule pointer-only state); continuing without stash"
+            fi
+          else
+            had_stash=1
+            if [[ "$VERBOSE" -eq 1 ]]; then
+              echo "[$repo] Auto-stashed local changes for sync"
+            fi
+          fi
+        else
+          echo "[$repo] ERROR: Failed to auto-stash local changes" >&2
+          echo "[$repo] Stash output:" >&2
+          echo "$stash_output" >&2
+          FAILED=1
+          continue
+        fi
+      elif [[ "$FAIL_ON_DIRTY_SYNC" -eq 1 ]]; then
+        echo "[$repo] Sync failed: local changes present (dirty working tree)" >&2
+        FAILED=1
+        continue
+      else
+        if [[ "$VERBOSE" -eq 1 ]]; then
+          echo "[$repo] Sync skipped: local changes present"
+        fi
+        continue
       fi
-    elif sync_output="$(git -C "$repo" pull --rebase 2>&1)"; then
+    fi
+
+    if sync_output="$(git -C "$repo" pull --rebase 2>&1)"; then
       :
     else
       sync_exit=$?
       echo "[$repo] Sync failed (exit code: $sync_exit)" >&2
       echo "[$repo] Sync output:" >&2
       echo "$sync_output" >&2
+      if [[ "$had_stash" -eq 1 ]]; then
+        echo "[$repo] Auto-stash kept due to sync failure. Recover with: git -C \"$repo\" stash list" >&2
+      fi
       echo "[$repo] Please resolve conflicts manually: cd $repo && git rebase --abort (or continue)" >&2
       FAILED=1
       continue
+    fi
+
+    if [[ "$had_stash" -eq 1 ]]; then
+      if pop_output="$(git -C "$repo" stash pop 2>&1)"; then
+        if [[ "$VERBOSE" -eq 1 ]]; then
+          echo "[$repo] Restored stashed changes after sync"
+        fi
+      else
+        pop_exit=$?
+        echo "[$repo] ERROR: Auto-stash pop failed (exit code: $pop_exit)" >&2
+        echo "[$repo] Stash pop output:" >&2
+        echo "$pop_output" >&2
+        echo "[$repo] Resolve conflicts and continue manually. Stash may still exist." >&2
+        FAILED=1
+        continue
+      fi
     fi
 
     # Only print output if there's non-trivial change or in verbose mode
@@ -407,6 +483,9 @@ for repo in "${REPOS[@]}"; do
   push_args=()
   if [[ "$FORCE_WITH_LEASE" -eq 1 ]]; then
     push_args+=("--force-with-lease")
+  fi
+  if [[ "$NO_VERIFY" -eq 1 ]]; then
+    push_args+=("--no-verify")
   fi
   if [[ "$set_upstream" -eq 1 ]]; then
     push_args+=("-u")
