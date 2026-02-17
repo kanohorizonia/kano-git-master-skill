@@ -387,13 +387,23 @@ gith_discover_repos() {
 
   # Add submodules
   for submodule in "${submodules[@]}"; do
+    if ! gith_is_git_repo "$submodule"; then
+      gith_log "WARN" "Skipping non-git submodule path from discovery: $submodule"
+      continue
+    fi
+
+    local metadata
+    metadata="$(gith_collect_repo_metadata "$submodule")"
+    if [[ -z "$metadata" || "$metadata" == "{}" ]]; then
+      gith_log "WARN" "Skipping submodule with invalid metadata: $submodule"
+      continue
+    fi
+
     if [[ $first -eq 0 ]]; then
       json+=","
     fi
     first=0
 
-    local metadata
-    metadata="$(gith_collect_repo_metadata "$submodule")"
     # Add type field
     metadata="${metadata%\}},\"type\":\"submodule\"}"
     json+="$metadata"
@@ -401,13 +411,23 @@ gith_discover_repos() {
 
   # Add standalone repos
   for standalone in "${standalone_repos[@]}"; do
+    if ! gith_is_git_repo "$standalone"; then
+      gith_log "WARN" "Skipping non-git standalone path from discovery: $standalone"
+      continue
+    fi
+
+    local metadata
+    metadata="$(gith_collect_repo_metadata "$standalone")"
+    if [[ -z "$metadata" || "$metadata" == "{}" ]]; then
+      gith_log "WARN" "Skipping standalone repo with invalid metadata: $standalone"
+      continue
+    fi
+
     if [[ $first -eq 0 ]]; then
       json+=","
     fi
     first=0
 
-    local metadata
-    metadata="$(gith_collect_repo_metadata "$standalone")"
     # Add type field
     metadata="${metadata%\}},\"type\":\"standalone\"}"
     json+="$metadata"
@@ -477,14 +497,25 @@ gith_collect_submodules() {
       local nested_submodules
       nested_submodules="$(gith_collect_submodules "$full_submodule_path")"
 
-      # If there are nested submodules, add them with adjusted paths
+      # If there are nested submodules, add them with parent-prefixed paths
       if [[ "$nested_submodules" != "[]" ]]; then
-        # Parse nested submodules and prepend parent path
-        local nested_json
-        nested_json="$(echo "$nested_submodules" | sed 's/^\[//;s/\]$//')"
-        if [[ -n "$nested_json" ]]; then
-          json+=",$nested_json"
-        fi
+        while IFS= read -r nested_repo; do
+          [[ -z "$nested_repo" ]] && continue
+
+          local nested_path nested_url
+          nested_path="$(echo "$nested_repo" | grep -o '"path":"[^"]*"' | sed 's/"path":"//;s/"$//')"
+          nested_url="$(echo "$nested_repo" | grep -o '"url":"[^"]*"' | sed 's/"url":"//;s/"$//')"
+
+          [[ -z "$nested_path" ]] && continue
+
+          local combined_path="$submodule_path/$nested_path"
+          local escaped_combined_path="${combined_path//\\/\\\\}"
+          escaped_combined_path="${escaped_combined_path//\"/\\\"}"
+          local escaped_nested_url="${nested_url//\\/\\\\}"
+          escaped_nested_url="${escaped_nested_url//\"/\\\"}"
+
+          json+=",{\"path\":\"$escaped_combined_path\",\"url\":\"$escaped_nested_url\"}"
+        done < <(echo "$nested_submodules" | grep -o '{[^}]*}')
       fi
     fi
   done <<< "$submodule_paths"
