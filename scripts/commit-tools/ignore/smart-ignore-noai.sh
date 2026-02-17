@@ -224,7 +224,11 @@ select_relevant_patterns() {
   local candidates="$1"
 
   if [[ -z "$candidates" ]]; then
-    get_all_patterns
+    # Progressive mode: no candidate files means no new patterns.
+    return 0
+  fi
+
+  if [[ -z "$(printf '%s' "$candidates" | sed '/^[[:space:]]*$/d')" ]]; then
     return 0
   fi
 
@@ -380,17 +384,13 @@ update_gitignore() {
   local gitignore="$repo/.gitignore"
   local temp_file new_patterns existing_patterns missing_patterns candidates
 
-  if [[ ! -f "$gitignore" ]]; then
-    touch "$gitignore"
-  fi
-
   check_all_patterns_for_conflicts "$repo"
 
   candidates=$(get_candidate_files "$repo" "$SCOPE")
   new_patterns=$(select_relevant_patterns "$candidates" | sort -u)
 
   local block_info
-  if block_info=$(find_managed_block "$gitignore"); then
+  if [[ -f "$gitignore" ]] && block_info=$(find_managed_block "$gitignore"); then
     existing_patterns=$(extract_existing_patterns "$gitignore")
 
     missing_patterns=$(comm -13 <(echo "$existing_patterns" | sort -u) <(echo "$new_patterns" | sort -u))
@@ -425,10 +425,23 @@ update_gitignore() {
       fi
     } > "$temp_file"
   else
+    # Progressive mode: if there is nothing to add, do not create .gitignore
+    # or a managed block.
+    if [[ -z "$new_patterns" ]]; then
+      if [[ "$DRY_RUN" -eq 0 ]]; then
+        echo "[$repo] .gitignore unchanged (no relevant patterns)"
+      else
+        echo "[$repo] Would not change .gitignore (no relevant patterns)"
+      fi
+      return 0
+    fi
+
     temp_file=$(mktemp)
     {
-      cat "$gitignore"
-      if [[ -s "$gitignore" ]]; then
+      if [[ -f "$gitignore" ]]; then
+        cat "$gitignore"
+      fi
+      if [[ -f "$gitignore" && -s "$gitignore" ]]; then
         echo ""
       fi
       echo "$BLOCK_START"
