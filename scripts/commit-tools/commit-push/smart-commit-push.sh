@@ -112,6 +112,12 @@ while [[ $# -gt 0 ]]; do
         shift
       fi
       ;;
+    --verbose)
+      # Verbose is useful for both commit and push (especially pre-sync diagnostics)
+      SMART_COMMIT_ARGS+=("$1")
+      SMART_PUSH_ARGS+=("$1")
+      shift
+      ;;
     --agent)
       AGENT_ID="${2:-}"
       SMART_COMMIT_ARGS+=("$1" "${2:-}")
@@ -201,6 +207,8 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
 else
   if ! bash "$SCRIPT_DIR/../smart-push.sh" --sync-only "${SMART_PUSH_ARGS[@]}"; then
     echo "ERROR: Pre-sync step failed. Check smart-push output above for repository-specific failures." >&2
+    echo "Hint: rerun pre-sync with details: ./smart-push.sh --sync-only --verbose" >&2
+    echo "After resolving conflicts, rerun this command to continue the 3-step flow." >&2
     exit 1
   fi
 fi
