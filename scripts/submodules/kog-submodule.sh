@@ -730,15 +730,36 @@ cmd_sync_submodule() {
     return 0
   fi
 
-  # Ensure submodule is on the correct branch (Requirement from USER)
+  # Ensure submodule is on the correct branch.
+  # Priority:
+  #   1) submodule.<path>.branch in .gitmodules
+  #   2) detected default branch from tracking remote
+  #   3) fallback to main (safe default)
   local target_branch
-  target_branch=$(git config -f .gitmodules "submodule.$submodule_path.branch" 2>/dev/null || echo "dev")
+  target_branch=$(git config -f .gitmodules "submodule.$submodule_path.branch" 2>/dev/null || true)
   
   # Determine best tracking remote (prefer upstream)
   local tracking_remote="origin"
   if git config -f .gitmodules "submodule.$submodule_path.kog-remote-upstream-https" >/dev/null 2>&1 || \
      git config -f .gitmodules "submodule.$submodule_path.kog-remote-upstream" >/dev/null 2>&1; then
     tracking_remote="upstream"
+  fi
+
+  if [[ -z "$target_branch" ]]; then
+    local detected_branch
+    detected_branch="$(gith_get_default_branch "$tracking_remote" "$submodule_path" || true)"
+    if [[ -n "$detected_branch" ]]; then
+      target_branch="$detected_branch"
+      if [[ "$dry_run" -eq 1 ]]; then
+        gith_log "INFO" "  [DRY-RUN] Would set .gitmodules branch to '$target_branch' for $submodule_path"
+      else
+        git config -f .gitmodules "submodule.$submodule_path.branch" "$target_branch"
+        gith_log "INFO" "  Set branch from remote default: $target_branch"
+      fi
+    else
+      target_branch="main"
+      gith_log "WARN" "  Could not detect default branch for $submodule_path; fallback to '$target_branch'"
+    fi
   fi
 
   if [[ "$dry_run" -eq 1 ]]; then
