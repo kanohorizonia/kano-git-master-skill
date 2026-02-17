@@ -6,7 +6,7 @@ version: 0.1.0-beta
 
 # Kano Git Master Skill
 
-**Version**: 0.1.0-beta  
+**Version**: 0.1.0-beta
 **Status**: Beta Release
 
 Comprehensive Git automation scripts for managing multi-repository workspaces. Works with any Git remote provider (GitHub, GitLab, Azure Repos, Bitbucket, self-hosted, etc.).
@@ -256,6 +256,18 @@ cd project
 ```
 
 **Features:** Root + submodules, auto-stash, configurable remote/branch
+
+### smart-sync* (Sync Shortcuts)
+
+Two explicit sync workflows:
+
+```bash
+# 1) Fork workflow: rebase onto upstream then force-push to origin
+./scripts/commit-tools/sync/smart-sync-upstream-force-push-copilot.sh
+
+# 2) Consumer workflow: checkout origin default branch and pull --rebase (no push)
+./scripts/commit-tools/sync/smart-sync-origin-latest.sh
+```
 
 ### discover-repos.sh
 

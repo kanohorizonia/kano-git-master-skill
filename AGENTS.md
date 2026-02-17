@@ -182,3 +182,10 @@ Note: sourcing will also define globals used by those functions (see the script 
 
 ### Shell vs PowerShell redirection
 - This toolkit is Bash-first (Git Bash on Windows). If you are debugging from PowerShell, note that `/dev/null` redirection is not valid there (`2>$null` is the PowerShell equivalent).
+
+### `smart-sync` split (explicit workflows)
+- Goal: avoid one ambiguous "sync" command that users run in the wrong context (fork vs consumer).
+- New workflows:
+  - `scripts/commit-tools/sync/smart-sync-upstream-force-push.sh`: AI rebase onto upstream default branch, then `git push --force-with-lease` to origin.
+  - `scripts/commit-tools/sync/smart-sync-origin-latest.sh`: checkout origin default branch and `git pull --rebase` (no push).
+- Project root provides wrappers (`smart-sync.sh` dispatches by mode) to keep usage stable from the workspace root.
