@@ -11,11 +11,17 @@
 #
 # Options:
 #   --manifest <file>       Use manifest file
+#   --repo-root <path>      Repository root/start path (default: .)
 #   --include-types <types> Comma-separated repo types
+#   --no-submodules         Exclude submodules from discovery/output
+#   --no-recursive          Disable recursive discovery (max-depth forced to 1)
 #   --exclude <pattern>     Exclude path patterns
 #   --max-depth <n>         Discovery max depth
 #   --format <table|json|markdown> Output format (default: table)
 #   --check-remote          Check remote status (slower)
+#   --detail                Show recent commits per repository
+#   --detail-commits <n>    Number of commits in detail mode (default: 3)
+#   --detail-log <mode>     oneline|full (default: oneline)
 #   --output <file>         Save to file
 #   -h, --help             Show help
 #
@@ -46,12 +52,18 @@ source "$SCRIPT_DIR/../lib/git-helpers.sh"
 #------------------------------------------------------------------------------
 
 MANIFEST_FILE=""
+REPO_ROOT="."
 INCLUDE_TYPES="root,submodule,standalone"
+INCLUDE_SUBMODULES=1
+RECURSIVE=1
 EXCLUDE_PATTERNS=()
 MAX_DEPTH=3
 OUTPUT_FORMAT="table"
 CHECK_REMOTE=0
 OUTPUT_FILE=""
+DETAIL_MODE=0
+DETAIL_COMMITS=3
+DETAIL_LOG_MODE="oneline"
 
 #------------------------------------------------------------------------------
 # Functions
@@ -65,11 +77,17 @@ Generate comprehensive status report for all repositories.
 
 Options:
   --manifest <file>       Use manifest file
+  --repo-root <path>      Repository root/start path (default: .)
   --include-types <types> Comma-separated: root,submodule,standalone (default: all)
+  --no-submodules         Exclude submodules
+  --no-recursive          Disable recursive discovery (forces --max-depth 1)
   --exclude <pattern>     Exclude path patterns (can be used multiple times)
   --max-depth <n>         Discovery max depth (default: 3)
   --format <table|json|markdown> Output format (default: table)
   --check-remote          Check remote status (slower)
+  --detail                Show recent commits per repository
+  --detail-commits <n>    Number of commits in detail mode (default: 3)
+  --detail-log <mode>     oneline|full (default: oneline)
   --output <file>         Save to file
   -h, --help             Show help
 
@@ -82,6 +100,12 @@ Examples:
 
   # Check remote status (slower but more accurate)
   ./status-all-repos.sh --check-remote
+
+  # Detail mode with 5 oneline commits
+  ./status-all-repos.sh --detail --detail-commits 5
+
+  # Exclude submodules, no recursive scan
+  ./status-all-repos.sh --no-submodules --no-recursive
 
   # Save to file
   ./status-all-repos.sh --format markdown --output status-report.md
@@ -172,6 +196,39 @@ filter_repos() {
   echo "$filtered"
 }
 
+format_recent_commits() {
+  local repo_path="$1"
+  local commit_count="$2"
+  local log_mode="$3"
+
+  if [[ "$log_mode" == "full" ]]; then
+    git -C "$repo_path" log -n "$commit_count" --date=iso --pretty=format:'%h %ad %an %s' 2>/dev/null || true
+  else
+    git -C "$repo_path" log -n "$commit_count" --oneline 2>/dev/null || true
+  fi
+}
+
+format_detail_sections() {
+  local status_data="$1"
+  local details=""
+
+  while IFS='|' read -r path branch type changes ahead status last_commit_date last_commit_msg; do
+    [[ -z "$path" ]] && continue
+
+    local commits
+    commits="$(format_recent_commits "$path" "$DETAIL_COMMITS" "$DETAIL_LOG_MODE")"
+    [[ -z "${commits:-}" ]] && commits="(no commits found)"
+
+    details+=$'\n'
+    details+="### $path ($type)"$'\n'
+    details+="Branch: $branch"$'\n'
+    details+="Recent commits ($DETAIL_COMMITS, $DETAIL_LOG_MODE):"$'\n'
+    details+="$commits"$'\n'
+  done <<< "$status_data"
+
+  printf "%s" "$details"
+}
+
 # Collect status for a single repository
 collect_repo_status() {
   local repo_path="$1"
@@ -205,6 +262,8 @@ collect_repo_status() {
   last_commit_msg="$(cd "$repo_path" && git log -1 --format='%s' 2>/dev/null || echo 'N/A')"
   # Escape quotes in commit message
   last_commit_msg="${last_commit_msg//\"/\\\"}"
+  # Keep delimiter-safe for table/markdown pipe-splitting
+  last_commit_msg="${last_commit_msg//|//}"
   status_json+="\"last_commit_date\":\"$last_commit_date\","
   status_json+="\"last_commit_message\":\"$last_commit_msg\","
   
@@ -261,26 +320,34 @@ format_as_table() {
   local status_data="$1"
   
   # Print header
-  printf "%-40s %-15s %-10s %-8s %-8s %-20s\n" "PATH" "BRANCH" "TYPE" "CHANGES" "UNPUSHED" "STATUS"
-  printf "%-40s %-15s %-10s %-8s %-8s %-20s\n" "----" "------" "----" "-------" "--------" "------"
+  printf "%-32s %-15s %-10s %-8s %-8s %-19s %-22s %-44s\n" "PATH" "BRANCH" "TYPE" "CHANGES" "UNPUSHED" "STATUS" "LAST COMMIT TIME" "LAST ONELINE"
+  printf "%-32s %-15s %-10s %-8s %-8s %-19s %-22s %-44s\n" "----" "------" "----" "-------" "--------" "------" "----------------" "------------"
   
   # Print rows
-  while IFS='|' read -r path branch type changes ahead status; do
+  while IFS='|' read -r path branch type changes ahead status last_commit_date last_commit_msg; do
     if [[ -z "$path" ]]; then
       continue
     fi
     
     # Truncate long paths
-    if [[ ${#path} -gt 38 ]]; then
-      path="...${path: -35}"
+    if [[ ${#path} -gt 30 ]]; then
+      path="...${path: -27}"
     fi
     
     # Truncate long branches
     if [[ ${#branch} -gt 13 ]]; then
       branch="${branch:0:10}..."
     fi
+
+    if [[ ${#last_commit_date} -gt 20 ]]; then
+      last_commit_date="${last_commit_date:0:19}"
+    fi
+
+    if [[ ${#last_commit_msg} -gt 42 ]]; then
+      last_commit_msg="${last_commit_msg:0:39}..."
+    fi
     
-    printf "%-40s %-15s %-10s %-8s %-8s %-20s\n" "$path" "$branch" "$type" "$changes" "$ahead" "$status"
+    printf "%-32s %-15s %-10s %-8s %-8s %-19s %-22s %-44s\n" "$path" "$branch" "$type" "$changes" "$ahead" "$status" "$last_commit_date" "$last_commit_msg"
   done <<< "$status_data"
 }
 
@@ -332,7 +399,7 @@ format_as_markdown() {
   echo "## Details"
   echo ""
   
-  while IFS='|' read -r path branch type changes ahead status; do
+  while IFS='|' read -r path branch type changes ahead status last_commit_date last_commit_msg; do
     if [[ -z "$path" ]]; then
       continue
     fi
@@ -346,6 +413,8 @@ format_as_markdown() {
     if [[ "$ahead" -gt 0 ]]; then
       echo "- **Unpushed commits**: $ahead"
     fi
+    echo "- **Last commit time**: $last_commit_date"
+    echo "- **Last one-line log**: $last_commit_msg"
     echo ""
   done <<< "$status_data"
 }
@@ -371,6 +440,15 @@ main() {
         MANIFEST_FILE="$2"
         shift 2
         ;;
+      --repo-root)
+        if [[ -z "${2:-}" ]]; then
+          gith_error "Option --repo-root requires an argument"
+          usage
+          exit 1
+        fi
+        REPO_ROOT="$2"
+        shift 2
+        ;;
       --include-types)
         if [[ -z "${2:-}" ]]; then
           gith_error "Option --include-types requires an argument"
@@ -379,6 +457,14 @@ main() {
         fi
         INCLUDE_TYPES="$2"
         shift 2
+        ;;
+      --no-submodules)
+        INCLUDE_SUBMODULES=0
+        shift
+        ;;
+      --no-recursive)
+        RECURSIVE=0
+        shift
         ;;
       --exclude)
         if [[ -z "${2:-}" ]]; then
@@ -411,6 +497,28 @@ main() {
         CHECK_REMOTE=1
         shift
         ;;
+      --detail)
+        DETAIL_MODE=1
+        shift
+        ;;
+      --detail-commits)
+        if [[ -z "${2:-}" ]]; then
+          gith_error "Option --detail-commits requires an argument"
+          usage
+          exit 1
+        fi
+        DETAIL_COMMITS="$2"
+        shift 2
+        ;;
+      --detail-log)
+        if [[ -z "${2:-}" ]]; then
+          gith_error "Option --detail-log requires an argument"
+          usage
+          exit 1
+        fi
+        DETAIL_LOG_MODE="$2"
+        shift 2
+        ;;
       --output)
         if [[ -z "${2:-}" ]]; then
           gith_error "Option --output requires an argument"
@@ -438,6 +546,22 @@ main() {
     gith_error "Invalid output format: $OUTPUT_FORMAT (must be 'table', 'json', or 'markdown')"
     exit 1
   fi
+
+  if [[ "$DETAIL_COMMITS" =~ ^[0-9]+$ ]] && [[ "$DETAIL_COMMITS" -gt 0 ]]; then
+    :
+  else
+    gith_error "Invalid --detail-commits value: $DETAIL_COMMITS (must be positive integer)"
+    exit 1
+  fi
+
+  if [[ "$DETAIL_LOG_MODE" != "oneline" ]] && [[ "$DETAIL_LOG_MODE" != "full" ]]; then
+    gith_error "Invalid --detail-log value: $DETAIL_LOG_MODE (must be oneline|full)"
+    exit 1
+  fi
+
+  if [[ "$RECURSIVE" -eq 0 ]]; then
+    MAX_DEPTH=1
+  fi
   
   # Get repositories list
   local repos_json
@@ -456,7 +580,7 @@ main() {
       )
     fi
     
-    repos_json="$(discover_repos "." "$MAX_DEPTH" "${EXCLUDE_PATTERNS[@]}")"
+    repos_json="$(discover_repos "$REPO_ROOT" "$MAX_DEPTH" "${EXCLUDE_PATTERNS[@]}")"
   fi
   
   if [[ $? -ne 0 ]] || [[ -z "$repos_json" ]]; then
@@ -465,7 +589,16 @@ main() {
   fi
   
   # Filter repositories by type
-  repos_json="$(filter_repos "$repos_json" "$INCLUDE_TYPES")"
+  local effective_include_types="$INCLUDE_TYPES"
+  if [[ "$INCLUDE_SUBMODULES" -eq 0 ]]; then
+    if [[ "$effective_include_types" == "all" ]] || [[ "$effective_include_types" == "root,submodule,standalone" ]]; then
+      effective_include_types="root,standalone"
+    else
+      effective_include_types="$(echo "$effective_include_types" | tr ',' '\n' | sed '/^submodule$/d' | paste -sd, -)"
+      [[ -z "$effective_include_types" ]] && effective_include_types="root,standalone"
+    fi
+  fi
+  repos_json="$(filter_repos "$repos_json" "$effective_include_types")"
   
   # Extract repository data
   local repo_data=()
@@ -503,11 +636,13 @@ main() {
     status_json="$(collect_repo_status "$repo_path" "$CHECK_REMOTE")"
     
     # Extract fields for formatting
-    local branch changes ahead status
+    local branch changes ahead status last_commit_date last_commit_msg
     branch="$(echo "$status_json" | grep -o '"branch":"[^"]*"' | sed 's/"branch":"//;s/"$//')"
     changes="$(echo "$status_json" | grep -o '"uncommitted_changes":[0-9]*' | sed 's/"uncommitted_changes"://')"
     ahead="$(echo "$status_json" | grep -o '"ahead":[0-9]*' | sed 's/"ahead"://')"
     status="$(echo "$status_json" | grep -o '"status":"[^"]*"' | sed 's/"status":"//;s/"$//')"
+    last_commit_date="$(echo "$status_json" | grep -o '"last_commit_date":"[^"]*"' | sed 's/"last_commit_date":"//;s/"$//')"
+    last_commit_msg="$(echo "$status_json" | grep -o '"last_commit_message":"[^"]*"' | sed 's/"last_commit_message":"//;s/"$//')"
     
     # Add to status array
     if [[ -n "$status_array" ]]; then
@@ -519,7 +654,7 @@ main() {
     if [[ -n "$status_data" ]]; then
       status_data+=$'\n'
     fi
-    status_data+="$repo_path|$branch|$repo_type|$changes|$ahead|$status"
+    status_data+="$repo_path|$branch|$repo_type|$changes|$ahead|$status|$last_commit_date|$last_commit_msg"
     
     # Count status
     if [[ "$status" == "up-to-date" ]] && [[ "$changes" -eq 0 ]]; then
@@ -537,6 +672,17 @@ main() {
     output="$(format_as_json "$repos_json" "$status_array")"
   elif [[ "$OUTPUT_FORMAT" == "markdown" ]]; then
     output="$(format_as_markdown "$status_data" "${#repo_data[@]}" "$up_to_date_count" "$need_attention_count")"
+  fi
+
+  if [[ "$DETAIL_MODE" -eq 1 ]]; then
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+      gith_log "WARN" "Detail section is not embedded in JSON output; use table or markdown for commit details."
+    else
+      output+=$'\n'
+      output+="## Commit Details"
+      output+=$'\n'
+      output+="$(format_detail_sections "$status_data")"
+    fi
   fi
   
   # Output to file or stdout

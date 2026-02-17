@@ -284,7 +284,76 @@ Two explicit sync workflows:
 
 # Origin-latest for one repo (no push)
 ./smart-sync-origin-latest.sh --repo src/opencode
+
+# Origin latest stable release tag (exclude beta/rc by default)
+./smart-sync-origin-latest.sh --repo src/opencode --target release
+
+# Include pre-release tags (beta/rc)
+./smart-sync-origin-latest.sh --repo src/opencode --target release --release-channel any
+
+# Custom tag regex
+./smart-sync-origin-latest.sh --repo src/opencode --target release --tag-pattern '^v?[0-9]+\.[0-9]+\.[0-9]+$'
+
+# Stable-dev mode:
+# 1) branch from latest stable tag
+# 2) cherry-pick fixes from previous stable dev branch
+# 3) push to origin
+./smart-sync-stable-dev.sh --repo src/opencode
+
+# Dev mode:
+# 1) base on upstream default branch tip
+# 2) cherry-pick fixes from origin maintenance branch
+# 3) push to origin
+./smart-sync-dev.sh --repo src/opencode
+
+# Pin target/base tag explicitly
+./smart-sync-stable-dev.sh --repo src/opencode --target-tag v1.0.0 --base-tag v0.9.9
+
+# Explicit source branch (use when branch_<base-tag> does not exist)
+./smart-sync-stable-dev.sh --repo src/opencode --target-tag v1.0.0 --base-tag v0.9.9 --source-branch dev/v0.9.9-fixes
+
+# Continue after conflict resolution
+./smart-sync-stable-dev.sh --repo src/opencode --continue
+
+# Manual conflict mode (disable AI resolve)
+./smart-sync-stable-dev.sh --repo src/opencode --no-ai-resolve
 ```
+
+**Stable-dev mode selection rule (generic):**
+- Repos with `upstream` run stable-dev tag + cherry-pick flow.
+- Repos without `upstream` use fallback branch sync:
+  - first read branch from nearest superproject `.gitmodules`
+  - if not defined, fallback to remote default branch
+
+**Stable-dev summary output (built-in):**
+- `target_version_tag`: release tag used as base (for example `v1.2.6`)
+- `maintained_commits_local`: number of local maintenance commits on `target_branch` since `target_version_tag`
+- Also includes `planned_commits`, `applied_commits`, `skipped_commits`, and `head_commit`
+- If previous source branch (`origin/branch_<base-tag>`) is not found and `--source-branch` is not provided, script enters bootstrap mode:
+  - create/switch target branch from stable tag
+  - skip cherry-pick
+  - push target branch
+
+**Strict precondition for stable-dev migration:**
+- Must start from a stable-dev branch: `branch_<stable_tag>`.
+- If current branch is not `branch_*` format, script exits with error.
+
+**Conflict behavior:**
+- Default: AI auto-resolve during cherry-pick conflicts.
+- Manual mode: pass `--no-ai-resolve`, resolve conflicts yourself, then run `--continue`.
+
+**stable-dev vs dev (difference only in upstream base):**
+- `stable-dev`: upstream base is latest/previous stable tags.
+- `dev`: upstream base is upstream default branch tip (for example `upstream/dev`).
+- Both modes use same migration shape: validate maintenance branch -> rebuild target base -> cherry-pick maintenance commits -> push.
+
+**Recommended daily flow (after stable branch line is created):**
+1. Run stable migration/update when needed:
+   - `./smart-sync-stable-dev.sh --repo src/opencode`
+2. Return to daily dev sync:
+   - `./smart-sync-origin-latest.sh --repo src/opencode`
+3. Verify summary from step 1:
+   - check `target_version_tag` and `maintained_commits_local` in `=== Stable Dev Summary ===`
 
 ### discover-repos.sh
 
@@ -354,9 +423,15 @@ Two explicit sync workflows:
 
 # Save to file
 ./scripts/workspace/status-all-repos.sh --format markdown --output STATUS.md
+
+# Detail mode: 5 commits, full log
+./scripts/workspace/status-all-repos.sh --detail --detail-commits 5 --detail-log full
+
+# Start from a specific repo root, exclude submodules, non-recursive
+./scripts/workspace/status-all-repos.sh --repo-root ./src --no-submodules --no-recursive
 ```
 
-**Features:** Multiple formats, remote checking, file output, summary stats
+**Features:** Multiple formats, remote checking, file output, summary stats, last commit time/oneline, configurable detail log mode
 
 ### compare-branches.sh
 

@@ -215,6 +215,56 @@ git checkout main
 - Verify access to skill repositories
 - Ensure paths don't conflict
 
+## Stable Dev + Daily Sync Workflow
+
+Use this when maintaining a stable branch line and then returning to regular development sync.
+
+1. Stable dev migration/update:
+```bash
+./smart-sync-stable-dev.sh --repo src/opencode
+```
+
+Precondition:
+- current branch must be `branch_<stable_tag>` (for example `branch_v1.2.6`)
+
+2. Confirm summary output:
+- `target_version_tag`
+- `maintained_commits_local`
+- `planned_commits` / `applied_commits` / `skipped_commits`
+
+Conflict modes:
+- Default: AI auto-resolve during cherry-pick conflicts.
+- Manual: `./smart-sync-stable-dev.sh --repo src/opencode --no-ai-resolve`
+- Continue after manual resolve: `./smart-sync-stable-dev.sh --repo src/opencode --continue --no-ai-resolve`
+
+3. Daily sync back to origin latest branch:
+```bash
+./smart-sync-origin-latest.sh --repo src/opencode
+```
+
+Expected behavior:
+- If previous stable source branch is missing, stable-dev enters bootstrap mode (no cherry-pick, push target branch).
+- `origin-latest` then checks out remote default branch (for this repo: `dev`) and pulls latest.
+
+## Dev Migration Workflow
+
+Use this when maintaining a long-running dev maintenance branch that tracks upstream default branch.
+
+1. Ensure current branch is `branch_<upstream_default_branch>` (example: `branch_dev`)
+2. Run:
+```bash
+./smart-sync-dev.sh --repo src/opencode
+```
+3. Confirm summary:
+- `upstream_default_branch`
+- `maintained_commits_local`
+- `planned_commits` / `applied_commits` / `skipped_commits`
+
+Difference from stable-dev:
+- stable-dev base = upstream stable tag line
+- dev base = upstream default branch tip
+- commit migration and conflict handling behavior are intentionally aligned
+
 ## References
 
 - [Repository Initialization Workflow Guide](../guides/repo-initialization-workflow.md)
