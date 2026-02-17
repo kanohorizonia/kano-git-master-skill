@@ -555,6 +555,11 @@ AI-powered commit across all repositories with safety checks:
 ./scripts/commit-tools/commit/smart-commit.sh --provider copilot --model gpt-5-mini --verbose
 ```
 
+**Agent delegation note (required contract):**
+- For delegated execution, pass `--agent <name>` (for example: `codex`, `cursor`, `copilot`, `kiro`, `claude`).
+- When `--agent` is not `manual`, a fixed commit message (`-m/--message`) is required.
+- Delegated runs disable in-script AI review (`--no-ai-review`) to avoid duplicate model calls.
+
 **Output modes:**
 - **Default (quiet)**: Shows only repos with actual commits
 - **Verbose**: Shows all repos, including those with no changes
@@ -580,6 +585,10 @@ Complete workflow: commit and push all repositories in one step:
 # With verbose output
 ./scripts/commit-tools/commit-push/smart-commit-push.sh --provider copilot --model gpt-5-mini --verbose
 ```
+
+**Agent delegation note (required contract):**
+- For agent-driven workflows, pass `--agent <name>` and provide a fixed commit message (`-m "..."`).
+- When `--agent` is not `manual`, delegated mode disables in-script AI review (`--no-ai-review`) to avoid duplicate model usage.
 
 **Summary tables:**
 After successful completion, displays two summary tables:

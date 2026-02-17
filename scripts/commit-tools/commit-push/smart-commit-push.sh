@@ -9,6 +9,7 @@
 #   --model <name>              AI model name
 #
 # Optional:
+#   --agent <name>             Execution identity (manual|codex|copilot|cursor|kiro|claude|...)
 #   --repos <paths>             Only process specific repos (comma-separated)
 #   --rules <text>              Custom commit rules (inline text)
 #   --rules-file <path>         Custom commit rules (from file)
@@ -36,6 +37,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DRY_RUN=0
 SMART_COMMIT_ARGS=()
 SMART_PUSH_ARGS=()
+AGENT_ID=""
 
 #------------------------------------------------------------------------------
 # Functions
@@ -52,6 +54,7 @@ Required Options:
   --model <name>              AI model name
 
 Optional:
+  --agent <name>             Execution identity. Use "manual" for human-run commands
   --repos <paths>             Only process specific repos (comma-separated)
   --no-root                   Exclude root repo from push
   --no-submodules             Exclude submodules from push
@@ -74,6 +77,9 @@ Examples:
 
   # Dry run to see what would happen
   ./smart-commit-push.sh --provider copilot --model gpt-5-mini --dry-run
+
+  # Agent-delegated mode (cost-safe): requires --message, auto-adds --no-ai-review
+  ./smart-commit-push.sh --agent codex -m "chore: update workspace"
 
 Workflow Steps:
   1. Commit changes (using smart-commit.sh)
@@ -105,6 +111,11 @@ while [[ $# -gt 0 ]]; do
         shift
       fi
       ;;
+    --agent)
+      AGENT_ID="${2:-}"
+      SMART_COMMIT_ARGS+=("$1" "${2:-}")
+      shift 2
+      ;;
     --no-smart-ignore)
       # Pass to smart-commit.sh
       SMART_COMMIT_ARGS+=("$1")
@@ -117,6 +128,56 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+has_commit_arg() {
+  local needle="$1"
+  local arg=""
+  for arg in "${SMART_COMMIT_ARGS[@]}"; do
+    if [[ "$arg" == "$needle" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+has_commit_message_arg() {
+  local i=0
+  local next=""
+  for ((i=0; i<${#SMART_COMMIT_ARGS[@]}; i++)); do
+    case "${SMART_COMMIT_ARGS[$i]}" in
+      -m|--message)
+        next=""
+        if [[ $((i+1)) -lt ${#SMART_COMMIT_ARGS[@]} ]]; then
+          next="${SMART_COMMIT_ARGS[$((i+1))]}"
+        fi
+        if [[ -n "$next" ]]; then
+          return 0
+        fi
+        ;;
+    esac
+  done
+  return 1
+}
+
+# Agent delegation contract pre-check:
+# - non-manual --agent requires fixed commit message
+# - non-manual --agent auto-injects --no-ai-review if missing
+if [[ -n "$AGENT_ID" ]]; then
+  AGENT_ID="$(printf '%s' "$AGENT_ID" | tr '[:upper:]' '[:lower:]')"
+fi
+
+if [[ -n "$AGENT_ID" && "$AGENT_ID" != "manual" ]]; then
+  if ! has_commit_message_arg; then
+    echo "ERROR: delegated run requires -m/--message (agent: $AGENT_ID)" >&2
+    echo "       Pass a fixed commit message to avoid in-script AI generation." >&2
+    exit 1
+  fi
+
+  if ! has_commit_arg "--no-ai-review"; then
+    SMART_COMMIT_ARGS+=("--no-ai-review")
+    echo "INFO: delegated run detected (agent: $AGENT_ID), auto-adding --no-ai-review"
+  fi
+fi
 
 # Validate that we have required args
 if [[ "${#SMART_COMMIT_ARGS[@]}" -eq 0 ]]; then

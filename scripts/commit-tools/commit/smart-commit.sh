@@ -22,6 +22,7 @@
 #   --model <name>              AI model name
 #
 # Optional:
+#   --agent <name>             Execution identity (manual|codex|copilot|cursor|kiro|claude|...)
 #   --ai-review                 Enable AI safety review (default: on)
 #   --no-ai-review              Disable AI safety review
 #   -m, --message <text>        Fixed commit message (skip AI generation)
@@ -92,6 +93,7 @@ RULES_FILE=""
 REPO_FILTER=""  # Comma-separated list of repo paths to include
 USE_SMART_IGNORE=1
 VERBOSE=0        # Show all repos (default: show only repos with changes)
+AGENT_ID=""      # Execution identity: manual or agent name
 
 #------------------------------------------------------------------------------
 # Functions
@@ -108,6 +110,7 @@ Required Options:
   --model <name>              AI model name
 
 Optional:
+  --agent <name>             Execution identity. Use "manual" for human-run commands.
   --ai-review                 Enable AI safety review (default: on)
   --no-ai-review              Disable AI safety review
   -m, --message <text>        Fixed commit message (skip AI generation)
@@ -141,6 +144,9 @@ Examples:
 
   # Custom message (no AI needed)
   ./smart-commit.sh --provider copilot --model gpt-5-mini -m "feat: Add feature"
+
+  # Agent-delegated mode (cost-safe): requires --message and auto-disables AI review
+  ./smart-commit.sh --agent codex -m "chore: update workspace"
 
   # With custom rules (inline)
   ./smart-commit.sh --provider copilot --model gpt-5-mini --rules "Use emoji prefixes"
@@ -231,6 +237,10 @@ while [[ $# -gt 0 ]]; do
       AI_REVIEW=1
       shift
       ;;
+    --agent)
+      AGENT_ID="${2:-}"
+      shift 2
+      ;;
     --no-ai-review)
       AI_REVIEW=0
       shift
@@ -282,6 +292,27 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# Agent delegation contract:
+# - --agent <name> where name != manual means delegated execution.
+# - Delegated mode must provide fixed commit message.
+# - Delegated mode forces --no-ai-review to avoid duplicate model invocation.
+if [[ -n "$AGENT_ID" ]]; then
+  AGENT_ID="$(printf '%s' "$AGENT_ID" | tr '[:upper:]' '[:lower:]')"
+fi
+
+if [[ -n "$AGENT_ID" && "$AGENT_ID" != "manual" ]]; then
+  if [[ -z "$COMMIT_MESSAGE" ]]; then
+    echo "ERROR: delegated run requires -m/--message (agent: $AGENT_ID)" >&2
+    echo "       Pass a fixed commit message to avoid in-script AI generation." >&2
+    exit 1
+  fi
+
+  if [[ "$AI_REVIEW" -eq 1 ]]; then
+    echo "INFO: delegated run detected (agent: $AGENT_ID), forcing --no-ai-review"
+  fi
+  AI_REVIEW=0
+fi
 
 # Validate required parameters
 if [[ -z "$COMMIT_MESSAGE" ]] || [[ "$AI_REVIEW" -eq 1 ]]; then
