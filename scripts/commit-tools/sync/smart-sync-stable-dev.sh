@@ -34,7 +34,8 @@ usage() {
 Usage: smart-sync-stable-dev.sh [options]
 
 Stable-dev migration workflow:
-  - must start on branch_<stable_tag>
+  - requires clean working tree
+  - auto-switches to target stable branch (create if missing)
   - migrates maintenance commits from previous stable branch to latest stable branch
 
 Options:
@@ -251,12 +252,6 @@ git -C "$REPO" fetch "$UPSTREAM_REMOTE" --prune --tags >/dev/null 2>&1 || true
 git -C "$REPO" fetch "$ORIGIN_REMOTE" --prune >/dev/null 2>&1 || true
 
 current_branch="$(get_current_branch "$REPO")"
-if [[ -z "$current_branch" || ! "$current_branch" =~ ^branch_(.+)$ ]]; then
-  echo "ERROR: Current branch must be stable-dev branch format: branch_<stable_tag>" >&2
-  echo "Current: ${current_branch:-detached}" >&2
-  exit 1
-fi
-current_stable_tag="${current_branch#branch_}"
 
 mapfile -t matched_tags < <(find_matching_tags_desc "$REPO" "$TAG_PATTERN")
 if [[ ${#matched_tags[@]} -lt 2 && ( -z "$TARGET_TAG" || -z "$BASE_TAG" ) ]]; then
@@ -271,13 +266,21 @@ if [[ -z "$BASE_TAG" ]]; then BASE_TAG="$previous_tag"; fi
 if [[ -z "$TARGET_BRANCH" ]]; then TARGET_BRANCH="branch_$(sanitize_tag_for_branch "$TARGET_TAG")"; fi
 if [[ -z "$SOURCE_BRANCH" ]]; then SOURCE_BRANCH="branch_$(sanitize_tag_for_branch "$BASE_TAG")"; fi
 
-if [[ "$current_stable_tag" != "$BASE_TAG" && "$current_stable_tag" != "$TARGET_TAG" ]]; then
-  echo "ERROR: Current stable branch tag ($current_stable_tag) must match base ($BASE_TAG) or target ($TARGET_TAG)." >&2
-  exit 1
-fi
-
 git -C "$REPO" rev-parse -q --verify "refs/tags/$TARGET_TAG" >/dev/null 2>&1 || { echo "ERROR: Target tag not found: $TARGET_TAG" >&2; exit 1; }
 git -C "$REPO" rev-parse -q --verify "refs/tags/$BASE_TAG" >/dev/null 2>&1 || { echo "ERROR: Base tag not found: $BASE_TAG" >&2; exit 1; }
+
+gitmodules_file=""
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  gitmodules_file="$(syncc_find_gitmodules_file_for_path "$WORKSPACE_ABS" "$REPO_ABS" || true)"
+  if [[ -n "$gitmodules_file" ]]; then
+    echo "  gitmodules update: would set branch=$TARGET_BRANCH for $REPO_REL"
+  fi
+else
+  gitmodules_file="$(syncc_set_gitmodules_branch_for_path "$WORKSPACE_ABS" "$REPO_ABS" "$TARGET_BRANCH" || true)"
+  if [[ -n "$gitmodules_file" ]]; then
+    echo "Updated .gitmodules branch for $REPO_REL -> $TARGET_BRANCH ($gitmodules_file)"
+  fi
+fi
 
 source_ref=""
 if git -C "$REPO" show-ref --verify --quiet "refs/remotes/$ORIGIN_REMOTE/$SOURCE_BRANCH"; then

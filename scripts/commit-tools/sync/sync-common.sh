@@ -81,6 +81,65 @@ syncc_get_gitmodules_branch_for_path() {
   return 1
 }
 
+syncc_set_gitmodules_branch_for_path() {
+  local workspace_root="$1"
+  local repo_abs="$2"
+  local branch="$3"
+  local scan_dir=""
+
+  scan_dir="$(dirname "$repo_abs")"
+  while :; do
+    local gm_file="$scan_dir/.gitmodules"
+    if [[ -f "$gm_file" ]]; then
+      local repo_rel_to_scan=""
+      local section_key=""
+      if [[ "$repo_abs" == "$scan_dir" ]]; then
+        repo_rel_to_scan="."
+      else
+        repo_rel_to_scan="${repo_abs#"$scan_dir"/}"
+      fi
+      section_key="$(git config -f "$gm_file" --get-regexp '^submodule\..*\.path$' 2>/dev/null | awk -v p="$repo_rel_to_scan" '$2==p {print $1; exit}')"
+      if [[ -n "$section_key" ]]; then
+        section_key="${section_key%.path}"
+        git config -f "$gm_file" "$section_key.branch" "$branch"
+        printf '%s' "$gm_file"
+        return 0
+      fi
+    fi
+    [[ "$scan_dir" == "$workspace_root" || "$scan_dir" == "/" ]] && break
+    scan_dir="$(dirname "$scan_dir")"
+  done
+  return 1
+}
+
+syncc_find_gitmodules_file_for_path() {
+  local workspace_root="$1"
+  local repo_abs="$2"
+  local scan_dir=""
+
+  scan_dir="$(dirname "$repo_abs")"
+  while :; do
+    local gm_file="$scan_dir/.gitmodules"
+    if [[ -f "$gm_file" ]]; then
+      local repo_rel_to_scan=""
+      local section_key=""
+      if [[ "$repo_abs" == "$scan_dir" ]]; then
+        repo_rel_to_scan="."
+      else
+        repo_rel_to_scan="${repo_abs#"$scan_dir"/}"
+      fi
+      section_key="$(git config -f "$gm_file" --get-regexp '^submodule\..*\.path$' 2>/dev/null | awk -v p="$repo_rel_to_scan" '$2==p {print $1; exit}')"
+      if [[ -n "$section_key" ]]; then
+        printf '%s' "$gm_file"
+        return 0
+      fi
+    fi
+    [[ "$scan_dir" == "$workspace_root" || "$scan_dir" == "/" ]] && break
+    scan_dir="$(dirname "$scan_dir")"
+  done
+  return 1
+}
+
 syncc_fallback_sync_branch_mode() {
   local repo="$1"
   local origin_remote="$2"
