@@ -19,6 +19,9 @@ VERBOSE=0        # Show all repos (default: show only repos with changes)
 
 # Push statistics: format "repo_name|remote|branch"
 declare -a PUSH_STATS=()
+TIMER_TOTAL_START=0
+TIMER_SYNC=0
+TIMER_PUSH=0
 
 detect_default_branch() {
   local repo="$1"
@@ -49,6 +52,37 @@ detect_default_branch() {
   done
 
   return 1
+}
+
+timer_now() {
+  date +%s
+}
+
+format_duration() {
+  local seconds="${1:-0}"
+  local h m s
+  h=$((seconds / 3600))
+  m=$(((seconds % 3600) / 60))
+  s=$((seconds % 60))
+  if [[ "$h" -gt 0 ]]; then
+    printf '%02dh %02dm %02ds' "$h" "$m" "$s"
+  elif [[ "$m" -gt 0 ]]; then
+    printf '%02dm %02ds' "$m" "$s"
+  else
+    printf '%02ds' "$s"
+  fi
+}
+
+print_timing_summary() {
+  local total_elapsed
+  total_elapsed=$(( $(timer_now) - TIMER_TOTAL_START ))
+  echo ""
+  echo "=== Timing Summary ==="
+  printf "%-16s  %8s  %s\n" "Phase" "Seconds" "Human"
+  printf "%-16s  %8s  %s\n" "-----" "-------" "-----"
+  printf "%-16s  %8s  %s\n" "sync" "$TIMER_SYNC" "$(format_duration "$TIMER_SYNC")"
+  printf "%-16s  %8s  %s\n" "push" "$TIMER_PUSH" "$(format_duration "$TIMER_PUSH")"
+  printf "%-16s  %8s  %s\n" "total" "$total_elapsed" "$(format_duration "$total_elapsed")"
 }
 
 detect_branch_from_superproject_gitmodules() {
@@ -324,6 +358,7 @@ if [[ ${#REPOS[@]} -eq 0 ]]; then
 fi
 
 FAILED=0
+TIMER_TOTAL_START="$(timer_now)"
 
 for repo in "${REPOS[@]}"; do
   branch="$(git -C "$repo" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
@@ -383,6 +418,7 @@ for repo in "${REPOS[@]}"; do
 
   # Auto-sync with upstream if exists (unless --skip-sync)
   if [[ "$SKIP_SYNC" -eq 0 && "$has_upstream" -eq 1 ]]; then
+    sync_step_start="$(timer_now)"
     local_changes=0
     had_stash=0
     sync_output=""
@@ -470,6 +506,7 @@ for repo in "${REPOS[@]}"; do
         echo "[$repo] Synced"
       fi
     fi
+    TIMER_SYNC=$(( TIMER_SYNC + $(timer_now) - sync_step_start ))
   fi
 
   if [[ "$SYNC_ONLY" -eq 1 ]]; then
@@ -496,6 +533,7 @@ for repo in "${REPOS[@]}"; do
   last_failed_remote=""
   last_failed_output=""
   short_repo="$(basename "$repo")"
+  push_step_start="$(timer_now)"
   for remote_name in "${push_remotes[@]}"; do
     remote_push_args=("${push_args[@]}")
     if [[ "$add_upstream_flag" -eq 0 ]]; then
@@ -546,6 +584,7 @@ for repo in "${REPOS[@]}"; do
   elif [[ "$repo_fail_count" -gt 0 && "$VERBOSE" -eq 1 ]]; then
     echo "[$repo] Partial push success: $repo_fail_count remote(s) failed, but at least one succeeded"
   fi
+  TIMER_PUSH=$(( TIMER_PUSH + $(timer_now) - push_step_start ))
 done
 
 if [[ "$FAILED" -eq 1 ]]; then
@@ -560,6 +599,7 @@ if [[ "$FAILED" -eq 1 ]]; then
       printf "%-35s  %-18s %s\\n" "$repo_name" "$remote" "$branch"
     done
   fi
+  print_timing_summary
   exit 1
 fi
 
@@ -574,3 +614,4 @@ if [[ "${#PUSH_STATS[@]}" -gt 0 ]]; then
     printf "%-35s  %-18s %s\\n" "$repo_name" "$remote" "$branch"
   done
 fi
+print_timing_summary

@@ -42,6 +42,11 @@ AGENT_ID=""
 WORKFLOW_ROOT=""
 WORKFLOW_LOCK_DIR=""
 WORKFLOW_LOCKED=0
+TIMER_TOTAL_START=0
+TIMER_PRE_SYNC=0
+TIMER_COMMIT=0
+TIMER_POST_SYNC=0
+TIMER_PUSH=0
 
 #------------------------------------------------------------------------------
 # Functions
@@ -109,6 +114,39 @@ truncate_text() {
   else
     printf '%s...' "${text:0:max-3}"
   fi
+}
+
+timer_now() {
+  date +%s
+}
+
+format_duration() {
+  local seconds="${1:-0}"
+  local h m s
+  h=$((seconds / 3600))
+  m=$(((seconds % 3600) / 60))
+  s=$((seconds % 60))
+  if [[ "$h" -gt 0 ]]; then
+    printf '%02dh %02dm %02ds' "$h" "$m" "$s"
+  elif [[ "$m" -gt 0 ]]; then
+    printf '%02dm %02ds' "$m" "$s"
+  else
+    printf '%02ds' "$s"
+  fi
+}
+
+print_timing_summary() {
+  local total_elapsed
+  total_elapsed=$(( $(timer_now) - TIMER_TOTAL_START ))
+  echo ""
+  echo "=== Timing Summary ==="
+  printf "%-16s  %8s  %s\n" "Phase" "Seconds" "Human"
+  printf "%-16s  %8s  %s\n" "-----" "-------" "-----"
+  printf "%-16s  %8s  %s\n" "pre-sync" "$TIMER_PRE_SYNC" "$(format_duration "$TIMER_PRE_SYNC")"
+  printf "%-16s  %8s  %s\n" "commit" "$TIMER_COMMIT" "$(format_duration "$TIMER_COMMIT")"
+  printf "%-16s  %8s  %s\n" "post-sync" "$TIMER_POST_SYNC" "$(format_duration "$TIMER_POST_SYNC")"
+  printf "%-16s  %8s  %s\n" "push" "$TIMER_PUSH" "$(format_duration "$TIMER_PUSH")"
+  printf "%-16s  %8s  %s\n" "total" "$total_elapsed" "$(format_duration "$total_elapsed")"
 }
 
 contains_push_arg() {
@@ -381,6 +419,7 @@ fi
 
 echo "=== Smart Commit-Push Workflow ==="
 echo ""
+TIMER_TOTAL_START="$(timer_now)"
 
 setup_workflow_root
 trap release_workflow_lock EXIT INT TERM
@@ -388,6 +427,7 @@ acquire_workflow_lock
 
 # Step 1: Pre-sync changes
 echo "Step 1: Pre-sync workflow..."
+step_start="$(timer_now)"
 if [[ "$DRY_RUN" -eq 1 ]]; then
   echo "[DRY RUN] Would run: $SCRIPT_DIR/../smart-push.sh --sync-only --stash-local-changes ${SMART_PUSH_ARGS[*]}"
 else
@@ -398,11 +438,13 @@ else
     exit 1
   fi
 fi
+TIMER_PRE_SYNC=$(( $(timer_now) - step_start ))
 
 echo ""
 
 # Step 2: Commit changes
 echo "Step 2: Committing changes..."
+step_start="$(timer_now)"
 if [[ "$DRY_RUN" -eq 1 ]]; then
   echo "[DRY RUN] Would run: $SCRIPT_DIR/../commit/smart-commit.sh ${SMART_COMMIT_ARGS[*]}"
 else
@@ -411,9 +453,11 @@ else
     exit 1
   fi
 fi
+TIMER_COMMIT=$(( $(timer_now) - step_start ))
 
 echo ""
 echo "Step 3: Post-sync workflow..."
+step_start="$(timer_now)"
 if [[ "$DRY_RUN" -eq 1 ]]; then
   echo "[DRY RUN] Would run: $SCRIPT_DIR/../smart-push.sh --sync-only --fail-on-dirty-sync ${SMART_PUSH_ARGS[*]}"
 else
@@ -422,9 +466,11 @@ else
     exit 1
   fi
 fi
+TIMER_POST_SYNC=$(( $(timer_now) - step_start ))
 
 echo ""
 echo "Step 4: Push workflow..."
+step_start="$(timer_now)"
 if [[ "$DRY_RUN" -eq 1 ]]; then
   echo "[DRY RUN] Would run: $SCRIPT_DIR/../smart-push.sh --skip-sync ${SMART_PUSH_ARGS[*]}"
 else
@@ -433,9 +479,11 @@ else
     exit 1
   fi
 fi
+TIMER_PUSH=$(( $(timer_now) - step_start ))
 
 echo ""
 echo "=== Workflow Complete (success) ==="
 echo "✓ Commit phase completed"
 echo "✓ Push phase completed"
+print_timing_summary
 print_final_workflow_summary

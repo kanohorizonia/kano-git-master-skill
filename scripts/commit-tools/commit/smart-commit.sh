@@ -434,6 +434,9 @@ touch "$REPO_LIST_FILE"
 
 # Commit statistics: format "repo_name|commit_count|branch"
 declare -a COMMIT_STATS=()
+TIMER_TOTAL_START=0
+TIMER_DISCOVERY=0
+TIMER_PROCESS=0
 
 resolve_revision_count() {
   local repo="$1"
@@ -443,6 +446,37 @@ resolve_revision_count() {
     return 0
   fi
   git -C "$repo" rev-list --count HEAD 2>/dev/null || echo "0"
+}
+
+timer_now() {
+  date +%s
+}
+
+format_duration() {
+  local seconds="${1:-0}"
+  local h m s
+  h=$((seconds / 3600))
+  m=$(((seconds % 3600) / 60))
+  s=$((seconds % 60))
+  if [[ "$h" -gt 0 ]]; then
+    printf '%02dh %02dm %02ds' "$h" "$m" "$s"
+  elif [[ "$m" -gt 0 ]]; then
+    printf '%02dm %02ds' "$m" "$s"
+  else
+    printf '%02ds' "$s"
+  fi
+}
+
+print_timing_summary() {
+  local total_elapsed
+  total_elapsed=$(( $(timer_now) - TIMER_TOTAL_START ))
+  echo ""
+  echo "=== Timing Summary ==="
+  printf "%-16s  %8s  %s\n" "Phase" "Seconds" "Human"
+  printf "%-16s  %8s  %s\n" "-----" "-------" "-----"
+  printf "%-16s  %8s  %s\n" "discovery" "$TIMER_DISCOVERY" "$(format_duration "$TIMER_DISCOVERY")"
+  printf "%-16s  %8s  %s\n" "commit-process" "$TIMER_PROCESS" "$(format_duration "$TIMER_PROCESS")"
+  printf "%-16s  %8s  %s\n" "total" "$total_elapsed" "$(format_duration "$total_elapsed")"
 }
 
 #------------------------------------------------------------------------------
@@ -1334,6 +1368,8 @@ commit_repo() {
 #------------------------------------------------------------------------------
 # Main
 #------------------------------------------------------------------------------
+TIMER_TOTAL_START="$(timer_now)"
+discovery_start="$(timer_now)"
 
 # Discover repositories
 if [[ "$VERBOSE" -eq 1 ]]; then
@@ -1402,6 +1438,8 @@ if [[ -n "$REPO_FILTER" ]]; then
     echo "Filtered to ${#REPOS[@]} repositories"
   fi
 fi
+TIMER_DISCOVERY=$(( $(timer_now) - discovery_start ))
+process_start="$(timer_now)"
 
 # Sort repos by depth (deepest first, root last)
 declare -a NON_ROOT=()
@@ -1434,6 +1472,7 @@ if ! commit_repo "$ROOT"; then
   ((FAILED_COUNT++)) || true
   FAILED_REPOS+=("$ROOT")
 fi
+TIMER_PROCESS=$(( $(timer_now) - process_start ))
 
 echo ""
 if [[ "$FAILED_COUNT" -gt 0 ]]; then
@@ -1444,6 +1483,7 @@ if [[ "$FAILED_COUNT" -gt 0 ]]; then
       echo "  - $repo"
     done
   fi
+  print_timing_summary
   echo "Fix the errors above and rerun smart-commit." >&2
   exit 1
 fi
@@ -1460,4 +1500,5 @@ if [[ "${#COMMIT_STATS[@]}" -gt 0 ]]; then
   done
 fi
 
+print_timing_summary
 echo "=== All done (success) ==="
