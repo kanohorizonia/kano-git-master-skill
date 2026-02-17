@@ -17,6 +17,115 @@ VERBOSE=0        # Show all repos (default: show only repos with changes)
 # Push statistics: format "repo_name|remote|branch"
 declare -a PUSH_STATS=()
 
+detect_default_branch() {
+  local repo="$1"
+  local remote=""
+  local head_ref=""
+  local branch=""
+
+  for remote in origin upstream; do
+    if ! git -C "$repo" remote get-url "$remote" >/dev/null 2>&1; then
+      continue
+    fi
+
+    head_ref="$(git -C "$repo" symbolic-ref --quiet "refs/remotes/$remote/HEAD" 2>/dev/null || true)"
+    if [[ -n "$head_ref" ]]; then
+      branch="${head_ref#refs/remotes/$remote/}"
+      if [[ -n "$branch" ]]; then
+        printf '%s|%s' "$remote" "$branch"
+        return 0
+      fi
+    fi
+
+    for branch in main master dev; do
+      if git -C "$repo" show-ref --verify --quiet "refs/remotes/$remote/$branch"; then
+        printf '%s|%s' "$remote" "$branch"
+        return 0
+      fi
+    done
+  done
+
+  return 1
+}
+
+detect_branch_from_superproject_gitmodules() {
+  local repo="$1"
+  local current=""
+  local rel_path=""
+  local configured_branch=""
+
+  current="$(dirname "$repo")"
+  while [[ -n "$current" ]]; do
+    if [[ -f "$current/.gitmodules" ]]; then
+      rel_path="${repo#$current/}"
+      if [[ "$rel_path" != "$repo" ]]; then
+        configured_branch="$(git -C "$current" config -f .gitmodules --get "submodule.$rel_path.branch" 2>/dev/null || true)"
+        if [[ -n "$configured_branch" ]]; then
+          printf '%s' "$configured_branch"
+          return 0
+        fi
+      fi
+    fi
+
+    if [[ "$current" == "/" || "$current" == "." ]]; then
+      break
+    fi
+    current="$(dirname "$current")"
+  done
+
+  return 1
+}
+
+attach_detached_to_default_branch() {
+  local repo="$1"
+  local preferred_branch=""
+  local detected=""
+  local remote=""
+  local branch=""
+
+  # 1) Prefer branch explicitly configured in the nearest superproject .gitmodules
+  preferred_branch="$(detect_branch_from_superproject_gitmodules "$repo" || true)"
+  if [[ -n "$preferred_branch" ]]; then
+    if git -C "$repo" show-ref --verify --quiet "refs/heads/$preferred_branch"; then
+      git -C "$repo" checkout "$preferred_branch" >/dev/null 2>&1 || true
+    elif git -C "$repo" show-ref --verify --quiet "refs/remotes/origin/$preferred_branch"; then
+      git -C "$repo" checkout -b "$preferred_branch" "origin/$preferred_branch" >/dev/null 2>&1 || true
+    elif git -C "$repo" show-ref --verify --quiet "refs/remotes/upstream/$preferred_branch"; then
+      git -C "$repo" checkout -b "$preferred_branch" "upstream/$preferred_branch" >/dev/null 2>&1 || true
+    fi
+
+    if git -C "$repo" symbolic-ref --quiet --short HEAD >/dev/null 2>&1; then
+      if [[ "$VERBOSE" -eq 1 ]]; then
+        echo "[$repo] Attached detached HEAD to .gitmodules branch '$preferred_branch'"
+      fi
+      return 0
+    fi
+  fi
+
+  # 2) Fallback to remote default branch detection
+  detected="$(detect_default_branch "$repo" || true)"
+  if [[ -z "$detected" ]]; then
+    return 1
+  fi
+
+  remote="${detected%%|*}"
+  branch="${detected#*|}"
+  if [[ -z "$remote" || -z "$branch" ]]; then
+    return 1
+  fi
+
+  if git -C "$repo" show-ref --verify --quiet "refs/heads/$branch"; then
+    git -C "$repo" checkout "$branch" >/dev/null 2>&1 || return 1
+  else
+    git -C "$repo" checkout -b "$branch" "$remote/$branch" >/dev/null 2>&1 || return 1
+  fi
+
+  if [[ "$VERBOSE" -eq 1 ]]; then
+    echo "[$repo] Attached detached HEAD to $branch (from $remote/$branch)"
+  fi
+  return 0
+}
+
 usage() {
   cat <<'EOF'
 Usage: smart-push.sh [options]
@@ -196,6 +305,12 @@ FAILED=0
 
 for repo in "${REPOS[@]}"; do
   branch="$(git -C "$repo" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+  if [[ -z "$branch" ]]; then
+    if attach_detached_to_default_branch "$repo"; then
+      branch="$(git -C "$repo" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+    fi
+  fi
+
   if [[ -z "$branch" ]]; then
     if [[ "$VERBOSE" -eq 1 ]]; then
       echo "[$repo] SKIP: Detached HEAD"
