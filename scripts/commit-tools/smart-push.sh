@@ -124,12 +124,25 @@ types_csv="$(IFS=,; echo "${include_types[*]}")"
 repos_json="$($SCRIPT_DIR/../core/discover-repos.sh --root "$ROOT" --format json --include-types "$types_csv" 2>/dev/null)"
 
 declare -a REPOS=()
+MALFORMED_REPO_COUNT=0
 while IFS= read -r repo; do
   [[ -z "$repo" ]] && continue
-  path="$(echo "$repo" | grep -o '"path":"[^"]*"' | sed 's/"path":"//;s/"$//')"
-  [[ -z "$path" ]] && continue
+  # Parse path defensively to avoid aborting on malformed entries.
+  # Some discovery outputs may include objects without "path".
+  path="$(printf '%s' "$repo" | sed -n 's/.*"path":"\([^"]*\)".*/\1/p')"
+  if [[ -z "$path" ]]; then
+    ((MALFORMED_REPO_COUNT++)) || true
+    if [[ "$VERBOSE" -eq 1 ]]; then
+      echo "[WARN] Skipping malformed repo entry: $repo" >&2
+    fi
+    continue
+  fi
   REPOS+=("$path")
 done < <(echo "$repos_json" | grep -o '{[^}]*}')
+
+if [[ "$VERBOSE" -eq 1 && "$MALFORMED_REPO_COUNT" -gt 0 ]]; then
+  echo "[WARN] Skipped $MALFORMED_REPO_COUNT malformed repo entr$( [[ "$MALFORMED_REPO_COUNT" -eq 1 ]] && echo "y" || echo "ies" ) during discovery." >&2
+fi
 
 if [[ -n "$REPO_FILTER" ]]; then
   declare -a FILTERED_REPOS=()
