@@ -125,7 +125,7 @@ else
 fi
 
 # Add submodule using git
-if [[ "$DRY_RUN" -eq 1 ]]; then
+  if [[ "$DRY_RUN" -eq 1 ]]; then
   if [[ -n "$BRANCH" ]]; then
     echo "+ git submodule add -b \"$BRANCH\" \"$URL\" \"$PREFIX\""
   else
@@ -135,7 +135,7 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   if [[ "$MULTI_URL_MODE" -eq 1 ]]; then
     echo "+ git config -f .gitmodules \"submodule.$PREFIX.kog-url-ssh\" \"$SSH_URL\""
     echo "+ git config -f .gitmodules \"submodule.$PREFIX.kog-url-https\" \"$HTTPS_URL\""
-    echo "+ git config -f .gitmodules \"submodule.$PREFIX.kog-protocol-priority\" \"auto\""
+    # Default protocol behavior is auto; no need to persist explicit field.
   fi
 else
   # Add submodule
@@ -150,7 +150,6 @@ else
     gith_log "INFO" "Adding kog-* extension fields to .gitmodules"
     git config -f .gitmodules "submodule.$PREFIX.kog-url-ssh" "$SSH_URL"
     git config -f .gitmodules "submodule.$PREFIX.kog-url-https" "$HTTPS_URL"
-    git config -f .gitmodules "submodule.$PREFIX.kog-protocol-priority" "auto"
 
     gith_log "INFO" "Submodule added with multi-URL support: $PREFIX"
     gith_log "INFO" "  SSH URL: $SSH_URL"

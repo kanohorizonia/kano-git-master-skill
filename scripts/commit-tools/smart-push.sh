@@ -133,7 +133,7 @@ usage() {
   cat <<'EOF'
 Usage: smart-push.sh [options]
 
-Push workflow with AI-powered sync and SSH→HTTP fallback per repo.
+Push workflow with AI-powered sync and multi-remote push (SSH + HTTP when both exist).
 
 Options:
   --repos <paths>        Only process specific repos (comma-separated)
@@ -159,7 +159,7 @@ Examples:
 
 Workflow:
   1. Sync with upstream (AI-powered rebase by default)
-  2. Push to remote with SSH→HTTP fallback
+  2. Push to origin remotes (origin-ssh and origin-http when configured; else origin)
 
 Note:
   By default, uses AI (Copilot/Codex/OpenCode) for intelligent sync.
@@ -364,19 +364,18 @@ for repo in "${REPOS[@]}"; do
     has_upstream=1
   fi
 
-  primary_remote=""
-  fallback_remote=""
-
+  declare -a push_remotes=()
   if git -C "$repo" remote get-url origin-ssh >/dev/null 2>&1; then
-    primary_remote="origin-ssh"
-    if git -C "$repo" remote get-url origin-http >/dev/null 2>&1; then
-      fallback_remote="origin-http"
-    fi
-  elif git -C "$repo" remote get-url origin-http >/dev/null 2>&1; then
-    primary_remote="origin-http"
-  elif git -C "$repo" remote get-url origin >/dev/null 2>&1; then
-    primary_remote="origin"
-  else
+    push_remotes+=("origin-ssh")
+  fi
+  if git -C "$repo" remote get-url origin-http >/dev/null 2>&1; then
+    push_remotes+=("origin-http")
+  fi
+  # Also push plain origin if configured.
+  if git -C "$repo" remote get-url origin >/dev/null 2>&1; then
+    push_remotes+=("origin")
+  fi
+  if [[ ${#push_remotes[@]} -eq 0 ]]; then
     echo "[$repo] ERROR: No origin remote found" >&2
     FAILED=1
     continue
@@ -491,55 +490,62 @@ for repo in "${REPOS[@]}"; do
     push_args+=("-u")
   fi
 
-  if push_output="$(git -C "$repo" push "${push_args[@]}" "$primary_remote" "$branch" 2>&1)"; then
-    # Push successful
-    short_repo="$(basename "$repo")"
-    if echo "$push_output" | grep -q "Everything up-to-date"; then
-      if [[ "$VERBOSE" -eq 1 ]]; then
-        echo "[$repo] Push: Everything up-to-date"
-      fi
-      # Don't add to summary if no changes
-    else
-      if [[ "$VERBOSE" -eq 1 ]]; then
-        echo "[$repo] Pushed to $primary_remote"
-      else
-        echo "[$repo] Pushed"
-      fi
-      PUSH_STATS+=("$short_repo|$primary_remote|$branch")
+  repo_success=0
+  repo_fail_count=0
+  add_upstream_flag="$set_upstream"
+  last_failed_remote=""
+  last_failed_output=""
+  short_repo="$(basename "$repo")"
+  for remote_name in "${push_remotes[@]}"; do
+    remote_push_args=("${push_args[@]}")
+    if [[ "$add_upstream_flag" -eq 0 ]]; then
+      filtered=()
+      for a in "${remote_push_args[@]}"; do
+        [[ "$a" == "-u" ]] && continue
+        filtered+=("$a")
+      done
+      remote_push_args=("${filtered[@]}")
     fi
-    continue
-  fi
 
-  # Try fallback remote
-  if [[ -n "$fallback_remote" ]]; then
-    if [[ "$VERBOSE" -eq 1 ]]; then
-      echo "[$repo] Falling back to $fallback_remote..."
-    fi
-    if push_output="$(git -C "$repo" push "${push_args[@]}" "$fallback_remote" "$branch" 2>&1)"; then
-      short_repo="$(basename "$repo")"
+    if push_output="$(git -C "$repo" push "${remote_push_args[@]}" "$remote_name" "$branch" 2>&1)"; then
+      repo_success=1
+      add_upstream_flag=0
       if echo "$push_output" | grep -q "Everything up-to-date"; then
         if [[ "$VERBOSE" -eq 1 ]]; then
-          echo "[$repo] Push: Everything up-to-date"
+          echo "[$repo] Push ($remote_name): Everything up-to-date"
         fi
-        # Don't add to summary if no changes
       else
         if [[ "$VERBOSE" -eq 1 ]]; then
-          echo "[$repo] Pushed to $fallback_remote"
+          echo "[$repo] Pushed to $remote_name"
         else
-          echo "[$repo] Pushed"
+          echo "[$repo] Pushed ($remote_name)"
         fi
-        PUSH_STATS+=("$short_repo|$fallback_remote|$branch")
+        PUSH_STATS+=("$short_repo|$remote_name|$branch")
       fi
-      continue
+    else
+      repo_fail_count=$((repo_fail_count + 1))
+      last_failed_remote="$remote_name"
+      last_failed_output="$push_output"
+      if [[ "$VERBOSE" -eq 1 ]]; then
+        echo "[$repo] Push failed on $remote_name" >&2
+        if [[ -n "${push_output:-}" ]]; then
+          echo "[$repo] Push output ($remote_name):" >&2
+          echo "$push_output" >&2
+        fi
+      fi
     fi
-  fi
+  done
 
-  echo "[$repo] Push failed" >&2
-  if [[ -n "${push_output:-}" ]]; then
-    echo "[$repo] Push output:" >&2
-    echo "$push_output" >&2
+  if [[ "$repo_success" -eq 0 ]]; then
+    echo "[$repo] Push failed on all remotes (${push_remotes[*]})" >&2
+    if [[ -n "$last_failed_remote" && -n "$last_failed_output" ]]; then
+      echo "[$repo] Last push output ($last_failed_remote):" >&2
+      echo "$last_failed_output" >&2
+    fi
+    FAILED=1
+  elif [[ "$repo_fail_count" -gt 0 && "$VERBOSE" -eq 1 ]]; then
+    echo "[$repo] Partial push success: $repo_fail_count remote(s) failed, but at least one succeeded"
   fi
-  FAILED=1
 done
 
 if [[ "$FAILED" -eq 1 ]]; then

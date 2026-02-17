@@ -133,6 +133,65 @@ print_commit_list() {
   done
 }
 
+resolve_commit_info_line() {
+  local repo="$1"
+  local rev="$2"
+  if [[ -z "$rev" ]]; then
+    echo "N/A"
+    return 0
+  fi
+  git -C "$repo" show -s --format='%h | %cI | %an | %s' "$rev" 2>/dev/null || echo "N/A"
+}
+
+resolve_stable_branch_ref() {
+  local repo="$1"
+  local target_branch="$2"
+  local current_branch="$3"
+  if [[ -n "$target_branch" ]] && git -C "$repo" show-ref --verify --quiet "refs/heads/$target_branch"; then
+    echo "$target_branch"
+    return 0
+  fi
+  if [[ -n "$current_branch" && "$current_branch" =~ ^branch_ ]]; then
+    echo "$current_branch"
+    return 0
+  fi
+  if [[ -n "$current_branch" ]]; then
+    echo "$current_branch"
+    return 0
+  fi
+  echo ""
+}
+
+print_branch_commit_report() {
+  local repo="$1"
+  local repo_rel="$2"
+  local current_branch="$3"
+  local upstream_rev="$4"
+  local stable_rev="$5"
+
+  local upstream_line stable_line
+  upstream_line="$(resolve_commit_info_line "$repo" "$upstream_rev")"
+  stable_line="$(resolve_commit_info_line "$repo" "$stable_rev")"
+
+  echo "=== Branch Commit Report ==="
+  echo "repo: $repo_rel"
+  echo "current_branch: ${current_branch:-detached}"
+  if [[ -n "$upstream_rev" && -n "$stable_rev" && "$upstream_rev" == "$stable_rev" ]]; then
+    echo "latest_commit (upstream=stable): $upstream_line"
+  else
+    if [[ -n "$upstream_rev" ]]; then
+      echo "latest_upstream_commit: $upstream_line"
+    else
+      echo "latest_upstream_commit: N/A"
+    fi
+    if [[ -n "$stable_rev" ]]; then
+      echo "latest_stable_branch_commit: $stable_line"
+    else
+      echo "latest_stable_branch_commit: N/A"
+    fi
+  fi
+}
+
 continue_cherry_pick() {
   local repo="$1"
   local origin_remote="$2"
@@ -235,9 +294,15 @@ if ! has_remote "$REPO" "$ORIGIN_REMOTE"; then
 fi
 
 if ! has_remote "$REPO" "$UPSTREAM_REMOTE"; then
-  echo "INFO: Repo without upstream detected ($REPO_REL); using fallback branch sync mode."
-  syncc_fallback_sync_branch_mode "$REPO" "$ORIGIN_REMOTE" "$WORKSPACE_ABS" "$REPO_ABS" "$DRY_RUN"
-  exit $?
+  current_branch="$(get_current_branch "$REPO")"
+  stable_ref="$(resolve_stable_branch_ref "$REPO" "$TARGET_BRANCH" "$current_branch")"
+  stable_rev=""
+  if [[ -n "$stable_ref" ]]; then
+    stable_rev="$(git -C "$REPO" rev-parse "$stable_ref" 2>/dev/null || true)"
+  fi
+  echo "INFO: Repo without upstream detected ($REPO_REL); skip stable-dev workflow."
+  print_branch_commit_report "$REPO" "$REPO_REL" "$current_branch" "" "$stable_rev"
+  exit 0
 fi
 
 if [[ "$RELEASE_CHANNEL" != "stable" && "$RELEASE_CHANNEL" != "any" ]]; then
@@ -265,6 +330,8 @@ if [[ -z "$TARGET_TAG" ]]; then TARGET_TAG="$latest_tag"; fi
 if [[ -z "$BASE_TAG" ]]; then BASE_TAG="$previous_tag"; fi
 if [[ -z "$TARGET_BRANCH" ]]; then TARGET_BRANCH="branch_$(sanitize_tag_for_branch "$TARGET_TAG")"; fi
 if [[ -z "$SOURCE_BRANCH" ]]; then SOURCE_BRANCH="branch_$(sanitize_tag_for_branch "$BASE_TAG")"; fi
+
+upstream_latest_rev="$(git -C "$REPO" rev-parse "refs/tags/$TARGET_TAG^{commit}" 2>/dev/null || true)"
 
 git -C "$REPO" rev-parse -q --verify "refs/tags/$TARGET_TAG" >/dev/null 2>&1 || { echo "ERROR: Target tag not found: $TARGET_TAG" >&2; exit 1; }
 git -C "$REPO" rev-parse -q --verify "refs/tags/$BASE_TAG" >/dev/null 2>&1 || { echo "ERROR: Base tag not found: $BASE_TAG" >&2; exit 1; }
@@ -347,12 +414,18 @@ if [[ ${#pick_commits[@]} -eq 0 ]]; then
     syncc_push_branch "$REPO" "$ORIGIN_REMOTE" "$TARGET_BRANCH" "$NO_PUSH"
     print_stable_dev_summary "$REPO" "$TARGET_BRANCH" "$TARGET_TAG" "$BASE_TAG" "0" "0" "0" "0" "0" "0" "$REPO_REL" "stable-dev"
   fi
+  current_branch="$(get_current_branch "$REPO")"
+  stable_rev="$(git -C "$REPO" rev-parse "$TARGET_BRANCH" 2>/dev/null || true)"
+  print_branch_commit_report "$REPO" "$REPO_REL" "$current_branch" "$upstream_latest_rev" "$stable_rev"
   exit 0
 fi
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
   echo "[DRY RUN] Would run cherry-pick for ${#pick_commits[@]} commits onto $TARGET_BRANCH"
   [[ "$NO_PUSH" -eq 0 ]] && echo "[DRY RUN] Would run: git -C $REPO push -u $ORIGIN_REMOTE $TARGET_BRANCH"
+  current_branch="$(get_current_branch "$REPO")"
+  stable_rev="$(git -C "$REPO" rev-parse "$TARGET_BRANCH" 2>/dev/null || true)"
+  print_branch_commit_report "$REPO" "$REPO_REL" "$current_branch" "$upstream_latest_rev" "$stable_rev"
   exit 0
 fi
 
@@ -444,4 +517,7 @@ syncc_push_branch "$REPO" "$ORIGIN_REMOTE" "$TARGET_BRANCH" "$NO_PUSH"
 print_stable_dev_summary "$REPO" "$TARGET_BRANCH" "$TARGET_TAG" "$BASE_TAG" "$planned_count" "$applied_count" "$skipped_count" "$conflict_count" "$resolved_conflict_count" "$pending_conflict_count" "$REPO_REL" "stable-dev"
 print_commit_list "$REPO" "Applied commits" "${applied_commits[@]}"
 print_commit_list "$REPO" "Skipped commits" "${skipped_commits[@]}"
+current_branch="$(get_current_branch "$REPO")"
+stable_rev="$(git -C "$REPO" rev-parse "$TARGET_BRANCH" 2>/dev/null || true)"
+print_branch_commit_report "$REPO" "$REPO_REL" "$current_branch" "$upstream_latest_rev" "$stable_rev"
 echo "Stable-dev sync completed: $TARGET_BRANCH"

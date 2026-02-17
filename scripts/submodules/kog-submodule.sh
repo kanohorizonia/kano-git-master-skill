@@ -556,7 +556,9 @@ cmd_add_submodule() {
       echo "  git config -f .gitmodules \"submodule.$path.kog-remote-$remote_name-https\" \"${REMOTE_HTTPS_URLS[$remote_name]}\""
     done
     echo "  git config -f .gitmodules \"submodule.$path.kog-push-remote\" \"$push_remote\""
-    echo "  git config -f .gitmodules \"submodule.$path.kog-protocol-priority\" \"$protocol_priority\""
+    if [[ "$protocol_priority" != "auto" ]]; then
+      echo "  git config -f .gitmodules \"submodule.$path.kog-protocol-priority\" \"$protocol_priority\""
+    fi
   else
     gith_log "INFO" "Adding submodule: $path"
 
@@ -575,7 +577,10 @@ cmd_add_submodule() {
 
     # Add configuration fields
     set_kog_field "$path" "kog-push-remote" "$push_remote"
-    set_kog_field "$path" "kog-protocol-priority" "$protocol_priority"
+    # "auto" is default behavior; only persist when explicitly overridden.
+    if [[ "$protocol_priority" != "auto" ]]; then
+      set_kog_field "$path" "kog-protocol-priority" "$protocol_priority"
+    fi
 
     gith_log "INFO" "Submodule added with multi-remote support"
     gith_log "INFO" "  Path: $path"
