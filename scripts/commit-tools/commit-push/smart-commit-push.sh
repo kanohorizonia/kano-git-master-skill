@@ -101,6 +101,126 @@ Safety:
 EOF
 }
 
+truncate_text() {
+  local text="$1"
+  local max="${2:-80}"
+  if (( ${#text} <= max )); then
+    printf '%s' "$text"
+  else
+    printf '%s...' "${text:0:max-3}"
+  fi
+}
+
+contains_push_arg() {
+  local needle="$1"
+  local arg=""
+  for arg in "${SMART_PUSH_ARGS[@]}"; do
+    if [[ "$arg" == "$needle" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+get_push_arg_value() {
+  local needle="$1"
+  local i=0
+  for ((i=0; i<${#SMART_PUSH_ARGS[@]}; i++)); do
+    if [[ "${SMART_PUSH_ARGS[$i]}" == "$needle" ]]; then
+      if [[ $((i+1)) -lt ${#SMART_PUSH_ARGS[@]} ]]; then
+        printf '%s' "${SMART_PUSH_ARGS[$((i+1))]}"
+        return 0
+      fi
+      break
+    fi
+  done
+  return 1
+}
+
+print_final_workflow_summary() {
+  local include_types=()
+  local repos_json=""
+  local types_csv=""
+  local repo_filter=""
+  local -a repos=()
+
+  if ! contains_push_arg "--no-root"; then
+    include_types+=("root")
+  fi
+  if ! contains_push_arg "--no-submodules"; then
+    include_types+=("submodule")
+  fi
+  if ! contains_push_arg "--no-standalone"; then
+    include_types+=("standalone")
+  fi
+
+  if [[ ${#include_types[@]} -eq 0 ]]; then
+    return 0
+  fi
+
+  types_csv="$(IFS=,; echo "${include_types[*]}")"
+  repos_json="$("$SCRIPT_DIR/../../core/discover-repos.sh" --root "$WORKFLOW_ROOT" --format json --include-types "$types_csv" 2>/dev/null || true)"
+  while IFS= read -r repo_obj; do
+    [[ -z "$repo_obj" ]] && continue
+    path="$(printf '%s' "$repo_obj" | sed -n 's/.*"path":"\([^"]*\)".*/\1/p')"
+    [[ -z "$path" ]] && continue
+    repos+=("$path")
+  done < <(echo "$repos_json" | grep -o '{[^}]*}')
+
+  repo_filter="$(get_push_arg_value "--repos" || true)"
+  if [[ -n "$repo_filter" ]]; then
+    filtered_repos=()
+    IFS=',' read -ra filter_paths <<< "$repo_filter"
+    for filter_path in "${filter_paths[@]}"; do
+      filter_path="${filter_path#./}"
+      if [[ "$filter_path" == "." ]]; then
+        filter_abs="$WORKFLOW_ROOT"
+      elif [[ "$filter_path" == /* ]]; then
+        filter_abs="$filter_path"
+      else
+        filter_abs="$WORKFLOW_ROOT/$filter_path"
+      fi
+      filter_abs="$(cd "$filter_abs" 2>/dev/null && pwd || echo "$filter_abs")"
+      for repo in "${repos[@]}"; do
+        if [[ "$repo" == "$filter_abs" ]]; then
+          filtered_repos+=("$repo")
+          break
+        fi
+      done
+    done
+    repos=("${filtered_repos[@]}")
+  fi
+
+  if [[ ${#repos[@]} -eq 0 ]]; then
+    return 0
+  fi
+
+  echo ""
+  echo "=== Final Workflow Summary ==="
+  printf "%-40s  %-20s  %-8s  %s\n" "Repository" "Branch" "Revision" "HEAD (sha | time | author | title)"
+  printf "%-40s  %-20s  %-8s  %s\n" "-----------" "------" "--------" "--------------------------------"
+
+  for repo in "${repos[@]}"; do
+    if ! git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      continue
+    fi
+    repo_rel="$repo"
+    if [[ "$repo_rel" == "$WORKFLOW_ROOT" ]]; then
+      repo_rel="."
+    elif [[ "$repo_rel" == "$WORKFLOW_ROOT/"* ]]; then
+      repo_rel="${repo_rel#"$WORKFLOW_ROOT"/}"
+    fi
+    branch="$(git -C "$repo" symbolic-ref --quiet --short HEAD 2>/dev/null || echo "(detached)")"
+    revision="$(git -C "$repo" rev-list --count "$branch" 2>/dev/null || git -C "$repo" rev-list --count HEAD 2>/dev/null || echo "0")"
+    head_line="$(git -C "$repo" show -s --format='%h | %cI | %an | %s' HEAD 2>/dev/null || echo "N/A")"
+    printf "%-40s  %-20s  %-8s  %s\n" \
+      "$(truncate_text "$repo_rel" 40)" \
+      "$(truncate_text "$branch" 20)" \
+      "$(truncate_text "$revision" 8)" \
+      "$(truncate_text "$head_line" 120)"
+  done
+}
+
 # Parse arguments
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -318,3 +438,4 @@ echo ""
 echo "=== Workflow Complete (success) ==="
 echo "✓ Commit phase completed"
 echo "✓ Push phase completed"
+print_final_workflow_summary

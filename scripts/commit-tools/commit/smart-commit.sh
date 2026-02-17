@@ -435,6 +435,16 @@ touch "$REPO_LIST_FILE"
 # Commit statistics: format "repo_name|commit_count|branch"
 declare -a COMMIT_STATS=()
 
+resolve_revision_count() {
+  local repo="$1"
+  local branch="$2"
+  if [[ -n "$branch" && "$branch" != "(detached)" ]] && git -C "$repo" show-ref --verify --quiet "refs/heads/$branch" 2>/dev/null; then
+    git -C "$repo" rev-list --count "$branch" 2>/dev/null || echo "0"
+    return 0
+  fi
+  git -C "$repo" rev-list --count HEAD 2>/dev/null || echo "0"
+}
+
 #------------------------------------------------------------------------------
 # Repository Discovery
 #------------------------------------------------------------------------------
@@ -1296,8 +1306,10 @@ commit_repo() {
 
   # Record statistics
   local branch="$(git -C "$repo" symbolic-ref --quiet --short HEAD 2>/dev/null || echo "(detached)")"
+  local revision
+  revision="$(resolve_revision_count "$repo" "$branch")"
   local short_repo="$(basename "$repo")"
-  COMMIT_STATS+=("$short_repo|1|$branch")
+  COMMIT_STATS+=("$short_repo|1|$branch|$revision")
 
   # Push if requested
   if [[ "$DO_PUSH" -eq 1 ]]; then
@@ -1436,11 +1448,11 @@ fi
 if [[ "${#COMMIT_STATS[@]}" -gt 0 ]]; then
   echo ""
   echo "=== Commit Summary ==="
-  printf "%-35s  Commits  Branch\\n" "Repository"
-  printf "%-35s  -------  ------\\n" "-----------"
+  printf "%-35s  Commits  Branch               Revision\\n" "Repository"
+  printf "%-35s  -------  ------               --------\\n" "-----------"
   for stat in "${COMMIT_STATS[@]}"; do
-    IFS='|' read -r repo_name commit_count branch <<< "$stat"
-    printf "%-35s  %-7s  %s\\n" "$repo_name" "$commit_count" "$branch"
+    IFS='|' read -r repo_name commit_count branch revision <<< "$stat"
+    printf "%-35s  %-7s  %-19s %s\\n" "$repo_name" "$commit_count" "$branch" "$revision"
   done
 fi
 
