@@ -684,11 +684,13 @@ Root-wrapper examples:
 
 Ready-to-copy templates:
 - Location: `assets/root-wrapper-templates/`
-- Includes: `smart-clone.sh`, `smart-commit.sh`, `smart-commit-push.sh`, `smart-push.sh`, `smart-status.sh`, `smart-sync.sh`, `smart-sync-upstream-stable-dev.sh`
-- Copy command:
+- Profiles:
+  - `common/` shared wrappers
+  - `profiles/standalone/` (`smart-sync.sh` defaults to `origin-latest`)
+  - `profiles/oss/` (includes upstream-focused sync wrappers)
+- Generate command (recommended):
 ```bash
-cp skills/kano/kano-git-master-skill/assets/root-wrapper-templates/smart-*.sh .
-chmod +x smart-*.sh
+./.agents/kano/kano-git-master-skill/scripts/core/gen-root-wrappers.sh --profile standalone --target .
 ```
 
 ## Troubleshooting
