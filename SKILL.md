@@ -575,6 +575,23 @@ Recommended root wrapper set:
 - `smart-sync-upstream-stable-dev.sh`
 - `smart-status.sh` (recommended when the repository is a multi-repo workspace)
 
+## Delegation Mode (代勞模式)
+
+Use delegation mode when an agent/tool is executing commit workflows on your behalf.
+
+- Enable with `--agent <name>` (for example: `codex`, `cursor`, `copilot`, `kiro`, `claude`).
+- If `--agent` is set and not `manual`:
+  - fixed commit message is required: `-m "..."` / `--message "..."`.
+  - in-script AI review is disabled automatically (`--no-ai-review`) to avoid duplicate model cost.
+- Use `--agent manual` for human-operated runs.
+
+Root-wrapper examples:
+
+```bash
+./smart-commit.sh --provider copilot --model gpt-5-mini --agent codex -m "chore: sync wrappers"
+./smart-commit-push.sh --provider copilot --model gpt-5-mini --agent codex -m "chore: apply stable-dev repair"
+```
+
 ## Troubleshooting
 
 ### Stable-Dev Cherry-Pick Repair Playbook (`-X theirs` after sync)
