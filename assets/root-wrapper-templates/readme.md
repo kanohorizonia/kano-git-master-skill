@@ -3,34 +3,43 @@
 These are recommended root-level `smart-*.sh` wrappers for projects that use
 `kano-git-master-skill` as a submodule at:
 
-`skills/kano/kano-git-master-skill`
+`.agents/kano/kano-git-master-skill`
 
-## included wrappers
+## profiles
 
-- `smart-clone.sh`
-- `smart-commit.sh`
-- `smart-commit-push.sh`
-- `smart-push.sh`
-- `smart-status.sh`
-- `smart-sync.sh`
-- `smart-sync-upstream-stable-dev.sh`
+- `common/`: shared wrappers used by all profiles
+- `profiles/standalone/`: profile-specific wrappers for no-upstream repos (`smart-sync.sh` defaults to `origin-latest`)
+- `profiles/oss/`: profile-specific wrappers for open source contributor workflows
 
-## copy to project root
+## generate wrappers (recommended)
 
-From project root:
+Use generator script:
 
 ```bash
-cp skills/kano/kano-git-master-skill/assets/root-wrapper-templates/smart-*.sh .
+./.agents/kano/kano-git-master-skill/scripts/core/gen-root-wrappers.sh --profile standalone --target .
 ```
 
-Optional executable bit:
+Open source contributor profile:
 
 ```bash
+./.agents/kano/kano-git-master-skill/scripts/core/gen-root-wrappers.sh --profile oss --target .
+```
+
+Options:
+
+- `--force`: overwrite existing `smart-*.sh`
+- `--dry-run`: preview actions without writing files
+
+## manual copy (legacy)
+
+```bash
+cp .agents/kano/kano-git-master-skill/assets/root-wrapper-templates/profiles/standalone/smart-*.sh .
 chmod +x smart-*.sh
 ```
 
 ## design notes
 
-- wrappers are thin entrypoints only (no business logic)
-- wrappers always export `KANO_GIT_MASTER_ROOT="$ROOT"`
-- implementation logic stays in `skills/kano/kano-git-master-skill/scripts/...`
+- wrappers are thin entrypoints only (no core business logic)
+- wrappers export `KANO_GIT_MASTER_ROOT="$ROOT"` when needed
+- implementation logic stays in `.agents/kano/kano-git-master-skill/scripts/...`
+- generator composes wrappers from `common/` and then applies profile overrides
