@@ -577,6 +577,23 @@ Recommended root wrapper set:
 
 ## Troubleshooting
 
+### Stable-Dev Cherry-Pick Repair Playbook (`-X theirs` after sync)
+
+Use this flow when `smart-sync-upstream-stable-dev` bootstraps a stable branch and you must re-apply local maintenance commits:
+
+1. Snapshot local commits first (author/range), then save to a file for traceability.
+2. Run stable-dev sync to create/update the target branch.
+3. Cherry-pick required commits to target stable branch.
+4. If conflicts are too expensive for manual line-by-line resolution, use `git cherry-pick -X theirs <sha>` as a temporary convergence strategy.
+5. **Do not stop at green cherry-pick**: run `git range-diff <old-range> <new-range>` to detect semantic drift (`!` entries).
+6. Inspect drift hotspots (especially tests and shared infra files) and reconcile manually.
+7. Run targeted tests for touched surfaces, then push the stable branch.
+8. Record what was repaired (files + reason) so the next stable-dev run has context.
+
+Notes:
+- `-X theirs` helps finish conflicted replay quickly, but it is not a correctness guarantee.
+- Prefer preserving current stable-branch architecture and only re-applying the intended behavior delta from the original commits.
+
 ### Rebase Conflicts
 ```bash
 git status                    # Check conflicts
