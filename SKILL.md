@@ -615,6 +615,7 @@ The following terms are project conventions in Kano Git Master and are **not** o
 - `agent delegation` / `--agent`: Kano execution contract for delegated automation identity (for example `codex`, `copilot`).
 - `multi-remote push` policy: Kano policy to push to `origin-ssh`, `origin-http`, and `origin` with "any success" semantics.
 - `kog-*` keys/commands: Kano-specific namespace (for example `kog-submodule.sh`, `kog-protocol-priority`, `kog-remote-origin-ssh`).
+- `smart-submodule`: canonical submodule command entrypoint (`scripts/submodules/smart-submodule.sh`) that dispatches add/sync/update/remove/foreach/sync-urls.
 - `include-types`: Kano discovery filter values (`root`, `submodule`, `standalone`) used by workspace scripts.
 - `manifest` (workspace manifest): Kano repo discovery output file consumed by batch scripts (not a Git native artifact).
 - `continue-on-error` batch mode: Kano batch execution behavior; continue processing other repos after a per-repo failure.

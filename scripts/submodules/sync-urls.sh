@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+source "$SCRIPT_DIR/submodule-common.sh"
+
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 DRY_RUN=0
 INIT_MISSING=0
@@ -65,12 +68,7 @@ if [[ ! -f "$ROOT/.gitmodules" ]]; then
 fi
 
 run() {
-  if [[ "$DRY_RUN" -eq 1 ]]; then
-    printf '+ %q' "$@"
-    printf '\n'
-    return 0
-  fi
-  "$@"
+  subm_run "$([[ "$DRY_RUN" -eq 1 ]] && echo true || echo false)" "$@"
 }
 
 echo "Root: $ROOT"

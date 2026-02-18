@@ -5,6 +5,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+source "$SCRIPT_DIR/submodule-common.sh"
 
 # Default options
 COMMAND=""
@@ -103,13 +104,12 @@ if [[ -z "$COMMAND" ]]; then
 fi
 
 # Check if we're in a git repository
-if ! git rev-parse --git-dir > /dev/null 2>&1; then
-    echo "Error: Not in a git repository" >&2
+if ! subm_require_git_repo; then
     exit 1
 fi
 
 # Check if there are any submodules
-if ! git config --file .gitmodules --get-regexp path > /dev/null 2>&1; then
+if ! subm_has_submodules; then
     echo "No submodules found in this repository"
     exit 0
 fi
@@ -133,9 +133,7 @@ echo ""
 
 # List submodules
 echo "Submodules:"
-git submodule status | while read -r line; do
-    echo "  $line"
-done
+subm_print_submodule_status
 echo ""
 
 if [[ "$DRY_RUN" == "true" ]]; then

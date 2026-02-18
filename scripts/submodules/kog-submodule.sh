@@ -374,7 +374,7 @@ cmd_add() {
   # Validate that each remote has at least one URL (SSH or HTTPS)
   local all_remotes
   all_remotes=$(echo "${!REMOTE_SSH_URLS[@]} ${!REMOTE_HTTPS_URLS[@]}" | tr ' ' '\n' | sort -u)
-  
+
   for remote_name in $all_remotes; do
     if [[ -z "${REMOTE_SSH_URLS[$remote_name]:-}" && -z "${REMOTE_HTTPS_URLS[$remote_name]:-}" ]]; then
       gith_error "Error: Remote '$remote_name' missing both SSH and HTTPS URL"
@@ -611,11 +611,16 @@ cmd_add_submodule() {
 #------------------------------------------------------------------------------
 
 cmd_sync() {
-  local target_path="${1:-}"
+  local target_path=""
   local dry_run=0
 
+  # Optional positional target path (only when first arg is not an option)
+  if [[ $# -gt 0 && "${1:-}" != -* ]]; then
+    target_path="$1"
+    shift || true
+  fi
+
   # Parse options
-  shift || true
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -h|--help) usage_sync; exit 0 ;;
@@ -754,7 +759,7 @@ cmd_sync_submodule() {
   #   3) fallback to main (safe default)
   local target_branch
   target_branch=$(git config -f .gitmodules "submodule.$submodule_path.branch" 2>/dev/null || true)
-  
+
   # Determine best tracking remote (prefer upstream)
   local tracking_remote="origin"
   if git config -f .gitmodules "submodule.$submodule_path.kog-remote-upstream-https" >/dev/null 2>&1 || \
@@ -872,11 +877,16 @@ cmd_sync_all_submodules() {
 #------------------------------------------------------------------------------
 
 cmd_update() {
-  local target_path="${1:-}"
+  local target_path=""
   local dry_run=0
 
+  # Optional positional target path (only when first arg is not an option)
+  if [[ $# -gt 0 && "${1:-}" != -* ]]; then
+    target_path="$1"
+    shift || true
+  fi
+
   # Parse options
-  shift || true
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -h|--help) usage_update; exit 0 ;;

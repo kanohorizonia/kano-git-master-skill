@@ -85,11 +85,13 @@ kano-git-master-skill/
     ├── worktree/           # Worktree management
     ├── subtree/            # Subtree management
     ├── submodules/         # Submodule operations
-    │   ├── kog-submodule.sh           # Enhanced submodule management
-    │   ├── add-submodule.sh           # Add submodule
+    │   ├── smart-submodule.sh         # Canonical submodule entrypoint
+    │   ├── kog-submodule.sh           # Enhanced multi-remote submodule ops
+    │   ├── add-submodule.sh           # Compatibility wrapper (add)
     │   ├── remove-submodule.sh        # Remove submodule
     │   ├── update-submodules.sh       # Update all submodules
-    │   └── sync-urls.sh               # Sync submodule URLs
+    │   ├── sync-urls.sh               # Sync submodule URLs
+    │   └── submodule-common.sh        # Shared submodule helpers
     ├── mono-repo/          # Mono-repo optimization
     ├── vcs-bridges/        # VCS integration (P4, SVN)
     └── lib/                # Helper libraries
@@ -179,6 +181,17 @@ Create isolated orphan branches for development tools:
 Manage submodules with multi-URL support and automatic fallback:
 
 ```bash
+# Canonical entrypoint (recommended)
+./scripts/submodules/smart-submodule.sh add \
+  --path tools/formatter \
+  --remote origin \
+    --ssh git@github.com:myuser/formatter.git \
+    --https https://github.com/myuser/formatter.git \
+  --remote upstream \
+    --ssh git@github.com:original/formatter.git \
+    --https https://github.com/original/formatter.git
+
+# Equivalent direct command
 # Add submodule with multiple remotes
 ./scripts/submodules/kog-submodule.sh add \
   --path tools/formatter \
@@ -189,11 +202,11 @@ Manage submodules with multi-URL support and automatic fallback:
     --ssh git@github.com:original/formatter.git \
     --https https://github.com/original/formatter.git
 
-# Sync submodule URLs (auto-detect SSH availability)
-./scripts/submodules/kog-submodule.sh sync
+# Sync remotes/branch alignment
+./scripts/submodules/smart-submodule.sh sync
 
-# Update with automatic fallback
-./scripts/submodules/kog-submodule.sh update
+# Update submodule checkouts
+./scripts/submodules/smart-submodule.sh update --remote --recursive
 ```
 
 ### Show Skill Version
