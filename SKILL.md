@@ -532,6 +532,32 @@ Most scripts support:
 6. **Use verbose mode for debugging**: Add `--verbose` to see all repos (default shows only changes)
 7. **Review summary tables**: Check commit and push summaries after workflow completion
 
+## Custom Terms Glossary (Non-Git Official Terms)
+
+The following terms are project conventions in Kano Git Master and are **not** official Git terminology:
+
+- `smart-*` scripts: Kano automation wrappers that orchestrate multiple Git steps with guardrails.
+  - Example: `smart-commit.sh`, `smart-sync.sh`, `smart-push.sh`.
+- `smart-status`: Kano wrapper name for multi-repo status reporting (implemented via `status-all-repos.sh`).
+- `root wrapper`: Thin executable at workspace root that forwards to `skills/kano/kano-git-master-skill/scripts/...`.
+- `multi-repo workspace`: A workspace containing a root repo plus submodules/standalone repos managed together.
+- `stable-dev` flow: Kano-defined maintenance sync mode using stable-tag/cherry-pick strategy (not a Git built-in workflow name).
+- `dev` flow (in `smart-sync` context): Kano-defined sync mode based on upstream latest for active development.
+- `stable branch` (in stable-dev context): Kano naming convention for maintenance target branch `branch_<target-tag>` (for example `branch_v1.2.6`).
+- `target branch` (stable-dev): the branch that will receive cherry-picked maintenance commits; usually equals `stable branch`.
+- `source branch` (stable-dev): maintenance commit source branch, defaulting to `origin/branch_<base-tag>` unless overridden by `--source-branch`.
+- `target-tag` / `base-tag` (stable-dev): release tag pair used to compute target maintenance line and previous maintenance source baseline.
+- `upstream default branch tip` (dev mode): latest commit on upstream default branch used as base in `smart-sync-dev`.
+- `AI review gate`: Kano commit gate that evaluates AI/static review verdict before allowing commit/push.
+- `agent delegation` / `--agent`: Kano execution contract for delegated automation identity (for example `codex`, `copilot`).
+- `multi-remote push` policy: Kano policy to push to `origin-ssh`, `origin-http`, and `origin` with "any success" semantics.
+- `kog-*` keys/commands: Kano-specific namespace (for example `kog-submodule.sh`, `kog-protocol-priority`, `kog-remote-origin-ssh`).
+- `include-types`: Kano discovery filter values (`root`, `submodule`, `standalone`) used by workspace scripts.
+- `manifest` (workspace manifest): Kano repo discovery output file consumed by batch scripts (not a Git native artifact).
+- `continue-on-error` batch mode: Kano batch execution behavior; continue processing other repos after a per-repo failure.
+
+When writing docs or scripts, use these terms consistently and avoid presenting them as native Git concepts.
+
 ## Root Repo Wrapper Script Recommendation
 
 For workspace root scripts (for example `./smart-commit.sh`, `./smart-commit-push.sh`, `./smart-sync.sh`):
@@ -547,6 +573,7 @@ Recommended root wrapper set:
 - `smart-commit-push.sh`
 - `smart-sync.sh`
 - `smart-sync-upstream-stable-dev.sh`
+- `smart-status.sh` (recommended when the repository is a multi-repo workspace)
 
 ## Troubleshooting
 
