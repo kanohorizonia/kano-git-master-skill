@@ -77,6 +77,69 @@ scripts/
     └── smart-push.sh         # Multi-repo push
 ```
 
+## Terminology (Custom vs Git)
+
+This section defines project-specific terms used in this skill.
+If a term is not listed here, assume standard Git meaning.
+
+### Custom terms (this project)
+
+- `stable-dev mode`
+  - Sync strategy based on upstream **stable tags**.
+  - Create/switch to `branch_<target-tag>`, then cherry-pick maintained commits from previous stable line.
+
+- `dev mode`
+  - Sync strategy based on upstream **default branch tip** (not stable tags).
+  - Uses the same migration shape as stable-dev but with different upstream base.
+
+- `stable branch`
+  - Project convention branch name: `branch_<stable_tag>`.
+  - Example: `branch_v1.2.6`.
+  - This is a maintenance branch in origin, not a Git built-in branch type.
+
+- `target-tag`
+  - The stable tag chosen as the new base in stable-dev sync.
+
+- `base-tag`
+  - Previous stable tag used to find prior maintenance branch (`branch_<base-tag>`) for cherry-pick source.
+
+- `bootstrap mode` (stable-dev)
+  - Triggered when previous stable source branch is missing and no `--source-branch` is provided.
+  - Behavior: create/switch target stable branch from tag, skip cherry-pick, then push.
+
+- `origin-latest` sync
+  - Consumer workflow: align to origin branch/tag latest state, no force-push fork maintenance behavior.
+
+- `upstream-force-push` sync
+  - Fork-maintenance workflow: sync from upstream then push to origin with `--force-with-lease`.
+
+- `pre-sync` / `post-sync` (smart-commit-push)
+  - `pre-sync`: `stash -> sync -> pop` (when stashable) before commit.
+  - `post-sync`: sync-only validation after commit, no stash/pop fallback.
+
+- `delegated mode`
+  - Activated when `--agent <name>` and name is not `manual`.
+  - Requires fixed `-m/--message` and auto-disables in-script AI review (`--no-ai-review`).
+
+- `workflow lock marker`
+  - `.git/kano-smart-commit-push.lock`
+  - Indicates workflow in progress; other agents/users should avoid concurrent file edits.
+
+- `protocol-priority=auto` persistence rule
+  - `auto` is default behavior and should not be persisted to `.gitmodules`.
+  - Persist only explicit non-default (`ssh` or `https`).
+
+### Git official terms (not custom)
+
+- `remote` (`origin`, `upstream`)
+- `default branch`
+- `detached HEAD`
+- `submodule`
+- `rebase`
+- `cherry-pick`
+- `stash`
+- `tag`
+
 ## Core Scripts
 
 | Script | Purpose | Use When |
@@ -592,6 +655,15 @@ Root-wrapper examples:
 ./smart-commit-push.sh --provider copilot --model gpt-5-mini --agent codex -m "chore: apply stable-dev repair"
 ```
 
+Ready-to-copy templates:
+- Location: `assets/root-wrapper-templates/`
+- Includes: `smart-clone.sh`, `smart-commit.sh`, `smart-commit-push.sh`, `smart-push.sh`, `smart-status.sh`, `smart-sync.sh`, `smart-sync-upstream-stable-dev.sh`
+- Copy command:
+```bash
+cp skills/kano/kano-git-master-skill/assets/root-wrapper-templates/smart-*.sh .
+chmod +x smart-*.sh
+```
+
 ## Troubleshooting
 
 ### Stable-Dev Cherry-Pick Repair Playbook (`-X theirs` after sync)
@@ -774,9 +846,9 @@ KOG_PROMPT_MODE=user KOG_RULES_FILE=.git/commit-rules.md ./scripts/commit-tools/
 
 **Default rules fallback (built-in):**
 - If no explicit `--rules` / `--rules-file` is provided, rule lookup order is:
-  1. `<repo>/dev.rule.md` or `<repo>/default.rule.md`
-  2. `<workspace-root>/dev.rule.md` or `<workspace-root>/default.rule.md`
-  3. built-in defaults in `references/dev.rule.md` and `references/default.rule.md`
+  1. For `kano-git-master-skill` repo: `dev.rule.md` (`<repo>` -> `<workspace-root>` -> `references/dev.rule.md`)
+  2. Commit-convention skill auto-discovery (`skills/**/SKILL.md` + `references/*`)
+  3. `default.rule.md` (`<repo>` -> `<workspace-root>` -> `references/default.rule.md`)
 
 **Output modes:**
 - **Default (quiet)**: Shows only repos with actual commits
