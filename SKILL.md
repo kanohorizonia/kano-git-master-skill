@@ -604,6 +604,7 @@ The following terms are project conventions in Kano Git Master and are **not** o
 
 | KOG term | Git term | Notes |
 |---|---|---|
+| `kano-git` / `kog` | CLI command alias pair | `kog` is the short alias of `kano-git`; both are supported entrypoints. |
 | `root repo` | top-level superproject (contextual) | Workspace boundary owner, typically contains `.gitmodules`. |
 | `parent repo` | superproject (relative) | Relationship term used during traversal. |
 | `child repo` | submodule (if registered) | Relationship term; use with a specific parent context. |
@@ -614,6 +615,7 @@ The following terms are project conventions in Kano Git Master and are **not** o
 
 - `smart-*` scripts: Kano automation wrappers that orchestrate multiple Git steps with guardrails.
   - Example: `smart-commit.sh`, `smart-sync.sh`, `smart-push.sh`.
+- `kano-git` / `kog`: CLI command aliases for the same tool; `kog` is shorthand of `kano-git`.
 - `smart-status`: Kano wrapper name for multi-repo status reporting (implemented via `status-all-repos.sh`).
 - `root wrapper`: Thin executable at workspace root that forwards to `skills/kano/kano-git-master-skill/scripts/...`.
 - `root repo`: the top-level repository that owns the workspace boundary and `.gitmodules`.

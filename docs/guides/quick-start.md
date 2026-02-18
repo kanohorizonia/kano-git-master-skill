@@ -2,6 +2,10 @@
 
 One-page reference for all Git Master Skill scripts.
 
+CLI naming note:
+- `kano-git` is the full command name.
+- `kog` is the short alias of `kano-git`.
+
 ## One-Liners
 
 ```bash
