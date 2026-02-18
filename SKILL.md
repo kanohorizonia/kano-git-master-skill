@@ -117,9 +117,10 @@ If a term is not listed here, assume standard Git meaning.
   - `pre-sync`: `stash -> sync -> pop` (when stashable) before commit.
   - `post-sync`: sync-only validation after commit, no stash/pop fallback.
 
-- `delegated mode`
+- `agent proxy mode (代理模式)`
   - Activated when `--agent <name>` and name is not `manual`.
   - Requires fixed `-m/--message` and auto-disables in-script AI review (`--no-ai-review`).
+  - Intent: use the current command agent/model as the single authority (no second review model).
 
 - `workflow lock marker`
   - `.git/kano-smart-commit-push.lock`
@@ -612,7 +613,7 @@ The following terms are project conventions in Kano Git Master and are **not** o
 - `target-tag` / `base-tag` (stable-dev): release tag pair used to compute target maintenance line and previous maintenance source baseline.
 - `upstream default branch tip` (dev mode): latest commit on upstream default branch used as base in `smart-sync-dev`.
 - `AI review gate`: Kano commit gate that evaluates AI/static review verdict before allowing commit/push.
-- `agent delegation` / `--agent`: Kano execution contract for delegated automation identity (for example `codex`, `copilot`).
+- `agent proxy mode` / `--agent`: Kano execution contract for agent proxy automation identity (for example `codex`, `copilot`).
 - `multi-remote push` policy: Kano policy to push to `origin-ssh`, `origin-http`, and `origin` with "any success" semantics.
 - `kog-*` keys/commands: Kano-specific namespace (for example `kog-submodule.sh`, `kog-protocol-priority`, `kog-remote-origin-ssh`).
 - `smart-submodule`: canonical submodule command entrypoint (`scripts/submodules/smart-submodule.sh`) that dispatches add/sync/update/remove/foreach/sync-urls.
@@ -639,14 +640,15 @@ Recommended root wrapper set:
 - `smart-sync-upstream-stable-dev.sh`
 - `smart-status.sh` (recommended when the repository is a multi-repo workspace)
 
-## Delegation Mode
+## agent proxy mode (代理模式)
 
-Use delegation mode when an agent/tool is executing commit workflows on your behalf.
+Use agent proxy mode (代理模式) when an agent/tool is executing commit workflows on your behalf.
 
 - Enable with `--agent <name>` (for example: `codex`, `cursor`, `copilot`, `kiro`, `claude`).
 - If `--agent` is set and not `manual`:
   - fixed commit message is required: `-m "..."` / `--message "..."`.
   - in-script AI review is disabled automatically (`--no-ai-review`) to avoid duplicate model cost.
+  - this keeps commit/review decisions on the current command agent/model.
 - Use `--agent manual` for human-operated runs.
 
 Root-wrapper examples:
@@ -817,10 +819,11 @@ AI-powered commit across all repositories with safety checks:
 ./scripts/commit-tools/commit/smart-commit.sh --provider copilot --model gpt-5-mini --verbose
 ```
 
-**Agent delegation note (required contract):**
-- For delegated execution, pass `--agent <name>` (for example: `codex`, `cursor`, `copilot`, `kiro`, `claude`).
+**Agent proxy mode note (required contract):**
+- For agent proxy execution, pass `--agent <name>` (for example: `codex`, `cursor`, `copilot`, `kiro`, `claude`).
 - When `--agent` is not `manual`, a fixed commit message (`-m/--message`) is required.
-- Delegated runs disable in-script AI review (`--no-ai-review`) to avoid duplicate model calls.
+- Agent proxy runs disable in-script AI review (`--no-ai-review`) to avoid duplicate model calls.
+- This keeps commit/review authority on the same agent model that executes the command.
 
 **Prompt templates (dev/user mode):**
 - AI prompt stages are file-based and mode-aware.
@@ -879,9 +882,10 @@ Complete workflow: commit and push all repositories in one step:
 ./scripts/commit-tools/commit-push/smart-commit-push.sh --provider copilot --model gpt-5-mini --verbose
 ```
 
-**Agent delegation note (required contract):**
+**Agent proxy mode note (required contract):**
 - For agent-driven workflows, pass `--agent <name>` and provide a fixed commit message (`-m "..."`).
-- When `--agent` is not `manual`, delegated mode disables in-script AI review (`--no-ai-review`) to avoid duplicate model usage.
+- When `--agent` is not `manual`, agent proxy mode (代理模式) disables in-script AI review (`--no-ai-review`) to avoid duplicate model usage.
+- This keeps commit/review authority on the same agent model that executes the command.
 - For human-run workflows, short flag `-noai` is available (same as `--no-ai-review`).
 - If you are modifying this skill itself (`kano-git-master-skill`), commit those edits first before running full `smart-commit-push`.
 - Reason: Step 1 pre-sync now uses auto stash/pop, and ongoing edits in the skill repo can be disrupted by stash-pop conflict handling.
@@ -994,3 +998,4 @@ bash scripts/test/run-all-tests.sh \
 ```
 
 See [TESTING.md](TESTING.md) for complete testing documentation.
+

@@ -92,7 +92,7 @@ Examples:
   # Disable AI review with short flag
   ./smart-commit-push.sh --provider copilot --model gpt-5-mini -noai
 
-  # Agent-delegated mode (cost-safe): requires --message, auto-adds --no-ai-review
+  # Agent proxy mode (代理模式) (cost-safe): requires --message, auto-adds --no-ai-review
   ./smart-commit-push.sh --agent codex -m "chore: update workspace"
 
 Workflow Steps:
@@ -386,23 +386,24 @@ has_commit_message_arg() {
   return 1
 }
 
-# Agent delegation contract pre-check:
+# Agent Proxy Contract pre-check:
 # - non-manual --agent requires fixed commit message
 # - non-manual --agent auto-injects --no-ai-review if missing
+# - intent: keep proxy workflow on the current agent model, avoid second review model.
 if [[ -n "$AGENT_ID" ]]; then
   AGENT_ID="$(printf '%s' "$AGENT_ID" | tr '[:upper:]' '[:lower:]')"
 fi
 
 if [[ -n "$AGENT_ID" && "$AGENT_ID" != "manual" ]]; then
   if ! has_commit_message_arg; then
-    echo "ERROR: delegated run requires -m/--message (agent: $AGENT_ID)" >&2
-    echo "       Pass a fixed commit message to avoid in-script AI generation." >&2
+    echo "ERROR: agent proxy run requires -m/--message (agent: $AGENT_ID)" >&2
+    echo "       In proxy mode, commit message/review are handled by the current agent model." >&2
     exit 1
   fi
 
   if ! has_commit_arg "--no-ai-review"; then
     SMART_COMMIT_ARGS+=("--no-ai-review")
-    echo "INFO: delegated run detected (agent: $AGENT_ID), auto-adding --no-ai-review"
+    echo "INFO: agent proxy run detected (agent: $AGENT_ID), auto-adding --no-ai-review"
   fi
 fi
 
@@ -487,3 +488,4 @@ echo "✓ Commit phase completed"
 echo "✓ Push phase completed"
 print_timing_summary
 print_final_workflow_summary
+

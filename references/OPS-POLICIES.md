@@ -50,4 +50,6 @@ This reference captures operational policies that were validated during recent i
 
 ### Cost-control shortcuts
 - `smart-commit-push` supports `-noai` as shortcut for `--no-ai-review`.
-- Delegated runs (`--agent <name>`, non-`manual`) auto-disable review and require fixed `-m/--message`.
+- agent proxy runs (`--agent <name>`, non-`manual`) auto-disable review and require fixed `-m/--message`.
+- intent: keep commit/review authority on the same command agent model (no second model review path).
+

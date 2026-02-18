@@ -168,7 +168,7 @@ Examples:
   # Custom message (no AI needed)
   ./smart-commit.sh --provider copilot --model gpt-5-mini -m "feat: Add feature"
 
-  # Agent-delegated mode (cost-safe): requires --message and auto-disables AI review
+  # Agent proxy mode (代理模式) (cost-safe): requires --message and auto-disables AI review
   ./smart-commit.sh --agent codex -m "chore: update workspace"
 
   # With custom rules (inline)
@@ -340,23 +340,24 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Agent delegation contract:
-# - --agent <name> where name != manual means delegated execution.
-# - Delegated mode must provide fixed commit message.
-# - Delegated mode forces --no-ai-review to avoid duplicate model invocation.
+# Agent Proxy Contract:
+# - --agent <name> where name != manual means agent proxy execution.
+# - agent proxy mode (代理模式) must provide fixed commit message.
+# - agent proxy mode (代理模式) forces --no-ai-review to avoid duplicate model invocation.
+# - intent: agent-handled workflow should not trigger a second in-script review model.
 if [[ -n "$AGENT_ID" ]]; then
   AGENT_ID="$(printf '%s' "$AGENT_ID" | tr '[:upper:]' '[:lower:]')"
 fi
 
 if [[ -n "$AGENT_ID" && "$AGENT_ID" != "manual" ]]; then
   if [[ -z "$COMMIT_MESSAGE" ]]; then
-    echo "ERROR: delegated run requires -m/--message (agent: $AGENT_ID)" >&2
-    echo "       Pass a fixed commit message to avoid in-script AI generation." >&2
+    echo "ERROR: agent proxy run requires -m/--message (agent: $AGENT_ID)" >&2
+    echo "       In proxy mode, commit message/review are handled by the current agent model." >&2
     exit 1
   fi
 
   if [[ "$AI_REVIEW" -eq 1 ]]; then
-    echo "INFO: delegated run detected (agent: $AGENT_ID), forcing --no-ai-review"
+    echo "INFO: agent proxy run detected (agent: $AGENT_ID), forcing --no-ai-review"
   fi
   AI_REVIEW=0
 fi
@@ -1602,3 +1603,4 @@ fi
 
 print_timing_summary
 echo "=== All done (success) ==="
+

@@ -157,8 +157,9 @@ Note: sourcing will also define globals used by those functions (see the script 
 - **AI Safety & Authentication**:
   - Scripts like `smart-commit.sh` perform AI safety reviews. Note that **Copilot authentication has two layers**: the standalone CLI (`copilot login`) and the GitHub CLI extension (`gh auth login`).
   - **Commit Message Filtering**: The system automatically filters AI conversational preamble (e.g., "Certainly!", "I'll inspect..."). It prioritizes lines matching **Conventional Commits** (`type(scope): msg`) or **Bracketed Tags** (`[Tag][SubTag] msg`).
-  - **Agent Delegation Contract (Required)**: For delegated `smart-*` operations, pass `--agent <name>` to declare identity (e.g., `codex`, `copilot`, `cursor`, `kiro`, `claude`).
-  - If `--agent` is provided and not `manual`, delegated mode is active: a fixed message (`-m/--message`) is required and in-script AI review is disabled (`--no-ai-review`) to avoid duplicate model cost.
+  - **Agent Proxy Contract (Required)**: For agent-proxy `smart-*` operations, pass `--agent <name>` to declare identity (e.g., `codex`, `copilot`, `cursor`, `kiro`, `claude`).
+  - If `--agent` is provided and not `manual`, agent proxy mode (代理模式) is active: a fixed message (`-m/--message`) is required and in-script AI review is disabled (`--no-ai-review`) to avoid duplicate model cost.
+  - Intent: commit/review decisions stay on the same agent model executing the command, not a second model pipeline.
   - Use `--agent manual` for human-operated runs.
   - **In case of Copilot auth failure, seek human assistance** to resolve credentials. Do not bypass reviews if a reliable safety check is possible.
 - **Kano Backlog Init Location**:
@@ -231,3 +232,4 @@ Note: sourcing will also define globals used by those functions (see the script 
   - Empty/invalid verdict -> warning + continue
   - Explicit `FAIL` verdict -> block commit
 - Parsing tolerates common small-model output drift (`PASS - ...`, leading spaces, fuzzy PASS/FAIL tokens).
+
