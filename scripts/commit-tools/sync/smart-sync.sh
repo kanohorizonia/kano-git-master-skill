@@ -54,6 +54,7 @@ STRATEGY=""
 DRY_RUN=0
 REPO="."
 NO_SUBMODULE_BRANCH_SYNC=0
+REJECT_DIRTY=0
 
 #------------------------------------------------------------------------------
 # Functions
@@ -75,6 +76,7 @@ Optional:
   --auto-squash               Auto-squash fixup commits
   --strategy <name>           Rebase strategy (merge, ours, theirs)
   --no-submodule-branch-sync  Skip submodule branch sync
+  --reject-dirty              Reject when working tree is dirty (disable auto stash/pop)
   --dry-run                   Show what would be done
   -h, --help                  Show help
 
@@ -280,6 +282,10 @@ while [[ $# -gt 0 ]]; do
       NO_SUBMODULE_BRANCH_SYNC=1
       shift
       ;;
+    --reject-dirty)
+      REJECT_DIRTY=1
+      shift
+      ;;
     --dry-run)
       DRY_RUN=1
       shift
@@ -315,11 +321,26 @@ if ! validate_repo "$REPO"; then
   exit 1
 fi
 
-# Check for clean working tree
+STASH_CREATED=0
+STASH_REF=""
 if ! is_clean_working_tree "$REPO"; then
-  echo "ERROR: Working tree has uncommitted changes" >&2
-  echo "Commit or stash changes before syncing" >&2
-  exit 1
+  if [[ "$REJECT_DIRTY" -eq 1 ]]; then
+    echo "ERROR: Working tree has uncommitted changes" >&2
+    echo "Sync rejected due to --reject-dirty" >&2
+    exit 1
+  fi
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY RUN] Working tree is dirty; would auto-stash before sync and pop after success"
+  else
+    echo "Working tree is dirty; auto-stashing before sync..."
+    stash_out="$(git -C "$REPO" stash push -u -m "auto-stash: smart-sync" 2>&1 || true)"
+    if [[ "$stash_out" != *"No local changes to save"* ]]; then
+      STASH_CREATED=1
+      STASH_REF="$(git -C "$REPO" stash list -n 1 --format='%gd' || true)"
+      echo "Created stash: ${STASH_REF:-stash@{0}}"
+    fi
+  fi
 fi
 
 # Get current branch
@@ -376,6 +397,15 @@ if [[ "$NO_SUBMODULE_BRANCH_SYNC" -eq 0 ]]; then
   echo ""
   echo "Syncing submodule branches (if any)..."
   gith_sync_submodules_to_branches "$REPO" "1"
+fi
+
+if [[ "$STASH_CREATED" -eq 1 ]]; then
+  echo ""
+  echo "Restoring auto-stashed changes..."
+  if ! git -C "$REPO" stash pop --index; then
+    echo "ERROR: Auto stash pop failed. Resolve conflicts manually and apply ${STASH_REF:-stash@{0}}." >&2
+    exit 1
+  fi
 fi
 
 echo ""
