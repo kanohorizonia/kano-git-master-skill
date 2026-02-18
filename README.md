@@ -133,7 +133,7 @@ Initialize a new repository with multi-remote setup, orphan branch, and submodul
 ./scripts/internal/init-kano-dev-skill.sh \
   --repo-ssh git@github.com:dorgonman/kano-agent-skill.git \
   --repo-https https://github.com/dorgonman/kano-agent-skill.git \
-  --repo-dir skills/kano \
+  --repo-dir .agents/kano \
   --skill "git@github.com:user/skill1.git:https://github.com/user/skill1.git:skills/skill1" \
   --skill "git@github.com:user/skill2.git:https://github.com/user/skill2.git:skills/skill2"
 
@@ -141,7 +141,7 @@ Initialize a new repository with multi-remote setup, orphan branch, and submodul
 ./scripts/internal/init-kano-dev-skill.sh \
   --repo-ssh git@github.com:dorgonman/kano-agent-skill.git \
   --repo-https https://github.com/dorgonman/kano-agent-skill.git \
-  --repo-dir skills/kano \
+  --repo-dir .agents/kano \
   --dry-run
 ```
 

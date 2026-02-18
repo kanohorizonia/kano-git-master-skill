@@ -617,7 +617,7 @@ The following terms are project conventions in Kano Git Master and are **not** o
   - Example: `smart-commit.sh`, `smart-sync.sh`, `smart-push.sh`.
 - `kano-git` / `kog`: CLI command aliases for the same tool; `kog` is shorthand of `kano-git`.
 - `smart-status`: Kano wrapper name for multi-repo status reporting (implemented via `status-all-repos.sh`).
-- `root wrapper`: Thin executable at workspace root that forwards to `skills/kano/kano-git-master-skill/scripts/...`.
+- `root wrapper`: Thin executable at workspace root that forwards to `.agents/kano/kano-git-master-skill/scripts/...`.
 - `root repo`: the top-level repository that owns the workspace boundary and `.gitmodules`.
 - `parent repo`: any repo that directly contains another repo path under it in the workspace tree.
 - `child repo`: a repo viewed from a specific parent-child relation (topology term, relation-scoped).
@@ -654,7 +654,7 @@ For workspace root scripts (for example `./smart-commit.sh`, `./smart-commit-pus
 1. Keep wrappers thin: only locate project root and `exec` the git-master skill script.
 2. Always export `KANO_GIT_MASTER_ROOT="$ROOT"` before `exec` so repo discovery is stable.
 3. Put provider choice in wrapper (for example copilot wrapper), but pass through all user args.
-4. Do not duplicate business logic in root wrappers; logic must live in `skills/kano/kano-git-master-skill/scripts/...`.
+4. Do not duplicate business logic in root wrappers; logic must live in `.agents/kano/kano-git-master-skill/scripts/...`.
 5. Wrapper names should stay stable and user-facing; internal script path can evolve.
 
 Recommended root wrapper set:
@@ -868,7 +868,7 @@ AI-powered commit across all repositories with safety checks:
 ./scripts/commit-tools/commit/smart-commit.sh --provider copilot --model gpt-5-mini --rules-file ./.rules/team-commit.rule.md
 
 # Force prompt mode and prompt root
-./scripts/commit-tools/commit/smart-commit.sh --provider copilot --model gpt-5-mini --prompt-mode user --prompt-root ./skills/kano/kano-git-master-skill/prompts
+./scripts/commit-tools/commit/smart-commit.sh --provider copilot --model gpt-5-mini --prompt-mode user --prompt-root ./.agents/kano/kano-git-master-skill/prompts
 
 # Environment variable defaults
 KOG_PROMPT_MODE=user KOG_RULES_FILE=.git/commit-rules.md ./scripts/commit-tools/commit/smart-commit.sh --provider copilot --model gpt-5-mini
@@ -947,13 +947,13 @@ Example output:
 Repository                    Commits  Branch
 -----------                   -------  ------
 kano-git-master-skill         1        main
-skills/kano                   1        dev/tooling
+.agents/kano                  1        dev/tooling
 
 === Push Summary ===
 Repository                    Remote             Branch
 -----------                   ------             ------
 kano-git-master-skill         origin             main
-skills/kano                   origin-http        dev/tooling
+.agents/kano                  origin-http        dev/tooling
 backlog                       origin             main (no changes)
 ```
 
