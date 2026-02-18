@@ -3,7 +3,7 @@
 # update-workspace-repos.sh - Update all repositories in workspace
 #
 # Purpose:
-#   Update all repositories in workspace (root, submodules, and standalone repos)
+#   Update all repositories in workspace (root, registered subrepos, and unregistered subrepos)
 #   with a single command. Supports manifest files or auto-discovery.
 #
 # Usage:
@@ -11,7 +11,7 @@
 #
 # Options:
 #   --manifest <file>       Use manifest file (default: auto-discover)
-#   --include-types <types> Comma-separated: root,submodule,standalone (default: all)
+#   --include-types <types> Comma-separated: root,registered,unregistered (aliases: submodule,standalone)
 #   --exclude <pattern>     Exclude path patterns
 #   --remote <name>         Remote name (default: origin)
 #   --max-depth <n>         Discovery max depth (default: 3)
@@ -27,8 +27,8 @@
 #   # Update using manifest file
 #   ./update-workspace-repos.sh --manifest repos-manifest.json
 #
-#   # Update only standalone repos
-#   ./update-workspace-repos.sh --include-types standalone
+#   # Update only unregistered subrepos
+#   ./update-workspace-repos.sh --include-types unregistered
 #
 #   # Update with custom remote
 #   ./update-workspace-repos.sh --remote upstream
@@ -50,7 +50,7 @@ source "$SCRIPT_DIR/../lib/git-helpers.sh"
 #------------------------------------------------------------------------------
 
 MANIFEST_FILE=""
-INCLUDE_TYPES="root,submodule,standalone"
+INCLUDE_TYPES="root,registered,unregistered"
 EXCLUDE_PATTERNS=()
 REMOTE_NAME="origin"
 MAX_DEPTH=3
@@ -66,11 +66,11 @@ usage() {
   cat << EOF
 Usage: $(basename "$0") [options]
 
-Update all repositories in workspace (root, submodules, and standalone repos).
+Update all repositories in workspace (root, registered subrepos, and unregistered subrepos).
 
 Options:
   --manifest <file>       Use manifest file (default: auto-discover)
-  --include-types <types> Comma-separated: root,submodule,standalone (default: all)
+  --include-types <types> Comma-separated: root,registered,unregistered (aliases: submodule,standalone)
   --exclude <pattern>     Exclude path patterns (can be used multiple times)
   --remote <name>         Remote name (default: origin)
   --max-depth <n>         Discovery max depth (default: 3)
@@ -86,8 +86,8 @@ Examples:
   # Update using manifest file
   ./update-workspace-repos.sh --manifest repos-manifest.json
 
-  # Update only standalone repos
-  ./update-workspace-repos.sh --include-types standalone
+  # Update only unregistered subrepos
+  ./update-workspace-repos.sh --include-types unregistered
 
   # Update with custom remote
   ./update-workspace-repos.sh --remote upstream
@@ -148,7 +148,7 @@ filter_repos() {
   local include_types="$2"
   
   # If include_types is "all" or contains all types, return all repos
-  if [[ -z "$include_types" ]] || [[ "$include_types" == "all" ]] || [[ "$include_types" == "root,submodule,standalone" ]]; then
+  if [[ -z "$include_types" ]] || [[ "$include_types" == "all" ]] || [[ "$include_types" == "root,registered,unregistered" ]]; then
     echo "$repos_json"
     return 0
   fi
@@ -171,6 +171,10 @@ filter_repos() {
     
     # Check if type is in include list
     for type in "${types[@]}"; do
+      case "$type" in
+        submodule) type="registered" ;;
+        standalone) type="unregistered" ;;
+      esac
       if [[ "$repo_type" == "$type" ]]; then
         if [[ $first -eq 0 ]]; then
           filtered+=","

@@ -66,8 +66,9 @@ Optional:
   --agent <name>             Execution identity. Use "manual" for human-run commands
   --repos <paths>             Only process specific repos (comma-separated)
   --no-root                   Exclude root repo from push
-  --no-submodules             Exclude submodules from push
-  --no-standalone             Exclude standalone repos from push
+  --no-submodules             Exclude registered subrepos from push (backward-compatible flag name)
+  --no-unregistered           Exclude unregistered subrepos from push
+  --no-standalone             Exclude unregistered subrepos from push (deprecated alias)
   --force-with-lease          Use --force-with-lease when pushing
   --no-verify                 Pass --no-verify to git push (skip pre-push hooks)
   --no-smart-sync             Disable AI-powered sync (use simple git pull --rebase)
@@ -186,10 +187,10 @@ print_final_workflow_summary() {
     include_types+=("root")
   fi
   if ! contains_push_arg "--no-submodules"; then
-    include_types+=("submodule")
+    include_types+=("registered")
   fi
-  if ! contains_push_arg "--no-standalone"; then
-    include_types+=("standalone")
+  if ! contains_push_arg "--no-unregistered" && ! contains_push_arg "--no-standalone"; then
+    include_types+=("unregistered")
   fi
 
   if [[ ${#include_types[@]} -eq 0 ]]; then
@@ -271,7 +272,7 @@ while [[ $# -gt 0 ]]; do
       usage
       exit 0
       ;;
-    --repos|--no-root|--no-submodules|--no-standalone|--force-with-lease|--no-verify|--no-smart-sync)
+    --repos|--no-root|--no-submodules|--no-unregistered|--no-standalone|--force-with-lease|--no-verify|--no-smart-sync)
       SMART_PUSH_ARGS+=("$1")
       if [[ "$1" == "--repos" ]]; then
         SMART_PUSH_ARGS+=("${2:-}")
@@ -488,4 +489,3 @@ echo "✓ Commit phase completed"
 echo "✓ Push phase completed"
 print_timing_summary
 print_final_workflow_summary
-

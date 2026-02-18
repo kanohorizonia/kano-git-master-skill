@@ -106,7 +106,7 @@ discover_workspace_repos() {
   # SCRIPT_DIR: <repo>/scripts/commit-tools/sync
   # scripts_root should be <repo>/scripts
   scripts_root="$(cd "$SCRIPT_DIR/../.." && pwd)"
-  repos_json="$("$scripts_root/core/discover-repos.sh" --root "$root" --format json --include-types root,submodule,standalone 2>/dev/null || true)"
+  repos_json="$("$scripts_root/core/discover-repos.sh" --root "$root" --format json --include-types root,registered,unregistered 2>/dev/null || true)"
   echo "$repos_json" | grep -o '{[^}]*}' | while IFS= read -r repo; do
     [[ -z "$repo" ]] && continue
     path="$(printf '%s' "$repo" | sed -n 's/.*"path":"\([^"]*\)".*/\1/p')"

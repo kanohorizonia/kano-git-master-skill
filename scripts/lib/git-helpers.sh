@@ -330,13 +330,13 @@ gith_discover_repos() {
 
   # Determine repo types and collect metadata
   local root_repo=""
-  local submodules=()
-  local standalone_repos=()
+  local registered_repos=()
+  local unregistered_repos=()
 
   # Check if root_dir itself is a git repo
   if gith_is_git_repo "$root_dir"; then
     root_repo="$root_dir"
-    # Collect submodules from root
+    # Collect repos declared in .gitmodules from root
     local submodule_json
     submodule_json="$(gith_collect_submodules "$root_dir")"
 
@@ -344,7 +344,7 @@ gith_discover_repos() {
     if [[ "$submodule_json" != "[]" ]]; then
       while IFS= read -r submodule_path; do
         if [[ -n "$submodule_path" ]]; then
-          submodules+=("$root_dir/$submodule_path")
+          registered_repos+=("$root_dir/$submodule_path")
         fi
       done < <(echo "$submodule_json" | grep -o '"path":"[^"]*"' | sed 's/"path":"//;s/"$//')
     fi
@@ -357,17 +357,17 @@ gith_discover_repos() {
       continue
     fi
 
-    # Check if it's a submodule
-    local is_submodule=0
-    for submodule in "${submodules[@]}"; do
-      if [[ "$repo_path" == "$submodule" ]]; then
-        is_submodule=1
+    # Check if it's declared in .gitmodules (registered)
+    local is_registered=0
+    for registered in "${registered_repos[@]}"; do
+      if [[ "$repo_path" == "$registered" ]]; then
+        is_registered=1
         break
       fi
     done
 
-    if [[ $is_submodule -eq 0 ]]; then
-      standalone_repos+=("$repo_path")
+    if [[ $is_registered -eq 0 ]]; then
+      unregistered_repos+=("$repo_path")
     fi
   done
 
@@ -385,17 +385,17 @@ gith_discover_repos() {
     first=0
   fi
 
-  # Add submodules
-  for submodule in "${submodules[@]}"; do
-    if ! gith_is_git_repo "$submodule"; then
-      gith_log "WARN" "Skipping non-git submodule path from discovery: $submodule"
+  # Add repos declared in .gitmodules (registered)
+  for registered in "${registered_repos[@]}"; do
+    if ! gith_is_git_repo "$registered"; then
+      gith_log "WARN" "Skipping non-git registered path from discovery: $registered"
       continue
     fi
 
     local metadata
-    metadata="$(gith_collect_repo_metadata "$submodule")"
+    metadata="$(gith_collect_repo_metadata "$registered")"
     if [[ -z "$metadata" || "$metadata" == "{}" ]]; then
-      gith_log "WARN" "Skipping submodule with invalid metadata: $submodule"
+      gith_log "WARN" "Skipping registered repo with invalid metadata: $registered"
       continue
     fi
 
@@ -405,21 +405,21 @@ gith_discover_repos() {
     first=0
 
     # Add type field
-    metadata="${metadata%\}},\"type\":\"submodule\"}"
+    metadata="${metadata%\}},\"type\":\"registered\"}"
     json+="$metadata"
   done
 
-  # Add standalone repos
-  for standalone in "${standalone_repos[@]}"; do
-    if ! gith_is_git_repo "$standalone"; then
-      gith_log "WARN" "Skipping non-git standalone path from discovery: $standalone"
+  # Add repos not declared in .gitmodules (unregistered)
+  for unregistered in "${unregistered_repos[@]}"; do
+    if ! gith_is_git_repo "$unregistered"; then
+      gith_log "WARN" "Skipping non-git unregistered path from discovery: $unregistered"
       continue
     fi
 
     local metadata
-    metadata="$(gith_collect_repo_metadata "$standalone")"
+    metadata="$(gith_collect_repo_metadata "$unregistered")"
     if [[ -z "$metadata" || "$metadata" == "{}" ]]; then
-      gith_log "WARN" "Skipping standalone repo with invalid metadata: $standalone"
+      gith_log "WARN" "Skipping unregistered repo with invalid metadata: $unregistered"
       continue
     fi
 
@@ -429,7 +429,7 @@ gith_discover_repos() {
     first=0
 
     # Add type field
-    metadata="${metadata%\}},\"type\":\"standalone\"}"
+    metadata="${metadata%\}},\"type\":\"unregistered\"}"
     json+="$metadata"
   done
 

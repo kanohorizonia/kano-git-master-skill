@@ -1,6 +1,6 @@
 ---
 name: kano-git-master-skill
-description: Comprehensive Git automation toolkit for multi-repository workspaces. Manage root repos, submodules, and standalone repos with vendor-agnostic scripts. Quick updates, fork workflows, batch operations, and status reporting.
+description: Comprehensive Git automation toolkit for multi-repository workspaces. Manage root repos plus registered/unregistered subrepos with vendor-agnostic scripts. Quick updates, fork workflows, batch operations, and status reporting.
 version: 0.1.0-beta
 ---
 
@@ -13,14 +13,14 @@ Comprehensive Git automation scripts for managing multi-repository workspaces. W
 
 ## Quick Start
 
-### Update Repository + Submodules (Most Common)
+### Update Repository + Registered Subrepos (Most Common)
 
 ```bash
 cd /path/to/your-repo
 ./scripts/update-repo.sh
 ```
 
-Updates your repository and all submodules to the latest version with smart branch detection and auto-stash.
+Updates your repository and all registered subrepos to the latest version with smart branch detection and auto-stash.
 
 ### Smart Clone (Clone Fork with Upstream)
 
@@ -145,7 +145,7 @@ If a term is not listed here, assume standard Git meaning.
 
 | Script | Purpose | Use When |
 |--------|---------|----------|
-| **update-repo.sh** | Update single repo + submodules | Daily sync, quick updates |
+| **update-repo.sh** | Update single repo + registered subrepos | Daily sync, quick updates |
 | **smart-clone.sh** | Clone with upstream remote | Fork setup, contribution workflow |
 | **init-empty-repo.sh** | Initialize empty remote repo | Quick repo setup, testing |
 | **rebase-to-upstream-latest.sh** | Rebase to upstream | Sync with upstream regularly |
@@ -214,8 +214,8 @@ cd project
 
 ### Flexible Discovery
 - ✅ Root repositories
-- ✅ Git submodules
-- ✅ Standalone repos in workspace
+- ✅ Registered subrepos from `.gitmodules`
+- ✅ Unregistered subrepos in workspace
 - ✅ Configurable exclude patterns
 - ✅ Manifest file support
 
@@ -250,7 +250,7 @@ cd project
 ./scripts/update-repo.sh --dry-run
 ```
 
-**Features:** Auto-stash, smart branch detection, recursive submodules, clear progress
+**Features:** Auto-stash, smart branch detection, recursive registered subrepos, clear progress
 
 ### smart-clone.sh
 
@@ -319,7 +319,7 @@ cd project
 ./scripts/rebase-to-upstream-latest.sh --remote origin
 ```
 
-**Features:** Root + submodules, auto-stash, configurable remote/branch
+**Features:** Root + registered subrepos, auto-stash, configurable remote/branch
 
 ### smart-sync* (Sync Shortcuts)
 
@@ -336,8 +336,8 @@ Two explicit sync workflows:
 **Practical usage:**
 - `smart-sync-upstream-force-push` supports auto-detection:
   - If current repo has `upstream`, operate on current repo.
-  - If current repo has no `upstream`, scan workspace and only process repos/submodules that have `upstream`.
-- Use `--repo <path>` to target a specific submodule from workspace root.
+  - If current repo has no `upstream`, scan workspace and only process repos/subrepos that have `upstream`.
+- Use `--repo <path>` to target a specific registered subrepo from workspace root.
 
 ```bash
 # Auto mode from workspace root: only repos with upstream will run
@@ -420,7 +420,7 @@ Two explicit sync workflows:
    - check `target_version_tag` and `maintained_commits_local` in `=== Stable Dev Summary ===`
 
 **Root wrapper (`./smart-sync-upstream-stable-dev.sh`) behavior:**
-- Without `--repo`, wrapper scans `src/*` submodules and processes only repos with `upstream`.
+- Without `--repo`, wrapper scans `src/*` registered subrepos and processes only repos with `upstream`.
 - End-of-run report is aggregated at the bottom.
 - Report formats: `compact` (default), `table`, `tsv`, `json`, `markdown`.
 
@@ -440,10 +440,10 @@ For full operational rules, see:
 ./scripts/discover-repos.sh --format json
 
 # Filter by type
-./scripts/discover-repos.sh --include-types standalone
+./scripts/discover-repos.sh --include-types unregistered
 ```
 
-**Features:** Find root/submodules/standalone (including nested submodules), exclude patterns, multiple formats, stable JSON output for piping into other tools
+**Features:** Find root/registered/unregistered subrepos (including nested registered subrepos), exclude patterns, multiple formats, stable JSON output for piping into other tools
 
 ### update-workspace-repos.sh
 
@@ -458,7 +458,7 @@ For full operational rules, see:
 ./scripts/update-workspace-repos.sh --continue-on-error
 
 # Filter by type
-./scripts/update-workspace-repos.sh --include-types submodule
+./scripts/update-workspace-repos.sh --include-types registered
 ```
 
 **Features:** Batch updates, manifest support, type filtering, error handling
@@ -499,7 +499,7 @@ For full operational rules, see:
 # Detail mode: 5 commits, full log
 ./scripts/workspace/status-all-repos.sh --detail --detail-commits 5 --detail-log full
 
-# Start from a specific repo root, exclude submodules, non-recursive
+# Start from a specific repo root, exclude registered subrepos, non-recursive
 ./scripts/workspace/status-all-repos.sh --repo-root ./src --no-submodules --no-recursive
 ```
 
@@ -582,7 +582,7 @@ All scripts support:
 Most scripts support:
 - `--remote <name>` - Remote name (default: origin or upstream)
 - `--manifest <file>` - Use manifest file
-- `--include-types <types>` - Filter by type (root,submodule,standalone)
+- `--include-types <types>` - Filter by type (root,registered,unregistered)
 - `--exclude <pattern>` - Exclude patterns (repeatable)
 - `--continue-on-error` - Don't stop on failures
 
@@ -600,11 +600,33 @@ Most scripts support:
 
 The following terms are project conventions in Kano Git Master and are **not** official Git terminology:
 
+### KOG ↔ Git Mapping
+
+| KOG term | Git term | Notes |
+|---|---|---|
+| `root repo` | top-level superproject (contextual) | Workspace boundary owner, typically contains `.gitmodules`. |
+| `parent repo` | superproject (relative) | Relationship term used during traversal. |
+| `child repo` | submodule (if registered) | Relationship term; use with a specific parent context. |
+| `subrepo` | n/a (KOG umbrella) | Any non-root repo. |
+| `registered subrepo` | submodule | Declared in root `.gitmodules`. |
+| `unregistered subrepo` | nested/independent repo (non-standard) | Not declared in root `.gitmodules`. |
+| `leaf repo` | n/a (graph term) | Repo with no child repos in current workspace graph. |
+
 - `smart-*` scripts: Kano automation wrappers that orchestrate multiple Git steps with guardrails.
   - Example: `smart-commit.sh`, `smart-sync.sh`, `smart-push.sh`.
 - `smart-status`: Kano wrapper name for multi-repo status reporting (implemented via `status-all-repos.sh`).
 - `root wrapper`: Thin executable at workspace root that forwards to `skills/kano/kano-git-master-skill/scripts/...`.
-- `multi-repo workspace`: A workspace containing a root repo plus submodules/standalone repos managed together.
+- `root repo`: the top-level repository that owns the workspace boundary and `.gitmodules`.
+- `parent repo`: any repo that directly contains another repo path under it in the workspace tree.
+- `child repo`: a repo viewed from a specific parent-child relation (topology term, relation-scoped).
+- `leaf repo`: a repo that does not contain other child repos in the current workspace graph.
+- `subrepo`: umbrella term for non-root repos in the workspace.
+- `registered subrepo`: a subrepo declared in root `.gitmodules` (legacy alias: `submodule`).
+- `unregistered subrepo`: a subrepo not declared in root `.gitmodules` (legacy alias: `standalone`).
+- `child` vs `subrepo`:
+  - use `child` / `parent` / `leaf` for topology or traversal operations.
+  - use `subrepo` / `registered` / `unregistered` for classification/filtering operations.
+- `multi-repo workspace`: A workspace containing a root repo plus registered/unregistered subrepos managed together.
 - `stable-dev` flow: Kano-defined maintenance sync mode using stable-tag/cherry-pick strategy (not a Git built-in workflow name).
 - `dev` flow (in `smart-sync` context): Kano-defined sync mode based on upstream latest for active development.
 - `stable branch` (in stable-dev context): Kano naming convention for maintenance target branch `branch_<target-tag>` (for example `branch_v1.2.6`).
@@ -617,7 +639,7 @@ The following terms are project conventions in Kano Git Master and are **not** o
 - `multi-remote push` policy: Kano policy to push to `origin-ssh`, `origin-http`, and `origin` with "any success" semantics.
 - `kog-*` keys/commands: Kano-specific namespace (for example `kog-submodule.sh`, `kog-protocol-priority`, `kog-remote-origin-ssh`).
 - `smart-submodule`: canonical submodule command entrypoint (`scripts/submodules/smart-submodule.sh`) that dispatches add/sync/update/remove/foreach/sync-urls.
-- `include-types`: Kano discovery filter values (`root`, `submodule`, `standalone`) used by workspace scripts.
+- `include-types`: Kano discovery filter values (`root`, `registered`, `unregistered`) used by workspace scripts (legacy aliases: `submodule`, `standalone`).
 - `manifest` (workspace manifest): Kano repo discovery output file consumed by batch scripts (not a Git native artifact).
 - `continue-on-error` batch mode: Kano batch execution behavior; continue processing other repos after a per-repo failure.
 
@@ -901,7 +923,7 @@ Complete workflow: commit and push all repositories in one step:
 - Treat this as "hands off": do not edit files during the workflow (especially with multiple agents working).
 
 **Pre-push hooks and `--no-verify`:**
-- Some repos/submodules enforce pre-push hooks (e.g. typecheck). If a hook fails, the overall workflow will fail at Step 4 for that repo.
+- Some repos/subrepos enforce pre-push hooks (e.g. typecheck). If a hook fails, the overall workflow will fail at Step 4 for that repo.
 - If you understand the risk and only need to push, pass `--no-verify` to skip hooks for the `git push` step.
 
 **Multi-remote push success rule (summary):**
@@ -932,7 +954,7 @@ backlog                       origin             main (no changes)
 ```
 
 **Features:**
-- Processes root repo, submodules, and nested repos
+- Processes root repo, registered/unregistered subrepos, and nested repos
 - AI-generated commit messages with safety review
 - Automatic sync with upstream before push
 - Multi-remote push support (`origin-ssh` + `origin-http` + `origin`)
@@ -998,4 +1020,3 @@ bash scripts/test/run-all-tests.sh \
 ```
 
 See [TESTING.md](TESTING.md) for complete testing documentation.
-

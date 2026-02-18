@@ -5,7 +5,7 @@ One-page reference for all Git Master Skill scripts.
 ## One-Liners
 
 ```bash
-# Update repo + submodules
+# Update repo + registered subrepos
 ./scripts/update-repo.sh
 
 # Clone fork with upstream
@@ -31,9 +31,9 @@ One-page reference for all Git Master Skill scripts.
 
 | Script | Purpose | Scope | Key Feature |
 |--------|---------|-------|-------------|
-| `update-repo.sh` | Update single repo | 1 repo + submodules | Fast, simple |
+| `update-repo.sh` | Update single repo | 1 repo + registered subrepos | Fast, simple |
 | `clone-with-upstream.sh` | Clone with upstream | 1 repo | Fork workflow |
-| `rebase-to-upstream-latest.sh` | Rebase to upstream | 1 repo + submodules | Sync with upstream |
+| `rebase-to-upstream-latest.sh` | Rebase to upstream | 1 repo + registered subrepos | Sync with upstream |
 | `discover-repos.sh` | Find all repos | Workspace | Discovery |
 | `update-workspace-repos.sh` | Update multiple repos | Workspace | Batch update |
 | `foreach-repo.sh` | Run commands | Workspace | Custom commands |
@@ -48,7 +48,7 @@ All scripts support:
 Most scripts support:
 - `--remote <name>` - Remote name (default: origin)
 - `--manifest <file>` - Use manifest file
-- `--include-types <types>` - Filter by type (root,submodule,standalone)
+- `--include-types <types>` - Filter by type (root,registered,unregistered)
 - `--exclude <pattern>` - Exclude patterns
 - `--continue-on-error` - Don't stop on failures
 
@@ -96,10 +96,12 @@ Most scripts support:
 ## Repository Types
 
 - `root` - Root repository
-- `submodule` - Git submodule
-- `standalone` - Independent repo in workspace
+- `registered` - Repo declared in root `.gitmodules` (legacy alias: `submodule`)
+- `unregistered` - Repo not declared in root `.gitmodules` (legacy alias: `standalone`)
+- `subrepo` - Umbrella term for non-root repos
+- `parent` / `child` / `leaf` - Topology terms used for traversal relationships
 
-Filter with: `--include-types root,submodule,standalone`
+Filter with: `--include-types root,registered,unregistered`
 
 ## Manifest File
 
@@ -109,8 +111,8 @@ Filter with: `--include-types root,submodule,standalone`
   "workspace_root": ".",
   "repos": [
     {"path": ".", "type": "root"},
-    {"path": "vendor/lib", "type": "submodule"},
-    {"path": "tools/helper", "type": "standalone"}
+    {"path": "vendor/lib", "type": "registered"},
+    {"path": "tools/helper", "type": "unregistered"}
   ]
 }
 ```
@@ -168,8 +170,8 @@ git checkout main
 # Update all
 ./scripts/update-workspace-repos.sh
 
-# Update only submodules
-./scripts/update-workspace-repos.sh --include-types submodule
+# Update only registered subrepos
+./scripts/update-workspace-repos.sh --include-types registered
 
 # Continue on errors
 ./scripts/update-workspace-repos.sh --continue-on-error

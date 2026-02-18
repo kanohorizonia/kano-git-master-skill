@@ -4,7 +4,7 @@
 #
 # Purpose:
 #   Automatically discover all Git repositories in a workspace including
-#   root repository, submodules, and standalone repositories.
+#   root repository, registered subrepos, and unregistered subrepos.
 #
 # Usage:
 #   ./discover-repos.sh [options]
@@ -15,7 +15,7 @@
 #   --exclude <pattern>   Exclude path patterns (can be used multiple times)
 #   --format <json|list>  Output format (default: list)
 #   --save <file>         Save to manifest file
-#   --include-types <types> Comma-separated: root,submodule,standalone (default: all)
+#   --include-types <types> Comma-separated: root,registered,unregistered (aliases: submodule,standalone)
 #   --dry-run            Preview mode
 #   -h, --help           Show help
 #
@@ -32,8 +32,8 @@
 #   # Save to manifest file
 #   ./discover-repos.sh --save repos-manifest.json
 #
-#   # Only show standalone repos
-#   ./discover-repos.sh --include-types standalone
+#   # Only show unregistered subrepos
+#   ./discover-repos.sh --include-types unregistered
 #
 # Works with any Git remote provider (GitHub, GitLab, Azure Repos, Bitbucket, self-hosted, etc.)
 #
@@ -53,7 +53,7 @@ MAX_DEPTH=3
 EXCLUDE_PATTERNS=()
 OUTPUT_FORMAT="list"
 SAVE_FILE=""
-INCLUDE_TYPES="root,submodule,standalone"
+INCLUDE_TYPES="root,registered,unregistered"
 DRY_RUN=0
 
 #------------------------------------------------------------------------------
@@ -64,7 +64,7 @@ usage() {
   cat << EOF
 Usage: $(basename "$0") [options]
 
-Discover all Git repositories in workspace (root, submodules, and standalone repos).
+Discover all Git repositories in workspace (root, registered subrepos, and unregistered subrepos).
 
 Options:
   --root <path>         Search root directory (default: current dir)
@@ -72,7 +72,7 @@ Options:
   --exclude <pattern>   Exclude path patterns (can be used multiple times)
   --format <json|list>  Output format (default: list)
   --save <file>         Save to manifest file
-  --include-types <types> Comma-separated: root,submodule,standalone (default: all)
+  --include-types <types> Comma-separated: root,registered,unregistered (aliases: submodule,standalone)
   --dry-run            Preview mode
   -h, --help           Show help
 
@@ -89,8 +89,8 @@ Examples:
   # Save to manifest file
   ./discover-repos.sh --save repos-manifest.json
 
-  # Only show standalone repos
-  ./discover-repos.sh --include-types standalone
+  # Only show unregistered subrepos
+  ./discover-repos.sh --include-types unregistered
 
 Works with any Git remote provider (GitHub, GitLab, Azure Repos, Bitbucket, self-hosted, etc.)
 EOF
@@ -107,7 +107,7 @@ filter_repos_by_type() {
     return 0
   fi
   
-  # Parse include_types into array
+  # Parse include_types into array (with backward-compatible aliases)
   IFS=',' read -ra types <<< "$include_types"
   
   # Filter repos by type
@@ -125,6 +125,10 @@ filter_repos_by_type() {
     
     # Check if type is in include list
     for type in "${types[@]}"; do
+      case "$type" in
+        submodule) type="registered" ;;
+        standalone) type="unregistered" ;;
+      esac
       if [[ "$repo_type" == "$type" ]]; then
         if [[ $first -eq 0 ]]; then
           filtered+=","
@@ -197,18 +201,18 @@ display_summary() {
   local repos_json="$1"
   
   # Count repos by type
-  local total root_count submodule_count standalone_count
+  local total root_count registered_count unregistered_count
   total="$(echo "$repos_json" | { grep -o '"type":"[^"]*"' || true; } | wc -l | tr -d ' ')"
   root_count="$(echo "$repos_json" | { grep -o '"type":"root"' || true; } | wc -l | tr -d ' ')"
-  submodule_count="$(echo "$repos_json" | { grep -o '"type":"submodule"' || true; } | wc -l | tr -d ' ')"
-  standalone_count="$(echo "$repos_json" | { grep -o '"type":"standalone"' || true; } | wc -l | tr -d ' ')"
+  registered_count="$(echo "$repos_json" | { grep -o '"type":"registered"' || true; } | wc -l | tr -d ' ')"
+  unregistered_count="$(echo "$repos_json" | { grep -o '"type":"unregistered"' || true; } | wc -l | tr -d ' ')"
   
   gith_log "INFO" ""
   gith_log "INFO" "Summary:"
   gith_log "INFO" "  Total repositories: $total"
   gith_log "INFO" "  Root: $root_count"
-  gith_log "INFO" "  Submodules: $submodule_count"
-  gith_log "INFO" "  Standalone: $standalone_count"
+  gith_log "INFO" "  Registered subrepos: $registered_count"
+  gith_log "INFO" "  Unregistered subrepos: $unregistered_count"
 }
 
 #------------------------------------------------------------------------------

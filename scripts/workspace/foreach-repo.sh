@@ -50,7 +50,7 @@ source "$SCRIPT_DIR/../lib/git-helpers.sh"
 
 COMMAND=""
 MANIFEST_FILE=""
-INCLUDE_TYPES="root,submodule,standalone"
+INCLUDE_TYPES="root,registered,unregistered"
 EXCLUDE_PATTERNS=()
 MAX_DEPTH=3
 CONTINUE_ON_ERROR=0
@@ -72,7 +72,7 @@ Arguments:
 
 Options:
   --manifest <file>       Use manifest file
-  --include-types <types> Comma-separated: root,submodule,standalone (default: all)
+  --include-types <types> Comma-separated: root,registered,unregistered (aliases: submodule,standalone)
   --exclude <pattern>     Exclude path patterns (can be used multiple times)
   --max-depth <n>         Discovery max depth (default: 3)
   --continue-on-error     Continue if command fails in a repo
@@ -146,7 +146,7 @@ filter_repos() {
   local include_types="$2"
   
   # If include_types is "all" or contains all types, return all repos
-  if [[ -z "$include_types" ]] || [[ "$include_types" == "all" ]] || [[ "$include_types" == "root,submodule,standalone" ]]; then
+  if [[ -z "$include_types" ]] || [[ "$include_types" == "all" ]] || [[ "$include_types" == "root,registered,unregistered" ]]; then
     echo "$repos_json"
     return 0
   fi
@@ -169,6 +169,10 @@ filter_repos() {
     
     # Check if type is in include list
     for type in "${types[@]}"; do
+      case "$type" in
+        submodule) type="registered" ;;
+        standalone) type="unregistered" ;;
+      esac
       if [[ "$repo_type" == "$type" ]]; then
         if [[ $first -eq 0 ]]; then
           filtered+=","

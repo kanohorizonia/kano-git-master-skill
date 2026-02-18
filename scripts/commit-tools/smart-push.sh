@@ -8,7 +8,7 @@ FORCE_WITH_LEASE=0
 NO_VERIFY=0
 INCLUDE_ROOT=1
 INCLUDE_SUBMODULES=1
-INCLUDE_STANDALONE=1
+INCLUDE_UNREGISTERED=1
 REPO_FILTER=""
 NO_SMART_SYNC=0
 SYNC_ONLY=0
@@ -172,8 +172,9 @@ Push workflow with AI-powered sync and multi-remote push (SSH + HTTP when both e
 Options:
   --repos <paths>        Only process specific repos (comma-separated)
   --no-root              Exclude root repo
-  --no-submodules        Exclude submodules
-  --no-standalone        Exclude standalone repos
+  --no-submodules        Exclude registered subrepos (backward-compatible flag name)
+  --no-unregistered      Exclude unregistered subrepos
+  --no-standalone        Exclude unregistered subrepos (deprecated alias)
   --sync-only            Sync only (no push)
   --skip-sync            Push only (skip sync)
   --stash-local-changes  When syncing dirty repos, auto stash before sync and pop after
@@ -189,7 +190,7 @@ Examples:
   smart-push.sh                    # AI-powered sync + push
   smart-push.sh --no-smart-sync    # Simple rebase + push
   smart-push.sh --repos ".,skills/kano"
-  smart-push.sh --no-standalone
+  smart-push.sh --no-unregistered
 
 Workflow:
   1. Sync with upstream (AI-powered rebase by default)
@@ -215,8 +216,8 @@ while [[ $# -gt 0 ]]; do
       INCLUDE_SUBMODULES=0
       shift
       ;;
-    --no-standalone)
-      INCLUDE_STANDALONE=0
+    --no-unregistered|--no-standalone)
+      INCLUDE_UNREGISTERED=0
       shift
       ;;
     --sync-only)
@@ -290,10 +291,10 @@ if [[ "$INCLUDE_ROOT" -eq 1 ]]; then
   include_types+=("root")
 fi
 if [[ "$INCLUDE_SUBMODULES" -eq 1 ]]; then
-  include_types+=("submodule")
+  include_types+=("registered")
 fi
-if [[ "$INCLUDE_STANDALONE" -eq 1 ]]; then
-  include_types+=("standalone")
+if [[ "$INCLUDE_UNREGISTERED" -eq 1 ]]; then
+  include_types+=("unregistered")
 fi
 
 if [[ ${#include_types[@]} -eq 0 ]]; then

@@ -169,7 +169,7 @@ Note: sourcing will also define globals used by those functions (see the script 
 ## Recent learnings (2026-02)
 
 ### `discover-repos.sh` JSON stability
-- Symptom: malformed JSON objects like `{,"type":"submodule"}` caused downstream parsers to warn/skip.
+- Symptom: malformed JSON objects like `{,"type":"registered"}` caused downstream parsers to warn/skip.
 - Root cause: nested submodules were emitted without parent path prefix (wrong absolute path), and invalid metadata `{}` was later string-appended with `"type"`, producing invalid JSON.
 - Fix pattern:
   - When recursing `gith_collect_submodules()`, prefix nested paths with `"$parent/$child"` (not child-only).
@@ -232,4 +232,3 @@ Note: sourcing will also define globals used by those functions (see the script 
   - Empty/invalid verdict -> warning + continue
   - Explicit `FAIL` verdict -> block commit
 - Parsing tolerates common small-model output drift (`PASS - ...`, leading spaces, fuzzy PASS/FAIL tokens).
-

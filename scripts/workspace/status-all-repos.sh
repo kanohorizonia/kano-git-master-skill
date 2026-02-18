@@ -13,7 +13,7 @@
 #   --manifest <file>       Use manifest file
 #   --repo-root <path>      Repository root/start path (default: .)
 #   --include-types <types> Comma-separated repo types
-#   --no-submodules         Exclude submodules from discovery/output
+#   --no-submodules         Exclude registered subrepos from discovery/output
 #   --no-recursive          Disable recursive discovery (max-depth forced to 1)
 #   --exclude <pattern>     Exclude path patterns
 #   --max-depth <n>         Discovery max depth
@@ -53,7 +53,7 @@ source "$SCRIPT_DIR/../lib/git-helpers.sh"
 
 MANIFEST_FILE=""
 REPO_ROOT="."
-INCLUDE_TYPES="root,submodule,standalone"
+INCLUDE_TYPES="root,registered,unregistered"
 INCLUDE_SUBMODULES=1
 RECURSIVE=1
 EXCLUDE_PATTERNS=()
@@ -78,8 +78,8 @@ Generate comprehensive status report for all repositories.
 Options:
   --manifest <file>       Use manifest file
   --repo-root <path>      Repository root/start path (default: .)
-  --include-types <types> Comma-separated: root,submodule,standalone (default: all)
-  --no-submodules         Exclude submodules
+  --include-types <types> Comma-separated: root,registered,unregistered (aliases: submodule,standalone)
+  --no-submodules         Exclude registered subrepos (alias for backward compatibility)
   --no-recursive          Disable recursive discovery (forces --max-depth 1)
   --exclude <pattern>     Exclude path patterns (can be used multiple times)
   --max-depth <n>         Discovery max depth (default: 3)
@@ -104,7 +104,7 @@ Examples:
   # Detail mode with 5 oneline commits
   ./status-all-repos.sh --detail --detail-commits 5
 
-  # Exclude submodules, no recursive scan
+  # Exclude registered subrepos, no recursive scan
   ./status-all-repos.sh --no-submodules --no-recursive
 
   # Save to file
@@ -162,7 +162,7 @@ filter_repos() {
   local repos_json="$1"
   local include_types="$2"
   
-  if [[ -z "$include_types" ]] || [[ "$include_types" == "all" ]] || [[ "$include_types" == "root,submodule,standalone" ]]; then
+  if [[ -z "$include_types" ]] || [[ "$include_types" == "all" ]] || [[ "$include_types" == "root,registered,unregistered" ]]; then
     echo "$repos_json"
     return 0
   fi
@@ -181,6 +181,10 @@ filter_repos() {
     repo_type="$(echo "$repo" | grep -o '"type":"[^"]*"' | sed 's/"type":"//;s/"$//')"
     
     for type in "${types[@]}"; do
+      case "$type" in
+        submodule) type="registered" ;;
+        standalone) type="unregistered" ;;
+      esac
       if [[ "$repo_type" == "$type" ]]; then
         if [[ $first -eq 0 ]]; then
           filtered+=","
@@ -591,11 +595,11 @@ main() {
   # Filter repositories by type
   local effective_include_types="$INCLUDE_TYPES"
   if [[ "$INCLUDE_SUBMODULES" -eq 0 ]]; then
-    if [[ "$effective_include_types" == "all" ]] || [[ "$effective_include_types" == "root,submodule,standalone" ]]; then
-      effective_include_types="root,standalone"
+    if [[ "$effective_include_types" == "all" ]] || [[ "$effective_include_types" == "root,registered,unregistered" ]]; then
+      effective_include_types="root,unregistered"
     else
-      effective_include_types="$(echo "$effective_include_types" | tr ',' '\n' | sed '/^submodule$/d' | paste -sd, -)"
-      [[ -z "$effective_include_types" ]] && effective_include_types="root,standalone"
+      effective_include_types="$(echo "$effective_include_types" | tr ',' '\n' | sed '/^submodule$/d; /^registered$/d' | paste -sd, -)"
+      [[ -z "$effective_include_types" ]] && effective_include_types="root,unregistered"
     fi
   fi
   repos_json="$(filter_repos "$repos_json" "$effective_include_types")"
