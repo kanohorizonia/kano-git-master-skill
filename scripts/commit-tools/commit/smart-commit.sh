@@ -735,9 +735,12 @@ run_safety_checks() {
     fi
   done < <(git -C "$repo" diff --cached --name-only --diff-filter=ACMR 2>/dev/null || true)
 
-  # Check for secrets in diff
-  if git -C "$repo" diff --cached --text 2>/dev/null | grep -E -i \
-    "(AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|ghp_[0-9A-Za-z]{36}|github_pat_[0-9A-Za-z_]{80,}|xox[baprs]-[0-9A-Za-z-]{10,}|-----BEGIN (RSA|EC|OPENSSH|DSA|PGP) PRIVATE KEY-----|api[_-]?key[[:space:]]*[:=][[:space:]]*['\"][^'\"]{8,}|token[[:space:]]*[:=][[:space:]]*['\"][^'\"]{8,}|password[[:space:]]*[:=][[:space:]]*['\"][^'\"]{8,}|secret[[:space:]]*[:=][[:space:]]*['\"][^'\"]{8,})" \
+  # Check for secrets only in added lines to avoid false positives when removing old examples.
+  if git -C "$repo" diff --cached --text --unified=0 2>/dev/null \
+    | grep -E '^\+' \
+    | grep -v -E '^\+\+\+' \
+    | grep -E -i \
+      "(AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|ghp_[0-9A-Za-z]{36}|github_pat_[0-9A-Za-z_]{80,}|xox[baprs]-[0-9A-Za-z-]{10,}|-----BEGIN (RSA|EC|OPENSSH|DSA|PGP) PRIVATE KEY-----|api[_-]?key[[:space:]]*[:=][[:space:]]*['\"][^'\"]{8,}|token[[:space:]]*[:=][[:space:]]*['\"][^'\"]{8,}|password[[:space:]]*[:=][[:space:]]*['\"][^'\"]{8,}|secret[[:space:]]*[:=][[:space:]]*['\"][^'\"]{8,})" \
     >"$check_file" 2>&1; then
     echo "[$repo] FAILED: Possible secret detected in diff" >&2
     cat "$check_file" >&2
@@ -1603,4 +1606,3 @@ fi
 
 print_timing_summary
 echo "=== All done (success) ==="
-
