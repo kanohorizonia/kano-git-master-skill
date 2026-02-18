@@ -575,7 +575,7 @@ Recommended root wrapper set:
 - `smart-sync-upstream-stable-dev.sh`
 - `smart-status.sh` (recommended when the repository is a multi-repo workspace)
 
-## Delegation Mode (代勞模式)
+## Delegation Mode
 
 Use delegation mode when an agent/tool is executing commit workflows on your behalf.
 
