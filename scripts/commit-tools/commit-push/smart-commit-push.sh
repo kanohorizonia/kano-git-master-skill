@@ -272,14 +272,15 @@ while [[ $# -gt 0 ]]; do
       usage
       exit 0
       ;;
-    --repos|--no-root|--no-submodules|--no-unregistered|--no-standalone|--force-with-lease|--no-verify|--no-smart-sync)
+    --repos)
+      # Keep commit/push scope aligned; otherwise commit phase may scan extra repos.
+      SMART_COMMIT_ARGS+=("$1" "${2:-}")
+      SMART_PUSH_ARGS+=("$1" "${2:-}")
+      shift 2
+      ;;
+    --no-root|--no-submodules|--no-unregistered|--no-standalone|--force-with-lease|--no-verify|--no-smart-sync)
       SMART_PUSH_ARGS+=("$1")
-      if [[ "$1" == "--repos" ]]; then
-        SMART_PUSH_ARGS+=("${2:-}")
-        shift 2
-      else
-        shift
-      fi
+      shift
       ;;
     --verbose)
       # Verbose is useful for both commit and push (especially pre-sync diagnostics)
@@ -461,11 +462,12 @@ echo ""
 echo "Step 3: Post-sync workflow..."
 step_start="$(timer_now)"
 if [[ "$DRY_RUN" -eq 1 ]]; then
-  echo "[DRY RUN] Would run: $SCRIPT_DIR/../smart-push.sh --sync-only --fail-on-dirty-sync --no-submodules ${SMART_PUSH_ARGS[*]}"
+  echo "[DRY RUN] Would run: $SCRIPT_DIR/../smart-push.sh --sync-only --fail-on-dirty-sync --no-submodules --no-unregistered ${SMART_PUSH_ARGS[*]}"
 else
   # Post-sync is a final safety check before push. Do not sync registered submodules here,
-  # otherwise advancing submodule HEADs can dirty the root repo (gitlink change) after commit.
-  if ! bash "$SCRIPT_DIR/../smart-push.sh" --sync-only --fail-on-dirty-sync --no-submodules "${SMART_PUSH_ARGS[@]}"; then
+  # or unregistered nested repos, otherwise advancing subrepo HEADs can dirty superprojects
+  # (gitlink changes) after commit.
+  if ! bash "$SCRIPT_DIR/../smart-push.sh" --sync-only --fail-on-dirty-sync --no-submodules --no-unregistered "${SMART_PUSH_ARGS[@]}"; then
     echo "ERROR: Post-sync step failed. Check smart-push output above for repository-specific failures." >&2
     exit 1
   fi
