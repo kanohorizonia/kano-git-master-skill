@@ -18,7 +18,7 @@ usage() {
 Usage: gen-root-wrappers.sh [options]
 
 Options:
-  --profile <standalone|oss>  Template profile (default: standalone)
+  --profile <standalone|oss|repo-passive-mode>  Template profile (default: standalone)
   --target <dir>              Target project root directory (default: current directory)
   --force                     Overwrite existing smart-*.sh files
   --dry-run                   Print planned actions without writing files
@@ -28,6 +28,7 @@ Examples:
   ./.agents/kano/kano-git-master-skill/scripts/core/gen-root-wrappers.sh
   ./.agents/kano/kano-git-master-skill/scripts/core/gen-root-wrappers.sh --profile oss --target /path/to/repo
   ./.agents/kano/kano-git-master-skill/scripts/core/gen-root-wrappers.sh --profile standalone --force
+  ./.agents/kano/kano-git-master-skill/scripts/core/gen-root-wrappers.sh --profile repo-passive-mode --target .
 USAGE
 }
 
@@ -71,10 +72,10 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$PROFILE" in
-  standalone|oss)
+  standalone|oss|repo-passive-mode)
     ;;
   *)
-    die "Unsupported profile: $PROFILE (expected: standalone or oss)"
+    die "Unsupported profile: $PROFILE (expected: standalone, oss, or repo-passive-mode)"
     ;;
 esac
 

@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
 #
-# smart-push.sh - Project-level wrapper for multi-repository push
-#
-# This script points to the kano-git-master-skill push tool.
-# It can be run from any directory within the project.
+# smart-push.sh - Project-level wrapper for multi-repository push (repo-passive-mode profile)
 
 set -euo pipefail
 
@@ -13,11 +10,15 @@ source "$ROOT/smart-wrapper-common.sh"
 SKILL_SCRIPT="$ROOT/.agents/kano/kano-git-master-skill/scripts/commit-tools/smart-push.sh"
 ensure_skill_script_exists "$SKILL_SCRIPT"
 
-# Run the actual script
-# Run the actual script (force repo root to project root)
+ARGS=("$@")
+if ! has_arg "--repos" "${ARGS[@]}"; then
+  REPOS_CSV="$(collect_cloned_repos_csv "$ROOT")"
+  ARGS+=("--repos" "$REPOS_CSV")
+fi
+
 export KANO_GIT_MASTER_ROOT="$ROOT"
 set +e
-bash "$SKILL_SCRIPT" "$@"
+bash "$SKILL_SCRIPT" "${ARGS[@]}"
 status=$?
 set -e
 pause_if_needed "$@"

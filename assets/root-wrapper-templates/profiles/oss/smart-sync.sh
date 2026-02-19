@@ -5,6 +5,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ORIG_ARGS=("$@")
+source "$ROOT/smart-wrapper-common.sh"
 GIT_MASTER_SKILL_SCRIPT_DIR=".agents/kano/kano-git-master-skill/scripts/commit-tools/sync"
 
 usage() {
@@ -30,14 +32,9 @@ run_skill_script() {
   local script_rel="$1"
   shift || true
   local script="$ROOT/$GIT_MASTER_SKILL_SCRIPT_DIR/$script_rel"
-  if [[ ! -f "$script" ]]; then
-    echo "ERROR: Git Master Skill script not found at:" >&2
-    echo "  $script" >&2
-    echo "Ensure the kano-git-master-skill submodule is initialized." >&2
-    exit 1
-  fi
+  ensure_skill_script_exists "$script"
   export KANO_GIT_MASTER_ROOT="$ROOT"
-  exec bash "$script" "$@"
+  bash "$script" "$@"
 }
 
 ensure_git_master_skill_ready() {
@@ -70,19 +67,31 @@ shift || true
 
 case "$mode" in
   upstream-stable-dev|stable-dev)
-    exec bash "$ROOT/smart-sync-upstream-stable-dev.sh" "$@"
+    set +e
+    bash "$ROOT/smart-sync-upstream-stable-dev.sh" "$@"
+    status=$?
+    set -e
     ;;
   upstream-force-push)
     ensure_git_master_skill_ready
+    set +e
     run_skill_script "smart-sync-upstream-force-push-copilot.sh" "$@"
+    status=$?
+    set -e
     ;;
   origin-latest)
     ensure_git_master_skill_ready
+    set +e
     run_skill_script "smart-sync-origin-latest.sh" "$@"
+    status=$?
+    set -e
     ;;
   dev)
     ensure_git_master_skill_ready
+    set +e
     run_skill_script "smart-sync-dev.sh" "$@"
+    status=$?
+    set -e
     ;;
   *)
     echo "ERROR: Unknown mode: $mode" >&2
@@ -90,3 +99,6 @@ case "$mode" in
     exit 1
     ;;
 esac
+
+pause_if_needed "${ORIG_ARGS[@]}"
+exit "${status:-0}"

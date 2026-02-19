@@ -10,15 +10,11 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ORIG_ARGS=("$@")
+source "$ROOT/smart-wrapper-common.sh"
 
 SKILL_SCRIPT="$ROOT/.agents/kano/kano-git-master-skill/scripts/commit-tools/sync/smart-sync-stable-dev.sh"
-
-if [[ ! -f "$SKILL_SCRIPT" ]]; then
-  echo "ERROR: Git Master Skill script not found at:" >&2
-  echo "  $SKILL_SCRIPT" >&2
-  echo "Ensure the kano-git-master-skill submodule is initialized." >&2
-  exit 1
-fi
+ensure_skill_script_exists "$SKILL_SCRIPT"
 
 export KANO_GIT_MASTER_ROOT="$ROOT"
 
@@ -241,7 +237,12 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ "$has_repo_arg" -eq 1 ]]; then
-  exec bash "$SKILL_SCRIPT" "${forward_args[@]}"
+  set +e
+  bash "$SKILL_SCRIPT" "${forward_args[@]}"
+  status=$?
+  set -e
+  pause_if_needed "${ORIG_ARGS[@]}"
+  exit "$status"
 fi
 
 if [[ ! -f "$ROOT/.gitmodules" ]]; then
@@ -310,5 +311,8 @@ case "$REPORT_FORMAT" in
 esac
 
 if [[ "$failed" -gt 0 ]]; then
+  pause_if_needed "${ORIG_ARGS[@]}"
   exit 1
 fi
+
+pause_if_needed "${ORIG_ARGS[@]}"

@@ -7,17 +7,19 @@
 #
 # It can be run from any directory within the project.
 
-# Find project root (location of this script)
+set -euo pipefail
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$ROOT/smart-wrapper-common.sh"
 
 # Path to the skill's script
 SKILL_SCRIPT="$ROOT/.agents/kano/kano-git-master-skill/scripts/core/smart-clone.sh"
-if [[ ! -f "$SKILL_SCRIPT" ]]; then
-  echo "ERROR: Smart Clone script not found at:"
-  echo "  $SKILL_SCRIPT"
-  echo "Ensure the kano-git-master-skill submodule is initialized."
-  exit 1
-fi
+ensure_skill_script_exists "$SKILL_SCRIPT"
 
 # Run the actual script
-exec bash "$SKILL_SCRIPT" "$@"
+set +e
+bash "$SKILL_SCRIPT" "$@"
+status=$?
+set -e
+pause_if_needed "$@"
+exit "$status"
