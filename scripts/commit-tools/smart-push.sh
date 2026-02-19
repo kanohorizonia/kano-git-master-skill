@@ -461,7 +461,9 @@ for repo in "${REPOS[@]}"; do
       fi
     fi
 
-    if sync_output="$(git -C "$repo" pull --rebase 2>&1)"; then
+    # Avoid fetch-time failures from historical submodule SHAs that no longer exist
+    # on remotes. Submodule checkout/sync remains an explicit follow-up step.
+    if sync_output="$(git -C "$repo" -c fetch.recurseSubmodules=false pull --rebase 2>&1)"; then
       :
     else
       sync_exit=$?
