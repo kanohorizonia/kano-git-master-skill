@@ -264,9 +264,12 @@ find_latest_release_tag() {
 
 collect_direct_submodule_paths() {
   local repo="$1"
-  local gm="$repo/.gitmodules"
+  local repo_abs=""
+  local gm=""
+  repo_abs="$(cd "$repo" && pwd -P)"
+  gm="$repo_abs/.gitmodules"
   [[ -f "$gm" ]] || return 0
-  git -C "$repo" config -f "$gm" --get-regexp '^submodule\..*\.path$' 2>/dev/null | awk '{print $2}' || true
+  git config -f "$gm" --get-regexp '^submodule\..*\.path$' 2>/dev/null | awk '{print $2}' || true
 }
 
 collect_index_gitlink_paths() {
@@ -280,19 +283,31 @@ repair_stale_submodule_gitlinks() {
   local gm_paths=""
   local gitlinks=""
   local p=""
+  local stale_list=""
 
   gm_paths="$(collect_direct_submodule_paths "$repo")"
   gitlinks="$(collect_index_gitlink_paths "$repo")"
 
+  # If .gitmodules exists but cannot be parsed into paths, skip cleanup to avoid destructive false positives.
+  if [[ -f "$repo/.gitmodules" ]] && [[ -z "$gm_paths" ]]; then
+    echo "WARN: Skip stale submodule gitlink cleanup; failed to parse .gitmodules paths in $repo" >&2
+    return 0
+  fi
+
   while IFS= read -r p; do
     [[ -n "$p" ]] || continue
     if ! grep -Fxq "$p" <<<"$gm_paths"; then
-      echo "Repairing stale submodule gitlink: $p"
-      git -C "$repo" submodule deinit -- "$p" >/dev/null 2>&1 || true
-      git -C "$repo" update-index --force-remove -- "$p"
-      had_fix=1
+      stale_list+="$p"$'\n'
     fi
   done <<<"$gitlinks"
+
+  while IFS= read -r p; do
+    [[ -n "$p" ]] || continue
+    echo "Repairing stale submodule gitlink: $p"
+    git -C "$repo" submodule deinit -- "$p" >/dev/null 2>&1 || true
+    git -C "$repo" update-index --force-remove -- "$p"
+    had_fix=1
+  done <<<"$stale_list"
 
   if [[ "$had_fix" -eq 1 ]]; then
     echo "Stale submodule gitlink cleanup complete"
