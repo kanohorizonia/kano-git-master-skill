@@ -15,7 +15,7 @@ ensure_skill_script_exists "$SKILL_SCRIPT"
 
 # Run the actual script
 set +e
-bash "$SKILL_SCRIPT" "$@"
+run_skill_script_from_root "$ROOT" "$SKILL_SCRIPT" "$@"
 status=$?
 set -e
 pause_if_needed "$@"

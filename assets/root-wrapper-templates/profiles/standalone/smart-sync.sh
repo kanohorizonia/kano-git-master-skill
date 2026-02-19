@@ -29,8 +29,7 @@ run_skill_script() {
   shift || true
   local script="$ROOT/$GIT_MASTER_SKILL_SCRIPT_DIR/$script_rel"
   ensure_skill_script_exists "$script"
-  export KANO_GIT_MASTER_ROOT="$ROOT"
-  bash "$script" "$@"
+  run_skill_script_from_root "$ROOT" "$script" "$@"
 }
 
 ensure_git_master_skill_ready() {

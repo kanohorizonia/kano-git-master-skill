@@ -13,10 +13,8 @@ source "$ROOT/smart-wrapper-common.sh"
 SKILL_SCRIPT="$ROOT/.agents/kano/kano-git-master-skill/scripts/commit-tools/commit-push/smart-commit-push-copilot.sh"
 ensure_skill_script_exists "$SKILL_SCRIPT"
 
-# Run the actual script (force repo root to project root)
-export KANO_GIT_MASTER_ROOT="$ROOT"
 set +e
-bash "$SKILL_SCRIPT" "$@"
+run_skill_script_from_root "$ROOT" "$SKILL_SCRIPT" "$@"
 status=$?
 set -e
 pause_if_needed "$@"

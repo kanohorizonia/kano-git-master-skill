@@ -15,6 +15,18 @@ ensure_skill_script_exists() {
   return 1
 }
 
+run_skill_script_from_root() {
+  local root="$1"
+  local script="$2"
+  shift 2 || true
+
+  export KANO_GIT_MASTER_ROOT="$root"
+  (
+    cd "$root"
+    bash "$script" "$@"
+  )
+}
+
 pause_if_needed() {
   # Pause only for interactive human runs.
   [[ -t 0 && -t 1 ]] || return 0
