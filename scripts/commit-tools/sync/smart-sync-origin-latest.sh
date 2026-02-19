@@ -17,6 +17,8 @@
 #   --target <mode>      Sync target: branch|release (default: branch)
 #   --release-channel <mode>  stable|any (default: stable)
 #   --tag-pattern <re>   Regex override for release tags
+#   --auto-stash         Auto stash/pop when dirty (default)
+#   --no-auto-stash      Reject when working tree is dirty
 #   --dry-run           Show what would be done
 #   -h, --help          Show help
 
@@ -34,6 +36,10 @@ TAG_PATTERN_STABLE='^(release[-_/])?(v)?[0-9]+(\.[0-9]+){1,3}(\+[0-9A-Za-z.-]+)?
 TAG_PATTERN_ANY='^(release[-_/])?(v)?[0-9]+(\.[0-9]+){1,3}([.-](alpha|beta|rc|pre|preview)[0-9]*)?(\+[0-9A-Za-z.-]+)?$'
 TAG_PATTERN=""
 TAG_PATTERN_SET=0
+AUTO_STASH=1
+HAD_STASH=0
+AUTO_STASH_MARKER=""
+declare -a STASHED_REPOS=()
 
 detect_remote_default_branch() {
   local repo="$1"
@@ -72,6 +78,8 @@ Options:
   --target <mode>      Sync target: branch|release (default: branch)
   --release-channel <mode>  stable|any (default: stable)
   --tag-pattern <re>   Regex override for release tags
+  --auto-stash         Auto stash/pop when dirty (default)
+  --no-auto-stash      Reject when working tree is dirty
   --dry-run           Show what would be done
   -h, --help          Show help
 
@@ -90,6 +98,82 @@ find_latest_release_tag() {
   git -C "$repo" tag --list --sort=-version:refname \
     | grep -Ei "$pattern" \
     | head -n1 || true
+}
+
+collect_direct_submodule_paths() {
+  local repo="$1"
+  local gm="$repo/.gitmodules"
+  [[ -f "$gm" ]] || return 0
+  git -C "$repo" config -f "$gm" --get-regexp '^submodule\..*\.path$' 2>/dev/null | awk '{print $2}' || true
+}
+
+auto_stash_one_repo() {
+  local repo="$1"
+  local marker="$2"
+
+  if is_clean_working_tree "$repo"; then
+    return 0
+  fi
+
+  local stash_output=""
+  stash_output="$(git -C "$repo" stash push -u -m "$marker" 2>&1 || true)"
+  if echo "$stash_output" | grep -q "No local changes to save"; then
+    return 0
+  fi
+  if [[ -z "$stash_output" ]]; then
+    echo "ERROR: Failed to auto-stash local changes in: $repo" >&2
+    return 1
+  fi
+
+  local stash_ref=""
+  stash_ref="$(git -C "$repo" stash list -n 1 --format='%gd' || true)"
+  STASHED_REPOS+=("$repo")
+  echo "Auto-stashed [$repo]: ${stash_ref:-stash@{0}}"
+  return 0
+}
+
+auto_stash_recursive() {
+  local repo="$1"
+  local marker="$2"
+
+  local sub_path=""
+  while IFS= read -r sub_path; do
+    [[ -n "$sub_path" ]] || continue
+    local child_repo="$repo/$sub_path"
+    if [[ -d "$child_repo" ]] && git -C "$child_repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      auto_stash_recursive "$child_repo" "$marker"
+      auto_stash_one_repo "$child_repo" "$marker"
+    fi
+  done < <(collect_direct_submodule_paths "$repo")
+}
+
+auto_pop_one_repo() {
+  local repo="$1"
+  local marker="$2"
+
+  local top_subject=""
+  top_subject="$(git -C "$repo" stash list -n 1 --format='%gs' || true)"
+  if [[ "$top_subject" != *"$marker"* ]]; then
+    return 0
+  fi
+
+  if ! git -C "$repo" stash pop; then
+    local stash_ref=""
+    stash_ref="$(git -C "$repo" stash list -n 1 --format='%gd' || true)"
+    echo "ERROR: Auto-stash pop failed in $repo. Resolve manually and apply ${stash_ref:-stash@{0}}." >&2
+    return 1
+  fi
+
+  echo "Restored auto-stashed changes: $repo"
+  return 0
+}
+
+auto_pop_all() {
+  local marker="$1"
+  local i=0
+  for ((i=${#STASHED_REPOS[@]}-1; i>=0; i--)); do
+    auto_pop_one_repo "${STASHED_REPOS[$i]}" "$marker"
+  done
 }
 
 while [[ $# -gt 0 ]]; do
@@ -115,6 +199,14 @@ while [[ $# -gt 0 ]]; do
       TAG_PATTERN_SET=1
       shift 2
       ;;
+    --auto-stash)
+      AUTO_STASH=1
+      shift
+      ;;
+    --no-auto-stash)
+      AUTO_STASH=0
+      shift
+      ;;
     --dry-run)
       DRY_RUN=1
       shift
@@ -136,9 +228,22 @@ if ! validate_repo "$REPO"; then
 fi
 
 if ! is_clean_working_tree "$REPO"; then
-  echo "ERROR: Working tree has uncommitted changes" >&2
-  echo "Commit or stash changes before syncing" >&2
-  exit 1
+  if [[ "$AUTO_STASH" -eq 0 ]]; then
+    echo "ERROR: Working tree has uncommitted changes" >&2
+    echo "Commit or stash changes before syncing (or use default auto-stash mode)" >&2
+    exit 1
+  fi
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[DRY RUN] Working tree is dirty; would auto-stash (root + submodules) before sync and pop after success"
+  else
+    AUTO_STASH_MARKER="kano-smart-sync-origin-latest-autostash $(date +%Y%m%d-%H%M%S)-$$"
+    auto_stash_recursive "$REPO" "$AUTO_STASH_MARKER"
+    auto_stash_one_repo "$REPO" "$AUTO_STASH_MARKER"
+    if [[ ${#STASHED_REPOS[@]} -gt 0 ]]; then
+      HAD_STASH=1
+    fi
+  fi
 fi
 
 if ! git -C "$REPO" remote get-url "$REMOTE" >/dev/null 2>&1; then
@@ -191,7 +296,12 @@ if [[ "$TARGET_MODE" == "branch" ]]; then
   fi
 
   "${checkout_cmd[@]}" >/dev/null 2>&1
-  "${pull_cmd[@]}"
+  if ! "${pull_cmd[@]}"; then
+    if [[ "$HAD_STASH" -eq 1 ]]; then
+      echo "Auto-stash kept due to sync failure. Recover with: git -C \"<repo>\" stash list" >&2
+    fi
+    exit 1
+  fi
 
   echo "=== Sync Complete ==="
   echo "On branch: $default_branch"
@@ -212,4 +322,11 @@ else
   "${checkout_cmd[@]}" >/dev/null 2>&1
   echo "=== Sync Complete ==="
   echo "On release tag: $latest_tag (detached HEAD)"
+fi
+
+if [[ "$HAD_STASH" -eq 1 ]]; then
+  echo "Restoring auto-stashed changes..."
+  if ! auto_pop_all "$AUTO_STASH_MARKER"; then
+    exit 1
+  fi
 fi

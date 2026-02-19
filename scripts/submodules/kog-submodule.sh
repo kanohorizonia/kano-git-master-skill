@@ -328,6 +328,60 @@ select_url() {
   esac
 }
 
+# Validate submodule registration metadata and repair when obviously broken.
+# This helps after manual submodule path rename or interrupted migration.
+ensure_submodule_registration_healthy() {
+  local submodule_path="$1"
+  local dry_run="${2:-0}"
+
+  local module_config=".git/modules/$submodule_path/config"
+  local needs_repair=0
+  local reason=""
+
+  # Missing module metadata usually means not initialized or stale registration.
+  if [[ ! -f "$module_config" ]]; then
+    needs_repair=1
+    reason="missing module config"
+  fi
+
+  # If core.worktree points to another path, root git status can break hard.
+  if [[ "$needs_repair" -eq 0 ]]; then
+    local configured_worktree=""
+    configured_worktree="$(git config -f "$module_config" --get core.worktree 2>/dev/null || true)"
+    if [[ -n "$configured_worktree" && "$configured_worktree" != *"$submodule_path" ]]; then
+      needs_repair=1
+      reason="worktree mismatch: $configured_worktree"
+    fi
+  fi
+
+  # Worktree exists but not a valid git repo from this superproject perspective.
+  if [[ "$needs_repair" -eq 0 ]]; then
+    if ! git -C "$submodule_path" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      needs_repair=1
+      reason="invalid submodule worktree"
+    fi
+  fi
+
+  if [[ "$needs_repair" -eq 0 ]]; then
+    return 0
+  fi
+
+  gith_log "WARN" "  Detected broken submodule registration for '$submodule_path' ($reason)"
+
+  if [[ "$dry_run" -eq 1 ]]; then
+    gith_log "INFO" "  [DRY-RUN] Would repair by deinit + re-init: $submodule_path"
+    return 0
+  fi
+
+  # Rebuild registration metadata from .gitmodules authoritative state.
+  git submodule deinit -f -- "$submodule_path" >/dev/null 2>&1 || true
+  rm -rf ".git/modules/$submodule_path" || true
+  git submodule sync -- "$submodule_path" >/dev/null 2>&1 || true
+  git submodule update --init -- "$submodule_path"
+
+  gith_log "INFO" "  Re-registered submodule: $submodule_path"
+}
+
 #------------------------------------------------------------------------------
 # Command: add
 #------------------------------------------------------------------------------
@@ -738,6 +792,8 @@ cmd_sync_submodule() {
   local dry_run="$2"
 
   gith_log "INFO" "Syncing: $submodule_path"
+
+  ensure_submodule_registration_healthy "$submodule_path" "$dry_run"
 
   # Get protocol priority
   local protocol_priority
