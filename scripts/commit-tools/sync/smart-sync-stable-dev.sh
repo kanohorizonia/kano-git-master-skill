@@ -219,7 +219,19 @@ continue_cherry_pick() {
     syncc_resolve_conflicts_ai "$SCRIPT_DIR" "$repo" "$provider" "$model"
   fi
 
+  set +e
   git -C "$repo" cherry-pick --continue
+  continue_rc=$?
+  set -e
+  if [[ "$continue_rc" -ne 0 ]]; then
+    if ! has_conflicts "$repo" && is_cherry_pick_in_progress "$repo"; then
+      git -C "$repo" cherry-pick --skip
+      echo "Skipped empty cherry-pick during --continue"
+    else
+      return "$continue_rc"
+    fi
+  fi
+
   syncc_push_branch "$repo" "$origin_remote" "$current_branch" "$NO_PUSH"
   echo "Stable-dev continue completed on $current_branch"
 }
@@ -354,6 +366,19 @@ if git -C "$REPO" show-ref --verify --quiet "refs/remotes/$ORIGIN_REMOTE/$SOURCE
   source_ref="$ORIGIN_REMOTE/$SOURCE_BRANCH"
 fi
 
+if [[ -z "$source_ref" && "$SOURCE_BRANCH_SET" -eq 0 ]]; then
+  for fallback_tag in "${matched_tags[@]:1}"; do
+    fallback_branch="branch_$(sanitize_tag_for_branch "$fallback_tag")"
+    if git -C "$REPO" show-ref --verify --quiet "refs/remotes/$ORIGIN_REMOTE/$fallback_branch"; then
+      SOURCE_BRANCH="$fallback_branch"
+      BASE_TAG="$fallback_tag"
+      source_ref="$ORIGIN_REMOTE/$SOURCE_BRANCH"
+      echo "Fallback source branch detected: $source_ref (base tag: $BASE_TAG)"
+      break
+    fi
+  done
+fi
+
 target_branch_state="new"
 if git -C "$REPO" show-ref --verify --quiet "refs/heads/$TARGET_BRANCH"; then
   target_branch_state="existing-local"
@@ -452,6 +477,18 @@ for c in "${pick_commits[@]}"; do
   fi
 
   if ! has_conflicts "$REPO"; then
+    if is_cherry_pick_in_progress "$REPO"; then
+      set +e
+      git -C "$REPO" cherry-pick --skip
+      skip_rc=$?
+      set -e
+      if [[ "$skip_rc" -eq 0 ]]; then
+        skipped_count=$((skipped_count + 1))
+        skipped_commits+=("$c")
+        echo "Skipped empty cherry-pick: $c"
+        continue
+      fi
+    fi
     echo "ERROR: cherry-pick failed without conflicts at $c" >&2
     exit "$rc"
   fi

@@ -28,6 +28,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../lib/git-helpers.sh"
+source "$SCRIPT_DIR/../../lib/git-helpers.sh"
 
 REMOTE="origin"
 DRY_RUN=0
@@ -531,6 +532,7 @@ if [[ "$TARGET_MODE" == "branch" ]]; then
   if [[ "$DRY_RUN" -eq 1 ]]; then
     echo "[DRY RUN] Would run: ${checkout_cmd[*]}"
     echo "[DRY RUN] Would run: ${pull_cmd[*]}"
+    echo "[DRY RUN] Would sync submodule branches based on .gitmodules"
     exit 0
   fi
 
@@ -551,6 +553,7 @@ if [[ "$TARGET_MODE" == "branch" ]]; then
   fi
 
   sync_submodules_after_sync "$REPO" "$DRY_RUN"
+  gith_sync_submodules_to_branches "$REPO" "1"
 
   echo "=== Sync Complete ==="
   echo "On branch: $default_branch"
