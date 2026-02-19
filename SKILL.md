@@ -1024,3 +1024,9 @@ bash scripts/test/run-all-tests.sh \
 ```
 
 See [TESTING.md](TESTING.md) for complete testing documentation.
+
+## Recent Learnings (2026-02-19)
+
+- Add and maintain a passive wrapper profile (`repo-passive-mode`) for multi-device workspaces. In passive mode, wrappers must not auto-init/clone submodules and should default to root + already-cloned submodules only.
+- Wrapper templates must include conditional pause behavior: pause only for interactive human runs; do not pause in agent mode (`--agent` non-manual), CI, or non-interactive shells.
+- In `smart-commit-push`, post-sync validation should avoid syncing registered submodules again. Re-syncing submodules after commit can advance gitlinks and dirty the root, causing `--fail-on-dirty-sync` failures.

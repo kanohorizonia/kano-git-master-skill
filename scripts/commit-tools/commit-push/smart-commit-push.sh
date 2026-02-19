@@ -461,9 +461,11 @@ echo ""
 echo "Step 3: Post-sync workflow..."
 step_start="$(timer_now)"
 if [[ "$DRY_RUN" -eq 1 ]]; then
-  echo "[DRY RUN] Would run: $SCRIPT_DIR/../smart-push.sh --sync-only --fail-on-dirty-sync ${SMART_PUSH_ARGS[*]}"
+  echo "[DRY RUN] Would run: $SCRIPT_DIR/../smart-push.sh --sync-only --fail-on-dirty-sync --no-submodules ${SMART_PUSH_ARGS[*]}"
 else
-  if ! bash "$SCRIPT_DIR/../smart-push.sh" --sync-only --fail-on-dirty-sync "${SMART_PUSH_ARGS[@]}"; then
+  # Post-sync is a final safety check before push. Do not sync registered submodules here,
+  # otherwise advancing submodule HEADs can dirty the root repo (gitlink change) after commit.
+  if ! bash "$SCRIPT_DIR/../smart-push.sh" --sync-only --fail-on-dirty-sync --no-submodules "${SMART_PUSH_ARGS[@]}"; then
     echo "ERROR: Post-sync step failed. Check smart-push output above for repository-specific failures." >&2
     exit 1
   fi
