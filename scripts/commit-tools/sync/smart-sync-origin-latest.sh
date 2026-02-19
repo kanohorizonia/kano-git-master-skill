@@ -107,6 +107,56 @@ collect_direct_submodule_paths() {
   git -C "$repo" config -f "$gm" --get-regexp '^submodule\..*\.path$' 2>/dev/null | awk '{print $2}' || true
 }
 
+collect_index_gitlink_paths() {
+  local repo="$1"
+  git -C "$repo" ls-files -s 2>/dev/null | awk '$1=="160000" {print $4}' || true
+}
+
+repair_stale_submodule_gitlinks() {
+  local repo="$1"
+  local had_fix=0
+  local gm_paths=""
+  local gitlinks=""
+  local p=""
+
+  gm_paths="$(collect_direct_submodule_paths "$repo")"
+  gitlinks="$(collect_index_gitlink_paths "$repo")"
+
+  while IFS= read -r p; do
+    [[ -n "$p" ]] || continue
+    if ! grep -Fxq "$p" <<<"$gm_paths"; then
+      echo "Repairing stale submodule gitlink: $p"
+      git -C "$repo" submodule deinit -- "$p" >/dev/null 2>&1 || true
+      git -C "$repo" update-index --force-remove -- "$p"
+      had_fix=1
+    fi
+  done <<<"$gitlinks"
+
+  if [[ "$had_fix" -eq 1 ]]; then
+    echo "Stale submodule gitlink cleanup complete"
+  fi
+}
+
+sync_submodules_after_sync() {
+  local repo="$1"
+  local dry_run="$2"
+
+  if [[ ! -f "$repo/.gitmodules" ]]; then
+    return 0
+  fi
+
+  if [[ "$dry_run" -eq 1 ]]; then
+    echo "[DRY RUN] Would run: git -C \"$repo\" submodule sync --recursive"
+    echo "[DRY RUN] Would run: git -C \"$repo\" submodule update --init --recursive"
+    echo "[DRY RUN] Would check and remove stale submodule gitlinks"
+    return 0
+  fi
+
+  git -C "$repo" submodule sync --recursive >/dev/null 2>&1 || true
+  git -C "$repo" submodule update --init --recursive >/dev/null 2>&1 || true
+  repair_stale_submodule_gitlinks "$repo"
+}
+
 auto_stash_one_repo() {
   local repo="$1"
   local marker="$2"
@@ -303,6 +353,8 @@ if [[ "$TARGET_MODE" == "branch" ]]; then
     exit 1
   fi
 
+  sync_submodules_after_sync "$REPO" "$DRY_RUN"
+
   echo "=== Sync Complete ==="
   echo "On branch: $default_branch"
 else
@@ -320,6 +372,7 @@ else
     exit 0
   fi
   "${checkout_cmd[@]}" >/dev/null 2>&1
+  sync_submodules_after_sync "$REPO" "$DRY_RUN"
   echo "=== Sync Complete ==="
   echo "On release tag: $latest_tag (detached HEAD)"
 fi
