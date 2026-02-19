@@ -19,6 +19,8 @@
 #   --tag-pattern <re>   Regex override for release tags
 #   --auto-stash         Auto stash/pop when dirty (default)
 #   --no-auto-stash      Reject when working tree is dirty
+#   --submodule-conflict-strategy <mode>
+#                       manual|ff-only|newer-date|ours|theirs (default: ff-only)
 #   --dry-run           Show what would be done
 #   -h, --help          Show help
 
@@ -39,6 +41,7 @@ TAG_PATTERN_SET=0
 AUTO_STASH=1
 HAD_STASH=0
 AUTO_STASH_MARKER=""
+SUBMODULE_CONFLICT_STRATEGY="ff-only"
 declare -a STASHED_REPOS=()
 
 detect_remote_default_branch() {
@@ -80,6 +83,8 @@ Options:
   --tag-pattern <re>   Regex override for release tags
   --auto-stash         Auto stash/pop when dirty (default)
   --no-auto-stash      Reject when working tree is dirty
+  --submodule-conflict-strategy <mode>
+                      manual|ff-only|newer-date|ours|theirs (default: ff-only)
   --dry-run           Show what would be done
   -h, --help          Show help
 
@@ -89,6 +94,163 @@ Examples:
   ./smart-sync-origin-latest.sh --target release
   ./smart-sync-origin-latest.sh --target release --release-channel any
 EOF
+}
+
+is_rebase_in_progress() {
+  local repo="$1"
+  [[ -d "$repo/.git/rebase-merge" || -d "$repo/.git/rebase-apply" ]]
+}
+
+list_unmerged_submodule_paths() {
+  local repo="$1"
+  git -C "$repo" ls-files -u 2>/dev/null | awk '$1=="160000" {print $4}' | sort -u || true
+}
+
+get_conflict_stage_commit() {
+  local repo="$1"
+  local path="$2"
+  local stage="$3"
+  git -C "$repo" ls-files -u -- "$path" 2>/dev/null | awk -v s="$stage" '$3==s {print $2; exit}' || true
+}
+
+pick_submodule_commit() {
+  local repo="$1"
+  local path="$2"
+  local ours_sha="$3"
+  local theirs_sha="$4"
+  local strategy="$5"
+  local child="$repo/$path"
+
+  if [[ "$strategy" == "ours" ]]; then
+    printf '%s' "$ours_sha"
+    return 0
+  fi
+  if [[ "$strategy" == "theirs" ]]; then
+    printf '%s' "$theirs_sha"
+    return 0
+  fi
+
+  if [[ ! -d "$child/.git" ]] && [[ ! -f "$child/.git" ]]; then
+    git -C "$repo" submodule update --init -- "$path" >/dev/null 2>&1 || true
+  fi
+
+  if ! git -C "$child" cat-file -e "${ours_sha}^{commit}" >/dev/null 2>&1; then
+    git -C "$child" fetch --all --tags --prune >/dev/null 2>&1 || true
+  fi
+  if ! git -C "$child" cat-file -e "${theirs_sha}^{commit}" >/dev/null 2>&1; then
+    git -C "$child" fetch --all --tags --prune >/dev/null 2>&1 || true
+  fi
+
+  if git -C "$child" merge-base --is-ancestor "$ours_sha" "$theirs_sha" >/dev/null 2>&1; then
+    printf '%s' "$theirs_sha"
+    return 0
+  fi
+  if git -C "$child" merge-base --is-ancestor "$theirs_sha" "$ours_sha" >/dev/null 2>&1; then
+    printf '%s' "$ours_sha"
+    return 0
+  fi
+
+  if [[ "$strategy" == "newer-date" ]]; then
+    local ours_ts=""
+    local theirs_ts=""
+    ours_ts="$(git -C "$child" show -s --format=%ct "$ours_sha" 2>/dev/null || true)"
+    theirs_ts="$(git -C "$child" show -s --format=%ct "$theirs_sha" 2>/dev/null || true)"
+    if [[ -n "$ours_ts" ]] && [[ -n "$theirs_ts" ]]; then
+      if [[ "$theirs_ts" -ge "$ours_ts" ]]; then
+        printf '%s' "$theirs_sha"
+      else
+        printf '%s' "$ours_sha"
+      fi
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+resolve_submodule_conflict_once() {
+  local repo="$1"
+  local path="$2"
+  local strategy="$3"
+  local ours_sha=""
+  local theirs_sha=""
+  local chosen_sha=""
+
+  ours_sha="$(get_conflict_stage_commit "$repo" "$path" 2)"
+  theirs_sha="$(get_conflict_stage_commit "$repo" "$path" 3)"
+
+  if [[ -z "$ours_sha" ]] && [[ -z "$theirs_sha" ]]; then
+    return 0
+  fi
+  if [[ -z "$ours_sha" ]]; then
+    git -C "$repo" rm --cached -f -- "$path" >/dev/null 2>&1 || true
+    return 0
+  fi
+  if [[ -z "$theirs_sha" ]]; then
+    git -C "$repo" rm --cached -f -- "$path" >/dev/null 2>&1 || true
+    return 0
+  fi
+
+  chosen_sha="$(pick_submodule_commit "$repo" "$path" "$ours_sha" "$theirs_sha" "$strategy" || true)"
+  if [[ -z "$chosen_sha" ]]; then
+    return 1
+  fi
+
+  git -C "$repo" update-index --cacheinfo 160000 "$chosen_sha" "$path"
+  return 0
+}
+
+attempt_auto_resolve_submodule_rebase_conflicts() {
+  local repo="$1"
+  local strategy="$2"
+  local max_loops=30
+  local loop=0
+  local paths=""
+  local p=""
+
+  if [[ "$strategy" == "manual" ]]; then
+    return 1
+  fi
+  if ! is_rebase_in_progress "$repo"; then
+    return 1
+  fi
+
+  while (( loop < max_loops )); do
+    loop=$((loop + 1))
+    paths="$(list_unmerged_submodule_paths "$repo")"
+    if [[ -z "$paths" ]]; then
+      return 0
+    fi
+
+    while IFS= read -r p; do
+      [[ -n "$p" ]] || continue
+      echo "Resolving submodule conflict: $p (strategy=$strategy)"
+      if ! resolve_submodule_conflict_once "$repo" "$p" "$strategy"; then
+        echo "Could not auto-resolve submodule conflict: $p" >&2
+        return 1
+      fi
+    done <<<"$paths"
+
+    if ! GIT_EDITOR=true git -C "$repo" rebase --continue >/dev/null 2>&1; then
+      local remaining=""
+      remaining="$(git -C "$repo" diff --name-only --diff-filter=U || true)"
+      if [[ -n "$remaining" ]]; then
+        echo "Rebase still has unresolved conflicts:" >&2
+        echo "$remaining" >&2
+        return 1
+      fi
+      if ! is_rebase_in_progress "$repo"; then
+        return 0
+      fi
+    fi
+
+    if ! is_rebase_in_progress "$repo"; then
+      return 0
+    fi
+  done
+
+  echo "Exceeded max attempts while auto-resolving submodule rebase conflicts" >&2
+  return 1
 }
 
 find_latest_release_tag() {
@@ -257,6 +419,10 @@ while [[ $# -gt 0 ]]; do
       AUTO_STASH=0
       shift
       ;;
+    --submodule-conflict-strategy)
+      SUBMODULE_CONFLICT_STRATEGY="${2:-}"
+      shift 2
+      ;;
     --dry-run)
       DRY_RUN=1
       shift
@@ -313,6 +479,14 @@ if [[ "$RELEASE_CHANNEL" != "stable" ]] && [[ "$RELEASE_CHANNEL" != "any" ]]; th
   exit 1
 fi
 
+case "$SUBMODULE_CONFLICT_STRATEGY" in
+  manual|ff-only|newer-date|ours|theirs) ;;
+  *)
+    echo "ERROR: --submodule-conflict-strategy must be one of: manual|ff-only|newer-date|ours|theirs" >&2
+    exit 1
+    ;;
+esac
+
 if [[ "$TAG_PATTERN_SET" -eq 0 ]]; then
   if [[ "$RELEASE_CHANNEL" == "stable" ]]; then
     TAG_PATTERN="$TAG_PATTERN_STABLE"
@@ -347,10 +521,18 @@ if [[ "$TARGET_MODE" == "branch" ]]; then
 
   "${checkout_cmd[@]}" >/dev/null 2>&1
   if ! "${pull_cmd[@]}"; then
-    if [[ "$HAD_STASH" -eq 1 ]]; then
-      echo "Auto-stash kept due to sync failure. Recover with: git -C \"<repo>\" stash list" >&2
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      echo "[DRY RUN] Rebase failed; would attempt submodule conflict auto-resolve (strategy=$SUBMODULE_CONFLICT_STRATEGY)"
+      exit 1
     fi
-    exit 1
+
+    if ! attempt_auto_resolve_submodule_rebase_conflicts "$REPO" "$SUBMODULE_CONFLICT_STRATEGY"; then
+      if [[ "$HAD_STASH" -eq 1 ]]; then
+        echo "Auto-stash kept due to sync failure. Recover with: git -C \"<repo>\" stash list" >&2
+      fi
+      echo "Sync failed during rebase. Resolve conflicts manually or retry with --submodule-conflict-strategy newer-date|ours|theirs" >&2
+      exit 1
+    fi
   fi
 
   sync_submodules_after_sync "$REPO" "$DRY_RUN"
