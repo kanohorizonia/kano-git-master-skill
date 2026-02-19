@@ -4,6 +4,37 @@
 
 set -euo pipefail
 
+resolve_git_master_skill_root() {
+  local root="$1"
+  local candidate=""
+  local candidates=(
+    "$root/.agents/skills/kano/kano-git-master-skill"
+    "$root/.agents/kano/kano-git-master-skill"
+  )
+
+  for candidate in "${candidates[@]}"; do
+    if [[ -d "$candidate" ]]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+
+  echo "ERROR: kano-git-master-skill submodule path not found under $root" >&2
+  echo "Tried:" >&2
+  echo "  $root/.agents/skills/kano/kano-git-master-skill" >&2
+  echo "  $root/.agents/kano/kano-git-master-skill" >&2
+  return 1
+}
+
+resolve_skill_script_path() {
+  local root="$1"
+  local rel_path="$2"
+  local skill_root
+
+  skill_root="$(resolve_git_master_skill_root "$root")" || return 1
+  printf '%s/%s' "$skill_root" "$rel_path"
+}
+
 ensure_skill_script_exists() {
   local script="$1"
   if [[ -f "$script" ]]; then

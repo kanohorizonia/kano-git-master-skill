@@ -7,7 +7,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$ROOT/smart-wrapper-common.sh"
 
-SKILL_SCRIPT="$ROOT/.agents/kano/kano-git-master-skill/scripts/commit-tools/smart-push.sh"
+SKILL_SCRIPT="$(resolve_skill_script_path "$ROOT" "scripts/commit-tools/smart-push.sh")"
 ensure_skill_script_exists "$SKILL_SCRIPT"
 
 ARGS=("$@")

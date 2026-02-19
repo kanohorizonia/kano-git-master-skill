@@ -7,7 +7,15 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ORIG_ARGS=("$@")
 source "$ROOT/smart-wrapper-common.sh"
-GIT_MASTER_SKILL_SCRIPT_DIR=".agents/kano/kano-git-master-skill/scripts/commit-tools/sync"
+
+resolve_sync_script_dir() {
+  local skill_root
+  if skill_root="$(resolve_git_master_skill_root "$ROOT" 2>/dev/null)"; then
+    printf '%s/scripts/commit-tools/sync' "$skill_root"
+    return 0
+  fi
+  printf '%s/.agents/skills/kano/kano-git-master-skill/scripts/commit-tools/sync' "$ROOT"
+}
 
 usage() {
   cat <<'USAGE'
@@ -27,7 +35,9 @@ USAGE
 run_skill_script() {
   local script_rel="$1"
   shift || true
-  local script="$ROOT/$GIT_MASTER_SKILL_SCRIPT_DIR/$script_rel"
+  local script_dir
+  script_dir="$(resolve_sync_script_dir)"
+  local script="$script_dir/$script_rel"
   ensure_skill_script_exists "$script"
   export KANO_GIT_MASTER_ROOT="$ROOT"
   bash "$script" "$@"

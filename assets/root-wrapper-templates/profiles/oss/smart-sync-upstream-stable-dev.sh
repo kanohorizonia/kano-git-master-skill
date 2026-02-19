@@ -13,7 +13,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ORIG_ARGS=("$@")
 source "$ROOT/smart-wrapper-common.sh"
 
-SKILL_SCRIPT="$ROOT/.agents/kano/kano-git-master-skill/scripts/commit-tools/sync/smart-sync-stable-dev.sh"
+SKILL_SCRIPT="$(resolve_skill_script_path "$ROOT" "scripts/commit-tools/sync/smart-sync-stable-dev.sh")"
 ensure_skill_script_exists "$SKILL_SCRIPT"
 
 export KANO_GIT_MASTER_ROOT="$ROOT"

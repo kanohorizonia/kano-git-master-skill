@@ -13,7 +13,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$ROOT/smart-wrapper-common.sh"
 
 # Path to the skill's script
-SKILL_SCRIPT="$ROOT/.agents/kano/kano-git-master-skill/scripts/core/smart-clone.sh"
+SKILL_SCRIPT="$(resolve_skill_script_path "$ROOT" "scripts/core/smart-clone.sh")"
 ensure_skill_script_exists "$SKILL_SCRIPT"
 
 # Run the actual script
