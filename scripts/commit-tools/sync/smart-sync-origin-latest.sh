@@ -335,6 +335,92 @@ sync_submodules_after_sync() {
   repair_stale_submodule_gitlinks "$repo"
 }
 
+sync_unregistered_repos_to_branches() {
+  local repo="$1"
+  local dry_run="$2"
+  local registered_paths=()
+  local all_nested=()
+  local path=""
+  local rel=""
+
+  # Collect registered submodule paths.
+  while IFS= read -r path; do
+    [[ -n "$path" ]] && registered_paths+=("$repo/$path")
+  done < <(collect_direct_submodule_paths "$repo")
+
+  # Discover all nested git repos via filesystem scan.
+  while IFS= read -r git_marker; do
+    [[ -z "$git_marker" ]] && continue
+    path="$(dirname "$git_marker")"
+    if [[ "$path" != "$repo" ]]; then
+      all_nested+=("$path")
+    fi
+  done < <(find "$repo" -type d -name .git -prune -print -o -type f -name .git -print 2>/dev/null || true)
+
+  # Identify unregistered (not in registered_paths).
+  for path in "${all_nested[@]}"; do
+    local is_registered=0
+    for reg in "${registered_paths[@]}"; do
+      if [[ "$path" == "$reg" ]]; then
+        is_registered=1
+        break
+      fi
+    done
+    if [[ "$is_registered" -eq 1 ]]; then
+      continue
+    fi
+
+    if ! git -C "$path" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      continue
+    fi
+
+    local current_branch=""
+    current_branch="$(git -C "$path" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+    if [[ -n "$current_branch" ]]; then
+      continue
+    fi
+
+    # Detached HEAD found in unregistered repo.
+    local remote_name="origin"
+    if ! git -C "$path" remote get-url "$remote_name" >/dev/null 2>&1; then
+      remote_name="upstream"
+    fi
+    if ! git -C "$path" remote get-url "$remote_name" >/dev/null 2>&1; then
+      remote_name="$(git -C "$path" remote | head -n 1 || true)"
+    fi
+    if [[ -z "$remote_name" ]]; then
+      continue
+    fi
+
+    local default_branch=""
+    default_branch="$(detect_remote_default_branch "$path" "$remote_name" || true)"
+    if [[ -z "$default_branch" ]]; then
+      continue
+    fi
+
+    local head_sha=""
+    local default_sha=""
+    head_sha="$(git -C "$path" rev-parse HEAD 2>/dev/null || true)"
+    default_sha="$(git -C "$path" rev-parse "$remote_name/$default_branch" 2>/dev/null || true)"
+
+    if [[ "$head_sha" != "$default_sha" ]]; then
+      continue
+    fi
+
+    rel="${path#$repo/}"
+    if [[ "$dry_run" -eq 1 ]]; then
+      echo "[DRY RUN] Would attach unregistered repo detached HEAD to $default_branch: $rel"
+    else
+      echo "Attaching unregistered repo detached HEAD to $default_branch: $rel"
+      if git -C "$path" show-ref --verify --quiet "refs/heads/$default_branch"; then
+        git -C "$path" checkout "$default_branch" >/dev/null 2>&1 || true
+      else
+        git -C "$path" checkout -b "$default_branch" "$remote_name/$default_branch" >/dev/null 2>&1 || true
+      fi
+    fi
+  done
+}
+
 auto_stash_one_repo() {
   local repo="$1"
   local marker="$2"
@@ -554,6 +640,7 @@ if [[ "$TARGET_MODE" == "branch" ]]; then
 
   sync_submodules_after_sync "$REPO" "$DRY_RUN"
   gith_sync_submodules_to_branches "$REPO" "1"
+  sync_unregistered_repos_to_branches "$REPO" "$DRY_RUN"
 
   echo "=== Sync Complete ==="
   echo "On branch: $default_branch"

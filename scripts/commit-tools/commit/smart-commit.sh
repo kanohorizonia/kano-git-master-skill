@@ -97,6 +97,7 @@ VERBOSE=0        # Show all repos (default: show only repos with changes)
 AGENT_ID=""      # Execution identity: manual or agent name
 PROMPT_MODE="auto"   # auto|dev|user
 PROMPT_ROOT="$SKILL_ROOT/prompts"
+LIST_REPOS_ONLY=0
 
 # Environment variable overrides (CLI args still take precedence):
 #   KOG_RULES_TEXT    -> same as --rules
@@ -145,6 +146,7 @@ Optional:
   --smart-ignore              Use smart-ignore.sh for .gitignore updates (default: on)
   --no-smart-ignore           Use legacy inline .gitignore updater only
   --verbose                   Show all repos (default: show only repos with changes)
+  --list-repos                List discovered repos (with type) and exit
   --list-models [provider]    List available models (all or specific provider)
   --clear-cache [provider]    Clear model cache (all or specific provider)
   -h, --help                  Show help
@@ -328,6 +330,10 @@ while [[ $# -gt 0 ]]; do
       VERBOSE=1
       shift
       ;;
+    --list-repos)
+      LIST_REPOS_ONLY=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -363,7 +369,7 @@ if [[ -n "$AGENT_ID" && "$AGENT_ID" != "manual" ]]; then
 fi
 
 # Validate required parameters
-if [[ -z "$COMMIT_MESSAGE" ]] || [[ "$AI_REVIEW" -eq 1 ]]; then
+if [[ "$LIST_REPOS_ONLY" -eq 0 ]] && { [[ -z "$COMMIT_MESSAGE" ]] || [[ "$AI_REVIEW" -eq 1 ]]; }; then
   # AI features needed, validate provider and model
   if [[ -z "$AI_PROVIDER" ]]; then
     echo "ERROR: --provider is required" >&2
@@ -502,6 +508,85 @@ add_repo() {
   fi
   printf '%s\n' "$repo" >>"$REPO_LIST_FILE"
   REPOS+=("$repo")
+}
+
+discover_repositories() {
+  local discover_script="$SCRIPT_DIR/../../core/discover-repos.sh"
+  local repos_json=""
+  local repo_obj=""
+  local path=""
+
+  # Preferred path: unified discovery implementation with explicit type support.
+  if [[ -f "$discover_script" ]]; then
+    repos_json="$(bash "$discover_script" --root "$ROOT" --format json --include-types root,registered,unregistered --max-depth 12 2>/dev/null || true)"
+    if [[ "$repos_json" == \[*\] ]]; then
+      while IFS= read -r repo_obj; do
+        [[ -z "$repo_obj" ]] && continue
+        path="$(printf '%s' "$repo_obj" | sed -n 's/.*"path":"\([^"]*\)".*/\1/p')"
+        [[ -z "$path" ]] && continue
+        add_repo "$path"
+      done < <(echo "$repos_json" | grep -o '{[^}]*}')
+    fi
+  fi
+
+  # Fallback: legacy local discovery if shared discover script is unavailable.
+  if [[ "${#REPOS[@]}" -eq 0 ]]; then
+    add_repo "$ROOT"
+
+    while IFS= read -r line; do
+      [[ -z "$line" ]] && continue
+      add_repo "$ROOT/$line"
+    done < <(git -C "$ROOT" config --file .gitmodules --get-regexp path 2>/dev/null | awk '{print $2}' || true)
+
+    while IFS= read -r git_marker; do
+      [[ -z "$git_marker" ]] && continue
+      add_repo "$(dirname "$git_marker")"
+    done < <(find "$ROOT" -type d -name .git -prune -print -o -type f -name .git -print 2>/dev/null || true)
+  fi
+}
+
+print_discovery_summary() {
+  local root_count=0
+  local registered_count=0
+  local unregistered_count=0
+  local repo=""
+
+  for repo in "${REPOS[@]}"; do
+    if [[ "$repo" == "$ROOT" ]]; then
+      ((root_count++)) || true
+    elif is_registered_repo "$repo"; then
+      ((registered_count++)) || true
+    else
+      ((unregistered_count++)) || true
+    fi
+  done
+
+  echo "Discovery: total=${#REPOS[@]} root=${root_count} registered=${registered_count} unregistered=${unregistered_count}"
+}
+
+is_registered_repo() {
+  local repo="$1"
+  local rel="${repo#$ROOT/}"
+  if [[ "$rel" == "$repo" ]]; then
+    return 1
+  fi
+  git -C "$ROOT" config --file .gitmodules --get-regexp path 2>/dev/null | awk '{print $2}' | grep -Fxq "$rel"
+}
+
+print_repo_list_and_exit() {
+  local repo=""
+  local type=""
+  for repo in "${REPOS[@]}"; do
+    if [[ "$repo" == "$ROOT" ]]; then
+      type="root"
+    elif is_registered_repo "$repo"; then
+      type="registered"
+    else
+      type="unregistered"
+    fi
+    echo "${type}: ${repo}"
+  done
+  exit 0
 }
 
 #------------------------------------------------------------------------------
@@ -1480,28 +1565,17 @@ if [[ "$VERBOSE" -eq 1 ]]; then
   echo "Discovering repositories under: $ROOT"
 fi
 
-# Add root repo
-add_repo "$ROOT"
-
-# Add submodules
-while IFS= read -r line; do
-  [[ -z "$line" ]] && continue
-  add_repo "$ROOT/$line"
-done < <(git -C "$ROOT" config --file .gitmodules --get-regexp path 2>/dev/null | awk '{print $2}' || true)
-
-# Add nested git repos
-while IFS= read -r git_marker; do
-  [[ -z "$git_marker" ]] && continue
-  add_repo "$(dirname "$git_marker")"
-done < <(find "$ROOT" -type d -name .git -prune -print -o -type f -name .git -print 2>/dev/null || true)
+discover_repositories
 
 if [[ "${#REPOS[@]}" -eq 0 ]]; then
   echo "No git repositories found under: $ROOT"
   exit 0
 fi
 
-if [[ "$VERBOSE" -eq 1 ]]; then
-  echo "Found ${#REPOS[@]} repositories"
+print_discovery_summary
+
+if [[ "$LIST_REPOS_ONLY" -eq 1 ]]; then
+  print_repo_list_and_exit
 fi
 
 # Apply repo filter if specified

@@ -974,9 +974,13 @@ gith_sync_submodules_to_branches() {
       if [[ -n "$configured_branch" ]]; then
         if [[ "$dry_run" == "1" ]]; then
           gith_log "INFO" "[DRY-RUN] Would checkout '$configured_branch' in $full_path"
+          gith_log "INFO" "[DRY-RUN] Would pull --rebase from $remote_name/$configured_branch"
         else
           if ! gith_checkout_branch "$configured_branch" "$full_path" "$remote_name"; then
             gith_log "WARN" "Failed to checkout $configured_branch in $full_path"
+            ok=0
+          elif ! (cd "$full_path" && git pull --rebase "$remote_name" "$configured_branch" 2>/dev/null); then
+            gith_log "WARN" "Failed to pull --rebase $configured_branch in $full_path"
             ok=0
           fi
         fi
@@ -1001,16 +1005,30 @@ gith_sync_submodules_to_branches() {
               if [[ "$dry_run" == "1" ]]; then
                 gith_log "INFO" "[DRY-RUN] Would set .gitmodules branch '$default_branch' for $submodule_path"
                 gith_log "INFO" "[DRY-RUN] Would checkout '$default_branch' in $full_path"
+                gith_log "INFO" "[DRY-RUN] Would pull --rebase from $remote_name/$default_branch"
               else
                 git config -f "$repo_path/.gitmodules" "submodule.$submodule_path.branch" "$default_branch"
                 if ! gith_checkout_branch "$default_branch" "$full_path" "$remote_name"; then
                   gith_log "WARN" "Failed to checkout $default_branch in $full_path"
+                  ok=0
+                elif ! (cd "$full_path" && git pull --rebase "$remote_name" "$default_branch" 2>/dev/null); then
+                  gith_log "WARN" "Failed to pull --rebase $default_branch in $full_path"
                   ok=0
                 fi
               fi
             else
               gith_log "WARN" "Detached HEAD in $full_path not at $remote_name/$default_branch; leaving as-is"
               ok=0
+            fi
+          fi
+        else
+          # Already on a branch, but no configured_branch in .gitmodules.
+          # Pull to sync with remote branch.
+          if [[ "$dry_run" == "1" ]]; then
+            gith_log "INFO" "[DRY-RUN] Would pull --rebase from $remote_name/$current_branch in $full_path"
+          else
+            if ! (cd "$full_path" && git pull --rebase "$remote_name" "$current_branch" 2>/dev/null); then
+              gith_log "WARN" "Failed to pull --rebase $current_branch in $full_path (continuing)"
             fi
           fi
         fi
