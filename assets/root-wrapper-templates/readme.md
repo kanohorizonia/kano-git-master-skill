@@ -8,20 +8,19 @@ These are recommended root-level `smart-*.sh` wrappers for projects that use
 ## profiles
 
 - `common/`: shared wrappers used by all profiles
-- `profiles/standalone/`: profile-specific wrappers for no-upstream repos (`smart-sync.sh` defaults to `origin-latest`)
-- `profiles/oss/`: profile-specific wrappers for open source contributor workflows
+- `profiles/standalone/`: no overrides (inherits wrappers from `common/`; directory kept with marker)
+- `profiles/oss/`: profile-specific wrappers for open source contributor workflows (`smart-sync-upstream-stable-dev.sh` only)
 - `profiles/repo-passive-mode/`: passive submodule wrappers for multi-device repositories across PC/Mac/mobile (only acts on already cloned submodules)
 
 ## profile behavior quick compare
 
 - `standalone`
-	- `smart-sync.sh` only routes to `origin-latest`
+	- uses shared `common/smart-sync.sh` behavior (only `origin-latest`)
 	- advanced sync modes are intentionally blocked in wrapper
 	- auto-bootstrap skill submodule when missing
 - `oss`
-	- `smart-sync.sh` supports `upstream-stable-dev|stable-dev|dev|upstream-force-push|origin-latest`
-	- no-arg default is `upstream-stable-dev`
-	- includes extra wrapper `smart-sync-upstream-stable-dev.sh`
+	- uses shared `common/smart-sync.sh` behavior (only `origin-latest`)
+	- adds only one profile wrapper: `smart-sync-upstream-stable-dev.sh`
 	- auto-bootstrap skill submodule when missing
 - `repo-passive-mode`
 	- `smart-sync.sh` only routes to `origin-latest`
@@ -57,7 +56,7 @@ Options:
 ## manual copy (legacy)
 
 ```bash
-cp .agents/kano/kano-git-master-skill/assets/root-wrapper-templates/profiles/standalone/smart-*.sh .
+cp .agents/kano/kano-git-master-skill/assets/root-wrapper-templates/common/smart-*.sh .
 chmod +x smart-*.sh
 ```
 

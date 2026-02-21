@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# smart-sync.sh - Project-level fast sync entrypoint (standalone profile)
+# smart-sync.sh - Project-level fast sync entrypoint
 
 set -euo pipefail
 
