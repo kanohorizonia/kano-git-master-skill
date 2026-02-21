@@ -19,7 +19,7 @@ resolve_sync_script_dir() {
 
 usage() {
   cat <<'USAGE'
-Usage: ./smart-sync.sh <mode> [args...]
+Usage: ./smart-sync.sh [mode] [args...]
 
 Modes:
   upstream-stable-dev  Stable maintenance branch migration and sync (recommended for release updates)
@@ -29,6 +29,8 @@ Modes:
   origin-latest        Checkout origin default branch and pull --rebase (no push)
 
 Examples:
+  ./smart-sync.sh
+  ./smart-sync.sh --dry-run
   ./smart-sync.sh origin-latest
   ./smart-sync.sh upstream-stable-dev --target-tag v1.0.0 --base-tag v0.9.9
   ./smart-sync.sh dev
@@ -70,12 +72,19 @@ ensure_git_master_skill_ready() {
   fi
 }
 
-mode="${1:-}"
-if [[ -z "$mode" || "$mode" == "-h" || "$mode" == "--help" ]]; then
+first_arg="${1:-}"
+if [[ "$first_arg" == "-h" || "$first_arg" == "--help" ]]; then
   usage
   exit 0
 fi
-shift || true
+
+mode="upstream-stable-dev"
+if [[ -n "$first_arg" && "$first_arg" != -* ]]; then
+  mode="$first_arg"
+  shift || true
+else
+  echo "[smart-sync] no mode specified, defaulting to: $mode" >&2
+fi
 
 case "$mode" in
   upstream-stable-dev|stable-dev)

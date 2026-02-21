@@ -12,6 +12,23 @@ These are recommended root-level `smart-*.sh` wrappers for projects that use
 - `profiles/oss/`: profile-specific wrappers for open source contributor workflows
 - `profiles/repo-passive-mode/`: passive submodule wrappers for multi-device repositories across PC/Mac/mobile (only acts on already cloned submodules)
 
+## profile behavior quick compare
+
+- `standalone`
+	- `smart-sync.sh` only routes to `origin-latest`
+	- advanced sync modes are intentionally blocked in wrapper
+	- auto-bootstrap skill submodule when missing
+- `oss`
+	- `smart-sync.sh` supports `upstream-stable-dev|stable-dev|dev|upstream-force-push|origin-latest`
+	- no-arg default is `upstream-stable-dev`
+	- includes extra wrapper `smart-sync-upstream-stable-dev.sh`
+	- auto-bootstrap skill submodule when missing
+- `repo-passive-mode`
+	- `smart-sync.sh` only routes to `origin-latest`
+	- loops through locally cloned repos only (`collect_cloned_repos_csv`)
+	- never runs submodule init/sync/update for missing repos
+	- intended for multi-device environments where clone layout may differ per device
+
 ## generate wrappers (recommended)
 
 Use generator script:
@@ -52,3 +69,25 @@ chmod +x smart-*.sh
 - generator composes wrappers from `common/` and then applies profile overrides
 - wrappers pause with `Press Enter to continue...` only for interactive human runs
 - wrappers do not pause for agent/CI/non-interactive runs (including `--agent` modes except `--agent manual`)
+
+## repo-passive-mode notes
+
+Use this profile when one repository is shared across devices, but not every device has all submodules cloned.
+
+Expected behavior:
+
+- sync only `.` and submodules that already have a local `.git`
+- skip missing submodules silently (no auto clone/init)
+- keep each device's local clone topology unchanged
+
+Typical command:
+
+```bash
+./smart-sync.sh
+```
+
+Equivalent explicit command:
+
+```bash
+./smart-sync.sh origin-latest
+```
