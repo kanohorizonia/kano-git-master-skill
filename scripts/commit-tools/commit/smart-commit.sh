@@ -59,6 +59,15 @@
 
 set -euo pipefail
 
+# Detect if running under agent control (Copilot, Cursor, etc.)
+# Agent mode should suppress interactive prompts
+if [[ "${KANO_AGENT_MODE:-}" != "1" ]]; then
+  # Set agent mode if we detect running via agent protocol (non-TTY, stdin pipe, etc.)
+  if ! [[ -t 0 && -t 1 ]]; then
+    export KANO_AGENT_MODE=1
+  fi
+fi
+
 # Get script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKILL_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
