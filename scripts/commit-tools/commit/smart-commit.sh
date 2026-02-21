@@ -762,6 +762,26 @@ run_safety_checks() {
   local repo="$1"
   local check_file="$TMP_DIR/check-$(echo "$repo" | sed 's#[^a-zA-Z0-9]#_#g').txt"
 
+  # Ensure core.fileMode is disabled to prevent accidental chmod commits
+  local current_filemode
+  current_filemode="$(git -C "$repo" config --get core.fileMode 2>/dev/null || echo "")"
+  if [[ "$current_filemode" != "false" ]]; then
+    git -C "$repo" config core.fileMode false 2>/dev/null || true
+  fi
+
+  # Unstage mode-only changes (defensive measure in case fileMode was enabled before)
+  local mode_only_count=0
+  while IFS= read -r file; do
+    if git -C "$repo" diff --cached --numstat "$file" 2>/dev/null | grep -q "^0[[:space:]]0[[:space:]]"; then
+      git -C "$repo" restore --staged "$file" 2>/dev/null || true
+      ((mode_only_count++)) || true
+    fi
+  done < <(git -C "$repo" diff --cached --name-only --diff-filter=M 2>/dev/null || true)
+
+  if [[ "$mode_only_count" -gt 0 ]]; then
+    echo "[$repo] Unstaged $mode_only_count mode-only change(s) (chmod ignored)" >&2
+  fi
+
   # Check for conflict markers and whitespace issues
   if ! git -C "$repo" diff --cached --check >"$check_file" 2>&1; then
     # Check if it's only trailing whitespace (not conflict markers)
