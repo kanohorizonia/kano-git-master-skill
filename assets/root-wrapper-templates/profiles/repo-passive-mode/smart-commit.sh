@@ -15,6 +15,9 @@ if ! has_arg "--repos" "${ARGS[@]}"; then
   REPOS_CSV="$(collect_cloned_repos_csv "$ROOT")"
   ARGS+=("--repos" "$REPOS_CSV")
 fi
+if ! has_arg "--ai-review" "${ARGS[@]}" && ! has_arg "--no-ai-review" "${ARGS[@]}"; then
+  ARGS+=("--no-ai-review")
+fi
 
 export KANO_GIT_MASTER_ROOT="$ROOT"
 set +e

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# smart-commit-push.sh - Project-level wrapper for AI-powered commit and push
+# smart-commit-push-with-ai-review.sh - Project-level wrapper for commit+push with AI review enabled
 #
 # This script points to the kano-git-master-skill combined workflow tool.
 # It can be run from any directory within the project.
@@ -14,8 +14,8 @@ SKILL_SCRIPT="$(resolve_skill_script_path "$ROOT" "scripts/commit-tools/commit-p
 ensure_skill_script_exists "$SKILL_SCRIPT"
 
 ARGS=("$@")
-if ! has_arg "--ai-review" "${ARGS[@]}" && ! has_arg "--no-ai-review" "${ARGS[@]}" && ! has_arg "-noai" "${ARGS[@]}"; then
-	ARGS+=("--no-ai-review")
+if ! has_arg "--ai-review" "${ARGS[@]}" && ! has_arg "--no-ai-review" "${ARGS[@]}"; then
+  ARGS+=("--ai-review")
 fi
 
 set +e

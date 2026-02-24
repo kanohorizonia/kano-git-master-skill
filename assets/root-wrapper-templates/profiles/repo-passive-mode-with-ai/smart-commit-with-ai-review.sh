@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
 #
-# smart-commit.sh - Project-level wrapper for AI-powered commits
-#
-# This script points to the kano-git-master-skill commit tool.
-# It can be run from any directory within the project.
+# smart-commit-with-ai-review.sh - Project-level wrapper for commits with AI review enabled (repo-passive-mode-with-ai profile)
 
 set -euo pipefail
 
@@ -14,13 +11,17 @@ SKILL_SCRIPT="$(resolve_skill_script_path "$ROOT" "scripts/commit-tools/commit/s
 ensure_skill_script_exists "$SKILL_SCRIPT"
 
 ARGS=("$@")
+if ! has_arg "--repos" "${ARGS[@]}"; then
+  REPOS_CSV="$(collect_cloned_repos_csv "$ROOT")"
+  ARGS+=("--repos" "$REPOS_CSV")
+fi
 if ! has_arg "--ai-review" "${ARGS[@]}" && ! has_arg "--no-ai-review" "${ARGS[@]}"; then
-	ARGS+=("--no-ai-review")
+  ARGS+=("--ai-review")
 fi
 
-# Run the actual script
+export KANO_GIT_MASTER_ROOT="$ROOT"
 set +e
-run_skill_script_from_root "$ROOT" "$SKILL_SCRIPT" "${ARGS[@]}"
+bash "$SKILL_SCRIPT" "${ARGS[@]}"
 status=$?
 set -e
 pause_if_needed "$@"

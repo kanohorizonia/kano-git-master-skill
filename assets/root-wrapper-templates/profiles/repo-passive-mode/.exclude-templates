@@ -1,0 +1,3 @@
+# Exclude optional AI-review entrypoint wrappers for base passive profile
+smart-commit-with-ai-review.sh
+smart-commit-push-with-ai-review.sh

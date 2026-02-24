@@ -18,7 +18,7 @@ usage() {
 Usage: gen-root-wrappers.sh [options]
 
 Options:
-  --profile <standalone|oss|repo-passive-mode>  Template profile (default: standalone)
+  --profile <standalone|oss|repo-passive-mode|repo-passive-mode-with-ai>  Template profile (default: standalone)
   --target <dir>              Target project root directory (default: current directory)
   --force                     Overwrite existing smart-*.sh files
   --dry-run                   Print planned actions without writing files
@@ -29,6 +29,7 @@ Examples:
   ./.agents/kano/kano-git-master-skill/scripts/core/gen-root-wrappers.sh --profile oss --target /path/to/repo
   ./.agents/kano/kano-git-master-skill/scripts/core/gen-root-wrappers.sh --profile standalone --force
   ./.agents/kano/kano-git-master-skill/scripts/core/gen-root-wrappers.sh --profile repo-passive-mode --target .
+  ./.agents/kano/kano-git-master-skill/scripts/core/gen-root-wrappers.sh --profile repo-passive-mode-with-ai --target .
 USAGE
 }
 
@@ -72,10 +73,10 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$PROFILE" in
-  standalone|oss|repo-passive-mode)
+  standalone|oss|repo-passive-mode|repo-passive-mode-with-ai)
     ;;
   *)
-    die "Unsupported profile: $PROFILE (expected: standalone, oss, or repo-passive-mode)"
+    die "Unsupported profile: $PROFILE (expected: standalone, oss, repo-passive-mode, or repo-passive-mode-with-ai)"
     ;;
 esac
 
@@ -87,12 +88,45 @@ PROFILE_DIR="$TEMPLATES_ROOT/profiles/$PROFILE"
 [[ -d "$COMMON_DIR" ]] || die "Common template directory not found: $COMMON_DIR"
 [[ -d "$PROFILE_DIR" ]] || die "Profile template directory not found: $PROFILE_DIR"
 
+BASE_PROFILE_DIR=""
+BASE_PROFILE_FILE="$PROFILE_DIR/.base-profile"
+if [[ -f "$BASE_PROFILE_FILE" ]]; then
+  BASE_PROFILE="$(sed -n '1p' "$BASE_PROFILE_FILE" | tr -d '[:space:]')"
+  [[ -n "$BASE_PROFILE" ]] || die "Base profile file is empty: $BASE_PROFILE_FILE"
+  BASE_PROFILE_DIR="$TEMPLATES_ROOT/profiles/$BASE_PROFILE"
+  [[ -d "$BASE_PROFILE_DIR" ]] || die "Base profile directory not found: $BASE_PROFILE_DIR"
+fi
+
 mapfile -t template_names < <(
   {
     find "$COMMON_DIR" -maxdepth 1 -type f -name 'smart-*.sh' -exec basename {} \;
+    if [[ -n "$BASE_PROFILE_DIR" ]]; then
+      find "$BASE_PROFILE_DIR" -maxdepth 1 -type f -name 'smart-*.sh' -exec basename {} \;
+    fi
     find "$PROFILE_DIR" -maxdepth 1 -type f -name 'smart-*.sh' -exec basename {} \;
   } | sort -u
 )
+
+EXCLUDE_FILE="$PROFILE_DIR/.exclude-templates"
+if [[ -f "$EXCLUDE_FILE" ]]; then
+  mapfile -t exclude_names < <(sed -e 's/#.*$//' -e 's/^\s*//' -e 's/\s*$//' "$EXCLUDE_FILE" | awk 'NF')
+  if [[ ${#exclude_names[@]} -gt 0 ]]; then
+    filtered=()
+    for name in "${template_names[@]}"; do
+      skip=0
+      for ex in "${exclude_names[@]}"; do
+        if [[ "$name" == "$ex" ]]; then
+          skip=1
+          break
+        fi
+      done
+      if [[ "$skip" -eq 0 ]]; then
+        filtered+=("$name")
+      fi
+    done
+    template_names=("${filtered[@]}")
+  fi
+fi
 [[ ${#template_names[@]} -gt 0 ]] || die "No templates found for profile: $PROFILE"
 
 log "profile=$PROFILE"
@@ -102,6 +136,9 @@ copied=0
 skipped=0
 for name in "${template_names[@]}"; do
   src="$COMMON_DIR/$name"
+  if [[ -n "$BASE_PROFILE_DIR" && -f "$BASE_PROFILE_DIR/$name" ]]; then
+    src="$BASE_PROFILE_DIR/$name"
+  fi
   if [[ -f "$PROFILE_DIR/$name" ]]; then
     src="$PROFILE_DIR/$name"
   fi

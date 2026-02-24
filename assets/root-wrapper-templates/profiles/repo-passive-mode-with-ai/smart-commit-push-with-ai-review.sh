@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #
-# smart-commit-with-ai-review.sh - Project-level wrapper for commits with AI review enabled (repo-passive-mode profile)
+# smart-commit-push-with-ai-review.sh - Project-level wrapper for commit+push with AI review enabled (repo-passive-mode-with-ai profile)
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$ROOT/smart-wrapper-common.sh"
 
-SKILL_SCRIPT="$(resolve_skill_script_path "$ROOT" "scripts/commit-tools/commit/smart-commit-copilot.sh")"
+SKILL_SCRIPT="$(resolve_skill_script_path "$ROOT" "scripts/commit-tools/commit-push/smart-commit-push-copilot.sh")"
 ensure_skill_script_exists "$SKILL_SCRIPT"
 
 ARGS=("$@")

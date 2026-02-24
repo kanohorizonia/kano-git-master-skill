@@ -11,6 +11,7 @@ These are recommended root-level `smart-*.sh` wrappers for projects that use
 - `profiles/standalone/`: no overrides (inherits wrappers from `common/`; directory kept with marker)
 - `profiles/oss/`: profile-specific wrappers for open source contributor workflows (`smart-sync-upstream-stable-dev.sh` only)
 - `profiles/repo-passive-mode/`: passive submodule wrappers for multi-device repositories across PC/Mac/mobile (only acts on already cloned submodules)
+- `profiles/repo-passive-mode-with-ai/`: extends `repo-passive-mode` and adds `*with-ai-review` wrappers
 
 ## profile behavior quick compare
 
@@ -27,6 +28,9 @@ These are recommended root-level `smart-*.sh` wrappers for projects that use
 	- loops through locally cloned repos only (`collect_cloned_repos_csv`)
 	- never runs submodule init/sync/update for missing repos
 	- intended for multi-device environments where clone layout may differ per device
+- `repo-passive-mode-with-ai`
+	- inherits all behavior from `repo-passive-mode`
+	- adds `smart-commit-with-ai-review.sh` and `smart-commit-push-with-ai-review.sh`
 
 ## generate wrappers (recommended)
 
@@ -46,6 +50,12 @@ Repository passive mode profile (passive submodule mode):
 
 ```bash
 ./.agents/kano/kano-git-master-skill/scripts/core/gen-root-wrappers.sh --profile repo-passive-mode --target .
+```
+
+Repository passive mode with extra with-ai-review wrappers:
+
+```bash
+./.agents/kano/kano-git-master-skill/scripts/core/gen-root-wrappers.sh --profile repo-passive-mode-with-ai --target .
 ```
 
 Options:
@@ -71,6 +81,8 @@ chmod +x smart-*.sh
 - commit wrappers are split into two entry points:
 	- `smart-commit.sh`
 	- `smart-commit-with-ai-review.sh`
+	- `smart-commit-push.sh`
+	- `smart-commit-push-with-ai-review.sh`
 
 ## repo-passive-mode notes
 
