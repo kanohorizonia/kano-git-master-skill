@@ -1,0 +1,11 @@
+#!/usr/bin/env python3
+"""kog — short alias for kano-git"""
+import os
+import sys
+from pathlib import Path
+
+# Just delegate to kano-git launcher
+launcher = Path(__file__).resolve().parent / "kano-git"
+args = [sys.executable, str(launcher)]
+args.extend(sys.argv[1:])
+os.execv(sys.executable, args)

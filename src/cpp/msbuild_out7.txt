@@ -1,0 +1,25 @@
+MSBuild version 17.14.40+3e7442088 for .NET Framework
+
+  1>Checking Build System
+  Scanning sources for module dependencies...
+  os.cc
+D:\_work\_Kano\kano-git-master-skill\src\cpp\thirdparty\fmt-10.2.1\include\fmt/os.h(11,10): fatal error C1083: Cannot open include file: 'cerrno': No such file or directory [D:\_work\_Kano\kano-git-master-skill\src\cpp\build\debug\kano-git-core\fmt_lib.vcxproj]
+  format.cc
+D:\_work\_Kano\kano-git-master-skill\src\cpp\thirdparty\fmt-10.2.1\include\fmt\format-inl.h(11,10): error C1083: Cannot open include file: 'algorithm': No such file or directory [D:\_work\_Kano\kano-git-master-skill\src\cpp\build\debug\kano-git-core\fmt_lib.vcxproj]
+D:\_work\_Kano\kano-git-master-skill\src\cpp\thirdparty\fmt-10.2.1\include\fmt\os.h(11,10): error C1083: Cannot open include file: 'cerrno': No such file or directory [D:\_work\_Kano\kano-git-master-skill\src\cpp\build\debug\kano-git-core\fmt_lib.vcxproj]
+  (compiling source file '../../../thirdparty/fmt-10.2.1/src/format.cc')
+  
+  (compiling source file '../../../thirdparty/fmt-10.2.1/src/os.cc')
+  
+D:\_work\_Kano\kano-git-master-skill\src\cpp\thirdparty\fmt-10.2.1\include\fmt/format-inl.h(11,10): fatal  error C1083: Cannot open include file: 'algorithm': No such file or directory [D:\_work\_Kano\kano-git-master-skill\src\cpp\build\debug\kano-git-core\fmt_lib.vcxproj]
+C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Microsoft\VC\v170\Microsoft.CppCommon.targets(532,5): warning MSB8074: Cannot read Module Dependencies file fmt_lib.dir\Debug\format.cc.module.json: Expecting element 'root' from namespace ''.. Encountered 'None'  with name '', namespace ''.  The build order might be incorrect. [D:\_work\_Kano\kano-git-master-skill\src\cpp\build\debug\kano-git-core\fmt_lib.vcxproj]
+C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Microsoft\VC\v170\Microsoft.CppCommon.targets(532,5): warning MSB8074: Cannot read Module Dependencies file fmt_lib.dir\Debug\os.cc.module.json: Expecting element 'root' from namespace ''.. Encountered 'None'  with name '', namespace ''.  The build order might be incorrect. [D:\_work\_Kano\kano-git-master-skill\src\cpp\build\debug\kano-git-core\fmt_lib.vcxproj]
+  Compiling...
+  os.cc
+  format.cc
+D:\_work\_Kano\kano-git-master-skill\src\cpp\thirdparty\fmt-10.2.1\include\fmt\os.h(11,10): error C1083: Cannot open include file: 'cerrno': No such file or directory [D:\_work\_Kano\kano-git-master-skill\src\cpp\build\debug\kano-git-core\fmt_lib.vcxproj]
+  (compiling source file '../../../thirdparty/fmt-10.2.1/src/os.cc')
+  
+D:\_work\_Kano\kano-git-master-skill\src\cpp\thirdparty\fmt-10.2.1\include\fmt\format-inl.h(11,10): error C1083: Cannot open include file: 'algorithm': No such file or directory [D:\_work\_Kano\kano-git-master-skill\src\cpp\build\debug\kano-git-core\fmt_lib.vcxproj]
+  (compiling source file '../../../thirdparty/fmt-10.2.1/src/format.cc')
+  

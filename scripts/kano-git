@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""
+kano-git launcher — cross-platform CLI launcher
+Locates and executes the compiled kano-git binary.
+
+Usage:
+    kano-git <command> [args...]
+    kog <command> [args...]       (alias)
+"""
+
+import os
+import sys
+import platform
+import subprocess
+from pathlib import Path
+from typing import Optional
+
+
+def find_binary() -> Optional[Path]:
+    """Find the kano-git binary, searching in standard locations."""
+    script_dir = Path(__file__).resolve().parent   # scripts/
+    project_root = script_dir.parent               # project root
+    build_dir = project_root / "src" / "cpp" / "build"
+
+    exe_name = "kano-git.exe" if platform.system() == "Windows" else "kano-git"
+
+    # Search order:
+    search_paths = [
+        # 1. KANO_GIT_BIN env var
+        Path(os.environ.get("KANO_GIT_BIN", "")) / exe_name,
+        # 2. Release build
+        build_dir / "release" / exe_name,
+        # 3. Debug build
+        build_dir / "debug" / exe_name,
+    ]
+
+    for path in search_paths:
+        if path.is_file():
+            return path
+
+    # 4. Try system PATH
+    import shutil
+    system_bin = shutil.which("kano-git")
+    if system_bin:
+        return Path(system_bin)
+
+    return None
+
+
+def main():
+    binary = find_binary()
+
+    if binary is None:
+        print("Error: kano-git binary not found.", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("Build it first:", file=sys.stderr)
+        print("  cd src/cpp && ./build.sh       # Unix", file=sys.stderr)
+        print("  cd src/cpp && .\\build.ps1      # Windows", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("Or set KANO_GIT_BIN to the directory containing the binary.", file=sys.stderr)
+        sys.exit(1)
+
+    # Pass through all arguments to the binary
+    args = [str(binary)]
+    args.extend(sys.argv[1:])
+
+    # Set KANO_GIT_MASTER_ROOT so the binary can find scripts/
+    env = os.environ.copy()
+    script_dir = Path(__file__).resolve().parent  # scripts/
+    project_root = script_dir.parent              # project root
+    env.setdefault("KANO_GIT_MASTER_ROOT", str(project_root))
+
+    try:
+        result = subprocess.run(args, env=env)
+        sys.exit(result.returncode)
+    except KeyboardInterrupt:
+        sys.exit(130)
+    except FileNotFoundError:
+        print(f"Error: Cannot execute {binary}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
