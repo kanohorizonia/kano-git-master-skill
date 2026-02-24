@@ -891,6 +891,33 @@ gith_checkout_branch() {
 #   - If .gitmodules defines submodule.<path>.branch, checkout that branch
 #   - If detached and HEAD matches remote default branch, set branch in .gitmodules and checkout
 #   - Optionally recurse into nested submodules
+gith_should_skip_empty_remote_branch_update() {
+  local repo_path="${1:-.}"
+  local remote_name="${2:-origin}"
+  local branch_name="${3:-main}"
+  local local_sha=""
+  local remote_sha=""
+  local local_count=""
+  local remote_count=""
+
+  local_sha="$(git -C "$repo_path" rev-parse HEAD 2>/dev/null || true)"
+  remote_sha="$(git -C "$repo_path" rev-parse "$remote_name/$branch_name" 2>/dev/null || true)"
+
+  if [[ -z "$local_sha" || -z "$remote_sha" ]]; then
+    return 1
+  fi
+
+  local_count="$(git -C "$repo_path" ls-tree -r --name-only "$local_sha" 2>/dev/null | wc -l | tr -d '[:space:]')"
+  remote_count="$(git -C "$repo_path" ls-tree -r --name-only "$remote_sha" 2>/dev/null | wc -l | tr -d '[:space:]')"
+
+  if [[ "$local_count" =~ ^[0-9]+$ ]] && [[ "$remote_count" =~ ^[0-9]+$ ]] && (( local_count > 0 )) && (( remote_count == 0 )); then
+    gith_log "WARN" "Skip pull in $repo_path: $remote_name/$branch_name points to empty tree (local has files)"
+    return 0
+  fi
+
+  return 1
+}
+
 gith_sync_submodules_to_branches() {
   local repo_path="${1:-.}"
   local recursive="${2:-1}"
@@ -954,13 +981,12 @@ gith_sync_submodules_to_branches() {
       continue
     fi
 
-    local stash_ref=""
-    local stash_created=0
     if gith_has_changes "$full_path"; then
-      stash_ref="$(gith_stash_create "$full_path" "auto-stash-submodule-branch")"
-      if [[ -n "$stash_ref" ]]; then
-        stash_created=1
+      gith_log "WARN" "Submodule has local changes; skip branch sync to avoid stash/pop conflicts: $full_path"
+      if [[ "$recursive" == "1" && -f "$full_path/.gitmodules" ]]; then
+        gith_sync_submodules_to_branches "$full_path" "$recursive"
       fi
+      continue
     fi
 
     local ok=1
@@ -976,9 +1002,13 @@ gith_sync_submodules_to_branches() {
           gith_log "INFO" "[DRY-RUN] Would checkout '$configured_branch' in $full_path"
           gith_log "INFO" "[DRY-RUN] Would pull --rebase from $remote_name/$configured_branch"
         else
-          if ! gith_checkout_branch "$configured_branch" "$full_path" "$remote_name"; then
+          if gith_should_skip_empty_remote_branch_update "$full_path" "$remote_name" "$configured_branch"; then
+            gith_log "WARN" "Skip checkout to empty-tree target branch for safety: $full_path"
+          elif ! gith_checkout_branch "$configured_branch" "$full_path" "$remote_name"; then
             gith_log "WARN" "Failed to checkout $configured_branch in $full_path"
             ok=0
+          elif gith_should_skip_empty_remote_branch_update "$full_path" "$remote_name" "$configured_branch"; then
+            gith_log "WARN" "Leaving submodule at current commit for safety: $full_path"
           elif ! (cd "$full_path" && git pull --rebase "$remote_name" "$configured_branch" 2>/dev/null); then
             gith_log "WARN" "Failed to pull --rebase $configured_branch in $full_path"
             ok=0
@@ -1008,9 +1038,13 @@ gith_sync_submodules_to_branches() {
                 gith_log "INFO" "[DRY-RUN] Would pull --rebase from $remote_name/$default_branch"
               else
                 git config -f "$repo_path/.gitmodules" "submodule.$submodule_path.branch" "$default_branch"
-                if ! gith_checkout_branch "$default_branch" "$full_path" "$remote_name"; then
+                if gith_should_skip_empty_remote_branch_update "$full_path" "$remote_name" "$default_branch"; then
+                  gith_log "WARN" "Skip checkout to empty-tree target branch for safety: $full_path"
+                elif ! gith_checkout_branch "$default_branch" "$full_path" "$remote_name"; then
                   gith_log "WARN" "Failed to checkout $default_branch in $full_path"
                   ok=0
+                elif gith_should_skip_empty_remote_branch_update "$full_path" "$remote_name" "$default_branch"; then
+                  gith_log "WARN" "Leaving submodule at current commit for safety: $full_path"
                 elif ! (cd "$full_path" && git pull --rebase "$remote_name" "$default_branch" 2>/dev/null); then
                   gith_log "WARN" "Failed to pull --rebase $default_branch in $full_path"
                   ok=0
@@ -1027,16 +1061,14 @@ gith_sync_submodules_to_branches() {
           if [[ "$dry_run" == "1" ]]; then
             gith_log "INFO" "[DRY-RUN] Would pull --rebase from $remote_name/$current_branch in $full_path"
           else
-            if ! (cd "$full_path" && git pull --rebase "$remote_name" "$current_branch" 2>/dev/null); then
+            if gith_should_skip_empty_remote_branch_update "$full_path" "$remote_name" "$current_branch"; then
+              gith_log "WARN" "Leaving submodule at current commit for safety: $full_path"
+            elif ! (cd "$full_path" && git pull --rebase "$remote_name" "$current_branch" 2>/dev/null); then
               gith_log "WARN" "Failed to pull --rebase $current_branch in $full_path (continuing)"
             fi
           fi
         fi
       fi
-    fi
-
-    if [[ "$stash_created" -eq 1 ]]; then
-      gith_stash_pop "$full_path" "$stash_ref"
     fi
 
     if [[ "$recursive" == "1" && -f "$full_path/.gitmodules" ]]; then

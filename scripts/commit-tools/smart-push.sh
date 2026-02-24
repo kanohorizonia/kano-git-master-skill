@@ -464,9 +464,8 @@ for repo in "${REPOS[@]}"; do
         continue
       else
         if [[ "$VERBOSE" -eq 1 ]]; then
-          echo "[$repo] Sync skipped: local changes present"
+          echo "[$repo] Sync skipped: local changes present; proceeding to push"
         fi
-        continue
       fi
     fi
 
