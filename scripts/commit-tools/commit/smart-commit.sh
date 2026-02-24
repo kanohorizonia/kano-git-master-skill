@@ -793,6 +793,7 @@ provider_auth_likely_missing() {
 
 run_safety_checks() {
   local repo="$1"
+  local check_file="$TMP_DIR/check-$(echo "$repo" | sed 's#[^a-zA-Z0-9]#_#g').txt"
 
   # Ensure core.fileMode is disabled to prevent accidental chmod commits
   local current_filemode
