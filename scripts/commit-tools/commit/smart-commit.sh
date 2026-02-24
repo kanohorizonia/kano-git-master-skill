@@ -448,7 +448,7 @@ declare -a REPOS=()
 REPO_LIST_FILE="$TMP_DIR/repos.txt"
 touch "$REPO_LIST_FILE"
 
-# Commit statistics: format "repo_name|commit_count|branch"
+# Commit statistics: format "repo_name|commit_count|branch|revision|files|insertions|deletions"
 declare -a COMMIT_STATS=()
 TIMER_TOTAL_START=0
 TIMER_DISCOVERY=0
@@ -466,6 +466,28 @@ resolve_revision_count() {
     return 0
   fi
   git -C "$repo" rev-list --count HEAD 2>/dev/null || echo "0"
+}
+
+collect_staged_change_metrics() {
+  local repo="$1"
+  local shortstat files_changed insertions deletions
+
+  shortstat="$(git -C "$repo" diff --cached --shortstat 2>/dev/null || true)"
+  files_changed=0
+  insertions=0
+  deletions=0
+
+  if [[ "$shortstat" =~ ([0-9]+)[[:space:]]+file[s]?[[:space:]]+changed ]]; then
+    files_changed="${BASH_REMATCH[1]}"
+  fi
+  if [[ "$shortstat" =~ ([0-9]+)[[:space:]]+insertion[s]?\(\+\) ]]; then
+    insertions="${BASH_REMATCH[1]}"
+  fi
+  if [[ "$shortstat" =~ ([0-9]+)[[:space:]]+deletion[s]?\(-\) ]]; then
+    deletions="${BASH_REMATCH[1]}"
+  fi
+
+  printf '%s|%s|%s' "$files_changed" "$insertions" "$deletions"
 }
 
 timer_now() {
@@ -1554,6 +1576,10 @@ commit_repo() {
     return 1
   fi
 
+  local change_metrics files_changed insertions deletions
+  change_metrics="$(collect_staged_change_metrics "$repo")"
+  IFS='|' read -r files_changed insertions deletions <<< "$change_metrics"
+
   echo "[$repo] Commit: $msg"
   git -C "$repo" commit -m "$msg" 2>/dev/null || {
     echo "[$repo] FAILED: Commit failed" >&2
@@ -1565,7 +1591,7 @@ commit_repo() {
   local revision
   revision="$(resolve_revision_count "$repo" "$branch")"
   local short_repo="$(basename "$repo")"
-  COMMIT_STATS+=("$short_repo|1|$branch|$revision")
+  COMMIT_STATS+=("$short_repo|1|$branch|$revision|$files_changed|$insertions|$deletions")
 
   # Push if requested
   if [[ "$DO_PUSH" -eq 1 ]]; then
@@ -1697,14 +1723,26 @@ fi
 
 # Show commit summary
 if [[ "${#COMMIT_STATS[@]}" -gt 0 ]]; then
+  total_commits=0
+  total_files=0
+  total_insertions=0
+  total_deletions=0
   echo ""
   echo "=== Commit Summary ==="
-  printf "%-35s  Commits  Branch               Revision\\n" "Repository"
-  printf "%-35s  -------  ------               --------\\n" "-----------"
+  printf "%-35s  Commits  Branch               Revision  Files  +Lines  -Lines\\n" "Repository"
+  printf "%-35s  -------  ------               --------  -----  ------  ------\\n" "-----------"
   for stat in "${COMMIT_STATS[@]}"; do
-    IFS='|' read -r repo_name commit_count branch revision <<< "$stat"
-    printf "%-35s  %-7s  %-19s %s\\n" "$repo_name" "$commit_count" "$branch" "$revision"
+    IFS='|' read -r repo_name commit_count branch revision files_changed insertions deletions <<< "$stat"
+    files_changed="${files_changed:-0}"
+    insertions="${insertions:-0}"
+    deletions="${deletions:-0}"
+    total_commits=$((total_commits + commit_count))
+    total_files=$((total_files + files_changed))
+    total_insertions=$((total_insertions + insertions))
+    total_deletions=$((total_deletions + deletions))
+    printf "%-35s  %-7s  %-19s %-8s  %5s  %6s  %6s\\n" "$repo_name" "$commit_count" "$branch" "$revision" "$files_changed" "$insertions" "$deletions"
   done
+  printf "%-35s  %-7s  %-19s %-8s  %5s  %6s  %6s\\n" "TOTAL" "$total_commits" "-" "-" "$total_files" "$total_insertions" "$total_deletions"
 fi
 
 print_timing_summary

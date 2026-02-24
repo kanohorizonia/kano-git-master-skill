@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# smart-wrapper-common.sh - Shared helpers for repo-passive-mode profile wrappers.
+# smart-wrapper-common.sh - Shared helpers for no-ai-review profile wrappers.
 
 set -euo pipefail
 
