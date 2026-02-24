@@ -46,6 +46,18 @@ ensure_skill_script_exists() {
   return 1
 }
 
+has_arg() {
+  local needle="$1"
+  shift
+  local arg=""
+  for arg in "$@"; do
+    if [[ "$arg" == "$needle" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 run_skill_script_from_root() {
   local root="$1"
   local script="$2"

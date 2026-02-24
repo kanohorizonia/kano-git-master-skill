@@ -18,7 +18,7 @@ usage() {
 Usage: gen-root-wrappers.sh [options]
 
 Options:
-  --profile <standalone|oss|repo-passive-mode|no-ai-review>  Template profile (default: standalone)
+  --profile <standalone|oss|repo-passive-mode>  Template profile (default: standalone)
   --target <dir>              Target project root directory (default: current directory)
   --force                     Overwrite existing smart-*.sh files
   --dry-run                   Print planned actions without writing files
@@ -29,7 +29,6 @@ Examples:
   ./.agents/kano/kano-git-master-skill/scripts/core/gen-root-wrappers.sh --profile oss --target /path/to/repo
   ./.agents/kano/kano-git-master-skill/scripts/core/gen-root-wrappers.sh --profile standalone --force
   ./.agents/kano/kano-git-master-skill/scripts/core/gen-root-wrappers.sh --profile repo-passive-mode --target .
-  ./.agents/kano/kano-git-master-skill/scripts/core/gen-root-wrappers.sh --profile no-ai-review --target .
 USAGE
 }
 
@@ -73,10 +72,10 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$PROFILE" in
-  standalone|oss|repo-passive-mode|no-ai-review)
+  standalone|oss|repo-passive-mode)
     ;;
   *)
-    die "Unsupported profile: $PROFILE (expected: standalone, oss, repo-passive-mode, or no-ai-review)"
+    die "Unsupported profile: $PROFILE (expected: standalone, oss, or repo-passive-mode)"
     ;;
 esac
 
@@ -123,3 +122,4 @@ for name in "${template_names[@]}"; do
 done
 
 log "done copied=$copied skipped=$skipped dry_run=$DRY_RUN"
+log "note: commit wrappers include smart-commit.sh and smart-commit-with-ai-review.sh when available"

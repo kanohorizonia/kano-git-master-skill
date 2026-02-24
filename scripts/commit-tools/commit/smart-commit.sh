@@ -417,8 +417,10 @@ if [[ "$LIST_REPOS_ONLY" -eq 0 ]] && { [[ -z "$COMMIT_MESSAGE" ]] || [[ "$AI_REV
       ;;
   esac
 
-  echo "Using Provider: $AI_PROVIDER"
-  echo "Using Model: $AI_MODEL"
+  if [[ "$AI_REVIEW" -eq 1 ]]; then
+    echo "Using Provider: $AI_PROVIDER"
+    echo "Using Model: $AI_MODEL"
+  fi
 fi
 
 # Validate max file size
