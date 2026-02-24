@@ -135,5 +135,12 @@ pause_if_needed() {
     fi
   fi
 
-  read -r -p "Press Enter to continue..."
+  local pause_timeout="${SMART_WRAPPER_PAUSE_TIMEOUT:-10}"
+  if [[ "$pause_timeout" =~ ^[0-9]+$ ]] && [[ "$pause_timeout" -gt 0 ]]; then
+    if ! read -r -t "$pause_timeout" -p "Press Enter to continue... (auto-continue in ${pause_timeout}s) "; then
+      echo ""
+    fi
+  else
+    read -r -p "Press Enter to continue..."
+  fi
 }
