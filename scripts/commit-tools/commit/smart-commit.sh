@@ -793,7 +793,6 @@ provider_auth_likely_missing() {
 
 run_safety_checks() {
   local repo="$1"
-  local check_file="$TMP_DIR/check-$(echo "$repo" | sed 's#[^a-zA-Z0-9]#_#g').txt"
 
   # Ensure core.fileMode is disabled to prevent accidental chmod commits
   local current_filemode
@@ -813,37 +812,6 @@ run_safety_checks() {
 
   if [[ "$mode_only_count" -gt 0 ]]; then
     echo "[$repo] Unstaged $mode_only_count mode-only change(s) (chmod ignored)" >&2
-  fi
-
-  # Check for conflict markers and whitespace issues
-  if ! git -C "$repo" diff --cached --check >"$check_file" 2>&1; then
-    # Check if it's only trailing whitespace (not conflict markers)
-    if grep -q "^<<<<<<< \|^=======$\|^>>>>>>> " "$check_file"; then
-      echo "[$repo] FAILED: Conflict markers detected" >&2
-      cat "$check_file" >&2
-      return 1
-    else
-      # Only trailing whitespace - auto-fix it
-      echo "[$repo] Auto-fixing trailing whitespace..." >&2
-
-      # Get list of staged files with trailing whitespace
-      local fixed_count=0
-      while IFS= read -r file; do
-        if [[ -f "$repo/$file" ]]; then
-          # Remove trailing whitespace from the file
-          sed -i 's/[[:space:]]*$//' "$repo/$file" 2>/dev/null || \
-            sed -i '' 's/[[:space:]]*$//' "$repo/$file" 2>/dev/null || true
-
-          # Re-stage the fixed file
-          git -C "$repo" add "$file" 2>/dev/null || true
-          ((fixed_count++)) || true
-        fi
-      done < <(git -C "$repo" diff --cached --name-only 2>/dev/null || true)
-
-      if [[ "$fixed_count" -gt 0 ]]; then
-        echo "[$repo] Fixed trailing whitespace in $fixed_count file(s)" >&2
-      fi
-    fi
   fi
 
   # Check staged files

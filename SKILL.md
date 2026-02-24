@@ -845,6 +845,12 @@ AI-powered commit across all repositories with safety checks:
 ./scripts/commit-tools/commit/smart-commit.sh --provider copilot --model gpt-5-mini --verbose
 ```
 
+**Recommended Git config:**
+```bash
+# Let Git enforce trailing whitespace policy consistently
+git config --global core.whitespace trailing-space
+```
+
 **Agent proxy mode note (required contract):**
 - For agent proxy execution, pass `--agent <name>` (for example: `codex`, `cursor`, `copilot`, `kiro`, `claude`).
 - When `--agent` is not `manual`, a fixed commit message (`-m/--message`) is required.
