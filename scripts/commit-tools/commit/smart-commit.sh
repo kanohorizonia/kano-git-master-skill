@@ -5,7 +5,7 @@
 # Purpose:
 #   Commit changes across root repo, submodules, and nested repos with:
 #   - AI-generated commit messages (multi-provider support)
-#   - Safety checks (secrets, large files, conflicts)
+#   - Safety checks (secrets, conflicts)
 #   - Auto .gitignore updates (smart-ignore + legacy fallback)
 #   - Optional AI review gate
 #
@@ -27,7 +27,7 @@
 #   --no-ai-review              Disable AI safety review
 #   -m, --message <text>        Fixed commit message (skip AI generation)
 #   -f, --push                  Push after commit with --force-with-lease
-#   --max-file-size-mb <int>    Block files larger than this (default: 5)
+#   --max-file-size-mb <int>    Deprecated, ignored (kept for compatibility)
 #   --list-models [provider]    List available models
 #   --clear-cache [provider]    Clear model cache (all or specific provider)
 #   -h, --help                  Show help
@@ -96,6 +96,7 @@ AI_PROVIDER=""  # Required: opencode, codex, copilot, claude
 AI_MODEL=""     # Required: model name
 COMMIT_MESSAGE=""
 DO_PUSH=0
+# Kept only for CLI compatibility; size checks are handled by hosting platforms.
 MAX_FILE_SIZE_MB=5
 AI_REVIEW=1
 CUSTOM_RULES=""
@@ -146,7 +147,7 @@ Optional:
   --no-ai-review              Disable AI safety review
   -m, --message <text>        Fixed commit message (skip AI generation)
   -f, --push                  Push after commit with --force-with-lease
-  --max-file-size-mb <int>    Block files larger than this (default: 5)
+  --max-file-size-mb <int>    Deprecated, ignored (kept for compatibility)
   --rules <text>              Custom commit rules (inline text)
   --rules-file <path>         Custom commit rules (from file)
   --prompt-mode <mode>        Prompt mode: auto|dev|user (default: auto)
@@ -423,12 +424,6 @@ if [[ "$LIST_REPOS_ONLY" -eq 0 ]] && { [[ -z "$COMMIT_MESSAGE" ]] || [[ "$AI_REV
   fi
 fi
 
-# Validate max file size
-if ! [[ "$MAX_FILE_SIZE_MB" =~ ^[0-9]+$ ]]; then
-  echo "ERROR: --max-file-size-mb must be an integer" >&2
-  exit 1
-fi
-
 # Validate prompt mode
 case "$PROMPT_MODE" in
   auto|dev|user)
@@ -438,8 +433,6 @@ case "$PROMPT_MODE" in
     exit 1
     ;;
 esac
-
-MAX_FILE_SIZE_BYTES=$((MAX_FILE_SIZE_MB * 1024 * 1024))
 
 # Setup temp directory
 TMP_DIR="$(mktemp -d)"
@@ -817,7 +810,6 @@ run_safety_checks() {
 
   # Check staged files
   local path=""
-  local blob_size=0
   while IFS= read -r path; do
     # Check for sensitive file patterns
     case "$path" in
@@ -834,24 +826,29 @@ run_safety_checks() {
         ;;
     esac
 
-    # Check file size
-    blob_size="$(git -C "$repo" cat-file -s ":$path" 2>/dev/null || echo 0)"
-    if (( blob_size > MAX_FILE_SIZE_BYTES )); then
-      echo "[$repo] FAILED: File too large (${blob_size} bytes > ${MAX_FILE_SIZE_BYTES}): $path" >&2
-      return 1
-    fi
   done < <(git -C "$repo" diff --cached --name-only --diff-filter=ACMR 2>/dev/null || true)
 
-  # Check for secrets only in added lines to avoid false positives when removing old examples.
-  if git -C "$repo" diff --cached --text --unified=0 2>/dev/null \
-    | grep -E '^\+' \
-    | grep -v -E '^\+\+\+' \
-    | grep -E -i \
-      "(AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|ghp_[0-9A-Za-z]{36}|github_pat_[0-9A-Za-z_]{80,}|xox[baprs]-[0-9A-Za-z-]{10,}|-----BEGIN (RSA|EC|OPENSSH|DSA|PGP) PRIVATE KEY-----|api[_-]?key[[:space:]]*[:=][[:space:]]*['\"][^'\"]{8,}|token[[:space:]]*[:=][[:space:]]*['\"][^'\"]{8,}|password[[:space:]]*[:=][[:space:]]*['\"][^'\"]{8,}|secret[[:space:]]*[:=][[:space:]]*['\"][^'\"]{8,})" \
-    >"$check_file" 2>&1; then
-    echo "[$repo] FAILED: Possible secret detected in diff" >&2
-    cat "$check_file" >&2
-    return 1
+  # Check for secrets only in added lines and only for text diffs to avoid
+  # false positives from binary files (LFS-managed assets, PDFs, WASM, etc.).
+  local -a text_paths=()
+  local num_a="" num_d="" file_path=""
+  while IFS=$'\t' read -r num_a num_d file_path; do
+    [[ -z "$file_path" ]] && continue
+    [[ "$num_a" == "-" || "$num_d" == "-" ]] && continue
+    text_paths+=("$file_path")
+  done < <(git -C "$repo" diff --cached --numstat 2>/dev/null || true)
+
+  if [[ "${#text_paths[@]}" -gt 0 ]]; then
+    if git -C "$repo" diff --cached --unified=0 -- "${text_paths[@]}" 2>/dev/null \
+      | grep -E '^\+' \
+      | grep -v -E '^\+\+\+' \
+      | grep -E -i \
+        "(AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|ghp_[0-9A-Za-z]{36}|github_pat_[0-9A-Za-z_]{80,}|xox[baprs]-[0-9A-Za-z-]{10,}|-----BEGIN (RSA|EC|OPENSSH|DSA|PGP) PRIVATE KEY-----|api[_-]?key[[:space:]]*[:=][[:space:]]*['\"][^'\"]{8,}|token[[:space:]]*[:=][[:space:]]*['\"][^'\"]{8,}|password[[:space:]]*[:=][[:space:]]*['\"][^'\"]{8,}|secret[[:space:]]*[:=][[:space:]]*['\"][^'\"]{8,})" \
+      >"$check_file" 2>&1; then
+      echo "[$repo] FAILED: Possible secret detected in diff" >&2
+      cat "$check_file" >&2
+      return 1
+    fi
   fi
 
   return 0
@@ -1709,4 +1706,12 @@ if [[ "${#COMMIT_STATS[@]}" -gt 0 ]]; then
     deletions="${deletions:-0}"
     total_commits=$((total_commits + commit_count))
     total_files=$((total_files + files_changed))
-    total_insertions=$((total_insertions + i
+    total_insertions=$((total_insertions + insertions))
+    total_deletions=$((total_deletions + deletions))
+    printf "%-35s  %-7s  %-19s %-8s  %5s  %6s  %6s\\n" "$repo_name" "$commit_count" "$branch" "$revision" "$files_changed" "$insertions" "$deletions"
+  done
+  printf "%-35s  %-7s  %-19s %-8s  %5s  %6s  %6s\\n" "TOTAL" "$total_commits" "-" "-" "$total_files" "$total_insertions" "$total_deletions"
+fi
+
+print_timing_summary
+echo "=== All done (success) ==="
