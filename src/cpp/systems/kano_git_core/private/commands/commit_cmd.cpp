@@ -1,14 +1,14 @@
 // commit command — AI-powered commit message generation
 // Delegates to: scripts/commit-tools/commit/smart-commit.sh (and variants)
 
-#include "KanoGit.CommandRegistry.hpp"
-#include "KanoGit.ShellExecutor.hpp"
+#include "command_registry.hpp"
+#include "shell_executor.hpp"
 #include <format>
 
 namespace kano::git::commands {
 
-void RegisterCommit(CLI::App& app) {
-    auto* cmd = app.add_subcommand("commit", "AI-powered commit message generation");
+void RegisterCommit(CLI::App& InApp) {
+    auto* cmd = InApp.add_subcommand("commit", "AI-powered commit message generation");
     cmd->allow_extras();  // Pass unknown flags through to the script
 
     // Provider option
@@ -29,11 +29,11 @@ void RegisterCommit(CLI::App& app) {
     cmd->add_option("--agent", *agent, "Agent proxy mode (codex, copilot, cursor, kiro, claude)");
 
     // Flags
-    auto* push_flag = new bool{false};
-    cmd->add_flag("--push", *push_flag, "Push after commit");
+    auto* bPush = new bool{false};
+    cmd->add_flag("--push", *bPush, "Push after commit");
 
-    auto* no_ai_review = new bool{false};
-    cmd->add_flag("--no-ai-review", *no_ai_review, "Skip AI review gate");
+    auto* bNoAiReview = new bool{false};
+    cmd->add_flag("--no-ai-review", *bNoAiReview, "Skip AI review gate");
 
     cmd->callback([=]() {
         std::vector<std::string> args;
@@ -50,8 +50,8 @@ void RegisterCommit(CLI::App& app) {
         if (!model->empty())    { args.push_back("--model");   args.push_back(*model); }
         if (!message->empty())  { args.push_back("-m");        args.push_back(*message); }
         if (!agent->empty())    { args.push_back("--agent");   args.push_back(*agent); }
-        if (*push_flag)         { args.push_back("--push"); }
-        if (*no_ai_review)      { args.push_back("--no-ai-review"); }
+        if (*bPush)             { args.push_back("--push"); }
+        if (*bNoAiReview)       { args.push_back("--no-ai-review"); }
 
         // Pass through any extra arguments
         auto extras = cmd->remaining();

@@ -1,5 +1,5 @@
 {
-    "version": 6,
+    "version": 3,
     "cmakeMinimumRequired": {
         "major": 3,
         "minor": 21,
@@ -7,47 +7,91 @@
     },
     "configurePresets": [
         {
-            "name": "vcpkg",
-            "hidden": true,
+            "name": "windows-msbuild",
+            "displayName": "Windows MSBuild",
+            "description": "Uses Visual Studio 17 2022 generator",
+            "generator": "Visual Studio 17 2022",
             "cacheVariables": {
-                "CMAKE_TOOLCHAIN_FILE": {
-                    "value": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
-                    "type": "FILEPATH"
-                }
+                "CMAKE_CXX_FLAGS": "/experimental:external-"
             },
-            "condition": {
-                "type": "notEquals",
-                "lhs": "$env{VCPKG_ROOT}",
-                "rhs": ""
-            }
+            "architecture": {
+                "value": "x64",
+                "strategy": "set"
+            },
+            "toolset": {
+                "value": "v143,version=14.44.35207",
+                "strategy": "set"
+            },
+            "binaryDir": "${sourceDir}/build/windows-msbuild"
         },
         {
-            "name": "debug",
-            "displayName": "Debug",
-            "inherits": "vcpkg",
-            "binaryDir": "${sourceDir}/build/debug",
+            "name": "windows-ninja-msvc",
+            "displayName": "Windows Ninja (MSVC)",
+            "description": "Uses Ninja generator with default MSVC compiler (requires vcvars64.bat)",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/windows-ninja-msvc",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug"
             }
         },
         {
-            "name": "release",
-            "displayName": "Release",
-            "inherits": "vcpkg",
-            "binaryDir": "${sourceDir}/build/release",
+            "name": "windows-ninja-clang",
+            "displayName": "Windows Ninja (Clang)",
+            "description": "Uses Ninja generator with LLVM Clang compiler",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/windows-ninja-clang",
             "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Release"
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_C_COMPILER": "clang-cl",
+                "CMAKE_CXX_COMPILER": "clang-cl"
+            }
+        },
+        {
+            "name": "linux-ninja-gcc",
+            "displayName": "Linux Ninja (GCC)",
+            "description": "Uses Ninja generator with GCC compiler",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/linux-ninja-gcc",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_C_COMPILER": "gcc",
+                "CMAKE_CXX_COMPILER": "g++"
+            }
+        },
+        {
+            "name": "linux-ninja-clang",
+            "displayName": "Linux Ninja (Clang)",
+            "description": "Uses Ninja generator with Clang compiler",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/linux-ninja-clang",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_C_COMPILER": "clang",
+                "CMAKE_CXX_COMPILER": "clang++"
             }
         }
     ],
     "buildPresets": [
         {
-            "name": "debug",
-            "configurePreset": "debug"
+            "name": "windows-msbuild-debug",
+            "configurePreset": "windows-msbuild",
+            "configuration": "Debug"
         },
         {
-            "name": "release",
-            "configurePreset": "release"
+            "name": "windows-ninja-msvc-debug",
+            "configurePreset": "windows-ninja-msvc"
+        },
+        {
+            "name": "windows-ninja-clang-debug",
+            "configurePreset": "windows-ninja-clang"
+        },
+        {
+            "name": "linux-ninja-gcc-debug",
+            "configurePreset": "linux-ninja-gcc"
+        },
+        {
+            "name": "linux-ninja-clang-debug",
+            "configurePreset": "linux-ninja-clang"
         }
     ]
 }

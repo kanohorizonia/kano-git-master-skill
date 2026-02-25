@@ -1,13 +1,13 @@
 // resolve command — AI-powered conflict resolution
 // Delegates to: scripts/commit-tools/resolve/smart-resolve.sh (and variants)
 
-#include "KanoGit.CommandRegistry.hpp"
-#include "KanoGit.ShellExecutor.hpp"
+#include "command_registry.hpp"
+#include "shell_executor.hpp"
 
 namespace kano::git::commands {
 
-void RegisterResolve(CLI::App& app) {
-    auto* cmd = app.add_subcommand("resolve", "AI-powered conflict resolution");
+void RegisterResolve(CLI::App& InApp) {
+    auto* cmd = InApp.add_subcommand("resolve", "AI-powered conflict resolution");
     cmd->allow_extras();
 
     auto* provider = new std::string{};

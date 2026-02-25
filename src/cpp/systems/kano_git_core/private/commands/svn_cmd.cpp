@@ -1,13 +1,13 @@
 // svn command — Git-Subversion bridge
 // Delegates to: scripts/vcs-bridges/svn/*.sh
 
-#include "KanoGit.CommandRegistry.hpp"
-#include "KanoGit.ShellExecutor.hpp"
+#include "command_registry.hpp"
+#include "shell_executor.hpp"
 
 namespace kano::git::commands {
 
-void RegisterSvn(CLI::App& app) {
-    auto* cmd = app.add_subcommand("svn", "Git-Subversion bridge (git-svn)");
+void RegisterSvn(CLI::App& InApp) {
+    auto* cmd = InApp.add_subcommand("svn", "Git-Subversion bridge (git-svn)");
 
     auto* clone = cmd->add_subcommand("clone", "Clone a SVN repository");
     clone->allow_extras();

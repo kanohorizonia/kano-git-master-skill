@@ -1,13 +1,13 @@
 // worktree command — Git worktree management
 // Delegates to: scripts/worktree/*.sh
 
-#include "KanoGit.CommandRegistry.hpp"
-#include "KanoGit.ShellExecutor.hpp"
+#include "command_registry.hpp"
+#include "shell_executor.hpp"
 
 namespace kano::git::commands {
 
-void RegisterWorktree(CLI::App& app) {
-    auto* cmd = app.add_subcommand("worktree", "Git worktree management");
+void RegisterWorktree(CLI::App& InApp) {
+    auto* cmd = InApp.add_subcommand("worktree", "Git worktree management");
 
     auto* create = cmd->add_subcommand("create", "Create a new worktree");
     create->allow_extras();

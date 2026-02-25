@@ -4,10 +4,10 @@
 // SPDX-License-Identifier: MIT
 
 #include <CLI/CLI.hpp>
-#include "KanoGit.Version.hpp"
-#include "KanoGit.CommandRegistry.hpp"
+#include "version.hpp"
+#include "command_registry.hpp"
 
-int main(int argc, char* argv[]) {
+int main(int InArgc, char* InArgv[]) {
     CLI::App app{
         "Kano Git Master — AI-powered Git CLI tools\n"
         "Standalone: kano-git <command> or kog <command>\n"
@@ -22,7 +22,7 @@ int main(int argc, char* argv[]) {
     // Register all commands
     kano::git::commands::RegisterAll(app);
 
-    CLI11_PARSE(app, argc, argv);
+    CLI11_PARSE(app, InArgc, InArgv);
 
     // If no subcommand was given, print help
     if (app.get_subcommands().empty()) {

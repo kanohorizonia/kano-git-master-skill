@@ -1,13 +1,13 @@
 // branch command — Branch operations (rebase, compare, cherry-pick)
 // Delegates to: scripts/branches/*.sh
 
-#include "KanoGit.CommandRegistry.hpp"
-#include "KanoGit.ShellExecutor.hpp"
+#include "command_registry.hpp"
+#include "shell_executor.hpp"
 
 namespace kano::git::commands {
 
-void RegisterBranch(CLI::App& app) {
-    auto* cmd = app.add_subcommand("branch", "Branch operations");
+void RegisterBranch(CLI::App& InApp) {
+    auto* cmd = InApp.add_subcommand("branch", "Branch operations");
 
     auto* rebase = cmd->add_subcommand("rebase-upstream", "Rebase to upstream latest");
     rebase->allow_extras();

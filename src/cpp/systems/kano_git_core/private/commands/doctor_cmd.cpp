@@ -1,13 +1,13 @@
 // doctor command — Environment and repo health checks
 // Delegates to: scripts/commit-tools/doctor.sh
 
-#include "KanoGit.CommandRegistry.hpp"
-#include "KanoGit.ShellExecutor.hpp"
+#include "command_registry.hpp"
+#include "shell_executor.hpp"
 
 namespace kano::git::commands {
 
-void RegisterDoctor(CLI::App& app) {
-    auto* cmd = app.add_subcommand("doctor", "Environment and repository health checks");
+void RegisterDoctor(CLI::App& InApp) {
+    auto* cmd = InApp.add_subcommand("doctor", "Environment and repository health checks");
     cmd->allow_extras();
 
     cmd->callback([=]() {

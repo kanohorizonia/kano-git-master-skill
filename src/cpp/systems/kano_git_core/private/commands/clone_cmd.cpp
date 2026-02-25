@@ -1,13 +1,13 @@
 // clone command — Smart clone with upstream support
 // Delegates to: scripts/core/smart-clone.sh
 
-#include "KanoGit.CommandRegistry.hpp"
-#include "KanoGit.ShellExecutor.hpp"
+#include "command_registry.hpp"
+#include "shell_executor.hpp"
 
 namespace kano::git::commands {
 
-void RegisterClone(CLI::App& app) {
-    auto* cmd = app.add_subcommand("clone", "Smart clone with upstream remote support");
+void RegisterClone(CLI::App& InApp) {
+    auto* cmd = InApp.add_subcommand("clone", "Smart clone with upstream remote support");
     cmd->allow_extras();
 
     cmd->callback([=]() {

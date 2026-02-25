@@ -1,13 +1,13 @@
 // p4 command — Git-Perforce bridge
 // Delegates to: scripts/vcs-bridges/p4/*.sh
 
-#include "KanoGit.CommandRegistry.hpp"
-#include "KanoGit.ShellExecutor.hpp"
+#include "command_registry.hpp"
+#include "shell_executor.hpp"
 
 namespace kano::git::commands {
 
-void RegisterP4(CLI::App& app) {
-    auto* cmd = app.add_subcommand("p4", "Git-Perforce bridge (git-p4)");
+void RegisterP4(CLI::App& InApp) {
+    auto* cmd = InApp.add_subcommand("p4", "Git-Perforce bridge (git-p4)");
 
     auto* clone = cmd->add_subcommand("clone", "Clone a Perforce depot");
     clone->allow_extras();

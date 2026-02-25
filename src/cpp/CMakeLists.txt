@@ -4,6 +4,7 @@ project(KanoGit DESCRIPTION "CLI" VERSION 0.1.0 LANGUAGES CXX)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 set(CMAKE_INCLUDE_SYSTEM_FLAG_CXX "/I ")
+set(CMAKE_NO_SYSTEM_FROM_IMPORTED ON)
 
 # Get version from parent VERSION file
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../VERSION")
@@ -26,7 +27,6 @@ if(NOT CLI11_FOUND)
         GIT_TAG v2.4.2
     )
     FetchContent_MakeAvailable(CLI11)
-    set_target_properties(CLI11 PROPERTIES SYSTEM OFF)
     # Patch CLI11 for MSVC 19.50+ (VS 2026) which removed <codecvt>
     set(_CLI11_MACROS "${cli11_SOURCE_DIR}/include/CLI/Macros.hpp")
     if(EXISTS "${_CLI11_MACROS}")
@@ -57,5 +57,5 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_CURRENT_BINARY_DIR}/debug)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_CURRENT_BINARY_DIR}/release)
 
 # Add subdirectories
-add_subdirectory(kano-git-core)
-add_subdirectory(kog-cli)
+add_subdirectory(systems/kano_git_core)
+add_subdirectory(apps/kano_git_cli)

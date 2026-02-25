@@ -1,13 +1,13 @@
 // subtree command — Git subtree management
 // Delegates to: scripts/subtree/*.sh
 
-#include "KanoGit.CommandRegistry.hpp"
-#include "KanoGit.ShellExecutor.hpp"
+#include "command_registry.hpp"
+#include "shell_executor.hpp"
 
 namespace kano::git::commands {
 
-void RegisterSubtree(CLI::App& app) {
-    auto* cmd = app.add_subcommand("subtree", "Git subtree management");
+void RegisterSubtree(CLI::App& InApp) {
+    auto* cmd = InApp.add_subcommand("subtree", "Git subtree management");
 
     auto* add = cmd->add_subcommand("add", "Add a subtree");
     add->allow_extras();

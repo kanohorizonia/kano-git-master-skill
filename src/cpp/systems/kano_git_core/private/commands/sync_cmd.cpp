@@ -1,13 +1,13 @@
 // sync command — Repository synchronization workflows
 // Delegates to: scripts/commit-tools/sync/smart-sync*.sh
 
-#include "KanoGit.CommandRegistry.hpp"
-#include "KanoGit.ShellExecutor.hpp"
+#include "command_registry.hpp"
+#include "shell_executor.hpp"
 
 namespace kano::git::commands {
 
-void RegisterSync(CLI::App& app) {
-    auto* cmd = app.add_subcommand("sync", "Repository synchronization workflows");
+void RegisterSync(CLI::App& InApp) {
+    auto* cmd = InApp.add_subcommand("sync", "Repository synchronization workflows");
 
     // --- sync origin-latest ---
     auto* origin_latest = cmd->add_subcommand("origin-latest", "Sync to origin default branch latest");

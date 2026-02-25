@@ -1,13 +1,13 @@
 // scalar command — Git Scalar integration for mono-repo performance
 // Delegates to: scripts/mono-repo/scalar/*.sh
 
-#include "KanoGit.CommandRegistry.hpp"
-#include "KanoGit.ShellExecutor.hpp"
+#include "command_registry.hpp"
+#include "shell_executor.hpp"
 
 namespace kano::git::commands {
 
-void RegisterScalar(CLI::App& app) {
-    auto* cmd = app.add_subcommand("scalar", "Git Scalar mono-repo performance tools");
+void RegisterScalar(CLI::App& InApp) {
+    auto* cmd = InApp.add_subcommand("scalar", "Git Scalar mono-repo performance tools");
 
     auto* reg = cmd->add_subcommand("register", "Register repository with Scalar");
     reg->allow_extras();

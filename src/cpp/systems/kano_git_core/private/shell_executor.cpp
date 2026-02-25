@@ -1,7 +1,7 @@
 // Shell script executor implementation
 // Cross-platform process spawning for shell scripts
 
-#include "KanoGit.ShellExecutor.hpp"
+#include "shell_executor.hpp"
 #include <format>
 #include <cstdlib>
 #include <array>
@@ -59,8 +59,8 @@ namespace {
 
 #ifdef KOG_PLATFORM_WINDOWS
 
-auto RunProcess(const std::string& cmdLine, ExecMode mode,
-                 const std::optional<std::filesystem::path>& workingDir) -> ExecResult
+auto RunProcess(const std::string& cmdLine, ExecMode InMode,
+                 const std::optional<std::filesystem::path>& InWorkingDir) -> ExecResult
 {
     ExecResult result;
 
@@ -71,7 +71,7 @@ auto RunProcess(const std::string& cmdLine, ExecMode mode,
     HANDLE hStdOutRead = nullptr, hStdOutWrite = nullptr;
     HANDLE hStdErrRead = nullptr, hStdErrWrite = nullptr;
 
-    if (mode == ExecMode::Capture) {
+    if (InMode == ExecMode::Capture) {
         CreatePipe(&hStdOutRead, &hStdOutWrite, &sa, 0);
         CreatePipe(&hStdErrRead, &hStdErrWrite, &sa, 0);
         SetHandleInformation(hStdOutRead, HANDLE_FLAG_INHERIT, 0);
@@ -80,7 +80,7 @@ auto RunProcess(const std::string& cmdLine, ExecMode mode,
 
     STARTUPINFOA si{};
     si.cb = sizeof(si);
-    if (mode == ExecMode::Capture) {
+    if (InMode == ExecMode::Capture) {
         si.dwFlags |= STARTF_USESTDHANDLES;
         si.hStdOutput = hStdOutWrite;
         si.hStdError = hStdErrWrite;
@@ -93,8 +93,8 @@ auto RunProcess(const std::string& cmdLine, ExecMode mode,
 
     std::string work_dir_str;
     LPCSTR work_dir_ptr = nullptr;
-    if (workingDir) {
-        work_dir_str = workingDir->string();
+    if (InWorkingDir) {
+        work_dir_str = InWorkingDir->string();
         work_dir_ptr = work_dir_str.c_str();
     }
 
@@ -102,7 +102,7 @@ auto RunProcess(const std::string& cmdLine, ExecMode mode,
         nullptr,
         mutable_cmd.data(),
         nullptr, nullptr,
-        mode == ExecMode::Capture ? TRUE : FALSE,
+        InMode == ExecMode::Capture ? TRUE : FALSE,
         0,
         nullptr,
         work_dir_ptr,
@@ -115,7 +115,7 @@ auto RunProcess(const std::string& cmdLine, ExecMode mode,
         return result;
     }
 
-    if (mode == ExecMode::Capture) {
+    if (InMode == ExecMode::Capture) {
         CloseHandle(hStdOutWrite);
         CloseHandle(hStdErrWrite);
 
@@ -148,17 +148,17 @@ auto RunProcess(const std::string& cmdLine, ExecMode mode,
 
 #else  // Unix
 
-auto RunProcess(const std::string& cmdLine, ExecMode mode,
-                 const std::optional<std::filesystem::path>& workingDir) -> ExecResult
+auto RunProcess(const std::string& cmdLine, ExecMode InMode,
+                 const std::optional<std::filesystem::path>& InWorkingDir) -> ExecResult
 {
     ExecResult result;
 
     std::string full_cmd = cmdLine;
-    if (workingDir) {
-        full_cmd = std::format("cd '{}' && {}", workingDir->string(), cmdLine);
+    if (InWorkingDir) {
+        full_cmd = std::format("cd '{}' && {}", InWorkingDir->string(), cmdLine);
     }
 
-    if (mode == ExecMode::PassThrough) {
+    if (InMode == ExecMode::PassThrough) {
         int rc = std::system(full_cmd.c_str());
         result.exitCode = WIFEXITED(rc) ? WEXITSTATUS(rc) : -1;
         return result;
@@ -186,9 +186,9 @@ auto RunProcess(const std::string& cmdLine, ExecMode mode,
 
 #endif
 
-auto BuildCommandLine(const std::string& program, const std::vector<std::string>& args) -> std::string {
+auto BuildCommandLine(const std::string& program, const std::vector<std::string>& InArgs) -> std::string {
     std::string cmd = program;
-    for (const auto& arg : args) {
+    for (const auto& arg : InArgs) {
         // Simple quoting — handles most cases
         if (arg.find(' ') != std::string::npos || arg.find('"') != std::string::npos) {
             cmd += " \"" + arg + "\"";
@@ -202,14 +202,14 @@ auto BuildCommandLine(const std::string& program, const std::vector<std::string>
 } // anonymous namespace
 
 auto ExecuteScript(
-    std::string_view relativeScript,
-    const std::vector<std::string>& args,
-    ExecMode mode,
-    std::optional<std::filesystem::path> workingDir
+    std::string_view InRelativeScript,
+    const std::vector<std::string>& InArgs,
+    ExecMode InMode,
+    std::optional<std::filesystem::path> InWorkingDir
 ) -> ExecResult
 {
     auto scripts_dir = GetScriptsDir();
-    auto script_path = scripts_dir / relativeScript;
+    auto script_path = scripts_dir / InRelativeScript;
 
     if (!std::filesystem::exists(script_path)) {
         return ExecResult{
@@ -226,27 +226,27 @@ auto ExecuteScript(
     }
     auto cmd = BuildCommandLine(
         std::format("{} \"{}\"", bash, script_path.string()),
-        args
+        InArgs
     );
 #else
     auto cmd = BuildCommandLine(
         std::format("bash \"{}\"", script_path.string()),
-        args
+        InArgs
     );
 #endif
 
-    return RunProcess(cmd, mode, workingDir);
+    return RunProcess(cmd, InMode, InWorkingDir);
 }
 
 auto ExecuteCommand(
-    const std::string& command,
-    const std::vector<std::string>& args,
-    ExecMode mode,
-    std::optional<std::filesystem::path> workingDir
+    const std::string& InCommand,
+    const std::vector<std::string>& InArgs,
+    ExecMode InMode,
+    std::optional<std::filesystem::path> InWorkingDir
 ) -> ExecResult
 {
-    auto cmd = BuildCommandLine(command, args);
-    return RunProcess(cmd, mode, workingDir);
+    auto cmd = BuildCommandLine(InCommand, InArgs);
+    return RunProcess(cmd, InMode, InWorkingDir);
 }
 
 } // namespace kano::git::shell

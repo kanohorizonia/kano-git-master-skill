@@ -1,13 +1,13 @@
 // workspace command — Multi-repository workspace operations
 // Delegates to: scripts/workspace/*.sh and scripts/core/*.sh
 
-#include "KanoGit.CommandRegistry.hpp"
-#include "KanoGit.ShellExecutor.hpp"
+#include "command_registry.hpp"
+#include "shell_executor.hpp"
 
 namespace kano::git::commands {
 
-void RegisterWorkspace(CLI::App& app) {
-    auto* cmd = app.add_subcommand("workspace", "Multi-repository workspace operations");
+void RegisterWorkspace(CLI::App& InApp) {
+    auto* cmd = InApp.add_subcommand("workspace", "Multi-repository workspace operations");
 
     auto* status = cmd->add_subcommand("status", "Status report of all repos");
     status->allow_extras();

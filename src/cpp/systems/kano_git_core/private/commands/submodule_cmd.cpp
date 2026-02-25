@@ -1,13 +1,13 @@
 // submodule command — Enhanced Git submodule management
 // Delegates to: scripts/submodules/smart-submodule.sh (canonical entrypoint)
 
-#include "KanoGit.CommandRegistry.hpp"
-#include "KanoGit.ShellExecutor.hpp"
+#include "command_registry.hpp"
+#include "shell_executor.hpp"
 
 namespace kano::git::commands {
 
-void RegisterSubmodule(CLI::App& app) {
-    auto* cmd = app.add_subcommand("submodule", "Enhanced submodule management");
+void RegisterSubmodule(CLI::App& InApp) {
+    auto* cmd = InApp.add_subcommand("submodule", "Enhanced submodule management");
 
     auto* add = cmd->add_subcommand("add", "Add a submodule");
     add->allow_extras();

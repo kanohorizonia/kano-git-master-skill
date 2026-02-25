@@ -18,17 +18,17 @@ struct ExecResult {
 auto GetScriptsDir() -> std::filesystem::path;
 
 auto ExecuteScript(
-    std::string_view relativeScript,
-    const std::vector<std::string>& args = {},
-    ExecMode mode = ExecMode::PassThrough,
-    std::optional<std::filesystem::path> workingDir = std::nullopt
+    std::string_view InRelativeScript,
+    const std::vector<std::string>& InArgs = {},
+    ExecMode InMode = ExecMode::PassThrough,
+    std::optional<std::filesystem::path> InWorkingDir = std::nullopt
 ) -> ExecResult;
 
 auto ExecuteCommand(
-    const std::string& command,
-    const std::vector<std::string>& args = {},
-    ExecMode mode = ExecMode::PassThrough,
-    std::optional<std::filesystem::path> workingDir = std::nullopt
+    const std::string& InCommand,
+    const std::vector<std::string>& InArgs = {},
+    ExecMode InMode = ExecMode::PassThrough,
+    std::optional<std::filesystem::path> InWorkingDir = std::nullopt
 ) -> ExecResult;
 
 }
