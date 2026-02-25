@@ -835,6 +835,11 @@ run_safety_checks() {
   while IFS=$'\t' read -r num_a num_d file_path; do
     [[ -z "$file_path" ]] && continue
     [[ "$num_a" == "-" || "$num_d" == "-" ]] && continue
+    case "$file_path" in
+      .obsidian/*)
+        continue
+        ;;
+    esac
     text_paths+=("$file_path")
   done < <(git -C "$repo" diff --cached --numstat 2>/dev/null || true)
 
