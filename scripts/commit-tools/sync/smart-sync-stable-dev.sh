@@ -417,8 +417,28 @@ fi
 
 declare -a pick_commits=()
 if [[ -n "$source_ref" ]]; then
+  declare -A equivalent_commits=()
+  declare -A target_subjects=()
+  while read -r marker sha; do
+    [[ -n "$marker" && -n "$sha" ]] || continue
+    if [[ "$marker" == "-" ]]; then
+      equivalent_commits["$sha"]=1
+    fi
+  done < <(git -C "$REPO" cherry "$TARGET_BRANCH" "$source_ref" 2>/dev/null || true)
+  while IFS= read -r subject; do
+    [[ -n "$subject" ]] || continue
+    target_subjects["$subject"]=1
+  done < <(git -C "$REPO" log --format=%s "$TARGET_BRANCH")
+
   mapfile -t candidate_commits < <(git -C "$REPO" rev-list --reverse --no-merges "$BASE_TAG..$source_ref")
   for c in "${candidate_commits[@]}"; do
+    if [[ -n "${equivalent_commits[$c]:-}" ]]; then
+      continue
+    fi
+    subject="$(git -C "$REPO" show -s --format=%s "$c" 2>/dev/null || true)"
+    if [[ -n "$subject" && -n "${target_subjects[$subject]:-}" ]]; then
+      continue
+    fi
     if git -C "$REPO" merge-base --is-ancestor "$c" "$TARGET_BRANCH" >/dev/null 2>&1; then
       continue
     fi
