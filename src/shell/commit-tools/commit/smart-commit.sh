@@ -108,6 +108,8 @@ AGENT_ID=""      # Execution identity: manual or agent name
 PROMPT_MODE="auto"   # auto|dev|user
 PROMPT_ROOT="$SKILL_ROOT/prompts"
 LIST_REPOS_ONLY=0
+EXTERNAL_REPO_LIST_FILE="${KANO_REPO_LIST_FILE:-}"
+DISCOVERY_SOURCE="discover-script"
 
 # Environment variable overrides (CLI args still take precedence):
 #   KOG_RULES_TEXT    -> same as --rules
@@ -509,6 +511,7 @@ print_timing_summary() {
   total_elapsed=$(( $(timer_now) - TIMER_TOTAL_START ))
   echo ""
   echo "=== Timing Summary ==="
+  printf "%-16s  %8s  %s\n" "discovery-src" "-" "$DISCOVERY_SOURCE"
   printf "%-16s  %8s  %s\n" "Phase" "Seconds" "Duration"
   printf "%-16s  %8s  %s\n" "-----" "-------" "-----"
   printf "%-16s  %8s  %s\n" "discovery" "$TIMER_DISCOVERY" "$(format_duration "$TIMER_DISCOVERY")"
@@ -542,9 +545,21 @@ discover_repositories() {
   local repo_obj=""
   local path=""
 
+  if [[ -n "$EXTERNAL_REPO_LIST_FILE" && -f "$EXTERNAL_REPO_LIST_FILE" ]]; then
+    DISCOVERY_SOURCE="external-list"
+    while IFS= read -r path; do
+      [[ -z "$path" ]] && continue
+      add_repo "$path"
+    done < "$EXTERNAL_REPO_LIST_FILE"
+    if [[ "${#REPOS[@]}" -gt 0 ]]; then
+      return
+    fi
+  fi
+
   # Preferred path: unified discovery implementation with explicit type support.
   if [[ -f "$discover_script" ]]; then
-    repos_json="$(bash "$discover_script" --root "$ROOT" --format json --include-types root,registered,unregistered --max-depth 12 2>/dev/null || true)"
+    DISCOVERY_SOURCE="discover-script"
+    repos_json="$(bash "$discover_script" --root "$ROOT" --format json --include-types root,registered,unregistered --metadata-level minimal --max-depth 12 2>/dev/null || true)"
     if [[ "$repos_json" == \[*\] ]]; then
       while IFS= read -r repo_obj; do
         [[ -z "$repo_obj" ]] && continue
@@ -557,6 +572,7 @@ discover_repositories() {
 
   # Fallback: legacy local discovery if shared discover script is unavailable.
   if [[ "${#REPOS[@]}" -eq 0 ]]; then
+    DISCOVERY_SOURCE="legacy-fallback"
     add_repo "$ROOT"
 
     while IFS= read -r line; do
@@ -1117,11 +1133,13 @@ build_prompt() {
 
   custom_rules_text="$(load_rules_text_for_repo "$repo" "commit" || true)"
   rules_source_path="$(resolve_rules_file_for_repo "$repo" "commit" || true)"
-  if [[ -n "$prompt_template" ]]; then
-    echo "[$repo] Using commit prompt mode: $prompt_mode" >&2
-  fi
-  if [[ -n "$rules_source_path" ]]; then
-    echo "[$repo] Using rules from: $rules_source_path" >&2
+  if [[ "$VERBOSE" -eq 1 ]]; then
+    if [[ -n "$prompt_template" ]]; then
+      echo "[$repo] Using commit prompt mode: $prompt_mode" >&2
+    fi
+    if [[ -n "$rules_source_path" ]]; then
+      echo "[$repo] Using rules from: $rules_source_path" >&2
+    fi
   fi
 
   # Preferred: file-based prompt template
@@ -1227,11 +1245,13 @@ build_review_prompt() {
   prompt_mode="$(resolve_prompt_mode_for_repo "$repo")"
   prompt_template="$(load_prompt_template_for_stage "$repo" "review" || true)"
 
-  if [[ -n "$prompt_template" ]]; then
-    echo "[$repo] Using review prompt mode: $prompt_mode" >&2
-  fi
-  if [[ -n "$review_rules_source" ]]; then
-    echo "[$repo] Using review rules from: $review_rules_source" >&2
+  if [[ "$VERBOSE" -eq 1 ]]; then
+    if [[ -n "$prompt_template" ]]; then
+      echo "[$repo] Using review prompt mode: $prompt_mode" >&2
+    fi
+    if [[ -n "$review_rules_source" ]]; then
+      echo "[$repo] Using review rules from: $review_rules_source" >&2
+    fi
   fi
 
   if [[ -n "$prompt_template" ]]; then
@@ -1526,8 +1546,6 @@ commit_repo() {
   if [[ "$VERBOSE" -eq 1 ]]; then
     echo ""
     echo "=== Processing: $repo ==="
-  else
-    echo "[$repo] Processing..."
   fi
 
   # Run safety checks
@@ -1600,7 +1618,9 @@ if [[ "${#REPOS[@]}" -eq 0 ]]; then
   exit 0
 fi
 
-print_discovery_summary
+if [[ "$VERBOSE" -eq 1 ]]; then
+  print_discovery_summary
+fi
 
 if [[ "$LIST_REPOS_ONLY" -eq 1 ]]; then
   print_repo_list_and_exit

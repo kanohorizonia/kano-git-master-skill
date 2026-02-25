@@ -244,6 +244,275 @@ gith_branch_exists_on_remote() {
 # Repository Discovery Functions
 #------------------------------------------------------------------------------
 
+# Get file modification time in epoch seconds (cross-platform)
+# Usage: gith_file_mtime <path>
+# Returns: epoch seconds, or 0 if file does not exist
+gith_file_mtime() {
+  local path="${1:-}"
+
+  if [[ -z "$path" ]] || [[ ! -e "$path" ]]; then
+    echo "0"
+    return 0
+  fi
+
+  stat -c %Y "$path" 2>/dev/null || stat -f %m "$path" 2>/dev/null || echo "0"
+}
+
+# Create a deterministic hash from a string
+# Usage: gith_hash_string <input>
+gith_hash_string() {
+  local input="${1:-}"
+
+  if command -v md5sum >/dev/null 2>&1; then
+    printf '%s' "$input" | md5sum | awk '{print $1}'
+    return 0
+  fi
+
+  if command -v shasum >/dev/null 2>&1; then
+    printf '%s' "$input" | shasum -a 256 | awk '{print $1}'
+    return 0
+  fi
+
+  printf '%s' "$input" | cksum | awk '{print $1}'
+}
+
+# Get cache directory for repository discovery
+# Usage: gith_get_discover_cache_dir <root_dir>
+gith_get_discover_cache_dir() {
+  local root_dir="${1:-.}"
+
+  if [[ -n "${GITH_DISCOVER_CACHE_DIR:-}" ]]; then
+    echo "$GITH_DISCOVER_CACHE_DIR"
+    return 0
+  fi
+
+  if gith_is_git_repo "$root_dir"; then
+    echo "$root_dir/.git/.kano-cache/discover-repos"
+  else
+    echo "$root_dir/.cache/kano-git-master-skill/discover-repos"
+  fi
+}
+
+# Read cached discovery payload and return repos JSON array
+# Usage: gith_read_discover_cache <cache_file>
+gith_read_discover_cache() {
+  local cache_file="${1:-}"
+
+  if [[ -z "$cache_file" ]] || [[ ! -f "$cache_file" ]]; then
+    return 1
+  fi
+
+  local payload repos_json
+  payload="$(tr -d '\r\n' < "$cache_file" 2>/dev/null || true)"
+  if [[ -z "$payload" ]]; then
+    return 1
+  fi
+
+  repos_json="$(printf '%s' "$payload" | sed -n 's/^.*"repos":\(\[.*\]\)[[:space:]]*}$/\1/p')"
+  if [[ "$repos_json" != \[*\] ]]; then
+    return 1
+  fi
+
+  echo "$repos_json"
+  return 0
+}
+
+# Read a string field from discovery cache payload
+# Usage: gith_read_discover_cache_field <cache_file> <field_name>
+gith_read_discover_cache_field() {
+  local cache_file="${1:-}"
+  local field_name="${2:-}"
+  local payload field_value
+
+  if [[ -z "$cache_file" ]] || [[ ! -f "$cache_file" ]] || [[ -z "$field_name" ]]; then
+    return 1
+  fi
+
+  payload="$(tr -d '\r\n' < "$cache_file" 2>/dev/null || true)"
+  if [[ -z "$payload" ]]; then
+    return 1
+  fi
+
+  field_value="$(printf '%s' "$payload" | sed -n "s/^.*\"$field_name\":\"\([^\"]*\)\".*$/\1/p")"
+  if [[ -z "$field_value" ]]; then
+    return 1
+  fi
+
+  printf '%s' "$field_value"
+  return 0
+}
+
+# Write discovery stats for downstream scripts (best-effort)
+# Usage: gith_write_discover_stats <mode> <cache_file>
+gith_write_discover_stats() {
+  local mode="${1:-unknown}"
+  local cache_file="${2:-}"
+  local stats_file="${GITH_DISCOVER_STATS_FILE:-}"
+
+  if [[ -z "$stats_file" ]]; then
+    return 0
+  fi
+
+  {
+    printf 'mode=%s\n' "$mode"
+    printf 'cache_file=%s\n' "$cache_file"
+  } > "$stats_file" 2>/dev/null || true
+}
+
+# Compute a lightweight discovery marker for incremental validation
+# Usage: gith_compute_discover_marker <root_dir> <max_depth> [exclude_patterns...]
+gith_compute_discover_marker() {
+  local root_dir="${1:-.}"
+  local max_depth="${2:-3}"
+  shift 2
+  local exclude_patterns=("$@")
+  local marker_input=""
+  local path=""
+  local -a marker_prune_patterns=()
+  local path_base=""
+  local excluded="0"
+
+  marker_prune_patterns=(
+    ".git"
+    ".agents"
+    "node_modules"
+    ".cache"
+    "build"
+    "dist"
+    ".venv"
+    "venv"
+    "__pycache__"
+  )
+  marker_prune_patterns+=("${exclude_patterns[@]}")
+
+  marker_input="$root_dir|$max_depth|root:$(gith_file_mtime "$root_dir")|gitmodules:$(gith_file_mtime "$root_dir/.gitmodules")"
+
+  while IFS= read -r path; do
+    [[ -z "$path" ]] && continue
+
+    excluded=0
+    path_base="$(basename "$path")"
+    for p in "${marker_prune_patterns[@]}"; do
+      if [[ "$path_base" == "$p" ]] || gith_is_excluded "$path" "$p"; then
+        excluded=1
+        break
+      fi
+    done
+    [[ "$excluded" -eq 1 ]] && continue
+
+    marker_input+="|$path:$(gith_file_mtime "$path")"
+  done < <(find "$root_dir" -mindepth 1 -maxdepth 2 -type d 2>/dev/null | sort)
+
+  gith_hash_string "$marker_input"
+}
+
+# Check if discovery cache file is valid
+# Usage: gith_discover_cache_is_valid <cache_file> <ttl_seconds> <root_dir>
+gith_discover_cache_is_valid() {
+  local cache_file="${1:-}"
+  local ttl_seconds="${2:-0}"
+  local root_dir="${3:-.}"
+  local marker="${4:-}"
+  local incremental="${GITH_DISCOVER_INCREMENTAL:-1}"
+  local max_stale="${GITH_DISCOVER_MAX_STALE_SECONDS:-900}"
+
+  GITH_DISCOVER_CACHE_HIT_MODE=""
+
+  if [[ -z "$cache_file" ]] || [[ ! -f "$cache_file" ]]; then
+    return 1
+  fi
+
+  if ! [[ "$ttl_seconds" =~ ^[0-9]+$ ]]; then
+    return 1
+  fi
+
+  if [[ "$ttl_seconds" -le 0 ]]; then
+    return 1
+  fi
+
+  local cache_mtime now_epoch cache_age
+  cache_mtime="$(gith_file_mtime "$cache_file")"
+  now_epoch="$(date +%s)"
+  cache_age=$((now_epoch - cache_mtime))
+
+  if ((cache_age > ttl_seconds)); then
+    if [[ "$incremental" != "1" ]]; then
+      return 1
+    fi
+    if ! [[ "$max_stale" =~ ^[0-9]+$ ]] || [[ "$max_stale" -le "$ttl_seconds" ]] || ((cache_age > max_stale)); then
+      return 1
+    fi
+
+    if [[ -z "$marker" ]]; then
+      return 1
+    fi
+
+    local cached_marker
+    cached_marker="$(gith_read_discover_cache_field "$cache_file" "marker" 2>/dev/null || true)"
+    if [[ -z "$cached_marker" ]] || [[ "$cached_marker" != "$marker" ]]; then
+      return 1
+    fi
+
+    GITH_DISCOVER_CACHE_HIT_MODE="cache-incremental-hit"
+  else
+    GITH_DISCOVER_CACHE_HIT_MODE="cache-fresh-hit"
+  fi
+
+  local gitmodules_path gitmodules_mtime
+  gitmodules_path="$root_dir/.gitmodules"
+  gitmodules_mtime="$(gith_file_mtime "$gitmodules_path")"
+  if [[ "$gitmodules_mtime" -gt "$cache_mtime" ]]; then
+    return 1
+  fi
+
+  if ! gith_read_discover_cache "$cache_file" >/dev/null 2>&1; then
+    return 1
+  fi
+
+  return 0
+}
+
+# Write discovery cache payload atomically
+# Usage: gith_write_discover_cache <cache_file> <repos_json> <root_dir>
+gith_write_discover_cache() {
+  local cache_file="${1:-}"
+  local repos_json="${2:-[]}"
+  local root_dir="${3:-.}"
+  local marker="${4:-none}"
+
+  if [[ -z "$cache_file" ]]; then
+    return 1
+  fi
+
+  local cache_dir
+  cache_dir="$(dirname "$cache_file")"
+  if ! mkdir -p "$cache_dir" 2>/dev/null; then
+    return 1
+  fi
+
+  local now_epoch gitmodules_mtime payload tmp_file
+  now_epoch="$(date +%s)"
+  gitmodules_mtime="$(gith_file_mtime "$root_dir/.gitmodules")"
+  payload="{\"version\":1,\"generated_epoch\":$now_epoch,\"gitmodules_mtime\":$gitmodules_mtime,\"marker\":\"$marker\",\"repos\":$repos_json}"
+
+  tmp_file="$(mktemp "$cache_dir/.discover-cache.XXXXXX" 2>/dev/null || true)"
+  if [[ -z "$tmp_file" ]]; then
+    tmp_file="$cache_dir/.discover-cache.$$.${RANDOM}.tmp"
+  fi
+
+  if ! printf '%s\n' "$payload" > "$tmp_file" 2>/dev/null; then
+    rm -f "$tmp_file" 2>/dev/null || true
+    return 1
+  fi
+
+  if ! mv "$tmp_file" "$cache_file" 2>/dev/null; then
+    rm -f "$tmp_file" 2>/dev/null || true
+    return 1
+  fi
+
+  return 0
+}
+
 # Check if directory is a Git repository
 # Usage: gith_is_git_repo <path>
 # Returns: 0 if git repo, 1 if not
@@ -274,6 +543,22 @@ gith_discover_repos() {
   local max_depth="${2:-3}"
   shift 2
   local exclude_patterns=("$@")
+  local use_cache="${GITH_DISCOVER_CACHE:-1}"
+  local cache_ttl="${GITH_DISCOVER_CACHE_TTL_SECONDS:-60}"
+  local cache_bust="${GITH_DISCOVER_CACHE_BUST:-0}"
+  local incremental="${GITH_DISCOVER_INCREMENTAL:-1}"
+  local metadata_level="${GITH_DISCOVER_METADATA_LEVEL:-full}"
+  local discover_quiet="${GITH_DISCOVER_QUIET:-0}"
+  local root_abs=""
+  local cache_key_input=""
+  local cache_key=""
+  local cache_dir=""
+  local cache_file=""
+  local cached_repos=""
+  local marker=""
+  local -a pre_prune_patterns=()
+
+  GITH_DISCOVER_LAST_MODE="scan-miss"
 
   # Default exclude patterns if none provided
   if [[ ${#exclude_patterns[@]} -eq 0 ]]; then
@@ -295,30 +580,86 @@ gith_discover_repos() {
     return 1
   fi
 
-  gith_log "INFO" "Discovering repositories in $root_dir (max depth: $max_depth)"
+  root_abs="$(cd "$root_dir" && pwd)"
 
-  # Build find command with exclude patterns
-  local find_cmd="find \"$root_dir\" -maxdepth $max_depth -name .git -type d"
+  if [[ "$metadata_level" != "full" ]] && [[ "$metadata_level" != "minimal" ]]; then
+    metadata_level="full"
+  fi
+
+  if [[ "$discover_quiet" != "1" ]]; then
+    gith_log "INFO" "Discovering repositories in $root_dir (max depth: $max_depth)"
+  fi
+
+  pre_prune_patterns=(
+    ".agents"
+    ".kano"
+    "node_modules"
+    ".cache"
+    "build"
+    "dist"
+    ".venv"
+    "venv"
+    "__pycache__"
+  )
+  pre_prune_patterns+=("${exclude_patterns[@]}")
+
+  if [[ "$incremental" == "1" ]]; then
+    marker="$(gith_compute_discover_marker "$root_abs" "$max_depth" "${exclude_patterns[@]}")"
+  fi
+
+  # Fast path: local discovery cache
+  if [[ "$use_cache" == "1" ]] && [[ "$cache_bust" != "1" ]] && [[ "$cache_ttl" =~ ^[0-9]+$ ]] && [[ "$cache_ttl" -gt 0 ]]; then
+    cache_key_input="$root_abs|$max_depth|$metadata_level|$incremental|$(IFS='|'; echo "${exclude_patterns[*]}")"
+    cache_key="$(gith_hash_string "$cache_key_input")"
+    cache_dir="$(gith_get_discover_cache_dir "$root_abs")"
+    cache_file="$cache_dir/$cache_key.json"
+
+    if gith_discover_cache_is_valid "$cache_file" "$cache_ttl" "$root_abs" "$marker"; then
+      cached_repos="$(gith_read_discover_cache "$cache_file" 2>/dev/null || true)"
+      if [[ "$cached_repos" == \[*\] ]]; then
+        GITH_DISCOVER_LAST_MODE="${GITH_DISCOVER_CACHE_HIT_MODE:-cache-hit}"
+        gith_write_discover_stats "$GITH_DISCOVER_LAST_MODE" "$cache_file"
+        if [[ "$discover_quiet" != "1" ]]; then
+          gith_log "INFO" "Using cached discovery result: $cache_file"
+        fi
+        echo "$cached_repos"
+        return 0
+      fi
+    fi
+  fi
 
   # Collect all .git directories
   local git_dirs=()
+  local git_dir=""
+  local repo_path=""
+  local excluded=0
+  local path_base=""
   while IFS= read -r git_dir; do
     if [[ -z "$git_dir" ]]; then
       continue
     fi
 
     # Get repo path (parent of .git directory)
-    local repo_path
     repo_path="$(dirname "$git_dir")"
 
     # Check if excluded
-    local excluded=0
+    excluded=0
+    path_base="$(basename "$repo_path")"
+    for pattern in "${pre_prune_patterns[@]}"; do
+      if [[ "$path_base" == "$pattern" ]]; then
+        excluded=1
+        break
+      fi
+    done
+
+    if [[ $excluded -eq 0 ]]; then
     for pattern in "${exclude_patterns[@]}"; do
       if gith_is_excluded "$repo_path" "$pattern"; then
         excluded=1
         break
       fi
     done
+    fi
 
     if [[ $excluded -eq 1 ]]; then
       gith_log "DEBUG" "Excluded: $repo_path"
@@ -326,7 +667,11 @@ gith_discover_repos() {
     fi
 
     git_dirs+=("$repo_path")
-  done < <(eval "$find_cmd" 2>/dev/null)
+  done < <(
+    find "$root_dir" -maxdepth "$max_depth" \
+      \( -type d \( -name ".agents" -o -name ".kano" -o -name "node_modules" -o -name ".cache" -o -name "build" -o -name "dist" -o -name ".venv" -o -name "venv" -o -name "__pycache__" \) -prune \) -o \
+      \( -type d -name .git -print \) 2>/dev/null
+  )
 
   # Determine repo types and collect metadata
   local root_repo=""
@@ -377,65 +722,116 @@ gith_discover_repos() {
 
   # Add root repo
   if [[ -n "$root_repo" ]]; then
-    local metadata
-    metadata="$(gith_collect_repo_metadata "$root_repo")"
-    # Add type field
-    metadata="${metadata%\}},\"type\":\"root\"}"
-    json+="$metadata"
+    if [[ "$metadata_level" == "minimal" ]]; then
+      local escaped_path
+      escaped_path="${root_repo//\\/\\\\}"
+      escaped_path="${escaped_path//\"/\\\"}"
+      json+="{\"path\":\"$escaped_path\",\"type\":\"root\"}"
+    else
+      local metadata
+      metadata="$(gith_collect_repo_metadata "$root_repo")"
+      # Add type field
+      metadata="${metadata%\}},\"type\":\"root\"}"
+      json+="$metadata"
+    fi
     first=0
   fi
 
   # Add repos declared in .gitmodules (registered)
   for registered in "${registered_repos[@]}"; do
-    if ! gith_is_git_repo "$registered"; then
-      gith_log "WARN" "Skipping non-git registered path from discovery: $registered"
-      continue
+    local repo_json=""
+
+    if [[ "$metadata_level" == "minimal" ]]; then
+      local escaped_path
+      escaped_path="${registered//\\/\\\\}"
+      escaped_path="${escaped_path//\"/\\\"}"
+      repo_json="{\"path\":\"$escaped_path\",\"type\":\"registered\"}"
+    else
+      if ! gith_is_git_repo "$registered"; then
+        gith_log "WARN" "Skipping non-git registered path from discovery: $registered"
+        continue
+      fi
+
+      local metadata
+      metadata="$(gith_collect_repo_metadata "$registered")"
+      if [[ -z "$metadata" || "$metadata" == "{}" ]]; then
+        gith_log "WARN" "Skipping registered repo with invalid metadata: $registered"
+        continue
+      fi
+
+      # Add type field
+      metadata="${metadata%\}},\"type\":\"registered\"}"
+      repo_json="$metadata"
     fi
 
-    local metadata
-    metadata="$(gith_collect_repo_metadata "$registered")"
-    if [[ -z "$metadata" || "$metadata" == "{}" ]]; then
-      gith_log "WARN" "Skipping registered repo with invalid metadata: $registered"
+    if [[ -z "$repo_json" ]]; then
       continue
     fi
 
     if [[ $first -eq 0 ]]; then
-      json+=","
+      json+="," 
     fi
     first=0
-
-    # Add type field
-    metadata="${metadata%\}},\"type\":\"registered\"}"
-    json+="$metadata"
+    json+="$repo_json"
   done
 
   # Add repos not declared in .gitmodules (unregistered)
   for unregistered in "${unregistered_repos[@]}"; do
-    if ! gith_is_git_repo "$unregistered"; then
-      gith_log "WARN" "Skipping non-git unregistered path from discovery: $unregistered"
-      continue
+    local repo_json=""
+
+    if [[ "$metadata_level" == "minimal" ]]; then
+      local escaped_path
+      escaped_path="${unregistered//\\/\\\\}"
+      escaped_path="${escaped_path//\"/\\\"}"
+      repo_json="{\"path\":\"$escaped_path\",\"type\":\"unregistered\"}"
+    else
+      if ! gith_is_git_repo "$unregistered"; then
+        gith_log "WARN" "Skipping non-git unregistered path from discovery: $unregistered"
+        continue
+      fi
+
+      local metadata
+      metadata="$(gith_collect_repo_metadata "$unregistered")"
+      if [[ -z "$metadata" || "$metadata" == "{}" ]]; then
+        gith_log "WARN" "Skipping unregistered repo with invalid metadata: $unregistered"
+        continue
+      fi
+
+      # Add type field
+      metadata="${metadata%\}},\"type\":\"unregistered\"}"
+      repo_json="$metadata"
     fi
 
-    local metadata
-    metadata="$(gith_collect_repo_metadata "$unregistered")"
-    if [[ -z "$metadata" || "$metadata" == "{}" ]]; then
-      gith_log "WARN" "Skipping unregistered repo with invalid metadata: $unregistered"
+    if [[ -z "$repo_json" ]]; then
       continue
     fi
 
     if [[ $first -eq 0 ]]; then
-      json+=","
+      json+="," 
     fi
     first=0
-
-    # Add type field
-    metadata="${metadata%\}},\"type\":\"unregistered\"}"
-    json+="$metadata"
+    json+="$repo_json"
   done
 
   json+="]"
 
-  gith_log "INFO" "Discovered ${#git_dirs[@]} repositories"
+  # Write discovery cache (best-effort)
+  if [[ "$use_cache" == "1" ]] && [[ "$cache_ttl" =~ ^[0-9]+$ ]] && [[ "$cache_ttl" -gt 0 ]]; then
+    cache_key_input="$root_abs|$max_depth|$metadata_level|$incremental|$(IFS='|'; echo "${exclude_patterns[*]}")"
+    cache_key="$(gith_hash_string "$cache_key_input")"
+    cache_dir="$(gith_get_discover_cache_dir "$root_abs")"
+    cache_file="$cache_dir/$cache_key.json"
+    if ! gith_write_discover_cache "$cache_file" "$json" "$root_abs" "$marker"; then
+      gith_log "DEBUG" "Failed to write discovery cache: $cache_file"
+    fi
+  fi
+
+  GITH_DISCOVER_LAST_MODE="scan-miss"
+  gith_write_discover_stats "$GITH_DISCOVER_LAST_MODE" "$cache_file"
+
+  if [[ "$discover_quiet" != "1" ]]; then
+    gith_log "INFO" "Discovered ${#git_dirs[@]} repositories"
+  fi
   echo "$json"
   return 0
 }

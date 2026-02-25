@@ -8,7 +8,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/git-helpers.sh"
+source "$SCRIPT_DIR/../lib/git-helpers.sh"
 
 # Test counter
 TESTS_RUN=0
@@ -19,8 +19,8 @@ TESTS_FAILED=0
 test_pass() {
   local test_name="$1"
   echo "✓ PASS: $test_name"
-  ((TESTS_PASSED++))
-  ((TESTS_RUN++))
+  TESTS_PASSED=$((TESTS_PASSED + 1))
+  TESTS_RUN=$((TESTS_RUN + 1))
 }
 
 test_fail() {
@@ -30,8 +30,8 @@ test_fail() {
   if [[ -n "$reason" ]]; then
     echo "  Reason: $reason"
   fi
-  ((TESTS_FAILED++))
-  ((TESTS_RUN++))
+  TESTS_FAILED=$((TESTS_FAILED + 1))
+  TESTS_RUN=$((TESTS_RUN + 1))
 }
 
 echo "========================================"
@@ -119,7 +119,7 @@ echo ""
 echo "Test 9: gith_run in dry-run mode"
 export DRY_RUN=1
 output="$(gith_run echo "test command" 2>&1)"
-if [[ "$output" == *"echo"* ]] && [[ "$output" == *"test command"* ]]; then
+if printf '%s' "$output" | grep -q "echo" && printf '%s' "$output" | grep -Eq "test(\\\\ | )command"; then
   test_pass "gith_run dry-run mode works"
 else
   test_fail "gith_run dry-run mode failed"

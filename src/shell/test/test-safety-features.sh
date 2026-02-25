@@ -7,7 +7,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-INIT_SCRIPT="$SCRIPT_DIR/../repo-management/init-empty-repo.sh"
+INIT_SCRIPT="$SCRIPT_DIR/../core/init-empty-repo.sh"
 
 echo "==================================================================="
 echo "Safety Features Test Suite for init-empty-repo.sh"

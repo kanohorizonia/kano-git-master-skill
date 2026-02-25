@@ -12,7 +12,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SKILL_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+SKILL_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 echo "Git Master Skill - Quick Test"
 echo "=============================="
@@ -22,7 +22,7 @@ echo ""
 echo "Test 1: Checking script files..."
 SCRIPTS=(
   "core/update-repo.sh"
-  "core/clone-with-upstream.sh"
+  "core/smart-clone.sh"
   "core/discover-repos.sh"
   "workspace/update-workspace-repos.sh"
   "workspace/foreach-repo.sh"
@@ -30,13 +30,13 @@ SCRIPTS=(
   "branches/rebase-to-upstream-latest.sh"
   "branches/compare-branches.sh"
   "branches/cherry-pick-batch.sh"
-  "commit-tools/smart-commit.sh"
+  "commit-tools/commit/smart-commit.sh"
   "lib/git-helpers.sh"
 )
 
 MISSING=0
 for script in "${SCRIPTS[@]}"; do
-  if [[ ! -f "$SKILL_ROOT/scripts/$script" ]]; then
+  if [[ ! -f "$SKILL_ROOT/$script" ]]; then
     echo "  ✗ Missing: $script"
     MISSING=1
   else
@@ -54,7 +54,7 @@ echo ""
 echo "Test 2: Checking help output..."
 HELP_SCRIPTS=(
   "core/update-repo.sh"
-  "core/clone-with-upstream.sh"
+  "core/smart-clone.sh"
   "core/discover-repos.sh"
   "workspace/update-workspace-repos.sh"
   "workspace/foreach-repo.sh"
@@ -62,12 +62,12 @@ HELP_SCRIPTS=(
   "branches/rebase-to-upstream-latest.sh"
   "branches/compare-branches.sh"
   "branches/cherry-pick-batch.sh"
-  "commit-tools/smart-commit.sh"
+  "commit-tools/commit/smart-commit.sh"
 )
 
 HELP_FAILED=0
 for script in "${HELP_SCRIPTS[@]}"; do
-  if bash "$SKILL_ROOT/scripts/$script" --help >/dev/null 2>&1; then
+  if bash "$SKILL_ROOT/$script" --help >/dev/null 2>&1; then
     echo "  ✓ Help works: $script"
   else
     echo "  ✗ Help failed: $script"
@@ -83,7 +83,7 @@ fi
 
 echo ""
 echo "Test 3: Checking git-helpers.sh..."
-if bash -c "source '$SKILL_ROOT/scripts/lib/git-helpers.sh' && type gith_log >/dev/null 2>&1"; then
+if bash -c "source '$SKILL_ROOT/lib/git-helpers.sh' && type gith_log >/dev/null 2>&1"; then
   echo "  ✓ git-helpers.sh loads correctly"
 else
   echo "  ✗ git-helpers.sh failed to load"
@@ -96,4 +96,4 @@ echo "All quick tests passed! ✓"
 echo "=============================="
 echo ""
 echo "Run full test suite with:"
-echo "  ./scripts/test/run-all-tests.sh --test-repo git@github.com:dorgonman/kano-git-master-skill-demo.git"
+echo "  ./src/shell/test/run-all-tests.sh --test-repo git@github.com:dorgonman/kano-git-master-skill-demo.git"

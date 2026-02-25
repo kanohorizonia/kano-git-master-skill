@@ -25,6 +25,12 @@ SKIP_SYNC=0
 STASH_LOCAL_CHANGES=0
 FAIL_ON_DIRTY_SYNC=0
 VERBOSE=0        # Show all repos (default: show only repos with changes)
+JOBS=1
+EXTERNAL_REPO_LIST_FILE="${KANO_REPO_LIST_FILE:-}"
+WORKER_MODE=0
+PROFILE=0
+DISCOVERY_SOURCE="discover-script"
+MAX_PARALLEL_OBSERVED=1
 
 # Push statistics: format "repo_name|remote|branch"
 declare -a PUSH_STATS=()
@@ -87,6 +93,7 @@ print_timing_summary() {
   total_elapsed=$(( $(timer_now) - TIMER_TOTAL_START ))
   echo ""
   echo "=== Timing Summary ==="
+  printf "%-16s  %8s  %s\n" "discovery" "-" "$DISCOVERY_SOURCE"
   printf "%-16s  %8s  %s\n" "Phase" "Seconds" "Duration"
   printf "%-16s  %8s  %s\n" "-----" "-------" "-----"
   printf "%-16s  %8s  %s\n" "sync" "$TIMER_SYNC" "$(format_duration "$TIMER_SYNC")"
@@ -192,6 +199,8 @@ Options:
   --force-with-lease     Use --force-with-lease on push
   --no-verify            Pass --no-verify to git push (skip pre-push hooks)
   --verbose              Show all repos (default: show only repos with changes)
+  --jobs <n>             Parallel repo workers (default: 1)
+  --profile              Print profiling info (discovery + concurrency)
   --dry-run              Show what would be done without doing it
   -h, --help             Show help
 
@@ -209,6 +218,83 @@ Note:
   By default, uses AI (Copilot/Codex/OpenCode) for intelligent sync.
   Use --no-smart-sync to disable AI and use simple git pull --rebase.
 EOF
+}
+
+load_repo_paths_from_json() {
+  local repos_json="$1"
+  while IFS= read -r repo; do
+    [[ -z "$repo" ]] && continue
+    path="$(printf '%s' "$repo" | sed -n 's/.*"path":"\([^"]*\)".*/\1/p')"
+    [[ -z "$path" ]] && continue
+    printf '%s\n' "$path"
+  done < <(echo "$repos_json" | grep -o '{[^}]*}')
+}
+
+load_repo_paths_from_file() {
+  local file_path="$1"
+  local line=""
+  if [[ -z "$file_path" ]] || [[ ! -f "$file_path" ]]; then
+    return 1
+  fi
+
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    printf '%s\n' "$line"
+  done < "$file_path"
+
+  return 0
+}
+
+print_profile_summary() {
+  local mode="$1"
+  local repo_count="$2"
+  echo ""
+  echo "=== Profile Summary ==="
+  printf "%-24s %s\n" "mode:" "$mode"
+  printf "%-24s %s\n" "discovery_source:" "$DISCOVERY_SOURCE"
+  printf "%-24s %s\n" "repo_count:" "$repo_count"
+  printf "%-24s %s\n" "jobs_requested:" "$JOBS"
+  printf "%-24s %s\n" "max_parallel_observed:" "$MAX_PARALLEL_OBSERVED"
+}
+
+collect_repo_runtime_state() {
+  local repo="$1"
+  local status_out=""
+  local line=""
+
+  REPO_BRANCH=""
+  REPO_HAS_UPSTREAM=0
+  REPO_LOCAL_CHANGES=0
+
+  status_out="$(git -C "$repo" status --porcelain=2 --branch 2>/dev/null || true)"
+
+  while IFS= read -r line; do
+    case "$line" in
+      "# branch.head "*)
+        REPO_BRANCH="${line#\# branch.head }"
+        if [[ "$REPO_BRANCH" == "(detached)" ]]; then
+          REPO_BRANCH=""
+        fi
+        ;;
+      "# branch.upstream "*)
+        if [[ -n "${line#\# branch.upstream }" ]]; then
+          REPO_HAS_UPSTREAM=1
+        fi
+        ;;
+      "# "*)
+        ;;
+      *)
+        REPO_LOCAL_CHANGES=1
+        ;;
+    esac
+  done <<< "$status_out"
+
+  if [[ -z "$REPO_BRANCH" ]]; then
+    REPO_BRANCH="$(git -C "$repo" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+  fi
+  if [[ "$REPO_HAS_UPSTREAM" -eq 0 ]] && git -C "$repo" rev-parse --abbrev-ref "@{upstream}" >/dev/null 2>&1; then
+    REPO_HAS_UPSTREAM=1
+  fi
 }
 
 while [[ $# -gt 0 ]]; do
@@ -261,8 +347,20 @@ while [[ $# -gt 0 ]]; do
       VERBOSE=1
       shift
       ;;
+    --jobs)
+      JOBS="${2:-}"
+      shift 2
+      ;;
+    --profile)
+      PROFILE=1
+      shift
+      ;;
     --dry-run)
       DRY_RUN=1
+      shift
+      ;;
+    --worker)
+      WORKER_MODE=1
       shift
       ;;
     -h|--help)
@@ -279,6 +377,11 @@ done
 
 if [[ "$SYNC_ONLY" -eq 1 && "$SKIP_SYNC" -eq 1 ]]; then
   echo "ERROR: --sync-only and --skip-sync cannot be used together" >&2
+  exit 1
+fi
+
+if ! [[ "$JOBS" =~ ^[0-9]+$ ]] || [[ "$JOBS" -lt 1 ]]; then
+  echo "ERROR: --jobs must be a positive integer" >&2
   exit 1
 fi
 if [[ "$STASH_LOCAL_CHANGES" -eq 1 && "$FAIL_ON_DIRTY_SYNC" -eq 1 ]]; then
@@ -313,24 +416,37 @@ fi
 
 types_csv="$(IFS=,; echo "${include_types[*]}")"
 
-repos_json="$($SCRIPT_DIR/../core/discover-repos.sh --root "$ROOT" --format json --include-types "$types_csv" 2>/dev/null)"
+if [[ -n "$EXTERNAL_REPO_LIST_FILE" && -f "$EXTERNAL_REPO_LIST_FILE" ]]; then
+  DISCOVERY_SOURCE="external-list"
+  repos_json=""
+else
+  DISCOVERY_SOURCE="discover-script"
+  repos_json="$($SCRIPT_DIR/../core/discover-repos.sh --root "$ROOT" --format json --include-types "$types_csv" --metadata-level minimal 2>/dev/null)"
+fi
 
 declare -a REPOS=()
 MALFORMED_REPO_COUNT=0
-while IFS= read -r repo; do
-  [[ -z "$repo" ]] && continue
-  # Parse path defensively to avoid aborting on malformed entries.
-  # Some discovery outputs may include objects without "path".
-  path="$(printf '%s' "$repo" | sed -n 's/.*"path":"\([^"]*\)".*/\1/p')"
-  if [[ -z "$path" ]]; then
-    ((MALFORMED_REPO_COUNT++)) || true
-    if [[ "$VERBOSE" -eq 1 ]]; then
-      echo "[WARN] Skipping malformed repo entry: $repo" >&2
+if [[ -n "$EXTERNAL_REPO_LIST_FILE" && -f "$EXTERNAL_REPO_LIST_FILE" ]]; then
+  while IFS= read -r path; do
+    [[ -z "$path" ]] && continue
+    REPOS+=("$path")
+  done < <(load_repo_paths_from_file "$EXTERNAL_REPO_LIST_FILE")
+else
+  while IFS= read -r repo; do
+    [[ -z "$repo" ]] && continue
+    # Parse path defensively to avoid aborting on malformed entries.
+    # Some discovery outputs may include objects without "path".
+    path="$(printf '%s' "$repo" | sed -n 's/.*"path":"\([^"]*\)".*/\1/p')"
+    if [[ -z "$path" ]]; then
+      ((MALFORMED_REPO_COUNT++)) || true
+      if [[ "$VERBOSE" -eq 1 ]]; then
+        echo "[WARN] Skipping malformed repo entry: $repo" >&2
+      fi
+      continue
     fi
-    continue
-  fi
-  REPOS+=("$path")
-done < <(echo "$repos_json" | grep -o '{[^}]*}')
+    REPOS+=("$path")
+  done < <(echo "$repos_json" | grep -o '{[^}]*}')
+fi
 
 if [[ "$VERBOSE" -eq 1 && "$MALFORMED_REPO_COUNT" -gt 0 ]]; then
   echo "[WARN] Skipped $MALFORMED_REPO_COUNT malformed repo entr$( [[ "$MALFORMED_REPO_COUNT" -eq 1 ]] && echo "y" || echo "ies" ) during discovery." >&2
@@ -367,14 +483,92 @@ if [[ ${#REPOS[@]} -eq 0 ]]; then
   exit 1
 fi
 
+if [[ "$JOBS" -gt 1 && "${#REPOS[@]}" -gt 1 && "$WORKER_MODE" -eq 0 ]]; then
+  worker_tmp_dir="$(mktemp -d 2>/dev/null || true)"
+  if [[ -z "$worker_tmp_dir" ]]; then
+    worker_tmp_dir="/tmp/smart-push-workers-$$"
+    mkdir -p "$worker_tmp_dir"
+  fi
+
+  worker_repo_file="$worker_tmp_dir/repos.txt"
+  printf '%s\n' "${REPOS[@]}" > "$worker_repo_file"
+
+  worker_args=()
+  if [[ "$INCLUDE_ROOT" -eq 0 ]]; then worker_args+=("--no-root"); fi
+  if [[ "$INCLUDE_SUBMODULES" -eq 0 ]]; then worker_args+=("--no-submodules"); fi
+  if [[ "$INCLUDE_UNREGISTERED" -eq 0 ]]; then worker_args+=("--no-unregistered"); fi
+  if [[ "$SYNC_ONLY" -eq 1 ]]; then worker_args+=("--sync-only"); fi
+  if [[ "$SKIP_SYNC" -eq 1 ]]; then worker_args+=("--skip-sync"); fi
+  if [[ "$STASH_LOCAL_CHANGES" -eq 1 ]]; then worker_args+=("--stash-local-changes"); fi
+  if [[ "$FAIL_ON_DIRTY_SYNC" -eq 1 ]]; then worker_args+=("--fail-on-dirty-sync"); fi
+  if [[ "$NO_SMART_SYNC" -eq 1 ]]; then worker_args+=("--no-smart-sync"); fi
+  if [[ "$FORCE_WITH_LEASE" -eq 1 ]]; then worker_args+=("--force-with-lease"); fi
+  if [[ "$NO_VERIFY" -eq 1 ]]; then worker_args+=("--no-verify"); fi
+  if [[ "$VERBOSE" -eq 1 ]]; then worker_args+=("--verbose"); fi
+  if [[ "$DRY_RUN" -eq 1 ]]; then worker_args+=("--dry-run"); fi
+  if [[ "$PROFILE" -eq 1 ]]; then worker_args+=("--profile"); fi
+
+  if [[ "$VERBOSE" -eq 1 || "$PROFILE" -eq 1 ]]; then
+    echo "[INFO] smart-push parallel mode: ${#REPOS[@]} repos, jobs=$JOBS"
+  fi
+
+  declare -a worker_pids=()
+  declare -a worker_repos=()
+  declare -a worker_logs=()
+
+  for repo in "${REPOS[@]}"; do
+    log_file="$worker_tmp_dir/worker.$(echo "$repo" | md5sum | awk '{print $1}').log"
+    (
+      KANO_REPO_LIST_FILE="$worker_repo_file" \
+      bash "$SCRIPT_DIR/smart-push.sh" --worker --jobs 1 --repos "$repo" "${worker_args[@]}" >"$log_file" 2>&1
+    ) &
+    worker_pids+=("$!")
+    worker_repos+=("$repo")
+    worker_logs+=("$log_file")
+
+    current_active="$(jobs -pr | wc -l | tr -d ' ')"
+    if [[ "$current_active" -gt "$MAX_PARALLEL_OBSERVED" ]]; then
+      MAX_PARALLEL_OBSERVED="$current_active"
+    fi
+
+    while [[ "$(jobs -pr | wc -l | tr -d ' ')" -ge "$JOBS" ]]; do
+      wait -n || true
+    done
+  done
+
+  worker_failed=0
+  for i in "${!worker_pids[@]}"; do
+    if ! wait "${worker_pids[$i]}"; then
+      worker_failed=1
+      echo "[ERROR] ${worker_repos[$i]} failed" >&2
+    fi
+    if [[ -f "${worker_logs[$i]}" ]]; then
+      cat "${worker_logs[$i]}"
+    fi
+  done
+
+  if [[ "$PROFILE" -eq 1 ]]; then
+    print_profile_summary "coordinator-parallel" "${#REPOS[@]}"
+  fi
+
+  rm -rf "$worker_tmp_dir" 2>/dev/null || true
+  exit "$worker_failed"
+fi
+
+if [[ "$WORKER_MODE" -eq 1 ]]; then
+  MAX_PARALLEL_OBSERVED=1
+fi
+
 FAILED=0
 TIMER_TOTAL_START="$(timer_now)"
 
 for repo in "${REPOS[@]}"; do
-  branch="$(git -C "$repo" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+  collect_repo_runtime_state "$repo"
+  branch="$REPO_BRANCH"
   if [[ -z "$branch" ]]; then
     if attach_detached_to_default_branch "$repo"; then
-      branch="$(git -C "$repo" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+      collect_repo_runtime_state "$repo"
+      branch="$REPO_BRANCH"
     fi
   fi
 
@@ -402,11 +596,9 @@ for repo in "${REPOS[@]}"; do
   fi
 
   set_upstream=0
-  has_upstream=0
-  if ! git -C "$repo" rev-parse --abbrev-ref "@{upstream}" >/dev/null 2>&1; then
+  has_upstream="$REPO_HAS_UPSTREAM"
+  if [[ "$has_upstream" -eq 0 ]]; then
     set_upstream=1
-  else
-    has_upstream=1
   fi
 
   declare -a push_remotes=()
@@ -429,12 +621,9 @@ for repo in "${REPOS[@]}"; do
   # Auto-sync with upstream if exists (unless --skip-sync)
   if [[ "$SKIP_SYNC" -eq 0 && "$has_upstream" -eq 1 ]]; then
     sync_step_start="$(timer_now)"
-    local_changes=0
+    local_changes="$REPO_LOCAL_CHANGES"
     had_stash=0
     sync_output=""
-    if [[ -n "$(git -C "$repo" status --porcelain 2>/dev/null || true)" ]]; then
-      local_changes=1
-    fi
 
     if [[ "$local_changes" -eq 1 ]]; then
       if [[ "$STASH_LOCAL_CHANGES" -eq 1 ]]; then
@@ -615,6 +804,9 @@ if [[ "$FAILED" -eq 1 ]]; then
       printf "%-35s  %-18s %s\\n" "$repo_name" "$remote" "$branch"
     done
   fi
+  if [[ "$PROFILE" -eq 1 ]]; then
+    print_profile_summary "single-process" "${#REPOS[@]}"
+  fi
   print_timing_summary
   exit 1
 fi
@@ -629,5 +821,8 @@ if [[ "${#PUSH_STATS[@]}" -gt 0 ]]; then
     IFS='|' read -r repo_name remote branch <<< "$stat"
     printf "%-35s  %-18s %s\\n" "$repo_name" "$remote" "$branch"
   done
+fi
+if [[ "$PROFILE" -eq 1 ]]; then
+  print_profile_summary "single-process" "${#REPOS[@]}"
 fi
 print_timing_summary

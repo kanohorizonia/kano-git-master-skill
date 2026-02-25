@@ -14,6 +14,12 @@
 #   --max-depth <n>       Maximum search depth (default: 3)
 #   --exclude <pattern>   Exclude path patterns (can be used multiple times)
 #   --format <json|list>  Output format (default: list)
+#   --no-cache            Disable local discovery cache
+#   --cache-ttl <sec>     Cache TTL in seconds (default: 60)
+#   --refresh-cache       Force cache refresh for this run
+#   --no-incremental      Disable incremental stale-cache validation
+#   --max-stale <sec>     Max stale seconds allowed for incremental reuse (default: 900)
+#   --metadata-level <full|minimal> Repository metadata detail level (default: full)
 #   --save <file>         Save to manifest file
 #   --include-types <types> Comma-separated: root,registered,unregistered (aliases: submodule,standalone)
 #   --dry-run            Preview mode
@@ -55,6 +61,12 @@ OUTPUT_FORMAT="list"
 SAVE_FILE=""
 INCLUDE_TYPES="root,registered,unregistered"
 DRY_RUN=0
+USE_CACHE=1
+CACHE_TTL_SECONDS="${GITH_DISCOVER_CACHE_TTL_SECONDS:-60}"
+REFRESH_CACHE=0
+INCREMENTAL=1
+MAX_STALE_SECONDS="${GITH_DISCOVER_MAX_STALE_SECONDS:-900}"
+METADATA_LEVEL="${GITH_DISCOVER_METADATA_LEVEL:-full}"
 
 #------------------------------------------------------------------------------
 # Functions
@@ -71,6 +83,12 @@ Options:
   --max-depth <n>       Maximum search depth (default: 3)
   --exclude <pattern>   Exclude path patterns (can be used multiple times)
   --format <json|list>  Output format (default: list)
+  --no-cache            Disable local discovery cache
+  --cache-ttl <sec>     Cache TTL in seconds (default: 60)
+  --refresh-cache       Force cache refresh for this run
+  --no-incremental      Disable incremental stale-cache validation
+  --max-stale <sec>     Max stale seconds allowed for incremental reuse (default: 900)
+  --metadata-level <full|minimal> Repository metadata detail level (default: full)
   --save <file>         Save to manifest file
   --include-types <types> Comma-separated: root,registered,unregistered (aliases: submodule,standalone)
   --dry-run            Preview mode
@@ -199,6 +217,7 @@ save_to_manifest() {
 # Display summary statistics
 display_summary() {
   local repos_json="$1"
+  local discover_mode="${2:-unknown}"
   
   # Count repos by type
   local total root_count registered_count unregistered_count
@@ -209,6 +228,7 @@ display_summary() {
   
   gith_log "INFO" ""
   gith_log "INFO" "Summary:"
+  gith_log "INFO" "  Discovery source: $discover_mode"
   gith_log "INFO" "  Total repositories: $total"
   gith_log "INFO" "  Root: $root_count"
   gith_log "INFO" "  Registered subrepos: $registered_count"
@@ -263,6 +283,45 @@ main() {
         OUTPUT_FORMAT="$2"
         shift 2
         ;;
+      --no-cache)
+        USE_CACHE=0
+        shift
+        ;;
+      --cache-ttl)
+        if [[ -z "${2:-}" ]]; then
+          gith_error "Option --cache-ttl requires an argument"
+          usage
+          exit 1
+        fi
+        CACHE_TTL_SECONDS="$2"
+        shift 2
+        ;;
+      --refresh-cache)
+        REFRESH_CACHE=1
+        shift
+        ;;
+      --no-incremental)
+        INCREMENTAL=0
+        shift
+        ;;
+      --max-stale)
+        if [[ -z "${2:-}" ]]; then
+          gith_error "Option --max-stale requires an argument"
+          usage
+          exit 1
+        fi
+        MAX_STALE_SECONDS="$2"
+        shift 2
+        ;;
+      --metadata-level)
+        if [[ -z "${2:-}" ]]; then
+          gith_error "Option --metadata-level requires an argument"
+          usage
+          exit 1
+        fi
+        METADATA_LEVEL="$2"
+        shift 2
+        ;;
       --save)
         if [[ -z "${2:-}" ]]; then
           gith_error "Option --save requires an argument"
@@ -313,6 +372,21 @@ main() {
     gith_error "Invalid output format: $OUTPUT_FORMAT (must be 'json' or 'list')"
     exit 1
   fi
+
+  if ! [[ "$CACHE_TTL_SECONDS" =~ ^[0-9]+$ ]]; then
+    gith_error "Invalid cache TTL: $CACHE_TTL_SECONDS (must be a non-negative integer)"
+    exit 1
+  fi
+
+  if ! [[ "$MAX_STALE_SECONDS" =~ ^[0-9]+$ ]]; then
+    gith_error "Invalid max stale: $MAX_STALE_SECONDS (must be a non-negative integer)"
+    exit 1
+  fi
+
+  if [[ "$METADATA_LEVEL" != "full" ]] && [[ "$METADATA_LEVEL" != "minimal" ]]; then
+    gith_error "Invalid metadata level: $METADATA_LEVEL (must be 'full' or 'minimal')"
+    exit 1
+  fi
   
   # Set default exclude patterns if none provided
   if [[ ${#EXCLUDE_PATTERNS[@]} -eq 0 ]]; then
@@ -331,10 +405,51 @@ main() {
   gith_log "INFO" "Root directory: $ROOT_DIR"
   gith_log "INFO" "Max depth: $MAX_DEPTH"
   gith_log "INFO" "Exclude patterns: ${EXCLUDE_PATTERNS[*]}"
-  
+  if [[ "$USE_CACHE" -eq 1 ]]; then
+    gith_log "INFO" "Cache: enabled (TTL ${CACHE_TTL_SECONDS}s)"
+  else
+    gith_log "INFO" "Cache: disabled"
+  fi
+  if [[ "$INCREMENTAL" -eq 1 ]]; then
+    gith_log "INFO" "Incremental cache validation: enabled (max stale ${MAX_STALE_SECONDS}s)"
+  else
+    gith_log "INFO" "Incremental cache validation: disabled"
+  fi
+  gith_log "INFO" "Metadata level: $METADATA_LEVEL"
+
+  if [[ "$USE_CACHE" -eq 1 ]]; then
+    export GITH_DISCOVER_CACHE=1
+    export GITH_DISCOVER_CACHE_TTL_SECONDS="$CACHE_TTL_SECONDS"
+  else
+    export GITH_DISCOVER_CACHE=0
+  fi
+  export GITH_DISCOVER_INCREMENTAL="$INCREMENTAL"
+  export GITH_DISCOVER_MAX_STALE_SECONDS="$MAX_STALE_SECONDS"
+  export GITH_DISCOVER_METADATA_LEVEL="$METADATA_LEVEL"
+
+  if [[ "$REFRESH_CACHE" -eq 1 ]]; then
+    export GITH_DISCOVER_CACHE_BUST=1
+  else
+    unset GITH_DISCOVER_CACHE_BUST
+  fi
+
   # Discover repositories
   local repos_json
+  local discover_mode="unknown"
+  local discover_stats_file=""
+
+  discover_stats_file="$(mktemp 2>/dev/null || true)"
+  if [[ -n "$discover_stats_file" ]]; then
+    export GITH_DISCOVER_STATS_FILE="$discover_stats_file"
+  fi
+
   repos_json="$(gith_discover_repos "$ROOT_DIR" "$MAX_DEPTH" "${EXCLUDE_PATTERNS[@]}")"
+
+  if [[ -n "$discover_stats_file" && -f "$discover_stats_file" ]]; then
+    discover_mode="$(sed -n 's/^mode=//p' "$discover_stats_file" | head -n 1)"
+    rm -f "$discover_stats_file" 2>/dev/null || true
+  fi
+  unset GITH_DISCOVER_STATS_FILE
   
   if [[ $? -ne 0 ]]; then
     gith_error "Failed to discover repositories"
@@ -361,7 +476,7 @@ main() {
   fi
   
   # Display summary
-  display_summary "$repos_json"
+  display_summary "$repos_json" "$discover_mode"
   
   exit 0
 }

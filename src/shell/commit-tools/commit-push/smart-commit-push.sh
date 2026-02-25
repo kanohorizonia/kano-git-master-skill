@@ -56,6 +56,8 @@ TIMER_PRE_SYNC=0
 TIMER_COMMIT=0
 TIMER_POST_SYNC=0
 TIMER_PUSH=0
+SHARED_REPO_TMP_DIR=""
+SHARED_REPO_FILE=""
 
 #------------------------------------------------------------------------------
 # Functions
@@ -81,6 +83,7 @@ Optional:
   --force-with-lease          Use --force-with-lease when pushing
   --no-verify                 Pass --no-verify to git push (skip pre-push hooks)
   --no-smart-sync             Disable AI-powered sync (use simple git pull --rebase)
+  --jobs <n>                  Parallel workers for smart-push steps
   --no-smart-ignore           Disable AI-powered .gitignore updates
   --rules <text>              Custom commit rules (inline text)
   --rules-file <path>         Custom commit rules (from file)
@@ -207,13 +210,20 @@ print_final_workflow_summary() {
   fi
 
   types_csv="$(IFS=,; echo "${include_types[*]}")"
-  repos_json="$("$SCRIPT_DIR/../../core/discover-repos.sh" --root "$WORKFLOW_ROOT" --format json --include-types "$types_csv" 2>/dev/null || true)"
-  while IFS= read -r repo_obj; do
-    [[ -z "$repo_obj" ]] && continue
-    path="$(printf '%s' "$repo_obj" | sed -n 's/.*"path":"\([^"]*\)".*/\1/p')"
-    [[ -z "$path" ]] && continue
-    repos+=("$path")
-  done < <(echo "$repos_json" | grep -o '{[^}]*}')
+  if [[ -n "$SHARED_REPO_FILE" && -f "$SHARED_REPO_FILE" ]]; then
+    while IFS= read -r path; do
+      [[ -z "$path" ]] && continue
+      repos+=("$path")
+    done < "$SHARED_REPO_FILE"
+  else
+    repos_json="$("$SCRIPT_DIR/../../core/discover-repos.sh" --root "$WORKFLOW_ROOT" --format json --include-types "$types_csv" --metadata-level minimal 2>/dev/null || true)"
+    while IFS= read -r repo_obj; do
+      [[ -z "$repo_obj" ]] && continue
+      path="$(printf '%s' "$repo_obj" | sed -n 's/.*"path":"\([^"]*\)".*/\1/p')"
+      [[ -z "$path" ]] && continue
+      repos+=("$path")
+    done < <(echo "$repos_json" | grep -o '{[^}]*}')
+  fi
 
   repo_filter="$(get_push_arg_value "--repos" || true)"
   if [[ -n "$repo_filter" ]]; then
@@ -287,6 +297,10 @@ while [[ $# -gt 0 ]]; do
       SMART_PUSH_ARGS+=("$1" "${2:-}")
       shift 2
       ;;
+    --jobs)
+      SMART_PUSH_ARGS+=("$1" "${2:-}")
+      shift 2
+      ;;
     --no-root|--no-submodules|--no-unregistered|--no-standalone|--force-with-lease|--no-verify|--no-smart-sync)
       SMART_PUSH_ARGS+=("$1")
       shift
@@ -347,6 +361,9 @@ release_workflow_lock() {
     rm -rf "$WORKFLOW_LOCK_DIR"
     WORKFLOW_LOCKED=0
   fi
+  if [[ -n "$SHARED_REPO_TMP_DIR" && -d "$SHARED_REPO_TMP_DIR" ]]; then
+    rm -rf "$SHARED_REPO_TMP_DIR"
+  fi
 }
 
 acquire_workflow_lock() {
@@ -375,6 +392,38 @@ acquire_workflow_lock() {
     fi
     echo "If stale, remove lock manually after verification." >&2
     exit 1
+  fi
+}
+
+create_shared_repo_list() {
+  local repos_json=""
+  local repo_obj=""
+  local path=""
+  local discover_script="$SCRIPT_DIR/../../core/discover-repos.sh"
+
+  SHARED_REPO_TMP_DIR="$(mktemp -d 2>/dev/null || true)"
+  if [[ -z "$SHARED_REPO_TMP_DIR" ]]; then
+    SHARED_REPO_TMP_DIR="$WORKFLOW_ROOT/.git/.kano-cache/smart-commit-push-$$"
+    mkdir -p "$SHARED_REPO_TMP_DIR"
+  fi
+  SHARED_REPO_FILE="$SHARED_REPO_TMP_DIR/repos.txt"
+  : > "$SHARED_REPO_FILE"
+
+  if [[ ! -f "$discover_script" ]]; then
+    echo "$WORKFLOW_ROOT" > "$SHARED_REPO_FILE"
+    return 0
+  fi
+
+  repos_json="$($discover_script --root "$WORKFLOW_ROOT" --format json --include-types root,registered,unregistered --metadata-level minimal 2>/dev/null || true)"
+  while IFS= read -r repo_obj; do
+    [[ -z "$repo_obj" ]] && continue
+    path="$(printf '%s' "$repo_obj" | sed -n 's/.*"path":"\([^"]*\)".*/\1/p')"
+    [[ -z "$path" ]] && continue
+    printf '%s\n' "$path" >> "$SHARED_REPO_FILE"
+  done < <(echo "$repos_json" | grep -o '{[^}]*}')
+
+  if [[ ! -s "$SHARED_REPO_FILE" ]]; then
+    echo "$WORKFLOW_ROOT" > "$SHARED_REPO_FILE"
   fi
 }
 
@@ -436,6 +485,7 @@ TIMER_TOTAL_START="$(timer_now)"
 setup_workflow_root
 trap release_workflow_lock EXIT INT TERM
 acquire_workflow_lock
+create_shared_repo_list
 
 # Step 1: Pre-sync changes
 echo "Step 1: Pre-sync workflow..."
@@ -443,7 +493,7 @@ step_start="$(timer_now)"
 if [[ "$DRY_RUN" -eq 1 ]]; then
   echo "[DRY RUN] Would run: $SCRIPT_DIR/../smart-push.sh --sync-only --stash-local-changes ${SMART_PUSH_ARGS[*]}"
 else
-  if ! bash "$SCRIPT_DIR/../smart-push.sh" --sync-only --stash-local-changes "${SMART_PUSH_ARGS[@]}"; then
+  if ! KANO_REPO_LIST_FILE="$SHARED_REPO_FILE" bash "$SCRIPT_DIR/../smart-push.sh" --sync-only --stash-local-changes "${SMART_PUSH_ARGS[@]}"; then
     echo "ERROR: Pre-sync step failed. Check smart-push output above for repository-specific failures." >&2
     echo "Hint: rerun pre-sync with details: ./smart-push.sh --sync-only --verbose" >&2
     echo "After resolving conflicts, rerun this command to continue the 4-step flow." >&2
@@ -460,7 +510,7 @@ step_start="$(timer_now)"
 if [[ "$DRY_RUN" -eq 1 ]]; then
   echo "[DRY RUN] Would run: $SCRIPT_DIR/../commit/smart-commit.sh ${SMART_COMMIT_ARGS[*]}"
 else
-  if ! bash "$SCRIPT_DIR/../commit/smart-commit.sh" "${SMART_COMMIT_ARGS[@]}"; then
+  if ! KANO_REPO_LIST_FILE="$SHARED_REPO_FILE" bash "$SCRIPT_DIR/../commit/smart-commit.sh" "${SMART_COMMIT_ARGS[@]}"; then
     echo "ERROR: Commit step failed. Check smart-commit output above for repository-specific failures." >&2
     exit 1
   fi
@@ -476,7 +526,7 @@ else
   # Post-sync is a final safety check before push. Do not sync registered submodules here,
   # or unregistered nested repos, otherwise advancing subrepo HEADs can dirty superprojects
   # (gitlink changes) after commit.
-  if ! bash "$SCRIPT_DIR/../smart-push.sh" --sync-only --fail-on-dirty-sync --no-submodules --no-unregistered "${SMART_PUSH_ARGS[@]}"; then
+  if ! KANO_REPO_LIST_FILE="$SHARED_REPO_FILE" bash "$SCRIPT_DIR/../smart-push.sh" --sync-only --fail-on-dirty-sync --no-submodules --no-unregistered "${SMART_PUSH_ARGS[@]}"; then
     echo "ERROR: Post-sync step failed. Check smart-push output above for repository-specific failures." >&2
     exit 1
   fi
@@ -489,7 +539,7 @@ step_start="$(timer_now)"
 if [[ "$DRY_RUN" -eq 1 ]]; then
   echo "[DRY RUN] Would run: $SCRIPT_DIR/../smart-push.sh --skip-sync ${SMART_PUSH_ARGS[*]}"
 else
-  if ! bash "$SCRIPT_DIR/../smart-push.sh" --skip-sync "${SMART_PUSH_ARGS[@]}"; then
+  if ! KANO_REPO_LIST_FILE="$SHARED_REPO_FILE" bash "$SCRIPT_DIR/../smart-push.sh" --skip-sync "${SMART_PUSH_ARGS[@]}"; then
     echo "ERROR: Push step failed. Check smart-push output above for repository-specific failures." >&2
     exit 1
   fi

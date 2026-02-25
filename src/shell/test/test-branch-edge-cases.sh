@@ -8,7 +8,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/git-helpers.sh"
+source "$SCRIPT_DIR/../lib/git-helpers.sh"
 
 echo "=========================================="
 echo "Testing Branch Function Edge Cases"
