@@ -3,11 +3,11 @@
 
 #include "KanoGit.CommandRegistry.hpp"
 #include "KanoGit.ShellExecutor.hpp"
-#include <fmt/core.h>
+#include <format>
 
 namespace kano::git::commands {
 
-void Registercommit(CLI::App& app) {
+void RegisterCommit(CLI::App& app) {
     auto* cmd = app.add_subcommand("commit", "AI-powered commit message generation");
     cmd->allow_extras();  // Pass unknown flags through to the script
 
@@ -54,7 +54,7 @@ void Registercommit(CLI::App& app) {
         if (*no_ai_review)      { args.push_back("--no-ai-review"); }
 
         // Pass through any extra arguments
-        auto& extras = cmd->remaining();
+        auto extras = cmd->remaining();
         args.insert(args.end(), extras.begin(), extras.end());
 
         auto result = shell::ExecuteScript(script, args);

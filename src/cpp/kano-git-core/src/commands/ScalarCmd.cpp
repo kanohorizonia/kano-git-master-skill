@@ -6,13 +6,13 @@
 
 namespace kano::git::commands {
 
-void Registerscalar(CLI::App& app) {
+void RegisterScalar(CLI::App& app) {
     auto* cmd = app.add_subcommand("scalar", "Git Scalar mono-repo performance tools");
 
     auto* reg = cmd->add_subcommand("register", "Register repository with Scalar");
     reg->allow_extras();
     reg->callback([=]() {
-        auto& extras = reg->remaining();
+        auto extras = reg->remaining();
         std::vector<std::string> args(extras.begin(), extras.end());
         auto result = shell::ExecuteScript("mono-repo/scalar/register.sh", args);
         std::exit(result.exitCode);
@@ -21,7 +21,7 @@ void Registerscalar(CLI::App& app) {
     auto* status = cmd->add_subcommand("status", "Show Scalar status");
     status->allow_extras();
     status->callback([=]() {
-        auto& extras = status->remaining();
+        auto extras = status->remaining();
         std::vector<std::string> args(extras.begin(), extras.end());
         auto result = shell::ExecuteScript("mono-repo/scalar/status.sh", args);
         std::exit(result.exitCode);
@@ -30,7 +30,7 @@ void Registerscalar(CLI::App& app) {
     auto* optimize = cmd->add_subcommand("optimize", "Optimize repository");
     optimize->allow_extras();
     optimize->callback([=]() {
-        auto& extras = optimize->remaining();
+        auto extras = optimize->remaining();
         std::vector<std::string> args(extras.begin(), extras.end());
         auto result = shell::ExecuteScript("mono-repo/scalar/optimize.sh", args);
         std::exit(result.exitCode);
@@ -39,7 +39,7 @@ void Registerscalar(CLI::App& app) {
     auto* unreg = cmd->add_subcommand("unregister", "Unregister repository from Scalar");
     unreg->allow_extras();
     unreg->callback([=]() {
-        auto& extras = unreg->remaining();
+        auto extras = unreg->remaining();
         std::vector<std::string> args(extras.begin(), extras.end());
         auto result = shell::ExecuteScript("mono-repo/scalar/unregister.sh", args);
         std::exit(result.exitCode);

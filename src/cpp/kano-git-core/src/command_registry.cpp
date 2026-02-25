@@ -1,6 +1,6 @@
 // Command registry — wires up all subcommands
 
-
+#include "KanoGit.CommandRegistry.hpp"
 
 namespace kano::git::commands {
 

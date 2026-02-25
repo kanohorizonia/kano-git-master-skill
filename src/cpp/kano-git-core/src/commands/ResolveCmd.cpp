@@ -6,7 +6,7 @@
 
 namespace kano::git::commands {
 
-void Registerresolve(CLI::App& app) {
+void RegisterResolve(CLI::App& app) {
     auto* cmd = app.add_subcommand("resolve", "AI-powered conflict resolution");
     cmd->allow_extras();
 
@@ -23,7 +23,7 @@ void Registerresolve(CLI::App& app) {
             else if (*provider == "opencode") script = "commit-tools/resolve/smart-resolve-opencode.sh";
         }
 
-        auto& extras = cmd->remaining();
+        auto extras = cmd->remaining();
         std::vector<std::string> args(extras.begin(), extras.end());
 
         auto result = shell::ExecuteScript(script, args);

@@ -4,8 +4,8 @@
 // SPDX-License-Identifier: MIT
 
 #include <CLI/CLI.hpp>
-import KanoGit.Version;
-import KanoGit.CommandRegistry;
+#include "KanoGit.Version.hpp"
+#include "KanoGit.CommandRegistry.hpp"
 
 int main(int argc, char* argv[]) {
     CLI::App app{

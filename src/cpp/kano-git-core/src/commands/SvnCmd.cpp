@@ -6,13 +6,13 @@
 
 namespace kano::git::commands {
 
-void Registersvn(CLI::App& app) {
+void RegisterSvn(CLI::App& app) {
     auto* cmd = app.add_subcommand("svn", "Git-Subversion bridge (git-svn)");
 
     auto* clone = cmd->add_subcommand("clone", "Clone a SVN repository");
     clone->allow_extras();
     clone->callback([=]() {
-        auto& extras = clone->remaining();
+        auto extras = clone->remaining();
         std::vector<std::string> args(extras.begin(), extras.end());
         auto result = shell::ExecuteScript("vcs-bridges/svn/clone.sh", args);
         std::exit(result.exitCode);
@@ -21,7 +21,7 @@ void Registersvn(CLI::App& app) {
     auto* fetch = cmd->add_subcommand("fetch", "Fetch from SVN");
     fetch->allow_extras();
     fetch->callback([=]() {
-        auto& extras = fetch->remaining();
+        auto extras = fetch->remaining();
         std::vector<std::string> args(extras.begin(), extras.end());
         auto result = shell::ExecuteScript("vcs-bridges/svn/fetch.sh", args);
         std::exit(result.exitCode);
@@ -30,7 +30,7 @@ void Registersvn(CLI::App& app) {
     auto* dcommit = cmd->add_subcommand("dcommit", "Push commits to SVN");
     dcommit->allow_extras();
     dcommit->callback([=]() {
-        auto& extras = dcommit->remaining();
+        auto extras = dcommit->remaining();
         std::vector<std::string> args(extras.begin(), extras.end());
         auto result = shell::ExecuteScript("vcs-bridges/svn/dcommit.sh", args);
         std::exit(result.exitCode);
@@ -39,7 +39,7 @@ void Registersvn(CLI::App& app) {
     auto* rebase = cmd->add_subcommand("rebase", "Rebase from SVN");
     rebase->allow_extras();
     rebase->callback([=]() {
-        auto& extras = rebase->remaining();
+        auto extras = rebase->remaining();
         std::vector<std::string> args(extras.begin(), extras.end());
         auto result = shell::ExecuteScript("vcs-bridges/svn/rebase.sh", args);
         std::exit(result.exitCode);

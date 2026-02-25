@@ -6,12 +6,12 @@
 
 namespace kano::git::commands {
 
-void Registerdoctor(CLI::App& app) {
+void RegisterDoctor(CLI::App& app) {
     auto* cmd = app.add_subcommand("doctor", "Environment and repository health checks");
     cmd->allow_extras();
 
     cmd->callback([=]() {
-        auto& extras = cmd->remaining();
+        auto extras = cmd->remaining();
         std::vector<std::string> args(extras.begin(), extras.end());
         auto result = shell::ExecuteScript("commit-tools/doctor.sh", args);
         std::exit(result.exitCode);

@@ -6,12 +6,12 @@
 
 namespace kano::git::commands {
 
-void Registerclone(CLI::App& app) {
+void RegisterClone(CLI::App& app) {
     auto* cmd = app.add_subcommand("clone", "Smart clone with upstream remote support");
     cmd->allow_extras();
 
     cmd->callback([=]() {
-        auto& extras = cmd->remaining();
+        auto extras = cmd->remaining();
         std::vector<std::string> args(extras.begin(), extras.end());
         auto result = shell::ExecuteScript("core/smart-clone.sh", args);
         std::exit(result.exitCode);

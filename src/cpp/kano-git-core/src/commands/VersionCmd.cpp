@@ -1,17 +1,16 @@
 // version command — prints version information
 
 #include "KanoGit.CommandRegistry.hpp"
-#include "../version.hpp"
-#include <fmt/core.h>
+#include "KanoGit.Version.hpp"
 #include <iostream>
 
 namespace kano::git::commands {
 
-void Registerversion(CLI::App& app) {
+void RegisterVersion(CLI::App& app) {
     auto* cmd = app.add_subcommand("version", "Show version information");
 
     cmd->callback([]() {
-        fmt::print("{}\n", kano::version::full());
+        std::cout << kano::git::GetVersion() << "\n";
     });
 }
 

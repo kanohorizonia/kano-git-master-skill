@@ -26,14 +26,15 @@ target_sources(kano_git_core
 
 add_library(kano::git_core ALIAS kano_git_core)
 
-# Public includes
-target_compile_features(kano_git_core PUBLIC cxx_std_23)
+# Set C++20 standard and disable module scanning (MSBuild bug workaround)
+target_compile_features(kano_git_core PUBLIC cxx_std_20)
+set_target_properties(kano_git_core PROPERTIES CXX_SCAN_FOR_MODULES OFF)
+# CLI11 v2.4 uses <codecvt> which is removed in MSVC 19.50 (VS 2026)
+target_compile_definitions(kano_git_core PRIVATE CLI11_HAS_CODECVT=0)
 target_include_directories(kano_git_core PRIVATE 
     src
-    ../thirdparty/fmt-10.2.1/include
     ../thirdparty
     src/modules
 )
 
-target_compile_definitions(kano_git_core PRIVATE FMT_HEADER_ONLY=1)
-target_link_libraries(kano_git_core PUBLIC CLI11::CLI11 fmt::fmt)
+target_link_libraries(kano_git_core PUBLIC CLI11::CLI11)

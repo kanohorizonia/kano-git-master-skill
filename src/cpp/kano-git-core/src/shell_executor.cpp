@@ -1,8 +1,8 @@
 // Shell script executor implementation
 // Cross-platform process spawning for shell scripts
 
-
-#include <fmt/core.h>
+#include "KanoGit.ShellExecutor.hpp"
+#include <format>
 #include <cstdlib>
 #include <array>
 #include <stdexcept>
@@ -111,7 +111,7 @@ auto RunProcess(const std::string& cmdLine, ExecMode mode,
 
     if (!ok) {
         result.exitCode = -1;
-        result.stderrStr = fmt::format("Failed to create process: {}", GetLastError());
+        result.stderrStr = std::format("Failed to create process: {}", GetLastError());
         return result;
     }
 
@@ -155,7 +155,7 @@ auto RunProcess(const std::string& cmdLine, ExecMode mode,
 
     std::string full_cmd = cmdLine;
     if (workingDir) {
-        full_cmd = fmt::format("cd '{}' && {}", workingDir->string(), cmdLine);
+        full_cmd = std::format("cd '{}' && {}", workingDir->string(), cmdLine);
     }
 
     if (mode == ExecMode::PassThrough) {
@@ -214,7 +214,7 @@ auto ExecuteScript(
     if (!std::filesystem::exists(script_path)) {
         return ExecResult{
             .exitCode = 127,
-            .stderrStr = fmt::format("Script not found: {}", script_path.string())
+            .stderrStr = std::format("Script not found: {}", script_path.string())
         };
     }
 
@@ -225,12 +225,12 @@ auto ExecuteScript(
         bash = git_bash;
     }
     auto cmd = BuildCommandLine(
-        fmt::format("{} \"{}\"", bash, script_path.string()),
+        std::format("{} \"{}\"", bash, script_path.string()),
         args
     );
 #else
     auto cmd = BuildCommandLine(
-        fmt::format("bash \"{}\"", script_path.string()),
+        std::format("bash \"{}\"", script_path.string()),
         args
     );
 #endif
