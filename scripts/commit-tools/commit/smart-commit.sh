@@ -1709,12 +1709,4 @@ if [[ "${#COMMIT_STATS[@]}" -gt 0 ]]; then
     deletions="${deletions:-0}"
     total_commits=$((total_commits + commit_count))
     total_files=$((total_files + files_changed))
-    total_insertions=$((total_insertions + insertions))
-    total_deletions=$((total_deletions + deletions))
-    printf "%-35s  %-7s  %-19s %-8s  %5s  %6s  %6s\\n" "$repo_name" "$commit_count" "$branch" "$revision" "$files_changed" "$insertions" "$deletions"
-  done
-  printf "%-35s  %-7s  %-19s %-8s  %5s  %6s  %6s\\n" "TOTAL" "$total_commits" "-" "-" "$total_files" "$total_insertions" "$total_deletions"
-fi
-
-print_timing_summary
-echo "=== All done (success) ==="
+    total_insertions=$((total_insertions + i
