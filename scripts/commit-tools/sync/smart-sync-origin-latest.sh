@@ -623,9 +623,20 @@ if [[ "$TARGET_MODE" == "branch" ]]; then
   fi
 
   "${checkout_cmd[@]}" >/dev/null 2>&1
-  if ! "${pull_cmd[@]}"; then
+  pull_output=""
+  if ! pull_output="$("${pull_cmd[@]}" 2>&1)"; then
+    echo "$pull_output" >&2
     if [[ "$DRY_RUN" -eq 1 ]]; then
       echo "[DRY RUN] Rebase failed; would attempt submodule conflict auto-resolve (strategy=$SUBMODULE_CONFLICT_STRATEGY)"
+      exit 1
+    fi
+
+    if echo "$pull_output" | grep -Eiq "repository .* not found|remote: .*not found|could not read from remote repository|could not resolve host|authentication failed|permission denied|access denied"; then
+      if [[ "$HAD_STASH" -eq 1 ]]; then
+        echo "Auto-stash kept due to sync failure. Recover with: git -C \"<repo>\" stash list" >&2
+      fi
+      echo "Sync failed: remote URL/access problem for '$REMOTE'." >&2
+      echo "Hint: verify remote URL and permissions, then retry." >&2
       exit 1
     fi
 

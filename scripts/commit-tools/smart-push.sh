@@ -481,7 +481,12 @@ for repo in "${REPOS[@]}"; do
       if [[ "$had_stash" -eq 1 ]]; then
         echo "[$repo] Auto-stash kept due to sync failure. Recover with: git -C \"$repo\" stash list" >&2
       fi
-      echo "[$repo] Please resolve conflicts manually: cd $repo && git rebase --abort (or continue)" >&2
+      if echo "$sync_output" | grep -Eiq "repository .* not found|remote: .*not found|could not read from remote repository|could not resolve host|authentication failed|permission denied|access denied"; then
+        echo "[$repo] Sync failed: remote URL/access problem." >&2
+        echo "[$repo] Hint: verify remote URL and permissions, then retry." >&2
+      else
+        echo "[$repo] Please resolve conflicts manually: cd $repo && git rebase --abort (or continue)" >&2
+      fi
       FAILED=1
       continue
     fi
