@@ -10,11 +10,15 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ORIG_ARGS=("$@")
-source "$ROOT/smart-wrapper-common.sh"
 
-SKILL_SCRIPT="$(resolve_skill_script_path "$ROOT" "scripts/commit-tools/sync/smart-sync-stable-dev.sh")"
-ensure_skill_script_exists "$SKILL_SCRIPT"
+SKILL_SCRIPT="$ROOT/.agents/kano/kano-git-master-skill/scripts/commit-tools/sync/smart-sync-stable-dev.sh"
+
+if [[ ! -f "$SKILL_SCRIPT" ]]; then
+  echo "ERROR: Git Master Skill script not found at:" >&2
+  echo "  $SKILL_SCRIPT" >&2
+  echo "Ensure the kano-git-master-skill submodule is initialized." >&2
+  exit 1
+fi
 
 export KANO_GIT_MASTER_ROOT="$ROOT"
 
@@ -90,8 +94,8 @@ append_repo_summary() {
   local branch upstream_sha stable_sha upstream_line stable_line latest_tag stable_ref
 
   if ! git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$rel" "$status" "N/A" "0" "N/A" "N/A" >>"$summary_file"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$rel" "$status" "N/A" "0" "N/A" "N/A" "$reason" >>"$summary_file"
     return 0
   fi
 
@@ -111,11 +115,11 @@ append_repo_summary() {
   stable_line="$(resolve_commit_line "$repo" "$stable_sha")"
 
   if [[ -n "$upstream_sha" && -n "$stable_sha" && "$upstream_sha" == "$stable_sha" ]]; then
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$rel" "$status" "$branch" "1" "$upstream_line" "(same as upstream)" >>"$summary_file"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$rel" "$status" "$branch" "1" "$upstream_line" "(same as upstream)" "$reason" >>"$summary_file"
   else
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$rel" "$status" "$branch" "0" "$upstream_line" "$stable_line" >>"$summary_file"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$rel" "$status" "$branch" "0" "$upstream_line" "$stable_line" "$reason" >>"$summary_file"
   fi
 }
 
@@ -132,29 +136,35 @@ truncate_text() {
 print_summary_table() {
   local summary_file="$1"
   local sep="+------------------------------+------------+------------------------+----------------------------------------------------------------------------------+----------------------------------------------------------------------------------+"
+  local sep="+------------------------------+---------+------------------------+------------------------------------------------------------+------------------------------------------------------------+------------------------------+"
   printf '%s\n' "$sep"
-  printf '| %-28s | %-10s | %-22s | %-80s | %-80s |\n' \
-    "Repo" "Status" "Current Branch" "Latest Upstream Commit (sha|time|author|title)" "Latest Stable Commit (sha|time|author|title)"
+  printf '| %-28s | %-7s | %-22s | %-58s | %-58s | %-28s |\n' \
+    "Repo" "Result" "Current Branch" "Latest Upstream Commit (sha|time|author|title)" "Latest Stable Commit (sha|time|author|title)" "Reason"
   printf '%s\n' "$sep"
 
-  while IFS=$'\t' read -r rel status branch same_flag upstream_line stable_line; do
-    local up st
-    up="$(truncate_text "$upstream_line" 80)"
-    st="$(truncate_text "$stable_line" 80)"
-    printf '| %-28s | %-10s | %-22s | %-80s | %-80s |\n' \
+  while IFS=$'\t' read -r rel status branch same_flag upstream_line stable_line reason; do
+    local up st rsn
+    up="$(truncate_text "$upstream_line" 58)"
+    st="$(truncate_text "$stable_line" 58)"
+    rsn="$(truncate_text "${reason:-}" 28)"
+    printf '| %-28s | %-7s | %-22s | %-58s | %-58s | %-28s |\n' \
       "$(truncate_text "$rel" 28)" \
-      "$(truncate_text "$status" 10)" \
+      "$(truncate_text "$status" 7)" \
       "$(truncate_text "$branch" 22)" \
       "$up" \
-      "$st"
+      "$st" \
+      "$rsn"
   done <"$summary_file"
   printf '%s\n' "$sep"
 }
 
 print_summary_compact() {
   local summary_file="$1"
-  while IFS=$'\t' read -r rel status branch same_flag upstream_line stable_line; do
-    echo "[$rel] $status | branch=$branch"
+  while IFS=$'\t' read -r rel status branch same_flag upstream_line stable_line reason; do
+    echo "[$rel] RESULT=$status | branch=$branch"
+    if [[ -n "${reason:-}" ]]; then
+      echo "  reason: $reason"
+    fi
     if [[ "$same_flag" == "1" ]]; then
       echo "  commit: $upstream_line"
     else
@@ -166,7 +176,7 @@ print_summary_compact() {
 
 print_summary_tsv() {
   local summary_file="$1"
-  echo -e "repo\tstatus\tcurrent_branch\tsame_commit\tlatest_upstream_commit\tlatest_stable_commit"
+  echo -e "repo\tresult\tcurrent_branch\tsame_commit\tlatest_upstream_commit\tlatest_stable_commit\treason"
   cat "$summary_file"
 }
 
@@ -184,16 +194,17 @@ print_summary_json() {
   local summary_file="$1"
   local first=1
   echo "["
-  while IFS=$'\t' read -r rel status branch same_flag upstream_line stable_line; do
+  while IFS=$'\t' read -r rel status branch same_flag upstream_line stable_line reason; do
     [[ "$first" -eq 0 ]] && echo ","
     first=0
-    printf '  {"repo":"%s","status":"%s","current_branch":"%s","same_commit":%s,"latest_upstream_commit":"%s","latest_stable_commit":"%s"}' \
+    printf '  {"repo":"%s","result":"%s","current_branch":"%s","same_commit":%s,"latest_upstream_commit":"%s","latest_stable_commit":"%s","reason":"%s"}' \
       "$(json_escape "$rel")" \
       "$(json_escape "$status")" \
       "$(json_escape "$branch")" \
       "$([[ "$same_flag" == "1" ]] && echo "true" || echo "false")" \
       "$(json_escape "$upstream_line")" \
-      "$(json_escape "$stable_line")"
+      "$(json_escape "$stable_line")" \
+      "$(json_escape "${reason:-}")"
   done <"$summary_file"
   echo
   echo "]"
@@ -201,18 +212,20 @@ print_summary_json() {
 
 print_summary_markdown() {
   local summary_file="$1"
-  echo "| Repo | Status | Current Branch | Latest Upstream Commit | Latest Stable Commit |"
-  echo "| --- | --- | --- | --- | --- |"
-  while IFS=$'\t' read -r rel status branch same_flag upstream_line stable_line; do
-    local up st
+  echo "| Repo | Result | Current Branch | Latest Upstream Commit | Latest Stable Commit | Reason |"
+  echo "| --- | --- | --- | --- | --- | --- |"
+  while IFS=$'\t' read -r rel status branch same_flag upstream_line stable_line reason; do
+    local up st rsn
     up="${upstream_line//|/\\|}"
     st="${stable_line//|/\\|}"
-    echo "| $rel | $status | $branch | $up | $st |"
+    rsn="${reason//|/\\|}"
+    echo "| $rel | $status | $branch | $up | $st | $rsn |"
   done <"$summary_file"
 }
 
 REPORT_FORMAT="compact"
 has_repo_arg=0
+force_ai_resolve=0
 forward_args=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -229,6 +242,10 @@ while [[ $# -gt 0 ]]; do
       forward_args+=("$1" "${2:-}")
       shift 2
       ;;
+    --ai-resolve)
+      force_ai_resolve=1
+      shift
+      ;;
     *)
       forward_args+=("$1")
       shift
@@ -236,13 +253,25 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+agent_mode_enabled=0
+if [[ "${KANO_AGENT_MODE:-}" == "1" || "${KANO_AGENT_MODE:-}" == "true" ]]; then
+  agent_mode_enabled=1
+fi
+
+has_no_ai_resolve_arg=0
+for arg in "${forward_args[@]}"; do
+  if [[ "$arg" == "--no-ai-resolve" ]]; then
+    has_no_ai_resolve_arg=1
+    break
+  fi
+done
+
+if [[ "$agent_mode_enabled" -eq 1 && "$force_ai_resolve" -eq 0 && "$has_no_ai_resolve_arg" -eq 0 ]]; then
+  forward_args+=("--no-ai-resolve")
+fi
+
 if [[ "$has_repo_arg" -eq 1 ]]; then
-  set +e
-  bash "$SKILL_SCRIPT" "${forward_args[@]}"
-  status=$?
-  set -e
-  pause_if_needed "${ORIG_ARGS[@]}"
-  exit "$status"
+  exec bash "$SKILL_SCRIPT" "${forward_args[@]}"
 fi
 
 if [[ ! -f "$ROOT/.gitmodules" ]]; then
@@ -265,7 +294,7 @@ case "$REPORT_FORMAT" in
 esac
 
 passed_args=("${forward_args[@]}")
-processed=0
+success=0
 skipped=0
 failed=0
 summary_file="$(mktemp)"
@@ -276,31 +305,36 @@ for rel in "${submodule_paths[@]}"; do
   if ! git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     echo "SKIP: $rel (not initialized git repo)"
     skipped=$((skipped + 1))
-    append_repo_summary "$summary_file" "$rel" "skipped" "not initialized git repo"
+    append_repo_summary "$summary_file" "$rel" "SKIPPED" "not initialized git repo"
     continue
   fi
   if ! git -C "$repo" remote | grep -q '^upstream$'; then
     echo "SKIP: $rel (no upstream remote)"
     skipped=$((skipped + 1))
-    append_repo_summary "$summary_file" "$rel" "skipped" "no upstream remote"
+    append_repo_summary "$summary_file" "$rel" "SKIPPED" "no upstream remote"
     continue
   fi
 
   echo "RUN: $rel"
   if bash "$SKILL_SCRIPT" --repo "$repo" "${passed_args[@]}"; then
-    processed=$((processed + 1))
-    append_repo_summary "$summary_file" "$rel" "processed" ""
+    success=$((success + 1))
+    append_repo_summary "$summary_file" "$rel" "SUCCESS" ""
   else
     echo "FAIL: $rel" >&2
     failed=$((failed + 1))
-    append_repo_summary "$summary_file" "$rel" "failed" "workflow failed"
+    append_repo_summary "$summary_file" "$rel" "FAILED" "workflow failed"
   fi
 done
 
 echo "=== upstream-stable-dev wrapper summary ==="
-echo "processed: $processed"
+echo "success: $success"
 echo "skipped: $skipped"
 echo "failed: $failed"
+if [[ "$failed" -gt 0 ]]; then
+  echo "OVERALL RESULT: FAILED"
+else
+  echo "OVERALL RESULT: SUCCESS"
+fi
 echo "=== upstream-stable-dev branch report ==="
 case "$REPORT_FORMAT" in
   compact) print_summary_compact "$summary_file" ;;
@@ -311,8 +345,5 @@ case "$REPORT_FORMAT" in
 esac
 
 if [[ "$failed" -gt 0 ]]; then
-  pause_if_needed "${ORIG_ARGS[@]}"
   exit 1
 fi
-
-pause_if_needed "${ORIG_ARGS[@]}"
