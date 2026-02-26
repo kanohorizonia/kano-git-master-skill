@@ -2,33 +2,53 @@ add_library(kano_git_core STATIC)
 
 target_sources(kano_git_core
   PRIVATE
-    public/shell_executor.hpp
-    public/command_registry.hpp
-    public/version.hpp
-    private/shell_executor.cpp
-    private/command_registry.cpp
-    private/commands/branch_cmd.cpp
-    private/commands/clone_cmd.cpp
-    private/commands/commit_cmd.cpp
-    private/commands/doctor_cmd.cpp
-    private/commands/p4_cmd.cpp
-    private/commands/push_cmd.cpp
-    private/commands/resolve_cmd.cpp
-    private/commands/scalar_cmd.cpp
-    private/commands/submodule_cmd.cpp
-    private/commands/subtree_cmd.cpp
-    private/commands/svn_cmd.cpp
-    private/commands/sync_cmd.cpp
-    private/commands/version_cmd.cpp
-    private/commands/workspace_cmd.cpp
-    private/commands/worktree_cmd.cpp
+    version/public/version.hpp
+    shell/public/shell_executor.hpp
+    commands/public/command_registry.hpp
+    workspace/public/discovery.hpp
+    workspace/public/native_workspace.hpp
+
+    version/public/version.cppm
+    shell/public/shell.cppm
+    commands/public/commands.cppm
+    workspace/public/workspace.cppm
+
+    shell/private/shell_executor.cpp
+    commands/private/command_registry.cpp
+
+    workspace/private/discovery.cpp
+    workspace/private/scheduler.hpp
+    workspace/private/scheduler.cpp
+    workspace/private/native_workspace.cpp
+
+    commands/private/commands/branch_cmd.cpp
+    commands/private/commands/clone_cmd.cpp
+    commands/private/commands/complete_cmd.cpp
+    commands/private/commands/completion_cmd.cpp
+    commands/private/commands/commit_cmd.cpp
+    commands/private/commands/doctor_cmd.cpp
+    commands/private/commands/meta_cmd.cpp
+    commands/private/commands/p4_cmd.cpp
+    commands/private/commands/push_cmd.cpp
+    commands/private/commands/resolve_cmd.cpp
+    commands/private/commands/scalar_cmd.cpp
+    commands/private/commands/submodule_cmd.cpp
+    commands/private/commands/subtree_cmd.cpp
+    commands/private/commands/svn_cmd.cpp
+    commands/private/commands/sync_cmd.cpp
+    commands/private/commands/version_cmd.cpp
+    commands/private/commands/workspace_cmd.cpp
+    commands/private/commands/worktree_cmd.cpp
 )
 
 if(KOG_ENABLE_MODULES)
   target_sources(kano_git_core
     PUBLIC
       FILE_SET cxx_modules TYPE CXX_MODULES FILES
-        public/version.cppm
+        version/public/version.cppm
+        shell/public/shell.cppm
+        commands/public/commands.cppm
+        workspace/public/workspace.cppm
   )
   target_compile_definitions(kano_git_core PUBLIC KOG_USE_MODULES=1)
 endif()
@@ -45,8 +65,16 @@ endif()
 # CLI11 v2.4 uses <codecvt> which is removed in MSVC 19.50 (VS 2026)
 target_compile_definitions(kano_git_core PRIVATE CLI11_HAS_CODECVT=0)
 target_include_directories(kano_git_core 
-    PUBLIC  public 
-    PRIVATE private
+    PUBLIC
+      version/public
+      shell/public
+      commands/public
+      workspace/public
+    PRIVATE
+      shell/private
+      commands/private
+      commands/private/commands
+      workspace/private
 )
 
 # Workaround for MSBuild failing to find standard headers due to -external:W0 on SYSTEM includes
