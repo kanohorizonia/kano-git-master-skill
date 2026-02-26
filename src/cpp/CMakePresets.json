@@ -95,6 +95,34 @@
                 "KOG_ENABLE_MODULES": "OFF",
                 "KOG_PRESET_NAME": "macos-ninja-clang"
             }
+        },
+        {
+            "name": "macos-ninja-clang-x64",
+            "displayName": "macOS Ninja Multi-Config (Clang x64)",
+            "description": "Uses Ninja Multi-Config with Apple Clang targeting Intel x86_64",
+            "generator": "Ninja Multi-Config",
+            "binaryDir": "${sourceDir}/build/_intermediate/macos-ninja-clang-x64",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "clang",
+                "CMAKE_CXX_COMPILER": "clang++",
+                "CMAKE_OSX_ARCHITECTURES": "x86_64",
+                "KOG_ENABLE_MODULES": "OFF",
+                "KOG_PRESET_NAME": "macos-ninja-clang-x64"
+            }
+        },
+        {
+            "name": "macos-ninja-clang-arm64",
+            "displayName": "macOS Ninja Multi-Config (Clang arm64)",
+            "description": "Uses Ninja Multi-Config with Apple Clang targeting Apple Silicon arm64",
+            "generator": "Ninja Multi-Config",
+            "binaryDir": "${sourceDir}/build/_intermediate/macos-ninja-clang-arm64",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "clang",
+                "CMAKE_CXX_COMPILER": "clang++",
+                "CMAKE_OSX_ARCHITECTURES": "arm64",
+                "KOG_ENABLE_MODULES": "OFF",
+                "KOG_PRESET_NAME": "macos-ninja-clang-arm64"
+            }
         }
     ],
     "buildPresets": [
@@ -166,6 +194,26 @@
         {
             "name": "macos-ninja-clang-release",
             "configurePreset": "macos-ninja-clang",
+            "configuration": "Release"
+        },
+        {
+            "name": "macos-ninja-clang-x64-debug",
+            "configurePreset": "macos-ninja-clang-x64",
+            "configuration": "Debug"
+        },
+        {
+            "name": "macos-ninja-clang-x64-release",
+            "configurePreset": "macos-ninja-clang-x64",
+            "configuration": "Release"
+        },
+        {
+            "name": "macos-ninja-clang-arm64-debug",
+            "configurePreset": "macos-ninja-clang-arm64",
+            "configuration": "Debug"
+        },
+        {
+            "name": "macos-ninja-clang-arm64-release",
+            "configurePreset": "macos-ninja-clang-arm64",
             "configuration": "Release"
         }
     ]

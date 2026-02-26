@@ -1,12 +1,5 @@
 #!/usr/bin/env python3
-"""
-kano-git launcher — cross-platform CLI launcher
-Locates and executes the compiled kano-git binary.
-
-Usage:
-    kano-git <command> [args...]
-    kog <command> [args...]       (alias)
-"""
+"""kano-git launcher with auto-build and shell fallback."""
 
 import os
 import sys
@@ -16,29 +9,72 @@ from pathlib import Path
 from typing import Optional
 
 
+def _project_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def _platform_name() -> str:
+    name = platform.system()
+    if name == "Darwin":
+        return "macos"
+    return name.lower()
+
+
+def _arch_name() -> str:
+    machine = platform.machine().lower()
+    if machine in {"arm64", "aarch64"}:
+        return "arm64"
+    return "x64"
+
+
+def _candidate_presets() -> list[str]:
+    os_name = platform.system()
+    arch = _arch_name()
+    if os_name == "Windows":
+        if arch == "arm64":
+            return ["windows-ninja-msvc-arm64", "windows-ninja-msvc"]
+        return ["windows-ninja-msvc"]
+    if os_name == "Linux":
+        return ["linux-ninja-gcc"]
+    if os_name == "Darwin":
+        if arch == "arm64":
+            return ["macos-ninja-clang-arm64", "macos-ninja-clang"]
+        return ["macos-ninja-clang-x64", "macos-ninja-clang"]
+    return []
+
+
 def find_binary() -> Optional[Path]:
     """Find the kano-git binary, searching in standard locations."""
-    script_dir = Path(__file__).resolve().parent   # scripts/
-    project_root = script_dir.parent               # project root
+    project_root = _project_root()
     build_dir = project_root / "src" / "cpp" / "build"
 
     exe_name = "kano-git.exe" if platform.system() == "Windows" else "kano-git"
 
-    # Search order:
-    search_paths = [
-        # 1. KANO_GIT_BIN env var
-        Path(os.environ.get("KANO_GIT_BIN", "")) / exe_name,
-        # 2. Release build
-        build_dir / "release" / exe_name,
-        # 3. Debug build
-        build_dir / "debug" / exe_name,
-    ]
+    search_paths = []
+
+    # 1) KANO_GIT_BIN env var (file path or directory)
+    env_bin = os.environ.get("KANO_GIT_BIN", "").strip()
+    if env_bin:
+        env_path = Path(env_bin)
+        if env_path.is_file():
+            search_paths.append(env_path)
+        else:
+            search_paths.append(env_path / exe_name)
+
+    # 2) Current preset layout
+    for preset in _candidate_presets():
+        search_paths.append(build_dir / "bin" / preset / "release" / exe_name)
+        search_paths.append(build_dir / "bin" / preset / "debug" / exe_name)
+
+    # 3) Legacy layout compatibility
+    search_paths.append(build_dir / "release" / exe_name)
+    search_paths.append(build_dir / "debug" / exe_name)
 
     for path in search_paths:
         if path.is_file():
             return path
 
-    # 4. Try system PATH
+    # 4) Try system PATH
     import shutil
     system_bin = shutil.which("kano-git")
     if system_bin:
@@ -47,18 +83,277 @@ def find_binary() -> Optional[Path]:
     return None
 
 
+def _find_bash() -> Optional[str]:
+    import shutil
+
+    if platform.system() == "Windows":
+        candidates = [
+            os.environ.get("GIT_BASH_PATH", "").strip(),
+            shutil.which("bash") or "",
+            r"C:\Program Files\Git\bin\bash.exe",
+        ]
+        for candidate in candidates:
+            if candidate and Path(candidate).is_file():
+                return candidate
+        return None
+
+    return shutil.which("bash")
+
+
+def _script_paths() -> tuple[Optional[Path], Optional[Path]]:
+    project_root = _project_root()
+    base = project_root / "src" / "cpp" / "build" / "script"
+    os_name = platform.system()
+    arch = _arch_name()
+
+    if os_name == "Windows":
+        prereq = base / "windows" / "prerequisite_windows.sh"
+        build = base / "windows" / (
+            "build_windows_ninja_msvc_arm64_release.sh"
+            if arch == "arm64"
+            else "build_windows_ninja_msvc_release.sh"
+        )
+        return prereq, build
+
+    if os_name == "Linux":
+        return (
+            base / "linux" / "prerequisite_linux.sh",
+            base / "linux" / "build_linux_ninja_gcc_release.sh",
+        )
+
+    if os_name == "Darwin":
+        build = base / "macos" / (
+            "build_macos_ninja_clang_arm64_release.sh"
+            if arch == "arm64"
+            else "build_macos_ninja_clang_x64_release.sh"
+        )
+        return (
+            base / "macos" / "prerequisite_macos.sh",
+            build,
+        )
+
+    return None, None
+
+
+def _install_marker_file() -> Path:
+    marker = os.environ.get("KANO_GIT_INSTALL_MARKER", "").strip()
+    if marker:
+        return Path(marker)
+    return _project_root() / ".kano-installed-marker"
+
+
+def _is_packaged_install() -> bool:
+    return _install_marker_file().is_file()
+
+
+def _run_shell_script(script: Path) -> bool:
+    bash = _find_bash()
+    if not bash:
+        print("Warning: bash not found; cannot run shell script automation.", file=sys.stderr)
+        return False
+
+    if not script.is_file():
+        print(f"Warning: script not found: {script}", file=sys.stderr)
+        return False
+
+    env = os.environ.copy()
+    env.setdefault("KANO_GIT_MASTER_ROOT", str(_project_root()))
+    try:
+        rc = subprocess.run([bash, str(script)], env=env).returncode
+        return rc == 0
+    except OSError as exc:
+        print(f"Warning: failed to execute {script}: {exc}", file=sys.stderr)
+        return False
+
+
+def _try_auto_prepare_binary() -> bool:
+    prereq_script, build_script = _script_paths()
+    if not prereq_script or not build_script:
+        print(
+            f"Warning: no build automation scripts for platform {_platform_name()} ({_arch_name()}).",
+            file=sys.stderr,
+        )
+        return False
+
+    print("kano-git binary not found. Installing/upgrading prerequisites...", file=sys.stderr)
+    if not _run_shell_script(prereq_script):
+        print("Warning: prerequisite installation failed.", file=sys.stderr)
+        return False
+
+    print("Building C++ accelerated kano-git binary...", file=sys.stderr)
+    if not _run_shell_script(build_script):
+        print("Warning: C++ binary build failed.", file=sys.stderr)
+        return False
+
+    return True
+
+
+def _resolve_fallback_script(argv: list[str]) -> tuple[Optional[Path], list[str]]:
+    if not argv:
+        return _project_root() / "src" / "shell" / "internal" / "show-version.sh", []
+
+    command = argv[0]
+    args = argv[1:]
+    root = _project_root() / "src" / "shell"
+
+    direct = {
+        "commit": root / "commit-tools" / "commit" / "smart-commit.sh",
+        "resolve": root / "commit-tools" / "resolve" / "smart-resolve.sh",
+        "push": root / "commit-tools" / "smart-push.sh",
+        "clone": root / "core" / "smart-clone.sh",
+        "doctor": root / "commit-tools" / "doctor.sh",
+        "version": root / "internal" / "show-version.sh",
+        "submodule": root / "submodules" / "smart-submodule.sh",
+    }
+    if command in direct:
+        return direct[command], args
+
+    if command == "sync":
+        if not args:
+            return root / "commit-tools" / "sync" / "smart-sync.sh", []
+        sub = args[0]
+        mapping = {
+            "origin-latest": root / "commit-tools" / "sync" / "smart-sync-origin-latest.sh",
+            "upstream-force-push": root / "commit-tools" / "sync" / "smart-sync-upstream-force-push.sh",
+            "stable-dev": root / "commit-tools" / "sync" / "smart-sync-stable-dev.sh",
+            "dev": root / "commit-tools" / "sync" / "smart-sync-dev.sh",
+        }
+        if sub in mapping:
+            return mapping[sub], args[1:]
+
+    if command == "workspace":
+        if not args:
+            return root / "workspace" / "status-all-repos.sh", []
+        sub = args[0]
+        mapping = {
+            "status": root / "workspace" / "status-all-repos.sh",
+            "update": root / "workspace" / "update-workspace-repos.sh",
+            "foreach": root / "workspace" / "foreach-repo.sh",
+            "discover": root / "core" / "discover-repos.sh",
+            "update-repo": root / "core" / "update-repo.sh",
+        }
+        if sub in mapping:
+            return mapping[sub], args[1:]
+
+    if command == "worktree":
+        if not args:
+            return root / "worktree" / "list-worktrees.sh", []
+        sub = args[0]
+        mapping = {
+            "create": root / "worktree" / "create-worktree.sh",
+            "create-orphan": root / "worktree" / "create-orphan-worktree.sh",
+            "list": root / "worktree" / "list-worktrees.sh",
+            "remove": root / "worktree" / "remove-worktree.sh",
+            "sync": root / "worktree" / "sync-worktrees.sh",
+            "open": root / "worktree" / "open-worktree.sh",
+        }
+        if sub in mapping:
+            return mapping[sub], args[1:]
+
+    if command == "subtree":
+        if not args:
+            return root / "subtree" / "list-subtrees.sh", []
+        sub = args[0]
+        mapping = {
+            "add": root / "subtree" / "add-subtree.sh",
+            "pull": root / "subtree" / "pull-subtree.sh",
+            "push": root / "subtree" / "push-subtree.sh",
+            "split": root / "subtree" / "split-subtree.sh",
+            "list": root / "subtree" / "list-subtrees.sh",
+        }
+        if sub in mapping:
+            return mapping[sub], args[1:]
+
+    if command == "scalar":
+        if not args:
+            return root / "mono-repo" / "scalar" / "status.sh", []
+        sub = args[0]
+        mapping = {
+            "register": root / "mono-repo" / "scalar" / "register.sh",
+            "unregister": root / "mono-repo" / "scalar" / "unregister.sh",
+            "status": root / "mono-repo" / "scalar" / "status.sh",
+            "optimize": root / "mono-repo" / "scalar" / "optimize.sh",
+        }
+        if sub in mapping:
+            return mapping[sub], args[1:]
+
+    if command == "branch":
+        if not args:
+            return None, []
+        sub = args[0]
+        mapping = {
+            "rebase-upstream": root / "branches" / "rebase-to-upstream-latest.sh",
+            "compare": root / "branches" / "compare-branches.sh",
+            "cherry-pick-batch": root / "branches" / "cherry-pick-batch.sh",
+        }
+        if sub in mapping:
+            return mapping[sub], args[1:]
+
+    if command in {"p4", "svn"}:
+        if not args:
+            return None, []
+        sub = args[0]
+        bridge_dir = root / "vcs-bridges" / command
+        candidate = bridge_dir / f"{sub}.sh"
+        if candidate.is_file():
+            return candidate, args[1:]
+
+    return None, []
+
+
+def _run_shell_fallback(argv: list[str]) -> int:
+    script, args = _resolve_fallback_script(argv)
+    if not script or not script.is_file():
+        print(
+            "Error: C++ acceleration unavailable and no shell fallback route for this command.",
+            file=sys.stderr,
+        )
+        return 1
+
+    bash = _find_bash()
+    if not bash:
+        print(
+            "Error: C++ acceleration unavailable and bash is missing, so shell fallback cannot run.",
+            file=sys.stderr,
+        )
+        return 1
+
+    env = os.environ.copy()
+    env.setdefault("KANO_GIT_MASTER_ROOT", str(_project_root()))
+    print(
+        "Warning: C++ acceleration is unavailable. Falling back to pure shell implementation.",
+        file=sys.stderr,
+    )
+    return subprocess.run([bash, str(script), *args], env=env).returncode
+
+
 def main():
     binary = find_binary()
 
     if binary is None:
-        print("Error: kano-git binary not found.", file=sys.stderr)
-        print("", file=sys.stderr)
-        print("Build it first:", file=sys.stderr)
-        print("  cd src/cpp && ./build.sh       # Unix", file=sys.stderr)
-        print("  cd src/cpp && .\\build.ps1      # Windows", file=sys.stderr)
-        print("", file=sys.stderr)
-        print("Or set KANO_GIT_BIN to the directory containing the binary.", file=sys.stderr)
-        sys.exit(1)
+        prepared = False
+        if _is_packaged_install():
+            marker_path = _install_marker_file()
+            print(
+                "Error: kano-git packaged install marker detected, but C++ binary is missing.",
+                file=sys.stderr,
+            )
+            print(
+                f"Error: marker file: {marker_path}",
+                file=sys.stderr,
+            )
+            print(
+                "Error: this installation may be corrupted. Please reinstall the package.",
+                file=sys.stderr,
+            )
+        else:
+            prepared = _try_auto_prepare_binary()
+        if prepared:
+            binary = find_binary()
+
+    if binary is None:
+        rc = _run_shell_fallback(sys.argv[1:])
+        sys.exit(rc)
 
     # Pass through all arguments to the binary
     args = [str(binary)]

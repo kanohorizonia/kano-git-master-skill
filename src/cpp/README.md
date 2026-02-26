@@ -33,9 +33,13 @@ The CLI wraps existing shell scripts into a unified binary (`kano-git` / `kog`) 
 ./src/cpp/build/script/linux/build_linux_ninja_gcc_debug.sh
 ./src/cpp/build/script/linux/build_linux_ninja_gcc_release.sh
 
-# macOS host
-./src/cpp/build/script/macos/build_macos_ninja_clang_debug.sh
-./src/cpp/build/script/macos/build_macos_ninja_clang_release.sh
+# macOS host (Intel)
+./src/cpp/build/script/macos/build_macos_ninja_clang_x64_debug.sh
+./src/cpp/build/script/macos/build_macos_ninja_clang_x64_release.sh
+
+# macOS host (Apple Silicon)
+./src/cpp/build/script/macos/build_macos_ninja_clang_arm64_debug.sh
+./src/cpp/build/script/macos/build_macos_ninja_clang_arm64_release.sh
 ```
 
 ### Run
@@ -58,6 +62,15 @@ The CLI wraps existing shell scripts into a unified binary (`kano-git` / `kog`) 
 kano-git commit
 kog commit    # short alias
 ```
+
+### Launcher mode (developer vs installed package)
+
+- Default behavior (no marker): launcher assumes **developer mode** and auto-runs prerequisite + build scripts when C++ binary is missing.
+- Installed-package behavior: if marker file exists, launcher assumes **packaged install mode** and will **not** auto-build.
+- Marker path:
+  - default: `.kano-installed-marker` at repo root
+  - override: `KANO_GIT_INSTALL_MARKER=/absolute/path/to/marker`
+- In packaged-install mode, if binary is missing, launcher prints an installation-corruption warning and asks user to reinstall.
 
 ## Command Tree
 

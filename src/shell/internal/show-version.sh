@@ -20,7 +20,7 @@ set -euo pipefail
 
 # Get script directory and project root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd -P)"
 VERSION_FILE="$PROJECT_ROOT/VERSION"
 
 # Default mode
