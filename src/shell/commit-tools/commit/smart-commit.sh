@@ -110,6 +110,7 @@ PROMPT_ROOT="$SKILL_ROOT/prompts"
 LIST_REPOS_ONLY=0
 EXTERNAL_REPO_LIST_FILE="${KANO_REPO_LIST_FILE:-}"
 DISCOVERY_SOURCE="discover-script"
+STAGED_ONLY=0
 
 # Environment variable overrides (CLI args still take precedence):
 #   KOG_RULES_TEXT    -> same as --rules
@@ -157,6 +158,7 @@ Optional:
   --repos <paths>             Only process specific repos (comma-separated paths)
   --smart-ignore              Use smart-ignore.sh for .gitignore updates (default: on)
   --no-smart-ignore           Use legacy inline .gitignore updater only
+  --staged-only               Commit only already-staged changes (skip auto git add)
   --verbose                   Show all repos (default: show only repos with changes)
   --list-repos                List discovered repos (with type) and exit
   --list-models [provider]    List available models (all or specific provider)
@@ -200,6 +202,9 @@ Examples:
 
   # Only process specific repos
   ./smart-commit.sh --provider copilot --model gpt-5-mini --repos ".,submodules/my-lib"
+
+  # Commit only staged changes
+  ./smart-commit.sh --provider copilot --model gpt-5-mini --staged-only -m "chore: update"
 
   # Commit and push
   ./smart-commit.sh --provider opencode --model auto --push
@@ -318,6 +323,10 @@ while [[ $# -gt 0 ]]; do
       RULES_FILE="${2:-}"
       shift 2
       ;;
+    --staged-only)
+      STAGED_ONLY=1
+      shift
+      ;;
     --prompt-mode)
       PROMPT_MODE="${2:-}"
       shift 2
@@ -329,6 +338,10 @@ while [[ $# -gt 0 ]]; do
     --repos)
       REPO_FILTER="${2:-}"
       shift 2
+      ;;
+    --staged-only)
+      STAGED_ONLY=1
+      shift
       ;;
     --smart-ignore)
       USE_SMART_IGNORE=1
@@ -1528,11 +1541,13 @@ commit_repo() {
     fi
   fi
 
-  # Update .gitignore
-  maybe_update_gitignore "$repo"
+  if [[ "$STAGED_ONLY" -eq 0 ]]; then
+    # Update .gitignore
+    maybe_update_gitignore "$repo"
 
-  # Stage all changes
-  git -C "$repo" add -A 2>/dev/null || true
+    # Stage all changes
+    git -C "$repo" add -A 2>/dev/null || true
+  fi
 
   # Check if there are staged changes
   if git -C "$repo" diff --cached --quiet 2>/dev/null; then
