@@ -14,7 +14,7 @@ __pycache__/
 .pnpm/
 .pytest_cache/
 .ruff_cache/
-.sisyphus/boulder.json
+.sisyphus/
 .tmp/
 .turbo/
 .venv/
@@ -45,9 +45,16 @@ venv/
 cli/build/
 cli/out/
 
-# Local C++ debug/build artifacts
+# Local C++ build artifacts (keep only checked-in wrappers)
+src/cpp/build/**
+!src/cpp/build/script/
+!src/cpp/build/script/**
 src/cpp/build_/
+src/cpp/compile_commands.json
+src/cpp/releases/
 src/cpp/cmake_ninja_out.txt
+src/cpp/cmake_out.txt
+src/cpp/msbuild_out*.txt
 src/cpp/msbuild_final*.txt
 src/cpp/ninja_build*.txt
 src/cpp/test_1444_out.txt
@@ -55,3 +62,8 @@ src/cpp/build_ninja.bat
 src/cpp/test_1444.bat
 src/cpp/test_env.bat
 src/cpp/patch_extras.py
+
+# Vendored dependency artifacts not needed for build
+src/cpp/code/thirdparty/fmt.zip
+src/cpp/code/thirdparty/fmt-10.2.1/doc/
+src/cpp/code/thirdparty/_deps/

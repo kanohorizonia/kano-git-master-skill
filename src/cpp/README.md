@@ -15,32 +15,40 @@ The CLI wraps existing shell scripts into a unified binary (`kano-git` / `kog`) 
 ### Prerequisites
 
 - **CMake** ≥ 3.21
-- **C++23 compiler** (GCC 13+, Clang 16+, MSVC 19.38+)
+- **C++20 compiler** (GCC 13+, Clang 16+, MSVC 19.38+)
 - **vcpkg** (set `VCPKG_ROOT` environment variable)
 
 ### Build
 
 ```bash
-# Unix
-cd src/cpp
-./build.sh                  # Release build
-./build.sh --debug          # Debug build
-./build.sh --clean          # Clean rebuild
+# Windows host (Git Bash)
+./src/cpp/build/script/windows/build_windows_ninja_msvc_debug.sh
+./src/cpp/build/script/windows/build_windows_ninja_msvc_release.sh
 
-# Windows
-cd src/cpp
-.\build.ps1                 # Release build
-.\build.ps1 -Config debug   # Debug build
-.\build.ps1 -Clean          # Clean rebuild
+# Windows host -> Linux via Docker
+./src/cpp/build/script/windows/build_linux_ninja_gcc_debug_via_docker.sh
+./src/cpp/build/script/windows/build_linux_ninja_gcc_release_via_docker.sh
+
+# Linux host
+./src/cpp/build/script/linux/build_linux_ninja_gcc_debug.sh
+./src/cpp/build/script/linux/build_linux_ninja_gcc_release.sh
+
+# macOS host
+./src/cpp/build/script/macos/build_macos_ninja_clang_debug.sh
+./src/cpp/build/script/macos/build_macos_ninja_clang_release.sh
 ```
 
 ### Run
 
 ```bash
-./src/cpp/build/release/kano-git version      # Show version
-./src/cpp/build/release/kano-git help          # Show all commands
-./src/cpp/build/release/kano-git commit        # AI-powered commit
-./src/cpp/build/release/kano-git push          # Smart multi-remote push
+# Windows (MSVC Ninja preset)
+./src/cpp/build/bin/windows-ninja-msvc/release/kano-git.exe version
+
+# Linux (GCC Ninja preset)
+./src/cpp/build/bin/linux-ninja-gcc/release/kano-git version
+
+# Generic artifact layout
+./src/cpp/build/bin/<preset>/<config>/kano-git[.exe]
 ```
 
 ### Python Launcher (alternative)
@@ -76,34 +84,33 @@ kog commit    # short alias
 ```
 src/
 ├── cpp/
-│   ├── kano-git-core/       # static library (C++23)
+│   ├── code/systems/kano_git_core/ # static library (C++20)
 │   │   ├── shell_executor   # Process spawning
 │   │   ├── command_registry # Command routing
 │   │   └── commands/        # Command implementations
-│   └── kog-cli/             # Thin CLI frontend
+│   └── code/apps/kano_git_cli/   # Thin CLI frontend
 │       └── main.cpp         # CLI11 entry point
 └── shell/                   # Shell scripts execution backend
 ```
 
 The CLI is a thin orchestrator — all actual Git logic lives in the existing shell scripts under `src/shell/`.
-The `kano-git-core` library is designed for reuse by future TUI/GUI frontends.
+The `kano_git_core` library is designed for reuse by future TUI/GUI frontends.
 
 ## Project Structure
 
 ```
 src/
 ├── cpp/
-│   ├── CMakeLists.txt          # Build configuration (C++23)
-│   ├── CMakePresets.json       # Debug/Release presets
-│   ├── vcpkg.json              # Dependencies (CLI11, fmt)
-│   ├── build.sh / build.ps1    # Build scripts
-│   ├── kano-git-core/          # Core static library
-│   │   ├── CMakeLists.txt
-│   │   ├── include/            # Public headers
-│   │   └── src/                # Implementations & commands/
-│   └── kog-cli/                # CLI executable
-│       ├── CMakeLists.txt
-│       └── main.cpp
+│   ├── CMakeLists.txt          # Build configuration (C++20 modules)
+│   ├── CMakePresets.json       # Multi-config presets (Debug/Release)
+│   ├── vcpkg.json              # Dependencies (CLI11)
+│   ├── build/script/           # Host/preset build wrappers
+│   ├── code/systems/kano_git_core/  # Core static library
+│   ├── code/apps/kano_git_cli/      # CLI executable
+│   ├── code/thirdparty/cli11/       # Vendored CLI11 source
+│   ├── build/bin/              # Final executables by preset/config
+│   ├── build/lib/              # Libraries by preset/config
+│   └── build/_intermediate/    # CMake/Ninja/MSBuild intermediates
 └── shell/                      # Shell execution backend
     ├── core/
     ├── workspace/
