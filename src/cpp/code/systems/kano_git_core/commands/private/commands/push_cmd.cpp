@@ -58,6 +58,8 @@ auto RunNativePush(
     const bool InDryRun,
     const bool InForceWithLease,
     const bool InNoVerify,
+    const bool InStashLocalChanges,
+    const bool InFailOnDirtySync,
     const std::string& InRemoteFilter) -> int {
     int failures = 0;
     int successes = 0;
@@ -85,8 +87,36 @@ auto RunNativePush(
         const bool hasLocalChanges = !Trim(GitCapture(repoPath, {"status", "--porcelain"}).stdoutStr).empty();
 
         if (!InSkipSync && hasUpstream) {
+            bool hadStash = false;
+            std::string stashName;
             if (hasLocalChanges) {
-                std::cout << "[" << repoLabel << "] Sync skipped: local changes present; proceeding to push\n";
+                if (InFailOnDirtySync) {
+                    std::cerr << "[" << repoLabel << "] Sync failed: local changes present (--fail-on-dirty-sync)\n";
+                    failures += 1;
+                    continue;
+                }
+
+                if (InStashLocalChanges) {
+                    stashName = "kano-native-push-autostash";
+                    if (InDryRun) {
+                        std::cout << "[DRY RUN] [" << repoLabel << "] Would run: git stash push -u -m " << stashName << "\n";
+                        hadStash = true;
+                    } else {
+                        const auto stash = GitCapture(repoPath, {"stash", "push", "-u", "-m", stashName});
+                        if (stash.exitCode != 0) {
+                            std::cerr << "[" << repoLabel << "] Failed to create auto-stash before sync\n";
+                            failures += 1;
+                            continue;
+                        }
+                        const auto stashOut = Trim(stash.stdoutStr);
+                        hadStash = stashOut.find("No local changes to save") == std::string::npos;
+                        if (hadStash) {
+                            std::cout << "[" << repoLabel << "] Auto-stashed local changes for sync\n";
+                        }
+                    }
+                } else {
+                    std::cout << "[" << repoLabel << "] Sync skipped: local changes present; proceeding to push\n";
+                }
             } else if (InDryRun) {
                 std::cout << "[DRY RUN] [" << repoLabel << "] Would run: git pull --rebase\n";
             } else {
@@ -95,6 +125,19 @@ auto RunNativePush(
                     std::cerr << "[" << repoLabel << "] Sync failed before push\n";
                     failures += 1;
                     continue;
+                }
+            }
+
+            if (InStashLocalChanges && hasLocalChanges && hadStash) {
+                if (InDryRun) {
+                    std::cout << "[DRY RUN] [" << repoLabel << "] Would run: git stash pop\n";
+                } else {
+                    const auto pop = GitPassThrough(repoPath, {"stash", "pop"});
+                    if (pop.exitCode != 0) {
+                        std::cerr << "[" << repoLabel << "] Failed to restore auto-stash after sync\n";
+                        failures += 1;
+                        continue;
+                    }
                 }
             }
         }
@@ -190,6 +233,8 @@ void RegisterPush(CLI::App& InApp) {
     auto* forceWithLease = new bool{false};
     auto* noVerify = new bool{false};
     auto* noSmartSync = new bool{false};
+    auto* stashLocalChanges = new bool{false};
+    auto* failOnDirtySync = new bool{false};
     auto* remote = new std::string{};
 
     cmd->add_flag("--shell", *shellMode, "Use shell fallback implementation");
@@ -200,6 +245,8 @@ void RegisterPush(CLI::App& InApp) {
     cmd->add_flag("--force-with-lease", *forceWithLease, "Use force-with-lease for push");
     cmd->add_flag("--no-verify", *noVerify, "Pass --no-verify to git push");
     cmd->add_flag("--no-smart-sync", *noSmartSync, "Compatibility flag (native uses simple pull --rebase)");
+    cmd->add_flag("--stash-local-changes", *stashLocalChanges, "Auto-stash local changes during native sync");
+    cmd->add_flag("--fail-on-dirty-sync", *failOnDirtySync, "Fail native sync when local changes exist");
     cmd->add_option("--remote", *remote, "Native remote filter (default fan-out origin-ssh/http/origin)");
 
     cmd->callback([=]() {
@@ -238,9 +285,20 @@ void RegisterPush(CLI::App& InApp) {
             if (*noSmartSync) {
                 args.push_back("--no-smart-sync");
             }
+            if (*stashLocalChanges) {
+                args.push_back("--stash-local-changes");
+            }
+            if (*failOnDirtySync) {
+                args.push_back("--fail-on-dirty-sync");
+            }
             args.insert(args.end(), extras.begin(), extras.end());
             auto result = shell::ExecuteScript("commit-tools/smart-push.sh", args);
             std::exit(result.exitCode);
+        }
+
+        if (*stashLocalChanges && *failOnDirtySync) {
+            std::cerr << "Error: --stash-local-changes and --fail-on-dirty-sync cannot be used together\n";
+            std::exit(1);
         }
 
         const auto code = RunNativePush(
@@ -250,6 +308,8 @@ void RegisterPush(CLI::App& InApp) {
             *dryRun,
             *forceWithLease,
             *noVerify,
+            *stashLocalChanges,
+            *failOnDirtySync,
             *remote);
         std::exit(code);
     });
