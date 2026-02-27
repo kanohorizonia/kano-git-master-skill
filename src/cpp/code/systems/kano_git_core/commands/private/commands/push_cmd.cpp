@@ -1,4 +1,4 @@
-// push command — Smart multi-remote push
+// push command — Multi-remote push workflow
 // Delegates to: scripts/commit-tools/smart-push.sh
 
 #include "command_registry.hpp"
@@ -7,7 +7,7 @@
 namespace kano::git::commands {
 
 void RegisterPush(CLI::App& InApp) {
-    auto* cmd = InApp.add_subcommand("push", "Smart multi-remote push with fallback");
+    auto* cmd = InApp.add_subcommand("push", "Multi-remote push workflow");
     cmd->allow_extras();
 
     cmd->callback([=]() {

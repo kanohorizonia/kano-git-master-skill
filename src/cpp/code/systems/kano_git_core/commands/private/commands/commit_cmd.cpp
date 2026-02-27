@@ -35,6 +35,9 @@ void RegisterCommit(CLI::App& InApp) {
     auto* bNoAiReview = new bool{false};
     cmd->add_flag("--no-ai-review", *bNoAiReview, "Skip AI review gate");
 
+    auto* bStagedOnly = new bool{false};
+    cmd->add_flag("--staged-only", *bStagedOnly, "Commit only already-staged changes (skip auto git add)");
+
     cmd->callback([=]() {
         std::vector<std::string> args;
 
@@ -52,6 +55,7 @@ void RegisterCommit(CLI::App& InApp) {
         if (!agent->empty())    { args.push_back("--agent");   args.push_back(*agent); }
         if (*bPush)             { args.push_back("--push"); }
         if (*bNoAiReview)       { args.push_back("--no-ai-review"); }
+        if (*bStagedOnly)       { args.push_back("--staged-only"); }
 
         // Pass through any extra arguments
         auto extras = cmd->remaining();

@@ -15,7 +15,7 @@ void RegisterVersion(CLI::App& InApp) {
     auto* cmd = InApp.add_subcommand("version", "Show version information");
 
     cmd->callback([]() {
-        std::cout << kano::git::GetVersion() << "\n";
+        std::cout << kano::git::GetBuildInfo() << "\n";
     });
 }
 

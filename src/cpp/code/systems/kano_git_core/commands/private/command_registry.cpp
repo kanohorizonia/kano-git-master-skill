@@ -9,6 +9,9 @@ void RegisterAll(CLI::App& InApp) {
     RegisterMeta(InApp);
     RegisterComplete(InApp);
     RegisterCompletion(InApp);
+    RegisterGuide(InApp);
+    RegisterStatus(InApp);
+    RegisterTui(InApp);
 
     // Smart tools (AI-powered)
     RegisterCommit(InApp);
