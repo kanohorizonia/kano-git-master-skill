@@ -19,6 +19,7 @@ __pycache__/
 .turbo/
 .venv/
 .vscode/
+!_kano/backlog/.gitignore
 _kano/
 skills/
 *.bak
