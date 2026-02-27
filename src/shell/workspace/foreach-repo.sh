@@ -13,6 +13,8 @@
 #   command                 Command to execute in each repo
 #
 # Options:
+#   --plan-file <file>       Use native planner JSON file (deterministic operation order)
+#   --command <cmd>          Explicit command string (preferred for wrappers)
 #   --manifest <file>       Use manifest file
 #   --include-types <types> Comma-separated repo types
 #   --exclude <pattern>     Exclude path patterns
@@ -49,6 +51,8 @@ source "$SCRIPT_DIR/../lib/git-helpers.sh"
 #------------------------------------------------------------------------------
 
 COMMAND=""
+PLAN_FILE=""
+EXPLICIT_COMMAND=""
 MANIFEST_FILE=""
 INCLUDE_TYPES="root,registered,unregistered"
 EXCLUDE_PATTERNS=()
@@ -71,6 +75,8 @@ Arguments:
   command                 Command to execute in each repo
 
 Options:
+  --plan-file <file>       Use native planner JSON file (deterministic operation order)
+  --command <cmd>          Explicit command string (preferred for wrappers)
   --manifest <file>       Use manifest file
   --include-types <types> Comma-separated: root,registered,unregistered (aliases: submodule,standalone)
   --exclude <pattern>     Exclude path patterns (can be used multiple times)
@@ -95,6 +101,78 @@ Examples:
 
 Works with any Git remote provider (GitHub, GitLab, Azure Repos, Bitbucket, self-hosted, etc.)
 EOF
+}
+
+type_included() {
+  local repo_type="$1"
+  local include_types="$2"
+  local type
+  IFS=',' read -ra types <<< "$include_types"
+  for type in "${types[@]}"; do
+    case "$type" in
+      submodule) type="registered" ;;
+      standalone) type="unregistered" ;;
+    esac
+    if [[ "$repo_type" == "$type" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+load_from_plan() {
+  local plan_file="$1"
+
+  if [[ ! -f "$plan_file" ]]; then
+    gith_error "Plan file not found: $plan_file"
+    return 1
+  fi
+
+  gith_log "INFO" "Loading foreach plan from: $plan_file"
+
+  local plan_json
+  plan_json="$(tr -d '\n' < "$plan_file")"
+
+  local operations_json
+  operations_json="${plan_json#*\"operations\":[}"
+  operations_json="${operations_json%%],\"waves\":*}"
+
+  if [[ "$operations_json" == "$plan_json" ]] || [[ -z "$operations_json" ]]; then
+    gith_error "Invalid plan file: operations not found"
+    return 1
+  fi
+
+  local repo_data=()
+  local op
+  while IFS= read -r op; do
+    if [[ -z "$op" ]]; then
+      continue
+    fi
+
+    local action
+    action="$(echo "$op" | grep -o '"action":"[^"]*"' | sed 's/"action":"//;s/"$//')"
+    if [[ "$action" != "foreach" ]]; then
+      continue
+    fi
+
+    local path
+    local type
+    path="$(echo "$op" | grep -o '"path":"[^"]*"' | sed 's/"path":"//;s/"$//')"
+    type="$(echo "$op" | grep -o '"type":"[^"]*"' | sed 's/"type":"//;s/"$//')"
+
+    if [[ -n "$path" ]] && [[ -n "$type" ]]; then
+      if type_included "$type" "$INCLUDE_TYPES"; then
+        repo_data+=("$path|$type")
+      fi
+    fi
+  done < <(echo "$operations_json" | grep -o '{[^}]*}')
+
+  if [[ ${#repo_data[@]} -eq 0 ]]; then
+    gith_log "WARN" "No foreach operations found in plan after filtering"
+    return 0
+  fi
+
+  printf '%s\n' "${repo_data[@]}"
 }
 
 # Load repositories from manifest file
@@ -235,6 +313,24 @@ main() {
         MANIFEST_FILE="$2"
         shift 2
         ;;
+      --plan-file)
+        if [[ -z "${2:-}" ]]; then
+          gith_error "Option --plan-file requires an argument"
+          usage
+          exit 1
+        fi
+        PLAN_FILE="$2"
+        shift 2
+        ;;
+      --command)
+        if [[ -z "${2:-}" ]]; then
+          gith_error "Option --command requires an argument"
+          usage
+          exit 1
+        fi
+        EXPLICIT_COMMAND="$2"
+        shift 2
+        ;;
       --include-types)
         if [[ -z "${2:-}" ]]; then
           gith_error "Option --include-types requires an argument"
@@ -292,18 +388,29 @@ main() {
     esac
   done
   
-  # Get command from positional arguments
-  if [[ ${#positional_args[@]} -eq 0 ]]; then
-    gith_error "Command is required"
-    usage
-    exit 1
+  # Resolve command from explicit option or positional argument
+  if [[ -n "$EXPLICIT_COMMAND" ]]; then
+    COMMAND="$EXPLICIT_COMMAND"
+  else
+    if [[ ${#positional_args[@]} -eq 0 ]]; then
+      gith_error "Command is required"
+      usage
+      exit 1
+    fi
+    COMMAND="${positional_args[0]}"
   fi
   
-  COMMAND="${positional_args[0]}"
-  
   # Get repositories list
-  local repos_json
-  if [[ -n "$MANIFEST_FILE" ]]; then
+  local repos_json=""
+  local repo_data=()
+
+  if [[ -n "$PLAN_FILE" ]]; then
+    while IFS= read -r repo_info; do
+      if [[ -n "$repo_info" ]]; then
+        repo_data+=("$repo_info")
+      fi
+    done < <(load_from_plan "$PLAN_FILE")
+  elif [[ -n "$MANIFEST_FILE" ]]; then
     repos_json="$(load_from_manifest "$MANIFEST_FILE")"
   else
     # Set default exclude patterns if none provided
@@ -322,29 +429,30 @@ main() {
     repos_json="$(discover_repos "." "$MAX_DEPTH" "${EXCLUDE_PATTERNS[@]}")"
   fi
   
-  if [[ $? -ne 0 ]] || [[ -z "$repos_json" ]]; then
-    gith_error "Failed to get repositories list"
-    exit 1
+  if [[ -z "$PLAN_FILE" ]]; then
+    if [[ $? -ne 0 ]] || [[ -z "$repos_json" ]]; then
+      gith_error "Failed to get repositories list"
+      exit 1
+    fi
+
+    # Filter repositories by type
+    repos_json="$(filter_repos "$repos_json" "$INCLUDE_TYPES")"
+
+    # Extract repository paths and types
+    while IFS= read -r repo; do
+      if [[ -z "$repo" ]]; then
+        continue
+      fi
+
+      local path type
+      path="$(echo "$repo" | grep -o '"path":"[^"]*"' | sed 's/"path":"//;s/"$//')"
+      type="$(echo "$repo" | grep -o '"type":"[^"]*"' | sed 's/"type":"//;s/"$//')"
+
+      if [[ -n "$path" ]]; then
+        repo_data+=("$path|$type")
+      fi
+    done < <(echo "$repos_json" | grep -o '{[^}]*}')
   fi
-  
-  # Filter repositories by type
-  repos_json="$(filter_repos "$repos_json" "$INCLUDE_TYPES")"
-  
-  # Extract repository paths and types
-  local repo_data=()
-  while IFS= read -r repo; do
-    if [[ -z "$repo" ]]; then
-      continue
-    fi
-    
-    local path type
-    path="$(echo "$repo" | grep -o '"path":"[^"]*"' | sed 's/"path":"//;s/"$//')"
-    type="$(echo "$repo" | grep -o '"type":"[^"]*"' | sed 's/"type":"//;s/"$//')"
-    
-    if [[ -n "$path" ]]; then
-      repo_data+=("$path|$type")
-    fi
-  done < <(echo "$repos_json" | grep -o '{[^}]*}')
   
   if [[ ${#repo_data[@]} -eq 0 ]]; then
     gith_log "WARN" "No repositories found"

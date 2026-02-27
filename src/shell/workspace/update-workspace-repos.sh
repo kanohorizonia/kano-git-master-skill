@@ -10,6 +10,7 @@
 #   ./update-workspace-repos.sh [options]
 #
 # Options:
+#   --plan-file <file>      Use native planner JSON file (deterministic operation order)
 #   --manifest <file>       Use manifest file (default: auto-discover)
 #   --include-types <types> Comma-separated: root,registered,unregistered (aliases: submodule,standalone)
 #   --exclude <pattern>     Exclude path patterns
@@ -50,6 +51,7 @@ source "$SCRIPT_DIR/../lib/git-helpers.sh"
 #------------------------------------------------------------------------------
 
 MANIFEST_FILE=""
+PLAN_FILE=""
 INCLUDE_TYPES="root,registered,unregistered"
 EXCLUDE_PATTERNS=()
 REMOTE_NAME="origin"
@@ -69,6 +71,7 @@ Usage: $(basename "$0") [options]
 Update all repositories in workspace (root, registered subrepos, and unregistered subrepos).
 
 Options:
+  --plan-file <file>      Use native planner JSON file (deterministic operation order)
   --manifest <file>       Use manifest file (default: auto-discover)
   --include-types <types> Comma-separated: root,registered,unregistered (aliases: submodule,standalone)
   --exclude <pattern>     Exclude path patterns (can be used multiple times)
@@ -97,6 +100,78 @@ Examples:
 
 Works with any Git remote provider (GitHub, GitLab, Azure Repos, Bitbucket, self-hosted, etc.)
 EOF
+}
+
+type_included() {
+  local repo_type="$1"
+  local include_types="$2"
+  local type
+  IFS=',' read -ra types <<< "$include_types"
+  for type in "${types[@]}"; do
+    case "$type" in
+      submodule) type="registered" ;;
+      standalone) type="unregistered" ;;
+    esac
+    if [[ "$repo_type" == "$type" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+load_from_plan() {
+  local plan_file="$1"
+
+  if [[ ! -f "$plan_file" ]]; then
+    gith_error "Plan file not found: $plan_file"
+    return 1
+  fi
+
+  gith_log "INFO" "Loading update plan from: $plan_file"
+
+  local plan_json
+  plan_json="$(tr -d '\n' < "$plan_file")"
+
+  local operations_json
+  operations_json="${plan_json#*\"operations\":[}"
+  operations_json="${operations_json%%],\"waves\":*}"
+
+  if [[ "$operations_json" == "$plan_json" ]] || [[ -z "$operations_json" ]]; then
+    gith_error "Invalid plan file: operations not found"
+    return 1
+  fi
+
+  local repo_data=()
+  local op
+  while IFS= read -r op; do
+    if [[ -z "$op" ]]; then
+      continue
+    fi
+
+    local action
+    action="$(echo "$op" | grep -o '"action":"[^"]*"' | sed 's/"action":"//;s/"$//')"
+    if [[ "$action" != "update-repo" ]]; then
+      continue
+    fi
+
+    local path
+    local type
+    path="$(echo "$op" | grep -o '"path":"[^"]*"' | sed 's/"path":"//;s/"$//')"
+    type="$(echo "$op" | grep -o '"type":"[^"]*"' | sed 's/"type":"//;s/"$//')"
+
+    if [[ -n "$path" ]] && [[ -n "$type" ]]; then
+      if type_included "$type" "$INCLUDE_TYPES"; then
+        repo_data+=("$path|$type")
+      fi
+    fi
+  done < <(echo "$operations_json" | grep -o '{[^}]*}')
+
+  if [[ ${#repo_data[@]} -eq 0 ]]; then
+    gith_log "WARN" "No operations found in plan after filtering"
+    return 0
+  fi
+
+  printf '%s\n' "${repo_data[@]}"
 }
 
 # Load repositories from manifest file
@@ -307,6 +382,15 @@ main() {
         MANIFEST_FILE="$2"
         shift 2
         ;;
+      --plan-file)
+        if [[ -z "${2:-}" ]]; then
+          gith_error "Option --plan-file requires an argument"
+          usage
+          exit 1
+        fi
+        PLAN_FILE="$2"
+        shift 2
+        ;;
       --include-types)
         if [[ -z "${2:-}" ]]; then
           gith_error "Option --include-types requires an argument"
@@ -375,8 +459,16 @@ main() {
   done
   
   # Get repositories list
-  local repos_json
-  if [[ -n "$MANIFEST_FILE" ]]; then
+  local repos_json=""
+  local repo_data=()
+
+  if [[ -n "$PLAN_FILE" ]]; then
+    while IFS= read -r repo_info; do
+      if [[ -n "$repo_info" ]]; then
+        repo_data+=("$repo_info")
+      fi
+    done < <(load_from_plan "$PLAN_FILE")
+  elif [[ -n "$MANIFEST_FILE" ]]; then
     repos_json="$(load_from_manifest "$MANIFEST_FILE")"
   else
     # Set default exclude patterns if none provided
@@ -395,35 +487,36 @@ main() {
     repos_json="$(discover_repos "." "$MAX_DEPTH" "${EXCLUDE_PATTERNS[@]}")"
   fi
   
-  if [[ $? -ne 0 ]] || [[ -z "$repos_json" ]]; then
-    gith_error "Failed to get repositories list"
-    exit 1
+  if [[ -z "$PLAN_FILE" ]]; then
+    if [[ $? -ne 0 ]] || [[ -z "$repos_json" ]]; then
+      gith_error "Failed to get repositories list"
+      exit 1
+    fi
+
+    # Filter repositories by type
+    repos_json="$(filter_repos "$repos_json" "$INCLUDE_TYPES")"
+
+    # Extract repository paths
+    while IFS= read -r repo; do
+      if [[ -z "$repo" ]]; then
+        continue
+      fi
+
+      local path
+      path="$(echo "$repo" | grep -o '"path":"[^"]*"' | sed 's/"path":"//;s/"$//')"
+
+      if [[ -n "$path" ]]; then
+        repo_data+=("$path|unknown")
+      fi
+    done < <(echo "$repos_json" | grep -o '{[^}]*}')
   fi
-  
-  # Filter repositories by type
-  repos_json="$(filter_repos "$repos_json" "$INCLUDE_TYPES")"
-  
-  # Extract repository paths
-  local repo_paths=()
-  while IFS= read -r repo; do
-    if [[ -z "$repo" ]]; then
-      continue
-    fi
-    
-    local path
-    path="$(echo "$repo" | grep -o '"path":"[^"]*"' | sed 's/"path":"//;s/"$//')"
-    
-    if [[ -n "$path" ]]; then
-      repo_paths+=("$path")
-    fi
-  done < <(echo "$repos_json" | grep -o '{[^}]*}')
-  
-  if [[ ${#repo_paths[@]} -eq 0 ]]; then
+
+  if [[ ${#repo_data[@]} -eq 0 ]]; then
     gith_log "WARN" "No repositories found to update"
     exit 0
   fi
-  
-  gith_log "INFO" "Found ${#repo_paths[@]} repositories to update"
+
+  gith_log "INFO" "Found ${#repo_data[@]} repositories to update"
   gith_log "INFO" "Remote: $REMOTE_NAME"
   
   # Update repositories
@@ -431,7 +524,10 @@ main() {
   local failure_count=0
   local failed_repos=()
   
-  for repo_path in "${repo_paths[@]}"; do
+  local repo_info
+  for repo_info in "${repo_data[@]}"; do
+    local repo_path
+    repo_path="${repo_info%%|*}"
     if update_single_repo "$repo_path" "$REMOTE_NAME"; then
       success_count=$((success_count + 1))
     else
@@ -448,7 +544,7 @@ main() {
   # Display summary
   gith_log "INFO" ""
   gith_log "INFO" "Summary:"
-  gith_log "INFO" "  Total repositories: ${#repo_paths[@]}"
+  gith_log "INFO" "  Total repositories: ${#repo_data[@]}"
   gith_log "INFO" "  Successful: $success_count"
   gith_log "INFO" "  Failed: $failure_count"
   

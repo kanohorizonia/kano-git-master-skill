@@ -94,7 +94,9 @@ case "$FORMAT" in
     fi
     
     # Parse worktree list
-    local path="" branch="" commit=""
+    path=""
+    branch=""
+    commit=""
     while IFS= read -r line; do
       if [[ "$line" =~ ^worktree\ (.+)$ ]]; then
         path="${BASH_REMATCH[1]}"
@@ -104,16 +106,16 @@ case "$FORMAT" in
         commit="${BASH_REMATCH[1]}"
       elif [[ -z "$line" && -n "$path" ]]; then
         # End of worktree entry
-        local is_orphan="No"
+        is_orphan="No"
         if [[ -n "$branch" ]] && wth_is_orphan_branch "$branch"; then
           is_orphan="Yes"
         fi
         
-        local status
+        status=""
         status=$(wth_get_status "$path")
         
         if [[ "$DETAILED" -eq 1 ]]; then
-          local last_commit
+          last_commit=""
           last_commit=$(wth_get_last_commit "$path")
           printf "%-40s %-20s %-8s %-12s %s\n" "$path" "${branch:-detached}" "$is_orphan" "$status" "$last_commit"
         else

@@ -90,9 +90,11 @@ IFS=',' read -ra FILTER_ARRAY <<< "$FILTER_WORKTREES"
 # Sync each worktree
 wth_info "Syncing worktrees..."
 
-local path="" branch="" commit=""
-local synced_count=0
-local failed_count=0
+path=""
+branch=""
+commit=""
+synced_count=0
+failed_count=0
 
 while IFS= read -r line; do
   if [[ "$line" =~ ^worktree\ (.+)$ ]]; then
@@ -105,7 +107,7 @@ while IFS= read -r line; do
     # End of worktree entry
     
     # Check if this worktree should be synced
-    local should_sync=1
+    should_sync=1
     if [[ -n "$FILTER_WORKTREES" ]]; then
       should_sync=0
       for filter_branch in "${FILTER_ARRAY[@]}"; do
