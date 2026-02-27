@@ -203,11 +203,18 @@ discover_repos() {
   local max_depth="$2"
   shift 2
   local exclude_patterns=("$@")
-  
+  local stats_file=""
+  local discover_mode="unknown"
+
   gith_log "INFO" "Auto-discovering repositories..."
-  
+
   local repos_json
-  repos_json="$(gith_discover_repos "$root_dir" "$max_depth" "${exclude_patterns[@]}")"
+  stats_file="$(mktemp 2>/dev/null || true)"
+  repos_json="$(GITH_DISCOVER_STATS_FILE="$stats_file" gith_discover_repos "$root_dir" "$max_depth" "${exclude_patterns[@]}")"
+  discover_mode="$(sed -n 's/^mode=//p' "$stats_file" 2>/dev/null | head -n1)"
+  rm -f "$stats_file" 2>/dev/null || true
+  [[ -z "$discover_mode" ]] && discover_mode="unknown"
+  gith_log "INFO" "Discover mode: $discover_mode"
   
   if [[ $? -ne 0 ]]; then
     gith_error "Failed to discover repositories"
