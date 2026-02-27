@@ -1,4 +1,7 @@
-# Smart Git Tools - AI-Powered Git Automation
+# AI Git Workflows (Legacy: Smart Git Tools)
+
+> Canonical CLI surface is `kano-git` / `kog` subcommands (for example `kog commit`, `kog push`, `kog sync`, `kog workspace status`).
+> `smart-*` naming in this document refers to legacy shell implementation files kept for compatibility/fallback.
 
 Complete guide to AI-powered Git tools in the Git Master Skill.
 

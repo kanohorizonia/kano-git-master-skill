@@ -13,6 +13,97 @@ Comprehensive Git automation scripts for managing multi-repository workspaces. W
 
 ## Quick Start
 
+### Install `kano-git` / `kog` in Git Bash (PATH + completion)
+
+```bash
+# From repo root
+bash ./scripts/kog-installer
+
+# Apply immediately in current terminal
+source ~/.bashrc
+
+# Verify
+kano-git --help
+kano-git completion bash | head -n 3
+```
+
+Installer options:
+
+```bash
+# Preview only (no file changes)
+bash ./scripts/kog-installer --dry-run
+
+# Use custom rc file
+bash ./scripts/kog-installer --rc-file ~/.bash_profile
+
+# Install PATH only (skip completion)
+bash ./scripts/kog-installer --no-completion
+```
+
+Compatibility alias (same behavior):
+
+```bash
+bash ./scripts/kano-git-installer
+```
+
+### Guided Flows (Easy Win Before Full TUI)
+
+Use the built-in guide command to get practical, low-risk command sequences:
+
+```bash
+# List available flows
+kano-git guide
+
+# Workspace safe-first flow with checklist
+kano-git guide --flow workspace --checklist
+
+# Other flows
+kano-git guide --flow sync
+kano-git guide --flow commit
+kano-git guide --flow worktree
+```
+
+This gives you immediate guided UX in pure terminal while we iterate toward richer TUI.
+
+### Global Cross-Repo Status (TUI-first experience seed)
+
+Use top-level status to get one-screen global view across discovered repos:
+
+```bash
+# Table view (default)
+kano-git status
+
+# JSON view for further tooling
+kano-git status --format json
+
+# Narrow scan
+kano-git status --max-depth 2 --exclude node_modules --exclude .agents
+```
+
+Status includes:
+- current branch
+- upstream/remote tracking branch
+- ahead/behind tracking summary
+- repo dirty flag
+- dirty worktree detection
+
+### Full TUI Preview (Interactive)
+
+```bash
+# Non-interactive preview (for quick validation)
+kano-git tui --demo
+
+# Launch interactive dashboard
+kano-git tui
+```
+
+Current TUI actions (v0):
+- refresh repo grid
+- toggle dirty-only filter
+- jump to status/guide quick views
+- trigger native workspace update
+- trigger workspace foreach command flow
+
 ### Update Repository + Registered Subrepos (Most Common)
 
 ```bash
