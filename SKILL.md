@@ -102,6 +102,7 @@ Current TUI actions (v1):
 - right panel: selected repo details (type, upstream, tracking, dirty/worktree)
 - Enter opens incremental history pager for selected repo
 - `t`: collapse/expand selected repo subtree in left panel
+- `/` in main view: enter repo path filter mode (incremental)
 - history mode controls:
   - `←` / `→`: previous/next repo page source
   - `PgUp` / `PgDn`: older/newer history page
@@ -112,6 +113,7 @@ Current TUI actions (v1):
   - `/`: enter history search mode, type keyword, Enter to apply
   - `n`: jump to next match in current page
   - selected history line always shows quick stats (files/insertions/deletions) without opening detail
+  - history list has lightweight lane marker (`│`) for scan readability
   - each page loads and caches 20 commit titles on demand
   - title shows repo path, parent repo, child repo count, repo index, and page index
 - keyboard controls: `r` refresh, `d` dirty-only toggle, `f` fetch selected repo, `Enter` history pager, `q` quit

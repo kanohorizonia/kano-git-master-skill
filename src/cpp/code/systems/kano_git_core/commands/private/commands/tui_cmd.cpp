@@ -446,6 +446,8 @@ auto RunFtxuiDashboard() -> int {
     using namespace ftxui;
 
     bool dirtyOnly = false;
+    bool filterMode = false;
+    std::string repoFilter;
     std::vector<RepoView> repos = DiscoverRepoViews(dirtyOnly);
     std::unordered_map<std::string, bool> collapsedRoots;
     std::vector<int> displayedRepoIndices;
@@ -461,6 +463,10 @@ auto RunFtxuiDashboard() -> int {
         menu.reserve(displayedRepoIndices.size());
         for (const auto idx : displayedRepoIndices) {
             const auto& repo = repos[idx];
+            const auto normalized = repo.path.lexically_normal().generic_string();
+            if (!repoFilter.empty() && ToLowerAscii(normalized).find(ToLowerAscii(repoFilter)) == std::string::npos) {
+                continue;
+            }
             auto path = repo.path.lexically_normal().generic_string();
             if (path.size() > 64) {
                 path = "..." + path.substr(path.size() - 61);
@@ -527,6 +533,11 @@ auto RunFtxuiDashboard() -> int {
 
     auto with_keys = CatchEvent(root, [&](Event event) {
         if (event == Event::Character('q')) {
+            if (filterMode) {
+                filterMode = false;
+                footer = "filter mode closed";
+                return true;
+            }
             if (history.active) {
                 if (history.detailActive) {
                     history.detailActive = false;
@@ -546,6 +557,42 @@ auto RunFtxuiDashboard() -> int {
             refresh_all();
             footer = "refreshed";
             return true;
+        }
+
+        if (filterMode) {
+            if (event == Event::Escape) {
+                filterMode = false;
+                footer = "filter mode cancelled";
+                return true;
+            }
+            if (event == Event::Backspace) {
+                if (!repoFilter.empty()) {
+                    repoFilter.pop_back();
+                }
+                refresh_menu();
+                footer = repoFilter.empty() ? "filter cleared" : "filter: " + repoFilter;
+                return true;
+            }
+            if (event == Event::Return || event == Event::Character('\n')) {
+                filterMode = false;
+                footer = repoFilter.empty() ? "filter cleared" : "filter applied";
+                return true;
+            }
+            if (event.is_character()) {
+                repoFilter += event.character();
+                refresh_menu();
+                footer = "filter: " + repoFilter;
+                return true;
+            }
+            return false;
+        }
+
+        if (event == Event::Character('/')) {
+            if (!history.active) {
+                filterMode = true;
+                footer = "repo filter mode: type path keyword";
+                return true;
+            }
         }
 
         if (event == Event::Character('d')) {
@@ -829,8 +876,8 @@ auto RunFtxuiDashboard() -> int {
                     for (std::size_t i = 0; i < lines.size(); ++i) {
                         const bool isHit = history.highlightedLine == static_cast<int>(i);
                         const bool isSelected = history.selectedLine == static_cast<int>(i);
-                        auto prefix = isSelected ? "> " : "  ";
-                        auto row = text(prefix + lines[i]);
+                        auto prefix = std::string(isSelected ? "> " : "  ");
+                        auto row = text(prefix + std::string("│ ") + lines[i]);
                         if (isHit) {
                             row = row | bold;
                         }
@@ -908,6 +955,7 @@ auto RunFtxuiDashboard() -> int {
                    text("KOG FTXUI Dashboard v2") | bold,
                    separator(),
                    text("Global repo view + incremental history pager."),
+                   text("repo filter: " + (repoFilter.empty() ? "(none)" : repoFilter)) | dim,
                    text("tree toggle key: t (collapse/expand child repos)") | dim,
                    separator(),
                    hbox({
@@ -936,6 +984,7 @@ auto PrintDemo() -> void {
     std::cout << "- FTXUI dashboard enabled\n";
     std::cout << "- repo list + details + incremental history pager\n";
     std::cout << "- controls: r(refresh), d(dirty-only), f(fetch), Enter(history), q(quit)\n";
+    std::cout << "- main view: / enters repo path filter mode\n";
     std::cout << "- tree: t collapse/expand selected repo subtree\n";
     std::cout << "- history mode: left/right repo, PgUp/PgDn page, up/down line, /search, n-next, m-detail-mode, o-sort-mode\n";
     std::cout << "- quick stats shown for selected commit line (cached by sha)\n";
