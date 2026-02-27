@@ -49,7 +49,6 @@ cli/out/
 src/cpp/build/**
 !src/cpp/build/script/
 !src/cpp/build/script/**
-src/cpp/build_/
 src/cpp/compile_commands.json
 src/cpp/releases/
 src/cpp/cmake_ninja_out.txt
@@ -63,7 +62,5 @@ src/cpp/test_1444.bat
 src/cpp/test_env.bat
 src/cpp/patch_extras.py
 
-# Vendored dependency artifacts not needed for build
-src/cpp/code/thirdparty/fmt.zip
-src/cpp/code/thirdparty/fmt-10.2.1/doc/
-src/cpp/code/thirdparty/_deps/
+# Vendored dependencies (local checkout)
+src/cpp/code/thirdparty/ftxui/
