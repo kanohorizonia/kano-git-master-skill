@@ -6,6 +6,7 @@
 
 #include <filesystem>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -23,121 +24,156 @@ auto Trim(std::string InValue) -> std::string {
     return InValue.substr(start);
 }
 
-auto GitCapture(const std::vector<std::string>& InArgs) -> shell::ExecResult {
-    return shell::ExecuteCommand("git", InArgs, shell::ExecMode::Capture);
+auto GitCapture(const std::filesystem::path& InRepo, const std::vector<std::string>& InArgs) -> shell::ExecResult {
+    return shell::ExecuteCommand("git", InArgs, shell::ExecMode::Capture, InRepo);
 }
 
-auto GitPassThrough(const std::vector<std::string>& InArgs) -> shell::ExecResult {
-    return shell::ExecuteCommand("git", InArgs, shell::ExecMode::PassThrough);
+auto GitPassThrough(const std::filesystem::path& InRepo, const std::vector<std::string>& InArgs) -> shell::ExecResult {
+    return shell::ExecuteCommand("git", InArgs, shell::ExecMode::PassThrough, InRepo);
 }
 
-auto HasRemote(const std::string& InRemote) -> bool {
-    const auto out = GitCapture({"remote", "get-url", InRemote});
+auto HasRemote(const std::filesystem::path& InRepo, const std::string& InRemote) -> bool {
+    const auto out = GitCapture(InRepo, {"remote", "get-url", InRemote});
     return out.exitCode == 0;
 }
 
+auto ParseReposCsv(const std::string& InCsv) -> std::vector<std::filesystem::path> {
+    std::vector<std::filesystem::path> out;
+    std::istringstream iss(InCsv);
+    std::string token;
+    while (std::getline(iss, token, ',')) {
+        const auto trimmed = Trim(token);
+        if (trimmed.empty()) {
+            continue;
+        }
+        out.emplace_back(trimmed);
+    }
+    return out;
+}
+
 auto RunNativePush(
+    const std::vector<std::filesystem::path>& InRepos,
     const bool InSkipSync,
     const bool InSyncOnly,
     const bool InDryRun,
     const bool InForceWithLease,
     const bool InNoVerify,
     const std::string& InRemoteFilter) -> int {
-    const auto gitDir = GitCapture({"rev-parse", "--git-dir"});
-    if (gitDir.exitCode != 0) {
-        std::cerr << "Error: Not in a git repository\n";
-        return 1;
-    }
+    int failures = 0;
+    int successes = 0;
 
-    const auto branchOut = GitCapture({"symbolic-ref", "--quiet", "--short", "HEAD"});
-    const auto branch = Trim(branchOut.stdoutStr);
-    if (branchOut.exitCode != 0 || branch.empty()) {
-        std::cerr << "Error: Detached HEAD is not supported by native push flow\n";
-        return 1;
-    }
+    for (const auto& repoPathRaw : InRepos) {
+        const auto repoPath = std::filesystem::weakly_canonical(repoPathRaw);
+        const auto repoLabel = repoPath.lexically_normal().generic_string();
 
-    const bool hasUpstream = (GitCapture({"rev-parse", "--abbrev-ref", "@{upstream}"}).exitCode == 0);
-    const bool hasLocalChanges = !Trim(GitCapture({"status", "--porcelain"}).stdoutStr).empty();
-
-    if (!InSkipSync && hasUpstream) {
-        if (hasLocalChanges) {
-            std::cout << "[.] Sync skipped: local changes present; proceeding to push\n";
-        } else if (InDryRun) {
-            std::cout << "[DRY RUN] Would run: git pull --rebase\n";
-        } else {
-            const auto pull = GitPassThrough({"pull", "--rebase"});
-            if (pull.exitCode != 0) {
-                std::cerr << "[.] Sync failed before push\n";
-                return 1;
-            }
-        }
-    }
-
-    if (InSyncOnly) {
-        std::cout << "[.] Sync-only mode: skipping push\n";
-        return 0;
-    }
-
-    std::vector<std::string> pushRemotes;
-    if (!InRemoteFilter.empty()) {
-        if (HasRemote(InRemoteFilter)) {
-            pushRemotes.push_back(InRemoteFilter);
-        }
-    } else {
-        if (HasRemote("origin-ssh")) {
-            pushRemotes.push_back("origin-ssh");
-        }
-        if (HasRemote("origin-http")) {
-            pushRemotes.push_back("origin-http");
-        }
-        if (HasRemote("origin")) {
-            pushRemotes.push_back("origin");
-        }
-    }
-
-    if (pushRemotes.empty()) {
-        std::cerr << "Error: No pushable origin remote found\n";
-        return 1;
-    }
-
-    std::vector<std::string> pushArgs;
-    if (InForceWithLease) {
-        pushArgs.push_back("--force-with-lease");
-    }
-    if (InNoVerify) {
-        pushArgs.push_back("--no-verify");
-    }
-    if (!hasUpstream) {
-        pushArgs.push_back("-u");
-    }
-
-    int success = 0;
-    for (const auto& remote : pushRemotes) {
-        std::vector<std::string> args = {"push"};
-        args.insert(args.end(), pushArgs.begin(), pushArgs.end());
-        args.push_back(remote);
-        args.push_back(branch);
-
-        if (InDryRun) {
-            std::cout << "[DRY RUN] Would run: git";
-            for (const auto& arg : args) {
-                std::cout << " " << arg;
-            }
-            std::cout << "\n";
-            success = 1;
+        const auto gitDir = GitCapture(repoPath, {"rev-parse", "--git-dir"});
+        if (gitDir.exitCode != 0) {
+            std::cerr << "Error: Not a git repository: " << repoLabel << "\n";
+            failures += 1;
             continue;
         }
 
-        const auto result = GitPassThrough(args);
-        if (result.exitCode == 0) {
-            std::cout << "[.] Pushed (" << remote << ")\n";
-            success = 1;
+        const auto branchOut = GitCapture(repoPath, {"symbolic-ref", "--quiet", "--short", "HEAD"});
+        const auto branch = Trim(branchOut.stdoutStr);
+        if (branchOut.exitCode != 0 || branch.empty()) {
+            std::cerr << "Error: Detached HEAD is not supported by native push flow: " << repoLabel << "\n";
+            failures += 1;
+            continue;
+        }
+
+        const bool hasUpstream = (GitCapture(repoPath, {"rev-parse", "--abbrev-ref", "@{upstream}"}).exitCode == 0);
+        const bool hasLocalChanges = !Trim(GitCapture(repoPath, {"status", "--porcelain"}).stdoutStr).empty();
+
+        if (!InSkipSync && hasUpstream) {
+            if (hasLocalChanges) {
+                std::cout << "[" << repoLabel << "] Sync skipped: local changes present; proceeding to push\n";
+            } else if (InDryRun) {
+                std::cout << "[DRY RUN] [" << repoLabel << "] Would run: git pull --rebase\n";
+            } else {
+                const auto pull = GitPassThrough(repoPath, {"pull", "--rebase"});
+                if (pull.exitCode != 0) {
+                    std::cerr << "[" << repoLabel << "] Sync failed before push\n";
+                    failures += 1;
+                    continue;
+                }
+            }
+        }
+
+        if (InSyncOnly) {
+            std::cout << "[" << repoLabel << "] Sync-only mode: skipping push\n";
+            successes += 1;
+            continue;
+        }
+
+        std::vector<std::string> pushRemotes;
+        if (!InRemoteFilter.empty()) {
+            if (HasRemote(repoPath, InRemoteFilter)) {
+                pushRemotes.push_back(InRemoteFilter);
+            }
         } else {
-            std::cerr << "[.] Push failed (" << remote << ")\n";
+            if (HasRemote(repoPath, "origin-ssh")) {
+                pushRemotes.push_back("origin-ssh");
+            }
+            if (HasRemote(repoPath, "origin-http")) {
+                pushRemotes.push_back("origin-http");
+            }
+            if (HasRemote(repoPath, "origin")) {
+                pushRemotes.push_back("origin");
+            }
+        }
+
+        if (pushRemotes.empty()) {
+            std::cerr << "Error: No pushable origin remote found for " << repoLabel << "\n";
+            failures += 1;
+            continue;
+        }
+
+        std::vector<std::string> pushArgs;
+        if (InForceWithLease) {
+            pushArgs.push_back("--force-with-lease");
+        }
+        if (InNoVerify) {
+            pushArgs.push_back("--no-verify");
+        }
+        if (!hasUpstream) {
+            pushArgs.push_back("-u");
+        }
+
+        int repoSuccess = 0;
+        for (const auto& remote : pushRemotes) {
+            std::vector<std::string> args = {"push"};
+            args.insert(args.end(), pushArgs.begin(), pushArgs.end());
+            args.push_back(remote);
+            args.push_back(branch);
+
+            if (InDryRun) {
+                std::cout << "[DRY RUN] [" << repoLabel << "] Would run: git";
+                for (const auto& arg : args) {
+                    std::cout << " " << arg;
+                }
+                std::cout << "\n";
+                repoSuccess = 1;
+                continue;
+            }
+
+            const auto result = GitPassThrough(repoPath, args);
+            if (result.exitCode == 0) {
+                std::cout << "[" << repoLabel << "] Pushed (" << remote << ")\n";
+                repoSuccess = 1;
+            } else {
+                std::cerr << "[" << repoLabel << "] Push failed (" << remote << ")\n";
+            }
+        }
+
+        if (repoSuccess == 0) {
+            failures += 1;
+        } else {
+            successes += 1;
         }
     }
 
-    return success ? 0 : 1;
+    std::cout << "Summary: " << successes << " succeeded, " << failures << " failed\n";
+    return failures == 0 ? 0 : 1;
 }
 
 } // namespace
@@ -169,7 +205,15 @@ void RegisterPush(CLI::App& InApp) {
     cmd->callback([=]() {
         auto extras = cmd->remaining();
 
-        const bool forceShell = *shellMode || !repos->empty() || !extras.empty();
+        std::vector<std::filesystem::path> nativeRepos;
+        if (!repos->empty()) {
+            nativeRepos = ParseReposCsv(*repos);
+        }
+        if (nativeRepos.empty()) {
+            nativeRepos.push_back(std::filesystem::current_path());
+        }
+
+        const bool forceShell = *shellMode || !extras.empty();
         if (forceShell) {
             std::vector<std::string> args;
             if (!repos->empty()) {
@@ -200,6 +244,7 @@ void RegisterPush(CLI::App& InApp) {
         }
 
         const auto code = RunNativePush(
+            nativeRepos,
             *skipSync,
             *syncOnly,
             *dryRun,
