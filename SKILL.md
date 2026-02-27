@@ -97,12 +97,24 @@ kano-git tui --demo
 kano-git tui
 ```
 
-Current TUI actions (v0):
-- refresh repo grid
-- toggle dirty-only filter
-- jump to status/guide quick views
-- trigger native workspace update
-- trigger workspace foreach command flow
+Current TUI actions (v1):
+- left panel: repo list (dirty + branch + path)
+- right panel: selected repo details (type, upstream, tracking, dirty/worktree)
+- Enter opens incremental history pager for selected repo
+- `t`: collapse/expand selected repo subtree in left panel
+- history mode controls:
+  - `←` / `→`: previous/next repo page source
+  - `PgUp` / `PgDn`: older/newer history page
+  - `↑` / `↓`: move selected commit line in current page
+  - `Enter`: open selected commit detail panel (show --stat/--name-status excerpt)
+  - `m`: toggle detail view mode (summary / files / patch)
+  - `o`: toggle history sort mode (time-desc / time-asc / match-first)
+  - `/`: enter history search mode, type keyword, Enter to apply
+  - `n`: jump to next match in current page
+  - selected history line always shows quick stats (files/insertions/deletions) without opening detail
+  - each page loads and caches 20 commit titles on demand
+  - title shows repo path, parent repo, child repo count, repo index, and page index
+- keyboard controls: `r` refresh, `d` dirty-only toggle, `f` fetch selected repo, `Enter` history pager, `q` quit
 
 ### Update Repository + Registered Subrepos (Most Common)
 
