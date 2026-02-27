@@ -5,6 +5,8 @@
 
 #include <CLI/CLI.hpp>
 #include "command_registry.hpp"
+#include <exception>
+#include <iostream>
 
 #if defined(KOG_USE_MODULES)
 import kano.git.version;
@@ -20,19 +22,30 @@ int main(int InArgc, char* InArgv[]) {
         "kano-git"
     };
 
-    app.set_version_flag("--version,-V", std::string{kano::git::GetVersion()});
+    app.set_version_flag("--version,-V", std::string{kano::git::GetBuildVersion()});
     app.require_subcommand(0);  // Allow running with no subcommand (shows help)
     app.fallthrough();
 
-    // Register all commands
-    kano::git::commands::RegisterAll(app);
+    try {
+        // Register all commands
+        kano::git::commands::RegisterAll(app);
 
-    CLI11_PARSE(app, InArgc, InArgv);
+        char** utf8Argv = app.ensure_utf8(InArgv);
+
+        app.parse(InArgc, utf8Argv);
+    } catch (const CLI::ParseError& e) {
+        return app.exit(e);
+    } catch (const std::exception& e) {
+        std::cerr << "Fatal error: " << e.what() << "\n";
+        return 1;
+    } catch (...) {
+        std::cerr << "Fatal error: unknown exception\n";
+        return 1;
+    }
 
     // If no subcommand was given, print help
     if (app.get_subcommands().empty()) {
         std::cout << app.help() << std::endl;
     }
-
     return 0;
 }

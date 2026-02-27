@@ -27,15 +27,18 @@ target_sources(kano_git_core
     commands/private/commands/completion_cmd.cpp
     commands/private/commands/commit_cmd.cpp
     commands/private/commands/doctor_cmd.cpp
+    commands/private/commands/guide_cmd.cpp
     commands/private/commands/meta_cmd.cpp
     commands/private/commands/p4_cmd.cpp
     commands/private/commands/push_cmd.cpp
     commands/private/commands/resolve_cmd.cpp
     commands/private/commands/scalar_cmd.cpp
+    commands/private/commands/status_cmd.cpp
     commands/private/commands/submodule_cmd.cpp
     commands/private/commands/subtree_cmd.cpp
     commands/private/commands/svn_cmd.cpp
     commands/private/commands/sync_cmd.cpp
+    commands/private/commands/tui_cmd.cpp
     commands/private/commands/version_cmd.cpp
     commands/private/commands/workspace_cmd.cpp
     commands/private/commands/worktree_cmd.cpp
@@ -82,4 +85,4 @@ if(MSVC AND CMAKE_GENERATOR MATCHES "Visual Studio")
     target_compile_options(kano_git_core PRIVATE "/I${cli11_SOURCE_DIR}/include")
 endif()
 
-target_link_libraries(kano_git_core PUBLIC CLI11::CLI11)
+target_link_libraries(kano_git_core PUBLIC CLI11::CLI11 ftxui::screen ftxui::dom ftxui::component)

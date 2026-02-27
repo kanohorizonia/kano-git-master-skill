@@ -4,10 +4,10 @@ C++20 command-line interface for [Kano Git Master](../SKILL.md).
 
 ## Overview
 
-The CLI wraps existing shell scripts into a unified binary (`kano-git` / `kog`) with:
+The CLI provides a unified binary (`kano-git` / `kog`) with:
 - Structured command tree (subcommands, flags, help)
 - Cross-platform support (Windows, macOS, Linux)
-- AI provider selection for smart commands
+- AI provider selection for AI-assisted commands
 - Future: parallel execution for multi-repo operations
 
 ## Quick Start
@@ -79,7 +79,7 @@ kog commit    # short alias
 | `commit` | AI-powered commit message generation |
 | `resolve` | AI-powered conflict resolution |
 | `sync` | Repository synchronization (origin-latest, upstream, stable-dev) |
-| `push` | Smart multi-remote push |
+| `push` | Multi-remote push workflow |
 | `worktree` | Git worktree management (create, list, remove, sync) |
 | `subtree` | Git subtree operations (add, pull, push, split, list) |
 | `submodule` | Enhanced submodule management |
@@ -88,9 +88,51 @@ kog commit    # short alias
 | `svn` | Git-Subversion bridge |
 | `branch` | Branch operations (rebase-upstream, compare, cherry-pick) |
 | `workspace` | Multi-repo workspace operations |
-| `clone` | Smart clone with upstream support |
+| `clone` | Clone with upstream support |
 | `doctor` | Environment and repo health checks |
 | `version` | Show version |
+
+### Native workspace discovery and wave planning
+
+The C++ CLI now includes a native discovery/cache/scheduler core for workspace planning:
+
+```bash
+# Native-first discovery (JSON repo list)
+kano-git workspace discover --native-metadata-level full
+
+# Deterministic execution waves with cycle status
+kano-git workspace discover --emit-waves
+
+# Native-first workspace status (table/json/markdown)
+kano-git workspace status --format table
+kano-git workspace status --format json
+
+# Native plan output for workspace update (no execution)
+kano-git workspace update --native-plan-only
+
+# Shell fallback escape hatch
+kano-git workspace status --shell
+kano-git workspace foreach --shell --command "git status --porcelain"
+```
+
+Notes:
+- Native discovery cache payload keeps parity fields (`version`, `generated_epoch`, `gitmodules_mtime`, `marker`, `repos`).
+- Wave output is deterministic and exits with code `2` when cycle nodes are detected.
+- Shared planner schema for `update` and `foreach` is documented in `docs/design/workspace-native-planner-contract.md`.
+
+### Module boundary convention (kano_git_core)
+
+Boundary hardening rule used in `kano_git_core`:
+
+- One domain directory = one facade module entrypoint (for example `private/workspace/native_workspace.hpp/.cpp`).
+- Domain internals stay behind the facade (`discovery.*`, `scheduler.*` are internal to workspace domain).
+- Command adapters depend on facade only (for example `workspace_cmd.cpp` includes `workspace/native_workspace.hpp` only).
+
+About `cppm`:
+
+- Your model is directionally correct: a directory-level module can have one primary `*.cppm` interface.
+- In practice, one directory can still have multiple internal `*.cpp` units behind that single interface.
+- Prefer one exported interface module per domain, then use implementation units/partitions as needed.
 
 ## Architecture
 
