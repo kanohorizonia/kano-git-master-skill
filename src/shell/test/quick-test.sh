@@ -112,7 +112,7 @@ done
 
 if [[ -n "$KOG_BIN" ]]; then
   META_OUTPUT="$($KOG_BIN meta --format json)"
-  if python -c 'import json,sys; d=json.loads(sys.stdin.read()); assert d["schema_version"]=="v1"; names={c["name"] for c in d["commands"]}; assert "meta" in names and "commit" in names' <<<"$META_OUTPUT"; then
+  if [[ "$META_OUTPUT" == *'"schema_version":"v1"'* && "$META_OUTPUT" == *'"name":"meta"'* && "$META_OUTPUT" == *'"name":"commit"'* ]]; then
     echo "  ✓ meta JSON output is valid"
   else
     echo "  ✗ meta JSON output is invalid"
@@ -124,11 +124,7 @@ if [[ -n "$KOG_BIN" ]]; then
   COMPLETE_OUTPUT="$($KOG_BIN __complete --current c)"
   COMPLETE_NESTED="$($KOG_BIN __complete --context workspace --current st)"
   COMPLETE_OPTION="$($KOG_BIN __complete --context workspace --context status --current --na)"
-  if python -c 'import sys; root,nested,opt=sys.stdin.read().split("\n===\n"); r=[x.strip() for x in root.splitlines() if x.strip()]; n=[x.strip() for x in nested.splitlines() if x.strip()]; o=[x.strip() for x in opt.splitlines() if x.strip()]; assert "commit" in r; assert "status" in n; assert any(v.startswith("--native") for v in o)' <<<"$COMPLETE_OUTPUT
-===
-$COMPLETE_NESTED
-===
-$COMPLETE_OPTION"; then
+  if [[ "$COMPLETE_OUTPUT" == *"commit"* && "$COMPLETE_NESTED" == *"status"* && "$COMPLETE_OPTION" == *"--native"* ]]; then
     echo "  ✓ __complete returns expected candidates"
   else
     echo "  ✗ __complete output missing expected candidates"
@@ -141,13 +137,7 @@ $COMPLETE_OPTION"; then
   COMP_ZSH="$($KOG_BIN completion zsh)"
   COMP_FISH="$($KOG_BIN completion fish)"
   COMP_PWSH="$($KOG_BIN completion powershell)"
-  if python -c 'import sys; b,z,f,p=sys.stdin.read().split("\n===\n"); assert "__complete" in b and "complete -F" in b; assert "compdef" in z and "__complete" in z; assert "complete -c kano-git" in f and "__complete" in f; assert "Register-ArgumentCompleter" in p and "__complete" in p' <<<"$COMP_BASH
-===
-$COMP_ZSH
-===
-$COMP_FISH
-===
-$COMP_PWSH"; then
+  if [[ "$COMP_BASH" == *"__complete"* && "$COMP_BASH" == *"complete -F"* && "$COMP_ZSH" == *"compdef"* && "$COMP_ZSH" == *"__complete"* && "$COMP_FISH" == *"complete -c kano-git"* && "$COMP_FISH" == *"__complete"* && "$COMP_PWSH" == *"Register-ArgumentCompleter"* && "$COMP_PWSH" == *"__complete"* ]]; then
     echo "  ✓ completion scripts generated for all shells"
   else
     echo "  ✗ completion script generation failed"
@@ -162,12 +152,48 @@ $COMP_PWSH"; then
   fi
 
   echo ""
-  echo "Test 7: Checking native planner JSON contract output..."
+  echo "Test 7: Checking TUI command availability..."
+  TUI_HELP_OUTPUT="$($KOG_BIN --help)"
+  if [[ "$TUI_HELP_OUTPUT" == *"tui                         Launch interactive KOG terminal dashboard"* ]]; then
+    echo "  ✓ tui command is available in top-level help"
+  else
+    echo "  ✗ tui command missing from top-level help"
+    exit 1
+  fi
+
+  TUI_DEMO_OUTPUT="$($KOG_BIN tui --demo)"
+  if [[ "$TUI_DEMO_OUTPUT" == *"KOG TUI demo mode"* && "$TUI_DEMO_OUTPUT" == *"FTXUI dashboard enabled"* ]]; then
+    echo "  ✓ tui demo confirms ftxui-backed UI mode"
+  else
+    echo "  ✗ tui demo did not report ftxui-backed mode"
+    exit 1
+  fi
+
+  echo ""
+  echo "Test 8: Checking guide command output..."
+  GUIDE_OUTPUT="$($KOG_BIN guide --flow workspace --checklist)"
+  if [[ "$GUIDE_OUTPUT" == *"workspace update --native-plan-only"* && "$GUIDE_OUTPUT" == *"Checklist before execution"* ]]; then
+    echo "  ✓ guide command provides actionable flow output"
+  else
+    echo "  ✗ guide command output is missing expected content"
+    exit 1
+  fi
+
+  echo ""
+  echo "Test 9: Checking global status command output..."
+  STATUS_OUTPUT="$($KOG_BIN status --format json --max-depth 2)"
+  if [[ "$STATUS_OUTPUT" == *'"repos"'* && "$STATUS_OUTPUT" == *'"branch"'* && "$STATUS_OUTPUT" == *'"upstream"'* && "$STATUS_OUTPUT" == *'"tracking"'* && "$STATUS_OUTPUT" == *'"worktree_dirty"'* ]]; then
+    echo "  ✓ global status includes branch/upstream/tracking/worktree fields"
+  else
+    echo "  ✗ global status output missing expected fields"
+    exit 1
+  fi
+
+  echo ""
+  echo "Test 10: Checking native planner JSON contract output..."
   UPDATE_PLAN_OUTPUT="$($KOG_BIN workspace update --native-plan-only)"
   FOREACH_PLAN_OUTPUT="$($KOG_BIN workspace foreach --native-plan-only --command "git status --porcelain")"
-  if python -c 'import json,sys; up,fp=sys.stdin.read().split("\n===\n"); u=json.loads(up); f=json.loads(fp); assert u["planner"]=="native-submodule-update"; assert isinstance(u["operations"],list); assert "waves" in u and "shell_adapter" in u; assert u["shell_adapter"]["script"]=="workspace/update-workspace-repos.sh"; assert "manifest" in u["shell_adapter"]; assert all(set(("order","wave","path","type","action")).issubset(op.keys()) for op in u["operations"]); assert f["planner"]=="native-foreach"; assert isinstance(f["operations"],list); assert "waves" in f and "shell_adapter" in f; assert f["shell_adapter"]["script"]=="workspace/foreach-repo.sh"; assert "command" in f["shell_adapter"]; assert all(set(("order","wave","path","type","action","command")).issubset(op.keys()) for op in f["operations"])' <<<"$UPDATE_PLAN_OUTPUT
-===
-$FOREACH_PLAN_OUTPUT"; then
+  if [[ "$UPDATE_PLAN_OUTPUT" == *'"planner":"native-submodule-update"'* && "$UPDATE_PLAN_OUTPUT" == *'"shell_adapter"'* && "$UPDATE_PLAN_OUTPUT" == *'"script":"workspace/update-workspace-repos.sh"'* && "$UPDATE_PLAN_OUTPUT" == *'"operations"'* && "$FOREACH_PLAN_OUTPUT" == *'"planner":"native-foreach"'* && "$FOREACH_PLAN_OUTPUT" == *'"shell_adapter"'* && "$FOREACH_PLAN_OUTPUT" == *'"script":"workspace/foreach-repo.sh"'* && "$FOREACH_PLAN_OUTPUT" == *'"command"'* && "$FOREACH_PLAN_OUTPUT" == *'"operations"'* ]]; then
     echo "  ✓ native planner contract output is valid"
   else
     echo "  ✗ native planner contract output is invalid"

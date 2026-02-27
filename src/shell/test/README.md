@@ -48,6 +48,7 @@ The full test suite covers:
 - ✓ `status-all-repos.sh` - Status reporting (table/JSON/markdown)
 - ✓ `foreach-repo.sh` - Execute commands across repos
 - ✓ `update-workspace-repos.sh` - Batch updates
+- ✓ `test-native-planner-contract.sh` - Validate native planner JSON contract for update/foreach
 
 ### Branch Operations
 - ✓ `compare-branches.sh` - Branch comparison (all formats)
@@ -97,6 +98,9 @@ source scripts/test/run-all-tests.sh
 # Run specific test
 test_compare_branches
 test_cherry_pick_batch
+
+# Validate native planner contract (uses built C++ binary if present)
+bash scripts/test/test-native-planner-contract.sh
 ```
 
 ## Test Output
