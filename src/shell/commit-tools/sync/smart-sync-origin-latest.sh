@@ -29,6 +29,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../lib/git-helpers.sh"
 source "$SCRIPT_DIR/../../lib/git-helpers.sh"
+source "$SCRIPT_DIR/sync-common.sh"
 
 REMOTE="origin"
 DRY_RUN=0
@@ -44,6 +45,7 @@ HAD_STASH=0
 AUTO_STASH_MARKER=""
 SUBMODULE_CONFLICT_STRATEGY="ff-only"
 declare -a STASHED_REPOS=()
+DISCOVER_MODE_LAST="unknown"
 
 detect_remote_default_branch() {
   local repo="$1"
@@ -68,6 +70,355 @@ detect_remote_default_branch() {
   done
 
   return 1
+}
+
+resolve_repo_remote() {
+  local repo="$1"
+  local preferred_remote="$2"
+  local remote_name=""
+
+  if [[ -n "$preferred_remote" ]] && git -C "$repo" remote get-url "$preferred_remote" >/dev/null 2>&1; then
+    printf '%s' "$preferred_remote"
+    return 0
+  fi
+
+  if git -C "$repo" remote get-url origin >/dev/null 2>&1; then
+    printf 'origin'
+    return 0
+  fi
+
+  if git -C "$repo" remote get-url upstream >/dev/null 2>&1; then
+    printf 'upstream'
+    return 0
+  fi
+
+  remote_name="$(git -C "$repo" remote | head -n1 || true)"
+  if [[ -n "$remote_name" ]]; then
+    printf '%s' "$remote_name"
+    return 0
+  fi
+
+  return 1
+}
+
+discover_nested_repo_paths_fullscan() {
+  local root="$1"
+  local root_abs=""
+  local marker=""
+  local repo_path=""
+
+  root_abs="$(cd "$root" && pwd -P)"
+
+  while IFS= read -r marker; do
+    [[ -n "$marker" ]] || continue
+    repo_path="$(dirname "$marker")"
+    repo_path="$(cd "$repo_path" && pwd -P)"
+    [[ "$repo_path" == "$root_abs" ]] && continue
+    printf '%s\n' "$repo_path"
+  done < <(find "$root_abs" -type d -name .git -prune -print -o -type f -name .git -print 2>/dev/null || true)
+}
+
+discover_nested_repo_paths_cached_to_file() {
+  local root="$1"
+  local output_file="$2"
+  local root_abs=""
+  local repos_json=""
+  local repo_line=""
+  local repo_path=""
+  local used_mode=""
+  local refreshed=0
+  local stats_file=""
+  local -a registered_paths=()
+  local -a unregistered_paths=()
+  local -a cached_registered_paths=()
+
+  root_abs="$(cd "$root" && pwd -P)"
+
+  stats_file="$(mktemp 2>/dev/null || true)"
+  repos_json="$(GITH_DISCOVER_STATS_FILE="$stats_file" GITH_DISCOVER_QUIET=1 GITH_DISCOVER_CACHE=1 GITH_DISCOVER_INCREMENTAL=1 GITH_DISCOVER_METADATA_LEVEL=minimal gith_discover_repos "$root_abs" "6" 2>/dev/null || true)"
+  used_mode="$(sed -n 's/^mode=//p' "$stats_file" 2>/dev/null | head -n1)"
+  [[ -n "$used_mode" ]] || used_mode="unknown"
+  DISCOVER_MODE_LAST="$used_mode"
+
+  if [[ "$repos_json" != \[*\] ]]; then
+    discover_nested_repo_paths_fullscan "$root_abs" > "$output_file"
+    DISCOVER_MODE_LAST="scan-miss"
+    return 0
+  fi
+
+  while IFS= read -r repo_path; do
+    [[ -n "$repo_path" ]] || continue
+    registered_paths+=("$repo_path")
+  done < <(collect_registered_repo_paths_recursive "$root_abs")
+
+  while IFS= read -r repo_line; do
+    local repo_type=""
+    [[ -n "$repo_line" ]] || continue
+    repo_path="$(printf '%s' "$repo_line" | sed -n 's/^.*"path":"\([^"]*\)".*$/\1/p')"
+    repo_type="$(printf '%s' "$repo_line" | sed -n 's/^.*"type":"\([^"]*\)".*$/\1/p')"
+    [[ -n "$repo_path" ]] || continue
+    repo_path="$(printf '%b' "${repo_path//\\//}")"
+    if [[ "$repo_path" != /* ]]; then
+      repo_path="$root_abs/$repo_path"
+    fi
+    repo_path="$(cd "$repo_path" 2>/dev/null && pwd -P || true)"
+    [[ -n "$repo_path" ]] || continue
+    [[ "$repo_path" == "$root_abs" ]] && continue
+    if [[ "$repo_type" == "registered" ]]; then
+      cached_registered_paths+=("$repo_path")
+      continue
+    fi
+    if [[ "$repo_type" == "unregistered" ]]; then
+      unregistered_paths+=("$repo_path")
+    fi
+  done < <(printf '%s' "$repos_json" | grep -o '{[^}]*}')
+
+  if ! validate_unregistered_cache_entries unregistered_paths registered_paths cached_registered_paths; then
+    repos_json="$(GITH_DISCOVER_STATS_FILE="$stats_file" GITH_DISCOVER_QUIET=1 GITH_DISCOVER_CACHE=1 GITH_DISCOVER_CACHE_BUST=1 GITH_DISCOVER_INCREMENTAL=1 GITH_DISCOVER_METADATA_LEVEL=minimal gith_discover_repos "$root_abs" "6" 2>/dev/null || true)"
+    refreshed=1
+    unregistered_paths=()
+    cached_registered_paths=()
+    while IFS= read -r repo_line; do
+      local repo_type=""
+      [[ -n "$repo_line" ]] || continue
+      repo_path="$(printf '%s' "$repo_line" | sed -n 's/^.*"path":"\([^"]*\)".*$/\1/p')"
+      repo_type="$(printf '%s' "$repo_line" | sed -n 's/^.*"type":"\([^"]*\)".*$/\1/p')"
+      [[ -n "$repo_path" ]] || continue
+      repo_path="$(printf '%b' "${repo_path//\\//}")"
+      if [[ "$repo_path" != /* ]]; then
+        repo_path="$root_abs/$repo_path"
+      fi
+      repo_path="$(cd "$repo_path" 2>/dev/null && pwd -P || true)"
+      [[ -n "$repo_path" ]] || continue
+      [[ "$repo_path" == "$root_abs" ]] && continue
+      if [[ "$repo_type" == "registered" ]]; then
+        cached_registered_paths+=("$repo_path")
+        continue
+      fi
+      if [[ "$repo_type" == "unregistered" ]]; then
+        unregistered_paths+=("$repo_path")
+      fi
+    done < <(printf '%s' "$repos_json" | grep -o '{[^}]*}')
+  fi
+
+  while IFS= read -r repo_path; do
+    [[ -n "$repo_path" ]] || continue
+    printf '%s\n' "$repo_path"
+  done < <(printf '%s\n' "${registered_paths[@]}" "${unregistered_paths[@]}" | awk 'NF' | sort -u) > "$output_file"
+
+  if [[ "$refreshed" -eq 1 ]]; then
+    DISCOVER_MODE_LAST="cache-refresh"
+    echo "INFO: Refreshed discover cache due to unregistered repo cache inconsistency" >&2
+  fi
+
+  rm -f "$stats_file" 2>/dev/null || true
+
+  return 0
+}
+
+collect_registered_repo_paths_recursive() {
+  local root="$1"
+  local -a queue=()
+  local -a seen=()
+  local current=""
+  local sub_path=""
+  local child_abs=""
+
+  queue+=("$(cd "$root" && pwd -P)")
+
+  while [[ ${#queue[@]} -gt 0 ]]; do
+    current="${queue[0]}"
+    queue=("${queue[@]:1}")
+
+    [[ -f "$current/.gitmodules" ]] || continue
+
+    while IFS= read -r sub_path; do
+      [[ -n "$sub_path" ]] || continue
+      child_abs="$(cd "$current/$sub_path" 2>/dev/null && pwd -P || true)"
+      [[ -n "$child_abs" ]] || continue
+
+      if ! printf '%s\n' "${seen[@]}" | grep -Fxq "$child_abs"; then
+        seen+=("$child_abs")
+        queue+=("$child_abs")
+        printf '%s\n' "$child_abs"
+      fi
+    done < <(git config -f "$current/.gitmodules" --get-regexp '^submodule\..*\.path$' 2>/dev/null | awk '{print $2}' || true)
+  done
+}
+
+validate_unregistered_cache_entries() {
+  local -n unregistered_ref="$1"
+  local -n registered_ref="$2"
+  local -n cached_registered_ref="$3"
+  local candidate=""
+
+  for candidate in "${unregistered_ref[@]}"; do
+    [[ -n "$candidate" ]] || continue
+    if ! git -C "$candidate" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      return 1
+    fi
+    if printf '%s\n' "${registered_ref[@]}" | grep -Fxq "$candidate"; then
+      return 1
+    fi
+  done
+
+  for candidate in "${cached_registered_ref[@]}"; do
+    [[ -n "$candidate" ]] || continue
+    if ! printf '%s\n' "${registered_ref[@]}" | grep -Fxq "$candidate"; then
+      return 1
+    fi
+  done
+
+  for candidate in "${registered_ref[@]}"; do
+    [[ -n "$candidate" ]] || continue
+    if ! printf '%s\n' "${cached_registered_ref[@]}" | grep -Fxq "$candidate"; then
+      return 1
+    fi
+  done
+
+  return 0
+}
+
+sync_single_repo_branch_mode() {
+  local repo="$1"
+  local workspace_root="$2"
+  local preferred_remote="$3"
+  local is_root="$4"
+  local dry_run="$5"
+
+  local repo_abs=""
+  local remote_name=""
+  local current_branch=""
+  local default_branch=""
+  local target_branch=""
+  local branch_source=""
+  local gm_file=""
+  local branch_from_gitmodules=""
+  local is_registered=0
+  local rel=""
+  local checkout_cmd=()
+  local pull_cmd=()
+
+  repo_abs="$(cd "$repo" && pwd -P)"
+  remote_name="$(resolve_repo_remote "$repo_abs" "$preferred_remote" || true)"
+  if [[ -z "$remote_name" ]]; then
+    echo "WARN: Skip repo without remotes: $repo_abs" >&2
+    return 0
+  fi
+
+  git -C "$repo_abs" fetch "$remote_name" --prune --tags >/dev/null 2>&1 || true
+  current_branch="$(git -C "$repo_abs" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+
+  if [[ "$is_root" -eq 1 ]]; then
+    if [[ -n "$current_branch" ]]; then
+      target_branch="$current_branch"
+      branch_source="root current branch"
+    else
+      default_branch="$(detect_remote_default_branch "$repo_abs" "$remote_name" || true)"
+      [[ -z "$default_branch" ]] && echo "ERROR: Could not detect default branch for root repo remote '$remote_name'" >&2 && return 1
+      target_branch="$default_branch"
+      branch_source="root detached -> remote default"
+    fi
+  else
+    gm_file="$(syncc_find_gitmodules_file_for_path "$workspace_root" "$repo_abs" || true)"
+    if [[ -n "$gm_file" ]]; then
+      is_registered=1
+      branch_from_gitmodules="$(syncc_get_gitmodules_branch_for_path "$workspace_root" "$repo_abs" || true)"
+      if [[ -n "$branch_from_gitmodules" ]]; then
+        target_branch="$branch_from_gitmodules"
+        branch_source="registered .gitmodules branch"
+      else
+        default_branch="$(detect_remote_default_branch "$repo_abs" "$remote_name" || true)"
+        [[ -z "$default_branch" ]] && echo "ERROR: Could not detect default branch for registered repo: $repo_abs" >&2 && return 1
+        target_branch="$default_branch"
+        branch_source="registered remote default branch"
+      fi
+    else
+      if [[ -n "$current_branch" ]]; then
+        target_branch="$current_branch"
+        branch_source="unregistered current branch"
+      else
+        default_branch="$(detect_remote_default_branch "$repo_abs" "$remote_name" || true)"
+        [[ -z "$default_branch" ]] && echo "ERROR: Could not detect default branch for detached unregistered repo: $repo_abs" >&2 && return 1
+        target_branch="$default_branch"
+        branch_source="unregistered detached -> remote default"
+      fi
+    fi
+  fi
+
+  if [[ -z "$target_branch" ]]; then
+    echo "ERROR: Could not determine target branch for repo: $repo_abs" >&2
+    return 1
+  fi
+
+  rel="${repo_abs#$workspace_root/}"
+  [[ "$repo_abs" == "$workspace_root" ]] && rel="."
+
+  if git -C "$repo_abs" show-ref --verify --quiet "refs/heads/$target_branch"; then
+    checkout_cmd=(git -C "$repo_abs" checkout "$target_branch")
+  elif git -C "$repo_abs" show-ref --verify --quiet "refs/remotes/$remote_name/$target_branch"; then
+    checkout_cmd=(git -C "$repo_abs" checkout -b "$target_branch" "$remote_name/$target_branch")
+  else
+    if [[ "$is_registered" -eq 1 || "$is_root" -eq 1 ]]; then
+      echo "ERROR: Target branch '$target_branch' not found for $rel ($branch_source)" >&2
+      return 1
+    fi
+    echo "WARN: Unregistered repo branch '$target_branch' has no remote ref on '$remote_name'; keep local branch only: $rel"
+    checkout_cmd=(git -C "$repo_abs" checkout "$target_branch")
+  fi
+
+  pull_cmd=(git -C "$repo_abs" pull --rebase "$remote_name" "$target_branch")
+
+  if [[ "$dry_run" -eq 1 ]]; then
+    echo "[DRY RUN] Repo: $rel"
+    echo "[DRY RUN] Branch source: $branch_source"
+    echo "[DRY RUN] Would run: ${checkout_cmd[*]}"
+    if git -C "$repo_abs" show-ref --verify --quiet "refs/remotes/$remote_name/$target_branch"; then
+      echo "[DRY RUN] Would run: ${pull_cmd[*]}"
+    else
+      echo "[DRY RUN] Skip pull: missing remote branch $remote_name/$target_branch"
+    fi
+    return 0
+  fi
+
+  "${checkout_cmd[@]}" >/dev/null 2>&1
+
+  if git -C "$repo_abs" show-ref --verify --quiet "refs/remotes/$remote_name/$target_branch"; then
+    "${pull_cmd[@]}" >/dev/null 2>&1 || true
+  fi
+}
+
+sync_workspace_repos_branch_mode() {
+  local root_repo="$1"
+  local preferred_remote="$2"
+  local dry_run="$3"
+  local root_abs=""
+  local repo_path=""
+  local discover_mode="unknown"
+  local repo_list_file=""
+
+  root_abs="$(cd "$root_repo" && pwd -P)"
+
+  sync_single_repo_branch_mode "$root_abs" "$root_abs" "$preferred_remote" 1 "$dry_run"
+  sync_submodules_after_sync "$root_abs" "$dry_run"
+
+  repo_list_file="$(mktemp 2>/dev/null || true)"
+  if [[ -z "$repo_list_file" ]]; then
+    repo_list_file="$root_abs/.git/.kano-cache/discover-repos/.sync-repo-list-$$.tmp"
+  fi
+
+  discover_nested_repo_paths_cached_to_file "$root_abs" "$repo_list_file"
+  discover_mode="$DISCOVER_MODE_LAST"
+
+  while IFS= read -r repo_path; do
+    [[ -n "$repo_path" ]] || continue
+    sync_single_repo_branch_mode "$repo_path" "$root_abs" "$preferred_remote" 0 "$dry_run"
+    sync_submodules_after_sync "$repo_path" "$dry_run"
+  done < "$repo_list_file"
+
+  rm -f "$repo_list_file" 2>/dev/null || true
+
+  echo "Discover mode: $discover_mode"
 }
 
 usage() {
@@ -600,61 +951,22 @@ fi
 git -C "$REPO" fetch "$REMOTE" --prune --tags >/dev/null 2>&1 || true
 
 if [[ "$TARGET_MODE" == "branch" ]]; then
-  default_branch="$(detect_remote_default_branch "$REPO" "$REMOTE" || true)"
-  if [[ -z "${default_branch:-}" ]]; then
-    echo "ERROR: Could not detect default branch for remote: $REMOTE" >&2
-    exit 1
-  fi
-
-  if git -C "$REPO" show-ref --verify --quiet "refs/heads/$default_branch"; then
-    checkout_cmd=(git -C "$REPO" checkout "$default_branch")
-  else
-    checkout_cmd=(git -C "$REPO" checkout -b "$default_branch" "$REMOTE/$default_branch")
-  fi
-
-  pull_cmd=(git -C "$REPO" pull --rebase "$REMOTE" "$default_branch")
-
-  echo "Syncing to latest branch: $REMOTE/$default_branch"
+  echo "Syncing workspace repos with recursive branch rules"
   if [[ "$DRY_RUN" -eq 1 ]]; then
-    echo "[DRY RUN] Would run: ${checkout_cmd[*]}"
-    echo "[DRY RUN] Would run: ${pull_cmd[*]}"
-    echo "[DRY RUN] Would sync submodule branches based on .gitmodules"
+    sync_workspace_repos_branch_mode "$REPO" "$REMOTE" "$DRY_RUN"
     exit 0
   fi
 
-  "${checkout_cmd[@]}" >/dev/null 2>&1
-  pull_output=""
-  if ! pull_output="$("${pull_cmd[@]}" 2>&1)"; then
-    echo "$pull_output" >&2
-    if [[ "$DRY_RUN" -eq 1 ]]; then
-      echo "[DRY RUN] Rebase failed; would attempt submodule conflict auto-resolve (strategy=$SUBMODULE_CONFLICT_STRATEGY)"
-      exit 1
+  if ! sync_workspace_repos_branch_mode "$REPO" "$REMOTE" "$DRY_RUN"; then
+    if [[ "$HAD_STASH" -eq 1 ]]; then
+      echo "Auto-stash kept due to sync failure. Recover with: git -C \"<repo>\" stash list" >&2
     fi
-
-    if echo "$pull_output" | grep -Eiq "repository .* not found|remote: .*not found|could not read from remote repository|could not resolve host|authentication failed|permission denied|access denied"; then
-      if [[ "$HAD_STASH" -eq 1 ]]; then
-        echo "Auto-stash kept due to sync failure. Recover with: git -C \"<repo>\" stash list" >&2
-      fi
-      echo "Sync failed: remote URL/access problem for '$REMOTE'." >&2
-      echo "Hint: verify remote URL and permissions, then retry." >&2
-      exit 1
-    fi
-
-    if ! attempt_auto_resolve_submodule_rebase_conflicts "$REPO" "$SUBMODULE_CONFLICT_STRATEGY"; then
-      if [[ "$HAD_STASH" -eq 1 ]]; then
-        echo "Auto-stash kept due to sync failure. Recover with: git -C \"<repo>\" stash list" >&2
-      fi
-      echo "Sync failed during rebase. Resolve conflicts manually or retry with --submodule-conflict-strategy newer-date|ours|theirs" >&2
-      exit 1
-    fi
+    echo "Sync failed while applying recursive branch rules." >&2
+    exit 1
   fi
 
-  sync_submodules_after_sync "$REPO" "$DRY_RUN"
-  gith_sync_submodules_to_branches "$REPO" "1"
-  sync_unregistered_repos_to_branches "$REPO" "$DRY_RUN"
-
   echo "=== Sync Complete ==="
-  echo "On branch: $default_branch"
+  echo "Root branch: $(git -C "$REPO" symbolic-ref --quiet --short HEAD 2>/dev/null || echo detached)"
 else
   latest_tag="$(find_latest_release_tag "$REPO" "$TAG_PATTERN")"
   if [[ -z "${latest_tag:-}" ]]; then
