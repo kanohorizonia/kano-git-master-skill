@@ -6,10 +6,12 @@
 
 #include <filesystem>
 #include <future>
+#include <iomanip>
 #include <iostream>
 #include <sstream>
 #include <string>
 #include <chrono>
+#include <mutex>
 #include <vector>
 
 namespace kano::git::commands {
@@ -69,6 +71,8 @@ auto RunNativePush(
     long long syncMillis = 0;
     long long pushMillis = 0;
     int maxParallelObserved = 1;
+    std::mutex statsMutex;
+    std::vector<std::tuple<std::string, std::string, std::string>> pushStats;
     int failures = 0;
     int successes = 0;
 
@@ -200,6 +204,10 @@ auto RunNativePush(
                 }
                 std::cout << "\n";
                 repoSuccess = 1;
+                {
+                    std::lock_guard<std::mutex> lock(statsMutex);
+                    pushStats.emplace_back(repoLabel, remote, branch);
+                }
                 continue;
             }
 
@@ -207,6 +215,10 @@ auto RunNativePush(
             if (result.exitCode == 0) {
                 std::cout << "[" << repoLabel << "] Pushed (" << remote << ")\n";
                 repoSuccess = 1;
+                {
+                    std::lock_guard<std::mutex> lock(statsMutex);
+                    pushStats.emplace_back(repoLabel, remote, branch);
+                }
             } else {
                 std::cerr << "[" << repoLabel << "] Push failed (" << remote << ")\n";
             }
@@ -258,7 +270,22 @@ auto RunNativePush(
         }
     }
 
-    std::cout << "Summary: " << successes << " succeeded, " << failures << " failed\n";
+    if (!pushStats.empty()) {
+        std::cout << "\n=== Push Summary ===\n";
+        std::cout << std::left << std::setw(45) << "Repository"
+                  << std::setw(20) << "Remote"
+                  << "Branch\n";
+        std::cout << std::left << std::setw(45) << "-----------"
+                  << std::setw(20) << "------"
+                  << "------\n";
+        for (const auto& stat : pushStats) {
+            std::cout << std::left << std::setw(45) << std::get<0>(stat)
+                      << std::setw(20) << std::get<1>(stat)
+                      << std::get<2>(stat) << "\n";
+        }
+    }
+
+    std::cout << "\nSummary: " << successes << " succeeded, " << failures << " failed\n";
     if (InProfile) {
         const auto totalEnd = std::chrono::steady_clock::now();
         const auto totalMillis = std::chrono::duration_cast<std::chrono::milliseconds>(totalEnd - totalStart).count();
