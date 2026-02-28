@@ -108,6 +108,7 @@ Current TUI actions (v1):
 - `p` in main view: show selected repo push preview (upstream/tracking + risk)
 - `f` in main view: fetch action uses confirm gate (`y` execute / `n` cancel)
 - `P` in main view: push execute with confirm gate (requires upstream)
+- `x` in main view: cherry-pick preflight panel (source/target candidates, duplicate+risk hints)
 - history mode controls:
   - `←` / `→`: previous/next repo page source
   - `PgUp` / `PgDn`: older/newer history page

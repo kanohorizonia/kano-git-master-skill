@@ -1430,7 +1430,7 @@ auto PrintDemo() -> void {
     std::cout << "KOG TUI demo mode\n";
     std::cout << "- FTXUI dashboard enabled\n";
     std::cout << "- repo list + details + incremental history pager\n";
-    std::cout << "- controls: r(refresh), d(dirty-only), f(fetch confirm), c(commit preview), C(commit confirm), p(push preview), P(push confirm), Enter(history), q(quit)\n";
+    std::cout << "- controls: r(refresh), d(dirty-only), f(fetch confirm), c(commit preview), C(commit confirm), p(push preview), P(push confirm), x(cherry preflight), Enter(history), q(quit)\n";
     std::cout << "- main view: / enters repo path filter mode\n";
     std::cout << "- tree: t collapse/expand selected repo subtree\n";
     std::cout << "- history mode: left/right repo, PgUp/PgDn page, up/down line, /search, n-next, m-detail-mode, o-sort-mode\n";
