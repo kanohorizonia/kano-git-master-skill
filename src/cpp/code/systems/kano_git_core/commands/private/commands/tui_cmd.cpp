@@ -49,6 +49,14 @@ struct RepoHistoryCache {
     std::unordered_map<std::string, std::string> commitQuickStats;
 };
 
+struct PreviewData {
+    std::vector<std::string> staged;
+    std::vector<std::string> unstaged;
+    std::string branch;
+    std::string upstream;
+    std::string tracking;
+};
+
 struct HistoryState {
     bool active = false;
     int repoIndex = 0;
@@ -62,6 +70,20 @@ struct HistoryState {
     std::string detailBody;
     int detailMode = 0; // 0=summary, 1=files, 2=patch
     int sortMode = 0;   // 0=time-desc, 1=time-asc, 2=match-first
+};
+
+struct PreviewPanelState {
+    bool active = false;
+    std::string title;
+    std::string body;
+};
+
+struct ConfirmState {
+    bool active = false;
+    std::string title;
+    std::string description;
+    std::filesystem::path repo;
+    std::vector<std::string> command;
 };
 
 auto Trim(std::string InValue) -> std::string {
@@ -404,6 +426,119 @@ auto FindNextMatch(const std::vector<std::string>& lines,
     return -1;
 }
 
+auto ParseStatusFiles(const shell::ExecResult& out) -> std::pair<std::vector<std::string>, std::vector<std::string>> {
+    std::vector<std::string> staged;
+    std::vector<std::string> unstaged;
+    if (out.exitCode != 0) {
+        return {staged, unstaged};
+    }
+
+    std::istringstream iss(out.stdoutStr);
+    std::string line;
+    while (std::getline(iss, line)) {
+        if (line.size() < 4) {
+            continue;
+        }
+        const char x = line[0];
+        const char y = line[1];
+        const std::string file = Trim(line.substr(3));
+        if (file.empty()) {
+            continue;
+        }
+        if (x != ' ' && x != '?') {
+            staged.push_back(file);
+        }
+        if (y != ' ' || x == '?') {
+            unstaged.push_back(file);
+        }
+    }
+
+    auto dedupe = [](std::vector<std::string>& v) {
+        std::sort(v.begin(), v.end());
+        v.erase(std::unique(v.begin(), v.end()), v.end());
+    };
+    dedupe(staged);
+    dedupe(unstaged);
+    return {staged, unstaged};
+}
+
+auto CollectPreviewData(const std::filesystem::path& repo) -> PreviewData {
+    PreviewData data;
+    data.branch = CurrentBranch(repo);
+    data.upstream = CurrentUpstream(repo);
+    data.tracking = TrackingSummary(repo);
+
+    const auto status = GitCapture(repo, {"status", "--porcelain"});
+    auto parsed = ParseStatusFiles(status);
+    data.staged = std::move(parsed.first);
+    data.unstaged = std::move(parsed.second);
+    return data;
+}
+
+auto BuildCommitPreview(const std::filesystem::path& repo) -> std::string {
+    const auto data = CollectPreviewData(repo);
+    std::ostringstream out;
+    out << "Commit Preview\n";
+    out << "repo: " << repo.lexically_normal().generic_string() << "\n";
+    out << "branch: " << data.branch << "\n\n";
+
+    out << "staged files: " << data.staged.size() << "\n";
+    for (std::size_t i = 0; i < std::min<std::size_t>(data.staged.size(), 20); ++i) {
+        out << "  + " << data.staged[i] << "\n";
+    }
+    if (data.staged.size() > 20) {
+        out << "  ... and " << (data.staged.size() - 20) << " more\n";
+    }
+
+    out << "\nunstaged/untracked files: " << data.unstaged.size() << "\n";
+    for (std::size_t i = 0; i < std::min<std::size_t>(data.unstaged.size(), 20); ++i) {
+        out << "  ! " << data.unstaged[i] << "\n";
+    }
+    if (data.unstaged.size() > 20) {
+        out << "  ... and " << (data.unstaged.size() - 20) << " more\n";
+    }
+
+    out << "\nrisk summary:\n";
+    if (data.staged.empty()) {
+        out << "  - HIGH: nothing staged (commit would fail)\n";
+    }
+    if (!data.unstaged.empty()) {
+        out << "  - MEDIUM: unstaged changes present; commit may be incomplete\n";
+    }
+    if (!data.staged.empty() && data.unstaged.empty()) {
+        out << "  - LOW: staged set appears clean\n";
+    }
+    return out.str();
+}
+
+auto BuildPushPreview(const std::filesystem::path& repo) -> std::string {
+    const auto data = CollectPreviewData(repo);
+    std::ostringstream out;
+    out << "Push Preview\n";
+    out << "repo: " << repo.lexically_normal().generic_string() << "\n";
+    out << "branch: " << data.branch << "\n";
+    out << "upstream: " << data.upstream << "\n";
+    out << "tracking: " << data.tracking << "\n\n";
+
+    out << "risk summary:\n";
+    if (data.upstream == "(none)" || data.tracking == "no-upstream") {
+        out << "  - HIGH: no upstream tracking branch\n";
+    } else if (data.tracking.find("behind") != std::string::npos && data.tracking.find("ahead") == std::string::npos) {
+        out << "  - HIGH: behind upstream; push likely rejected\n";
+    } else if (data.tracking.find("behind") != std::string::npos && data.tracking.find("ahead") != std::string::npos) {
+        out << "  - MEDIUM: diverged with upstream; rebase/merge recommended\n";
+    } else if (data.tracking.find("ahead") != std::string::npos) {
+        out << "  - LOW: ahead commits available to push\n";
+    } else {
+        out << "  - INFO: branch appears in sync\n";
+    }
+
+    if (!data.unstaged.empty()) {
+        out << "  - INFO: working tree has local changes (does not block push)\n";
+    }
+    return out.str();
+}
+
 auto BuildDisplayedRepoIndices(const std::vector<RepoView>& repos,
                               const std::unordered_map<std::string, bool>& collapsedRoots) -> std::vector<int> {
     std::vector<int> indices;
@@ -455,6 +590,8 @@ auto RunFtxuiDashboard() -> int {
     int selectedDisplayed = 0;
     std::string footer = "r=refresh d=dirty-only f=fetch Enter=history q=quit";
     HistoryState history{};
+    PreviewPanelState preview{};
+    ConfirmState confirm{};
     std::unordered_map<std::string, RepoHistoryCache> historyCache;
 
     auto refresh_menu = [&] {
@@ -533,6 +670,16 @@ auto RunFtxuiDashboard() -> int {
 
     auto with_keys = CatchEvent(root, [&](Event event) {
         if (event == Event::Character('q')) {
+            if (confirm.active) {
+                confirm.active = false;
+                footer = "confirm cancelled";
+                return true;
+            }
+            if (preview.active) {
+                preview.active = false;
+                footer = "preview closed";
+                return true;
+            }
             if (filterMode) {
                 filterMode = false;
                 footer = "filter mode closed";
@@ -608,11 +755,81 @@ auto RunFtxuiDashboard() -> int {
                 footer = "fetch skipped: no selected repo";
                 return true;
             }
-            const auto result = shell::ExecuteCommand("git", {"fetch", "--all", "--prune"}, shell::ExecMode::Capture, repos[selected].path);
-            footer = result.exitCode == 0
-                ? "fetch ok: " + repos[selected].path.filename().string()
-                : "fetch failed(" + std::to_string(result.exitCode) + "): " + repos[selected].path.filename().string();
+            confirm.active = true;
+            confirm.title = "Confirm fetch";
+            confirm.description = "Run git fetch --all --prune on selected repo?";
+            confirm.repo = repos[selected].path;
+            confirm.command = {"fetch", "--all", "--prune"};
+            footer = "confirm fetch: y/n";
+            return true;
+        }
+
+        if (event == Event::Character('c')) {
+            const int selected = RepoIndexFromDisplayed(displayedRepoIndices, selectedDisplayed);
+            if (repos.empty() || selected < 0 || selected >= static_cast<int>(repos.size())) {
+                footer = "commit preview skipped: no selected repo";
+                return true;
+            }
+            preview.active = true;
+            preview.title = "Commit Preview";
+            preview.body = BuildCommitPreview(repos[selected].path);
+            footer = "commit preview ready";
+            return true;
+        }
+
+        if (event == Event::Character('p')) {
+            const int selected = RepoIndexFromDisplayed(displayedRepoIndices, selectedDisplayed);
+            if (repos.empty() || selected < 0 || selected >= static_cast<int>(repos.size())) {
+                footer = "push preview skipped: no selected repo";
+                return true;
+            }
+            preview.active = true;
+            preview.title = "Push Preview";
+            preview.body = BuildPushPreview(repos[selected].path);
+            footer = "push preview ready";
+            return true;
+        }
+
+        if (event == Event::Character('P')) {
+            const int selected = RepoIndexFromDisplayed(displayedRepoIndices, selectedDisplayed);
+            if (repos.empty() || selected < 0 || selected >= static_cast<int>(repos.size())) {
+                footer = "push execute skipped: no selected repo";
+                return true;
+            }
+            const auto data = CollectPreviewData(repos[selected].path);
+            if (data.upstream == "(none)" || data.tracking == "no-upstream") {
+                footer = "push blocked: no upstream tracking branch";
+                return true;
+            }
+            confirm.active = true;
+            confirm.title = "Confirm push";
+            confirm.description = "Run git push on selected repo?";
+            confirm.repo = repos[selected].path;
+            confirm.command = {"push"};
+            footer = "confirm push: y/n";
+            return true;
+        }
+
+        if (confirm.active && (event == Event::Character('y') || event == Event::Character('Y'))) {
+            const auto result = shell::ExecuteCommand("git", confirm.command, shell::ExecMode::Capture, confirm.repo);
+            preview.active = true;
+            preview.title = confirm.title + " result";
+            preview.body = "repo: " + confirm.repo.lexically_normal().generic_string() + "\n"
+                + "command: git";
+            for (const auto& part : confirm.command) {
+                preview.body += " " + part;
+            }
+            preview.body += "\nexit: " + std::to_string(result.exitCode) + "\n\n";
+            preview.body += !result.stdoutStr.empty() ? result.stdoutStr : result.stderrStr;
+            confirm.active = false;
+            footer = result.exitCode == 0 ? "execute success" : "execute failed";
             refresh_all();
+            return true;
+        }
+
+        if (confirm.active && (event == Event::Character('n') || event == Event::Character('N') || event == Event::Escape)) {
+            confirm.active = false;
+            footer = "confirm declined";
             return true;
         }
 
@@ -832,7 +1049,31 @@ auto RunFtxuiDashboard() -> int {
     auto ui = Renderer(with_keys, [&] {
         Element rightPanel;
 
-        if (history.active && !repos.empty()) {
+        if (confirm.active) {
+            rightPanel = vbox({
+                text(confirm.title) | bold,
+                separator(),
+                text(confirm.description),
+                text("repo: " + confirm.repo.lexically_normal().generic_string()),
+                text("command: git" + [&] {
+                    std::string cmd;
+                    for (const auto& part : confirm.command) {
+                        cmd += " " + part;
+                    }
+                    return cmd;
+                }()),
+                separator(),
+                text("Press y to execute, n/Esc/q to cancel") | dim,
+            }) | border;
+        } else if (preview.active) {
+            rightPanel = vbox({
+                text(preview.title) | bold,
+                separator(),
+                text("Press q to close preview") | dim,
+                separator(),
+                paragraph(preview.body),
+            }) | border;
+        } else if (history.active && !repos.empty()) {
             const auto& repo = repos[history.repoIndex];
             const auto key = repo.path.lexically_normal().generic_string();
             ensure_history_loaded(history.repoIndex, history.pageIndex);
@@ -955,6 +1196,7 @@ auto RunFtxuiDashboard() -> int {
                    text("KOG FTXUI Dashboard v2") | bold,
                    separator(),
                    text("Global repo view + incremental history pager."),
+                   text("preview keys: c(commit preview), p(push preview), P(push execute), f(fetch confirm)") | dim,
                    text("repo filter: " + (repoFilter.empty() ? "(none)" : repoFilter)) | dim,
                    text("tree toggle key: t (collapse/expand child repos)") | dim,
                    separator(),
@@ -983,7 +1225,7 @@ auto PrintDemo() -> void {
     std::cout << "KOG TUI demo mode\n";
     std::cout << "- FTXUI dashboard enabled\n";
     std::cout << "- repo list + details + incremental history pager\n";
-    std::cout << "- controls: r(refresh), d(dirty-only), f(fetch), Enter(history), q(quit)\n";
+    std::cout << "- controls: r(refresh), d(dirty-only), f(fetch confirm), c(commit preview), p(push preview), P(push confirm), Enter(history), q(quit)\n";
     std::cout << "- main view: / enters repo path filter mode\n";
     std::cout << "- tree: t collapse/expand selected repo subtree\n";
     std::cout << "- history mode: left/right repo, PgUp/PgDn page, up/down line, /search, n-next, m-detail-mode, o-sort-mode\n";

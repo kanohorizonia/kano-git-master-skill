@@ -103,6 +103,10 @@ Current TUI actions (v1):
 - Enter opens incremental history pager for selected repo
 - `t`: collapse/expand selected repo subtree in left panel
 - `/` in main view: enter repo path filter mode (incremental)
+- `c` in main view: show selected repo commit preview (staged/unstaged + risk)
+- `p` in main view: show selected repo push preview (upstream/tracking + risk)
+- `f` in main view: fetch action uses confirm gate (`y` execute / `n` cancel)
+- `P` in main view: push execute with confirm gate (requires upstream)
 - history mode controls:
   - `←` / `→`: previous/next repo page source
   - `PgUp` / `PgDn`: older/newer history page
