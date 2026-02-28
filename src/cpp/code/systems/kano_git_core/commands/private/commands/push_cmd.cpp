@@ -9,6 +9,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <chrono>
 #include <vector>
 
 namespace kano::git::commands {
@@ -62,7 +63,12 @@ auto RunNativePush(
     const bool InStashLocalChanges,
     const bool InFailOnDirtySync,
     const int InJobs,
+    const bool InProfile,
     const std::string& InRemoteFilter) -> int {
+    const auto totalStart = std::chrono::steady_clock::now();
+    long long syncMillis = 0;
+    long long pushMillis = 0;
+    int maxParallelObserved = 1;
     int failures = 0;
     int successes = 0;
 
@@ -87,6 +93,7 @@ auto RunNativePush(
         const bool hasLocalChanges = !Trim(GitCapture(repoPath, {"status", "--porcelain"}).stdoutStr).empty();
 
         if (!InSkipSync && hasUpstream) {
+            const auto syncStart = std::chrono::steady_clock::now();
             bool hadStash = false;
             std::string stashName;
             if (hasLocalChanges) {
@@ -136,6 +143,8 @@ auto RunNativePush(
                     }
                 }
             }
+            const auto syncEnd = std::chrono::steady_clock::now();
+            syncMillis += std::chrono::duration_cast<std::chrono::milliseconds>(syncEnd - syncStart).count();
         }
 
         if (InSyncOnly) {
@@ -177,6 +186,7 @@ auto RunNativePush(
         }
 
         int repoSuccess = 0;
+        const auto pushStart = std::chrono::steady_clock::now();
         for (const auto& remote : pushRemotes) {
             std::vector<std::string> args = {"push"};
             args.insert(args.end(), pushArgs.begin(), pushArgs.end());
@@ -205,6 +215,8 @@ auto RunNativePush(
         if (repoSuccess == 0) {
             return {0, 1};
         }
+        const auto pushEnd = std::chrono::steady_clock::now();
+        pushMillis += std::chrono::duration_cast<std::chrono::milliseconds>(pushEnd - pushStart).count();
         return {1, 0};
     };
 
@@ -236,6 +248,9 @@ auto RunNativePush(
             active.push_back(std::async(std::launch::async, [&, repoPathRaw]() {
                 return runOneRepo(repoPathRaw);
             }));
+            if (static_cast<int>(active.size()) > maxParallelObserved) {
+                maxParallelObserved = static_cast<int>(active.size());
+            }
         }
 
         while (!active.empty()) {
@@ -244,6 +259,18 @@ auto RunNativePush(
     }
 
     std::cout << "Summary: " << successes << " succeeded, " << failures << " failed\n";
+    if (InProfile) {
+        const auto totalEnd = std::chrono::steady_clock::now();
+        const auto totalMillis = std::chrono::duration_cast<std::chrono::milliseconds>(totalEnd - totalStart).count();
+        std::cout << "\n=== Profile Summary ===\n";
+        std::cout << "mode: native\n";
+        std::cout << "repo_count: " << InRepos.size() << "\n";
+        std::cout << "jobs_requested: " << jobs << "\n";
+        std::cout << "max_parallel_observed: " << maxParallelObserved << "\n";
+        std::cout << "sync_ms: " << syncMillis << "\n";
+        std::cout << "push_ms: " << pushMillis << "\n";
+        std::cout << "total_ms: " << totalMillis << "\n";
+    }
     return failures == 0 ? 0 : 1;
 }
 
@@ -264,6 +291,7 @@ void RegisterPush(CLI::App& InApp) {
     auto* stashLocalChanges = new bool{false};
     auto* failOnDirtySync = new bool{false};
     auto* jobs = new int{1};
+    auto* profile = new bool{false};
     auto* remote = new std::string{};
 
     cmd->add_flag("--shell", *shellMode, "Use shell fallback implementation");
@@ -277,6 +305,7 @@ void RegisterPush(CLI::App& InApp) {
     cmd->add_flag("--stash-local-changes", *stashLocalChanges, "Auto-stash local changes during native sync");
     cmd->add_flag("--fail-on-dirty-sync", *failOnDirtySync, "Fail native sync when local changes exist");
     cmd->add_option("--jobs", *jobs, "Number of parallel repo workers for native push");
+    cmd->add_flag("--profile", *profile, "Print native push timing/profile summary");
     cmd->add_option("--remote", *remote, "Native remote filter (default fan-out origin-ssh/http/origin)");
 
     cmd->callback([=]() {
@@ -325,6 +354,9 @@ void RegisterPush(CLI::App& InApp) {
                 args.push_back("--jobs");
                 args.push_back(std::to_string(*jobs));
             }
+            if (*profile) {
+                args.push_back("--profile");
+            }
             args.insert(args.end(), extras.begin(), extras.end());
             auto result = shell::ExecuteScript("commit-tools/smart-push.sh", args);
             std::exit(result.exitCode);
@@ -350,6 +382,7 @@ void RegisterPush(CLI::App& InApp) {
             *stashLocalChanges,
             *failOnDirtySync,
             *jobs,
+            *profile,
             *remote);
         std::exit(code);
     });
