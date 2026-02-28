@@ -5,6 +5,7 @@
 #include "shell_executor.hpp"
 
 #include <filesystem>
+#include <future>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -60,27 +61,26 @@ auto RunNativePush(
     const bool InNoVerify,
     const bool InStashLocalChanges,
     const bool InFailOnDirtySync,
+    const int InJobs,
     const std::string& InRemoteFilter) -> int {
     int failures = 0;
     int successes = 0;
 
-    for (const auto& repoPathRaw : InRepos) {
+    auto runOneRepo = [&](const std::filesystem::path& repoPathRaw) -> std::pair<int, int> {
         const auto repoPath = std::filesystem::weakly_canonical(repoPathRaw);
         const auto repoLabel = repoPath.lexically_normal().generic_string();
 
         const auto gitDir = GitCapture(repoPath, {"rev-parse", "--git-dir"});
         if (gitDir.exitCode != 0) {
             std::cerr << "Error: Not a git repository: " << repoLabel << "\n";
-            failures += 1;
-            continue;
+            return {0, 1};
         }
 
         const auto branchOut = GitCapture(repoPath, {"symbolic-ref", "--quiet", "--short", "HEAD"});
         const auto branch = Trim(branchOut.stdoutStr);
         if (branchOut.exitCode != 0 || branch.empty()) {
             std::cerr << "Error: Detached HEAD is not supported by native push flow: " << repoLabel << "\n";
-            failures += 1;
-            continue;
+            return {0, 1};
         }
 
         const bool hasUpstream = (GitCapture(repoPath, {"rev-parse", "--abbrev-ref", "@{upstream}"}).exitCode == 0);
@@ -92,8 +92,7 @@ auto RunNativePush(
             if (hasLocalChanges) {
                 if (InFailOnDirtySync) {
                     std::cerr << "[" << repoLabel << "] Sync failed: local changes present (--fail-on-dirty-sync)\n";
-                    failures += 1;
-                    continue;
+                    return {0, 1};
                 }
 
                 if (InStashLocalChanges) {
@@ -105,8 +104,7 @@ auto RunNativePush(
                         const auto stash = GitCapture(repoPath, {"stash", "push", "-u", "-m", stashName});
                         if (stash.exitCode != 0) {
                             std::cerr << "[" << repoLabel << "] Failed to create auto-stash before sync\n";
-                            failures += 1;
-                            continue;
+                            return {0, 1};
                         }
                         const auto stashOut = Trim(stash.stdoutStr);
                         hadStash = stashOut.find("No local changes to save") == std::string::npos;
@@ -123,8 +121,7 @@ auto RunNativePush(
                 const auto pull = GitPassThrough(repoPath, {"pull", "--rebase"});
                 if (pull.exitCode != 0) {
                     std::cerr << "[" << repoLabel << "] Sync failed before push\n";
-                    failures += 1;
-                    continue;
+                    return {0, 1};
                 }
             }
 
@@ -135,8 +132,7 @@ auto RunNativePush(
                     const auto pop = GitPassThrough(repoPath, {"stash", "pop"});
                     if (pop.exitCode != 0) {
                         std::cerr << "[" << repoLabel << "] Failed to restore auto-stash after sync\n";
-                        failures += 1;
-                        continue;
+                        return {0, 1};
                     }
                 }
             }
@@ -144,8 +140,7 @@ auto RunNativePush(
 
         if (InSyncOnly) {
             std::cout << "[" << repoLabel << "] Sync-only mode: skipping push\n";
-            successes += 1;
-            continue;
+            return {1, 0};
         }
 
         std::vector<std::string> pushRemotes;
@@ -167,8 +162,7 @@ auto RunNativePush(
 
         if (pushRemotes.empty()) {
             std::cerr << "Error: No pushable origin remote found for " << repoLabel << "\n";
-            failures += 1;
-            continue;
+            return {0, 1};
         }
 
         std::vector<std::string> pushArgs;
@@ -209,9 +203,43 @@ auto RunNativePush(
         }
 
         if (repoSuccess == 0) {
-            failures += 1;
-        } else {
-            successes += 1;
+            return {0, 1};
+        }
+        return {1, 0};
+    };
+
+    const int jobs = InJobs < 1 ? 1 : InJobs;
+    if (jobs == 1 || InRepos.size() <= 1) {
+        for (const auto& repoPathRaw : InRepos) {
+            const auto [s, f] = runOneRepo(repoPathRaw);
+            successes += s;
+            failures += f;
+        }
+    } else {
+        std::vector<std::future<std::pair<int, int>>> active;
+        active.reserve(static_cast<std::size_t>(jobs));
+
+        auto waitOne = [&]() {
+            if (active.empty()) {
+                return;
+            }
+            auto result = active.front().get();
+            successes += result.first;
+            failures += result.second;
+            active.erase(active.begin());
+        };
+
+        for (const auto& repoPathRaw : InRepos) {
+            while (static_cast<int>(active.size()) >= jobs) {
+                waitOne();
+            }
+            active.push_back(std::async(std::launch::async, [&, repoPathRaw]() {
+                return runOneRepo(repoPathRaw);
+            }));
+        }
+
+        while (!active.empty()) {
+            waitOne();
         }
     }
 
@@ -235,6 +263,7 @@ void RegisterPush(CLI::App& InApp) {
     auto* noSmartSync = new bool{false};
     auto* stashLocalChanges = new bool{false};
     auto* failOnDirtySync = new bool{false};
+    auto* jobs = new int{1};
     auto* remote = new std::string{};
 
     cmd->add_flag("--shell", *shellMode, "Use shell fallback implementation");
@@ -247,6 +276,7 @@ void RegisterPush(CLI::App& InApp) {
     cmd->add_flag("--no-smart-sync", *noSmartSync, "Compatibility flag (native uses simple pull --rebase)");
     cmd->add_flag("--stash-local-changes", *stashLocalChanges, "Auto-stash local changes during native sync");
     cmd->add_flag("--fail-on-dirty-sync", *failOnDirtySync, "Fail native sync when local changes exist");
+    cmd->add_option("--jobs", *jobs, "Number of parallel repo workers for native push");
     cmd->add_option("--remote", *remote, "Native remote filter (default fan-out origin-ssh/http/origin)");
 
     cmd->callback([=]() {
@@ -291,6 +321,10 @@ void RegisterPush(CLI::App& InApp) {
             if (*failOnDirtySync) {
                 args.push_back("--fail-on-dirty-sync");
             }
+            if (*jobs > 1) {
+                args.push_back("--jobs");
+                args.push_back(std::to_string(*jobs));
+            }
             args.insert(args.end(), extras.begin(), extras.end());
             auto result = shell::ExecuteScript("commit-tools/smart-push.sh", args);
             std::exit(result.exitCode);
@@ -298,6 +332,11 @@ void RegisterPush(CLI::App& InApp) {
 
         if (*stashLocalChanges && *failOnDirtySync) {
             std::cerr << "Error: --stash-local-changes and --fail-on-dirty-sync cannot be used together\n";
+            std::exit(1);
+        }
+
+        if (*jobs < 1) {
+            std::cerr << "Error: --jobs must be a positive integer\n";
             std::exit(1);
         }
 
@@ -310,6 +349,7 @@ void RegisterPush(CLI::App& InApp) {
             *noVerify,
             *stashLocalChanges,
             *failOnDirtySync,
+            *jobs,
             *remote);
         std::exit(code);
     });
