@@ -66,6 +66,7 @@ auto RunNativePush(
     const bool InFailOnDirtySync,
     const int InJobs,
     const bool InProfile,
+    const bool InVerbose,
     const std::string& InRemoteFilter) -> int {
     const auto totalStart = std::chrono::steady_clock::now();
     long long syncMillis = 0;
@@ -211,7 +212,9 @@ auto RunNativePush(
                 continue;
             }
 
-            const auto result = GitPassThrough(repoPath, args);
+            const auto result = InVerbose
+                ? GitPassThrough(repoPath, args)
+                : GitCapture(repoPath, args);
             if (result.exitCode == 0) {
                 std::cout << "[" << repoLabel << "] Pushed (" << remote << ")\n";
                 repoSuccess = 1;
@@ -220,7 +223,9 @@ auto RunNativePush(
                     pushStats.emplace_back(repoLabel, remote, branch);
                 }
             } else {
-                std::cerr << "[" << repoLabel << "] Push failed (" << remote << ")\n";
+                if (InVerbose) {
+                    std::cerr << "[" << repoLabel << "] Push failed (" << remote << ")\n";
+                }
             }
         }
 
@@ -319,6 +324,7 @@ void RegisterPush(CLI::App& InApp) {
     auto* failOnDirtySync = new bool{false};
     auto* jobs = new int{1};
     auto* profile = new bool{false};
+    auto* verbose = new bool{false};
     auto* remote = new std::string{};
 
     cmd->add_flag("--shell", *shellMode, "Use shell fallback implementation");
@@ -333,6 +339,7 @@ void RegisterPush(CLI::App& InApp) {
     cmd->add_flag("--fail-on-dirty-sync", *failOnDirtySync, "Fail native sync when local changes exist");
     cmd->add_option("--jobs", *jobs, "Number of parallel repo workers for native push");
     cmd->add_flag("--profile", *profile, "Print native push timing/profile summary");
+    cmd->add_flag("--verbose", *verbose, "Show detailed native push output including partial failures");
     cmd->add_option("--remote", *remote, "Native remote filter (default fan-out origin-ssh/http/origin)");
 
     cmd->callback([=]() {
@@ -384,6 +391,9 @@ void RegisterPush(CLI::App& InApp) {
             if (*profile) {
                 args.push_back("--profile");
             }
+            if (*verbose) {
+                args.push_back("--verbose");
+            }
             args.insert(args.end(), extras.begin(), extras.end());
             auto result = shell::ExecuteScript("commit-tools/smart-push.sh", args);
             std::exit(result.exitCode);
@@ -410,6 +420,7 @@ void RegisterPush(CLI::App& InApp) {
             *failOnDirtySync,
             *jobs,
             *profile,
+            *verbose,
             *remote);
         std::exit(code);
     });
