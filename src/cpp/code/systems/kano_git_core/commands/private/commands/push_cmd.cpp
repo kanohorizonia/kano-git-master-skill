@@ -55,6 +55,16 @@ auto ParseReposCsv(const std::string& InCsv) -> std::vector<std::filesystem::pat
     return out;
 }
 
+auto Ellipsize(const std::string& InValue, const std::size_t InMaxWidth) -> std::string {
+    if (InValue.size() <= InMaxWidth) {
+        return InValue;
+    }
+    if (InMaxWidth <= 3) {
+        return InValue.substr(0, InMaxWidth);
+    }
+    return InValue.substr(0, InMaxWidth - 3) + "...";
+}
+
 auto RunNativePush(
     const std::vector<std::filesystem::path>& InRepos,
     const bool InSkipSync,
@@ -276,16 +286,26 @@ auto RunNativePush(
     }
 
     if (!pushStats.empty()) {
+        constexpr int repoColWidth = 52;
+        constexpr int remoteColWidth = 20;
         std::cout << "\n=== Push Summary ===\n";
-        std::cout << std::left << std::setw(45) << "Repository"
-                  << std::setw(20) << "Remote"
+        std::cout << std::left << std::setw(repoColWidth) << "Repository"
+                  << "  "
+                  << std::setw(remoteColWidth) << "Remote"
+                  << "  "
                   << "Branch\n";
-        std::cout << std::left << std::setw(45) << "-----------"
-                  << std::setw(20) << "------"
+        std::cout << std::left << std::setw(repoColWidth) << "-----------"
+                  << "  "
+                  << std::setw(remoteColWidth) << "------"
+                  << "  "
                   << "------\n";
         for (const auto& stat : pushStats) {
-            std::cout << std::left << std::setw(45) << std::get<0>(stat)
-                      << std::setw(20) << std::get<1>(stat)
+            const auto repoName = Ellipsize(std::get<0>(stat), static_cast<std::size_t>(repoColWidth - 1));
+            const auto remoteName = Ellipsize(std::get<1>(stat), static_cast<std::size_t>(remoteColWidth - 1));
+            std::cout << std::left << std::setw(repoColWidth) << repoName
+                      << "  "
+                      << std::setw(remoteColWidth) << remoteName
+                      << "  "
                       << std::get<2>(stat) << "\n";
         }
     }
