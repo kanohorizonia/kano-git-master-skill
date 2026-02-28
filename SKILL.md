@@ -109,6 +109,9 @@ Current TUI actions (v1):
 - `f` in main view: fetch action uses confirm gate (`y` execute / `n` cancel)
 - `P` in main view: push execute with confirm gate (requires upstream)
 - `x` in main view: cherry-pick preflight panel (source/target candidates, duplicate+risk hints)
+- `X` in main view: start cherry-pick runner from preflight non-duplicate queue
+- runner controls: `n` next, `c` continue, `s` skip, `a` abort, `q` close panel
+- `b` in main view: rebase preflight panel (branch/upstream/divergence/candidate commits/risk)
 - history mode controls:
   - `←` / `→`: previous/next repo page source
   - `PgUp` / `PgDn`: older/newer history page

@@ -101,6 +101,27 @@ struct CherryPickPreflightState {
     std::string note;
 };
 
+struct CherryPickRunnerState {
+    bool active = false;
+    std::filesystem::path repo;
+    std::vector<CherryPickCandidate> queue;
+    int index = 0;
+    bool waitingConflictResolution = false;
+    std::string lastOutput;
+};
+
+struct RebasePreflightState {
+    bool active = false;
+    std::filesystem::path repo;
+    std::string branch;
+    std::string upstream;
+    std::string tracking;
+    std::string mergeBase;
+    std::vector<std::string> candidates;
+    std::string risk;
+    std::string note;
+};
+
 auto Trim(std::string InValue) -> std::string {
     while (!InValue.empty() && (InValue.back() == '\n' || InValue.back() == '\r' || InValue.back() == ' ' || InValue.back() == '\t')) {
         InValue.pop_back();
@@ -661,6 +682,102 @@ auto BuildCherryPickPreflight(const std::filesystem::path& repo,
     return state;
 }
 
+auto FirstNonEmptyLine(const std::string& text) -> std::string {
+    std::istringstream iss(text);
+    std::string line;
+    while (std::getline(iss, line)) {
+        line = Trim(line);
+        if (!line.empty()) {
+            return line;
+        }
+    }
+    return "";
+}
+
+auto CollectRebasePreflight(const std::filesystem::path& repo) -> RebasePreflightState {
+    RebasePreflightState state;
+    state.active = true;
+    state.repo = repo;
+    state.branch = CurrentBranch(repo);
+    state.upstream = CurrentUpstream(repo);
+    state.tracking = TrackingSummary(repo);
+
+    std::string baseRef;
+    if (state.upstream != "(none)") {
+        baseRef = state.upstream;
+    } else {
+        const auto mbMain = GitCapture(repo, {"merge-base", "HEAD", "main"});
+        if (mbMain.exitCode == 0) {
+            baseRef = "main";
+        } else {
+            const auto mbMaster = GitCapture(repo, {"merge-base", "HEAD", "master"});
+            if (mbMaster.exitCode == 0) {
+                baseRef = "master";
+            }
+        }
+    }
+
+    if (baseRef.empty()) {
+        state.note = "no upstream/main/master base found";
+        state.risk = "high";
+        return state;
+    }
+
+    const auto mergeBaseOut = GitCapture(repo, {"merge-base", "HEAD", baseRef});
+    state.mergeBase = FirstNonEmptyLine(mergeBaseOut.stdoutStr);
+
+    const auto logOut = GitCapture(repo, {"log", "--oneline", (baseRef + "..HEAD")});
+    if (logOut.exitCode != 0) {
+        state.note = "failed to enumerate rebase candidate commits";
+        state.risk = "high";
+        return state;
+    }
+
+    std::istringstream iss(logOut.stdoutStr);
+    std::string line;
+    while (std::getline(iss, line)) {
+        line = Trim(line);
+        if (!line.empty()) {
+            state.candidates.push_back(line);
+        }
+    }
+
+    if (state.branch == "main" || state.branch == "master") {
+        state.risk = "high";
+        state.note = "on protected-like branch; avoid rebase here";
+    } else if (state.upstream == "(none)" || state.tracking == "no-upstream") {
+        state.risk = "medium";
+        state.note = "no upstream tracking branch";
+    } else if (state.tracking.find("behind") != std::string::npos && state.tracking.find("ahead") != std::string::npos) {
+        state.risk = "high";
+        state.note = "diverged with upstream";
+    } else if (state.candidates.empty()) {
+        state.risk = "low";
+        state.note = "no local commits to rebase";
+    } else {
+        state.risk = "low";
+        state.note = "rebase candidates loaded: " + std::to_string(state.candidates.size());
+    }
+
+    return state;
+}
+
+auto RunCherryPickOne(const std::filesystem::path& repo, const std::string& sha) -> shell::ExecResult {
+    return GitCapture(repo, {"cherry-pick", sha});
+}
+
+auto CherryPickContinue(const std::filesystem::path& repo) -> shell::ExecResult {
+    return GitCapture(repo, {"cherry-pick", "--continue"});
+}
+
+auto CherryPickSkip(const std::filesystem::path& repo) -> shell::ExecResult {
+    return GitCapture(repo, {"cherry-pick", "--skip"});
+}
+
+auto CherryPickAbort(const std::filesystem::path& repo) -> shell::ExecResult {
+    return GitCapture(repo, {"cherry-pick", "--abort"});
+}
+
 auto BuildDisplayedRepoIndices(const std::vector<RepoView>& repos,
                               const std::unordered_map<std::string, bool>& collapsedRoots) -> std::vector<int> {
     std::vector<int> indices;
@@ -715,6 +832,8 @@ auto RunFtxuiDashboard() -> int {
     PreviewPanelState preview{};
     ConfirmState confirm{};
     CherryPickPreflightState cherry{};
+    CherryPickRunnerState cherryRun{};
+    RebasePreflightState rebase{};
     std::unordered_map<std::string, RepoHistoryCache> historyCache;
 
     auto refresh_menu = [&] {
@@ -793,6 +912,17 @@ auto RunFtxuiDashboard() -> int {
 
     auto with_keys = CatchEvent(root, [&](Event event) {
         if (event == Event::Character('q')) {
+            if (rebase.active) {
+                rebase.active = false;
+                footer = "rebase preflight closed";
+                return true;
+            }
+            if (cherryRun.active) {
+                cherryRun.active = false;
+                cherryRun.waitingConflictResolution = false;
+                footer = "cherry-pick runner closed";
+                return true;
+            }
             if (cherry.active) {
                 cherry.active = false;
                 footer = "cherry-pick preflight closed";
@@ -921,6 +1051,109 @@ auto RunFtxuiDashboard() -> int {
             cherry = BuildCherryPickPreflight(repos[selected].path, source, target);
             cherry.active = true;
             footer = "cherry-pick preflight ready";
+            return true;
+        }
+
+        if (event == Event::Character('b')) {
+            const int selected = RepoIndexFromDisplayed(displayedRepoIndices, selectedDisplayed);
+            if (repos.empty() || selected < 0 || selected >= static_cast<int>(repos.size())) {
+                footer = "rebase preflight skipped: no selected repo";
+                return true;
+            }
+            rebase = CollectRebasePreflight(repos[selected].path);
+            rebase.active = true;
+            footer = "rebase preflight ready";
+            return true;
+        }
+
+        if (event == Event::Character('X')) {
+            if (!cherry.active || cherry.commits.empty()) {
+                footer = "cherry-pick run blocked: open preflight with x first";
+                return true;
+            }
+
+            cherryRun.active = true;
+            cherryRun.repo = RepoIndexFromDisplayed(displayedRepoIndices, selectedDisplayed) >= 0
+                ? repos[RepoIndexFromDisplayed(displayedRepoIndices, selectedDisplayed)].path
+                : std::filesystem::current_path();
+            cherryRun.queue.clear();
+            for (const auto& c : cherry.commits) {
+                if (!c.alreadyInTarget) {
+                    cherryRun.queue.push_back(c);
+                }
+            }
+            cherryRun.index = 0;
+            cherryRun.waitingConflictResolution = false;
+            cherryRun.lastOutput = "runner initialized";
+
+            if (cherryRun.queue.empty()) {
+                footer = "cherry-pick run skipped: no non-duplicate commits";
+                cherryRun.active = false;
+                return true;
+            }
+
+            const auto result = RunCherryPickOne(cherryRun.repo, cherryRun.queue[cherryRun.index].sha);
+            cherryRun.lastOutput = !result.stdoutStr.empty() ? result.stdoutStr : result.stderrStr;
+            if (result.exitCode == 0) {
+                cherryRun.index += 1;
+                footer = "cherry-pick step ok";
+            } else {
+                cherryRun.waitingConflictResolution = true;
+                footer = "cherry-pick conflict/stop: c=continue s=skip a=abort";
+            }
+            return true;
+        }
+
+        if (cherryRun.active && cherryRun.waitingConflictResolution && (event == Event::Character('c') || event == Event::Character('C'))) {
+            const auto result = CherryPickContinue(cherryRun.repo);
+            cherryRun.lastOutput = !result.stdoutStr.empty() ? result.stdoutStr : result.stderrStr;
+            if (result.exitCode == 0) {
+                cherryRun.waitingConflictResolution = false;
+                cherryRun.index += 1;
+                footer = "cherry-pick continue ok";
+            } else {
+                footer = "continue failed";
+            }
+            return true;
+        }
+
+        if (cherryRun.active && cherryRun.waitingConflictResolution && (event == Event::Character('s') || event == Event::Character('S'))) {
+            const auto result = CherryPickSkip(cherryRun.repo);
+            cherryRun.lastOutput = !result.stdoutStr.empty() ? result.stdoutStr : result.stderrStr;
+            if (result.exitCode == 0) {
+                cherryRun.waitingConflictResolution = false;
+                cherryRun.index += 1;
+                footer = "cherry-pick skip ok";
+            } else {
+                footer = "skip failed";
+            }
+            return true;
+        }
+
+        if (cherryRun.active && (event == Event::Character('a') || event == Event::Character('A'))) {
+            const auto result = CherryPickAbort(cherryRun.repo);
+            cherryRun.lastOutput = !result.stdoutStr.empty() ? result.stdoutStr : result.stderrStr;
+            cherryRun.waitingConflictResolution = false;
+            cherryRun.active = false;
+            footer = result.exitCode == 0 ? "cherry-pick aborted" : "abort failed";
+            return true;
+        }
+
+        if (cherryRun.active && !cherryRun.waitingConflictResolution && (event == Event::Character('n') || event == Event::Character('N'))) {
+            if (cherryRun.index >= static_cast<int>(cherryRun.queue.size())) {
+                cherryRun.active = false;
+                footer = "cherry-pick runner complete";
+                return true;
+            }
+            const auto result = RunCherryPickOne(cherryRun.repo, cherryRun.queue[cherryRun.index].sha);
+            cherryRun.lastOutput = !result.stdoutStr.empty() ? result.stdoutStr : result.stderrStr;
+            if (result.exitCode == 0) {
+                cherryRun.index += 1;
+                footer = "cherry-pick step ok";
+            } else {
+                cherryRun.waitingConflictResolution = true;
+                footer = "cherry-pick conflict/stop: c=continue s=skip a=abort";
+            }
             return true;
         }
 
@@ -1229,7 +1462,55 @@ auto RunFtxuiDashboard() -> int {
     auto ui = Renderer(with_keys, [&] {
         Element rightPanel;
 
-        if (cherry.active) {
+        if (rebase.active) {
+            rightPanel = vbox({
+                text("Rebase Preflight") | bold,
+                separator(),
+                text("repo: " + rebase.repo.lexically_normal().generic_string()),
+                text("branch: " + rebase.branch),
+                text("upstream: " + rebase.upstream),
+                text("tracking: " + rebase.tracking),
+                text("merge-base: " + (rebase.mergeBase.empty() ? "(unknown)" : rebase.mergeBase)),
+                text("risk: " + rebase.risk),
+                text("note: " + rebase.note),
+                separator(),
+                text("candidate commits") | bold,
+                vbox([&] {
+                    Elements rows;
+                    const auto maxItems = std::min<std::size_t>(rebase.candidates.size(), 24);
+                    for (std::size_t i = 0; i < maxItems; ++i) {
+                        rows.push_back(text(rebase.candidates[i]));
+                    }
+                    if (rebase.candidates.size() > maxItems) {
+                        rows.push_back(text("... and " + std::to_string(rebase.candidates.size() - maxItems) + " more"));
+                    }
+                    if (rebase.candidates.empty()) {
+                        rows.push_back(text("(none)"));
+                    }
+                    return rows;
+                }()) | border,
+                separator(),
+                text("Press q to close rebase preflight") | dim,
+            }) | border;
+        } else if (cherryRun.active) {
+            std::string progress = "progress: " + std::to_string(std::min(cherryRun.index, static_cast<int>(cherryRun.queue.size()))) + "/" + std::to_string(cherryRun.queue.size());
+            std::string current = "(none)";
+            if (cherryRun.index >= 0 && cherryRun.index < static_cast<int>(cherryRun.queue.size())) {
+                current = cherryRun.queue[cherryRun.index].sha + " " + cherryRun.queue[cherryRun.index].title;
+            }
+            rightPanel = vbox({
+                text("Cherry-pick Runner") | bold,
+                separator(),
+                text("repo: " + cherryRun.repo.lexically_normal().generic_string()),
+                text(progress),
+                text("current: " + current),
+                text(cherryRun.waitingConflictResolution
+                         ? "state: waiting conflict resolution (c=continue, s=skip, a=abort)"
+                         : "state: ready (n=next, a=abort, q=close panel)"),
+                separator(),
+                paragraph(cherryRun.lastOutput.empty() ? "(no output yet)" : cherryRun.lastOutput),
+            }) | border;
+        } else if (cherry.active) {
             rightPanel = vbox({
                 text("Cherry-pick Preflight") | bold,
                 separator(),
@@ -1401,7 +1682,7 @@ auto RunFtxuiDashboard() -> int {
                    text("KOG FTXUI Dashboard v2") | bold,
                    separator(),
                    text("Global repo view + incremental history pager."),
-                   text("preview keys: c/C commit preview/execute, p/P push preview/execute, f fetch confirm, x cherry-preflight") | dim,
+                   text("preview keys: c/C commit preview/execute, p/P push preview/execute, f fetch confirm, x/X cherry preflight/run, b rebase preflight") | dim,
                    text("repo filter: " + (repoFilter.empty() ? "(none)" : repoFilter)) | dim,
                    text("tree toggle key: t (collapse/expand child repos)") | dim,
                    separator(),
@@ -1430,7 +1711,8 @@ auto PrintDemo() -> void {
     std::cout << "KOG TUI demo mode\n";
     std::cout << "- FTXUI dashboard enabled\n";
     std::cout << "- repo list + details + incremental history pager\n";
-    std::cout << "- controls: r(refresh), d(dirty-only), f(fetch confirm), c(commit preview), C(commit confirm), p(push preview), P(push confirm), x(cherry preflight), Enter(history), q(quit)\n";
+    std::cout << "- controls: r(refresh), d(dirty-only), f(fetch confirm), c(commit preview), C(commit confirm), p(push preview), P(push confirm), x/X(cherry preflight/run), b(rebase preflight), Enter(history), q(quit)\n";
+    std::cout << "- cherry runner controls: n(next), c(continue), s(skip), a(abort), q(close panel)\n";
     std::cout << "- main view: / enters repo path filter mode\n";
     std::cout << "- tree: t collapse/expand selected repo subtree\n";
     std::cout << "- history mode: left/right repo, PgUp/PgDn page, up/down line, /search, n-next, m-detail-mode, o-sort-mode\n";
