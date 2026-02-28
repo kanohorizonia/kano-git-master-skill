@@ -5,6 +5,7 @@
 #include "shell_executor.hpp"
 #include <format>
 #include <iostream>
+#include <iomanip>
 #include <string>
 #include <vector>
 
@@ -17,6 +18,9 @@ struct CommitPreflightReport {
     int unstagedCount = 0;
     int untrackedCount = 0;
     std::vector<std::string> riskyFiles;
+    std::vector<std::string> stagedFiles;
+    std::vector<std::string> unstagedFiles;
+    std::vector<std::string> untrackedFiles;
 };
 
 auto Trim(std::string InValue) -> std::string {
@@ -57,7 +61,7 @@ auto RunCommitPreflight() -> CommitPreflightReport {
         return report;
     }
 
-    const auto status = shell::ExecuteCommand("git", {"status", "--porcelain"}, shell::ExecMode::Capture);
+    const auto status = shell::ExecuteCommand("git", {"-c", "color.status=false", "status", "--porcelain"}, shell::ExecMode::Capture);
     if (status.exitCode != 0) {
         return report;
     }
@@ -70,7 +74,9 @@ auto RunCommitPreflight() -> CommitPreflightReport {
         line = (end == std::string::npos) ? content.substr(start) : content.substr(start, end - start);
         start = (end == std::string::npos) ? (content.size() + 1) : (end + 1);
 
-        line = Trim(line);
+        while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) {
+            line.pop_back();
+        }
         if (line.size() < 3) {
             continue;
         }
@@ -81,12 +87,21 @@ auto RunCommitPreflight() -> CommitPreflightReport {
 
         if (x == '?' && y == '?') {
             report.untrackedCount += 1;
+            if (!filePath.empty()) {
+                report.untrackedFiles.push_back(filePath);
+            }
         }
         if (x != ' ' && x != '?') {
             report.stagedCount += 1;
+            if (!filePath.empty()) {
+                report.stagedFiles.push_back(filePath);
+            }
         }
         if (y != ' ' || (x == '?' && y == '?')) {
             report.unstagedCount += 1;
+            if (!filePath.empty() && !(x == '?' && y == '?')) {
+                report.unstagedFiles.push_back(filePath);
+            }
         }
 
         if (!filePath.empty() && LooksRiskyPath(filePath)) {
@@ -109,6 +124,27 @@ auto PrintCommitPreflight(const CommitPreflightReport& InReport, bool InStagedOn
     std::cout << "untracked: " << InReport.untrackedCount << "\n";
     std::cout << "mode: " << (InStagedOnly ? "staged-only" : "auto-stage shell path") << "\n";
 
+    auto printFileTable = [](const std::string& title, const std::vector<std::string>& files) {
+        if (files.empty()) {
+            return;
+        }
+        std::cout << "\n" << title << "\n";
+        std::cout << std::left << std::setw(6) << "No." << "Path\n";
+        std::cout << std::left << std::setw(6) << "---" << "----\n";
+        const std::size_t limit = 25;
+        const std::size_t count = std::min(files.size(), limit);
+        for (std::size_t i = 0; i < count; ++i) {
+            std::cout << std::left << std::setw(6) << (i + 1) << files[i] << "\n";
+        }
+        if (files.size() > limit) {
+            std::cout << "... and " << (files.size() - limit) << " more\n";
+        }
+    };
+
+    printFileTable("Staged set preview", InReport.stagedFiles);
+    printFileTable("Unstaged changes preview", InReport.unstagedFiles);
+    printFileTable("Untracked files preview", InReport.untrackedFiles);
+
     if (InReport.riskyFiles.empty()) {
         std::cout << "risk: no obvious secret-like file names\n";
     } else {
@@ -116,6 +152,17 @@ auto PrintCommitPreflight(const CommitPreflightReport& InReport, bool InStagedOn
         for (const auto& file : InReport.riskyFiles) {
             std::cout << "  - " << file << "\n";
         }
+    }
+
+    std::cout << "policy hints:\n";
+    if (InReport.stagedCount == 0) {
+        std::cout << "  - Stage intended files before commit\n";
+    }
+    if (InReport.unstagedCount > 0) {
+        std::cout << "  - Unstaged changes exist; commit scope may be incomplete\n";
+    }
+    if (InReport.untrackedCount > 0) {
+        std::cout << "  - Untracked files exist; verify if they should be included\n";
     }
 }
 
