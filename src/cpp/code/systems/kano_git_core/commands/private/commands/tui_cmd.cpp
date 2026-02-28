@@ -777,6 +777,26 @@ auto RunFtxuiDashboard() -> int {
             return true;
         }
 
+        if (event == Event::Character('C')) {
+            const int selected = RepoIndexFromDisplayed(displayedRepoIndices, selectedDisplayed);
+            if (repos.empty() || selected < 0 || selected >= static_cast<int>(repos.size())) {
+                footer = "commit execute skipped: no selected repo";
+                return true;
+            }
+            const auto data = CollectPreviewData(repos[selected].path);
+            if (data.staged.empty()) {
+                footer = "commit blocked: nothing staged";
+                return true;
+            }
+            confirm.active = true;
+            confirm.title = "Confirm commit";
+            confirm.description = "Run git commit with default safe message on selected repo?";
+            confirm.repo = repos[selected].path;
+            confirm.command = {"commit", "-m", "chore: tui confirmed commit"};
+            footer = "confirm commit: y/n";
+            return true;
+        }
+
         if (event == Event::Character('p')) {
             const int selected = RepoIndexFromDisplayed(displayedRepoIndices, selectedDisplayed);
             if (repos.empty() || selected < 0 || selected >= static_cast<int>(repos.size())) {
@@ -1225,7 +1245,7 @@ auto PrintDemo() -> void {
     std::cout << "KOG TUI demo mode\n";
     std::cout << "- FTXUI dashboard enabled\n";
     std::cout << "- repo list + details + incremental history pager\n";
-    std::cout << "- controls: r(refresh), d(dirty-only), f(fetch confirm), c(commit preview), p(push preview), P(push confirm), Enter(history), q(quit)\n";
+    std::cout << "- controls: r(refresh), d(dirty-only), f(fetch confirm), c(commit preview), C(commit confirm), p(push preview), P(push confirm), Enter(history), q(quit)\n";
     std::cout << "- main view: / enters repo path filter mode\n";
     std::cout << "- tree: t collapse/expand selected repo subtree\n";
     std::cout << "- history mode: left/right repo, PgUp/PgDn page, up/down line, /search, n-next, m-detail-mode, o-sort-mode\n";
