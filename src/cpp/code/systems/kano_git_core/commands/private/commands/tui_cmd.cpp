@@ -588,7 +588,7 @@ auto RunFtxuiDashboard() -> int {
     std::vector<int> displayedRepoIndices;
     std::vector<std::string> menu;
     int selectedDisplayed = 0;
-    std::string footer = "r=refresh d=dirty-only f=fetch Enter=history q=quit";
+    std::string footer = "r=refresh d=dirty-only f=fetch(confirm) c/C=commit preview/confirm p/P=push preview/confirm Enter=history q=quit";
     HistoryState history{};
     PreviewPanelState preview{};
     ConfirmState confirm{};
@@ -1216,7 +1216,7 @@ auto RunFtxuiDashboard() -> int {
                    text("KOG FTXUI Dashboard v2") | bold,
                    separator(),
                    text("Global repo view + incremental history pager."),
-                   text("preview keys: c(commit preview), p(push preview), P(push execute), f(fetch confirm)") | dim,
+                   text("preview keys: c(commit preview), C(commit execute), p(push preview), P(push execute), f(fetch confirm)") | dim,
                    text("repo filter: " + (repoFilter.empty() ? "(none)" : repoFilter)) | dim,
                    text("tree toggle key: t (collapse/expand child repos)") | dim,
                    separator(),
