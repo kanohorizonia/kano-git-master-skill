@@ -86,6 +86,21 @@ struct ConfirmState {
     std::vector<std::string> command;
 };
 
+struct CherryPickCandidate {
+    std::string sha;
+    std::string title;
+    bool alreadyInTarget = false;
+    std::string risk;
+};
+
+struct CherryPickPreflightState {
+    bool active = false;
+    std::string sourceBranch;
+    std::string targetBranch;
+    std::vector<CherryPickCandidate> commits;
+    std::string note;
+};
+
 auto Trim(std::string InValue) -> std::string {
     while (!InValue.empty() && (InValue.back() == '\n' || InValue.back() == '\r' || InValue.back() == ' ' || InValue.back() == '\t')) {
         InValue.pop_back();
@@ -539,6 +554,113 @@ auto BuildPushPreview(const std::filesystem::path& repo) -> std::string {
     return out.str();
 }
 
+auto ListBranches(const std::filesystem::path& repo) -> std::vector<std::string> {
+    const auto out = GitCapture(repo, {"for-each-ref", "--format=%(refname:short)", "refs/heads"});
+    std::vector<std::string> branches;
+    if (out.exitCode != 0) {
+        return branches;
+    }
+    std::istringstream iss(out.stdoutStr);
+    std::string line;
+    while (std::getline(iss, line)) {
+        line = Trim(line);
+        if (!line.empty()) {
+            branches.push_back(line);
+        }
+    }
+    return branches;
+}
+
+auto CommitFileSet(const std::filesystem::path& repo, const std::string& sha) -> std::vector<std::string> {
+    const auto out = GitCapture(repo, {"show", "--name-only", "--pretty=format:", "-n", "1", sha});
+    std::vector<std::string> files;
+    if (out.exitCode != 0) {
+        return files;
+    }
+    std::istringstream iss(out.stdoutStr);
+    std::string line;
+    while (std::getline(iss, line)) {
+        line = Trim(line);
+        if (!line.empty()) {
+            files.push_back(line);
+        }
+    }
+    std::sort(files.begin(), files.end());
+    files.erase(std::unique(files.begin(), files.end()), files.end());
+    return files;
+}
+
+auto HasPatchEquivalentInTarget(const std::filesystem::path& repo,
+                                const std::string& targetBranch,
+                                const std::string& sha) -> bool {
+    const auto out = GitCapture(repo, {"cherry", targetBranch, sha});
+    if (out.exitCode != 0) {
+        return false;
+    }
+    std::istringstream iss(out.stdoutStr);
+    std::string line;
+    while (std::getline(iss, line)) {
+        line = Trim(line);
+        if (!line.empty() && line[0] == '-') {
+            return true;
+        }
+    }
+    return false;
+}
+
+auto BuildCherryPickPreflight(const std::filesystem::path& repo,
+                              const std::string& sourceBranch,
+                              const std::string& targetBranch) -> CherryPickPreflightState {
+    CherryPickPreflightState state;
+    state.active = true;
+    state.sourceBranch = sourceBranch;
+    state.targetBranch = targetBranch;
+
+    const auto list = GitCapture(repo, {"log", "--oneline", (targetBranch + ".." + sourceBranch)});
+    if (list.exitCode != 0) {
+        state.note = "failed to enumerate source commits";
+        return state;
+    }
+
+    std::istringstream iss(list.stdoutStr);
+    std::string line;
+    while (std::getline(iss, line)) {
+        line = Trim(line);
+        if (line.empty()) {
+            continue;
+        }
+        const auto sp = line.find(' ');
+        if (sp == std::string::npos) {
+            continue;
+        }
+
+        CherryPickCandidate c;
+        c.sha = line.substr(0, sp);
+        c.title = line.substr(sp + 1);
+        c.alreadyInTarget = HasPatchEquivalentInTarget(repo, targetBranch, c.sha);
+
+        const auto files = CommitFileSet(repo, c.sha);
+        if (files.empty()) {
+            c.risk = "unknown";
+        } else if (files.size() >= 12) {
+            c.risk = "high";
+        } else if (files.size() >= 5) {
+            c.risk = "medium";
+        } else {
+            c.risk = "low";
+        }
+
+        state.commits.push_back(std::move(c));
+    }
+
+    if (state.commits.empty()) {
+        state.note = "no candidate commits (source may be fully merged)";
+    } else {
+        state.note = "candidate commits loaded: " + std::to_string(state.commits.size());
+    }
+    return state;
+}
+
 auto BuildDisplayedRepoIndices(const std::vector<RepoView>& repos,
                               const std::unordered_map<std::string, bool>& collapsedRoots) -> std::vector<int> {
     std::vector<int> indices;
@@ -592,6 +714,7 @@ auto RunFtxuiDashboard() -> int {
     HistoryState history{};
     PreviewPanelState preview{};
     ConfirmState confirm{};
+    CherryPickPreflightState cherry{};
     std::unordered_map<std::string, RepoHistoryCache> historyCache;
 
     auto refresh_menu = [&] {
@@ -670,6 +793,11 @@ auto RunFtxuiDashboard() -> int {
 
     auto with_keys = CatchEvent(root, [&](Event event) {
         if (event == Event::Character('q')) {
+            if (cherry.active) {
+                cherry.active = false;
+                footer = "cherry-pick preflight closed";
+                return true;
+            }
             if (confirm.active) {
                 confirm.active = false;
                 footer = "confirm cancelled";
@@ -761,6 +889,38 @@ auto RunFtxuiDashboard() -> int {
             confirm.repo = repos[selected].path;
             confirm.command = {"fetch", "--all", "--prune"};
             footer = "confirm fetch: y/n";
+            return true;
+        }
+
+        if (event == Event::Character('x')) {
+            const int selected = RepoIndexFromDisplayed(displayedRepoIndices, selectedDisplayed);
+            if (repos.empty() || selected < 0 || selected >= static_cast<int>(repos.size())) {
+                footer = "cherry-pick preflight skipped: no selected repo";
+                return true;
+            }
+
+            const auto branches = ListBranches(repos[selected].path);
+            if (branches.size() < 2) {
+                footer = "cherry-pick preflight blocked: need at least 2 local branches";
+                return true;
+            }
+
+            const auto target = CurrentBranch(repos[selected].path);
+            std::string source;
+            for (const auto& b : branches) {
+                if (b != target) {
+                    source = b;
+                    break;
+                }
+            }
+            if (source.empty()) {
+                footer = "cherry-pick preflight blocked: no source branch candidate";
+                return true;
+            }
+
+            cherry = BuildCherryPickPreflight(repos[selected].path, source, target);
+            cherry.active = true;
+            footer = "cherry-pick preflight ready";
             return true;
         }
 
@@ -1069,7 +1229,32 @@ auto RunFtxuiDashboard() -> int {
     auto ui = Renderer(with_keys, [&] {
         Element rightPanel;
 
-        if (confirm.active) {
+        if (cherry.active) {
+            rightPanel = vbox({
+                text("Cherry-pick Preflight") | bold,
+                separator(),
+                text("source: " + cherry.sourceBranch),
+                text("target: " + cherry.targetBranch),
+                text(cherry.note),
+                separator(),
+                text("candidate commits") | bold,
+                vbox([&] {
+                    Elements rows;
+                    const auto maxItems = std::min<std::size_t>(cherry.commits.size(), 24);
+                    for (std::size_t i = 0; i < maxItems; ++i) {
+                        const auto& c = cherry.commits[i];
+                        const auto dup = c.alreadyInTarget ? "dup" : "new";
+                        rows.push_back(text(c.sha + " | " + dup + " | risk=" + c.risk + " | " + c.title));
+                    }
+                    if (cherry.commits.size() > maxItems) {
+                        rows.push_back(text("... and " + std::to_string(cherry.commits.size() - maxItems) + " more"));
+                    }
+                    return rows;
+                }()) | border,
+                separator(),
+                text("Press q to close preflight panel") | dim,
+            }) | border;
+        } else if (confirm.active) {
             rightPanel = vbox({
                 text(confirm.title) | bold,
                 separator(),
@@ -1216,7 +1401,7 @@ auto RunFtxuiDashboard() -> int {
                    text("KOG FTXUI Dashboard v2") | bold,
                    separator(),
                    text("Global repo view + incremental history pager."),
-                   text("preview keys: c(commit preview), C(commit execute), p(push preview), P(push execute), f(fetch confirm)") | dim,
+                   text("preview keys: c/C commit preview/execute, p/P push preview/execute, f fetch confirm, x cherry-preflight") | dim,
                    text("repo filter: " + (repoFilter.empty() ? "(none)" : repoFilter)) | dim,
                    text("tree toggle key: t (collapse/expand child repos)") | dim,
                    separator(),
