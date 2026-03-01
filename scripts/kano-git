@@ -333,16 +333,6 @@ run_shell_fallback() {
 }
 
 should_force_shell_fallback() {
-  local command
-  command="${1:-}"
-  shift || true
-  if [[ "$command" == "commit" ]]; then
-    for arg in "$@"; do
-      if [[ "$arg" == "--staged-only" ]]; then
-        return 0
-      fi
-    done
-  fi
   return 1
 }
 
@@ -371,7 +361,10 @@ main() {
     fi
   fi
 
-  run_shell_fallback "$@"
+  echo "Error: strict native-only mode is enabled and C++ binary is unavailable." >&2
+  echo "Error: shell fallback is disabled by design." >&2
+  echo "Hint: run the platform build script under src/cpp/build/script/ and retry." >&2
+  exit 1
 }
 
 main "$@"

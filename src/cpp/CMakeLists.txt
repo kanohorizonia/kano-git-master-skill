@@ -11,6 +11,10 @@ endif()
 if(MSVC)
     set(CMAKE_INCLUDE_SYSTEM_FLAG_CXX "/I ")
     set(CMAKE_NO_SYSTEM_FROM_IMPORTED ON)
+    add_compile_options(
+        "$<$<COMPILE_LANGUAGE:CXX>:/EHsc>"
+        "$<$<COMPILE_LANGUAGE:CXX>:/GR>"
+    )
 endif()
 
 # Get version from parent VERSION file

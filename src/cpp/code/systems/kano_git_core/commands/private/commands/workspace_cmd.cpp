@@ -1,5 +1,4 @@
-// workspace command — Multi-repository workspace operations
-// Delegates to: scripts/workspace/*.sh and scripts/core/*.sh
+// workspace command — Multi-repository workspace operations (native C++)
 
 #include "command_registry.hpp"
 #include "shell_executor.hpp"
@@ -369,7 +368,7 @@ void RegisterWorkspace(CLI::App& InApp) {
     auto* statusOutput = new std::string{};
 
     status->add_flag("--native", *statusNative, "Use native C++ workspace status implementation (default)");
-    status->add_flag("--shell", *statusShell, "Use shell fallback implementation");
+    status->add_flag("--shell", *statusShell, "Deprecated compatibility flag (shell path removed)");
     status->add_option("--native-max-depth", *statusNativeMaxDepth, "Native discovery max depth");
     status->add_option("--native-exclude", *statusNativeExclude, "Native discovery exclude pattern (repeatable)");
     status->add_flag("--native-no-cache", *statusNativeNoCache, "Disable native discovery cache");
@@ -394,103 +393,61 @@ void RegisterWorkspace(CLI::App& InApp) {
     status->add_option("--output", *statusOutput, "Write output to file");
 
     status->callback([=]() {
-        if (!*statusShell) {
-            if (*statusFormat != "table" && *statusFormat != "json" && *statusFormat != "markdown") {
-                std::cerr << "Error: invalid --format value: " << *statusFormat << " (expected table|json|markdown)\n";
-                std::exit(1);
-            }
-
-            workspace::DiscoverOptions options;
-            options.rootDir = statusRepoRoot->empty() ? std::filesystem::current_path() : std::filesystem::path(*statusRepoRoot);
-            options.maxDepth = *statusNativeMaxDepth > 0 ? *statusNativeMaxDepth : *statusMaxDepth;
-            options.excludePatterns = *statusNativeExclude;
-            if (options.excludePatterns.empty()) {
-                options.excludePatterns = *statusExclude;
-            }
-            options.useCache = !*statusNativeNoCache;
-            options.cacheTtlSeconds = *statusNativeCacheTtl;
-            options.refreshCache = *statusNativeRefreshCache;
-            options.incremental = !*statusNativeNoIncremental;
-            options.maxStaleSeconds = *statusNativeMaxStale;
-            options.metadataLevel = *statusNativeMetadata;
-
-            auto discovery = workspace::DiscoverRepos(options);
-            auto repos = discovery.repos;
-            std::sort(repos.begin(), repos.end(), [](const workspace::RepoRecord& A, const workspace::RepoRecord& B) {
-                return A.path.lexically_normal().generic_string() < B.path.lexically_normal().generic_string();
-            });
-
-            std::string output;
-            if (*statusFormat == "json") {
-                output = FormatNativeStatusJson(repos);
-            } else if (*statusFormat == "markdown") {
-                output = FormatNativeStatusMarkdown(repos);
-            } else {
-                output = FormatNativeStatusTable(repos);
-            }
-
-            if (!statusOutput->empty()) {
-                std::ofstream out(*statusOutput, std::ios::out | std::ios::binary | std::ios::trunc);
-                out << output;
-            } else {
-                std::cout << output << "\n";
-            }
-            std::exit(0);
-        }
-
-        std::vector<std::string> args;
-        if (!statusManifest->empty()) {
-            args.push_back("--manifest");
-            args.push_back(*statusManifest);
-        }
-        if (!statusRepoRoot->empty() && *statusRepoRoot != ".") {
-            args.push_back("--repo-root");
-            args.push_back(*statusRepoRoot);
-        }
-        if (!statusIncludeTypes->empty()) {
-            args.push_back("--include-types");
-            args.push_back(*statusIncludeTypes);
-        }
-        if (*statusNoSubmodules) {
-            args.push_back("--no-submodules");
-        }
-        if (*statusNoRecursive) {
-            args.push_back("--no-recursive");
-        }
-        for (const auto& pattern : *statusExclude) {
-            args.push_back("--exclude");
-            args.push_back(pattern);
-        }
-        if (*statusMaxDepth > 0) {
-            args.push_back("--max-depth");
-            args.push_back(std::to_string(*statusMaxDepth));
-        }
-        if (*statusCheckRemote) {
-            args.push_back("--check-remote");
-        }
-        if (*statusDetail) {
-            args.push_back("--detail");
-        }
-        if (*statusDetailCommits > 0) {
-            args.push_back("--detail-commits");
-            args.push_back(std::to_string(*statusDetailCommits));
-        }
-        if (!statusDetailLog->empty()) {
-            args.push_back("--detail-log");
-            args.push_back(*statusDetailLog);
-        }
-        if (!statusFormat->empty()) {
-            args.push_back("--format");
-            args.push_back(*statusFormat);
-        }
-        if (!statusOutput->empty()) {
-            args.push_back("--output");
-            args.push_back(*statusOutput);
+        if (*statusShell) {
+            std::cerr << "Error: --shell is no longer supported; workspace status is fully native now\n";
+            std::exit(2);
         }
         auto extras = status->remaining();
-        args.insert(args.end(), extras.begin(), extras.end());
-        auto result = shell::ExecuteScript("workspace/status-all-repos.sh", args);
-        std::exit(result.exitCode);
+        if (!extras.empty()) {
+            std::cerr << "Error: unsupported extra arguments in native workspace status mode:";
+            for (const auto& extra : extras) {
+                std::cerr << ' ' << extra;
+            }
+            std::cerr << "\n";
+            std::exit(2);
+        }
+
+        if (*statusFormat != "table" && *statusFormat != "json" && *statusFormat != "markdown") {
+            std::cerr << "Error: invalid --format value: " << *statusFormat << " (expected table|json|markdown)\n";
+            std::exit(1);
+        }
+
+        workspace::DiscoverOptions options;
+        options.rootDir = statusRepoRoot->empty() ? std::filesystem::current_path() : std::filesystem::path(*statusRepoRoot);
+        options.maxDepth = *statusNativeMaxDepth > 0 ? *statusNativeMaxDepth : *statusMaxDepth;
+        options.excludePatterns = *statusNativeExclude;
+        if (options.excludePatterns.empty()) {
+            options.excludePatterns = *statusExclude;
+        }
+        options.useCache = !*statusNativeNoCache;
+        options.cacheTtlSeconds = *statusNativeCacheTtl;
+        options.refreshCache = *statusNativeRefreshCache;
+        options.incremental = !*statusNativeNoIncremental;
+        options.maxStaleSeconds = *statusNativeMaxStale;
+        options.metadataLevel = *statusNativeMetadata;
+
+        auto discovery = workspace::DiscoverRepos(options);
+        auto repos = discovery.repos;
+        std::sort(repos.begin(), repos.end(), [](const workspace::RepoRecord& A, const workspace::RepoRecord& B) {
+            return A.path.lexically_normal().generic_string() < B.path.lexically_normal().generic_string();
+        });
+
+        std::string output;
+        if (*statusFormat == "json") {
+            output = FormatNativeStatusJson(repos);
+        } else if (*statusFormat == "markdown") {
+            output = FormatNativeStatusMarkdown(repos);
+        } else {
+            output = FormatNativeStatusTable(repos);
+        }
+
+        if (!statusOutput->empty()) {
+            std::ofstream out(*statusOutput, std::ios::out | std::ios::binary | std::ios::trunc);
+            out << output;
+        } else {
+            std::cout << output << "\n";
+        }
+        std::exit(0);
     });
 
     auto* update = cmd->add_subcommand("update", "Update all workspace repos");
@@ -516,7 +473,7 @@ void RegisterWorkspace(CLI::App& InApp) {
     auto* updateDryRun = new bool{false};
 
     update->add_flag("--native", *nativeUpdate, "Use native C++ wave executor for update operations (default)");
-    update->add_flag("--shell", *updateShell, "Use shell fallback implementation");
+    update->add_flag("--shell", *updateShell, "Deprecated compatibility flag (shell path removed)");
     update->add_flag("--native-plan", *nativePlan, "Use native C++ discovery + scheduler plan");
     update->add_flag("--native-plan-only", *nativePlanOnly, "Emit native wave plan JSON only (no shell update execution)");
     update->add_option("--native-max-depth", *nativeMaxDepth, "Native discovery max depth");
@@ -540,12 +497,25 @@ void RegisterWorkspace(CLI::App& InApp) {
             *nativePlan = true;
         }
 
-        if (*updateShell && (*nativeUpdate || *nativePlan)) {
-            std::cerr << "Error: --shell cannot be combined with --native/--native-plan\n";
-            std::exit(1);
+        if (*updateShell) {
+            std::cerr << "Error: --shell is no longer supported; workspace update is fully native now\n";
+            std::exit(2);
         }
-        if (!*updateShell && !*nativeUpdate && !*nativePlan) {
+        if (!*nativeUpdate && !*nativePlan) {
             *nativeUpdate = true;
+        }
+        auto extras = update->remaining();
+        if (!extras.empty()) {
+            std::cerr << "Error: unsupported extra arguments in native workspace update mode:";
+            for (const auto& extra : extras) {
+                std::cerr << ' ' << extra;
+            }
+            std::cerr << "\n";
+            std::exit(2);
+        }
+        if (*nativePlan && !*nativePlanOnly) {
+            *nativeUpdate = true;
+            *nativePlan = false;
         }
 
         if (*nativeUpdate || *nativePlan) {
@@ -671,87 +641,11 @@ void RegisterWorkspace(CLI::App& InApp) {
                 std::exit(failureCount > 0 ? 1 : 0);
             }
 
-            const auto now = std::chrono::system_clock::now().time_since_epoch();
-            const auto stamp = std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
-            const auto planPath = std::filesystem::temp_directory_path() /
-                std::format("kano-workspace-native-plan-{}.json", stamp);
-
-            {
-                std::ofstream out(planPath, std::ios::out | std::ios::binary | std::ios::trunc);
-                out << native.updatePlanJson;
-            }
-
-            std::vector<std::string> args = {"--plan-file", planPath.string()};
-            if (!updateIncludeTypes->empty()) {
-                args.push_back("--include-types");
-                args.push_back(*updateIncludeTypes);
-            }
-            for (const auto& pattern : *updateExclude) {
-                args.push_back("--exclude");
-                args.push_back(pattern);
-            }
-            if (!updateRemote->empty()) {
-                args.push_back("--remote");
-                args.push_back(*updateRemote);
-            }
-            if (*updateMaxDepth > 0) {
-                args.push_back("--max-depth");
-                args.push_back(std::to_string(*updateMaxDepth));
-            }
-            if (*updateParallel > 0) {
-                args.push_back("--parallel");
-                args.push_back(std::to_string(*updateParallel));
-            }
-            if (*updateContinueOnError) {
-                args.push_back("--continue-on-error");
-            }
-            if (*updateDryRun) {
-                args.push_back("--dry-run");
-            }
-            auto extras = update->remaining();
-            args.insert(args.end(), extras.begin(), extras.end());
-            auto result = shell::ExecuteScript("workspace/update-workspace-repos.sh", args);
-
-            std::error_code ec;
-            std::filesystem::remove(planPath, ec);
-            std::exit(result.exitCode);
+            std::cerr << "Error: native-plan adapter execution via shell is disabled in strict native-only mode\n";
+            std::exit(2);
         }
-
-        std::vector<std::string> args;
-        if (!updateManifest->empty()) {
-            args.push_back("--manifest");
-            args.push_back(*updateManifest);
-        }
-        if (!updateIncludeTypes->empty()) {
-            args.push_back("--include-types");
-            args.push_back(*updateIncludeTypes);
-        }
-        for (const auto& pattern : *updateExclude) {
-            args.push_back("--exclude");
-            args.push_back(pattern);
-        }
-        if (!updateRemote->empty()) {
-            args.push_back("--remote");
-            args.push_back(*updateRemote);
-        }
-        if (*updateMaxDepth > 0) {
-            args.push_back("--max-depth");
-            args.push_back(std::to_string(*updateMaxDepth));
-        }
-        if (*updateParallel > 0) {
-            args.push_back("--parallel");
-            args.push_back(std::to_string(*updateParallel));
-        }
-        if (*updateContinueOnError) {
-            args.push_back("--continue-on-error");
-        }
-        if (*updateDryRun) {
-            args.push_back("--dry-run");
-        }
-        auto extras = update->remaining();
-        args.insert(args.end(), extras.begin(), extras.end());
-        auto result = shell::ExecuteScript("workspace/update-workspace-repos.sh", args);
-        std::exit(result.exitCode);
+        std::cerr << "Error: workspace update must run in native mode\n";
+        std::exit(2);
     });
 
     auto* foreach = cmd->add_subcommand("foreach", "Run command on each repo");
@@ -780,7 +674,7 @@ void RegisterWorkspace(CLI::App& InApp) {
     auto* foreachDryRun = new bool{false};
 
     foreach->add_flag("--native", *foreachNative, "Use native C++ wave executor (default)");
-    foreach->add_flag("--shell", *foreachShell, "Use shell fallback implementation");
+    foreach->add_flag("--shell", *foreachShell, "Deprecated compatibility flag (shell path removed)");
     foreach->add_flag("--native-plan", *foreachNativePlan, "Use native C++ planner + shell foreach adapter execution");
     foreach->add_flag("--native-plan-only", *foreachNativePlanOnly, "Emit native foreach plan JSON only");
     foreach->add_flag("--continue-on-error", *foreachContinueOnError, "Continue if command fails in a repo");
@@ -804,11 +698,11 @@ void RegisterWorkspace(CLI::App& InApp) {
         if (*foreachNativePlanOnly) {
             *foreachNativePlan = true;
         }
-        if (*foreachShell && (*foreachNative || *foreachNativePlan)) {
-            std::cerr << "Error: --shell cannot be combined with --native/--native-plan\n";
-            std::exit(1);
+        if (*foreachShell) {
+            std::cerr << "Error: --shell is no longer supported; workspace foreach is fully native now\n";
+            std::exit(2);
         }
-        if (!*foreachShell && !*foreachNative && !*foreachNativePlan) {
+        if (!*foreachNative && !*foreachNativePlan) {
             *foreachNative = true;
         }
         if (foreachCommand->empty() && !foreachPositionalCommand->empty()) {
@@ -818,6 +712,18 @@ void RegisterWorkspace(CLI::App& InApp) {
         if (foreachCommand->empty() && !extras.empty()) {
             *foreachCommand = extras.front();
             extras.erase(extras.begin());
+        }
+        if (!extras.empty()) {
+            std::cerr << "Error: unsupported extra arguments in native workspace foreach mode:";
+            for (const auto& extra : extras) {
+                std::cerr << ' ' << extra;
+            }
+            std::cerr << "\n";
+            std::exit(2);
+        }
+        if (*foreachNativePlan && !*foreachNativePlanOnly) {
+            *foreachNative = true;
+            *foreachNativePlan = false;
         }
 
         if (*foreachNative || *foreachNativePlan) {
@@ -895,44 +801,8 @@ void RegisterWorkspace(CLI::App& InApp) {
             }
 
             if (*foreachNativePlan) {
-                const auto now = std::chrono::system_clock::now().time_since_epoch();
-                const auto stamp = std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
-                const auto planPath = std::filesystem::temp_directory_path() /
-                    std::format("kano-workspace-foreach-plan-{}.json", stamp);
-                {
-                    std::ofstream out(planPath, std::ios::out | std::ios::binary | std::ios::trunc);
-                    out << foreachPlanJson;
-                }
-
-                std::vector<std::string> args = {"--plan-file", planPath.string(), "--command", *foreachCommand};
-                if (!foreachIncludeTypes->empty()) {
-                    args.push_back("--include-types");
-                    args.push_back(*foreachIncludeTypes);
-                }
-                for (const auto& pattern : *foreachExclude) {
-                    args.push_back("--exclude");
-                    args.push_back(pattern);
-                }
-                if (*foreachMaxDepth > 0) {
-                    args.push_back("--max-depth");
-                    args.push_back(std::to_string(*foreachMaxDepth));
-                }
-                if (*foreachContinueOnError) {
-                    args.push_back("--continue-on-error");
-                }
-                if (*foreachParallel > 0) {
-                    args.push_back("--parallel");
-                    args.push_back(std::to_string(*foreachParallel));
-                }
-                if (*foreachDryRun) {
-                    args.push_back("--dry-run");
-                }
-                args.insert(args.end(), extras.begin(), extras.end());
-                auto result = shell::ExecuteScript("workspace/foreach-repo.sh", args);
-
-                std::error_code ec;
-                std::filesystem::remove(planPath, ec);
-                std::exit(result.exitCode);
+                std::cerr << "Error: native-plan adapter execution via shell is disabled in strict native-only mode\n";
+                std::exit(2);
             }
 
             int successCount = 0;
@@ -994,39 +864,8 @@ void RegisterWorkspace(CLI::App& InApp) {
             std::exit(failureCount > 0 ? 1 : 0);
         }
 
-        std::vector<std::string> args;
-        if (!foreachManifest->empty()) {
-            args.push_back("--manifest");
-            args.push_back(*foreachManifest);
-        }
-        if (!foreachIncludeTypes->empty()) {
-            args.push_back("--include-types");
-            args.push_back(*foreachIncludeTypes);
-        }
-        for (const auto& pattern : *foreachExclude) {
-            args.push_back("--exclude");
-            args.push_back(pattern);
-        }
-        if (*foreachMaxDepth > 0) {
-            args.push_back("--max-depth");
-            args.push_back(std::to_string(*foreachMaxDepth));
-        }
-        if (*foreachContinueOnError) {
-            args.push_back("--continue-on-error");
-        }
-        if (*foreachParallel > 0) {
-            args.push_back("--parallel");
-            args.push_back(std::to_string(*foreachParallel));
-        }
-        if (*foreachDryRun) {
-            args.push_back("--dry-run");
-        }
-        if (!foreachCommand->empty()) {
-            args.push_back(*foreachCommand);
-        }
-        args.insert(args.end(), extras.begin(), extras.end());
-        auto result = shell::ExecuteScript("workspace/foreach-repo.sh", args);
-        std::exit(result.exitCode);
+        std::cerr << "Error: workspace foreach must run in native mode\n";
+        std::exit(2);
     });
 
     auto* discover = cmd->add_subcommand("discover", "Discover all repos in workspace");
@@ -1044,7 +883,7 @@ void RegisterWorkspace(CLI::App& InApp) {
     auto* nativeMetadata = new std::string{"full"};
 
     discover->add_flag("--native", *nativeDiscover, "Use native C++ discovery implementation (default)");
-    discover->add_flag("--shell", *discoverShell, "Use shell fallback implementation");
+    discover->add_flag("--shell", *discoverShell, "Deprecated compatibility flag (shell path removed)");
     discover->add_flag("--emit-waves", *emitWaves, "Emit deterministic execution waves (implies --native)");
     discover->add_option("--native-max-depth", *nativeDiscoverMaxDepth, "Native discovery max depth");
     discover->add_option("--native-exclude", *nativeDiscoverExclude, "Native discovery exclude pattern (repeatable)");
@@ -1059,12 +898,21 @@ void RegisterWorkspace(CLI::App& InApp) {
         if (*emitWaves) {
             *nativeDiscover = true;
         }
-        if (*discoverShell && *nativeDiscover) {
-            std::cerr << "Error: --shell cannot be combined with --native/--emit-waves\n";
-            std::exit(1);
+        if (*discoverShell) {
+            std::cerr << "Error: --shell is no longer supported; workspace discover is fully native now\n";
+            std::exit(2);
         }
-        if (!*discoverShell && !*nativeDiscover) {
+        if (!*nativeDiscover) {
             *nativeDiscover = true;
+        }
+        auto extras = discover->remaining();
+        if (!extras.empty()) {
+            std::cerr << "Error: unsupported extra arguments in native workspace discover mode:";
+            for (const auto& extra : extras) {
+                std::cerr << ' ' << extra;
+            }
+            std::cerr << "\n";
+            std::exit(2);
         }
 
         if (*nativeDiscover) {
@@ -1089,19 +937,35 @@ void RegisterWorkspace(CLI::App& InApp) {
             std::exit(0);
         }
 
-        auto extras = discover->remaining();
-        std::vector<std::string> args(extras.begin(), extras.end());
-        auto result = shell::ExecuteScript("core/discover-repos.sh", args);
-        std::exit(result.exitCode);
+        std::cerr << "Error: workspace discover must run in native mode\n";
+        std::exit(2);
     });
 
     auto* update_repo = cmd->add_subcommand("update-repo", "Update a single repo + registered subrepos");
+    auto* updateRepoPath = new std::string{"."};
+    auto* updateRepoRemote = new std::string{"origin"};
+    auto* updateRepoDryRun = new bool{false};
+    update_repo->add_option("--repo", *updateRepoPath, "Repository path to update");
+    update_repo->add_option("--remote", *updateRepoRemote, "Remote name to sync from");
+    update_repo->add_flag("--dry-run", *updateRepoDryRun, "Preview single-repo update");
     update_repo->allow_extras();
     update_repo->callback([=]() {
         auto extras = update_repo->remaining();
-        std::vector<std::string> args(extras.begin(), extras.end());
-        auto result = shell::ExecuteScript("core/update-repo.sh", args);
-        std::exit(result.exitCode);
+        if (!extras.empty()) {
+            std::cerr << "Error: unsupported extra arguments in native workspace update-repo mode:";
+            for (const auto& extra : extras) {
+                std::cerr << ' ' << extra;
+            }
+            std::cerr << "\n";
+            std::exit(2);
+        }
+
+        workspace::RepoRecord repo;
+        repo.path = std::filesystem::weakly_canonical(std::filesystem::path(*updateRepoPath));
+        repo.type = "direct";
+        const auto result = UpdateRepoNative(repo, *updateRepoRemote, *updateRepoDryRun);
+        PrintRepoUpdateResult(result);
+        std::exit(result.exitCode == 0 ? 0 : 1);
     });
 }
 

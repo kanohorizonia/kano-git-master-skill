@@ -295,6 +295,161 @@ auto WorktreePathExists(const std::string& InPath) -> bool {
     return std::filesystem::exists(std::filesystem::path(InPath));
 }
 
+auto RunNativeWorktreeOpen(const std::string& InTarget, const std::string& InIde) -> int {
+    if (!EnsureGitRepository()) {
+        return 1;
+    }
+
+    if (InTarget.empty()) {
+        std::cerr << "Error: branch or path is required\n";
+        return 1;
+    }
+
+    std::string worktreePath;
+    if (WorktreePathExists(InTarget)) {
+        worktreePath = InTarget;
+    } else {
+        worktreePath = GetWorktreePathByBranch(InTarget);
+    }
+
+    if (worktreePath.empty()) {
+        std::cerr << "Error: cannot resolve worktree path from target: " << InTarget << "\n";
+        return 1;
+    }
+
+    const auto openInCode = [&]() -> int {
+        const auto codeResult = kano::git::shell::ExecuteCommand(
+            "code",
+            {worktreePath},
+            kano::git::shell::ExecMode::Capture
+        );
+        return codeResult.exitCode;
+    };
+
+    if (InIde == "terminal") {
+        std::cout << worktreePath << "\n";
+        return 0;
+    }
+    if (InIde == "vim") {
+        const auto result = kano::git::shell::ExecuteCommand(
+            "vim",
+            {},
+            kano::git::shell::ExecMode::PassThrough,
+            std::filesystem::path(worktreePath)
+        );
+        return result.exitCode;
+    }
+    if (InIde == "idea") {
+        const auto result = kano::git::shell::ExecuteCommand(
+            "idea",
+            {worktreePath},
+            kano::git::shell::ExecMode::PassThrough
+        );
+        return result.exitCode;
+    }
+    if (InIde == "code") {
+        const auto codeExit = openInCode();
+        if (codeExit != 0) {
+            std::cerr << "Error: failed to launch VS Code for path: " << worktreePath << "\n";
+        }
+        return codeExit;
+    }
+
+    const auto codeExit = openInCode();
+    if (codeExit == 0) {
+        return 0;
+    }
+
+    std::cerr << "Error: unable to auto-open worktree (VS Code command 'code' not available).\n";
+    std::cerr << "Hint: use 'kog worktree open --ide terminal <target>' to print the path.\n";
+    return 1;
+}
+
+auto RunNativeWorktreeCreateOrphan(
+    const std::string& InBranch,
+    const std::string& InPath,
+    bool InDryRun,
+    bool InOpen,
+    const std::string& InIde) -> int {
+    if (InBranch.empty()) {
+        std::cerr << "Error: Branch name is required\n";
+        return 1;
+    }
+    if (!EnsureGitRepository()) {
+        return 1;
+    }
+
+    const auto worktreePath = InPath.empty() ? MakeDefaultWorktreePath(InBranch) : InPath;
+    if (worktreePath.empty()) {
+        std::cerr << "Error: Failed to resolve worktree path\n";
+        return 1;
+    }
+    if (WorktreeExistsForBranch(InBranch)) {
+        std::cerr << "Error: Worktree already exists for branch: " << InBranch << "\n";
+        return 1;
+    }
+    if (WorktreePathExists(worktreePath)) {
+        std::cerr << "Error: Path already exists: " << worktreePath << "\n";
+        return 1;
+    }
+
+    if (InDryRun) {
+        std::cout << "+ git worktree add --detach \"" << worktreePath << "\"\n";
+        std::cout << "+ (cd \"" << worktreePath << "\" && git checkout --orphan \"" << InBranch << "\")\n";
+        std::cout << "+ (cd \"" << worktreePath << "\" && git rm -rf --ignore-unmatch .)\n";
+        std::cout << "+ (cd \"" << worktreePath << "\" && git clean -fd)\n";
+        if (InOpen) {
+            std::cout << "+ open worktree in IDE: " << InIde << "\n";
+        }
+        return 0;
+    }
+
+    const auto addResult = kano::git::shell::ExecuteCommand(
+        "git",
+        {"worktree", "add", "--detach", worktreePath},
+        kano::git::shell::ExecMode::PassThrough
+    );
+    if (addResult.exitCode != 0) {
+        return addResult.exitCode;
+    }
+
+    const auto orphanResult = kano::git::shell::ExecuteCommand(
+        "git",
+        {"checkout", "--orphan", InBranch},
+        kano::git::shell::ExecMode::PassThrough,
+        std::filesystem::path(worktreePath)
+    );
+    if (orphanResult.exitCode != 0) {
+        return orphanResult.exitCode;
+    }
+
+    const auto clearTracked = kano::git::shell::ExecuteCommand(
+        "git",
+        {"rm", "-rf", "--ignore-unmatch", "."},
+        kano::git::shell::ExecMode::PassThrough,
+        std::filesystem::path(worktreePath)
+    );
+    if (clearTracked.exitCode != 0) {
+        return clearTracked.exitCode;
+    }
+
+    const auto cleanResult = kano::git::shell::ExecuteCommand(
+        "git",
+        {"clean", "-fd"},
+        kano::git::shell::ExecMode::PassThrough,
+        std::filesystem::path(worktreePath)
+    );
+    if (cleanResult.exitCode != 0) {
+        return cleanResult.exitCode;
+    }
+
+    std::cout << "[INFO] Orphan worktree created successfully at: " << worktreePath << "\n";
+    if (InOpen) {
+        return RunNativeWorktreeOpen(worktreePath, InIde);
+    }
+    return 0;
+}
+
 auto RunNativeWorktreeCreate(
     const std::string& InBranch,
     const std::string& InPath,
@@ -371,15 +526,7 @@ auto RunNativeWorktreeCreate(
     std::cout << "[INFO] Branch: " << InBranch << "\n";
 
     if (InOpen) {
-        std::vector<std::string> openArgs = {InBranch};
-        if (!InIde.empty() && InIde != "auto") {
-            openArgs.push_back("--ide");
-            openArgs.push_back(InIde);
-        }
-        const auto openResult = kano::git::shell::ExecuteScript("worktree/open-worktree.sh", openArgs);
-        if (openResult.exitCode != 0) {
-            return openResult.exitCode;
-        }
+        return RunNativeWorktreeOpen(worktreePath, InIde);
     }
 
     std::cout << "[INFO] Done!\n";
@@ -603,7 +750,7 @@ void RegisterWorktree(CLI::App& InApp) {
     auto* createDryRun = new bool{false};
     auto* createBranch = new std::string{};
     create->add_flag("--native", *createNative, "Use native C++ worktree create implementation (default)");
-    create->add_flag("--shell", *createShell, "Use shell fallback implementation");
+    create->add_flag("--shell", *createShell, "Deprecated compatibility flag (shell path removed)");
     create->add_option("--path", *createPath, "Custom worktree path");
     create->add_flag("--new-branch", *createNewBranch, "Create new branch");
     create->add_flag("--open", *createOpen, "Open in IDE after creation");
@@ -615,6 +762,10 @@ void RegisterWorktree(CLI::App& InApp) {
             std::cerr << "Error: --shell cannot be combined with --native\n";
             std::exit(1);
         }
+        if (*createShell) {
+            std::cerr << "Error: --shell is no longer supported; worktree create is fully native now\n";
+            std::exit(2);
+        }
 
         auto extras = create->remaining();
         std::string branch = *createBranch;
@@ -623,46 +774,19 @@ void RegisterWorktree(CLI::App& InApp) {
             extras.erase(extras.begin());
         }
 
-        if (!*createShell) {
-            if (!extras.empty()) {
-                std::cerr << "Error: Unexpected argument: " << extras.front() << "\n";
-                std::exit(1);
-            }
-
-            std::exit(RunNativeWorktreeCreate(
-                branch,
-                *createPath,
-                *createNewBranch,
-                *createDryRun,
-                *createOpen,
-                *createIde
-            ));
+        if (!extras.empty()) {
+            std::cerr << "Error: Unexpected argument: " << extras.front() << "\n";
+            std::exit(1);
         }
 
-        std::vector<std::string> args;
-        if (!branch.empty()) {
-            args.push_back(branch);
-        }
-        if (!createPath->empty()) {
-            args.push_back("--path");
-            args.push_back(*createPath);
-        }
-        if (*createNewBranch) {
-            args.push_back("--new-branch");
-        }
-        if (*createOpen) {
-            args.push_back("--open");
-        }
-        if (!createIde->empty()) {
-            args.push_back("--ide");
-            args.push_back(*createIde);
-        }
-        if (*createDryRun) {
-            args.push_back("--dry-run");
-        }
-        args.insert(args.end(), extras.begin(), extras.end());
-        auto result = shell::ExecuteScript("worktree/create-worktree.sh", args);
-        std::exit(result.exitCode);
+        std::exit(RunNativeWorktreeCreate(
+            branch,
+            *createPath,
+            *createNewBranch,
+            *createDryRun,
+            *createOpen,
+            *createIde
+        ));
     });
 
     auto* list = cmd->add_subcommand("list", "List all worktrees");
@@ -672,32 +796,29 @@ void RegisterWorktree(CLI::App& InApp) {
     auto* listFormat = new std::string{"table"};
     auto* listDetailed = new bool{false};
     list->add_flag("--native", *listNative, "Use native C++ worktree list implementation (default)");
-    list->add_flag("--shell", *listShell, "Use shell fallback implementation");
+    list->add_flag("--shell", *listShell, "Deprecated compatibility flag (shell path removed)");
     list->add_option("--format", *listFormat, "Output format: table|json");
     list->add_flag("--detailed", *listDetailed, "Show detailed information");
     list->callback([=]() {
-        if (!*listShell) {
-            if (*listFormat != "table" && *listFormat != "json") {
-                std::cerr << "Error: Unknown format: " << *listFormat << "\n";
-                std::exit(1);
-            }
-            if (!EnsureGitRepository()) {
-                std::exit(1);
-            }
-
-            const auto records = CollectWorktrees();
-            if (*listFormat == "json") {
-                PrintWorktreesJson(records);
-            } else {
-                PrintWorktreesTable(records, *listDetailed);
-            }
-            std::exit(0);
+        if (*listShell) {
+            std::cerr << "Error: --shell is no longer supported; worktree list is fully native now\n";
+            std::exit(2);
+        }
+        if (*listFormat != "table" && *listFormat != "json") {
+            std::cerr << "Error: Unknown format: " << *listFormat << "\n";
+            std::exit(1);
+        }
+        if (!EnsureGitRepository()) {
+            std::exit(1);
         }
 
-        auto extras = list->remaining();
-        std::vector<std::string> args(extras.begin(), extras.end());
-        auto result = shell::ExecuteScript("worktree/list-worktrees.sh", args);
-        std::exit(result.exitCode);
+        const auto records = CollectWorktrees();
+        if (*listFormat == "json") {
+            PrintWorktreesJson(records);
+        } else {
+            PrintWorktreesTable(records, *listDetailed);
+        }
+        std::exit(0);
     });
 
     auto* remove = cmd->add_subcommand("remove", "Remove a worktree");
@@ -709,7 +830,7 @@ void RegisterWorktree(CLI::App& InApp) {
     auto* removeDryRun = new bool{false};
     auto* removeBranch = new std::string{};
     remove->add_flag("--native", *removeNative, "Use native C++ worktree remove implementation (default)");
-    remove->add_flag("--shell", *removeShell, "Use shell fallback implementation");
+    remove->add_flag("--shell", *removeShell, "Deprecated compatibility flag (shell path removed)");
     remove->add_flag("--force", *removeForce, "Force removal even with uncommitted changes");
     remove->add_flag("--delete-branch", *removeDeleteBranch, "Also delete the branch");
     remove->add_flag("--dry-run", *removeDryRun, "Preview mode");
@@ -719,6 +840,10 @@ void RegisterWorktree(CLI::App& InApp) {
             std::cerr << "Error: --shell cannot be combined with --native\n";
             std::exit(1);
         }
+        if (*removeShell) {
+            std::cerr << "Error: --shell is no longer supported; worktree remove is fully native now\n";
+            std::exit(2);
+        }
 
         auto extras = remove->remaining();
         std::string branch = *removeBranch;
@@ -727,36 +852,17 @@ void RegisterWorktree(CLI::App& InApp) {
             extras.erase(extras.begin());
         }
 
-        if (!*removeShell) {
-            if (!extras.empty()) {
-                std::cerr << "Error: Unexpected argument: " << extras.front() << "\n";
-                std::exit(1);
-            }
-
-            std::exit(RunNativeWorktreeRemove(
-                branch,
-                *removeForce,
-                *removeDeleteBranch,
-                *removeDryRun
-            ));
+        if (!extras.empty()) {
+            std::cerr << "Error: Unexpected argument: " << extras.front() << "\n";
+            std::exit(1);
         }
 
-        std::vector<std::string> args;
-        if (!branch.empty()) {
-            args.push_back(branch);
-        }
-        if (*removeForce) {
-            args.push_back("--force");
-        }
-        if (*removeDeleteBranch) {
-            args.push_back("--delete-branch");
-        }
-        if (*removeDryRun) {
-            args.push_back("--dry-run");
-        }
-        args.insert(args.end(), extras.begin(), extras.end());
-        auto result = shell::ExecuteScript("worktree/remove-worktree.sh", args);
-        std::exit(result.exitCode);
+        std::exit(RunNativeWorktreeRemove(
+            branch,
+            *removeForce,
+            *removeDeleteBranch,
+            *removeDryRun
+        ));
     });
 
     auto* sync_wt = cmd->add_subcommand("sync", "Sync all worktrees");
@@ -767,7 +873,7 @@ void RegisterWorktree(CLI::App& InApp) {
     auto* syncFilterWorktrees = new std::string{};
     auto* syncDryRun = new bool{false};
     sync_wt->add_flag("--native", *syncNative, "Use native C++ worktree sync implementation (default)");
-    sync_wt->add_flag("--shell", *syncShell, "Use shell fallback implementation");
+    sync_wt->add_flag("--shell", *syncShell, "Deprecated compatibility flag (shell path removed)");
     sync_wt->add_flag("--status", *syncShowStatus, "Show status after sync");
     sync_wt->add_option("--worktrees", *syncFilterWorktrees, "Comma-separated list of branches to sync");
     sync_wt->add_flag("--dry-run", *syncDryRun, "Preview mode");
@@ -776,52 +882,73 @@ void RegisterWorktree(CLI::App& InApp) {
             std::cerr << "Error: --shell cannot be combined with --native\n";
             std::exit(1);
         }
+        if (*syncShell) {
+            std::cerr << "Error: --shell is no longer supported; worktree sync is fully native now\n";
+            std::exit(2);
+        }
 
         auto extras = sync_wt->remaining();
-        if (!*syncShell) {
-            if (!extras.empty()) {
-                std::cerr << "Error: Unexpected argument: " << extras.front() << "\n";
-                std::exit(1);
-            }
-            std::exit(RunNativeWorktreeSync(
-                *syncShowStatus,
-                *syncFilterWorktrees,
-                *syncDryRun
-            ));
+        if (!extras.empty()) {
+            std::cerr << "Error: Unexpected argument: " << extras.front() << "\n";
+            std::exit(1);
         }
-
-        std::vector<std::string> args;
-        if (*syncShowStatus) {
-            args.push_back("--status");
-        }
-        if (!syncFilterWorktrees->empty()) {
-            args.push_back("--worktrees");
-            args.push_back(*syncFilterWorktrees);
-        }
-        if (*syncDryRun) {
-            args.push_back("--dry-run");
-        }
-        args.insert(args.end(), extras.begin(), extras.end());
-        auto result = shell::ExecuteScript("worktree/sync-worktrees.sh", args);
-        std::exit(result.exitCode);
+        std::exit(RunNativeWorktreeSync(
+            *syncShowStatus,
+            *syncFilterWorktrees,
+            *syncDryRun
+        ));
     });
 
     auto* open = cmd->add_subcommand("open", "Open worktree in IDE");
+    auto* openTarget = new std::string{};
+    auto* openIde = new std::string{"auto"};
+    open->add_option("target", *openTarget, "Branch name or worktree path");
+    open->add_option("--ide", *openIde, "IDE to use: auto, code, idea, vim, terminal");
     open->allow_extras();
     open->callback([=]() {
         auto extras = open->remaining();
-        std::vector<std::string> args(extras.begin(), extras.end());
-        auto result = shell::ExecuteScript("worktree/open-worktree.sh", args);
-        std::exit(result.exitCode);
+        std::string target = *openTarget;
+        if (target.empty() && !extras.empty()) {
+            target = extras.front();
+            extras.erase(extras.begin());
+        }
+        if (!extras.empty()) {
+            std::cerr << "Error: Unexpected argument: " << extras.front() << "\n";
+            std::exit(1);
+        }
+        std::exit(RunNativeWorktreeOpen(target, *openIde));
     });
 
     auto* orphan = cmd->add_subcommand("create-orphan", "Create orphan branch worktree");
+    auto* orphanBranch = new std::string{};
+    auto* orphanPath = new std::string{};
+    auto* orphanOpen = new bool{false};
+    auto* orphanIde = new std::string{"auto"};
+    auto* orphanDryRun = new bool{false};
+    orphan->add_option("branch", *orphanBranch, "Orphan branch name");
+    orphan->add_option("--path", *orphanPath, "Custom worktree path");
+    orphan->add_flag("--open", *orphanOpen, "Open in IDE after creation");
+    orphan->add_option("--ide", *orphanIde, "IDE to use: auto, code, idea, vim, terminal");
+    orphan->add_flag("--dry-run", *orphanDryRun, "Preview mode");
     orphan->allow_extras();
     orphan->callback([=]() {
         auto extras = orphan->remaining();
-        std::vector<std::string> args(extras.begin(), extras.end());
-        auto result = shell::ExecuteScript("worktree/create-orphan-worktree.sh", args);
-        std::exit(result.exitCode);
+        std::string branch = *orphanBranch;
+        if (branch.empty() && !extras.empty()) {
+            branch = extras.front();
+            extras.erase(extras.begin());
+        }
+        if (!extras.empty()) {
+            std::cerr << "Error: Unexpected argument: " << extras.front() << "\n";
+            std::exit(1);
+        }
+        std::exit(RunNativeWorktreeCreateOrphan(
+            branch,
+            *orphanPath,
+            *orphanDryRun,
+            *orphanOpen,
+            *orphanIde
+        ));
     });
 }
 

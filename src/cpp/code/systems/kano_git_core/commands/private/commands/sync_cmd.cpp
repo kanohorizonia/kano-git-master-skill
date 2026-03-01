@@ -388,6 +388,103 @@ void PrintStableDevSummary(const std::vector<StableDevSummaryRow>& InRows, Stabl
     }
 }
 
+auto RunNativeStableDevSync(
+    const std::filesystem::path& InRoot,
+    const std::filesystem::path& InRepo,
+    const std::string& InRel,
+    bool InDryRun,
+    StableDevSummaryRow& OutRow) -> int {
+    OutRow.repo = InRel;
+    OutRow.currentBranch = CurrentBranch(InRepo);
+
+    if (OutRow.currentBranch.empty()) {
+        OutRow.result = "FAILED";
+        OutRow.sameCommit = false;
+        OutRow.latestUpstreamCommit = "N/A";
+        OutRow.latestStableCommit = "N/A";
+        OutRow.reason = "detached HEAD";
+        return 1;
+    }
+
+    const auto latestTag = ResolveLatestStableTag(InRepo);
+    if (latestTag.empty()) {
+        OutRow.result = "FAILED";
+        OutRow.sameCommit = false;
+        OutRow.latestUpstreamCommit = "N/A";
+        OutRow.latestStableCommit = "N/A";
+        OutRow.reason = "no stable tag found";
+        return 1;
+    }
+
+    if (InDryRun) {
+        std::cout << "[DRY RUN] " << InRel << ": git fetch upstream --tags --prune\n";
+    } else {
+        const auto fetch = GitPassThrough(InRepo, {"fetch", "upstream", "--tags", "--prune"});
+        if (fetch.exitCode != 0) {
+            OutRow.result = "FAILED";
+            OutRow.sameCommit = false;
+            OutRow.latestUpstreamCommit = "N/A";
+            OutRow.latestStableCommit = "N/A";
+            OutRow.reason = "fetch upstream --tags failed";
+            return fetch.exitCode;
+        }
+    }
+
+    const auto upstreamSha = ResolveCommitSha(InRepo, std::format("refs/tags/{}^{{commit}}", latestTag));
+    const auto stableRef = ResolveStableRef(InRoot, InRepo, OutRow.currentBranch, InRel);
+    const auto stableShaBefore = ResolveCommitSha(InRepo, stableRef);
+
+    OutRow.latestUpstreamCommit = ResolveCommitLine(InRepo, upstreamSha);
+    OutRow.latestStableCommit = ResolveCommitLine(InRepo, stableShaBefore);
+
+    if (upstreamSha.empty()) {
+        OutRow.result = "FAILED";
+        OutRow.sameCommit = false;
+        OutRow.reason = "cannot resolve stable tag commit";
+        return 1;
+    }
+
+    if (stableShaBefore.empty()) {
+        OutRow.result = "FAILED";
+        OutRow.sameCommit = false;
+        OutRow.reason = "cannot resolve stable branch ref";
+        return 1;
+    }
+
+    if (upstreamSha == stableShaBefore) {
+        OutRow.result = "SUCCESS";
+        OutRow.sameCommit = true;
+        OutRow.latestStableCommit = "(same as upstream)";
+        OutRow.reason.clear();
+        return 0;
+    }
+
+    if (InDryRun) {
+        std::cout << "[DRY RUN] " << InRel << ": git rebase refs/tags/" << latestTag << "\n";
+        OutRow.result = "SUCCESS";
+        OutRow.sameCommit = false;
+        OutRow.reason = "dry-run";
+        return 0;
+    }
+
+    const auto rebase = GitPassThrough(InRepo, {"rebase", std::format("refs/tags/{}", latestTag)});
+    if (rebase.exitCode != 0) {
+        OutRow.result = "FAILED";
+        OutRow.sameCommit = false;
+        OutRow.reason = "rebase onto latest stable tag failed";
+        return rebase.exitCode;
+    }
+
+    const auto stableShaAfter = ResolveCommitSha(InRepo, "HEAD");
+    OutRow.result = "SUCCESS";
+    OutRow.sameCommit = (stableShaAfter == upstreamSha);
+    OutRow.latestStableCommit = OutRow.sameCommit
+        ? "(same as upstream)"
+        : ResolveCommitLine(InRepo, stableShaAfter);
+    OutRow.reason.clear();
+    return 0;
+}
+
 auto RunStableDevWorkspace(
     const std::filesystem::path& InRoot,
     StableDevReportFormat InFormat,
@@ -397,9 +494,7 @@ auto RunStableDevWorkspace(
         return 1;
     }
 
-    if (IsAgentModeEnabled() && !HasLongFlag(InForwardArgs, "--ai-resolve") && !HasLongFlag(InForwardArgs, "--no-ai-resolve")) {
-        InForwardArgs.push_back("--no-ai-resolve");
-    }
+    const bool dryRun = HasLongFlag(InForwardArgs, "--dry-run");
 
     const auto gitmodules = InRoot / ".gitmodules";
     if (!std::filesystem::exists(gitmodules)) {
@@ -436,42 +531,16 @@ auto RunStableDevWorkspace(
         }
 
         std::cout << "RUN: " << rel << "\n";
-        std::vector<std::string> args = {"--repo", repoPath.generic_string()};
-        args.insert(args.end(), InForwardArgs.begin(), InForwardArgs.end());
-        const auto run = shell::ExecuteScript("commit-tools/sync/smart-sync-stable-dev.sh", args);
+        StableDevSummaryRow row;
+        const auto runExitCode = RunNativeStableDevSync(InRoot, repoPath, rel, dryRun, row);
 
-        const auto branch = CurrentBranch(repoPath);
-        const auto latestTag = ResolveLatestStableTag(repoPath);
-        const auto upstreamSha = latestTag.empty() ? std::string{} : ResolveCommitSha(repoPath, std::format("refs/tags/{}^{{commit}}", latestTag));
-        const auto stableRef = ResolveStableRef(InRoot, repoPath, branch, rel);
-        const auto stableSha = ResolveCommitSha(repoPath, stableRef);
-        const auto upstreamLine = ResolveCommitLine(repoPath, upstreamSha);
-        const auto stableLine = ResolveCommitLine(repoPath, stableSha);
-
-        if (run.exitCode == 0) {
+        if (runExitCode == 0) {
             success += 1;
-            const bool same = !upstreamSha.empty() && !stableSha.empty() && upstreamSha == stableSha;
-            summary.push_back({
-                rel,
-                "SUCCESS",
-                branch,
-                same,
-                upstreamLine,
-                same ? "(same as upstream)" : stableLine,
-                ""
-            });
+            summary.push_back(row);
         } else {
             failed += 1;
-            std::cerr << "FAIL: " << rel << "\n";
-            summary.push_back({
-                rel,
-                "FAILED",
-                branch,
-                false,
-                upstreamLine,
-                stableLine,
-                "workflow failed"
-            });
+            std::cerr << "FAIL: " << rel << " (" << row.reason << ")\n";
+            summary.push_back(row);
         }
     }
 
@@ -677,7 +746,29 @@ auto RunNativeOriginLatestSync(
     bool InDryRun,
     bool InNoCache,
     bool InRefreshCache) -> int {
-    const auto [plans, mode] = BuildSyncPlans(InRepoRoot, InRemote, InMaxDepth, InNoCache, InRefreshCache);
+    std::vector<SyncPlan> plans;
+    std::string mode;
+    try {
+        auto planResult = BuildSyncPlans(InRepoRoot, InRemote, InMaxDepth, InNoCache, InRefreshCache);
+        plans = std::move(planResult.first);
+        mode = std::move(planResult.second);
+    } catch (const std::exception& ex) {
+        if (!InNoCache) {
+            std::cerr << "WARN: native discovery failed with cache enabled, retrying without cache: " << ex.what() << "\n";
+            try {
+                auto planResult = BuildSyncPlans(InRepoRoot, InRemote, InMaxDepth, true, InRefreshCache);
+                plans = std::move(planResult.first);
+                mode = std::move(planResult.second);
+            } catch (const std::exception& exNoCache) {
+                std::cerr << "ERROR: native discovery failed without cache: " << exNoCache.what() << "\n";
+                return 1;
+            }
+        } else {
+            std::cerr << "ERROR: native discovery failed: " << ex.what() << "\n";
+            return 1;
+        }
+    }
+
     std::cout << "Syncing workspace repos with recursive branch rules\n";
     std::cout << "Discover mode: " << (mode.empty() ? "unknown" : mode) << "\n";
 
@@ -746,6 +837,57 @@ auto RunNativeOriginLatestSync(
     return failures > 0 ? 1 : 0;
 }
 
+auto RunNativeUpstreamForcePush(
+    const std::filesystem::path& InRepo,
+    bool InDryRun) -> int {
+    const auto repo = std::filesystem::weakly_canonical(InRepo);
+    if (GitCapture(repo, {"rev-parse", "--is-inside-work-tree"}).exitCode != 0) {
+        std::cerr << "ERROR: Not a git repository: " << repo.generic_string() << "\n";
+        return 1;
+    }
+
+    if (!HasRemote(repo, "upstream")) {
+        std::cerr << "ERROR: Missing upstream remote\n";
+        return 1;
+    }
+    if (!HasRemote(repo, "origin")) {
+        std::cerr << "ERROR: Missing origin remote\n";
+        return 1;
+    }
+
+    const auto branch = CurrentBranch(repo);
+    if (branch.empty()) {
+        std::cerr << "ERROR: Detached HEAD not supported for upstream-force-push\n";
+        return 1;
+    }
+
+    auto upstreamDefault = DetectRemoteDefaultBranch(repo, "upstream");
+    if (upstreamDefault.empty()) {
+        std::cerr << "ERROR: Cannot resolve upstream default branch\n";
+        return 1;
+    }
+
+    if (InDryRun) {
+        std::cout << "[DRY RUN] Would run: git fetch upstream\n";
+        std::cout << "[DRY RUN] Would run: git rebase " << upstreamDefault << "\n";
+        std::cout << "[DRY RUN] Would run: git push --force-with-lease origin " << branch << "\n";
+        return 0;
+    }
+
+    const auto fetch = GitPassThrough(repo, {"fetch", "upstream"});
+    if (fetch.exitCode != 0) {
+        return fetch.exitCode;
+    }
+
+    const auto rebase = GitPassThrough(repo, {"rebase", upstreamDefault});
+    if (rebase.exitCode != 0) {
+        return rebase.exitCode;
+    }
+
+    const auto push = GitPassThrough(repo, {"push", "--force-with-lease", "origin", branch});
+    return push.exitCode;
+}
+
 } // namespace
 
 void RegisterSync(CLI::App& InApp) {
@@ -762,7 +904,7 @@ void RegisterSync(CLI::App& InApp) {
     auto* originLatestNoCache = new bool{false};
     auto* originLatestRefreshCache = new bool{false};
 
-    origin_latest->add_flag("--shell", *originLatestShell, "Use shell fallback implementation");
+    origin_latest->add_flag("--shell", *originLatestShell, "Deprecated compatibility flag (shell path removed)");
     origin_latest->add_option("--repo", *originLatestRepo, "Target repository root path");
     origin_latest->add_option("--remote", *originLatestRemote, "Preferred remote name");
     origin_latest->add_flag("--dry-run", *originLatestDryRun, "Preview sync actions without modifying repositories");
@@ -772,22 +914,17 @@ void RegisterSync(CLI::App& InApp) {
 
     origin_latest->callback([=]() {
         auto extras = origin_latest->remaining();
-        if (*originLatestShell || !extras.empty()) {
-            std::vector<std::string> args;
-            if (!originLatestRepo->empty() && *originLatestRepo != ".") {
-                args.push_back("--repo");
-                args.push_back(*originLatestRepo);
+        if (*originLatestShell) {
+            std::cerr << "Error: --shell is no longer supported; sync origin-latest is fully native now\n";
+            std::exit(2);
+        }
+        if (!extras.empty()) {
+            std::cerr << "Error: unsupported extra arguments in native sync origin-latest mode:";
+            for (const auto& extra : extras) {
+                std::cerr << ' ' << extra;
             }
-            if (!originLatestRemote->empty()) {
-                args.push_back("--remote");
-                args.push_back(*originLatestRemote);
-            }
-            if (*originLatestDryRun) {
-                args.push_back("--dry-run");
-            }
-            args.insert(args.end(), extras.begin(), extras.end());
-            auto result = shell::ExecuteScript("commit-tools/sync/smart-sync-origin-latest.sh", args);
-            std::exit(result.exitCode);
+            std::cerr << "\n";
+            std::exit(2);
         }
 
         const auto repoRoot = std::filesystem::weakly_canonical(std::filesystem::path(*originLatestRepo));
@@ -804,11 +941,23 @@ void RegisterSync(CLI::App& InApp) {
     // --- sync upstream-force-push ---
     auto* upstream_fp = cmd->add_subcommand("upstream-force-push", "Sync from upstream, force-push to origin");
     upstream_fp->allow_extras();
+    auto* upstreamRepo = new std::string{"."};
+    auto* upstreamDryRun = new bool{false};
+    upstream_fp->add_option("--repo", *upstreamRepo, "Target repository path");
+    upstream_fp->add_flag("--dry-run", *upstreamDryRun, "Preview force-push sync actions");
     upstream_fp->callback([=]() {
         auto extras = upstream_fp->remaining();
-        std::vector<std::string> args(extras.begin(), extras.end());
-        auto result = shell::ExecuteScript("commit-tools/sync/smart-sync-upstream-force-push.sh", args);
-        std::exit(result.exitCode);
+        if (!extras.empty()) {
+            std::cerr << "Error: unsupported extra arguments in native sync upstream-force-push mode:";
+            for (const auto& extra : extras) {
+                std::cerr << ' ' << extra;
+            }
+            std::cerr << "\n";
+            std::exit(2);
+        }
+
+        const auto repoRoot = std::filesystem::weakly_canonical(std::filesystem::path(*upstreamRepo));
+        std::exit(RunNativeUpstreamForcePush(repoRoot, *upstreamDryRun));
     });
 
     // --- sync stable-dev ---
@@ -816,40 +965,108 @@ void RegisterSync(CLI::App& InApp) {
     stable_dev->allow_extras();
     auto* stableDevWorkspace = new bool{false};
     auto* stableDevReportFormat = new std::string{"compact"};
+    auto* stableDevRepo = new std::string{"."};
+    auto* stableDevDryRun = new bool{false};
     stable_dev->add_flag("--workspace", *stableDevWorkspace, "Run stable-dev across src/* submodules with aggregated summary report");
     stable_dev->add_option("--format", *stableDevReportFormat, "Workspace report format: compact|table|tsv|json|markdown");
+    stable_dev->add_option("--repo", *stableDevRepo, "Single-repo mode target path");
+    stable_dev->add_flag("--dry-run", *stableDevDryRun, "Preview stable-dev sync actions");
     stable_dev->callback([=]() {
         auto extras = stable_dev->remaining();
         std::vector<std::string> args(extras.begin(), extras.end());
 
-        if (*stableDevWorkspace) {
-            const auto format = ParseStableDevReportFormat(*stableDevReportFormat);
-            if (!format.has_value()) {
-                std::cerr << "ERROR: Unsupported --format: " << *stableDevReportFormat << " (supported: compact, table, tsv, json, markdown)\n";
-                std::exit(1);
+        if (!extras.empty()) {
+            std::cerr << "Error: unsupported extra arguments in native sync stable-dev mode:";
+            for (const auto& extra : extras) {
+                std::cerr << ' ' << extra;
             }
-
-            std::filesystem::path workspaceRoot;
-            if (const char* rootEnv = std::getenv("KANO_GIT_MASTER_ROOT"); rootEnv != nullptr && std::string(rootEnv).size() > 0) {
-                workspaceRoot = std::filesystem::weakly_canonical(std::filesystem::path(rootEnv));
-            } else {
-                workspaceRoot = std::filesystem::current_path();
-            }
-            std::exit(RunStableDevWorkspace(workspaceRoot, *format, args));
+            std::cerr << "\n";
+            std::exit(2);
         }
 
-        auto result = shell::ExecuteScript("commit-tools/sync/smart-sync-stable-dev.sh", args);
-        std::exit(result.exitCode);
+        const auto format = ParseStableDevReportFormat(*stableDevReportFormat);
+        if (!format.has_value()) {
+            std::cerr << "ERROR: Unsupported --format: " << *stableDevReportFormat << " (supported: compact, table, tsv, json, markdown)\n";
+            std::exit(1);
+        }
+
+        std::filesystem::path workspaceRoot;
+        if (const char* rootEnv = std::getenv("KANO_GIT_MASTER_ROOT"); rootEnv != nullptr && std::string(rootEnv).size() > 0) {
+            workspaceRoot = std::filesystem::weakly_canonical(std::filesystem::path(rootEnv));
+        } else {
+            workspaceRoot = std::filesystem::current_path();
+        }
+
+        if (*stableDevWorkspace) {
+            if (!*stableDevDryRun && HasLongFlag(args, "--dry-run")) {
+                *stableDevDryRun = true;
+            }
+            std::vector<std::string> workspaceArgs;
+            if (*stableDevDryRun) {
+                workspaceArgs.push_back("--dry-run");
+            }
+            std::exit(RunStableDevWorkspace(workspaceRoot, *format, workspaceArgs));
+        }
+
+        const auto repoPath = std::filesystem::weakly_canonical(std::filesystem::path(*stableDevRepo));
+        const auto repoRel = std::filesystem::relative(repoPath, workspaceRoot).generic_string();
+        const auto repoLabel = (repoRel.empty() || repoRel == ".") ? "." : repoRel;
+
+        if (GitCapture(repoPath, {"rev-parse", "--is-inside-work-tree"}).exitCode != 0) {
+            std::cerr << "ERROR: Not a git repository: " << repoPath.generic_string() << "\n";
+            std::exit(1);
+        }
+        if (!HasRemote(repoPath, "upstream")) {
+            std::cerr << "ERROR: Missing upstream remote for repo: " << repoLabel << "\n";
+            std::exit(1);
+        }
+
+        StableDevSummaryRow row;
+        const auto code = RunNativeStableDevSync(workspaceRoot, repoPath, repoLabel, *stableDevDryRun, row);
+
+        std::cout << "=== upstream-stable-dev wrapper summary ===\n";
+        std::cout << "success: " << (code == 0 ? 1 : 0) << "\n";
+        std::cout << "skipped: 0\n";
+        std::cout << "failed: " << (code == 0 ? 0 : 1) << "\n";
+        std::cout << "OVERALL RESULT: " << (code == 0 ? "SUCCESS" : "FAILED") << "\n";
+        std::cout << "=== upstream-stable-dev branch report ===\n";
+        PrintStableDevSummary({row}, *format);
+        std::exit(code == 0 ? 0 : 1);
     });
 
     // --- sync dev ---
     auto* dev = cmd->add_subcommand("dev", "Dev sync (upstream default branch tip)");
     dev->allow_extras();
+    auto* devRepo = new std::string{"."};
+    auto* devDryRun = new bool{false};
+    auto* devMaxDepth = new int{6};
+    auto* devNoCache = new bool{false};
+    auto* devRefreshCache = new bool{false};
+    dev->add_option("--repo", *devRepo, "Target repository root path");
+    dev->add_flag("--dry-run", *devDryRun, "Preview sync actions without modifying repositories");
+    dev->add_option("--native-max-depth", *devMaxDepth, "Native discovery max depth");
+    dev->add_flag("--native-no-cache", *devNoCache, "Disable native discovery cache");
+    dev->add_flag("--native-refresh-cache", *devRefreshCache, "Force native cache refresh");
     dev->callback([=]() {
         auto extras = dev->remaining();
-        std::vector<std::string> args(extras.begin(), extras.end());
-        auto result = shell::ExecuteScript("commit-tools/sync/smart-sync-dev.sh", args);
-        std::exit(result.exitCode);
+        if (!extras.empty()) {
+            std::cerr << "Error: unsupported extra arguments in native sync dev mode:";
+            for (const auto& extra : extras) {
+                std::cerr << ' ' << extra;
+            }
+            std::cerr << "\n";
+            std::exit(2);
+        }
+
+        const auto repoRoot = std::filesystem::weakly_canonical(std::filesystem::path(*devRepo));
+        const auto code = RunNativeOriginLatestSync(
+            repoRoot,
+            "upstream",
+            *devMaxDepth,
+            *devDryRun,
+            *devNoCache,
+            *devRefreshCache);
+        std::exit(code);
     });
 
     // --- sync (default: auto-detect) ---
@@ -857,9 +1074,20 @@ void RegisterSync(CLI::App& InApp) {
     cmd->callback([=]() {
         if (cmd->get_subcommands().empty()) {
             auto extras = cmd->remaining();
-            std::vector<std::string> args(extras.begin(), extras.end());
-            auto result = shell::ExecuteScript("commit-tools/sync/smart-sync.sh", args);
-            std::exit(result.exitCode);
+            if (!extras.empty()) {
+                std::cerr << "Error: default sync in native-only mode does not accept extra args.\n";
+                std::cerr << "Hint: use explicit subcommands, e.g. 'kog sync origin-latest'.\n";
+                std::exit(2);
+            }
+
+            const auto code = RunNativeOriginLatestSync(
+                std::filesystem::current_path(),
+                "origin",
+                6,
+                false,
+                false,
+                false);
+            std::exit(code);
         }
     });
 }

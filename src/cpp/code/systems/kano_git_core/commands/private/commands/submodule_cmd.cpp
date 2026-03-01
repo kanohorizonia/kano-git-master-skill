@@ -356,9 +356,13 @@ void RegisterSubmodule(CLI::App& InApp) {
     add->allow_extras();
     add->callback([=]() {
         auto extras = add->remaining();
-        std::vector<std::string> args = {"add"};
-        args.insert(args.end(), extras.begin(), extras.end());
-        auto result = shell::ExecuteScript("submodules/kog-submodule.sh", args);
+        if (extras.empty()) {
+            std::cerr << "Error: submodule add requires arguments (for example: <url> [path])\n";
+            std::exit(1);
+        }
+        std::vector<std::string> gitArgs = {"submodule", "add"};
+        gitArgs.insert(gitArgs.end(), extras.begin(), extras.end());
+        const auto result = shell::ExecuteCommand("git", gitArgs, shell::ExecMode::PassThrough);
         std::exit(result.exitCode);
     });
 
@@ -370,7 +374,7 @@ void RegisterSubmodule(CLI::App& InApp) {
     auto* syncDryRun = new bool{false};
     auto* syncPath = new std::string{};
     sync->add_flag("--native", *syncNative, "Use native git submodule sync implementation (default)");
-    sync->add_flag("--shell", *syncShell, "Use shell fallback implementation");
+    sync->add_flag("--shell", *syncShell, "Deprecated compatibility flag (shell path removed)");
     sync->add_flag("--recursive", *syncRecursive, "Sync recursively");
     sync->add_flag("--dry-run", *syncDryRun, "Preview mode");
     sync->add_option("path", *syncPath, "Optional submodule path");
@@ -379,25 +383,12 @@ void RegisterSubmodule(CLI::App& InApp) {
             std::cerr << "Error: --shell cannot be combined with --native\n";
             std::exit(1);
         }
-        if (!*syncShell) {
-            const auto gitArgs = BuildGitSubmoduleArgs("sync", *syncRecursive, false, *syncPath, {});
-            std::exit(RunNativeSubmodule(gitArgs, *syncDryRun, "Syncing submodule URLs..."));
+        if (*syncShell) {
+            std::cerr << "Error: --shell is no longer supported; submodule sync is fully native now\n";
+            std::exit(2);
         }
-
-        auto extras = sync->remaining();
-        std::vector<std::string> args = {"sync"};
-        if (*syncRecursive) {
-            args.push_back("--recursive");
-        }
-        if (*syncDryRun) {
-            args.push_back("--dry-run");
-        }
-        if (!syncPath->empty()) {
-            args.push_back(*syncPath);
-        }
-        args.insert(args.end(), extras.begin(), extras.end());
-        auto result = shell::ExecuteScript("submodules/kog-submodule.sh", args);
-        std::exit(result.exitCode);
+        const auto gitArgs = BuildGitSubmoduleArgs("sync", *syncRecursive, false, *syncPath, {});
+        std::exit(RunNativeSubmodule(gitArgs, *syncDryRun, "Syncing submodule URLs..."));
     });
 
     auto* update = cmd->add_subcommand("update", "Update submodules");
@@ -409,7 +400,7 @@ void RegisterSubmodule(CLI::App& InApp) {
     auto* updateDryRun = new bool{false};
     auto* updatePath = new std::string{};
     update->add_flag("--native", *updateNative, "Use native git submodule update implementation (default)");
-    update->add_flag("--shell", *updateShell, "Use shell fallback implementation");
+    update->add_flag("--shell", *updateShell, "Deprecated compatibility flag (shell path removed)");
     update->add_flag("--recursive", *updateRecursive, "Update recursively");
     update->add_flag("--remote", *updateRemote, "Update to latest remote tracked commit");
     update->add_flag("--dry-run", *updateDryRun, "Preview mode");
@@ -419,28 +410,12 @@ void RegisterSubmodule(CLI::App& InApp) {
             std::cerr << "Error: --shell cannot be combined with --native\n";
             std::exit(1);
         }
-        if (!*updateShell) {
-            const auto gitArgs = BuildGitSubmoduleArgs("update", *updateRecursive, *updateRemote, *updatePath, "--init");
-            std::exit(RunNativeSubmodule(gitArgs, *updateDryRun, "Updating submodules..."));
+        if (*updateShell) {
+            std::cerr << "Error: --shell is no longer supported; submodule update is fully native now\n";
+            std::exit(2);
         }
-
-        auto extras = update->remaining();
-        std::vector<std::string> args;
-        if (*updateRecursive) {
-            args.push_back("--recursive");
-        }
-        if (*updateRemote) {
-            args.push_back("--remote");
-        }
-        if (*updateDryRun) {
-            args.push_back("--dry-run");
-        }
-        if (!updatePath->empty()) {
-            args.push_back(*updatePath);
-        }
-        args.insert(args.end(), extras.begin(), extras.end());
-        auto result = shell::ExecuteScript("submodules/update-submodules.sh", args);
-        std::exit(result.exitCode);
+        const auto gitArgs = BuildGitSubmoduleArgs("update", *updateRecursive, *updateRemote, *updatePath, "--init");
+        std::exit(RunNativeSubmodule(gitArgs, *updateDryRun, "Updating submodules..."));
     });
 
     auto* remove = cmd->add_subcommand("remove", "Remove a submodule");
@@ -450,7 +425,7 @@ void RegisterSubmodule(CLI::App& InApp) {
     auto* removeDryRun = new bool{false};
     auto* removePath = new std::string{};
     remove->add_flag("--native", *removeNative, "Use native submodule remove implementation (default)");
-    remove->add_flag("--shell", *removeShell, "Use shell fallback implementation");
+    remove->add_flag("--shell", *removeShell, "Deprecated compatibility flag (shell path removed)");
     remove->add_flag("--dry-run", *removeDryRun, "Preview mode");
     remove->add_option("path", *removePath, "Submodule path to remove");
     remove->callback([=]() {
@@ -458,32 +433,23 @@ void RegisterSubmodule(CLI::App& InApp) {
             std::cerr << "Error: --shell cannot be combined with --native\n";
             std::exit(1);
         }
+        if (*removeShell) {
+            std::cerr << "Error: --shell is no longer supported; submodule remove is fully native now\n";
+            std::exit(2);
+        }
 
         auto extras = remove->remaining();
-        if (!*removeShell) {
-            std::string targetPath = *removePath;
-            if (targetPath.empty() && !extras.empty()) {
-                targetPath = extras.front();
-                extras.erase(extras.begin());
-            }
-            if (!extras.empty()) {
-                std::cerr << "Error: Too many arguments\n";
-                std::exit(1);
-            }
-
-            std::exit(RunNativeRemoveSubmodule(targetPath, *removeDryRun));
+        std::string targetPath = *removePath;
+        if (targetPath.empty() && !extras.empty()) {
+            targetPath = extras.front();
+            extras.erase(extras.begin());
+        }
+        if (!extras.empty()) {
+            std::cerr << "Error: Too many arguments\n";
+            std::exit(1);
         }
 
-        std::vector<std::string> args;
-        if (!removePath->empty()) {
-            args.push_back(*removePath);
-        }
-        if (*removeDryRun) {
-            args.push_back("--dry-run");
-        }
-        args.insert(args.end(), extras.begin(), extras.end());
-        auto result = shell::ExecuteScript("submodules/remove-submodule.sh", args);
-        std::exit(result.exitCode);
+        std::exit(RunNativeRemoveSubmodule(targetPath, *removeDryRun));
     });
 
     auto* foreach = cmd->add_subcommand("foreach", "Run command on each submodule");
@@ -494,7 +460,7 @@ void RegisterSubmodule(CLI::App& InApp) {
     auto* foreachDryRun = new bool{false};
     auto* foreachCommand = new std::string{};
     foreach->add_flag("--native", *foreachNative, "Use native git submodule foreach implementation (default)");
-    foreach->add_flag("--shell", *foreachShell, "Use shell fallback implementation");
+    foreach->add_flag("--shell", *foreachShell, "Deprecated compatibility flag (shell path removed)");
     foreach->add_flag("--recursive", *foreachRecursive, "Execute recursively");
     foreach->add_flag("--dry-run", *foreachDryRun, "Preview mode");
     foreach->add_option("--command", *foreachCommand, "Command to execute in each submodule");
@@ -504,47 +470,34 @@ void RegisterSubmodule(CLI::App& InApp) {
             std::cerr << "Error: --shell cannot be combined with --native\n";
             std::exit(1);
         }
-        if (!*foreachShell) {
-            auto extras = foreach->remaining();
-            std::string command = *foreachCommand;
-            if (command.empty() && !extras.empty()) {
-                command = extras.front();
-                extras.erase(extras.begin());
+        if (*foreachShell) {
+            std::cerr << "Error: --shell is no longer supported; submodule foreach is fully native now\n";
+            std::exit(2);
+        }
+        auto extras = foreach->remaining();
+        std::string command = *foreachCommand;
+        if (command.empty() && !extras.empty()) {
+            command = extras.front();
+            extras.erase(extras.begin());
+        }
+        if (!extras.empty()) {
+            if (!command.empty()) {
+                command += " ";
             }
-            if (!extras.empty()) {
-                if (!command.empty()) {
+            for (std::size_t i = 0; i < extras.size(); ++i) {
+                if (i > 0) {
                     command += " ";
                 }
-                for (std::size_t i = 0; i < extras.size(); ++i) {
-                    if (i > 0) {
-                        command += " ";
-                    }
-                    command += extras[i];
-                }
+                command += extras[i];
             }
-            if (command.empty()) {
-                std::cerr << "Error: command is required\n";
-                std::exit(1);
-            }
-
-            const auto gitArgs = BuildGitSubmoduleArgs("foreach", *foreachRecursive, false, {}, command);
-            std::exit(RunNativeSubmodule(gitArgs, *foreachDryRun, "Executing command in submodules..."));
+        }
+        if (command.empty()) {
+            std::cerr << "Error: command is required\n";
+            std::exit(1);
         }
 
-        auto extras = foreach->remaining();
-        std::vector<std::string> args;
-        if (*foreachRecursive) {
-            args.push_back("--recursive");
-        }
-        if (*foreachDryRun) {
-            args.push_back("--dry-run");
-        }
-        if (!foreachCommand->empty()) {
-            args.push_back(*foreachCommand);
-        }
-        args.insert(args.end(), extras.begin(), extras.end());
-        auto result = shell::ExecuteScript("submodules/foreach-submodule.sh", args);
-        std::exit(result.exitCode);
+        const auto gitArgs = BuildGitSubmoduleArgs("foreach", *foreachRecursive, false, {}, command);
+        std::exit(RunNativeSubmodule(gitArgs, *foreachDryRun, "Executing command in submodules..."));
     });
 
     auto* sync_urls = cmd->add_subcommand("sync-urls", "Sync submodule URLs from .gitmodules");
@@ -556,7 +509,7 @@ void RegisterSubmodule(CLI::App& InApp) {
     auto* syncUrlsNoRecursive = new bool{false};
     auto* syncUrlsNoOrigin = new bool{false};
     sync_urls->add_flag("--native", *syncUrlsNative, "Use native sync-urls implementation (default)");
-    sync_urls->add_flag("--shell", *syncUrlsShell, "Use shell fallback implementation");
+    sync_urls->add_flag("--shell", *syncUrlsShell, "Deprecated compatibility flag (shell path removed)");
     sync_urls->add_flag("--dry-run", *syncUrlsDryRun, "Preview mode");
     sync_urls->add_flag("--init-missing", *syncUrlsInitMissing, "Initialize missing submodules before syncing");
     sync_urls->add_flag("--no-recursive", *syncUrlsNoRecursive, "Disable recursive submodule sync");
@@ -566,43 +519,27 @@ void RegisterSubmodule(CLI::App& InApp) {
             std::cerr << "Error: --shell cannot be combined with --native\n";
             std::exit(1);
         }
+        if (*syncUrlsShell) {
+            std::cerr << "Error: --shell is no longer supported; submodule sync-urls is fully native now\n";
+            std::exit(2);
+        }
 
-        if (!*syncUrlsShell) {
-            const auto extras = sync_urls->remaining();
-            if (!extras.empty()) {
-                std::cerr << "Error: unknown arguments for native sync-urls:";
-                for (const auto& extra : extras) {
-                    std::cerr << " " << extra;
-                }
-                std::cerr << "\n";
-                std::exit(1);
+        const auto extras = sync_urls->remaining();
+        if (!extras.empty()) {
+            std::cerr << "Error: unknown arguments for native sync-urls:";
+            for (const auto& extra : extras) {
+                std::cerr << " " << extra;
             }
-
-            std::exit(RunNativeSyncUrls(
-                *syncUrlsDryRun,
-                *syncUrlsInitMissing,
-                *syncUrlsNoRecursive,
-                *syncUrlsNoOrigin
-            ));
+            std::cerr << "\n";
+            std::exit(1);
         }
 
-        auto extras = sync_urls->remaining();
-        std::vector<std::string> args;
-        if (*syncUrlsDryRun) {
-            args.push_back("--dry-run");
-        }
-        if (*syncUrlsInitMissing) {
-            args.push_back("--init-missing");
-        }
-        if (*syncUrlsNoRecursive) {
-            args.push_back("--no-recursive");
-        }
-        if (*syncUrlsNoOrigin) {
-            args.push_back("--no-origin");
-        }
-        args.insert(args.end(), extras.begin(), extras.end());
-        auto result = shell::ExecuteScript("submodules/sync-urls.sh", args);
-        std::exit(result.exitCode);
+        std::exit(RunNativeSyncUrls(
+            *syncUrlsDryRun,
+            *syncUrlsInitMissing,
+            *syncUrlsNoRecursive,
+            *syncUrlsNoOrigin
+        ));
     });
 }
 

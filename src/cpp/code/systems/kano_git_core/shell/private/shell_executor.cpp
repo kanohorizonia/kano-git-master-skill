@@ -208,34 +208,16 @@ auto ExecuteScript(
     std::optional<std::filesystem::path> InWorkingDir
 ) -> ExecResult
 {
-    auto scripts_dir = GetScriptsDir();
-    auto script_path = scripts_dir / InRelativeScript;
+    (void)InArgs;
+    (void)InMode;
+    (void)InWorkingDir;
 
-    if (!std::filesystem::exists(script_path)) {
-        return ExecResult{
-            .exitCode = 127,
-            .stderrStr = std::format("Script not found: {}", script_path.string())
-        };
-    }
-
-#ifdef KOG_PLATFORM_WINDOWS
-    // On Windows, use Git Bash to run shell scripts
-    std::string bash = "bash";
-    if (auto* git_bash = std::getenv("GIT_BASH_PATH")) {
-        bash = git_bash;
-    }
-    auto cmd = BuildCommandLine(
-        std::format("{} \"{}\"", bash, script_path.string()),
-        InArgs
-    );
-#else
-    auto cmd = BuildCommandLine(
-        std::format("bash \"{}\"", script_path.string()),
-        InArgs
-    );
-#endif
-
-    return RunProcess(cmd, InMode, InWorkingDir);
+    return ExecResult{
+        .exitCode = 78,
+        .stderrStr = std::format(
+            "Shell execution is disabled in strict native-only mode: {}",
+            std::string(InRelativeScript))
+    };
 }
 
 auto ExecuteCommand(
