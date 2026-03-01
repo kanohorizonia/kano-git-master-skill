@@ -104,13 +104,69 @@ std::string RenderPowerShellScript() {
 )POWERSHELL";
 }
 
+std::string RenderGitBashEnhancerScript() {
+        return R"BASH(# kano-git enhancer for native git completion (bash)
+# Usage:
+#   source <(kano-git completion git-bash)
+# Requires git's own completion (_git) to be already loaded.
+
+_kano_git_config_keys="kano.cache.global-dir kano.cache.local-dir"
+
+_kano_git_enhance_git_config_completion() {
+    local cur prev
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+
+    if [[ ${#COMP_WORDS[@]} -lt 2 || "${COMP_WORDS[1]}" != "config" ]]; then
+        return 1
+    fi
+
+    case "$prev" in
+        config|--global|--local|--system)
+            COMPREPLY=($(compgen -W "$_kano_git_config_keys" -- "$cur"))
+            return 0
+            ;;
+    esac
+
+    case "$cur" in
+        kano.*|kano*|ka*)
+            COMPREPLY=($(compgen -W "$_kano_git_config_keys" -- "$cur"))
+            return 0
+            ;;
+    esac
+
+    return 1
+}
+
+_kano_git_wrap_existing_git_completion() {
+    local old_func
+    old_func="$1"
+
+    _kano_git_git_complete_wrapper() {
+        if _kano_git_enhance_git_config_completion; then
+            return 0
+        fi
+        "$old_func"
+    }
+
+    complete -o bashdefault -o default -F _kano_git_git_complete_wrapper git
+}
+
+if declare -F _git >/dev/null 2>&1; then
+    _kano_git_wrap_existing_git_completion _git
+else
+    complete -o bashdefault -o default -F _kano_git_enhance_git_config_completion git
+fi
+)BASH";
+}
+
 } // namespace
 
 void RegisterCompletion(CLI::App& InApp) {
     auto* cmd = InApp.add_subcommand("completion", "Generate shell completion script");
 
     auto shell = std::make_shared<std::string>();
-    cmd->add_option("shell", *shell, "Target shell: bash|zsh|fish|powershell")->required();
+    cmd->add_option("shell", *shell, "Target shell: bash|zsh|fish|powershell|git-bash")->required();
 
     cmd->callback([shell]() {
         if (*shell == "bash") {
@@ -129,9 +185,13 @@ void RegisterCompletion(CLI::App& InApp) {
             std::cout << RenderPowerShellScript();
             return;
         }
+        if (*shell == "git-bash") {
+            std::cout << RenderGitBashEnhancerScript();
+            return;
+        }
 
         std::cerr << "Unsupported shell: " << *shell
-                  << " (expected: bash|zsh|fish|powershell)\n";
+                  << " (expected: bash|zsh|fish|powershell|git-bash)\n";
         throw CLI::RuntimeError(2);
     });
 }

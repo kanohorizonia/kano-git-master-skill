@@ -6,6 +6,7 @@ namespace kano::git::commands {
 void RegisterAll(CLI::App& InApp);
 
 void RegisterVersion(CLI::App& InApp);
+void RegisterCache(CLI::App& InApp);
 void RegisterMeta(CLI::App& InApp);
 void RegisterComplete(CLI::App& InApp);
 void RegisterCompletion(CLI::App& InApp);
@@ -13,6 +14,7 @@ void RegisterGuide(CLI::App& InApp);
 void RegisterStatus(CLI::App& InApp);
 void RegisterTui(CLI::App& InApp);
 void RegisterCommit(CLI::App& InApp);
+void RegisterAmend(CLI::App& InApp);
 void RegisterResolve(CLI::App& InApp);
 void RegisterSync(CLI::App& InApp);
 void RegisterPush(CLI::App& InApp);

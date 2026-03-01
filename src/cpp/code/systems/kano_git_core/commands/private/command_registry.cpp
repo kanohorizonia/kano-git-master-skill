@@ -5,37 +5,30 @@
 namespace kano::git::commands {
 
 void RegisterAll(CLI::App& InApp) {
-    RegisterVersion(InApp);
-    RegisterMeta(InApp);
+    // Top-level commands sorted A-Z for predictable help output
+    RegisterAmend(InApp);
+    RegisterBranch(InApp);
+    RegisterCache(InApp);
+    RegisterClone(InApp);
+    RegisterCommit(InApp);
     RegisterComplete(InApp);
     RegisterCompletion(InApp);
-    RegisterGuide(InApp);
-    RegisterStatus(InApp);
-    RegisterTui(InApp);
-
-    // Smart tools (AI-powered)
-    RegisterCommit(InApp);
-    RegisterResolve(InApp);
-    RegisterSync(InApp);
-    RegisterPush(InApp);
-
-    // Repository structure
-    RegisterWorktree(InApp);
-    RegisterSubtree(InApp);
-    RegisterSubmodule(InApp);
-    RegisterScalar(InApp);
-
-    // VCS bridges
-    RegisterP4(InApp);
-    RegisterSvn(InApp);
-
-    // Branch & workspace operations
-    RegisterBranch(InApp);
-    RegisterWorkspace(InApp);
-
-    // Utilities
-    RegisterClone(InApp);
     RegisterDoctor(InApp);
+    RegisterGuide(InApp);
+    RegisterMeta(InApp);
+    RegisterP4(InApp);
+    RegisterPush(InApp);
+    RegisterResolve(InApp);
+    RegisterScalar(InApp);
+    RegisterStatus(InApp);
+    RegisterSubmodule(InApp);
+    RegisterSubtree(InApp);
+    RegisterSvn(InApp);
+    RegisterSync(InApp);
+    RegisterTui(InApp);
+    RegisterVersion(InApp);
+    RegisterWorkspace(InApp);
+    RegisterWorktree(InApp);
 }
 
 } // namespace kano::git::commands

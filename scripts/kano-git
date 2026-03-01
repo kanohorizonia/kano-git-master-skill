@@ -4,6 +4,553 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+LAUNCHER_STATE_DIR="$PROJECT_ROOT/.kano/launcher"
+REBUILD_DIRECTION="unknown"
+REBUILD_REASON=""
+
+is_interactive_terminal() {
+  [[ -t 0 && -t 1 ]]
+}
+
+ensure_launcher_state_dir() {
+  mkdir -p "$LAUNCHER_STATE_DIR"
+}
+
+state_file_for() {
+  local name="$1"
+  printf '%s/%s\n' "$LAUNCHER_STATE_DIR" "$name"
+}
+
+file_mtime_epoch() {
+  local file="$1"
+  if [[ ! -e "$file" ]]; then
+    printf '%s\n' "0"
+    return 0
+  fi
+
+  if stat -c %Y "$file" >/dev/null 2>&1; then
+    stat -c %Y "$file"
+    return 0
+  fi
+
+  if stat -f %m "$file" >/dev/null 2>&1; then
+    stat -f %m "$file"
+    return 0
+  fi
+
+  printf '%s\n' "0"
+}
+
+current_epoch() {
+  date +%s 2>/dev/null || printf '%s\n' "0"
+}
+
+should_run_interval_check() {
+  local stamp_file="$1"
+  local interval_seconds="$2"
+  local now last delta
+
+  if [[ "$interval_seconds" -le 0 ]]; then
+    return 0
+  fi
+
+  now="$(current_epoch)"
+  last="$(file_mtime_epoch "$stamp_file")"
+  if [[ "$last" -le 0 ]]; then
+    return 0
+  fi
+
+  delta=$((now - last))
+  [[ "$delta" -ge "$interval_seconds" ]]
+}
+
+touch_stamp_file() {
+  local stamp_file="$1"
+  ensure_launcher_state_dir
+  : > "$stamp_file"
+}
+
+log_launcher_status() {
+  local step="$1"
+  local status="$2"
+  local message="${3:-}"
+
+  if [[ -n "$message" ]]; then
+    echo "[launcher][$step][$status] $message" >&2
+  else
+    echo "[launcher][$step][$status]" >&2
+  fi
+}
+
+run_with_progress() {
+  local label="$1"
+  shift
+
+  local interval pid start now elapsed
+  interval="${KANO_GIT_PROGRESS_INTERVAL_SECONDS:-10}"
+  if [[ ! "$interval" =~ ^[0-9]+$ || "$interval" -le 0 ]]; then
+    interval=10
+  fi
+
+  if [[ "${KANO_GIT_PROGRESS_HEARTBEAT:-1}" == "1" && -t 1 ]]; then
+    "$@" &
+    pid=$!
+    start="$(current_epoch)"
+    while kill -0 "$pid" 2>/dev/null; do
+      sleep "$interval"
+      if ! kill -0 "$pid" 2>/dev/null; then
+        break
+      fi
+      now="$(current_epoch)"
+      elapsed=$((now - start))
+      log_launcher_status "$label" "running" "elapsed=${elapsed}s"
+    done
+    wait "$pid"
+    return $?
+  fi
+
+  "$@"
+}
+
+maybe_prompt_yes_no() {
+  local prompt="$1"
+  local answer
+
+  if ! is_interactive_terminal; then
+    return 1
+  fi
+
+  read -r -p "$prompt [y/N]: " answer
+  case "${answer,,}" in
+    y|yes) return 0 ;;
+  esac
+  return 1
+}
+
+normalize_launcher_args() {
+  local -n out_ref="$1"
+  shift
+
+  out_ref=()
+  if [[ "$#" -eq 0 ]]; then
+    return 0
+  fi
+
+  local command="$1"
+  if [[ "$command" != "commit" && "$command" != "amend" ]]; then
+    out_ref=("$@")
+    return 0
+  fi
+
+  local token
+  for token in "$@"; do
+    case "$token" in
+      -ai)
+        out_ref+=("--ai-auto")
+        ;;
+      *)
+        out_ref+=("$token")
+        ;;
+    esac
+  done
+}
+
+clean_native_build_artifacts() {
+  local preset
+  local base_build="$PROJECT_ROOT/src/cpp/build"
+
+  while IFS= read -r preset; do
+    [[ -z "$preset" ]] && continue
+    rm -rf "$base_build/_intermediate/$preset"
+    rm -rf "$base_build/bin/$preset"
+    rm -rf "$base_build/lib/$preset"
+  done < <(candidate_presets)
+
+  rm -rf "$base_build/release"
+  rm -rf "$base_build/debug"
+}
+
+run_native_build_mode() {
+  local mode="$1"
+  local prereq_script build_script
+
+  if ! mapfile -t _scripts < <(script_paths); then
+    echo "Error: no native build scripts for platform $(platform_name) ($(arch_name))." >&2
+    return 1
+  fi
+
+  prereq_script="${_scripts[0]:-}"
+  build_script="${_scripts[1]:-}"
+  if [[ -z "$prereq_script" || -z "$build_script" ]]; then
+    echo "Error: missing native build script mapping for this platform." >&2
+    return 1
+  fi
+
+  case "$mode" in
+    incremental)
+      log_launcher_status "build-native" "start" "mode=incremental"
+      ;;
+    full)
+      log_launcher_status "build-native" "start" "mode=full"
+      log_launcher_status "build-native" "step" "clean-artifacts"
+      clean_native_build_artifacts
+      ;;
+    *)
+      echo "Error: unsupported build mode: $mode (expected: incremental|full)" >&2
+      return 2
+      ;;
+  esac
+
+  if run_shell_script "$build_script"; then
+    log_launcher_status "build-native" "ok" "build completed"
+  else
+    log_launcher_status "build-native" "step" "install-prerequisites"
+    run_shell_script "$prereq_script" || {
+      log_launcher_status "build-native" "fail" "prerequisite install failed"
+      return 1
+    }
+    run_shell_script "$build_script" || {
+      log_launcher_status "build-native" "fail" "build failed after prerequisite install"
+      return 1
+    }
+    log_launcher_status "build-native" "ok" "build completed after prerequisite install"
+  fi
+
+  local binary
+  binary="$(find_binary || true)"
+  if [[ -n "$binary" && -f "$binary" ]]; then
+    echo "Native binary ready: $binary"
+    return 0
+  fi
+
+  echo "Warning: build finished but binary path could not be resolved." >&2
+  return 1
+}
+
+maybe_handle_launcher_build_request() {
+  if [[ "$#" -eq 0 ]]; then
+    return 1
+  fi
+
+  local first="$1"
+  local mode=""
+
+  case "$first" in
+    build)
+      mode="incremental"
+      ;;
+    rebuild)
+      mode="full"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+
+  if (( $# > 1 )); then
+    echo "Warning: extra arguments after $first are ignored." >&2
+  fi
+
+  run_native_build_mode "$mode"
+  return $?
+}
+
+safe_branch_name() {
+  local value="$1"
+  value="${value//$'\n'/}"
+  value="${value//$'\r'/}"
+  printf '%s\n' "$value"
+}
+
+detect_remote_default_branch() {
+  local repo="$1"
+  local remote="$2"
+  local head_ref branch
+
+  head_ref="$(git -C "$repo" symbolic-ref --quiet "refs/remotes/$remote/HEAD" 2>/dev/null || true)"
+  if [[ -n "$head_ref" ]]; then
+    branch="${head_ref#refs/remotes/$remote/}"
+    if [[ -n "$branch" ]]; then
+      printf '%s\n' "$branch"
+      return 0
+    fi
+  fi
+
+  for branch in main master dev develop trunk; do
+    if git -C "$repo" show-ref --verify --quiet "refs/remotes/$remote/$branch" 2>/dev/null; then
+      printf '%s\n' "$branch"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+current_git_hash_short() {
+  git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || true
+}
+
+current_git_branch() {
+  git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || true
+}
+
+current_git_revision() {
+  git -C "$PROJECT_ROOT" rev-list --count --first-parent HEAD 2>/dev/null || true
+}
+
+is_non_negative_integer() {
+  local value="$1"
+  [[ "$value" =~ ^[0-9]+$ ]]
+}
+
+binary_build_info() {
+  local binary="$1"
+  KANO_GIT_MASTER_ROOT="${KANO_GIT_MASTER_ROOT:-$PROJECT_ROOT}" "$binary" version 2>/dev/null || true
+}
+
+build_info_field() {
+  local info="$1"
+  local field="$2"
+  printf '%s\n' "$info" | tr ' ' '\n' | awk -F= -v key="$field" '$1==key {print $2; exit}'
+}
+
+binary_build_hash_short() {
+  local binary="$1"
+  local output
+
+  output="$(binary_build_info "$binary")"
+  if [[ "$output" =~ hash_short=([^[:space:]]+) ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+    return 0
+  fi
+
+  printf '%s\n' ""
+}
+
+should_rebuild_native_binary() {
+  local binary="$1"
+  local build_hash git_hash build_branch git_branch build_revision git_revision
+  local build_info direction_text
+  local version_file cmake_file preset_file
+
+  REBUILD_DIRECTION="unknown"
+  REBUILD_REASON=""
+
+  if [[ ! -f "$binary" ]]; then
+    REBUILD_REASON="binary missing"
+    return 0
+  fi
+
+  build_info="$(binary_build_info "$binary")"
+  git_hash="$(current_git_hash_short)"
+  git_branch="$(current_git_branch)"
+  git_revision="$(current_git_revision)"
+
+  build_hash="$(build_info_field "$build_info" "hash_short")"
+  build_branch="$(build_info_field "$build_info" "branch")"
+  build_revision="$(build_info_field "$build_info" "rev")"
+
+  direction_text="unknown"
+  if is_non_negative_integer "$git_revision" && is_non_negative_integer "$build_revision"; then
+    if (( git_revision > build_revision )); then
+      REBUILD_DIRECTION="upgrade"
+      direction_text="upgrade"
+    elif (( git_revision < build_revision )); then
+      REBUILD_DIRECTION="downgrade"
+      direction_text="downgrade"
+    else
+      REBUILD_DIRECTION="same-revision"
+      direction_text="same-revision"
+    fi
+  fi
+
+  if [[ -n "$git_hash" && -n "$build_hash" && "$build_hash" != "unknown" && "$git_hash" != "$build_hash" ]]; then
+    REBUILD_REASON="hash mismatch: binary(branch=${build_branch:-unknown}, rev=${build_revision:-unknown}, hash=${build_hash:-unknown}) vs git(branch=${git_branch:-unknown}, rev=${git_revision:-unknown}, hash=${git_hash:-unknown}), direction=$direction_text"
+    return 0
+  fi
+
+  version_file="$PROJECT_ROOT/VERSION"
+  cmake_file="$PROJECT_ROOT/src/cpp/CMakeLists.txt"
+  preset_file="$PROJECT_ROOT/src/cpp/CMakePresets.json"
+
+  if [[ -f "$version_file" && "$version_file" -nt "$binary" ]]; then
+    REBUILD_REASON="VERSION file is newer than binary"
+    return 0
+  fi
+
+  if [[ -f "$cmake_file" && "$cmake_file" -nt "$binary" ]]; then
+    REBUILD_REASON="CMakeLists changed after binary build"
+    return 0
+  fi
+
+  if [[ -f "$preset_file" && "$preset_file" -nt "$binary" ]]; then
+    REBUILD_REASON="CMakePresets changed after binary build"
+    return 0
+  fi
+
+  return 1
+}
+
+maybe_rebuild_binary_if_needed() {
+  local binary="$1"
+  local rebuilt_binary
+  local allow_noninteractive_downgrade="${KANO_GIT_ALLOW_NONINTERACTIVE_DOWNGRADE_REBUILD:-0}"
+
+  if should_rebuild_native_binary "$binary"; then
+    if [[ "$REBUILD_DIRECTION" == "downgrade" ]]; then
+      if ! is_interactive_terminal; then
+        if [[ "$allow_noninteractive_downgrade" != "1" ]]; then
+          printf '%s\n' "$binary"
+          return 0
+        fi
+        echo "Detected downgrade rebuild in non-interactive mode; override enabled, proceeding with rebuild." >&2
+      fi
+      if ! maybe_prompt_yes_no "Detected downgrade rebuild. $REBUILD_REASON Proceed with downgrade rebuild?"; then
+        echo "User declined downgrade rebuild; keep current binary." >&2
+        printf '%s\n' "$binary"
+        return 0
+      fi
+    fi
+
+    if [[ -n "$REBUILD_REASON" ]]; then
+      echo "$REBUILD_REASON" >&2
+    fi
+    echo "Detected stale C++ binary; triggering rebuild..." >&2
+    if try_auto_prepare_binary; then
+      rebuilt_binary="$(find_binary || true)"
+      if [[ -n "$rebuilt_binary" && -f "$rebuilt_binary" ]]; then
+        printf '%s\n' "$rebuilt_binary"
+        return 0
+      fi
+      echo "Rebuild completed but no binary path was resolved." >&2
+    fi
+
+    if [[ -n "$binary" && -f "$binary" ]]; then
+      printf '%s\n' "$binary"
+      return 0
+    fi
+    return 1
+  fi
+
+  if [[ -z "$binary" || ! -f "$binary" ]]; then
+    return 1
+  fi
+
+  printf '%s\n' "$binary"
+}
+
+should_skip_update_prompt_for_command() {
+  local command="${1:-}"
+  case "$command" in
+    ""|help|-h|--help|-v|--version|version|completion|complete|__complete|sync|tui)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+run_dev_mode_update_flow() {
+  local preferred_remote branch ahead_count sync_script
+
+  if ! is_interactive_terminal; then
+    return 0
+  fi
+
+  preferred_remote="upstream"
+  if ! git -C "$PROJECT_ROOT" remote get-url "$preferred_remote" >/dev/null 2>&1; then
+    preferred_remote="origin"
+  fi
+  if ! git -C "$PROJECT_ROOT" remote get-url "$preferred_remote" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  echo "[launcher] Checking remote updates from $preferred_remote..." >&2
+  git -C "$PROJECT_ROOT" fetch "$preferred_remote" --prune >/dev/null 2>&1 || true
+
+  branch="$(detect_remote_default_branch "$PROJECT_ROOT" "$preferred_remote" || true)"
+  branch="$(safe_branch_name "$branch")"
+  if [[ -z "$branch" ]]; then
+    branch="$(safe_branch_name "$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || true)")"
+  fi
+  [[ -z "$branch" ]] && return 0
+
+  ahead_count="$(git -C "$PROJECT_ROOT" rev-list --count "HEAD..$preferred_remote/$branch" 2>/dev/null || printf '0')"
+  if [[ ! "$ahead_count" =~ ^[0-9]+$ || "$ahead_count" -le 0 ]]; then
+    return 0
+  fi
+
+  if maybe_prompt_yes_no "[launcher] Found $ahead_count upstream commit(s) on $preferred_remote/$branch. Run sync now?"; then
+    sync_script="$PROJECT_ROOT/src/shell/commit-tools/sync/smart-sync-origin-latest.sh"
+    if [[ -f "$sync_script" ]]; then
+      run_shell_script "$sync_script" --repo "$PROJECT_ROOT" --remote "$preferred_remote" || true
+    fi
+  fi
+}
+
+run_package_mode_update_flow() {
+  local interval stamp_file latest_version current_version check_cmd update_cmd
+
+  if ! is_interactive_terminal; then
+    return 0
+  fi
+
+  interval="${KANO_GIT_PACKAGE_UPDATE_CHECK_INTERVAL_SECONDS:-21600}"
+  if [[ ! "$interval" =~ ^[0-9]+$ ]]; then
+    interval=21600
+  fi
+
+  stamp_file="$(state_file_for package-update-check.stamp)"
+  if ! should_run_interval_check "$stamp_file" "$interval"; then
+    return 0
+  fi
+
+  touch_stamp_file "$stamp_file"
+
+  check_cmd="${KANO_GIT_PACKAGE_VERSION_CHECK_CMD:-}"
+  [[ -z "$check_cmd" ]] && return 0
+
+  latest_version="$(bash -lc "$check_cmd" 2>/dev/null | tr -d '\r\n' || true)"
+  [[ -z "$latest_version" ]] && return 0
+
+  current_version="$(tr -d '\r\n' < "$PROJECT_ROOT/VERSION" 2>/dev/null || echo "unknown")"
+  if [[ "$latest_version" == "$current_version" ]]; then
+    return 0
+  fi
+
+  if maybe_prompt_yes_no "[launcher] New package version available ($current_version -> $latest_version). Update now?"; then
+    update_cmd="${KANO_GIT_PACKAGE_UPDATE_CMD:-}"
+    if [[ -z "$update_cmd" ]]; then
+      echo "[launcher] Set KANO_GIT_PACKAGE_UPDATE_CMD to enable one-click package updates." >&2
+      return 0
+    fi
+    run_with_progress "package update" bash -lc "$update_cmd" || true
+  fi
+}
+
+maybe_run_launcher_update_flow() {
+  local command="${1:-}"
+
+  if [[ "${KANO_GIT_AUTO_UPDATE_CHECK:-1}" != "1" ]]; then
+    return 0
+  fi
+
+  if [[ "${KANO_AGENT_MODE:-0}" == "1" ]]; then
+    return 0
+  fi
+
+  if should_skip_update_prompt_for_command "$command"; then
+    return 0
+  fi
+
+  if is_packaged_install; then
+    run_package_mode_update_flow
+    return 0
+  fi
+
+  if git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    run_dev_mode_update_flow
+  fi
+}
 
 platform_name() {
   local os_name
@@ -78,7 +625,7 @@ candidate_presets() {
 }
 
 find_binary() {
-  local exe_name build_dir candidate preset
+  local exe_name build_dir candidate preset resolved_path resolved_dir
   exe_name="$(binary_name)"
   build_dir="$PROJECT_ROOT/src/cpp/build"
 
@@ -113,8 +660,15 @@ find_binary() {
   [[ -f "$candidate" ]] && { printf '%s\n' "$candidate"; return 0; }
 
   if command -v kano-git >/dev/null 2>&1; then
-    command -v kano-git
-    return 0
+    resolved_path="$(command -v kano-git)"
+    if [[ -n "$resolved_path" ]]; then
+      resolved_dir="$(cd "$(dirname "$resolved_path")" && pwd)"
+      resolved_path="$resolved_dir/$(basename "$resolved_path")"
+      if [[ "$resolved_path" != "$SCRIPT_DIR/kano-git" ]]; then
+        printf '%s\n' "$resolved_path"
+        return 0
+      fi
+    fi
   fi
 
   return 1
@@ -170,8 +724,9 @@ is_packaged_install() {
 }
 
 run_shell_script() {
-  local script bash_path
+  local script bash_path start end elapsed
   script="$1"
+  shift || true
   if ! bash_path="$(find_bash)"; then
     echo "Warning: bash not found; cannot run shell script automation." >&2
     return 1
@@ -180,11 +735,25 @@ run_shell_script() {
     echo "Warning: script not found: $script" >&2
     return 1
   fi
-  KANO_GIT_MASTER_ROOT="${KANO_GIT_MASTER_ROOT:-$PROJECT_ROOT}" "$bash_path" "$script"
+
+  start="$(current_epoch)"
+  log_launcher_status "$(basename "$script")" "start" "args=$*"
+  if run_with_progress "$(basename "$script")" env KANO_GIT_MASTER_ROOT="${KANO_GIT_MASTER_ROOT:-$PROJECT_ROOT}" "$bash_path" "$script" "$@"; then
+    end="$(current_epoch)"
+    elapsed=$((end - start))
+    log_launcher_status "$(basename "$script")" "ok" "elapsed=${elapsed}s"
+    return 0
+  fi
+
+  end="$(current_epoch)"
+  elapsed=$((end - start))
+  log_launcher_status "$(basename "$script")" "fail" "elapsed=${elapsed}s"
+  return 1
 }
 
 try_auto_prepare_binary() {
   local prereq_script build_script
+  local step_idx=0
   if ! mapfile -t _scripts < <(script_paths); then
     echo "Warning: no build automation scripts for platform $(platform_name) ($(arch_name))." >&2
     return 1
@@ -197,18 +766,33 @@ try_auto_prepare_binary() {
     return 1
   fi
 
-  echo "kano-git binary not found. Installing/upgrading prerequisites..." >&2
+  step_idx=$((step_idx + 1))
+  log_launcher_status "auto-prepare" "step" "${step_idx}: direct-build"
+  echo "kano-git binary not found. Attempting direct C++ build..." >&2
+  if run_shell_script "$build_script"; then
+    log_launcher_status "auto-prepare" "ok" "direct-build succeeded"
+    return 0
+  fi
+
+  step_idx=$((step_idx + 1))
+  log_launcher_status "auto-prepare" "step" "${step_idx}: prerequisite-install"
+  echo "Direct build failed. Installing/upgrading prerequisites..." >&2
   run_shell_script "$prereq_script" || {
+    log_launcher_status "auto-prepare" "fail" "prerequisite-install failed"
     echo "Warning: prerequisite installation failed." >&2
     return 1
   }
 
-  echo "Building C++ accelerated kano-git binary..." >&2
+  step_idx=$((step_idx + 1))
+  log_launcher_status "auto-prepare" "step" "${step_idx}: rebuild-after-prereq"
+  echo "Retrying C++ accelerated kano-git binary build..." >&2
   run_shell_script "$build_script" || {
-    echo "Warning: C++ binary build failed." >&2
+    log_launcher_status "auto-prepare" "fail" "rebuild-after-prereq failed"
+    echo "Warning: C++ binary build failed after prerequisite installation." >&2
     return 1
   }
 
+  log_launcher_status "auto-prepare" "ok" "binary ready"
   return 0
 }
 
@@ -336,15 +920,77 @@ should_force_shell_fallback() {
   return 1
 }
 
+print_launcher_help_extras() {
+  cat >&2 <<'EOF'
+
+Launcher commands:
+  build                               Build native binary (incremental)
+  rebuild                             Rebuild native binary (full clean rebuild)
+
+Launcher env:
+  KANO_GIT_ALLOW_NONINTERACTIVE_DOWNGRADE_REBUILD=1
+                                      Allow downgrade rebuild in non-interactive mode
+EOF
+}
+
+run_native_binary() {
+  local binary="$1"
+  shift || true
+
+  local first="${1:-}"
+  local arg_count=$#
+
+  KANO_GIT_MASTER_ROOT="${KANO_GIT_MASTER_ROOT:-$PROJECT_ROOT}" "$binary" "$@"
+  local status=$?
+
+  if [[ "$status" -eq 0 ]]; then
+    case "$first" in
+      ""|-h|--help|help)
+        if [[ "$arg_count" -le 1 ]]; then
+          print_launcher_help_extras
+        fi
+        ;;
+    esac
+  fi
+
+  return "$status"
+}
+
 main() {
   local binary marker
+  local -a args=()
+
+  normalize_launcher_args args "$@"
+
+  case "${args[0]:-}" in
+    build|rebuild)
+      maybe_handle_launcher_build_request "${args[@]}"
+      exit $?
+      ;;
+  esac
+
+  maybe_run_launcher_update_flow "${args[0]:-}"
+
   if binary="$(find_binary)"; then
-    if should_force_shell_fallback "$@"; then
-      run_shell_fallback "$@"
+    if ! binary="$(maybe_rebuild_binary_if_needed "$binary")"; then
+      binary=""
+    fi
+
+    if [[ -z "$binary" || ! -f "$binary" ]]; then
+      echo "Warning: resolved binary path is unavailable after rebuild checks; retrying auto-prepare." >&2
+      if ! is_packaged_install && try_auto_prepare_binary; then
+        binary="$(find_binary || true)"
+      fi
+    fi
+
+    if [[ -n "$binary" && -f "$binary" ]]; then
+    if should_force_shell_fallback "${args[@]}"; then
+      run_shell_fallback "${args[@]}"
       exit $?
     fi
-    KANO_GIT_MASTER_ROOT="${KANO_GIT_MASTER_ROOT:-$PROJECT_ROOT}" "$binary" "$@"
+    run_native_binary "$binary" "${args[@]}"
     exit $?
+    fi
   fi
 
   if is_packaged_install; then
@@ -355,7 +1001,7 @@ main() {
   else
     if try_auto_prepare_binary; then
       if binary="$(find_binary)"; then
-        KANO_GIT_MASTER_ROOT="${KANO_GIT_MASTER_ROOT:-$PROJECT_ROOT}" "$binary" "$@"
+        run_native_binary "$binary" "${args[@]}"
         exit $?
       fi
     fi

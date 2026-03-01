@@ -22,6 +22,7 @@ target_sources(kano_git_core
     workspace/private/native_workspace.cpp
 
     commands/private/commands/branch_cmd.cpp
+    commands/private/commands/cache_cmd.cpp
     commands/private/commands/clone_cmd.cpp
     commands/private/commands/complete_cmd.cpp
     commands/private/commands/completion_cmd.cpp

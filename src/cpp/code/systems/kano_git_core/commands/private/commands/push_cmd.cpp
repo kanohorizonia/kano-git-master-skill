@@ -3,6 +3,7 @@
 
 #include "command_registry.hpp"
 #include "shell_executor.hpp"
+#include "discovery.hpp"
 
 #include <filesystem>
 #include <future>
@@ -54,6 +55,41 @@ auto ParseReposCsv(const std::string& InCsv) -> std::vector<std::filesystem::pat
         out.emplace_back(trimmed);
     }
     return out;
+}
+
+auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<std::filesystem::path> {
+    workspace::DiscoverOptions options;
+    options.rootDir = InRoot;
+    options.maxDepth = 12;
+    options.useCache = true;
+    options.metadataLevel = "minimal";
+    options.excludePatterns = {
+        ".kano",
+        ".agents",
+        "tmp",
+        "node_modules",
+        ".cache",
+        "build",
+        "dist",
+        ".venv",
+        "venv",
+        "__pycache__",
+    };
+
+    const auto discovery = workspace::DiscoverRepos(options);
+    std::vector<std::filesystem::path> repos;
+    repos.reserve(discovery.repos.size());
+    for (const auto& repo : discovery.repos) {
+        repos.push_back(repo.path.lexically_normal());
+    }
+
+    std::sort(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
+        return A.generic_string() < B.generic_string();
+    });
+    repos.erase(std::unique(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
+        return A.generic_string() == B.generic_string();
+    }), repos.end());
+    return repos;
 }
 
 auto Ellipsize(const std::string& InValue, const std::size_t InMaxWidth) -> std::string {
@@ -415,6 +451,7 @@ void RegisterPush(CLI::App& InApp) {
     cmd->allow_extras();
 
     auto* shellMode = new bool{false};
+    auto* noRecursive = new bool{false};
     auto* repos = new std::string{};
     auto* skipSync = new bool{false};
     auto* syncOnly = new bool{false};
@@ -430,6 +467,8 @@ void RegisterPush(CLI::App& InApp) {
     auto* remote = new std::string{};
 
     cmd->add_flag("--shell", *shellMode, "Deprecated compatibility flag (shell path removed)");
+    cmd->add_flag("--no-recursive,-N", *noRecursive, "Only push current repository (disable workspace recursive discovery)");
+    cmd->add_flag("--current-only", *noRecursive, "Alias of --no-recursive (backward compatible)");
     cmd->add_option("--repos", *repos, "Repo filter (comma-separated paths, native mode)");
     cmd->add_flag("--skip-sync", *skipSync, "Skip sync step before push");
     cmd->add_flag("--sync-only", *syncOnly, "Run sync only and skip push");
@@ -465,6 +504,11 @@ void RegisterPush(CLI::App& InApp) {
         if (!repos->empty()) {
             nativeRepos = ParseReposCsv(*repos);
         }
+
+        if (nativeRepos.empty() && !*noRecursive) {
+            nativeRepos = DiscoverWorkspaceRepos(std::filesystem::current_path());
+        }
+
         if (nativeRepos.empty()) {
             nativeRepos.push_back(std::filesystem::current_path());
         }
