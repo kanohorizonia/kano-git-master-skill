@@ -5,7 +5,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-SKILL_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
+SKILL_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd -P)"
 TEMPLATES_ROOT="$SKILL_ROOT/assets/root-wrapper-templates"
 
 PROFILE="standalone"
@@ -20,16 +20,16 @@ Usage: gen-root-wrappers.sh [options]
 Options:
   --profile <standalone|oss|repo-passive-mode|repo-passive-mode-with-ai>  Template profile (default: standalone)
   --target <dir>              Target project root directory (default: current directory)
-  --force                     Overwrite existing smart-*.sh files
+  --force                     Overwrite existing wrapper files
   --dry-run                   Print planned actions without writing files
   -h, --help                  Show this help
 
 Examples:
-  ./.agents/kano/kano-git-master-skill/scripts/core/gen-root-wrappers.sh
-  ./.agents/kano/kano-git-master-skill/scripts/core/gen-root-wrappers.sh --profile oss --target /path/to/repo
-  ./.agents/kano/kano-git-master-skill/scripts/core/gen-root-wrappers.sh --profile standalone --force
-  ./.agents/kano/kano-git-master-skill/scripts/core/gen-root-wrappers.sh --profile repo-passive-mode --target .
-  ./.agents/kano/kano-git-master-skill/scripts/core/gen-root-wrappers.sh --profile repo-passive-mode-with-ai --target .
+  ./.agents/kano/kano-git-master-skill/src/shell/core/gen-root-wrappers.sh
+  ./.agents/kano/kano-git-master-skill/src/shell/core/gen-root-wrappers.sh --profile oss --target /path/to/repo
+  ./.agents/kano/kano-git-master-skill/src/shell/core/gen-root-wrappers.sh --profile standalone --force
+  ./.agents/kano/kano-git-master-skill/src/shell/core/gen-root-wrappers.sh --profile repo-passive-mode --target .
+  ./.agents/kano/kano-git-master-skill/src/shell/core/gen-root-wrappers.sh --profile repo-passive-mode-with-ai --target .
 USAGE
 }
 
@@ -99,11 +99,14 @@ fi
 
 mapfile -t template_names < <(
   {
-    find "$COMMON_DIR" -maxdepth 1 -type f -name 'smart-*.sh' -exec basename {} \;
+    find "$COMMON_DIR" -maxdepth 1 -type f -name 'kog-*.sh' -exec basename {} \;
+    find "$COMMON_DIR" -maxdepth 1 -type f -name 'kog' -exec basename {} \;
     if [[ -n "$BASE_PROFILE_DIR" ]]; then
-      find "$BASE_PROFILE_DIR" -maxdepth 1 -type f -name 'smart-*.sh' -exec basename {} \;
+      find "$BASE_PROFILE_DIR" -maxdepth 1 -type f -name 'kog-*.sh' -exec basename {} \;
+      find "$BASE_PROFILE_DIR" -maxdepth 1 -type f -name 'kog' -exec basename {} \;
     fi
-    find "$PROFILE_DIR" -maxdepth 1 -type f -name 'smart-*.sh' -exec basename {} \;
+    find "$PROFILE_DIR" -maxdepth 1 -type f -name 'kog-*.sh' -exec basename {} \;
+    find "$PROFILE_DIR" -maxdepth 1 -type f -name 'kog' -exec basename {} \;
   } | sort -u
 )
 
@@ -159,4 +162,4 @@ for name in "${template_names[@]}"; do
 done
 
 log "done copied=$copied skipped=$skipped dry_run=$DRY_RUN"
-log "note: commit wrappers include smart-commit.sh and smart-commit-with-ai-review.sh when available"
+log "note: commit wrappers default to --no-ai-review; with-ai-review wrappers opt-in explicitly"

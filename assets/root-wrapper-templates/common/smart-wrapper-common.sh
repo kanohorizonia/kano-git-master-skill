@@ -30,8 +30,35 @@ resolve_skill_script_path() {
   local root="$1"
   local rel_path="$2"
   local skill_root
+  local candidate
+  local alt
 
   skill_root="$(resolve_git_master_skill_root "$root")" || return 1
+
+  candidate="$skill_root/$rel_path"
+  if [[ -f "$candidate" ]]; then
+    printf '%s' "$candidate"
+    return 0
+  fi
+
+  if [[ "$rel_path" == scripts/* ]]; then
+    alt="${rel_path#scripts/}"
+    candidate="$skill_root/src/shell/$alt"
+    if [[ -f "$candidate" ]]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  fi
+
+  if [[ "$rel_path" == src/shell/* ]]; then
+    alt="${rel_path#src/shell/}"
+    candidate="$skill_root/scripts/$alt"
+    if [[ -f "$candidate" ]]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  fi
+
   printf '%s/%s' "$skill_root" "$rel_path"
 }
 
