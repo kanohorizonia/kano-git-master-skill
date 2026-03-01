@@ -48,6 +48,7 @@ cli/out/
 
 # Local C++ build artifacts (keep only checked-in wrappers)
 src/cpp/build/**
+!src/cpp/build/
 !src/cpp/build/script/
 !src/cpp/build/script/**
 src/cpp/compile_commands.json
