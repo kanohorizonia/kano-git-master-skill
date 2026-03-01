@@ -137,7 +137,7 @@ normalize_launcher_args() {
   fi
 
   local command="$1"
-  if [[ "$command" != "commit" && "$command" != "amend" ]]; then
+  if [[ "$command" != "commit" && "$command" != "amend" && "$command" != "commit-push" ]]; then
     out_ref=("$@")
     return 0
   fi
@@ -940,7 +940,7 @@ run_native_binary() {
   local first="${1:-}"
   local arg_count=$#
 
-  KANO_GIT_MASTER_ROOT="${KANO_GIT_MASTER_ROOT:-$PROJECT_ROOT}" "$binary" "$@"
+  KANO_GIT_MASTER_ROOT="${KANO_GIT_MASTER_ROOT:-$PROJECT_ROOT}" KANO_GIT_BINARY_PATH="$binary" "$binary" "$@"
   local status=$?
 
   if [[ "$status" -eq 0 ]]; then

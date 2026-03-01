@@ -11,6 +11,7 @@ void RegisterAll(CLI::App& InApp) {
     RegisterCache(InApp);
     RegisterClone(InApp);
     RegisterCommit(InApp);
+    RegisterCommitPush(InApp);
     RegisterComplete(InApp);
     RegisterCompletion(InApp);
     RegisterDoctor(InApp);
