@@ -30,6 +30,11 @@ int main(int InArgc, char* InArgv[]) {
         // Register all commands
         kano::git::commands::RegisterAll(app);
 
+        if (InArgc <= 1) {
+            std::cout << app.help() << std::endl;
+            return 0;
+        }
+
         char** utf8Argv = app.ensure_utf8(InArgv);
 
         app.parse(InArgc, utf8Argv);
@@ -43,9 +48,5 @@ int main(int InArgc, char* InArgv[]) {
         return 1;
     }
 
-    // If no subcommand was given, print help
-    if (app.get_subcommands().empty()) {
-        std::cout << app.help() << std::endl;
-    }
     return 0;
 }

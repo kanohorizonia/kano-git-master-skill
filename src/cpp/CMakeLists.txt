@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.28)
+cmake_minimum_required(VERSION 3.21)
 project(KanoGit DESCRIPTION "CLI" VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -90,11 +90,14 @@ add_compile_definitions(CLI11_HAS_CODECVT=0)
 set(KOG_CLI11_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/code/thirdparty/cli11")
 set(KOG_CLI11_BINARY_DIR "${CMAKE_BINARY_DIR}/thirdparty/cli11-build")
 
-find_package(CLI11 CONFIG QUIET)
 if(EXISTS "${KOG_CLI11_SOURCE_DIR}/CMakeLists.txt")
     add_subdirectory("${KOG_CLI11_SOURCE_DIR}" "${KOG_CLI11_BINARY_DIR}" EXCLUDE_FROM_ALL)
     set(cli11_SOURCE_DIR "${KOG_CLI11_SOURCE_DIR}")
-elseif(NOT CLI11_FOUND)
+else()
+    find_package(CLI11 CONFIG QUIET)
+endif()
+
+if(NOT EXISTS "${KOG_CLI11_SOURCE_DIR}/CMakeLists.txt" AND NOT CLI11_FOUND)
     include(FetchContent)
     FetchContent_Declare(
         CLI11
@@ -122,22 +125,7 @@ else()
     message(FATAL_ERROR "FTXUI vendored source not found at code/thirdparty/ftxui. Please clone fork+upstream into thirdparty first.")
 endif()
 
-# Patch CLI11 for MSVC 19.50+ (VS 2026) which removed <codecvt>
-if(DEFINED cli11_SOURCE_DIR)
-    set(_CLI11_MACROS "${cli11_SOURCE_DIR}/include/CLI/Macros.hpp")
-    if(EXISTS "${_CLI11_MACROS}")
-        file(READ "${_CLI11_MACROS}" _macros_content)
-        string(FIND "${_macros_content}" "#ifndef CLI11_HAS_CODECVT" _already_patched)
-        if(_already_patched EQUAL -1)
-            string(REPLACE
-                "/** <codecvt> availability */\n#if defined(__GNUC__) && !defined(__llvm__) && !defined(__INTEL_COMPILER) && __GNUC__ < 5\n#define CLI11_HAS_CODECVT 0\n#else\n#define CLI11_HAS_CODECVT 1\n#include <codecvt>\n#endif"
-                "/** <codecvt> availability */\n#ifndef CLI11_HAS_CODECVT\n#if defined(__GNUC__) && !defined(__llvm__) && !defined(__INTEL_COMPILER) && __GNUC__ < 5\n#define CLI11_HAS_CODECVT 0\n#elif defined(_MSC_VER) && _MSC_VER >= 1950\n#define CLI11_HAS_CODECVT 0\n#else\n#define CLI11_HAS_CODECVT 1\n#include <codecvt>\n#endif\n#endif"
-                _macros_content "${_macros_content}")
-            file(WRITE "${_CLI11_MACROS}" "${_macros_content}")
-            message(STATUS "Patched CLI11 Macros.hpp: disabled <codecvt> for MSVC 19.50+")
-        endif()
-    endif()
-endif()
+# Avoid mutating vendored sources; use compile definition only.
 
 
 # Platform detection

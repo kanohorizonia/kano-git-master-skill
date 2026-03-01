@@ -3,6 +3,7 @@
 #include "command_registry.hpp"
 
 #include <iostream>
+#include <memory>
 #include <string>
 
 namespace kano::git::commands {
@@ -13,17 +14,23 @@ std::string RenderBashScript() {
 _kano_git_complete() {
   local cur
   local context
+  local -a args
   local out
 
   cur="${COMP_WORDS[COMP_CWORD]}"
   context=()
+  args=()
 
   local i
   for ((i=1; i<COMP_CWORD; ++i)); do
     context+=("${COMP_WORDS[i]}")
   done
 
-  out="$(kano-git __complete ${context[@]/#/--context } --current "$cur" 2>/dev/null)"
+  for token in "${context[@]}"; do
+    args+=(--context "$token")
+  done
+
+  out="$(kano-git __complete "${args[@]}" --current "$cur" 2>/dev/null)"
   COMPREPLY=($(compgen -W "$out" -- "$cur"))
 }
 
@@ -102,7 +109,7 @@ std::string RenderPowerShellScript() {
 void RegisterCompletion(CLI::App& InApp) {
     auto* cmd = InApp.add_subcommand("completion", "Generate shell completion script");
 
-    auto* shell = new std::string{};
+    auto shell = std::make_shared<std::string>();
     cmd->add_option("shell", *shell, "Target shell: bash|zsh|fish|powershell")->required();
 
     cmd->callback([shell]() {
@@ -125,7 +132,7 @@ void RegisterCompletion(CLI::App& InApp) {
 
         std::cerr << "Unsupported shell: " << *shell
                   << " (expected: bash|zsh|fish|powershell)\n";
-        std::exit(2);
+        throw CLI::RuntimeError(2);
     });
 }
 

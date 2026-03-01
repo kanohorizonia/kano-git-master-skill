@@ -56,6 +56,7 @@ src/cpp/cmake_ninja_out.txt
 src/cpp/cmake_out.txt
 src/cpp/msbuild_out*.txt
 src/cpp/msbuild_final*.txt
+msbuild_out.txt
 src/cpp/ninja_build*.txt
 src/cpp/test_1444_out.txt
 src/cpp/build_ninja.bat

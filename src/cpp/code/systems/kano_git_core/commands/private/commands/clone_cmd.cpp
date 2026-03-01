@@ -4,42 +4,48 @@
 #include "command_registry.hpp"
 #include "shell_executor.hpp"
 
+#include <memory>
+
 namespace kano::git::commands {
 
 void RegisterClone(CLI::App& InApp) {
     auto* cmd = InApp.add_subcommand("clone", "Smart clone with upstream remote support");
 
-    auto* repoUrl = new std::string{};
-    auto* upstreamUrl = new std::string{};
-    auto* targetDir = new std::string{};
-    auto* noInit = new bool{false};
-    auto* noCheckout = new bool{false};
-    auto* dryRun = new bool{false};
+    struct CloneOptions {
+        std::string repoUrl;
+        std::string upstreamUrl;
+        std::string targetDir;
+        bool noInit = false;
+        bool noCheckout = false;
+        bool dryRun = false;
+    };
 
-    cmd->add_option("repo-url", *repoUrl, "Repository URL to clone")->required();
-    cmd->add_option("upstream-url", *upstreamUrl, "Optional upstream repository URL");
-    cmd->add_option("--dir", *targetDir, "Target directory");
-    cmd->add_flag("--no-init", *noInit, "Skip initializing if remote is empty");
-    cmd->add_flag("--no-checkout", *noCheckout, "Skip checkout to default branch");
-    cmd->add_flag("--dry-run", *dryRun, "Show what would be done");
+    auto options = std::make_shared<CloneOptions>();
 
-    cmd->callback([=]() {
+    cmd->add_option("repo-url", options->repoUrl, "Repository URL to clone")->required();
+    cmd->add_option("upstream-url", options->upstreamUrl, "Optional upstream repository URL");
+    cmd->add_option("--dir", options->targetDir, "Target directory");
+    cmd->add_flag("--no-init", options->noInit, "Skip initializing if remote is empty");
+    cmd->add_flag("--no-checkout", options->noCheckout, "Skip checkout to default branch");
+    cmd->add_flag("--dry-run", options->dryRun, "Show what would be done");
+
+    cmd->callback([cmd, options]() {
         std::vector<std::string> args;
-        args.push_back(*repoUrl);
-        if (!upstreamUrl->empty()) {
-            args.push_back(*upstreamUrl);
+        args.push_back(options->repoUrl);
+        if (!options->upstreamUrl.empty()) {
+            args.push_back(options->upstreamUrl);
         }
-        if (!targetDir->empty()) {
+        if (!options->targetDir.empty()) {
             args.push_back("--dir");
-            args.push_back(*targetDir);
+            args.push_back(options->targetDir);
         }
-        if (*noInit) {
+        if (options->noInit) {
             args.push_back("--no-init");
         }
-        if (*noCheckout) {
+        if (options->noCheckout) {
             args.push_back("--no-checkout");
         }
-        if (*dryRun) {
+        if (options->dryRun) {
             args.push_back("--dry-run");
         }
 
@@ -47,7 +53,9 @@ void RegisterClone(CLI::App& InApp) {
         args.insert(args.end(), extras.begin(), extras.end());
 
         auto result = shell::ExecuteScript("core/smart-clone.sh", args);
-        std::exit(result.exitCode);
+        if (result.exitCode != 0) {
+            throw CLI::RuntimeError(result.exitCode);
+        }
     });
 }
 

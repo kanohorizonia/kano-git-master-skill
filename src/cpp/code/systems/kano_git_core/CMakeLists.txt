@@ -82,7 +82,9 @@ target_include_directories(kano_git_core
 
 # Workaround for MSBuild failing to find standard headers due to -external:W0 on SYSTEM includes
 if(MSVC AND CMAKE_GENERATOR MATCHES "Visual Studio")
-    target_compile_options(kano_git_core PRIVATE "/I${cli11_SOURCE_DIR}/include")
+    if(DEFINED cli11_SOURCE_DIR AND EXISTS "${cli11_SOURCE_DIR}/include")
+        target_compile_options(kano_git_core PRIVATE "/I${cli11_SOURCE_DIR}/include")
+    endif()
 endif()
 
 target_link_libraries(kano_git_core PUBLIC CLI11::CLI11 ftxui::screen ftxui::dom ftxui::component)

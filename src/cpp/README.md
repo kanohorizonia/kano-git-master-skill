@@ -55,10 +55,10 @@ The CLI provides a unified binary (`kano-git` / `kog`) with:
 ./src/cpp/build/bin/<preset>/<config>/kano-git[.exe]
 ```
 
-### Python Launcher (alternative)
+### CLI launcher scripts (alternative)
 
 ```bash
-# Add scripts/ to PATH, then:
+# Add scripts/ (bash launchers) to PATH, then:
 kano-git commit
 kog commit    # short alias
 ```
@@ -171,7 +171,7 @@ src/
     ├── workspace/
     └── ...
 
-scripts/                        # Python launchers
+scripts/                        # Bash launchers
 ├── kano-git / kano-git.bat
 └── kog / kog.bat
 ```

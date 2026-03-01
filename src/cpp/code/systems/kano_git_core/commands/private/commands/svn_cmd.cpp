@@ -15,7 +15,9 @@ void RegisterSvn(CLI::App& InApp) {
         auto extras = clone->remaining();
         std::vector<std::string> args(extras.begin(), extras.end());
         auto result = shell::ExecuteScript("vcs-bridges/svn/clone.sh", args);
-        std::exit(result.exitCode);
+        if (result.exitCode != 0) {
+            throw CLI::RuntimeError(result.exitCode);
+        }
     });
 
     auto* fetch = cmd->add_subcommand("fetch", "Fetch from SVN");
@@ -24,7 +26,9 @@ void RegisterSvn(CLI::App& InApp) {
         auto extras = fetch->remaining();
         std::vector<std::string> args(extras.begin(), extras.end());
         auto result = shell::ExecuteScript("vcs-bridges/svn/fetch.sh", args);
-        std::exit(result.exitCode);
+        if (result.exitCode != 0) {
+            throw CLI::RuntimeError(result.exitCode);
+        }
     });
 
     auto* dcommit = cmd->add_subcommand("dcommit", "Push commits to SVN");
@@ -33,7 +37,9 @@ void RegisterSvn(CLI::App& InApp) {
         auto extras = dcommit->remaining();
         std::vector<std::string> args(extras.begin(), extras.end());
         auto result = shell::ExecuteScript("vcs-bridges/svn/dcommit.sh", args);
-        std::exit(result.exitCode);
+        if (result.exitCode != 0) {
+            throw CLI::RuntimeError(result.exitCode);
+        }
     });
 
     auto* rebase = cmd->add_subcommand("rebase", "Rebase from SVN");
@@ -42,7 +48,9 @@ void RegisterSvn(CLI::App& InApp) {
         auto extras = rebase->remaining();
         std::vector<std::string> args(extras.begin(), extras.end());
         auto result = shell::ExecuteScript("vcs-bridges/svn/rebase.sh", args);
-        std::exit(result.exitCode);
+        if (result.exitCode != 0) {
+            throw CLI::RuntimeError(result.exitCode);
+        }
     });
 }
 
