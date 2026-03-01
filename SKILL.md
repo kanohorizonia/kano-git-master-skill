@@ -112,6 +112,10 @@ Current TUI actions (v1):
 - `X` in main view: start cherry-pick runner from preflight non-duplicate queue
 - runner controls: `n` next, `c` continue, `s` skip, `a` abort, `q` close panel
 - `b` in main view: rebase preflight panel (branch/upstream/divergence/candidate commits/risk)
+- `B` in main view: open rebase planner (no execution) from preflight candidates
+- planner controls: `↑/↓` select line, `p/s/f/d` set action (pick/squash/fixup/drop), `q` close planner
+- `R` in main view: start rebase runner from planner queue
+- rebase runner controls: `N` next, `C` continue, `S` skip, `A` abort, `q` close panel
 - history mode controls:
   - `←` / `→`: previous/next repo page source
   - `PgUp` / `PgDn`: older/newer history page

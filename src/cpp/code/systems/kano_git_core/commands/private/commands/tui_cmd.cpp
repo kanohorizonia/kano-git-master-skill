@@ -122,6 +122,30 @@ struct RebasePreflightState {
     std::string note;
 };
 
+struct RebasePlanItem {
+    std::string sha;
+    std::string title;
+    std::string action = "pick"; // pick|squash|fixup|drop
+};
+
+struct RebasePlannerState {
+    bool active = false;
+    std::filesystem::path repo;
+    std::string baseRef;
+    std::vector<RebasePlanItem> items;
+    int selectedIndex = 0;
+    std::string preview;
+};
+
+struct RebaseRunnerState {
+    bool active = false;
+    std::filesystem::path repo;
+    std::vector<RebasePlanItem> queue;
+    int index = 0;
+    bool waitingConflictResolution = false;
+    std::string lastOutput;
+};
+
 auto Trim(std::string InValue) -> std::string {
     while (!InValue.empty() && (InValue.back() == '\n' || InValue.back() == '\r' || InValue.back() == ' ' || InValue.back() == '\t')) {
         InValue.pop_back();
@@ -762,6 +786,67 @@ auto CollectRebasePreflight(const std::filesystem::path& repo) -> RebasePrefligh
     return state;
 }
 
+auto BuildRebasePlanPreview(const RebasePlannerState& planner) -> std::string {
+    std::ostringstream out;
+    out << "Rebase Plan Preview\n";
+    out << "repo: " << planner.repo.lexically_normal().generic_string() << "\n";
+    out << "base: " << planner.baseRef << "\n\n";
+    out << "# interactive todo style\n";
+    for (const auto& item : planner.items) {
+        out << item.action << " " << item.sha << " " << item.title << "\n";
+    }
+    if (planner.items.empty()) {
+        out << "(no plan items)\n";
+    }
+    return out.str();
+}
+
+auto BuildRebasePlanner(const std::filesystem::path& repo, const RebasePreflightState& pre) -> RebasePlannerState {
+    RebasePlannerState planner;
+    planner.active = true;
+    planner.repo = repo;
+    planner.baseRef = pre.upstream != "(none)" ? pre.upstream : (pre.branch == "main" ? "main" : "master");
+    planner.selectedIndex = 0;
+
+    for (const auto& line : pre.candidates) {
+        const auto sp = line.find(' ');
+        if (sp == std::string::npos) {
+            continue;
+        }
+        RebasePlanItem item;
+        item.sha = line.substr(0, sp);
+        item.title = line.substr(sp + 1);
+        item.action = "pick";
+        planner.items.push_back(std::move(item));
+    }
+
+    planner.preview = BuildRebasePlanPreview(planner);
+    return planner;
+}
+
+auto RunRebaseContinue(const std::filesystem::path& repo) -> shell::ExecResult {
+    return GitCapture(repo, {"rebase", "--continue"});
+}
+
+auto RunRebaseSkip(const std::filesystem::path& repo) -> shell::ExecResult {
+    return GitCapture(repo, {"rebase", "--skip"});
+}
+
+auto RunRebaseAbort(const std::filesystem::path& repo) -> shell::ExecResult {
+    return GitCapture(repo, {"rebase", "--abort"});
+}
+
+auto RunRebaseStep(const std::filesystem::path& repo, const RebasePlanItem& item) -> shell::ExecResult {
+    if (item.action == "drop") {
+        return GitCapture(repo, {"rebase", "--skip"});
+    }
+
+    // For planner v1, execute as cherry-pick equivalent sequence for pick/squash/fixup.
+    // squash/fixup will be represented as cherry-pick then follow-up continue flow when needed.
+    // This keeps runner deterministic while full interactive todo execution is added later.
+    return GitCapture(repo, {"cherry-pick", item.sha});
+}
+
 auto RunCherryPickOne(const std::filesystem::path& repo, const std::string& sha) -> shell::ExecResult {
     return GitCapture(repo, {"cherry-pick", sha});
 }
@@ -834,6 +919,8 @@ auto RunFtxuiDashboard() -> int {
     CherryPickPreflightState cherry{};
     CherryPickRunnerState cherryRun{};
     RebasePreflightState rebase{};
+    RebasePlannerState rebasePlanner{};
+    RebaseRunnerState rebaseRun{};
     std::unordered_map<std::string, RepoHistoryCache> historyCache;
 
     auto refresh_menu = [&] {
@@ -912,6 +999,17 @@ auto RunFtxuiDashboard() -> int {
 
     auto with_keys = CatchEvent(root, [&](Event event) {
         if (event == Event::Character('q')) {
+            if (rebaseRun.active) {
+                rebaseRun.active = false;
+                rebaseRun.waitingConflictResolution = false;
+                footer = "rebase runner closed";
+                return true;
+            }
+            if (rebasePlanner.active) {
+                rebasePlanner.active = false;
+                footer = "rebase planner closed";
+                return true;
+            }
             if (rebase.active) {
                 rebase.active = false;
                 footer = "rebase preflight closed";
@@ -1063,6 +1161,138 @@ auto RunFtxuiDashboard() -> int {
             rebase = CollectRebasePreflight(repos[selected].path);
             rebase.active = true;
             footer = "rebase preflight ready";
+            return true;
+        }
+
+        if (event == Event::Character('B')) {
+            if (!rebase.active) {
+                footer = "rebase planner blocked: open preflight with b first";
+                return true;
+            }
+            rebasePlanner = BuildRebasePlanner(rebase.repo, rebase);
+            rebasePlanner.active = true;
+            footer = "rebase planner ready";
+            return true;
+        }
+
+        if (event == Event::Character('R')) {
+            if (!rebasePlanner.active) {
+                footer = "rebase runner blocked: open planner with B first";
+                return true;
+            }
+            rebaseRun.active = true;
+            rebaseRun.repo = rebasePlanner.repo;
+            rebaseRun.queue = rebasePlanner.items;
+            rebaseRun.index = 0;
+            rebaseRun.waitingConflictResolution = false;
+            rebaseRun.lastOutput = "runner initialized";
+
+            if (rebaseRun.queue.empty()) {
+                rebaseRun.active = false;
+                footer = "rebase runner skipped: empty plan";
+                return true;
+            }
+
+            const auto result = RunRebaseStep(rebaseRun.repo, rebaseRun.queue[rebaseRun.index]);
+            rebaseRun.lastOutput = !result.stdoutStr.empty() ? result.stdoutStr : result.stderrStr;
+            if (result.exitCode == 0) {
+                rebaseRun.index += 1;
+                footer = "rebase step ok";
+            } else {
+                rebaseRun.waitingConflictResolution = true;
+                footer = "rebase stopped: C=continue S=skip A=abort";
+            }
+            return true;
+        }
+
+        if (rebasePlanner.active && (event == Event::ArrowUp || event == Event::Character('k'))) {
+            if (!rebasePlanner.items.empty()) {
+                rebasePlanner.selectedIndex = std::max(0, rebasePlanner.selectedIndex - 1);
+                footer = "rebase planner line up";
+            }
+            return true;
+        }
+
+        if (rebasePlanner.active && (event == Event::ArrowDown || event == Event::Character('j'))) {
+            if (!rebasePlanner.items.empty()) {
+                rebasePlanner.selectedIndex = std::min(static_cast<int>(rebasePlanner.items.size()) - 1, rebasePlanner.selectedIndex + 1);
+                footer = "rebase planner line down";
+            }
+            return true;
+        }
+
+        if (rebasePlanner.active && event.is_character()) {
+            if (rebasePlanner.items.empty()) {
+                return true;
+            }
+            auto& item = rebasePlanner.items[rebasePlanner.selectedIndex];
+            const auto ch = event.character();
+            if (ch == "p") {
+                item.action = "pick";
+            } else if (ch == "s") {
+                item.action = "squash";
+            } else if (ch == "f") {
+                item.action = "fixup";
+            } else if (ch == "d") {
+                item.action = "drop";
+            } else {
+                return false;
+            }
+            rebasePlanner.preview = BuildRebasePlanPreview(rebasePlanner);
+            footer = "rebase action set: " + item.action;
+            return true;
+        }
+
+        if (rebaseRun.active && rebaseRun.waitingConflictResolution && (event == Event::Character('C'))) {
+            const auto result = RunRebaseContinue(rebaseRun.repo);
+            rebaseRun.lastOutput = !result.stdoutStr.empty() ? result.stdoutStr : result.stderrStr;
+            if (result.exitCode == 0) {
+                rebaseRun.waitingConflictResolution = false;
+                rebaseRun.index += 1;
+                footer = "rebase continue ok";
+            } else {
+                footer = "rebase continue failed";
+            }
+            return true;
+        }
+
+        if (rebaseRun.active && rebaseRun.waitingConflictResolution && (event == Event::Character('S'))) {
+            const auto result = RunRebaseSkip(rebaseRun.repo);
+            rebaseRun.lastOutput = !result.stdoutStr.empty() ? result.stdoutStr : result.stderrStr;
+            if (result.exitCode == 0) {
+                rebaseRun.waitingConflictResolution = false;
+                rebaseRun.index += 1;
+                footer = "rebase skip ok";
+            } else {
+                footer = "rebase skip failed";
+            }
+            return true;
+        }
+
+        if (rebaseRun.active && (event == Event::Character('A'))) {
+            const auto result = RunRebaseAbort(rebaseRun.repo);
+            rebaseRun.lastOutput = !result.stdoutStr.empty() ? result.stdoutStr : result.stderrStr;
+            rebaseRun.waitingConflictResolution = false;
+            rebaseRun.active = false;
+            footer = result.exitCode == 0 ? "rebase aborted" : "rebase abort failed";
+            return true;
+        }
+
+        if (rebaseRun.active && !rebaseRun.waitingConflictResolution && (event == Event::Character('N'))) {
+            if (rebaseRun.index >= static_cast<int>(rebaseRun.queue.size())) {
+                rebaseRun.active = false;
+                footer = "rebase runner complete";
+                return true;
+            }
+            const auto result = RunRebaseStep(rebaseRun.repo, rebaseRun.queue[rebaseRun.index]);
+            rebaseRun.lastOutput = !result.stdoutStr.empty() ? result.stdoutStr : result.stderrStr;
+            if (result.exitCode == 0) {
+                rebaseRun.index += 1;
+                footer = "rebase step ok";
+            } else {
+                rebaseRun.waitingConflictResolution = true;
+                footer = "rebase stopped: C=continue S=skip A=abort";
+            }
             return true;
         }
 
@@ -1462,7 +1692,54 @@ auto RunFtxuiDashboard() -> int {
     auto ui = Renderer(with_keys, [&] {
         Element rightPanel;
 
-        if (rebase.active) {
+        if (rebaseRun.active) {
+            std::string progress = "progress: " + std::to_string(std::min(rebaseRun.index, static_cast<int>(rebaseRun.queue.size()))) + "/" + std::to_string(rebaseRun.queue.size());
+            std::string current = "(none)";
+            if (rebaseRun.index >= 0 && rebaseRun.index < static_cast<int>(rebaseRun.queue.size())) {
+                const auto& item = rebaseRun.queue[rebaseRun.index];
+                current = item.action + " " + item.sha + " " + item.title;
+            }
+            rightPanel = vbox({
+                text("Rebase Runner") | bold,
+                separator(),
+                text("repo: " + rebaseRun.repo.lexically_normal().generic_string()),
+                text(progress),
+                text("current: " + current),
+                text(rebaseRun.waitingConflictResolution
+                         ? "state: waiting resolution (C=continue, S=skip, A=abort)"
+                         : "state: ready (N=next, A=abort, q=close panel)"),
+                separator(),
+                paragraph(rebaseRun.lastOutput.empty() ? "(no output yet)" : rebaseRun.lastOutput),
+            }) | border;
+        } else if (rebasePlanner.active) {
+            rightPanel = vbox({
+                text("Rebase Planner") | bold,
+                separator(),
+                text("repo: " + rebasePlanner.repo.lexically_normal().generic_string()),
+                text("base: " + rebasePlanner.baseRef),
+                text("controls: up/down select, p=pick s=squash f=fixup d=drop, q close") | dim,
+                separator(),
+                vbox([&] {
+                    Elements rows;
+                    for (std::size_t i = 0; i < rebasePlanner.items.size(); ++i) {
+                        const auto& it = rebasePlanner.items[i];
+                        const bool sel = static_cast<int>(i) == rebasePlanner.selectedIndex;
+                        auto row = text(std::string(sel ? "> " : "  ") + it.action + " " + it.sha + " " + it.title);
+                        if (sel) {
+                            row = row | bold;
+                        }
+                        rows.push_back(row);
+                    }
+                    if (rebasePlanner.items.empty()) {
+                        rows.push_back(text("(no planner items)"));
+                    }
+                    return rows;
+                }()) | border,
+                separator(),
+                text("Plan preview") | bold,
+                paragraph(rebasePlanner.preview),
+            }) | border;
+        } else if (rebase.active) {
             rightPanel = vbox({
                 text("Rebase Preflight") | bold,
                 separator(),
@@ -1682,7 +1959,7 @@ auto RunFtxuiDashboard() -> int {
                    text("KOG FTXUI Dashboard v2") | bold,
                    separator(),
                    text("Global repo view + incremental history pager."),
-                   text("preview keys: c/C commit preview/execute, p/P push preview/execute, f fetch confirm, x/X cherry preflight/run, b rebase preflight") | dim,
+                   text("preview keys: c/C commit preview/execute, p/P push preview/execute, f fetch confirm, x/X cherry preflight/run, b/B rebase preflight/planner, R rebase runner") | dim,
                    text("repo filter: " + (repoFilter.empty() ? "(none)" : repoFilter)) | dim,
                    text("tree toggle key: t (collapse/expand child repos)") | dim,
                    separator(),
@@ -1711,8 +1988,9 @@ auto PrintDemo() -> void {
     std::cout << "KOG TUI demo mode\n";
     std::cout << "- FTXUI dashboard enabled\n";
     std::cout << "- repo list + details + incremental history pager\n";
-    std::cout << "- controls: r(refresh), d(dirty-only), f(fetch confirm), c(commit preview), C(commit confirm), p(push preview), P(push confirm), x/X(cherry preflight/run), b(rebase preflight), Enter(history), q(quit)\n";
+    std::cout << "- controls: r(refresh), d(dirty-only), f(fetch confirm), c(commit preview), C(commit confirm), p(push preview), P(push confirm), x/X(cherry preflight/run), b/B(rebase preflight/planner), R(rebase runner), Enter(history), q(quit)\n";
     std::cout << "- cherry runner controls: n(next), c(continue), s(skip), a(abort), q(close panel)\n";
+    std::cout << "- rebase runner controls: N(next), C(continue), S(skip), A(abort), q(close panel)\n";
     std::cout << "- main view: / enters repo path filter mode\n";
     std::cout << "- tree: t collapse/expand selected repo subtree\n";
     std::cout << "- history mode: left/right repo, PgUp/PgDn page, up/down line, /search, n-next, m-detail-mode, o-sort-mode\n";
