@@ -443,13 +443,38 @@ auto DisplayRepoLabel(const std::filesystem::path& InWorkspaceRoot, const std::f
     const auto rootNorm = NormalizePath(InWorkspaceRoot);
     const auto repoNorm = NormalizePath(InRepo);
     if (ToGeneric(rootNorm) == ToGeneric(repoNorm)) {
-        return ".";
+        auto rootName = rootNorm.filename().generic_string();
+        if (rootName.empty()) {
+            rootName = rootNorm.generic_string();
+        }
+        return rootName + " (.)";
     }
     const auto rel = repoNorm.lexically_relative(rootNorm);
     if (!rel.empty() && rel != ".") {
         return rel.generic_string();
     }
     return repoNorm.generic_string();
+}
+
+auto BuildCommitScope(const std::filesystem::path& InWorkspaceRoot,
+                      const std::filesystem::path& InRepo) -> std::string {
+    const auto rootNorm = NormalizePath(InWorkspaceRoot);
+    const auto repoNorm = NormalizePath(InRepo);
+
+    std::string scope;
+    if (ToGeneric(rootNorm) == ToGeneric(repoNorm)) {
+        scope = "root";
+    } else {
+        scope = DisplayRepoLabel(InWorkspaceRoot, InRepo);
+    }
+
+    for (auto& c : scope) {
+        if (c == '/' || c == '\\' || c == ' ') {
+            c = '-';
+        }
+    }
+
+    return scope.empty() ? "root" : scope;
 }
 
 auto BuildOrderedRepoList(const std::filesystem::path& InWorkspaceRoot, const std::string& InReposCsv) -> std::vector<std::filesystem::path> {
@@ -631,15 +656,7 @@ auto BuildAutoCommitMessage(const std::filesystem::path& InWorkspaceRoot,
         type = "docs";
     }
 
-    auto scope = DisplayRepoLabel(InWorkspaceRoot, InRepo);
-    if (scope == ".") {
-        scope = "root";
-    }
-    for (auto& c : scope) {
-        if (c == '/' || c == '\\' || c == ' ') {
-            c = '-';
-        }
-    }
+    const auto scope = BuildCommitScope(InWorkspaceRoot, InRepo);
 
     const int changedFiles = static_cast<int>(InReport.stagedFiles.size() + InReport.unstagedFiles.size() + InReport.untrackedFiles.size());
     const int safeCount = changedFiles > 0 ? changedFiles : 1;
@@ -828,15 +845,7 @@ auto BuildCombineFallbackMessage(const std::filesystem::path& InWorkspaceRoot,
                                  const std::filesystem::path& InRepo,
                                  int InCombinedCommits,
                                  const CommitPreflightReport& InReport) -> std::string {
-    auto scope = DisplayRepoLabel(InWorkspaceRoot, InRepo);
-    if (scope == ".") {
-        scope = "root";
-    }
-    for (auto& c : scope) {
-        if (c == '/' || c == '\\' || c == ' ') {
-            c = '-';
-        }
-    }
+    const auto scope = BuildCommitScope(InWorkspaceRoot, InRepo);
 
     const int combined = std::max(1, InCombinedCommits);
     const int stagedFiles = std::max(1, InReport.stagedCount);

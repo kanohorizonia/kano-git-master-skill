@@ -182,7 +182,7 @@ auto DetectDefaultPushJobs() -> int {
 auto RunNativePush(
     const std::vector<std::filesystem::path>& InRepos,
     const bool InSkipSync,
-    const bool InSyncOnly,
+    const bool InFetchOnly,
     const bool InDryRun,
     const bool InForceWithLease,
     const bool InNoVerify,
@@ -209,6 +209,20 @@ auto RunNativePush(
         if (gitDir.exitCode != 0) {
             std::cerr << "Error: Not a git repository: " << repoLabel << "\n";
             return {0, 1};
+        }
+
+        if (InFetchOnly) {
+            if (InDryRun) {
+                std::cout << "[DRY RUN] [" << repoLabel << "] Would run: git fetch --all --prune --tags\n";
+            } else {
+                const auto fetch = GitPassThrough(repoPath, {"fetch", "--all", "--prune", "--tags"});
+                if (fetch.exitCode != 0) {
+                    std::cerr << "[" << repoLabel << "] Fetch failed\n";
+                    return {0, 1};
+                }
+            }
+            std::cout << "[" << repoLabel << "] Fetch-only mode: skipping rebase and push\n";
+            return {1, 0};
         }
 
         const auto branchOut = GitCapture(repoPath, {"symbolic-ref", "--quiet", "--short", "HEAD"});
@@ -274,11 +288,6 @@ auto RunNativePush(
             }
             const auto syncEnd = std::chrono::steady_clock::now();
             syncMillis += std::chrono::duration_cast<std::chrono::milliseconds>(syncEnd - syncStart).count();
-        }
-
-        if (InSyncOnly) {
-            std::cout << "[" << repoLabel << "] Sync-only mode: skipping push\n";
-            return {1, 0};
         }
 
         std::vector<std::string> pushRemotes;
@@ -454,7 +463,7 @@ void RegisterPush(CLI::App& InApp) {
     auto* noRecursive = new bool{false};
     auto* repos = new std::string{};
     auto* skipSync = new bool{false};
-    auto* syncOnly = new bool{false};
+    auto* fetchOnly = new bool{false};
     auto* dryRun = new bool{false};
     auto* forceWithLease = new bool{false};
     auto* noVerify = new bool{false};
@@ -471,7 +480,7 @@ void RegisterPush(CLI::App& InApp) {
     cmd->add_flag("--current-only", *noRecursive, "Alias of --no-recursive (backward compatible)");
     cmd->add_option("--repos", *repos, "Repo filter (comma-separated paths, native mode)");
     cmd->add_flag("--skip-sync", *skipSync, "Skip sync step before push");
-    cmd->add_flag("--sync-only", *syncOnly, "Run sync only and skip push");
+    cmd->add_flag("--fetch-only", *fetchOnly, "Run fetch only (skip rebase and push)");
     cmd->add_flag("--dry-run", *dryRun, "Preview push operations");
     cmd->add_flag("--force-with-lease", *forceWithLease, "Use force-with-lease for push");
     cmd->add_flag("--no-verify", *noVerify, "Pass --no-verify to git push");
@@ -518,6 +527,11 @@ void RegisterPush(CLI::App& InApp) {
             std::exit(1);
         }
 
+        if (*fetchOnly && *skipSync) {
+            std::cerr << "Error: --fetch-only cannot be used with --skip-sync\n";
+            std::exit(1);
+        }
+
         if (*jobs < 1) {
             std::cerr << "Error: --jobs must be a positive integer\n";
             std::exit(1);
@@ -526,7 +540,7 @@ void RegisterPush(CLI::App& InApp) {
         const auto code = RunNativePush(
             nativeRepos,
             *skipSync,
-            *syncOnly,
+            *fetchOnly,
             *dryRun,
             *forceWithLease,
             *noVerify,
