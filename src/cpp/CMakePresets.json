@@ -1,0 +1,220 @@
+{
+    "version": 3,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 21,
+        "patch": 0
+    },
+    "configurePresets": [
+        {
+            "name": "windows-msbuild",
+            "displayName": "Windows MSBuild",
+            "description": "Uses Visual Studio 17 2022 generator",
+            "generator": "Visual Studio 17 2022",
+            "cacheVariables": {
+                "CMAKE_CXX_FLAGS": "/experimental:external-",
+                "KOG_PRESET_NAME": "windows-msbuild"
+            },
+            "architecture": {
+                "value": "x64",
+                "strategy": "set"
+            },
+            "toolset": {
+                "value": "v143,version=14.44.35207",
+                "strategy": "set"
+            },
+            "binaryDir": "${sourceDir}/build/_intermediate/windows-msbuild"
+        },
+        {
+            "name": "windows-ninja-msvc",
+            "displayName": "Windows Ninja Multi-Config (MSVC)",
+            "description": "Uses Ninja Multi-Config with default MSVC compiler (requires vcvars64.bat)",
+            "generator": "Ninja Multi-Config",
+            "binaryDir": "${sourceDir}/build/_intermediate/windows-ninja-msvc",
+            "cacheVariables": {
+                "KOG_PRESET_NAME": "windows-ninja-msvc"
+            }
+        },
+        {
+            "name": "windows-ninja-msvc-arm64",
+            "displayName": "Windows Ninja Multi-Config (MSVC ARM64)",
+            "description": "Uses Ninja Multi-Config with MSVC cross-compile toolchain (amd64_arm64)",
+            "generator": "Ninja Multi-Config",
+            "binaryDir": "${sourceDir}/build/_intermediate/windows-ninja-msvc-arm64",
+            "cacheVariables": {
+                "KOG_PRESET_NAME": "windows-ninja-msvc-arm64"
+            }
+        },
+        {
+            "name": "windows-ninja-clang",
+            "displayName": "Windows Ninja Multi-Config (Clang)",
+            "description": "Uses Ninja Multi-Config with LLVM Clang compiler",
+            "generator": "Ninja Multi-Config",
+            "binaryDir": "${sourceDir}/build/_intermediate/windows-ninja-clang",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "clang-cl",
+                "CMAKE_CXX_COMPILER": "clang-cl",
+                "KOG_PRESET_NAME": "windows-ninja-clang"
+            }
+        },
+        {
+            "name": "linux-ninja-gcc",
+            "displayName": "Linux Ninja Multi-Config (GCC)",
+            "description": "Uses Ninja Multi-Config with GCC compiler",
+            "generator": "Ninja Multi-Config",
+            "binaryDir": "${sourceDir}/build/_intermediate/linux-ninja-gcc",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "gcc",
+                "CMAKE_CXX_COMPILER": "g++",
+                "KOG_ENABLE_MODULES": "OFF",
+                "KOG_PRESET_NAME": "linux-ninja-gcc"
+            }
+        },
+        {
+            "name": "linux-ninja-clang",
+            "displayName": "Linux Ninja Multi-Config (Clang)",
+            "description": "Uses Ninja Multi-Config with Clang compiler",
+            "generator": "Ninja Multi-Config",
+            "binaryDir": "${sourceDir}/build/_intermediate/linux-ninja-clang",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "clang",
+                "CMAKE_CXX_COMPILER": "clang++",
+                "KOG_ENABLE_MODULES": "OFF",
+                "KOG_PRESET_NAME": "linux-ninja-clang"
+            }
+        },
+        {
+            "name": "macos-ninja-clang",
+            "displayName": "macOS Ninja Multi-Config (Clang)",
+            "description": "Uses Ninja Multi-Config with Apple Clang compiler",
+            "generator": "Ninja Multi-Config",
+            "binaryDir": "${sourceDir}/build/_intermediate/macos-ninja-clang",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "clang",
+                "CMAKE_CXX_COMPILER": "clang++",
+                "KOG_ENABLE_MODULES": "OFF",
+                "KOG_PRESET_NAME": "macos-ninja-clang"
+            }
+        },
+        {
+            "name": "macos-ninja-clang-x64",
+            "displayName": "macOS Ninja Multi-Config (Clang x64)",
+            "description": "Uses Ninja Multi-Config with Apple Clang targeting Intel x86_64",
+            "generator": "Ninja Multi-Config",
+            "binaryDir": "${sourceDir}/build/_intermediate/macos-ninja-clang-x64",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "clang",
+                "CMAKE_CXX_COMPILER": "clang++",
+                "CMAKE_OSX_ARCHITECTURES": "x86_64",
+                "KOG_ENABLE_MODULES": "OFF",
+                "KOG_PRESET_NAME": "macos-ninja-clang-x64"
+            }
+        },
+        {
+            "name": "macos-ninja-clang-arm64",
+            "displayName": "macOS Ninja Multi-Config (Clang arm64)",
+            "description": "Uses Ninja Multi-Config with Apple Clang targeting Apple Silicon arm64",
+            "generator": "Ninja Multi-Config",
+            "binaryDir": "${sourceDir}/build/_intermediate/macos-ninja-clang-arm64",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "clang",
+                "CMAKE_CXX_COMPILER": "clang++",
+                "CMAKE_OSX_ARCHITECTURES": "arm64",
+                "KOG_ENABLE_MODULES": "OFF",
+                "KOG_PRESET_NAME": "macos-ninja-clang-arm64"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "windows-msbuild-debug",
+            "configurePreset": "windows-msbuild",
+            "configuration": "Debug"
+        },
+        {
+            "name": "windows-msbuild-release",
+            "configurePreset": "windows-msbuild",
+            "configuration": "Release"
+        },
+        {
+            "name": "windows-ninja-msvc-debug",
+            "configurePreset": "windows-ninja-msvc",
+            "configuration": "Debug"
+        },
+        {
+            "name": "windows-ninja-msvc-release",
+            "configurePreset": "windows-ninja-msvc",
+            "configuration": "Release"
+        },
+        {
+            "name": "windows-ninja-msvc-arm64-debug",
+            "configurePreset": "windows-ninja-msvc-arm64",
+            "configuration": "Debug"
+        },
+        {
+            "name": "windows-ninja-msvc-arm64-release",
+            "configurePreset": "windows-ninja-msvc-arm64",
+            "configuration": "Release"
+        },
+        {
+            "name": "windows-ninja-clang-debug",
+            "configurePreset": "windows-ninja-clang",
+            "configuration": "Debug"
+        },
+        {
+            "name": "windows-ninja-clang-release",
+            "configurePreset": "windows-ninja-clang",
+            "configuration": "Release"
+        },
+        {
+            "name": "linux-ninja-gcc-debug",
+            "configurePreset": "linux-ninja-gcc",
+            "configuration": "Debug"
+        },
+        {
+            "name": "linux-ninja-gcc-release",
+            "configurePreset": "linux-ninja-gcc",
+            "configuration": "Release"
+        },
+        {
+            "name": "linux-ninja-clang-debug",
+            "configurePreset": "linux-ninja-clang",
+            "configuration": "Debug"
+        },
+        {
+            "name": "linux-ninja-clang-release",
+            "configurePreset": "linux-ninja-clang",
+            "configuration": "Release"
+        },
+        {
+            "name": "macos-ninja-clang-debug",
+            "configurePreset": "macos-ninja-clang",
+            "configuration": "Debug"
+        },
+        {
+            "name": "macos-ninja-clang-release",
+            "configurePreset": "macos-ninja-clang",
+            "configuration": "Release"
+        },
+        {
+            "name": "macos-ninja-clang-x64-debug",
+            "configurePreset": "macos-ninja-clang-x64",
+            "configuration": "Debug"
+        },
+        {
+            "name": "macos-ninja-clang-x64-release",
+            "configurePreset": "macos-ninja-clang-x64",
+            "configuration": "Release"
+        },
+        {
+            "name": "macos-ninja-clang-arm64-debug",
+            "configurePreset": "macos-ninja-clang-arm64",
+            "configuration": "Debug"
+        },
+        {
+            "name": "macos-ninja-clang-arm64-release",
+            "configurePreset": "macos-ninja-clang-arm64",
+            "configuration": "Release"
+        }
+    ]
+}

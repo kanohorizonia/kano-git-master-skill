@@ -1,0 +1,377 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+platform_name() {
+  local os_name
+  os_name="$(uname -s 2>/dev/null || true)"
+  case "$os_name" in
+    Darwin*) echo "macos" ;;
+    Linux*) echo "linux" ;;
+    MINGW*|MSYS*|CYGWIN*|Windows_NT) echo "windows" ;;
+    *) echo "${os_name,,}" ;;
+  esac
+}
+
+arch_name() {
+  local machine
+  machine="$(uname -m 2>/dev/null || true)"
+  case "$machine" in
+    arm64|aarch64) echo "arm64" ;;
+    *) echo "x64" ;;
+  esac
+}
+
+find_bash() {
+  if command -v bash >/dev/null 2>&1; then
+    command -v bash
+    return 0
+  fi
+
+  if [[ -n "${GIT_BASH_PATH:-}" && -f "${GIT_BASH_PATH}" ]]; then
+    printf '%s\n' "$GIT_BASH_PATH"
+    return 0
+  fi
+
+  if [[ -f "C:/Program Files/Git/bin/bash.exe" ]]; then
+    printf '%s\n' "C:/Program Files/Git/bin/bash.exe"
+    return 0
+  fi
+
+  return 1
+}
+
+binary_name() {
+  case "$(platform_name)" in
+    windows) echo "kano-git.exe" ;;
+    *) echo "kano-git" ;;
+  esac
+}
+
+candidate_presets() {
+  local os_name arch
+  os_name="$(platform_name)"
+  arch="$(arch_name)"
+
+  case "$os_name" in
+    windows)
+      if [[ "$arch" == "arm64" ]]; then
+        printf '%s\n' "windows-ninja-msvc-arm64" "windows-ninja-msvc"
+      else
+        printf '%s\n' "windows-ninja-msvc"
+      fi
+      ;;
+    linux)
+      printf '%s\n' "linux-ninja-gcc"
+      ;;
+    macos)
+      if [[ "$arch" == "arm64" ]]; then
+        printf '%s\n' "macos-ninja-clang-arm64" "macos-ninja-clang"
+      else
+        printf '%s\n' "macos-ninja-clang-x64" "macos-ninja-clang"
+      fi
+      ;;
+  esac
+}
+
+find_binary() {
+  local exe_name build_dir candidate preset
+  exe_name="$(binary_name)"
+  build_dir="$PROJECT_ROOT/src/cpp/build"
+
+  if [[ -n "${KANO_GIT_BIN:-}" ]]; then
+    if [[ -f "$KANO_GIT_BIN" ]]; then
+      printf '%s\n' "$KANO_GIT_BIN"
+      return 0
+    fi
+    if [[ -f "$KANO_GIT_BIN/$exe_name" ]]; then
+      printf '%s\n' "$KANO_GIT_BIN/$exe_name"
+      return 0
+    fi
+  fi
+
+  while IFS= read -r preset; do
+    [[ -z "$preset" ]] && continue
+    candidate="$build_dir/bin/$preset/release/$exe_name"
+    if [[ -f "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+    candidate="$build_dir/bin/$preset/debug/$exe_name"
+    if [[ -f "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done < <(candidate_presets)
+
+  candidate="$build_dir/release/$exe_name"
+  [[ -f "$candidate" ]] && { printf '%s\n' "$candidate"; return 0; }
+  candidate="$build_dir/debug/$exe_name"
+  [[ -f "$candidate" ]] && { printf '%s\n' "$candidate"; return 0; }
+
+  if command -v kano-git >/dev/null 2>&1; then
+    command -v kano-git
+    return 0
+  fi
+
+  return 1
+}
+
+script_paths() {
+  local base os_name arch prereq build
+  base="$PROJECT_ROOT/src/cpp/build/script"
+  os_name="$(platform_name)"
+  arch="$(arch_name)"
+
+  case "$os_name" in
+    windows)
+      prereq="$base/windows/prerequisite_windows.sh"
+      if [[ "$arch" == "arm64" ]]; then
+        build="$base/windows/build_windows_ninja_msvc_arm64_release.sh"
+      else
+        build="$base/windows/build_windows_ninja_msvc_release.sh"
+      fi
+      ;;
+    linux)
+      prereq="$base/linux/prerequisite_linux.sh"
+      build="$base/linux/build_linux_ninja_gcc_release.sh"
+      ;;
+    macos)
+      prereq="$base/macos/prerequisite_macos.sh"
+      if [[ "$arch" == "arm64" ]]; then
+        build="$base/macos/build_macos_ninja_clang_arm64_release.sh"
+      else
+        build="$base/macos/build_macos_ninja_clang_x64_release.sh"
+      fi
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+
+  printf '%s\n%s\n' "$prereq" "$build"
+}
+
+install_marker_file() {
+  if [[ -n "${KANO_GIT_INSTALL_MARKER:-}" ]]; then
+    printf '%s\n' "$KANO_GIT_INSTALL_MARKER"
+  else
+    printf '%s\n' "$PROJECT_ROOT/.kano-installed-marker"
+  fi
+}
+
+is_packaged_install() {
+  local marker
+  marker="$(install_marker_file)"
+  [[ -f "$marker" ]]
+}
+
+run_shell_script() {
+  local script bash_path
+  script="$1"
+  if ! bash_path="$(find_bash)"; then
+    echo "Warning: bash not found; cannot run shell script automation." >&2
+    return 1
+  fi
+  if [[ ! -f "$script" ]]; then
+    echo "Warning: script not found: $script" >&2
+    return 1
+  fi
+  KANO_GIT_MASTER_ROOT="${KANO_GIT_MASTER_ROOT:-$PROJECT_ROOT}" "$bash_path" "$script"
+}
+
+try_auto_prepare_binary() {
+  local prereq_script build_script
+  if ! mapfile -t _scripts < <(script_paths); then
+    echo "Warning: no build automation scripts for platform $(platform_name) ($(arch_name))." >&2
+    return 1
+  fi
+
+  prereq_script="${_scripts[0]:-}"
+  build_script="${_scripts[1]:-}"
+  if [[ -z "$prereq_script" || -z "$build_script" ]]; then
+    echo "Warning: missing prerequisite/build script mapping for this platform." >&2
+    return 1
+  fi
+
+  echo "kano-git binary not found. Installing/upgrading prerequisites..." >&2
+  run_shell_script "$prereq_script" || {
+    echo "Warning: prerequisite installation failed." >&2
+    return 1
+  }
+
+  echo "Building C++ accelerated kano-git binary..." >&2
+  run_shell_script "$build_script" || {
+    echo "Warning: C++ binary build failed." >&2
+    return 1
+  }
+
+  return 0
+}
+
+resolve_fallback_script() {
+  local command sub root
+  root="$PROJECT_ROOT/src/shell"
+
+  if [[ "$#" -eq 0 ]]; then
+    printf '%s|%s\n' "$root/internal/show-version.sh" "0"
+    return 0
+  fi
+
+  command="$1"
+  shift
+
+  case "$command" in
+    commit) printf '%s|%s\n' "$root/commit-tools/commit/smart-commit.sh" "1" ;;
+    resolve) printf '%s|%s\n' "$root/commit-tools/resolve/smart-resolve.sh" "1" ;;
+    push) printf '%s|%s\n' "$root/commit-tools/smart-push.sh" "1" ;;
+    clone) printf '%s|%s\n' "$root/core/smart-clone.sh" "1" ;;
+    doctor) printf '%s|%s\n' "$root/commit-tools/doctor.sh" "1" ;;
+    version) printf '%s|%s\n' "$root/internal/show-version.sh" "1" ;;
+    submodule) printf '%s|%s\n' "$root/submodules/smart-submodule.sh" "1" ;;
+    sync)
+      sub="${1:-}"
+      case "$sub" in
+        "") printf '%s|%s\n' "$root/commit-tools/sync/smart-sync.sh" "1" ;;
+        origin-latest) printf '%s|%s\n' "$root/commit-tools/sync/smart-sync-origin-latest.sh" "2" ;;
+        upstream-force-push) printf '%s|%s\n' "$root/commit-tools/sync/smart-sync-upstream-force-push.sh" "2" ;;
+        stable-dev) printf '%s|%s\n' "$root/commit-tools/sync/smart-sync-stable-dev.sh" "2" ;;
+        dev) printf '%s|%s\n' "$root/commit-tools/sync/smart-sync-dev.sh" "2" ;;
+      esac
+      ;;
+    workspace)
+      sub="${1:-}"
+      case "$sub" in
+        "") printf '%s|%s\n' "$root/workspace/status-all-repos.sh" "1" ;;
+        status) printf '%s|%s\n' "$root/workspace/status-all-repos.sh" "2" ;;
+        update) printf '%s|%s\n' "$root/workspace/update-workspace-repos.sh" "2" ;;
+        foreach) printf '%s|%s\n' "$root/workspace/foreach-repo.sh" "2" ;;
+        discover) printf '%s|%s\n' "$root/core/discover-repos.sh" "2" ;;
+        update-repo) printf '%s|%s\n' "$root/core/update-repo.sh" "2" ;;
+      esac
+      ;;
+    worktree)
+      sub="${1:-}"
+      case "$sub" in
+        "") printf '%s|%s\n' "$root/worktree/list-worktrees.sh" "1" ;;
+        create) printf '%s|%s\n' "$root/worktree/create-worktree.sh" "2" ;;
+        create-orphan) printf '%s|%s\n' "$root/worktree/create-orphan-worktree.sh" "2" ;;
+        list) printf '%s|%s\n' "$root/worktree/list-worktrees.sh" "2" ;;
+        remove) printf '%s|%s\n' "$root/worktree/remove-worktree.sh" "2" ;;
+        sync) printf '%s|%s\n' "$root/worktree/sync-worktrees.sh" "2" ;;
+        open) printf '%s|%s\n' "$root/worktree/open-worktree.sh" "2" ;;
+      esac
+      ;;
+    subtree)
+      sub="${1:-}"
+      case "$sub" in
+        "") printf '%s|%s\n' "$root/subtree/list-subtrees.sh" "1" ;;
+        add) printf '%s|%s\n' "$root/subtree/add-subtree.sh" "2" ;;
+        pull) printf '%s|%s\n' "$root/subtree/pull-subtree.sh" "2" ;;
+        push) printf '%s|%s\n' "$root/subtree/push-subtree.sh" "2" ;;
+        split) printf '%s|%s\n' "$root/subtree/split-subtree.sh" "2" ;;
+        list) printf '%s|%s\n' "$root/subtree/list-subtrees.sh" "2" ;;
+      esac
+      ;;
+    scalar)
+      sub="${1:-}"
+      case "$sub" in
+        "") printf '%s|%s\n' "$root/mono-repo/scalar/status.sh" "1" ;;
+        register) printf '%s|%s\n' "$root/mono-repo/scalar/register.sh" "2" ;;
+        unregister) printf '%s|%s\n' "$root/mono-repo/scalar/unregister.sh" "2" ;;
+        status) printf '%s|%s\n' "$root/mono-repo/scalar/status.sh" "2" ;;
+        optimize) printf '%s|%s\n' "$root/mono-repo/scalar/optimize.sh" "2" ;;
+      esac
+      ;;
+    branch)
+      sub="${1:-}"
+      case "$sub" in
+        rebase-upstream) printf '%s|%s\n' "$root/branches/rebase-to-upstream-latest.sh" "2" ;;
+        compare) printf '%s|%s\n' "$root/branches/compare-branches.sh" "2" ;;
+        cherry-pick-batch) printf '%s|%s\n' "$root/branches/cherry-pick-batch.sh" "2" ;;
+      esac
+      ;;
+    p4|svn)
+      sub="${1:-}"
+      if [[ -n "$sub" ]]; then
+        local candidate="$root/vcs-bridges/$command/$sub.sh"
+        [[ -f "$candidate" ]] && printf '%s|%s\n' "$candidate" "2"
+      fi
+      ;;
+  esac
+}
+
+run_shell_fallback() {
+  local mapping script skip bash_path
+  mapping="$(resolve_fallback_script "$@" || true)"
+  script="${mapping%%|*}"
+  skip="${mapping##*|}"
+
+  if [[ -z "$script" || "$script" == "$mapping" || ! -f "$script" ]]; then
+    echo "Error: C++ acceleration unavailable and no shell fallback route for this command." >&2
+    return 1
+  fi
+
+  if [[ ! "$skip" =~ ^[0-9]+$ ]]; then
+    skip=1
+  fi
+
+  if ! bash_path="$(find_bash)"; then
+    echo "Error: C++ acceleration unavailable and bash is missing, so shell fallback cannot run." >&2
+    return 1
+  fi
+
+  echo "Warning: C++ acceleration is unavailable. Falling back to pure shell implementation." >&2
+  if (( skip == 0 )); then
+    KANO_GIT_MASTER_ROOT="${KANO_GIT_MASTER_ROOT:-$PROJECT_ROOT}" "$bash_path" "$script" "$@"
+  else
+    KANO_GIT_MASTER_ROOT="${KANO_GIT_MASTER_ROOT:-$PROJECT_ROOT}" "$bash_path" "$script" "${@:skip+1}"
+  fi
+}
+
+should_force_shell_fallback() {
+  local command
+  command="${1:-}"
+  shift || true
+  if [[ "$command" == "commit" ]]; then
+    for arg in "$@"; do
+      if [[ "$arg" == "--staged-only" ]]; then
+        return 0
+      fi
+    done
+  fi
+  return 1
+}
+
+main() {
+  local binary marker
+  if binary="$(find_binary)"; then
+    if should_force_shell_fallback "$@"; then
+      run_shell_fallback "$@"
+      exit $?
+    fi
+    KANO_GIT_MASTER_ROOT="${KANO_GIT_MASTER_ROOT:-$PROJECT_ROOT}" "$binary" "$@"
+    exit $?
+  fi
+
+  if is_packaged_install; then
+    marker="$(install_marker_file)"
+    echo "Error: kano-git packaged install marker detected, but C++ binary is missing." >&2
+    echo "Error: marker file: $marker" >&2
+    echo "Error: this installation may be corrupted. Please reinstall the package." >&2
+  else
+    if try_auto_prepare_binary; then
+      if binary="$(find_binary)"; then
+        KANO_GIT_MASTER_ROOT="${KANO_GIT_MASTER_ROOT:-$PROJECT_ROOT}" "$binary" "$@"
+        exit $?
+      fi
+    fi
+  fi
+
+  run_shell_fallback "$@"
+}
+
+main "$@"

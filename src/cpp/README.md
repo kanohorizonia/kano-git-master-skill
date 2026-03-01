@@ -1,0 +1,177 @@
+# kano-git CLI
+
+C++20 command-line interface for [Kano Git Master](../SKILL.md).
+
+## Overview
+
+The CLI provides a unified binary (`kano-git` / `kog`) with:
+- Structured command tree (subcommands, flags, help)
+- Cross-platform support (Windows, macOS, Linux)
+- AI provider selection for AI-assisted commands
+- Future: parallel execution for multi-repo operations
+
+## Quick Start
+
+### Prerequisites
+
+- **CMake** ≥ 3.21
+- **C++20 compiler** (GCC 13+, Clang 16+, MSVC 19.38+)
+- **vcpkg** (set `VCPKG_ROOT` environment variable)
+
+### Build
+
+```bash
+# Windows host (Git Bash)
+./src/cpp/build/script/windows/build_windows_ninja_msvc_debug.sh
+./src/cpp/build/script/windows/build_windows_ninja_msvc_release.sh
+
+# Windows host -> Linux via Docker
+./src/cpp/build/script/windows/build_linux_ninja_gcc_debug_via_docker.sh
+./src/cpp/build/script/windows/build_linux_ninja_gcc_release_via_docker.sh
+
+# Linux host
+./src/cpp/build/script/linux/build_linux_ninja_gcc_debug.sh
+./src/cpp/build/script/linux/build_linux_ninja_gcc_release.sh
+
+# macOS host (Intel)
+./src/cpp/build/script/macos/build_macos_ninja_clang_x64_debug.sh
+./src/cpp/build/script/macos/build_macos_ninja_clang_x64_release.sh
+
+# macOS host (Apple Silicon)
+./src/cpp/build/script/macos/build_macos_ninja_clang_arm64_debug.sh
+./src/cpp/build/script/macos/build_macos_ninja_clang_arm64_release.sh
+```
+
+### Run
+
+```bash
+# Windows (MSVC Ninja preset)
+./src/cpp/build/bin/windows-ninja-msvc/release/kano-git.exe version
+
+# Linux (GCC Ninja preset)
+./src/cpp/build/bin/linux-ninja-gcc/release/kano-git version
+
+# Generic artifact layout
+./src/cpp/build/bin/<preset>/<config>/kano-git[.exe]
+```
+
+### CLI launcher scripts (alternative)
+
+```bash
+# Add scripts/ (bash launchers) to PATH, then:
+kano-git commit
+kog commit    # short alias
+```
+
+### Launcher mode (developer vs installed package)
+
+- Default behavior (no marker): launcher assumes **developer mode** and auto-runs prerequisite + build scripts when C++ binary is missing.
+- Installed-package behavior: if marker file exists, launcher assumes **packaged install mode** and will **not** auto-build.
+- Marker path:
+  - default: `.kano-installed-marker` at repo root
+  - override: `KANO_GIT_INSTALL_MARKER=/absolute/path/to/marker`
+- In packaged-install mode, if binary is missing, launcher prints an installation-corruption warning and asks user to reinstall.
+
+## Command Tree
+
+| Command | Description |
+|---------|-------------|
+| `commit` | AI-powered commit message generation |
+| `resolve` | AI-powered conflict resolution |
+| `sync` | Repository synchronization (origin-latest, upstream, stable-dev) |
+| `push` | Multi-remote push workflow |
+| `worktree` | Git worktree management (create, list, remove, sync) |
+| `subtree` | Git subtree operations (add, pull, push, split, list) |
+| `submodule` | Enhanced submodule management |
+| `scalar` | Git Scalar mono-repo performance |
+| `p4` | Git-Perforce bridge |
+| `svn` | Git-Subversion bridge |
+| `branch` | Branch operations (rebase-upstream, compare, cherry-pick) |
+| `workspace` | Multi-repo workspace operations |
+| `clone` | Clone with upstream support |
+| `doctor` | Environment and repo health checks |
+| `version` | Show version |
+
+### Native workspace discovery and wave planning
+
+The C++ CLI now includes a native discovery/cache/scheduler core for workspace planning:
+
+```bash
+# Native-first discovery (JSON repo list)
+kano-git workspace discover --native-metadata-level full
+
+# Deterministic execution waves with cycle status
+kano-git workspace discover --emit-waves
+
+# Native-first workspace status (table/json/markdown)
+kano-git workspace status --format table
+kano-git workspace status --format json
+
+# Native plan output for workspace update (no execution)
+kano-git workspace update --native-plan-only
+
+# Shell fallback escape hatch
+kano-git workspace status --shell
+kano-git workspace foreach --shell --command "git status --porcelain"
+```
+
+Notes:
+- Native discovery cache payload keeps parity fields (`version`, `generated_epoch`, `gitmodules_mtime`, `marker`, `repos`).
+- Wave output is deterministic and exits with code `2` when cycle nodes are detected.
+- Shared planner schema for `update` and `foreach` is documented in `docs/design/workspace-native-planner-contract.md`.
+
+### Module boundary convention (kano_git_core)
+
+Boundary hardening rule used in `kano_git_core`:
+
+- One domain directory = one facade module entrypoint (for example `private/workspace/native_workspace.hpp/.cpp`).
+- Domain internals stay behind the facade (`discovery.*`, `scheduler.*` are internal to workspace domain).
+- Command adapters depend on facade only (for example `workspace_cmd.cpp` includes `workspace/native_workspace.hpp` only).
+
+About `cppm`:
+
+- Your model is directionally correct: a directory-level module can have one primary `*.cppm` interface.
+- In practice, one directory can still have multiple internal `*.cpp` units behind that single interface.
+- Prefer one exported interface module per domain, then use implementation units/partitions as needed.
+
+## Architecture
+
+```
+src/
+├── cpp/
+│   ├── code/systems/kano_git_core/ # static library (C++20)
+│   │   ├── shell_executor   # Process spawning
+│   │   ├── command_registry # Command routing
+│   │   └── commands/        # Command implementations
+│   └── code/apps/kano_git_cli/   # Thin CLI frontend
+│       └── main.cpp         # CLI11 entry point
+└── shell/                   # Shell scripts execution backend
+```
+
+The CLI is a thin orchestrator — all actual Git logic lives in the existing shell scripts under `src/shell/`.
+The `kano_git_core` library is designed for reuse by future TUI/GUI frontends.
+
+## Project Structure
+
+```
+src/
+├── cpp/
+│   ├── CMakeLists.txt          # Build configuration (C++20 modules)
+│   ├── CMakePresets.json       # Multi-config presets (Debug/Release)
+│   ├── vcpkg.json              # Dependencies (CLI11)
+│   ├── build/script/           # Host/preset build wrappers
+│   ├── code/systems/kano_git_core/  # Core static library
+│   ├── code/apps/kano_git_cli/      # CLI executable
+│   ├── code/thirdparty/cli11/       # Vendored CLI11 source
+│   ├── build/bin/              # Final executables by preset/config
+│   ├── build/lib/              # Libraries by preset/config
+│   └── build/_intermediate/    # CMake/Ninja/MSBuild intermediates
+└── shell/                      # Shell execution backend
+    ├── core/
+    ├── workspace/
+    └── ...
+
+scripts/                        # Bash launchers
+├── kano-git / kano-git.bat
+└── kog / kog.bat
+```

@@ -14,11 +14,12 @@ __pycache__/
 .pnpm/
 .pytest_cache/
 .ruff_cache/
-.sisyphus/boulder.json
+.sisyphus/
 .tmp/
 .turbo/
 .venv/
 .vscode/
+!_kano/backlog/.gitignore
 _kano/
 skills/
 *.bak
@@ -40,3 +41,28 @@ tmp/
 vendor/
 venv/
 # <<< STATIC-GITIGNORE
+
+# CLI build artifacts
+cli/build/
+cli/out/
+
+# Local C++ build artifacts (keep only checked-in wrappers)
+src/cpp/build/**
+!src/cpp/build/script/
+!src/cpp/build/script/**
+src/cpp/compile_commands.json
+src/cpp/releases/
+src/cpp/cmake_ninja_out.txt
+src/cpp/cmake_out.txt
+src/cpp/msbuild_out*.txt
+src/cpp/msbuild_final*.txt
+msbuild_out.txt
+src/cpp/ninja_build*.txt
+src/cpp/test_1444_out.txt
+src/cpp/build_ninja.bat
+src/cpp/test_1444.bat
+src/cpp/test_env.bat
+src/cpp/patch_extras.py
+
+# Vendored dependencies (local checkout)
+src/cpp/code/thirdparty/ftxui/
