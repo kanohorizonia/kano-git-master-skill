@@ -3,6 +3,7 @@
 #include "command_registry.hpp"
 #include "shell_executor.hpp"
 
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
@@ -88,6 +89,7 @@ void RegisterCommitPush(CLI::App& InApp) {
     auto* noAiReview = new bool{false};
     auto* stagedOnly = new bool{false};
     auto* dryRun = new bool{false};
+    auto* profile = new bool{false};
     auto* forceWithLease = new bool{false};
     auto* noVerify = new bool{false};
     auto* jobs = new int{0};
@@ -103,6 +105,7 @@ void RegisterCommitPush(CLI::App& InApp) {
     cmd->add_flag("--no-ai-review", *noAiReview, "Skip AI review gate for commit");
     cmd->add_flag("--staged-only", *stagedOnly, "Commit only staged changes");
     cmd->add_flag("--dry-run", *dryRun, "Preview commit/sync/push actions without modifying repositories");
+    cmd->add_flag("--profile", *profile, "Print commit-push stage timing summary");
     cmd->add_flag("--force-with-lease", *forceWithLease, "Use force-with-lease for push");
     cmd->add_flag("--no-verify", *noVerify, "Pass --no-verify to push");
     cmd->add_option("--jobs", *jobs, "Push parallel workers");
@@ -110,6 +113,11 @@ void RegisterCommitPush(CLI::App& InApp) {
     cmd->add_option("--remote", *remote, "Remote filter for push");
 
     cmd->callback([=]() {
+        const auto totalStart = std::chrono::steady_clock::now();
+        long long commitMillis = 0;
+        long long syncMillis = 0;
+        long long pushMillis = 0;
+
         const auto extras = cmd->remaining();
         if (!extras.empty()) {
             std::cerr << "Error: unsupported extra arguments in commit-push mode:";
@@ -150,12 +158,16 @@ void RegisterCommitPush(CLI::App& InApp) {
         }
 
         std::cout << "=== commit-push stage: commit ===\n";
+        const auto commitStart = std::chrono::steady_clock::now();
         const auto commitResult = RunKogCommand(commitArgs);
+        const auto commitEnd = std::chrono::steady_clock::now();
+        commitMillis = std::chrono::duration_cast<std::chrono::milliseconds>(commitEnd - commitStart).count();
         if (commitResult.exitCode != 0) {
             std::exit(commitResult.exitCode);
         }
 
         std::cout << "=== commit-push stage: sync ===\n";
+        const auto syncStart = std::chrono::steady_clock::now();
         const auto repoList = ParseReposCsv(*repos);
         if (!repoList.empty()) {
             for (const auto& repo : repoList) {
@@ -181,6 +193,8 @@ void RegisterCommitPush(CLI::App& InApp) {
                 std::exit(syncResult.exitCode);
             }
         }
+        const auto syncEnd = std::chrono::steady_clock::now();
+        syncMillis = std::chrono::duration_cast<std::chrono::milliseconds>(syncEnd - syncStart).count();
 
         std::vector<std::string> pushArgs{"push", "--skip-sync"};
         if (!repos->empty()) {
@@ -191,6 +205,9 @@ void RegisterCommitPush(CLI::App& InApp) {
         }
         if (*dryRun) {
             pushArgs.push_back("--dry-run");
+        }
+        if (*profile) {
+            pushArgs.push_back("--profile");
         }
         if (*forceWithLease) {
             pushArgs.push_back("--force-with-lease");
@@ -211,7 +228,23 @@ void RegisterCommitPush(CLI::App& InApp) {
         }
 
         std::cout << "=== commit-push stage: push ===\n";
+        const auto pushStart = std::chrono::steady_clock::now();
         const auto pushResult = RunKogCommand(pushArgs);
+
+        const auto pushEnd = std::chrono::steady_clock::now();
+        pushMillis = std::chrono::duration_cast<std::chrono::milliseconds>(pushEnd - pushStart).count();
+
+        if (*profile) {
+            const auto totalEnd = std::chrono::steady_clock::now();
+            const auto totalMillis = std::chrono::duration_cast<std::chrono::milliseconds>(totalEnd - totalStart).count();
+            std::cout << "\n=== Commit-Push Profile Summary ===\n";
+            std::cout << "mode: native\n";
+            std::cout << "commit_ms: " << commitMillis << "\n";
+            std::cout << "sync_ms: " << syncMillis << "\n";
+            std::cout << "push_ms: " << pushMillis << "\n";
+            std::cout << "total_ms: " << totalMillis << "\n";
+        }
+
         std::exit(pushResult.exitCode);
     });
 }

@@ -103,6 +103,22 @@ test_cherry_pick_batch
 bash scripts/test/test-native-planner-contract.sh
 ```
 
+## Benchmark (Shell vs Native)
+
+Use this helper to compare wall-clock time between pure shell scripts and the C++ native CLI for major workflows.
+
+```bash
+bash src/shell/test/benchmark-shell-vs-native.sh
+```
+
+Common options:
+- `--runs <n>`: repeat count per operation (default: 3)
+- `--ops <csv>`: `commit,sync,push,commit-push`
+- `--repo <path>`: target repository path (default: `.`)
+- `--output <path>`: write raw TSV for charting
+
+The benchmark uses safe defaults (`--dry-run` / `--preflight-only`) and prints an average-ms summary plus a TSV path.
+
 ## Test Output
 
 ### Quick Test Output

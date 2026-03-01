@@ -5,6 +5,7 @@
 #include "shell_executor.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cctype>
 #include <cstdlib>
 #include <fstream>
@@ -1259,7 +1260,17 @@ void RegisterCommit(CLI::App& InApp) {
     auto* bNoNativePreflight = new bool{false};
     cmd->add_flag("--no-native-preflight", *bNoNativePreflight, "Skip native preflight checks before shell commit");
 
+    auto* bProfile = new bool{false};
+    cmd->add_flag("--profile", *bProfile, "Print native commit timing/profile summary");
+
     cmd->callback([=]() {
+        using clock = std::chrono::steady_clock;
+        const auto totalStart = clock::now();
+        long long preflightMs = 0;
+        long long planningMs = 0;
+        long long commitMs = 0;
+        long long summaryMs = 0;
+
         if (*bShell) {
             std::cerr << "Error: --shell is no longer supported; commit workflow is fully native now\n";
             std::exit(2);
@@ -1268,6 +1279,7 @@ void RegisterCommit(CLI::App& InApp) {
         const auto workspaceRoot = std::filesystem::current_path();
 
         if (!*bNoNativePreflight || *bPreflightOnly) {
+            const auto preflightStart = clock::now();
             const auto report = RunCommitPreflight(workspaceRoot);
             PrintCommitPreflight(report, *bStagedOnly);
             if (!report.inRepo) {
@@ -1277,7 +1289,19 @@ void RegisterCommit(CLI::App& InApp) {
                 std::cerr << "Preflight blocked: --staged-only but nothing staged\n";
                 std::exit(2);
             }
+            preflightMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - preflightStart).count();
             if (*bPreflightOnly) {
+                if (*bProfile) {
+                    const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - totalStart).count();
+                    std::cout << "\n=== Commit Profile Summary ===\n";
+                    std::cout << "mode: native\n";
+                    std::cout << "repo_count: 1\n";
+                    std::cout << "preflight_ms: " << preflightMs << "\n";
+                    std::cout << "planning_ms: 0\n";
+                    std::cout << "commit_ms: 0\n";
+                    std::cout << "summary_ms: 0\n";
+                    std::cout << "total_ms: " << totalMs << "\n";
+                }
                 std::exit(0);
             }
         }
@@ -1306,6 +1330,7 @@ void RegisterCommit(CLI::App& InApp) {
                       << " review=" << (ai.reviewEnabled ? "on" : "off") << "\n";
         }
 
+        const auto planningStart = clock::now();
         auto reposCsv = Trim(*repos);
         std::vector<std::filesystem::path> repoList;
         if (reposCsv.empty()) {
@@ -1323,18 +1348,36 @@ void RegisterCommit(CLI::App& InApp) {
                 repoList.push_back(workspaceRoot);
             }
         }
+        planningMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - planningStart).count();
 
         std::vector<RepoCommitResult> results;
         results.reserve(repoList.size());
 
+        const auto commitStart = clock::now();
         for (const auto& repo : repoList) {
             const auto label = DisplayRepoLabel(workspaceRoot, repo);
             std::cout << "\n[commit] " << label << "\n";
             const auto one = CommitSingleRepo(workspaceRoot, repo, *message, *bStagedOnly, *bPush, ai);
             results.push_back(one);
         }
+        commitMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - commitStart).count();
 
+        const auto summaryStart = clock::now();
         const auto exitCode = PrintCommitSummary(workspaceRoot, results);
+        summaryMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - summaryStart).count();
+
+        if (*bProfile) {
+            const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - totalStart).count();
+            std::cout << "\n=== Commit Profile Summary ===\n";
+            std::cout << "mode: native\n";
+            std::cout << "repo_count: " << repoList.size() << "\n";
+            std::cout << "preflight_ms: " << preflightMs << "\n";
+            std::cout << "planning_ms: " << planningMs << "\n";
+            std::cout << "commit_ms: " << commitMs << "\n";
+            std::cout << "summary_ms: " << summaryMs << "\n";
+            std::cout << "total_ms: " << totalMs << "\n";
+        }
+
         std::exit(exitCode);
     });
 }
