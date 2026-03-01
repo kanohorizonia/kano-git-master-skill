@@ -392,30 +392,24 @@ void RegisterScalar(CLI::App& InApp) {
     auto* registerShell = new bool{false};
     auto* registerDryRun = new bool{false};
     reg->add_flag("--native", *registerNative, "Use native C++ scalar register implementation (default)");
-    reg->add_flag("--shell", *registerShell, "Use shell fallback implementation");
+    reg->add_flag("--shell", *registerShell, "Deprecated compatibility flag (shell path removed)");
     reg->add_flag("--dry-run", *registerDryRun, "Preview mode");
     reg->callback([=]() {
         if (*registerShell && *registerNative) {
             std::cerr << "Error: --shell cannot be combined with --native\n";
             std::exit(1);
         }
+        if (*registerShell) {
+            std::cerr << "Error: --shell is no longer supported; scalar register is fully native now\n";
+            std::exit(2);
+        }
 
         auto extras = reg->remaining();
-        if (!*registerShell) {
-            if (!extras.empty()) {
-                std::cerr << "Error: Unexpected argument: " << extras.front() << "\n";
-                std::exit(1);
-            }
-            std::exit(RunNativeScalarRegister(*registerDryRun));
+        if (!extras.empty()) {
+            std::cerr << "Error: Unexpected argument: " << extras.front() << "\n";
+            std::exit(1);
         }
-
-        std::vector<std::string> args;
-        if (*registerDryRun) {
-            args.push_back("--dry-run");
-        }
-        args.insert(args.end(), extras.begin(), extras.end());
-        auto result = shell::ExecuteScript("mono-repo/scalar/register.sh", args);
-        std::exit(result.exitCode);
+        std::exit(RunNativeScalarRegister(*registerDryRun));
     });
 
     auto* status = cmd->add_subcommand("status", "Show Scalar status");
@@ -424,40 +418,37 @@ void RegisterScalar(CLI::App& InApp) {
     auto* statusShell = new bool{false};
     auto* statusFormat = new std::string{"text"};
     status->add_flag("--native", *statusNative, "Use native C++ scalar status implementation (default)");
-    status->add_flag("--shell", *statusShell, "Use shell fallback implementation");
+    status->add_flag("--shell", *statusShell, "Deprecated compatibility flag (shell path removed)");
     status->add_option("--format", *statusFormat, "Output format: text|json");
     status->callback([=]() {
-        if (!*statusShell) {
-            if (*statusFormat != "text" && *statusFormat != "json") {
-                std::cerr << "Error: Invalid format: " << *statusFormat << " (must be text or json)\n";
-                std::exit(1);
-            }
-            if (!EnsureGitRepository()) {
-                std::exit(1);
-            }
-            if (!ScalarAvailable()) {
-                if (*statusFormat == "json") {
-                    std::cout << "{\"error\": \"Git Scalar not available\", \"scalar_available\": false}\n";
-                } else {
-                    std::cerr << "Error: Git Scalar is not available\n";
-                    std::cerr << "Git Scalar requires Git 2.38 or higher.\n";
-                }
-                std::exit(1);
-            }
-
-            const auto native = CollectScalarStatus();
+        if (*statusShell) {
+            std::cerr << "Error: --shell is no longer supported; scalar status is fully native now\n";
+            std::exit(2);
+        }
+        if (*statusFormat != "text" && *statusFormat != "json") {
+            std::cerr << "Error: Invalid format: " << *statusFormat << " (must be text or json)\n";
+            std::exit(1);
+        }
+        if (!EnsureGitRepository()) {
+            std::exit(1);
+        }
+        if (!ScalarAvailable()) {
             if (*statusFormat == "json") {
-                PrintScalarJson(native);
+                std::cout << "{\"error\": \"Git Scalar not available\", \"scalar_available\": false}\n";
             } else {
-                PrintScalarText(native);
+                std::cerr << "Error: Git Scalar is not available\n";
+                std::cerr << "Git Scalar requires Git 2.38 or higher.\n";
             }
-            std::exit(0);
+            std::exit(1);
         }
 
-        auto extras = status->remaining();
-        std::vector<std::string> args(extras.begin(), extras.end());
-        auto result = shell::ExecuteScript("mono-repo/scalar/status.sh", args);
-        std::exit(result.exitCode);
+        const auto native = CollectScalarStatus();
+        if (*statusFormat == "json") {
+            PrintScalarJson(native);
+        } else {
+            PrintScalarText(native);
+        }
+        std::exit(0);
     });
 
     auto* optimize = cmd->add_subcommand("optimize", "Optimize repository");
@@ -466,30 +457,24 @@ void RegisterScalar(CLI::App& InApp) {
     auto* optimizeShell = new bool{false};
     auto* optimizeDryRun = new bool{false};
     optimize->add_flag("--native", *optimizeNative, "Use native C++ scalar optimize implementation (default)");
-    optimize->add_flag("--shell", *optimizeShell, "Use shell fallback implementation");
+    optimize->add_flag("--shell", *optimizeShell, "Deprecated compatibility flag (shell path removed)");
     optimize->add_flag("--dry-run", *optimizeDryRun, "Preview mode");
     optimize->callback([=]() {
         if (*optimizeShell && *optimizeNative) {
             std::cerr << "Error: --shell cannot be combined with --native\n";
             std::exit(1);
         }
+        if (*optimizeShell) {
+            std::cerr << "Error: --shell is no longer supported; scalar optimize is fully native now\n";
+            std::exit(2);
+        }
 
         auto extras = optimize->remaining();
-        if (!*optimizeShell) {
-            if (!extras.empty()) {
-                std::cerr << "Error: Unexpected argument: " << extras.front() << "\n";
-                std::exit(1);
-            }
-            std::exit(RunNativeScalarOptimize(*optimizeDryRun));
+        if (!extras.empty()) {
+            std::cerr << "Error: Unexpected argument: " << extras.front() << "\n";
+            std::exit(1);
         }
-
-        std::vector<std::string> args;
-        if (*optimizeDryRun) {
-            args.push_back("--dry-run");
-        }
-        args.insert(args.end(), extras.begin(), extras.end());
-        auto result = shell::ExecuteScript("mono-repo/scalar/optimize.sh", args);
-        std::exit(result.exitCode);
+        std::exit(RunNativeScalarOptimize(*optimizeDryRun));
     });
 
     auto* unreg = cmd->add_subcommand("unregister", "Unregister repository from Scalar");
@@ -498,30 +483,24 @@ void RegisterScalar(CLI::App& InApp) {
     auto* unregisterShell = new bool{false};
     auto* unregisterDryRun = new bool{false};
     unreg->add_flag("--native", *unregisterNative, "Use native C++ scalar unregister implementation (default)");
-    unreg->add_flag("--shell", *unregisterShell, "Use shell fallback implementation");
+    unreg->add_flag("--shell", *unregisterShell, "Deprecated compatibility flag (shell path removed)");
     unreg->add_flag("--dry-run", *unregisterDryRun, "Preview mode");
     unreg->callback([=]() {
         if (*unregisterShell && *unregisterNative) {
             std::cerr << "Error: --shell cannot be combined with --native\n";
             std::exit(1);
         }
+        if (*unregisterShell) {
+            std::cerr << "Error: --shell is no longer supported; scalar unregister is fully native now\n";
+            std::exit(2);
+        }
 
         auto extras = unreg->remaining();
-        if (!*unregisterShell) {
-            if (!extras.empty()) {
-                std::cerr << "Error: Unexpected argument: " << extras.front() << "\n";
-                std::exit(1);
-            }
-            std::exit(RunNativeScalarUnregister(*unregisterDryRun));
+        if (!extras.empty()) {
+            std::cerr << "Error: Unexpected argument: " << extras.front() << "\n";
+            std::exit(1);
         }
-
-        std::vector<std::string> args;
-        if (*unregisterDryRun) {
-            args.push_back("--dry-run");
-        }
-        args.insert(args.end(), extras.begin(), extras.end());
-        auto result = shell::ExecuteScript("mono-repo/scalar/unregister.sh", args);
-        std::exit(result.exitCode);
+        std::exit(RunNativeScalarUnregister(*unregisterDryRun));
     });
 }
 

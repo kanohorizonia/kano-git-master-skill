@@ -103,10 +103,9 @@ infer_profile_from_root() {
 }
 
 pause_if_needed() {
-  [[ -t 0 && -t 1 ]] || return 0
   [[ "${CI:-}" == "1" || "${CI:-}" == "true" ]] && return 0
   [[ "${KANO_AGENT_MODE:-}" == "1" || "${KANO_AGENT_MODE:-}" == "true" ]] && return 0
-  local pause_timeout="${KOG_WRAPPER_PAUSE_TIMEOUT:-12}"
+  local pause_timeout="${KOG_WRAPPER_PAUSE_TIMEOUT:-10}"
   if [[ "$pause_timeout" =~ ^[0-9]+$ ]] && [[ "$pause_timeout" -gt 0 ]]; then
     if ! read -r -t "$pause_timeout" -p "Press Enter to continue... (auto-continue in ${pause_timeout}s) "; then
       echo ""

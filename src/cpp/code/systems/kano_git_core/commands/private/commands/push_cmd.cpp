@@ -12,6 +12,7 @@
 #include <string>
 #include <chrono>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 namespace kano::git::commands {
@@ -63,6 +64,83 @@ auto Ellipsize(const std::string& InValue, const std::size_t InMaxWidth) -> std:
         return InValue.substr(0, InMaxWidth);
     }
     return InValue.substr(0, InMaxWidth - 3) + "...";
+}
+
+auto IsParentPath(const std::filesystem::path& InParent, const std::filesystem::path& InChild) -> bool {
+    const auto parent = InParent.lexically_normal().generic_string();
+    const auto child = InChild.lexically_normal().generic_string();
+    if (parent.empty() || child.empty() || parent == child) {
+        return false;
+    }
+    const std::string prefix = parent + "/";
+    return child.rfind(prefix, 0) == 0;
+}
+
+auto BuildPushWaves(const std::vector<std::filesystem::path>& InRepos) -> std::vector<std::vector<std::filesystem::path>> {
+    const std::size_t n = InRepos.size();
+    if (n <= 1) {
+        return {InRepos};
+    }
+
+    std::vector<int> indegree(n, 0);
+    std::vector<std::vector<std::size_t>> reverseEdges(n);
+
+    for (std::size_t parent = 0; parent < n; ++parent) {
+        for (std::size_t child = 0; child < n; ++child) {
+            if (parent == child) {
+                continue;
+            }
+            if (IsParentPath(InRepos[parent], InRepos[child])) {
+                indegree[parent] += 1;
+                reverseEdges[child].push_back(parent);
+            }
+        }
+    }
+
+    std::vector<std::size_t> frontier;
+    frontier.reserve(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        if (indegree[i] == 0) {
+            frontier.push_back(i);
+        }
+    }
+
+    std::vector<std::vector<std::filesystem::path>> waves;
+    std::size_t processed = 0;
+    while (!frontier.empty()) {
+        std::sort(frontier.begin(), frontier.end(), [&](const std::size_t A, const std::size_t B) {
+            return InRepos[A].lexically_normal().generic_string() < InRepos[B].lexically_normal().generic_string();
+        });
+
+        std::vector<std::filesystem::path> wave;
+        wave.reserve(frontier.size());
+        std::vector<std::size_t> next;
+        for (const auto idx : frontier) {
+            wave.push_back(InRepos[idx]);
+            processed += 1;
+            for (const auto dependent : reverseEdges[idx]) {
+                indegree[dependent] -= 1;
+                if (indegree[dependent] == 0) {
+                    next.push_back(dependent);
+                }
+            }
+        }
+        waves.push_back(std::move(wave));
+        frontier = std::move(next);
+    }
+
+    if (processed != n) {
+        return {InRepos};
+    }
+    return waves;
+}
+
+auto DetectDefaultPushJobs() -> int {
+    const unsigned int cores = std::thread::hardware_concurrency();
+    if (cores == 0) {
+        return 1;
+    }
+    return static_cast<int>(cores);
 }
 
 auto RunNativePush(
@@ -248,13 +326,17 @@ auto RunNativePush(
     };
 
     const int jobs = InJobs < 1 ? 1 : InJobs;
-    if (jobs == 1 || InRepos.size() <= 1) {
-        for (const auto& repoPathRaw : InRepos) {
-            const auto [s, f] = runOneRepo(repoPathRaw);
-            successes += s;
-            failures += f;
+    const auto waves = BuildPushWaves(InRepos);
+    for (const auto& wave : waves) {
+        if (jobs == 1 || wave.size() <= 1) {
+            for (const auto& repoPathRaw : wave) {
+                const auto [s, f] = runOneRepo(repoPathRaw);
+                successes += s;
+                failures += f;
+            }
+            continue;
         }
-    } else {
+
         std::vector<std::future<std::pair<int, int>>> active;
         active.reserve(static_cast<std::size_t>(jobs));
 
@@ -268,7 +350,7 @@ auto RunNativePush(
             active.erase(active.begin());
         };
 
-        for (const auto& repoPathRaw : InRepos) {
+        for (const auto& repoPathRaw : wave) {
             while (static_cast<int>(active.size()) >= jobs) {
                 waitOne();
             }
@@ -342,13 +424,13 @@ void RegisterPush(CLI::App& InApp) {
     auto* noSmartSync = new bool{false};
     auto* stashLocalChanges = new bool{false};
     auto* failOnDirtySync = new bool{false};
-    auto* jobs = new int{1};
+    auto* jobs = new int{DetectDefaultPushJobs()};
     auto* profile = new bool{false};
     auto* verbose = new bool{false};
     auto* remote = new std::string{};
 
-    cmd->add_flag("--shell", *shellMode, "Use shell fallback implementation");
-    cmd->add_option("--repos", *repos, "Shell-mode repo filter (forces shell fallback)");
+    cmd->add_flag("--shell", *shellMode, "Deprecated compatibility flag (shell path removed)");
+    cmd->add_option("--repos", *repos, "Repo filter (comma-separated paths, native mode)");
     cmd->add_flag("--skip-sync", *skipSync, "Skip sync step before push");
     cmd->add_flag("--sync-only", *syncOnly, "Run sync only and skip push");
     cmd->add_flag("--dry-run", *dryRun, "Preview push operations");
@@ -357,7 +439,7 @@ void RegisterPush(CLI::App& InApp) {
     cmd->add_flag("--no-smart-sync", *noSmartSync, "Compatibility flag (native uses simple pull --rebase)");
     cmd->add_flag("--stash-local-changes", *stashLocalChanges, "Auto-stash local changes during native sync");
     cmd->add_flag("--fail-on-dirty-sync", *failOnDirtySync, "Fail native sync when local changes exist");
-    cmd->add_option("--jobs", *jobs, "Number of parallel repo workers for native push");
+    cmd->add_option("--jobs", *jobs, "Number of parallel repo workers for native push (default: CPU cores)");
     cmd->add_flag("--profile", *profile, "Print native push timing/profile summary");
     cmd->add_flag("--verbose", *verbose, "Show detailed native push output including partial failures");
     cmd->add_option("--remote", *remote, "Native remote filter (default fan-out origin-ssh/http/origin)");
@@ -365,58 +447,26 @@ void RegisterPush(CLI::App& InApp) {
     cmd->callback([=]() {
         auto extras = cmd->remaining();
 
+        if (*shellMode) {
+            std::cerr << "Error: --shell is no longer supported; push workflow is fully native now\n";
+            std::exit(2);
+        }
+
+        if (!extras.empty()) {
+            std::cerr << "Error: unsupported extra arguments in native push mode:";
+            for (const auto& extra : extras) {
+                std::cerr << ' ' << extra;
+            }
+            std::cerr << "\n";
+            std::exit(2);
+        }
+
         std::vector<std::filesystem::path> nativeRepos;
         if (!repos->empty()) {
             nativeRepos = ParseReposCsv(*repos);
         }
         if (nativeRepos.empty()) {
             nativeRepos.push_back(std::filesystem::current_path());
-        }
-
-        const bool forceShell = *shellMode || !extras.empty();
-        if (forceShell) {
-            std::vector<std::string> args;
-            if (!repos->empty()) {
-                args.push_back("--repos");
-                args.push_back(*repos);
-            }
-            if (*skipSync) {
-                args.push_back("--skip-sync");
-            }
-            if (*syncOnly) {
-                args.push_back("--sync-only");
-            }
-            if (*dryRun) {
-                args.push_back("--dry-run");
-            }
-            if (*forceWithLease) {
-                args.push_back("--force-with-lease");
-            }
-            if (*noVerify) {
-                args.push_back("--no-verify");
-            }
-            if (*noSmartSync) {
-                args.push_back("--no-smart-sync");
-            }
-            if (*stashLocalChanges) {
-                args.push_back("--stash-local-changes");
-            }
-            if (*failOnDirtySync) {
-                args.push_back("--fail-on-dirty-sync");
-            }
-            if (*jobs > 1) {
-                args.push_back("--jobs");
-                args.push_back(std::to_string(*jobs));
-            }
-            if (*profile) {
-                args.push_back("--profile");
-            }
-            if (*verbose) {
-                args.push_back("--verbose");
-            }
-            args.insert(args.end(), extras.begin(), extras.end());
-            auto result = shell::ExecuteScript("commit-tools/smart-push.sh", args);
-            std::exit(result.exitCode);
         }
 
         if (*stashLocalChanges && *failOnDirtySync) {

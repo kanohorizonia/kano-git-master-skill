@@ -4,6 +4,29 @@
 #include "command_registry.hpp"
 #include "shell_executor.hpp"
 
+#include <iostream>
+#include <string>
+#include <vector>
+
+namespace {
+
+auto RunGitP4Subcommand(
+    const std::string& InSubcommand,
+    const std::vector<std::string>& InExtras,
+    bool InRequireArgs) -> int {
+    if (InRequireArgs && InExtras.empty()) {
+        std::cerr << "Error: p4 " << InSubcommand << " requires arguments\n";
+        return 1;
+    }
+
+    std::vector<std::string> args = {"p4", InSubcommand};
+    args.insert(args.end(), InExtras.begin(), InExtras.end());
+    const auto result = kano::git::shell::ExecuteCommand("git", args, kano::git::shell::ExecMode::PassThrough);
+    return result.exitCode;
+}
+
+} // namespace
+
 namespace kano::git::commands {
 
 void RegisterP4(CLI::App& InApp) {
@@ -12,37 +35,29 @@ void RegisterP4(CLI::App& InApp) {
     auto* clone = cmd->add_subcommand("clone", "Clone a Perforce depot");
     clone->allow_extras();
     clone->callback([=]() {
-        auto extras = clone->remaining();
-        std::vector<std::string> args(extras.begin(), extras.end());
-        auto result = shell::ExecuteScript("vcs-bridges/p4/clone.sh", args);
-        std::exit(result.exitCode);
+        const auto extras = clone->remaining();
+        std::exit(RunGitP4Subcommand("clone", std::vector<std::string>(extras.begin(), extras.end()), true));
     });
 
     auto* sync = cmd->add_subcommand("sync", "Sync from Perforce");
     sync->allow_extras();
     sync->callback([=]() {
-        auto extras = sync->remaining();
-        std::vector<std::string> args(extras.begin(), extras.end());
-        auto result = shell::ExecuteScript("vcs-bridges/p4/sync.sh", args);
-        std::exit(result.exitCode);
+        const auto extras = sync->remaining();
+        std::exit(RunGitP4Subcommand("sync", std::vector<std::string>(extras.begin(), extras.end()), false));
     });
 
     auto* submit = cmd->add_subcommand("submit", "Submit to Perforce");
     submit->allow_extras();
     submit->callback([=]() {
-        auto extras = submit->remaining();
-        std::vector<std::string> args(extras.begin(), extras.end());
-        auto result = shell::ExecuteScript("vcs-bridges/p4/submit.sh", args);
-        std::exit(result.exitCode);
+        const auto extras = submit->remaining();
+        std::exit(RunGitP4Subcommand("submit", std::vector<std::string>(extras.begin(), extras.end()), false));
     });
 
     auto* rebase = cmd->add_subcommand("rebase", "Rebase from Perforce");
     rebase->allow_extras();
     rebase->callback([=]() {
-        auto extras = rebase->remaining();
-        std::vector<std::string> args(extras.begin(), extras.end());
-        auto result = shell::ExecuteScript("vcs-bridges/p4/rebase.sh", args);
-        std::exit(result.exitCode);
+        const auto extras = rebase->remaining();
+        std::exit(RunGitP4Subcommand("rebase", std::vector<std::string>(extras.begin(), extras.end()), false));
     });
 }
 

@@ -172,6 +172,21 @@ void PrintSubtreesTable(const std::vector<SubtreeRecord>& InRecords) {
     }
 }
 
+auto RunNativeSubtreePassthrough(const std::string& InSubcommand, const std::vector<std::string>& InExtras) -> int {
+    if (!EnsureGitRepository()) {
+        return 1;
+    }
+    if (InExtras.empty()) {
+        std::cerr << "Error: subtree " << InSubcommand << " requires arguments\n";
+        return 1;
+    }
+
+    std::vector<std::string> args = {"subtree", InSubcommand};
+    args.insert(args.end(), InExtras.begin(), InExtras.end());
+    const auto result = kano::git::shell::ExecuteCommand("git", args, kano::git::shell::ExecMode::PassThrough);
+    return result.exitCode;
+}
+
 } // namespace
 
 namespace kano::git::commands {
@@ -182,37 +197,29 @@ void RegisterSubtree(CLI::App& InApp) {
     auto* add = cmd->add_subcommand("add", "Add a subtree");
     add->allow_extras();
     add->callback([=]() {
-        auto extras = add->remaining();
-        std::vector<std::string> args(extras.begin(), extras.end());
-        auto result = shell::ExecuteScript("subtree/add-subtree.sh", args);
-        std::exit(result.exitCode);
+        const auto extras = add->remaining();
+        std::exit(RunNativeSubtreePassthrough("add", std::vector<std::string>(extras.begin(), extras.end())));
     });
 
     auto* pull = cmd->add_subcommand("pull", "Pull subtree updates");
     pull->allow_extras();
     pull->callback([=]() {
-        auto extras = pull->remaining();
-        std::vector<std::string> args(extras.begin(), extras.end());
-        auto result = shell::ExecuteScript("subtree/pull-subtree.sh", args);
-        std::exit(result.exitCode);
+        const auto extras = pull->remaining();
+        std::exit(RunNativeSubtreePassthrough("pull", std::vector<std::string>(extras.begin(), extras.end())));
     });
 
     auto* push = cmd->add_subcommand("push", "Push subtree changes");
     push->allow_extras();
     push->callback([=]() {
-        auto extras = push->remaining();
-        std::vector<std::string> args(extras.begin(), extras.end());
-        auto result = shell::ExecuteScript("subtree/push-subtree.sh", args);
-        std::exit(result.exitCode);
+        const auto extras = push->remaining();
+        std::exit(RunNativeSubtreePassthrough("push", std::vector<std::string>(extras.begin(), extras.end())));
     });
 
     auto* split = cmd->add_subcommand("split", "Split subtree");
     split->allow_extras();
     split->callback([=]() {
-        auto extras = split->remaining();
-        std::vector<std::string> args(extras.begin(), extras.end());
-        auto result = shell::ExecuteScript("subtree/split-subtree.sh", args);
-        std::exit(result.exitCode);
+        const auto extras = split->remaining();
+        std::exit(RunNativeSubtreePassthrough("split", std::vector<std::string>(extras.begin(), extras.end())));
     });
 
     auto* list = cmd->add_subcommand("list", "List subtrees");
@@ -221,40 +228,37 @@ void RegisterSubtree(CLI::App& InApp) {
     auto* listShell = new bool{false};
     auto* listFormat = new std::string{"table"};
     list->add_flag("--native", *listNative, "Use native C++ subtree list implementation (default)");
-    list->add_flag("--shell", *listShell, "Use shell fallback implementation");
+    list->add_flag("--shell", *listShell, "Deprecated compatibility flag (shell path removed)");
     list->add_option("--format", *listFormat, "Output format: table|json");
     list->callback([=]() {
-        if (!*listShell) {
-            if (*listFormat != "table" && *listFormat != "json") {
-                std::cerr << "Error: Unknown format: " << *listFormat << "\n";
-                std::exit(1);
-            }
-            if (!EnsureGitRepository()) {
-                std::exit(1);
-            }
+        if (*listShell) {
+            std::cerr << "Error: --shell is no longer supported; subtree list is fully native now\n";
+            std::exit(2);
+        }
+        if (*listFormat != "table" && *listFormat != "json") {
+            std::cerr << "Error: Unknown format: " << *listFormat << "\n";
+            std::exit(1);
+        }
+        if (!EnsureGitRepository()) {
+            std::exit(1);
+        }
 
-            const auto records = CollectSubtrees();
-            if (records.empty()) {
-                if (*listFormat == "json") {
-                    std::cout << "[]\n";
-                } else {
-                    std::cout << "[INFO] No subtrees found in this repository\n";
-                }
-                std::exit(0);
-            }
-
+        const auto records = CollectSubtrees();
+        if (records.empty()) {
             if (*listFormat == "json") {
-                PrintSubtreesJson(records);
+                std::cout << "[]\n";
             } else {
-                PrintSubtreesTable(records);
+                std::cout << "[INFO] No subtrees found in this repository\n";
             }
             std::exit(0);
         }
 
-        auto extras = list->remaining();
-        std::vector<std::string> args(extras.begin(), extras.end());
-        auto result = shell::ExecuteScript("subtree/list-subtrees.sh", args);
-        std::exit(result.exitCode);
+        if (*listFormat == "json") {
+            PrintSubtreesJson(records);
+        } else {
+            PrintSubtreesTable(records);
+        }
+        std::exit(0);
     });
 }
 
