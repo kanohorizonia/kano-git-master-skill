@@ -43,6 +43,37 @@ auto HasRemote(const std::filesystem::path& InRepo, const std::string& InRemote)
     return out.exitCode == 0;
 }
 
+auto ParseNonNegativeInt(const std::string& InValue) -> int {
+    const auto trimmed = Trim(InValue);
+    if (trimmed.empty()) {
+        return 0;
+    }
+    try {
+        return std::max(0, std::stoi(trimmed));
+    } catch (const std::exception&) {
+        return 0;
+    }
+}
+
+auto HasCommitsToPush(const std::filesystem::path& InRepo,
+                      const std::string& InRemote,
+                      const std::string& InBranch) -> bool {
+    const auto remoteRef = std::format("refs/remotes/{}/{}", InRemote, InBranch);
+    const auto localRef = std::format("refs/heads/{}", InBranch);
+
+    const auto hasRemoteRef = GitCapture(InRepo, {"show-ref", "--verify", "--quiet", remoteRef}).exitCode == 0;
+    if (!hasRemoteRef) {
+        return true;
+    }
+
+    const auto ahead = GitCapture(InRepo, {"rev-list", "--count", std::format("{}..{}", remoteRef, localRef)});
+    if (ahead.exitCode != 0) {
+        return true;
+    }
+
+    return ParseNonNegativeInt(ahead.stdoutStr) > 0;
+}
+
 auto ParseReposCsv(const std::string& InCsv) -> std::vector<std::filesystem::path> {
     std::vector<std::filesystem::path> out;
     std::istringstream iss(InCsv);
@@ -326,6 +357,15 @@ auto RunNativePush(
         int repoSuccess = 0;
         const auto pushStart = std::chrono::steady_clock::now();
         for (const auto& remote : pushRemotes) {
+            const bool hasSomethingToPush = HasCommitsToPush(repoPath, remote, branch);
+            if (!hasSomethingToPush) {
+                if (InVerbose) {
+                    std::cout << "[" << repoLabel << "] Unchanged (" << remote << ")\n";
+                }
+                repoSuccess = 1;
+                continue;
+            }
+
             std::vector<std::string> args = {"push"};
             args.insert(args.end(), pushArgs.begin(), pushArgs.end());
             args.push_back(remote);

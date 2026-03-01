@@ -14,6 +14,7 @@ void RegisterGuide(CLI::App& InApp);
 void RegisterStatus(CLI::App& InApp);
 void RegisterTui(CLI::App& InApp);
 void RegisterCommit(CLI::App& InApp);
+void RegisterCommitPush(CLI::App& InApp);
 void RegisterAmend(CLI::App& InApp);
 void RegisterResolve(CLI::App& InApp);
 void RegisterSync(CLI::App& InApp);
