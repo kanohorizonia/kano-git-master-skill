@@ -6,6 +6,7 @@
 #include "shell_executor.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <format>
 #include <cstdlib>
@@ -916,6 +917,7 @@ void RegisterSync(CLI::App& InApp) {
     auto* originLatestNoCache = new bool{false};
     auto* originLatestRefreshCache = new bool{false};
     auto* originLatestNoRecursive = new bool{false};
+    auto* originLatestProfile = new bool{false};
 
     origin_latest->add_flag("--shell", *originLatestShell, "Deprecated compatibility flag (shell path removed)");
     origin_latest->add_option("--repo", *originLatestRepo, "Target repository root path");
@@ -925,6 +927,7 @@ void RegisterSync(CLI::App& InApp) {
     origin_latest->add_flag("--native-no-cache", *originLatestNoCache, "Disable native discovery cache");
     origin_latest->add_flag("--native-refresh-cache", *originLatestRefreshCache, "Force native cache refresh");
     origin_latest->add_flag("--no-recursive,-N", *originLatestNoRecursive, "Sync only current repository");
+    origin_latest->add_flag("--profile", *originLatestProfile, "Print native sync timing/profile summary");
 
     origin_latest->callback([=]() {
         auto extras = origin_latest->remaining();
@@ -941,6 +944,7 @@ void RegisterSync(CLI::App& InApp) {
             std::exit(2);
         }
 
+        const auto start = std::chrono::steady_clock::now();
         const auto repoRoot = std::filesystem::weakly_canonical(std::filesystem::path(*originLatestRepo));
         const auto code = RunNativeOriginLatestSync(
             repoRoot,
@@ -950,6 +954,15 @@ void RegisterSync(CLI::App& InApp) {
             *originLatestNoCache,
             *originLatestRefreshCache,
             !*originLatestNoRecursive);
+        if (*originLatestProfile) {
+            const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+            std::cout << "\n=== Sync Profile Summary ===\n";
+            std::cout << "mode: native\n";
+            std::cout << "workflow: origin-latest\n";
+            std::cout << "recursive: " << (!*originLatestNoRecursive ? "true" : "false") << "\n";
+            std::cout << "dry_run: " << (*originLatestDryRun ? "true" : "false") << "\n";
+            std::cout << "total_ms: " << totalMs << "\n";
+        }
         std::exit(code);
     });
 
@@ -958,8 +971,10 @@ void RegisterSync(CLI::App& InApp) {
     upstream_fp->allow_extras();
     auto* upstreamRepo = new std::string{"."};
     auto* upstreamDryRun = new bool{false};
+    auto* upstreamProfile = new bool{false};
     upstream_fp->add_option("--repo", *upstreamRepo, "Target repository path");
     upstream_fp->add_flag("--dry-run", *upstreamDryRun, "Preview force-push sync actions");
+    upstream_fp->add_flag("--profile", *upstreamProfile, "Print native sync timing/profile summary");
     upstream_fp->callback([=]() {
         auto extras = upstream_fp->remaining();
         if (!extras.empty()) {
@@ -971,8 +986,18 @@ void RegisterSync(CLI::App& InApp) {
             std::exit(2);
         }
 
+        const auto start = std::chrono::steady_clock::now();
         const auto repoRoot = std::filesystem::weakly_canonical(std::filesystem::path(*upstreamRepo));
-        std::exit(RunNativeUpstreamForcePush(repoRoot, *upstreamDryRun));
+        const auto code = RunNativeUpstreamForcePush(repoRoot, *upstreamDryRun);
+        if (*upstreamProfile) {
+            const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+            std::cout << "\n=== Sync Profile Summary ===\n";
+            std::cout << "mode: native\n";
+            std::cout << "workflow: upstream-force-push\n";
+            std::cout << "dry_run: " << (*upstreamDryRun ? "true" : "false") << "\n";
+            std::cout << "total_ms: " << totalMs << "\n";
+        }
+        std::exit(code);
     });
 
     // --- sync stable-dev ---
@@ -982,11 +1007,14 @@ void RegisterSync(CLI::App& InApp) {
     auto* stableDevReportFormat = new std::string{"compact"};
     auto* stableDevRepo = new std::string{"."};
     auto* stableDevDryRun = new bool{false};
+    auto* stableDevProfile = new bool{false};
     stable_dev->add_flag("--workspace", *stableDevWorkspace, "Run stable-dev across src/* submodules with aggregated summary report");
     stable_dev->add_option("--format", *stableDevReportFormat, "Workspace report format: compact|table|tsv|json|markdown");
     stable_dev->add_option("--repo", *stableDevRepo, "Single-repo mode target path");
     stable_dev->add_flag("--dry-run", *stableDevDryRun, "Preview stable-dev sync actions");
+    stable_dev->add_flag("--profile", *stableDevProfile, "Print native sync timing/profile summary");
     stable_dev->callback([=]() {
+        const auto start = std::chrono::steady_clock::now();
         auto extras = stable_dev->remaining();
         std::vector<std::string> args(extras.begin(), extras.end());
 
@@ -1020,7 +1048,16 @@ void RegisterSync(CLI::App& InApp) {
             if (*stableDevDryRun) {
                 workspaceArgs.push_back("--dry-run");
             }
-            std::exit(RunStableDevWorkspace(workspaceRoot, *format, workspaceArgs));
+            const auto code = RunStableDevWorkspace(workspaceRoot, *format, workspaceArgs);
+            if (*stableDevProfile) {
+                const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+                std::cout << "\n=== Sync Profile Summary ===\n";
+                std::cout << "mode: native\n";
+                std::cout << "workflow: stable-dev(workspace)\n";
+                std::cout << "dry_run: " << (*stableDevDryRun ? "true" : "false") << "\n";
+                std::cout << "total_ms: " << totalMs << "\n";
+            }
+            std::exit(code);
         }
 
         const auto repoPath = std::filesystem::weakly_canonical(std::filesystem::path(*stableDevRepo));
@@ -1046,6 +1083,14 @@ void RegisterSync(CLI::App& InApp) {
         std::cout << "OVERALL RESULT: " << (code == 0 ? "SUCCESS" : "FAILED") << "\n";
         std::cout << "=== upstream-stable-dev branch report ===\n";
         PrintStableDevSummary({row}, *format);
+        if (*stableDevProfile) {
+            const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+            std::cout << "\n=== Sync Profile Summary ===\n";
+            std::cout << "mode: native\n";
+            std::cout << "workflow: stable-dev(single-repo)\n";
+            std::cout << "dry_run: " << (*stableDevDryRun ? "true" : "false") << "\n";
+            std::cout << "total_ms: " << totalMs << "\n";
+        }
         std::exit(code == 0 ? 0 : 1);
     });
 
@@ -1058,12 +1103,14 @@ void RegisterSync(CLI::App& InApp) {
     auto* devNoCache = new bool{false};
     auto* devRefreshCache = new bool{false};
     auto* devNoRecursive = new bool{false};
+    auto* devProfile = new bool{false};
     dev->add_option("--repo", *devRepo, "Target repository root path");
     dev->add_flag("--dry-run", *devDryRun, "Preview sync actions without modifying repositories");
     dev->add_option("--native-max-depth", *devMaxDepth, "Native discovery max depth");
     dev->add_flag("--native-no-cache", *devNoCache, "Disable native discovery cache");
     dev->add_flag("--native-refresh-cache", *devRefreshCache, "Force native cache refresh");
     dev->add_flag("--no-recursive,-N", *devNoRecursive, "Sync only current repository");
+    dev->add_flag("--profile", *devProfile, "Print native sync timing/profile summary");
     dev->callback([=]() {
         auto extras = dev->remaining();
         if (!extras.empty()) {
@@ -1075,6 +1122,7 @@ void RegisterSync(CLI::App& InApp) {
             std::exit(2);
         }
 
+        const auto start = std::chrono::steady_clock::now();
         const auto repoRoot = std::filesystem::weakly_canonical(std::filesystem::path(*devRepo));
         const auto code = RunNativeOriginLatestSync(
             repoRoot,
@@ -1084,12 +1132,23 @@ void RegisterSync(CLI::App& InApp) {
             *devNoCache,
             *devRefreshCache,
             !*devNoRecursive);
+        if (*devProfile) {
+            const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+            std::cout << "\n=== Sync Profile Summary ===\n";
+            std::cout << "mode: native\n";
+            std::cout << "workflow: dev\n";
+            std::cout << "recursive: " << (!*devNoRecursive ? "true" : "false") << "\n";
+            std::cout << "dry_run: " << (*devDryRun ? "true" : "false") << "\n";
+            std::cout << "total_ms: " << totalMs << "\n";
+        }
         std::exit(code);
     });
 
     // --- sync (default: auto-detect) ---
     auto* defaultNoRecursive = new bool{false};
+    auto* defaultProfile = new bool{false};
     cmd->add_flag("--no-recursive,-N", *defaultNoRecursive, "Default sync: only current repository");
+    cmd->add_flag("--profile", *defaultProfile, "Default sync: print native timing/profile summary");
     cmd->allow_extras();
     cmd->callback([=]() {
         if (cmd->get_subcommands().empty()) {
@@ -1100,6 +1159,7 @@ void RegisterSync(CLI::App& InApp) {
                 std::exit(2);
             }
 
+            const auto start = std::chrono::steady_clock::now();
             const auto code = RunNativeOriginLatestSync(
                 std::filesystem::current_path(),
                 "origin",
@@ -1108,6 +1168,15 @@ void RegisterSync(CLI::App& InApp) {
                 false,
                 false,
                 !*defaultNoRecursive);
+            if (*defaultProfile) {
+                const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+                std::cout << "\n=== Sync Profile Summary ===\n";
+                std::cout << "mode: native\n";
+                std::cout << "workflow: default(origin-latest)\n";
+                std::cout << "recursive: " << (!*defaultNoRecursive ? "true" : "false") << "\n";
+                std::cout << "dry_run: false\n";
+                std::cout << "total_ms: " << totalMs << "\n";
+            }
             std::exit(code);
         }
     });

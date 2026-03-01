@@ -1,0 +1,4 @@
+[submodule "src/cpp/code/apps/unreal/KanoGitGUI"]
+	path = src/cpp/code/apps/unreal/KanoGitGUI
+	url = https://github.com/kanohorizonia/KanoGitGUI.git
+	branch = main
