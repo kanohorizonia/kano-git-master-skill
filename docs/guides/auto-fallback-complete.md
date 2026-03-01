@@ -1,5 +1,8 @@
 # Auto-Fallback Implementation - Complete
 
+> Canonical usage is through `kano-git` / `kog` commands.
+> `smart-*` names in this guide are legacy shell implementation files retained for compatibility/fallback.
+
 **Date**: 2026-02-13
 **Status**: Complete
 
@@ -211,4 +214,3 @@ Potential improvements:
 **Total Scripts**: 6 auto-fallback variants
 **Lines of Code**: ~1,200 lines
 **Test Status**: ✅ All scripts tested and working
-

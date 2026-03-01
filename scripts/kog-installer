@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: kog-installer [options]
+
+Install kano-git/kog launcher integration for Git Bash:
+  - Add scripts/ directory to PATH in ~/.bashrc
+  - Enable bash completion via `kano-git completion bash`
+
+Options:
+  --rc-file <path>      Target rc file (default: ~/.bashrc)
+  --no-completion       Skip completion setup
+  --dry-run             Show changes without writing
+  -h, --help            Show this help
+EOF
+}
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RC_FILE="${HOME}/.bashrc"
+ENABLE_COMPLETION=1
+DRY_RUN=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --rc-file)
+      RC_FILE="$2"
+      shift 2
+      ;;
+    --no-completion)
+      ENABLE_COMPLETION=0
+      shift
+      ;;
+    --dry-run)
+      DRY_RUN=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
+
+mkdir -p "$(dirname "$RC_FILE")"
+touch "$RC_FILE"
+
+BLOCK_START="# >>> kano-git installer >>>"
+BLOCK_END="# <<< kano-git installer <<<"
+
+if grep -Fq "$BLOCK_START" "$RC_FILE"; then
+  echo "kano-git installer block already exists in: $RC_FILE"
+  echo "No changes needed."
+  exit 0
+fi
+
+COMPLETION_LINE="# source <(kano-git completion bash)"
+if [[ "$ENABLE_COMPLETION" -eq 1 ]]; then
+  COMPLETION_LINE="source <(kano-git completion bash)"
+fi
+
+BLOCK_CONTENT=$(cat <<EOF
+
+$BLOCK_START
+export PATH="\$PATH:$SCRIPT_DIR"
+$COMPLETION_LINE
+$BLOCK_END
+EOF
+)
+
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  echo "[dry-run] Would append to $RC_FILE:"
+  echo "$BLOCK_CONTENT"
+  echo
+  echo "Then run: source \"$RC_FILE\""
+  exit 0
+fi
+
+printf "%s\n" "$BLOCK_CONTENT" >> "$RC_FILE"
+
+echo "Installed kano-git launcher settings into: $RC_FILE"
+echo "Apply now with: source \"$RC_FILE\""

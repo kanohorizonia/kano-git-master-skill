@@ -13,6 +13,124 @@ Comprehensive Git automation scripts for managing multi-repository workspaces. W
 
 ## Quick Start
 
+### Install `kano-git` / `kog` in Git Bash (PATH + completion)
+
+```bash
+# From repo root
+bash ./scripts/kog-installer
+
+# Apply immediately in current terminal
+source ~/.bashrc
+
+# Verify
+kano-git --help
+kano-git completion bash | head -n 3
+```
+
+Installer options:
+
+```bash
+# Preview only (no file changes)
+bash ./scripts/kog-installer --dry-run
+
+# Use custom rc file
+bash ./scripts/kog-installer --rc-file ~/.bash_profile
+
+# Install PATH only (skip completion)
+bash ./scripts/kog-installer --no-completion
+```
+
+Compatibility alias (same behavior):
+
+```bash
+bash ./scripts/kano-git-installer
+```
+
+### Guided Flows (Easy Win Before Full TUI)
+
+Use the built-in guide command to get practical, low-risk command sequences:
+
+```bash
+# List available flows
+kano-git guide
+
+# Workspace safe-first flow with checklist
+kano-git guide --flow workspace --checklist
+
+# Other flows
+kano-git guide --flow sync
+kano-git guide --flow commit
+kano-git guide --flow worktree
+```
+
+This gives you immediate guided UX in pure terminal while we iterate toward richer TUI.
+
+### Global Cross-Repo Status (TUI-first experience seed)
+
+Use top-level status to get one-screen global view across discovered repos:
+
+```bash
+# Table view (default)
+kano-git status
+
+# JSON view for further tooling
+kano-git status --format json
+
+# Narrow scan
+kano-git status --max-depth 2 --exclude node_modules --exclude .agents
+```
+
+Status includes:
+- current branch
+- upstream/remote tracking branch
+- ahead/behind tracking summary
+- repo dirty flag
+- dirty worktree detection
+
+### Full TUI Preview (Interactive)
+
+```bash
+# Non-interactive preview (for quick validation)
+kano-git tui --demo
+
+# Launch interactive dashboard
+kano-git tui
+```
+
+Current TUI actions (v1):
+- left panel: repo list (dirty + branch + path)
+- right panel: selected repo details (type, upstream, tracking, dirty/worktree)
+- Enter opens incremental history pager for selected repo
+- `t`: collapse/expand selected repo subtree in left panel
+- `/` in main view: enter repo path filter mode (incremental)
+- `c` in main view: show selected repo commit preview (staged/unstaged + risk)
+- `C` in main view: commit execute with confirm gate (requires staged files)
+- `p` in main view: show selected repo push preview (upstream/tracking + risk)
+- `f` in main view: fetch action uses confirm gate (`y` execute / `n` cancel)
+- `P` in main view: push execute with confirm gate (requires upstream)
+- `x` in main view: cherry-pick preflight panel (source/target candidates, duplicate+risk hints)
+- `X` in main view: start cherry-pick runner from preflight non-duplicate queue
+- runner controls: `n` next, `c` continue, `s` skip, `a` abort, `q` close panel
+- `b` in main view: rebase preflight panel (branch/upstream/divergence/candidate commits/risk)
+- `B` in main view: open rebase planner (no execution) from preflight candidates
+- planner controls: `↑/↓` select line, `p/s/f/d` set action (pick/squash/fixup/drop), `q` close planner
+- `R` in main view: start rebase runner from planner queue
+- rebase runner controls: `N` next, `C` continue, `S` skip, `A` abort, `q` close panel
+- history mode controls:
+  - `←` / `→`: previous/next repo page source
+  - `PgUp` / `PgDn`: older/newer history page
+  - `↑` / `↓`: move selected commit line in current page
+  - `Enter`: open selected commit detail panel (show --stat/--name-status excerpt)
+  - `m`: toggle detail view mode (summary / files / patch)
+  - `o`: toggle history sort mode (time-desc / time-asc / match-first)
+  - `/`: enter history search mode, type keyword, Enter to apply
+  - `n`: jump to next match in current page
+  - selected history line always shows quick stats (files/insertions/deletions) without opening detail
+  - history list has lightweight lane marker (`│`) for scan readability
+  - each page loads and caches 20 commit titles on demand
+  - title shows repo path, parent repo, child repo count, repo index, and page index
+- keyboard controls: `r` refresh, `d` dirty-only toggle, `f` fetch selected repo, `Enter` history pager, `q` quit
+
 ### Update Repository + Registered Subrepos (Most Common)
 
 ```bash

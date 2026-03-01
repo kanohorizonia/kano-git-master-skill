@@ -52,7 +52,6 @@ cd kano-git-master-skill
 
 - Git 2.x or higher
 - Bash 4.x or higher (or Git Bash on Windows)
-- Python 3.x (for git-p4 features)
 - Git Scalar (optional, for mono-repo optimization)
 
 ## Project Structure

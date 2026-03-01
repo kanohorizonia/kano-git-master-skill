@@ -43,6 +43,7 @@ This documentation is organized into the following categories:
 ### 🏗️ Architecture
 - [Worktree & Scalar Design](./design/worktree-scalar.md) - Technical architecture
 - [Orphan Branch Design](./design/orphan-branch.md) - Integration design
+- [Workspace Native Planner Contract](./design/workspace-native-planner-contract.md) - JSON contract for native planner and shell adapters
 
 ### 📊 Project Information
 - [Changelog](./status/changelog.md) - Version history and release notes
@@ -80,7 +81,8 @@ docs/
 │   └── svn-to-git.md
 ├── design/                      # Architecture docs
 │   ├── worktree-scalar.md
-│   └── orphan-branch.md
+│   ├── orphan-branch.md
+│   └── workspace-native-planner-contract.md
 ├── status/                      # Project information
 │   └── changelog.md             # Version history
 └── development/                 # Contributing docs
