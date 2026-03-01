@@ -329,21 +329,47 @@ auto RunAiGenerate(const std::string& InProvider,
     return shell::ExecResult{.exitCode = 1, .stderrStr = "unsupported provider or provider command unavailable"};
 }
 
+auto SummarizeAiFailure(const shell::ExecResult& InResult) -> std::string {
+    std::string detail = Trim(InResult.stderrStr);
+    if (detail.empty()) {
+        detail = Trim(InResult.stdoutStr);
+    }
+    if (detail.empty()) {
+        return "ai provider returned no details";
+    }
+    constexpr std::size_t kMaxLen = 140;
+    if (detail.size() > kMaxLen) {
+        detail = detail.substr(0, kMaxLen) + "...";
+    }
+    return detail;
+}
+
 auto GenerateAiCommitMessage(const std::filesystem::path& InWorkspaceRoot,
                              const std::filesystem::path& InRepo,
                              const CommitPreflightReport& InReport,
-                             const NativeAiConfig& InAi) -> std::string {
+                             const NativeAiConfig& InAi,
+                             std::string* OutFailureReason = nullptr) -> std::string {
     if (!InAi.enabled) {
+        if (OutFailureReason != nullptr) {
+            *OutFailureReason = "ai is disabled";
+        }
         return {};
     }
 
     const auto prompt = BuildAiCommitPrompt(InWorkspaceRoot, InRepo, InReport);
     const auto out = RunAiGenerate(InAi.provider, InAi.model, prompt, InRepo);
     if (out.exitCode != 0) {
+        if (OutFailureReason != nullptr) {
+            *OutFailureReason = SummarizeAiFailure(out);
+        }
         return {};
     }
 
-    return ExtractSingleLineMessage(out.stdoutStr + "\n" + out.stderrStr);
+    auto message = ExtractSingleLineMessage(out.stdoutStr + "\n" + out.stderrStr);
+    if (message.empty() && OutFailureReason != nullptr) {
+        *OutFailureReason = "ai provider returned empty message";
+    }
+    return message;
 }
 
 auto ShouldBlockByAiReview(const std::filesystem::path& InRepo,
@@ -373,10 +399,45 @@ auto ShouldBlockByAiReview(const std::filesystem::path& InRepo,
     }
 
     const auto verdict = ToLower(ExtractSingleLineMessage(out.stdoutStr + "\n" + out.stderrStr));
-    if (verdict.rfind("fail", 0) == 0 || verdict.find(" fail") != std::string::npos) {
+    if (verdict.empty()) {
+        return false;
+    }
+
+    const auto startsWithAny = [&](const std::vector<std::string>& prefixes) {
+        for (const auto& prefix : prefixes) {
+            if (verdict.rfind(prefix, 0) == 0) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    const bool explicitFail = startsWithAny({
+        "fail",
+        "[fail]",
+        "fail:",
+        "fail -",
+        "verdict: fail",
+        "verdict fail",
+    });
+    if (explicitFail) {
         OutReason = verdict;
         return true;
     }
+
+    const bool explicitPass = startsWithAny({
+        "pass",
+        "[pass]",
+        "pass:",
+        "pass -",
+        "verdict: pass",
+        "verdict pass",
+    });
+    if (explicitPass) {
+        return false;
+    }
+
+    // Unknown/non-conforming verdict: fail-open to avoid false positives.
     return false;
 }
 
@@ -788,10 +849,11 @@ auto CommitSingleRepo(const std::filesystem::path& InWorkspaceRoot,
     if (!InMessage.empty()) {
         commitMessage = InMessage;
     } else {
-        commitMessage = GenerateAiCommitMessage(InWorkspaceRoot, InRepo, report, InAi);
+        std::string aiFailureReason;
+        commitMessage = GenerateAiCommitMessage(InWorkspaceRoot, InRepo, report, InAi, &aiFailureReason);
         if (commitMessage.empty()) {
             commitMessage = BuildAutoCommitMessage(InWorkspaceRoot, InRepo, report);
-            result.note = "ai message unavailable; used native fallback";
+            result.note = "ai message unavailable (" + aiFailureReason + "); used native fallback";
         } else {
             result.note = "ai message generated";
         }
@@ -913,10 +975,11 @@ auto AmendSingleRepo(const std::filesystem::path& InWorkspaceRoot,
         if (!InMessage.empty()) {
             commitMessage = InMessage;
         } else {
-            commitMessage = GenerateAiCommitMessage(InWorkspaceRoot, InRepo, report, InAi);
+            std::string aiFailureReason;
+            commitMessage = GenerateAiCommitMessage(InWorkspaceRoot, InRepo, report, InAi, &aiFailureReason);
             if (commitMessage.empty()) {
                 commitMessage = BuildCombineFallbackMessage(InWorkspaceRoot, InRepo, unpushedCount, report);
-                result.note = "combined with native fallback message";
+                result.note = "combined with native fallback message (ai unavailable: " + aiFailureReason + ")";
             } else {
                 result.note = "combined with ai-generated message";
             }
@@ -963,9 +1026,10 @@ auto AmendSingleRepo(const std::filesystem::path& InWorkspaceRoot,
 
     std::string commitMessage = InMessage;
     if (commitMessage.empty() && InAi.enabled && report.stagedCount > 0) {
-        commitMessage = GenerateAiCommitMessage(InWorkspaceRoot, InRepo, report, InAi);
+        std::string aiFailureReason;
+        commitMessage = GenerateAiCommitMessage(InWorkspaceRoot, InRepo, report, InAi, &aiFailureReason);
         if (commitMessage.empty()) {
-            result.note = "ai message unavailable; amend keeps previous message";
+            result.note = "ai message unavailable (" + aiFailureReason + "); amend keeps previous message";
         } else {
             result.note = "amended with ai-generated message";
         }
