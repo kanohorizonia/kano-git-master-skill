@@ -5,11 +5,16 @@
 #include "shell_executor.hpp"
 
 #include <algorithm>
+#include <cctype>
+#include <cstdlib>
+#include <fstream>
 #include <format>
 #include <filesystem>
 #include <iostream>
 #include <iomanip>
+#include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -29,6 +34,15 @@ struct CommitPreflightReport {
     std::vector<std::string> untrackedFiles;
 };
 
+struct NativeAiConfig {
+    bool enabled = false;
+    bool reviewEnabled = true;
+    std::string provider;
+    std::string model;
+};
+
+auto DisplayRepoLabel(const std::filesystem::path& InWorkspaceRoot, const std::filesystem::path& InRepo) -> std::string;
+
 auto Trim(std::string InValue) -> std::string {
     while (!InValue.empty() && (InValue.back() == '\n' || InValue.back() == '\r' || InValue.back() == ' ' || InValue.back() == '\t')) {
         InValue.pop_back();
@@ -38,6 +52,13 @@ auto Trim(std::string InValue) -> std::string {
         start += 1;
     }
     return InValue.substr(start);
+}
+
+auto ToLower(std::string InValue) -> std::string {
+    std::transform(InValue.begin(), InValue.end(), InValue.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return InValue;
 }
 
 auto LooksRiskyPath(const std::string& InPath) -> bool {
@@ -65,6 +86,298 @@ auto GitCapture(const std::filesystem::path& InRepo, const std::vector<std::stri
 
 auto GitPassThrough(const std::filesystem::path& InRepo, const std::vector<std::string>& InArgs) -> shell::ExecResult {
     return shell::ExecuteCommand("git", InArgs, shell::ExecMode::PassThrough, InRepo);
+}
+
+auto HasCommand(const std::string& InCommand, const std::vector<std::string>& InArgs = {"--help"}) -> bool {
+    const auto result = shell::ExecuteCommand(InCommand, InArgs, shell::ExecMode::Capture, std::filesystem::current_path());
+    return result.exitCode == 0;
+}
+
+auto ResolveProvider(const std::string& InProviderRaw) -> std::string {
+    const auto provider = ToLower(Trim(InProviderRaw));
+    if (!provider.empty() && provider != "auto") {
+        return provider;
+    }
+
+    if (HasCommand("copilot", {"--help"}) || HasCommand("gh", {"copilot", "--version"})) {
+        return "copilot";
+    }
+    if (HasCommand("codex", {"--help"})) {
+        return "codex";
+    }
+    if (HasCommand("opencode", {"--help"})) {
+        return "opencode";
+    }
+    return {};
+}
+
+auto HomeDirectory() -> std::filesystem::path {
+    if (const char* home = std::getenv("HOME"); home != nullptr && std::string(home).size() > 0) {
+        return std::filesystem::path(home);
+    }
+    if (const char* userProfile = std::getenv("USERPROFILE"); userProfile != nullptr && std::string(userProfile).size() > 0) {
+        return std::filesystem::path(userProfile);
+    }
+    return {};
+}
+
+auto GitConfigPath(const std::string& InKey) -> std::string {
+    const auto out = shell::ExecuteCommand("git", {"config", "--path", "--get", InKey}, shell::ExecMode::Capture, std::filesystem::current_path());
+    if (out.exitCode != 0) {
+        return {};
+    }
+    return Trim(out.stdoutStr);
+}
+
+auto ResolveGlobalCacheRoot() -> std::filesystem::path {
+    const auto configured = GitConfigPath("kano.cache.global-dir");
+    if (!configured.empty()) {
+        const std::filesystem::path configuredPath(configured);
+        if (configuredPath.is_absolute()) {
+            return configuredPath.lexically_normal();
+        }
+        return (std::filesystem::current_path() / configuredPath).lexically_normal();
+    }
+
+    const auto home = HomeDirectory();
+    if (home.empty()) {
+        return {};
+    }
+    return (home / ".kano" / "cache" / "git").lexically_normal();
+}
+
+auto AiCacheDir() -> std::filesystem::path {
+    const auto root = ResolveGlobalCacheRoot();
+    if (root.empty()) {
+        return {};
+    }
+    return (root / "ai").lexically_normal();
+}
+
+auto ModelCacheFilePath(const std::string& InProvider) -> std::filesystem::path {
+    if (InProvider.empty()) {
+        return {};
+    }
+    auto provider = ToLower(Trim(InProvider));
+    if (provider.empty()) {
+        return {};
+    }
+    return AiCacheDir() / ("last-model-" + provider + ".txt");
+}
+
+auto ReadRememberedModel(const std::string& InProvider) -> std::string {
+    const auto cacheFile = ModelCacheFilePath(InProvider);
+    if (!cacheFile.empty() && std::filesystem::exists(cacheFile)) {
+        std::ifstream in(cacheFile);
+        if (!in) {
+            return {};
+        }
+
+        std::string line;
+        std::getline(in, line);
+        return Trim(line);
+    }
+
+    const auto home = HomeDirectory();
+    if (home.empty()) {
+        return {};
+    }
+    const auto legacyFile = (home / ".cache" / "kano-git-master-skill" / "ai" / ("last-model-" + ToLower(Trim(InProvider)) + ".txt")).lexically_normal();
+    if (!std::filesystem::exists(legacyFile)) {
+        return {};
+    }
+
+    std::ifstream in(legacyFile);
+    if (!in) {
+        return {};
+    }
+    std::string line;
+    std::getline(in, line);
+    return Trim(line);
+}
+
+void RememberModelChoice(const std::string& InProvider, const std::string& InModel) {
+    const auto provider = ToLower(Trim(InProvider));
+    const auto model = Trim(InModel);
+    if (provider.empty() || model.empty() || model == "auto") {
+        return;
+    }
+
+    const auto cacheDir = AiCacheDir();
+    const auto cacheFile = ModelCacheFilePath(provider);
+    if (cacheDir.empty() || cacheFile.empty()) {
+        return;
+    }
+
+    std::error_code ec;
+    std::filesystem::create_directories(cacheDir, ec);
+
+    std::ofstream out(cacheFile, std::ios::trunc);
+    if (!out) {
+        return;
+    }
+    out << model << "\n";
+}
+
+auto ResolveModelForAi(const std::string& InProvider,
+                       const std::string& InModelRaw,
+                       bool InAiAuto) -> std::string {
+    auto model = Trim(InModelRaw);
+    const auto provider = ToLower(Trim(InProvider));
+
+    if (!model.empty() && model != "auto") {
+        RememberModelChoice(provider, model);
+        return model;
+    }
+
+    const auto remembered = ReadRememberedModel(provider);
+    if (!remembered.empty()) {
+        return remembered;
+    }
+
+    if (InAiAuto || model == "auto") {
+        if (provider == "copilot") {
+            return "gpt-5-mini";
+        }
+        if (provider == "codex") {
+            return "gpt-5-mini";
+        }
+        if (provider == "opencode") {
+            return "gpt-5-mini";
+        }
+    }
+
+    return {};
+}
+
+auto BuildAiCommitPrompt(const std::filesystem::path& InWorkspaceRoot,
+                         const std::filesystem::path& InRepo,
+                         const CommitPreflightReport& InReport) -> std::string {
+    const auto label = DisplayRepoLabel(InWorkspaceRoot, InRepo);
+    const auto diff = GitCapture(InRepo, {"diff", "--cached", "--", "."});
+    std::string diffText = diff.stdoutStr;
+    constexpr std::size_t kMaxDiffChars = 12000;
+    if (diffText.size() > kMaxDiffChars) {
+        diffText = diffText.substr(0, kMaxDiffChars) + "\n... (truncated)";
+    }
+
+    std::ostringstream oss;
+    oss << "You are generating ONE git commit message.\n"
+        << "Requirements:\n"
+        << "- Output exactly one line\n"
+        << "- Use Conventional Commits format\n"
+        << "- No markdown, no code fences, no explanation\n\n"
+        << "Repo: " << label << "\n"
+        << "Staged: " << InReport.stagedCount << "\n"
+        << "Unstaged: " << InReport.unstagedCount << "\n"
+        << "Untracked: " << InReport.untrackedCount << "\n\n"
+        << "Staged diff:\n"
+        << diffText << "\n";
+    return oss.str();
+}
+
+auto ExtractSingleLineMessage(const std::string& InText) -> std::string {
+    std::istringstream iss(InText);
+    std::string line;
+    while (std::getline(iss, line)) {
+        line = Trim(line);
+        if (line.empty()) {
+            continue;
+        }
+        if (line.rfind("```", 0) == 0) {
+            continue;
+        }
+        return line;
+    }
+    return {};
+}
+
+auto RunAiGenerate(const std::string& InProvider,
+                   const std::string& InModel,
+                   const std::string& InPrompt,
+                   std::optional<std::filesystem::path> InWorkingDir = std::nullopt) -> shell::ExecResult {
+    if (InProvider == "opencode") {
+        if (!InModel.empty() && InModel != "auto") {
+            return shell::ExecuteCommand("opencode", {"run", "--model", InModel, InPrompt}, shell::ExecMode::Capture, InWorkingDir);
+        }
+        return shell::ExecuteCommand("opencode", {"run", InPrompt}, shell::ExecMode::Capture, InWorkingDir);
+    }
+
+    if (InProvider == "codex") {
+        if (!InModel.empty() && InModel != "auto") {
+            return shell::ExecuteCommand("codex", {"-q", "--model", InModel, InPrompt}, shell::ExecMode::Capture, InWorkingDir);
+        }
+        return shell::ExecuteCommand("codex", {"-q", InPrompt}, shell::ExecMode::Capture, InWorkingDir);
+    }
+
+    if (InProvider == "copilot") {
+        if (HasCommand("copilot", {"--help"})) {
+            if (!InModel.empty() && InModel != "auto") {
+                return shell::ExecuteCommand("copilot", {"-s", "-p", InPrompt, "--model", InModel, "--no-color", "--stream", "off", "--no-ask-user"}, shell::ExecMode::Capture, InWorkingDir);
+            }
+            return shell::ExecuteCommand("copilot", {"-s", "-p", InPrompt, "--no-color", "--stream", "off", "--no-ask-user"}, shell::ExecMode::Capture, InWorkingDir);
+        }
+
+        if (HasCommand("gh", {"copilot", "--version"})) {
+            if (!InModel.empty() && InModel != "auto") {
+                return shell::ExecuteCommand("gh", {"copilot", "--", "-s", "-p", InPrompt, "--model", InModel, "--no-color", "--stream", "off", "--no-ask-user"}, shell::ExecMode::Capture, InWorkingDir);
+            }
+            return shell::ExecuteCommand("gh", {"copilot", "--", "-s", "-p", InPrompt, "--no-color", "--stream", "off", "--no-ask-user"}, shell::ExecMode::Capture, InWorkingDir);
+        }
+    }
+
+    return shell::ExecResult{.exitCode = 1, .stderrStr = "unsupported provider or provider command unavailable"};
+}
+
+auto GenerateAiCommitMessage(const std::filesystem::path& InWorkspaceRoot,
+                             const std::filesystem::path& InRepo,
+                             const CommitPreflightReport& InReport,
+                             const NativeAiConfig& InAi) -> std::string {
+    if (!InAi.enabled) {
+        return {};
+    }
+
+    const auto prompt = BuildAiCommitPrompt(InWorkspaceRoot, InRepo, InReport);
+    const auto out = RunAiGenerate(InAi.provider, InAi.model, prompt, InRepo);
+    if (out.exitCode != 0) {
+        return {};
+    }
+
+    return ExtractSingleLineMessage(out.stdoutStr + "\n" + out.stderrStr);
+}
+
+auto ShouldBlockByAiReview(const std::filesystem::path& InRepo,
+                           const std::string& InMessage,
+                           const NativeAiConfig& InAi,
+                           std::string& OutReason) -> bool {
+    if (!InAi.enabled || !InAi.reviewEnabled) {
+        return false;
+    }
+
+    auto stagedDiff = GitCapture(InRepo, {"diff", "--cached", "--", "."}).stdoutStr;
+    constexpr std::size_t kMaxDiffChars = 10000;
+    if (stagedDiff.size() > kMaxDiffChars) {
+        stagedDiff = stagedDiff.substr(0, kMaxDiffChars) + "\n... (truncated)";
+    }
+
+    std::ostringstream prompt;
+    prompt << "You are a commit safety reviewer.\n"
+           << "Evaluate whether this commit message matches staged changes and is safe.\n"
+           << "Respond with exactly one line: PASS or FAIL: <reason>.\n\n"
+           << "Message:\n" << InMessage << "\n\n"
+           << "Staged diff:\n" << stagedDiff << "\n";
+
+    const auto out = RunAiGenerate(InAi.provider, InAi.model, prompt.str(), InRepo);
+    if (out.exitCode != 0) {
+        return false;
+    }
+
+    const auto verdict = ToLower(ExtractSingleLineMessage(out.stdoutStr + "\n" + out.stderrStr));
+    if (verdict.rfind("fail", 0) == 0 || verdict.find(" fail") != std::string::npos) {
+        OutReason = verdict;
+        return true;
+    }
+    return false;
 }
 
 auto ParseReposCsv(const std::string& InCsv) -> std::vector<std::filesystem::path> {
@@ -345,6 +658,37 @@ auto CurrentBranch(const std::filesystem::path& InRepo) -> std::string {
     return value;
 }
 
+auto ResolveUpstreamRef(const std::filesystem::path& InRepo) -> std::string {
+    const auto out = GitCapture(InRepo, {"rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"});
+    if (out.exitCode != 0) {
+        return {};
+    }
+    return Trim(out.stdoutStr);
+}
+
+auto ParsePositiveInt(const std::string& InValue) -> int {
+    try {
+        const auto value = Trim(InValue);
+        if (value.empty()) {
+            return 0;
+        }
+        return std::max(0, std::stoi(value));
+    } catch (const std::exception&) {
+        return 0;
+    }
+}
+
+auto CountUnpushedCommits(const std::filesystem::path& InRepo, const std::string& InUpstreamRef) -> int {
+    if (InUpstreamRef.empty()) {
+        return 0;
+    }
+    const auto out = GitCapture(InRepo, {"rev-list", "--count", InUpstreamRef + "..HEAD"});
+    if (out.exitCode != 0) {
+        return 0;
+    }
+    return ParsePositiveInt(out.stdoutStr);
+}
+
 auto HasRemote(const std::filesystem::path& InRepo, const std::string& InRemote) -> bool {
     const auto out = GitCapture(InRepo, {"remote", "get-url", InRemote});
     return out.exitCode == 0;
@@ -374,11 +718,20 @@ struct RepoCommitResult {
     std::string note;
 };
 
+struct RepoAmendResult {
+    std::filesystem::path repo;
+    bool amended = false;
+    bool combined = false;
+    bool failed = false;
+    std::string note;
+};
+
 auto CommitSingleRepo(const std::filesystem::path& InWorkspaceRoot,
                      const std::filesystem::path& InRepo,
                      const std::string& InMessage,
                      const bool InStagedOnly,
-                     const bool InPush) -> RepoCommitResult {
+                     const bool InPush,
+                     const NativeAiConfig& InAi) -> RepoCommitResult {
     RepoCommitResult result;
     result.repo = InRepo;
 
@@ -414,7 +767,26 @@ auto CommitSingleRepo(const std::filesystem::path& InWorkspaceRoot,
         return result;
     }
 
-    const auto commitMessage = InMessage.empty() ? BuildAutoCommitMessage(InWorkspaceRoot, InRepo, report) : InMessage;
+    std::string commitMessage;
+    if (!InMessage.empty()) {
+        commitMessage = InMessage;
+    } else {
+        commitMessage = GenerateAiCommitMessage(InWorkspaceRoot, InRepo, report, InAi);
+        if (commitMessage.empty()) {
+            commitMessage = BuildAutoCommitMessage(InWorkspaceRoot, InRepo, report);
+            result.note = "ai message unavailable; used native fallback";
+        } else {
+            result.note = "ai message generated";
+        }
+    }
+
+    std::string reviewReason;
+    if (ShouldBlockByAiReview(InRepo, commitMessage, InAi, reviewReason)) {
+        result.failed = true;
+        result.note = "blocked by ai review: " + reviewReason;
+        return result;
+    }
+
     const auto commit = GitPassThrough(InRepo, {"commit", "-m", commitMessage});
     if (commit.exitCode != 0) {
         const auto status = RunCommitPreflight(InRepo);
@@ -428,7 +800,9 @@ auto CommitSingleRepo(const std::filesystem::path& InWorkspaceRoot,
     }
 
     result.committed = true;
-    result.note = "committed";
+    if (result.note.empty()) {
+        result.note = "committed";
+    }
 
     if (InPush) {
         const auto branch = CurrentBranch(InRepo);
@@ -444,9 +818,178 @@ auto CommitSingleRepo(const std::filesystem::path& InWorkspaceRoot,
             return result;
         }
         result.pushed = true;
-        result.note = "committed + pushed";
+        result.note += result.note.empty() ? "committed + pushed" : " + pushed";
     }
 
+    return result;
+}
+
+auto BuildCombineFallbackMessage(const std::filesystem::path& InWorkspaceRoot,
+                                 const std::filesystem::path& InRepo,
+                                 int InCombinedCommits,
+                                 const CommitPreflightReport& InReport) -> std::string {
+    auto scope = DisplayRepoLabel(InWorkspaceRoot, InRepo);
+    if (scope == ".") {
+        scope = "root";
+    }
+    for (auto& c : scope) {
+        if (c == '/' || c == '\\' || c == ' ') {
+            c = '-';
+        }
+    }
+
+    const int combined = std::max(1, InCombinedCommits);
+    const int stagedFiles = std::max(1, InReport.stagedCount);
+    return std::format("chore({}): combine {} local commit{} into {} file{} update",
+                       scope,
+                       combined,
+                       combined == 1 ? "" : "s",
+                       stagedFiles,
+                       stagedFiles == 1 ? "" : "s");
+}
+
+auto AmendSingleRepo(const std::filesystem::path& InWorkspaceRoot,
+                    const std::filesystem::path& InRepo,
+                    const std::string& InMessage,
+                    const bool InStagedOnly,
+                    const bool InCombineUnpushed,
+                    const NativeAiConfig& InAi) -> RepoAmendResult {
+    RepoAmendResult result;
+    result.repo = InRepo;
+
+    auto report = RunCommitPreflight(InRepo);
+    if (!report.inRepo) {
+        result.failed = true;
+        result.note = "not a git repository";
+        return result;
+    }
+
+    if (InCombineUnpushed) {
+        const auto upstream = ResolveUpstreamRef(InRepo);
+        if (upstream.empty()) {
+            result.failed = true;
+            result.note = "combine requires tracking upstream (@{upstream})";
+            return result;
+        }
+
+        const int unpushedCount = CountUnpushedCommits(InRepo, upstream);
+        if (unpushedCount <= 0) {
+            result.note = "no local unpushed commits to combine";
+            return result;
+        }
+
+        const auto softReset = GitPassThrough(InRepo, {"reset", "--soft", upstream});
+        if (softReset.exitCode != 0) {
+            result.failed = true;
+            result.note = "git reset --soft to upstream failed";
+            return result;
+        }
+
+        if (!InStagedOnly) {
+            const auto add = GitPassThrough(InRepo, {"add", "-A"});
+            if (add.exitCode != 0) {
+                result.failed = true;
+                result.note = "git add -A failed after combine reset";
+                return result;
+            }
+        }
+
+        report = RunCommitPreflight(InRepo);
+        if (report.stagedCount == 0) {
+            result.note = "no staged content after combine preparation";
+            return result;
+        }
+
+        std::string commitMessage;
+        if (!InMessage.empty()) {
+            commitMessage = InMessage;
+        } else {
+            commitMessage = GenerateAiCommitMessage(InWorkspaceRoot, InRepo, report, InAi);
+            if (commitMessage.empty()) {
+                commitMessage = BuildCombineFallbackMessage(InWorkspaceRoot, InRepo, unpushedCount, report);
+                result.note = "combined with native fallback message";
+            } else {
+                result.note = "combined with ai-generated message";
+            }
+        }
+
+        std::string reviewReason;
+        if (ShouldBlockByAiReview(InRepo, commitMessage, InAi, reviewReason)) {
+            result.failed = true;
+            result.note = "blocked by ai review: " + reviewReason;
+            return result;
+        }
+
+        const auto commit = GitPassThrough(InRepo, {"commit", "-m", commitMessage});
+        if (commit.exitCode != 0) {
+            result.failed = true;
+            result.note = "git commit failed after combine";
+            return result;
+        }
+
+        result.combined = true;
+        result.amended = true;
+        if (result.note.empty()) {
+            result.note = "combined unpushed commits";
+        }
+        return result;
+    }
+
+    if (!InStagedOnly && (report.unstagedCount > 0 || report.untrackedCount > 0)) {
+        const auto add = GitPassThrough(InRepo, {"add", "-A"});
+        if (add.exitCode != 0) {
+            result.failed = true;
+            result.note = "git add -A failed";
+            return result;
+        }
+        report = RunCommitPreflight(InRepo);
+    }
+
+    const auto headExists = GitCapture(InRepo, {"rev-parse", "--verify", "HEAD"});
+    if (headExists.exitCode != 0) {
+        result.failed = true;
+        result.note = "amend requires at least one existing commit";
+        return result;
+    }
+
+    std::string commitMessage = InMessage;
+    if (commitMessage.empty() && InAi.enabled && report.stagedCount > 0) {
+        commitMessage = GenerateAiCommitMessage(InWorkspaceRoot, InRepo, report, InAi);
+        if (commitMessage.empty()) {
+            result.note = "ai message unavailable; amend keeps previous message";
+        } else {
+            result.note = "amended with ai-generated message";
+        }
+    }
+
+    if (!commitMessage.empty()) {
+        std::string reviewReason;
+        if (ShouldBlockByAiReview(InRepo, commitMessage, InAi, reviewReason)) {
+            result.failed = true;
+            result.note = "blocked by ai review: " + reviewReason;
+            return result;
+        }
+    }
+
+    std::vector<std::string> amendArgs = {"commit", "--amend"};
+    if (!commitMessage.empty()) {
+        amendArgs.push_back("-m");
+        amendArgs.push_back(commitMessage);
+    } else {
+        amendArgs.push_back("--no-edit");
+    }
+
+    const auto amend = GitPassThrough(InRepo, amendArgs);
+    if (amend.exitCode != 0) {
+        result.failed = true;
+        result.note = "git commit --amend failed";
+        return result;
+    }
+
+    result.amended = true;
+    if (result.note.empty()) {
+        result.note = "amended HEAD";
+    }
     return result;
 }
 
@@ -489,6 +1032,51 @@ auto PrintCommitSummary(const std::filesystem::path& InWorkspaceRoot,
 
     std::cout << "\nTotals: committed=" << committed
               << " pushed=" << pushed
+              << " skipped=" << skipped
+              << " failed=" << failed << "\n";
+
+    return failed == 0 ? 0 : 1;
+}
+
+auto PrintAmendSummary(const std::filesystem::path& InWorkspaceRoot,
+                       const std::vector<RepoAmendResult>& InResults) -> int {
+    int failed = 0;
+    int amended = 0;
+    int combined = 0;
+    int skipped = 0;
+
+    std::cout << "\n=== Native Amend Summary ===\n";
+    std::cout << std::left << std::setw(36) << "Repo"
+              << std::setw(12) << "Result"
+              << "Detail\n";
+    std::cout << std::left << std::setw(36) << "----"
+              << std::setw(12) << "------"
+              << "------\n";
+
+    for (const auto& item : InResults) {
+        const auto repoLabel = DisplayRepoLabel(InWorkspaceRoot, item.repo);
+        std::string status;
+        if (item.failed) {
+            status = "failed";
+            failed += 1;
+        } else if (item.amended) {
+            status = item.combined ? "combined" : "amended";
+            amended += 1;
+            if (item.combined) {
+                combined += 1;
+            }
+        } else {
+            status = "skipped";
+            skipped += 1;
+        }
+
+        std::cout << std::left << std::setw(36) << repoLabel
+                  << std::setw(12) << status
+                  << item.note << "\n";
+    }
+
+    std::cout << "\nTotals: amended=" << amended
+              << " combined=" << combined
               << " skipped=" << skipped
               << " failed=" << failed << "\n";
 
@@ -556,15 +1144,20 @@ void RegisterCommit(CLI::App& InApp) {
 
     auto* repos = new std::string{};
     cmd->add_option("--repos", *repos, "Commit target repos (comma-separated). Default: auto-discover workspace repos");
+    auto* bNoRecursive = new bool{false};
+    cmd->add_flag("--no-recursive,-N", *bNoRecursive, "Commit only current repository when --repos is not provided");
 
     // Provider option
     auto* provider = new std::string{};
-    cmd->add_option("--provider,-p", *provider, "AI provider (copilot, codex, opencode)")
+    cmd->add_option("--ai-provider", *provider, "AI provider (copilot, codex, opencode)")
         ->default_str("auto");
 
     // Model option
     auto* model = new std::string{};
-    cmd->add_option("--model", *model, "AI model to use");
+    cmd->add_option("--ai-model", *model, "AI model to use");
+
+    auto* bAiAuto = new bool{false};
+    cmd->add_flag("--ai-auto", *bAiAuto, "Enable AI auto mode (auto provider/model with remembered model preference)");
 
     // Message option
     auto* message = new std::string{};
@@ -616,14 +1209,46 @@ void RegisterCommit(CLI::App& InApp) {
             }
         }
 
-        if ((!provider->empty() && *provider != "auto") || !model->empty() || !agent->empty() || !*bNoAiReview) {
-            std::cout << "[native-commit] AI provider/model/review flags are compatibility no-ops in pure native mode.\n";
+        NativeAiConfig ai;
+        const bool aiRequested = *bAiAuto || !provider->empty() || !model->empty();
+        ai.provider = aiRequested ? ResolveProvider(*provider) : std::string{};
+        ai.model = aiRequested ? ResolveModelForAi(ai.provider, *model, *bAiAuto) : std::string{};
+        ai.reviewEnabled = !*bNoAiReview;
+        ai.enabled = aiRequested && !ai.provider.empty();
+
+        if (!agent->empty()) {
+            std::cout << "[native-commit] --agent is currently ignored in native mode.\n";
+        }
+
+        if (aiRequested && !ai.enabled) {
+            std::cerr << "Error: AI mode requested, but provider is unavailable.\n";
+            std::cerr << "- provider resolved: " << (ai.provider.empty() ? "<none>" : ai.provider) << "\n";
+            std::cerr << "- model: " << (ai.model.empty() ? "<none>" : ai.model) << "\n";
+            std::exit(2);
+        }
+
+        if (ai.enabled) {
+            std::cout << "[native-commit] AI enabled: provider=" << ai.provider
+                      << " model=" << ai.model
+                      << " review=" << (ai.reviewEnabled ? "on" : "off") << "\n";
         }
 
         auto reposCsv = Trim(*repos);
-        auto repoList = BuildOrderedRepoList(workspaceRoot, reposCsv);
-        if (repoList.empty()) {
-            repoList.push_back(workspaceRoot);
+        std::vector<std::filesystem::path> repoList;
+        if (reposCsv.empty()) {
+            if (*bNoRecursive) {
+                repoList.push_back(workspaceRoot);
+            } else {
+                repoList = BuildOrderedRepoList(workspaceRoot, reposCsv);
+                if (repoList.empty()) {
+                    repoList.push_back(workspaceRoot);
+                }
+            }
+        } else {
+            repoList = BuildOrderedRepoList(workspaceRoot, reposCsv);
+            if (repoList.empty()) {
+                repoList.push_back(workspaceRoot);
+            }
         }
 
         std::vector<RepoCommitResult> results;
@@ -632,11 +1257,88 @@ void RegisterCommit(CLI::App& InApp) {
         for (const auto& repo : repoList) {
             const auto label = DisplayRepoLabel(workspaceRoot, repo);
             std::cout << "\n[commit] " << label << "\n";
-            const auto one = CommitSingleRepo(workspaceRoot, repo, *message, *bStagedOnly, *bPush);
+            const auto one = CommitSingleRepo(workspaceRoot, repo, *message, *bStagedOnly, *bPush, ai);
             results.push_back(one);
         }
 
         const auto exitCode = PrintCommitSummary(workspaceRoot, results);
+        std::exit(exitCode);
+    });
+}
+
+void RegisterAmend(CLI::App& InApp) {
+    auto* cmd = InApp.add_subcommand("amend", "Native amend workflow (default: amend previous commit)");
+
+    auto* repos = new std::string{};
+    cmd->add_option("--repos", *repos, "Amend target repos (comma-separated). Default: current repo only");
+
+    auto* provider = new std::string{};
+    cmd->add_option("--ai-provider", *provider, "AI provider (copilot, codex, opencode)")
+        ->default_str("auto");
+
+    auto* model = new std::string{};
+    cmd->add_option("--ai-model", *model, "AI model to use");
+
+    auto* bAiAuto = new bool{false};
+    cmd->add_flag("--ai-auto", *bAiAuto, "Enable AI auto mode (auto provider/model with remembered model preference)");
+
+    auto* message = new std::string{};
+    cmd->add_option("--message,-m", *message, "Amend commit message (skips AI generation)");
+
+    auto* bNoAiReview = new bool{false};
+    cmd->add_flag("--no-ai-review", *bNoAiReview, "Skip AI review gate");
+
+    auto* bStagedOnly = new bool{false};
+    cmd->add_flag("--staged-only", *bStagedOnly, "Amend only currently staged changes (skip auto git add)");
+
+    auto* bCombineUnpushed = new bool{false};
+    cmd->add_flag("--combine,--combine-unpushed,-U", *bCombineUnpushed, "Combine all local commits not pushed to upstream into one commit");
+
+    cmd->callback([=]() {
+        const auto workspaceRoot = std::filesystem::current_path();
+
+        NativeAiConfig ai;
+        const bool aiRequested = *bAiAuto || !provider->empty() || !model->empty();
+        ai.provider = aiRequested ? ResolveProvider(*provider) : std::string{};
+        ai.model = aiRequested ? ResolveModelForAi(ai.provider, *model, *bAiAuto) : std::string{};
+        ai.reviewEnabled = !*bNoAiReview;
+        ai.enabled = aiRequested && !ai.provider.empty();
+
+        if (aiRequested && !ai.enabled) {
+            std::cerr << "Error: AI mode requested, but provider is unavailable.\n";
+            std::cerr << "- provider resolved: " << (ai.provider.empty() ? "<none>" : ai.provider) << "\n";
+            std::cerr << "- model: " << (ai.model.empty() ? "<none>" : ai.model) << "\n";
+            std::exit(2);
+        }
+
+        if (ai.enabled) {
+            std::cout << "[native-amend] AI enabled: provider=" << ai.provider
+                      << " model=" << ai.model
+                      << " review=" << (ai.reviewEnabled ? "on" : "off") << "\n";
+        }
+
+        auto reposCsv = Trim(*repos);
+        std::vector<std::filesystem::path> repoList;
+        if (reposCsv.empty()) {
+            repoList.push_back(workspaceRoot);
+        } else {
+            repoList = BuildOrderedRepoList(workspaceRoot, reposCsv);
+            if (repoList.empty()) {
+                repoList.push_back(workspaceRoot);
+            }
+        }
+
+        std::vector<RepoAmendResult> results;
+        results.reserve(repoList.size());
+
+        for (const auto& repo : repoList) {
+            const auto label = DisplayRepoLabel(workspaceRoot, repo);
+            std::cout << "\n[amend] " << label << "\n";
+            const auto one = AmendSingleRepo(workspaceRoot, repo, *message, *bStagedOnly, *bCombineUnpushed, ai);
+            results.push_back(one);
+        }
+
+        const auto exitCode = PrintAmendSummary(workspaceRoot, results);
         std::exit(exitCode);
     });
 }

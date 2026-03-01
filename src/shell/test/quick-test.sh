@@ -124,7 +124,9 @@ if [[ -n "$KOG_BIN" ]]; then
   COMPLETE_OUTPUT="$($KOG_BIN __complete --current c)"
   COMPLETE_NESTED="$($KOG_BIN __complete --context workspace --current st)"
   COMPLETE_OPTION="$($KOG_BIN __complete --context workspace --context status --current --na)"
-  if [[ "$COMPLETE_OUTPUT" == *"commit"* && "$COMPLETE_NESTED" == *"status"* && "$COMPLETE_OPTION" == *"--native"* ]]; then
+  COMPLETE_ROOT_BUILD="$($KOG_BIN __complete --current bu)"
+  COMPLETE_ROOT_REBUILD="$($KOG_BIN __complete --current reb)"
+  if [[ "$COMPLETE_OUTPUT" == *"commit"* && "$COMPLETE_NESTED" == *"status"* && "$COMPLETE_OPTION" == *"--native"* && "$COMPLETE_ROOT_BUILD" == *"build"* && "$COMPLETE_ROOT_REBUILD" == *"rebuild"* ]]; then
     echo "  ✓ __complete returns expected candidates"
   else
     echo "  ✗ __complete output missing expected candidates"

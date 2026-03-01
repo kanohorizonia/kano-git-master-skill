@@ -745,7 +745,8 @@ auto RunNativeOriginLatestSync(
     int InMaxDepth,
     bool InDryRun,
     bool InNoCache,
-    bool InRefreshCache) -> int {
+    bool InRefreshCache,
+    bool InRecursive) -> int {
     std::vector<SyncPlan> plans;
     std::string mode;
     try {
@@ -769,7 +770,18 @@ auto RunNativeOriginLatestSync(
         }
     }
 
-    std::cout << "Syncing workspace repos with recursive branch rules\n";
+    if (!InRecursive) {
+        const auto root = std::filesystem::weakly_canonical(InRepoRoot);
+        plans.erase(
+            std::remove_if(plans.begin(), plans.end(), [&](const SyncPlan& InPlan) {
+                return std::filesystem::weakly_canonical(InPlan.path) != root;
+            }),
+            plans.end());
+    }
+
+    std::cout << (InRecursive
+        ? "Syncing workspace repos with recursive branch rules\n"
+        : "Syncing current repository only (non-recursive mode)\n");
     std::cout << "Discover mode: " << (mode.empty() ? "unknown" : mode) << "\n";
 
     int failures = 0;
@@ -903,6 +915,7 @@ void RegisterSync(CLI::App& InApp) {
     auto* originLatestMaxDepth = new int{6};
     auto* originLatestNoCache = new bool{false};
     auto* originLatestRefreshCache = new bool{false};
+    auto* originLatestNoRecursive = new bool{false};
 
     origin_latest->add_flag("--shell", *originLatestShell, "Deprecated compatibility flag (shell path removed)");
     origin_latest->add_option("--repo", *originLatestRepo, "Target repository root path");
@@ -911,6 +924,7 @@ void RegisterSync(CLI::App& InApp) {
     origin_latest->add_option("--native-max-depth", *originLatestMaxDepth, "Native discovery max depth");
     origin_latest->add_flag("--native-no-cache", *originLatestNoCache, "Disable native discovery cache");
     origin_latest->add_flag("--native-refresh-cache", *originLatestRefreshCache, "Force native cache refresh");
+    origin_latest->add_flag("--no-recursive,-N", *originLatestNoRecursive, "Sync only current repository");
 
     origin_latest->callback([=]() {
         auto extras = origin_latest->remaining();
@@ -934,7 +948,8 @@ void RegisterSync(CLI::App& InApp) {
             *originLatestMaxDepth,
             *originLatestDryRun,
             *originLatestNoCache,
-            *originLatestRefreshCache);
+            *originLatestRefreshCache,
+            !*originLatestNoRecursive);
         std::exit(code);
     });
 
@@ -1042,11 +1057,13 @@ void RegisterSync(CLI::App& InApp) {
     auto* devMaxDepth = new int{6};
     auto* devNoCache = new bool{false};
     auto* devRefreshCache = new bool{false};
+    auto* devNoRecursive = new bool{false};
     dev->add_option("--repo", *devRepo, "Target repository root path");
     dev->add_flag("--dry-run", *devDryRun, "Preview sync actions without modifying repositories");
     dev->add_option("--native-max-depth", *devMaxDepth, "Native discovery max depth");
     dev->add_flag("--native-no-cache", *devNoCache, "Disable native discovery cache");
     dev->add_flag("--native-refresh-cache", *devRefreshCache, "Force native cache refresh");
+    dev->add_flag("--no-recursive,-N", *devNoRecursive, "Sync only current repository");
     dev->callback([=]() {
         auto extras = dev->remaining();
         if (!extras.empty()) {
@@ -1065,11 +1082,14 @@ void RegisterSync(CLI::App& InApp) {
             *devMaxDepth,
             *devDryRun,
             *devNoCache,
-            *devRefreshCache);
+            *devRefreshCache,
+            !*devNoRecursive);
         std::exit(code);
     });
 
     // --- sync (default: auto-detect) ---
+    auto* defaultNoRecursive = new bool{false};
+    cmd->add_flag("--no-recursive,-N", *defaultNoRecursive, "Default sync: only current repository");
     cmd->allow_extras();
     cmd->callback([=]() {
         if (cmd->get_subcommands().empty()) {
@@ -1086,7 +1106,8 @@ void RegisterSync(CLI::App& InApp) {
                 6,
                 false,
                 false,
-                false);
+                false,
+                !*defaultNoRecursive);
             std::exit(code);
         }
     });

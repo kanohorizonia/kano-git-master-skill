@@ -27,6 +27,17 @@ auto PathKey(const std::filesystem::path& InPath) -> std::string {
     return Normalize(InPath).generic_string();
 }
 
+auto Trim(std::string InValue) -> std::string {
+    while (!InValue.empty() && (InValue.back() == '\n' || InValue.back() == '\r' || InValue.back() == ' ' || InValue.back() == '\t')) {
+        InValue.pop_back();
+    }
+    std::size_t start = 0;
+    while (start < InValue.size() && (InValue[start] == ' ' || InValue[start] == '\t')) {
+        start += 1;
+    }
+    return InValue.substr(start);
+}
+
 auto EscapeJson(std::string InValue) -> std::string {
     std::string out;
     out.reserve(InValue.size() + 8);
@@ -318,9 +329,19 @@ auto DiscoverGitRepos(const std::filesystem::path& InRoot, const int InMaxDepth,
 
 auto CacheDirFor(const std::filesystem::path& InRoot) -> std::filesystem::path {
     if (IsGitRepo(InRoot)) {
-        return InRoot / ".git" / ".kano-cache" / "discover-repos";
+        const auto configured = RunGitCapture(InRoot, {"config", "--path", "--get", "kano.cache.local-dir"});
+        if (configured.exitCode == 0) {
+            const auto value = Trim(configured.stdoutStr);
+            if (!value.empty()) {
+                const std::filesystem::path configuredPath(value);
+                if (configuredPath.is_absolute()) {
+                    return (configuredPath / "discover-repos").lexically_normal();
+                }
+                return (InRoot / configuredPath / "discover-repos").lexically_normal();
+            }
+        }
     }
-    return InRoot / ".cache" / "kano-git-master-skill" / "discover-repos";
+    return (InRoot / ".kano" / "cache" / "git" / "discover-repos").lexically_normal();
 }
 
 auto ComputeMarker(const std::filesystem::path& InRoot, const int InMaxDepth, const std::vector<std::string>& InExcludePatterns) -> std::string {

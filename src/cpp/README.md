@@ -61,6 +61,10 @@ The CLI provides a unified binary (`kano-git` / `kog`) with:
 # Add scripts/ (bash launchers) to PATH, then:
 kano-git commit
 kog commit    # short alias
+kog amend     # amend previous commit (native)
+
+# enhance native git config completion for kano keys (keeps git completion)
+source <(kano-git completion git-bash)
 ```
 
 ### Launcher mode (developer vs installed package)
@@ -72,11 +76,38 @@ kog commit    # short alias
   - override: `KANO_GIT_INSTALL_MARKER=/absolute/path/to/marker`
 - In packaged-install mode, if binary is missing, launcher prints an installation-corruption warning and asks user to reinstall.
 
+### Launcher progress and update checks
+
+- Long-running launcher tasks (prerequisite/build/package update command) emit heartbeat logs by default:
+  - `[launcher] <task> still running... <seconds>s elapsed`
+- Heartbeat controls:
+  - `KANO_GIT_PROGRESS_HEARTBEAT=0` to disable
+  - `KANO_GIT_PROGRESS_INTERVAL_SECONDS=<n>` to adjust interval (default: `10`)
+
+- Developer mode update check:
+  - launcher fetches remote (`upstream` preferred, else `origin`) and checks whether remote default branch is ahead of local `HEAD`
+  - when updates exist, launcher prompts whether to run sync workflow (`smart-sync-origin-latest.sh`)
+
+- Packaged mode update check (interval-based, default every 6h):
+  - `KANO_GIT_PACKAGE_VERSION_CHECK_CMD` command that prints latest available version (single line)
+  - `KANO_GIT_PACKAGE_UPDATE_CMD` command used to perform update when user confirms
+  - `KANO_GIT_PACKAGE_UPDATE_CHECK_INTERVAL_SECONDS=<n>` check interval in seconds (default: `21600`)
+
+- Global toggle:
+  - `KANO_GIT_AUTO_UPDATE_CHECK=0` disables launcher update checks
+
+- Rebuild trigger (developer mode):
+  - launcher auto-rebuilds native binary when it detects stale build signals, including
+    - embedded `hash_short` differs from current Git `HEAD` short hash
+    - `VERSION`/`src/cpp/CMakeLists.txt`/`src/cpp/CMakePresets.json` newer than binary
+
 ## Command Tree
 
 | Command | Description |
 |---------|-------------|
 | `commit` | AI-powered commit message generation |
+| `amend` | Amend previous commit or combine unpushed local commits |
+| `cache` | Show/clear kano-git cache with system/global/local effective view |
 | `resolve` | AI-powered conflict resolution |
 | `sync` | Repository synchronization (origin-latest, upstream, stable-dev) |
 | `push` | Multi-remote push workflow |
