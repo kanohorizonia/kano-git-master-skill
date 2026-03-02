@@ -24,7 +24,11 @@ auto Normalize(const std::filesystem::path& InPath) -> std::filesystem::path {
 }
 
 auto PathKey(const std::filesystem::path& InPath) -> std::string {
-    return Normalize(InPath).generic_string();
+    auto key = Normalize(InPath).generic_string();
+    while (key.size() > 1 && key.back() == '/') {
+        key.pop_back();
+    }
+    return key;
 }
 
 auto Trim(std::string InValue) -> std::string {
@@ -160,7 +164,6 @@ auto DefaultExcludePatterns() -> std::vector<std::string> {
 
 auto PrePrunePatterns() -> std::vector<std::string> {
     return {
-        ".agents",
         ".kano",
         "node_modules",
         ".cache",
@@ -305,6 +308,15 @@ auto DiscoverGitRepos(const std::filesystem::path& InRoot, const int InMaxDepth,
             continue;
         }
 
+        if (currentPath.filename() == ".git") {
+            const auto repoPath = Normalize(currentPath.parent_path());
+            unique.insert(PathKey(repoPath));
+            if (it->is_directory(ec)) {
+                it.disable_recursion_pending();
+            }
+            continue;
+        }
+
         if (!it->is_directory(ec)) {
             continue;
         }
@@ -314,11 +326,6 @@ auto DiscoverGitRepos(const std::filesystem::path& InRoot, const int InMaxDepth,
             continue;
         }
 
-        if (currentPath.filename() == ".git") {
-            const auto repoPath = Normalize(currentPath.parent_path());
-            unique.insert(PathKey(repoPath));
-            it.disable_recursion_pending();
-        }
     }
 
     for (const auto& key : unique) {
@@ -517,26 +524,38 @@ auto ParseCache(const std::string& InPayload) -> std::optional<std::vector<RepoR
 }
 
 auto CacheFilePath(const DiscoverOptions& InOptions, const std::filesystem::path& InRootAbs) -> std::filesystem::path {
-    const std::string patternsJoined = [&InOptions]() {
-        std::string out;
-        for (std::size_t i = 0; i < InOptions.excludePatterns.size(); ++i) {
-            if (i > 0) {
-                out += '|';
-            }
-            out += InOptions.excludePatterns[i];
+    (void)InOptions;
+    return CacheDirFor(InRootAbs) / "discover-repos.json";
+}
+
+auto PruneLegacyCacheFiles(const std::filesystem::path& InCacheFile) -> void {
+    std::error_code ec;
+    const auto parent = InCacheFile.parent_path();
+    if (!std::filesystem::exists(parent, ec)) {
+        return;
+    }
+
+    std::filesystem::directory_iterator it(parent, std::filesystem::directory_options::skip_permission_denied, ec);
+    std::filesystem::directory_iterator end;
+    for (; it != end; it.increment(ec)) {
+        if (ec) {
+            ec.clear();
+            continue;
         }
-        return out;
-    }();
-
-    const auto cacheKey = HashFNV1a(std::format(
-        "{}|{}|{}|{}|{}",
-        PathKey(InRootAbs),
-        InOptions.maxDepth,
-        InOptions.metadataLevel,
-        InOptions.incremental ? 1 : 0,
-        patternsJoined));
-
-    return CacheDirFor(InRootAbs) / std::format("{}.json", cacheKey);
+        const auto path = it->path();
+        if (path == InCacheFile) {
+            continue;
+        }
+        if (!it->is_regular_file(ec)) {
+            ec.clear();
+            continue;
+        }
+        if (path.extension() != ".json") {
+            continue;
+        }
+        std::filesystem::remove(path, ec);
+        ec.clear();
+    }
 }
 
 auto IsPrefixPath(const std::filesystem::path& InParent, const std::filesystem::path& InChild) -> bool {
@@ -569,7 +588,7 @@ auto BuildRepoRecords(
     for (const auto& repoPath : sorted) {
         RepoRecord record;
         record.path = Normalize(repoPath);
-        if (rootIsRepo && Normalize(repoPath) == Normalize(InRootAbs)) {
+        if (rootIsRepo && PathKey(repoPath) == PathKey(InRootAbs)) {
             record.type = "root";
         } else if (InRegistered.contains(PathKey(repoPath))) {
             record.type = "registered";
@@ -681,6 +700,7 @@ auto DiscoverRepos(const DiscoverOptions& InOptions) -> DiscoveryResult {
 
     const auto marker = options.incremental ? ComputeMarker(rootAbs, options.maxDepth, options.excludePatterns) : std::string{};
     const auto cacheFile = CacheFilePath(options, rootAbs);
+    PruneLegacyCacheFiles(cacheFile);
 
     result.cacheFile = cacheFile;
     result.marker = marker;

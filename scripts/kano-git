@@ -7,6 +7,13 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 LAUNCHER_STATE_DIR="$PROJECT_ROOT/.kano/launcher"
 REBUILD_DIRECTION="unknown"
 REBUILD_REASON=""
+if [[ "$(uname -s 2>/dev/null || true)" == "Darwin" ]]; then
+  KOG_BUILD_USE_LLVM="${KOG_BUILD_USE_LLVM:-1}"
+  KOG_BUILD_ENABLE_MODULES="${KOG_BUILD_ENABLE_MODULES:-1}"
+else
+  KOG_BUILD_USE_LLVM="${KOG_BUILD_USE_LLVM:-0}"
+  KOG_BUILD_ENABLE_MODULES="${KOG_BUILD_ENABLE_MODULES:-0}"
+fi
 
 is_interactive_terminal() {
   [[ -t 0 && -t 1 ]]
@@ -156,18 +163,34 @@ normalize_launcher_args() {
 }
 
 clean_native_build_artifacts() {
+  remove_tree_best_effort() {
+    local target_path="$1"
+    [[ -e "$target_path" ]] || return 0
+
+    if rm -rf "$target_path" 2>/dev/null; then
+      return 0
+    fi
+
+    sleep 0.1
+    rm -rf "$target_path" 2>/dev/null || true
+
+    if [[ -e "$target_path" ]]; then
+      log_launcher_status "build-native" "warn" "cleanup skipped (path still exists): $target_path"
+    fi
+  }
+
   local preset
   local base_build="$PROJECT_ROOT/src/cpp/build"
 
   while IFS= read -r preset; do
     [[ -z "$preset" ]] && continue
-    rm -rf "$base_build/_intermediate/$preset"
-    rm -rf "$base_build/bin/$preset"
-    rm -rf "$base_build/lib/$preset"
+    remove_tree_best_effort "$base_build/_intermediate/$preset"
+    remove_tree_best_effort "$base_build/bin/$preset"
+    remove_tree_best_effort "$base_build/lib/$preset"
   done < <(candidate_presets)
 
-  rm -rf "$base_build/release"
-  rm -rf "$base_build/debug"
+  remove_tree_best_effort "$base_build/release"
+  remove_tree_best_effort "$base_build/debug"
 }
 
 run_native_build_mode() {
@@ -233,7 +256,9 @@ maybe_handle_launcher_build_request() {
   fi
 
   local first="$1"
+  shift || true
   local mode=""
+  local extra
 
   case "$first" in
     build)
@@ -247,12 +272,122 @@ maybe_handle_launcher_build_request() {
       ;;
   esac
 
-  if (( $# > 1 )); then
-    echo "Warning: extra arguments after $first are ignored." >&2
-  fi
+  for extra in "$@"; do
+    case "$extra" in
+      --llvm)
+        KOG_BUILD_USE_LLVM="1"
+        ;;
+      --modules)
+        KOG_BUILD_ENABLE_MODULES="1"
+        ;;
+      --no-modules)
+        KOG_BUILD_ENABLE_MODULES="0"
+        ;;
+      --apple-clang)
+        KOG_BUILD_USE_LLVM="0"
+        ;;
+      *)
+        echo "Error: unsupported build option: $extra" >&2
+        echo "Hint: supported options are --llvm, --apple-clang, --modules, --no-modules" >&2
+        return 2
+        ;;
+    esac
+  done
 
   run_native_build_mode "$mode"
   return $?
+}
+
+append_once_to_file() {
+  local file="$1"
+  local marker="$2"
+  local content="$3"
+
+  mkdir -p "$(dirname "$file")"
+  touch "$file"
+
+  if grep -Fq "$marker" "$file" 2>/dev/null; then
+    return 0
+  fi
+
+  printf '\n%s\n' "$content" >> "$file"
+}
+
+install_bash_completion() {
+  local binary="$1"
+  local completion_dir completion_file bash_rc source_block
+
+  completion_dir="${HOME}/.local/share/bash-completion/completions"
+  completion_file="$completion_dir/kog"
+  bash_rc="${HOME}/.bashrc"
+
+  mkdir -p "$completion_dir"
+  KANO_GIT_MASTER_ROOT="${KANO_GIT_MASTER_ROOT:-$PROJECT_ROOT}" "$binary" completion bash > "$completion_file"
+  chmod 0644 "$completion_file" 2>/dev/null || true
+
+  source_block=$(cat <<EOF
+# kano-git bash completion
+if [[ -r "$completion_file" ]]; then
+  source "$completion_file"
+fi
+EOF
+)
+  append_once_to_file "$bash_rc" "# kano-git bash completion" "$source_block"
+
+  echo "Bash completion installed: $completion_file"
+  echo "Reload shell with: source $bash_rc"
+}
+
+maybe_handle_completion_install_request() {
+  if [[ "$#" -eq 0 ]]; then
+    return 1
+  fi
+
+  local first="$1"
+  local second="${2:-}"
+  local third="${3:-}"
+  local shell_name=""
+  local binary=""
+
+  case "$first" in
+    completion-install)
+      shell_name="${second:-bash}"
+      ;;
+    completion)
+      if [[ "$second" != "install" ]]; then
+        return 1
+      fi
+      shell_name="${third:-bash}"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+
+  if [[ "$shell_name" != "bash" ]]; then
+    echo "Error: completion install currently supports bash only." >&2
+    echo "Hint: use './kog completion install bash'" >&2
+    return 2
+  fi
+
+  binary="$(find_binary || true)"
+  if [[ -z "$binary" || ! -f "$binary" ]]; then
+    if try_auto_prepare_binary; then
+      binary="$(find_binary || true)"
+    fi
+  fi
+
+  if [[ -z "$binary" || ! -f "$binary" ]]; then
+    echo "Error: native binary unavailable; cannot install completion." >&2
+    return 1
+  fi
+
+  if [[ ! -x "$binary" ]]; then
+    chmod u+x "$binary" >/dev/null 2>&1 || true
+  fi
+
+  install_bash_completion "$binary"
+  return 0
 }
 
 safe_branch_name() {
@@ -298,6 +433,10 @@ current_git_revision() {
   git -C "$PROJECT_ROOT" rev-list --count --first-parent HEAD 2>/dev/null || true
 }
 
+is_git_worktree_dirty() {
+  [[ -n "$(git -C "$PROJECT_ROOT" status --porcelain 2>/dev/null || true)" ]]
+}
+
 is_non_negative_integer() {
   local value="$1"
   [[ "$value" =~ ^[0-9]+$ ]]
@@ -332,6 +471,7 @@ should_rebuild_native_binary() {
   local build_hash git_hash build_branch git_branch build_revision git_revision
   local build_info direction_text
   local version_file cmake_file preset_file
+  local skip_when_dirty
 
   REBUILD_DIRECTION="unknown"
   REBUILD_REASON=""
@@ -339,6 +479,12 @@ should_rebuild_native_binary() {
   if [[ ! -f "$binary" ]]; then
     REBUILD_REASON="binary missing"
     return 0
+  fi
+
+  skip_when_dirty="${KOG_SKIP_AUTO_REBUILD_WHEN_DIRTY:-1}"
+  if [[ "$skip_when_dirty" == "1" ]] && is_git_worktree_dirty; then
+    log_launcher_status "auto-rebuild" "skip" "dirty worktree detected in $PROJECT_ROOT; skipping rebuild hash/timestamp checks"
+    return 1
   fi
 
   build_info="$(binary_build_info "$binary")"
@@ -442,11 +588,56 @@ maybe_rebuild_binary_if_needed() {
 should_skip_update_prompt_for_command() {
   local command="${1:-}"
   case "$command" in
-    ""|help|-h|--help|-v|--version|version|completion|complete|__complete|sync|tui)
+    ""|help|-h|--help|-v|--version|version|completion|complete|__complete|sync|tui|discover|remote)
       return 0
       ;;
   esac
   return 1
+}
+
+rewrite_discover_command_args() {
+  local -n out_ref="$1"
+  shift
+
+  local -a incoming=("$@")
+  local arg
+  local has_max_depth=0
+
+  out_ref=("workspace" "discover")
+
+  for arg in "${incoming[@]:1}"; do
+    case "$arg" in
+      --native-max-depth)
+        out_ref+=("--max-depth")
+        has_max_depth=1
+        continue
+        ;;
+      --native-max-depth=*)
+        out_ref+=("--max-depth=${arg#--native-max-depth=}")
+        has_max_depth=1
+        continue
+        ;;
+      --max-depth|--max-depth=*)
+        has_max_depth=1
+        ;;
+      --no-cache)
+        out_ref+=("--no-cache")
+        continue
+        ;;
+      --native-no-cache)
+        out_ref+=("--no-cache")
+        continue
+        ;;
+      --native-refresh-cache)
+        continue
+        ;;
+    esac
+    out_ref+=("$arg")
+  done
+
+  if [[ "$has_max_depth" -eq 0 ]]; then
+    out_ref+=("--max-depth" "${KOG_DISCOVER_MAX_DEPTH:-8}")
+  fi
 }
 
 run_dev_mode_update_flow() {
@@ -616,9 +807,9 @@ candidate_presets() {
       ;;
     macos)
       if [[ "$arch" == "arm64" ]]; then
-        printf '%s\n' "macos-ninja-clang-arm64" "macos-ninja-clang"
+        printf '%s\n' "macos-ninja-clang-arm64" "macos-ninja-llvm-arm64" "macos-make-clang-arm64" "macos-make-llvm-arm64" "macos-ninja-clang"
       else
-        printf '%s\n' "macos-ninja-clang-x64" "macos-ninja-clang"
+        printf '%s\n' "macos-ninja-clang-x64" "macos-ninja-llvm-x64" "macos-make-clang-x64" "macos-make-llvm-x64" "macos-ninja-clang"
       fi
       ;;
   esac
@@ -738,7 +929,7 @@ run_shell_script() {
 
   start="$(current_epoch)"
   log_launcher_status "$(basename "$script")" "start" "args=$*"
-  if run_with_progress "$(basename "$script")" env KANO_GIT_MASTER_ROOT="${KANO_GIT_MASTER_ROOT:-$PROJECT_ROOT}" "$bash_path" "$script" "$@"; then
+  if run_with_progress "$(basename "$script")" env KANO_GIT_MASTER_ROOT="${KANO_GIT_MASTER_ROOT:-$PROJECT_ROOT}" KOG_BUILD_USE_LLVM="$KOG_BUILD_USE_LLVM" KOG_BUILD_ENABLE_MODULES="$KOG_BUILD_ENABLE_MODULES" "$bash_path" "$script" "$@"; then
     end="$(current_epoch)"
     elapsed=$((end - start))
     log_launcher_status "$(basename "$script")" "ok" "elapsed=${elapsed}s"
@@ -926,10 +1117,20 @@ print_launcher_help_extras() {
 Launcher commands:
   build                               Build native binary (incremental)
   rebuild                             Rebuild native binary (full clean rebuild)
+  discover                            Run manual repo discovery, refresh cache, and print cache file path
+    --llvm                            Use Homebrew LLVM clang/clang++ toolchain (macOS)
+    --modules                         Enable C++20 modules (requires compatible toolchain)
+    --no-modules                      Disable C++20 modules
+  completion install bash             Install bash completion script
+  completion-install bash             Alias of completion install bash
 
 Launcher env:
   KANO_GIT_ALLOW_NONINTERACTIVE_DOWNGRADE_REBUILD=1
                                       Allow downgrade rebuild in non-interactive mode
+  KOG_BUILD_USE_LLVM=0|1              Build with LLVM toolchain (macOS default: 1)
+  KOG_BUILD_ENABLE_MODULES=0|1        Build with C++20 modules (macOS default: 1)
+  KOG_SKIP_AUTO_REBUILD_WHEN_DIRTY=0|1
+                                      Skip auto-rebuild checks when git worktree is dirty (default: 1)
 EOF
 }
 
@@ -939,6 +1140,10 @@ run_native_binary() {
 
   local first="${1:-}"
   local arg_count=$#
+
+  if [[ ! -x "$binary" ]]; then
+    chmod u+x "$binary" >/dev/null 2>&1 || true
+  fi
 
   KANO_GIT_MASTER_ROOT="${KANO_GIT_MASTER_ROOT:-$PROJECT_ROOT}" KANO_GIT_BINARY_PATH="$binary" "$binary" "$@"
   local status=$?
@@ -959,6 +1164,7 @@ run_native_binary() {
 main() {
   local binary marker
   local -a args=()
+  local -a exec_args=()
 
   normalize_launcher_args args "$@"
 
@@ -969,7 +1175,22 @@ main() {
       ;;
   esac
 
+  local completion_status=0
+  if maybe_handle_completion_install_request "${args[@]}"; then
+    exit 0
+  else
+    completion_status=$?
+  fi
+  if [[ "$completion_status" -ne 1 ]]; then
+    exit "$completion_status"
+  fi
+
   maybe_run_launcher_update_flow "${args[0]:-}"
+
+  exec_args=("${args[@]}")
+  if [[ "${args[0]:-}" == "discover" ]]; then
+    rewrite_discover_command_args exec_args "${args[@]}"
+  fi
 
   if binary="$(find_binary)"; then
     if ! binary="$(maybe_rebuild_binary_if_needed "$binary")"; then
@@ -988,7 +1209,7 @@ main() {
       run_shell_fallback "${args[@]}"
       exit $?
     fi
-    run_native_binary "$binary" "${args[@]}"
+    run_native_binary "$binary" "${exec_args[@]}"
     exit $?
     fi
   fi
@@ -1001,7 +1222,7 @@ main() {
   else
     if try_auto_prepare_binary; then
       if binary="$(find_binary)"; then
-        run_native_binary "$binary" "${args[@]}"
+        run_native_binary "$binary" "${exec_args[@]}"
         exit $?
       fi
     fi

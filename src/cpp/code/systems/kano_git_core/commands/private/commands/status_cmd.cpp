@@ -10,6 +10,7 @@
 #include <iomanip>
 #include <iostream>
 #include <sstream>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -18,9 +19,11 @@ namespace {
 
 struct RepoView {
     std::filesystem::path path;
+    std::string group;
+    std::string repoName;
     std::string type;
     std::string branch;
-    std::string upstream;
+    std::string remote;
     std::string tracking;
     bool repoDirty = false;
     bool hasDirtyWorktree = false;
@@ -51,7 +54,7 @@ auto CurrentBranch(const std::filesystem::path& InRepo) -> std::string {
     return value.empty() ? "(detached)" : value;
 }
 
-auto CurrentUpstream(const std::filesystem::path& InRepo) -> std::string {
+auto CurrentRemote(const std::filesystem::path& InRepo) -> std::string {
     const auto out = GitCapture(InRepo, {"rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"});
     if (out.exitCode != 0) {
         return "(none)";
@@ -82,7 +85,7 @@ auto TrackingSummary(const std::filesystem::path& InRepo) -> std::string {
     }
 
     if (first.find("...") != std::string::npos) {
-        return "in-sync";
+        return "up-to-date";
     }
 
     return "no-upstream";
@@ -128,36 +131,81 @@ auto HasDirtyWorktrees(const std::filesystem::path& InRepo, std::string& OutDirt
     return true;
 }
 
+auto RelativeDisplayPath(const std::filesystem::path& InRoot, const std::filesystem::path& InPath) -> std::filesystem::path {
+    const auto normalizedRoot = InRoot.lexically_normal();
+    const auto normalizedPath = InPath.lexically_normal();
+    const auto relative = normalizedPath.lexically_relative(normalizedRoot);
+    if (!relative.empty()) {
+        return relative;
+    }
+    return normalizedPath;
+}
+
+auto GroupFromRelativePath(const std::filesystem::path& InRelativePath) -> std::string {
+    const auto parent = InRelativePath.parent_path().generic_string();
+    if (parent.empty() || parent == ".") {
+        return ".";
+    }
+    return parent;
+}
+
+auto RepoNameFromPath(const std::filesystem::path& InPath) -> std::string {
+    const auto name = InPath.filename().generic_string();
+    if (!name.empty()) {
+        return name;
+    }
+    return InPath.lexically_normal().generic_string();
+}
+
 auto FormatTable(const std::vector<RepoView>& InRows) -> std::string {
     std::ostringstream oss;
-    oss << std::left
-        << std::setw(44) << "PATH"
-        << std::setw(16) << "BRANCH"
-        << std::setw(24) << "UPSTREAM"
-        << std::setw(16) << "TRACKING"
-        << std::setw(8) << "DIRTY"
-        << std::setw(12) << "WT_DIRTY"
-        << "TYPE"
-        << "\n";
-
+    std::set<std::string> groups;
+    std::size_t dirtyCount = 0;
     for (const auto& row : InRows) {
-        auto path = row.path.lexically_normal().generic_string();
-        if (path.size() > 42) {
-            path = "..." + path.substr(path.size() - 39);
+        groups.insert(row.group);
+        if (row.repoDirty) {
+            dirtyCount += 1;
+        }
+    }
+
+    oss << "SUMMARY: repos=" << InRows.size() << ", dirty=" << dirtyCount << ", groups=" << groups.size() << "\n";
+
+    std::string currentGroup;
+    for (std::size_t i = 0; i < InRows.size(); ++i) {
+        const auto& row = InRows[i];
+        if (currentGroup != row.group) {
+            currentGroup = row.group;
+            oss << "\nGROUP: " << currentGroup << "\n";
+            oss << std::left
+                << std::setw(6) << "#"
+                << std::setw(24) << "REPO"
+                << std::setw(16) << "BRANCH"
+                << std::setw(24) << "REMOTE"
+                << std::setw(16) << "TRACKING"
+                << std::setw(8) << "DIRTY"
+                << std::setw(12) << "WT_DIRTY"
+                << "TYPE"
+                << "\n";
+        }
+
+        auto repoName = row.repoName;
+        if (repoName.size() > 22) {
+            repoName = repoName.substr(0, 19) + "...";
         }
         auto branch = row.branch;
         if (branch.size() > 14) {
             branch = branch.substr(0, 11) + "...";
         }
-        auto upstream = row.upstream;
-        if (upstream.size() > 22) {
-            upstream = upstream.substr(0, 19) + "...";
+        auto remote = row.remote;
+        if (remote.size() > 22) {
+            remote = remote.substr(0, 19) + "...";
         }
 
         oss << std::left
-            << std::setw(44) << path
+            << std::setw(6) << std::to_string(i + 1)
+            << std::setw(24) << repoName
             << std::setw(16) << branch
-            << std::setw(24) << upstream
+            << std::setw(24) << remote
             << std::setw(16) << row.tracking
             << std::setw(8) << (row.repoDirty ? "yes" : "no")
             << std::setw(12) << (row.hasDirtyWorktree ? "yes" : "no")
@@ -170,17 +218,29 @@ auto FormatTable(const std::vector<RepoView>& InRows) -> std::string {
 
 auto FormatJson(const std::vector<RepoView>& InRows) -> std::string {
     std::ostringstream out;
-    out << "{\"repos\":[";
+    std::size_t dirtyCount = 0;
+    for (const auto& row : InRows) {
+        if (row.repoDirty) {
+            dirtyCount += 1;
+        }
+    }
+
+    out << "{\"summary\":{";
+    out << std::format("\"repo_count\":{},\"dirty_count\":{}", InRows.size(), dirtyCount);
+    out << "},\"repos\":[";
     for (std::size_t i = 0; i < InRows.size(); ++i) {
         if (i > 0) {
             out << ",";
         }
         const auto& row = InRows[i];
         out << "{";
+        out << std::format("\"index\":{},", i + 1);
         out << std::format("\"path\":\"{}\",", row.path.lexically_normal().generic_string());
+        out << std::format("\"group\":\"{}\",", row.group);
+        out << std::format("\"repo_name\":\"{}\",", row.repoName);
         out << std::format("\"type\":\"{}\",", row.type);
         out << std::format("\"branch\":\"{}\",", row.branch);
-        out << std::format("\"upstream\":\"{}\",", row.upstream);
+        out << std::format("\"remote\":\"{}\",", row.remote);
         out << std::format("\"tracking\":\"{}\",", row.tracking);
         out << std::format("\"dirty\":{},", row.repoDirty ? "true" : "false");
         out << std::format("\"worktree_dirty\":{}", row.hasDirtyWorktree ? "true" : "false");
@@ -199,7 +259,7 @@ void RegisterStatus(CLI::App& InApp) {
     auto* cmd = InApp.add_subcommand("status", "Global cross-repo status view (branch/upstream/dirty/worktree)");
 
     auto* format = new std::string{"table"};
-    auto* maxDepth = new int{3};
+    auto* maxDepth = new int{6};
     auto* exclude = new std::vector<std::string>{};
     auto* noCache = new bool{false};
 
@@ -228,11 +288,14 @@ void RegisterStatus(CLI::App& InApp) {
         for (const auto& repo : discovery.repos) {
             RepoView row;
             row.path = repo.path;
+            const auto relativePath = RelativeDisplayPath(options.rootDir, repo.path);
+            row.group = GroupFromRelativePath(relativePath);
+            row.repoName = RepoNameFromPath(repo.path);
             row.type = repo.type;
             row.repoDirty = repo.hasChanges;
 
             row.branch = CurrentBranch(repo.path);
-            row.upstream = CurrentUpstream(repo.path);
+            row.remote = CurrentRemote(repo.path);
             row.tracking = TrackingSummary(repo.path);
             row.hasDirtyWorktree = HasDirtyWorktrees(repo.path, row.dirtyWorktrees);
 
@@ -240,6 +303,12 @@ void RegisterStatus(CLI::App& InApp) {
         }
 
         std::sort(rows.begin(), rows.end(), [](const RepoView& A, const RepoView& B) {
+            if (A.group != B.group) {
+                return A.group < B.group;
+            }
+            if (A.repoName != B.repoName) {
+                return A.repoName < B.repoName;
+            }
             return A.path.lexically_normal().generic_string() < B.path.lexically_normal().generic_string();
         });
 
