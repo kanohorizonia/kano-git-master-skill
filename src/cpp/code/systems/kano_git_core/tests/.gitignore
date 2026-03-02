@@ -1,0 +1,23 @@
+# Test build artifacts
+*.o
+*.obj
+*.exe
+*.out
+*.app
+
+# Test output files
+*.log
+*.xml
+*.json
+
+# Temporary test data
+tmp/
+temp/
+test_repos/
+
+# IDE files
+.vscode/
+.vs/
+*.swp
+*.swo
+*~

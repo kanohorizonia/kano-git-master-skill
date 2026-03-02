@@ -15,6 +15,23 @@ Advanced Git automation scripts for power users and teams.
 cat docs/README.md
 ```
 
+## Native C++ Build (Required Method)
+
+When building native `kano-git` / `kog`, use the platform scripts under `src/cpp/build/script/`.
+
+```bash
+# Windows (recommended)
+bash src/cpp/build/script/windows/build_windows_ninja_msvc_release.sh
+
+# Linux (example)
+bash src/cpp/build/script/linux/build_linux_ninja_gcc_release.sh
+
+# macOS (example)
+bash src/cpp/build/script/macos/build_macos_ninja_clang_release.sh
+```
+
+Do not use ad-hoc direct CMake/Ninja command sequences in this repo unless a maintainer explicitly asks for it.
+
 ## Features
 
 - **Repository Initialization Workflow** - Automated repository setup with multi-remote, orphan branches, and submodules

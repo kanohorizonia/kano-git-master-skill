@@ -3,6 +3,10 @@
 #include "command_registry.hpp"
 #include "discovery.hpp"
 #include "shell_executor.hpp"
+#include "tui_state.hpp"
+#include "metadata_cache.hpp"
+#include "autocomplete_engine.hpp"
+#include "command_executor.hpp"
 
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/component_options.hpp>
@@ -16,6 +20,7 @@
 #include <iostream>
 #include <optional>
 #include <map>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -901,7 +906,7 @@ auto RepoIndexFromDisplayed(const std::vector<int>& displayed, int displayedInde
     return displayed[displayedIndex];
 }
 
-auto RunFtxuiDashboard() -> int {
+auto RunFtxuiDashboard(CLI::App& app) -> int {
     using namespace ftxui;
 
     bool dirtyOnly = false;
@@ -922,6 +927,20 @@ auto RunFtxuiDashboard() -> int {
     RebasePlannerState rebasePlanner{};
     RebaseRunnerState rebaseRun{};
     std::unordered_map<std::string, RepoHistoryCache> historyCache;
+    
+    // Initialize TUI command input system
+    kano::git::commands::TuiState tui_state;
+    try {
+        auto metadata_cache = std::make_shared<kano::git::commands::MetadataCache>(app);
+        auto autocomplete_engine = std::make_shared<kano::git::commands::AutocompleteEngine>(metadata_cache);
+        auto command_executor = std::make_shared<kano::git::commands::CommandExecutor>(app, std::filesystem::current_path());
+        tui_state.autocomplete_engine = autocomplete_engine;
+        tui_state.command_executor = command_executor;
+    } catch (const std::exception& e) {
+        std::cerr << "Failed to initialize TUI command input system: " << e.what() << std::endl;
+        std::cerr << "Autocomplete will be disabled. TUI will continue with basic functionality." << std::endl;
+        // Continue without autocomplete - tui_state.autocomplete_engine remains nullptr
+    }
 
     auto refresh_menu = [&] {
         displayedRepoIndices = BuildDisplayedRepoIndices(repos, collapsedRoots);
@@ -997,7 +1016,51 @@ auto RunFtxuiDashboard() -> int {
     });
     auto root = Container::Vertical({list, refresh_button});
 
+    auto map_event_to_tui = [&](const Event& event) -> std::optional<std::pair<std::string, char>> {
+        if (event == Event::Escape) return std::make_pair(std::string("escape"), '\0');
+        if (event == Event::Return || event == Event::Character('\n')) return std::make_pair(std::string("enter"), '\0');
+        if (event == Event::Backspace) return std::make_pair(std::string("backspace"), '\0');
+        if (event == Event::Delete) return std::make_pair(std::string("delete"), '\0');
+        if (event == Event::ArrowLeft) return std::make_pair(std::string("left"), '\0');
+        if (event == Event::ArrowRight) return std::make_pair(std::string("right"), '\0');
+        if (event == Event::ArrowUp) return std::make_pair(std::string("up"), '\0');
+        if (event == Event::ArrowDown) return std::make_pair(std::string("down"), '\0');
+        if (event == Event::Home) return std::make_pair(std::string("home"), '\0');
+        if (event == Event::End) return std::make_pair(std::string("end"), '\0');
+        if (event == Event::Tab) return std::make_pair(std::string("tab"), '\0');
+        if (event.is_character()) {
+            const auto text = event.character();
+            if (text == "\x10") return std::make_pair(std::string("ctrl_p"), '\0');
+            if (text == "\x15") return std::make_pair(std::string("ctrl_u"), '\0');
+            if (!text.empty()) return std::make_pair(std::string("character"), text[0]);
+        }
+        return std::nullopt;
+    };
+
     auto with_keys = CatchEvent(root, [&](Event event) {
+        if (auto mapped = map_event_to_tui(event); mapped.has_value()) {
+            const auto prevMode = tui_state.GetMode();
+            const bool handled = tui_state.HandleEvent(mapped->first, mapped->second);
+            if (handled) {
+                if (!tui_state.footer_message.empty()) {
+                    footer = tui_state.footer_message;
+                } else if (prevMode != tui_state.GetMode()) {
+                    if (tui_state.GetMode() == kano::git::commands::TuiMode::Command) {
+                        footer = "command mode: type command, Tab complete, Enter execute, Esc cancel";
+                    } else if (tui_state.GetMode() == kano::git::commands::TuiMode::CommandPalette) {
+                        footer = "command palette: type to filter, Enter select, Esc close";
+                    } else if (tui_state.GetMode() == kano::git::commands::TuiMode::Help) {
+                        footer = "help panel: Esc/q to close";
+                    }
+                }
+                return true;
+            }
+
+            if (prevMode != kano::git::commands::TuiMode::Normal) {
+                return true;
+            }
+        }
+
         if (event == Event::Character('q')) {
             if (rebaseRun.active) {
                 rebaseRun.active = false;
@@ -1692,7 +1755,59 @@ auto RunFtxuiDashboard() -> int {
     auto ui = Renderer(with_keys, [&] {
         Element rightPanel;
 
-        if (rebaseRun.active) {
+        if (tui_state.GetMode() == kano::git::commands::TuiMode::Help) {
+            rightPanel = vbox({
+                text("Help") | bold,
+                separator(),
+                text("Command Mode"),
+                text(": enter command mode, Esc cancel, Enter execute") | dim,
+                text("Tab/Up/Down navigate candidates, Enter accepts selected candidate") | dim,
+                separator(),
+                text("Shortcuts"),
+                text("r refresh | d dirty-only | f fetch | c/C commit preview/execute") | dim,
+                text("p/P push preview/execute | Enter history | q quit") | dim,
+                separator(),
+                text("Press Esc or q to close") | dim,
+            }) | border;
+        } else if (tui_state.GetMode() == kano::git::commands::TuiMode::CommandPalette) {
+            Elements rows;
+            if (tui_state.palette_state.filtered_commands.empty()) {
+                rows.push_back(text("(no matching commands)") | dim);
+            } else {
+                for (std::size_t i = 0; i < tui_state.palette_state.filtered_commands.size(); ++i) {
+                    const auto& item = tui_state.palette_state.filtered_commands[i];
+                    const bool selected = static_cast<int>(i) == tui_state.palette_state.selected_index;
+                    auto row = hbox({
+                        text(selected ? "> " : "  "),
+                        text("[" + item.category + "] ") | dim,
+                        text(item.name) | bold,
+                        text(" - " + item.description) | dim,
+                    });
+                    if (selected) {
+                        row = row | inverted;
+                    }
+                    rows.push_back(row);
+                }
+            }
+
+            rightPanel = vbox({
+                text("Command Palette") | bold,
+                separator(),
+                text("search: " + tui_state.palette_state.search_query),
+                separator(),
+                vbox(std::move(rows)) | border,
+                separator(),
+                text("Enter select | Esc close") | dim,
+            }) | border;
+        } else if (tui_state.GetMode() == kano::git::commands::TuiMode::Confirm && tui_state.confirm_state.active) {
+            rightPanel = vbox({
+                text("Confirm Command") | bold,
+                separator(),
+                paragraph(tui_state.confirm_state.message),
+                separator(),
+                text("Press y to confirm, n/Esc to cancel") | dim,
+            }) | border;
+        } else if (rebaseRun.active) {
             std::string progress = "progress: " + std::to_string(std::min(rebaseRun.index, static_cast<int>(rebaseRun.queue.size()))) + "/" + std::to_string(rebaseRun.queue.size());
             std::string current = "(none)";
             if (rebaseRun.index >= 0 && rebaseRun.index < static_cast<int>(rebaseRun.queue.size())) {
@@ -1955,6 +2070,38 @@ auto RunFtxuiDashboard() -> int {
             }) | border;
         }
 
+        Elements commandRows;
+        if (tui_state.GetMode() == kano::git::commands::TuiMode::Command) {
+            if (tui_state.command_state.HasCandidates()) {
+                Elements candRows;
+                for (std::size_t i = 0; i < tui_state.command_state.candidates.items.size(); ++i) {
+                    const auto& c = tui_state.command_state.candidates.items[i];
+                    const bool selected = static_cast<int>(i) == tui_state.command_state.candidates.selected_index;
+                    auto row = hbox({
+                        text(selected ? "> " : "  "),
+                        text(c.text) | bold,
+                        text(" - " + c.description) | dim,
+                    });
+                    if (selected) {
+                        row = row | inverted;
+                    }
+                    candRows.push_back(row);
+                }
+                commandRows.push_back(vbox({text("Candidates") | bold, vbox(std::move(candRows))}) | border);
+                commandRows.push_back(separator());
+            }
+
+            std::string inputLine = tui_state.command_state.GetBuffer();
+            const auto cursorPos = std::min(tui_state.command_state.GetCursorPos(), inputLine.size());
+            inputLine.insert(cursorPos, "█");
+            commandRows.push_back(text(":" + inputLine) | border);
+            commandRows.push_back(separator());
+        }
+
+        const auto footerText = tui_state.footer_message.empty() ? footer : tui_state.footer_message;
+        auto footerElement = text(footerText);
+        footerElement = tui_state.footer_is_error ? (footerElement | color(Color::Red)) : (footerElement | dim);
+
         return vbox({
                    text("KOG FTXUI Dashboard v2") | bold,
                    separator(),
@@ -1975,7 +2122,8 @@ auto RunFtxuiDashboard() -> int {
                    separator(),
                    refresh_button->Render(),
                    separator(),
-                   text(footer) | dim,
+                   vbox(std::move(commandRows)),
+                   footerElement,
                }) |
                border;
     });
@@ -2006,12 +2154,12 @@ void RegisterTui(CLI::App& InApp) {
     auto* demo = new bool{false};
     cmd->add_flag("--demo", *demo, "Print demo summary and exit (non-interactive)");
 
-    cmd->callback([demo]() {
+    cmd->callback([demo, &InApp]() {
         if (*demo) {
             PrintDemo();
             return;
         }
-        std::exit(RunFtxuiDashboard());
+        std::exit(RunFtxuiDashboard(InApp));
     });
 }
 

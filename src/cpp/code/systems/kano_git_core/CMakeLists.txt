@@ -5,11 +5,21 @@ target_sources(kano_git_core
     version/public/version.hpp
     shell/public/shell_executor.hpp
     commands/public/command_registry.hpp
+    commands/public/metadata_cache.hpp
+    commands/public/autocomplete_engine.hpp
+    commands/public/command_mode_state.hpp
+    commands/public/command_executor.hpp
+    commands/public/tui_state.hpp
     workspace/public/discovery.hpp
     workspace/public/native_workspace.hpp
 
     shell/private/shell_executor.cpp
     commands/private/command_registry.cpp
+    commands/private/metadata_cache.cpp
+    commands/private/autocomplete_engine.cpp
+    commands/private/command_mode_state.cpp
+    commands/private/command_executor.cpp
+    commands/private/tui_state.cpp
 
     workspace/private/discovery.cpp
     workspace/private/scheduler.hpp
@@ -88,3 +98,9 @@ if(MSVC AND CMAKE_GENERATOR MATCHES "Visual Studio")
 endif()
 
 target_link_libraries(kano_git_core PUBLIC CLI11::CLI11 ftxui::screen ftxui::dom ftxui::component)
+
+# Add tests subdirectory
+option(KOG_BUILD_TESTS "Build TUI command input enhancement tests" ON)
+if(KOG_BUILD_TESTS)
+    add_subdirectory(tests)
+endif()

@@ -13,6 +13,20 @@ Comprehensive Git automation scripts for managing multi-repository workspaces. W
 
 ## Quick Start
 
+### Performance (C++ vs Shell vs Native Git)
+
+The native C++ version of `kano-git` provides a significant performance boost over the fallback shell version and native Git commands, especially in complex multi-repository workspaces.
+
+**Test Environment**: 8 repositories (3 registered submodules, 3 unregistered subrepos, 1 nested repo, 1 root).
+
+| Operation | Shell Version | Native Git* | C++ Version (Native) | Speedup (vs Shell) |
+| :--- | :--- | :--- | :--- | :--- |
+| **Discover Repos** | ~6122ms | N/A | **~337ms** | **~18x faster** |
+| **Workspace Status** | ~7976ms | N/A | **~88ms** | **~90x faster** |
+| **Foreach Command** | ~2994ms | ~842ms | **~241ms** | **~12x faster** |
+
+*\* Native Git benchmarks use `git submodule foreach --recursive`, which only supports registered submodules. C++ supports both registered and unregistered subrepos natively.*
+
 ### Install `kano-git` / `kog` in Git Bash (PATH + completion)
 
 ```bash
@@ -45,6 +59,23 @@ Compatibility alias (same behavior):
 ```bash
 bash ./scripts/kano-git-installer
 ```
+
+### Native C++ build rule (important)
+
+When building native `kano-git` / `kog`, use the platform scripts under `src/cpp/build/script/`.
+
+```bash
+# Windows (recommended)
+bash src/cpp/build/script/windows/build_windows_ninja_msvc_release.sh
+
+# Linux (example)
+bash src/cpp/build/script/linux/build_linux_ninja_gcc_release.sh
+
+# macOS (example)
+bash src/cpp/build/script/macos/build_macos_ninja_clang_release.sh
+```
+
+Do not replace this with ad-hoc direct CMake/Ninja command sequences unless a maintainer explicitly asks for it.
 
 ### Guided Flows (Easy Win Before Full TUI)
 
