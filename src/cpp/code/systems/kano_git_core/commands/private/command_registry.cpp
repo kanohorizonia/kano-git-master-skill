@@ -14,6 +14,7 @@ void RegisterAll(CLI::App& InApp) {
     RegisterCommitPush(InApp);
     RegisterComplete(InApp);
     RegisterCompletion(InApp);
+    RegisterDirty(InApp);
     RegisterDoctor(InApp);
     RegisterGuide(InApp);
     RegisterMeta(InApp);
@@ -22,12 +23,14 @@ void RegisterAll(CLI::App& InApp) {
     RegisterRemote(InApp);
     RegisterResolve(InApp);
     RegisterScalar(InApp);
+    RegisterSlog(InApp);
     RegisterStatus(InApp);
     RegisterSubmodule(InApp);
     RegisterSubtree(InApp);
     RegisterSvn(InApp);
     RegisterSync(InApp);
     RegisterTui(InApp);
+    RegisterUplog(InApp);
     RegisterVersion(InApp);
     RegisterWorkspace(InApp);
     RegisterWorktree(InApp);

@@ -10,6 +10,7 @@ void RegisterCache(CLI::App& InApp);
 void RegisterMeta(CLI::App& InApp);
 void RegisterComplete(CLI::App& InApp);
 void RegisterCompletion(CLI::App& InApp);
+void RegisterDirty(CLI::App& InApp);
 void RegisterGuide(CLI::App& InApp);
 void RegisterRemote(CLI::App& InApp);
 void RegisterStatus(CLI::App& InApp);
@@ -27,7 +28,9 @@ void RegisterSubmodule(CLI::App& InApp);
 void RegisterScalar(CLI::App& InApp);
 
 void RegisterP4(CLI::App& InApp);
+void RegisterSlog(CLI::App& InApp);
 void RegisterSvn(CLI::App& InApp);
+void RegisterUplog(CLI::App& InApp);
 
 void RegisterBranch(CLI::App& InApp);
 void RegisterWorkspace(CLI::App& InApp);

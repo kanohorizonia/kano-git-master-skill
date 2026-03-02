@@ -588,11 +588,63 @@ maybe_rebuild_binary_if_needed() {
 should_skip_update_prompt_for_command() {
   local command="${1:-}"
   case "$command" in
-    ""|help|-h|--help|-v|--version|version|completion|complete|__complete|sync|tui|discover|remote)
+    ""|help|-h|--help|-v|--version|version|completion|complete|__complete|sync|tui|discover|remote|slog|uplog)
       return 0
       ;;
   esac
   return 1
+}
+
+int32_max() {
+  printf '%s\n' "2147483647"
+}
+
+is_valid_int32_positive() {
+  local value="$1"
+  local max
+  max="$(int32_max)"
+
+  [[ "$value" =~ ^[0-9]+$ ]] || return 1
+  [[ "$value" != "0" ]] || return 1
+
+  while [[ ${#value} -gt 1 && "${value:0:1}" == "0" ]]; do
+    value="${value:1}"
+  done
+
+  if [[ ${#value} -lt ${#max} ]]; then
+    return 0
+  fi
+  if [[ ${#value} -gt ${#max} ]]; then
+    return 1
+  fi
+
+  [[ "$value" < "$max" || "$value" == "$max" ]]
+}
+
+rewrite_slog_shorthand_args() {
+  local -n out_ref="$1"
+  shift
+
+  local -a incoming=("$@")
+  local first="${incoming[0]:-}"
+  local count_part="${first#slog}"
+
+  if [[ -z "$first" || "$first" == "slog" ]]; then
+    out_ref=("${incoming[@]}")
+    return 0
+  fi
+
+  if [[ "$first" =~ ^slog[0-9]+$ ]]; then
+    if ! is_valid_int32_positive "$count_part"; then
+      echo "Error: slog count must be a positive integer <= $(int32_max)" >&2
+      return 2
+    fi
+    out_ref=("slog" "$count_part" "${incoming[@]:1}")
+    return 0
+  fi
+
+  out_ref=("${incoming[@]}")
+  return 0
 }
 
 rewrite_discover_command_args() {
@@ -1188,6 +1240,9 @@ main() {
   maybe_run_launcher_update_flow "${args[0]:-}"
 
   exec_args=("${args[@]}")
+  if ! rewrite_slog_shorthand_args exec_args "${exec_args[@]}"; then
+    exit $?
+  fi
   if [[ "${args[0]:-}" == "discover" ]]; then
     rewrite_discover_command_args exec_args "${args[@]}"
   fi
