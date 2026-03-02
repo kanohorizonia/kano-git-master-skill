@@ -144,9 +144,26 @@ normalize_launcher_args() {
   fi
 
   local command="$1"
+  case "$command" in
+    cp)
+      command="commit-push"
+      ;;
+    cpa)
+      command="commit-push"
+      ;;
+  esac
+
   if [[ "$command" != "commit" && "$command" != "amend" && "$command" != "commit-push" ]]; then
     out_ref=("$@")
     return 0
+  fi
+
+  if [[ "$1" == "cp" ]]; then
+    out_ref+=("commit-push")
+    shift
+  elif [[ "$1" == "cpa" ]]; then
+    out_ref+=("commit-push" "--ai-auto")
+    shift
   fi
 
   local token
@@ -1170,6 +1187,8 @@ Launcher commands:
   build                               Build native binary (incremental)
   rebuild                             Rebuild native binary (full clean rebuild)
   discover                            Run manual repo discovery, refresh cache, and print cache file path
+  cp ...                              Alias of commit-push ...
+  cpa ...                             Alias of commit-push --ai-auto ...
     --llvm                            Use Homebrew LLVM clang/clang++ toolchain (macOS)
     --modules                         Enable C++20 modules (requires compatible toolchain)
     --no-modules                      Disable C++20 modules

@@ -9,6 +9,7 @@
 #include <future>
 #include <iomanip>
 #include <iostream>
+#include <map>
 #include <sstream>
 #include <string>
 #include <chrono>
@@ -124,14 +125,37 @@ auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<
     return repos;
 }
 
-auto Ellipsize(const std::string& InValue, const std::size_t InMaxWidth) -> std::string {
-    if (InValue.size() <= InMaxWidth) {
-        return InValue;
+auto RelativeDisplayPath(const std::filesystem::path& InRoot, const std::filesystem::path& InPath) -> std::filesystem::path {
+    auto normalizedRoot = InRoot.lexically_normal();
+    if (!normalizedRoot.is_absolute()) {
+        normalizedRoot = std::filesystem::absolute(normalizedRoot).lexically_normal();
     }
-    if (InMaxWidth <= 3) {
-        return InValue.substr(0, InMaxWidth);
+    const auto normalizedPath = InPath.lexically_normal();
+    const auto relative = normalizedPath.lexically_relative(normalizedRoot);
+    if (!relative.empty()) {
+        return relative;
     }
-    return InValue.substr(0, InMaxWidth - 3) + "...";
+    return normalizedPath;
+}
+
+auto GroupFromRelativePath(const std::filesystem::path& InRelativePath) -> std::string {
+    const auto parent = InRelativePath.parent_path().generic_string();
+    if (parent.empty() || parent == ".") {
+        return ".";
+    }
+    return parent;
+}
+
+auto RepoNameFromPath(const std::filesystem::path& InPath) -> std::string {
+    const auto normalized = InPath.lexically_normal();
+    auto name = normalized.filename().generic_string();
+    if (name.empty()) {
+        name = normalized.parent_path().filename().generic_string();
+    }
+    if (!name.empty()) {
+        return name;
+    }
+    return normalized.generic_string();
 }
 
 auto IsParentPath(const std::filesystem::path& InParent, const std::filesystem::path& InChild) -> bool {
@@ -475,27 +499,33 @@ auto RunNativePush(
     }
 
     if (!pushStats.empty()) {
-        constexpr int repoColWidth = 52;
-        constexpr int remoteColWidth = 20;
-        std::cout << "\n=== Push Summary ===\n";
-        std::cout << std::left << std::setw(repoColWidth) << "Repository"
-                  << "  "
-                  << std::setw(remoteColWidth) << "Remote"
-                  << "  "
-                  << "Branch\n";
-        std::cout << std::left << std::setw(repoColWidth) << "-----------"
-                  << "  "
-                  << std::setw(remoteColWidth) << "------"
-                  << "  "
-                  << "------\n";
+        const auto root = std::filesystem::current_path().lexically_normal();
+        std::map<std::string, std::vector<std::tuple<std::string, std::string, std::string>>> grouped;
+
         for (const auto& stat : pushStats) {
-            const auto repoName = Ellipsize(std::get<0>(stat), static_cast<std::size_t>(repoColWidth - 1));
-            const auto remoteName = Ellipsize(std::get<1>(stat), static_cast<std::size_t>(remoteColWidth - 1));
-            std::cout << std::left << std::setw(repoColWidth) << repoName
-                      << "  "
-                      << std::setw(remoteColWidth) << remoteName
-                      << "  "
-                      << std::get<2>(stat) << "\n";
+            const std::filesystem::path repoPath(std::get<0>(stat));
+            const auto relative = RelativeDisplayPath(root, repoPath);
+            const auto group = GroupFromRelativePath(relative);
+            grouped[group].emplace_back(
+                RepoNameFromPath(repoPath),
+                std::get<1>(stat),
+                std::get<2>(stat));
+        }
+
+        std::cout << "\n=== Push Summary ===\n";
+        std::cout << "SUMMARY: pushed_entries=" << pushStats.size() << ", groups=" << grouped.size() << "\n\n";
+
+        std::size_t index = 0;
+        for (const auto& [group, rows] : grouped) {
+            std::cout << "GROUP: " << group << "\n";
+            for (const auto& row : rows) {
+                index += 1;
+                std::cout << "[" << index << "] " << std::get<0>(row)
+                          << "  remote=" << std::get<1>(row)
+                          << "  branch=" << std::get<2>(row)
+                          << "\n";
+            }
+            std::cout << "\n";
         }
     }
 
