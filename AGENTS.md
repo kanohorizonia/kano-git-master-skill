@@ -9,7 +9,15 @@ This repo is a **Bash script toolkit** (plus Bash-based tests) for Git automatio
 - Requirements are documented in `README.md` (Git 2.x+, Bash 4.x+, optional Python/Scalar).
 
 ### Build
-- No build step (shell scripts only).
+- Shell scripts: no build step.
+- C++ native CLI (`kano-git`/`kog`): **must** use platform build scripts under `src/cpp/build/script/`.
+  - Windows (recommended):
+    - `bash src/cpp/build/script/windows/build_windows_ninja_msvc_release.sh`
+  - Linux (example):
+    - `bash src/cpp/build/script/linux/build_linux_ninja_gcc_release.sh`
+  - macOS (example):
+    - `bash src/cpp/build/script/macos/build_macos_ninja_clang_release.sh`
+- Do not use ad-hoc direct CMake/Ninja command sequences when working in this repo unless explicitly requested by a human maintainer.
 
 ### Lint / format
 - No repo-provided lint/format commands (no shellcheck/shfmt config found).
