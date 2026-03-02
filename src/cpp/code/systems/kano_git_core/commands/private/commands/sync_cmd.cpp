@@ -143,6 +143,47 @@ auto CurrentBranch(const std::filesystem::path& InRepo) -> std::string {
     return Trim(result.stdoutStr);
 }
 
+auto HasRebaseInProgress(const std::filesystem::path& InRepo) -> bool {
+    const auto rebaseMergePath = GitCapture(InRepo, {"rev-parse", "--git-path", "rebase-merge"});
+    if (rebaseMergePath.exitCode == 0) {
+        const auto path = Trim(rebaseMergePath.stdoutStr);
+        if (!path.empty() && std::filesystem::exists(path)) {
+            return true;
+        }
+    }
+
+    const auto rebaseApplyPath = GitCapture(InRepo, {"rev-parse", "--git-path", "rebase-apply"});
+    if (rebaseApplyPath.exitCode == 0) {
+        const auto path = Trim(rebaseApplyPath.stdoutStr);
+        if (!path.empty() && std::filesystem::exists(path)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+auto RecoverRebaseState(const std::filesystem::path& InRepo, const std::string& InRepoName, bool InDryRun) -> bool {
+    if (!HasRebaseInProgress(InRepo)) {
+        return true;
+    }
+
+    if (InDryRun) {
+        std::cout << "[DRY RUN] Detected in-progress rebase in " << InRepoName << "; would run: git rebase --abort\n";
+        return true;
+    }
+
+    std::cout << "WARN: Detected in-progress rebase in " << InRepoName << "; attempting auto-recovery via rebase --abort\n";
+    const auto abortRebase = GitPassThrough(InRepo, {"rebase", "--abort"});
+    if (abortRebase.exitCode != 0) {
+        std::cerr << "ERROR: Failed to recover rebase state for " << InRepoName << "\n";
+        return false;
+    }
+
+    std::cout << "Recovered rebase state for " << InRepoName << "\n";
+    return true;
+}
+
 auto LocalBranchExists(const std::filesystem::path& InRepo, const std::string& InBranch) -> bool {
     if (InBranch.empty()) {
         return false;
@@ -1006,9 +1047,15 @@ auto RunNativeOriginLatestSync(
         }
 
         if (hasRemote) {
+            if (!RecoverRebaseState(plan.path, name, InDryRun)) {
+                failures += 1;
+                continue;
+            }
+
             const auto pull = GitPassThrough(plan.path, {"pull", "--rebase", plan.remote, plan.targetBranch});
             if (pull.exitCode != 0) {
-                std::cerr << "WARN: pull --rebase failed for " << name << "\n";
+                std::cerr << "ERROR: pull --rebase failed for " << name << "\n";
+                failures += 1;
             }
         }
     }
