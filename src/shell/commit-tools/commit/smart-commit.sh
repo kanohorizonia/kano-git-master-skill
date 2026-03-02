@@ -1348,16 +1348,22 @@ run_ai_review() {
   local repo="$1"
   local prompt raw first verdict
   local first_trimmed="" first_upper="" raw_upper=""
+  local review_start=0
+  local review_elapsed=0
 
   if [[ "$AI_REVIEW" -ne 1 ]]; then
     return 0
   fi
 
+  echo "[$repo] AI review in process... (provider=$AI_PROVIDER, model=$AI_MODEL)"
+  review_start="$(timer_now)"
+
   prompt="$(build_review_prompt "$repo")"
   raw="$(ai_generate_message_first_line "$AI_PROVIDER" "$AI_MODEL" "$prompt" || true)"
+  review_elapsed=$(( $(timer_now) - review_start ))
 
   if [[ -z "$raw" ]]; then
-    echo "[$repo] WARNING: AI review unavailable, skipping gate (fail-open)" >&2
+    echo "[$repo] WARNING: AI review unavailable after ${review_elapsed}s, skipping gate (fail-open)" >&2
     if provider_auth_likely_missing; then
       echo "[$repo] AI provider auth appears missing for: $AI_PROVIDER" >&2
       echo "[$repo] $(provider_auth_hint)" >&2
@@ -1390,16 +1396,16 @@ run_ai_review() {
   fi
 
   if [[ "$verdict" == "PASS" ]]; then
-    echo "[$repo] AI review: ${first_trimmed:-PASS}"
+    echo "[$repo] AI review PASS (${review_elapsed}s): ${first_trimmed:-PASS}"
     return 0
   fi
 
   if [[ "$verdict" == "FAIL" ]]; then
-    echo "[$repo] AI review BLOCKED: ${first_trimmed:-FAIL}" >&2
+    echo "[$repo] AI review BLOCKED (${review_elapsed}s): ${first_trimmed:-FAIL}" >&2
     return 1
   fi
 
-  echo "[$repo] WARNING: AI review returned invalid verdict, skipping gate (fail-open)" >&2
+  echo "[$repo] WARNING: AI review returned invalid verdict after ${review_elapsed}s, skipping gate (fail-open)" >&2
   if [[ -n "$first_trimmed" ]]; then
     echo "[$repo] AI output: $first_trimmed" >&2
   fi
