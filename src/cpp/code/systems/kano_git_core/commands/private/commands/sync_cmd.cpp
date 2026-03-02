@@ -855,7 +855,18 @@ auto CheckoutRecoveredBranch(
             std::cout << "[DRY RUN] Would run: git checkout " << InBranch << "\n";
             return true;
         }
-        return GitPassThrough(InRepo, {"checkout", InBranch}).exitCode == 0;
+        const auto checkout = GitPassThrough(InRepo, {"checkout", InBranch});
+        if (checkout.exitCode == 0) {
+            return true;
+        }
+        const auto forceCheckout = GitPassThrough(InRepo, {"checkout", "-f", InBranch});
+        if (forceCheckout.exitCode == 0) {
+            if (OutDetail != nullptr) {
+                *OutDetail = "force checkout existing local branch";
+            }
+            return true;
+        }
+        return false;
     }
 
     if (RemoteBranchExists(InRepo, InRemote, InBranch)) {
@@ -866,7 +877,18 @@ auto CheckoutRecoveredBranch(
             std::cout << "[DRY RUN] Would run: git checkout -b " << InBranch << " " << InRemote << "/" << InBranch << "\n";
             return true;
         }
-        return GitPassThrough(InRepo, {"checkout", "-b", InBranch, std::format("{}/{}", InRemote, InBranch)}).exitCode == 0;
+        const auto checkout = GitPassThrough(InRepo, {"checkout", "-b", InBranch, std::format("{}/{}", InRemote, InBranch)});
+        if (checkout.exitCode == 0) {
+            return true;
+        }
+        const auto forceCheckout = GitPassThrough(InRepo, {"checkout", "-B", InBranch, std::format("{}/{}", InRemote, InBranch)});
+        if (forceCheckout.exitCode == 0) {
+            if (OutDetail != nullptr) {
+                *OutDetail = "force recreate local branch from remote";
+            }
+            return true;
+        }
+        return false;
     }
 
     if (InMode == BranchMode::StableDev) {
@@ -943,6 +965,39 @@ auto ResolveUnmergedByTheirs(const std::filesystem::path& InRepo, bool InDryRun)
     }
 
     return CollectUnmergedPaths(InRepo).empty();
+}
+
+auto ContinueRebaseByPreferringTheirs(const std::filesystem::path& InRepo, const std::string& InRepoName) -> bool {
+    constexpr int maxAttempts = 24;
+    for (int attempt = 0; attempt < maxAttempts; ++attempt) {
+        if (!HasRebaseInProgress(InRepo)) {
+            return true;
+        }
+
+        const auto unmerged = CollectUnmergedPaths(InRepo);
+        if (unmerged.empty()) {
+            return false;
+        }
+
+        std::cerr << "WARN: rebase conflict in " << InRepoName
+                  << "; preferring incoming changes (--theirs) for "
+                  << unmerged.size() << " path" << (unmerged.size() == 1 ? "" : "s") << "\n";
+
+        if (!ResolveUnmergedByTheirs(InRepo, false)) {
+            return false;
+        }
+
+        const auto cont = GitPassThrough(InRepo, {"rebase", "--continue"});
+        if (cont.exitCode == 0) {
+            continue;
+        }
+
+        if (!HasRebaseInProgress(InRepo)) {
+            return false;
+        }
+    }
+
+    return !HasRebaseInProgress(InRepo);
 }
 
 auto BuildSyncPlans(
@@ -1146,7 +1201,7 @@ auto RunNativeOriginLatestSync(
             }
             std::cout << "\n";
             if (hasRemote) {
-                std::cout << "[DRY RUN] Would run: git pull --rebase " << plan.remote << " " << plan.targetBranch << "\n";
+                std::cout << "[DRY RUN] Would run: git rebase " << plan.remote << "/" << plan.targetBranch << "\n";
             } else {
                 std::cout << "[DRY RUN] Skip pull: missing remote branch " << plan.remote << "/" << plan.targetBranch << "\n";
             }
@@ -1171,18 +1226,25 @@ auto RunNativeOriginLatestSync(
                 continue;
             }
 
-            const auto pull = GitPassThrough(plan.path, {"pull", "--rebase", plan.remote, plan.targetBranch});
-            if (pull.exitCode != 0) {
-                std::cerr << "ERROR: pull --rebase failed for " << name << "\n";
-                failures += 1;
-                failureDetails.emplace_back(name, "pull --rebase failed");
-                if (stashCreated) {
-                    const auto stashPop = GitPassThrough(plan.path, {"stash", "pop"});
-                    if (stashPop.exitCode != 0) {
-                        std::cerr << "WARN: failed to restore auto-stash for " << name << "\n";
-                    }
+            const auto rebaseTarget = std::format("{}/{}", plan.remote, plan.targetBranch);
+            const auto rebase = GitPassThrough(plan.path, {"rebase", rebaseTarget});
+            if (rebase.exitCode != 0) {
+                bool recovered = false;
+                if (HasRebaseInProgress(plan.path) && !CollectUnmergedPaths(plan.path).empty()) {
+                    recovered = ContinueRebaseByPreferringTheirs(plan.path, name);
                 }
-                continue;
+                if (!recovered) {
+                    std::cerr << "ERROR: rebase failed for " << name << "\n";
+                    failures += 1;
+                    failureDetails.emplace_back(name, "rebase failed");
+                    if (stashCreated) {
+                        const auto stashPop = GitPassThrough(plan.path, {"stash", "pop"});
+                        if (stashPop.exitCode != 0) {
+                            std::cerr << "WARN: failed to restore auto-stash for " << name << "\n";
+                        }
+                    }
+                    continue;
+                }
             }
         }
 
