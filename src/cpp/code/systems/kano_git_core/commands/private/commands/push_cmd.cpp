@@ -191,6 +191,37 @@ auto RepoNameFromPath(const std::filesystem::path& InPath) -> std::string {
     return normalized.generic_string();
 }
 
+auto ResolveGitmodulesPushPolicy(const std::filesystem::path& InRepo) -> std::string {
+    auto repo = std::filesystem::weakly_canonical(InRepo).lexically_normal();
+    auto current = repo.parent_path();
+
+    while (!current.empty()) {
+        const auto gitmodulesPath = current / ".gitmodules";
+        if (std::filesystem::exists(gitmodulesPath)) {
+            const auto relative = repo.lexically_relative(current);
+            const auto rel = relative.generic_string();
+            if (!rel.empty() && rel != "." && !rel.starts_with("..")) {
+                const auto key = std::format("submodule.{}.kog-push-policy", rel);
+                const auto configured = GitCapture(current, {"config", "-f", ".gitmodules", "--get", key});
+                if (configured.exitCode == 0) {
+                    const auto policy = ToLower(Trim(configured.stdoutStr));
+                    if (!policy.empty()) {
+                        return policy;
+                    }
+                }
+            }
+        }
+
+        const auto parent = current.parent_path();
+        if (parent == current) {
+            break;
+        }
+        current = parent;
+    }
+
+    return {};
+}
+
 auto IsParentPath(const std::filesystem::path& InParent, const std::filesystem::path& InChild) -> bool {
     const auto parent = InParent.lexically_normal().generic_string();
     const auto child = InChild.lexically_normal().generic_string();
@@ -340,6 +371,16 @@ auto RunNativePush(
         if (branchOut.exitCode != 0 || branch.empty()) {
             std::cerr << "Error: Detached HEAD is not supported by native push flow: " << repoLabel << "\n";
             return {0, 1};
+        }
+
+        const auto pushPolicy = ResolveGitmodulesPushPolicy(repoPath);
+        if (pushPolicy == "skip") {
+            std::cout << "[" << repoLabel << "] Push skipped by .gitmodules policy (kog-push-policy=skip)\n";
+            return {1, 0};
+        }
+        if (!pushPolicy.empty() && pushPolicy != "allow") {
+            std::cerr << "[" << repoLabel << "] Warning: unknown .gitmodules kog-push-policy='" << pushPolicy
+                      << "'; expected skip|allow, treating as allow\n";
         }
 
         const bool hasUpstream = (GitCapture(repoPath, {"rev-parse", "--abbrev-ref", "@{upstream}"}).exitCode == 0);

@@ -6,7 +6,9 @@
 	path = src/cpp/code/thirdparty/cli11
 	url = https://github.com/CLIUtils/CLI11.git
 	branch = branch_v2.6.2
+	kog-push-policy = skip
 [submodule "src/cpp/code/thirdparty/ftxui"]
 	path = src/cpp/code/thirdparty/ftxui
 	url = https://github.com/ArthurSonzogni/FTXUI.git
 	branch = branch_v5.0.0
+	kog-push-policy = skip

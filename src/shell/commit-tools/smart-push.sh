@@ -297,6 +297,37 @@ collect_repo_runtime_state() {
   fi
 }
 
+resolve_gitmodules_push_policy() {
+  local repo="$1"
+  local repo_abs=""
+  local current=""
+  local rel_path=""
+  local configured_policy=""
+
+  repo_abs="$(cd "$repo" 2>/dev/null && pwd -P || echo "$repo")"
+  current="$(dirname "$repo_abs")"
+
+  while [[ -n "$current" ]]; do
+    if [[ -f "$current/.gitmodules" ]]; then
+      rel_path="${repo_abs#$current/}"
+      if [[ "$rel_path" != "$repo_abs" ]]; then
+        configured_policy="$(git -C "$current" config -f .gitmodules --get "submodule.$rel_path.kog-push-policy" 2>/dev/null || true)"
+        if [[ -n "$configured_policy" ]]; then
+          printf '%s' "$configured_policy" | tr '[:upper:]' '[:lower:]'
+          return 0
+        fi
+      fi
+    fi
+
+    if [[ "$current" == "/" || "$current" == "." ]]; then
+      break
+    fi
+    current="$(dirname "$current")"
+  done
+
+  return 1
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --repos)
@@ -564,6 +595,7 @@ TIMER_TOTAL_START="$(timer_now)"
 
 for repo in "${REPOS[@]}"; do
   collect_repo_runtime_state "$repo"
+  push_policy="$(resolve_gitmodules_push_policy "$repo" || true)"
   branch="$REPO_BRANCH"
   if [[ -z "$branch" ]]; then
     if attach_detached_to_default_branch "$repo"; then
@@ -577,6 +609,14 @@ for repo in "${REPOS[@]}"; do
       echo "[$repo] SKIP: Detached HEAD"
     fi
     continue
+  fi
+
+  if [[ "$push_policy" == "skip" ]]; then
+    echo "[$repo] Push skipped by .gitmodules policy (kog-push-policy=skip)"
+    continue
+  fi
+  if [[ -n "$push_policy" && "$push_policy" != "allow" ]]; then
+    echo "[$repo] WARNING: unknown .gitmodules kog-push-policy='$push_policy' (expected skip|allow); treating as allow" >&2
   fi
 
   if [[ "$VERBOSE" -eq 1 ]]; then
