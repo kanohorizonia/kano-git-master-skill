@@ -375,13 +375,43 @@ auto RunNativePush(
                 } else {
                     std::cout << "[" << repoLabel << "] Sync skipped: local changes present; proceeding to push\n";
                 }
-            } else if (InDryRun) {
-                std::cout << "[DRY RUN] [" << repoLabel << "] Would run: git pull --rebase\n";
             } else {
-                const auto pull = GitPassThrough(repoPath, {"pull", "--rebase"});
-                if (pull.exitCode != 0) {
-                    std::cerr << "[" << repoLabel << "] Sync failed before push\n";
-                    return {0, 1};
+                const auto upstreamRef = Trim(GitCapture(repoPath, {"rev-parse", "--abbrev-ref", "@{upstream}"}).stdoutStr);
+                bool shouldPullRebase = true;
+                int aheadCount = -1;
+                int behindCount = -1;
+                if (!upstreamRef.empty()) {
+                    const auto aheadBehind = GitCapture(repoPath, {"rev-list", "--left-right", "--count", std::format("HEAD...{}", upstreamRef)});
+                    if (aheadBehind.exitCode == 0) {
+                        std::istringstream iss(aheadBehind.stdoutStr);
+                        if (iss >> aheadCount >> behindCount) {
+                            shouldPullRebase = behindCount > 0;
+                        }
+                    }
+                }
+
+                if (InDryRun) {
+                    if (shouldPullRebase) {
+                        std::cout << "[DRY RUN] [" << repoLabel << "] Would run: git pull --rebase\n";
+                    } else {
+                        std::cout << "[DRY RUN] [" << repoLabel << "] Skip sync pull: local branch is not behind upstream";
+                        if (aheadCount >= 0 && behindCount >= 0) {
+                            std::cout << " (ahead=" << aheadCount << ", behind=" << behindCount << ")";
+                        }
+                        std::cout << "\n";
+                    }
+                } else if (shouldPullRebase) {
+                    const auto pull = GitPassThrough(repoPath, {"pull", "--rebase"});
+                    if (pull.exitCode != 0) {
+                        std::cerr << "[" << repoLabel << "] Sync failed before push\n";
+                        return {0, 1};
+                    }
+                } else {
+                    std::cout << "[" << repoLabel << "] Sync skipped: local branch is not behind upstream";
+                    if (aheadCount >= 0 && behindCount >= 0) {
+                        std::cout << " (ahead=" << aheadCount << ", behind=" << behindCount << ")";
+                    }
+                    std::cout << "\n";
                 }
             }
 

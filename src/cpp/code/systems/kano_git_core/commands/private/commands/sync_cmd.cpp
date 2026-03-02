@@ -383,6 +383,26 @@ auto CollectSrcSubmodulePaths(const std::filesystem::path& InRoot) -> std::vecto
     return out;
 }
 
+auto TryResolveTagRefForBranch(const std::filesystem::path& InRepo, const std::string& InBranch, std::string* OutTagRef) -> bool {
+    if (!InBranch.starts_with("branch_") || InBranch.size() <= 7) {
+        return false;
+    }
+
+    const auto tag = InBranch.substr(7);
+    if (tag.empty()) {
+        return false;
+    }
+
+    if (GitCapture(InRepo, {"show-ref", "--verify", "--quiet", std::format("refs/tags/{}", tag)}).exitCode != 0) {
+        return false;
+    }
+
+    if (OutTagRef != nullptr) {
+        *OutTagRef = std::format("refs/tags/{}", tag);
+    }
+    return true;
+}
+
 void PrintStableDevSummary(const std::vector<StableDevSummaryRow>& InRows, StableDevReportFormat InFormat) {
     switch (InFormat) {
         case StableDevReportFormat::Compact: {
@@ -905,6 +925,18 @@ auto CheckoutRecoveredBranch(
         }
     }
 
+    std::string tagRef;
+    if (TryResolveTagRefForBranch(InRepo, InBranch, &tagRef)) {
+        if (OutDetail != nullptr) {
+            *OutDetail = "create local branch from matching tag";
+        }
+        if (InDryRun) {
+            std::cout << "[DRY RUN] Would run: git checkout -b " << InBranch << " " << tagRef << "\n";
+            return true;
+        }
+        return GitPassThrough(InRepo, {"checkout", "-b", InBranch, tagRef}).exitCode == 0;
+    }
+
     return false;
 }
 
@@ -1187,10 +1219,16 @@ auto RunNativeOriginLatestSync(
                 checkoutArgs = {"checkout", plan.targetBranch};
                 std::cout << "WARN: Unregistered repo branch has no remote ref, keeping local branch: " << name << "\n";
             } else {
-                std::cerr << "ERROR: Target branch not found for " << name << "\n";
-                failures += 1;
-                failureDetails.emplace_back(name, "target branch not found on local/remote");
-                continue;
+                std::string tagRef;
+                if (TryResolveTagRefForBranch(plan.path, plan.targetBranch, &tagRef)) {
+                    checkoutArgs = {"checkout", "-B", plan.targetBranch, tagRef};
+                    std::cout << "INFO: Target branch missing for " << name << "; creating from tag " << tagRef << "\n";
+                } else {
+                    std::cerr << "ERROR: Target branch not found for " << name << "\n";
+                    failures += 1;
+                    failureDetails.emplace_back(name, "target branch and matching tag not found");
+                    continue;
+                }
             }
         }
 
@@ -1201,7 +1239,23 @@ auto RunNativeOriginLatestSync(
             }
             std::cout << "\n";
             if (hasRemote) {
-                std::cout << "[DRY RUN] Would run: git rebase " << plan.remote << "/" << plan.targetBranch << "\n";
+                const auto rebaseTarget = std::format("{}/{}", plan.remote, plan.targetBranch);
+                const auto aheadBehind = GitCapture(plan.path, {"rev-list", "--left-right", "--count", std::format("HEAD...{}", rebaseTarget)});
+                bool shouldRebase = true;
+                if (aheadBehind.exitCode == 0) {
+                    std::istringstream iss(aheadBehind.stdoutStr);
+                    int aheadCount = 0;
+                    int behindCount = 0;
+                    if (iss >> aheadCount >> behindCount) {
+                        shouldRebase = behindCount > 0;
+                        if (!shouldRebase) {
+                            std::cout << "[DRY RUN] Skip rebase: local branch is not behind " << rebaseTarget << " (ahead=" << aheadCount << ", behind=" << behindCount << ")\n";
+                        }
+                    }
+                }
+                if (shouldRebase) {
+                    std::cout << "[DRY RUN] Would run: git rebase " << rebaseTarget << "\n";
+                }
             } else {
                 std::cout << "[DRY RUN] Skip pull: missing remote branch " << plan.remote << "/" << plan.targetBranch << "\n";
             }
@@ -1227,23 +1281,40 @@ auto RunNativeOriginLatestSync(
             }
 
             const auto rebaseTarget = std::format("{}/{}", plan.remote, plan.targetBranch);
-            const auto rebase = GitPassThrough(plan.path, {"rebase", rebaseTarget});
-            if (rebase.exitCode != 0) {
-                bool recovered = false;
-                if (HasRebaseInProgress(plan.path) && !CollectUnmergedPaths(plan.path).empty()) {
-                    recovered = ContinueRebaseByPreferringTheirs(plan.path, name);
-                }
-                if (!recovered) {
-                    std::cerr << "ERROR: rebase failed for " << name << "\n";
-                    failures += 1;
-                    failureDetails.emplace_back(name, "rebase failed");
-                    if (stashCreated) {
-                        const auto stashPop = GitPassThrough(plan.path, {"stash", "pop"});
-                        if (stashPop.exitCode != 0) {
-                            std::cerr << "WARN: failed to restore auto-stash for " << name << "\n";
-                        }
+            bool shouldRebase = true;
+            const auto aheadBehind = GitCapture(plan.path, {"rev-list", "--left-right", "--count", std::format("HEAD...{}", rebaseTarget)});
+            if (aheadBehind.exitCode == 0) {
+                std::istringstream iss(aheadBehind.stdoutStr);
+                int aheadCount = 0;
+                int behindCount = 0;
+                if (iss >> aheadCount >> behindCount) {
+                    shouldRebase = behindCount > 0;
+                    if (!shouldRebase) {
+                        std::cout << "Skip rebase for " << name << ": local branch is not behind " << rebaseTarget
+                                  << " (ahead=" << aheadCount << ", behind=" << behindCount << ")\n";
                     }
-                    continue;
+                }
+            }
+
+            if (shouldRebase) {
+                const auto rebase = GitPassThrough(plan.path, {"rebase", rebaseTarget});
+                if (rebase.exitCode != 0) {
+                    bool recovered = false;
+                    if (HasRebaseInProgress(plan.path) && !CollectUnmergedPaths(plan.path).empty()) {
+                        recovered = ContinueRebaseByPreferringTheirs(plan.path, name);
+                    }
+                    if (!recovered) {
+                        std::cerr << "ERROR: rebase failed for " << name << "\n";
+                        failures += 1;
+                        failureDetails.emplace_back(name, "rebase failed");
+                        if (stashCreated) {
+                            const auto stashPop = GitPassThrough(plan.path, {"stash", "pop"});
+                            if (stashPop.exitCode != 0) {
+                                std::cerr << "WARN: failed to restore auto-stash for " << name << "\n";
+                            }
+                        }
+                        continue;
+                    }
                 }
             }
         }

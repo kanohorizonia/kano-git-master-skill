@@ -65,5 +65,3 @@ src/cpp/test_1444.bat
 src/cpp/test_env.bat
 src/cpp/patch_extras.py
 
-# Vendored dependencies (local checkout)
-src/cpp/code/thirdparty/ftxui/
