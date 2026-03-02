@@ -660,24 +660,40 @@ for repo in "${REPOS[@]}"; do
 
     # Avoid fetch-time failures from historical submodule SHAs that no longer exist
     # on remotes. Submodule checkout/sync remains an explicit follow-up step.
-    if sync_output="$(git -C "$repo" -c fetch.recurseSubmodules=false pull --rebase 2>&1)"; then
-      :
-    else
-      sync_exit=$?
-      echo "[$repo] Sync failed (exit code: $sync_exit)" >&2
-      echo "[$repo] Sync output:" >&2
-      echo "$sync_output" >&2
-      if [[ "$had_stash" -eq 1 ]]; then
-        echo "[$repo] Auto-stash kept due to sync failure. Recover with: git -C \"$repo\" stash list" >&2
+    upstream_ref="$(git -C "$repo" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)"
+    should_rebase=1
+    if [[ -n "$upstream_ref" ]]; then
+      ahead_behind="$(git -C "$repo" rev-list --left-right --count "HEAD...$upstream_ref" 2>/dev/null || true)"
+      if [[ "$ahead_behind" =~ ^[[:space:]]*([0-9]+)[[:space:]]+([0-9]+)[[:space:]]*$ ]]; then
+        ahead_count="${BASH_REMATCH[1]}"
+        behind_count="${BASH_REMATCH[2]}"
+        if [[ "$behind_count" -eq 0 ]]; then
+          should_rebase=0
+          sync_output="Skip rebase: local branch is not behind $upstream_ref (ahead=$ahead_count, behind=$behind_count)"
+        fi
       fi
-      if echo "$sync_output" | grep -Eiq "repository .* not found|remote: .*not found|could not read from remote repository|could not resolve host|authentication failed|permission denied|access denied"; then
-        echo "[$repo] Sync failed: remote URL/access problem." >&2
-        echo "[$repo] Hint: verify remote URL and permissions, then retry." >&2
+    fi
+
+    if [[ "$should_rebase" -eq 1 ]]; then
+      if sync_output="$(git -C "$repo" -c fetch.recurseSubmodules=false pull --rebase 2>&1)"; then
+        :
       else
-        echo "[$repo] Please resolve conflicts manually: cd $repo && git rebase --abort (or continue)" >&2
+        sync_exit=$?
+        echo "[$repo] Sync failed (exit code: $sync_exit)" >&2
+        echo "[$repo] Sync output:" >&2
+        echo "$sync_output" >&2
+        if [[ "$had_stash" -eq 1 ]]; then
+          echo "[$repo] Auto-stash kept due to sync failure. Recover with: git -C \"$repo\" stash list" >&2
+        fi
+        if echo "$sync_output" | grep -Eiq "repository .* not found|remote: .*not found|could not read from remote repository|could not resolve host|authentication failed|permission denied|access denied"; then
+          echo "[$repo] Sync failed: remote URL/access problem." >&2
+          echo "[$repo] Hint: verify remote URL and permissions, then retry." >&2
+        else
+          echo "[$repo] Please resolve conflicts manually: cd $repo && git rebase --abort (or continue)" >&2
+        fi
+        FAILED=1
+        continue
       fi
-      FAILED=1
-      continue
     fi
 
     if [[ "$had_stash" -eq 1 ]]; then

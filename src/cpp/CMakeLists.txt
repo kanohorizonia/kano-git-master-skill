@@ -85,63 +85,37 @@ add_compile_definitions(KOG_BUILD_TOOLCHAIN="${KOG_BUILD_TOOLCHAIN_STR}")
 # CLI11 v2.4 uses <codecvt> which is removed in MSVC 19.50 (VS 2026)
 add_compile_definitions(CLI11_HAS_CODECVT=0)
 
-# Resolve CLI11: prefer vendored source in code/thirdparty/cli11
-set(KOG_CLI11_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/code/thirdparty/cli11")
+# Resolve CLI11 source strategy (submodule-managed by git)
+#   submodule (default): use code/thirdparty/cli11 from git submodule
+#   system: use find_package(CLI11)
+set(KOG_CLI11_SOURCE_MODE "submodule" CACHE STRING "CLI11 source mode: submodule|system")
+set_property(CACHE KOG_CLI11_SOURCE_MODE PROPERTY STRINGS submodule system)
+
+set(KOG_CLI11_SUBMODULE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/code/thirdparty/cli11")
 set(KOG_CLI11_BINARY_DIR "${CMAKE_BINARY_DIR}/thirdparty/cli11-build")
 
-if(EXISTS "${KOG_CLI11_SOURCE_DIR}/CMakeLists.txt")
-    add_subdirectory("${KOG_CLI11_SOURCE_DIR}" "${KOG_CLI11_BINARY_DIR}" EXCLUDE_FROM_ALL)
-    set(cli11_SOURCE_DIR "${KOG_CLI11_SOURCE_DIR}")
-else()
-    find_package(CLI11 CONFIG QUIET)
-endif()
-
-if(NOT EXISTS "${KOG_CLI11_SOURCE_DIR}/CMakeLists.txt" AND NOT CLI11_FOUND)
-    include(FetchContent)
-    FetchContent_Declare(
-        CLI11
-        GIT_REPOSITORY https://github.com/CLIUtils/CLI11.git
-        GIT_TAG v2.4.2
-        SOURCE_DIR "${KOG_CLI11_SOURCE_DIR}"
-        BINARY_DIR "${KOG_CLI11_BINARY_DIR}"
-        SUBBUILD_DIR "${CMAKE_BINARY_DIR}/thirdparty/cli11-subbuild"
-    )
-    FetchContent_GetProperties(CLI11)
-    if(NOT CLI11_POPULATED)
-        FetchContent_Populate(CLI11)
-        add_subdirectory("${KOG_CLI11_SOURCE_DIR}" "${KOG_CLI11_BINARY_DIR}" EXCLUDE_FROM_ALL)
+if(KOG_CLI11_SOURCE_MODE STREQUAL "submodule")
+    if(EXISTS "${KOG_CLI11_SUBMODULE_SOURCE_DIR}/CMakeLists.txt")
+        add_subdirectory("${KOG_CLI11_SUBMODULE_SOURCE_DIR}" "${KOG_CLI11_BINARY_DIR}" EXCLUDE_FROM_ALL)
+        set(cli11_SOURCE_DIR "${KOG_CLI11_SUBMODULE_SOURCE_DIR}")
+    else()
+        message(FATAL_ERROR "CLI11 submodule missing: ${KOG_CLI11_SUBMODULE_SOURCE_DIR}. Run: git submodule update --init --recursive")
     endif()
-    set(cli11_SOURCE_DIR "${KOG_CLI11_SOURCE_DIR}")
+elseif(KOG_CLI11_SOURCE_MODE STREQUAL "system")
+    find_package(CLI11 CONFIG REQUIRED)
+else()
+    message(FATAL_ERROR "Unsupported KOG_CLI11_SOURCE_MODE: ${KOG_CLI11_SOURCE_MODE} (expected submodule|system)")
 endif()
 
-set(KOG_FTXUI_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/code/thirdparty/ftxui")
+set(KOG_FTXUI_SUBMODULE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/code/thirdparty/ftxui")
 set(KOG_FTXUI_BINARY_DIR "${CMAKE_BINARY_DIR}/thirdparty/ftxui-build")
-set(KOG_FTXUI_GIT_REPOSITORY "https://github.com/ArthurSonzogni/FTXUI.git" CACHE STRING "FTXUI git repository URL")
-set(KOG_FTXUI_GIT_TAG "v5.0.0" CACHE STRING "FTXUI git tag or commit")
 
-if(EXISTS "${KOG_FTXUI_SOURCE_DIR}/CMakeLists.txt")
-    add_subdirectory("${KOG_FTXUI_SOURCE_DIR}" "${KOG_FTXUI_BINARY_DIR}" EXCLUDE_FROM_ALL)
-    message(STATUS "FTXUI vendored source found: enabling full tui")
+if(EXISTS "${KOG_FTXUI_SUBMODULE_SOURCE_DIR}/CMakeLists.txt")
+    add_subdirectory("${KOG_FTXUI_SUBMODULE_SOURCE_DIR}" "${KOG_FTXUI_BINARY_DIR}" EXCLUDE_FROM_ALL)
+    message(STATUS "FTXUI submodule found: enabling full tui")
 else()
-    include(FetchContent)
-    message(STATUS "FTXUI vendored source missing; fetching ${KOG_FTXUI_GIT_REPOSITORY}@${KOG_FTXUI_GIT_TAG}")
-    FetchContent_Declare(
-        FTXUI
-        GIT_REPOSITORY ${KOG_FTXUI_GIT_REPOSITORY}
-        GIT_TAG ${KOG_FTXUI_GIT_TAG}
-        SOURCE_DIR "${KOG_FTXUI_SOURCE_DIR}"
-        BINARY_DIR "${KOG_FTXUI_BINARY_DIR}"
-        SUBBUILD_DIR "${CMAKE_BINARY_DIR}/thirdparty/ftxui-subbuild"
-    )
-    FetchContent_GetProperties(FTXUI)
-    if(NOT FTXUI_POPULATED)
-        FetchContent_Populate(FTXUI)
-    endif()
-    add_subdirectory("${KOG_FTXUI_SOURCE_DIR}" "${KOG_FTXUI_BINARY_DIR}" EXCLUDE_FROM_ALL)
-    message(STATUS "FTXUI fetched successfully: enabling full tui")
+    message(FATAL_ERROR "FTXUI submodule missing: ${KOG_FTXUI_SUBMODULE_SOURCE_DIR}. Run: git submodule update --init --recursive")
 endif()
-
-# Avoid mutating vendored sources; use compile definition only.
 
 
 # Platform detection

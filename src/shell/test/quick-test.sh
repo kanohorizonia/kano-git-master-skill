@@ -201,6 +201,17 @@ if [[ -n "$KOG_BIN" ]]; then
     echo "  ✗ native planner contract output is invalid"
     exit 1
   fi
+
+  echo ""
+  echo "Test 11: Checking native pre-commit submodule conflict auto-resolution..."
+  PRECOMMIT_CONFLICT_OUTPUT="$(bash "$SCRIPT_DIR/test-native-pre-commit-submodule-conflict-theirs.sh" 2>&1)"
+  if [[ "$PRECOMMIT_CONFLICT_OUTPUT" == *"✓ PASS: native pre-commit recovers detached+unmerged submodule by preferring theirs"* ]]; then
+    echo "  ✓ native pre-commit auto-resolves detached submodule conflict with --theirs"
+  else
+    echo "  ✗ native pre-commit submodule conflict regression test failed"
+    echo "$PRECOMMIT_CONFLICT_OUTPUT"
+    exit 1
+  fi
 else
   echo "  - skipped (no built C++ binary found)"
 fi
