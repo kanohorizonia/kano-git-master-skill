@@ -8,11 +8,6 @@ target_sources(kano_git_core
     workspace/public/discovery.hpp
     workspace/public/native_workspace.hpp
 
-    version/public/version.cppm
-    shell/public/shell.cppm
-    commands/public/commands.cppm
-    workspace/public/workspace.cppm
-
     shell/private/shell_executor.cpp
     commands/private/command_registry.cpp
 
@@ -33,6 +28,7 @@ target_sources(kano_git_core
     commands/private/commands/meta_cmd.cpp
     commands/private/commands/p4_cmd.cpp
     commands/private/commands/push_cmd.cpp
+    commands/private/commands/remote_cmd.cpp
     commands/private/commands/resolve_cmd.cpp
     commands/private/commands/scalar_cmd.cpp
     commands/private/commands/status_cmd.cpp

@@ -12,6 +12,7 @@
 #include <sstream>
 #include <string>
 #include <chrono>
+#include <unordered_map>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -231,10 +232,31 @@ auto RunNativePush(
     std::vector<std::tuple<std::string, std::string, std::string>> pushStats;
     int failures = 0;
     int successes = 0;
+    std::mutex outputMutex;
+
+    std::unordered_map<std::string, std::size_t> repoOrderByPath;
+    repoOrderByPath.reserve(InRepos.size());
+    for (std::size_t i = 0; i < InRepos.size(); ++i) {
+        const auto repoPath = std::filesystem::weakly_canonical(InRepos[i]).lexically_normal().generic_string();
+        repoOrderByPath[repoPath] = i + 1;
+    }
 
     auto runOneRepo = [&](const std::filesystem::path& repoPathRaw) -> std::pair<int, int> {
         const auto repoPath = std::filesystem::weakly_canonical(repoPathRaw);
         const auto repoLabel = repoPath.lexically_normal().generic_string();
+        std::size_t repoIndex = 0;
+        if (const auto it = repoOrderByPath.find(repoLabel); it != repoOrderByPath.end()) {
+            repoIndex = it->second;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(outputMutex);
+            if (repoIndex > 0) {
+                std::cout << "[" << repoIndex << "/" << InRepos.size() << "] Processing " << repoLabel << "\n";
+            } else {
+                std::cout << "[?/?] Processing " << repoLabel << "\n";
+            }
+        }
 
         const auto gitDir = GitCapture(repoPath, {"rev-parse", "--git-dir"});
         if (gitDir.exitCode != 0) {

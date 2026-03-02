@@ -18,8 +18,11 @@ if ! command -v brew >/dev/null 2>&1; then
   exit 1
 fi
 
-brew update
-brew upgrade cmake ninja git python || true
-brew install cmake ninja git python
+if ! brew update; then
+  echo "Warning: brew update failed; continuing with no-auto-update install attempt." >&2
+fi
 
-echo "macOS prerequisites setup complete."
+HOMEBREW_NO_AUTO_UPDATE=1 brew upgrade cmake ninja git python llvm || true
+HOMEBREW_NO_AUTO_UPDATE=1 brew install cmake ninja git python llvm
+
+echo "macOS prerequisites setup complete (cmake, ninja, git, python, llvm)."

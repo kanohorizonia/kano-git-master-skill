@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(KanoGit DESCRIPTION "CLI" VERSION 0.1.0 LANGUAGES CXX)
+project(KanoGit DESCRIPTION "CLI" VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(KOG_ENABLE_MODULES "Enable C++20 modules" ON)
@@ -121,12 +121,29 @@ endif()
 
 set(KOG_FTXUI_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/code/thirdparty/ftxui")
 set(KOG_FTXUI_BINARY_DIR "${CMAKE_BINARY_DIR}/thirdparty/ftxui-build")
+set(KOG_FTXUI_GIT_REPOSITORY "https://github.com/ArthurSonzogni/FTXUI.git" CACHE STRING "FTXUI git repository URL")
+set(KOG_FTXUI_GIT_TAG "v5.0.0" CACHE STRING "FTXUI git tag or commit")
 
 if(EXISTS "${KOG_FTXUI_SOURCE_DIR}/CMakeLists.txt")
     add_subdirectory("${KOG_FTXUI_SOURCE_DIR}" "${KOG_FTXUI_BINARY_DIR}" EXCLUDE_FROM_ALL)
     message(STATUS "FTXUI vendored source found: enabling full tui")
 else()
-    message(FATAL_ERROR "FTXUI vendored source not found at code/thirdparty/ftxui. Please clone fork+upstream into thirdparty first.")
+    include(FetchContent)
+    message(STATUS "FTXUI vendored source missing; fetching ${KOG_FTXUI_GIT_REPOSITORY}@${KOG_FTXUI_GIT_TAG}")
+    FetchContent_Declare(
+        FTXUI
+        GIT_REPOSITORY ${KOG_FTXUI_GIT_REPOSITORY}
+        GIT_TAG ${KOG_FTXUI_GIT_TAG}
+        SOURCE_DIR "${KOG_FTXUI_SOURCE_DIR}"
+        BINARY_DIR "${KOG_FTXUI_BINARY_DIR}"
+        SUBBUILD_DIR "${CMAKE_BINARY_DIR}/thirdparty/ftxui-subbuild"
+    )
+    FetchContent_GetProperties(FTXUI)
+    if(NOT FTXUI_POPULATED)
+        FetchContent_Populate(FTXUI)
+    endif()
+    add_subdirectory("${KOG_FTXUI_SOURCE_DIR}" "${KOG_FTXUI_BINARY_DIR}" EXCLUDE_FROM_ALL)
+    message(STATUS "FTXUI fetched successfully: enabling full tui")
 endif()
 
 # Avoid mutating vendored sources; use compile definition only.

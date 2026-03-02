@@ -11,6 +11,7 @@ void RegisterMeta(CLI::App& InApp);
 void RegisterComplete(CLI::App& InApp);
 void RegisterCompletion(CLI::App& InApp);
 void RegisterGuide(CLI::App& InApp);
+void RegisterRemote(CLI::App& InApp);
 void RegisterStatus(CLI::App& InApp);
 void RegisterTui(CLI::App& InApp);
 void RegisterCommit(CLI::App& InApp);
