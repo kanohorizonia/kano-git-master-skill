@@ -3,10 +3,13 @@
 #include "command_registry.hpp"
 #include "shell_executor.hpp"
 
+#include <cctype>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <map>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -55,11 +58,11 @@ auto ResolveLauncherScript() -> std::filesystem::path {
     return {};
 }
 
-auto RunKogCommand(const std::vector<std::string>& InArgs) -> shell::ExecResult {
+auto RunKogCommand(const std::vector<std::string>& InArgs, shell::ExecMode InMode) -> shell::ExecResult {
     if (const char* binaryPath = std::getenv("KANO_GIT_BINARY_PATH"); binaryPath != nullptr) {
         const std::filesystem::path binary(binaryPath);
         if (std::filesystem::exists(binary)) {
-            return shell::ExecuteCommand(binary.generic_string(), InArgs, shell::ExecMode::PassThrough, std::filesystem::current_path());
+            return shell::ExecuteCommand(binary.generic_string(), InArgs, InMode, std::filesystem::current_path());
         }
     }
 
@@ -68,10 +71,92 @@ auto RunKogCommand(const std::vector<std::string>& InArgs) -> shell::ExecResult 
         std::vector<std::string> args;
         args.push_back(launcher.generic_string());
         args.insert(args.end(), InArgs.begin(), InArgs.end());
-        return shell::ExecuteCommand("bash", args, shell::ExecMode::PassThrough, std::filesystem::current_path());
+        return shell::ExecuteCommand("bash", args, InMode, std::filesystem::current_path());
     }
 
-    return shell::ExecuteCommand("kano-git", InArgs, shell::ExecMode::PassThrough, std::filesystem::current_path());
+    return shell::ExecuteCommand("kano-git", InArgs, InMode, std::filesystem::current_path());
+}
+
+auto RunKogCommand(const std::vector<std::string>& InArgs) -> shell::ExecResult {
+    return RunKogCommand(InArgs, shell::ExecMode::PassThrough);
+}
+
+auto SplitLines(const std::string& InText) -> std::vector<std::string> {
+    std::vector<std::string> out;
+    std::istringstream iss(InText);
+    std::string line;
+    while (std::getline(iss, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        out.push_back(line);
+    }
+    return out;
+}
+
+auto ParsePushFailures(const std::string& InStdout, const std::string& InStderr) -> std::map<std::string, std::vector<std::string>> {
+    std::map<std::string, std::vector<std::string>> failures;
+    std::map<std::string, std::set<std::string>> dedup;
+
+    auto handleLine = [&](const std::string& line) {
+        if (line.empty()) {
+            return;
+        }
+
+        std::string repo = "(unknown)";
+        std::string reason = line;
+
+        const auto lb = line.find('[');
+        const auto rb = line.find(']');
+        if (lb != std::string::npos && rb != std::string::npos && rb > lb + 1) {
+            repo = line.substr(lb + 1, rb - lb - 1);
+            if (rb + 1 < line.size()) {
+                reason = Trim(line.substr(rb + 1));
+            }
+        } else {
+            const auto forPos = line.find(" for ");
+            if (forPos != std::string::npos && forPos + 5 < line.size()) {
+                repo = Trim(line.substr(forPos + 5));
+            }
+        }
+
+        const auto lowered = [] (std::string value) {
+            for (auto& ch : value) {
+                ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+            }
+            return value;
+        }(reason);
+
+        const bool failedLike =
+            lowered.find("failed") != std::string::npos ||
+            lowered.find("fatal:") != std::string::npos ||
+            lowered.find("error:") != std::string::npos;
+        if (!failedLike) {
+            return;
+        }
+
+        if (lowered.rfind("summary:", 0) == 0) {
+            return;
+        }
+
+        if (reason.empty()) {
+            reason = line;
+        }
+
+        if (!dedup[repo].contains(reason)) {
+            dedup[repo].insert(reason);
+            failures[repo].push_back(reason);
+        }
+    };
+
+    for (const auto& line : SplitLines(InStdout)) {
+        handleLine(line);
+    }
+    for (const auto& line : SplitLines(InStderr)) {
+        handleLine(line);
+    }
+
+    return failures;
 }
 
 } // namespace
@@ -229,7 +314,35 @@ void RegisterCommitPush(CLI::App& InApp) {
 
         std::cout << "=== commit-push stage: push ===\n";
         const auto pushStart = std::chrono::steady_clock::now();
-        const auto pushResult = RunKogCommand(pushArgs);
+        const auto pushResult = RunKogCommand(pushArgs, shell::ExecMode::Capture);
+
+        if (!pushResult.stdoutStr.empty()) {
+            std::cout << pushResult.stdoutStr;
+            if (pushResult.stdoutStr.back() != '\n') {
+                std::cout << "\n";
+            }
+        }
+        if (!pushResult.stderrStr.empty()) {
+            std::cerr << pushResult.stderrStr;
+            if (pushResult.stderrStr.back() != '\n') {
+                std::cerr << "\n";
+            }
+        }
+
+        if (pushResult.exitCode != 0) {
+            const auto failures = ParsePushFailures(pushResult.stdoutStr, pushResult.stderrStr);
+            if (!failures.empty()) {
+                std::cerr << "\n=== Failed Repos (highlight) ===\n";
+                std::size_t idx = 0;
+                for (const auto& [repo, reasons] : failures) {
+                    idx += 1;
+                    std::cerr << "[" << idx << "] " << repo << "\n";
+                    for (const auto& reason : reasons) {
+                        std::cerr << "  - " << reason << "\n";
+                    }
+                }
+            }
+        }
 
         const auto pushEnd = std::chrono::steady_clock::now();
         pushMillis = std::chrono::duration_cast<std::chrono::milliseconds>(pushEnd - pushStart).count();
