@@ -31,7 +31,7 @@ kog_collect_build_metadata() {
   local pipeline_id
   local platform="${KOG_BUILD_PLATFORM:-$(uname -s 2>/dev/null || printf 'unknown')-$(uname -m 2>/dev/null || printf 'unknown')}"
 
-  timestamp_utc="$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || printf 'unknown')"
+  timestamp_utc=""
   host_name="${KOG_BUILD_HOST_NAME:-${HOSTNAME:-$(hostname 2>/dev/null || printf 'unknown')}}"
   if [[ -n "${CI:-}" ]]; then
     ci="true"
@@ -46,6 +46,9 @@ kog_collect_build_metadata() {
     revision="$( (cd "$root" && git rev-list --count --first-parent HEAD 2>/dev/null) || true )"
     hash_short="$( (cd "$root" && git rev-parse --short HEAD 2>/dev/null) || true )"
     hash_full="$( (cd "$root" && git rev-parse HEAD 2>/dev/null) || true )"
+    if [[ -z "$timestamp_utc" ]]; then
+      timestamp_utc="$( (cd "$root" && git show -s --format=%cI HEAD 2>/dev/null) || true )"
+    fi
     if [[ -n "$( (cd "$root" && git status --porcelain 2>/dev/null) || true )" ]]; then
       dirty="true"
     else
@@ -56,6 +59,9 @@ kog_collect_build_metadata() {
     branch="$( (cd "$root" && svn info --show-item relative-url 2>/dev/null) || true )"
     branch="${branch#^/}"
     revision="$( (cd "$root" && svn info --show-item revision 2>/dev/null) || true )"
+    if [[ -z "$timestamp_utc" ]]; then
+      timestamp_utc="$( (cd "$root" && svn info --show-item last-changed-date 2>/dev/null) || true )"
+    fi
     if [[ -n "$( (cd "$root" && svn status -q 2>/dev/null) || true )" ]]; then
       dirty="true"
     else
@@ -74,7 +80,6 @@ kog_collect_build_metadata() {
   export KOG_BUILD_REVISION_HASH_SHORT="$(_kog_default_unknown "$(_kog_trim "$hash_short")")"
   export KOG_BUILD_REVISION_HASH="$(_kog_default_unknown "$(_kog_trim "$hash_full")")"
   export KOG_BUILD_DIRTY="$(_kog_default_unknown "$(_kog_trim "$dirty")")"
-  export KOG_BUILD_TIMESTAMP_UTC="$(_kog_default_unknown "$(_kog_trim "$timestamp_utc")")"
   export KOG_BUILD_HOST_NAME="$(_kog_default_unknown "$(_kog_trim "$host_name")")"
   export KOG_BUILD_CI="$(_kog_default_unknown "$(_kog_trim "$ci")")"
   export KOG_BUILD_PIPELINE_ID="$(_kog_default_unknown "$(_kog_trim "$pipeline_id")")"

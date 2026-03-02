@@ -175,6 +175,7 @@ void RegisterCommitPush(CLI::App& InApp) {
     auto* stagedOnly = new bool{false};
     auto* dryRun = new bool{false};
     auto* profile = new bool{false};
+    auto* branchMode = new std::string{"default"};
     auto* forceWithLease = new bool{false};
     auto* noVerify = new bool{false};
     auto* jobs = new int{0};
@@ -191,6 +192,7 @@ void RegisterCommitPush(CLI::App& InApp) {
     cmd->add_flag("--staged-only", *stagedOnly, "Commit only staged changes");
     cmd->add_flag("--dry-run", *dryRun, "Preview commit/sync/push actions without modifying repositories");
     cmd->add_flag("--profile", *profile, "Print commit-push stage timing summary");
+    cmd->add_option("--branch-mode", *branchMode, "Detached branch inference mode for pre-commit: default|stable-dev");
     cmd->add_flag("--force-with-lease", *forceWithLease, "Use force-with-lease for push");
     cmd->add_flag("--no-verify", *noVerify, "Pass --no-verify to push");
     cmd->add_option("--jobs", *jobs, "Push parallel workers");
@@ -199,6 +201,7 @@ void RegisterCommitPush(CLI::App& InApp) {
 
     cmd->callback([=]() {
         const auto totalStart = std::chrono::steady_clock::now();
+        long long preCommitMillis = 0;
         long long commitMillis = 0;
         long long syncMillis = 0;
         long long pushMillis = 0;
@@ -212,6 +215,36 @@ void RegisterCommitPush(CLI::App& InApp) {
             std::cerr << "\n";
             std::exit(2);
         }
+
+        std::cout << "=== commit-push stage: pre-commit ===\n";
+        const auto preCommitStart = std::chrono::steady_clock::now();
+        const auto repoList = ParseReposCsv(*repos);
+        if (!repoList.empty()) {
+            for (const auto& repo : repoList) {
+                std::vector<std::string> preCommitArgs{"sync", "pre-commit", "--repo", repo, "--no-recursive", "--branch-mode", *branchMode};
+                if (*dryRun) {
+                    preCommitArgs.push_back("--dry-run");
+                }
+                const auto preCommitResult = RunKogCommand(preCommitArgs);
+                if (preCommitResult.exitCode != 0) {
+                    std::exit(preCommitResult.exitCode);
+                }
+            }
+        } else {
+            std::vector<std::string> preCommitArgs{"sync", "pre-commit", "--branch-mode", *branchMode};
+            if (*noRecursive) {
+                preCommitArgs.push_back("--no-recursive");
+            }
+            if (*dryRun) {
+                preCommitArgs.push_back("--dry-run");
+            }
+            const auto preCommitResult = RunKogCommand(preCommitArgs);
+            if (preCommitResult.exitCode != 0) {
+                std::exit(preCommitResult.exitCode);
+            }
+        }
+        const auto preCommitEnd = std::chrono::steady_clock::now();
+        preCommitMillis = std::chrono::duration_cast<std::chrono::milliseconds>(preCommitEnd - preCommitStart).count();
 
         std::vector<std::string> commitArgs{"commit"};
         if (!repos->empty()) {
@@ -253,7 +286,6 @@ void RegisterCommitPush(CLI::App& InApp) {
 
         std::cout << "=== commit-push stage: sync ===\n";
         const auto syncStart = std::chrono::steady_clock::now();
-        const auto repoList = ParseReposCsv(*repos);
         if (!repoList.empty()) {
             for (const auto& repo : repoList) {
                 std::vector<std::string> syncArgs{"sync", "origin-latest", "--repo", repo, "--no-recursive"};
@@ -352,6 +384,7 @@ void RegisterCommitPush(CLI::App& InApp) {
             const auto totalMillis = std::chrono::duration_cast<std::chrono::milliseconds>(totalEnd - totalStart).count();
             std::cout << "\n=== Commit-Push Profile Summary ===\n";
             std::cout << "mode: native\n";
+            std::cout << "pre_commit_ms: " << preCommitMillis << "\n";
             std::cout << "commit_ms: " << commitMillis << "\n";
             std::cout << "sync_ms: " << syncMillis << "\n";
             std::cout << "push_ms: " << pushMillis << "\n";
