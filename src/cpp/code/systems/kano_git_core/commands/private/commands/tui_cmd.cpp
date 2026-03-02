@@ -151,6 +151,15 @@ struct RebaseRunnerState {
     std::string lastOutput;
 };
 
+struct DiscoverPagerState {
+    bool active = false;
+    std::vector<std::string> lines;
+    int pageIndex = 0;
+    int pageSize = 18;
+    bool dirtyOnly = false;
+    std::string title;
+};
+
 auto Trim(std::string InValue) -> std::string {
     while (!InValue.empty() && (InValue.back() == '\n' || InValue.back() == '\r' || InValue.back() == ' ' || InValue.back() == '\t')) {
         InValue.pop_back();
@@ -906,6 +915,53 @@ auto RepoIndexFromDisplayed(const std::vector<int>& displayed, int displayedInde
     return displayed[displayedIndex];
 }
 
+auto BuildDiscoverLines(const std::vector<RepoView>& repos) -> std::vector<std::string> {
+    std::vector<std::string> lines;
+    lines.reserve(repos.size() + 8);
+
+    std::size_t dirtyRepoCount = 0;
+    std::size_t worktreeDirtyCount = 0;
+    for (const auto& repo : repos) {
+        if (repo.repoDirty) {
+            dirtyRepoCount += 1;
+        }
+        if (repo.worktreeDirty) {
+            worktreeDirtyCount += 1;
+        }
+    }
+
+    lines.push_back("discover summary");
+    lines.push_back("  total repos: " + std::to_string(repos.size()));
+    lines.push_back("  dirty repos: " + std::to_string(dirtyRepoCount));
+    lines.push_back("  dirty worktrees: " + std::to_string(worktreeDirtyCount));
+    lines.push_back("");
+    lines.push_back("# | branch | tracking | dirty | path");
+
+    for (std::size_t i = 0; i < repos.size(); ++i) {
+        const auto& r = repos[i];
+        std::string path = r.path.lexically_normal().generic_string();
+        if (path.size() > 90) {
+            path = "..." + path.substr(path.size() - 87);
+        }
+        std::string tracking = r.tracking;
+        if (tracking.size() > 20) {
+            tracking = tracking.substr(0, 20) + "...";
+        }
+        std::string branch = r.branch;
+        if (branch.size() > 20) {
+            branch = branch.substr(0, 20) + "...";
+        }
+        const std::string dirty = r.repoDirty ? "yes" : "no";
+        lines.push_back(std::to_string(i + 1) + " | " + branch + " | " + tracking + " | " + dirty + " | " + path);
+    }
+
+    if (repos.empty()) {
+        lines.push_back("(no repositories found)");
+    }
+
+    return lines;
+}
+
 auto RunFtxuiDashboard(CLI::App& app) -> int {
     using namespace ftxui;
 
@@ -917,7 +973,7 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
     std::vector<int> displayedRepoIndices;
     std::vector<std::string> menu;
     int selectedDisplayed = 0;
-    std::string footer = "r=refresh d=dirty-only f=fetch(confirm) c/C=commit preview/confirm p/P=push preview/confirm Enter=history q=quit";
+    std::string footer = ": command mode | :discover for paged discover output | r refresh | Enter history | q quit";
     HistoryState history{};
     PreviewPanelState preview{};
     ConfirmState confirm{};
@@ -926,6 +982,7 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
     RebasePreflightState rebase{};
     RebasePlannerState rebasePlanner{};
     RebaseRunnerState rebaseRun{};
+    DiscoverPagerState discover{};
     std::unordered_map<std::string, RepoHistoryCache> historyCache;
     
     // Initialize TUI command input system
@@ -1038,6 +1095,42 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
     };
 
     auto with_keys = CatchEvent(root, [&](Event event) {
+        if (tui_state.GetMode() == kano::git::commands::TuiMode::Command &&
+            (event == Event::Return || event == Event::Character('\n'))) {
+            std::string commandLine = Trim(tui_state.command_state.GetBuffer());
+            if (!commandLine.empty() && commandLine[0] == ':') {
+                commandLine = Trim(commandLine.substr(1));
+            }
+            if (!commandLine.empty()) {
+                auto lower = ToLowerAscii(commandLine);
+                bool handledDiscoverCommand = false;
+                bool discoverDirtyOnly = false;
+                if (lower == "discover") {
+                    handledDiscoverCommand = true;
+                } else if (lower == "discover dirty" || lower == "discover --dirty") {
+                    handledDiscoverCommand = true;
+                    discoverDirtyOnly = true;
+                }
+
+                if (handledDiscoverCommand) {
+                    const auto discovered = DiscoverRepoViews(discoverDirtyOnly);
+                    discover.active = true;
+                    discover.dirtyOnly = discoverDirtyOnly;
+                    discover.pageIndex = 0;
+                    discover.title = discoverDirtyOnly ? "discover (dirty-only)" : "discover";
+                    discover.lines = BuildDiscoverLines(discovered);
+
+                    tui_state.mode = kano::git::commands::TuiMode::Normal;
+                    tui_state.command_state = kano::git::commands::CommandModeState{};
+                    tui_state.footer_message.clear();
+                    tui_state.footer_is_error = false;
+
+                    footer = "discover loaded: PgUp/PgDn page, [/] prev/next, Esc/q close";
+                    return true;
+                }
+            }
+        }
+
         if (auto mapped = map_event_to_tui(event); mapped.has_value()) {
             const auto prevMode = tui_state.GetMode();
             const bool handled = tui_state.HandleEvent(mapped->first, mapped->second);
@@ -1062,6 +1155,11 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
         }
 
         if (event == Event::Character('q')) {
+            if (discover.active) {
+                discover.active = false;
+                footer = "discover panel closed";
+                return true;
+            }
             if (rebaseRun.active) {
                 rebaseRun.active = false;
                 rebaseRun.waitingConflictResolution = false;
@@ -1121,7 +1219,32 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
 
         if (event == Event::Character('r')) {
             refresh_all();
+            if (discover.active) {
+                const auto discovered = DiscoverRepoViews(discover.dirtyOnly);
+                discover.lines = BuildDiscoverLines(discovered);
+                const int totalPages = std::max(1, static_cast<int>((discover.lines.size() + static_cast<std::size_t>(discover.pageSize) - 1) / static_cast<std::size_t>(discover.pageSize)));
+                discover.pageIndex = std::clamp(discover.pageIndex, 0, totalPages - 1);
+            }
             footer = "refreshed";
+            return true;
+        }
+
+        if (discover.active && event == Event::Escape) {
+            discover.active = false;
+            footer = "discover panel closed";
+            return true;
+        }
+
+        if (discover.active && (event == Event::Character(']') || event == Event::PageUp)) {
+            const int totalPages = std::max(1, static_cast<int>((discover.lines.size() + static_cast<std::size_t>(discover.pageSize) - 1) / static_cast<std::size_t>(discover.pageSize)));
+            discover.pageIndex = std::min(totalPages - 1, discover.pageIndex + 1);
+            footer = "discover page ->";
+            return true;
+        }
+
+        if (discover.active && (event == Event::Character('[') || event == Event::PageDown)) {
+            discover.pageIndex = std::max(0, discover.pageIndex - 1);
+            footer = "discover page <-";
             return true;
         }
 
@@ -1755,12 +1878,38 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
     auto ui = Renderer(with_keys, [&] {
         Element rightPanel;
 
-        if (tui_state.GetMode() == kano::git::commands::TuiMode::Help) {
+        if (discover.active) {
+            const int totalPages = std::max(1, static_cast<int>((discover.lines.size() + static_cast<std::size_t>(discover.pageSize) - 1) / static_cast<std::size_t>(discover.pageSize)));
+            const int clampedPage = std::clamp(discover.pageIndex, 0, totalPages - 1);
+            const int start = clampedPage * discover.pageSize;
+            const int end = std::min(start + discover.pageSize, static_cast<int>(discover.lines.size()));
+
+            Elements pageRows;
+            for (int i = start; i < end; ++i) {
+                pageRows.push_back(text(discover.lines[static_cast<std::size_t>(i)]));
+            }
+            if (pageRows.empty()) {
+                pageRows.push_back(text("(no lines in this page)") | dim);
+            }
+
+            rightPanel = vbox({
+                text("Discover Output (paged)") | bold,
+                separator(),
+                text("command: :" + discover.title),
+                text("page: " + std::to_string(clampedPage + 1) + "/" + std::to_string(totalPages) +
+                     "  lines: " + std::to_string(start + 1) + "-" + std::to_string(std::max(start + 1, end)) +
+                     "/" + std::to_string(discover.lines.size())),
+                text("controls: [ or PgDown prev page | ] or PgUp next page | r refresh | Esc/q close") | dim,
+                separator(),
+                vbox(std::move(pageRows)) | border,
+            }) | border;
+        } else if (tui_state.GetMode() == kano::git::commands::TuiMode::Help) {
             rightPanel = vbox({
                 text("Help") | bold,
                 separator(),
                 text("Command Mode"),
                 text(": enter command mode, Esc cancel, Enter execute") | dim,
+                text("Try :discover or :discover dirty for paged discover output") | dim,
                 text("Tab/Up/Down navigate candidates, Enter accepts selected candidate") | dim,
                 separator(),
                 text("Shortcuts"),
@@ -2105,8 +2254,9 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
         return vbox({
                    text("KOG FTXUI Dashboard v2") | bold,
                    separator(),
-                   text("Global repo view + incremental history pager."),
+                   text("Command-input-first workflow + global repo view + incremental history pager."),
                    text("preview keys: c/C commit preview/execute, p/P push preview/execute, f fetch confirm, x/X cherry preflight/run, b/B rebase preflight/planner, R rebase runner") | dim,
+                   text("command examples: :discover | :discover dirty") | dim,
                    text("repo filter: " + (repoFilter.empty() ? "(none)" : repoFilter)) | dim,
                    text("tree toggle key: t (collapse/expand child repos)") | dim,
                    separator(),
@@ -2139,6 +2289,8 @@ auto PrintDemo() -> void {
     std::cout << "- controls: r(refresh), d(dirty-only), f(fetch confirm), c(commit preview), C(commit confirm), p(push preview), P(push confirm), x/X(cherry preflight/run), b/B(rebase preflight/planner), R(rebase runner), Enter(history), q(quit)\n";
     std::cout << "- cherry runner controls: n(next), c(continue), s(skip), a(abort), q(close panel)\n";
     std::cout << "- rebase runner controls: N(next), C(continue), S(skip), A(abort), q(close panel)\n";
+    std::cout << "- command-first flow: : to enter command mode, then run :discover or :discover dirty\n";
+    std::cout << "- discover panel controls: ]/PgUp next page, [/PgDown prev page, r refresh, Esc/q close\n";
     std::cout << "- main view: / enters repo path filter mode\n";
     std::cout << "- tree: t collapse/expand selected repo subtree\n";
     std::cout << "- history mode: left/right repo, PgUp/PgDn page, up/down line, /search, n-next, m-detail-mode, o-sort-mode\n";

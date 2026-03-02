@@ -955,7 +955,8 @@ auto RunNativeOriginLatestSync(
     bool InDryRun,
     bool InNoCache,
     bool InRefreshCache,
-    bool InRecursive) -> int {
+    bool InRecursive,
+    bool InAutoStashLocalChanges) -> int {
     std::vector<SyncPlan> plans;
     std::string mode;
     try {
@@ -994,12 +995,45 @@ auto RunNativeOriginLatestSync(
     std::cout << "Discover mode: " << (mode.empty() ? "unknown" : mode) << "\n";
 
     int failures = 0;
+    int succeeded = 0;
+    std::vector<std::pair<std::string, std::string>> failureDetails;
     for (const auto& plan : plans) {
         const auto rel = std::filesystem::relative(plan.path, InRepoRoot).generic_string();
         const auto name = (rel.empty() || rel == ".") ? "." : rel;
+        const auto status = GitCapture(plan.path, {"status", "--porcelain"});
+        const bool hasLocalChanges = status.exitCode == 0 && !Trim(status.stdoutStr).empty();
+        bool stashCreated = false;
 
         std::cout << (InDryRun ? "[DRY RUN] " : "") << "Repo: " << name << "\n";
         std::cout << (InDryRun ? "[DRY RUN] " : "") << "Branch source: " << plan.branchSource << "\n";
+
+        if (hasLocalChanges) {
+            if (InAutoStashLocalChanges) {
+                if (InDryRun) {
+                    std::cout << "[DRY RUN] Would run: git stash push -u -m kano-native-sync-autostash\n";
+                    stashCreated = true;
+                } else {
+                    const auto stash = GitCapture(plan.path, {"stash", "push", "-u", "-m", "kano-native-sync-autostash"});
+                    if (stash.exitCode != 0) {
+                        std::cerr << "ERROR: failed to auto-stash local changes for " << name << "\n";
+                        failures += 1;
+                        failureDetails.emplace_back(name, "auto-stash failed");
+                        continue;
+                    }
+
+                    const auto stashOut = Trim(stash.stdoutStr + "\n" + stash.stderrStr);
+                    stashCreated = stashOut.find("No local changes to save") == std::string::npos;
+                    if (stashCreated) {
+                        std::cout << "Auto-stashed local changes for " << name << "\n";
+                    }
+                }
+            } else {
+                std::cerr << "ERROR: local changes detected for " << name << " (auto-stash disabled)\n";
+                failures += 1;
+                failureDetails.emplace_back(name, "local changes present and auto-stash disabled");
+                continue;
+            }
+        }
 
         const auto fetch = GitCapture(plan.path, {"fetch", plan.remote, "--prune", "--tags"});
         if (!InDryRun && fetch.exitCode != 0) {
@@ -1021,6 +1055,7 @@ auto RunNativeOriginLatestSync(
             } else {
                 std::cerr << "ERROR: Target branch not found for " << name << "\n";
                 failures += 1;
+                failureDetails.emplace_back(name, "target branch not found on local/remote");
                 continue;
             }
         }
@@ -1036,6 +1071,9 @@ auto RunNativeOriginLatestSync(
             } else {
                 std::cout << "[DRY RUN] Skip pull: missing remote branch " << plan.remote << "/" << plan.targetBranch << "\n";
             }
+            if (stashCreated) {
+                std::cout << "[DRY RUN] Would run: git stash pop\n";
+            }
             continue;
         }
 
@@ -1043,12 +1081,14 @@ auto RunNativeOriginLatestSync(
         if (checkout.exitCode != 0) {
             std::cerr << "ERROR: checkout failed for " << name << "\n";
             failures += 1;
+            failureDetails.emplace_back(name, "checkout failed");
             continue;
         }
 
         if (hasRemote) {
             if (!RecoverRebaseState(plan.path, name, InDryRun)) {
                 failures += 1;
+                failureDetails.emplace_back(name, "rebase state recovery failed");
                 continue;
             }
 
@@ -1056,11 +1096,40 @@ auto RunNativeOriginLatestSync(
             if (pull.exitCode != 0) {
                 std::cerr << "ERROR: pull --rebase failed for " << name << "\n";
                 failures += 1;
+                failureDetails.emplace_back(name, "pull --rebase failed");
+                if (stashCreated) {
+                    const auto stashPop = GitPassThrough(plan.path, {"stash", "pop"});
+                    if (stashPop.exitCode != 0) {
+                        std::cerr << "WARN: failed to restore auto-stash for " << name << "\n";
+                    }
+                }
+                continue;
             }
         }
+
+        if (stashCreated) {
+            const auto stashPop = GitPassThrough(plan.path, {"stash", "pop"});
+            if (stashPop.exitCode != 0) {
+                std::cerr << "ERROR: failed to restore auto-stash for " << name << "\n";
+                failures += 1;
+                failureDetails.emplace_back(name, "stash pop failed after sync");
+                continue;
+            }
+            std::cout << "Restored auto-stash for " << name << "\n";
+        }
+
+        succeeded += 1;
     }
 
     std::cout << "=== Sync Complete ===\n";
+    std::cout << "Succeeded: " << succeeded << "\n";
+    std::cout << "Failed: " << failures << "\n";
+    if (!failureDetails.empty()) {
+        std::cout << "\n=== FAILED REPOS ===\n";
+        for (const auto& [repo, reason] : failureDetails) {
+            std::cout << "[ERROR] " << repo << " | " << reason << "\n";
+        }
+    }
     return failures > 0 ? 1 : 0;
 }
 
@@ -1310,6 +1379,7 @@ void RegisterSync(CLI::App& InApp) {
     auto* originLatestNoCache = new bool{false};
     auto* originLatestRefreshCache = new bool{false};
     auto* originLatestNoRecursive = new bool{false};
+    auto* originLatestNoAutoStash = new bool{false};
     auto* originLatestProfile = new bool{false};
 
     origin_latest->add_flag("--shell", *originLatestShell, "Deprecated compatibility flag (shell path removed)");
@@ -1320,6 +1390,7 @@ void RegisterSync(CLI::App& InApp) {
     origin_latest->add_flag("--native-no-cache", *originLatestNoCache, "Disable native discovery cache");
     origin_latest->add_flag("--native-refresh-cache", *originLatestRefreshCache, "Force native cache refresh");
     origin_latest->add_flag("--no-recursive,-N", *originLatestNoRecursive, "Sync only current repository");
+    origin_latest->add_flag("--no-auto-stash", *originLatestNoAutoStash, "Do not auto-stash local changes before sync");
     origin_latest->add_flag("--profile", *originLatestProfile, "Print native sync timing/profile summary");
 
     origin_latest->callback([=]() {
@@ -1346,7 +1417,8 @@ void RegisterSync(CLI::App& InApp) {
             *originLatestDryRun,
             *originLatestNoCache,
             *originLatestRefreshCache,
-            !*originLatestNoRecursive);
+            !*originLatestNoRecursive,
+            !*originLatestNoAutoStash);
         if (*originLatestProfile) {
             const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
             std::cout << "\n=== Sync Profile Summary ===\n";
@@ -1524,7 +1596,8 @@ void RegisterSync(CLI::App& InApp) {
             *devDryRun,
             *devNoCache,
             *devRefreshCache,
-            !*devNoRecursive);
+            !*devNoRecursive,
+            true);
         if (*devProfile) {
             const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
             std::cout << "\n=== Sync Profile Summary ===\n";
@@ -1560,7 +1633,8 @@ void RegisterSync(CLI::App& InApp) {
                 false,
                 false,
                 false,
-                !*defaultNoRecursive);
+                !*defaultNoRecursive,
+                true);
             if (*defaultProfile) {
                 const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
                 std::cout << "\n=== Sync Profile Summary ===\n";
