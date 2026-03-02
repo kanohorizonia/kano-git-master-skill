@@ -5,6 +5,8 @@
 #include "shell_executor.hpp"
 #include "discovery.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <future>
 #include <iomanip>
@@ -30,6 +32,37 @@ auto Trim(std::string InValue) -> std::string {
         start += 1;
     }
     return InValue.substr(start);
+}
+
+auto ToLower(std::string InValue) -> std::string {
+    std::transform(InValue.begin(), InValue.end(), InValue.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return InValue;
+}
+
+auto LooksLikeLfsPushFailure(const shell::ExecResult& InResult) -> bool {
+    const auto merged = ToLower(InResult.stdoutStr + "\n" + InResult.stderrStr);
+    if (merged.find("git-lfs-authenticate") != std::string::npos) {
+        return true;
+    }
+    if (merged.find("batch request") != std::string::npos && merged.find("lfs") != std::string::npos) {
+        return true;
+    }
+    if (merged.find("uploading lfs objects") != std::string::npos &&
+        merged.find("failed to push some refs") != std::string::npos) {
+        return true;
+    }
+    return false;
+}
+
+auto PrintCapturedOutputIfAny(const shell::ExecResult& InResult) -> void {
+    if (!InResult.stdoutStr.empty()) {
+        std::cout << InResult.stdoutStr;
+    }
+    if (!InResult.stderrStr.empty()) {
+        std::cerr << InResult.stderrStr;
+    }
 }
 
 auto GitCapture(const std::filesystem::path& InRepo, const std::vector<std::string>& InArgs) -> shell::ExecResult {
@@ -431,9 +464,10 @@ auto RunNativePush(
                 continue;
             }
 
-            const auto result = InVerbose
-                ? GitPassThrough(repoPath, args)
-                : GitCapture(repoPath, args);
+            auto result = GitCapture(repoPath, args);
+            if (InVerbose) {
+                PrintCapturedOutputIfAny(result);
+            }
             if (result.exitCode == 0) {
                 std::cout << "[" << repoLabel << "] Pushed (" << remote << ")\n";
                 repoSuccess = 1;
@@ -442,6 +476,36 @@ auto RunNativePush(
                     pushStats.emplace_back(repoLabel, remote, branch);
                 }
             } else {
+                bool recoveredByLfsRetry = false;
+                if (!InDryRun && LooksLikeLfsPushFailure(result)) {
+                    std::cerr << "[" << repoLabel << "] Push failed (" << remote
+                              << ") due to LFS transport/auth issue; attempting git lfs push retry\n";
+
+                    const auto lfsPush = GitCapture(repoPath, {"lfs", "push", remote, branch});
+                    if (InVerbose || lfsPush.exitCode != 0) {
+                        PrintCapturedOutputIfAny(lfsPush);
+                    }
+
+                    if (lfsPush.exitCode == 0) {
+                        auto retryResult = GitCapture(repoPath, args);
+                        if (InVerbose || retryResult.exitCode != 0) {
+                            PrintCapturedOutputIfAny(retryResult);
+                        }
+                        if (retryResult.exitCode == 0) {
+                            std::cout << "[" << repoLabel << "] Pushed (" << remote
+                                      << ") after LFS retry\n";
+                            repoSuccess = 1;
+                            recoveredByLfsRetry = true;
+                            std::lock_guard<std::mutex> lock(statsMutex);
+                            pushStats.emplace_back(repoLabel, remote, branch);
+                        }
+                    }
+                }
+
+                if (recoveredByLfsRetry) {
+                    continue;
+                }
+
                 if (InVerbose) {
                     std::cerr << "[" << repoLabel << "] Push failed (" << remote << ")\n";
                 }
