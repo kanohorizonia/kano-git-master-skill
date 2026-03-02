@@ -23,8 +23,10 @@ target_sources(kano_git_core
     commands/private/commands/completion_cmd.cpp
     commands/private/commands/commit_cmd.cpp
     commands/private/commands/commit_push_cmd.cpp
+    commands/private/commands/dirty_cmd.cpp
     commands/private/commands/doctor_cmd.cpp
     commands/private/commands/guide_cmd.cpp
+    commands/private/commands/log_cmd.cpp
     commands/private/commands/meta_cmd.cpp
     commands/private/commands/p4_cmd.cpp
     commands/private/commands/push_cmd.cpp
