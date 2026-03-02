@@ -16,6 +16,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace kano::git::commands {
@@ -482,16 +483,6 @@ auto RunNativeStableDevSync(
         return 1;
     }
 
-    const auto latestTag = ResolveLatestStableTag(InRepo);
-    if (latestTag.empty()) {
-        OutRow.result = "FAILED";
-        OutRow.sameCommit = false;
-        OutRow.latestUpstreamCommit = "N/A";
-        OutRow.latestStableCommit = "N/A";
-        OutRow.reason = "no stable tag found";
-        return 1;
-    }
-
     if (InDryRun) {
         std::cout << "[DRY RUN] " << InRel << ": git fetch upstream --tags --prune\n";
     } else {
@@ -506,8 +497,21 @@ auto RunNativeStableDevSync(
         }
     }
 
+    const auto latestTag = ResolveLatestStableTag(InRepo);
+    if (latestTag.empty()) {
+        OutRow.result = "FAILED";
+        OutRow.sameCommit = false;
+        OutRow.latestUpstreamCommit = "N/A";
+        OutRow.latestStableCommit = "N/A";
+        OutRow.reason = "no stable tag found";
+        return 1;
+    }
+
+    const auto sourceBranch = OutRow.currentBranch;
+    const auto targetBranch = std::string{"branch_"} + latestTag;
+
     const auto upstreamSha = ResolveCommitSha(InRepo, std::format("refs/tags/{}^{{commit}}", latestTag));
-    const auto stableRef = ResolveStableRef(InRoot, InRepo, OutRow.currentBranch, InRel);
+    const auto stableRef = ResolveStableRef(InRoot, InRepo, sourceBranch, InRel);
     const auto stableShaBefore = ResolveCommitSha(InRepo, stableRef);
 
     OutRow.latestUpstreamCommit = ResolveCommitLine(InRepo, upstreamSha);
@@ -530,6 +534,7 @@ auto RunNativeStableDevSync(
     if (upstreamSha == stableShaBefore) {
         OutRow.result = "SUCCESS";
         OutRow.sameCommit = true;
+        OutRow.currentBranch = sourceBranch;
         OutRow.latestStableCommit = "(same as upstream)";
         OutRow.reason.clear();
         return 0;
@@ -537,8 +542,12 @@ auto RunNativeStableDevSync(
 
     if (InDryRun) {
         std::cout << "[DRY RUN] " << InRel << ": git rebase refs/tags/" << latestTag << "\n";
+        if (sourceBranch != targetBranch) {
+            std::cout << "[DRY RUN] " << InRel << ": git checkout -B " << targetBranch << " " << sourceBranch << "\n";
+        }
         OutRow.result = "SUCCESS";
         OutRow.sameCommit = false;
+        OutRow.currentBranch = (sourceBranch == targetBranch) ? sourceBranch : targetBranch;
         OutRow.reason = "dry-run";
         return 0;
     }
@@ -551,9 +560,20 @@ auto RunNativeStableDevSync(
         return rebase.exitCode;
     }
 
+    if (sourceBranch != targetBranch) {
+        const auto moveToTarget = GitPassThrough(InRepo, {"checkout", "-B", targetBranch, sourceBranch});
+        if (moveToTarget.exitCode != 0) {
+            OutRow.result = "FAILED";
+            OutRow.sameCommit = false;
+            OutRow.reason = "failed to move onto target stable branch";
+            return moveToTarget.exitCode;
+        }
+    }
+
     const auto stableShaAfter = ResolveCommitSha(InRepo, "HEAD");
     OutRow.result = "SUCCESS";
     OutRow.sameCommit = (stableShaAfter == upstreamSha);
+    OutRow.currentBranch = (sourceBranch == targetBranch) ? sourceBranch : targetBranch;
     OutRow.latestStableCommit = OutRow.sameCommit
         ? "(same as upstream)"
         : ResolveCommitLine(InRepo, stableShaAfter);
@@ -864,6 +884,65 @@ auto CheckoutRecoveredBranch(
     }
 
     return false;
+}
+
+auto CollectUnmergedPaths(const std::filesystem::path& InRepo) -> std::vector<std::string> {
+    std::vector<std::string> paths;
+    const auto unmerged = GitCapture(InRepo, {"ls-files", "-u"});
+    if (unmerged.exitCode != 0) {
+        return paths;
+    }
+
+    std::unordered_set<std::string> seen;
+    std::istringstream iss(unmerged.stdoutStr);
+    std::string line;
+    while (std::getline(iss, line)) {
+        line = Trim(line);
+        if (line.empty()) {
+            continue;
+        }
+        const auto tab = line.find('\t');
+        if (tab == std::string::npos || tab + 1 >= line.size()) {
+            continue;
+        }
+        const auto path = line.substr(tab + 1);
+        if (seen.insert(path).second) {
+            paths.push_back(path);
+        }
+    }
+
+    return paths;
+}
+
+auto ResolveUnmergedByTheirs(const std::filesystem::path& InRepo, bool InDryRun) -> bool {
+    const auto paths = CollectUnmergedPaths(InRepo);
+    if (paths.empty()) {
+        return false;
+    }
+
+    for (const auto& path : paths) {
+        if (InDryRun) {
+            std::cout << "[DRY RUN] Would run: git checkout --theirs -- " << path << "\n";
+            std::cout << "[DRY RUN] Would run: git add -- " << path << "\n";
+            continue;
+        }
+
+        const auto checkoutTheirs = GitPassThrough(InRepo, {"checkout", "--theirs", "--", path});
+        if (checkoutTheirs.exitCode != 0) {
+            return false;
+        }
+
+        const auto addPath = GitPassThrough(InRepo, {"add", "--", path});
+        if (addPath.exitCode != 0) {
+            return false;
+        }
+    }
+
+    if (InDryRun) {
+        return true;
+    }
+
+    return CollectUnmergedPaths(InRepo).empty();
 }
 
 auto BuildSyncPlans(
@@ -1214,13 +1293,33 @@ auto RunNativePreCommitRepair(
         }
 
         std::string checkoutDetail;
-        const auto checkedOut = CheckoutRecoveredBranch(
+        bool checkedOut = CheckoutRecoveredBranch(
             repoPath,
             remote,
             targetBranch,
             InBranchMode,
             InDryRun,
             &checkoutDetail);
+
+        if (!checkedOut) {
+            const auto unmergedPaths = CollectUnmergedPaths(repoPath);
+            if (!unmergedPaths.empty()) {
+                std::cerr << "WARN: " << name << " has " << unmergedPaths.size()
+                          << " unmerged index entr" << (unmergedPaths.size() == 1 ? "y" : "ies")
+                          << "; auto-resolving with --theirs and retrying branch recovery\n";
+                const auto resolved = ResolveUnmergedByTheirs(repoPath, InDryRun);
+                if (resolved) {
+                    checkedOut = CheckoutRecoveredBranch(
+                        repoPath,
+                        remote,
+                        targetBranch,
+                        InBranchMode,
+                        InDryRun,
+                        &checkoutDetail);
+                }
+            }
+        }
+
         if (!checkedOut) {
             std::cerr << "ERROR: failed to recover detached HEAD for repo: " << name << "\n";
             failures += 1;
