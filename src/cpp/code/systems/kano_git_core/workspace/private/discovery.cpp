@@ -162,6 +162,80 @@ auto DefaultExcludePatterns() -> std::vector<std::string> {
     };
 }
 
+struct IgnoreRule {
+    std::string pattern;
+    bool include = false;
+};
+
+auto NormalizeRulePattern(std::string InPattern) -> std::string {
+    auto pattern = Trim(std::move(InPattern));
+    while (!pattern.empty() && pattern.front() == '/') {
+        pattern.erase(pattern.begin());
+    }
+    while (!pattern.empty() && pattern.back() == '/') {
+        pattern.pop_back();
+    }
+    return pattern;
+}
+
+auto LoadIgnoreRulesFromFile(const std::filesystem::path& InFile) -> std::vector<IgnoreRule> {
+    std::vector<IgnoreRule> rules;
+    if (!std::filesystem::exists(InFile)) {
+        return rules;
+    }
+
+    std::ifstream in(InFile);
+    if (!in) {
+        return rules;
+    }
+
+    std::string line;
+    while (std::getline(in, line)) {
+        auto trimmed = Trim(line);
+        if (trimmed.empty() || trimmed.starts_with("#")) {
+            continue;
+        }
+
+        bool include = false;
+        if (!trimmed.empty() && trimmed.front() == '!') {
+            include = true;
+            trimmed.erase(trimmed.begin());
+            trimmed = Trim(trimmed);
+        }
+
+        const auto normalized = NormalizeRulePattern(trimmed);
+        if (normalized.empty()) {
+            continue;
+        }
+
+        rules.push_back(IgnoreRule{.pattern = normalized, .include = include});
+    }
+
+    return rules;
+}
+
+auto BuildIgnoreRules(const std::filesystem::path& InRoot, const std::vector<std::string>& InExcludePatterns) -> std::vector<IgnoreRule> {
+    std::vector<IgnoreRule> rules;
+    rules.reserve(InExcludePatterns.size() + 32);
+
+    for (const auto& pattern : InExcludePatterns) {
+        const auto normalized = NormalizeRulePattern(pattern);
+        if (normalized.empty()) {
+            continue;
+        }
+        rules.push_back(IgnoreRule{.pattern = normalized, .include = false});
+    }
+
+    for (const auto& fileRule : LoadIgnoreRulesFromFile(InRoot / ".gitignore")) {
+        rules.push_back(fileRule);
+    }
+    for (const auto& fileRule : LoadIgnoreRulesFromFile(InRoot / ".kogignore")) {
+        rules.push_back(fileRule);
+    }
+
+    return rules;
+}
+
 auto PrePrunePatterns() -> std::vector<std::string> {
     return {
         ".kano",
@@ -175,27 +249,69 @@ auto PrePrunePatterns() -> std::vector<std::string> {
     };
 }
 
-auto ShouldExcludePath(const std::filesystem::path& InPath, const std::vector<std::string>& InPatterns) -> bool {
-    const auto key = PathKey(InPath);
-    for (const auto& pattern : InPatterns) {
-        if (pattern.empty()) {
-            continue;
-        }
-        if (key.find(pattern) != std::string::npos) {
+auto PathContainsSegment(const std::string& InPath, const std::string& InSegment) -> bool {
+    if (InSegment.empty()) {
+        return false;
+    }
+    std::size_t start = 0;
+    while (start <= InPath.size()) {
+        const auto slash = InPath.find('/', start);
+        const auto end = (slash == std::string::npos) ? InPath.size() : slash;
+        if (end > start && InPath.substr(start, end - start) == InSegment) {
             return true;
         }
+        if (slash == std::string::npos) {
+            break;
+        }
+        start = slash + 1;
     }
     return false;
 }
 
-auto ShouldPrePrune(const std::filesystem::path& InPath, const std::vector<std::string>& InPrePrune, const std::vector<std::string>& InExclude) -> bool {
+auto RuleMatchesPath(const std::string& InRelPath, const IgnoreRule& InRule) -> bool {
+    const auto& pattern = InRule.pattern;
+    if (pattern.empty()) {
+        return false;
+    }
+
+    if (pattern.find('/') == std::string::npos) {
+        return PathContainsSegment(InRelPath, pattern);
+    }
+
+    if (InRelPath == pattern) {
+        return true;
+    }
+    if (InRelPath.starts_with(pattern + "/")) {
+        return true;
+    }
+    if (InRelPath.ends_with("/" + pattern)) {
+        return true;
+    }
+    return InRelPath.find("/" + pattern + "/") != std::string::npos;
+}
+
+auto ShouldExcludePath(const std::filesystem::path& InRoot, const std::filesystem::path& InPath, const std::vector<IgnoreRule>& InRules) -> bool {
+    std::error_code ec;
+    const auto rel = std::filesystem::relative(InPath, InRoot, ec);
+    const auto relKey = (!ec && !rel.empty() && rel != ".") ? PathKey(rel) : PathKey(InPath);
+
+    bool excluded = false;
+    for (const auto& rule : InRules) {
+        if (RuleMatchesPath(relKey, rule)) {
+            excluded = !rule.include;
+        }
+    }
+    return excluded;
+}
+
+auto ShouldPrePrune(const std::filesystem::path& InRoot, const std::filesystem::path& InPath, const std::vector<std::string>& InPrePrune, const std::vector<IgnoreRule>& InRules) -> bool {
     const auto base = InPath.filename().generic_string();
     for (const auto& name : InPrePrune) {
         if (base == name) {
             return true;
         }
     }
-    return ShouldExcludePath(InPath, InExclude);
+    return ShouldExcludePath(InRoot, InPath, InRules);
 }
 
 auto RunGitCapture(const std::filesystem::path& InRepoPath, const std::vector<std::string>& InArgs) -> shell::ExecResult {
@@ -283,7 +399,7 @@ auto CollectRegisteredSubmodulesRecursive(const std::filesystem::path& InRepoPat
     }
 }
 
-auto DiscoverGitRepos(const std::filesystem::path& InRoot, const int InMaxDepth, const std::vector<std::string>& InExcludePatterns) -> std::vector<std::filesystem::path> {
+auto DiscoverGitRepos(const std::filesystem::path& InRoot, const int InMaxDepth, const std::vector<IgnoreRule>& InIgnoreRules) -> std::vector<std::filesystem::path> {
     std::vector<std::filesystem::path> repos;
     std::set<std::string> unique;
 
@@ -321,7 +437,7 @@ auto DiscoverGitRepos(const std::filesystem::path& InRoot, const int InMaxDepth,
             continue;
         }
 
-        if (ShouldPrePrune(currentPath, prePrune, InExcludePatterns)) {
+        if (ShouldPrePrune(InRoot, currentPath, prePrune, InIgnoreRules)) {
             it.disable_recursion_pending();
             continue;
         }
@@ -351,7 +467,7 @@ auto CacheDirFor(const std::filesystem::path& InRoot) -> std::filesystem::path {
     return (InRoot / ".kano" / "cache" / "git" / "discover-repos").lexically_normal();
 }
 
-auto ComputeMarker(const std::filesystem::path& InRoot, const int InMaxDepth, const std::vector<std::string>& InExcludePatterns) -> std::string {
+auto ComputeMarker(const std::filesystem::path& InRoot, const int InMaxDepth, const std::vector<IgnoreRule>& InIgnoreRules) -> std::string {
     std::string markerInput;
     markerInput += PathKey(InRoot);
     markerInput += "|";
@@ -377,7 +493,7 @@ auto ComputeMarker(const std::filesystem::path& InRoot, const int InMaxDepth, co
             continue;
         }
         const auto path = it->path();
-        if (ShouldPrePrune(path, prePrune, InExcludePatterns)) {
+        if (ShouldPrePrune(InRoot, path, prePrune, InIgnoreRules)) {
             it.disable_recursion_pending();
             continue;
         }
@@ -685,6 +801,8 @@ auto DiscoverRepos(const DiscoverOptions& InOptions) -> DiscoveryResult {
     if (options.excludePatterns.empty()) {
         options.excludePatterns = DefaultExcludePatterns();
     }
+    const auto ignoreRules = BuildIgnoreRules(rootAbs, options.excludePatterns);
+
     if (options.maxDepth <= 0) {
         options.maxDepth = 3;
     }
@@ -698,7 +816,7 @@ auto DiscoverRepos(const DiscoverOptions& InOptions) -> DiscoveryResult {
         options.maxStaleSeconds = 0;
     }
 
-    const auto marker = options.incremental ? ComputeMarker(rootAbs, options.maxDepth, options.excludePatterns) : std::string{};
+    const auto marker = options.incremental ? ComputeMarker(rootAbs, options.maxDepth, ignoreRules) : std::string{};
     const auto cacheFile = CacheFilePath(options, rootAbs);
     PruneLegacyCacheFiles(cacheFile);
 
@@ -751,7 +869,7 @@ auto DiscoverRepos(const DiscoverOptions& InOptions) -> DiscoveryResult {
         CollectRegisteredSubmodulesRecursive(rootAbs, registered);
     }
 
-    const auto discovered = DiscoverGitRepos(rootAbs, options.maxDepth, options.excludePatterns);
+    const auto discovered = DiscoverGitRepos(rootAbs, options.maxDepth, ignoreRules);
     result.repos = BuildRepoRecords(rootAbs, discovered, registered, options.metadataLevel);
 
     if (options.useCache && options.cacheTtlSeconds > 0) {

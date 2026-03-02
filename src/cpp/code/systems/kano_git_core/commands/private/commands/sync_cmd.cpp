@@ -29,6 +29,16 @@ struct SyncPlan {
     std::string branchSource;
 };
 
+enum class BranchMode {
+    Default,
+    StableDev,
+};
+
+struct GitmodulesBinding {
+    std::filesystem::path root;
+    std::string prefix;
+};
+
 enum class StableDevReportFormat {
     Compact,
     Table,
@@ -133,6 +143,20 @@ auto CurrentBranch(const std::filesystem::path& InRepo) -> std::string {
     return Trim(result.stdoutStr);
 }
 
+auto LocalBranchExists(const std::filesystem::path& InRepo, const std::string& InBranch) -> bool {
+    if (InBranch.empty()) {
+        return false;
+    }
+    return GitCapture(InRepo, {"show-ref", "--verify", "--quiet", std::format("refs/heads/{}", InBranch)}).exitCode == 0;
+}
+
+auto RemoteBranchExists(const std::filesystem::path& InRepo, const std::string& InRemote, const std::string& InBranch) -> bool {
+    if (InRemote.empty() || InBranch.empty()) {
+        return false;
+    }
+    return GitCapture(InRepo, {"show-ref", "--verify", "--quiet", std::format("refs/remotes/{}/{}", InRemote, InBranch)}).exitCode == 0;
+}
+
 auto ParseStableDevReportFormat(const std::string& InValue) -> std::optional<StableDevReportFormat> {
     if (InValue == "compact") {
         return StableDevReportFormat::Compact;
@@ -148,6 +172,16 @@ auto ParseStableDevReportFormat(const std::string& InValue) -> std::optional<Sta
     }
     if (InValue == "markdown") {
         return StableDevReportFormat::Markdown;
+    }
+    return std::nullopt;
+}
+
+auto ParseBranchMode(const std::string& InValue) -> std::optional<BranchMode> {
+    if (InValue == "default") {
+        return BranchMode::Default;
+    }
+    if (InValue == "stable-dev") {
+        return BranchMode::StableDev;
     }
     return std::nullopt;
 }
@@ -658,6 +692,139 @@ auto GitmodulesBranchForPath(const std::filesystem::path& InWorkspaceRoot, const
     return std::nullopt;
 }
 
+auto FindGitmodulesBindingForPath(const std::filesystem::path& InWorkspaceRoot, const std::filesystem::path& InRepoPath) -> std::optional<GitmodulesBinding> {
+    auto current = InRepoPath.parent_path();
+    const auto workspace = std::filesystem::weakly_canonical(InWorkspaceRoot);
+    const auto target = std::filesystem::weakly_canonical(InRepoPath);
+
+    while (!current.empty()) {
+        const auto candidateGitmodules = current / ".gitmodules";
+        if (std::filesystem::exists(candidateGitmodules)) {
+            std::error_code ec;
+            auto rel = std::filesystem::relative(target, current, ec);
+            if (!ec) {
+                const auto relPath = rel.generic_string();
+                const auto pathResult = GitCapture(current, {"config", "-f", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$"});
+                if (pathResult.exitCode == 0) {
+                    std::istringstream iss(pathResult.stdoutStr);
+                    std::string line;
+                    while (std::getline(iss, line)) {
+                        line = Trim(line);
+                        if (line.empty()) {
+                            continue;
+                        }
+                        const auto sp = line.find(' ');
+                        if (sp == std::string::npos || sp + 1 >= line.size()) {
+                            continue;
+                        }
+                        const auto key = line.substr(0, sp);
+                        const auto value = line.substr(sp + 1);
+                        if (value != relPath || !key.ends_with(".path")) {
+                            continue;
+                        }
+                        return GitmodulesBinding{
+                            .root = std::filesystem::weakly_canonical(current),
+                            .prefix = key.substr(0, key.size() - 5),
+                        };
+                    }
+                }
+            }
+        }
+
+        if (std::filesystem::weakly_canonical(current) == workspace) {
+            break;
+        }
+        const auto next = current.parent_path();
+        if (next == current) {
+            break;
+        }
+        current = next;
+    }
+
+    return std::nullopt;
+}
+
+auto WriteGitmodulesBranch(const GitmodulesBinding& InBinding, const std::string& InBranch, bool InDryRun) -> bool {
+    if (InBranch.empty()) {
+        return false;
+    }
+
+    if (InDryRun) {
+        std::cout << "[DRY RUN] Would run: git -C " << InBinding.root.generic_string()
+                  << " config -f .gitmodules --replace-all " << InBinding.prefix << ".branch " << InBranch << "\n";
+        return true;
+    }
+
+    const auto write = GitCapture(InBinding.root, {"config", "-f", ".gitmodules", "--replace-all", InBinding.prefix + ".branch", InBranch});
+    return write.exitCode == 0;
+}
+
+auto ResolveDetachedTargetBranch(const std::filesystem::path& InRepo, const std::string& InRemote, const BranchMode InMode) -> std::pair<std::string, std::string> {
+    if (InMode == BranchMode::StableDev) {
+        const auto latestTag = ResolveLatestStableTag(InRepo);
+        if (latestTag.empty()) {
+            return {{}, "stable-dev mode: no release tag found"};
+        }
+        return {"branch_" + latestTag, "stable-dev inferred branch from latest tag"};
+    }
+
+    const auto remoteDefault = DetectRemoteDefaultBranch(InRepo, InRemote);
+    if (remoteDefault.empty()) {
+        return {{}, "default mode: cannot resolve remote default branch"};
+    }
+    return {remoteDefault, "default mode inferred remote default branch"};
+}
+
+auto CheckoutRecoveredBranch(
+    const std::filesystem::path& InRepo,
+    const std::string& InRemote,
+    const std::string& InBranch,
+    const BranchMode InMode,
+    bool InDryRun,
+    std::string* OutDetail) -> bool {
+    if (InBranch.empty()) {
+        return false;
+    }
+
+    if (LocalBranchExists(InRepo, InBranch)) {
+        if (OutDetail != nullptr) {
+            *OutDetail = "checkout existing local branch";
+        }
+        if (InDryRun) {
+            std::cout << "[DRY RUN] Would run: git checkout " << InBranch << "\n";
+            return true;
+        }
+        return GitPassThrough(InRepo, {"checkout", InBranch}).exitCode == 0;
+    }
+
+    if (RemoteBranchExists(InRepo, InRemote, InBranch)) {
+        if (OutDetail != nullptr) {
+            *OutDetail = "create local branch from remote";
+        }
+        if (InDryRun) {
+            std::cout << "[DRY RUN] Would run: git checkout -b " << InBranch << " " << InRemote << "/" << InBranch << "\n";
+            return true;
+        }
+        return GitPassThrough(InRepo, {"checkout", "-b", InBranch, std::format("{}/{}", InRemote, InBranch)}).exitCode == 0;
+    }
+
+    if (InMode == BranchMode::StableDev) {
+        const auto latestTag = ResolveLatestStableTag(InRepo);
+        if (!latestTag.empty()) {
+            if (OutDetail != nullptr) {
+                *OutDetail = "create stable-dev branch from latest tag";
+            }
+            if (InDryRun) {
+                std::cout << "[DRY RUN] Would run: git checkout -b " << InBranch << " refs/tags/" << latestTag << "\n";
+                return true;
+            }
+            return GitPassThrough(InRepo, {"checkout", "-b", InBranch, std::format("refs/tags/{}", latestTag)}).exitCode == 0;
+        }
+    }
+
+    return false;
+}
+
 auto BuildSyncPlans(
     const std::filesystem::path& InRoot,
     const std::string& InPreferredRemote,
@@ -850,6 +1017,121 @@ auto RunNativeOriginLatestSync(
     return failures > 0 ? 1 : 0;
 }
 
+auto RunNativePreCommitRepair(
+    const std::filesystem::path& InRepoRoot,
+    const std::string& InRemote,
+    int InMaxDepth,
+    bool InDryRun,
+    bool InNoCache,
+    bool InRefreshCache,
+    bool InRecursive,
+    BranchMode InBranchMode) -> int {
+    workspace::DiscoverOptions options;
+    options.rootDir = InRepoRoot;
+    options.maxDepth = InMaxDepth;
+    options.useCache = !InNoCache;
+    options.refreshCache = InRefreshCache;
+    options.metadataLevel = "full";
+
+    const auto discovery = workspace::DiscoverRepos(options);
+    const auto root = std::filesystem::weakly_canonical(InRepoRoot);
+    const auto registeredPaths = DiscoverRegisteredPathsRecursive(root);
+
+    int failures = 0;
+
+    std::cout << (InRecursive
+        ? "Pre-commit detached-HEAD repair for workspace repos\n"
+        : "Pre-commit detached-HEAD repair for current repository only\n");
+
+    for (const auto& repo : discovery.repos) {
+        const auto repoPath = std::filesystem::weakly_canonical(repo.path);
+        if (!InRecursive && repoPath != root) {
+            continue;
+        }
+
+        const auto rel = std::filesystem::relative(repoPath, InRepoRoot).generic_string();
+        const auto name = (rel.empty() || rel == ".") ? "." : rel;
+
+        const auto remote = ResolveRemote(repoPath, InRemote);
+        if (remote.empty()) {
+            std::cerr << "WARN: Skip repo without remotes: " << name << "\n";
+            continue;
+        }
+
+        const auto current = CurrentBranch(repoPath);
+        if (!current.empty()) {
+            std::cout << (InDryRun ? "[DRY RUN] " : "") << "Repo: " << name << " already on branch " << current << "\n";
+            continue;
+        }
+
+        const bool isRegistered = registeredPaths.contains(repoPath.generic_string());
+        std::string branchSource;
+        std::string targetBranch;
+
+        if (isRegistered) {
+            const auto configured = GitmodulesBranchForPath(root, repoPath);
+            if (configured.has_value() && !configured->empty()) {
+                targetBranch = *configured;
+                branchSource = "registered .gitmodules branch";
+            }
+        }
+
+        if (targetBranch.empty()) {
+            auto [inferredBranch, inferredSource] = ResolveDetachedTargetBranch(repoPath, remote, InBranchMode);
+            targetBranch = std::move(inferredBranch);
+            branchSource = std::move(inferredSource);
+        }
+
+        if (targetBranch.empty()) {
+            std::cerr << "ERROR: " << name << " detached HEAD with no resolvable target branch\n";
+            failures += 1;
+            continue;
+        }
+
+        std::cout << (InDryRun ? "[DRY RUN] " : "") << "Repo: " << name << " | source=" << branchSource << " | target=" << targetBranch << "\n";
+
+        if (!InDryRun) {
+            const auto fetch = GitCapture(repoPath, {"fetch", remote, "--prune", "--tags"});
+            if (fetch.exitCode != 0) {
+                std::cerr << "WARN: fetch failed before detached recovery: " << name << "\n";
+            }
+        }
+
+        std::string checkoutDetail;
+        const auto checkedOut = CheckoutRecoveredBranch(
+            repoPath,
+            remote,
+            targetBranch,
+            InBranchMode,
+            InDryRun,
+            &checkoutDetail);
+        if (!checkedOut) {
+            std::cerr << "ERROR: failed to recover detached HEAD for repo: " << name << "\n";
+            failures += 1;
+            continue;
+        }
+
+        if (!checkoutDetail.empty()) {
+            std::cout << (InDryRun ? "[DRY RUN] " : "") << "Repo: " << name << " | action=" << checkoutDetail << "\n";
+        }
+
+        if (isRegistered) {
+            const auto binding = FindGitmodulesBindingForPath(root, repoPath);
+            if (!binding.has_value()) {
+                std::cerr << "WARN: registered repo without resolvable .gitmodules binding: " << name << "\n";
+                continue;
+            }
+
+            if (!WriteGitmodulesBranch(*binding, targetBranch, InDryRun)) {
+                std::cerr << "WARN: failed to write .gitmodules branch for repo: " << name << "\n";
+            }
+        }
+    }
+
+    std::cout << "=== Pre-Commit Repair Complete ===\n";
+    return failures > 0 ? 1 : 0;
+}
+
 auto RunNativeUpstreamForcePush(
     const std::filesystem::path& InRepo,
     bool InDryRun) -> int {
@@ -905,6 +1187,70 @@ auto RunNativeUpstreamForcePush(
 
 void RegisterSync(CLI::App& InApp) {
     auto* cmd = InApp.add_subcommand("sync", "Repository synchronization workflows");
+
+    // --- sync pre-commit ---
+    auto* pre_commit = cmd->add_subcommand("pre-commit", "Repair detached HEAD before commit workflow");
+    pre_commit->allow_extras();
+    auto* preCommitRepo = new std::string{"."};
+    auto* preCommitRemote = new std::string{"origin"};
+    auto* preCommitDryRun = new bool{false};
+    auto* preCommitMaxDepth = new int{6};
+    auto* preCommitNoCache = new bool{false};
+    auto* preCommitRefreshCache = new bool{false};
+    auto* preCommitNoRecursive = new bool{false};
+    auto* preCommitBranchMode = new std::string{"default"};
+    auto* preCommitProfile = new bool{false};
+
+    pre_commit->add_option("--repo", *preCommitRepo, "Target repository root path");
+    pre_commit->add_option("--remote", *preCommitRemote, "Preferred remote name");
+    pre_commit->add_flag("--dry-run", *preCommitDryRun, "Preview detached-head repair actions");
+    pre_commit->add_option("--native-max-depth", *preCommitMaxDepth, "Native discovery max depth");
+    pre_commit->add_flag("--native-no-cache", *preCommitNoCache, "Disable native discovery cache");
+    pre_commit->add_flag("--native-refresh-cache", *preCommitRefreshCache, "Force native cache refresh");
+    pre_commit->add_flag("--no-recursive,-N", *preCommitNoRecursive, "Repair only current repository");
+    pre_commit->add_option("--branch-mode", *preCommitBranchMode, "Detached-branch inference mode: default|stable-dev");
+    pre_commit->add_flag("--profile", *preCommitProfile, "Print native pre-commit timing/profile summary");
+
+    pre_commit->callback([=]() {
+        auto extras = pre_commit->remaining();
+        if (!extras.empty()) {
+            std::cerr << "Error: unsupported extra arguments in native sync pre-commit mode:";
+            for (const auto& extra : extras) {
+                std::cerr << ' ' << extra;
+            }
+            std::cerr << "\n";
+            std::exit(2);
+        }
+
+        const auto branchMode = ParseBranchMode(*preCommitBranchMode);
+        if (!branchMode.has_value()) {
+            std::cerr << "ERROR: Unsupported --branch-mode: " << *preCommitBranchMode << " (supported: default, stable-dev)\n";
+            std::exit(1);
+        }
+
+        const auto start = std::chrono::steady_clock::now();
+        const auto repoRoot = std::filesystem::weakly_canonical(std::filesystem::path(*preCommitRepo));
+        const auto code = RunNativePreCommitRepair(
+            repoRoot,
+            *preCommitRemote,
+            *preCommitMaxDepth,
+            *preCommitDryRun,
+            *preCommitNoCache,
+            *preCommitRefreshCache,
+            !*preCommitNoRecursive,
+            *branchMode);
+        if (*preCommitProfile) {
+            const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+            std::cout << "\n=== Sync Profile Summary ===\n";
+            std::cout << "mode: native\n";
+            std::cout << "workflow: pre-commit\n";
+            std::cout << "recursive: " << (!*preCommitNoRecursive ? "true" : "false") << "\n";
+            std::cout << "dry_run: " << (*preCommitDryRun ? "true" : "false") << "\n";
+            std::cout << "branch_mode: " << *preCommitBranchMode << "\n";
+            std::cout << "total_ms: " << totalMs << "\n";
+        }
+        std::exit(code);
+    });
 
     // --- sync origin-latest ---
     auto* origin_latest = cmd->add_subcommand("origin-latest", "Sync to origin default branch latest");

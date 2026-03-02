@@ -12,7 +12,6 @@ using ::kano::git::GetBuildRevision;
 using ::kano::git::GetBuildRevisionHashShort;
 using ::kano::git::GetBuildRevisionHash;
 using ::kano::git::GetBuildDirty;
-using ::kano::git::GetBuildTimestampUtc;
 using ::kano::git::BuildHostName;
 using ::kano::git::GetBuildCI;
 using ::kano::git::GetBuildPipelineId;

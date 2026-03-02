@@ -62,14 +62,6 @@ constexpr std::string_view GetBuildDirty() {
 #endif
 }
 
-constexpr std::string_view GetBuildTimestampUtc() {
-#ifdef KOG_BUILD_TIMESTAMP_UTC
-    return KOG_BUILD_TIMESTAMP_UTC;
-#else
-    return "unknown";
-#endif
-}
-
 constexpr std::string_view BuildHostName() {
 #ifdef KOG_BUILD_HOST_NAME
     return KOG_BUILD_HOST_NAME;
@@ -127,8 +119,6 @@ inline std::string GetBuildInfo() {
     out += GetBuildRevisionHash();
     out += " dirty=";
     out += GetBuildDirty();
-    out += " ts_utc=";
-    out += GetBuildTimestampUtc();
     out += " host=";
     out += BuildHostName();
     out += " host_platform=";
