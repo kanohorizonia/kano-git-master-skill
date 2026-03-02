@@ -170,22 +170,25 @@ auto FormatTable(const std::vector<RepoView>& InRows) -> std::string {
 
     oss << "SUMMARY: repos=" << InRows.size() << ", dirty=" << dirtyCount << ", groups=" << groups.size() << "\n";
 
+    if (!InRows.empty()) {
+        oss << std::left
+            << std::setw(6) << "#"
+            << std::setw(24) << "REPO"
+            << std::setw(16) << "BRANCH"
+            << std::setw(24) << "REMOTE"
+            << std::setw(16) << "TRACKING"
+            << std::setw(8) << "DIRTY"
+            << std::setw(12) << "WT_DIRTY"
+            << "TYPE"
+            << "\n";
+    }
+
     std::string currentGroup;
     for (std::size_t i = 0; i < InRows.size(); ++i) {
         const auto& row = InRows[i];
         if (currentGroup != row.group) {
             currentGroup = row.group;
             oss << "\nGROUP: " << currentGroup << "\n";
-            oss << std::left
-                << std::setw(6) << "#"
-                << std::setw(24) << "REPO"
-                << std::setw(16) << "BRANCH"
-                << std::setw(24) << "REMOTE"
-                << std::setw(16) << "TRACKING"
-                << std::setw(8) << "DIRTY"
-                << std::setw(12) << "WT_DIRTY"
-                << "TYPE"
-                << "\n";
         }
 
         auto repoName = row.repoName;
@@ -259,16 +262,18 @@ void RegisterStatus(CLI::App& InApp) {
     auto* cmd = InApp.add_subcommand("status", "Global cross-repo status view (branch/upstream/dirty/worktree)");
 
     auto* format = new std::string{"table"};
-    auto* maxDepth = new int{6};
+    auto* maxDepth = new int{8};
     auto* exclude = new std::vector<std::string>{};
     auto* noCache = new bool{false};
+    auto* noRefreshCache = new bool{false};
 
     cmd->add_option("--format", *format, "Output format: table|json")->default_str("table");
     cmd->add_option("--max-depth", *maxDepth, "Discovery max depth");
     cmd->add_option("--exclude", *exclude, "Exclude path pattern (repeatable)");
     cmd->add_flag("--no-cache", *noCache, "Disable discovery cache for this run");
+    cmd->add_flag("--no-refresh-cache", *noRefreshCache, "Do not force cache refresh");
 
-    cmd->callback([format, maxDepth, exclude, noCache]() {
+    cmd->callback([format, maxDepth, exclude, noCache, noRefreshCache]() {
         if (*format != "table" && *format != "json") {
             std::cerr << "Error: invalid --format value: " << *format << " (expected table|json)\n";
             std::exit(1);
@@ -279,6 +284,7 @@ void RegisterStatus(CLI::App& InApp) {
         options.maxDepth = *maxDepth;
         options.excludePatterns = *exclude;
         options.useCache = !*noCache;
+        options.refreshCache = !*noRefreshCache;
         options.metadataLevel = "full";
 
         const auto discovery = workspace::DiscoverRepos(options);

@@ -113,9 +113,7 @@ auto FormatNativeStatusTable(const std::vector<workspace::RepoRecord>& InRepos, 
         groupedRepoIndexes[GroupFromRelativePath(relativePath)].push_back(i);
     }
 
-    std::size_t globalIndex = 0;
-    for (const auto& [group, indexes] : groupedRepoIndexes) {
-        oss << "GROUP: " << group << "\n";
+    if (!InRepos.empty()) {
         oss << std::left
             << std::setw(6) << "#"
             << std::setw(26) << "REPO"
@@ -123,6 +121,11 @@ auto FormatNativeStatusTable(const std::vector<workspace::RepoRecord>& InRepos, 
             << std::setw(14) << "TYPE"
             << std::setw(8) << "DIRTY"
             << "\n";
+    }
+
+    std::size_t globalIndex = 0;
+    for (const auto& [group, indexes] : groupedRepoIndexes) {
+        oss << "GROUP: " << group << "\n";
 
         for (const auto repoIdx : indexes) {
             const auto& repo = InRepos[repoIdx];

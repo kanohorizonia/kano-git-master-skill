@@ -250,7 +250,7 @@ void RegisterRemote(CLI::App& InApp) {
 
     auto* format = new std::string{"table"};
     auto* repo = new std::string{};
-    auto* maxDepth = new int{6};
+    auto* maxDepth = new int{8};
     auto* noCache = new bool{false};
     auto* noRefreshCache = new bool{false};
 
