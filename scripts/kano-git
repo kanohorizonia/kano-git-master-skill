@@ -214,6 +214,68 @@ run_native_build_mode() {
   local mode="$1"
   local prereq_script build_script
 
+  ensure_cpp_build_submodules() {
+    local -a required_paths update_paths
+    local path abs_path status_line state
+    required_paths=(
+      "src/cpp/code/thirdparty/cli11"
+      "src/cpp/code/thirdparty/ftxui"
+    )
+
+    if [[ ! -f "$PROJECT_ROOT/.gitmodules" ]]; then
+      return 0
+    fi
+
+    if ! command -v git >/dev/null 2>&1; then
+      echo "Error: git command not found; cannot prepare required submodules before build." >&2
+      return 1
+    fi
+
+    log_launcher_status "build-native" "step" "prepare-submodules"
+
+    for path in "${required_paths[@]}"; do
+      abs_path="$PROJECT_ROOT/$path"
+      status_line="$(git -C "$PROJECT_ROOT" submodule status -- "$path" 2>/dev/null || true)"
+      state="${status_line:0:1}"
+
+      if [[ "$state" == "-" && -d "$abs_path" ]]; then
+        if find "$abs_path" -mindepth 1 -print -quit 2>/dev/null | grep -q .; then
+          log_launcher_status "build-native" "warn" "removing stale uninitialized submodule dir: $path"
+          rm -rf "$abs_path" || {
+            echo "Error: failed to clean stale submodule directory: $path" >&2
+            return 1
+          }
+        fi
+      fi
+
+      if [[ -z "$status_line" ]]; then
+        continue
+      fi
+
+      update_paths+=("$path")
+    done
+
+    if [[ "${#update_paths[@]}" -eq 0 ]]; then
+      log_launcher_status "build-native" "ok" "no registered C++ submodules to prepare"
+      return 0
+    fi
+
+    (
+      cd "$PROJECT_ROOT"
+      git submodule sync -- "${update_paths[@]}" >/dev/null
+      git submodule update --init --recursive -- "${update_paths[@]}"
+    ) || {
+      echo "Error: failed to initialize required C++ submodules (cli11/ftxui)." >&2
+      echo "Hint: run 'git submodule update --init --recursive -- src/cpp/code/thirdparty/cli11 src/cpp/code/thirdparty/ftxui' and retry." >&2
+      return 1
+    }
+
+    log_launcher_status "build-native" "ok" "submodules ready"
+    return 0
+  }
+
+  ensure_cpp_build_submodules || return 1
+
   if ! mapfile -t _scripts < <(script_paths); then
     echo "Error: no native build scripts for platform $(platform_name) ($(arch_name))." >&2
     return 1
@@ -1184,8 +1246,8 @@ print_launcher_help_extras() {
   cat >&2 <<'EOF'
 
 Launcher commands:
-  build                               Build native binary (incremental)
-  rebuild                             Rebuild native binary (full clean rebuild)
+  build                               Build native binary (incremental; auto-prepare required C++ submodules)
+  rebuild                             Rebuild native binary (full clean rebuild; auto-prepare required C++ submodules)
   discover                            Run manual repo discovery, refresh cache, and print cache file path
   cp ...                              Alias of commit-push ...
   cpa ...                             Alias of commit-push --ai-auto ...
