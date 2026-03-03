@@ -212,6 +212,31 @@ apply_agent_mode_from_args() {
   done
 }
 
+has_non_manual_agent_arg() {
+  local arg next
+  next=""
+
+  for arg in "$@"; do
+    if [[ "$next" == "agent" ]]; then
+      [[ -n "$arg" && "$arg" != "manual" ]] && return 0
+      next=""
+      continue
+    fi
+
+    case "$arg" in
+      --agent)
+        next="agent"
+        ;;
+      --agent=*)
+        local agent_value="${arg#--agent=}"
+        [[ -n "$agent_value" && "$agent_value" != "manual" ]] && return 0
+        ;;
+    esac
+  done
+
+  return 1
+}
+
 clean_native_build_artifacts() {
   remove_tree_best_effort() {
     local target_path="$1"
@@ -1165,6 +1190,7 @@ resolve_fallback_script() {
 
   case "$command" in
     commit) printf '%s|%s\n' "$root/commit-tools/commit/smart-commit.sh" "1" ;;
+    commit-push) printf '%s|%s\n' "$root/commit-tools/commit-push/smart-commit-push.sh" "1" ;;
     resolve) printf '%s|%s\n' "$root/commit-tools/resolve/smart-resolve.sh" "1" ;;
     push) printf '%s|%s\n' "$root/commit-tools/smart-push.sh" "1" ;;
     clone) printf '%s|%s\n' "$root/core/smart-clone.sh" "1" ;;
@@ -1272,6 +1298,12 @@ run_shell_fallback() {
 }
 
 should_force_shell_fallback() {
+  local command="${1:-}"
+
+  if [[ "$command" == "commit-push" ]] && has_non_manual_agent_arg "$@"; then
+    return 0
+  fi
+
   return 1
 }
 
