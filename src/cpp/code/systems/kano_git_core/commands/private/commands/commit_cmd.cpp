@@ -278,10 +278,51 @@ auto BuildAiCommitPrompt(const std::filesystem::path& InWorkspaceRoot,
 }
 
 auto ExtractSingleLineMessage(const std::string& InText) -> std::string {
+    auto NormalizeAiLine = [](std::string line) -> std::string {
+        line = Trim(std::move(line));
+        if (line.empty()) {
+            return {};
+        }
+
+        if (line.rfind("- ", 0) == 0 || line.rfind("* ", 0) == 0) {
+            line = Trim(line.substr(2));
+        }
+
+        // Some providers return html-ish wrappers (e.g. "<p>...") or noisy prefixes ("??").
+        while (!line.empty() && (line.front() == '?' || line.front() == '!' || line.front() == '#' || line.front() == '*')) {
+            line.erase(line.begin());
+            line = Trim(line);
+        }
+
+        while (!line.empty() && line.front() == '<') {
+            const auto close = line.find('>');
+            if (close == std::string::npos || close > 24) {
+                break;
+            }
+            auto tag = line.substr(1, close - 1);
+            tag = ToLower(Trim(tag));
+            if (tag == "p" || tag == "/p" || tag == "div" || tag == "/div" || tag == "span" || tag == "/span") {
+                line = Trim(line.substr(close + 1));
+                continue;
+            }
+            break;
+        }
+
+        if (line.ends_with("</p>")) {
+            line = Trim(line.substr(0, line.size() - 4));
+        } else if (line.ends_with("</div>")) {
+            line = Trim(line.substr(0, line.size() - 6));
+        } else if (line.ends_with("</span>")) {
+            line = Trim(line.substr(0, line.size() - 7));
+        }
+
+        return line;
+    };
+
     std::istringstream iss(InText);
     std::string line;
     while (std::getline(iss, line)) {
-        line = Trim(line);
+        line = NormalizeAiLine(std::move(line));
         if (line.empty()) {
             continue;
         }
