@@ -97,9 +97,14 @@ kog_ensure_ftxui_vendor() {
   fi
 
   if [[ -d "$ftxui_dir" ]]; then
+    if [[ -z "$(find "$ftxui_dir" -mindepth 1 -print -quit 2>/dev/null || true)" ]]; then
+      echo "Found empty vendored FTXUI directory. Recreating: $ftxui_dir" >&2
+      rmdir "$ftxui_dir" 2>/dev/null || rm -rf "$ftxui_dir"
+    else
     echo "Found incomplete vendored FTXUI directory: $ftxui_dir" >&2
     echo "Remove it and rerun, or ensure CMakeLists.txt exists in that directory." >&2
     exit 1
+    fi
   fi
 
   if ! command -v git >/dev/null 2>&1; then
