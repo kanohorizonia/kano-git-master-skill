@@ -179,6 +179,39 @@ normalize_launcher_args() {
   done
 }
 
+apply_agent_mode_from_args() {
+  local arg next
+  next=""
+
+  if [[ "${KANO_AGENT_MODE:-}" == "1" || "${KANO_AGENT_MODE:-}" == "true" ]]; then
+    return 0
+  fi
+
+  for arg in "$@"; do
+    if [[ "$next" == "agent" ]]; then
+      if [[ -n "$arg" && "$arg" != "manual" ]]; then
+        export KANO_AGENT_MODE=1
+        return 0
+      fi
+      next=""
+      continue
+    fi
+
+    case "$arg" in
+      --agent)
+        next="agent"
+        ;;
+      --agent=*)
+        local agent_value="${arg#--agent=}"
+        if [[ -n "$agent_value" && "$agent_value" != "manual" ]]; then
+          export KANO_AGENT_MODE=1
+          return 0
+        fi
+        ;;
+    esac
+  done
+}
+
 clean_native_build_artifacts() {
   remove_tree_best_effort() {
     local target_path="$1"
@@ -1258,6 +1291,7 @@ Launcher commands:
   completion-install bash             Alias of completion install bash
 
 Launcher env:
+  KANO_AGENT_MODE=1                Force non-interactive agent mode in launcher flows
   KANO_GIT_ALLOW_NONINTERACTIVE_DOWNGRADE_REBUILD=1
                                       Allow downgrade rebuild in non-interactive mode
   KOG_BUILD_USE_LLVM=0|1              Build with LLVM toolchain (macOS default: 1)
@@ -1300,6 +1334,7 @@ main() {
   local -a exec_args=()
 
   normalize_launcher_args args "$@"
+  apply_agent_mode_from_args "${args[@]}"
 
   case "${args[0]:-}" in
     build|rebuild)
