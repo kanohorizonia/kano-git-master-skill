@@ -789,12 +789,21 @@ auto PushRepo(const std::filesystem::path& InRepo, const std::string& InBranch) 
     return !triedRemote ? false : false;
 }
 
+auto HeadCommitTitle(const std::filesystem::path& InRepo) -> std::string {
+    const auto out = GitCapture(InRepo, {"show", "-s", "--format=%s", "HEAD"});
+    if (out.exitCode != 0) {
+        return {};
+    }
+    return Trim(out.stdoutStr);
+}
+
 struct RepoCommitResult {
     std::filesystem::path repo;
     bool committed = false;
     bool pushed = false;
     bool failed = false;
     std::string note;
+    std::string commitTitle;
 };
 
 struct RepoAmendResult {
@@ -880,6 +889,7 @@ auto CommitSingleRepo(const std::filesystem::path& InWorkspaceRoot,
     }
 
     result.committed = true;
+    result.commitTitle = HeadCommitTitle(InRepo);
     if (result.note.empty()) {
         result.note = "committed";
     }
@@ -1082,6 +1092,7 @@ auto PrintCommitSummary(const std::filesystem::path& InWorkspaceRoot,
               << std::setw(12) << "------"
               << "------\n";
 
+    bool printedAnyCommitted = false;
     for (const auto& item : InResults) {
         const auto repoLabel = DisplayRepoLabel(InWorkspaceRoot, item.repo);
         std::string status;
@@ -1099,9 +1110,20 @@ auto PrintCommitSummary(const std::filesystem::path& InWorkspaceRoot,
             skipped += 1;
         }
 
+        if (!item.committed) {
+            continue;
+        }
+
+        printedAnyCommitted = true;
+        const auto detail = item.commitTitle.empty() ? item.note : item.commitTitle;
+
         std::cout << std::left << std::setw(36) << repoLabel
                   << std::setw(12) << status
-                  << item.note << "\n";
+                  << detail << "\n";
+    }
+
+    if (!printedAnyCommitted) {
+        std::cout << "(no commits created)\n";
     }
 
     std::cout << "\nTotals: committed=" << committed
