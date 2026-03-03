@@ -9,8 +9,45 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/build_metadata.sh"
 
-KOG_VCVARSALL_DEFAULT="C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvarsall.bat"
-KOG_VCVARSALL="${KOG_VCVARSALL:-$KOG_VCVARSALL_DEFAULT}"
+kog_windows_file_exists() {
+  local InPath="$1"
+  local EscapedPath="${InPath//\'/\'\'}"
+  powershell -NoProfile -ExecutionPolicy Bypass -Command "if (Test-Path -LiteralPath '$EscapedPath') { exit 0 } else { exit 1 }" >/dev/null 2>&1
+}
+
+kog_detect_vcvarsall() {
+  local Found=""
+
+  if command -v powershell >/dev/null 2>&1; then
+    Found="$(
+      powershell -NoProfile -ExecutionPolicy Bypass -Command "\
+        \$vswhere = Join-Path \${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'; \
+        if (Test-Path \$vswhere) { \
+          \$found = & \$vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find 'VC\Auxiliary\Build\vcvarsall.bat' 2>\$null | Select-Object -First 1; \
+          if (\$found) { Write-Output \$found; exit 0 } \
+        }; \
+        \$roots = @(); \
+        if (\$env:ProgramFiles) { \$roots += (Join-Path \$env:ProgramFiles 'Microsoft Visual Studio') }; \
+        if (\${env:ProgramFiles(x86)}) { \$roots += (Join-Path \${env:ProgramFiles(x86)} 'Microsoft Visual Studio') }; \
+        \$roots = \$roots | Where-Object { Test-Path \$_ }; \
+        if (\$roots.Count -gt 0) { \
+          \$scan = Get-ChildItem -Path \$roots -Recurse -File -Filter vcvarsall.bat -ErrorAction SilentlyContinue | \
+            Where-Object { \$_.FullName -match '\\\\VC\\\\Auxiliary\\\\Build\\\\vcvarsall\.bat$' } | \
+            Sort-Object FullName -Descending | \
+            Select-Object -First 1 -ExpandProperty FullName; \
+          if (\$scan) { Write-Output \$scan } \
+        }" \
+      | tr -d '\r'
+    )"
+  fi
+
+  if [[ -n "$Found" ]] && kog_windows_file_exists "$Found"; then
+    printf '%s\n' "$Found"
+    return 0
+  fi
+
+  return 1
+}
 
 kog_run_windows_preset() {
   local InConfigurePreset="$1"
@@ -29,8 +66,18 @@ kog_run_windows_preset() {
     exit 1
   fi
 
-  if [[ ! -f "$KOG_VCVARSALL" ]]; then
-    echo "vcvarsall.bat not found: $KOG_VCVARSALL" >&2
+  local RequestedVcvars="${KOG_VCVARSALL:-}"
+  local ResolvedVcvars=""
+  if [[ -n "$RequestedVcvars" ]]; then
+    ResolvedVcvars="$RequestedVcvars"
+  else
+    ResolvedVcvars="$(kog_detect_vcvarsall || true)"
+  fi
+
+  if ! kog_windows_file_exists "$ResolvedVcvars"; then
+    echo "vcvarsall.bat not found." >&2
+    echo "Set KOG_VCVARSALL explicitly, e.g.:" >&2
+    echo "  KOG_VCVARSALL='C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Auxiliary\\Build\\vcvarsall.bat'" >&2
     exit 1
   fi
 
@@ -45,122 +92,10 @@ kog_run_windows_preset() {
     RootWin="$(cd "$KOG_CPP_ROOT" && pwd -W)"
   fi
 
-  export KOG_PS_ROOT="$RootWin"
-  export KOG_PS_VCVARS="$KOG_VCVARSALL"
-  export KOG_PS_SUBST_PURPOSE="$InSubstPurpose"
-  export KOG_PS_SUBST_DRIVE="$InPreferredSubstDrive"
-  export KOG_PS_CONFIG_PRESET="$InConfigurePreset"
-  export KOG_PS_BUILD_PRESET="$InBuildPreset"
-  export KOG_PS_VCVARS_ARCH="$InVcvarsArch"
+  local PSEscapedRoot
+  local PSEscapedVcvars
+  PSEscapedRoot="${RootWin//\'/\'\'}"
+  PSEscapedVcvars="${ResolvedVcvars//\'/\'\'}"
 
-  local temp_ps1
-  temp_ps1="$(mktemp -t kog_windows_preset_build.XXXXXX.ps1)"
-  cat >"$temp_ps1" <<'POWERSHELL'
-Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Stop'
-
-$rootDir = $env:KOG_PS_ROOT
-$vcvarsPath = $env:KOG_PS_VCVARS
-$substPurpose = $env:KOG_PS_SUBST_PURPOSE
-$preferredDrive = $env:KOG_PS_SUBST_DRIVE
-$configurePreset = $env:KOG_PS_CONFIG_PRESET
-$buildPreset = $env:KOG_PS_BUILD_PRESET
-$vcvarsArch = $env:KOG_PS_VCVARS_ARCH
-$ownerDir = Join-Path $env:TEMP 'kano-git-subst-owners'
-
-if (-not (Test-Path $ownerDir)) {
-  New-Item -ItemType Directory -Path $ownerDir -Force | Out-Null
-}
-
-function Get-OwnerFilePath {
-  param([string]$driveLetter)
-  return (Join-Path $ownerDir ("{0}.json" -f $driveLetter.ToUpperInvariant()))
-}
-
-$defaultDriveCandidates = @('X', 'Y', 'Z', 'W', 'V', 'U', 'T', 'S', 'R', 'Q', 'P')
-$preferredDrive = [string]$preferredDrive
-$preferredDrive = $preferredDrive.Trim().TrimEnd(':').ToUpperInvariant()
-
-if ([string]::IsNullOrWhiteSpace($preferredDrive)) {
-  $driveCandidates = $defaultDriveCandidates
-} else {
-  $driveCandidates = @($preferredDrive) + ($defaultDriveCandidates | Where-Object { $_ -ne $preferredDrive })
-}
-
-$substList = cmd.exe /d /s /c subst
-if ($LASTEXITCODE -eq 0) {
-  foreach ($line in $substList) {
-    if ($line -match '^([A-Z]):\\: => (.+)$') {
-      $mappedDrive = $matches[1].ToUpperInvariant()
-      $mappedPath = $matches[2].Trim()
-      if (($driveCandidates -contains $mappedDrive) -and ($mappedPath -ieq $rootDir)) {
-        $ownerFile = Get-OwnerFilePath -driveLetter $mappedDrive
-        if (Test-Path $ownerFile) {
-          try {
-            $owner = Get-Content $ownerFile -Raw | ConvertFrom-Json
-            if ($owner.tool -eq 'kano-git' -and $owner.rootDir -ieq $mappedPath) {
-              Write-Host "[launcher][windows-preset-build] cleanup stale owned subst ${mappedDrive}: -> $mappedPath"
-              subst ($mappedDrive + ':') /D 2>&1 | Out-Null
-              Remove-Item $ownerFile -Force -ErrorAction SilentlyContinue
-            }
-          } catch {
-            Write-Host "[launcher][windows-preset-build] skip stale cleanup for ${mappedDrive}: invalid owner marker"
-          }
-        }
-      }
-    }
-  }
-}
-
-$selectedDrive = $null
-foreach ($candidate in $driveCandidates) {
-  if (-not (Get-PSDrive -Name $candidate -ErrorAction SilentlyContinue)) {
-    $selectedDrive = $candidate
-    break
-  }
-}
-
-if (-not $selectedDrive) {
-  Write-Host '[launcher][windows-preset-build] ERROR: no free drive letter for subst'
-  exit 1
-}
-
-$substPath = $selectedDrive + ':'
-Write-Host "[launcher][windows-preset-build] subst map $substPath -> $rootDir (purpose=$substPurpose)"
-subst $substPath "$rootDir" 2>&1 | Out-Null
-if ($LASTEXITCODE -ne 0) {
-  Write-Host "[launcher][windows-preset-build] ERROR: subst failed for $substPath"
-  exit 1
-}
-Write-Host "[launcher][windows-preset-build] subst ready"
-
-$ownerFile = Get-OwnerFilePath -driveLetter $selectedDrive
-$ownerRecord = [PSCustomObject]@{
-  tool = 'kano-git'
-  rootDir = $rootDir
-  drive = $substPath
-  purpose = $substPurpose
-  pid = $PID
-  createdAtUtc = [DateTime]::UtcNow.ToString('o')
-}
-$ownerRecord | ConvertTo-Json -Depth 4 | Set-Content -Path $ownerFile -Encoding UTF8
-Write-Host "[launcher][windows-preset-build] owner marker written: $ownerFile"
-
-try {
-  $cmd = ('cd /d {5} && call "{0}" {1} -vcvars_ver=14.44.35207 && cmake --preset {2} -S {3} && cmake --build --preset {4}' -f $vcvarsPath, $vcvarsArch, $configurePreset, $substPath, $buildPreset, $substPath)
-  Write-Host "[launcher][windows-preset-build] run cmd: $cmd"
-  cmd.exe /d /s /c $cmd
-  exit $LASTEXITCODE
-} finally {
-  subst $substPath /D 2>&1 | Out-Null
-  if (Test-Path $ownerFile) {
-    Remove-Item $ownerFile -Force -ErrorAction SilentlyContinue
-  }
-}
-POWERSHELL
-
-  powershell -NoProfile -ExecutionPolicy Bypass -File "$temp_ps1"
-  local ps_exit=$?
-  rm -f "$temp_ps1"
-  return $ps_exit
+  powershell -NoProfile -ExecutionPolicy Bypass -Command "& { Set-Location '$PSEscapedRoot'; \$cmd = 'call \"$PSEscapedVcvars\" $InVcvarsArch -vcvars_ver=14.44.35207 && cmake --preset $InConfigurePreset && cmake --build --preset $InBuildPreset'; cmd.exe /d /s /c \$cmd; exit \$LASTEXITCODE }"
 }

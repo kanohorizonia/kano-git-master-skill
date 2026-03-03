@@ -1170,6 +1170,22 @@ run_shell_script() {
 try_auto_prepare_binary() {
   local prereq_script build_script
   local step_idx=0
+  local -a build_submodules=(
+    "src/cpp/code/thirdparty/cli11"
+    "src/cpp/code/thirdparty/ftxui"
+  )
+
+  if [[ -f "$PROJECT_ROOT/.gitmodules" ]] && command -v git >/dev/null 2>&1; then
+    log_launcher_status "auto-prepare" "step" "prepare-submodules"
+    (
+      cd "$PROJECT_ROOT"
+      git submodule sync -- "${build_submodules[@]}" >/dev/null
+      git submodule update --init --recursive -- "${build_submodules[@]}"
+    ) || {
+      echo "Warning: failed to prepare C++ thirdparty submodules (cli11/ftxui); build may fail." >&2
+    }
+  fi
+
   if ! mapfile -t _scripts < <(script_paths); then
     echo "Warning: no build automation scripts for platform $(platform_name) ($(arch_name))." >&2
     return 1

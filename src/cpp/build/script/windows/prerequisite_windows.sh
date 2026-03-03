@@ -49,16 +49,36 @@ function Ensure-WingetPackage {
   param([string]$Id)
 
   Invoke-LauncherStep -Step "prereq:$Id" -Action {
+    $noUpgradeCode = -1978335189
     $installed = winget list --id $Id --exact --accept-source-agreements 2>$null
     if ($LASTEXITCODE -ne 0) {
       Write-LauncherStatus -Step "prereq:$Id" -Status 'info' -Message 'mode=install'
       winget install --id $Id --exact --source winget --accept-source-agreements --accept-package-agreements --silent --disable-interactivity
+      if ($LASTEXITCODE -ne 0) {
+        throw "winget install failed for $Id with exit code $LASTEXITCODE"
+      }
       return
     }
 
     Write-LauncherStatus -Step "prereq:$Id" -Status 'info' -Message 'mode=upgrade'
     winget upgrade --id $Id --exact --source winget --accept-source-agreements --accept-package-agreements --silent --disable-interactivity
+    if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne $noUpgradeCode) {
+      throw "winget upgrade failed for $Id with exit code $LASTEXITCODE"
+    }
   }
+}
+
+function Resolve-VcvarsallPath {
+  $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+  if (-not (Test-Path $vswhere)) {
+    return $null
+  }
+
+  $path = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find 'VC\Auxiliary\Build\vcvarsall.bat' 2>$null | Select-Object -First 1
+  if ([string]::IsNullOrWhiteSpace($path)) {
+    return $null
+  }
+  return $path
 }
 
 if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
@@ -69,13 +89,21 @@ Write-LauncherStatus -Step 'prerequisite' -Status 'start' -Message 'windows depe
 
 Ensure-WingetPackage -Id 'Kitware.CMake'
 Ensure-WingetPackage -Id 'Ninja-build.Ninja'
-Ensure-WingetPackage -Id 'Git.Git'
 Ensure-WingetPackage -Id 'Python.Python.3.12'
 
 Invoke-LauncherStep -Step 'prereq:Microsoft.VisualStudio.2022.BuildTools' -Action {
-  Write-LauncherStatus -Step 'prereq:Microsoft.VisualStudio.2022.BuildTools' -Status 'info' -Message 'mode=install-or-repair-components'
+  $existingVcvarsall = Resolve-VcvarsallPath
+  if ($existingVcvarsall) {
+    Write-LauncherStatus -Step 'prereq:Microsoft.VisualStudio.2022.BuildTools' -Status 'info' -Message "mode=skip-existing-msvc vcvarsall=$existingVcvarsall"
+    return
+  }
+
+  Write-LauncherStatus -Step 'prereq:Microsoft.VisualStudio.2022.BuildTools' -Status 'info' -Message 'mode=install-components'
   winget install --id Microsoft.VisualStudio.2022.BuildTools --exact --source winget --override '--quiet --wait --norestart --nocache --add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.VC.Tools.ARM64 --add Microsoft.VisualStudio.Component.VC.CMake.Project' --accept-source-agreements --accept-package-agreements --disable-interactivity
+  if ($LASTEXITCODE -ne 0) {
+    throw "winget install failed for Microsoft.VisualStudio.2022.BuildTools with exit code $LASTEXITCODE"
+  }
 }
 
 Write-LauncherStatus -Step 'prerequisite' -Status 'ok' -Message 'windows dependency bootstrap complete'
-POWERSHELL 
+POWERSHELL
