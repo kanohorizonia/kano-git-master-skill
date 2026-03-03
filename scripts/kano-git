@@ -1212,137 +1212,6 @@ try_auto_prepare_binary() {
   return 0
 }
 
-resolve_fallback_script() {
-  local command sub root
-  root="$PROJECT_ROOT/src/shell"
-
-  if [[ "$#" -eq 0 ]]; then
-    printf '%s|%s\n' "$root/internal/show-version.sh" "0"
-    return 0
-  fi
-
-  command="$1"
-  shift
-
-  case "$command" in
-    commit) printf '%s|%s\n' "$root/commit-tools/commit/smart-commit.sh" "1" ;;
-    commit-push) printf '%s|%s\n' "$root/commit-tools/commit-push/smart-commit-push.sh" "1" ;;
-    resolve) printf '%s|%s\n' "$root/commit-tools/resolve/smart-resolve.sh" "1" ;;
-    push) printf '%s|%s\n' "$root/commit-tools/smart-push.sh" "1" ;;
-    clone) printf '%s|%s\n' "$root/core/smart-clone.sh" "1" ;;
-    doctor) printf '%s|%s\n' "$root/commit-tools/doctor.sh" "1" ;;
-    version) printf '%s|%s\n' "$root/internal/show-version.sh" "1" ;;
-    submodule) printf '%s|%s\n' "$root/submodules/smart-submodule.sh" "1" ;;
-    sync)
-      sub="${1:-}"
-      case "$sub" in
-        "") printf '%s|%s\n' "$root/commit-tools/sync/smart-sync.sh" "1" ;;
-        origin-latest) printf '%s|%s\n' "$root/commit-tools/sync/smart-sync-origin-latest.sh" "2" ;;
-        upstream-force-push) printf '%s|%s\n' "$root/commit-tools/sync/smart-sync-upstream-force-push.sh" "2" ;;
-        stable-dev) printf '%s|%s\n' "$root/commit-tools/sync/smart-sync-stable-dev.sh" "2" ;;
-        dev) printf '%s|%s\n' "$root/commit-tools/sync/smart-sync-dev.sh" "2" ;;
-      esac
-      ;;
-    workspace)
-      sub="${1:-}"
-      case "$sub" in
-        "") printf '%s|%s\n' "$root/workspace/status-all-repos.sh" "1" ;;
-        status) printf '%s|%s\n' "$root/workspace/status-all-repos.sh" "2" ;;
-        update) printf '%s|%s\n' "$root/workspace/update-workspace-repos.sh" "2" ;;
-        foreach) printf '%s|%s\n' "$root/workspace/foreach-repo.sh" "2" ;;
-        discover) printf '%s|%s\n' "$root/core/discover-repos.sh" "2" ;;
-        update-repo) printf '%s|%s\n' "$root/core/update-repo.sh" "2" ;;
-      esac
-      ;;
-    worktree)
-      sub="${1:-}"
-      case "$sub" in
-        "") printf '%s|%s\n' "$root/worktree/list-worktrees.sh" "1" ;;
-        create) printf '%s|%s\n' "$root/worktree/create-worktree.sh" "2" ;;
-        create-orphan) printf '%s|%s\n' "$root/worktree/create-orphan-worktree.sh" "2" ;;
-        list) printf '%s|%s\n' "$root/worktree/list-worktrees.sh" "2" ;;
-        remove) printf '%s|%s\n' "$root/worktree/remove-worktree.sh" "2" ;;
-        sync) printf '%s|%s\n' "$root/worktree/sync-worktrees.sh" "2" ;;
-        open) printf '%s|%s\n' "$root/worktree/open-worktree.sh" "2" ;;
-      esac
-      ;;
-    subtree)
-      sub="${1:-}"
-      case "$sub" in
-        "") printf '%s|%s\n' "$root/subtree/list-subtrees.sh" "1" ;;
-        add) printf '%s|%s\n' "$root/subtree/add-subtree.sh" "2" ;;
-        pull) printf '%s|%s\n' "$root/subtree/pull-subtree.sh" "2" ;;
-        push) printf '%s|%s\n' "$root/subtree/push-subtree.sh" "2" ;;
-        split) printf '%s|%s\n' "$root/subtree/split-subtree.sh" "2" ;;
-        list) printf '%s|%s\n' "$root/subtree/list-subtrees.sh" "2" ;;
-      esac
-      ;;
-    scalar)
-      sub="${1:-}"
-      case "$sub" in
-        "") printf '%s|%s\n' "$root/mono-repo/scalar/status.sh" "1" ;;
-        register) printf '%s|%s\n' "$root/mono-repo/scalar/register.sh" "2" ;;
-        unregister) printf '%s|%s\n' "$root/mono-repo/scalar/unregister.sh" "2" ;;
-        status) printf '%s|%s\n' "$root/mono-repo/scalar/status.sh" "2" ;;
-        optimize) printf '%s|%s\n' "$root/mono-repo/scalar/optimize.sh" "2" ;;
-      esac
-      ;;
-    branch)
-      sub="${1:-}"
-      case "$sub" in
-        rebase-upstream) printf '%s|%s\n' "$root/branches/rebase-to-upstream-latest.sh" "2" ;;
-        compare) printf '%s|%s\n' "$root/branches/compare-branches.sh" "2" ;;
-        cherry-pick-batch) printf '%s|%s\n' "$root/branches/cherry-pick-batch.sh" "2" ;;
-      esac
-      ;;
-    p4|svn)
-      sub="${1:-}"
-      if [[ -n "$sub" ]]; then
-        local candidate="$root/vcs-bridges/$command/$sub.sh"
-        [[ -f "$candidate" ]] && printf '%s|%s\n' "$candidate" "2"
-      fi
-      ;;
-  esac
-}
-
-run_shell_fallback() {
-  local mapping script skip bash_path
-  mapping="$(resolve_fallback_script "$@" || true)"
-  script="${mapping%%|*}"
-  skip="${mapping##*|}"
-
-  if [[ -z "$script" || "$script" == "$mapping" || ! -f "$script" ]]; then
-    echo "Error: C++ acceleration unavailable and no shell fallback route for this command." >&2
-    return 1
-  fi
-
-  if [[ ! "$skip" =~ ^[0-9]+$ ]]; then
-    skip=1
-  fi
-
-  if ! bash_path="$(find_bash)"; then
-    echo "Error: C++ acceleration unavailable and bash is missing, so shell fallback cannot run." >&2
-    return 1
-  fi
-
-  echo "Warning: C++ acceleration is unavailable. Falling back to pure shell implementation." >&2
-  if (( skip == 0 )); then
-    KANO_GIT_MASTER_ROOT="${KANO_GIT_MASTER_ROOT:-$PROJECT_ROOT}" "$bash_path" "$script" "$@"
-  else
-    KANO_GIT_MASTER_ROOT="${KANO_GIT_MASTER_ROOT:-$PROJECT_ROOT}" "$bash_path" "$script" "${@:skip+1}"
-  fi
-}
-
-should_force_shell_fallback() {
-  local command="${1:-}"
-
-  if [[ "$command" == "commit-push" ]] && has_non_manual_agent_arg "$@"; then
-    return 0
-  fi
-
-  return 1
-}
-
 print_launcher_help_extras() {
   cat >&2 <<'EOF'
 
@@ -1444,12 +1313,8 @@ main() {
     fi
 
     if [[ -n "$binary" && -f "$binary" ]]; then
-    if should_force_shell_fallback "${args[@]}"; then
-      run_shell_fallback "${args[@]}"
+      run_native_binary "$binary" "${exec_args[@]}"
       exit $?
-    fi
-    run_native_binary "$binary" "${exec_args[@]}"
-    exit $?
     fi
   fi
 
