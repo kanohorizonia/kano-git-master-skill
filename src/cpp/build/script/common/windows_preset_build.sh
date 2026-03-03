@@ -49,6 +49,71 @@ kog_detect_vcvarsall() {
   return 1
 }
 
+kog_resolve_windows_source_root() {
+  local InRootWin="$1"
+  local InConfigurePreset="$2"
+  local DecisionAndRoot=""
+  local Decision=""
+  local EffectiveRoot=""
+
+  DecisionAndRoot="$(
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "\
+      \$root = '$InRootWin'; \
+      \$preset = '$InConfigurePreset'; \
+      function Normalize-PathKey([string]\$path) { \
+        if ([string]::IsNullOrWhiteSpace(\$path)) { return '' } \
+        \$candidate = \$path.Trim(); \
+        \$resolved = Resolve-Path -LiteralPath \$candidate -ErrorAction SilentlyContinue; \
+        if (\$resolved) { \$candidate = \$resolved.Path }; \
+        \$candidate = \$candidate -replace '/', '\\\\'; \
+        while (\$candidate.Length -gt 3 -and \$candidate.EndsWith('\\')) { \$candidate = \$candidate.Substring(0, \$candidate.Length - 1) }; \
+        return \$candidate.ToLowerInvariant(); \
+      }; \
+      \$decision = 'keep'; \
+      \$effectiveRoot = \$root; \
+      \$buildDir = Join-Path \$root ('build\\_intermediate\\' + \$preset); \
+      \$cacheFile = Join-Path \$buildDir 'CMakeCache.txt'; \
+      if (Test-Path -LiteralPath \$cacheFile) { \
+        \$cacheDirLine = Select-String -Path \$cacheFile -Pattern '^CMAKE_CACHEFILE_DIR:INTERNAL=(.+)$' -ErrorAction SilentlyContinue | Select-Object -First 1; \
+        \$homeDirLine = Select-String -Path \$cacheFile -Pattern '^CMAKE_HOME_DIRECTORY:INTERNAL=(.+)$' -ErrorAction SilentlyContinue | Select-Object -First 1; \
+        \$cachedDir = ''; \
+        \$cachedHome = ''; \
+        if (\$cacheDirLine -and \$cacheDirLine.Matches.Count -gt 0) { \$cachedDir = \$cacheDirLine.Matches[0].Groups[1].Value.Trim() }; \
+        if (\$homeDirLine -and \$homeDirLine.Matches.Count -gt 0) { \$cachedHome = \$homeDirLine.Matches[0].Groups[1].Value.Trim() }; \
+        \$buildKey = Normalize-PathKey \$buildDir; \
+        \$cachedKey = Normalize-PathKey \$cachedDir; \
+        if (-not [string]::IsNullOrWhiteSpace(\$cachedKey) -and \$cachedKey -ne \$buildKey) { \
+          if (-not [string]::IsNullOrWhiteSpace(\$cachedHome) -and (Test-Path -LiteralPath \$cachedHome)) { \
+            \$decision = 'use-cache-home'; \
+            \$effectiveRoot = \$cachedHome; \
+          } else { \
+            \$decision = 'clean-cache'; \
+            Remove-Item -LiteralPath \$buildDir -Recurse -Force -ErrorAction SilentlyContinue; \
+          } \
+        } \
+      }; \
+      Write-Output (\$decision + '|' + \$effectiveRoot)" \
+    | tr -d '\r'
+  )"
+
+  Decision="${DecisionAndRoot%%|*}"
+  EffectiveRoot="${DecisionAndRoot#*|}"
+  if [[ -z "$EffectiveRoot" ]]; then
+    EffectiveRoot="$InRootWin"
+  fi
+
+  case "$Decision" in
+    use-cache-home)
+      echo "[launcher][cmake-cache][info] detected path-alias cache; reuse source root: $EffectiveRoot" >&2
+      ;;
+    clean-cache)
+      echo "[launcher][cmake-cache][warn] removed incompatible cache dir for preset: $InConfigurePreset" >&2
+      ;;
+  esac
+
+  printf '%s\n' "$EffectiveRoot"
+}
+
 kog_run_windows_preset() {
   local InConfigurePreset="$1"
   local InBuildPreset="$2"
@@ -92,9 +157,11 @@ kog_run_windows_preset() {
     RootWin="$(cd "$KOG_CPP_ROOT" && pwd -W)"
   fi
 
+  local EffectiveRootWin
   local PSEscapedRoot
   local PSEscapedVcvars
-  PSEscapedRoot="${RootWin//\'/\'\'}"
+  EffectiveRootWin="$(kog_resolve_windows_source_root "$RootWin" "$InConfigurePreset")"
+  PSEscapedRoot="${EffectiveRootWin//\'/\'\'}"
   PSEscapedVcvars="${ResolvedVcvars//\'/\'\'}"
 
   powershell -NoProfile -ExecutionPolicy Bypass -Command "& { Set-Location '$PSEscapedRoot'; \$cmd = 'call \"$PSEscapedVcvars\" $InVcvarsArch -vcvars_ver=14.44.35207 && cmake --preset $InConfigurePreset && cmake --build --preset $InBuildPreset'; cmd.exe /d /s /c \$cmd; exit \$LASTEXITCODE }"
