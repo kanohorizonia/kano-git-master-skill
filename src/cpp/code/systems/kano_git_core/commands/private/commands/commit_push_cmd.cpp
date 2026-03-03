@@ -162,7 +162,7 @@ auto ParsePushFailures(const std::string& InStdout, const std::string& InStderr)
 } // namespace
 
 void RegisterCommitPush(CLI::App& InApp) {
-    auto* cmd = InApp.add_subcommand("commit-push", "Run commit, sync, then push in one command");
+    auto* cmd = InApp.add_subcommand("commit-push", "Run pre-commit, commit, sync, post-commit, then push in one command");
     cmd->allow_extras();
 
     auto* repos = new std::string{};
@@ -204,6 +204,7 @@ void RegisterCommitPush(CLI::App& InApp) {
         long long preCommitMillis = 0;
         long long commitMillis = 0;
         long long syncMillis = 0;
+        long long postCommitMillis = 0;
         long long pushMillis = 0;
 
         const auto extras = cmd->remaining();
@@ -313,6 +314,44 @@ void RegisterCommitPush(CLI::App& InApp) {
         const auto syncEnd = std::chrono::steady_clock::now();
         syncMillis = std::chrono::duration_cast<std::chrono::milliseconds>(syncEnd - syncStart).count();
 
+        std::vector<std::string> postCommitArgs{"commit"};
+        if (!repos->empty()) {
+            postCommitArgs.insert(postCommitArgs.end(), {"--repos", *repos});
+        }
+        if (*noRecursive) {
+            postCommitArgs.push_back("--no-recursive");
+        }
+        if (!message->empty()) {
+            postCommitArgs.insert(postCommitArgs.end(), {"-m", *message});
+        }
+        if (!aiProvider->empty()) {
+            postCommitArgs.insert(postCommitArgs.end(), {"--ai-provider", *aiProvider});
+        }
+        if (!aiModel->empty()) {
+            postCommitArgs.insert(postCommitArgs.end(), {"--ai-model", *aiModel});
+        }
+        if (*aiAuto) {
+            postCommitArgs.push_back("--ai-auto");
+        }
+        if (*noAiReview) {
+            postCommitArgs.push_back("--no-ai-review");
+        }
+        if (*stagedOnly) {
+            postCommitArgs.push_back("--staged-only");
+        }
+        if (*dryRun) {
+            postCommitArgs.push_back("--preflight-only");
+        }
+
+        std::cout << "=== commit-push stage: post-commit ===\n";
+        const auto postCommitStart = std::chrono::steady_clock::now();
+        const auto postCommitResult = RunKogCommand(postCommitArgs);
+        const auto postCommitEnd = std::chrono::steady_clock::now();
+        postCommitMillis = std::chrono::duration_cast<std::chrono::milliseconds>(postCommitEnd - postCommitStart).count();
+        if (postCommitResult.exitCode != 0) {
+            std::exit(postCommitResult.exitCode);
+        }
+
         std::vector<std::string> pushArgs{"push", "--skip-sync"};
         if (!repos->empty()) {
             pushArgs.insert(pushArgs.end(), {"--repos", *repos});
@@ -387,6 +426,7 @@ void RegisterCommitPush(CLI::App& InApp) {
             std::cout << "pre_commit_ms: " << preCommitMillis << "\n";
             std::cout << "commit_ms: " << commitMillis << "\n";
             std::cout << "sync_ms: " << syncMillis << "\n";
+            std::cout << "post_commit_ms: " << postCommitMillis << "\n";
             std::cout << "push_ms: " << pushMillis << "\n";
             std::cout << "total_ms: " << totalMillis << "\n";
         }
