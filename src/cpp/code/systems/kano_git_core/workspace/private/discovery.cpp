@@ -8,6 +8,7 @@
 #include <format>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <optional>
 #include <regex>
 #include <set>
@@ -804,7 +805,7 @@ auto DiscoverRepos(const DiscoverOptions& InOptions) -> DiscoveryResult {
     const auto ignoreRules = BuildIgnoreRules(rootAbs, options.excludePatterns);
 
     if (options.maxDepth <= 0) {
-        options.maxDepth = 3;
+        options.maxDepth = std::numeric_limits<int>::max();
     }
     if (options.metadataLevel != "minimal" && options.metadataLevel != "full") {
         options.metadataLevel = "full";
