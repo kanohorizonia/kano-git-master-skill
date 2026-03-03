@@ -818,6 +818,8 @@ Recommended root wrapper set:
 Use agent proxy mode (代理模式) when an agent/tool is executing commit workflows on your behalf.
 
 - Enable with `--agent <name>` (for example: `codex`, `cursor`, `copilot`, `kiro`, `claude`).
+- If commands are launched via `kog` / `kano-git`, set `KANO_AGENT_MODE=1` to suppress launcher-level interactive update checks before dispatch.
+  - Example: `KANO_AGENT_MODE=1 kog cpa --agent codex -m "chore: update workspace"`
 - If `--agent` is set and not `manual`:
   - fixed commit message is required: `-m "..."` / `--message "..."`.
   - in-script AI review is disabled automatically (`--no-ai-review`) to avoid duplicate model cost.
