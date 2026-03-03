@@ -836,6 +836,11 @@ run_dev_mode_update_flow() {
     return 0
   fi
 
+  if is_git_worktree_dirty; then
+    echo "[launcher] Skip remote update check: dirty worktree in $PROJECT_ROOT" >&2
+    return 0
+  fi
+
   preferred_remote="upstream"
   if ! git -C "$PROJECT_ROOT" remote get-url "$preferred_remote" >/dev/null 2>&1; then
     preferred_remote="origin"
