@@ -17,8 +17,13 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <unordered_set>
 #include <vector>
+#include <future>
+#include <unordered_map>
+#include <set>
+#include <functional>
 
 namespace kano::git::commands {
 namespace {
@@ -628,30 +633,283 @@ auto BuildOrderedRepoList(const std::filesystem::path& InWorkspaceRoot, const st
     return deduped;
 }
 
-auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<std::filesystem::path> {
+auto DiscoverWorkspaceRepoRecords(const std::filesystem::path& InRoot, const std::string& InMetadataLevel) -> std::vector<workspace::RepoRecord> {
     workspace::DiscoverOptions options;
     options.rootDir = InRoot;
     options.maxDepth = 12;
     options.useCache = true;
-    options.metadataLevel = "minimal";
+    options.metadataLevel = InMetadataLevel;
 
     const auto discovery = workspace::DiscoverRepos(options);
-    std::vector<std::filesystem::path> repos;
-    repos.reserve(discovery.repos.size());
+    std::vector<workspace::RepoRecord> repos = discovery.repos;
+    std::sort(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
+        return A.path.lexically_normal().generic_string() < B.path.lexically_normal().generic_string();
+    });
+    repos.erase(std::unique(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
+        return A.path.lexically_normal().generic_string() == B.path.lexically_normal().generic_string();
+    }), repos.end());
+    return repos;
+}
 
-    for (const auto& repo : discovery.repos) {
+auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<std::filesystem::path> {
+    std::vector<std::filesystem::path> repos;
+    const auto discovered = DiscoverWorkspaceRepoRecords(InRoot, "minimal");
+    repos.reserve(discovered.size());
+    for (const auto& repo : discovered) {
         repos.push_back(repo.path);
     }
+    return repos;
+}
 
-    std::sort(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
-        return A.lexically_normal().generic_string() < B.lexically_normal().generic_string();
+auto BuildCommitScopeRecords(const std::filesystem::path& InWorkspaceRoot,
+                             const std::string& InReposCsv,
+                             const bool InNoRecursive,
+                             const bool InDirtyOnly) -> std::vector<workspace::RepoRecord> {
+    const auto all = DiscoverWorkspaceRepoRecords(InWorkspaceRoot, "full");
+    std::unordered_map<std::string, workspace::RepoRecord> byPath;
+    byPath.reserve(all.size());
+    for (const auto& repo : all) {
+        byPath.emplace(ToGeneric(repo.path), repo);
+    }
+
+    std::vector<workspace::RepoRecord> selected;
+    auto reposCsv = Trim(InReposCsv);
+    if (!reposCsv.empty()) {
+        for (const auto& item : ParseReposCsv(reposCsv)) {
+            const auto resolved = ResolveRepoPath(InWorkspaceRoot, item);
+            const auto key = ToGeneric(resolved);
+            if (key.empty()) {
+                continue;
+            }
+            const auto found = byPath.find(key);
+            if (found != byPath.end()) {
+                selected.push_back(found->second);
+            } else {
+                workspace::RepoRecord fallback;
+                fallback.path = resolved;
+                fallback.type = "explicit";
+                selected.push_back(std::move(fallback));
+            }
+        }
+    } else if (InNoRecursive) {
+        const auto rootKey = ToGeneric(InWorkspaceRoot);
+        const auto found = byPath.find(rootKey);
+        if (found != byPath.end()) {
+            selected.push_back(found->second);
+        } else {
+            workspace::RepoRecord fallback;
+            fallback.path = InWorkspaceRoot;
+            fallback.type = "root";
+            selected.push_back(std::move(fallback));
+        }
+    } else {
+        selected = all;
+    }
+
+    std::unordered_map<std::string, std::size_t> idxByPath;
+    idxByPath.reserve(selected.size());
+    for (std::size_t i = 0; i < selected.size(); ++i) {
+        idxByPath.emplace(ToGeneric(selected[i].path), i);
+    }
+
+    if (InDirtyOnly && reposCsv.empty() && !InNoRecursive) {
+        std::vector<std::vector<std::size_t>> children(selected.size());
+        for (std::size_t i = 0; i < selected.size(); ++i) {
+            for (const auto& dep : selected[i].dependencies) {
+                const auto it = idxByPath.find(ToGeneric(dep));
+                if (it != idxByPath.end()) {
+                    children[it->second].push_back(i);
+                }
+            }
+        }
+
+        std::vector<int> keepMemo(selected.size(), -1);
+        std::function<bool(std::size_t)> keepNode = [&](const std::size_t index) -> bool {
+            if (keepMemo[index] != -1) {
+                return keepMemo[index] == 1;
+            }
+            bool keep = selected[index].hasChanges;
+            for (const auto child : children[index]) {
+                if (keepNode(child)) {
+                    keep = true;
+                }
+            }
+            keepMemo[index] = keep ? 1 : 0;
+            return keep;
+        };
+
+        std::vector<workspace::RepoRecord> filtered;
+        filtered.reserve(selected.size());
+        for (std::size_t i = 0; i < selected.size(); ++i) {
+            if (keepNode(i)) {
+                filtered.push_back(selected[i]);
+            }
+        }
+        selected = std::move(filtered);
+    }
+
+    std::unordered_set<std::string> keep;
+    keep.reserve(selected.size());
+    for (const auto& repo : selected) {
+        keep.insert(ToGeneric(repo.path));
+    }
+
+    for (auto& repo : selected) {
+        std::vector<std::filesystem::path> deps;
+        deps.reserve(repo.dependencies.size());
+        std::unordered_set<std::string> seenDeps;
+        for (const auto& dep : repo.dependencies) {
+            const auto key = ToGeneric(dep);
+            if (keep.contains(key) && seenDeps.insert(key).second) {
+                deps.push_back(dep);
+            }
+        }
+        repo.dependencies = std::move(deps);
+    }
+
+    std::sort(selected.begin(), selected.end(), [&](const auto& A, const auto& B) {
+        const auto aKey = ToGeneric(A.path);
+        const auto bKey = ToGeneric(B.path);
+        const bool aIsRoot = aKey == ToGeneric(InWorkspaceRoot);
+        const bool bIsRoot = bKey == ToGeneric(InWorkspaceRoot);
+        if (aIsRoot != bIsRoot) {
+            return !aIsRoot && bIsRoot;
+        }
+        const auto aDepth = PathDepth(A.path);
+        const auto bDepth = PathDepth(B.path);
+        if (aDepth != bDepth) {
+            return aDepth > bDepth;
+        }
+        return aKey < bKey;
     });
 
-    repos.erase(std::unique(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
-        return A.lexically_normal().generic_string() == B.lexically_normal().generic_string();
-    }), repos.end());
+    return selected;
+}
 
-    return repos;
+auto BuildExecutionWaves(const std::vector<workspace::RepoRecord>& InRepos) -> std::vector<std::vector<std::size_t>> {
+    std::vector<std::vector<std::size_t>> waves;
+    if (InRepos.empty()) {
+        return waves;
+    }
+
+    std::unordered_map<std::string, std::size_t> byPath;
+    byPath.reserve(InRepos.size());
+    for (std::size_t idx = 0; idx < InRepos.size(); ++idx) {
+        byPath.emplace(ToGeneric(InRepos[idx].path), idx);
+    }
+
+    std::vector<std::vector<std::size_t>> outgoing(InRepos.size());
+    std::vector<std::size_t> indegree(InRepos.size(), 0);
+
+    for (std::size_t idx = 0; idx < InRepos.size(); ++idx) {
+        std::set<std::size_t> uniqueDeps;
+        for (const auto& dep : InRepos[idx].dependencies) {
+            const auto it = byPath.find(ToGeneric(dep));
+            if (it == byPath.end()) {
+                continue;
+            }
+            const auto depIdx = it->second;
+            if (depIdx == idx) {
+                continue;
+            }
+            if (uniqueDeps.insert(depIdx).second) {
+                outgoing[depIdx].push_back(idx);
+                indegree[idx] += 1;
+            }
+        }
+    }
+
+    std::vector<std::size_t> ready;
+    ready.reserve(InRepos.size());
+    for (std::size_t i = 0; i < InRepos.size(); ++i) {
+        if (indegree[i] == 0) {
+            ready.push_back(i);
+        }
+    }
+
+    auto sortByPath = [&](std::vector<std::size_t>& list) {
+        std::sort(list.begin(), list.end(), [&](const auto A, const auto B) {
+            return ToGeneric(InRepos[A].path) < ToGeneric(InRepos[B].path);
+        });
+    };
+    sortByPath(ready);
+
+    std::size_t processed = 0;
+    while (!ready.empty()) {
+        waves.push_back(ready);
+        processed += ready.size();
+
+        std::vector<std::size_t> next;
+        for (const auto node : ready) {
+            for (const auto out : outgoing[node]) {
+                if (indegree[out] == 0) {
+                    continue;
+                }
+                indegree[out] -= 1;
+                if (indegree[out] == 0) {
+                    next.push_back(out);
+                }
+            }
+        }
+        sortByPath(next);
+        next.erase(std::unique(next.begin(), next.end()), next.end());
+        ready = std::move(next);
+    }
+
+    if (processed != InRepos.size()) {
+        waves.clear();
+        std::vector<std::size_t> fallback;
+        fallback.reserve(InRepos.size());
+        for (std::size_t i = 0; i < InRepos.size(); ++i) {
+            fallback.push_back(i);
+        }
+        sortByPath(fallback);
+        waves.push_back(std::move(fallback));
+    }
+
+    return waves;
+}
+
+auto ParseJobsValue(const std::string& InValue) -> std::optional<int> {
+    const auto value = ToLower(Trim(InValue));
+    if (value.empty() || value == "auto") {
+        return std::nullopt;
+    }
+    try {
+        const int jobs = std::stoi(value);
+        if (jobs <= 0) {
+            return std::nullopt;
+        }
+        return jobs;
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+}
+
+auto ResolveCommitJobs(const std::string& InJobs,
+                       const std::size_t InRepoCount,
+                       const bool InAiEnabled) -> int {
+    if (InRepoCount == 0) {
+        return 1;
+    }
+
+    if (const auto explicitJobs = ParseJobsValue(InJobs); explicitJobs.has_value()) {
+        return std::max(1, std::min(*explicitJobs, static_cast<int>(InRepoCount)));
+    }
+
+    unsigned int cores = std::thread::hardware_concurrency();
+    if (cores == 0) {
+        cores = 4;
+    }
+
+    int cap = 1;
+    if (InAiEnabled) {
+        cap = static_cast<int>(std::max(1u, std::min(4u, cores / 2)));
+    } else {
+        cap = static_cast<int>(std::max(1u, std::min(8u, cores)));
+    }
+
+    return std::max(1, std::min(cap, static_cast<int>(InRepoCount)));
 }
 
 auto RunCommitPreflight(const std::filesystem::path& InRepo) -> CommitPreflightReport {
@@ -1283,6 +1541,10 @@ void RegisterCommit(CLI::App& InApp) {
     cmd->add_option("--repos", *repos, "Commit target repos (comma-separated). Default: auto-discover workspace repos");
     auto* bNoRecursive = new bool{false};
     cmd->add_flag("--no-recursive,-N", *bNoRecursive, "Commit only current repository when --repos is not provided");
+    auto* bNoDirtyOnly = new bool{false};
+    cmd->add_flag("--no-dirty-only", *bNoDirtyOnly, "Disable dirty-only pruning (default: dirty-only on)");
+    auto* jobs = new std::string{"auto"};
+    cmd->add_option("--jobs,-j", *jobs, "Parallel repo workers (auto|N)")->default_str("auto");
 
     // Provider option
     auto* provider = new std::string{};
@@ -1394,34 +1656,68 @@ void RegisterCommit(CLI::App& InApp) {
         }
 
         const auto planningStart = clock::now();
+        const bool dirtyOnly = !*bNoDirtyOnly;
         auto reposCsv = Trim(*repos);
-        std::vector<std::filesystem::path> repoList;
-        if (reposCsv.empty()) {
-            if (*bNoRecursive) {
-                repoList.push_back(workspaceRoot);
-            } else {
-                repoList = BuildOrderedRepoList(workspaceRoot, reposCsv);
-                if (repoList.empty()) {
-                    repoList.push_back(workspaceRoot);
-                }
-            }
-        } else {
-            repoList = BuildOrderedRepoList(workspaceRoot, reposCsv);
-            if (repoList.empty()) {
-                repoList.push_back(workspaceRoot);
-            }
+        auto repoRecords = BuildCommitScopeRecords(workspaceRoot, reposCsv, *bNoRecursive, dirtyOnly);
+        if (repoRecords.empty()) {
+            workspace::RepoRecord fallback;
+            fallback.path = workspaceRoot;
+            fallback.type = "root";
+            repoRecords.push_back(std::move(fallback));
         }
         planningMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - planningStart).count();
 
         std::vector<RepoCommitResult> results;
-        results.reserve(repoList.size());
+        results.reserve(repoRecords.size());
 
+        const auto waves = BuildExecutionWaves(repoRecords);
+        const int workers = ResolveCommitJobs(*jobs, repoRecords.size(), ai.enabled);
         const auto commitStart = clock::now();
-        for (const auto& repo : repoList) {
-            const auto label = DisplayRepoLabel(workspaceRoot, repo);
-            std::cout << "\n[commit] " << label << "\n";
-            const auto one = CommitSingleRepo(workspaceRoot, repo, *message, *bStagedOnly, *bPush, ai);
-            results.push_back(one);
+        std::cout << "[native-commit] plan: repos=" << repoRecords.size()
+                  << " waves=" << waves.size()
+                  << " jobs=" << workers
+                  << " dirty_only=" << (dirtyOnly ? "on" : "off") << "\n";
+
+        for (const auto& wave : waves) {
+            if (wave.empty()) {
+                continue;
+            }
+            const int waveWorkers = std::max(1, std::min(workers, static_cast<int>(wave.size())));
+            if (waveWorkers == 1) {
+                for (const auto idx : wave) {
+                    const auto& repo = repoRecords[idx].path;
+                    const auto label = DisplayRepoLabel(workspaceRoot, repo);
+                    std::cout << "\n[commit] " << label << "\n";
+                    results.push_back(CommitSingleRepo(workspaceRoot, repo, *message, *bStagedOnly, *bPush, ai));
+                }
+                continue;
+            }
+
+            std::vector<std::future<RepoCommitResult>> active;
+            active.reserve(static_cast<std::size_t>(waveWorkers));
+            std::size_t cursor = 0;
+            std::vector<RepoCommitResult> waveResults;
+            waveResults.reserve(wave.size());
+
+            while (cursor < wave.size() || !active.empty()) {
+                while (cursor < wave.size() && static_cast<int>(active.size()) < waveWorkers) {
+                    const auto idx = wave[cursor++];
+                    const auto repo = repoRecords[idx].path;
+                    active.push_back(std::async(std::launch::async, [&, repo]() {
+                        return CommitSingleRepo(workspaceRoot, repo, *message, *bStagedOnly, *bPush, ai);
+                    }));
+                }
+
+                if (!active.empty()) {
+                    waveResults.push_back(active.front().get());
+                    active.erase(active.begin());
+                }
+            }
+
+            std::sort(waveResults.begin(), waveResults.end(), [&](const RepoCommitResult& A, const RepoCommitResult& B) {
+                return ToGeneric(A.repo) < ToGeneric(B.repo);
+            });
+            results.insert(results.end(), waveResults.begin(), waveResults.end());
         }
         commitMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - commitStart).count();
 
@@ -1433,7 +1729,7 @@ void RegisterCommit(CLI::App& InApp) {
             const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - totalStart).count();
             std::cout << "\n=== Commit Profile Summary ===\n";
             std::cout << "mode: native\n";
-            std::cout << "repo_count: " << repoList.size() << "\n";
+            std::cout << "repo_count: " << repoRecords.size() << "\n";
             std::cout << "preflight_ms: " << preflightMs << "\n";
             std::cout << "planning_ms: " << planningMs << "\n";
             std::cout << "commit_ms: " << commitMs << "\n";
