@@ -882,6 +882,26 @@ struct RepoCommitPlanEntry {
 };
 
 struct CommitPlanPayload {
+    struct PlannerMeta {
+        std::string agent;
+        std::string provider;
+        std::string model;
+        std::string requestId;
+    };
+
+    struct ReviewMeta {
+        std::string verdict;
+        std::string reason;
+    };
+
+    struct Meta {
+        std::string schemaVersion;
+        std::string planId;
+        PlannerMeta planner;
+        ReviewMeta review;
+    };
+
+    Meta meta;
     std::vector<RepoCommitPlanEntry> commitEntries;
     std::vector<RepoCommitPlanEntry> postSyncEntries;
 };
@@ -1172,6 +1192,37 @@ auto ParseCommitPlan(const std::filesystem::path& InFile,
     }
 
     CommitPlanPayload out;
+    if (const auto metaObject = ExtractObjectBodyForKey(text, "meta"); metaObject.has_value()) {
+        if (const auto schemaVersion = ExtractStringField(*metaObject, "schema_version"); schemaVersion.has_value()) {
+            out.meta.schemaVersion = Trim(*schemaVersion);
+        }
+        if (const auto planId = ExtractStringField(*metaObject, "plan_id"); planId.has_value()) {
+            out.meta.planId = Trim(*planId);
+        }
+        if (const auto plannerObject = ExtractObjectBodyForKey(*metaObject, "planner"); plannerObject.has_value()) {
+            if (const auto value = ExtractStringField(*plannerObject, "agent"); value.has_value()) {
+                out.meta.planner.agent = Trim(*value);
+            }
+            if (const auto value = ExtractStringField(*plannerObject, "provider"); value.has_value()) {
+                out.meta.planner.provider = Trim(*value);
+            }
+            if (const auto value = ExtractStringField(*plannerObject, "model"); value.has_value()) {
+                out.meta.planner.model = Trim(*value);
+            }
+            if (const auto value = ExtractStringField(*plannerObject, "request_id"); value.has_value()) {
+                out.meta.planner.requestId = Trim(*value);
+            }
+        }
+        if (const auto reviewObject = ExtractObjectBodyForKey(*metaObject, "review"); reviewObject.has_value()) {
+            if (const auto value = ExtractStringField(*reviewObject, "verdict"); value.has_value()) {
+                out.meta.review.verdict = ToLower(Trim(*value));
+            }
+            if (const auto value = ExtractStringField(*reviewObject, "reason"); value.has_value()) {
+                out.meta.review.reason = Trim(*value);
+            }
+        }
+    }
+
     if (const auto commitArray = ExtractArrayBodyForKey(*stagesObject, "commit"); commitArray.has_value()) {
         out.commitEntries = ParseStageEntries(*commitArray);
     }
@@ -2043,6 +2094,28 @@ void RegisterCommit(CLI::App& InApp) {
                 }
                 std::cerr << "\n";
                 std::exit(2);
+            }
+
+            const auto reviewVerdict = ToLower(Trim(parsed->meta.review.verdict));
+            if (reviewVerdict == "reject" || reviewVerdict == "fail") {
+                std::cerr << "Error: commit plan review verdict is " << parsed->meta.review.verdict;
+                if (!parsed->meta.review.reason.empty()) {
+                    std::cerr << " (" << parsed->meta.review.reason << ")";
+                }
+                std::cerr << "\n";
+                std::exit(2);
+            }
+
+            if (!parsed->meta.planner.provider.empty() ||
+                !parsed->meta.planner.agent.empty() ||
+                !parsed->meta.planner.model.empty()) {
+                std::cout << "[native-commit] plan meta: planner_agent="
+                          << (parsed->meta.planner.agent.empty() ? "<unset>" : parsed->meta.planner.agent)
+                          << " provider="
+                          << (parsed->meta.planner.provider.empty() ? "<unset>" : parsed->meta.planner.provider)
+                          << " model="
+                          << (parsed->meta.planner.model.empty() ? "<unset>" : parsed->meta.planner.model)
+                          << "\n";
             }
 
             const auto stage = ParseCommitPlanStage(*planStage);
