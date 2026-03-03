@@ -2029,8 +2029,8 @@ void RegisterCommit(CLI::App& InApp) {
 
         std::unordered_map<std::string, std::vector<std::string>> stageMessages;
         if (!commitPlanFile->empty()) {
-            if (!repos->empty() || *bNoRecursive) {
-                std::cerr << "Error: --commit-plan-file cannot be combined with --repos/--no-recursive\n";
+            if (!repos->empty()) {
+                std::cerr << "Error: --commit-plan-file cannot be combined with --repos\n";
                 std::exit(2);
             }
 
