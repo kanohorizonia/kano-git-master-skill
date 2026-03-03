@@ -1542,7 +1542,7 @@ void RegisterSync(CLI::App& InApp) {
     auto* preCommitRepo = new std::string{"."};
     auto* preCommitRemote = new std::string{"origin"};
     auto* preCommitDryRun = new bool{false};
-    auto* preCommitMaxDepth = new int{6};
+    auto* preCommitMaxDepth = new int{0};
     auto* preCommitNoCache = new bool{false};
     auto* preCommitRefreshCache = new bool{false};
     auto* preCommitNoRecursive = new bool{false};
@@ -1552,7 +1552,7 @@ void RegisterSync(CLI::App& InApp) {
     pre_commit->add_option("--repo", *preCommitRepo, "Target repository root path");
     pre_commit->add_option("--remote", *preCommitRemote, "Preferred remote name");
     pre_commit->add_flag("--dry-run", *preCommitDryRun, "Preview detached-head repair actions");
-    pre_commit->add_option("--native-max-depth", *preCommitMaxDepth, "Native discovery max depth");
+    pre_commit->add_option("--native-max-depth", *preCommitMaxDepth, "Native discovery max depth (0 = unlimited)");
     pre_commit->add_flag("--native-no-cache", *preCommitNoCache, "Disable native discovery cache");
     pre_commit->add_flag("--native-refresh-cache", *preCommitRefreshCache, "Force native cache refresh");
     pre_commit->add_flag("--no-recursive,-N", *preCommitNoRecursive, "Repair only current repository");
@@ -1607,7 +1607,7 @@ void RegisterSync(CLI::App& InApp) {
     auto* originLatestRepo = new std::string{"."};
     auto* originLatestRemote = new std::string{"origin"};
     auto* originLatestDryRun = new bool{false};
-    auto* originLatestMaxDepth = new int{6};
+    auto* originLatestMaxDepth = new int{0};
     auto* originLatestNoCache = new bool{false};
     auto* originLatestRefreshCache = new bool{false};
     auto* originLatestNoRecursive = new bool{false};
@@ -1618,7 +1618,7 @@ void RegisterSync(CLI::App& InApp) {
     origin_latest->add_option("--repo", *originLatestRepo, "Target repository root path");
     origin_latest->add_option("--remote", *originLatestRemote, "Preferred remote name");
     origin_latest->add_flag("--dry-run", *originLatestDryRun, "Preview sync actions without modifying repositories");
-    origin_latest->add_option("--native-max-depth", *originLatestMaxDepth, "Native discovery max depth");
+    origin_latest->add_option("--native-max-depth", *originLatestMaxDepth, "Native discovery max depth (0 = unlimited)");
     origin_latest->add_flag("--native-no-cache", *originLatestNoCache, "Disable native discovery cache");
     origin_latest->add_flag("--native-refresh-cache", *originLatestRefreshCache, "Force native cache refresh");
     origin_latest->add_flag("--no-recursive,-N", *originLatestNoRecursive, "Sync only current repository");
@@ -1796,14 +1796,14 @@ void RegisterSync(CLI::App& InApp) {
     dev->allow_extras();
     auto* devRepo = new std::string{"."};
     auto* devDryRun = new bool{false};
-    auto* devMaxDepth = new int{6};
+    auto* devMaxDepth = new int{0};
     auto* devNoCache = new bool{false};
     auto* devRefreshCache = new bool{false};
     auto* devNoRecursive = new bool{false};
     auto* devProfile = new bool{false};
     dev->add_option("--repo", *devRepo, "Target repository root path");
     dev->add_flag("--dry-run", *devDryRun, "Preview sync actions without modifying repositories");
-    dev->add_option("--native-max-depth", *devMaxDepth, "Native discovery max depth");
+    dev->add_option("--native-max-depth", *devMaxDepth, "Native discovery max depth (0 = unlimited)");
     dev->add_flag("--native-no-cache", *devNoCache, "Disable native discovery cache");
     dev->add_flag("--native-refresh-cache", *devRefreshCache, "Force native cache refresh");
     dev->add_flag("--no-recursive,-N", *devNoRecursive, "Sync only current repository");
@@ -1861,7 +1861,7 @@ void RegisterSync(CLI::App& InApp) {
             const auto code = RunNativeOriginLatestSync(
                 std::filesystem::current_path(),
                 "origin",
-                6,
+                12,
                 false,
                 false,
                 false,

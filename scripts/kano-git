@@ -1022,9 +1022,9 @@ candidate_presets() {
       ;;
     macos)
       if [[ "$arch" == "arm64" ]]; then
-        printf '%s\n' "macos-ninja-clang-arm64" "macos-ninja-llvm-arm64" "macos-make-clang-arm64" "macos-make-llvm-arm64" "macos-ninja-clang"
+        printf '%s\n' "macos-ninja-clang-arm64" "macos-ninja-clang" "macos-ninja-llvm-arm64" "macos-make-clang-arm64" "macos-make-llvm-arm64"
       else
-        printf '%s\n' "macos-ninja-clang-x64" "macos-ninja-llvm-x64" "macos-make-clang-x64" "macos-make-llvm-x64" "macos-ninja-clang"
+        printf '%s\n' "macos-ninja-clang-x64" "macos-ninja-clang" "macos-ninja-llvm-x64" "macos-make-clang-x64" "macos-make-llvm-x64"
       fi
       ;;
   esac
