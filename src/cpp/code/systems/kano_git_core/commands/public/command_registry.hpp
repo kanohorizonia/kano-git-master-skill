@@ -12,6 +12,7 @@ void RegisterComplete(CLI::App& InApp);
 void RegisterCompletion(CLI::App& InApp);
 void RegisterDirty(CLI::App& InApp);
 void RegisterGuide(CLI::App& InApp);
+void RegisterLog(CLI::App& InApp);
 void RegisterRemote(CLI::App& InApp);
 void RegisterStatus(CLI::App& InApp);
 void RegisterTui(CLI::App& InApp);

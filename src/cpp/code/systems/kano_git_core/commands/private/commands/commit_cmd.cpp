@@ -870,6 +870,374 @@ auto BuildExecutionWaves(const std::vector<workspace::RepoRecord>& InRepos) -> s
     return waves;
 }
 
+enum class CommitPlanStage {
+    Commit,
+    PostSync,
+    Both,
+};
+
+struct RepoCommitPlanEntry {
+    std::string repoKey;
+    std::vector<std::string> messages;
+};
+
+struct CommitPlanPayload {
+    std::vector<RepoCommitPlanEntry> commitEntries;
+    std::vector<RepoCommitPlanEntry> postSyncEntries;
+};
+
+auto NormalizePlanKey(std::string InValue) -> std::string {
+    auto key = Trim(std::move(InValue));
+    for (auto& ch : key) {
+        if (ch == '\\') {
+            ch = '/';
+        }
+    }
+    while (key.size() > 1 && key.back() == '/') {
+        key.pop_back();
+    }
+    if (key.empty()) {
+        return ".";
+    }
+    return key;
+}
+
+auto ReadFileText(const std::filesystem::path& InPath) -> std::optional<std::string> {
+    std::ifstream in(InPath, std::ios::in | std::ios::binary);
+    if (!in) {
+        return std::nullopt;
+    }
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    return buffer.str();
+}
+
+auto UnescapeJsonString(std::string InValue) -> std::string {
+    std::string out;
+    out.reserve(InValue.size());
+    for (std::size_t i = 0; i < InValue.size(); ++i) {
+        const char ch = InValue[i];
+        if (ch != '\\' || i + 1 >= InValue.size()) {
+            out.push_back(ch);
+            continue;
+        }
+        const char next = InValue[i + 1];
+        switch (next) {
+        case '\\': out.push_back('\\'); break;
+        case '"': out.push_back('"'); break;
+        case 'n': out.push_back('\n'); break;
+        case 'r': out.push_back('\r'); break;
+        case 't': out.push_back('\t'); break;
+        default: out.push_back(next); break;
+        }
+        i += 1;
+    }
+    return out;
+}
+
+auto SkipJsonWhitespace(const std::string& InText, std::size_t InPos) -> std::size_t {
+    std::size_t pos = InPos;
+    while (pos < InText.size()) {
+        const char ch = InText[pos];
+        if (ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r') {
+            break;
+        }
+        pos += 1;
+    }
+    return pos;
+}
+
+auto ParseJsonStringAt(const std::string& InText, std::size_t InPos) -> std::optional<std::pair<std::string, std::size_t>> {
+    if (InPos >= InText.size() || InText[InPos] != '"') {
+        return std::nullopt;
+    }
+    std::string raw;
+    std::size_t pos = InPos + 1;
+    while (pos < InText.size()) {
+        const char ch = InText[pos];
+        if (ch == '\\') {
+            if (pos + 1 >= InText.size()) {
+                return std::nullopt;
+            }
+            raw.push_back(ch);
+            raw.push_back(InText[pos + 1]);
+            pos += 2;
+            continue;
+        }
+        if (ch == '"') {
+            return std::make_pair(UnescapeJsonString(raw), pos + 1);
+        }
+        raw.push_back(ch);
+        pos += 1;
+    }
+    return std::nullopt;
+}
+
+auto FindJsonKeyValueStart(const std::string& InText, const std::string& InKey, std::size_t InFrom = 0) -> std::optional<std::size_t> {
+    std::size_t pos = InFrom;
+    while (pos < InText.size()) {
+        pos = InText.find('"', pos);
+        if (pos == std::string::npos) {
+            return std::nullopt;
+        }
+        const auto parsed = ParseJsonStringAt(InText, pos);
+        if (!parsed.has_value()) {
+            return std::nullopt;
+        }
+        const auto& [key, nextPos] = *parsed;
+        pos = SkipJsonWhitespace(InText, nextPos);
+        if (key == InKey && pos < InText.size() && InText[pos] == ':') {
+            return SkipJsonWhitespace(InText, pos + 1);
+        }
+    }
+    return std::nullopt;
+}
+
+auto ExtractBracketBody(const std::string& InText, std::size_t InStart, char InOpen, char InClose) -> std::optional<std::string> {
+    if (InStart >= InText.size() || InText[InStart] != InOpen) {
+        return std::nullopt;
+    }
+    bool inString = false;
+    bool escaped = false;
+    int depth = 0;
+    for (std::size_t pos = InStart; pos < InText.size(); ++pos) {
+        const char ch = InText[pos];
+        if (inString) {
+            if (escaped) {
+                escaped = false;
+            } else if (ch == '\\') {
+                escaped = true;
+            } else if (ch == '"') {
+                inString = false;
+            }
+            continue;
+        }
+        if (ch == '"') {
+            inString = true;
+            continue;
+        }
+        if (ch == InOpen) {
+            depth += 1;
+            continue;
+        }
+        if (ch == InClose) {
+            depth -= 1;
+            if (depth == 0) {
+                return InText.substr(InStart + 1, pos - InStart - 1);
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+auto ExtractObjectBodyForKey(const std::string& InText, const std::string& InKey) -> std::optional<std::string> {
+    const auto valuePos = FindJsonKeyValueStart(InText, InKey);
+    if (!valuePos.has_value()) {
+        return std::nullopt;
+    }
+    return ExtractBracketBody(InText, *valuePos, '{', '}');
+}
+
+auto ExtractArrayBodyForKey(const std::string& InText, const std::string& InKey) -> std::optional<std::string> {
+    const auto valuePos = FindJsonKeyValueStart(InText, InKey);
+    if (!valuePos.has_value()) {
+        return std::nullopt;
+    }
+    return ExtractBracketBody(InText, *valuePos, '[', ']');
+}
+
+auto SplitTopLevelObjects(const std::string& InArrayBody) -> std::vector<std::string> {
+    std::vector<std::string> objects;
+    bool inString = false;
+    bool escaped = false;
+    int depth = 0;
+    std::size_t objectStart = std::string::npos;
+
+    for (std::size_t pos = 0; pos < InArrayBody.size(); ++pos) {
+        const char ch = InArrayBody[pos];
+        if (inString) {
+            if (escaped) {
+                escaped = false;
+            } else if (ch == '\\') {
+                escaped = true;
+            } else if (ch == '"') {
+                inString = false;
+            }
+            continue;
+        }
+        if (ch == '"') {
+            inString = true;
+            continue;
+        }
+        if (ch == '{') {
+            if (depth == 0) {
+                objectStart = pos;
+            }
+            depth += 1;
+            continue;
+        }
+        if (ch == '}') {
+            depth -= 1;
+            if (depth == 0 && objectStart != std::string::npos) {
+                objects.push_back(InArrayBody.substr(objectStart, pos - objectStart + 1));
+                objectStart = std::string::npos;
+            }
+        }
+    }
+    return objects;
+}
+
+auto ExtractStringField(const std::string& InObjectText, const std::string& InField) -> std::optional<std::string> {
+    const auto valuePos = FindJsonKeyValueStart(InObjectText, InField);
+    if (!valuePos.has_value()) {
+        return std::nullopt;
+    }
+    const auto parsed = ParseJsonStringAt(InObjectText, *valuePos);
+    if (!parsed.has_value()) {
+        return std::nullopt;
+    }
+    return parsed->first;
+}
+
+auto ParseStageEntries(const std::string& InStageArrayBody) -> std::vector<RepoCommitPlanEntry> {
+    std::vector<RepoCommitPlanEntry> entries;
+    for (const auto& repoObject : SplitTopLevelObjects(InStageArrayBody)) {
+        const auto repoField = ExtractStringField(repoObject, "repo");
+        if (!repoField.has_value()) {
+            continue;
+        }
+
+        RepoCommitPlanEntry entry;
+        entry.repoKey = NormalizePlanKey(*repoField);
+
+        const auto commitsArrayBody = ExtractArrayBodyForKey(repoObject, "commits");
+        if (commitsArrayBody.has_value()) {
+            for (const auto& commitObject : SplitTopLevelObjects(*commitsArrayBody)) {
+                const auto messageField = ExtractStringField(commitObject, "message");
+                if (!messageField.has_value()) {
+                    continue;
+                }
+                const auto message = Trim(*messageField);
+                if (!message.empty()) {
+                    entry.messages.push_back(message);
+                }
+            }
+        }
+
+        if (!entry.repoKey.empty() && !entry.messages.empty()) {
+            entries.push_back(std::move(entry));
+        }
+    }
+    return entries;
+}
+
+auto ParseCommitPlanStage(const std::string& InValue) -> std::optional<CommitPlanStage> {
+    const auto value = ToLower(Trim(InValue));
+    if (value.empty() || value == "commit") {
+        return CommitPlanStage::Commit;
+    }
+    if (value == "post_sync" || value == "post-sync") {
+        return CommitPlanStage::PostSync;
+    }
+    if (value == "both") {
+        return CommitPlanStage::Both;
+    }
+    return std::nullopt;
+}
+
+auto ParseCommitPlan(const std::filesystem::path& InFile,
+                     std::string* OutError) -> std::optional<CommitPlanPayload> {
+    const auto payload = ReadFileText(InFile);
+    if (!payload.has_value()) {
+        if (OutError != nullptr) {
+            *OutError = "cannot read commit plan file";
+        }
+        return std::nullopt;
+    }
+
+    const auto text = Trim(*payload);
+    if (text.empty()) {
+        if (OutError != nullptr) {
+            *OutError = "commit plan file is empty";
+        }
+        return std::nullopt;
+    }
+
+    const auto stagesObject = ExtractObjectBodyForKey(text, "stages");
+    if (!stagesObject.has_value()) {
+        if (OutError != nullptr) {
+            *OutError = "missing \"stages\" object";
+        }
+        return std::nullopt;
+    }
+
+    CommitPlanPayload out;
+    if (const auto commitArray = ExtractArrayBodyForKey(*stagesObject, "commit"); commitArray.has_value()) {
+        out.commitEntries = ParseStageEntries(*commitArray);
+    }
+    if (const auto postSyncArray = ExtractArrayBodyForKey(*stagesObject, "post_sync"); postSyncArray.has_value()) {
+        out.postSyncEntries = ParseStageEntries(*postSyncArray);
+    }
+
+    if (out.commitEntries.empty() && out.postSyncEntries.empty()) {
+        if (OutError != nullptr) {
+            *OutError = "no valid stage entries found";
+        }
+        return std::nullopt;
+    }
+    return out;
+}
+
+auto BuildStageMessageMap(const CommitPlanPayload& InPlan,
+                          const CommitPlanStage InStage) -> std::unordered_map<std::string, std::vector<std::string>> {
+    std::unordered_map<std::string, std::vector<std::string>> out;
+    auto appendEntries = [&](const std::vector<RepoCommitPlanEntry>& entries) {
+        for (const auto& entry : entries) {
+            auto& bucket = out[NormalizePlanKey(entry.repoKey)];
+            bucket.insert(bucket.end(), entry.messages.begin(), entry.messages.end());
+        }
+    };
+
+    if (InStage == CommitPlanStage::Commit || InStage == CommitPlanStage::Both) {
+        appendEntries(InPlan.commitEntries);
+    }
+    if (InStage == CommitPlanStage::PostSync || InStage == CommitPlanStage::Both) {
+        appendEntries(InPlan.postSyncEntries);
+    }
+    return out;
+}
+
+auto ResolveRepoMessages(const std::unordered_map<std::string, std::vector<std::string>>& InStageMessages,
+                         const std::filesystem::path& InWorkspaceRoot,
+                         const std::filesystem::path& InRepo,
+                         const std::string& InDefaultMessage) -> std::vector<std::string> {
+    std::vector<std::string> candidates;
+    const auto rootNorm = NormalizePath(InWorkspaceRoot);
+    const auto repoNorm = NormalizePath(InRepo);
+
+    candidates.push_back(NormalizePlanKey(ToGeneric(repoNorm)));
+    if (ToGeneric(rootNorm) == ToGeneric(repoNorm)) {
+        candidates.push_back(".");
+    } else {
+        const auto rel = repoNorm.lexically_relative(rootNorm);
+        if (!rel.empty() && rel != ".") {
+            candidates.push_back(NormalizePlanKey(rel.generic_string()));
+        }
+    }
+    candidates.push_back(NormalizePlanKey(repoNorm.filename().generic_string()));
+
+    for (const auto& key : candidates) {
+        if (const auto it = InStageMessages.find(key); it != InStageMessages.end() && !it->second.empty()) {
+            return it->second;
+        }
+    }
+
+    if (!InDefaultMessage.empty()) {
+        return {InDefaultMessage};
+    }
+    return {""};
+}
+
 auto ParseJobsValue(const std::string& InValue) -> std::optional<int> {
     const auto value = ToLower(Trim(InValue));
     if (value.empty() || value == "auto") {
@@ -1545,6 +1913,10 @@ void RegisterCommit(CLI::App& InApp) {
     cmd->add_flag("--no-dirty-only", *bNoDirtyOnly, "Disable dirty-only pruning (default: dirty-only on)");
     auto* jobs = new std::string{"auto"};
     cmd->add_option("--jobs,-j", *jobs, "Parallel repo workers (auto|N)")->default_str("auto");
+    auto* commitPlanFile = new std::string{};
+    auto* planStage = new std::string{"commit"};
+    cmd->add_option("--commit-plan-file", *commitPlanFile, "Commit plan JSON file");
+    cmd->add_option("--plan-stage", *planStage, "Plan stage: commit|post_sync|both")->default_str("commit");
 
     // Provider option
     auto* provider = new std::string{};
@@ -1655,9 +2027,54 @@ void RegisterCommit(CLI::App& InApp) {
                       << " review=" << (ai.reviewEnabled ? "on" : "off") << "\n";
         }
 
+        std::unordered_map<std::string, std::vector<std::string>> stageMessages;
+        if (!commitPlanFile->empty()) {
+            if (!repos->empty() || *bNoRecursive) {
+                std::cerr << "Error: --commit-plan-file cannot be combined with --repos/--no-recursive\n";
+                std::exit(2);
+            }
+
+            std::string planError;
+            const auto parsed = ParseCommitPlan(std::filesystem::path(*commitPlanFile), &planError);
+            if (!parsed.has_value()) {
+                std::cerr << "Error: invalid --commit-plan-file: " << *commitPlanFile;
+                if (!planError.empty()) {
+                    std::cerr << " (" << planError << ")";
+                }
+                std::cerr << "\n";
+                std::exit(2);
+            }
+
+            const auto stage = ParseCommitPlanStage(*planStage);
+            if (!stage.has_value()) {
+                std::cerr << "Error: invalid --plan-stage value: " << *planStage
+                          << " (expected commit|post_sync|both)\n";
+                std::exit(2);
+            }
+
+            stageMessages = BuildStageMessageMap(*parsed, *stage);
+            if (stageMessages.empty()) {
+                std::cerr << "Error: no entries found for selected --plan-stage in commit plan\n";
+                std::exit(2);
+            }
+        }
+
         const auto planningStart = clock::now();
         const bool dirtyOnly = !*bNoDirtyOnly;
         auto reposCsv = Trim(*repos);
+        if (!stageMessages.empty()) {
+            std::string planReposCsv;
+            for (const auto& [repoKey, messages] : stageMessages) {
+                if (messages.empty()) {
+                    continue;
+                }
+                if (!planReposCsv.empty()) {
+                    planReposCsv += ",";
+                }
+                planReposCsv += repoKey;
+            }
+            reposCsv = std::move(planReposCsv);
+        }
         auto repoRecords = BuildCommitScopeRecords(workspaceRoot, reposCsv, *bNoRecursive, dirtyOnly);
         if (repoRecords.empty()) {
             workspace::RepoRecord fallback;
@@ -1688,12 +2105,15 @@ void RegisterCommit(CLI::App& InApp) {
                     const auto& repo = repoRecords[idx].path;
                     const auto label = DisplayRepoLabel(workspaceRoot, repo);
                     std::cout << "\n[commit] " << label << "\n";
-                    results.push_back(CommitSingleRepo(workspaceRoot, repo, *message, *bStagedOnly, *bPush, ai));
+                    const auto repoMessages = ResolveRepoMessages(stageMessages, workspaceRoot, repo, *message);
+                    for (const auto& repoMessage : repoMessages) {
+                        results.push_back(CommitSingleRepo(workspaceRoot, repo, repoMessage, *bStagedOnly, *bPush, ai));
+                    }
                 }
                 continue;
             }
 
-            std::vector<std::future<RepoCommitResult>> active;
+            std::vector<std::future<std::vector<RepoCommitResult>>> active;
             active.reserve(static_cast<std::size_t>(waveWorkers));
             std::size_t cursor = 0;
             std::vector<RepoCommitResult> waveResults;
@@ -1703,13 +2123,20 @@ void RegisterCommit(CLI::App& InApp) {
                 while (cursor < wave.size() && static_cast<int>(active.size()) < waveWorkers) {
                     const auto idx = wave[cursor++];
                     const auto repo = repoRecords[idx].path;
-                    active.push_back(std::async(std::launch::async, [&, repo]() {
-                        return CommitSingleRepo(workspaceRoot, repo, *message, *bStagedOnly, *bPush, ai);
+                    const auto repoMessages = ResolveRepoMessages(stageMessages, workspaceRoot, repo, *message);
+                    active.push_back(std::async(std::launch::async, [&, repo, repoMessages]() {
+                        std::vector<RepoCommitResult> oneRepoResults;
+                        oneRepoResults.reserve(repoMessages.size());
+                        for (const auto& repoMessage : repoMessages) {
+                            oneRepoResults.push_back(CommitSingleRepo(workspaceRoot, repo, repoMessage, *bStagedOnly, *bPush, ai));
+                        }
+                        return oneRepoResults;
                     }));
                 }
 
                 if (!active.empty()) {
-                    waveResults.push_back(active.front().get());
+                    auto completed = active.front().get();
+                    waveResults.insert(waveResults.end(), completed.begin(), completed.end());
                     active.erase(active.begin());
                 }
             }

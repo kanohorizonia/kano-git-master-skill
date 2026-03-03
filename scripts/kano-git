@@ -746,7 +746,7 @@ maybe_rebuild_binary_if_needed() {
 should_skip_update_prompt_for_command() {
   local command="${1:-}"
   case "$command" in
-    ""|help|-h|--help|-v|--version|version|completion|complete|__complete|sync|tui|discover|remote|slog|uplog)
+    ""|help|-h|--help|-v|--version|version|completion|complete|__complete|sync|tui|discover|remote|slog|log|uplog)
       return 0
       ;;
   esac
