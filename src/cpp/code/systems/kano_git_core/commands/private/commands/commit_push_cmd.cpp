@@ -6,7 +6,9 @@
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
+#include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <map>
 #include <set>
@@ -40,6 +42,116 @@ auto ParseReposCsv(const std::string& InCsv) -> std::vector<std::string> {
         repos.push_back(token);
     }
     return repos;
+}
+
+auto IsAgentModeEnabled() -> bool {
+    const char* raw = std::getenv("KANO_AGENT_MODE");
+    if (raw == nullptr) {
+        return false;
+    }
+    const auto value = Trim(raw);
+    if (value.empty() || value == "0" || value == "false" || value == "FALSE") {
+        return false;
+    }
+    return true;
+}
+
+auto CaptureHeadShortSha(const std::filesystem::path& InWorkingDir) -> std::string {
+    const auto out = shell::ExecuteCommand("git", {"rev-parse", "--short", "HEAD"}, shell::ExecMode::Capture, InWorkingDir);
+    if (out.exitCode != 0) {
+        return "nohead";
+    }
+    auto value = Trim(out.stdoutStr);
+    if (value.empty()) {
+        return "nohead";
+    }
+    for (auto& ch : value) {
+        if (!std::isalnum(static_cast<unsigned char>(ch))) {
+            ch = '_';
+        }
+    }
+    return value;
+}
+
+auto CurrentUtcTimestampCompact() -> std::string {
+    const auto now = std::chrono::system_clock::now();
+    const auto tt = std::chrono::system_clock::to_time_t(now);
+    std::tm utc{};
+#if defined(_WIN32)
+    gmtime_s(&utc, &tt);
+#else
+    gmtime_r(&tt, &utc);
+#endif
+    char buffer[32] = {0};
+    std::strftime(buffer, sizeof(buffer), "%Y%m%dT%H%M%SZ", &utc);
+    return std::string(buffer);
+}
+
+auto DefaultCommitPlanOutputPath(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path {
+    const auto headShort = CaptureHeadShortSha(InWorkspaceRoot);
+    const auto stamp = CurrentUtcTimestampCompact();
+    return (InWorkspaceRoot / ".kano" / "cache" / "git" / "commit-plans" /
+            ("plan-" + stamp + "-" + headShort + ".json"))
+        .lexically_normal();
+}
+
+auto BuildCommitPlanTemplateJson() -> std::string {
+    return R"json({
+  "meta": {
+    "schema_version": "2",
+    "plan_id": "replace-with-unique-id",
+    "planner": {
+      "agent": "human",
+      "provider": "human",
+      "model": ""
+    },
+    "review": {
+      "verdict": "pass",
+      "reason": "replace-with-review-summary"
+    }
+  },
+  "stages": {
+    "commit": [
+      {
+        "repo": ".",
+        "commits": [
+          { "message": "feat(scope): replace-with-commit-message" }
+        ]
+      }
+    ],
+    "post_sync": []
+  }
+}
+)json";
+}
+
+auto WriteTextFile(const std::filesystem::path& InPath,
+                   const std::string& InText,
+                   std::string* OutError) -> bool {
+    std::error_code ec;
+    std::filesystem::create_directories(InPath.parent_path(), ec);
+    if (ec) {
+        if (OutError != nullptr) {
+            *OutError = "cannot create parent directories";
+        }
+        return false;
+    }
+
+    std::ofstream out(InPath, std::ios::trunc | std::ios::binary);
+    if (!out) {
+        if (OutError != nullptr) {
+            *OutError = "cannot open output file";
+        }
+        return false;
+    }
+    out << InText;
+    if (!out.good()) {
+        if (OutError != nullptr) {
+            *OutError = "failed while writing output file";
+        }
+        return false;
+    }
+    return true;
 }
 
 auto ResolveLauncherScript() -> std::filesystem::path {
@@ -169,6 +281,8 @@ void RegisterCommitPush(CLI::App& InApp) {
     auto* noRecursive = new bool{false};
     auto* message = new std::string{};
     auto* commitPlanFile = new std::string{};
+    auto* writeCommitPlanTemplate = new bool{false};
+    auto* commitPlanOut = new std::string{};
     auto* aiProvider = new std::string{};
     auto* aiModel = new std::string{};
     auto* aiAuto = new bool{false};
@@ -187,6 +301,8 @@ void RegisterCommitPush(CLI::App& InApp) {
     cmd->add_flag("--no-recursive,-N", *noRecursive, "Only operate on current repository (or provided --repos)");
     cmd->add_option("--message,-m", *message, "Commit message (skip AI generation)");
     cmd->add_option("--commit-plan-file", *commitPlanFile, "Commit plan JSON file (stage-aware)");
+    cmd->add_flag("--write-commit-plan-template", *writeCommitPlanTemplate, "Write commit plan template JSON and exit");
+    cmd->add_option("--commit-plan-out", *commitPlanOut, "Template output path (default: .kano/cache/git/commit-plans/plan-<utc>-<head>.json)");
     cmd->add_option("--ai-provider", *aiProvider, "AI provider for commit (copilot, codex, opencode)");
     cmd->add_option("--ai-model", *aiModel, "AI model for commit");
     cmd->add_flag("--ai-auto", *aiAuto, "Enable commit AI auto mode");
@@ -217,6 +333,36 @@ void RegisterCommitPush(CLI::App& InApp) {
             }
             std::cerr << "\n";
             std::exit(2);
+        }
+
+        const auto workspaceRoot = std::filesystem::current_path().lexically_normal();
+        if (*writeCommitPlanTemplate) {
+            const auto outPath = commitPlanOut->empty()
+                ? DefaultCommitPlanOutputPath(workspaceRoot)
+                : std::filesystem::path(*commitPlanOut).lexically_normal();
+            std::string error;
+            if (!WriteTextFile(outPath, BuildCommitPlanTemplateJson(), &error)) {
+                std::cerr << "Error: failed to write commit plan template to " << outPath.generic_string();
+                if (!error.empty()) {
+                    std::cerr << " (" << error << ")";
+                }
+                std::cerr << "\n";
+                std::exit(2);
+            }
+            std::cout << "Wrote commit plan template: " << outPath.generic_string() << "\n";
+            std::exit(0);
+        }
+        if (!commitPlanOut->empty()) {
+            std::cerr << "Error: --commit-plan-out requires --write-commit-plan-template\n";
+            std::exit(2);
+        }
+
+        const bool agentMode = IsAgentModeEnabled();
+        const bool hasCommitPlan = !commitPlanFile->empty();
+        const bool useAiCommitFlow = !hasCommitPlan;
+
+        if (agentMode && hasCommitPlan) {
+            std::cout << "[commit-push] agent mode + --commit-plan-file detected; using plan-driven commit flow.\n";
         }
 
         std::cout << "=== commit-push stage: pre-commit ===\n";
@@ -262,16 +408,16 @@ void RegisterCommitPush(CLI::App& InApp) {
         if (!commitPlanFile->empty()) {
             commitArgs.insert(commitArgs.end(), {"--commit-plan-file", *commitPlanFile, "--plan-stage", "commit"});
         }
-        if (!aiProvider->empty()) {
+        if (useAiCommitFlow && !aiProvider->empty()) {
             commitArgs.insert(commitArgs.end(), {"--ai-provider", *aiProvider});
         }
-        if (!aiModel->empty()) {
+        if (useAiCommitFlow && !aiModel->empty()) {
             commitArgs.insert(commitArgs.end(), {"--ai-model", *aiModel});
         }
-        if (*aiAuto) {
+        if (useAiCommitFlow && *aiAuto) {
             commitArgs.push_back("--ai-auto");
         }
-        if (*noAiReview) {
+        if (useAiCommitFlow && *noAiReview) {
             commitArgs.push_back("--no-ai-review");
         }
         if (*stagedOnly) {
@@ -332,16 +478,16 @@ void RegisterCommitPush(CLI::App& InApp) {
         if (!commitPlanFile->empty()) {
             postCommitArgs.insert(postCommitArgs.end(), {"--commit-plan-file", *commitPlanFile, "--plan-stage", "post_sync"});
         }
-        if (!aiProvider->empty()) {
+        if (useAiCommitFlow && !aiProvider->empty()) {
             postCommitArgs.insert(postCommitArgs.end(), {"--ai-provider", *aiProvider});
         }
-        if (!aiModel->empty()) {
+        if (useAiCommitFlow && !aiModel->empty()) {
             postCommitArgs.insert(postCommitArgs.end(), {"--ai-model", *aiModel});
         }
-        if (*aiAuto) {
+        if (useAiCommitFlow && *aiAuto) {
             postCommitArgs.push_back("--ai-auto");
         }
-        if (*noAiReview) {
+        if (useAiCommitFlow && *noAiReview) {
             postCommitArgs.push_back("--no-ai-review");
         }
         if (*stagedOnly) {
