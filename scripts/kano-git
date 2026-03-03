@@ -1153,7 +1153,7 @@ try_auto_prepare_binary() {
 
   step_idx=$((step_idx + 1))
   log_launcher_status "auto-prepare" "step" "${step_idx}: direct-build"
-  echo "kano-git binary not found. Attempting direct C++ build..." >&2
+  echo "Attempting C++ binary build/refresh..." >&2
   if run_shell_script "$build_script"; then
     log_launcher_status "auto-prepare" "ok" "direct-build succeeded"
     return 0
