@@ -4,6 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PATH="$SCRIPT_DIR:$PATH"
 LAUNCHER_STATE_DIR="$PROJECT_ROOT/.kano/launcher"
 REBUILD_DIRECTION="unknown"
 REBUILD_REASON=""
@@ -94,9 +95,9 @@ run_with_progress() {
   shift
 
   local interval pid start now elapsed
-  interval="${KANO_GIT_PROGRESS_INTERVAL_SECONDS:-10}"
+  interval="${KANO_GIT_PROGRESS_INTERVAL_SECONDS:-30}"
   if [[ ! "$interval" =~ ^[0-9]+$ || "$interval" -le 0 ]]; then
-    interval=10
+    interval=30
   fi
 
   if [[ "${KANO_GIT_PROGRESS_HEARTBEAT:-1}" == "1" && -t 1 ]]; then
@@ -270,7 +271,7 @@ clean_native_build_artifacts() {
 
 run_native_build_mode() {
   local mode="$1"
-  local prereq_script build_script
+  local prereq_script build_script prereq_stamp prereq_interval now_epoch last_epoch cooldown_left
 
   ensure_cpp_build_submodules() {
     local -a required_paths update_paths
@@ -364,7 +365,27 @@ run_native_build_mode() {
   if run_shell_script "$build_script"; then
     log_launcher_status "build-native" "ok" "build completed"
   else
-    log_launcher_status "build-native" "step" "install-prerequisites"
+    prereq_stamp="$(state_file_for build-prereq.stamp)"
+    prereq_interval="${KANO_GIT_PREREQ_RETRY_INTERVAL_SECONDS:-21600}"
+    if [[ ! "$prereq_interval" =~ ^[0-9]+$ || "$prereq_interval" -lt 0 ]]; then
+      prereq_interval=21600
+    fi
+
+    if should_run_interval_check "$prereq_stamp" "$prereq_interval"; then
+      log_launcher_status "build-native" "step" "install-prerequisites"
+      touch_stamp_file "$prereq_stamp"
+    else
+      now_epoch="$(current_epoch)"
+      last_epoch="$(file_mtime_epoch "$prereq_stamp")"
+      cooldown_left=$((prereq_interval - (now_epoch - last_epoch)))
+      if [[ "$cooldown_left" -lt 0 ]]; then
+        cooldown_left=0
+      fi
+      log_launcher_status "build-native" "warn" "skip prerequisite reinstall (cooldown=${cooldown_left}s)"
+      log_launcher_status "build-native" "fail" "build failed"
+      return 1
+    fi
+
     run_shell_script "$prereq_script" || {
       log_launcher_status "build-native" "fail" "prerequisite install failed"
       return 1
@@ -1110,8 +1131,10 @@ is_packaged_install() {
 
 run_shell_script() {
   local script bash_path start end elapsed
+  local script_name
   script="$1"
   shift || true
+  script_name="$(basename "$script")"
   if ! bash_path="$(find_bash)"; then
     echo "Warning: bash not found; cannot run shell script automation." >&2
     return 1
@@ -1122,17 +1145,25 @@ run_shell_script() {
   fi
 
   start="$(current_epoch)"
-  log_launcher_status "$(basename "$script")" "start" "args=$*"
-  if run_with_progress "$(basename "$script")" env KANO_GIT_MASTER_ROOT="${KANO_GIT_MASTER_ROOT:-$PROJECT_ROOT}" KOG_BUILD_USE_LLVM="$KOG_BUILD_USE_LLVM" KOG_BUILD_ENABLE_MODULES="$KOG_BUILD_ENABLE_MODULES" "$bash_path" "$script" "$@"; then
+  log_launcher_status "$script_name" "start" "args=$*"
+
+  if [[ "$script_name" == prerequisite_* ]]; then
+    if env KANO_GIT_MASTER_ROOT="${KANO_GIT_MASTER_ROOT:-$PROJECT_ROOT}" KOG_BUILD_USE_LLVM="$KOG_BUILD_USE_LLVM" KOG_BUILD_ENABLE_MODULES="$KOG_BUILD_ENABLE_MODULES" "$bash_path" "$script" "$@"; then
+      end="$(current_epoch)"
+      elapsed=$((end - start))
+      log_launcher_status "$script_name" "ok" "elapsed=${elapsed}s"
+      return 0
+    fi
+  elif run_with_progress "$script_name" env KANO_GIT_MASTER_ROOT="${KANO_GIT_MASTER_ROOT:-$PROJECT_ROOT}" KOG_BUILD_USE_LLVM="$KOG_BUILD_USE_LLVM" KOG_BUILD_ENABLE_MODULES="$KOG_BUILD_ENABLE_MODULES" "$bash_path" "$script" "$@"; then
     end="$(current_epoch)"
     elapsed=$((end - start))
-    log_launcher_status "$(basename "$script")" "ok" "elapsed=${elapsed}s"
+    log_launcher_status "$script_name" "ok" "elapsed=${elapsed}s"
     return 0
   fi
 
   end="$(current_epoch)"
   elapsed=$((end - start))
-  log_launcher_status "$(basename "$script")" "fail" "elapsed=${elapsed}s"
+  log_launcher_status "$script_name" "fail" "elapsed=${elapsed}s"
   return 1
 }
 
