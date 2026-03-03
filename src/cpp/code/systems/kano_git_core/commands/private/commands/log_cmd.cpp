@@ -152,19 +152,123 @@ auto ResolveRepoFromSpec(const std::filesystem::path& InRoot,
     return matches.front();
 }
 
+struct RepoBranchRefs {
+    std::string localBranch = "HEAD(detached)";
+    std::string localCommit = "unknown";
+    std::string upstreamBranch = "(no upstream)";
+    std::string upstreamCommit = "-";
+};
+
+auto ResolveRepoBranchRefs(const std::filesystem::path& InRepo) -> RepoBranchRefs {
+    RepoBranchRefs refs;
+
+    if (const auto branchOut = GitCapture(InRepo, {"symbolic-ref", "--short", "-q", "HEAD"}); branchOut.exitCode == 0) {
+        const auto parsed = Trim(branchOut.stdoutStr);
+        if (!parsed.empty()) {
+            refs.localBranch = parsed;
+        }
+    }
+
+    if (const auto headOut = GitCapture(InRepo, {"rev-parse", "--short", "HEAD"}); headOut.exitCode == 0) {
+        const auto parsed = Trim(headOut.stdoutStr);
+        if (!parsed.empty()) {
+            refs.localCommit = parsed;
+        }
+    }
+
+    if (const auto upstreamOut = GitCapture(InRepo, {"rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"});
+        upstreamOut.exitCode == 0) {
+        const auto parsed = Trim(upstreamOut.stdoutStr);
+        if (!parsed.empty()) {
+            refs.upstreamBranch = parsed;
+            if (const auto upstreamCommitOut = GitCapture(InRepo, {"rev-parse", "--short", parsed}); upstreamCommitOut.exitCode == 0) {
+                const auto parsedCommit = Trim(upstreamCommitOut.stdoutStr);
+                if (!parsedCommit.empty()) {
+                    refs.upstreamCommit = parsedCommit;
+                }
+            }
+        }
+    }
+
+    return refs;
+}
+
 auto PrintSlog(const std::filesystem::path& InRepo, int InCount) -> int {
     if (!IsGitRepo(InRepo)) {
         std::cerr << "Error: not a git repository: " << InRepo.generic_string() << "\n";
         return 1;
     }
 
-    const auto logOut = GitCapture(InRepo, {"log", std::format("-{}", InCount), "--oneline"});
+    const auto logOut = GitCapture(InRepo, {"log", std::format("-{}", InCount), "--pretty=format:%h %an %s"});
     if (logOut.exitCode != 0) {
         std::cerr << "Error: failed to read log for repo: " << InRepo.generic_string() << "\n";
         return 1;
     }
 
+    const auto refs = ResolveRepoBranchRefs(InRepo);
+
     std::cout << "REPO: " << InRepo.lexically_normal().generic_string() << "\n";
+    std::cout << "LOCAL: " << refs.localBranch << " @ " << refs.localCommit << "\n";
+    std::cout << "REMOTE: " << refs.upstreamBranch << " @ " << refs.upstreamCommit << "\n";
+    std::cout << "LAST: " << InCount << " commit(s)\n\n";
+    std::cout << Trim(logOut.stdoutStr) << "\n";
+    return 0;
+}
+
+auto CollectSlogTargets(const std::filesystem::path& InRoot,
+                        int InMaxDepth,
+                        bool InUseCache,
+                        bool InNoRecursive) -> std::vector<std::filesystem::path> {
+    std::vector<std::filesystem::path> targets;
+    if (InNoRecursive) {
+        const auto cwd = std::filesystem::current_path().lexically_normal();
+        if (IsGitRepo(cwd)) {
+            targets.push_back(cwd);
+        }
+        return targets;
+    }
+
+    workspace::DiscoverOptions options;
+    options.rootDir = InRoot;
+    options.maxDepth = InMaxDepth;
+    options.useCache = InUseCache;
+    options.metadataLevel = "minimal";
+
+    const auto discovery = workspace::DiscoverRepos(options);
+    for (const auto& repo : discovery.repos) {
+        const auto path = repo.path.lexically_normal();
+        if (!IsGitRepo(path)) {
+            continue;
+        }
+        targets.push_back(path);
+    }
+
+    std::sort(targets.begin(), targets.end(), [](const auto& A, const auto& B) {
+        return A.generic_string() < B.generic_string();
+    });
+    targets.erase(std::unique(targets.begin(), targets.end(), [](const auto& A, const auto& B) {
+        return A.generic_string() == B.generic_string();
+    }), targets.end());
+
+    return targets;
+}
+
+auto PrintFullLog(const std::filesystem::path& InRepo, int InCount) -> int {
+    if (!IsGitRepo(InRepo)) {
+        std::cerr << "Error: not a git repository: " << InRepo.generic_string() << "\n";
+        return 1;
+    }
+
+    const auto logOut = GitCapture(InRepo, {"log", std::format("-{}", InCount), "--decorate=short", "--date=iso-strict", "--pretty=fuller"});
+    if (logOut.exitCode != 0) {
+        std::cerr << "Error: failed to read log for repo: " << InRepo.generic_string() << "\n";
+        return 1;
+    }
+
+    const auto refs = ResolveRepoBranchRefs(InRepo);
+    std::cout << "REPO: " << InRepo.lexically_normal().generic_string() << "\n";
+    std::cout << "LOCAL: " << refs.localBranch << " @ " << refs.localCommit << "\n";
+    std::cout << "REMOTE: " << refs.upstreamBranch << " @ " << refs.upstreamCommit << "\n";
     std::cout << "LAST: " << InCount << " commit(s)\n\n";
     std::cout << Trim(logOut.stdoutStr) << "\n";
     return 0;
@@ -287,7 +391,7 @@ auto PrintUplog(const std::vector<UplogEntry>& InEntries) -> void {
 } // namespace
 
 void RegisterSlog(CLI::App& InApp) {
-    auto* cmd = InApp.add_subcommand("slog", "Show short log (git log --oneline) for a target repo");
+    auto* cmd = InApp.add_subcommand("slog", "Show short logs recursively by default (sha author subject + local/upstream refs)");
     auto* count = new int{10};
     auto* repo = new std::string{};
     auto* countPos = new std::string{};
@@ -295,6 +399,7 @@ void RegisterSlog(CLI::App& InApp) {
     auto* root = new std::string{"."};
     auto* maxDepth = new int{8};
     auto* noCache = new bool{false};
+    auto* noRecursive = new bool{false};
 
     cmd->add_option("--count,-n", *count, "Number of commits to show");
     cmd->add_option("--repo", *repo, "Repo path or repo name");
@@ -303,6 +408,7 @@ void RegisterSlog(CLI::App& InApp) {
     cmd->add_option("--repo-root", *root, "Workspace root used for repo-name lookup");
     cmd->add_option("--max-depth", *maxDepth, "Discovery max depth for repo-name lookup");
     cmd->add_flag("--no-cache", *noCache, "Disable discovery cache for repo-name lookup");
+    cmd->add_flag("--no-recursive,-N", *noRecursive, "Disable recursive discovery and show current repo only (when --repo is not provided)");
 
     cmd->callback([=]() {
         if (!countPos->empty()) {
@@ -319,8 +425,96 @@ void RegisterSlog(CLI::App& InApp) {
         }
 
         try {
-            const auto repoPath = ResolveRepoFromSpec(std::filesystem::path(*root), repoSpec, *maxDepth, !*noCache);
-            std::exit(PrintSlog(repoPath, *count));
+            if (!repoSpec.empty()) {
+                const auto repoPath = ResolveRepoFromSpec(std::filesystem::path(*root), repoSpec, *maxDepth, !*noCache);
+                std::exit(PrintSlog(repoPath, *count));
+            }
+
+            const auto targets = CollectSlogTargets(std::filesystem::path(*root), *maxDepth, !*noCache, *noRecursive);
+            if (targets.empty()) {
+                std::cerr << "Error: no git repositories found for slog target scope\n";
+                std::exit(1);
+            }
+
+            int failed = 0;
+            bool first = true;
+            for (const auto& target : targets) {
+                if (!first) {
+                    std::cout << "\n";
+                }
+                first = false;
+                const auto code = PrintSlog(target, *count);
+                if (code != 0) {
+                    failed += 1;
+                }
+            }
+            std::exit(failed == 0 ? 0 : 1);
+        } catch (const std::exception& ex) {
+            std::cerr << "Error: " << ex.what() << "\n";
+            std::exit(1);
+        }
+    });
+}
+
+void RegisterLog(CLI::App& InApp) {
+    auto* cmd = InApp.add_subcommand("log", "Show full commit logs recursively by default (fuller format + local/upstream refs)");
+    auto* count = new int{10};
+    auto* repo = new std::string{};
+    auto* countPos = new std::string{};
+    auto* repoPos = new std::string{};
+    auto* root = new std::string{"."};
+    auto* maxDepth = new int{8};
+    auto* noCache = new bool{false};
+    auto* noRecursive = new bool{false};
+
+    cmd->add_option("--count,-n", *count, "Number of commits to show");
+    cmd->add_option("--repo", *repo, "Repo path or repo name");
+    cmd->add_option("count_pos", *countPos, "Positional count (e.g. log 20)");
+    cmd->add_option("repo_spec", *repoPos, "Positional repo path/name (e.g. log 20 kano)");
+    cmd->add_option("--repo-root", *root, "Workspace root used for repo-name lookup");
+    cmd->add_option("--max-depth", *maxDepth, "Discovery max depth for repo-name lookup");
+    cmd->add_flag("--no-cache", *noCache, "Disable discovery cache for repo-name lookup");
+    cmd->add_flag("--no-recursive,-N", *noRecursive, "Disable recursive discovery and show current repo only (when --repo is not provided)");
+
+    cmd->callback([=]() {
+        if (!countPos->empty()) {
+            *count = ParsePositiveInt(*countPos, -1);
+        }
+        if (*count <= 0) {
+            std::cerr << "Error: --count must be a positive integer\n";
+            std::exit(1);
+        }
+
+        std::string repoSpec = *repo;
+        if (repoSpec.empty() && !repoPos->empty()) {
+            repoSpec = *repoPos;
+        }
+
+        try {
+            if (!repoSpec.empty()) {
+                const auto repoPath = ResolveRepoFromSpec(std::filesystem::path(*root), repoSpec, *maxDepth, !*noCache);
+                std::exit(PrintFullLog(repoPath, *count));
+            }
+
+            const auto targets = CollectSlogTargets(std::filesystem::path(*root), *maxDepth, !*noCache, *noRecursive);
+            if (targets.empty()) {
+                std::cerr << "Error: no git repositories found for log target scope\n";
+                std::exit(1);
+            }
+
+            int failed = 0;
+            bool first = true;
+            for (const auto& target : targets) {
+                if (!first) {
+                    std::cout << "\n";
+                }
+                first = false;
+                const auto code = PrintFullLog(target, *count);
+                if (code != 0) {
+                    failed += 1;
+                }
+            }
+            std::exit(failed == 0 ? 0 : 1);
         } catch (const std::exception& ex) {
             std::cerr << "Error: " << ex.what() << "\n";
             std::exit(1);

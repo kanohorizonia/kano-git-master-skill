@@ -162,12 +162,13 @@ auto ParsePushFailures(const std::string& InStdout, const std::string& InStderr)
 } // namespace
 
 void RegisterCommitPush(CLI::App& InApp) {
-    auto* cmd = InApp.add_subcommand("commit-push", "Run pre-commit, commit, sync, post-commit, then push in one command");
+    auto* cmd = InApp.add_subcommand("commit-push", "Run pre-commit, commit, sync, post-sync, then push in one command");
     cmd->allow_extras();
 
     auto* repos = new std::string{};
     auto* noRecursive = new bool{false};
     auto* message = new std::string{};
+    auto* commitPlanFile = new std::string{};
     auto* aiProvider = new std::string{};
     auto* aiModel = new std::string{};
     auto* aiAuto = new bool{false};
@@ -185,6 +186,7 @@ void RegisterCommitPush(CLI::App& InApp) {
     cmd->add_option("--repos", *repos, "Target repos (comma-separated)");
     cmd->add_flag("--no-recursive,-N", *noRecursive, "Only operate on current repository (or provided --repos)");
     cmd->add_option("--message,-m", *message, "Commit message (skip AI generation)");
+    cmd->add_option("--commit-plan-file", *commitPlanFile, "Commit plan JSON file (stage-aware)");
     cmd->add_option("--ai-provider", *aiProvider, "AI provider for commit (copilot, codex, opencode)");
     cmd->add_option("--ai-model", *aiModel, "AI model for commit");
     cmd->add_flag("--ai-auto", *aiAuto, "Enable commit AI auto mode");
@@ -204,7 +206,7 @@ void RegisterCommitPush(CLI::App& InApp) {
         long long preCommitMillis = 0;
         long long commitMillis = 0;
         long long syncMillis = 0;
-        long long postCommitMillis = 0;
+        long long postSyncMillis = 0;
         long long pushMillis = 0;
 
         const auto extras = cmd->remaining();
@@ -256,6 +258,9 @@ void RegisterCommitPush(CLI::App& InApp) {
         }
         if (!message->empty()) {
             commitArgs.insert(commitArgs.end(), {"-m", *message});
+        }
+        if (!commitPlanFile->empty()) {
+            commitArgs.insert(commitArgs.end(), {"--commit-plan-file", *commitPlanFile, "--plan-stage", "commit"});
         }
         if (!aiProvider->empty()) {
             commitArgs.insert(commitArgs.end(), {"--ai-provider", *aiProvider});
@@ -324,6 +329,9 @@ void RegisterCommitPush(CLI::App& InApp) {
         if (!message->empty()) {
             postCommitArgs.insert(postCommitArgs.end(), {"-m", *message});
         }
+        if (!commitPlanFile->empty()) {
+            postCommitArgs.insert(postCommitArgs.end(), {"--commit-plan-file", *commitPlanFile, "--plan-stage", "post_sync"});
+        }
         if (!aiProvider->empty()) {
             postCommitArgs.insert(postCommitArgs.end(), {"--ai-provider", *aiProvider});
         }
@@ -343,11 +351,11 @@ void RegisterCommitPush(CLI::App& InApp) {
             postCommitArgs.push_back("--preflight-only");
         }
 
-        std::cout << "=== commit-push stage: post-commit ===\n";
+        std::cout << "=== commit-push stage: post-sync ===\n";
         const auto postCommitStart = std::chrono::steady_clock::now();
         const auto postCommitResult = RunKogCommand(postCommitArgs);
         const auto postCommitEnd = std::chrono::steady_clock::now();
-        postCommitMillis = std::chrono::duration_cast<std::chrono::milliseconds>(postCommitEnd - postCommitStart).count();
+        postSyncMillis = std::chrono::duration_cast<std::chrono::milliseconds>(postCommitEnd - postCommitStart).count();
         if (postCommitResult.exitCode != 0) {
             std::exit(postCommitResult.exitCode);
         }
@@ -426,7 +434,7 @@ void RegisterCommitPush(CLI::App& InApp) {
             std::cout << "pre_commit_ms: " << preCommitMillis << "\n";
             std::cout << "commit_ms: " << commitMillis << "\n";
             std::cout << "sync_ms: " << syncMillis << "\n";
-            std::cout << "post_commit_ms: " << postCommitMillis << "\n";
+            std::cout << "post_sync_ms: " << postSyncMillis << "\n";
             std::cout << "push_ms: " << pushMillis << "\n";
             std::cout << "total_ms: " << totalMillis << "\n";
         }

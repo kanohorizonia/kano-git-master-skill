@@ -17,6 +17,7 @@ void RegisterAll(CLI::App& InApp) {
     RegisterDirty(InApp);
     RegisterDoctor(InApp);
     RegisterGuide(InApp);
+    RegisterLog(InApp);
     RegisterMeta(InApp);
     RegisterP4(InApp);
     RegisterPush(InApp);
