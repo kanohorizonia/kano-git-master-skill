@@ -29,6 +29,7 @@ void RegisterSubmodule(CLI::App& InApp);
 void RegisterScalar(CLI::App& InApp);
 
 void RegisterP4(CLI::App& InApp);
+void RegisterPlan(CLI::App& InApp);
 void RegisterSlog(CLI::App& InApp);
 void RegisterSvn(CLI::App& InApp);
 void RegisterUplog(CLI::App& InApp);
@@ -38,5 +39,6 @@ void RegisterWorkspace(CLI::App& InApp);
 
 void RegisterClone(CLI::App& InApp);
 void RegisterDoctor(CLI::App& InApp);
+void RegisterIgnore(CLI::App& InApp);
 
 }

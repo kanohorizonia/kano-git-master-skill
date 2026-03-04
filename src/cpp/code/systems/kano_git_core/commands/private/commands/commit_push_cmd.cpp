@@ -11,6 +11,7 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <regex>
 #include <set>
 #include <sstream>
 #include <string>
@@ -125,19 +126,36 @@ auto CurrentUtcTimestampCompact() -> std::string {
     return std::string(buffer);
 }
 
+auto CurrentUtcTimestampIso8601() -> std::string {
+    const auto now = std::chrono::system_clock::now();
+    const auto tt = std::chrono::system_clock::to_time_t(now);
+    std::tm utc{};
+#if defined(_WIN32)
+    gmtime_s(&utc, &tt);
+#else
+    gmtime_r(&tt, &utc);
+#endif
+    char buffer[32] = {0};
+    std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", &utc);
+    return std::string(buffer);
+}
+
 auto DefaultCommitPlanOutputPath(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path {
     const auto headShort = CaptureHeadShortSha(InWorkspaceRoot);
     const auto stamp = CurrentUtcTimestampCompact();
-    return (InWorkspaceRoot / ".kano" / "cache" / "git" / "commit-plans" /
+    return (InWorkspaceRoot / ".kano" / "cache" / "git" / "plans" /
             ("plan-" + stamp + "-" + headShort + ".json"))
         .lexically_normal();
 }
 
-auto BuildCommitPlanTemplateJson() -> std::string {
-    return R"json({
+auto BuildCommitPlanTemplateJson(const std::string& InGeneratedAtUtc) -> std::string {
+    std::ostringstream oss;
+    oss << R"json({
   "meta": {
     "schema_version": "2",
     "plan_id": "replace-with-unique-id",
+    "generated_at_utc": ")json" << InGeneratedAtUtc << R"json(",
+    "executed_at_utc": "",
     "base_head_sha": "replace-with-head-sha",
     "dirty_fingerprint": "replace-with-dirty-fingerprint",
     "planner": {
@@ -162,6 +180,7 @@ auto BuildCommitPlanTemplateJson() -> std::string {
   }
 }
 )json";
+    return oss.str();
 }
 
 auto WriteTextFile(const std::filesystem::path& InPath,
@@ -191,6 +210,53 @@ auto WriteTextFile(const std::filesystem::path& InPath,
         return false;
     }
     return true;
+}
+
+auto StampCommitPlanExecutedAt(const std::filesystem::path& InPath,
+                               std::string* OutError) -> bool {
+    std::ifstream in(InPath, std::ios::in | std::ios::binary);
+    if (!in) {
+        if (OutError != nullptr) {
+            *OutError = "cannot open plan file";
+        }
+        return false;
+    }
+
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    auto text = buffer.str();
+    if (text.empty()) {
+        if (OutError != nullptr) {
+            *OutError = "plan file is empty";
+        }
+        return false;
+    }
+
+    const auto executedAt = CurrentUtcTimestampIso8601();
+    const std::regex executedPattern(R"("executed_at_utc"\s*:\s*"[^"]*")");
+    if (std::regex_search(text, executedPattern)) {
+        text = std::regex_replace(
+            text,
+            executedPattern,
+            std::string("\"executed_at_utc\": \"") + executedAt + "\"",
+            std::regex_constants::format_first_only);
+    } else {
+        const std::regex metaPattern(R"("meta"\s*:\s*\{)");
+        if (std::regex_search(text, metaPattern)) {
+            text = std::regex_replace(
+                text,
+                metaPattern,
+                std::string("\"meta\": {\n    \"executed_at_utc\": \"") + executedAt + "\",",
+                std::regex_constants::format_first_only);
+        } else {
+            if (OutError != nullptr) {
+                *OutError = "cannot locate meta object in plan";
+            }
+            return false;
+        }
+    }
+
+    return WriteTextFile(InPath, text, OutError);
 }
 
 auto ResolveLauncherScript() -> std::filesystem::path {
@@ -339,9 +405,9 @@ void RegisterCommitPush(CLI::App& InApp) {
     cmd->add_option("--repos", *repos, "Target repos (comma-separated)");
     cmd->add_flag("--no-recursive,-N", *noRecursive, "Only operate on current repository (or provided --repos)");
     cmd->add_option("--message,-m", *message, "Commit message (skip AI generation)");
-    cmd->add_option("--commit-plan-file", *commitPlanFile, "Commit plan JSON file (stage-aware)");
-    cmd->add_flag("--write-commit-plan-template", *writeCommitPlanTemplate, "Write commit plan template JSON and exit");
-    cmd->add_option("--commit-plan-out", *commitPlanOut, "Template output path (default: .kano/cache/git/commit-plans/plan-<utc>-<head>.json)");
+    cmd->add_option("--plan-file", *commitPlanFile, "Plan JSON file (stage-aware)");
+    cmd->add_flag("--write-plan-template", *writeCommitPlanTemplate, "Write plan template JSON and exit");
+    cmd->add_option("--plan-out", *commitPlanOut, "Template output path (default: .kano/cache/git/plans/plan-<utc>-<head>.json)");
     cmd->add_option("--ai-provider", *aiProvider, "AI provider for commit (copilot, codex, opencode)");
     cmd->add_option("--ai-model", *aiModel, "AI model for commit");
     cmd->add_flag("--ai-auto", *aiAuto, "Enable commit AI auto mode");
@@ -380,19 +446,19 @@ void RegisterCommitPush(CLI::App& InApp) {
                 ? DefaultCommitPlanOutputPath(workspaceRoot)
                 : std::filesystem::path(NormalizeInputPathForCurrentPlatform(*commitPlanOut)).lexically_normal();
             std::string error;
-            if (!WriteTextFile(outPath, BuildCommitPlanTemplateJson(), &error)) {
-                std::cerr << "Error: failed to write commit plan template to " << outPath.generic_string();
+            if (!WriteTextFile(outPath, BuildCommitPlanTemplateJson(CurrentUtcTimestampIso8601()), &error)) {
+                std::cerr << "Error: failed to write plan template to " << outPath.generic_string();
                 if (!error.empty()) {
                     std::cerr << " (" << error << ")";
                 }
                 std::cerr << "\n";
                 std::exit(2);
             }
-            std::cout << "Wrote commit plan template: " << outPath.generic_string() << "\n";
+            std::cout << "Wrote plan template: " << outPath.generic_string() << "\n";
             std::exit(0);
         }
         if (!commitPlanOut->empty()) {
-            std::cerr << "Error: --commit-plan-out requires --write-commit-plan-template\n";
+            std::cerr << "Error: --plan-out requires --write-plan-template\n";
             std::exit(2);
         }
 
@@ -401,8 +467,21 @@ void RegisterCommitPush(CLI::App& InApp) {
         const bool hasCommitPlan = !normalizedCommitPlanFile.empty();
         const bool useAiCommitFlow = !hasCommitPlan;
 
+        if (hasCommitPlan) {
+            std::string stampError;
+            const auto planPath = std::filesystem::path(normalizedCommitPlanFile).lexically_normal();
+            if (!StampCommitPlanExecutedAt(planPath, &stampError)) {
+                std::cerr << "Warning: failed to stamp plan executed_at_utc: "
+                          << planPath.generic_string();
+                if (!stampError.empty()) {
+                    std::cerr << " (" << stampError << ")";
+                }
+                std::cerr << "\n";
+            }
+        }
+
         if (agentMode && hasCommitPlan) {
-            std::cout << "[commit-push] agent mode + --commit-plan-file detected; using plan-driven commit flow.\n";
+            std::cout << "[commit-push] agent mode + --plan-file detected; using plan-driven flow.\n";
         }
 
         std::cout << "=== commit-push stage: pre-commit ===\n";
@@ -446,7 +525,7 @@ void RegisterCommitPush(CLI::App& InApp) {
             commitArgs.insert(commitArgs.end(), {"-m", *message});
         }
         if (hasCommitPlan) {
-            commitArgs.insert(commitArgs.end(), {"--commit-plan-file", normalizedCommitPlanFile, "--plan-stage", "commit"});
+            commitArgs.insert(commitArgs.end(), {"--plan-file", normalizedCommitPlanFile, "--plan-stage", "commit"});
         }
         if (useAiCommitFlow && !aiProvider->empty()) {
             commitArgs.insert(commitArgs.end(), {"--ai-provider", *aiProvider});
@@ -516,7 +595,7 @@ void RegisterCommitPush(CLI::App& InApp) {
             postCommitArgs.insert(postCommitArgs.end(), {"-m", *message});
         }
         if (hasCommitPlan) {
-            postCommitArgs.insert(postCommitArgs.end(), {"--commit-plan-file", normalizedCommitPlanFile, "--plan-stage", "post_sync"});
+            postCommitArgs.insert(postCommitArgs.end(), {"--plan-file", normalizedCommitPlanFile, "--plan-stage", "post_sync"});
         }
         if (useAiCommitFlow && !aiProvider->empty()) {
             postCommitArgs.insert(postCommitArgs.end(), {"--ai-provider", *aiProvider});

@@ -9,36 +9,34 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/build_metadata.sh"
 
+KOG_WINDOWS_PS_HELPER="$SCRIPT_DIR/windows_preset_helper.ps1"
+
+kog_powershell_bin() {
+  local candidate
+  for candidate in powershell powershell.exe pwsh pwsh.exe; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+kog_run_windows_ps_helper() {
+  local PowerShellBin=""
+  PowerShellBin="$(kog_powershell_bin)" || return 127
+  "$PowerShellBin" -NoProfile -ExecutionPolicy Bypass -File "$KOG_WINDOWS_PS_HELPER" "$@"
+}
+
 kog_windows_file_exists() {
   local InPath="$1"
-  local EscapedPath="${InPath//\'/\'\'}"
-  powershell -NoProfile -ExecutionPolicy Bypass -Command "if (Test-Path -LiteralPath '$EscapedPath') { exit 0 } else { exit 1 }" >/dev/null 2>&1
+  kog_run_windows_ps_helper -Action test-path -Path "$InPath" >/dev/null 2>&1
 }
 
 kog_detect_vcvarsall() {
   local Found=""
-
-  if command -v powershell >/dev/null 2>&1; then
-    Found="$(
-      powershell -NoProfile -ExecutionPolicy Bypass -Command "\
-        \$vswhere = Join-Path \${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'; \
-        if (Test-Path \$vswhere) { \
-          \$found = & \$vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find 'VC\Auxiliary\Build\vcvarsall.bat' 2>\$null | Select-Object -First 1; \
-          if (\$found) { Write-Output \$found; exit 0 } \
-        }; \
-        \$roots = @(); \
-        if (\$env:ProgramFiles) { \$roots += (Join-Path \$env:ProgramFiles 'Microsoft Visual Studio') }; \
-        if (\${env:ProgramFiles(x86)}) { \$roots += (Join-Path \${env:ProgramFiles(x86)} 'Microsoft Visual Studio') }; \
-        \$roots = \$roots | Where-Object { Test-Path \$_ }; \
-        if (\$roots.Count -gt 0) { \
-          \$scan = Get-ChildItem -Path \$roots -Recurse -File -Filter vcvarsall.bat -ErrorAction SilentlyContinue | \
-            Where-Object { \$_.FullName -match '\\\\VC\\\\Auxiliary\\\\Build\\\\vcvarsall\.bat$' } | \
-            Sort-Object FullName -Descending | \
-            Select-Object -First 1 -ExpandProperty FullName; \
-          if (\$scan) { Write-Output \$scan } \
-        }" \
-      | tr -d '\r'
-    )"
+  if kog_powershell_bin >/dev/null 2>&1; then
+    Found="$(kog_run_windows_ps_helper -Action detect-vcvarsall 2>/dev/null | tr -d '\r')"
   fi
 
   if [[ -n "$Found" ]] && kog_windows_file_exists "$Found"; then
@@ -57,43 +55,8 @@ kog_resolve_windows_source_root() {
   local EffectiveRoot=""
 
   DecisionAndRoot="$(
-    powershell -NoProfile -ExecutionPolicy Bypass -Command "\
-      \$root = '$InRootWin'; \
-      \$preset = '$InConfigurePreset'; \
-      function Normalize-PathKey([string]\$path) { \
-        if ([string]::IsNullOrWhiteSpace(\$path)) { return '' } \
-        \$candidate = \$path.Trim(); \
-        \$resolved = Resolve-Path -LiteralPath \$candidate -ErrorAction SilentlyContinue; \
-        if (\$resolved) { \$candidate = \$resolved.Path }; \
-        \$candidate = \$candidate -replace '/', '\\\\'; \
-        while (\$candidate.Length -gt 3 -and \$candidate.EndsWith('\\')) { \$candidate = \$candidate.Substring(0, \$candidate.Length - 1) }; \
-        return \$candidate.ToLowerInvariant(); \
-      }; \
-      \$decision = 'keep'; \
-      \$effectiveRoot = \$root; \
-      \$buildDir = Join-Path \$root ('build\\_intermediate\\' + \$preset); \
-      \$cacheFile = Join-Path \$buildDir 'CMakeCache.txt'; \
-      if (Test-Path -LiteralPath \$cacheFile) { \
-        \$cacheDirLine = Select-String -Path \$cacheFile -Pattern '^CMAKE_CACHEFILE_DIR:INTERNAL=(.+)$' -ErrorAction SilentlyContinue | Select-Object -First 1; \
-        \$homeDirLine = Select-String -Path \$cacheFile -Pattern '^CMAKE_HOME_DIRECTORY:INTERNAL=(.+)$' -ErrorAction SilentlyContinue | Select-Object -First 1; \
-        \$cachedDir = ''; \
-        \$cachedHome = ''; \
-        if (\$cacheDirLine -and \$cacheDirLine.Matches.Count -gt 0) { \$cachedDir = \$cacheDirLine.Matches[0].Groups[1].Value.Trim() }; \
-        if (\$homeDirLine -and \$homeDirLine.Matches.Count -gt 0) { \$cachedHome = \$homeDirLine.Matches[0].Groups[1].Value.Trim() }; \
-        \$buildKey = Normalize-PathKey \$buildDir; \
-        \$cachedKey = Normalize-PathKey \$cachedDir; \
-        if (-not [string]::IsNullOrWhiteSpace(\$cachedKey) -and \$cachedKey -ne \$buildKey) { \
-          if (-not [string]::IsNullOrWhiteSpace(\$cachedHome) -and (Test-Path -LiteralPath \$cachedHome)) { \
-            \$decision = 'use-cache-home'; \
-            \$effectiveRoot = \$cachedHome; \
-          } else { \
-            \$decision = 'clean-cache'; \
-            Remove-Item -LiteralPath \$buildDir -Recurse -Force -ErrorAction SilentlyContinue; \
-          } \
-        } \
-      }; \
-      Write-Output (\$decision + '|' + \$effectiveRoot)" \
-    | tr -d '\r'
+    kog_run_windows_ps_helper -Action resolve-source-root -Root "$InRootWin" -Preset "$InConfigurePreset" \
+      | tr -d '\r'
   )"
 
   Decision="${DecisionAndRoot%%|*}"
@@ -114,6 +77,34 @@ kog_resolve_windows_source_root() {
   printf '%s\n' "$EffectiveRoot"
 }
 
+kog_prepare_windows_subst_root() {
+  local InRootWin="$1"
+  local InSubstPurpose="$2"
+  local InPreferredSubstDrive="$3"
+  local InSubstMode="${KOG_SUBST_MODE:-auto}"
+
+  # InSubstPurpose is kept for launch logs/context compatibility.
+  : "$InSubstPurpose"
+  kog_run_windows_ps_helper -Action prepare-subst-root -Root "$InRootWin" -PreferredDrive "$InPreferredSubstDrive" -Mode "$InSubstMode" \
+    | tr -d '\r'
+}
+
+kog_cleanup_windows_subst_drive() {
+  local InMappedDrive="$1"
+  local InCleanupFlag="$2"
+  local InSubstPurpose="$3"
+
+  if [[ "$InCleanupFlag" != "1" ]]; then
+    return 0
+  fi
+  if [[ -z "$InMappedDrive" ]]; then
+    return 0
+  fi
+
+  kog_run_windows_ps_helper -Action cleanup-subst -Drive "$InMappedDrive" >/dev/null 2>&1 || true
+  echo "[launcher][subst][info] unmapped $InMappedDrive (purpose: $InSubstPurpose)" >&2
+}
+
 kog_run_windows_preset() {
   local InConfigurePreset="$1"
   local InBuildPreset="$2"
@@ -126,8 +117,13 @@ kog_run_windows_preset() {
     exit 1
   fi
 
-  if ! command -v powershell >/dev/null 2>&1; then
+  if ! kog_powershell_bin >/dev/null 2>&1; then
     echo "powershell is required." >&2
+    exit 1
+  fi
+
+  if [[ ! -f "$KOG_WINDOWS_PS_HELPER" ]]; then
+    echo "windows preset helper script not found: $KOG_WINDOWS_PS_HELPER" >&2
     exit 1
   fi
 
@@ -158,11 +154,35 @@ kog_run_windows_preset() {
   fi
 
   local EffectiveRootWin
-  local PSEscapedRoot
-  local PSEscapedVcvars
-  EffectiveRootWin="$(kog_resolve_windows_source_root "$RootWin" "$InConfigurePreset")"
-  PSEscapedRoot="${EffectiveRootWin//\'/\'\'}"
-  PSEscapedVcvars="${ResolvedVcvars//\'/\'\'}"
+  local BuildRootWin
+  local SubstDrive
+  local SubstCleanupFlag
+  local SubstLine
 
-  powershell -NoProfile -ExecutionPolicy Bypass -Command "& { Set-Location '$PSEscapedRoot'; \$cmd = 'call \"$PSEscapedVcvars\" $InVcvarsArch -vcvars_ver=14.44.35207 && cmake --preset $InConfigurePreset && cmake --build --preset $InBuildPreset'; cmd.exe /d /s /c \$cmd; exit \$LASTEXITCODE }"
+  EffectiveRootWin="$(kog_resolve_windows_source_root "$RootWin" "$InConfigurePreset")"
+  BuildRootWin="$EffectiveRootWin"
+  SubstDrive=""
+  SubstCleanupFlag="0"
+  SubstLine="$(kog_prepare_windows_subst_root "$EffectiveRootWin" "$InSubstPurpose" "$InPreferredSubstDrive")"
+  if [[ -n "$SubstLine" ]]; then
+    BuildRootWin="${SubstLine%%$'\t'*}"
+    local _rest="${SubstLine#*$'\t'}"
+    SubstDrive="${_rest%%$'\t'*}"
+    SubstCleanupFlag="${SubstLine##*$'\t'}"
+  fi
+  if [[ -n "$SubstDrive" && "$BuildRootWin" != "$EffectiveRootWin" ]]; then
+    echo "[launcher][subst][info] mapped $SubstDrive -> $EffectiveRootWin (purpose: $InSubstPurpose)" >&2
+  fi
+
+  local ExitCode=0
+  kog_run_windows_ps_helper \
+    -Action run-preset \
+    -Root "$BuildRootWin" \
+    -Vcvars "$ResolvedVcvars" \
+    -Arch "$InVcvarsArch" \
+    -ConfigurePreset "$InConfigurePreset" \
+    -BuildPreset "$InBuildPreset" || ExitCode=$?
+
+  kog_cleanup_windows_subst_drive "$SubstDrive" "$SubstCleanupFlag" "$InSubstPurpose"
+  return "$ExitCode"
 }

@@ -1,0 +1,62 @@
+{
+  "meta": {
+    "schema_version": "3",
+    "plan_id": "replace-with-unique-id",
+    "generated_at_utc": "replace-with-generated-at-utc",
+    "executed_at_utc": "",
+    "base_head_sha": "replace-with-head-sha",
+    "dirty_fingerprint": "replace-with-dirty-fingerprint",
+    "planner": {
+      "provider": "replace-with-provider",
+      "ai-model": "replace-with-ai-model"
+    },
+    "review": {
+      "verdict": "pass",
+      "reason": "replace-with-review-summary"
+    },
+    "ignore_datasource": {
+      "root": "replace-with-ignore-datasource-root",
+      "manifest": "replace-with-ignore-datasource-manifest",
+      "prefer_sources": [
+        "kano-local-rules",
+        "github-gitignore"
+      ]
+    }
+  },
+  "stages": {
+    "ignore": [
+      {
+        "repo": ".",
+        "base_gitignore_sha256": "replace-with-gitignore-sha256",
+        "candidates": [
+          {
+            "rule": "replace-with-ignore-rule",
+            "source": "template-mapping"
+          }
+        ],
+        "datasource_refs": [
+          "kano-local-rules",
+          "github-gitignore"
+        ],
+        "merged_output_path": ".kano/cache/git/plans/replace-with-plan-id.gitignore.merged",
+        "apply_target": ".gitignore",
+        "applied_at_utc": ""
+      }
+    ],
+    "commit": [
+      {
+        "repo": ".",
+        "commits": [
+          {
+            "message": "replace-with-commit-message",
+            "review": {
+              "verdict": "pass",
+              "reason": "replace-with-review-reason-for-this-commit"
+            }
+          }
+        ]
+      }
+    ],
+    "post_sync": []
+  }
+}
