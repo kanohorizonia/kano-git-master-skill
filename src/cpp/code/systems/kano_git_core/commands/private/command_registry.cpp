@@ -17,9 +17,11 @@ void RegisterAll(CLI::App& InApp) {
     RegisterDirty(InApp);
     RegisterDoctor(InApp);
     RegisterGuide(InApp);
+    RegisterIgnore(InApp);
     RegisterLog(InApp);
     RegisterMeta(InApp);
     RegisterP4(InApp);
+    RegisterPlan(InApp);
     RegisterPush(InApp);
     RegisterRemote(InApp);
     RegisterResolve(InApp);

@@ -868,6 +868,11 @@ auto BuildExecutionWaves(const std::vector<workspace::RepoRecord>& InRepos) -> s
 
     auto sortByPath = [&](std::vector<std::size_t>& list) {
         std::sort(list.begin(), list.end(), [&](const auto A, const auto B) {
+            const auto aDepth = PathDepth(InRepos[A].path);
+            const auto bDepth = PathDepth(InRepos[B].path);
+            if (aDepth != bDepth) {
+                return aDepth > bDepth;
+            }
             return ToGeneric(InRepos[A].path) < ToGeneric(InRepos[B].path);
         });
     };
@@ -916,8 +921,18 @@ enum class CommitPlanStage {
 };
 
 struct RepoCommitPlanEntry {
+    struct CommitReviewMeta {
+        std::string verdict;
+        std::string reason;
+    };
+
+    struct CommitItem {
+        std::string message;
+        CommitReviewMeta review;
+    };
+
     std::string repoKey;
-    std::vector<std::string> messages;
+    std::vector<CommitItem> commits;
 };
 
 struct CommitPlanPayload {
@@ -935,6 +950,8 @@ struct CommitPlanPayload {
     struct Meta {
         std::string schemaVersion;
         std::string planId;
+        std::string generatedAtUtc;
+        std::string executedAtUtc;
         std::string baseHeadSha;
         std::string dirtyFingerprint;
         PlannerMeta planner;
@@ -1179,12 +1196,22 @@ auto ParseStageEntries(const std::string& InStageArrayBody) -> std::vector<RepoC
                 }
                 const auto message = Trim(*messageField);
                 if (!message.empty()) {
-                    entry.messages.push_back(message);
+                    RepoCommitPlanEntry::CommitItem item;
+                    item.message = message;
+                    if (const auto reviewObject = ExtractObjectBodyForKey(commitObject, "review"); reviewObject.has_value()) {
+                        if (const auto value = ExtractStringField(*reviewObject, "verdict"); value.has_value()) {
+                            item.review.verdict = ToLower(Trim(*value));
+                        }
+                        if (const auto value = ExtractStringField(*reviewObject, "reason"); value.has_value()) {
+                            item.review.reason = Trim(*value);
+                        }
+                    }
+                    entry.commits.push_back(std::move(item));
                 }
             }
         }
 
-        if (!entry.repoKey.empty() && !entry.messages.empty()) {
+        if (!entry.repoKey.empty() && !entry.commits.empty()) {
             entries.push_back(std::move(entry));
         }
     }
@@ -1210,7 +1237,7 @@ auto ParseCommitPlan(const std::filesystem::path& InFile,
     const auto payload = ReadFileText(InFile);
     if (!payload.has_value()) {
         if (OutError != nullptr) {
-            *OutError = "cannot read commit plan file";
+            *OutError = "cannot read plan file";
         }
         return std::nullopt;
     }
@@ -1218,7 +1245,7 @@ auto ParseCommitPlan(const std::filesystem::path& InFile,
     const auto text = Trim(*payload);
     if (text.empty()) {
         if (OutError != nullptr) {
-            *OutError = "commit plan file is empty";
+            *OutError = "plan file is empty";
         }
         return std::nullopt;
     }
@@ -1239,6 +1266,12 @@ auto ParseCommitPlan(const std::filesystem::path& InFile,
         if (const auto planId = ExtractStringField(*metaObject, "plan_id"); planId.has_value()) {
             out.meta.planId = Trim(*planId);
         }
+        if (const auto generatedAtUtc = ExtractStringField(*metaObject, "generated_at_utc"); generatedAtUtc.has_value()) {
+            out.meta.generatedAtUtc = Trim(*generatedAtUtc);
+        }
+        if (const auto executedAtUtc = ExtractStringField(*metaObject, "executed_at_utc"); executedAtUtc.has_value()) {
+            out.meta.executedAtUtc = Trim(*executedAtUtc);
+        }
         if (const auto baseHeadSha = ExtractStringField(*metaObject, "base_head_sha"); baseHeadSha.has_value()) {
             out.meta.baseHeadSha = Trim(*baseHeadSha);
         }
@@ -1252,7 +1285,7 @@ auto ParseCommitPlan(const std::filesystem::path& InFile,
             if (const auto value = ExtractStringField(*plannerObject, "ai-model"); value.has_value()) {
                 out.meta.planner.model = Trim(*value);
             } else if (const auto valueLegacy = ExtractStringField(*plannerObject, "model"); valueLegacy.has_value()) {
-                // Backward compatibility for older commit plan schema.
+                // Backward compatibility for older plan schema.
                 out.meta.planner.model = Trim(*valueLegacy);
             }
             if (const auto value = ExtractStringField(*plannerObject, "request_id"); value.has_value()) {
@@ -1303,6 +1336,12 @@ auto ValidateCommitPlanForAiMode(const CommitPlanPayload& InPlan,
         }
         return false;
     }
+    if (!IsValidRequiredValue(InPlan.meta.generatedAtUtc)) {
+        if (OutError != nullptr) {
+            *OutError = "meta.generated_at_utc is missing or placeholder";
+        }
+        return false;
+    }
     if (!IsValidRequiredValue(InPlan.meta.baseHeadSha)) {
         if (OutError != nullptr) {
             *OutError = "meta.base_head_sha is missing or placeholder";
@@ -1343,8 +1382,8 @@ auto ValidateCommitPlanForAiMode(const CommitPlanPayload& InPlan,
     bool hasValidMessage = false;
     auto scanEntries = [&](const std::vector<RepoCommitPlanEntry>& InEntries) {
         for (const auto& entry : InEntries) {
-            for (const auto& message : entry.messages) {
-                if (IsValidRequiredValue(message)) {
+            for (const auto& item : entry.commits) {
+                if (IsValidRequiredValue(item.message)) {
                     hasValidMessage = true;
                     return;
                 }
@@ -1362,6 +1401,41 @@ auto ValidateCommitPlanForAiMode(const CommitPlanPayload& InPlan,
         return false;
     }
 
+    auto validateEntryReviews = [&](const std::vector<RepoCommitPlanEntry>& InEntries,
+                                    const std::string& InStageName) -> bool {
+        for (const auto& entry : InEntries) {
+            for (std::size_t idx = 0; idx < entry.commits.size(); ++idx) {
+                const auto& item = entry.commits[idx];
+                if (!IsValidRequiredValue(item.message)) {
+                    if (OutError != nullptr) {
+                        *OutError = std::format("{}.repo({}).commits[{}].message is missing or placeholder", InStageName, entry.repoKey, idx);
+                    }
+                    return false;
+                }
+                if (ToLower(Trim(item.review.verdict)) != "pass") {
+                    if (OutError != nullptr) {
+                        *OutError = std::format("{}.repo({}).commits[{}].review.verdict must be \"pass\"", InStageName, entry.repoKey, idx);
+                    }
+                    return false;
+                }
+                if (!IsValidRequiredValue(item.review.reason)) {
+                    if (OutError != nullptr) {
+                        *OutError = std::format("{}.repo({}).commits[{}].review.reason is missing or placeholder", InStageName, entry.repoKey, idx);
+                    }
+                    return false;
+                }
+            }
+        }
+        return true;
+    };
+
+    if (!validateEntryReviews(InPlan.commitEntries, "stages.commit")) {
+        return false;
+    }
+    if (!validateEntryReviews(InPlan.postSyncEntries, "stages.post_sync")) {
+        return false;
+    }
+
     return true;
 }
 
@@ -1371,7 +1445,9 @@ auto BuildStageMessageMap(const CommitPlanPayload& InPlan,
     auto appendEntries = [&](const std::vector<RepoCommitPlanEntry>& entries) {
         for (const auto& entry : entries) {
             auto& bucket = out[NormalizePlanKey(entry.repoKey)];
-            bucket.insert(bucket.end(), entry.messages.begin(), entry.messages.end());
+            for (const auto& item : entry.commits) {
+                bucket.push_back(item.message);
+            }
         }
     };
 
@@ -2092,7 +2168,7 @@ void RegisterCommit(CLI::App& InApp) {
     cmd->add_option("--jobs,-j", *jobs, "Parallel repo workers (auto|N)")->default_str("auto");
     auto* commitPlanFile = new std::string{};
     auto* planStage = new std::string{"commit"};
-    cmd->add_option("--commit-plan-file", *commitPlanFile, "Commit plan JSON file");
+    cmd->add_option("--plan-file", *commitPlanFile, "Plan JSON file");
     cmd->add_option("--plan-stage", *planStage, "Plan stage: commit|post_sync|both")->default_str("commit");
 
     // Provider option
@@ -2207,7 +2283,7 @@ void RegisterCommit(CLI::App& InApp) {
         std::unordered_map<std::string, std::vector<std::string>> stageMessages;
         if (!commitPlanFile->empty()) {
             if (!repos->empty()) {
-                std::cerr << "Error: --commit-plan-file cannot be combined with --repos\n";
+                std::cerr << "Error: --plan-file cannot be combined with --repos\n";
                 std::exit(2);
             }
 
@@ -2215,7 +2291,7 @@ void RegisterCommit(CLI::App& InApp) {
             const auto normalizedCommitPlanPath = NormalizeInputPathForCurrentPlatform(*commitPlanFile);
             const auto parsed = ParseCommitPlan(std::filesystem::path(normalizedCommitPlanPath), &planError);
             if (!parsed.has_value()) {
-                std::cerr << "Error: invalid --commit-plan-file: " << normalizedCommitPlanPath;
+                std::cerr << "Error: invalid --plan-file: " << normalizedCommitPlanPath;
                 if (!planError.empty()) {
                     std::cerr << " (" << planError << ")";
                 }
@@ -2225,7 +2301,7 @@ void RegisterCommit(CLI::App& InApp) {
 
             std::string validationError;
             if (!ValidateCommitPlanForAiMode(*parsed, &validationError)) {
-                std::cerr << "Error: invalid --commit-plan-file: " << *commitPlanFile;
+                std::cerr << "Error: invalid --plan-file: " << normalizedCommitPlanPath;
                 if (!validationError.empty()) {
                     std::cerr << " (" << validationError << ")";
                 }

@@ -136,26 +136,536 @@ maybe_prompt_yes_no() {
   return 1
 }
 
-commit_plan_template_path() {
-  printf '%s\n' "$PROJECT_ROOT/assets/commit-plan/default-plan.json"
+plan_template_path() {
+  printf '%s\n' "$PROJECT_ROOT/assets/plan/default-plan.json"
 }
 
-default_commit_plan_output_path() {
+ignore_gate_allowlist_path() {
+  printf '%s\n' "$PROJECT_ROOT/assets/gitignore/ignore-gate-allowlist.txt"
+}
+
+default_plan_output_path() {
   local workspace_root="${KANO_GIT_MASTER_ROOT:-$PWD}"
-  printf '%s\n' "$workspace_root/.kano/cache/git/commit-plans/default-plan.json"
+  printf '%s\n' "$workspace_root/.kano/cache/git/plans/default-plan.json"
 }
 
-maybe_handle_commit_plan_init_request() {
-  local -a args=("$@")
-  local out_path force template parent allow_ignore_gate
+current_utc_iso8601() {
+  date -u +"%Y-%m-%dT%H:%M:%SZ"
+}
 
-  if [[ "${args[0]:-}" != "commit-plan" || "${args[1]:-}" != "init" ]]; then
+plan_has_executed_timestamp() {
+  local plan_file="$1"
+  local executed_at=""
+
+  [[ -f "$plan_file" ]] || return 1
+
+  if has_command jq; then
+    executed_at="$(jq -r '.meta.executed_at_utc // ""' "$plan_file" 2>/dev/null || true)"
+  else
+    executed_at="$(sed -n 's/.*"executed_at_utc"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$plan_file" 2>/dev/null | head -n 1)"
+  fi
+
+  executed_at="$(printf '%s' "$executed_at" | tr -d '\r\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  [[ -n "$executed_at" ]]
+}
+
+has_command() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+ensure_windows_ai_runtime_paths() {
+  # npm-based wrappers (codex/copilot) require node runtime in PATH.
+  # Add common Windows node path when running in Git Bash/WSL style environments.
+  if ! has_command node && [[ -x "/mnt/c/Program Files/nodejs/node.exe" ]]; then
+    PATH="/mnt/c/Program Files/nodejs:$PATH"
+  fi
+
+  # In Linux shells (WSL/Git-Bash style), wrappers may call `node` (without .exe).
+  # Create a lightweight shim so npm CLI wrappers can execute consistently.
+  if ! has_command node && [[ -x "/mnt/c/Program Files/nodejs/node.exe" ]]; then
+    local shim_dir="$PROJECT_ROOT/.kano/cache/runtime-shims"
+    mkdir -p "$shim_dir"
+    cat > "$shim_dir/node" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$#" -gt 0 && "$1" == /* ]] && command -v wslpath >/dev/null 2>&1; then
+  first_arg="$(wslpath -w "$1" 2>/dev/null || printf '%s' "$1")"
+  shift
+  exec "/mnt/c/Program Files/nodejs/node.exe" "$first_arg" "$@"
+fi
+exec "/mnt/c/Program Files/nodejs/node.exe" "$@"
+EOF
+    chmod +x "$shim_dir/node" >/dev/null 2>&1 || true
+    PATH="$shim_dir:$PATH"
+  fi
+}
+
+is_working_command() {
+  local cmd="$1"
+  shift || true
+  has_command "$cmd" || return 1
+  "$cmd" "$@" >/dev/null 2>&1
+}
+
+resolve_plan_ai_provider() {
+  local requested="${1:-auto}"
+  local provider="${requested,,}"
+  provider="${provider// /}"
+
+  if [[ -n "$provider" && "$provider" != "auto" ]]; then
+    case "$provider" in
+      codex|opencode|copilot)
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+    printf '%s\n' "$provider"
+    return 0
+  fi
+
+  if is_working_command copilot --help || (has_command gh && gh copilot --version >/dev/null 2>&1); then
+    printf '%s\n' "copilot"
+    return 0
+  fi
+  if is_working_command codex --help; then
+    printf '%s\n' "codex"
+    return 0
+  fi
+  if is_working_command opencode --help; then
+    printf '%s\n' "opencode"
+    return 0
+  fi
+
+  return 1
+}
+
+resolve_plan_ai_model() {
+  local provider="${1:-}"
+  local requested="${2:-auto}"
+  local model="$requested"
+  if [[ -z "$model" || "$model" == "auto" ]]; then
+    case "$provider" in
+      codex|opencode|copilot)
+        model="gpt-5-mini"
+        ;;
+      *)
+        model=""
+        ;;
+    esac
+  fi
+  printf '%s\n' "$model"
+}
+
+collect_dirty_repo_context_text() {
+  local workspace_root="$1"
+  local -a repos=()
+  local repo rel status_out line_count
+  local output=""
+
+  mapfile -t repos < <(discover_workspace_git_repos "$workspace_root")
+  if [[ "${#repos[@]}" -eq 0 ]]; then
+    repos=("$workspace_root")
+  fi
+
+  for repo in "${repos[@]}"; do
+    [[ -n "$repo" ]] || continue
+    if ! status_out="$(run_git_quick "$repo" status --porcelain --untracked-files=all 2>/dev/null)"; then
+      continue
+    fi
+    if [[ -z "$status_out" ]]; then
+      continue
+    fi
+
+    rel="$(repo_rel_path "$workspace_root" "$repo")"
+    line_count="$(printf '%s\n' "$status_out" | awk 'NF {c+=1} END {print c+0}')"
+    output+="repo: $rel"$'\n'
+    output+="changes: $line_count"$'\n'
+    output+="status:"$'\n'
+    output+="$(printf '%s\n' "$status_out" | head -n 80)"$'\n'
+    output+=$'\n'
+  done
+
+  printf '%s' "$output"
+}
+
+extract_json_between_markers() {
+  local text="$1"
+  local begin_marker="$2"
+  local end_marker="$3"
+
+  printf '%s\n' "$text" | sed -n "/$begin_marker/,/$end_marker/p" | sed '1d;$d'
+}
+
+normalize_ai_json_text() {
+  local text="$1"
+  local normalized="$text"
+  normalized="${normalized//$'\r'/}"
+  normalized="$(printf '%s\n' "$normalized" | sed -E 's/^[[:space:]]*[-*•][[:space:]]*//')"
+  normalized="$(printf '%s\n' "$normalized" | sed -E 's#</?p>##g; s#</?div>##g; s#</?span>##g')"
+  normalized="${normalized//&quot;/\"}"
+  normalized="${normalized//&#34;/\"}"
+  normalized="${normalized//&apos;/\'}"
+  normalized="${normalized//&#39;/\'}"
+  normalized="${normalized//&amp;/&}"
+  normalized="${normalized//&lt;/<}"
+  normalized="${normalized//&gt;/>}"
+  printf '%s\n' "$normalized"
+}
+
+run_plan_ai_generate_once() {
+  local provider="$1"
+  local model="$2"
+  local prompt="$3"
+
+  case "$provider" in
+    codex)
+      if [[ -n "$model" ]]; then
+        codex -q --model "$model" "$prompt" 2>&1
+      else
+        codex -q "$prompt" 2>&1
+      fi
+      ;;
+    opencode)
+      if [[ -n "$model" ]]; then
+        opencode run --model "$model" "$prompt" 2>&1
+      else
+        opencode run "$prompt" 2>&1
+      fi
+      ;;
+    copilot)
+      if has_command copilot; then
+        if [[ -n "$model" ]]; then
+          copilot -s -p "$prompt" --model "$model" --no-color --stream off --no-ask-user 2>&1
+        else
+          copilot -s -p "$prompt" --no-color --stream off --no-ask-user 2>&1
+        fi
+      elif has_command gh && gh copilot --version >/dev/null 2>&1; then
+        if [[ -n "$model" ]]; then
+          gh copilot -- -s -p "$prompt" --model "$model" --no-color --stream off --no-ask-user 2>&1
+        else
+          gh copilot -- -s -p "$prompt" --no-color --stream off --no-ask-user 2>&1
+        fi
+      else
+        echo "copilot command unavailable" >&2
+        return 1
+      fi
+      ;;
+    *)
+      echo "unsupported provider: $provider" >&2
+      return 1
+      ;;
+  esac
+}
+
+ensure_plan_provider_usable() {
+  local provider="$1"
+  local debug_ai="${KOG_DEBUG_AI:-0}"
+  case "$provider" in
+    codex)
+      if is_working_command codex --help; then
+        return 0
+      fi
+      if [[ "$debug_ai" == "1" ]]; then
+        echo "[debug-ai] codex path: $(command -v codex 2>/dev/null || echo '<missing>')" >&2
+        codex --help 2>&1 | sed -n '1,6p' >&2 || true
+      fi
+      return 1
+      ;;
+    opencode)
+      if is_working_command opencode --help; then
+        return 0
+      fi
+      if [[ "$debug_ai" == "1" ]]; then
+        echo "[debug-ai] opencode path: $(command -v opencode 2>/dev/null || echo '<missing>')" >&2
+        opencode --help 2>&1 | sed -n '1,6p' >&2 || true
+      fi
+      return 1
+      ;;
+    copilot)
+      if is_working_command copilot --help || (has_command gh && gh copilot --version >/dev/null 2>&1); then
+        return 0
+      fi
+      if [[ "$debug_ai" == "1" ]]; then
+        echo "[debug-ai] node path: $(command -v node 2>/dev/null || echo '<missing>')" >&2
+        echo "[debug-ai] copilot path: $(command -v copilot 2>/dev/null || echo '<missing>')" >&2
+        copilot --help 2>&1 | sed -n '1,8p' >&2 || true
+        if has_command gh; then
+          gh copilot --version 2>&1 | sed -n '1,8p' >&2 || true
+        fi
+      fi
+      return 1
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+summarize_text_head() {
+  local text="$1"
+  local max_lines="${2:-4}"
+  printf '%s\n' "$text" | sed -n "1,${max_lines}p" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g;s/^ //;s/ $//'
+}
+
+plan_prompt_template_path() {
+  local custom="${KOG_PLAN_PROMPT_TEMPLATE:-}"
+  if [[ -n "$custom" ]]; then
+    printf '%s\n' "$custom"
+    return 0
+  fi
+  printf '%s\n' "$PROJECT_ROOT/assets/prompts/base/plan-init.md"
+}
+
+plan_debug_dir() {
+  local workspace_root="$1"
+  printf '%s\n' "$workspace_root/.kano/cache/git/plans/debug"
+}
+
+build_plan_prompt() {
+  local provider="$1"
+  local model="$2"
+  local template_json="$3"
+  local dirty_context="$4"
+  local prompt_file prompt
+
+  prompt_file="$(plan_prompt_template_path)"
+  if [[ -f "$prompt_file" ]]; then
+    prompt="$(cat "$prompt_file")"
+    prompt="${prompt//'{{PROVIDER}}'/$provider}"
+    prompt="${prompt//'{{MODEL}}'/$model}"
+    prompt="${prompt//'{{TEMPLATE_JSON}}'/$template_json}"
+    prompt="${prompt//'{{DIRTY_CONTEXT}}'/$dirty_context}"
+    printf '%s\n' "$prompt"
+    return 0
+  fi
+
+  cat <<EOF
+You are generating a complete plan JSON for kano-git.
+Return STRICT JSON ONLY between markers:
+BEGIN_KOG_PLAN_JSON
+<json>
+END_KOG_PLAN_JSON
+
+Rules:
+- Output a full JSON object with keys: meta, stages.
+- Keep existing meta fields that are already concrete values (plan_id/generated_at_utc/base_head_sha/dirty_fingerprint).
+- meta.planner.provider must be "${provider}".
+- meta.planner.ai-model must be "${model}".
+- meta.review.verdict must be "pass".
+- meta.review.reason must be a concise overall review summary.
+- stages.commit must contain dirty repos only.
+- For each repo entry, provide commits array.
+- Every commit item must include:
+  - message (Conventional Commit one-line)
+  - review.verdict = "pass"
+  - review.reason = concise reason
+- stages.post_sync must be [].
+- Do NOT include placeholder values.
+
+Current template JSON (fill it, do not remove required keys):
+$template_json
+
+Workspace dirty context:
+$dirty_context
+EOF
+}
+
+plan_init_ai_fill() {
+  local out_path="$1"
+  local workspace_root="$2"
+  local requested_provider="${3:-auto}"
+  local requested_model="${4:-auto}"
+  local debug_ai="${5:-0}"
+  local provider model dirty_context prompt ai_raw ai_json
+  local template_json
+  local tmp_json tmp_out tmp_err
+  local debug_dir debug_prefix debug_enabled
+
+  debug_enabled=0
+  if [[ "$debug_ai" == "1" || "$debug_ai" == "true" || "${KOG_DEBUG_AI:-0}" == "1" ]]; then
+    debug_enabled=1
+  fi
+  if [[ "$debug_enabled" -eq 1 ]]; then
+    export KOG_DEBUG_AI=1
+    debug_dir="$(plan_debug_dir "$workspace_root")"
+    mkdir -p "$debug_dir"
+    debug_prefix="$debug_dir/pia-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+  fi
+
+  ensure_windows_ai_runtime_paths
+
+  provider="$(resolve_plan_ai_provider "$requested_provider" || true)"
+  if [[ -z "$provider" ]]; then
+    echo "Error: no AI provider found for plan init -ai (supported: codex/opencode/copilot)." >&2
+    return 2
+  fi
+  if ! ensure_plan_provider_usable "$provider"; then
+    echo "Error: selected AI provider is not executable in current shell: $provider" >&2
+    echo "Hint: ensure runtime dependencies (e.g. node for npm-based CLIs) are available in PATH." >&2
+    return 2
+  fi
+  model="$(resolve_plan_ai_model "$provider" "$requested_model")"
+  dirty_context="$(collect_dirty_repo_context_text "$workspace_root")"
+  if [[ -z "$dirty_context" ]]; then
+    echo "Error: no dirty repository changes found; nothing to generate for plan." >&2
+    return 2
+  fi
+
+  template_json="$(cat "$out_path")"
+  prompt="$(build_plan_prompt "$provider" "$model" "$template_json" "$dirty_context")"
+  if [[ "$debug_enabled" -eq 1 ]]; then
+    printf '%s\n' "$prompt" > "${debug_prefix}.prompt.txt"
+  fi
+
+  if ! ai_raw="$(run_plan_ai_generate_once "$provider" "$model" "$prompt")"; then
+    echo "Error: AI provider command failed for plan generation." >&2
+    echo "Provider: $provider  Model: ${model:-auto}" >&2
+    if [[ "$debug_enabled" -eq 1 ]]; then
+      printf '%s\n' "$ai_raw" > "${debug_prefix}.raw.txt"
+      echo "Debug: ${debug_prefix}.raw.txt" >&2
+      echo "Debug: ${debug_prefix}.prompt.txt" >&2
+    fi
+    local ai_fail_summary
+    ai_fail_summary="$(summarize_text_head "$ai_raw" 6)"
+    [[ -n "$ai_fail_summary" ]] && echo "Detail: $ai_fail_summary" >&2
+    return 2
+  fi
+  if [[ "$debug_enabled" -eq 1 ]]; then
+    printf '%s\n' "$ai_raw" > "${debug_prefix}.raw.txt"
+  fi
+  local ai_normalized
+  ai_normalized="$(normalize_ai_json_text "$ai_raw")"
+  ai_json="$(extract_json_between_markers "$ai_normalized" "BEGIN_KOG_PLAN_JSON" "END_KOG_PLAN_JSON")"
+  if [[ -z "$ai_json" ]]; then
+    ai_json="$(printf '%s\n' "$ai_normalized" | sed -n '/^{/,/^}/p')"
+  fi
+  if [[ -z "$ai_json" ]]; then
+    echo "Error: AI did not return JSON payload for plan." >&2
+    if [[ "$debug_enabled" -eq 1 ]]; then
+      echo "Debug: ${debug_prefix}.raw.txt" >&2
+      echo "Debug: ${debug_prefix}.prompt.txt" >&2
+    fi
+    local ai_out_summary
+    ai_out_summary="$(summarize_text_head "$ai_raw" 6)"
+    [[ -n "$ai_out_summary" ]] && echo "Detail: $ai_out_summary" >&2
+    return 2
+  fi
+
+  tmp_json="$(mktemp)"
+  tmp_out="$(mktemp)"
+  tmp_err="$(mktemp)"
+  printf '%s\n' "$ai_json" > "$tmp_json"
+  if [[ "$debug_enabled" -eq 1 ]]; then
+    printf '%s\n' "$ai_normalized" > "${debug_prefix}.normalized.txt"
+    cp "$tmp_json" "${debug_prefix}.extracted.json"
+  fi
+
+  if has_command jq; then
+    if ! jq -e '
+        (.meta|type=="object") and
+        (.stages|type=="object") and
+        (.stages.commit|type=="array") and
+        (.stages.post_sync|type=="array")
+      ' "$tmp_json" >/dev/null 2>"$tmp_err"; then
+      echo "Error: AI JSON payload schema invalid for plan generation." >&2
+      if [[ "$debug_enabled" -eq 1 ]]; then
+        cp "$tmp_err" "${debug_prefix}.schema.err.txt"
+        echo "Debug: ${debug_prefix}.extracted.json" >&2
+        echo "Debug: ${debug_prefix}.normalized.txt" >&2
+        echo "Debug: ${debug_prefix}.schema.err.txt" >&2
+        echo "Debug: ${debug_prefix}.raw.txt" >&2
+        echo "Debug: ${debug_prefix}.prompt.txt" >&2
+      fi
+      rm -f "$tmp_json" "$tmp_out" "$tmp_err"
+      return 2
+    fi
+
+    if ! jq -e '
+        [.stages.commit[]?.commits[]?] as $c |
+        ( ($c|length) > 0 ) and
+        all($c[]; (.message|type=="string" and length>0)
+                    and (.review.verdict=="pass")
+                    and (.review.reason|type=="string" and length>0))
+      ' "$tmp_json" >/dev/null 2>"$tmp_err"; then
+      echo "Error: AI JSON payload missing required per-commit review fields." >&2
+      if [[ "$debug_enabled" -eq 1 ]]; then
+        cp "$tmp_err" "${debug_prefix}.review.err.txt"
+        echo "Debug: ${debug_prefix}.extracted.json" >&2
+        echo "Debug: ${debug_prefix}.normalized.txt" >&2
+        echo "Debug: ${debug_prefix}.review.err.txt" >&2
+        echo "Debug: ${debug_prefix}.raw.txt" >&2
+        echo "Debug: ${debug_prefix}.prompt.txt" >&2
+      fi
+      rm -f "$tmp_json" "$tmp_out" "$tmp_err"
+      return 2
+    fi
+
+    jq '.' "$tmp_json" > "$tmp_out"
+    mv "$tmp_out" "$out_path"
+    rm -f "$tmp_json" "$tmp_err"
+  else
+    if ! grep -q '"meta"' "$tmp_json" || ! grep -q '"stages"' "$tmp_json" || ! grep -q '"commit"' "$tmp_json"; then
+      echo "Error: AI JSON payload missing required plan sections (meta/stages/commit)." >&2
+      if [[ "$debug_enabled" -eq 1 ]]; then
+        echo "Debug: ${debug_prefix}.extracted.json" >&2
+        echo "Debug: ${debug_prefix}.normalized.txt" >&2
+        echo "Debug: ${debug_prefix}.raw.txt" >&2
+        echo "Debug: ${debug_prefix}.prompt.txt" >&2
+      fi
+      rm -f "$tmp_json" "$tmp_out" "$tmp_err"
+      return 2
+    fi
+    if grep -q 'replace-with-' "$tmp_json"; then
+      echo "Error: AI JSON payload still contains placeholder values." >&2
+      if [[ "$debug_enabled" -eq 1 ]]; then
+        echo "Debug: ${debug_prefix}.extracted.json" >&2
+        echo "Debug: ${debug_prefix}.normalized.txt" >&2
+        echo "Debug: ${debug_prefix}.raw.txt" >&2
+        echo "Debug: ${debug_prefix}.prompt.txt" >&2
+      fi
+      rm -f "$tmp_json" "$tmp_out" "$tmp_err"
+      return 2
+    fi
+    if ! grep -q '"review"' "$tmp_json" || ! grep -q '"verdict"[[:space:]]*:[[:space:]]*"pass"' "$tmp_json"; then
+      echo "Error: AI JSON payload missing required review verdict fields." >&2
+      if [[ "$debug_enabled" -eq 1 ]]; then
+        echo "Debug: ${debug_prefix}.extracted.json" >&2
+        echo "Debug: ${debug_prefix}.normalized.txt" >&2
+        echo "Debug: ${debug_prefix}.raw.txt" >&2
+        echo "Debug: ${debug_prefix}.prompt.txt" >&2
+      fi
+      rm -f "$tmp_json" "$tmp_out" "$tmp_err"
+      return 2
+    fi
+    mv "$tmp_json" "$out_path"
+    rm -f "$tmp_err"
+  fi
+
+  echo "Filled plan with AI: provider=$provider model=${model:-auto}"
+  if [[ "$debug_enabled" -eq 1 ]]; then
+    echo "Debug: ${debug_prefix}.prompt.txt" >&2
+    echo "Debug: ${debug_prefix}.raw.txt" >&2
+    echo "Debug: ${debug_prefix}.normalized.txt" >&2
+    echo "Debug: ${debug_prefix}.extracted.json" >&2
+  fi
+  return 0
+}
+
+maybe_handle_plan_init_request() {
+  local -a args=("$@")
+  local out_path force template parent allow_ignore_gate ai_auto ai_provider ai_model debug_ai
+
+  if [[ "${args[0]:-}" != "plan" || "${args[1]:-}" != "init" ]]; then
     return 1
   fi
 
-  out_path="$(default_commit_plan_output_path)"
+  out_path="$(default_plan_output_path)"
   force=0
   allow_ignore_gate=0
+  ai_auto=0
+  ai_provider="auto"
+  ai_model="auto"
+  debug_ai=0
 
   local i arg
   for ((i = 2; i < ${#args[@]}; i++)); do
@@ -178,18 +688,48 @@ maybe_handle_commit_plan_init_request() {
       --allow-ignore-gate)
         allow_ignore_gate=1
         ;;
+      -ai|--ai-auto)
+        ai_auto=1
+        ;;
+      --ai-provider|--provider)
+        if ((i + 1 >= ${#args[@]})); then
+          echo "Error: $arg requires a value" >&2
+          return 2
+        fi
+        ai_provider="${args[$((i + 1))]}"
+        i=$((i + 1))
+        ;;
+      --ai-provider=*|--provider=*)
+        ai_provider="${arg#*=}"
+        ;;
+      --ai-model|--model)
+        if ((i + 1 >= ${#args[@]})); then
+          echo "Error: $arg requires a value" >&2
+          return 2
+        fi
+        ai_model="${args[$((i + 1))]}"
+        i=$((i + 1))
+        ;;
+      --ai-model=*|--model=*)
+        ai_model="${arg#*=}"
+        ;;
+      --debug-ai)
+        debug_ai=1
+        ;;
       -h|--help)
         cat <<'EOF'
-Usage: kog commit-plan init [--output <path>] [--force] [--allow-ignore-gate]
+Usage: kog plan init [--output <path>] [--force] [--allow-ignore-gate]
+                           [--ai-auto|-ai] [--ai-provider <name>] [--ai-model <name>]
+                           [--debug-ai]
 
-Create commit plan JSON from assets template.
+Create plan JSON from assets template.
 Default output:
-  ./.kano/cache/git/commit-plans/default-plan.json
+  ./.kano/cache/git/plans/default-plan.json
 EOF
         return 0
         ;;
       *)
-        echo "Error: unknown argument for commit-plan init: $arg" >&2
+        echo "Error: unknown argument for plan init: $arg" >&2
         return 2
         ;;
     esac
@@ -200,34 +740,48 @@ EOF
   fi
 
   local workspace_root="${KANO_GIT_MASTER_ROOT:-$PWD}"
-  check_ignore_gate "$workspace_root" "commit-plan-init"
+  check_ignore_gate "$workspace_root" "plan-init"
   local ignore_gate_status=$?
   if [[ "$ignore_gate_status" -ne 0 ]]; then
     return "$ignore_gate_status"
   fi
 
-  template="$(commit_plan_template_path)"
+  template="$(plan_template_path)"
   if [[ ! -f "$template" ]]; then
-    echo "Error: commit plan template not found: $template" >&2
+    echo "Error: plan template not found: $template" >&2
     return 2
   fi
 
   if [[ -e "$out_path" && "$force" -ne 1 ]]; then
-    echo "Error: output already exists: $out_path" >&2
-    echo "Hint: pass --force to overwrite." >&2
-    return 2
+    if plan_has_executed_timestamp "$out_path"; then
+      force=1
+      echo "[plan] existing plan has meta.executed_at_utc; overwrite enabled automatically." >&2
+    else
+      echo "Error: output already exists: $out_path" >&2
+      echo "Hint: pass --force to overwrite." >&2
+      return 2
+    fi
   fi
 
   parent="$(dirname "$out_path")"
   mkdir -p "$parent"
   cp "$template" "$out_path"
 
-  local workspace_root base_head dirty_fp state_pair
+  local workspace_root base_head dirty_fp state_pair generated_at
   workspace_root="${KANO_GIT_MASTER_ROOT:-$PWD}"
+  local ignore_ds_root ignore_ds_manifest
+  ignore_ds_root="$PROJECT_ROOT/assets/ignore-sources"
+  ignore_ds_manifest="$PROJECT_ROOT/assets/ignore-sources/local/datasource.manifest.json"
+  sed -i "s|replace-with-ignore-datasource-root|$ignore_ds_root|g" "$out_path"
+  sed -i "s|replace-with-ignore-datasource-manifest|$ignore_ds_manifest|g" "$out_path"
   if git -C "$workspace_root" rev-parse --git-dir >/dev/null 2>&1; then
     state_pair="$(collect_workspace_state_hashes "$workspace_root")"
     base_head="${state_pair%% *}"
     dirty_fp="${state_pair#* }"
+    generated_at="$(current_utc_iso8601)"
+    if [[ -n "$generated_at" ]]; then
+      sed -i "s/replace-with-generated-at-utc/$generated_at/g" "$out_path"
+    fi
     if [[ -n "$base_head" ]]; then
       sed -i "s/replace-with-head-sha/$base_head/g" "$out_path"
     fi
@@ -236,8 +790,34 @@ EOF
     fi
   fi
 
-  echo "Wrote commit plan template: $out_path"
+  if [[ "$ai_auto" -eq 1 ]]; then
+    if ! plan_init_ai_fill "$out_path" "$workspace_root" "$ai_provider" "$ai_model" "$debug_ai"; then
+      return 2
+    fi
+  fi
+
+  echo "Wrote plan template: $out_path"
   return 0
+}
+
+resolve_abs_path_from_base() {
+  # moved to native C++ command
+  printf '%s\n' "$2"
+}
+
+merge_gitignore_with_rules() {
+  # moved to native C++ command
+  return 0
+}
+
+apply_ignore_stage_from_plan() {
+  # moved to native C++ command
+  return 0
+}
+
+maybe_handle_plan_stage_request() {
+  # Moved to native C++ command implementation.
+  return 1
 }
 
 normalize_launcher_args() {
@@ -251,11 +831,20 @@ normalize_launcher_args() {
 
   local command="$1"
   case "$command" in
-    cp)
+    pi)
+      out_ref=("plan" "init" "${@:2}")
+      return 0
+      ;;
+    pia)
+      out_ref=("plan" "init" "--ai-auto" "${@:2}")
+      return 0
+      ;;
+    pa)
       command="commit-push"
       ;;
-    cpa)
-      command="commit-push"
+    pv)
+      out_ref=("plan" "verify" "${@:2}")
+      return 0
       ;;
   esac
 
@@ -264,12 +853,9 @@ normalize_launcher_args() {
     return 0
   fi
 
-  local disable_auto_commit_plan=0
+  local disable_auto_plan=0
   local allow_ignore_gate=0
-  if [[ "$1" == "cp" ]]; then
-    out_ref+=("commit-push")
-    shift
-  elif [[ "$1" == "cpa" ]]; then
+  if [[ "$1" == "pa" ]]; then
     out_ref+=("commit-push" "--ai-auto")
     shift
   fi
@@ -280,8 +866,8 @@ normalize_launcher_args() {
       -ai)
         out_ref+=("--ai-auto")
         ;;
-      --no-commit-plan-auto)
-        disable_auto_commit_plan=1
+      --no-plan-auto)
+        disable_auto_plan=1
         ;;
       --allow-ignore-gate)
         allow_ignore_gate=1
@@ -296,14 +882,18 @@ normalize_launcher_args() {
     KOG_ALLOW_IGNORE_GATE=1
   fi
 
-  # Default policy: when AI mode is requested for commit/commit-push, route through commit plan.
-  # Users can opt out with launcher-only flag: --no-commit-plan-auto
+  # Default policy: when AI mode is requested for commit/commit-push, route through plan.
+  # Users can opt out with launcher-only flag: --no-plan-auto
   local normalized_command="${out_ref[0]:-}"
-  if [[ "$disable_auto_commit_plan" -eq 0 ]] && [[ "$normalized_command" == "commit" || "$normalized_command" == "commit-push" ]]; then
+  if [[ "$disable_auto_plan" -eq 0 ]] && [[ "$normalized_command" == "commit" || "$normalized_command" == "commit-push" ]]; then
     local ai_requested=0
     local has_plan_file=0
+    local has_message=0
+    local agent_mode_requested=0
     local arg
-    for arg in "${out_ref[@]}"; do
+    local idx
+    for ((idx = 0; idx < ${#out_ref[@]}; idx++)); do
+      arg="${out_ref[$idx]}"
       case "$arg" in
         --ai-auto|--ai-provider|--ai-model|--provider|--model)
           ai_requested=1
@@ -311,18 +901,74 @@ normalize_launcher_args() {
         --ai-provider=*|--ai-model=*|--provider=*|--model=*)
           ai_requested=1
           ;;
-        --commit-plan-file|--commit-plan-file=*)
+        --plan-file|--plan-file=*)
           has_plan_file=1
+          ;;
+        -m|--message)
+          if ((idx + 1 < ${#out_ref[@]})); then
+            has_message=1
+          fi
+          ;;
+        -m=*|--message=*)
+          has_message=1
+          ;;
+        --agent)
+          if ((idx + 1 < ${#out_ref[@]})) && [[ -n "${out_ref[$((idx + 1))]}" ]] && [[ "${out_ref[$((idx + 1))]}" != "manual" ]]; then
+            agent_mode_requested=1
+          fi
+          ;;
+        --agent=*)
+          if [[ "${arg#--agent=}" != "manual" && -n "${arg#--agent=}" ]]; then
+            agent_mode_requested=1
+          fi
           ;;
       esac
     done
 
     if [[ "$ai_requested" -eq 1 ]] && [[ "$has_plan_file" -eq 0 ]]; then
+      # Fast-path: in agent mode with explicit -m and trivial single-change workspace,
+      # skip plan generation and run direct commit pipeline.
+      if [[ "${KANO_AGENT_MODE:-0}" == "1" || "$agent_mode_requested" -eq 1 ]] && [[ "$has_message" -eq 1 ]]; then
+        local workspace_root="${KANO_GIT_MASTER_ROOT:-$PWD}"
+        local dirty_stats dirty_repo_count dirty_change_count
+        dirty_stats="$(compute_dirty_workspace_scope "$workspace_root")"
+        dirty_repo_count="${dirty_stats%% *}"
+        dirty_change_count="${dirty_stats#* }"
+        if [[ "$dirty_repo_count" == "1" && "$dirty_change_count" == "1" ]]; then
+          return 0
+        fi
+      fi
       local workspace_root="${KANO_GIT_MASTER_ROOT:-$PWD}"
-      local default_plan_file="${KOG_COMMIT_PLAN_FILE:-$workspace_root/.kano/cache/git/commit-plans/default-plan.json}"
-      out_ref+=("--commit-plan-file" "$default_plan_file")
+      local default_plan_file="${KOG_PLAN_FILE:-$workspace_root/.kano/cache/git/plans/default-plan.json}"
+      out_ref+=("--plan-file" "$default_plan_file")
     fi
   fi
+}
+
+compute_dirty_workspace_scope() {
+  local workspace_root="$1"
+  local -a repos=()
+  local repo status_out line_count
+  local dirty_repos=0
+  local total_changes=0
+
+  mapfile -t repos < <(discover_workspace_git_repos "$workspace_root")
+  if [[ "${#repos[@]}" -eq 0 ]]; then
+    repos=("$workspace_root")
+  fi
+
+  for repo in "${repos[@]}"; do
+    [[ -n "$repo" ]] || continue
+    status_out="$(run_git_quick "$repo" status --porcelain --untracked-files=all 2>/dev/null || true)"
+    [[ -n "$status_out" ]] || continue
+    line_count="$(printf '%s\n' "$status_out" | awk 'NF {c+=1} END {print c+0}')"
+    if [[ "$line_count" =~ ^[0-9]+$ ]] && [[ "$line_count" -gt 0 ]]; then
+      dirty_repos=$((dirty_repos + 1))
+      total_changes=$((total_changes + line_count))
+    fi
+  done
+
+  printf '%s %s\n' "$dirty_repos" "$total_changes"
 }
 
 is_ai_mode_commit_command() {
@@ -348,7 +994,7 @@ is_ai_mode_commit_command() {
   return 1
 }
 
-extract_commit_plan_file_from_args() {
+extract_plan_file_from_args() {
   local -n out_ref="$1"
   shift
   local -a args=("$@")
@@ -358,20 +1004,170 @@ extract_commit_plan_file_from_args() {
   for ((i = 0; i < ${#args[@]}; i++)); do
     arg="${args[$i]}"
     case "$arg" in
-      --commit-plan-file)
+      --plan-file)
         if ((i + 1 < ${#args[@]})); then
           out_ref="${args[$((i + 1))]}"
           return 0
         fi
         ;;
-      --commit-plan-file=*)
-        out_ref="${arg#--commit-plan-file=}"
+      --plan-file=*)
+        out_ref="${arg#--plan-file=}"
         return 0
         ;;
     esac
   done
 
   return 1
+}
+
+extract_ai_options_from_args() {
+  local -n out_provider_ref="$1"
+  local -n out_model_ref="$2"
+  shift 2
+
+  local -a args=("$@")
+  local i arg
+
+  out_provider_ref="auto"
+  out_model_ref="auto"
+
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    arg="${args[$i]}"
+    case "$arg" in
+      --ai-provider|--provider)
+        if ((i + 1 < ${#args[@]})); then
+          out_provider_ref="${args[$((i + 1))]}"
+          i=$((i + 1))
+        fi
+        ;;
+      --ai-provider=*|--provider=*)
+        out_provider_ref="${arg#*=}"
+        ;;
+      --ai-model|--model)
+        if ((i + 1 < ${#args[@]})); then
+          out_model_ref="${args[$((i + 1))]}"
+          i=$((i + 1))
+        fi
+        ;;
+      --ai-model=*|--model=*)
+        out_model_ref="${arg#*=}"
+        ;;
+    esac
+  done
+}
+
+plan_file_needs_refresh() {
+  local plan_file="$1"
+  local bytes=0
+
+  if [[ ! -f "$plan_file" || ! -r "$plan_file" ]]; then
+    return 0
+  fi
+
+  bytes=$(wc -c <"$plan_file" 2>/dev/null || echo 0)
+  if [[ ! "$bytes" =~ ^[0-9]+$ || "$bytes" -le 0 ]]; then
+    return 0
+  fi
+
+  if grep -q 'replace-with-' "$plan_file" 2>/dev/null; then
+    return 0
+  fi
+
+  return 1
+}
+
+print_plan_summary() {
+  local plan_file="$1"
+  [[ -f "$plan_file" ]] || return 0
+
+  if has_command jq; then
+    local meta_line
+    meta_line="$(jq -r '
+      "[plan] meta: plan_id=\(.meta.plan_id // "-") generated=\(.meta.generated_at_utc // "-") provider=\(.meta.planner.provider // "-") ai-model=\(.meta.planner["ai-model"] // "-")"
+    ' "$plan_file" 2>/dev/null || true)"
+    [[ -n "$meta_line" ]] && echo "$meta_line" >&2
+
+    local counts
+    counts="$(jq -r '
+      .stages.commit as $c |
+      "[plan] commits: repos=\(($c // [])|length) total=\(($c // [])|map((.commits // [])|length)|add // 0)"
+    ' "$plan_file" 2>/dev/null || true)"
+    [[ -n "$counts" ]] && echo "$counts" >&2
+
+    jq -r '
+      .stages.commit[]? as $r |
+      ($r.repo // "?") as $repo |
+      ($r.commits // [])[]? |
+      "[plan] - \($repo): \(.message // "")"
+    ' "$plan_file" 2>/dev/null | head -n 10 >&2 || true
+  else
+    echo "[plan] file: $plan_file (install jq for detailed summary)" >&2
+  fi
+}
+
+maybe_show_plan_summary_for_ai_command() {
+  local -a args=("$@")
+  local plan_file=""
+
+  if ! is_ai_mode_commit_command "${args[@]}"; then
+    return 0
+  fi
+  if ! extract_plan_file_from_args plan_file "${args[@]}"; then
+    return 0
+  fi
+  print_plan_summary "$plan_file"
+}
+
+maybe_auto_prepare_plan_for_ai_command() {
+  local -a args=("$@")
+  local cmd="${args[0]:-}"
+  local plan_file="" ai_provider="auto" ai_model="auto"
+  local allow_ignore_gate=0
+  local i arg status
+  local -a init_args=()
+
+  # Focus on pa flow (normalized to commit-push) and commit --ai flows.
+  if [[ "$cmd" != "commit" && "$cmd" != "commit-push" ]]; then
+    return 0
+  fi
+  if ! is_ai_mode_commit_command "${args[@]}"; then
+    return 0
+  fi
+  if ! extract_plan_file_from_args plan_file "${args[@]}"; then
+    return 0
+  fi
+  if ! plan_file_needs_refresh "$plan_file"; then
+    return 0
+  fi
+
+  extract_ai_options_from_args ai_provider ai_model "${args[@]}"
+
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    arg="${args[$i]}"
+    case "$arg" in
+      --allow-ignore-gate)
+        allow_ignore_gate=1
+        ;;
+    esac
+  done
+
+  init_args=("plan" "init" "--output" "$plan_file" "--force" "--ai-auto" "--ai-provider" "$ai_provider" "--ai-model" "$ai_model")
+  if [[ "$allow_ignore_gate" -eq 1 ]]; then
+    init_args+=("--allow-ignore-gate")
+  fi
+
+  if [[ "${KOG_PA_AUTO_PLAN_DEBUG:-0}" == "1" ]]; then
+    init_args+=("--debug-ai")
+  fi
+
+  echo "[plan] auto-prepare start: $plan_file" >&2
+  if maybe_handle_plan_init_request "${init_args[@]}"; then
+    echo "[plan] auto-prepare done: $plan_file" >&2
+    return 0
+  fi
+  status=$?
+  echo "Error: auto-prepare plan failed (exit=$status)." >&2
+  return "$status"
 }
 
 sha256_from_stdin() {
@@ -655,7 +1451,7 @@ is_probable_ignore_artifact_path() {
     */.cache/*|.cache/*|*/.pytest_cache/*|.pytest_cache/*|*/.mypy_cache/*|.mypy_cache/*|*/.idea/*|.idea/*|*/.vscode/*|.vscode/*)
       return 0
       ;;
-    */node_modules/*|node_modules/*|*/dist/*|dist/*|*/build/*|build/*|*/bin/*|bin/*|*/obj/*|obj/*|*/target/*|target/*)
+    */node_modules/*|node_modules/*|*/dist/*|dist/*|*/obj/*|obj/*|*/target/*|target/*|*/out/*|out/*)
       return 0
       ;;
     *.log|*.tmp|*.temp|*.cache|*.bak|*.swp|*.swo|*.class|*.obj|*.o|*.pdb|*.ilk|*.dmp|*.pyc)
@@ -665,9 +1461,31 @@ is_probable_ignore_artifact_path() {
   return 1
 }
 
+is_ignore_gate_allowlisted_path() {
+  local p="${1//\\//}"
+  local lower="${p,,}"
+  local allowlist_file pattern
+
+  allowlist_file="$(ignore_gate_allowlist_path)"
+  [[ -f "$allowlist_file" ]] || return 1
+
+  while IFS= read -r pattern || [[ -n "$pattern" ]]; do
+    pattern="${pattern%$'\r'}"
+    [[ -n "$pattern" ]] || continue
+    [[ "${pattern:0:1}" == "#" ]] && continue
+    local norm="${pattern//\\//}"
+    local norm_lower="${norm,,}"
+    if [[ "$lower" == $norm_lower ]]; then
+      return 0
+    fi
+  done < "$allowlist_file"
+
+  return 1
+}
+
 check_ignore_gate() {
   local repo_root="$1"
-  local context="${2:-commit-plan}"
+  local context="${2:-plan}"
   local allow="${KOG_ALLOW_IGNORE_GATE:-0}"
   local -a repos=()
   local -a untracked=()
@@ -693,6 +1511,9 @@ check_ignore_gate() {
     rel="$(repo_rel_path "$repo_root" "$repo")"
     mapfile -t untracked < <(run_git_quick "$repo" ls-files --others --exclude-standard 2>/dev/null || true)
     for path in "${untracked[@]}"; do
+      if is_ignore_gate_allowlisted_path "$path"; then
+        continue
+      fi
       if is_probable_ignore_artifact_path "$path"; then
         if [[ "$rel" == "." ]]; then
           candidates+=("$path")
@@ -716,12 +1537,22 @@ check_ignore_gate() {
   if (( ${#candidates[@]} > limit )); then
     echo "  ... and $(( ${#candidates[@]} - limit )) more" >&2
   fi
-  echo "Hint: update .gitignore first, then regenerate commit plan." >&2
-  echo "Hint: override once with --allow-ignore-gate (or KOG_ALLOW_IGNORE_GATE=1)." >&2
+  if [[ "$context" == "ai-commit" ]]; then
+    echo "Reason: current plan-driven AI commit run is blocked by ignore gate to prevent accidental artifact commits." >&2
+    echo "Action: either add/remove those files now, or bypass once on the same command with --allow-ignore-gate." >&2
+  else
+    echo "Reason: ignore gate requires artifact-like untracked files to be handled before proceeding." >&2
+    echo "Action: add/remove those files, or bypass once with --allow-ignore-gate." >&2
+  fi
   return 3
 }
 
-validate_commit_plan_required_fields_for_ai_mode() {
+maybe_handle_ignore_doctor_request() {
+  # Moved to native C++ command implementation.
+  return 1
+}
+
+validate_plan_required_fields_for_ai_mode() {
   local -a args=("$@")
   local plan_file=""
   local bytes=0
@@ -737,24 +1568,24 @@ validate_commit_plan_required_fields_for_ai_mode() {
     return "$ignore_gate_status"
   fi
 
-  if ! extract_commit_plan_file_from_args plan_file "${args[@]}"; then
-    echo "Error: AI mode commit requires --commit-plan-file." >&2
-    echo "Hint: set KOG_COMMIT_PLAN_FILE or pass --commit-plan-file <path>." >&2
+  if ! extract_plan_file_from_args plan_file "${args[@]}"; then
+    echo "Error: AI mode commit requires --plan-file." >&2
+    echo "Hint: set KOG_PLAN_FILE or pass --plan-file <path>." >&2
     return 2
   fi
 
   if [[ ! -f "$plan_file" ]]; then
-    echo "Error: commit plan file not found: $plan_file" >&2
+    echo "Error: plan file not found: $plan_file" >&2
     return 2
   fi
   if [[ ! -r "$plan_file" ]]; then
-    echo "Error: commit plan file is not readable: $plan_file" >&2
+    echo "Error: plan file is not readable: $plan_file" >&2
     return 2
   fi
 
   bytes=$(wc -c <"$plan_file" 2>/dev/null || echo 0)
   if [[ ! "$bytes" =~ ^[0-9]+$ || "$bytes" -le 0 ]]; then
-    echo "Error: commit plan file is empty: $plan_file" >&2
+    echo "Error: plan file is empty: $plan_file" >&2
     return 2
   fi
 
@@ -1329,7 +2160,7 @@ maybe_rebuild_binary_if_needed() {
 should_skip_update_prompt_for_command() {
   local command="${1:-}"
   case "$command" in
-    ""|help|-h|--help|-v|--version|version|completion|complete|__complete|sync|tui|discover|remote|slog|log|uplog|commit-plan)
+    ""|help|-h|--help|-v|--version|version|completion|complete|__complete|sync|tui|discover|remote|slog|log|uplog|plan|ignore)
       return 0
       ;;
   esac
@@ -1818,10 +2649,26 @@ Launcher commands:
   build                               Build native binary (incremental; auto-prepare required C++ submodules)
   rebuild                             Rebuild native binary (full clean rebuild; auto-prepare required C++ submodules)
   discover                            Run manual repo discovery, refresh cache, and print cache file path
-  commit-plan init                    Write commit plan template from assets
-  cp ...                              Alias of commit-push ...
-  cpa ...                             Alias of commit-push --ai-auto (auto adds --commit-plan-file)
-    --no-commit-plan-auto             Launcher-only: disable AI->commit-plan auto routing
+  plan init                           Write plan template from assets
+    -ai, --ai-auto                    Generate and fill plan via one AI request
+    --ai-provider <name>              AI provider for plan generation (codex|opencode|copilot|auto)
+    --ai-model <name>                 AI model for plan generation
+  plan apply                          Apply plan stages (default: all)
+    --stage ignore|commit|all         Run only selected stage(s)
+  plan verify                         Verify plan schema
+    --stage ignore|commit|all         Verify selected stage requirements
+  ignore doctor                       Scan tracked files and suggest likely ignore candidates
+    --repo <path>                     Limit scan root (default: current workspace)
+    --limit <n>                       Max findings (default: 200)
+    --json                            Output JSON
+    --apply                           Apply untrack actions (git rm --cached) for findings
+    --dry-run                         Print planned untrack actions only
+    --yes                             Skip interactive confirmation for --apply
+  pi ...                              Alias of plan init ...
+  pia ...                             Alias of plan init --ai-auto ...
+  pa ...                              Alias of commit-push --ai-auto (auto adds --plan-file)
+                                      Auto-prepares plan via AI when missing/placeholder
+    --no-plan-auto                    Launcher-only: disable AI->plan auto routing
     --allow-ignore-gate               Launcher-only: bypass ignore gate for this run
     --llvm                            Use Homebrew LLVM clang/clang++ toolchain (macOS)
     --modules                         Enable C++20 modules (requires compatible toolchain)
@@ -1835,12 +2682,15 @@ Launcher env:
                                       Allow downgrade rebuild in non-interactive mode
   KOG_BUILD_USE_LLVM=0|1              Build with LLVM toolchain (macOS default: 1)
   KOG_BUILD_ENABLE_MODULES=0|1        Build with C++20 modules (macOS default: 1)
-  KOG_COMMIT_PLAN_FILE=<path>         Default commit plan file used when AI flags are present
-                                      AI mode enforces required commit-plan fields before execution
+  KOG_PLAN_FILE=<path>                Default plan file used when AI flags are present
+                                      AI mode enforces required plan fields before execution,
+                                      including per-commit review (verdict=pass + reason)
+  KOG_PA_AUTO_PLAN_DEBUG=1            Enable --debug-ai during pa auto plan prepare
   KOG_MERKLE_ENABLE_FIND_SCAN=1       Include filesystem .git scan for unregistered nested repos
                                       (default: 0; use discover cache + submodule list)
   KOG_ALLOW_IGNORE_GATE=1             Bypass ignore gate (not recommended)
   KOG_IGNORE_GATE=off                 Disable ignore gate globally (not recommended)
+                                      Static allowlist: assets/gitignore/ignore-gate-allowlist.txt
   KOG_SKIP_AUTO_REBUILD_WHEN_DIRTY=0|1
                                       Skip auto-rebuild checks when git worktree is dirty (default: 1)
 EOF
@@ -1871,12 +2721,12 @@ run_native_binary() {
         continue
       fi
       case "$arg" in
-        --commit-plan-file)
+        --plan-file)
           next_is_plan_path=1
           ;;
-        --commit-plan-file=*)
-          if converted="$(to_windows_path "${arg#--commit-plan-file=}" 2>/dev/null)"; then
-            native_args[$i]="--commit-plan-file=$converted"
+        --plan-file=*)
+          if converted="$(to_windows_path "${arg#--plan-file=}" 2>/dev/null)"; then
+            native_args[$i]="--plan-file=$converted"
           fi
           ;;
       esac
@@ -1914,14 +2764,14 @@ main() {
       ;;
   esac
 
-  local commit_plan_init_status=0
-  if maybe_handle_commit_plan_init_request "${args[@]}"; then
+  local plan_init_status=0
+  if maybe_handle_plan_init_request "${args[@]}"; then
     exit 0
   else
-    commit_plan_init_status=$?
+    plan_init_status=$?
   fi
-  if [[ "$commit_plan_init_status" -ne 1 ]]; then
-    exit "$commit_plan_init_status"
+  if [[ "$plan_init_status" -ne 1 ]]; then
+    exit "$plan_init_status"
   fi
 
   local completion_status=0
@@ -1943,10 +2793,16 @@ main() {
   if [[ "${args[0]:-}" == "discover" ]]; then
     rewrite_discover_command_args exec_args "${args[@]}"
   fi
-  validate_commit_plan_required_fields_for_ai_mode "${exec_args[@]}"
-  local commit_plan_validate_status=$?
-  if [[ "$commit_plan_validate_status" -ne 0 ]]; then
-    exit "$commit_plan_validate_status"
+  maybe_auto_prepare_plan_for_ai_command "${exec_args[@]}"
+  local auto_plan_status=$?
+  if [[ "$auto_plan_status" -ne 0 ]]; then
+    exit "$auto_plan_status"
+  fi
+  maybe_show_plan_summary_for_ai_command "${exec_args[@]}"
+  validate_plan_required_fields_for_ai_mode "${exec_args[@]}"
+  local plan_validate_status=$?
+  if [[ "$plan_validate_status" -ne 0 ]]; then
+    exit "$plan_validate_status"
   fi
 
   if binary="$(find_binary)"; then

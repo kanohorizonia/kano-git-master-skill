@@ -1,0 +1,4 @@
+# Ignore-gate allowlist (one shell-glob per line, relative path style)
+# Use this for source paths that would otherwise match broad artifact patterns.
+
+src/cpp/build/script/**

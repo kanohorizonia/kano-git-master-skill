@@ -168,7 +168,7 @@ Note: sourcing will also define globals used by those functions (see the script 
   - **Agent Proxy Contract (Required)**: For agent-proxy `smart-*` operations, pass `--agent <name>` to declare identity (e.g., `codex`, `copilot`, `cursor`, `kiro`, `claude`).
   - If `--agent` is provided and not `manual`, agent proxy mode (代理模式) is active: a fixed message (`-m/--message`) is required and in-script AI review is disabled (`--no-ai-review`) to avoid duplicate model cost.
   - **Launcher agent env (important)**: when invoking through `kog`/`kano-git`, set `KANO_AGENT_MODE=1` for agent runs so launcher update prompts/interactive flows are suppressed before command dispatch.
-    - Example: `KANO_AGENT_MODE=1 kog cpa --agent codex -m "chore: update workspace"`
+    - Example: `KANO_AGENT_MODE=1 kog pa --agent codex -m "chore: update workspace"`
   - Intent: commit/review decisions stay on the same agent model executing the command, not a second model pipeline.
   - Use `--agent manual` for human-operated runs.
   - **In case of Copilot auth failure, seek human assistance** to resolve credentials. Do not bypass reviews if a reliable safety check is possible.

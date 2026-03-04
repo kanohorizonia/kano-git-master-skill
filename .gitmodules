@@ -12,3 +12,6 @@
 	url = https://github.com/ArthurSonzogni/FTXUI.git
 	branch = branch_v5.0.0
 	kog-push-policy = skip
+[submodule "assets/ignore-sources/upstream/github-gitignore"]
+	path = assets/ignore-sources/upstream/github-gitignore
+	url = https://github.com/github/gitignore.git

@@ -1,0 +1,8 @@
+# Kano local ignore datasource rules
+# Format:
+#   <pattern>
+#   <pattern> # optional comment
+
+.kano/cache/
+*.tmp
+*.temp

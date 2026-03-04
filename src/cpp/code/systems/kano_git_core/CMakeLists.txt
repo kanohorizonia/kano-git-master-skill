@@ -39,6 +39,7 @@ target_sources(kano_git_core
     commands/private/commands/log_cmd.cpp
     commands/private/commands/meta_cmd.cpp
     commands/private/commands/p4_cmd.cpp
+    commands/private/commands/plan_cmd.cpp
     commands/private/commands/push_cmd.cpp
     commands/private/commands/remote_cmd.cpp
     commands/private/commands/resolve_cmd.cpp
