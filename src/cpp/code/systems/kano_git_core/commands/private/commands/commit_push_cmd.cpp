@@ -30,6 +30,44 @@ auto Trim(std::string InValue) -> std::string {
     return InValue.substr(start);
 }
 
+auto NormalizeInputPathForCurrentPlatform(std::string InPath) -> std::string {
+    auto path = Trim(std::move(InPath));
+    if (path.empty()) {
+        return path;
+    }
+#if defined(_WIN32)
+    auto toWindowsPath = [](char drive, std::string rest) -> std::string {
+        for (auto& ch : rest) {
+            if (ch == '/') {
+                ch = '\\';
+            }
+        }
+        if (!rest.empty() && (rest.front() == '\\' || rest.front() == '/')) {
+            rest.erase(rest.begin());
+        }
+        std::string out;
+        out.reserve(rest.size() + 3);
+        out.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(drive))));
+        out.append(":\\");
+        out.append(rest);
+        return out;
+    };
+
+    if (path.rfind("/cygdrive/", 0) == 0 && path.size() > 11 && std::isalpha(static_cast<unsigned char>(path[10])) &&
+        path[11] == '/') {
+        return toWindowsPath(path[10], path.substr(12));
+    }
+    if (path.rfind("/mnt/", 0) == 0 && path.size() > 6 && std::isalpha(static_cast<unsigned char>(path[5])) &&
+        path[6] == '/') {
+        return toWindowsPath(path[5], path.substr(7));
+    }
+    if (path.size() > 3 && path[0] == '/' && std::isalpha(static_cast<unsigned char>(path[1])) && path[2] == '/') {
+        return toWindowsPath(path[1], path.substr(3));
+    }
+#endif
+    return path;
+}
+
 auto ParseReposCsv(const std::string& InCsv) -> std::vector<std::string> {
     std::vector<std::string> repos;
     std::istringstream iss(InCsv);
@@ -100,10 +138,11 @@ auto BuildCommitPlanTemplateJson() -> std::string {
   "meta": {
     "schema_version": "2",
     "plan_id": "replace-with-unique-id",
+    "base_head_sha": "replace-with-head-sha",
+    "dirty_fingerprint": "replace-with-dirty-fingerprint",
     "planner": {
-      "agent": "human",
       "provider": "human",
-      "model": ""
+      "ai-model": ""
     },
     "review": {
       "verdict": "pass",
@@ -339,7 +378,7 @@ void RegisterCommitPush(CLI::App& InApp) {
         if (*writeCommitPlanTemplate) {
             const auto outPath = commitPlanOut->empty()
                 ? DefaultCommitPlanOutputPath(workspaceRoot)
-                : std::filesystem::path(*commitPlanOut).lexically_normal();
+                : std::filesystem::path(NormalizeInputPathForCurrentPlatform(*commitPlanOut)).lexically_normal();
             std::string error;
             if (!WriteTextFile(outPath, BuildCommitPlanTemplateJson(), &error)) {
                 std::cerr << "Error: failed to write commit plan template to " << outPath.generic_string();
@@ -358,7 +397,8 @@ void RegisterCommitPush(CLI::App& InApp) {
         }
 
         const bool agentMode = IsAgentModeEnabled();
-        const bool hasCommitPlan = !commitPlanFile->empty();
+        const auto normalizedCommitPlanFile = NormalizeInputPathForCurrentPlatform(*commitPlanFile);
+        const bool hasCommitPlan = !normalizedCommitPlanFile.empty();
         const bool useAiCommitFlow = !hasCommitPlan;
 
         if (agentMode && hasCommitPlan) {
@@ -405,8 +445,8 @@ void RegisterCommitPush(CLI::App& InApp) {
         if (!message->empty()) {
             commitArgs.insert(commitArgs.end(), {"-m", *message});
         }
-        if (!commitPlanFile->empty()) {
-            commitArgs.insert(commitArgs.end(), {"--commit-plan-file", *commitPlanFile, "--plan-stage", "commit"});
+        if (hasCommitPlan) {
+            commitArgs.insert(commitArgs.end(), {"--commit-plan-file", normalizedCommitPlanFile, "--plan-stage", "commit"});
         }
         if (useAiCommitFlow && !aiProvider->empty()) {
             commitArgs.insert(commitArgs.end(), {"--ai-provider", *aiProvider});
@@ -475,8 +515,8 @@ void RegisterCommitPush(CLI::App& InApp) {
         if (!message->empty()) {
             postCommitArgs.insert(postCommitArgs.end(), {"-m", *message});
         }
-        if (!commitPlanFile->empty()) {
-            postCommitArgs.insert(postCommitArgs.end(), {"--commit-plan-file", *commitPlanFile, "--plan-stage", "post_sync"});
+        if (hasCommitPlan) {
+            postCommitArgs.insert(postCommitArgs.end(), {"--commit-plan-file", normalizedCommitPlanFile, "--plan-stage", "post_sync"});
         }
         if (useAiCommitFlow && !aiProvider->empty()) {
             postCommitArgs.insert(postCommitArgs.end(), {"--ai-provider", *aiProvider});

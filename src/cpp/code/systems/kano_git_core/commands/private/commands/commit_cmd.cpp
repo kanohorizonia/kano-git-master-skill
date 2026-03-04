@@ -61,6 +61,44 @@ auto Trim(std::string InValue) -> std::string {
     return InValue.substr(start);
 }
 
+auto NormalizeInputPathForCurrentPlatform(std::string InPath) -> std::string {
+    auto path = Trim(std::move(InPath));
+    if (path.empty()) {
+        return path;
+    }
+#if defined(_WIN32)
+    auto toWindowsPath = [](char drive, std::string rest) -> std::string {
+        for (auto& ch : rest) {
+            if (ch == '/') {
+                ch = '\\';
+            }
+        }
+        if (!rest.empty() && (rest.front() == '\\' || rest.front() == '/')) {
+            rest.erase(rest.begin());
+        }
+        std::string out;
+        out.reserve(rest.size() + 3);
+        out.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(drive))));
+        out.append(":\\");
+        out.append(rest);
+        return out;
+    };
+
+    if (path.rfind("/cygdrive/", 0) == 0 && path.size() > 11 && std::isalpha(static_cast<unsigned char>(path[10])) &&
+        path[11] == '/') {
+        return toWindowsPath(path[10], path.substr(12));
+    }
+    if (path.rfind("/mnt/", 0) == 0 && path.size() > 6 && std::isalpha(static_cast<unsigned char>(path[5])) &&
+        path[6] == '/') {
+        return toWindowsPath(path[5], path.substr(7));
+    }
+    if (path.size() > 3 && path[0] == '/' && std::isalpha(static_cast<unsigned char>(path[1])) && path[2] == '/') {
+        return toWindowsPath(path[1], path.substr(3));
+    }
+#endif
+    return path;
+}
+
 auto ToLower(std::string InValue) -> std::string {
     std::transform(InValue.begin(), InValue.end(), InValue.begin(), [](unsigned char c) {
         return static_cast<char>(std::tolower(c));
@@ -884,7 +922,6 @@ struct RepoCommitPlanEntry {
 
 struct CommitPlanPayload {
     struct PlannerMeta {
-        std::string agent;
         std::string provider;
         std::string model;
         std::string requestId;
@@ -898,6 +935,8 @@ struct CommitPlanPayload {
     struct Meta {
         std::string schemaVersion;
         std::string planId;
+        std::string baseHeadSha;
+        std::string dirtyFingerprint;
         PlannerMeta planner;
         ReviewMeta review;
     };
@@ -1200,15 +1239,21 @@ auto ParseCommitPlan(const std::filesystem::path& InFile,
         if (const auto planId = ExtractStringField(*metaObject, "plan_id"); planId.has_value()) {
             out.meta.planId = Trim(*planId);
         }
+        if (const auto baseHeadSha = ExtractStringField(*metaObject, "base_head_sha"); baseHeadSha.has_value()) {
+            out.meta.baseHeadSha = Trim(*baseHeadSha);
+        }
+        if (const auto dirtyFingerprint = ExtractStringField(*metaObject, "dirty_fingerprint"); dirtyFingerprint.has_value()) {
+            out.meta.dirtyFingerprint = Trim(*dirtyFingerprint);
+        }
         if (const auto plannerObject = ExtractObjectBodyForKey(*metaObject, "planner"); plannerObject.has_value()) {
-            if (const auto value = ExtractStringField(*plannerObject, "agent"); value.has_value()) {
-                out.meta.planner.agent = Trim(*value);
-            }
             if (const auto value = ExtractStringField(*plannerObject, "provider"); value.has_value()) {
                 out.meta.planner.provider = Trim(*value);
             }
-            if (const auto value = ExtractStringField(*plannerObject, "model"); value.has_value()) {
+            if (const auto value = ExtractStringField(*plannerObject, "ai-model"); value.has_value()) {
                 out.meta.planner.model = Trim(*value);
+            } else if (const auto valueLegacy = ExtractStringField(*plannerObject, "model"); valueLegacy.has_value()) {
+                // Backward compatibility for older commit plan schema.
+                out.meta.planner.model = Trim(*valueLegacy);
             }
             if (const auto value = ExtractStringField(*plannerObject, "request_id"); value.has_value()) {
                 out.meta.planner.requestId = Trim(*value);
@@ -1238,6 +1283,86 @@ auto ParseCommitPlan(const std::filesystem::path& InFile,
         return std::nullopt;
     }
     return out;
+}
+
+auto IsPlaceholderValue(const std::string& InValue) -> bool {
+    const auto value = Trim(InValue);
+    return value.rfind("replace-with-", 0) == 0;
+}
+
+auto IsValidRequiredValue(const std::string& InValue) -> bool {
+    const auto value = Trim(InValue);
+    return !value.empty() && !IsPlaceholderValue(value);
+}
+
+auto ValidateCommitPlanForAiMode(const CommitPlanPayload& InPlan,
+                                 std::string* OutError) -> bool {
+    if (!IsValidRequiredValue(InPlan.meta.planId)) {
+        if (OutError != nullptr) {
+            *OutError = "meta.plan_id is missing or placeholder";
+        }
+        return false;
+    }
+    if (!IsValidRequiredValue(InPlan.meta.baseHeadSha)) {
+        if (OutError != nullptr) {
+            *OutError = "meta.base_head_sha is missing or placeholder";
+        }
+        return false;
+    }
+    if (!IsValidRequiredValue(InPlan.meta.dirtyFingerprint)) {
+        if (OutError != nullptr) {
+            *OutError = "meta.dirty_fingerprint is missing or placeholder";
+        }
+        return false;
+    }
+    if (!IsValidRequiredValue(InPlan.meta.planner.provider)) {
+        if (OutError != nullptr) {
+            *OutError = "meta.planner.provider is missing or placeholder";
+        }
+        return false;
+    }
+    if (!IsValidRequiredValue(InPlan.meta.planner.model)) {
+        if (OutError != nullptr) {
+            *OutError = "meta.planner.ai-model is missing or placeholder";
+        }
+        return false;
+    }
+    if (ToLower(Trim(InPlan.meta.review.verdict)) != "pass") {
+        if (OutError != nullptr) {
+            *OutError = "meta.review.verdict must be \"pass\"";
+        }
+        return false;
+    }
+    if (!IsValidRequiredValue(InPlan.meta.review.reason)) {
+        if (OutError != nullptr) {
+            *OutError = "meta.review.reason is missing or placeholder";
+        }
+        return false;
+    }
+
+    bool hasValidMessage = false;
+    auto scanEntries = [&](const std::vector<RepoCommitPlanEntry>& InEntries) {
+        for (const auto& entry : InEntries) {
+            for (const auto& message : entry.messages) {
+                if (IsValidRequiredValue(message)) {
+                    hasValidMessage = true;
+                    return;
+                }
+            }
+        }
+    };
+    scanEntries(InPlan.commitEntries);
+    if (!hasValidMessage) {
+        scanEntries(InPlan.postSyncEntries);
+    }
+    if (!hasValidMessage) {
+        if (OutError != nullptr) {
+            *OutError = "no valid non-placeholder commit messages found in stages.commit/post_sync";
+        }
+        return false;
+    }
+
+    return true;
 }
 
 auto BuildStageMessageMap(const CommitPlanPayload& InPlan,
@@ -2087,9 +2212,10 @@ void RegisterCommit(CLI::App& InApp) {
             }
 
             std::string planError;
-            const auto parsed = ParseCommitPlan(std::filesystem::path(*commitPlanFile), &planError);
+            const auto normalizedCommitPlanPath = NormalizeInputPathForCurrentPlatform(*commitPlanFile);
+            const auto parsed = ParseCommitPlan(std::filesystem::path(normalizedCommitPlanPath), &planError);
             if (!parsed.has_value()) {
-                std::cerr << "Error: invalid --commit-plan-file: " << *commitPlanFile;
+                std::cerr << "Error: invalid --commit-plan-file: " << normalizedCommitPlanPath;
                 if (!planError.empty()) {
                     std::cerr << " (" << planError << ")";
                 }
@@ -2097,24 +2223,21 @@ void RegisterCommit(CLI::App& InApp) {
                 std::exit(2);
             }
 
-            const auto reviewVerdict = ToLower(Trim(parsed->meta.review.verdict));
-            if (reviewVerdict == "reject" || reviewVerdict == "fail") {
-                std::cerr << "Error: commit plan review verdict is " << parsed->meta.review.verdict;
-                if (!parsed->meta.review.reason.empty()) {
-                    std::cerr << " (" << parsed->meta.review.reason << ")";
+            std::string validationError;
+            if (!ValidateCommitPlanForAiMode(*parsed, &validationError)) {
+                std::cerr << "Error: invalid --commit-plan-file: " << *commitPlanFile;
+                if (!validationError.empty()) {
+                    std::cerr << " (" << validationError << ")";
                 }
                 std::cerr << "\n";
                 std::exit(2);
             }
 
             if (!parsed->meta.planner.provider.empty() ||
-                !parsed->meta.planner.agent.empty() ||
                 !parsed->meta.planner.model.empty()) {
-                std::cout << "[native-commit] plan meta: planner_agent="
-                          << (parsed->meta.planner.agent.empty() ? "<unset>" : parsed->meta.planner.agent)
-                          << " provider="
+                std::cout << "[native-commit] plan meta: provider="
                           << (parsed->meta.planner.provider.empty() ? "<unset>" : parsed->meta.planner.provider)
-                          << " model="
+                          << " ai-model="
                           << (parsed->meta.planner.model.empty() ? "<unset>" : parsed->meta.planner.model)
                           << "\n";
             }

@@ -203,7 +203,7 @@ Note: sourcing will also define globals used by those functions (see the script 
 
 ### Prompt templates (AI stages)
 - `smart-commit.sh` now uses file-based prompt templates for `commit-message` and `review` stages.
-- Template layout: `prompts/base/<stage>.md` + optional overlay `prompts/<mode>/<stage>.md`.
+- Template layout: `assets/prompts/base/<stage>.md` + optional overlay `assets/prompts/<mode>/<stage>.md`.
 - Mode routing:
   - `auto` (default): `kano-git-master-skill` repos -> `dev`, others -> `user`
   - override with `--prompt-mode dev|user`

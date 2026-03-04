@@ -31,6 +31,20 @@ auto Trim(std::string InValue) -> std::string {
     return InValue.substr(start);
 }
 
+auto SplitNonEmptyLines(const std::string& InText) -> std::vector<std::string> {
+    std::vector<std::string> lines;
+    std::istringstream iss(InText);
+    std::string line;
+    while (std::getline(iss, line)) {
+        auto trimmed = Trim(line);
+        if (trimmed.empty()) {
+            continue;
+        }
+        lines.push_back(std::move(trimmed));
+    }
+    return lines;
+}
+
 auto ParsePositiveInt(const std::string& InValue, int InDefault) -> int {
     const auto value = Trim(InValue);
     if (value.empty()) {
@@ -159,6 +173,61 @@ struct RepoBranchRefs {
     std::string upstreamCommit = "-";
 };
 
+auto ExtractShaPrefix(const std::string& InLine) -> std::string {
+    const auto trimmed = Trim(InLine);
+    if (trimmed.empty()) {
+        return {};
+    }
+    const auto firstSpace = trimmed.find(' ');
+    if (firstSpace == std::string::npos) {
+        return trimmed;
+    }
+    return trimmed.substr(0, firstSpace);
+}
+
+auto FirstParentRevisionCount(const std::filesystem::path& InRepo, const std::string& InRev) -> int {
+    if (InRev.empty()) {
+        return 0;
+    }
+    const auto out = GitCapture(InRepo, {"rev-list", "--count", "--first-parent", InRev});
+    if (out.exitCode != 0) {
+        return 0;
+    }
+    return ParsePositiveInt(out.stdoutStr, 0);
+}
+
+auto FormatLogLineWithMarkers(const std::filesystem::path& InRepo,
+                              const RepoBranchRefs& InRefs,
+                              const std::string& InLine) -> std::string {
+    const auto trimmed = Trim(InLine);
+    if (trimmed.empty()) {
+        return {};
+    }
+
+    const auto sha = ExtractShaPrefix(trimmed);
+    const auto revision = FirstParentRevisionCount(InRepo, sha);
+
+    const bool isLocal = (!InRefs.localCommit.empty() && InRefs.localCommit != "unknown" && sha == InRefs.localCommit);
+    const bool isRemote = (!InRefs.upstreamCommit.empty() && InRefs.upstreamCommit != "-" && sha == InRefs.upstreamCommit);
+
+    std::ostringstream oss;
+    if (isLocal && isRemote) {
+        oss << "SYNCED ";
+    } else if (isLocal) {
+        oss << "LOCAL ";
+    } else if (isRemote) {
+        oss << "REMOTE ";
+    }
+
+    if (revision > 0) {
+        oss << "[" << revision << "] ";
+    } else {
+        oss << "[?] ";
+    }
+    oss << trimmed;
+    return oss.str();
+}
+
 auto ResolveRepoBranchRefs(const std::filesystem::path& InRepo) -> RepoBranchRefs {
     RepoBranchRefs refs;
 
@@ -208,10 +277,20 @@ auto PrintSlog(const std::filesystem::path& InRepo, int InCount) -> int {
     const auto refs = ResolveRepoBranchRefs(InRepo);
 
     std::cout << "REPO: " << InRepo.lexically_normal().generic_string() << "\n";
-    std::cout << "LOCAL: " << refs.localBranch << " @ " << refs.localCommit << "\n";
-    std::cout << "REMOTE: " << refs.upstreamBranch << " @ " << refs.upstreamCommit << "\n";
-    std::cout << "LAST: " << InCount << " commit(s)\n\n";
-    std::cout << Trim(logOut.stdoutStr) << "\n";
+    std::cout << "SLOG(last " << InCount << ")\n";
+
+    const auto lines = SplitNonEmptyLines(logOut.stdoutStr);
+    if (lines.empty()) {
+        std::cout << "[?] (no commits)\n";
+        return 0;
+    }
+
+    for (const auto& line : lines) {
+        const auto formatted = FormatLogLineWithMarkers(InRepo, refs, line);
+        if (!formatted.empty()) {
+            std::cout << formatted << "\n";
+        }
+    }
     return 0;
 }
 
@@ -259,7 +338,7 @@ auto PrintFullLog(const std::filesystem::path& InRepo, int InCount) -> int {
         return 1;
     }
 
-    const auto logOut = GitCapture(InRepo, {"log", std::format("-{}", InCount), "--decorate=short", "--date=iso-strict", "--pretty=fuller"});
+    const auto logOut = GitCapture(InRepo, {"log", std::format("-{}", InCount), "--decorate=short", "--date=iso-strict", "--pretty=format:%h %an %s"});
     if (logOut.exitCode != 0) {
         std::cerr << "Error: failed to read log for repo: " << InRepo.generic_string() << "\n";
         return 1;
@@ -267,10 +346,20 @@ auto PrintFullLog(const std::filesystem::path& InRepo, int InCount) -> int {
 
     const auto refs = ResolveRepoBranchRefs(InRepo);
     std::cout << "REPO: " << InRepo.lexically_normal().generic_string() << "\n";
-    std::cout << "LOCAL: " << refs.localBranch << " @ " << refs.localCommit << "\n";
-    std::cout << "REMOTE: " << refs.upstreamBranch << " @ " << refs.upstreamCommit << "\n";
-    std::cout << "LAST: " << InCount << " commit(s)\n\n";
-    std::cout << Trim(logOut.stdoutStr) << "\n";
+    std::cout << "LOG(last " << InCount << ")\n";
+
+    const auto lines = SplitNonEmptyLines(logOut.stdoutStr);
+    if (lines.empty()) {
+        std::cout << "[?] (no commits)\n";
+        return 0;
+    }
+
+    for (const auto& line : lines) {
+        const auto formatted = FormatLogLineWithMarkers(InRepo, refs, line);
+        if (!formatted.empty()) {
+            std::cout << formatted << "\n";
+        }
+    }
     return 0;
 }
 
@@ -392,7 +481,7 @@ auto PrintUplog(const std::vector<UplogEntry>& InEntries) -> void {
 
 void RegisterSlog(CLI::App& InApp) {
     auto* cmd = InApp.add_subcommand("slog", "Show short logs recursively by default (sha author subject + local/upstream refs)");
-    auto* count = new int{10};
+    auto* count = new int{3};
     auto* repo = new std::string{};
     auto* countPos = new std::string{};
     auto* repoPos = new std::string{};
@@ -457,8 +546,8 @@ void RegisterSlog(CLI::App& InApp) {
 }
 
 void RegisterLog(CLI::App& InApp) {
-    auto* cmd = InApp.add_subcommand("log", "Show full commit logs recursively by default (fuller format + local/upstream refs)");
-    auto* count = new int{10};
+    auto* cmd = InApp.add_subcommand("log", "Show one-line commit logs recursively by default (LOCAL/REMOTE markers + first-parent revision)");
+    auto* count = new int{3};
     auto* repo = new std::string{};
     auto* countPos = new std::string{};
     auto* repoPos = new std::string{};
