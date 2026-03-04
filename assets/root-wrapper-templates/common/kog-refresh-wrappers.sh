@@ -16,7 +16,12 @@ usage() {
 Usage: kog-refresh-wrappers.sh [options]
 
 Options:
-  --profile <name>      Wrapper profile (default: oss)
+  --profile <name>      Wrapper profile:
+                        - standalone
+                        - oss
+                        - repo-passive-mode
+                        - repo-passive-mode-with-ai
+                        (default: auto infer from env/state/root)
   --target <dir>        Target directory (default: current repo root)
   --no-force            Do not overwrite existing wrappers
   --dry-run             Preview actions only
