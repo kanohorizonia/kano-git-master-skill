@@ -60,12 +60,12 @@
         {
             "name": "linux-ninja-gcc",
             "displayName": "Linux Ninja Multi-Config (GCC)",
-            "description": "Uses Ninja Multi-Config with GCC compiler",
+            "description": "Uses Ninja Multi-Config with GCC 14 compiler",
             "generator": "Ninja Multi-Config",
             "binaryDir": "${sourceDir}/build/_intermediate/linux-ninja-gcc",
             "cacheVariables": {
-                "CMAKE_C_COMPILER": "gcc",
-                "CMAKE_CXX_COMPILER": "g++",
+                "CMAKE_C_COMPILER": "gcc-14",
+                "CMAKE_CXX_COMPILER": "g++-14",
                 "KOG_ENABLE_MODULES": "OFF",
                 "KOG_PRESET_NAME": "linux-ninja-gcc"
             }
