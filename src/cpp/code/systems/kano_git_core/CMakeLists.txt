@@ -68,8 +68,8 @@ endif()
 
 add_library(kano::git_core ALIAS kano_git_core)
 
-# Set C++20 standard and disable module scanning (MSBuild bug workaround)
-target_compile_features(kano_git_core PUBLIC cxx_std_20)
+# Set C++23 standard and disable module scanning (MSBuild bug workaround)
+target_compile_features(kano_git_core PUBLIC cxx_std_23)
 if(KOG_ENABLE_MODULES)
   set_target_properties(kano_git_core PROPERTIES CXX_SCAN_FOR_MODULES ON)
 else()
