@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if ! command -v apt-get >/dev/null 2>&1; then
-  echo "Unsupported Linux package manager for this script. Please install cmake, ninja-build, gcc-14/g++-14, clang, git manually." >&2
+  echo "Unsupported Linux package manager for this script. Please install cmake, ninja-build, gcc-15/g++-15, clang, git manually." >&2
   exit 1
 fi
 
@@ -21,8 +21,8 @@ ${SUDO} DEBIAN_FRONTEND=noninteractive apt-get install -y \
   ca-certificates \
   cmake \
   ninja-build \
-  gcc-14 \
-  g++-14 \
+  gcc-15 \
+  g++-15 \
   clang \
   git \
   pkg-config \
