@@ -2127,8 +2127,19 @@ void RegisterCommit(CLI::App& InApp) {
 
             stageMessages = BuildStageMessageMap(*parsed, *stage);
             if (stageMessages.empty()) {
-                std::cerr << "Error: no entries found for selected --plan-stage in commit plan\n";
-                std::exit(2);
+                std::cout << "[native-commit] no entries found for selected --plan-stage; skipping commit.\n";
+                if (*bProfile) {
+                    const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - totalStart).count();
+                    std::cout << "\n=== Commit Profile Summary ===\n";
+                    std::cout << "mode: native\n";
+                    std::cout << "repo_count: 0\n";
+                    std::cout << "preflight_ms: " << preflightMs << "\n";
+                    std::cout << "planning_ms: 0\n";
+                    std::cout << "commit_ms: 0\n";
+                    std::cout << "summary_ms: 0\n";
+                    std::cout << "total_ms: " << totalMs << "\n";
+                }
+                std::exit(0);
             }
         }
 
