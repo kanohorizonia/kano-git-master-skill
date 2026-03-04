@@ -14,6 +14,7 @@
 #include <iostream>
 #include <iomanip>
 #include <optional>
+#include <print>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -2127,7 +2128,7 @@ void RegisterCommit(CLI::App& InApp) {
 
             stageMessages = BuildStageMessageMap(*parsed, *stage);
             if (stageMessages.empty()) {
-                std::cout << "[native-commit] no entries found for selected --plan-stage; skipping commit.\n";
+                std::println("[native-commit] no entries found for selected --plan-stage; skipping commit.");
                 if (*bProfile) {
                     const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - totalStart).count();
                     std::cout << "\n=== Commit Profile Summary ===\n";
