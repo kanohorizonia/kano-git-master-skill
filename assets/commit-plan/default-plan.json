@@ -1,0 +1,29 @@
+{
+  "meta": {
+    "schema_version": "2",
+    "plan_id": "replace-with-unique-id",
+    "base_head_sha": "replace-with-head-sha",
+    "dirty_fingerprint": "replace-with-dirty-fingerprint",
+    "planner": {
+      "provider": "replace-with-provider",
+      "ai-model": "replace-with-ai-model"
+    },
+    "review": {
+      "verdict": "pass",
+      "reason": "replace-with-review-summary"
+    }
+  },
+  "stages": {
+    "commit": [
+      {
+        "repo": ".",
+        "commits": [
+          {
+            "message": "replace-with-commit-message"
+          }
+        ]
+      }
+    ],
+    "post_sync": []
+  }
+}

@@ -15,6 +15,7 @@ else
   KOG_BUILD_USE_LLVM="${KOG_BUILD_USE_LLVM:-0}"
   KOG_BUILD_ENABLE_MODULES="${KOG_BUILD_ENABLE_MODULES:-0}"
 fi
+KOG_ALLOW_IGNORE_GATE="${KOG_ALLOW_IGNORE_GATE:-0}"
 
 is_interactive_terminal() {
   [[ -t 0 && -t 1 ]]
@@ -135,6 +136,110 @@ maybe_prompt_yes_no() {
   return 1
 }
 
+commit_plan_template_path() {
+  printf '%s\n' "$PROJECT_ROOT/assets/commit-plan/default-plan.json"
+}
+
+default_commit_plan_output_path() {
+  local workspace_root="${KANO_GIT_MASTER_ROOT:-$PWD}"
+  printf '%s\n' "$workspace_root/.kano/cache/git/commit-plans/default-plan.json"
+}
+
+maybe_handle_commit_plan_init_request() {
+  local -a args=("$@")
+  local out_path force template parent allow_ignore_gate
+
+  if [[ "${args[0]:-}" != "commit-plan" || "${args[1]:-}" != "init" ]]; then
+    return 1
+  fi
+
+  out_path="$(default_commit_plan_output_path)"
+  force=0
+  allow_ignore_gate=0
+
+  local i arg
+  for ((i = 2; i < ${#args[@]}; i++)); do
+    arg="${args[$i]}"
+    case "$arg" in
+      --output|-o)
+        if ((i + 1 >= ${#args[@]})); then
+          echo "Error: $arg requires a value" >&2
+          return 2
+        fi
+        out_path="${args[$((i + 1))]}"
+        i=$((i + 1))
+        ;;
+      --output=*|-o=*)
+        out_path="${arg#*=}"
+        ;;
+      --force|-f)
+        force=1
+        ;;
+      --allow-ignore-gate)
+        allow_ignore_gate=1
+        ;;
+      -h|--help)
+        cat <<'EOF'
+Usage: kog commit-plan init [--output <path>] [--force] [--allow-ignore-gate]
+
+Create commit plan JSON from assets template.
+Default output:
+  ./.kano/cache/git/commit-plans/default-plan.json
+EOF
+        return 0
+        ;;
+      *)
+        echo "Error: unknown argument for commit-plan init: $arg" >&2
+        return 2
+        ;;
+    esac
+  done
+
+  if [[ "$allow_ignore_gate" -eq 1 ]]; then
+    KOG_ALLOW_IGNORE_GATE=1
+  fi
+
+  local workspace_root="${KANO_GIT_MASTER_ROOT:-$PWD}"
+  check_ignore_gate "$workspace_root" "commit-plan-init"
+  local ignore_gate_status=$?
+  if [[ "$ignore_gate_status" -ne 0 ]]; then
+    return "$ignore_gate_status"
+  fi
+
+  template="$(commit_plan_template_path)"
+  if [[ ! -f "$template" ]]; then
+    echo "Error: commit plan template not found: $template" >&2
+    return 2
+  fi
+
+  if [[ -e "$out_path" && "$force" -ne 1 ]]; then
+    echo "Error: output already exists: $out_path" >&2
+    echo "Hint: pass --force to overwrite." >&2
+    return 2
+  fi
+
+  parent="$(dirname "$out_path")"
+  mkdir -p "$parent"
+  cp "$template" "$out_path"
+
+  local workspace_root base_head dirty_fp state_pair
+  workspace_root="${KANO_GIT_MASTER_ROOT:-$PWD}"
+  if git -C "$workspace_root" rev-parse --git-dir >/dev/null 2>&1; then
+    state_pair="$(collect_workspace_state_hashes "$workspace_root")"
+    base_head="${state_pair%% *}"
+    dirty_fp="${state_pair#* }"
+    if [[ -n "$base_head" ]]; then
+      sed -i "s/replace-with-head-sha/$base_head/g" "$out_path"
+    fi
+    if [[ -n "$dirty_fp" ]]; then
+      sed -i "s/replace-with-dirty-fingerprint/$dirty_fp/g" "$out_path"
+    fi
+  fi
+
+  echo "Wrote commit plan template: $out_path"
+  return 0
+}
+
 normalize_launcher_args() {
   local -n out_ref="$1"
   shift
@@ -159,6 +264,8 @@ normalize_launcher_args() {
     return 0
   fi
 
+  local disable_auto_commit_plan=0
+  local allow_ignore_gate=0
   if [[ "$1" == "cp" ]]; then
     out_ref+=("commit-push")
     shift
@@ -173,11 +280,487 @@ normalize_launcher_args() {
       -ai)
         out_ref+=("--ai-auto")
         ;;
+      --no-commit-plan-auto)
+        disable_auto_commit_plan=1
+        ;;
+      --allow-ignore-gate)
+        allow_ignore_gate=1
+        ;;
       *)
         out_ref+=("$token")
         ;;
     esac
   done
+
+  if [[ "$allow_ignore_gate" -eq 1 ]]; then
+    KOG_ALLOW_IGNORE_GATE=1
+  fi
+
+  # Default policy: when AI mode is requested for commit/commit-push, route through commit plan.
+  # Users can opt out with launcher-only flag: --no-commit-plan-auto
+  local normalized_command="${out_ref[0]:-}"
+  if [[ "$disable_auto_commit_plan" -eq 0 ]] && [[ "$normalized_command" == "commit" || "$normalized_command" == "commit-push" ]]; then
+    local ai_requested=0
+    local has_plan_file=0
+    local arg
+    for arg in "${out_ref[@]}"; do
+      case "$arg" in
+        --ai-auto|--ai-provider|--ai-model|--provider|--model)
+          ai_requested=1
+          ;;
+        --ai-provider=*|--ai-model=*|--provider=*|--model=*)
+          ai_requested=1
+          ;;
+        --commit-plan-file|--commit-plan-file=*)
+          has_plan_file=1
+          ;;
+      esac
+    done
+
+    if [[ "$ai_requested" -eq 1 ]] && [[ "$has_plan_file" -eq 0 ]]; then
+      local workspace_root="${KANO_GIT_MASTER_ROOT:-$PWD}"
+      local default_plan_file="${KOG_COMMIT_PLAN_FILE:-$workspace_root/.kano/cache/git/commit-plans/default-plan.json}"
+      out_ref+=("--commit-plan-file" "$default_plan_file")
+    fi
+  fi
+}
+
+is_ai_mode_commit_command() {
+  local -a args=("$@")
+  local cmd="${args[0]:-}"
+  local arg
+
+  if [[ "$cmd" != "commit" && "$cmd" != "commit-push" ]]; then
+    return 1
+  fi
+
+  for arg in "${args[@]:1}"; do
+    case "$arg" in
+      --ai-auto|--ai-provider|--ai-model|--provider|--model)
+        return 0
+        ;;
+      --ai-provider=*|--ai-model=*|--provider=*|--model=*)
+        return 0
+        ;;
+    esac
+  done
+
+  return 1
+}
+
+extract_commit_plan_file_from_args() {
+  local -n out_ref="$1"
+  shift
+  local -a args=("$@")
+  local i arg
+
+  out_ref=""
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    arg="${args[$i]}"
+    case "$arg" in
+      --commit-plan-file)
+        if ((i + 1 < ${#args[@]})); then
+          out_ref="${args[$((i + 1))]}"
+          return 0
+        fi
+        ;;
+      --commit-plan-file=*)
+        out_ref="${arg#--commit-plan-file=}"
+        return 0
+        ;;
+    esac
+  done
+
+  return 1
+}
+
+sha256_from_stdin() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | awk '{print $1}'
+    return 0
+  fi
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | awk '{print $1}'
+    return 0
+  fi
+  if command -v openssl >/dev/null 2>&1; then
+    openssl dgst -sha256 | awk '{print $NF}'
+    return 0
+  fi
+  echo "Error: no SHA-256 tool found (sha256sum/shasum/openssl)." >&2
+  return 1
+}
+
+workspace_root_abs() {
+  local in_root="$1"
+  local normalized="$in_root"
+
+  if [[ "$normalized" =~ ^([A-Za-z]):[\\/](.*)$ ]]; then
+    local drive="${BASH_REMATCH[1],,}"
+    local rest="${BASH_REMATCH[2]}"
+    rest="${rest//\\//}"
+    normalized="/mnt/${drive}/${rest}"
+  fi
+
+  in_root="$normalized"
+  if [[ -d "$in_root" ]]; then
+    (cd "$in_root" && pwd -P)
+    return 0
+  fi
+  printf '%s\n' "$in_root"
+}
+
+GIT_EXE_FAST_PATH=""
+
+resolve_git_exe_fast_path() {
+  if [[ -n "$GIT_EXE_FAST_PATH" ]]; then
+    printf '%s\n' "$GIT_EXE_FAST_PATH"
+    return 0
+  fi
+  if command -v git.exe >/dev/null 2>&1; then
+    GIT_EXE_FAST_PATH="$(command -v git.exe)"
+    printf '%s\n' "$GIT_EXE_FAST_PATH"
+    return 0
+  fi
+  if [[ -x "/mnt/c/Program Files/Git/cmd/git.exe" ]]; then
+    GIT_EXE_FAST_PATH="/mnt/c/Program Files/Git/cmd/git.exe"
+    printf '%s\n' "$GIT_EXE_FAST_PATH"
+    return 0
+  fi
+  return 1
+}
+
+to_windows_path() {
+  local p="$1"
+  if [[ "$p" =~ ^/mnt/([a-zA-Z])/(.*)$ ]]; then
+    local drive="${BASH_REMATCH[1]}"
+    local rest="${BASH_REMATCH[2]}"
+    rest="${rest//\//\\}"
+    printf '%s:\\%s\n' "${drive^^}" "$rest"
+    return 0
+  fi
+  if [[ "$p" =~ ^([A-Za-z]):[\\/] ]]; then
+    printf '%s\n' "$p"
+    return 0
+  fi
+  return 1
+}
+
+run_git_quick() {
+  local repo="$1"
+  shift || true
+  local mode="${KOG_GIT_EXE_FAST:-auto}"
+  local git_exe win_repo
+
+  if [[ "$mode" != "0" && "$mode" != "off" ]]; then
+    if git_exe="$(resolve_git_exe_fast_path 2>/dev/null)"; then
+      if win_repo="$(to_windows_path "$repo" 2>/dev/null)"; then
+        "$git_exe" -C "$win_repo" "$@"
+        return $?
+      fi
+    fi
+  fi
+
+  git -C "$repo" "$@"
+}
+
+repo_rel_path() {
+  local workspace_root="$1"
+  local repo_root="$2"
+  local ws_abs repo_abs
+  ws_abs="$(workspace_root_abs "$workspace_root")"
+  repo_abs="$(workspace_root_abs "$repo_root")"
+
+  if [[ "$repo_abs" == "$ws_abs" ]]; then
+    printf '.\n'
+    return 0
+  fi
+  if [[ "$repo_abs" == "$ws_abs/"* ]]; then
+    printf '%s\n' "${repo_abs#"$ws_abs/"}"
+    return 0
+  fi
+  printf '%s\n' "$repo_abs"
+}
+
+extract_repo_paths_from_discover_cache() {
+  local cache_file="$1"
+
+  if [[ ! -f "$cache_file" ]]; then
+    return 0
+  fi
+
+  if command -v jq >/dev/null 2>&1; then
+    jq -r '.repos[]?.path // empty' "$cache_file" 2>/dev/null || true
+    return 0
+  fi
+
+  # Minimal JSON field extraction fallback for environments without jq.
+  # We only need `.repos[].path` from our generated discover cache.
+  sed -n 's/.*"path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$cache_file" 2>/dev/null || true
+}
+
+discover_workspace_git_repos() {
+  local workspace_root="$1"
+  local ws_abs
+  local -A seen=()
+  local -a repos=()
+  local candidate meta_path cache_file scan_depth enable_find_scan
+  ws_abs="$(workspace_root_abs "$workspace_root")"
+  cache_file="$ws_abs/.kano/cache/git/discover-repos/discover-repos.json"
+  scan_depth="${KOG_MERKLE_SCAN_DEPTH:-6}"
+  enable_find_scan="${KOG_MERKLE_ENABLE_FIND_SCAN:-0}"
+
+  if git -C "$ws_abs" rev-parse --git-dir >/dev/null 2>&1; then
+    repos+=("$ws_abs")
+    seen["$ws_abs"]=1
+  fi
+
+  if [[ -f "$cache_file" ]]; then
+    while IFS= read -r candidate; do
+      [[ -n "$candidate" ]] || continue
+      candidate="$(workspace_root_abs "$candidate")"
+      if [[ -n "${seen["$candidate"]:-}" ]]; then
+        continue
+      fi
+      seen["$candidate"]=1
+      repos+=("$candidate")
+    done < <(extract_repo_paths_from_discover_cache "$cache_file")
+    if ((${#repos[@]} > 0)); then
+      printf '%s\n' "${repos[@]}" | awk 'NF {print}' | sort -u
+      return 0
+    fi
+  fi
+
+  if git -C "$ws_abs" rev-parse --git-dir >/dev/null 2>&1; then
+    while IFS= read -r candidate; do
+      [[ -n "$candidate" ]] || continue
+      candidate="$(workspace_root_abs "$candidate")"
+      if [[ -n "${seen["$candidate"]:-}" ]]; then
+        continue
+      fi
+      seen["$candidate"]=1
+      repos+=("$candidate")
+    done < <(git -C "$ws_abs" submodule foreach --quiet --recursive 'pwd' 2>/dev/null || true)
+  fi
+
+  if [[ "$enable_find_scan" == "1" || "$enable_find_scan" == "true" ]] && command -v find >/dev/null 2>&1; then
+    while IFS= read -r meta_path; do
+      [[ -n "$meta_path" ]] || continue
+      candidate="$(dirname "$meta_path")"
+      if [[ -n "${seen["$candidate"]:-}" ]]; then
+        continue
+      fi
+      seen["$candidate"]=1
+      repos+=("$candidate")
+    done < <(find "$ws_abs" -maxdepth "$scan_depth" -name .git -print 2>/dev/null || true)
+  fi
+
+  if ((${#repos[@]} == 0)); then
+    return 0
+  fi
+  printf '%s\n' "${repos[@]}" | awk 'NF {print}' | sort -u
+}
+
+hash_text_or_clean() {
+  local text="$1"
+  if [[ -z "$text" ]]; then
+    printf '%s\n' "clean"
+    return 0
+  fi
+  printf '%s' "$text" | sha256_from_stdin
+}
+
+WORKSPACE_STATE_CACHE_ROOT=""
+WORKSPACE_STATE_CACHE_BASE=""
+WORKSPACE_STATE_CACHE_DIRTY=""
+
+collect_workspace_state_hashes() {
+  local workspace_root="$1"
+  local -a repos=()
+  local repo rel status_out head status_fp
+  local line_count=0
+  local base_aggregate=""
+  local dirty_aggregate=""
+
+  mapfile -t repos < <(discover_workspace_git_repos "$workspace_root")
+  if [[ "${KOG_DEBUG_MERKLE:-0}" == "1" ]]; then
+    echo "[merkle] repos=${#repos[@]}" >&2
+  fi
+  if [[ "${#repos[@]}" -eq 0 ]]; then
+    printf '%s\n' "no-repo clean"
+    return 0
+  fi
+
+  for repo in "${repos[@]}"; do
+    [[ -n "$repo" ]] || continue
+    if [[ "${KOG_DEBUG_MERKLE:-0}" == "1" ]]; then
+      echo "[merkle] status $repo" >&2
+    fi
+    if ! status_out="$(run_git_quick "$repo" status --porcelain=v2 --branch --untracked-files=normal --ignore-submodules=none 2>/dev/null)"; then
+      if [[ "${KOG_DEBUG_MERKLE:-0}" == "1" ]]; then
+        echo "[merkle] skip(non-repo): $repo" >&2
+      fi
+      continue
+    fi
+    rel="$(repo_rel_path "$workspace_root" "$repo")"
+    head="$(printf '%s\n' "$status_out" | awk '/^# branch\.oid /{print $3; exit}')"
+    if [[ -z "$head" || "$head" == "(initial)" ]]; then
+      head="no-head"
+    fi
+    status_fp="$(hash_text_or_clean "$status_out")"
+    base_aggregate+="${rel}|${head}"$'\n'
+    dirty_aggregate+="${rel}|${head}|${status_fp}"$'\n'
+    line_count=$((line_count + 1))
+  done
+
+  if [[ "$line_count" -eq 0 ]]; then
+    printf '%s\n' "no-repo clean"
+    return 0
+  fi
+
+  printf '%s %s\n' \
+    "$(printf '%s' "$base_aggregate" | sha256_from_stdin)" \
+    "$(printf '%s' "$dirty_aggregate" | sha256_from_stdin)"
+}
+
+ensure_workspace_state_cache() {
+  local workspace_root="$1"
+  local resolved_root computed
+  resolved_root="$(workspace_root_abs "$workspace_root")"
+  if [[ "$WORKSPACE_STATE_CACHE_ROOT" == "$resolved_root" ]] && [[ -n "$WORKSPACE_STATE_CACHE_BASE" ]] && [[ -n "$WORKSPACE_STATE_CACHE_DIRTY" ]]; then
+    return 0
+  fi
+  computed="$(collect_workspace_state_hashes "$resolved_root")"
+  WORKSPACE_STATE_CACHE_ROOT="$resolved_root"
+  WORKSPACE_STATE_CACHE_BASE="${computed%% *}"
+  WORKSPACE_STATE_CACHE_DIRTY="${computed#* }"
+}
+
+current_dirty_fingerprint() {
+  local repo_root="$1"
+  ensure_workspace_state_cache "$repo_root"
+  printf '%s\n' "$WORKSPACE_STATE_CACHE_DIRTY"
+}
+
+current_head_sha() {
+  local repo_root="$1"
+  ensure_workspace_state_cache "$repo_root"
+  printf '%s\n' "$WORKSPACE_STATE_CACHE_BASE"
+}
+
+is_probable_ignore_artifact_path() {
+  local p="${1//\\//}"
+  local lower="${p,,}"
+  case "$lower" in
+    */.cache/*|.cache/*|*/.pytest_cache/*|.pytest_cache/*|*/.mypy_cache/*|.mypy_cache/*|*/.idea/*|.idea/*|*/.vscode/*|.vscode/*)
+      return 0
+      ;;
+    */node_modules/*|node_modules/*|*/dist/*|dist/*|*/build/*|build/*|*/bin/*|bin/*|*/obj/*|obj/*|*/target/*|target/*)
+      return 0
+      ;;
+    *.log|*.tmp|*.temp|*.cache|*.bak|*.swp|*.swo|*.class|*.obj|*.o|*.pdb|*.ilk|*.dmp|*.pyc)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+check_ignore_gate() {
+  local repo_root="$1"
+  local context="${2:-commit-plan}"
+  local allow="${KOG_ALLOW_IGNORE_GATE:-0}"
+  local -a repos=()
+  local -a untracked=()
+  local -a candidates=()
+  local repo rel path
+
+  if [[ "$allow" == "1" || "$allow" == "true" ]]; then
+    return 0
+  fi
+  if [[ "${KOG_IGNORE_GATE:-on}" == "off" ]]; then
+    return 0
+  fi
+  if ! git -C "$repo_root" rev-parse --git-dir >/dev/null 2>&1; then
+    return 0
+  fi
+
+  mapfile -t repos < <(discover_workspace_git_repos "$repo_root")
+  if [[ "${#repos[@]}" -eq 0 ]]; then
+    repos=("$repo_root")
+  fi
+
+  for repo in "${repos[@]}"; do
+    rel="$(repo_rel_path "$repo_root" "$repo")"
+    mapfile -t untracked < <(run_git_quick "$repo" ls-files --others --exclude-standard 2>/dev/null || true)
+    for path in "${untracked[@]}"; do
+      if is_probable_ignore_artifact_path "$path"; then
+        if [[ "$rel" == "." ]]; then
+          candidates+=("$path")
+        else
+          candidates+=("$rel/$path")
+        fi
+      fi
+    done
+  done
+
+  if [[ "${#candidates[@]}" -eq 0 ]]; then
+    return 0
+  fi
+
+  echo "Error: ignore gate failed (${context}); unresolved untracked artifact-like files detected." >&2
+  local i limit
+  limit=20
+  for ((i = 0; i < ${#candidates[@]} && i < limit; i++)); do
+    echo "  - ${candidates[$i]}" >&2
+  done
+  if (( ${#candidates[@]} > limit )); then
+    echo "  ... and $(( ${#candidates[@]} - limit )) more" >&2
+  fi
+  echo "Hint: update .gitignore first, then regenerate commit plan." >&2
+  echo "Hint: override once with --allow-ignore-gate (or KOG_ALLOW_IGNORE_GATE=1)." >&2
+  return 3
+}
+
+validate_commit_plan_required_fields_for_ai_mode() {
+  local -a args=("$@")
+  local plan_file=""
+  local bytes=0
+
+  if ! is_ai_mode_commit_command "${args[@]}"; then
+    return 0
+  fi
+
+  local workspace_root="${KANO_GIT_MASTER_ROOT:-$PWD}"
+  check_ignore_gate "$workspace_root" "ai-commit"
+  local ignore_gate_status=$?
+  if [[ "$ignore_gate_status" -ne 0 ]]; then
+    return "$ignore_gate_status"
+  fi
+
+  if ! extract_commit_plan_file_from_args plan_file "${args[@]}"; then
+    echo "Error: AI mode commit requires --commit-plan-file." >&2
+    echo "Hint: set KOG_COMMIT_PLAN_FILE or pass --commit-plan-file <path>." >&2
+    return 2
+  fi
+
+  if [[ ! -f "$plan_file" ]]; then
+    echo "Error: commit plan file not found: $plan_file" >&2
+    return 2
+  fi
+  if [[ ! -r "$plan_file" ]]; then
+    echo "Error: commit plan file is not readable: $plan_file" >&2
+    return 2
+  fi
+
+  bytes=$(wc -c <"$plan_file" 2>/dev/null || echo 0)
+  if [[ ! "$bytes" =~ ^[0-9]+$ || "$bytes" -le 0 ]]; then
+    echo "Error: commit plan file is empty: $plan_file" >&2
+    return 2
+  fi
+
+  # Content validation is handled in native C++ commit command.
+  # Shell launcher only enforces file presence and readability.
+  return 0
 }
 
 apply_agent_mode_from_args() {
@@ -746,7 +1329,7 @@ maybe_rebuild_binary_if_needed() {
 should_skip_update_prompt_for_command() {
   local command="${1:-}"
   case "$command" in
-    ""|help|-h|--help|-v|--version|version|completion|complete|__complete|sync|tui|discover|remote|slog|log|uplog)
+    ""|help|-h|--help|-v|--version|version|completion|complete|__complete|sync|tui|discover|remote|slog|log|uplog|commit-plan)
       return 0
       ;;
   esac
@@ -1235,8 +1818,11 @@ Launcher commands:
   build                               Build native binary (incremental; auto-prepare required C++ submodules)
   rebuild                             Rebuild native binary (full clean rebuild; auto-prepare required C++ submodules)
   discover                            Run manual repo discovery, refresh cache, and print cache file path
+  commit-plan init                    Write commit plan template from assets
   cp ...                              Alias of commit-push ...
-  cpa ...                             Alias of commit-push --ai-auto ...
+  cpa ...                             Alias of commit-push --ai-auto (auto adds --commit-plan-file)
+    --no-commit-plan-auto             Launcher-only: disable AI->commit-plan auto routing
+    --allow-ignore-gate               Launcher-only: bypass ignore gate for this run
     --llvm                            Use Homebrew LLVM clang/clang++ toolchain (macOS)
     --modules                         Enable C++20 modules (requires compatible toolchain)
     --no-modules                      Disable C++20 modules
@@ -1249,6 +1835,12 @@ Launcher env:
                                       Allow downgrade rebuild in non-interactive mode
   KOG_BUILD_USE_LLVM=0|1              Build with LLVM toolchain (macOS default: 1)
   KOG_BUILD_ENABLE_MODULES=0|1        Build with C++20 modules (macOS default: 1)
+  KOG_COMMIT_PLAN_FILE=<path>         Default commit plan file used when AI flags are present
+                                      AI mode enforces required commit-plan fields before execution
+  KOG_MERKLE_ENABLE_FIND_SCAN=1       Include filesystem .git scan for unregistered nested repos
+                                      (default: 0; use discover cache + submodule list)
+  KOG_ALLOW_IGNORE_GATE=1             Bypass ignore gate (not recommended)
+  KOG_IGNORE_GATE=off                 Disable ignore gate globally (not recommended)
   KOG_SKIP_AUTO_REBUILD_WHEN_DIRTY=0|1
                                       Skip auto-rebuild checks when git worktree is dirty (default: 1)
 EOF
@@ -1260,12 +1852,38 @@ run_native_binary() {
 
   local first="${1:-}"
   local arg_count=$#
+  local -a native_args=("$@")
+  local i arg next_is_plan_path converted
 
   if [[ ! -x "$binary" ]]; then
     chmod u+x "$binary" >/dev/null 2>&1 || true
   fi
 
-  KANO_GIT_MASTER_ROOT="${KANO_GIT_MASTER_ROOT:-$PROJECT_ROOT}" KANO_GIT_BINARY_PATH="$binary" "$binary" "$@"
+  if [[ "$binary" == *.exe ]]; then
+    next_is_plan_path=0
+    for ((i = 0; i < ${#native_args[@]}; i++)); do
+      arg="${native_args[$i]}"
+      if [[ "$next_is_plan_path" -eq 1 ]]; then
+        if converted="$(to_windows_path "$arg" 2>/dev/null)"; then
+          native_args[$i]="$converted"
+        fi
+        next_is_plan_path=0
+        continue
+      fi
+      case "$arg" in
+        --commit-plan-file)
+          next_is_plan_path=1
+          ;;
+        --commit-plan-file=*)
+          if converted="$(to_windows_path "${arg#--commit-plan-file=}" 2>/dev/null)"; then
+            native_args[$i]="--commit-plan-file=$converted"
+          fi
+          ;;
+      esac
+    done
+  fi
+
+  KANO_GIT_MASTER_ROOT="${KANO_GIT_MASTER_ROOT:-$PROJECT_ROOT}" KANO_GIT_BINARY_PATH="$binary" "$binary" "${native_args[@]}"
   local status=$?
 
   if [[ "$status" -eq 0 ]]; then
@@ -1296,6 +1914,16 @@ main() {
       ;;
   esac
 
+  local commit_plan_init_status=0
+  if maybe_handle_commit_plan_init_request "${args[@]}"; then
+    exit 0
+  else
+    commit_plan_init_status=$?
+  fi
+  if [[ "$commit_plan_init_status" -ne 1 ]]; then
+    exit "$commit_plan_init_status"
+  fi
+
   local completion_status=0
   if maybe_handle_completion_install_request "${args[@]}"; then
     exit 0
@@ -1314,6 +1942,11 @@ main() {
   fi
   if [[ "${args[0]:-}" == "discover" ]]; then
     rewrite_discover_command_args exec_args "${args[@]}"
+  fi
+  validate_commit_plan_required_fields_for_ai_mode "${exec_args[@]}"
+  local commit_plan_validate_status=$?
+  if [[ "$commit_plan_validate_status" -ne 0 ]]; then
+    exit "$commit_plan_validate_status"
   fi
 
   if binary="$(find_binary)"; then
