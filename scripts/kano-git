@@ -16,6 +16,29 @@ else
   KOG_BUILD_ENABLE_MODULES="${KOG_BUILD_ENABLE_MODULES:-0}"
 fi
 KOG_ALLOW_IGNORE_GATE="${KOG_ALLOW_IGNORE_GATE:-0}"
+KOG_GIT_INTERACTIVE="${KOG_GIT_INTERACTIVE:-auto}"
+
+# Non-interactive git defaults:
+# - agent mode => non-interactive by default
+# - human/manual mode => interactive by default
+# Override with KOG_GIT_INTERACTIVE=1|true|0|false.
+__kog_git_interactive_mode="${KOG_GIT_INTERACTIVE,,}"
+if [[ "$__kog_git_interactive_mode" == "auto" || -z "$__kog_git_interactive_mode" ]]; then
+  if [[ "${KANO_AGENT_MODE:-0}" == "1" || "${KANO_AGENT_MODE:-}" == "true" ]]; then
+    __kog_git_interactive_mode="0"
+  else
+    __kog_git_interactive_mode="1"
+  fi
+fi
+
+if [[ "$__kog_git_interactive_mode" != "1" && "$__kog_git_interactive_mode" != "true" ]]; then
+  export GIT_TERMINAL_PROMPT="${GIT_TERMINAL_PROMPT:-0}"
+  export GIT_EDITOR="${GIT_EDITOR:-true}"
+  export GIT_SEQUENCE_EDITOR="${GIT_SEQUENCE_EDITOR:-true}"
+  export EDITOR="${EDITOR:-true}"
+  export VISUAL="${VISUAL:-true}"
+fi
+unset __kog_git_interactive_mode
 
 is_interactive_terminal() {
   [[ -t 0 && -t 1 ]]
@@ -1521,6 +1544,8 @@ Launcher env:
                                       Disable cpa single-change shortcut auto-routing
   KOG_CPA_SHORTCUT_MESSAGE=<msg>      Override shortcut commit message used by auto-routed cp -m
   KOG_ALLOW_IGNORE_GATE=1             Bypass ignore gate (not recommended)
+  KOG_GIT_INTERACTIVE=auto            Git prompt/editor mode: auto|1|0
+                                      auto: agent mode -> non-interactive, human mode -> interactive
   KOG_DISABLE_SECRET_GATE=1           Disable secret gate (not recommended)
   KOG_IGNORE_GATE=off                 Disable ignore gate globally (not recommended)
                                       Static allowlist: assets/gitignore/ignore-gate-allowlist.txt
