@@ -25,6 +25,7 @@
 #include <unordered_map>
 #include <set>
 #include <functional>
+#include <utility>
 
 namespace kano::git::commands {
 namespace {
@@ -706,11 +707,18 @@ auto BuildOrderedRepoList(const std::filesystem::path& InWorkspaceRoot, const st
     return deduped;
 }
 
-auto DiscoverWorkspaceRepoRecords(const std::filesystem::path& InRoot, const std::string& InMetadataLevel) -> std::vector<workspace::RepoRecord> {
+auto DiscoverWorkspaceRepoRecords(const std::filesystem::path& InRoot,
+                                  const std::string& InMetadataLevel,
+                                  const bool InUseCache = true,
+                                  const bool InRefreshCache = false) -> std::vector<workspace::RepoRecord> {
     workspace::DiscoverOptions options;
     options.rootDir = InRoot;
     options.maxDepth = 12;
-    options.useCache = true;
+    options.useCache = InUseCache;
+    options.refreshCache = InRefreshCache;
+    if (!InUseCache) {
+        options.incremental = false;
+    }
     options.metadataLevel = InMetadataLevel;
 
     const auto discovery = workspace::DiscoverRepos(options);
@@ -738,7 +746,21 @@ auto BuildCommitScopeRecords(const std::filesystem::path& InWorkspaceRoot,
                              const std::string& InReposCsv,
                              const bool InNoRecursive,
                              const bool InDirtyOnly) -> std::vector<workspace::RepoRecord> {
-    const auto all = DiscoverWorkspaceRepoRecords(InWorkspaceRoot, "full");
+    auto all = DiscoverWorkspaceRepoRecords(
+        InWorkspaceRoot,
+        "full",
+        InDirtyOnly ? false : true,
+        InDirtyOnly ? true : false
+    );
+    // Recovery path:
+    // If recursive commit scope unexpectedly resolves to only root repo, refresh once without cache.
+    // This avoids stale-discovery cache causing agent-mode cp/cpa to skip dirty subrepos.
+    if (Trim(InReposCsv).empty() && !InNoRecursive && all.size() <= 1) {
+        const auto refreshed = DiscoverWorkspaceRepoRecords(InWorkspaceRoot, "full", false, true);
+        if (refreshed.size() > all.size()) {
+            all = refreshed;
+        }
+    }
     std::unordered_map<std::string, workspace::RepoRecord> byPath;
     byPath.reserve(all.size());
     for (const auto& repo : all) {
@@ -777,6 +799,43 @@ auto BuildCommitScopeRecords(const std::filesystem::path& InWorkspaceRoot,
         }
     } else {
         selected = all;
+    }
+
+    if (InDirtyOnly && Trim(InReposCsv).empty() && !InNoRecursive && selected.size() <= 1) {
+        const auto rootStatus = GitCapture(InWorkspaceRoot, {"status", "--porcelain"});
+        if (rootStatus.exitCode == 0) {
+            std::istringstream iss(rootStatus.stdoutStr);
+            std::string line;
+            while (std::getline(iss, line)) {
+                while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) {
+                    line.pop_back();
+                }
+                if (line.size() < 4) {
+                    continue;
+                }
+                auto relPath = Trim(line.substr(3));
+                if (relPath.empty()) {
+                    continue;
+                }
+                const auto arrowPos = relPath.find(" -> ");
+                if (arrowPos != std::string::npos) {
+                    relPath = Trim(relPath.substr(arrowPos + 4));
+                }
+                const auto candidate = ResolveRepoPath(InWorkspaceRoot, relPath);
+                if (candidate.empty()) {
+                    continue;
+                }
+                const auto inGitRepo = GitCapture(candidate, {"rev-parse", "--is-inside-work-tree"});
+                if (inGitRepo.exitCode != 0 || Trim(inGitRepo.stdoutStr) != "true") {
+                    continue;
+                }
+                workspace::RepoRecord fallback;
+                fallback.path = candidate;
+                fallback.type = "explicit-dirty-fallback";
+                fallback.hasChanges = true;
+                selected.push_back(std::move(fallback));
+            }
+        }
     }
 
     std::unordered_map<std::string, std::size_t> idxByPath;
@@ -1565,6 +1624,198 @@ auto ResolveRepoMessages(const std::unordered_map<std::string, std::vector<RepoC
     RepoCommitPlanEntry::CommitItem one;
     one.message = "";
     return {one};
+}
+
+struct RepoCommitRunbook {
+    std::size_t repoRecordIndex = 0;
+    std::filesystem::path repo;
+    std::vector<RepoCommitPlanEntry::CommitItem> commits;
+    bool valid = true;
+    std::string validationError;
+};
+
+struct CommitTaskNode {
+    std::size_t repoRecordIndex = 0;
+    std::size_t commitIndexInRepo = 0;
+    std::size_t repoCommitCount = 0;
+    std::filesystem::path repo;
+    RepoCommitPlanEntry::CommitItem commit;
+};
+
+struct CommitTaskGraph {
+    std::vector<CommitTaskNode> tasks;
+    std::vector<std::vector<std::size_t>> waves;
+    bool dependencyCycleDetected = false;
+};
+
+auto BuildRepoCommitRunbooks(const std::vector<workspace::RepoRecord>& InRepoRecords,
+                             const std::unordered_map<std::string, std::vector<RepoCommitPlanEntry::CommitItem>>& InStageMessages,
+                             const std::filesystem::path& InWorkspaceRoot,
+                             const std::string& InDefaultMessage,
+                             const bool InIsPlanMode) -> std::vector<RepoCommitRunbook> {
+    std::vector<RepoCommitRunbook> out;
+    out.reserve(InRepoRecords.size());
+    for (std::size_t ridx = 0; ridx < InRepoRecords.size(); ++ridx) {
+        RepoCommitRunbook runbook;
+        runbook.repoRecordIndex = ridx;
+        runbook.repo = InRepoRecords[ridx].path;
+        runbook.commits = ResolveRepoMessages(InStageMessages, InWorkspaceRoot, runbook.repo, InDefaultMessage);
+        if (InIsPlanMode && runbook.commits.size() > 1) {
+            bool hasUnscoped = false;
+            for (const auto& item : runbook.commits) {
+                if (item.include.empty() && item.exclude.empty()) {
+                    hasUnscoped = true;
+                    break;
+                }
+            }
+            if (hasUnscoped) {
+                runbook.valid = false;
+                runbook.validationError = "plan has multiple commits for one repo but some commit entries miss include/exclude scope";
+                runbook.commits.clear();
+            }
+        }
+        out.push_back(std::move(runbook));
+    }
+    return out;
+}
+
+auto BuildCommitTaskGraph(const std::vector<workspace::RepoRecord>& InRepoRecords,
+                          const std::vector<RepoCommitRunbook>& InRunbooks) -> CommitTaskGraph {
+    CommitTaskGraph graph;
+    if (InRepoRecords.empty() || InRunbooks.empty()) {
+        return graph;
+    }
+
+    std::vector<std::vector<std::size_t>> repoTaskIndices(InRepoRecords.size());
+    for (const auto& runbook : InRunbooks) {
+        if (!runbook.valid || runbook.commits.empty()) {
+            continue;
+        }
+        for (std::size_t cidx = 0; cidx < runbook.commits.size(); ++cidx) {
+            CommitTaskNode node;
+            node.repoRecordIndex = runbook.repoRecordIndex;
+            node.commitIndexInRepo = cidx;
+            node.repoCommitCount = runbook.commits.size();
+            node.repo = runbook.repo;
+            node.commit = runbook.commits[cidx];
+            const auto taskIndex = graph.tasks.size();
+            graph.tasks.push_back(std::move(node));
+            repoTaskIndices[runbook.repoRecordIndex].push_back(taskIndex);
+        }
+    }
+
+    if (graph.tasks.empty()) {
+        return graph;
+    }
+
+    std::vector<std::vector<std::size_t>> outgoing(graph.tasks.size());
+    std::vector<std::unordered_set<std::size_t>> dedupOutgoing(graph.tasks.size());
+    std::vector<std::size_t> indegree(graph.tasks.size(), 0);
+
+    auto addEdge = [&](const std::size_t from, const std::size_t to) {
+        if (from == to) {
+            return;
+        }
+        if (dedupOutgoing[from].insert(to).second) {
+            outgoing[from].push_back(to);
+            indegree[to] += 1;
+        }
+    };
+
+    for (const auto& taskList : repoTaskIndices) {
+        for (std::size_t idx = 1; idx < taskList.size(); ++idx) {
+            addEdge(taskList[idx - 1], taskList[idx]);
+        }
+    }
+
+    std::unordered_map<std::string, std::size_t> repoByPath;
+    repoByPath.reserve(InRepoRecords.size());
+    for (std::size_t idx = 0; idx < InRepoRecords.size(); ++idx) {
+        repoByPath.emplace(ToGeneric(InRepoRecords[idx].path), idx);
+    }
+
+    for (std::size_t ridx = 0; ridx < InRepoRecords.size(); ++ridx) {
+        if (repoTaskIndices[ridx].empty()) {
+            continue;
+        }
+        for (const auto& dep : InRepoRecords[ridx].dependencies) {
+            const auto depIt = repoByPath.find(ToGeneric(dep));
+            if (depIt == repoByPath.end()) {
+                continue;
+            }
+            const auto depRepoIndex = depIt->second;
+            if (depRepoIndex == ridx || repoTaskIndices[depRepoIndex].empty()) {
+                continue;
+            }
+            const auto depTail = repoTaskIndices[depRepoIndex].back();
+            const auto repoHead = repoTaskIndices[ridx].front();
+            addEdge(depTail, repoHead);
+        }
+    }
+
+    auto nodeLess = [&](const std::size_t A, const std::size_t B) {
+        const auto& taskA = graph.tasks[A];
+        const auto& taskB = graph.tasks[B];
+        const auto& repoA = InRepoRecords[taskA.repoRecordIndex].path;
+        const auto& repoB = InRepoRecords[taskB.repoRecordIndex].path;
+        const auto depthA = PathDepth(repoA);
+        const auto depthB = PathDepth(repoB);
+        if (depthA != depthB) {
+            return depthA > depthB;
+        }
+        const auto keyA = ToGeneric(repoA);
+        const auto keyB = ToGeneric(repoB);
+        if (keyA != keyB) {
+            return keyA < keyB;
+        }
+        return taskA.commitIndexInRepo < taskB.commitIndexInRepo;
+    };
+
+    std::vector<std::size_t> ready;
+    ready.reserve(graph.tasks.size());
+    for (std::size_t idx = 0; idx < graph.tasks.size(); ++idx) {
+        if (indegree[idx] == 0) {
+            ready.push_back(idx);
+        }
+    }
+    std::sort(ready.begin(), ready.end(), nodeLess);
+
+    std::size_t processed = 0;
+    while (!ready.empty()) {
+        graph.waves.push_back(ready);
+        processed += ready.size();
+        std::vector<std::size_t> next;
+        for (const auto node : ready) {
+            for (const auto out : outgoing[node]) {
+                if (indegree[out] == 0) {
+                    continue;
+                }
+                indegree[out] -= 1;
+                if (indegree[out] == 0) {
+                    next.push_back(out);
+                }
+            }
+        }
+        std::sort(next.begin(), next.end(), nodeLess);
+        next.erase(std::unique(next.begin(), next.end()), next.end());
+        ready = std::move(next);
+    }
+
+    if (processed != graph.tasks.size()) {
+        graph.dependencyCycleDetected = true;
+        graph.waves.clear();
+        std::vector<std::size_t> fallback;
+        fallback.reserve(graph.tasks.size());
+        for (std::size_t idx = 0; idx < graph.tasks.size(); ++idx) {
+            fallback.push_back(idx);
+        }
+        std::sort(fallback.begin(), fallback.end(), nodeLess);
+        for (const auto idx : fallback) {
+            graph.waves.push_back({idx});
+        }
+    }
+
+    return graph;
 }
 
 auto StageCommitItemForPlan(const std::filesystem::path& InRepo,
@@ -2490,140 +2741,107 @@ void RegisterCommit(CLI::App& InApp) {
         }
         planningMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - planningStart).count();
 
-        std::vector<RepoCommitResult> results;
-        results.reserve(repoRecords.size());
+        const bool isPlanMode = !stageMessages.empty();
+        const auto repoWaves = BuildExecutionWaves(repoRecords);
+        const auto runbooks = BuildRepoCommitRunbooks(repoRecords, stageMessages, workspaceRoot, *message, isPlanMode);
+        const auto taskGraph = BuildCommitTaskGraph(repoRecords, runbooks);
+        const int workers = ResolveCommitJobs(*jobs, taskGraph.tasks.size(), ai.enabled);
 
-        const auto waves = BuildExecutionWaves(repoRecords);
-        const int workers = ResolveCommitJobs(*jobs, repoRecords.size(), ai.enabled);
+        std::vector<RepoCommitResult> results;
+        results.reserve(repoRecords.size() + taskGraph.tasks.size());
+        for (const auto& runbook : runbooks) {
+            if (runbook.valid) {
+                continue;
+            }
+            RepoCommitResult failed;
+            failed.repo = runbook.repo;
+            failed.failed = true;
+            failed.note = runbook.validationError;
+            results.push_back(std::move(failed));
+        }
+
         const auto commitStart = clock::now();
         std::cout << "[native-commit] plan: repos=" << repoRecords.size()
-                  << " waves=" << waves.size()
+                  << " repo_waves=" << repoWaves.size()
+                  << " commits=" << taskGraph.tasks.size()
+                  << " commit_waves=" << taskGraph.waves.size()
                   << " jobs=" << workers
                   << " dirty_only=" << (dirtyOnly ? "on" : "off") << "\n";
+        if (taskGraph.dependencyCycleDetected) {
+            std::cout << "[native-commit] warning: dependency cycle detected in commit graph; downgraded to serial fallback order.\n";
+        }
 
-        const bool isPlanMode = !stageMessages.empty();
-        for (const auto& wave : waves) {
+        auto executeCommitTask = [&](const CommitTaskNode& InNode) -> RepoCommitResult {
+            const auto& repo = InNode.repo;
+            const auto& repoMessage = InNode.commit;
+            const bool needsPlanStaging =
+                isPlanMode && (InNode.repoCommitCount > 1 || !repoMessage.include.empty() || !repoMessage.exclude.empty());
+            if (needsPlanStaging) {
+                std::string stageError;
+                if (!StageCommitItemForPlan(repo, repoMessage, &stageError)) {
+                    RepoCommitResult failed;
+                    failed.repo = repo;
+                    failed.failed = true;
+                    failed.note = std::format("plan commit[{}] stage failed: {}", InNode.commitIndexInRepo, stageError);
+                    return failed;
+                }
+            }
+            return CommitSingleRepo(workspaceRoot,
+                                    repo,
+                                    repoMessage.message,
+                                    needsPlanStaging ? true : *bStagedOnly,
+                                    *bPush,
+                                    ai);
+        };
+
+        for (const auto& wave : taskGraph.waves) {
             if (wave.empty()) {
                 continue;
             }
             const int waveWorkers = std::max(1, std::min(workers, static_cast<int>(wave.size())));
             if (waveWorkers == 1) {
-                for (const auto idx : wave) {
-                    const auto& repo = repoRecords[idx].path;
-                    const auto label = DisplayRepoLabel(workspaceRoot, repo);
-                    std::cout << "\n[commit] " << label << "\n";
-                    const auto repoMessages = ResolveRepoMessages(stageMessages, workspaceRoot, repo, *message);
-                    if (isPlanMode && repoMessages.size() > 1) {
-                        bool hasUnscoped = false;
-                        for (const auto& item : repoMessages) {
-                            if (item.include.empty() && item.exclude.empty()) {
-                                hasUnscoped = true;
-                                break;
-                            }
-                        }
-                        if (hasUnscoped) {
-                            RepoCommitResult failed;
-                            failed.repo = repo;
-                            failed.failed = true;
-                            failed.note = "plan has multiple commits for one repo but some commit entries miss include/exclude scope";
-                            results.push_back(std::move(failed));
-                            continue;
-                        }
-                    }
-                    for (std::size_t midx = 0; midx < repoMessages.size(); ++midx) {
-                        const auto& repoMessage = repoMessages[midx];
-                        const bool needsPlanStaging =
-                            isPlanMode && (repoMessages.size() > 1 || !repoMessage.include.empty() || !repoMessage.exclude.empty());
-                        if (needsPlanStaging) {
-                            std::string stageError;
-                            if (!StageCommitItemForPlan(repo, repoMessage, &stageError)) {
-                                RepoCommitResult failed;
-                                failed.repo = repo;
-                                failed.failed = true;
-                                failed.note = std::format("plan commit[{}] stage failed: {}", midx, stageError);
-                                results.push_back(std::move(failed));
-                                continue;
-                            }
-                        }
-                        results.push_back(CommitSingleRepo(workspaceRoot,
-                                                           repo,
-                                                           repoMessage.message,
-                                                           needsPlanStaging ? true : *bStagedOnly,
-                                                           *bPush,
-                                                           ai));
-                    }
+                for (const auto nodeIndex : wave) {
+                    const auto& task = taskGraph.tasks[nodeIndex];
+                    const auto label = DisplayRepoLabel(workspaceRoot, task.repo);
+                    std::cout << "\n[commit] " << label
+                              << " [" << (task.commitIndexInRepo + 1) << "/" << task.repoCommitCount << "]\n";
+                    results.push_back(executeCommitTask(task));
                 }
                 continue;
             }
 
-            std::vector<std::future<std::vector<RepoCommitResult>>> active;
+            std::vector<std::future<std::pair<std::size_t, RepoCommitResult>>> active;
             active.reserve(static_cast<std::size_t>(waveWorkers));
             std::size_t cursor = 0;
-            std::vector<RepoCommitResult> waveResults;
+            std::vector<std::pair<std::size_t, RepoCommitResult>> waveResults;
             waveResults.reserve(wave.size());
 
             while (cursor < wave.size() || !active.empty()) {
                 while (cursor < wave.size() && static_cast<int>(active.size()) < waveWorkers) {
-                    const auto idx = wave[cursor++];
-                    const auto repo = repoRecords[idx].path;
-                    const auto repoMessages = ResolveRepoMessages(stageMessages, workspaceRoot, repo, *message);
-                    active.push_back(std::async(std::launch::async, [&, repo, repoMessages, isPlanMode]() {
-                        std::vector<RepoCommitResult> oneRepoResults;
-                        oneRepoResults.reserve(repoMessages.size());
-                        if (isPlanMode && repoMessages.size() > 1) {
-                            bool hasUnscoped = false;
-                            for (const auto& item : repoMessages) {
-                                if (item.include.empty() && item.exclude.empty()) {
-                                    hasUnscoped = true;
-                                    break;
-                                }
-                            }
-                            if (hasUnscoped) {
-                                RepoCommitResult failed;
-                                failed.repo = repo;
-                                failed.failed = true;
-                                failed.note = "plan has multiple commits for one repo but some commit entries miss include/exclude scope";
-                                oneRepoResults.push_back(std::move(failed));
-                                return oneRepoResults;
-                            }
-                        }
-                        for (std::size_t midx = 0; midx < repoMessages.size(); ++midx) {
-                            const auto& repoMessage = repoMessages[midx];
-                            const bool needsPlanStaging =
-                                isPlanMode && (repoMessages.size() > 1 || !repoMessage.include.empty() || !repoMessage.exclude.empty());
-                            if (needsPlanStaging) {
-                                std::string stageError;
-                                if (!StageCommitItemForPlan(repo, repoMessage, &stageError)) {
-                                    RepoCommitResult failed;
-                                    failed.repo = repo;
-                                    failed.failed = true;
-                                    failed.note = std::format("plan commit[{}] stage failed: {}", midx, stageError);
-                                    oneRepoResults.push_back(std::move(failed));
-                                    continue;
-                                }
-                            }
-                            oneRepoResults.push_back(CommitSingleRepo(workspaceRoot,
-                                                                       repo,
-                                                                       repoMessage.message,
-                                                                       needsPlanStaging ? true : *bStagedOnly,
-                                                                       *bPush,
-                                                                       ai));
-                        }
-                        return oneRepoResults;
+                    const auto nodeIndex = wave[cursor++];
+                    const auto& task = taskGraph.tasks[nodeIndex];
+                    const auto label = DisplayRepoLabel(workspaceRoot, task.repo);
+                    std::cout << "\n[commit] " << label
+                              << " [" << (task.commitIndexInRepo + 1) << "/" << task.repoCommitCount << "]\n";
+                    active.push_back(std::async(std::launch::async, [&, nodeIndex]() {
+                        const auto one = executeCommitTask(taskGraph.tasks[nodeIndex]);
+                        return std::make_pair(nodeIndex, one);
                     }));
                 }
 
                 if (!active.empty()) {
-                    auto completed = active.front().get();
-                    waveResults.insert(waveResults.end(), completed.begin(), completed.end());
+                    waveResults.push_back(active.front().get());
                     active.erase(active.begin());
                 }
             }
 
-            std::sort(waveResults.begin(), waveResults.end(), [&](const RepoCommitResult& A, const RepoCommitResult& B) {
-                return ToGeneric(A.repo) < ToGeneric(B.repo);
+            std::sort(waveResults.begin(), waveResults.end(), [&](const auto& A, const auto& B) {
+                return A.first < B.first;
             });
-            results.insert(results.end(), waveResults.begin(), waveResults.end());
+            for (auto& [idx, one] : waveResults) {
+                static_cast<void>(idx);
+                results.push_back(std::move(one));
+            }
         }
         commitMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - commitStart).count();
 
