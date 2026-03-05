@@ -1987,4 +1987,38 @@ void RegisterSync(CLI::App& InApp) {
     });
 }
 
+auto RunSyncPreCommitNative(const std::filesystem::path& InRepoRoot,
+                            const bool InRecursive,
+                            const bool InDryRun,
+                            const std::string& InBranchMode) -> int {
+    const auto branchMode = ParseBranchMode(InBranchMode);
+    if (!branchMode.has_value()) {
+        std::cerr << "ERROR: Unsupported --branch-mode: " << InBranchMode << " (supported: default, stable-dev)\n";
+        return 2;
+    }
+    return RunNativePreCommitRepair(
+        InRepoRoot,
+        "origin",
+        12,
+        InDryRun,
+        false,
+        false,
+        InRecursive,
+        *branchMode);
+}
+
+auto RunSyncOriginLatestNative(const std::filesystem::path& InRepoRoot,
+                               const bool InRecursive,
+                               const bool InDryRun) -> int {
+    return RunNativeOriginLatestSync(
+        InRepoRoot,
+        "origin",
+        12,
+        InDryRun,
+        false,
+        false,
+        InRecursive,
+        true);
+}
+
 } // namespace kano::git::commands

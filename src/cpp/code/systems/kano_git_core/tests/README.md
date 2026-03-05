@@ -99,6 +99,9 @@ ctest --output-on-failure
 # Run tests matching a tag
 ./build/bin/<preset>/tui_property_tests "[Property 1]"
 
+# Run shell executor focused tests
+./build/bin/<preset>/tui_unit_tests "[shell-executor]"
+
 # Run tests matching a name
 ./build/bin/<preset>/tui_unit_tests "Mode transition"
 

@@ -682,6 +682,40 @@ auto RunNativePush(
 
 } // namespace
 
+auto RunPushNativeSimple(const std::filesystem::path& InWorkspaceRoot,
+                         const bool InRecursive,
+                         const bool InDryRun,
+                         const bool InProfile,
+                         const bool InForceWithLease,
+                         const bool InNoVerify,
+                         const int InJobs,
+                         const bool InVerbose,
+                         const std::string& InRemote) -> int {
+    std::vector<std::filesystem::path> repos;
+    if (InRecursive) {
+        repos = DiscoverWorkspaceRepos(InWorkspaceRoot);
+        if (repos.empty()) {
+            repos.push_back(InWorkspaceRoot);
+        }
+    } else {
+        repos.push_back(InWorkspaceRoot);
+    }
+
+    return RunNativePush(
+        repos,
+        true,
+        false,
+        InDryRun,
+        InForceWithLease,
+        InNoVerify,
+        true,
+        false,
+        InJobs,
+        InProfile,
+        InVerbose,
+        InRemote);
+}
+
 void RegisterPush(CLI::App& InApp) {
     auto* cmd = InApp.add_subcommand("push", "Multi-remote push workflow");
     cmd->allow_extras();

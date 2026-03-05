@@ -14,6 +14,10 @@
 #include <string>
 #include <vector>
 
+#if defined(_WIN32)
+#include <windows.h>
+#endif
+
 #if defined(KOG_USE_MODULES)
 import kano.git.version;
 #else
@@ -71,6 +75,60 @@ void SetAllowIgnoreGateEnv(bool InEnabled) {
     if (InEnabled) {
         setenv("KOG_ALLOW_IGNORE_GATE", "1", 1);
     }
+#endif
+}
+
+void SetSelfBinaryPathEnv(char* InArgv0) {
+    std::filesystem::path binaryPath;
+#if defined(_WIN32)
+    std::wstring moduleBuffer(static_cast<std::size_t>(MAX_PATH), L'\0');
+    DWORD copied = 0;
+    for (;;) {
+        copied = GetModuleFileNameW(nullptr, moduleBuffer.data(), static_cast<DWORD>(moduleBuffer.size()));
+        if (copied == 0) {
+            break;
+        }
+        if (copied < moduleBuffer.size() - 1) {
+            moduleBuffer.resize(copied);
+            binaryPath = std::filesystem::path(moduleBuffer);
+            break;
+        }
+        moduleBuffer.resize(moduleBuffer.size() * 2);
+    }
+#else
+    if (InArgv0 != nullptr && *InArgv0 != '\0') {
+        std::error_code ec;
+        const auto raw = std::filesystem::path{InArgv0};
+        if (raw.is_absolute()) {
+            binaryPath = std::filesystem::weakly_canonical(raw, ec);
+            if (ec) {
+                binaryPath = raw;
+            }
+        } else {
+            const auto candidate = std::filesystem::current_path(ec) / raw;
+            if (!ec) {
+                binaryPath = std::filesystem::weakly_canonical(candidate, ec);
+                if (ec) {
+                    binaryPath = candidate;
+                }
+            }
+        }
+    }
+#endif
+
+    if (binaryPath.empty()) {
+        return;
+    }
+
+    const auto normalized = binaryPath.lexically_normal().string();
+    if (normalized.empty()) {
+        return;
+    }
+
+#if defined(_WIN32)
+    _putenv_s("KANO_GIT_BINARY_PATH", normalized.c_str());
+#else
+    setenv("KANO_GIT_BINARY_PATH", normalized.c_str(), 1);
 #endif
 }
 
@@ -323,6 +381,8 @@ int main(int InArgc, char* InArgv[]) {
     app.fallthrough();
 
     try {
+        SetSelfBinaryPathEnv(InArgc > 0 ? InArgv[0] : nullptr);
+
         // Register all commands
         kano::git::commands::RegisterAll(app);
 

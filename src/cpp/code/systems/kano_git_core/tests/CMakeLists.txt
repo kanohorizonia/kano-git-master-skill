@@ -33,6 +33,7 @@ add_executable(tui_unit_tests
     unit/test_command_mode_state.cpp
     unit/test_command_executor.cpp
     unit/test_tui_state.cpp
+    unit/test_shell_executor.cpp
 )
 target_link_libraries(tui_unit_tests
     PRIVATE Catch2::Catch2WithMain

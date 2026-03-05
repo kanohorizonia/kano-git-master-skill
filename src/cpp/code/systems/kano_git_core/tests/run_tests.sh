@@ -28,6 +28,10 @@ echo "Running unit tests..."
 "./build/bin/$PRESET/tui_unit_tests"
 
 echo ""
+echo "Running shell executor focused tests..."
+"./build/bin/$PRESET/tui_unit_tests" "[shell-executor]"
+
+echo ""
 echo "Running property tests..."
 "./build/bin/$PRESET/tui_property_tests"
 

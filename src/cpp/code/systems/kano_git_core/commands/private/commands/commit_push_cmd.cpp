@@ -1,8 +1,10 @@
 // commit-push command — Orchestrate commit -> sync -> push workflow
 
 #include "command_registry.hpp"
+#include "discovery.hpp"
 #include "shell_executor.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
@@ -15,6 +17,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace kano::git::commands {
@@ -29,6 +32,13 @@ auto Trim(std::string InValue) -> std::string {
         start += 1;
     }
     return InValue.substr(start);
+}
+
+auto ToLower(std::string InValue) -> std::string {
+    std::transform(InValue.begin(), InValue.end(), InValue.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return InValue;
 }
 
 auto NormalizeInputPathForCurrentPlatform(std::string InPath) -> std::string {
@@ -81,6 +91,173 @@ auto ParseReposCsv(const std::string& InCsv) -> std::vector<std::string> {
         repos.push_back(token);
     }
     return repos;
+}
+
+auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<std::filesystem::path> {
+    workspace::DiscoverOptions options;
+    options.rootDir = InRoot;
+    options.maxDepth = 12;
+    options.useCache = true;
+    options.metadataLevel = "minimal";
+    const auto discovery = workspace::DiscoverRepos(options);
+    std::vector<std::filesystem::path> repos;
+    repos.reserve(discovery.repos.size());
+    for (const auto& repo : discovery.repos) {
+        repos.push_back(repo.path.lexically_normal());
+    }
+    if (repos.empty()) {
+        repos.push_back(InRoot.lexically_normal());
+    }
+    std::sort(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
+        return A.generic_string() < B.generic_string();
+    });
+    repos.erase(std::unique(repos.begin(), repos.end()), repos.end());
+    return repos;
+}
+
+auto ResolveSkillRoot(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path {
+    return (InWorkspaceRoot / ".agents" / "skills" / "kano" / "kano-git-master-skill").lexically_normal();
+}
+
+auto LoadNormalizedLineSet(const std::filesystem::path& InFile) -> std::unordered_set<std::string> {
+    std::unordered_set<std::string> out;
+    std::ifstream in(InFile);
+    if (!in) {
+        return out;
+    }
+    std::string line;
+    while (std::getline(in, line)) {
+        auto t = Trim(line);
+        if (t.empty() || t[0] == '#') {
+            continue;
+        }
+        std::replace(t.begin(), t.end(), '\\', '/');
+        out.insert(ToLower(t));
+    }
+    return out;
+}
+
+auto IsProbableIgnoreArtifactPath(const std::string& InPath) -> bool {
+    auto p = InPath;
+    std::replace(p.begin(), p.end(), '\\', '/');
+    const auto lower = ToLower(p);
+    auto contains = [&](const std::string& token) { return lower.find(token) != std::string::npos; };
+    if (contains("/.cache/") || contains("/.pytest_cache/") || contains("/.mypy_cache/") || contains("/.idea/") || contains("/.vscode/")) {
+        return true;
+    }
+    if (contains("/node_modules/") || contains("/dist/") || contains("/build/") || contains("/bin/") || contains("/obj/") || contains("/target/")) {
+        return true;
+    }
+    return lower.ends_with(".log") || lower.ends_with(".tmp") || lower.ends_with(".temp") || lower.ends_with(".cache") ||
+           lower.ends_with(".bak") || lower.ends_with(".swp") || lower.ends_with(".swo") || lower.ends_with(".class") ||
+           lower.ends_with(".obj") || lower.ends_with(".o") || lower.ends_with(".pdb") || lower.ends_with(".ilk") ||
+           lower.ends_with(".dmp") || lower.ends_with(".pyc");
+}
+
+struct SecretRule {
+    std::string id;
+    std::regex pattern;
+};
+
+struct SecretFinding {
+    std::string repo;
+    std::string file;
+    int line = 0;
+    std::string ruleId;
+    std::string preview;
+};
+
+auto LoadSecretRules(const std::filesystem::path& InFile) -> std::vector<SecretRule> {
+    std::vector<SecretRule> out;
+    std::ifstream in(InFile);
+    if (!in) {
+        return out;
+    }
+    std::string line;
+    while (std::getline(in, line)) {
+        const auto t = Trim(line);
+        if (t.empty() || t[0] == '#') {
+            continue;
+        }
+        const auto delim = t.find('|');
+        if (delim == std::string::npos) {
+            continue;
+        }
+        const auto id = Trim(t.substr(0, delim));
+        const auto expr = Trim(t.substr(delim + 1));
+        if (id.empty() || expr.empty()) {
+            continue;
+        }
+        try {
+            out.push_back({id, std::regex(expr, std::regex::ECMAScript | std::regex::icase)});
+        } catch (const std::regex_error&) {
+            continue;
+        }
+    }
+    return out;
+}
+
+auto CollectChangedCandidateFiles(const std::filesystem::path& InRepo) -> std::vector<std::string> {
+    std::unordered_set<std::string> files;
+    const std::vector<std::vector<std::string>> commands = {
+        {"diff", "--cached", "--name-only"},
+        {"diff", "--name-only"},
+        {"ls-files", "--others", "--exclude-standard"},
+    };
+    for (const auto& args : commands) {
+        const auto out = shell::ExecuteCommand("git", args, shell::ExecMode::Capture, InRepo);
+        if (out.exitCode != 0) {
+            continue;
+        }
+        std::istringstream iss(out.stdoutStr);
+        std::string line;
+        while (std::getline(iss, line)) {
+            auto path = Trim(line);
+            if (path.empty()) {
+                continue;
+            }
+            const auto abs = (InRepo / std::filesystem::path(path)).lexically_normal();
+            std::error_code ec;
+            if (!std::filesystem::exists(abs, ec) || std::filesystem::is_directory(abs, ec)) {
+                continue;
+            }
+            files.insert(path);
+        }
+    }
+    return std::vector<std::string>(files.begin(), files.end());
+}
+
+auto ScanFileForSecretRules(const std::filesystem::path& InRepo,
+                            const std::string& InFile,
+                            const std::vector<SecretRule>& InRules,
+                            const int InLimit,
+                            std::vector<SecretFinding>* OutFindings) -> void {
+    if (OutFindings == nullptr || static_cast<int>(OutFindings->size()) >= InLimit) {
+        return;
+    }
+    std::ifstream in((InRepo / std::filesystem::path(InFile)).lexically_normal());
+    if (!in) {
+        return;
+    }
+    std::string line;
+    int lineNo = 0;
+    while (std::getline(in, line) && static_cast<int>(OutFindings->size()) < InLimit) {
+        lineNo += 1;
+        for (const auto& rule : InRules) {
+            if (std::regex_search(line, rule.pattern)) {
+                SecretFinding f;
+                f.file = InFile;
+                f.line = lineNo;
+                f.ruleId = rule.id;
+                f.preview = Trim(line);
+                if (f.preview.size() > 160) {
+                    f.preview = f.preview.substr(0, 160) + "...";
+                }
+                OutFindings->push_back(std::move(f));
+                break;
+            }
+        }
+    }
 }
 
 auto IsAgentModeEnabled() -> bool {
@@ -259,141 +436,190 @@ auto StampCommitPlanExecutedAt(const std::filesystem::path& InPath,
     return WriteTextFile(InPath, text, OutError);
 }
 
-auto ResolveLauncherScript() -> std::filesystem::path {
-    if (const char* root = std::getenv("KANO_GIT_MASTER_ROOT"); root != nullptr) {
-        const std::filesystem::path candidate = std::filesystem::path(root) / "scripts" / "kano-git";
-        if (std::filesystem::exists(candidate)) {
-            return candidate;
+auto RunPipelineSafetyGatesForNonAiCommitPush(const std::filesystem::path& InWorkspaceRoot) -> void {
+    const auto workspaceRoot = InWorkspaceRoot.lexically_normal();
+
+    const auto allowIgnoreGate = ToLower(Trim(std::getenv("KOG_ALLOW_IGNORE_GATE") == nullptr ? "" : std::getenv("KOG_ALLOW_IGNORE_GATE")));
+    const auto ignoreGateMode = ToLower(Trim(std::getenv("KOG_IGNORE_GATE") == nullptr ? "on" : std::getenv("KOG_IGNORE_GATE")));
+    if (!(allowIgnoreGate == "1" || allowIgnoreGate == "true") && ignoreGateMode != "off") {
+        const auto allowlistPath =
+            (ResolveSkillRoot(workspaceRoot) / "assets" / "gitignore" / "ignore-gate-allowlist.txt").lexically_normal();
+        const auto allowlist = LoadNormalizedLineSet(allowlistPath);
+
+        auto repos = DiscoverWorkspaceRepos(workspaceRoot);
+        std::vector<std::string> findings;
+        findings.reserve(20);
+        for (const auto& repo : repos) {
+            const auto rel = repo.lexically_relative(workspaceRoot).generic_string();
+            const auto repoLabel = rel.empty() ? "." : rel;
+            const auto untracked = shell::ExecuteCommand("git", {"ls-files", "--others", "--exclude-standard"}, shell::ExecMode::Capture, repo);
+            if (untracked.exitCode != 0) {
+                continue;
+            }
+            std::istringstream iss(untracked.stdoutStr);
+            std::string path;
+            while (std::getline(iss, path)) {
+                auto p = Trim(path);
+                if (p.empty() || !IsProbableIgnoreArtifactPath(p)) {
+                    continue;
+                }
+                std::replace(p.begin(), p.end(), '\\', '/');
+                const auto key = ToLower(repoLabel == "." ? p : (repoLabel + "/" + p));
+                if (allowlist.find(key) != allowlist.end()) {
+                    continue;
+                }
+                findings.push_back(key);
+                if (findings.size() >= 20) {
+                    break;
+                }
+            }
+            if (findings.size() >= 20) {
+                break;
+            }
+        }
+        if (!findings.empty()) {
+            std::cerr << "Error: ignore gate failed (commit-push); unresolved untracked artifact-like files detected.\n";
+            for (const auto& f : findings) {
+                std::cerr << "  - " << f << "\n";
+            }
+            std::cerr << "Hint: update .gitignore first, then regenerate plan.\n";
+            std::cerr << "Hint: override once with --allow-ignore-gate (or KOG_ALLOW_IGNORE_GATE=1).\n";
+            std::exit(3);
         }
     }
 
-    const std::filesystem::path cwdCandidate = std::filesystem::current_path() / "scripts" / "kano-git";
-    if (std::filesystem::exists(cwdCandidate)) {
-        return cwdCandidate;
-    }
-
-    return {};
-}
-
-auto RunKogCommand(const std::vector<std::string>& InArgs, shell::ExecMode InMode) -> shell::ExecResult {
-    if (const char* binaryPath = std::getenv("KANO_GIT_BINARY_PATH"); binaryPath != nullptr) {
-        const std::filesystem::path binary(binaryPath);
-        if (std::filesystem::exists(binary)) {
-            return shell::ExecuteCommand(binary.generic_string(), InArgs, InMode, std::filesystem::current_path());
-        }
-    }
-
-    const auto launcher = ResolveLauncherScript();
-    if (!launcher.empty()) {
-        std::vector<std::string> args;
-        args.push_back(launcher.generic_string());
-        args.insert(args.end(), InArgs.begin(), InArgs.end());
-        return shell::ExecuteCommand("bash", args, InMode, std::filesystem::current_path());
-    }
-
-    return shell::ExecuteCommand("kano-git", InArgs, InMode, std::filesystem::current_path());
-}
-
-auto RunKogCommand(const std::vector<std::string>& InArgs) -> shell::ExecResult {
-    return RunKogCommand(InArgs, shell::ExecMode::PassThrough);
-}
-
-auto RunPipelineSafetyGatesForNonAiCommitPush() -> void {
-    const auto ignoreGateResult = RunKogCommand({"plan", "verify", "ignore", "--context", "commit-push"});
-    if (ignoreGateResult.exitCode != 0) {
-        std::exit(ignoreGateResult.exitCode);
-    }
-
-    const auto secretGateProbe = RunKogCommand({"plan", "verify", "secret", "--help"}, shell::ExecMode::Capture);
-    if (secretGateProbe.exitCode != 0) {
-        std::cerr << "Warning: native binary does not support plan verify secret yet; skipping secret gate.\n";
+    const auto disableSecretGate = ToLower(Trim(std::getenv("KOG_DISABLE_SECRET_GATE") == nullptr ? "" : std::getenv("KOG_DISABLE_SECRET_GATE")));
+    if (disableSecretGate == "1" || disableSecretGate == "true") {
         return;
     }
-    const auto secretGateResult = RunKogCommand({"plan", "verify", "secret", "--context", "commit-push", "--limit", "20"});
-    if (secretGateResult.exitCode != 0) {
-        std::exit(secretGateResult.exitCode);
+
+    const auto rulesPath = (ResolveSkillRoot(workspaceRoot) / "assets" / "security" / "secret-blacklist.rules").lexically_normal();
+    const auto rules = LoadSecretRules(rulesPath);
+    if (rules.empty()) {
+        return;
+    }
+    auto repos = DiscoverWorkspaceRepos(workspaceRoot);
+    std::vector<SecretFinding> findings;
+    findings.reserve(20);
+    for (const auto& repo : repos) {
+        const auto changedFiles = CollectChangedCandidateFiles(repo);
+        if (changedFiles.empty()) {
+            continue;
+        }
+        const auto rel = repo.lexically_relative(workspaceRoot).generic_string();
+        const auto repoLabel = rel.empty() ? "." : rel;
+        for (const auto& file : changedFiles) {
+            if (static_cast<int>(findings.size()) >= 20) {
+                break;
+            }
+            const auto before = findings.size();
+            ScanFileForSecretRules(repo, file, rules, 20, &findings);
+            for (std::size_t i = before; i < findings.size(); ++i) {
+                findings[i].repo = repoLabel;
+            }
+        }
+        if (static_cast<int>(findings.size()) >= 20) {
+            break;
+        }
+    }
+    if (!findings.empty()) {
+        std::cerr << "Error: secret gate failed (commit-push); potential secrets detected.\n";
+        for (const auto& f : findings) {
+            std::cerr << std::format("  - [{}/{}:{}] rule={} preview={}\n",
+                                     f.repo.empty() ? "." : f.repo,
+                                     f.file,
+                                     f.line,
+                                     f.ruleId,
+                                     f.preview);
+        }
+        std::cerr << "Hint: remove/redact secrets, rotate leaked credentials if needed, then rerun.\n";
+        std::cerr << "Hint: disable once with KOG_DISABLE_SECRET_GATE=1 (not recommended).\n";
+        std::exit(3);
     }
 }
 
-auto SplitLines(const std::string& InText) -> std::vector<std::string> {
-    std::vector<std::string> out;
-    std::istringstream iss(InText);
-    std::string line;
-    while (std::getline(iss, line)) {
-        if (!line.empty() && line.back() == '\r') {
-            line.pop_back();
-        }
-        out.push_back(line);
-    }
-    return out;
-}
-
-auto ParsePushFailures(const std::string& InStdout, const std::string& InStderr) -> std::map<std::string, std::vector<std::string>> {
-    std::map<std::string, std::vector<std::string>> failures;
-    std::map<std::string, std::set<std::string>> dedup;
-
-    auto handleLine = [&](const std::string& line) {
-        if (line.empty()) {
-            return;
-        }
-
-        std::string repo = "(unknown)";
-        std::string reason = line;
-
-        const auto lb = line.find('[');
-        const auto rb = line.find(']');
-        if (lb != std::string::npos && rb != std::string::npos && rb > lb + 1) {
-            repo = line.substr(lb + 1, rb - lb - 1);
-            if (rb + 1 < line.size()) {
-                reason = Trim(line.substr(rb + 1));
-            }
-        } else {
-            const auto forPos = line.find(" for ");
-            if (forPos != std::string::npos && forPos + 5 < line.size()) {
-                repo = Trim(line.substr(forPos + 5));
-            }
-        }
-
-        const auto lowered = [] (std::string value) {
-            for (auto& ch : value) {
-                ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-            }
-            return value;
-        }(reason);
-
-        const bool failedLike =
-            lowered.find("failed") != std::string::npos ||
-            lowered.find("fatal:") != std::string::npos ||
-            lowered.find("error:") != std::string::npos;
-        if (!failedLike) {
-            return;
-        }
-
-        if (lowered.rfind("summary:", 0) == 0) {
-            return;
-        }
-
-        if (reason.empty()) {
-            reason = line;
-        }
-
-        if (!dedup[repo].contains(reason)) {
-            dedup[repo].insert(reason);
-            failures[repo].push_back(reason);
-        }
-    };
-
-    for (const auto& line : SplitLines(InStdout)) {
-        handleLine(line);
-    }
-    for (const auto& line : SplitLines(InStderr)) {
-        handleLine(line);
+auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceRoot,
+                                       const std::string& InNormalizedPlanFile,
+                                       const std::vector<std::string>& InExtraArgs) -> int {
+    const bool agentMode = IsAgentModeEnabled();
+    if (InNormalizedPlanFile.empty()) {
+        std::cerr << "Error: plan pipeline requires non-empty --plan-file\n";
+        return 2;
     }
 
-    return failures;
+    if (!InExtraArgs.empty()) {
+        std::cerr << "Error: unsupported extra arguments in plan pipeline mode:";
+        for (const auto& extra : InExtraArgs) {
+            std::cerr << ' ' << extra;
+        }
+        std::cerr << "\n";
+        return 2;
+    }
+
+    {
+        std::string stampError;
+        const auto planPath = std::filesystem::path(InNormalizedPlanFile).lexically_normal();
+        if (!StampCommitPlanExecutedAt(planPath, &stampError)) {
+            std::cerr << "Warning: failed to stamp plan executed_at_utc: " << planPath.generic_string();
+            if (!stampError.empty()) {
+                std::cerr << " (" << stampError << ")";
+            }
+            std::cerr << "\n";
+        }
+    }
+
+    if (agentMode) {
+        std::cout << "[commit-push] agent mode + --plan-file detected; using plan-driven flow.\n";
+    }
+
+    std::cout << "=== commit-push stage: safety-gates ===\n";
+    RunPipelineSafetyGatesForNonAiCommitPush(InWorkspaceRoot);
+
+    std::cout << "=== commit-push stage: pre-commit ===\n";
+    {
+        const auto preCommitCode = RunSyncPreCommitNative(InWorkspaceRoot, true, false, "default");
+        if (preCommitCode != 0) {
+            return preCommitCode;
+        }
+    }
+
+    std::cout << "=== commit-push stage: commit ===\n";
+    {
+        const auto commitCode = RunCommitNativePlanStage(InWorkspaceRoot, InNormalizedPlanFile, "commit", false);
+        if (commitCode != 0) {
+            return commitCode;
+        }
+    }
+
+    std::cout << "=== commit-push stage: sync ===\n";
+    {
+        const auto syncCode = RunSyncOriginLatestNative(InWorkspaceRoot, true, false);
+        if (syncCode != 0) {
+            return syncCode;
+        }
+    }
+
+    std::cout << "=== commit-push stage: post-sync ===\n";
+    {
+        const auto postCommitCode = RunCommitNativePlanStage(InWorkspaceRoot, InNormalizedPlanFile, "post_sync", false);
+        if (postCommitCode != 0) {
+            return postCommitCode;
+        }
+    }
+
+    std::cout << "=== commit-push stage: push ===\n";
+    {
+        return RunPushNativeSimple(InWorkspaceRoot, true, false, false, false, false, 0, false, "");
+    }
 }
 
 } // namespace
+
+auto RunCommitPushPlanFilePipeline(const std::filesystem::path& InWorkspaceRoot,
+                                   const std::string& InNormalizedPlanFile,
+                                   const std::vector<std::string>& InExtraArgs) -> int {
+    return RunCommitPushPlanFilePipelineImpl(InWorkspaceRoot, InNormalizedPlanFile, InExtraArgs);
+}
 
 void RegisterCommitPush(CLI::App& InApp) {
     auto* cmd = InApp.add_subcommand("commit-push", "Run pre-commit, commit, sync, post-sync, then push in one command");
@@ -479,11 +705,47 @@ void RegisterCommitPush(CLI::App& InApp) {
             std::exit(2);
         }
 
-        const bool agentMode = IsAgentModeEnabled();
         const auto normalizedCommitPlanFile = NormalizeInputPathForCurrentPlatform(*commitPlanFile);
         const bool hasCommitPlan = !normalizedCommitPlanFile.empty();
-        const bool useAiCommitFlow = !hasCommitPlan;
         const bool aiModeRequested = *aiAuto || !aiProvider->empty() || !aiModel->empty();
+        if (hasCommitPlan && aiModeRequested) {
+            std::cerr << "Error: --plan-file cannot be combined with --ai-* flags.\n";
+            std::cerr << "Hint: fill plan first (kog plan runbook commit), then run commit-push with --plan-file only.\n";
+            std::exit(2);
+        }
+        if (hasCommitPlan && !message->empty()) {
+            std::cerr << "Error: --plan-file cannot be combined with --message/-m.\n";
+            std::cerr << "Hint: set commit messages in plan entries.\n";
+            std::exit(2);
+        }
+        if (hasCommitPlan && *stagedOnly) {
+            std::cerr << "Error: --plan-file cannot be combined with --staged-only.\n";
+            std::cerr << "Hint: plan apply handles staging per plan entries.\n";
+            std::exit(2);
+        }
+        if (hasCommitPlan && *noAiReview) {
+            std::cerr << "Error: --plan-file cannot be combined with --no-ai-review.\n";
+            std::cerr << "Hint: AI review policy is captured when plan is prepared.\n";
+            std::exit(2);
+        }
+
+        const bool canUsePlanPipelineFastPath = hasCommitPlan &&
+                                                repos->empty() &&
+                                                !*noRecursive &&
+                                                message->empty() &&
+                                                !*dryRun &&
+                                                !*profile &&
+                                                *branchMode == "default" &&
+                                                !*forceWithLease &&
+                                                !*noVerify &&
+                                                *jobs <= 0 &&
+                                                !*verbose &&
+                                                remote->empty();
+
+        if (canUsePlanPipelineFastPath) {
+            const auto code = RunCommitPushPlanFilePipeline(workspaceRoot, normalizedCommitPlanFile, {});
+            std::exit(code);
+        }
 
         if (hasCommitPlan) {
             std::string stampError;
@@ -498,13 +760,13 @@ void RegisterCommitPush(CLI::App& InApp) {
             }
         }
 
-        if (agentMode && hasCommitPlan) {
+        if (IsAgentModeEnabled() && hasCommitPlan) {
             std::cout << "[commit-push] agent mode + --plan-file detected; using plan-driven flow.\n";
         }
 
         if (!aiModeRequested) {
             std::cout << "=== commit-push stage: safety-gates ===\n";
-            RunPipelineSafetyGatesForNonAiCommitPush();
+            RunPipelineSafetyGatesForNonAiCommitPush(workspaceRoot);
         }
 
         std::cout << "=== commit-push stage: pre-commit ===\n";
@@ -512,66 +774,40 @@ void RegisterCommitPush(CLI::App& InApp) {
         const auto repoList = ParseReposCsv(*repos);
         if (!repoList.empty()) {
             for (const auto& repo : repoList) {
-                std::vector<std::string> preCommitArgs{"sync", "pre-commit", "--repo", repo, "--no-recursive", "--branch-mode", *branchMode};
-                if (*dryRun) {
-                    preCommitArgs.push_back("--dry-run");
-                }
-                const auto preCommitResult = RunKogCommand(preCommitArgs);
-                if (preCommitResult.exitCode != 0) {
-                    std::exit(preCommitResult.exitCode);
+                const auto repoRoot = (workspaceRoot / std::filesystem::path(repo)).lexically_normal();
+                const auto preCommitCode = RunSyncPreCommitNative(repoRoot, false, *dryRun, *branchMode);
+                if (preCommitCode != 0) {
+                    std::exit(preCommitCode);
                 }
             }
         } else {
-            std::vector<std::string> preCommitArgs{"sync", "pre-commit", "--branch-mode", *branchMode};
-            if (*noRecursive) {
-                preCommitArgs.push_back("--no-recursive");
-            }
-            if (*dryRun) {
-                preCommitArgs.push_back("--dry-run");
-            }
-            const auto preCommitResult = RunKogCommand(preCommitArgs);
-            if (preCommitResult.exitCode != 0) {
-                std::exit(preCommitResult.exitCode);
+            const auto preCommitCode = RunSyncPreCommitNative(workspaceRoot, !*noRecursive, *dryRun, *branchMode);
+            if (preCommitCode != 0) {
+                std::exit(preCommitCode);
             }
         }
         const auto preCommitEnd = std::chrono::steady_clock::now();
         preCommitMillis = std::chrono::duration_cast<std::chrono::milliseconds>(preCommitEnd - preCommitStart).count();
 
-        std::vector<std::string> commitArgs{"commit"};
-        if (!repos->empty()) {
-            commitArgs.insert(commitArgs.end(), {"--repos", *repos});
-        }
-        if (*noRecursive) {
-            commitArgs.push_back("--no-recursive");
-        }
-        if (!message->empty()) {
-            commitArgs.insert(commitArgs.end(), {"-m", *message});
-        }
-        if (hasCommitPlan) {
-            commitArgs.insert(commitArgs.end(), {"--plan-file", normalizedCommitPlanFile, "--plan-stage", "commit"});
-        }
-        if (useAiCommitFlow && !aiProvider->empty()) {
-            commitArgs.insert(commitArgs.end(), {"--ai-provider", *aiProvider});
-        }
-        if (useAiCommitFlow && !aiModel->empty()) {
-            commitArgs.insert(commitArgs.end(), {"--ai-model", *aiModel});
-        }
-        if (useAiCommitFlow && *aiAuto) {
-            commitArgs.push_back("--ai-auto");
-        }
-        if (useAiCommitFlow && *noAiReview) {
-            commitArgs.push_back("--no-ai-review");
-        }
-        if (*stagedOnly) {
-            commitArgs.push_back("--staged-only");
-        }
-        if (*dryRun) {
-            commitArgs.push_back("--preflight-only");
-        }
-
         std::cout << "=== commit-push stage: commit ===\n";
         const auto commitStart = std::chrono::steady_clock::now();
-        const auto commitResult = RunKogCommand(commitArgs);
+        const auto commitResult = hasCommitPlan
+            ? shell::ExecResult{
+                RunCommitNativePlanStage(workspaceRoot, normalizedCommitPlanFile, "commit", false), "", ""}
+            : shell::ExecResult{
+                RunCommitNativeSimple(
+                    workspaceRoot,
+                    *repos,
+                    *noRecursive,
+                    *message,
+                    *stagedOnly,
+                    *dryRun,
+                    *aiProvider,
+                    *aiModel,
+                    *aiAuto,
+                    *noAiReview,
+                    false),
+                "", ""};
         const auto commitEnd = std::chrono::steady_clock::now();
         commitMillis = std::chrono::duration_cast<std::chrono::milliseconds>(commitEnd - commitStart).count();
         if (commitResult.exitCode != 0) {
@@ -582,134 +818,58 @@ void RegisterCommitPush(CLI::App& InApp) {
         const auto syncStart = std::chrono::steady_clock::now();
         if (!repoList.empty()) {
             for (const auto& repo : repoList) {
-                std::vector<std::string> syncArgs{"sync", "origin-latest", "--repo", repo, "--no-recursive"};
-                if (*dryRun) {
-                    syncArgs.push_back("--dry-run");
-                }
-                const auto syncResult = RunKogCommand(syncArgs);
-                if (syncResult.exitCode != 0) {
-                    std::exit(syncResult.exitCode);
+                const auto repoRoot = (workspaceRoot / std::filesystem::path(repo)).lexically_normal();
+                const auto syncCode = RunSyncOriginLatestNative(repoRoot, false, *dryRun);
+                if (syncCode != 0) {
+                    std::exit(syncCode);
                 }
             }
         } else {
-            std::vector<std::string> syncArgs{"sync", "origin-latest"};
-            if (*noRecursive) {
-                syncArgs.push_back("--no-recursive");
-            }
-            if (*dryRun) {
-                syncArgs.push_back("--dry-run");
-            }
-            const auto syncResult = RunKogCommand(syncArgs);
-            if (syncResult.exitCode != 0) {
-                std::exit(syncResult.exitCode);
+            const auto syncCode = RunSyncOriginLatestNative(workspaceRoot, !*noRecursive, *dryRun);
+            if (syncCode != 0) {
+                std::exit(syncCode);
             }
         }
         const auto syncEnd = std::chrono::steady_clock::now();
         syncMillis = std::chrono::duration_cast<std::chrono::milliseconds>(syncEnd - syncStart).count();
 
-        std::vector<std::string> postCommitArgs{"commit"};
-        if (!repos->empty()) {
-            postCommitArgs.insert(postCommitArgs.end(), {"--repos", *repos});
-        }
-        if (*noRecursive) {
-            postCommitArgs.push_back("--no-recursive");
-        }
-        if (!message->empty()) {
-            postCommitArgs.insert(postCommitArgs.end(), {"-m", *message});
-        }
-        if (hasCommitPlan) {
-            postCommitArgs.insert(postCommitArgs.end(), {"--plan-file", normalizedCommitPlanFile, "--plan-stage", "post_sync"});
-        }
-        if (useAiCommitFlow && !aiProvider->empty()) {
-            postCommitArgs.insert(postCommitArgs.end(), {"--ai-provider", *aiProvider});
-        }
-        if (useAiCommitFlow && !aiModel->empty()) {
-            postCommitArgs.insert(postCommitArgs.end(), {"--ai-model", *aiModel});
-        }
-        if (useAiCommitFlow && *aiAuto) {
-            postCommitArgs.push_back("--ai-auto");
-        }
-        if (useAiCommitFlow && *noAiReview) {
-            postCommitArgs.push_back("--no-ai-review");
-        }
-        if (*stagedOnly) {
-            postCommitArgs.push_back("--staged-only");
-        }
-        if (*dryRun) {
-            postCommitArgs.push_back("--preflight-only");
-        }
-
         std::cout << "=== commit-push stage: post-sync ===\n";
         const auto postCommitStart = std::chrono::steady_clock::now();
-        const auto postCommitResult = RunKogCommand(postCommitArgs);
+        const auto postCommitResult = hasCommitPlan
+            ? shell::ExecResult{
+                RunCommitNativePlanStage(workspaceRoot, normalizedCommitPlanFile, "post_sync", false), "", ""}
+            : shell::ExecResult{
+                RunCommitNativeSimple(
+                    workspaceRoot,
+                    *repos,
+                    *noRecursive,
+                    *message,
+                    *stagedOnly,
+                    *dryRun,
+                    *aiProvider,
+                    *aiModel,
+                    *aiAuto,
+                    *noAiReview,
+                    false),
+                "", ""};
         const auto postCommitEnd = std::chrono::steady_clock::now();
         postSyncMillis = std::chrono::duration_cast<std::chrono::milliseconds>(postCommitEnd - postCommitStart).count();
         if (postCommitResult.exitCode != 0) {
             std::exit(postCommitResult.exitCode);
         }
 
-        std::vector<std::string> pushArgs{"push", "--skip-sync"};
-        if (!repos->empty()) {
-            pushArgs.insert(pushArgs.end(), {"--repos", *repos});
-        }
-        if (*noRecursive) {
-            pushArgs.push_back("--no-recursive");
-        }
-        if (*dryRun) {
-            pushArgs.push_back("--dry-run");
-        }
-        if (*profile) {
-            pushArgs.push_back("--profile");
-        }
-        if (*forceWithLease) {
-            pushArgs.push_back("--force-with-lease");
-        }
-        if (*noVerify) {
-            pushArgs.push_back("--no-verify");
-        }
-        if (*jobs > 0) {
-            pushArgs.push_back("--jobs");
-            pushArgs.push_back(std::to_string(*jobs));
-        }
-        if (*verbose) {
-            pushArgs.push_back("--verbose");
-        }
-        if (!remote->empty()) {
-            pushArgs.push_back("--remote");
-            pushArgs.push_back(*remote);
-        }
-
         std::cout << "=== commit-push stage: push ===\n";
         const auto pushStart = std::chrono::steady_clock::now();
-        const auto pushResult = RunKogCommand(pushArgs, shell::ExecMode::Capture);
-
-        if (!pushResult.stdoutStr.empty()) {
-            std::cout << pushResult.stdoutStr;
-            if (pushResult.stdoutStr.back() != '\n') {
-                std::cout << "\n";
-            }
-        }
-        if (!pushResult.stderrStr.empty()) {
-            std::cerr << pushResult.stderrStr;
-            if (pushResult.stderrStr.back() != '\n') {
-                std::cerr << "\n";
-            }
-        }
-
-        if (pushResult.exitCode != 0) {
-            const auto failures = ParsePushFailures(pushResult.stdoutStr, pushResult.stderrStr);
-            if (!failures.empty()) {
-                std::cerr << "\n=== Failed Repos (highlight) ===\n";
-                std::size_t idx = 0;
-                for (const auto& [repo, reasons] : failures) {
-                    idx += 1;
-                    std::cerr << "[" << idx << "] " << repo << "\n";
-                    for (const auto& reason : reasons) {
-                        std::cerr << "  - " << reason << "\n";
-                    }
-                }
-            }
-        }
+        const auto pushExitCode = RunPushNativeSimple(
+            workspaceRoot,
+            !*noRecursive,
+            *dryRun,
+            *profile,
+            *forceWithLease,
+            *noVerify,
+            *jobs,
+            *verbose,
+            *remote);
 
         const auto pushEnd = std::chrono::steady_clock::now();
         pushMillis = std::chrono::duration_cast<std::chrono::milliseconds>(pushEnd - pushStart).count();
@@ -727,7 +887,7 @@ void RegisterCommitPush(CLI::App& InApp) {
             std::cout << "total_ms: " << totalMillis << "\n";
         }
 
-        std::exit(pushResult.exitCode);
+        std::exit(pushExitCode);
     });
 }
 
