@@ -29,6 +29,10 @@ Write-Host "Running unit tests..."
 & ".\build\bin\$Preset\tui_unit_tests.exe"
 
 Write-Host ""
+Write-Host "Running shell executor focused tests..."
+& ".\build\bin\$Preset\tui_unit_tests.exe" "[shell-executor]"
+
+Write-Host ""
 Write-Host "Running property tests..."
 & ".\build\bin\$Preset\tui_property_tests.exe"
 

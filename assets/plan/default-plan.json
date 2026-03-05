@@ -5,6 +5,7 @@
     "generated_at_utc": "replace-with-generated-at-utc",
     "executed_at_utc": "",
     "base_head_sha": "replace-with-head-sha",
+    "dirty_fingerprint_pre_ignore": "replace-with-dirty-fingerprint-pre-ignore",
     "dirty_fingerprint": "replace-with-dirty-fingerprint",
     "planner": {
       "provider": "replace-with-provider",

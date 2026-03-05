@@ -7,12 +7,14 @@
 #include <algorithm>
 #include <chrono>
 #include <cctype>
+#include <cstdint>
 #include <cstring>
 #include <ctime>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <format>
+#include <iomanip>
 #include <iostream>
 #include <optional>
 #include <regex>
@@ -57,6 +59,8 @@ auto ExtractArrayBodyForKey(const std::string& InText, const std::string& InKey)
 auto SplitTopLevelObjects(const std::string& InArrayBody) -> std::vector<std::string>;
 auto ExtractStringField(const std::string& InObjectText, const std::string& InField) -> std::optional<std::string>;
 auto ResolveSkillRoot(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path;
+auto ComputeWorkspaceBaseHeadSha(const std::filesystem::path& InWorkspaceRoot) -> std::string;
+auto ComputeWorkspaceDirtyFingerprint(const std::filesystem::path& InWorkspaceRoot) -> std::string;
 
 auto Trim(std::string InValue) -> std::string {
     while (!InValue.empty() &&
@@ -497,19 +501,30 @@ auto BuildPlanPrompt(const std::filesystem::path& InRoot,
                      const std::string& InModel,
                      const std::string& InTemplateJson,
                      const std::string& InDirtyContext) -> std::string {
-    std::filesystem::path promptPath;
+    std::vector<std::filesystem::path> candidates;
     if (const char* custom = std::getenv("KOG_PLAN_PROMPT_TEMPLATE"); custom != nullptr && std::string(custom).size() > 0) {
-        promptPath = std::filesystem::path(custom);
-    } else {
-        promptPath = (InRoot / "assets" / "prompts" / "base" / "plan-init.md").lexically_normal();
+        candidates.emplace_back(std::filesystem::path(custom).lexically_normal());
     }
-    if (const auto text = ReadFileText(promptPath); text.has_value()) {
-        auto prompt = *text;
-        prompt = ReplaceAll(std::move(prompt), "{{PROVIDER}}", InProvider);
-        prompt = ReplaceAll(std::move(prompt), "{{MODEL}}", InModel);
-        prompt = ReplaceAll(std::move(prompt), "{{TEMPLATE_JSON}}", InTemplateJson);
-        prompt = ReplaceAll(std::move(prompt), "{{DIRTY_CONTEXT}}", InDirtyContext);
-        return prompt;
+    candidates.emplace_back((InRoot / "assets" / "prompts" / "base" / "plan-init.md").lexically_normal());
+    candidates.emplace_back(
+        (InRoot / ".agents" / "skills" / "kano" / "kano-git-master-skill" / "assets" / "prompts" / "base" / "plan-init.md").lexically_normal());
+
+    std::optional<std::filesystem::path> promptPath;
+    for (const auto& candidate : candidates) {
+        if (std::error_code ec; std::filesystem::exists(candidate, ec) && !ec) {
+            promptPath = candidate;
+            break;
+        }
+    }
+    if (promptPath.has_value()) {
+        if (const auto text = ReadFileText(*promptPath); text.has_value()) {
+            auto prompt = *text;
+            prompt = ReplaceAll(std::move(prompt), "{{PROVIDER}}", InProvider);
+            prompt = ReplaceAll(std::move(prompt), "{{MODEL}}", InModel);
+            prompt = ReplaceAll(std::move(prompt), "{{TEMPLATE_JSON}}", InTemplateJson);
+            prompt = ReplaceAll(std::move(prompt), "{{DIRTY_CONTEXT}}", InDirtyContext);
+            return prompt;
+        }
     }
     std::ostringstream fallback;
     fallback << "You are generating a complete plan JSON for kano-git.\n";
@@ -605,6 +620,8 @@ auto BuildDefaultPlanTemplate(const std::filesystem::path& InWorkspaceRoot,
         (dsRootPath / "local" / "datasource.manifest.json").lexically_normal());
     const auto dsRoot = dsRootPath.lexically_normal().generic_string();
     const auto dsManifest = dsManifestPath.lexically_normal().generic_string();
+    const auto baseHeadSha = ComputeWorkspaceBaseHeadSha(InWorkspaceRoot);
+    const auto dirtyFingerprint = ComputeWorkspaceDirtyFingerprint(InWorkspaceRoot);
     std::ostringstream oss;
     oss << R"json({
   "meta": {
@@ -613,8 +630,12 @@ auto BuildDefaultPlanTemplate(const std::filesystem::path& InWorkspaceRoot,
     "generated_at_utc": ")json"
         << CurrentUtcIso8601() << R"json(",
     "executed_at_utc": "",
-    "base_head_sha": "replace-with-head-sha",
-    "dirty_fingerprint": "replace-with-dirty-fingerprint",
+    "base_head_sha": ")json"
+        << baseHeadSha << R"json(",
+    "dirty_fingerprint_pre_ignore": ")json"
+        << dirtyFingerprint << R"json(",
+    "dirty_fingerprint": ")json"
+        << dirtyFingerprint << R"json(",
     "planner": {
       "provider": "replace-with-provider",
       "ai-model": "replace-with-ai-model"
@@ -925,6 +946,100 @@ auto CountTopLevelObjects(const std::string& InArrayBody) -> std::size_t {
     return SplitTopLevelObjects(InArrayBody).size();
 }
 
+auto Fnv1a64Hex(const std::string& InText) -> std::string {
+    std::uint64_t hash = 1469598103934665603ULL;
+    for (const unsigned char ch : InText) {
+        hash ^= static_cast<std::uint64_t>(ch);
+        hash *= 1099511628211ULL;
+    }
+    std::ostringstream oss;
+    oss << std::hex << std::setfill('0') << std::setw(16) << hash;
+    return oss.str();
+}
+
+auto ExtractBranchOidFromStatusV2(const std::string& InStatus) -> std::string {
+    std::istringstream iss(InStatus);
+    std::string line;
+    while (std::getline(iss, line)) {
+        auto t = Trim(line);
+        if (t.rfind("# branch.oid ", 0) == 0) {
+            t = Trim(t.substr(std::string("# branch.oid ").size()));
+            if (!t.empty() && t != "(initial)") {
+                return t;
+            }
+            break;
+        }
+    }
+    return "no-head";
+}
+
+auto ComputeWorkspaceBaseHeadSha(const std::filesystem::path& InWorkspaceRoot) -> std::string {
+    std::vector<std::string> lines;
+    const auto repos = DiscoverWorkspaceRepos(InWorkspaceRoot);
+    lines.reserve(repos.size());
+    for (const auto& repo : repos) {
+        const auto rel = RelativeDisplayPath(InWorkspaceRoot, repo);
+        const auto key = rel.empty() ? "." : rel;
+        const auto head = GitCapture(repo, {"rev-parse", "HEAD"});
+        const auto sha = (head.exitCode == 0) ? Trim(head.stdoutStr) : std::string("0000000000000000000000000000000000000000");
+        lines.push_back(key + "\t" + sha);
+    }
+    std::sort(lines.begin(), lines.end());
+    std::ostringstream canonical;
+    for (const auto& line : lines) {
+        canonical << line << "\n";
+    }
+    return "ws-head-v2-" + Fnv1a64Hex(canonical.str());
+}
+
+auto ComputeWorkspaceDirtyFingerprint(const std::filesystem::path& InWorkspaceRoot) -> std::string {
+    std::vector<std::string> lines;
+    const auto repos = DiscoverWorkspaceRepos(InWorkspaceRoot);
+    lines.reserve(repos.size());
+    for (const auto& repo : repos) {
+        const auto rel = RelativeDisplayPath(InWorkspaceRoot, repo);
+        const auto key = rel.empty() ? "." : rel;
+        const auto status = GitCapture(repo, {"status", "--porcelain=v2", "--branch", "--untracked-files=normal", "--ignore-submodules=none"});
+        if (status.exitCode != 0) {
+            continue;
+        }
+        const auto normalized = Trim(status.stdoutStr);
+        const auto head = ExtractBranchOidFromStatusV2(normalized);
+        const auto statusFingerprint = normalized.empty() ? std::string("clean") : Fnv1a64Hex(normalized);
+        lines.push_back(std::format("{}|{}|{}", key, head, statusFingerprint));
+    }
+    std::sort(lines.begin(), lines.end());
+    std::ostringstream canonical;
+    for (const auto& line : lines) {
+        canonical << line << "\n";
+    }
+    return "ws-dirty-v2-" + Fnv1a64Hex(canonical.str());
+}
+
+auto IsPlaceholderPlanValue(const std::string& InValue) -> bool {
+    const auto value = Trim(InValue);
+    return value.empty() || value.rfind("replace-with-", 0) == 0;
+}
+
+auto ExtractPlanWorkspaceHashes(const std::string& InPlanText, std::string* OutBaseHeadSha, std::string* OutDirtyFingerprint) -> bool {
+    const auto meta = ExtractObjectBodyForKey(InPlanText, "meta");
+    if (!meta.has_value()) {
+        return false;
+    }
+    const auto baseHeadSha = Trim(ExtractStringField(*meta, "base_head_sha").value_or(""));
+    const auto dirtyFingerprint = Trim(ExtractStringField(*meta, "dirty_fingerprint").value_or(""));
+    if (IsPlaceholderPlanValue(baseHeadSha) || IsPlaceholderPlanValue(dirtyFingerprint)) {
+        return false;
+    }
+    if (OutBaseHeadSha != nullptr) {
+        *OutBaseHeadSha = baseHeadSha;
+    }
+    if (OutDirtyFingerprint != nullptr) {
+        *OutDirtyFingerprint = dirtyFingerprint;
+    }
+    return true;
+}
+
 auto PlanNeedsRefresh(const std::string& InPlanText) -> bool {
     if (Trim(InPlanText).empty()) {
         return true;
@@ -933,6 +1048,250 @@ auto PlanNeedsRefresh(const std::string& InPlanText) -> bool {
         return true;
     }
     return false;
+}
+
+auto JsonEscape(std::string InValue) -> std::string {
+    std::string out;
+    out.reserve(InValue.size() + 8);
+    for (const char ch : InValue) {
+        switch (ch) {
+        case '\\': out += "\\\\"; break;
+        case '"': out += "\\\""; break;
+        case '\n': out += "\\n"; break;
+        case '\r': out += "\\r"; break;
+        case '\t': out += "\\t"; break;
+        default: out.push_back(ch); break;
+        }
+    }
+    return out;
+}
+
+auto CountNonEmptyLines(const std::string& InText) -> int {
+    int lines = 0;
+    std::istringstream iss(InText);
+    std::string line;
+    while (std::getline(iss, line)) {
+        if (!Trim(line).empty()) {
+            lines += 1;
+        }
+    }
+    return lines;
+}
+
+auto ReplaceArrayBodyForKey(const std::string& InText, const std::string& InKey, const std::string& InNewBody) -> std::optional<std::string>;
+auto CountTopLevelObjects(const std::string& InArrayBody) -> std::size_t;
+
+auto BuildFallbackCommitScope(const std::string& InRepoDisplay) -> std::string {
+    if (InRepoDisplay.empty() || InRepoDisplay == ".") {
+        return "workspace";
+    }
+    std::string scope = InRepoDisplay;
+    std::replace(scope.begin(), scope.end(), '\\', '/');
+    for (auto& ch : scope) {
+        if (ch == '/' || ch == ' ') {
+            ch = '-';
+        }
+    }
+    return scope;
+}
+
+auto BuildCommitSeedEntriesJson(const std::filesystem::path& InWorkspaceRoot, const bool InUsePlaceholders) -> std::string {
+    std::vector<std::string> entries;
+    const auto repos = DiscoverWorkspaceRepos(InWorkspaceRoot);
+    entries.reserve(repos.size());
+    for (const auto& repo : repos) {
+        const auto status = GitCapture(repo, {"status", "--porcelain", "--untracked-files=all"});
+        if (status.exitCode != 0 || Trim(status.stdoutStr).empty()) {
+            continue;
+        }
+        const auto repoDisplay = RelativeDisplayPath(InWorkspaceRoot, repo);
+        const auto scope = BuildFallbackCommitScope(repoDisplay);
+        const int changed = std::max(1, CountNonEmptyLines(status.stdoutStr));
+        const auto message = InUsePlaceholders
+                                 ? std::string("replace-with-commit-message")
+                                 : std::format("chore({}): apply workspace updates ({} file{})",
+                                               scope,
+                                               changed,
+                                               changed == 1 ? "" : "s");
+        const auto reviewReason = InUsePlaceholders
+                                      ? std::string("replace-with-review-reason-for-this-commit")
+                                      : std::string("seeded by plan commit-seed from current dirty status");
+        const auto repoJson = repoDisplay.empty() ? "." : repoDisplay;
+        entries.push_back(
+            std::format("{{\"repo\":\"{}\",\"commits\":[{{\"message\":\"{}\",\"include\":[],\"exclude\":[],\"review\":{{\"verdict\":\"pass\",\"reason\":\"{}\"}}}}]}}",
+                        JsonEscape(repoJson),
+                        JsonEscape(message),
+                        JsonEscape(reviewReason)));
+    }
+    std::ostringstream oss;
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        if (i != 0) {
+            oss << ",";
+        }
+        oss << entries[i];
+    }
+    return oss.str();
+}
+
+auto HasValidCommitItems(const std::string& InPlanText) -> bool {
+    const auto stages = ExtractObjectBodyForKey(InPlanText, "stages");
+    if (!stages.has_value()) {
+        return false;
+    }
+    const auto commitArray = ExtractArrayBodyForKey(*stages, "commit").value_or(std::string{});
+    for (const auto& repoObj : SplitTopLevelObjects(commitArray)) {
+        if (const auto commits = ExtractArrayBodyForKey(repoObj, "commits"); commits.has_value()) {
+            if (CountTopLevelObjects(*commits) > 0) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+auto SeedCommitStage(const std::filesystem::path& InWorkspaceRoot,
+                     const std::string& InPlanText,
+                     const bool InForce,
+                     const bool InUsePlaceholders) -> std::optional<std::string> {
+    if (!InForce && HasValidCommitItems(InPlanText)) {
+        return std::nullopt;
+    }
+    const auto body = BuildCommitSeedEntriesJson(InWorkspaceRoot, InUsePlaceholders);
+    return ReplaceArrayBodyForKey(InPlanText, "commit", body);
+}
+
+auto BuildFallbackCommitEntriesJson(const std::filesystem::path& InWorkspaceRoot) -> std::string {
+    return BuildCommitSeedEntriesJson(InWorkspaceRoot, false);
+}
+
+auto ReplaceArrayBodyForKey(const std::string& InText, const std::string& InKey, const std::string& InNewBody) -> std::optional<std::string> {
+    const auto valuePos = FindJsonKeyValueStart(InText, InKey);
+    if (!valuePos.has_value() || *valuePos >= InText.size() || InText[*valuePos] != '[') {
+        return std::nullopt;
+    }
+
+    const std::size_t start = *valuePos;
+    bool inString = false;
+    bool escaped = false;
+    int depth = 0;
+    for (std::size_t pos = start; pos < InText.size(); ++pos) {
+        const char ch = InText[pos];
+        if (inString) {
+            if (escaped) {
+                escaped = false;
+            } else if (ch == '\\') {
+                escaped = true;
+            } else if (ch == '"') {
+                inString = false;
+            }
+            continue;
+        }
+        if (ch == '"') {
+            inString = true;
+            continue;
+        }
+        if (ch == '[') {
+            depth += 1;
+            continue;
+        }
+        if (ch == ']') {
+            depth -= 1;
+            if (depth == 0) {
+                std::string out;
+                out.reserve(InText.size() + InNewBody.size() + 8);
+                out.append(InText.substr(0, start + 1));
+                out.append(InNewBody);
+                out.append(InText.substr(pos));
+                return out;
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+auto TryInjectFallbackCommits(const std::filesystem::path& InWorkspaceRoot, const std::string& InPlanText) -> std::optional<std::string> {
+    const auto stages = ExtractObjectBodyForKey(InPlanText, "stages");
+    if (!stages.has_value()) {
+        return std::nullopt;
+    }
+    if (HasValidCommitItems(InPlanText)) {
+        return std::nullopt;
+    }
+    const auto fallbackBody = BuildFallbackCommitEntriesJson(InWorkspaceRoot);
+    if (Trim(fallbackBody).empty()) {
+        return std::nullopt;
+    }
+    return ReplaceArrayBodyForKey(InPlanText, "commit", fallbackBody);
+}
+
+auto BuildJsonStringArray(const std::vector<std::string>& InValues) -> std::string {
+    std::ostringstream oss;
+    for (std::size_t i = 0; i < InValues.size(); ++i) {
+        if (i != 0) {
+            oss << ",";
+        }
+        oss << "\"" << JsonEscape(InValues[i]) << "\"";
+    }
+    return oss.str();
+}
+
+auto UpsertCommitEntry(const std::string& InPlanText,
+                       const std::string& InRepo,
+                       const std::string& InMessage,
+                       const std::vector<std::string>& InInclude,
+                       const std::vector<std::string>& InExclude,
+                       const std::string& InReviewVerdict,
+                       const std::string& InReviewReason) -> std::optional<std::string> {
+    const auto stages = ExtractObjectBodyForKey(InPlanText, "stages");
+    if (!stages.has_value()) {
+        return std::nullopt;
+    }
+    const auto commitArray = ExtractArrayBodyForKey(*stages, "commit");
+    if (!commitArray.has_value()) {
+        return std::nullopt;
+    }
+
+    const auto item = std::format(
+        "{{\"message\":\"{}\",\"include\":[{}],\"exclude\":[{}],\"review\":{{\"verdict\":\"{}\",\"reason\":\"{}\"}}}}",
+        JsonEscape(InMessage),
+        BuildJsonStringArray(InInclude),
+        BuildJsonStringArray(InExclude),
+        JsonEscape(InReviewVerdict),
+        JsonEscape(InReviewReason));
+
+    auto repoObjects = SplitTopLevelObjects(*commitArray);
+    bool found = false;
+    for (auto& repoObj : repoObjects) {
+        const auto repo = ExtractStringField(repoObj, "repo").value_or("");
+        if (repo != InRepo) {
+            continue;
+        }
+        const auto commits = ExtractArrayBodyForKey(repoObj, "commits").value_or(std::string{});
+        std::string newCommits;
+        if (Trim(commits).empty()) {
+            newCommits = item;
+        } else {
+            newCommits = commits + "," + item;
+        }
+        if (const auto replaced = ReplaceArrayBodyForKey(repoObj, "commits", newCommits); replaced.has_value()) {
+            repoObj = *replaced;
+            found = true;
+        }
+        break;
+    }
+
+    if (!found) {
+        repoObjects.push_back(std::format("{{\"repo\":\"{}\",\"commits\":[{}]}}", JsonEscape(InRepo), item));
+    }
+
+    std::ostringstream commitBody;
+    for (std::size_t i = 0; i < repoObjects.size(); ++i) {
+        if (i != 0) {
+            commitBody << ",";
+        }
+        commitBody << repoObjects[i];
+    }
+    return ReplaceArrayBodyForKey(InPlanText, "commit", commitBody.str());
 }
 
 auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
@@ -1198,6 +1557,10 @@ auto ApplyIgnoreDatasourceOverrides(std::string InPlanText,
     return out;
 }
 
+auto ReplacePlanDirtyFingerprint(std::string InPlanText, const std::string& InNewDirtyFingerprint) -> std::optional<std::string> {
+    return ReplaceJsonStringFieldInObject(std::move(InPlanText), "meta", "dirty_fingerprint", InNewDirtyFingerprint);
+}
+
 auto ParseStatusUntrackedPath(const std::string& InLine) -> std::string {
     if (InLine.size() < 4 || InLine[0] != '?' || InLine[1] != '?') {
         return {};
@@ -1344,19 +1707,6 @@ auto StampIgnoreAppliedAtAll(std::string InText, const std::string& InTimestamp)
     return std::regex_replace(InText, pattern, std::string("\"applied_at_utc\": \"") + InTimestamp + "\"");
 }
 
-auto ResolveKogBinaryCommand() -> std::optional<std::string> {
-    if (const char* bin = std::getenv("KANO_GIT_BINARY_PATH"); bin != nullptr && std::string(bin).size() > 0) {
-        return std::string(bin);
-    }
-    if (shell::ExecuteCommand("kano-git", {"--version"}, shell::ExecMode::Capture).exitCode == 0) {
-        return std::string("kano-git");
-    }
-    if (shell::ExecuteCommand("kog", {"--version"}, shell::ExecMode::Capture).exitCode == 0) {
-        return std::string("kog");
-    }
-    return std::nullopt;
-}
-
 auto DefaultPlanPath(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path {
     return (InWorkspaceRoot / ".kano" / "cache" / "git" / "plans" / "default-plan.json").lexically_normal();
 }
@@ -1408,16 +1758,6 @@ auto GitSubmoduleGitlinkShaAtHead(const std::filesystem::path& InRepo, const std
 
 void RegisterPlan(CLI::App& InApp) {
     auto* cmd = InApp.add_subcommand("plan", "Plan pipeline commands");
-    const auto ForwardToPlanInternal = [](const std::vector<std::string>& InArgs) {
-        const auto workspaceRoot = std::filesystem::current_path().lexically_normal();
-        const auto bin = ResolveKogBinaryCommand();
-        if (!bin.has_value()) {
-            std::cerr << "Error: cannot resolve kog binary for plan lifecycle routing.\n";
-            std::exit(2);
-        }
-        const auto run = shell::ExecuteCommand(*bin, InArgs, shell::ExecMode::PassThrough, workspaceRoot);
-        std::exit(run.exitCode);
-    };
 
     auto* init = cmd->add_subcommand("new", "Write plan template");
     auto* initOut = new std::string{};
@@ -1477,6 +1817,55 @@ void RegisterPlan(CLI::App& InApp) {
         std::cout << "Wrote plan template: " << outPath.generic_string() << "\n";
     });
 
+    auto* commitSeed = cmd->add_subcommand("commit-seed", "Populate stages.commit skeleton from current dirty repos");
+    auto* commitSeedFile = new std::string{};
+    auto* commitSeedForce = new bool{false};
+    auto* commitSeedDeterministic = new bool{false};
+    commitSeed->add_option("--plan-file", *commitSeedFile, "Plan file path");
+    commitSeed->add_flag("--force,-f", *commitSeedForce, "Overwrite existing stages.commit even when populated");
+    commitSeed->add_flag("--deterministic", *commitSeedDeterministic, "Seed deterministic messages/review instead of placeholders");
+    commitSeed->callback([=]() {
+        const auto workspaceRoot = std::filesystem::current_path().lexically_normal();
+        const auto planPath =
+            commitSeedFile->empty() ? DefaultPlanPath(workspaceRoot) : std::filesystem::path(*commitSeedFile).lexically_normal();
+        auto payload = ReadFileText(planPath);
+        if (!payload.has_value()) {
+            std::string error;
+            if (!WriteFileText(planPath, BuildDefaultPlanTemplate(workspaceRoot), &error)) {
+                std::cerr << "Error: failed to create plan template: " << planPath.generic_string();
+                if (!error.empty()) {
+                    std::cerr << " (" << error << ")";
+                }
+                std::cerr << "\n";
+                std::exit(2);
+            }
+            payload = ReadFileText(planPath);
+        }
+        if (!payload.has_value()) {
+            std::cerr << "Error: plan file not found/readable: " << planPath.generic_string() << "\n";
+            std::exit(2);
+        }
+        const auto seeded = SeedCommitStage(workspaceRoot, *payload, *commitSeedForce, !*commitSeedDeterministic);
+        if (!seeded.has_value()) {
+            std::cout << "Plan commit-seed skipped: stages.commit already populated.\n";
+            return;
+        }
+        std::string error;
+        if (!WriteFileText(planPath, *seeded, &error)) {
+            std::cerr << "Error: failed to write seeded commit stage: " << planPath.generic_string();
+            if (!error.empty()) {
+                std::cerr << " (" << error << ")";
+            }
+            std::cerr << "\n";
+            std::exit(2);
+        }
+        const auto stages = ExtractObjectBodyForKey(*seeded, "stages").value_or(std::string{});
+        const auto commitArray = ExtractArrayBodyForKey(stages, "commit").value_or(std::string{});
+        std::cout << std::format("Plan commit-seed complete: repos={} file={}\n",
+                                 CountTopLevelObjects(commitArray),
+                                 planPath.generic_string());
+    });
+
     auto* needsRefresh = cmd->add_subcommand("refresh-check", "Return 0 when plan should be regenerated");
     auto* needsRefreshFile = new std::string{};
     auto* needsRefreshVerbose = new bool{false};
@@ -1498,10 +1887,89 @@ void RegisterPlan(CLI::App& InApp) {
             }
             std::exit(0);
         }
+        std::string planBaseHeadSha;
+        std::string planDirtyFingerprint;
+        if (!ExtractPlanWorkspaceHashes(*payload, &planBaseHeadSha, &planDirtyFingerprint)) {
+            if (*needsRefreshVerbose) {
+                std::cout << "refresh-needed: missing-or-placeholder-workspace-hash\n";
+            }
+            std::exit(0);
+        }
+        const auto currentBaseHeadSha = ComputeWorkspaceBaseHeadSha(workspaceRoot);
+        const auto currentDirtyFingerprint = ComputeWorkspaceDirtyFingerprint(workspaceRoot);
+        if (planBaseHeadSha != currentBaseHeadSha || planDirtyFingerprint != currentDirtyFingerprint) {
+            if (*needsRefreshVerbose) {
+                std::cout << "refresh-needed: workspace-state-changed\n";
+            }
+            std::exit(0);
+        }
         if (*needsRefreshVerbose) {
             std::cout << "refresh-not-needed\n";
         }
         std::exit(1);
+    });
+
+    auto* prepare = cmd->add_subcommand("prepare", "Prepare-stage plan editing utilities");
+    auto* addCommitEntry = prepare->add_subcommand("add-commit-entry", "Add or append one commit entry to stages.commit");
+    auto* addCommitFile = new std::string{};
+    auto* addCommitRepo = new std::string{};
+    auto* addCommitMessage = new std::string{};
+    auto* addCommitInclude = new std::vector<std::string>{};
+    auto* addCommitExclude = new std::vector<std::string>{};
+    auto* addCommitReviewVerdict = new std::string{"pass"};
+    auto* addCommitReviewReason = new std::string{};
+    addCommitEntry->add_option("--plan-file", *addCommitFile, "Plan file path");
+    addCommitEntry->add_option("--repo", *addCommitRepo, "Target repo path/key (e.g. . or .agents/skills/kano)")->required();
+    addCommitEntry->add_option("--commit-message,--commit.message", *addCommitMessage, "Commit message")->required();
+    addCommitEntry->add_option("--commit-include,--commit.include", *addCommitInclude, "Include pathspec (repeatable)");
+    addCommitEntry->add_option("--commit-exclude,--commit.exclude", *addCommitExclude, "Exclude pathspec (repeatable)");
+    addCommitEntry->add_option("--commit-review-verdict,--commit.review.verdict",
+                               *addCommitReviewVerdict,
+                               "Review verdict (default: pass)")
+        ->default_str("pass");
+    addCommitEntry->add_option("--commit-review-reason,--commit.review.reason", *addCommitReviewReason, "Review reason")->required();
+    addCommitEntry->callback([=]() {
+        const auto workspaceRoot = std::filesystem::current_path().lexically_normal();
+        const auto planPath =
+            addCommitFile->empty() ? DefaultPlanPath(workspaceRoot) : std::filesystem::path(*addCommitFile).lexically_normal();
+        auto payload = ReadFileText(planPath);
+        if (!payload.has_value()) {
+            std::string error;
+            if (!WriteFileText(planPath, BuildDefaultPlanTemplate(workspaceRoot), &error)) {
+                std::cerr << "Error: failed to create plan template: " << planPath.generic_string();
+                if (!error.empty()) {
+                    std::cerr << " (" << error << ")";
+                }
+                std::cerr << "\n";
+                std::exit(2);
+            }
+            payload = ReadFileText(planPath);
+        }
+        if (!payload.has_value()) {
+            std::cerr << "Error: plan file not found/readable: " << planPath.generic_string() << "\n";
+            std::exit(2);
+        }
+        const auto updated = UpsertCommitEntry(*payload,
+                                               Trim(*addCommitRepo),
+                                               Trim(*addCommitMessage),
+                                               *addCommitInclude,
+                                               *addCommitExclude,
+                                               Trim(*addCommitReviewVerdict),
+                                               Trim(*addCommitReviewReason));
+        if (!updated.has_value()) {
+            std::cerr << "Error: failed to update stages.commit (schema missing?)\n";
+            std::exit(2);
+        }
+        std::string error;
+        if (!WriteFileText(planPath, *updated, &error)) {
+            std::cerr << "Error: failed to write plan file: " << planPath.generic_string();
+            if (!error.empty()) {
+                std::cerr << " (" << error << ")";
+            }
+            std::cerr << "\n";
+            std::exit(2);
+        }
+        std::cout << "Plan prepare add-commit-entry complete: " << planPath.generic_string() << "\n";
     });
 
     auto* summary = cmd->add_subcommand("finish-report", "Print compact plan summary");
@@ -1577,7 +2045,7 @@ void RegisterPlan(CLI::App& InApp) {
         const auto payload = ReadFileText(planPath);
         const bool needs = *ensureForce || !payload.has_value() || PlanNeedsRefresh(*payload);
         std::optional<std::string> latestPayload = payload;
-        if (needs) {
+        auto regenerateOnce = [&]() -> bool {
             std::string error;
             if (!WriteFileText(planPath, BuildDefaultPlanTemplate(workspaceRoot), &error)) {
                 std::cerr << "Error: failed to write plan template: " << planPath.generic_string();
@@ -1585,14 +2053,32 @@ void RegisterPlan(CLI::App& InApp) {
                     std::cerr << " (" << error << ")";
                 }
                 std::cerr << "\n";
-                std::exit(2);
+                return false;
+            }
+            if (const auto seeded = SeedCommitStage(workspaceRoot, ReadFileText(planPath).value_or(std::string{}), true, true);
+                seeded.has_value()) {
+                std::string seedError;
+                if (!WriteFileText(planPath, *seeded, &seedError)) {
+                    std::cerr << "Error: failed to seed commit stage: " << planPath.generic_string();
+                    if (!seedError.empty()) {
+                        std::cerr << " (" << seedError << ")";
+                    }
+                    std::cerr << "\n";
+                    return false;
+                }
             }
             std::string aiError;
             if (!FillPlanByAi(workspaceRoot, planPath, *ensureProvider, *ensureModel, *ensureDebugAi, &aiError)) {
                 std::cerr << aiError << "\n";
-                std::exit(2);
+                return false;
             }
             latestPayload = ReadFileText(planPath);
+            return latestPayload.has_value();
+        };
+        if (needs) {
+            if (!regenerateOnce()) {
+                std::exit(2);
+            }
         }
         if (!latestPayload.has_value()) {
             std::cerr << "Error: plan file not found/readable: " << planPath.generic_string() << "\n";
@@ -1601,8 +2087,35 @@ void RegisterPlan(CLI::App& InApp) {
 
         std::string reason;
         if (!ValidateAiReadyPlan(*latestPayload, &reason)) {
-            std::cerr << "Error: AI-ready plan validation failed: " << reason << "\n";
-            std::exit(2);
+            std::cerr << std::format("[plan] validation failed ({}), regenerating once...\n", reason);
+            if (!regenerateOnce()) {
+                std::exit(2);
+            }
+            reason.clear();
+            if (!latestPayload.has_value() || !ValidateAiReadyPlan(*latestPayload, &reason)) {
+                if (reason == "no commit entries in stages.commit" && latestPayload.has_value()) {
+                    if (const auto fallback = TryInjectFallbackCommits(workspaceRoot, *latestPayload); fallback.has_value()) {
+                        std::string writeError;
+                        if (!WriteFileText(planPath, *fallback, &writeError)) {
+                            std::cerr << "Error: failed to write fallback commit plan: " << planPath.generic_string();
+                            if (!writeError.empty()) {
+                                std::cerr << " (" << writeError << ")";
+                            }
+                            std::cerr << "\n";
+                            std::exit(2);
+                        }
+                        latestPayload = ReadFileText(planPath);
+                        reason.clear();
+                        if (latestPayload.has_value() && ValidateAiReadyPlan(*latestPayload, &reason)) {
+                            std::cerr << "[plan] fallback commit entries injected after empty AI commit stage.\n";
+                            std::cout << "Plan ensure-prepare-ready passed: " << planPath.generic_string() << "\n";
+                            return;
+                        }
+                    }
+                }
+                std::cerr << "Error: AI-ready plan validation failed: " << reason << "\n";
+                std::exit(2);
+            }
         }
         std::cout << "Plan ensure-prepare-ready passed: " << planPath.generic_string() << "\n";
     });
@@ -1622,37 +2135,91 @@ void RegisterPlan(CLI::App& InApp) {
     preflightAiCommit->add_flag("--debug-ai", *preflightDebugAi, "Write AI prompt/raw/extracted debug artifacts");
     preflightAiCommit->add_flag("--allow-ignore-gate", *preflightAllowIgnoreGate, "Compatibility flag (currently no-op in runbook-commit)");
     preflightAiCommit->add_option("--max-commits", *preflightMaxCommits, "Max commit lines to print in summary")->default_val(10);
-    preflightAiCommit->callback([=]() {
-        const auto workspaceRoot = std::filesystem::current_path().lexically_normal();
-        const auto planPath = preflightFile->empty() ? DefaultPlanPath(workspaceRoot) : std::filesystem::path(*preflightFile).lexically_normal();
-        auto payload = ReadFileText(planPath);
+    const auto runCommitRunbook = [&](const std::filesystem::path& InWorkspaceRoot,
+                                      const std::filesystem::path& InPlanPath,
+                                      const std::string& InProvider,
+                                      const std::string& InModel,
+                                      const bool InDebugAi,
+                                      const int InMaxCommits) -> int {
+        auto payload = ReadFileText(InPlanPath);
         const bool needs = !payload.has_value() || PlanNeedsRefresh(*payload);
-        if (needs) {
+        auto regenerateOnce = [&]() -> bool {
             std::string error;
-            if (!WriteFileText(planPath, BuildDefaultPlanTemplate(workspaceRoot), &error)) {
-                std::cerr << "Error: failed to write plan template: " << planPath.generic_string();
+            if (!WriteFileText(InPlanPath, BuildDefaultPlanTemplate(InWorkspaceRoot), &error)) {
+                std::cerr << "Error: failed to write plan template: " << InPlanPath.generic_string();
                 if (!error.empty()) {
                     std::cerr << " (" << error << ")";
                 }
                 std::cerr << "\n";
-                std::exit(2);
+                return false;
+            }
+            if (const auto seeded = SeedCommitStage(InWorkspaceRoot, ReadFileText(InPlanPath).value_or(std::string{}), true, true);
+                seeded.has_value()) {
+                std::string seedError;
+                if (!WriteFileText(InPlanPath, *seeded, &seedError)) {
+                    std::cerr << "Error: failed to seed commit stage: " << InPlanPath.generic_string();
+                    if (!seedError.empty()) {
+                        std::cerr << " (" << seedError << ")";
+                    }
+                    std::cerr << "\n";
+                    return false;
+                }
             }
             std::string aiError;
-            if (!FillPlanByAi(workspaceRoot, planPath, *preflightProvider, *preflightModel, *preflightDebugAi, &aiError)) {
+            if (!FillPlanByAi(InWorkspaceRoot, InPlanPath, InProvider, InModel, InDebugAi, &aiError)) {
                 std::cerr << aiError << "\n";
-                std::exit(2);
+                return false;
             }
-            payload = ReadFileText(planPath);
+            payload = ReadFileText(InPlanPath);
+            return payload.has_value();
+        };
+        if (needs && !regenerateOnce()) {
+            return 2;
         }
         if (!payload.has_value()) {
-            std::cerr << "Error: plan file not found/readable: " << planPath.generic_string() << "\n";
-            std::exit(2);
+            std::cerr << "Error: plan file not found/readable: " << InPlanPath.generic_string() << "\n";
+            return 2;
         }
 
         std::string reason;
         if (!ValidateAiReadyPlan(*payload, &reason)) {
-            std::cerr << "Error: AI-ready plan validation failed: " << reason << "\n";
-            std::exit(2);
+            std::cerr << std::format("[plan] validation failed ({}), regenerating once...\n", reason);
+            if (!regenerateOnce()) {
+                return 2;
+            }
+            reason.clear();
+            if (!payload.has_value() || !ValidateAiReadyPlan(*payload, &reason)) {
+                if (reason == "no commit entries in stages.commit" && payload.has_value()) {
+                    bool fixedByFallback = false;
+                    if (const auto fallback = TryInjectFallbackCommits(InWorkspaceRoot, *payload); fallback.has_value()) {
+                        std::string writeError;
+                        if (!WriteFileText(InPlanPath, *fallback, &writeError)) {
+                            std::cerr << "Error: failed to write fallback commit plan: " << InPlanPath.generic_string();
+                            if (!writeError.empty()) {
+                                std::cerr << " (" << writeError << ")";
+                            }
+                            std::cerr << "\n";
+                            return 2;
+                        }
+                        payload = ReadFileText(InPlanPath);
+                        reason.clear();
+                        if (payload.has_value() && ValidateAiReadyPlan(*payload, &reason)) {
+                            std::cerr << "[plan] fallback commit entries injected after empty AI commit stage.\n";
+                            fixedByFallback = true;
+                        } else {
+                            std::cerr << "Error: AI-ready plan validation failed: " << reason << "\n";
+                            return 2;
+                        }
+                    }
+                    if (!fixedByFallback) {
+                        std::cerr << "Error: AI-ready plan validation failed: " << reason << "\n";
+                        return 2;
+                    }
+                } else {
+                    std::cerr << "Error: AI-ready plan validation failed: " << reason << "\n";
+                    return 2;
+                }
+            }
         }
 
         const auto text = *payload;
@@ -1660,7 +2227,7 @@ void RegisterPlan(CLI::App& InApp) {
         const auto stages = ExtractObjectBodyForKey(text, "stages");
         if (!meta.has_value() || !stages.has_value()) {
             std::cerr << "Error: plan schema invalid: missing meta/stages\n";
-            std::exit(2);
+            return 2;
         }
         const auto planner = ExtractObjectBodyForKey(*meta, "planner");
         const auto planId = ExtractStringField(*meta, "plan_id").value_or("-");
@@ -1687,14 +2254,149 @@ void RegisterPlan(CLI::App& InApp) {
             }
         }
         std::cerr << std::format("[plan] commits: repos={} total={}\n", repoCount, commitCount);
-        if (*preflightMaxCommits < 0) {
-            *preflightMaxCommits = 0;
-        }
-        const auto limit = std::min<std::size_t>(lines.size(), static_cast<std::size_t>(*preflightMaxCommits));
+        const auto cappedMax = InMaxCommits < 0 ? 0 : InMaxCommits;
+        const auto limit = std::min<std::size_t>(lines.size(), static_cast<std::size_t>(cappedMax));
         for (std::size_t i = 0; i < limit; ++i) {
             std::cerr << lines[i] << "\n";
         }
+        return 0;
+    };
+
+    preflightAiCommit->callback([=]() {
+        const auto workspaceRoot = std::filesystem::current_path().lexically_normal();
+        const auto planPath = preflightFile->empty() ? DefaultPlanPath(workspaceRoot) : std::filesystem::path(*preflightFile).lexically_normal();
+        const auto code =
+            runCommitRunbook(workspaceRoot, planPath, *preflightProvider, *preflightModel, *preflightDebugAi, *preflightMaxCommits);
+        std::exit(code);
     });
+
+    const auto runPreApplyVerify = [&](const std::filesystem::path& InWorkspaceRoot,
+                                       const std::filesystem::path& InPlanPath,
+                                       const std::string& InStage) -> int {
+        const auto payload = ReadFileText(InPlanPath);
+        if (!payload.has_value()) {
+            std::cerr << "Error: plan file not found/readable: " << InPlanPath.generic_string() << "\n";
+            std::cerr << "Hint: create one with `kog plan new --plan-file \"" << InPlanPath.generic_string() << "\"`.\n";
+            return 2;
+        }
+        const auto text = *payload;
+        const auto stages = ExtractObjectBodyForKey(text, "stages");
+        if (!stages.has_value() || !ExtractObjectBodyForKey(text, "meta").has_value()) {
+            std::cerr << "Error: plan schema invalid: missing meta/stages\n";
+            std::cerr << "Hint: regenerate template with `kog plan new --force --plan-file \"" << InPlanPath.generic_string() << "\"`.\n";
+            return 2;
+        }
+        const auto stage = ToLower(Trim(InStage));
+        if (stage != "ignore" && stage != "commit" && stage != "all") {
+            std::cerr << "Error: invalid --stage value: " << InStage << " (expected ignore|commit|all)\n";
+            return 2;
+        }
+        if (stage == "ignore" || stage == "all") {
+            if (!ExtractArrayBodyForKey(*stages, "ignore").has_value()) {
+                std::cerr << "Error: plan schema invalid: stages.ignore missing\n";
+                std::cerr << "Hint: run `kog plan ignore-init --force --plan-file \"" << InPlanPath.generic_string() << "\"`.\n";
+                return 2;
+            }
+        }
+        if (stage == "commit" || stage == "all") {
+            if (!ExtractArrayBodyForKey(*stages, "commit").has_value() || !ExtractArrayBodyForKey(*stages, "post_sync").has_value()) {
+                std::cerr << "Error: plan schema invalid: stages.commit/post_sync missing\n";
+                std::cerr << "Hint: regenerate template with `kog plan new --force --plan-file \"" << InPlanPath.generic_string() << "\"`.\n";
+                return 2;
+            }
+        }
+        std::string planBaseHeadSha;
+        std::string planDirtyFingerprint;
+        if (!ExtractPlanWorkspaceHashes(text, &planBaseHeadSha, &planDirtyFingerprint)) {
+            std::cerr << "Error: plan schema invalid: meta.base_head_sha/meta.dirty_fingerprint missing or placeholder\n";
+            std::cerr << "Hint: regenerate and refill with `kog plan runbook commit --force --plan-file \"" << InPlanPath.generic_string() << "\"`.\n";
+            return 2;
+        }
+        const auto currentBaseHeadSha = ComputeWorkspaceBaseHeadSha(InWorkspaceRoot);
+        const auto currentDirtyFingerprint = ComputeWorkspaceDirtyFingerprint(InWorkspaceRoot);
+        if (planBaseHeadSha != currentBaseHeadSha || planDirtyFingerprint != currentDirtyFingerprint) {
+            std::cerr << "Error: plan schema invalid: workspace state drift detected.\n";
+            std::cerr << "  plan.base_head_sha=" << planBaseHeadSha << "\n";
+            std::cerr << "  current.base_head_sha=" << currentBaseHeadSha << "\n";
+            std::cerr << "  plan.dirty_fingerprint=" << planDirtyFingerprint << "\n";
+            std::cerr << "  current.dirty_fingerprint=" << currentDirtyFingerprint << "\n";
+            std::cerr << "Hint: refresh plan via `kog plan runbook commit --force --plan-file \"" << InPlanPath.generic_string() << "\"`.\n";
+            return 2;
+        }
+        return 0;
+    };
+
+    const auto runIgnoreRunbook = [&](const std::filesystem::path& InWorkspaceRoot,
+                                      const std::filesystem::path& InPlanPath,
+                                      const bool InForce,
+                                      const int InMaxPerRepo,
+                                      const std::string& InDatasourceRoot,
+                                      const std::string& InDatasourceManifest) -> int {
+        if (InMaxPerRepo <= 0) {
+            std::cerr << "Error: --max-per-repo must be positive\n";
+            return 2;
+        }
+        auto payload = ReadFileText(InPlanPath);
+        const auto datasourceRoot = InDatasourceRoot.empty()
+                                        ? std::optional<std::filesystem::path>{}
+                                        : std::optional<std::filesystem::path>{ResolvePath(InWorkspaceRoot, InDatasourceRoot)};
+        const auto datasourceManifest = InDatasourceManifest.empty()
+                                            ? std::optional<std::filesystem::path>{}
+                                            : std::optional<std::filesystem::path>{ResolvePath(InWorkspaceRoot, InDatasourceManifest)};
+        if (!payload.has_value()) {
+            if (!InForce) {
+                std::cerr << "Error: plan file not found/readable: " << InPlanPath.generic_string() << "\n";
+                std::cerr << "Hint: run `kog plan new --plan-file \"" << InPlanPath.generic_string()
+                          << "\"` first, or rerun with `kog plan ignore-init --force --plan-file \"" << InPlanPath.generic_string()
+                          << "\"`.\n";
+                return 2;
+            }
+            std::string error;
+            const auto seed = BuildDefaultPlanTemplate(InWorkspaceRoot, datasourceRoot, datasourceManifest);
+            if (!WriteFileText(InPlanPath, seed, &error)) {
+                std::cerr << "Error: failed to create plan template: " << InPlanPath.generic_string();
+                if (!error.empty()) {
+                    std::cerr << " (" << error << ")";
+                }
+                std::cerr << "\n";
+                return 2;
+            }
+            payload = seed;
+        }
+        const auto entries = BuildIgnoreEntriesFromWorkingTree(InWorkspaceRoot, InMaxPerRepo);
+        auto updated = InjectIgnoreEntries(*payload, entries);
+        if (!updated.has_value()) {
+            std::cerr << "Error: plan schema invalid: cannot locate stages.ignore array\n";
+            std::cerr << "Hint: regenerate template with `kog plan new --force --plan-file \"" << InPlanPath.generic_string()
+                      << "\"`, then rerun `kog plan ignore-init --plan-file \"" << InPlanPath.generic_string() << "\"`.\n";
+            return 2;
+        }
+        if (datasourceRoot.has_value() || datasourceManifest.has_value()) {
+            updated = ApplyIgnoreDatasourceOverrides(*updated, datasourceRoot, datasourceManifest);
+            if (!updated.has_value()) {
+                std::cerr << "Error: plan schema invalid: cannot update meta.ignore_datasource root/manifest\n";
+                return 2;
+            }
+        }
+        std::string error;
+        if (!WriteFileText(InPlanPath, *updated, &error)) {
+            std::cerr << "Error: failed to write plan ignore stage: " << InPlanPath.generic_string();
+            if (!error.empty()) {
+                std::cerr << " (" << error << ")";
+            }
+            std::cerr << "\n";
+            return 2;
+        }
+        std::size_t totalRules = 0;
+        for (const auto& e : entries) {
+            totalRules += e.rules.size();
+        }
+        std::cout << std::format("Plan ignore-init complete: repos={} rules={} file={}\n",
+                                 entries.size(),
+                                 totalRules,
+                                 InPlanPath.generic_string());
+        return runPreApplyVerify(InWorkspaceRoot, InPlanPath, "ignore");
+    };
 
     auto* runbookIgnore = cmd->add_subcommand("runbook-ignore", "Run ignore runbook (init + pre-apply verify)");
     runbookIgnore->group("");
@@ -1712,40 +2414,13 @@ void RegisterPlan(CLI::App& InApp) {
         const auto workspaceRoot = std::filesystem::current_path().lexically_normal();
         const auto planPath =
             runbookIgnoreFile->empty() ? DefaultPlanPath(workspaceRoot) : std::filesystem::path(*runbookIgnoreFile).lexically_normal();
-        if (*runbookIgnoreMaxPerRepo <= 0) {
-            std::cerr << "Error: --max-per-repo must be positive\n";
-            std::exit(2);
-        }
-        const auto bin = ResolveKogBinaryCommand();
-        if (!bin.has_value()) {
-            std::cerr << "Error: cannot resolve kog binary for runbook-ignore.\n";
-            std::exit(2);
-        }
-
-        std::vector<std::string> initArgs{"plan", "ignore-init", "--plan-file", planPath.generic_string(), "--max-per-repo",
-                                          std::to_string(*runbookIgnoreMaxPerRepo)};
-        if (*runbookIgnoreForce) {
-            initArgs.push_back("--force");
-        }
-        if (!runbookIgnoreDatasourceRoot->empty()) {
-            initArgs.push_back("--ignore-datasource-root");
-            initArgs.push_back(*runbookIgnoreDatasourceRoot);
-        }
-        if (!runbookIgnoreDatasourceManifest->empty()) {
-            initArgs.push_back("--ignore-datasource-manifest");
-            initArgs.push_back(*runbookIgnoreDatasourceManifest);
-        }
-        const auto initRun = shell::ExecuteCommand(*bin, initArgs, shell::ExecMode::PassThrough, workspaceRoot);
-        if (initRun.exitCode != 0) {
-            std::exit(initRun.exitCode);
-        }
-
-        const auto verifyRun = shell::ExecuteCommand(
-            *bin,
-            {"plan", "verify", "pre-apply", "--stage", "ignore", "--plan-file", planPath.generic_string()},
-            shell::ExecMode::PassThrough,
-            workspaceRoot);
-        std::exit(verifyRun.exitCode);
+        const auto code = runIgnoreRunbook(workspaceRoot,
+                                           planPath,
+                                           *runbookIgnoreForce,
+                                           *runbookIgnoreMaxPerRepo,
+                                           *runbookIgnoreDatasourceRoot,
+                                           *runbookIgnoreDatasourceManifest);
+        std::exit(code);
     });
 
     auto* runbookFull = cmd->add_subcommand("runbook-full", "Run full runbook (ignore + commit + pre-apply verify)");
@@ -1770,46 +2445,18 @@ void RegisterPlan(CLI::App& InApp) {
         const auto workspaceRoot = std::filesystem::current_path().lexically_normal();
         const auto planPath =
             runbookFullFile->empty() ? DefaultPlanPath(workspaceRoot) : std::filesystem::path(*runbookFullFile).lexically_normal();
-        if (*runbookFullMaxPerRepo <= 0) {
-            std::cerr << "Error: --max-per-repo must be positive\n";
-            std::exit(2);
+        const auto ignoreCode = runIgnoreRunbook(workspaceRoot, planPath, *runbookFullForce, *runbookFullMaxPerRepo, "", "");
+        if (ignoreCode != 0) {
+            std::exit(ignoreCode);
         }
-        const auto bin = ResolveKogBinaryCommand();
-        if (!bin.has_value()) {
-            std::cerr << "Error: cannot resolve kog binary for runbook-full.\n";
-            std::exit(2);
-        }
-
-        std::vector<std::string> ignoreArgs{"plan", "runbook", "ignore", "--plan-file", planPath.generic_string(), "--max-per-repo",
-                                            std::to_string(*runbookFullMaxPerRepo)};
-        if (*runbookFullForce) {
-            ignoreArgs.push_back("--force");
-        }
-        const auto ignoreRun = shell::ExecuteCommand(*bin, ignoreArgs, shell::ExecMode::PassThrough, workspaceRoot);
-        if (ignoreRun.exitCode != 0) {
-            std::exit(ignoreRun.exitCode);
+        const auto commitCode =
+            runCommitRunbook(workspaceRoot, planPath, *runbookFullProvider, *runbookFullModel, *runbookFullDebugAi, *runbookFullMaxCommits);
+        if (commitCode != 0) {
+            std::exit(commitCode);
         }
 
-        std::vector<std::string> commitArgs{"plan", "runbook", "commit", "--plan-file", planPath.generic_string(), "--ai-provider",
-                                            *runbookFullProvider, "--ai-model", *runbookFullModel, "--max-commits",
-                                            std::to_string(*runbookFullMaxCommits)};
-        if (*runbookFullDebugAi) {
-            commitArgs.push_back("--debug-ai");
-        }
-        if (*runbookFullAllowIgnoreGate) {
-            commitArgs.push_back("--allow-ignore-gate");
-        }
-        const auto commitRun = shell::ExecuteCommand(*bin, commitArgs, shell::ExecMode::PassThrough, workspaceRoot);
-        if (commitRun.exitCode != 0) {
-            std::exit(commitRun.exitCode);
-        }
-
-        const auto verifyRun = shell::ExecuteCommand(
-            *bin,
-            {"plan", "verify", "pre-apply", "--stage", "all", "--plan-file", planPath.generic_string()},
-            shell::ExecMode::PassThrough,
-            workspaceRoot);
-        std::exit(verifyRun.exitCode);
+        const auto verifyCode = runPreApplyVerify(workspaceRoot, planPath, "all");
+        std::exit(verifyCode);
     });
 
     auto* runbook = cmd->add_subcommand("runbook", "Plan runbooks");
@@ -1827,19 +2474,10 @@ void RegisterPlan(CLI::App& InApp) {
     runbookCommit->add_flag("--allow-ignore-gate", *rbCommitAllowIgnoreGate, "Forward allow-ignore-gate to commit runbook");
     runbookCommit->add_option("--max-commits", *rbCommitMaxCommits, "Max commit lines to print in summary")->default_val(10);
     runbookCommit->callback([=]() {
-        std::vector<std::string> args{"plan", "runbook-commit", "--ai-provider", *rbCommitProvider, "--ai-model", *rbCommitModel,
-                                      "--max-commits", std::to_string(*rbCommitMaxCommits)};
-        if (!rbCommitFile->empty()) {
-            args.push_back("--plan-file");
-            args.push_back(*rbCommitFile);
-        }
-        if (*rbCommitDebugAi) {
-            args.push_back("--debug-ai");
-        }
-        if (*rbCommitAllowIgnoreGate) {
-            args.push_back("--allow-ignore-gate");
-        }
-        ForwardToPlanInternal(args);
+        const auto workspaceRoot = std::filesystem::current_path().lexically_normal();
+        const auto planPath = rbCommitFile->empty() ? DefaultPlanPath(workspaceRoot) : std::filesystem::path(*rbCommitFile).lexically_normal();
+        const auto code = runCommitRunbook(workspaceRoot, planPath, *rbCommitProvider, *rbCommitModel, *rbCommitDebugAi, *rbCommitMaxCommits);
+        std::exit(code);
     });
 
     auto* runbookIgnorePublic = runbook->add_subcommand("ignore", "Run ignore runbook (init + pre-apply verify)");
@@ -1854,23 +2492,11 @@ void RegisterPlan(CLI::App& InApp) {
     runbookIgnorePublic->add_option("--ignore-datasource-root", *rbIgnoreDatasourceRoot, "Override plan meta.ignore_datasource.root");
     runbookIgnorePublic->add_option("--ignore-datasource-manifest", *rbIgnoreDatasourceManifest, "Override plan meta.ignore_datasource.manifest");
     runbookIgnorePublic->callback([=]() {
-        std::vector<std::string> args{"plan", "runbook-ignore", "--max-per-repo", std::to_string(*rbIgnoreMaxPerRepo)};
-        if (!rbIgnoreFile->empty()) {
-            args.push_back("--plan-file");
-            args.push_back(*rbIgnoreFile);
-        }
-        if (*rbIgnoreForce) {
-            args.push_back("--force");
-        }
-        if (!rbIgnoreDatasourceRoot->empty()) {
-            args.push_back("--ignore-datasource-root");
-            args.push_back(*rbIgnoreDatasourceRoot);
-        }
-        if (!rbIgnoreDatasourceManifest->empty()) {
-            args.push_back("--ignore-datasource-manifest");
-            args.push_back(*rbIgnoreDatasourceManifest);
-        }
-        ForwardToPlanInternal(args);
+        const auto workspaceRoot = std::filesystem::current_path().lexically_normal();
+        const auto planPath = rbIgnoreFile->empty() ? DefaultPlanPath(workspaceRoot) : std::filesystem::path(*rbIgnoreFile).lexically_normal();
+        const auto code = runIgnoreRunbook(
+            workspaceRoot, planPath, *rbIgnoreForce, *rbIgnoreMaxPerRepo, *rbIgnoreDatasourceRoot, *rbIgnoreDatasourceManifest);
+        std::exit(code);
     });
 
     auto* runbookFullPublic = runbook->add_subcommand("full", "Run full runbook (ignore + commit + pre-apply verify)");
@@ -1891,30 +2517,19 @@ void RegisterPlan(CLI::App& InApp) {
     runbookFullPublic->add_option("--max-commits", *rbFullMaxCommits, "Max commit lines to print in summary")->default_val(10);
     runbookFullPublic->add_option("--max-per-repo", *rbFullMaxPerRepo, "Max ignore candidates per repo")->default_val(200);
     runbookFullPublic->callback([=]() {
-        std::vector<std::string> args{"plan",
-                                      "runbook-full",
-                                      "--ai-provider",
-                                      *rbFullProvider,
-                                      "--ai-model",
-                                      *rbFullModel,
-                                      "--max-commits",
-                                      std::to_string(*rbFullMaxCommits),
-                                      "--max-per-repo",
-                                      std::to_string(*rbFullMaxPerRepo)};
-        if (!rbFullFile->empty()) {
-            args.push_back("--plan-file");
-            args.push_back(*rbFullFile);
+        const auto workspaceRoot = std::filesystem::current_path().lexically_normal();
+        const auto planPath = rbFullFile->empty() ? DefaultPlanPath(workspaceRoot) : std::filesystem::path(*rbFullFile).lexically_normal();
+        const auto ignoreCode = runIgnoreRunbook(workspaceRoot, planPath, *rbFullForce, *rbFullMaxPerRepo, "", "");
+        if (ignoreCode != 0) {
+            std::exit(ignoreCode);
         }
-        if (*rbFullDebugAi) {
-            args.push_back("--debug-ai");
+        const auto commitCode =
+            runCommitRunbook(workspaceRoot, planPath, *rbFullProvider, *rbFullModel, *rbFullDebugAi, *rbFullMaxCommits);
+        if (commitCode != 0) {
+            std::exit(commitCode);
         }
-        if (*rbFullAllowIgnoreGate) {
-            args.push_back("--allow-ignore-gate");
-        }
-        if (*rbFullForce) {
-            args.push_back("--force");
-        }
-        ForwardToPlanInternal(args);
+        const auto verifyCode = runPreApplyVerify(workspaceRoot, planPath, "all");
+        std::exit(verifyCode);
     });
 
     auto* ignoreInit = cmd->add_subcommand("ignore-init", "Populate stages.ignore from current working tree");
@@ -2292,12 +2907,59 @@ void RegisterPlan(CLI::App& InApp) {
     verifyPreApply->add_option("--plan-file", *verifyPreFile, "Plan file path");
     verifyPreApply->add_option("--stage", *verifyPreStage, "Stage: ignore|commit|all")->default_str("all");
     verifyPreApply->callback([=]() {
-        std::vector<std::string> args{"plan", "schema-verify", "--stage", *verifyPreStage};
-        if (!verifyPreFile->empty()) {
-            args.push_back("--plan-file");
-            args.push_back(*verifyPreFile);
+        const auto workspaceRoot = std::filesystem::current_path().lexically_normal();
+        const auto planPath = verifyPreFile->empty() ? DefaultPlanPath(workspaceRoot) : std::filesystem::path(*verifyPreFile).lexically_normal();
+        const auto payload = ReadFileText(planPath);
+        if (!payload.has_value()) {
+            std::cerr << "Error: plan file not found/readable: " << planPath.generic_string() << "\n";
+            std::cerr << "Hint: create one with `kog plan new --plan-file \"" << planPath.generic_string() << "\"`.\n";
+            std::exit(2);
         }
-        ForwardToPlanInternal(args);
+        const auto text = *payload;
+        const auto stages = ExtractObjectBodyForKey(text, "stages");
+        if (!stages.has_value() || !ExtractObjectBodyForKey(text, "meta").has_value()) {
+            std::cerr << "Error: plan schema invalid: missing meta/stages\n";
+            std::cerr << "Hint: regenerate template with `kog plan new --force --plan-file \"" << planPath.generic_string() << "\"`.\n";
+            std::exit(2);
+        }
+        const auto stage = ToLower(Trim(*verifyPreStage));
+        if (stage != "ignore" && stage != "commit" && stage != "all") {
+            std::cerr << "Error: invalid --stage value: " << *verifyPreStage << " (expected ignore|commit|all)\n";
+            std::exit(2);
+        }
+        if (stage == "ignore" || stage == "all") {
+            if (!ExtractArrayBodyForKey(*stages, "ignore").has_value()) {
+                std::cerr << "Error: plan schema invalid: stages.ignore missing\n";
+                std::cerr << "Hint: run `kog plan ignore-init --force --plan-file \"" << planPath.generic_string() << "\"`.\n";
+                std::exit(2);
+            }
+        }
+        if (stage == "commit" || stage == "all") {
+            if (!ExtractArrayBodyForKey(*stages, "commit").has_value() || !ExtractArrayBodyForKey(*stages, "post_sync").has_value()) {
+                std::cerr << "Error: plan schema invalid: stages.commit/post_sync missing\n";
+                std::cerr << "Hint: regenerate template with `kog plan new --force --plan-file \"" << planPath.generic_string() << "\"`.\n";
+                std::exit(2);
+            }
+        }
+        std::string planBaseHeadSha;
+        std::string planDirtyFingerprint;
+        if (!ExtractPlanWorkspaceHashes(text, &planBaseHeadSha, &planDirtyFingerprint)) {
+            std::cerr << "Error: plan schema invalid: meta.base_head_sha/meta.dirty_fingerprint missing or placeholder\n";
+            std::cerr << "Hint: regenerate and refill with `kog plan runbook commit --force --plan-file \"" << planPath.generic_string() << "\"`.\n";
+            std::exit(2);
+        }
+        const auto currentBaseHeadSha = ComputeWorkspaceBaseHeadSha(workspaceRoot);
+        const auto currentDirtyFingerprint = ComputeWorkspaceDirtyFingerprint(workspaceRoot);
+        if (planBaseHeadSha != currentBaseHeadSha || planDirtyFingerprint != currentDirtyFingerprint) {
+            std::cerr << "Error: plan schema invalid: workspace state drift detected.\n";
+            std::cerr << "  plan.base_head_sha=" << planBaseHeadSha << "\n";
+            std::cerr << "  current.base_head_sha=" << currentBaseHeadSha << "\n";
+            std::cerr << "  plan.dirty_fingerprint=" << planDirtyFingerprint << "\n";
+            std::cerr << "  current.dirty_fingerprint=" << currentDirtyFingerprint << "\n";
+            std::cerr << "Hint: refresh plan via `kog plan runbook commit --force --plan-file \"" << planPath.generic_string() << "\"`.\n";
+            std::exit(2);
+        }
+        std::cout << "Plan schema-verify passed: " << planPath.generic_string() << "\n";
     });
 
     auto* verifyPostApply = verify->add_subcommand("post-apply", "Verify result state after apply");
@@ -2306,12 +2968,36 @@ void RegisterPlan(CLI::App& InApp) {
     verifyPostApply->add_option("--plan-file", *verifyPostFile, "Plan file path");
     verifyPostApply->add_option("--stage", *verifyPostStage, "Stage: ignore|commit|all")->default_str("all");
     verifyPostApply->callback([=]() {
-        std::vector<std::string> args{"plan", "result-verify", "--stage", *verifyPostStage};
-        if (!verifyPostFile->empty()) {
-            args.push_back("--plan-file");
-            args.push_back(*verifyPostFile);
+        const auto workspaceRoot = std::filesystem::current_path().lexically_normal();
+        const auto planPath = verifyPostFile->empty() ? DefaultPlanPath(workspaceRoot) : std::filesystem::path(*verifyPostFile).lexically_normal();
+        const auto payload = ReadFileText(planPath);
+        if (!payload.has_value()) {
+            std::cerr << "Error: plan file not found/readable: " << planPath.generic_string() << "\n";
+            std::exit(2);
         }
-        ForwardToPlanInternal(args);
+        const auto stage = ToLower(Trim(*verifyPostStage));
+        if (stage != "ignore" && stage != "commit" && stage != "all") {
+            std::cerr << "Error: invalid --stage value: " << *verifyPostStage << " (expected ignore|commit|all)\n";
+            std::exit(2);
+        }
+        const auto text = *payload;
+        if (stage == "ignore" || stage == "all") {
+            const std::regex ignoreAppliedPattern(R"("applied_at_utc"\s*:\s*"[0-9]{4}-[0-9]{2}-[0-9]{2}T[^"]+")");
+            if (!std::regex_search(text, ignoreAppliedPattern)) {
+                std::cerr << "Error: post-apply verify failed: no applied_at_utc found for ignore stage.\n";
+                std::cerr << "Hint: run `kog plan apply --stage ignore --plan-file \"" << planPath.generic_string() << "\"` first.\n";
+                std::exit(2);
+            }
+        }
+        if (stage == "commit" || stage == "all") {
+            const std::regex commitExecutedPattern(R"("executed_at_utc"\s*:\s*"[0-9]{4}-[0-9]{2}-[0-9]{2}T[^"]+")");
+            if (!std::regex_search(text, commitExecutedPattern)) {
+                std::cerr << "Error: post-apply verify failed: meta.executed_at_utc is empty.\n";
+                std::cerr << "Hint: run commit/commit-push apply path first so execution stamp is written.\n";
+                std::exit(2);
+            }
+        }
+        std::cout << "Plan result-verify passed: " << planPath.generic_string() << "\n";
     });
 
     auto* verifyIgnore = verify->add_subcommand("ignore", "Run ignore gate verification");
@@ -2324,16 +3010,65 @@ void RegisterPlan(CLI::App& InApp) {
     verifyIgnore->add_option("--allowlist", *verifyIgnoreAllowlist, "Allowlist file path");
     verifyIgnore->add_option("--limit", *verifyIgnoreLimit, "Max listed candidates")->default_val(20);
     verifyIgnore->callback([=]() {
-        std::vector<std::string> args{"plan", "ignore-gate", "--context", *verifyIgnoreContext, "--limit", std::to_string(*verifyIgnoreLimit)};
-        if (!verifyIgnoreRoot->empty()) {
-            args.push_back("--workspace-root");
-            args.push_back(*verifyIgnoreRoot);
+        const auto allow = std::string(std::getenv("KOG_ALLOW_IGNORE_GATE") != nullptr ? std::getenv("KOG_ALLOW_IGNORE_GATE") : "");
+        if (ToLower(Trim(allow)) == "1" || ToLower(Trim(allow)) == "true") {
+            std::exit(0);
         }
-        if (!verifyIgnoreAllowlist->empty()) {
-            args.push_back("--allowlist");
-            args.push_back(*verifyIgnoreAllowlist);
+        const auto gate = std::string(std::getenv("KOG_IGNORE_GATE") != nullptr ? std::getenv("KOG_IGNORE_GATE") : "");
+        if (ToLower(Trim(gate)) == "off") {
+            std::exit(0);
         }
-        ForwardToPlanInternal(args);
+        const auto workspaceRoot =
+            verifyIgnoreRoot->empty() ? std::filesystem::current_path().lexically_normal() : std::filesystem::path(*verifyIgnoreRoot).lexically_normal();
+        if (GitCapture(workspaceRoot, {"rev-parse", "--git-dir"}).exitCode != 0) {
+            std::exit(0);
+        }
+        const auto allowlistPath = verifyIgnoreAllowlist->empty()
+                                       ? (workspaceRoot / ".agents" / "skills" / "kano" / "kano-git-master-skill" / "assets" / "gitignore" /
+                                          "ignore-gate-allowlist.txt")
+                                             .lexically_normal()
+                                       : std::filesystem::path(*verifyIgnoreAllowlist).lexically_normal();
+        const auto allowlist = ReadIgnoreGateAllowlist(allowlistPath);
+        std::vector<std::string> candidates;
+        for (const auto& repo : DiscoverWorkspaceRepos(workspaceRoot)) {
+            const auto rel = RelativeDisplayPath(workspaceRoot, repo);
+            const auto untracked = GitCapture(repo, {"ls-files", "--others", "--exclude-standard"});
+            if (untracked.exitCode != 0 || Trim(untracked.stdoutStr).empty()) {
+                continue;
+            }
+            std::istringstream iss(untracked.stdoutStr);
+            std::string path;
+            while (std::getline(iss, path)) {
+                auto raw = Trim(path);
+                if (raw.empty() || !IsProbableIgnoreArtifactPath(raw)) {
+                    continue;
+                }
+                const auto norm = NormalizePathSlashesLower(raw);
+                if (allowlist.contains(norm)) {
+                    continue;
+                }
+                if (rel == "." || rel.empty()) {
+                    candidates.push_back(raw);
+                } else {
+                    candidates.push_back(std::format("{}/{}", rel, raw));
+                }
+            }
+        }
+        if (candidates.empty()) {
+            std::exit(0);
+        }
+        const auto context = Trim(*verifyIgnoreContext);
+        std::cerr << "Error: ignore gate failed (" << context << "); unresolved untracked artifact-like files detected.\n";
+        const int limit = *verifyIgnoreLimit > 0 ? *verifyIgnoreLimit : 20;
+        for (int i = 0; i < limit && i < static_cast<int>(candidates.size()); ++i) {
+            std::cerr << "  - " << candidates[static_cast<std::size_t>(i)] << "\n";
+        }
+        if (static_cast<int>(candidates.size()) > limit) {
+            std::cerr << "  ... and " << (static_cast<int>(candidates.size()) - limit) << " more\n";
+        }
+        std::cerr << "Reason: ignore gate requires artifact-like untracked files to be handled before proceeding.\n";
+        std::cerr << "Action: add/remove those files, or bypass once with --allow-ignore-gate.\n";
+        std::exit(3);
     });
 
     auto* verifySecret = verify->add_subcommand("secret", "Run secret/token gate verification");
@@ -2346,16 +3081,69 @@ void RegisterPlan(CLI::App& InApp) {
     verifySecret->add_option("--rules-file", *verifySecretRules, "Rule file path (format: id|regex)");
     verifySecret->add_option("--limit", *verifySecretLimit, "Max listed findings")->default_val(20);
     verifySecret->callback([=]() {
-        std::vector<std::string> args{"plan", "secret-gate", "--context", *verifySecretContext, "--limit", std::to_string(*verifySecretLimit)};
-        if (!verifySecretRoot->empty()) {
-            args.push_back("--workspace-root");
-            args.push_back(*verifySecretRoot);
+        const auto disable =
+            std::string(std::getenv("KOG_DISABLE_SECRET_GATE") != nullptr ? std::getenv("KOG_DISABLE_SECRET_GATE") : "");
+        if (ToLower(Trim(disable)) == "1" || ToLower(Trim(disable)) == "true") {
+            std::exit(0);
         }
-        if (!verifySecretRules->empty()) {
-            args.push_back("--rules-file");
-            args.push_back(*verifySecretRules);
+        if (*verifySecretLimit <= 0) {
+            std::cerr << "Error: --limit must be positive\n";
+            std::exit(2);
         }
-        ForwardToPlanInternal(args);
+        const auto workspaceRoot =
+            verifySecretRoot->empty() ? std::filesystem::current_path().lexically_normal() : std::filesystem::path(*verifySecretRoot).lexically_normal();
+        const auto rulesPath =
+            verifySecretRules->empty() ? DefaultSecretRulesPath(workspaceRoot) : ResolvePath(workspaceRoot, *verifySecretRules);
+        std::string rulesError;
+        const auto rules = LoadSecretRules(rulesPath, &rulesError);
+        if (!rulesError.empty()) {
+            std::cerr << "Error: secret gate rules invalid: " << rulesError << "\n";
+            std::exit(2);
+        }
+        if (rules.empty()) {
+            std::cout << "Secret gate passed: no rules loaded\n";
+            std::exit(0);
+        }
+        const auto repos = DiscoverWorkspaceRepos(workspaceRoot);
+        std::vector<SecretFinding> findings;
+        findings.reserve(static_cast<std::size_t>(*verifySecretLimit));
+        for (const auto& repo : repos) {
+            const auto changedFiles = CollectChangedCandidateFiles(repo);
+            if (changedFiles.empty()) {
+                continue;
+            }
+            const auto repoRel = RelativeDisplayPath(workspaceRoot, repo);
+            for (const auto& file : changedFiles) {
+                if (static_cast<int>(findings.size()) >= *verifySecretLimit) {
+                    break;
+                }
+                const auto before = findings.size();
+                ScanFileForSecretRules(repo, file, rules, *verifySecretLimit, &findings);
+                for (std::size_t i = before; i < findings.size(); ++i) {
+                    findings[i].repo = repoRel.empty() ? "." : repoRel;
+                }
+            }
+            if (static_cast<int>(findings.size()) >= *verifySecretLimit) {
+                break;
+            }
+        }
+        if (findings.empty()) {
+            std::cout << "Secret gate passed: no high-confidence findings in changed files\n";
+            std::exit(0);
+        }
+        const auto context = Trim(*verifySecretContext);
+        std::cerr << "Error: secret gate failed (" << context << "); potential secrets detected.\n";
+        for (const auto& f : findings) {
+            std::cerr << std::format("  - [{}/{}:{}] rule={} preview={}\n",
+                                     f.repo.empty() ? "." : f.repo,
+                                     f.file,
+                                     f.line,
+                                     f.ruleId,
+                                     f.preview);
+        }
+        std::cerr << "Hint: remove/redact secrets, rotate leaked credentials if needed, then rerun.\n";
+        std::cerr << "Hint: disable once with KOG_DISABLE_SECRET_GATE=1 (not recommended).\n";
+        std::exit(3);
     });
 
     auto* schemaVerify = cmd->add_subcommand("schema-verify", "Verify plan schema (pre-apply)");
@@ -2398,6 +3186,24 @@ void RegisterPlan(CLI::App& InApp) {
                 std::cerr << "Hint: regenerate template with `kog plan new --force --plan-file \"" << planPath.generic_string() << "\"`.\n";
                 std::exit(2);
             }
+        }
+        std::string planBaseHeadSha;
+        std::string planDirtyFingerprint;
+        if (!ExtractPlanWorkspaceHashes(text, &planBaseHeadSha, &planDirtyFingerprint)) {
+            std::cerr << "Error: plan schema invalid: meta.base_head_sha/meta.dirty_fingerprint missing or placeholder\n";
+            std::cerr << "Hint: regenerate and refill with `kog plan runbook commit --force --plan-file \"" << planPath.generic_string() << "\"`.\n";
+            std::exit(2);
+        }
+        const auto currentBaseHeadSha = ComputeWorkspaceBaseHeadSha(workspaceRoot);
+        const auto currentDirtyFingerprint = ComputeWorkspaceDirtyFingerprint(workspaceRoot);
+        if (planBaseHeadSha != currentBaseHeadSha || planDirtyFingerprint != currentDirtyFingerprint) {
+            std::cerr << "Error: plan schema invalid: workspace state drift detected.\n";
+            std::cerr << "  plan.base_head_sha=" << planBaseHeadSha << "\n";
+            std::cerr << "  current.base_head_sha=" << currentBaseHeadSha << "\n";
+            std::cerr << "  plan.dirty_fingerprint=" << planDirtyFingerprint << "\n";
+            std::cerr << "  current.dirty_fingerprint=" << currentDirtyFingerprint << "\n";
+            std::cerr << "Hint: refresh plan via `kog plan runbook commit --force --plan-file \"" << planPath.generic_string() << "\"`.\n";
+            std::exit(2);
         }
         std::cout << "Plan schema-verify passed: " << planPath.generic_string() << "\n";
         if (stage == "ignore") {
@@ -2474,18 +3280,30 @@ void RegisterPlan(CLI::App& InApp) {
             std::cerr << "Error: invalid --stage value: " << *applyStage << " (expected ignore|commit|all)\n";
             std::exit(2);
         }
-        const auto bin = ResolveKogBinaryCommand();
-        if (!bin.has_value()) {
-            std::cerr << "Error: cannot resolve kog binary for apply/post-apply verification.\n";
-            std::exit(2);
-        }
         const auto runPostApplyVerify = [&](const std::string& stageValue) -> int {
-            return shell::ExecuteCommand(
-                       *bin,
-                       {"plan", "verify", "post-apply", "--stage", stageValue, "--plan-file", planPath.generic_string()},
-                       shell::ExecMode::PassThrough,
-                       workspaceRoot)
-                .exitCode;
+            const auto verifyPayload = ReadFileText(planPath);
+            if (!verifyPayload.has_value()) {
+                std::cerr << "Error: plan file not found/readable: " << planPath.generic_string() << "\n";
+                return 2;
+            }
+            const auto text = *verifyPayload;
+            if (stageValue == "ignore" || stageValue == "all") {
+                const std::regex ignoreAppliedPattern(R"("applied_at_utc"\s*:\s*"[0-9]{4}-[0-9]{2}-[0-9]{2}T[^"]+")");
+                if (!std::regex_search(text, ignoreAppliedPattern)) {
+                    std::cerr << "Error: post-apply verify failed: no applied_at_utc found for ignore stage.\n";
+                    std::cerr << "Hint: run `kog plan apply --stage ignore --plan-file \"" << planPath.generic_string() << "\"` first.\n";
+                    return 2;
+                }
+            }
+            if (stageValue == "commit" || stageValue == "all") {
+                const std::regex commitExecutedPattern(R"("executed_at_utc"\s*:\s*"[0-9]{4}-[0-9]{2}-[0-9]{2}T[^"]+")");
+                if (!std::regex_search(text, commitExecutedPattern)) {
+                    std::cerr << "Error: post-apply verify failed: meta.executed_at_utc is empty.\n";
+                    std::cerr << "Hint: run commit/commit-push apply path first so execution stamp is written.\n";
+                    return 2;
+                }
+            }
+            return 0;
         };
 
         if (stage == "ignore" || stage == "all") {
@@ -2518,6 +3336,13 @@ void RegisterPlan(CLI::App& InApp) {
                           << " merged=" << mergedAbs.generic_string() << "\n";
             }
             *payload = StampIgnoreAppliedAtAll(*payload, CurrentUtcIso8601());
+            const auto postIgnoreDirtyFingerprint = ComputeWorkspaceDirtyFingerprint(workspaceRoot);
+            if (const auto updated = ReplacePlanDirtyFingerprint(*payload, postIgnoreDirtyFingerprint); updated.has_value()) {
+                *payload = *updated;
+            } else {
+                std::cerr << "Error: failed to update meta.dirty_fingerprint after ignore apply.\n";
+                std::exit(2);
+            }
             std::string error;
             if (!WriteFileText(planPath, *payload, &error)) {
                 std::cerr << "Error: failed to stamp plan applied_at_utc: " << planPath.generic_string() << " (" << error << ")\n";
@@ -2536,13 +3361,11 @@ void RegisterPlan(CLI::App& InApp) {
             }
         }
 
-        // Forward commit stage to existing native commit-push pipeline.
-        std::vector<std::string> args{"commit-push", "--plan-file", planPath.generic_string()};
+        // Run commit-push plan pipeline in-process.
         const auto extras = apply->remaining();
-        args.insert(args.end(), extras.begin(), extras.end());
-        const auto run = shell::ExecuteCommand(*bin, args, shell::ExecMode::PassThrough, workspaceRoot);
-        if (run.exitCode != 0) {
-            std::exit(run.exitCode);
+        const auto commitPushCode = RunCommitPushPlanFilePipeline(workspaceRoot, planPath.generic_string(), extras);
+        if (commitPushCode != 0) {
+            std::exit(commitPushCode);
         }
         const auto verifyStatus = runPostApplyVerify(stage == "all" ? "all" : "commit");
         std::exit(verifyStatus);

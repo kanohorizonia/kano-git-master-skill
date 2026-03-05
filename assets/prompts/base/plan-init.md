@@ -6,6 +6,7 @@ END_KOG_PLAN_JSON
 
 Rules:
 - Output a full JSON object with keys: meta, stages.
+- Treat `stages.commit` structure as canonical. Do not replace it with alternative schemas (`id`, `files`, `commit_message`, `target_repo_path`, etc.).
 - Keep existing meta fields that are already concrete values (plan_id/generated_at_utc/base_head_sha/dirty_fingerprint).
 - meta.planner.provider must be "{{PROVIDER}}".
 - meta.planner.ai-model must be "{{MODEL}}".
@@ -19,8 +20,16 @@ Rules:
   - message (Conventional Commit one-line)
   - review.verdict = "pass"
   - review.reason = concise reason
+- If commit stage is already seeded, keep repo grouping and only fill/adjust commit message + review fields.
 - stages.post_sync must be [].
 - Do NOT include placeholder values.
+
+CLI building blocks (for operator/agent workflow):
+- `kog plan new` creates template.
+- `kog plan commit-seed` pre-populates `stages.commit` skeleton from dirty repos.
+- `kog plan prepare add-commit-entry --repo "<path>" --commit.message "<msg>" --commit.include "<pathspec>" --commit.review.verdict pass --commit.review.reason "<reason>"` appends commit entries deterministically.
+- `kog plan ignore-init` pre-populates ignore stage.
+- `kog plan ensure-prepare-ready` fills and validates AI-ready fields.
 
 Current template JSON (fill it, do not remove required keys):
 {{TEMPLATE_JSON}}

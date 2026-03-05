@@ -15,6 +15,7 @@
 #include <iomanip>
 #include <optional>
 #include <print>
+#include <regex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -50,6 +51,7 @@ struct NativeAiConfig {
 };
 
 auto DisplayRepoLabel(const std::filesystem::path& InWorkspaceRoot, const std::filesystem::path& InRepo) -> std::string;
+auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<std::filesystem::path>;
 
 auto Trim(std::string InValue) -> std::string {
     while (!InValue.empty() && (InValue.back() == '\n' || InValue.back() == '\r' || InValue.back() == ' ' || InValue.back() == '\t')) {
@@ -139,37 +141,255 @@ auto HasCommand(const std::string& InCommand, const std::vector<std::string>& In
     return result.exitCode == 0;
 }
 
-auto ResolveKanoGitCliCommand() -> std::string {
-    if (const char* bin = std::getenv("KANO_GIT_BINARY_PATH"); bin != nullptr && std::string(bin).size() > 0) {
-        return std::string(bin);
+auto IsTruthyEnv(const char* InValue) -> bool {
+    if (InValue == nullptr) {
+        return false;
     }
-    if (HasCommand("kano-git", {"--help"})) {
-        return "kano-git";
-    }
-    if (HasCommand("kog", {"--help"})) {
-        return "kog";
-    }
-    return "kano-git";
+    const auto v = ToLower(Trim(std::string(InValue)));
+    return v == "1" || v == "true" || v == "yes" || v == "on";
 }
 
-auto RunKanoGitCli(const std::vector<std::string>& InArgs, shell::ExecMode InMode = shell::ExecMode::PassThrough) -> shell::ExecResult {
-    return shell::ExecuteCommand(ResolveKanoGitCliCommand(), InArgs, InMode, std::filesystem::current_path());
+auto ResolveSkillRoot(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path {
+    return (InWorkspaceRoot / ".agents" / "skills" / "kano" / "kano-git-master-skill").lexically_normal();
 }
 
-auto RunPipelineSafetyGatesForNonAiCommit() -> void {
-    const auto ignoreGateResult = RunKanoGitCli({"plan", "verify", "ignore", "--context", "commit"});
-    if (ignoreGateResult.exitCode != 0) {
-        std::exit(ignoreGateResult.exitCode);
+auto LoadNormalizedLineSet(const std::filesystem::path& InFile) -> std::unordered_set<std::string> {
+    std::unordered_set<std::string> out;
+    std::ifstream in(InFile);
+    if (!in) {
+        return out;
     }
+    std::string line;
+    while (std::getline(in, line)) {
+        auto t = Trim(line);
+        if (t.empty() || t[0] == '#') {
+            continue;
+        }
+        std::replace(t.begin(), t.end(), '\\', '/');
+        out.insert(t);
+    }
+    return out;
+}
 
-    const auto secretGateProbe = RunKanoGitCli({"plan", "verify", "secret", "--help"}, shell::ExecMode::Capture);
-    if (secretGateProbe.exitCode != 0) {
-        std::cerr << "Warning: native binary does not support plan verify secret yet; skipping secret gate.\n";
+auto IsProbableIgnoreArtifactPath(const std::string& InPath) -> bool {
+    auto p = InPath;
+    std::replace(p.begin(), p.end(), '\\', '/');
+    const auto lower = ToLower(p);
+    auto contains = [&](const std::string& token) { return lower.find(token) != std::string::npos; };
+    if (contains("/.cache/") || contains("/.pytest_cache/") || contains("/.mypy_cache/") || contains("/.idea/") || contains("/.vscode/")) {
+        return true;
+    }
+    if (contains("/node_modules/") || contains("/dist/") || contains("/build/") || contains("/bin/") || contains("/obj/") || contains("/target/")) {
+        return true;
+    }
+    return lower.ends_with(".log") || lower.ends_with(".tmp") || lower.ends_with(".temp") || lower.ends_with(".cache") ||
+           lower.ends_with(".bak") || lower.ends_with(".swp") || lower.ends_with(".swo") || lower.ends_with(".class") ||
+           lower.ends_with(".obj") || lower.ends_with(".o") || lower.ends_with(".pdb") || lower.ends_with(".ilk") ||
+           lower.ends_with(".dmp") || lower.ends_with(".pyc");
+}
+
+struct SecretRule {
+    std::string id;
+    std::regex pattern;
+};
+
+struct SecretFinding {
+    std::string repo;
+    std::string file;
+    int line = 0;
+    std::string ruleId;
+    std::string preview;
+};
+
+auto LoadSecretRules(const std::filesystem::path& InFile) -> std::vector<SecretRule> {
+    std::vector<SecretRule> out;
+    std::ifstream in(InFile);
+    if (!in) {
+        return out;
+    }
+    std::string line;
+    while (std::getline(in, line)) {
+        const auto t = Trim(line);
+        if (t.empty() || t[0] == '#') {
+            continue;
+        }
+        const auto delim = t.find('|');
+        if (delim == std::string::npos) {
+            continue;
+        }
+        const auto id = Trim(t.substr(0, delim));
+        const auto expr = Trim(t.substr(delim + 1));
+        if (id.empty() || expr.empty()) {
+            continue;
+        }
+        try {
+            out.push_back({id, std::regex(expr, std::regex::ECMAScript | std::regex::icase)});
+        } catch (const std::regex_error&) {
+            continue;
+        }
+    }
+    return out;
+}
+
+auto CollectChangedCandidateFiles(const std::filesystem::path& InRepo) -> std::vector<std::string> {
+    std::unordered_set<std::string> files;
+    const std::vector<std::vector<std::string>> commands = {
+        {"diff", "--cached", "--name-only"},
+        {"diff", "--name-only"},
+        {"ls-files", "--others", "--exclude-standard"},
+    };
+    for (const auto& args : commands) {
+        const auto out = GitCapture(InRepo, args);
+        if (out.exitCode != 0) {
+            continue;
+        }
+        std::istringstream iss(out.stdoutStr);
+        std::string line;
+        while (std::getline(iss, line)) {
+            auto path = Trim(line);
+            if (path.empty()) {
+                continue;
+            }
+            const auto abs = (InRepo / std::filesystem::path(path)).lexically_normal();
+            std::error_code ec;
+            if (!std::filesystem::exists(abs, ec) || std::filesystem::is_directory(abs, ec)) {
+                continue;
+            }
+            files.insert(path);
+        }
+    }
+    return std::vector<std::string>(files.begin(), files.end());
+}
+
+auto ScanFileForSecretRules(const std::filesystem::path& InRepo,
+                            const std::string& InFile,
+                            const std::vector<SecretRule>& InRules,
+                            const int InLimit,
+                            std::vector<SecretFinding>* OutFindings) -> void {
+    if (OutFindings == nullptr || static_cast<int>(OutFindings->size()) >= InLimit) {
         return;
     }
-    const auto secretGateResult = RunKanoGitCli({"plan", "verify", "secret", "--context", "commit", "--limit", "20"});
-    if (secretGateResult.exitCode != 0) {
-        std::exit(secretGateResult.exitCode);
+    std::ifstream in((InRepo / std::filesystem::path(InFile)).lexically_normal());
+    if (!in) {
+        return;
+    }
+    std::string line;
+    int lineNo = 0;
+    while (std::getline(in, line) && static_cast<int>(OutFindings->size()) < InLimit) {
+        lineNo += 1;
+        for (const auto& rule : InRules) {
+            if (std::regex_search(line, rule.pattern)) {
+                SecretFinding f;
+                f.file = InFile;
+                f.line = lineNo;
+                f.ruleId = rule.id;
+                f.preview = Trim(line);
+                if (f.preview.size() > 160) {
+                    f.preview = f.preview.substr(0, 160) + "...";
+                }
+                OutFindings->push_back(std::move(f));
+                break;
+            }
+        }
+    }
+}
+
+auto RunPipelineSafetyGatesForNonAiCommit(const std::filesystem::path& InWorkspaceRoot) -> void {
+    if (!IsTruthyEnv(std::getenv("KOG_ALLOW_IGNORE_GATE")) && ToLower(Trim(std::getenv("KOG_IGNORE_GATE") == nullptr ? "on" : std::getenv("KOG_IGNORE_GATE"))) != "off") {
+        auto repos = DiscoverWorkspaceRepos(InWorkspaceRoot);
+        if (repos.empty()) {
+            repos.push_back(InWorkspaceRoot);
+        }
+        const auto allowlistPath = (ResolveSkillRoot(InWorkspaceRoot) / "assets" / "ignore-sources" / "local" / "ignore-gate-allowlist.txt").lexically_normal();
+        const auto allowlist = LoadNormalizedLineSet(allowlistPath);
+        std::vector<std::string> findings;
+        for (const auto& repo : repos) {
+            const auto rel = repo.lexically_relative(InWorkspaceRoot).generic_string();
+            const auto repoLabel = rel.empty() ? "." : rel;
+            const auto untracked = GitCapture(repo, {"ls-files", "--others", "--exclude-standard"});
+            if (untracked.exitCode != 0) {
+                continue;
+            }
+            std::istringstream iss(untracked.stdoutStr);
+            std::string path;
+            while (std::getline(iss, path)) {
+                auto p = Trim(path);
+                if (p.empty() || !IsProbableIgnoreArtifactPath(p)) {
+                    continue;
+                }
+                std::replace(p.begin(), p.end(), '\\', '/');
+                const auto key = repoLabel == "." ? p : (repoLabel + "/" + p);
+                if (allowlist.find(key) != allowlist.end()) {
+                    continue;
+                }
+                findings.push_back(key);
+                if (findings.size() >= 20) {
+                    break;
+                }
+            }
+            if (findings.size() >= 20) {
+                break;
+            }
+        }
+        if (!findings.empty()) {
+            std::cerr << "Error: ignore gate failed (commit); unresolved untracked artifact-like files detected.\n";
+            for (const auto& f : findings) {
+                std::cerr << "  - " << f << "\n";
+            }
+            std::cerr << "Hint: update .gitignore first, then regenerate plan.\n";
+            std::cerr << "Hint: override once with --allow-ignore-gate (or KOG_ALLOW_IGNORE_GATE=1).\n";
+            std::exit(3);
+        }
+    }
+
+    if (IsTruthyEnv(std::getenv("KOG_DISABLE_SECRET_GATE"))) {
+        return;
+    }
+    const auto rulesPath = (ResolveSkillRoot(InWorkspaceRoot) / "assets" / "secret-rules" / "default.rules").lexically_normal();
+    const auto rules = LoadSecretRules(rulesPath);
+    if (rules.empty()) {
+        return;
+    }
+    auto repos = DiscoverWorkspaceRepos(InWorkspaceRoot);
+    if (repos.empty()) {
+        repos.push_back(InWorkspaceRoot);
+    }
+    std::vector<SecretFinding> findings;
+    findings.reserve(20);
+    for (const auto& repo : repos) {
+        const auto changedFiles = CollectChangedCandidateFiles(repo);
+        if (changedFiles.empty()) {
+            continue;
+        }
+        const auto rel = repo.lexically_relative(InWorkspaceRoot).generic_string();
+        const auto repoLabel = rel.empty() ? "." : rel;
+        for (const auto& file : changedFiles) {
+            if (static_cast<int>(findings.size()) >= 20) {
+                break;
+            }
+            const auto before = findings.size();
+            ScanFileForSecretRules(repo, file, rules, 20, &findings);
+            for (std::size_t i = before; i < findings.size(); ++i) {
+                findings[i].repo = repoLabel;
+            }
+        }
+        if (static_cast<int>(findings.size()) >= 20) {
+            break;
+        }
+    }
+    if (!findings.empty()) {
+        std::cerr << "Error: secret gate failed (commit); potential secrets detected.\n";
+        for (const auto& f : findings) {
+            std::cerr << std::format("  - [{}/{}:{}] rule={} preview={}\n",
+                                     f.repo.empty() ? "." : f.repo,
+                                     f.file,
+                                     f.line,
+                                     f.ruleId,
+                                     f.preview);
+        }
+        std::cerr << "Hint: remove/redact secrets, rotate leaked credentials if needed, then rerun.\n";
+        std::cerr << "Hint: disable once with KOG_DISABLE_SECRET_GATE=1 (not recommended).\n";
+        std::exit(3);
     }
 }
 
@@ -742,15 +962,98 @@ auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<
     return repos;
 }
 
+auto Fnv1a64Hex(const std::string& InText) -> std::string {
+    std::uint64_t hash = 1469598103934665603ULL;
+    for (const unsigned char ch : InText) {
+        hash ^= static_cast<std::uint64_t>(ch);
+        hash *= 1099511628211ULL;
+    }
+    std::ostringstream oss;
+    oss << std::hex << std::setfill('0') << std::setw(16) << hash;
+    return oss.str();
+}
+
+auto WorkspaceRepoKey(const std::filesystem::path& InWorkspaceRoot, const std::filesystem::path& InRepo) -> std::string {
+    const auto rootNorm = NormalizePath(InWorkspaceRoot);
+    const auto repoNorm = NormalizePath(InRepo);
+    if (ToGeneric(rootNorm) == ToGeneric(repoNorm)) {
+        return ".";
+    }
+    const auto rel = repoNorm.lexically_relative(rootNorm);
+    if (rel.empty()) {
+        return repoNorm.generic_string();
+    }
+    return rel.generic_string();
+}
+
+auto ExtractBranchOidFromStatusV2(const std::string& InStatus) -> std::string {
+    std::istringstream iss(InStatus);
+    std::string line;
+    while (std::getline(iss, line)) {
+        auto t = Trim(line);
+        if (t.rfind("# branch.oid ", 0) == 0) {
+            t = Trim(t.substr(std::string("# branch.oid ").size()));
+            if (!t.empty() && t != "(initial)") {
+                return t;
+            }
+            break;
+        }
+    }
+    return "no-head";
+}
+
+auto ComputeWorkspaceBaseHeadSha(const std::filesystem::path& InWorkspaceRoot) -> std::string {
+    std::vector<std::string> lines;
+    const auto repos = DiscoverWorkspaceRepos(InWorkspaceRoot);
+    lines.reserve(repos.size());
+    for (const auto& repo : repos) {
+        const auto head = GitCapture(repo, {"rev-parse", "HEAD"});
+        const auto sha = (head.exitCode == 0) ? Trim(head.stdoutStr) : std::string("0000000000000000000000000000000000000000");
+        lines.push_back(WorkspaceRepoKey(InWorkspaceRoot, repo) + "\t" + sha);
+    }
+    std::sort(lines.begin(), lines.end());
+    std::ostringstream canonical;
+    for (const auto& line : lines) {
+        canonical << line << "\n";
+    }
+    return "ws-head-v2-" + Fnv1a64Hex(canonical.str());
+}
+
+auto ComputeWorkspaceDirtyFingerprint(const std::filesystem::path& InWorkspaceRoot) -> std::string {
+    std::vector<std::string> lines;
+    const auto repos = DiscoverWorkspaceRepos(InWorkspaceRoot);
+    lines.reserve(repos.size());
+    for (const auto& repo : repos) {
+        const auto status = GitCapture(repo, {"status", "--porcelain=v2", "--branch", "--untracked-files=normal", "--ignore-submodules=none"});
+        if (status.exitCode != 0) {
+            continue;
+        }
+        const auto normalized = Trim(status.stdoutStr);
+        const auto head = ExtractBranchOidFromStatusV2(normalized);
+        const auto statusFingerprint = normalized.empty() ? std::string("clean") : Fnv1a64Hex(normalized);
+        lines.push_back(std::format("{}|{}|{}",
+                                    WorkspaceRepoKey(InWorkspaceRoot, repo),
+                                    head,
+                                    statusFingerprint));
+    }
+    std::sort(lines.begin(), lines.end());
+    std::ostringstream canonical;
+    for (const auto& line : lines) {
+        canonical << line << "\n";
+    }
+    return "ws-dirty-v2-" + Fnv1a64Hex(canonical.str());
+}
+
 auto BuildCommitScopeRecords(const std::filesystem::path& InWorkspaceRoot,
                              const std::string& InReposCsv,
                              const bool InNoRecursive,
                              const bool InDirtyOnly) -> std::vector<workspace::RepoRecord> {
+    const bool forceFreshDirtyScope = InDirtyOnly && Trim(InReposCsv).empty() && !InNoRecursive;
     auto all = DiscoverWorkspaceRepoRecords(
         InWorkspaceRoot,
         "full",
-        InDirtyOnly ? false : true,
-        InDirtyOnly ? true : false
+        forceFreshDirtyScope ? false : true,
+        forceFreshDirtyScope ? true : false
     );
     // Recovery path:
     // If recursive commit scope unexpectedly resolves to only root repo, refresh once without cache.
@@ -1048,6 +1351,7 @@ struct CommitPlanPayload {
         std::string generatedAtUtc;
         std::string executedAtUtc;
         std::string baseHeadSha;
+        std::string dirtyFingerprintPreIgnore;
         std::string dirtyFingerprint;
         PlannerMeta planner;
         ReviewMeta review;
@@ -1405,6 +1709,10 @@ auto ParseCommitPlan(const std::filesystem::path& InFile,
         }
         if (const auto baseHeadSha = ExtractStringField(*metaObject, "base_head_sha"); baseHeadSha.has_value()) {
             out.meta.baseHeadSha = Trim(*baseHeadSha);
+        }
+        if (const auto dirtyFingerprintPreIgnore = ExtractStringField(*metaObject, "dirty_fingerprint_pre_ignore");
+            dirtyFingerprintPreIgnore.has_value()) {
+            out.meta.dirtyFingerprintPreIgnore = Trim(*dirtyFingerprintPreIgnore);
         }
         if (const auto dirtyFingerprint = ExtractStringField(*metaObject, "dirty_fingerprint"); dirtyFingerprint.has_value()) {
             out.meta.dirtyFingerprint = Trim(*dirtyFingerprint);
@@ -2523,6 +2831,399 @@ auto PrintCommitPreflight(const CommitPreflightReport& InReport, bool InStagedOn
 
 } // namespace
 
+auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
+                              const std::string& InPlanFile,
+                              const std::string& InPlanStage,
+                              const bool InProfile) -> int {
+    using clock = std::chrono::steady_clock;
+    const auto totalStart = clock::now();
+    long long preflightMs = 0;
+    long long planningMs = 0;
+    long long commitMs = 0;
+    long long summaryMs = 0;
+
+    const auto workspaceRoot = InWorkspaceRoot.lexically_normal();
+
+    const auto preflightStart = clock::now();
+    const auto report = RunCommitPreflight(workspaceRoot);
+    PrintCommitPreflight(report, false);
+    if (!report.inRepo) {
+        return 1;
+    }
+    preflightMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - preflightStart).count();
+
+    std::cout << "[native-commit] safety-gates: ignore + secret\n";
+    RunPipelineSafetyGatesForNonAiCommit(workspaceRoot);
+
+    std::string planError;
+    const auto normalizedCommitPlanPath = NormalizeInputPathForCurrentPlatform(InPlanFile);
+    const auto parsed = ParseCommitPlan(std::filesystem::path(normalizedCommitPlanPath), &planError);
+    if (!parsed.has_value()) {
+        std::cerr << "Error: invalid --plan-file: " << normalizedCommitPlanPath;
+        if (!planError.empty()) {
+            std::cerr << " (" << planError << ")";
+        }
+        std::cerr << "\n";
+        return 2;
+    }
+
+    std::string validationError;
+    if (!ValidateCommitPlanForAiMode(*parsed, &validationError)) {
+        std::cerr << "Error: invalid --plan-file: " << normalizedCommitPlanPath;
+        if (!validationError.empty()) {
+            std::cerr << " (" << validationError << ")";
+        }
+        std::cerr << "\n";
+        return 2;
+    }
+    const auto currentBaseHeadSha = ComputeWorkspaceBaseHeadSha(workspaceRoot);
+    const auto currentDirtyFingerprint = ComputeWorkspaceDirtyFingerprint(workspaceRoot);
+    if (Trim(parsed->meta.baseHeadSha) != currentBaseHeadSha ||
+        Trim(parsed->meta.dirtyFingerprint) != currentDirtyFingerprint) {
+        std::cerr << "Error: invalid --plan-file: workspace state drift detected.\n";
+        std::cerr << "  plan.base_head_sha=" << parsed->meta.baseHeadSha << "\n";
+        std::cerr << "  current.base_head_sha=" << currentBaseHeadSha << "\n";
+        std::cerr << "  plan.dirty_fingerprint=" << parsed->meta.dirtyFingerprint << "\n";
+        std::cerr << "  current.dirty_fingerprint=" << currentDirtyFingerprint << "\n";
+        std::cerr << "Hint: regenerate/refill plan before commit apply.\n";
+        return 2;
+    }
+
+    const auto stage = ParseCommitPlanStage(InPlanStage);
+    if (!stage.has_value()) {
+        std::cerr << "Error: invalid --plan-stage value: " << InPlanStage
+                  << " (expected commit|post_sync|both)\n";
+        return 2;
+    }
+
+    auto stageMessages = BuildStageMessageMap(*parsed, *stage);
+    if (stageMessages.empty()) {
+        std::println("[native-commit] no entries found for selected --plan-stage; skipping commit.");
+        if (InProfile) {
+            const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - totalStart).count();
+            std::cout << "\n=== Commit Profile Summary ===\n";
+            std::cout << "mode: native\n";
+            std::cout << "repo_count: 0\n";
+            std::cout << "preflight_ms: " << preflightMs << "\n";
+            std::cout << "planning_ms: 0\n";
+            std::cout << "commit_ms: 0\n";
+            std::cout << "summary_ms: 0\n";
+            std::cout << "total_ms: " << totalMs << "\n";
+        }
+        return 0;
+    }
+
+    const auto planningStart = clock::now();
+    std::string planReposCsv;
+    for (const auto& [repoKey, items] : stageMessages) {
+        if (items.empty()) {
+            continue;
+        }
+        if (!planReposCsv.empty()) {
+            planReposCsv += ",";
+        }
+        planReposCsv += repoKey;
+    }
+    auto repoRecords = BuildCommitScopeRecords(workspaceRoot, planReposCsv, false, true);
+    if (repoRecords.empty()) {
+        workspace::RepoRecord fallback;
+        fallback.path = workspaceRoot;
+        fallback.type = "root";
+        repoRecords.push_back(std::move(fallback));
+    }
+    planningMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - planningStart).count();
+
+    const auto repoWaves = BuildExecutionWaves(repoRecords);
+    const auto runbooks = BuildRepoCommitRunbooks(repoRecords, stageMessages, workspaceRoot, "", true);
+    const auto taskGraph = BuildCommitTaskGraph(repoRecords, runbooks);
+    const int workers = ResolveCommitJobs("auto", taskGraph.tasks.size(), false);
+
+    std::vector<RepoCommitResult> results;
+    results.reserve(repoRecords.size() + taskGraph.tasks.size());
+    for (const auto& runbook : runbooks) {
+        if (runbook.valid) {
+            continue;
+        }
+        RepoCommitResult failed;
+        failed.repo = runbook.repo;
+        failed.failed = true;
+        failed.note = runbook.validationError;
+        results.push_back(std::move(failed));
+    }
+
+    NativeAiConfig ai{};
+    ai.enabled = false;
+    ai.reviewEnabled = false;
+
+    const auto commitStart = clock::now();
+    std::cout << "[native-commit] plan: repos=" << repoRecords.size()
+              << " repo_waves=" << repoWaves.size()
+              << " commits=" << taskGraph.tasks.size()
+              << " commit_waves=" << taskGraph.waves.size()
+              << " jobs=" << workers
+              << " dirty_only=on\n";
+    if (taskGraph.dependencyCycleDetected) {
+        std::cout << "[native-commit] warning: dependency cycle detected in commit graph; downgraded to serial fallback order.\n";
+    }
+
+    auto executeCommitTask = [&](const CommitTaskNode& InNode) -> RepoCommitResult {
+        const auto& repo = InNode.repo;
+        const auto& repoMessage = InNode.commit;
+        const bool needsPlanStaging =
+            InNode.repoCommitCount > 1 || !repoMessage.include.empty() || !repoMessage.exclude.empty();
+        if (needsPlanStaging) {
+            std::string stageError;
+            if (!StageCommitItemForPlan(repo, repoMessage, &stageError)) {
+                RepoCommitResult failed;
+                failed.repo = repo;
+                failed.failed = true;
+                failed.note = std::format("plan commit[{}] stage failed: {}", InNode.commitIndexInRepo, stageError);
+                return failed;
+            }
+        }
+        return CommitSingleRepo(workspaceRoot, repo, repoMessage.message, needsPlanStaging, false, ai);
+    };
+
+    for (const auto& wave : taskGraph.waves) {
+        if (wave.empty()) {
+            continue;
+        }
+        const int waveWorkers = std::max(1, std::min(workers, static_cast<int>(wave.size())));
+        if (waveWorkers == 1) {
+            for (const auto nodeIndex : wave) {
+                const auto& task = taskGraph.tasks[nodeIndex];
+                const auto label = DisplayRepoLabel(workspaceRoot, task.repo);
+                std::cout << "\n[commit] " << label
+                          << " [" << (task.commitIndexInRepo + 1) << "/" << task.repoCommitCount << "]\n";
+                results.push_back(executeCommitTask(task));
+            }
+            continue;
+        }
+
+        std::vector<std::future<std::pair<std::size_t, RepoCommitResult>>> active;
+        active.reserve(static_cast<std::size_t>(waveWorkers));
+        std::size_t cursor = 0;
+        std::vector<std::pair<std::size_t, RepoCommitResult>> waveResults;
+        waveResults.reserve(wave.size());
+
+        while (cursor < wave.size() || !active.empty()) {
+            while (cursor < wave.size() && static_cast<int>(active.size()) < waveWorkers) {
+                const auto nodeIndex = wave[cursor++];
+                const auto& task = taskGraph.tasks[nodeIndex];
+                const auto label = DisplayRepoLabel(workspaceRoot, task.repo);
+                std::cout << "\n[commit] " << label
+                          << " [" << (task.commitIndexInRepo + 1) << "/" << task.repoCommitCount << "]\n";
+                active.push_back(std::async(std::launch::async, [&, nodeIndex]() {
+                    const auto one = executeCommitTask(taskGraph.tasks[nodeIndex]);
+                    return std::make_pair(nodeIndex, one);
+                }));
+            }
+
+            if (!active.empty()) {
+                waveResults.push_back(active.front().get());
+                active.erase(active.begin());
+            }
+        }
+
+        std::sort(waveResults.begin(), waveResults.end(), [&](const auto& A, const auto& B) {
+            return A.first < B.first;
+        });
+        for (auto& [idx, one] : waveResults) {
+            static_cast<void>(idx);
+            results.push_back(std::move(one));
+        }
+    }
+    commitMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - commitStart).count();
+
+    const auto summaryStart = clock::now();
+    const auto exitCode = PrintCommitSummary(workspaceRoot, results);
+    summaryMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - summaryStart).count();
+
+    if (InProfile) {
+        const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - totalStart).count();
+        std::cout << "\n=== Commit Profile Summary ===\n";
+        std::cout << "mode: native\n";
+        std::cout << "repo_count: " << repoRecords.size() << "\n";
+        std::cout << "preflight_ms: " << preflightMs << "\n";
+        std::cout << "planning_ms: " << planningMs << "\n";
+        std::cout << "commit_ms: " << commitMs << "\n";
+        std::cout << "summary_ms: " << summaryMs << "\n";
+        std::cout << "total_ms: " << totalMs << "\n";
+    }
+
+    return exitCode;
+}
+
+auto RunCommitNativeSimple(const std::filesystem::path& InWorkspaceRoot,
+                           const std::string& InReposCsv,
+                           const bool InNoRecursive,
+                           const std::string& InMessage,
+                           const bool InStagedOnly,
+                           const bool InDryRun,
+                           const std::string& InAiProvider,
+                           const std::string& InAiModel,
+                           const bool InAiAuto,
+                           const bool InNoAiReview,
+                           const bool InProfile) -> int {
+    using clock = std::chrono::steady_clock;
+    const auto totalStart = clock::now();
+    long long preflightMs = 0;
+    long long planningMs = 0;
+    long long commitMs = 0;
+    long long summaryMs = 0;
+
+    const auto workspaceRoot = InWorkspaceRoot.lexically_normal();
+    const auto report = RunCommitPreflight(workspaceRoot);
+    PrintCommitPreflight(report, InStagedOnly);
+    if (!report.inRepo) {
+        return 1;
+    }
+    if (InStagedOnly && report.stagedCount == 0) {
+        std::cerr << "Preflight blocked: --staged-only but nothing staged\n";
+        return 2;
+    }
+    preflightMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - totalStart).count();
+
+    NativeAiConfig ai;
+    const bool aiRequested = InAiAuto || !InAiProvider.empty() || !InAiModel.empty();
+    ai.provider = aiRequested ? ResolveProvider(InAiProvider) : std::string{};
+    ai.model = aiRequested ? ResolveModelForAi(ai.provider, InAiModel, InAiAuto) : std::string{};
+    ai.reviewEnabled = !InNoAiReview;
+    ai.enabled = aiRequested && !ai.provider.empty();
+
+    if (aiRequested && !ai.enabled) {
+        std::cerr << "Error: AI mode requested, but provider is unavailable.\n";
+        std::cerr << "- provider resolved: " << (ai.provider.empty() ? "<none>" : ai.provider) << "\n";
+        std::cerr << "- model: " << (ai.model.empty() ? "<none>" : ai.model) << "\n";
+        return 2;
+    }
+    if (ai.enabled) {
+        std::cout << "[native-commit] AI enabled: provider=" << ai.provider
+                  << " model=" << ai.model
+                  << " review=" << (ai.reviewEnabled ? "on" : "off") << "\n";
+    } else {
+        std::cout << "[native-commit] safety-gates: ignore + secret\n";
+        RunPipelineSafetyGatesForNonAiCommit(workspaceRoot);
+    }
+
+    const auto planningStart = clock::now();
+    const bool dirtyOnly = true;
+    auto repoRecords = BuildCommitScopeRecords(workspaceRoot, Trim(InReposCsv), InNoRecursive, dirtyOnly);
+    if (repoRecords.empty()) {
+        workspace::RepoRecord fallback;
+        fallback.path = workspaceRoot;
+        fallback.type = "root";
+        repoRecords.push_back(std::move(fallback));
+    }
+    planningMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - planningStart).count();
+
+    std::unordered_map<std::string, std::vector<RepoCommitPlanEntry::CommitItem>> emptyStages;
+    const auto runbooks = BuildRepoCommitRunbooks(repoRecords, emptyStages, workspaceRoot, InMessage, false);
+    const auto taskGraph = BuildCommitTaskGraph(repoRecords, runbooks);
+    const int workers = ResolveCommitJobs("auto", taskGraph.tasks.size(), ai.enabled);
+
+    if (InDryRun) {
+        std::cout << "[native-commit] dry-run: planned commits=" << taskGraph.tasks.size()
+                  << " repos=" << repoRecords.size() << "\n";
+        for (const auto& task : taskGraph.tasks) {
+            const auto label = DisplayRepoLabel(workspaceRoot, task.repo);
+            std::cout << "  - " << label << ": " << task.commit.message << "\n";
+        }
+        return 0;
+    }
+
+    std::vector<RepoCommitResult> results;
+    results.reserve(repoRecords.size() + taskGraph.tasks.size());
+    for (const auto& runbook : runbooks) {
+        if (runbook.valid) {
+            continue;
+        }
+        RepoCommitResult failed;
+        failed.repo = runbook.repo;
+        failed.failed = true;
+        failed.note = runbook.validationError;
+        results.push_back(std::move(failed));
+    }
+
+    const auto commitStart = clock::now();
+    std::cout << "[native-commit] plan: repos=" << repoRecords.size()
+              << " commits=" << taskGraph.tasks.size()
+              << " commit_waves=" << taskGraph.waves.size()
+              << " jobs=" << workers
+              << " dirty_only=on\n";
+
+    auto executeCommitTask = [&](const CommitTaskNode& InNode) -> RepoCommitResult {
+        const auto& repo = InNode.repo;
+        const auto& repoMessage = InNode.commit;
+        return CommitSingleRepo(workspaceRoot, repo, repoMessage.message, InStagedOnly, false, ai);
+    };
+
+    for (const auto& wave : taskGraph.waves) {
+        if (wave.empty()) {
+            continue;
+        }
+        const int waveWorkers = std::max(1, std::min(workers, static_cast<int>(wave.size())));
+        if (waveWorkers == 1) {
+            for (const auto nodeIndex : wave) {
+                const auto& task = taskGraph.tasks[nodeIndex];
+                const auto label = DisplayRepoLabel(workspaceRoot, task.repo);
+                std::cout << "\n[commit] " << label
+                          << " [" << (task.commitIndexInRepo + 1) << "/" << task.repoCommitCount << "]\n";
+                results.push_back(executeCommitTask(task));
+            }
+            continue;
+        }
+        std::vector<std::future<std::pair<std::size_t, RepoCommitResult>>> active;
+        active.reserve(static_cast<std::size_t>(waveWorkers));
+        std::size_t cursor = 0;
+        std::vector<std::pair<std::size_t, RepoCommitResult>> waveResults;
+        waveResults.reserve(wave.size());
+        while (cursor < wave.size() || !active.empty()) {
+            while (cursor < wave.size() && static_cast<int>(active.size()) < waveWorkers) {
+                const auto nodeIndex = wave[cursor++];
+                const auto& task = taskGraph.tasks[nodeIndex];
+                const auto label = DisplayRepoLabel(workspaceRoot, task.repo);
+                std::cout << "\n[commit] " << label
+                          << " [" << (task.commitIndexInRepo + 1) << "/" << task.repoCommitCount << "]\n";
+                active.push_back(std::async(std::launch::async, [&, nodeIndex]() {
+                    const auto one = executeCommitTask(taskGraph.tasks[nodeIndex]);
+                    return std::make_pair(nodeIndex, one);
+                }));
+            }
+            if (!active.empty()) {
+                waveResults.push_back(active.front().get());
+                active.erase(active.begin());
+            }
+        }
+        std::sort(waveResults.begin(), waveResults.end(), [&](const auto& A, const auto& B) {
+            return A.first < B.first;
+        });
+        for (auto& [idx, one] : waveResults) {
+            static_cast<void>(idx);
+            results.push_back(std::move(one));
+        }
+    }
+    commitMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - commitStart).count();
+
+    const auto summaryStart = clock::now();
+    const auto exitCode = PrintCommitSummary(workspaceRoot, results);
+    summaryMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - summaryStart).count();
+
+    if (InProfile) {
+        const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - totalStart).count();
+        std::cout << "\n=== Commit Profile Summary ===\n";
+        std::cout << "mode: native\n";
+        std::cout << "repo_count: " << repoRecords.size() << "\n";
+        std::cout << "preflight_ms: " << preflightMs << "\n";
+        std::cout << "planning_ms: " << planningMs << "\n";
+        std::cout << "commit_ms: " << commitMs << "\n";
+        std::cout << "summary_ms: " << summaryMs << "\n";
+        std::cout << "total_ms: " << totalMs << "\n";
+    }
+
+    return exitCode;
+}
+
 void RegisterCommit(CLI::App& InApp) {
     auto* cmd = InApp.add_subcommand("commit", "Native multi-repo commit workflow (pure C++)");
 
@@ -2650,7 +3351,7 @@ void RegisterCommit(CLI::App& InApp) {
 
         if (!aiRequested) {
             std::cout << "[native-commit] safety-gates: ignore + secret\n";
-            RunPipelineSafetyGatesForNonAiCommit();
+            RunPipelineSafetyGatesForNonAiCommit(workspaceRoot);
         }
 
         std::unordered_map<std::string, std::vector<RepoCommitPlanEntry::CommitItem>> stageMessages;
@@ -2679,6 +3380,18 @@ void RegisterCommit(CLI::App& InApp) {
                     std::cerr << " (" << validationError << ")";
                 }
                 std::cerr << "\n";
+                std::exit(2);
+            }
+            const auto currentBaseHeadSha = ComputeWorkspaceBaseHeadSha(workspaceRoot);
+            const auto currentDirtyFingerprint = ComputeWorkspaceDirtyFingerprint(workspaceRoot);
+            if (Trim(parsed->meta.baseHeadSha) != currentBaseHeadSha ||
+                Trim(parsed->meta.dirtyFingerprint) != currentDirtyFingerprint) {
+                std::cerr << "Error: invalid --plan-file: workspace state drift detected.\n";
+                std::cerr << "  plan.base_head_sha=" << parsed->meta.baseHeadSha << "\n";
+                std::cerr << "  current.base_head_sha=" << currentBaseHeadSha << "\n";
+                std::cerr << "  plan.dirty_fingerprint=" << parsed->meta.dirtyFingerprint << "\n";
+                std::cerr << "  current.dirty_fingerprint=" << currentDirtyFingerprint << "\n";
+                std::cerr << "Hint: regenerate/refill plan before commit apply.\n";
                 std::exit(2);
             }
 

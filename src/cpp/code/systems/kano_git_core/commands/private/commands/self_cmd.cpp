@@ -107,7 +107,11 @@ auto ResolveBinaryCommand() -> std::string {
             return p.generic_string();
         }
     }
+#if defined(_WIN32)
+    return "kano-git.exe";
+#else
     return "kano-git";
+#endif
 }
 
 auto ResolveInstallMarkerPath(const std::filesystem::path& InRepoRoot) -> std::filesystem::path {

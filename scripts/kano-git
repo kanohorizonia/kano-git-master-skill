@@ -437,6 +437,26 @@ extract_ai_options_from_args() {
   done
 }
 
+maybe_alias_self_shortcuts() {
+  local -n out_args_ref="$1"
+  local cmd="${out_args_ref[0]:-}"
+  local -a rest=()
+  if ((${#out_args_ref[@]} > 1)); then
+    rest=("${out_args_ref[@]:1}")
+  fi
+
+  case "$cmd" in
+    sb)
+      out_args_ref=("self" "build" "${rest[@]}")
+      log_launcher_status "alias-self" "ok" "map sb -> self build"
+      ;;
+    srb)
+      out_args_ref=("self" "rebuild" "${rest[@]}")
+      log_launcher_status "alias-self" "ok" "map srb -> self rebuild"
+      ;;
+  esac
+}
+
 maybe_run_plan_preflight_for_ai_command() {
   local -a args=("$@")
   local cmd="${args[0]:-}"
@@ -1528,6 +1548,8 @@ Launcher commands:
     --no-modules                      Disable C++20 modules
   completion install bash             Install bash completion script
   completion-install bash             Alias of completion install bash
+  sb ...                              Alias of self build ...
+  srb ...                             Alias of self rebuild ...
 
 Launcher env:
   KANO_AGENT_MODE=1                Force non-interactive agent mode in launcher flows
@@ -1634,13 +1656,7 @@ main() {
     fi
   fi
 
-  case "${args[0]:-}" in
-    build|rebuild)
-      echo "Error: '${args[0]}' moved under 'self' lifecycle commands." >&2
-      echo "Hint: use './kog self ${args[0]}' instead." >&2
-      exit 2
-      ;;
-  esac
+  maybe_alias_self_shortcuts args
 
   if [[ "${args[0]:-}" == "self" ]]; then
     case "${args[1]:-}" in
