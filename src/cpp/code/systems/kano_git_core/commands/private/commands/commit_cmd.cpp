@@ -1575,6 +1575,44 @@ auto ExtractStringField(const std::string& InObjectText, const std::string& InFi
     return parsed->first;
 }
 
+auto NormalizePlanPathspecToken(std::string InValue) -> std::string {
+    auto value = Trim(std::move(InValue));
+    if (value.empty()) {
+        return value;
+    }
+
+    for (auto& ch : value) {
+        if (ch == '\\') {
+            ch = '/';
+        }
+    }
+
+    std::string cleaned;
+    cleaned.reserve(value.size());
+    for (const char ch : value) {
+        if (ch == '\r' || ch == '\n' || ch == '\t') {
+            continue;
+        }
+        cleaned.push_back(ch);
+    }
+
+    const bool looksLikePath = cleaned.find('/') != std::string::npos;
+    if (!looksLikePath) {
+        return Trim(cleaned);
+    }
+
+    // AI output may wrap long paths with indentation spaces; strip all spaces for pathspec stability.
+    std::string compact;
+    compact.reserve(cleaned.size());
+    for (const char ch : cleaned) {
+        if (ch == ' ') {
+            continue;
+        }
+        compact.push_back(ch);
+    }
+    return Trim(compact);
+}
+
 auto ExtractStringArrayForKey(const std::string& InObjectText, const std::string& InField) -> std::vector<std::string> {
     std::vector<std::string> out;
     const auto arrayBody = ExtractArrayBodyForKey(InObjectText, InField);
@@ -1595,13 +1633,8 @@ auto ExtractStringArrayForKey(const std::string& InObjectText, const std::string
         if (!parsed.has_value()) {
             break;
         }
-        auto value = Trim(parsed->first);
+        auto value = NormalizePlanPathspecToken(parsed->first);
         if (!value.empty()) {
-            for (auto& ch : value) {
-                if (ch == '\\') {
-                    ch = '/';
-                }
-            }
             out.push_back(std::move(value));
         }
         pos = parsed->second;

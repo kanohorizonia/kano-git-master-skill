@@ -1618,7 +1618,10 @@ run_native_binary() {
     done
   fi
 
-  KANO_GIT_MASTER_ROOT="${KANO_GIT_MASTER_ROOT:-$PROJECT_ROOT}" KANO_GIT_BINARY_PATH="$binary" "$binary" "${native_args[@]}"
+  KANO_GIT_MASTER_ROOT="${KANO_GIT_MASTER_ROOT:-$PROJECT_ROOT}" \
+  KANO_GIT_BINARY_PATH="$binary" \
+  KANO_AGENT_MODE="${KANO_AGENT_MODE:-}" \
+  "$binary" "${native_args[@]}"
   local status=$?
 
   if [[ "$status" -eq 0 ]]; then
