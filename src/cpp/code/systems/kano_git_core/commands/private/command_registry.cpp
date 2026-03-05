@@ -25,6 +25,7 @@ void RegisterAll(CLI::App& InApp) {
     RegisterPush(InApp);
     RegisterRemote(InApp);
     RegisterResolve(InApp);
+    RegisterSelf(InApp);
     RegisterScalar(InApp);
     RegisterSlog(InApp);
     RegisterStatus(InApp);

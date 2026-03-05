@@ -408,7 +408,7 @@ std::vector<std::string> CompleteFromTokens(const CLI::App& InRoot,
         }
 
         if (partial.empty() || partial[0] == '-') {
-            AddMatchingWords({"-ai"}, partial, candidates);
+            AddMatchingWords({"--ai"}, partial, candidates);
         }
     }
 

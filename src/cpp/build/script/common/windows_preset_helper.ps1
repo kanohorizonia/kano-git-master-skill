@@ -127,7 +127,73 @@ function Resolve-SourceRoot([string]$InRoot, [string]$InPreset) {
   Write-Output ($decision + "|" + $effectiveRoot)
 }
 
-function Prepare-SubstRoot([string]$InRoot, [string]$InPreferredDrive, [string]$InMode) {
+function Get-LongPathsEnabled() {
+  try {
+    $value = Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" -Name "LongPathsEnabled" -ErrorAction Stop
+    if ($null -ne $value -and $null -ne $value.LongPathsEnabled) {
+      return ([int]$value.LongPathsEnabled -eq 1)
+    }
+  } catch {
+    # If registry cannot be read (policy/permission), treat as disabled for safety.
+  }
+  return $false
+}
+
+function Get-PathRiskReport([string]$InRoot, [string]$InPreset, [int]$InPathLimit) {
+  $root = Resolve-AbsoluteWindowsPath $InRoot
+  if ([string]::IsNullOrWhiteSpace($root)) {
+    $root = $InRoot
+  }
+  if ([string]::IsNullOrWhiteSpace($root)) {
+    return @{
+      Root = $InRoot
+      CurrentLongestPath = $InRoot
+      CurrentLongestLength = 0
+      EstimatedLongestPath = ""
+      EstimatedLongestLength = 0
+      PathLimit = $InPathLimit
+      ExceedsLimit = $false
+    }
+  }
+
+  $currentLongestPath = $root
+  $currentLongestLength = $root.Length
+  Get-ChildItem -LiteralPath $root -Recurse -Force -File -ErrorAction SilentlyContinue | ForEach-Object {
+    $full = $_.FullName
+    if ($full.Length -gt $currentLongestLength) {
+      $currentLongestLength = $full.Length
+      $currentLongestPath = $full
+    }
+  }
+
+  $estimateCandidates = @(
+    ("build\_intermediate\" + $InPreset + "\CMakeFiles\kano_git_core.dir\commands\private\commands\commit_push_cmd.cpp.obj"),
+    ("build\_intermediate\" + $InPreset + "\CMakeFiles\kano_git_core.dir\commands\private\commands\plan_cmd.cpp.obj"),
+    ("build\_intermediate\" + $InPreset + "\CMakeFiles\kano_git_core.dir\commands\private\commands\sync_cmd.cpp.obj")
+  )
+  $estimatedLongestPath = $root
+  $estimatedLongestLength = $root.Length
+  foreach ($suffix in $estimateCandidates) {
+    $candidate = Join-Path $root $suffix
+    if ($candidate.Length -gt $estimatedLongestLength) {
+      $estimatedLongestLength = $candidate.Length
+      $estimatedLongestPath = $candidate
+    }
+  }
+
+  $maxLen = [Math]::Max($currentLongestLength, $estimatedLongestLength)
+  return @{
+    Root = $root
+    CurrentLongestPath = $currentLongestPath
+    CurrentLongestLength = $currentLongestLength
+    EstimatedLongestPath = $estimatedLongestPath
+    EstimatedLongestLength = $estimatedLongestLength
+    PathLimit = $InPathLimit
+    ExceedsLimit = ($maxLen -ge $InPathLimit)
+  }
+}
+
+function Prepare-SubstRoot([string]$InRoot, [string]$InPreset, [string]$InPreferredDrive, [string]$InMode) {
   $tab = [char]9
   $root = Resolve-AbsoluteWindowsPath $InRoot
   if ([string]::IsNullOrWhiteSpace($root)) {
@@ -138,6 +204,22 @@ function Prepare-SubstRoot([string]$InRoot, [string]$InPreferredDrive, [string]$
   if ([string]::IsNullOrWhiteSpace($modeNorm)) {
     $modeNorm = "auto"
   }
+  $pathLimit = 240
+  if ($env:KOG_WINDOWS_PATH_LIMIT -match "^\d+$") {
+    $parsed = [int]$env:KOG_WINDOWS_PATH_LIMIT
+    if ($parsed -gt 0) {
+      $pathLimit = $parsed
+    }
+  }
+
+  $longPathsEnabled = Get-LongPathsEnabled
+  if ($longPathsEnabled) {
+    # Long paths are enabled system-wide; prefer native long-path support over subst indirection.
+    Write-Output ($root + $tab + $tab + "0")
+    return
+  }
+
+  $risk = Get-PathRiskReport -InRoot $root -InPreset $InPreset -InPathLimit $pathLimit
 
   $shouldMap = $false
   if ($modeNorm -eq "on") {
@@ -145,7 +227,7 @@ function Prepare-SubstRoot([string]$InRoot, [string]$InPreferredDrive, [string]$
   } elseif ($modeNorm -eq "off") {
     $shouldMap = $false
   } else {
-    $shouldMap = ($root.Length -ge 55)
+    $shouldMap = $risk.ExceedsLimit
   }
   if (-not [string]::IsNullOrWhiteSpace($InPreferredDrive)) {
     $shouldMap = $true
@@ -203,6 +285,21 @@ function Prepare-SubstRoot([string]$InRoot, [string]$InPreferredDrive, [string]$
     }
   }
 
+  if ($risk.ExceedsLimit) {
+    Write-Error ("No available drive letter for SUBST while path risk exceeds limit.")
+    Write-Error ("Root: " + $risk.Root)
+    Write-Error ("LongPathsEnabled: 0")
+    Write-Error ("PathLimit: " + $risk.PathLimit)
+    Write-Error ("CurrentLongestLength: " + $risk.CurrentLongestLength)
+    Write-Error ("CurrentLongestPath: " + $risk.CurrentLongestPath)
+    Write-Error ("EstimatedLongestLength: " + $risk.EstimatedLongestLength)
+    Write-Error ("EstimatedLongestPath: " + $risk.EstimatedLongestPath)
+    Write-Error ("Hint: enable Windows long paths (run as Administrator):")
+    Write-Error ("  Set-ItemProperty -Path ""HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem"" -Name ""LongPathsEnabled"" -Value 1")
+    Write-Error ("  Get-ItemProperty -Path ""HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem"" | Select-Object LongPathsEnabled")
+    exit 3
+  }
+
   Write-Output ($root + $tab + $tab + "0")
 }
 
@@ -232,7 +329,7 @@ switch ($Action.ToLowerInvariant()) {
     exit 0
   }
   "prepare-subst-root" {
-    Prepare-SubstRoot $Root $PreferredDrive $Mode
+    Prepare-SubstRoot $Root $Preset $PreferredDrive $Mode
     exit 0
   }
   "cleanup-subst" {
