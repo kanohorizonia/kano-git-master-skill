@@ -6,6 +6,7 @@
 #include "shell_executor.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <filesystem>
 #include <format>
@@ -16,6 +17,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -339,18 +341,175 @@ auto ResolveGitmodulesBranch(const std::filesystem::path& InRoot, const std::str
     return {};
 }
 
-auto ResolveStableRef(const std::filesystem::path& InRoot, const std::filesystem::path& InRepo, const std::string& InCurrentBranch, const std::string& InRelPath) -> std::string {
+struct StableBranchRef {
+    std::string ref;
+    std::string canonical;
+    std::array<int, 4> version{0, 0, 0, 0};
+    bool local{false};
+};
+
+auto ParseStableBranchVersion(const std::string& InBranch, std::array<int, 4>* OutVersion) -> bool {
+    static const std::regex stableBranchPattern(R"(^branch_v([0-9]+(?:\.[0-9]+){1,3})$)");
+
+    std::smatch match;
+    if (!std::regex_match(InBranch, match, stableBranchPattern)) {
+        return false;
+    }
+
+    std::array<int, 4> parsed{0, 0, 0, 0};
+    std::size_t partIndex = 0;
+    std::istringstream iss(match[1].str());
+    std::string token;
+    while (std::getline(iss, token, '.') && partIndex < parsed.size()) {
+        try {
+            parsed[partIndex] = std::stoi(token);
+        } catch (const std::exception&) {
+            return false;
+        }
+        partIndex += 1;
+    }
+
+    if (partIndex < 2) {
+        return false;
+    }
+
+    if (OutVersion != nullptr) {
+        *OutVersion = parsed;
+    }
+    return true;
+}
+
+auto CompareStableVersion(const std::array<int, 4>& InLeft, const std::array<int, 4>& InRight) -> int {
+    for (std::size_t i = 0; i < InLeft.size(); ++i) {
+        if (InLeft[i] < InRight[i]) {
+            return -1;
+        }
+        if (InLeft[i] > InRight[i]) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+auto CollectStableBranchRefs(const std::filesystem::path& InRepo) -> std::vector<StableBranchRef> {
+    std::unordered_map<std::string, StableBranchRef> byCanonical;
+    auto ingest = [&](const shell::ExecResult& InListResult, bool InRemote) {
+        if (InListResult.exitCode != 0) {
+            return;
+        }
+
+        std::istringstream iss(InListResult.stdoutStr);
+        std::string line;
+        while (std::getline(iss, line)) {
+            line = Trim(line);
+            if (line.empty()) {
+                continue;
+            }
+            if (line.starts_with("* ")) {
+                line = Trim(line.substr(2));
+            }
+
+            const auto canonical = InRemote && line.starts_with("origin/")
+                ? line.substr(7)
+                : line;
+
+            std::array<int, 4> version{0, 0, 0, 0};
+            if (!ParseStableBranchVersion(canonical, &version)) {
+                continue;
+            }
+
+            StableBranchRef candidate;
+            candidate.ref = line;
+            candidate.canonical = canonical;
+            candidate.version = version;
+            candidate.local = !InRemote;
+
+            const auto it = byCanonical.find(canonical);
+            if (it == byCanonical.end() || (!it->second.local && candidate.local)) {
+                byCanonical[canonical] = candidate;
+            }
+        }
+    };
+
+    ingest(GitCapture(InRepo, {"branch", "--list", "branch_v*"}), false);
+    ingest(GitCapture(InRepo, {"branch", "-r", "--list", "origin/branch_v*"}), true);
+
+    std::vector<StableBranchRef> out;
+    out.reserve(byCanonical.size());
+    for (const auto& [_, ref] : byCanonical) {
+        out.push_back(ref);
+    }
+    return out;
+}
+
+auto ResolvePreviousStableBranch(const std::filesystem::path& InRepo, const std::string& InCurrentStableBranch) -> std::string {
+    std::array<int, 4> currentVersion{0, 0, 0, 0};
+    if (!ParseStableBranchVersion(InCurrentStableBranch, &currentVersion)) {
+        return {};
+    }
+
+    const auto refs = CollectStableBranchRefs(InRepo);
+    std::optional<StableBranchRef> best;
+    for (const auto& ref : refs) {
+        if (ref.canonical == InCurrentStableBranch) {
+            continue;
+        }
+        if (CompareStableVersion(ref.version, currentVersion) >= 0) {
+            continue;
+        }
+        if (!best.has_value() || CompareStableVersion(ref.version, best->version) > 0) {
+            best = ref;
+        }
+    }
+
+    if (!best.has_value()) {
+        return {};
+    }
+    return best->ref;
+}
+
+auto ResolveStableRef(
+    const std::filesystem::path& InRoot,
+    const std::filesystem::path& InRepo,
+    const std::string& InCurrentBranch,
+    const std::string& InTargetBranch,
+    const std::string& InRelPath) -> std::string {
     if (InCurrentBranch.starts_with("branch_")) {
+        if (!InTargetBranch.empty() && InCurrentBranch == InTargetBranch) {
+            const auto previous = ResolvePreviousStableBranch(InRepo, InCurrentBranch);
+            if (!previous.empty()) {
+                return previous;
+            }
+        }
         return InCurrentBranch;
     }
 
     const auto gmBranch = ResolveGitmodulesBranch(InRoot, InRelPath);
     if (!gmBranch.empty()) {
-        if (GitCapture(InRepo, {"show-ref", "--verify", "--quiet", "refs/heads/" + gmBranch}).exitCode == 0) {
-            return gmBranch;
+        std::string source = gmBranch;
+        if (!InTargetBranch.empty() && gmBranch == InTargetBranch) {
+            const auto previous = ResolvePreviousStableBranch(InRepo, gmBranch);
+            if (!previous.empty()) {
+                source = previous;
+            }
         }
-        if (GitCapture(InRepo, {"show-ref", "--verify", "--quiet", "refs/remotes/origin/" + gmBranch}).exitCode == 0) {
-            return "origin/" + gmBranch;
+
+        if (GitCapture(InRepo, {"show-ref", "--verify", "--quiet", "refs/heads/" + source}).exitCode == 0) {
+            return source;
+        }
+        if (source.starts_with("origin/")) {
+            if (GitCapture(InRepo, {"show-ref", "--verify", "--quiet", "refs/remotes/" + source}).exitCode == 0) {
+                return source;
+            }
+        } else if (GitCapture(InRepo, {"show-ref", "--verify", "--quiet", "refs/remotes/origin/" + source}).exitCode == 0) {
+            return "origin/" + source;
+        }
+    }
+
+    if (!InTargetBranch.empty()) {
+        const auto previous = ResolvePreviousStableBranch(InRepo, InTargetBranch);
+        if (!previous.empty()) {
+            return previous;
         }
     }
 
@@ -531,7 +690,7 @@ auto RunNativeStableDevSync(
     const auto targetBranch = std::string{"branch_"} + latestTag;
 
     const auto upstreamSha = ResolveCommitSha(InRepo, std::format("refs/tags/{}^{{commit}}", latestTag));
-    const auto stableRef = ResolveStableRef(InRoot, InRepo, sourceBranch, InRel);
+    const auto stableRef = ResolveStableRef(InRoot, InRepo, sourceBranch, targetBranch, InRel);
     const auto stableShaBefore = ResolveCommitSha(InRepo, stableRef);
 
     OutRow.latestUpstreamCommit = ResolveCommitLine(InRepo, upstreamSha);
@@ -561,15 +720,21 @@ auto RunNativeStableDevSync(
     }
 
     if (InDryRun) {
+        std::cout << "[DRY RUN] " << InRel << ": git checkout -B " << targetBranch << " " << stableRef << "\n";
         std::cout << "[DRY RUN] " << InRel << ": git rebase refs/tags/" << latestTag << "\n";
-        if (sourceBranch != targetBranch) {
-            std::cout << "[DRY RUN] " << InRel << ": git checkout -B " << targetBranch << " " << sourceBranch << "\n";
-        }
         OutRow.result = "SUCCESS";
         OutRow.sameCommit = false;
-        OutRow.currentBranch = (sourceBranch == targetBranch) ? sourceBranch : targetBranch;
+        OutRow.currentBranch = targetBranch;
         OutRow.reason = "dry-run";
         return 0;
+    }
+
+    const auto resetTarget = GitPassThrough(InRepo, {"checkout", "-B", targetBranch, stableRef});
+    if (resetTarget.exitCode != 0) {
+        OutRow.result = "FAILED";
+        OutRow.sameCommit = false;
+        OutRow.reason = "failed to reset target branch from stable source";
+        return resetTarget.exitCode;
     }
 
     const auto rebase = GitPassThrough(InRepo, {"rebase", std::format("refs/tags/{}", latestTag)});
@@ -580,20 +745,10 @@ auto RunNativeStableDevSync(
         return rebase.exitCode;
     }
 
-    if (sourceBranch != targetBranch) {
-        const auto moveToTarget = GitPassThrough(InRepo, {"checkout", "-B", targetBranch, sourceBranch});
-        if (moveToTarget.exitCode != 0) {
-            OutRow.result = "FAILED";
-            OutRow.sameCommit = false;
-            OutRow.reason = "failed to move onto target stable branch";
-            return moveToTarget.exitCode;
-        }
-    }
-
     const auto stableShaAfter = ResolveCommitSha(InRepo, "HEAD");
     OutRow.result = "SUCCESS";
     OutRow.sameCommit = (stableShaAfter == upstreamSha);
-    OutRow.currentBranch = (sourceBranch == targetBranch) ? sourceBranch : targetBranch;
+    OutRow.currentBranch = targetBranch;
     OutRow.latestStableCommit = OutRow.sameCommit
         ? "(same as upstream)"
         : ResolveCommitLine(InRepo, stableShaAfter);
