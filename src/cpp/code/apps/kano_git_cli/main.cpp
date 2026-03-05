@@ -227,53 +227,10 @@ void RewriteCommandAliases(std::vector<std::string>& InOutArgs) {
 }
 
 void RewritePlanLifecycleAliases(std::vector<std::string>& InOutArgs) {
-    if (InOutArgs.size() <= 2 || InOutArgs[1] != "plan") {
-        return;
-    }
-
-    if (InOutArgs[2] == "runbook" && InOutArgs.size() > 3 && InOutArgs[3] == "commit") {
-        InOutArgs[2] = "runbook-commit";
-        InOutArgs.erase(InOutArgs.begin() + 3);
-        return;
-    }
-    if (InOutArgs[2] == "runbook" && InOutArgs.size() > 3 && InOutArgs[3] == "ignore") {
-        InOutArgs[2] = "runbook-ignore";
-        InOutArgs.erase(InOutArgs.begin() + 3);
-        return;
-    }
-    if (InOutArgs[2] == "runbook" && InOutArgs.size() > 3 && InOutArgs[3] == "full") {
-        InOutArgs[2] = "runbook-full";
-        InOutArgs.erase(InOutArgs.begin() + 3);
-        return;
-    }
-
-    if (InOutArgs[2] != "verify") {
-        return;
-    }
-    if (InOutArgs.size() <= 3) {
-        return;
-    }
-
-    std::string mode = InOutArgs[3];
-    if (mode == "pre-apply") {
-        InOutArgs[2] = "schema-verify";
-        InOutArgs.erase(InOutArgs.begin() + 3);
-        return;
-    }
-    if (mode == "post-apply") {
-        InOutArgs[2] = "result-verify";
-        InOutArgs.erase(InOutArgs.begin() + 3);
-        return;
-    }
-    if (mode == "ignore") {
-        InOutArgs[2] = "ignore-gate";
-        InOutArgs.erase(InOutArgs.begin() + 3);
-        return;
-    }
-    if (mode == "secret") {
-        InOutArgs[2] = "secret-gate";
-        InOutArgs.erase(InOutArgs.begin() + 3);
-    }
+    (void)InOutArgs;
+    // No-op. Plan lifecycle routing is now handled by native nested subcommands:
+    // - plan runbook <commit|ignore|full>
+    // - plan verify <pre-apply|post-apply|ignore|secret>
 }
 
 void RewriteCommitAiFlagsAndPlan(std::vector<std::string>& InOutArgs) {

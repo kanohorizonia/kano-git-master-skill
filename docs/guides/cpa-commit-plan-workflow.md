@@ -45,7 +45,6 @@ Mapped commands:
   - `kog plan new`
 - `init` (stage-specific bootstrap)
   - `kog plan ignore-init`
-  - `kog plan commit-prepare` (legacy name; currently means commit stage initialization)
 - `prepare`
   - `kog plan ensure-prepare-ready`
   - `kog plan runbook commit` (aggregated prepare flow for commit stage)
@@ -135,7 +134,7 @@ flowchart TD
 | Stage | Commands |
 |---|---|
 | New | `kog plan new` |
-| Init (stage seed) | `kog plan ignore-init`, `kog plan commit-prepare` |
+| Init (stage seed) | `kog plan ignore-init` |
 | Prepare | `kog plan ensure-prepare-ready`, `kog plan runbook commit`, `kog plan runbook ignore`, `kog plan runbook full` |
 | Verify pre-apply | `kog plan verify pre-apply`, `kog plan verify ignore`, `kog plan verify secret` |
 | Apply | `kog plan apply --stage ignore`, `kog plan apply --stage commit` |

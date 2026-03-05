@@ -1408,6 +1408,16 @@ auto GitSubmoduleGitlinkShaAtHead(const std::filesystem::path& InRepo, const std
 
 void RegisterPlan(CLI::App& InApp) {
     auto* cmd = InApp.add_subcommand("plan", "Plan pipeline commands");
+    const auto ForwardToPlanInternal = [](const std::vector<std::string>& InArgs) {
+        const auto workspaceRoot = std::filesystem::current_path().lexically_normal();
+        const auto bin = ResolveKogBinaryCommand();
+        if (!bin.has_value()) {
+            std::cerr << "Error: cannot resolve kog binary for plan lifecycle routing.\n";
+            std::exit(2);
+        }
+        const auto run = shell::ExecuteCommand(*bin, InArgs, shell::ExecMode::PassThrough, workspaceRoot);
+        std::exit(run.exitCode);
+    };
 
     auto* init = cmd->add_subcommand("new", "Write plan template");
     auto* initOut = new std::string{};
@@ -1598,6 +1608,7 @@ void RegisterPlan(CLI::App& InApp) {
     });
 
     auto* preflightAiCommit = cmd->add_subcommand("runbook-commit", "Run commit runbook (prepare + summary + validate)");
+    preflightAiCommit->group("");
     auto* preflightFile = new std::string{};
     auto* preflightProvider = new std::string{"auto"};
     auto* preflightModel = new std::string{"auto"};
@@ -1686,6 +1697,7 @@ void RegisterPlan(CLI::App& InApp) {
     });
 
     auto* runbookIgnore = cmd->add_subcommand("runbook-ignore", "Run ignore runbook (init + pre-apply verify)");
+    runbookIgnore->group("");
     auto* runbookIgnoreFile = new std::string{};
     auto* runbookIgnoreForce = new bool{false};
     auto* runbookIgnoreMaxPerRepo = new int{200};
@@ -1737,6 +1749,7 @@ void RegisterPlan(CLI::App& InApp) {
     });
 
     auto* runbookFull = cmd->add_subcommand("runbook-full", "Run full runbook (ignore + commit + pre-apply verify)");
+    runbookFull->group("");
     auto* runbookFullFile = new std::string{};
     auto* runbookFullProvider = new std::string{"auto"};
     auto* runbookFullModel = new std::string{"auto"};
@@ -1797,6 +1810,111 @@ void RegisterPlan(CLI::App& InApp) {
             shell::ExecMode::PassThrough,
             workspaceRoot);
         std::exit(verifyRun.exitCode);
+    });
+
+    auto* runbook = cmd->add_subcommand("runbook", "Plan runbooks");
+    auto* runbookCommit = runbook->add_subcommand("commit", "Run commit runbook (prepare + summary + pre-apply verify)");
+    auto* rbCommitFile = new std::string{};
+    auto* rbCommitProvider = new std::string{"auto"};
+    auto* rbCommitModel = new std::string{"auto"};
+    auto* rbCommitDebugAi = new bool{false};
+    auto* rbCommitAllowIgnoreGate = new bool{false};
+    auto* rbCommitMaxCommits = new int{10};
+    runbookCommit->add_option("--plan-file", *rbCommitFile, "Plan file path");
+    runbookCommit->add_option("--ai-provider,--provider", *rbCommitProvider, "AI provider (copilot|codex|opencode|auto)")->default_str("auto");
+    runbookCommit->add_option("--ai-model,--model", *rbCommitModel, "AI model (default auto)")->default_str("auto");
+    runbookCommit->add_flag("--debug-ai", *rbCommitDebugAi, "Write AI prompt/raw/extracted debug artifacts");
+    runbookCommit->add_flag("--allow-ignore-gate", *rbCommitAllowIgnoreGate, "Forward allow-ignore-gate to commit runbook");
+    runbookCommit->add_option("--max-commits", *rbCommitMaxCommits, "Max commit lines to print in summary")->default_val(10);
+    runbookCommit->callback([=]() {
+        std::vector<std::string> args{"plan", "runbook-commit", "--ai-provider", *rbCommitProvider, "--ai-model", *rbCommitModel,
+                                      "--max-commits", std::to_string(*rbCommitMaxCommits)};
+        if (!rbCommitFile->empty()) {
+            args.push_back("--plan-file");
+            args.push_back(*rbCommitFile);
+        }
+        if (*rbCommitDebugAi) {
+            args.push_back("--debug-ai");
+        }
+        if (*rbCommitAllowIgnoreGate) {
+            args.push_back("--allow-ignore-gate");
+        }
+        ForwardToPlanInternal(args);
+    });
+
+    auto* runbookIgnorePublic = runbook->add_subcommand("ignore", "Run ignore runbook (init + pre-apply verify)");
+    auto* rbIgnoreFile = new std::string{};
+    auto* rbIgnoreForce = new bool{false};
+    auto* rbIgnoreMaxPerRepo = new int{200};
+    auto* rbIgnoreDatasourceRoot = new std::string{};
+    auto* rbIgnoreDatasourceManifest = new std::string{};
+    runbookIgnorePublic->add_option("--plan-file", *rbIgnoreFile, "Plan file path");
+    runbookIgnorePublic->add_flag("--force,-f", *rbIgnoreForce, "Create default plan when file missing");
+    runbookIgnorePublic->add_option("--max-per-repo", *rbIgnoreMaxPerRepo, "Max ignore candidates per repo")->default_val(200);
+    runbookIgnorePublic->add_option("--ignore-datasource-root", *rbIgnoreDatasourceRoot, "Override plan meta.ignore_datasource.root");
+    runbookIgnorePublic->add_option("--ignore-datasource-manifest", *rbIgnoreDatasourceManifest, "Override plan meta.ignore_datasource.manifest");
+    runbookIgnorePublic->callback([=]() {
+        std::vector<std::string> args{"plan", "runbook-ignore", "--max-per-repo", std::to_string(*rbIgnoreMaxPerRepo)};
+        if (!rbIgnoreFile->empty()) {
+            args.push_back("--plan-file");
+            args.push_back(*rbIgnoreFile);
+        }
+        if (*rbIgnoreForce) {
+            args.push_back("--force");
+        }
+        if (!rbIgnoreDatasourceRoot->empty()) {
+            args.push_back("--ignore-datasource-root");
+            args.push_back(*rbIgnoreDatasourceRoot);
+        }
+        if (!rbIgnoreDatasourceManifest->empty()) {
+            args.push_back("--ignore-datasource-manifest");
+            args.push_back(*rbIgnoreDatasourceManifest);
+        }
+        ForwardToPlanInternal(args);
+    });
+
+    auto* runbookFullPublic = runbook->add_subcommand("full", "Run full runbook (ignore + commit + pre-apply verify)");
+    auto* rbFullFile = new std::string{};
+    auto* rbFullProvider = new std::string{"auto"};
+    auto* rbFullModel = new std::string{"auto"};
+    auto* rbFullDebugAi = new bool{false};
+    auto* rbFullAllowIgnoreGate = new bool{false};
+    auto* rbFullForce = new bool{false};
+    auto* rbFullMaxCommits = new int{10};
+    auto* rbFullMaxPerRepo = new int{200};
+    runbookFullPublic->add_option("--plan-file", *rbFullFile, "Plan file path");
+    runbookFullPublic->add_option("--ai-provider,--provider", *rbFullProvider, "AI provider (copilot|codex|opencode|auto)")->default_str("auto");
+    runbookFullPublic->add_option("--ai-model,--model", *rbFullModel, "AI model (default auto)")->default_str("auto");
+    runbookFullPublic->add_flag("--debug-ai", *rbFullDebugAi, "Write AI prompt/raw/extracted debug artifacts");
+    runbookFullPublic->add_flag("--allow-ignore-gate", *rbFullAllowIgnoreGate, "Forward allow-ignore-gate to commit runbook");
+    runbookFullPublic->add_flag("--force,-f", *rbFullForce, "Create default plan when file missing during ignore runbook");
+    runbookFullPublic->add_option("--max-commits", *rbFullMaxCommits, "Max commit lines to print in summary")->default_val(10);
+    runbookFullPublic->add_option("--max-per-repo", *rbFullMaxPerRepo, "Max ignore candidates per repo")->default_val(200);
+    runbookFullPublic->callback([=]() {
+        std::vector<std::string> args{"plan",
+                                      "runbook-full",
+                                      "--ai-provider",
+                                      *rbFullProvider,
+                                      "--ai-model",
+                                      *rbFullModel,
+                                      "--max-commits",
+                                      std::to_string(*rbFullMaxCommits),
+                                      "--max-per-repo",
+                                      std::to_string(*rbFullMaxPerRepo)};
+        if (!rbFullFile->empty()) {
+            args.push_back("--plan-file");
+            args.push_back(*rbFullFile);
+        }
+        if (*rbFullDebugAi) {
+            args.push_back("--debug-ai");
+        }
+        if (*rbFullAllowIgnoreGate) {
+            args.push_back("--allow-ignore-gate");
+        }
+        if (*rbFullForce) {
+            args.push_back("--force");
+        }
+        ForwardToPlanInternal(args);
     });
 
     auto* ignoreInit = cmd->add_subcommand("ignore-init", "Populate stages.ignore from current working tree");
@@ -2004,6 +2122,7 @@ void RegisterPlan(CLI::App& InApp) {
     });
 
     auto* checkIgnoreGate = cmd->add_subcommand("ignore-gate", "Check unresolved artifact-like untracked files");
+    checkIgnoreGate->group("");
     auto* ignoreGateRoot = new std::string{};
     auto* ignoreGateContext = new std::string{"plan"};
     auto* ignoreGateAllowlist = new std::string{};
@@ -2087,6 +2206,7 @@ void RegisterPlan(CLI::App& InApp) {
     });
 
     auto* checkSecretGate = cmd->add_subcommand("secret-gate", "Check changed files for secret/token patterns");
+    checkSecretGate->group("");
     auto* secretGateRoot = new std::string{};
     auto* secretGateContext = new std::string{"plan"};
     auto* secretGateRules = new std::string{};
@@ -2164,7 +2284,82 @@ void RegisterPlan(CLI::App& InApp) {
         std::exit(3);
     });
 
+    auto* verify = cmd->add_subcommand("verify", "Plan verification stages");
+
+    auto* verifyPreApply = verify->add_subcommand("pre-apply", "Verify plan schema before apply");
+    auto* verifyPreFile = new std::string{};
+    auto* verifyPreStage = new std::string{"all"};
+    verifyPreApply->add_option("--plan-file", *verifyPreFile, "Plan file path");
+    verifyPreApply->add_option("--stage", *verifyPreStage, "Stage: ignore|commit|all")->default_str("all");
+    verifyPreApply->callback([=]() {
+        std::vector<std::string> args{"plan", "schema-verify", "--stage", *verifyPreStage};
+        if (!verifyPreFile->empty()) {
+            args.push_back("--plan-file");
+            args.push_back(*verifyPreFile);
+        }
+        ForwardToPlanInternal(args);
+    });
+
+    auto* verifyPostApply = verify->add_subcommand("post-apply", "Verify result state after apply");
+    auto* verifyPostFile = new std::string{};
+    auto* verifyPostStage = new std::string{"all"};
+    verifyPostApply->add_option("--plan-file", *verifyPostFile, "Plan file path");
+    verifyPostApply->add_option("--stage", *verifyPostStage, "Stage: ignore|commit|all")->default_str("all");
+    verifyPostApply->callback([=]() {
+        std::vector<std::string> args{"plan", "result-verify", "--stage", *verifyPostStage};
+        if (!verifyPostFile->empty()) {
+            args.push_back("--plan-file");
+            args.push_back(*verifyPostFile);
+        }
+        ForwardToPlanInternal(args);
+    });
+
+    auto* verifyIgnore = verify->add_subcommand("ignore", "Run ignore gate verification");
+    auto* verifyIgnoreRoot = new std::string{};
+    auto* verifyIgnoreContext = new std::string{"plan"};
+    auto* verifyIgnoreAllowlist = new std::string{};
+    auto* verifyIgnoreLimit = new int{20};
+    verifyIgnore->add_option("--workspace-root", *verifyIgnoreRoot, "Workspace root path (default: cwd)");
+    verifyIgnore->add_option("--context", *verifyIgnoreContext, "Context label (plan|ai-commit)")->default_str("plan");
+    verifyIgnore->add_option("--allowlist", *verifyIgnoreAllowlist, "Allowlist file path");
+    verifyIgnore->add_option("--limit", *verifyIgnoreLimit, "Max listed candidates")->default_val(20);
+    verifyIgnore->callback([=]() {
+        std::vector<std::string> args{"plan", "ignore-gate", "--context", *verifyIgnoreContext, "--limit", std::to_string(*verifyIgnoreLimit)};
+        if (!verifyIgnoreRoot->empty()) {
+            args.push_back("--workspace-root");
+            args.push_back(*verifyIgnoreRoot);
+        }
+        if (!verifyIgnoreAllowlist->empty()) {
+            args.push_back("--allowlist");
+            args.push_back(*verifyIgnoreAllowlist);
+        }
+        ForwardToPlanInternal(args);
+    });
+
+    auto* verifySecret = verify->add_subcommand("secret", "Run secret/token gate verification");
+    auto* verifySecretRoot = new std::string{};
+    auto* verifySecretContext = new std::string{"plan"};
+    auto* verifySecretRules = new std::string{};
+    auto* verifySecretLimit = new int{20};
+    verifySecret->add_option("--workspace-root", *verifySecretRoot, "Workspace root path (default: cwd)");
+    verifySecret->add_option("--context", *verifySecretContext, "Context label (plan|ai-commit|commit-push)")->default_str("plan");
+    verifySecret->add_option("--rules-file", *verifySecretRules, "Rule file path (format: id|regex)");
+    verifySecret->add_option("--limit", *verifySecretLimit, "Max listed findings")->default_val(20);
+    verifySecret->callback([=]() {
+        std::vector<std::string> args{"plan", "secret-gate", "--context", *verifySecretContext, "--limit", std::to_string(*verifySecretLimit)};
+        if (!verifySecretRoot->empty()) {
+            args.push_back("--workspace-root");
+            args.push_back(*verifySecretRoot);
+        }
+        if (!verifySecretRules->empty()) {
+            args.push_back("--rules-file");
+            args.push_back(*verifySecretRules);
+        }
+        ForwardToPlanInternal(args);
+    });
+
     auto* schemaVerify = cmd->add_subcommand("schema-verify", "Verify plan schema (pre-apply)");
+    schemaVerify->group("");
     auto* verifyFile = new std::string{};
     auto* verifyStage = new std::string{"all"};
     schemaVerify->add_option("--plan-file", *verifyFile, "Plan file path");
@@ -2218,6 +2413,7 @@ void RegisterPlan(CLI::App& InApp) {
     });
 
     auto* resultVerify = cmd->add_subcommand("result-verify", "Verify apply result state (post-apply)");
+    resultVerify->group("");
     auto* resultVerifyFile = new std::string{};
     auto* resultVerifyStage = new std::string{"all"};
     resultVerify->add_option("--plan-file", *resultVerifyFile, "Plan file path");
@@ -2471,4 +2667,3 @@ void RegisterIgnore(CLI::App& InApp) {
 }
 
 } // namespace kano::git::commands
-
