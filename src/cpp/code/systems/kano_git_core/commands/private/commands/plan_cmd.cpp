@@ -1050,6 +1050,18 @@ auto PlanNeedsRefresh(const std::string& InPlanText) -> bool {
     return false;
 }
 
+auto PlanWorkspaceStateDrifted(const std::filesystem::path& InWorkspaceRoot, const std::string& InPlanText) -> bool {
+    std::string planBaseHeadSha;
+    std::string planDirtyFingerprint;
+    if (!ExtractPlanWorkspaceHashes(InPlanText, &planBaseHeadSha, &planDirtyFingerprint)) {
+        // Missing/placeholder workspace hashes are treated as schema/template refresh signals elsewhere.
+        return false;
+    }
+    const auto currentBaseHeadSha = ComputeWorkspaceBaseHeadSha(InWorkspaceRoot);
+    const auto currentDirtyFingerprint = ComputeWorkspaceDirtyFingerprint(InWorkspaceRoot);
+    return planBaseHeadSha != currentBaseHeadSha || planDirtyFingerprint != currentDirtyFingerprint;
+}
+
 auto JsonEscape(std::string InValue) -> std::string {
     std::string out;
     out.reserve(InValue.size() + 8);
@@ -2043,7 +2055,8 @@ void RegisterPlan(CLI::App& InApp) {
         const auto workspaceRoot = std::filesystem::current_path().lexically_normal();
         const auto planPath = ensureFile->empty() ? DefaultPlanPath(workspaceRoot) : std::filesystem::path(*ensureFile).lexically_normal();
         const auto payload = ReadFileText(planPath);
-        const bool needs = *ensureForce || !payload.has_value() || PlanNeedsRefresh(*payload);
+        const bool needs = *ensureForce || !payload.has_value() || PlanNeedsRefresh(*payload) ||
+                           (payload.has_value() && PlanWorkspaceStateDrifted(workspaceRoot, *payload));
         std::optional<std::string> latestPayload = payload;
         auto regenerateOnce = [&]() -> bool {
             std::string error;
@@ -2142,7 +2155,8 @@ void RegisterPlan(CLI::App& InApp) {
                                       const bool InDebugAi,
                                       const int InMaxCommits) -> int {
         auto payload = ReadFileText(InPlanPath);
-        const bool needs = !payload.has_value() || PlanNeedsRefresh(*payload);
+        const bool needs = !payload.has_value() || PlanNeedsRefresh(*payload) ||
+                           (payload.has_value() && PlanWorkspaceStateDrifted(InWorkspaceRoot, *payload));
         auto regenerateOnce = [&]() -> bool {
             std::string error;
             if (!WriteFileText(InPlanPath, BuildDefaultPlanTemplate(InWorkspaceRoot), &error)) {

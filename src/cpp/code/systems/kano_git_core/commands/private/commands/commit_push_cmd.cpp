@@ -538,6 +538,37 @@ auto RunPipelineSafetyGatesForNonAiCommitPush(const std::filesystem::path& InWor
     }
 }
 
+auto RepoHasAnyWorkingTreeChanges(const std::filesystem::path& InRepoRoot) -> bool {
+    const auto status = shell::ExecuteCommand("git", {"status", "--porcelain"}, shell::ExecMode::Capture, InRepoRoot);
+    return status.exitCode == 0 && !Trim(status.stdoutStr).empty();
+}
+
+auto NeedsPostSyncCommitNonPlan(const std::filesystem::path& InWorkspaceRoot,
+                                const std::vector<std::string>& InRepoList,
+                                const bool InNoRecursive) -> bool {
+    if (!InRepoList.empty()) {
+        for (const auto& repo : InRepoList) {
+            const auto repoRoot = (InWorkspaceRoot / std::filesystem::path(repo)).lexically_normal();
+            if (RepoHasAnyWorkingTreeChanges(repoRoot)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    if (InNoRecursive) {
+        return RepoHasAnyWorkingTreeChanges(InWorkspaceRoot);
+    }
+
+    const auto repos = DiscoverWorkspaceRepos(InWorkspaceRoot);
+    for (const auto& repo : repos) {
+        if (RepoHasAnyWorkingTreeChanges(repo)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceRoot,
                                        const std::string& InNormalizedPlanFile,
                                        const std::vector<std::string>& InExtraArgs) -> int {
@@ -707,7 +738,14 @@ void RegisterCommitPush(CLI::App& InApp) {
 
         const auto normalizedCommitPlanFile = NormalizeInputPathForCurrentPlatform(*commitPlanFile);
         const bool hasCommitPlan = !normalizedCommitPlanFile.empty();
+        const bool agentMode = IsAgentModeEnabled();
         const bool aiModeRequested = *aiAuto || !aiProvider->empty() || !aiModel->empty();
+        if (agentMode && !hasCommitPlan && message->empty()) {
+            std::cerr << "Error: agent mode commit-push requires either --plan-file or --message/-m.\n";
+            std::cerr << "Hint: prepare/fill plan first, then run with --plan-file.\n";
+            std::cerr << "Hint: or provide explicit --message/-m for single-commit non-plan flow.\n";
+            std::exit(2);
+        }
         if (hasCommitPlan && aiModeRequested) {
             std::cerr << "Error: --plan-file cannot be combined with --ai-* flags.\n";
             std::cerr << "Hint: fill plan first (kog plan runbook commit), then run commit-push with --plan-file only.\n";
@@ -726,6 +764,11 @@ void RegisterCommitPush(CLI::App& InApp) {
         if (hasCommitPlan && *noAiReview) {
             std::cerr << "Error: --plan-file cannot be combined with --no-ai-review.\n";
             std::cerr << "Hint: AI review policy is captured when plan is prepared.\n";
+            std::exit(2);
+        }
+        if (hasCommitPlan && *dryRun) {
+            std::cerr << "Error: --plan-file cannot be combined with --dry-run yet.\n";
+            std::cerr << "Hint: use `kog plan verify pre-apply --plan-file <file>` for no-write validation.\n";
             std::exit(2);
         }
 
@@ -760,7 +803,7 @@ void RegisterCommitPush(CLI::App& InApp) {
             }
         }
 
-        if (IsAgentModeEnabled() && hasCommitPlan) {
+        if (agentMode && hasCommitPlan) {
             std::cout << "[commit-push] agent mode + --plan-file detected; using plan-driven flow.\n";
         }
 
@@ -835,23 +878,31 @@ void RegisterCommitPush(CLI::App& InApp) {
 
         std::cout << "=== commit-push stage: post-sync ===\n";
         const auto postCommitStart = std::chrono::steady_clock::now();
-        const auto postCommitResult = hasCommitPlan
-            ? shell::ExecResult{
-                RunCommitNativePlanStage(workspaceRoot, normalizedCommitPlanFile, "post_sync", false), "", ""}
-            : shell::ExecResult{
-                RunCommitNativeSimple(
-                    workspaceRoot,
-                    *repos,
-                    *noRecursive,
-                    *message,
-                    *stagedOnly,
-                    *dryRun,
-                    *aiProvider,
-                    *aiModel,
-                    *aiAuto,
-                    *noAiReview,
-                    false),
-                "", ""};
+        shell::ExecResult postCommitResult{0, "", ""};
+        if (hasCommitPlan) {
+            postCommitResult =
+                shell::ExecResult{RunCommitNativePlanStage(workspaceRoot, normalizedCommitPlanFile, "post_sync", false), "", ""};
+        } else if (*dryRun) {
+            std::cout << "[commit-push] post-sync commit skipped in dry-run mode.\n";
+        } else if (NeedsPostSyncCommitNonPlan(workspaceRoot, repoList, *noRecursive)) {
+            postCommitResult =
+                shell::ExecResult{
+                    RunCommitNativeSimple(
+                        workspaceRoot,
+                        *repos,
+                        *noRecursive,
+                        *message,
+                        *stagedOnly,
+                        *dryRun,
+                        *aiProvider,
+                        *aiModel,
+                        *aiAuto,
+                        *noAiReview,
+                        false),
+                    "", ""};
+        } else {
+            std::cout << "[commit-push] post-sync commit skipped (no working tree changes).\n";
+        }
         const auto postCommitEnd = std::chrono::steady_clock::now();
         postSyncMillis = std::chrono::duration_cast<std::chrono::milliseconds>(postCommitEnd - postCommitStart).count();
         if (postCommitResult.exitCode != 0) {
