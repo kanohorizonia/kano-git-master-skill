@@ -4,13 +4,13 @@
     {
       "id": "kano-local-rules",
       "kind": "local-rules",
-      "path": "local/custom-ignore.rules",
+      "path": "./custom.gitignore",
       "enabled": true
     },
     {
       "id": "github-gitignore",
       "kind": "gitignore-template-corpus",
-      "path": "upstream/github-gitignore",
+      "path": "../upstream/github-gitignore",
       "enabled": true
     }
   ]

@@ -165,12 +165,17 @@ Note: sourcing will also define globals used by those functions (see the script 
 - **AI Safety & Authentication**:
   - Scripts like `smart-commit.sh` perform AI safety reviews. Note that **Copilot authentication has two layers**: the standalone CLI (`copilot login`) and the GitHub CLI extension (`gh auth login`).
   - **Commit Message Filtering**: The system automatically filters AI conversational preamble (e.g., "Certainly!", "I'll inspect..."). It prioritizes lines matching **Conventional Commits** (`type(scope): msg`) or **Bracketed Tags** (`[Tag][SubTag] msg`).
-  - **Agent Proxy Contract (Required)**: For agent-proxy `smart-*` operations, pass `--agent <name>` to declare identity (e.g., `codex`, `copilot`, `cursor`, `kiro`, `claude`).
-  - If `--agent` is provided and not `manual`, agent proxy mode (代理模式) is active: a fixed message (`-m/--message`) is required and in-script AI review is disabled (`--no-ai-review`) to avoid duplicate model cost.
-  - **Launcher agent env (important)**: when invoking through `kog`/`kano-git`, set `KANO_AGENT_MODE=1` for agent runs so launcher update prompts/interactive flows are suppressed before command dispatch.
-    - Example: `KANO_AGENT_MODE=1 kog pa --agent codex -m "chore: update workspace"`
-  - Intent: commit/review decisions stay on the same agent model executing the command, not a second model pipeline.
-  - Use `--agent manual` for human-operated runs.
+- **Agent Proxy Contract (Required)**: For agent-proxy `smart-*` operations, pass `--agent <name>` to declare identity (e.g., `codex`, `copilot`, `cursor`, `kiro`, `claude`).
+- If `--agent` is provided and not `manual`, agent proxy mode (代理模式) is active: a fixed message (`-m/--message`) is required and in-script AI review is disabled (`--no-ai-review`) to avoid duplicate model cost.
+- **Launcher agent env (important)**: when invoking through `kog`/`kano-git`, set `KANO_AGENT_MODE=1` for agent runs so launcher update prompts/interactive flows are suppressed before command dispatch.
+  - Example: `KANO_AGENT_MODE=1 kog pa --agent codex -m "chore: update workspace"`
+- Intent: commit/review decisions stay on the same agent model executing the command, not a second model pipeline.
+- **Agent-mode AI ownership rule (kog)**:
+  - In `KANO_AGENT_MODE=1`, launcher treats `cpa` as `cp` (no extra launcher-side AI preflight injection).
+  - AI planning/review is owned by the externally started agent session; `kog` should execute deterministic gates/pipeline only.
+  - Use `-a/--agent <name>` explicitly for agent runs so identity is recorded and the correct agent-mode path is forced.
+  - Even in agent mode, plan completeness gates still apply; if prepared fields are missing/invalid, verify must fail fast (do not bypass).
+- Use `--agent manual` for human-operated runs.
   - **In case of Copilot auth failure, seek human assistance** to resolve credentials. Do not bypass reviews if a reliable safety check is possible.
 - **Kano Backlog Init Location**:
   - Run `kano backlog admin init` from `_kano/backlog` to generate `.kano/config` for this repo.

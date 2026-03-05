@@ -65,6 +65,8 @@ echo "Failed: $TESTS_FAILED"
 # Run all test files
 ./scripts/test/test-revision-offset.sh
 ./scripts/test/test-worktree-scripts.sh
+# Acceptance quickstart workflow (commit/commit-push)
+./scripts/core/acceptance-quickstart-commit-push.sh
 ```
 
 ### Specific Tests

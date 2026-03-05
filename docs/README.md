@@ -17,6 +17,9 @@ This documentation is organized into the following categories:
 ### 📖 User Guides
 
 #### Feature Guides
+- [CPA Commit Plan Workflow](./guides/cpa-commit-plan-workflow.md) - Full-auto and semi-auto AI commit pipeline
+- [Ignore Plan Operator Workflow](./guides/ignore-plan-operator-workflow.md) - Ignore stage command sequence, troubleshooting, and evidence checklist
+- [Ignore Datasource Sync Policy](./guides/ignore-datasource-sync-policy.md) - Upstream github/gitignore sync and pinning policy
 - [Repository Initialization Workflow](./guides/repo-initialization-workflow.md) - Automated repository setup
 - [Version Information](./guides/version-info.md) - Extract version information
 - [Worktree Management](./guides/worktree.md) - Manage multiple working trees
@@ -60,6 +63,9 @@ docs/
 ├── guides/                      # User guides
 │   ├── quick-start.md
 │   ├── new-features.md
+│   ├── cpa-commit-plan-workflow.md
+│   ├── ignore-plan-operator-workflow.md
+│   ├── ignore-datasource-sync-policy.md
 │   ├── repo-initialization-workflow.md
 │   ├── version-info.md
 │   ├── worktree.md
@@ -132,6 +138,9 @@ docs/
 
 ### By Feature
 - **Repository Initialization**: [guides/repo-initialization-workflow.md](./guides/repo-initialization-workflow.md)
+- **AI Commit (CPA)**: [guides/cpa-commit-plan-workflow.md](./guides/cpa-commit-plan-workflow.md)
+- **Ignore Stage Ops**: [guides/ignore-plan-operator-workflow.md](./guides/ignore-plan-operator-workflow.md)
+- **Ignore Datasource Sync**: [guides/ignore-datasource-sync-policy.md](./guides/ignore-datasource-sync-policy.md)
 - **Version Info**: [guides/version-info.md](./guides/version-info.md)
 - **Worktrees**: [guides/worktree.md](./guides/worktree.md)
 - **Subtrees**: [guides/subtree.md](./guides/subtree.md)

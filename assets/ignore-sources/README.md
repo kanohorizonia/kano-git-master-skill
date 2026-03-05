@@ -7,3 +7,19 @@ Contents:
 - `upstream/github-gitignore/`: upstream template corpus via git submodule.
 
 Ignore-plan generation should read this folder as a whole datasource set.
+
+Path resolution rules (`local/datasource.manifest.json`):
+- `path` supports absolute path and relative path.
+- Relative `path` is resolved against the manifest file directory (`assets/ignore-sources/local/`).
+- On Windows, POSIX-style inputs from Git Bash/Cygwin/WSL forms are normalized before resolve (for example `/d/...`, `/mnt/d/...`, `/cygdrive/d/...`).
+
+Examples:
+- `./custom.gitignore` -> `assets/ignore-sources/local/custom.gitignore`
+- `../upstream/github-gitignore` -> `assets/ignore-sources/upstream/github-gitignore`
+
+Sync upstream source:
+
+```bash
+./kog plan datasource-sync --dry-run
+./kog plan datasource-sync
+```

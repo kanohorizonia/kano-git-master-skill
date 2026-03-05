@@ -48,6 +48,7 @@ All documentation is in the `docs/` directory:
 
 - [Documentation Index](./docs/README.md) - Start here
 - [Quick Start Guide](./docs/guides/quick-start.md)
+- [CPA Commit Plan Workflow](./docs/guides/cpa-commit-plan-workflow.md) - Full-auto/semi-auto AI commit flows with stage diagram
 - [Repository Initialization Workflow Examples](./docs/examples/repo-initialization-workflow-examples.md) - Complete usage examples
 - [Submodule Guide](./docs/guides/submodule.md) - Enhanced submodule management
 - [Common Pitfalls](./docs/guides/common-pitfalls.md) - Troubleshooting guide
