@@ -7,6 +7,8 @@
 #include <array>
 #include <stdexcept>
 #include <iostream>
+#include <algorithm>
+#include <cctype>
 
 #ifdef KOG_PLATFORM_WINDOWS
 #include <windows.h>
@@ -199,6 +201,71 @@ auto BuildCommandLine(const std::string& program, const std::vector<std::string>
     return cmd;
 }
 
+auto ToLower(std::string in) -> std::string {
+    std::transform(in.begin(), in.end(), in.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return in;
+}
+
+auto BaseNameLower(const std::string& InCommand) -> std::string {
+    auto pos = InCommand.find_last_of("/\\");
+    const std::string base = (pos == std::string::npos) ? InCommand : InCommand.substr(pos + 1);
+    return ToLower(base);
+}
+
+auto WithGitNonInteractiveDefaults(const std::string& InCommand,
+                                   const std::vector<std::string>& InArgs) -> std::vector<std::string> {
+    auto args = InArgs;
+    if (BaseNameLower(InCommand) != "git" && BaseNameLower(InCommand) != "git.exe") {
+        return args;
+    }
+
+    // Interactive switch:
+    // - KOG_GIT_INTERACTIVE=1|true   => interactive
+    // - KOG_GIT_INTERACTIVE=0|false  => non-interactive
+    // - KOG_GIT_INTERACTIVE=auto/unset => agent mode non-interactive, human mode interactive
+    bool forceNonInteractive = false;
+    if (const auto* interactive = std::getenv("KOG_GIT_INTERACTIVE"); interactive != nullptr) {
+        const auto value = ToLower(std::string(interactive));
+        if (value == "1" || value == "true") {
+            return args;
+        }
+        if (value == "0" || value == "false") {
+            forceNonInteractive = true;
+        } else {
+            const auto* agent = std::getenv("KANO_AGENT_MODE");
+            if (agent != nullptr) {
+                const auto agentValue = ToLower(std::string(agent));
+                forceNonInteractive = (agentValue == "1" || agentValue == "true");
+            }
+        }
+    } else {
+        const auto* agent = std::getenv("KANO_AGENT_MODE");
+        if (agent != nullptr) {
+            const auto agentValue = ToLower(std::string(agent));
+            forceNonInteractive = (agentValue == "1" || agentValue == "true");
+        }
+    }
+
+    if (!forceNonInteractive) {
+        return args;
+    }
+
+    // Force non-interactive git behavior in automation:
+    // - no editor popup for rebase/cherry-pick/commit continue
+    // - no terminal credential prompt
+    // Keep these as command-scoped `-c` to avoid global env side effects in parallel jobs.
+    std::vector<std::string> prefixed{
+        "-c", "core.editor=true",
+        "-c", "sequence.editor=true",
+        "-c", "credential.interactive=false",
+        "-c", "advice.waitingForEditor=false"
+    };
+    prefixed.insert(prefixed.end(), args.begin(), args.end());
+    return prefixed;
+}
+
 } // anonymous namespace
 
 auto ExecuteScript(
@@ -227,7 +294,8 @@ auto ExecuteCommand(
     std::optional<std::filesystem::path> InWorkingDir
 ) -> ExecResult
 {
-    auto cmd = BuildCommandLine(InCommand, InArgs);
+    const auto effectiveArgs = WithGitNonInteractiveDefaults(InCommand, InArgs);
+    auto cmd = BuildCommandLine(InCommand, effectiveArgs);
     return RunProcess(cmd, InMode, InWorkingDir);
 }
 

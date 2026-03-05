@@ -177,6 +177,20 @@ Note: sourcing will also define globals used by those functions (see the script 
   - Even in agent mode, plan completeness gates still apply; if prepared fields are missing/invalid, verify must fail fast (do not bypass).
 - Use `--agent manual` for human-operated runs.
   - **In case of Copilot auth failure, seek human assistance** to resolve credentials. Do not bypass reviews if a reliable safety check is possible.
+- **Skill developer dogfood rule (required)**:
+  - If you are developing this skill itself, execute by the skill design intent first; do not bypass missing/buggy parts with ad-hoc shortcuts.
+  - When a gap/bug is found, prioritize implementing or fixing the feature, then continue the operator workflow.
+  - Avoid "work around and move on" behavior for core pipeline stages (plan/verify/apply/sync/push).
+- **AGENT MODE sync conflict SOP (required)**:
+  - On sync/rebase conflict, stop the auto flow and preserve evidence (`git status`, conflict file list, current SHA).
+  - Prefer integrating remote latest state first ("theirs-first" for conflict baseline), then replay local intended changes explicitly.
+  - After conflict resolution, run plan verification gates again before continuing (`plan verify pre-apply`, then post-apply checks).
+  - Do not silently drop local planned changes; ensure each planned commit intent is present after merge/replay.
+- **Plan dependency ordering + parallelization policy**:
+  - Plan commits should be topologically ordered by dependency graph before execution.
+  - Minimum graph: parent repo/submodule pointer dependencies must commit after child repo commits.
+  - Only independent nodes (no dependency edge) may run in parallel; dependent nodes must run in later waves.
+  - If graph ordering is violated and causes a second pass, treat it as a pipeline defect and fix the planner/executor.
 - **Kano Backlog Init Location**:
   - Run `kano backlog admin init` from `_kano/backlog` to generate `.kano/config` for this repo.
 - When adding/adjusting behavior, update the relevant docs in `docs/` and add/extend tests in `scripts/test/`.
