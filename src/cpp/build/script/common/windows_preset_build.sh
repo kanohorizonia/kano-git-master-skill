@@ -79,13 +79,14 @@ kog_resolve_windows_source_root() {
 
 kog_prepare_windows_subst_root() {
   local InRootWin="$1"
-  local InSubstPurpose="$2"
-  local InPreferredSubstDrive="$3"
+  local InConfigurePreset="$2"
+  local InSubstPurpose="$3"
+  local InPreferredSubstDrive="$4"
   local InSubstMode="${KOG_SUBST_MODE:-auto}"
 
   # InSubstPurpose is kept for launch logs/context compatibility.
   : "$InSubstPurpose"
-  kog_run_windows_ps_helper -Action prepare-subst-root -Root "$InRootWin" -PreferredDrive "$InPreferredSubstDrive" -Mode "$InSubstMode" \
+  kog_run_windows_ps_helper -Action prepare-subst-root -Root "$InRootWin" -Preset "$InConfigurePreset" -PreferredDrive "$InPreferredSubstDrive" -Mode "$InSubstMode" \
     | tr -d '\r'
 }
 
@@ -163,7 +164,7 @@ kog_run_windows_preset() {
   BuildRootWin="$EffectiveRootWin"
   SubstDrive=""
   SubstCleanupFlag="0"
-  SubstLine="$(kog_prepare_windows_subst_root "$EffectiveRootWin" "$InSubstPurpose" "$InPreferredSubstDrive")"
+  SubstLine="$(kog_prepare_windows_subst_root "$EffectiveRootWin" "$InConfigurePreset" "$InSubstPurpose" "$InPreferredSubstDrive")"
   if [[ -n "$SubstLine" ]]; then
     BuildRootWin="${SubstLine%%$'\t'*}"
     local _rest="${SubstLine#*$'\t'}"

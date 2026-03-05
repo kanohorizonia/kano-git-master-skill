@@ -136,839 +136,194 @@ maybe_prompt_yes_no() {
   return 1
 }
 
-plan_template_path() {
-  printf '%s\n' "$PROJECT_ROOT/assets/plan/default-plan.json"
+is_windows_compat_shell() {
+  local os_name
+  os_name="$(uname -s 2>/dev/null || true)"
+  case "$os_name" in
+    MINGW*|MSYS*|CYGWIN*)
+      return 0
+      ;;
+  esac
+  return 1
 }
 
-ignore_gate_allowlist_path() {
-  printf '%s\n' "$PROJECT_ROOT/assets/gitignore/ignore-gate-allowlist.txt"
-}
-
-default_plan_output_path() {
-  local workspace_root="${KANO_GIT_MASTER_ROOT:-$PWD}"
-  printf '%s\n' "$workspace_root/.kano/cache/git/plans/default-plan.json"
-}
-
-current_utc_iso8601() {
-  date -u +"%Y-%m-%dT%H:%M:%SZ"
-}
-
-plan_has_executed_timestamp() {
-  local plan_file="$1"
-  local executed_at=""
-
-  [[ -f "$plan_file" ]] || return 1
-
-  if has_command jq; then
-    executed_at="$(jq -r '.meta.executed_at_utc // ""' "$plan_file" 2>/dev/null || true)"
-  else
-    executed_at="$(sed -n 's/.*"executed_at_utc"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$plan_file" 2>/dev/null | head -n 1)"
+ensure_windows_build_runtime_paths() {
+  # Only for Windows-compat shells (Git Bash / Cygwin).
+  # WSL is treated as Linux build environment and should not consume Windows .exe toolchain shims.
+  if ! is_windows_compat_shell; then
+    return 0
   fi
 
-  executed_at="$(printf '%s' "$executed_at" | tr -d '\r\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-  [[ -n "$executed_at" ]]
-}
-
-has_command() {
-  command -v "$1" >/dev/null 2>&1
-}
-
-ensure_windows_ai_runtime_paths() {
-  # npm-based wrappers (codex/copilot) require node runtime in PATH.
-  # Add common Windows node path when running in Git Bash/WSL style environments.
-  if ! has_command node && [[ -x "/mnt/c/Program Files/nodejs/node.exe" ]]; then
-    PATH="/mnt/c/Program Files/nodejs:$PATH"
+  # Ensure cmake/ninja are reachable in Windows-compat shells.
+  local cmake_exe="" ninja_exe=""
+  if [[ -x "/mnt/c/Program Files/CMake/bin/cmake.exe" ]]; then
+    cmake_exe="/mnt/c/Program Files/CMake/bin/cmake.exe"
+  elif [[ -x "/c/Program Files/CMake/bin/cmake.exe" ]]; then
+    cmake_exe="/c/Program Files/CMake/bin/cmake.exe"
+  fi
+  if [[ -x "/mnt/c/Program Files/CMake/bin/ninja.exe" ]]; then
+    ninja_exe="/mnt/c/Program Files/CMake/bin/ninja.exe"
+  elif [[ -x "/c/Program Files/CMake/bin/ninja.exe" ]]; then
+    ninja_exe="/c/Program Files/CMake/bin/ninja.exe"
   fi
 
-  # In Linux shells (WSL/Git-Bash style), wrappers may call `node` (without .exe).
-  # Create a lightweight shim so npm CLI wrappers can execute consistently.
-  if ! has_command node && [[ -x "/mnt/c/Program Files/nodejs/node.exe" ]]; then
+  if [[ -n "$cmake_exe" || -n "$ninja_exe" ]]; then
     local shim_dir="$PROJECT_ROOT/.kano/cache/runtime-shims"
     mkdir -p "$shim_dir"
-    cat > "$shim_dir/node" <<'EOF'
+    if [[ -n "$cmake_exe" && ! -x "$shim_dir/cmake" ]]; then
+      cat > "$shim_dir/cmake" <<EOF
 #!/usr/bin/env bash
-if [[ "$#" -gt 0 && "$1" == /* ]] && command -v wslpath >/dev/null 2>&1; then
-  first_arg="$(wslpath -w "$1" 2>/dev/null || printf '%s' "$1")"
-  shift
-  exec "/mnt/c/Program Files/nodejs/node.exe" "$first_arg" "$@"
-fi
-exec "/mnt/c/Program Files/nodejs/node.exe" "$@"
+exec "$cmake_exe" "\$@"
 EOF
-    chmod +x "$shim_dir/node" >/dev/null 2>&1 || true
+      chmod +x "$shim_dir/cmake" >/dev/null 2>&1 || true
+    fi
+    if [[ -n "$ninja_exe" && ! -x "$shim_dir/ninja" ]]; then
+      cat > "$shim_dir/ninja" <<EOF
+#!/usr/bin/env bash
+exec "$ninja_exe" "\$@"
+EOF
+      chmod +x "$shim_dir/ninja" >/dev/null 2>&1 || true
+    fi
     PATH="$shim_dir:$PATH"
   fi
 }
 
-is_working_command() {
-  local cmd="$1"
-  shift || true
-  has_command "$cmd" || return 1
-  "$cmd" "$@" >/dev/null 2>&1
-}
-
-resolve_plan_ai_provider() {
-  local requested="${1:-auto}"
-  local provider="${requested,,}"
-  provider="${provider// /}"
-
-  if [[ -n "$provider" && "$provider" != "auto" ]]; then
-    case "$provider" in
-      codex|opencode|copilot)
-        ;;
-      *)
-        return 1
-        ;;
-    esac
-    printf '%s\n' "$provider"
-    return 0
-  fi
-
-  if is_working_command copilot --help || (has_command gh && gh copilot --version >/dev/null 2>&1); then
-    printf '%s\n' "copilot"
-    return 0
-  fi
-  if is_working_command codex --help; then
-    printf '%s\n' "codex"
-    return 0
-  fi
-  if is_working_command opencode --help; then
-    printf '%s\n' "opencode"
-    return 0
-  fi
-
-  return 1
-}
-
-resolve_plan_ai_model() {
-  local provider="${1:-}"
-  local requested="${2:-auto}"
-  local model="$requested"
-  if [[ -z "$model" || "$model" == "auto" ]]; then
-    case "$provider" in
-      codex|opencode|copilot)
-        model="gpt-5-mini"
-        ;;
-      *)
-        model=""
-        ;;
-    esac
-  fi
-  printf '%s\n' "$model"
-}
-
-collect_dirty_repo_context_text() {
-  local workspace_root="$1"
-  local -a repos=()
-  local repo rel status_out line_count
-  local output=""
-
-  mapfile -t repos < <(discover_workspace_git_repos "$workspace_root")
-  if [[ "${#repos[@]}" -eq 0 ]]; then
-    repos=("$workspace_root")
-  fi
-
-  for repo in "${repos[@]}"; do
-    [[ -n "$repo" ]] || continue
-    if ! status_out="$(run_git_quick "$repo" status --porcelain --untracked-files=all 2>/dev/null)"; then
-      continue
-    fi
-    if [[ -z "$status_out" ]]; then
-      continue
-    fi
-
-    rel="$(repo_rel_path "$workspace_root" "$repo")"
-    line_count="$(printf '%s\n' "$status_out" | awk 'NF {c+=1} END {print c+0}')"
-    output+="repo: $rel"$'\n'
-    output+="changes: $line_count"$'\n'
-    output+="status:"$'\n'
-    output+="$(printf '%s\n' "$status_out" | head -n 80)"$'\n'
-    output+=$'\n'
-  done
-
-  printf '%s' "$output"
-}
-
-extract_json_between_markers() {
-  local text="$1"
-  local begin_marker="$2"
-  local end_marker="$3"
-
-  printf '%s\n' "$text" | sed -n "/$begin_marker/,/$end_marker/p" | sed '1d;$d'
-}
-
-normalize_ai_json_text() {
-  local text="$1"
-  local normalized="$text"
-  normalized="${normalized//$'\r'/}"
-  normalized="$(printf '%s\n' "$normalized" | sed -E 's/^[[:space:]]*[-*•][[:space:]]*//')"
-  normalized="$(printf '%s\n' "$normalized" | sed -E 's#</?p>##g; s#</?div>##g; s#</?span>##g')"
-  normalized="${normalized//&quot;/\"}"
-  normalized="${normalized//&#34;/\"}"
-  normalized="${normalized//&apos;/\'}"
-  normalized="${normalized//&#39;/\'}"
-  normalized="${normalized//&amp;/&}"
-  normalized="${normalized//&lt;/<}"
-  normalized="${normalized//&gt;/>}"
-  printf '%s\n' "$normalized"
-}
-
-run_plan_ai_generate_once() {
-  local provider="$1"
-  local model="$2"
-  local prompt="$3"
-
-  case "$provider" in
-    codex)
-      if [[ -n "$model" ]]; then
-        codex -q --model "$model" "$prompt" 2>&1
-      else
-        codex -q "$prompt" 2>&1
-      fi
-      ;;
-    opencode)
-      if [[ -n "$model" ]]; then
-        opencode run --model "$model" "$prompt" 2>&1
-      else
-        opencode run "$prompt" 2>&1
-      fi
-      ;;
-    copilot)
-      if has_command copilot; then
-        if [[ -n "$model" ]]; then
-          copilot -s -p "$prompt" --model "$model" --no-color --stream off --no-ask-user 2>&1
-        else
-          copilot -s -p "$prompt" --no-color --stream off --no-ask-user 2>&1
-        fi
-      elif has_command gh && gh copilot --version >/dev/null 2>&1; then
-        if [[ -n "$model" ]]; then
-          gh copilot -- -s -p "$prompt" --model "$model" --no-color --stream off --no-ask-user 2>&1
-        else
-          gh copilot -- -s -p "$prompt" --no-color --stream off --no-ask-user 2>&1
-        fi
-      else
-        echo "copilot command unavailable" >&2
-        return 1
-      fi
-      ;;
-    *)
-      echo "unsupported provider: $provider" >&2
-      return 1
-      ;;
-  esac
-}
-
-ensure_plan_provider_usable() {
-  local provider="$1"
-  local debug_ai="${KOG_DEBUG_AI:-0}"
-  case "$provider" in
-    codex)
-      if is_working_command codex --help; then
-        return 0
-      fi
-      if [[ "$debug_ai" == "1" ]]; then
-        echo "[debug-ai] codex path: $(command -v codex 2>/dev/null || echo '<missing>')" >&2
-        codex --help 2>&1 | sed -n '1,6p' >&2 || true
-      fi
-      return 1
-      ;;
-    opencode)
-      if is_working_command opencode --help; then
-        return 0
-      fi
-      if [[ "$debug_ai" == "1" ]]; then
-        echo "[debug-ai] opencode path: $(command -v opencode 2>/dev/null || echo '<missing>')" >&2
-        opencode --help 2>&1 | sed -n '1,6p' >&2 || true
-      fi
-      return 1
-      ;;
-    copilot)
-      if is_working_command copilot --help || (has_command gh && gh copilot --version >/dev/null 2>&1); then
-        return 0
-      fi
-      if [[ "$debug_ai" == "1" ]]; then
-        echo "[debug-ai] node path: $(command -v node 2>/dev/null || echo '<missing>')" >&2
-        echo "[debug-ai] copilot path: $(command -v copilot 2>/dev/null || echo '<missing>')" >&2
-        copilot --help 2>&1 | sed -n '1,8p' >&2 || true
-        if has_command gh; then
-          gh copilot --version 2>&1 | sed -n '1,8p' >&2 || true
-        fi
-      fi
-      return 1
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
-summarize_text_head() {
-  local text="$1"
-  local max_lines="${2:-4}"
-  printf '%s\n' "$text" | sed -n "1,${max_lines}p" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g;s/^ //;s/ $//'
-}
-
-plan_prompt_template_path() {
-  local custom="${KOG_PLAN_PROMPT_TEMPLATE:-}"
-  if [[ -n "$custom" ]]; then
-    printf '%s\n' "$custom"
-    return 0
-  fi
-  printf '%s\n' "$PROJECT_ROOT/assets/prompts/base/plan-init.md"
-}
-
-plan_debug_dir() {
-  local workspace_root="$1"
-  printf '%s\n' "$workspace_root/.kano/cache/git/plans/debug"
-}
-
-build_plan_prompt() {
-  local provider="$1"
-  local model="$2"
-  local template_json="$3"
-  local dirty_context="$4"
-  local prompt_file prompt
-
-  prompt_file="$(plan_prompt_template_path)"
-  if [[ -f "$prompt_file" ]]; then
-    prompt="$(cat "$prompt_file")"
-    prompt="${prompt//'{{PROVIDER}}'/$provider}"
-    prompt="${prompt//'{{MODEL}}'/$model}"
-    prompt="${prompt//'{{TEMPLATE_JSON}}'/$template_json}"
-    prompt="${prompt//'{{DIRTY_CONTEXT}}'/$dirty_context}"
-    printf '%s\n' "$prompt"
-    return 0
-  fi
-
-  cat <<EOF
-You are generating a complete plan JSON for kano-git.
-Return STRICT JSON ONLY between markers:
-BEGIN_KOG_PLAN_JSON
-<json>
-END_KOG_PLAN_JSON
-
-Rules:
-- Output a full JSON object with keys: meta, stages.
-- Keep existing meta fields that are already concrete values (plan_id/generated_at_utc/base_head_sha/dirty_fingerprint).
-- meta.planner.provider must be "${provider}".
-- meta.planner.ai-model must be "${model}".
-- meta.review.verdict must be "pass".
-- meta.review.reason must be a concise overall review summary.
-- stages.commit must contain dirty repos only.
-- For each repo entry, provide commits array.
-- Every commit item must include:
-  - message (Conventional Commit one-line)
-  - review.verdict = "pass"
-  - review.reason = concise reason
-- stages.post_sync must be [].
-- Do NOT include placeholder values.
-
-Current template JSON (fill it, do not remove required keys):
-$template_json
-
-Workspace dirty context:
-$dirty_context
-EOF
-}
-
-plan_init_ai_fill() {
-  local out_path="$1"
-  local workspace_root="$2"
-  local requested_provider="${3:-auto}"
-  local requested_model="${4:-auto}"
-  local debug_ai="${5:-0}"
-  local provider model dirty_context prompt ai_raw ai_json
-  local template_json
-  local tmp_json tmp_out tmp_err
-  local debug_dir debug_prefix debug_enabled
-
-  debug_enabled=0
-  if [[ "$debug_ai" == "1" || "$debug_ai" == "true" || "${KOG_DEBUG_AI:-0}" == "1" ]]; then
-    debug_enabled=1
-  fi
-  if [[ "$debug_enabled" -eq 1 ]]; then
-    export KOG_DEBUG_AI=1
-    debug_dir="$(plan_debug_dir "$workspace_root")"
-    mkdir -p "$debug_dir"
-    debug_prefix="$debug_dir/pia-$(date -u +%Y%m%dT%H%M%SZ)-$$"
-  fi
-
-  ensure_windows_ai_runtime_paths
-
-  provider="$(resolve_plan_ai_provider "$requested_provider" || true)"
-  if [[ -z "$provider" ]]; then
-    echo "Error: no AI provider found for plan init -ai (supported: codex/opencode/copilot)." >&2
-    return 2
-  fi
-  if ! ensure_plan_provider_usable "$provider"; then
-    echo "Error: selected AI provider is not executable in current shell: $provider" >&2
-    echo "Hint: ensure runtime dependencies (e.g. node for npm-based CLIs) are available in PATH." >&2
-    return 2
-  fi
-  model="$(resolve_plan_ai_model "$provider" "$requested_model")"
-  dirty_context="$(collect_dirty_repo_context_text "$workspace_root")"
-  if [[ -z "$dirty_context" ]]; then
-    echo "Error: no dirty repository changes found; nothing to generate for plan." >&2
-    return 2
-  fi
-
-  template_json="$(cat "$out_path")"
-  prompt="$(build_plan_prompt "$provider" "$model" "$template_json" "$dirty_context")"
-  if [[ "$debug_enabled" -eq 1 ]]; then
-    printf '%s\n' "$prompt" > "${debug_prefix}.prompt.txt"
-  fi
-
-  if ! ai_raw="$(run_plan_ai_generate_once "$provider" "$model" "$prompt")"; then
-    echo "Error: AI provider command failed for plan generation." >&2
-    echo "Provider: $provider  Model: ${model:-auto}" >&2
-    if [[ "$debug_enabled" -eq 1 ]]; then
-      printf '%s\n' "$ai_raw" > "${debug_prefix}.raw.txt"
-      echo "Debug: ${debug_prefix}.raw.txt" >&2
-      echo "Debug: ${debug_prefix}.prompt.txt" >&2
-    fi
-    local ai_fail_summary
-    ai_fail_summary="$(summarize_text_head "$ai_raw" 6)"
-    [[ -n "$ai_fail_summary" ]] && echo "Detail: $ai_fail_summary" >&2
-    return 2
-  fi
-  if [[ "$debug_enabled" -eq 1 ]]; then
-    printf '%s\n' "$ai_raw" > "${debug_prefix}.raw.txt"
-  fi
-  local ai_normalized
-  ai_normalized="$(normalize_ai_json_text "$ai_raw")"
-  ai_json="$(extract_json_between_markers "$ai_normalized" "BEGIN_KOG_PLAN_JSON" "END_KOG_PLAN_JSON")"
-  if [[ -z "$ai_json" ]]; then
-    ai_json="$(printf '%s\n' "$ai_normalized" | sed -n '/^{/,/^}/p')"
-  fi
-  if [[ -z "$ai_json" ]]; then
-    echo "Error: AI did not return JSON payload for plan." >&2
-    if [[ "$debug_enabled" -eq 1 ]]; then
-      echo "Debug: ${debug_prefix}.raw.txt" >&2
-      echo "Debug: ${debug_prefix}.prompt.txt" >&2
-    fi
-    local ai_out_summary
-    ai_out_summary="$(summarize_text_head "$ai_raw" 6)"
-    [[ -n "$ai_out_summary" ]] && echo "Detail: $ai_out_summary" >&2
-    return 2
-  fi
-
-  tmp_json="$(mktemp)"
-  tmp_out="$(mktemp)"
-  tmp_err="$(mktemp)"
-  printf '%s\n' "$ai_json" > "$tmp_json"
-  if [[ "$debug_enabled" -eq 1 ]]; then
-    printf '%s\n' "$ai_normalized" > "${debug_prefix}.normalized.txt"
-    cp "$tmp_json" "${debug_prefix}.extracted.json"
-  fi
-
-  if has_command jq; then
-    if ! jq -e '
-        (.meta|type=="object") and
-        (.stages|type=="object") and
-        (.stages.commit|type=="array") and
-        (.stages.post_sync|type=="array")
-      ' "$tmp_json" >/dev/null 2>"$tmp_err"; then
-      echo "Error: AI JSON payload schema invalid for plan generation." >&2
-      if [[ "$debug_enabled" -eq 1 ]]; then
-        cp "$tmp_err" "${debug_prefix}.schema.err.txt"
-        echo "Debug: ${debug_prefix}.extracted.json" >&2
-        echo "Debug: ${debug_prefix}.normalized.txt" >&2
-        echo "Debug: ${debug_prefix}.schema.err.txt" >&2
-        echo "Debug: ${debug_prefix}.raw.txt" >&2
-        echo "Debug: ${debug_prefix}.prompt.txt" >&2
-      fi
-      rm -f "$tmp_json" "$tmp_out" "$tmp_err"
-      return 2
-    fi
-
-    if ! jq -e '
-        [.stages.commit[]?.commits[]?] as $c |
-        ( ($c|length) > 0 ) and
-        all($c[]; (.message|type=="string" and length>0)
-                    and (.review.verdict=="pass")
-                    and (.review.reason|type=="string" and length>0))
-      ' "$tmp_json" >/dev/null 2>"$tmp_err"; then
-      echo "Error: AI JSON payload missing required per-commit review fields." >&2
-      if [[ "$debug_enabled" -eq 1 ]]; then
-        cp "$tmp_err" "${debug_prefix}.review.err.txt"
-        echo "Debug: ${debug_prefix}.extracted.json" >&2
-        echo "Debug: ${debug_prefix}.normalized.txt" >&2
-        echo "Debug: ${debug_prefix}.review.err.txt" >&2
-        echo "Debug: ${debug_prefix}.raw.txt" >&2
-        echo "Debug: ${debug_prefix}.prompt.txt" >&2
-      fi
-      rm -f "$tmp_json" "$tmp_out" "$tmp_err"
-      return 2
-    fi
-
-    jq '.' "$tmp_json" > "$tmp_out"
-    mv "$tmp_out" "$out_path"
-    rm -f "$tmp_json" "$tmp_err"
-  else
-    if ! grep -q '"meta"' "$tmp_json" || ! grep -q '"stages"' "$tmp_json" || ! grep -q '"commit"' "$tmp_json"; then
-      echo "Error: AI JSON payload missing required plan sections (meta/stages/commit)." >&2
-      if [[ "$debug_enabled" -eq 1 ]]; then
-        echo "Debug: ${debug_prefix}.extracted.json" >&2
-        echo "Debug: ${debug_prefix}.normalized.txt" >&2
-        echo "Debug: ${debug_prefix}.raw.txt" >&2
-        echo "Debug: ${debug_prefix}.prompt.txt" >&2
-      fi
-      rm -f "$tmp_json" "$tmp_out" "$tmp_err"
-      return 2
-    fi
-    if grep -q 'replace-with-' "$tmp_json"; then
-      echo "Error: AI JSON payload still contains placeholder values." >&2
-      if [[ "$debug_enabled" -eq 1 ]]; then
-        echo "Debug: ${debug_prefix}.extracted.json" >&2
-        echo "Debug: ${debug_prefix}.normalized.txt" >&2
-        echo "Debug: ${debug_prefix}.raw.txt" >&2
-        echo "Debug: ${debug_prefix}.prompt.txt" >&2
-      fi
-      rm -f "$tmp_json" "$tmp_out" "$tmp_err"
-      return 2
-    fi
-    if ! grep -q '"review"' "$tmp_json" || ! grep -q '"verdict"[[:space:]]*:[[:space:]]*"pass"' "$tmp_json"; then
-      echo "Error: AI JSON payload missing required review verdict fields." >&2
-      if [[ "$debug_enabled" -eq 1 ]]; then
-        echo "Debug: ${debug_prefix}.extracted.json" >&2
-        echo "Debug: ${debug_prefix}.normalized.txt" >&2
-        echo "Debug: ${debug_prefix}.raw.txt" >&2
-        echo "Debug: ${debug_prefix}.prompt.txt" >&2
-      fi
-      rm -f "$tmp_json" "$tmp_out" "$tmp_err"
-      return 2
-    fi
-    mv "$tmp_json" "$out_path"
-    rm -f "$tmp_err"
-  fi
-
-  echo "Filled plan with AI: provider=$provider model=${model:-auto}"
-  if [[ "$debug_enabled" -eq 1 ]]; then
-    echo "Debug: ${debug_prefix}.prompt.txt" >&2
-    echo "Debug: ${debug_prefix}.raw.txt" >&2
-    echo "Debug: ${debug_prefix}.normalized.txt" >&2
-    echo "Debug: ${debug_prefix}.extracted.json" >&2
-  fi
-  return 0
-}
-
-maybe_handle_plan_init_request() {
-  local -a args=("$@")
-  local out_path force template parent allow_ignore_gate ai_auto ai_provider ai_model debug_ai
-
-  if [[ "${args[0]:-}" != "plan" || "${args[1]:-}" != "init" ]]; then
-    return 1
-  fi
-
-  out_path="$(default_plan_output_path)"
-  force=0
-  allow_ignore_gate=0
-  ai_auto=0
-  ai_provider="auto"
-  ai_model="auto"
-  debug_ai=0
-
-  local i arg
-  for ((i = 2; i < ${#args[@]}; i++)); do
-    arg="${args[$i]}"
+apply_launcher_env_overrides() {
+  local arg
+  for arg in "$@"; do
     case "$arg" in
-      --output|-o)
-        if ((i + 1 >= ${#args[@]})); then
-          echo "Error: $arg requires a value" >&2
-          return 2
-        fi
-        out_path="${args[$((i + 1))]}"
-        i=$((i + 1))
-        ;;
-      --output=*|-o=*)
-        out_path="${arg#*=}"
-        ;;
-      --force|-f)
-        force=1
-        ;;
       --allow-ignore-gate)
-        allow_ignore_gate=1
-        ;;
-      -ai|--ai-auto)
-        ai_auto=1
-        ;;
-      --ai-provider|--provider)
-        if ((i + 1 >= ${#args[@]})); then
-          echo "Error: $arg requires a value" >&2
-          return 2
-        fi
-        ai_provider="${args[$((i + 1))]}"
-        i=$((i + 1))
-        ;;
-      --ai-provider=*|--provider=*)
-        ai_provider="${arg#*=}"
-        ;;
-      --ai-model|--model)
-        if ((i + 1 >= ${#args[@]})); then
-          echo "Error: $arg requires a value" >&2
-          return 2
-        fi
-        ai_model="${args[$((i + 1))]}"
-        i=$((i + 1))
-        ;;
-      --ai-model=*|--model=*)
-        ai_model="${arg#*=}"
-        ;;
-      --debug-ai)
-        debug_ai=1
-        ;;
-      -h|--help)
-        cat <<'EOF'
-Usage: kog plan init [--output <path>] [--force] [--allow-ignore-gate]
-                           [--ai-auto|-ai] [--ai-provider <name>] [--ai-model <name>]
-                           [--debug-ai]
-
-Create plan JSON from assets template.
-Default output:
-  ./.kano/cache/git/plans/default-plan.json
-EOF
-        return 0
-        ;;
-      *)
-        echo "Error: unknown argument for plan init: $arg" >&2
-        return 2
+        KOG_ALLOW_IGNORE_GATE=1
+        export KOG_ALLOW_IGNORE_GATE
         ;;
     esac
   done
-
-  if [[ "$allow_ignore_gate" -eq 1 ]]; then
-    KOG_ALLOW_IGNORE_GATE=1
-  fi
-
-  local workspace_root="${KANO_GIT_MASTER_ROOT:-$PWD}"
-  check_ignore_gate "$workspace_root" "plan-init"
-  local ignore_gate_status=$?
-  if [[ "$ignore_gate_status" -ne 0 ]]; then
-    return "$ignore_gate_status"
-  fi
-
-  template="$(plan_template_path)"
-  if [[ ! -f "$template" ]]; then
-    echo "Error: plan template not found: $template" >&2
-    return 2
-  fi
-
-  if [[ -e "$out_path" && "$force" -ne 1 ]]; then
-    if plan_has_executed_timestamp "$out_path"; then
-      force=1
-      echo "[plan] existing plan has meta.executed_at_utc; overwrite enabled automatically." >&2
-    else
-      echo "Error: output already exists: $out_path" >&2
-      echo "Hint: pass --force to overwrite." >&2
-      return 2
-    fi
-  fi
-
-  parent="$(dirname "$out_path")"
-  mkdir -p "$parent"
-  cp "$template" "$out_path"
-
-  local workspace_root base_head dirty_fp state_pair generated_at
-  workspace_root="${KANO_GIT_MASTER_ROOT:-$PWD}"
-  local ignore_ds_root ignore_ds_manifest
-  ignore_ds_root="$PROJECT_ROOT/assets/ignore-sources"
-  ignore_ds_manifest="$PROJECT_ROOT/assets/ignore-sources/local/datasource.manifest.json"
-  sed -i "s|replace-with-ignore-datasource-root|$ignore_ds_root|g" "$out_path"
-  sed -i "s|replace-with-ignore-datasource-manifest|$ignore_ds_manifest|g" "$out_path"
-  if git -C "$workspace_root" rev-parse --git-dir >/dev/null 2>&1; then
-    state_pair="$(collect_workspace_state_hashes "$workspace_root")"
-    base_head="${state_pair%% *}"
-    dirty_fp="${state_pair#* }"
-    generated_at="$(current_utc_iso8601)"
-    if [[ -n "$generated_at" ]]; then
-      sed -i "s/replace-with-generated-at-utc/$generated_at/g" "$out_path"
-    fi
-    if [[ -n "$base_head" ]]; then
-      sed -i "s/replace-with-head-sha/$base_head/g" "$out_path"
-    fi
-    if [[ -n "$dirty_fp" ]]; then
-      sed -i "s/replace-with-dirty-fingerprint/$dirty_fp/g" "$out_path"
-    fi
-  fi
-
-  if [[ "$ai_auto" -eq 1 ]]; then
-    if ! plan_init_ai_fill "$out_path" "$workspace_root" "$ai_provider" "$ai_model" "$debug_ai"; then
-      return 2
-    fi
-  fi
-
-  echo "Wrote plan template: $out_path"
-  return 0
 }
 
-resolve_abs_path_from_base() {
-  # moved to native C++ command
-  printf '%s\n' "$2"
-}
-
-merge_gitignore_with_rules() {
-  # moved to native C++ command
-  return 0
-}
-
-apply_ignore_stage_from_plan() {
-  # moved to native C++ command
-  return 0
-}
-
-maybe_handle_plan_stage_request() {
-  # Moved to native C++ command implementation.
+has_no_plan_auto_arg() {
+  local arg
+  for arg in "$@"; do
+    [[ "$arg" == "--no-plan-auto" ]] && return 0
+  done
   return 1
 }
 
-normalize_launcher_args() {
-  local -n out_ref="$1"
-  shift
-
-  out_ref=()
-  if [[ "$#" -eq 0 ]]; then
-    return 0
-  fi
-
-  local command="$1"
-  case "$command" in
-    pi)
-      out_ref=("plan" "init" "${@:2}")
-      return 0
-      ;;
-    pia)
-      out_ref=("plan" "init" "--ai-auto" "${@:2}")
-      return 0
-      ;;
-    pa)
-      command="commit-push"
-      ;;
-    pv)
-      out_ref=("plan" "verify" "${@:2}")
-      return 0
-      ;;
-  esac
-
-  if [[ "$command" != "commit" && "$command" != "amend" && "$command" != "commit-push" ]]; then
-    out_ref=("$@")
-    return 0
-  fi
-
-  local disable_auto_plan=0
-  local allow_ignore_gate=0
-  if [[ "$1" == "pa" ]]; then
-    out_ref+=("commit-push" "--ai-auto")
-    shift
-  fi
-
-  local token
-  for token in "$@"; do
-    case "$token" in
-      -ai)
-        out_ref+=("--ai-auto")
-        ;;
-      --no-plan-auto)
-        disable_auto_plan=1
-        ;;
-      --allow-ignore-gate)
-        allow_ignore_gate=1
-        ;;
-      *)
-        out_ref+=("$token")
+has_help_request_arg() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      -h|--help|help)
+        return 0
         ;;
     esac
   done
-
-  if [[ "$allow_ignore_gate" -eq 1 ]]; then
-    KOG_ALLOW_IGNORE_GATE=1
-  fi
-
-  # Default policy: when AI mode is requested for commit/commit-push, route through plan.
-  # Users can opt out with launcher-only flag: --no-plan-auto
-  local normalized_command="${out_ref[0]:-}"
-  if [[ "$disable_auto_plan" -eq 0 ]] && [[ "$normalized_command" == "commit" || "$normalized_command" == "commit-push" ]]; then
-    local ai_requested=0
-    local has_plan_file=0
-    local has_message=0
-    local agent_mode_requested=0
-    local arg
-    local idx
-    for ((idx = 0; idx < ${#out_ref[@]}; idx++)); do
-      arg="${out_ref[$idx]}"
-      case "$arg" in
-        --ai-auto|--ai-provider|--ai-model|--provider|--model)
-          ai_requested=1
-          ;;
-        --ai-provider=*|--ai-model=*|--provider=*|--model=*)
-          ai_requested=1
-          ;;
-        --plan-file|--plan-file=*)
-          has_plan_file=1
-          ;;
-        -m|--message)
-          if ((idx + 1 < ${#out_ref[@]})); then
-            has_message=1
-          fi
-          ;;
-        -m=*|--message=*)
-          has_message=1
-          ;;
-        --agent)
-          if ((idx + 1 < ${#out_ref[@]})) && [[ -n "${out_ref[$((idx + 1))]}" ]] && [[ "${out_ref[$((idx + 1))]}" != "manual" ]]; then
-            agent_mode_requested=1
-          fi
-          ;;
-        --agent=*)
-          if [[ "${arg#--agent=}" != "manual" && -n "${arg#--agent=}" ]]; then
-            agent_mode_requested=1
-          fi
-          ;;
-      esac
-    done
-
-    if [[ "$ai_requested" -eq 1 ]] && [[ "$has_plan_file" -eq 0 ]]; then
-      # Fast-path: in agent mode with explicit -m and trivial single-change workspace,
-      # skip plan generation and run direct commit pipeline.
-      if [[ "${KANO_AGENT_MODE:-0}" == "1" || "$agent_mode_requested" -eq 1 ]] && [[ "$has_message" -eq 1 ]]; then
-        local workspace_root="${KANO_GIT_MASTER_ROOT:-$PWD}"
-        local dirty_stats dirty_repo_count dirty_change_count
-        dirty_stats="$(compute_dirty_workspace_scope "$workspace_root")"
-        dirty_repo_count="${dirty_stats%% *}"
-        dirty_change_count="${dirty_stats#* }"
-        if [[ "$dirty_repo_count" == "1" && "$dirty_change_count" == "1" ]]; then
-          return 0
-        fi
-      fi
-      local workspace_root="${KANO_GIT_MASTER_ROOT:-$PWD}"
-      local default_plan_file="${KOG_PLAN_FILE:-$workspace_root/.kano/cache/git/plans/default-plan.json}"
-      out_ref+=("--plan-file" "$default_plan_file")
-    fi
-  fi
+  return 1
 }
 
-compute_dirty_workspace_scope() {
-  local workspace_root="$1"
-  local -a repos=()
-  local repo status_out line_count
-  local dirty_repos=0
-  local total_changes=0
+is_lightweight_query_command() {
+  local -a args=("$@")
+  local cmd="${args[0]:-}"
+  if [[ "$cmd" == "--version" || "$cmd" == "-v" || "$cmd" == "version" ]]; then
+    return 0
+  fi
+  if has_help_request_arg "${args[@]}"; then
+    return 0
+  fi
+  return 1
+}
 
-  mapfile -t repos < <(discover_workspace_git_repos "$workspace_root")
-  if [[ "${#repos[@]}" -eq 0 ]]; then
-    repos=("$workspace_root")
+has_message_arg() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      -m|--message|--message=*)
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+has_repos_arg() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      --repos|--repos=*)
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+maybe_apply_cpa_single_change_shortcut() {
+  local -n io_args_ref="$1"
+  local cmd binary scope_line dirty_repos total_changes
+  local default_message
+
+  cmd="${io_args_ref[0]:-}"
+  if [[ "$cmd" != "cpa" ]]; then
+    return 0
+  fi
+  if has_help_request_arg "${io_args_ref[@]}"; then
+    return 0
+  fi
+  if has_no_plan_auto_arg "${io_args_ref[@]}"; then
+    return 0
+  fi
+  if has_message_arg "${io_args_ref[@]}"; then
+    return 0
+  fi
+  if has_repos_arg "${io_args_ref[@]}"; then
+    return 0
+  fi
+  local plan_file=""
+  if extract_plan_file_from_args plan_file "${io_args_ref[@]}"; then
+    return 0
+  fi
+  if [[ "${KOG_CPA_DISABLE_SINGLE_CHANGE_SHORTCUT:-0}" == "1" ]]; then
+    return 0
   fi
 
-  for repo in "${repos[@]}"; do
-    [[ -n "$repo" ]] || continue
-    status_out="$(run_git_quick "$repo" status --porcelain --untracked-files=all 2>/dev/null || true)"
-    [[ -n "$status_out" ]] || continue
-    line_count="$(printf '%s\n' "$status_out" | awk 'NF {c+=1} END {print c+0}')"
-    if [[ "$line_count" =~ ^[0-9]+$ ]] && [[ "$line_count" -gt 0 ]]; then
-      dirty_repos=$((dirty_repos + 1))
-      total_changes=$((total_changes + line_count))
-    fi
-  done
+  if ! binary="$(find_existing_binary)"; then
+    return 0
+  fi
+  if ! scope_line="$(
+      KANO_GIT_MASTER_ROOT="${KANO_GIT_MASTER_ROOT:-$PROJECT_ROOT}" \
+      KANO_GIT_BINARY_PATH="$binary" \
+      "$binary" plan prepare-scope 2>/dev/null | tr -d '\r' | tail -n 1
+    )"; then
+    return 0
+  fi
+  read -r dirty_repos total_changes _ <<<"$scope_line"
+  if [[ ! "$dirty_repos" =~ ^[0-9]+$ || ! "$total_changes" =~ ^[0-9]+$ ]]; then
+    return 0
+  fi
+  if [[ "$dirty_repos" -ne 1 || "$total_changes" -ne 1 ]]; then
+    return 0
+  fi
 
-  printf '%s %s\n' "$dirty_repos" "$total_changes"
+  default_message="${KOG_CPA_SHORTCUT_MESSAGE:-chore(workspace): apply single-change update}"
+  io_args_ref=("cp" "-m" "$default_message")
+  log_launcher_status "cpa-shortcut" "ok" "single dirty repo + single change; bypass plan preflight with cp -m"
+  return 0
+}
+
+maybe_alias_cpa_for_agent_mode() {
+  local -n io_args_ref="$1"
+  local cmd="${io_args_ref[0]:-}"
+  local agent_mode="${KANO_AGENT_MODE:-0}"
+
+  if [[ "$cmd" != "cpa" ]]; then
+    return 0
+  fi
+  if [[ "$agent_mode" != "1" && "$agent_mode" != "true" ]]; then
+    return 0
+  fi
+
+  io_args_ref[0]="cp"
+  log_launcher_status "agent-cpa-alias" "ok" "agent mode enabled; map cpa -> cp (skip launcher AI preflight)"
+  return 0
 }
 
 is_ai_mode_commit_command() {
@@ -976,13 +331,16 @@ is_ai_mode_commit_command() {
   local cmd="${args[0]:-}"
   local arg
 
+  if [[ "$cmd" == "cpa" ]]; then
+    return 0
+  fi
   if [[ "$cmd" != "commit" && "$cmd" != "commit-push" ]]; then
     return 1
   fi
 
   for arg in "${args[@]:1}"; do
     case "$arg" in
-      --ai-auto|--ai-provider|--ai-model|--provider|--model)
+      -ai|--ai-auto|--ai-provider|--ai-model|--provider|--model)
         return 0
         ;;
       --ai-provider=*|--ai-model=*|--provider=*|--model=*)
@@ -1056,91 +414,31 @@ extract_ai_options_from_args() {
   done
 }
 
-plan_file_needs_refresh() {
-  local plan_file="$1"
-  local bytes=0
-
-  if [[ ! -f "$plan_file" || ! -r "$plan_file" ]]; then
-    return 0
-  fi
-
-  bytes=$(wc -c <"$plan_file" 2>/dev/null || echo 0)
-  if [[ ! "$bytes" =~ ^[0-9]+$ || "$bytes" -le 0 ]]; then
-    return 0
-  fi
-
-  if grep -q 'replace-with-' "$plan_file" 2>/dev/null; then
-    return 0
-  fi
-
-  return 1
-}
-
-print_plan_summary() {
-  local plan_file="$1"
-  [[ -f "$plan_file" ]] || return 0
-
-  if has_command jq; then
-    local meta_line
-    meta_line="$(jq -r '
-      "[plan] meta: plan_id=\(.meta.plan_id // "-") generated=\(.meta.generated_at_utc // "-") provider=\(.meta.planner.provider // "-") ai-model=\(.meta.planner["ai-model"] // "-")"
-    ' "$plan_file" 2>/dev/null || true)"
-    [[ -n "$meta_line" ]] && echo "$meta_line" >&2
-
-    local counts
-    counts="$(jq -r '
-      .stages.commit as $c |
-      "[plan] commits: repos=\(($c // [])|length) total=\(($c // [])|map((.commits // [])|length)|add // 0)"
-    ' "$plan_file" 2>/dev/null || true)"
-    [[ -n "$counts" ]] && echo "$counts" >&2
-
-    jq -r '
-      .stages.commit[]? as $r |
-      ($r.repo // "?") as $repo |
-      ($r.commits // [])[]? |
-      "[plan] - \($repo): \(.message // "")"
-    ' "$plan_file" 2>/dev/null | head -n 10 >&2 || true
-  else
-    echo "[plan] file: $plan_file (install jq for detailed summary)" >&2
-  fi
-}
-
-maybe_show_plan_summary_for_ai_command() {
-  local -a args=("$@")
-  local plan_file=""
-
-  if ! is_ai_mode_commit_command "${args[@]}"; then
-    return 0
-  fi
-  if ! extract_plan_file_from_args plan_file "${args[@]}"; then
-    return 0
-  fi
-  print_plan_summary "$plan_file"
-}
-
-maybe_auto_prepare_plan_for_ai_command() {
+maybe_run_plan_preflight_for_ai_command() {
   local -a args=("$@")
   local cmd="${args[0]:-}"
   local plan_file="" ai_provider="auto" ai_model="auto"
   local allow_ignore_gate=0
   local i arg status
-  local -a init_args=()
+  local -a preflight_args=()
+  local -a secret_gate_args=()
+  local binary=""
 
-  # Focus on pa flow (normalized to commit-push) and commit --ai flows.
-  if [[ "$cmd" != "commit" && "$cmd" != "commit-push" ]]; then
+  if [[ "$cmd" != "commit" && "$cmd" != "commit-push" && "$cmd" != "cpa" ]]; then
+    return 0
+  fi
+  if has_help_request_arg "${args[@]}"; then
+    return 0
+  fi
+  if has_no_plan_auto_arg "${args[@]}"; then
     return 0
   fi
   if ! is_ai_mode_commit_command "${args[@]}"; then
     return 0
   fi
-  if ! extract_plan_file_from_args plan_file "${args[@]}"; then
-    return 0
-  fi
-  if ! plan_file_needs_refresh "$plan_file"; then
-    return 0
-  fi
 
   extract_ai_options_from_args ai_provider ai_model "${args[@]}"
+  extract_plan_file_from_args plan_file "${args[@]}" || true
 
   for ((i = 0; i < ${#args[@]}; i++)); do
     arg="${args[$i]}"
@@ -1151,447 +449,38 @@ maybe_auto_prepare_plan_for_ai_command() {
     esac
   done
 
-  init_args=("plan" "init" "--output" "$plan_file" "--force" "--ai-auto" "--ai-provider" "$ai_provider" "--ai-model" "$ai_model")
+  preflight_args=("plan" "runbook" "commit" "--ai-provider" "$ai_provider" "--ai-model" "$ai_model" "--max-commits" "10")
+  if [[ -n "$plan_file" ]]; then
+    preflight_args+=("--plan-file" "$plan_file")
+  fi
   if [[ "$allow_ignore_gate" -eq 1 ]]; then
-    init_args+=("--allow-ignore-gate")
+    preflight_args+=("--allow-ignore-gate")
+  fi
+  if [[ "${KOG_CPA_AUTO_PLAN_DEBUG:-${KOG_PA_AUTO_PLAN_DEBUG:-0}}" == "1" ]]; then
+    preflight_args+=("--debug-ai")
   fi
 
-  if [[ "${KOG_PA_AUTO_PLAN_DEBUG:-0}" == "1" ]]; then
-    init_args+=("--debug-ai")
-  fi
-
-  echo "[plan] auto-prepare start: $plan_file" >&2
-  if maybe_handle_plan_init_request "${init_args[@]}"; then
-    echo "[plan] auto-prepare done: $plan_file" >&2
-    return 0
-  fi
-  status=$?
-  echo "Error: auto-prepare plan failed (exit=$status)." >&2
-  return "$status"
-}
-
-sha256_from_stdin() {
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum | awk '{print $1}'
-    return 0
-  fi
-  if command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 | awk '{print $1}'
-    return 0
-  fi
-  if command -v openssl >/dev/null 2>&1; then
-    openssl dgst -sha256 | awk '{print $NF}'
-    return 0
-  fi
-  echo "Error: no SHA-256 tool found (sha256sum/shasum/openssl)." >&2
-  return 1
-}
-
-workspace_root_abs() {
-  local in_root="$1"
-  local normalized="$in_root"
-
-  if [[ "$normalized" =~ ^([A-Za-z]):[\\/](.*)$ ]]; then
-    local drive="${BASH_REMATCH[1],,}"
-    local rest="${BASH_REMATCH[2]}"
-    rest="${rest//\\//}"
-    normalized="/mnt/${drive}/${rest}"
-  fi
-
-  in_root="$normalized"
-  if [[ -d "$in_root" ]]; then
-    (cd "$in_root" && pwd -P)
-    return 0
-  fi
-  printf '%s\n' "$in_root"
-}
-
-GIT_EXE_FAST_PATH=""
-
-resolve_git_exe_fast_path() {
-  if [[ -n "$GIT_EXE_FAST_PATH" ]]; then
-    printf '%s\n' "$GIT_EXE_FAST_PATH"
-    return 0
-  fi
-  if command -v git.exe >/dev/null 2>&1; then
-    GIT_EXE_FAST_PATH="$(command -v git.exe)"
-    printf '%s\n' "$GIT_EXE_FAST_PATH"
-    return 0
-  fi
-  if [[ -x "/mnt/c/Program Files/Git/cmd/git.exe" ]]; then
-    GIT_EXE_FAST_PATH="/mnt/c/Program Files/Git/cmd/git.exe"
-    printf '%s\n' "$GIT_EXE_FAST_PATH"
-    return 0
-  fi
-  return 1
-}
-
-to_windows_path() {
-  local p="$1"
-  if [[ "$p" =~ ^/mnt/([a-zA-Z])/(.*)$ ]]; then
-    local drive="${BASH_REMATCH[1]}"
-    local rest="${BASH_REMATCH[2]}"
-    rest="${rest//\//\\}"
-    printf '%s:\\%s\n' "${drive^^}" "$rest"
-    return 0
-  fi
-  if [[ "$p" =~ ^([A-Za-z]):[\\/] ]]; then
-    printf '%s\n' "$p"
-    return 0
-  fi
-  return 1
-}
-
-run_git_quick() {
-  local repo="$1"
-  shift || true
-  local mode="${KOG_GIT_EXE_FAST:-auto}"
-  local git_exe win_repo
-
-  if [[ "$mode" != "0" && "$mode" != "off" ]]; then
-    if git_exe="$(resolve_git_exe_fast_path 2>/dev/null)"; then
-      if win_repo="$(to_windows_path "$repo" 2>/dev/null)"; then
-        "$git_exe" -C "$win_repo" "$@"
-        return $?
-      fi
-    fi
-  fi
-
-  git -C "$repo" "$@"
-}
-
-repo_rel_path() {
-  local workspace_root="$1"
-  local repo_root="$2"
-  local ws_abs repo_abs
-  ws_abs="$(workspace_root_abs "$workspace_root")"
-  repo_abs="$(workspace_root_abs "$repo_root")"
-
-  if [[ "$repo_abs" == "$ws_abs" ]]; then
-    printf '.\n'
-    return 0
-  fi
-  if [[ "$repo_abs" == "$ws_abs/"* ]]; then
-    printf '%s\n' "${repo_abs#"$ws_abs/"}"
-    return 0
-  fi
-  printf '%s\n' "$repo_abs"
-}
-
-extract_repo_paths_from_discover_cache() {
-  local cache_file="$1"
-
-  if [[ ! -f "$cache_file" ]]; then
-    return 0
-  fi
-
-  if command -v jq >/dev/null 2>&1; then
-    jq -r '.repos[]?.path // empty' "$cache_file" 2>/dev/null || true
-    return 0
-  fi
-
-  # Minimal JSON field extraction fallback for environments without jq.
-  # We only need `.repos[].path` from our generated discover cache.
-  sed -n 's/.*"path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$cache_file" 2>/dev/null || true
-}
-
-discover_workspace_git_repos() {
-  local workspace_root="$1"
-  local ws_abs
-  local -A seen=()
-  local -a repos=()
-  local candidate meta_path cache_file scan_depth enable_find_scan
-  ws_abs="$(workspace_root_abs "$workspace_root")"
-  cache_file="$ws_abs/.kano/cache/git/discover-repos/discover-repos.json"
-  scan_depth="${KOG_MERKLE_SCAN_DEPTH:-6}"
-  enable_find_scan="${KOG_MERKLE_ENABLE_FIND_SCAN:-0}"
-
-  if git -C "$ws_abs" rev-parse --git-dir >/dev/null 2>&1; then
-    repos+=("$ws_abs")
-    seen["$ws_abs"]=1
-  fi
-
-  if [[ -f "$cache_file" ]]; then
-    while IFS= read -r candidate; do
-      [[ -n "$candidate" ]] || continue
-      candidate="$(workspace_root_abs "$candidate")"
-      if [[ -n "${seen["$candidate"]:-}" ]]; then
-        continue
-      fi
-      seen["$candidate"]=1
-      repos+=("$candidate")
-    done < <(extract_repo_paths_from_discover_cache "$cache_file")
-    if ((${#repos[@]} > 0)); then
-      printf '%s\n' "${repos[@]}" | awk 'NF {print}' | sort -u
-      return 0
-    fi
-  fi
-
-  if git -C "$ws_abs" rev-parse --git-dir >/dev/null 2>&1; then
-    while IFS= read -r candidate; do
-      [[ -n "$candidate" ]] || continue
-      candidate="$(workspace_root_abs "$candidate")"
-      if [[ -n "${seen["$candidate"]:-}" ]]; then
-        continue
-      fi
-      seen["$candidate"]=1
-      repos+=("$candidate")
-    done < <(git -C "$ws_abs" submodule foreach --quiet --recursive 'pwd' 2>/dev/null || true)
-  fi
-
-  if [[ "$enable_find_scan" == "1" || "$enable_find_scan" == "true" ]] && command -v find >/dev/null 2>&1; then
-    while IFS= read -r meta_path; do
-      [[ -n "$meta_path" ]] || continue
-      candidate="$(dirname "$meta_path")"
-      if [[ -n "${seen["$candidate"]:-}" ]]; then
-        continue
-      fi
-      seen["$candidate"]=1
-      repos+=("$candidate")
-    done < <(find "$ws_abs" -maxdepth "$scan_depth" -name .git -print 2>/dev/null || true)
-  fi
-
-  if ((${#repos[@]} == 0)); then
-    return 0
-  fi
-  printf '%s\n' "${repos[@]}" | awk 'NF {print}' | sort -u
-}
-
-hash_text_or_clean() {
-  local text="$1"
-  if [[ -z "$text" ]]; then
-    printf '%s\n' "clean"
-    return 0
-  fi
-  printf '%s' "$text" | sha256_from_stdin
-}
-
-WORKSPACE_STATE_CACHE_ROOT=""
-WORKSPACE_STATE_CACHE_BASE=""
-WORKSPACE_STATE_CACHE_DIRTY=""
-
-collect_workspace_state_hashes() {
-  local workspace_root="$1"
-  local -a repos=()
-  local repo rel status_out head status_fp
-  local line_count=0
-  local base_aggregate=""
-  local dirty_aggregate=""
-
-  mapfile -t repos < <(discover_workspace_git_repos "$workspace_root")
-  if [[ "${KOG_DEBUG_MERKLE:-0}" == "1" ]]; then
-    echo "[merkle] repos=${#repos[@]}" >&2
-  fi
-  if [[ "${#repos[@]}" -eq 0 ]]; then
-    printf '%s\n' "no-repo clean"
-    return 0
-  fi
-
-  for repo in "${repos[@]}"; do
-    [[ -n "$repo" ]] || continue
-    if [[ "${KOG_DEBUG_MERKLE:-0}" == "1" ]]; then
-      echo "[merkle] status $repo" >&2
-    fi
-    if ! status_out="$(run_git_quick "$repo" status --porcelain=v2 --branch --untracked-files=normal --ignore-submodules=none 2>/dev/null)"; then
-      if [[ "${KOG_DEBUG_MERKLE:-0}" == "1" ]]; then
-        echo "[merkle] skip(non-repo): $repo" >&2
-      fi
-      continue
-    fi
-    rel="$(repo_rel_path "$workspace_root" "$repo")"
-    head="$(printf '%s\n' "$status_out" | awk '/^# branch\.oid /{print $3; exit}')"
-    if [[ -z "$head" || "$head" == "(initial)" ]]; then
-      head="no-head"
-    fi
-    status_fp="$(hash_text_or_clean "$status_out")"
-    base_aggregate+="${rel}|${head}"$'\n'
-    dirty_aggregate+="${rel}|${head}|${status_fp}"$'\n'
-    line_count=$((line_count + 1))
-  done
-
-  if [[ "$line_count" -eq 0 ]]; then
-    printf '%s\n' "no-repo clean"
-    return 0
-  fi
-
-  printf '%s %s\n' \
-    "$(printf '%s' "$base_aggregate" | sha256_from_stdin)" \
-    "$(printf '%s' "$dirty_aggregate" | sha256_from_stdin)"
-}
-
-ensure_workspace_state_cache() {
-  local workspace_root="$1"
-  local resolved_root computed
-  resolved_root="$(workspace_root_abs "$workspace_root")"
-  if [[ "$WORKSPACE_STATE_CACHE_ROOT" == "$resolved_root" ]] && [[ -n "$WORKSPACE_STATE_CACHE_BASE" ]] && [[ -n "$WORKSPACE_STATE_CACHE_DIRTY" ]]; then
-    return 0
-  fi
-  computed="$(collect_workspace_state_hashes "$resolved_root")"
-  WORKSPACE_STATE_CACHE_ROOT="$resolved_root"
-  WORKSPACE_STATE_CACHE_BASE="${computed%% *}"
-  WORKSPACE_STATE_CACHE_DIRTY="${computed#* }"
-}
-
-current_dirty_fingerprint() {
-  local repo_root="$1"
-  ensure_workspace_state_cache "$repo_root"
-  printf '%s\n' "$WORKSPACE_STATE_CACHE_DIRTY"
-}
-
-current_head_sha() {
-  local repo_root="$1"
-  ensure_workspace_state_cache "$repo_root"
-  printf '%s\n' "$WORKSPACE_STATE_CACHE_BASE"
-}
-
-is_probable_ignore_artifact_path() {
-  local p="${1//\\//}"
-  local lower="${p,,}"
-  case "$lower" in
-    */.cache/*|.cache/*|*/.pytest_cache/*|.pytest_cache/*|*/.mypy_cache/*|.mypy_cache/*|*/.idea/*|.idea/*|*/.vscode/*|.vscode/*)
-      return 0
-      ;;
-    */node_modules/*|node_modules/*|*/dist/*|dist/*|*/obj/*|obj/*|*/target/*|target/*|*/out/*|out/*)
-      return 0
-      ;;
-    *.log|*.tmp|*.temp|*.cache|*.bak|*.swp|*.swo|*.class|*.obj|*.o|*.pdb|*.ilk|*.dmp|*.pyc)
-      return 0
-      ;;
-  esac
-  return 1
-}
-
-is_ignore_gate_allowlisted_path() {
-  local p="${1//\\//}"
-  local lower="${p,,}"
-  local allowlist_file pattern
-
-  allowlist_file="$(ignore_gate_allowlist_path)"
-  [[ -f "$allowlist_file" ]] || return 1
-
-  while IFS= read -r pattern || [[ -n "$pattern" ]]; do
-    pattern="${pattern%$'\r'}"
-    [[ -n "$pattern" ]] || continue
-    [[ "${pattern:0:1}" == "#" ]] && continue
-    local norm="${pattern//\\//}"
-    local norm_lower="${norm,,}"
-    if [[ "$lower" == $norm_lower ]]; then
-      return 0
-    fi
-  done < "$allowlist_file"
-
-  return 1
-}
-
-check_ignore_gate() {
-  local repo_root="$1"
-  local context="${2:-plan}"
-  local allow="${KOG_ALLOW_IGNORE_GATE:-0}"
-  local -a repos=()
-  local -a untracked=()
-  local -a candidates=()
-  local repo rel path
-
-  if [[ "$allow" == "1" || "$allow" == "true" ]]; then
-    return 0
-  fi
-  if [[ "${KOG_IGNORE_GATE:-on}" == "off" ]]; then
-    return 0
-  fi
-  if ! git -C "$repo_root" rev-parse --git-dir >/dev/null 2>&1; then
-    return 0
-  fi
-
-  mapfile -t repos < <(discover_workspace_git_repos "$repo_root")
-  if [[ "${#repos[@]}" -eq 0 ]]; then
-    repos=("$repo_root")
-  fi
-
-  for repo in "${repos[@]}"; do
-    rel="$(repo_rel_path "$repo_root" "$repo")"
-    mapfile -t untracked < <(run_git_quick "$repo" ls-files --others --exclude-standard 2>/dev/null || true)
-    for path in "${untracked[@]}"; do
-      if is_ignore_gate_allowlisted_path "$path"; then
-        continue
-      fi
-      if is_probable_ignore_artifact_path "$path"; then
-        if [[ "$rel" == "." ]]; then
-          candidates+=("$path")
-        else
-          candidates+=("$rel/$path")
+  if binary="$(find_existing_binary)"; then
+    if run_native_binary "$binary" "${preflight_args[@]}"; then
+      secret_gate_args=("plan" "verify" "secret" "--context" "ai-commit" "--limit" "20")
+      if "$binary" plan verify secret --help >/dev/null 2>&1; then
+        if run_native_binary "$binary" "${secret_gate_args[@]}"; then
+          return 0
         fi
+        status=$?
+        echo "Error: secret gate failed via native binary (exit=$status)." >&2
+        return "$status"
       fi
-    done
-  done
-
-  if [[ "${#candidates[@]}" -eq 0 ]]; then
-    return 0
+      echo "Warning: native binary does not support plan verify secret yet; skipping secret gate." >&2
+      return 0
+    else
+      status=$?
+      echo "Error: AI plan preflight failed via native binary (exit=$status)." >&2
+      return "$status"
+    fi
   fi
-
-  echo "Error: ignore gate failed (${context}); unresolved untracked artifact-like files detected." >&2
-  local i limit
-  limit=20
-  for ((i = 0; i < ${#candidates[@]} && i < limit; i++)); do
-    echo "  - ${candidates[$i]}" >&2
-  done
-  if (( ${#candidates[@]} > limit )); then
-    echo "  ... and $(( ${#candidates[@]} - limit )) more" >&2
-  fi
-  if [[ "$context" == "ai-commit" ]]; then
-    echo "Reason: current plan-driven AI commit run is blocked by ignore gate to prevent accidental artifact commits." >&2
-    echo "Action: either add/remove those files now, or bypass once on the same command with --allow-ignore-gate." >&2
-  else
-    echo "Reason: ignore gate requires artifact-like untracked files to be handled before proceeding." >&2
-    echo "Action: add/remove those files, or bypass once with --allow-ignore-gate." >&2
-  fi
-  return 3
-}
-
-maybe_handle_ignore_doctor_request() {
-  # Moved to native C++ command implementation.
-  return 1
-}
-
-validate_plan_required_fields_for_ai_mode() {
-  local -a args=("$@")
-  local plan_file=""
-  local bytes=0
-
-  if ! is_ai_mode_commit_command "${args[@]}"; then
-    return 0
-  fi
-
-  local workspace_root="${KANO_GIT_MASTER_ROOT:-$PWD}"
-  check_ignore_gate "$workspace_root" "ai-commit"
-  local ignore_gate_status=$?
-  if [[ "$ignore_gate_status" -ne 0 ]]; then
-    return "$ignore_gate_status"
-  fi
-
-  if ! extract_plan_file_from_args plan_file "${args[@]}"; then
-    echo "Error: AI mode commit requires --plan-file." >&2
-    echo "Hint: set KOG_PLAN_FILE or pass --plan-file <path>." >&2
-    return 2
-  fi
-
-  if [[ ! -f "$plan_file" ]]; then
-    echo "Error: plan file not found: $plan_file" >&2
-    return 2
-  fi
-  if [[ ! -r "$plan_file" ]]; then
-    echo "Error: plan file is not readable: $plan_file" >&2
-    return 2
-  fi
-
-  bytes=$(wc -c <"$plan_file" 2>/dev/null || echo 0)
-  if [[ ! "$bytes" =~ ^[0-9]+$ || "$bytes" -le 0 ]]; then
-    echo "Error: plan file is empty: $plan_file" >&2
-    return 2
-  fi
-
-  # Content validation is handled in native C++ commit command.
-  # Shell launcher only enforces file presence and readability.
-  return 0
+  echo "Error: AI plan preflight failed: native binary unavailable." >&2
+  return 2
 }
 
 apply_agent_mode_from_args() {
@@ -1627,31 +516,6 @@ apply_agent_mode_from_args() {
   done
 }
 
-has_non_manual_agent_arg() {
-  local arg next
-  next=""
-
-  for arg in "$@"; do
-    if [[ "$next" == "agent" ]]; then
-      [[ -n "$arg" && "$arg" != "manual" ]] && return 0
-      next=""
-      continue
-    fi
-
-    case "$arg" in
-      --agent)
-        next="agent"
-        ;;
-      --agent=*)
-        local agent_value="${arg#--agent=}"
-        [[ -n "$agent_value" && "$agent_value" != "manual" ]] && return 0
-        ;;
-    esac
-  done
-
-  return 1
-}
-
 clean_native_build_artifacts() {
   remove_tree_best_effort() {
     local target_path="$1"
@@ -1683,71 +547,84 @@ clean_native_build_artifacts() {
   remove_tree_best_effort "$base_build/debug"
 }
 
+prepare_cpp_build_submodules() {
+  local context_label="${1:-build-native}"
+  local -a discovered_paths update_paths
+  local line path abs_path status_line state
+
+  if [[ ! -f "$PROJECT_ROOT/.gitmodules" ]]; then
+    return 0
+  fi
+
+  if ! command -v git >/dev/null 2>&1; then
+    echo "Error: git command not found; cannot prepare required submodules." >&2
+    return 1
+  fi
+
+  log_launcher_status "$context_label" "step" "prepare-submodules"
+
+  # Discover C++ build dependencies from .gitmodules dynamically.
+  # Any registered submodule under src/cpp/code/thirdparty/ is treated as build dependency.
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    path="${line#* }"
+    if [[ "$path" == src/cpp/code/thirdparty/* ]]; then
+      discovered_paths+=("$path")
+    fi
+  done < <(git -C "$PROJECT_ROOT" config -f .gitmodules --get-regexp '^submodule\..*\.path$' 2>/dev/null || true)
+
+  if [[ "${#discovered_paths[@]}" -eq 0 ]]; then
+    log_launcher_status "$context_label" "ok" "no C++ thirdparty submodules registered in .gitmodules"
+    return 0
+  fi
+
+  for path in "${discovered_paths[@]}"; do
+    abs_path="$PROJECT_ROOT/$path"
+    status_line="$(git -C "$PROJECT_ROOT" submodule status -- "$path" 2>/dev/null || true)"
+    state="${status_line:0:1}"
+
+    if [[ "$state" == "-" && -d "$abs_path" ]]; then
+      if find "$abs_path" -mindepth 1 -print -quit 2>/dev/null | grep -q .; then
+        log_launcher_status "$context_label" "warn" "removing stale uninitialized submodule dir: $path"
+        rm -rf "$abs_path" || {
+          echo "Error: failed to clean stale submodule directory: $path" >&2
+          return 1
+        }
+      fi
+    fi
+
+    if [[ -z "$status_line" ]]; then
+      continue
+    fi
+
+    update_paths+=("$path")
+  done
+
+  if [[ "${#update_paths[@]}" -eq 0 ]]; then
+    log_launcher_status "$context_label" "ok" "no registered C++ submodules to prepare"
+    return 0
+  fi
+
+  (
+    cd "$PROJECT_ROOT"
+    git submodule sync -- "${update_paths[@]}" >/dev/null
+    git submodule update --init --recursive -- "${update_paths[@]}"
+  ) || {
+    echo "Error: failed to initialize required C++ thirdparty submodules." >&2
+    echo "Hint: run 'git submodule update --init --recursive -- src/cpp/code/thirdparty/*' and retry." >&2
+    return 1
+  }
+
+  log_launcher_status "$context_label" "ok" "submodules ready"
+  return 0
+}
+
 run_native_build_mode() {
   local mode="$1"
   local prereq_script build_script prereq_stamp prereq_interval now_epoch last_epoch cooldown_left
 
-  ensure_cpp_build_submodules() {
-    local -a required_paths update_paths
-    local path abs_path status_line state
-    required_paths=(
-      "src/cpp/code/thirdparty/cli11"
-      "src/cpp/code/thirdparty/ftxui"
-    )
-
-    if [[ ! -f "$PROJECT_ROOT/.gitmodules" ]]; then
-      return 0
-    fi
-
-    if ! command -v git >/dev/null 2>&1; then
-      echo "Error: git command not found; cannot prepare required submodules before build." >&2
-      return 1
-    fi
-
-    log_launcher_status "build-native" "step" "prepare-submodules"
-
-    for path in "${required_paths[@]}"; do
-      abs_path="$PROJECT_ROOT/$path"
-      status_line="$(git -C "$PROJECT_ROOT" submodule status -- "$path" 2>/dev/null || true)"
-      state="${status_line:0:1}"
-
-      if [[ "$state" == "-" && -d "$abs_path" ]]; then
-        if find "$abs_path" -mindepth 1 -print -quit 2>/dev/null | grep -q .; then
-          log_launcher_status "build-native" "warn" "removing stale uninitialized submodule dir: $path"
-          rm -rf "$abs_path" || {
-            echo "Error: failed to clean stale submodule directory: $path" >&2
-            return 1
-          }
-        fi
-      fi
-
-      if [[ -z "$status_line" ]]; then
-        continue
-      fi
-
-      update_paths+=("$path")
-    done
-
-    if [[ "${#update_paths[@]}" -eq 0 ]]; then
-      log_launcher_status "build-native" "ok" "no registered C++ submodules to prepare"
-      return 0
-    fi
-
-    (
-      cd "$PROJECT_ROOT"
-      git submodule sync -- "${update_paths[@]}" >/dev/null
-      git submodule update --init --recursive -- "${update_paths[@]}"
-    ) || {
-      echo "Error: failed to initialize required C++ submodules (cli11/ftxui)." >&2
-      echo "Hint: run 'git submodule update --init --recursive -- src/cpp/code/thirdparty/cli11 src/cpp/code/thirdparty/ftxui' and retry." >&2
-      return 1
-    }
-
-    log_launcher_status "build-native" "ok" "submodules ready"
-    return 0
-  }
-
-  ensure_cpp_build_submodules || return 1
+  ensure_windows_build_runtime_paths
+  prepare_cpp_build_submodules "build-native" || return 1
 
   if ! mapfile -t _scripts < <(script_paths); then
     echo "Error: no native build scripts for platform $(platform_name) ($(arch_name))." >&2
@@ -1870,6 +747,141 @@ maybe_handle_launcher_build_request() {
   return $?
 }
 
+manual_self_update_shell() {
+  local repo_root="$1"
+  local preferred_remote="$2"
+  local auto_sync="$3"
+  local non_interactive="$4"
+  local remote="" branch="" ahead_raw="" ahead_count=0
+
+  if [[ "$(git -C "$repo_root" rev-parse --is-inside-work-tree 2>/dev/null || true)" != "true" ]]; then
+    echo "Error: self update requires a git worktree: $repo_root" >&2
+    return 1
+  fi
+
+  if [[ -n "$(git -C "$repo_root" status --porcelain 2>/dev/null || true)" ]]; then
+    echo "Error: self update aborted: dirty worktree in $repo_root" >&2
+    echo "Hint: commit/stash/discard changes before running 'kog self update'." >&2
+    return 1
+  fi
+
+  if [[ -n "$preferred_remote" ]] && git -C "$repo_root" remote get-url "$preferred_remote" >/dev/null 2>&1; then
+    remote="$preferred_remote"
+  elif git -C "$repo_root" remote get-url upstream >/dev/null 2>&1; then
+    remote="upstream"
+  elif git -C "$repo_root" remote get-url origin >/dev/null 2>&1; then
+    remote="origin"
+  else
+    echo "Error: no git remote found for self update." >&2
+    return 1
+  fi
+
+  echo "[self-update] fetching from remote: $remote" >&2
+  git -C "$repo_root" fetch "$remote" --prune >/dev/null
+
+  branch="$(git -C "$repo_root" symbolic-ref --quiet --short "refs/remotes/$remote/HEAD" 2>/dev/null || true)"
+  if [[ -n "$branch" ]]; then
+    branch="${branch#${remote}/}"
+  else
+    branch="$(git -C "$repo_root" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  fi
+  if [[ -z "$branch" ]]; then
+    echo "Error: unable to resolve target branch for self update." >&2
+    return 1
+  fi
+
+  ahead_raw="$(git -C "$repo_root" rev-list --count "HEAD..$remote/$branch" 2>/dev/null || true)"
+  if [[ "$ahead_raw" =~ ^[0-9]+$ ]]; then
+    ahead_count="$ahead_raw"
+  fi
+  if [[ "$ahead_count" -le 0 ]]; then
+    echo "[self-update] already up to date: $remote/$branch" >&2
+    return 0
+  fi
+
+  local should_sync=0
+  if [[ "$auto_sync" == "1" ]]; then
+    should_sync=1
+  elif [[ "$non_interactive" == "1" || "${KANO_AGENT_MODE:-0}" == "1" ]]; then
+    should_sync=0
+  elif is_interactive_terminal && maybe_prompt_yes_no "[self-update] Found ${ahead_count} commit(s) on ${remote}/${branch}. Sync now?"; then
+    should_sync=1
+  fi
+
+  if [[ "$should_sync" != "1" ]]; then
+    echo "[self-update] updates available (${ahead_count}) but not applied." >&2
+    return 0
+  fi
+
+  echo "[self-update] syncing with rebase: $remote/$branch" >&2
+  git -C "$repo_root" rebase "$remote/$branch"
+  return $?
+}
+
+maybe_handle_manual_self_request() {
+  if [[ "$#" -lt 2 ]]; then
+    return 1
+  fi
+
+  local first="$1"
+  local second="$2"
+  shift 2 || true
+
+  if [[ "$first" != "self" ]]; then
+    return 1
+  fi
+
+  case "$second" in
+    build|rebuild)
+      maybe_handle_launcher_build_request "$second" "$@"
+      return $?
+      ;;
+    update)
+      local binary=""
+      local remote="upstream"
+      local auto_sync="0"
+      local non_interactive="0"
+      local arg
+      while [[ "$#" -gt 0 ]]; do
+        arg="$1"
+        shift || true
+        case "$arg" in
+          --remote)
+            if [[ "$#" -gt 0 ]]; then
+              remote="$1"
+              shift || true
+            fi
+            ;;
+          --remote=*)
+            remote="${arg#--remote=}"
+            ;;
+          --auto-sync)
+            auto_sync="1"
+            ;;
+          --non-interactive)
+            non_interactive="1"
+            ;;
+        esac
+      done
+      if ! binary="$(find_existing_binary 2>/dev/null)"; then
+        echo "Warning: native binary unavailable; using shell fallback for self update." >&2
+        manual_self_update_shell "$PROJECT_ROOT" "$remote" "$auto_sync" "$non_interactive" || return $?
+        prepare_cpp_build_submodules "self-update" || return $?
+        echo "[self-update] bootstrap ready: required C++ submodules are prepared for self build." >&2
+        return 0
+      fi
+      local -a native_args=("self" "update-check" "--repo" "$PROJECT_ROOT" "--mode" "auto" "--remote" "$remote")
+      [[ "$auto_sync" == "1" ]] && native_args+=("--auto-update")
+      [[ "$non_interactive" == "1" ]] && native_args+=("--non-interactive")
+      run_native_binary "$binary" "${native_args[@]}"
+      return $?
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 append_once_to_file() {
   local file="$1"
   local marker="$2"
@@ -1944,13 +956,8 @@ maybe_handle_completion_install_request() {
 
   binary="$(find_binary || true)"
   if [[ -z "$binary" || ! -f "$binary" ]]; then
-    if try_auto_prepare_binary; then
-      binary="$(find_binary || true)"
-    fi
-  fi
-
-  if [[ -z "$binary" || ! -f "$binary" ]]; then
     echo "Error: native binary unavailable; cannot install completion." >&2
+    echo "Hint: run './kog self build' first." >&2
     return 1
   fi
 
@@ -1962,88 +969,9 @@ maybe_handle_completion_install_request() {
   return 0
 }
 
-safe_branch_name() {
-  local value="$1"
-  value="${value//$'\n'/}"
-  value="${value//$'\r'/}"
-  printf '%s\n' "$value"
-}
-
-detect_remote_default_branch() {
-  local repo="$1"
-  local remote="$2"
-  local head_ref branch
-
-  head_ref="$(git -C "$repo" symbolic-ref --quiet "refs/remotes/$remote/HEAD" 2>/dev/null || true)"
-  if [[ -n "$head_ref" ]]; then
-    branch="${head_ref#refs/remotes/$remote/}"
-    if [[ -n "$branch" ]]; then
-      printf '%s\n' "$branch"
-      return 0
-    fi
-  fi
-
-  for branch in main master dev develop trunk; do
-    if git -C "$repo" show-ref --verify --quiet "refs/remotes/$remote/$branch" 2>/dev/null; then
-      printf '%s\n' "$branch"
-      return 0
-    fi
-  done
-
-  return 1
-}
-
-current_git_hash_short() {
-  git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || true
-}
-
-current_git_branch() {
-  git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || true
-}
-
-current_git_revision() {
-  git -C "$PROJECT_ROOT" rev-list --count --first-parent HEAD 2>/dev/null || true
-}
-
-is_git_worktree_dirty() {
-  [[ -n "$(git -C "$PROJECT_ROOT" status --porcelain 2>/dev/null || true)" ]]
-}
-
-is_non_negative_integer() {
-  local value="$1"
-  [[ "$value" =~ ^[0-9]+$ ]]
-}
-
-binary_build_info() {
-  local binary="$1"
-  KANO_GIT_MASTER_ROOT="${KANO_GIT_MASTER_ROOT:-$PROJECT_ROOT}" "$binary" version 2>/dev/null || true
-}
-
-build_info_field() {
-  local info="$1"
-  local field="$2"
-  printf '%s\n' "$info" | tr ' ' '\n' | awk -F= -v key="$field" '$1==key {print $2; exit}'
-}
-
-binary_build_hash_short() {
-  local binary="$1"
-  local output
-
-  output="$(binary_build_info "$binary")"
-  if [[ "$output" =~ hash_short=([^[:space:]]+) ]]; then
-    printf '%s\n' "${BASH_REMATCH[1]}"
-    return 0
-  fi
-
-  printf '%s\n' ""
-}
-
 should_rebuild_native_binary() {
   local binary="$1"
-  local build_hash git_hash build_branch git_branch build_revision git_revision
-  local build_info direction_text
-  local version_file cmake_file preset_file
-  local skip_when_dirty
+  local native_out native_status native_reason native_dir
 
   REBUILD_DIRECTION="unknown"
   REBUILD_REASON=""
@@ -2053,59 +981,25 @@ should_rebuild_native_binary() {
     return 0
   fi
 
-  skip_when_dirty="${KOG_SKIP_AUTO_REBUILD_WHEN_DIRTY:-1}"
-  if [[ "$skip_when_dirty" == "1" ]] && is_git_worktree_dirty; then
-    log_launcher_status "auto-rebuild" "skip" "dirty worktree detected in $PROJECT_ROOT; skipping rebuild hash/timestamp checks"
+  native_out="$(run_native_binary "$binary" self stale-check --repo "$PROJECT_ROOT" --binary "$binary" 2>/dev/null)"
+  native_status=$?
+  if [[ "$native_status" -eq 0 || "$native_status" -eq 1 ]]; then
+    native_dir="$(printf '%s\n' "$native_out" | sed -n 's/.*direction=\([^ ]*\).*/\1/p' | head -n1)"
+    native_reason="$(printf '%s\n' "$native_out" | sed -n 's/.*reason=\(.*\)$/\1/p' | head -n1)"
+    if [[ -n "$native_dir" ]]; then
+      REBUILD_DIRECTION="$native_dir"
+    fi
+    if [[ -n "$native_reason" ]]; then
+      REBUILD_REASON="$native_reason"
+    fi
+    if [[ "$native_status" -eq 0 ]]; then
+      return 0
+    fi
     return 1
   fi
 
-  build_info="$(binary_build_info "$binary")"
-  git_hash="$(current_git_hash_short)"
-  git_branch="$(current_git_branch)"
-  git_revision="$(current_git_revision)"
-
-  build_hash="$(build_info_field "$build_info" "hash_short")"
-  build_branch="$(build_info_field "$build_info" "branch")"
-  build_revision="$(build_info_field "$build_info" "rev")"
-
-  direction_text="unknown"
-  if is_non_negative_integer "$git_revision" && is_non_negative_integer "$build_revision"; then
-    if (( git_revision > build_revision )); then
-      REBUILD_DIRECTION="upgrade"
-      direction_text="upgrade"
-    elif (( git_revision < build_revision )); then
-      REBUILD_DIRECTION="downgrade"
-      direction_text="downgrade"
-    else
-      REBUILD_DIRECTION="same-revision"
-      direction_text="same-revision"
-    fi
-  fi
-
-  if [[ -n "$git_hash" && -n "$build_hash" && "$build_hash" != "unknown" && "$git_hash" != "$build_hash" ]]; then
-    REBUILD_REASON="hash mismatch: binary(branch=${build_branch:-unknown}, rev=${build_revision:-unknown}, hash=${build_hash:-unknown}) vs git(branch=${git_branch:-unknown}, rev=${git_revision:-unknown}, hash=${git_hash:-unknown}), direction=$direction_text"
-    return 0
-  fi
-
-  version_file="$PROJECT_ROOT/VERSION"
-  cmake_file="$PROJECT_ROOT/src/cpp/CMakeLists.txt"
-  preset_file="$PROJECT_ROOT/src/cpp/CMakePresets.json"
-
-  if [[ -f "$version_file" && "$version_file" -nt "$binary" ]]; then
-    REBUILD_REASON="VERSION file is newer than binary"
-    return 0
-  fi
-
-  if [[ -f "$cmake_file" && "$cmake_file" -nt "$binary" ]]; then
-    REBUILD_REASON="CMakeLists changed after binary build"
-    return 0
-  fi
-
-  if [[ -f "$preset_file" && "$preset_file" -nt "$binary" ]]; then
-    REBUILD_REASON="CMakePresets changed after binary build"
-    return 0
-  fi
-
+  # Strict native-only behavior: stale-check must be provided by C++ binary.
+  log_launcher_status "auto-rebuild" "skip" "native self stale-check unavailable; skip launcher-side rebuild heuristics"
   return 1
 }
 
@@ -2157,219 +1051,17 @@ maybe_rebuild_binary_if_needed() {
   printf '%s\n' "$binary"
 }
 
-should_skip_update_prompt_for_command() {
-  local command="${1:-}"
-  case "$command" in
-    ""|help|-h|--help|-v|--version|version|completion|complete|__complete|sync|tui|discover|remote|slog|log|uplog|plan|ignore)
-      return 0
-      ;;
-  esac
-  return 1
-}
-
-int32_max() {
-  printf '%s\n' "2147483647"
-}
-
-is_valid_int32_positive() {
-  local value="$1"
-  local max
-  max="$(int32_max)"
-
-  [[ "$value" =~ ^[0-9]+$ ]] || return 1
-  [[ "$value" != "0" ]] || return 1
-
-  while [[ ${#value} -gt 1 && "${value:0:1}" == "0" ]]; do
-    value="${value:1}"
-  done
-
-  if [[ ${#value} -lt ${#max} ]]; then
-    return 0
-  fi
-  if [[ ${#value} -gt ${#max} ]]; then
-    return 1
-  fi
-
-  [[ "$value" < "$max" || "$value" == "$max" ]]
-}
-
-rewrite_slog_shorthand_args() {
-  local -n out_ref="$1"
-  shift
-
-  local -a incoming=("$@")
-  local first="${incoming[0]:-}"
-  local count_part="${first#slog}"
-
-  if [[ -z "$first" || "$first" == "slog" ]]; then
-    out_ref=("${incoming[@]}")
-    return 0
-  fi
-
-  if [[ "$first" =~ ^slog[0-9]+$ ]]; then
-    if ! is_valid_int32_positive "$count_part"; then
-      echo "Error: slog count must be a positive integer <= $(int32_max)" >&2
-      return 2
-    fi
-    out_ref=("slog" "$count_part" "${incoming[@]:1}")
-    return 0
-  fi
-
-  out_ref=("${incoming[@]}")
-  return 0
-}
-
-rewrite_discover_command_args() {
-  local -n out_ref="$1"
-  shift
-
-  local -a incoming=("$@")
-  local arg
-  local has_max_depth=0
-
-  out_ref=("workspace" "discover")
-
-  for arg in "${incoming[@]:1}"; do
-    case "$arg" in
-      --native-max-depth)
-        out_ref+=("--max-depth")
-        has_max_depth=1
-        continue
-        ;;
-      --native-max-depth=*)
-        out_ref+=("--max-depth=${arg#--native-max-depth=}")
-        has_max_depth=1
-        continue
-        ;;
-      --max-depth|--max-depth=*)
-        has_max_depth=1
-        ;;
-      --no-cache)
-        out_ref+=("--no-cache")
-        continue
-        ;;
-      --native-no-cache)
-        out_ref+=("--no-cache")
-        continue
-        ;;
-      --native-refresh-cache)
-        continue
-        ;;
-    esac
-    out_ref+=("$arg")
-  done
-
-  if [[ "$has_max_depth" -eq 0 ]]; then
-    out_ref+=("--max-depth" "${KOG_DISCOVER_MAX_DEPTH:-8}")
-  fi
-}
-
-run_dev_mode_update_flow() {
-  local preferred_remote branch ahead_count sync_script
-
-  if ! is_interactive_terminal; then
-    return 0
-  fi
-
-  if is_git_worktree_dirty; then
-    echo "[launcher] Skip remote update check: dirty worktree in $PROJECT_ROOT" >&2
-    return 0
-  fi
-
-  preferred_remote="upstream"
-  if ! git -C "$PROJECT_ROOT" remote get-url "$preferred_remote" >/dev/null 2>&1; then
-    preferred_remote="origin"
-  fi
-  if ! git -C "$PROJECT_ROOT" remote get-url "$preferred_remote" >/dev/null 2>&1; then
-    return 0
-  fi
-
-  echo "[launcher] Checking remote updates from $preferred_remote..." >&2
-  git -C "$PROJECT_ROOT" fetch "$preferred_remote" --prune >/dev/null 2>&1 || true
-
-  branch="$(detect_remote_default_branch "$PROJECT_ROOT" "$preferred_remote" || true)"
-  branch="$(safe_branch_name "$branch")"
-  if [[ -z "$branch" ]]; then
-    branch="$(safe_branch_name "$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || true)")"
-  fi
-  [[ -z "$branch" ]] && return 0
-
-  ahead_count="$(git -C "$PROJECT_ROOT" rev-list --count "HEAD..$preferred_remote/$branch" 2>/dev/null || printf '0')"
-  if [[ ! "$ahead_count" =~ ^[0-9]+$ || "$ahead_count" -le 0 ]]; then
-    return 0
-  fi
-
-  if maybe_prompt_yes_no "[launcher] Found $ahead_count upstream commit(s) on $preferred_remote/$branch. Run sync now?"; then
-    sync_script="$PROJECT_ROOT/src/shell/commit-tools/sync/smart-sync-origin-latest.sh"
-    if [[ -f "$sync_script" ]]; then
-      run_shell_script "$sync_script" --repo "$PROJECT_ROOT" --remote "$preferred_remote" || true
-    fi
-  fi
-}
-
-run_package_mode_update_flow() {
-  local interval stamp_file latest_version current_version check_cmd update_cmd
-
-  if ! is_interactive_terminal; then
-    return 0
-  fi
-
-  interval="${KANO_GIT_PACKAGE_UPDATE_CHECK_INTERVAL_SECONDS:-21600}"
-  if [[ ! "$interval" =~ ^[0-9]+$ ]]; then
-    interval=21600
-  fi
-
-  stamp_file="$(state_file_for package-update-check.stamp)"
-  if ! should_run_interval_check "$stamp_file" "$interval"; then
-    return 0
-  fi
-
-  touch_stamp_file "$stamp_file"
-
-  check_cmd="${KANO_GIT_PACKAGE_VERSION_CHECK_CMD:-}"
-  [[ -z "$check_cmd" ]] && return 0
-
-  latest_version="$(bash -lc "$check_cmd" 2>/dev/null | tr -d '\r\n' || true)"
-  [[ -z "$latest_version" ]] && return 0
-
-  current_version="$(tr -d '\r\n' < "$PROJECT_ROOT/VERSION" 2>/dev/null || echo "unknown")"
-  if [[ "$latest_version" == "$current_version" ]]; then
-    return 0
-  fi
-
-  if maybe_prompt_yes_no "[launcher] New package version available ($current_version -> $latest_version). Update now?"; then
-    update_cmd="${KANO_GIT_PACKAGE_UPDATE_CMD:-}"
-    if [[ -z "$update_cmd" ]]; then
-      echo "[launcher] Set KANO_GIT_PACKAGE_UPDATE_CMD to enable one-click package updates." >&2
-      return 0
-    fi
-    run_with_progress "package update" bash -lc "$update_cmd" || true
-  fi
-}
-
 maybe_run_launcher_update_flow() {
   local command="${1:-}"
-
-  if [[ "${KANO_GIT_AUTO_UPDATE_CHECK:-1}" != "1" ]]; then
+  local binary=""
+  local wsl_update_check="${KOG_WSL_AUTO_UPDATE_CHECK:-0}"
+  if is_wsl_shell && [[ "$wsl_update_check" != "1" ]]; then
     return 0
   fi
-
-  if [[ "${KANO_AGENT_MODE:-0}" == "1" ]]; then
+  if ! binary="$(find_existing_binary 2>/dev/null)"; then
     return 0
   fi
-
-  if should_skip_update_prompt_for_command "$command"; then
-    return 0
-  fi
-
-  if is_packaged_install; then
-    run_package_mode_update_flow
-    return 0
-  fi
-
-  if git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    run_dev_mode_update_flow
-  fi
+  run_native_binary "$binary" self maybe-auto-update --repo "$PROJECT_ROOT" --command "$command" || true
 }
 
 platform_name() {
@@ -2383,6 +1075,63 @@ platform_name() {
   esac
 }
 
+is_wsl_shell() {
+  if [[ -n "${WSL_DISTRO_NAME:-}" || -n "${WSL_INTEROP:-}" ]]; then
+    return 0
+  fi
+  if [[ "$(uname -s 2>/dev/null || true)" != "Linux" ]]; then
+    return 1
+  fi
+  if [[ -r "/proc/version" ]] && grep -qi "microsoft" /proc/version 2>/dev/null; then
+    return 0
+  fi
+  return 1
+}
+
+is_binary_compatible_with_shell() {
+  local binary="$1"
+  local os_name
+  os_name="$(platform_name)"
+
+  case "$os_name" in
+    windows)
+      [[ "$binary" == *.exe ]]
+      return $?
+      ;;
+    linux|macos)
+      [[ "$binary" == *.exe ]] && return 1
+      return 0
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+}
+
+ensure_binary_shell_compatibility() {
+  local binary="$1"
+  local allow_cross="${KOG_ALLOW_CROSS_PLATFORM_BINARY:-0}"
+
+  if is_binary_compatible_with_shell "$binary"; then
+    return 0
+  fi
+  if [[ "$allow_cross" == "1" ]]; then
+    return 0
+  fi
+
+  if is_wsl_shell && [[ "$binary" == *.exe ]]; then
+    echo "Error: detected Windows .exe binary in WSL shell: $binary" >&2
+    echo "Hint: WSL is Linux runtime. Build/use Linux binary, or run this command in Git Bash/Cygwin on Windows." >&2
+    echo "Hint: set KOG_ALLOW_CROSS_PLATFORM_BINARY=1 only for one-off debugging." >&2
+    return 1
+  fi
+
+  echo "Error: binary/shell platform mismatch: $binary" >&2
+  echo "Hint: use a shell matching the target binary platform (Windows shell for .exe, Linux/macOS shell for native)." >&2
+  echo "Hint: set KOG_ALLOW_CROSS_PLATFORM_BINARY=1 only for one-off debugging." >&2
+  return 1
+}
+
 arch_name() {
   local machine
   machine="$(uname -m 2>/dev/null || true)"
@@ -2392,37 +1141,10 @@ arch_name() {
   esac
 }
 
-find_bash() {
-  if command -v bash >/dev/null 2>&1; then
-    command -v bash
-    return 0
-  fi
-
-  if [[ -n "${GIT_BASH_PATH:-}" && -f "${GIT_BASH_PATH}" ]]; then
-    printf '%s\n' "$GIT_BASH_PATH"
-    return 0
-  fi
-
-  if [[ -f "C:/Program Files/Git/bin/bash.exe" ]]; then
-    printf '%s\n' "C:/Program Files/Git/bin/bash.exe"
-    return 0
-  fi
-
-  return 1
-}
-
-binary_name() {
-  case "$(platform_name)" in
-    windows) echo "kano-git.exe" ;;
-    *) echo "kano-git" ;;
-  esac
-}
-
 candidate_presets() {
   local os_name arch
   os_name="$(platform_name)"
   arch="$(arch_name)"
-
   case "$os_name" in
     windows)
       if [[ "$arch" == "arm64" ]]; then
@@ -2444,19 +1166,66 @@ candidate_presets() {
   esac
 }
 
+to_windows_path() {
+  local p="$1"
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -w "$p" 2>/dev/null && return 0
+  fi
+  if [[ "$p" =~ ^/mnt/([a-zA-Z])/(.*)$ ]]; then
+    local drive="${BASH_REMATCH[1]}"
+    local rest="${BASH_REMATCH[2]}"
+    rest="${rest//\//\\}"
+    printf '%s:\\%s\n' "${drive^^}" "$rest"
+    return 0
+  fi
+  if [[ "$p" =~ ^([A-Za-z]):[\\/] ]]; then
+    printf '%s\n' "$p"
+    return 0
+  fi
+  return 1
+}
+
+find_bash() {
+  if command -v bash >/dev/null 2>&1; then
+    command -v bash
+    return 0
+  fi
+
+  if [[ -n "${GIT_BASH_PATH:-}" && -f "${GIT_BASH_PATH}" ]]; then
+    printf '%s\n' "$GIT_BASH_PATH"
+    return 0
+  fi
+
+  if [[ -f "C:/Program Files/Git/bin/bash.exe" ]]; then
+    printf '%s\n' "C:/Program Files/Git/bin/bash.exe"
+    return 0
+  fi
+
+  return 1
+}
+
 find_binary() {
-  local exe_name build_dir candidate preset resolved_path resolved_dir
-  exe_name="$(binary_name)"
+  local exe_name build_dir candidate preset resolved_path resolved_dir os_name arch
+  os_name="$(platform_name)"
+  arch="$(arch_name)"
+  case "$os_name" in
+    windows) exe_name="kano-git.exe" ;;
+    *) exe_name="kano-git" ;;
+  esac
   build_dir="$PROJECT_ROOT/src/cpp/build"
 
   if [[ -n "${KANO_GIT_BIN:-}" ]]; then
     if [[ -f "$KANO_GIT_BIN" ]]; then
-      printf '%s\n' "$KANO_GIT_BIN"
-      return 0
+      if is_binary_compatible_with_shell "$KANO_GIT_BIN"; then
+        printf '%s\n' "$KANO_GIT_BIN"
+        return 0
+      fi
     fi
     if [[ -f "$KANO_GIT_BIN/$exe_name" ]]; then
-      printf '%s\n' "$KANO_GIT_BIN/$exe_name"
-      return 0
+      if is_binary_compatible_with_shell "$KANO_GIT_BIN/$exe_name"; then
+        printf '%s\n' "$KANO_GIT_BIN/$exe_name"
+        return 0
+      fi
     fi
   fi
 
@@ -2464,20 +1233,24 @@ find_binary() {
     [[ -z "$preset" ]] && continue
     candidate="$build_dir/bin/$preset/release/$exe_name"
     if [[ -f "$candidate" ]]; then
-      printf '%s\n' "$candidate"
-      return 0
+      if is_binary_compatible_with_shell "$candidate"; then
+        printf '%s\n' "$candidate"
+        return 0
+      fi
     fi
     candidate="$build_dir/bin/$preset/debug/$exe_name"
     if [[ -f "$candidate" ]]; then
-      printf '%s\n' "$candidate"
-      return 0
+      if is_binary_compatible_with_shell "$candidate"; then
+        printf '%s\n' "$candidate"
+        return 0
+      fi
     fi
   done < <(candidate_presets)
 
   candidate="$build_dir/release/$exe_name"
-  [[ -f "$candidate" ]] && { printf '%s\n' "$candidate"; return 0; }
+  [[ -f "$candidate" ]] && is_binary_compatible_with_shell "$candidate" && { printf '%s\n' "$candidate"; return 0; }
   candidate="$build_dir/debug/$exe_name"
-  [[ -f "$candidate" ]] && { printf '%s\n' "$candidate"; return 0; }
+  [[ -f "$candidate" ]] && is_binary_compatible_with_shell "$candidate" && { printf '%s\n' "$candidate"; return 0; }
 
   if command -v kano-git >/dev/null 2>&1; then
     resolved_path="$(command -v kano-git)"
@@ -2485,13 +1258,24 @@ find_binary() {
       resolved_dir="$(cd "$(dirname "$resolved_path")" && pwd)"
       resolved_path="$resolved_dir/$(basename "$resolved_path")"
       if [[ "$resolved_path" != "$SCRIPT_DIR/kano-git" ]]; then
-        printf '%s\n' "$resolved_path"
-        return 0
+        if is_binary_compatible_with_shell "$resolved_path"; then
+          printf '%s\n' "$resolved_path"
+          return 0
+        fi
       fi
     fi
   fi
 
   return 1
+}
+
+find_existing_binary() {
+  local binary=""
+  if ! binary="$(find_binary 2>/dev/null)"; then
+    return 1
+  fi
+  [[ -n "$binary" && -f "$binary" ]] || return 1
+  printf '%s\n' "$binary"
 }
 
 script_paths() {
@@ -2529,7 +1313,7 @@ script_paths() {
   printf '%s\n%s\n' "$prereq" "$build"
 }
 
-install_marker_file() {
+fallback_install_marker_file() {
   if [[ -n "${KANO_GIT_INSTALL_MARKER:-}" ]]; then
     printf '%s\n' "$KANO_GIT_INSTALL_MARKER"
   else
@@ -2537,9 +1321,30 @@ install_marker_file() {
   fi
 }
 
+install_marker_file() {
+  local binary="" marker=""
+  if binary="$(find_existing_binary 2>/dev/null)"; then
+    marker="$(run_native_binary "$binary" self marker-path --repo "$PROJECT_ROOT" 2>/dev/null || true)"
+    marker="$(printf '%s' "$marker" | tr -d '\r' | tail -n 1)"
+    if [[ -n "$marker" ]]; then
+      printf '%s\n' "$marker"
+      return 0
+    fi
+  fi
+  fallback_install_marker_file
+}
+
 is_packaged_install() {
+  local binary=""
+  if binary="$(find_existing_binary 2>/dev/null)"; then
+    run_native_binary "$binary" self is-packaged --repo "$PROJECT_ROOT" >/dev/null 2>&1
+    local status=$?
+    if [[ "$status" -eq 0 || "$status" -eq 1 ]]; then
+      return "$status"
+    fi
+  fi
   local marker
-  marker="$(install_marker_file)"
+  marker="$(fallback_install_marker_file)"
   [[ -f "$marker" ]]
 }
 
@@ -2646,17 +1451,38 @@ print_launcher_help_extras() {
   cat >&2 <<'EOF'
 
 Launcher commands:
-  build                               Build native binary (incremental; auto-prepare required C++ submodules)
-  rebuild                             Rebuild native binary (full clean rebuild; auto-prepare required C++ submodules)
+  self build                          Build native binary (incremental)
+  self rebuild                        Rebuild native binary (full clean rebuild)
+  self update                         Run manual launcher update check flow
+                                      When native binary is unavailable, fallback sync also prepares required C++ submodules.
+    --remote <name>                   Preferred remote (default: upstream, fallback origin)
+    --auto-sync                       Apply update without prompt when commits are available
+    --non-interactive                 Do not prompt; report availability only unless --auto-sync
   discover                            Run manual repo discovery, refresh cache, and print cache file path
-  plan init                           Write plan template from assets
+  plan new                           Write plan template from assets
     -ai, --ai-auto                    Generate and fill plan via one AI request
     --ai-provider <name>              AI provider for plan generation (codex|opencode|copilot|auto)
     --ai-model <name>                 AI model for plan generation
+    --ignore-datasource-root <path>   Override plan meta ignore datasource root
+    --ignore-datasource-manifest <p>  Override plan meta ignore datasource manifest
   plan apply                          Apply plan stages (default: all)
     --stage ignore|commit|all         Run only selected stage(s)
-  plan verify                         Verify plan schema
+  plan verify pre-apply               Verify plan schema before apply
     --stage ignore|commit|all         Verify selected stage requirements
+  plan verify post-apply              Verify apply result state after apply
+    --stage ignore|commit|all         Verify selected stage results
+  plan verify ignore                  Run ignore gate verification only
+  plan verify secret                  Run secret gate verification only
+  plan finish-report                        Print compact plan summary
+    --max-commits <n>                 Limit printed commit lines (default: 10)
+  plan refresh-check                  Exit 0 when plan should be regenerated
+  plan ensure-prepare-ready          Ensure plan is prepared and AI-ready (fill + validate)
+  plan runbook commit                 Run commit runbook (prepare + summary + validate)
+  plan runbook ignore                 Run ignore runbook (init + pre-apply verify)
+  plan runbook full                   Run full runbook (ignore + commit + pre-apply verify)
+  plan datasource-sync                Update ignore-plan reference datasource (default: github-gitignore)
+    --source github-gitignore         Datasource source id
+    --dry-run                         Print revision metadata without updating
   ignore doctor                       Scan tracked files and suggest likely ignore candidates
     --repo <path>                     Limit scan root (default: current workspace)
     --limit <n>                       Max findings (default: 200)
@@ -2664,12 +1490,16 @@ Launcher commands:
     --apply                           Apply untrack actions (git rm --cached) for findings
     --dry-run                         Print planned untrack actions only
     --yes                             Skip interactive confirmation for --apply
-  pi ...                              Alias of plan init ...
-  pia ...                             Alias of plan init --ai-auto ...
-  pa ...                              Alias of commit-push --ai-auto (auto adds --plan-file)
+  pi ...                              Alias of plan new ...
+  pia ...                             Alias of plan new --ai-auto ...
+  cp ...                              Alias of commit-push (non-AI; no implicit --ai-auto)
+  cpa ...                             Alias of commit-push --ai-auto (auto adds --plan-file)
+                                      In agent mode (KANO_AGENT_MODE=1), cpa is treated as cp.
+                                      Shortcut: if prepare-scope is 1 repo + 1 change and no -m/--plan-file/--repos,
+                                      launcher auto-routes to `cp -m` for faster direct commit-push.
                                       Auto-prepares plan via AI when missing/placeholder
-    --no-plan-auto                    Launcher-only: disable AI->plan auto routing
-    --allow-ignore-gate               Launcher-only: bypass ignore gate for this run
+    --no-plan-auto                    Disable AI->plan auto routing
+    --allow-ignore-gate               Bypass ignore gate for this run
     --llvm                            Use Homebrew LLVM clang/clang++ toolchain (macOS)
     --modules                         Enable C++20 modules (requires compatible toolchain)
     --no-modules                      Disable C++20 modules
@@ -2685,14 +1515,18 @@ Launcher env:
   KOG_PLAN_FILE=<path>                Default plan file used when AI flags are present
                                       AI mode enforces required plan fields before execution,
                                       including per-commit review (verdict=pass + reason)
-  KOG_PA_AUTO_PLAN_DEBUG=1            Enable --debug-ai during pa auto plan prepare
-  KOG_MERKLE_ENABLE_FIND_SCAN=1       Include filesystem .git scan for unregistered nested repos
-                                      (default: 0; use discover cache + submodule list)
+  KOG_CPA_AUTO_PLAN_DEBUG=1           Enable --debug-ai during cpa auto plan prepare
+  KOG_PA_AUTO_PLAN_DEBUG=1            Deprecated legacy alias (compat); use KOG_CPA_AUTO_PLAN_DEBUG
+  KOG_CPA_DISABLE_SINGLE_CHANGE_SHORTCUT=1
+                                      Disable cpa single-change shortcut auto-routing
+  KOG_CPA_SHORTCUT_MESSAGE=<msg>      Override shortcut commit message used by auto-routed cp -m
   KOG_ALLOW_IGNORE_GATE=1             Bypass ignore gate (not recommended)
+  KOG_DISABLE_SECRET_GATE=1           Disable secret gate (not recommended)
   KOG_IGNORE_GATE=off                 Disable ignore gate globally (not recommended)
                                       Static allowlist: assets/gitignore/ignore-gate-allowlist.txt
   KOG_SKIP_AUTO_REBUILD_WHEN_DIRTY=0|1
-                                      Skip auto-rebuild checks when git worktree is dirty (default: 1)
+                                      Reserved (auto-rebuild disabled in manual mode)
+  KOG_WSL_AUTO_UPDATE_CHECK=0|1       Reserved (auto-update disabled in manual mode)
 EOF
 }
 
@@ -2704,6 +1538,10 @@ run_native_binary() {
   local arg_count=$#
   local -a native_args=("$@")
   local i arg next_is_plan_path converted
+
+  if ! ensure_binary_shell_compatibility "$binary"; then
+    return 2
+  fi
 
   if [[ ! -x "$binary" ]]; then
     chmod u+x "$binary" >/dev/null 2>&1 || true
@@ -2753,25 +1591,39 @@ main() {
   local binary marker
   local -a args=()
   local -a exec_args=()
+  local explicit_bin=""
 
-  normalize_launcher_args args "$@"
+  args=("$@")
+  apply_launcher_env_overrides "${args[@]}"
   apply_agent_mode_from_args "${args[@]}"
+
+  # Fail fast when user explicitly points to an incompatible binary for current shell.
+  if [[ -n "${KANO_GIT_BIN:-}" ]]; then
+    explicit_bin="$KANO_GIT_BIN"
+  elif [[ -n "${KANO_GIT_BINARY_PATH:-}" ]]; then
+    explicit_bin="$KANO_GIT_BINARY_PATH"
+  fi
+  if [[ -n "$explicit_bin" && -e "$explicit_bin" ]]; then
+    if ! ensure_binary_shell_compatibility "$explicit_bin"; then
+      exit 2
+    fi
+  fi
 
   case "${args[0]:-}" in
     build|rebuild)
-      maybe_handle_launcher_build_request "${args[@]}"
-      exit $?
+      echo "Error: '${args[0]}' moved under 'self' lifecycle commands." >&2
+      echo "Hint: use './kog self ${args[0]}' instead." >&2
+      exit 2
       ;;
   esac
 
-  local plan_init_status=0
-  if maybe_handle_plan_init_request "${args[@]}"; then
-    exit 0
-  else
-    plan_init_status=$?
-  fi
-  if [[ "$plan_init_status" -ne 1 ]]; then
-    exit "$plan_init_status"
+  if [[ "${args[0]:-}" == "self" ]]; then
+    case "${args[1]:-}" in
+      build|rebuild|update)
+        maybe_handle_manual_self_request "${args[@]}"
+        exit $?
+        ;;
+    esac
   fi
 
   local completion_status=0
@@ -2784,43 +1636,28 @@ main() {
     exit "$completion_status"
   fi
 
-  maybe_run_launcher_update_flow "${args[0]:-}"
-
   exec_args=("${args[@]}")
-  if ! rewrite_slog_shorthand_args exec_args "${exec_args[@]}"; then
-    exit $?
-  fi
-  if [[ "${args[0]:-}" == "discover" ]]; then
-    rewrite_discover_command_args exec_args "${args[@]}"
-  fi
-  maybe_auto_prepare_plan_for_ai_command "${exec_args[@]}"
-  local auto_plan_status=$?
-  if [[ "$auto_plan_status" -ne 0 ]]; then
-    exit "$auto_plan_status"
-  fi
-  maybe_show_plan_summary_for_ai_command "${exec_args[@]}"
-  validate_plan_required_fields_for_ai_mode "${exec_args[@]}"
-  local plan_validate_status=$?
-  if [[ "$plan_validate_status" -ne 0 ]]; then
-    exit "$plan_validate_status"
+  maybe_alias_cpa_for_agent_mode exec_args
+  maybe_apply_cpa_single_change_shortcut exec_args
+  maybe_run_plan_preflight_for_ai_command "${exec_args[@]}"
+  local preflight_status=$?
+  if [[ "$preflight_status" -ne 0 ]]; then
+    exit "$preflight_status"
   fi
 
+  # Manual mode: no auto-rebuild/auto-prepare in execution path.
   if binary="$(find_binary)"; then
-    if ! binary="$(maybe_rebuild_binary_if_needed "$binary")"; then
-      binary=""
-    fi
-
-    if [[ -z "$binary" || ! -f "$binary" ]]; then
-      echo "Warning: resolved binary path is unavailable after rebuild checks; retrying auto-prepare." >&2
-      if ! is_packaged_install && try_auto_prepare_binary; then
-        binary="$(find_binary || true)"
-      fi
-    fi
-
     if [[ -n "$binary" && -f "$binary" ]]; then
       run_native_binary "$binary" "${exec_args[@]}"
       exit $?
     fi
+  fi
+
+  if is_lightweight_query_command "${exec_args[@]}"; then
+    echo "Error: no compatible native binary found for current shell." >&2
+    echo "Hint: do not mix WSL shell with Windows .exe binary. Use Linux build in WSL, or run Git Bash/Cygwin for Windows build." >&2
+    echo "Hint: run './kog self build' in the current shell environment." >&2
+    exit 1
   fi
 
   if is_packaged_install; then
@@ -2829,17 +1666,12 @@ main() {
     echo "Error: marker file: $marker" >&2
     echo "Error: this installation may be corrupted. Please reinstall the package." >&2
   else
-    if try_auto_prepare_binary; then
-      if binary="$(find_binary)"; then
-        run_native_binary "$binary" "${exec_args[@]}"
-        exit $?
-      fi
-    fi
+    :
   fi
 
   echo "Error: strict native-only mode is enabled and C++ binary is unavailable." >&2
-  echo "Error: shell fallback is disabled by design." >&2
-  echo "Hint: run the platform build script under src/cpp/build/script/ and retry." >&2
+  echo "Error: shell fallback is disabled by design; auto build/update are disabled in manual mode." >&2
+  echo "Hint: run './kog self build' (or './kog self rebuild') in this shell, then retry." >&2
   exit 1
 }
 
