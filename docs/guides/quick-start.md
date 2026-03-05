@@ -6,6 +6,20 @@ CLI naming note:
 - `kano-git` is the full command name.
 - `kog` is the short alias of `kano-git`.
 
+AI commit-plan shortcuts:
+- `cpa` / `pa` -> `commit-push --ai-auto`
+- `pi` -> `plan new`
+- `pia` -> `plan new --ai-auto`
+- `pv` -> `plan verify pre-apply`
+
+See full flow: [CPA Commit Plan Workflow](./cpa-commit-plan-workflow.md)
+Ignore stage operations: [Ignore Plan Operator Workflow](./ignore-plan-operator-workflow.md)
+Ignore datasource updates: [Ignore Datasource Sync Policy](./ignore-datasource-sync-policy.md)
+
+If you use your own ignore datasource, initialize plan metadata with:
+- `--ignore-datasource-root <path>`
+- `--ignore-datasource-manifest <path>`
+
 ## One-Liners
 
 ```bash
