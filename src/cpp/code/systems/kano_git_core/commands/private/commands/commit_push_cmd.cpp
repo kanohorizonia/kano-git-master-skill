@@ -298,6 +298,23 @@ auto RunKogCommand(const std::vector<std::string>& InArgs) -> shell::ExecResult 
     return RunKogCommand(InArgs, shell::ExecMode::PassThrough);
 }
 
+auto RunPipelineSafetyGatesForNonAiCommitPush() -> void {
+    const auto ignoreGateResult = RunKogCommand({"plan", "verify", "ignore", "--context", "commit-push"});
+    if (ignoreGateResult.exitCode != 0) {
+        std::exit(ignoreGateResult.exitCode);
+    }
+
+    const auto secretGateProbe = RunKogCommand({"plan", "verify", "secret", "--help"}, shell::ExecMode::Capture);
+    if (secretGateProbe.exitCode != 0) {
+        std::cerr << "Warning: native binary does not support plan verify secret yet; skipping secret gate.\n";
+        return;
+    }
+    const auto secretGateResult = RunKogCommand({"plan", "verify", "secret", "--context", "commit-push", "--limit", "20"});
+    if (secretGateResult.exitCode != 0) {
+        std::exit(secretGateResult.exitCode);
+    }
+}
+
 auto SplitLines(const std::string& InText) -> std::vector<std::string> {
     std::vector<std::string> out;
     std::istringstream iss(InText);
@@ -466,6 +483,7 @@ void RegisterCommitPush(CLI::App& InApp) {
         const auto normalizedCommitPlanFile = NormalizeInputPathForCurrentPlatform(*commitPlanFile);
         const bool hasCommitPlan = !normalizedCommitPlanFile.empty();
         const bool useAiCommitFlow = !hasCommitPlan;
+        const bool aiModeRequested = *aiAuto || !aiProvider->empty() || !aiModel->empty();
 
         if (hasCommitPlan) {
             std::string stampError;
@@ -482,6 +500,11 @@ void RegisterCommitPush(CLI::App& InApp) {
 
         if (agentMode && hasCommitPlan) {
             std::cout << "[commit-push] agent mode + --plan-file detected; using plan-driven flow.\n";
+        }
+
+        if (!aiModeRequested) {
+            std::cout << "=== commit-push stage: safety-gates ===\n";
+            RunPipelineSafetyGatesForNonAiCommitPush();
         }
 
         std::cout << "=== commit-push stage: pre-commit ===\n";

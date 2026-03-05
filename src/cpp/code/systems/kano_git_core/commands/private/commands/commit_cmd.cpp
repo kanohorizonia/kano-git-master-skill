@@ -138,6 +138,40 @@ auto HasCommand(const std::string& InCommand, const std::vector<std::string>& In
     return result.exitCode == 0;
 }
 
+auto ResolveKanoGitCliCommand() -> std::string {
+    if (const char* bin = std::getenv("KANO_GIT_BINARY_PATH"); bin != nullptr && std::string(bin).size() > 0) {
+        return std::string(bin);
+    }
+    if (HasCommand("kano-git", {"--help"})) {
+        return "kano-git";
+    }
+    if (HasCommand("kog", {"--help"})) {
+        return "kog";
+    }
+    return "kano-git";
+}
+
+auto RunKanoGitCli(const std::vector<std::string>& InArgs, shell::ExecMode InMode = shell::ExecMode::PassThrough) -> shell::ExecResult {
+    return shell::ExecuteCommand(ResolveKanoGitCliCommand(), InArgs, InMode, std::filesystem::current_path());
+}
+
+auto RunPipelineSafetyGatesForNonAiCommit() -> void {
+    const auto ignoreGateResult = RunKanoGitCli({"plan", "verify", "ignore", "--context", "commit"});
+    if (ignoreGateResult.exitCode != 0) {
+        std::exit(ignoreGateResult.exitCode);
+    }
+
+    const auto secretGateProbe = RunKanoGitCli({"plan", "verify", "secret", "--help"}, shell::ExecMode::Capture);
+    if (secretGateProbe.exitCode != 0) {
+        std::cerr << "Warning: native binary does not support plan verify secret yet; skipping secret gate.\n";
+        return;
+    }
+    const auto secretGateResult = RunKanoGitCli({"plan", "verify", "secret", "--context", "commit", "--limit", "20"});
+    if (secretGateResult.exitCode != 0) {
+        std::exit(secretGateResult.exitCode);
+    }
+}
+
 auto ResolveProvider(const std::string& InProviderRaw) -> std::string {
     const auto provider = ToLower(Trim(InProviderRaw));
     if (!provider.empty() && provider != "auto") {
@@ -929,6 +963,8 @@ struct RepoCommitPlanEntry {
     struct CommitItem {
         std::string message;
         CommitReviewMeta review;
+        std::vector<std::string> include;
+        std::vector<std::string> exclude;
     };
 
     std::string repoKey;
@@ -1176,6 +1212,40 @@ auto ExtractStringField(const std::string& InObjectText, const std::string& InFi
     return parsed->first;
 }
 
+auto ExtractStringArrayForKey(const std::string& InObjectText, const std::string& InField) -> std::vector<std::string> {
+    std::vector<std::string> out;
+    const auto arrayBody = ExtractArrayBodyForKey(InObjectText, InField);
+    if (!arrayBody.has_value()) {
+        return out;
+    }
+    std::size_t pos = 0;
+    while (pos < arrayBody->size()) {
+        pos = SkipJsonWhitespace(*arrayBody, pos);
+        if (pos >= arrayBody->size()) {
+            break;
+        }
+        if ((*arrayBody)[pos] == ',') {
+            pos += 1;
+            continue;
+        }
+        const auto parsed = ParseJsonStringAt(*arrayBody, pos);
+        if (!parsed.has_value()) {
+            break;
+        }
+        auto value = Trim(parsed->first);
+        if (!value.empty()) {
+            for (auto& ch : value) {
+                if (ch == '\\') {
+                    ch = '/';
+                }
+            }
+            out.push_back(std::move(value));
+        }
+        pos = parsed->second;
+    }
+    return out;
+}
+
 auto ParseStageEntries(const std::string& InStageArrayBody) -> std::vector<RepoCommitPlanEntry> {
     std::vector<RepoCommitPlanEntry> entries;
     for (const auto& repoObject : SplitTopLevelObjects(InStageArrayBody)) {
@@ -1198,6 +1268,8 @@ auto ParseStageEntries(const std::string& InStageArrayBody) -> std::vector<RepoC
                 if (!message.empty()) {
                     RepoCommitPlanEntry::CommitItem item;
                     item.message = message;
+                    item.include = ExtractStringArrayForKey(commitObject, "include");
+                    item.exclude = ExtractStringArrayForKey(commitObject, "exclude");
                     if (const auto reviewObject = ExtractObjectBodyForKey(commitObject, "review"); reviewObject.has_value()) {
                         if (const auto value = ExtractStringField(*reviewObject, "verdict"); value.has_value()) {
                             item.review.verdict = ToLower(Trim(*value));
@@ -1440,13 +1512,13 @@ auto ValidateCommitPlanForAiMode(const CommitPlanPayload& InPlan,
 }
 
 auto BuildStageMessageMap(const CommitPlanPayload& InPlan,
-                          const CommitPlanStage InStage) -> std::unordered_map<std::string, std::vector<std::string>> {
-    std::unordered_map<std::string, std::vector<std::string>> out;
+                          const CommitPlanStage InStage) -> std::unordered_map<std::string, std::vector<RepoCommitPlanEntry::CommitItem>> {
+    std::unordered_map<std::string, std::vector<RepoCommitPlanEntry::CommitItem>> out;
     auto appendEntries = [&](const std::vector<RepoCommitPlanEntry>& entries) {
         for (const auto& entry : entries) {
             auto& bucket = out[NormalizePlanKey(entry.repoKey)];
             for (const auto& item : entry.commits) {
-                bucket.push_back(item.message);
+                bucket.push_back(item);
             }
         }
     };
@@ -1460,10 +1532,10 @@ auto BuildStageMessageMap(const CommitPlanPayload& InPlan,
     return out;
 }
 
-auto ResolveRepoMessages(const std::unordered_map<std::string, std::vector<std::string>>& InStageMessages,
+auto ResolveRepoMessages(const std::unordered_map<std::string, std::vector<RepoCommitPlanEntry::CommitItem>>& InStageMessages,
                          const std::filesystem::path& InWorkspaceRoot,
                          const std::filesystem::path& InRepo,
-                         const std::string& InDefaultMessage) -> std::vector<std::string> {
+                         const std::string& InDefaultMessage) -> std::vector<RepoCommitPlanEntry::CommitItem> {
     std::vector<std::string> candidates;
     const auto rootNorm = NormalizePath(InWorkspaceRoot);
     const auto repoNorm = NormalizePath(InRepo);
@@ -1486,9 +1558,54 @@ auto ResolveRepoMessages(const std::unordered_map<std::string, std::vector<std::
     }
 
     if (!InDefaultMessage.empty()) {
-        return {InDefaultMessage};
+        RepoCommitPlanEntry::CommitItem one;
+        one.message = InDefaultMessage;
+        return {one};
     }
-    return {""};
+    RepoCommitPlanEntry::CommitItem one;
+    one.message = "";
+    return {one};
+}
+
+auto StageCommitItemForPlan(const std::filesystem::path& InRepo,
+                            const RepoCommitPlanEntry::CommitItem& InItem,
+                            std::string* OutError) -> bool {
+    const auto reset = GitPassThrough(InRepo, {"reset", "-q"});
+    if (reset.exitCode != 0) {
+        if (OutError != nullptr) {
+            *OutError = "git reset failed before plan-staged commit";
+        }
+        return false;
+    }
+
+    std::vector<std::string> args{"add", "-A", "--"};
+    if (!InItem.include.empty()) {
+        args.insert(args.end(), InItem.include.begin(), InItem.include.end());
+    }
+    for (const auto& ex : InItem.exclude) {
+        if (ex.rfind(":(exclude)", 0) == 0) {
+            args.push_back(ex);
+        } else {
+            args.push_back(std::string(":(exclude)") + ex);
+        }
+    }
+
+    const auto add = GitPassThrough(InRepo, args);
+    if (add.exitCode != 0) {
+        if (OutError != nullptr) {
+            *OutError = "git add failed for plan include/exclude pathspec";
+        }
+        return false;
+    }
+
+    const auto staged = GitCapture(InRepo, {"diff", "--cached", "--name-only"});
+    if (staged.exitCode != 0 || Trim(staged.stdoutStr).empty()) {
+        if (OutError != nullptr) {
+            *OutError = "plan commit staged no files (check include/exclude pathspec)";
+        }
+        return false;
+    }
+    return true;
 }
 
 auto ParseJobsValue(const std::string& InValue) -> std::optional<int> {
@@ -2280,7 +2397,12 @@ void RegisterCommit(CLI::App& InApp) {
                       << " review=" << (ai.reviewEnabled ? "on" : "off") << "\n";
         }
 
-        std::unordered_map<std::string, std::vector<std::string>> stageMessages;
+        if (!aiRequested) {
+            std::cout << "[native-commit] safety-gates: ignore + secret\n";
+            RunPipelineSafetyGatesForNonAiCommit();
+        }
+
+        std::unordered_map<std::string, std::vector<RepoCommitPlanEntry::CommitItem>> stageMessages;
         if (!commitPlanFile->empty()) {
             if (!repos->empty()) {
                 std::cerr << "Error: --plan-file cannot be combined with --repos\n";
@@ -2348,8 +2470,8 @@ void RegisterCommit(CLI::App& InApp) {
         auto reposCsv = Trim(*repos);
         if (!stageMessages.empty()) {
             std::string planReposCsv;
-            for (const auto& [repoKey, messages] : stageMessages) {
-                if (messages.empty()) {
+            for (const auto& [repoKey, items] : stageMessages) {
+                if (items.empty()) {
                     continue;
                 }
                 if (!planReposCsv.empty()) {
@@ -2379,6 +2501,7 @@ void RegisterCommit(CLI::App& InApp) {
                   << " jobs=" << workers
                   << " dirty_only=" << (dirtyOnly ? "on" : "off") << "\n";
 
+        const bool isPlanMode = !stageMessages.empty();
         for (const auto& wave : waves) {
             if (wave.empty()) {
                 continue;
@@ -2390,8 +2513,44 @@ void RegisterCommit(CLI::App& InApp) {
                     const auto label = DisplayRepoLabel(workspaceRoot, repo);
                     std::cout << "\n[commit] " << label << "\n";
                     const auto repoMessages = ResolveRepoMessages(stageMessages, workspaceRoot, repo, *message);
-                    for (const auto& repoMessage : repoMessages) {
-                        results.push_back(CommitSingleRepo(workspaceRoot, repo, repoMessage, *bStagedOnly, *bPush, ai));
+                    if (isPlanMode && repoMessages.size() > 1) {
+                        bool hasUnscoped = false;
+                        for (const auto& item : repoMessages) {
+                            if (item.include.empty() && item.exclude.empty()) {
+                                hasUnscoped = true;
+                                break;
+                            }
+                        }
+                        if (hasUnscoped) {
+                            RepoCommitResult failed;
+                            failed.repo = repo;
+                            failed.failed = true;
+                            failed.note = "plan has multiple commits for one repo but some commit entries miss include/exclude scope";
+                            results.push_back(std::move(failed));
+                            continue;
+                        }
+                    }
+                    for (std::size_t midx = 0; midx < repoMessages.size(); ++midx) {
+                        const auto& repoMessage = repoMessages[midx];
+                        const bool needsPlanStaging =
+                            isPlanMode && (repoMessages.size() > 1 || !repoMessage.include.empty() || !repoMessage.exclude.empty());
+                        if (needsPlanStaging) {
+                            std::string stageError;
+                            if (!StageCommitItemForPlan(repo, repoMessage, &stageError)) {
+                                RepoCommitResult failed;
+                                failed.repo = repo;
+                                failed.failed = true;
+                                failed.note = std::format("plan commit[{}] stage failed: {}", midx, stageError);
+                                results.push_back(std::move(failed));
+                                continue;
+                            }
+                        }
+                        results.push_back(CommitSingleRepo(workspaceRoot,
+                                                           repo,
+                                                           repoMessage.message,
+                                                           needsPlanStaging ? true : *bStagedOnly,
+                                                           *bPush,
+                                                           ai));
                     }
                 }
                 continue;
@@ -2408,11 +2567,47 @@ void RegisterCommit(CLI::App& InApp) {
                     const auto idx = wave[cursor++];
                     const auto repo = repoRecords[idx].path;
                     const auto repoMessages = ResolveRepoMessages(stageMessages, workspaceRoot, repo, *message);
-                    active.push_back(std::async(std::launch::async, [&, repo, repoMessages]() {
+                    active.push_back(std::async(std::launch::async, [&, repo, repoMessages, isPlanMode]() {
                         std::vector<RepoCommitResult> oneRepoResults;
                         oneRepoResults.reserve(repoMessages.size());
-                        for (const auto& repoMessage : repoMessages) {
-                            oneRepoResults.push_back(CommitSingleRepo(workspaceRoot, repo, repoMessage, *bStagedOnly, *bPush, ai));
+                        if (isPlanMode && repoMessages.size() > 1) {
+                            bool hasUnscoped = false;
+                            for (const auto& item : repoMessages) {
+                                if (item.include.empty() && item.exclude.empty()) {
+                                    hasUnscoped = true;
+                                    break;
+                                }
+                            }
+                            if (hasUnscoped) {
+                                RepoCommitResult failed;
+                                failed.repo = repo;
+                                failed.failed = true;
+                                failed.note = "plan has multiple commits for one repo but some commit entries miss include/exclude scope";
+                                oneRepoResults.push_back(std::move(failed));
+                                return oneRepoResults;
+                            }
+                        }
+                        for (std::size_t midx = 0; midx < repoMessages.size(); ++midx) {
+                            const auto& repoMessage = repoMessages[midx];
+                            const bool needsPlanStaging =
+                                isPlanMode && (repoMessages.size() > 1 || !repoMessage.include.empty() || !repoMessage.exclude.empty());
+                            if (needsPlanStaging) {
+                                std::string stageError;
+                                if (!StageCommitItemForPlan(repo, repoMessage, &stageError)) {
+                                    RepoCommitResult failed;
+                                    failed.repo = repo;
+                                    failed.failed = true;
+                                    failed.note = std::format("plan commit[{}] stage failed: {}", midx, stageError);
+                                    oneRepoResults.push_back(std::move(failed));
+                                    continue;
+                                }
+                            }
+                            oneRepoResults.push_back(CommitSingleRepo(workspaceRoot,
+                                                                       repo,
+                                                                       repoMessage.message,
+                                                                       needsPlanStaging ? true : *bStagedOnly,
+                                                                       *bPush,
+                                                                       ai));
                         }
                         return oneRepoResults;
                     }));

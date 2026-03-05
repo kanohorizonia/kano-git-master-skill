@@ -49,6 +49,12 @@
         "commits": [
           {
             "message": "replace-with-commit-message",
+            "include": [
+              "replace-with-include-path-or-glob"
+            ],
+            "exclude": [
+              "replace-with-exclude-path-or-glob"
+            ],
             "review": {
               "verdict": "pass",
               "reason": "replace-with-review-reason-for-this-commit"
