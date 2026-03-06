@@ -505,6 +505,16 @@ maybe_run_plan_preflight_for_ai_command() {
 
   if binary="$(find_existing_binary)"; then
     if run_native_binary "$binary" "${preflight_args[@]}"; then
+      # Clean workspace is a successful no-op for cpa/ai commit flows.
+      if "$binary" dirty --help >/dev/null 2>&1; then
+        local dirty_json=""
+        dirty_json="$("$binary" dirty --format json 2>/dev/null || true)"
+        if printf '%s' "$dirty_json" | grep -Eq '"dirty_repo_count"[[:space:]]*:[[:space:]]*0'; then
+          export KOG_PLAN_PREFLIGHT_WORKSPACE_CLEAN=1
+          return 0
+        fi
+      fi
+
       secret_gate_args=("plan" "verify" "secret" "--context" "ai-commit" "--limit" "20")
       if "$binary" plan verify secret --help >/dev/null 2>&1; then
         if run_native_binary "$binary" "${secret_gate_args[@]}"; then
@@ -1739,12 +1749,16 @@ main() {
   fi
 
   exec_args=("${args[@]}")
+  unset KOG_PLAN_PREFLIGHT_WORKSPACE_CLEAN
   maybe_alias_cpa_for_agent_mode exec_args
   maybe_apply_cpa_single_change_shortcut exec_args
   maybe_run_plan_preflight_for_ai_command "${exec_args[@]}"
   local preflight_status=$?
   if [[ "$preflight_status" -ne 0 ]]; then
     exit "$preflight_status"
+  fi
+  if [[ "${KOG_PLAN_PREFLIGHT_WORKSPACE_CLEAN:-0}" == "1" ]]; then
+    exit 0
   fi
   maybe_finalize_args_after_ai_preflight exec_args
 
