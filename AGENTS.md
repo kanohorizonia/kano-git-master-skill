@@ -136,6 +136,15 @@ Note: sourcing will also define globals used by those functions (see the script 
 
 ## Agent notes (how to make changes that fit)
 - Keep changes **minimal and script-local**; avoid broad refactors unless requested.
+- **Bootstrap-only scripts policy (required)**:
+  - `scripts/` (especially `scripts/kano-git` and `scripts/kog`) are bootstrap/entry wrappers only.
+  - Do not add new business pipeline logic to shell wrappers when the same logic can live in native C++ commands.
+  - Wrapper responsibilities are limited to:
+    - locating/dispatching native binary
+    - minimal environment/bootstrap setup
+    - installer/completion/wrapper-generation glue
+  - Commit/plan/verify/apply/sync/push decision logic must be implemented in native C++ (`src/cpp/...`), not duplicated in shell.
+  - If a behavior currently exists in shell and is not bootstrap-critical, migrate it into native first, then simplify/remove shell path.
 - When adding a new script:
   - place it under an existing category in `scripts/`
   - include `--help` and `--dry-run` when it mutates state

@@ -1750,17 +1750,10 @@ main() {
 
   exec_args=("${args[@]}")
   unset KOG_PLAN_PREFLIGHT_WORKSPACE_CLEAN
-  maybe_alias_cpa_for_agent_mode exec_args
-  maybe_apply_cpa_single_change_shortcut exec_args
-  maybe_run_plan_preflight_for_ai_command "${exec_args[@]}"
-  local preflight_status=$?
-  if [[ "$preflight_status" -ne 0 ]]; then
-    exit "$preflight_status"
-  fi
-  if [[ "${KOG_PLAN_PREFLIGHT_WORKSPACE_CLEAN:-0}" == "1" ]]; then
-    exit 0
-  fi
-  maybe_finalize_args_after_ai_preflight exec_args
+  # Bootstrap-only wrapper policy:
+  # cpa/cp/commit/commit-push routing, AI preflight, and plan lifecycle logic
+  # must be handled by native C++ command layer (main.cpp + command modules),
+  # not duplicated in shell wrapper.
 
   # Manual mode: no auto-rebuild/auto-prepare in execution path.
   if binary="$(find_binary)"; then
