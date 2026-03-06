@@ -1253,10 +1253,19 @@ main() {
   fi
 
   exec_args=("${args[@]}")
-  # Bootstrap-only wrapper policy:
-  # cpa/cp/commit/commit-push routing, AI preflight, and plan lifecycle logic
-  # must be handled by native C++ command layer (main.cpp + command modules),
-  # not duplicated in shell wrapper.
+  # Temporary launcher-side rewrite for cp/cpa.
+  # Native alias routing is expected to handle this, but current native parser path
+  # does not accept cp/cpa consistently. Keep shell behavior aligned with help text
+  # until the native alias path is corrected.
+  if [[ "${exec_args[0]:-}" == "cp" ]]; then
+    exec_args=("commit-push" "${exec_args[@]:1}")
+  elif [[ "${exec_args[0]:-}" == "cpa" ]]; then
+    if [[ "${KANO_AGENT_MODE:-0}" == "1" || "${KANO_AGENT_MODE:-}" == "true" ]]; then
+      exec_args=("commit-push" "${exec_args[@]:1}")
+    else
+      exec_args=("commit-push" "--ai-auto" "${exec_args[@]:1}")
+    fi
+  fi
 
   # Manual mode: no auto-rebuild/auto-prepare in execution path.
   if binary="$(find_binary)"; then
