@@ -738,6 +738,11 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
         }
     }
 
+    if (!NeedsPostSyncCommitNonPlan(InWorkspaceRoot, {}, false)) {
+        std::cout << "[commit-push] workspace clean; nothing to commit/push.\n";
+        return 0;
+    }
+
     std::cout << "=== commit-push stage: commit ===\n";
     {
         const auto commitCode = RunCommitNativePlanStage(InWorkspaceRoot, InNormalizedPlanFile, "commit", false);
