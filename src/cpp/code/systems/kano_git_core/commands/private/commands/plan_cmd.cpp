@@ -674,10 +674,16 @@ auto UnescapeJsonString(std::string InValue) -> std::string {
         switch (next) {
         case '\\': out.push_back('\\'); break;
         case '"': out.push_back('"'); break;
+        case '/': out.push_back('/'); break;
         case 'n': out.push_back('\n'); break;
         case 'r': out.push_back('\r'); break;
         case 't': out.push_back('\t'); break;
-        default: out.push_back(next); break;
+        default:
+            // Be permissive for AI-emitted JSON-like payloads (e.g. "\s" in Windows paths):
+            // preserve the backslash instead of silently dropping it.
+            out.push_back('\\');
+            out.push_back(next);
+            break;
         }
         i += 1;
     }
