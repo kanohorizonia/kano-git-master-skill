@@ -846,6 +846,50 @@ Ready-to-copy templates:
 
 ## Troubleshooting
 
+### Azure HTTPS auth: `fatal: unable to get password from user`
+
+Symptom:
+- `git ls-remote https://dev.azure.com/...` fails with `fatal: unable to get password from user`
+- `git lfs push` fails similarly after switching LFS endpoint to HTTPS
+
+Root cause (common in VS Code agent shells):
+- `credential.interactive=never` disables all credential prompts
+- `GIT_ASKPASS` points to VS Code askpass in non-interactive contexts
+
+Fix (repo-local, preferred):
+
+```bash
+# Allow prompts for this repo only
+git config --local credential.interactive always
+git config --local credential.https://dev.azure.com.useHttpPath true
+
+# Clear VS Code askpass for current shell
+unset GIT_ASKPASS SSH_ASKPASS VSCODE_GIT_ASKPASS_MAIN VSCODE_GIT_ASKPASS_NODE VSCODE_GIT_ASKPASS_EXTRA_ARGS
+export GIT_TERMINAL_PROMPT=1
+
+# Re-auth test (enter username + Azure PAT when prompted)
+git ls-remote https://dev.azure.com/<org>/<project>/_git/<repo>
+```
+
+For Azure Repos + LFS when Git remote stays SSH:
+
+```bash
+# Keep git remote as SSH, force LFS over HTTPS endpoint
+git config lfs.url https://dev.azure.com/<org>/<project>/_git/<repo>/info/lfs
+git config lfs.https://dev.azure.com/<org>/<project>/_git/<repo>/info/lfs.locksverify false
+```
+
+Then push in two steps:
+
+```bash
+git lfs push origin <branch>
+git push
+```
+
+Notes:
+- If you must change default behavior globally: `git config --global credential.interactive always`
+- Prefer repo-local override first to avoid changing other automation environments.
+
 ### Stable-Dev Cherry-Pick Repair Playbook (`-X theirs` after sync)
 
 Use this flow when `smart-sync-upstream-stable-dev` bootstraps a stable branch and you must re-apply local maintenance commits:
@@ -862,6 +906,50 @@ Use this flow when `smart-sync-upstream-stable-dev` bootstraps a stable branch a
 Notes:
 - `-X theirs` helps finish conflicted replay quickly, but it is not a correctness guarantee.
 - Prefer preserving current stable-branch architecture and only re-applying the intended behavior delta from the original commits.
+
+### Agent Mode SOP: `kog-sync-upstream-stable-dev.sh`
+
+Use this when running stable-dev sync from agent flows (non-interactive, deterministic):
+
+1. Run in agent mode (suppress interactive launcher behavior):
+
+```bash
+KANO_AGENT_MODE=1 ./kog-sync-upstream-stable-dev.sh
+```
+
+2. If cherry-pick conflicts occur, prioritize convergence first:
+  - resolve conflicted hunks with **theirs** (target stable line)
+  - `git add ...` then `git rebase --continue` / `git cherry-pick --continue`
+
+3. After all conflicts are green, perform **semantic backfill** (must-do):
+  - compare old maintenance intent vs new result (`git range-diff <old-range> <new-range>`)
+  - inspect `!` entries and files with behavior drift
+  - manually re-apply missing logic from old implementation (do not rely on `-X theirs` output alone)
+
+4. Validate and finalize:
+  - run targeted tests for touched surfaces
+  - ensure branch report still reflects expected source/target stable lines
+
+5. Push (explicit final step):
+  - push only after semantic parity is restored
+
+```bash
+git push
+# or, if workflow requires explicit remote/branch:
+git push origin <target-stable-branch>
+```
+
+Quick conflict commands:
+
+```bash
+git checkout --theirs <conflicted-file>
+git add <conflicted-file>
+git rebase --continue   # or: git cherry-pick --continue
+```
+
+Required review gate after conflicts:
+- "All conflicts resolved" is not done.
+- Done = conflicts resolved **and** previous maintenance logic verified/reinstated where needed.
 
 ### Rebase Conflicts
 ```bash
