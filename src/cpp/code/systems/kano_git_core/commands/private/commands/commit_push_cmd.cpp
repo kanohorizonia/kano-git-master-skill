@@ -880,8 +880,14 @@ void RegisterCommitPush(CLI::App& InApp) {
         const auto postCommitStart = std::chrono::steady_clock::now();
         shell::ExecResult postCommitResult{0, "", ""};
         if (hasCommitPlan) {
-            postCommitResult =
-                shell::ExecResult{RunCommitNativePlanStage(workspaceRoot, normalizedCommitPlanFile, "post_sync", false), "", ""};
+            if (*dryRun) {
+                std::cout << "[commit-push] post-sync plan commit skipped in dry-run mode.\n";
+            } else if (NeedsPostSyncCommitNonPlan(workspaceRoot, repoList, *noRecursive)) {
+                postCommitResult =
+                    shell::ExecResult{RunCommitNativePlanStage(workspaceRoot, normalizedCommitPlanFile, "post_sync", false), "", ""};
+            } else {
+                std::cout << "[commit-push] post-sync plan commit skipped (no working tree changes).\n";
+            }
         } else if (*dryRun) {
             std::cout << "[commit-push] post-sync commit skipped in dry-run mode.\n";
         } else if (NeedsPostSyncCommitNonPlan(workspaceRoot, repoList, *noRecursive)) {
