@@ -127,11 +127,12 @@ auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<
     workspace::DiscoverOptions options;
     options.rootDir = InRoot;
     options.maxDepth = 12;
-    options.useCache = true;
+    // Push must operate on the live workspace repo graph so newly added/nested
+    // repos are not silently skipped by a stale discovery cache.
+    options.useCache = false;
     options.metadataLevel = "minimal";
     options.excludePatterns = {
         ".kano",
-        ".agents",
         "tmp",
         "node_modules",
         ".cache",
