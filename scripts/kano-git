@@ -223,14 +223,6 @@ apply_launcher_env_overrides() {
   done
 }
 
-has_no_plan_auto_arg() {
-  local arg
-  for arg in "$@"; do
-    [[ "$arg" == "--no-plan-auto" ]] && return 0
-  done
-  return 1
-}
-
 has_help_request_arg() {
   local arg
   for arg in "$@"; do
@@ -255,188 +247,6 @@ is_lightweight_query_command() {
   return 1
 }
 
-has_message_arg() {
-  local arg
-  for arg in "$@"; do
-    case "$arg" in
-      -m|--message|--message=*)
-        return 0
-        ;;
-    esac
-  done
-  return 1
-}
-
-has_repos_arg() {
-  local arg
-  for arg in "$@"; do
-    case "$arg" in
-      --repos|--repos=*)
-        return 0
-        ;;
-    esac
-  done
-  return 1
-}
-
-maybe_apply_cpa_single_change_shortcut() {
-  local -n io_args_ref="$1"
-  local cmd binary scope_line dirty_repos total_changes
-  local default_message
-
-  cmd="${io_args_ref[0]:-}"
-  if [[ "$cmd" != "cpa" ]]; then
-    return 0
-  fi
-  if has_help_request_arg "${io_args_ref[@]}"; then
-    return 0
-  fi
-  if has_no_plan_auto_arg "${io_args_ref[@]}"; then
-    return 0
-  fi
-  if has_message_arg "${io_args_ref[@]}"; then
-    return 0
-  fi
-  if has_repos_arg "${io_args_ref[@]}"; then
-    return 0
-  fi
-  local plan_file=""
-  if extract_plan_file_from_args plan_file "${io_args_ref[@]}"; then
-    return 0
-  fi
-  if [[ "${KOG_CPA_DISABLE_SINGLE_CHANGE_SHORTCUT:-0}" == "1" ]]; then
-    return 0
-  fi
-
-  if ! binary="$(find_existing_binary)"; then
-    return 0
-  fi
-  if ! scope_line="$(
-      KANO_GIT_MASTER_ROOT="${KANO_GIT_MASTER_ROOT:-$PROJECT_ROOT}" \
-      KANO_GIT_BINARY_PATH="$binary" \
-      "$binary" plan prepare-scope 2>/dev/null | tr -d '\r' | tail -n 1
-    )"; then
-    return 0
-  fi
-  read -r dirty_repos total_changes _ <<<"$scope_line"
-  if [[ ! "$dirty_repos" =~ ^[0-9]+$ || ! "$total_changes" =~ ^[0-9]+$ ]]; then
-    return 0
-  fi
-  if [[ "$dirty_repos" -ne 1 || "$total_changes" -ne 1 ]]; then
-    return 0
-  fi
-
-  default_message="${KOG_CPA_SHORTCUT_MESSAGE:-chore(workspace): apply single-change update}"
-  io_args_ref=("cp" "-m" "$default_message")
-  log_launcher_status "cpa-shortcut" "ok" "single dirty repo + single change; bypass plan preflight with cp -m"
-  return 0
-}
-
-maybe_alias_cpa_for_agent_mode() {
-  local -n io_args_ref="$1"
-  local cmd="${io_args_ref[0]:-}"
-  local agent_mode="${KANO_AGENT_MODE:-0}"
-
-  if [[ "$cmd" != "cpa" ]]; then
-    return 0
-  fi
-  if [[ "$agent_mode" != "1" && "$agent_mode" != "true" ]]; then
-    return 0
-  fi
-
-  io_args_ref[0]="cp"
-  log_launcher_status "agent-cpa-alias" "ok" "agent mode enabled; map cpa -> cp (skip launcher AI preflight)"
-  return 0
-}
-
-is_ai_mode_commit_command() {
-  local -a args=("$@")
-  local cmd="${args[0]:-}"
-  local arg
-
-  if [[ "$cmd" == "cpa" ]]; then
-    return 0
-  fi
-  if [[ "$cmd" != "commit" && "$cmd" != "commit-push" ]]; then
-    return 1
-  fi
-
-  for arg in "${args[@]:1}"; do
-    case "$arg" in
-      -ai|--ai-auto|--ai-provider|--ai-model|--provider|--model)
-        return 0
-        ;;
-      --ai-provider=*|--ai-model=*|--provider=*|--model=*)
-        return 0
-        ;;
-    esac
-  done
-
-  return 1
-}
-
-extract_plan_file_from_args() {
-  local -n out_ref="$1"
-  shift
-  local -a args=("$@")
-  local i arg
-
-  out_ref=""
-  for ((i = 0; i < ${#args[@]}; i++)); do
-    arg="${args[$i]}"
-    case "$arg" in
-      --plan-file)
-        if ((i + 1 < ${#args[@]})); then
-          out_ref="${args[$((i + 1))]}"
-          return 0
-        fi
-        ;;
-      --plan-file=*)
-        out_ref="${arg#--plan-file=}"
-        return 0
-        ;;
-    esac
-  done
-
-  return 1
-}
-
-extract_ai_options_from_args() {
-  local -n out_provider_ref="$1"
-  local -n out_model_ref="$2"
-  shift 2
-
-  local -a args=("$@")
-  local i arg
-
-  out_provider_ref="auto"
-  out_model_ref="auto"
-
-  for ((i = 0; i < ${#args[@]}; i++)); do
-    arg="${args[$i]}"
-    case "$arg" in
-      --ai-provider|--provider)
-        if ((i + 1 < ${#args[@]})); then
-          out_provider_ref="${args[$((i + 1))]}"
-          i=$((i + 1))
-        fi
-        ;;
-      --ai-provider=*|--provider=*)
-        out_provider_ref="${arg#*=}"
-        ;;
-      --ai-model|--model)
-        if ((i + 1 < ${#args[@]})); then
-          out_model_ref="${args[$((i + 1))]}"
-          i=$((i + 1))
-        fi
-        ;;
-      --ai-model=*|--model=*)
-        out_model_ref="${arg#*=}"
-        ;;
-    esac
-  done
-}
-
 maybe_alias_self_shortcuts() {
   local -n out_args_ref="$1"
   local cmd="${out_args_ref[0]:-}"
@@ -455,143 +265,6 @@ maybe_alias_self_shortcuts() {
       log_launcher_status "alias-self" "ok" "map srb -> self rebuild"
       ;;
   esac
-}
-
-maybe_run_plan_preflight_for_ai_command() {
-  local -a args=("$@")
-  local cmd="${args[0]:-}"
-  local plan_file="" ai_provider="auto" ai_model="auto"
-  local allow_ignore_gate=0
-  local i arg status
-  local -a preflight_args=()
-  local -a secret_gate_args=()
-  local binary=""
-
-  if [[ "$cmd" != "commit" && "$cmd" != "commit-push" && "$cmd" != "cpa" ]]; then
-    return 0
-  fi
-  if has_help_request_arg "${args[@]}"; then
-    return 0
-  fi
-  if has_no_plan_auto_arg "${args[@]}"; then
-    return 0
-  fi
-  if ! is_ai_mode_commit_command "${args[@]}"; then
-    return 0
-  fi
-
-  extract_ai_options_from_args ai_provider ai_model "${args[@]}"
-  extract_plan_file_from_args plan_file "${args[@]}" || true
-
-  for ((i = 0; i < ${#args[@]}; i++)); do
-    arg="${args[$i]}"
-    case "$arg" in
-      --allow-ignore-gate)
-        allow_ignore_gate=1
-        ;;
-    esac
-  done
-
-  preflight_args=("plan" "runbook" "commit" "--ai-provider" "$ai_provider" "--ai-model" "$ai_model" "--max-commits" "10")
-  if [[ -n "$plan_file" ]]; then
-    preflight_args+=("--plan-file" "$plan_file")
-  fi
-  if [[ "$allow_ignore_gate" -eq 1 ]]; then
-    preflight_args+=("--allow-ignore-gate")
-  fi
-  if [[ "${KOG_CPA_AUTO_PLAN_DEBUG:-${KOG_PA_AUTO_PLAN_DEBUG:-0}}" == "1" ]]; then
-    preflight_args+=("--debug-ai")
-  fi
-
-  if binary="$(find_existing_binary)"; then
-    if run_native_binary "$binary" "${preflight_args[@]}"; then
-      # Clean workspace is a successful no-op for cpa/ai commit flows.
-      if "$binary" dirty --help >/dev/null 2>&1; then
-        local dirty_json=""
-        dirty_json="$("$binary" dirty --format json 2>/dev/null || true)"
-        if printf '%s' "$dirty_json" | grep -Eq '"dirty_repo_count"[[:space:]]*:[[:space:]]*0'; then
-          export KOG_PLAN_PREFLIGHT_WORKSPACE_CLEAN=1
-          return 0
-        fi
-      fi
-
-      secret_gate_args=("plan" "verify" "secret" "--context" "ai-commit" "--limit" "20")
-      if "$binary" plan verify secret --help >/dev/null 2>&1; then
-        if run_native_binary "$binary" "${secret_gate_args[@]}"; then
-          return 0
-        fi
-        status=$?
-        echo "Error: secret gate failed via native binary (exit=$status)." >&2
-        return "$status"
-      fi
-      echo "Warning: native binary does not support plan verify secret yet; skipping secret gate." >&2
-      return 0
-    else
-      status=$?
-      echo "Error: AI plan preflight failed via native binary (exit=$status)." >&2
-      return "$status"
-    fi
-  fi
-  echo "Error: AI plan preflight failed: native binary unavailable." >&2
-  return 2
-}
-
-maybe_finalize_args_after_ai_preflight() {
-  local -n io_args_ref="$1"
-  local cmd="${io_args_ref[0]:-}"
-  local plan_file=""
-  local workspace_root="${KANO_GIT_MASTER_ROOT:-$PROJECT_ROOT}"
-  local -a rewritten=()
-  local i arg
-
-  if [[ "$cmd" != "cpa" && "$cmd" != "commit" && "$cmd" != "commit-push" ]]; then
-    return 0
-  fi
-  if has_no_plan_auto_arg "${io_args_ref[@]}"; then
-    return 0
-  fi
-  if ! is_ai_mode_commit_command "${io_args_ref[@]}"; then
-    return 0
-  fi
-
-  extract_plan_file_from_args plan_file "${io_args_ref[@]}" || true
-  if [[ -z "$plan_file" ]]; then
-    plan_file="$workspace_root/.kano/cache/git/plans/default-plan.json"
-  fi
-
-  # cpa should execute as non-AI plan apply after preflight
-  if [[ "$cmd" == "cpa" ]]; then
-    rewritten+=("cp")
-  else
-    rewritten+=("$cmd")
-  fi
-
-  for ((i = 1; i < ${#io_args_ref[@]}; i++)); do
-    arg="${io_args_ref[$i]}"
-    case "$arg" in
-      -ai|--ai-auto|--ai-provider|--provider|--ai-model|--model)
-        if [[ "$arg" == "--ai-provider" || "$arg" == "--provider" || "$arg" == "--ai-model" || "$arg" == "--model" ]]; then
-          ((i++))
-        fi
-        continue
-        ;;
-      --ai-provider=*|--provider=*|--ai-model=*|--model=*)
-        continue
-        ;;
-      --plan-file)
-        ((i++))
-        continue
-        ;;
-      --plan-file=*)
-        continue
-        ;;
-    esac
-    rewritten+=("$arg")
-  done
-
-  rewritten+=("--plan-file" "$plan_file")
-  io_args_ref=("${rewritten[@]}")
-  return 0
 }
 
 apply_agent_mode_from_args() {
@@ -1080,101 +753,6 @@ maybe_handle_completion_install_request() {
   return 0
 }
 
-should_rebuild_native_binary() {
-  local binary="$1"
-  local native_out native_status native_reason native_dir
-
-  REBUILD_DIRECTION="unknown"
-  REBUILD_REASON=""
-
-  if [[ ! -f "$binary" ]]; then
-    REBUILD_REASON="binary missing"
-    return 0
-  fi
-
-  native_out="$(run_native_binary "$binary" self stale-check --repo "$PROJECT_ROOT" --binary "$binary" 2>/dev/null)"
-  native_status=$?
-  if [[ "$native_status" -eq 0 || "$native_status" -eq 1 ]]; then
-    native_dir="$(printf '%s\n' "$native_out" | sed -n 's/.*direction=\([^ ]*\).*/\1/p' | head -n1)"
-    native_reason="$(printf '%s\n' "$native_out" | sed -n 's/.*reason=\(.*\)$/\1/p' | head -n1)"
-    if [[ -n "$native_dir" ]]; then
-      REBUILD_DIRECTION="$native_dir"
-    fi
-    if [[ -n "$native_reason" ]]; then
-      REBUILD_REASON="$native_reason"
-    fi
-    if [[ "$native_status" -eq 0 ]]; then
-      return 0
-    fi
-    return 1
-  fi
-
-  # Strict native-only behavior: stale-check must be provided by C++ binary.
-  log_launcher_status "auto-rebuild" "skip" "native self stale-check unavailable; skip launcher-side rebuild heuristics"
-  return 1
-}
-
-maybe_rebuild_binary_if_needed() {
-  local binary="$1"
-  local rebuilt_binary
-  local allow_noninteractive_downgrade="${KANO_GIT_ALLOW_NONINTERACTIVE_DOWNGRADE_REBUILD:-0}"
-
-  if should_rebuild_native_binary "$binary"; then
-    if [[ "$REBUILD_DIRECTION" == "downgrade" ]]; then
-      if ! is_interactive_terminal; then
-        if [[ "$allow_noninteractive_downgrade" != "1" ]]; then
-          printf '%s\n' "$binary"
-          return 0
-        fi
-        echo "Detected downgrade rebuild in non-interactive mode; override enabled, proceeding with rebuild." >&2
-      fi
-      if ! maybe_prompt_yes_no "Detected downgrade rebuild. $REBUILD_REASON Proceed with downgrade rebuild?"; then
-        echo "User declined downgrade rebuild; keep current binary." >&2
-        printf '%s\n' "$binary"
-        return 0
-      fi
-    fi
-
-    if [[ -n "$REBUILD_REASON" ]]; then
-      echo "$REBUILD_REASON" >&2
-    fi
-    echo "Detected stale C++ binary; triggering rebuild..." >&2
-    if try_auto_prepare_binary; then
-      rebuilt_binary="$(find_binary || true)"
-      if [[ -n "$rebuilt_binary" && -f "$rebuilt_binary" ]]; then
-        printf '%s\n' "$rebuilt_binary"
-        return 0
-      fi
-      echo "Rebuild completed but no binary path was resolved." >&2
-    fi
-
-    if [[ -n "$binary" && -f "$binary" ]]; then
-      printf '%s\n' "$binary"
-      return 0
-    fi
-    return 1
-  fi
-
-  if [[ -z "$binary" || ! -f "$binary" ]]; then
-    return 1
-  fi
-
-  printf '%s\n' "$binary"
-}
-
-maybe_run_launcher_update_flow() {
-  local command="${1:-}"
-  local binary=""
-  local wsl_update_check="${KOG_WSL_AUTO_UPDATE_CHECK:-0}"
-  if is_wsl_shell && [[ "$wsl_update_check" != "1" ]]; then
-    return 0
-  fi
-  if ! binary="$(find_existing_binary 2>/dev/null)"; then
-    return 0
-  fi
-  run_native_binary "$binary" self maybe-auto-update --repo "$PROJECT_ROOT" --command "$command" || true
-}
-
 platform_name() {
   local os_name
   os_name="$(uname -s 2>/dev/null || true)"
@@ -1497,67 +1075,6 @@ run_shell_script() {
   return 1
 }
 
-try_auto_prepare_binary() {
-  local prereq_script build_script
-  local step_idx=0
-  local -a build_submodules=(
-    "src/cpp/code/thirdparty/cli11"
-    "src/cpp/code/thirdparty/ftxui"
-  )
-
-  if [[ -f "$PROJECT_ROOT/.gitmodules" ]] && command -v git >/dev/null 2>&1; then
-    log_launcher_status "auto-prepare" "step" "prepare-submodules"
-    (
-      cd "$PROJECT_ROOT"
-      git submodule sync -- "${build_submodules[@]}" >/dev/null
-      git submodule update --init --recursive -- "${build_submodules[@]}"
-    ) || {
-      echo "Warning: failed to prepare C++ thirdparty submodules (cli11/ftxui); build may fail." >&2
-    }
-  fi
-
-  if ! mapfile -t _scripts < <(script_paths); then
-    echo "Warning: no build automation scripts for platform $(platform_name) ($(arch_name))." >&2
-    return 1
-  fi
-
-  prereq_script="${_scripts[0]:-}"
-  build_script="${_scripts[1]:-}"
-  if [[ -z "$prereq_script" || -z "$build_script" ]]; then
-    echo "Warning: missing prerequisite/build script mapping for this platform." >&2
-    return 1
-  fi
-
-  step_idx=$((step_idx + 1))
-  log_launcher_status "auto-prepare" "step" "${step_idx}: direct-build"
-  echo "Attempting C++ binary build/refresh..." >&2
-  if run_shell_script "$build_script"; then
-    log_launcher_status "auto-prepare" "ok" "direct-build succeeded"
-    return 0
-  fi
-
-  step_idx=$((step_idx + 1))
-  log_launcher_status "auto-prepare" "step" "${step_idx}: prerequisite-install"
-  echo "Direct build failed. Installing/upgrading prerequisites..." >&2
-  run_shell_script "$prereq_script" || {
-    log_launcher_status "auto-prepare" "fail" "prerequisite-install failed"
-    echo "Warning: prerequisite installation failed." >&2
-    return 1
-  }
-
-  step_idx=$((step_idx + 1))
-  log_launcher_status "auto-prepare" "step" "${step_idx}: rebuild-after-prereq"
-  echo "Retrying C++ accelerated kano-git binary build..." >&2
-  run_shell_script "$build_script" || {
-    log_launcher_status "auto-prepare" "fail" "rebuild-after-prereq failed"
-    echo "Warning: C++ binary build failed after prerequisite installation." >&2
-    return 1
-  }
-
-  log_launcher_status "auto-prepare" "ok" "binary ready"
-  return 0
-}
-
 print_launcher_help_extras() {
   cat >&2 <<'EOF'
 
@@ -1604,11 +1121,8 @@ Launcher commands:
   pi ...                              Alias of plan new ...
   pia ...                             Alias of plan new --ai-auto ...
   cp ...                              Alias of commit-push (non-AI; no implicit --ai-auto)
-  cpa ...                             Alias of commit-push --ai-auto (auto adds --plan-file)
-                                      In agent mode (KANO_AGENT_MODE=1), cpa is treated as cp.
-                                      Shortcut: if prepare-scope is 1 repo + 1 change and no -m/--plan-file/--repos,
-                                      launcher auto-routes to `cp -m` for faster direct commit-push.
-                                      Auto-prepares plan via AI when missing/placeholder
+  cpa ...                             Alias of commit-push --ai-auto
+                                      AI planning/preflight/apply is handled by native command layer.
     --no-plan-auto                    Disable AI->plan auto routing
     --allow-ignore-gate               Bypass ignore gate for this run
     --llvm                            Use Homebrew LLVM clang/clang++ toolchain (macOS)
@@ -1621,27 +1135,17 @@ Launcher commands:
 
 Launcher env:
   KANO_AGENT_MODE=1                Force non-interactive agent mode in launcher flows
-  KANO_GIT_ALLOW_NONINTERACTIVE_DOWNGRADE_REBUILD=1
-                                      Allow downgrade rebuild in non-interactive mode
   KOG_BUILD_USE_LLVM=0|1              Build with LLVM toolchain (macOS default: 1)
   KOG_BUILD_ENABLE_MODULES=0|1        Build with C++20 modules (macOS default: 1)
   KOG_PLAN_FILE=<path>                Default plan file used when AI flags are present
                                       AI mode enforces required plan fields before execution,
                                       including per-commit review (verdict=pass + reason)
-  KOG_CPA_AUTO_PLAN_DEBUG=1           Enable --debug-ai during cpa auto plan prepare
-  KOG_PA_AUTO_PLAN_DEBUG=1            Deprecated legacy alias (compat); use KOG_CPA_AUTO_PLAN_DEBUG
-  KOG_CPA_DISABLE_SINGLE_CHANGE_SHORTCUT=1
-                                      Disable cpa single-change shortcut auto-routing
-  KOG_CPA_SHORTCUT_MESSAGE=<msg>      Override shortcut commit message used by auto-routed cp -m
   KOG_ALLOW_IGNORE_GATE=1             Bypass ignore gate (not recommended)
   KOG_GIT_INTERACTIVE=auto            Git prompt/editor mode: auto|1|0
                                       auto: agent mode -> non-interactive, human mode -> interactive
   KOG_DISABLE_SECRET_GATE=1           Disable secret gate (not recommended)
   KOG_IGNORE_GATE=off                 Disable ignore gate globally (not recommended)
                                       Static allowlist: assets/gitignore/ignore-gate-allowlist.txt
-  KOG_SKIP_AUTO_REBUILD_WHEN_DIRTY=0|1
-                                      Reserved (auto-rebuild disabled in manual mode)
-  KOG_WSL_AUTO_UPDATE_CHECK=0|1       Reserved (auto-update disabled in manual mode)
 EOF
 }
 
@@ -1749,7 +1253,6 @@ main() {
   fi
 
   exec_args=("${args[@]}")
-  unset KOG_PLAN_PREFLIGHT_WORKSPACE_CLEAN
   # Bootstrap-only wrapper policy:
   # cpa/cp/commit/commit-push routing, AI preflight, and plan lifecycle logic
   # must be handled by native C++ command layer (main.cpp + command modules),
