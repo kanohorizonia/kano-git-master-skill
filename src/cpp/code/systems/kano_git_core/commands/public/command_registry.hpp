@@ -56,7 +56,8 @@ auto RunSyncPreCommitNative(const std::filesystem::path& InRepoRoot,
 
 auto RunSyncOriginLatestNative(const std::filesystem::path& InRepoRoot,
                                bool InRecursive,
-                               bool InDryRun) -> int;
+                               bool InDryRun,
+                               bool InCleanupStaleLocks = false) -> int;
 
 auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
                               const std::string& InPlanFile,
