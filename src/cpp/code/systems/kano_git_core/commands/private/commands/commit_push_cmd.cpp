@@ -1531,6 +1531,9 @@ void RegisterCommitPush(CLI::App& InApp) {
 
         std::cout << "=== commit-push stage: push ===\n";
         const auto pushStart = std::chrono::steady_clock::now();
+        // Keep commit-push convergence deterministic and avoid the known
+        // parallel push worker hang path. Standalone `kog push` still exposes
+        // configurable parallelism for operator-driven use.
         const auto pushExitCode = RunPushNativeSimple(
             workspaceRoot,
             !*noRecursive,
@@ -1538,7 +1541,7 @@ void RegisterCommitPush(CLI::App& InApp) {
             *profile,
             *forceWithLease,
             *noVerify,
-            *jobs,
+            1,
             *verbose,
             *remote);
 
