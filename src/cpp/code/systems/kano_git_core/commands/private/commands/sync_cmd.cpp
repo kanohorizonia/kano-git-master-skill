@@ -923,14 +923,14 @@ auto CheckoutRecoveredBranch(
             *OutDetail = "checkout existing local branch";
         }
         if (InDryRun) {
-            std::cout << "[DRY RUN] Would run: git checkout " << InBranch << "\n";
+            std::cout << "[DRY RUN] Would run: git checkout -q " << InBranch << "\n";
             return true;
         }
-        const auto checkout = GitPassThrough(InRepo, {"checkout", InBranch});
+        const auto checkout = GitPassThrough(InRepo, {"checkout", "-q", InBranch});
         if (checkout.exitCode == 0) {
             return true;
         }
-        const auto forceCheckout = GitPassThrough(InRepo, {"checkout", "-f", InBranch});
+        const auto forceCheckout = GitPassThrough(InRepo, {"checkout", "-q", "-f", InBranch});
         if (forceCheckout.exitCode == 0) {
             if (OutDetail != nullptr) {
                 *OutDetail = "force checkout existing local branch";
@@ -945,14 +945,14 @@ auto CheckoutRecoveredBranch(
             *OutDetail = "create local branch from remote";
         }
         if (InDryRun) {
-            std::cout << "[DRY RUN] Would run: git checkout -b " << InBranch << " " << InRemote << "/" << InBranch << "\n";
+            std::cout << "[DRY RUN] Would run: git checkout -q -b " << InBranch << " " << InRemote << "/" << InBranch << "\n";
             return true;
         }
-        const auto checkout = GitPassThrough(InRepo, {"checkout", "-b", InBranch, std::format("{}/{}", InRemote, InBranch)});
+        const auto checkout = GitPassThrough(InRepo, {"checkout", "-q", "-b", InBranch, std::format("{}/{}", InRemote, InBranch)});
         if (checkout.exitCode == 0) {
             return true;
         }
-        const auto forceCheckout = GitPassThrough(InRepo, {"checkout", "-B", InBranch, std::format("{}/{}", InRemote, InBranch)});
+        const auto forceCheckout = GitPassThrough(InRepo, {"checkout", "-q", "-B", InBranch, std::format("{}/{}", InRemote, InBranch)});
         if (forceCheckout.exitCode == 0) {
             if (OutDetail != nullptr) {
                 *OutDetail = "force recreate local branch from remote";
@@ -969,10 +969,10 @@ auto CheckoutRecoveredBranch(
                 *OutDetail = "create stable-dev branch from latest tag";
             }
             if (InDryRun) {
-                std::cout << "[DRY RUN] Would run: git checkout -b " << InBranch << " refs/tags/" << latestTag << "\n";
+                std::cout << "[DRY RUN] Would run: git checkout -q -b " << InBranch << " refs/tags/" << latestTag << "\n";
                 return true;
             }
-            return GitPassThrough(InRepo, {"checkout", "-b", InBranch, std::format("refs/tags/{}", latestTag)}).exitCode == 0;
+            return GitPassThrough(InRepo, {"checkout", "-q", "-b", InBranch, std::format("refs/tags/{}", latestTag)}).exitCode == 0;
         }
     }
 
@@ -982,10 +982,10 @@ auto CheckoutRecoveredBranch(
             *OutDetail = "create local branch from matching tag";
         }
         if (InDryRun) {
-            std::cout << "[DRY RUN] Would run: git checkout -b " << InBranch << " " << tagRef << "\n";
+            std::cout << "[DRY RUN] Would run: git checkout -q -b " << InBranch << " " << tagRef << "\n";
             return true;
         }
-        return GitPassThrough(InRepo, {"checkout", "-b", InBranch, tagRef}).exitCode == 0;
+        return GitPassThrough(InRepo, {"checkout", "-q", "-b", InBranch, tagRef}).exitCode == 0;
     }
 
     return false;
@@ -1244,17 +1244,17 @@ auto RunNativeOriginLatestSync(
 
         std::vector<std::string> checkoutArgs;
         if (hasLocal) {
-            checkoutArgs = {"checkout", targetBranch};
+            checkoutArgs = {"checkout", "-q", targetBranch};
         } else if (hasRemote) {
-            checkoutArgs = {"checkout", "-B", targetBranch, std::format("{}/{}", plan.remote, targetBranch)};
+            checkoutArgs = {"checkout", "-q", "-B", targetBranch, std::format("{}/{}", plan.remote, targetBranch)};
         } else {
             if (plan.type == "unregistered") {
-                checkoutArgs = {"checkout", targetBranch};
+                checkoutArgs = {"checkout", "-q", targetBranch};
                 std::cout << "WARN: Unregistered repo branch has no remote ref, keeping local branch: " << name << "\n";
             } else {
                 std::string tagRef;
                 if (TryResolveTagRefForBranch(plan.path, targetBranch, &tagRef)) {
-                    checkoutArgs = {"checkout", "-B", targetBranch, tagRef};
+                    checkoutArgs = {"checkout", "-q", "-B", targetBranch, tagRef};
                     std::cout << "INFO: Target branch missing for " << name << "; creating from tag " << tagRef << "\n";
                 } else {
                     std::cerr << "ERROR: Target branch not found for " << name << "\n";
