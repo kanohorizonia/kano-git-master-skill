@@ -13,6 +13,7 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <optional>
 #include <regex>
 #include <set>
 #include <sstream>
@@ -387,6 +388,260 @@ auto WriteTextFile(const std::filesystem::path& InPath,
         return false;
     }
     return true;
+}
+
+auto ReadTextFile(const std::filesystem::path& InPath) -> std::optional<std::string> {
+    std::ifstream in(InPath, std::ios::in | std::ios::binary);
+    if (!in) {
+        return std::nullopt;
+    }
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    return buffer.str();
+}
+
+auto UnescapeJsonString(std::string InValue) -> std::string {
+    std::string out;
+    out.reserve(InValue.size());
+    for (std::size_t i = 0; i < InValue.size(); ++i) {
+        const char ch = InValue[i];
+        if (ch != '\\' || i + 1 >= InValue.size()) {
+            out.push_back(ch);
+            continue;
+        }
+        const char next = InValue[i + 1];
+        switch (next) {
+        case '\\': out.push_back('\\'); break;
+        case '"': out.push_back('"'); break;
+        case '/': out.push_back('/'); break;
+        case 'n': out.push_back('\n'); break;
+        case 'r': out.push_back('\r'); break;
+        case 't': out.push_back('\t'); break;
+        default:
+            out.push_back('\\');
+            out.push_back(next);
+            break;
+        }
+        i += 1;
+    }
+    return out;
+}
+
+auto SkipJsonWhitespace(const std::string& InText, std::size_t InPos) -> std::size_t {
+    std::size_t pos = InPos;
+    while (pos < InText.size()) {
+        const char ch = InText[pos];
+        if (ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r') {
+            break;
+        }
+        pos += 1;
+    }
+    return pos;
+}
+
+auto ParseJsonStringAt(const std::string& InText, std::size_t InPos) -> std::optional<std::pair<std::string, std::size_t>> {
+    if (InPos >= InText.size() || InText[InPos] != '"') {
+        return std::nullopt;
+    }
+    std::string raw;
+    std::size_t pos = InPos + 1;
+    while (pos < InText.size()) {
+        const char ch = InText[pos];
+        if (ch == '\\') {
+            if (pos + 1 >= InText.size()) {
+                return std::nullopt;
+            }
+            raw.push_back(ch);
+            raw.push_back(InText[pos + 1]);
+            pos += 2;
+            continue;
+        }
+        if (ch == '"') {
+            return std::make_pair(UnescapeJsonString(raw), pos + 1);
+        }
+        raw.push_back(ch);
+        pos += 1;
+    }
+    return std::nullopt;
+}
+
+auto FindJsonKeyValueStart(const std::string& InText, const std::string& InKey, std::size_t InFrom = 0) -> std::optional<std::size_t> {
+    std::size_t pos = InFrom;
+    while (pos < InText.size()) {
+        pos = InText.find('"', pos);
+        if (pos == std::string::npos) {
+            return std::nullopt;
+        }
+        const auto parsed = ParseJsonStringAt(InText, pos);
+        if (!parsed.has_value()) {
+            return std::nullopt;
+        }
+        const auto& [key, nextPos] = *parsed;
+        pos = SkipJsonWhitespace(InText, nextPos);
+        if (key == InKey && pos < InText.size() && InText[pos] == ':') {
+            return SkipJsonWhitespace(InText, pos + 1);
+        }
+    }
+    return std::nullopt;
+}
+
+auto ExtractBracketBody(const std::string& InText, std::size_t InStart, char InOpen, char InClose) -> std::optional<std::string> {
+    if (InStart >= InText.size() || InText[InStart] != InOpen) {
+        return std::nullopt;
+    }
+    bool inString = false;
+    bool escaped = false;
+    int depth = 0;
+    for (std::size_t pos = InStart; pos < InText.size(); ++pos) {
+        const char ch = InText[pos];
+        if (inString) {
+            if (escaped) {
+                escaped = false;
+            } else if (ch == '\\') {
+                escaped = true;
+            } else if (ch == '"') {
+                inString = false;
+            }
+            continue;
+        }
+        if (ch == '"') {
+            inString = true;
+            continue;
+        }
+        if (ch == InOpen) {
+            depth += 1;
+            continue;
+        }
+        if (ch == InClose) {
+            depth -= 1;
+            if (depth == 0) {
+                return InText.substr(InStart, pos - InStart + 1);
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+auto ExtractObjectBodyForKey(const std::string& InText, const std::string& InKey) -> std::optional<std::string> {
+    const auto valuePos = FindJsonKeyValueStart(InText, InKey);
+    if (!valuePos.has_value()) {
+        return std::nullopt;
+    }
+    return ExtractBracketBody(InText, *valuePos, '{', '}');
+}
+
+auto ExtractArrayBodyForKey(const std::string& InText, const std::string& InKey) -> std::optional<std::string> {
+    const auto valuePos = FindJsonKeyValueStart(InText, InKey);
+    if (!valuePos.has_value()) {
+        return std::nullopt;
+    }
+    return ExtractBracketBody(InText, *valuePos, '[', ']');
+}
+
+auto SplitTopLevelObjects(const std::string& InArrayBody) -> std::vector<std::string> {
+    std::vector<std::string> objects;
+    bool inString = false;
+    bool escaped = false;
+    int depth = 0;
+    std::size_t objectStart = std::string::npos;
+    for (std::size_t pos = 0; pos < InArrayBody.size(); ++pos) {
+        const char ch = InArrayBody[pos];
+        if (inString) {
+            if (escaped) {
+                escaped = false;
+            } else if (ch == '\\') {
+                escaped = true;
+            } else if (ch == '"') {
+                inString = false;
+            }
+            continue;
+        }
+        if (ch == '"') {
+            inString = true;
+            continue;
+        }
+        if (ch == '{') {
+            if (depth == 0) {
+                objectStart = pos;
+            }
+            depth += 1;
+            continue;
+        }
+        if (ch == '}') {
+            depth -= 1;
+            if (depth == 0 && objectStart != std::string::npos) {
+                objects.push_back(InArrayBody.substr(objectStart, pos - objectStart + 1));
+                objectStart = std::string::npos;
+            }
+        }
+    }
+    return objects;
+}
+
+auto ExtractStringField(const std::string& InObjectText, const std::string& InField) -> std::optional<std::string> {
+    const auto valuePos = FindJsonKeyValueStart(InObjectText, InField);
+    if (!valuePos.has_value()) {
+        return std::nullopt;
+    }
+    const auto parsed = ParseJsonStringAt(InObjectText, *valuePos);
+    if (!parsed.has_value()) {
+        return std::nullopt;
+    }
+    return parsed->first;
+}
+
+void PrintExecutedPlanSummary(const std::filesystem::path& InPlanPath, const int InMaxCommits = 10) {
+    const auto payload = ReadTextFile(InPlanPath);
+    if (!payload.has_value()) {
+        std::cerr << "Warning: executed plan summary unavailable: cannot read plan file: "
+                  << InPlanPath.generic_string() << "\n";
+        return;
+    }
+
+    const auto meta = ExtractObjectBodyForKey(*payload, "meta");
+    const auto stages = ExtractObjectBodyForKey(*payload, "stages");
+    if (!meta.has_value() || !stages.has_value()) {
+        std::cerr << "Warning: executed plan summary unavailable: plan schema missing meta/stages\n";
+        return;
+    }
+
+    const auto planner = ExtractObjectBodyForKey(*meta, "planner");
+    const auto planId = ExtractStringField(*meta, "plan_id").value_or("-");
+    const auto generated = ExtractStringField(*meta, "generated_at_utc").value_or("-");
+    const auto executed = ExtractStringField(*meta, "executed_at_utc").value_or("-");
+    const auto provider = planner.has_value() ? ExtractStringField(*planner, "provider").value_or("-") : "-";
+    const auto model = planner.has_value() ? ExtractStringField(*planner, "ai-model").value_or("-") : "-";
+
+    std::cout << "=== plan summary ===\n";
+    std::cout << "[plan] file: " << InPlanPath.generic_string() << "\n";
+    std::cout << "[plan] meta: plan_id=" << planId
+              << " generated=" << generated
+              << " executed=" << executed
+              << " provider=" << provider
+              << " ai-model=" << model << "\n";
+
+    const auto commitArray = ExtractArrayBodyForKey(*stages, "commit").value_or(std::string{});
+    std::size_t repoCount = 0;
+    std::size_t commitCount = 0;
+    std::vector<std::string> lines;
+    for (const auto& repoObj : SplitTopLevelObjects(commitArray)) {
+        const auto repo = ExtractStringField(repoObj, "repo").value_or("?");
+        const auto commits = ExtractArrayBodyForKey(repoObj, "commits").value_or(std::string{});
+        const auto commitObjects = SplitTopLevelObjects(commits);
+        if (!commitObjects.empty()) {
+            repoCount += 1;
+        }
+        commitCount += commitObjects.size();
+        for (const auto& commitObj : commitObjects) {
+            const auto msg = ExtractStringField(commitObj, "message").value_or("");
+            lines.push_back("[plan] - " + repo + ": " + msg);
+        }
+    }
+    std::cout << "[plan] commits: repos=" << repoCount << " total=" << commitCount << "\n";
+    const auto limit = std::min<std::size_t>(lines.size(), static_cast<std::size_t>(std::max(InMaxCommits, 0)));
+    for (std::size_t i = 0; i < limit; ++i) {
+        std::cout << lines[i] << "\n";
+    }
 }
 
 auto StampCommitPlanExecutedAt(const std::filesystem::path& InPath,
@@ -789,7 +1044,9 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
 
     std::cout << "=== commit-push stage: push ===\n";
     {
-        return RunPushNativeSimple(InWorkspaceRoot, true, false, false, false, false, 0, false, "");
+        const auto pushCode = RunPushNativeSimple(InWorkspaceRoot, true, false, false, false, false, 0, false, "");
+        PrintExecutedPlanSummary(std::filesystem::path(InNormalizedPlanFile).lexically_normal(), 10);
+        return pushCode;
     }
 }
 
@@ -1126,6 +1383,10 @@ void RegisterCommitPush(CLI::App& InApp) {
             std::cout << "post_sync_ms: " << postSyncMillis << "\n";
             std::cout << "push_ms: " << pushMillis << "\n";
             std::cout << "total_ms: " << totalMillis << "\n";
+        }
+
+        if (hasCommitPlan) {
+            PrintExecutedPlanSummary(std::filesystem::path(normalizedCommitPlanFile).lexically_normal(), 10);
         }
 
         std::exit(pushExitCode);
