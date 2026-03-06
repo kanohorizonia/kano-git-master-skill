@@ -66,6 +66,23 @@ bool IsPositiveInt32(const std::string& InValue) {
     return normalized <= kInt32Max;
 }
 
+bool IsTruthyEnv(const char* InName) {
+    if (InName == nullptr || *InName == '\0') {
+        return false;
+    }
+    const char* value = std::getenv(InName);
+    if (value == nullptr) {
+        return false;
+    }
+    const std::string raw{value};
+    std::string normalized;
+    normalized.reserve(raw.size());
+    for (const char ch : raw) {
+        normalized.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+    }
+    return normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on";
+}
+
 void SetAllowIgnoreGateEnv(bool InEnabled) {
 #if defined(_WIN32)
     if (InEnabled) {
@@ -276,10 +293,13 @@ void RewriteCommandAliases(std::vector<std::string>& InOutArgs) {
         rewritten.reserve(InOutArgs.size() + 3);
         rewritten.push_back(InOutArgs[0]);
         rewritten.push_back("commit-push");
-        rewritten.push_back("--ai-auto");
-        // Keep cpa alias from being auto-augmented with --plan-file by generic
-        // commit/commit-push rewrite pass; cpa flow resolves plan behavior downstream.
-        rewritten.push_back("--no-plan-auto");
+        // In agent mode, cpa must behave exactly like cp (external agent owns AI).
+        if (!IsTruthyEnv("KANO_AGENT_MODE")) {
+            rewritten.push_back("--ai-auto");
+            // Keep cpa alias from being auto-augmented with --plan-file by generic
+            // commit/commit-push rewrite pass; cpa flow resolves plan behavior downstream.
+            rewritten.push_back("--no-plan-auto");
+        }
         for (std::size_t i = 2; i < InOutArgs.size(); ++i) {
             rewritten.push_back(InOutArgs[i]);
         }
