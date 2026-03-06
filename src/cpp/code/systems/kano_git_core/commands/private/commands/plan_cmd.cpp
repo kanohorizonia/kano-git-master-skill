@@ -1730,6 +1730,9 @@ auto DefaultPlanPath(const std::filesystem::path& InWorkspaceRoot) -> std::files
 }
 
 auto ResolveSkillRoot(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path {
+    if (const char* envRoot = std::getenv("KANO_GIT_SKILL_ROOT"); envRoot != nullptr && std::string(envRoot).size() > 0) {
+        return std::filesystem::path(envRoot).lexically_normal();
+    }
     return (InWorkspaceRoot / ".agents" / "skills" / "kano" / "kano-git-master-skill").lexically_normal();
 }
 

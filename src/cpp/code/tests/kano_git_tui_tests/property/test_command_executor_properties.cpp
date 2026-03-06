@@ -8,6 +8,8 @@
 
 using namespace kano::git::commands;
 
+namespace {
+
 // Helper to create a test CLI11 app with sample commands
 auto CreateTestApp() -> std::unique_ptr<CLI::App> {
     auto app = std::make_unique<CLI::App>("Test App");
@@ -81,6 +83,8 @@ auto random_destructive_command() -> Catch::Generators::GeneratorWrapper<std::st
         Catch::Generators::random(0, static_cast<int>(commands.size() - 1))
     );
 }
+
+} // namespace
 
 TEST_CASE("Property 13: Command Execution Success Flow",
           "[Feature: tui-command-input-enhancement]"

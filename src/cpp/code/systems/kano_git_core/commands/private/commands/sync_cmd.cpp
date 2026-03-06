@@ -1026,39 +1026,6 @@ auto ResolveUnmergedByTheirs(const std::filesystem::path& InRepo, bool InDryRun)
     return CollectUnmergedPaths(InRepo).empty();
 }
 
-auto ContinueRebaseByPreferringTheirs(const std::filesystem::path& InRepo, const std::string& InRepoName) -> bool {
-    constexpr int maxAttempts = 24;
-    for (int attempt = 0; attempt < maxAttempts; ++attempt) {
-        if (!HasRebaseInProgress(InRepo)) {
-            return true;
-        }
-
-        const auto unmerged = CollectUnmergedPaths(InRepo);
-        if (unmerged.empty()) {
-            return false;
-        }
-
-        std::cerr << "WARN: rebase conflict in " << InRepoName
-                  << "; preferring incoming changes (--theirs) for "
-                  << unmerged.size() << " path" << (unmerged.size() == 1 ? "" : "s") << "\n";
-
-        if (!ResolveUnmergedByTheirs(InRepo, false)) {
-            return false;
-        }
-
-        const auto cont = GitPassThrough(InRepo, {"rebase", "--continue"});
-        if (cont.exitCode == 0) {
-            continue;
-        }
-
-        if (!HasRebaseInProgress(InRepo)) {
-            return false;
-        }
-    }
-
-    return !HasRebaseInProgress(InRepo);
-}
-
 auto BuildSyncPlans(
     const std::filesystem::path& InRoot,
     const std::string& InPreferredRemote,
@@ -1326,14 +1293,15 @@ auto RunNativeOriginLatestSync(
             if (shouldRebase) {
                 const auto rebase = GitPassThrough(plan.path, {"rebase", rebaseTarget});
                 if (rebase.exitCode != 0) {
-                    bool recovered = false;
-                    if (HasRebaseInProgress(plan.path) && !CollectUnmergedPaths(plan.path).empty()) {
-                        recovered = ContinueRebaseByPreferringTheirs(plan.path, name);
-                    }
-                    if (!recovered) {
-                        std::cerr << "ERROR: rebase failed for " << name << "\n";
+                    if (HasRebaseInProgress(plan.path)) {
+                        std::cerr << "ERROR: rebase conflict detected for " << name
+                                  << "; stopping sync and aborting rebase for manual review\n";
+                        const auto abortRebase = GitPassThrough(plan.path, {"rebase", "--abort"});
+                        if (abortRebase.exitCode != 0) {
+                            std::cerr << "WARN: failed to abort rebase after conflict for " << name << "\n";
+                        }
                         failures += 1;
-                        failureDetails.emplace_back(name, "rebase failed");
+                        failureDetails.emplace_back(name, "rebase conflict");
                         if (stashCreated) {
                             const auto stashPop = GitPassThrough(plan.path, {"stash", "pop"});
                             if (stashPop.exitCode != 0) {
@@ -1342,6 +1310,16 @@ auto RunNativeOriginLatestSync(
                         }
                         continue;
                     }
+                    std::cerr << "ERROR: rebase failed for " << name << "\n";
+                    failures += 1;
+                    failureDetails.emplace_back(name, "rebase failed");
+                    if (stashCreated) {
+                        const auto stashPop = GitPassThrough(plan.path, {"stash", "pop"});
+                        if (stashPop.exitCode != 0) {
+                            std::cerr << "WARN: failed to restore auto-stash for " << name << "\n";
+                        }
+                    }
+                    continue;
                 }
             }
         }

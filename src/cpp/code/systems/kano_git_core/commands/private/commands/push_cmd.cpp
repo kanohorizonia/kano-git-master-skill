@@ -131,17 +131,10 @@ auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<
     // repos are not silently skipped by a stale discovery cache.
     options.useCache = false;
     options.metadataLevel = "minimal";
-    options.excludePatterns = {
-        ".kano",
-        "tmp",
-        "node_modules",
-        ".cache",
-        "build",
-        "dist",
-        ".venv",
-        "venv",
-        "__pycache__",
-    };
+    // Push discovery should enumerate the live workspace repo graph without
+    // folder-name heuristics. Push/skip decisions belong to explicit policy
+    // checks in the execution stage, not discovery.
+    options.excludePatterns.clear();
 
     const auto discovery = workspace::DiscoverRepos(options);
     std::vector<std::filesystem::path> repos;
@@ -367,13 +360,6 @@ auto RunNativePush(
             return {1, 0};
         }
 
-        const auto branchOut = GitCapture(repoPath, {"symbolic-ref", "--quiet", "--short", "HEAD"});
-        const auto branch = Trim(branchOut.stdoutStr);
-        if (branchOut.exitCode != 0 || branch.empty()) {
-            std::cerr << "Error: Detached HEAD is not supported by native push flow: " << repoLabel << "\n";
-            return {0, 1};
-        }
-
         const auto pushPolicy = ResolveGitmodulesPushPolicy(repoPath);
         if (pushPolicy == "skip") {
             std::cout << "[" << repoLabel << "] Push skipped by .gitmodules policy (kog-push-policy=skip)\n";
@@ -382,6 +368,13 @@ auto RunNativePush(
         if (!pushPolicy.empty() && pushPolicy != "allow") {
             std::cerr << "[" << repoLabel << "] Warning: unknown .gitmodules kog-push-policy='" << pushPolicy
                       << "'; expected skip|allow, treating as allow\n";
+        }
+
+        const auto branchOut = GitCapture(repoPath, {"symbolic-ref", "--quiet", "--short", "HEAD"});
+        const auto branch = Trim(branchOut.stdoutStr);
+        if (branchOut.exitCode != 0 || branch.empty()) {
+            std::cerr << "Error: Detached HEAD is not supported by native push flow: " << repoLabel << "\n";
+            return {0, 1};
         }
 
         const bool hasUpstream = (GitCapture(repoPath, {"rev-parse", "--abbrev-ref", "@{upstream}"}).exitCode == 0);

@@ -1,4 +1,4 @@
-#include "generators/command_string_generator.hpp"
+#include "command_string_generator.hpp"
 #include <random>
 #include <algorithm>
 

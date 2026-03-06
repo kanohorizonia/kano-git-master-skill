@@ -117,6 +117,9 @@ auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<
 }
 
 auto ResolveSkillRoot(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path {
+    if (const char* envRoot = std::getenv("KANO_GIT_SKILL_ROOT"); envRoot != nullptr && std::string(envRoot).size() > 0) {
+        return std::filesystem::path(envRoot).lexically_normal();
+    }
     return (InWorkspaceRoot / ".agents" / "skills" / "kano" / "kano-git-master-skill").lexically_normal();
 }
 
@@ -901,25 +904,66 @@ auto IsGitlinkPathInHead(const std::filesystem::path& InRepoRoot, const std::str
     return out.rfind("160000 ", 0) == 0;
 }
 
-auto RepoHasGitlinkOnlyChanges(const std::filesystem::path& InRepoRoot) -> bool {
+auto CollectGitlinkOnlyChangedPaths(const std::filesystem::path& InRepoRoot) -> std::vector<std::string> {
     const auto status = shell::ExecuteCommand("git", {"status", "--porcelain"}, shell::ExecMode::Capture, InRepoRoot);
     if (status.exitCode != 0) {
-        return false;
+        return {};
     }
-    const auto porcelain = Trim(status.stdoutStr);
-    if (porcelain.empty()) {
-        return false;
+    const auto& porcelain = status.stdoutStr;
+    if (Trim(porcelain).empty()) {
+        return {};
     }
     const auto changedPaths = ParsePorcelainChangedPaths(porcelain);
     if (changedPaths.empty()) {
-        return false;
+        return {};
     }
     for (const auto& path : changedPaths) {
         if (!IsGitlinkPathInHead(InRepoRoot, path)) {
-            return false;
+            return {};
         }
     }
-    return true;
+    return changedPaths;
+}
+
+enum class PostSyncDeltaKind {
+    None,
+    GitlinkOnly,
+    SemanticDrift,
+};
+
+struct PostSyncDeltaSummary {
+    PostSyncDeltaKind kind = PostSyncDeltaKind::None;
+    int gitlinkOnlyRepoCount = 0;
+    std::vector<std::filesystem::path> semanticRepos;
+};
+
+auto ClassifyPostSyncDelta(const std::filesystem::path& InWorkspaceRoot,
+                           const std::vector<std::string>& InRepoList,
+                           const bool InNoRecursive) -> PostSyncDeltaSummary {
+    PostSyncDeltaSummary summary;
+    const auto repos = CollectPostSyncCandidateRepos(InWorkspaceRoot, InRepoList, InNoRecursive);
+    for (const auto& repo : repos) {
+        const auto status = shell::ExecuteCommand("git", {"status", "--porcelain"}, shell::ExecMode::Capture, repo);
+        if (status.exitCode != 0) {
+            continue;
+        }
+        const auto& porcelain = status.stdoutStr;
+    if (Trim(porcelain).empty()) {
+            continue;
+        }
+        const auto gitlinkPaths = CollectGitlinkOnlyChangedPaths(repo);
+        if (!gitlinkPaths.empty()) {
+            summary.gitlinkOnlyRepoCount += 1;
+            continue;
+        }
+        summary.semanticRepos.push_back(repo);
+    }
+    if (!summary.semanticRepos.empty()) {
+        summary.kind = PostSyncDeltaKind::SemanticDrift;
+    } else if (summary.gitlinkOnlyRepoCount > 0) {
+        summary.kind = PostSyncDeltaKind::GitlinkOnly;
+    }
+    return summary;
 }
 
 auto AutoAmendGitlinkOnlyPostSyncRepos(const std::filesystem::path& InWorkspaceRoot,
@@ -928,12 +972,15 @@ auto AutoAmendGitlinkOnlyPostSyncRepos(const std::filesystem::path& InWorkspaceR
     int amendedCount = 0;
     const auto repos = CollectPostSyncCandidateRepos(InWorkspaceRoot, InRepoList, InNoRecursive);
     for (const auto& repo : repos) {
-        if (!RepoHasGitlinkOnlyChanges(repo)) {
+        const auto gitlinkPaths = CollectGitlinkOnlyChangedPaths(repo);
+        if (gitlinkPaths.empty()) {
             continue;
         }
-        const auto addResult = shell::ExecuteCommand("git", {"add", "-A"}, shell::ExecMode::PassThrough, repo);
+        std::vector<std::string> addArgs = {"add", "--"};
+        addArgs.insert(addArgs.end(), gitlinkPaths.begin(), gitlinkPaths.end());
+        const auto addResult = shell::ExecuteCommand("git", addArgs, shell::ExecMode::PassThrough, repo);
         if (addResult.exitCode != 0) {
-            std::cerr << "[commit-push] post-sync gitlink-only auto-amend failed: git add -A failed in "
+            std::cerr << "[commit-push] post-sync gitlink-only auto-amend failed: git add -- <gitlink paths> failed in "
                       << repo.generic_string() << "\n";
             return {-1, amendedCount};
         }
@@ -966,11 +1013,6 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
         return 2;
     }
 
-    if (!NeedsPostSyncCommitNonPlan(InWorkspaceRoot, {}, false)) {
-        std::cout << "[commit-push] workspace clean; nothing to commit/push.\n";
-        return 0;
-    }
-
     {
         std::string stampError;
         const auto planPath = std::filesystem::path(InNormalizedPlanFile).lexically_normal();
@@ -998,45 +1040,53 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
         }
     }
 
-    if (!NeedsPostSyncCommitNonPlan(InWorkspaceRoot, {}, false)) {
-        std::cout << "[commit-push] workspace clean; nothing to commit/push.\n";
-        return 0;
-    }
-
-    std::cout << "=== commit-push stage: commit ===\n";
-    {
-        const auto commitCode = RunCommitNativePlanStage(InWorkspaceRoot, InNormalizedPlanFile, "commit", false);
-        if (commitCode != 0) {
-            return commitCode;
+    const bool hasWorkingChanges = NeedsPostSyncCommitNonPlan(InWorkspaceRoot, {}, false);
+    if (!hasWorkingChanges) {
+        std::cout << "[commit-push] workspace clean; skipping commit/sync/post-sync and proceeding to push check.\n";
+    } else {
+        std::cout << "=== commit-push stage: commit ===\n";
+        {
+            const auto commitCode = RunCommitNativePlanStage(InWorkspaceRoot, InNormalizedPlanFile, "commit", false);
+            if (commitCode != 0) {
+                return commitCode;
+            }
         }
-    }
 
-    std::cout << "=== commit-push stage: sync ===\n";
-    {
-        const auto syncCode = RunSyncOriginLatestNative(InWorkspaceRoot, true, false);
-        if (syncCode != 0) {
-            return syncCode;
+        std::cout << "=== commit-push stage: sync ===\n";
+        {
+            const auto syncCode = RunSyncOriginLatestNative(InWorkspaceRoot, true, false);
+            if (syncCode != 0) {
+                return syncCode;
+            }
         }
-    }
 
-    std::cout << "=== commit-push stage: post-sync ===\n";
-    {
-        const auto amendResult = AutoAmendGitlinkOnlyPostSyncRepos(InWorkspaceRoot, {}, false);
-        if (amendResult.first != 0) {
-            return 2;
-        }
-        if (amendResult.second > 0) {
-            std::cout << "[commit-push] post-sync gitlink-only auto-amend applied: repos=" << amendResult.second << "\n";
-        } else {
-            const bool hasPostSyncStage = PlanStageLikelyNonEmpty(std::filesystem::path(InNormalizedPlanFile), "post_sync");
-            if (!hasPostSyncStage) {
-                std::cout << "[commit-push] post-sync plan stage is empty; skipping.\n";
-            } else if (!NeedsPostSyncCommitNonPlan(InWorkspaceRoot, {}, false)) {
-                std::cout << "[commit-push] post-sync plan commit skipped (no working tree changes).\n";
+        std::cout << "=== commit-push stage: post-sync ===\n";
+        {
+            const auto summary = ClassifyPostSyncDelta(InWorkspaceRoot, {}, false);
+            if (summary.kind == PostSyncDeltaKind::SemanticDrift) {
+                std::cerr << "[commit-push] post-sync semantic drift detected after sync; manual review required.\n";
+                for (const auto& repo : summary.semanticRepos) {
+                    std::cerr << "  repo: " << repo.generic_string() << "\n";
+                }
+                return 2;
+            }
+            if (summary.kind == PostSyncDeltaKind::GitlinkOnly) {
+                const auto amendResult = AutoAmendGitlinkOnlyPostSyncRepos(InWorkspaceRoot, {}, false);
+                if (amendResult.first != 0) {
+                    return 2;
+                }
+                std::cout << "[commit-push] post-sync gitlink-only auto-amend applied: repos=" << amendResult.second << "\n";
             } else {
-                const auto postCommitCode = RunCommitNativePlanStage(InWorkspaceRoot, InNormalizedPlanFile, "post_sync", false);
-                if (postCommitCode != 0) {
-                    return postCommitCode;
+                const bool hasPostSyncStage = PlanStageLikelyNonEmpty(std::filesystem::path(InNormalizedPlanFile), "post_sync");
+                if (!hasPostSyncStage) {
+                    std::cout << "[commit-push] post-sync plan stage is empty; skipping.\n";
+                } else if (!NeedsPostSyncCommitNonPlan(InWorkspaceRoot, {}, false)) {
+                    std::cout << "[commit-push] post-sync plan commit skipped (no working tree changes).\n";
+                } else {
+                    const auto postCommitCode = RunCommitNativePlanStage(InWorkspaceRoot, InNormalizedPlanFile, "post_sync", false);
+                    if (postCommitCode != 0) {
+                        return postCommitCode;
+                    }
                 }
             }
         }
@@ -1122,10 +1172,6 @@ void RegisterCommitPush(CLI::App& InApp) {
 
         const auto workspaceRoot = std::filesystem::current_path().lexically_normal();
         const auto repoList = ParseReposCsv(*repos);
-        if (!NeedsPostSyncCommitNonPlan(workspaceRoot, repoList, *noRecursive)) {
-            std::cout << "[commit-push] workspace clean; nothing to commit/push.\n";
-            std::exit(0);
-        }
 
         if (*writeCommitPlanTemplate) {
             const auto outPath = commitPlanOut->empty()
@@ -1243,117 +1289,113 @@ void RegisterCommitPush(CLI::App& InApp) {
         const auto preCommitEnd = std::chrono::steady_clock::now();
         preCommitMillis = std::chrono::duration_cast<std::chrono::milliseconds>(preCommitEnd - preCommitStart).count();
 
-        if (!NeedsPostSyncCommitNonPlan(workspaceRoot, repoList, *noRecursive)) {
-            std::cout << "[commit-push] workspace clean; nothing to commit/push.\n";
-            if (*profile) {
-                const auto totalEnd = std::chrono::steady_clock::now();
-                const auto totalMillis = std::chrono::duration_cast<std::chrono::milliseconds>(totalEnd - totalStart).count();
-                std::cout << "\n=== Commit-Push Profile Summary ===\n";
-                std::cout << "mode: native\n";
-                std::cout << "pre_commit_ms: " << preCommitMillis << "\n";
-                std::cout << "commit_ms: 0\n";
-                std::cout << "sync_ms: 0\n";
-                std::cout << "post_sync_ms: 0\n";
-                std::cout << "push_ms: 0\n";
-                std::cout << "total_ms: " << totalMillis << "\n";
+        const bool hasWorkingChanges = NeedsPostSyncCommitNonPlan(workspaceRoot, repoList, *noRecursive);
+        if (!hasWorkingChanges) {
+            std::cout << "[commit-push] workspace clean; skipping commit/sync/post-sync and proceeding to push check.\n";
+        } else {
+            std::cout << "=== commit-push stage: commit ===\n";
+            const auto commitStart = std::chrono::steady_clock::now();
+            const auto commitResult = hasCommitPlan
+                ? shell::ExecResult{
+                    RunCommitNativePlanStage(workspaceRoot, normalizedCommitPlanFile, "commit", false), "", ""}
+                : shell::ExecResult{
+                    RunCommitNativeSimple(
+                        workspaceRoot,
+                        *repos,
+                        *noRecursive,
+                        *message,
+                        *stagedOnly,
+                        *dryRun,
+                        *aiProvider,
+                        *aiModel,
+                        *aiAuto,
+                        *noAiReview,
+                        false),
+                    "", ""};
+            const auto commitEnd = std::chrono::steady_clock::now();
+            commitMillis = std::chrono::duration_cast<std::chrono::milliseconds>(commitEnd - commitStart).count();
+            if (commitResult.exitCode != 0) {
+                std::exit(commitResult.exitCode);
             }
-            std::exit(0);
-        }
 
-        std::cout << "=== commit-push stage: commit ===\n";
-        const auto commitStart = std::chrono::steady_clock::now();
-        const auto commitResult = hasCommitPlan
-            ? shell::ExecResult{
-                RunCommitNativePlanStage(workspaceRoot, normalizedCommitPlanFile, "commit", false), "", ""}
-            : shell::ExecResult{
-                RunCommitNativeSimple(
-                    workspaceRoot,
-                    *repos,
-                    *noRecursive,
-                    *message,
-                    *stagedOnly,
-                    *dryRun,
-                    *aiProvider,
-                    *aiModel,
-                    *aiAuto,
-                    *noAiReview,
-                    false),
-                "", ""};
-        const auto commitEnd = std::chrono::steady_clock::now();
-        commitMillis = std::chrono::duration_cast<std::chrono::milliseconds>(commitEnd - commitStart).count();
-        if (commitResult.exitCode != 0) {
-            std::exit(commitResult.exitCode);
-        }
-
-        std::cout << "=== commit-push stage: sync ===\n";
-        const auto syncStart = std::chrono::steady_clock::now();
-        if (!repoList.empty()) {
-            for (const auto& repo : repoList) {
-                const auto repoRoot = (workspaceRoot / std::filesystem::path(repo)).lexically_normal();
-                const auto syncCode = RunSyncOriginLatestNative(repoRoot, false, *dryRun);
+            std::cout << "=== commit-push stage: sync ===\n";
+            const auto syncStart = std::chrono::steady_clock::now();
+            if (!repoList.empty()) {
+                for (const auto& repo : repoList) {
+                    const auto repoRoot = (workspaceRoot / std::filesystem::path(repo)).lexically_normal();
+                    const auto syncCode = RunSyncOriginLatestNative(repoRoot, false, *dryRun);
+                    if (syncCode != 0) {
+                        std::exit(syncCode);
+                    }
+                }
+            } else {
+                const auto syncCode = RunSyncOriginLatestNative(workspaceRoot, !*noRecursive, *dryRun);
                 if (syncCode != 0) {
                     std::exit(syncCode);
                 }
             }
-        } else {
-            const auto syncCode = RunSyncOriginLatestNative(workspaceRoot, !*noRecursive, *dryRun);
-            if (syncCode != 0) {
-                std::exit(syncCode);
-            }
-        }
-        const auto syncEnd = std::chrono::steady_clock::now();
-        syncMillis = std::chrono::duration_cast<std::chrono::milliseconds>(syncEnd - syncStart).count();
+            const auto syncEnd = std::chrono::steady_clock::now();
+            syncMillis = std::chrono::duration_cast<std::chrono::milliseconds>(syncEnd - syncStart).count();
 
-        std::cout << "=== commit-push stage: post-sync ===\n";
-        const auto postCommitStart = std::chrono::steady_clock::now();
-        shell::ExecResult postCommitResult{0, "", ""};
-        if (*dryRun) {
-            if (hasCommitPlan) {
-                std::cout << "[commit-push] post-sync plan commit skipped in dry-run mode.\n";
+            std::cout << "=== commit-push stage: post-sync ===\n";
+            const auto postCommitStart = std::chrono::steady_clock::now();
+            shell::ExecResult postCommitResult{0, "", ""};
+            if (*dryRun) {
+                if (hasCommitPlan) {
+                    std::cout << "[commit-push] post-sync plan commit skipped in dry-run mode.\n";
+                } else {
+                    std::cout << "[commit-push] post-sync commit skipped in dry-run mode.\n";
+                }
             } else {
-                std::cout << "[commit-push] post-sync commit skipped in dry-run mode.\n";
-            }
-        } else {
-            const auto amendResult = AutoAmendGitlinkOnlyPostSyncRepos(workspaceRoot, repoList, *noRecursive);
-            if (amendResult.first != 0) {
-                std::exit(2);
-            }
-            if (amendResult.second > 0) {
-                std::cout << "[commit-push] post-sync gitlink-only auto-amend applied: repos=" << amendResult.second << "\n";
-            } else if (hasCommitPlan) {
-                const bool hasPostSyncStage = PlanStageLikelyNonEmpty(std::filesystem::path(normalizedCommitPlanFile), "post_sync");
-                if (!hasPostSyncStage) {
-                    std::cout << "[commit-push] post-sync plan stage is empty; skipping.\n";
+                const auto summary = ClassifyPostSyncDelta(workspaceRoot, repoList, *noRecursive);
+                if (summary.kind == PostSyncDeltaKind::SemanticDrift) {
+                    std::cerr << "[commit-push] post-sync semantic drift detected after sync; manual review required.\n";
+                    for (const auto& repo : summary.semanticRepos) {
+                        std::cerr << "  repo: " << repo.generic_string() << "\n";
+                    }
+                    std::exit(2);
+                }
+                if (summary.kind == PostSyncDeltaKind::GitlinkOnly) {
+                    const auto amendResult = AutoAmendGitlinkOnlyPostSyncRepos(workspaceRoot, repoList, *noRecursive);
+                    if (amendResult.first != 0) {
+                        std::exit(2);
+                    }
+                    std::cout << "[commit-push] post-sync gitlink-only auto-amend applied: repos=" << amendResult.second << "\n";
+                } else if (hasCommitPlan) {
+                    const bool hasPostSyncStage = PlanStageLikelyNonEmpty(std::filesystem::path(normalizedCommitPlanFile), "post_sync");
+                    if (!hasPostSyncStage) {
+                        std::cout << "[commit-push] post-sync plan stage is empty; skipping.\n";
+                    } else if (NeedsPostSyncCommitNonPlan(workspaceRoot, repoList, *noRecursive)) {
+                        postCommitResult =
+                            shell::ExecResult{RunCommitNativePlanStage(workspaceRoot, normalizedCommitPlanFile, "post_sync", false), "", ""};
+                    } else {
+                        std::cout << "[commit-push] post-sync plan commit skipped (no working tree changes).\n";
+                    }
                 } else if (NeedsPostSyncCommitNonPlan(workspaceRoot, repoList, *noRecursive)) {
                     postCommitResult =
-                        shell::ExecResult{RunCommitNativePlanStage(workspaceRoot, normalizedCommitPlanFile, "post_sync", false), "", ""};
+                        shell::ExecResult{
+                            RunCommitNativeSimple(
+                                workspaceRoot,
+                                *repos,
+                                *noRecursive,
+                                *message,
+                                *stagedOnly,
+                                *dryRun,
+                                *aiProvider,
+                                *aiModel,
+                                *aiAuto,
+                                *noAiReview,
+                                false),
+                            "", ""};
                 } else {
-                    std::cout << "[commit-push] post-sync plan commit skipped (no working tree changes).\n";
+                    std::cout << "[commit-push] post-sync commit skipped (no working tree changes).\n";
                 }
-            } else if (NeedsPostSyncCommitNonPlan(workspaceRoot, repoList, *noRecursive)) {
-                postCommitResult =
-                    shell::ExecResult{
-                        RunCommitNativeSimple(
-                            workspaceRoot,
-                            *repos,
-                            *noRecursive,
-                            *message,
-                            *stagedOnly,
-                            *dryRun,
-                            *aiProvider,
-                            *aiModel,
-                            *aiAuto,
-                            *noAiReview,
-                            false),
-                        "", ""};
-            } else {
-                std::cout << "[commit-push] post-sync commit skipped (no working tree changes).\n";
             }
-        }
-        const auto postCommitEnd = std::chrono::steady_clock::now();
-        postSyncMillis = std::chrono::duration_cast<std::chrono::milliseconds>(postCommitEnd - postCommitStart).count();
-        if (postCommitResult.exitCode != 0) {
-            std::exit(postCommitResult.exitCode);
+            const auto postCommitEnd = std::chrono::steady_clock::now();
+            postSyncMillis = std::chrono::duration_cast<std::chrono::milliseconds>(postCommitEnd - postCommitStart).count();
+            if (postCommitResult.exitCode != 0) {
+                std::exit(postCommitResult.exitCode);
+            }
         }
 
         std::cout << "=== commit-push stage: push ===\n";

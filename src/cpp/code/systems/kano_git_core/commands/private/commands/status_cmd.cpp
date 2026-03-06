@@ -269,7 +269,7 @@ void RegisterStatus(CLI::App& InApp) {
 
     cmd->add_option("--format", *format, "Output format: table|json")->default_str("table");
     cmd->add_option("--max-depth", *maxDepth, "Discovery max depth");
-    cmd->add_option("--exclude", *exclude, "Exclude path pattern (repeatable)");
+    cmd->add_option("--exclude", *exclude, "Temporary scan-scope exclude override for this invocation only (repeatable; prefer .gitignore/.kogignore for shared policy)");
     cmd->add_flag("--no-cache", *noCache, "Disable discovery cache for this run");
     cmd->add_flag("--no-refresh-cache", *noRefreshCache, "Do not force cache refresh");
 
