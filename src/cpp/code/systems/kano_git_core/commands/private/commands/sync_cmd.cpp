@@ -20,9 +20,11 @@
 #include <string>
 #include <unordered_set>
 #include <vector>
+#include <fstream>
 
 #if defined(_WIN32)
 #include <io.h>
+#include <process.h>
 #else
 #include <unistd.h>
 #endif
@@ -206,6 +208,144 @@ auto RestoreAutoStashIfNeeded(const std::filesystem::path& InRepo, const std::st
 
     std::cout << "Restored auto-stash for " << InRepoName << "\n";
     return true;
+}
+
+struct IndexLockDiagnosis {
+    bool lockExists{false};
+    std::filesystem::path lockPath;
+    bool activeGitProcessDetected{false};
+    long long ageSeconds{-1};
+};
+
+auto ResolveIndexLockPath(const std::filesystem::path& InRepo) -> std::filesystem::path {
+    const auto result = GitCapture(InRepo, {"rev-parse", "--git-path", "index.lock"});
+    if (result.exitCode != 0) {
+        return {};
+    }
+    const auto pathText = Trim(result.stdoutStr);
+    if (pathText.empty()) {
+        return {};
+    }
+    auto path = std::filesystem::path(pathText);
+    if (path.is_relative()) {
+        path = std::filesystem::absolute((InRepo / path).lexically_normal());
+    }
+    return path;
+}
+
+auto DetectActiveGitProcesses() -> bool {
+    if (const char* overrideValue = std::getenv("KOG_SYNC_TEST_ASSUME_ACTIVE_GIT_PROCESS"); overrideValue != nullptr) {
+        const auto normalized = Trim(overrideValue);
+        if (normalized == "1" || normalized == "true" || normalized == "TRUE") {
+            return true;
+        }
+        if (normalized == "0" || normalized == "false" || normalized == "FALSE") {
+            return false;
+        }
+    }
+    const auto selfPid =
+#if defined(_WIN32)
+        _getpid();
+#else
+        getpid();
+#endif
+#if defined(_WIN32)
+    const auto result = shell::ExecuteCommand(
+        "powershell",
+        {"-NoLogo", "-NoProfile", "-Command",
+         std::format("$self={}; $p = Get-Process git -ErrorAction SilentlyContinue | Where-Object {{ $_.Id -ne $self }}; if ($null -eq $p) {{ exit 1 }} else {{ exit 0 }}",
+                     selfPid)},
+        shell::ExecMode::Capture,
+        std::filesystem::current_path());
+    return result.exitCode == 0;
+#else
+    const auto result = shell::ExecuteCommand(
+        "sh",
+        {"-lc", std::format("self={}; pgrep -f '(^|/)git(\\.exe)?$' | grep -v \"^$self$\" >/dev/null 2>&1", selfPid)},
+        shell::ExecMode::Capture,
+        std::filesystem::current_path());
+    return result.exitCode == 0;
+#endif
+}
+
+auto DiagnoseIndexLock(const std::filesystem::path& InRepo) -> IndexLockDiagnosis {
+    IndexLockDiagnosis out;
+    out.lockPath = ResolveIndexLockPath(InRepo);
+    if (out.lockPath.empty()) {
+        return out;
+    }
+    std::error_code ec;
+    out.lockExists = std::filesystem::exists(out.lockPath, ec) && !ec;
+    out.activeGitProcessDetected = DetectActiveGitProcesses();
+    if (out.lockExists) {
+        const auto writeTime = std::filesystem::last_write_time(out.lockPath, ec);
+        if (!ec) {
+            const auto now = decltype(writeTime)::clock::now();
+            out.ageSeconds =
+                std::chrono::duration_cast<std::chrono::seconds>(now - writeTime).count();
+            if (out.ageSeconds < 0) {
+                out.ageSeconds = 0;
+            }
+        }
+    }
+    return out;
+}
+
+auto PrintIndexLockDiagnosis(const std::string& InRepoName, const IndexLockDiagnosis& InDiagnosis) -> void {
+    if (!InDiagnosis.lockExists) {
+        return;
+    }
+    std::cerr << "ERROR: git index lock detected for " << InRepoName << "\n";
+    std::cerr << "  index.lock: " << InDiagnosis.lockPath.generic_string() << "\n";
+    if (InDiagnosis.ageSeconds >= 0) {
+        std::cerr << "  lock_last_write_age_seconds: " << InDiagnosis.ageSeconds << "\n";
+    }
+    std::cerr << "  active_git_process: " << (InDiagnosis.activeGitProcessDetected ? "yes" : "no") << "\n";
+}
+
+auto TryCleanupStaleIndexLock(const std::string& InRepoName, const IndexLockDiagnosis& InDiagnosis) -> bool {
+    if (!InDiagnosis.lockExists || InDiagnosis.lockPath.empty()) {
+        return false;
+    }
+    if (InDiagnosis.activeGitProcessDetected) {
+        std::cerr << "Hint: active git process detected; not removing index.lock automatically for " << InRepoName << "\n";
+        return false;
+    }
+    if (InDiagnosis.ageSeconds >= 0 && InDiagnosis.ageSeconds < 2) {
+        std::cerr << "Hint: index.lock is too new to treat as stale automatically for " << InRepoName << "\n";
+        return false;
+    }
+
+    std::error_code ec;
+    const bool removed = std::filesystem::remove(InDiagnosis.lockPath, ec);
+    if (!removed || ec) {
+        std::cerr << "ERROR: failed to remove stale index.lock for " << InRepoName << ": " << ec.message() << "\n";
+        return false;
+    }
+
+    std::cout << "Removed stale index.lock for " << InRepoName << ": " << InDiagnosis.lockPath.generic_string() << "\n";
+    return true;
+}
+
+auto IsIndexLockFailure(const shell::ExecResult& InResult) -> bool {
+    const auto merged = InResult.stdoutStr + "\n" + InResult.stderrStr;
+    return merged.find("index.lock") != std::string::npos &&
+           (merged.find("File exists") != std::string::npos ||
+            merged.find("could not write index") != std::string::npos ||
+            merged.find("Unable to create") != std::string::npos);
+}
+
+auto DescribeIndexLockFailure(const IndexLockDiagnosis& InDiagnosis, const bool InCleanupEnabled) -> std::string {
+    if (!InDiagnosis.lockExists) {
+        return "auto-stash failed";
+    }
+    if (InDiagnosis.activeGitProcessDetected) {
+        return "auto-stash blocked by index.lock (active git process detected)";
+    }
+    if (InCleanupEnabled) {
+        return "auto-stash blocked by stale index.lock (cleanup failed or lock too new)";
+    }
+    return "auto-stash blocked by stale index.lock (rerun with --cleanup-stale-locks)";
 }
 
 auto LocalBranchExists(const std::filesystem::path& InRepo, const std::string& InBranch) -> bool {
@@ -1145,7 +1285,8 @@ auto RunNativeOriginLatestSync(
     bool InNoCache,
     bool InRefreshCache,
     bool InRecursive,
-    bool InAutoStashLocalChanges) -> int {
+    bool InAutoStashLocalChanges,
+    bool InCleanupStaleLocks) -> int {
     std::vector<SyncPlan> plans;
     std::string mode;
     try {
@@ -1212,11 +1353,28 @@ auto RunNativeOriginLatestSync(
                     std::cout << "[DRY RUN] Would run: git stash push -u -m kano-native-sync-autostash\n";
                     stashCreated = true;
                 } else {
-                    const auto stash = GitCapture(plan.path, {"stash", "push", "-u", "-m", "kano-native-sync-autostash"});
+                    auto stash = GitCapture(plan.path, {"stash", "push", "-u", "-m", "kano-native-sync-autostash"});
+                    std::optional<IndexLockDiagnosis> indexLockDiagnosis;
+                    if (stash.exitCode != 0 && IsIndexLockFailure(stash)) {
+                        const auto diagnosis = DiagnoseIndexLock(plan.path);
+                        indexLockDiagnosis = diagnosis;
+                        PrintIndexLockDiagnosis(name, diagnosis);
+                        if (InCleanupStaleLocks) {
+                            if (TryCleanupStaleIndexLock(name, diagnosis)) {
+                                stash = GitCapture(plan.path, {"stash", "push", "-u", "-m", "kano-native-sync-autostash"});
+                            }
+                        } else if (diagnosis.lockExists && !diagnosis.activeGitProcessDetected) {
+                            std::cerr << "Hint: rerun with --cleanup-stale-locks to remove the stale index.lock automatically.\n";
+                        }
+                    }
                     if (stash.exitCode != 0) {
                         std::cerr << "ERROR: failed to auto-stash local changes for " << name << "\n";
                         failures += 1;
-                        failureDetails.emplace_back(name, "auto-stash failed");
+                        if (indexLockDiagnosis.has_value()) {
+                            failureDetails.emplace_back(name, DescribeIndexLockFailure(*indexLockDiagnosis, InCleanupStaleLocks));
+                        } else {
+                            failureDetails.emplace_back(name, "auto-stash failed");
+                        }
                         continue;
                     }
 
@@ -1651,6 +1809,7 @@ void RegisterSync(CLI::App& InApp) {
     auto* originLatestRefreshCache = new bool{false};
     auto* originLatestNoRecursive = new bool{false};
     auto* originLatestNoAutoStash = new bool{false};
+    auto* originLatestCleanupStaleLocks = new bool{false};
     auto* originLatestProfile = new bool{false};
 
     origin_latest->add_flag("--shell", *originLatestShell, "Deprecated compatibility flag (shell path removed)");
@@ -1662,6 +1821,7 @@ void RegisterSync(CLI::App& InApp) {
     origin_latest->add_flag("--native-refresh-cache", *originLatestRefreshCache, "Force native cache refresh");
     origin_latest->add_flag("--no-recursive,-N", *originLatestNoRecursive, "Sync only current repository");
     origin_latest->add_flag("--no-auto-stash", *originLatestNoAutoStash, "Do not auto-stash local changes before sync");
+    origin_latest->add_flag("--cleanup-stale-locks", *originLatestCleanupStaleLocks, "When auto-stash fails on index.lock and no git/kano-git process is active, remove the stale lock and retry once");
     origin_latest->add_flag("--profile", *originLatestProfile, "Print native sync timing/profile summary");
 
     origin_latest->callback([=]() {
@@ -1689,7 +1849,8 @@ void RegisterSync(CLI::App& InApp) {
             *originLatestNoCache,
             *originLatestRefreshCache,
             !*originLatestNoRecursive,
-            !*originLatestNoAutoStash);
+            !*originLatestNoAutoStash,
+            *originLatestCleanupStaleLocks);
         if (*originLatestProfile) {
             const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
             std::cout << "\n=== Sync Profile Summary ===\n";
@@ -1839,6 +2000,7 @@ void RegisterSync(CLI::App& InApp) {
     auto* devNoCache = new bool{false};
     auto* devRefreshCache = new bool{false};
     auto* devNoRecursive = new bool{false};
+    auto* devCleanupStaleLocks = new bool{false};
     auto* devProfile = new bool{false};
     dev->add_option("--repo", *devRepo, "Target repository root path");
     dev->add_flag("--dry-run", *devDryRun, "Preview sync actions without modifying repositories");
@@ -1846,6 +2008,7 @@ void RegisterSync(CLI::App& InApp) {
     dev->add_flag("--native-no-cache", *devNoCache, "Disable native discovery cache");
     dev->add_flag("--native-refresh-cache", *devRefreshCache, "Force native cache refresh");
     dev->add_flag("--no-recursive,-N", *devNoRecursive, "Sync only current repository");
+    dev->add_flag("--cleanup-stale-locks", *devCleanupStaleLocks, "When auto-stash fails on index.lock and no git/kano-git process is active, remove the stale lock and retry once");
     dev->add_flag("--profile", *devProfile, "Print native sync timing/profile summary");
     dev->callback([=]() {
         auto extras = dev->remaining();
@@ -1868,7 +2031,8 @@ void RegisterSync(CLI::App& InApp) {
             *devNoCache,
             *devRefreshCache,
             !*devNoRecursive,
-            true);
+            true,
+            *devCleanupStaleLocks);
         if (*devProfile) {
             const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
             std::cout << "\n=== Sync Profile Summary ===\n";
@@ -1956,14 +2120,17 @@ void RegisterSync(CLI::App& InApp) {
             false,
             false,
             false,
-            true);
+            true,
+            false);
         std::exit(code);
     });
 
     // --- sync (default: auto-detect) ---
     auto* defaultNoRecursive = new bool{false};
+    auto* defaultCleanupStaleLocks = new bool{false};
     auto* defaultProfile = new bool{false};
     cmd->add_flag("--no-recursive,-N", *defaultNoRecursive, "Default sync: only current repository");
+    cmd->add_flag("--cleanup-stale-locks", *defaultCleanupStaleLocks, "Default sync: remove stale index.lock automatically when no git/kano-git process is active");
     cmd->add_flag("--profile", *defaultProfile, "Default sync: print native timing/profile summary");
     cmd->allow_extras();
     cmd->callback([=]() {
@@ -1984,7 +2151,8 @@ void RegisterSync(CLI::App& InApp) {
                 false,
                 false,
                 !*defaultNoRecursive,
-                true);
+                true,
+                *defaultCleanupStaleLocks);
             if (*defaultProfile) {
                 const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
                 std::cout << "\n=== Sync Profile Summary ===\n";
@@ -2021,7 +2189,8 @@ auto RunSyncPreCommitNative(const std::filesystem::path& InRepoRoot,
 
 auto RunSyncOriginLatestNative(const std::filesystem::path& InRepoRoot,
                                const bool InRecursive,
-                               const bool InDryRun) -> int {
+                               const bool InDryRun,
+                               const bool InCleanupStaleLocks) -> int {
     return RunNativeOriginLatestSync(
         InRepoRoot,
         "origin",
@@ -2030,7 +2199,8 @@ auto RunSyncOriginLatestNative(const std::filesystem::path& InRepoRoot,
         false,
         false,
         InRecursive,
-        true);
+        true,
+        InCleanupStaleLocks);
 }
 
 } // namespace kano::git::commands

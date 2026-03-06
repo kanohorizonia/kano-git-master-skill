@@ -2,6 +2,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -134,8 +135,25 @@ auto ReadTextFile(const std::filesystem::path& InPath) -> std::string {
     return buffer.str();
 }
 
+auto TouchFile(const std::filesystem::path& InPath) -> void {
+    std::filesystem::create_directories(InPath.parent_path());
+    std::ofstream out(InPath, std::ios::binary | std::ios::trunc);
+    REQUIRE(out.good());
+}
+
+auto SetFileAgeSeconds(const std::filesystem::path& InPath, const int InAgeSeconds) -> void {
+    const auto now = std::filesystem::file_time_type::clock::now();
+    std::filesystem::last_write_time(InPath, now - std::chrono::seconds(InAgeSeconds));
+}
+
 auto ContainsPathEntry(const std::string& InPayload, const std::filesystem::path& InPath) -> bool {
     return InPayload.find(InPath.lexically_normal().generic_string()) != std::string::npos;
+}
+
+auto ContainsRawCheckoutChatter(const std::string& InPayload) -> bool {
+    return InPayload.find("Already on '") != std::string::npos ||
+           InPayload.find("Switched to branch '") != std::string::npos ||
+           InPayload.find("Previous HEAD position was ") != std::string::npos;
 }
 
 auto ExtractJsonStringField(const std::string& InJson, const std::string& InKey) -> std::string {
@@ -855,7 +873,72 @@ TEST_CASE("detached_head_recoverable_converges", "[functional][commit-push][deta
     INFO(result.stdoutText);
     INFO(result.stderrText);
     REQUIRE(result.exitCode == 0);
+    REQUIRE_FALSE(ContainsRawCheckoutChatter(result.stdoutText + "\n" + result.stderrText));
     REQUIRE(CurrentBranch(ctx.cloneRepo) == ctx.branch);
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("commit_push_success_path_does_not_emit_checkout_chatter", "[functional][commit-push][output]") {
+    const auto ctx = CreateRemoteWithClone("commit-push-quiet-output");
+    WriteTextFile(ctx.cloneRepo / "README.md", "seed\nquiet output check\n");
+
+    const auto result = RunKog({"commit-push", "-m", "test: quiet output path"}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    REQUIRE_FALSE(ContainsRawCheckoutChatter(result.stdoutText + "\n" + result.stderrText));
+    const auto [behind, ahead] = AheadBehindCounts(ctx.cloneRepo);
+    REQUIRE(behind == 0);
+    REQUIRE(ahead == 0);
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("sync_reports_index_lock_path_and_hint_when_auto_stash_hits_lock", "[functional][sync][locks]") {
+    const auto ctx = CreateRemoteWithClone("sync-lock-diagnose");
+    WriteTextFile(ctx.cloneRepo / "README.md", "seed\nlock diagnose\n");
+    const auto lockPath = (ctx.cloneRepo / ".git" / "index.lock").lexically_normal();
+    TouchFile(lockPath);
+
+    const auto result = RunKogWithEnv(
+        {"sync", "origin-latest", "--no-recursive"},
+        ctx.cloneRepo,
+        {{"KOG_SYNC_TEST_ASSUME_ACTIVE_GIT_PROCESS", "0"}});
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode != 0);
+    const auto merged = result.stdoutText + "\n" + result.stderrText;
+    REQUIRE(merged.find("git index lock detected for .") != std::string::npos);
+    REQUIRE(merged.find("index.lock:") != std::string::npos);
+    REQUIRE(merged.find(".git/index.lock") != std::string::npos);
+    REQUIRE(merged.find("lock_last_write_age_seconds:") != std::string::npos);
+    REQUIRE(merged.find("active_git_process:") != std::string::npos);
+    REQUIRE(merged.find("--cleanup-stale-locks") != std::string::npos);
+    REQUIRE(std::filesystem::exists(lockPath));
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("sync_cleanup_stale_locks_recovers_when_no_git_process_detected", "[functional][sync][locks]") {
+    const auto ctx = CreateRemoteWithClone("sync-lock-cleanup");
+    WriteTextFile(ctx.cloneRepo / "README.md", "seed\nlock cleanup\n");
+    const auto lockPath = (ctx.cloneRepo / ".git" / "index.lock").lexically_normal();
+    TouchFile(lockPath);
+    SetFileAgeSeconds(lockPath, 10);
+
+    const auto result = RunKogWithEnv(
+        {"sync", "origin-latest", "--no-recursive", "--cleanup-stale-locks"},
+        ctx.cloneRepo,
+        {{"KOG_SYNC_TEST_ASSUME_ACTIVE_GIT_PROCESS", "0"}});
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    const auto merged = result.stdoutText + "\n" + result.stderrText;
+    REQUIRE(merged.find("Removed stale index.lock for .") != std::string::npos);
+    REQUIRE_FALSE(std::filesystem::exists(lockPath));
+    const auto [behind, ahead] = AheadBehindCounts(ctx.cloneRepo);
+    REQUIRE(behind == 0);
+    REQUIRE(ahead == 0);
+
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
