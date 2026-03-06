@@ -971,6 +971,23 @@ void RegisterCommitPush(CLI::App& InApp) {
         const auto preCommitEnd = std::chrono::steady_clock::now();
         preCommitMillis = std::chrono::duration_cast<std::chrono::milliseconds>(preCommitEnd - preCommitStart).count();
 
+        if (!NeedsPostSyncCommitNonPlan(workspaceRoot, repoList, *noRecursive)) {
+            std::cout << "[commit-push] workspace clean; nothing to commit/push.\n";
+            if (*profile) {
+                const auto totalEnd = std::chrono::steady_clock::now();
+                const auto totalMillis = std::chrono::duration_cast<std::chrono::milliseconds>(totalEnd - totalStart).count();
+                std::cout << "\n=== Commit-Push Profile Summary ===\n";
+                std::cout << "mode: native\n";
+                std::cout << "pre_commit_ms: " << preCommitMillis << "\n";
+                std::cout << "commit_ms: 0\n";
+                std::cout << "sync_ms: 0\n";
+                std::cout << "post_sync_ms: 0\n";
+                std::cout << "push_ms: 0\n";
+                std::cout << "total_ms: " << totalMillis << "\n";
+            }
+            std::exit(0);
+        }
+
         std::cout << "=== commit-push stage: commit ===\n";
         const auto commitStart = std::chrono::steady_clock::now();
         const auto commitResult = hasCommitPlan
