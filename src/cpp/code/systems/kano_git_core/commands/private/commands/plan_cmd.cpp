@@ -211,7 +211,7 @@ auto IsProbableIgnoreArtifactPath(const std::string& InPath) -> bool {
         }
         return false;
     };
-    if (containsAny({"/.cache/", ".cache/", "/.pytest_cache/", ".pytest_cache/", "/.mypy_cache/", ".mypy_cache/", "/.idea/",
+    if (containsAny({"/.kano/", ".kano/", "/.cache/", ".cache/", "/.pytest_cache/", ".pytest_cache/", "/.mypy_cache/", ".mypy_cache/", "/.idea/",
                      ".idea/", "/.vscode/", ".vscode/", "/node_modules/", "node_modules/", "/dist/", "dist/", "/obj/",
                      "obj/", "/target/", "target/", "/out/", "out/"})) {
         return true;
@@ -223,6 +223,12 @@ auto IsProbableIgnoreArtifactPath(const std::string& InPath) -> bool {
         }
     }
     return false;
+}
+
+auto IsInternalPipelineArtifactPath(const std::string& InPath) -> bool {
+    auto lower = ToLower(InPath);
+    std::replace(lower.begin(), lower.end(), '\\', '/');
+    return lower == ".kano" || lower.rfind(".kano/", 0) == 0 || lower.find("/.kano/") != std::string::npos;
 }
 
 auto DefaultSecretRulesPath(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path {
@@ -356,6 +362,14 @@ auto ScanFileForSecretRules(const std::filesystem::path& InRepo,
     }
 }
 
+auto IsInternalOperationalRepoPath(const std::filesystem::path& InRoot, const std::filesystem::path& InRepo) -> bool {
+    auto rel = InRepo.lexically_relative(InRoot).generic_string();
+    std::replace(rel.begin(), rel.end(), '\\', '/');
+    const auto lower = ToLower(rel);
+    return lower == ".kano" || lower.rfind(".kano/", 0) == 0 || lower.find("/.kano/") != std::string::npos ||
+           lower == "src/cpp/build" || lower.rfind("src/cpp/build/", 0) == 0 || lower.find("/src/cpp/build/") != std::string::npos;
+}
+
 auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<std::filesystem::path> {
     workspace::DiscoverOptions options;
     options.rootDir = InRoot;
@@ -366,7 +380,11 @@ auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<
     std::vector<std::filesystem::path> repos;
     repos.reserve(discovery.repos.size());
     for (const auto& repo : discovery.repos) {
-        repos.push_back(repo.path.lexically_normal());
+        const auto path = repo.path.lexically_normal();
+        if (IsInternalOperationalRepoPath(InRoot, path)) {
+            continue;
+        }
+        repos.push_back(path);
     }
     std::sort(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
         return A.generic_string() < B.generic_string();
@@ -2791,8 +2809,8 @@ void RegisterPlan(CLI::App& InApp) {
         }
 
         const auto allowlistPath = ignoreGateAllowlist->empty()
-                                       ? (workspaceRoot / ".agents" / "skills" / "kano" / "kano-git-master-skill" / "assets" / "gitignore" /
-                                          "ignore-gate-allowlist.txt")
+                                       ? (workspaceRoot / ".agents" / "skills" / "kano" / "kano-git-master-skill" / "assets" /
+                                          "ignore-sources" / "local" / "ignore-gate-allowlist.txt")
                                              .lexically_normal()
                                        : std::filesystem::path(*ignoreGateAllowlist).lexically_normal();
         const auto allowlist = ReadIgnoreGateAllowlist(allowlistPath);
@@ -2811,6 +2829,9 @@ void RegisterPlan(CLI::App& InApp) {
                     continue;
                 }
                 if (!IsProbableIgnoreArtifactPath(raw)) {
+                    continue;
+                }
+                if (IsInternalPipelineArtifactPath(raw)) {
                     continue;
                 }
                 const auto norm = NormalizePathSlashesLower(raw);
@@ -3069,6 +3090,9 @@ void RegisterPlan(CLI::App& InApp) {
             while (std::getline(iss, path)) {
                 auto raw = Trim(path);
                 if (raw.empty() || !IsProbableIgnoreArtifactPath(raw)) {
+                    continue;
+                }
+                if (IsInternalPipelineArtifactPath(raw)) {
                     continue;
                 }
                 const auto norm = NormalizePathSlashesLower(raw);
@@ -3442,6 +3466,9 @@ void RegisterIgnore(CLI::App& InApp) {
                     continue;
                 }
                 if (!IsProbableIgnoreArtifactPath(path)) {
+                    continue;
+                }
+                if (IsInternalPipelineArtifactPath(path)) {
                     continue;
                 }
                 IgnoreFinding f;

@@ -179,7 +179,8 @@ auto IsProbableIgnoreArtifactPath(const std::string& InPath) -> bool {
     std::replace(p.begin(), p.end(), '\\', '/');
     const auto lower = ToLower(p);
     auto contains = [&](const std::string& token) { return lower.find(token) != std::string::npos; };
-    if (contains("/.cache/") || contains("/.pytest_cache/") || contains("/.mypy_cache/") || contains("/.idea/") || contains("/.vscode/")) {
+    if (lower == ".kano" || lower.rfind(".kano/", 0) == 0 || contains("/.kano/") ||
+        contains("/.cache/") || contains("/.pytest_cache/") || contains("/.mypy_cache/") || contains("/.idea/") || contains("/.vscode/")) {
         return true;
     }
     if (contains("/node_modules/") || contains("/dist/") || contains("/build/") || contains("/bin/") || contains("/obj/") || contains("/target/")) {
@@ -189,6 +190,12 @@ auto IsProbableIgnoreArtifactPath(const std::string& InPath) -> bool {
            lower.ends_with(".bak") || lower.ends_with(".swp") || lower.ends_with(".swo") || lower.ends_with(".class") ||
            lower.ends_with(".obj") || lower.ends_with(".o") || lower.ends_with(".pdb") || lower.ends_with(".ilk") ||
            lower.ends_with(".dmp") || lower.ends_with(".pyc");
+}
+
+auto IsInternalPipelineArtifactPath(const std::string& InPath) -> bool {
+    auto lower = ToLower(InPath);
+    std::replace(lower.begin(), lower.end(), '\\', '/');
+    return lower == ".kano" || lower.rfind(".kano/", 0) == 0 || lower.find("/.kano/") != std::string::npos;
 }
 
 struct SecretRule {
@@ -318,6 +325,9 @@ auto RunPipelineSafetyGatesForNonAiCommit(const std::filesystem::path& InWorkspa
             while (std::getline(iss, path)) {
                 auto p = Trim(path);
                 if (p.empty() || !IsProbableIgnoreArtifactPath(p)) {
+                    continue;
+                }
+                if (IsInternalPipelineArtifactPath(p)) {
                     continue;
                 }
                 std::replace(p.begin(), p.end(), '\\', '/');
@@ -799,6 +809,14 @@ auto ParseReposCsv(const std::string& InCsv) -> std::vector<std::filesystem::pat
     return out;
 }
 
+auto IsInternalOperationalRepoPath(const std::filesystem::path& InRoot, const std::filesystem::path& InRepo) -> bool {
+    auto rel = InRepo.lexically_relative(InRoot).generic_string();
+    std::replace(rel.begin(), rel.end(), '\\', '/');
+    const auto lower = ToLower(rel);
+    return lower == ".kano" || lower.rfind(".kano/", 0) == 0 || lower.find("/.kano/") != std::string::npos ||
+           lower == "src/cpp/build" || lower.rfind("src/cpp/build/", 0) == 0 || lower.find("/src/cpp/build/") != std::string::npos;
+}
+
 auto JoinReposCsv(const std::vector<std::filesystem::path>& InRepos) -> std::string {
     std::string out;
     for (std::size_t idx = 0; idx < InRepos.size(); ++idx) {
@@ -960,7 +978,11 @@ auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<
     const auto discovered = DiscoverWorkspaceRepoRecords(InRoot, "minimal");
     repos.reserve(discovered.size());
     for (const auto& repo : discovered) {
-        repos.push_back(repo.path);
+        const auto path = repo.path.lexically_normal();
+        if (IsInternalOperationalRepoPath(InRoot, path)) {
+            continue;
+        }
+        repos.push_back(path);
     }
     return repos;
 }
@@ -1070,6 +1092,9 @@ auto BuildCommitScopeRecords(const std::filesystem::path& InWorkspaceRoot,
     std::unordered_map<std::string, workspace::RepoRecord> byPath;
     byPath.reserve(all.size());
     for (const auto& repo : all) {
+        if (IsInternalOperationalRepoPath(InWorkspaceRoot, repo.path)) {
+            continue;
+        }
         byPath.emplace(ToGeneric(repo.path), repo);
     }
 
@@ -1104,7 +1129,12 @@ auto BuildCommitScopeRecords(const std::filesystem::path& InWorkspaceRoot,
             selected.push_back(std::move(fallback));
         }
     } else {
-        selected = all;
+        for (const auto& repo : all) {
+            if (IsInternalOperationalRepoPath(InWorkspaceRoot, repo.path)) {
+                continue;
+            }
+            selected.push_back(repo);
+        }
     }
 
     if (InDirtyOnly && Trim(InReposCsv).empty() && !InNoRecursive && selected.size() <= 1) {
@@ -2925,6 +2955,7 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
     if (Trim(parsed->meta.baseHeadSha) != currentBaseHeadSha ||
         Trim(parsed->meta.dirtyFingerprint) != currentDirtyFingerprint) {
         std::cerr << "Error: invalid --plan-file: workspace state drift detected.\n";
+        std::cerr << "  plan.path=" << normalizedCommitPlanPath << "\n";
         std::cerr << "  plan.base_head_sha=" << parsed->meta.baseHeadSha << "\n";
         std::cerr << "  current.base_head_sha=" << currentBaseHeadSha << "\n";
         std::cerr << "  plan.dirty_fingerprint=" << parsed->meta.dirtyFingerprint << "\n";
@@ -3452,6 +3483,7 @@ void RegisterCommit(CLI::App& InApp) {
             if (Trim(parsed->meta.baseHeadSha) != currentBaseHeadSha ||
                 Trim(parsed->meta.dirtyFingerprint) != currentDirtyFingerprint) {
                 std::cerr << "Error: invalid --plan-file: workspace state drift detected.\n";
+                std::cerr << "  plan.path=" << normalizedCommitPlanPath << "\n";
                 std::cerr << "  plan.base_head_sha=" << parsed->meta.baseHeadSha << "\n";
                 std::cerr << "  current.base_head_sha=" << currentBaseHeadSha << "\n";
                 std::cerr << "  plan.dirty_fingerprint=" << parsed->meta.dirtyFingerprint << "\n";

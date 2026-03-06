@@ -193,6 +193,21 @@ auto RecoverRebaseState(const std::filesystem::path& InRepo, const std::string& 
     return true;
 }
 
+auto RestoreAutoStashIfNeeded(const std::filesystem::path& InRepo, const std::string& InRepoName, bool InStashCreated) -> bool {
+    if (!InStashCreated) {
+        return true;
+    }
+
+    const auto stashPop = GitPassThrough(InRepo, {"stash", "pop"});
+    if (stashPop.exitCode != 0) {
+        std::cerr << "WARN: failed to restore auto-stash for " << InRepoName << "\n";
+        return false;
+    }
+
+    std::cout << "Restored auto-stash for " << InRepoName << "\n";
+    return true;
+}
+
 auto LocalBranchExists(const std::filesystem::path& InRepo, const std::string& InBranch) -> bool {
     if (InBranch.empty()) {
         return false;
@@ -364,6 +379,24 @@ auto ResolveGitmodulesBranch(const std::filesystem::path& InRoot, const std::str
     }
 
     return {};
+}
+
+auto RelativePathDepth(const std::filesystem::path& InRoot, const std::filesystem::path& InPath) -> std::size_t {
+    std::error_code ec;
+    const auto rel = std::filesystem::relative(InPath, InRoot, ec);
+    if (ec) {
+        return static_cast<std::size_t>(std::distance(InPath.begin(), InPath.end()));
+    }
+    return static_cast<std::size_t>(std::distance(rel.begin(), rel.end()));
+}
+
+auto IsInternalOperationalRepoPath(const std::filesystem::path& InRoot, const std::filesystem::path& InRepo) -> bool {
+    auto rel = InRepo.lexically_relative(InRoot).generic_string();
+    std::replace(rel.begin(), rel.end(), '\\', '/');
+    rel = Trim(rel);
+    std::transform(rel.begin(), rel.end(), rel.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return rel == ".kano" || rel.rfind(".kano/", 0) == 0 || rel.find("/.kano/") != std::string::npos ||
+           rel == "src/cpp/build" || rel.rfind("src/cpp/build/", 0) == 0 || rel.find("/src/cpp/build/") != std::string::npos;
 }
 
 auto ResolveStableRef(const std::filesystem::path& InRoot, const std::filesystem::path& InRepo, const std::string& InCurrentBranch, const std::string& InRelPath) -> std::string {
@@ -1048,6 +1081,9 @@ auto BuildSyncPlans(
 
     for (const auto& repo : discovery.repos) {
         const auto repoPath = std::filesystem::weakly_canonical(repo.path);
+        if (IsInternalOperationalRepoPath(root, repoPath)) {
+            continue;
+        }
         const auto remote = ResolveRemote(repoPath, InPreferredRemote);
         if (remote.empty()) {
             std::cerr << "WARN: Skip repo without remotes: " << repoPath.generic_string() << "\n";
@@ -1101,7 +1137,12 @@ auto BuildSyncPlans(
         });
     }
 
-    std::sort(plans.begin(), plans.end(), [](const SyncPlan& A, const SyncPlan& B) {
+    std::sort(plans.begin(), plans.end(), [&](const SyncPlan& A, const SyncPlan& B) {
+        const auto depthA = RelativePathDepth(root, A.path);
+        const auto depthB = RelativePathDepth(root, B.path);
+        if (depthA != depthB) {
+            return depthA < depthB;
+        }
         return A.path.generic_string() < B.path.generic_string();
     });
 
@@ -1154,18 +1195,28 @@ auto RunNativeOriginLatestSync(
         : "Syncing current repository only (non-recursive mode)\n");
     std::cout << "Discover mode: " << (mode.empty() ? "unknown" : mode) << "\n";
 
+    const auto root = std::filesystem::weakly_canonical(InRepoRoot);
     int failures = 0;
     int succeeded = 0;
     std::vector<std::pair<std::string, std::string>> failureDetails;
     for (const auto& plan : plans) {
         const auto rel = std::filesystem::relative(plan.path, InRepoRoot).generic_string();
         const auto name = (rel.empty() || rel == ".") ? "." : rel;
+        std::string targetBranch = plan.targetBranch;
+        std::string branchSource = plan.branchSource;
+        if (plan.type == "registered") {
+            const auto refreshed = GitmodulesBranchForPath(root, plan.path);
+            if (refreshed.has_value() && !refreshed->empty() && *refreshed != targetBranch) {
+                targetBranch = *refreshed;
+                branchSource = "registered .gitmodules branch (refreshed)";
+            }
+        }
         const auto status = GitCapture(plan.path, {"status", "--porcelain"});
         const bool hasLocalChanges = status.exitCode == 0 && !Trim(status.stdoutStr).empty();
         bool stashCreated = false;
 
         std::cout << (InDryRun ? "[DRY RUN] " : "") << "Repo: " << name << "\n";
-        std::cout << (InDryRun ? "[DRY RUN] " : "") << "Branch source: " << plan.branchSource << "\n";
+        std::cout << (InDryRun ? "[DRY RUN] " : "") << "Branch source: " << branchSource << "\n";
 
         if (hasLocalChanges) {
             if (InAutoStashLocalChanges) {
@@ -1200,27 +1251,30 @@ auto RunNativeOriginLatestSync(
             std::cerr << "WARN: fetch failed for " << name << "\n";
         }
 
-        const auto hasLocal = GitCapture(plan.path, {"show-ref", "--verify", "--quiet", std::format("refs/heads/{}", plan.targetBranch)}).exitCode == 0;
-        const auto hasRemote = GitCapture(plan.path, {"show-ref", "--verify", "--quiet", std::format("refs/remotes/{}/{}", plan.remote, plan.targetBranch)}).exitCode == 0;
+        const auto hasLocal = GitCapture(plan.path, {"show-ref", "--verify", "--quiet", std::format("refs/heads/{}", targetBranch)}).exitCode == 0;
+        const auto hasRemote = GitCapture(plan.path, {"show-ref", "--verify", "--quiet", std::format("refs/remotes/{}/{}", plan.remote, targetBranch)}).exitCode == 0;
 
         std::vector<std::string> checkoutArgs;
         if (hasLocal) {
-            checkoutArgs = {"checkout", plan.targetBranch};
+            checkoutArgs = {"checkout", targetBranch};
         } else if (hasRemote) {
-            checkoutArgs = {"checkout", "-b", plan.targetBranch, std::format("{}/{}", plan.remote, plan.targetBranch)};
+            checkoutArgs = {"checkout", "-B", targetBranch, std::format("{}/{}", plan.remote, targetBranch)};
         } else {
             if (plan.type == "unregistered") {
-                checkoutArgs = {"checkout", plan.targetBranch};
+                checkoutArgs = {"checkout", targetBranch};
                 std::cout << "WARN: Unregistered repo branch has no remote ref, keeping local branch: " << name << "\n";
             } else {
                 std::string tagRef;
-                if (TryResolveTagRefForBranch(plan.path, plan.targetBranch, &tagRef)) {
-                    checkoutArgs = {"checkout", "-B", plan.targetBranch, tagRef};
+                if (TryResolveTagRefForBranch(plan.path, targetBranch, &tagRef)) {
+                    checkoutArgs = {"checkout", "-B", targetBranch, tagRef};
                     std::cout << "INFO: Target branch missing for " << name << "; creating from tag " << tagRef << "\n";
                 } else {
                     std::cerr << "ERROR: Target branch not found for " << name << "\n";
                     failures += 1;
                     failureDetails.emplace_back(name, "target branch and matching tag not found");
+                    if (!RestoreAutoStashIfNeeded(plan.path, name, stashCreated)) {
+                        failureDetails.emplace_back(name, "stash pop failed after target-branch lookup failure");
+                    }
                     continue;
                 }
             }
@@ -1233,7 +1287,7 @@ auto RunNativeOriginLatestSync(
             }
             std::cout << "\n";
             if (hasRemote) {
-                const auto rebaseTarget = std::format("{}/{}", plan.remote, plan.targetBranch);
+                const auto rebaseTarget = std::format("{}/{}", plan.remote, targetBranch);
                 const auto aheadBehind = GitCapture(plan.path, {"rev-list", "--left-right", "--count", std::format("HEAD...{}", rebaseTarget)});
                 bool shouldRebase = true;
                 if (aheadBehind.exitCode == 0) {
@@ -1264,6 +1318,9 @@ auto RunNativeOriginLatestSync(
             std::cerr << "ERROR: checkout failed for " << name << "\n";
             failures += 1;
             failureDetails.emplace_back(name, "checkout failed");
+            if (!RestoreAutoStashIfNeeded(plan.path, name, stashCreated)) {
+                failureDetails.emplace_back(name, "stash pop failed after checkout failure");
+            }
             continue;
         }
 
@@ -1274,7 +1331,7 @@ auto RunNativeOriginLatestSync(
                 continue;
             }
 
-            const auto rebaseTarget = std::format("{}/{}", plan.remote, plan.targetBranch);
+            const auto rebaseTarget = std::format("{}/{}", plan.remote, targetBranch);
             bool shouldRebase = true;
             const auto aheadBehind = GitCapture(plan.path, {"rev-list", "--left-right", "--count", std::format("HEAD...{}", rebaseTarget)});
             if (aheadBehind.exitCode == 0) {
@@ -1302,37 +1359,26 @@ auto RunNativeOriginLatestSync(
                         }
                         failures += 1;
                         failureDetails.emplace_back(name, "rebase conflict");
-                        if (stashCreated) {
-                            const auto stashPop = GitPassThrough(plan.path, {"stash", "pop"});
-                            if (stashPop.exitCode != 0) {
-                                std::cerr << "WARN: failed to restore auto-stash for " << name << "\n";
-                            }
+                        if (!RestoreAutoStashIfNeeded(plan.path, name, stashCreated)) {
+                            failureDetails.emplace_back(name, "stash pop failed after rebase conflict");
                         }
                         continue;
                     }
                     std::cerr << "ERROR: rebase failed for " << name << "\n";
                     failures += 1;
                     failureDetails.emplace_back(name, "rebase failed");
-                    if (stashCreated) {
-                        const auto stashPop = GitPassThrough(plan.path, {"stash", "pop"});
-                        if (stashPop.exitCode != 0) {
-                            std::cerr << "WARN: failed to restore auto-stash for " << name << "\n";
-                        }
+                    if (!RestoreAutoStashIfNeeded(plan.path, name, stashCreated)) {
+                        failureDetails.emplace_back(name, "stash pop failed after rebase failure");
                     }
                     continue;
                 }
             }
         }
 
-        if (stashCreated) {
-            const auto stashPop = GitPassThrough(plan.path, {"stash", "pop"});
-            if (stashPop.exitCode != 0) {
-                std::cerr << "ERROR: failed to restore auto-stash for " << name << "\n";
-                failures += 1;
-                failureDetails.emplace_back(name, "stash pop failed after sync");
-                continue;
-            }
-            std::cout << "Restored auto-stash for " << name << "\n";
+        if (!RestoreAutoStashIfNeeded(plan.path, name, stashCreated)) {
+            failures += 1;
+            failureDetails.emplace_back(name, "stash pop failed after sync");
+            continue;
         }
 
         succeeded += 1;
@@ -1378,6 +1424,9 @@ auto RunNativePreCommitRepair(
 
     for (const auto& repo : discovery.repos) {
         const auto repoPath = std::filesystem::weakly_canonical(repo.path);
+        if (IsInternalOperationalRepoPath(root, repoPath)) {
+            continue;
+        }
         if (!InRecursive && repoPath != root) {
             continue;
         }

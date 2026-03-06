@@ -6,6 +6,10 @@ Contents:
 - `local/`: Kano-maintained deterministic ignore rules and mappings.
 - `upstream/github-gitignore/`: upstream template corpus via git submodule.
 
+Policy files under `local/`:
+- `custom.gitignore`: deterministic local ignore rules merged into ignore-plan suggestions.
+- `ignore-gate-allowlist.txt`: explicit path allowlist for ignore-gate false-positive exceptions.
+
 Ignore-plan generation should read this folder as a whole datasource set.
 
 Path resolution rules (`local/datasource.manifest.json`):

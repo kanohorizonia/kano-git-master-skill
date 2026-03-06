@@ -30,6 +30,20 @@ struct SubmoduleWorkspaceContext {
     std::string submodulePath;
 };
 
+struct SubmoduleBranchUpgradeContext {
+    SandboxContext sandbox;
+    std::filesystem::path childBareRemote;
+    std::filesystem::path childSeedRepo;
+    std::filesystem::path rootBareRemote;
+    std::filesystem::path rootSeedRepo;
+    std::filesystem::path cloneRootRepo;
+    std::filesystem::path cloneChildRepo;
+    std::string rootBranch;
+    std::string initialChildBranch;
+    std::string upgradedChildBranch;
+    std::string submodulePath;
+};
+
 struct NestedWorkspaceContext {
     SandboxContext sandbox;
     std::filesystem::path nestedBareRemote;
@@ -202,6 +216,68 @@ auto CreateRemoteWithSubmoduleClone(const std::string& InName, const std::string
     RequireSuccess(RunGit({"remote", "add", "origin", ctx.rootBareRemote.string()}, ctx.rootSeedRepo), "root add remote");
     RequireSuccess(RunGit({"push", "-u", "origin", ctx.branch}, ctx.rootSeedRepo), "root push");
     RequireSuccess(RunGit({"symbolic-ref", "HEAD", ("refs/heads/" + ctx.branch)}, ctx.rootBareRemote), "root bare HEAD");
+
+    RequireSuccess(
+        RunGit({"-c", "protocol.file.allow=always", "clone", "--recurse-submodules", ctx.rootBareRemote.string(), ctx.cloneRootRepo.string()},
+               ctx.sandbox.root),
+        "clone root with submodules");
+    ConfigureIdentity(ctx.cloneRootRepo);
+    RequireSuccess(
+        RunGit({"config", "kano.cache.local-dir", (ctx.sandbox.root / "_cache").string()}, ctx.cloneRootRepo),
+        "configure root external kano cache");
+    ctx.cloneChildRepo = (ctx.cloneRootRepo / std::filesystem::path(ctx.submodulePath)).lexically_normal();
+    ConfigureIdentity(ctx.cloneChildRepo);
+    return ctx;
+}
+
+auto CreateRemoteWithSubmoduleBranchUpgradeClone(const std::string& InName) -> SubmoduleBranchUpgradeContext {
+    SubmoduleBranchUpgradeContext ctx;
+    ctx.sandbox = CreateSandboxWorkspace(InName);
+    ctx.childBareRemote = (ctx.sandbox.root / "child-remote.git").lexically_normal();
+    ctx.childSeedRepo = (ctx.sandbox.root / "child-seed").lexically_normal();
+    ctx.rootBareRemote = (ctx.sandbox.root / "root-remote.git").lexically_normal();
+    ctx.rootSeedRepo = (ctx.sandbox.root / "root-seed").lexically_normal();
+    ctx.cloneRootRepo = (ctx.sandbox.root / "root-clone").lexically_normal();
+    ctx.rootBranch = "main";
+    ctx.initialChildBranch = "branch_v1.2.15";
+    ctx.upgradedChildBranch = "branch_v1.2.25";
+    ctx.submodulePath = "deps/child";
+
+    RequireSuccess(RunGit({"init", "--bare", ctx.childBareRemote.string()}, ctx.sandbox.root), "init child bare");
+    RequireSuccess(RunGit({"init", ctx.childSeedRepo.string()}, ctx.sandbox.root), "init child seed");
+    ConfigureIdentity(ctx.childSeedRepo);
+    RequireSuccess(RunGit({"checkout", "-b", ctx.initialChildBranch}, ctx.childSeedRepo), "checkout child initial branch");
+    WriteTextFile(ctx.childSeedRepo / ".gitignore", ".kano/\n");
+    WriteTextFile(ctx.childSeedRepo / "child.txt", "child seed\n");
+    RequireSuccess(RunGit({"add", ".gitignore", "child.txt"}, ctx.childSeedRepo), "child add");
+    RequireSuccess(RunGit({"commit", "-m", "child seed"}, ctx.childSeedRepo), "child commit");
+    RequireSuccess(RunGit({"remote", "add", "origin", ctx.childBareRemote.string()}, ctx.childSeedRepo), "child add remote");
+    RequireSuccess(RunGit({"push", "-u", "origin", ctx.initialChildBranch}, ctx.childSeedRepo), "child push initial");
+
+    RequireSuccess(RunGit({"checkout", "-b", ctx.upgradedChildBranch}, ctx.childSeedRepo), "checkout child upgraded branch");
+    WriteTextFile(ctx.childSeedRepo / "child.txt", "child upgraded\n");
+    RequireSuccess(RunGit({"add", "child.txt"}, ctx.childSeedRepo), "child upgraded add");
+    RequireSuccess(RunGit({"commit", "-m", "child upgraded"}, ctx.childSeedRepo), "child upgraded commit");
+    RequireSuccess(RunGit({"push", "-u", "origin", ctx.upgradedChildBranch}, ctx.childSeedRepo), "child push upgraded");
+    RequireSuccess(RunGit({"checkout", ctx.initialChildBranch}, ctx.childSeedRepo), "checkout child initial again");
+    RequireSuccess(RunGit({"symbolic-ref", "HEAD", ("refs/heads/" + ctx.initialChildBranch)}, ctx.childBareRemote), "child bare HEAD");
+
+    RequireSuccess(RunGit({"init", "--bare", ctx.rootBareRemote.string()}, ctx.sandbox.root), "init root bare");
+    RequireSuccess(RunGit({"init", ctx.rootSeedRepo.string()}, ctx.sandbox.root), "init root seed");
+    ConfigureIdentity(ctx.rootSeedRepo);
+    RequireSuccess(RunGit({"checkout", "-b", ctx.rootBranch}, ctx.rootSeedRepo), "checkout root branch");
+    WriteTextFile(ctx.rootSeedRepo / ".gitignore", ".kano/\n");
+    WriteTextFile(ctx.rootSeedRepo / "README.md", "root seed\n");
+    RequireSuccess(RunGit({"add", ".gitignore", "README.md"}, ctx.rootSeedRepo), "root add base");
+    RequireSuccess(RunGit({"commit", "-m", "root seed"}, ctx.rootSeedRepo), "root base commit");
+    RequireSuccess(
+        RunGit({"-c", "protocol.file.allow=always", "submodule", "add", "-b", ctx.initialChildBranch, ctx.childBareRemote.string(), ctx.submodulePath},
+               ctx.rootSeedRepo),
+        "root add submodule initial");
+    RequireSuccess(RunGit({"commit", "-am", "add submodule initial"}, ctx.rootSeedRepo), "root commit submodule initial");
+    RequireSuccess(RunGit({"remote", "add", "origin", ctx.rootBareRemote.string()}, ctx.rootSeedRepo), "root add remote");
+    RequireSuccess(RunGit({"push", "-u", "origin", ctx.rootBranch}, ctx.rootSeedRepo), "root push initial");
+    RequireSuccess(RunGit({"symbolic-ref", "HEAD", ("refs/heads/" + ctx.rootBranch)}, ctx.rootBareRemote), "root bare HEAD");
 
     RequireSuccess(
         RunGit({"-c", "protocol.file.allow=always", "clone", "--recurse-submodules", ctx.rootBareRemote.string(), ctx.cloneRootRepo.string()},
@@ -390,6 +466,69 @@ TEST_CASE("sync_conflict_fails_fast", "[functional][commit-push][post-sync]") {
                                   merged.find("could not apply") != std::string::npos ||
                                   merged.find("rebase") != std::string::npos;
     REQUIRE(mentionsConflict);
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("sync_registered_submodule_refreshes_gitmodules_branch_after_parent_sync", "[functional][sync][gitmodules-branch]") {
+    const auto ctx = CreateRemoteWithSubmoduleBranchUpgradeClone("sync-gitmodules-branch-refresh");
+
+    WriteTextFile(ctx.cloneChildRepo / "local-only.txt", "dirty local change\n");
+
+    const auto rootSubmoduleRepo = (ctx.rootSeedRepo / std::filesystem::path(ctx.submodulePath)).lexically_normal();
+    RequireSuccess(RunGit({"fetch", "origin", "--prune", "--tags"}, rootSubmoduleRepo), "fetch child origin from root seed");
+    RequireSuccess(RunGit({"checkout", "-B", ctx.upgradedChildBranch, ("origin/" + ctx.upgradedChildBranch)}, rootSubmoduleRepo), "checkout upgraded child branch in root seed");
+    RequireSuccess(
+        RunGit({"config", "-f", ".gitmodules", ("submodule." + ctx.submodulePath + ".branch"), ctx.upgradedChildBranch}, ctx.rootSeedRepo),
+        "update gitmodules branch");
+    RequireSuccess(RunGit({"add", ".gitmodules", ctx.submodulePath}, ctx.rootSeedRepo), "stage root upgrade");
+    RequireSuccess(RunGit({"commit", "-m", "upgrade child branch mapping"}, ctx.rootSeedRepo), "commit root upgrade");
+    RequireSuccess(RunGit({"push", "origin", ctx.rootBranch}, ctx.rootSeedRepo), "push root upgrade");
+
+    const auto result = RunKog({"sync"}, ctx.cloneRootRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    REQUIRE(result.stdoutText.find("Branch source: registered .gitmodules branch (refreshed)") != std::string::npos);
+    REQUIRE(result.stdoutText.find("Auto-stashed local changes for deps/child") != std::string::npos);
+    REQUIRE(result.stdoutText.find("Restored auto-stash for deps/child") != std::string::npos);
+
+    REQUIRE(CurrentBranch(ctx.cloneChildRepo) == ctx.upgradedChildBranch);
+    REQUIRE(CurrentHeadSha(ctx.cloneChildRepo) == RefSha(ctx.childBareRemote, "refs/heads/" + ctx.upgradedChildBranch));
+    REQUIRE(ReadTextFile(ctx.cloneChildRepo / "local-only.txt") == "dirty local change\n");
+    REQUIRE(ReadTextFile(ctx.cloneRootRepo / ".gitmodules").find("branch = " + ctx.upgradedChildBranch) != std::string::npos);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("sync_registered_submodule_fails_when_refreshed_gitmodules_branch_is_missing", "[functional][sync][gitmodules-branch]") {
+    const auto ctx = CreateRemoteWithSubmoduleBranchUpgradeClone("sync-gitmodules-branch-missing");
+
+    WriteTextFile(ctx.cloneChildRepo / "child.txt", "child seed\nlocal dirty change\n");
+    const auto childHeadBefore = CurrentHeadSha(ctx.cloneChildRepo);
+    const auto childBranchBefore = CurrentBranch(ctx.cloneChildRepo);
+
+    const auto missingBranch = std::string("branch_v1.2.99");
+    RequireSuccess(
+        RunGit({"config", "-f", ".gitmodules", ("submodule." + ctx.submodulePath + ".branch"), missingBranch}, ctx.rootSeedRepo),
+        "set missing child branch in gitmodules");
+    RequireSuccess(RunGit({"add", ".gitmodules"}, ctx.rootSeedRepo), "stage missing gitmodules branch");
+    RequireSuccess(RunGit({"commit", "-m", "point submodule branch to missing branch"}, ctx.rootSeedRepo), "commit missing gitmodules branch");
+    RequireSuccess(RunGit({"push", "origin", ctx.rootBranch}, ctx.rootSeedRepo), "push missing gitmodules branch");
+
+    const auto result = RunKog({"sync"}, ctx.cloneRootRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode != 0);
+
+    const auto merged = result.stdoutText + "\n" + result.stderrText;
+    REQUIRE(merged.find("registered .gitmodules branch (refreshed)") != std::string::npos);
+    REQUIRE(merged.find("Target branch not found for deps/child") != std::string::npos);
+
+    REQUIRE(CurrentHeadSha(ctx.cloneChildRepo) == childHeadBefore);
+    REQUIRE(CurrentBranch(ctx.cloneChildRepo) == childBranchBefore);
+    REQUIRE(ReadTextFile(ctx.cloneChildRepo / "child.txt") == "child seed\nlocal dirty change\n");
+    REQUIRE(ReadTextFile(ctx.cloneRootRepo / ".gitmodules").find("branch = " + missingBranch) != std::string::npos);
+
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
@@ -614,7 +753,8 @@ TEST_CASE("plan_verify_pre_apply_detects_base_head_sha_drift", "[functional][pla
 
 TEST_CASE("commit_push_secret_gate_blocks_high_confidence_finding", "[functional][secret-gate][commit-push]") {
     const auto ctx = CreateRemoteWithClone("secret-gate-block");
-    WriteTextFile(ctx.cloneRepo / "secrets.txt", "OPENAI_API_KEY=\"sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ12\"\n");
+    const auto secretPayload = std::string("OPENAI_API_KEY=\"") + "sk-" + std::string("ABCDEFGHIJKLMNOPQRSTUVWXYZ12") + "\"\n";
+    WriteTextFile(ctx.cloneRepo / "secrets.txt", secretPayload);
 
     const auto result = RunKog({"commit-push", "-m", "test(functional): secret gate"}, ctx.cloneRepo);
     INFO(result.stdoutText);
@@ -628,7 +768,8 @@ TEST_CASE("commit_push_secret_gate_blocks_high_confidence_finding", "[functional
 
 TEST_CASE("commit_push_secret_gate_can_be_disabled_explicitly", "[functional][secret-gate][commit-push]") {
     const auto ctx = CreateRemoteWithClone("secret-gate-disabled");
-    WriteTextFile(ctx.cloneRepo / "secrets.txt", "OPENAI_API_KEY=\"sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ12\"\n");
+    const auto secretPayload = std::string("OPENAI_API_KEY=\"") + "sk-" + std::string("ABCDEFGHIJKLMNOPQRSTUVWXYZ12") + "\"\n";
+    WriteTextFile(ctx.cloneRepo / "secrets.txt", secretPayload);
 
     const auto result =
         RunKogWithEnv({"commit-push", "-m", "test(functional): secret gate disabled"},

@@ -1145,7 +1145,7 @@ Launcher env:
                                       auto: agent mode -> non-interactive, human mode -> interactive
   KOG_DISABLE_SECRET_GATE=1           Disable secret gate (not recommended)
   KOG_IGNORE_GATE=off                 Disable ignore gate globally (not recommended)
-                                      Static allowlist: assets/gitignore/ignore-gate-allowlist.txt
+                                      Static allowlist: assets/ignore-sources/local/ignore-gate-allowlist.txt
 EOF
 }
 
