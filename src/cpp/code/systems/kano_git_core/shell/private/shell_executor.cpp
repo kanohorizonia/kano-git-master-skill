@@ -14,6 +14,7 @@
 #include <mutex>
 #include <thread>
 #include <string_view>
+#include <cerrno>
 
 #ifdef KOG_PLATFORM_WINDOWS
 #include <windows.h>
@@ -397,41 +398,138 @@ auto RunProcess(const std::string& cmdLine, ExecMode InMode,
 
 #else  // Unix
 
-auto RunProcess(const std::string& cmdLine, ExecMode InMode,
-                 const std::optional<unsigned int>& InTimeoutMs,
-                 const std::optional<std::filesystem::path>& InWorkingDir) -> ExecResult
-{
-    ExecResult result;
-
-    std::string full_cmd = cmdLine;
-    if (InWorkingDir) {
-        full_cmd = std::format("cd '{}' && {}", InWorkingDir->string(), cmdLine);
+auto BuildExecArgv(const std::string& InCommand,
+                   const std::vector<std::string>& InArgs,
+                   std::vector<std::string>& InOwned) -> std::vector<char*> {
+    InOwned.clear();
+    InOwned.reserve(InArgs.size() + 1);
+    InOwned.push_back(InCommand);
+    for (const auto& arg : InArgs) {
+        InOwned.push_back(arg);
     }
 
+    std::vector<char*> argv;
+    argv.reserve(InOwned.size() + 1);
+    for (auto& token : InOwned) {
+        argv.push_back(token.data());
+    }
+    argv.push_back(nullptr);
+    return argv;
+}
+
+auto WaitForPid(const pid_t InPid) -> int {
+    int status = 0;
+    while (true) {
+        const auto waited = ::waitpid(InPid, &status, 0);
+        if (waited < 0 && errno == EINTR) {
+            continue;
+        }
+        if (waited < 0) {
+            return -1;
+        }
+        break;
+    }
+
+    if (WIFEXITED(status)) {
+        return WEXITSTATUS(status);
+    }
+    if (WIFSIGNALED(status)) {
+        return 128 + WTERMSIG(status);
+    }
+    return -1;
+}
+
+auto RunProcessUnix(const std::string& InCommand,
+                    const std::vector<std::string>& InArgs,
+                    ExecMode InMode,
+                    const std::optional<unsigned int>& InTimeoutMs,
+                    const std::optional<std::filesystem::path>& InWorkingDir) -> ExecResult {
     (void)InTimeoutMs;
+
+    ExecResult result;
+    std::vector<std::string> ownedArgs;
+    auto argv = BuildExecArgv(InCommand, InArgs, ownedArgs);
+
     if (InMode == ExecMode::PassThrough) {
-        int rc = std::system(full_cmd.c_str());
-        result.exitCode = WIFEXITED(rc) ? WEXITSTATUS(rc) : -1;
+        const auto pid = ::fork();
+        if (pid < 0) {
+            result.exitCode = -1;
+            result.stderrStr = std::format("fork failed: {}", std::strerror(errno));
+            return result;
+        }
+        if (pid == 0) {
+            if (InWorkingDir && ::chdir(InWorkingDir->c_str()) != 0) {
+                std::fprintf(stderr, "chdir failed: %s\n", std::strerror(errno));
+                std::fflush(stderr);
+                _exit(127);
+            }
+            ::execvp(InCommand.c_str(), argv.data());
+            std::fprintf(stderr, "execvp failed: %s\n", std::strerror(errno));
+            std::fflush(stderr);
+            _exit(127);
+        }
+
+        result.exitCode = WaitForPid(pid);
         return result;
     }
 
-    // Capture mode
-    std::string capture_cmd = full_cmd + " 2>&1";
-    FILE* pipe = popen(capture_cmd.c_str(), "r");
-    if (!pipe) {
+    int pipefd[2] = {-1, -1};
+    if (::pipe(pipefd) != 0) {
         result.exitCode = -1;
-        result.stderrStr = "Failed to open pipe";
+        result.stderrStr = std::format("pipe failed: {}", std::strerror(errno));
         return result;
     }
 
-    std::array<char, 4096> buf{};
-    while (fgets(buf.data(), static_cast<int>(buf.size()), pipe) != nullptr) {
-        result.stdoutStr += buf.data();
+    const auto pid = ::fork();
+    if (pid < 0) {
+        ::close(pipefd[0]);
+        ::close(pipefd[1]);
+        result.exitCode = -1;
+        result.stderrStr = std::format("fork failed: {}", std::strerror(errno));
+        return result;
     }
 
-    int rc = pclose(pipe);
-    result.exitCode = WIFEXITED(rc) ? WEXITSTATUS(rc) : -1;
+    if (pid == 0) {
+        ::close(pipefd[0]);
+        if (::dup2(pipefd[1], STDOUT_FILENO) < 0 || ::dup2(pipefd[1], STDERR_FILENO) < 0) {
+            std::fprintf(stderr, "dup2 failed: %s\n", std::strerror(errno));
+            std::fflush(stderr);
+            _exit(127);
+        }
+        ::close(pipefd[1]);
 
+        if (InWorkingDir && ::chdir(InWorkingDir->c_str()) != 0) {
+            std::fprintf(stderr, "chdir failed: %s\n", std::strerror(errno));
+            std::fflush(stderr);
+            _exit(127);
+        }
+
+        ::execvp(InCommand.c_str(), argv.data());
+        std::fprintf(stderr, "execvp failed: %s\n", std::strerror(errno));
+        std::fflush(stderr);
+        _exit(127);
+    }
+
+    ::close(pipefd[1]);
+    std::array<char, 4096> buf{};
+    while (true) {
+        const auto n = ::read(pipefd[0], buf.data(), buf.size());
+        if (n > 0) {
+            result.stdoutStr.append(buf.data(), static_cast<std::size_t>(n));
+            continue;
+        }
+        if (n == 0) {
+            break;
+        }
+        if (errno == EINTR) {
+            continue;
+        }
+        result.stderrStr = std::format("read failed: {}", std::strerror(errno));
+        break;
+    }
+    ::close(pipefd[0]);
+
+    result.exitCode = WaitForPid(pid);
     return result;
 }
 
@@ -546,11 +644,12 @@ auto ExecuteCommand(
     const auto effectiveArgs = WithGitNonInteractiveDefaults(InCommand, InArgs);
 #ifdef KOG_PLATFORM_WINDOWS
     const auto timeoutMs = ResolveTimeoutMs(InCommand, effectiveArgs, InMode);
-#else
-    const std::optional<unsigned int> timeoutMs = std::nullopt;
-#endif
     auto cmd = BuildCommandLine(InCommand, effectiveArgs);
     return RunProcess(cmd, InMode, timeoutMs, InWorkingDir);
+#else
+    const std::optional<unsigned int> timeoutMs = std::nullopt;
+    return RunProcessUnix(InCommand, effectiveArgs, InMode, timeoutMs, InWorkingDir);
+#endif
 }
 
 } // namespace kano::git::shell
