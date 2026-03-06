@@ -154,7 +154,63 @@ auto HashFNV1a(const std::string& InValue) -> std::string {
 struct IgnoreRule {
     std::string pattern;
     bool include = false;
+    bool directoryOnly = false;
 };
+
+auto RunGitCapture(const std::filesystem::path& InRepoPath, const std::vector<std::string>& InArgs) -> shell::ExecResult;
+auto IsGitRepo(const std::filesystem::path& InRepoPath) -> bool;
+
+auto EscapeRegexChar(const char InChar) -> std::string {
+    switch (InChar) {
+        case '.':
+        case '^':
+        case '$':
+        case '|':
+        case '(':
+        case ')':
+        case '[':
+        case ']':
+        case '{':
+        case '}':
+        case '+':
+        case '\\':
+            return std::string("\\") + InChar;
+        default:
+            return std::string(1, InChar);
+    }
+}
+
+auto GlobToRegex(const std::string& InPattern) -> std::string {
+    std::string regex = "^";
+    for (std::size_t i = 0; i < InPattern.size(); ++i) {
+        const char ch = InPattern[i];
+        if (ch == '*') {
+            const bool isGlobStar = (i + 1 < InPattern.size() && InPattern[i + 1] == '*');
+            if (isGlobStar) {
+                regex += ".*";
+                i += 1;
+            } else {
+                regex += "[^/]*";
+            }
+            continue;
+        }
+        if (ch == '?') {
+            regex += "[^/]";
+            continue;
+        }
+        regex += EscapeRegexChar(ch);
+    }
+    regex += "$";
+    return regex;
+}
+
+auto GlobMatchesPath(const std::string& InRelPath, const std::string& InPattern) -> bool {
+    try {
+        return std::regex_match(InRelPath, std::regex(GlobToRegex(InPattern), std::regex::ECMAScript));
+    } catch (const std::regex_error&) {
+        return false;
+    }
+}
 
 auto NormalizeRulePattern(std::string InPattern) -> std::string {
     auto pattern = Trim(std::move(InPattern));
@@ -192,12 +248,13 @@ auto LoadIgnoreRulesFromFile(const std::filesystem::path& InFile) -> std::vector
             trimmed = Trim(trimmed);
         }
 
+        const bool directoryOnly = !trimmed.empty() && trimmed.back() == '/';
         const auto normalized = NormalizeRulePattern(trimmed);
         if (normalized.empty()) {
             continue;
         }
 
-        rules.push_back(IgnoreRule{.pattern = normalized, .include = include});
+        rules.push_back(IgnoreRule{.pattern = normalized, .include = include, .directoryOnly = directoryOnly});
     }
 
     return rules;
@@ -212,7 +269,7 @@ auto BuildIgnoreRules(const std::filesystem::path& InRoot, const std::vector<std
         if (normalized.empty()) {
             continue;
         }
-        rules.push_back(IgnoreRule{.pattern = normalized, .include = false});
+        rules.push_back(IgnoreRule{.pattern = normalized, .include = false, .directoryOnly = false});
     }
 
     for (const auto& fileRule : LoadIgnoreRulesFromFile(InRoot / ".gitignore")) {
@@ -250,8 +307,42 @@ auto RuleMatchesPath(const std::string& InRelPath, const IgnoreRule& InRule) -> 
         return false;
     }
 
+    if (InRule.directoryOnly) {
+        if (InRule.include) {
+            return InRelPath == pattern;
+        }
+        return InRelPath == pattern || InRelPath.starts_with(pattern + "/");
+    }
+
+    if (pattern.size() > 3 && pattern.ends_with("/**")) {
+        const auto base = pattern.substr(0, pattern.size() - 3);
+        if (InRelPath == base || InRelPath.starts_with(base + "/")) {
+            return true;
+        }
+    }
+
     if (pattern.find('/') == std::string::npos) {
+        if (pattern.find('*') != std::string::npos || pattern.find('?') != std::string::npos) {
+            std::size_t start = 0;
+            while (start <= InRelPath.size()) {
+                const auto slash = InRelPath.find('/', start);
+                const auto end = (slash == std::string::npos) ? InRelPath.size() : slash;
+                const auto segment = InRelPath.substr(start, end - start);
+                if (!segment.empty() && GlobMatchesPath(segment, pattern)) {
+                    return true;
+                }
+                if (slash == std::string::npos) {
+                    break;
+                }
+                start = slash + 1;
+            }
+            return false;
+        }
         return PathContainsSegment(InRelPath, pattern);
+    }
+
+    if (GlobMatchesPath(InRelPath, pattern)) {
+        return true;
     }
 
     if (InRelPath == pattern) {
@@ -270,6 +361,27 @@ auto ShouldExcludePath(const std::filesystem::path& InRoot, const std::filesyste
     std::error_code ec;
     const auto rel = std::filesystem::relative(InPath, InRoot, ec);
     const auto relKey = (!ec && !rel.empty() && rel != ".") ? PathKey(rel) : PathKey(InPath);
+
+    auto owner = InPath.parent_path();
+    while (!owner.empty()) {
+        if (owner == InRoot.parent_path()) {
+            break;
+        }
+        if (owner != InPath && IsGitRepo(owner)) {
+            const auto ownerRel = std::filesystem::relative(InPath, owner, ec);
+            if (!ec && !ownerRel.empty() && ownerRel != ".") {
+                const auto gitIgnored = RunGitCapture(owner, {"check-ignore", "-q", "--no-index", PathKey(ownerRel)});
+                if (gitIgnored.exitCode == 0) {
+                    return true;
+                }
+            }
+            break;
+        }
+        if (owner == InRoot) {
+            break;
+        }
+        owner = owner.parent_path();
+    }
 
     bool excluded = false;
     for (const auto& rule : InRules) {

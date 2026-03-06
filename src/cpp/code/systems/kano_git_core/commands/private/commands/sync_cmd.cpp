@@ -390,15 +390,6 @@ auto RelativePathDepth(const std::filesystem::path& InRoot, const std::filesyste
     return static_cast<std::size_t>(std::distance(rel.begin(), rel.end()));
 }
 
-auto IsInternalOperationalRepoPath(const std::filesystem::path& InRoot, const std::filesystem::path& InRepo) -> bool {
-    auto rel = InRepo.lexically_relative(InRoot).generic_string();
-    std::replace(rel.begin(), rel.end(), '\\', '/');
-    rel = Trim(rel);
-    std::transform(rel.begin(), rel.end(), rel.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return rel == ".kano" || rel.rfind(".kano/", 0) == 0 || rel.find("/.kano/") != std::string::npos ||
-           rel == "src/cpp/build" || rel.rfind("src/cpp/build/", 0) == 0 || rel.find("/src/cpp/build/") != std::string::npos;
-}
-
 auto ResolveStableRef(const std::filesystem::path& InRoot, const std::filesystem::path& InRepo, const std::string& InCurrentBranch, const std::string& InRelPath) -> std::string {
     if (InCurrentBranch.starts_with("branch_")) {
         return InCurrentBranch;
@@ -1081,9 +1072,6 @@ auto BuildSyncPlans(
 
     for (const auto& repo : discovery.repos) {
         const auto repoPath = std::filesystem::weakly_canonical(repo.path);
-        if (IsInternalOperationalRepoPath(root, repoPath)) {
-            continue;
-        }
         const auto remote = ResolveRemote(repoPath, InPreferredRemote);
         if (remote.empty()) {
             std::cerr << "WARN: Skip repo without remotes: " << repoPath.generic_string() << "\n";
@@ -1424,9 +1412,6 @@ auto RunNativePreCommitRepair(
 
     for (const auto& repo : discovery.repos) {
         const auto repoPath = std::filesystem::weakly_canonical(repo.path);
-        if (IsInternalOperationalRepoPath(root, repoPath)) {
-            continue;
-        }
         if (!InRecursive && repoPath != root) {
             continue;
         }

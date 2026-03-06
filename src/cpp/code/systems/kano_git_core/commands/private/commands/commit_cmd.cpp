@@ -809,14 +809,6 @@ auto ParseReposCsv(const std::string& InCsv) -> std::vector<std::filesystem::pat
     return out;
 }
 
-auto IsInternalOperationalRepoPath(const std::filesystem::path& InRoot, const std::filesystem::path& InRepo) -> bool {
-    auto rel = InRepo.lexically_relative(InRoot).generic_string();
-    std::replace(rel.begin(), rel.end(), '\\', '/');
-    const auto lower = ToLower(rel);
-    return lower == ".kano" || lower.rfind(".kano/", 0) == 0 || lower.find("/.kano/") != std::string::npos ||
-           lower == "src/cpp/build" || lower.rfind("src/cpp/build/", 0) == 0 || lower.find("/src/cpp/build/") != std::string::npos;
-}
-
 auto JoinReposCsv(const std::vector<std::filesystem::path>& InRepos) -> std::string {
     std::string out;
     for (std::size_t idx = 0; idx < InRepos.size(); ++idx) {
@@ -978,11 +970,7 @@ auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<
     const auto discovered = DiscoverWorkspaceRepoRecords(InRoot, "minimal");
     repos.reserve(discovered.size());
     for (const auto& repo : discovered) {
-        const auto path = repo.path.lexically_normal();
-        if (IsInternalOperationalRepoPath(InRoot, path)) {
-            continue;
-        }
-        repos.push_back(path);
+        repos.push_back(repo.path.lexically_normal());
     }
     return repos;
 }
@@ -1092,9 +1080,6 @@ auto BuildCommitScopeRecords(const std::filesystem::path& InWorkspaceRoot,
     std::unordered_map<std::string, workspace::RepoRecord> byPath;
     byPath.reserve(all.size());
     for (const auto& repo : all) {
-        if (IsInternalOperationalRepoPath(InWorkspaceRoot, repo.path)) {
-            continue;
-        }
         byPath.emplace(ToGeneric(repo.path), repo);
     }
 
@@ -1130,9 +1115,6 @@ auto BuildCommitScopeRecords(const std::filesystem::path& InWorkspaceRoot,
         }
     } else {
         for (const auto& repo : all) {
-            if (IsInternalOperationalRepoPath(InWorkspaceRoot, repo.path)) {
-                continue;
-            }
             selected.push_back(repo);
         }
     }

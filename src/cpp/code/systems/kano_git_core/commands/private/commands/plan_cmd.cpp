@@ -362,14 +362,6 @@ auto ScanFileForSecretRules(const std::filesystem::path& InRepo,
     }
 }
 
-auto IsInternalOperationalRepoPath(const std::filesystem::path& InRoot, const std::filesystem::path& InRepo) -> bool {
-    auto rel = InRepo.lexically_relative(InRoot).generic_string();
-    std::replace(rel.begin(), rel.end(), '\\', '/');
-    const auto lower = ToLower(rel);
-    return lower == ".kano" || lower.rfind(".kano/", 0) == 0 || lower.find("/.kano/") != std::string::npos ||
-           lower == "src/cpp/build" || lower.rfind("src/cpp/build/", 0) == 0 || lower.find("/src/cpp/build/") != std::string::npos;
-}
-
 auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<std::filesystem::path> {
     workspace::DiscoverOptions options;
     options.rootDir = InRoot;
@@ -380,11 +372,7 @@ auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<
     std::vector<std::filesystem::path> repos;
     repos.reserve(discovery.repos.size());
     for (const auto& repo : discovery.repos) {
-        const auto path = repo.path.lexically_normal();
-        if (IsInternalOperationalRepoPath(InRoot, path)) {
-            continue;
-        }
-        repos.push_back(path);
+        repos.push_back(repo.path.lexically_normal());
     }
     std::sort(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
         return A.generic_string() < B.generic_string();

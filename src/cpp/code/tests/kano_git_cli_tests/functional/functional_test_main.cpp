@@ -686,6 +686,67 @@ TEST_CASE("workspace_discover_exclude_is_temporary_override", "[functional][work
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("workspace_discover_honors_gitignore_reinclude_under_build_script", "[functional][workspace][discovery]") {
+    const auto ctx = CreateRemoteWithClone("discover-build-script-reinclude");
+    WriteTextFile(
+        ctx.cloneRepo / ".gitignore",
+        ".kano/\n"
+        "src/cpp/build/**\n"
+        "!src/cpp/build/\n"
+        "!src/cpp/build/script/\n"
+        "!src/cpp/build/script/**\n");
+
+    const auto scriptRepo = (ctx.cloneRepo / "src" / "cpp" / "build" / "script" / "tooling-repo").lexically_normal();
+    const auto intermediateRepo = (ctx.cloneRepo / "src" / "cpp" / "build" / "_intermediate" / "cache-repo").lexically_normal();
+
+    std::filesystem::create_directories(scriptRepo.parent_path());
+    std::filesystem::create_directories(intermediateRepo.parent_path());
+    RequireSuccess(RunGit({"init", scriptRepo.string()}, ctx.cloneRepo), "init script nested repo");
+    RequireSuccess(RunGit({"init", intermediateRepo.string()}, ctx.cloneRepo), "init intermediate nested repo");
+
+    const auto result = RunKog(
+        {"workspace", "discover", "--format", "json", "--repo-root", ctx.cloneRepo.string(), "--no-cache"},
+        ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    REQUIRE(ContainsPathEntry(result.stdoutText, ctx.cloneRepo));
+    REQUIRE(ContainsPathEntry(result.stdoutText, scriptRepo));
+    REQUIRE_FALSE(ContainsPathEntry(result.stdoutText, intermediateRepo));
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("workspace_discover_honors_kogignore_reinclude_under_build_script", "[functional][workspace][discovery]") {
+    const auto ctx = CreateRemoteWithClone("discover-build-script-kogignore-reinclude");
+    WriteTextFile(
+        ctx.cloneRepo / ".kogignore",
+        "src/cpp/build/**\n"
+        "!src/cpp/build/\n"
+        "!src/cpp/build/script/\n"
+        "!src/cpp/build/script/**\n");
+
+    const auto scriptRepo = (ctx.cloneRepo / "src" / "cpp" / "build" / "script" / "tooling-repo").lexically_normal();
+    const auto intermediateRepo = (ctx.cloneRepo / "src" / "cpp" / "build" / "_intermediate" / "cache-repo").lexically_normal();
+
+    std::filesystem::create_directories(scriptRepo.parent_path());
+    std::filesystem::create_directories(intermediateRepo.parent_path());
+    RequireSuccess(RunGit({"init", scriptRepo.string()}, ctx.cloneRepo), "init script nested repo via kogignore");
+    RequireSuccess(RunGit({"init", intermediateRepo.string()}, ctx.cloneRepo), "init intermediate nested repo via kogignore");
+
+    const auto result = RunKog(
+        {"workspace", "discover", "--format", "json", "--repo-root", ctx.cloneRepo.string(), "--no-cache"},
+        ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    REQUIRE(ContainsPathEntry(result.stdoutText, ctx.cloneRepo));
+    REQUIRE(ContainsPathEntry(result.stdoutText, scriptRepo));
+    REQUIRE_FALSE(ContainsPathEntry(result.stdoutText, intermediateRepo));
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("plan_new_populates_hashes_and_verify_pre_apply_passes", "[functional][plan][freshness]") {
     const auto ctx = CreateRemoteWithClone("plan-new-hashes");
     WriteTextFile(ctx.cloneRepo / "README.md", "seed\nplan dirty\n");
