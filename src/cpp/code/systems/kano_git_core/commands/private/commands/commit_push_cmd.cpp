@@ -651,9 +651,16 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
 
     std::cout << "=== commit-push stage: post-sync ===\n";
     {
-        const auto postCommitCode = RunCommitNativePlanStage(InWorkspaceRoot, InNormalizedPlanFile, "post_sync", false);
-        if (postCommitCode != 0) {
-            return postCommitCode;
+        const bool hasPostSyncStage = PlanStageLikelyNonEmpty(std::filesystem::path(InNormalizedPlanFile), "post_sync");
+        if (!hasPostSyncStage) {
+            std::cout << "[commit-push] post-sync plan stage is empty; skipping.\n";
+        } else if (!NeedsPostSyncCommitNonPlan(InWorkspaceRoot, {}, false)) {
+            std::cout << "[commit-push] post-sync plan commit skipped (no working tree changes).\n";
+        } else {
+            const auto postCommitCode = RunCommitNativePlanStage(InWorkspaceRoot, InNormalizedPlanFile, "post_sync", false);
+            if (postCommitCode != 0) {
+                return postCommitCode;
+            }
         }
     }
 
