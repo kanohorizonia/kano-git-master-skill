@@ -8,6 +8,7 @@ CPP_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
 
 # Default preset (can be overridden)
 PRESET="${1:-linux-ninja-gcc}"
+WITH_E2E="${2:-0}"
 
 echo "Building TUI tests with preset: $PRESET"
 cd "$CPP_ROOT"
@@ -41,3 +42,9 @@ echo "Running integration tests..."
 
 echo ""
 echo "All tests completed successfully!"
+
+if [[ "$WITH_E2E" == "1" || "$WITH_E2E" == "--with-e2e" ]]; then
+    echo ""
+    echo "Running E2E regression tests..."
+    "$SCRIPT_DIR/e2e/run_plan_commit_regression_e2e.sh"
+fi
