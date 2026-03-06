@@ -2094,9 +2094,11 @@ auto BuildCommitTaskGraph(const std::vector<workspace::RepoRecord>& InRepoRecord
             if (depRepoIndex == ridx || repoTaskIndices[depRepoIndex].empty()) {
                 continue;
             }
-            const auto depTail = repoTaskIndices[depRepoIndex].back();
-            const auto repoHead = repoTaskIndices[ridx].front();
-            addEdge(depTail, repoHead);
+            // dependencies[] currently points to parent repos (superproject).
+            // For commit apply, child commits must land first so parent pointer updates can commit afterward.
+            const auto repoTail = repoTaskIndices[ridx].back();
+            const auto depHead = repoTaskIndices[depRepoIndex].front();
+            addEdge(repoTail, depHead);
         }
     }
 
