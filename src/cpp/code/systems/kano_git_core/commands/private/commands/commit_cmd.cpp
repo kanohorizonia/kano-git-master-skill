@@ -1401,10 +1401,16 @@ auto UnescapeJsonString(std::string InValue) -> std::string {
         switch (next) {
         case '\\': out.push_back('\\'); break;
         case '"': out.push_back('"'); break;
+        case '/': out.push_back('/'); break;
         case 'n': out.push_back('\n'); break;
         case 'r': out.push_back('\r'); break;
         case 't': out.push_back('\t'); break;
-        default: out.push_back(next); break;
+        default:
+            // Be permissive for AI-emitted JSON-like payloads (e.g. "\s" in Windows paths):
+            // preserve the backslash instead of silently dropping it.
+            out.push_back('\\');
+            out.push_back(next);
+            break;
         }
         i += 1;
     }
@@ -3322,6 +3328,7 @@ void RegisterCommit(CLI::App& InApp) {
         long long planningMs = 0;
         long long commitMs = 0;
         long long summaryMs = 0;
+        std::optional<CommitPreflightReport> cachedPreflightReport;
 
         if (*bShell) {
             std::cerr << "Error: --shell is no longer supported; commit workflow is fully native now\n";
@@ -3333,6 +3340,7 @@ void RegisterCommit(CLI::App& InApp) {
         if (!*bNoNativePreflight || *bPreflightOnly) {
             const auto preflightStart = clock::now();
             const auto report = RunCommitPreflight(workspaceRoot);
+            cachedPreflightReport = report;
             PrintCommitPreflight(report, *bStagedOnly);
             if (!report.inRepo) {
                 std::exit(1);
@@ -3385,6 +3393,25 @@ void RegisterCommit(CLI::App& InApp) {
         if (!aiRequested) {
             std::cout << "[native-commit] safety-gates: ignore + secret\n";
             RunPipelineSafetyGatesForNonAiCommit(workspaceRoot);
+        }
+
+        if (!commitPlanFile->empty()) {
+            const auto report = cachedPreflightReport.has_value() ? *cachedPreflightReport : RunCommitPreflight(workspaceRoot);
+            if (!HasAnyChanges(report)) {
+                std::println("[native-commit] workspace clean; skipping --plan-file validation and commit.");
+                if (*bProfile) {
+                    const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - totalStart).count();
+                    std::cout << "\n=== Commit Profile Summary ===\n";
+                    std::cout << "mode: native\n";
+                    std::cout << "repo_count: 0\n";
+                    std::cout << "preflight_ms: " << preflightMs << "\n";
+                    std::cout << "planning_ms: 0\n";
+                    std::cout << "commit_ms: 0\n";
+                    std::cout << "summary_ms: 0\n";
+                    std::cout << "total_ms: " << totalMs << "\n";
+                }
+                std::exit(0);
+            }
         }
 
         std::unordered_map<std::string, std::vector<RepoCommitPlanEntry::CommitItem>> stageMessages;
