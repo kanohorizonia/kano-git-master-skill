@@ -94,6 +94,14 @@ auto ParseReposCsv(const std::string& InCsv) -> std::vector<std::string> {
     return repos;
 }
 
+auto IsInternalOperationalRepoPath(const std::filesystem::path& InRoot, const std::filesystem::path& InRepo) -> bool {
+    auto rel = InRepo.lexically_relative(InRoot).generic_string();
+    std::replace(rel.begin(), rel.end(), '\\', '/');
+    const auto lower = ToLower(rel);
+    return lower == ".kano" || lower.rfind(".kano/", 0) == 0 || lower.find("/.kano/") != std::string::npos ||
+           lower == "src/cpp/build" || lower.rfind("src/cpp/build/", 0) == 0 || lower.find("/src/cpp/build/") != std::string::npos;
+}
+
 auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<std::filesystem::path> {
     workspace::DiscoverOptions options;
     options.rootDir = InRoot;
@@ -104,7 +112,11 @@ auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<
     std::vector<std::filesystem::path> repos;
     repos.reserve(discovery.repos.size());
     for (const auto& repo : discovery.repos) {
-        repos.push_back(repo.path.lexically_normal());
+        const auto path = repo.path.lexically_normal();
+        if (IsInternalOperationalRepoPath(InRoot, path)) {
+            continue;
+        }
+        repos.push_back(path);
     }
     if (repos.empty()) {
         repos.push_back(InRoot.lexically_normal());
@@ -146,7 +158,8 @@ auto IsProbableIgnoreArtifactPath(const std::string& InPath) -> bool {
     std::replace(p.begin(), p.end(), '\\', '/');
     const auto lower = ToLower(p);
     auto contains = [&](const std::string& token) { return lower.find(token) != std::string::npos; };
-    if (contains("/.cache/") || contains("/.pytest_cache/") || contains("/.mypy_cache/") || contains("/.idea/") || contains("/.vscode/")) {
+    if (lower == ".kano" || lower.rfind(".kano/", 0) == 0 || contains("/.kano/") ||
+        contains("/.cache/") || contains("/.pytest_cache/") || contains("/.mypy_cache/") || contains("/.idea/") || contains("/.vscode/")) {
         return true;
     }
     if (contains("/node_modules/") || contains("/dist/") || contains("/build/") || contains("/bin/") || contains("/obj/") || contains("/target/")) {
@@ -156,6 +169,12 @@ auto IsProbableIgnoreArtifactPath(const std::string& InPath) -> bool {
            lower.ends_with(".bak") || lower.ends_with(".swp") || lower.ends_with(".swo") || lower.ends_with(".class") ||
            lower.ends_with(".obj") || lower.ends_with(".o") || lower.ends_with(".pdb") || lower.ends_with(".ilk") ||
            lower.ends_with(".dmp") || lower.ends_with(".pyc");
+}
+
+auto IsInternalPipelineArtifactPath(const std::string& InPath) -> bool {
+    auto lower = ToLower(InPath);
+    std::replace(lower.begin(), lower.end(), '\\', '/');
+    return lower == ".kano" || lower.rfind(".kano/", 0) == 0 || lower.find("/.kano/") != std::string::npos;
 }
 
 struct SecretRule {
@@ -327,6 +346,85 @@ auto DefaultCommitPlanOutputPath(const std::filesystem::path& InWorkspaceRoot) -
     return (InWorkspaceRoot / ".kano" / "cache" / "git" / "plans" /
             ("plan-" + stamp + "-" + headShort + ".json"))
         .lexically_normal();
+}
+
+auto DefaultSharedPlanPath(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path {
+    if (const char* explicitPlan = std::getenv("KOG_PLAN_FILE"); explicitPlan != nullptr && *explicitPlan != '\0') {
+        return std::filesystem::path(explicitPlan).lexically_normal();
+    }
+    return (InWorkspaceRoot / ".kano" / "cache" / "git" / "plans" / "default-plan.json").lexically_normal();
+}
+
+auto ResolveSelfBinaryCommand() -> std::string {
+    if (const char* binaryPath = std::getenv("KANO_GIT_BINARY_PATH"); binaryPath != nullptr) {
+        const std::filesystem::path p(binaryPath);
+        if (std::filesystem::exists(p)) {
+            return p.generic_string();
+        }
+    }
+#if defined(_WIN32)
+    return "kano-git.exe";
+#else
+    return "kano-git";
+#endif
+}
+
+auto RunCommitPlanRunbookViaSelf(const std::filesystem::path& InWorkspaceRoot,
+                                 const std::filesystem::path& InPlanPath,
+                                 const std::string& InProvider,
+                                 const std::string& InModel) -> int {
+    std::vector<std::string> args = {
+        "plan", "runbook", "commit",
+        "--plan-file", InPlanPath.generic_string(),
+        "--ai-provider", InProvider.empty() ? "auto" : InProvider,
+        "--ai-model", InModel.empty() ? "auto" : InModel,
+    };
+    const auto result = shell::ExecuteCommand(ResolveSelfBinaryCommand(), args, shell::ExecMode::PassThrough, InWorkspaceRoot);
+    if (result.exitCode != 0) {
+        std::cerr << "Error: AI commit runbook failed via native binary (exit=" << result.exitCode << ").\n";
+    }
+    return result.exitCode;
+}
+
+auto RunPlanNewViaSelf(const std::filesystem::path& InWorkspaceRoot,
+                       const std::filesystem::path& InPlanPath) -> int {
+    std::vector<std::string> args = {
+        "plan", "new",
+        "--force",
+        "--output", InPlanPath.generic_string(),
+    };
+    const auto result = shell::ExecuteCommand(ResolveSelfBinaryCommand(), args, shell::ExecMode::PassThrough, InWorkspaceRoot);
+    if (result.exitCode != 0) {
+        std::cerr << "Error: plan new failed via native binary (exit=" << result.exitCode << ").\n";
+    }
+    return result.exitCode;
+}
+
+auto RunIgnorePlanRunbookViaSelf(const std::filesystem::path& InWorkspaceRoot,
+                                 const std::filesystem::path& InPlanPath) -> int {
+    std::vector<std::string> args = {
+        "plan", "runbook", "ignore",
+        "--force",
+        "--plan-file", InPlanPath.generic_string(),
+    };
+    const auto result = shell::ExecuteCommand(ResolveSelfBinaryCommand(), args, shell::ExecMode::PassThrough, InWorkspaceRoot);
+    if (result.exitCode != 0) {
+        std::cerr << "Error: ignore runbook failed via native binary (exit=" << result.exitCode << ").\n";
+    }
+    return result.exitCode;
+}
+
+auto RunIgnorePlanApplyViaSelf(const std::filesystem::path& InWorkspaceRoot,
+                               const std::filesystem::path& InPlanPath) -> int {
+    std::vector<std::string> args = {
+        "plan", "apply", "--stage", "ignore",
+        "--plan-file", InPlanPath.generic_string(),
+    };
+    const auto result = shell::ExecuteCommand(ResolveSelfBinaryCommand(), args, shell::ExecMode::PassThrough, InWorkspaceRoot);
+    if (result.exitCode != 0) {
+        std::cerr << "Error: ignore apply failed via native binary (exit=" << result.exitCode << ").\n";
+    }
+    return result.exitCode;
 }
 
 auto BuildCommitPlanTemplateJson(const std::string& InGeneratedAtUtc) -> std::string {
@@ -701,7 +799,7 @@ auto RunPipelineSafetyGatesForNonAiCommitPush(const std::filesystem::path& InWor
     const auto ignoreGateMode = ToLower(Trim(std::getenv("KOG_IGNORE_GATE") == nullptr ? "on" : std::getenv("KOG_IGNORE_GATE")));
     if (!(allowIgnoreGate == "1" || allowIgnoreGate == "true") && ignoreGateMode != "off") {
         const auto allowlistPath =
-            (ResolveSkillRoot(workspaceRoot) / "assets" / "gitignore" / "ignore-gate-allowlist.txt").lexically_normal();
+            (ResolveSkillRoot(workspaceRoot) / "assets" / "ignore-sources" / "local" / "ignore-gate-allowlist.txt").lexically_normal();
         const auto allowlist = LoadNormalizedLineSet(allowlistPath);
 
         auto repos = DiscoverWorkspaceRepos(workspaceRoot);
@@ -719,6 +817,9 @@ auto RunPipelineSafetyGatesForNonAiCommitPush(const std::filesystem::path& InWor
             while (std::getline(iss, path)) {
                 auto p = Trim(path);
                 if (p.empty() || !IsProbableIgnoreArtifactPath(p)) {
+                    continue;
+                }
+                if (IsInternalPipelineArtifactPath(p)) {
                     continue;
                 }
                 std::replace(p.begin(), p.end(), '\\', '/');
@@ -1003,6 +1104,7 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
         std::cerr << "Error: plan pipeline requires non-empty --plan-file\n";
         return 2;
     }
+    std::cout << "[commit-push] using plan file: " << InNormalizedPlanFile << "\n";
 
     if (!InExtraArgs.empty()) {
         std::cerr << "Error: unsupported extra arguments in plan pipeline mode:";
@@ -1198,6 +1300,9 @@ void RegisterCommitPush(CLI::App& InApp) {
         const bool hasCommitPlan = !normalizedCommitPlanFile.empty();
         const bool agentMode = IsAgentModeEnabled();
         const bool aiModeRequested = *aiAuto || !aiProvider->empty() || !aiModel->empty();
+        const bool autoPlanAiMode = aiModeRequested && !agentMode && !hasCommitPlan && message->empty();
+        const bool hasWorkingChangesAtStart = NeedsPostSyncCommitNonPlan(workspaceRoot, repoList, *noRecursive);
+        const bool effectiveAiModeRequested = aiModeRequested && !(autoPlanAiMode && !hasWorkingChangesAtStart);
         if (agentMode && !hasCommitPlan && message->empty()) {
             std::cerr << "Error: agent mode commit-push requires either --plan-file or --message/-m.\n";
             std::cerr << "Hint: prepare/fill plan first, then run with --plan-file.\n";
@@ -1228,6 +1333,44 @@ void RegisterCommitPush(CLI::App& InApp) {
             std::cerr << "Error: --plan-file cannot be combined with --dry-run yet.\n";
             std::cerr << "Hint: use `kog plan verify pre-apply --plan-file <file>` for no-write validation.\n";
             std::exit(2);
+        }
+
+        if (autoPlanAiMode) {
+            if (!repoList.empty() || *noRecursive || *dryRun || *profile || *branchMode != "default" ||
+                *forceWithLease || *noVerify || *jobs > 0 || *verbose || !remote->empty()) {
+                std::cerr << "Error: full-auto plan mode currently supports only the default `kog cpa` shape.\n";
+                std::cerr << "Hint: use plain `kog cpa`, or run `kog plan runbook commit` then `kog commit-push --plan-file <file>`.\n";
+                std::exit(2);
+            }
+
+            if (!hasWorkingChangesAtStart) {
+                std::cout << "[commit-push] workspace clean; skip AI commit runbook (no-op) and proceed to push check.\n";
+            } else {
+                const auto autoPlanPath = DefaultSharedPlanPath(workspaceRoot);
+                std::cout << "[commit-push] full-auto plan file: " << autoPlanPath.generic_string() << "\n";
+                const auto planNewCode = RunPlanNewViaSelf(workspaceRoot, autoPlanPath);
+                if (planNewCode != 0) {
+                    std::exit(planNewCode);
+                }
+                const auto ignoreRunbookCode = RunIgnorePlanRunbookViaSelf(workspaceRoot, autoPlanPath);
+                if (ignoreRunbookCode != 0) {
+                    std::exit(ignoreRunbookCode);
+                }
+                if (PlanStageLikelyNonEmpty(autoPlanPath, "ignore")) {
+                    const auto ignoreApplyCode = RunIgnorePlanApplyViaSelf(workspaceRoot, autoPlanPath);
+                    if (ignoreApplyCode != 0) {
+                        std::exit(ignoreApplyCode);
+                    }
+                } else {
+                    std::cout << "[commit-push] ignore plan stage is empty; skipping ignore apply.\n";
+                }
+                const auto runbookCode = RunCommitPlanRunbookViaSelf(workspaceRoot, autoPlanPath, *aiProvider, *aiModel);
+                if (runbookCode != 0) {
+                    std::exit(runbookCode);
+                }
+                const auto pipelineCode = RunCommitPushPlanFilePipeline(workspaceRoot, autoPlanPath.generic_string(), {});
+                std::exit(pipelineCode);
+            }
         }
 
         const bool canUsePlanPipelineFastPath = hasCommitPlan &&
@@ -1265,7 +1408,7 @@ void RegisterCommitPush(CLI::App& InApp) {
             std::cout << "[commit-push] agent mode + --plan-file detected; using plan-driven flow.\n";
         }
 
-        if (!aiModeRequested) {
+        if (!effectiveAiModeRequested) {
             std::cout << "=== commit-push stage: safety-gates ===\n";
             RunPipelineSafetyGatesForNonAiCommitPush(workspaceRoot);
         }

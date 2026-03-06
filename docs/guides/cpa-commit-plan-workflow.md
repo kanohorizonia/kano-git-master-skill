@@ -91,6 +91,14 @@ No commit/push execution happens here.
 
 ## Flow Overview
 
+Execution ordering semantics:
+- `sync` is `parent-first convergence`
+- `commit-push` is `child-first convergence`
+
+Rationale:
+- `sync` updates parent repos first so refreshed `.gitmodules` branch policy can be applied to registered children in the same run.
+- `commit-push` commits and pushes child repos first, then lets parent repos absorb the final gitlink pointer and push parent repos last.
+
 ### Entry Routing
 
 ```mermaid
