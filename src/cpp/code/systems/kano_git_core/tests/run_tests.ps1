@@ -1,7 +1,8 @@
 # Quick script to build and run TUI command input enhancement tests (Windows)
 
 param(
-    [string]$Preset = "windows-ninja-msvc"
+    [string]$Preset = "windows-ninja-msvc",
+    [switch]$WithE2E
 )
 
 $ErrorActionPreference = "Stop"
@@ -42,3 +43,9 @@ Write-Host "Running integration tests..."
 
 Write-Host ""
 Write-Host "All tests completed successfully!"
+
+if ($WithE2E) {
+    Write-Host ""
+    Write-Host "Running E2E regression tests..."
+    & ".\code\systems\kano_git_core\tests\e2e\run_plan_commit_regression_e2e.ps1"
+}

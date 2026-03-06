@@ -526,6 +526,64 @@ maybe_run_plan_preflight_for_ai_command() {
   return 2
 }
 
+maybe_finalize_args_after_ai_preflight() {
+  local -n io_args_ref="$1"
+  local cmd="${io_args_ref[0]:-}"
+  local plan_file=""
+  local workspace_root="${KANO_GIT_MASTER_ROOT:-$PROJECT_ROOT}"
+  local -a rewritten=()
+  local i arg
+
+  if [[ "$cmd" != "cpa" && "$cmd" != "commit" && "$cmd" != "commit-push" ]]; then
+    return 0
+  fi
+  if has_no_plan_auto_arg "${io_args_ref[@]}"; then
+    return 0
+  fi
+  if ! is_ai_mode_commit_command "${io_args_ref[@]}"; then
+    return 0
+  fi
+
+  extract_plan_file_from_args plan_file "${io_args_ref[@]}" || true
+  if [[ -z "$plan_file" ]]; then
+    plan_file="$workspace_root/.kano/cache/git/plans/default-plan.json"
+  fi
+
+  # cpa should execute as non-AI plan apply after preflight
+  if [[ "$cmd" == "cpa" ]]; then
+    rewritten+=("cp")
+  else
+    rewritten+=("$cmd")
+  fi
+
+  for ((i = 1; i < ${#io_args_ref[@]}; i++)); do
+    arg="${io_args_ref[$i]}"
+    case "$arg" in
+      -ai|--ai-auto|--ai-provider|--provider|--ai-model|--model)
+        if [[ "$arg" == "--ai-provider" || "$arg" == "--provider" || "$arg" == "--ai-model" || "$arg" == "--model" ]]; then
+          ((i++))
+        fi
+        continue
+        ;;
+      --ai-provider=*|--provider=*|--ai-model=*|--model=*)
+        continue
+        ;;
+      --plan-file)
+        ((i++))
+        continue
+        ;;
+      --plan-file=*)
+        continue
+        ;;
+    esac
+    rewritten+=("$arg")
+  done
+
+  rewritten+=("--plan-file" "$plan_file")
+  io_args_ref=("${rewritten[@]}")
+  return 0
+}
+
 apply_agent_mode_from_args() {
   local arg next
   next=""
@@ -1688,6 +1746,7 @@ main() {
   if [[ "$preflight_status" -ne 0 ]]; then
     exit "$preflight_status"
   fi
+  maybe_finalize_args_after_ai_preflight exec_args
 
   # Manual mode: no auto-rebuild/auto-prepare in execution path.
   if binary="$(find_binary)"; then

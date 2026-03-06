@@ -17,8 +17,11 @@ tests/
 │   └── test_main.cpp
 ├── property/                   # Property-based tests using Catch2 generators
 │   └── test_main.cpp
-└── integration/                # Integration tests for complete workflows
-    └── test_main.cpp
+├── integration/                # Integration tests for complete workflows
+│   └── test_main.cpp
+└── e2e/                        # CLI E2E regressions from real dogfood failures
+    ├── run_plan_commit_regression_e2e.ps1
+    └── run_plan_commit_regression_e2e.sh
 ```
 
 ## Test Categories
@@ -46,6 +49,13 @@ Integration tests verify complete user workflows:
 - Command palette workflows
 - Help panel navigation
 - Error handling and recovery
+
+### E2E Regression Tests (`e2e/`)
+E2E scripts replay high-impact regressions found in real dogfood runs:
+- Agent mode `cpa` guard (`--plan-file` or `-m` required)
+- `plan new` workspace hash fields (`base_head_sha`, `dirty_fingerprint`) are non-placeholder
+- `plan verify pre-apply` rejects workspace drift
+- Agent mode `cpa -m --dry-run` smoke path
 
 ## Test Data Generators
 
@@ -92,6 +102,17 @@ cmake --build --preset <your-preset> --target run_tui_tests
 ```bash
 cd build/_intermediate/<preset>
 ctest --output-on-failure
+```
+
+### Run E2E regression scripts
+```powershell
+# Windows
+pwsh ./code/systems/kano_git_core/tests/e2e/run_plan_commit_regression_e2e.ps1
+```
+
+```bash
+# Linux/macOS
+bash ./code/systems/kano_git_core/tests/e2e/run_plan_commit_regression_e2e.sh
 ```
 
 ### Run specific test cases
