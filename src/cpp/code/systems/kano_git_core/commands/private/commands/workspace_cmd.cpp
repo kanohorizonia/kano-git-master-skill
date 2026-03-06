@@ -398,7 +398,6 @@ void RegisterWorkspace(CLI::App& InApp) {
     status->allow_extras();
     auto* statusNative = new bool{false};
     auto* statusNativeMaxDepth = new int{3};
-    auto* statusNativeExclude = new std::vector<std::string>{};
     auto* statusNativeNoCache = new bool{false};
     auto* statusNativeRefreshCache = new bool{false};
     auto* statusNativeNoIncremental = new bool{false};
@@ -423,7 +422,6 @@ void RegisterWorkspace(CLI::App& InApp) {
     status->add_flag("--native", *statusNative, "Use native C++ workspace status implementation (default)");
     status->add_flag("--shell", *statusShell, "Deprecated compatibility flag (shell path removed)");
     status->add_option("--native-max-depth", *statusNativeMaxDepth, "Native discovery max depth");
-    status->add_option("--native-exclude", *statusNativeExclude, "Native discovery exclude pattern (repeatable)");
     status->add_flag("--native-no-cache", *statusNativeNoCache, "Disable native discovery cache");
     status->add_flag("--native-refresh-cache", *statusNativeRefreshCache, "Force native cache refresh");
     status->add_flag("--native-no-incremental", *statusNativeNoIncremental, "Disable native incremental cache validation");
@@ -436,7 +434,7 @@ void RegisterWorkspace(CLI::App& InApp) {
     status->add_option("--include-types", *statusIncludeTypes, "Include repo types");
     status->add_flag("--no-submodules", *statusNoSubmodules, "Exclude registered submodules");
     status->add_flag("--no-recursive", *statusNoRecursive, "Disable recursive discovery");
-    status->add_option("--exclude", *statusExclude, "Exclude path pattern (repeatable)");
+    status->add_option("--exclude", *statusExclude, "Temporary scan-scope exclude override for this invocation only (repeatable; prefer .gitignore/.kogignore for shared policy)");
     status->add_option("--max-depth", *statusMaxDepth, "Discovery max depth");
     status->add_flag("--check-remote", *statusCheckRemote, "Check remote status");
     status->add_flag("--detail", *statusDetail, "Show detail commits");
@@ -468,10 +466,7 @@ void RegisterWorkspace(CLI::App& InApp) {
         workspace::DiscoverOptions options;
         options.rootDir = statusRepoRoot->empty() ? std::filesystem::current_path() : std::filesystem::path(*statusRepoRoot);
         options.maxDepth = *statusNativeMaxDepth > 0 ? *statusNativeMaxDepth : *statusMaxDepth;
-        options.excludePatterns = *statusNativeExclude;
-        if (options.excludePatterns.empty()) {
-            options.excludePatterns = *statusExclude;
-        }
+        options.excludePatterns = *statusExclude;
         options.useCache = !*statusNativeNoCache;
         options.cacheTtlSeconds = *statusNativeCacheTtl;
         options.refreshCache = *statusNativeRefreshCache;
@@ -518,7 +513,7 @@ void RegisterWorkspace(CLI::App& InApp) {
     discover->add_option("--format", *discoverFormat, "Output format: table|json")->default_str("table");
     discover->add_option("--repo-root", *discoverRoot, "Repository root/start path");
     discover->add_option("--max-depth", *discoverMaxDepth, "Discovery max depth");
-    discover->add_option("--exclude", *discoverExclude, "Exclude path pattern (repeatable)");
+    discover->add_option("--exclude", *discoverExclude, "Temporary scan-scope exclude override for this invocation only (repeatable; prefer .gitignore/.kogignore for shared policy)");
     discover->add_flag("--no-cache", *discoverNoCache, "Disable discovery cache for this run");
     discover->add_flag("--no-refresh-cache", *discoverNoRefresh, "Do not force cache refresh");
     discover->add_flag("--no-incremental", *discoverNoIncremental, "Disable incremental cache validation");
@@ -568,7 +563,6 @@ void RegisterWorkspace(CLI::App& InApp) {
     auto* nativePlan = new bool{false};
     auto* nativePlanOnly = new bool{false};
     auto* nativeMaxDepth = new int{3};
-    auto* nativeExclude = new std::vector<std::string>{};
     auto* nativeNoCache = new bool{false};
     auto* nativeRefreshCache = new bool{false};
     auto* nativeNoIncremental = new bool{false};
@@ -588,7 +582,6 @@ void RegisterWorkspace(CLI::App& InApp) {
     update->add_flag("--native-plan", *nativePlan, "Use native C++ discovery + scheduler plan");
     update->add_flag("--native-plan-only", *nativePlanOnly, "Emit native wave plan JSON only (no shell update execution)");
     update->add_option("--native-max-depth", *nativeMaxDepth, "Native discovery max depth");
-    update->add_option("--native-exclude", *nativeExclude, "Native discovery exclude pattern (repeatable)");
     update->add_flag("--native-no-cache", *nativeNoCache, "Disable native discovery cache");
     update->add_flag("--native-refresh-cache", *nativeRefreshCache, "Force native cache refresh");
     update->add_flag("--native-no-incremental", *nativeNoIncremental, "Disable native incremental cache validation");
@@ -596,7 +589,7 @@ void RegisterWorkspace(CLI::App& InApp) {
     update->add_option("--native-max-stale", *nativeMaxStale, "Native incremental max stale seconds");
     update->add_option("--manifest", *updateManifest, "Use manifest file (default: auto-discover)");
     update->add_option("--include-types", *updateIncludeTypes, "Comma-separated: root,registered,unregistered");
-    update->add_option("--exclude", *updateExclude, "Exclude path pattern (repeatable)");
+    update->add_option("--exclude", *updateExclude, "Temporary scan-scope exclude override for this invocation only (repeatable; prefer .gitignore/.kogignore for shared policy)");
     update->add_option("--remote", *updateRemote, "Remote name (default: origin)");
     update->add_option("--max-depth", *updateMaxDepth, "Discovery max depth (default: 3)");
     update->add_option("--parallel", *updateParallel, "Parallel updates (default: 1)");
@@ -638,10 +631,7 @@ void RegisterWorkspace(CLI::App& InApp) {
             workspace::DiscoverOptions options;
             options.rootDir = std::filesystem::current_path();
             options.maxDepth = *nativeMaxDepth;
-            options.excludePatterns = *nativeExclude;
-            if (options.excludePatterns.empty()) {
-                options.excludePatterns = *updateExclude;
-            }
+            options.excludePatterns = *updateExclude;
             options.useCache = !*nativeNoCache;
             options.cacheTtlSeconds = *nativeCacheTtl;
             options.refreshCache = *nativeRefreshCache;
@@ -771,7 +761,6 @@ void RegisterWorkspace(CLI::App& InApp) {
     auto* foreachContinueOnError = new bool{false};
     auto* foreachParallel = new int{1};
     auto* foreachNativeMaxDepth = new int{3};
-    auto* foreachNativeExclude = new std::vector<std::string>{};
     auto* foreachNativeNoCache = new bool{false};
     auto* foreachNativeRefreshCache = new bool{false};
     auto* foreachNativeNoIncremental = new bool{false};
@@ -791,7 +780,6 @@ void RegisterWorkspace(CLI::App& InApp) {
     foreach->add_flag("--continue-on-error", *foreachContinueOnError, "Continue if command fails in a repo");
     foreach->add_option("--parallel", *foreachParallel, "Parallel execution per wave (default 1)");
     foreach->add_option("--native-max-depth", *foreachNativeMaxDepth, "Native discovery max depth");
-    foreach->add_option("--native-exclude", *foreachNativeExclude, "Native discovery exclude pattern (repeatable)");
     foreach->add_flag("--native-no-cache", *foreachNativeNoCache, "Disable native discovery cache");
     foreach->add_flag("--native-refresh-cache", *foreachNativeRefreshCache, "Force native cache refresh");
     foreach->add_flag("--native-no-incremental", *foreachNativeNoIncremental, "Disable native incremental cache validation");
@@ -800,7 +788,7 @@ void RegisterWorkspace(CLI::App& InApp) {
     foreach->add_option("--native-metadata-level", *foreachNativeMetadata, "Native metadata level: full|minimal");
     foreach->add_option("--manifest", *foreachManifest, "Manifest file path");
     foreach->add_option("--include-types", *foreachIncludeTypes, "Comma-separated repo types");
-    foreach->add_option("--exclude", *foreachExclude, "Exclude path pattern (repeatable)");
+    foreach->add_option("--exclude", *foreachExclude, "Temporary scan-scope exclude override for this invocation only (repeatable; prefer .gitignore/.kogignore for shared policy)");
     foreach->add_option("--max-depth", *foreachMaxDepth, "Discovery max depth");
     foreach->add_flag("--dry-run", *foreachDryRun, "Preview mode");
     foreach->add_option("--command", *foreachCommand, "Explicit command string for native foreach");
@@ -850,10 +838,7 @@ void RegisterWorkspace(CLI::App& InApp) {
             workspace::DiscoverOptions options;
             options.rootDir = std::filesystem::current_path();
             options.maxDepth = *foreachNativeMaxDepth;
-            options.excludePatterns = *foreachNativeExclude;
-            if (options.excludePatterns.empty()) {
-                options.excludePatterns = *foreachExclude;
-            }
+            options.excludePatterns = *foreachExclude;
             options.useCache = !*foreachNativeNoCache;
             options.cacheTtlSeconds = *foreachNativeCacheTtl;
             options.refreshCache = *foreachNativeRefreshCache;

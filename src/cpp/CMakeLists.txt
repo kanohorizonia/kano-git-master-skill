@@ -154,3 +154,8 @@ endforeach()
 # Add subdirectories
 add_subdirectory(code/systems/kano_git_core)
 add_subdirectory(code/apps/kano_git_cli)
+
+option(KOG_BUILD_TESTS "Build kano-git C++ test targets" ON)
+if(KOG_BUILD_TESTS)
+    add_subdirectory(code/tests)
+endif()

@@ -151,18 +151,6 @@ auto HashFNV1a(const std::string& InValue) -> std::string {
     return std::format("{:016x}", hash);
 }
 
-auto DefaultExcludePatterns() -> std::vector<std::string> {
-    return {
-        "node_modules",
-        ".cache",
-        "build",
-        "dist",
-        ".venv",
-        "venv",
-        "__pycache__",
-    };
-}
-
 struct IgnoreRule {
     std::string pattern;
     bool include = false;
@@ -235,19 +223,6 @@ auto BuildIgnoreRules(const std::filesystem::path& InRoot, const std::vector<std
     }
 
     return rules;
-}
-
-auto PrePrunePatterns() -> std::vector<std::string> {
-    return {
-        ".kano",
-        "node_modules",
-        ".cache",
-        "build",
-        "dist",
-        ".venv",
-        "venv",
-        "__pycache__",
-    };
 }
 
 auto PathContainsSegment(const std::string& InPath, const std::string& InSegment) -> bool {
@@ -408,7 +383,7 @@ auto DiscoverGitRepos(const std::filesystem::path& InRoot, const int InMaxDepth,
         unique.insert(PathKey(InRoot));
     }
 
-    const auto prePrune = PrePrunePatterns();
+    const std::vector<std::string> prePrune;
     std::error_code ec;
     std::filesystem::recursive_directory_iterator it(
         InRoot,
@@ -484,7 +459,7 @@ auto ComputeMarker(const std::filesystem::path& InRoot, const int InMaxDepth, co
         ec);
     std::filesystem::recursive_directory_iterator end;
 
-    const auto prePrune = PrePrunePatterns();
+    const std::vector<std::string> prePrune;
     for (; it != end; ++it) {
         if (it.depth() + 1 > 2) {
             it.disable_recursion_pending();
@@ -799,9 +774,6 @@ auto DiscoverRepos(const DiscoverOptions& InOptions) -> DiscoveryResult {
     }
 
     DiscoverOptions options = InOptions;
-    if (options.excludePatterns.empty()) {
-        options.excludePatterns = DefaultExcludePatterns();
-    }
     const auto ignoreRules = BuildIgnoreRules(rootAbs, options.excludePatterns);
 
     if (options.maxDepth <= 0) {

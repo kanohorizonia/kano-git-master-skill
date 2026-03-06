@@ -1,4 +1,4 @@
-#include "generators/tui_state_generator.hpp"
+#include "tui_state_generator.hpp"
 #include <random>
 #include <algorithm>
 

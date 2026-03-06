@@ -5,6 +5,8 @@
 
 using namespace kano::git::commands;
 
+namespace {
+
 // Helper to create a test CLI11 app with sample commands
 auto CreateTestApp() -> std::unique_ptr<CLI::App> {
     auto app = std::make_unique<CLI::App>("Test App");
@@ -31,6 +33,8 @@ auto CreateTestApp() -> std::unique_ptr<CLI::App> {
 
     return app;
 }
+
+} // namespace
 
 TEST_CASE("CommandExecutor - ParseCommandLine", "[Feature: tui-command-input-enhancement][Unit]") {
     auto app = CreateTestApp();

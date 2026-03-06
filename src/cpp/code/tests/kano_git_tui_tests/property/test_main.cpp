@@ -2,8 +2,8 @@
 // This file will be populated with property test cases as components are implemented
 
 #include <catch2/catch_test_macros.hpp>
-#include "generators/tui_state_generator.hpp"
-#include "generators/command_string_generator.hpp"
+#include "tui_state_generator.hpp"
+#include "command_string_generator.hpp"
 #include "metadata_cache.hpp"
 #include <CLI/CLI.hpp>
 

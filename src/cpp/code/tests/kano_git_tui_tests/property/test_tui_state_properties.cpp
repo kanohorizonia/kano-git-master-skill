@@ -4,7 +4,7 @@
 #include <catch2/generators/catch_generators_range.hpp>
 #include <catch2/generators/catch_generators_random.hpp>
 #include "tui_state.hpp"
-#include "generators/command_string_generator.hpp"
+#include "command_string_generator.hpp"
 #include <random>
 #include <string>
 

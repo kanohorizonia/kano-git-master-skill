@@ -18,6 +18,8 @@ struct RepoRecord {
 struct DiscoverOptions {
     std::filesystem::path rootDir = ".";
     int maxDepth = 3;
+    // Temporary operator/debug scan-scope override only.
+    // Shared workspace exclusion policy should live in .gitignore / .kogignore.
     std::vector<std::string> excludePatterns;
     bool useCache = true;
     int cacheTtlSeconds = 60;

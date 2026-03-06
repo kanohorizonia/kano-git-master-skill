@@ -100,9 +100,3 @@ if(MSVC AND CMAKE_GENERATOR MATCHES "Visual Studio")
 endif()
 
 target_link_libraries(kano_git_core PUBLIC CLI11::CLI11 ftxui::screen ftxui::dom ftxui::component)
-
-# Add tests subdirectory
-option(KOG_BUILD_TESTS "Build TUI command input enhancement tests" ON)
-if(KOG_BUILD_TESTS)
-    add_subdirectory(tests)
-endif()
