@@ -197,7 +197,7 @@ auto ResolveTimeoutMs(const std::string& InCommand,
 }
 
 auto RunProcess(const std::string& cmdLine, ExecMode InMode,
-                 const std::optional<DWORD>& InTimeoutMs,
+                 const std::optional<unsigned int>& InTimeoutMs,
                  const std::optional<std::filesystem::path>& InWorkingDir) -> ExecResult
 {
     ExecResult result;
@@ -398,7 +398,7 @@ auto RunProcess(const std::string& cmdLine, ExecMode InMode,
 #else  // Unix
 
 auto RunProcess(const std::string& cmdLine, ExecMode InMode,
-                 const std::optional<DWORD>& InTimeoutMs,
+                 const std::optional<unsigned int>& InTimeoutMs,
                  const std::optional<std::filesystem::path>& InWorkingDir) -> ExecResult
 {
     ExecResult result;
@@ -544,7 +544,11 @@ auto ExecuteCommand(
 ) -> ExecResult
 {
     const auto effectiveArgs = WithGitNonInteractiveDefaults(InCommand, InArgs);
+#ifdef KOG_PLATFORM_WINDOWS
     const auto timeoutMs = ResolveTimeoutMs(InCommand, effectiveArgs, InMode);
+#else
+    const std::optional<unsigned int> timeoutMs = std::nullopt;
+#endif
     auto cmd = BuildCommandLine(InCommand, effectiveArgs);
     return RunProcess(cmd, InMode, timeoutMs, InWorkingDir);
 }

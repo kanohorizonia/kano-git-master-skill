@@ -285,3 +285,12 @@ Note: sourcing will also define globals used by those functions (see the script 
   - Empty/invalid verdict -> warning + continue
   - Explicit `FAIL` verdict -> block commit
 - Parsing tolerates common small-model output drift (`PASS - ...`, leading spaces, fuzzy PASS/FAIL tokens).
+
+### Azure HTTPS credential prompt blocked (`unable to get password from user`)
+- Symptom: `git ls-remote https://dev.azure.com/...` and `git lfs push` fail with `fatal: unable to get password from user`.
+- Root cause: global/user config had `credential.interactive=never`, which suppresses all prompts; VS Code `GIT_ASKPASS` may also keep shell non-interactive.
+- Fast repo-local repair:
+  - `git config --local credential.interactive always`
+  - `git config --local credential.https://dev.azure.com.useHttpPath true`
+  - clear askpass env in current shell and set `GIT_TERMINAL_PROMPT=1`
+- For Azure Repos with SSH git remote + LFS upload failures, set LFS HTTPS endpoint explicitly and disable locks verify for that endpoint.
