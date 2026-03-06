@@ -357,6 +357,37 @@ auto ResolveSelfBinaryCommand() -> std::string {
 #endif
 }
 
+auto EmitCapturedSelfResult(const shell::ExecResult& InResult) -> void {
+    if (!InResult.stdoutStr.empty()) {
+        std::cout << InResult.stdoutStr;
+        if (InResult.stdoutStr.back() != '\n') {
+            std::cout << '\n';
+        }
+    }
+    if (!InResult.stderrStr.empty()) {
+        std::cerr << InResult.stderrStr;
+        if (InResult.stderrStr.back() != '\n') {
+            std::cerr << '\n';
+        }
+    }
+}
+
+auto ContainsNestedSelfLauncherFailure(const shell::ExecResult& InResult) -> bool {
+    const auto stderrLower = ToLower(InResult.stderrStr);
+    return stderrLower.find("find_binary: command not found") != std::string::npos;
+}
+
+auto FinalizeNestedSelfResult(const char* InLabel,
+                              const shell::ExecResult& InResult) -> int {
+    EmitCapturedSelfResult(InResult);
+    if (ContainsNestedSelfLauncherFailure(InResult)) {
+        std::cerr << "Error: " << InLabel
+                  << " hit nested launcher shell failure (`find_binary` leaked into sh); aborting.\n";
+        return InResult.exitCode != 0 ? InResult.exitCode : 127;
+    }
+    return InResult.exitCode;
+}
+
 auto RunCommitPlanRunbookViaSelf(const std::filesystem::path& InWorkspaceRoot,
                                  const std::filesystem::path& InPlanPath,
                                  const std::string& InProvider,
@@ -367,11 +398,12 @@ auto RunCommitPlanRunbookViaSelf(const std::filesystem::path& InWorkspaceRoot,
         "--ai-provider", InProvider.empty() ? "auto" : InProvider,
         "--ai-model", InModel.empty() ? "auto" : InModel,
     };
-    const auto result = shell::ExecuteCommand(ResolveSelfBinaryCommand(), args, shell::ExecMode::PassThrough, InWorkspaceRoot);
-    if (result.exitCode != 0) {
-        std::cerr << "Error: AI commit runbook failed via native binary (exit=" << result.exitCode << ").\n";
+    const auto result = shell::ExecuteCommand(ResolveSelfBinaryCommand(), args, shell::ExecMode::Capture, InWorkspaceRoot);
+    const auto exitCode = FinalizeNestedSelfResult("AI commit runbook", result);
+    if (exitCode != 0) {
+        std::cerr << "Error: AI commit runbook failed via native binary (exit=" << exitCode << ").\n";
     }
-    return result.exitCode;
+    return exitCode;
 }
 
 auto RunPlanNewViaSelf(const std::filesystem::path& InWorkspaceRoot,
@@ -381,11 +413,12 @@ auto RunPlanNewViaSelf(const std::filesystem::path& InWorkspaceRoot,
         "--force",
         "--output", InPlanPath.generic_string(),
     };
-    const auto result = shell::ExecuteCommand(ResolveSelfBinaryCommand(), args, shell::ExecMode::PassThrough, InWorkspaceRoot);
-    if (result.exitCode != 0) {
-        std::cerr << "Error: plan new failed via native binary (exit=" << result.exitCode << ").\n";
+    const auto result = shell::ExecuteCommand(ResolveSelfBinaryCommand(), args, shell::ExecMode::Capture, InWorkspaceRoot);
+    const auto exitCode = FinalizeNestedSelfResult("plan new", result);
+    if (exitCode != 0) {
+        std::cerr << "Error: plan new failed via native binary (exit=" << exitCode << ").\n";
     }
-    return result.exitCode;
+    return exitCode;
 }
 
 auto RunIgnorePlanRunbookViaSelf(const std::filesystem::path& InWorkspaceRoot,
@@ -395,11 +428,12 @@ auto RunIgnorePlanRunbookViaSelf(const std::filesystem::path& InWorkspaceRoot,
         "--force",
         "--plan-file", InPlanPath.generic_string(),
     };
-    const auto result = shell::ExecuteCommand(ResolveSelfBinaryCommand(), args, shell::ExecMode::PassThrough, InWorkspaceRoot);
-    if (result.exitCode != 0) {
-        std::cerr << "Error: ignore runbook failed via native binary (exit=" << result.exitCode << ").\n";
+    const auto result = shell::ExecuteCommand(ResolveSelfBinaryCommand(), args, shell::ExecMode::Capture, InWorkspaceRoot);
+    const auto exitCode = FinalizeNestedSelfResult("ignore runbook", result);
+    if (exitCode != 0) {
+        std::cerr << "Error: ignore runbook failed via native binary (exit=" << exitCode << ").\n";
     }
-    return result.exitCode;
+    return exitCode;
 }
 
 auto RunIgnorePlanApplyViaSelf(const std::filesystem::path& InWorkspaceRoot,
@@ -408,11 +442,12 @@ auto RunIgnorePlanApplyViaSelf(const std::filesystem::path& InWorkspaceRoot,
         "plan", "apply", "--stage", "ignore",
         "--plan-file", InPlanPath.generic_string(),
     };
-    const auto result = shell::ExecuteCommand(ResolveSelfBinaryCommand(), args, shell::ExecMode::PassThrough, InWorkspaceRoot);
-    if (result.exitCode != 0) {
-        std::cerr << "Error: ignore apply failed via native binary (exit=" << result.exitCode << ").\n";
+    const auto result = shell::ExecuteCommand(ResolveSelfBinaryCommand(), args, shell::ExecMode::Capture, InWorkspaceRoot);
+    const auto exitCode = FinalizeNestedSelfResult("ignore apply", result);
+    if (exitCode != 0) {
+        std::cerr << "Error: ignore apply failed via native binary (exit=" << exitCode << ").\n";
     }
-    return result.exitCode;
+    return exitCode;
 }
 
 auto BuildCommitPlanTemplateJson(const std::string& InGeneratedAtUtc) -> std::string {
