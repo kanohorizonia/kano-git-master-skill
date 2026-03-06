@@ -2160,6 +2160,11 @@ void RegisterPlan(CLI::App& InApp) {
                                       const std::string& InModel,
                                       const bool InDebugAi,
                                       const int InMaxCommits) -> int {
+        const auto dirtyContext = CollectDirtyRepoContextText(InWorkspaceRoot);
+        if (Trim(dirtyContext).empty()) {
+            std::cerr << "[plan] workspace clean; skip commit runbook (no-op).\n";
+            return 0;
+        }
         auto payload = ReadFileText(InPlanPath);
         const bool needs = !payload.has_value() || PlanNeedsRefresh(*payload) ||
                            (payload.has_value() && PlanWorkspaceStateDrifted(InWorkspaceRoot, *payload));
