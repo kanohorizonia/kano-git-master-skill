@@ -543,6 +543,25 @@ auto RepoHasAnyWorkingTreeChanges(const std::filesystem::path& InRepoRoot) -> bo
     return status.exitCode == 0 && !Trim(status.stdoutStr).empty();
 }
 
+auto PlanStageLikelyNonEmpty(const std::filesystem::path& InPlanFile, const std::string& InStageKey) -> bool {
+    std::ifstream in(InPlanFile, std::ios::in | std::ios::binary);
+    if (!in) {
+        // Conservative fallback: if we cannot inspect the file, keep existing execution path.
+        return true;
+    }
+    std::ostringstream oss;
+    oss << in.rdbuf();
+    const auto text = oss.str();
+    if (text.empty()) {
+        return true;
+    }
+
+    const std::regex emptyStagePattern(
+        "\"" + InStageKey + "\"\\s*:\\s*\\[\\s*\\]",
+        std::regex::icase);
+    return !std::regex_search(text, emptyStagePattern);
+}
+
 auto NeedsPostSyncCommitNonPlan(const std::filesystem::path& InWorkspaceRoot,
                                 const std::vector<std::string>& InRepoList,
                                 const bool InNoRecursive) -> bool {
@@ -880,8 +899,11 @@ void RegisterCommitPush(CLI::App& InApp) {
         const auto postCommitStart = std::chrono::steady_clock::now();
         shell::ExecResult postCommitResult{0, "", ""};
         if (hasCommitPlan) {
+            const bool hasPostSyncStage = PlanStageLikelyNonEmpty(std::filesystem::path(normalizedCommitPlanFile), "post_sync");
             if (*dryRun) {
                 std::cout << "[commit-push] post-sync plan commit skipped in dry-run mode.\n";
+            } else if (!hasPostSyncStage) {
+                std::cout << "[commit-push] post-sync plan stage is empty; skipping.\n";
             } else if (NeedsPostSyncCommitNonPlan(workspaceRoot, repoList, *noRecursive)) {
                 postCommitResult =
                     shell::ExecResult{RunCommitNativePlanStage(workspaceRoot, normalizedCommitPlanFile, "post_sync", false), "", ""};
