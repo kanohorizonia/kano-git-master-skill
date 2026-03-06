@@ -2268,43 +2268,6 @@ void RegisterPlan(CLI::App& InApp) {
             }
         }
 
-        const auto text = *payload;
-        const auto meta = ExtractObjectBodyForKey(text, "meta");
-        const auto stages = ExtractObjectBodyForKey(text, "stages");
-        if (!meta.has_value() || !stages.has_value()) {
-            std::cerr << "Error: plan schema invalid: missing meta/stages\n";
-            return 2;
-        }
-        const auto planner = ExtractObjectBodyForKey(*meta, "planner");
-        const auto planId = ExtractStringField(*meta, "plan_id").value_or("-");
-        const auto generated = ExtractStringField(*meta, "generated_at_utc").value_or("-");
-        const auto provider = planner.has_value() ? ExtractStringField(*planner, "provider").value_or("-") : "-";
-        const auto model = planner.has_value() ? ExtractStringField(*planner, "ai-model").value_or("-") : "-";
-        std::cerr << std::format("[plan] meta: plan_id={} generated={} provider={} ai-model={}\n", planId, generated, provider, model);
-
-        const auto commitArray = ExtractArrayBodyForKey(*stages, "commit").value_or(std::string{});
-        std::size_t repoCount = 0;
-        std::size_t commitCount = 0;
-        std::vector<std::string> lines;
-        for (const auto& repoObj : SplitTopLevelObjects(commitArray)) {
-            const auto repo = ExtractStringField(repoObj, "repo").value_or("?");
-            const auto commits = ExtractArrayBodyForKey(repoObj, "commits").value_or(std::string{});
-            const auto commitObjects = SplitTopLevelObjects(commits);
-            if (!commitObjects.empty()) {
-                repoCount += 1;
-            }
-            commitCount += commitObjects.size();
-            for (const auto& commitObj : commitObjects) {
-                const auto msg = ExtractStringField(commitObj, "message").value_or("");
-                lines.push_back(std::format("[plan] - {}: {}", repo, msg));
-            }
-        }
-        std::cerr << std::format("[plan] commits: repos={} total={}\n", repoCount, commitCount);
-        const auto cappedMax = InMaxCommits < 0 ? 0 : InMaxCommits;
-        const auto limit = std::min<std::size_t>(lines.size(), static_cast<std::size_t>(cappedMax));
-        for (std::size_t i = 0; i < limit; ++i) {
-            std::cerr << lines[i] << "\n";
-        }
         return 0;
     };
 
