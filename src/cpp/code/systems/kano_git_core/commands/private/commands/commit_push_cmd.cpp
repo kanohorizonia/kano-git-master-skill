@@ -711,6 +711,11 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
         return 2;
     }
 
+    if (!NeedsPostSyncCommitNonPlan(InWorkspaceRoot, {}, false)) {
+        std::cout << "[commit-push] workspace clean; nothing to commit/push.\n";
+        return 0;
+    }
+
     {
         std::string stampError;
         const auto planPath = std::filesystem::path(InNormalizedPlanFile).lexically_normal();
@@ -859,6 +864,12 @@ void RegisterCommitPush(CLI::App& InApp) {
         }
 
         const auto workspaceRoot = std::filesystem::current_path().lexically_normal();
+        const auto repoList = ParseReposCsv(*repos);
+        if (!NeedsPostSyncCommitNonPlan(workspaceRoot, repoList, *noRecursive)) {
+            std::cout << "[commit-push] workspace clean; nothing to commit/push.\n";
+            std::exit(0);
+        }
+
         if (*writeCommitPlanTemplate) {
             const auto outPath = commitPlanOut->empty()
                 ? DefaultCommitPlanOutputPath(workspaceRoot)
@@ -958,7 +969,6 @@ void RegisterCommitPush(CLI::App& InApp) {
 
         std::cout << "=== commit-push stage: pre-commit ===\n";
         const auto preCommitStart = std::chrono::steady_clock::now();
-        const auto repoList = ParseReposCsv(*repos);
         if (!repoList.empty()) {
             for (const auto& repo : repoList) {
                 const auto repoRoot = (workspaceRoot / std::filesystem::path(repo)).lexically_normal();
