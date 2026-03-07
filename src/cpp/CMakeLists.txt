@@ -121,6 +121,7 @@ endif()
 # Platform detection
 if(WIN32)
     add_compile_definitions(KOG_PLATFORM_WINDOWS=1)
+    add_compile_definitions(NOMINMAX)
 else()
     add_compile_definitions(KOG_PLATFORM_UNIX=1)
 endif()

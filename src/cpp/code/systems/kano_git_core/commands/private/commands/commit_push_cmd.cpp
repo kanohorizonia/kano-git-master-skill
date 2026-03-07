@@ -1607,17 +1607,6 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
         }
     }
 
-    {
-        std::string stampError;
-        if (!StampCommitPlanExecutedAt(planPath, &stampError)) {
-            std::cerr << "Warning: failed to stamp plan executed_at_utc: " << planPath.generic_string();
-            if (!stampError.empty()) {
-                std::cerr << " (" << stampError << ")";
-            }
-            std::cerr << "\n";
-        }
-    }
-
     if (agentMode) {
         std::cout << "[commit-push] agent mode + --plan-file detected; using plan-driven flow.\n";
     }
@@ -1688,6 +1677,14 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
     std::cout << "=== commit-push stage: push ===\n";
     {
         const auto pushCode = RunPushNativeSimple(InWorkspaceRoot, true, false, false, false, false, 0, false, "");
+        std::string stampError;
+        if (!StampCommitPlanExecutedAt(planPath, &stampError)) {
+            std::cerr << "Warning: failed to stamp plan executed_at_utc: " << planPath.generic_string();
+            if (!stampError.empty()) {
+                std::cerr << " (" << stampError << ")";
+            }
+            std::cerr << "\n";
+        }
         PrintExecutedPlanSummary(std::filesystem::path(InNormalizedPlanFile).lexically_normal(), 10);
         return pushCode;
     }
@@ -1906,19 +1903,6 @@ void RegisterCommitPush(CLI::App& InApp) {
             std::exit(code);
         }
 
-        if (hasCommitPlan) {
-            std::string stampError;
-            const auto planPath = std::filesystem::path(normalizedCommitPlanFile).lexically_normal();
-            if (!StampCommitPlanExecutedAt(planPath, &stampError)) {
-                std::cerr << "Warning: failed to stamp plan executed_at_utc: "
-                          << planPath.generic_string();
-                if (!stampError.empty()) {
-                    std::cerr << " (" << stampError << ")";
-                }
-                std::cerr << "\n";
-            }
-        }
-
         if (agentMode && hasCommitPlan) {
             std::cout << "[commit-push] agent mode + --plan-file detected; using plan-driven flow.\n";
         }
@@ -2115,7 +2099,17 @@ void RegisterCommitPush(CLI::App& InApp) {
         }
 
         if (hasCommitPlan) {
-            PrintExecutedPlanSummary(std::filesystem::path(normalizedCommitPlanFile).lexically_normal(), 10);
+            std::string stampError;
+            const auto planPath = std::filesystem::path(normalizedCommitPlanFile).lexically_normal();
+            if (!StampCommitPlanExecutedAt(planPath, &stampError)) {
+                std::cerr << "Warning: failed to stamp plan executed_at_utc: "
+                          << planPath.generic_string();
+                if (!stampError.empty()) {
+                    std::cerr << " (" << stampError << ")";
+                }
+                std::cerr << "\n";
+            }
+            PrintExecutedPlanSummary(planPath, 10);
         }
 
         std::exit(pushExitCode);
