@@ -290,15 +290,12 @@ void RewriteCommandAliases(std::vector<std::string>& InOutArgs) {
     }
     if (cmd == "cpa") {
         std::vector<std::string> rewritten;
-        rewritten.reserve(InOutArgs.size() + 3);
+        rewritten.reserve(InOutArgs.size() + 2);
         rewritten.push_back(InOutArgs[0]);
         rewritten.push_back("commit-push");
         // In agent mode, cpa must behave exactly like cp (external agent owns AI).
         if (!IsTruthyEnv("KANO_AGENT_MODE")) {
             rewritten.push_back("--ai-auto");
-            // Keep cpa alias from being auto-augmented with --plan-file by generic
-            // commit/commit-push rewrite pass; cpa flow resolves plan behavior downstream.
-            rewritten.push_back("--no-plan-auto");
         }
         for (std::size_t i = 2; i < InOutArgs.size(); ++i) {
             rewritten.push_back(InOutArgs[i]);
