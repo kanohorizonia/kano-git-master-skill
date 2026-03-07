@@ -694,9 +694,10 @@ auto RunNativePush(
                     continue;
                 }
 
-                if (InVerbose) {
-                    std::cerr << "[" << repoLabel << "] Push failed (" << remote << ")\n";
+                if (!InVerbose) {
+                    PrintCapturedOutputIfAny(result);
                 }
+                std::cerr << "[" << repoLabel << "] Push failed (" << remote << ")\n";
             }
         }
 

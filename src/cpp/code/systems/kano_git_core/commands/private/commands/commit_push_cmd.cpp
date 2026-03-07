@@ -43,6 +43,18 @@ auto ToLower(std::string InValue) -> std::string {
     return InValue;
 }
 
+auto ParseNonNegativeInt(const std::string& InValue) -> int {
+    const auto trimmed = Trim(InValue);
+    if (trimmed.empty()) {
+        return 0;
+    }
+    try {
+        return std::max(0, std::stoi(trimmed));
+    } catch (const std::exception&) {
+        return 0;
+    }
+}
+
 auto NormalizeInputPathForCurrentPlatform(std::string InPath) -> std::string {
     auto path = Trim(std::move(InPath));
     if (path.empty()) {
@@ -1324,6 +1336,79 @@ auto CollectGitlinkOnlyChangedPaths(const std::filesystem::path& InRepoRoot) -> 
     return changedPaths;
 }
 
+auto RepoCurrentBranch(const std::filesystem::path& InRepoRoot) -> std::string {
+    const auto branch = shell::ExecuteCommand("git", {"symbolic-ref", "--quiet", "--short", "HEAD"}, shell::ExecMode::Capture, InRepoRoot);
+    if (branch.exitCode != 0) {
+        return {};
+    }
+    return Trim(branch.stdoutStr);
+}
+
+auto RepoHasRemote(const std::filesystem::path& InRepoRoot, const std::string& InRemote) -> bool {
+    return shell::ExecuteCommand("git", {"remote", "get-url", InRemote}, shell::ExecMode::Capture, InRepoRoot).exitCode == 0;
+}
+
+auto RepoPushRemotes(const std::filesystem::path& InRepoRoot) -> std::vector<std::string> {
+    std::vector<std::string> remotes;
+    if (RepoHasRemote(InRepoRoot, "origin-ssh")) {
+        remotes.push_back("origin-ssh");
+    }
+    if (RepoHasRemote(InRepoRoot, "origin-http")) {
+        remotes.push_back("origin-http");
+    }
+    if (RepoHasRemote(InRepoRoot, "origin")) {
+        remotes.push_back("origin");
+    }
+    return remotes;
+}
+
+auto RepoHasCommitsToPushToRemote(const std::filesystem::path& InRepoRoot,
+                                  const std::string& InRemote,
+                                  const std::string& InBranch) -> bool {
+    if (InRemote.empty() || InBranch.empty()) {
+        return false;
+    }
+    const auto remoteRef = std::format("refs/remotes/{}/{}", InRemote, InBranch);
+    const auto localRef = std::format("refs/heads/{}", InBranch);
+    const auto hasRemoteRef =
+        shell::ExecuteCommand("git", {"show-ref", "--verify", "--quiet", remoteRef}, shell::ExecMode::Capture, InRepoRoot).exitCode == 0;
+    if (!hasRemoteRef) {
+        return true;
+    }
+    const auto ahead =
+        shell::ExecuteCommand("git", {"rev-list", "--count", std::format("{}..{}", remoteRef, localRef)}, shell::ExecMode::Capture, InRepoRoot);
+    if (ahead.exitCode != 0) {
+        return true;
+    }
+    return ParseNonNegativeInt(ahead.stdoutStr) > 0;
+}
+
+auto RepoHeadIsUnpublishedAcrossPushRemotes(const std::filesystem::path& InRepoRoot) -> bool {
+    const auto branch = RepoCurrentBranch(InRepoRoot);
+    if (branch.empty()) {
+        return false;
+    }
+    const auto remotes = RepoPushRemotes(InRepoRoot);
+    if (remotes.empty()) {
+        return false;
+    }
+    for (const auto& remote : remotes) {
+        if (!RepoHasCommitsToPushToRemote(InRepoRoot, remote, branch)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+auto BuildGitlinkOnlyFollowupCommitMessage(const std::filesystem::path& InWorkspaceRoot,
+                                           const std::filesystem::path& InRepoRoot) -> std::string {
+    const auto relative = RelativeDisplayPath(InWorkspaceRoot, InRepoRoot).generic_string();
+    if (relative.empty() || relative == ".") {
+        return "chore(workspace): update submodule pointers";
+    }
+    return std::format("chore({}): update submodule pointers", RepoNameFromPath(InRepoRoot));
+}
+
 enum class PostSyncDeltaKind {
     None,
     GitlinkOnly,
@@ -1368,7 +1453,7 @@ auto ClassifyPostSyncDelta(const std::filesystem::path& InWorkspaceRoot,
 auto AutoAmendGitlinkOnlyPostSyncRepos(const std::filesystem::path& InWorkspaceRoot,
                                        const std::vector<std::string>& InRepoList,
                                        const bool InNoRecursive) -> std::pair<int, int> {
-    int amendedCount = 0;
+    int updatedCount = 0;
     const auto repos = CollectPostSyncCandidateRepos(InWorkspaceRoot, InRepoList, InNoRecursive);
     for (const auto& repo : repos) {
         const auto gitlinkPaths = CollectGitlinkOnlyChangedPaths(repo);
@@ -1381,17 +1466,31 @@ auto AutoAmendGitlinkOnlyPostSyncRepos(const std::filesystem::path& InWorkspaceR
         if (addResult.exitCode != 0) {
             std::cerr << "[commit-push] post-sync gitlink-only auto-amend failed: git add -- <gitlink paths> failed in "
                       << repo.generic_string() << "\n";
-            return {-1, amendedCount};
+            return {-1, updatedCount};
         }
-        const auto amendResult = shell::ExecuteCommand("git", {"commit", "--amend", "--no-edit"}, shell::ExecMode::PassThrough, repo);
-        if (amendResult.exitCode != 0) {
-            std::cerr << "[commit-push] post-sync gitlink-only auto-amend failed: git commit --amend --no-edit failed in "
-                      << repo.generic_string() << "\n";
-            return {-1, amendedCount};
+
+        if (RepoHeadIsUnpublishedAcrossPushRemotes(repo)) {
+            const auto amendResult = shell::ExecuteCommand("git", {"commit", "--amend", "--no-edit"}, shell::ExecMode::PassThrough, repo);
+            if (amendResult.exitCode != 0) {
+                std::cerr << "[commit-push] post-sync gitlink-only auto-amend failed: git commit --amend --no-edit failed in "
+                          << repo.generic_string() << "\n";
+                return {-1, updatedCount};
+            }
+        } else {
+            const auto commitResult = shell::ExecuteCommand(
+                "git",
+                {"commit", "-m", BuildGitlinkOnlyFollowupCommitMessage(InWorkspaceRoot, repo)},
+                shell::ExecMode::PassThrough,
+                repo);
+            if (commitResult.exitCode != 0) {
+                std::cerr << "[commit-push] post-sync gitlink-only follow-up commit failed in "
+                          << repo.generic_string() << "\n";
+                return {-1, updatedCount};
+            }
         }
-        amendedCount += 1;
+        updatedCount += 1;
     }
-    return {0, amendedCount};
+    return {0, updatedCount};
 }
 
 auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceRoot,
