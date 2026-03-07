@@ -1458,6 +1458,16 @@ auto BuildExecutionWaves(const std::vector<workspace::RepoRecord>& InRepos) -> s
     return waves;
 }
 
+auto IsParentRepoPath(const std::filesystem::path& InParent, const std::filesystem::path& InChild) -> bool {
+    const auto parent = ToGeneric(InParent);
+    const auto child = ToGeneric(InChild);
+    if (parent.empty() || child.empty() || parent == child) {
+        return false;
+    }
+    const std::string prefix = parent + "/";
+    return child.rfind(prefix, 0) == 0;
+}
+
 enum class CommitPlanStage {
     Commit,
     PostSync,
@@ -2247,6 +2257,23 @@ auto BuildCommitTaskGraph(const std::vector<workspace::RepoRecord>& InRepoRecord
             const auto repoTail = repoTaskIndices[ridx].back();
             const auto depHead = repoTaskIndices[depRepoIndex].front();
             addEdge(repoTail, depHead);
+        }
+    }
+
+    for (std::size_t parentIdx = 0; parentIdx < InRepoRecords.size(); ++parentIdx) {
+        if (repoTaskIndices[parentIdx].empty()) {
+            continue;
+        }
+        for (std::size_t childIdx = 0; childIdx < InRepoRecords.size(); ++childIdx) {
+            if (parentIdx == childIdx || repoTaskIndices[childIdx].empty()) {
+                continue;
+            }
+            if (!IsParentRepoPath(InRepoRecords[parentIdx].path, InRepoRecords[childIdx].path)) {
+                continue;
+            }
+            const auto childTail = repoTaskIndices[childIdx].back();
+            const auto parentHead = repoTaskIndices[parentIdx].front();
+            addEdge(childTail, parentHead);
         }
     }
 
