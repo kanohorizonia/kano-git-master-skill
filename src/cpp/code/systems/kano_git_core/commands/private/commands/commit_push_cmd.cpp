@@ -1521,42 +1521,59 @@ auto AutoAmendGitlinkOnlyPostSyncRepos(const std::filesystem::path& InWorkspaceR
                                        const std::vector<std::string>& InRepoList,
                                        const bool InNoRecursive) -> std::pair<int, int> {
     int updatedCount = 0;
-    const auto repoWaves = BuildNestedRepoWaves(CollectPostSyncCandidateRepos(InWorkspaceRoot, InRepoList, InNoRecursive));
-    for (const auto& wave : repoWaves) {
-        for (const auto& repo : wave) {
-            const auto gitlinkPaths = CollectGitlinkOnlyChangedPaths(repo);
-            if (gitlinkPaths.empty()) {
-                continue;
-            }
-            std::vector<std::string> addArgs = {"add", "--"};
-            addArgs.insert(addArgs.end(), gitlinkPaths.begin(), gitlinkPaths.end());
-            const auto addResult = shell::ExecuteCommand("git", addArgs, shell::ExecMode::PassThrough, repo);
-            if (addResult.exitCode != 0) {
-                std::cerr << "[commit-push] post-sync gitlink-only auto-amend failed: git add -- <gitlink paths> failed in "
-                          << repo.generic_string() << "\n";
-                return {-1, updatedCount};
-            }
+    const auto candidateRepos = CollectPostSyncCandidateRepos(InWorkspaceRoot, InRepoList, InNoRecursive);
+    const auto maxPasses = std::max<std::size_t>(candidateRepos.size(), 1);
+    for (std::size_t pass = 0; pass < maxPasses; ++pass) {
+        bool changedThisPass = false;
+        const auto repoWaves = BuildNestedRepoWaves(candidateRepos);
+        for (const auto& wave : repoWaves) {
+            for (const auto& repo : wave) {
+                const auto gitlinkPaths = CollectGitlinkOnlyChangedPaths(repo);
+                if (gitlinkPaths.empty()) {
+                    continue;
+                }
+                std::vector<std::string> addArgs = {"add", "--"};
+                addArgs.insert(addArgs.end(), gitlinkPaths.begin(), gitlinkPaths.end());
+                const auto addResult = shell::ExecuteCommand("git", addArgs, shell::ExecMode::PassThrough, repo);
+                if (addResult.exitCode != 0) {
+                    std::cerr << "[commit-push] post-sync gitlink-only auto-amend failed: git add -- <gitlink paths> failed in "
+                              << repo.generic_string() << "\n";
+                    return {-1, updatedCount};
+                }
 
-            if (RepoHeadIsUnpublishedAcrossPushRemotes(repo)) {
-                const auto amendResult = shell::ExecuteCommand("git", {"commit", "--amend", "--no-edit"}, shell::ExecMode::PassThrough, repo);
-                if (amendResult.exitCode != 0) {
-                    std::cerr << "[commit-push] post-sync gitlink-only auto-amend failed: git commit --amend --no-edit failed in "
-                              << repo.generic_string() << "\n";
-                    return {-1, updatedCount};
+                if (RepoHeadIsUnpublishedAcrossPushRemotes(repo)) {
+                    const auto amendResult = shell::ExecuteCommand("git", {"commit", "--amend", "--no-edit"}, shell::ExecMode::PassThrough, repo);
+                    if (amendResult.exitCode != 0) {
+                        std::cerr << "[commit-push] post-sync gitlink-only auto-amend failed: git commit --amend --no-edit failed in "
+                                  << repo.generic_string() << "\n";
+                        return {-1, updatedCount};
+                    }
+                } else {
+                    const auto commitResult = shell::ExecuteCommand(
+                        "git",
+                        {"commit", "-m", BuildGitlinkOnlyFollowupCommitMessage(InWorkspaceRoot, repo)},
+                        shell::ExecMode::PassThrough,
+                        repo);
+                    if (commitResult.exitCode != 0) {
+                        std::cerr << "[commit-push] post-sync gitlink-only follow-up commit failed in "
+                                  << repo.generic_string() << "\n";
+                        return {-1, updatedCount};
+                    }
                 }
-            } else {
-                const auto commitResult = shell::ExecuteCommand(
-                    "git",
-                    {"commit", "-m", BuildGitlinkOnlyFollowupCommitMessage(InWorkspaceRoot, repo)},
-                    shell::ExecMode::PassThrough,
-                    repo);
-                if (commitResult.exitCode != 0) {
-                    std::cerr << "[commit-push] post-sync gitlink-only follow-up commit failed in "
-                              << repo.generic_string() << "\n";
-                    return {-1, updatedCount};
-                }
+                updatedCount += 1;
+                changedThisPass = true;
             }
-            updatedCount += 1;
+        }
+        if (!changedThisPass) {
+            return {0, updatedCount};
+        }
+    }
+
+    for (const auto& repo : candidateRepos) {
+        if (!CollectGitlinkOnlyChangedPaths(repo).empty()) {
+            std::cerr << "[commit-push] post-sync gitlink-only convergence failed; repo still dirty after iterative passes: "
+                      << repo.generic_string() << "\n";
+            return {-1, updatedCount};
         }
     }
     return {0, updatedCount};
