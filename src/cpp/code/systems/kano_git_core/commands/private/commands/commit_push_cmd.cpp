@@ -128,6 +128,16 @@ auto RelativeDisplayPath(const std::filesystem::path& InRoot, const std::filesys
     return normalizedPath;
 }
 
+auto IsParentPath(const std::filesystem::path& InParent, const std::filesystem::path& InChild) -> bool {
+    const auto parent = InParent.lexically_normal().generic_string();
+    const auto child = InChild.lexically_normal().generic_string();
+    if (parent.empty() || child.empty() || parent == child) {
+        return false;
+    }
+    const std::string prefix = parent + "/";
+    return child.rfind(prefix, 0) == 0;
+}
+
 auto RepoNameFromPath(const std::filesystem::path& InPath) -> std::string {
     const auto normalized = InPath.lexically_normal();
     auto name = normalized.filename().generic_string();
@@ -1336,6 +1346,63 @@ auto CollectGitlinkOnlyChangedPaths(const std::filesystem::path& InRepoRoot) -> 
     return changedPaths;
 }
 
+auto BuildNestedRepoWaves(const std::vector<std::filesystem::path>& InRepos) -> std::vector<std::vector<std::filesystem::path>> {
+    const std::size_t count = InRepos.size();
+    if (count <= 1) {
+        return {InRepos};
+    }
+
+    std::vector<int> indegree(count, 0);
+    std::vector<std::vector<std::size_t>> reverseEdges(count);
+    for (std::size_t parent = 0; parent < count; ++parent) {
+        for (std::size_t child = 0; child < count; ++child) {
+            if (parent == child) {
+                continue;
+            }
+            if (IsParentPath(InRepos[parent], InRepos[child])) {
+                indegree[parent] += 1;
+                reverseEdges[child].push_back(parent);
+            }
+        }
+    }
+
+    std::vector<std::size_t> frontier;
+    frontier.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        if (indegree[i] == 0) {
+            frontier.push_back(i);
+        }
+    }
+
+    std::vector<std::vector<std::filesystem::path>> waves;
+    std::size_t processed = 0;
+    while (!frontier.empty()) {
+        std::sort(frontier.begin(), frontier.end(), [&](const std::size_t A, const std::size_t B) {
+            return InRepos[A].lexically_normal().generic_string() < InRepos[B].lexically_normal().generic_string();
+        });
+
+        std::vector<std::filesystem::path> wave;
+        std::vector<std::size_t> next;
+        for (const auto idx : frontier) {
+            wave.push_back(InRepos[idx]);
+            processed += 1;
+            for (const auto dependent : reverseEdges[idx]) {
+                indegree[dependent] -= 1;
+                if (indegree[dependent] == 0) {
+                    next.push_back(dependent);
+                }
+            }
+        }
+        waves.push_back(std::move(wave));
+        frontier = std::move(next);
+    }
+
+    if (processed != count) {
+        return {InRepos};
+    }
+    return waves;
+}
+
 auto RepoCurrentBranch(const std::filesystem::path& InRepoRoot) -> std::string {
     const auto branch = shell::ExecuteCommand("git", {"symbolic-ref", "--quiet", "--short", "HEAD"}, shell::ExecMode::Capture, InRepoRoot);
     if (branch.exitCode != 0) {
@@ -1454,41 +1521,43 @@ auto AutoAmendGitlinkOnlyPostSyncRepos(const std::filesystem::path& InWorkspaceR
                                        const std::vector<std::string>& InRepoList,
                                        const bool InNoRecursive) -> std::pair<int, int> {
     int updatedCount = 0;
-    const auto repos = CollectPostSyncCandidateRepos(InWorkspaceRoot, InRepoList, InNoRecursive);
-    for (const auto& repo : repos) {
-        const auto gitlinkPaths = CollectGitlinkOnlyChangedPaths(repo);
-        if (gitlinkPaths.empty()) {
-            continue;
-        }
-        std::vector<std::string> addArgs = {"add", "--"};
-        addArgs.insert(addArgs.end(), gitlinkPaths.begin(), gitlinkPaths.end());
-        const auto addResult = shell::ExecuteCommand("git", addArgs, shell::ExecMode::PassThrough, repo);
-        if (addResult.exitCode != 0) {
-            std::cerr << "[commit-push] post-sync gitlink-only auto-amend failed: git add -- <gitlink paths> failed in "
-                      << repo.generic_string() << "\n";
-            return {-1, updatedCount};
-        }
+    const auto repoWaves = BuildNestedRepoWaves(CollectPostSyncCandidateRepos(InWorkspaceRoot, InRepoList, InNoRecursive));
+    for (const auto& wave : repoWaves) {
+        for (const auto& repo : wave) {
+            const auto gitlinkPaths = CollectGitlinkOnlyChangedPaths(repo);
+            if (gitlinkPaths.empty()) {
+                continue;
+            }
+            std::vector<std::string> addArgs = {"add", "--"};
+            addArgs.insert(addArgs.end(), gitlinkPaths.begin(), gitlinkPaths.end());
+            const auto addResult = shell::ExecuteCommand("git", addArgs, shell::ExecMode::PassThrough, repo);
+            if (addResult.exitCode != 0) {
+                std::cerr << "[commit-push] post-sync gitlink-only auto-amend failed: git add -- <gitlink paths> failed in "
+                          << repo.generic_string() << "\n";
+                return {-1, updatedCount};
+            }
 
-        if (RepoHeadIsUnpublishedAcrossPushRemotes(repo)) {
-            const auto amendResult = shell::ExecuteCommand("git", {"commit", "--amend", "--no-edit"}, shell::ExecMode::PassThrough, repo);
-            if (amendResult.exitCode != 0) {
-                std::cerr << "[commit-push] post-sync gitlink-only auto-amend failed: git commit --amend --no-edit failed in "
-                          << repo.generic_string() << "\n";
-                return {-1, updatedCount};
+            if (RepoHeadIsUnpublishedAcrossPushRemotes(repo)) {
+                const auto amendResult = shell::ExecuteCommand("git", {"commit", "--amend", "--no-edit"}, shell::ExecMode::PassThrough, repo);
+                if (amendResult.exitCode != 0) {
+                    std::cerr << "[commit-push] post-sync gitlink-only auto-amend failed: git commit --amend --no-edit failed in "
+                              << repo.generic_string() << "\n";
+                    return {-1, updatedCount};
+                }
+            } else {
+                const auto commitResult = shell::ExecuteCommand(
+                    "git",
+                    {"commit", "-m", BuildGitlinkOnlyFollowupCommitMessage(InWorkspaceRoot, repo)},
+                    shell::ExecMode::PassThrough,
+                    repo);
+                if (commitResult.exitCode != 0) {
+                    std::cerr << "[commit-push] post-sync gitlink-only follow-up commit failed in "
+                              << repo.generic_string() << "\n";
+                    return {-1, updatedCount};
+                }
             }
-        } else {
-            const auto commitResult = shell::ExecuteCommand(
-                "git",
-                {"commit", "-m", BuildGitlinkOnlyFollowupCommitMessage(InWorkspaceRoot, repo)},
-                shell::ExecMode::PassThrough,
-                repo);
-            if (commitResult.exitCode != 0) {
-                std::cerr << "[commit-push] post-sync gitlink-only follow-up commit failed in "
-                          << repo.generic_string() << "\n";
-                return {-1, updatedCount};
-            }
+            updatedCount += 1;
         }
-        updatedCount += 1;
     }
     return {0, updatedCount};
 }
