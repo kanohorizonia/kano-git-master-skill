@@ -2,6 +2,7 @@
 // Delegates to: scripts/core/smart-clone.sh
 
 #include "command_registry.hpp"
+#include "discovery.hpp"
 #include "shell_executor.hpp"
 
 #include <filesystem>
@@ -106,6 +107,16 @@ void RegisterClone(CLI::App& InApp) {
                 throw CLI::RuntimeError(addUpstream.exitCode);
             }
             std::cout << "[INFO] Added upstream remote in " << repoPath.generic_string() << "\n";
+        }
+
+        const auto repoDir = options->targetDir.empty() ? DeriveRepoDirName(options->repoUrl) : options->targetDir;
+        const auto repoPath = (std::filesystem::current_path() / std::filesystem::path(repoDir)).lexically_normal();
+        const auto workspaceRoot = std::filesystem::current_path().lexically_normal();
+        const auto relative = repoPath.lexically_relative(workspaceRoot);
+        if (!relative.empty() && !relative.generic_string().starts_with("..")) {
+            if (!workspace::UpsertUnregisteredRepoIntoWorkspaceManifest(workspaceRoot, repoPath)) {
+                std::cerr << "[WARN] cloned repo succeeded, but failed to update workspace manifest\n";
+            }
         }
 
         std::exit(0);

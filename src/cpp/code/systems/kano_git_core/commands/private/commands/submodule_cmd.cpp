@@ -1,6 +1,7 @@
 // submodule command — Git submodule management
 
 #include "command_registry.hpp"
+#include "discovery.hpp"
 #include "shell_executor.hpp"
 
 #include <filesystem>
@@ -298,6 +299,9 @@ auto RunNativeRemoveSubmodule(const std::string& InPath, bool InDryRun) -> int {
     std::cout << "Next steps:\n";
     std::cout << "  1. Review the changes: git status\n";
     std::cout << "  2. Commit the changes: git commit -m \"Remove submodule " << InPath << "\"\n";
+    if (!kano::git::workspace::RefreshWorkspaceManifestAfterRegisteredChange(std::filesystem::path(root))) {
+        std::cerr << "[WARN] submodule remove succeeded, but failed to refresh workspace manifest\n";
+    }
     return 0;
 }
 
@@ -363,6 +367,15 @@ void RegisterSubmodule(CLI::App& InApp) {
         std::vector<std::string> gitArgs = {"submodule", "add"};
         gitArgs.insert(gitArgs.end(), extras.begin(), extras.end());
         const auto result = shell::ExecuteCommand("git", gitArgs, shell::ExecMode::PassThrough);
+        if (result.exitCode == 0) {
+            const auto rootResult = RunGitCapture({"rev-parse", "--show-toplevel"});
+            if (rootResult.exitCode == 0) {
+                const auto root = Trim(rootResult.stdoutStr);
+                if (!kano::git::workspace::RefreshWorkspaceManifestAfterRegisteredChange(std::filesystem::path(root))) {
+                    std::cerr << "[WARN] submodule add succeeded, but failed to refresh workspace manifest\n";
+                }
+            }
+        }
         std::exit(result.exitCode);
     });
 

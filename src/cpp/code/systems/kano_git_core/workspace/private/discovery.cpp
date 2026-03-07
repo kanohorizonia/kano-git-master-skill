@@ -15,6 +15,7 @@
 #include <sstream>
 #include <string>
 #include <cstdint>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace kano::git::workspace {
@@ -555,6 +556,23 @@ auto CacheDirFor(const std::filesystem::path& InRoot) -> std::filesystem::path {
     return (InRoot / ".kano" / "cache" / "git" / "discover-repos").lexically_normal();
 }
 
+auto WorkspaceCacheDirFor(const std::filesystem::path& InRoot) -> std::filesystem::path {
+    if (IsGitRepo(InRoot)) {
+        const auto configured = RunGitCapture(InRoot, {"config", "--path", "--get", "kano.cache.local-dir"});
+        if (configured.exitCode == 0) {
+            const auto value = Trim(configured.stdoutStr);
+            if (!value.empty()) {
+                const std::filesystem::path configuredPath(value);
+                if (configuredPath.is_absolute()) {
+                    return configuredPath.lexically_normal();
+                }
+                return (InRoot / configuredPath).lexically_normal();
+            }
+        }
+    }
+    return (InRoot / ".kano" / "cache" / "git").lexically_normal();
+}
+
 auto ComputeMarker(const std::filesystem::path& InRoot, const int InMaxDepth, const std::vector<IgnoreRule>& InIgnoreRules) -> std::string {
     std::string markerInput;
     markerInput += PathKey(InRoot);
@@ -705,6 +723,192 @@ auto ParseReposArray(const std::string& InRawArray) -> std::vector<RepoRecord> {
         idx = objEnd + 1;
     }
     return repos;
+}
+
+auto ExtractArrayRaw(const std::string& InPayload, const std::string& InField) -> std::optional<std::string> {
+    const auto keyPos = InPayload.find(std::format("\"{}\":", InField));
+    if (keyPos == std::string::npos) {
+        return std::nullopt;
+    }
+    const auto start = InPayload.find('[', keyPos);
+    if (start == std::string::npos) {
+        return std::nullopt;
+    }
+    int depth = 0;
+    for (std::size_t idx = start; idx < InPayload.size(); ++idx) {
+        const char ch = InPayload[idx];
+        if (ch == '[') {
+            depth += 1;
+        } else if (ch == ']') {
+            depth -= 1;
+            if (depth == 0) {
+                return InPayload.substr(start, idx - start + 1);
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+auto ParseGitmodulesFingerprints(const std::string& InRawArray) -> std::unordered_map<std::string, std::string> {
+    std::unordered_map<std::string, std::string> out;
+    std::size_t idx = 0;
+    while (idx < InRawArray.size()) {
+        const auto objStart = InRawArray.find('{', idx);
+        if (objStart == std::string::npos) {
+            break;
+        }
+        int depth = 0;
+        std::size_t objEnd = objStart;
+        for (; objEnd < InRawArray.size(); ++objEnd) {
+            const char ch = InRawArray[objEnd];
+            if (ch == '{') {
+                depth += 1;
+            } else if (ch == '}') {
+                depth -= 1;
+                if (depth == 0) {
+                    break;
+                }
+            }
+        }
+        if (objEnd >= InRawArray.size()) {
+            break;
+        }
+        const std::string obj = InRawArray.substr(objStart, objEnd - objStart + 1);
+        const auto path = ExtractStringField(obj, "path");
+        const auto fingerprint = ExtractStringField(obj, "fingerprint");
+        if (path && fingerprint) {
+            out.emplace(*path, *fingerprint);
+        }
+        idx = objEnd + 1;
+    }
+    return out;
+}
+
+auto GitmodulesFingerprint(const std::filesystem::path& InRepoPath) -> std::string {
+    const auto gitmodules = InRepoPath / ".gitmodules";
+    const auto text = ReadFileText(gitmodules);
+    if (!text) {
+        return "missing";
+    }
+    return HashFNV1a(*text);
+}
+
+auto RelativePathKeyOrDot(const std::filesystem::path& InRoot, const std::filesystem::path& InPath) -> std::string {
+    std::error_code ec;
+    auto relative = std::filesystem::relative(InPath, InRoot, ec);
+    if (ec || relative.empty()) {
+        relative = InPath.lexically_relative(InRoot);
+    }
+    auto key = relative.empty() ? std::string(".") : PathKey(relative);
+    if (key.empty()) {
+        key = ".";
+    }
+    return key;
+}
+
+auto SortUniquePaths(std::vector<std::filesystem::path>* OutPaths) -> void {
+    if (OutPaths == nullptr) {
+        return;
+    }
+    std::sort(OutPaths->begin(), OutPaths->end(), [](const auto& A, const auto& B) {
+        return PathKey(A) < PathKey(B);
+    });
+    OutPaths->erase(std::unique(OutPaths->begin(), OutPaths->end(), [](const auto& A, const auto& B) {
+        return PathKey(A) == PathKey(B);
+    }), OutPaths->end());
+}
+
+auto WorkspaceManifestToJson(const WorkspaceManifest& InManifest) -> std::string {
+    std::string json = "{";
+    json += "\"version\":1,";
+    json += std::format("\"workspace_root\":\"{}\",", EscapeJson(PathKey(InManifest.workspaceRoot)));
+    json += std::format("\"generated_at\":\"{}\",", EscapeJson(ToUtcIsoString(std::chrono::system_clock::now())));
+    json += "\"repos\":[";
+    for (std::size_t idx = 0; idx < InManifest.repos.size(); ++idx) {
+        if (idx > 0) {
+            json += ",";
+        }
+        const auto& repo = InManifest.repos[idx];
+        json += "{";
+        json += std::format("\"path\":\"{}\",", EscapeJson(RelativePathKeyOrDot(InManifest.workspaceRoot, repo.path)));
+        json += std::format("\"type\":\"{}\"", EscapeJson(repo.type));
+        json += "}";
+    }
+    json += "],";
+    json += "\"gitmodules_fingerprints\":[";
+    std::vector<std::pair<std::string, std::string>> sorted(
+        InManifest.gitmodulesFingerprints.begin(), InManifest.gitmodulesFingerprints.end());
+    std::sort(sorted.begin(), sorted.end(), [](const auto& A, const auto& B) {
+        return A.first < B.first;
+    });
+    for (std::size_t idx = 0; idx < sorted.size(); ++idx) {
+        if (idx > 0) {
+            json += ",";
+        }
+        json += "{";
+        json += std::format("\"path\":\"{}\",", EscapeJson(sorted[idx].first));
+        json += std::format("\"fingerprint\":\"{}\"", EscapeJson(sorted[idx].second));
+        json += "}";
+    }
+    json += "]";
+    json += "}";
+    return json;
+}
+
+auto ParseWorkspaceManifest(const std::string& InPayload, const std::filesystem::path& InManifestFile) -> std::optional<WorkspaceManifest> {
+    const auto workspaceRoot = ExtractStringField(InPayload, "workspace_root");
+    const auto reposRaw = ExtractArrayRaw(InPayload, "repos");
+    const auto fingerprintsRaw = ExtractArrayRaw(InPayload, "gitmodules_fingerprints");
+    if (!workspaceRoot || !reposRaw) {
+        return std::nullopt;
+    }
+
+    WorkspaceManifest out;
+    out.workspaceRoot = Normalize(std::filesystem::path(*workspaceRoot));
+    out.manifestFile = InManifestFile;
+    out.repos = ParseReposArray(*reposRaw);
+    for (auto& repo : out.repos) {
+        repo.path = (out.workspaceRoot / repo.path).lexically_normal();
+    }
+    if (fingerprintsRaw) {
+        out.gitmodulesFingerprints = ParseGitmodulesFingerprints(*fingerprintsRaw);
+    }
+    return out;
+}
+
+auto IsWorkspaceManifestTrustedImpl(const WorkspaceManifest& InManifest,
+                                    const std::filesystem::path& InRoot,
+                                    std::string* OutReason) -> bool {
+    const auto rootAbs = Normalize(std::filesystem::absolute(InRoot));
+    if (Normalize(InManifest.workspaceRoot) != rootAbs) {
+        if (OutReason != nullptr) {
+            *OutReason = "workspace root mismatch";
+        }
+        return false;
+    }
+
+    for (const auto& repo : InManifest.repos) {
+        std::error_code ec;
+        if (!std::filesystem::exists(repo.path, ec) || !std::filesystem::is_directory(repo.path, ec)) {
+            if (OutReason != nullptr) {
+                *OutReason = std::format("repo path missing: {}", repo.path.generic_string());
+            }
+            return false;
+        }
+    }
+
+    for (const auto& [relPath, stored] : InManifest.gitmodulesFingerprints) {
+        const auto repoPath = (rootAbs / std::filesystem::path(relPath)).lexically_normal();
+        const auto current = GitmodulesFingerprint(repoPath);
+        if (current != stored) {
+            if (OutReason != nullptr) {
+                *OutReason = std::format(".gitmodules changed: {}", relPath);
+            }
+            return false;
+        }
+    }
+
+    return true;
 }
 
 auto CachePayloadFromRepos(const std::filesystem::path& InRoot, const std::string& InMarker, const std::vector<RepoRecord>& InRepos) -> std::string {
@@ -875,6 +1079,196 @@ auto ManifestToJson(const std::filesystem::path& InWorkspaceRoot, const std::vec
     }
     json += "]}";
     return json;
+}
+
+auto DiscoverRegisteredPathsRecursive(const std::filesystem::path& InWorkspaceRoot) -> std::vector<std::filesystem::path> {
+    std::vector<std::filesystem::path> out;
+    std::vector<std::filesystem::path> queue{Normalize(std::filesystem::absolute(InWorkspaceRoot))};
+
+    while (!queue.empty()) {
+        const auto current = queue.back();
+        queue.pop_back();
+
+        const auto gitmodules = current / ".gitmodules";
+        if (!std::filesystem::exists(gitmodules)) {
+            continue;
+        }
+
+        const auto pathsResult = RunGitCapture(current, {"config", "-f", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$"});
+        if (pathsResult.exitCode != 0) {
+            continue;
+        }
+
+        std::istringstream iss(pathsResult.stdoutStr);
+        std::string line;
+        while (std::getline(iss, line)) {
+            line = Trim(line);
+            if (line.empty()) {
+                continue;
+            }
+            const auto sp = line.find(' ');
+            if (sp == std::string::npos || sp + 1 >= line.size()) {
+                continue;
+            }
+            const auto relPath = line.substr(sp + 1);
+            const auto full = Normalize(std::filesystem::weakly_canonical(current / relPath));
+            if (std::find_if(out.begin(), out.end(), [&](const auto& candidate) {
+                    return PathKey(candidate) == PathKey(full);
+                }) == out.end()) {
+                out.push_back(full);
+                queue.push_back(full);
+            }
+        }
+    }
+
+    SortUniquePaths(&out);
+    return out;
+}
+
+auto WorkspaceManifestFilePath(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path {
+    const auto rootAbs = Normalize(std::filesystem::absolute(InWorkspaceRoot));
+    return (WorkspaceCacheDirFor(rootAbs) / "workspace-manifest.json").lexically_normal();
+}
+
+auto BuildWorkspaceManifest(const std::filesystem::path& InWorkspaceRoot, const std::vector<RepoRecord>& InRepos) -> WorkspaceManifest {
+    WorkspaceManifest out;
+    out.workspaceRoot = Normalize(std::filesystem::absolute(InWorkspaceRoot));
+    out.manifestFile = WorkspaceManifestFilePath(out.workspaceRoot);
+
+    out.repos = InRepos;
+    std::sort(out.repos.begin(), out.repos.end(), [](const auto& A, const auto& B) {
+        return PathKey(A.path) < PathKey(B.path);
+    });
+
+    out.gitmodulesFingerprints.emplace(".", GitmodulesFingerprint(out.workspaceRoot));
+    for (const auto& repoPath : DiscoverRegisteredPathsRecursive(out.workspaceRoot)) {
+        out.gitmodulesFingerprints.emplace(RelativePathKeyOrDot(out.workspaceRoot, repoPath), GitmodulesFingerprint(repoPath));
+    }
+    return out;
+}
+
+auto SaveWorkspaceManifest(const WorkspaceManifest& InManifest) -> bool {
+    return WriteFileText(InManifest.manifestFile, WorkspaceManifestToJson(InManifest));
+}
+
+auto LoadWorkspaceManifestAny(const std::filesystem::path& InWorkspaceRoot) -> std::optional<WorkspaceManifest> {
+    const auto rootAbs = Normalize(std::filesystem::absolute(InWorkspaceRoot));
+    const auto manifestFile = WorkspaceManifestFilePath(rootAbs);
+    const auto payload = ReadFileText(manifestFile);
+    if (!payload) {
+        return std::nullopt;
+    }
+    return ParseWorkspaceManifest(*payload, manifestFile);
+}
+
+auto LoadTrustedWorkspaceManifest(const std::filesystem::path& InWorkspaceRoot, std::string* OutReason) -> std::optional<WorkspaceManifest> {
+    const auto rootAbs = Normalize(std::filesystem::absolute(InWorkspaceRoot));
+    const auto manifestFile = WorkspaceManifestFilePath(rootAbs);
+    const auto payload = ReadFileText(manifestFile);
+    if (!payload) {
+        if (OutReason != nullptr) {
+            *OutReason = "workspace manifest missing";
+        }
+        return std::nullopt;
+    }
+
+    const auto manifest = ParseWorkspaceManifest(*payload, manifestFile);
+    if (!manifest) {
+        if (OutReason != nullptr) {
+            *OutReason = "workspace manifest parse failed";
+        }
+        return std::nullopt;
+    }
+    if (!IsWorkspaceManifestTrustedImpl(*manifest, rootAbs, OutReason)) {
+        return std::nullopt;
+    }
+    return manifest;
+}
+
+auto UpsertUnregisteredRepoIntoWorkspaceManifest(const std::filesystem::path& InWorkspaceRoot,
+                                                 const std::filesystem::path& InRepoPath) -> bool {
+    const auto rootAbs = Normalize(std::filesystem::absolute(InWorkspaceRoot));
+    const auto repoAbs = Normalize(std::filesystem::absolute(InRepoPath));
+    std::string ignoredReason;
+    auto manifest = LoadTrustedWorkspaceManifest(rootAbs, &ignoredReason).value_or(WorkspaceManifest{
+        .workspaceRoot = rootAbs,
+        .repos = {},
+        .gitmodulesFingerprints = {{"." , GitmodulesFingerprint(rootAbs)}},
+        .manifestFile = WorkspaceManifestFilePath(rootAbs),
+    });
+
+    const auto registered = DiscoverRegisteredPathsRecursive(rootAbs);
+    const bool isRegistered = std::any_of(registered.begin(), registered.end(), [&](const auto& candidate) {
+        return PathKey(candidate) == PathKey(repoAbs);
+    });
+
+    auto existing = std::find_if(manifest.repos.begin(), manifest.repos.end(), [&](const auto& repo) {
+        return PathKey(repo.path) == PathKey(repoAbs);
+    });
+    if (existing == manifest.repos.end()) {
+        RepoRecord record;
+        record.path = repoAbs;
+        record.type = isRegistered ? "registered" : (PathKey(repoAbs) == PathKey(rootAbs) ? "root" : "unregistered");
+        manifest.repos.push_back(std::move(record));
+    } else if (existing->type == "unregistered" && isRegistered) {
+        existing->type = "registered";
+    }
+
+    manifest.gitmodulesFingerprints.clear();
+    manifest.gitmodulesFingerprints.emplace(".", GitmodulesFingerprint(rootAbs));
+    for (const auto& registeredPath : registered) {
+        manifest.gitmodulesFingerprints.emplace(RelativePathKeyOrDot(rootAbs, registeredPath), GitmodulesFingerprint(registeredPath));
+    }
+    std::sort(manifest.repos.begin(), manifest.repos.end(), [](const auto& A, const auto& B) {
+        return PathKey(A.path) < PathKey(B.path);
+    });
+    return SaveWorkspaceManifest(manifest);
+}
+
+auto RefreshWorkspaceManifestAfterRegisteredChange(const std::filesystem::path& InWorkspaceRoot) -> bool {
+    const auto rootAbs = Normalize(std::filesystem::absolute(InWorkspaceRoot));
+    const auto existing = LoadWorkspaceManifestAny(rootAbs);
+    const auto registered = DiscoverRegisteredPathsRecursive(rootAbs);
+
+    std::vector<RepoRecord> repos;
+    RepoRecord rootRecord;
+    rootRecord.path = rootAbs;
+    rootRecord.type = "root";
+    repos.push_back(rootRecord);
+
+    for (const auto& repoPath : registered) {
+        RepoRecord record;
+        record.path = repoPath;
+        record.type = "registered";
+        repos.push_back(std::move(record));
+    }
+
+    if (existing.has_value()) {
+        for (const auto& repo : existing->repos) {
+            if (repo.type != "unregistered") {
+                continue;
+            }
+            std::error_code ec;
+            if (!std::filesystem::exists(repo.path, ec) || !std::filesystem::is_directory(repo.path, ec)) {
+                continue;
+            }
+            const bool existsAlready = std::any_of(repos.begin(), repos.end(), [&](const auto& current) {
+                return PathKey(current.path) == PathKey(repo.path);
+            });
+            if (!existsAlready) {
+                repos.push_back(repo);
+            }
+        }
+    }
+
+    std::sort(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
+        return PathKey(A.path) < PathKey(B.path);
+    });
+    repos.erase(std::unique(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
+        return PathKey(A.path) == PathKey(B.path);
+    }), repos.end());
+
+    return SaveWorkspaceManifest(BuildWorkspaceManifest(rootAbs, repos));
 }
 
 auto DiscoverRepos(const DiscoverOptions& InOptions) -> DiscoveryResult {

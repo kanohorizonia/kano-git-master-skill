@@ -1355,15 +1355,34 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
     }
     const auto aiCombined = aiRaw.stdoutStr + "\n" + aiRaw.stderrStr;
     const auto aiJson = ExtractJsonBetweenMarkers(aiCombined);
+    std::string debugPrefix;
+    if (InDebugAi) {
+        const auto debugDir = (InWorkspaceRoot / ".kano" / "cache" / "git" / "plans" / "debug").lexically_normal();
+        debugPrefix = (debugDir / std::format("pia-{}", CurrentUtcCompact())).generic_string();
+        std::string debugError;
+        WriteFileText(std::filesystem::path(debugPrefix + ".prompt.txt"), prompt, &debugError);
+        WriteFileText(std::filesystem::path(debugPrefix + ".raw.txt"), aiCombined, &debugError);
+        WriteFileText(std::filesystem::path(debugPrefix + ".extracted.json"), aiJson, &debugError);
+    }
     if (aiJson.empty()) {
         if (OutError != nullptr) {
             *OutError = "Error: AI did not return JSON payload for plan.";
+            if (!debugPrefix.empty()) {
+                *OutError += std::format(" Debug: {}.raw.txt", debugPrefix);
+            }
         }
         return false;
     }
-    if (!ValidateAiPlanPayload(aiJson)) {
+    std::string validationReason;
+    if (!ValidateAiReadyPlan(aiJson, &validationReason)) {
         if (OutError != nullptr) {
             *OutError = "Error: AI JSON payload schema invalid for plan generation.";
+            if (!Trim(validationReason).empty()) {
+                *OutError += " Detail: " + validationReason;
+            }
+            if (!debugPrefix.empty()) {
+                *OutError += std::format(" Debug: {}.raw.txt {}.extracted.json", debugPrefix, debugPrefix);
+            }
         }
         return false;
     }
@@ -1379,17 +1398,10 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
         }
         return false;
     }
-
-    if (InDebugAi) {
-        const auto debugDir = (InWorkspaceRoot / ".kano" / "cache" / "git" / "plans" / "debug").lexically_normal();
-        const auto prefix = (debugDir / std::format("pia-{}", CurrentUtcCompact())).lexically_normal();
-        std::string debugError;
-        WriteFileText(std::filesystem::path(prefix.generic_string() + ".prompt.txt"), prompt, &debugError);
-        WriteFileText(std::filesystem::path(prefix.generic_string() + ".raw.txt"), aiCombined, &debugError);
-        WriteFileText(std::filesystem::path(prefix.generic_string() + ".extracted.json"), aiJson, &debugError);
-        std::cerr << "Debug: " << prefix.generic_string() << ".prompt.txt\n";
-        std::cerr << "Debug: " << prefix.generic_string() << ".raw.txt\n";
-        std::cerr << "Debug: " << prefix.generic_string() << ".extracted.json\n";
+    if (!debugPrefix.empty()) {
+        std::cerr << "Debug: " << debugPrefix << ".prompt.txt\n";
+        std::cerr << "Debug: " << debugPrefix << ".raw.txt\n";
+        std::cerr << "Debug: " << debugPrefix << ".extracted.json\n";
     }
     std::cout << "Filled plan with AI: provider=" << provider << " model=" << (model.empty() ? "auto" : model) << "\n";
     return true;

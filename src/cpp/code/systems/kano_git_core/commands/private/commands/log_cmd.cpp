@@ -501,7 +501,12 @@ void RegisterSlog(CLI::App& InApp) {
 
     cmd->callback([=]() {
         if (!countPos->empty()) {
-            *count = ParsePositiveInt(*countPos, -1);
+            const auto parsed = ParsePositiveInt(*countPos, -1);
+            if (parsed > 0) {
+                *count = parsed;
+            } else if (repoPos->empty() && repo->empty()) {
+                *repoPos = *countPos;
+            }
         }
         if (*count <= 0) {
             std::cerr << "Error: --count must be a positive integer\n";
@@ -567,7 +572,12 @@ void RegisterLog(CLI::App& InApp) {
 
     cmd->callback([=]() {
         if (!countPos->empty()) {
-            *count = ParsePositiveInt(*countPos, -1);
+            const auto parsed = ParsePositiveInt(*countPos, -1);
+            if (parsed > 0) {
+                *count = parsed;
+            } else if (repoPos->empty() && repo->empty()) {
+                *repoPos = *countPos;
+            }
         }
         if (*count <= 0) {
             std::cerr << "Error: --count must be a positive integer\n";

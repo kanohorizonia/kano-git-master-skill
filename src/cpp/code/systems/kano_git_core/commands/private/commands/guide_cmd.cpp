@@ -10,20 +10,20 @@ namespace kano::git::commands {
 namespace {
 
 std::string BuildFlowGuide(const std::string& flow) {
-    if (flow == "workspace") {
-        return R"TXT(Guide: workspace (safe first)
+    if (flow == "update" || flow == "discover" || flow == "foreach") {
+        return R"TXT(Guide: update/discover/foreach (safe first)
 
 1) Preview repository discovery and waves
-   kano-git workspace discover --native --emit-waves
+   kano-git discover --emit-waves
 
 2) Preview update plan only (no execution)
-   kano-git workspace update --native-plan-only --native-max-depth 3
+   kano-git update --native-plan-only --native-max-depth 3
 
 3) Execute update with controlled parallelism
-   kano-git workspace update --native --parallel 2 --continue-on-error
+   kano-git update --native --parallel 2 --continue-on-error
 
 4) Run a command across repos with native planner
-   kano-git workspace foreach --native --parallel 2 --command "git status --short"
+   kano-git foreach --native --parallel 2 --command "git status --short"
 )TXT";
     }
 
@@ -84,14 +84,16 @@ void PrintGeneralGuide() {
     std::cout
         << "kano-git guide (quick start flows)\n\n"
         << "Available flows:\n"
-        << "  - workspace  (multi-repo discovery/update/foreach)\n"
+        << "  - discover   (repo discovery + manifest refresh)\n"
+        << "  - foreach    (run a command across repos)\n"
+        << "  - update     (multi-repo update planner/executor)\n"
         << "  - sync       (origin/upstream/stable-dev sync strategies)\n"
         << "  - commit     (AI-assisted commit workflows)\n"
         << "  - worktree   (create/list/open/remove worktrees)\n\n"
         << "Show one flow:\n"
-        << "  kano-git guide --flow workspace\n\n"
+        << "  kano-git guide --flow update\n\n"
         << "Include quick safety checklist:\n"
-        << "  kano-git guide --flow workspace --checklist\n";
+        << "  kano-git guide --flow update --checklist\n";
 }
 
 void PrintChecklist() {
@@ -111,7 +113,7 @@ void RegisterGuide(CLI::App& InApp) {
     auto* flow = new std::string{};
     auto* checklist = new bool{false};
 
-    cmd->add_option("--flow", *flow, "Flow name: workspace|sync|commit|worktree");
+    cmd->add_option("--flow", *flow, "Flow name: discover|foreach|update|sync|commit|worktree");
     cmd->add_flag("--checklist", *checklist, "Append safety checklist");
 
     cmd->callback([flow, checklist]() {
@@ -126,7 +128,7 @@ void RegisterGuide(CLI::App& InApp) {
         const std::string content = BuildFlowGuide(*flow);
         if (content.empty()) {
             std::cerr << "Unknown flow: " << *flow
-                      << " (expected: workspace|sync|commit|worktree)\n";
+                      << " (expected: discover|foreach|update|sync|commit|worktree)\n";
             std::exit(2);
         }
 
