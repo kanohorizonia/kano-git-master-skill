@@ -616,6 +616,86 @@ auto RunPlanNewViaSelf(const std::filesystem::path& InWorkspaceRoot,
     return exitCode;
 }
 
+auto RunPlanCommitSeedViaSelf(const std::filesystem::path& InWorkspaceRoot,
+                              const std::filesystem::path& InPlanPath,
+                              const bool InDeterministic) -> int {
+    std::vector<std::string> args = {
+        "plan", "commit-seed",
+        "--force",
+        "--plan-file", InPlanPath.generic_string(),
+    };
+    if (InDeterministic) {
+        args.push_back("--deterministic");
+    }
+    const auto result = shell::ExecuteCommand(ResolveSelfBinaryCommand(), args, shell::ExecMode::Capture, InWorkspaceRoot);
+    const auto exitCode = FinalizeNestedSelfResult("plan commit-seed", result);
+    if (exitCode != 0) {
+        std::cerr << "Error: plan commit-seed failed via native binary (exit=" << exitCode << ").\n";
+    }
+    return exitCode;
+}
+
+auto CheckPlanRefreshNeededViaSelf(const std::filesystem::path& InWorkspaceRoot,
+                                   const std::filesystem::path& InPlanPath,
+                                   std::string* OutReason) -> int {
+    std::vector<std::string> args = {
+        "plan", "refresh-check",
+        "--plan-file", InPlanPath.generic_string(),
+        "--verbose",
+    };
+    const auto result = shell::ExecuteCommand(ResolveSelfBinaryCommand(), args, shell::ExecMode::Capture, InWorkspaceRoot);
+    EmitCapturedSelfResult(result);
+    if (OutReason != nullptr) {
+        *OutReason = Trim(!result.stdoutStr.empty() ? result.stdoutStr : result.stderrStr);
+    }
+    return result.exitCode;
+}
+
+auto IsSharedDefaultPlanPath(const std::filesystem::path& InWorkspaceRoot,
+                             const std::filesystem::path& InPlanPath) -> bool {
+    return InPlanPath.lexically_normal() == DefaultSharedPlanPath(InWorkspaceRoot).lexically_normal();
+}
+
+auto EnsureAgentSharedPlanFresh(const std::filesystem::path& InWorkspaceRoot,
+                                const std::filesystem::path& InPlanPath) -> int {
+    std::string refreshReason;
+    const auto refreshCheckExit = CheckPlanRefreshNeededViaSelf(InWorkspaceRoot, InPlanPath, &refreshReason);
+    if (refreshCheckExit == 1) {
+        return 0;
+    }
+    if (refreshCheckExit != 0) {
+        std::cerr << "Error: plan refresh-check failed for " << InPlanPath.generic_string() << " (exit=" << refreshCheckExit << ")\n";
+        return refreshCheckExit;
+    }
+
+    std::cout << "[commit-push] refreshing shared agent plan: " << InPlanPath.generic_string();
+    if (!refreshReason.empty()) {
+        std::cout << " (" << refreshReason << ")";
+    }
+    std::cout << "\n";
+
+    const auto planNewCode = RunPlanNewViaSelf(InWorkspaceRoot, InPlanPath);
+    if (planNewCode != 0) {
+        return planNewCode;
+    }
+    const auto commitSeedCode = RunPlanCommitSeedViaSelf(InWorkspaceRoot, InPlanPath, true);
+    if (commitSeedCode != 0) {
+        return commitSeedCode;
+    }
+
+    refreshReason.clear();
+    const auto verifyExit = CheckPlanRefreshNeededViaSelf(InWorkspaceRoot, InPlanPath, &refreshReason);
+    if (verifyExit != 1) {
+        std::cerr << "Error: refreshed shared agent plan is still not ready: " << InPlanPath.generic_string();
+        if (!refreshReason.empty()) {
+            std::cerr << " (" << refreshReason << ")";
+        }
+        std::cerr << "\n";
+        return verifyExit == 0 ? 2 : verifyExit;
+    }
+    return 0;
+}
+
 auto RunIgnorePlanRunbookViaSelf(const std::filesystem::path& InWorkspaceRoot,
                                  const std::filesystem::path& InPlanPath) -> int {
     std::vector<std::string> args = {
@@ -1333,9 +1413,17 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
         return 2;
     }
 
+    const auto planPath = std::filesystem::path(InNormalizedPlanFile).lexically_normal();
+
+    if (agentMode && IsSharedDefaultPlanPath(InWorkspaceRoot, planPath)) {
+        const auto refreshCode = EnsureAgentSharedPlanFresh(InWorkspaceRoot, planPath);
+        if (refreshCode != 0) {
+            return refreshCode;
+        }
+    }
+
     {
         std::string stampError;
-        const auto planPath = std::filesystem::path(InNormalizedPlanFile).lexically_normal();
         if (!StampCommitPlanExecutedAt(planPath, &stampError)) {
             std::cerr << "Warning: failed to stamp plan executed_at_utc: " << planPath.generic_string();
             if (!stampError.empty()) {
