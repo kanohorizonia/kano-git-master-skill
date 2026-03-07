@@ -13,7 +13,8 @@ All verify/apply/execute gates are deterministic non-AI stages.
 
 | Scenario | Use this | Commands |
 |---|---|---|
-| Full auto commit-push | One command | `./kog cpa` or `./kog commit-push --ai-auto` |
+| Full auto commit-push (human mode) | One command | `./kog cpa` or `./kog commit-push --ai-auto` |
+| Full auto commit-push (agent mode) | One command | `KANO_AGENT_MODE=1 ./kog cpa` |
 | Full auto commit-only | One command | `./kog commit --ai-auto` |
 | Semi-auto (AI generates plan, human reviews, then execute) | Prepare -> review -> execute | `./kog pia --force` -> review `.kano/cache/git/plans/default-plan.json` -> `./kog pv` -> `./kog cpa` |
 | Manual plan-driven commit-only | Human fills plan | `./kog pi --force` -> edit plan -> `./kog pv` -> `./kog commit --plan-file .kano/cache/git/plans/default-plan.json --plan-stage commit` |
@@ -28,10 +29,25 @@ Notes:
 ## Aliases
 
 - `cp` -> `commit-push`
-- `cpa` -> `commit-push --ai-auto`
+- `cpa` -> human mode: `commit-push --ai-auto`
+- `KANO_AGENT_MODE=1 cpa` -> agent-mode shared-plan path (deterministic plan bootstrap/refresh + `commit-push --plan-file ...`)
 - `pi` -> `plan new`
 - `pia` -> `plan new --ai-auto`
 - `pv` -> `plan verify pre-apply`
+
+## Agent-Mode Ownership Contract
+
+In `KANO_AGENT_MODE=1`:
+
+- external agent owns semantic authoring decisions
+- `kog` owns deterministic plan bootstrap, freshness refresh, verification, execution, sync, and push
+- agent mode must not fall back to internal provider-driven `--ai-auto` planning
+
+Operationally this means:
+
+- human `cpa` may invoke internal AI plan preparation
+- agent-mode `cpa` must use the shared plan file path
+- deterministic metadata such as `plan_id` and planner identity should be produced by tooling, not hand-patched by the agent
 
 ## Plan Lifecycle
 
@@ -98,6 +114,7 @@ Execution ordering semantics:
 Rationale:
 - `sync` updates parent repos first so refreshed `.gitmodules` branch policy can be applied to registered children in the same run.
 - `commit-push` commits and pushes child repos first, then lets parent repos absorb the final gitlink pointer and push parent repos last.
+- first-run correctness is the target; "run it a second time" is not an acceptable steady-state convergence model.
 
 ### Entry Routing
 
