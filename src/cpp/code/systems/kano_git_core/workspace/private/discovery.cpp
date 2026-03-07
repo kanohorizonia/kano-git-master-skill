@@ -14,9 +14,19 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <cstdint>
 #include <unordered_map>
 #include <unordered_set>
+
+#if defined(_WIN32)
+#include <windows.h>
+#include <process.h>
+#else
+#include <cerrno>
+#include <csignal>
+#include <unistd.h>
+#endif
 
 namespace kano::git::workspace {
 namespace {
@@ -106,26 +116,255 @@ auto ReadFileText(const std::filesystem::path& InFile) -> std::optional<std::str
     return buffer.str();
 }
 
-auto WriteFileText(const std::filesystem::path& InFile, const std::string& InText) -> bool {
-    std::filesystem::create_directories(InFile.parent_path());
-    const auto temp = InFile.parent_path() / (InFile.filename().generic_string() + ".tmp");
+auto CurrentProcessId() -> long long {
+#if defined(_WIN32)
+    return static_cast<long long>(_getpid());
+#else
+    return static_cast<long long>(getpid());
+#endif
+}
+
+auto CurrentProcessCommand() -> std::string {
+    return "kano-git";
+}
+
+auto LockPathFor(const std::filesystem::path& InFile) -> std::filesystem::path {
+    return std::filesystem::path(InFile.generic_string() + ".lock").lexically_normal();
+}
+
+auto LockOwnerMetadataPath(const std::filesystem::path& InLockPath) -> std::filesystem::path {
+    return (InLockPath / "owner.txt").lexically_normal();
+}
+
+auto ProcessIsActive(const long long InPid) -> bool {
+    if (InPid <= 0) {
+        return false;
+    }
+#if defined(_WIN32)
+    const HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, static_cast<DWORD>(InPid));
+    if (process == nullptr) {
+        return false;
+    }
+    const DWORD wait = WaitForSingleObject(process, 0);
+    CloseHandle(process);
+    return wait == WAIT_TIMEOUT;
+#else
+    if (::kill(static_cast<pid_t>(InPid), 0) == 0) {
+        return true;
+    }
+    return errno == EPERM;
+#endif
+}
+
+auto FileAgeSeconds(const std::filesystem::path& InPath) -> long long {
+    std::error_code ec;
+    if (!std::filesystem::exists(InPath, ec)) {
+        return -1;
+    }
+    const auto writeTime = std::filesystem::last_write_time(InPath, ec);
+    if (ec) {
+        return -1;
+    }
+    const auto now = decltype(writeTime)::clock::now();
+    return std::chrono::duration_cast<std::chrono::seconds>(now - writeTime).count();
+}
+
+auto ParseOwnerMetadata(const std::filesystem::path& InLockPath) -> CacheLockInfo {
+    CacheLockInfo out;
+    out.lockPath = InLockPath;
+    out.exists = true;
+    out.targetPath = InLockPath;
+    const auto owner = ReadFileText(LockOwnerMetadataPath(InLockPath));
+    if (!owner) {
+        out.ageSeconds = FileAgeSeconds(InLockPath);
+        out.staleCandidate = out.ageSeconds >= 30;
+        return out;
+    }
+    std::istringstream iss(*owner);
+    std::string line;
+    while (std::getline(iss, line)) {
+        const auto pos = line.find('=');
+        if (pos == std::string::npos) {
+            continue;
+        }
+        const auto key = Trim(line.substr(0, pos));
+        const auto value = Trim(line.substr(pos + 1));
+        if (key == "pid") {
+            try {
+                out.ownerPid = std::stoll(value);
+            } catch (...) {
+                out.ownerPid = -1;
+            }
+        } else if (key == "command") {
+            out.ownerCommand = value;
+        } else if (key == "target") {
+            out.targetPath = std::filesystem::path(value).lexically_normal();
+        }
+    }
+    out.ageSeconds = FileAgeSeconds(InLockPath);
+    out.activeProcessDetected = ProcessIsActive(out.ownerPid);
+    out.staleCandidate = !out.activeProcessDetected && out.ageSeconds >= 30;
+    return out;
+}
+
+auto WriteOwnerMetadata(const std::filesystem::path& InLockPath, const std::filesystem::path& InTargetPath) -> bool {
+    const auto ownerPath = LockOwnerMetadataPath(InLockPath);
+    std::ofstream out(ownerPath, std::ios::out | std::ios::binary | std::ios::trunc);
+    if (!out) {
+        return false;
+    }
+    out << "pid=" << CurrentProcessId() << "\n";
+    out << "command=" << CurrentProcessCommand() << "\n";
+    out << "target=" << InTargetPath.lexically_normal().generic_string() << "\n";
+    out << "created_at=" << ToUtcIsoString(std::chrono::system_clock::now()) << "\n";
+    return out.good();
+}
+
+auto RemoveLockPath(const std::filesystem::path& InLockPath) -> bool {
+    std::error_code ec;
+    std::filesystem::remove_all(InLockPath, ec);
+    return !ec;
+}
+
+class ScopedCacheFileLock {
+  public:
+    ScopedCacheFileLock() = default;
+    ScopedCacheFileLock(const ScopedCacheFileLock&) = delete;
+    auto operator=(const ScopedCacheFileLock&) -> ScopedCacheFileLock& = delete;
+    ScopedCacheFileLock(ScopedCacheFileLock&& InOther) noexcept
+        : lockPath_(std::move(InOther.lockPath_)), owns_(InOther.owns_) {
+        InOther.owns_ = false;
+    }
+    auto operator=(ScopedCacheFileLock&& InOther) noexcept -> ScopedCacheFileLock& {
+        if (this != &InOther) {
+            Release();
+            lockPath_ = std::move(InOther.lockPath_);
+            owns_ = InOther.owns_;
+            InOther.owns_ = false;
+        }
+        return *this;
+    }
+    ~ScopedCacheFileLock() {
+        Release();
+    }
+
+    static auto Acquire(const std::filesystem::path& InFile,
+                        std::string* OutError = nullptr,
+                        int InTimeoutMs = 5000,
+                        int InStaleAgeSeconds = 30) -> std::optional<ScopedCacheFileLock> {
+        ScopedCacheFileLock out;
+        out.lockPath_ = LockPathFor(InFile);
+        std::error_code ec;
+        std::filesystem::create_directories(out.lockPath_.parent_path(), ec);
+        if (ec) {
+            if (OutError != nullptr) {
+                *OutError = "cannot create cache lock parent directory";
+            }
+            return std::nullopt;
+        }
+
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(std::max(0, InTimeoutMs));
+        while (true) {
+            ec.clear();
+            if (std::filesystem::create_directory(out.lockPath_, ec)) {
+                if (!WriteOwnerMetadata(out.lockPath_, InFile)) {
+                    RemoveLockPath(out.lockPath_);
+                    if (OutError != nullptr) {
+                        *OutError = "cannot write cache lock owner metadata";
+                    }
+                    return std::nullopt;
+                }
+                out.owns_ = true;
+                return out;
+            }
+
+            CacheLockInfo info = ParseOwnerMetadata(out.lockPath_);
+            info.targetPath = InFile;
+            if (!info.activeProcessDetected && info.ageSeconds >= InStaleAgeSeconds) {
+                (void)RemoveLockPath(out.lockPath_);
+                continue;
+            }
+
+            if (std::chrono::steady_clock::now() >= deadline) {
+                if (OutError != nullptr) {
+                    *OutError = std::format("cache lock busy: {} (pid={} age={}s command={})",
+                                            out.lockPath_.generic_string(),
+                                            info.ownerPid,
+                                            info.ageSeconds,
+                                            info.ownerCommand.empty() ? "-" : info.ownerCommand);
+                }
+                return std::nullopt;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+    }
+
+  private:
+    void Release() {
+        if (!owns_) {
+            return;
+        }
+        owns_ = false;
+        (void)RemoveLockPath(lockPath_);
+    }
+
+    std::filesystem::path lockPath_;
+    bool owns_ = false;
+};
+
+auto WriteFileTextUnlocked(const std::filesystem::path& InFile, const std::string& InText, std::string* OutError = nullptr) -> bool {
+    std::error_code ec;
+    std::filesystem::create_directories(InFile.parent_path(), ec);
+    if (ec) {
+        if (OutError != nullptr) {
+            *OutError = "cannot create cache file parent directory";
+        }
+        return false;
+    }
+    const auto temp = InFile.parent_path() /
+                      std::format("{}.tmp.{}.{}",
+                                  InFile.filename().generic_string(),
+                                  CurrentProcessId(),
+                                  std::chrono::duration_cast<std::chrono::microseconds>(
+                                      std::chrono::steady_clock::now().time_since_epoch()).count());
     {
         std::ofstream out(temp, std::ios::out | std::ios::binary | std::ios::trunc);
         if (!out) {
+            if (OutError != nullptr) {
+                *OutError = "cannot open temp output file";
+            }
             return false;
         }
         out << InText;
         if (!out.good()) {
+            if (OutError != nullptr) {
+                *OutError = "failed while writing temp output file";
+            }
             return false;
         }
     }
-    std::error_code ec;
     std::filesystem::rename(temp, InFile, ec);
     if (ec) {
+        if (std::filesystem::exists(InFile, ec)) {
+            ec.clear();
+            std::filesystem::remove(InFile, ec);
+            ec.clear();
+            std::filesystem::rename(temp, InFile, ec);
+        }
+    }
+    if (ec) {
         std::filesystem::remove(temp, ec);
+        if (OutError != nullptr) {
+            *OutError = "failed to atomically replace target file";
+        }
         return false;
     }
     return true;
+}
+
+auto WriteFileText(const std::filesystem::path& InFile, const std::string& InText) -> bool {
+    std::string ignoredError;
+    return kano::git::workspace::WriteCacheFileText(InFile, InText, &ignoredError);
 }
 
 auto FileMtimeEpochSeconds(const std::filesystem::path& InPath) -> long long {
@@ -1269,6 +1508,58 @@ auto RefreshWorkspaceManifestAfterRegisteredChange(const std::filesystem::path& 
     }), repos.end());
 
     return SaveWorkspaceManifest(BuildWorkspaceManifest(rootAbs, repos));
+}
+
+auto WriteCacheFileText(const std::filesystem::path& InFile,
+                        const std::string& InText,
+                        std::string* OutError) -> bool {
+    const auto lock = ScopedCacheFileLock::Acquire(InFile, OutError);
+    if (!lock.has_value()) {
+        return false;
+    }
+    return WriteFileTextUnlocked(InFile, InText, OutError);
+}
+
+auto InspectCacheLocks(const std::filesystem::path& InCacheRoot) -> std::vector<CacheLockInfo> {
+    std::vector<CacheLockInfo> out;
+    const auto root = Normalize(std::filesystem::absolute(InCacheRoot));
+    std::error_code ec;
+    if (!std::filesystem::exists(root, ec) || !std::filesystem::is_directory(root, ec)) {
+        return out;
+    }
+    for (std::filesystem::recursive_directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
+        if (!it->is_directory(ec)) {
+            continue;
+        }
+        const auto path = it->path().lexically_normal();
+        if (!path.filename().generic_string().ends_with(".lock")) {
+            continue;
+        }
+        auto info = ParseOwnerMetadata(path);
+        if (PathKey(info.targetPath) == PathKey(path)) {
+            const auto stem = path.filename().generic_string();
+            info.targetPath = path.parent_path() / stem.substr(0, stem.size() - std::string(".lock").size());
+        }
+        out.push_back(std::move(info));
+        it.disable_recursion_pending();
+    }
+    std::sort(out.begin(), out.end(), [](const auto& A, const auto& B) {
+        return PathKey(A.lockPath) < PathKey(B.lockPath);
+    });
+    return out;
+}
+
+auto CleanupStaleCacheLocks(const std::filesystem::path& InCacheRoot,
+                            int InMinAgeSeconds) -> std::vector<CacheLockInfo> {
+    auto locks = InspectCacheLocks(InCacheRoot);
+    for (auto& lock : locks) {
+        lock.staleCandidate = !lock.activeProcessDetected && lock.ageSeconds >= InMinAgeSeconds;
+        if (lock.staleCandidate) {
+            (void)RemoveLockPath(lock.lockPath);
+            lock.exists = std::filesystem::exists(lock.lockPath) == true;
+        }
+    }
+    return locks;
 }
 
 auto DiscoverRepos(const DiscoverOptions& InOptions) -> DiscoveryResult {

@@ -45,6 +45,17 @@ struct WorkspaceManifest {
     std::filesystem::path manifestFile;
 };
 
+struct CacheLockInfo {
+    std::filesystem::path lockPath;
+    std::filesystem::path targetPath;
+    bool exists = false;
+    bool activeProcessDetected = false;
+    bool staleCandidate = false;
+    long long ageSeconds = -1;
+    long long ownerPid = -1;
+    std::string ownerCommand;
+};
+
 auto DiscoverRepos(const DiscoverOptions& InOptions) -> DiscoveryResult;
 auto ReposToJson(const std::vector<RepoRecord>& InRepos) -> std::string;
 auto ManifestToJson(const std::filesystem::path& InWorkspaceRoot, const std::vector<RepoRecord>& InRepos) -> std::string;
@@ -57,5 +68,11 @@ auto LoadTrustedWorkspaceManifest(const std::filesystem::path& InWorkspaceRoot,
 auto UpsertUnregisteredRepoIntoWorkspaceManifest(const std::filesystem::path& InWorkspaceRoot,
                                                  const std::filesystem::path& InRepoPath) -> bool;
 auto RefreshWorkspaceManifestAfterRegisteredChange(const std::filesystem::path& InWorkspaceRoot) -> bool;
+auto WriteCacheFileText(const std::filesystem::path& InFile,
+                        const std::string& InText,
+                        std::string* OutError = nullptr) -> bool;
+auto InspectCacheLocks(const std::filesystem::path& InCacheRoot) -> std::vector<CacheLockInfo>;
+auto CleanupStaleCacheLocks(const std::filesystem::path& InCacheRoot,
+                            int InMinAgeSeconds = 30) -> std::vector<CacheLockInfo>;
 
 } // namespace kano::git::workspace

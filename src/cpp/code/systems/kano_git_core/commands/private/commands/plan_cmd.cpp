@@ -120,23 +120,7 @@ auto ReadFileText(const std::filesystem::path& InPath) -> std::optional<std::str
 }
 
 auto WriteFileText(const std::filesystem::path& InPath, const std::string& InText, std::string* OutError = nullptr) -> bool {
-    std::error_code ec;
-    std::filesystem::create_directories(InPath.parent_path(), ec);
-    if (ec) {
-        if (OutError != nullptr) {
-            *OutError = "cannot create parent directory";
-        }
-        return false;
-    }
-    std::ofstream out(InPath, std::ios::out | std::ios::binary | std::ios::trunc);
-    if (!out) {
-        if (OutError != nullptr) {
-            *OutError = "cannot open output file";
-        }
-        return false;
-    }
-    out << InText;
-    return out.good();
+    return workspace::WriteCacheFileText(InPath, InText, OutError);
 }
 
 auto RelativeDisplayPath(const std::filesystem::path& InRoot, const std::filesystem::path& InPath) -> std::string {
@@ -363,16 +347,27 @@ auto ScanFileForSecretRules(const std::filesystem::path& InRepo,
 }
 
 auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<std::filesystem::path> {
-    workspace::DiscoverOptions options;
-    options.rootDir = InRoot;
-    options.maxDepth = 12;
-    options.useCache = true;
-    options.metadataLevel = "minimal";
-    const auto discovery = workspace::DiscoverRepos(options);
     std::vector<std::filesystem::path> repos;
-    repos.reserve(discovery.repos.size());
-    for (const auto& repo : discovery.repos) {
-        repos.push_back(repo.path.lexically_normal());
+    std::string ignoredReason;
+    if (const auto manifest = workspace::LoadTrustedWorkspaceManifest(InRoot, &ignoredReason); manifest.has_value()) {
+        repos.reserve(manifest->repos.size());
+        for (const auto& repo : manifest->repos) {
+            repos.push_back(repo.path.lexically_normal());
+        }
+    } else {
+        workspace::DiscoverOptions options;
+        options.rootDir = InRoot;
+        options.maxDepth = 12;
+        options.useCache = true;
+        options.cacheTtlSeconds = 900;
+        options.incremental = true;
+        options.maxStaleSeconds = 86400;
+        options.metadataLevel = "minimal";
+        const auto discovery = workspace::DiscoverRepos(options);
+        repos.reserve(discovery.repos.size());
+        for (const auto& repo : discovery.repos) {
+            repos.push_back(repo.path.lexically_normal());
+        }
     }
     std::sort(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
         return A.generic_string() < B.generic_string();
