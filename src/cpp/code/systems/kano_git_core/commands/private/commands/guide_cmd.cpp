@@ -30,6 +30,10 @@ std::string BuildFlowGuide(const std::string& flow) {
     if (flow == "sync") {
         return R"TXT(Guide: sync (fork workflows)
 
+Execution contract:
+  - sync is parent-first
+  - registered child repos observe refreshed parent branch/module state after parent sync
+
 1) Consumer sync to origin latest
    kano-git sync origin-latest
 
@@ -45,6 +49,10 @@ Tip: Start with origin-latest if unsure.
 
     if (flow == "commit") {
         return R"TXT(Guide: commit (AI-assisted)
+
+Execution contract:
+  - commit is child-first for nested repos
+  - parent repos commit gitlink pointers after child repos settle
 
 1) Generate commit message automatically
    kano-git commit

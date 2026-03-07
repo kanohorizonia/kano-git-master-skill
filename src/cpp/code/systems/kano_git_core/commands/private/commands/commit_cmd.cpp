@@ -3442,7 +3442,7 @@ auto RunCommitNativeSimple(const std::filesystem::path& InWorkspaceRoot,
 }
 
 void RegisterCommit(CLI::App& InApp) {
-    auto* cmd = InApp.add_subcommand("commit", "Native multi-repo commit workflow (pure C++)");
+    auto* cmd = InApp.add_subcommand("commit", "Native multi-repo commit workflow (pure C++, child-first for nested repos)");
 
     auto* repos = new std::string{};
     auto* repoRoot = new std::string{};
