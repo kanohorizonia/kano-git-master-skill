@@ -132,6 +132,10 @@ auto GitCapture(const std::filesystem::path& InRepo, const std::vector<std::stri
     return shell::ExecuteCommand("git", InArgs, shell::ExecMode::Capture, InRepo);
 }
 
+auto IsGitRepo(const std::filesystem::path& InRepo) -> bool {
+    return GitCapture(InRepo, {"rev-parse", "--git-dir"}).exitCode == 0;
+}
+
 auto GitPassThrough(const std::filesystem::path& InRepo, const std::vector<std::string>& InArgs) -> shell::ExecResult {
     return shell::ExecuteCommand("git", InArgs, shell::ExecMode::PassThrough, InRepo);
 }
@@ -841,7 +845,95 @@ auto ResolveRepoPath(const std::filesystem::path& InWorkspaceRoot, const std::fi
     if (InPath.is_absolute()) {
         return NormalizePath(InPath);
     }
-    return NormalizePath(InWorkspaceRoot / InPath);
+    const auto candidate = NormalizePath(InWorkspaceRoot / InPath);
+    if (std::filesystem::exists(candidate) && IsGitRepo(candidate)) {
+        return candidate;
+    }
+
+    std::string manifestReason;
+    if (const auto manifest = workspace::LoadTrustedWorkspaceManifest(InWorkspaceRoot, &manifestReason); manifest.has_value()) {
+        const auto specText = InPath.generic_string();
+        std::vector<std::filesystem::path> exactMatches;
+        std::vector<std::filesystem::path> fuzzyMatches;
+        for (const auto& repo : manifest->repos) {
+            const auto repoPath = NormalizePath(repo.path);
+            const auto repoName = repoPath.filename().generic_string();
+            const auto repoKey = repoPath.generic_string();
+            const auto relativeKey = repoPath.lexically_relative(NormalizePath(InWorkspaceRoot)).generic_string();
+            if (repoName == specText || repoKey == specText || relativeKey == specText) {
+                exactMatches.push_back(repoPath);
+                continue;
+            }
+            if (repoKey.find(specText) != std::string::npos || relativeKey.find(specText) != std::string::npos) {
+                fuzzyMatches.push_back(repoPath);
+            }
+        }
+        auto matches = exactMatches.empty() ? fuzzyMatches : exactMatches;
+        std::sort(matches.begin(), matches.end(), [](const auto& A, const auto& B) {
+            return A.generic_string() < B.generic_string();
+        });
+        matches.erase(std::unique(matches.begin(), matches.end(), [](const auto& A, const auto& B) {
+            return A.generic_string() == B.generic_string();
+        }), matches.end());
+        if (matches.size() == 1) {
+            return matches.front();
+        }
+        if (matches.size() > 1) {
+            std::ostringstream oss;
+            oss << "repo spec is ambiguous: " << specText << "\nMatches:\n";
+            for (const auto& match : matches) {
+                oss << "  - " << match.generic_string() << "\n";
+            }
+            throw std::runtime_error(oss.str());
+        }
+    }
+
+    workspace::DiscoverOptions options;
+    options.rootDir = InWorkspaceRoot;
+    options.maxDepth = 12;
+    options.useCache = true;
+    options.metadataLevel = "minimal";
+
+    const auto discovery = workspace::DiscoverRepos(options);
+    const auto specText = InPath.generic_string();
+    std::vector<std::filesystem::path> exactMatches;
+    std::vector<std::filesystem::path> fuzzyMatches;
+
+    for (const auto& repo : discovery.repos) {
+        const auto repoPath = NormalizePath(repo.path);
+        const auto repoName = repoPath.filename().generic_string();
+        const auto repoKey = repoPath.generic_string();
+        const auto relativeKey = repoPath.lexically_relative(NormalizePath(InWorkspaceRoot)).generic_string();
+
+        if (repoName == specText || repoKey == specText || relativeKey == specText) {
+            exactMatches.push_back(repoPath);
+            continue;
+        }
+        if (repoKey.find(specText) != std::string::npos || relativeKey.find(specText) != std::string::npos) {
+            fuzzyMatches.push_back(repoPath);
+        }
+    }
+
+    auto matches = exactMatches.empty() ? fuzzyMatches : exactMatches;
+    std::sort(matches.begin(), matches.end(), [](const auto& A, const auto& B) {
+        return A.generic_string() < B.generic_string();
+    });
+    matches.erase(std::unique(matches.begin(), matches.end(), [](const auto& A, const auto& B) {
+        return A.generic_string() == B.generic_string();
+    }), matches.end());
+
+    if (matches.empty()) {
+        return candidate;
+    }
+    if (matches.size() > 1) {
+        std::ostringstream oss;
+        oss << "repo spec is ambiguous: " << specText << "\nMatches:\n";
+        for (const auto& match : matches) {
+            oss << "  - " << match.generic_string() << "\n";
+        }
+        throw std::runtime_error(oss.str());
+    }
+    return matches.front();
 }
 
 auto PathDepth(const std::filesystem::path& InPath) -> std::size_t {
@@ -944,6 +1036,30 @@ auto DiscoverWorkspaceRepoRecords(const std::filesystem::path& InRoot,
                                   const std::string& InMetadataLevel,
                                   const bool InUseCache = true,
                                   const bool InRefreshCache = false) -> std::vector<workspace::RepoRecord> {
+    if (InUseCache && !InRefreshCache) {
+        std::string manifestReason;
+        if (const auto manifest = workspace::LoadTrustedWorkspaceManifest(InRoot, &manifestReason); manifest.has_value()) {
+            std::vector<workspace::RepoRecord> repos = manifest->repos;
+            if (repos.empty()) {
+                workspace::RepoRecord root;
+                root.path = InRoot.lexically_normal();
+                root.type = "root";
+                repos.push_back(std::move(root));
+            }
+            for (auto& repo : repos) {
+                const auto status = GitCapture(repo.path, {"status", "--porcelain"});
+                repo.hasChanges = status.exitCode == 0 && !Trim(status.stdoutStr).empty();
+            }
+            std::sort(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
+                return A.path.lexically_normal().generic_string() < B.path.lexically_normal().generic_string();
+            });
+            repos.erase(std::unique(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
+                return A.path.lexically_normal().generic_string() == B.path.lexically_normal().generic_string();
+            }), repos.end());
+            return repos;
+        }
+    }
+
     workspace::DiscoverOptions options;
     options.rootDir = InRoot;
     options.maxDepth = 12;
@@ -967,6 +1083,23 @@ auto DiscoverWorkspaceRepoRecords(const std::filesystem::path& InRoot,
 
 auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<std::filesystem::path> {
     std::vector<std::filesystem::path> repos;
+    std::string manifestReason;
+    if (const auto manifest = workspace::LoadTrustedWorkspaceManifest(InRoot, &manifestReason); manifest.has_value()) {
+        repos.reserve(manifest->repos.size());
+        for (const auto& repo : manifest->repos) {
+            repos.push_back(repo.path.lexically_normal());
+        }
+        if (repos.empty()) {
+            repos.push_back(InRoot.lexically_normal());
+        }
+        std::sort(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
+            return A.generic_string() < B.generic_string();
+        });
+        repos.erase(std::unique(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
+            return A.generic_string() == B.generic_string();
+        }), repos.end());
+        return repos;
+    }
     const auto discovered = DiscoverWorkspaceRepoRecords(InRoot, "minimal");
     repos.reserve(discovered.size());
     for (const auto& repo : discovered) {
@@ -3285,7 +3418,11 @@ void RegisterCommit(CLI::App& InApp) {
     auto* cmd = InApp.add_subcommand("commit", "Native multi-repo commit workflow (pure C++)");
 
     auto* repos = new std::string{};
+    auto* repoRoot = new std::string{};
+    auto* target = new std::string{};
     cmd->add_option("--repos", *repos, "Commit target repos (comma-separated). Default: auto-discover workspace repos");
+    cmd->add_option("--repo-root", *repoRoot, "Workspace root/start path used for repo-name lookup");
+    cmd->add_option("target", *target, "Optional repo target root (repo name or relative path)")->required(false);
     auto* bNoRecursive = new bool{false};
     cmd->add_flag("--no-recursive,-N", *bNoRecursive, "Commit only current repository when --repos is not provided");
     auto* bNoDirtyOnly = new bool{false};
@@ -3353,7 +3490,15 @@ void RegisterCommit(CLI::App& InApp) {
             std::exit(2);
         }
 
-        const auto workspaceRoot = std::filesystem::current_path();
+        const auto invocationRoot = repoRoot->empty() ? std::filesystem::current_path() : std::filesystem::path(*repoRoot);
+        const auto workspaceRoot = target->empty()
+            ? invocationRoot.lexically_normal()
+            : ResolveRepoPath(invocationRoot.lexically_normal(), std::filesystem::path(*target));
+
+        if (!repos->empty() && !target->empty()) {
+            std::cerr << "Error: positional target cannot be combined with --repos\n";
+            std::exit(2);
+        }
 
         if (!*bNoNativePreflight || *bPreflightOnly) {
             const auto preflightStart = clock::now();
@@ -3508,6 +3653,14 @@ void RegisterCommit(CLI::App& InApp) {
             }
         }
 
+        bool effectiveNoRecursive = *bNoRecursive;
+        if (!effectiveNoRecursive && repos->empty() && !target->empty()) {
+            const auto scopedRepos = DiscoverWorkspaceRepos(workspaceRoot);
+            if (scopedRepos.size() <= 1) {
+                effectiveNoRecursive = true;
+            }
+        }
+
         const auto planningStart = clock::now();
         const bool dirtyOnly = !*bNoDirtyOnly;
         auto reposCsv = Trim(*repos);
@@ -3524,7 +3677,7 @@ void RegisterCommit(CLI::App& InApp) {
             }
             reposCsv = std::move(planReposCsv);
         }
-        auto repoRecords = BuildCommitScopeRecords(workspaceRoot, reposCsv, *bNoRecursive, dirtyOnly);
+        auto repoRecords = BuildCommitScopeRecords(workspaceRoot, reposCsv, effectiveNoRecursive, dirtyOnly);
         if (repoRecords.empty()) {
             workspace::RepoRecord fallback;
             fallback.path = workspaceRoot;

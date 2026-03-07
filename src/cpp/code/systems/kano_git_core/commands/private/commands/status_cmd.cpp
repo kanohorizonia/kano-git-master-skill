@@ -5,11 +5,15 @@
 #include "shell_executor.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <format>
+#include <future>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
+#include <stdexcept>
 #include <set>
 #include <string>
 #include <vector>
@@ -157,6 +161,68 @@ auto RepoNameFromPath(const std::filesystem::path& InPath) -> std::string {
     return InPath.lexically_normal().generic_string();
 }
 
+auto ResolveRepoFromSpec(const std::filesystem::path& InRoot,
+                         const std::string& InSpec,
+                         int InMaxDepth,
+                         bool InUseCache) -> std::filesystem::path {
+    if (InSpec.empty()) {
+        return std::filesystem::current_path().lexically_normal();
+    }
+
+    const std::filesystem::path asPath(InSpec);
+    const auto candidate = (asPath.is_absolute() ? asPath : (InRoot / asPath)).lexically_normal();
+    if (std::filesystem::exists(candidate) && GitCapture(candidate, {"rev-parse", "--git-dir"}).exitCode == 0) {
+        return candidate;
+    }
+
+    workspace::DiscoverOptions options;
+    options.rootDir = InRoot;
+    options.maxDepth = InMaxDepth;
+    options.useCache = InUseCache;
+    options.metadataLevel = "minimal";
+
+    const auto discovery = workspace::DiscoverRepos(options);
+    std::vector<std::filesystem::path> exactMatches;
+    std::vector<std::filesystem::path> fuzzyMatches;
+
+    for (const auto& repo : discovery.repos) {
+        const auto repoPath = repo.path.lexically_normal();
+        const auto repoName = RepoNameFromPath(repoPath);
+        const auto repoKey = repoPath.generic_string();
+        const auto relativeKey = RelativeDisplayPath(InRoot, repoPath).generic_string();
+
+        if (repoName == InSpec || repoKey == InSpec || relativeKey == InSpec) {
+            exactMatches.push_back(repoPath);
+            continue;
+        }
+        if (repoKey.find(InSpec) != std::string::npos || relativeKey.find(InSpec) != std::string::npos) {
+            fuzzyMatches.push_back(repoPath);
+        }
+    }
+
+    auto matches = exactMatches.empty() ? fuzzyMatches : exactMatches;
+    std::sort(matches.begin(), matches.end(), [](const auto& A, const auto& B) {
+        return A.generic_string() < B.generic_string();
+    });
+    matches.erase(std::unique(matches.begin(), matches.end(), [](const auto& A, const auto& B) {
+        return A.generic_string() == B.generic_string();
+    }), matches.end());
+
+    if (matches.empty()) {
+        throw std::runtime_error("repo not found: " + InSpec);
+    }
+    if (matches.size() > 1) {
+        std::ostringstream oss;
+        oss << "repo spec is ambiguous: " << InSpec << "\nMatches:\n";
+        for (const auto& match : matches) {
+            oss << "  - " << match.generic_string() << "\n";
+        }
+        throw std::runtime_error(oss.str());
+    }
+
+    return matches.front();
+}
+
 auto FormatTable(const std::vector<RepoView>& InRows) -> std::string {
     std::ostringstream oss;
     std::set<std::string> groups;
@@ -256,6 +322,107 @@ auto FormatJson(const std::vector<RepoView>& InRows) -> std::string {
     return out.str();
 }
 
+auto FormatMarkdown(const std::vector<RepoView>& InRows) -> std::string {
+    std::ostringstream oss;
+    std::size_t dirtyCount = 0;
+    for (const auto& row : InRows) {
+        if (row.repoDirty) {
+            dirtyCount += 1;
+        }
+    }
+
+    oss << "# Status\n\n";
+    oss << "- Repos: " << InRows.size() << "\n";
+    oss << "- Dirty: " << dirtyCount << "\n\n";
+    oss << "| Path | Branch | Remote | Tracking | Dirty | Worktree Dirty | Type |\n";
+    oss << "| --- | --- | --- | --- | --- | --- | --- |\n";
+    for (const auto& row : InRows) {
+        oss << "| "
+            << row.path.lexically_normal().generic_string() << " | "
+            << row.branch << " | "
+            << row.remote << " | "
+            << row.tracking << " | "
+            << (row.repoDirty ? "yes" : "no") << " | "
+            << (row.hasDirtyWorktree ? "yes" : "no") << " | "
+            << row.type << " |\n";
+    }
+    return oss.str();
+}
+
+auto MakeRepoView(const workspace::RepoRecord& InRepo, const std::filesystem::path& InRoot) -> RepoView {
+    RepoView row;
+    row.path = InRepo.path;
+    const auto relativePath = RelativeDisplayPath(InRoot, InRepo.path);
+    row.group = GroupFromRelativePath(relativePath);
+    row.repoName = RepoNameFromPath(InRepo.path);
+    row.type = InRepo.type;
+    row.repoDirty = InRepo.hasChanges;
+    row.branch = CurrentBranch(InRepo.path);
+    row.remote = CurrentRemote(InRepo.path);
+    row.tracking = TrackingSummary(InRepo.path);
+    row.hasDirtyWorktree = HasDirtyWorktrees(InRepo.path, row.dirtyWorktrees);
+    return row;
+}
+
+auto BuildRepoViews(const std::vector<workspace::RepoRecord>& InRepos, const std::filesystem::path& InRoot) -> std::vector<RepoView> {
+    std::vector<RepoView> rows;
+    rows.reserve(InRepos.size());
+
+    if (InRepos.size() <= 1) {
+        for (const auto& repo : InRepos) {
+            rows.push_back(MakeRepoView(repo, InRoot));
+        }
+    } else {
+        std::vector<std::future<RepoView>> futures;
+        futures.reserve(InRepos.size());
+        for (const auto& repo : InRepos) {
+            futures.push_back(std::async(std::launch::async, [&repo, &InRoot]() {
+                return MakeRepoView(repo, InRoot);
+            }));
+        }
+        for (auto& future : futures) {
+            rows.push_back(future.get());
+        }
+    }
+
+    std::sort(rows.begin(), rows.end(), [](const RepoView& A, const RepoView& B) {
+        if (A.group != B.group) {
+            return A.group < B.group;
+        }
+        if (A.repoName != B.repoName) {
+            return A.repoName < B.repoName;
+        }
+        return A.path.lexically_normal().generic_string() < B.path.lexically_normal().generic_string();
+    });
+    return rows;
+}
+
+auto SelfBinaryPath() -> std::string {
+    if (const char* path = std::getenv("KANO_GIT_BINARY_PATH"); path != nullptr && *path != '\0') {
+        return std::string(path);
+    }
+    return "kano-git";
+}
+
+auto RunSelfScopedCommand(const std::string& InCommand,
+                          const std::filesystem::path& InResolvedRepo,
+                          const std::vector<std::string>& InExtraArgs) -> int {
+    std::vector<std::string> args;
+    if (InCommand == "push" || InCommand == "commit" || InCommand == "commit-push") {
+        args = {InCommand, "--repos", InResolvedRepo.generic_string(), "--no-recursive"};
+    } else if (InCommand == "log" || InCommand == "slog") {
+        args = {InCommand, "--repo", InResolvedRepo.generic_string(), "--no-recursive"};
+    } else if (InCommand == "update") {
+        args = {InCommand, "--repo", InResolvedRepo.generic_string()};
+    } else {
+        std::cerr << "Error: unsupported repo-scoped command: " << InCommand << "\n";
+        return 2;
+    }
+    args.insert(args.end(), InExtraArgs.begin(), InExtraArgs.end());
+    const auto result = shell::ExecuteCommand(SelfBinaryPath(), args, shell::ExecMode::PassThrough, std::filesystem::current_path());
+    return result.exitCode;
+}
+
 } // namespace
 
 void RegisterStatus(CLI::App& InApp) {
@@ -266,21 +433,38 @@ void RegisterStatus(CLI::App& InApp) {
     auto* exclude = new std::vector<std::string>{};
     auto* noCache = new bool{false};
     auto* noRefreshCache = new bool{false};
+    auto* repoRoot = new std::string{"."};
+    auto* output = new std::string{};
+    auto* target = new std::string{};
 
-    cmd->add_option("--format", *format, "Output format: table|json")->default_str("table");
+    cmd->add_option("--format", *format, "Output format: table|json|markdown")->default_str("table");
     cmd->add_option("--max-depth", *maxDepth, "Discovery max depth");
     cmd->add_option("--exclude", *exclude, "Temporary scan-scope exclude override for this invocation only (repeatable; prefer .gitignore/.kogignore for shared policy)");
     cmd->add_flag("--no-cache", *noCache, "Disable discovery cache for this run");
     cmd->add_flag("--no-refresh-cache", *noRefreshCache, "Do not force cache refresh");
+    cmd->add_option("--repo-root", *repoRoot, "Repository root/start path");
+    cmd->add_option("--output", *output, "Write output to file");
+    cmd->add_option("target", *target, "Optional repo target (repo name or relative path)")->required(false);
 
-    cmd->callback([format, maxDepth, exclude, noCache, noRefreshCache]() {
-        if (*format != "table" && *format != "json") {
-            std::cerr << "Error: invalid --format value: " << *format << " (expected table|json)\n";
+    cmd->callback([format, maxDepth, exclude, noCache, noRefreshCache, repoRoot, output, target]() {
+        if (*format != "table" && *format != "json" && *format != "markdown") {
+            std::cerr << "Error: invalid --format value: " << *format << " (expected table|json|markdown)\n";
             std::exit(1);
         }
 
+        auto root = repoRoot->empty() ? std::filesystem::current_path() : std::filesystem::path(*repoRoot);
+        root = std::filesystem::absolute(root).lexically_normal();
+        if (!target->empty()) {
+            try {
+                root = ResolveRepoFromSpec(root, *target, *maxDepth, !*noCache);
+            } catch (const std::exception& ex) {
+                std::cerr << "Error: " << ex.what() << "\n";
+                std::exit(1);
+            }
+        }
+
         workspace::DiscoverOptions options;
-        options.rootDir = std::filesystem::current_path();
+        options.rootDir = root;
         options.maxDepth = *maxDepth;
         options.excludePatterns = *exclude;
         options.useCache = !*noCache;
@@ -288,42 +472,134 @@ void RegisterStatus(CLI::App& InApp) {
         options.metadataLevel = "full";
 
         const auto discovery = workspace::DiscoverRepos(options);
-        std::vector<RepoView> rows;
-        rows.reserve(discovery.repos.size());
+        const auto rows = BuildRepoViews(discovery.repos, options.rootDir);
 
-        for (const auto& repo : discovery.repos) {
-            RepoView row;
-            row.path = repo.path;
-            const auto relativePath = RelativeDisplayPath(options.rootDir, repo.path);
-            row.group = GroupFromRelativePath(relativePath);
-            row.repoName = RepoNameFromPath(repo.path);
-            row.type = repo.type;
-            row.repoDirty = repo.hasChanges;
-
-            row.branch = CurrentBranch(repo.path);
-            row.remote = CurrentRemote(repo.path);
-            row.tracking = TrackingSummary(repo.path);
-            row.hasDirtyWorktree = HasDirtyWorktrees(repo.path, row.dirtyWorktrees);
-
-            rows.push_back(std::move(row));
+        std::string rendered;
+        if (*format == "json") {
+            rendered = FormatJson(rows);
+        } else if (*format == "markdown") {
+            rendered = FormatMarkdown(rows);
+        } else {
+            rendered = FormatTable(rows);
         }
 
-        std::sort(rows.begin(), rows.end(), [](const RepoView& A, const RepoView& B) {
-            if (A.group != B.group) {
-                return A.group < B.group;
-            }
-            if (A.repoName != B.repoName) {
-                return A.repoName < B.repoName;
-            }
-            return A.path.lexically_normal().generic_string() < B.path.lexically_normal().generic_string();
-        });
-
-        if (*format == "json") {
-            std::cout << FormatJson(rows) << '\n';
+        if (!output->empty()) {
+            std::ofstream out(*output, std::ios::out | std::ios::binary | std::ios::trunc);
+            out << rendered;
         } else {
-            std::cout << FormatTable(rows) << '\n';
+            std::cout << rendered << '\n';
         }
     });
+}
+
+void RegisterRepo(CLI::App& InApp) {
+    auto* cmd = InApp.add_subcommand("repo", "Single-repo scoped command variants");
+    auto* status = cmd->add_subcommand("status", "Status for a single repo without recursive expansion");
+
+    auto* format = new std::string{"table"};
+    auto* repoRoot = new std::string{"."};
+    auto* output = new std::string{};
+    auto* target = new std::string{"."};
+
+    status->add_option("target", *target, "Target repo (repo name or relative path)")->required();
+    status->add_option("--format", *format, "Output format: table|json|markdown")->default_str("table");
+    status->add_option("--repo-root", *repoRoot, "Workspace root/start path used for repo-name lookup");
+    status->add_option("--output", *output, "Write output to file");
+
+    status->callback([format, repoRoot, output, target]() {
+        if (*format != "table" && *format != "json" && *format != "markdown") {
+            std::cerr << "Error: invalid --format value: " << *format << " (expected table|json|markdown)\n";
+            std::exit(1);
+        }
+
+        auto root = repoRoot->empty() ? std::filesystem::current_path() : std::filesystem::path(*repoRoot);
+        root = std::filesystem::absolute(root).lexically_normal();
+
+        std::filesystem::path repoPath;
+        try {
+            repoPath = ResolveRepoFromSpec(root, *target, 8, true);
+        } catch (const std::exception& ex) {
+            std::cerr << "Error: " << ex.what() << "\n";
+            std::exit(1);
+        }
+
+        workspace::RepoRecord record;
+        record.path = repoPath;
+        record.type = (repoPath == root) ? "root" : "direct";
+        record.hasChanges = GitCapture(repoPath, {"status", "--porcelain"}).exitCode == 0 &&
+                            !Trim(GitCapture(repoPath, {"status", "--porcelain"}).stdoutStr).empty();
+
+        const auto rows = BuildRepoViews({record}, repoPath);
+
+        std::string rendered;
+        if (*format == "json") {
+            rendered = FormatJson(rows);
+        } else if (*format == "markdown") {
+            rendered = FormatMarkdown(rows);
+        } else {
+            rendered = FormatTable(rows);
+        }
+
+        if (!output->empty()) {
+            std::ofstream out(*output, std::ios::out | std::ios::binary | std::ios::trunc);
+            out << rendered;
+        } else {
+            std::cout << rendered << '\n';
+        }
+        std::exit(0);
+    });
+
+    auto registerRepoLogLike = [&](const std::string& InName, bool InShort) {
+        auto* sub = cmd->add_subcommand(InName, InShort ? "Short log for a single repo" : "Log for a single repo");
+        auto* targetArg = new std::string{"."};
+        auto* count = new int{3};
+        auto* repoRoot = new std::string{"."};
+        sub->add_option("target", *targetArg, "Target repo (repo name or relative path)")->required();
+        sub->add_option("--count,-n", *count, "Number of commits to show");
+        sub->add_option("--repo-root", *repoRoot, "Workspace root/start path used for repo-name lookup");
+        sub->callback([targetArg, count, repoRoot, InShort]() {
+            auto root = repoRoot->empty() ? std::filesystem::current_path() : std::filesystem::path(*repoRoot);
+            root = std::filesystem::absolute(root).lexically_normal();
+            try {
+                const auto repoPath = ResolveRepoFromSpec(root, *targetArg, 8, true);
+                const auto code = RunSelfScopedCommand(
+                    InShort ? "slog" : "log",
+                    repoPath,
+                    {"--count", std::to_string(*count)});
+                std::exit(code);
+            } catch (const std::exception& ex) {
+                std::cerr << "Error: " << ex.what() << "\n";
+                std::exit(1);
+            }
+        });
+    };
+
+    registerRepoLogLike("log", false);
+    registerRepoLogLike("slog", true);
+
+    auto registerRepoPassThrough = [&](const std::string& InName) {
+        auto* sub = cmd->add_subcommand(InName, std::format("Run {} against a single repo", InName));
+        sub->allow_extras();
+        sub->prefix_command();
+        auto* targetArg = new std::string{"."};
+        sub->add_option("target", *targetArg, "Target repo (repo name or relative path)")->required();
+        sub->callback([sub, targetArg, InName]() {
+            const auto extrasRaw = sub->remaining();
+            std::vector<std::string> extras(extrasRaw.begin(), extrasRaw.end());
+            try {
+                const auto repoPath = ResolveRepoFromSpec(std::filesystem::current_path(), *targetArg, 8, true);
+                std::exit(RunSelfScopedCommand(InName, repoPath, extras));
+            } catch (const std::exception& ex) {
+                std::cerr << "Error: " << ex.what() << "\n";
+                std::exit(1);
+            }
+        });
+    };
+
+    registerRepoPassThrough("push");
+    registerRepoPassThrough("commit");
+    registerRepoPassThrough("commit-push");
+    registerRepoPassThrough("update");
 }
 
 } // namespace kano::git::commands

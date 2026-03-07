@@ -1,7 +1,9 @@
 #pragma once
 
 #include <filesystem>
+#include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace kano::git::workspace {
@@ -36,8 +38,24 @@ struct DiscoveryResult {
     std::string marker;
 };
 
+struct WorkspaceManifest {
+    std::filesystem::path workspaceRoot;
+    std::vector<RepoRecord> repos;
+    std::unordered_map<std::string, std::string> gitmodulesFingerprints;
+    std::filesystem::path manifestFile;
+};
+
 auto DiscoverRepos(const DiscoverOptions& InOptions) -> DiscoveryResult;
 auto ReposToJson(const std::vector<RepoRecord>& InRepos) -> std::string;
 auto ManifestToJson(const std::filesystem::path& InWorkspaceRoot, const std::vector<RepoRecord>& InRepos) -> std::string;
+auto DiscoverRegisteredPathsRecursive(const std::filesystem::path& InWorkspaceRoot) -> std::vector<std::filesystem::path>;
+auto WorkspaceManifestFilePath(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path;
+auto BuildWorkspaceManifest(const std::filesystem::path& InWorkspaceRoot, const std::vector<RepoRecord>& InRepos) -> WorkspaceManifest;
+auto SaveWorkspaceManifest(const WorkspaceManifest& InManifest) -> bool;
+auto LoadTrustedWorkspaceManifest(const std::filesystem::path& InWorkspaceRoot,
+                                  std::string* OutReason = nullptr) -> std::optional<WorkspaceManifest>;
+auto UpsertUnregisteredRepoIntoWorkspaceManifest(const std::filesystem::path& InWorkspaceRoot,
+                                                 const std::filesystem::path& InRepoPath) -> bool;
+auto RefreshWorkspaceManifestAfterRegisteredChange(const std::filesystem::path& InWorkspaceRoot) -> bool;
 
 } // namespace kano::git::workspace

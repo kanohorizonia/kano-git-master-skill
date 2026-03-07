@@ -18,6 +18,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -94,11 +95,199 @@ auto ParseReposCsv(const std::string& InCsv) -> std::vector<std::string> {
     return repos;
 }
 
+auto GitCapture(const std::filesystem::path& InRepo, const std::vector<std::string>& InArgs) -> shell::ExecResult {
+    return shell::ExecuteCommand("git", InArgs, shell::ExecMode::Capture, InRepo);
+}
+
+auto IsGitRepo(const std::filesystem::path& InRepo) -> bool {
+    return GitCapture(InRepo, {"rev-parse", "--git-dir"}).exitCode == 0;
+}
+
+auto RelativeDisplayPath(const std::filesystem::path& InRoot, const std::filesystem::path& InPath) -> std::filesystem::path {
+    auto normalizedRoot = InRoot.lexically_normal();
+    if (!normalizedRoot.is_absolute()) {
+        normalizedRoot = std::filesystem::absolute(normalizedRoot).lexically_normal();
+    }
+    const auto normalizedPath = InPath.lexically_normal();
+    const auto relative = normalizedPath.lexically_relative(normalizedRoot);
+    if (!relative.empty()) {
+        return relative;
+    }
+    return normalizedPath;
+}
+
+auto RepoNameFromPath(const std::filesystem::path& InPath) -> std::string {
+    const auto normalized = InPath.lexically_normal();
+    auto name = normalized.filename().generic_string();
+    if (name.empty()) {
+        name = normalized.parent_path().filename().generic_string();
+    }
+    if (!name.empty()) {
+        return name;
+    }
+    return normalized.generic_string();
+}
+
+auto ResolveRepoFromSpec(const std::filesystem::path& InRoot,
+                         const std::filesystem::path& InSpec,
+                         const int InMaxDepth,
+                         const bool InUseCache) -> std::filesystem::path {
+    if (InSpec.empty() || InSpec == ".") {
+        return InRoot.lexically_normal();
+    }
+
+    const auto specText = InSpec.generic_string();
+    const auto candidate = (InSpec.is_absolute() ? InSpec : (InRoot / InSpec)).lexically_normal();
+    if (std::filesystem::exists(candidate) && IsGitRepo(candidate)) {
+        return candidate;
+    }
+
+    std::string manifestReason;
+    if (const auto manifest = workspace::LoadTrustedWorkspaceManifest(InRoot, &manifestReason); manifest.has_value()) {
+        std::vector<std::filesystem::path> exactMatches;
+        std::vector<std::filesystem::path> fuzzyMatches;
+        for (const auto& repo : manifest->repos) {
+            const auto repoPath = repo.path.lexically_normal();
+            const auto repoName = RepoNameFromPath(repoPath);
+            const auto repoKey = repoPath.generic_string();
+            const auto relativeKey = RelativeDisplayPath(InRoot, repoPath).generic_string();
+            if (repoName == specText || repoKey == specText || relativeKey == specText) {
+                exactMatches.push_back(repoPath);
+                continue;
+            }
+            if (repoKey.find(specText) != std::string::npos || relativeKey.find(specText) != std::string::npos) {
+                fuzzyMatches.push_back(repoPath);
+            }
+        }
+        auto matches = exactMatches.empty() ? fuzzyMatches : exactMatches;
+        std::sort(matches.begin(), matches.end(), [](const auto& A, const auto& B) {
+            return A.generic_string() < B.generic_string();
+        });
+        matches.erase(std::unique(matches.begin(), matches.end(), [](const auto& A, const auto& B) {
+            return A.generic_string() == B.generic_string();
+        }), matches.end());
+        if (matches.size() == 1) {
+            return matches.front();
+        }
+        if (matches.size() > 1) {
+            std::ostringstream oss;
+            oss << "repo spec is ambiguous: " << specText << "\nMatches:\n";
+            for (const auto& match : matches) {
+                oss << "  - " << match.generic_string() << "\n";
+            }
+            throw std::runtime_error(oss.str());
+        }
+    }
+
+    workspace::DiscoverOptions options;
+    options.rootDir = InRoot;
+    options.maxDepth = InMaxDepth;
+    options.useCache = InUseCache;
+    options.metadataLevel = "minimal";
+
+    const auto discovery = workspace::DiscoverRepos(options);
+    std::vector<std::filesystem::path> exactMatches;
+    std::vector<std::filesystem::path> fuzzyMatches;
+
+    for (const auto& repo : discovery.repos) {
+        const auto repoPath = repo.path.lexically_normal();
+        const auto repoName = RepoNameFromPath(repoPath);
+        const auto repoKey = repoPath.generic_string();
+        const auto relativeKey = RelativeDisplayPath(InRoot, repoPath).generic_string();
+
+        if (repoName == specText || repoKey == specText || relativeKey == specText) {
+            exactMatches.push_back(repoPath);
+            continue;
+        }
+        if (repoKey.find(specText) != std::string::npos || relativeKey.find(specText) != std::string::npos) {
+            fuzzyMatches.push_back(repoPath);
+        }
+    }
+
+    auto matches = exactMatches.empty() ? fuzzyMatches : exactMatches;
+    std::sort(matches.begin(), matches.end(), [](const auto& A, const auto& B) {
+        return A.generic_string() < B.generic_string();
+    });
+    matches.erase(std::unique(matches.begin(), matches.end(), [](const auto& A, const auto& B) {
+        return A.generic_string() == B.generic_string();
+    }), matches.end());
+
+    if (matches.empty()) {
+        throw std::runtime_error("repo not found: " + specText);
+    }
+    if (matches.size() > 1) {
+        std::ostringstream oss;
+        oss << "repo spec is ambiguous: " << specText << "\nMatches:\n";
+        for (const auto& match : matches) {
+            oss << "  - " << match.generic_string() << "\n";
+        }
+        throw std::runtime_error(oss.str());
+    }
+    return matches.front();
+}
+
+auto ResolveRepoList(const std::filesystem::path& InRoot, const std::vector<std::string>& InRepoList) -> std::vector<std::string> {
+    std::vector<std::string> out;
+    out.reserve(InRepoList.size());
+    for (const auto& repo : InRepoList) {
+        out.push_back(ResolveRepoFromSpec(InRoot, std::filesystem::path(repo), 12, true).generic_string());
+    }
+    return out;
+}
+
+auto JoinReposCsv(const std::vector<std::string>& InRepoList) -> std::string {
+    std::ostringstream oss;
+    for (std::size_t i = 0; i < InRepoList.size(); ++i) {
+        if (i > 0) {
+            oss << ",";
+        }
+        oss << InRepoList[i];
+    }
+    return oss.str();
+}
+
+auto SelfBinaryPath() -> std::string {
+    if (const char* path = std::getenv("KANO_GIT_BINARY_PATH"); path != nullptr && *path != '\0') {
+        return std::string(path);
+    }
+    return "kano-git";
+}
+
 auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<std::filesystem::path> {
+    static std::unordered_map<std::string, std::vector<std::filesystem::path>> cache;
+    const auto cacheKey = InRoot.lexically_normal().generic_string();
+    if (const auto cached = cache.find(cacheKey); cached != cache.end()) {
+        return cached->second;
+    }
+
+    std::string manifestReason;
+    if (const auto manifest = workspace::LoadTrustedWorkspaceManifest(InRoot, &manifestReason); manifest.has_value()) {
+        std::vector<std::filesystem::path> repos;
+        repos.reserve(manifest->repos.size());
+        for (const auto& repo : manifest->repos) {
+            repos.push_back(repo.path.lexically_normal());
+        }
+        if (repos.empty()) {
+            repos.push_back(InRoot.lexically_normal());
+        }
+        std::sort(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
+            return A.generic_string() < B.generic_string();
+        });
+        repos.erase(std::unique(repos.begin(), repos.end()), repos.end());
+        cache.emplace(cacheKey, repos);
+        return repos;
+    }
+
+    std::cerr << "[commit-push] workspace manifest untrusted (" << manifestReason
+              << "); running full scan under " << cacheKey << "...\n";
+    std::cerr.flush();
+
     workspace::DiscoverOptions options;
     options.rootDir = InRoot;
     options.maxDepth = 12;
-    options.useCache = true;
+    options.useCache = false;
+    options.refreshCache = true;
+    options.incremental = false;
     options.metadataLevel = "minimal";
     const auto discovery = workspace::DiscoverRepos(options);
     std::vector<std::filesystem::path> repos;
@@ -113,6 +302,12 @@ auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<
         return A.generic_string() < B.generic_string();
     });
     repos.erase(std::unique(repos.begin(), repos.end()), repos.end());
+    const auto manifest = workspace::BuildWorkspaceManifest(InRoot, discovery.repos);
+    if (!workspace::SaveWorkspaceManifest(manifest)) {
+        std::cerr << "[commit-push] WARN: failed to refresh workspace manifest at "
+                  << manifest.manifestFile.lexically_normal().generic_string() << "\n";
+    }
+    cache.emplace(cacheKey, repos);
     return repos;
 }
 
@@ -949,7 +1144,7 @@ auto NeedsPostSyncCommitNonPlan(const std::filesystem::path& InWorkspaceRoot,
                                 const bool InNoRecursive) -> bool {
     if (!InRepoList.empty()) {
         for (const auto& repo : InRepoList) {
-            const auto repoRoot = (InWorkspaceRoot / std::filesystem::path(repo)).lexically_normal();
+            const auto repoRoot = ResolveRepoFromSpec(InWorkspaceRoot, std::filesystem::path(repo), 12, true);
             if (RepoHasAnyWorkingTreeChanges(repoRoot)) {
                 return true;
             }
@@ -977,7 +1172,7 @@ auto CollectPostSyncCandidateRepos(const std::filesystem::path& InWorkspaceRoot,
     if (!InRepoList.empty()) {
         repos.reserve(InRepoList.size());
         for (const auto& repo : InRepoList) {
-            repos.push_back((InWorkspaceRoot / std::filesystem::path(repo)).lexically_normal());
+            repos.push_back(ResolveRepoFromSpec(InWorkspaceRoot, std::filesystem::path(repo), 12, true));
         }
         return repos;
     }
@@ -1256,8 +1451,12 @@ void RegisterCommitPush(CLI::App& InApp) {
     auto* jobs = new int{0};
     auto* verbose = new bool{false};
     auto* remote = new std::string{};
+    auto* repoRoot = new std::string{};
+    auto* target = new std::string{};
 
     cmd->add_option("--repos", *repos, "Target repos (comma-separated)");
+    cmd->add_option("--repo-root", *repoRoot, "Workspace root/start path used for repo-name lookup");
+    cmd->add_option("target", *target, "Optional repo target root (repo name or relative path)")->required(false);
     cmd->add_flag("--no-recursive,-N", *noRecursive, "Only operate on current repository (or provided --repos)");
     cmd->add_option("--message,-m", *message, "Commit message (skip AI generation)");
     cmd->add_option("--plan-file", *commitPlanFile, "Plan JSON file (stage-aware)");
@@ -1295,8 +1494,22 @@ void RegisterCommitPush(CLI::App& InApp) {
             std::exit(2);
         }
 
-        const auto workspaceRoot = std::filesystem::current_path().lexically_normal();
-        const auto repoList = ParseReposCsv(*repos);
+        const auto invocationRoot = repoRoot->empty() ? std::filesystem::current_path() : std::filesystem::path(*repoRoot);
+        const auto workspaceRoot = target->empty()
+            ? invocationRoot.lexically_normal()
+            : ResolveRepoFromSpec(invocationRoot.lexically_normal(), std::filesystem::path(*target), 12, true);
+        if (!repos->empty() && !target->empty()) {
+            std::cerr << "Error: positional target cannot be combined with --repos\n";
+            std::exit(2);
+        }
+        const auto repoList = ResolveRepoList(workspaceRoot, ParseReposCsv(*repos));
+        bool effectiveNoRecursive = *noRecursive;
+        if (!effectiveNoRecursive && repoList.empty() && !target->empty()) {
+            const auto scopedRepos = DiscoverWorkspaceRepos(workspaceRoot);
+            if (scopedRepos.size() <= 1) {
+                effectiveNoRecursive = true;
+            }
+        }
 
         if (*writeCommitPlanTemplate) {
             const auto outPath = commitPlanOut->empty()
@@ -1323,10 +1536,16 @@ void RegisterCommitPush(CLI::App& InApp) {
         const bool hasCommitPlan = !normalizedCommitPlanFile.empty();
         const bool agentMode = IsAgentModeEnabled();
         const bool aiModeRequested = *aiAuto || !aiProvider->empty() || !aiModel->empty();
-        const bool autoPlanAiMode = aiModeRequested && !agentMode && !hasCommitPlan && message->empty();
-        const bool hasWorkingChangesAtStart = NeedsPostSyncCommitNonPlan(workspaceRoot, repoList, *noRecursive);
+        const bool autoPlanAiMode = aiModeRequested && !hasCommitPlan && message->empty();
+        const bool hasWorkingChangesAtStart = NeedsPostSyncCommitNonPlan(workspaceRoot, repoList, effectiveNoRecursive);
         const bool effectiveAiModeRequested = aiModeRequested && !(autoPlanAiMode && !hasWorkingChangesAtStart);
-        if (agentMode && !hasCommitPlan && message->empty()) {
+        if (agentMode && autoPlanAiMode) {
+            std::cerr << "Error: agent mode cpa/commit-push cannot invoke internal AI auto-plan.\n";
+            std::cerr << "Hint: prepare the default plan file first, then run agent mode cpa/commit-push with --plan-file.\n";
+            std::cerr << "Hint: bare `KANO_AGENT_MODE=1 kog cpa` is reserved for the agent-prepared default plan path.\n";
+            std::exit(2);
+        }
+        if (agentMode && !hasCommitPlan && message->empty() && !autoPlanAiMode) {
             std::cerr << "Error: agent mode commit-push requires either --plan-file or --message/-m.\n";
             std::cerr << "Hint: prepare/fill plan first, then run with --plan-file.\n";
             std::cerr << "Hint: or provide explicit --message/-m for single-commit non-plan flow.\n";
@@ -1455,7 +1674,7 @@ void RegisterCommitPush(CLI::App& InApp) {
         const auto preCommitEnd = std::chrono::steady_clock::now();
         preCommitMillis = std::chrono::duration_cast<std::chrono::milliseconds>(preCommitEnd - preCommitStart).count();
 
-        const bool hasWorkingChanges = NeedsPostSyncCommitNonPlan(workspaceRoot, repoList, *noRecursive);
+        const bool hasWorkingChanges = NeedsPostSyncCommitNonPlan(workspaceRoot, repoList, effectiveNoRecursive);
         if (!hasWorkingChanges) {
             std::cout << "[commit-push] workspace clean; skipping commit/sync/post-sync and proceeding to push check.\n";
         } else {
@@ -1468,7 +1687,7 @@ void RegisterCommitPush(CLI::App& InApp) {
                     RunCommitNativeSimple(
                         workspaceRoot,
                         *repos,
-                        *noRecursive,
+                        effectiveNoRecursive,
                         *message,
                         *stagedOnly,
                         *dryRun,
@@ -1495,7 +1714,7 @@ void RegisterCommitPush(CLI::App& InApp) {
                     }
                 }
             } else {
-                const auto syncCode = RunSyncOriginLatestNative(workspaceRoot, !*noRecursive, *dryRun);
+                const auto syncCode = RunSyncOriginLatestNative(workspaceRoot, !effectiveNoRecursive, *dryRun);
                 if (syncCode != 0) {
                     std::exit(syncCode);
                 }
@@ -1513,7 +1732,7 @@ void RegisterCommitPush(CLI::App& InApp) {
                     std::cout << "[commit-push] post-sync commit skipped in dry-run mode.\n";
                 }
             } else {
-                const auto summary = ClassifyPostSyncDelta(workspaceRoot, repoList, *noRecursive);
+                const auto summary = ClassifyPostSyncDelta(workspaceRoot, repoList, effectiveNoRecursive);
                 if (summary.kind == PostSyncDeltaKind::SemanticDrift) {
                     std::cerr << "[commit-push] post-sync semantic drift detected after sync; manual review required.\n";
                     for (const auto& repo : summary.semanticRepos) {
@@ -1522,7 +1741,7 @@ void RegisterCommitPush(CLI::App& InApp) {
                     std::exit(2);
                 }
                 if (summary.kind == PostSyncDeltaKind::GitlinkOnly) {
-                    const auto amendResult = AutoAmendGitlinkOnlyPostSyncRepos(workspaceRoot, repoList, *noRecursive);
+                    const auto amendResult = AutoAmendGitlinkOnlyPostSyncRepos(workspaceRoot, repoList, effectiveNoRecursive);
                     if (amendResult.first != 0) {
                         std::exit(2);
                     }
@@ -1531,19 +1750,19 @@ void RegisterCommitPush(CLI::App& InApp) {
                     const bool hasPostSyncStage = PlanStageLikelyNonEmpty(std::filesystem::path(normalizedCommitPlanFile), "post_sync");
                     if (!hasPostSyncStage) {
                         std::cout << "[commit-push] post-sync plan stage is empty; skipping.\n";
-                    } else if (NeedsPostSyncCommitNonPlan(workspaceRoot, repoList, *noRecursive)) {
+                    } else if (NeedsPostSyncCommitNonPlan(workspaceRoot, repoList, effectiveNoRecursive)) {
                         postCommitResult =
                             shell::ExecResult{RunCommitNativePlanStage(workspaceRoot, normalizedCommitPlanFile, "post_sync", false), "", ""};
                     } else {
                         std::cout << "[commit-push] post-sync plan commit skipped (no working tree changes).\n";
                     }
-                } else if (NeedsPostSyncCommitNonPlan(workspaceRoot, repoList, *noRecursive)) {
+                } else if (NeedsPostSyncCommitNonPlan(workspaceRoot, repoList, effectiveNoRecursive)) {
                     postCommitResult =
                         shell::ExecResult{
                             RunCommitNativeSimple(
                                 workspaceRoot,
                                 *repos,
-                                *noRecursive,
+                                effectiveNoRecursive,
                                 *message,
                                 *stagedOnly,
                                 *dryRun,
@@ -1566,19 +1785,45 @@ void RegisterCommitPush(CLI::App& InApp) {
 
         std::cout << "=== commit-push stage: push ===\n";
         const auto pushStart = std::chrono::steady_clock::now();
-        // Keep commit-push convergence deterministic and avoid the known
-        // parallel push worker hang path. Standalone `kog push` still exposes
-        // configurable parallelism for operator-driven use.
-        const auto pushExitCode = RunPushNativeSimple(
-            workspaceRoot,
-            !*noRecursive,
-            *dryRun,
-            *profile,
-            *forceWithLease,
-            *noVerify,
-            1,
-            *verbose,
-            *remote);
+        int pushExitCode = 0;
+        if (!repoList.empty()) {
+            std::vector<std::string> pushArgs = {"push", "--repos", JoinReposCsv(repoList), "--no-recursive"};
+            if (*dryRun) {
+                pushArgs.push_back("--dry-run");
+            }
+            if (*profile) {
+                pushArgs.push_back("--profile");
+            }
+            if (*forceWithLease) {
+                pushArgs.push_back("--force-with-lease");
+            }
+            if (*noVerify) {
+                pushArgs.push_back("--no-verify");
+            }
+            if (*verbose) {
+                pushArgs.push_back("--verbose");
+            }
+            if (!remote->empty()) {
+                pushArgs.push_back("--remote");
+                pushArgs.push_back(*remote);
+            }
+            const auto pushResult = shell::ExecuteCommand(SelfBinaryPath(), pushArgs, shell::ExecMode::PassThrough, workspaceRoot);
+            pushExitCode = pushResult.exitCode;
+        } else {
+            // Keep commit-push convergence deterministic and avoid the known
+            // parallel push worker hang path. Standalone `kog push` still exposes
+            // configurable parallelism for operator-driven use.
+            pushExitCode = RunPushNativeSimple(
+                workspaceRoot,
+                !effectiveNoRecursive,
+                *dryRun,
+                *profile,
+                *forceWithLease,
+                *noVerify,
+                1,
+                *verbose,
+                *remote);
+        }
 
         const auto pushEnd = std::chrono::steady_clock::now();
         pushMillis = std::chrono::duration_cast<std::chrono::milliseconds>(pushEnd - pushStart).count();

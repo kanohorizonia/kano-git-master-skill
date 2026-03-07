@@ -196,9 +196,8 @@ void RewriteDiscoverAlias(std::vector<std::string>& InOutArgs) {
     }
 
     std::vector<std::string> normalized;
-    normalized.reserve(InOutArgs.size() + 4);
+    normalized.reserve(InOutArgs.size() + 2);
     normalized.push_back(InOutArgs[0]);
-    normalized.push_back("workspace");
     normalized.push_back("discover");
 
     bool hasMaxDepth = false;
@@ -232,6 +231,57 @@ void RewriteDiscoverAlias(std::vector<std::string>& InOutArgs) {
         normalized.push_back(std::to_string(DiscoverDefaultMaxDepth()));
     }
     InOutArgs = std::move(normalized);
+}
+
+void RewriteRepoScopedCommands(std::vector<std::string>& InOutArgs) {
+    if (InOutArgs.size() <= 3 || InOutArgs[1] != "repo") {
+        return;
+    }
+
+    const std::string command = InOutArgs[2];
+    if (command == "status") {
+        return;
+    }
+
+    const std::string target = InOutArgs[3];
+    std::vector<std::string> rewritten;
+    rewritten.reserve(InOutArgs.size() + 4);
+    rewritten.push_back(InOutArgs[0]);
+
+    if (command == "push" || command == "commit" || command == "commit-push") {
+        rewritten.push_back(command);
+        rewritten.push_back("--repos");
+        rewritten.push_back(target);
+        rewritten.push_back("--no-recursive");
+        for (std::size_t i = 4; i < InOutArgs.size(); ++i) {
+            rewritten.push_back(InOutArgs[i]);
+        }
+        InOutArgs = std::move(rewritten);
+        return;
+    }
+
+    if (command == "update") {
+        rewritten.push_back("update");
+        rewritten.push_back("--repo");
+        rewritten.push_back(target);
+        for (std::size_t i = 4; i < InOutArgs.size(); ++i) {
+            rewritten.push_back(InOutArgs[i]);
+        }
+        InOutArgs = std::move(rewritten);
+        return;
+    }
+
+    if (command == "log" || command == "slog") {
+        rewritten.push_back(command);
+        rewritten.push_back("--repo");
+        rewritten.push_back(target);
+        rewritten.push_back("--no-recursive");
+        for (std::size_t i = 4; i < InOutArgs.size(); ++i) {
+            rewritten.push_back(InOutArgs[i]);
+        }
+        InOutArgs = std::move(rewritten);
+        return;
+    }
 }
 
 void RewriteCommandAliases(std::vector<std::string>& InOutArgs) {
@@ -290,11 +340,13 @@ void RewriteCommandAliases(std::vector<std::string>& InOutArgs) {
     }
     if (cmd == "cpa") {
         std::vector<std::string> rewritten;
-        rewritten.reserve(InOutArgs.size() + 2);
+        rewritten.reserve(InOutArgs.size() + 3);
         rewritten.push_back(InOutArgs[0]);
         rewritten.push_back("commit-push");
-        // In agent mode, cpa must behave exactly like cp (external agent owns AI).
-        if (!IsTruthyEnv("KANO_AGENT_MODE")) {
+        if (IsTruthyEnv("KANO_AGENT_MODE")) {
+            rewritten.push_back("--plan-file");
+            rewritten.push_back(DefaultPlanPath());
+        } else {
             rewritten.push_back("--ai-auto");
         }
         for (std::size_t i = 2; i < InOutArgs.size(); ++i) {
@@ -358,7 +410,7 @@ void RewriteCommitAiFlagsAndPlan(std::vector<std::string>& InOutArgs) {
 
     SetAllowIgnoreGateEnv(allowIgnoreGate);
 
-    if (!noPlanAuto && aiRequested && !hasPlanFile && (cmd == "commit" || cmd == "commit-push")) {
+    if (!noPlanAuto && aiRequested && !hasPlanFile && cmd == "commit") {
         rewritten.push_back("--plan-file");
         rewritten.push_back(DefaultPlanPath());
     }
@@ -382,6 +434,7 @@ std::vector<std::string> NormalizeLegacyArgs(int InArgc, char* InArgv[]) {
     RewriteCommandAliases(out);
     RewritePlanLifecycleAliases(out);
     RewriteDiscoverAlias(out);
+    RewriteRepoScopedCommands(out);
     RewriteCommitAiFlagsAndPlan(out);
     return out;
 }

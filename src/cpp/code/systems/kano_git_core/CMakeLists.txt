@@ -52,7 +52,9 @@ target_sources(kano_git_core
     commands/private/commands/sync_cmd.cpp
     commands/private/commands/tui_cmd.cpp
     commands/private/commands/version_cmd.cpp
-    commands/private/commands/workspace_cmd.cpp
+    commands/private/commands/discover_cmd.cpp
+    commands/private/commands/foreach_cmd.cpp
+    commands/private/commands/update_cmd.cpp
     commands/private/commands/worktree_cmd.cpp
 )
 
