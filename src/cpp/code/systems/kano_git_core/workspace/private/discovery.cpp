@@ -263,7 +263,7 @@ class ScopedCacheFileLock {
             return std::nullopt;
         }
 
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(std::max(0, InTimeoutMs));
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds((std::max)(0, InTimeoutMs));
         while (true) {
             ec.clear();
             if (std::filesystem::create_directory(out.lockPath_, ec)) {
@@ -1574,7 +1574,7 @@ auto DiscoverRepos(const DiscoverOptions& InOptions) -> DiscoveryResult {
     const auto ignoreRules = BuildIgnoreRules(rootAbs, options.excludePatterns);
 
     if (options.maxDepth <= 0) {
-        options.maxDepth = std::numeric_limits<int>::max();
+        options.maxDepth = (std::numeric_limits<int>::max)();
     }
     if (options.metadataLevel != "minimal" && options.metadataLevel != "full") {
         options.metadataLevel = "full";
