@@ -21,6 +21,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -887,14 +888,24 @@ auto BuildPlanFillOpsPrompt(const std::filesystem::path& InRoot,
 
 auto BuildFillOpsRetryPrompt(const std::string& InBasePrompt,
                              std::size_t InExpectedCommits,
-                             std::size_t InReturnedCommits,
+                             const std::optional<std::size_t>& InReturnedCommits,
+                             const std::string& InFailureCategory,
+                             const std::string& InFailureDetail,
                              const std::string& InPreviousRaw) -> std::string {
     std::ostringstream prompt;
     prompt << InBasePrompt;
     prompt << "\n\nRetry directive (mandatory):\n";
-    prompt << "- Previous response was rejected because commit count was incomplete.\n";
+    prompt << "- Previous response was rejected by validator.\n";
+    if (!Trim(InFailureCategory).empty()) {
+        prompt << "- Failure category: " << InFailureCategory << "\n";
+    }
+    if (!Trim(InFailureDetail).empty()) {
+        prompt << "- Failure detail: " << CompactSingleLine(InFailureDetail, 220) << "\n";
+    }
     prompt << std::format("- Expected commits count: {}\\n", InExpectedCommits);
-    prompt << std::format("- Returned commits count: {}\\n", InReturnedCommits);
+    if (InReturnedCommits.has_value()) {
+        prompt << std::format("- Returned commits count: {}\\n", *InReturnedCommits);
+    }
     prompt << "- Re-output a COMPLETE commits array covering ALL indexes exactly once.\n";
     prompt << "- Output STRICT JSON only between BEGIN_KOG_PLAN_FILL_OPS / END_KOG_PLAN_FILL_OPS.\n";
     const auto rawSnippet = CompactSingleLine(InPreviousRaw, 1000);
@@ -1632,6 +1643,130 @@ auto BuildFallbackCommitEntriesJson(const std::filesystem::path& InWorkspaceRoot
     return BuildCommitSeedEntriesJson(InWorkspaceRoot, false);
 }
 
+auto BuildDeterministicCommitFillOps(const std::vector<CommitPlanEntry>& InEntries) -> std::vector<CommitFillOp> {
+    std::vector<CommitFillOp> out;
+    out.reserve(InEntries.size());
+    for (const auto& entry : InEntries) {
+        const auto repoDisplay = entry.repo.empty() ? std::string(".") : entry.repo;
+        const auto scope = BuildFallbackCommitScope(repoDisplay);
+        CommitFillOp op;
+        op.index = entry.index;
+        op.message = std::format("chore({}): apply planned updates", scope);
+        op.reviewVerdict = "pass";
+        op.reviewReason = std::format("deterministic fallback fill for repo {} (index {}) after AI fill-op failure",
+                                      repoDisplay,
+                                      entry.index);
+        out.push_back(std::move(op));
+    }
+    return out;
+}
+
+auto BuildDeterministicCommitFillOp(const CommitPlanEntry& InEntry) -> CommitFillOp {
+    const auto repoDisplay = InEntry.repo.empty() ? std::string(".") : InEntry.repo;
+    const auto scope = BuildFallbackCommitScope(repoDisplay);
+    CommitFillOp op;
+    op.index = InEntry.index;
+    op.message = std::format("chore({}): apply planned updates", scope);
+    op.reviewVerdict = "pass";
+    op.reviewReason = std::format("deterministic fallback fill for repo {} (index {})", repoDisplay, InEntry.index);
+    return op;
+}
+
+auto ResolvePlanFillMode(const std::string& InRequestedMode) -> std::string {
+    auto mode = ToLower(Trim(InRequestedMode));
+    if (mode.empty() || mode == "auto") {
+        if (const char* envMode = std::getenv("KOG_PLAN_FILL_MODE"); envMode != nullptr) {
+            mode = ToLower(Trim(std::string(envMode)));
+        }
+    }
+    if (mode.empty()) {
+        mode = "adaptive";
+    }
+    if (mode != "single" && mode != "per-commit" && mode != "adaptive") {
+        mode = "adaptive";
+    }
+    return mode;
+}
+
+auto ResolveRepoPathFromDisplay(const std::filesystem::path& InWorkspaceRoot, const std::string& InRepoDisplay) -> std::filesystem::path {
+    if (InRepoDisplay.empty() || InRepoDisplay == ".") {
+        return InWorkspaceRoot;
+    }
+    return (InWorkspaceRoot / InRepoDisplay).lexically_normal();
+}
+
+auto ParseStatusPathFromPorcelainLine(const std::string& InLine) -> std::string {
+    if (InLine.size() < 4) {
+        return {};
+    }
+    auto path = Trim(InLine.substr(3));
+    const auto renamePos = path.find(" -> ");
+    if (renamePos != std::string::npos) {
+        path = Trim(path.substr(renamePos + 4));
+    }
+    return path;
+}
+
+auto IsGitlinkPath(const std::filesystem::path& InRepoPath, const std::string& InPath) -> bool {
+    if (Trim(InPath).empty()) {
+        return false;
+    }
+    const auto staged = GitCapture(InRepoPath, {"ls-files", "--stage", "--", InPath});
+    if (staged.exitCode != 0) {
+        return false;
+    }
+    std::istringstream iss(staged.stdoutStr);
+    std::string mode;
+    iss >> mode;
+    return mode == "160000";
+}
+
+auto RepoHasGitlinkOnlyChanges(const std::filesystem::path& InRepoPath) -> bool {
+    const auto status = GitCapture(InRepoPath, {"status", "--porcelain", "--untracked-files=all"});
+    if (status.exitCode != 0 || Trim(status.stdoutStr).empty()) {
+        return false;
+    }
+    bool hasChange = false;
+    std::istringstream iss(status.stdoutStr);
+    std::string line;
+    while (std::getline(iss, line)) {
+        const auto path = ParseStatusPathFromPorcelainLine(line);
+        if (Trim(path).empty()) {
+            continue;
+        }
+        hasChange = true;
+        if (!IsGitlinkPath(InRepoPath, path)) {
+            return false;
+        }
+    }
+    return hasChange;
+}
+
+auto BuildSingleCommitFillPrompt(const std::string& InProvider,
+                                 const std::string& InModel,
+                                 const CommitPlanEntry& InEntry,
+                                 const std::string& InDirtyContext) -> std::string {
+    std::ostringstream prompt;
+    prompt << "You are filling exactly ONE commit plan entry for kano-git.\\n";
+    prompt << "Return STRICT JSON ONLY between markers:\\nBEGIN_KOG_PLAN_FILL_OPS\\n<json>\\nEND_KOG_PLAN_FILL_OPS\\n\\n";
+    prompt << "Rules:\\n";
+    prompt << "- Output exactly one commits item for index " << InEntry.index << ".\\n";
+    prompt << "- Do not output any other index.\\n";
+    prompt << "- review.verdict must be pass.\\n";
+    prompt << "- No prose, no markdown fences, no commentary.\\n";
+    prompt << "- Provider=" << InProvider << " model=" << (InModel.empty() ? "auto" : InModel) << "\\n\\n";
+    prompt << "Target commit entry:\\n";
+    prompt << "{\\n";
+    prompt << "  \"index\": " << InEntry.index << ",\\n";
+    prompt << "  \"repo\": \"" << JsonEscape(InEntry.repo.empty() ? "." : InEntry.repo) << "\",\\n";
+    prompt << "  \"message\": \"" << JsonEscape(InEntry.message) << "\",\\n";
+    prompt << "  \"review\": {\"verdict\": \"" << JsonEscape(InEntry.reviewVerdict) << "\", \"reason\": \""
+           << JsonEscape(InEntry.reviewReason) << "\"}\\n";
+    prompt << "}\\n\\n";
+    prompt << "Workspace dirty context:\\n" << InDirtyContext << "\\n";
+    return prompt.str();
+}
+
 auto ReplaceArrayBodyForKey(const std::string& InText, const std::string& InKey, const std::string& InNewBody) -> std::optional<std::string> {
     const auto valuePos = FindJsonKeyValueStart(InText, InKey);
     if (!valuePos.has_value() || *valuePos >= InText.size() || InText[*valuePos] != '[') {
@@ -2089,6 +2224,7 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
                   const std::filesystem::path& InPlanPath,
                   const std::string& InRequestedProvider,
                   const std::string& InRequestedModel,
+                  const std::string& InRequestedFillMode,
                   bool InDebugAi,
                   std::string* OutError = nullptr) -> bool {
     const auto provider = ResolveAiProvider(InRequestedProvider);
@@ -2108,6 +2244,7 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
     }
     const auto templateJson = ReadFileText(InPlanPath).value_or(std::string{});
     const auto currentEntries = CollectCommitPlanEntries(templateJson);
+    const auto fillMode = ResolvePlanFillMode(InRequestedFillMode);
     if (currentEntries.empty()) {
         if (OutError != nullptr) {
             *OutError = "Error: plan has no commit entries to fill; seed stages.commit first.";
@@ -2116,6 +2253,7 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
     }
     std::cout << "[plan] AI fill start: provider=" << provider
               << " model=" << (model.empty() ? "auto" : model)
+              << " mode=" << fillMode
               << " commits=" << currentEntries.size() << "\n";
     const auto prompt = BuildPlanFillOpsPrompt(InWorkspaceRoot, provider, model, templateJson, dirtyContext);
     std::string debugPrefix;
@@ -2125,88 +2263,259 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
         std::string debugError;
         WriteFileText(std::filesystem::path(debugPrefix + ".prompt.txt"), prompt, &debugError);
     }
-    auto aiRaw = RunAiGenerate(provider, model, prompt, InWorkspaceRoot);
-    if (aiRaw.exitCode != 0) {
-        if (OutError != nullptr) {
-            std::ostringstream oss;
-            oss << "Error: AI provider command failed for plan generation.";
-            if (!Trim(aiRaw.stderrStr).empty()) {
-                oss << " Detail: " << Trim(aiRaw.stderrStr);
+    int maxAttempts = 1;
+    if (const char* envAttempts = std::getenv("KOG_PLAN_FILL_MAX_ATTEMPTS"); envAttempts != nullptr) {
+        try {
+            const int parsedAttempts = std::stoi(Trim(std::string(envAttempts)));
+            if (parsedAttempts > 0) {
+                maxAttempts = parsedAttempts;
             }
-            if (!debugPrefix.empty()) {
-                oss << std::format(" Debug: {}.prompt.txt", debugPrefix);
-            }
-            *OutError = oss.str();
+        } catch (const std::exception&) {
         }
-        return false;
     }
-    auto aiCombined = aiRaw.stdoutStr + "\n" + aiRaw.stderrStr;
-    auto aiJson = ExtractPlanFillOpsJson(aiCombined);
-    if (InDebugAi) {
-        std::string debugError;
-        WriteFileText(std::filesystem::path(debugPrefix + ".raw.txt"), aiCombined, &debugError);
-        WriteFileText(std::filesystem::path(debugPrefix + ".extracted.json"), aiJson, &debugError);
-    }
-    if (aiJson.empty()) {
-        if (OutError != nullptr) {
-            *OutError = "Error: AI did not return fill-ops JSON payload for plan.";
-            const auto snippet = CompactSingleLine(aiCombined, 220);
-            if (!snippet.empty()) {
-                *OutError += " Raw: " + snippet;
-            }
-            if (!debugPrefix.empty()) {
-                *OutError += std::format(" Debug: {}.raw.txt", debugPrefix);
-            }
-        }
-        return false;
-    }
+    std::vector<CommitFillOp> ops;
+    bool usedDeterministicFallback = false;
+    if (fillMode == "single") {
+        std::string lastFailureCategory;
+        std::string lastFailureDetail;
+        std::string lastAiCombined;
+        std::string lastAiJson;
+        std::optional<std::size_t> lastReturnedCount;
+        bool fillReady = false;
 
-    std::string parseError;
-    auto ops = ParseCommitFillOps(aiJson, &parseError);
-    if (ops.empty()) {
-        if (OutError != nullptr) {
-            *OutError = "Error: AI fill-ops payload schema invalid.";
-            if (!Trim(parseError).empty()) {
-                *OutError += " Detail: " + parseError;
-            }
-            if (!debugPrefix.empty()) {
-                *OutError += std::format(" Debug: {}.raw.txt {}.extracted.json", debugPrefix, debugPrefix);
-            }
-        }
-        return false;
-    }
+        for (int attempt = 1; attempt <= maxAttempts; ++attempt) {
+            const bool isRetry = (attempt > 1);
+            const std::string attemptSuffix = isRetry ? std::format(".retry{}", attempt - 1) : std::string{};
+            const auto attemptPrompt = isRetry
+                ? BuildFillOpsRetryPrompt(prompt,
+                                          currentEntries.size(),
+                                          lastReturnedCount,
+                                          lastFailureCategory,
+                                          lastFailureDetail,
+                                          lastAiCombined)
+                : prompt;
 
-    if (ops.size() != currentEntries.size()) {
-        const auto retryPrompt = BuildFillOpsRetryPrompt(prompt, currentEntries.size(), ops.size(), aiCombined);
-        const auto retryRaw = RunAiGenerate(provider, model, retryPrompt, InWorkspaceRoot);
-        if (retryRaw.exitCode == 0) {
-            aiCombined = retryRaw.stdoutStr + "\n" + retryRaw.stderrStr;
-            aiJson = ExtractPlanFillOpsJson(aiCombined);
-            parseError.clear();
-            ops = ParseCommitFillOps(aiJson, &parseError);
+            if (InDebugAi && !debugPrefix.empty() && isRetry) {
+                std::string debugError;
+                WriteFileText(std::filesystem::path(debugPrefix + attemptSuffix + ".prompt.txt"), attemptPrompt, &debugError);
+            }
+
+            const auto aiRaw = RunAiGenerate(provider, model, attemptPrompt, InWorkspaceRoot);
+            if (aiRaw.exitCode != 0) {
+                lastFailureCategory = "provider-command-failed";
+                lastFailureDetail = Trim(aiRaw.stderrStr);
+                lastAiCombined = aiRaw.stdoutStr + "\n" + aiRaw.stderrStr;
+                lastAiJson.clear();
+                lastReturnedCount.reset();
+                if (InDebugAi && !debugPrefix.empty()) {
+                    std::string debugError;
+                    WriteFileText(std::filesystem::path(debugPrefix + attemptSuffix + ".raw.txt"), lastAiCombined, &debugError);
+                    WriteFileText(std::filesystem::path(debugPrefix + attemptSuffix + ".extracted.json"), lastAiJson, &debugError);
+                }
+                continue;
+            }
+
+            lastAiCombined = aiRaw.stdoutStr + "\n" + aiRaw.stderrStr;
+            lastAiJson = ExtractPlanFillOpsJson(lastAiCombined);
             if (InDebugAi && !debugPrefix.empty()) {
                 std::string debugError;
-                WriteFileText(std::filesystem::path(debugPrefix + ".retry.prompt.txt"), retryPrompt, &debugError);
-                WriteFileText(std::filesystem::path(debugPrefix + ".retry.raw.txt"), aiCombined, &debugError);
-                WriteFileText(std::filesystem::path(debugPrefix + ".retry.extracted.json"), aiJson, &debugError);
+                WriteFileText(std::filesystem::path(debugPrefix + attemptSuffix + ".raw.txt"), lastAiCombined, &debugError);
+                WriteFileText(std::filesystem::path(debugPrefix + attemptSuffix + ".extracted.json"), lastAiJson, &debugError);
             }
+
+            if (lastAiJson.empty()) {
+                lastFailureCategory = "no-fill-ops-payload";
+                lastFailureDetail = CompactSingleLine(lastAiCombined, 220);
+                lastReturnedCount.reset();
+                continue;
+            }
+
+            std::string parseError;
+            ops = ParseCommitFillOps(lastAiJson, &parseError);
+            if (ops.empty()) {
+                lastFailureCategory = "schema-invalid-fill-ops";
+                lastFailureDetail = Trim(parseError);
+                lastReturnedCount.reset();
+                continue;
+            }
+
+            if (ops.size() != currentEntries.size()) {
+                lastFailureCategory = "incomplete-fill-ops";
+                lastFailureDetail = std::format("expected {} commits, got {}", currentEntries.size(), ops.size());
+                lastReturnedCount = ops.size();
+                continue;
+            }
+
+            fillReady = true;
+            break;
         }
 
-        if (ops.size() != currentEntries.size()) {
-            if (OutError != nullptr) {
-                *OutError = std::format("Error: AI returned incomplete fill ops: expected {} commits, got {}.", currentEntries.size(), ops.size());
-                if (!Trim(parseError).empty()) {
-                    *OutError += " Detail: " + parseError;
+        if (!fillReady) {
+            ops = BuildDeterministicCommitFillOps(currentEntries);
+            if (ops.size() == currentEntries.size()) {
+                usedDeterministicFallback = true;
+                fillReady = true;
+                std::cerr << "[plan] warning: AI fill-ops generation failed; using deterministic local fallback. category="
+                          << (Trim(lastFailureCategory).empty() ? "unknown" : lastFailureCategory) << "\n";
+                if (InDebugAi && !debugPrefix.empty()) {
+                    std::ostringstream fallbackJson;
+                    fallbackJson << "{\n  \"commits\": [\n";
+                    for (std::size_t i = 0; i < ops.size(); ++i) {
+                        const auto& op = ops[i];
+                        fallbackJson << std::format("    {{\"index\":{},\"message\":\"{}\",\"review\":{{\"verdict\":\"{}\",\"reason\":\"{}\"}}}}",
+                                                    op.index,
+                                                    JsonEscape(op.message),
+                                                    JsonEscape(op.reviewVerdict),
+                                                    JsonEscape(op.reviewReason));
+                        if (i + 1 < ops.size()) {
+                            fallbackJson << ",";
+                        }
+                        fallbackJson << "\n";
+                    }
+                    fallbackJson << "  ]\n}\n";
+                    std::string debugError;
+                    WriteFileText(std::filesystem::path(debugPrefix + ".fallback.extracted.json"), fallbackJson.str(), &debugError);
+                }
+            } else if (OutError != nullptr) {
+                std::ostringstream oss;
+                oss << "Error: AI fill-ops generation failed after retries.";
+                if (!Trim(lastFailureCategory).empty()) {
+                    oss << " Category: " << lastFailureCategory << ".";
+                }
+                if (!Trim(lastFailureDetail).empty()) {
+                    oss << " Detail: " << lastFailureDetail;
                 }
                 if (!debugPrefix.empty()) {
-                    *OutError += std::format(" Debug: {}.raw.txt {}.extracted.json {}.retry.raw.txt {}.retry.extracted.json",
-                                             debugPrefix,
-                                             debugPrefix,
-                                             debugPrefix,
-                                             debugPrefix);
+                    oss << std::format(" Debug: {}.prompt.txt {}.raw.txt {}.extracted.json",
+                                       debugPrefix,
+                                       debugPrefix,
+                                       debugPrefix);
+                    for (int retryIndex = 1; retryIndex < maxAttempts; ++retryIndex) {
+                        oss << std::format(" {}.retry{}.prompt.txt {}.retry{}.raw.txt {}.retry{}.extracted.json",
+                                           debugPrefix,
+                                           retryIndex,
+                                           debugPrefix,
+                                           retryIndex,
+                                           debugPrefix,
+                                           retryIndex);
+                    }
                 }
+                *OutError = oss.str();
+                return false;
             }
-            return false;
+        }
+    } else {
+        std::unordered_map<std::string, bool> repoGitlinkOnlyCache;
+        auto isEntryGitlinkOnly = [&](const CommitPlanEntry& InEntry) -> bool {
+            const auto repoDisplay = InEntry.repo.empty() ? std::string(".") : InEntry.repo;
+            if (const auto it = repoGitlinkOnlyCache.find(repoDisplay); it != repoGitlinkOnlyCache.end()) {
+                return it->second;
+            }
+            const auto repoPath = ResolveRepoPathFromDisplay(InWorkspaceRoot, repoDisplay);
+            const bool gitlinkOnly = RepoHasGitlinkOnlyChanges(repoPath);
+            repoGitlinkOnlyCache[repoDisplay] = gitlinkOnly;
+            return gitlinkOnly;
+        };
+
+        for (const auto& entry : currentEntries) {
+            const bool deterministicByMode = (fillMode == "adaptive" && isEntryGitlinkOnly(entry));
+            if (deterministicByMode) {
+                ops.push_back(BuildDeterministicCommitFillOp(entry));
+                usedDeterministicFallback = true;
+                continue;
+            }
+
+            std::string entryFailureCategory;
+            std::string entryFailureDetail;
+            std::string entryAiCombined;
+            bool resolved = false;
+            const auto baseEntryPrompt = BuildSingleCommitFillPrompt(provider, model, entry, dirtyContext);
+            if (InDebugAi && !debugPrefix.empty()) {
+                std::string debugError;
+                WriteFileText(std::filesystem::path(std::format("{}.item{}.prompt.txt", debugPrefix, entry.index)), baseEntryPrompt, &debugError);
+            }
+
+            for (int attempt = 1; attempt <= maxAttempts; ++attempt) {
+                const bool isRetry = (attempt > 1);
+                const std::string attemptSuffix = isRetry ? std::format(".item{}.retry{}", entry.index, attempt - 1)
+                                                          : std::format(".item{}", entry.index);
+                const auto attemptPrompt = isRetry
+                    ? BuildFillOpsRetryPrompt(baseEntryPrompt, 1, std::nullopt, entryFailureCategory, entryFailureDetail, entryAiCombined)
+                    : baseEntryPrompt;
+
+                if (InDebugAi && !debugPrefix.empty() && isRetry) {
+                    std::string debugError;
+                    WriteFileText(std::filesystem::path(debugPrefix + attemptSuffix + ".prompt.txt"), attemptPrompt, &debugError);
+                }
+
+                const auto aiRaw = RunAiGenerate(provider, model, attemptPrompt, InWorkspaceRoot);
+                entryAiCombined = aiRaw.stdoutStr + "\n" + aiRaw.stderrStr;
+                auto aiJson = std::string{};
+                if (aiRaw.exitCode == 0) {
+                    aiJson = ExtractPlanFillOpsJson(entryAiCombined);
+                }
+                if (InDebugAi && !debugPrefix.empty()) {
+                    std::string debugError;
+                    WriteFileText(std::filesystem::path(debugPrefix + attemptSuffix + ".raw.txt"), entryAiCombined, &debugError);
+                    WriteFileText(std::filesystem::path(debugPrefix + attemptSuffix + ".extracted.json"), aiJson, &debugError);
+                }
+
+                if (aiRaw.exitCode != 0) {
+                    entryFailureCategory = "provider-command-failed";
+                    entryFailureDetail = Trim(aiRaw.stderrStr);
+                    continue;
+                }
+                if (aiJson.empty()) {
+                    entryFailureCategory = "no-fill-ops-payload";
+                    entryFailureDetail = CompactSingleLine(entryAiCombined, 220);
+                    continue;
+                }
+
+                std::string parseError;
+                const auto entryOps = ParseCommitFillOps(aiJson, &parseError);
+                if (entryOps.empty()) {
+                    entryFailureCategory = "schema-invalid-fill-ops";
+                    entryFailureDetail = Trim(parseError);
+                    continue;
+                }
+
+                const auto it = std::find_if(entryOps.begin(), entryOps.end(), [&](const CommitFillOp& op) {
+                    return op.index == entry.index;
+                });
+                if (it == entryOps.end()) {
+                    entryFailureCategory = "missing-target-index";
+                    entryFailureDetail = std::format("expected index {} not found in payload", entry.index);
+                    continue;
+                }
+
+                ops.push_back(*it);
+                resolved = true;
+                break;
+            }
+
+            if (!resolved) {
+                if (OutError != nullptr) {
+                    std::ostringstream oss;
+                    oss << std::format("Error: AI per-commit fill failed at index {}.", entry.index);
+                    if (!Trim(entryFailureCategory).empty()) {
+                        oss << " Category: " << entryFailureCategory << ".";
+                    }
+                    if (!Trim(entryFailureDetail).empty()) {
+                        oss << " Detail: " << entryFailureDetail;
+                    }
+                    if (!debugPrefix.empty()) {
+                        oss << std::format(" Debug: {}.item{}.prompt.txt {}.item{}.raw.txt {}.item{}.extracted.json",
+                                           debugPrefix,
+                                           entry.index,
+                                           debugPrefix,
+                                           entry.index,
+                                           debugPrefix,
+                                           entry.index);
+                    }
+                    *OutError = oss.str();
+                }
+                return false;
+            }
         }
     }
 
@@ -2266,9 +2575,18 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
         std::cerr << "Debug: " << debugPrefix << ".prompt.txt\n";
         std::cerr << "Debug: " << debugPrefix << ".raw.txt\n";
         std::cerr << "Debug: " << debugPrefix << ".extracted.json\n";
+        if (usedDeterministicFallback) {
+            std::cerr << "Debug: " << debugPrefix << ".fallback.extracted.json\n";
+        }
     }
-    std::cout << "Filled plan commit entries with AI-safe ops: provider=" << provider << " model=" << (model.empty() ? "auto" : model)
-              << " commits=" << ops.size() << "\n";
+    if (usedDeterministicFallback) {
+        std::cout << "Filled plan commit entries with deterministic fallback ops: provider=" << provider
+                  << " model=" << (model.empty() ? "auto" : model)
+                  << " commits=" << ops.size() << "\n";
+    } else {
+        std::cout << "Filled plan commit entries with AI-safe ops: provider=" << provider << " model=" << (model.empty() ? "auto" : model)
+                  << " commits=" << ops.size() << "\n";
+    }
     return true;
 }
 
@@ -2669,6 +2987,7 @@ void RegisterPlan(CLI::App& InApp) {
     auto* initAiAuto = new bool{false};
     auto* initAiProvider = new std::string{"auto"};
     auto* initAiModel = new std::string{"auto"};
+    auto* initAiFillMode = new std::string{"adaptive"};
     auto* initDebugAi = new bool{false};
     auto* initAllowIgnoreGate = new bool{false};
     auto* initDatasourceRoot = new std::string{};
@@ -2678,6 +2997,7 @@ void RegisterPlan(CLI::App& InApp) {
     init->add_flag("--ai-auto,--ai", *initAiAuto, "Generate and fill plan by AI");
     init->add_option("--ai-provider,--provider", *initAiProvider, "AI provider (copilot|codex|opencode|auto)")->default_str("auto");
     init->add_option("--ai-model,--model", *initAiModel, "AI model (default auto)")->default_str("auto");
+    init->add_option("--ai-fill-mode", *initAiFillMode, "AI fill mode (adaptive|single|per-commit)")->default_str("adaptive");
     init->add_flag("--debug-ai", *initDebugAi, "Write AI prompt/raw/extracted debug artifacts");
     init->add_flag("--allow-ignore-gate", *initAllowIgnoreGate, "Compatibility flag (currently no-op in native plan new)");
     init->add_option("--ignore-datasource-root",
@@ -2712,7 +3032,7 @@ void RegisterPlan(CLI::App& InApp) {
 
         if (*initAiAuto) {
             std::string aiError;
-            if (!FillPlanByAi(workspaceRoot, outPath, *initAiProvider, *initAiModel, *initDebugAi, &aiError)) {
+            if (!FillPlanByAi(workspaceRoot, outPath, *initAiProvider, *initAiModel, *initAiFillMode, *initDebugAi, &aiError)) {
                 std::cerr << aiError << "\n";
                 std::exit(2);
             }
@@ -3144,12 +3464,14 @@ void RegisterPlan(CLI::App& InApp) {
     auto* ensureFile = new std::string{};
     auto* ensureProvider = new std::string{"auto"};
     auto* ensureModel = new std::string{"auto"};
+    auto* ensureFillMode = new std::string{"adaptive"};
     auto* ensureDebugAi = new bool{false};
     auto* ensureAllowIgnoreGate = new bool{false};
     auto* ensureForce = new bool{false};
     ensureAiReady->add_option("--plan-file", *ensureFile, "Plan file path");
     ensureAiReady->add_option("--ai-provider,--provider", *ensureProvider, "AI provider (copilot|codex|opencode|auto)")->default_str("auto");
     ensureAiReady->add_option("--ai-model,--model", *ensureModel, "AI model (default auto)")->default_str("auto");
+    ensureAiReady->add_option("--ai-fill-mode", *ensureFillMode, "AI fill mode (adaptive|single|per-commit)")->default_str("adaptive");
     ensureAiReady->add_flag("--debug-ai", *ensureDebugAi, "Write AI prompt/raw/extracted debug artifacts");
     ensureAiReady->add_flag("--allow-ignore-gate", *ensureAllowIgnoreGate, "Compatibility flag (currently no-op in prepare)");
     ensureAiReady->add_flag("--force,-f", *ensureForce, "Force regenerate even if existing plan looks complete");
@@ -3183,7 +3505,7 @@ void RegisterPlan(CLI::App& InApp) {
                 }
             }
             std::string aiError;
-            if (!FillPlanByAi(workspaceRoot, planPath, *ensureProvider, *ensureModel, *ensureDebugAi, &aiError)) {
+            if (!FillPlanByAi(workspaceRoot, planPath, *ensureProvider, *ensureModel, *ensureFillMode, *ensureDebugAi, &aiError)) {
                 std::cerr << aiError << "\n";
                 return false;
             }
@@ -3240,6 +3562,7 @@ void RegisterPlan(CLI::App& InApp) {
     auto* preflightFile = new std::string{};
     auto* preflightProvider = new std::string{"auto"};
     auto* preflightModel = new std::string{"auto"};
+    auto* preflightFillMode = new std::string{"adaptive"};
     auto* preflightDebugAi = new bool{false};
     auto* preflightAllowIgnoreGate = new bool{false};
     auto* preflightMaxCommits = new int{10};
@@ -3247,6 +3570,7 @@ void RegisterPlan(CLI::App& InApp) {
     preflightAiCommit->add_option("--ai-provider,--provider", *preflightProvider, "AI provider (copilot|codex|opencode|auto)")
         ->default_str("auto");
     preflightAiCommit->add_option("--ai-model,--model", *preflightModel, "AI model (default auto)")->default_str("auto");
+    preflightAiCommit->add_option("--ai-fill-mode", *preflightFillMode, "AI fill mode (adaptive|single|per-commit)")->default_str("adaptive");
     preflightAiCommit->add_flag("--debug-ai", *preflightDebugAi, "Write AI prompt/raw/extracted debug artifacts");
     preflightAiCommit->add_flag("--allow-ignore-gate", *preflightAllowIgnoreGate, "Compatibility flag (currently no-op in runbook-commit)");
     preflightAiCommit->add_option("--max-commits", *preflightMaxCommits, "Max commit lines to print in summary")->default_val(10);
@@ -3254,6 +3578,7 @@ void RegisterPlan(CLI::App& InApp) {
                                       const std::filesystem::path& InPlanPath,
                                       const std::string& InProvider,
                                       const std::string& InModel,
+                                      const std::string& InFillMode,
                                       const bool InDebugAi,
                                       const int InMaxCommits) -> int {
         const auto dirtyContext = CollectDirtyRepoContextText(InWorkspaceRoot);
@@ -3287,7 +3612,7 @@ void RegisterPlan(CLI::App& InApp) {
                 }
             }
             std::string aiError;
-            if (!FillPlanByAi(InWorkspaceRoot, InPlanPath, InProvider, InModel, InDebugAi, &aiError)) {
+            if (!FillPlanByAi(InWorkspaceRoot, InPlanPath, InProvider, InModel, InFillMode, InDebugAi, &aiError)) {
                 std::cerr << aiError << "\n";
                 return false;
             }
@@ -3349,8 +3674,8 @@ void RegisterPlan(CLI::App& InApp) {
     preflightAiCommit->callback([=]() {
         const auto workspaceRoot = std::filesystem::current_path().lexically_normal();
         const auto planPath = preflightFile->empty() ? DefaultPlanPath(workspaceRoot) : std::filesystem::path(*preflightFile).lexically_normal();
-        const auto code =
-            runCommitRunbook(workspaceRoot, planPath, *preflightProvider, *preflightModel, *preflightDebugAi, *preflightMaxCommits);
+        const auto code = runCommitRunbook(
+            workspaceRoot, planPath, *preflightProvider, *preflightModel, *preflightFillMode, *preflightDebugAi, *preflightMaxCommits);
         std::exit(code);
     });
 
@@ -3512,6 +3837,7 @@ void RegisterPlan(CLI::App& InApp) {
     auto* runbookFullFile = new std::string{};
     auto* runbookFullProvider = new std::string{"auto"};
     auto* runbookFullModel = new std::string{"auto"};
+    auto* runbookFullFillMode = new std::string{"adaptive"};
     auto* runbookFullDebugAi = new bool{false};
     auto* runbookFullAllowIgnoreGate = new bool{false};
     auto* runbookFullForce = new bool{false};
@@ -3520,6 +3846,7 @@ void RegisterPlan(CLI::App& InApp) {
     runbookFull->add_option("--plan-file", *runbookFullFile, "Plan file path");
     runbookFull->add_option("--ai-provider,--provider", *runbookFullProvider, "AI provider (copilot|codex|opencode|auto)")->default_str("auto");
     runbookFull->add_option("--ai-model,--model", *runbookFullModel, "AI model (default auto)")->default_str("auto");
+    runbookFull->add_option("--ai-fill-mode", *runbookFullFillMode, "AI fill mode (adaptive|single|per-commit)")->default_str("adaptive");
     runbookFull->add_flag("--debug-ai", *runbookFullDebugAi, "Write AI prompt/raw/extracted debug artifacts");
     runbookFull->add_flag("--allow-ignore-gate", *runbookFullAllowIgnoreGate, "Compatibility flag (forwarded to commit runbook)");
     runbookFull->add_flag("--force,-f", *runbookFullForce, "Create default plan when file missing during ignore runbook");
@@ -3533,8 +3860,13 @@ void RegisterPlan(CLI::App& InApp) {
         if (ignoreCode != 0) {
             std::exit(ignoreCode);
         }
-        const auto commitCode =
-            runCommitRunbook(workspaceRoot, planPath, *runbookFullProvider, *runbookFullModel, *runbookFullDebugAi, *runbookFullMaxCommits);
+        const auto commitCode = runCommitRunbook(workspaceRoot,
+                                                 planPath,
+                                                 *runbookFullProvider,
+                                                 *runbookFullModel,
+                                                 *runbookFullFillMode,
+                                                 *runbookFullDebugAi,
+                                                 *runbookFullMaxCommits);
         if (commitCode != 0) {
             std::exit(commitCode);
         }
@@ -3548,19 +3880,22 @@ void RegisterPlan(CLI::App& InApp) {
     auto* rbCommitFile = new std::string{};
     auto* rbCommitProvider = new std::string{"auto"};
     auto* rbCommitModel = new std::string{"auto"};
+    auto* rbCommitFillMode = new std::string{"adaptive"};
     auto* rbCommitDebugAi = new bool{false};
     auto* rbCommitAllowIgnoreGate = new bool{false};
     auto* rbCommitMaxCommits = new int{10};
     runbookCommit->add_option("--plan-file", *rbCommitFile, "Plan file path");
     runbookCommit->add_option("--ai-provider,--provider", *rbCommitProvider, "AI provider (copilot|codex|opencode|auto)")->default_str("auto");
     runbookCommit->add_option("--ai-model,--model", *rbCommitModel, "AI model (default auto)")->default_str("auto");
+    runbookCommit->add_option("--ai-fill-mode", *rbCommitFillMode, "AI fill mode (adaptive|single|per-commit)")->default_str("adaptive");
     runbookCommit->add_flag("--debug-ai", *rbCommitDebugAi, "Write AI prompt/raw/extracted debug artifacts");
     runbookCommit->add_flag("--allow-ignore-gate", *rbCommitAllowIgnoreGate, "Forward allow-ignore-gate to commit runbook");
     runbookCommit->add_option("--max-commits", *rbCommitMaxCommits, "Max commit lines to print in summary")->default_val(10);
     runbookCommit->callback([=]() {
         const auto workspaceRoot = std::filesystem::current_path().lexically_normal();
         const auto planPath = rbCommitFile->empty() ? DefaultPlanPath(workspaceRoot) : std::filesystem::path(*rbCommitFile).lexically_normal();
-        const auto code = runCommitRunbook(workspaceRoot, planPath, *rbCommitProvider, *rbCommitModel, *rbCommitDebugAi, *rbCommitMaxCommits);
+        const auto code =
+            runCommitRunbook(workspaceRoot, planPath, *rbCommitProvider, *rbCommitModel, *rbCommitFillMode, *rbCommitDebugAi, *rbCommitMaxCommits);
         std::exit(code);
     });
 
@@ -3587,6 +3922,7 @@ void RegisterPlan(CLI::App& InApp) {
     auto* rbFullFile = new std::string{};
     auto* rbFullProvider = new std::string{"auto"};
     auto* rbFullModel = new std::string{"auto"};
+    auto* rbFullFillMode = new std::string{"adaptive"};
     auto* rbFullDebugAi = new bool{false};
     auto* rbFullAllowIgnoreGate = new bool{false};
     auto* rbFullForce = new bool{false};
@@ -3595,6 +3931,7 @@ void RegisterPlan(CLI::App& InApp) {
     runbookFullPublic->add_option("--plan-file", *rbFullFile, "Plan file path");
     runbookFullPublic->add_option("--ai-provider,--provider", *rbFullProvider, "AI provider (copilot|codex|opencode|auto)")->default_str("auto");
     runbookFullPublic->add_option("--ai-model,--model", *rbFullModel, "AI model (default auto)")->default_str("auto");
+    runbookFullPublic->add_option("--ai-fill-mode", *rbFullFillMode, "AI fill mode (adaptive|single|per-commit)")->default_str("adaptive");
     runbookFullPublic->add_flag("--debug-ai", *rbFullDebugAi, "Write AI prompt/raw/extracted debug artifacts");
     runbookFullPublic->add_flag("--allow-ignore-gate", *rbFullAllowIgnoreGate, "Forward allow-ignore-gate to commit runbook");
     runbookFullPublic->add_flag("--force,-f", *rbFullForce, "Create default plan when file missing during ignore runbook");
@@ -3608,7 +3945,7 @@ void RegisterPlan(CLI::App& InApp) {
             std::exit(ignoreCode);
         }
         const auto commitCode =
-            runCommitRunbook(workspaceRoot, planPath, *rbFullProvider, *rbFullModel, *rbFullDebugAi, *rbFullMaxCommits);
+            runCommitRunbook(workspaceRoot, planPath, *rbFullProvider, *rbFullModel, *rbFullFillMode, *rbFullDebugAi, *rbFullMaxCommits);
         if (commitCode != 0) {
             std::exit(commitCode);
         }
