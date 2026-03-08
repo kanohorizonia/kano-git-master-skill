@@ -605,10 +605,36 @@ auto FinalizeNestedSelfResult(const char* InLabel,
     return InResult.exitCode;
 }
 
+auto ExtractPlanAiFillMillis(const shell::ExecResult& InResult) -> std::optional<long long> {
+    std::istringstream iss(InResult.stdoutStr + "\n" + InResult.stderrStr);
+    std::string line;
+    while (std::getline(iss, line)) {
+        const auto trimmed = Trim(line);
+        constexpr std::string_view kPrefix = "[plan] ai_fill_ms:";
+        if (!trimmed.starts_with(kPrefix)) {
+            continue;
+        }
+        const auto value = Trim(trimmed.substr(kPrefix.size()));
+        if (value.empty()) {
+            continue;
+        }
+        try {
+            return std::stoll(value);
+        } catch (const std::exception&) {
+        }
+    }
+    return std::nullopt;
+}
+
+struct CommitRunbookResult {
+    int exitCode = 0;
+    std::optional<long long> aiFillMillis;
+};
+
 auto RunCommitPlanRunbookViaSelf(const std::filesystem::path& InWorkspaceRoot,
                                  const std::filesystem::path& InPlanPath,
                                  const std::string& InProvider,
-                                 const std::string& InModel) -> int {
+                                 const std::string& InModel) -> CommitRunbookResult {
     std::vector<std::string> args = {
         "plan", "runbook", "commit",
         "--plan-file", InPlanPath.generic_string(),
@@ -616,11 +642,14 @@ auto RunCommitPlanRunbookViaSelf(const std::filesystem::path& InWorkspaceRoot,
         "--ai-model", InModel.empty() ? "auto" : InModel,
     };
     const auto result = shell::ExecuteCommand(ResolveSelfBinaryCommand(), args, shell::ExecMode::Capture, InWorkspaceRoot);
+    CommitRunbookResult out;
+    out.aiFillMillis = ExtractPlanAiFillMillis(result);
     const auto exitCode = FinalizeNestedSelfResult("AI commit runbook", result);
+    out.exitCode = exitCode;
     if (exitCode != 0) {
         std::cerr << "Error: AI commit runbook failed via native binary (exit=" << exitCode << ").\n";
     }
-    return exitCode;
+    return out;
 }
 
 auto RunPlanNewViaSelf(const std::filesystem::path& InWorkspaceRoot,
@@ -2001,6 +2030,7 @@ void RegisterCommitPush(CLI::App& InApp) {
                 long long ignoreRunbookMillis = 0;
                 long long ignoreApplyMillis = 0;
                 long long commitRunbookMillis = 0;
+                std::optional<long long> aiFillMillis;
                 long long planPipelineMillis = 0;
                 const auto autoPlanPath = DefaultSharedPlanPath(workspaceRoot);
                 std::cout << "[commit-push] full-auto plan file: " << autoPlanPath.generic_string() << "\n";
@@ -2037,11 +2067,12 @@ void RegisterCommitPush(CLI::App& InApp) {
                 }
                 std::cout << "[commit-push][auto-plan] stage=commit-runbook start\n";
                 const auto commitRunbookStart = std::chrono::steady_clock::now();
-                const auto runbookCode = RunCommitPlanRunbookViaSelf(workspaceRoot, autoPlanPath, *aiProvider, *aiModel);
+                const auto runbookResult = RunCommitPlanRunbookViaSelf(workspaceRoot, autoPlanPath, *aiProvider, *aiModel);
                 const auto commitRunbookEnd = std::chrono::steady_clock::now();
                 commitRunbookMillis = std::chrono::duration_cast<std::chrono::milliseconds>(commitRunbookEnd - commitRunbookStart).count();
-                if (runbookCode != 0) {
-                    std::exit(runbookCode);
+                aiFillMillis = runbookResult.aiFillMillis;
+                if (runbookResult.exitCode != 0) {
+                    std::exit(runbookResult.exitCode);
                 }
                 std::cout << "[commit-push][auto-plan] stage=commit-runbook done ms=" << commitRunbookMillis << "\n";
                 std::string deterministicReason;
@@ -2063,6 +2094,11 @@ void RegisterCommitPush(CLI::App& InApp) {
                 std::cout << "ignore_runbook_ms: " << ignoreRunbookMillis << "\n";
                 std::cout << "ignore_apply_ms: " << ignoreApplyMillis << "\n";
                 std::cout << "commit_runbook_ms: " << commitRunbookMillis << "\n";
+                if (aiFillMillis.has_value()) {
+                    std::cout << "ai_fill_ms: " << *aiFillMillis << "\n";
+                } else {
+                    std::cout << "ai_fill_ms: n/a\n";
+                }
                 std::cout << "plan_pipeline_ms: " << planPipelineMillis << "\n";
                 std::cout << "total_ms: " << autoTotalMillis << "\n";
                 std::exit(pipelineCode);
