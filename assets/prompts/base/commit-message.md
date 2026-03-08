@@ -6,6 +6,12 @@ Rules:
 - Allowed types: feat, fix, refactor, chore, docs, test, ci, build, perf, style.
 - Keep summary under 72 characters when possible.
 
-You will receive repository name, stats, and changed files.
-Use that context to produce a precise message.
+Repository context:
+- Repo: {{REPO_LABEL}}
+- Staged: {{STAGED_COUNT}}
+- Unstaged: {{UNSTAGED_COUNT}}
+- Untracked: {{UNTRACKED_COUNT}}
+
+Staged diff:
+{{STAGED_DIFF}}
 

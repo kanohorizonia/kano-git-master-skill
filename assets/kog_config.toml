@@ -1,0 +1,120 @@
+# kano-git layered config defaults
+#
+# Load order matches git-style override precedence:
+#   1. system: this file (assets/kog_config.toml)
+#   2. global: ~/.kano/kog_config.toml
+#   3. local:  .kano/kog_config.toml
+# Later files override earlier ones.
+
+# Effective default AI model selection.
+#
+# This is consulted when a command does not receive an explicit `--ai-model`
+# and there is no remembered provider model override.
+#
+# Available values:
+# - "auto"
+#   Use the provider's auto-selection behavior. For Copilot, this means the
+#   `[ai.model.auto]` ladder below.
+# - "provider-default"
+#   Use the provider's built-in recommended fixed default model.
+# - "provider/model"
+#   Provider-qualified exact model reference, for example:
+#   `copilot/gpt-5.4`
+# - "model"
+#   Bare model name for the active provider, for example:
+#   `gpt-5.4`
+#
+# Notes:
+# - Legacy alias `default` is still accepted and normalized to
+#   `provider-default`.
+# - If a `provider/model` entry names a different provider than the active one,
+#   it is ignored for that provider.
+[ai.model]
+selection = "auto"
+
+# Auto model selection policy for AI providers.
+#
+# This section is only used when the effective AI model setting is `auto`.
+#
+# In other words, this ladder applies when:
+# - `[ai.model].selection = "auto"`
+# - or you explicitly set/remember `--ai-model auto`
+#
+# This ladder is NOT used when you explicitly set/remember:
+# - a concrete model such as `copilot/gpt-5.4` or `gpt-5.4`
+# - `provider-default`
+#
+# Meaning of the special keywords:
+# - `auto`    = choose from this `[ai.model.auto]` policy by change volume
+# - `provider-default` = use the provider's built-in recommended fixed default model
+# - legacy alias `default` is still accepted, but `provider-default` is clearer
+#
+# Current native command defaults resolve by this order:
+# - explicit `--ai-model`
+# - remembered provider model
+# - `[ai.model].selection`
+# - fallback `auto`
+#
+# So with the shipped defaults, this section is active by default unless you
+# override or remember something else.
+#
+# `change_thresholds` supports multiple intervals.
+# Example: `change_thresholds = [5, 10, 20]`
+# - If changed file/status entries <= 5, use models[0]
+# - If changed file/status entries <= 10, use models[1]
+# - If changed file/status entries <= 20, use models[2]
+# - Otherwise use models[3]
+#
+# Rule: `models` should contain exactly one more entry than `change_thresholds`.
+# If fewer models are provided, the last model is reused for remaining ranges.
+# If more models are provided, extra entries are ignored.
+#
+# The shipped default below is intentionally simple:
+# - 2 thresholds
+# - 3 models
+# This gives 3 ranges total.
+#
+# You only need to add more thresholds/models if you want finer-grained routing.
+#
+# `models` uses slash format: "provider/model"
+# Example providers: copilot, codex, opencode
+# Current native auto-selection is primarily used for Copilot.
+[ai.model.auto]
+# Threshold boundaries between ranges.
+#
+# Default example:
+# - `<= 5`  -> models[0]
+# - `<= 10` -> models[1]
+# - `> 10`  -> models[2]
+#
+# Add more numbers only if you also want more model ranges.
+change_thresholds = [5, 10]
+
+# Ordered model ladder.
+#
+# For `change_thresholds = [5, 10]`, this means:
+# - models[0] = small change set model
+# - models[1] = medium change set model
+# - models[2] = large change set model
+#
+# For more thresholds, add one extra model per extra boundary.
+models = ["copilot/gpt-5-mini", "copilot/claude-haiku-4.5", "copilot/gpt-5.4"]
+
+# Plan AI behavior defaults.
+[plan.ai]
+# How `kog plan` generates/fills commit entries.
+#
+# Available values:
+# - "single"
+#   One AI pass generates all commit entries for the whole workspace.
+#   Best when you want maximum shared context across all commits.
+#
+# - "per-commit"
+#   One AI pass per commit entry.
+#   Best when you want tighter, more isolated generation per item.
+#
+# - "adaptive"
+#   Uses per-commit generation, with deterministic fallback for special cases
+#   such as gitlink/submodule-pointer-only changes.
+#   This is the recommended default.
+commit_generation_mode = "adaptive"

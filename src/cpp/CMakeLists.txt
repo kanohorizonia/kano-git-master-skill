@@ -117,6 +117,39 @@ else()
     message(FATAL_ERROR "FTXUI submodule missing: ${KOG_FTXUI_SUBMODULE_SOURCE_DIR}. Run: git submodule update --init --recursive")
 endif()
 
+# Resolve toml++ source strategy
+#   submodule: use code/thirdparty/tomlplusplus from git submodule
+#   fetch (default): FetchContent from upstream release tag
+#   system: use find_package(tomlplusplus)
+set(KOG_TOMLPP_SOURCE_MODE "fetch" CACHE STRING "toml++ source mode: submodule|fetch|system")
+set_property(CACHE KOG_TOMLPP_SOURCE_MODE PROPERTY STRINGS submodule fetch system)
+
+set(KOG_TOMLPP_SUBMODULE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/code/thirdparty/tomlplusplus")
+set(KOG_TOMLPP_BINARY_DIR "${CMAKE_BINARY_DIR}/thirdparty/tomlplusplus-build")
+
+if(KOG_TOMLPP_SOURCE_MODE STREQUAL "submodule")
+    if(EXISTS "${KOG_TOMLPP_SUBMODULE_SOURCE_DIR}/CMakeLists.txt")
+        add_subdirectory("${KOG_TOMLPP_SUBMODULE_SOURCE_DIR}" "${KOG_TOMLPP_BINARY_DIR}" EXCLUDE_FROM_ALL)
+    else()
+        message(FATAL_ERROR "toml++ submodule missing: ${KOG_TOMLPP_SUBMODULE_SOURCE_DIR}. Run: git submodule update --init --recursive")
+    endif()
+elseif(KOG_TOMLPP_SOURCE_MODE STREQUAL "fetch")
+    include(FetchContent)
+    FetchContent_Declare(
+        tomlplusplus
+        GIT_REPOSITORY https://github.com/marzer/tomlplusplus.git
+        GIT_TAG v3.4.0
+    )
+    set(TOMLPLUSPLUS_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(TOMLPLUSPLUS_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(TOMLPLUSPLUS_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(tomlplusplus)
+elseif(KOG_TOMLPP_SOURCE_MODE STREQUAL "system")
+    find_package(tomlplusplus CONFIG REQUIRED)
+else()
+    message(FATAL_ERROR "Unsupported KOG_TOMLPP_SOURCE_MODE: ${KOG_TOMLPP_SOURCE_MODE} (expected submodule|fetch|system)")
+endif()
+
 
 # Platform detection
 if(WIN32)

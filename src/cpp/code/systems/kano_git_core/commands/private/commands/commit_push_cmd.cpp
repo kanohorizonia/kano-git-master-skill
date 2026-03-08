@@ -639,8 +639,11 @@ auto RunCommitPlanRunbookViaSelf(const std::filesystem::path& InWorkspaceRoot,
         "plan", "runbook", "commit",
         "--plan-file", InPlanPath.generic_string(),
         "--ai-provider", InProvider.empty() ? "auto" : InProvider,
-        "--ai-model", InModel.empty() ? "auto" : InModel,
     };
+    if (!InModel.empty()) {
+        args.push_back("--ai-model");
+        args.push_back(InModel);
+    }
     const auto result = shell::ExecuteCommand(ResolveSelfBinaryCommand(), args, shell::ExecMode::Capture, InWorkspaceRoot);
     CommitRunbookResult out;
     out.aiFillMillis = ExtractPlanAiFillMillis(result);

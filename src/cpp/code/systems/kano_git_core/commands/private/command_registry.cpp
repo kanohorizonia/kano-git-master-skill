@@ -14,6 +14,7 @@ void RegisterAll(CLI::App& InApp) {
     RegisterCommitPush(InApp);
     RegisterComplete(InApp);
     RegisterCompletion(InApp);
+    RegisterConfig(InApp);
     RegisterDirty(InApp);
     RegisterDiscover(InApp);
     RegisterDoctor(InApp);

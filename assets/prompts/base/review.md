@@ -14,3 +14,9 @@ Focus on:
 - risky unintended changes
 - destructive git automation without safeguards
 
+Message:
+{{MESSAGE}}
+
+Staged diff:
+{{STAGED_DIFF}}
+

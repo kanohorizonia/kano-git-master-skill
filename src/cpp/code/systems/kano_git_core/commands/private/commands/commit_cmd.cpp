@@ -3,6 +3,8 @@
 #include "command_registry.hpp"
 #include "discovery.hpp"
 #include "shell_executor.hpp"
+#include "auto_model_policy.hpp"
+#include "kog_config.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -52,6 +54,8 @@ struct NativeAiConfig {
 
 auto DisplayRepoLabel(const std::filesystem::path& InWorkspaceRoot, const std::filesystem::path& InRepo) -> std::string;
 auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<std::filesystem::path>;
+auto ReadFileText(const std::filesystem::path& InPath) -> std::optional<std::string>;
+auto ResolveSkillRoot(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path;
 
 auto Trim(std::string InValue) -> std::string {
     while (!InValue.empty() && (InValue.back() == '\n' || InValue.back() == '\r' || InValue.back() == ' ' || InValue.back() == '\t')) {
@@ -109,6 +113,44 @@ auto ToLower(std::string InValue) -> std::string {
     return InValue;
 }
 
+auto NormalizeAiModelKeyword(const std::string& InValue) -> std::string {
+    return kog_config::NormalizeAiModelSelection(InValue);
+}
+
+auto ReplaceAll(std::string InText, const std::string& InFrom, const std::string& InTo) -> std::string {
+    if (InFrom.empty()) {
+        return InText;
+    }
+    std::size_t pos = 0;
+    while ((pos = InText.find(InFrom, pos)) != std::string::npos) {
+        InText.replace(pos, InFrom.size(), InTo);
+        pos += InTo.size();
+    }
+    return InText;
+}
+
+auto LoadPromptAssetText(const std::filesystem::path& InWorkspaceRoot,
+                         const char* InEnvVar,
+                         const std::filesystem::path& InRelativeAssetPath) -> std::optional<std::string> {
+    std::vector<std::filesystem::path> candidates;
+    if (InEnvVar != nullptr) {
+        if (const char* custom = std::getenv(InEnvVar); custom != nullptr && std::string(custom).size() > 0) {
+            candidates.emplace_back(std::filesystem::path(custom).lexically_normal());
+        }
+    }
+    candidates.emplace_back((InWorkspaceRoot / InRelativeAssetPath).lexically_normal());
+    candidates.emplace_back((ResolveSkillRoot(InWorkspaceRoot) / InRelativeAssetPath.filename()).lexically_normal());
+    candidates.emplace_back((ResolveSkillRoot(InWorkspaceRoot) / InRelativeAssetPath).lexically_normal());
+    for (const auto& candidate : candidates) {
+        if (std::error_code ec; std::filesystem::exists(candidate, ec) && !ec) {
+            if (const auto text = ReadFileText(candidate); text.has_value()) {
+                return *text;
+            }
+        }
+    }
+    return std::nullopt;
+}
+
 auto LooksRiskyPath(const std::string& InPath) -> bool {
     const std::string lower = [&]() {
         std::string out = InPath;
@@ -151,6 +193,140 @@ auto IsTruthyEnv(const char* InValue) -> bool {
     }
     const auto v = ToLower(Trim(std::string(InValue)));
     return v == "1" || v == "true" || v == "yes" || v == "on";
+}
+
+auto SplitEnvList(const char* InValue) -> std::vector<std::string> {
+    std::vector<std::string> out;
+    if (InValue == nullptr) {
+        return out;
+    }
+    std::string raw = InValue;
+    std::string token;
+    std::istringstream iss(raw);
+    while (std::getline(iss, token, ';')) {
+        token = Trim(std::move(token));
+        if (!token.empty()) {
+            out.push_back(std::move(token));
+        }
+    }
+    return out;
+}
+
+void AppendRepeatableFlag(std::vector<std::string>* OutArgs,
+                         const char* InEnvVar,
+                         const std::string& InFlag) {
+    if (OutArgs == nullptr) {
+        return;
+    }
+    for (const auto& value : SplitEnvList(std::getenv(InEnvVar))) {
+        OutArgs->push_back(InFlag);
+        OutArgs->push_back(value);
+    }
+}
+
+void AppendRepeatableFlagWithDefaults(std::vector<std::string>* OutArgs,
+                                      const char* InEnvVar,
+                                      const std::string& InFlag,
+                                      const std::vector<std::string>& InDefaultValues) {
+    if (OutArgs == nullptr) {
+        return;
+    }
+    const char* value = std::getenv(InEnvVar);
+    const auto values = value == nullptr ? InDefaultValues : SplitEnvList(value);
+    for (const auto& item : values) {
+        if (Trim(item).empty()) {
+            continue;
+        }
+        OutArgs->push_back(InFlag);
+        OutArgs->push_back(item);
+    }
+}
+
+void AppendSingleValueFlag(std::vector<std::string>* OutArgs,
+                           const char* InEnvVar,
+                           const std::string& InFlag) {
+    if (OutArgs == nullptr) {
+        return;
+    }
+    if (const char* value = std::getenv(InEnvVar); value != nullptr) {
+        const auto trimmed = Trim(std::string(value));
+        if (!trimmed.empty()) {
+            OutArgs->push_back(InFlag);
+            OutArgs->push_back(trimmed);
+        }
+    }
+}
+
+void AppendBoolFlag(std::vector<std::string>* OutArgs,
+                    const char* InEnvVar,
+                    const std::string& InFlag) {
+    if (OutArgs == nullptr) {
+        return;
+    }
+    if (IsTruthyEnv(std::getenv(InEnvVar))) {
+        OutArgs->push_back(InFlag);
+    }
+}
+
+void AppendBoolFlagDefaultTrue(std::vector<std::string>* OutArgs,
+                               const char* InEnvVar,
+                               const std::string& InFlag) {
+    if (OutArgs == nullptr) {
+        return;
+    }
+    const char* value = std::getenv(InEnvVar);
+    if (value == nullptr) {
+        OutArgs->push_back(InFlag);
+        return;
+    }
+    if (IsTruthyEnv(value)) {
+        OutArgs->push_back(InFlag);
+    }
+}
+
+void AppendSingleValueFlagWithDefault(std::vector<std::string>* OutArgs,
+                                      const char* InEnvVar,
+                                      const std::string& InFlag,
+                                      const std::string& InDefaultValue) {
+    if (OutArgs == nullptr) {
+        return;
+    }
+    if (const char* value = std::getenv(InEnvVar); value != nullptr) {
+        const auto trimmed = Trim(std::string(value));
+        if (!trimmed.empty()) {
+            OutArgs->push_back(InFlag);
+            OutArgs->push_back(trimmed);
+        }
+        return;
+    }
+    if (!InDefaultValue.empty()) {
+        OutArgs->push_back(InFlag);
+        OutArgs->push_back(InDefaultValue);
+    }
+}
+
+void AppendFlagOrSingleValueFlag(std::vector<std::string>* OutArgs,
+                                 const char* InEnvVar,
+                                 const std::string& InFlag) {
+    if (OutArgs == nullptr) {
+        return;
+    }
+    const char* value = std::getenv(InEnvVar);
+    if (value == nullptr) {
+        return;
+    }
+    const auto trimmed = Trim(std::string(value));
+    if (trimmed.empty()) {
+        return;
+    }
+    const auto lowered = ToLower(trimmed);
+    if (lowered == "0" || lowered == "false" || lowered == "no" || lowered == "off") {
+        return;
+    }
+    OutArgs->push_back(InFlag);
+    if (!(lowered == "1" || lowered == "true" || lowered == "yes" || lowered == "on")) {
+        OutArgs->push_back(trimmed);
+    }
 }
 
 auto ResolveSkillRoot(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path {
@@ -515,9 +691,13 @@ auto ReadRememberedModel(const std::string& InProvider) -> std::string {
 
 void RememberModelChoice(const std::string& InProvider, const std::string& InModel) {
     const auto provider = ToLower(Trim(InProvider));
-    const auto model = Trim(InModel);
-    if (provider.empty() || model.empty() || model == "auto") {
+    auto model = Trim(InModel);
+    if (provider.empty() || model.empty()) {
         return;
+    }
+    const auto normalizedKeyword = NormalizeAiModelKeyword(model);
+    if (normalizedKeyword == "auto" || normalizedKeyword == "provider-default") {
+        model = normalizedKeyword;
     }
 
     const auto cacheDir = AiCacheDir();
@@ -538,30 +718,84 @@ void RememberModelChoice(const std::string& InProvider, const std::string& InMod
 
 auto ResolveModelForAi(const std::string& InProvider,
                        const std::string& InModelRaw,
-                       bool InAiAuto) -> std::string {
+                       bool InAiAuto,
+                       const std::filesystem::path& InWorkspaceRoot) -> std::string {
     auto model = Trim(InModelRaw);
+    const auto modelLower = NormalizeAiModelKeyword(model);
     const auto provider = ToLower(Trim(InProvider));
 
-    if (!model.empty() && model != "auto") {
+    auto resolvePolicy = [&]() -> auto_model_policy::AutoModelPolicy {
+        return auto_model_policy::ResolveAutoModelPolicy(provider, InWorkspaceRoot, ResolveSkillRoot(InWorkspaceRoot));
+    };
+    auto countDirtyEntries = [&]() -> int {
+        int total = 0;
+        for (const auto& repo : DiscoverWorkspaceRepos(InWorkspaceRoot)) {
+            const auto status = GitCapture(repo, {"status", "--porcelain", "--untracked-files=all"});
+            if (status.exitCode != 0 || Trim(status.stdoutStr).empty()) {
+                continue;
+            }
+            std::istringstream iss(status.stdoutStr);
+            std::string line;
+            while (std::getline(iss, line)) {
+                if (!Trim(line).empty()) {
+                    total += 1;
+                }
+            }
+        }
+        return total;
+    };
+    auto resolveDefaultModel = [&]() -> std::string {
+        if (provider == "codex") {
+            return "gpt-5.2-codex";
+        }
+        return "gpt-5-mini";
+    };
+    auto resolveAutoModel = [&]() -> std::string {
+        if (provider != "copilot") {
+            return resolveDefaultModel();
+        }
+        const auto policy = resolvePolicy();
+        const int changedEntries = countDirtyEntries();
+        return auto_model_policy::ResolveModelForChangeCount(policy, changedEntries);
+    };
+
+    if (!model.empty() && modelLower != "auto") {
         RememberModelChoice(provider, model);
+        if (modelLower == "provider-default") {
+            return resolveDefaultModel();
+        }
         return model;
     }
 
-    const auto remembered = ReadRememberedModel(provider);
+    auto remembered = ReadRememberedModel(provider);
     if (!remembered.empty()) {
+        const auto rememberedLower = NormalizeAiModelKeyword(remembered);
+        if (rememberedLower == "provider-default") {
+            return resolveDefaultModel();
+        }
+        if (rememberedLower == "auto") {
+            return resolveAutoModel();
+        }
         return remembered;
     }
 
-    if (InAiAuto || model == "auto") {
-        if (provider == "copilot") {
-            return "gpt-5-mini";
-        }
-        if (provider == "codex") {
-            return "gpt-5-mini";
-        }
-        if (provider == "opencode") {
-            return "gpt-5-mini";
-        }
+    if (InAiAuto || modelLower == "auto") {
+        return resolveAutoModel();
+    }
+
+    const auto configuredSelection = kog_config::ResolveDefaultAiModelSelection(provider,
+                                                                                InWorkspaceRoot,
+                                                                                ResolveSkillRoot(InWorkspaceRoot),
+                                                                                "auto");
+    const auto configuredLower = NormalizeAiModelKeyword(configuredSelection);
+    if (configuredLower == "provider-default") {
+        return resolveDefaultModel();
+    }
+    if (configuredLower == "auto") {
+        return resolveAutoModel();
+    }
+    if (!Trim(configuredSelection).empty()) {
+        return configuredSelection;
     }
 
     return {};
@@ -576,6 +810,19 @@ auto BuildAiCommitPrompt(const std::filesystem::path& InWorkspaceRoot,
     constexpr std::size_t kMaxDiffChars = 12000;
     if (diffText.size() > kMaxDiffChars) {
         diffText = diffText.substr(0, kMaxDiffChars) + "\n... (truncated)";
+    }
+
+    if (const auto text = LoadPromptAssetText(InWorkspaceRoot,
+                                              "KOG_COMMIT_MESSAGE_PROMPT_TEMPLATE",
+                                              std::filesystem::path("assets") / "prompts" / "base" / "commit-message.md");
+        text.has_value()) {
+        auto prompt = *text;
+        prompt = ReplaceAll(std::move(prompt), "{{REPO_LABEL}}", label);
+        prompt = ReplaceAll(std::move(prompt), "{{STAGED_COUNT}}", std::to_string(InReport.stagedCount));
+        prompt = ReplaceAll(std::move(prompt), "{{UNSTAGED_COUNT}}", std::to_string(InReport.unstagedCount));
+        prompt = ReplaceAll(std::move(prompt), "{{UNTRACKED_COUNT}}", std::to_string(InReport.untrackedCount));
+        prompt = ReplaceAll(std::move(prompt), "{{STAGED_DIFF}}", diffText);
+        return prompt;
     }
 
     std::ostringstream oss;
@@ -655,13 +902,48 @@ auto RunAiGenerate(const std::string& InProvider,
                    const std::string& InPrompt,
                    std::optional<std::filesystem::path> InWorkingDir = std::nullopt) -> shell::ExecResult {
     if (InProvider == "opencode") {
-        if (!InModel.empty() && InModel != "auto") {
-            return shell::ExecuteCommand("opencode", {"run", "--model", InModel, InPrompt}, shell::ExecMode::Capture, InWorkingDir);
+        std::vector<std::string> args{"run"};
+        AppendBoolFlag(&args, "KOG_OPENCODE_CONTINUE", "--continue");
+        AppendSingleValueFlag(&args, "KOG_OPENCODE_SESSION", "--session");
+        AppendBoolFlag(&args, "KOG_OPENCODE_FORK", "--fork");
+        AppendSingleValueFlag(&args, "KOG_OPENCODE_AGENT", "--agent");
+        AppendSingleValueFlag(&args, "KOG_OPENCODE_ATTACH", "--attach");
+        AppendSingleValueFlag(&args, "KOG_OPENCODE_VARIANT", "--variant");
+        AppendSingleValueFlag(&args, "KOG_OPENCODE_FORMAT", "--format");
+        AppendBoolFlag(&args, "KOG_OPENCODE_THINKING", "--thinking");
+        if (InWorkingDir.has_value()) {
+            args.push_back("--dir");
+            args.push_back(InWorkingDir->lexically_normal().generic_string());
         }
-        return shell::ExecuteCommand("opencode", {"run", InPrompt}, shell::ExecMode::Capture, InWorkingDir);
+        if (!InModel.empty() && InModel != "auto") {
+            args.push_back("--model");
+            args.push_back(InModel);
+        }
+        args.push_back(InPrompt);
+        return shell::ExecuteCommand("opencode", args, shell::ExecMode::Capture, InWorkingDir);
     }
 
     if (InProvider == "codex") {
+        if (IsTruthyEnv(std::getenv("KOG_CODEX_USE_EXEC"))) {
+            std::vector<std::string> args{"exec"};
+            AppendBoolFlag(&args, "KOG_CODEX_FULL_AUTO", "--full-auto");
+            AppendBoolFlag(&args, "KOG_CODEX_EPHEMERAL", "--ephemeral");
+            AppendBoolFlag(&args, "KOG_CODEX_JSON", "--json");
+            AppendSingleValueFlag(&args, "KOG_CODEX_SANDBOX", "--sandbox");
+            AppendSingleValueFlag(&args, "KOG_CODEX_APPROVAL", "--ask-for-approval");
+            AppendSingleValueFlag(&args, "KOG_CODEX_PROFILE", "--profile");
+            AppendRepeatableFlag(&args, "KOG_CODEX_ADD_DIRS", "--add-dir");
+            if (InWorkingDir.has_value()) {
+                args.push_back("--cd");
+                args.push_back(InWorkingDir->lexically_normal().generic_string());
+            }
+            if (!InModel.empty() && InModel != "auto") {
+                args.push_back("--model");
+                args.push_back(InModel);
+            }
+            args.push_back(InPrompt);
+            return shell::ExecuteCommand("codex", args, shell::ExecMode::Capture, InWorkingDir);
+        }
         if (!InModel.empty() && InModel != "auto") {
             return shell::ExecuteCommand("codex", {"-q", "--model", InModel, InPrompt}, shell::ExecMode::Capture, InWorkingDir);
         }
@@ -670,17 +952,67 @@ auto RunAiGenerate(const std::string& InProvider,
 
     if (InProvider == "copilot") {
         if (HasCommand("copilot", {"--help"})) {
+            std::vector<std::string> args{"-s", "-p", InPrompt};
             if (!InModel.empty() && InModel != "auto") {
-                return shell::ExecuteCommand("copilot", {"-s", "-p", InPrompt, "--model", InModel, "--no-color", "--stream", "off", "--no-ask-user"}, shell::ExecMode::Capture, InWorkingDir);
+                args.push_back("--model");
+                args.push_back(InModel);
             }
-            return shell::ExecuteCommand("copilot", {"-s", "-p", InPrompt, "--no-color", "--stream", "off", "--no-ask-user"}, shell::ExecMode::Capture, InWorkingDir);
+            AppendBoolFlagDefaultTrue(&args, "KOG_COPILOT_AUTOPILOT", "--autopilot");
+            AppendSingleValueFlagWithDefault(&args,
+                                             "KOG_COPILOT_MAX_AUTOPILOT_CONTINUES",
+                                             "--max-autopilot-continues",
+                                             "12");
+            AppendFlagOrSingleValueFlag(&args, "KOG_COPILOT_RESUME", "--resume");
+            if (std::getenv("KOG_COPILOT_RESUME") == nullptr) {
+                AppendBoolFlag(&args, "KOG_COPILOT_CONTINUE", "--continue");
+            }
+            AppendSingleValueFlag(&args, "KOG_COPILOT_AGENT", "--agent");
+            AppendRepeatableFlag(&args, "KOG_COPILOT_ADD_DIRS", "--add-dir");
+            AppendRepeatableFlagWithDefaults(&args,
+                                             "KOG_COPILOT_ALLOW_TOOLS",
+                                             "--allow-tool",
+                                             {"shell(git:*)", "write"});
+            AppendRepeatableFlag(&args, "KOG_COPILOT_ALLOW_URLS", "--allow-url");
+            AppendRepeatableFlag(&args, "KOG_COPILOT_AVAILABLE_TOOLS", "--available-tools");
+            AppendRepeatableFlag(&args, "KOG_COPILOT_EXCLUDED_TOOLS", "--excluded-tools");
+            AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL_TOOLS", "--allow-all-tools");
+            AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL_PATHS", "--allow-all-paths");
+            AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL_URLS", "--allow-all-urls");
+            AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL", "--allow-all");
+            args.insert(args.end(), {"--no-color", "--stream", "off", "--no-ask-user"});
+            return shell::ExecuteCommand("copilot", args, shell::ExecMode::Capture, InWorkingDir);
         }
 
         if (HasCommand("gh", {"copilot", "--version"})) {
+            std::vector<std::string> args{"copilot", "--", "-s", "-p", InPrompt};
             if (!InModel.empty() && InModel != "auto") {
-                return shell::ExecuteCommand("gh", {"copilot", "--", "-s", "-p", InPrompt, "--model", InModel, "--no-color", "--stream", "off", "--no-ask-user"}, shell::ExecMode::Capture, InWorkingDir);
+                args.push_back("--model");
+                args.push_back(InModel);
             }
-            return shell::ExecuteCommand("gh", {"copilot", "--", "-s", "-p", InPrompt, "--no-color", "--stream", "off", "--no-ask-user"}, shell::ExecMode::Capture, InWorkingDir);
+            AppendBoolFlagDefaultTrue(&args, "KOG_COPILOT_AUTOPILOT", "--autopilot");
+            AppendSingleValueFlagWithDefault(&args,
+                                             "KOG_COPILOT_MAX_AUTOPILOT_CONTINUES",
+                                             "--max-autopilot-continues",
+                                             "12");
+            AppendFlagOrSingleValueFlag(&args, "KOG_COPILOT_RESUME", "--resume");
+            if (std::getenv("KOG_COPILOT_RESUME") == nullptr) {
+                AppendBoolFlag(&args, "KOG_COPILOT_CONTINUE", "--continue");
+            }
+            AppendSingleValueFlag(&args, "KOG_COPILOT_AGENT", "--agent");
+            AppendRepeatableFlag(&args, "KOG_COPILOT_ADD_DIRS", "--add-dir");
+            AppendRepeatableFlagWithDefaults(&args,
+                                             "KOG_COPILOT_ALLOW_TOOLS",
+                                             "--allow-tool",
+                                             {"shell(git:*)", "write"});
+            AppendRepeatableFlag(&args, "KOG_COPILOT_ALLOW_URLS", "--allow-url");
+            AppendRepeatableFlag(&args, "KOG_COPILOT_AVAILABLE_TOOLS", "--available-tools");
+            AppendRepeatableFlag(&args, "KOG_COPILOT_EXCLUDED_TOOLS", "--excluded-tools");
+            AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL_TOOLS", "--allow-all-tools");
+            AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL_PATHS", "--allow-all-paths");
+            AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL_URLS", "--allow-all-urls");
+            AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL", "--allow-all");
+            args.insert(args.end(), {"--no-color", "--stream", "off", "--no-ask-user"});
+            return shell::ExecuteCommand("gh", args, shell::ExecMode::Capture, InWorkingDir);
         }
     }
 
@@ -744,14 +1076,25 @@ auto ShouldBlockByAiReview(const std::filesystem::path& InRepo,
         stagedDiff = stagedDiff.substr(0, kMaxDiffChars) + "\n... (truncated)";
     }
 
-    std::ostringstream prompt;
-    prompt << "You are a commit safety reviewer.\n"
-           << "Evaluate whether this commit message matches staged changes and is safe.\n"
-           << "Respond with exactly one line: PASS or FAIL: <reason>.\n\n"
-           << "Message:\n" << InMessage << "\n\n"
-           << "Staged diff:\n" << stagedDiff << "\n";
+    std::string promptText;
+    if (const auto text = LoadPromptAssetText(std::filesystem::current_path().lexically_normal(),
+                                              "KOG_COMMIT_REVIEW_PROMPT_TEMPLATE",
+                                              std::filesystem::path("assets") / "prompts" / "base" / "review.md");
+        text.has_value()) {
+        promptText = *text;
+        promptText = ReplaceAll(std::move(promptText), "{{MESSAGE}}", InMessage);
+        promptText = ReplaceAll(std::move(promptText), "{{STAGED_DIFF}}", stagedDiff);
+    } else {
+        std::ostringstream prompt;
+        prompt << "You are a commit safety reviewer.\n"
+               << "Evaluate whether this commit message matches staged changes and is safe.\n"
+               << "Respond with exactly one line: PASS or FAIL: <reason>.\n\n"
+               << "Message:\n" << InMessage << "\n\n"
+               << "Staged diff:\n" << stagedDiff << "\n";
+        promptText = prompt.str();
+    }
 
-    const auto out = RunAiGenerate(InAi.provider, InAi.model, prompt.str(), InRepo);
+    const auto out = RunAiGenerate(InAi.provider, InAi.model, promptText, InRepo);
     if (out.exitCode != 0) {
         return false;
     }
@@ -3304,7 +3647,7 @@ auto RunCommitNativeSimple(const std::filesystem::path& InWorkspaceRoot,
     NativeAiConfig ai;
     const bool aiRequested = InAiAuto || !InAiProvider.empty() || !InAiModel.empty();
     ai.provider = aiRequested ? ResolveProvider(InAiProvider) : std::string{};
-    ai.model = aiRequested ? ResolveModelForAi(ai.provider, InAiModel, InAiAuto) : std::string{};
+    ai.model = aiRequested ? ResolveModelForAi(ai.provider, InAiModel, InAiAuto, workspaceRoot) : std::string{};
     ai.reviewEnabled = !InNoAiReview;
     ai.enabled = aiRequested && !ai.provider.empty();
 
@@ -3559,7 +3902,7 @@ void RegisterCommit(CLI::App& InApp) {
         NativeAiConfig ai;
         const bool aiRequested = *bAiAuto || !provider->empty() || !model->empty();
         ai.provider = aiRequested ? ResolveProvider(*provider) : std::string{};
-        ai.model = aiRequested ? ResolveModelForAi(ai.provider, *model, *bAiAuto) : std::string{};
+        ai.model = aiRequested ? ResolveModelForAi(ai.provider, *model, *bAiAuto, workspaceRoot) : std::string{};
         ai.reviewEnabled = !*bNoAiReview;
         ai.enabled = aiRequested && !ai.provider.empty();
 
@@ -3871,7 +4214,7 @@ void RegisterAmend(CLI::App& InApp) {
         NativeAiConfig ai;
         const bool aiRequested = *bAiAuto || !provider->empty() || !model->empty();
         ai.provider = aiRequested ? ResolveProvider(*provider) : std::string{};
-        ai.model = aiRequested ? ResolveModelForAi(ai.provider, *model, *bAiAuto) : std::string{};
+        ai.model = aiRequested ? ResolveModelForAi(ai.provider, *model, *bAiAuto, workspaceRoot) : std::string{};
         ai.reviewEnabled = !*bNoAiReview;
         ai.enabled = aiRequested && !ai.provider.empty();
 
