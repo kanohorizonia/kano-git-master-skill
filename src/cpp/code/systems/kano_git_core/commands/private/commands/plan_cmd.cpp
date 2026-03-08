@@ -54,14 +54,43 @@ struct IgnoreDatasourceSource {
     std::filesystem::path resolvedPath;
 };
 
+struct CommitPlanEntry {
+    int index = -1;
+    std::string repo;
+    std::string message;
+    std::vector<std::string> include;
+    std::vector<std::string> exclude;
+    std::string reviewVerdict;
+    std::string reviewReason;
+};
+
+struct CommitFillOp {
+    int index = -1;
+    std::string message;
+    std::string reviewVerdict;
+    std::string reviewReason;
+};
+
 auto ExtractObjectBodyForKey(const std::string& InText, const std::string& InKey) -> std::optional<std::string>;
 auto ExtractArrayBodyForKey(const std::string& InText, const std::string& InKey) -> std::optional<std::string>;
 auto SplitTopLevelObjects(const std::string& InArrayBody) -> std::vector<std::string>;
 auto ExtractStringField(const std::string& InObjectText, const std::string& InField) -> std::optional<std::string>;
+auto ExtractScalarFieldToken(const std::string& InObjectText, const std::string& InField) -> std::optional<std::string>;
+auto ExtractJsonBetweenMarkers(const std::string& InText) -> std::string;
 auto ResolveSkillRoot(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path;
 auto ComputeWorkspaceBaseHeadSha(const std::filesystem::path& InWorkspaceRoot) -> std::string;
 auto ComputeWorkspaceDirtyFingerprint(const std::filesystem::path& InWorkspaceRoot) -> std::string;
 auto Fnv1a64Hex(const std::string& InText) -> std::string;
+auto FillCommitEntryByFlatIndex(const std::string& InPlanText,
+                                int InCommitIndex,
+                                const std::optional<std::string>& InCommitMessage,
+                                const std::optional<std::string>& InReviewVerdict,
+                                const std::optional<std::string>& InReviewReason,
+                                std::string* OutError) -> std::optional<std::string>;
+auto ReplaceJsonStringFieldInObject(std::string InJson,
+                                    const std::string& InObjectKey,
+                                    const std::string& InFieldKey,
+                                    const std::string& InNewValue) -> std::optional<std::string>;
 
 auto Trim(std::string InValue) -> std::string {
     while (!InValue.empty() &&
@@ -80,6 +109,10 @@ auto ToLower(std::string InValue) -> std::string {
         return static_cast<char>(std::tolower(c));
     });
     return InValue;
+}
+
+auto StartsWith(const std::string& InValue, const std::string& InPrefix) -> bool {
+    return InValue.rfind(InPrefix, 0) == 0;
 }
 
 auto CurrentUtcIso8601() -> std::string {
@@ -108,6 +141,122 @@ auto CurrentUtcCompact() -> std::string {
     char buffer[32] = {0};
     std::strftime(buffer, sizeof(buffer), "%Y%m%dT%H%M%SZ", &utc);
     return std::string(buffer);
+}
+
+auto HomeDirectory() -> std::filesystem::path {
+    if (const char* home = std::getenv("HOME"); home != nullptr && *home != '\0') {
+        return std::filesystem::path(home).lexically_normal();
+    }
+#if defined(_WIN32)
+    if (const char* userProfile = std::getenv("USERPROFILE"); userProfile != nullptr && *userProfile != '\0') {
+        return std::filesystem::path(userProfile).lexically_normal();
+    }
+    const char* homeDrive = std::getenv("HOMEDRIVE");
+    const char* homePath = std::getenv("HOMEPATH");
+    if (homeDrive != nullptr && *homeDrive != '\0' && homePath != nullptr && *homePath != '\0') {
+        return (std::filesystem::path(homeDrive) / homePath).lexically_normal();
+    }
+#endif
+    return {};
+}
+
+auto AiCacheDir() -> std::filesystem::path {
+    const auto home = HomeDirectory();
+    if (home.empty()) {
+        return {};
+    }
+    return (home / ".kano" / "cache" / "git" / "ai").lexically_normal();
+}
+
+auto ModelCacheFilePath(const std::string& InProvider) -> std::filesystem::path {
+    const auto provider = ToLower(Trim(InProvider));
+    if (provider.empty()) {
+        return {};
+    }
+    const auto cacheDir = AiCacheDir();
+    if (cacheDir.empty()) {
+        return {};
+    }
+    return (cacheDir / ("last-model-" + provider + ".txt")).lexically_normal();
+}
+
+auto ReadRememberedModel(const std::string& InProvider) -> std::string {
+    const auto cacheFile = ModelCacheFilePath(InProvider);
+    if (!cacheFile.empty() && std::filesystem::exists(cacheFile)) {
+        std::ifstream in(cacheFile);
+        if (in) {
+            std::string line;
+            std::getline(in, line);
+            return Trim(line);
+        }
+    }
+
+    const auto home = HomeDirectory();
+    const auto provider = ToLower(Trim(InProvider));
+    if (home.empty() || provider.empty()) {
+        return {};
+    }
+
+    const auto legacyFile = (home / ".cache" / "kano-git-master-skill" / "ai" / ("last-model-" + provider + ".txt")).lexically_normal();
+    if (!std::filesystem::exists(legacyFile)) {
+        return {};
+    }
+
+    std::ifstream in(legacyFile);
+    if (!in) {
+        return {};
+    }
+
+    std::string line;
+    std::getline(in, line);
+    return Trim(line);
+}
+
+void RememberModelChoice(const std::string& InProvider, const std::string& InModel) {
+    const auto provider = ToLower(Trim(InProvider));
+    const auto model = Trim(InModel);
+    const auto cacheDir = AiCacheDir();
+    const auto cacheFile = ModelCacheFilePath(provider);
+    if (provider.empty() || model.empty() || model == "auto" || cacheDir.empty() || cacheFile.empty()) {
+        return;
+    }
+
+    std::error_code ec;
+    std::filesystem::create_directories(cacheDir, ec);
+
+    std::ofstream out(cacheFile, std::ios::trunc);
+    if (!out) {
+        return;
+    }
+    out << model << "\n";
+}
+
+auto CompactSingleLine(std::string InText, std::size_t InMaxChars) -> std::string {
+    for (char& ch : InText) {
+        if (ch == '\r' || ch == '\n' || ch == '\t') {
+            ch = ' ';
+        }
+    }
+    InText = Trim(std::move(InText));
+    std::string compact;
+    compact.reserve(InText.size());
+    bool lastWasSpace = false;
+    for (const char ch : InText) {
+        if (ch == ' ') {
+            if (!lastWasSpace) {
+                compact.push_back(ch);
+            }
+            lastWasSpace = true;
+            continue;
+        }
+        compact.push_back(ch);
+        lastWasSpace = false;
+    }
+    InText = Trim(std::move(compact));
+    if (InText.size() > InMaxChars && InMaxChars > 3) {
+        InText = InText.substr(0, InMaxChars - 3) + "...";
+    }
+    return InText;
 }
 
 auto ReadFileText(const std::filesystem::path& InPath) -> std::optional<std::string> {
@@ -384,6 +533,140 @@ auto HasCommand(const std::string& InCommand, const std::vector<std::string>& In
     return shell::ExecuteCommand(InCommand, InArgs, shell::ExecMode::Capture).exitCode == 0;
 }
 
+auto LooksLikeModelToken(const std::string& InToken) -> bool {
+    if (InToken.empty()) {
+        return false;
+    }
+    for (const char ch : InToken) {
+        const bool ok = (ch >= 'a' && ch <= 'z') ||
+                        (ch >= 'A' && ch <= 'Z') ||
+                        (ch >= '0' && ch <= '9') ||
+                        ch == '-' || ch == '_' || ch == '.';
+        if (!ok) {
+            return false;
+        }
+    }
+    return true;
+}
+
+auto IsLikelyAiModelName(const std::string& InToken) -> bool {
+    if (!LooksLikeModelToken(InToken)) {
+        return false;
+    }
+
+    const auto lower = ToLower(InToken);
+    const bool knownPrefix = StartsWith(lower, "gpt-") ||
+                             StartsWith(lower, "claude-") ||
+                             StartsWith(lower, "gemini-") ||
+                             StartsWith(lower, "grok-") ||
+                             StartsWith(lower, "o1") ||
+                             StartsWith(lower, "o3") ||
+                             StartsWith(lower, "o4") ||
+                             StartsWith(lower, "o5");
+    if (!knownPrefix) {
+        return false;
+    }
+
+    return std::any_of(lower.begin(), lower.end(), [](char ch) {
+        return ch >= '0' && ch <= '9';
+    });
+}
+
+auto ExtractModelTokensFromText(const std::string& InText) -> std::vector<std::string> {
+    std::set<std::string> out;
+    const std::regex modelPattern(R"(([A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)+))");
+
+    std::istringstream iss(InText);
+    std::string lineRaw;
+    while (std::getline(iss, lineRaw)) {
+        const auto line = Trim(lineRaw);
+        if (line.empty() || line.rfind("===", 0) == 0) {
+            continue;
+        }
+
+        const auto firstSpace = line.find(' ');
+        if (firstSpace != std::string::npos) {
+            const auto firstToken = line.substr(0, firstSpace);
+            if (IsLikelyAiModelName(firstToken)) {
+                out.insert(firstToken);
+            }
+        }
+
+        for (std::sregex_iterator it(line.begin(), line.end(), modelPattern), end; it != end; ++it) {
+            const auto token = Trim((*it)[1].str());
+            if (IsLikelyAiModelName(token)) {
+                out.insert(token);
+            }
+        }
+    }
+
+    return std::vector<std::string>(out.begin(), out.end());
+}
+
+auto FetchProviderModelsForHelp(const std::string& InProvider) -> std::vector<std::string> {
+    const auto provider = ToLower(Trim(InProvider));
+    std::set<std::string> models;
+    const auto remembered = ReadRememberedModel(provider);
+    if (!remembered.empty()) {
+        models.insert(remembered);
+    }
+
+    if (provider == "copilot") {
+        models.insert("claude-haiku-4.5");
+        models.insert("claude-opus-4.5");
+        models.insert("claude-opus-4.6");
+        models.insert("claude-opus-4.6-fast");
+        models.insert("claude-sonnet-4");
+        models.insert("claude-sonnet-4.5");
+        models.insert("claude-sonnet-4.6");
+        models.insert("gemini-3-pro-preview");
+        models.insert("gpt-4.1");
+        models.insert("gpt-5-mini");
+        models.insert("gpt-5.1");
+        models.insert("gpt-5.1-codex");
+        models.insert("gpt-5.1-codex-max");
+        models.insert("gpt-5.1-codex-mini");
+        models.insert("gpt-5.2");
+        models.insert("gpt-5.2-codex");
+        models.insert("gpt-5.3-codex");
+        models.insert("gpt-5.4");
+    } else if (provider == "codex" || provider == "opencode") {
+        models.insert("gpt-5-mini");
+    }
+
+    return std::vector<std::string>(models.begin(), models.end());
+}
+
+auto BuildSetAiModelHelpFooter() -> std::string {
+    const auto cacheDir = AiCacheDir();
+    std::ostringstream oss;
+    oss << "Remembered model cache:\n";
+    if (!cacheDir.empty()) {
+        oss << "  " << (cacheDir / "last-model-<provider>.txt").generic_string() << "\n";
+    } else {
+        oss << "  <home>/.kano/cache/git/ai/last-model-<provider>.txt\n";
+    }
+    oss << "  legacy: <home>/.cache/kano-git-master-skill/ai/last-model-<provider>.txt\n";
+    oss << "\nModel list source: built-in provider catalog + remembered model cache (non-blocking help).\n";
+    oss << "\nDetected models by provider:\n";
+    for (const auto& provider : std::vector<std::string>{"copilot", "codex", "opencode"}) {
+        const auto models = FetchProviderModelsForHelp(provider);
+        oss << "  " << provider << ": ";
+        if (models.empty()) {
+            oss << "<none detected>";
+        } else {
+            for (std::size_t i = 0; i < models.size(); ++i) {
+                if (i != 0) {
+                    oss << ", ";
+                }
+                oss << models[i];
+            }
+        }
+        oss << "\n";
+    }
+    return oss.str();
+}
+
 auto ResolveAiProvider(const std::string& InRequested) -> std::string {
     const auto provider = ToLower(Trim(InRequested));
     if (!provider.empty() && provider != "auto") {
@@ -407,7 +690,12 @@ auto ResolveAiProvider(const std::string& InRequested) -> std::string {
 auto ResolveAiModel(const std::string& InProvider, const std::string& InRequested) -> std::string {
     const auto model = Trim(InRequested);
     if (!model.empty() && model != "auto") {
+        RememberModelChoice(InProvider, model);
         return model;
+    }
+    const auto remembered = ReadRememberedModel(InProvider);
+    if (!remembered.empty()) {
+        return remembered;
     }
     if (InProvider == "copilot" || InProvider == "codex" || InProvider == "opencode") {
         return "gpt-5-mini";
@@ -534,6 +822,97 @@ auto BuildPlanPrompt(const std::filesystem::path& InRoot,
     fallback << "Template JSON:\n" << InTemplateJson << "\n\n";
     fallback << "Workspace dirty context:\n" << InDirtyContext << "\n";
     return fallback.str();
+}
+
+auto BuildPlanFillOpsPrompt(const std::filesystem::path& InRoot,
+                            const std::string& InProvider,
+                            const std::string& InModel,
+                            const std::string& InPlanJson,
+                            const std::string& InDirtyContext) -> std::string {
+    std::ostringstream prompt;
+    prompt << "You are filling commit plan entries for kano-git.\n";
+    prompt << "This prompt is SELF-CONTAINED: do not assume any external SKILL.md/global skill context.\n";
+    prompt << "The plan file already exists and MUST NOT be rewritten by AI.\n";
+    prompt << "AI must only decide semantic fields for existing commit entries.\n\n";
+    prompt << "Execution contract (must follow):\n";
+    prompt << "- Mode: single-agent serialized only (no parallel review behavior).\n";
+    prompt << "- Process all commit indexes in ascending order.\n";
+    prompt << "- Global index is across ALL repos in stages.commit (not repo-local).\n";
+    prompt << "- Schema-safe mutation only: equivalent to CLI flow using plan count/get/fill/verify.\n";
+    prompt << "- Do NOT output a full replacement plan JSON.\n\n";
+    prompt << "Reference CLI workflow (for behavior alignment only):\n";
+    prompt << "1) kog plan count-commits --json --plan-file <plan>\n";
+    prompt << "2) kog plan finish-report --plan-file <plan>\n";
+    prompt << "3) kog plan get-commit <index> --json --plan-file <plan>\n";
+    prompt << "4) kog plan fill-commit <index> --commit-message ... --review.verdict pass --review.reason ...\n";
+    prompt << "5) kog plan verify pre-apply --stage commit --plan-file <plan>\n\n";
+    prompt << "Return STRICT JSON ONLY between markers:\n";
+    prompt << "BEGIN_KOG_PLAN_FILL_OPS\n<json>\nEND_KOG_PLAN_FILL_OPS\n\n";
+    prompt << "Required JSON schema:\n";
+    prompt << "{\n";
+    prompt << "  \"commits\": [\n";
+    prompt << "    {\n";
+    prompt << "      \"index\": 0,\n";
+    prompt << "      \"message\": \"feat(scope): concise commit message\",\n";
+    prompt << "      \"review\": {\n";
+    prompt << "        \"verdict\": \"pass\",\n";
+    prompt << "        \"reason\": \"Specific review rationale for this commit.\"\n";
+    prompt << "      }\n";
+    prompt << "    }\n";
+    prompt << "  ]\n";
+    prompt << "}\n\n";
+    prompt << "Rules:\n";
+    prompt << "- Output exactly one item for EVERY existing commit entry in stages.commit.\n";
+    prompt << "- Do not omit any index.\n";
+    prompt << "- Do not invent new indexes.\n";
+    prompt << "- Index values must map exactly to existing entries in Current plan JSON.\n";
+    prompt << "- Return the JSON object only; no prose, no markdown fences, no commentary.\n";
+    prompt << "- index may be a JSON integer or string, but integer is preferred.\n";
+    prompt << "- review.verdict must be pass.\n";
+    prompt << "- Do not use placeholders like replace-with-*.\n";
+    prompt << "- Do not modify include/exclude/repo; they are read-only context.\n";
+    prompt << "- Provider=" << InProvider << " model=" << (InModel.empty() ? "auto" : InModel) << "\n\n";
+    prompt << "Hard constraints for semantic quality:\n";
+    prompt << "- message must be concrete and commit-ready (no TODO/placeholder).\n";
+    prompt << "- review.reason must be specific to that commit index and repo scope.\n";
+    prompt << "- Do not mention hidden/external tools; only reason from provided plan+dirty context.\n\n";
+    prompt << "Response behavior constraints:\n";
+    prompt << "- You are NOT executing commands and NOT editing files directly in this task.\n";
+    prompt << "- Do NOT output permission/tool-access disclaimers.\n";
+    prompt << "- Return only the required fill-ops JSON payload.\n\n";
+    prompt << "Current plan JSON:\n" << InPlanJson << "\n\n";
+    prompt << "Workspace dirty context:\n" << InDirtyContext << "\n";
+    return prompt.str();
+}
+
+auto BuildFillOpsRetryPrompt(const std::string& InBasePrompt,
+                             std::size_t InExpectedCommits,
+                             std::size_t InReturnedCommits,
+                             const std::string& InPreviousRaw) -> std::string {
+    std::ostringstream prompt;
+    prompt << InBasePrompt;
+    prompt << "\n\nRetry directive (mandatory):\n";
+    prompt << "- Previous response was rejected because commit count was incomplete.\n";
+    prompt << std::format("- Expected commits count: {}\\n", InExpectedCommits);
+    prompt << std::format("- Returned commits count: {}\\n", InReturnedCommits);
+    prompt << "- Re-output a COMPLETE commits array covering ALL indexes exactly once.\n";
+    prompt << "- Output STRICT JSON only between BEGIN_KOG_PLAN_FILL_OPS / END_KOG_PLAN_FILL_OPS.\n";
+    const auto rawSnippet = CompactSingleLine(InPreviousRaw, 1000);
+    if (!rawSnippet.empty()) {
+        prompt << "\nPrevious raw response snippet:\n" << rawSnippet << "\n";
+    }
+    return prompt.str();
+}
+
+auto ExtractPlanFillOpsJson(const std::string& InText) -> std::string {
+    const std::string begin = "BEGIN_KOG_PLAN_FILL_OPS";
+    const std::string end = "END_KOG_PLAN_FILL_OPS";
+    const auto b = InText.find(begin);
+    const auto e = InText.find(end);
+    if (b != std::string::npos && e != std::string::npos && e > b + begin.size()) {
+        return Trim(InText.substr(b + begin.size(), e - (b + begin.size())));
+    }
+    return ExtractJsonBetweenMarkers(InText);
 }
 
 auto ExtractJsonBetweenMarkers(const std::string& InText) -> std::string {
@@ -888,6 +1267,32 @@ auto ExtractStringField(const std::string& InObjectText, const std::string& InFi
         return std::nullopt;
     }
     return parsed->first;
+}
+
+auto ExtractScalarFieldToken(const std::string& InObjectText, const std::string& InField) -> std::optional<std::string> {
+    const auto valuePos = FindJsonKeyValueStart(InObjectText, InField);
+    if (!valuePos.has_value()) {
+        return std::nullopt;
+    }
+
+    if (*valuePos < InObjectText.size() && InObjectText[*valuePos] == '"') {
+        return ExtractStringField(InObjectText, InField);
+    }
+
+    std::size_t end = *valuePos;
+    while (end < InObjectText.size()) {
+        const char ch = InObjectText[end];
+        if (ch == ',' || ch == '}' || ch == ']' || std::isspace(static_cast<unsigned char>(ch))) {
+            break;
+        }
+        end += 1;
+    }
+
+    const auto token = Trim(InObjectText.substr(*valuePos, end - *valuePos));
+    if (token.empty()) {
+        return std::nullopt;
+    }
+    return token;
 }
 
 auto ExtractBoolField(const std::string& InObjectText, const std::string& InField) -> std::optional<bool> {
@@ -1298,6 +1703,253 @@ auto BuildJsonStringArray(const std::vector<std::string>& InValues) -> std::stri
     return oss.str();
 }
 
+auto RebuildCommitArrayBody(const std::vector<std::string>& InRepoObjects) -> std::string {
+    std::ostringstream commitBody;
+    for (std::size_t i = 0; i < InRepoObjects.size(); ++i) {
+        if (i != 0) {
+            commitBody << ",";
+        }
+        commitBody << InRepoObjects[i];
+    }
+    return commitBody.str();
+}
+
+auto BuildCommitObjectJson(const std::string& InMessage,
+                          const std::string& InIncludeArrayBody,
+                          const std::string& InExcludeArrayBody,
+                          const std::string& InReviewVerdict,
+                          const std::string& InReviewReason) -> std::string {
+    return std::format(
+        "{{\"message\":\"{}\",\"include\":[{}],\"exclude\":[{}],\"review\":{{\"verdict\":\"{}\",\"reason\":\"{}\"}}}}",
+        JsonEscape(InMessage),
+        InIncludeArrayBody,
+        InExcludeArrayBody,
+        JsonEscape(InReviewVerdict),
+        JsonEscape(InReviewReason));
+}
+
+auto ParseJsonStringArrayBody(const std::string& InArrayBody) -> std::vector<std::string> {
+    std::vector<std::string> out;
+    std::size_t pos = 0;
+    while (pos < InArrayBody.size()) {
+        pos = InArrayBody.find('"', pos);
+        if (pos == std::string::npos) {
+            break;
+        }
+        const auto parsed = ParseJsonStringAt(InArrayBody, pos);
+        if (!parsed.has_value()) {
+            break;
+        }
+        out.push_back(parsed->first);
+        pos = parsed->second;
+    }
+    return out;
+}
+
+auto CollectCommitPlanEntries(const std::string& InPlanText) -> std::vector<CommitPlanEntry> {
+    std::vector<CommitPlanEntry> out;
+    const auto stages = ExtractObjectBodyForKey(InPlanText, "stages");
+    if (!stages.has_value()) {
+        return out;
+    }
+    const auto commitArray = ExtractArrayBodyForKey(*stages, "commit");
+    if (!commitArray.has_value()) {
+        return out;
+    }
+
+    int flatIndex = 0;
+    for (const auto& repoObj : SplitTopLevelObjects(*commitArray)) {
+        const auto repo = ExtractStringField(repoObj, "repo").value_or(".");
+        const auto commits = ExtractArrayBodyForKey(repoObj, "commits").value_or(std::string{});
+        for (const auto& commitObj : SplitTopLevelObjects(commits)) {
+            const auto reviewObj = ExtractObjectBodyForKey(commitObj, "review");
+            const auto includeBody = ExtractArrayBodyForKey(commitObj, "include").value_or(std::string{});
+            const auto excludeBody = ExtractArrayBodyForKey(commitObj, "exclude").value_or(std::string{});
+            CommitPlanEntry entry;
+            entry.index = flatIndex;
+            entry.repo = repo;
+            entry.message = ExtractStringField(commitObj, "message").value_or("");
+            entry.include = ParseJsonStringArrayBody(includeBody);
+            entry.exclude = ParseJsonStringArrayBody(excludeBody);
+            entry.reviewVerdict = reviewObj.has_value() ? ExtractStringField(*reviewObj, "verdict").value_or("") : "";
+            entry.reviewReason = reviewObj.has_value() ? ExtractStringField(*reviewObj, "reason").value_or("") : "";
+            out.push_back(std::move(entry));
+            flatIndex += 1;
+        }
+    }
+    return out;
+}
+
+auto CommitEntryNeedsReview(const CommitPlanEntry& InEntry) -> bool {
+    if (Trim(InEntry.message).empty() || Trim(InEntry.reviewVerdict).empty() || Trim(InEntry.reviewReason).empty()) {
+        return true;
+    }
+    if (InEntry.message.find("replace-with-") != std::string::npos || InEntry.reviewReason.find("replace-with-") != std::string::npos) {
+        return true;
+    }
+    if (ToLower(Trim(InEntry.reviewVerdict)) != "pass") {
+        return true;
+    }
+    return false;
+}
+
+auto CollectCommitIndexesNeedingReview(const std::vector<CommitPlanEntry>& InEntries) -> std::vector<int> {
+    std::vector<int> out;
+    for (const auto& entry : InEntries) {
+        if (CommitEntryNeedsReview(entry)) {
+            out.push_back(entry.index);
+        }
+    }
+    return out;
+}
+
+auto FindCommitEntryByFlatIndex(const std::string& InPlanText,
+                                int InCommitIndex,
+                                std::string* OutError = nullptr) -> std::optional<CommitPlanEntry> {
+    if (InCommitIndex < 0) {
+        if (OutError != nullptr) {
+            *OutError = "--index must be >= 0";
+        }
+        return std::nullopt;
+    }
+    const auto stages = ExtractObjectBodyForKey(InPlanText, "stages");
+    if (!stages.has_value()) {
+        if (OutError != nullptr) {
+            *OutError = "schema invalid: missing stages";
+        }
+        return std::nullopt;
+    }
+    const auto commitArray = ExtractArrayBodyForKey(*stages, "commit");
+    if (!commitArray.has_value()) {
+        if (OutError != nullptr) {
+            *OutError = "schema invalid: missing stages.commit";
+        }
+        return std::nullopt;
+    }
+
+    int flatIndex = 0;
+    for (const auto& repoObj : SplitTopLevelObjects(*commitArray)) {
+        const auto repo = ExtractStringField(repoObj, "repo").value_or(".");
+        const auto commits = ExtractArrayBodyForKey(repoObj, "commits").value_or(std::string{});
+        for (const auto& commitObj : SplitTopLevelObjects(commits)) {
+            if (flatIndex != InCommitIndex) {
+                flatIndex += 1;
+                continue;
+            }
+            const auto reviewObj = ExtractObjectBodyForKey(commitObj, "review");
+            const auto includeBody = ExtractArrayBodyForKey(commitObj, "include").value_or(std::string{});
+            const auto excludeBody = ExtractArrayBodyForKey(commitObj, "exclude").value_or(std::string{});
+            CommitPlanEntry entry;
+            entry.index = flatIndex;
+            entry.repo = repo;
+            entry.message = ExtractStringField(commitObj, "message").value_or("");
+            entry.include = ParseJsonStringArrayBody(includeBody);
+            entry.exclude = ParseJsonStringArrayBody(excludeBody);
+            entry.reviewVerdict = reviewObj.has_value() ? ExtractStringField(*reviewObj, "verdict").value_or("") : "";
+            entry.reviewReason = reviewObj.has_value() ? ExtractStringField(*reviewObj, "reason").value_or("") : "";
+            return entry;
+        }
+    }
+
+    if (OutError != nullptr) {
+        *OutError = std::format("commit index out of range: {}", InCommitIndex);
+    }
+    return std::nullopt;
+}
+
+auto ParseCommitFillOps(const std::string& InJson, std::string* OutError = nullptr) -> std::vector<CommitFillOp> {
+    std::vector<CommitFillOp> ops;
+    const auto commitsArray = ExtractArrayBodyForKey(InJson, "commits");
+    if (!commitsArray.has_value()) {
+        if (OutError != nullptr) {
+            *OutError = "schema invalid: missing commits array";
+        }
+        return {};
+    }
+    for (const auto& item : SplitTopLevelObjects(*commitsArray)) {
+        CommitFillOp op;
+        const auto indexText = Trim(ExtractScalarFieldToken(item, "index").value_or(""));
+        const auto reviewObj = ExtractObjectBodyForKey(item, "review");
+        if (indexText.empty() || !reviewObj.has_value()) {
+            if (OutError != nullptr) {
+                *OutError = "schema invalid: fill op missing index/review";
+            }
+            return {};
+        }
+        try {
+            op.index = std::stoi(indexText);
+        } catch (const std::exception&) {
+            if (OutError != nullptr) {
+                *OutError = std::format("invalid commit index: {}", indexText);
+            }
+            return {};
+        }
+        op.message = Trim(ExtractStringField(item, "message").value_or(""));
+        op.reviewVerdict = Trim(ExtractStringField(*reviewObj, "verdict").value_or(""));
+        op.reviewReason = Trim(ExtractStringField(*reviewObj, "reason").value_or(""));
+        if (op.index < 0 || op.message.empty() || op.reviewVerdict.empty() || op.reviewReason.empty()) {
+            if (OutError != nullptr) {
+                *OutError = "fill op missing required message/review fields";
+            }
+            return {};
+        }
+        if (op.message.find("replace-with-") != std::string::npos || op.reviewReason.find("replace-with-") != std::string::npos) {
+            if (OutError != nullptr) {
+                *OutError = "placeholder value detected in fill op";
+            }
+            return {};
+        }
+        if (ToLower(op.reviewVerdict) != "pass") {
+            if (OutError != nullptr) {
+                *OutError = "review.verdict must be pass";
+            }
+            return {};
+        }
+        ops.push_back(std::move(op));
+    }
+    return ops;
+}
+
+auto ApplyCommitFillOps(const std::string& InPlanText,
+                        const std::vector<CommitFillOp>& InOps,
+                        std::string* OutError = nullptr) -> std::optional<std::string> {
+    auto current = InPlanText;
+    std::unordered_set<int> seen;
+    for (const auto& op : InOps) {
+        if (!seen.insert(op.index).second) {
+            if (OutError != nullptr) {
+                *OutError = std::format("duplicate fill op index: {}", op.index);
+            }
+            return std::nullopt;
+        }
+        std::string fillError;
+        const auto updated = FillCommitEntryByFlatIndex(current,
+                                                        op.index,
+                                                        std::optional<std::string>{op.message},
+                                                        std::optional<std::string>{op.reviewVerdict},
+                                                        std::optional<std::string>{op.reviewReason},
+                                                        &fillError);
+        if (!updated.has_value()) {
+            if (OutError != nullptr) {
+                *OutError = fillError.empty() ? std::format("failed to fill commit {}", op.index) : fillError;
+            }
+            return std::nullopt;
+        }
+        current = *updated;
+    }
+    return current;
+}
+
+auto StampPlanAiPlannerMetadata(std::string InPlanText,
+                                const std::string& InProvider,
+                                const std::string& InModel) -> std::optional<std::string> {
+    auto updated = ReplaceJsonStringFieldInObject(std::move(InPlanText), "planner", "provider", InProvider);
+    if (!updated.has_value()) {
+        return std::nullopt;
+    }
+    return ReplaceJsonStringFieldInObject(*updated, "planner", "ai-model", InModel.empty() ? std::string("auto") : InModel);
+}
+
 auto UpsertCommitEntry(const std::string& InPlanText,
                        const std::string& InRepo,
                        const std::string& InMessage,
@@ -1347,14 +1999,90 @@ auto UpsertCommitEntry(const std::string& InPlanText,
         repoObjects.push_back(std::format("{{\"repo\":\"{}\",\"commits\":[{}]}}", JsonEscape(InRepo), item));
     }
 
-    std::ostringstream commitBody;
-    for (std::size_t i = 0; i < repoObjects.size(); ++i) {
-        if (i != 0) {
-            commitBody << ",";
+    return ReplaceArrayBodyForKey(InPlanText, "commit", RebuildCommitArrayBody(repoObjects));
+}
+
+auto FillCommitEntryByFlatIndex(const std::string& InPlanText,
+                                int InCommitIndex,
+                                const std::optional<std::string>& InCommitMessage,
+                                const std::optional<std::string>& InReviewVerdict,
+                                const std::optional<std::string>& InReviewReason,
+                                std::string* OutError = nullptr) -> std::optional<std::string> {
+    if (InCommitIndex < 0) {
+        if (OutError != nullptr) {
+            *OutError = "--index must be >= 0";
         }
-        commitBody << repoObjects[i];
+        return std::nullopt;
     }
-    return ReplaceArrayBodyForKey(InPlanText, "commit", commitBody.str());
+    const auto stages = ExtractObjectBodyForKey(InPlanText, "stages");
+    if (!stages.has_value()) {
+        if (OutError != nullptr) {
+            *OutError = "schema invalid: missing stages";
+        }
+        return std::nullopt;
+    }
+    const auto commitArray = ExtractArrayBodyForKey(*stages, "commit");
+    if (!commitArray.has_value()) {
+        if (OutError != nullptr) {
+            *OutError = "schema invalid: missing stages.commit";
+        }
+        return std::nullopt;
+    }
+
+    auto repoObjects = SplitTopLevelObjects(*commitArray);
+    int flatIndex = 0;
+    for (auto& repoObj : repoObjects) {
+        const auto commits = ExtractArrayBodyForKey(repoObj, "commits").value_or(std::string{});
+        auto commitObjects = SplitTopLevelObjects(commits);
+        for (auto& commitObj : commitObjects) {
+            if (flatIndex != InCommitIndex) {
+                flatIndex += 1;
+                continue;
+            }
+            auto message = Trim(InCommitMessage.value_or(ExtractStringField(commitObj, "message").value_or("")));
+            const auto reviewObj = ExtractObjectBodyForKey(commitObj, "review");
+            auto reviewVerdict = Trim(InReviewVerdict.value_or(reviewObj.has_value() ? ExtractStringField(*reviewObj, "verdict").value_or("") : ""));
+            auto reviewReason = Trim(InReviewReason.value_or(reviewObj.has_value() ? ExtractStringField(*reviewObj, "reason").value_or("") : ""));
+            const auto includeBody = ExtractArrayBodyForKey(commitObj, "include").value_or(std::string{});
+            const auto excludeBody = ExtractArrayBodyForKey(commitObj, "exclude").value_or(std::string{});
+
+            if (message.empty()) {
+                if (OutError != nullptr) {
+                    *OutError = "commit message cannot be empty after fill";
+                }
+                return std::nullopt;
+            }
+            if (reviewVerdict.empty()) {
+                if (OutError != nullptr) {
+                    *OutError = "review.verdict cannot be empty after fill";
+                }
+                return std::nullopt;
+            }
+            if (reviewReason.empty()) {
+                if (OutError != nullptr) {
+                    *OutError = "review.reason cannot be empty after fill";
+                }
+                return std::nullopt;
+            }
+
+            commitObj = BuildCommitObjectJson(message, includeBody, excludeBody, reviewVerdict, reviewReason);
+            const auto updatedCommits = RebuildCommitArrayBody(commitObjects);
+            const auto updatedRepoObj = ReplaceArrayBodyForKey(repoObj, "commits", updatedCommits);
+            if (!updatedRepoObj.has_value()) {
+                if (OutError != nullptr) {
+                    *OutError = "failed to update repo commits array";
+                }
+                return std::nullopt;
+            }
+            repoObj = *updatedRepoObj;
+            return ReplaceArrayBodyForKey(InPlanText, "commit", RebuildCommitArrayBody(repoObjects));
+        }
+    }
+
+    if (OutError != nullptr) {
+        *OutError = std::format("commit index out of range: {}", InCommitIndex);
+    }
+    return std::nullopt;
 }
 
 auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
@@ -1379,8 +2107,25 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
         return false;
     }
     const auto templateJson = ReadFileText(InPlanPath).value_or(std::string{});
-    const auto prompt = BuildPlanPrompt(InWorkspaceRoot, provider, model, templateJson, dirtyContext);
-    const auto aiRaw = RunAiGenerate(provider, model, prompt, InWorkspaceRoot);
+    const auto currentEntries = CollectCommitPlanEntries(templateJson);
+    if (currentEntries.empty()) {
+        if (OutError != nullptr) {
+            *OutError = "Error: plan has no commit entries to fill; seed stages.commit first.";
+        }
+        return false;
+    }
+    std::cout << "[plan] AI fill start: provider=" << provider
+              << " model=" << (model.empty() ? "auto" : model)
+              << " commits=" << currentEntries.size() << "\n";
+    const auto prompt = BuildPlanFillOpsPrompt(InWorkspaceRoot, provider, model, templateJson, dirtyContext);
+    std::string debugPrefix;
+    if (InDebugAi) {
+        const auto debugDir = (InWorkspaceRoot / ".kano" / "cache" / "git" / "plans" / "debug").lexically_normal();
+        debugPrefix = (debugDir / std::format("pia-{}", CurrentUtcCompact())).generic_string();
+        std::string debugError;
+        WriteFileText(std::filesystem::path(debugPrefix + ".prompt.txt"), prompt, &debugError);
+    }
+    auto aiRaw = RunAiGenerate(provider, model, prompt, InWorkspaceRoot);
     if (aiRaw.exitCode != 0) {
         if (OutError != nullptr) {
             std::ostringstream oss;
@@ -1388,36 +2133,41 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
             if (!Trim(aiRaw.stderrStr).empty()) {
                 oss << " Detail: " << Trim(aiRaw.stderrStr);
             }
+            if (!debugPrefix.empty()) {
+                oss << std::format(" Debug: {}.prompt.txt", debugPrefix);
+            }
             *OutError = oss.str();
         }
         return false;
     }
-    const auto aiCombined = aiRaw.stdoutStr + "\n" + aiRaw.stderrStr;
-    const auto aiJson = ExtractJsonBetweenMarkers(aiCombined);
-    std::string debugPrefix;
+    auto aiCombined = aiRaw.stdoutStr + "\n" + aiRaw.stderrStr;
+    auto aiJson = ExtractPlanFillOpsJson(aiCombined);
     if (InDebugAi) {
-        const auto debugDir = (InWorkspaceRoot / ".kano" / "cache" / "git" / "plans" / "debug").lexically_normal();
-        debugPrefix = (debugDir / std::format("pia-{}", CurrentUtcCompact())).generic_string();
         std::string debugError;
-        WriteFileText(std::filesystem::path(debugPrefix + ".prompt.txt"), prompt, &debugError);
         WriteFileText(std::filesystem::path(debugPrefix + ".raw.txt"), aiCombined, &debugError);
         WriteFileText(std::filesystem::path(debugPrefix + ".extracted.json"), aiJson, &debugError);
     }
     if (aiJson.empty()) {
         if (OutError != nullptr) {
-            *OutError = "Error: AI did not return JSON payload for plan.";
+            *OutError = "Error: AI did not return fill-ops JSON payload for plan.";
+            const auto snippet = CompactSingleLine(aiCombined, 220);
+            if (!snippet.empty()) {
+                *OutError += " Raw: " + snippet;
+            }
             if (!debugPrefix.empty()) {
                 *OutError += std::format(" Debug: {}.raw.txt", debugPrefix);
             }
         }
         return false;
     }
-    std::string validationReason;
-    if (!ValidateAiReadyPlan(aiJson, &validationReason)) {
+
+    std::string parseError;
+    auto ops = ParseCommitFillOps(aiJson, &parseError);
+    if (ops.empty()) {
         if (OutError != nullptr) {
-            *OutError = "Error: AI JSON payload schema invalid for plan generation.";
-            if (!Trim(validationReason).empty()) {
-                *OutError += " Detail: " + validationReason;
+            *OutError = "Error: AI fill-ops payload schema invalid.";
+            if (!Trim(parseError).empty()) {
+                *OutError += " Detail: " + parseError;
             }
             if (!debugPrefix.empty()) {
                 *OutError += std::format(" Debug: {}.raw.txt {}.extracted.json", debugPrefix, debugPrefix);
@@ -1425,11 +2175,86 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
         }
         return false;
     }
+
+    if (ops.size() != currentEntries.size()) {
+        const auto retryPrompt = BuildFillOpsRetryPrompt(prompt, currentEntries.size(), ops.size(), aiCombined);
+        const auto retryRaw = RunAiGenerate(provider, model, retryPrompt, InWorkspaceRoot);
+        if (retryRaw.exitCode == 0) {
+            aiCombined = retryRaw.stdoutStr + "\n" + retryRaw.stderrStr;
+            aiJson = ExtractPlanFillOpsJson(aiCombined);
+            parseError.clear();
+            ops = ParseCommitFillOps(aiJson, &parseError);
+            if (InDebugAi && !debugPrefix.empty()) {
+                std::string debugError;
+                WriteFileText(std::filesystem::path(debugPrefix + ".retry.prompt.txt"), retryPrompt, &debugError);
+                WriteFileText(std::filesystem::path(debugPrefix + ".retry.raw.txt"), aiCombined, &debugError);
+                WriteFileText(std::filesystem::path(debugPrefix + ".retry.extracted.json"), aiJson, &debugError);
+            }
+        }
+
+        if (ops.size() != currentEntries.size()) {
+            if (OutError != nullptr) {
+                *OutError = std::format("Error: AI returned incomplete fill ops: expected {} commits, got {}.", currentEntries.size(), ops.size());
+                if (!Trim(parseError).empty()) {
+                    *OutError += " Detail: " + parseError;
+                }
+                if (!debugPrefix.empty()) {
+                    *OutError += std::format(" Debug: {}.raw.txt {}.extracted.json {}.retry.raw.txt {}.retry.extracted.json",
+                                             debugPrefix,
+                                             debugPrefix,
+                                             debugPrefix,
+                                             debugPrefix);
+                }
+            }
+            return false;
+        }
+    }
+
+    std::unordered_set<int> expectedIndexes;
+    for (const auto& entry : currentEntries) {
+        expectedIndexes.insert(entry.index);
+    }
+    for (const auto& op : ops) {
+        if (!expectedIndexes.contains(op.index)) {
+            if (OutError != nullptr) {
+                *OutError = std::format("Error: AI returned unknown fill op index: {}", op.index);
+            }
+            return false;
+        }
+    }
+
+    std::string applyError;
+    auto updatedPlan = ApplyCommitFillOps(templateJson, ops, &applyError);
+    if (!updatedPlan.has_value()) {
+        if (OutError != nullptr) {
+            *OutError = "Error: failed to apply AI fill ops to plan.";
+            if (!Trim(applyError).empty()) {
+                *OutError += " Detail: " + applyError;
+            }
+        }
+        return false;
+    }
+
+    if (const auto stamped = StampPlanAiPlannerMetadata(*updatedPlan, provider, model); stamped.has_value()) {
+        updatedPlan = *stamped;
+    }
+
+    std::string validationReason;
+    if (!ValidateAiReadyPlan(*updatedPlan, &validationReason)) {
+        if (OutError != nullptr) {
+            *OutError = "Error: AI-applied plan validation failed.";
+            if (!Trim(validationReason).empty()) {
+                *OutError += " Detail: " + validationReason;
+            }
+        }
+        return false;
+    }
+
     std::string error;
-    if (!WriteFileText(InPlanPath, aiJson, &error)) {
+    if (!WriteFileText(InPlanPath, *updatedPlan, &error)) {
         if (OutError != nullptr) {
             std::ostringstream oss;
-            oss << "Error: failed to write AI plan output: " << InPlanPath.generic_string();
+            oss << "Error: failed to write AI-filled plan output: " << InPlanPath.generic_string();
             if (!error.empty()) {
                 oss << " (" << error << ")";
             }
@@ -1442,7 +2267,8 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
         std::cerr << "Debug: " << debugPrefix << ".raw.txt\n";
         std::cerr << "Debug: " << debugPrefix << ".extracted.json\n";
     }
-    std::cout << "Filled plan with AI: provider=" << provider << " model=" << (model.empty() ? "auto" : model) << "\n";
+    std::cout << "Filled plan commit entries with AI-safe ops: provider=" << provider << " model=" << (model.empty() ? "auto" : model)
+              << " commits=" << ops.size() << "\n";
     return true;
 }
 
@@ -1895,6 +2721,37 @@ void RegisterPlan(CLI::App& InApp) {
         std::cout << "Wrote plan template: " << outPath.generic_string() << "\n";
     });
 
+    auto* setAiModel = cmd->add_subcommand("set-ai-model", "Set default AI model for auto plan/commit flows");
+    setAiModel->alias("remember-model");
+    setAiModel->footer([]() {
+        return BuildSetAiModelHelpFooter();
+    });
+    auto* setAiProvider = new std::string{"auto"};
+    auto* setAiModelValue = new std::string{};
+    setAiModel->add_option("--ai-provider,--provider", *setAiProvider, "AI provider (copilot|codex|opencode|auto)")->default_str("auto");
+    setAiModel->add_option("--ai-model,--model", *setAiModelValue, "AI model to remember; see --help footer for detected models")->required();
+    setAiModel->callback([=]() {
+        const auto provider = ResolveAiProvider(*setAiProvider);
+        const auto model = Trim(*setAiModelValue);
+        if (provider.empty()) {
+            std::cerr << "Error: no AI provider found to remember model for.\n";
+            std::exit(2);
+        }
+        if (model.empty() || model == "auto") {
+            std::cerr << "Error: --ai-model must be a concrete model name.\n";
+            std::exit(2);
+        }
+        RememberModelChoice(provider, model);
+        const auto cacheFile = ModelCacheFilePath(provider);
+        if (cacheFile.empty() || !std::filesystem::exists(cacheFile)) {
+            std::cerr << "Error: failed to persist remembered model cache.\n";
+            std::exit(2);
+        }
+        std::cout << "Remembered AI model: provider=" << provider
+                  << " model=" << model
+                  << " cache=" << cacheFile.generic_string() << "\n";
+    });
+
     auto* commitSeed = cmd->add_subcommand("commit-seed", "Populate stages.commit skeleton from current dirty repos");
     auto* commitSeedFile = new std::string{};
     auto* commitSeedForce = new bool{false};
@@ -2050,6 +2907,183 @@ void RegisterPlan(CLI::App& InApp) {
         std::cout << "Plan prepare add-commit-entry complete: " << planPath.generic_string() << "\n";
     });
 
+    auto* fillCommit = cmd->add_subcommand("fill-commit", "Fill/update one stages.commit entry by global index");
+    auto* fillCommitFile = new std::string{};
+    auto* fillCommitIndex = new int{-1};
+    auto* fillCommitMessage = new std::string{};
+    auto* fillCommitReviewVerdict = new std::string{};
+    auto* fillCommitReviewReason = new std::string{};
+    fillCommit->add_option("--plan-file", *fillCommitFile, "Plan file path");
+    fillCommit->add_option("index", *fillCommitIndex, "Global commit index from `kog plan finish-report`")->required();
+    fillCommit->add_option("--commit-message,--commit.message,--message", *fillCommitMessage, "Commit message");
+    fillCommit->add_option("--review-verdict,--review.verdict", *fillCommitReviewVerdict, "Review verdict");
+    fillCommit->add_option("--review-reason,--review.reason", *fillCommitReviewReason, "Review reason");
+    fillCommit->callback([=]() {
+        const auto workspaceRoot = std::filesystem::current_path().lexically_normal();
+        const auto planPath =
+            fillCommitFile->empty() ? DefaultPlanPath(workspaceRoot) : std::filesystem::path(*fillCommitFile).lexically_normal();
+        const auto payload = ReadFileText(planPath);
+        if (!payload.has_value()) {
+            std::cerr << "Error: plan file not found/readable: " << planPath.generic_string() << "\n";
+            std::exit(2);
+        }
+
+        const auto message = Trim(*fillCommitMessage);
+        const auto reviewVerdict = Trim(*fillCommitReviewVerdict);
+        const auto reviewReason = Trim(*fillCommitReviewReason);
+        const bool hasMessage = !message.empty();
+        const bool hasVerdict = !reviewVerdict.empty();
+        const bool hasReason = !reviewReason.empty();
+        if (!hasMessage && !hasVerdict && !hasReason) {
+            std::cerr << "Error: no fill fields provided. Use --commit-message and/or --review-verdict/--review-reason\n";
+            std::exit(2);
+        }
+
+        std::string fillError;
+        const auto updated = FillCommitEntryByFlatIndex(*payload,
+                                                         *fillCommitIndex,
+                                                         hasMessage ? std::optional<std::string>{message} : std::nullopt,
+                                                         hasVerdict ? std::optional<std::string>{reviewVerdict} : std::nullopt,
+                                                         hasReason ? std::optional<std::string>{reviewReason} : std::nullopt,
+                                                         &fillError);
+        if (!updated.has_value()) {
+            std::cerr << "Error: failed to fill commit entry";
+            if (!fillError.empty()) {
+                std::cerr << ": " << fillError;
+            }
+            std::cerr << "\n";
+            std::exit(2);
+        }
+        std::string error;
+        if (!WriteFileText(planPath, *updated, &error)) {
+            std::cerr << "Error: failed to write plan file: " << planPath.generic_string();
+            if (!error.empty()) {
+                std::cerr << " (" << error << ")";
+            }
+            std::cerr << "\n";
+            std::exit(2);
+        }
+        std::cout << "Plan fill-commit complete: index=" << *fillCommitIndex << " file=" << planPath.generic_string() << "\n";
+    });
+
+    auto* getCommit = cmd->add_subcommand("get-commit", "Get one stages.commit entry by global index");
+    auto* getCommitFile = new std::string{};
+    auto* getCommitIndex = new int{-1};
+    auto* getCommitJson = new bool{false};
+    getCommit->add_option("--plan-file", *getCommitFile, "Plan file path");
+    getCommit->add_option("index", *getCommitIndex, "Global commit index from `kog plan finish-report`")->required();
+    getCommit->add_flag("--json", *getCommitJson, "Print machine-readable JSON output");
+    getCommit->callback([=]() {
+        const auto workspaceRoot = std::filesystem::current_path().lexically_normal();
+        const auto planPath =
+            getCommitFile->empty() ? DefaultPlanPath(workspaceRoot) : std::filesystem::path(*getCommitFile).lexically_normal();
+        const auto payload = ReadFileText(planPath);
+        if (!payload.has_value()) {
+            std::cerr << "Error: plan file not found/readable: " << planPath.generic_string() << "\n";
+            std::exit(2);
+        }
+        std::string lookupError;
+        const auto entry = FindCommitEntryByFlatIndex(*payload, *getCommitIndex, &lookupError);
+        if (!entry.has_value()) {
+            std::cerr << "Error: failed to read commit entry";
+            if (!lookupError.empty()) {
+                std::cerr << ": " << lookupError;
+            }
+            std::cerr << "\n";
+            std::exit(2);
+        }
+
+        if (*getCommitJson) {
+            std::ostringstream oss;
+            oss << "{\n";
+            oss << "  \"index\": " << entry->index << ",\n";
+            oss << "  \"repo\": \"" << JsonEscape(entry->repo) << "\",\n";
+            oss << "  \"message\": \"" << JsonEscape(entry->message) << "\",\n";
+            oss << "  \"include\": [";
+            for (std::size_t i = 0; i < entry->include.size(); ++i) {
+                if (i != 0) {
+                    oss << ",";
+                }
+                oss << "\"" << JsonEscape(entry->include[i]) << "\"";
+            }
+            oss << "],\n";
+            oss << "  \"exclude\": [";
+            for (std::size_t i = 0; i < entry->exclude.size(); ++i) {
+                if (i != 0) {
+                    oss << ",";
+                }
+                oss << "\"" << JsonEscape(entry->exclude[i]) << "\"";
+            }
+            oss << "],\n";
+            oss << "  \"review\": {\n";
+            oss << "    \"verdict\": \"" << JsonEscape(entry->reviewVerdict) << "\",\n";
+            oss << "    \"reason\": \"" << JsonEscape(entry->reviewReason) << "\"\n";
+            oss << "  }\n";
+            oss << "}\n";
+            std::cout << oss.str();
+            return;
+        }
+
+        std::cout << "[plan] commit[" << entry->index << "] repo=" << entry->repo << "\n";
+        std::cout << "[plan] message: " << entry->message << "\n";
+        std::cout << "[plan] review.verdict: " << entry->reviewVerdict << "\n";
+        std::cout << "[plan] review.reason: " << entry->reviewReason << "\n";
+        std::cout << "[plan] include:\n";
+        for (const auto& path : entry->include) {
+            std::cout << "  - " << path << "\n";
+        }
+        std::cout << "[plan] exclude:\n";
+        for (const auto& path : entry->exclude) {
+            std::cout << "  - " << path << "\n";
+        }
+    });
+
+    auto* countCommits = cmd->add_subcommand("count-commits", "Count commit entries and review-needed items in stages.commit");
+    auto* countCommitsFile = new std::string{};
+    auto* countCommitsJson = new bool{false};
+    countCommits->add_option("--plan-file", *countCommitsFile, "Plan file path");
+    countCommits->add_flag("--json", *countCommitsJson, "Print machine-readable JSON output");
+    countCommits->callback([=]() {
+        const auto workspaceRoot = std::filesystem::current_path().lexically_normal();
+        const auto planPath = countCommitsFile->empty() ? DefaultPlanPath(workspaceRoot)
+                                                        : std::filesystem::path(*countCommitsFile).lexically_normal();
+        const auto payload = ReadFileText(planPath);
+        if (!payload.has_value()) {
+            std::cerr << "Error: plan file not found/readable: " << planPath.generic_string() << "\n";
+            std::exit(2);
+        }
+        const auto entries = CollectCommitPlanEntries(*payload);
+        const auto reviewNeededIndexes = CollectCommitIndexesNeedingReview(entries);
+        if (*countCommitsJson) {
+            std::ostringstream oss;
+            oss << "{\n";
+            oss << "  \"total_commits\": " << entries.size() << ",\n";
+            oss << "  \"review_needed_commits\": " << reviewNeededIndexes.size() << ",\n";
+            oss << "  \"review_needed_indexes\": [";
+            for (std::size_t i = 0; i < reviewNeededIndexes.size(); ++i) {
+                if (i != 0) {
+                    oss << ",";
+                }
+                oss << reviewNeededIndexes[i];
+            }
+            oss << "]\n";
+            oss << "}\n";
+            std::cout << oss.str();
+            return;
+        }
+        std::cout << "[plan] total_commits: " << entries.size() << "\n";
+        std::cout << "[plan] review_needed_commits: " << reviewNeededIndexes.size() << "\n";
+        std::cout << "[plan] review_needed_indexes:";
+        if (reviewNeededIndexes.empty()) {
+            std::cout << " <none>\n";
+            return;
+        }
+        for (const auto index : reviewNeededIndexes) {
+            std::cout << " " << index;
+        }
+        std::cout << "\n";
+    });
+
     auto* summary = cmd->add_subcommand("finish-report", "Print compact plan summary");
     auto* summaryFile = new std::string{};
     auto* summaryMax = new int{10};
@@ -2080,6 +3114,7 @@ void RegisterPlan(CLI::App& InApp) {
         const auto commitArray = ExtractArrayBodyForKey(*stages, "commit").value_or(std::string{});
         std::size_t repoCount = 0;
         std::size_t commitCount = 0;
+        std::size_t flatIndex = 0;
         std::vector<std::string> lines;
         for (const auto& repoObj : SplitTopLevelObjects(commitArray)) {
             const auto repo = ExtractStringField(repoObj, "repo").value_or("?");
@@ -2091,7 +3126,8 @@ void RegisterPlan(CLI::App& InApp) {
             commitCount += commitObjects.size();
             for (const auto& commitObj : commitObjects) {
                 const auto msg = ExtractStringField(commitObj, "message").value_or("");
-                lines.push_back(std::format("[plan] - {}: {}", repo, msg));
+                lines.push_back(std::format("[plan] - [{}] {}: {}", flatIndex, repo, msg));
+                flatIndex += 1;
             }
         }
         std::cout << std::format("[plan] commits: repos={} total={}\n", repoCount, commitCount);
