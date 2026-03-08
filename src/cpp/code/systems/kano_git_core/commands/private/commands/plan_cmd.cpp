@@ -2227,6 +2227,7 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
                   const std::string& InRequestedFillMode,
                   bool InDebugAi,
                   std::string* OutError = nullptr) -> bool {
+    const auto fillStart = std::chrono::steady_clock::now();
     const auto provider = ResolveAiProvider(InRequestedProvider);
     if (provider.empty()) {
         if (OutError != nullptr) {
@@ -2587,6 +2588,9 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
         std::cout << "Filled plan commit entries with AI-safe ops: provider=" << provider << " model=" << (model.empty() ? "auto" : model)
                   << " commits=" << ops.size() << "\n";
     }
+    const auto fillEnd = std::chrono::steady_clock::now();
+    const auto fillMillis = std::chrono::duration_cast<std::chrono::milliseconds>(fillEnd - fillStart).count();
+    std::cout << "[plan] ai_fill_ms: " << fillMillis << "\n";
     return true;
 }
 
