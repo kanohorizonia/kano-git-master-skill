@@ -1011,6 +1011,109 @@ auto ExtractStringField(const std::string& InObjectText, const std::string& InFi
     return parsed->first;
 }
 
+void PrintCommitPushStageTimings(const std::string& InMode,
+                                 long long InSafetyGatesMillis,
+                                 long long InPreCommitMillis,
+                                 long long InCommitMillis,
+                                 long long InSyncMillis,
+                                 long long InPostSyncMillis,
+                                 long long InPushMillis,
+                                 long long InTotalMillis) {
+    std::cout << "\n=== commit-push stage timings ===\n";
+    std::cout << "mode: " << InMode << "\n";
+    std::cout << "safety_gates_ms: " << InSafetyGatesMillis << "\n";
+    std::cout << "pre_commit_ms: " << InPreCommitMillis << "\n";
+    std::cout << "commit_ms: " << InCommitMillis << "\n";
+    std::cout << "sync_ms: " << InSyncMillis << "\n";
+    std::cout << "post_sync_ms: " << InPostSyncMillis << "\n";
+    std::cout << "push_ms: " << InPushMillis << "\n";
+    std::cout << "total_ms: " << InTotalMillis << "\n";
+}
+
+auto HumanAutoPlanLooksDeterministic(const std::filesystem::path& InPlanPath,
+                                     std::string* OutReason) -> bool {
+    const auto payload = ReadTextFile(InPlanPath);
+    if (!payload.has_value()) {
+        if (OutReason != nullptr) {
+            *OutReason = "cannot read plan file";
+        }
+        return true;
+    }
+
+    const auto meta = ExtractObjectBodyForKey(*payload, "meta");
+    if (!meta.has_value()) {
+        if (OutReason != nullptr) {
+            *OutReason = "plan meta missing";
+        }
+        return true;
+    }
+
+    const auto planner = ExtractObjectBodyForKey(*meta, "planner");
+    const auto review = ExtractObjectBodyForKey(*meta, "review");
+    const auto stages = ExtractObjectBodyForKey(*payload, "stages");
+    const auto provider = ToLower(planner.has_value() ? ExtractStringField(*planner, "provider").value_or("") : std::string{});
+    const auto model = ToLower(planner.has_value() ? ExtractStringField(*planner, "ai-model").value_or("") : std::string{});
+    const auto reason = ToLower(review.has_value() ? ExtractStringField(*review, "reason").value_or("") : std::string{});
+
+    const bool deterministicPlannerMeta = provider == "agent" ||
+                                          model == "external-agent" ||
+                                          model == "deterministic" ||
+                                          reason.find("deterministic plan bootstrap") != std::string::npos;
+    if (!deterministicPlannerMeta) {
+        return false;
+    }
+
+    if (!stages.has_value()) {
+        if (OutReason != nullptr) {
+            *OutReason = std::format("provider={} ai-model={} review.reason={} stages=<missing>",
+                                     provider.empty() ? "<unset>" : provider,
+                                     model.empty() ? "<unset>" : model,
+                                     reason.empty() ? "<unset>" : reason);
+        }
+        return true;
+    }
+
+    bool hasCommitItems = false;
+    bool hasLikelyAiContent = false;
+    const auto commitArray = ExtractArrayBodyForKey(*stages, "commit").value_or(std::string{});
+    const std::regex fallbackMessagePattern(R"(^chore\(.+\): apply workspace updates \([0-9]+ files?\)$)", std::regex::icase);
+    for (const auto& repoObj : SplitTopLevelObjects(commitArray)) {
+        const auto commits = ExtractArrayBodyForKey(repoObj, "commits").value_or(std::string{});
+        for (const auto& commitObj : SplitTopLevelObjects(commits)) {
+            hasCommitItems = true;
+            const auto msg = ToLower(ExtractStringField(commitObj, "message").value_or(""));
+            const auto commitReview = ExtractObjectBodyForKey(commitObj, "review");
+            const auto commitReason = ToLower(
+                commitReview.has_value() ? ExtractStringField(*commitReview, "reason").value_or("") : std::string{});
+            const bool isFallbackMessage = std::regex_match(msg, fallbackMessagePattern);
+            const bool isFallbackReason = commitReason.find("seeded by plan commit-seed") != std::string::npos;
+            const bool isPlaceholder = msg.find("replace-with-") != std::string::npos ||
+                                       commitReason.find("replace-with-") != std::string::npos;
+            if (!isFallbackMessage && !isFallbackReason && !isPlaceholder) {
+                hasLikelyAiContent = true;
+            }
+        }
+    }
+
+    if (hasLikelyAiContent) {
+        if (OutReason != nullptr) {
+            *OutReason = std::format("metadata deterministic but commit content appears AI-authored; allowing proceed (provider={} ai-model={})",
+                                     provider.empty() ? "<unset>" : provider,
+                                     model.empty() ? "<unset>" : model);
+        }
+        return false;
+    }
+
+    if (OutReason != nullptr) {
+        *OutReason = std::format("provider={} ai-model={} review.reason={} has_commit_items={} content=fallback-only",
+                                 provider.empty() ? "<unset>" : provider,
+                                 model.empty() ? "<unset>" : model,
+                                 reason.empty() ? "<unset>" : reason,
+                                 hasCommitItems ? "true" : "false");
+    }
+    return true;
+}
+
 void PrintExecutedPlanSummary(const std::filesystem::path& InPlanPath, const int InMaxCommits = 10) {
     const auto payload = ReadTextFile(InPlanPath);
     if (!payload.has_value()) {
@@ -1583,6 +1686,13 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
                                        const std::string& InNormalizedPlanFile,
                                        const std::vector<std::string>& InExtraArgs) -> int {
     const bool agentMode = IsAgentModeEnabled();
+    const auto totalStart = std::chrono::steady_clock::now();
+    long long safetyGatesMillis = 0;
+    long long preCommitMillis = 0;
+    long long commitMillis = 0;
+    long long syncMillis = 0;
+    long long postSyncMillis = 0;
+    long long pushMillis = 0;
     if (InNormalizedPlanFile.empty()) {
         std::cerr << "Error: plan pipeline requires non-empty --plan-file\n";
         return 2;
@@ -1612,11 +1722,17 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
     }
 
     std::cout << "=== commit-push stage: safety-gates ===\n";
+    const auto safetyStart = std::chrono::steady_clock::now();
     RunPipelineSafetyGatesForNonAiCommitPush(InWorkspaceRoot);
+    const auto safetyEnd = std::chrono::steady_clock::now();
+    safetyGatesMillis = std::chrono::duration_cast<std::chrono::milliseconds>(safetyEnd - safetyStart).count();
 
     std::cout << "=== commit-push stage: pre-commit ===\n";
     {
+        const auto preCommitStart = std::chrono::steady_clock::now();
         const auto preCommitCode = RunSyncPreCommitNative(InWorkspaceRoot, true, false, "default");
+        const auto preCommitEnd = std::chrono::steady_clock::now();
+        preCommitMillis = std::chrono::duration_cast<std::chrono::milliseconds>(preCommitEnd - preCommitStart).count();
         if (preCommitCode != 0) {
             return preCommitCode;
         }
@@ -1628,7 +1744,10 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
     } else {
         std::cout << "=== commit-push stage: commit ===\n";
         {
+            const auto commitStart = std::chrono::steady_clock::now();
             const auto commitCode = RunCommitNativePlanStage(InWorkspaceRoot, InNormalizedPlanFile, "commit", false);
+            const auto commitEnd = std::chrono::steady_clock::now();
+            commitMillis = std::chrono::duration_cast<std::chrono::milliseconds>(commitEnd - commitStart).count();
             if (commitCode != 0) {
                 return commitCode;
             }
@@ -1636,7 +1755,10 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
 
         std::cout << "=== commit-push stage: sync ===\n";
         {
+            const auto syncStart = std::chrono::steady_clock::now();
             const auto syncCode = RunSyncOriginLatestNative(InWorkspaceRoot, true, false);
+            const auto syncEnd = std::chrono::steady_clock::now();
+            syncMillis = std::chrono::duration_cast<std::chrono::milliseconds>(syncEnd - syncStart).count();
             if (syncCode != 0) {
                 return syncCode;
             }
@@ -1644,6 +1766,7 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
 
         std::cout << "=== commit-push stage: post-sync ===\n";
         {
+            const auto postSyncStart = std::chrono::steady_clock::now();
             const auto summary = ClassifyPostSyncDelta(InWorkspaceRoot, {}, false);
             if (summary.kind == PostSyncDeltaKind::SemanticDrift) {
                 std::cerr << "[commit-push] post-sync semantic drift detected after sync; manual review required.\n";
@@ -1671,12 +1794,19 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
                     }
                 }
             }
+            const auto postSyncEnd = std::chrono::steady_clock::now();
+            postSyncMillis = std::chrono::duration_cast<std::chrono::milliseconds>(postSyncEnd - postSyncStart).count();
         }
     }
 
     std::cout << "=== commit-push stage: push ===\n";
     {
+        const auto pushStart = std::chrono::steady_clock::now();
         const auto pushCode = RunPushNativeSimple(InWorkspaceRoot, true, false, false, false, false, 0, false, "");
+        const auto pushEnd = std::chrono::steady_clock::now();
+        pushMillis = std::chrono::duration_cast<std::chrono::milliseconds>(pushEnd - pushStart).count();
+        const auto totalEnd = std::chrono::steady_clock::now();
+        const auto totalMillis = std::chrono::duration_cast<std::chrono::milliseconds>(totalEnd - totalStart).count();
         std::string stampError;
         if (!StampCommitPlanExecutedAt(planPath, &stampError)) {
             std::cerr << "Warning: failed to stamp plan executed_at_utc: " << planPath.generic_string();
@@ -1685,6 +1815,14 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
             }
             std::cerr << "\n";
         }
+        PrintCommitPushStageTimings("plan-file",
+                                    safetyGatesMillis,
+                                    preCommitMillis,
+                                    commitMillis,
+                                    syncMillis,
+                                    postSyncMillis,
+                                    pushMillis,
+                                    totalMillis);
         PrintExecutedPlanSummary(std::filesystem::path(InNormalizedPlanFile).lexically_normal(), 10);
         return pushCode;
     }
@@ -1748,6 +1886,7 @@ void RegisterCommitPush(CLI::App& InApp) {
 
     cmd->callback([=]() {
         const auto totalStart = std::chrono::steady_clock::now();
+        long long safetyGatesMillis = 0;
         long long preCommitMillis = 0;
         long long commitMillis = 0;
         long long syncMillis = 0;
@@ -1858,29 +1997,74 @@ void RegisterCommitPush(CLI::App& InApp) {
             if (!hasWorkingChangesAtStart) {
                 std::cout << "[commit-push] workspace clean; skip AI commit runbook (no-op) and proceed to push check.\n";
             } else {
+                long long planNewMillis = 0;
+                long long ignoreRunbookMillis = 0;
+                long long ignoreApplyMillis = 0;
+                long long commitRunbookMillis = 0;
+                long long planPipelineMillis = 0;
                 const auto autoPlanPath = DefaultSharedPlanPath(workspaceRoot);
                 std::cout << "[commit-push] full-auto plan file: " << autoPlanPath.generic_string() << "\n";
+                std::cout << "[commit-push][auto-plan] stage=plan-new start\n";
+                const auto planNewStart = std::chrono::steady_clock::now();
                 const auto planNewCode = RunPlanNewViaSelf(workspaceRoot, autoPlanPath);
+                const auto planNewEnd = std::chrono::steady_clock::now();
+                planNewMillis = std::chrono::duration_cast<std::chrono::milliseconds>(planNewEnd - planNewStart).count();
                 if (planNewCode != 0) {
                     std::exit(planNewCode);
                 }
+                std::cout << "[commit-push][auto-plan] stage=plan-new done ms=" << planNewMillis << "\n";
+                std::cout << "[commit-push][auto-plan] stage=ignore-runbook start\n";
+                const auto ignoreRunbookStart = std::chrono::steady_clock::now();
                 const auto ignoreRunbookCode = RunIgnorePlanRunbookViaSelf(workspaceRoot, autoPlanPath);
+                const auto ignoreRunbookEnd = std::chrono::steady_clock::now();
+                ignoreRunbookMillis = std::chrono::duration_cast<std::chrono::milliseconds>(ignoreRunbookEnd - ignoreRunbookStart).count();
                 if (ignoreRunbookCode != 0) {
                     std::exit(ignoreRunbookCode);
                 }
+                std::cout << "[commit-push][auto-plan] stage=ignore-runbook done ms=" << ignoreRunbookMillis << "\n";
                 if (PlanStageLikelyNonEmpty(autoPlanPath, "ignore")) {
+                    std::cout << "[commit-push][auto-plan] stage=ignore-apply start\n";
+                    const auto ignoreApplyStart = std::chrono::steady_clock::now();
                     const auto ignoreApplyCode = RunIgnorePlanApplyViaSelf(workspaceRoot, autoPlanPath);
+                    const auto ignoreApplyEnd = std::chrono::steady_clock::now();
+                    ignoreApplyMillis = std::chrono::duration_cast<std::chrono::milliseconds>(ignoreApplyEnd - ignoreApplyStart).count();
                     if (ignoreApplyCode != 0) {
                         std::exit(ignoreApplyCode);
                     }
+                    std::cout << "[commit-push][auto-plan] stage=ignore-apply done ms=" << ignoreApplyMillis << "\n";
                 } else {
                     std::cout << "[commit-push] ignore plan stage is empty; skipping ignore apply.\n";
                 }
+                std::cout << "[commit-push][auto-plan] stage=commit-runbook start\n";
+                const auto commitRunbookStart = std::chrono::steady_clock::now();
                 const auto runbookCode = RunCommitPlanRunbookViaSelf(workspaceRoot, autoPlanPath, *aiProvider, *aiModel);
+                const auto commitRunbookEnd = std::chrono::steady_clock::now();
+                commitRunbookMillis = std::chrono::duration_cast<std::chrono::milliseconds>(commitRunbookEnd - commitRunbookStart).count();
                 if (runbookCode != 0) {
                     std::exit(runbookCode);
                 }
+                std::cout << "[commit-push][auto-plan] stage=commit-runbook done ms=" << commitRunbookMillis << "\n";
+                std::string deterministicReason;
+                if (HumanAutoPlanLooksDeterministic(autoPlanPath, &deterministicReason)) {
+                    std::cerr << "Error: AI commit runbook produced non-AI deterministic plan metadata; refusing to continue.\n";
+                    std::cerr << "Hint: verify AI provider/auth and rerun plain `kog cpa`.\n";
+                    std::cerr << "Hint: deterministic metadata: " << deterministicReason << "\n";
+                    std::exit(2);
+                }
+                std::cout << "[commit-push][auto-plan] stage=plan-pipeline start\n";
+                const auto planPipelineStart = std::chrono::steady_clock::now();
                 const auto pipelineCode = RunCommitPushPlanFilePipeline(workspaceRoot, autoPlanPath.generic_string(), {});
+                const auto planPipelineEnd = std::chrono::steady_clock::now();
+                planPipelineMillis = std::chrono::duration_cast<std::chrono::milliseconds>(planPipelineEnd - planPipelineStart).count();
+                const auto autoTotalEnd = std::chrono::steady_clock::now();
+                const auto autoTotalMillis = std::chrono::duration_cast<std::chrono::milliseconds>(autoTotalEnd - totalStart).count();
+                std::cout << "\n=== commit-push auto-plan timings ===\n";
+                std::cout << "plan_new_ms: " << planNewMillis << "\n";
+                std::cout << "ignore_runbook_ms: " << ignoreRunbookMillis << "\n";
+                std::cout << "ignore_apply_ms: " << ignoreApplyMillis << "\n";
+                std::cout << "commit_runbook_ms: " << commitRunbookMillis << "\n";
+                std::cout << "plan_pipeline_ms: " << planPipelineMillis << "\n";
+                std::cout << "total_ms: " << autoTotalMillis << "\n";
                 std::exit(pipelineCode);
             }
         }
@@ -1909,7 +2093,10 @@ void RegisterCommitPush(CLI::App& InApp) {
 
         if (!effectiveAiModeRequested) {
             std::cout << "=== commit-push stage: safety-gates ===\n";
+            const auto safetyStart = std::chrono::steady_clock::now();
             RunPipelineSafetyGatesForNonAiCommitPush(workspaceRoot);
+            const auto safetyEnd = std::chrono::steady_clock::now();
+            safetyGatesMillis = std::chrono::duration_cast<std::chrono::milliseconds>(safetyEnd - safetyStart).count();
         }
 
         std::cout << "=== commit-push stage: pre-commit ===\n";
@@ -2084,19 +2271,16 @@ void RegisterCommitPush(CLI::App& InApp) {
 
         const auto pushEnd = std::chrono::steady_clock::now();
         pushMillis = std::chrono::duration_cast<std::chrono::milliseconds>(pushEnd - pushStart).count();
-
-        if (*profile) {
-            const auto totalEnd = std::chrono::steady_clock::now();
-            const auto totalMillis = std::chrono::duration_cast<std::chrono::milliseconds>(totalEnd - totalStart).count();
-            std::cout << "\n=== Commit-Push Profile Summary ===\n";
-            std::cout << "mode: native\n";
-            std::cout << "pre_commit_ms: " << preCommitMillis << "\n";
-            std::cout << "commit_ms: " << commitMillis << "\n";
-            std::cout << "sync_ms: " << syncMillis << "\n";
-            std::cout << "post_sync_ms: " << postSyncMillis << "\n";
-            std::cout << "push_ms: " << pushMillis << "\n";
-            std::cout << "total_ms: " << totalMillis << "\n";
-        }
+        const auto totalEnd = std::chrono::steady_clock::now();
+        const auto totalMillis = std::chrono::duration_cast<std::chrono::milliseconds>(totalEnd - totalStart).count();
+        PrintCommitPushStageTimings("native",
+                                    safetyGatesMillis,
+                                    preCommitMillis,
+                                    commitMillis,
+                                    syncMillis,
+                                    postSyncMillis,
+                                    pushMillis,
+                                    totalMillis);
 
         if (hasCommitPlan) {
             std::string stampError;

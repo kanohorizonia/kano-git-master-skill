@@ -844,6 +844,109 @@ Ready-to-copy templates:
 ./.agents/kano/kano-git-master-skill/scripts/core/gen-root-wrappers.sh --profile standalone --target .
 ```
 
+## Plan Review SOP (CLI-only, schema-safe)
+
+For any AI-assisted commit planning or review flow, agents must **not** edit plan JSON directly.
+All plan mutations must go through `kog plan` subcommands so plan schema stays valid.
+
+### Current support level
+
+Current supported mode is **single-agent serialized execution only**.
+
+- One agent owns the whole plan-review loop.
+- Process commit entries one by one in ascending index order.
+- Do not split indexes across multiple agents yet.
+- Do not design around claim/lease/parallel worker behavior yet.
+
+Parallel review may be added later, but it is explicitly **out of scope** until serialized `cpa` is stable and repeatable.
+
+### Required rule
+
+- Do **not** rewrite `.kano/cache/git/plans/*.json` by hand.
+- Do **not** ask AI to emit a full replacement plan JSON for commit/review authoring.
+- Use native CLI subcommands to inspect and fill commit entries.
+
+### Required inspection/fill loop
+
+1. Count how many commit entries exist and whether any still need review:
+
+```bash
+kog plan count-commits --json --plan-file .kano/cache/git/plans/default-plan.json
+```
+
+Expected machine-readable fields:
+- `total_commits`
+- `review_needed_commits`
+- `review_needed_indexes`
+
+2. Print indexed overview:
+
+```bash
+kog plan finish-report --plan-file .kano/cache/git/plans/default-plan.json
+```
+
+3. For each target index, inspect the exact entry before updating it:
+
+```bash
+kog plan get-commit 0 --json --plan-file .kano/cache/git/plans/default-plan.json
+```
+
+Read-only fields from `get-commit` are the source of truth for:
+- `repo`
+- `include`
+- `exclude`
+- current `message`
+- current `review`
+
+4. Update only semantic authoring fields via CLI:
+
+```bash
+kog plan fill-commit 0 \
+  --plan-file .kano/cache/git/plans/default-plan.json \
+  --commit-message "chore: update .agents/kano submodule pointer" \
+  --review.verdict pass \
+  --review.reason "Workspace dirty state is a tracked gitlink update at .agents/kano and this commit scopes exactly to that change."
+```
+
+5. Verify before execution:
+
+```bash
+kog plan verify pre-apply --stage commit --plan-file .kano/cache/git/plans/default-plan.json
+```
+
+6. Execute canonical human flow:
+
+```bash
+kog cpa
+```
+
+### Multi-repo rule
+
+- `fill-commit` and `get-commit` use **global commit index** across all repos in `stages.commit`.
+- Agents must not assume `index == repo-local index`.
+- Always discover indexes via `count-commits` and `finish-report` first.
+- Even in multi-repo plans, review is still serialized by global index order.
+
+### Placeholder / incomplete-plan rule
+
+An entry still needs AI review if any of the following is true:
+- empty `message`
+- empty `review.verdict`
+- empty `review.reason`
+- any `replace-with-*` placeholder remains
+- `review.verdict` is not `pass`
+
+### `cpa` contract
+
+`kog cpa` must follow the same schema-safe contract:
+- tool-owned bootstrap/seed may create the plan structure
+- AI may author commit/review content
+- commit/review content must be applied through native plan mutation logic, not raw JSON replacement
+- verify gates must run before commit execution
+- execution model is single-agent serialized until explicitly upgraded
+
+If a future implementation changes internal wiring, it must preserve the external SOP above.
+
 ## Troubleshooting
 
 ### Azure HTTPS auth: `fatal: unable to get password from user`
