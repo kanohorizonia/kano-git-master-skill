@@ -56,6 +56,10 @@
             "exclude": [
               "replace-with-exclude-path-or-glob"
             ],
+            "planner": {
+              "provider": "replace-with-provider",
+              "ai-model": "replace-with-ai-model"
+            },
             "review": {
               "verdict": "pass",
               "reason": "replace-with-review-reason-for-this-commit"

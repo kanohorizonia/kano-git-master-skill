@@ -20,6 +20,10 @@ target_sources(kano_git_core
     commands/private/command_mode_state.cpp
     commands/private/command_executor.cpp
     commands/private/tui_state.cpp
+    commands/private/kog_config.hpp
+    commands/private/kog_config.cpp
+    commands/private/auto_model_policy.hpp
+    commands/private/auto_model_policy.cpp
 
     workspace/private/discovery.cpp
     workspace/private/scheduler.hpp
@@ -33,6 +37,7 @@ target_sources(kano_git_core
     commands/private/commands/completion_cmd.cpp
     commands/private/commands/commit_cmd.cpp
     commands/private/commands/commit_push_cmd.cpp
+    commands/private/commands/config_cmd.cpp
     commands/private/commands/dirty_cmd.cpp
     commands/private/commands/doctor_cmd.cpp
     commands/private/commands/guide_cmd.cpp
@@ -101,4 +106,4 @@ if(MSVC AND CMAKE_GENERATOR MATCHES "Visual Studio")
     endif()
 endif()
 
-target_link_libraries(kano_git_core PUBLIC CLI11::CLI11 ftxui::screen ftxui::dom ftxui::component)
+target_link_libraries(kano_git_core PUBLIC CLI11::CLI11 ftxui::screen ftxui::dom ftxui::component tomlplusplus::tomlplusplus)

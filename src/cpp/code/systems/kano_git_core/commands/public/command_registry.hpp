@@ -10,6 +10,7 @@ void RegisterAll(CLI::App& InApp);
 
 void RegisterVersion(CLI::App& InApp);
 void RegisterCache(CLI::App& InApp);
+void RegisterConfig(CLI::App& InApp);
 void RegisterMeta(CLI::App& InApp);
 void RegisterComplete(CLI::App& InApp);
 void RegisterCompletion(CLI::App& InApp);
