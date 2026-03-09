@@ -549,7 +549,7 @@ auto CurrentUtcTimestampIso8601() -> std::string {
 auto DefaultCommitPlanOutputPath(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path {
     const auto headShort = CaptureHeadShortSha(InWorkspaceRoot);
     const auto stamp = CurrentUtcTimestampCompact();
-    return (InWorkspaceRoot / ".kano" / "cache" / "git" / "plans" /
+    return (InWorkspaceRoot / ".kano" / "tmp" / "git" / "plans" /
             ("plan-" + stamp + "-" + headShort + ".json"))
         .lexically_normal();
 }
@@ -558,7 +558,7 @@ auto DefaultSharedPlanPath(const std::filesystem::path& InWorkspaceRoot) -> std:
     if (const char* explicitPlan = std::getenv("KOG_PLAN_FILE"); explicitPlan != nullptr && *explicitPlan != '\0') {
         return std::filesystem::path(explicitPlan).lexically_normal();
     }
-    return (InWorkspaceRoot / ".kano" / "cache" / "git" / "plans" / "default-plan.json").lexically_normal();
+    return (InWorkspaceRoot / ".kano" / "tmp" / "git" / "plans" / "default-plan.json").lexically_normal();
 }
 
 auto ResolveSelfBinaryCommand() -> std::string {
@@ -635,7 +635,8 @@ struct CommitRunbookResult {
 auto RunCommitPlanRunbookViaSelf(const std::filesystem::path& InWorkspaceRoot,
                                  const std::filesystem::path& InPlanPath,
                                  const std::string& InProvider,
-                                 const std::string& InModel) -> CommitRunbookResult {
+                                 const std::string& InModel,
+                                 const std::string& InFillMode) -> CommitRunbookResult {
     std::vector<std::string> args = {
         "plan", "runbook", "commit",
         "--plan-file", InPlanPath.generic_string(),
@@ -645,6 +646,10 @@ auto RunCommitPlanRunbookViaSelf(const std::filesystem::path& InWorkspaceRoot,
         args.push_back("--ai-model");
         args.push_back(InModel);
     }
+    if (!InFillMode.empty()) {
+        args.push_back("--ai-fill-mode");
+        args.push_back(InFillMode);
+    }
     const auto result = shell::ExecuteCommand(ResolveSelfBinaryCommand(), args, shell::ExecMode::Capture, InWorkspaceRoot);
     CommitRunbookResult out;
     out.aiFillMillis = ExtractPlanAiFillMillis(result);
@@ -652,6 +657,9 @@ auto RunCommitPlanRunbookViaSelf(const std::filesystem::path& InWorkspaceRoot,
     out.exitCode = exitCode;
     if (exitCode != 0) {
         std::cerr << "Error: AI commit runbook failed via native binary (exit=" << exitCode << ").\n";
+        if (ToLower(Trim(InFillMode)) == "single" && std::getenv("KANO_AGENT_MODE") == nullptr) {
+            std::cerr << "Hint: human-mode single CPA forbids deterministic commit fallback; resolve the AI fill failure and rerun.\n";
+        }
     }
     return out;
 }
@@ -1881,6 +1889,7 @@ void RegisterCommitPush(CLI::App& InApp) {
     auto* commitPlanOut = new std::string{};
     auto* aiProvider = new std::string{};
     auto* aiModel = new std::string{};
+    auto* aiFillMode = new std::string{};
     auto* aiAuto = new bool{false};
     auto* noAiReview = new bool{false};
     auto* stagedOnly = new bool{false};
@@ -1902,9 +1911,10 @@ void RegisterCommitPush(CLI::App& InApp) {
     cmd->add_option("--message,-m", *message, "Commit message (skip AI generation)");
     cmd->add_option("--plan-file", *commitPlanFile, "Plan JSON file (stage-aware)");
     cmd->add_flag("--write-plan-template", *writeCommitPlanTemplate, "Write plan template JSON and exit");
-    cmd->add_option("--plan-out", *commitPlanOut, "Template output path (default: .kano/cache/git/plans/plan-<utc>-<head>.json)");
+    cmd->add_option("--plan-out", *commitPlanOut, "Template output path (default: .kano/tmp/git/plans/plan-<utc>-<head>.json)");
     cmd->add_option("--ai-provider", *aiProvider, "AI provider for commit (copilot, codex, opencode)");
     cmd->add_option("--ai-model", *aiModel, "AI model for commit");
+    cmd->add_option("--ai-commit-generation-mode,--ai-fill-mode", *aiFillMode, "AI commit generation mode override (single|per-commit|adaptive)");
     cmd->add_flag("--ai-auto", *aiAuto, "Enable commit AI auto mode");
     cmd->add_flag("--no-ai-review", *noAiReview, "Skip AI review gate for commit");
     cmd->add_flag("--staged-only", *stagedOnly, "Commit only staged changes");
@@ -2071,11 +2081,12 @@ void RegisterCommitPush(CLI::App& InApp) {
                 }
                 std::cout << "[commit-push][auto-plan] stage=commit-runbook start\n";
                 const auto commitRunbookStart = std::chrono::steady_clock::now();
-                const auto runbookResult = RunCommitPlanRunbookViaSelf(workspaceRoot, autoPlanPath, *aiProvider, *aiModel);
+                const auto runbookResult = RunCommitPlanRunbookViaSelf(workspaceRoot, autoPlanPath, *aiProvider, *aiModel, *aiFillMode);
                 const auto commitRunbookEnd = std::chrono::steady_clock::now();
                 commitRunbookMillis = std::chrono::duration_cast<std::chrono::milliseconds>(commitRunbookEnd - commitRunbookStart).count();
                 aiFillMillis = runbookResult.aiFillMillis;
                 if (runbookResult.exitCode != 0) {
+                    std::cerr << "[commit-push][auto-plan] stage=commit-runbook failed ms=" << commitRunbookMillis << "\n";
                     std::exit(runbookResult.exitCode);
                 }
                 std::cout << "[commit-push][auto-plan] stage=commit-runbook done ms=" << commitRunbookMillis << "\n";

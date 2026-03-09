@@ -56,6 +56,8 @@ auto DisplayRepoLabel(const std::filesystem::path& InWorkspaceRoot, const std::f
 auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<std::filesystem::path>;
 auto ReadFileText(const std::filesystem::path& InPath) -> std::optional<std::string>;
 auto ResolveSkillRoot(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path;
+auto Fnv1a64Hex(const std::string& InText) -> std::string;
+auto RunCommitPreflight(const std::filesystem::path& InRepo) -> CommitPreflightReport;
 
 auto Trim(std::string InValue) -> std::string {
     while (!InValue.empty() && (InValue.back() == '\n' || InValue.back() == '\r' || InValue.back() == ' ' || InValue.back() == '\t')) {
@@ -170,6 +172,129 @@ auto LooksRiskyPath(const std::string& InPath) -> bool {
            lower.ends_with(".key");
 }
 
+auto TrimTrailingWindowsPathChars(std::string InValue) -> std::string {
+    while (!InValue.empty() && (InValue.back() == ' ' || InValue.back() == '.')) {
+        InValue.pop_back();
+    }
+    return InValue;
+}
+
+auto IsWindowsReservedDeviceComponent(std::string InComponent) -> bool {
+#if defined(_WIN32)
+    InComponent = TrimTrailingWindowsPathChars(ToLower(Trim(std::move(InComponent))));
+    if (InComponent.empty() || InComponent == "." || InComponent == "..") {
+        return false;
+    }
+
+    const auto colon = InComponent.find(':');
+    if (colon != std::string::npos) {
+        InComponent = InComponent.substr(0, colon);
+    }
+
+    const auto dot = InComponent.find('.');
+    const auto stem = dot == std::string::npos ? InComponent : InComponent.substr(0, dot);
+    static const std::unordered_set<std::string> reserved = {
+        "con", "prn", "aux", "nul",
+        "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+        "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9"
+    };
+    return reserved.contains(stem);
+#else
+    (void)InComponent;
+    return false;
+#endif
+}
+
+auto PathHasWindowsReservedDeviceComponent(const std::string& InPath) -> bool {
+#if defined(_WIN32)
+    if (InPath.empty()) {
+        return false;
+    }
+
+    std::string normalized = InPath;
+    for (auto& ch : normalized) {
+        if (ch == '\\') {
+            ch = '/';
+        }
+    }
+
+    std::size_t start = 0;
+    while (start <= normalized.size()) {
+        const auto end = normalized.find('/', start);
+        auto component = end == std::string::npos ? normalized.substr(start) : normalized.substr(start, end - start);
+        if (IsWindowsReservedDeviceComponent(component)) {
+            return true;
+        }
+        if (end == std::string::npos) {
+            break;
+        }
+        start = end + 1;
+    }
+
+    return false;
+#else
+    (void)InPath;
+    return false;
+#endif
+}
+
+auto BuildGitAddAllArgs(const CommitPreflightReport& InReport, std::vector<std::string>* OutExcluded = nullptr)
+    -> std::vector<std::string> {
+    std::vector<std::string> args{"add", "-A"};
+#if defined(_WIN32)
+    std::vector<std::string> excluded;
+    std::set<std::string> seen;
+    auto collect = [&](const std::vector<std::string>& paths) {
+        for (const auto& path : paths) {
+            if (!PathHasWindowsReservedDeviceComponent(path)) {
+                continue;
+            }
+            if (!seen.insert(path).second) {
+                continue;
+            }
+            excluded.push_back(path);
+        }
+    };
+    collect(InReport.untrackedFiles);
+    collect(InReport.unstagedFiles);
+    collect(InReport.stagedFiles);
+    if (!excluded.empty()) {
+        args.push_back("--");
+        args.push_back(".");
+        for (const auto& path : excluded) {
+            args.push_back(std::string(":(exclude)") + path);
+        }
+        if (OutExcluded != nullptr) {
+            *OutExcluded = std::move(excluded);
+        }
+    }
+#else
+    (void)InReport;
+    (void)OutExcluded;
+#endif
+    return args;
+}
+
+auto MaybeWarnAboutReservedPaths(const std::filesystem::path& InRepo,
+                                 const std::vector<std::string>& InExcluded) -> void {
+    if (InExcluded.empty()) {
+        return;
+    }
+
+    std::ostringstream stream;
+    for (std::size_t index = 0; index < InExcluded.size(); ++index) {
+        if (index > 0) {
+            stream << ", ";
+        }
+        stream << InExcluded[index];
+    }
+    std::cerr << "[kog commit] warning: skipped Windows reserved path(s) in "
+              << InRepo.generic_string()
+              << ": "
+              << stream.str()
+              << '\n';
+}
+
 auto GitCapture(const std::filesystem::path& InRepo, const std::vector<std::string>& InArgs) -> shell::ExecResult {
     return shell::ExecuteCommand("git", InArgs, shell::ExecMode::Capture, InRepo);
 }
@@ -185,6 +310,208 @@ auto GitPassThrough(const std::filesystem::path& InRepo, const std::vector<std::
 auto HasCommand(const std::string& InCommand, const std::vector<std::string>& InArgs = {"--help"}) -> bool {
     const auto result = shell::ExecuteCommand(InCommand, InArgs, shell::ExecMode::Capture, std::filesystem::current_path());
     return result.exitCode == 0;
+}
+
+auto CopilotStandaloneCommand() -> std::string {
+#if defined(_WIN32)
+    return "copilot.cmd";
+#else
+    return "copilot";
+#endif
+}
+
+auto CodexStandaloneCommand() -> std::string {
+#if defined(_WIN32)
+    return "codex.cmd";
+#else
+    return "codex";
+#endif
+}
+
+auto HasStandaloneCopilotCommand() -> bool {
+    return HasCommand(CopilotStandaloneCommand(), {"--help"}) || HasCommand("copilot", {"--help"});
+}
+
+auto ExecuteStandaloneCopilot(const std::vector<std::string>& InArgs,
+                              std::optional<std::filesystem::path> InWorkingDir) -> shell::ExecResult {
+    return shell::ExecuteCommand(CopilotStandaloneCommand(), InArgs, shell::ExecMode::Capture, InWorkingDir);
+}
+
+auto CurrentUtcCompact() -> std::string {
+    const auto now = std::chrono::system_clock::now();
+    const auto tt = std::chrono::system_clock::to_time_t(now);
+    std::tm utc{};
+#if defined(_WIN32)
+    gmtime_s(&utc, &tt);
+#else
+    gmtime_r(&tt, &utc);
+#endif
+    char buffer[32] = {0};
+    std::strftime(buffer, sizeof(buffer), "%Y%m%dT%H%M%SZ", &utc);
+    return std::string(buffer);
+}
+
+auto WriteFileText(const std::filesystem::path& InPath, const std::string& InText, std::string* OutError = nullptr) -> bool {
+    std::error_code ec;
+    const auto parent = InPath.parent_path();
+    if (!parent.empty()) {
+        std::filesystem::create_directories(parent, ec);
+        if (ec) {
+            if (OutError != nullptr) {
+                *OutError = std::format("create_directories failed: {}", ec.message());
+            }
+            return false;
+        }
+    }
+
+    std::ofstream out(InPath, std::ios::out | std::ios::binary | std::ios::trunc);
+    if (!out) {
+        if (OutError != nullptr) {
+            *OutError = std::format("open failed: {}", InPath.generic_string());
+        }
+        return false;
+    }
+    out << InText;
+    if (!out.good()) {
+        if (OutError != nullptr) {
+            *OutError = std::format("write failed: {}", InPath.generic_string());
+        }
+        return false;
+    }
+    return true;
+}
+
+auto WritePromptFile(const std::filesystem::path& InWorkdir,
+                     const std::string& InPrompt,
+                     const std::string& InPurpose,
+                     std::filesystem::path* OutPath,
+                     std::string* OutError = nullptr) -> bool {
+    if (OutPath == nullptr) {
+        if (OutError != nullptr) {
+            *OutError = "missing output path";
+        }
+        return false;
+    }
+
+    const auto promptDir = (InWorkdir / ".kano" / "tmp" / "git" / "provider-prompts").lexically_normal();
+    std::error_code ec;
+    std::filesystem::create_directories(promptDir, ec);
+    if (ec) {
+        if (OutError != nullptr) {
+            *OutError = std::format("create_directories failed: {}", ec.message());
+        }
+        return false;
+    }
+
+    const auto promptPath = (promptDir / std::format("{}-{}-{}.md",
+                                                      InPurpose,
+                                                      CurrentUtcCompact(),
+                                                      Fnv1a64Hex(InPrompt).substr(0, 8)))
+                                .lexically_normal();
+    if (!WriteFileText(promptPath, InPrompt, OutError)) {
+        return false;
+    }
+
+    *OutPath = promptPath;
+    return true;
+}
+
+auto BuildFileBackedPromptArgument(std::optional<std::filesystem::path> InWorkingDir,
+                                   const std::string& InPrompt,
+                                   const std::string& InPurpose) -> std::string {
+    if (!InWorkingDir.has_value()) {
+        return InPrompt;
+    }
+
+    std::filesystem::path promptPath;
+    if (!WritePromptFile(*InWorkingDir, InPrompt, InPurpose, &promptPath)) {
+        return InPrompt;
+    }
+
+    auto refPath = promptPath.lexically_relative(*InWorkingDir);
+    if (refPath.empty()) {
+        refPath = promptPath.lexically_normal();
+    }
+    return std::format(
+        "Read @{} and follow it exactly. Treat that file as the complete task. Do not ask clarifying questions. Output only the final answer required by that file.",
+        refPath.generic_string());
+}
+
+auto WriteCodexResponseFilePath(const std::filesystem::path& InWorkdir,
+                                const std::string& InPurpose,
+                                const std::string& InPrompt,
+                                std::filesystem::path* OutPath,
+                                std::string* OutError = nullptr) -> bool {
+    if (OutPath == nullptr) {
+        if (OutError != nullptr) {
+            *OutError = "missing output path";
+        }
+        return false;
+    }
+
+    const auto responseDir = (InWorkdir / ".kano" / "tmp" / "git" / "codex-responses").lexically_normal();
+    std::error_code ec;
+    std::filesystem::create_directories(responseDir, ec);
+    if (ec) {
+        if (OutError != nullptr) {
+            *OutError = std::format("create_directories failed: {}", ec.message());
+        }
+        return false;
+    }
+
+    *OutPath = (responseDir / std::format("{}-{}-{}.txt",
+                                          InPurpose,
+                                          CurrentUtcCompact(),
+                                          Fnv1a64Hex(InPrompt).substr(0, 8)))
+                   .lexically_normal();
+    return true;
+}
+
+void AppendRepeatableFlag(std::vector<std::string>* OutArgs,
+                          const char* InEnvVar,
+                          const std::string& InFlag);
+void AppendSingleValueFlag(std::vector<std::string>* OutArgs,
+                           const char* InEnvVar,
+                           const std::string& InFlag);
+void AppendBoolFlag(std::vector<std::string>* OutArgs,
+                    const char* InEnvVar,
+                    const std::string& InFlag);
+
+auto ExecuteCodexExec(std::optional<std::filesystem::path> InWorkingDir,
+                      const std::string& InPrompt,
+                      const std::string& InPurpose,
+                      const std::string& InModel) -> shell::ExecResult {
+    const auto workdir = InWorkingDir.value_or(std::filesystem::current_path());
+    std::filesystem::path responsePath;
+    std::string responseError;
+    if (!WriteCodexResponseFilePath(workdir, InPurpose, InPrompt, &responsePath, &responseError)) {
+        return shell::ExecResult{.exitCode = 1, .stderrStr = std::format("codex response path error: {}", responseError)};
+    }
+
+    std::vector<std::string> args{"exec", "--skip-git-repo-check"};
+    AppendBoolFlag(&args, "KOG_CODEX_FULL_AUTO", "--full-auto");
+    AppendBoolFlag(&args, "KOG_CODEX_EPHEMERAL", "--ephemeral");
+    AppendBoolFlag(&args, "KOG_CODEX_JSON", "--json");
+    AppendSingleValueFlag(&args, "KOG_CODEX_SANDBOX", "--sandbox");
+    AppendSingleValueFlag(&args, "KOG_CODEX_PROFILE", "--profile");
+    AppendRepeatableFlag(&args, "KOG_CODEX_ADD_DIRS", "--add-dir");
+    args.push_back("-o");
+    args.push_back(responsePath.lexically_normal().generic_string());
+    args.push_back("--cd");
+    args.push_back(workdir.lexically_normal().generic_string());
+    if (!InModel.empty() && InModel != "auto") {
+        args.push_back("--model");
+        args.push_back(InModel);
+    }
+    args.push_back(InPrompt);
+
+    auto result = shell::ExecuteCommand(CodexStandaloneCommand(), args, shell::ExecMode::Capture, InWorkingDir);
+    if (result.exitCode == 0) {
+        if (const auto responseText = ReadFileText(responsePath); responseText.has_value()) {
+            result.stdoutStr = *responseText;
+        }
+    }
+    return result;
 }
 
 auto IsTruthyEnv(const char* InValue) -> bool {
@@ -2996,12 +3323,14 @@ auto CommitSingleRepo(const std::filesystem::path& InWorkspaceRoot,
     }
 
     if (!InStagedOnly && (report.unstagedCount > 0 || report.untrackedCount > 0)) {
-        const auto add = GitPassThrough(InRepo, {"add", "-A"});
+        std::vector<std::string> excludedReserved;
+        const auto add = GitPassThrough(InRepo, BuildGitAddAllArgs(report, &excludedReserved));
         if (add.exitCode != 0) {
             result.failed = true;
             result.note = "git add -A failed";
             return result;
         }
+        MaybeWarnAboutReservedPaths(InRepo, excludedReserved);
         report = RunCommitPreflight(InRepo);
     }
 
@@ -3123,12 +3452,14 @@ auto AmendSingleRepo(const std::filesystem::path& InWorkspaceRoot,
         }
 
         if (!InStagedOnly) {
-            const auto add = GitPassThrough(InRepo, {"add", "-A"});
+            std::vector<std::string> excludedReserved;
+            const auto add = GitPassThrough(InRepo, BuildGitAddAllArgs(report, &excludedReserved));
             if (add.exitCode != 0) {
                 result.failed = true;
                 result.note = "git add -A failed after combine reset";
                 return result;
             }
+            MaybeWarnAboutReservedPaths(InRepo, excludedReserved);
         }
 
         report = RunCommitPreflight(InRepo);
@@ -3174,12 +3505,14 @@ auto AmendSingleRepo(const std::filesystem::path& InWorkspaceRoot,
     }
 
     if (!InStagedOnly && (report.unstagedCount > 0 || report.untrackedCount > 0)) {
-        const auto add = GitPassThrough(InRepo, {"add", "-A"});
+        std::vector<std::string> excludedReserved;
+        const auto add = GitPassThrough(InRepo, BuildGitAddAllArgs(report, &excludedReserved));
         if (add.exitCode != 0) {
             result.failed = true;
             result.note = "git add -A failed";
             return result;
         }
+        MaybeWarnAboutReservedPaths(InRepo, excludedReserved);
         report = RunCommitPreflight(InRepo);
     }
 
@@ -3814,7 +4147,7 @@ void RegisterCommit(CLI::App& InApp) {
     cmd->add_option("--ai-model", *model, "AI model to use");
 
     auto* bAiAuto = new bool{false};
-    cmd->add_flag("--ai-auto", *bAiAuto, "Enable AI auto mode (auto provider/model with remembered model preference)");
+    cmd->add_flag("--ai-auto", *bAiAuto, "Enable AI auto mode (provider auto + layered kog_config model selection)");
 
     // Message option
     auto* message = new std::string{};
