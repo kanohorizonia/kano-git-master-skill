@@ -296,12 +296,12 @@ Note: sourcing will also define globals used by those functions (see the script 
 - Avoid rebuilding a complex partial invalidation graph when a manifest-trust + full-scan fallback model is sufficient.
 
 ### Cache writes need cross-process coordination
-- Shared runtime state under `.kano/tmp/git/*` and discovery cache under `.kano/cache/git/discover-repos/*` require:
+- Shared runtime state under `.kano/tmp/git/*`, canonical workspace state under `.kano/cache/git/workspace-manifest.json`, and discovery cache under `.kano/cache/git/discover-repos/*` require:
   - atomic write (temp file + rename)
   - per-resource cross-process lock
   - stale-lock cleanup path
 - Default shared resources include:
-  - workspace manifest under `.kano/tmp/git/`
+  - workspace manifest under `.kano/cache/git/workspace-manifest.json`
   - discover cache under `.kano/cache/git/discover-repos/`
   - shared default plan under `.kano/tmp/git/plans/`
 - Prefer lock files/directories plus cleanup/inspection commands over broad global locks or implicit best-effort writes.
