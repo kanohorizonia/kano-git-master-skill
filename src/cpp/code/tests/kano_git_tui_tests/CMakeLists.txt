@@ -17,7 +17,7 @@ add_executable(kano_git_tui_tests
 target_link_libraries(kano_git_tui_tests
   PRIVATE Catch2::Catch2WithMain
   PRIVATE kano_git_test_core
-  PRIVATE kano_git_core
+  PRIVATE kano_git_command
 )
 
 catch_discover_tests(kano_git_tui_tests)

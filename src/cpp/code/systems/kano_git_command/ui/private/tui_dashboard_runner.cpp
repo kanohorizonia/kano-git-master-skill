@@ -1,0 +1,2311 @@
+// tui command — FTXUI dashboard with incremental history pager
+
+#include "tui_dashboard_runner.hpp"
+#include "discovery.hpp"
+#include "shell_executor.hpp"
+#include "tui_state.hpp"
+#include "metadata_cache.hpp"
+#include "autocomplete_engine.hpp"
+#include "command_executor.hpp"
+
+#include <ftxui/component/component.hpp>
+#include <ftxui/component/component_options.hpp>
+#include <ftxui/component/screen_interactive.hpp>
+#include <ftxui/dom/elements.hpp>
+
+#include <algorithm>
+#include <cstdlib>
+#include <filesystem>
+#include <functional>
+#include <iostream>
+#include <optional>
+#include <map>
+#include <memory>
+#include <sstream>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+namespace kano::git::commands {
+namespace {
+
+constexpr int kHistoryPageSize = 20;
+
+struct RepoView {
+    std::filesystem::path path;
+    std::string type;
+    std::string branch;
+    std::string upstream;
+    std::string tracking;
+    bool repoDirty = false;
+    bool worktreeDirty = false;
+    std::string dirtyWorktrees;
+    std::vector<std::string> dirtyFiles;
+    std::string parentRepo;
+    int childRepoCount = 0;
+    int treeDepth = 0;
+};
+
+struct RepoHistoryCache {
+    std::map<int, std::vector<std::string>> pages;
+    std::optional<int> totalCommits;
+    std::unordered_map<std::string, std::string> commitDetails;
+    std::unordered_map<std::string, std::string> commitQuickStats;
+};
+
+struct PreviewData {
+    std::vector<std::string> staged;
+    std::vector<std::string> unstaged;
+    std::string branch;
+    std::string upstream;
+    std::string tracking;
+};
+
+struct HistoryState {
+    bool active = false;
+    int repoIndex = 0;
+    int pageIndex = 0;
+    int selectedLine = 0;
+    bool searchMode = false;
+    std::string searchQuery;
+    int highlightedLine = -1;
+    bool detailActive = false;
+    std::string detailSha;
+    std::string detailBody;
+    int detailMode = 0; // 0=summary, 1=files, 2=patch
+    int sortMode = 0;   // 0=time-desc, 1=time-asc, 2=match-first
+};
+
+struct PreviewPanelState {
+    bool active = false;
+    std::string title;
+    std::string body;
+};
+
+struct ConfirmState {
+    bool active = false;
+    std::string title;
+    std::string description;
+    std::filesystem::path repo;
+    std::vector<std::string> command;
+};
+
+struct CherryPickCandidate {
+    std::string sha;
+    std::string title;
+    bool alreadyInTarget = false;
+    std::string risk;
+};
+
+struct CherryPickPreflightState {
+    bool active = false;
+    std::string sourceBranch;
+    std::string targetBranch;
+    std::vector<CherryPickCandidate> commits;
+    std::string note;
+};
+
+struct CherryPickRunnerState {
+    bool active = false;
+    std::filesystem::path repo;
+    std::vector<CherryPickCandidate> queue;
+    int index = 0;
+    bool waitingConflictResolution = false;
+    std::string lastOutput;
+};
+
+struct RebasePreflightState {
+    bool active = false;
+    std::filesystem::path repo;
+    std::string branch;
+    std::string upstream;
+    std::string tracking;
+    std::string mergeBase;
+    std::vector<std::string> candidates;
+    std::string risk;
+    std::string note;
+};
+
+struct RebasePlanItem {
+    std::string sha;
+    std::string title;
+    std::string action = "pick"; // pick|squash|fixup|drop
+};
+
+struct RebasePlannerState {
+    bool active = false;
+    std::filesystem::path repo;
+    std::string baseRef;
+    std::vector<RebasePlanItem> items;
+    int selectedIndex = 0;
+    std::string preview;
+};
+
+struct RebaseRunnerState {
+    bool active = false;
+    std::filesystem::path repo;
+    std::vector<RebasePlanItem> queue;
+    int index = 0;
+    bool waitingConflictResolution = false;
+    std::string lastOutput;
+};
+
+struct DiscoverPagerState {
+    bool active = false;
+    std::vector<std::string> lines;
+    int pageIndex = 0;
+    int pageSize = 18;
+    bool dirtyOnly = false;
+    std::string title;
+};
+
+auto Trim(std::string InValue) -> std::string {
+    while (!InValue.empty() && (InValue.back() == '\n' || InValue.back() == '\r' || InValue.back() == ' ' || InValue.back() == '\t')) {
+        InValue.pop_back();
+    }
+    std::size_t start = 0;
+    while (start < InValue.size() && (InValue[start] == ' ' || InValue[start] == '\t')) {
+        start += 1;
+    }
+    return InValue.substr(start);
+}
+
+auto GitCapture(const std::filesystem::path& InRepo, const std::vector<std::string>& InArgs) -> shell::ExecResult {
+    return shell::ExecuteCommand("git", InArgs, shell::ExecMode::Capture, InRepo);
+}
+
+auto CurrentBranch(const std::filesystem::path& InRepo) -> std::string {
+    const auto out = GitCapture(InRepo, {"symbolic-ref", "--short", "HEAD"});
+    if (out.exitCode != 0) {
+        return "(detached)";
+    }
+    const auto value = Trim(out.stdoutStr);
+    return value.empty() ? "(detached)" : value;
+}
+
+auto CurrentUpstream(const std::filesystem::path& InRepo) -> std::string {
+    const auto out = GitCapture(InRepo, {"rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"});
+    if (out.exitCode != 0) {
+        return "(none)";
+    }
+    const auto value = Trim(out.stdoutStr);
+    return value.empty() ? "(none)" : value;
+}
+
+auto TrackingSummary(const std::filesystem::path& InRepo) -> std::string {
+    const auto out = GitCapture(InRepo, {"status", "--porcelain=v1", "-b"});
+    if (out.exitCode != 0) {
+        return "unknown";
+    }
+    std::istringstream iss(out.stdoutStr);
+    std::string first;
+    if (!std::getline(iss, first)) {
+        return "unknown";
+    }
+    const auto lb = first.find('[');
+    const auto rb = first.find(']');
+    if (lb != std::string::npos && rb != std::string::npos && rb > lb) {
+        return first.substr(lb + 1, rb - lb - 1);
+    }
+    if (first.find("...") != std::string::npos) {
+        return "in-sync";
+    }
+    return "no-upstream";
+}
+
+auto HasDirtyWorktrees(const std::filesystem::path& InRepo, std::string& OutDirtyList) -> bool {
+    const auto out = GitCapture(InRepo, {"worktree", "list", "--porcelain"});
+    if (out.exitCode != 0) {
+        OutDirtyList.clear();
+        return false;
+    }
+
+    std::istringstream iss(out.stdoutStr);
+    std::string line;
+    std::string currentWorktree;
+    std::vector<std::string> dirty;
+    while (std::getline(iss, line)) {
+        line = Trim(line);
+        if (line.rfind("worktree ", 0) == 0) {
+            currentWorktree = line.substr(9);
+            continue;
+        }
+        if (line == "dirty" && !currentWorktree.empty()) {
+            dirty.push_back(currentWorktree);
+        }
+    }
+
+    if (dirty.empty()) {
+        OutDirtyList.clear();
+        return false;
+    }
+
+    std::ostringstream joined;
+    for (std::size_t i = 0; i < dirty.size(); ++i) {
+        if (i > 0) {
+            joined << ", ";
+        }
+        joined << dirty[i];
+    }
+    OutDirtyList = joined.str();
+    return true;
+}
+
+auto DirtyFiles(const std::filesystem::path& InRepo) -> std::vector<std::string> {
+    const auto out = GitCapture(InRepo, {"status", "--porcelain"});
+    if (out.exitCode != 0) {
+        return {};
+    }
+    std::istringstream iss(out.stdoutStr);
+    std::string line;
+    std::vector<std::string> files;
+    while (std::getline(iss, line)) {
+        line = Trim(line);
+        if (line.size() >= 4) {
+            files.push_back(line.substr(3));
+        }
+    }
+    return files;
+}
+
+auto IsAncestorPath(const std::filesystem::path& Ancestor, const std::filesystem::path& Child) -> bool {
+    auto a = Ancestor.lexically_normal();
+    auto c = Child.lexically_normal();
+    if (a == c) {
+        return false;
+    }
+    auto ai = a.begin();
+    auto ci = c.begin();
+    for (; ai != a.end() && ci != c.end(); ++ai, ++ci) {
+        if (*ai != *ci) {
+            return false;
+        }
+    }
+    return ai == a.end();
+}
+
+auto DiscoverRepoViews(const bool InDirtyOnly) -> std::vector<RepoView> {
+    workspace::DiscoverOptions options;
+    options.rootDir = std::filesystem::current_path();
+    options.maxDepth = 3;
+    options.useCache = true;
+    options.metadataLevel = "full";
+
+    const auto discovery = workspace::DiscoverRepos(options);
+    std::vector<RepoView> rows;
+    rows.reserve(discovery.repos.size());
+
+    for (const auto& repo : discovery.repos) {
+        if (InDirtyOnly && !repo.hasChanges) {
+            continue;
+        }
+        RepoView row;
+        row.path = repo.path;
+        row.type = repo.type;
+        row.repoDirty = repo.hasChanges;
+        row.branch = CurrentBranch(repo.path);
+        row.upstream = CurrentUpstream(repo.path);
+        row.tracking = TrackingSummary(repo.path);
+        row.worktreeDirty = HasDirtyWorktrees(repo.path, row.dirtyWorktrees);
+        row.dirtyFiles = DirtyFiles(repo.path);
+        rows.push_back(std::move(row));
+    }
+
+    std::sort(rows.begin(), rows.end(), [](const RepoView& A, const RepoView& B) {
+        return A.path.lexically_normal().generic_string() < B.path.lexically_normal().generic_string();
+    });
+
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+        std::filesystem::path bestParent;
+        for (std::size_t j = 0; j < rows.size(); ++j) {
+            if (i == j) {
+                continue;
+            }
+            if (IsAncestorPath(rows[j].path, rows[i].path)) {
+                if (bestParent.empty() || rows[j].path.generic_string().size() > bestParent.generic_string().size()) {
+                    bestParent = rows[j].path;
+                }
+            }
+        }
+        rows[i].parentRepo = bestParent.empty() ? "(none)" : bestParent.lexically_normal().generic_string();
+    }
+
+    for (auto& row : rows) {
+        int depth = 0;
+        std::string cursor = row.parentRepo;
+        while (cursor != "(none)") {
+            depth += 1;
+            std::string next = "(none)";
+            for (const auto& maybeParent : rows) {
+                if (maybeParent.path.lexically_normal().generic_string() == cursor) {
+                    next = maybeParent.parentRepo;
+                    break;
+                }
+            }
+            cursor = next;
+        }
+        row.treeDepth = depth;
+    }
+
+    for (auto& row : rows) {
+        row.childRepoCount = 0;
+    }
+    for (auto& row : rows) {
+        if (row.parentRepo == "(none)") {
+            continue;
+        }
+        for (auto& maybeParent : rows) {
+            if (maybeParent.path.lexically_normal().generic_string() == row.parentRepo) {
+                maybeParent.childRepoCount += 1;
+                break;
+            }
+        }
+    }
+
+    return rows;
+}
+
+auto FetchHistoryPage(const std::filesystem::path& InRepo, const int InPageIndex) -> std::vector<std::string> {
+    const auto skip = std::to_string(InPageIndex * kHistoryPageSize);
+    const auto count = std::to_string(kHistoryPageSize);
+    const auto out = GitCapture(InRepo, {"log", "--oneline", "--no-decorate", "--skip", skip, "-n", count});
+    if (out.exitCode != 0) {
+        return {"(failed to load history page)"};
+    }
+    std::istringstream iss(out.stdoutStr);
+    std::string line;
+    std::vector<std::string> lines;
+    while (std::getline(iss, line)) {
+        line = Trim(line);
+        if (!line.empty()) {
+            lines.push_back(line);
+        }
+    }
+    if (lines.empty()) {
+        lines.push_back("(no commits in this page)");
+    }
+    return lines;
+}
+
+auto FetchTotalCommitCount(const std::filesystem::path& InRepo) -> std::optional<int> {
+    const auto out = GitCapture(InRepo, {"rev-list", "--count", "HEAD"});
+    if (out.exitCode != 0) {
+        return std::nullopt;
+    }
+    const auto text = Trim(out.stdoutStr);
+    if (text.empty()) {
+        return std::nullopt;
+    }
+    try {
+        return std::stoi(text);
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+auto CommitShaFromOneline(const std::string& line) -> std::string {
+    const auto trimmed = Trim(line);
+    const auto sp = trimmed.find(' ');
+    if (sp == std::string::npos) {
+        return trimmed;
+    }
+    return trimmed.substr(0, sp);
+}
+
+auto FetchCommitDetail(const std::filesystem::path& repo, const std::string& sha, int mode) -> std::string {
+    if (sha.empty()) {
+        return "(invalid commit sha)";
+    }
+
+    std::vector<std::string> args;
+    if (mode == 1) {
+        args = {"show", "--no-color", "--date=iso", "--name-status", "--pretty=fuller", "-n", "1", sha};
+    } else if (mode == 2) {
+        args = {"show", "--no-color", "--date=iso", "--pretty=fuller", "-n", "1", sha};
+    } else {
+        args = {"show", "--no-color", "--date=iso", "--stat", "--name-status", "--pretty=fuller", "-n", "1", sha};
+    }
+
+    const auto out = GitCapture(repo, args);
+    if (out.exitCode != 0) {
+        return "(failed to load commit detail)\n" + out.stderrStr;
+    }
+    auto body = out.stdoutStr;
+    constexpr std::size_t kMaxChars = 20000;
+    if (body.size() > kMaxChars) {
+        body = body.substr(0, kMaxChars) + "\n... (truncated)";
+    }
+    return body;
+}
+
+auto FetchCommitQuickStats(const std::filesystem::path& repo, const std::string& sha) -> std::string {
+    if (sha.empty()) {
+        return "(invalid commit sha)";
+    }
+    const auto out = GitCapture(repo, {
+        "show", "--no-color", "--shortstat", "--pretty=format:%h %s", "-n", "1", sha,
+    });
+    if (out.exitCode != 0) {
+        return "(failed to load quick stats)";
+    }
+
+    std::istringstream iss(out.stdoutStr);
+    std::string title;
+    std::getline(iss, title);
+    title = Trim(title);
+
+    std::string stat;
+    while (std::getline(iss, stat)) {
+        stat = Trim(stat);
+        if (!stat.empty()) {
+            break;
+        }
+    }
+
+    if (stat.empty()) {
+        stat = "0 files changed";
+    }
+
+    if (title.empty()) {
+        return stat;
+    }
+    return title + " | " + stat;
+}
+
+auto ToLowerAscii(std::string value) -> std::string {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        if (c >= 'A' && c <= 'Z') {
+            return static_cast<char>(c - 'A' + 'a');
+        }
+        return static_cast<char>(c);
+    });
+    return value;
+}
+
+auto FindNextMatch(const std::vector<std::string>& lines,
+                   const std::string& query,
+                   int startExclusive) -> int {
+    if (query.empty() || lines.empty()) {
+        return -1;
+    }
+    const auto needle = ToLowerAscii(query);
+    const int size = static_cast<int>(lines.size());
+    for (int step = 1; step <= size; ++step) {
+        const int idx = (startExclusive + step + size) % size;
+        if (ToLowerAscii(lines[idx]).find(needle) != std::string::npos) {
+            return idx;
+        }
+    }
+    return -1;
+}
+
+auto ParseStatusFiles(const shell::ExecResult& out) -> std::pair<std::vector<std::string>, std::vector<std::string>> {
+    std::vector<std::string> staged;
+    std::vector<std::string> unstaged;
+    if (out.exitCode != 0) {
+        return {staged, unstaged};
+    }
+
+    std::istringstream iss(out.stdoutStr);
+    std::string line;
+    while (std::getline(iss, line)) {
+        if (line.size() < 4) {
+            continue;
+        }
+        const char x = line[0];
+        const char y = line[1];
+        const std::string file = Trim(line.substr(3));
+        if (file.empty()) {
+            continue;
+        }
+        if (x != ' ' && x != '?') {
+            staged.push_back(file);
+        }
+        if (y != ' ' || x == '?') {
+            unstaged.push_back(file);
+        }
+    }
+
+    auto dedupe = [](std::vector<std::string>& v) {
+        std::sort(v.begin(), v.end());
+        v.erase(std::unique(v.begin(), v.end()), v.end());
+    };
+    dedupe(staged);
+    dedupe(unstaged);
+    return {staged, unstaged};
+}
+
+auto CollectPreviewData(const std::filesystem::path& repo) -> PreviewData {
+    PreviewData data;
+    data.branch = CurrentBranch(repo);
+    data.upstream = CurrentUpstream(repo);
+    data.tracking = TrackingSummary(repo);
+
+    const auto status = GitCapture(repo, {"status", "--porcelain"});
+    auto parsed = ParseStatusFiles(status);
+    data.staged = std::move(parsed.first);
+    data.unstaged = std::move(parsed.second);
+    return data;
+}
+
+auto BuildCommitPreview(const std::filesystem::path& repo) -> std::string {
+    const auto data = CollectPreviewData(repo);
+    std::ostringstream out;
+    out << "Commit Preview\n";
+    out << "repo: " << repo.lexically_normal().generic_string() << "\n";
+    out << "branch: " << data.branch << "\n\n";
+
+    out << "staged files: " << data.staged.size() << "\n";
+    for (std::size_t i = 0; i < std::min<std::size_t>(data.staged.size(), 20); ++i) {
+        out << "  + " << data.staged[i] << "\n";
+    }
+    if (data.staged.size() > 20) {
+        out << "  ... and " << (data.staged.size() - 20) << " more\n";
+    }
+
+    out << "\nunstaged/untracked files: " << data.unstaged.size() << "\n";
+    for (std::size_t i = 0; i < std::min<std::size_t>(data.unstaged.size(), 20); ++i) {
+        out << "  ! " << data.unstaged[i] << "\n";
+    }
+    if (data.unstaged.size() > 20) {
+        out << "  ... and " << (data.unstaged.size() - 20) << " more\n";
+    }
+
+    out << "\nrisk summary:\n";
+    if (data.staged.empty()) {
+        out << "  - HIGH: nothing staged (commit would fail)\n";
+    }
+    if (!data.unstaged.empty()) {
+        out << "  - MEDIUM: unstaged changes present; commit may be incomplete\n";
+    }
+    if (!data.staged.empty() && data.unstaged.empty()) {
+        out << "  - LOW: staged set appears clean\n";
+    }
+    return out.str();
+}
+
+auto BuildPushPreview(const std::filesystem::path& repo) -> std::string {
+    const auto data = CollectPreviewData(repo);
+    std::ostringstream out;
+    out << "Push Preview\n";
+    out << "repo: " << repo.lexically_normal().generic_string() << "\n";
+    out << "branch: " << data.branch << "\n";
+    out << "upstream: " << data.upstream << "\n";
+    out << "tracking: " << data.tracking << "\n\n";
+
+    out << "risk summary:\n";
+    if (data.upstream == "(none)" || data.tracking == "no-upstream") {
+        out << "  - HIGH: no upstream tracking branch\n";
+    } else if (data.tracking.find("behind") != std::string::npos && data.tracking.find("ahead") == std::string::npos) {
+        out << "  - HIGH: behind upstream; push likely rejected\n";
+    } else if (data.tracking.find("behind") != std::string::npos && data.tracking.find("ahead") != std::string::npos) {
+        out << "  - MEDIUM: diverged with upstream; rebase/merge recommended\n";
+    } else if (data.tracking.find("ahead") != std::string::npos) {
+        out << "  - LOW: ahead commits available to push\n";
+    } else {
+        out << "  - INFO: branch appears in sync\n";
+    }
+
+    if (!data.unstaged.empty()) {
+        out << "  - INFO: working tree has local changes (does not block push)\n";
+    }
+    return out.str();
+}
+
+auto ListBranches(const std::filesystem::path& repo) -> std::vector<std::string> {
+    const auto out = GitCapture(repo, {"for-each-ref", "--format=%(refname:short)", "refs/heads"});
+    std::vector<std::string> branches;
+    if (out.exitCode != 0) {
+        return branches;
+    }
+    std::istringstream iss(out.stdoutStr);
+    std::string line;
+    while (std::getline(iss, line)) {
+        line = Trim(line);
+        if (!line.empty()) {
+            branches.push_back(line);
+        }
+    }
+    return branches;
+}
+
+auto CommitFileSet(const std::filesystem::path& repo, const std::string& sha) -> std::vector<std::string> {
+    const auto out = GitCapture(repo, {"show", "--name-only", "--pretty=format:", "-n", "1", sha});
+    std::vector<std::string> files;
+    if (out.exitCode != 0) {
+        return files;
+    }
+    std::istringstream iss(out.stdoutStr);
+    std::string line;
+    while (std::getline(iss, line)) {
+        line = Trim(line);
+        if (!line.empty()) {
+            files.push_back(line);
+        }
+    }
+    std::sort(files.begin(), files.end());
+    files.erase(std::unique(files.begin(), files.end()), files.end());
+    return files;
+}
+
+auto HasPatchEquivalentInTarget(const std::filesystem::path& repo,
+                                const std::string& targetBranch,
+                                const std::string& sha) -> bool {
+    const auto out = GitCapture(repo, {"cherry", targetBranch, sha});
+    if (out.exitCode != 0) {
+        return false;
+    }
+    std::istringstream iss(out.stdoutStr);
+    std::string line;
+    while (std::getline(iss, line)) {
+        line = Trim(line);
+        if (!line.empty() && line[0] == '-') {
+            return true;
+        }
+    }
+    return false;
+}
+
+auto BuildCherryPickPreflight(const std::filesystem::path& repo,
+                              const std::string& sourceBranch,
+                              const std::string& targetBranch) -> CherryPickPreflightState {
+    CherryPickPreflightState state;
+    state.active = true;
+    state.sourceBranch = sourceBranch;
+    state.targetBranch = targetBranch;
+
+    const auto list = GitCapture(repo, {"log", "--oneline", (targetBranch + ".." + sourceBranch)});
+    if (list.exitCode != 0) {
+        state.note = "failed to enumerate source commits";
+        return state;
+    }
+
+    std::istringstream iss(list.stdoutStr);
+    std::string line;
+    while (std::getline(iss, line)) {
+        line = Trim(line);
+        if (line.empty()) {
+            continue;
+        }
+        const auto sp = line.find(' ');
+        if (sp == std::string::npos) {
+            continue;
+        }
+
+        CherryPickCandidate c;
+        c.sha = line.substr(0, sp);
+        c.title = line.substr(sp + 1);
+        c.alreadyInTarget = HasPatchEquivalentInTarget(repo, targetBranch, c.sha);
+
+        const auto files = CommitFileSet(repo, c.sha);
+        if (files.empty()) {
+            c.risk = "unknown";
+        } else if (files.size() >= 12) {
+            c.risk = "high";
+        } else if (files.size() >= 5) {
+            c.risk = "medium";
+        } else {
+            c.risk = "low";
+        }
+
+        state.commits.push_back(std::move(c));
+    }
+
+    if (state.commits.empty()) {
+        state.note = "no candidate commits (source may be fully merged)";
+    } else {
+        state.note = "candidate commits loaded: " + std::to_string(state.commits.size());
+    }
+    return state;
+}
+
+auto FirstNonEmptyLine(const std::string& text) -> std::string {
+    std::istringstream iss(text);
+    std::string line;
+    while (std::getline(iss, line)) {
+        line = Trim(line);
+        if (!line.empty()) {
+            return line;
+        }
+    }
+    return "";
+}
+
+auto CollectRebasePreflight(const std::filesystem::path& repo) -> RebasePreflightState {
+    RebasePreflightState state;
+    state.active = true;
+    state.repo = repo;
+    state.branch = CurrentBranch(repo);
+    state.upstream = CurrentUpstream(repo);
+    state.tracking = TrackingSummary(repo);
+
+    std::string baseRef;
+    if (state.upstream != "(none)") {
+        baseRef = state.upstream;
+    } else {
+        const auto mbMain = GitCapture(repo, {"merge-base", "HEAD", "main"});
+        if (mbMain.exitCode == 0) {
+            baseRef = "main";
+        } else {
+            const auto mbMaster = GitCapture(repo, {"merge-base", "HEAD", "master"});
+            if (mbMaster.exitCode == 0) {
+                baseRef = "master";
+            }
+        }
+    }
+
+    if (baseRef.empty()) {
+        state.note = "no upstream/main/master base found";
+        state.risk = "high";
+        return state;
+    }
+
+    const auto mergeBaseOut = GitCapture(repo, {"merge-base", "HEAD", baseRef});
+    state.mergeBase = FirstNonEmptyLine(mergeBaseOut.stdoutStr);
+
+    const auto logOut = GitCapture(repo, {"log", "--oneline", (baseRef + "..HEAD")});
+    if (logOut.exitCode != 0) {
+        state.note = "failed to enumerate rebase candidate commits";
+        state.risk = "high";
+        return state;
+    }
+
+    std::istringstream iss(logOut.stdoutStr);
+    std::string line;
+    while (std::getline(iss, line)) {
+        line = Trim(line);
+        if (!line.empty()) {
+            state.candidates.push_back(line);
+        }
+    }
+
+    if (state.branch == "main" || state.branch == "master") {
+        state.risk = "high";
+        state.note = "on protected-like branch; avoid rebase here";
+    } else if (state.upstream == "(none)" || state.tracking == "no-upstream") {
+        state.risk = "medium";
+        state.note = "no upstream tracking branch";
+    } else if (state.tracking.find("behind") != std::string::npos && state.tracking.find("ahead") != std::string::npos) {
+        state.risk = "high";
+        state.note = "diverged with upstream";
+    } else if (state.candidates.empty()) {
+        state.risk = "low";
+        state.note = "no local commits to rebase";
+    } else {
+        state.risk = "low";
+        state.note = "rebase candidates loaded: " + std::to_string(state.candidates.size());
+    }
+
+    return state;
+}
+
+auto BuildRebasePlanPreview(const RebasePlannerState& planner) -> std::string {
+    std::ostringstream out;
+    out << "Rebase Plan Preview\n";
+    out << "repo: " << planner.repo.lexically_normal().generic_string() << "\n";
+    out << "base: " << planner.baseRef << "\n\n";
+    out << "# interactive todo style\n";
+    for (const auto& item : planner.items) {
+        out << item.action << " " << item.sha << " " << item.title << "\n";
+    }
+    if (planner.items.empty()) {
+        out << "(no plan items)\n";
+    }
+    return out.str();
+}
+
+auto BuildRebasePlanner(const std::filesystem::path& repo, const RebasePreflightState& pre) -> RebasePlannerState {
+    RebasePlannerState planner;
+    planner.active = true;
+    planner.repo = repo;
+    planner.baseRef = pre.upstream != "(none)" ? pre.upstream : (pre.branch == "main" ? "main" : "master");
+    planner.selectedIndex = 0;
+
+    for (const auto& line : pre.candidates) {
+        const auto sp = line.find(' ');
+        if (sp == std::string::npos) {
+            continue;
+        }
+        RebasePlanItem item;
+        item.sha = line.substr(0, sp);
+        item.title = line.substr(sp + 1);
+        item.action = "pick";
+        planner.items.push_back(std::move(item));
+    }
+
+    planner.preview = BuildRebasePlanPreview(planner);
+    return planner;
+}
+
+auto RunRebaseContinue(const std::filesystem::path& repo) -> shell::ExecResult {
+    return GitCapture(repo, {"rebase", "--continue"});
+}
+
+auto RunRebaseSkip(const std::filesystem::path& repo) -> shell::ExecResult {
+    return GitCapture(repo, {"rebase", "--skip"});
+}
+
+auto RunRebaseAbort(const std::filesystem::path& repo) -> shell::ExecResult {
+    return GitCapture(repo, {"rebase", "--abort"});
+}
+
+auto RunRebaseStep(const std::filesystem::path& repo, const RebasePlanItem& item) -> shell::ExecResult {
+    if (item.action == "drop") {
+        return GitCapture(repo, {"rebase", "--skip"});
+    }
+
+    // For planner v1, execute as cherry-pick equivalent sequence for pick/squash/fixup.
+    // squash/fixup will be represented as cherry-pick then follow-up continue flow when needed.
+    // This keeps runner deterministic while full interactive todo execution is added later.
+    return GitCapture(repo, {"cherry-pick", item.sha});
+}
+
+auto RunCherryPickOne(const std::filesystem::path& repo, const std::string& sha) -> shell::ExecResult {
+    return GitCapture(repo, {"cherry-pick", sha});
+}
+
+auto CherryPickContinue(const std::filesystem::path& repo) -> shell::ExecResult {
+    return GitCapture(repo, {"cherry-pick", "--continue"});
+}
+
+auto CherryPickSkip(const std::filesystem::path& repo) -> shell::ExecResult {
+    return GitCapture(repo, {"cherry-pick", "--skip"});
+}
+
+auto CherryPickAbort(const std::filesystem::path& repo) -> shell::ExecResult {
+    return GitCapture(repo, {"cherry-pick", "--abort"});
+}
+
+auto BuildDisplayedRepoIndices(const std::vector<RepoView>& repos,
+                              const std::unordered_map<std::string, bool>& collapsedRoots) -> std::vector<int> {
+    std::vector<int> indices;
+    indices.reserve(repos.size());
+
+    for (std::size_t i = 0; i < repos.size(); ++i) {
+        const auto& row = repos[i];
+        bool hidden = false;
+        std::string cursor = row.parentRepo;
+        while (cursor != "(none)") {
+            if (auto it = collapsedRoots.find(cursor); it != collapsedRoots.end() && it->second) {
+                hidden = true;
+                break;
+            }
+            std::string next = "(none)";
+            for (const auto& parent : repos) {
+                if (parent.path.lexically_normal().generic_string() == cursor) {
+                    next = parent.parentRepo;
+                    break;
+                }
+            }
+            cursor = next;
+        }
+        if (!hidden) {
+            indices.push_back(static_cast<int>(i));
+        }
+    }
+    return indices;
+}
+
+auto RepoIndexFromDisplayed(const std::vector<int>& displayed, int displayedIndex) -> int {
+    if (displayed.empty()) {
+        return -1;
+    }
+    displayedIndex = std::clamp(displayedIndex, 0, static_cast<int>(displayed.size()) - 1);
+    return displayed[displayedIndex];
+}
+
+auto BuildDiscoverLines(const std::vector<RepoView>& repos) -> std::vector<std::string> {
+    std::vector<std::string> lines;
+    lines.reserve(repos.size() + 8);
+
+    std::size_t dirtyRepoCount = 0;
+    std::size_t worktreeDirtyCount = 0;
+    for (const auto& repo : repos) {
+        if (repo.repoDirty) {
+            dirtyRepoCount += 1;
+        }
+        if (repo.worktreeDirty) {
+            worktreeDirtyCount += 1;
+        }
+    }
+
+    lines.push_back("discover summary");
+    lines.push_back("  total repos: " + std::to_string(repos.size()));
+    lines.push_back("  dirty repos: " + std::to_string(dirtyRepoCount));
+    lines.push_back("  dirty worktrees: " + std::to_string(worktreeDirtyCount));
+    lines.push_back("");
+    lines.push_back("# | branch | tracking | dirty | path");
+
+    for (std::size_t i = 0; i < repos.size(); ++i) {
+        const auto& r = repos[i];
+        std::string path = r.path.lexically_normal().generic_string();
+        if (path.size() > 90) {
+            path = "..." + path.substr(path.size() - 87);
+        }
+        std::string tracking = r.tracking;
+        if (tracking.size() > 20) {
+            tracking = tracking.substr(0, 20) + "...";
+        }
+        std::string branch = r.branch;
+        if (branch.size() > 20) {
+            branch = branch.substr(0, 20) + "...";
+        }
+        const std::string dirty = r.repoDirty ? "yes" : "no";
+        lines.push_back(std::to_string(i + 1) + " | " + branch + " | " + tracking + " | " + dirty + " | " + path);
+    }
+
+    if (repos.empty()) {
+        lines.push_back("(no repositories found)");
+    }
+
+    return lines;
+}
+
+auto RunFtxuiDashboard(CLI::App& app) -> int {
+    using namespace ftxui;
+
+    bool dirtyOnly = false;
+    bool filterMode = false;
+    std::string repoFilter;
+    std::vector<RepoView> repos = DiscoverRepoViews(dirtyOnly);
+    std::unordered_map<std::string, bool> collapsedRoots;
+    std::vector<int> displayedRepoIndices;
+    std::vector<std::string> menu;
+    int selectedDisplayed = 0;
+    std::string footer = ": command mode | :discover for paged discover output | r refresh | Enter history | q quit";
+    HistoryState history{};
+    PreviewPanelState preview{};
+    ConfirmState confirm{};
+    CherryPickPreflightState cherry{};
+    CherryPickRunnerState cherryRun{};
+    RebasePreflightState rebase{};
+    RebasePlannerState rebasePlanner{};
+    RebaseRunnerState rebaseRun{};
+    DiscoverPagerState discover{};
+    std::unordered_map<std::string, RepoHistoryCache> historyCache;
+    
+    // Initialize TUI command input system
+    kano::git::commands::TuiState tui_state;
+    try {
+        auto metadata_cache = std::make_shared<kano::git::commands::MetadataCache>(app);
+        auto autocomplete_engine = std::make_shared<kano::git::commands::AutocompleteEngine>(metadata_cache);
+        auto command_executor = std::make_shared<kano::git::commands::CommandExecutor>(app, std::filesystem::current_path());
+        tui_state.autocomplete_engine = autocomplete_engine;
+        tui_state.command_executor = command_executor;
+    } catch (const std::exception& e) {
+        std::cerr << "Failed to initialize TUI command input system: " << e.what() << std::endl;
+        std::cerr << "Autocomplete will be disabled. TUI will continue with basic functionality." << std::endl;
+        // Continue without autocomplete - tui_state.autocomplete_engine remains nullptr
+    }
+
+    auto refresh_menu = [&] {
+        displayedRepoIndices = BuildDisplayedRepoIndices(repos, collapsedRoots);
+        menu.clear();
+        menu.reserve(displayedRepoIndices.size());
+        for (const auto idx : displayedRepoIndices) {
+            const auto& repo = repos[idx];
+            const auto normalized = repo.path.lexically_normal().generic_string();
+            if (!repoFilter.empty() && ToLowerAscii(normalized).find(ToLowerAscii(repoFilter)) == std::string::npos) {
+                continue;
+            }
+            auto path = repo.path.lexically_normal().generic_string();
+            if (path.size() > 64) {
+                path = "..." + path.substr(path.size() - 61);
+            }
+            std::string indent(static_cast<std::size_t>(repo.treeDepth * 2), ' ');
+            const bool collapsed = collapsedRoots[repo.path.lexically_normal().generic_string()];
+            const std::string marker = repo.childRepoCount > 0 ? (collapsed ? "[+] " : "[-] ") : "    ";
+            menu.push_back(indent + marker + (repo.repoDirty ? "* " : "  ") + repo.branch + " | " + path);
+        }
+        if (menu.empty()) {
+            menu.push_back("(no repositories found)");
+            selectedDisplayed = 0;
+        } else if (selectedDisplayed >= static_cast<int>(menu.size())) {
+            selectedDisplayed = static_cast<int>(menu.size()) - 1;
+        }
+    };
+
+    auto refresh_all = [&] {
+        repos = DiscoverRepoViews(dirtyOnly);
+        refresh_menu();
+        historyCache.clear();
+    };
+
+    refresh_menu();
+
+    auto ensure_history_loaded = [&](const int RepoIndex, const int PageIndex) {
+        if (RepoIndex < 0 || RepoIndex >= static_cast<int>(repos.size()) || PageIndex < 0) {
+            return;
+        }
+        const auto key = repos[RepoIndex].path.lexically_normal().generic_string();
+        auto& cache = historyCache[key];
+        if (cache.pages.find(PageIndex) == cache.pages.end()) {
+            cache.pages[PageIndex] = FetchHistoryPage(repos[RepoIndex].path, PageIndex);
+        }
+        if (!cache.totalCommits.has_value()) {
+            cache.totalCommits = FetchTotalCommitCount(repos[RepoIndex].path);
+        }
+    };
+
+    auto current_history_lines = [&]() -> std::vector<std::string> {
+        if (!history.active || repos.empty() || history.repoIndex < 0 || history.repoIndex >= static_cast<int>(repos.size())) {
+            return {};
+        }
+        ensure_history_loaded(history.repoIndex, history.pageIndex);
+        const auto key = repos[history.repoIndex].path.lexically_normal().generic_string();
+        auto itCache = historyCache.find(key);
+        if (itCache == historyCache.end()) {
+            return {};
+        }
+        auto itPage = itCache->second.pages.find(history.pageIndex);
+        if (itPage == itCache->second.pages.end()) {
+            return {};
+        }
+        return itPage->second;
+    };
+
+    auto screen = ScreenInteractive::FitComponent();
+    auto list = Menu(&menu, &selectedDisplayed);
+    auto refresh_button = Button("Refresh", [&] {
+        refresh_all();
+        footer = "refreshed";
+    });
+    auto root = Container::Vertical({list, refresh_button});
+
+    auto map_event_to_tui = [&](const Event& event) -> std::optional<std::pair<std::string, char>> {
+        if (event == Event::Escape) return std::make_pair(std::string("escape"), '\0');
+        if (event == Event::Return || event == Event::Character('\n')) return std::make_pair(std::string("enter"), '\0');
+        if (event == Event::Backspace) return std::make_pair(std::string("backspace"), '\0');
+        if (event == Event::Delete) return std::make_pair(std::string("delete"), '\0');
+        if (event == Event::ArrowLeft) return std::make_pair(std::string("left"), '\0');
+        if (event == Event::ArrowRight) return std::make_pair(std::string("right"), '\0');
+        if (event == Event::ArrowUp) return std::make_pair(std::string("up"), '\0');
+        if (event == Event::ArrowDown) return std::make_pair(std::string("down"), '\0');
+        if (event == Event::Home) return std::make_pair(std::string("home"), '\0');
+        if (event == Event::End) return std::make_pair(std::string("end"), '\0');
+        if (event == Event::Tab) return std::make_pair(std::string("tab"), '\0');
+        if (event.is_character()) {
+            const auto text = event.character();
+            if (text == "\x10") return std::make_pair(std::string("ctrl_p"), '\0');
+            if (text == "\x15") return std::make_pair(std::string("ctrl_u"), '\0');
+            if (!text.empty()) return std::make_pair(std::string("character"), text[0]);
+        }
+        return std::nullopt;
+    };
+
+    auto with_keys = CatchEvent(root, [&](Event event) {
+        if (tui_state.GetMode() == kano::git::commands::TuiMode::Command &&
+            (event == Event::Return || event == Event::Character('\n'))) {
+            std::string commandLine = Trim(tui_state.command_state.GetBuffer());
+            if (!commandLine.empty() && commandLine[0] == ':') {
+                commandLine = Trim(commandLine.substr(1));
+            }
+            if (!commandLine.empty()) {
+                auto lower = ToLowerAscii(commandLine);
+                bool handledDiscoverCommand = false;
+                bool discoverDirtyOnly = false;
+                if (lower == "discover") {
+                    handledDiscoverCommand = true;
+                } else if (lower == "discover dirty" || lower == "discover --dirty") {
+                    handledDiscoverCommand = true;
+                    discoverDirtyOnly = true;
+                }
+
+                if (handledDiscoverCommand) {
+                    const auto discovered = DiscoverRepoViews(discoverDirtyOnly);
+                    discover.active = true;
+                    discover.dirtyOnly = discoverDirtyOnly;
+                    discover.pageIndex = 0;
+                    discover.title = discoverDirtyOnly ? "discover (dirty-only)" : "discover";
+                    discover.lines = BuildDiscoverLines(discovered);
+
+                    tui_state.mode = kano::git::commands::TuiMode::Normal;
+                    tui_state.command_state = kano::git::commands::CommandModeState{};
+                    tui_state.footer_message.clear();
+                    tui_state.footer_is_error = false;
+
+                    footer = "discover loaded: PgUp/PgDn page, [/] prev/next, Esc/q close";
+                    return true;
+                }
+            }
+        }
+
+        if (auto mapped = map_event_to_tui(event); mapped.has_value()) {
+            const auto prevMode = tui_state.GetMode();
+            const bool handled = tui_state.HandleEvent(mapped->first, mapped->second);
+            if (handled) {
+                if (!tui_state.footer_message.empty()) {
+                    footer = tui_state.footer_message;
+                } else if (prevMode != tui_state.GetMode()) {
+                    if (tui_state.GetMode() == kano::git::commands::TuiMode::Command) {
+                        footer = "command mode: type command, Tab complete, Enter execute, Esc cancel";
+                    } else if (tui_state.GetMode() == kano::git::commands::TuiMode::CommandPalette) {
+                        footer = "command palette: type to filter, Enter select, Esc close";
+                    } else if (tui_state.GetMode() == kano::git::commands::TuiMode::Help) {
+                        footer = "help panel: Esc/q to close";
+                    }
+                }
+                return true;
+            }
+
+            if (prevMode != kano::git::commands::TuiMode::Normal) {
+                return true;
+            }
+        }
+
+        if (event == Event::Character('q')) {
+            if (discover.active) {
+                discover.active = false;
+                footer = "discover panel closed";
+                return true;
+            }
+            if (rebaseRun.active) {
+                rebaseRun.active = false;
+                rebaseRun.waitingConflictResolution = false;
+                footer = "rebase runner closed";
+                return true;
+            }
+            if (rebasePlanner.active) {
+                rebasePlanner.active = false;
+                footer = "rebase planner closed";
+                return true;
+            }
+            if (rebase.active) {
+                rebase.active = false;
+                footer = "rebase preflight closed";
+                return true;
+            }
+            if (cherryRun.active) {
+                cherryRun.active = false;
+                cherryRun.waitingConflictResolution = false;
+                footer = "cherry-pick runner closed";
+                return true;
+            }
+            if (cherry.active) {
+                cherry.active = false;
+                footer = "cherry-pick preflight closed";
+                return true;
+            }
+            if (confirm.active) {
+                confirm.active = false;
+                footer = "confirm cancelled";
+                return true;
+            }
+            if (preview.active) {
+                preview.active = false;
+                footer = "preview closed";
+                return true;
+            }
+            if (filterMode) {
+                filterMode = false;
+                footer = "filter mode closed";
+                return true;
+            }
+            if (history.active) {
+                if (history.detailActive) {
+                    history.detailActive = false;
+                    footer = "history detail closed";
+                    return true;
+                }
+                history.active = false;
+                history.searchMode = false;
+                footer = "history closed";
+                return true;
+            }
+            screen.ExitLoopClosure()();
+            return true;
+        }
+
+        if (event == Event::Character('r')) {
+            refresh_all();
+            if (discover.active) {
+                const auto discovered = DiscoverRepoViews(discover.dirtyOnly);
+                discover.lines = BuildDiscoverLines(discovered);
+                const int totalPages = std::max(1, static_cast<int>((discover.lines.size() + static_cast<std::size_t>(discover.pageSize) - 1) / static_cast<std::size_t>(discover.pageSize)));
+                discover.pageIndex = std::clamp(discover.pageIndex, 0, totalPages - 1);
+            }
+            footer = "refreshed";
+            return true;
+        }
+
+        if (discover.active && event == Event::Escape) {
+            discover.active = false;
+            footer = "discover panel closed";
+            return true;
+        }
+
+        if (discover.active && (event == Event::Character(']') || event == Event::PageUp)) {
+            const int totalPages = std::max(1, static_cast<int>((discover.lines.size() + static_cast<std::size_t>(discover.pageSize) - 1) / static_cast<std::size_t>(discover.pageSize)));
+            discover.pageIndex = std::min(totalPages - 1, discover.pageIndex + 1);
+            footer = "discover page ->";
+            return true;
+        }
+
+        if (discover.active && (event == Event::Character('[') || event == Event::PageDown)) {
+            discover.pageIndex = std::max(0, discover.pageIndex - 1);
+            footer = "discover page <-";
+            return true;
+        }
+
+        if (filterMode) {
+            if (event == Event::Escape) {
+                filterMode = false;
+                footer = "filter mode cancelled";
+                return true;
+            }
+            if (event == Event::Backspace) {
+                if (!repoFilter.empty()) {
+                    repoFilter.pop_back();
+                }
+                refresh_menu();
+                footer = repoFilter.empty() ? "filter cleared" : "filter: " + repoFilter;
+                return true;
+            }
+            if (event == Event::Return || event == Event::Character('\n')) {
+                filterMode = false;
+                footer = repoFilter.empty() ? "filter cleared" : "filter applied";
+                return true;
+            }
+            if (event.is_character()) {
+                repoFilter += event.character();
+                refresh_menu();
+                footer = "filter: " + repoFilter;
+                return true;
+            }
+            return false;
+        }
+
+        if (event == Event::Character('/')) {
+            if (!history.active) {
+                filterMode = true;
+                footer = "repo filter mode: type path keyword";
+                return true;
+            }
+        }
+
+        if (event == Event::Character('d')) {
+            dirtyOnly = !dirtyOnly;
+            refresh_all();
+            footer = dirtyOnly ? "dirty-only enabled" : "dirty-only disabled";
+            return true;
+        }
+
+        if (event == Event::Character('f')) {
+            const int selected = RepoIndexFromDisplayed(displayedRepoIndices, selectedDisplayed);
+            if (repos.empty() || selected < 0 || selected >= static_cast<int>(repos.size())) {
+                footer = "fetch skipped: no selected repo";
+                return true;
+            }
+            confirm.active = true;
+            confirm.title = "Confirm fetch";
+            confirm.description = "Run git fetch --all --prune on selected repo?";
+            confirm.repo = repos[selected].path;
+            confirm.command = {"fetch", "--all", "--prune"};
+            footer = "confirm fetch: y/n";
+            return true;
+        }
+
+        if (event == Event::Character('x')) {
+            const int selected = RepoIndexFromDisplayed(displayedRepoIndices, selectedDisplayed);
+            if (repos.empty() || selected < 0 || selected >= static_cast<int>(repos.size())) {
+                footer = "cherry-pick preflight skipped: no selected repo";
+                return true;
+            }
+
+            const auto branches = ListBranches(repos[selected].path);
+            if (branches.size() < 2) {
+                footer = "cherry-pick preflight blocked: need at least 2 local branches";
+                return true;
+            }
+
+            const auto target = CurrentBranch(repos[selected].path);
+            std::string source;
+            for (const auto& b : branches) {
+                if (b != target) {
+                    source = b;
+                    break;
+                }
+            }
+            if (source.empty()) {
+                footer = "cherry-pick preflight blocked: no source branch candidate";
+                return true;
+            }
+
+            cherry = BuildCherryPickPreflight(repos[selected].path, source, target);
+            cherry.active = true;
+            footer = "cherry-pick preflight ready";
+            return true;
+        }
+
+        if (event == Event::Character('b')) {
+            const int selected = RepoIndexFromDisplayed(displayedRepoIndices, selectedDisplayed);
+            if (repos.empty() || selected < 0 || selected >= static_cast<int>(repos.size())) {
+                footer = "rebase preflight skipped: no selected repo";
+                return true;
+            }
+            rebase = CollectRebasePreflight(repos[selected].path);
+            rebase.active = true;
+            footer = "rebase preflight ready";
+            return true;
+        }
+
+        if (event == Event::Character('B')) {
+            if (!rebase.active) {
+                footer = "rebase planner blocked: open preflight with b first";
+                return true;
+            }
+            rebasePlanner = BuildRebasePlanner(rebase.repo, rebase);
+            rebasePlanner.active = true;
+            footer = "rebase planner ready";
+            return true;
+        }
+
+        if (event == Event::Character('R')) {
+            if (!rebasePlanner.active) {
+                footer = "rebase runner blocked: open planner with B first";
+                return true;
+            }
+            rebaseRun.active = true;
+            rebaseRun.repo = rebasePlanner.repo;
+            rebaseRun.queue = rebasePlanner.items;
+            rebaseRun.index = 0;
+            rebaseRun.waitingConflictResolution = false;
+            rebaseRun.lastOutput = "runner initialized";
+
+            if (rebaseRun.queue.empty()) {
+                rebaseRun.active = false;
+                footer = "rebase runner skipped: empty plan";
+                return true;
+            }
+
+            const auto result = RunRebaseStep(rebaseRun.repo, rebaseRun.queue[rebaseRun.index]);
+            rebaseRun.lastOutput = !result.stdoutStr.empty() ? result.stdoutStr : result.stderrStr;
+            if (result.exitCode == 0) {
+                rebaseRun.index += 1;
+                footer = "rebase step ok";
+            } else {
+                rebaseRun.waitingConflictResolution = true;
+                footer = "rebase stopped: C=continue S=skip A=abort";
+            }
+            return true;
+        }
+
+        if (rebasePlanner.active && (event == Event::ArrowUp || event == Event::Character('k'))) {
+            if (!rebasePlanner.items.empty()) {
+                rebasePlanner.selectedIndex = std::max(0, rebasePlanner.selectedIndex - 1);
+                footer = "rebase planner line up";
+            }
+            return true;
+        }
+
+        if (rebasePlanner.active && (event == Event::ArrowDown || event == Event::Character('j'))) {
+            if (!rebasePlanner.items.empty()) {
+                rebasePlanner.selectedIndex = std::min(static_cast<int>(rebasePlanner.items.size()) - 1, rebasePlanner.selectedIndex + 1);
+                footer = "rebase planner line down";
+            }
+            return true;
+        }
+
+        if (rebasePlanner.active && event.is_character()) {
+            if (rebasePlanner.items.empty()) {
+                return true;
+            }
+            auto& item = rebasePlanner.items[rebasePlanner.selectedIndex];
+            const auto ch = event.character();
+            if (ch == "p") {
+                item.action = "pick";
+            } else if (ch == "s") {
+                item.action = "squash";
+            } else if (ch == "f") {
+                item.action = "fixup";
+            } else if (ch == "d") {
+                item.action = "drop";
+            } else {
+                return false;
+            }
+            rebasePlanner.preview = BuildRebasePlanPreview(rebasePlanner);
+            footer = "rebase action set: " + item.action;
+            return true;
+        }
+
+        if (rebaseRun.active && rebaseRun.waitingConflictResolution && (event == Event::Character('C'))) {
+            const auto result = RunRebaseContinue(rebaseRun.repo);
+            rebaseRun.lastOutput = !result.stdoutStr.empty() ? result.stdoutStr : result.stderrStr;
+            if (result.exitCode == 0) {
+                rebaseRun.waitingConflictResolution = false;
+                rebaseRun.index += 1;
+                footer = "rebase continue ok";
+            } else {
+                footer = "rebase continue failed";
+            }
+            return true;
+        }
+
+        if (rebaseRun.active && rebaseRun.waitingConflictResolution && (event == Event::Character('S'))) {
+            const auto result = RunRebaseSkip(rebaseRun.repo);
+            rebaseRun.lastOutput = !result.stdoutStr.empty() ? result.stdoutStr : result.stderrStr;
+            if (result.exitCode == 0) {
+                rebaseRun.waitingConflictResolution = false;
+                rebaseRun.index += 1;
+                footer = "rebase skip ok";
+            } else {
+                footer = "rebase skip failed";
+            }
+            return true;
+        }
+
+        if (rebaseRun.active && (event == Event::Character('A'))) {
+            const auto result = RunRebaseAbort(rebaseRun.repo);
+            rebaseRun.lastOutput = !result.stdoutStr.empty() ? result.stdoutStr : result.stderrStr;
+            rebaseRun.waitingConflictResolution = false;
+            rebaseRun.active = false;
+            footer = result.exitCode == 0 ? "rebase aborted" : "rebase abort failed";
+            return true;
+        }
+
+        if (rebaseRun.active && !rebaseRun.waitingConflictResolution && (event == Event::Character('N'))) {
+            if (rebaseRun.index >= static_cast<int>(rebaseRun.queue.size())) {
+                rebaseRun.active = false;
+                footer = "rebase runner complete";
+                return true;
+            }
+            const auto result = RunRebaseStep(rebaseRun.repo, rebaseRun.queue[rebaseRun.index]);
+            rebaseRun.lastOutput = !result.stdoutStr.empty() ? result.stdoutStr : result.stderrStr;
+            if (result.exitCode == 0) {
+                rebaseRun.index += 1;
+                footer = "rebase step ok";
+            } else {
+                rebaseRun.waitingConflictResolution = true;
+                footer = "rebase stopped: C=continue S=skip A=abort";
+            }
+            return true;
+        }
+
+        if (event == Event::Character('X')) {
+            if (!cherry.active || cherry.commits.empty()) {
+                footer = "cherry-pick run blocked: open preflight with x first";
+                return true;
+            }
+
+            cherryRun.active = true;
+            cherryRun.repo = RepoIndexFromDisplayed(displayedRepoIndices, selectedDisplayed) >= 0
+                ? repos[RepoIndexFromDisplayed(displayedRepoIndices, selectedDisplayed)].path
+                : std::filesystem::current_path();
+            cherryRun.queue.clear();
+            for (const auto& c : cherry.commits) {
+                if (!c.alreadyInTarget) {
+                    cherryRun.queue.push_back(c);
+                }
+            }
+            cherryRun.index = 0;
+            cherryRun.waitingConflictResolution = false;
+            cherryRun.lastOutput = "runner initialized";
+
+            if (cherryRun.queue.empty()) {
+                footer = "cherry-pick run skipped: no non-duplicate commits";
+                cherryRun.active = false;
+                return true;
+            }
+
+            const auto result = RunCherryPickOne(cherryRun.repo, cherryRun.queue[cherryRun.index].sha);
+            cherryRun.lastOutput = !result.stdoutStr.empty() ? result.stdoutStr : result.stderrStr;
+            if (result.exitCode == 0) {
+                cherryRun.index += 1;
+                footer = "cherry-pick step ok";
+            } else {
+                cherryRun.waitingConflictResolution = true;
+                footer = "cherry-pick conflict/stop: c=continue s=skip a=abort";
+            }
+            return true;
+        }
+
+        if (cherryRun.active && cherryRun.waitingConflictResolution && (event == Event::Character('c') || event == Event::Character('C'))) {
+            const auto result = CherryPickContinue(cherryRun.repo);
+            cherryRun.lastOutput = !result.stdoutStr.empty() ? result.stdoutStr : result.stderrStr;
+            if (result.exitCode == 0) {
+                cherryRun.waitingConflictResolution = false;
+                cherryRun.index += 1;
+                footer = "cherry-pick continue ok";
+            } else {
+                footer = "continue failed";
+            }
+            return true;
+        }
+
+        if (cherryRun.active && cherryRun.waitingConflictResolution && (event == Event::Character('s') || event == Event::Character('S'))) {
+            const auto result = CherryPickSkip(cherryRun.repo);
+            cherryRun.lastOutput = !result.stdoutStr.empty() ? result.stdoutStr : result.stderrStr;
+            if (result.exitCode == 0) {
+                cherryRun.waitingConflictResolution = false;
+                cherryRun.index += 1;
+                footer = "cherry-pick skip ok";
+            } else {
+                footer = "skip failed";
+            }
+            return true;
+        }
+
+        if (cherryRun.active && (event == Event::Character('a') || event == Event::Character('A'))) {
+            const auto result = CherryPickAbort(cherryRun.repo);
+            cherryRun.lastOutput = !result.stdoutStr.empty() ? result.stdoutStr : result.stderrStr;
+            cherryRun.waitingConflictResolution = false;
+            cherryRun.active = false;
+            footer = result.exitCode == 0 ? "cherry-pick aborted" : "abort failed";
+            return true;
+        }
+
+        if (cherryRun.active && !cherryRun.waitingConflictResolution && (event == Event::Character('n') || event == Event::Character('N'))) {
+            if (cherryRun.index >= static_cast<int>(cherryRun.queue.size())) {
+                cherryRun.active = false;
+                footer = "cherry-pick runner complete";
+                return true;
+            }
+            const auto result = RunCherryPickOne(cherryRun.repo, cherryRun.queue[cherryRun.index].sha);
+            cherryRun.lastOutput = !result.stdoutStr.empty() ? result.stdoutStr : result.stderrStr;
+            if (result.exitCode == 0) {
+                cherryRun.index += 1;
+                footer = "cherry-pick step ok";
+            } else {
+                cherryRun.waitingConflictResolution = true;
+                footer = "cherry-pick conflict/stop: c=continue s=skip a=abort";
+            }
+            return true;
+        }
+
+        if (event == Event::Character('c')) {
+            const int selected = RepoIndexFromDisplayed(displayedRepoIndices, selectedDisplayed);
+            if (repos.empty() || selected < 0 || selected >= static_cast<int>(repos.size())) {
+                footer = "commit preview skipped: no selected repo";
+                return true;
+            }
+            preview.active = true;
+            preview.title = "Commit Preview";
+            preview.body = BuildCommitPreview(repos[selected].path);
+            footer = "commit preview ready";
+            return true;
+        }
+
+        if (event == Event::Character('C')) {
+            const int selected = RepoIndexFromDisplayed(displayedRepoIndices, selectedDisplayed);
+            if (repos.empty() || selected < 0 || selected >= static_cast<int>(repos.size())) {
+                footer = "commit execute skipped: no selected repo";
+                return true;
+            }
+            const auto data = CollectPreviewData(repos[selected].path);
+            if (data.staged.empty()) {
+                footer = "commit blocked: nothing staged";
+                return true;
+            }
+            confirm.active = true;
+            confirm.title = "Confirm commit";
+            confirm.description = "Run git commit with default safe message on selected repo?";
+            confirm.repo = repos[selected].path;
+            confirm.command = {"commit", "-m", "chore: tui confirmed commit"};
+            footer = "confirm commit: y/n";
+            return true;
+        }
+
+        if (event == Event::Character('p')) {
+            const int selected = RepoIndexFromDisplayed(displayedRepoIndices, selectedDisplayed);
+            if (repos.empty() || selected < 0 || selected >= static_cast<int>(repos.size())) {
+                footer = "push preview skipped: no selected repo";
+                return true;
+            }
+            preview.active = true;
+            preview.title = "Push Preview";
+            preview.body = BuildPushPreview(repos[selected].path);
+            footer = "push preview ready";
+            return true;
+        }
+
+        if (event == Event::Character('P')) {
+            const int selected = RepoIndexFromDisplayed(displayedRepoIndices, selectedDisplayed);
+            if (repos.empty() || selected < 0 || selected >= static_cast<int>(repos.size())) {
+                footer = "push execute skipped: no selected repo";
+                return true;
+            }
+            const auto data = CollectPreviewData(repos[selected].path);
+            if (data.upstream == "(none)" || data.tracking == "no-upstream") {
+                footer = "push blocked: no upstream tracking branch";
+                return true;
+            }
+            confirm.active = true;
+            confirm.title = "Confirm push";
+            confirm.description = "Run git push on selected repo?";
+            confirm.repo = repos[selected].path;
+            confirm.command = {"push"};
+            footer = "confirm push: y/n";
+            return true;
+        }
+
+        if (confirm.active && (event == Event::Character('y') || event == Event::Character('Y'))) {
+            const auto result = shell::ExecuteCommand("git", confirm.command, shell::ExecMode::Capture, confirm.repo);
+            preview.active = true;
+            preview.title = confirm.title + " result";
+            preview.body = "repo: " + confirm.repo.lexically_normal().generic_string() + "\n"
+                + "command: git";
+            for (const auto& part : confirm.command) {
+                preview.body += " " + part;
+            }
+            preview.body += "\nexit: " + std::to_string(result.exitCode) + "\n\n";
+            preview.body += !result.stdoutStr.empty() ? result.stdoutStr : result.stderrStr;
+            confirm.active = false;
+            footer = result.exitCode == 0 ? "execute success" : "execute failed";
+            refresh_all();
+            return true;
+        }
+
+        if (confirm.active && (event == Event::Character('n') || event == Event::Character('N') || event == Event::Escape)) {
+            confirm.active = false;
+            footer = "confirm declined";
+            return true;
+        }
+
+        if (event == Event::Return || event == Event::Character('\n')) {
+            const int selected = RepoIndexFromDisplayed(displayedRepoIndices, selectedDisplayed);
+            if (repos.empty() || selected < 0 || selected >= static_cast<int>(repos.size())) {
+                footer = "history skipped: no selected repo";
+                return true;
+            }
+            history.active = true;
+            history.repoIndex = selected;
+            history.pageIndex = 0;
+            history.selectedLine = 0;
+            history.searchMode = false;
+            history.searchQuery.clear();
+            history.highlightedLine = -1;
+            history.detailActive = false;
+            history.detailSha.clear();
+            history.detailBody.clear();
+            history.detailMode = 0;
+            ensure_history_loaded(history.repoIndex, history.pageIndex);
+            footer = "history opened";
+            return true;
+        }
+
+        if (event == Event::Character('t')) {
+            const int selected = RepoIndexFromDisplayed(displayedRepoIndices, selectedDisplayed);
+            if (selected < 0 || selected >= static_cast<int>(repos.size())) {
+                footer = "tree toggle skipped: no selected repo";
+                return true;
+            }
+            const auto key = repos[selected].path.lexically_normal().generic_string();
+            if (repos[selected].childRepoCount > 0) {
+                collapsedRoots[key] = !collapsedRoots[key];
+                refresh_menu();
+                footer = collapsedRoots[key] ? "tree collapsed" : "tree expanded";
+            } else {
+                footer = "selected repo has no child repos";
+            }
+            return true;
+        }
+
+        if (history.active) {
+            if (history.searchMode) {
+                if (event == Event::Escape) {
+                    history.searchMode = false;
+                    footer = "history search cancelled";
+                    return true;
+                }
+                if (event == Event::Backspace) {
+                    if (!history.searchQuery.empty()) {
+                        history.searchQuery.pop_back();
+                    }
+                    const auto lines = current_history_lines();
+                    history.highlightedLine = FindNextMatch(lines, history.searchQuery, -1);
+                    footer = history.searchQuery.empty() ? "search cleared" : "search: /" + history.searchQuery;
+                    return true;
+                }
+                if (event == Event::Return || event == Event::Character('\n')) {
+                    history.searchMode = false;
+                    footer = history.highlightedLine >= 0 ? "search applied" : "search no match";
+                    return true;
+                }
+                if (event.is_character()) {
+                    history.searchQuery += event.character();
+                    const auto lines = current_history_lines();
+                    history.highlightedLine = FindNextMatch(lines, history.searchQuery, -1);
+                    footer = "search: /" + history.searchQuery;
+                    return true;
+                }
+                return false;
+            }
+
+            if (event == Event::Character('/')) {
+                history.searchMode = true;
+                history.searchQuery.clear();
+                history.highlightedLine = -1;
+                footer = "search mode: type query then Enter";
+                return true;
+            }
+
+            if (event == Event::Return || event == Event::Character('\n')) {
+                ensure_history_loaded(history.repoIndex, history.pageIndex);
+                const auto key = repos[history.repoIndex].path.lexically_normal().generic_string();
+                const auto& page = historyCache[key].pages[history.pageIndex];
+                if (page.empty()) {
+                    footer = "history detail skipped: page empty";
+                    return true;
+                }
+
+                const int line = std::clamp(history.selectedLine, 0, static_cast<int>(page.size()) - 1);
+                const auto sha = CommitShaFromOneline(page[line]);
+                if (sha.empty() || sha[0] == '(') {
+                    footer = "history detail skipped: invalid sha";
+                    return true;
+                }
+
+                auto& cache = historyCache[key];
+                const auto detailKey = sha + "|" + std::to_string(history.detailMode);
+                auto it = cache.commitDetails.find(detailKey);
+                if (it == cache.commitDetails.end()) {
+                    cache.commitDetails[detailKey] = FetchCommitDetail(repos[history.repoIndex].path, sha, history.detailMode);
+                }
+                history.detailActive = true;
+                history.detailSha = sha;
+                history.detailBody = cache.commitDetails[detailKey];
+                footer = "history detail opened: " + sha;
+                return true;
+            }
+
+            if (event == Event::Character('n')) {
+                if (history.searchQuery.empty()) {
+                    footer = "search query is empty";
+                    return true;
+                }
+                const auto lines = current_history_lines();
+                history.highlightedLine = FindNextMatch(lines, history.searchQuery, history.highlightedLine);
+                if (history.highlightedLine >= 0) {
+                    history.selectedLine = history.highlightedLine;
+                }
+                footer = history.highlightedLine >= 0 ? "search next match" : "search no match";
+                return true;
+            }
+
+            if (event == Event::Character('o')) {
+                history.sortMode = (history.sortMode + 1) % 3;
+                footer = history.sortMode == 0 ? "history sort: time-desc" : (history.sortMode == 1 ? "history sort: time-asc" : "history sort: match-first");
+                return true;
+            }
+
+            if (event == Event::Character('m')) {
+                history.detailMode = (history.detailMode + 1) % 3;
+                if (history.detailActive && !history.detailSha.empty()) {
+                    const auto key = repos[history.repoIndex].path.lexically_normal().generic_string();
+                    auto& cache = historyCache[key];
+                    const auto detailKey = history.detailSha + "|" + std::to_string(history.detailMode);
+                    auto it = cache.commitDetails.find(detailKey);
+                    if (it == cache.commitDetails.end()) {
+                        cache.commitDetails[detailKey] = FetchCommitDetail(repos[history.repoIndex].path, history.detailSha, history.detailMode);
+                    }
+                    history.detailBody = cache.commitDetails[detailKey];
+                }
+                footer = history.detailMode == 0 ? "detail mode: summary" : (history.detailMode == 1 ? "detail mode: files" : "detail mode: patch");
+                return true;
+            }
+
+            if (event == Event::ArrowUp || event == Event::Character('k')) {
+                ensure_history_loaded(history.repoIndex, history.pageIndex);
+                const auto key = repos[history.repoIndex].path.lexically_normal().generic_string();
+                const auto& page = historyCache[key].pages[history.pageIndex];
+                if (!page.empty()) {
+                    history.selectedLine = std::max(0, history.selectedLine - 1);
+                    footer = "history line up";
+                    return true;
+                }
+            }
+            if (event == Event::ArrowDown || event == Event::Character('j')) {
+                ensure_history_loaded(history.repoIndex, history.pageIndex);
+                const auto key = repos[history.repoIndex].path.lexically_normal().generic_string();
+                const auto& page = historyCache[key].pages[history.pageIndex];
+                if (!page.empty()) {
+                    history.selectedLine = std::min(static_cast<int>(page.size()) - 1, history.selectedLine + 1);
+                    footer = "history line down";
+                    return true;
+                }
+            }
+
+            if (event == Event::ArrowLeft || event == Event::Character('h')) {
+                if (!repos.empty()) {
+                    history.repoIndex = (history.repoIndex - 1 + static_cast<int>(repos.size())) % static_cast<int>(repos.size());
+                    history.pageIndex = 0;
+                    history.selectedLine = 0;
+                    history.highlightedLine = -1;
+                    history.detailActive = false;
+                    ensure_history_loaded(history.repoIndex, history.pageIndex);
+                    footer = "history repo <-";
+                }
+                return true;
+            }
+            if (event == Event::ArrowRight || event == Event::Character('l')) {
+                if (!repos.empty()) {
+                    history.repoIndex = (history.repoIndex + 1) % static_cast<int>(repos.size());
+                    history.pageIndex = 0;
+                    history.selectedLine = 0;
+                    history.highlightedLine = -1;
+                    history.detailActive = false;
+                    ensure_history_loaded(history.repoIndex, history.pageIndex);
+                    footer = "history repo ->";
+                }
+                return true;
+            }
+            if (event == Event::PageUp || event == Event::Character('K')) {
+                history.pageIndex += 1;
+                history.selectedLine = 0;
+                history.highlightedLine = -1;
+                history.detailActive = false;
+                ensure_history_loaded(history.repoIndex, history.pageIndex);
+                footer = "history page older";
+                return true;
+            }
+            if (event == Event::PageDown || event == Event::Character('J')) {
+                if (history.pageIndex > 0) {
+                    history.pageIndex -= 1;
+                    history.selectedLine = 0;
+                    history.highlightedLine = -1;
+                    history.detailActive = false;
+                    ensure_history_loaded(history.repoIndex, history.pageIndex);
+                    footer = "history page newer";
+                }
+                return true;
+            }
+        }
+
+        return false;
+    });
+
+    auto ui = Renderer(with_keys, [&] {
+        Element rightPanel;
+
+        if (discover.active) {
+            const int totalPages = std::max(1, static_cast<int>((discover.lines.size() + static_cast<std::size_t>(discover.pageSize) - 1) / static_cast<std::size_t>(discover.pageSize)));
+            const int clampedPage = std::clamp(discover.pageIndex, 0, totalPages - 1);
+            const int start = clampedPage * discover.pageSize;
+            const int end = std::min(start + discover.pageSize, static_cast<int>(discover.lines.size()));
+
+            Elements pageRows;
+            for (int i = start; i < end; ++i) {
+                pageRows.push_back(text(discover.lines[static_cast<std::size_t>(i)]));
+            }
+            if (pageRows.empty()) {
+                pageRows.push_back(text("(no lines in this page)") | dim);
+            }
+
+            rightPanel = vbox({
+                text("Discover Output (paged)") | bold,
+                separator(),
+                text("command: :" + discover.title),
+                text("page: " + std::to_string(clampedPage + 1) + "/" + std::to_string(totalPages) +
+                     "  lines: " + std::to_string(start + 1) + "-" + std::to_string(std::max(start + 1, end)) +
+                     "/" + std::to_string(discover.lines.size())),
+                text("controls: [ or PgDown prev page | ] or PgUp next page | r refresh | Esc/q close") | dim,
+                separator(),
+                vbox(std::move(pageRows)) | border,
+            }) | border;
+        } else if (tui_state.GetMode() == kano::git::commands::TuiMode::Help) {
+            rightPanel = vbox({
+                text("Help") | bold,
+                separator(),
+                text("Command Mode"),
+                text(": enter command mode, Esc cancel, Enter execute") | dim,
+                text("Try :discover or :discover dirty for paged discover output") | dim,
+                text("Tab/Up/Down navigate candidates, Enter accepts selected candidate") | dim,
+                separator(),
+                text("Shortcuts"),
+                text("r refresh | d dirty-only | f fetch | c/C commit preview/execute") | dim,
+                text("p/P push preview/execute | Enter history | q quit") | dim,
+                separator(),
+                text("Press Esc or q to close") | dim,
+            }) | border;
+        } else if (tui_state.GetMode() == kano::git::commands::TuiMode::CommandPalette) {
+            Elements rows;
+            if (tui_state.palette_state.filtered_commands.empty()) {
+                rows.push_back(text("(no matching commands)") | dim);
+            } else {
+                for (std::size_t i = 0; i < tui_state.palette_state.filtered_commands.size(); ++i) {
+                    const auto& item = tui_state.palette_state.filtered_commands[i];
+                    const bool selected = static_cast<int>(i) == tui_state.palette_state.selected_index;
+                    auto row = hbox({
+                        text(selected ? "> " : "  "),
+                        text("[" + item.category + "] ") | dim,
+                        text(item.name) | bold,
+                        text(" - " + item.description) | dim,
+                    });
+                    if (selected) {
+                        row = row | inverted;
+                    }
+                    rows.push_back(row);
+                }
+            }
+
+            rightPanel = vbox({
+                text("Command Palette") | bold,
+                separator(),
+                text("search: " + tui_state.palette_state.search_query),
+                separator(),
+                vbox(std::move(rows)) | border,
+                separator(),
+                text("Enter select | Esc close") | dim,
+            }) | border;
+        } else if (tui_state.GetMode() == kano::git::commands::TuiMode::Confirm && tui_state.confirm_state.active) {
+            rightPanel = vbox({
+                text("Confirm Command") | bold,
+                separator(),
+                paragraph(tui_state.confirm_state.message),
+                separator(),
+                text("Press y to confirm, n/Esc to cancel") | dim,
+            }) | border;
+        } else if (rebaseRun.active) {
+            std::string progress = "progress: " + std::to_string(std::min(rebaseRun.index, static_cast<int>(rebaseRun.queue.size()))) + "/" + std::to_string(rebaseRun.queue.size());
+            std::string current = "(none)";
+            if (rebaseRun.index >= 0 && rebaseRun.index < static_cast<int>(rebaseRun.queue.size())) {
+                const auto& item = rebaseRun.queue[rebaseRun.index];
+                current = item.action + " " + item.sha + " " + item.title;
+            }
+            rightPanel = vbox({
+                text("Rebase Runner") | bold,
+                separator(),
+                text("repo: " + rebaseRun.repo.lexically_normal().generic_string()),
+                text(progress),
+                text("current: " + current),
+                text(rebaseRun.waitingConflictResolution
+                         ? "state: waiting resolution (C=continue, S=skip, A=abort)"
+                         : "state: ready (N=next, A=abort, q=close panel)"),
+                separator(),
+                paragraph(rebaseRun.lastOutput.empty() ? "(no output yet)" : rebaseRun.lastOutput),
+            }) | border;
+        } else if (rebasePlanner.active) {
+            rightPanel = vbox({
+                text("Rebase Planner") | bold,
+                separator(),
+                text("repo: " + rebasePlanner.repo.lexically_normal().generic_string()),
+                text("base: " + rebasePlanner.baseRef),
+                text("controls: up/down select, p=pick s=squash f=fixup d=drop, q close") | dim,
+                separator(),
+                vbox([&] {
+                    Elements rows;
+                    for (std::size_t i = 0; i < rebasePlanner.items.size(); ++i) {
+                        const auto& it = rebasePlanner.items[i];
+                        const bool sel = static_cast<int>(i) == rebasePlanner.selectedIndex;
+                        auto row = text(std::string(sel ? "> " : "  ") + it.action + " " + it.sha + " " + it.title);
+                        if (sel) {
+                            row = row | bold;
+                        }
+                        rows.push_back(row);
+                    }
+                    if (rebasePlanner.items.empty()) {
+                        rows.push_back(text("(no planner items)"));
+                    }
+                    return rows;
+                }()) | border,
+                separator(),
+                text("Plan preview") | bold,
+                paragraph(rebasePlanner.preview),
+            }) | border;
+        } else if (rebase.active) {
+            rightPanel = vbox({
+                text("Rebase Preflight") | bold,
+                separator(),
+                text("repo: " + rebase.repo.lexically_normal().generic_string()),
+                text("branch: " + rebase.branch),
+                text("upstream: " + rebase.upstream),
+                text("tracking: " + rebase.tracking),
+                text("merge-base: " + (rebase.mergeBase.empty() ? "(unknown)" : rebase.mergeBase)),
+                text("risk: " + rebase.risk),
+                text("note: " + rebase.note),
+                separator(),
+                text("candidate commits") | bold,
+                vbox([&] {
+                    Elements rows;
+                    const auto maxItems = std::min<std::size_t>(rebase.candidates.size(), 24);
+                    for (std::size_t i = 0; i < maxItems; ++i) {
+                        rows.push_back(text(rebase.candidates[i]));
+                    }
+                    if (rebase.candidates.size() > maxItems) {
+                        rows.push_back(text("... and " + std::to_string(rebase.candidates.size() - maxItems) + " more"));
+                    }
+                    if (rebase.candidates.empty()) {
+                        rows.push_back(text("(none)"));
+                    }
+                    return rows;
+                }()) | border,
+                separator(),
+                text("Press q to close rebase preflight") | dim,
+            }) | border;
+        } else if (cherryRun.active) {
+            std::string progress = "progress: " + std::to_string(std::min(cherryRun.index, static_cast<int>(cherryRun.queue.size()))) + "/" + std::to_string(cherryRun.queue.size());
+            std::string current = "(none)";
+            if (cherryRun.index >= 0 && cherryRun.index < static_cast<int>(cherryRun.queue.size())) {
+                current = cherryRun.queue[cherryRun.index].sha + " " + cherryRun.queue[cherryRun.index].title;
+            }
+            rightPanel = vbox({
+                text("Cherry-pick Runner") | bold,
+                separator(),
+                text("repo: " + cherryRun.repo.lexically_normal().generic_string()),
+                text(progress),
+                text("current: " + current),
+                text(cherryRun.waitingConflictResolution
+                         ? "state: waiting conflict resolution (c=continue, s=skip, a=abort)"
+                         : "state: ready (n=next, a=abort, q=close panel)"),
+                separator(),
+                paragraph(cherryRun.lastOutput.empty() ? "(no output yet)" : cherryRun.lastOutput),
+            }) | border;
+        } else if (cherry.active) {
+            rightPanel = vbox({
+                text("Cherry-pick Preflight") | bold,
+                separator(),
+                text("source: " + cherry.sourceBranch),
+                text("target: " + cherry.targetBranch),
+                text(cherry.note),
+                separator(),
+                text("candidate commits") | bold,
+                vbox([&] {
+                    Elements rows;
+                    const auto maxItems = std::min<std::size_t>(cherry.commits.size(), 24);
+                    for (std::size_t i = 0; i < maxItems; ++i) {
+                        const auto& c = cherry.commits[i];
+                        const auto dup = c.alreadyInTarget ? "dup" : "new";
+                        rows.push_back(text(c.sha + " | " + dup + " | risk=" + c.risk + " | " + c.title));
+                    }
+                    if (cherry.commits.size() > maxItems) {
+                        rows.push_back(text("... and " + std::to_string(cherry.commits.size() - maxItems) + " more"));
+                    }
+                    return rows;
+                }()) | border,
+                separator(),
+                text("Press q to close preflight panel") | dim,
+            }) | border;
+        } else if (confirm.active) {
+            rightPanel = vbox({
+                text(confirm.title) | bold,
+                separator(),
+                text(confirm.description),
+                text("repo: " + confirm.repo.lexically_normal().generic_string()),
+                text("command: git" + [&] {
+                    std::string cmd;
+                    for (const auto& part : confirm.command) {
+                        cmd += " " + part;
+                    }
+                    return cmd;
+                }()),
+                separator(),
+                text("Press y to execute, n/Esc/q to cancel") | dim,
+            }) | border;
+        } else if (preview.active) {
+            rightPanel = vbox({
+                text(preview.title) | bold,
+                separator(),
+                text("Press q to close preview") | dim,
+                separator(),
+                paragraph(preview.body),
+            }) | border;
+        } else if (history.active && !repos.empty()) {
+            const auto& repo = repos[history.repoIndex];
+            const auto key = repo.path.lexically_normal().generic_string();
+            ensure_history_loaded(history.repoIndex, history.pageIndex);
+            const auto& cache = historyCache[key];
+            const auto it = cache.pages.find(history.pageIndex);
+            auto lines = (it != cache.pages.end()) ? it->second : std::vector<std::string>{"(no data)"};
+
+            if (history.sortMode == 1) {
+                std::reverse(lines.begin(), lines.end());
+            } else if (history.sortMode == 2 && !history.searchQuery.empty()) {
+                std::stable_sort(lines.begin(), lines.end(), [&](const std::string& a, const std::string& b) {
+                    const bool am = ToLowerAscii(a).find(ToLowerAscii(history.searchQuery)) != std::string::npos;
+                    const bool bm = ToLowerAscii(b).find(ToLowerAscii(history.searchQuery)) != std::string::npos;
+                    return am > bm;
+                });
+            }
+
+            std::string totalPages = "?";
+            if (cache.totalCommits.has_value()) {
+                const int pages = std::max(1, (cache.totalCommits.value() + kHistoryPageSize - 1) / kHistoryPageSize);
+                totalPages = std::to_string(pages);
+            }
+
+            rightPanel = vbox({
+                text("History Pager") | bold,
+                separator(),
+                text("repo path: " + repo.path.lexically_normal().generic_string()),
+                text("parent repo: " + repo.parentRepo),
+                text("child repos: " + std::to_string(repo.childRepoCount)),
+                text("repo index: " + std::to_string(history.repoIndex + 1) + "/" + std::to_string(repos.size())),
+                text("page index: " + std::to_string(history.pageIndex + 1) + "/" + totalPages),
+                text("line index: " + std::to_string(std::max(0, history.selectedLine) + 1) + "/" + std::to_string(lines.size())),
+                text("search: " + (history.searchQuery.empty() ? "(none)" : "/" + history.searchQuery)),
+                text("detail mode: " + std::string(history.detailMode == 0 ? "summary" : (history.detailMode == 1 ? "files" : "patch"))),
+                text("sort mode: " + std::string(history.sortMode == 0 ? "time-desc" : (history.sortMode == 1 ? "time-asc" : "match-first"))),
+                separator(),
+                text("controls: up/down line, PgUp/PgDn page, left/right repo, Enter detail, m(mode), o(sort), /(search), n(next), q close") | dim,
+                separator(),
+                vbox([&] {
+                    Elements rows;
+                    for (std::size_t i = 0; i < lines.size(); ++i) {
+                        const bool isHit = history.highlightedLine == static_cast<int>(i);
+                        const bool isSelected = history.selectedLine == static_cast<int>(i);
+                        auto prefix = std::string(isSelected ? "> " : "  ");
+                        auto row = text(prefix + std::string("│ ") + lines[i]);
+                        if (isHit) {
+                            row = row | bold;
+                        }
+                        rows.push_back(row);
+                    }
+                    return rows;
+                }()) | border,
+                [&]() {
+                    if (lines.empty()) {
+                        return text("quick stats: (no commits)") | dim;
+                    }
+                    const int line = std::clamp(history.selectedLine, 0, static_cast<int>(lines.size()) - 1);
+                    const auto sha = CommitShaFromOneline(lines[line]);
+                    if (sha.empty() || sha[0] == '(') {
+                        return text("quick stats: (invalid commit)") | dim;
+                    }
+
+                    auto& mutableCache = historyCache[key];
+                    auto it = mutableCache.commitQuickStats.find(sha);
+                    if (it == mutableCache.commitQuickStats.end()) {
+                        mutableCache.commitQuickStats[sha] = FetchCommitQuickStats(repo.path, sha);
+                        it = mutableCache.commitQuickStats.find(sha);
+                    }
+                    return text("quick stats: " + it->second) | dim;
+                }(),
+                history.detailActive
+                    ? vbox({
+                          separator(),
+                          text("Commit Detail: " + history.detailSha + " (" + (history.detailMode == 0 ? std::string("summary") : (history.detailMode == 1 ? std::string("files") : std::string("patch"))) + ")") | bold,
+                          paragraph(history.detailBody),
+                      }) | border
+                    : text(""),
+            }) | border;
+        } else if (!repos.empty() && RepoIndexFromDisplayed(displayedRepoIndices, selectedDisplayed) >= 0) {
+            const int selected = RepoIndexFromDisplayed(displayedRepoIndices, selectedDisplayed);
+            const auto& row = repos[selected];
+            rightPanel = vbox({
+                text("Repository Details") | bold,
+                separator(),
+                text("path: " + row.path.lexically_normal().generic_string()),
+                text("parent repo: " + row.parentRepo),
+                text("child repos: " + std::to_string(row.childRepoCount)),
+                text("type: " + row.type),
+                text("branch: " + row.branch),
+                text("upstream: " + row.upstream),
+                text("tracking: " + row.tracking),
+                text(std::string("dirty: ") + (row.repoDirty ? "yes" : "no")),
+                text(std::string("worktree dirty: ") + (row.worktreeDirty ? "yes" : "no")),
+                text("dirty worktrees: " + (row.dirtyWorktrees.empty() ? "(none)" : row.dirtyWorktrees)),
+                separator(),
+                text("dirty files:") | bold,
+                row.dirtyFiles.empty()
+                    ? text("(none)")
+                    : vbox([&] {
+                          Elements lines;
+                          const auto maxItems = std::min<std::size_t>(row.dirtyFiles.size(), 8);
+                          for (std::size_t i = 0; i < maxItems; ++i) {
+                              lines.push_back(text("- " + row.dirtyFiles[i]));
+                          }
+                          if (row.dirtyFiles.size() > maxItems) {
+                              lines.push_back(text("... and " + std::to_string(row.dirtyFiles.size() - maxItems) + " more"));
+                          }
+                          return lines;
+                      }()),
+            }) | border;
+        } else {
+            rightPanel = vbox({
+                text("Repository Details") | bold,
+                separator(),
+                text("No repositories to display."),
+            }) | border;
+        }
+
+        Elements commandRows;
+        if (tui_state.GetMode() == kano::git::commands::TuiMode::Command) {
+            if (tui_state.command_state.HasCandidates()) {
+                Elements candRows;
+                for (std::size_t i = 0; i < tui_state.command_state.candidates.items.size(); ++i) {
+                    const auto& c = tui_state.command_state.candidates.items[i];
+                    const bool selected = static_cast<int>(i) == tui_state.command_state.candidates.selected_index;
+                    auto row = hbox({
+                        text(selected ? "> " : "  "),
+                        text(c.text) | bold,
+                        text(" - " + c.description) | dim,
+                    });
+                    if (selected) {
+                        row = row | inverted;
+                    }
+                    candRows.push_back(row);
+                }
+                commandRows.push_back(vbox({text("Candidates") | bold, vbox(std::move(candRows))}) | border);
+                commandRows.push_back(separator());
+            }
+
+            std::string inputLine = tui_state.command_state.GetBuffer();
+            const auto cursorPos = std::min(tui_state.command_state.GetCursorPos(), inputLine.size());
+            inputLine.insert(cursorPos, "█");
+            commandRows.push_back(text(":" + inputLine) | border);
+            commandRows.push_back(separator());
+        }
+
+        const auto footerText = tui_state.footer_message.empty() ? footer : tui_state.footer_message;
+        auto footerElement = text(footerText);
+        footerElement = tui_state.footer_is_error ? (footerElement | color(Color::Red)) : (footerElement | dim);
+
+        return vbox({
+                   text("KOG FTXUI Dashboard v2") | bold,
+                   separator(),
+                   text("Command-input-first workflow + global repo view + incremental history pager."),
+                   text("preview keys: c/C commit preview/execute, p/P push preview/execute, f fetch confirm, x/X cherry preflight/run, b/B rebase preflight/planner, R rebase runner") | dim,
+                   text("command examples: :discover | :discover dirty") | dim,
+                   text("repo filter: " + (repoFilter.empty() ? "(none)" : repoFilter)) | dim,
+                   text("tree toggle key: t (collapse/expand child repos)") | dim,
+                   separator(),
+                   hbox({
+                       vbox({
+                           text("Repositories") | bold,
+                           separator(),
+                           list->Render() | border,
+                       }) | flex,
+                       separator(),
+                       rightPanel | flex,
+                   }) | flex,
+                   separator(),
+                   refresh_button->Render(),
+                   separator(),
+                   vbox(std::move(commandRows)),
+                   footerElement,
+               }) |
+               border;
+    });
+
+    screen.Loop(ui);
+    return 0;
+}
+
+auto PrintDemo() -> void {
+    std::cout << "KOG TUI demo mode\n";
+    std::cout << "- FTXUI dashboard enabled\n";
+    std::cout << "- repo list + details + incremental history pager\n";
+    std::cout << "- controls: r(refresh), d(dirty-only), f(fetch confirm), c(commit preview), C(commit confirm), p(push preview), P(push confirm), x/X(cherry preflight/run), b/B(rebase preflight/planner), R(rebase runner), Enter(history), q(quit)\n";
+    std::cout << "- cherry runner controls: n(next), c(continue), s(skip), a(abort), q(close panel)\n";
+    std::cout << "- rebase runner controls: N(next), C(continue), S(skip), A(abort), q(close panel)\n";
+    std::cout << "- command-first flow: : to enter command mode, then run :discover or :discover dirty\n";
+    std::cout << "- discover panel controls: ]/PgUp next page, [/PgDown prev page, r refresh, Esc/q close\n";
+    std::cout << "- main view: / enters repo path filter mode\n";
+    std::cout << "- tree: t collapse/expand selected repo subtree\n";
+    std::cout << "- history mode: left/right repo, PgUp/PgDn page, up/down line, /search, n-next, m-detail-mode, o-sort-mode\n";
+    std::cout << "- quick stats shown for selected commit line (cached by sha)\n";
+    std::cout << "Run `kano-git tui` to start the FTXUI UI.\n";
+}
+
+} // namespace
+
+auto RunTuiDashboard(CLI::App& InApp) -> int {
+    return RunFtxuiDashboard(InApp);
+}
+
+auto PrintTuiDemoSummary() -> void {
+    PrintDemo();
+}
+
+} // namespace kano::git::commands
