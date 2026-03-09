@@ -133,6 +133,10 @@ auto IsTruthyEnv(const char* InValue) -> bool {
     return v == "1" || v == "true" || v == "yes" || v == "on";
 }
 
+auto IsAgentModeEnabled() -> bool {
+    return IsTruthyEnv(std::getenv("KANO_AGENT_MODE"));
+}
+
 auto SplitEnvList(const char* InValue) -> std::vector<std::string> {
     std::vector<std::string> out;
     if (InValue == nullptr) {
@@ -316,81 +320,6 @@ auto HomeDirectory() -> std::filesystem::path {
     return {};
 }
 
-auto AiCacheDir() -> std::filesystem::path {
-    const auto home = HomeDirectory();
-    if (home.empty()) {
-        return {};
-    }
-    return (home / ".kano" / "cache" / "git" / "ai").lexically_normal();
-}
-
-auto ModelCacheFilePath(const std::string& InProvider) -> std::filesystem::path {
-    const auto provider = ToLower(Trim(InProvider));
-    if (provider.empty()) {
-        return {};
-    }
-    const auto cacheDir = AiCacheDir();
-    if (cacheDir.empty()) {
-        return {};
-    }
-    return (cacheDir / ("last-model-" + provider + ".txt")).lexically_normal();
-}
-
-auto ReadRememberedModel(const std::string& InProvider) -> std::string {
-    const auto cacheFile = ModelCacheFilePath(InProvider);
-    if (!cacheFile.empty() && std::filesystem::exists(cacheFile)) {
-        std::ifstream in(cacheFile);
-        if (in) {
-            std::string line;
-            std::getline(in, line);
-            return Trim(line);
-        }
-    }
-
-    const auto home = HomeDirectory();
-    const auto provider = ToLower(Trim(InProvider));
-    if (home.empty() || provider.empty()) {
-        return {};
-    }
-
-    const auto legacyFile = (home / ".cache" / "kano-git-master-skill" / "ai" / ("last-model-" + provider + ".txt")).lexically_normal();
-    if (!std::filesystem::exists(legacyFile)) {
-        return {};
-    }
-
-    std::ifstream in(legacyFile);
-    if (!in) {
-        return {};
-    }
-
-    std::string line;
-    std::getline(in, line);
-    return Trim(line);
-}
-
-void RememberModelChoice(const std::string& InProvider, const std::string& InModel) {
-    const auto provider = ToLower(Trim(InProvider));
-    auto model = Trim(InModel);
-    const auto cacheDir = AiCacheDir();
-    const auto cacheFile = ModelCacheFilePath(provider);
-    if (provider.empty() || model.empty() || cacheDir.empty() || cacheFile.empty()) {
-        return;
-    }
-    const auto normalizedKeyword = NormalizeAiModelKeyword(model);
-    if (normalizedKeyword == "auto" || normalizedKeyword == "provider-default") {
-        model = normalizedKeyword;
-    }
-
-    std::error_code ec;
-    std::filesystem::create_directories(cacheDir, ec);
-
-    std::ofstream out(cacheFile, std::ios::trunc);
-    if (!out) {
-        return;
-    }
-    out << model << "\n";
-}
-
 auto CountWorkspaceDirtyEntries(const std::filesystem::path& InRoot) -> int {
     auto countRepoDirtyEntries = [](const std::filesystem::path& InRepo) -> int {
         int total = 0;
@@ -451,20 +380,10 @@ auto ResolveAiModelDirective(const std::string& InProvider,
         if (requestedLower == "auto") {
             return "auto";
         }
-        RememberModelChoice(InProvider, requested);
         if (requestedLower == "provider-default") {
             return "provider-default";
         }
         return requested;
-    }
-
-    auto remembered = ReadRememberedModel(InProvider);
-    if (!remembered.empty()) {
-        const auto rememberedLower = NormalizeAiModelKeyword(remembered);
-        if (rememberedLower == "provider-default" || rememberedLower == "auto") {
-            return rememberedLower;
-        }
-        return remembered;
     }
 
     return kog_config::ResolveDefaultAiModelSelection(InProvider, InWorkspaceRoot, ResolveSkillRoot(InWorkspaceRoot), "auto");
@@ -791,6 +710,75 @@ auto HasCommand(const std::string& InCommand, const std::vector<std::string>& In
     return shell::ExecuteCommand(InCommand, InArgs, shell::ExecMode::Capture).exitCode == 0;
 }
 
+auto CopilotStandaloneCommand() -> std::string {
+#if defined(_WIN32)
+    return "copilot.cmd";
+#else
+    return "copilot";
+#endif
+}
+
+auto HasStandaloneCopilotCommand() -> bool {
+    return HasCommand(CopilotStandaloneCommand(), {"--help"}) || HasCommand("copilot", {"--help"});
+}
+
+auto ExecuteStandaloneCopilot(const std::vector<std::string>& InArgs,
+                              const std::filesystem::path& InWorkdir) -> shell::ExecResult {
+    return shell::ExecuteCommand(CopilotStandaloneCommand(), InArgs, shell::ExecMode::Capture, InWorkdir);
+}
+
+auto WriteCopilotPromptFile(const std::filesystem::path& InWorkdir,
+                            const std::string& InPrompt,
+                            const std::string& InPurpose,
+                            std::filesystem::path* OutPath,
+                            std::string* OutError = nullptr) -> bool {
+    if (OutPath == nullptr) {
+        if (OutError != nullptr) {
+            *OutError = "missing output path";
+        }
+        return false;
+    }
+
+    const auto promptDir = (InWorkdir / ".kano" / "tmp" / "git" / "copilot-prompts").lexically_normal();
+    std::error_code ec;
+    std::filesystem::create_directories(promptDir, ec);
+    if (ec) {
+        if (OutError != nullptr) {
+            *OutError = std::format("create_directories failed: {}", ec.message());
+        }
+        return false;
+    }
+
+    const auto promptPath = (promptDir / std::format("{}-{}-{}.md",
+                                                      InPurpose,
+                                                      CurrentUtcCompact(),
+                                                      Fnv1a64Hex(InPrompt).substr(0, 8)))
+                                .lexically_normal();
+    if (!WriteFileText(promptPath, InPrompt, OutError)) {
+        return false;
+    }
+
+    *OutPath = promptPath;
+    return true;
+}
+
+auto BuildCopilotPromptArgument(const std::filesystem::path& InWorkdir,
+                                const std::string& InPrompt,
+                                const std::string& InPurpose) -> std::string {
+    std::filesystem::path promptPath;
+    if (!WriteCopilotPromptFile(InWorkdir, InPrompt, InPurpose, &promptPath)) {
+        return InPrompt;
+    }
+
+    auto refPath = promptPath.lexically_relative(InWorkdir);
+    if (refPath.empty()) {
+        refPath = promptPath.lexically_normal();
+    }
+    return std::format(
+        "Read @{} and follow it exactly. Treat that file as the complete task. Do not ask clarifying questions. Output only the final answer required by that file.",
+        refPath.generic_string());
+}
+
 auto LooksLikeModelToken(const std::string& InToken) -> bool {
     if (InToken.empty()) {
         return false;
@@ -864,10 +852,6 @@ auto ExtractModelTokensFromText(const std::string& InText) -> std::vector<std::s
 auto FetchProviderModelsForHelp(const std::string& InProvider) -> std::vector<std::string> {
     const auto provider = ToLower(Trim(InProvider));
     std::set<std::string> models;
-    const auto remembered = ReadRememberedModel(provider);
-    if (!remembered.empty()) {
-        models.insert(remembered);
-    }
 
     if (provider == "copilot") {
         models.insert("claude-haiku-4.5");
@@ -899,29 +883,26 @@ auto FetchProviderModelsForHelp(const std::string& InProvider) -> std::vector<st
 }
 
 auto BuildSetAiModelHelpFooter() -> std::string {
-    const auto cacheDir = AiCacheDir();
     const auto cwd = std::filesystem::current_path().lexically_normal();
+    const auto skillRoot = ResolveSkillRoot(cwd);
     const auto home = HomeDirectory();
     std::ostringstream oss;
-    oss << "Remembered model cache:\n";
-    if (!cacheDir.empty()) {
-        oss << "  " << (cacheDir / "last-model-<provider>.txt").generic_string() << "\n";
+    oss << "Layered config lookup order (low -> high):\n";
+    if (!skillRoot.empty()) {
+        oss << "  system: " << kog_config::SystemConfigPath(skillRoot).generic_string() << "\n";
     } else {
-        oss << "  <home>/.kano/cache/git/ai/last-model-<provider>.txt\n";
+        oss << "  system: <skill-root>/assets/kog_config.toml\n";
     }
-    oss << "  legacy: <home>/.cache/kano-git-master-skill/ai/last-model-<provider>.txt\n";
-    oss << "\nSpecial remembered model keywords:\n";
-    oss << "  provider-default : use provider/system-recommended fixed default model\n";
-    oss << "  auto             : auto-select model by workspace change volume\n";
-    oss << "  note             : legacy alias 'default' is still accepted\n";
-    oss << "\nAuto-model policy config override order (low -> high):\n";
-    oss << "  system: " << (ResolveSkillRoot(cwd) / "assets" / "kog_config.toml").generic_string() << "\n";
     if (!home.empty()) {
-        oss << "  global: " << (home / ".kano" / "kog_config.toml").generic_string() << "\n";
+        oss << "  global: " << kog_config::GlobalConfigPath().generic_string() << "\n";
     } else {
         oss << "  global: <home>/.kano/kog_config.toml\n";
     }
-    oss << "  local:  " << (cwd / ".kano" / "kog_config.toml").generic_string() << "\n";
+    oss << "  local:  " << kog_config::LocalConfigPath(cwd).generic_string() << "\n";
+    oss << "\nSpecial AI model keywords:\n";
+    oss << "  provider-default : use provider/system-recommended fixed default model\n";
+    oss << "  auto             : auto-select model by workspace change volume\n";
+    oss << "  note             : legacy alias 'default' is still accepted\n";
     oss << "\nDefault model selection + auto-model config format:\n";
     oss << "  [ai.model]\n";
     oss << "  selection = \"auto\"  # auto | provider-default | provider/model | model\n";
@@ -930,8 +911,7 @@ auto BuildSetAiModelHelpFooter() -> std::string {
     oss << "  models = [\"copilot/gpt-5-mini\", \"copilot/claude-haiku-4.5\", \"copilot/gpt-5.4\"]\n";
     oss << "  # supports more ranges, e.g. change_thresholds = [5, 10, 20] with 4 models\n";
     oss << "  note: provider:model (colon) is not supported.\n";
-    oss << "  note: remembered exact models override auto-policy selection until you set --ai-model auto again.\n";
-    oss << "\nModel list source: built-in provider catalog + remembered model cache (non-blocking help).\n";
+    oss << "\nModel list source: built-in provider catalog (non-blocking help).\n";
     oss << "\nDetected models by provider:\n";
     for (const auto& provider : std::vector<std::string>{"copilot", "codex", "opencode"}) {
         const auto models = FetchProviderModelsForHelp(provider);
@@ -959,7 +939,7 @@ auto ResolveAiProvider(const std::string& InRequested) -> std::string {
         }
         return {};
     }
-    if (HasCommand("copilot", {"--help"}) || HasCommand("gh", {"copilot", "--version"})) {
+    if (HasStandaloneCopilotCommand() || HasCommand("gh", {"copilot", "--version"})) {
         return "copilot";
     }
     if (HasCommand("codex", {"--help"})) {
@@ -974,40 +954,37 @@ auto ResolveAiProvider(const std::string& InRequested) -> std::string {
 auto ResolveAiModel(const std::string& InProvider,
                     const std::string& InRequested,
                     const std::filesystem::path& InWorkspaceRoot) -> std::string {
-    auto model = Trim(InRequested);
-    auto lowered = ToLower(model);
-
-    if (!model.empty() && lowered != "auto") {
-        RememberModelChoice(InProvider, model);
-        if (lowered == "default") {
-            return ResolveSystemRecommendedModel(InProvider);
-        }
-        return model;
-    }
-
-    auto remembered = ReadRememberedModel(InProvider);
-    if (!remembered.empty()) {
-        const auto rememberedLower = ToLower(Trim(remembered));
-        if (rememberedLower == "default") {
-            return ResolveSystemRecommendedModel(InProvider);
-        }
-        if (rememberedLower == "auto") {
-            return ResolveAutoModelByChangeCount(InProvider, InWorkspaceRoot);
-        }
-        return remembered;
-    }
-
-    if (lowered == "auto") {
+    const auto directive = ResolveAiModelDirective(InProvider, InRequested, InWorkspaceRoot);
+    if (directive == "auto") {
         return ResolveAutoModelByChangeCount(InProvider, InWorkspaceRoot);
     }
-
-    return ResolveSystemRecommendedModel(InProvider);
+    if (directive == "provider-default") {
+        return ResolveSystemRecommendedModel(InProvider);
+    }
+    return directive;
 }
 
 auto RunAiGenerate(const std::string& InProvider,
                    const std::string& InModel,
                    const std::string& InPrompt,
-                   const std::filesystem::path& InWorkdir) -> shell::ExecResult {
+                   const std::filesystem::path& InWorkdir,
+                   const bool InStructuredJsonOnly = false) -> shell::ExecResult {
+    if (const char* forcedStdout = std::getenv("KOG_TEST_AI_STDOUT"); forcedStdout != nullptr ||
+        std::getenv("KOG_TEST_AI_STDERR") != nullptr ||
+        std::getenv("KOG_TEST_AI_EXIT_CODE") != nullptr) {
+        shell::ExecResult forced;
+        if (forcedStdout != nullptr) {
+            forced.stdoutStr = forcedStdout;
+        }
+        if (const char* forcedStderr = std::getenv("KOG_TEST_AI_STDERR"); forcedStderr != nullptr) {
+            forced.stderrStr = forcedStderr;
+        }
+        if (const char* forcedExit = std::getenv("KOG_TEST_AI_EXIT_CODE"); forcedExit != nullptr) {
+            forced.exitCode = std::atoi(forcedExit);
+        }
+        return forced;
+    }
+
     auto debugArgs = [&](const std::string& InCmd, const std::vector<std::string>& InArgs) {
         if (!IsTruthyEnv(std::getenv("KOG_DEBUG_AI_ARGS"))) {
             return;
@@ -1068,37 +1045,49 @@ auto RunAiGenerate(const std::string& InProvider,
         return shell::ExecuteCommand("codex", {"-q", InPrompt}, shell::ExecMode::Capture, InWorkdir);
     }
     if (InProvider == "copilot") {
-        if (HasCommand("copilot", {"--help"})) {
+        const auto copilotPrompt = BuildCopilotPromptArgument(
+            InWorkdir,
+            InPrompt,
+            InStructuredJsonOnly ? "plan-fill-structured" : "plan-fill");
+        if (HasStandaloneCopilotCommand()) {
             std::vector<std::string> args{"-s"};
             if (!InModel.empty() && InModel != "auto") {
                 args.push_back("--model");
                 args.push_back(InModel);
             }
-            AppendBoolFlagDefaultTrue(&args, "KOG_COPILOT_AUTOPILOT", "--autopilot");
-            AppendSingleValueFlagWithDefault(&args,
-                                             "KOG_COPILOT_MAX_AUTOPILOT_CONTINUES",
-                                             "--max-autopilot-continues",
-                                             "12");
-            AppendFlagOrSingleValueFlag(&args, "KOG_COPILOT_RESUME", "--resume");
-            if (std::getenv("KOG_COPILOT_RESUME") == nullptr) {
-                AppendBoolFlag(&args, "KOG_COPILOT_CONTINUE", "--continue");
+            if (InStructuredJsonOnly) {
+                args.push_back("--no-custom-instructions");
             }
-            AppendSingleValueFlag(&args, "KOG_COPILOT_AGENT", "--agent");
-            AppendRepeatableFlag(&args, "KOG_COPILOT_ADD_DIRS", "--add-dir");
-            AppendRepeatableFlagWithDefaults(&args,
-                                             "KOG_COPILOT_ALLOW_TOOLS",
-                                             "--allow-tool",
-                                             {"shell(git:*)", "write"});
-            AppendRepeatableFlag(&args, "KOG_COPILOT_ALLOW_URLS", "--allow-url");
-            AppendRepeatableFlag(&args, "KOG_COPILOT_AVAILABLE_TOOLS", "--available-tools");
-            AppendRepeatableFlag(&args, "KOG_COPILOT_EXCLUDED_TOOLS", "--excluded-tools");
-            AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL_TOOLS", "--allow-all-tools");
-            AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL_PATHS", "--allow-all-paths");
-            AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL_URLS", "--allow-all-urls");
-            AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL", "--allow-all");
-            args.insert(args.end(), {"--no-color", "--stream", "off", "--no-ask-user", "-p", InPrompt});
-            debugArgs("copilot", args);
-            return shell::ExecuteCommand("copilot", args, shell::ExecMode::Capture, InWorkdir);
+            if (!InStructuredJsonOnly) {
+                const bool autopilotEnabled = IsTruthyEnv(std::getenv("KOG_COPILOT_AUTOPILOT"));
+                AppendBoolFlag(&args, "KOG_COPILOT_AUTOPILOT", "--autopilot");
+                if (autopilotEnabled) {
+                    AppendSingleValueFlagWithDefault(&args,
+                                                     "KOG_COPILOT_MAX_AUTOPILOT_CONTINUES",
+                                                     "--max-autopilot-continues",
+                                                     "12");
+                }
+                AppendFlagOrSingleValueFlag(&args, "KOG_COPILOT_RESUME", "--resume");
+                if (std::getenv("KOG_COPILOT_RESUME") == nullptr) {
+                    AppendBoolFlag(&args, "KOG_COPILOT_CONTINUE", "--continue");
+                }
+                AppendSingleValueFlag(&args, "KOG_COPILOT_AGENT", "--agent");
+                AppendRepeatableFlag(&args, "KOG_COPILOT_ADD_DIRS", "--add-dir");
+                AppendRepeatableFlagWithDefaults(&args,
+                                                 "KOG_COPILOT_ALLOW_TOOLS",
+                                                 "--allow-tool",
+                                                 {"shell(git:*)", "write"});
+                AppendRepeatableFlag(&args, "KOG_COPILOT_ALLOW_URLS", "--allow-url");
+                AppendRepeatableFlag(&args, "KOG_COPILOT_AVAILABLE_TOOLS", "--available-tools");
+                AppendRepeatableFlag(&args, "KOG_COPILOT_EXCLUDED_TOOLS", "--excluded-tools");
+                AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL_TOOLS", "--allow-all-tools");
+                AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL_PATHS", "--allow-all-paths");
+                AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL_URLS", "--allow-all-urls");
+                AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL", "--allow-all");
+            }
+            args.insert(args.end(), {"--no-color", "--stream", "off", "--no-ask-user", "-p", copilotPrompt});
+            debugArgs(CopilotStandaloneCommand(), args);
+            return ExecuteStandaloneCopilot(args, InWorkdir);
         }
         if (HasCommand("gh", {"copilot", "--version"})) {
             std::vector<std::string> args{"copilot", "--", "-s"};
@@ -1106,29 +1095,37 @@ auto RunAiGenerate(const std::string& InProvider,
                 args.push_back("--model");
                 args.push_back(InModel);
             }
-            AppendBoolFlagDefaultTrue(&args, "KOG_COPILOT_AUTOPILOT", "--autopilot");
-            AppendSingleValueFlagWithDefault(&args,
-                                             "KOG_COPILOT_MAX_AUTOPILOT_CONTINUES",
-                                             "--max-autopilot-continues",
-                                             "12");
-            AppendFlagOrSingleValueFlag(&args, "KOG_COPILOT_RESUME", "--resume");
-            if (std::getenv("KOG_COPILOT_RESUME") == nullptr) {
-                AppendBoolFlag(&args, "KOG_COPILOT_CONTINUE", "--continue");
+            if (InStructuredJsonOnly) {
+                args.push_back("--no-custom-instructions");
             }
-            AppendSingleValueFlag(&args, "KOG_COPILOT_AGENT", "--agent");
-            AppendRepeatableFlag(&args, "KOG_COPILOT_ADD_DIRS", "--add-dir");
-            AppendRepeatableFlagWithDefaults(&args,
-                                             "KOG_COPILOT_ALLOW_TOOLS",
-                                             "--allow-tool",
-                                             {"shell(git:*)", "write"});
-            AppendRepeatableFlag(&args, "KOG_COPILOT_ALLOW_URLS", "--allow-url");
-            AppendRepeatableFlag(&args, "KOG_COPILOT_AVAILABLE_TOOLS", "--available-tools");
-            AppendRepeatableFlag(&args, "KOG_COPILOT_EXCLUDED_TOOLS", "--excluded-tools");
-            AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL_TOOLS", "--allow-all-tools");
-            AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL_PATHS", "--allow-all-paths");
-            AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL_URLS", "--allow-all-urls");
-            AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL", "--allow-all");
-            args.insert(args.end(), {"--no-color", "--stream", "off", "--no-ask-user", "-p", InPrompt});
+            if (!InStructuredJsonOnly) {
+                const bool autopilotEnabled = IsTruthyEnv(std::getenv("KOG_COPILOT_AUTOPILOT"));
+                AppendBoolFlag(&args, "KOG_COPILOT_AUTOPILOT", "--autopilot");
+                if (autopilotEnabled) {
+                    AppendSingleValueFlagWithDefault(&args,
+                                                     "KOG_COPILOT_MAX_AUTOPILOT_CONTINUES",
+                                                     "--max-autopilot-continues",
+                                                     "12");
+                }
+                AppendFlagOrSingleValueFlag(&args, "KOG_COPILOT_RESUME", "--resume");
+                if (std::getenv("KOG_COPILOT_RESUME") == nullptr) {
+                    AppendBoolFlag(&args, "KOG_COPILOT_CONTINUE", "--continue");
+                }
+                AppendSingleValueFlag(&args, "KOG_COPILOT_AGENT", "--agent");
+                AppendRepeatableFlag(&args, "KOG_COPILOT_ADD_DIRS", "--add-dir");
+                AppendRepeatableFlagWithDefaults(&args,
+                                                 "KOG_COPILOT_ALLOW_TOOLS",
+                                                 "--allow-tool",
+                                                 {"shell(git:*)", "write"});
+                AppendRepeatableFlag(&args, "KOG_COPILOT_ALLOW_URLS", "--allow-url");
+                AppendRepeatableFlag(&args, "KOG_COPILOT_AVAILABLE_TOOLS", "--available-tools");
+                AppendRepeatableFlag(&args, "KOG_COPILOT_EXCLUDED_TOOLS", "--excluded-tools");
+                AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL_TOOLS", "--allow-all-tools");
+                AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL_PATHS", "--allow-all-paths");
+                AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL_URLS", "--allow-all-urls");
+                AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL", "--allow-all");
+            }
+            args.insert(args.end(), {"--no-color", "--stream", "off", "--no-ask-user", "-p", copilotPrompt});
             debugArgs("gh", args);
             return shell::ExecuteCommand("gh", args, shell::ExecMode::Capture, InWorkdir);
         }
@@ -1221,8 +1218,20 @@ auto BuildPlanPrompt(const std::filesystem::path& InRoot,
 auto BuildPlanFillOpsPrompt(const std::filesystem::path& InRoot,
                             const std::string& InProvider,
                             const std::string& InModel,
+                            const std::filesystem::path& InPlanPath,
                             const std::string& InPlanJson,
                             const std::string& InDirtyContext) -> std::string {
+    const auto planPath = InPlanPath.lexically_normal();
+    auto absolutePlanPath = planPath;
+    if (!absolutePlanPath.is_absolute()) {
+        absolutePlanPath = (InRoot / absolutePlanPath).lexically_normal();
+    }
+    std::error_code planPathError;
+    absolutePlanPath = std::filesystem::absolute(absolutePlanPath, planPathError);
+    if (planPathError) {
+        absolutePlanPath = (InRoot / planPath).lexically_normal();
+    }
+
     if (const auto text = LoadPromptAssetText(InRoot,
                                               "KOG_PLAN_FILL_SINGLE_PROMPT_TEMPLATE",
                                               std::filesystem::path("assets") / "prompts" / "base" / "plan-fill-single.md");
@@ -1230,15 +1239,27 @@ auto BuildPlanFillOpsPrompt(const std::filesystem::path& InRoot,
         auto prompt = *text;
         prompt = ReplaceAll(std::move(prompt), "{{PROVIDER}}", InProvider);
         prompt = ReplaceAll(std::move(prompt), "{{MODEL}}", InModel.empty() ? std::string("auto") : InModel);
+        prompt = ReplaceAll(std::move(prompt), "{{PLAN_PATH}}", planPath.generic_string());
+        prompt = ReplaceAll(std::move(prompt), "{{PLAN_PATH_ABSOLUTE}}", absolutePlanPath.string());
         prompt = ReplaceAll(std::move(prompt), "{{PLAN_JSON}}", InPlanJson);
         prompt = ReplaceAll(std::move(prompt), "{{DIRTY_CONTEXT}}", InDirtyContext);
         return prompt;
     }
 
     std::ostringstream prompt;
-    prompt << "You are filling commit plan entries for kano-git.\n";
-    prompt << "Goal: produce semantic fill-ops for every existing commit entry in the current plan.\n";
+    prompt << "You are a focused kano-git subagent invoked for one task only.\n";
+    prompt << "The task is already fully specified in this prompt. Do not ask what task to perform.\n";
+    prompt << "Task: produce semantic fill-ops for every existing commit entry in the authoritative plan file.\n";
+    prompt << "Use only the plan snapshot and dirty workspace context included below.\n";
     prompt << "The plan already exists. Do not rewrite it; only return fill-ops JSON.\n\n";
+    prompt << "This subagent has no external conversation context beyond this prompt.\n";
+    prompt << "Authoritative plan file absolute path: " << absolutePlanPath.string() << "\n";
+    prompt << "Workspace-relative plan file path: " << planPath.generic_string() << "\n";
+    prompt << "Do not ask clarifying questions. Do not ask for more instructions. Execute the specified fill task directly.\n";
+    prompt << "The Current plan JSON below is the exact plan file content snapshot. Do not reopen it, search for it, or inspect similarly named files.\n\n";
+    prompt << "Do not inspect files, do not explore the repository, do not propose a plan, and do not describe actions.\n";
+    prompt << "Do not use tools even if the provider supports tools. All required context is already included below.\n\n";
+    prompt << "Do not ask the user to restate the task. Do not say you are ready to help.\n";
     prompt << "Return STRICT JSON ONLY between markers:\n";
     prompt << "BEGIN_KOG_PLAN_FILL_OPS\n<json>\nEND_KOG_PLAN_FILL_OPS\n\n";
     prompt << "Required JSON schema:\n";
@@ -1421,21 +1442,21 @@ auto BuildDeterministicPlanId(const std::filesystem::path& InWorkspaceRoot,
 }
 
 auto DeterministicPlannerProvider() -> std::string {
-    if (std::getenv("KANO_AGENT_MODE") != nullptr) {
+    if (IsAgentModeEnabled()) {
         return "agent";
     }
     return "native";
 }
 
 auto DeterministicPlannerModel() -> std::string {
-    if (std::getenv("KANO_AGENT_MODE") != nullptr) {
+    if (IsAgentModeEnabled()) {
         return "external-agent";
     }
     return "deterministic";
 }
 
 auto DeterministicReviewReason() -> std::string {
-    if (std::getenv("KANO_AGENT_MODE") != nullptr) {
+    if (IsAgentModeEnabled()) {
         return "agent-ready deterministic plan bootstrap generated by native tooling";
     }
     return "deterministic plan bootstrap generated by native tooling";
@@ -2098,6 +2119,14 @@ auto ResolvePlanCommitGenerationMode(const std::filesystem::path& InWorkspaceRoo
     return kog_config::ResolvePlanCommitGenerationMode(InWorkspaceRoot, ResolveSkillRoot(InWorkspaceRoot), "adaptive");
 }
 
+auto AllowDeterministicCommitFallbackForMode(const std::string& InFillMode) -> bool {
+    const auto fillMode = ToLower(Trim(InFillMode));
+    if (fillMode == "single" && !IsAgentModeEnabled()) {
+        return false;
+    }
+    return true;
+}
+
 auto ResolveRepoPathFromDisplay(const std::filesystem::path& InWorkspaceRoot, const std::string& InRepoDisplay) -> std::filesystem::path {
     if (InRepoDisplay.empty() || InRepoDisplay == ".") {
         return InWorkspaceRoot;
@@ -2709,7 +2738,7 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
               << " model=" << (fillMode == "single" ? model : modelDirective)
               << " mode=" << fillMode
               << " commits=" << currentEntries.size() << "\n";
-    const auto prompt = BuildPlanFillOpsPrompt(InWorkspaceRoot, provider, model, templateJson, dirtyContext);
+    const auto prompt = BuildPlanFillOpsPrompt(InWorkspaceRoot, provider, model, InPlanPath, templateJson, dirtyContext);
     std::string debugPrefix;
     if (InDebugAi) {
         const auto debugDir = (InWorkspaceRoot / ".kano" / "cache" / "git" / "plans" / "debug").lexically_normal();
@@ -2729,6 +2758,7 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
     }
     std::vector<CommitFillOp> ops;
     bool usedDeterministicFallback = false;
+    const bool allowDeterministicFallback = AllowDeterministicCommitFallbackForMode(fillMode);
     if (fillMode == "single") {
         std::string lastFailureCategory;
         std::string lastFailureDetail;
@@ -2754,7 +2784,7 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
                 WriteFileText(std::filesystem::path(debugPrefix + attemptSuffix + ".prompt.txt"), attemptPrompt, &debugError);
             }
 
-            const auto aiRaw = RunAiGenerate(provider, model, attemptPrompt, InWorkspaceRoot);
+            const auto aiRaw = RunAiGenerate(provider, model, attemptPrompt, InWorkspaceRoot, true);
             if (aiRaw.exitCode != 0) {
                 lastFailureCategory = "provider-command-failed";
                 lastFailureDetail = Trim(aiRaw.stderrStr);
@@ -2805,6 +2835,36 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
         }
 
         if (!fillReady) {
+            if (!allowDeterministicFallback) {
+                if (OutError != nullptr) {
+                    std::ostringstream oss;
+                    oss << "Error: AI fill-ops generation failed after retries.";
+                    if (!Trim(lastFailureCategory).empty()) {
+                        oss << " Category: " << lastFailureCategory << ".";
+                    }
+                    if (!Trim(lastFailureDetail).empty()) {
+                        oss << " Detail: " << lastFailureDetail;
+                    }
+                    oss << " Human-mode CPA forbids deterministic commit fallback in single mode.";
+                    if (!debugPrefix.empty()) {
+                        oss << std::format(" Debug: {}.prompt.txt {}.raw.txt {}.extracted.json",
+                                           debugPrefix,
+                                           debugPrefix,
+                                           debugPrefix);
+                        for (int retryIndex = 1; retryIndex < maxAttempts; ++retryIndex) {
+                            oss << std::format(" {}.retry{}.prompt.txt {}.retry{}.raw.txt {}.retry{}.extracted.json",
+                                               debugPrefix,
+                                               retryIndex,
+                                               debugPrefix,
+                                               retryIndex,
+                                               debugPrefix,
+                                               retryIndex);
+                        }
+                    }
+                    *OutError = oss.str();
+                }
+                return false;
+            }
             ops = BuildDeterministicCommitFillOps(currentEntries);
             if (ops.size() == currentEntries.size()) {
                 usedDeterministicFallback = true;
@@ -2924,7 +2984,7 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
                     WriteFileText(std::filesystem::path(debugPrefix + attemptSuffix + ".prompt.txt"), attemptPrompt, &debugError);
                 }
 
-                const auto aiRaw = RunAiGenerate(provider, entryModel, attemptPrompt, InWorkspaceRoot);
+                const auto aiRaw = RunAiGenerate(provider, entryModel, attemptPrompt, InWorkspaceRoot, true);
                 entryAiCombined = aiRaw.stdoutStr + "\n" + aiRaw.stderrStr;
                 auto aiJson = std::string{};
                 if (aiRaw.exitCode == 0) {
@@ -3484,7 +3544,7 @@ void RegisterPlan(CLI::App& InApp) {
     init->add_flag("--force,-f", *initForce, "Overwrite existing output");
     init->add_flag("--ai-auto,--ai", *initAiAuto, "Generate and fill plan by AI");
     init->add_option("--ai-provider,--provider", *initAiProvider, "AI provider (copilot|codex|opencode|auto)")->default_str("auto");
-    init->add_option("--ai-model,--model", *initAiModel, "AI model (default: config -> remembered -> auto)");
+    init->add_option("--ai-model,--model", *initAiModel, "AI model (default: layered kog_config -> auto policy)");
     init->add_option("--ai-commit-generation-mode,--ai-fill-mode",
                      *initAiFillMode,
                      "AI commit generation mode: single=one workspace-wide pass, per-commit=one AI pass per commit, adaptive=per-commit + deterministic gitlink fallback (single|per-commit|adaptive)")
@@ -3532,20 +3592,20 @@ void RegisterPlan(CLI::App& InApp) {
         std::cout << "Wrote plan template: " << outPath.generic_string() << "\n";
     });
 
-    auto* setAiModel = cmd->add_subcommand("set-ai-model", "Set default AI model for auto plan/commit flows");
-    setAiModel->alias("remember-model");
+    auto* setAiModel = cmd->add_subcommand("set-ai-model", "Set local default AI model in .kano/kog_config.toml for auto plan/commit flows");
     setAiModel->footer([]() {
         return BuildSetAiModelHelpFooter();
     });
     auto* setAiProvider = new std::string{"auto"};
     auto* setAiModelValue = new std::string{};
     setAiModel->add_option("--ai-provider,--provider", *setAiProvider, "AI provider (copilot|codex|opencode|auto)")->default_str("auto");
-    setAiModel->add_option("--ai-model,--model", *setAiModelValue, "AI model to remember; see --help footer for detected models")->required();
+    setAiModel->add_option("--ai-model,--model", *setAiModelValue, "AI model to write to local kog_config; see --help footer for detected models")->required();
     setAiModel->callback([=]() {
+        const auto workspaceRoot = std::filesystem::current_path().lexically_normal();
         const auto provider = ResolveAiProvider(*setAiProvider);
         const auto model = Trim(*setAiModelValue);
         if (provider.empty()) {
-            std::cerr << "Error: no AI provider found to remember model for.\n";
+            std::cerr << "Error: no AI provider found to write config for.\n";
             std::exit(2);
         }
         const auto modelLower = NormalizeAiModelKeyword(model);
@@ -3553,19 +3613,16 @@ void RegisterPlan(CLI::App& InApp) {
             std::cerr << "Error: --ai-model must be a model name or special keyword (provider-default|auto).\n";
             std::exit(2);
         }
-        if (modelLower == "auto" || modelLower == "provider-default") {
-            RememberModelChoice(provider, modelLower);
-        } else {
-            RememberModelChoice(provider, model);
-        }
-        const auto cacheFile = ModelCacheFilePath(provider);
-        if (cacheFile.empty() || !std::filesystem::exists(cacheFile)) {
-            std::cerr << "Error: failed to persist remembered model cache.\n";
+        const auto configValue = (modelLower == "auto" || modelLower == "provider-default")
+            ? modelLower
+            : provider + "/" + model;
+        const auto localConfig = kog_config::LocalConfigPath(workspaceRoot);
+        if (!kog_config::WriteTomlValue(localConfig, "ai.model.selection", configValue)) {
+            std::cerr << "Error: failed to persist local AI model config.\n";
             std::exit(2);
         }
-        std::cout << "Remembered AI model: provider=" << provider
-                  << " model=" << (modelLower == "auto" || modelLower == "provider-default" ? modelLower : model)
-                  << " cache=" << cacheFile.generic_string() << "\n";
+        std::cout << "Updated local AI model config: key=ai.model.selection value=" << configValue
+                  << " file=" << localConfig.generic_string() << "\n";
     });
 
     auto* commitSeed = cmd->add_subcommand("commit-seed", "Populate stages.commit skeleton from current dirty repos");
@@ -3968,7 +4025,7 @@ void RegisterPlan(CLI::App& InApp) {
     auto* ensureForce = new bool{false};
     ensureAiReady->add_option("--plan-file", *ensureFile, "Plan file path");
     ensureAiReady->add_option("--ai-provider,--provider", *ensureProvider, "AI provider (copilot|codex|opencode|auto)")->default_str("auto");
-    ensureAiReady->add_option("--ai-model,--model", *ensureModel, "AI model (default: config -> remembered -> auto)");
+    ensureAiReady->add_option("--ai-model,--model", *ensureModel, "AI model (default: layered kog_config -> auto policy)");
     ensureAiReady->add_option("--ai-commit-generation-mode,--ai-fill-mode",
                               *ensureFillMode,
                               "AI commit generation mode: single=one workspace-wide pass, per-commit=one AI pass per commit, adaptive=per-commit + deterministic gitlink fallback (single|per-commit|adaptive)")
@@ -4031,7 +4088,8 @@ void RegisterPlan(CLI::App& InApp) {
             }
             reason.clear();
             if (!latestPayload.has_value() || !ValidateAiReadyPlan(*latestPayload, &reason)) {
-                if (reason == "no commit entries in stages.commit" && latestPayload.has_value()) {
+                if (reason == "no commit entries in stages.commit" && latestPayload.has_value() &&
+                    AllowDeterministicCommitFallbackForMode(defaultCommitGenerationMode)) {
                     if (const auto fallback = TryInjectFallbackCommits(workspaceRoot, *latestPayload); fallback.has_value()) {
                         std::string writeError;
                         if (!WriteFileText(planPath, *fallback, &writeError)) {
@@ -4070,7 +4128,7 @@ void RegisterPlan(CLI::App& InApp) {
     preflightAiCommit->add_option("--plan-file", *preflightFile, "Plan file path");
     preflightAiCommit->add_option("--ai-provider,--provider", *preflightProvider, "AI provider (copilot|codex|opencode|auto)")
         ->default_str("auto");
-    preflightAiCommit->add_option("--ai-model,--model", *preflightModel, "AI model (default: config -> remembered -> auto)");
+    preflightAiCommit->add_option("--ai-model,--model", *preflightModel, "AI model (default: layered kog_config -> auto policy)");
     preflightAiCommit->add_option("--ai-commit-generation-mode,--ai-fill-mode",
                                   *preflightFillMode,
                                   "AI commit generation mode: single=one workspace-wide pass, per-commit=one AI pass per commit, adaptive=per-commit + deterministic gitlink fallback (single|per-commit|adaptive)")
@@ -4141,24 +4199,26 @@ void RegisterPlan(CLI::App& InApp) {
             if (!payload.has_value() || !ValidateAiReadyPlan(*payload, &reason)) {
                 if (reason == "no commit entries in stages.commit" && payload.has_value()) {
                     bool fixedByFallback = false;
-                    if (const auto fallback = TryInjectFallbackCommits(InWorkspaceRoot, *payload); fallback.has_value()) {
-                        std::string writeError;
-                        if (!WriteFileText(InPlanPath, *fallback, &writeError)) {
-                            std::cerr << "Error: failed to write fallback commit plan: " << InPlanPath.generic_string();
-                            if (!writeError.empty()) {
-                                std::cerr << " (" << writeError << ")";
+                    if (AllowDeterministicCommitFallbackForMode(InFillMode)) {
+                        if (const auto fallback = TryInjectFallbackCommits(InWorkspaceRoot, *payload); fallback.has_value()) {
+                            std::string writeError;
+                            if (!WriteFileText(InPlanPath, *fallback, &writeError)) {
+                                std::cerr << "Error: failed to write fallback commit plan: " << InPlanPath.generic_string();
+                                if (!writeError.empty()) {
+                                    std::cerr << " (" << writeError << ")";
+                                }
+                                std::cerr << "\n";
+                                return 2;
                             }
-                            std::cerr << "\n";
-                            return 2;
-                        }
-                        payload = ReadFileText(InPlanPath);
-                        reason.clear();
-                        if (payload.has_value() && ValidateAiReadyPlan(*payload, &reason)) {
-                            std::cerr << "[plan] fallback commit entries injected after empty AI commit stage.\n";
-                            fixedByFallback = true;
-                        } else {
-                            std::cerr << "Error: AI-ready plan validation failed: " << reason << "\n";
-                            return 2;
+                            payload = ReadFileText(InPlanPath);
+                            reason.clear();
+                            if (payload.has_value() && ValidateAiReadyPlan(*payload, &reason)) {
+                                std::cerr << "[plan] fallback commit entries injected after empty AI commit stage.\n";
+                                fixedByFallback = true;
+                            } else {
+                                std::cerr << "Error: AI-ready plan validation failed: " << reason << "\n";
+                                return 2;
+                            }
                         }
                     }
                     if (!fixedByFallback) {
@@ -4349,7 +4409,7 @@ void RegisterPlan(CLI::App& InApp) {
     auto* runbookFullMaxPerRepo = new int{200};
     runbookFull->add_option("--plan-file", *runbookFullFile, "Plan file path");
     runbookFull->add_option("--ai-provider,--provider", *runbookFullProvider, "AI provider (copilot|codex|opencode|auto)")->default_str("auto");
-    runbookFull->add_option("--ai-model,--model", *runbookFullModel, "AI model (default: config -> remembered -> auto)");
+    runbookFull->add_option("--ai-model,--model", *runbookFullModel, "AI model (default: layered kog_config -> auto policy)");
     runbookFull->add_option("--ai-commit-generation-mode,--ai-fill-mode",
                             *runbookFullFillMode,
                             "AI commit generation mode: single=one workspace-wide pass, per-commit=one AI pass per commit, adaptive=per-commit + deterministic gitlink fallback (single|per-commit|adaptive)")
@@ -4393,7 +4453,7 @@ void RegisterPlan(CLI::App& InApp) {
     auto* rbCommitMaxCommits = new int{10};
     runbookCommit->add_option("--plan-file", *rbCommitFile, "Plan file path");
     runbookCommit->add_option("--ai-provider,--provider", *rbCommitProvider, "AI provider (copilot|codex|opencode|auto)")->default_str("auto");
-    runbookCommit->add_option("--ai-model,--model", *rbCommitModel, "AI model (default: config -> remembered -> auto)");
+    runbookCommit->add_option("--ai-model,--model", *rbCommitModel, "AI model (default: layered kog_config -> auto policy)");
     runbookCommit->add_option("--ai-commit-generation-mode,--ai-fill-mode",
                               *rbCommitFillMode,
                               "AI commit generation mode: single=one workspace-wide pass, per-commit=one AI pass per commit, adaptive=per-commit + deterministic gitlink fallback (single|per-commit|adaptive)")
@@ -4440,7 +4500,7 @@ void RegisterPlan(CLI::App& InApp) {
     auto* rbFullMaxPerRepo = new int{200};
     runbookFullPublic->add_option("--plan-file", *rbFullFile, "Plan file path");
     runbookFullPublic->add_option("--ai-provider,--provider", *rbFullProvider, "AI provider (copilot|codex|opencode|auto)")->default_str("auto");
-    runbookFullPublic->add_option("--ai-model,--model", *rbFullModel, "AI model (default: config -> remembered -> auto)");
+    runbookFullPublic->add_option("--ai-model,--model", *rbFullModel, "AI model (default: layered kog_config -> auto policy)");
     runbookFullPublic->add_option("--ai-commit-generation-mode,--ai-fill-mode",
                                   *rbFullFillMode,
                                   "AI commit generation mode: single=one workspace-wide pass, per-commit=one AI pass per commit, adaptive=per-commit + deterministic gitlink fallback (single|per-commit|adaptive)")

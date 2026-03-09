@@ -2,6 +2,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstdlib>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -484,6 +485,43 @@ TEST_CASE("sync_conflict_fails_fast", "[functional][commit-push][post-sync]") {
                                   merged.find("could not apply") != std::string::npos ||
                                   merged.find("rebase") != std::string::npos;
     REQUIRE(mentionsConflict);
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("commit_push_ai_auto_single_human_mode_fails_without_deterministic_fallback",
+          "[functional][commit-push][ai][single]") {
+    const auto ctx = CreateRemoteWithClone("commit-push-ai-single-fail-fast");
+    WriteTextFile(ctx.cloneRepo / "README.md", "seed\nai single fail-fast\n");
+    const auto beforeHead = CurrentHeadSha(ctx.cloneRepo);
+
+    std::vector<std::pair<std::string, std::string>> env{
+        {"KOG_TEST_AI_STDOUT", "not-json"},
+        {"KOG_TEST_AI_EXIT_CODE", "0"},
+        {"KANO_AGENT_MODE", ""},
+    };
+    if (const char* currentPath = std::getenv("PATH"); currentPath != nullptr) {
+        env.emplace_back("PATH", currentPath);
+    }
+
+    const auto result = RunKogWithEnv(
+        {"commit-push", "--ai-auto", "--ai-provider", "copilot", "--ai-fill-mode", "single", "--no-ai-review"},
+        ctx.cloneRepo,
+        env);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode != 0);
+
+    const auto merged = result.stdoutText + "\n" + result.stderrText;
+    REQUIRE(merged.find("Human-mode CPA forbids deterministic commit fallback in single mode") != std::string::npos);
+    REQUIRE(merged.find("AI commit runbook failed via native binary") != std::string::npos);
+    REQUIRE(merged.find("[commit-push][auto-plan] stage=commit-runbook failed") != std::string::npos);
+    REQUIRE(merged.find("Filled plan commit entries with deterministic fallback ops") == std::string::npos);
+    REQUIRE(merged.find("using deterministic local fallback") == std::string::npos);
+    REQUIRE(CurrentHeadSha(ctx.cloneRepo) == beforeHead);
+    const auto [behind, ahead] = AheadBehindCounts(ctx.cloneRepo);
+    REQUIRE(behind == 0);
+    REQUIRE(ahead == 0);
+
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 

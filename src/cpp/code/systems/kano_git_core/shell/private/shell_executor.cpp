@@ -535,7 +535,57 @@ auto RunProcessUnix(const std::string& InCommand,
 
 #endif
 
+auto QuoteWindowsArg(const std::string& InArg) -> std::string {
+    if (InArg.empty()) {
+        return "\"\"";
+    }
+
+    const bool needsQuotes = std::any_of(InArg.begin(), InArg.end(), [](char ch) {
+        return std::isspace(static_cast<unsigned char>(ch)) || ch == '"';
+    });
+    if (!needsQuotes) {
+        return InArg;
+    }
+
+    std::string out;
+    out.reserve(InArg.size() + 8);
+    out.push_back('"');
+
+    std::size_t backslashCount = 0;
+    for (const char ch : InArg) {
+        if (ch == '\\') {
+            backslashCount += 1;
+            continue;
+        }
+        if (ch == '"') {
+            out.append(backslashCount * 2 + 1, '\\');
+            out.push_back('"');
+            backslashCount = 0;
+            continue;
+        }
+        if (backslashCount > 0) {
+            out.append(backslashCount, '\\');
+            backslashCount = 0;
+        }
+        out.push_back(ch);
+    }
+
+    if (backslashCount > 0) {
+        out.append(backslashCount * 2, '\\');
+    }
+    out.push_back('"');
+    return out;
+}
+
 auto BuildCommandLine(const std::string& program, const std::vector<std::string>& InArgs) -> std::string {
+#ifdef KOG_PLATFORM_WINDOWS
+    std::string cmd = QuoteWindowsArg(program);
+    for (const auto& arg : InArgs) {
+        cmd += " ";
+        cmd += QuoteWindowsArg(arg);
+    }
+    return cmd;
+#else
     std::string cmd = program;
     for (const auto& arg : InArgs) {
         // Simple quoting — handles most cases
@@ -546,6 +596,7 @@ auto BuildCommandLine(const std::string& program, const std::vector<std::string>
         }
     }
     return cmd;
+#endif
 }
 
 auto ToLower(std::string in) -> std::string {
@@ -559,6 +610,11 @@ auto BaseNameLower(const std::string& InCommand) -> std::string {
     auto pos = InCommand.find_last_of("/\\");
     const std::string base = (pos == std::string::npos) ? InCommand : InCommand.substr(pos + 1);
     return ToLower(base);
+}
+
+auto IsCmdScriptCommand(const std::string& InCommand) -> bool {
+    const auto base = BaseNameLower(InCommand);
+    return (base.size() > 4 && base.ends_with(".cmd")) || (base.size() > 4 && base.ends_with(".bat"));
 }
 
 auto WithGitNonInteractiveDefaults(const std::string& InCommand,
@@ -644,6 +700,12 @@ auto ExecuteCommand(
     const auto effectiveArgs = WithGitNonInteractiveDefaults(InCommand, InArgs);
 #ifdef KOG_PLATFORM_WINDOWS
     const auto timeoutMs = ResolveTimeoutMs(InCommand, effectiveArgs, InMode);
+    if (IsCmdScriptCommand(InCommand)) {
+        std::vector<std::string> wrappedArgs{"/d", "/s", "/c", InCommand};
+        wrappedArgs.insert(wrappedArgs.end(), effectiveArgs.begin(), effectiveArgs.end());
+        const auto wrapped = BuildCommandLine("cmd.exe", wrappedArgs);
+        return RunProcess(wrapped, InMode, timeoutMs, InWorkingDir);
+    }
     auto cmd = BuildCommandLine(InCommand, effectiveArgs);
     return RunProcess(cmd, InMode, timeoutMs, InWorkingDir);
 #else

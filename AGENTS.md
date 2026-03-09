@@ -186,6 +186,9 @@ Note: sourcing will also define globals used by those functions (see the script 
   - Even in agent mode, plan completeness gates still apply; if prepared fields are missing/invalid, verify must fail fast (do not bypass).
 - Use `--agent manual` for human-operated runs.
   - **In case of Copilot auth failure, seek human assistance** to resolve credentials. Do not bypass reviews if a reliable safety check is possible.
+  - **Human-mode CPA no-fallback rule (required)**: when `cpa` runs in human mode with `commit_generation_mode=single`, AI commit generation must fail fast on invalid/empty fill output.
+  - Do not inject deterministic fallback commit messages, do not auto-repair empty commit stages with fallback commit entries, and do not route around the failure by silently continuing the pipeline.
+  - Expected behavior is a surfaced error with debug evidence so the operator can inspect the AI failure directly.
 - **Skill developer dogfood rule (required)**:
   - If you are developing this skill itself, execute by the skill design intent first; do not bypass missing/buggy parts with ad-hoc shortcuts.
   - When a gap/bug is found, prioritize implementing or fixing the feature, then continue the operator workflow.
