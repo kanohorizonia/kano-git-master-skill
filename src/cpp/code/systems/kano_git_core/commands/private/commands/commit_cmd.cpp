@@ -57,6 +57,7 @@ auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<
 auto ReadFileText(const std::filesystem::path& InPath) -> std::optional<std::string>;
 auto ResolveSkillRoot(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path;
 auto Fnv1a64Hex(const std::string& InText) -> std::string;
+auto RunCommitPreflight(const std::filesystem::path& InRepo) -> CommitPreflightReport;
 
 auto Trim(std::string InValue) -> std::string {
     while (!InValue.empty() && (InValue.back() == '\n' || InValue.back() == '\r' || InValue.back() == ' ' || InValue.back() == '\t')) {
@@ -169,6 +170,129 @@ auto LooksRiskyPath(const std::string& InPath) -> bool {
            lower.find("id_rsa") != std::string::npos ||
            lower.ends_with(".pem") ||
            lower.ends_with(".key");
+}
+
+auto TrimTrailingWindowsPathChars(std::string InValue) -> std::string {
+    while (!InValue.empty() && (InValue.back() == ' ' || InValue.back() == '.')) {
+        InValue.pop_back();
+    }
+    return InValue;
+}
+
+auto IsWindowsReservedDeviceComponent(std::string InComponent) -> bool {
+#if defined(_WIN32)
+    InComponent = TrimTrailingWindowsPathChars(ToLower(Trim(std::move(InComponent))));
+    if (InComponent.empty() || InComponent == "." || InComponent == "..") {
+        return false;
+    }
+
+    const auto colon = InComponent.find(':');
+    if (colon != std::string::npos) {
+        InComponent = InComponent.substr(0, colon);
+    }
+
+    const auto dot = InComponent.find('.');
+    const auto stem = dot == std::string::npos ? InComponent : InComponent.substr(0, dot);
+    static const std::unordered_set<std::string> reserved = {
+        "con", "prn", "aux", "nul",
+        "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+        "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9"
+    };
+    return reserved.contains(stem);
+#else
+    (void)InComponent;
+    return false;
+#endif
+}
+
+auto PathHasWindowsReservedDeviceComponent(const std::string& InPath) -> bool {
+#if defined(_WIN32)
+    if (InPath.empty()) {
+        return false;
+    }
+
+    std::string normalized = InPath;
+    for (auto& ch : normalized) {
+        if (ch == '\\') {
+            ch = '/';
+        }
+    }
+
+    std::size_t start = 0;
+    while (start <= normalized.size()) {
+        const auto end = normalized.find('/', start);
+        auto component = end == std::string::npos ? normalized.substr(start) : normalized.substr(start, end - start);
+        if (IsWindowsReservedDeviceComponent(component)) {
+            return true;
+        }
+        if (end == std::string::npos) {
+            break;
+        }
+        start = end + 1;
+    }
+
+    return false;
+#else
+    (void)InPath;
+    return false;
+#endif
+}
+
+auto BuildGitAddAllArgs(const CommitPreflightReport& InReport, std::vector<std::string>* OutExcluded = nullptr)
+    -> std::vector<std::string> {
+    std::vector<std::string> args{"add", "-A"};
+#if defined(_WIN32)
+    std::vector<std::string> excluded;
+    std::set<std::string> seen;
+    auto collect = [&](const std::vector<std::string>& paths) {
+        for (const auto& path : paths) {
+            if (!PathHasWindowsReservedDeviceComponent(path)) {
+                continue;
+            }
+            if (!seen.insert(path).second) {
+                continue;
+            }
+            excluded.push_back(path);
+        }
+    };
+    collect(InReport.untrackedFiles);
+    collect(InReport.unstagedFiles);
+    collect(InReport.stagedFiles);
+    if (!excluded.empty()) {
+        args.push_back("--");
+        args.push_back(".");
+        for (const auto& path : excluded) {
+            args.push_back(std::string(":(exclude)") + path);
+        }
+        if (OutExcluded != nullptr) {
+            *OutExcluded = std::move(excluded);
+        }
+    }
+#else
+    (void)InReport;
+    (void)OutExcluded;
+#endif
+    return args;
+}
+
+auto MaybeWarnAboutReservedPaths(const std::filesystem::path& InRepo,
+                                 const std::vector<std::string>& InExcluded) -> void {
+    if (InExcluded.empty()) {
+        return;
+    }
+
+    std::ostringstream stream;
+    for (std::size_t index = 0; index < InExcluded.size(); ++index) {
+        if (index > 0) {
+            stream << ", ";
+        }
+        stream << InExcluded[index];
+    }
+    std::cerr << "[kog commit] warning: skipped Windows reserved path(s) in "
+              << InRepo.generic_string()
+              << ": "
+              << stream.str()
+              << '\n';
 }
 
 auto GitCapture(const std::filesystem::path& InRepo, const std::vector<std::string>& InArgs) -> shell::ExecResult {
@@ -2806,9 +2930,30 @@ auto StageCommitItemForPlan(const std::filesystem::path& InRepo,
         return false;
     }
 
-    std::vector<std::string> args{"add", "-A", "--"};
-    if (!InItem.include.empty()) {
-        args.insert(args.end(), InItem.include.begin(), InItem.include.end());
+    auto report = RunCommitPreflight(InRepo);
+    std::vector<std::string> excludedReserved;
+    std::vector<std::string> safeIncludes;
+    safeIncludes.reserve(InItem.include.size());
+    for (const auto& path : InItem.include) {
+        if (PathHasWindowsReservedDeviceComponent(path)) {
+            excludedReserved.push_back(path);
+            continue;
+        }
+        safeIncludes.push_back(path);
+    }
+
+    std::vector<std::string> args;
+    if (InItem.include.empty()) {
+        args = BuildGitAddAllArgs(report, &excludedReserved);
+    } else {
+        args = {"add", "-A", "--"};
+        if (safeIncludes.empty()) {
+            if (OutError != nullptr) {
+                *OutError = "plan include only referenced Windows reserved path(s)";
+            }
+            return false;
+        }
+        args.insert(args.end(), safeIncludes.begin(), safeIncludes.end());
     }
     for (const auto& ex : InItem.exclude) {
         if (ex.rfind(":(exclude)", 0) == 0) {
@@ -2817,6 +2962,8 @@ auto StageCommitItemForPlan(const std::filesystem::path& InRepo,
             args.push_back(std::string(":(exclude)") + ex);
         }
     }
+
+    MaybeWarnAboutReservedPaths(InRepo, excludedReserved);
 
     const auto add = GitPassThrough(InRepo, args);
     if (add.exitCode != 0) {
@@ -3106,12 +3253,14 @@ auto CommitSingleRepo(const std::filesystem::path& InWorkspaceRoot,
     }
 
     if (!InStagedOnly && (report.unstagedCount > 0 || report.untrackedCount > 0)) {
-        const auto add = GitPassThrough(InRepo, {"add", "-A"});
+        std::vector<std::string> excludedReserved;
+        const auto add = GitPassThrough(InRepo, BuildGitAddAllArgs(report, &excludedReserved));
         if (add.exitCode != 0) {
             result.failed = true;
             result.note = "git add -A failed";
             return result;
         }
+        MaybeWarnAboutReservedPaths(InRepo, excludedReserved);
         report = RunCommitPreflight(InRepo);
     }
 
@@ -3233,12 +3382,14 @@ auto AmendSingleRepo(const std::filesystem::path& InWorkspaceRoot,
         }
 
         if (!InStagedOnly) {
-            const auto add = GitPassThrough(InRepo, {"add", "-A"});
+            std::vector<std::string> excludedReserved;
+            const auto add = GitPassThrough(InRepo, BuildGitAddAllArgs(report, &excludedReserved));
             if (add.exitCode != 0) {
                 result.failed = true;
                 result.note = "git add -A failed after combine reset";
                 return result;
             }
+            MaybeWarnAboutReservedPaths(InRepo, excludedReserved);
         }
 
         report = RunCommitPreflight(InRepo);
@@ -3284,12 +3435,14 @@ auto AmendSingleRepo(const std::filesystem::path& InWorkspaceRoot,
     }
 
     if (!InStagedOnly && (report.unstagedCount > 0 || report.untrackedCount > 0)) {
-        const auto add = GitPassThrough(InRepo, {"add", "-A"});
+        std::vector<std::string> excludedReserved;
+        const auto add = GitPassThrough(InRepo, BuildGitAddAllArgs(report, &excludedReserved));
         if (add.exitCode != 0) {
             result.failed = true;
             result.note = "git add -A failed";
             return result;
         }
+        MaybeWarnAboutReservedPaths(InRepo, excludedReserved);
         report = RunCommitPreflight(InRepo);
     }
 

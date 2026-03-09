@@ -2170,7 +2170,7 @@ auto ResolvePlanCommitGenerationMode(const std::filesystem::path& InWorkspaceRoo
             return envResolved;
         }
     }
-    return kog_config::ResolvePlanCommitGenerationMode(InWorkspaceRoot, ResolveSkillRoot(InWorkspaceRoot), "adaptive");
+    return kog_config::ResolvePlanCommitGenerationMode(InWorkspaceRoot, ResolveSkillRoot(InWorkspaceRoot), "single");
 }
 
 auto AllowDeterministicCommitFallbackForMode(const std::string& InFillMode) -> bool {
