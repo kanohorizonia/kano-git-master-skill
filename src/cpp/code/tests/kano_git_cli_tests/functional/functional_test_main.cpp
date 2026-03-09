@@ -78,6 +78,25 @@ auto ConfigureIdentity(const std::filesystem::path& InRepo) -> void {
     RequireSuccess(RunGit({"config", "user.email", "kano-test@example.invalid"}, InRepo), "config user.email");
 }
 
+auto SeedSelfBuildScaffolding(const RemoteCloneContext& InCtx) -> void {
+    WriteTextFile(InCtx.seedRepo / "scripts/kano-git", "#!/usr/bin/env bash\nset -euo pipefail\n");
+
+    const std::string buildScript = "#!/usr/bin/env bash\nset -euo pipefail\nprintf 'built\\n' > .kano-self-build-ran\n";
+    WriteTextFile(InCtx.seedRepo / "src/cpp/build/script/windows/build_windows_ninja_msvc_release.sh", buildScript);
+    WriteTextFile(InCtx.seedRepo / "src/cpp/build/script/windows/build_windows_ninja_msvc_arm64_release.sh", buildScript);
+    WriteTextFile(InCtx.seedRepo / "src/cpp/build/script/linux/build_linux_ninja_gcc_release.sh", buildScript);
+    WriteTextFile(InCtx.seedRepo / "src/cpp/build/script/macos/build_macos_ninja_clang_x64_release.sh", buildScript);
+    WriteTextFile(InCtx.seedRepo / "src/cpp/build/script/macos/build_macos_ninja_clang_arm64_release.sh", buildScript);
+
+    RequireSuccess(RunGit({"add", "scripts", "src/cpp"}, InCtx.seedRepo), "seed self-build scaffolding add");
+    RequireSuccess(RunGit({"commit", "-m", "seed self-build scaffolding"}, InCtx.seedRepo), "seed self-build scaffolding commit");
+    RequireSuccess(RunGit({"push", "origin", InCtx.branch}, InCtx.seedRepo), "seed self-build scaffolding push");
+    RequireSuccess(RunGit({"pull", "--rebase", "origin", InCtx.branch}, InCtx.cloneRepo), "clone sync self-build scaffolding");
+
+    std::error_code ec;
+    std::filesystem::remove((InCtx.cloneRepo / ".kano-self-build-ran").lexically_normal(), ec);
+}
+
 auto CurrentHeadSha(const std::filesystem::path& InRepo) -> std::string {
     const auto result = RunGit({"rev-parse", "HEAD"}, InRepo);
     RequireSuccess(result, "rev-parse HEAD");
@@ -973,6 +992,30 @@ TEST_CASE("sync_cleanup_stale_locks_recovers_when_no_git_process_detected", "[fu
     const auto merged = result.stdoutText + "\n" + result.stderrText;
     REQUIRE(merged.find("Removed stale index.lock for .") != std::string::npos);
     REQUIRE_FALSE(std::filesystem::exists(lockPath));
+    const auto [behind, ahead] = AheadBehindCounts(ctx.cloneRepo);
+    REQUIRE(behind == 0);
+    REQUIRE(ahead == 0);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("sync_runs_self_cpp_build_when_self_repo_cpp_changes_arrive", "[functional][sync][self-build]") {
+    const auto ctx = CreateRemoteWithClone("sync-self-cpp-build");
+    SeedSelfBuildScaffolding(ctx);
+
+    WriteTextFile(ctx.seedRepo / "src/cpp/code/demo.cpp", "int main() { return 42; }\n");
+    RequireSuccess(RunGit({"add", "src/cpp/code/demo.cpp"}, ctx.seedRepo), "seed cpp add");
+    RequireSuccess(RunGit({"commit", "-m", "seed cpp update"}, ctx.seedRepo), "seed cpp commit");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.seedRepo), "seed cpp push");
+
+    const auto result = RunKogWithEnv(
+        {"sync", "origin-latest", "--no-recursive"},
+        ctx.cloneRepo,
+        {{"KANO_GIT_MASTER_ROOT", ctx.cloneRepo.string()}});
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    REQUIRE(ReadTextFile(ctx.cloneRepo / ".kano-self-build-ran") == "built\n");
     const auto [behind, ahead] = AheadBehindCounts(ctx.cloneRepo);
     REQUIRE(behind == 0);
     REQUIRE(ahead == 0);
