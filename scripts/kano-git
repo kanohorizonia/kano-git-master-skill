@@ -1284,7 +1284,7 @@ main() {
     exec_args=("commit-push" "${exec_args[@]:1}")
   elif [[ "${exec_args[0]:-}" == "cpa" ]]; then
     if [[ "${KANO_AGENT_MODE:-0}" == "1" || "${KANO_AGENT_MODE:-}" == "true" ]]; then
-      exec_args=("commit-push" "--plan-file" "$PWD/.kano/cache/git/plans/default-plan.json" "${exec_args[@]:1}")
+      exec_args=("commit-push" "--plan-file" "$PWD/.kano/tmp/git/plans/default-plan.json" "${exec_args[@]:1}")
     else
       exec_args=("commit-push" "--ai-auto" "${exec_args[@]:1}")
     fi

@@ -108,6 +108,7 @@ models = ["copilot/gpt-5-mini", "copilot/claude-haiku-4.5", "copilot/gpt-5.4"]
 # - "single"
 #   One AI pass generates all commit entries for the whole workspace.
 #   Best when you want maximum shared context across all commits.
+#   This is the recommended default.
 #
 # - "per-commit"
 #   One AI pass per commit entry.
@@ -116,5 +117,4 @@ models = ["copilot/gpt-5-mini", "copilot/claude-haiku-4.5", "copilot/gpt-5.4"]
 # - "adaptive"
 #   Uses per-commit generation, with deterministic fallback for special cases
 #   such as gitlink/submodule-pointer-only changes.
-#   This is the recommended default.
-commit_generation_mode = "adaptive"
+commit_generation_mode = "single"

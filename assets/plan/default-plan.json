@@ -39,7 +39,7 @@
           "kano-local-rules",
           "github-gitignore"
         ],
-        "merged_output_path": ".kano/cache/git/plans/replace-with-plan-id.gitignore.merged",
+        "merged_output_path": ".kano/tmp/git/plans/replace-with-plan-id.gitignore.merged",
         "apply_target": ".gitignore",
         "applied_at_utc": ""
       }

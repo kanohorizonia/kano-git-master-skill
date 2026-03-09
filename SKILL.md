@@ -862,7 +862,7 @@ Parallel review may be added later, but it is explicitly **out of scope** until 
 
 ### Required rule
 
-- Do **not** rewrite `.kano/cache/git/plans/*.json` by hand.
+- Do **not** rewrite `.kano/tmp/git/plans/*.json` by hand.
 - Do **not** ask AI to emit a full replacement plan JSON for commit/review authoring.
 - Use native CLI subcommands to inspect and fill commit entries.
 
@@ -871,7 +871,7 @@ Parallel review may be added later, but it is explicitly **out of scope** until 
 1. Count how many commit entries exist and whether any still need review:
 
 ```bash
-kog plan count-commits --json --plan-file .kano/cache/git/plans/default-plan.json
+kog plan count-commits --json --plan-file .kano/tmp/git/plans/default-plan.json
 ```
 
 Expected machine-readable fields:
@@ -882,13 +882,13 @@ Expected machine-readable fields:
 2. Print indexed overview:
 
 ```bash
-kog plan finish-report --plan-file .kano/cache/git/plans/default-plan.json
+kog plan finish-report --plan-file .kano/tmp/git/plans/default-plan.json
 ```
 
 3. For each target index, inspect the exact entry before updating it:
 
 ```bash
-kog plan get-commit 0 --json --plan-file .kano/cache/git/plans/default-plan.json
+kog plan get-commit 0 --json --plan-file .kano/tmp/git/plans/default-plan.json
 ```
 
 Read-only fields from `get-commit` are the source of truth for:
@@ -902,7 +902,7 @@ Read-only fields from `get-commit` are the source of truth for:
 
 ```bash
 kog plan fill-commit 0 \
-  --plan-file .kano/cache/git/plans/default-plan.json \
+  --plan-file .kano/tmp/git/plans/default-plan.json \
   --commit-message "chore: update .agents/kano submodule pointer" \
   --review.verdict pass \
   --review.reason "Workspace dirty state is a tracked gitlink update at .agents/kano and this commit scopes exactly to that change."
@@ -911,7 +911,7 @@ kog plan fill-commit 0 \
 5. Verify before execution:
 
 ```bash
-kog plan verify pre-apply --stage commit --plan-file .kano/cache/git/plans/default-plan.json
+kog plan verify pre-apply --stage commit --plan-file .kano/tmp/git/plans/default-plan.json
 ```
 
 6. Execute canonical human flow:

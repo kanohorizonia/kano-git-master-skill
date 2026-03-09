@@ -11,7 +11,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 TIMESTAMP_UTC="$(date -u +%Y%m%dT%H%M%SZ)"
 TMP_ROOT="${TMPDIR:-/tmp}"
 CASE_DIR="${TMP_ROOT}/kog-ignore-plan-acceptance-${TIMESTAMP_UTC}-$$"
-PLAN_FILE="${CASE_DIR}/.kano/cache/git/plans/acceptance-plan.json"
+PLAN_FILE="${CASE_DIR}/.kano/tmp/git/plans/acceptance-plan.json"
 
 resolve_kog_bin() {
   if [[ -n "${KOG_BIN:-}" ]]; then
@@ -72,7 +72,7 @@ main() {
     exit 2
   fi
 
-  mkdir -p "${CASE_DIR}/.kano/cache/git/plans"
+  mkdir -p "${CASE_DIR}/.kano/tmp/git/plans"
   git -C "${CASE_DIR}" init -q
 
   # Create deterministic artifact-like untracked files.

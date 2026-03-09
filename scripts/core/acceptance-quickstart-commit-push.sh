@@ -11,7 +11,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TIMESTAMP_UTC="$(date -u +%Y%m%dT%H%M%SZ)"
-TMP_ROOT="${KOG_ACCEPTANCE_TMP_ROOT:-${ROOT_DIR}/.kano/cache/git/acceptance}"
+TMP_ROOT="${KOG_ACCEPTANCE_TMP_ROOT:-${ROOT_DIR}/.kano/tmp/git/acceptance}"
 CASE_ROOT="${TMP_ROOT}/kog-quickstart-acceptance-${TIMESTAMP_UTC}-$$"
 
 PASS_COUNT=0
@@ -193,7 +193,7 @@ scenario_manual_plan_commit() {
   msg="chore(test): plan-driven commit message"
 
   printf 'case-plan\n' >> "${repo_dir}/README.md"
-  plan_dir="${repo_dir}/.kano/cache/git/plans"
+  plan_dir="${repo_dir}/.kano/tmp/git/plans"
   plan_file="${plan_dir}/manual-plan.json"
   mkdir -p "$plan_dir"
   cat > "$plan_file" <<EOF

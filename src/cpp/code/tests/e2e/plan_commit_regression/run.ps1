@@ -91,7 +91,7 @@ function Assert-True {
 
 function New-E2ESandbox {
     param([string]$Root)
-    $base = Join-Path $Root ".kano/cache/git/e2e"
+    $base = Join-Path $Root ".kano/tmp/git/e2e"
     New-Item -ItemType Directory -Force -Path $base | Out-Null
     $name = "plan-commit-regression-" + [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
     $sandbox = Join-Path $base $name
@@ -130,7 +130,7 @@ if (-not (Test-Path $kog)) {
 Push-Location $root
 try {
     $sandboxRepo = New-E2ESandbox -Root $root
-    $planDir = ".kano/cache/git/plans"
+    $planDir = ".kano/tmp/git/plans"
     New-Item -ItemType Directory -Force -Path (Join-Path $sandboxRepo $planDir) | Out-Null
     $planPath = Join-Path $sandboxRepo (Join-Path $planDir "e2e-regression-plan.json")
     $mutPath = Join-Path $sandboxRepo (Join-Path $planDir "e2e-regression-plan-mutated.json")
