@@ -1094,6 +1094,34 @@ auto ManifestReposToJson(const WorkspaceManifest& InManifest) -> std::string {
     return json;
 }
 
+auto RepoRecordsToRelativeJson(const std::filesystem::path& InWorkspaceRoot,
+                               const std::vector<RepoRecord>& InRepos) -> std::string {
+    std::string json = "[";
+    for (std::size_t idx = 0; idx < InRepos.size(); ++idx) {
+        if (idx > 0) {
+            json += ",";
+        }
+        const auto& repo = InRepos[idx];
+        json += "{";
+        json += std::format("\"path\":\"{}\",", EscapeJson(RelativePathKeyOrDot(InWorkspaceRoot, repo.path)));
+        json += std::format("\"type\":\"{}\",", EscapeJson(repo.type));
+        json += std::format("\"current_branch\":\"{}\",", EscapeJson(repo.currentBranch));
+        json += std::format("\"remotes\":\"{}\",", EscapeJson(repo.remotes));
+        json += std::format("\"has_changes\":{},", repo.hasChanges ? "true" : "false");
+        json += "\"dependencies\":[";
+        for (std::size_t depIdx = 0; depIdx < repo.dependencies.size(); ++depIdx) {
+            if (depIdx > 0) {
+                json += ",";
+            }
+            json += std::format("\"{}\"", EscapeJson(RelativePathKeyOrDot(InWorkspaceRoot, repo.dependencies[depIdx])));
+        }
+        json += "]";
+        json += "}";
+    }
+    json += "]";
+    return json;
+}
+
 auto ManifestFingerprintsToJson(const WorkspaceManifest& InManifest) -> std::string {
     std::string json = "[";
     std::vector<std::pair<std::string, std::string>> sorted(
@@ -1116,49 +1144,73 @@ auto ManifestFingerprintsToJson(const WorkspaceManifest& InManifest) -> std::str
 
 auto WorkspaceManifestToJson(const WorkspaceManifest& InManifest) -> std::string {
     std::string json = "{";
-    json += "\"version\":2,";
+    json += "\"version\":3,";
     json += std::format("\"workspace_root\":\"{}\",", EscapeJson(PathKey(InManifest.workspaceRoot)));
     json += std::format("\"generated_at\":\"{}\",", EscapeJson(ToUtcIsoString(std::chrono::system_clock::now())));
-    json += "\"manifest\":{";
-    json += std::format("\"repos\":{},", ManifestReposToJson(InManifest));
+    json += std::format("\"repos\":{},", RepoRecordsToRelativeJson(InManifest.workspaceRoot, InManifest.repos));
     json += std::format("\"gitmodules_fingerprints\":{}", ManifestFingerprintsToJson(InManifest));
-    json += "}";
     json += "}";
     return json;
 }
 
-auto DiscoveryCacheToJson(const DiscoveryCacheSnapshot& InCache) -> std::string {
+auto DiscoveryStateToJson(const DiscoveryCacheSnapshot& InCache) -> std::string {
     return std::format(
-        "{{\"generated_epoch\":{},\"gitmodules_mtime\":{},\"marker\":\"{}\",\"repos\":{}}}",
+        "{{\"generated_epoch\":{},\"gitmodules_mtime\":{},\"marker\":\"{}\"}}",
         InCache.generatedEpoch,
         InCache.gitmodulesMtime,
-        EscapeJson(InCache.marker.empty() ? "none" : InCache.marker),
-        ReposToJson(InCache.repos));
+        EscapeJson(InCache.marker.empty() ? "none" : InCache.marker));
 }
 
 auto WorkspaceStateDocumentToJson(const WorkspaceStateDocument& InState) -> std::string {
     std::string json = "{";
-    json += "\"version\":2,";
+    json += "\"version\":3,";
     json += std::format("\"workspace_root\":\"{}\",", EscapeJson(PathKey(InState.workspaceRoot)));
     json += std::format("\"generated_at\":\"{}\"", EscapeJson(ToUtcIsoString(std::chrono::system_clock::now())));
+    const std::vector<RepoRecord>* repos = nullptr;
+    if (InState.discoveryCache.has_value()) {
+        repos = &InState.discoveryCache->repos;
+    } else if (InState.manifest.has_value()) {
+        repos = &InState.manifest->repos;
+    }
+    if (repos != nullptr) {
+        json += std::format(",\"repos\":{}", RepoRecordsToRelativeJson(InState.workspaceRoot, *repos));
+    }
     if (InState.manifest.has_value()) {
-        json += ",\"manifest\":{";
-        json += std::format("\"repos\":{},", ManifestReposToJson(*InState.manifest));
-        json += std::format("\"gitmodules_fingerprints\":{}", ManifestFingerprintsToJson(*InState.manifest));
-        json += "}";
+        json += std::format(",\"gitmodules_fingerprints\":{}", ManifestFingerprintsToJson(*InState.manifest));
     }
     if (InState.discoveryCache.has_value()) {
-        json += std::format(",\"discovery_cache\":{}", DiscoveryCacheToJson(*InState.discoveryCache));
+        json += std::format(",\"discovery_state\":{}", DiscoveryStateToJson(*InState.discoveryCache));
     }
     json += "}";
     return json;
+}
+
+auto AbsolutizeRepoRecords(const std::filesystem::path& InWorkspaceRoot, std::vector<RepoRecord>* OutRepos) -> void {
+    if (OutRepos == nullptr) {
+        return;
+    }
+    for (auto& repo : *OutRepos) {
+        if (repo.path.is_relative()) {
+            repo.path = (InWorkspaceRoot / repo.path).lexically_normal();
+        } else {
+            repo.path = repo.path.lexically_normal();
+        }
+        for (auto& dep : repo.dependencies) {
+            if (dep.is_relative()) {
+                dep = (InWorkspaceRoot / dep).lexically_normal();
+            } else {
+                dep = dep.lexically_normal();
+            }
+        }
+    }
 }
 
 auto ParseWorkspaceManifest(const std::string& InPayload, const std::filesystem::path& InManifestFile) -> std::optional<WorkspaceManifest> {
     const auto workspaceRoot = ExtractStringField(InPayload, "workspace_root");
     const auto manifestRaw = ExtractObjectRaw(InPayload, "manifest");
+    const auto topLevelReposRaw = ExtractArrayRaw(InPayload, "repos");
     const auto& manifestPayload = manifestRaw.value_or(InPayload);
-    const auto reposRaw = ExtractArrayRaw(manifestPayload, "repos");
+    const auto reposRaw = topLevelReposRaw.has_value() ? topLevelReposRaw : ExtractArrayRaw(manifestPayload, "repos");
     const auto fingerprintsRaw = ExtractArrayRaw(manifestPayload, "gitmodules_fingerprints");
     if (!workspaceRoot || !reposRaw) {
         return std::nullopt;
@@ -1168,9 +1220,7 @@ auto ParseWorkspaceManifest(const std::string& InPayload, const std::filesystem:
     out.workspaceRoot = Normalize(std::filesystem::path(*workspaceRoot));
     out.manifestFile = InManifestFile;
     out.repos = ParseReposArray(*reposRaw);
-    for (auto& repo : out.repos) {
-        repo.path = (out.workspaceRoot / repo.path).lexically_normal();
-    }
+    AbsolutizeRepoRecords(out.workspaceRoot, &out.repos);
     if (fingerprintsRaw) {
         out.gitmodulesFingerprints = ParseGitmodulesFingerprints(*fingerprintsRaw);
     }
@@ -1178,10 +1228,13 @@ auto ParseWorkspaceManifest(const std::string& InPayload, const std::filesystem:
 }
 
 auto ParseDiscoveryCacheSnapshot(const std::string& InPayload) -> std::optional<DiscoveryCacheSnapshot> {
+    const auto workspaceRoot = ExtractStringField(InPayload, "workspace_root");
+    const auto topLevelReposRaw = ExtractArrayRaw(InPayload, "repos");
     const auto cacheRaw = ExtractObjectRaw(InPayload, "discovery_cache");
-    const auto& cachePayload = cacheRaw.value_or(InPayload);
-    const auto reposRaw = ExtractArrayRaw(cachePayload, "repos");
-    if (!reposRaw) {
+    const auto stateRaw = ExtractObjectRaw(InPayload, "discovery_state");
+    const auto& cachePayload = stateRaw ? *stateRaw : (cacheRaw ? *cacheRaw : InPayload);
+    const auto reposRaw = topLevelReposRaw.has_value() ? topLevelReposRaw : ExtractArrayRaw(cachePayload, "repos");
+    if (!reposRaw || !workspaceRoot) {
         return std::nullopt;
     }
 
@@ -1190,6 +1243,7 @@ auto ParseDiscoveryCacheSnapshot(const std::string& InPayload) -> std::optional<
     out.gitmodulesMtime = ExtractIntField(cachePayload, "gitmodules_mtime").value_or(0);
     out.marker = ExtractStringField(cachePayload, "marker").value_or("none");
     out.repos = ParseReposArray(*reposRaw);
+    AbsolutizeRepoRecords(Normalize(std::filesystem::path(*workspaceRoot)), &out.repos);
     return out;
 }
 
