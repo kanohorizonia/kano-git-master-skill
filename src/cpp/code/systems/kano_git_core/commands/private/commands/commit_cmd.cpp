@@ -901,6 +901,22 @@ auto RunAiGenerate(const std::string& InProvider,
                    const std::string& InModel,
                    const std::string& InPrompt,
                    std::optional<std::filesystem::path> InWorkingDir = std::nullopt) -> shell::ExecResult {
+    auto debugArgs = [&](const std::string& InCmd, const std::vector<std::string>& InArgs) {
+        if (!IsTruthyEnv(std::getenv("KOG_DEBUG_AI_ARGS"))) {
+            return;
+        }
+        std::ostringstream oss;
+        oss << "[ai-debug] cmd=" << InCmd << " args=";
+        for (std::size_t i = 0; i < InArgs.size(); ++i) {
+            if (i != 0) {
+                oss << " ";
+            }
+            oss << "\"" << InArgs[i] << "\"";
+        }
+        oss << "\n";
+        std::cerr << oss.str();
+    };
+
     if (InProvider == "opencode") {
         std::vector<std::string> args{"run"};
         AppendBoolFlag(&args, "KOG_OPENCODE_CONTINUE", "--continue");
@@ -952,7 +968,7 @@ auto RunAiGenerate(const std::string& InProvider,
 
     if (InProvider == "copilot") {
         if (HasCommand("copilot", {"--help"})) {
-            std::vector<std::string> args{"-s", "-p", InPrompt};
+            std::vector<std::string> args{"-s"};
             if (!InModel.empty() && InModel != "auto") {
                 args.push_back("--model");
                 args.push_back(InModel);
@@ -979,12 +995,13 @@ auto RunAiGenerate(const std::string& InProvider,
             AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL_PATHS", "--allow-all-paths");
             AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL_URLS", "--allow-all-urls");
             AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL", "--allow-all");
-            args.insert(args.end(), {"--no-color", "--stream", "off", "--no-ask-user"});
+            args.insert(args.end(), {"--no-color", "--stream", "off", "--no-ask-user", "-p", InPrompt});
+            debugArgs("copilot", args);
             return shell::ExecuteCommand("copilot", args, shell::ExecMode::Capture, InWorkingDir);
         }
 
         if (HasCommand("gh", {"copilot", "--version"})) {
-            std::vector<std::string> args{"copilot", "--", "-s", "-p", InPrompt};
+            std::vector<std::string> args{"copilot", "--", "-s"};
             if (!InModel.empty() && InModel != "auto") {
                 args.push_back("--model");
                 args.push_back(InModel);
@@ -1011,7 +1028,8 @@ auto RunAiGenerate(const std::string& InProvider,
             AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL_PATHS", "--allow-all-paths");
             AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL_URLS", "--allow-all-urls");
             AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL", "--allow-all");
-            args.insert(args.end(), {"--no-color", "--stream", "off", "--no-ask-user"});
+            args.insert(args.end(), {"--no-color", "--stream", "off", "--no-ask-user", "-p", InPrompt});
+            debugArgs("gh", args);
             return shell::ExecuteCommand("gh", args, shell::ExecMode::Capture, InWorkingDir);
         }
     }
