@@ -49,6 +49,12 @@ Operationally this means:
 - agent-mode `cpa` must use the shared plan file path
 - deterministic metadata such as `plan_id` and planner identity should be produced by tooling, not hand-patched by the agent
 
+## Copilot Chat Session Note
+
+- Observed behavior: human-mode `cpa` may create a new Copilot Chat session on each run.
+- Current workflow should assume chat-session continuity is unreliable.
+- Prompt files, shared plan files, and canonical workspace state are the reliable continuity mechanisms.
+
 ## Plan Lifecycle
 
 Current lifecycle model:
