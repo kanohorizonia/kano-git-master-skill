@@ -53,6 +53,7 @@ kog_run_unix_preset() {
   (
     cd "$KOG_CPP_ROOT"
     kog_ensure_ftxui_vendor
+    kog_apply_self_build_config
     kog_collect_build_metadata
     cmake --preset "$InConfigurePreset" "${extra_args[@]}"
     cmake --build --preset "$InBuildPreset"

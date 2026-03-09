@@ -53,6 +53,7 @@ fi
 
 (
 	cd "$KOG_CPP_ROOT"
+	kog_apply_self_build_config
 	kog_collect_build_metadata
 	cmake -S . -B build/_intermediate/macos-make-clang-x64 \
 		-G "Unix Makefiles" \

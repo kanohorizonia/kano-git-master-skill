@@ -118,3 +118,15 @@ models = ["copilot/gpt-5-mini", "copilot/claude-haiku-4.5", "copilot/gpt-5.4"]
 #   Uses per-commit generation, with deterministic fallback for special cases
 #   such as gitlink/submodule-pointer-only changes.
 commit_generation_mode = "single"
+
+# Native self-build behavior.
+#
+# Controls the optional compiler launcher used by the C++ build presets.
+# Available values:
+# - "auto"    : Windows prefers sccache then ccache; Unix prefers ccache then sccache
+# - "none"    : disable compiler launcher usage
+# - "ccache"  : require ccache
+# - "sccache" : require sccache
+# - custom executable/path values are also accepted via env/CMake cache
+[self]
+compiler_launcher = "auto"

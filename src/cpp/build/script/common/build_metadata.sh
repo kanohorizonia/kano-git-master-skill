@@ -17,6 +17,81 @@ _kog_default_unknown() {
   printf '%s' "$value"
 }
 
+kog_workspace_root() {
+  local cpp_root="${KOG_CPP_ROOT:-$(pwd)}"
+  (cd "$cpp_root/../.." && pwd)
+}
+
+_kog_extract_toml_section_value() {
+  local file_path="$1"
+  local section_name="$2"
+  local key_name="$3"
+  awk -v section="$section_name" -v key="$key_name" '
+    function trim(s) {
+      sub(/^[[:space:]]+/, "", s)
+      sub(/[[:space:]]+$/, "", s)
+      return s
+    }
+    /^[[:space:]]*#/ { next }
+    /^[[:space:]]*$/ { next }
+    /^[[:space:]]*\[/ {
+      current = $0
+      sub(/^[[:space:]]*\[/, "", current)
+      sub(/\][[:space:]]*$/, "", current)
+      current = trim(current)
+      in_section = (current == section)
+      next
+    }
+    in_section {
+      line = $0
+      sub(/[[:space:]]+#.*$/, "", line)
+      if (line ~ "^[[:space:]]*" key "[[:space:]]*=") {
+        sub("^[[:space:]]*" key "[[:space:]]*=[[:space:]]*", "", line)
+        line = trim(line)
+        if (line ~ /^".*"$/) {
+          sub(/^"/, "", line)
+          sub(/"$/, "", line)
+        }
+        print line
+      }
+    }
+  ' "$file_path" | tail -n 1
+}
+
+kog_resolve_self_config_value() {
+  local key_name="$1"
+  local workspace_root
+  local home_dir="${HOME:-}"
+  local value=""
+  local file_path=""
+  workspace_root="$(kog_workspace_root)"
+
+  for file_path in \
+    "$workspace_root/assets/kog_config.toml" \
+    "$home_dir/.kano/kog_config.toml" \
+    "$workspace_root/.kano/kog_config.toml"; do
+    if [[ -f "$file_path" ]]; then
+      local candidate=""
+      candidate="$(_kog_extract_toml_section_value "$file_path" "self" "$key_name")"
+      if [[ -n "$candidate" ]]; then
+        value="$candidate"
+      fi
+    fi
+  done
+
+  printf '%s' "$value"
+}
+
+kog_apply_self_build_config() {
+  if [[ -z "${KOG_COMPILER_LAUNCHER:-}" ]]; then
+    local configured_launcher=""
+    configured_launcher="$(kog_resolve_self_config_value "compiler_launcher")"
+    if [[ -n "$configured_launcher" ]]; then
+      export KOG_COMPILER_LAUNCHER="$configured_launcher"
+    fi
+  fi
+}
+
 kog_collect_build_metadata() {
   local root="${KOG_CPP_ROOT:-$(pwd)}"
   local vcs="unknown"
