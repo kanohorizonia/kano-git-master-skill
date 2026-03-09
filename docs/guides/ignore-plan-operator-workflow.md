@@ -22,16 +22,16 @@ Use one plan file consistently in the whole run:
 
 ```bash
 # 1) Create or refresh plan template
-./kog plan new --plan-file .kano/cache/git/plans/default-plan.json --force
+./kog plan new --plan-file .kano/tmp/git/plans/default-plan.json --force
 
 # 2) Populate ignore candidates from current working tree
-./kog plan ignore-init --plan-file .kano/cache/git/plans/default-plan.json --max-per-repo 200
+./kog plan ignore-init --plan-file .kano/tmp/git/plans/default-plan.json --max-per-repo 200
 
 # 3) Validate ignore-stage schema and required shape
-./kog plan verify pre-apply --stage ignore --plan-file .kano/cache/git/plans/default-plan.json
+./kog plan verify pre-apply --stage ignore --plan-file .kano/tmp/git/plans/default-plan.json
 
 # 4) Apply merged/deduplicated rules to targets
-./kog plan apply --stage ignore --plan-file .kano/cache/git/plans/default-plan.json
+./kog plan apply --stage ignore --plan-file .kano/tmp/git/plans/default-plan.json
 
 # 5) Confirm gate status
 ./kog plan verify ignore --context plan

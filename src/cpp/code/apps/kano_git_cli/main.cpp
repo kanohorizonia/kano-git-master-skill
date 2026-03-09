@@ -157,7 +157,7 @@ std::string DefaultPlanPath() {
     if (const char* rootEnv = std::getenv("KANO_GIT_MASTER_ROOT"); rootEnv != nullptr && *rootEnv != '\0') {
         root = std::filesystem::path{rootEnv};
     }
-    return (root / ".kano" / "cache" / "git" / "plans" / "default-plan.json").lexically_normal().generic_string();
+    return (root / ".kano" / "tmp" / "git" / "plans" / "default-plan.json").lexically_normal().generic_string();
 }
 
 bool RewriteSlogShorthand(std::vector<std::string>& InOutArgs, std::string& OutError) {

@@ -718,6 +718,14 @@ auto CopilotStandaloneCommand() -> std::string {
 #endif
 }
 
+auto CodexStandaloneCommand() -> std::string {
+#if defined(_WIN32)
+    return "codex.cmd";
+#else
+    return "codex";
+#endif
+}
+
 auto HasStandaloneCopilotCommand() -> bool {
     return HasCommand(CopilotStandaloneCommand(), {"--help"}) || HasCommand("copilot", {"--help"});
 }
@@ -727,11 +735,11 @@ auto ExecuteStandaloneCopilot(const std::vector<std::string>& InArgs,
     return shell::ExecuteCommand(CopilotStandaloneCommand(), InArgs, shell::ExecMode::Capture, InWorkdir);
 }
 
-auto WriteCopilotPromptFile(const std::filesystem::path& InWorkdir,
-                            const std::string& InPrompt,
-                            const std::string& InPurpose,
-                            std::filesystem::path* OutPath,
-                            std::string* OutError = nullptr) -> bool {
+auto WritePromptFile(const std::filesystem::path& InWorkdir,
+                     const std::string& InPrompt,
+                     const std::string& InPurpose,
+                     std::filesystem::path* OutPath,
+                     std::string* OutError = nullptr) -> bool {
     if (OutPath == nullptr) {
         if (OutError != nullptr) {
             *OutError = "missing output path";
@@ -739,7 +747,7 @@ auto WriteCopilotPromptFile(const std::filesystem::path& InWorkdir,
         return false;
     }
 
-    const auto promptDir = (InWorkdir / ".kano" / "tmp" / "git" / "copilot-prompts").lexically_normal();
+    const auto promptDir = (InWorkdir / ".kano" / "tmp" / "git" / "provider-prompts").lexically_normal();
     std::error_code ec;
     std::filesystem::create_directories(promptDir, ec);
     if (ec) {
@@ -762,11 +770,11 @@ auto WriteCopilotPromptFile(const std::filesystem::path& InWorkdir,
     return true;
 }
 
-auto BuildCopilotPromptArgument(const std::filesystem::path& InWorkdir,
-                                const std::string& InPrompt,
-                                const std::string& InPurpose) -> std::string {
+auto BuildFileBackedPromptArgument(const std::filesystem::path& InWorkdir,
+                                   const std::string& InPrompt,
+                                   const std::string& InPurpose) -> std::string {
     std::filesystem::path promptPath;
-    if (!WriteCopilotPromptFile(InWorkdir, InPrompt, InPurpose, &promptPath)) {
+    if (!WritePromptFile(InWorkdir, InPrompt, InPurpose, &promptPath)) {
         return InPrompt;
     }
 
@@ -777,6 +785,72 @@ auto BuildCopilotPromptArgument(const std::filesystem::path& InWorkdir,
     return std::format(
         "Read @{} and follow it exactly. Treat that file as the complete task. Do not ask clarifying questions. Output only the final answer required by that file.",
         refPath.generic_string());
+}
+
+auto WriteCodexResponseFilePath(const std::filesystem::path& InWorkdir,
+                                const std::string& InPurpose,
+                                const std::string& InPrompt,
+                                std::filesystem::path* OutPath,
+                                std::string* OutError = nullptr) -> bool {
+    if (OutPath == nullptr) {
+        if (OutError != nullptr) {
+            *OutError = "missing output path";
+        }
+        return false;
+    }
+
+    const auto responseDir = (InWorkdir / ".kano" / "tmp" / "git" / "codex-responses").lexically_normal();
+    std::error_code ec;
+    std::filesystem::create_directories(responseDir, ec);
+    if (ec) {
+        if (OutError != nullptr) {
+            *OutError = std::format("create_directories failed: {}", ec.message());
+        }
+        return false;
+    }
+
+    *OutPath = (responseDir / std::format("{}-{}-{}.txt",
+                                          InPurpose,
+                                          CurrentUtcCompact(),
+                                          Fnv1a64Hex(InPrompt).substr(0, 8)))
+                   .lexically_normal();
+    return true;
+}
+
+auto ExecuteCodexExec(const std::filesystem::path& InWorkdir,
+                      const std::string& InPrompt,
+                      const std::string& InPurpose,
+                      const std::string& InModel) -> shell::ExecResult {
+    std::filesystem::path responsePath;
+    std::string responseError;
+    if (!WriteCodexResponseFilePath(InWorkdir, InPurpose, InPrompt, &responsePath, &responseError)) {
+        return shell::ExecResult{.exitCode = 1, .stderrStr = std::format("codex response path error: {}", responseError)};
+    }
+
+    std::vector<std::string> args{"exec", "--skip-git-repo-check"};
+    AppendBoolFlag(&args, "KOG_CODEX_FULL_AUTO", "--full-auto");
+    AppendBoolFlag(&args, "KOG_CODEX_EPHEMERAL", "--ephemeral");
+    AppendBoolFlag(&args, "KOG_CODEX_JSON", "--json");
+    AppendSingleValueFlag(&args, "KOG_CODEX_SANDBOX", "--sandbox");
+    AppendSingleValueFlag(&args, "KOG_CODEX_PROFILE", "--profile");
+    AppendRepeatableFlag(&args, "KOG_CODEX_ADD_DIRS", "--add-dir");
+    args.push_back("-o");
+    args.push_back(responsePath.lexically_normal().generic_string());
+    args.push_back("--cd");
+    args.push_back(InWorkdir.lexically_normal().generic_string());
+    if (!InModel.empty() && InModel != "auto") {
+        args.push_back("--model");
+        args.push_back(InModel);
+    }
+    args.push_back(InPrompt);
+
+    auto result = shell::ExecuteCommand(CodexStandaloneCommand(), args, shell::ExecMode::Capture, InWorkdir);
+    if (result.exitCode == 0) {
+        if (const auto responseText = ReadFileText(responsePath); responseText.has_value()) {
+            result.stdoutStr = *responseText;
+        }
+    }
+    return result;
 }
 
 auto LooksLikeModelToken(const std::string& InToken) -> bool {
@@ -942,7 +1016,7 @@ auto ResolveAiProvider(const std::string& InRequested) -> std::string {
     if (HasStandaloneCopilotCommand() || HasCommand("gh", {"copilot", "--version"})) {
         return "copilot";
     }
-    if (HasCommand("codex", {"--help"})) {
+    if (HasCommand(CodexStandaloneCommand(), {"--help"}) || HasCommand("codex", {"--help"})) {
         return "codex";
     }
     if (HasCommand("opencode", {"--help"})) {
@@ -1021,31 +1095,11 @@ auto RunAiGenerate(const std::string& InProvider,
         return shell::ExecuteCommand("opencode", args, shell::ExecMode::Capture, InWorkdir);
     }
     if (InProvider == "codex") {
-        if (IsTruthyEnv(std::getenv("KOG_CODEX_USE_EXEC"))) {
-            std::vector<std::string> args{"exec"};
-            AppendBoolFlag(&args, "KOG_CODEX_FULL_AUTO", "--full-auto");
-            AppendBoolFlag(&args, "KOG_CODEX_EPHEMERAL", "--ephemeral");
-            AppendBoolFlag(&args, "KOG_CODEX_JSON", "--json");
-            AppendSingleValueFlag(&args, "KOG_CODEX_SANDBOX", "--sandbox");
-            AppendSingleValueFlag(&args, "KOG_CODEX_APPROVAL", "--ask-for-approval");
-            AppendSingleValueFlag(&args, "KOG_CODEX_PROFILE", "--profile");
-            AppendRepeatableFlag(&args, "KOG_CODEX_ADD_DIRS", "--add-dir");
-            args.push_back("--cd");
-            args.push_back(InWorkdir.lexically_normal().generic_string());
-            if (!InModel.empty() && InModel != "auto") {
-                args.push_back("--model");
-                args.push_back(InModel);
-            }
-            args.push_back(InPrompt);
-            return shell::ExecuteCommand("codex", args, shell::ExecMode::Capture, InWorkdir);
-        }
-        if (!InModel.empty() && InModel != "auto") {
-            return shell::ExecuteCommand("codex", {"-q", "--model", InModel, InPrompt}, shell::ExecMode::Capture, InWorkdir);
-        }
-        return shell::ExecuteCommand("codex", {"-q", InPrompt}, shell::ExecMode::Capture, InWorkdir);
+        const auto codexPrompt = BuildFileBackedPromptArgument(InWorkdir, InPrompt, InStructuredJsonOnly ? "plan-fill-structured" : "plan-fill");
+        return ExecuteCodexExec(InWorkdir, codexPrompt, InStructuredJsonOnly ? "plan-fill-structured" : "plan-fill", InModel);
     }
     if (InProvider == "copilot") {
-        const auto copilotPrompt = BuildCopilotPromptArgument(
+        const auto copilotPrompt = BuildFileBackedPromptArgument(
             InWorkdir,
             InPrompt,
             InStructuredJsonOnly ? "plan-fill-structured" : "plan-fill");
@@ -2741,7 +2795,7 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
     const auto prompt = BuildPlanFillOpsPrompt(InWorkspaceRoot, provider, model, InPlanPath, templateJson, dirtyContext);
     std::string debugPrefix;
     if (InDebugAi) {
-        const auto debugDir = (InWorkspaceRoot / ".kano" / "cache" / "git" / "plans" / "debug").lexically_normal();
+        const auto debugDir = (InWorkspaceRoot / ".kano" / "tmp" / "git" / "plans" / "debug").lexically_normal();
         debugPrefix = (debugDir / std::format("pia-{}", CurrentUtcCompact())).generic_string();
         std::string debugError;
         WriteFileText(std::filesystem::path(debugPrefix + ".prompt.txt"), prompt, &debugError);
@@ -3388,7 +3442,7 @@ auto BuildIgnoreEntriesFromWorkingTree(const std::filesystem::path& InWorkspaceR
             e.repo = ".";
         }
         e.applyTarget = ".gitignore";
-        e.mergedOutputPath = (InWorkspaceRoot / ".kano" / "cache" / "git" / "plans" /
+        e.mergedOutputPath = (InWorkspaceRoot / ".kano" / "tmp" / "git" / "plans" /
                               std::format("ignore-merged-{}.gitignore", e.repo == "." ? "root" : e.repo))
                                  .lexically_normal()
                                  .generic_string();
@@ -3471,7 +3525,7 @@ auto StampIgnoreAppliedAtAll(std::string InText, const std::string& InTimestamp)
 }
 
 auto DefaultPlanPath(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path {
-    return (InWorkspaceRoot / ".kano" / "cache" / "git" / "plans" / "default-plan.json").lexically_normal();
+    return (InWorkspaceRoot / ".kano" / "tmp" / "git" / "plans" / "default-plan.json").lexically_normal();
 }
 
 auto ResolveSkillRoot(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path {
@@ -3540,7 +3594,7 @@ void RegisterPlan(CLI::App& InApp) {
     auto* initAllowIgnoreGate = new bool{false};
     auto* initDatasourceRoot = new std::string{};
     auto* initDatasourceManifest = new std::string{};
-    init->add_option("--output,-o", *initOut, "Plan output path (default: .kano/cache/git/plans/default-plan.json)");
+    init->add_option("--output,-o", *initOut, "Plan output path (default: .kano/tmp/git/plans/default-plan.json)");
     init->add_flag("--force,-f", *initForce, "Overwrite existing output");
     init->add_flag("--ai-auto,--ai", *initAiAuto, "Generate and fill plan by AI");
     init->add_option("--ai-provider,--provider", *initAiProvider, "AI provider (copilot|codex|opencode|auto)")->default_str("auto");
@@ -5320,7 +5374,7 @@ void RegisterPlan(CLI::App& InApp) {
                 const auto repoAbs = ResolvePath(workspaceRoot, e.repo);
                 const auto targetAbs = ResolvePath(repoAbs, e.applyTarget);
                 auto mergedAbs = e.mergedOutputPath.empty()
-                    ? (workspaceRoot / ".kano" / "cache" / "git" / "plans" / std::format("ignore-merged-{}.gitignore", idx)).lexically_normal()
+                    ? (workspaceRoot / ".kano" / "tmp" / "git" / "plans" / std::format("ignore-merged-{}.gitignore", idx)).lexically_normal()
                     : ResolvePath(workspaceRoot, e.mergedOutputPath);
                 const auto mergedText = MergeGitignore(targetAbs, e.rules);
                 std::string error;

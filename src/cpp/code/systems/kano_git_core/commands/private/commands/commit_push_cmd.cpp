@@ -548,7 +548,7 @@ auto CurrentUtcTimestampIso8601() -> std::string {
 auto DefaultCommitPlanOutputPath(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path {
     const auto headShort = CaptureHeadShortSha(InWorkspaceRoot);
     const auto stamp = CurrentUtcTimestampCompact();
-    return (InWorkspaceRoot / ".kano" / "cache" / "git" / "plans" /
+    return (InWorkspaceRoot / ".kano" / "tmp" / "git" / "plans" /
             ("plan-" + stamp + "-" + headShort + ".json"))
         .lexically_normal();
 }
@@ -557,7 +557,7 @@ auto DefaultSharedPlanPath(const std::filesystem::path& InWorkspaceRoot) -> std:
     if (const char* explicitPlan = std::getenv("KOG_PLAN_FILE"); explicitPlan != nullptr && *explicitPlan != '\0') {
         return std::filesystem::path(explicitPlan).lexically_normal();
     }
-    return (InWorkspaceRoot / ".kano" / "cache" / "git" / "plans" / "default-plan.json").lexically_normal();
+    return (InWorkspaceRoot / ".kano" / "tmp" / "git" / "plans" / "default-plan.json").lexically_normal();
 }
 
 auto ResolveSelfBinaryCommand() -> std::string {
@@ -1910,7 +1910,7 @@ void RegisterCommitPush(CLI::App& InApp) {
     cmd->add_option("--message,-m", *message, "Commit message (skip AI generation)");
     cmd->add_option("--plan-file", *commitPlanFile, "Plan JSON file (stage-aware)");
     cmd->add_flag("--write-plan-template", *writeCommitPlanTemplate, "Write plan template JSON and exit");
-    cmd->add_option("--plan-out", *commitPlanOut, "Template output path (default: .kano/cache/git/plans/plan-<utc>-<head>.json)");
+    cmd->add_option("--plan-out", *commitPlanOut, "Template output path (default: .kano/tmp/git/plans/plan-<utc>-<head>.json)");
     cmd->add_option("--ai-provider", *aiProvider, "AI provider for commit (copilot, codex, opencode)");
     cmd->add_option("--ai-model", *aiModel, "AI model for commit");
     cmd->add_option("--ai-commit-generation-mode,--ai-fill-mode", *aiFillMode, "AI commit generation mode override (single|per-commit|adaptive)");

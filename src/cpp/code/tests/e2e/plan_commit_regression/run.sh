@@ -12,10 +12,10 @@ fi
 
 cd "$WORKSPACE_ROOT"
 
-PLAN_DIR=".kano/cache/git/plans"
+PLAN_DIR=".kano/tmp/git/plans"
 
 make_sandbox() {
-  local base="$WORKSPACE_ROOT/.kano/cache/git/e2e"
+  local base="$WORKSPACE_ROOT/.kano/tmp/git/e2e"
   local name="plan-commit-regression-$(date +%s%N)"
   local sandbox="$base/$name"
   local remote="$sandbox/remote.git"

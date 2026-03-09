@@ -196,6 +196,14 @@ auto CopilotStandaloneCommand() -> std::string {
 #endif
 }
 
+auto CodexStandaloneCommand() -> std::string {
+#if defined(_WIN32)
+    return "codex.cmd";
+#else
+    return "codex";
+#endif
+}
+
 auto HasStandaloneCopilotCommand() -> bool {
     return HasCommand(CopilotStandaloneCommand(), {"--help"}) || HasCommand("copilot", {"--help"});
 }
@@ -249,11 +257,11 @@ auto WriteFileText(const std::filesystem::path& InPath, const std::string& InTex
     return true;
 }
 
-auto WriteCopilotPromptFile(const std::filesystem::path& InWorkdir,
-                            const std::string& InPrompt,
-                            const std::string& InPurpose,
-                            std::filesystem::path* OutPath,
-                            std::string* OutError = nullptr) -> bool {
+auto WritePromptFile(const std::filesystem::path& InWorkdir,
+                     const std::string& InPrompt,
+                     const std::string& InPurpose,
+                     std::filesystem::path* OutPath,
+                     std::string* OutError = nullptr) -> bool {
     if (OutPath == nullptr) {
         if (OutError != nullptr) {
             *OutError = "missing output path";
@@ -261,7 +269,7 @@ auto WriteCopilotPromptFile(const std::filesystem::path& InWorkdir,
         return false;
     }
 
-    const auto promptDir = (InWorkdir / ".kano" / "tmp" / "git" / "copilot-prompts").lexically_normal();
+    const auto promptDir = (InWorkdir / ".kano" / "tmp" / "git" / "provider-prompts").lexically_normal();
     std::error_code ec;
     std::filesystem::create_directories(promptDir, ec);
     if (ec) {
@@ -284,15 +292,15 @@ auto WriteCopilotPromptFile(const std::filesystem::path& InWorkdir,
     return true;
 }
 
-auto BuildCopilotPromptArgument(std::optional<std::filesystem::path> InWorkingDir,
-                                const std::string& InPrompt,
-                                const std::string& InPurpose) -> std::string {
+auto BuildFileBackedPromptArgument(std::optional<std::filesystem::path> InWorkingDir,
+                                   const std::string& InPrompt,
+                                   const std::string& InPurpose) -> std::string {
     if (!InWorkingDir.has_value()) {
         return InPrompt;
     }
 
     std::filesystem::path promptPath;
-    if (!WriteCopilotPromptFile(*InWorkingDir, InPrompt, InPurpose, &promptPath)) {
+    if (!WritePromptFile(*InWorkingDir, InPrompt, InPurpose, &promptPath)) {
         return InPrompt;
     }
 
@@ -303,6 +311,83 @@ auto BuildCopilotPromptArgument(std::optional<std::filesystem::path> InWorkingDi
     return std::format(
         "Read @{} and follow it exactly. Treat that file as the complete task. Do not ask clarifying questions. Output only the final answer required by that file.",
         refPath.generic_string());
+}
+
+auto WriteCodexResponseFilePath(const std::filesystem::path& InWorkdir,
+                                const std::string& InPurpose,
+                                const std::string& InPrompt,
+                                std::filesystem::path* OutPath,
+                                std::string* OutError = nullptr) -> bool {
+    if (OutPath == nullptr) {
+        if (OutError != nullptr) {
+            *OutError = "missing output path";
+        }
+        return false;
+    }
+
+    const auto responseDir = (InWorkdir / ".kano" / "tmp" / "git" / "codex-responses").lexically_normal();
+    std::error_code ec;
+    std::filesystem::create_directories(responseDir, ec);
+    if (ec) {
+        if (OutError != nullptr) {
+            *OutError = std::format("create_directories failed: {}", ec.message());
+        }
+        return false;
+    }
+
+    *OutPath = (responseDir / std::format("{}-{}-{}.txt",
+                                          InPurpose,
+                                          CurrentUtcCompact(),
+                                          Fnv1a64Hex(InPrompt).substr(0, 8)))
+                   .lexically_normal();
+    return true;
+}
+
+void AppendRepeatableFlag(std::vector<std::string>* OutArgs,
+                          const char* InEnvVar,
+                          const std::string& InFlag);
+void AppendSingleValueFlag(std::vector<std::string>* OutArgs,
+                           const char* InEnvVar,
+                           const std::string& InFlag);
+void AppendBoolFlag(std::vector<std::string>* OutArgs,
+                    const char* InEnvVar,
+                    const std::string& InFlag);
+
+auto ExecuteCodexExec(std::optional<std::filesystem::path> InWorkingDir,
+                      const std::string& InPrompt,
+                      const std::string& InPurpose,
+                      const std::string& InModel) -> shell::ExecResult {
+    const auto workdir = InWorkingDir.value_or(std::filesystem::current_path());
+    std::filesystem::path responsePath;
+    std::string responseError;
+    if (!WriteCodexResponseFilePath(workdir, InPurpose, InPrompt, &responsePath, &responseError)) {
+        return shell::ExecResult{.exitCode = 1, .stderrStr = std::format("codex response path error: {}", responseError)};
+    }
+
+    std::vector<std::string> args{"exec", "--skip-git-repo-check"};
+    AppendBoolFlag(&args, "KOG_CODEX_FULL_AUTO", "--full-auto");
+    AppendBoolFlag(&args, "KOG_CODEX_EPHEMERAL", "--ephemeral");
+    AppendBoolFlag(&args, "KOG_CODEX_JSON", "--json");
+    AppendSingleValueFlag(&args, "KOG_CODEX_SANDBOX", "--sandbox");
+    AppendSingleValueFlag(&args, "KOG_CODEX_PROFILE", "--profile");
+    AppendRepeatableFlag(&args, "KOG_CODEX_ADD_DIRS", "--add-dir");
+    args.push_back("-o");
+    args.push_back(responsePath.lexically_normal().generic_string());
+    args.push_back("--cd");
+    args.push_back(workdir.lexically_normal().generic_string());
+    if (!InModel.empty() && InModel != "auto") {
+        args.push_back("--model");
+        args.push_back(InModel);
+    }
+    args.push_back(InPrompt);
+
+    auto result = shell::ExecuteCommand(CodexStandaloneCommand(), args, shell::ExecMode::Capture, InWorkingDir);
+    if (result.exitCode == 0) {
+        if (const auto responseText = ReadFileText(responsePath); responseText.has_value()) {
+            result.stdoutStr = *responseText;
+        }
+    }
+    return result;
 }
 
 auto IsTruthyEnv(const char* InValue) -> bool {
@@ -713,7 +798,7 @@ auto ResolveProvider(const std::string& InProviderRaw) -> std::string {
     if (HasStandaloneCopilotCommand() || HasCommand("gh", {"copilot", "--version"})) {
         return "copilot";
     }
-    if (HasCommand("codex", {"--help"})) {
+    if (HasCommand(CodexStandaloneCommand(), {"--help"}) || HasCommand("codex", {"--help"})) {
         return "codex";
     }
     if (HasCommand("opencode", {"--help"})) {
@@ -968,34 +1053,12 @@ auto RunAiGenerate(const std::string& InProvider,
     }
 
     if (InProvider == "codex") {
-        if (IsTruthyEnv(std::getenv("KOG_CODEX_USE_EXEC"))) {
-            std::vector<std::string> args{"exec"};
-            AppendBoolFlag(&args, "KOG_CODEX_FULL_AUTO", "--full-auto");
-            AppendBoolFlag(&args, "KOG_CODEX_EPHEMERAL", "--ephemeral");
-            AppendBoolFlag(&args, "KOG_CODEX_JSON", "--json");
-            AppendSingleValueFlag(&args, "KOG_CODEX_SANDBOX", "--sandbox");
-            AppendSingleValueFlag(&args, "KOG_CODEX_APPROVAL", "--ask-for-approval");
-            AppendSingleValueFlag(&args, "KOG_CODEX_PROFILE", "--profile");
-            AppendRepeatableFlag(&args, "KOG_CODEX_ADD_DIRS", "--add-dir");
-            if (InWorkingDir.has_value()) {
-                args.push_back("--cd");
-                args.push_back(InWorkingDir->lexically_normal().generic_string());
-            }
-            if (!InModel.empty() && InModel != "auto") {
-                args.push_back("--model");
-                args.push_back(InModel);
-            }
-            args.push_back(InPrompt);
-            return shell::ExecuteCommand("codex", args, shell::ExecMode::Capture, InWorkingDir);
-        }
-        if (!InModel.empty() && InModel != "auto") {
-            return shell::ExecuteCommand("codex", {"-q", "--model", InModel, InPrompt}, shell::ExecMode::Capture, InWorkingDir);
-        }
-        return shell::ExecuteCommand("codex", {"-q", InPrompt}, shell::ExecMode::Capture, InWorkingDir);
+        const auto codexPrompt = BuildFileBackedPromptArgument(InWorkingDir, InPrompt, "commit-ai");
+        return ExecuteCodexExec(InWorkingDir, codexPrompt, "commit-ai", InModel);
     }
 
     if (InProvider == "copilot") {
-        const auto copilotPrompt = BuildCopilotPromptArgument(InWorkingDir, InPrompt, "commit-ai");
+        const auto copilotPrompt = BuildFileBackedPromptArgument(InWorkingDir, InPrompt, "commit-ai");
         if (HasStandaloneCopilotCommand()) {
             std::vector<std::string> args{"-s"};
             if (!InModel.empty() && InModel != "auto") {

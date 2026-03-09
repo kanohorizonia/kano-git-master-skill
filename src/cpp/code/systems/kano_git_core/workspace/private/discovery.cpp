@@ -809,7 +809,7 @@ auto WorkspaceCacheDirFor(const std::filesystem::path& InRoot) -> std::filesyste
             }
         }
     }
-    return (InRoot / ".kano" / "cache" / "git").lexically_normal();
+    return (InRoot / ".kano" / "tmp" / "git").lexically_normal();
 }
 
 auto ComputeMarker(const std::filesystem::path& InRoot, const int InMaxDepth, const std::vector<IgnoreRule>& InIgnoreRules) -> std::string {

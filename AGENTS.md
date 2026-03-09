@@ -251,7 +251,7 @@ Note: sourcing will also define globals used by those functions (see the script 
 
 ### Shared default-plan behavior for agent mode
 - Shared plan location:
-  - `.kano/cache/git/plans/default-plan.json`
+  - `.kano/tmp/git/plans/default-plan.json`
 - In agent mode, `commit-push` should:
   - run freshness check
   - refresh/bootstrap the shared plan when stale or missing
@@ -296,14 +296,14 @@ Note: sourcing will also define globals used by those functions (see the script 
 - Avoid rebuilding a complex partial invalidation graph when a manifest-trust + full-scan fallback model is sufficient.
 
 ### Cache writes need cross-process coordination
-- Shared `.kano/cache/git/*` files require:
+- Shared runtime state under `.kano/tmp/git/*` and discovery cache under `.kano/cache/git/discover-repos/*` require:
   - atomic write (temp file + rename)
   - per-resource cross-process lock
   - stale-lock cleanup path
 - Default shared resources include:
-  - workspace manifest
-  - discover cache
-  - shared default plan
+  - workspace manifest under `.kano/tmp/git/`
+  - discover cache under `.kano/cache/git/discover-repos/`
+  - shared default plan under `.kano/tmp/git/plans/`
 - Prefer lock files/directories plus cleanup/inspection commands over broad global locks or implicit best-effort writes.
 
 ### Dogfood evidence should be visible without source archaeology

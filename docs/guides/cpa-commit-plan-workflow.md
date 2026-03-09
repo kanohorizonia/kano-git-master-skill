@@ -16,9 +16,9 @@ All verify/apply/execute gates are deterministic non-AI stages.
 | Full auto commit-push (human mode) | One command | `./kog cpa` or `./kog commit-push --ai-auto` |
 | Full auto commit-push (agent mode) | One command | `KANO_AGENT_MODE=1 ./kog cpa` |
 | Full auto commit-only | One command | `./kog commit --ai-auto` |
-| Semi-auto (AI generates plan, human reviews, then execute) | Prepare -> review -> execute | `./kog pia --force` -> review `.kano/cache/git/plans/default-plan.json` -> `./kog pv` -> `./kog cpa` |
-| Manual plan-driven commit-only | Human fills plan | `./kog pi --force` -> edit plan -> `./kog pv` -> `./kog commit --plan-file .kano/cache/git/plans/default-plan.json --plan-stage commit` |
-| Manual plan-driven commit-push | Human fills plan | `./kog pi --force` -> edit plan -> `./kog pv` -> `./kog cp --plan-file .kano/cache/git/plans/default-plan.json` |
+| Semi-auto (AI generates plan, human reviews, then execute) | Prepare -> review -> execute | `./kog pia --force` -> review `.kano/tmp/git/plans/default-plan.json` -> `./kog pv` -> `./kog cpa` |
+| Manual plan-driven commit-only | Human fills plan | `./kog pi --force` -> edit plan -> `./kog pv` -> `./kog commit --plan-file .kano/tmp/git/plans/default-plan.json --plan-stage commit` |
+| Manual plan-driven commit-push | Human fills plan | `./kog pi --force` -> edit plan -> `./kog pv` -> `./kog cp --plan-file .kano/tmp/git/plans/default-plan.json` |
 | Non-AI inline commit-only | Manual message | `./kog commit -m "your message"` |
 | Non-AI inline commit-push | Manual message | `./kog cp -m "your message"` or `./kog commit-push -m "your message"` |
 
