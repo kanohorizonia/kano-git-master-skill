@@ -903,6 +903,21 @@ find_binary() {
   esac
   build_dir="$PROJECT_ROOT/src/cpp/build"
 
+  if [[ -n "${KANO_GIT_BINARY_PATH:-}" ]]; then
+    if [[ -f "$KANO_GIT_BINARY_PATH" ]]; then
+      if is_binary_compatible_with_shell "$KANO_GIT_BINARY_PATH"; then
+        printf '%s\n' "$KANO_GIT_BINARY_PATH"
+        return 0
+      fi
+    fi
+    if [[ -f "$KANO_GIT_BINARY_PATH/$exe_name" ]]; then
+      if is_binary_compatible_with_shell "$KANO_GIT_BINARY_PATH/$exe_name"; then
+        printf '%s\n' "$KANO_GIT_BINARY_PATH/$exe_name"
+        return 0
+      fi
+    fi
+  fi
+
   if [[ -n "${KANO_GIT_BIN:-}" ]]; then
     if [[ -f "$KANO_GIT_BIN" ]]; then
       if is_binary_compatible_with_shell "$KANO_GIT_BIN"; then
@@ -1190,11 +1205,19 @@ run_native_binary() {
     done
   fi
 
-  KANO_GIT_MASTER_ROOT="${KANO_GIT_MASTER_ROOT:-$PROJECT_ROOT}" \
-  KANO_GIT_BINARY_PATH="$binary" \
-  KANO_AGENT_MODE="${KANO_AGENT_MODE:-}" \
-  "$binary" "${native_args[@]}"
-  local status=$?
+  local status=0
+  if [[ -n "${KANO_AGENT_MODE:-}" ]]; then
+    KANO_GIT_MASTER_ROOT="${KANO_GIT_MASTER_ROOT:-$PROJECT_ROOT}" \
+    KANO_GIT_BINARY_PATH="$binary" \
+    KANO_AGENT_MODE="$KANO_AGENT_MODE" \
+    "$binary" "${native_args[@]}"
+    status=$?
+  else
+    KANO_GIT_MASTER_ROOT="${KANO_GIT_MASTER_ROOT:-$PROJECT_ROOT}" \
+    KANO_GIT_BINARY_PATH="$binary" \
+    "$binary" "${native_args[@]}"
+    status=$?
+  fi
 
   if [[ "$status" -eq 0 ]]; then
     case "$first" in

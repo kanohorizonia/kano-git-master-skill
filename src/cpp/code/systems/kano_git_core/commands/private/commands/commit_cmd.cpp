@@ -56,6 +56,7 @@ auto DisplayRepoLabel(const std::filesystem::path& InWorkspaceRoot, const std::f
 auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<std::filesystem::path>;
 auto ReadFileText(const std::filesystem::path& InPath) -> std::optional<std::string>;
 auto ResolveSkillRoot(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path;
+auto Fnv1a64Hex(const std::string& InText) -> std::string;
 
 auto Trim(std::string InValue) -> std::string {
     while (!InValue.empty() && (InValue.back() == '\n' || InValue.back() == '\r' || InValue.back() == ' ' || InValue.back() == '\t')) {
@@ -185,6 +186,123 @@ auto GitPassThrough(const std::filesystem::path& InRepo, const std::vector<std::
 auto HasCommand(const std::string& InCommand, const std::vector<std::string>& InArgs = {"--help"}) -> bool {
     const auto result = shell::ExecuteCommand(InCommand, InArgs, shell::ExecMode::Capture, std::filesystem::current_path());
     return result.exitCode == 0;
+}
+
+auto CopilotStandaloneCommand() -> std::string {
+#if defined(_WIN32)
+    return "copilot.cmd";
+#else
+    return "copilot";
+#endif
+}
+
+auto HasStandaloneCopilotCommand() -> bool {
+    return HasCommand(CopilotStandaloneCommand(), {"--help"}) || HasCommand("copilot", {"--help"});
+}
+
+auto ExecuteStandaloneCopilot(const std::vector<std::string>& InArgs,
+                              std::optional<std::filesystem::path> InWorkingDir) -> shell::ExecResult {
+    return shell::ExecuteCommand(CopilotStandaloneCommand(), InArgs, shell::ExecMode::Capture, InWorkingDir);
+}
+
+auto CurrentUtcCompact() -> std::string {
+    const auto now = std::chrono::system_clock::now();
+    const auto tt = std::chrono::system_clock::to_time_t(now);
+    std::tm utc{};
+#if defined(_WIN32)
+    gmtime_s(&utc, &tt);
+#else
+    gmtime_r(&tt, &utc);
+#endif
+    char buffer[32] = {0};
+    std::strftime(buffer, sizeof(buffer), "%Y%m%dT%H%M%SZ", &utc);
+    return std::string(buffer);
+}
+
+auto WriteFileText(const std::filesystem::path& InPath, const std::string& InText, std::string* OutError = nullptr) -> bool {
+    std::error_code ec;
+    const auto parent = InPath.parent_path();
+    if (!parent.empty()) {
+        std::filesystem::create_directories(parent, ec);
+        if (ec) {
+            if (OutError != nullptr) {
+                *OutError = std::format("create_directories failed: {}", ec.message());
+            }
+            return false;
+        }
+    }
+
+    std::ofstream out(InPath, std::ios::out | std::ios::binary | std::ios::trunc);
+    if (!out) {
+        if (OutError != nullptr) {
+            *OutError = std::format("open failed: {}", InPath.generic_string());
+        }
+        return false;
+    }
+    out << InText;
+    if (!out.good()) {
+        if (OutError != nullptr) {
+            *OutError = std::format("write failed: {}", InPath.generic_string());
+        }
+        return false;
+    }
+    return true;
+}
+
+auto WriteCopilotPromptFile(const std::filesystem::path& InWorkdir,
+                            const std::string& InPrompt,
+                            const std::string& InPurpose,
+                            std::filesystem::path* OutPath,
+                            std::string* OutError = nullptr) -> bool {
+    if (OutPath == nullptr) {
+        if (OutError != nullptr) {
+            *OutError = "missing output path";
+        }
+        return false;
+    }
+
+    const auto promptDir = (InWorkdir / ".kano" / "tmp" / "git" / "copilot-prompts").lexically_normal();
+    std::error_code ec;
+    std::filesystem::create_directories(promptDir, ec);
+    if (ec) {
+        if (OutError != nullptr) {
+            *OutError = std::format("create_directories failed: {}", ec.message());
+        }
+        return false;
+    }
+
+    const auto promptPath = (promptDir / std::format("{}-{}-{}.md",
+                                                      InPurpose,
+                                                      CurrentUtcCompact(),
+                                                      Fnv1a64Hex(InPrompt).substr(0, 8)))
+                                .lexically_normal();
+    if (!WriteFileText(promptPath, InPrompt, OutError)) {
+        return false;
+    }
+
+    *OutPath = promptPath;
+    return true;
+}
+
+auto BuildCopilotPromptArgument(std::optional<std::filesystem::path> InWorkingDir,
+                                const std::string& InPrompt,
+                                const std::string& InPurpose) -> std::string {
+    if (!InWorkingDir.has_value()) {
+        return InPrompt;
+    }
+
+    std::filesystem::path promptPath;
+    if (!WriteCopilotPromptFile(*InWorkingDir, InPrompt, InPurpose, &promptPath)) {
+        return InPrompt;
+    }
+
+    auto refPath = promptPath.lexically_relative(*InWorkingDir);
+    if (refPath.empty()) {
+        refPath = promptPath.lexically_normal();
+    }
+    return std::format(
+        "Read @{} and follow it exactly. Treat that file as the complete task. Do not ask clarifying questions. Output only the final answer required by that file.",
+        refPath.generic_string());
 }
 
 auto IsTruthyEnv(const char* InValue) -> bool {
@@ -592,7 +710,7 @@ auto ResolveProvider(const std::string& InProviderRaw) -> std::string {
         return provider;
     }
 
-    if (HasCommand("copilot", {"--help"}) || HasCommand("gh", {"copilot", "--version"})) {
+    if (HasStandaloneCopilotCommand() || HasCommand("gh", {"copilot", "--version"})) {
         return "copilot";
     }
     if (HasCommand("codex", {"--help"})) {
@@ -639,83 +757,6 @@ auto ResolveGlobalCacheRoot() -> std::filesystem::path {
     return (home / ".kano" / "cache" / "git").lexically_normal();
 }
 
-auto AiCacheDir() -> std::filesystem::path {
-    const auto root = ResolveGlobalCacheRoot();
-    if (root.empty()) {
-        return {};
-    }
-    return (root / "ai").lexically_normal();
-}
-
-auto ModelCacheFilePath(const std::string& InProvider) -> std::filesystem::path {
-    if (InProvider.empty()) {
-        return {};
-    }
-    auto provider = ToLower(Trim(InProvider));
-    if (provider.empty()) {
-        return {};
-    }
-    return AiCacheDir() / ("last-model-" + provider + ".txt");
-}
-
-auto ReadRememberedModel(const std::string& InProvider) -> std::string {
-    const auto cacheFile = ModelCacheFilePath(InProvider);
-    if (!cacheFile.empty() && std::filesystem::exists(cacheFile)) {
-        std::ifstream in(cacheFile);
-        if (!in) {
-            return {};
-        }
-
-        std::string line;
-        std::getline(in, line);
-        return Trim(line);
-    }
-
-    const auto home = HomeDirectory();
-    if (home.empty()) {
-        return {};
-    }
-    const auto legacyFile = (home / ".cache" / "kano-git-master-skill" / "ai" / ("last-model-" + ToLower(Trim(InProvider)) + ".txt")).lexically_normal();
-    if (!std::filesystem::exists(legacyFile)) {
-        return {};
-    }
-
-    std::ifstream in(legacyFile);
-    if (!in) {
-        return {};
-    }
-    std::string line;
-    std::getline(in, line);
-    return Trim(line);
-}
-
-void RememberModelChoice(const std::string& InProvider, const std::string& InModel) {
-    const auto provider = ToLower(Trim(InProvider));
-    auto model = Trim(InModel);
-    if (provider.empty() || model.empty()) {
-        return;
-    }
-    const auto normalizedKeyword = NormalizeAiModelKeyword(model);
-    if (normalizedKeyword == "auto" || normalizedKeyword == "provider-default") {
-        model = normalizedKeyword;
-    }
-
-    const auto cacheDir = AiCacheDir();
-    const auto cacheFile = ModelCacheFilePath(provider);
-    if (cacheDir.empty() || cacheFile.empty()) {
-        return;
-    }
-
-    std::error_code ec;
-    std::filesystem::create_directories(cacheDir, ec);
-
-    std::ofstream out(cacheFile, std::ios::trunc);
-    if (!out) {
-        return;
-    }
-    out << model << "\n";
-}
-
 auto ResolveModelForAi(const std::string& InProvider,
                        const std::string& InModelRaw,
                        bool InAiAuto,
@@ -760,27 +801,10 @@ auto ResolveModelForAi(const std::string& InProvider,
     };
 
     if (!model.empty() && modelLower != "auto") {
-        RememberModelChoice(provider, model);
         if (modelLower == "provider-default") {
             return resolveDefaultModel();
         }
         return model;
-    }
-
-    auto remembered = ReadRememberedModel(provider);
-    if (!remembered.empty()) {
-        const auto rememberedLower = NormalizeAiModelKeyword(remembered);
-        if (rememberedLower == "provider-default") {
-            return resolveDefaultModel();
-        }
-        if (rememberedLower == "auto") {
-            return resolveAutoModel();
-        }
-        return remembered;
-    }
-
-    if (InAiAuto || modelLower == "auto") {
-        return resolveAutoModel();
     }
 
     const auto configuredSelection = kog_config::ResolveDefaultAiModelSelection(provider,
@@ -796,6 +820,10 @@ auto ResolveModelForAi(const std::string& InProvider,
     }
     if (!Trim(configuredSelection).empty()) {
         return configuredSelection;
+    }
+
+    if (InAiAuto || modelLower == "auto") {
+        return resolveAutoModel();
     }
 
     return {};
@@ -967,7 +995,8 @@ auto RunAiGenerate(const std::string& InProvider,
     }
 
     if (InProvider == "copilot") {
-        if (HasCommand("copilot", {"--help"})) {
+        const auto copilotPrompt = BuildCopilotPromptArgument(InWorkingDir, InPrompt, "commit-ai");
+        if (HasStandaloneCopilotCommand()) {
             std::vector<std::string> args{"-s"};
             if (!InModel.empty() && InModel != "auto") {
                 args.push_back("--model");
@@ -995,9 +1024,9 @@ auto RunAiGenerate(const std::string& InProvider,
             AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL_PATHS", "--allow-all-paths");
             AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL_URLS", "--allow-all-urls");
             AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL", "--allow-all");
-            args.insert(args.end(), {"--no-color", "--stream", "off", "--no-ask-user", "-p", InPrompt});
-            debugArgs("copilot", args);
-            return shell::ExecuteCommand("copilot", args, shell::ExecMode::Capture, InWorkingDir);
+            args.insert(args.end(), {"--no-color", "--stream", "off", "--no-ask-user", "-p", copilotPrompt});
+            debugArgs(CopilotStandaloneCommand(), args);
+            return ExecuteStandaloneCopilot(args, InWorkingDir);
         }
 
         if (HasCommand("gh", {"copilot", "--version"})) {
@@ -1028,7 +1057,7 @@ auto RunAiGenerate(const std::string& InProvider,
             AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL_PATHS", "--allow-all-paths");
             AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL_URLS", "--allow-all-urls");
             AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL", "--allow-all");
-            args.insert(args.end(), {"--no-color", "--stream", "off", "--no-ask-user", "-p", InPrompt});
+            args.insert(args.end(), {"--no-color", "--stream", "off", "--no-ask-user", "-p", copilotPrompt});
             debugArgs("gh", args);
             return shell::ExecuteCommand("gh", args, shell::ExecMode::Capture, InWorkingDir);
         }
@@ -3832,7 +3861,7 @@ void RegisterCommit(CLI::App& InApp) {
     cmd->add_option("--ai-model", *model, "AI model to use");
 
     auto* bAiAuto = new bool{false};
-    cmd->add_flag("--ai-auto", *bAiAuto, "Enable AI auto mode (auto provider/model with remembered model preference)");
+    cmd->add_flag("--ai-auto", *bAiAuto, "Enable AI auto mode (provider auto + layered kog_config model selection)");
 
     // Message option
     auto* message = new std::string{};
@@ -4212,7 +4241,7 @@ void RegisterAmend(CLI::App& InApp) {
     cmd->add_option("--ai-model", *model, "AI model to use");
 
     auto* bAiAuto = new bool{false};
-    cmd->add_flag("--ai-auto", *bAiAuto, "Enable AI auto mode (auto provider/model with remembered model preference)");
+    cmd->add_flag("--ai-auto", *bAiAuto, "Enable AI auto mode (provider auto + layered kog_config model selection)");
 
     auto* message = new std::string{};
     cmd->add_option("--message,-m", *message, "Amend commit message (skips AI generation)");
