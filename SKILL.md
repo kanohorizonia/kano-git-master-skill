@@ -612,6 +612,33 @@ For full operational rules, see:
 
 **Features:** Batch updates, manifest support, type filtering, error handling
 
+### Canonical workspace state
+
+- Canonical repo inventory/state file: `.kano/cache/git/workspace-manifest.json`
+- Current schema uses one top-level `repos` array only.
+- Each repo entry carries both inventory fields and scan metadata fields:
+  - `path`, `type`
+  - `current_branch`, `remotes`, `has_changes`, `dependencies`
+- Top-level trust metadata stays separate in `gitmodules_fingerprints`.
+- Top-level scan metadata stays separate in `discovery_state`.
+- Do not reintroduce duplicated repo arrays under separate manifest/cache sections.
+
+### CPA session behavior note
+
+- Human-mode `./kog cpa` may cause Copilot Chat to create a new chat session for each run.
+- Treat this as a current tooling limitation.
+- Prefer file-backed prompts and externalized workspace state so CPA does not depend on chat-session continuity.
+
+### CPA hardening lessons
+
+- Human-mode `cpa` and agent-mode `cpa` are materially different paths and should not be documented or debugged as if they were the same execution route.
+- For provider-driven plan/commit fill, use file-backed prompts rather than large inline prompt strings.
+- Copilot/Codex CLI automation on Windows must account for npm shim executables (`copilot.cmd`, `codex.cmd`).
+- Codex non-interactive execution should use `codex exec`.
+- The current canonical workspace-state file is `.kano/cache/git/workspace-manifest.json`, while the shared plan file remains `.kano/tmp/git/plans/default-plan.json`.
+- The workspace-state schema now keeps one top-level `repos` array only; do not split repo inventory across multiple sections.
+- Native commit staging on Windows must guard against reserved device filenames breaking `git add`.
+
 ### foreach-repo.sh
 
 ```bash

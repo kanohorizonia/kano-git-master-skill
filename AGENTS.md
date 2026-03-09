@@ -294,17 +294,40 @@ Note: sourcing will also define globals used by those functions (see the script 
   - if introduced by `kog clone`, update manifest directly
   - if introduced by manual `git clone`, require explicit `kog discover` full scan to import them
 - Avoid rebuilding a complex partial invalidation graph when a manifest-trust + full-scan fallback model is sufficient.
+- Current canonical workspace-state design:
+  - single canonical file: `.kano/cache/git/workspace-manifest.json`
+  - single top-level `repos` array only; do not duplicate repo inventory under separate manifest/cache sections
+  - keep `gitmodules_fingerprints` as top-level trust metadata
+  - keep `discovery_state` as top-level scan metadata (`generated_epoch`, `gitmodules_mtime`, `marker`)
 
 ### Cache writes need cross-process coordination
-- Shared runtime state under `.kano/tmp/git/*`, canonical workspace state under `.kano/cache/git/workspace-manifest.json`, and discovery cache under `.kano/cache/git/discover-repos/*` require:
+- Shared runtime state under `.kano/tmp/git/*` and canonical workspace state under `.kano/cache/git/workspace-manifest.json` require:
   - atomic write (temp file + rename)
   - per-resource cross-process lock
   - stale-lock cleanup path
 - Default shared resources include:
   - workspace manifest under `.kano/cache/git/workspace-manifest.json`
-  - discover cache under `.kano/cache/git/discover-repos/`
   - shared default plan under `.kano/tmp/git/plans/`
 - Prefer lock files/directories plus cleanup/inspection commands over broad global locks or implicit best-effort writes.
+
+### Human CPA Copilot session behavior
+- Observed dogfood behavior: each human-mode `cpa` run may create a new Copilot chat session.
+- Treat this as a current tooling limitation, not as a reason to rely on session continuity.
+- Design prompt/state plumbing so human `cpa` can succeed even when each run starts from a fresh Copilot chat session.
+
+### Provider subprocess pitfalls discovered during CPA hardening
+- For CLI-driven Copilot/Codex prompting, prefer file-backed prompts and a short wrapper prompt that references `@file` content.
+- Do not rely on `.github/prompts/*.prompt.md` for CLI automation; that mechanism is IDE-facing, not the reliable non-interactive CLI path.
+- On Windows, standalone `copilot` and `codex` may resolve to npm shim executables (`copilot.cmd`, `codex.cmd`).
+- Native subprocess execution must handle `.cmd`/`.bat` through the Windows command processor; direct exec assumptions are brittle.
+- Current Codex CLI contract for non-interactive execution is `codex exec`; older `codex -q` assumptions are stale.
+
+### CPA / staging pitfalls discovered during dogfood
+- Human-mode `cpa` and agent-mode `cpa` both need deterministic continuity anchored in files, not editor chat state.
+- The canonical shared plan path remains `.kano/tmp/git/plans/default-plan.json`; workspace inventory/state is separate under `.kano/cache/git/workspace-manifest.json`.
+- Windows reserved device names such as `NUL`, `CON`, `PRN`, `AUX`, `COM1`-`COM9`, and `LPT1`-`LPT9` can break `git add -A` and must be excluded during native auto-stage flows.
+- A literal untracked file named `NUL` can be created accidentally from shell redirection patterns in Git Bash and will derail commit staging unless handled explicitly.
+- `commit_generation_mode` should default to `single`, including native fallback behavior when config is absent or unreadable.
 
 ### Dogfood evidence should be visible without source archaeology
 - User-facing guide/help should expose important workflow contracts such as:
