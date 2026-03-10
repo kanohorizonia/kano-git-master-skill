@@ -29,6 +29,7 @@ void RegisterAll(CLI::App& InApp) {
     RegisterPush(InApp);
     RegisterRepo(InApp);
     RegisterRemote(InApp);
+    RegisterReset(InApp);
     RegisterResolve(InApp);
     RegisterSelf(InApp);
     RegisterScalar(InApp);

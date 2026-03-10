@@ -27,6 +27,7 @@ void RegisterSelf(CLI::App& InApp);
 void RegisterSync(CLI::App& InApp);
 void RegisterPush(CLI::App& InApp);
 void RegisterRepo(CLI::App& InApp);
+void RegisterReset(CLI::App& InApp);
 void RegisterWorktree(CLI::App& InApp);
 void RegisterSubtree(CLI::App& InApp);
 void RegisterSubmodule(CLI::App& InApp);

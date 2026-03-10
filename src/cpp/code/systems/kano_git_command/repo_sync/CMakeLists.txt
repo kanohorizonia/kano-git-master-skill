@@ -4,6 +4,7 @@ target_sources(kano_git_cmd_repo_sync
   PRIVATE
     private/foreach_cmd.cpp
     private/push_cmd.cpp
+    private/reset_cmd.cpp
     private/remote_cmd.cpp
     private/submodule_cmd.cpp
     private/subtree_cmd.cpp
