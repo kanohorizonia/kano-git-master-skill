@@ -169,7 +169,10 @@ function Get-PathRiskReport([string]$InRoot, [string]$InPreset, [int]$InPathLimi
   $estimateCandidates = @(
     ("build\_intermediate\" + $InPreset + "\CMakeFiles\kano_git_core.dir\commands\private\commands\commit_push_cmd.cpp.obj"),
     ("build\_intermediate\" + $InPreset + "\CMakeFiles\kano_git_core.dir\commands\private\commands\plan_cmd.cpp.obj"),
-    ("build\_intermediate\" + $InPreset + "\CMakeFiles\kano_git_core.dir\commands\private\commands\sync_cmd.cpp.obj")
+    ("build\_intermediate\" + $InPreset + "\CMakeFiles\kano_git_core.dir\commands\private\commands\sync_cmd.cpp.obj"),
+    ("build\_intermediate\" + $InPreset + "\code\systems\kano_git_test_core\CMakeFiles\kano_git_test_core.dir\Release\generators\private\command_string_generator.cpp.obj.modmap"),
+    ("build\_intermediate\" + $InPreset + "\code\systems\kano_git_command\commit_plan\CMakeFiles\kano_git_cmd_commit_plan.dir\Release\private\commit_push_cmd.cpp.obj.modmap"),
+    ("build\_intermediate\" + $InPreset + "\code\tests\kano_git_tui_tests\CMakeFiles\kano_git_tui_tests.dir\Release\property\test_command_executor_properties.cpp.obj.modmap")
   )
   $estimatedLongestPath = $root
   $estimatedLongestLength = $root.Length
@@ -213,11 +216,6 @@ function Prepare-SubstRoot([string]$InRoot, [string]$InPreset, [string]$InPrefer
   }
 
   $longPathsEnabled = Get-LongPathsEnabled
-  if ($longPathsEnabled) {
-    # Long paths are enabled system-wide; prefer native long-path support over subst indirection.
-    Write-Output ($root + $tab + $tab + "0")
-    return
-  }
 
   $risk = Get-PathRiskReport -InRoot $root -InPreset $InPreset -InPathLimit $pathLimit
 
@@ -288,7 +286,7 @@ function Prepare-SubstRoot([string]$InRoot, [string]$InPreset, [string]$InPrefer
   if ($risk.ExceedsLimit) {
     Write-Error ("No available drive letter for SUBST while path risk exceeds limit.")
     Write-Error ("Root: " + $risk.Root)
-    Write-Error ("LongPathsEnabled: 0")
+    Write-Error ("LongPathsEnabled: " + $(if ($longPathsEnabled) { "1" } else { "0" }))
     Write-Error ("PathLimit: " + $risk.PathLimit)
     Write-Error ("CurrentLongestLength: " + $risk.CurrentLongestLength)
     Write-Error ("CurrentLongestPath: " + $risk.CurrentLongestPath)
