@@ -2016,17 +2016,25 @@ void RegisterSync(CLI::App& InApp) {
     });
 
     // --- sync stable-dev ---
-    auto* stable_dev = cmd->add_subcommand("stable-dev", "Stable-dev sync (tag-based cherry-pick migration)");
+    auto* stable_dev = cmd->add_subcommand(
+        "stable-dev",
+        "Stable-dev sync: fetch upstream tags, rebase current stable branch onto latest stable tag, and retarget to branch_<latestTag> when needed");
     stable_dev->allow_extras();
     auto* stableDevWorkspace = new bool{false};
     auto* stableDevReportFormat = new std::string{"compact"};
     auto* stableDevRepo = new std::string{"."};
     auto* stableDevDryRun = new bool{false};
     auto* stableDevProfile = new bool{false};
-    stable_dev->add_flag("--workspace", *stableDevWorkspace, "Run stable-dev across src/* submodules with aggregated summary report");
+    stable_dev->add_flag(
+        "--workspace",
+        *stableDevWorkspace,
+        "Run stable-dev across src/* submodules with upstream remotes; may leave repos in rebase conflict state until resolved");
     stable_dev->add_option("--format", *stableDevReportFormat, "Workspace report format: compact|table|tsv|json|markdown");
     stable_dev->add_option("--repo", *stableDevRepo, "Single-repo mode target path");
-    stable_dev->add_flag("--dry-run", *stableDevDryRun, "Preview stable-dev sync actions");
+    stable_dev->add_flag(
+        "--dry-run",
+        *stableDevDryRun,
+        "Preview fetch/tag/rebase/branch-retarget actions without modifying repos");
     stable_dev->add_flag("--profile", *stableDevProfile, "Print native sync timing/profile summary");
     stable_dev->callback([=]() {
         const auto start = std::chrono::steady_clock::now();
