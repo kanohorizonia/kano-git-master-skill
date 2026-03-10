@@ -1849,7 +1849,7 @@ auto RunNativeUpstreamForcePush(
 } // namespace
 
 void RegisterSync(CLI::App& InApp) {
-    auto* cmd = InApp.add_subcommand("sync", "Repository synchronization workflows (serial policy is parent-first)");
+    auto* cmd = InApp.add_subcommand("sync", "Pipeline sync stage (origin-latest by default) plus specialized sync workflows");
 
     // --- sync pre-commit ---
     auto* pre_commit = cmd->add_subcommand("pre-commit", "Repair detached HEAD before commit workflow");

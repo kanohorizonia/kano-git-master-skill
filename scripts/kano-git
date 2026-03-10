@@ -1135,6 +1135,7 @@ Launcher commands:
     --yes                             Skip interactive confirmation for --apply
   pi ...                              Alias of plan new ...
   pia ...                             Alias of plan new --ai-auto ...
+  ca ...                              Alias of commit --ai-auto
   cp ...                              Alias of commit-push (non-AI; no implicit --ai-auto)
   cpa ...                             Alias of commit-push --ai-auto
                                       AI planning/preflight/apply is handled by native command layer.
@@ -1280,7 +1281,9 @@ main() {
   # Native alias routing is expected to handle this, but current native parser path
   # does not accept cp/cpa consistently. Keep shell behavior aligned with help text
   # until the native alias path is corrected.
-  if [[ "${exec_args[0]:-}" == "cp" ]]; then
+  if [[ "${exec_args[0]:-}" == "ca" ]]; then
+    exec_args=("commit" "--ai-auto" "${exec_args[@]:1}")
+  elif [[ "${exec_args[0]:-}" == "cp" ]]; then
     exec_args=("commit-push" "${exec_args[@]:1}")
   elif [[ "${exec_args[0]:-}" == "cpa" ]]; then
     if [[ "${KANO_AGENT_MODE:-0}" == "1" || "${KANO_AGENT_MODE:-}" == "true" ]]; then
