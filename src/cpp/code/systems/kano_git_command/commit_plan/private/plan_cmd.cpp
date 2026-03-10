@@ -321,6 +321,51 @@ auto HomeDirectory() -> std::filesystem::path {
     return {};
 }
 
+auto LoadOptionalCommitConventionSkillText(const std::filesystem::path& InWorkspaceRoot) -> std::optional<std::string> {
+    std::vector<std::filesystem::path> candidates;
+    candidates.emplace_back((InWorkspaceRoot / ".agents" / "kano" / "kano-commit-convention" / "SKILL.md").lexically_normal());
+    candidates.emplace_back((ResolveSkillRoot(InWorkspaceRoot).parent_path() / "kano-commit-convention" / "SKILL.md").lexically_normal());
+    if (const char* codexHome = std::getenv("CODEX_HOME"); codexHome != nullptr && *codexHome != '\0') {
+        const auto root = std::filesystem::path(codexHome).lexically_normal();
+        candidates.emplace_back((root / "skills" / "kano-commit-convention" / "SKILL.md").lexically_normal());
+        candidates.emplace_back((root / "skills" / ".system" / "kano-commit-convention" / "SKILL.md").lexically_normal());
+    }
+    if (const auto home = HomeDirectory(); !home.empty()) {
+        candidates.emplace_back((home / ".codex" / "skills" / "kano-commit-convention" / "SKILL.md").lexically_normal());
+        candidates.emplace_back((home / ".codex" / "skills" / ".system" / "kano-commit-convention" / "SKILL.md").lexically_normal());
+        candidates.emplace_back((home / ".kano" / "skills" / "kano-commit-convention" / "SKILL.md").lexically_normal());
+    }
+    if (const char* custom = std::getenv("KOG_COMMIT_CONVENTION_SKILL_MD"); custom != nullptr && *custom != '\0') {
+        candidates.emplace_back(std::filesystem::path(custom).lexically_normal());
+    }
+
+    for (const auto& candidate : candidates) {
+        if (std::error_code ec; std::filesystem::exists(candidate, ec) && !ec) {
+            if (const auto text = ReadFileText(candidate); text.has_value()) {
+                return *text;
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+auto AppendCommitConventionSkillSection(const std::filesystem::path& InWorkspaceRoot,
+                                        std::string InPrompt) -> std::string {
+    const auto skillText = LoadOptionalCommitConventionSkillText(InWorkspaceRoot);
+    if (!skillText.has_value() || Trim(*skillText).empty()) {
+        return InPrompt;
+    }
+
+    InPrompt += "\n\nFollow this commit convention skill when generating or reviewing commit plan content:\n";
+    InPrompt += "--- BEGIN kano-commit-convention/SKILL.md ---\n";
+    InPrompt += *skillText;
+    if (!InPrompt.empty() && InPrompt.back() != '\n') {
+        InPrompt += '\n';
+    }
+    InPrompt += "--- END kano-commit-convention/SKILL.md ---\n";
+    return InPrompt;
+}
+
 auto CountWorkspaceDirtyEntries(const std::filesystem::path& InRoot) -> int {
     auto countRepoDirtyEntries = [](const std::filesystem::path& InRepo) -> int {
         int total = 0;
@@ -1260,14 +1305,14 @@ auto BuildPlanPrompt(const std::filesystem::path& InRoot,
         prompt = ReplaceAll(std::move(prompt), "{{MODEL}}", InModel);
         prompt = ReplaceAll(std::move(prompt), "{{TEMPLATE_JSON}}", InTemplateJson);
         prompt = ReplaceAll(std::move(prompt), "{{DIRTY_CONTEXT}}", InDirtyContext);
-        return prompt;
+        return AppendCommitConventionSkillSection(InRoot, std::move(prompt));
     }
     std::ostringstream fallback;
     fallback << "You are generating a complete plan JSON for kano-git.\n";
     fallback << "Return STRICT JSON ONLY between markers:\nBEGIN_KOG_PLAN_JSON\n<json>\nEND_KOG_PLAN_JSON\n\n";
     fallback << "Template JSON:\n" << InTemplateJson << "\n\n";
     fallback << "Workspace dirty context:\n" << InDirtyContext << "\n";
-    return fallback.str();
+    return AppendCommitConventionSkillSection(InRoot, fallback.str());
 }
 
 auto BuildPlanFillOpsPrompt(const std::filesystem::path& InRoot,
@@ -1298,7 +1343,7 @@ auto BuildPlanFillOpsPrompt(const std::filesystem::path& InRoot,
         prompt = ReplaceAll(std::move(prompt), "{{PLAN_PATH_ABSOLUTE}}", absolutePlanPath.string());
         prompt = ReplaceAll(std::move(prompt), "{{PLAN_JSON}}", InPlanJson);
         prompt = ReplaceAll(std::move(prompt), "{{DIRTY_CONTEXT}}", InDirtyContext);
-        return prompt;
+        return AppendCommitConventionSkillSection(InRoot, std::move(prompt));
     }
 
     std::ostringstream prompt;
@@ -1347,7 +1392,7 @@ auto BuildPlanFillOpsPrompt(const std::filesystem::path& InRoot,
     prompt << "- Do not mention hidden/external tools; only reason from provided plan+dirty context.\n\n";
     prompt << "Current plan JSON:\n" << InPlanJson << "\n\n";
     prompt << "Workspace dirty context:\n" << InDirtyContext << "\n";
-    return prompt.str();
+    return AppendCommitConventionSkillSection(InRoot, prompt.str());
 }
 
 auto BuildFillOpsRetryPrompt(const std::string& InBasePrompt,
@@ -2260,7 +2305,7 @@ auto BuildSingleCommitFillPrompt(const std::filesystem::path& InWorkspaceRoot,
         prompt = ReplaceAll(std::move(prompt), "{{ENTRY_INDEX}}", std::to_string(InEntry.index));
         prompt = ReplaceAll(std::move(prompt), "{{TARGET_ENTRY_JSON}}", targetEntry.str());
         prompt = ReplaceAll(std::move(prompt), "{{DIRTY_CONTEXT}}", InDirtyContext);
-        return prompt;
+        return AppendCommitConventionSkillSection(InWorkspaceRoot, std::move(prompt));
     }
 
     std::ostringstream prompt;
@@ -2274,7 +2319,7 @@ auto BuildSingleCommitFillPrompt(const std::filesystem::path& InWorkspaceRoot,
     prompt << "- Provider=" << InProvider << " model=" << (InModel.empty() ? "auto" : InModel) << "\\n\\n";
     prompt << "Target commit entry:\\n" << targetEntry.str() << "\\n";
     prompt << "Workspace dirty context:\\n" << InDirtyContext << "\\n";
-    return prompt.str();
+    return AppendCommitConventionSkillSection(InWorkspaceRoot, prompt.str());
 }
 
 auto ReplaceArrayBodyForKey(const std::string& InText, const std::string& InKey, const std::string& InNewBody) -> std::optional<std::string> {

@@ -835,7 +835,7 @@ auto RunPushNativeSimple(const std::filesystem::path& InWorkspaceRoot,
 }
 
 void RegisterPush(CLI::App& InApp) {
-    auto* cmd = InApp.add_subcommand("push", "Multi-remote push workflow");
+    auto* cmd = InApp.add_subcommand("push", "Pipeline push stage (push only by default; no implicit sync)");
     cmd->allow_extras();
 
     auto* shellMode = new bool{false};
@@ -843,6 +843,7 @@ void RegisterPush(CLI::App& InApp) {
     auto* repos = new std::string{};
     auto* repoRoot = new std::string{};
     auto* target = new std::string{};
+    auto* withSync = new bool{false};
     auto* skipSync = new bool{false};
     auto* fetchOnly = new bool{false};
     auto* dryRun = new bool{false};
@@ -862,14 +863,15 @@ void RegisterPush(CLI::App& InApp) {
     cmd->add_option("--repos", *repos, "Repo filter (comma-separated paths, native mode)");
     cmd->add_option("--repo-root", *repoRoot, "Workspace root/start path used for repo-name lookup");
     cmd->add_option("target", *target, "Optional repo target root (repo name or relative path)")->required(false);
-    cmd->add_flag("--skip-sync", *skipSync, "Skip sync step before push");
-    cmd->add_flag("--fetch-only", *fetchOnly, "Run fetch only (skip rebase and push)");
+    cmd->add_flag("--with-sync", *withSync, "Run legacy sync-before-push behavior");
+    cmd->add_flag("--skip-sync", *skipSync, "Deprecated compatibility flag; push already skips sync by default");
+    cmd->add_flag("--fetch-only", *fetchOnly, "Run fetch only (legacy sync path; implies --with-sync)");
     cmd->add_flag("--dry-run", *dryRun, "Preview push operations");
     cmd->add_flag("--force-with-lease", *forceWithLease, "Use force-with-lease for push");
     cmd->add_flag("--no-verify", *noVerify, "Pass --no-verify to git push");
     cmd->add_flag("--no-smart-sync", *noSmartSync, "Compatibility flag (native uses simple pull --rebase)");
-    cmd->add_flag("--stash-local-changes", *stashLocalChanges, "Auto-stash local changes during native sync");
-    cmd->add_flag("--fail-on-dirty-sync", *failOnDirtySync, "Fail native sync when local changes exist");
+    cmd->add_flag("--stash-local-changes", *stashLocalChanges, "Auto-stash local changes during legacy sync-before-push");
+    cmd->add_flag("--fail-on-dirty-sync", *failOnDirtySync, "Fail legacy sync-before-push when local changes exist");
     cmd->add_option("--jobs", *jobs, "Number of parallel repo workers for native push (default: CPU cores)");
     cmd->add_flag("--profile", *profile, "Print native push timing/profile summary");
     cmd->add_flag("--verbose", *verbose, "Show detailed native push output including partial failures");
@@ -920,8 +922,21 @@ void RegisterPush(CLI::App& InApp) {
             std::exit(1);
         }
 
-        if (*fetchOnly && *skipSync) {
-            std::cerr << "Error: --fetch-only cannot be used with --skip-sync\n";
+        const bool legacySyncRequested = *withSync || *fetchOnly || *stashLocalChanges || *failOnDirtySync;
+        const bool effectiveSkipSync = !legacySyncRequested || *skipSync;
+
+        if (*withSync && *skipSync) {
+            std::cerr << "Error: --with-sync cannot be combined with --skip-sync\n";
+            std::exit(1);
+        }
+
+        if (*fetchOnly && effectiveSkipSync) {
+            std::cerr << "Error: --fetch-only requires sync path; use --with-sync and remove --skip-sync\n";
+            std::exit(1);
+        }
+
+        if ((*stashLocalChanges || *failOnDirtySync) && effectiveSkipSync) {
+            std::cerr << "Error: sync-only flags require --with-sync\n";
             std::exit(1);
         }
 
@@ -932,7 +947,7 @@ void RegisterPush(CLI::App& InApp) {
 
         const auto code = RunNativePush(
             nativeRepos,
-            *skipSync,
+            effectiveSkipSync,
             *fetchOnly,
             *dryRun,
             *forceWithLease,

@@ -5,6 +5,7 @@
 #include "shell_executor.hpp"
 #include "auto_model_policy.hpp"
 #include "kog_config.hpp"
+#include "command_runtime_ops.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -56,6 +57,7 @@ auto DisplayRepoLabel(const std::filesystem::path& InWorkspaceRoot, const std::f
 auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<std::filesystem::path>;
 auto ReadFileText(const std::filesystem::path& InPath) -> std::optional<std::string>;
 auto ResolveSkillRoot(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path;
+auto HomeDirectory() -> std::filesystem::path;
 auto Fnv1a64Hex(const std::string& InText) -> std::string;
 auto RunCommitPreflight(const std::filesystem::path& InRepo) -> CommitPreflightReport;
 
@@ -119,6 +121,23 @@ auto NormalizeAiModelKeyword(const std::string& InValue) -> std::string {
     return kog_config::NormalizeAiModelSelection(InValue);
 }
 
+auto WasOptionExplicitlyPassed(const std::string& InLongFlag) -> bool {
+#if defined(_WIN32)
+    const int argc = *__p___argc();
+    char** argv = *__p___argv();
+    for (int idx = 1; idx < argc; ++idx) {
+        const std::string arg = argv[idx] == nullptr ? "" : std::string(argv[idx]);
+        if (arg == InLongFlag) {
+            return true;
+        }
+        if (arg.rfind(InLongFlag + "=", 0) == 0) {
+            return true;
+        }
+    }
+#endif
+    return false;
+}
+
 auto ReplaceAll(std::string InText, const std::string& InFrom, const std::string& InTo) -> std::string {
     if (InFrom.empty()) {
         return InText;
@@ -151,6 +170,51 @@ auto LoadPromptAssetText(const std::filesystem::path& InWorkspaceRoot,
         }
     }
     return std::nullopt;
+}
+
+auto LoadOptionalCommitConventionSkillText(const std::filesystem::path& InWorkspaceRoot) -> std::optional<std::string> {
+    std::vector<std::filesystem::path> candidates;
+    candidates.emplace_back((InWorkspaceRoot / ".agents" / "kano" / "kano-commit-convention" / "SKILL.md").lexically_normal());
+    candidates.emplace_back((ResolveSkillRoot(InWorkspaceRoot).parent_path() / "kano-commit-convention" / "SKILL.md").lexically_normal());
+    if (const char* codexHome = std::getenv("CODEX_HOME"); codexHome != nullptr && std::string(codexHome).size() > 0) {
+        const auto root = std::filesystem::path(codexHome).lexically_normal();
+        candidates.emplace_back((root / "skills" / "kano-commit-convention" / "SKILL.md").lexically_normal());
+        candidates.emplace_back((root / "skills" / ".system" / "kano-commit-convention" / "SKILL.md").lexically_normal());
+    }
+    if (const auto home = HomeDirectory(); !home.empty()) {
+        candidates.emplace_back((home / ".codex" / "skills" / "kano-commit-convention" / "SKILL.md").lexically_normal());
+        candidates.emplace_back((home / ".codex" / "skills" / ".system" / "kano-commit-convention" / "SKILL.md").lexically_normal());
+        candidates.emplace_back((home / ".kano" / "skills" / "kano-commit-convention" / "SKILL.md").lexically_normal());
+    }
+    if (const char* custom = std::getenv("KOG_COMMIT_CONVENTION_SKILL_MD"); custom != nullptr && std::string(custom).size() > 0) {
+        candidates.emplace_back(std::filesystem::path(custom).lexically_normal());
+    }
+
+    for (const auto& candidate : candidates) {
+        if (std::error_code ec; std::filesystem::exists(candidate, ec) && !ec) {
+            if (const auto text = ReadFileText(candidate); text.has_value()) {
+                return *text;
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+auto AppendCommitConventionSkillSection(const std::filesystem::path& InWorkspaceRoot,
+                                        std::string InPrompt) -> std::string {
+    const auto skillText = LoadOptionalCommitConventionSkillText(InWorkspaceRoot);
+    if (!skillText.has_value()) {
+        return InPrompt;
+    }
+
+    InPrompt += "\n\nFollow this commit convention skill when generating or reviewing the commit message:\n";
+    InPrompt += "--- BEGIN kano-commit-convention/SKILL.md ---\n";
+    InPrompt += *skillText;
+    if (!InPrompt.empty() && InPrompt.back() != '\n') {
+        InPrompt += '\n';
+    }
+    InPrompt += "--- END kano-commit-convention/SKILL.md ---\n";
+    return InPrompt;
 }
 
 auto LooksRiskyPath(const std::string& InPath) -> bool {
@@ -974,75 +1038,6 @@ auto AiCacheDir() -> std::filesystem::path {
     return (root / "ai").lexically_normal();
 }
 
-auto ModelCacheFilePath(const std::string& InProvider) -> std::filesystem::path {
-    if (InProvider.empty()) {
-        return {};
-    }
-    auto provider = ToLower(Trim(InProvider));
-    if (provider.empty()) {
-        return {};
-    }
-    return AiCacheDir() / ("last-model-" + provider + ".txt");
-}
-
-auto ReadRememberedModel(const std::string& InProvider) -> std::string {
-    const auto cacheFile = ModelCacheFilePath(InProvider);
-    if (!cacheFile.empty() && std::filesystem::exists(cacheFile)) {
-        std::ifstream in(cacheFile);
-        if (!in) {
-            return {};
-        }
-
-        std::string line;
-        std::getline(in, line);
-        return Trim(line);
-    }
-
-    const auto home = HomeDirectory();
-    if (home.empty()) {
-        return {};
-    }
-    const auto legacyFile = (home / ".cache" / "kano-git-master-skill" / "ai" / ("last-model-" + ToLower(Trim(InProvider)) + ".txt")).lexically_normal();
-    if (!std::filesystem::exists(legacyFile)) {
-        return {};
-    }
-
-    std::ifstream in(legacyFile);
-    if (!in) {
-        return {};
-    }
-    std::string line;
-    std::getline(in, line);
-    return Trim(line);
-}
-
-void RememberModelChoice(const std::string& InProvider, const std::string& InModel) {
-    const auto provider = ToLower(Trim(InProvider));
-    auto model = Trim(InModel);
-    if (provider.empty() || model.empty()) {
-        return;
-    }
-    const auto normalizedKeyword = NormalizeAiModelKeyword(model);
-    if (normalizedKeyword == "auto" || normalizedKeyword == "provider-default") {
-        model = normalizedKeyword;
-    }
-
-    const auto cacheDir = AiCacheDir();
-    const auto cacheFile = ModelCacheFilePath(provider);
-    if (cacheDir.empty() || cacheFile.empty()) {
-        return;
-    }
-
-    std::error_code ec;
-    std::filesystem::create_directories(cacheDir, ec);
-
-    std::ofstream out(cacheFile, std::ios::trunc);
-    if (!out) {
-        return;
-    }
-    out << model << "\n";
-}
-
 auto ResolveModelForAi(const std::string& InProvider,
                        const std::string& InModelRaw,
                        bool InAiAuto,
@@ -1087,27 +1082,10 @@ auto ResolveModelForAi(const std::string& InProvider,
     };
 
     if (!model.empty() && modelLower != "auto") {
-        RememberModelChoice(provider, model);
         if (modelLower == "provider-default") {
             return resolveDefaultModel();
         }
         return model;
-    }
-
-    auto remembered = ReadRememberedModel(provider);
-    if (!remembered.empty()) {
-        const auto rememberedLower = NormalizeAiModelKeyword(remembered);
-        if (rememberedLower == "provider-default") {
-            return resolveDefaultModel();
-        }
-        if (rememberedLower == "auto") {
-            return resolveAutoModel();
-        }
-        return remembered;
-    }
-
-    if (InAiAuto || modelLower == "auto") {
-        return resolveAutoModel();
     }
 
     const auto configuredSelection = kog_config::ResolveDefaultAiModelSelection(provider,
@@ -1115,14 +1093,18 @@ auto ResolveModelForAi(const std::string& InProvider,
                                                                                 ResolveSkillRoot(InWorkspaceRoot),
                                                                                 "auto");
     const auto configuredLower = NormalizeAiModelKeyword(configuredSelection);
-    if (configuredLower == "provider-default") {
-        return resolveDefaultModel();
-    }
-    if (configuredLower == "auto") {
-        return resolveAutoModel();
-    }
     if (!Trim(configuredSelection).empty()) {
+        if (configuredLower == "provider-default") {
+            return resolveDefaultModel();
+        }
+        if (configuredLower == "auto") {
+            return resolveAutoModel();
+        }
         return configuredSelection;
+    }
+
+    if (InAiAuto || modelLower == "auto") {
+        return resolveAutoModel();
     }
 
     return {};
@@ -1149,7 +1131,7 @@ auto BuildAiCommitPrompt(const std::filesystem::path& InWorkspaceRoot,
         prompt = ReplaceAll(std::move(prompt), "{{UNSTAGED_COUNT}}", std::to_string(InReport.unstagedCount));
         prompt = ReplaceAll(std::move(prompt), "{{UNTRACKED_COUNT}}", std::to_string(InReport.untrackedCount));
         prompt = ReplaceAll(std::move(prompt), "{{STAGED_DIFF}}", diffText);
-        return prompt;
+        return AppendCommitConventionSkillSection(InWorkspaceRoot, std::move(prompt));
     }
 
     std::ostringstream oss;
@@ -1164,7 +1146,7 @@ auto BuildAiCommitPrompt(const std::filesystem::path& InWorkspaceRoot,
         << "Untracked: " << InReport.untrackedCount << "\n\n"
         << "Staged diff:\n"
         << diffText << "\n";
-    return oss.str();
+    return AppendCommitConventionSkillSection(InWorkspaceRoot, oss.str());
 }
 
 auto ExtractSingleLineMessage(const std::string& InText) -> std::string {
@@ -1227,7 +1209,9 @@ auto ExtractSingleLineMessage(const std::string& InText) -> std::string {
 auto RunAiGenerate(const std::string& InProvider,
                    const std::string& InModel,
                    const std::string& InPrompt,
-                   std::optional<std::filesystem::path> InWorkingDir = std::nullopt) -> shell::ExecResult {
+                   std::optional<std::filesystem::path> InWorkingDir = std::nullopt,
+                   const std::string& InPurpose = "commit-ai") -> shell::ExecResult {
+    const auto effectivePrompt = BuildFileBackedPromptArgument(InWorkingDir, InPrompt, InPurpose);
     if (InProvider == "opencode") {
         std::vector<std::string> args{"run"};
         AppendBoolFlag(&args, "KOG_OPENCODE_CONTINUE", "--continue");
@@ -1246,40 +1230,23 @@ auto RunAiGenerate(const std::string& InProvider,
             args.push_back("--model");
             args.push_back(InModel);
         }
-        args.push_back(InPrompt);
+        args.push_back(effectivePrompt);
         return shell::ExecuteCommand("opencode", args, shell::ExecMode::Capture, InWorkingDir);
     }
 
     if (InProvider == "codex") {
         if (IsTruthyEnv(std::getenv("KOG_CODEX_USE_EXEC"))) {
-            std::vector<std::string> args{"exec"};
-            AppendBoolFlag(&args, "KOG_CODEX_FULL_AUTO", "--full-auto");
-            AppendBoolFlag(&args, "KOG_CODEX_EPHEMERAL", "--ephemeral");
-            AppendBoolFlag(&args, "KOG_CODEX_JSON", "--json");
-            AppendSingleValueFlag(&args, "KOG_CODEX_SANDBOX", "--sandbox");
-            AppendSingleValueFlag(&args, "KOG_CODEX_APPROVAL", "--ask-for-approval");
-            AppendSingleValueFlag(&args, "KOG_CODEX_PROFILE", "--profile");
-            AppendRepeatableFlag(&args, "KOG_CODEX_ADD_DIRS", "--add-dir");
-            if (InWorkingDir.has_value()) {
-                args.push_back("--cd");
-                args.push_back(InWorkingDir->lexically_normal().generic_string());
-            }
-            if (!InModel.empty() && InModel != "auto") {
-                args.push_back("--model");
-                args.push_back(InModel);
-            }
-            args.push_back(InPrompt);
-            return shell::ExecuteCommand("codex", args, shell::ExecMode::Capture, InWorkingDir);
+            return ExecuteCodexExec(InWorkingDir, effectivePrompt, InPurpose, InModel);
         }
         if (!InModel.empty() && InModel != "auto") {
-            return shell::ExecuteCommand("codex", {"-q", "--model", InModel, InPrompt}, shell::ExecMode::Capture, InWorkingDir);
+            return shell::ExecuteCommand("codex", {"-q", "--model", InModel, effectivePrompt}, shell::ExecMode::Capture, InWorkingDir);
         }
-        return shell::ExecuteCommand("codex", {"-q", InPrompt}, shell::ExecMode::Capture, InWorkingDir);
+        return shell::ExecuteCommand("codex", {"-q", effectivePrompt}, shell::ExecMode::Capture, InWorkingDir);
     }
 
     if (InProvider == "copilot") {
         if (HasCommand("copilot", {"--help"})) {
-            std::vector<std::string> args{"-s", "-p", InPrompt};
+            std::vector<std::string> args{"-s", "-p", effectivePrompt};
             if (!InModel.empty() && InModel != "auto") {
                 args.push_back("--model");
                 args.push_back(InModel);
@@ -1311,7 +1278,7 @@ auto RunAiGenerate(const std::string& InProvider,
         }
 
         if (HasCommand("gh", {"copilot", "--version"})) {
-            std::vector<std::string> args{"copilot", "--", "-s", "-p", InPrompt};
+            std::vector<std::string> args{"copilot", "--", "-s", "-p", effectivePrompt};
             if (!InModel.empty() && InModel != "auto") {
                 args.push_back("--model");
                 args.push_back(InModel);
@@ -1374,7 +1341,7 @@ auto GenerateAiCommitMessage(const std::filesystem::path& InWorkspaceRoot,
     }
 
     const auto prompt = BuildAiCommitPrompt(InWorkspaceRoot, InRepo, InReport);
-    const auto out = RunAiGenerate(InAi.provider, InAi.model, prompt, InRepo);
+    const auto out = RunAiGenerate(InAi.provider, InAi.model, prompt, InRepo, "commit-message");
     if (out.exitCode != 0) {
         if (OutFailureReason != nullptr) {
             *OutFailureReason = SummarizeAiFailure(out);
@@ -1416,12 +1383,14 @@ auto ShouldBlockByAiReview(const std::filesystem::path& InRepo,
         prompt << "You are a commit safety reviewer.\n"
                << "Evaluate whether this commit message matches staged changes and is safe.\n"
                << "Respond with exactly one line: PASS or FAIL: <reason>.\n\n"
-               << "Message:\n" << InMessage << "\n\n"
-               << "Staged diff:\n" << stagedDiff << "\n";
+            << "Message:\n" << InMessage << "\n\n"
+            << "Staged diff:\n" << stagedDiff << "\n";
         promptText = prompt.str();
     }
 
-    const auto out = RunAiGenerate(InAi.provider, InAi.model, promptText, InRepo);
+    promptText = AppendCommitConventionSkillSection(std::filesystem::current_path().lexically_normal(), std::move(promptText));
+
+    const auto out = RunAiGenerate(InAi.provider, InAi.model, promptText, InRepo, "commit-review");
     if (out.exitCode != 0) {
         return false;
     }
@@ -2534,6 +2503,10 @@ auto ParseCommitPlanStage(const std::string& InValue) -> std::optional<CommitPla
     return std::nullopt;
 }
 
+auto PlanStageNeedsPreCommit(const CommitPlanStage InStage) -> bool {
+    return InStage == CommitPlanStage::Commit || InStage == CommitPlanStage::Both;
+}
+
 auto ParseCommitPlan(const std::filesystem::path& InFile,
                      std::string* OutError) -> std::optional<CommitPlanPayload> {
     const auto payload = ReadFileText(InFile);
@@ -2743,6 +2716,280 @@ auto ValidateCommitPlanForAiMode(const CommitPlanPayload& InPlan,
     }
 
     return true;
+}
+
+auto DefaultSharedPlanPath(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path {
+    if (const char* explicitPlan = std::getenv("KOG_PLAN_FILE"); explicitPlan != nullptr && *explicitPlan != '\0') {
+        return std::filesystem::path(explicitPlan).lexically_normal();
+    }
+    return (InWorkspaceRoot / ".kano" / "tmp" / "git" / "plans" / "default-plan.json").lexically_normal();
+}
+
+auto ResolveSelfBinaryCommand() -> std::string {
+    if (const char* binaryPath = std::getenv("KANO_GIT_BINARY_PATH"); binaryPath != nullptr) {
+        const std::filesystem::path p(binaryPath);
+        if (std::filesystem::exists(p)) {
+            return p.generic_string();
+        }
+    }
+#if defined(_WIN32)
+    return "kano-git.exe";
+#else
+    return "kano-git";
+#endif
+}
+
+void EmitCapturedSelfResult(const shell::ExecResult& InResult) {
+    if (!InResult.stdoutStr.empty()) {
+        std::cout << InResult.stdoutStr;
+        if (InResult.stdoutStr.back() != '\n') {
+            std::cout << '\n';
+        }
+    }
+    if (!InResult.stderrStr.empty()) {
+        std::cerr << InResult.stderrStr;
+        if (InResult.stderrStr.back() != '\n') {
+            std::cerr << '\n';
+        }
+    }
+}
+
+auto FinalizeNestedSelfResult(const char* InLabel, const shell::ExecResult& InResult) -> int {
+    EmitCapturedSelfResult(InResult);
+    const auto stderrLower = ToLower(InResult.stderrStr);
+    if (stderrLower.find("find_binary: command not found") != std::string::npos) {
+        std::cerr << "Error: " << InLabel
+                  << " hit nested launcher shell failure (`find_binary` leaked into sh); aborting.\n";
+        return InResult.exitCode != 0 ? InResult.exitCode : 127;
+    }
+    return InResult.exitCode;
+}
+
+struct CommitRunbookResult {
+    int exitCode = 0;
+    std::optional<long long> aiFillMillis;
+};
+
+auto ExtractPlanAiFillMillis(const shell::ExecResult& InResult) -> std::optional<long long> {
+    std::istringstream iss(InResult.stdoutStr + "\n" + InResult.stderrStr);
+    std::string line;
+    while (std::getline(iss, line)) {
+        const auto trimmed = Trim(line);
+        constexpr std::string_view kPrefix = "[plan] ai_fill_ms:";
+        if (!trimmed.starts_with(kPrefix)) {
+            continue;
+        }
+        const auto value = Trim(trimmed.substr(kPrefix.size()));
+        if (value.empty() || value == "n/a") {
+            return std::nullopt;
+        }
+        try {
+            return std::stoll(value);
+        } catch (const std::exception&) {
+        }
+    }
+    return std::nullopt;
+}
+
+auto RunPlanNewViaSelf(const std::filesystem::path& InWorkspaceRoot,
+                       const std::filesystem::path& InPlanPath) -> int {
+    std::vector<std::string> args = {
+        "plan", "new",
+        "--force",
+        "--output", InPlanPath.generic_string(),
+    };
+    const auto result = shell::ExecuteCommand(ResolveSelfBinaryCommand(), args, shell::ExecMode::Capture, InWorkspaceRoot);
+    const auto exitCode = FinalizeNestedSelfResult("plan new", result);
+    if (exitCode != 0) {
+        std::cerr << "Error: plan new failed via native binary (exit=" << exitCode << ").\n";
+    }
+    return exitCode;
+}
+
+auto RunIgnorePlanRunbookViaSelf(const std::filesystem::path& InWorkspaceRoot,
+                                 const std::filesystem::path& InPlanPath) -> int {
+    std::vector<std::string> args = {
+        "plan", "runbook", "ignore",
+        "--force",
+        "--plan-file", InPlanPath.generic_string(),
+    };
+    const auto result = shell::ExecuteCommand(ResolveSelfBinaryCommand(), args, shell::ExecMode::Capture, InWorkspaceRoot);
+    const auto exitCode = FinalizeNestedSelfResult("ignore runbook", result);
+    if (exitCode != 0) {
+        std::cerr << "Error: ignore runbook failed via native binary (exit=" << exitCode << ").\n";
+    }
+    return exitCode;
+}
+
+auto RunIgnorePlanApplyViaSelf(const std::filesystem::path& InWorkspaceRoot,
+                               const std::filesystem::path& InPlanPath) -> int {
+    std::vector<std::string> args = {
+        "plan", "apply", "--stage", "ignore",
+        "--plan-file", InPlanPath.generic_string(),
+    };
+    const auto result = shell::ExecuteCommand(ResolveSelfBinaryCommand(), args, shell::ExecMode::Capture, InWorkspaceRoot);
+    const auto combinedOutput = ToLower(result.stdoutStr + "\n" + result.stderrStr);
+    if (result.exitCode != 0 &&
+        combinedOutput.find("no ignore plan entries found in stages.ignore") != std::string::npos) {
+        EmitCapturedSelfResult(result);
+        std::cout << "[native-commit] ignore plan stage is empty; skipping ignore apply.\n";
+        return 0;
+    }
+    const auto exitCode = FinalizeNestedSelfResult("ignore apply", result);
+    if (exitCode != 0) {
+        std::cerr << "Error: ignore apply failed via native binary (exit=" << exitCode << ").\n";
+    }
+    return exitCode;
+}
+
+auto RunCommitPlanRunbookViaSelf(const std::filesystem::path& InWorkspaceRoot,
+                                 const std::filesystem::path& InPlanPath,
+                                 const std::string& InProvider,
+                                 const std::string& InModel,
+                                 const std::string& InFillMode) -> CommitRunbookResult {
+    std::vector<std::string> args = {
+        "plan", "runbook", "commit",
+        "--plan-file", InPlanPath.generic_string(),
+        "--ai-provider", InProvider.empty() ? "auto" : InProvider,
+    };
+    if (!InModel.empty()) {
+        args.push_back("--ai-model");
+        args.push_back(InModel);
+    }
+    if (!InFillMode.empty()) {
+        args.push_back("--ai-fill-mode");
+        args.push_back(InFillMode);
+    }
+    const auto result = shell::ExecuteCommand(ResolveSelfBinaryCommand(), args, shell::ExecMode::Capture, InWorkspaceRoot);
+    CommitRunbookResult out;
+    out.aiFillMillis = ExtractPlanAiFillMillis(result);
+    const auto exitCode = FinalizeNestedSelfResult("AI commit runbook", result);
+    out.exitCode = exitCode;
+    if (exitCode != 0) {
+        std::cerr << "Error: AI commit runbook failed via native binary (exit=" << exitCode << ").\n";
+    }
+    return out;
+}
+
+auto HumanAutoPlanLooksDeterministic(const std::filesystem::path& InPlanPath,
+                                     std::string* OutReason) -> bool {
+    const auto payload = ReadFileText(InPlanPath);
+    if (!payload.has_value()) {
+        if (OutReason != nullptr) {
+            *OutReason = "cannot read plan file";
+        }
+        return true;
+    }
+
+    const auto meta = ExtractObjectBodyForKey(*payload, "meta");
+    if (!meta.has_value()) {
+        if (OutReason != nullptr) {
+            *OutReason = "plan meta missing";
+        }
+        return true;
+    }
+
+    const auto planner = ExtractObjectBodyForKey(*meta, "planner");
+    const auto provider = ToLower(planner.has_value() ? ExtractStringField(*planner, "provider").value_or("") : std::string{});
+    const auto model = ToLower(planner.has_value() ? ExtractStringField(*planner, "ai-model").value_or("") : std::string{});
+
+    const bool deterministicPlannerMeta = provider == "agent" ||
+                                          model == "external-agent" ||
+                                          model == "deterministic" ||
+                                          provider == "native";
+    if (deterministicPlannerMeta && OutReason != nullptr) {
+        *OutReason = std::format("provider={} model={}", provider, model);
+    }
+    return deterministicPlannerMeta;
+}
+
+auto RunCommitAutoPlanPipeline(const std::filesystem::path& InWorkspaceRoot,
+                               const NativeAiConfig& InAi,
+                               const std::string& InAiFillMode,
+                               const bool InProfile) -> int {
+    using clock = std::chrono::steady_clock;
+    const auto totalStart = clock::now();
+    long long planNewMillis = 0;
+    long long ignoreRunbookMillis = 0;
+    long long ignoreApplyMillis = 0;
+    long long commitRunbookMillis = 0;
+    long long preCommitMillis = 0;
+    long long commitApplyMillis = 0;
+    std::optional<long long> aiFillMillis;
+
+    const auto autoPlanPath = DefaultSharedPlanPath(InWorkspaceRoot);
+    std::cout << "[native-commit] auto-plan file: " << autoPlanPath.generic_string() << "\n";
+
+    const auto planNewStart = clock::now();
+    const auto planNewCode = RunPlanNewViaSelf(InWorkspaceRoot, autoPlanPath);
+    planNewMillis = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - planNewStart).count();
+    if (planNewCode != 0) {
+        return planNewCode;
+    }
+
+    const auto ignoreRunbookStart = clock::now();
+    const auto ignoreRunbookCode = RunIgnorePlanRunbookViaSelf(InWorkspaceRoot, autoPlanPath);
+    ignoreRunbookMillis = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - ignoreRunbookStart).count();
+    if (ignoreRunbookCode != 0) {
+        return ignoreRunbookCode;
+    }
+
+    const auto ignoreApplyStart = clock::now();
+    const auto ignoreApplyCode = RunIgnorePlanApplyViaSelf(InWorkspaceRoot, autoPlanPath);
+    ignoreApplyMillis = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - ignoreApplyStart).count();
+    if (ignoreApplyCode != 0) {
+        return ignoreApplyCode;
+    }
+
+    const auto commitRunbookStart = clock::now();
+    const auto runbookResult = RunCommitPlanRunbookViaSelf(InWorkspaceRoot, autoPlanPath, InAi.provider, InAi.model, InAiFillMode);
+    commitRunbookMillis = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - commitRunbookStart).count();
+    aiFillMillis = runbookResult.aiFillMillis;
+    if (runbookResult.exitCode != 0) {
+        return runbookResult.exitCode;
+    }
+
+    std::string deterministicReason;
+    if (HumanAutoPlanLooksDeterministic(autoPlanPath, &deterministicReason)) {
+        std::cerr << "Error: AI commit runbook produced non-AI deterministic plan metadata; refusing to continue.\n";
+        std::cerr << "Hint: verify AI provider/auth and rerun plain `kog commit --ai-auto`.\n";
+        std::cerr << "Hint: deterministic metadata: " << deterministicReason << "\n";
+        return 2;
+    }
+
+    const auto preCommitStart = clock::now();
+    const auto preCommitCode = RunSyncPreCommitNative(InWorkspaceRoot, true, false, "default");
+    preCommitMillis = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - preCommitStart).count();
+    if (preCommitCode != 0) {
+        return preCommitCode;
+    }
+
+    const auto commitApplyStart = clock::now();
+    const auto commitApplyCode = RunCommitNativePlanStage(InWorkspaceRoot, autoPlanPath.generic_string(), "commit", false);
+    commitApplyMillis = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - commitApplyStart).count();
+    if (commitApplyCode != 0) {
+        return commitApplyCode;
+    }
+
+    if (InProfile) {
+        const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - totalStart).count();
+        std::cout << "\n=== Commit Auto-Plan Profile Summary ===\n";
+        std::cout << "mode: plan-first\n";
+        std::cout << "plan_new_ms: " << planNewMillis << "\n";
+        std::cout << "ignore_runbook_ms: " << ignoreRunbookMillis << "\n";
+        std::cout << "ignore_apply_ms: " << ignoreApplyMillis << "\n";
+        std::cout << "commit_runbook_ms: " << commitRunbookMillis << "\n";
+        if (aiFillMillis.has_value()) {
+            std::cout << "ai_fill_ms: " << *aiFillMillis << "\n";
+        } else {
+            std::cout << "ai_fill_ms: n/a\n";
+        }
+        std::cout << "pre_commit_ms: " << preCommitMillis << "\n";
+        std::cout << "commit_apply_ms: " << commitApplyMillis << "\n";
+        std::cout << "total_ms: " << totalMs << "\n";
+    }
+
+    return 0;
 }
 
 auto BuildStageMessageMap(const CommitPlanPayload& InPlan,
@@ -4119,67 +4366,58 @@ auto RunCommitNativeSimple(const std::filesystem::path& InWorkspaceRoot,
 
 void RegisterCommit(CLI::App& InApp) {
     auto* cmd = InApp.add_subcommand("commit", "Native multi-repo commit workflow (pure C++, child-first for nested repos)");
+    auto* cmdAiAlias = InApp.add_subcommand("ca", "Alias of commit --ai-auto");
 
     auto* repos = new std::string{};
     auto* repoRoot = new std::string{};
     auto* target = new std::string{};
-    cmd->add_option("--repos", *repos, "Commit target repos (comma-separated). Default: auto-discover workspace repos");
-    cmd->add_option("--repo-root", *repoRoot, "Workspace root/start path used for repo-name lookup");
-    cmd->add_option("target", *target, "Optional repo target root (repo name or relative path)")->required(false);
     auto* bNoRecursive = new bool{false};
-    cmd->add_flag("--no-recursive,-N", *bNoRecursive, "Commit only current repository when --repos is not provided");
     auto* bNoDirtyOnly = new bool{false};
-    cmd->add_flag("--no-dirty-only", *bNoDirtyOnly, "Disable dirty-only pruning (default: dirty-only on)");
     auto* jobs = new std::string{"auto"};
-    cmd->add_option("--jobs,-j", *jobs, "Parallel repo workers (auto|N)")->default_str("auto");
     auto* commitPlanFile = new std::string{};
     auto* planStage = new std::string{"commit"};
-    cmd->add_option("--plan-file", *commitPlanFile, "Plan JSON file");
-    cmd->add_option("--plan-stage", *planStage, "Plan stage: commit|post_sync|both")->default_str("commit");
-
-    // Provider option
     auto* provider = new std::string{};
-    cmd->add_option("--ai-provider", *provider, "AI provider (copilot, codex, opencode)")
-        ->default_str("auto");
-
-    // Model option
     auto* model = new std::string{};
-    cmd->add_option("--ai-model", *model, "AI model to use");
-
     auto* bAiAuto = new bool{false};
-    cmd->add_flag("--ai-auto", *bAiAuto, "Enable AI auto mode (provider auto + layered kog_config model selection)");
-
-    // Message option
+    auto* aiFillMode = new std::string{};
     auto* message = new std::string{};
-    cmd->add_option("--message,-m", *message, "Commit message (skips AI generation)");
-
-    // Agent proxy mode
     auto* agent = new std::string{};
-    cmd->add_option("--agent", *agent, "Agent proxy mode (codex, copilot, cursor, kiro, claude)");
-
-    // Flags
     auto* bPush = new bool{false};
-    cmd->add_flag("--push", *bPush, "Push after commit");
-
     auto* bNoAiReview = new bool{false};
-    cmd->add_flag("--no-ai-review", *bNoAiReview, "Skip AI review gate");
-
     auto* bStagedOnly = new bool{false};
-    cmd->add_flag("--staged-only", *bStagedOnly, "Commit only already-staged changes (skip auto git add)");
-
     auto* bShell = new bool{false};
-    cmd->add_flag("--shell", *bShell, "Deprecated compatibility flag (shell path removed)");
-
     auto* bPreflightOnly = new bool{false};
-    cmd->add_flag("--preflight-only", *bPreflightOnly, "Run native preflight checks and exit without commit");
-
     auto* bNoNativePreflight = new bool{false};
-    cmd->add_flag("--no-native-preflight", *bNoNativePreflight, "Skip native preflight checks before shell commit");
-
     auto* bProfile = new bool{false};
-    cmd->add_flag("--profile", *bProfile, "Print native commit timing/profile summary");
 
-    cmd->callback([=]() {
+    auto configure = [&](CLI::App* InCmd) {
+        InCmd->add_option("--repos", *repos, "Commit target repos (comma-separated). Default: auto-discover workspace repos");
+        InCmd->add_option("--repo-root", *repoRoot, "Workspace root/start path used for repo-name lookup");
+        InCmd->add_option("target", *target, "Optional repo target root (repo name or relative path)")->required(false);
+        InCmd->add_flag("--no-recursive,-N", *bNoRecursive, "Commit only current repository when --repos is not provided");
+        InCmd->add_flag("--no-dirty-only", *bNoDirtyOnly, "Disable dirty-only pruning (default: dirty-only on)");
+        InCmd->add_option("--jobs,-j", *jobs, "Parallel repo workers (auto|N)")->default_str("auto");
+        InCmd->add_option("--plan-file", *commitPlanFile, "Plan JSON file");
+        InCmd->add_option("--plan-stage", *planStage, "Plan stage: commit|post_sync|both")->default_str("commit");
+        InCmd->add_option("--ai-provider", *provider, "AI provider (copilot, codex, opencode)")->default_str("auto");
+        InCmd->add_option("--ai-model", *model, "AI model to use");
+        InCmd->add_flag("--ai-auto", *bAiAuto, "Enable AI auto mode (provider auto + layered kog_config model selection)");
+        InCmd->add_option("--ai-commit-generation-mode,--ai-fill-mode", *aiFillMode, "AI commit generation mode override (single|per-commit|adaptive)");
+        InCmd->add_option("--message,-m", *message, "Commit message (skips AI generation)");
+        InCmd->add_option("--agent", *agent, "Agent proxy mode (codex, copilot, cursor, kiro, claude)");
+        InCmd->add_flag("--push", *bPush, "Push after commit");
+        InCmd->add_flag("--no-ai-review", *bNoAiReview, "Skip AI review gate");
+        InCmd->add_flag("--staged-only", *bStagedOnly, "Commit only already-staged changes (skip auto git add)");
+        InCmd->add_flag("--shell", *bShell, "Deprecated compatibility flag (shell path removed)");
+        InCmd->add_flag("--preflight-only", *bPreflightOnly, "Run native preflight checks and exit without commit");
+        InCmd->add_flag("--no-native-preflight", *bNoNativePreflight, "Skip native preflight checks before shell commit");
+        InCmd->add_flag("--profile", *bProfile, "Print native commit timing/profile summary");
+    };
+
+    configure(cmd);
+    configure(cmdAiAlias);
+
+    auto run = [=, &InApp]() {
         using clock = std::chrono::steady_clock;
         const auto totalStart = clock::now();
         long long preflightMs = 0;
@@ -4187,6 +4425,10 @@ void RegisterCommit(CLI::App& InApp) {
         long long commitMs = 0;
         long long summaryMs = 0;
         std::optional<CommitPreflightReport> cachedPreflightReport;
+
+        if (InApp.got_subcommand(cmdAiAlias)) {
+            *bAiAuto = true;
+        }
 
         if (*bShell) {
             std::cerr << "Error: --shell is no longer supported; commit workflow is fully native now\n";
@@ -4256,6 +4498,26 @@ void RegisterCommit(CLI::App& InApp) {
                       << " review=" << (ai.reviewEnabled ? "on" : "off") << "\n";
         }
 
+        const bool explicitPlanFileRequested = WasOptionExplicitlyPassed("--plan-file");
+        const bool autoPlanAiMode = ai.enabled && message->empty() && !explicitPlanFileRequested;
+        if (autoPlanAiMode) {
+            if (!repos->empty() || *bNoRecursive || *bNoDirtyOnly || *bStagedOnly || *bPush) {
+                std::cerr << "Error: commit auto-plan mode currently supports only workspace-scoped commit apply without --push.\n";
+                std::cerr << "Hint: use `kog plan runbook commit --plan-file <file>` then `kog commit --plan-file <file>` for custom scope.\n";
+                std::exit(2);
+            }
+
+            const auto report = cachedPreflightReport.has_value() ? *cachedPreflightReport : RunCommitPreflight(workspaceRoot);
+            if (!HasAnyChanges(report)) {
+                std::println("[native-commit] workspace clean; skipping auto-plan generation and commit.");
+                std::exit(0);
+            }
+
+            commitPlanFile->clear();
+            const auto code = RunCommitAutoPlanPipeline(workspaceRoot, ai, *aiFillMode, *bProfile);
+            std::exit(code);
+        }
+
         if (!aiRequested) {
             std::cout << "[native-commit] safety-gates: ignore + secret\n";
             RunPipelineSafetyGatesForNonAiCommit(workspaceRoot);
@@ -4281,6 +4543,7 @@ void RegisterCommit(CLI::App& InApp) {
         }
 
         std::unordered_map<std::string, std::vector<RepoCommitPlanEntry::CommitItem>> stageMessages;
+        std::optional<CommitPlanStage> selectedPlanStage;
         if (!commitPlanFile->empty()) {
             if (!repos->empty()) {
                 std::cerr << "Error: --plan-file cannot be combined with --repos\n";
@@ -4331,14 +4594,14 @@ void RegisterCommit(CLI::App& InApp) {
                           << "\n";
             }
 
-            const auto stage = ParseCommitPlanStage(*planStage);
-            if (!stage.has_value()) {
+            selectedPlanStage = ParseCommitPlanStage(*planStage);
+            if (!selectedPlanStage.has_value()) {
                 std::cerr << "Error: invalid --plan-stage value: " << *planStage
                           << " (expected commit|post_sync|both)\n";
                 std::exit(2);
             }
 
-            stageMessages = BuildStageMessageMap(*parsed, *stage);
+            stageMessages = BuildStageMessageMap(*parsed, *selectedPlanStage);
             if (stageMessages.empty()) {
                 std::println("[native-commit] no entries found for selected --plan-stage; skipping commit.");
                 if (*bProfile) {
@@ -4353,6 +4616,13 @@ void RegisterCommit(CLI::App& InApp) {
                     std::cout << "total_ms: " << totalMs << "\n";
                 }
                 std::exit(0);
+            }
+
+            if (PlanStageNeedsPreCommit(*selectedPlanStage)) {
+                const auto preCommitCode = RunSyncPreCommitNative(workspaceRoot, true, false, "default");
+                if (preCommitCode != 0) {
+                    std::exit(preCommitCode);
+                }
             }
         }
 
@@ -4510,7 +4780,9 @@ void RegisterCommit(CLI::App& InApp) {
         }
 
         std::exit(exitCode);
-    });
+    };
+    cmd->callback(run);
+    cmdAiAlias->callback(run);
 }
 
 void RegisterAmend(CLI::App& InApp) {
@@ -4527,7 +4799,7 @@ void RegisterAmend(CLI::App& InApp) {
     cmd->add_option("--ai-model", *model, "AI model to use");
 
     auto* bAiAuto = new bool{false};
-    cmd->add_flag("--ai-auto", *bAiAuto, "Enable AI auto mode (auto provider/model with remembered model preference)");
+    cmd->add_flag("--ai-auto", *bAiAuto, "Enable AI auto mode (provider auto + layered kog_config model selection)");
 
     auto* message = new std::string{};
     cmd->add_option("--message,-m", *message, "Amend commit message (skips AI generation)");
