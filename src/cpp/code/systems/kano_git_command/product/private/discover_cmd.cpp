@@ -195,6 +195,15 @@ void RegisterDiscover(CLI::App& InApp) {
         options.incremental = !*discoverNoIncremental;
         options.maxStaleSeconds = *discoverMaxStale;
         options.metadataLevel = *discoverMetadata;
+        options.progressCallback = [](const std::string& InMessage) {
+            std::cerr << "[discover] " << InMessage << "\n";
+        };
+
+        std::cerr << "[discover] start root=" << options.rootDir.lexically_normal().generic_string()
+                  << " depth=" << options.maxDepth
+                  << " cache=" << (options.useCache ? "on" : "off")
+                  << " refresh=" << (options.refreshCache ? "on" : "off")
+                  << " metadata=" << options.metadataLevel << "\n";
 
         auto discovery = workspace::DiscoverRepos(options);
         auto repos = discovery.repos;
@@ -202,11 +211,14 @@ void RegisterDiscover(CLI::App& InApp) {
             return A.path.lexically_normal().generic_string() < B.path.lexically_normal().generic_string();
         });
         const auto manifest = workspace::BuildWorkspaceManifest(options.rootDir, repos);
+        std::cerr << "[discover] writing workspace manifest -> "
+                  << manifest.manifestFile.lexically_normal().generic_string() << "\n";
         if (!workspace::SaveWorkspaceManifest(manifest)) {
             std::cerr << "Error: failed to write workspace manifest: "
                       << manifest.manifestFile.lexically_normal().generic_string() << "\n";
             std::exit(1);
         }
+        std::cerr << "[discover] complete mode=" << discovery.mode << " repos=" << repos.size() << "\n";
 
         std::cout << "Discovery mode: " << discovery.mode << "\n";
         std::cout << "Discovery cache: " << discovery.cacheFile.lexically_normal().generic_string() << "\n";

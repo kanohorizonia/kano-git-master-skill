@@ -1,7 +1,3 @@
-[submodule "src/cpp/code/apps/unreal/KanoGitGUI"]
-	path = src/cpp/code/apps/unreal/KanoGitGUI
-	url = https://github.com/kanohorizonia/KanoGitGUI.git
-	branch = main
 [submodule "src/cpp/code/thirdparty/cli11"]
 	path = src/cpp/code/thirdparty/cli11
 	url = https://github.com/CLIUtils/CLI11.git

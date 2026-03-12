@@ -496,9 +496,18 @@ auto BuildFileBackedPromptArgument(std::optional<std::filesystem::path> InWorkin
     if (refPath.empty()) {
         refPath = promptPath.lexically_normal();
     }
+    auto refText = refPath.generic_string();
+#if defined(_WIN32)
+    const bool hasExplicitRelativePrefix =
+        refText.rfind("./", 0) == 0 || refText.rfind(".\\", 0) == 0;
+    if (!refPath.is_absolute() && !refText.empty() && !hasExplicitRelativePrefix &&
+        refText.front() != '/' && refText.front() != '\\') {
+        refText = "./" + refText;
+    }
+#endif
     return std::format(
         "Read @{} and follow it exactly. Treat that file as the complete task. Do not ask clarifying questions. Output only the final answer required by that file.",
-        refPath.generic_string());
+        refText);
 }
 
 auto WriteCodexResponseFilePath(const std::filesystem::path& InWorkdir,

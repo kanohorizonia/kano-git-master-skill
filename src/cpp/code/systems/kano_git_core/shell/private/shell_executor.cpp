@@ -15,6 +15,7 @@
 #include <thread>
 #include <string_view>
 #include <cerrno>
+#include <cstring>
 
 #ifdef KOG_PLATFORM_WINDOWS
 #include <windows.h>

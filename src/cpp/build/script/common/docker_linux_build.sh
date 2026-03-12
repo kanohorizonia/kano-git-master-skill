@@ -24,5 +24,7 @@ kog_run_linux_preset_via_docker() {
   RepoRootWin="$(cd "$KOG_CPP_ROOT/../.." && pwd -W)"
   RepoRootWin="${RepoRootWin//\'/\'\'}"
 
-  powershell -NoProfile -ExecutionPolicy Bypass -Command "& { docker run --rm -v '$RepoRootWin:/work' -w /work/src/cpp ubuntu:25.10 bash -lc 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y cmake ninja-build gcc-15 g++-15 git && rm -rf /work/src/cpp/build/_intermediate/$InConfigurePreset && cmake --preset $InConfigurePreset && cmake --build --preset $InBuildPreset'; exit \$LASTEXITCODE }"
+  # --security-opt seccomp=unconfined: required for sanitizer builds (TSan uses
+  # personality(ADDR_NO_RANDOMIZE) which the default Docker seccomp profile blocks)
+  powershell -NoProfile -ExecutionPolicy Bypass -Command "& { docker run --rm --security-opt seccomp=unconfined -v '$RepoRootWin:/work' -w /work/src/cpp ubuntu:25.10 bash -lc 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y cmake ninja-build gcc-15 g++-15 git && rm -rf /work/src/cpp/build/_intermediate/$InConfigurePreset && cmake --preset $InConfigurePreset && cmake --build --preset $InBuildPreset'; exit \$LASTEXITCODE }"
 }

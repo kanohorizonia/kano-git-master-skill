@@ -1406,6 +1406,30 @@ auto BuildRepoRecords(
         repos.push_back(std::move(record));
     }
 
+    std::set<std::string> discoveredKeys;
+    for (const auto& repoPath : sorted) {
+        discoveredKeys.insert(PathKey(repoPath));
+    }
+    for (const auto& registeredKey : InRegistered) {
+        if (discoveredKeys.contains(registeredKey)) {
+            continue;
+        }
+        const std::filesystem::path registeredPath(registeredKey);
+        RepoRecord record;
+        record.path = Normalize(registeredPath);
+        if (IsGitRepo(registeredPath)) {
+            record.type = "registered";
+            if (InMetadataLevel != "minimal") {
+                record.currentBranch = CurrentBranch(registeredPath);
+                record.remotes = JoinLinesWithComma(RunGitCapture(registeredPath, {"remote"}).stdoutStr);
+                record.hasChanges = HasChanges(registeredPath);
+            }
+        } else {
+            record.type = "registered-uninit";
+        }
+        repos.push_back(std::move(record));
+    }
+
     for (std::size_t idx = 0; idx < repos.size(); ++idx) {
         std::optional<std::size_t> nearestParent;
         for (std::size_t cand = 0; cand < repos.size(); ++cand) {
@@ -1710,6 +1734,11 @@ auto CleanupStaleCacheLocks(const std::filesystem::path& InCacheRoot,
 
 auto DiscoverRepos(const DiscoverOptions& InOptions) -> DiscoveryResult {
     DiscoveryResult result;
+    auto reportProgress = [&](const std::string& InMessage) {
+        if (InOptions.progressCallback) {
+            InOptions.progressCallback(InMessage);
+        }
+    };
 
     auto rootAbs = std::filesystem::absolute(InOptions.rootDir).lexically_normal();
     if (rootAbs.empty()) {
@@ -1732,6 +1761,8 @@ auto DiscoverRepos(const DiscoverOptions& InOptions) -> DiscoveryResult {
         options.maxStaleSeconds = 0;
     }
 
+    reportProgress(std::format("discover: preparing scan root={} depth={}", rootAbs.generic_string(), options.maxDepth));
+
     const auto marker = options.incremental ? ComputeMarker(rootAbs, options.maxDepth, ignoreRules) : std::string{};
     const auto cacheFile = CacheFilePath(options, rootAbs);
     PruneLegacyCacheFiles(LegacyDiscoverCacheFilePath(rootAbs));
@@ -1741,6 +1772,7 @@ auto DiscoverRepos(const DiscoverOptions& InOptions) -> DiscoveryResult {
     result.mode = "scan-miss";
 
     if (options.useCache && !options.refreshCache && options.cacheTtlSeconds > 0) {
+        reportProgress("discover: checking cached workspace state");
         const auto state = LoadWorkspaceStateDocumentAny(rootAbs);
         if (state.discoveryCache.has_value()) {
             const auto nowEpoch = std::chrono::duration_cast<std::chrono::seconds>(
@@ -1771,26 +1803,33 @@ auto DiscoverRepos(const DiscoverOptions& InOptions) -> DiscoveryResult {
                     return PathKey(A.path) < PathKey(B.path);
                 });
                 result.mode = incrementalHit ? "cache-incremental-hit" : "cache-fresh-hit";
+                reportProgress(std::format("discover: cache hit ({}) repos={}", result.mode, result.repos.size()));
                 return result;
             }
         }
     }
 
+    reportProgress("discover: collecting registered submodules");
     std::set<std::string> registered;
     if (IsGitRepo(rootAbs)) {
         CollectRegisteredSubmodulesRecursive(rootAbs, registered);
     }
 
+    reportProgress("discover: scanning filesystem for git repos");
     const auto discovered = DiscoverGitRepos(rootAbs, options.maxDepth, ignoreRules);
+    reportProgress(std::format("discover: building repo metadata for {} repos", discovered.size()));
     result.repos = BuildRepoRecords(rootAbs, discovered, registered, options.metadataLevel);
 
     if (options.useCache && options.cacheTtlSeconds > 0) {
+        reportProgress("discover: saving workspace discovery cache");
         auto state = LoadWorkspaceStateDocumentAny(rootAbs);
         state.workspaceRoot = rootAbs;
         state.filePath = cacheFile;
         state.discoveryCache = BuildDiscoveryCacheSnapshot(rootAbs, marker, result.repos);
         (void)SaveWorkspaceStateDocument(state);
     }
+
+    reportProgress(std::format("discover: done mode={} repos={}", result.mode, result.repos.size()));
 
     return result;
 }

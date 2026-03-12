@@ -15,6 +15,10 @@ endif()
 
 kog_configure_kano_module(kano_git_version)
 
+if(NOT KOG_ENABLE_MODULES)
+  set_target_properties(kano_git_version PROPERTIES LINKER_LANGUAGE CXX)
+endif()
+
 target_include_directories(kano_git_version
   PUBLIC
     public
