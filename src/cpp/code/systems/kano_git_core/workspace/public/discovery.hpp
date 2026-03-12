@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -29,6 +30,7 @@ struct DiscoverOptions {
     bool incremental = true;
     int maxStaleSeconds = 900;
     std::string metadataLevel = "full";
+    std::function<void(const std::string&)> progressCallback;
 };
 
 struct DiscoveryResult {

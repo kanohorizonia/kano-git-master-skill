@@ -84,6 +84,19 @@
             }
         },
         {
+            "name": "linux-ninja-gcc-tsan",
+            "displayName": "Linux Ninja Multi-Config (GCC + ThreadSanitizer)",
+            "description": "Inherits linux-ninja-gcc with -fsanitize=thread for data-race detection",
+            "inherits": "linux-ninja-gcc",
+            "binaryDir": "${sourceDir}/build/_intermediate/linux-ninja-gcc-tsan",
+            "cacheVariables": {
+                "CMAKE_C_FLAGS": "-fsanitize=thread",
+                "CMAKE_CXX_FLAGS": "-fsanitize=thread",
+                "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=thread",
+                "KOG_PRESET_NAME": "linux-ninja-gcc-tsan"
+            }
+        },
+        {
             "name": "macos-ninja-clang",
             "displayName": "macOS Ninja Multi-Config (Clang)",
             "description": "Uses Ninja Multi-Config with Apple Clang compiler",
@@ -175,6 +188,11 @@
             "name": "linux-ninja-gcc-release",
             "configurePreset": "linux-ninja-gcc",
             "configuration": "Release"
+        },
+        {
+            "name": "linux-ninja-gcc-tsan-debug",
+            "configurePreset": "linux-ninja-gcc-tsan",
+            "configuration": "Debug"
         },
         {
             "name": "linux-ninja-clang-debug",

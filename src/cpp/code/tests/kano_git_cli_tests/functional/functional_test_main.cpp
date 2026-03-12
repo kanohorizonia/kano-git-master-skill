@@ -161,6 +161,34 @@ auto TouchFile(const std::filesystem::path& InPath) -> void {
     REQUIRE(out.good());
 }
 
+auto InstallCodexCaptureStub(const std::filesystem::path& InDir,
+                             const std::filesystem::path& InCapturePath) -> std::filesystem::path {
+    const auto stubDir = (InDir / "fake-codex-bin").lexically_normal();
+    std::filesystem::create_directories(stubDir);
+    const auto scriptPath = (stubDir / "codex-stub.ps1").lexically_normal();
+    const auto cmdPath = (stubDir / "codex.cmd").lexically_normal();
+
+    std::ostringstream script;
+    script << "$capture = " << '"' << InCapturePath.string() << "\"\n";
+    script << "$output = $null\n";
+    script << "for ($i = 0; $i -lt $args.Length; $i++) {\n";
+    script << "  if ($args[$i] -eq '-o' -and ($i + 1) -lt $args.Length) { $output = $args[$i + 1] }\n";
+    script << "}\n";
+    script << "if ($args.Length -gt 0) {\n";
+    script << "  Set-Content -LiteralPath $capture -Value $args[$args.Length - 1]\n";
+    script << "}\n";
+    script << "if ($output) {\n";
+    script << "  Set-Content -LiteralPath $output -Value '[]'\n";
+    script << "}\n";
+    WriteTextFile(scriptPath, script.str());
+
+    std::ostringstream cmd;
+    cmd << "@echo off\r\n";
+    cmd << "powershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0codex-stub.ps1\" %*\r\n";
+    WriteTextFile(cmdPath, cmd.str());
+    return stubDir;
+}
+
 auto SetFileAgeSeconds(const std::filesystem::path& InPath, const int InAgeSeconds) -> void {
     const auto now = std::filesystem::file_time_type::clock::now();
     std::filesystem::last_write_time(InPath, now - std::chrono::seconds(InAgeSeconds));
@@ -542,6 +570,38 @@ TEST_CASE("commit_push_ai_auto_single_human_mode_fails_without_deterministic_fal
     REQUIRE(ahead == 0);
 
     RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("commit_push_ai_auto_codex_uses_explicit_workspace_relative_prompt_reference",
+          "[functional][commit-push][ai][codex]") {
+#if defined(_WIN32)
+    const auto ctx = CreateRemoteWithClone("commit-push-ai-codex-prompt-ref");
+    WriteTextFile(ctx.cloneRepo / "README.md", "seed\ncodex prompt ref\n");
+
+    const auto capturePath = (ctx.sandbox.root / "codex-prompt.txt").lexically_normal();
+    const auto stubDir = InstallCodexCaptureStub(ctx.sandbox.root, capturePath);
+
+    std::vector<std::pair<std::string, std::string>> env{
+        {"KANO_AGENT_MODE", ""},
+        {"PATH", stubDir.string() + ";" + (std::getenv("PATH") != nullptr ? std::getenv("PATH") : "")},
+    };
+
+    const auto result = RunKogWithEnv(
+        {"commit-push", "--ai-auto", "--ai-provider", "codex", "--ai-fill-mode", "single", "--no-ai-review"},
+        ctx.cloneRepo,
+        env);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+
+    REQUIRE(std::filesystem::exists(capturePath));
+    const auto capturedPrompt = ReadTextFile(capturePath);
+    REQUIRE(capturedPrompt.find("Read @./.kano/tmp/git/provider-prompts/plan-fill-structured-") != std::string::npos);
+    REQUIRE(capturedPrompt.find("Read @.kano/tmp/git/provider-prompts/plan-fill-structured-") == std::string::npos);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+#else
+    SUCCEED("Windows-only regression");
+#endif
 }
 
 TEST_CASE("sync_registered_submodule_refreshes_gitmodules_branch_after_parent_sync", "[functional][sync][gitmodules-branch]") {
