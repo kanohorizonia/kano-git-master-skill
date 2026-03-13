@@ -1079,6 +1079,29 @@ TEST_CASE("sync_cleanup_stale_locks_recovers_when_no_git_process_detected", "[fu
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("sync_ignores_windows_reserved_paths_during_auto_stash", "[functional][sync][windows]") {
+#if defined(_WIN32)
+    const auto ctx = CreateRemoteWithClone("sync-windows-reserved-path");
+    WriteTextFile(ctx.cloneRepo / "README.md", "seed\nreal local change\n");
+
+    const auto result = RunKogWithEnv(
+        {"sync", "origin-latest", "--no-recursive"},
+        ctx.cloneRepo,
+        {{"KOG_SYNC_TEST_RESERVED_STATUS_PATHS", "NUL"}});
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    const auto merged = result.stdoutText + "\n" + result.stderrText;
+    REQUIRE(merged.find("Auto-stashed local changes for .") != std::string::npos);
+    REQUIRE(merged.find("Restored auto-stash for .") != std::string::npos);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+#else
+    SUCCEED("Windows-only reserved path regression test");
+#endif
+}
+
 TEST_CASE("sync_runs_self_cpp_build_when_self_repo_cpp_changes_arrive", "[functional][sync][self-build]") {
     const auto ctx = CreateRemoteWithClone("sync-self-cpp-build");
     SeedSelfBuildScaffolding(ctx);
