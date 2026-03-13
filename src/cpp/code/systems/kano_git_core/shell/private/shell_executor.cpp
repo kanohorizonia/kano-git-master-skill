@@ -199,8 +199,9 @@ auto ResolveTimeoutMs(const std::string& InCommand,
 }
 
 auto RunProcess(const std::string& cmdLine, ExecMode InMode,
-                 const std::optional<unsigned int>& InTimeoutMs,
-                 const std::optional<std::filesystem::path>& InWorkingDir) -> ExecResult
+                const std::optional<unsigned int>& InTimeoutMs,
+                const std::optional<std::filesystem::path>& InWorkingDir,
+                ProgressCallback InProgressCallback) -> ExecResult
 {
     ExecResult result;
 
@@ -300,6 +301,9 @@ auto RunProcess(const std::string& cmdLine, ExecMode InMode,
             localBatch.reserve(64 * 1024);
             DWORD bytesRead = 0;
             while (ReadFile(InReadHandle, buf.data(), static_cast<DWORD>(buf.size()), &bytesRead, nullptr) && bytesRead > 0) {
+                if (InProgressCallback) {
+                    InProgressCallback(std::string_view(buf.data(), bytesRead), InIsStdErr);
+                }
                 localBatch.append(buf.data(), bytesRead);
                 if (localBatch.size() >= 64 * 1024) {
                     if (InIsStdErr) {
@@ -397,6 +401,13 @@ auto RunProcess(const std::string& cmdLine, ExecMode InMode,
     return result;
 }
 
+auto RunProcess(const std::string& cmdLine, ExecMode InMode,
+                const std::optional<unsigned int>& InTimeoutMs,
+                const std::optional<std::filesystem::path>& InWorkingDir) -> ExecResult
+{
+    return RunProcess(cmdLine, InMode, InTimeoutMs, InWorkingDir, ProgressCallback{});
+}
+
 #else  // Unix
 
 auto BuildExecArgv(const std::string& InCommand,
@@ -444,7 +455,8 @@ auto RunProcessUnix(const std::string& InCommand,
                     const std::vector<std::string>& InArgs,
                     ExecMode InMode,
                     const std::optional<unsigned int>& InTimeoutMs,
-                    const std::optional<std::filesystem::path>& InWorkingDir) -> ExecResult {
+                    const std::optional<std::filesystem::path>& InWorkingDir,
+                    ProgressCallback InProgressCallback) -> ExecResult {
     (void)InTimeoutMs;
 
     ExecResult result;
@@ -517,6 +529,9 @@ auto RunProcessUnix(const std::string& InCommand,
         const auto n = ::read(pipefd[0], buf.data(), buf.size());
         if (n > 0) {
             result.stdoutStr.append(buf.data(), static_cast<std::size_t>(n));
+            if (InProgressCallback) {
+                InProgressCallback(std::string_view(buf.data(), static_cast<std::size_t>(n)), false);
+            }
             continue;
         }
         if (n == 0) {
@@ -532,6 +547,14 @@ auto RunProcessUnix(const std::string& InCommand,
 
     result.exitCode = WaitForPid(pid);
     return result;
+}
+
+auto RunProcessUnix(const std::string& InCommand,
+                    const std::vector<std::string>& InArgs,
+                    ExecMode InMode,
+                    const std::optional<unsigned int>& InTimeoutMs,
+                    const std::optional<std::filesystem::path>& InWorkingDir) -> ExecResult {
+    return RunProcessUnix(InCommand, InArgs, InMode, InTimeoutMs, InWorkingDir, ProgressCallback{});
 }
 
 #endif
@@ -698,6 +721,17 @@ auto ExecuteCommand(
     std::optional<std::filesystem::path> InWorkingDir
 ) -> ExecResult
 {
+    return ExecuteCommand(InCommand, InArgs, InMode, InWorkingDir, ProgressCallback{});
+}
+
+auto ExecuteCommand(
+    const std::string& InCommand,
+    const std::vector<std::string>& InArgs,
+    ExecMode InMode,
+    std::optional<std::filesystem::path> InWorkingDir,
+    ProgressCallback InProgressCallback
+) -> ExecResult
+{
     const auto effectiveArgs = WithGitNonInteractiveDefaults(InCommand, InArgs);
 #ifdef KOG_PLATFORM_WINDOWS
     const auto timeoutMs = ResolveTimeoutMs(InCommand, effectiveArgs, InMode);
@@ -705,13 +739,13 @@ auto ExecuteCommand(
         std::vector<std::string> wrappedArgs{"/d", "/s", "/c", InCommand};
         wrappedArgs.insert(wrappedArgs.end(), effectiveArgs.begin(), effectiveArgs.end());
         const auto wrapped = BuildCommandLine("cmd.exe", wrappedArgs);
-        return RunProcess(wrapped, InMode, timeoutMs, InWorkingDir);
+        return RunProcess(wrapped, InMode, timeoutMs, InWorkingDir, InProgressCallback);
     }
     auto cmd = BuildCommandLine(InCommand, effectiveArgs);
-    return RunProcess(cmd, InMode, timeoutMs, InWorkingDir);
+    return RunProcess(cmd, InMode, timeoutMs, InWorkingDir, InProgressCallback);
 #else
     const std::optional<unsigned int> timeoutMs = std::nullopt;
-    return RunProcessUnix(InCommand, effectiveArgs, InMode, timeoutMs, InWorkingDir);
+    return RunProcessUnix(InCommand, effectiveArgs, InMode, timeoutMs, InWorkingDir, InProgressCallback);
 #endif
 }
 

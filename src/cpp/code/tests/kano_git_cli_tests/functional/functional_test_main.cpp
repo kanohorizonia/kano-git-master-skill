@@ -962,6 +962,26 @@ TEST_CASE("commit_push_secret_gate_blocks_high_confidence_finding", "[functional
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("commit_push_secret_gate_allows_intentional_placeholder_examples", "[functional][secret-gate][commit-push]") {
+    const auto ctx = CreateRemoteWithClone("secret-gate-placeholder");
+    WriteTextFile(
+        ctx.cloneRepo / "docs" / "configuration.md",
+        "# Configuration\n\n"
+        "export GEMINI_API_KEY=\"your-api-key-here\"\n");
+
+    const auto result = RunKog({"commit-push", "-m", "docs(functional): add placeholder example"}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    const auto merged = result.stdoutText + "\n" + result.stderrText;
+    REQUIRE(merged.find("secret gate failed") == std::string::npos);
+    const auto [behind, ahead] = AheadBehindCounts(ctx.cloneRepo);
+    REQUIRE(behind == 0);
+    REQUIRE(ahead == 0);
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("commit_push_secret_gate_can_be_disabled_explicitly", "[functional][secret-gate][commit-push]") {
     const auto ctx = CreateRemoteWithClone("secret-gate-disabled");
     const auto secretPayload = std::string("OPENAI_API_KEY=\"") + "sk-" + std::string("ABCDEFGHIJKLMNOPQRSTUVWXYZ12") + "\"\n";

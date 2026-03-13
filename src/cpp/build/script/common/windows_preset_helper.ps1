@@ -301,6 +301,64 @@ function Prepare-SubstRoot([string]$InRoot, [string]$InPreset, [string]$InPrefer
   Write-Output ($root + $tab + $tab + "0")
 }
 
+function Get-CMakeInputsFingerprint([string]$InRoot) {
+  $root = Resolve-AbsoluteWindowsPath $InRoot
+  if ([string]::IsNullOrWhiteSpace($root)) {
+    $root = $InRoot
+  }
+  
+  # Key files that affect configure output
+  $inputFiles = @(
+    (Join-Path $root "CMakeLists.txt"),
+    (Join-Path $root "CMakePresets.json"),
+    (Join-Path $root "vcpkg.json")
+  )
+  
+  # Also include all subdirectory CMakeLists.txt
+  $subCMakeLists = Get-ChildItem -LiteralPath $root -Recurse -File -Filter "CMakeLists.txt" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
+  if ($subCMakeLists) {
+    $inputFiles += $subCMakeLists
+  }
+  
+  # Filter to existing files only
+  $existingFiles = $inputFiles | Where-Object { Test-Path -LiteralPath $_ }
+  
+  if ($existingFiles.Count -eq 0) {
+    return ""
+  }
+  
+  # Compute combined hash
+  $hash = [System.Security.Cryptography.SHA256]::Create()
+  $combined = ""
+  
+  foreach ($file in ($existingFiles | Sort-Object)) {
+    $content = Get-Content -LiteralPath $file -Raw -ErrorAction SilentlyContinue
+    if ($content) {
+      $bytes = [System.Text.Encoding]::UTF8.GetBytes($content)
+      $hash.TransformBlock($bytes, 0, $bytes.Length, $null, 0) | Out-Null
+    }
+  }
+  
+  $hash.TransformFinalBlock(@(), 0, 0) | Out-Null
+  $fingerprint = [System.BitConverter]::ToString($hash.Hash) -replace "-", ""
+  $hash.Dispose()
+  
+  return $fingerprint
+}
+
+function Get-StoredConfigureFingerprint([string]$InBuildDir) {
+  $fingerprintFile = Join-Path $InBuildDir "cmake-inputs.fingerprint"
+  if (Test-Path -LiteralPath $fingerprintFile) {
+    return (Get-Content -LiteralPath $fingerprintFile -Raw -ErrorAction SilentlyContinue).Trim()
+  }
+  return $null
+}
+
+function Set-StoredConfigureFingerprint([string]$InBuildDir, [string]$InFingerprint) {
+  $fingerprintFile = Join-Path $InBuildDir "cmake-inputs.fingerprint"
+  Set-Content -LiteralPath $fingerprintFile -Value $InFingerprint -NoNewline -ErrorAction SilentlyContinue
+}
+
 function Run-Preset([string]$InRoot,
                     [string]$InVcvars,
                     [string]$InArch,
@@ -308,8 +366,39 @@ function Run-Preset([string]$InRoot,
                     [string]$InBuildPreset,
                     [string]$InVcvarsVersion) {
   Set-Location -LiteralPath $InRoot
+  
+  $buildDir = Join-Path $InRoot "build\_intermediate\$InConfigurePreset"
+  
+  # Compute current fingerprint of configure inputs
+  $currentFingerprint = Get-CMakeInputsFingerprint -InRoot $InRoot
+  $storedFingerprint = Get-StoredConfigureFingerprint -InBuildDir $buildDir
+  
+  $shouldConfigure = $true
+  if ($currentFingerprint -and $storedFingerprint -and ($currentFingerprint -eq $storedFingerprint)) {
+    $shouldConfigure = $false
+    Write-Host "[launcher][cmake][skip] Configure inputs unchanged, skipping cmake --preset"
+  } else {
+    Write-Host "[launcher][cmake][info] Configure inputs changed or no cached fingerprint, running cmake --preset"
+  }
+  
   $quotedVcvars = '"' + $InVcvars + '"'
-  $cmd = "call $quotedVcvars $InArch -vcvars_ver=$InVcvarsVersion && cmake --preset $InConfigurePreset && cmake --build --preset $InBuildPreset"
+  
+  if ($shouldConfigure) {
+    $cmd = "call $quotedVcvars $InArch -vcvars_ver=$InVcvarsVersion && cmake --preset $InConfigurePreset"
+    cmd.exe /d /s /c $cmd
+    $configureExitCode = $LASTEXITCODE
+    if ($configureExitCode -ne 0) {
+      Write-Error "cmake --preset failed with exit code $configureExitCode"
+      exit $configureExitCode
+    }
+    # Store the fingerprint after successful configure
+    if ($currentFingerprint) {
+      Set-StoredConfigureFingerprint -InBuildDir $buildDir -InFingerprint $currentFingerprint
+    }
+  }
+  
+  # Always run build (this is the incremental part)
+  $cmd = "call $quotedVcvars $InArch -vcvars_ver=$InVcvarsVersion && cmake --build --preset $InBuildPreset"
   cmd.exe /d /s /c $cmd
   exit $LASTEXITCODE
 }
