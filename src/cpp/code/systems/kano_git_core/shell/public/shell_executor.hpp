@@ -4,6 +4,7 @@
 #include <vector>
 #include <optional>
 #include <filesystem>
+#include <functional>
 
 namespace kano::git::shell {
 
@@ -14,6 +15,8 @@ struct ExecResult {
     std::string stdoutStr;
     std::string stderrStr;
 };
+
+using ProgressCallback = std::function<void(std::string_view chunk, bool isStderr)>;
 
 auto GetScriptsDir() -> std::filesystem::path;
 
@@ -29,6 +32,14 @@ auto ExecuteCommand(
     const std::vector<std::string>& InArgs = {},
     ExecMode InMode = ExecMode::PassThrough,
     std::optional<std::filesystem::path> InWorkingDir = std::nullopt
+) -> ExecResult;
+
+auto ExecuteCommand(
+    const std::string& InCommand,
+    const std::vector<std::string>& InArgs,
+    ExecMode InMode,
+    std::optional<std::filesystem::path> InWorkingDir,
+    ProgressCallback InProgressCallback
 ) -> ExecResult;
 
 }

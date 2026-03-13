@@ -3,6 +3,7 @@
 #include <CLI/CLI.hpp>
 #include "command_runtime_ops.hpp"
 #include "discovery.hpp"
+#include "secret_scan_utils.hpp"
 #include "shell_executor.hpp"
 
 #include <algorithm>
@@ -474,6 +475,9 @@ auto ScanFileForSecretRules(const std::filesystem::path& InRepo,
         lineNo += 1;
         for (const auto& rule : InRules) {
             if (std::regex_search(line, rule.pattern)) {
+                if (secret_scan::ShouldIgnoreSecretFinding(rule.id, line)) {
+                    continue;
+                }
                 SecretFinding f;
                 f.file = InFile;
                 f.line = lineNo;

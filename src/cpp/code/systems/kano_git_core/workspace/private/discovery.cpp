@@ -602,6 +602,17 @@ auto ShouldExcludePath(const std::filesystem::path& InRoot, const std::filesyste
     const auto rel = std::filesystem::relative(InPath, InRoot, ec);
     const auto relKey = (!ec && !rel.empty() && rel != ".") ? PathKey(rel) : PathKey(InPath);
 
+    // Check cheap rule matching FIRST (before expensive git subprocess calls).
+    bool excluded = false;
+    for (const auto& rule : InRules) {
+        if (RuleMatchesPath(relKey, rule)) {
+            excluded = !rule.include;
+        }
+    }
+    if (excluded) {
+        return true;
+    }
+
     auto owner = InPath.parent_path();
     while (!owner.empty()) {
         if (owner == InRoot.parent_path()) {
@@ -623,13 +634,7 @@ auto ShouldExcludePath(const std::filesystem::path& InRoot, const std::filesyste
         owner = owner.parent_path();
     }
 
-    bool excluded = false;
-    for (const auto& rule : InRules) {
-        if (RuleMatchesPath(relKey, rule)) {
-            excluded = !rule.include;
-        }
-    }
-    return excluded;
+    return false;
 }
 
 auto ShouldPrePrune(const std::filesystem::path& InRoot, const std::filesystem::path& InPath, const std::vector<std::string>& InPrePrune, const std::vector<IgnoreRule>& InRules) -> bool {
@@ -652,8 +657,17 @@ auto RunGitCapture(const std::filesystem::path& InRepoPath, const std::vector<st
 }
 
 auto IsGitRepo(const std::filesystem::path& InRepoPath) -> bool {
-    const auto result = RunGitCapture(InRepoPath, {"rev-parse", "--git-dir"});
-    return result.exitCode == 0;
+    const auto inside = RunGitCapture(InRepoPath, {"rev-parse", "--is-inside-work-tree"});
+    if (inside.exitCode != 0 || Trim(inside.stdoutStr) != "true") {
+        return false;
+    }
+
+    const auto topLevel = RunGitCapture(InRepoPath, {"rev-parse", "--show-toplevel"});
+    if (topLevel.exitCode != 0) {
+        return false;
+    }
+
+    return PathKey(InRepoPath) == PathKey(std::filesystem::path(Trim(topLevel.stdoutStr)));
 }
 
 auto CurrentBranch(const std::filesystem::path& InRepoPath) -> std::string {
@@ -735,7 +749,14 @@ auto DiscoverGitRepos(const std::filesystem::path& InRoot, const int InMaxDepth,
         unique.insert(PathKey(InRoot));
     }
 
-    const std::vector<std::string> prePrune;
+    // Fast-reject common non-repo directory names to avoid expensive
+    // ShouldExcludePath() calls (which spawn git subprocesses per parent).
+    const std::vector<std::string> prePrune{
+        "node_modules", ".cache", ".turbo", "__pycache__", ".mypy_cache",
+        ".ruff_cache", ".pytest_cache", ".venv", "venv", ".next", "dist",
+        "build", "out", "coverage", ".pnpm", "vendor", ".tox",
+        ".sisyphus", ".tmp", "tmp",
+    };
     std::error_code ec;
     std::filesystem::recursive_directory_iterator it(
         InRoot,
@@ -828,7 +849,12 @@ auto ComputeMarker(const std::filesystem::path& InRoot, const int InMaxDepth, co
         ec);
     std::filesystem::recursive_directory_iterator end;
 
-    const std::vector<std::string> prePrune;
+    const std::vector<std::string> prePrune{
+        "node_modules", ".cache", ".turbo", "__pycache__", ".mypy_cache",
+        ".ruff_cache", ".pytest_cache", ".venv", "venv", ".next", "dist",
+        "build", "out", "coverage", ".pnpm", "vendor", ".tox",
+        ".sisyphus", ".tmp", "tmp",
+    };
     for (; it != end; ++it) {
         if (it.depth() + 1 > 2) {
             it.disable_recursion_pending();

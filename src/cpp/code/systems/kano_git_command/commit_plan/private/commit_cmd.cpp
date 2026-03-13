@@ -6,6 +6,7 @@
 #include "auto_model_policy.hpp"
 #include "kog_config.hpp"
 #include "command_runtime_ops.hpp"
+#include "secret_scan_utils.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -869,6 +870,9 @@ auto ScanFileForSecretRules(const std::filesystem::path& InRepo,
         lineNo += 1;
         for (const auto& rule : InRules) {
             if (std::regex_search(line, rule.pattern)) {
+                if (secret_scan::ShouldIgnoreSecretFinding(rule.id, line)) {
+                    continue;
+                }
                 SecretFinding f;
                 f.file = InFile;
                 f.line = lineNo;
