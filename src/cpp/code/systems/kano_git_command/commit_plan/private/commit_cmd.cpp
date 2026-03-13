@@ -815,6 +815,29 @@ auto IsInternalPipelineArtifactPath(const std::string& InPath) -> bool {
     return lower == ".kano" || lower.rfind(".kano/", 0) == 0 || lower.find("/.kano/") != std::string::npos;
 }
 
+auto ParseStatusChangedPath(const std::string& InLine) -> std::optional<std::string> {
+    if (InLine.size() < 4) {
+        return std::nullopt;
+    }
+    const char x = InLine[0];
+    const char y = InLine[1];
+    if (x == 'D' || y == 'D') {
+        return std::nullopt;
+    }
+    if (x == '?' && y == '?') {
+        return Trim(InLine.substr(3));
+    }
+    auto path = Trim(InLine.substr(3));
+    const auto arrow = path.find(" -> ");
+    if (arrow != std::string::npos) {
+        path = Trim(path.substr(arrow + 4));
+    }
+    if (path.empty()) {
+        return std::nullopt;
+    }
+    return path;
+}
+
 struct SecretRule {
     std::string id;
     std::regex pattern;
@@ -1962,7 +1985,27 @@ auto ComputeWorkspaceDirtyFingerprint(const std::filesystem::path& InWorkspaceRo
         if (status.exitCode != 0) {
             continue;
         }
-        const auto normalized = Trim(status.stdoutStr);
+        std::istringstream iss(status.stdoutStr);
+        std::ostringstream filtered;
+        std::string line;
+        while (std::getline(iss, line)) {
+            const auto trimmed = Trim(line);
+            if (trimmed.empty()) {
+                continue;
+            }
+            if (trimmed.rfind("# ", 0) == 0) {
+                filtered << trimmed << "\n";
+                continue;
+            }
+
+            const auto maybePath = ParseStatusChangedPath(trimmed);
+            if (maybePath.has_value() && IsInternalPipelineArtifactPath(*maybePath)) {
+                continue;
+            }
+
+            filtered << trimmed << "\n";
+        }
+        const auto normalized = Trim(filtered.str());
         const auto head = ExtractBranchOidFromStatusV2(normalized);
         const auto statusFingerprint = normalized.empty() ? std::string("clean") : Fnv1a64Hex(normalized);
         lines.push_back(std::format("{}|{}|{}",

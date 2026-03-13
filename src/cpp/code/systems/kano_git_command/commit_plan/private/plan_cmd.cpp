@@ -2004,7 +2004,25 @@ auto ComputeWorkspaceDirtyFingerprint(const std::filesystem::path& InWorkspaceRo
         if (status.exitCode != 0) {
             continue;
         }
-        const auto normalized = Trim(status.stdoutStr);
+        std::istringstream iss(status.stdoutStr);
+        std::ostringstream filtered;
+        std::string line;
+        while (std::getline(iss, line)) {
+            const auto trimmed = Trim(line);
+            if (trimmed.empty()) {
+                continue;
+            }
+            if (trimmed.rfind("# ", 0) == 0) {
+                filtered << trimmed << "\n";
+                continue;
+            }
+            const auto maybePath = ParseStatusChangedPath(trimmed);
+            if (maybePath.has_value() && IsInternalPipelineArtifactPath(*maybePath)) {
+                continue;
+            }
+            filtered << trimmed << "\n";
+        }
+        const auto normalized = Trim(filtered.str());
         const auto head = ExtractBranchOidFromStatusV2(normalized);
         const auto statusFingerprint = normalized.empty() ? std::string("clean") : Fnv1a64Hex(normalized);
         lines.push_back(std::format("{}|{}|{}", key, head, statusFingerprint));
@@ -2327,9 +2345,24 @@ auto BuildSingleCommitFillPrompt(const std::filesystem::path& InWorkspaceRoot,
     prompt << "Rules:\\n";
     prompt << "- Output exactly one commits item for index " << InEntry.index << ".\\n";
     prompt << "- Do not output any other index.\\n";
+    prompt << "- Return one JSON object with a top-level commits array.\\n";
+    prompt << "- Each commits item must include index, message, and nested review.verdict + review.reason.\\n";
     prompt << "- review.verdict must be pass.\\n";
     prompt << "- No prose, no markdown fences, no commentary.\\n";
     prompt << "- Provider=" << InProvider << " model=" << (InModel.empty() ? "auto" : InModel) << "\\n\\n";
+    prompt << "Required JSON schema:\\n";
+    prompt << "{\\n";
+    prompt << "  \"commits\": [\\n";
+    prompt << "    {\\n";
+    prompt << "      \"index\": " << InEntry.index << ",\\n";
+    prompt << "      \"message\": \"feat(scope): concise commit message\",\\n";
+    prompt << "      \"review\": {\\n";
+    prompt << "        \"verdict\": \"pass\",\\n";
+    prompt << "        \"reason\": \"Specific review rationale for this commit.\"\\n";
+    prompt << "      }\\n";
+    prompt << "    }\\n";
+    prompt << "  ]\\n";
+    prompt << "}\\n\\n";
     prompt << "Target commit entry:\\n" << targetEntry.str() << "\\n";
     prompt << "Workspace dirty context:\\n" << InDirtyContext << "\\n";
     return AppendCommitConventionSkillSection(InWorkspaceRoot, prompt.str());
@@ -2451,6 +2484,57 @@ auto ParseJsonStringArrayBody(const std::string& InArrayBody) -> std::vector<std
         pos = parsed->second;
     }
     return out;
+}
+
+auto ExtractFirstNonEmptyStringField(const std::string& InObjectText,
+                                     const std::initializer_list<std::string>& InFieldNames) -> std::string {
+    for (const auto& fieldName : InFieldNames) {
+        const auto value = Trim(ExtractStringField(InObjectText, fieldName).value_or(""));
+        if (!value.empty()) {
+            return value;
+        }
+    }
+    return {};
+}
+
+auto ExtractCommitFillReviewVerdict(const std::string& InItem, const std::optional<std::string>& InReviewObj) -> std::string {
+    if (InReviewObj.has_value()) {
+        const auto nestedVerdict = Trim(ExtractStringField(*InReviewObj, "verdict").value_or(""));
+        if (!nestedVerdict.empty()) {
+            return nestedVerdict;
+        }
+    }
+    return ExtractFirstNonEmptyStringField(InItem, {"review_verdict", "review.verdict", "verdict"});
+}
+
+auto ExtractCommitFillReviewReason(const std::string& InItem, const std::optional<std::string>& InReviewObj) -> std::string {
+    if (InReviewObj.has_value()) {
+        const auto nestedReason = Trim(ExtractStringField(*InReviewObj, "reason").value_or(""));
+        if (!nestedReason.empty()) {
+            return nestedReason;
+        }
+    }
+    return ExtractFirstNonEmptyStringField(InItem, {"review_reason", "review.reason", "reason"});
+}
+
+auto ExtractCommitFillPlannerProvider(const std::string& InItem, const std::optional<std::string>& InPlannerObj) -> std::string {
+    if (InPlannerObj.has_value()) {
+        const auto nestedProvider = Trim(ExtractStringField(*InPlannerObj, "provider").value_or(""));
+        if (!nestedProvider.empty()) {
+            return nestedProvider;
+        }
+    }
+    return ExtractFirstNonEmptyStringField(InItem, {"planner_provider", "planner.provider"});
+}
+
+auto ExtractCommitFillPlannerModel(const std::string& InItem, const std::optional<std::string>& InPlannerObj) -> std::string {
+    if (InPlannerObj.has_value()) {
+        const auto nestedModel = Trim(ExtractStringField(*InPlannerObj, "ai-model").value_or(""));
+        if (!nestedModel.empty()) {
+            return nestedModel;
+        }
+    }
+    return ExtractFirstNonEmptyStringField(InItem, {"planner_model", "planner.ai-model", "ai-model"});
 }
 
 auto CollectCommitPlanEntries(const std::string& InPlanText) -> std::vector<CommitPlanEntry> {
@@ -2577,9 +2661,9 @@ auto ParseCommitFillOps(const std::string& InJson, std::string* OutError = nullp
         CommitFillOp op;
         const auto indexText = Trim(ExtractScalarFieldToken(item, "index").value_or(""));
         const auto reviewObj = ExtractObjectBodyForKey(item, "review");
-        if (indexText.empty() || !reviewObj.has_value()) {
+        if (indexText.empty()) {
             if (OutError != nullptr) {
-                *OutError = "schema invalid: fill op missing index/review";
+                *OutError = "schema invalid: fill op missing index";
             }
             return {};
         }
@@ -2592,11 +2676,14 @@ auto ParseCommitFillOps(const std::string& InJson, std::string* OutError = nullp
             return {};
         }
         op.message = Trim(ExtractStringField(item, "message").value_or(""));
-        op.reviewVerdict = Trim(ExtractStringField(*reviewObj, "verdict").value_or(""));
-        op.reviewReason = Trim(ExtractStringField(*reviewObj, "reason").value_or(""));
+        op.reviewVerdict = ExtractCommitFillReviewVerdict(item, reviewObj);
+        op.reviewReason = ExtractCommitFillReviewReason(item, reviewObj);
+        const auto plannerObj = ExtractObjectBodyForKey(item, "planner");
+        op.plannerProvider = ExtractCommitFillPlannerProvider(item, plannerObj);
+        op.plannerModel = ExtractCommitFillPlannerModel(item, plannerObj);
         if (op.index < 0 || op.message.empty() || op.reviewVerdict.empty() || op.reviewReason.empty()) {
             if (OutError != nullptr) {
-                *OutError = "fill op missing required message/review fields";
+                *OutError = "fill op missing required message/review fields (accepted forms: review.{verdict,reason} or flat review_verdict/review_reason)";
             }
             return {};
         }

@@ -1846,13 +1846,6 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
 
     const auto planPath = std::filesystem::path(InNormalizedPlanFile).lexically_normal();
 
-    if (agentMode && IsSharedDefaultPlanPath(InWorkspaceRoot, planPath)) {
-        const auto refreshCode = EnsureAgentSharedPlanFresh(InWorkspaceRoot, planPath);
-        if (refreshCode != 0) {
-            return refreshCode;
-        }
-    }
-
     if (agentMode) {
         std::cout << "[commit-push] agent mode + --plan-file detected; using plan-driven flow.\n";
     }
@@ -1871,6 +1864,13 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
         preCommitMillis = std::chrono::duration_cast<std::chrono::milliseconds>(preCommitEnd - preCommitStart).count();
         if (preCommitCode != 0) {
             return preCommitCode;
+        }
+    }
+
+    if (agentMode && IsSharedDefaultPlanPath(InWorkspaceRoot, planPath)) {
+        const auto refreshCode = EnsureAgentSharedPlanFresh(InWorkspaceRoot, planPath);
+        if (refreshCode != 0) {
+            return refreshCode;
         }
     }
 
