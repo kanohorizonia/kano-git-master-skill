@@ -80,11 +80,19 @@ auto Trim(std::string InValue) -> std::string {
 }
 
 auto GitCapture(const std::filesystem::path& InRepo, const std::vector<std::string>& InArgs) -> shell::ExecResult {
-    return shell::ExecuteCommand("git", InArgs, shell::ExecMode::Capture, InRepo);
+    std::vector<std::string> args;
+    args.reserve(InArgs.size() + 4);
+    args.insert(args.end(), {"-c", "submodule.recurse=false", "-c", "checkout.recurseSubmodules=false"});
+    args.insert(args.end(), InArgs.begin(), InArgs.end());
+    return shell::ExecuteCommand("git", args, shell::ExecMode::Capture, InRepo);
 }
 
 auto GitPassThrough(const std::filesystem::path& InRepo, const std::vector<std::string>& InArgs) -> shell::ExecResult {
-    return shell::ExecuteCommand("git", InArgs, shell::ExecMode::PassThrough, InRepo);
+    std::vector<std::string> args;
+    args.reserve(InArgs.size() + 4);
+    args.insert(args.end(), {"-c", "submodule.recurse=false", "-c", "checkout.recurseSubmodules=false"});
+    args.insert(args.end(), InArgs.begin(), InArgs.end());
+    return shell::ExecuteCommand("git", args, shell::ExecMode::PassThrough, InRepo);
 }
 
 auto IsGitRepo(const std::filesystem::path& InRepo) -> bool {

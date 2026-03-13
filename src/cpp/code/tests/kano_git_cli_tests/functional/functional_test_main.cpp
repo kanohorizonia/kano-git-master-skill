@@ -614,6 +614,52 @@ TEST_CASE("commit_push_ai_auto_codex_uses_explicit_workspace_relative_prompt_ref
 #endif
 }
 
+TEST_CASE("plan_runbook_commit_per_commit_accepts_flat_review_fill_ops_aliases",
+          "[functional][plan][ai][per-commit]") {
+    const auto ctx = CreateRemoteWithClone("plan-runbook-per-commit-flat-review-aliases");
+    WriteTextFile(ctx.cloneRepo / "README.md", "seed\nper-commit alias fill\n");
+    const auto planPath = (ctx.cloneRepo / ".kano" / "tmp" / "git" / "plans" / "per-commit-plan.json").lexically_normal();
+
+    const std::string aiPayload =
+        "BEGIN_KOG_PLAN_FILL_OPS\n"
+        "{\n"
+        "  \"commits\": [\n"
+        "    {\n"
+        "      \"index\": 0,\n"
+        "      \"message\": \"docs(readme): clarify per-commit alias handling\",\n"
+        "      \"review_verdict\": \"pass\",\n"
+        "      \"review_reason\": \"The README change is self-contained and the alias-based fill payload is semantically complete.\"\n"
+        "    }\n"
+        "  ]\n"
+        "}\n"
+        "END_KOG_PLAN_FILL_OPS\n";
+
+    std::vector<std::pair<std::string, std::string>> env{
+        {"KOG_TEST_AI_STDOUT", aiPayload},
+        {"KOG_TEST_AI_EXIT_CODE", "0"},
+    };
+    if (const char* currentPath = std::getenv("PATH"); currentPath != nullptr) {
+        env.emplace_back("PATH", currentPath);
+    }
+
+    const auto result = RunKogWithEnv(
+        {"plan", "runbook", "commit", "--plan-file", planPath.string(), "--ai-provider", "copilot", "--ai-fill-mode", "per-commit"},
+        ctx.cloneRepo,
+        env);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    REQUIRE(std::filesystem::exists(planPath));
+
+    const auto planText = ReadTextFile(planPath);
+    REQUIRE(planText.find("docs(readme): clarify per-commit alias handling") != std::string::npos);
+    REQUIRE(planText.find("The README change is self-contained and the alias-based fill payload is semantically complete.") != std::string::npos);
+    REQUIRE(planText.find("\"verdict\":\"pass\"") != std::string::npos);
+    REQUIRE(result.stdoutText.find("Filled plan commit entries with AI-safe ops") != std::string::npos);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("sync_registered_submodule_refreshes_gitmodules_branch_after_parent_sync", "[functional][sync][gitmodules-branch]") {
     const auto ctx = CreateRemoteWithSubmoduleBranchUpgradeClone("sync-gitmodules-branch-refresh");
 
