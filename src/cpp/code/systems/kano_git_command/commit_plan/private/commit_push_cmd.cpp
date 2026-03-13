@@ -45,6 +45,72 @@ auto ToLower(std::string InValue) -> std::string {
     return InValue;
 }
 
+auto TrimTrailingWindowsPathChars(std::string InValue) -> std::string {
+    while (!InValue.empty() && (InValue.back() == ' ' || InValue.back() == '.')) {
+        InValue.pop_back();
+    }
+    return InValue;
+}
+
+auto IsWindowsReservedDeviceComponent(std::string InComponent) -> bool {
+#if defined(_WIN32)
+    InComponent = TrimTrailingWindowsPathChars(ToLower(Trim(std::move(InComponent))));
+    if (InComponent.empty() || InComponent == "." || InComponent == "..") {
+        return false;
+    }
+
+    const auto colon = InComponent.find(':');
+    if (colon != std::string::npos) {
+        InComponent = InComponent.substr(0, colon);
+    }
+
+    const auto dot = InComponent.find('.');
+    const auto stem = dot == std::string::npos ? InComponent : InComponent.substr(0, dot);
+    static const std::unordered_set<std::string> reserved = {
+        "con", "prn", "aux", "nul",
+        "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+        "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9"
+    };
+    return reserved.contains(stem);
+#else
+    (void)InComponent;
+    return false;
+#endif
+}
+
+auto PathHasWindowsReservedDeviceComponent(const std::string& InPath) -> bool {
+#if defined(_WIN32)
+    if (InPath.empty()) {
+        return false;
+    }
+
+    std::string normalized = InPath;
+    for (auto& ch : normalized) {
+        if (ch == '\\') {
+            ch = '/';
+        }
+    }
+
+    std::size_t start = 0;
+    while (start <= normalized.size()) {
+        const auto end = normalized.find('/', start);
+        auto component = end == std::string::npos ? normalized.substr(start) : normalized.substr(start, end - start);
+        if (IsWindowsReservedDeviceComponent(component)) {
+            return true;
+        }
+        if (end == std::string::npos) {
+            break;
+        }
+        start = end + 1;
+    }
+
+    return false;
+#else
+    (void)InPath;
+    return false;
+#endif
+}
+
 auto ParseNonNegativeInt(const std::string& InValue) -> int {
     const auto trimmed = Trim(InValue);
     if (trimmed.empty()) {
@@ -1365,9 +1431,33 @@ auto RunPipelineSafetyGatesForNonAiCommitPush(const std::filesystem::path& InWor
     }
 }
 
+auto FilterIgnoredReservedStatusLines(const std::string& InStatusPorcelain) -> std::vector<std::string> {
+    std::vector<std::string> kept;
+    std::istringstream iss(InStatusPorcelain);
+    std::string line;
+    while (std::getline(iss, line)) {
+        if (line.size() < 4) {
+            continue;
+        }
+        auto path = Trim(line.substr(3));
+        const auto renamePos = path.find(" -> ");
+        if (renamePos != std::string::npos) {
+            path = Trim(path.substr(renamePos + 4));
+        }
+        if (path.empty()) {
+            continue;
+        }
+        if (PathHasWindowsReservedDeviceComponent(path)) {
+            continue;
+        }
+        kept.push_back(line);
+    }
+    return kept;
+}
+
 auto RepoHasAnyWorkingTreeChanges(const std::filesystem::path& InRepoRoot) -> bool {
     const auto status = shell::ExecuteCommand("git", {"status", "--porcelain"}, shell::ExecMode::Capture, InRepoRoot);
-    return status.exitCode == 0 && !Trim(status.stdoutStr).empty();
+    return status.exitCode == 0 && !FilterIgnoredReservedStatusLines(status.stdoutStr).empty();
 }
 
 auto PlanStageLikelyNonEmpty(const std::filesystem::path& InPlanFile, const std::string& InStageKey) -> bool {
@@ -1435,9 +1525,7 @@ auto CollectPostSyncCandidateRepos(const std::filesystem::path& InWorkspaceRoot,
 
 auto ParsePorcelainChangedPaths(const std::string& InStatusPorcelain) -> std::vector<std::string> {
     std::vector<std::string> out;
-    std::istringstream iss(InStatusPorcelain);
-    std::string line;
-    while (std::getline(iss, line)) {
+    for (const auto& line : FilterIgnoredReservedStatusLines(InStatusPorcelain)) {
         if (line.size() < 4) {
             continue;
         }
