@@ -1735,7 +1735,10 @@ auto ClassifyPostSyncDelta(const std::filesystem::path& InWorkspaceRoot,
             continue;
         }
         const auto& porcelain = status.stdoutStr;
-    if (Trim(porcelain).empty()) {
+        if (Trim(porcelain).empty()) {
+            continue;
+        }
+        if (FilterIgnoredReservedStatusLines(porcelain).empty()) {
             continue;
         }
         const auto gitlinkPaths = CollectGitlinkOnlyChangedPaths(repo);
