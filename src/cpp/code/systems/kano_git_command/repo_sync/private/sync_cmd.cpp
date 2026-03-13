@@ -193,6 +193,171 @@ auto TruncateText(const std::string& InText, std::size_t InMax) -> std::string {
     return InText.substr(0, InMax - 3) + "...";
 }
 
+auto TrimTrailingWindowsPathChars(std::string InValue) -> std::string {
+    while (!InValue.empty() && (InValue.back() == ' ' || InValue.back() == '.')) {
+        InValue.pop_back();
+    }
+    return InValue;
+}
+
+auto ToLower(std::string InValue) -> std::string {
+    std::transform(InValue.begin(), InValue.end(), InValue.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return InValue;
+}
+
+auto IsWindowsReservedDeviceComponent(std::string InComponent) -> bool {
+#if defined(_WIN32)
+    InComponent = TrimTrailingWindowsPathChars(ToLower(Trim(std::move(InComponent))));
+    if (InComponent.empty() || InComponent == "." || InComponent == "..") {
+        return false;
+    }
+
+    const auto colon = InComponent.find(':');
+    if (colon != std::string::npos) {
+        InComponent = InComponent.substr(0, colon);
+    }
+
+    const auto dot = InComponent.find('.');
+    const auto stem = dot == std::string::npos ? InComponent : InComponent.substr(0, dot);
+    static const std::unordered_set<std::string> reserved = {
+        "con", "prn", "aux", "nul",
+        "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+        "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9"
+    };
+    return reserved.contains(stem);
+#else
+    (void)InComponent;
+    return false;
+#endif
+}
+
+auto PathHasWindowsReservedDeviceComponent(const std::string& InPath) -> bool {
+#if defined(_WIN32)
+    if (InPath.empty()) {
+        return false;
+    }
+
+    std::string normalized = InPath;
+    for (auto& ch : normalized) {
+        if (ch == '\\') {
+            ch = '/';
+        }
+    }
+
+    std::size_t start = 0;
+    while (start <= normalized.size()) {
+        const auto end = normalized.find('/', start);
+        auto component = end == std::string::npos ? normalized.substr(start) : normalized.substr(start, end - start);
+        if (IsWindowsReservedDeviceComponent(component)) {
+            return true;
+        }
+        if (end == std::string::npos) {
+            break;
+        }
+        start = end + 1;
+    }
+
+    return false;
+#else
+    (void)InPath;
+    return false;
+#endif
+}
+
+auto ParseStatusPaths(const std::string& InStatusText) -> std::vector<std::string> {
+    std::vector<std::string> paths;
+    std::istringstream iss(InStatusText);
+    std::string line;
+    while (std::getline(iss, line)) {
+        if (line.size() < 4) {
+            continue;
+        }
+        auto path = line.substr(3);
+        const auto renameMarker = path.find(" -> ");
+        if (renameMarker != std::string::npos) {
+            path = path.substr(renameMarker + 4);
+        }
+        path = Trim(path);
+        if (!path.empty()) {
+            paths.push_back(std::move(path));
+        }
+    }
+    return paths;
+}
+
+auto CollectWindowsReservedStatusPaths(const std::string& InStatusText) -> std::vector<std::string> {
+    std::vector<std::string> reserved;
+#if defined(_WIN32)
+    if (const char* overrideValue = std::getenv("KOG_SYNC_TEST_RESERVED_STATUS_PATHS"); overrideValue != nullptr) {
+        std::istringstream overrideStream(overrideValue);
+        std::string line;
+        std::set<std::string> seen;
+        while (std::getline(overrideStream, line, ';')) {
+            line = Trim(line);
+            if (line.empty()) {
+                continue;
+            }
+            if (!seen.insert(line).second) {
+                continue;
+            }
+            reserved.push_back(std::move(line));
+        }
+        return reserved;
+    }
+    std::set<std::string> seen;
+    for (const auto& path : ParseStatusPaths(InStatusText)) {
+        if (!PathHasWindowsReservedDeviceComponent(path)) {
+            continue;
+        }
+        if (!seen.insert(path).second) {
+            continue;
+        }
+        reserved.push_back(path);
+    }
+#else
+    (void)InStatusText;
+#endif
+    return reserved;
+}
+
+auto BuildSyncStashArgs(const std::vector<std::string>& InExcluded) -> std::vector<std::string> {
+    std::vector<std::string> args{"stash", "push", "-u", "-m", "kano-native-sync-autostash"};
+#if defined(_WIN32)
+    if (!InExcluded.empty()) {
+        args.push_back("--");
+        args.push_back(".");
+        for (const auto& path : InExcluded) {
+            args.push_back(std::string(":(exclude)") + path);
+        }
+    }
+#else
+    (void)InExcluded;
+#endif
+    return args;
+}
+
+auto MaybeWarnAboutReservedSyncPaths(const std::filesystem::path& InRepo,
+                                     const std::vector<std::string>& InExcluded) -> void {
+    if (InExcluded.empty()) {
+        return;
+    }
+
+    std::ostringstream stream;
+    for (std::size_t index = 0; index < InExcluded.size(); ++index) {
+        if (index > 0) {
+            stream << ", ";
+        }
+        stream << InExcluded[index];
+    }
+    std::cerr << "[kog sync] warning: skipped Windows reserved path(s) in "
+              << InRepo.generic_string()
+              << ": "
+              << stream.str()
+              << '\n';
+}
+
 auto HasRemote(const std::filesystem::path& InRepo, const std::string& InRemote) -> bool {
     if (InRemote.empty()) {
         return false;
@@ -428,7 +593,9 @@ auto IsIndexLockFailure(const shell::ExecResult& InResult) -> bool {
     return merged.find("index.lock") != std::string::npos &&
            (merged.find("File exists") != std::string::npos ||
             merged.find("could not write index") != std::string::npos ||
-            merged.find("Unable to create") != std::string::npos);
+            merged.find("Unable to create") != std::string::npos ||
+            merged.find("another git process seems to be running") != std::string::npos ||
+            merged.find("Unable to create '") != std::string::npos);
 }
 
 auto DescribeIndexLockFailure(const IndexLockDiagnosis& InDiagnosis, const bool InCleanupEnabled) -> std::string {
@@ -1443,6 +1610,9 @@ auto RunNativeOriginLatestSync(
         const auto status = GitCapture(plan.path, {"status", "--porcelain"});
         const bool hasLocalChanges = status.exitCode == 0 && !Trim(status.stdoutStr).empty();
         bool stashCreated = false;
+        const auto reservedPaths = status.exitCode == 0 ? CollectWindowsReservedStatusPaths(status.stdoutStr)
+                                                        : std::vector<std::string>{};
+        const auto stashArgs = BuildSyncStashArgs(reservedPaths);
 
         std::cout << (InDryRun ? "[DRY RUN] " : "") << "Repo: " << name << "\n";
         std::cout << (InDryRun ? "[DRY RUN] " : "") << "Branch source: " << branchSource << "\n";
@@ -1450,10 +1620,18 @@ auto RunNativeOriginLatestSync(
         if (hasLocalChanges) {
             if (InAutoStashLocalChanges) {
                 if (InDryRun) {
-                    std::cout << "[DRY RUN] Would run: git stash push -u -m kano-native-sync-autostash\n";
+                    std::cout << "[DRY RUN] Would run: git stash push -u -m kano-native-sync-autostash";
+                    if (!reservedPaths.empty()) {
+                        std::cout << " -- .";
+                        for (const auto& path : reservedPaths) {
+                            std::cout << " :(exclude)" << path;
+                        }
+                    }
+                    std::cout << "\n";
                     stashCreated = true;
                 } else {
-                    auto stash = GitCapture(plan.path, {"stash", "push", "-u", "-m", "kano-native-sync-autostash"});
+                    MaybeWarnAboutReservedSyncPaths(plan.path, reservedPaths);
+                    auto stash = GitCapture(plan.path, stashArgs);
                     std::optional<IndexLockDiagnosis> indexLockDiagnosis;
                     if (stash.exitCode != 0 && IsIndexLockFailure(stash)) {
                         const auto diagnosis = DiagnoseIndexLock(plan.path);
@@ -1461,10 +1639,20 @@ auto RunNativeOriginLatestSync(
                         PrintIndexLockDiagnosis(name, diagnosis);
                         if (InCleanupStaleLocks) {
                             if (TryCleanupStaleIndexLock(name, diagnosis)) {
-                                stash = GitCapture(plan.path, {"stash", "push", "-u", "-m", "kano-native-sync-autostash"});
+                                stash = GitCapture(plan.path, stashArgs);
                             }
                         } else if (diagnosis.lockExists && !diagnosis.activeGitProcessDetected) {
                             std::cerr << "Hint: rerun with --cleanup-stale-locks to remove the stale index.lock automatically.\n";
+                        }
+                    }
+                    if (stash.exitCode != 0 && !indexLockDiagnosis.has_value()) {
+                        const auto diagnosis = DiagnoseIndexLock(plan.path);
+                        if (diagnosis.lockExists) {
+                            indexLockDiagnosis = diagnosis;
+                            PrintIndexLockDiagnosis(name, diagnosis);
+                            if (!InCleanupStaleLocks && !diagnosis.activeGitProcessDetected) {
+                                std::cerr << "Hint: rerun with --cleanup-stale-locks to remove the stale index.lock automatically.\n";
+                            }
                         }
                     }
                     if (stash.exitCode != 0) {
