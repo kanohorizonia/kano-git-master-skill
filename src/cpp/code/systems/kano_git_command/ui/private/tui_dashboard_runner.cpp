@@ -923,6 +923,10 @@ auto ComputeHistoryPageSize() -> int {
     return std::max(5, ftxui::Terminal::Size().dimy - 14);
 }
 
+auto ComputeDetailBodyPageSize() -> int {
+    return std::max(5, ftxui::Terminal::Size().dimy - 12);
+}
+
 auto ComputeHistoryRowWidthEstimate() -> int {
     constexpr int kHistoryLeftPanelWidth = 22;
     constexpr int kApproxChromeWidth = 12;
@@ -2706,7 +2710,7 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                     if (sectionCount > 0) {
                         history.detailSelectedSection = std::clamp(history.detailSelectedSection, 0, sectionCount - 1);
                         const auto sectionLines = SplitLines(overlay->sections[history.detailSelectedSection].body);
-                        const int pageSize = 20;
+                        const int pageSize = ComputeDetailBodyPageSize();
                         const int pageCount = std::max(1, static_cast<int>((sectionLines.size() + pageSize - 1) / pageSize));
                         history.detailPageIndex = std::clamp(history.detailPageIndex, 0, pageCount - 1);
 
@@ -3177,9 +3181,91 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
             const auto key = CanonicalPathString(repo.path);
             ensure_history_loaded(history.repoIndex, history.pageIndex);
             const auto& cache = historyCache[key];
-            auto entries = BuildDisplayedHistoryEntries(
-                history_page_slice(cache, history.pageIndex),
-                history);
+
+            if (history.detailActive) {
+                const bool isDirtyWorkingTree = history.detailSha == "dirty working tree";
+                const auto detailKey = (isDirtyWorkingTree ? DirtyCachePrefix(historyCache[key]) : history.detailSha) + "|" + std::to_string(history.detailMode);
+                auto* overlay = historyCache[key].detailOverlays.get(detailKey);
+
+                if (overlay == nullptr) {
+                    rightPanel = vbox({
+                        text("History Detail") | bold,
+                        separator(),
+                        text("(detail data unavailable)") | dim,
+                        separator(),
+                        text("Press Esc or q to close") | dim,
+                    }) | border;
+                } else {
+                    const int sectionCount = static_cast<int>(overlay->sections.size());
+                    const int selectedSection = sectionCount == 0 ? 0 : std::clamp(history.detailSelectedSection, 0, sectionCount - 1);
+                    const auto sectionLines = sectionCount == 0
+                        ? std::vector<std::string>{"(no detail sections)"}
+                        : SplitLines(overlay->sections[selectedSection].body);
+                    const int pageSize = ComputeDetailBodyPageSize();
+                    const int pageCount = std::max(1, static_cast<int>((sectionLines.size() + pageSize - 1) / pageSize));
+                    const int pageIndex = std::clamp(history.detailPageIndex, 0, pageCount - 1);
+                    const int start = pageIndex * pageSize;
+                    const int end = std::min(start + pageSize, static_cast<int>(sectionLines.size()));
+
+                    Elements sectionRows;
+                    for (int i = 0; i < sectionCount; ++i) {
+                        const bool isSelected = i == selectedSection;
+                        auto row = text(std::string(isSelected ? "> " : "  ") + overlay->sections[i].title);
+                        if (isSelected) {
+                            row = row | bold;
+                        }
+                        sectionRows.push_back(row);
+                    }
+                    if (sectionRows.empty()) {
+                        sectionRows.push_back(text("(no changes)") | dim);
+                    }
+
+                    Elements bodyRows;
+                    for (int i = start; i < end; ++i) {
+                        bodyRows.push_back(paragraph(sectionLines[static_cast<std::size_t>(i)]));
+                    }
+                    if (bodyRows.empty()) {
+                        bodyRows.push_back(paragraph("(empty page)"));
+                    }
+
+                    const auto modeLabel = history.detailMode == 0 ? "summary" : (history.detailMode == 1 ? "files" : "patch");
+                    const auto sectionLabel = sectionCount == 0
+                        ? std::string("0/0")
+                        : std::to_string(selectedSection + 1) + "/" + std::to_string(sectionCount);
+
+                    rightPanel = vbox({
+                        hbox({
+                            text("commit: " + history.detailSha),
+                            filler(),
+                            text("mode: " + std::string(modeLabel)),
+                            filler(),
+                            text("section " + sectionLabel),
+                            filler(),
+                            text("page " + std::to_string(pageIndex + 1) + "/" + std::to_string(pageCount)),
+                        }) | bold,
+                        separator(),
+                        hbox({
+                            vbox({
+                                text("changes") | bold,
+                                separator(),
+                                vbox(std::move(sectionRows)) | yframe | flex,
+                            }) | size(WIDTH, EQUAL, 32) | border,
+                            separator(),
+                            vbox({
+                                text(overlay->title) | bold,
+                                text(sectionCount == 0 ? std::string("(no selected change)") : overlay->sections[selectedSection].title) | dim,
+                                separator(),
+                                vbox(std::move(bodyRows)) | yframe | flex,
+                            }) | flex,
+                        }) | flex,
+                        separator(),
+                        text("detail controls: up/down change, left/right page, m mode, Esc/q close") | dim,
+                    }) | border;
+                }
+            } else {
+                auto entries = BuildDisplayedHistoryEntries(
+                    history_page_slice(cache, history.pageIndex),
+                    history);
 
             std::string totalPages = "?";
             const int totalEntries = static_cast<int>(cache.allEntries.size());
@@ -3193,19 +3279,123 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
             auto historyList = vbox([&] {
                  Elements rows;
                  const int historyRowWidth = ComputeHistoryRowWidthEstimate();
+                 constexpr int kMinSubjectWidth = 15;
+                 const std::string kRowPrefix = "│ ";
+                 const std::string kAuthorSeparator = " | ";
+
+                 auto build_index_text = [&](const RepoHistoryCache::HistoryEntry& entry) {
+                     return entry.totalCount > 0
+                         ? std::to_string(entry.globalIndex) + "/" + std::to_string(entry.totalCount)
+                         : std::to_string(entry.globalIndex) + "/?";
+                 };
+
+                 auto base_prefix_width = static_cast<int>(std::string("  ").size() + kRowPrefix.size());
+                 int minAuthorAllowance = historyRowWidth;
+                 std::size_t maxEmailLen = 0;
+                 std::size_t maxNameLen = 0;
+
+                 for (const auto& entry : entries) {
+                     const auto indexText = build_index_text(entry);
+                     const auto indexPart = "[" + indexText + "] ";
+                     const auto shaPart = entry.isDirtyWorkingTree ? "(dirty)" : entry.sha;
+                     const int baseLen = static_cast<int>(indexPart.size() + shaPart.size() + 1);
+                     const int allowance = historyRowWidth - base_prefix_width - baseLen - kMinSubjectWidth - static_cast<int>(kAuthorSeparator.size());
+                     minAuthorAllowance = std::min(minAuthorAllowance, allowance);
+                     if (!entry.authorEmail.empty()) {
+                         maxEmailLen = std::max(maxEmailLen, entry.authorEmail.size());
+                     }
+                     if (!entry.authorName.empty()) {
+                         maxNameLen = std::max(maxNameLen, entry.authorName.size());
+                     }
+                 }
+
+                 enum class AuthorMode {
+                     None,
+                     Email,
+                     Name,
+                 };
+
+                 AuthorMode authorMode = AuthorMode::None;
+                 int authorColumnWidth = 0;
+                 if (!entries.empty() && minAuthorAllowance > 0) {
+                     const int allowed = minAuthorAllowance;
+                     if (maxEmailLen > 0 && static_cast<int>(maxEmailLen) <= allowed) {
+                         authorMode = AuthorMode::Email;
+                         authorColumnWidth = static_cast<int>(maxEmailLen);
+                     } else if (maxNameLen > 0 && static_cast<int>(maxNameLen) <= allowed) {
+                         authorMode = AuthorMode::Name;
+                         authorColumnWidth = static_cast<int>(maxNameLen);
+                     } else if (allowed > 0) {
+                         if (maxEmailLen > 0) {
+                             authorMode = AuthorMode::Email;
+                             authorColumnWidth = allowed;
+                         } else if (maxNameLen > 0) {
+                             authorMode = AuthorMode::Name;
+                             authorColumnWidth = allowed;
+                         }
+                     }
+                 }
+
+                 auto truncate_with_ellipsis = [&](const std::string& value, int width) {
+                     if (width <= 0) {
+                         return std::string();
+                     }
+                     if (static_cast<int>(value.size()) <= width) {
+                         return value;
+                     }
+                     if (width <= 3) {
+                         return value.substr(0, static_cast<std::size_t>(width));
+                     }
+                     return value.substr(0, static_cast<std::size_t>(width - 3)) + "...";
+                 };
+
+                 auto pad_right = [&](const std::string& value, int width) {
+                     if (width <= 0) {
+                         return std::string();
+                     }
+                     if (static_cast<int>(value.size()) >= width) {
+                         return value.substr(0, static_cast<std::size_t>(width));
+                     }
+                     return value + std::string(static_cast<std::size_t>(width - static_cast<int>(value.size())), ' ');
+                 };
+
+                 auto pad_left = [&](const std::string& value, int width) {
+                     if (width <= 0) {
+                         return std::string();
+                     }
+                     if (static_cast<int>(value.size()) >= width) {
+                         return value.substr(0, static_cast<std::size_t>(width));
+                     }
+                     return std::string(static_cast<std::size_t>(width - static_cast<int>(value.size())), ' ') + value;
+                 };
+
                  for (std::size_t i = 0; i < entries.size(); ++i) {
                        const bool isHit = history.highlightedLine == static_cast<int>(i);
                       const bool isSelected = clampedSelectedLine == static_cast<int>(i);
                        auto prefix = std::string(isSelected ? "> " : "  ");
-                       const auto compactLine = BuildHistoryDisplayLine(entries[i]);
-                       const auto emailLine = BuildHistoryDisplayLine(entries[i], entries[i].authorEmail);
-                       const auto nameLine = BuildHistoryDisplayLine(entries[i], entries[i].authorName);
-                       const auto& chosenLine = (!entries[i].authorEmail.empty() && static_cast<int>(emailLine.size()) <= historyRowWidth)
-                           ? emailLine
-                           : (!entries[i].authorName.empty() && static_cast<int>(nameLine.size()) <= historyRowWidth)
-                               ? nameLine
-                               : compactLine;
-                       auto row = text(prefix + std::string("│ ") + chosenLine);
+
+                       std::string chosenLine;
+                       if (authorMode == AuthorMode::None || authorColumnWidth <= 0) {
+                           chosenLine = BuildHistoryDisplayLine(entries[i]);
+                       } else {
+                           const auto indexText = build_index_text(entries[i]);
+                           const auto indexPart = "[" + indexText + "] ";
+                           const auto shaPart = entries[i].isDirtyWorkingTree ? "(dirty)" : entries[i].sha;
+                           const auto subjectPart = entries[i].isDirtyWorkingTree ? "dirty working tree" : entries[i].subject;
+                           const int baseLen = static_cast<int>(indexPart.size() + shaPart.size() + 1);
+                           const int subjectWidth = historyRowWidth - base_prefix_width - baseLen - authorColumnWidth - static_cast<int>(kAuthorSeparator.size());
+                           const auto subjectTrimmed = truncate_with_ellipsis(subjectPart, subjectWidth);
+                           const auto subjectPadded = pad_right(subjectTrimmed, subjectWidth);
+
+                           std::string authorText = (authorMode == AuthorMode::Email) ? entries[i].authorEmail : entries[i].authorName;
+                           if (static_cast<int>(authorText.size()) > authorColumnWidth) {
+                               authorText = authorText.substr(0, static_cast<std::size_t>(authorColumnWidth));
+                           }
+                           const auto authorPadded = pad_left(authorText, authorColumnWidth);
+                           chosenLine = indexPart + shaPart + " " + subjectPadded + kAuthorSeparator + authorPadded;
+                       }
+
+                       auto row = text(prefix + kRowPrefix + chosenLine);
                        if (isHit) {
                            row = row | bold;
                        }
@@ -3234,42 +3424,43 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                 return text("quick stats: " + (stat == nullptr ? std::string("(unavailable)") : *stat)) | dim;
             }();
 
-            rightPanel = vbox({
-                text("History Pager") | bold,
-                separator(),
-                hbox({
-                    text("repo: " + DisplayRepoPath(workspaceRoot, repo.path)),
-                    filler(),
-                    text("branch: " + repo.branch),
-                    filler(),
-                    text("repo " + [&]() {
-                        auto it = std::find(displayedRepoIndices.begin(), displayedRepoIndices.end(), history.repoIndex);
-                        const int pos = (it != displayedRepoIndices.end()) ? static_cast<int>(std::distance(displayedRepoIndices.begin(), it)) + 1 : 0;
-                        return std::to_string(pos) + "/" + std::to_string(displayedRepoIndices.size());
-                    }()),
-                }),
-                hbox({
-                    text("parent: " + DisplayParentRepo(workspaceRoot, repo.parentRepo)),
-                    filler(),
-                    text("children: " + std::to_string(repo.childRepoCount)),
-                    filler(),
-                    text("page " + std::to_string(history.pageIndex + 1) + "/" + totalPages),
-                    filler(),
-                    text("entry " + (selectedEntry == nullptr ? std::string("0/?") : std::to_string(selectedEntry->globalIndex) + "/" + (selectedEntry->totalCount > 0 ? std::to_string(selectedEntry->totalCount) : std::string("?")))),
-                    filler(),
-                    text("search: " + (history.searchQuery.empty() ? "(none)" : "/" + history.searchQuery)),
-                    filler(),
-                    text("detail: " + std::string(history.detailMode == 0 ? "summary" : (history.detailMode == 1 ? "files" : "patch"))),
-                    filler(),
-                    text("sort: " + std::string(history.sortMode == 0 ? "time-desc" : (history.sortMode == 1 ? "time-asc" : "match-first"))),
-                }),
-                separator(),
-                historyList | border | flex,
-                quickStats,
-                text(""),
-                separator(),
-                text("controls: [ prev-repo, ] next-repo, left/right page, up/down line->page, Enter detail, m(mode), o(sort), /(search), n(next), q close") | dim,
-            }) | border;
+                rightPanel = vbox({
+                    text("History Pager") | bold,
+                    separator(),
+                    hbox({
+                        text("repo: " + DisplayRepoPath(workspaceRoot, repo.path)),
+                        filler(),
+                        text("branch: " + repo.branch),
+                        filler(),
+                        text("repo " + [&]() {
+                            auto it = std::find(displayedRepoIndices.begin(), displayedRepoIndices.end(), history.repoIndex);
+                            const int pos = (it != displayedRepoIndices.end()) ? static_cast<int>(std::distance(displayedRepoIndices.begin(), it)) + 1 : 0;
+                            return std::to_string(pos) + "/" + std::to_string(displayedRepoIndices.size());
+                        }()),
+                    }),
+                    hbox({
+                        text("parent: " + DisplayParentRepo(workspaceRoot, repo.parentRepo)),
+                        filler(),
+                        text("children: " + std::to_string(repo.childRepoCount)),
+                        filler(),
+                        text("page " + std::to_string(history.pageIndex + 1) + "/" + totalPages),
+                        filler(),
+                        text("entry " + (selectedEntry == nullptr ? std::string("0/?") : std::to_string(selectedEntry->globalIndex) + "/" + (selectedEntry->totalCount > 0 ? std::to_string(selectedEntry->totalCount) : std::string("?")))),
+                        filler(),
+                        text("search: " + (history.searchQuery.empty() ? "(none)" : "/" + history.searchQuery)),
+                        filler(),
+                        text("detail: " + std::string(history.detailMode == 0 ? "summary" : (history.detailMode == 1 ? "files" : "patch"))),
+                        filler(),
+                        text("sort: " + std::string(history.sortMode == 0 ? "time-desc" : (history.sortMode == 1 ? "time-asc" : "match-first"))),
+                    }),
+                    separator(),
+                    historyList | border | flex,
+                    quickStats,
+                    text(""),
+                    separator(),
+                    text("controls: [ prev-repo, ] next-repo, left/right page, up/down line->page, Enter detail, m(mode), o(sort), /(search), n(next), q close") | dim,
+                }) | border;
+            }
         } else if (!repos.empty() && RepoIndexFromDisplayed(displayedRepoIndices, selectedDisplayed) >= 0) {
             const int selected = RepoIndexFromDisplayed(displayedRepoIndices, selectedDisplayed);
             const auto& row = repos[selected];
@@ -3446,71 +3637,6 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
         rootRows.push_back(footerElement);
 
         auto rootElement = vbox(std::move(rootRows)) | border;
-
-        if (history.active && history.detailActive && history.repoIndex >= 0 && history.repoIndex < static_cast<int>(repos.size())) {
-            const auto key = CanonicalPathString(repos[history.repoIndex].path);
-            const bool isDirtyWorkingTree = history.detailSha == "dirty working tree";
-            const auto detailKey = (isDirtyWorkingTree ? DirtyCachePrefix(historyCache[key]) : history.detailSha) + "|" + std::to_string(history.detailMode);
-            auto* overlay = historyCache[key].detailOverlays.get(detailKey);
-            if (overlay != nullptr) {
-                const int sectionCount = static_cast<int>(overlay->sections.size());
-                const int selectedSection = sectionCount == 0 ? 0 : std::clamp(history.detailSelectedSection, 0, sectionCount - 1);
-                const auto sectionLines = sectionCount == 0 ? std::vector<std::string>{"(no detail sections)"} : SplitLines(overlay->sections[selectedSection].body);
-                const int pageSize = 20;
-                const int pageCount = std::max(1, static_cast<int>((sectionLines.size() + pageSize - 1) / pageSize));
-                const int pageIndex = std::clamp(history.detailPageIndex, 0, pageCount - 1);
-                const int start = pageIndex * pageSize;
-                const int end = std::min(start + pageSize, static_cast<int>(sectionLines.size()));
-
-                Elements sectionRows;
-                for (int i = 0; i < sectionCount; ++i) {
-                    const bool isSelected = i == selectedSection;
-                    auto row = text(std::string(isSelected ? "> " : "  ") + overlay->sections[i].title);
-                    if (isSelected) {
-                        row = row | bold;
-                    }
-                    sectionRows.push_back(row);
-                }
-                if (sectionRows.empty()) {
-                    sectionRows.push_back(text("(no changes)") | dim);
-                }
-
-                Elements bodyRows;
-                for (int i = start; i < end; ++i) {
-                    bodyRows.push_back(paragraph(sectionLines[static_cast<std::size_t>(i)]));
-                }
-                if (bodyRows.empty()) {
-                    bodyRows.push_back(paragraph("(empty page)"));
-                }
-
-                auto overlayPanel = window(
-                    text("History Detail Overlay"),
-                    hbox({
-                        vbox({
-                            text("changes") | bold,
-                            separator(),
-                            vbox(std::move(sectionRows)) | yframe | flex,
-                        }) | size(WIDTH, EQUAL, 32) | border,
-                        separator(),
-                        vbox({
-                            text(overlay->title + " | " + (sectionCount == 0 ? std::string("0/0") : std::to_string(selectedSection + 1) + "/" + std::to_string(sectionCount))) | bold,
-                            text("mode: " + std::string(history.detailMode == 0 ? "summary" : (history.detailMode == 1 ? "files" : "patch"))
-                                + " | page " + std::to_string(pageIndex + 1) + "/" + std::to_string(pageCount)) | dim,
-                            separator(),
-                            text(sectionCount == 0 ? std::string("(no selected change)") : overlay->sections[selectedSection].title) | bold,
-                            separator(),
-                            vbox(std::move(bodyRows)) | yframe | flex,
-                            separator(),
-                            text("detail controls: up/down change, left/right page, m mode, Esc/q close") | dim,
-                        }) | flex,
-                    }));
-
-                return dbox({
-                    rootElement,
-                    overlayPanel | clear_under | center,
-                });
-            }
-        }
 
         return rootElement;
     });
