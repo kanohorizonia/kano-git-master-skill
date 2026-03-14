@@ -16,8 +16,10 @@
 #include <ftxui/screen/terminal.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <iostream>
 #include <optional>
@@ -30,8 +32,71 @@
 #include <utility>
 #include <vector>
 
+#ifdef KOG_PLATFORM_WINDOWS
+#include <windows.h>
+#else
+#include <termios.h>
+#include <unistd.h>
+#endif
+
 namespace kano::git::commands {
 namespace {
+
+struct TerminalModeGuard {
+    TerminalModeGuard() {
+#ifdef KOG_PLATFORM_WINDOWS
+        inputHandle_ = GetStdHandle(STD_INPUT_HANDLE);
+        outputHandle_ = GetStdHandle(STD_OUTPUT_HANDLE);
+        if (inputHandle_ != nullptr && inputHandle_ != INVALID_HANDLE_VALUE) {
+            inputValid_ = GetConsoleMode(inputHandle_, &inputMode_) != 0;
+        }
+        if (outputHandle_ != nullptr && outputHandle_ != INVALID_HANDLE_VALUE) {
+            outputValid_ = GetConsoleMode(outputHandle_, &outputMode_) != 0;
+        }
+#else
+        if (isatty(STDIN_FILENO) == 1) {
+            inputValid_ = tcgetattr(STDIN_FILENO, &inputMode_) == 0;
+        }
+        if (isatty(STDOUT_FILENO) == 1) {
+            outputValid_ = tcgetattr(STDOUT_FILENO, &outputMode_) == 0;
+        }
+#endif
+    }
+
+    ~TerminalModeGuard() {
+#ifdef KOG_PLATFORM_WINDOWS
+        if (inputValid_ && inputHandle_ != nullptr && inputHandle_ != INVALID_HANDLE_VALUE) {
+            SetConsoleMode(inputHandle_, inputMode_);
+        }
+        if (outputValid_ && outputHandle_ != nullptr && outputHandle_ != INVALID_HANDLE_VALUE) {
+            SetConsoleMode(outputHandle_, outputMode_);
+        }
+#else
+        if (inputValid_) {
+            tcsetattr(STDIN_FILENO, TCSANOW, &inputMode_);
+        }
+        if (outputValid_) {
+            tcsetattr(STDOUT_FILENO, TCSANOW, &outputMode_);
+        }
+#endif
+    }
+
+    TerminalModeGuard(const TerminalModeGuard&) = delete;
+    auto operator=(const TerminalModeGuard&) -> TerminalModeGuard& = delete;
+
+private:
+#ifdef KOG_PLATFORM_WINDOWS
+    HANDLE inputHandle_ = nullptr;
+    HANDLE outputHandle_ = nullptr;
+    DWORD inputMode_ = 0;
+    DWORD outputMode_ = 0;
+#else
+    termios inputMode_{};
+    termios outputMode_{};
+#endif
+    bool inputValid_ = false;
+    bool outputValid_ = false;
+};
 
 struct RepoView {
     std::filesystem::path path;
@@ -898,6 +963,7 @@ auto DiscoverRepoViews(const bool InDirtyOnly,
             row.parentRepo = ResolveRepoParent(workspaceRoot, repo);
             row.statusFromSnapshot = true;
             row.repoDirty = false;
+            row.type = "registered-uninit";
             row.branch = "(uninit)";
             row.upstream.clear();
             row.tracking.clear();
@@ -912,6 +978,22 @@ auto DiscoverRepoViews(const bool InDirtyOnly,
         row.statusFromSnapshot = !InRefreshRepoStatus;
         row.repoDirty = repo.hasChanges;
         if (InRefreshRepoStatus) {
+            // Validate that the path is actually an initialized git repo before querying branch.
+            // Handles stale manifest entries where type="registered" but directory does not exist.
+            if (repo.type == "registered") {
+                const auto topLevel = GitCapture(normalizedRepoPath, {"rev-parse", "--show-toplevel"});
+                if (topLevel.exitCode != 0 ||
+                    CanonicalPathString(normalizedRepoPath) != CanonicalPathString(std::filesystem::path(Trim(topLevel.stdoutStr)))) {
+                    row.type = "registered-uninit";
+                    row.branch = "(uninit)";
+                    row.upstream.clear();
+                    row.tracking.clear();
+                    row.statusFromSnapshot = true;
+                    row.repoDirty = false;
+                    rows.push_back(std::move(row));
+                    continue;
+                }
+            }
             row.branch = CurrentBranch(normalizedRepoPath);
             row.upstream = CurrentUpstream(normalizedRepoPath);
             row.tracking = TrackingSummary(normalizedRepoPath);
@@ -957,6 +1039,7 @@ auto DiscoverRepoViews(const bool InDirtyOnly,
             row.parentRepo = ResolveRepoParent(workspaceRoot, repo);
             row.statusFromSnapshot = true;
             row.repoDirty = false;
+            row.type = "registered-uninit";
             row.branch = "(uninit)";
             row.upstream.clear();
             row.tracking.clear();
@@ -971,6 +1054,22 @@ auto DiscoverRepoViews(const bool InDirtyOnly,
         row.statusFromSnapshot = !InRefreshRepoStatus;
         row.repoDirty = repo.hasChanges;
         if (InRefreshRepoStatus) {
+            // Validate that the path is actually an initialized git repo before querying branch.
+            // Handles stale manifest entries where type="registered" but directory does not exist.
+            if (repo.type == "registered") {
+                const auto topLevel = GitCapture(normalizedRepoPath, {"rev-parse", "--show-toplevel"});
+                if (topLevel.exitCode != 0 ||
+                    CanonicalPathString(normalizedRepoPath) != CanonicalPathString(std::filesystem::path(Trim(topLevel.stdoutStr)))) {
+                    row.type = "registered-uninit";
+                    row.branch = "(uninit)";
+                    row.upstream.clear();
+                    row.tracking.clear();
+                    row.statusFromSnapshot = true;
+                    row.repoDirty = false;
+                    rows.push_back(std::move(row));
+                    continue;
+                }
+            }
             row.branch = CurrentBranch(normalizedRepoPath);
             row.upstream = CurrentUpstream(normalizedRepoPath);
             row.tracking = TrackingSummary(normalizedRepoPath);
@@ -1001,10 +1100,11 @@ auto BuildLiveRepoView(const std::filesystem::path& InWorkspaceRoot,
     row.dirtyWorktrees.clear();
     row.dirtyFiles.clear();
 
-    if (InCurrentRow.type == "registered-uninit") {
+    if (InCurrentRow.type == "registered-uninit" || InCurrentRow.type == "registered") {
         const auto topLevel = GitCapture(row.path, {"rev-parse", "--show-toplevel"});
         if (topLevel.exitCode != 0 ||
             CanonicalPathString(row.path) != CanonicalPathString(std::filesystem::path(Trim(topLevel.stdoutStr)))) {
+            row.type = "registered-uninit";
             row.branch = "(uninit)";
             row.upstream.clear();
             row.tracking.clear();
@@ -2134,6 +2234,24 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
         return false;
     }();
 
+    const bool debugArrowInput = [&]() {
+        if (const char* value = std::getenv("KOG_TUI_DEBUG_ARROW_INPUT"); value != nullptr) {
+            const auto normalized = ToLowerAscii(Trim(value));
+            return normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on";
+        }
+        return false;
+    }();
+
+    const bool debugEventLog = [&]() {
+        if (const char* value = std::getenv("KOG_TUI_DEBUG_EVENT_LOG"); value != nullptr) {
+            const auto normalized = ToLowerAscii(Trim(value));
+            return normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on";
+        }
+        return false;
+    }();
+
+    const auto debugEventLogPath = workspaceRoot / ".kano" / "tmp" / "git" / "tui-event-debug.log";
+
     auto compact_status_icon = [&](const StatusTone tone) -> std::string {
         if (useAsciiStatusIcons) {
             switch (tone) {
@@ -2228,10 +2346,12 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
     }
 
     auto refresh_menu = [&] {
-        displayedRepoIndices = BuildDisplayedRepoIndices(repos, collapsedRoots);
+        const auto candidateIndices = BuildDisplayedRepoIndices(repos, collapsedRoots);
+        displayedRepoIndices.clear();
         menu.clear();
-        menu.reserve(displayedRepoIndices.size());
-        for (const auto idx : displayedRepoIndices) {
+        menu.reserve(candidateIndices.size());
+        displayedRepoIndices.reserve(candidateIndices.size());
+        for (const auto idx : candidateIndices) {
             const auto& repo = repos[idx];
             const auto normalized = CanonicalPathString(repo.path);
             const auto displayPath = DisplayRepoPath(workspaceRoot, repo.path);
@@ -2239,6 +2359,7 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
             if (!repoFilter.empty() && ToLowerAscii(normalized).find(filterNeedle) == std::string::npos && ToLowerAscii(displayPath).find(filterNeedle) == std::string::npos) {
                 continue;
             }
+            displayedRepoIndices.push_back(idx);
             const auto& path = displayPath;
             std::string indent(static_cast<std::size_t>(repo.treeDepth * 2), ' ');
             const bool collapsed = collapsedRoots[CanonicalPathString(repo.path)];
@@ -2251,6 +2372,8 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
         }
         if (menu.empty()) {
             menu.push_back("(no repositories found)");
+            selectedDisplayed = 0;
+        } else if (selectedDisplayed < 0) {
             selectedDisplayed = 0;
         } else if (selectedDisplayed >= static_cast<int>(menu.size())) {
             selectedDisplayed = static_cast<int>(menu.size()) - 1;
@@ -2423,6 +2546,14 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
 
     auto screen = ScreenInteractive::Fullscreen();
     screen.TrackMouse(false);
+    std::function<void()> process_async_state;
+
+    auto request_async_ui_tick = [&]() {
+        screen.Post(ftxui::Closure([&]() {
+            process_async_state();
+            screen.RequestAnimationFrame();
+        }));
+    };
 
     auto finish_async_operation = [&]() {
         if (asyncWorker.joinable()) {
@@ -2448,7 +2579,7 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
         }
         asyncWorker = std::thread([&, InWorkerBody]() {
             InWorkerBody();
-            screen.PostEvent(ftxui::Event::Custom);
+            request_async_ui_tick();
         });
         return true;
     };
@@ -2502,7 +2633,7 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                         std::lock_guard<std::mutex> lock(asyncMu);
                         asyncState.progress = InMessage;
                     }
-                    screen.PostEvent(ftxui::Event::Custom);
+                    request_async_ui_tick();
                 };
                 try {
                     const auto refreshedRepos = DiscoverRepoViews(dirtyOnly, false, true, progressCallback);
@@ -2550,7 +2681,7 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                         std::lock_guard<std::mutex> lock(asyncMu);
                         asyncState.progress = InMessage;
                     }
-                    screen.PostEvent(ftxui::Event::Custom);
+                    request_async_ui_tick();
                 };
 
                 try {
@@ -2578,20 +2709,13 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
     };
 
     auto begin_async_discover = [&](const bool InDirtyOnly) {
-        discover.active = true;
-        discover.loading = true;
-        discover.dirtyOnly = InDirtyOnly;
-        discover.pageIndex = 0;
-        discover.title = InDirtyOnly ? "discover (dirty-only)" : "discover";
-        discover.lines = {"(discover running in background...)"};
-        discover.progress = "starting discover...";
         if (!begin_async_operation("discover", [&, InDirtyOnly]() {
                 auto progressCallback = [&](const std::string& InMessage) {
                     {
                         std::lock_guard<std::mutex> lock(asyncMu);
                         asyncState.progress = InMessage;
                     }
-                    screen.PostEvent(ftxui::Event::Custom);
+                    request_async_ui_tick();
                 };
                 try {
                     const auto discoveredRepos = DiscoverRepoViews(InDirtyOnly, true, true, progressCallback);
@@ -2609,8 +2733,130 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
             })) {
             return;
         }
+        discover.active = true;
+        discover.loading = true;
+        discover.dirtyOnly = InDirtyOnly;
+        discover.pageIndex = 0;
+        discover.title = InDirtyOnly ? "discover (dirty-only)" : "discover";
+        discover.lines = {"(discover running in background...)"};
+        discover.progress = "starting discover...";
         footer = "discover started in background";
         footerIsError = false;
+    };
+
+    process_async_state = [&]() {
+        bool shouldRefreshMenu = false;
+        bool shouldFinishWorker = false;
+        std::string nextFooter;
+        std::string selectedRepoKeyBeforeApply;
+        {
+            std::lock_guard<std::mutex> lock(asyncMu);
+            if (asyncState.busy) {
+                if (!asyncState.hasResult && !asyncState.hasError && asyncState.showPreview) {
+                    preview.body = asyncState.previewBody;
+                    asyncState.showPreview = false;
+                }
+                if (asyncState.hasResult) {
+                    selectedRepoKeyBeforeApply = selected_repo_key();
+                    if (asyncState.refreshRepos) {
+                        repos = std::move(asyncState.repos);
+                        historyCache.clear();
+                        shouldRefreshMenu = true;
+                    }
+                    if (asyncState.refreshSelectedRepo) {
+                        const auto repoKey = asyncState.refreshedRepoKey;
+                        auto it = std::find_if(repos.begin(), repos.end(), [&](const RepoView& row) {
+                            return CanonicalPathString(row.path) == repoKey;
+                        });
+                        if (it != repos.end()) {
+                            *it = asyncState.refreshedRepo;
+                            repos = FinalizeRepoTree(std::move(repos));
+                            historyCache.erase(repoKey);
+                            shouldRefreshMenu = true;
+                        }
+                    }
+                    if (asyncState.refreshDiscover) {
+                        discover.active = true;
+                        discover.loading = false;
+                        discover.title = asyncState.discoverTitle;
+                        discover.lines = std::move(asyncState.discoverLines);
+                        discover.progress.clear();
+                        const int totalPages = std::max(1, static_cast<int>((discover.lines.size() + static_cast<std::size_t>(discover.pageSize) - 1) / static_cast<std::size_t>(discover.pageSize)));
+                        discover.pageIndex = std::clamp(discover.pageIndex, 0, totalPages - 1);
+                    }
+                    if (asyncState.showPreview) {
+                        preview.active = true;
+                        preview.running = false;
+                        preview.isError = asyncState.hasError;
+                        preview.autoCloseAfterRefresh = asyncState.previewAutoCloseAfterRefresh;
+                        preview.title = asyncState.previewTitle;
+                        preview.body = asyncState.previewBody;
+                    }
+                    nextFooter = asyncState.completionFooter.empty() ? "background operation complete" : asyncState.completionFooter;
+                    asyncState = AsyncWorkState{};
+                    shouldFinishWorker = true;
+                } else if (asyncState.hasError) {
+                    discover.loading = false;
+                    nextFooter = asyncState.errorMessage;
+                    asyncState = AsyncWorkState{};
+                    shouldFinishWorker = true;
+                } else {
+                    if (discover.loading) {
+                        discover.progress = asyncState.progress;
+                    } else if (!asyncState.progress.empty()) {
+                        footer = asyncState.progress;
+                    }
+                    if (footer.empty()) {
+                        footer = "r refresh repo | :refresh live status | :discover rescan repos | Enter history | q quit";
+                    }
+                }
+            }
+        }
+        if (shouldRefreshMenu) {
+            refresh_menu();
+            const auto keyToRestore = selectedRepoKeyBeforeApply;
+            bool restored = false;
+            if (!keyToRestore.empty()) {
+                for (std::size_t displayedIndex = 0; displayedIndex < displayedRepoIndices.size(); ++displayedIndex) {
+                    const int repoIndex = displayedRepoIndices[displayedIndex];
+                    if (repoIndex >= 0 && repoIndex < static_cast<int>(repos.size()) &&
+                        CanonicalPathString(repos[repoIndex].path) == keyToRestore) {
+                        selectedDisplayed = static_cast<int>(displayedIndex);
+                        restored = true;
+                        break;
+                    }
+                }
+            }
+            if (!restored) {
+                if (menu.empty()) {
+                    selectedDisplayed = 0;
+                } else {
+                    selectedDisplayed = std::clamp(selectedDisplayed, 0, static_cast<int>(menu.size()) - 1);
+                }
+            }
+            tui_state.mode = kano::git::commands::TuiMode::Normal;
+            tui_state.command_state = kano::git::commands::CommandModeState{};
+            tui_state.palette_state = kano::git::commands::CommandPaletteState{};
+            tui_state.help_state = kano::git::commands::HelpPanelState{};
+            tui_state.confirm_state = kano::git::commands::ConfirmState{};
+            tui_state.footer_message.clear();
+            tui_state.footer_is_error = false;
+        }
+        if (!nextFooter.empty()) {
+            footer = nextFooter;
+            footerIsError = nextFooter.find("failed:") != std::string::npos;
+        }
+        if (shouldFinishWorker) {
+            finish_async_operation();
+            if (preview.active && !preview.running && preview.autoCloseAfterRefresh) {
+                if (preview.autoCloseAfterRefresh) {
+                    preview.active = false;
+                    preview.autoCloseAfterRefresh = false;
+                    footer = "r refresh repo | :refresh live status | :discover rescan repos | Enter history | q quit";
+                    footerIsError = false;
+                }
+            }
+        }
     };
 
     MenuOption repoMenuOption;
@@ -2663,7 +2909,54 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
         return std::nullopt;
     };
 
+    auto is_arrow_up = [&](const Event& event) {
+        const auto& input = event.input();
+        return event == Event::ArrowUp || input == "\x1B[A" || input == "\x1B[1A";
+    };
+    auto is_arrow_down = [&](const Event& event) {
+        const auto& input = event.input();
+        return event == Event::ArrowDown || input == "\x1B[B" || input == "\x1B[1B";
+    };
+    auto is_arrow_left = [&](const Event& event) {
+        const auto& input = event.input();
+        return event == Event::ArrowLeft || input == "\x1B[D" || input == "\x1B[1D";
+    };
+    auto is_arrow_right = [&](const Event& event) {
+        const auto& input = event.input();
+        return event == Event::ArrowRight || input == "\x1B[C" || input == "\x1B[1C";
+    };
+
+    auto append_debug_event_log = [&](const Event& event, const char* stage) {
+        if (!debugEventLog) {
+            return;
+        }
+        std::error_code ec;
+        std::filesystem::create_directories(debugEventLogPath.parent_path(), ec);
+        std::ofstream out(debugEventLogPath, std::ios::app | std::ios::binary);
+        if (!out) {
+            return;
+        }
+        out << "stage=" << stage
+            << " mode=" << static_cast<int>(tui_state.GetMode())
+            << " history=" << history.active
+            << " discover=" << discover.active
+            << " preview=" << preview.active
+            << " confirm=" << confirm.active
+            << " selectedDisplayed=" << selectedDisplayed
+            << " menuSize=" << menu.size()
+            << " displayedSize=" << displayedRepoIndices.size()
+            << " input=";
+        for (unsigned char ch : event.input()) {
+            out << std::format("{:02X}", static_cast<unsigned int>(ch)) << ' ';
+        }
+        if (event.is_character()) {
+            out << " char=" << event.character();
+        }
+        out << '\n';
+    };
+
     auto with_keys = CatchEvent(root, [&](Event event) {
+        append_debug_event_log(event, "catch-start");
         if (tui_state.GetMode() == kano::git::commands::TuiMode::Command &&
             (event == Event::Return || event == Event::Character('\n'))) {
             std::string commandLine = Trim(tui_state.command_state.GetBuffer());
@@ -2720,103 +3013,6 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
         }
 
         if (event == Event::Custom) {
-            bool shouldRefreshMenu = false;
-            bool shouldFinishWorker = false;
-            std::string nextFooter;
-            std::string selectedRepoKeyBeforeApply;
-            {
-                std::lock_guard<std::mutex> lock(asyncMu);
-                if (asyncState.busy) {
-                    if (!asyncState.hasResult && !asyncState.hasError && asyncState.showPreview) {
-                        preview.body = asyncState.previewBody;
-                        asyncState.showPreview = false;
-                    }
-                    if (asyncState.hasResult) {
-                        selectedRepoKeyBeforeApply = selected_repo_key();
-                        if (asyncState.refreshRepos) {
-                            repos = std::move(asyncState.repos);
-                            historyCache.clear();
-                            shouldRefreshMenu = true;
-                        }
-                        if (asyncState.refreshSelectedRepo) {
-                            const auto repoKey = asyncState.refreshedRepoKey;
-                            auto it = std::find_if(repos.begin(), repos.end(), [&](const RepoView& row) {
-                                return CanonicalPathString(row.path) == repoKey;
-                            });
-                            if (it != repos.end()) {
-                                *it = asyncState.refreshedRepo;
-                                repos = FinalizeRepoTree(std::move(repos));
-                                historyCache.erase(repoKey);
-                                shouldRefreshMenu = true;
-                            }
-                        }
-                        if (asyncState.refreshDiscover) {
-                            discover.active = true;
-                            discover.loading = false;
-                            discover.title = asyncState.discoverTitle;
-                            discover.lines = std::move(asyncState.discoverLines);
-                            discover.progress.clear();
-                            const int totalPages = std::max(1, static_cast<int>((discover.lines.size() + static_cast<std::size_t>(discover.pageSize) - 1) / static_cast<std::size_t>(discover.pageSize)));
-                            discover.pageIndex = std::clamp(discover.pageIndex, 0, totalPages - 1);
-                        }
-                        if (asyncState.showPreview) {
-                            preview.active = true;
-                            preview.running = false;
-                            preview.isError = asyncState.hasError;
-                            preview.autoCloseAfterRefresh = asyncState.previewAutoCloseAfterRefresh;
-                            preview.title = asyncState.previewTitle;
-                            preview.body = asyncState.previewBody;
-                        }
-                        nextFooter = asyncState.completionFooter.empty() ? "background operation complete" : asyncState.completionFooter;
-                        asyncState = AsyncWorkState{};
-                        shouldFinishWorker = true;
-                    } else if (asyncState.hasError) {
-                        discover.loading = false;
-                        nextFooter = asyncState.errorMessage;
-                        asyncState = AsyncWorkState{};
-                        shouldFinishWorker = true;
-                    } else {
-                        if (discover.loading) {
-                            discover.progress = asyncState.progress;
-                        } else if (!asyncState.progress.empty()) {
-                            footer = asyncState.progress;
-                        }
-                        if (footer.empty()) {
-                            footer = "r refresh repo | :refresh live status | :discover rescan repos | Enter history | q quit";
-                        }
-                    }
-                }
-            }
-            if (shouldRefreshMenu) {
-                refresh_menu();
-                const auto keyToRestore = selectedRepoKeyBeforeApply;
-                if (!keyToRestore.empty()) {
-                    for (std::size_t displayedIndex = 0; displayedIndex < displayedRepoIndices.size(); ++displayedIndex) {
-                        const int repoIndex = displayedRepoIndices[displayedIndex];
-                        if (repoIndex >= 0 && repoIndex < static_cast<int>(repos.size()) &&
-                            CanonicalPathString(repos[repoIndex].path) == keyToRestore) {
-                            selectedDisplayed = static_cast<int>(displayedIndex);
-                            break;
-                        }
-                    }
-                }
-            }
-            if (!nextFooter.empty()) {
-                footer = nextFooter;
-                footerIsError = nextFooter.find("failed:") != std::string::npos;
-            }
-            if (shouldFinishWorker) {
-                finish_async_operation();
-                if (preview.active && !preview.running && (footer == "command finished" || footer == "command failed")) {
-                    // Close preview before refresh if auto-close was requested,
-                    // so the user regains navigation immediately.
-                    if (preview.autoCloseAfterRefresh) {
-                        preview.active = false;
-                        preview.autoCloseAfterRefresh = false;
-                    }
-                    begin_async_refresh(discover.active);
-                }
-            }
             return true;
         }
 
@@ -3129,6 +3325,55 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
             return true;
         }
 
+        if (!history.active && !discover.active && !preview.active && !confirm.active &&
+            tui_state.GetMode() == kano::git::commands::TuiMode::Normal) {
+            if (debugArrowInput && !event.input().empty() && event.input().front() == '\x1B') {
+                std::ostringstream oss;
+                oss << "arrow-debug input=";
+                for (unsigned char ch : event.input()) {
+                    oss << std::format("{:02X}", static_cast<unsigned int>(ch));
+                    oss << ' ';
+                }
+                footer = Trim(oss.str());
+            }
+            if (is_arrow_up(event) || event == Event::Character('k') || event == Event::Character('w')) {
+                if (!menu.empty()) {
+                    selectedDisplayed = std::max(0, selectedDisplayed - 1);
+                }
+                return true;
+            }
+            if (is_arrow_down(event) || event == Event::Character('j') || event == Event::Character('s')) {
+                if (!menu.empty()) {
+                    selectedDisplayed = std::min(static_cast<int>(menu.size()) - 1, selectedDisplayed + 1);
+                }
+                return true;
+            }
+            if (is_arrow_left(event) || event == Event::Character('a')) {
+                const int selected = RepoIndexFromDisplayed(displayedRepoIndices, selectedDisplayed);
+                if (selected >= 0 && selected < static_cast<int>(repos.size())) {
+                    const auto key = CanonicalPathString(repos[selected].path);
+                    if (repos[selected].childRepoCount > 0 && !collapsedRoots[key]) {
+                        collapsedRoots[key] = true;
+                        refresh_menu();
+                        footer = "tree collapsed";
+                    }
+                }
+                return true;
+            }
+            if (is_arrow_right(event) || event == Event::Character('d')) {
+                const int selected = RepoIndexFromDisplayed(displayedRepoIndices, selectedDisplayed);
+                if (selected >= 0 && selected < static_cast<int>(repos.size())) {
+                    const auto key = CanonicalPathString(repos[selected].path);
+                    if (repos[selected].childRepoCount > 0 && collapsedRoots[key]) {
+                        collapsedRoots[key] = false;
+                        refresh_menu();
+                        footer = "tree expanded";
+                    }
+                }
+                return true;
+            }
+        }
+
         if (!history.active && (event == Event::Return || event == Event::Character('\n'))) {
             const int selected = RepoIndexFromDisplayed(displayedRepoIndices, selectedDisplayed);
             if (repos.empty() || selected < 0 || selected >= static_cast<int>(repos.size())) {
@@ -3209,6 +3454,8 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                 + "\n\n(waiting for command output...)";
 
             if (!begin_async_operation(label, [&, parentPath, relPath, commandText, label]() {
+                    TerminalModeGuard terminalModeGuard;
+
                     // --- Phase 1: Submodule init with streaming progress ---
                     std::string streamOutput;
                     std::mutex streamMu;
@@ -3226,12 +3473,19 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                             + "command: " + commandText + "\n"
                             + "state: running\n\n"
                             + currentOutput;
+                        bool shouldPost = true;
                         {
                             std::lock_guard<std::mutex> lock(asyncMu);
-                            asyncState.previewBody = std::move(liveBody);
-                            asyncState.showPreview = true;
+                            if (asyncState.hasResult || asyncState.hasError) {
+                                shouldPost = false;
+                            } else {
+                                asyncState.previewBody = std::move(liveBody);
+                                asyncState.showPreview = true;
+                            }
                         }
-                        screen.PostEvent(ftxui::Event::Custom);
+                        if (shouldPost) {
+                            request_async_ui_tick();
+                        }
                     };
 
                     const auto result = shell::ExecuteCommand("git",
@@ -3253,12 +3507,19 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
 
                     // Helper: post live progress to preview panel during Phase 2
                     auto postProgress = [&](const std::string& InBody) {
+                        bool shouldPost = true;
                         {
                             std::lock_guard<std::mutex> lock(asyncMu);
-                            asyncState.previewBody = InBody;
-                            asyncState.showPreview = true;
+                            if (asyncState.hasResult || asyncState.hasError) {
+                                shouldPost = false;
+                            } else {
+                                asyncState.previewBody = InBody;
+                                asyncState.showPreview = true;
+                            }
                         }
-                        screen.PostEvent(ftxui::Event::Custom);
+                        if (shouldPost) {
+                            request_async_ui_tick();
+                        }
                     };
 
                     // --- Phase 2: Post-init branch checkout (only on success) ---
@@ -3337,6 +3598,22 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                         if (!targetBranch.empty()) {
                             postProgress(body + "\n--- branch ---\n" + branchLog + "checking out " + targetBranch + "...");
 
+                            // Step 2d-i: Stash any residual files before checkout to avoid conflicts
+                            bool stashCreated = false;
+                            {
+                                const auto statusCheck = GitCapture(repoPath, {"status", "--porcelain"});
+                                if (statusCheck.exitCode == 0 && !Trim(statusCheck.stdoutStr).empty()) {
+                                    const auto stash = GitCapture(repoPath, {"stash", "push", "--include-untracked", "-m", "kano-init-stash"});
+                                    stashCreated = stash.exitCode == 0;
+                                    branchLog += "stash: " + std::string(stashCreated ? "ok" : "failed") + "\n";
+                                    if (!stash.stderrStr.empty()) {
+                                        branchLog += stash.stderrStr + "\n";
+                                    }
+                                } else {
+                                    branchLog += "stash: skipped (working tree clean)\n";
+                                }
+                            }
+
                             const auto localExists = GitCapture(repoPath, {"show-ref", "--verify", "--quiet", "refs/heads/" + targetBranch});
                             int checkoutExit = -1;
                             if (localExists.exitCode == 0) {
@@ -3344,14 +3621,32 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                                 checkoutExit = co.exitCode;
                                 branchLog += "checkout " + targetBranch + ": " + (co.exitCode == 0 ? "ok" : "failed") + "\n";
                                 if (co.exitCode != 0 && !co.stderrStr.empty()) {
-                                    branchLog += co.stderrStr;
+                                    branchLog += co.stderrStr + "\n";
                                 }
                             } else {
                                 const auto co = GitCapture(repoPath, {"checkout", "-b", targetBranch, "origin/" + targetBranch});
                                 checkoutExit = co.exitCode;
                                 branchLog += "checkout -b " + targetBranch + " origin/" + targetBranch + ": " + (co.exitCode == 0 ? "ok" : "failed") + "\n";
                                 if (co.exitCode != 0 && !co.stderrStr.empty()) {
-                                    branchLog += co.stderrStr;
+                                    branchLog += co.stderrStr + "\n";
+                                }
+                            }
+
+                            // Step 2d-ii: Stash pop after checkout
+                            if (stashCreated) {
+                                postProgress(body + "\n--- branch ---\n" + branchLog + "restoring stash...");
+                                const auto pop = GitCapture(repoPath, {"stash", "pop"});
+                                if (pop.exitCode == 0) {
+                                    branchLog += "stash pop: ok\n";
+                                } else {
+                                    branchLog += "stash pop: conflict - working tree left in conflict state\n";
+                                    if (!pop.stdoutStr.empty()) {
+                                        branchLog += pop.stdoutStr + "\n";
+                                    }
+                                    if (!pop.stderrStr.empty()) {
+                                        branchLog += pop.stderrStr + "\n";
+                                    }
+                                    branchLog += "WARNING: resolve conflicts manually, then run: git stash drop\n";
                                 }
                             }
 
@@ -3370,10 +3665,31 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                         body += "\n--- branch ---\n" + branchLog;
                     }
 
-                    // Refresh workspace manifest so next TUI launch uses cached discovery
-                    // instead of expensive full filesystem scan.
-                    postProgress(body + "\nrefreshing workspace manifest...");
-                    workspace::RefreshWorkspaceManifestAfterRegisteredChange(workspaceRoot);
+                    std::vector<RepoView> refreshedRepos;
+                    try {
+                        // Refresh workspace manifest and immediately rebuild live repo views
+                        // in this same worker, so completion stays single-phase and doesn't
+                        // leave preview/modal state waiting on a second refresh async cycle.
+                        postProgress(body + "\nrefreshing workspace manifest...");
+                        workspace::RefreshWorkspaceManifestAfterRegisteredChange(workspaceRoot);
+
+                        postProgress(body + "\nreloading repo status...");
+                        refreshedRepos = DiscoverRepoViews(dirtyOnly, discover.active, true);
+                    } catch (const std::exception& e) {
+                        body += std::string("\n--- refresh ---\nfailed: ") + e.what() + "\n";
+                        {
+                            std::lock_guard<std::mutex> lock(asyncMu);
+                            asyncState.showPreview = true;
+                            asyncState.previewTitle = label + " failed";
+                            asyncState.previewBody = std::move(body);
+                            asyncState.previewAutoCloseAfterRefresh = false;
+                            asyncState.hasResult = true;
+                            asyncState.hasError = true;
+                            asyncState.errorMessage = std::string("submodule init refresh failed: ") + e.what();
+                            asyncState.completionFooter = "command failed";
+                        }
+                        return;
+                    }
 
                     {
                         std::lock_guard<std::mutex> lock(asyncMu);
@@ -3381,6 +3697,8 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                         asyncState.previewTitle = label + (result.exitCode == 0 ? " complete" : " failed");
                         asyncState.previewBody = std::move(body);
                         asyncState.previewAutoCloseAfterRefresh = result.exitCode == 0;
+                        asyncState.repos = refreshedRepos;
+                        asyncState.refreshRepos = true;
                         asyncState.hasResult = true;
                         asyncState.completionFooter = result.exitCode == 0 ? "command finished" : "command failed";
                         if (result.exitCode != 0) {

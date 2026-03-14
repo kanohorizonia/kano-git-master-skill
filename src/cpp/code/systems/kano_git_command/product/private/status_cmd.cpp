@@ -16,6 +16,7 @@
 #include <stdexcept>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace kano::git::commands {
@@ -180,6 +181,7 @@ auto ResolveRepoFromSpec(const std::filesystem::path& InRoot,
     options.maxDepth = InMaxDepth;
     options.useCache = InUseCache;
     options.metadataLevel = "minimal";
+    options.scope = workspace::DiscoverScope::RegisteredOnly;
 
     const auto discovery = workspace::DiscoverRepos(options);
     std::vector<std::filesystem::path> exactMatches;
@@ -373,15 +375,20 @@ auto BuildRepoViews(const std::vector<workspace::RepoRecord>& InRepos, const std
             rows.push_back(MakeRepoView(repo, InRoot));
         }
     } else {
-        std::vector<std::future<RepoView>> futures;
-        futures.reserve(InRepos.size());
-        for (const auto& repo : InRepos) {
-            futures.push_back(std::async(std::launch::async, [&repo, &InRoot]() {
-                return MakeRepoView(repo, InRoot);
-            }));
-        }
-        for (auto& future : futures) {
-            rows.push_back(future.get());
+        const unsigned int hardware = std::thread::hardware_concurrency();
+        const std::size_t maxParallel = std::max<std::size_t>(1, hardware == 0 ? 4 : hardware);
+        for (std::size_t start = 0; start < InRepos.size(); start += maxParallel) {
+            const auto end = std::min(InRepos.size(), start + maxParallel);
+            std::vector<std::future<RepoView>> futures;
+            futures.reserve(end - start);
+            for (std::size_t idx = start; idx < end; ++idx) {
+                futures.push_back(std::async(std::launch::async, [&repo = InRepos[idx], &InRoot]() {
+                    return MakeRepoView(repo, InRoot);
+                }));
+            }
+            for (auto& future : futures) {
+                rows.push_back(future.get());
+            }
         }
     }
 
@@ -470,6 +477,7 @@ void RegisterStatus(CLI::App& InApp) {
         options.useCache = !*noCache;
         options.refreshCache = !*noRefreshCache;
         options.metadataLevel = "full";
+        options.scope = workspace::DiscoverScope::RegisteredOnly;
 
         const auto discovery = workspace::DiscoverRepos(options);
         const auto rows = BuildRepoViews(discovery.repos, options.rootDir);

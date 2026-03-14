@@ -9,6 +9,11 @@
 
 namespace kano::git::workspace {
 
+enum class DiscoverScope {
+    RegisteredOnly,
+    Full,
+};
+
 struct RepoRecord {
     std::filesystem::path path;
     std::string type;
@@ -30,6 +35,7 @@ struct DiscoverOptions {
     bool incremental = true;
     int maxStaleSeconds = 900;
     std::string metadataLevel = "full";
+    DiscoverScope scope = DiscoverScope::RegisteredOnly;
     std::function<void(const std::string&)> progressCallback;
 };
 
