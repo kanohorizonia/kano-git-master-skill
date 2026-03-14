@@ -1334,6 +1334,19 @@ auto CacheFilePath(const DiscoverOptions& InOptions, const std::filesystem::path
     return WorkspaceManifestFilePath(InRootAbs);
 }
 
+auto CachedReposMatchScope(const std::vector<RepoRecord>& InRepos, const DiscoverOptions& InOptions) -> bool {
+    if (InOptions.scope == DiscoverScope::Full) {
+        return true;
+    }
+
+    for (const auto& repo : InRepos) {
+        if (repo.type == "unregistered") {
+            return false;
+        }
+    }
+    return true;
+}
+
 auto LegacyDiscoverCacheFilePath(const std::filesystem::path& InRootAbs) -> std::filesystem::path {
     return CacheDirFor(InRootAbs) / "discover-repos.json";
 }
@@ -1604,6 +1617,41 @@ auto LoadWorkspaceManifestAny(const std::filesystem::path& InWorkspaceRoot) -> s
     return LoadWorkspaceStateDocumentAny(InWorkspaceRoot).manifest;
 }
 
+auto MergePersistedUnregisteredRepos(const std::filesystem::path& InWorkspaceRoot,
+                                     std::vector<RepoRecord>* IoRepos) -> void {
+    if (IoRepos == nullptr) {
+        return;
+    }
+
+    const auto existing = LoadWorkspaceManifestAny(InWorkspaceRoot);
+    if (!existing.has_value()) {
+        return;
+    }
+
+    for (const auto& repo : existing->repos) {
+        if (repo.type != "unregistered") {
+            continue;
+        }
+        std::error_code ec;
+        if (!std::filesystem::exists(repo.path, ec) || !std::filesystem::is_directory(repo.path, ec)) {
+            continue;
+        }
+        const bool existsAlready = std::any_of(IoRepos->begin(), IoRepos->end(), [&](const auto& current) {
+            return PathKey(current.path) == PathKey(repo.path);
+        });
+        if (!existsAlready) {
+            IoRepos->push_back(repo);
+        }
+    }
+
+    std::sort(IoRepos->begin(), IoRepos->end(), [](const auto& A, const auto& B) {
+        return PathKey(A.path) < PathKey(B.path);
+    });
+    IoRepos->erase(std::unique(IoRepos->begin(), IoRepos->end(), [](const auto& A, const auto& B) {
+        return PathKey(A.path) == PathKey(B.path);
+    }), IoRepos->end());
+}
+
 auto LoadTrustedWorkspaceManifest(const std::filesystem::path& InWorkspaceRoot, std::string* OutReason) -> std::optional<WorkspaceManifest> {
     const auto rootAbs = Normalize(std::filesystem::absolute(InWorkspaceRoot));
     const auto state = LoadWorkspaceStateDocumentAny(rootAbs);
@@ -1824,6 +1872,12 @@ auto DiscoverRepos(const DiscoverOptions& InOptions) -> DiscoveryResult {
             }
 
             if (valid) {
+                if (!CachedReposMatchScope(state.discoveryCache->repos, options)) {
+                    valid = false;
+                }
+            }
+
+            if (valid) {
                 result.repos = state.discoveryCache->repos;
                 std::sort(result.repos.begin(), result.repos.end(), [](const RepoRecord& A, const RepoRecord& B) {
                     return PathKey(A.path) < PathKey(B.path);
@@ -1841,10 +1895,24 @@ auto DiscoverRepos(const DiscoverOptions& InOptions) -> DiscoveryResult {
         CollectRegisteredSubmodulesRecursive(rootAbs, registered);
     }
 
-    reportProgress("discover: scanning filesystem for git repos");
-    const auto discovered = DiscoverGitRepos(rootAbs, options.maxDepth, ignoreRules);
-    reportProgress(std::format("discover: building repo metadata for {} repos", discovered.size()));
-    result.repos = BuildRepoRecords(rootAbs, discovered, registered, options.metadataLevel);
+    if (options.scope == DiscoverScope::RegisteredOnly) {
+        std::vector<std::filesystem::path> discovered;
+        discovered.reserve(registered.size() + 1);
+        discovered.push_back(rootAbs);
+        for (const auto& pathKey : registered) {
+            discovered.push_back(std::filesystem::path(pathKey));
+        }
+        SortUniquePaths(&discovered);
+        result.mode = "registered-only-scan";
+        reportProgress(std::format("discover: building repo metadata for {} registered repos", discovered.size()));
+        result.repos = BuildRepoRecords(rootAbs, discovered, registered, options.metadataLevel);
+        MergePersistedUnregisteredRepos(rootAbs, &result.repos);
+    } else {
+        reportProgress("discover: scanning filesystem for git repos");
+        const auto discovered = DiscoverGitRepos(rootAbs, options.maxDepth, ignoreRules);
+        reportProgress(std::format("discover: building repo metadata for {} repos", discovered.size()));
+        result.repos = BuildRepoRecords(rootAbs, discovered, registered, options.metadataLevel);
+    }
 
     if (options.useCache && options.cacheTtlSeconds > 0) {
         reportProgress("discover: saving workspace discovery cache");

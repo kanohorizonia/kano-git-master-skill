@@ -4,6 +4,7 @@
 #include "discovery.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <ctime>
 #include <filesystem>
 #include <iomanip>
@@ -76,6 +77,127 @@ auto RepoNameFromPath(const std::filesystem::path& InPath) -> std::string {
         return name;
     }
     return normalized.generic_string();
+}
+
+auto FormatNativeStatusJson(const std::vector<workspace::RepoRecord>& InRepos) -> std::string;
+auto FormatNativeStatusTable(const std::vector<workspace::RepoRecord>& InRepos, const std::filesystem::path& InRoot) -> std::string;
+
+auto FormatHumanDuration(std::chrono::milliseconds InDuration) -> std::string {
+    auto remaining = InDuration.count();
+    const long long hours = remaining / (60LL * 60LL * 1000LL);
+    remaining %= (60LL * 60LL * 1000LL);
+    const long long minutes = remaining / (60LL * 1000LL);
+    remaining %= (60LL * 1000LL);
+    const long long seconds = remaining / 1000LL;
+    remaining %= 1000LL;
+    const long long milliseconds = remaining;
+
+    std::ostringstream oss;
+    bool wrote = false;
+    auto append = [&](long long value, const char* suffix) {
+        const bool isMilliseconds = std::string(suffix) == "ms";
+        if (value == 0 && !isMilliseconds) {
+            return;
+        }
+        if (wrote) {
+            oss << ' ';
+        }
+        oss << value << suffix;
+        wrote = true;
+    };
+
+    append(hours, "h");
+    append(minutes, "m");
+    append(seconds, "s");
+    append(milliseconds, "ms");
+    return oss.str();
+}
+
+void RunDiscoverCommand(const std::string& InFormat,
+                        const std::string& InRoot,
+                        int InMaxDepth,
+                        const std::vector<std::string>& InExclude,
+                        bool InNoCache,
+                        bool InNoRefresh,
+                        bool InNoIncremental,
+                        int InCacheTtl,
+                        int InMaxStale,
+                        const std::string& InMetadata,
+                        workspace::DiscoverScope InScope) {
+    if (InFormat != "table" && InFormat != "json") {
+        std::cerr << "Error: invalid --format value: " << InFormat << " (expected table|json)\n";
+        std::exit(1);
+    }
+
+    workspace::DiscoverOptions options;
+    options.rootDir = InRoot.empty() ? std::filesystem::current_path() : std::filesystem::path(InRoot);
+    options.maxDepth = InMaxDepth;
+    options.excludePatterns = InExclude;
+    options.useCache = !InNoCache;
+    options.cacheTtlSeconds = InCacheTtl;
+    options.refreshCache = !InNoRefresh;
+    options.incremental = !InNoIncremental;
+    options.maxStaleSeconds = InMaxStale;
+    options.metadataLevel = InMetadata;
+    options.scope = InScope;
+    options.progressCallback = [](const std::string& InMessage) {
+        std::cerr << "[discover] " << InMessage << "\n";
+    };
+
+    std::cerr << "[discover] start root=" << options.rootDir.lexically_normal().generic_string()
+              << " cache=" << (options.useCache ? "on" : "off")
+              << " refresh=" << (options.refreshCache ? "on" : "off")
+              << " metadata=" << options.metadataLevel
+              << " scope=" << (options.scope == workspace::DiscoverScope::Full ? "full" : "registered-only")
+              << (options.scope == workspace::DiscoverScope::Full ? std::string(" depth=") + std::to_string(options.maxDepth) : std::string(" recursive=registered"))
+              << "\n";
+
+    const auto totalStart = std::chrono::steady_clock::now();
+    const auto discoverStart = totalStart;
+    auto discovery = workspace::DiscoverRepos(options);
+    const auto discoverEnd = std::chrono::steady_clock::now();
+
+    auto repos = discovery.repos;
+    std::sort(repos.begin(), repos.end(), [](const workspace::RepoRecord& A, const workspace::RepoRecord& B) {
+        return A.path.lexically_normal().generic_string() < B.path.lexically_normal().generic_string();
+    });
+
+    const auto manifestStart = std::chrono::steady_clock::now();
+    const auto manifest = workspace::BuildWorkspaceManifest(options.rootDir, repos);
+    std::cerr << "[discover] writing workspace manifest -> "
+              << manifest.manifestFile.lexically_normal().generic_string() << "\n";
+    if (!workspace::SaveWorkspaceManifest(manifest)) {
+        std::cerr << "Error: failed to write workspace manifest: "
+                  << manifest.manifestFile.lexically_normal().generic_string() << "\n";
+        std::exit(1);
+    }
+    const auto manifestEnd = std::chrono::steady_clock::now();
+    const auto totalEnd = manifestEnd;
+
+    const auto discoverElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(discoverEnd - discoverStart);
+    const auto manifestElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(manifestEnd - manifestStart);
+    const auto totalElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(totalEnd - totalStart);
+    const auto discoverElapsedText = FormatHumanDuration(discoverElapsed);
+    const auto manifestElapsedText = FormatHumanDuration(manifestElapsed);
+    const auto totalElapsedText = FormatHumanDuration(totalElapsed);
+    std::cerr << "[discover] complete mode=" << discovery.mode << " repos=" << repos.size()
+              << " elapsed=" << totalElapsedText << "\n";
+
+    std::cout << "Discovery mode: " << discovery.mode << "\n";
+    std::cout << "Discovery scope: " << (options.scope == workspace::DiscoverScope::Full ? "full" : "registered-only") << "\n";
+    std::cout << "Discovery cache: " << discovery.cacheFile.lexically_normal().generic_string() << "\n";
+    std::cout << "Workspace manifest: " << manifest.manifestFile.lexically_normal().generic_string() << "\n";
+    std::cout << "Repos discovered: " << repos.size() << "\n";
+    std::cout << "Discovery elapsed: " << discoverElapsedText << "\n";
+    std::cout << "Manifest write elapsed: " << manifestElapsedText << "\n";
+    std::cout << "Total elapsed: " << totalElapsedText << "\n\n";
+
+    if (InFormat == "json") {
+        std::cout << FormatNativeStatusJson(repos) << "\n";
+    } else {
+        std::cout << FormatNativeStatusTable(repos, options.rootDir) << "\n";
+    }
+    std::exit(0);
 }
 
 auto FormatNativeStatusJson(const std::vector<workspace::RepoRecord>& InRepos) -> std::string {
@@ -157,6 +279,7 @@ auto FormatNativeStatusTable(const std::vector<workspace::RepoRecord>& InRepos, 
 
 void RegisterDiscover(CLI::App& InApp) {
     auto* cmd = InApp.add_subcommand("discover", "Discover repositories and refresh workspace manifest");
+    auto* full = cmd->add_subcommand("full", "Discover repositories with full filesystem scan (includes unregistered repos)");
     auto* discoverFormat = new std::string{"table"};
     auto* discoverRoot = new std::string{"."};
     auto* discoverMaxDepth = new int{8};
@@ -170,7 +293,6 @@ void RegisterDiscover(CLI::App& InApp) {
 
     cmd->add_option("--format", *discoverFormat, "Output format: table|json")->default_str("table");
     cmd->add_option("--repo-root", *discoverRoot, "Repository root/start path");
-    cmd->add_option("--max-depth", *discoverMaxDepth, "Discovery max depth");
     cmd->add_option("--exclude", *discoverExclude, "Temporary scan-scope exclude override for this invocation only (repeatable; prefer .gitignore/.kogignore for shared policy)");
     cmd->add_flag("--no-cache", *discoverNoCache, "Disable discovery cache for this run");
     cmd->add_flag("--no-refresh-cache", *discoverNoRefresh, "Do not force cache refresh");
@@ -178,59 +300,45 @@ void RegisterDiscover(CLI::App& InApp) {
     cmd->add_option("--cache-ttl", *discoverCacheTtl, "Cache TTL seconds");
     cmd->add_option("--max-stale", *discoverMaxStale, "Incremental max stale seconds");
     cmd->add_option("--metadata-level", *discoverMetadata, "Metadata level: full|minimal");
+    full->add_option("--format", *discoverFormat, "Output format: table|json")->default_str("table");
+    full->add_option("--repo-root", *discoverRoot, "Repository root/start path");
+    full->add_option("--max-depth", *discoverMaxDepth, "Full discovery max depth");
+    full->add_option("--exclude", *discoverExclude, "Temporary scan-scope exclude override for this invocation only (repeatable; prefer .gitignore/.kogignore for shared policy)");
+    full->add_flag("--no-cache", *discoverNoCache, "Disable discovery cache for this run");
+    full->add_flag("--no-refresh-cache", *discoverNoRefresh, "Do not force cache refresh");
+    full->add_flag("--no-incremental", *discoverNoIncremental, "Disable incremental cache validation");
+    full->add_option("--cache-ttl", *discoverCacheTtl, "Cache TTL seconds");
+    full->add_option("--max-stale", *discoverMaxStale, "Incremental max stale seconds");
+    full->add_option("--metadata-level", *discoverMetadata, "Metadata level: full|minimal");
 
     cmd->callback([=]() {
-        if (*discoverFormat != "table" && *discoverFormat != "json") {
-            std::cerr << "Error: invalid --format value: " << *discoverFormat << " (expected table|json)\n";
-            std::exit(1);
-        }
+        RunDiscoverCommand(
+            *discoverFormat,
+            *discoverRoot,
+            *discoverMaxDepth,
+            *discoverExclude,
+            *discoverNoCache,
+            *discoverNoRefresh,
+            *discoverNoIncremental,
+            *discoverCacheTtl,
+            *discoverMaxStale,
+            *discoverMetadata,
+            workspace::DiscoverScope::RegisteredOnly);
+    });
 
-        workspace::DiscoverOptions options;
-        options.rootDir = discoverRoot->empty() ? std::filesystem::current_path() : std::filesystem::path(*discoverRoot);
-        options.maxDepth = *discoverMaxDepth;
-        options.excludePatterns = *discoverExclude;
-        options.useCache = !*discoverNoCache;
-        options.cacheTtlSeconds = *discoverCacheTtl;
-        options.refreshCache = !*discoverNoRefresh;
-        options.incremental = !*discoverNoIncremental;
-        options.maxStaleSeconds = *discoverMaxStale;
-        options.metadataLevel = *discoverMetadata;
-        options.progressCallback = [](const std::string& InMessage) {
-            std::cerr << "[discover] " << InMessage << "\n";
-        };
-
-        std::cerr << "[discover] start root=" << options.rootDir.lexically_normal().generic_string()
-                  << " depth=" << options.maxDepth
-                  << " cache=" << (options.useCache ? "on" : "off")
-                  << " refresh=" << (options.refreshCache ? "on" : "off")
-                  << " metadata=" << options.metadataLevel << "\n";
-
-        auto discovery = workspace::DiscoverRepos(options);
-        auto repos = discovery.repos;
-        std::sort(repos.begin(), repos.end(), [](const workspace::RepoRecord& A, const workspace::RepoRecord& B) {
-            return A.path.lexically_normal().generic_string() < B.path.lexically_normal().generic_string();
-        });
-        const auto manifest = workspace::BuildWorkspaceManifest(options.rootDir, repos);
-        std::cerr << "[discover] writing workspace manifest -> "
-                  << manifest.manifestFile.lexically_normal().generic_string() << "\n";
-        if (!workspace::SaveWorkspaceManifest(manifest)) {
-            std::cerr << "Error: failed to write workspace manifest: "
-                      << manifest.manifestFile.lexically_normal().generic_string() << "\n";
-            std::exit(1);
-        }
-        std::cerr << "[discover] complete mode=" << discovery.mode << " repos=" << repos.size() << "\n";
-
-        std::cout << "Discovery mode: " << discovery.mode << "\n";
-        std::cout << "Discovery cache: " << discovery.cacheFile.lexically_normal().generic_string() << "\n";
-        std::cout << "Workspace manifest: " << manifest.manifestFile.lexically_normal().generic_string() << "\n";
-        std::cout << "Repos discovered: " << repos.size() << "\n\n";
-
-        if (*discoverFormat == "json") {
-            std::cout << FormatNativeStatusJson(repos) << "\n";
-        } else {
-            std::cout << FormatNativeStatusTable(repos, options.rootDir) << "\n";
-        }
-        std::exit(0);
+    full->callback([=]() {
+        RunDiscoverCommand(
+            *discoverFormat,
+            *discoverRoot,
+            *discoverMaxDepth,
+            *discoverExclude,
+            *discoverNoCache,
+            *discoverNoRefresh,
+            *discoverNoIncremental,
+            *discoverCacheTtl,
+            *discoverMaxStale,
+            *discoverMetadata,
+            workspace::DiscoverScope::Full);
     });
 }
 

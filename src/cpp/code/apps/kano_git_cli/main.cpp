@@ -195,26 +195,36 @@ void RewriteDiscoverAlias(std::vector<std::string>& InOutArgs) {
         return;
     }
 
+    const bool isFullDiscover = InOutArgs.size() > 2 && InOutArgs[2] == "full";
     std::vector<std::string> normalized;
     normalized.reserve(InOutArgs.size() + 2);
     normalized.push_back(InOutArgs[0]);
     normalized.push_back("discover");
+    if (isFullDiscover) {
+        normalized.push_back("full");
+    }
 
     bool hasMaxDepth = false;
-    for (std::size_t i = 2; i < InOutArgs.size(); ++i) {
+    for (std::size_t i = isFullDiscover ? 3 : 2; i < InOutArgs.size(); ++i) {
         const std::string& arg = InOutArgs[i];
         if (arg == "--native-max-depth") {
-            normalized.push_back("--max-depth");
-            hasMaxDepth = true;
+            if (isFullDiscover) {
+                normalized.push_back("--max-depth");
+                hasMaxDepth = true;
+            }
             continue;
         }
         if (arg.rfind("--native-max-depth=", 0) == 0) {
-            normalized.push_back("--max-depth=" + arg.substr(std::string{"--native-max-depth="}.size()));
-            hasMaxDepth = true;
+            if (isFullDiscover) {
+                normalized.push_back("--max-depth=" + arg.substr(std::string{"--native-max-depth="}.size()));
+                hasMaxDepth = true;
+            }
             continue;
         }
         if (arg == "--max-depth" || arg.rfind("--max-depth=", 0) == 0) {
-            hasMaxDepth = true;
+            if (isFullDiscover) {
+                hasMaxDepth = true;
+            }
         }
         if (arg == "--native-no-cache" || arg == "--no-cache") {
             normalized.push_back("--no-cache");
@@ -226,7 +236,7 @@ void RewriteDiscoverAlias(std::vector<std::string>& InOutArgs) {
         normalized.push_back(arg);
     }
 
-    if (!hasMaxDepth) {
+    if (isFullDiscover && !hasMaxDepth) {
         normalized.push_back("--max-depth");
         normalized.push_back(std::to_string(DiscoverDefaultMaxDepth()));
     }
