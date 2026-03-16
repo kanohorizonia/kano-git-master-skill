@@ -5,6 +5,7 @@
 #include "shell_executor.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -18,6 +19,13 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <sys/ioctl.h>
+#include <unistd.h>
+#endif
 
 namespace kano::git::commands {
 namespace {
@@ -35,6 +43,17 @@ struct RepoView {
     std::string dirtyWorktrees;
 };
 
+struct TableLayout {
+    int indexWidth = 6;
+    int repoWidth = 24;
+    int branchWidth = 12;
+    int remoteWidth = 16;
+    int trackingWidth = 14;
+    int dirtyWidth = 7;
+    int worktreeDirtyWidth = 10;
+    int typeWidth = 8;
+};
+
 auto Trim(std::string InValue) -> std::string {
     while (!InValue.empty() && (InValue.back() == '\n' || InValue.back() == '\r' || InValue.back() == ' ' || InValue.back() == '\t')) {
         InValue.pop_back();
@@ -48,6 +67,135 @@ auto Trim(std::string InValue) -> std::string {
 
 auto GitCapture(const std::filesystem::path& InRepo, const std::vector<std::string>& InArgs) -> shell::ExecResult {
     return shell::ExecuteCommand("git", InArgs, shell::ExecMode::Capture, InRepo);
+}
+
+auto ParsePositiveIntEnv(const char* InName) -> int {
+    if (InName == nullptr) {
+        return 0;
+    }
+    const char* raw = std::getenv(InName);
+    if (raw == nullptr || *raw == '\0') {
+        return 0;
+    }
+    try {
+        return std::max(0, std::stoi(Trim(raw)));
+    } catch (const std::exception&) {
+        return 0;
+    }
+}
+
+auto DetectTerminalWidth() -> int {
+    if (const int columns = ParsePositiveIntEnv("COLUMNS"); columns > 0) {
+        return columns;
+    }
+#if defined(_WIN32)
+    CONSOLE_SCREEN_BUFFER_INFO info{};
+    const HANDLE stdoutHandle = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (stdoutHandle != INVALID_HANDLE_VALUE && stdoutHandle != nullptr && GetConsoleScreenBufferInfo(stdoutHandle, &info)) {
+        const auto width = static_cast<int>(info.srWindow.Right - info.srWindow.Left + 1);
+        if (width > 0) {
+            return width;
+        }
+    }
+#else
+    winsize size{};
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0 && size.ws_col > 0) {
+        return static_cast<int>(size.ws_col);
+    }
+#endif
+    return 120;
+}
+
+auto DisplayWidthForContent(const std::string& InText) -> int {
+    return static_cast<int>(InText.size()) + 2;
+}
+
+auto ComputeTypeWidth(const std::vector<RepoView>& InRows) -> int {
+    int width = DisplayWidthForContent("TYPE");
+    for (const auto& row : InRows) {
+        width = std::max(width, DisplayWidthForContent(row.type));
+    }
+    return std::clamp(width, 6, 18);
+}
+
+auto TruncateWithEllipsis(const std::string& InValue, int InWidth) -> std::string {
+    if (InWidth <= 0 || static_cast<int>(InValue.size()) <= InWidth) {
+        return InValue;
+    }
+    if (InWidth <= 3) {
+        return InValue.substr(0, static_cast<std::size_t>(InWidth));
+    }
+    return InValue.substr(0, static_cast<std::size_t>(InWidth - 3)) + "...";
+}
+
+auto PadRight(const std::string& InValue, int InWidth) -> std::string {
+    if (InWidth <= 0) {
+        return InValue;
+    }
+    if (static_cast<int>(InValue.size()) >= InWidth) {
+        return InValue;
+    }
+    return InValue + std::string(static_cast<std::size_t>(InWidth - static_cast<int>(InValue.size())), ' ');
+}
+
+auto ComputeTableLayout(const std::vector<RepoView>& InRows) -> TableLayout {
+    TableLayout layout;
+    layout.typeWidth = ComputeTypeWidth(InRows);
+
+    const int terminalWidth = DetectTerminalWidth();
+    const int fixedWidth = layout.indexWidth + layout.dirtyWidth + layout.worktreeDirtyWidth + layout.typeWidth;
+
+    struct DynamicColumn {
+        int minimum;
+        int desired;
+        int width;
+    };
+
+    std::array<DynamicColumn, 4> columns{{
+        DynamicColumn{14, DisplayWidthForContent("REPO"), 14},
+        DynamicColumn{8, DisplayWidthForContent("BRANCH"), 8},
+        DynamicColumn{8, DisplayWidthForContent("REMOTE"), 8},
+        DynamicColumn{10, DisplayWidthForContent("TRACKING"), 10},
+    }};
+
+    for (const auto& row : InRows) {
+        columns[0].desired = std::max(columns[0].desired, DisplayWidthForContent(row.repoName));
+        columns[1].desired = std::max(columns[1].desired, DisplayWidthForContent(row.branch));
+        columns[2].desired = std::max(columns[2].desired, DisplayWidthForContent(row.remote));
+        columns[3].desired = std::max(columns[3].desired, DisplayWidthForContent(row.tracking));
+    }
+
+    columns[0].desired = std::clamp(columns[0].desired, columns[0].minimum, 80);
+    columns[1].desired = std::clamp(columns[1].desired, columns[1].minimum, 24);
+    columns[2].desired = std::clamp(columns[2].desired, columns[2].minimum, 32);
+    columns[3].desired = std::clamp(columns[3].desired, columns[3].minimum, 20);
+
+    const int totalMinimumWidth = fixedWidth + columns[0].minimum + columns[1].minimum + columns[2].minimum + columns[3].minimum;
+    int remaining = std::max(0, terminalWidth - totalMinimumWidth);
+
+    while (remaining > 0) {
+        bool grew = false;
+        for (const std::size_t index : {std::size_t{0}, std::size_t{2}, std::size_t{1}, std::size_t{3}}) {
+            if (remaining == 0) {
+                break;
+            }
+            if (columns[index].width >= columns[index].desired) {
+                continue;
+            }
+            columns[index].width += 1;
+            remaining -= 1;
+            grew = true;
+        }
+        if (!grew) {
+            break;
+        }
+    }
+
+    layout.repoWidth = columns[0].width;
+    layout.branchWidth = columns[1].width;
+    layout.remoteWidth = columns[2].width;
+    layout.trackingWidth = columns[3].width;
+    return layout;
 }
 
 auto CurrentBranch(const std::filesystem::path& InRepo) -> std::string {
@@ -227,6 +375,7 @@ auto ResolveRepoFromSpec(const std::filesystem::path& InRoot,
 
 auto FormatTable(const std::vector<RepoView>& InRows) -> std::string {
     std::ostringstream oss;
+    const auto layout = ComputeTableLayout(InRows);
     std::set<std::string> groups;
     std::size_t dirtyCount = 0;
     for (const auto& row : InRows) {
@@ -239,16 +388,14 @@ auto FormatTable(const std::vector<RepoView>& InRows) -> std::string {
     oss << "SUMMARY: repos=" << InRows.size() << ", dirty=" << dirtyCount << ", groups=" << groups.size() << "\n";
 
     if (!InRows.empty()) {
-        oss << std::left
-            << std::setw(6) << "#"
-            << std::setw(24) << "REPO"
-            << std::setw(16) << "BRANCH"
-            << std::setw(24) << "REMOTE"
-            << std::setw(16) << "TRACKING"
-            << std::setw(8) << "DIRTY"
-            << std::setw(12) << "WT_DIRTY"
-            << "TYPE"
-            << "\n";
+        oss << PadRight("#", layout.indexWidth)
+            << PadRight("REPO", layout.repoWidth)
+            << PadRight("BRANCH", layout.branchWidth)
+            << PadRight("REMOTE", layout.remoteWidth)
+            << PadRight("TRACKING", layout.trackingWidth)
+            << PadRight("DIRTY", layout.dirtyWidth)
+            << PadRight("WT_DIRTY", layout.worktreeDirtyWidth)
+            << "TYPE\n";
     }
 
     std::string currentGroup;
@@ -259,29 +406,19 @@ auto FormatTable(const std::vector<RepoView>& InRows) -> std::string {
             oss << "\nGROUP: " << currentGroup << "\n";
         }
 
-        auto repoName = row.repoName;
-        if (repoName.size() > 22) {
-            repoName = repoName.substr(0, 19) + "...";
-        }
-        auto branch = row.branch;
-        if (branch.size() > 14) {
-            branch = branch.substr(0, 11) + "...";
-        }
-        auto remote = row.remote;
-        if (remote.size() > 22) {
-            remote = remote.substr(0, 19) + "...";
-        }
+        const auto repoName = TruncateWithEllipsis(row.repoName, std::max(1, layout.repoWidth - 1));
+        const auto branch = TruncateWithEllipsis(row.branch, std::max(1, layout.branchWidth - 1));
+        const auto remote = TruncateWithEllipsis(row.remote, std::max(1, layout.remoteWidth - 1));
+        const auto tracking = TruncateWithEllipsis(row.tracking, std::max(1, layout.trackingWidth - 1));
 
-        oss << std::left
-            << std::setw(6) << std::to_string(i + 1)
-            << std::setw(24) << repoName
-            << std::setw(16) << branch
-            << std::setw(24) << remote
-            << std::setw(16) << row.tracking
-            << std::setw(8) << (row.repoDirty ? "yes" : "no")
-            << std::setw(12) << (row.hasDirtyWorktree ? "yes" : "no")
-            << row.type
-            << "\n";
+        oss << PadRight(std::to_string(i + 1), layout.indexWidth)
+            << PadRight(repoName, layout.repoWidth)
+            << PadRight(branch, layout.branchWidth)
+            << PadRight(remote, layout.remoteWidth)
+            << PadRight(tracking, layout.trackingWidth)
+            << PadRight(row.repoDirty ? "yes" : "no", layout.dirtyWidth)
+            << PadRight(row.hasDirtyWorktree ? "yes" : "no", layout.worktreeDirtyWidth)
+            << row.type << "\n";
     }
 
     return oss.str();
