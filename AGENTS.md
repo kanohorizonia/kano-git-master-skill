@@ -131,8 +131,24 @@ Note: sourcing will also define globals used by those functions (see the script 
   - manage cleanup explicitly
   - print pass/fail counters and exit non-zero if failures occurred
 
+### C++ code conventions
+
+#### Human-readable time output
+- When outputting duration/timing information to users, always format as human-readable:
+  - `< 1s`: show as `Xms`
+  - `< 1m`: show as `Xs`
+  - `>= 1m`: show as `Xm Ys`
+  - `>= 1h`: show as `Xh Ym`
+- Example:
+  ```cpp
+  // Bad:  std::cout << "total_ms: " << total << "\n";
+  // Good: std::cout << "total: " << formatDuration(total) << "\n";
+  //        Output: "total: 2m 4s"
+  ```
+- Provide a reusable helper function `formatDuration(long long ms)` in common utility headers.
+
 ## Cursor / Copilot repository rules
-- No `.cursor/rules/`, `.cursorrules`, or `.github/copilot-instructions.md` found in this repo at time of writing.
+- No `.cursor/rules/`, `.cursorrules`, or `.github/copilot-instructions.md` found in this repo at time of setting.
 
 ## Agent notes (how to make changes that fit)
 - Keep changes **minimal and script-local**; avoid broad refactors unless requested.

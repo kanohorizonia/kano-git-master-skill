@@ -368,6 +368,42 @@ auto IsGitRepo(const std::filesystem::path& InRepo) -> bool {
     return GitCapture(InRepo, {"rev-parse", "--git-dir"}).exitCode == 0;
 }
 
+auto ResolveWorkspaceRootFromInvocation(const std::filesystem::path& InStartPath) -> std::filesystem::path {
+    auto current = InStartPath.lexically_normal();
+    if (current.empty()) {
+        current = std::filesystem::current_path().lexically_normal();
+    }
+
+    if (!std::filesystem::is_directory(current)) {
+        current = current.parent_path();
+    }
+
+    std::filesystem::path bestGitRoot;
+    auto cursor = current;
+    while (!cursor.empty()) {
+        if (IsGitRepo(cursor)) {
+            bestGitRoot = cursor;
+
+            const auto hasSkillRepo = std::filesystem::exists((cursor / ".agents" / "kano" / "kano-git-master-skill").lexically_normal());
+            const auto hasConventionSkill = std::filesystem::exists((cursor / ".agents" / "kano" / "kano-commit-convention" / "SKILL.md").lexically_normal());
+            if (hasSkillRepo || hasConventionSkill) {
+                return cursor.lexically_normal();
+            }
+        }
+
+        const auto parent = cursor.parent_path();
+        if (parent == cursor) {
+            break;
+        }
+        cursor = parent;
+    }
+
+    if (!bestGitRoot.empty()) {
+        return bestGitRoot.lexically_normal();
+    }
+    return current.lexically_normal();
+}
+
 auto GitPassThrough(const std::filesystem::path& InRepo, const std::vector<std::string>& InArgs) -> shell::ExecResult {
     return shell::ExecuteCommand("git", InArgs, shell::ExecMode::PassThrough, InRepo);
 }
@@ -1163,7 +1199,36 @@ auto BuildAiCommitPrompt(const std::filesystem::path& InWorkspaceRoot,
 }
 
 auto ExtractSingleLineMessage(const std::string& InText) -> std::string {
-    auto NormalizeAiLine = [](std::string line) -> std::string {
+    // --- Strip leading Unicode bullet/symbol characters (multi-byte UTF-8) ---
+    auto StripLeadingUnicodeBullets = [](std::string s) -> std::string {
+        // Common AI-output bullet/symbol UTF-8 byte sequences:
+        //   ● U+25CF (E2 97 8F)   ◆ U+25C6 (E2 97 86)   ▶ U+25B6 (E2 96 B6)
+        //   ► U+25BA (E2 96 BA)   ○ U+25CB (E2 97 8B)   ◉ U+25C9 (E2 97 89)
+        //   → U+2192 (E2 86 92)   • U+2022 (E2 80 A2)   ‣ U+2023 (E2 80 A3)
+        //   ✓ U+2713 (E2 9C 93)   ✗ U+2717 (E2 9C 97)   ✦ U+2726 (E2 9C A6)
+        //   ★ U+2605 (E2 98 85)   ☆ U+2606 (E2 98 86)
+        // All are 3-byte sequences starting with 0xE2.
+        static const std::string kBulletPrefixes[] = {
+            "\xE2\x97\x8F", "\xE2\x97\x86", "\xE2\x96\xB6", "\xE2\x96\xBA",
+            "\xE2\x97\x8B", "\xE2\x97\x89", "\xE2\x86\x92", "\xE2\x80\xA2",
+            "\xE2\x80\xA3", "\xE2\x9C\x93", "\xE2\x9C\x97", "\xE2\x9C\xA6",
+            "\xE2\x98\x85", "\xE2\x98\x86",
+        };
+        bool stripped = true;
+        while (stripped && s.size() >= 3) {
+            stripped = false;
+            for (const auto& prefix : kBulletPrefixes) {
+                if (s.rfind(prefix, 0) == 0) {
+                    s.erase(0, prefix.size());
+                    stripped = true;
+                    break;
+                }
+            }
+        }
+        return s;
+    };
+
+    auto NormalizeAiLine = [&StripLeadingUnicodeBullets](std::string line) -> std::string {
         line = Trim(std::move(line));
         if (line.empty()) {
             return {};
@@ -1171,6 +1236,12 @@ auto ExtractSingleLineMessage(const std::string& InText) -> std::string {
 
         if (line.rfind("- ", 0) == 0 || line.rfind("* ", 0) == 0) {
             line = Trim(line.substr(2));
+        }
+
+        // Strip leading Unicode bullet/symbol characters before ASCII-prefix cleanup.
+        line = Trim(StripLeadingUnicodeBullets(std::move(line)));
+        if (line.empty()) {
+            return {};
         }
 
         // Some providers return html-ish wrappers (e.g. "<p>...") or noisy prefixes ("??").
@@ -1204,19 +1275,84 @@ auto ExtractSingleLineMessage(const std::string& InText) -> std::string {
         return line;
     };
 
-    std::istringstream iss(InText);
-    std::string line;
-    while (std::getline(iss, line)) {
-        line = NormalizeAiLine(std::move(line));
-        if (line.empty()) {
-            continue;
+    // --- Conventional Commits / Bracketed Tag detection ---
+    // Matches: type(scope): msg, type: msg, type(scope)!: msg
+    static const std::regex kConventionalRe(
+        R"(^(feat|fix|refactor|chore|docs|test|ci|build|perf|style|revert)(\([^)]*\))?!?:\s+.+)",
+        std::regex_constants::icase);
+    // Matches: [Tag] msg, [Tag][SubTag] msg
+    static const std::regex kBracketedRe(R"(^\[[A-Za-z][^\]]*\].+)");
+
+    auto IsConventionalCommitLine = [&](const std::string& s) -> bool {
+        return std::regex_match(s, kConventionalRe) || std::regex_match(s, kBracketedRe);
+    };
+
+    // --- AI preamble / conversational narration detector ---
+    auto IsAiPreambleLine = [](const std::string& s) -> bool {
+        // Case-insensitive prefix check for common AI narration patterns.
+        auto lower = ToLower(s);
+        static const std::string kPreamblePrefixes[] = {
+            "reading the ",    "let me ",        "i'll ",         "i will ",
+            "here's ",         "here is ",       "based on ",     "looking at ",
+            "analyzing ",      "certainly",       "sure",          "of course",
+            "the commit ",     "this commit ",    "i've ",         "i have ",
+            "after reviewing", "after analyzing", "inspecting ",   "examining ",
+        };
+        for (const auto& prefix : kPreamblePrefixes) {
+            if (lower.rfind(prefix, 0) == 0) {
+                return true;
+            }
         }
-        if (line.rfind("```", 0) == 0) {
-            continue;
+        // Also reject lines that look like AI internal status (e.g. "Reading the provider prompt file...")
+        if (lower.find("provider prompt") != std::string::npos) {
+            return true;
         }
-        return line;
+        if (lower.find("commit message") != std::string::npos
+            && (lower.find("reading") != std::string::npos || lower.find("generating") != std::string::npos
+                || lower.find("creating") != std::string::npos)) {
+            return true;
+        }
+        return false;
+    };
+
+    // --- Two-pass extraction ---
+    // Pass 1: collect all normalized non-empty, non-code-fence lines.
+    std::vector<std::string> candidates;
+    {
+        std::istringstream iss(InText);
+        std::string line;
+        while (std::getline(iss, line)) {
+            line = NormalizeAiLine(std::move(line));
+            if (line.empty()) {
+                continue;
+            }
+            if (line.rfind("```", 0) == 0) {
+                continue;
+            }
+            candidates.push_back(std::move(line));
+        }
     }
-    return {};
+
+    if (candidates.empty()) {
+        return {};
+    }
+
+    // Pass 2a: prefer a line matching Conventional Commits or Bracketed Tag format.
+    for (const auto& c : candidates) {
+        if (IsConventionalCommitLine(c)) {
+            return c;
+        }
+    }
+
+    // Pass 2b: fall back to first non-preamble line.
+    for (const auto& c : candidates) {
+        if (!IsAiPreambleLine(c)) {
+            return c;
+        }
+    }
+
+    // Pass 2c: last resort — return first candidate even if it looks like preamble.
+    return candidates.front();
 }
 
 auto RunAiGenerate(const std::string& InProvider,
@@ -4804,6 +4940,12 @@ void RegisterAmend(CLI::App& InApp) {
     auto* repos = new std::string{};
     cmd->add_option("--repos", *repos, "Amend target repos (comma-separated). Default: current repo only");
 
+    auto* repoRoot = new std::string{};
+    cmd->add_option("--repo-root", *repoRoot, "Workspace root/start path used for repo-name lookup");
+
+    auto* target = new std::string{};
+    cmd->add_option("target", *target, "Optional repo target root (repo name or relative path)")->required(false);
+
     auto* provider = new std::string{};
     cmd->add_option("--ai-provider", *provider, "AI provider (copilot, codex, opencode)")
         ->default_str("auto");
@@ -4812,7 +4954,7 @@ void RegisterAmend(CLI::App& InApp) {
     cmd->add_option("--ai-model", *model, "AI model to use");
 
     auto* bAiAuto = new bool{false};
-    cmd->add_flag("--ai-auto", *bAiAuto, "Enable AI auto mode (provider auto + layered kog_config model selection)");
+    cmd->add_flag("--ai-auto,--ai", *bAiAuto, "Enable AI auto mode (provider auto + layered kog_config model selection)");
 
     auto* message = new std::string{};
     cmd->add_option("--message,-m", *message, "Amend commit message (skips AI generation)");
@@ -4827,7 +4969,11 @@ void RegisterAmend(CLI::App& InApp) {
     cmd->add_flag("--combine,--combine-unpushed,-U", *bCombineUnpushed, "Combine all local commits not pushed to upstream into one commit");
 
     cmd->callback([=]() {
-        const auto workspaceRoot = std::filesystem::current_path();
+        const auto invocationRoot = repoRoot->empty() ? std::filesystem::current_path() : std::filesystem::path(*repoRoot);
+        const auto resolvedTarget = target->empty()
+            ? invocationRoot.lexically_normal()
+            : ResolveRepoPath(invocationRoot.lexically_normal(), std::filesystem::path(*target));
+        const auto workspaceRoot = ResolveWorkspaceRootFromInvocation(invocationRoot.lexically_normal());
 
         NativeAiConfig ai;
         const bool aiRequested = *bAiAuto || !provider->empty() || !model->empty();
@@ -4849,15 +4995,22 @@ void RegisterAmend(CLI::App& InApp) {
                       << " review=" << (ai.reviewEnabled ? "on" : "off") << "\n";
         }
 
+        if (!repos->empty() && !target->empty()) {
+            std::cerr << "Error: positional target cannot be combined with --repos\n";
+            std::exit(2);
+        }
+
         auto reposCsv = Trim(*repos);
         std::vector<std::filesystem::path> repoList;
-        if (reposCsv.empty()) {
-            repoList.push_back(workspaceRoot);
-        } else {
+        if (!reposCsv.empty()) {
             repoList = BuildOrderedRepoList(workspaceRoot, reposCsv);
             if (repoList.empty()) {
-                repoList.push_back(workspaceRoot);
+                repoList.push_back(resolvedTarget);
             }
+        } else if (!target->empty()) {
+            repoList.push_back(resolvedTarget);
+        } else {
+            repoList.push_back(std::filesystem::current_path().lexically_normal());
         }
 
         std::vector<RepoAmendResult> results;

@@ -155,6 +155,16 @@ auto ReadTextFile(const std::filesystem::path& InPath) -> std::string {
     return buffer.str();
 }
 
+auto LongestLineLength(const std::string& InText) -> std::size_t {
+    std::istringstream iss(InText);
+    std::string line;
+    std::size_t longest = 0;
+    while (std::getline(iss, line)) {
+        longest = std::max(longest, line.size());
+    }
+    return longest;
+}
+
 auto TouchFile(const std::filesystem::path& InPath) -> void {
     std::filesystem::create_directories(InPath.parent_path());
     std::ofstream out(InPath, std::ios::binary | std::ios::trunc);
@@ -998,6 +1008,36 @@ TEST_CASE("commit_push_secret_gate_can_be_disabled_explicitly", "[functional][se
     REQUIRE(behind == 0);
     REQUIRE(ahead == 0);
     RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("repo_status_table_adapts_repo_column_to_terminal_width", "[functional][status][table-width]") {
+    const auto sandbox = CreateSandboxWorkspace("status-table-width");
+    const auto longRepo = (sandbox.root / "repository-name-that-should-expand-with-terminal-width").lexically_normal();
+
+    RequireSuccess(RunGit({"init", longRepo.string()}, sandbox.root), "init long-name repo");
+
+    const auto narrow = RunKogWithEnv(
+        {"repo", "status", longRepo.string(), "--repo-root", sandbox.root.string()},
+        sandbox.root,
+        {{"COLUMNS", "80"}});
+    INFO(narrow.stdoutText);
+    INFO(narrow.stderrText);
+    REQUIRE(narrow.exitCode == 0);
+
+    const auto wide = RunKogWithEnv(
+        {"repo", "status", longRepo.string(), "--repo-root", sandbox.root.string()},
+        sandbox.root,
+        {{"COLUMNS", "140"}});
+    INFO(wide.stdoutText);
+    INFO(wide.stderrText);
+    REQUIRE(wide.exitCode == 0);
+
+    const auto repoName = longRepo.filename().string();
+    REQUIRE(narrow.stdoutText.find(repoName) == std::string::npos);
+    REQUIRE(wide.stdoutText.find(repoName) != std::string::npos);
+    REQUIRE(LongestLineLength(narrow.stdoutText) <= 80);
+
+    RemoveSandboxWorkspace(sandbox);
 }
 
 TEST_CASE("detached_head_recoverable_converges", "[functional][commit-push][detached-head]") {

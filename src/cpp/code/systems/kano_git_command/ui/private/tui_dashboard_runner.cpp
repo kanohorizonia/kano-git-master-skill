@@ -34,6 +34,9 @@
 
 #ifdef KOG_PLATFORM_WINDOWS
 #include <windows.h>
+#ifdef RGB
+#undef RGB
+#endif
 #else
 #include <termios.h>
 #include <unistd.h>
@@ -2125,6 +2128,14 @@ auto BuildDiscoverLines(const std::vector<RepoView>& repos, const std::filesyste
 auto RunFtxuiDashboard(CLI::App& app) -> int {
     using namespace ftxui;
 
+#ifdef KOG_PLATFORM_WINDOWS
+    // Ensure the Windows console interprets subprocess output as UTF-8.
+    // Without this, non-ASCII characters (bullets, CJK, etc.) captured from
+    // child processes via CreateProcessA + pipes render as mojibake.
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+#endif
+
     bool dirtyOnly = false;
     bool filterMode = false;
     const auto workspaceRoot = std::filesystem::current_path().lexically_normal();
@@ -2155,16 +2166,19 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
         std::cerr << "[tui] " << InMessage << std::endl;
     };
 
-    const Decorator kTitleStyle = [](Element element) { return element | bold | color(Color::White); };
-    const Decorator kSectionTitleStyle = [](Element element) { return element | bold | color(Color::Yellow); };
-    const Decorator kInfoStyle = [](Element element) { return element | color(Color::BlueLight); };
-    const Decorator kMutedStyle = [](Element element) { return element | dim | color(Color::GrayDark); };
-    const Decorator kSuccessStyle = [](Element element) { return element | color(Color::Green); };
-    const Decorator kWarningStyle = [](Element element) { return element | color(Color::Yellow); };
-    const Decorator kErrorStyle = [](Element element) { return element | color(Color::Red); };
-    const Decorator kRunningStyle = [](Element element) { return element | color(Color::CyanLight); };
-    const Decorator kSelectedStyle = [](Element element) { return element | inverted | bold; };
-    const Decorator kHighlightStyle = [](Element element) { return element | bold | color(Color::BlueLight); };
+    const Decorator kTitleStyle = [](Element element) { return element | bold | color(Color::RGB(235, 235, 235)); };
+    const Decorator kSectionTitleStyle = [](Element element) { return element | bold | color(Color::RGB(255, 215, 120)); };
+    const Decorator kInfoStyle = [](Element element) { return element | color(Color::RGB(140, 210, 255)); };
+    const Decorator kSecondaryStyle = [](Element element) { return element | color(Color::RGB(210, 210, 210)); };
+    const Decorator kMutedStyle = [](Element element) { return element | color(Color::RGB(180, 180, 180)); };
+    const Decorator kSuccessStyle = [](Element element) { return element | color(Color::RGB(120, 230, 140)); };
+    const Decorator kWarningStyle = [](Element element) { return element | color(Color::RGB(255, 210, 80)); };
+    const Decorator kErrorStyle = [](Element element) { return element | color(Color::RGB(255, 110, 110)); };
+    const Decorator kRunningStyle = [](Element element) { return element | color(Color::RGB(120, 220, 255)); };
+    const Decorator kSelectedStyle = [](Element element) {
+        return element | bold | color(Color::White) | bgcolor(Color::RGB(50, 90, 160));
+    };
+    const Decorator kHighlightStyle = [](Element element) { return element | bold | color(Color::RGB(120, 220, 255)); };
     const Decorator kPlainStyle = [](Element element) { return element; };
 
     enum class StatusTone {
@@ -2509,7 +2523,7 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
     };
 
     auto command_supports_target_scope = [](const std::string& command) {
-        return command == "commit" || command == "ca" || command == "commit-push" || command == "cp" || command == "cpa" || command == "push" || command == "log" || command == "slog";
+        return command == "commit" || command == "ca" || command == "commit-push" || command == "cp" || command == "cpa" || command == "push" || command == "log" || command == "slog" || command == "amend";
     };
 
     auto has_option = [](const std::vector<std::string>& args, const std::string& longOpt, const std::string& shortOpt = std::string()) {
@@ -2588,25 +2602,42 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                                   const std::vector<std::string>& InArgs,
                                   const std::string& InCommandText,
                                   const std::string& InLabel) {
+        const auto repoKey = CanonicalPathString(InRepo);
+        const auto repoDisplay = DisplayRepoPath(workspaceRoot, InRepo);
         preview.active = true;
         preview.running = true;
         preview.isError = false;
         preview.autoCloseAfterRefresh = false;
         preview.title = InLabel;
         preview.body = "state: running\nrepo: " + InRepo.lexically_normal().generic_string() + "\nscope: " + command_scope_label() + "\ncommand: " + InCommandText + "\n\n(waiting for command output...)";
-        if (!begin_async_operation(InLabel, [&, InRepo, InArgs, InCommandText, InLabel]() {
+        if (!begin_async_operation(InLabel, [&, InRepo, InArgs, InCommandText, InLabel, repoKey, repoDisplay]() {
                 const auto result = shell::ExecuteCommand(ResolveKanoGitBinaryCommand(), InArgs, shell::ExecMode::Capture, InRepo);
                 std::string body = "repo: " + InRepo.lexically_normal().generic_string() + "\n"
                     + "scope: " + command_scope_label() + "\n"
                     + "command: " + InCommandText + "\n"
                     + "exit: " + std::to_string(result.exitCode) + "\n\n";
                 body += !result.stdoutStr.empty() ? result.stdoutStr : result.stderrStr;
+                std::optional<RepoView> refreshedRow;
+                if (result.exitCode == 0) {
+                    auto it = std::find_if(repos.begin(), repos.end(), [&](const RepoView& row) {
+                        return CanonicalPathString(row.path) == repoKey;
+                    });
+                    if (it != repos.end()) {
+                        refreshedRow = BuildLiveRepoView(workspaceRoot, *it);
+                    }
+                }
                 std::lock_guard<std::mutex> lock(asyncMu);
                 asyncState.showPreview = true;
                 asyncState.previewTitle = InLabel + " result";
                 asyncState.previewBody = std::move(body);
                 asyncState.hasResult = true;
                 asyncState.completionFooter = result.exitCode == 0 ? "command finished" : "command failed";
+                if (refreshedRow.has_value()) {
+                    asyncState.refreshSelectedRepo = true;
+                    asyncState.refreshedRepo = std::move(*refreshedRow);
+                    asyncState.refreshedRepoKey = repoKey;
+                    asyncState.completionFooter = "repo refreshed: " + repoDisplay;
+                }
                 if (result.exitCode != 0) {
                     asyncState.hasError = true;
                     asyncState.errorMessage = "command failed";
@@ -2870,10 +2901,10 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
             tone = StatusTone::Warning;
         }
         auto row = compact_status_icon(tone).empty()
-            ? text(state.label) | color(Color::GrayLight)
+            ? text(state.label) | kSecondaryStyle
             : hbox({
                   text(compact_status_icon(tone) + std::string(" ")) | tone_style(tone),
-                  text(state.label) | color(Color::GrayLight),
+                  text(state.label) | kSecondaryStyle,
               });
         if (state.label.find("(uninit)") != std::string::npos) {
             row = row | kWarningStyle;
@@ -3800,7 +3831,8 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                         history.detailPageIndex = std::clamp(history.detailPageIndex, 0, pageCount - 1);
 
                         if (event == Event::Character('m')) {
-                            history.detailMode = (history.detailMode + 1) % 3;
+                            // Cycle: summary(0) <-> patch(2), skip files mode as it's not very informative
+                            history.detailMode = (history.detailMode == 0) ? 2 : 0;
                             auto& cache = historyCache[key];
                             const auto dirtyPrefix = isDirtyWorkingTree ? RefreshDirtyToken(cache, repos[history.repoIndex].path) : std::string();
                             const auto nextDetailKey = (isDirtyWorkingTree ? dirtyPrefix : history.detailSha) + "|" + std::to_string(history.detailMode);
@@ -3820,7 +3852,7 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                             history.detailBody = detail == nullptr ? std::string() : *detail;
                             history.detailSelectedSection = 0;
                             history.detailPageIndex = 0;
-                            footer = history.detailMode == 0 ? "detail mode: summary" : (history.detailMode == 1 ? "detail mode: files" : "detail mode: patch");
+                            footer = history.detailMode == 0 ? "detail mode: summary" : "detail mode: patch";
                             return true;
                         }
                         if (event == Event::ArrowUp || event == Event::Character('k') || event == Event::Character('w')) {
@@ -3963,8 +3995,9 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
             }
 
             if (event == Event::Character('m')) {
-                history.detailMode = (history.detailMode + 1) % 3;
-                footer = history.detailMode == 0 ? "detail mode: summary" : (history.detailMode == 1 ? "detail mode: files" : "detail mode: patch");
+                // Cycle: summary(0) <-> patch(2), skip files mode as it's not very informative
+                history.detailMode = (history.detailMode == 0) ? 2 : 0;
+                footer = history.detailMode == 0 ? "detail mode: summary" : "detail mode: patch";
                 return true;
             }
 
@@ -4047,7 +4080,7 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                 pageRows.push_back(text(discover.lines[static_cast<std::size_t>(i)]));
             }
             if (pageRows.empty()) {
-                pageRows.push_back(text("(no lines in this page)") | dim);
+                pageRows.push_back(text("(no lines in this page)") | kMutedStyle);
             }
 
             rightPanel = vbox({
@@ -4060,7 +4093,7 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                 status_text("page: " + std::to_string(clampedPage + 1) + "/" + std::to_string(totalPages) +
                      "  lines: " + std::to_string(start + 1) + "-" + std::to_string(std::max(start + 1, end)) +
                      "/" + std::to_string(discover.lines.size())),
-                text("controls: [ or PgDown prev page | ] or PgUp next page | Esc/q close") | kMutedStyle,
+                text("controls: [ or PgDown prev page | ] or PgUp next page | Esc/q close") | kSecondaryStyle,
                 separator(),
                 vbox(std::move(pageRows)) | border,
             }) | border;
@@ -4069,29 +4102,29 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                 status_title("Help"),
                 separator(),
                 text("Command Mode") | kInfoStyle,
-                text(": enter command mode, Esc cancel, Enter execute") | kMutedStyle,
-                text("Try :refresh, :discover, or :discover dirty") | kMutedStyle,
-                text("Tab/Up/Down navigate candidates, Enter accepts selected candidate") | kMutedStyle,
+                text(": enter command mode, Esc cancel, Enter execute") | kSecondaryStyle,
+                text("Try :refresh, :discover, or :discover dirty") | kSecondaryStyle,
+                text("Tab/Up/Down navigate candidates, Enter accepts selected candidate") | kSecondaryStyle,
                 separator(),
                 text("Shortcuts") | kInfoStyle,
-                text("r refresh | d dirty-only | f fetch | c/C commit preview/execute") | kMutedStyle,
-                text("p/P push preview/execute | Enter history | q quit") | kMutedStyle,
+                text("r refresh | d dirty-only | f fetch | c/C commit preview/execute") | kSecondaryStyle,
+                text("p/P push preview/execute | Enter history | q quit") | kSecondaryStyle,
                 separator(),
-                text("Press Esc or q to close") | kMutedStyle,
+                text("Press Esc or q to close") | kSecondaryStyle,
             }) | border;
         } else if (tui_state.GetMode() == kano::git::commands::TuiMode::CommandPalette) {
             Elements rows;
             if (tui_state.palette_state.filtered_commands.empty()) {
-                rows.push_back(text("(no matching commands)") | dim);
+                rows.push_back(text("(no matching commands)") | kMutedStyle);
             } else {
                 for (std::size_t i = 0; i < tui_state.palette_state.filtered_commands.size(); ++i) {
                     const auto& item = tui_state.palette_state.filtered_commands[i];
                     const bool selected = static_cast<int>(i) == tui_state.palette_state.selected_index;
                     auto row = hbox({
                         text(selected ? "> " : "  "),
-                        text("[" + item.category + "] ") | kMutedStyle,
+                        text("[" + item.category + "] ") | kInfoStyle,
                         text(item.name) | bold,
-                        text(" - " + item.description) | kMutedStyle,
+                        text(" - " + item.description) | kSecondaryStyle,
                     });
                     if (selected) {
                         row = row | kSelectedStyle;
@@ -4259,7 +4292,15 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                 separator(),
                 text(preview.running ? "Running... q will close panel only" : "Press q to close preview") | (preview.running ? kInfoStyle : kMutedStyle),
                 separator(),
-                paragraph(preview.body),
+                [&] {
+                    const auto lines = SplitLines(preview.body);
+                    Elements elems;
+                    elems.reserve(lines.size());
+                    for (const auto& line : lines) {
+                        elems.push_back(line.empty() ? text("") : paragraph(line));
+                    }
+                    return vbox(std::move(elems));
+                }(),
             }) | border;
         } else if (history.active && !repos.empty()) {
             const auto& repo = repos[history.repoIndex];
@@ -4324,7 +4365,7 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                         bodyRows.push_back(paragraph("(empty page)") | kMutedStyle);
                     }
 
-                    const auto modeLabel = history.detailMode == 0 ? "summary" : (history.detailMode == 1 ? "files" : "patch");
+                    const auto modeLabel = history.detailMode == 0 ? "summary" : "patch";
                     const auto sectionLabel = sectionCount == 0
                         ? std::string("0/0")
                         : std::to_string(selectedSection + 1) + "/" + std::to_string(sectionCount);
@@ -4355,7 +4396,7 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                             }) | flex,
                         }) | flex,
                         separator(),
-                        text("detail controls: up/down change, left/right page, m mode, Esc/q close") | kMutedStyle,
+                        text("detail controls: up/down change, left/right page, m mode, Esc/q close") | kSecondaryStyle,
                     }) | border;
                 }
             } else {
@@ -4508,7 +4549,7 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
 
             auto quickStats = [&]() {
                 if (selectedEntry == nullptr) {
-                    return text("quick stats: (no history entries)") | kMutedStyle;
+                    return text("quick stats: (no history entries)") | kSecondaryStyle;
                 }
                 if (selectedEntry->isDirtyWorkingTree) {
                     return text("quick stats: dirty working tree | " + std::to_string(repo.dirtyFiles.size()) + " files") | kWarningStyle;
@@ -4520,7 +4561,7 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                     mutableCache.commitQuickStats.put(selectedEntry->sha, FetchCommitQuickStats(repo.path, selectedEntry->sha));
                     stat = mutableCache.commitQuickStats.get(selectedEntry->sha);
                 }
-                return text("quick stats: " + (stat == nullptr ? std::string("(unavailable)") : *stat)) | kMutedStyle;
+                return text("quick stats: " + (stat == nullptr ? std::string("(unavailable)") : *stat)) | kSecondaryStyle;
             }();
 
                 rightPanel = vbox({
@@ -4548,7 +4589,7 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                         filler(),
                         status_text("search: " + (history.searchQuery.empty() ? "(none)" : "/" + history.searchQuery)),
                         filler(),
-                        status_text("detail: " + std::string(history.detailMode == 0 ? "summary" : (history.detailMode == 1 ? "files" : "patch"))),
+                        status_text("detail: " + std::string(history.detailMode == 0 ? "summary" : "patch")),
                         filler(),
                         status_text("sort: " + std::string(history.sortMode == 0 ? "time-desc" : (history.sortMode == 1 ? "time-asc" : "match-first"))),
                     }),
@@ -4557,7 +4598,7 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                     quickStats,
                     text(""),
                     separator(),
-                    text("controls: [ prev-repo, ] next-repo, left/right page, up/down line->page, Enter detail, m(mode), o(sort), /(search), n(next), q close") | kMutedStyle,
+                    text("controls: [ prev-repo, ] next-repo, left/right page, up/down line->page, Enter detail, m(mode), o(sort), /(search), n(next), q close") | kSecondaryStyle,
                 }) | border;
             }
         } else if (!repos.empty() && RepoIndexFromDisplayed(displayedRepoIndices, selectedDisplayed) >= 0) {
@@ -4675,8 +4716,8 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                     const bool selected = static_cast<int>(i) == tui_state.command_state.candidates.selected_index;
                     auto row = hbox({
                         text(selected ? "> " : "  "),
-                        text(c.text) | bold,
-                        text(" - " + c.description) | kMutedStyle,
+                        text(c.text) | bold | color(Color::White),
+                        text(" - " + c.description) | kSecondaryStyle,
                     });
                     if (selected) {
                         row = row | kSelectedStyle;
@@ -4691,7 +4732,7 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
             const auto cursorPos = std::min(tui_state.command_state.GetCursorPos(), inputLine.size());
             inputLine.insert(cursorPos, "█");
             commandRows.push_back(status_text("scope: " + command_scope_label()));
-            commandRows.push_back(text("command controls: g toggle scope (empty input), Tab complete, Enter execute, Esc cancel") | kMutedStyle);
+            commandRows.push_back(text("command controls: g toggle scope (empty input), Tab complete, Enter execute, Esc cancel") | kSecondaryStyle);
             commandRows.push_back(separator());
             commandRows.push_back((text(":" + inputLine) | color(Color::White)) | border);
             commandRows.push_back(separator());
@@ -4736,13 +4777,13 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
         rootRows.push_back(separator());
         if (!history.active) {
             rootRows.push_back(paragraph("Command-input-first workflow + global repo view + incremental history pager.") | kInfoStyle);
-            rootRows.push_back(paragraph("command examples: :refresh | :discover | :discover dirty") | kMutedStyle);
+            rootRows.push_back(paragraph("command examples: :refresh | :discover | :discover dirty") | kSecondaryStyle);
             rootRows.push_back(status_paragraph("repo filter: " + (repoFilter.empty() ? "(none)" : repoFilter)));
         }
         rootRows.push_back([&]() {
                         std::lock_guard<std::mutex> lock(asyncMu);
                         if (!asyncState.busy) {
-                        return paragraph("") | kMutedStyle;
+                        return paragraph("") | kSecondaryStyle;
                         }
                         std::string backgroundText = "background: " + asyncState.label + " | " + asyncState.progress;
                         if (asyncState.label == "refresh" && asyncState.progress.rfind("discover:", 0) == 0) {
@@ -4751,7 +4792,7 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                         return status_paragraph(backgroundText);
                     }());
         if (!history.active) {
-            rootRows.push_back(paragraph("tree toggle key: t (collapse/expand child repos)") | kMutedStyle);
+            rootRows.push_back(paragraph("tree toggle key: t (collapse/expand child repos)") | kSecondaryStyle);
         }
         rootRows.push_back(separator());
         rootRows.push_back(mainPanel | flex);

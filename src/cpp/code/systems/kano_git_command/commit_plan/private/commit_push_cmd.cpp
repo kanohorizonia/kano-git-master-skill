@@ -2199,18 +2199,28 @@ void RegisterCommitPush(CLI::App& InApp) {
                 planPipelineMillis = std::chrono::duration_cast<std::chrono::milliseconds>(planPipelineEnd - planPipelineStart).count();
                 const auto autoTotalEnd = std::chrono::steady_clock::now();
                 const auto autoTotalMillis = std::chrono::duration_cast<std::chrono::milliseconds>(autoTotalEnd - totalStart).count();
+                auto formatDuration = [](long long ms) -> std::string {
+                    if (ms < 1000) return std::to_string(ms) + "ms";
+                    if (ms < 60000) return std::to_string(ms / 1000) + "s";
+                    const auto minutes = ms / 60000;
+                    const auto seconds = (ms % 60000) / 1000;
+                    if (minutes < 60) return std::to_string(minutes) + "m " + std::to_string(seconds) + "s";
+                    const auto hours = minutes / 60;
+                    const auto remainMins = minutes % 60;
+                    return std::to_string(hours) + "h " + std::to_string(remainMins) + "m";
+                };
                 std::cout << "\n=== commit-push auto-plan timings ===\n";
-                std::cout << "plan_new_ms: " << planNewMillis << "\n";
-                std::cout << "ignore_runbook_ms: " << ignoreRunbookMillis << "\n";
-                std::cout << "ignore_apply_ms: " << ignoreApplyMillis << "\n";
-                std::cout << "commit_runbook_ms: " << commitRunbookMillis << "\n";
+                std::cout << "plan_new: " << formatDuration(planNewMillis) << "\n";
+                std::cout << "ignore_runbook: " << formatDuration(ignoreRunbookMillis) << "\n";
+                std::cout << "ignore_apply: " << formatDuration(ignoreApplyMillis) << "\n";
+                std::cout << "commit_runbook: " << formatDuration(commitRunbookMillis) << "\n";
                 if (aiFillMillis.has_value()) {
-                    std::cout << "ai_fill_ms: " << *aiFillMillis << "\n";
+                    std::cout << "ai_fill: " << formatDuration(*aiFillMillis) << "\n";
                 } else {
-                    std::cout << "ai_fill_ms: n/a\n";
+                    std::cout << "ai_fill: n/a\n";
                 }
-                std::cout << "plan_pipeline_ms: " << planPipelineMillis << "\n";
-                std::cout << "total_ms: " << autoTotalMillis << "\n";
+                std::cout << "plan_pipeline: " << formatDuration(planPipelineMillis) << "\n";
+                std::cout << "total: " << formatDuration(autoTotalMillis) << "\n";
                 std::exit(pipelineCode);
             }
         }
