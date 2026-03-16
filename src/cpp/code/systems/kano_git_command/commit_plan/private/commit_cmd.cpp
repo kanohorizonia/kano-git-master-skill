@@ -1639,6 +1639,68 @@ auto JoinReposCsv(const std::vector<std::filesystem::path>& InRepos) -> std::str
     return out;
 }
 
+auto RepoKey(const std::filesystem::path& InPath) -> std::string {
+    std::error_code ec;
+    const auto canonical = std::filesystem::weakly_canonical(InPath, ec);
+    const auto normalized = (ec ? InPath : canonical).lexically_normal().generic_string();
+#if defined(_WIN32)
+    return ToLower(normalized);
+#else
+    return normalized;
+#endif
+}
+
+auto DiscoverRegisteredPathsRecursive(const std::filesystem::path& InWorkspaceRoot) -> std::vector<std::filesystem::path> {
+    std::vector<std::filesystem::path> out;
+    std::vector<std::filesystem::path> queue{std::filesystem::weakly_canonical(InWorkspaceRoot)};
+
+    while (!queue.empty()) {
+        const auto current = queue.back();
+        queue.pop_back();
+
+        const auto gitmodules = current / ".gitmodules";
+        if (!std::filesystem::exists(gitmodules)) {
+            continue;
+        }
+
+        const auto pathsResult = GitCapture(current, {"config", "-f", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$"});
+        if (pathsResult.exitCode != 0) {
+            continue;
+        }
+
+        std::istringstream iss(pathsResult.stdoutStr);
+        std::string line;
+        while (std::getline(iss, line)) {
+            line = Trim(line);
+            if (line.empty()) {
+                continue;
+            }
+            const auto sp = line.find(' ');
+            if (sp == std::string::npos || sp + 1 >= line.size()) {
+                continue;
+            }
+            const auto relPath = line.substr(sp + 1);
+            const auto full = std::filesystem::weakly_canonical(current / relPath).lexically_normal();
+            const auto fullKey = RepoKey(full);
+            const bool existsAlready = std::any_of(out.begin(), out.end(), [&](const auto& candidate) {
+                return RepoKey(candidate) == fullKey;
+            });
+            if (!existsAlready) {
+                out.push_back(full);
+                queue.push_back(full);
+            }
+        }
+    }
+
+    std::sort(out.begin(), out.end(), [](const auto& A, const auto& B) {
+        return RepoKey(A) < RepoKey(B);
+    });
+    out.erase(std::unique(out.begin(), out.end(), [](const auto& A, const auto& B) {
+        return RepoKey(A) == RepoKey(B);
+    }), out.end());
+    return out;
+}
+
 auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<std::filesystem::path>;
 
 auto NormalizePath(const std::filesystem::path& InPath) -> std::filesystem::path {
@@ -1646,7 +1708,7 @@ auto NormalizePath(const std::filesystem::path& InPath) -> std::filesystem::path
 }
 
 auto ToGeneric(const std::filesystem::path& InPath) -> std::string {
-    return NormalizePath(InPath).generic_string();
+    return RepoKey(NormalizePath(InPath));
 }
 
 auto ResolveRepoPath(const std::filesystem::path& InWorkspaceRoot, const std::filesystem::path& InPath) -> std::filesystem::path {
@@ -1862,11 +1924,27 @@ auto DiscoverWorkspaceRepoRecords(const std::filesystem::path& InRoot,
                 repo.hasChanges = status.exitCode == 0 && !Trim(status.stdoutStr).empty();
             }
             std::sort(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
-                return A.path.lexically_normal().generic_string() < B.path.lexically_normal().generic_string();
+                return RepoKey(A.path) < RepoKey(B.path);
             });
             repos.erase(std::unique(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
-                return A.path.lexically_normal().generic_string() == B.path.lexically_normal().generic_string();
+                return RepoKey(A.path) == RepoKey(B.path);
             }), repos.end());
+            for (const auto& registeredPath : DiscoverRegisteredPathsRecursive(InRoot)) {
+                const auto key = RepoKey(registeredPath);
+                if (std::none_of(repos.begin(), repos.end(), [&](const auto& repo) {
+                        return RepoKey(repo.path) == key;
+                    })) {
+                    workspace::RepoRecord fallback;
+                    fallback.path = registeredPath;
+                    fallback.type = "registered";
+                    const auto status = GitCapture(registeredPath, {"status", "--porcelain"});
+                    fallback.hasChanges = status.exitCode == 0 && !Trim(status.stdoutStr).empty();
+                    repos.push_back(std::move(fallback));
+                }
+            }
+            std::sort(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
+                return RepoKey(A.path) < RepoKey(B.path);
+            });
             return repos;
         }
     }
@@ -1883,11 +1961,24 @@ auto DiscoverWorkspaceRepoRecords(const std::filesystem::path& InRoot,
 
     const auto discovery = workspace::DiscoverRepos(options);
     std::vector<workspace::RepoRecord> repos = discovery.repos;
+    for (const auto& registeredPath : DiscoverRegisteredPathsRecursive(InRoot)) {
+        const auto key = RepoKey(registeredPath);
+        if (std::none_of(repos.begin(), repos.end(), [&](const auto& repo) {
+                return RepoKey(repo.path) == key;
+            })) {
+            workspace::RepoRecord fallback;
+            fallback.path = registeredPath;
+            fallback.type = "registered";
+            const auto status = GitCapture(registeredPath, {"status", "--porcelain"});
+            fallback.hasChanges = status.exitCode == 0 && !Trim(status.stdoutStr).empty();
+            repos.push_back(std::move(fallback));
+        }
+    }
     std::sort(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
-        return A.path.lexically_normal().generic_string() < B.path.lexically_normal().generic_string();
+        return RepoKey(A.path) < RepoKey(B.path);
     });
     repos.erase(std::unique(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
-        return A.path.lexically_normal().generic_string() == B.path.lexically_normal().generic_string();
+        return RepoKey(A.path) == RepoKey(B.path);
     }), repos.end());
     return repos;
 }
@@ -1904,10 +1995,10 @@ auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<
             repos.push_back(InRoot.lexically_normal());
         }
         std::sort(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
-            return A.generic_string() < B.generic_string();
+            return RepoKey(A) < RepoKey(B);
         });
         repos.erase(std::unique(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
-            return A.generic_string() == B.generic_string();
+            return RepoKey(A) == RepoKey(B);
         }), repos.end());
         return repos;
     }

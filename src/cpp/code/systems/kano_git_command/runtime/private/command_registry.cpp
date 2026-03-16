@@ -43,6 +43,7 @@ void RegisterAll(CLI::App& InApp) {
     RegisterUpdate(InApp);
     RegisterUplog(InApp);
     RegisterVersion(InApp);
+    RegisterWorkspace(InApp);
     RegisterWorktree(InApp);
 }
 

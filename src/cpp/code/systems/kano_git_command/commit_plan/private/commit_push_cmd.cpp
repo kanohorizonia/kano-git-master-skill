@@ -175,6 +175,72 @@ auto ParseReposCsv(const std::string& InCsv) -> std::vector<std::string> {
     return repos;
 }
 
+auto RepoKey(const std::filesystem::path& InPath) -> std::string {
+    std::error_code ec;
+    const auto canonical = std::filesystem::weakly_canonical(InPath, ec);
+    const auto normalized = (ec ? InPath : canonical).lexically_normal().generic_string();
+#if defined(_WIN32)
+    return ToLower(normalized);
+#else
+    return normalized;
+#endif
+}
+
+auto DiscoverRegisteredPathsRecursive(const std::filesystem::path& InWorkspaceRoot) -> std::vector<std::filesystem::path> {
+    std::vector<std::filesystem::path> out;
+    std::vector<std::filesystem::path> queue{std::filesystem::weakly_canonical(InWorkspaceRoot)};
+
+    while (!queue.empty()) {
+        const auto current = queue.back();
+        queue.pop_back();
+
+        const auto gitmodules = current / ".gitmodules";
+        if (!std::filesystem::exists(gitmodules)) {
+            continue;
+        }
+
+        const auto pathsResult = shell::ExecuteCommand(
+            "git",
+            {"config", "-f", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$"},
+            shell::ExecMode::Capture,
+            current);
+        if (pathsResult.exitCode != 0) {
+            continue;
+        }
+
+        std::istringstream iss(pathsResult.stdoutStr);
+        std::string line;
+        while (std::getline(iss, line)) {
+            line = Trim(line);
+            if (line.empty()) {
+                continue;
+            }
+            const auto sp = line.find(' ');
+            if (sp == std::string::npos || sp + 1 >= line.size()) {
+                continue;
+            }
+            const auto relPath = line.substr(sp + 1);
+            const auto full = std::filesystem::weakly_canonical(current / relPath).lexically_normal();
+            const auto fullKey = RepoKey(full);
+            const bool existsAlready = std::any_of(out.begin(), out.end(), [&](const auto& candidate) {
+                return RepoKey(candidate) == fullKey;
+            });
+            if (!existsAlready) {
+                out.push_back(full);
+                queue.push_back(full);
+            }
+        }
+    }
+
+    std::sort(out.begin(), out.end(), [](const auto& A, const auto& B) {
+        return RepoKey(A) < RepoKey(B);
+    });
+    out.erase(std::unique(out.begin(), out.end(), [](const auto& A, const auto& B) {
+        return RepoKey(A) == RepoKey(B);
+    }), out.end());
+    return out;
+}
+
 auto GitCapture(const std::filesystem::path& InRepo, const std::vector<std::string>& InArgs) -> shell::ExecResult {
     return shell::ExecuteCommand("git", InArgs, shell::ExecMode::Capture, InRepo);
 }
@@ -345,25 +411,32 @@ auto SelfBinaryPath() -> std::string {
 
 auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<std::filesystem::path> {
     static std::unordered_map<std::string, std::vector<std::filesystem::path>> cache;
-    const auto cacheKey = InRoot.lexically_normal().generic_string();
+        const auto cacheKey = RepoKey(InRoot);
     if (const auto cached = cache.find(cacheKey); cached != cache.end()) {
         return cached->second;
     }
 
+    const auto root = std::filesystem::weakly_canonical(InRoot).lexically_normal();
     std::string manifestReason;
     if (const auto manifest = workspace::LoadTrustedWorkspaceManifest(InRoot, &manifestReason); manifest.has_value()) {
         std::vector<std::filesystem::path> repos;
-        repos.reserve(manifest->repos.size());
+        repos.reserve(manifest->repos.size() + 4);
+        repos.push_back(root);
         for (const auto& repo : manifest->repos) {
             repos.push_back(repo.path.lexically_normal());
+        }
+        for (const auto& repo : DiscoverRegisteredPathsRecursive(root)) {
+            repos.push_back(repo);
         }
         if (repos.empty()) {
             repos.push_back(InRoot.lexically_normal());
         }
         std::sort(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
-            return A.generic_string() < B.generic_string();
+            return RepoKey(A) < RepoKey(B);
         });
-        repos.erase(std::unique(repos.begin(), repos.end()), repos.end());
+        repos.erase(std::unique(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
+            return RepoKey(A) == RepoKey(B);
+        }), repos.end());
         cache.emplace(cacheKey, repos);
         return repos;
     }
@@ -375,23 +448,30 @@ auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<
     workspace::DiscoverOptions options;
     options.rootDir = InRoot;
     options.maxDepth = 12;
+    options.scope = workspace::DiscoverScope::Full;
     options.useCache = false;
     options.refreshCache = true;
     options.incremental = false;
     options.metadataLevel = "minimal";
     const auto discovery = workspace::DiscoverRepos(options);
     std::vector<std::filesystem::path> repos;
-    repos.reserve(discovery.repos.size());
+    repos.reserve(discovery.repos.size() + 4);
+    repos.push_back(root);
     for (const auto& repo : discovery.repos) {
         repos.push_back(repo.path.lexically_normal());
+    }
+    for (const auto& repo : DiscoverRegisteredPathsRecursive(root)) {
+        repos.push_back(repo);
     }
     if (repos.empty()) {
         repos.push_back(InRoot.lexically_normal());
     }
     std::sort(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
-        return A.generic_string() < B.generic_string();
+        return RepoKey(A) < RepoKey(B);
     });
-    repos.erase(std::unique(repos.begin(), repos.end()), repos.end());
+    repos.erase(std::unique(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
+        return RepoKey(A) == RepoKey(B);
+    }), repos.end());
     const auto manifest = workspace::BuildWorkspaceManifest(InRoot, discovery.repos);
     if (!workspace::SaveWorkspaceManifest(manifest)) {
         std::cerr << "[commit-push] WARN: failed to refresh workspace manifest at "
@@ -1905,11 +1985,10 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
             const auto postSyncStart = std::chrono::steady_clock::now();
             const auto summary = ClassifyPostSyncDelta(InWorkspaceRoot, {}, false);
             if (summary.kind == PostSyncDeltaKind::SemanticDrift) {
-                std::cerr << "[commit-push] post-sync semantic drift detected after sync; manual review required.\n";
+                std::cout << "[commit-push] post-sync semantic changes detected; proceeding to post-sync commit stage.\n";
                 for (const auto& repo : summary.semanticRepos) {
-                    std::cerr << "  repo: " << repo.generic_string() << "\n";
+                    std::cout << "  repo: " << repo.generic_string() << "\n";
                 }
-                return 2;
             }
             if (summary.kind == PostSyncDeltaKind::GitlinkOnly) {
                 const auto amendResult = AutoAmendGitlinkOnlyPostSyncRepos(InWorkspaceRoot, {}, false);
@@ -2334,11 +2413,10 @@ void RegisterCommitPush(CLI::App& InApp) {
             } else {
                 const auto summary = ClassifyPostSyncDelta(workspaceRoot, repoList, effectiveNoRecursive);
                 if (summary.kind == PostSyncDeltaKind::SemanticDrift) {
-                    std::cerr << "[commit-push] post-sync semantic drift detected after sync; manual review required.\n";
+                    std::cout << "[commit-push] post-sync semantic changes detected; proceeding to post-sync commit stage.\n";
                     for (const auto& repo : summary.semanticRepos) {
-                        std::cerr << "  repo: " << repo.generic_string() << "\n";
+                        std::cout << "  repo: " << repo.generic_string() << "\n";
                     }
-                    std::exit(2);
                 }
                 if (summary.kind == PostSyncDeltaKind::GitlinkOnly) {
                     const auto amendResult = AutoAmendGitlinkOnlyPostSyncRepos(workspaceRoot, repoList, effectiveNoRecursive);
