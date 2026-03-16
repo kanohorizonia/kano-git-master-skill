@@ -12,6 +12,7 @@
 #include <iomanip>
 #include <iostream>
 #include <map>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <chrono>
@@ -80,6 +81,18 @@ auto GitPassThrough(const std::filesystem::path& InRepo, const std::vector<std::
 auto HasRemote(const std::filesystem::path& InRepo, const std::string& InRemote) -> bool {
     const auto out = GitCapture(InRepo, {"remote", "get-url", InRemote});
     return out.exitCode == 0;
+}
+
+auto GetRemoteUrl(const std::filesystem::path& InRepo, const std::string& InRemote) -> std::optional<std::string> {
+    const auto out = GitCapture(InRepo, {"remote", "get-url", InRemote});
+    if (out.exitCode != 0) {
+        return std::nullopt;
+    }
+    const auto url = Trim(out.stdoutStr);
+    if (url.empty()) {
+        return std::nullopt;
+    }
+    return url;
 }
 
 auto ParseNonNegativeInt(const std::string& InValue) -> int {
@@ -408,6 +421,79 @@ auto ResolveGitmodulesPushPolicy(const std::filesystem::path& InRepo) -> std::st
     return {};
 }
 
+auto TryResolveLocalRemotePath(const std::filesystem::path& InRepo, const std::string& InRemoteUrl)
+    -> std::optional<std::filesystem::path> {
+    auto url = Trim(InRemoteUrl);
+    if (url.empty()) {
+        return std::nullopt;
+    }
+
+    if (url.rfind("file://", 0) == 0) {
+        url = url.substr(7);
+#if defined(_WIN32)
+        if (url.size() >= 3 && url[0] == '/' && std::isalpha(static_cast<unsigned char>(url[1])) && url[2] == ':') {
+            url.erase(url.begin());
+        }
+#endif
+    } else {
+        const bool hasScheme = url.find("://") != std::string::npos;
+        const bool scpLikeRemote = url.find('@') != std::string::npos && url.find(':') != std::string::npos;
+        if (hasScheme || scpLikeRemote) {
+            return std::nullopt;
+        }
+    }
+
+    auto remotePath = std::filesystem::path(url);
+    if (remotePath.is_relative()) {
+        remotePath = (InRepo / remotePath).lexically_normal();
+    }
+
+    std::error_code ec;
+    remotePath = std::filesystem::weakly_canonical(remotePath, ec);
+    if (ec || !std::filesystem::exists(remotePath)) {
+        return std::nullopt;
+    }
+    return remotePath.lexically_normal();
+}
+
+auto ShouldSkipLocalCheckedOutRemotePush(const std::filesystem::path& InRepo,
+                                         const std::string& InRemote,
+                                         const std::string& InBranch,
+                                         std::string* OutReason) -> bool {
+    const auto remoteUrl = GetRemoteUrl(InRepo, InRemote);
+    if (!remoteUrl.has_value()) {
+        return false;
+    }
+
+    const auto remotePath = TryResolveLocalRemotePath(InRepo, *remoteUrl);
+    if (!remotePath.has_value() || !IsGitRepo(*remotePath)) {
+        return false;
+    }
+
+    const auto bareResult = GitCapture(*remotePath, {"rev-parse", "--is-bare-repository"});
+    if (bareResult.exitCode != 0 || ToLower(Trim(bareResult.stdoutStr)) == "true") {
+        return false;
+    }
+
+    const auto headBranchResult = GitCapture(*remotePath, {"symbolic-ref", "--quiet", "--short", "HEAD"});
+    if (headBranchResult.exitCode != 0) {
+        return false;
+    }
+
+    const auto checkedOutBranch = Trim(headBranchResult.stdoutStr);
+    if (checkedOutBranch != InBranch) {
+        return false;
+    }
+
+    if (OutReason != nullptr) {
+        *OutReason = std::format(
+            "local non-bare remote has checked-out branch '{}' at {}",
+            checkedOutBranch,
+            remotePath->generic_string());
+    }
+    return true;
+}
+
 auto IsParentPath(const std::filesystem::path& InParent, const std::filesystem::path& InChild) -> bool {
     const auto parent = InParent.lexically_normal().generic_string();
     const auto child = InChild.lexically_normal().generic_string();
@@ -698,6 +784,13 @@ auto RunNativePush(
                 if (InVerbose) {
                     std::cout << "[" << repoLabel << "] Unchanged (" << remote << ")\n";
                 }
+                repoSuccess = 1;
+                continue;
+            }
+
+            std::string skipReason;
+            if (ShouldSkipLocalCheckedOutRemotePush(repoPath, remote, branch, &skipReason)) {
+                std::cout << "[" << repoLabel << "] Push skipped (" << remote << "): " << skipReason << "\n";
                 repoSuccess = 1;
                 continue;
             }
