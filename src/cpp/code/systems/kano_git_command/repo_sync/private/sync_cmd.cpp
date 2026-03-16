@@ -23,6 +23,7 @@
 #include <fstream>
 
 #if defined(_WIN32)
+#include <windows.h>
 #include <io.h>
 #include <process.h>
 #else
@@ -48,6 +49,11 @@ enum class BranchMode {
 struct GitmodulesBinding {
     std::filesystem::path root;
     std::string prefix;
+};
+
+struct WorkingTreeFileSnapshot {
+    std::string relativePath;
+    std::string contents;
 };
 
 enum class StableDevReportFormat {
@@ -586,7 +592,30 @@ auto TryCleanupStaleIndexLock(const std::string& InRepoName, const IndexLockDiag
     }
 
     std::error_code ec;
-    const bool removed = std::filesystem::remove(InDiagnosis.lockPath, ec);
+    bool removed = std::filesystem::remove(InDiagnosis.lockPath, ec);
+#if defined(_WIN32)
+    if ((!removed || ec) && std::filesystem::exists(InDiagnosis.lockPath)) {
+        ec.clear();
+        const auto nativePath = InDiagnosis.lockPath.native();
+        ::SetFileAttributesW(nativePath.c_str(), FILE_ATTRIBUTE_NORMAL);
+        removed = ::DeleteFileW(nativePath.c_str()) != 0;
+        if (removed) {
+            ec.clear();
+        }
+    }
+    if ((!removed || ec) && std::filesystem::exists(InDiagnosis.lockPath)) {
+        const auto deleteCommand = std::format("del /f /q \"{}\"", InDiagnosis.lockPath.string());
+        const auto deleteResult = shell::ExecuteCommand(
+            "cmd",
+            {"/C", deleteCommand},
+            shell::ExecMode::Capture,
+            std::filesystem::current_path());
+        if (deleteResult.exitCode == 0 && !std::filesystem::exists(InDiagnosis.lockPath)) {
+            ec.clear();
+            removed = true;
+        }
+    }
+#endif
     if (!removed || ec) {
         std::cerr << "ERROR: failed to remove stale index.lock for " << InRepoName << ": " << ec.message() << "\n";
         return false;
@@ -1467,22 +1496,37 @@ auto BuildSyncPlans(
     int InMaxDepth,
     bool InNoCache,
     bool InRefreshCache) -> std::pair<std::vector<SyncPlan>, std::string> {
-    workspace::DiscoverOptions options;
-    options.rootDir = InRoot;
-    options.maxDepth = InMaxDepth;
-    options.useCache = !InNoCache;
-    options.refreshCache = InRefreshCache;
-    options.metadataLevel = "full";
-
-    const auto discovery = workspace::DiscoverRepos(options);
     const auto root = std::filesystem::weakly_canonical(InRoot);
     const auto registeredPaths = DiscoverRegisteredPathsRecursive(root);
 
-    std::vector<SyncPlan> plans;
-    plans.reserve(discovery.repos.size());
+    std::vector<std::filesystem::path> discoveredPaths;
+    discoveredPaths.reserve(registeredPaths.size() + 1);
+    discoveredPaths.push_back(root);
+    for (const auto& registeredPath : registeredPaths) {
+        discoveredPaths.push_back(std::filesystem::path(registeredPath));
+    }
 
-    for (const auto& repo : discovery.repos) {
-        const auto repoPath = std::filesystem::weakly_canonical(repo.path);
+    if (!InNoCache) {
+        std::string manifestReason;
+        if (const auto manifest = workspace::LoadTrustedWorkspaceManifest(root, &manifestReason); manifest.has_value()) {
+            for (const auto& repo : manifest->repos) {
+                discoveredPaths.push_back(repo.path.lexically_normal());
+            }
+        }
+    }
+
+    std::sort(discoveredPaths.begin(), discoveredPaths.end(), [](const auto& A, const auto& B) {
+        return A.generic_string() < B.generic_string();
+    });
+    discoveredPaths.erase(std::unique(discoveredPaths.begin(), discoveredPaths.end(), [](const auto& A, const auto& B) {
+        return A.generic_string() == B.generic_string();
+    }), discoveredPaths.end());
+
+    std::vector<SyncPlan> plans;
+    plans.reserve(discoveredPaths.size());
+
+    for (const auto& discoveredPath : discoveredPaths) {
+        const auto repoPath = std::filesystem::weakly_canonical(discoveredPath);
         const auto remote = ResolveRemote(repoPath, InPreferredRemote);
         if (remote.empty()) {
             std::cerr << "WARN: Skip repo without remotes: " << repoPath.generic_string() << "\n";
@@ -1545,7 +1589,62 @@ auto BuildSyncPlans(
         return A.path.generic_string() < B.path.generic_string();
     });
 
-    return {plans, discovery.mode};
+    return {plans, "registered-only-scan"};
+}
+
+auto CaptureWorkingTreeFileSnapshots(const std::filesystem::path& InRepo,
+                                     const std::string& InStatusText) -> std::vector<WorkingTreeFileSnapshot> {
+    std::vector<WorkingTreeFileSnapshot> snapshots;
+    std::set<std::string> seen;
+    for (const auto& relativePath : ParseStatusPaths(InStatusText)) {
+        if (!seen.insert(relativePath).second) {
+            continue;
+        }
+        const auto absolutePath = (InRepo / std::filesystem::path(relativePath)).lexically_normal();
+        std::error_code ec;
+        if (!std::filesystem::exists(absolutePath, ec) || std::filesystem::is_directory(absolutePath, ec)) {
+            continue;
+        }
+        std::ifstream in(absolutePath, std::ios::binary);
+        if (!in) {
+            continue;
+        }
+        std::ostringstream buffer;
+        buffer << in.rdbuf();
+        snapshots.push_back(WorkingTreeFileSnapshot{
+            .relativePath = relativePath,
+            .contents = buffer.str(),
+        });
+    }
+    return snapshots;
+}
+
+auto RestoreWorkingTreeFileSnapshots(const std::filesystem::path& InRepo,
+                                     const std::vector<WorkingTreeFileSnapshot>& InSnapshots,
+                                     const std::string& InRepoName) -> bool {
+    for (const auto& snapshot : InSnapshots) {
+        const auto absolutePath = (InRepo / std::filesystem::path(snapshot.relativePath)).lexically_normal();
+        std::error_code ec;
+        std::filesystem::create_directories(absolutePath.parent_path(), ec);
+        if (ec) {
+            std::cerr << "WARN: failed to restore local snapshot parent path for " << InRepoName
+                      << ": " << snapshot.relativePath << "\n";
+            return false;
+        }
+        std::ofstream out(absolutePath, std::ios::binary | std::ios::trunc);
+        if (!out) {
+            std::cerr << "WARN: failed to restore local snapshot for " << InRepoName
+                      << ": " << snapshot.relativePath << "\n";
+            return false;
+        }
+        out << snapshot.contents;
+        if (!out.good()) {
+            std::cerr << "WARN: failed to write restored local snapshot for " << InRepoName
+                      << ": " << snapshot.relativePath << "\n";
+            return false;
+        }
+    }
+    return true;
 }
 
 auto RunNativeOriginLatestSync(
@@ -1618,6 +1717,10 @@ auto RunNativeOriginLatestSync(
         const auto status = GitCapture(plan.path, {"status", "--porcelain"});
         const bool hasLocalChanges = status.exitCode == 0 && !Trim(status.stdoutStr).empty();
         bool stashCreated = false;
+        bool performedRebase = false;
+        const auto workingTreeSnapshots = status.exitCode == 0
+            ? CaptureWorkingTreeFileSnapshots(plan.path, status.stdoutStr)
+            : std::vector<WorkingTreeFileSnapshot>{};
         const auto reservedPaths = status.exitCode == 0 ? CollectWindowsReservedStatusPaths(status.stdoutStr)
                                                         : std::vector<std::string>{};
         const auto stashArgs = BuildSyncStashArgs(reservedPaths);
@@ -1658,7 +1761,11 @@ auto RunNativeOriginLatestSync(
                         if (diagnosis.lockExists) {
                             indexLockDiagnosis = diagnosis;
                             PrintIndexLockDiagnosis(name, diagnosis);
-                            if (!InCleanupStaleLocks && !diagnosis.activeGitProcessDetected) {
+                            if (InCleanupStaleLocks && !diagnosis.activeGitProcessDetected) {
+                                if (TryCleanupStaleIndexLock(name, diagnosis)) {
+                                    stash = GitCapture(plan.path, stashArgs);
+                                }
+                            } else if (!diagnosis.activeGitProcessDetected) {
                                 std::cerr << "Hint: rerun with --cleanup-stale-locks to remove the stale index.lock automatically.\n";
                             }
                         }
@@ -1716,6 +1823,8 @@ auto RunNativeOriginLatestSync(
                     failureDetails.emplace_back(name, "target branch and matching tag not found");
                     if (!RestoreAutoStashIfNeeded(plan.path, name, stashCreated)) {
                         failureDetails.emplace_back(name, "stash pop failed after target-branch lookup failure");
+                    } else if (stashCreated && !workingTreeSnapshots.empty()) {
+                        (void)RestoreWorkingTreeFileSnapshots(plan.path, workingTreeSnapshots, name);
                     }
                     continue;
                 }
@@ -1762,6 +1871,8 @@ auto RunNativeOriginLatestSync(
             failureDetails.emplace_back(name, "checkout failed");
             if (!RestoreAutoStashIfNeeded(plan.path, name, stashCreated)) {
                 failureDetails.emplace_back(name, "stash pop failed after checkout failure");
+            } else if (stashCreated && !workingTreeSnapshots.empty()) {
+                (void)RestoreWorkingTreeFileSnapshots(plan.path, workingTreeSnapshots, name);
             }
             continue;
         }
@@ -1803,6 +1914,8 @@ auto RunNativeOriginLatestSync(
                         failureDetails.emplace_back(name, "rebase conflict");
                         if (!RestoreAutoStashIfNeeded(plan.path, name, stashCreated)) {
                             failureDetails.emplace_back(name, "stash pop failed after rebase conflict");
+                        } else if (stashCreated && !workingTreeSnapshots.empty()) {
+                            (void)RestoreWorkingTreeFileSnapshots(plan.path, workingTreeSnapshots, name);
                         }
                         continue;
                     }
@@ -1811,9 +1924,12 @@ auto RunNativeOriginLatestSync(
                     failureDetails.emplace_back(name, "rebase failed");
                     if (!RestoreAutoStashIfNeeded(plan.path, name, stashCreated)) {
                         failureDetails.emplace_back(name, "stash pop failed after rebase failure");
+                    } else if (stashCreated && !workingTreeSnapshots.empty()) {
+                        (void)RestoreWorkingTreeFileSnapshots(plan.path, workingTreeSnapshots, name);
                     }
                     continue;
                 }
+                performedRebase = true;
             }
         }
 
@@ -1821,6 +1937,9 @@ auto RunNativeOriginLatestSync(
             failures += 1;
             failureDetails.emplace_back(name, "stash pop failed after sync");
             continue;
+        }
+        if (stashCreated && !performedRebase && !workingTreeSnapshots.empty()) {
+            (void)RestoreWorkingTreeFileSnapshots(plan.path, workingTreeSnapshots, name);
         }
 
         succeeded += 1;

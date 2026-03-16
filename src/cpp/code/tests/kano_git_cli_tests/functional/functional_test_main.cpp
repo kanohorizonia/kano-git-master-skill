@@ -509,7 +509,7 @@ TEST_CASE("sync_gitlink_only_auto_amends", "[functional][commit-push][post-sync]
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
-TEST_CASE("sync_semantic_drift_fails", "[functional][commit-push][post-sync]") {
+TEST_CASE("sync_semantic_drift_reaches_post_sync_commit_stage", "[functional][commit-push][post-sync]") {
     const auto ctx = CreateRemoteWithClone("sync-semantic-drift");
     WriteTextFile(ctx.cloneRepo / "staged.txt", "staged\n");
     WriteTextFile(ctx.cloneRepo / "leftover.txt", "leftover\n");
@@ -520,7 +520,8 @@ TEST_CASE("sync_semantic_drift_fails", "[functional][commit-push][post-sync]") {
     INFO(result.stderrText);
     REQUIRE(result.exitCode != 0);
     const auto merged = result.stdoutText + "\n" + result.stderrText;
-    REQUIRE(merged.find("post-sync semantic drift detected after sync") != std::string::npos);
+    REQUIRE(merged.find("post-sync semantic changes detected; proceeding to post-sync commit stage") != std::string::npos);
+    REQUIRE(merged.find("Preflight blocked: --staged-only but nothing staged") != std::string::npos);
     REQUIRE(std::filesystem::exists(ctx.cloneRepo / "leftover.txt"));
     RemoveSandboxWorkspace(ctx.sandbox);
 }

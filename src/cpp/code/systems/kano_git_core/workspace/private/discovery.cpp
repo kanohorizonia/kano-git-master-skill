@@ -754,7 +754,7 @@ auto DiscoverGitRepos(const std::filesystem::path& InRoot, const int InMaxDepth,
     const std::vector<std::string> prePrune{
         "node_modules", ".cache", ".turbo", "__pycache__", ".mypy_cache",
         ".ruff_cache", ".pytest_cache", ".venv", "venv", ".next", "dist",
-        "build", "out", "coverage", ".pnpm", "vendor", ".tox",
+        "out", "coverage", ".pnpm", "vendor", ".tox",
         ".sisyphus", ".tmp", "tmp",
     };
     std::error_code ec;
@@ -852,7 +852,7 @@ auto ComputeMarker(const std::filesystem::path& InRoot, const int InMaxDepth, co
     const std::vector<std::string> prePrune{
         "node_modules", ".cache", ".turbo", "__pycache__", ".mypy_cache",
         ".ruff_cache", ".pytest_cache", ".venv", "venv", ".next", "dist",
-        "build", "out", "coverage", ".pnpm", "vendor", ".tox",
+        "out", "coverage", ".pnpm", "vendor", ".tox",
         ".sisyphus", ".tmp", "tmp",
     };
     for (; it != end; ++it) {

@@ -342,4 +342,70 @@ void RegisterDiscover(CLI::App& InApp) {
     });
 }
 
+void RegisterWorkspace(CLI::App& InApp) {
+    auto* workspace = InApp.add_subcommand("workspace", "Workspace operations");
+    auto* cmd = workspace->add_subcommand("discover", "Discover repositories and refresh workspace manifest");
+    auto* full = cmd->add_subcommand("full", "Discover repositories with full filesystem scan (includes unregistered repos)");
+    auto* discoverFormat = new std::string{"table"};
+    auto* discoverRoot = new std::string{"."};
+    auto* discoverMaxDepth = new int{8};
+    auto* discoverExclude = new std::vector<std::string>{};
+    auto* discoverNoCache = new bool{false};
+    auto* discoverNoRefresh = new bool{false};
+    auto* discoverNoIncremental = new bool{false};
+    auto* discoverCacheTtl = new int{60};
+    auto* discoverMaxStale = new int{900};
+    auto* discoverMetadata = new std::string{"full"};
+
+    cmd->add_option("--format", *discoverFormat, "Output format: table|json")->default_str("table");
+    cmd->add_option("--repo-root", *discoverRoot, "Repository root/start path");
+    cmd->add_option("--exclude", *discoverExclude, "Temporary scan-scope exclude override for this invocation only (repeatable; prefer .gitignore/.kogignore for shared policy)");
+    cmd->add_flag("--no-cache", *discoverNoCache, "Disable discovery cache for this run");
+    cmd->add_flag("--no-refresh-cache", *discoverNoRefresh, "Do not force cache refresh");
+    cmd->add_flag("--no-incremental", *discoverNoIncremental, "Disable incremental cache validation");
+    cmd->add_option("--cache-ttl", *discoverCacheTtl, "Cache TTL seconds");
+    cmd->add_option("--max-stale", *discoverMaxStale, "Incremental max stale seconds");
+    cmd->add_option("--metadata-level", *discoverMetadata, "Metadata level: full|minimal");
+    full->add_option("--format", *discoverFormat, "Output format: table|json")->default_str("table");
+    full->add_option("--repo-root", *discoverRoot, "Repository root/start path");
+    full->add_option("--max-depth", *discoverMaxDepth, "Full discovery max depth");
+    full->add_option("--exclude", *discoverExclude, "Temporary scan-scope exclude override for this invocation only (repeatable; prefer .gitignore/.kogignore for shared policy)");
+    full->add_flag("--no-cache", *discoverNoCache, "Disable discovery cache for this run");
+    full->add_flag("--no-refresh-cache", *discoverNoRefresh, "Do not force cache refresh");
+    full->add_flag("--no-incremental", *discoverNoIncremental, "Disable incremental cache validation");
+    full->add_option("--cache-ttl", *discoverCacheTtl, "Cache TTL seconds");
+    full->add_option("--max-stale", *discoverMaxStale, "Incremental max stale seconds");
+    full->add_option("--metadata-level", *discoverMetadata, "Metadata level: full|minimal");
+
+    cmd->callback([=]() {
+        RunDiscoverCommand(
+            *discoverFormat,
+            *discoverRoot,
+            *discoverMaxDepth,
+            *discoverExclude,
+            *discoverNoCache,
+            *discoverNoRefresh,
+            *discoverNoIncremental,
+            *discoverCacheTtl,
+            *discoverMaxStale,
+            *discoverMetadata,
+            workspace::DiscoverScope::Full);
+    });
+
+    full->callback([=]() {
+        RunDiscoverCommand(
+            *discoverFormat,
+            *discoverRoot,
+            *discoverMaxDepth,
+            *discoverExclude,
+            *discoverNoCache,
+            *discoverNoRefresh,
+            *discoverNoIncremental,
+            *discoverCacheTtl,
+            *discoverMaxStale,
+            *discoverMetadata,
+            workspace::DiscoverScope::Full);
+    });
+}
+
 } // namespace kano::git::commands
