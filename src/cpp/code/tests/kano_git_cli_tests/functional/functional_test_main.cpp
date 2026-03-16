@@ -815,6 +815,30 @@ TEST_CASE("push_skips_registered_submodule_when_gitmodules_policy_is_skip", "[fu
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("push_skips_local_non_bare_remote_with_checked_out_branch", "[functional][push][policy]") {
+    const auto ctx = CreateRemoteWithClone("push-local-non-bare-checked-out");
+    const auto localWorkingRemote = (ctx.sandbox.root / "local-working-remote").lexically_normal();
+
+    RequireSuccess(RunGit({"clone", ctx.bareRemote.string(), localWorkingRemote.string()}, ctx.sandbox.root), "clone local working remote");
+    ConfigureIdentity(localWorkingRemote);
+    RequireSuccess(RunGit({"remote", "set-url", "origin", localWorkingRemote.string()}, ctx.cloneRepo), "set clone origin to local working remote");
+
+    WriteTextFile(ctx.cloneRepo / "README.md", "seed\nlocal remote push skip\n");
+    RequireSuccess(RunGit({"add", "README.md"}, ctx.cloneRepo), "stage local remote push skip change");
+    RequireSuccess(RunGit({"commit", "-m", "local remote push skip"}, ctx.cloneRepo), "commit local remote push skip change");
+
+    const auto beforeRemoteHead = CurrentHeadSha(localWorkingRemote);
+
+    const auto result = RunKog({"push"}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    REQUIRE(result.stdoutText.find("Push skipped (origin): local non-bare remote has checked-out branch") != std::string::npos);
+    REQUIRE(CurrentHeadSha(localWorkingRemote) == beforeRemoteHead);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("workspace_discover_respects_gitignore_for_nested_repo", "[functional][workspace][discovery]") {
     const auto ctx = CreateRemoteWithNestedRepoClone("discover-gitignore");
     WriteTextFile(ctx.cloneRootRepo / ".gitignore", ".kano/\nnested/\n");
