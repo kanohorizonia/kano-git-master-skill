@@ -1,0 +1,17 @@
+Task 13 developer-checkout conflict summary
+===========================================
+
+Scenario
+- Target path already contained a manual/developer checkout at:
+  %USERPROFILE%\.agents\skills\kano\kano-git-master-skill
+
+Run
+- MSI install attempted against the real fixed install root.
+- Evidence log: .sisyphus/evidence/task-13-dev-conflict.log
+
+Observed result
+- Installer stopped in LaunchConditions before file copy.
+- Existing checkout contents remained intact after the run.
+
+Outcome
+- Conflict gate behaved correctly for the real current-user target.

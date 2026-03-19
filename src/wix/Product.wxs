@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?ifndef UpgradeCode ?>
+<?define UpgradeCode = "11111111-1111-1111-1111-111111111111" ?>
+<?endif?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <?include "Fragments/Directories.wxs" ?>
+  <?include "Fragments/Components.wxs" ?>
+  <?include "Fragments/Features.wxs" ?>
+  <?include "Fragments/Prerequisites.wxs" ?>
+
+  <Package
+    Name="Kano Git Master Skill"
+    Manufacturer="Kano"
+    Version="$(var.ProductVersion)"
+    UpgradeCode="$(var.UpgradeCode)"
+    Scope="perUser"
+    Language="1033"
+    InstallerVersion="500"
+    Compressed="yes">
+    <SummaryInformation
+      Description="Per-user MSI scaffold for kano-git-master-skill under %USERPROFILE%\.agents\skills\kano\kano-git-master-skill."
+      Manufacturer="Kano" />
+
+    <util:QueryWindowsDirectories />
+
+    <MajorUpgrade
+      DowngradeErrorMessage="A newer version of Kano Git Master Skill is already installed."
+      Schedule="afterInstallInitialize" />
+
+    <Launch Condition="Installed OR KANO_GFW_INSTALLPATH_HKCU OR KANO_GFW_INSTALLPATH_HKLM OR KANO_GFW_INSTALLPATH_HKLM32" Message="Kano Git Master Skill requires Git for Windows. Install or repair Git for Windows so the stable Software\GitForWindows registry key exposes an InstallPath. This MSI does not bundle Git for Windows." />
+
+    <Launch Condition="Installed OR KANO_GIT_EXE_CMD_HKCU OR KANO_GIT_EXE_CMD_HKLM OR KANO_GIT_EXE_CMD_HKLM32 OR KANO_GIT_EXE_MINGW64_HKCU OR KANO_GIT_EXE_MINGW64_HKLM OR KANO_GIT_EXE_MINGW64_HKLM32 OR KANO_GIT_EXE_MINGW32_HKCU OR KANO_GIT_EXE_MINGW32_HKLM OR KANO_GIT_EXE_MINGW32_HKLM32" Message="Kano Git Master Skill requires Git for Windows to provide git.exe. Install, repair, or update Git for Windows so git.exe exists under its registered install root. This MSI does not bundle Git for Windows." />
+
+    <Launch Condition="Installed OR KANO_BASH_EXE_BIN_HKCU OR KANO_BASH_EXE_BIN_HKLM OR KANO_BASH_EXE_BIN_HKLM32 OR KANO_BASH_EXE_USRBIN_HKCU OR KANO_BASH_EXE_USRBIN_HKLM OR KANO_BASH_EXE_USRBIN_HKLM32" Message="Kano Git Master Skill requires Git for Windows to provide bash.exe. Install, repair, or update Git for Windows so bash.exe exists under its registered install root. This MSI does not bundle Git for Windows." />
+
+    <Launch Condition="Installed OR KANO_GIT_EXE_MIN244_CMD_HKCU OR KANO_GIT_EXE_MIN244_CMD_HKLM OR KANO_GIT_EXE_MIN244_CMD_HKLM32 OR KANO_GIT_EXE_MIN244_MINGW64_HKCU OR KANO_GIT_EXE_MIN244_MINGW64_HKLM OR KANO_GIT_EXE_MIN244_MINGW64_HKLM32 OR KANO_GIT_EXE_MIN244_MINGW32_HKCU OR KANO_GIT_EXE_MIN244_MINGW32_HKLM OR KANO_GIT_EXE_MIN244_MINGW32_HKLM32" Message="Kano Git Master Skill requires Git for Windows 2.44 or newer. Update Git for Windows so the registered installation contains git.exe version 2.44+. Detected registered version: [KANO_GFW_CURRENTVERSION_HKCU][KANO_GFW_CURRENTVERSION_HKLM][KANO_GFW_CURRENTVERSION_HKLM32]." />
+
+    <Launch Condition="Installed OR (NOT KANO_DEV_CHECKOUT_GITDIR_HEAD AND NOT KANO_DEV_CHECKOUT_GITFILE)" Message="Kano Git Master Skill detected an existing manual/developer checkout at %USERPROFILE%\.agents\skills\kano\kano-git-master-skill. That manual/developer checkout remains authoritative, and this MSI will not overwrite or merge into it. Remove or relocate the existing checkout if you want the MSI-managed copy instead." />
+
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <!--
+      Per contract, this package is per-user only and installs beneath the calling
+      user's profile at the fixed Kano skill root. The UpgradeCode is an intentional
+      placeholder until the first shippable MSI identity is frozen.
+    -->
+    <FeatureRef Id="CoreFiles" />
+    <FeatureRef Id="ShellIntegration" />
+  </Package>
+</Wix>

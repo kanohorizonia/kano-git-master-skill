@@ -1,0 +1,21 @@
+Task 14 shell-integration enabled summary
+========================================
+
+Scenario
+- ShellIntegration feature enabled on MSI install/configuration.
+
+Evidence
+- .sisyphus/evidence/task-14-shell-on.log
+- .sisyphus/evidence/task-14-path-before.txt
+
+Observed behavior
+- MSI completed successfully with ADDLOCAL=CoreFiles,ShellIntegration.
+- WriteEnvironmentStrings / RemoveEnvironmentStrings actions ran.
+- The user PATH already contained the scripts directory from prior manual setup, and the MSI run did not duplicate that entry.
+- Launcher-owned shell artifacts remained separate from MSI ownership:
+  - completion install/uninstall lives in scripts/kano-git
+  - kog-installer delegates to completion-only flow
+
+Ownership conclusion
+- PATH integration is MSI-owned.
+- Completion file and profile hook remain launcher-owned.

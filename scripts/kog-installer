@@ -4,33 +4,30 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: kog-installer [options]
+Usage: kog-installer <install|uninstall> [options]
 
-Install kano-git/kog launcher integration for Git Bash:
-  - Add scripts/ directory to PATH in ~/.bashrc
-  - Enable bash completion via `kano-git completion bash`
+Manage launcher-owned Git Bash completion/profile hooks:
+  - install: create/update bash completion file and add a launcher-owned source hook
+  - uninstall: remove that completion file and source hook
+
+This command does not modify PATH.
+For packaged MSI installs, optional ShellIntegration owns PATH only.
+For manual repo use, invoke `./scripts/kog` directly or add the scripts directory to PATH yourself.
 
 Options:
-  --rc-file <path>      Target rc file (default: ~/.bashrc)
-  --no-completion       Skip completion setup
   --dry-run             Show changes without writing
   -h, --help            Show this help
 EOF
 }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RC_FILE="${HOME}/.bashrc"
-ENABLE_COMPLETION=1
+ACTION="install"
 DRY_RUN=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --rc-file)
-      RC_FILE="$2"
-      shift 2
-      ;;
-    --no-completion)
-      ENABLE_COMPLETION=0
+    install|uninstall)
+      ACTION="$1"
       shift
       ;;
     --dry-run)
@@ -49,41 +46,13 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-mkdir -p "$(dirname "$RC_FILE")"
-touch "$RC_FILE"
-
-BLOCK_START="# >>> kano-git installer >>>"
-BLOCK_END="# <<< kano-git installer <<<"
-
-if grep -Fq "$BLOCK_START" "$RC_FILE"; then
-  echo "kano-git installer block already exists in: $RC_FILE"
-  echo "No changes needed."
-  exit 0
-fi
-
-COMPLETION_LINE="# source <(kano-git completion bash)"
-if [[ "$ENABLE_COMPLETION" -eq 1 ]]; then
-  COMPLETION_LINE="source <(kano-git completion bash)"
-fi
-
-BLOCK_CONTENT=$(cat <<EOF
-
-$BLOCK_START
-export PATH="\$PATH:$SCRIPT_DIR"
-$COMPLETION_LINE
-$BLOCK_END
-EOF
-)
-
 if [[ "$DRY_RUN" -eq 1 ]]; then
-  echo "[dry-run] Would append to $RC_FILE:"
-  echo "$BLOCK_CONTENT"
-  echo
-  echo "Then run: source \"$RC_FILE\""
+  if [[ "$ACTION" == "install" ]]; then
+    echo "[dry-run] Would run: kano-git completion install bash"
+  else
+    echo "[dry-run] Would run: kano-git completion uninstall bash"
+  fi
   exit 0
 fi
 
-printf "%s\n" "$BLOCK_CONTENT" >> "$RC_FILE"
-
-echo "Installed kano-git launcher settings into: $RC_FILE"
-echo "Apply now with: source \"$RC_FILE\""
+exec "$SCRIPT_DIR/kano-git" completion "$ACTION" bash

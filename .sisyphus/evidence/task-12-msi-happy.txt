@@ -1,0 +1,39 @@
+Task 12 happy-path MSI verification summary
+==========================================
+
+Environment
+- Worktree: C:\Users\dorgon.chang\.agents\skills\kano\kano-git-master-skill-windows-wix-msi-skill-install
+- Canonical version after normal rebuild: 0.1.0-beta -> MSI 0.1.0
+- Upgrade verification used temporary VERSION bump: 0.1.1-beta -> MSI 0.1.1
+
+Happy-path install
+- MSI install succeeded with explicit prerequisite properties pointing at the real Git for Windows installation.
+- Success evidence:
+  - .sisyphus/evidence/task-12-msi-install-fresh.log
+  - Contains: "Product: Kano Git Master Skill -- Installation completed successfully."
+  - Contains: "MainEngineThread is returning 0"
+- Verified installed layout under %USERPROFILE%\.agents\skills\kano\kano-git-master-skill:
+  - top-level metadata: README.md, SKILL.md, VERSION
+  - assets/
+  - scripts/ including generated .cmd wrappers
+  - bin/kano-git.exe
+
+Same-scope upgrade
+- Built temporary upgrade MSI: src/wix/out/kano-git-master-skill-upgrade.msi
+- Upgrade install succeeded from 0.1.0 to 0.1.1.
+- Success evidence:
+  - .sisyphus/evidence/task-12-msi-upgrade.log
+  - Contains WIX_UPGRADE_DETECTED
+  - Contains RemoveExistingProducts activity
+  - Registered package version observed after upgrade: 0.1.1
+
+Uninstall
+- Successful uninstall was verified using the actual registered MSI product code from Get-Package.
+- Success evidence:
+  - .sisyphus/evidence/task-12-msi-uninstall-productcode.log
+  - Contains: "Product: Kano Git Master Skill -- Removal completed successfully."
+  - Contains: "MainEngineThread is returning 0"
+
+Cleanup / safety
+- Test MSI registration was removed again during final cleanup.
+- The original fixed-root developer checkout was restored from backup after MSI QA.

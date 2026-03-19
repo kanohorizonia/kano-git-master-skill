@@ -681,32 +681,69 @@ append_once_to_file() {
   printf '\n%s\n' "$content" >> "$file"
 }
 
+remove_block_from_file() {
+  local file="$1"
+  local block_start="$2"
+  local block_end="$3"
+  local tmp_file
+
+  [[ -f "$file" ]] || return 0
+
+  tmp_file="${file}.tmp.$$"
+  awk -v start="$block_start" -v end="$block_end" '
+    $0 == start { skip=1; next }
+    skip && $0 == end { skip=0; next }
+    !skip { print }
+  ' "$file" > "$tmp_file"
+  mv "$tmp_file" "$file"
+}
+
 install_bash_completion() {
   local binary="$1"
-  local completion_dir completion_file bash_rc source_block
+  local completion_dir completion_file bash_rc source_block block_start block_end
 
   completion_dir="${HOME}/.local/share/bash-completion/completions"
   completion_file="$completion_dir/kog"
   bash_rc="${HOME}/.bashrc"
+  block_start="# >>> kano-git completion hook >>>"
+  block_end="# <<< kano-git completion hook <<<"
 
   mkdir -p "$completion_dir"
   KANO_GIT_MASTER_ROOT="${KANO_GIT_MASTER_ROOT:-$PROJECT_ROOT}" "$binary" completion bash > "$completion_file"
   chmod 0644 "$completion_file" 2>/dev/null || true
 
   source_block=$(cat <<EOF
-# kano-git bash completion
+$block_start
 if [[ -r "$completion_file" ]]; then
   source "$completion_file"
 fi
+$block_end
 EOF
 )
-  append_once_to_file "$bash_rc" "# kano-git bash completion" "$source_block"
+  append_once_to_file "$bash_rc" "$block_start" "$source_block"
 
   echo "Bash completion installed: $completion_file"
+  echo "Completion/profile hooks are launcher-owned. PATH is not modified here."
   echo "Reload shell with: source $bash_rc"
 }
 
-maybe_handle_completion_install_request() {
+uninstall_bash_completion() {
+  local completion_file bash_rc block_start block_end
+
+  completion_file="${HOME}/.local/share/bash-completion/completions/kog"
+  bash_rc="${HOME}/.bashrc"
+  block_start="# >>> kano-git completion hook >>>"
+  block_end="# <<< kano-git completion hook <<<"
+
+  rm -f "$completion_file"
+  remove_block_from_file "$bash_rc" "$block_start" "$block_end"
+
+  echo "Bash completion removed: $completion_file"
+  echo "Completion/profile hooks are launcher-owned. PATH is not modified here."
+  echo "Reload shell with: source $bash_rc"
+}
+
+maybe_handle_completion_management_request() {
   if [[ "$#" -eq 0 ]]; then
     return 1
   fi
@@ -714,17 +751,24 @@ maybe_handle_completion_install_request() {
   local first="$1"
   local second="${2:-}"
   local third="${3:-}"
+  local action=""
   local shell_name=""
   local binary=""
 
   case "$first" in
     completion-install)
+      action="install"
+      shell_name="${second:-bash}"
+      ;;
+    completion-uninstall)
+      action="uninstall"
       shell_name="${second:-bash}"
       ;;
     completion)
-      if [[ "$second" != "install" ]]; then
+      if [[ "$second" != "install" && "$second" != "uninstall" ]]; then
         return 1
       fi
+      action="$second"
       shell_name="${third:-bash}"
       ;;
     *)
@@ -734,8 +778,13 @@ maybe_handle_completion_install_request() {
 
   if [[ "$shell_name" != "bash" ]]; then
     echo "Error: completion install currently supports bash only." >&2
-    echo "Hint: use './kog completion install bash'" >&2
+    echo "Hint: use './kog completion install bash' or './kog completion uninstall bash'" >&2
     return 2
+  fi
+
+  if [[ "$action" == "uninstall" ]]; then
+    uninstall_bash_completion
+    return 0
   fi
 
   binary="$(find_binary || true)"
@@ -933,6 +982,9 @@ find_binary() {
     fi
   fi
 
+  candidate="$PROJECT_ROOT/bin/$exe_name"
+  [[ -f "$candidate" ]] && is_binary_compatible_with_shell "$candidate" && { printf '%s\n' "$candidate"; return 0; }
+
   while IFS= read -r preset; do
     [[ -z "$preset" ]] && continue
     candidate="$build_dir/bin/$preset/release/$exe_name"
@@ -1017,39 +1069,39 @@ script_paths() {
   printf '%s\n%s\n' "$prereq" "$build"
 }
 
-fallback_install_marker_file() {
-  if [[ -n "${KANO_GIT_INSTALL_MARKER:-}" ]]; then
-    printf '%s\n' "$KANO_GIT_INSTALL_MARKER"
+fallback_install_state_file() {
+  if [[ -n "${KANO_GIT_INSTALL_STATE_FILE:-}" ]]; then
+    printf '%s\n' "$KANO_GIT_INSTALL_STATE_FILE"
   else
-    printf '%s\n' "$PROJECT_ROOT/.kano-installed-marker"
+    printf '%s\n' "${HOME}/.kano/git/kog-install-state.json"
   fi
 }
 
-install_marker_file() {
-  local binary="" marker=""
+install_state_file() {
+  local binary="" state_file=""
   if binary="$(find_existing_binary 2>/dev/null)"; then
-    marker="$(run_native_binary "$binary" self marker-path --repo "$PROJECT_ROOT" 2>/dev/null || true)"
-    marker="$(printf '%s' "$marker" | tr -d '\r' | tail -n 1)"
-    if [[ -n "$marker" ]]; then
-      printf '%s\n' "$marker"
+    state_file="$(run_native_binary "$binary" self install-state-path 2>/dev/null || true)"
+    state_file="$(printf '%s' "$state_file" | tr -d '\r' | tail -n 1)"
+    if [[ -n "$state_file" ]]; then
+      printf '%s\n' "$state_file"
       return 0
     fi
   fi
-  fallback_install_marker_file
+  fallback_install_state_file
 }
 
 is_packaged_install() {
   local binary=""
   if binary="$(find_existing_binary 2>/dev/null)"; then
-    run_native_binary "$binary" self is-packaged --repo "$PROJECT_ROOT" >/dev/null 2>&1
+    run_native_binary "$binary" self is-packaged >/dev/null 2>&1
     local status=$?
     if [[ "$status" -eq 0 || "$status" -eq 1 ]]; then
       return "$status"
     fi
   fi
-  local marker
-  marker="$(fallback_install_marker_file)"
-  [[ -f "$marker" ]]
+  local state_file
+  state_file="$(fallback_install_state_file)"
+  [[ -f "$state_file" ]]
 }
 
 run_shell_script() {
@@ -1144,10 +1196,20 @@ Launcher commands:
     --llvm                            Use Homebrew LLVM clang/clang++ toolchain (macOS)
     --modules                         Enable C++20 modules (requires compatible toolchain)
     --no-modules                      Disable C++20 modules
-  completion install bash             Install bash completion script
+  completion install bash             Install bash completion file and shell hook only
+  completion uninstall bash           Remove launcher-owned bash completion file and hook
   completion-install bash             Alias of completion install bash
+  completion-uninstall bash           Alias of completion uninstall bash
   sb ...                              Alias of self build ...
   srb ...                             Alias of self rebuild ...
+
+MSI/package model:
+  MSI install                         Per-user deployment to ~/.agents/skills/kano/kano-git-master-skill
+                                      Optional ShellIntegration owns PATH only
+                                      MSI install aborts if that fixed target already contains a manual repo checkout
+  completion install/uninstall        Launcher-owned completion file and profile hook flow
+                                      Does not modify PATH
+  self install state                  Native-owned state at ~/.kano/git/kog-install-state.json
 
 Launcher env:
   KANO_AGENT_MODE=1                Force non-interactive agent mode in launcher flows
@@ -1267,7 +1329,7 @@ main() {
   fi
 
   local completion_status=0
-  if maybe_handle_completion_install_request "${args[@]}"; then
+  if maybe_handle_completion_management_request "${args[@]}"; then
     exit 0
   else
     completion_status=$?
@@ -1309,9 +1371,9 @@ main() {
   fi
 
   if is_packaged_install; then
-    marker="$(install_marker_file)"
-    echo "Error: kano-git packaged install marker detected, but C++ binary is missing." >&2
-    echo "Error: marker file: $marker" >&2
+    marker="$(install_state_file)"
+    echo "Error: kano-git packaged install state detected, but C++ binary is missing." >&2
+    echo "Error: install state file: $marker" >&2
     echo "Error: this installation may be corrupted. Please reinstall the package." >&2
   else
     :

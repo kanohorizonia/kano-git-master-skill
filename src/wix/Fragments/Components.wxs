@@ -1,0 +1,55 @@
+<Include xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Fragment>
+    <ComponentGroup Id="CoreFilesComponents" Directory="KanoSkillRoot" Source="$(var.PayloadRoot)">
+      <Component Id="CreateKanoSkillRootComponent" Guid="*">
+        <CreateFolder />
+        <RemoveFolder Id="RemoveKanoSkillRootOnUninstall" Directory="KanoSkillRoot" On="uninstall" />
+        <RegistryValue
+          Root="HKCU"
+          Key="Software\Kano\GitMasterSkillInstaller"
+          Name="InstallRoot"
+          Type="string"
+          Value="[KanoSkillRoot]"
+          KeyPath="yes" />
+      </Component>
+
+      <Files Include="VERSION" />
+      <Files Include="README.md" />
+      <Files Include="SKILL.md" />
+    </ComponentGroup>
+
+    <ComponentGroup Id="CoreAssetsComponents" Directory="KanoAssetsDir" Source="$(var.PayloadRoot)\assets">
+      <Files Include="**">
+        <Exclude Files="ignore-sources\upstream\**" />
+      </Files>
+    </ComponentGroup>
+
+    <ComponentGroup Id="CoreScriptsComponents" Directory="KanoScriptsDir" Source="$(var.PayloadRoot)\scripts">
+      <Files Include="**" />
+    </ComponentGroup>
+
+    <ComponentGroup Id="CoreBinComponents" Directory="KanoBinDir" Source="$(var.PayloadRoot)\bin">
+      <Files Include="**" />
+    </ComponentGroup>
+
+    <ComponentGroup Id="ShellIntegrationComponents" Directory="KanoScriptsDir">
+      <Component Id="KanoShellIntegrationPathComponent" Guid="*">
+        <RegistryValue
+          Root="HKCU"
+          Key="Software\Kano\GitMasterSkillInstaller"
+          Name="ShellIntegrationPath"
+          Type="integer"
+          Value="1"
+          KeyPath="yes" />
+        <Environment
+          Id="KanoScriptsPathEnvironment"
+          Name="PATH"
+          Value="[KanoScriptsDir]"
+          Permanent="no"
+          Part="last"
+          Action="set"
+          System="no" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+</Include>

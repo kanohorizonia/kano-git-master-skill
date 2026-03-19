@@ -1,0 +1,21 @@
+<Include xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Fragment>
+    <StandardDirectory Id="TARGETDIR">
+      <Directory Id="KanoUserProfile" Name=".">
+        <Directory Id="KanoAgentsDir" Name=".agents">
+          <Directory Id="KanoSkillsDir" Name="skills">
+            <Directory Id="KanoVendorDir" Name="kano">
+              <Directory Id="KanoSkillRoot" Name="kano-git-master-skill" ComponentGuidGenerationSeed="7F4E31E4-6E8B-4A2A-9B78-5B5DA1F7D0C2">
+                <Directory Id="KanoAssetsDir" Name="assets" />
+                <Directory Id="KanoScriptsDir" Name="scripts" />
+                <Directory Id="KanoBinDir" Name="bin" />
+              </Directory>
+            </Directory>
+          </Directory>
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+
+    <SetDirectory Id="KanoUserProfile" Value="[WIX_DIR_PROFILE]" />
+  </Fragment>
+</Include>

@@ -1,0 +1,25 @@
+<Include xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Fragment>
+    <Feature
+      Id="CoreFiles"
+      Title="Core files"
+      Description="Installs MSI-owned kano-git skill files beneath the fixed per-user skill root."
+      Level="1"
+      AllowAbsent="no"
+      AllowAdvertise="no">
+      <ComponentGroupRef Id="CoreFilesComponents" />
+      <ComponentGroupRef Id="CoreAssetsComponents" />
+      <ComponentGroupRef Id="CoreScriptsComponents" />
+      <ComponentGroupRef Id="CoreBinComponents" />
+    </Feature>
+
+    <Feature
+      Id="ShellIntegration"
+      Title="Shell integration (PATH only)"
+      Description="Optional per-user PATH-only integration. Completion files, profile hooks, and install state remain launcher/native owned."
+      Level="2"
+      AllowAdvertise="no">
+      <ComponentGroupRef Id="ShellIntegrationComponents" />
+    </Feature>
+  </Fragment>
+</Include>

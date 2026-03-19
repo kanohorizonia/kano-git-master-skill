@@ -114,15 +114,18 @@ auto ResolveBinaryCommand() -> std::string {
 #endif
 }
 
-auto ResolveInstallMarkerPath(const std::filesystem::path& InRepoRoot) -> std::filesystem::path {
-    if (const char* marker = std::getenv("KANO_GIT_INSTALL_MARKER"); marker != nullptr && std::string(marker).size() > 0) {
-        return std::filesystem::path(marker).lexically_normal();
+auto ResolveInstallStatePath() -> std::filesystem::path {
+    if (const char* state = std::getenv("KANO_GIT_INSTALL_STATE_FILE"); state != nullptr && std::string(state).size() > 0) {
+        return std::filesystem::path(state).lexically_normal();
     }
-    return (InRepoRoot / ".kano-installed-marker").lexically_normal();
+    if (const char* home = std::getenv("HOME"); home != nullptr && std::string(home).size() > 0) {
+        return (std::filesystem::path(home) / ".kano" / "git" / "kog-install-state.json").lexically_normal();
+    }
+    return (std::filesystem::path(".") / ".kano" / "git" / "kog-install-state.json").lexically_normal();
 }
 
-auto IsPackagedInstall(const std::filesystem::path& InRepoRoot) -> bool {
-    return std::filesystem::exists(ResolveInstallMarkerPath(InRepoRoot));
+auto IsPackagedInstall() -> bool {
+    return std::filesystem::exists(ResolveInstallStatePath());
 }
 
 auto ReadTextFileTrimmed(const std::filesystem::path& InPath) -> std::string {
@@ -248,20 +251,14 @@ auto BuildInfoField(const std::string& InInfo, const std::string& InField) -> st
 
 void RegisterSelf(CLI::App& InApp) {
     auto* cmd = InApp.add_subcommand("self", "Launcher self-management commands");
-    auto* markerPath = cmd->add_subcommand("marker-path", "Print packaged-install marker path");
-    auto* markerRepo = new std::string{"."};
-    markerPath->add_option("--repo", *markerRepo, "Launcher project root path");
-    markerPath->callback([=]() {
-        const auto repoRoot = std::filesystem::weakly_canonical(std::filesystem::path(*markerRepo));
-        std::cout << ResolveInstallMarkerPath(repoRoot).generic_string() << "\n";
+    auto* installStatePath = cmd->add_subcommand("install-state-path", "Print packaged-install state file path");
+    installStatePath->callback([=]() {
+        std::cout << ResolveInstallStatePath().generic_string() << "\n";
     });
 
-    auto* isPackaged = cmd->add_subcommand("is-packaged", "Exit 0 when packaged install marker is present");
-    auto* packagedRepo = new std::string{"."};
-    isPackaged->add_option("--repo", *packagedRepo, "Launcher project root path");
+    auto* isPackaged = cmd->add_subcommand("is-packaged", "Exit 0 when packaged install state is present");
     isPackaged->callback([=]() {
-        const auto repoRoot = std::filesystem::weakly_canonical(std::filesystem::path(*packagedRepo));
-        std::exit(IsPackagedInstall(repoRoot) ? 0 : 1);
+        std::exit(IsPackagedInstall() ? 0 : 1);
     });
 
     auto* updateCheck = cmd->add_subcommand("update-check", "Run launcher update checks (dev/package)");
@@ -298,7 +295,7 @@ void RegisterSelf(CLI::App& InApp) {
         });
 
         if (modeValue == "auto") {
-            modeValue = IsPackagedInstall(repoRoot) ? "package" : "dev";
+            modeValue = IsPackagedInstall() ? "package" : "dev";
         }
 
         if (modeValue == "dev") {
@@ -347,7 +344,7 @@ void RegisterSelf(CLI::App& InApp) {
         }
 
         const auto repoRoot = std::filesystem::weakly_canonical(std::filesystem::path(*maybeRepo));
-        if (IsPackagedInstall(repoRoot)) {
+        if (IsPackagedInstall()) {
             std::string checkCmd;
             if (const char* env = std::getenv("KANO_GIT_PACKAGE_VERSION_CHECK_CMD"); env != nullptr) {
                 checkCmd = env;
