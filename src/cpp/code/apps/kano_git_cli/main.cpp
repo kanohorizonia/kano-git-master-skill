@@ -149,6 +149,40 @@ void SetSelfBinaryPathEnv(char* InArgv0) {
 #endif
 }
 
+void SetSkillRootEnvFromBinaryPath() {
+    if (const char* existing = std::getenv("KANO_GIT_SKILL_ROOT"); existing != nullptr && *existing != '\0') {
+        return;
+    }
+    const char* binaryRaw = std::getenv("KANO_GIT_BINARY_PATH");
+    if (binaryRaw == nullptr || *binaryRaw == '\0') {
+        return;
+    }
+
+    std::error_code ec;
+    auto binaryPath = std::filesystem::weakly_canonical(std::filesystem::path(binaryRaw), ec);
+    if (ec) {
+        binaryPath = std::filesystem::path(binaryRaw).lexically_normal();
+    }
+    if (binaryPath.empty()) {
+        return;
+    }
+
+    auto current = binaryPath.parent_path();
+    for (int i = 0; i < 8 && !current.empty(); ++i) {
+        const auto marker = (current / ".kano").lexically_normal();
+        if (std::filesystem::exists(marker, ec) && !ec && std::filesystem::is_directory(marker, ec)) {
+#if defined(_WIN32)
+            _putenv_s("KANO_GIT_SKILL_ROOT", current.lexically_normal().string().c_str());
+#else
+            setenv("KANO_GIT_SKILL_ROOT", current.lexically_normal().string().c_str(), 1);
+#endif
+            return;
+        }
+        ec.clear();
+        current = current.parent_path();
+    }
+}
+
 std::string DefaultPlanPath() {
     if (const char* explicitPlan = std::getenv("KOG_PLAN_FILE"); explicitPlan != nullptr && *explicitPlan != '\0') {
         return std::string{explicitPlan};
@@ -465,6 +499,7 @@ int main(int InArgc, char* InArgv[]) {
 
     try {
         SetSelfBinaryPathEnv(InArgc > 0 ? InArgv[0] : nullptr);
+        SetSkillRootEnvFromBinaryPath();
 
         // Register all commands
         kano::git::commands::RegisterAll(app);

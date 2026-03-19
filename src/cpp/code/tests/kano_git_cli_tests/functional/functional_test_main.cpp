@@ -171,6 +171,15 @@ auto TouchFile(const std::filesystem::path& InPath) -> void {
     REQUIRE(out.good());
 }
 
+auto InitPlainGitRepo(const std::filesystem::path& InRepo) -> void {
+    std::filesystem::create_directories(InRepo);
+    RequireSuccess(RunGit({"init", InRepo.string()}, InRepo.parent_path()), "init plain git repo");
+    ConfigureIdentity(InRepo);
+    WriteTextFile(InRepo / "README.md", "repo\n");
+    RequireSuccess(RunGit({"add", "README.md"}, InRepo), "add plain repo readme");
+    RequireSuccess(RunGit({"commit", "-m", "seed repo"}, InRepo), "commit plain repo readme");
+}
+
 auto InstallCodexCaptureStub(const std::filesystem::path& InDir,
                              const std::filesystem::path& InCapturePath) -> std::filesystem::path {
     const auto stubDir = (InDir / "fake-codex-bin").lexically_normal();
@@ -959,6 +968,81 @@ TEST_CASE("workspace_discover_honors_kogignore_reinclude_under_build_script", "[
     REQUIRE(ContainsPathEntry(result.stdoutText, ctx.cloneRepo));
     REQUIRE(ContainsPathEntry(result.stdoutText, scriptRepo));
     REQUIRE_FALSE(ContainsPathEntry(result.stdoutText, intermediateRepo));
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("workspace_discover_includes_external_roots_when_local_config_inherits", "[functional][workspace][discovery][external]") {
+    const auto ctx = CreateRemoteWithClone("discover-external-inherit");
+    const auto skillRoot = (ctx.sandbox.root / "skill-root").lexically_normal();
+    const auto systemAssets = (skillRoot / "assets").lexically_normal();
+    const auto agentsRoot = (ctx.sandbox.root / "agents-skills-kano").lexically_normal();
+    const auto codexRoot = (ctx.sandbox.root / "codex-skills-kano").lexically_normal();
+    const auto agentRepo = (agentsRoot / "alpha-skill").lexically_normal();
+    const auto codexRepo = (codexRoot / "beta-skill").lexically_normal();
+
+    std::filesystem::create_directories(systemAssets);
+    WriteTextFile(systemAssets / "kog_config.toml",
+                  "[workspace.external]\n"
+                  "inherit = true\n"
+                  "roots = ['" + agentsRoot.generic_string() + "']\n");
+    std::filesystem::create_directories(ctx.cloneRepo / ".kano");
+    WriteTextFile(ctx.cloneRepo / ".kano" / "kog_config.toml",
+                  "[workspace.external]\n"
+                  "inherit = true\n"
+                  "roots = ['" + codexRoot.generic_string() + "']\n");
+
+    InitPlainGitRepo(agentRepo);
+    InitPlainGitRepo(codexRepo);
+
+    const auto result = RunKogWithEnv(
+        {"workspace", "discover", "--format", "json", "--repo-root", ctx.cloneRepo.string(), "--no-cache"},
+        ctx.cloneRepo,
+        {{"KANO_GIT_SKILL_ROOT", skillRoot.string()}});
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    REQUIRE(ContainsPathEntry(result.stdoutText, ctx.cloneRepo));
+    REQUIRE(ContainsPathEntry(result.stdoutText, agentRepo));
+    REQUIRE(ContainsPathEntry(result.stdoutText, codexRepo));
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("workspace_discover_local_external_roots_can_disable_inherited_defaults", "[functional][workspace][discovery][external]") {
+    const auto ctx = CreateRemoteWithClone("discover-external-no-inherit");
+    const auto skillRoot = (ctx.sandbox.root / "skill-root").lexically_normal();
+    const auto systemAssets = (skillRoot / "assets").lexically_normal();
+    const auto agentsRoot = (ctx.sandbox.root / "agents-skills-kano").lexically_normal();
+    const auto codexRoot = (ctx.sandbox.root / "codex-skills-kano").lexically_normal();
+    const auto sharedName = std::string("shared-skill");
+    const auto agentRepo = (agentsRoot / sharedName).lexically_normal();
+    const auto codexRepo = (codexRoot / sharedName).lexically_normal();
+
+    std::filesystem::create_directories(systemAssets);
+    WriteTextFile(systemAssets / "kog_config.toml",
+                  "[workspace.external]\n"
+                  "inherit = true\n"
+                  "roots = ['" + agentsRoot.generic_string() + "']\n");
+    std::filesystem::create_directories(ctx.cloneRepo / ".kano");
+    WriteTextFile(ctx.cloneRepo / ".kano" / "kog_config.toml",
+                  "[workspace.external]\n"
+                  "inherit = false\n"
+                  "roots = ['" + codexRoot.generic_string() + "']\n");
+
+    InitPlainGitRepo(agentRepo);
+    InitPlainGitRepo(codexRepo);
+
+    const auto result = RunKogWithEnv(
+        {"workspace", "discover", "--format", "json", "--repo-root", ctx.cloneRepo.string(), "--no-cache"},
+        ctx.cloneRepo,
+        {{"KANO_GIT_SKILL_ROOT", skillRoot.string()}});
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    REQUIRE(ContainsPathEntry(result.stdoutText, ctx.cloneRepo));
+    REQUIRE_FALSE(ContainsPathEntry(result.stdoutText, agentRepo));
+    REQUIRE(ContainsPathEntry(result.stdoutText, codexRepo));
 
     RemoveSandboxWorkspace(ctx.sandbox);
 }

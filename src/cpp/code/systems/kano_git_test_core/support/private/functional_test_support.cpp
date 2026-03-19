@@ -134,8 +134,11 @@ auto RunKogWithEnv(const std::vector<std::string>& InArgs,
                    const std::filesystem::path& InWorkingDir,
                    const std::vector<std::pair<std::string, std::string>>& InEnv) -> CommandResult {
     auto env = InEnv;
+    const auto hasExplicitSkillRoot = std::any_of(env.begin(), env.end(), [](const auto& entry) {
+        return entry.first == "KANO_GIT_SKILL_ROOT";
+    });
     const auto skillRoot = ResolveSkillRootFromKogBinary();
-    if (!skillRoot.empty()) {
+    if (!hasExplicitSkillRoot && !skillRoot.empty()) {
         env.emplace_back("KANO_GIT_SKILL_ROOT", skillRoot.string());
     }
 #if defined(_WIN32)
