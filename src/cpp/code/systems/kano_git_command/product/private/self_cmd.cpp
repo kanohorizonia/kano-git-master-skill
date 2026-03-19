@@ -1,4 +1,4 @@
-// self command - launcher lifecycle helpers (update checks)
+// self command - launcher lifecycle helpers (update checks, install marker, sync)
 
 #include <CLI/CLI.hpp>
 #include "shell_executor.hpp"
@@ -24,16 +24,86 @@
 namespace kano::git::commands {
 namespace {
 
+// ============================================================================
+// Install State Schema (JSON format)
+// ============================================================================
+// Path: ~/.kano/git/kog-install-state.json (or $KANO_GIT_INSTALL_MARKER)
+// Schema:
+// {
+//   "version": "0.1.0-beta",
+//   "bin_path": "/path/to/kano-git",
+//   "repo_path": "/path/to/kano-git-master-skill",
+//   "installed_at": "2026-03-17T10:30:00Z",
+//   "platform": "windows|linux|macos",
+//   "arch": "x64|arm64"
+// }
+// ============================================================================
+
 auto Trim(std::string InValue) -> std::string {
-    while (!InValue.empty() &&
-           (InValue.back() == '\n' || InValue.back() == '\r' || InValue.back() == ' ' || InValue.back() == '\t')) {
-        InValue.pop_back();
+  while (!InValue.empty() &&
+         (InValue.back() == '\n' || InValue.back() == '\r' || InValue.back() == ' ' || InValue.back() == '\t')) {
+    InValue.pop_back();
+  }
+  std::size_t start = 0;
+  while (start < InValue.size() && (InValue[start] == ' ' || InValue[start] == '\t')) {
+    start += 1;
+  }
+  return InValue.substr(start);
+}
+
+auto JsonEscape(const std::string_view InValue) -> std::string {
+  std::string out;
+  out.reserve(InValue.size() + 16);
+  for (const char c : InValue) {
+    switch (c) {
+    case '\\': out += "\\\\"; break;
+    case '"': out += "\\\""; break;
+    case '\n': out += "\\n"; break;
+    case '\r': out += "\\r"; break;
+    case '\t': out += "\\t"; break;
+    default: out.push_back(c); break;
     }
-    std::size_t start = 0;
-    while (start < InValue.size() && (InValue[start] == ' ' || InValue[start] == '\t')) {
-        start += 1;
-    }
-    return InValue.substr(start);
+  }
+  return out;
+}
+
+auto PlatformName() -> std::string {
+#if defined(_WIN32)
+  return "windows";
+#elif defined(__APPLE__)
+  return "macos";
+#elif defined(__linux__)
+  return "linux";
+#else
+  return "unknown";
+#endif
+}
+
+auto ArchName() -> std::string {
+#if defined(__aarch64__) || defined(_M_ARM64)
+  return "arm64";
+#else
+  return "x64";
+#endif
+}
+
+auto GetHomeDirectory() -> std::filesystem::path {
+  if (const char* home = std::getenv("HOME"); home != nullptr && std::string(home).size() > 0) {
+    return std::filesystem::path(home);
+  }
+  if (const char* userProfile = std::getenv("USERPROFILE"); userProfile != nullptr && std::string(userProfile).size() > 0) {
+    return std::filesystem::path(userProfile);
+  }
+  // Fallback to current user's home via path expansion
+  return std::filesystem::path("~");
+}
+
+auto Iso8601Timestamp() -> std::string {
+  const auto now = std::chrono::system_clock::now();
+  const auto time = std::chrono::system_clock::to_time_t(now);
+  std::ostringstream oss;
+  oss << std::put_time(std::gmtime(&time), "%Y-%m-%dT%H:%M:%SZ");
+  return oss.str();
 }
 
 auto IsInteractiveTerminal() -> bool {
@@ -114,9 +184,14 @@ auto ResolveBinaryCommand() -> std::string {
 #endif
 }
 
+auto ReadTextFileTrimmed(const std::filesystem::path& InPath) -> std::string;
+
 auto ResolveInstallStatePath() -> std::filesystem::path {
     if (const char* state = std::getenv("KANO_GIT_INSTALL_STATE_FILE"); state != nullptr && std::string(state).size() > 0) {
         return std::filesystem::path(state).lexically_normal();
+    }
+    if (const char* marker = std::getenv("KANO_GIT_INSTALL_MARKER"); marker != nullptr && std::string(marker).size() > 0) {
+        return std::filesystem::path(marker).lexically_normal();
     }
     if (const char* home = std::getenv("HOME"); home != nullptr && std::string(home).size() > 0) {
         return (std::filesystem::path(home) / ".kano" / "git" / "kog-install-state.json").lexically_normal();
@@ -124,8 +199,174 @@ auto ResolveInstallStatePath() -> std::filesystem::path {
     return (std::filesystem::path(".") / ".kano" / "git" / "kog-install-state.json").lexically_normal();
 }
 
+auto ResolveInstallMarkerDir() -> std::filesystem::path {
+  if (const char* markerDir = std::getenv("KANO_GIT_INSTALL_MARKER_DIR"); markerDir != nullptr && std::string(markerDir).size() > 0) {
+    return std::filesystem::path(markerDir).lexically_normal();
+  }
+  return ResolveInstallStatePath().parent_path().lexically_normal();
+}
+
+auto ResolveInstallMarkerPath(const std::filesystem::path& InRepoRoot) -> std::filesystem::path {
+  (void)InRepoRoot;
+  return ResolveInstallStatePath();
+}
+
 auto IsPackagedInstall() -> bool {
     return std::filesystem::exists(ResolveInstallStatePath());
+}
+
+auto IsPackagedInstall(const std::filesystem::path& InRepoRoot) -> bool {
+  return std::filesystem::exists(ResolveInstallMarkerPath(InRepoRoot));
+}
+
+auto ReadVersionFile(const std::filesystem::path& InRepoRoot) -> std::string {
+  const auto versionPath = InRepoRoot / "VERSION";
+  return ReadTextFileTrimmed(versionPath);
+}
+
+auto FindKogLocation() -> std::string {
+  if (const char* kogPath = std::getenv("KANO_GIT_BINARY_PATH"); kogPath != nullptr) {
+    const std::filesystem::path p(kogPath);
+    if (std::filesystem::exists(p)) {
+      return p.generic_string();
+    }
+  }
+
+#if defined(_WIN32)
+  const auto result = shell::ExecuteCommand("where", {"kog"}, shell::ExecMode::Capture, std::filesystem::current_path());
+#else
+  const auto result = shell::ExecuteCommand("which", {"kog"}, shell::ExecMode::Capture, std::filesystem::current_path());
+#endif
+
+  if (result.exitCode == 0) {
+    auto path = Trim(result.stdoutStr);
+    const auto newlinePos = path.find('\n');
+    if (newlinePos != std::string::npos) {
+      path = path.substr(0, newlinePos);
+    }
+    return Trim(path);
+  }
+
+  return {};
+}
+
+auto FindKogRepoRoot() -> std::string {
+  const auto kogPath = FindKogLocation();
+  if (kogPath.empty()) {
+    return {};
+  }
+
+  std::filesystem::path scriptPath(kogPath);
+  if (!std::filesystem::exists(scriptPath)) {
+    return {};
+  }
+
+  std::error_code ec;
+  scriptPath = std::filesystem::canonical(scriptPath, ec);
+  if (ec) {
+    return {};
+  }
+
+  auto scriptsDir = scriptPath.parent_path();
+  auto repoRoot = scriptsDir.parent_path();
+
+  const auto gitDir = repoRoot / ".git";
+  if (!std::filesystem::exists(gitDir)) {
+    return {};
+  }
+
+  return repoRoot.generic_string();
+}
+
+auto GenerateInstallMarkerJson(const std::filesystem::path& InRepoRoot, const std::filesystem::path& InBinaryPath) -> std::string {
+  const auto version = ReadVersionFile(InRepoRoot);
+  const auto timestamp = Iso8601Timestamp();
+  const auto platform = PlatformName();
+  const auto arch = ArchName();
+
+  std::ostringstream json;
+  json << "{\n";
+  json << "  \"version\": \"" << JsonEscape(version) << "\",\n";
+  json << "  \"bin_path\": \"" << JsonEscape(InBinaryPath.generic_string()) << "\",\n";
+  json << "  \"repo_path\": \"" << JsonEscape(InRepoRoot.generic_string()) << "\",\n";
+  json << "  \"installed_at\": \"" << timestamp << "\",\n";
+  json << "  \"platform\": \"" << platform << "\",\n";
+  json << "  \"arch\": \"" << arch << "\"\n";
+  json << "}\n";
+
+  return json.str();
+}
+
+auto WriteInstallMarker(const std::filesystem::path& InRepoRoot, const std::filesystem::path& InBinaryPath) -> bool {
+  const auto markerPath = ResolveInstallMarkerPath(InRepoRoot);
+  const auto markerDir = markerPath.parent_path();
+
+  std::error_code ec;
+  std::filesystem::create_directories(markerDir, ec);
+  if (ec) {
+    std::cerr << "Error: Failed to create install state directory: " << markerDir.generic_string() << "\n";
+    return false;
+  }
+
+  const auto jsonContent = GenerateInstallMarkerJson(InRepoRoot, InBinaryPath);
+
+  std::ofstream out(markerPath, std::ios::out | std::ios::trunc | std::ios::binary);
+  if (!out) {
+    std::cerr << "Error: Failed to open install state file for writing: " << markerPath.generic_string() << "\n";
+    return false;
+  }
+
+  out << jsonContent;
+
+  std::cout << "Install state written to: " << markerPath.generic_string() << "\n";
+  std::cout << jsonContent;
+
+  return true;
+}
+
+auto ParseMarkerRepoPath(const std::filesystem::path& InMarkerPath) -> std::string {
+  std::ifstream in(InMarkerPath, std::ios::in | std::ios::binary);
+  if (!in) {
+    return {};
+  }
+
+  std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+
+  const auto repoPathKey = "\"repo_path\"";
+  const auto pos = content.find(repoPathKey);
+  if (pos == std::string::npos) {
+    return {};
+  }
+
+  const auto colonPos = content.find(':', pos);
+  if (colonPos == std::string::npos) {
+    return {};
+  }
+
+  const auto startQuote = content.find('"', colonPos);
+  if (startQuote == std::string::npos) {
+    return {};
+  }
+
+  std::string value;
+  for (std::size_t i = startQuote + 1; i < content.size(); ++i) {
+    if (content[i] == '\\' && i + 1 < content.size()) {
+      switch (content[i + 1]) {
+        case '"': value += '"'; ++i; break;
+        case '\\': value += '\\'; ++i; break;
+        case 'n': value += '\n'; ++i; break;
+        case 'r': value += '\r'; ++i; break;
+        case 't': value += '\t'; ++i; break;
+        default: value += content[i]; break;
+      }
+    } else if (content[i] == '"') {
+      break;
+    } else {
+      value += content[i];
+    }
+  }
+
+  return value;
 }
 
 auto ReadTextFileTrimmed(const std::filesystem::path& InPath) -> std::string {
@@ -256,9 +497,20 @@ void RegisterSelf(CLI::App& InApp) {
         std::cout << ResolveInstallStatePath().generic_string() << "\n";
     });
 
-    auto* isPackaged = cmd->add_subcommand("is-packaged", "Exit 0 when packaged install state is present");
+    auto* markerPath = cmd->add_subcommand("marker-path", "Print install state file path");
+    auto* markerRepo = new std::string{"."};
+    markerPath->add_option("--repo", *markerRepo, "Launcher project root path");
+    markerPath->callback([=]() {
+        const auto repoRoot = std::filesystem::weakly_canonical(std::filesystem::path(*markerRepo));
+        std::cout << ResolveInstallMarkerPath(repoRoot).generic_string() << "\n";
+    });
+
+    auto* isPackaged = cmd->add_subcommand("is-packaged", "Exit 0 when install state file is present");
+    auto* packagedRepo = new std::string{"."};
+    isPackaged->add_option("--repo", *packagedRepo, "Launcher project root path");
     isPackaged->callback([=]() {
-        std::exit(IsPackagedInstall() ? 0 : 1);
+        const auto repoRoot = std::filesystem::weakly_canonical(std::filesystem::path(*packagedRepo));
+        std::exit(IsPackagedInstall(repoRoot) ? 0 : 1);
     });
 
     auto* updateCheck = cmd->add_subcommand("update-check", "Run launcher update checks (dev/package)");
@@ -461,9 +713,263 @@ void RegisterSelf(CLI::App& InApp) {
             std::exit(0);
         }
 
-        std::cout << "direction=same-revision reason=up-to-date\n";
+  std::cout << "direction=same-revision reason=up-to-date\n";
+  std::exit(1);
+  });
+
+  // ========================================================================
+  // self install - Generate/update install state
+  // ========================================================================
+  auto* selfInstall = cmd->add_subcommand("install", "Generate or update install state file");
+  auto* installRepo = new std::string{"."};
+  auto* installBinary = new std::string{};
+  auto* installForce = new bool{false};
+
+  selfInstall->add_option("--repo", *installRepo, "Path to kano-git-master-skill repo root");
+  selfInstall->add_option("--binary", *installBinary, "Path to kano-git binary (auto-detected if not specified)");
+  selfInstall->add_flag("--force", *installForce, "Overwrite existing install state");
+
+  selfInstall->callback([=]() {
+    const auto repoRoot = std::filesystem::weakly_canonical(std::filesystem::path(*installRepo));
+
+    // Verify repo is valid
+    const auto gitDir = repoRoot / ".git";
+    if (!std::filesystem::exists(gitDir)) {
+      std::cerr << "Error: Not a git repository: " << repoRoot.generic_string() << "\n";
+      std::exit(1);
+    }
+
+    const auto versionFile = repoRoot / "VERSION";
+    if (!std::filesystem::exists(versionFile)) {
+      std::cerr << "Error: VERSION file not found in: " << repoRoot.generic_string() << "\n";
+      std::cerr << "Hint: Ensure you're pointing to a valid kano-git-master-skill repo.\n";
+      std::exit(1);
+    }
+
+    // Resolve binary path
+    std::filesystem::path binaryPath;
+    if (!installBinary->empty()) {
+      binaryPath = std::filesystem::weakly_canonical(std::filesystem::path(*installBinary));
+    } else {
+      // Try to find binary in build directory
+      const auto buildDir = repoRoot / "src" / "cpp" / "build";
+      const auto presets = std::vector<std::string>{
+        "windows-ninja-msvc", "linux-ninja-gcc", "macos-ninja-clang-arm64", "macos-ninja-clang-x64"
+      };
+
+      for (const auto& preset : presets) {
+        std::filesystem::path candidate = buildDir / "bin" / preset / "release" /
+#if defined(_WIN32)
+          "kano-git.exe";
+#else
+          "kano-git";
+#endif
+        if (std::filesystem::exists(candidate)) {
+          binaryPath = candidate;
+          break;
+        }
+        candidate = buildDir / "bin" / preset / "debug" /
+#if defined(_WIN32)
+          "kano-git.exe";
+#else
+          "kano-git";
+#endif
+        if (std::filesystem::exists(candidate)) {
+          binaryPath = candidate;
+          break;
+        }
+      }
+
+      if (binaryPath.empty()) {
+        std::cerr << "Error: Could not find kano-git binary in build directory.\n";
+        std::cerr << "Hint: Build the project first with 'kog self build'.\n";
+        std::cerr << "Hint: Or specify binary path with --binary option.\n";
         std::exit(1);
-    });
+      }
+    }
+
+    // Check for existing install state
+    const auto markerPath = ResolveInstallMarkerPath(repoRoot);
+    if (std::filesystem::exists(markerPath) && !*installForce) {
+      std::cerr << "Error: Install state already exists: " << markerPath.generic_string() << "\n";
+      std::cerr << "Hint: Use --force to overwrite.\n";
+      std::exit(1);
+    }
+
+    // Write install state
+    if (!WriteInstallMarker(repoRoot, binaryPath)) {
+      std::cerr << "Error: Failed to write install state.\n";
+      std::exit(1);
+    }
+
+    std::cout << "Install state created successfully.\n";
+    std::exit(0);
+  });
+
+  // ========================================================================
+  // self sync - Sync kog repo and rebuild
+  // ========================================================================
+  auto* selfSync = cmd->add_subcommand("sync", "Find and sync kog repo (git pull + rebuild)");
+  auto* syncRemote = new std::string{"upstream"};
+  auto* syncBranch = new std::string{};
+  auto* syncAutoRebase = new bool{false};
+  auto* syncSkipRebuild = new bool{false};
+  auto* syncNonInteractive = new bool{false};
+
+  selfSync->add_option("--remote", *syncRemote, "Remote to sync from (default: upstream, fallback: origin)");
+  selfSync->add_option("--branch", *syncBranch, "Branch to sync (default: remote HEAD)");
+  selfSync->add_flag("--auto-rebase", *syncAutoRebase, "Automatically rebase without prompting");
+  selfSync->add_flag("--skip-rebuild", *syncSkipRebuild, "Skip rebuild after sync");
+  selfSync->add_flag("--non-interactive", *syncNonInteractive, "Disable interactive prompts");
+
+  selfSync->callback([=]() {
+    // Find kog repo root
+    const auto kogRepoRoot = FindKogRepoRoot();
+    if (kogRepoRoot.empty()) {
+      std::cerr << "Error: Could not find kog repository.\n";
+      std::cerr << "Hint: Ensure 'kog' is in your PATH and points to kano-git-master-skill.\n";
+      std::exit(1);
+    }
+
+    const auto repoRoot = std::filesystem::path(kogRepoRoot);
+    std::cout << "[self sync] Found kog repo: " << repoRoot.generic_string() << "\n";
+
+    // Check for dirty worktree
+    const auto dirty = shell::ExecuteCommand("git", {"status", "--porcelain"}, shell::ExecMode::Capture, repoRoot);
+    if (dirty.exitCode == 0 && !Trim(dirty.stdoutStr).empty()) {
+      std::cerr << "Error: Dirty worktree in " << repoRoot.generic_string() << "\n";
+      std::cerr << "Hint: Commit, stash, or discard changes before running 'kog self sync'.\n";
+      std::exit(1);
+    }
+
+    // Resolve remote
+    std::string remote = *syncRemote;
+    const auto upstreamCheck = shell::ExecuteCommand("git", {"remote", "get-url", remote}, shell::ExecMode::Capture, repoRoot);
+    if (upstreamCheck.exitCode != 0) {
+      // Fallback to origin
+      remote = "origin";
+      const auto originCheck = shell::ExecuteCommand("git", {"remote", "get-url", remote}, shell::ExecMode::Capture, repoRoot);
+      if (originCheck.exitCode != 0) {
+        std::cerr << "Error: No remote found (tried upstream and origin).\n";
+        std::exit(1);
+      }
+    }
+
+    std::cout << "[self sync] Using remote: " << remote << "\n";
+
+    // Fetch
+    std::cout << "[self sync] Fetching from " << remote << "...\n";
+    const auto fetchResult = shell::ExecuteCommand("git", {"fetch", remote, "--prune"}, shell::ExecMode::PassThrough, repoRoot);
+    if (fetchResult.exitCode != 0) {
+      std::cerr << "Error: Failed to fetch from " << remote << "\n";
+      std::exit(1);
+    }
+
+    // Resolve branch
+    std::string branch = *syncBranch;
+    if (branch.empty()) {
+      // Try to get default branch from remote HEAD
+      const auto remoteHead = shell::ExecuteCommand("git", {"symbolic-ref", "--quiet", "--short", "refs/remotes/" + remote + "/HEAD"}, shell::ExecMode::Capture, repoRoot);
+      if (remoteHead.exitCode == 0) {
+        branch = Trim(remoteHead.stdoutStr);
+        // Strip remote prefix
+        const auto prefix = remote + "/";
+        if (branch.substr(0, prefix.size()) == prefix) {
+          branch = branch.substr(prefix.size());
+        }
+      } else {
+        // Fallback to current branch
+        const auto currentBranch = shell::ExecuteCommand("git", {"rev-parse", "--abbrev-ref", "HEAD"}, shell::ExecMode::Capture, repoRoot);
+        if (currentBranch.exitCode == 0) {
+          branch = Trim(currentBranch.stdoutStr);
+        } else {
+          branch = "main";
+        }
+      }
+    }
+
+    std::cout << "[self sync] Target branch: " << branch << "\n";
+
+    // Check if updates available
+    const auto aheadCount = shell::ExecuteCommand("git", {"rev-list", "--count", "HEAD.." + remote + "/" + branch}, shell::ExecMode::Capture, repoRoot);
+    int updates = 0;
+    if (aheadCount.exitCode == 0) {
+      try {
+        updates = std::stoi(Trim(aheadCount.stdoutStr));
+      } catch (...) {
+        updates = 0;
+      }
+    }
+
+    if (updates <= 0) {
+      std::cout << "[self sync] Already up to date: " << remote << "/" << branch << "\n";
+      std::exit(0);
+    }
+
+    std::cout << "[self sync] Found " << updates << " update(s) available.\n";
+
+    // Confirm rebase (unless auto or non-interactive)
+    bool shouldRebase = *syncAutoRebase;
+    if (!shouldRebase && !*syncNonInteractive && IsInteractiveTerminal()) {
+      shouldRebase = PromptYesNo(std::format("[self sync] Rebase onto {}/{}?", remote, branch));
+    }
+
+    if (!shouldRebase) {
+      std::cout << "[self sync] Updates available but not applied.\n";
+      std::cout << "Hint: Use --auto-rebase to apply updates automatically.\n";
+      std::exit(0);
+    }
+
+    // Perform rebase
+    std::cout << "[self sync] Rebasing onto " << remote << "/" << branch << "...\n";
+    const auto rebaseResult = shell::ExecuteCommand("git", {"rebase", remote + "/" + branch}, shell::ExecMode::PassThrough, repoRoot);
+    if (rebaseResult.exitCode != 0) {
+      std::cerr << "Error: Rebase failed. Please resolve conflicts manually.\n";
+      std::cerr << "Hint: After resolving, run 'git rebase --continue' and then 'kog self build'.\n";
+      std::exit(1);
+    }
+
+    std::cout << "[self sync] Rebase completed successfully.\n";
+
+    // Rebuild
+    if (*syncSkipRebuild) {
+      std::cout << "[self sync] Skipping rebuild (--skip-rebuild).\n";
+      std::cout << "Hint: Run 'kog self build' to rebuild the binary.\n";
+      std::exit(0);
+    }
+
+    std::cout << "[self sync] Rebuilding binary...\n";
+
+    // Find and run build script
+    const auto buildDir = repoRoot / "src" / "cpp" / "build" / "script";
+    std::string buildScript;
+
+#if defined(_WIN32)
+    buildScript = (buildDir / "windows" / "build_windows_ninja_msvc_release.sh").generic_string();
+#elif defined(__APPLE__)
+#if defined(__aarch64__) || defined(_M_ARM64)
+    buildScript = (buildDir / "macos" / "build_macos_ninja_clang_arm64_release.sh").generic_string();
+#else
+    buildScript = (buildDir / "macos" / "build_macos_ninja_clang_x64_release.sh").generic_string();
+#endif
+#else
+    buildScript = (buildDir / "linux" / "build_linux_ninja_gcc_release.sh").generic_string();
+#endif
+
+    if (!std::filesystem::exists(buildScript)) {
+      std::cerr << "Error: Build script not found: " << buildScript << "\n";
+      std::exit(1);
+    }
+
+    const auto buildResult = shell::ExecuteCommand("bash", {"-lc", buildScript}, shell::ExecMode::PassThrough, repoRoot);
+    if (buildResult.exitCode != 0) {
+      std::cerr << "Error: Build failed.\n";
+      std::exit(1);
+    }
+
+    std::cout << "[self sync] Sync complete: repo updated and binary rebuilt.\n";
+    std::exit(0);
+  });
 }
 
 } // namespace kano::git::commands
