@@ -1,9 +1,11 @@
 #include "discovery.hpp"
 
+#include "kog_config.hpp"
 #include "shell_executor.hpp"
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <ctime>
 #include <format>
 #include <fstream>
@@ -1412,6 +1414,109 @@ auto IsPrefixPath(const std::filesystem::path& InParent, const std::filesystem::
     return pit == parent.end() && parent != child;
 }
 
+auto ResolveSkillRootFromEnv() -> std::filesystem::path {
+    if (const char* raw = std::getenv("KANO_GIT_SKILL_ROOT"); raw != nullptr && *raw != '\0') {
+        return Normalize(std::filesystem::path(raw));
+    }
+    return {};
+}
+
+auto RepoIdentityName(const std::filesystem::path& InRepoPath) -> std::string {
+    auto name = Normalize(InRepoPath).filename().generic_string();
+    if (name.empty()) {
+        name = Normalize(InRepoPath).generic_string();
+    }
+    return name;
+}
+
+auto CollectExternalRootRepos(const std::filesystem::path& InWorkspaceRoot,
+                              const std::vector<std::filesystem::path>& InExternalRoots,
+                              int InMaxDepth,
+                              const std::vector<std::string>& InExcludePatterns) -> std::vector<std::filesystem::path> {
+    (void)InMaxDepth;
+    (void)InExcludePatterns;
+    std::vector<std::filesystem::path> repos;
+    std::set<std::string> seen;
+    auto tryInsertRepo = [&](const std::filesystem::path& InCandidate) {
+        const auto normalized = Normalize(InCandidate);
+        const auto key = PathKey(normalized);
+        if (key == PathKey(InWorkspaceRoot) || seen.contains(key)) {
+            return;
+        }
+        if (RunGitCapture(normalized, {"rev-parse", "--git-dir"}).exitCode != 0) {
+            return;
+        }
+        seen.insert(key);
+        repos.push_back(normalized);
+    };
+
+    for (const auto& root : InExternalRoots) {
+        std::error_code ec;
+        const auto expanded = std::filesystem::absolute(root).lexically_normal();
+        if (!std::filesystem::exists(expanded, ec) || ec || !std::filesystem::is_directory(expanded, ec)) {
+            continue;
+        }
+
+        tryInsertRepo(expanded);
+
+        for (const auto& entry : std::filesystem::directory_iterator(expanded, ec)) {
+            if (ec) {
+                break;
+            }
+            if (!entry.is_directory(ec) || ec) {
+                ec.clear();
+                continue;
+            }
+            if (entry.path().filename() == ".git") {
+                continue;
+            }
+            tryInsertRepo(entry.path());
+        }
+    }
+    SortUniquePaths(&repos);
+    return repos;
+}
+
+auto MergeExternalReposWithOverride(std::vector<RepoRecord>* IoRepos,
+                                    const std::vector<std::filesystem::path>& InExternalRepos,
+                                    const std::string& InMetadataLevel) -> void {
+    if (IoRepos == nullptr || InExternalRepos.empty()) {
+        return;
+    }
+
+    std::set<std::string> existingPaths;
+    std::set<std::string> existingNames;
+    for (const auto& repo : *IoRepos) {
+        existingPaths.insert(PathKey(repo.path));
+        existingNames.insert(RepoIdentityName(repo.path));
+    }
+
+    for (const auto& repoPath : InExternalRepos) {
+        const auto normalized = Normalize(repoPath);
+        const auto pathKey = PathKey(normalized);
+        const auto repoName = RepoIdentityName(normalized);
+        if (existingPaths.contains(pathKey) || existingNames.contains(repoName)) {
+            continue;
+        }
+
+        RepoRecord record;
+        record.path = normalized;
+        record.type = "external";
+        if (InMetadataLevel != "minimal") {
+            record.currentBranch = CurrentBranch(normalized);
+            record.remotes = JoinLinesWithComma(RunGitCapture(normalized, {"remote"}).stdoutStr);
+            record.hasChanges = HasChanges(normalized);
+        }
+        IoRepos->push_back(std::move(record));
+        existingPaths.insert(pathKey);
+        existingNames.insert(repoName);
+    }
+
+    std::sort(IoRepos->begin(), IoRepos->end(), [](const auto& A, const auto& B) {
+        return PathKey(A.path) < PathKey(B.path);
+    });
+}
+
 auto BuildRepoRecords(
     const std::filesystem::path& InRootAbs,
     const std::vector<std::filesystem::path>& InDiscovered,
@@ -1835,6 +1940,8 @@ auto DiscoverRepos(const DiscoverOptions& InOptions) -> DiscoveryResult {
         options.maxStaleSeconds = 0;
     }
 
+    const auto externalRoots = kano::git::commands::kog_config::ResolveWorkspaceExternalRoots(rootAbs, ResolveSkillRootFromEnv());
+
     reportProgress(std::format("discover: preparing scan root={} depth={}", rootAbs.generic_string(), options.maxDepth));
 
     const auto marker = options.incremental ? ComputeMarker(rootAbs, options.maxDepth, ignoreRules) : std::string{};
@@ -1907,11 +2014,23 @@ auto DiscoverRepos(const DiscoverOptions& InOptions) -> DiscoveryResult {
         reportProgress(std::format("discover: building repo metadata for {} registered repos", discovered.size()));
         result.repos = BuildRepoRecords(rootAbs, discovered, registered, options.metadataLevel);
         MergePersistedUnregisteredRepos(rootAbs, &result.repos);
+
+        if (!externalRoots.empty()) {
+            reportProgress(std::format("discover: scanning {} external root(s)", externalRoots.size()));
+            const auto externalRepos = CollectExternalRootRepos(rootAbs, externalRoots, options.maxDepth, options.excludePatterns);
+            MergeExternalReposWithOverride(&result.repos, externalRepos, options.metadataLevel);
+        }
     } else {
         reportProgress("discover: scanning filesystem for git repos");
         const auto discovered = DiscoverGitRepos(rootAbs, options.maxDepth, ignoreRules);
         reportProgress(std::format("discover: building repo metadata for {} repos", discovered.size()));
         result.repos = BuildRepoRecords(rootAbs, discovered, registered, options.metadataLevel);
+
+        if (!externalRoots.empty()) {
+            reportProgress(std::format("discover: scanning {} external root(s)", externalRoots.size()));
+            const auto externalRepos = CollectExternalRootRepos(rootAbs, externalRoots, options.maxDepth, options.excludePatterns);
+            MergeExternalReposWithOverride(&result.repos, externalRepos, options.metadataLevel);
+        }
     }
 
     if (options.useCache && options.cacheTtlSeconds > 0) {

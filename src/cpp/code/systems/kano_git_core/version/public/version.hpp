@@ -78,6 +78,14 @@ constexpr std::string_view GetBuildCI() {
 #endif
 }
 
+constexpr std::string_view GetBuildContext() {
+#ifdef KOG_BUILD_CONTEXT
+    return KOG_BUILD_CONTEXT;
+#else
+    return "local-manual";
+#endif
+}
+
 constexpr std::string_view GetBuildPipelineId() {
 #ifdef KOG_BUILD_PIPELINE_ID
     return KOG_BUILD_PIPELINE_ID;
@@ -89,6 +97,30 @@ constexpr std::string_view GetBuildPipelineId() {
 constexpr std::string_view GetBuildToolchain() {
 #ifdef KOG_BUILD_TOOLCHAIN
     return KOG_BUILD_TOOLCHAIN;
+#else
+    return "unknown";
+#endif
+}
+
+constexpr std::string_view GetBuildGenerator() {
+#ifdef KOG_BUILD_GENERATOR
+    return KOG_BUILD_GENERATOR;
+#else
+    return "unknown";
+#endif
+}
+
+constexpr std::string_view GetBuildPreset() {
+#ifdef KOG_BUILD_PRESET
+    return KOG_BUILD_PRESET;
+#else
+    return "unknown-preset";
+#endif
+}
+
+constexpr std::string_view GetBuildConfiguration() {
+#ifdef KOG_BUILD_CONFIGURATION
+    return KOG_BUILD_CONFIGURATION;
 #else
     return "unknown";
 #endif
@@ -125,8 +157,16 @@ inline std::string GetBuildInfo() {
     out += BuildHostPlatform();
     out += " toolchain=";
     out += GetBuildToolchain();
+    out += " generator=";
+    out += GetBuildGenerator();
+    out += " preset=";
+    out += GetBuildPreset();
+    out += " config=";
+    out += GetBuildConfiguration();
     out += " ci=";
     out += GetBuildCI();
+    out += " context=";
+    out += GetBuildContext();
     out += " pipeline=";
     out += GetBuildPipelineId();
     return out;

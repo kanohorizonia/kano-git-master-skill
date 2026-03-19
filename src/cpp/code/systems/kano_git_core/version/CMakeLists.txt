@@ -5,6 +5,13 @@ target_sources(kano_git_version
     public/version.hpp
 )
 
+if(NOT KOG_ENABLE_MODULES)
+  target_sources(kano_git_version
+    PRIVATE
+      private/version.cpp
+  )
+endif()
+
 if(KOG_ENABLE_MODULES)
   target_sources(kano_git_version
     PUBLIC
@@ -26,14 +33,14 @@ target_compile_definitions(kano_git_version
     KOG_BUILD_DIRTY="${KOG_BUILD_DIRTY_STR}"
     KOG_BUILD_HOST_NAME="${KOG_BUILD_HOST_NAME_STR}"
     KOG_BUILD_CI="${KOG_BUILD_CI_STR}"
+    KOG_BUILD_CONTEXT="${KOG_BUILD_CONTEXT_STR}"
     KOG_BUILD_PIPELINE_ID="${KOG_BUILD_PIPELINE_ID_STR}"
     KOG_BUILD_PLATFORM="${KOG_BUILD_PLATFORM_STR}"
     KOG_BUILD_TOOLCHAIN="${KOG_BUILD_TOOLCHAIN_STR}"
+    KOG_BUILD_GENERATOR="${KOG_BUILD_GENERATOR_STR}"
+    KOG_BUILD_PRESET="${KOG_BUILD_PRESET_STR}"
+    KOG_BUILD_CONFIGURATION="${KOG_BUILD_CONFIGURATION_STR}"
 )
-
-if(NOT KOG_ENABLE_MODULES)
-  set_target_properties(kano_git_version PROPERTIES LINKER_LANGUAGE CXX)
-endif()
 
 target_include_directories(kano_git_version
   PUBLIC
