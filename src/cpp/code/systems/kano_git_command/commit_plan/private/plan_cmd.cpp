@@ -1024,7 +1024,7 @@ auto BuildSetAiModelHelpFooter() -> std::string {
     if (!skillRoot.empty()) {
         oss << "  system: " << kog_config::SystemConfigPath(skillRoot).generic_string() << "\n";
     } else {
-        oss << "  system: <skill-root>/assets/kog_config.toml\n";
+        oss << "  system: <skill-root>/.kano/kog_config.toml\n";
     }
     if (!home.empty()) {
         oss << "  global: " << kog_config::GlobalConfigPath().generic_string() << "\n";

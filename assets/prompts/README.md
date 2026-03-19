@@ -136,7 +136,7 @@ These env vars are optional. If unset, native AI flows keep the previous safe/de
 
 `kog_config.toml` is resolved in this order, later files overriding earlier ones:
 
-1. system: `assets/kog_config.toml`
+1. system: `.kano/kog_config.toml`
 2. global: `$HOME/.kano/kog_config.toml`
 3. local: `.kano/kog_config.toml`
 

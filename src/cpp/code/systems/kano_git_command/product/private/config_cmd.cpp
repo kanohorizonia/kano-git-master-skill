@@ -56,7 +56,7 @@ void RegisterConfig(CLI::App& InApp) {
         "  kog config --unset <key>        Remove key from target layer\n"
         "  kog config --list               List effective config (all layers merged)\n\n"
         "Layers (system < global < local):\n"
-        "  system: <skill_root>/assets/kog_config.toml\n"
+        "  system: <skill_root>/.kano/kog_config.toml\n"
         "  global: ~/.kano/kog_config.toml\n"
         "  local:  .kano/kog_config.toml\n\n"
         "Known Keys & Values:\n"
