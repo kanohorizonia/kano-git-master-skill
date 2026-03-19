@@ -53,7 +53,9 @@ This documentation is organized into the following categories:
 
 ### 🔧 Contributing
 - [Contributing Guide](./development/contributing.md) - How to contribute
+- [Kano C++ Dev Convention](./development/kano-cpp-dev-convention.md) - Repo-local C++ include and structure rules
 - [Testing Guide](./development/testing.md) - Running tests
+- [Pixi Development Environment](./development/pixi.md) - Repo-local tools and task entrypoints
 
 ## 📁 Directory Structure
 
@@ -93,6 +95,8 @@ docs/
 │   └── changelog.md             # Version history
 └── development/                 # Contributing docs
     ├── contributing.md
+    ├── kano-cpp-dev-convention.md
+    ├── pixi.md
     └── testing.md
 ```
 

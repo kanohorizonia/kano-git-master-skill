@@ -59,14 +59,14 @@ echo "Failed: $TESTS_FAILED"
 
 ## Running Tests
 
+If `pixi` is available, use it as the default repo entrypoint. The tasks in `pixi.toml` call the existing test scripts and keep their behavior intact.
+
 ### All Tests
 
 ```bash
-# Run all test files
-./scripts/test/test-revision-offset.sh
-./scripts/test/test-worktree-scripts.sh
-# Acceptance quickstart workflow (commit/commit-push)
-./scripts/core/acceptance-quickstart-commit-push.sh
+pixi install
+pixi run quick-test
+pixi run full-test
 ```
 
 ### Specific Tests
@@ -360,19 +360,21 @@ jobs:
     
     steps:
       - uses: actions/checkout@v2
+      - name: Install pixi
+        run: curl -fsSL https://pixi.sh/install.sh | bash
+      - name: Install workspace tools
+        run: pixi install --locked
       
       - name: Run tests
-        run: |
-          ./scripts/test/test-revision-offset.sh
-          ./scripts/test/test-worktree-scripts.sh
+        run: pixi run full-test
 ```
 
 ### Local CI Simulation
 
 ```bash
 # Run all tests like CI would
-./scripts/test/test-revision-offset.sh && \
-./scripts/test/test-worktree-scripts.sh
+pixi install
+pixi run full-test
 ```
 
 ## Debugging Tests
