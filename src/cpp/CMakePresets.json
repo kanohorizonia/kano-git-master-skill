@@ -46,6 +46,20 @@
             }
         },
         {
+            "name": "windows-fastbuild-msvc",
+            "displayName": "Windows FASTBuild (MSVC)",
+            "description": "Uses FASTBuild generator with MSVC compiler (requires vcvars64.bat and CMake 4.2+)",
+            "generator": "FASTBuild",
+            "binaryDir": "${sourceDir}/build/_intermediate/windows-fastbuild-msvc",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_CXX_SCAN_FOR_MODULES": "OFF",
+                "KOG_ENABLE_MODULES": "OFF",
+                "KOG_COMPILER_LAUNCHER": "none",
+                "KOG_PRESET_NAME": "windows-fastbuild-msvc"
+            }
+        },
+        {
             "name": "windows-ninja-clang",
             "displayName": "Windows Ninja Multi-Config (Clang)",
             "description": "Uses Ninja Multi-Config with LLVM Clang compiler",
@@ -168,6 +182,10 @@
             "name": "windows-ninja-msvc-arm64-release",
             "configurePreset": "windows-ninja-msvc-arm64",
             "configuration": "Release"
+        },
+        {
+            "name": "windows-fastbuild-msvc-release",
+            "configurePreset": "windows-fastbuild-msvc"
         },
         {
             "name": "windows-ninja-clang-debug",
