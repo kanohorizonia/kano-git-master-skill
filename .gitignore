@@ -6,7 +6,9 @@ __pycache__/
 .env
 .env.*
 .idea/
-.kano/
+.kano/cache
+.kano/launcher
+.kano/reports
 .modules.yaml
 .mypy_cache/
 .next/
