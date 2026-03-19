@@ -8,6 +8,7 @@ Thank you for your interest in contributing to Git Master Skill!
 
 - Git 2.x or higher
 - Bash 4.x or higher (or Git Bash on Windows)
+- pixi (recommended for repo-local tool provisioning)
 - Basic understanding of shell scripting
 
 ### Optional Dependencies
@@ -29,13 +30,15 @@ cd git-master-skill
 ### Run Tests
 
 ```bash
-# Run all tests
-./scripts/test/test-revision-offset.sh
-./scripts/test/test-worktree-scripts.sh
+pixi install
+pixi run quick-test
+pixi run full-test
 
-# Run specific test
+# Run specific test directly when iterating on one script
 ./scripts/test/test-worktree-scripts.sh --test create
 ```
+
+`pixi` is the repo-level environment/task layer. Native C++ libraries still stay in `src/cpp/vcpkg.json`; see `./pixi.md`.
 
 ## Coding Standards
 
@@ -356,7 +359,7 @@ Flowchart or decision tree.
 
 ### Before Submitting
 
-1. **Test thoroughly**: Run all tests
+1. **Test thoroughly**: Run `pixi run quick-test` and the relevant deeper test flow
 2. **Update documentation**: Add/update relevant docs
 3. **Follow conventions**: Ensure code follows standards
 4. **Check for errors**: No syntax errors or warnings

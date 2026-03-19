@@ -14,11 +14,29 @@ The CLI provides a unified binary (`kano-git` / `kog`) with:
 
 ### Prerequisites
 
+- **pixi** (recommended for repo-local tools; see `../../docs/development/pixi.md`)
 - **CMake** ≥ 3.21
 - **C++20 compiler** (GCC 13+, Clang 16+, MSVC 19.38+)
 - **vcpkg** (set `VCPKG_ROOT` environment variable)
 
+`pixi` does not replace `vcpkg` here.
+
+- `pixi` manages repo-local tools such as `bash`, `cmake`, `ninja`, `git`, and `python`
+- `vcpkg` still provides native C++ libraries from `src/cpp/vcpkg.json`
+- platform prerequisite scripts still handle host-specific system packages such as Visual Studio Build Tools
+- the prerequisite bootstrap scripts now skip pixi-provided common tools where possible, while keeping system compiler/toolchain setup in the platform scripts
+
 ### Build
+
+Recommended repo-root flow:
+
+```bash
+pixi install
+pixi run env-summary
+pixi run build-native
+```
+
+Direct script flow remains the source of truth and is what the pixi tasks call:
 
 ```bash
 # Windows host (Git Bash)

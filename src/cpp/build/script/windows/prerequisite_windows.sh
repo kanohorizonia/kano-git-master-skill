@@ -68,6 +68,51 @@ function Ensure-WingetPackage {
   }
 }
 
+function Get-PixiEnvironmentRoot {
+  if (-not [string]::IsNullOrWhiteSpace($env:PIXI_PROJECT_ROOT)) {
+    return $env:PIXI_PROJECT_ROOT
+  }
+  if (-not [string]::IsNullOrWhiteSpace($env:CONDA_PREFIX)) {
+    return $env:CONDA_PREFIX
+  }
+  return $null
+}
+
+function Test-CommandAvailable {
+  param([string[]]$Names)
+
+  foreach ($name in $Names) {
+    if ([string]::IsNullOrWhiteSpace($name)) {
+      continue
+    }
+    if (Get-Command $name -ErrorAction SilentlyContinue) {
+      return $true
+    }
+  }
+
+  return $false
+}
+
+function Ensure-WingetPackageUnlessCommandAvailable {
+  param(
+    [string]$Id,
+    [string[]]$CommandNames
+  )
+
+  $pixiRoot = Get-PixiEnvironmentRoot
+  if ($pixiRoot -and (Test-CommandAvailable -Names $CommandNames)) {
+    $commandLabel = ($CommandNames | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join ','
+    Write-LauncherStatus -Step "prereq:$Id" -Status 'info' -Message "mode=skip-pixi-env root=$pixiRoot commands=$commandLabel"
+    return
+  }
+
+  if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+    throw "winget is required to install $Id automatically. Install App Installer from Microsoft Store, or provide the tool via pixi/system PATH."
+  }
+
+  Ensure-WingetPackage -Id $Id
+}
+
 function Resolve-VcvarsallPath {
   $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
   if (-not (Test-Path $vswhere)) {
@@ -81,21 +126,21 @@ function Resolve-VcvarsallPath {
   return $path
 }
 
-if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-  throw 'winget is required to auto-install prerequisites. Please install App Installer from Microsoft Store.'
-}
-
 Write-LauncherStatus -Step 'prerequisite' -Status 'start' -Message 'windows dependency bootstrap'
 
-Ensure-WingetPackage -Id 'Kitware.CMake'
-Ensure-WingetPackage -Id 'Ninja-build.Ninja'
-Ensure-WingetPackage -Id 'Python.Python.3.12'
+Ensure-WingetPackageUnlessCommandAvailable -Id 'Kitware.CMake' -CommandNames @('cmake')
+Ensure-WingetPackageUnlessCommandAvailable -Id 'Ninja-build.Ninja' -CommandNames @('ninja')
+Ensure-WingetPackageUnlessCommandAvailable -Id 'Python.Python.3.12' -CommandNames @('python', 'python3')
 
 Invoke-LauncherStep -Step 'prereq:Microsoft.VisualStudio.2022.BuildTools' -Action {
   $existingVcvarsall = Resolve-VcvarsallPath
   if ($existingVcvarsall) {
     Write-LauncherStatus -Step 'prereq:Microsoft.VisualStudio.2022.BuildTools' -Status 'info' -Message "mode=skip-existing-msvc vcvarsall=$existingVcvarsall"
     return
+  }
+
+  if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+    throw 'winget is required to auto-install Microsoft.VisualStudio.2022.BuildTools. Please install App Installer from Microsoft Store.'
   }
 
   Write-LauncherStatus -Step 'prereq:Microsoft.VisualStudio.2022.BuildTools' -Status 'info' -Message 'mode=install-components'

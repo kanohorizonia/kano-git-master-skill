@@ -1,0 +1,37 @@
+[workspace]
+name = "kano-git-master-skill"
+channels = ["conda-forge"]
+platforms = ["win-64", "linux-64", "osx-64", "osx-arm64"]
+
+[dependencies]
+bash = "*"
+cmake = ">=3.21"
+git = "*"
+gh = "*"
+jq = "*"
+ninja = "*"
+python = "3.12.*"
+ripgrep = "*"
+
+[tasks]
+env-summary = "python --version && git --version && cmake --version && ninja --version"
+bootstrap-windows-system = "bash src/cpp/build/script/windows/prerequisite_windows.sh"
+bootstrap-linux-system = "bash src/cpp/build/script/linux/prerequisite_linux.sh"
+bootstrap-macos-system = "bash src/cpp/build/script/macos/prerequisite_macos.sh"
+build-native = "bash src/cpp/build/script/windows/build_windows_ninja_msvc_release.sh"
+build-native-linux = "bash src/cpp/build/script/linux/build_linux_ninja_gcc_release.sh"
+build-native-macos = "bash src/cpp/build/script/macos/build_macos_ninja_clang_arm64_release.sh"
+quick-test = "bash scripts/test/quick-test.sh"
+full-test = "bash scripts/test/run-all-tests.sh"
+
+[target.win-64.tasks]
+build-native = "bash src/cpp/build/script/windows/build_windows_ninja_msvc_release.sh"
+
+[target.linux-64.tasks]
+build-native = "bash src/cpp/build/script/linux/build_linux_ninja_gcc_release.sh"
+
+[target.osx-64.tasks]
+build-native = "bash src/cpp/build/script/macos/build_macos_ninja_clang_x64_release.sh"
+
+[target.osx-arm64.tasks]
+build-native = "bash src/cpp/build/script/macos/build_macos_ninja_clang_arm64_release.sh"
