@@ -45,7 +45,11 @@ auto BuildInfoEntries() -> std::vector<std::pair<std::string, std::string>> {
         {"host", std::string(kano::git::BuildHostName())},
         {"host_platform", std::string(kano::git::BuildHostPlatform())},
         {"toolchain", std::string(kano::git::GetBuildToolchain())},
+        {"generator", std::string(kano::git::GetBuildGenerator())},
+        {"preset", std::string(kano::git::GetBuildPreset())},
+        {"config", std::string(kano::git::GetBuildConfiguration())},
         {"ci", std::string(kano::git::GetBuildCI())},
+        {"context", std::string(kano::git::GetBuildContext())},
         {"pipeline", std::string(kano::git::GetBuildPipelineId())},
     };
 }
