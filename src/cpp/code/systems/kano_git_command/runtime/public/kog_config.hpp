@@ -38,6 +38,14 @@ auto ReadEffectiveValue(const std::filesystem::path& InWorkspaceRoot,
                         const std::filesystem::path& InSkillRoot,
                         const std::string& InDottedKey) -> std::string;
 
+auto ReadEffectiveBool(const std::filesystem::path& InWorkspaceRoot,
+                       const std::filesystem::path& InSkillRoot,
+                       const std::string& InDottedKey,
+                       bool InFallback) -> bool;
+
+auto ResolveWorkspaceExternalRoots(const std::filesystem::path& InWorkspaceRoot,
+                                   const std::filesystem::path& InSkillRoot) -> std::vector<std::filesystem::path>;
+
 auto WriteTomlValue(const std::filesystem::path& InConfigPath,
                     const std::string& InDottedKey,
                     const std::string& InValue) -> bool;

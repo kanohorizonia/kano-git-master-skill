@@ -164,3 +164,5 @@ auto CommandExecutor::BuildConfirmationMessage(const std::string& command) -> st
 }
 
 }  // namespace kano::git::commands
+
+// benchmark-probe:20260319T061728Z

@@ -34,6 +34,51 @@ auto ToLower(std::string InValue) -> std::string {
     return InValue;
 }
 
+auto ExpandHomePath(const std::filesystem::path& InPath) -> std::filesystem::path {
+    const auto raw = InPath.generic_string();
+    if (raw == "~") {
+        return HomeDirectory();
+    }
+    if (raw.rfind("~/", 0) == 0) {
+        return (HomeDirectory() / raw.substr(2)).lexically_normal();
+    }
+    return InPath.lexically_normal();
+}
+
+auto ParseBoolValue(const std::string& InValue, bool* OutValue) -> bool {
+    if (OutValue == nullptr) {
+        return false;
+    }
+    const auto lowered = ToLower(Trim(InValue));
+    if (lowered == "true" || lowered == "1" || lowered == "yes" || lowered == "on") {
+        *OutValue = true;
+        return true;
+    }
+    if (lowered == "false" || lowered == "0" || lowered == "no" || lowered == "off") {
+        *OutValue = false;
+        return true;
+    }
+    return false;
+}
+
+auto ParseStringArray(const toml::node& InNode) -> std::vector<std::string> {
+    std::vector<std::string> out;
+    const auto* array = InNode.as_array();
+    if (array == nullptr) {
+        return out;
+    }
+    out.reserve(array->size());
+    for (const auto& item : *array) {
+        if (const auto value = item.value<std::string>(); value.has_value()) {
+            const auto trimmed = Trim(*value);
+            if (!trimmed.empty()) {
+                out.push_back(trimmed);
+            }
+        }
+    }
+    return out;
+}
+
 auto SplitLines(const std::string& InContent) -> std::vector<std::string> {
     std::vector<std::string> out;
     std::string line;
@@ -134,7 +179,7 @@ auto ResolveConfigSearchPaths(const std::filesystem::path& InWorkspaceRoot,
                               const std::filesystem::path& InSkillRoot) -> std::vector<std::filesystem::path> {
     std::vector<std::filesystem::path> out;
     if (!InSkillRoot.empty()) {
-        out.push_back((InSkillRoot / "assets" / "kog_config.toml").lexically_normal());
+        out.push_back((InSkillRoot / ".kano" / "kog_config.toml").lexically_normal());
     }
     const auto home = HomeDirectory();
     if (!home.empty()) {
@@ -306,7 +351,7 @@ auto SystemConfigPath(const std::filesystem::path& InSkillRoot) -> std::filesyst
     if (InSkillRoot.empty()) {
         return {};
     }
-    return (InSkillRoot / "assets" / "kog_config.toml").lexically_normal();
+    return (InSkillRoot / ".kano" / "kog_config.toml").lexically_normal();
 }
 
 auto GlobalConfigPath() -> std::filesystem::path {
@@ -429,6 +474,86 @@ auto ReadEffectiveValue(const std::filesystem::path& InWorkspaceRoot,
         }
     }
     return result;
+}
+
+auto ReadEffectiveBool(const std::filesystem::path& InWorkspaceRoot,
+                       const std::filesystem::path& InSkillRoot,
+                       const std::string& InDottedKey,
+                       bool InFallback) -> bool {
+    auto result = InFallback;
+    for (const auto& configPath : ResolveConfigSearchPaths(InWorkspaceRoot, InSkillRoot)) {
+        const auto value = ReadTomlValue(configPath, InDottedKey);
+        bool parsed = false;
+        if (ParseBoolValue(value, &parsed)) {
+            result = parsed;
+        }
+    }
+    return result;
+}
+
+auto ResolveWorkspaceExternalRoots(const std::filesystem::path& InWorkspaceRoot,
+                                   const std::filesystem::path& InSkillRoot) -> std::vector<std::filesystem::path> {
+    std::vector<std::filesystem::path> mergedRoots;
+
+    for (const auto& configPath : ResolveConfigSearchPaths(InWorkspaceRoot, InSkillRoot)) {
+        std::error_code ec;
+        if (!std::filesystem::exists(configPath, ec) || ec) {
+            continue;
+        }
+
+        try {
+            const auto parsed = toml::parse_file(configPath.string());
+            const auto* workspace = parsed["workspace"].as_table();
+            if (workspace == nullptr) {
+                continue;
+            }
+            const auto* external = (*workspace)["external"].as_table();
+            if (external == nullptr) {
+                continue;
+            }
+
+            bool inherit = true;
+            if (const auto inheritNode = (*external).get("inherit"); inheritNode != nullptr) {
+                if (const auto inheritValue = inheritNode->value<bool>(); inheritValue.has_value()) {
+                    inherit = *inheritValue;
+                } else if (const auto inheritString = inheritNode->value<std::string>(); inheritString.has_value()) {
+                    bool parsedInherit = true;
+                    if (ParseBoolValue(*inheritString, &parsedInherit)) {
+                        inherit = parsedInherit;
+                    }
+                }
+            }
+
+            if (!inherit) {
+                mergedRoots.clear();
+            }
+
+            if (const auto* rootsNode = (*external).get("roots"); rootsNode != nullptr) {
+                for (const auto& root : ParseStringArray(*rootsNode)) {
+                    const auto expanded = ExpandHomePath(std::filesystem::path(root));
+                    if (!expanded.empty()) {
+                        mergedRoots.push_back(expanded.lexically_normal());
+                    }
+                }
+            }
+        } catch (const toml::parse_error&) {
+        } catch (const std::exception&) {
+        }
+    }
+
+    std::vector<std::filesystem::path> deduped;
+    std::set<std::string> seen;
+    deduped.reserve(mergedRoots.size());
+    for (const auto& root : mergedRoots) {
+        const auto normalized = ExpandHomePath(root).lexically_normal();
+        const auto key = normalized.generic_string();
+        if (key.empty() || seen.contains(key)) {
+            continue;
+        }
+        seen.insert(key);
+        deduped.push_back(normalized);
+    }
+    return deduped;
 }
 
 auto WriteTomlValue(const std::filesystem::path& InConfigPath,
