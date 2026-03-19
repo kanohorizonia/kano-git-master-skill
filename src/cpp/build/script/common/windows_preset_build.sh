@@ -155,25 +155,29 @@ kog_run_windows_preset() {
     RootWin="$(cd "$KOG_CPP_ROOT" && pwd -W)"
   fi
 
-  local EffectiveRootWin
   local BuildRootWin
+  local EffectiveRootWin
   local SubstDrive
   local SubstCleanupFlag
   local SubstLine
 
-  EffectiveRootWin="$(kog_resolve_windows_source_root "$RootWin" "$InConfigurePreset")"
-  BuildRootWin="$EffectiveRootWin"
+  BuildRootWin="$RootWin"
   SubstDrive=""
   SubstCleanupFlag="0"
-  SubstLine="$(kog_prepare_windows_subst_root "$EffectiveRootWin" "$InConfigurePreset" "$InSubstPurpose" "$InPreferredSubstDrive")"
+  SubstLine="$(kog_prepare_windows_subst_root "$BuildRootWin" "$InConfigurePreset" "$InSubstPurpose" "$InPreferredSubstDrive")"
   if [[ -n "$SubstLine" ]]; then
     BuildRootWin="${SubstLine%%$'\t'*}"
     local _rest="${SubstLine#*$'\t'}"
     SubstDrive="${_rest%%$'\t'*}"
     SubstCleanupFlag="${SubstLine##*$'\t'}"
   fi
-  if [[ -n "$SubstDrive" && "$BuildRootWin" != "$EffectiveRootWin" ]]; then
-    echo "[launcher][subst][info] mapped $SubstDrive -> $EffectiveRootWin (purpose: $InSubstPurpose)" >&2
+  if [[ -n "$SubstDrive" && "$BuildRootWin" != "$RootWin" ]]; then
+    echo "[launcher][subst][info] mapped $SubstDrive -> $RootWin (purpose: $InSubstPurpose)" >&2
+  fi
+
+  EffectiveRootWin="$(kog_resolve_windows_source_root "$BuildRootWin" "$InConfigurePreset")"
+  if [[ -n "$EffectiveRootWin" ]]; then
+    BuildRootWin="$EffectiveRootWin"
   fi
 
   local ExitCode=0
