@@ -425,6 +425,25 @@ auto CompactDetailValue(std::string InValue) -> std::string {
     return InValue;
 }
 
+auto RepoTypeTag(const std::string& InType) -> std::string {
+    if (InType == "external") {
+        return "[ext] ";
+    }
+    if (InType == "registered") {
+        return "[reg] ";
+    }
+    if (InType == "registered-uninit") {
+        return "[sub] ";
+    }
+    if (InType == "root") {
+        return "[root] ";
+    }
+    if (InType == "unregistered") {
+        return "[repo] ";
+    }
+    return "";
+}
+
 enum class DetailLabelMode {
     Full,
     Short,
@@ -2378,10 +2397,11 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
             std::string indent(static_cast<std::size_t>(repo.treeDepth * 2), ' ');
             const bool collapsed = collapsedRoots[CanonicalPathString(repo.path)];
             const std::string marker = repo.childRepoCount > 0 ? (collapsed ? "[+] " : "[-] ") : "    ";
+            const std::string typeTag = RepoTypeTag(repo.type);
             if (repo.type == "registered-uninit") {
-                menu.push_back(indent + marker + "  " + UninitializedRepoListLabel(workspaceRoot, repo) + " | " + path);
+                menu.push_back(indent + marker + typeTag + UninitializedRepoListLabel(workspaceRoot, repo) + " | " + path);
             } else {
-                menu.push_back(indent + marker + (repo.repoDirty ? "* " : "  ") + repo.branch + " | " + path);
+                menu.push_back(indent + marker + typeTag + (repo.repoDirty ? "* " : "  ") + repo.branch + " | " + path);
             }
         }
         if (menu.empty()) {

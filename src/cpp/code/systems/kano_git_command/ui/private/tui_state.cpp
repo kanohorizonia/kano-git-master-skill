@@ -9,7 +9,7 @@ namespace kano::git::commands {
 
 namespace {
 
-auto ToLower(const std::string& value) -> std::string {
+auto TuiStateToLower(const std::string& value) -> std::string {
     std::string out = value;
     std::transform(out.begin(), out.end(), out.begin(), [](unsigned char c) {
         return static_cast<char>(std::tolower(c));
@@ -17,7 +17,7 @@ auto ToLower(const std::string& value) -> std::string {
     return out;
 }
 
-auto Trim(const std::string& value) -> std::string {
+auto TuiStateTrim(const std::string& value) -> std::string {
     std::size_t start = 0;
     while (start < value.size() && std::isspace(static_cast<unsigned char>(value[start])) != 0) {
         start += 1;
@@ -112,8 +112,8 @@ auto TuiState::HandleCommandMode(const std::string& event_type, char ch) -> bool
 
     // Execute command on Enter with non-empty buffer
     if (event_type == "enter" && !command_state.GetBuffer().empty()) {
-        const auto commandLine = Trim(command_state.GetBuffer());
-        if (ToLower(commandLine) == "help" || ToLower(commandLine) == ":help") {
+        const auto commandLine = TuiStateTrim(command_state.GetBuffer());
+        if (TuiStateToLower(commandLine) == "help" || TuiStateToLower(commandLine) == ":help") {
             EnterHelpMode();
             return true;
         }
@@ -416,14 +416,14 @@ auto TuiState::BuildPaletteItems() -> std::vector<PaletteItem> {
 auto TuiState::UpdatePaletteFilter() -> void {
     palette_state.filtered_commands.clear();
 
-    const auto query = ToLower(Trim(palette_state.search_query));
+    const auto query = TuiStateToLower(TuiStateTrim(palette_state.search_query));
     for (const auto& item : palette_state.all_commands) {
         if (query.empty()) {
             palette_state.filtered_commands.push_back(item);
             continue;
         }
-        const auto name = ToLower(item.name);
-        const auto desc = ToLower(item.description);
+        const auto name = TuiStateToLower(item.name);
+        const auto desc = TuiStateToLower(item.description);
         if (name.find(query) != std::string::npos || desc.find(query) != std::string::npos) {
             palette_state.filtered_commands.push_back(item);
         }
@@ -441,7 +441,7 @@ auto TuiState::UpdatePaletteFilter() -> void {
 }
 
 auto TuiState::CategorizeCommand(const std::string& name) -> std::string {
-    const auto normalized = ToLower(name);
+    const auto normalized = TuiStateToLower(name);
     if (normalized == "status" || normalized == "workspace" || normalized == "sync" || normalized == "fetch") {
         return "Repository";
     }

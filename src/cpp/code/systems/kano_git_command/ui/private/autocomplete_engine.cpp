@@ -8,7 +8,7 @@ namespace kano::git::commands {
 namespace {
 
 /// Convert string to lowercase (ASCII only)
-auto ToLowerAscii(const std::string& str) -> std::string {
+auto AutocompleteToLowerAscii(const std::string& str) -> std::string {
     std::string result = str;
     std::transform(result.begin(), result.end(), result.begin(),
                    [](unsigned char c) { return std::tolower(c); });
@@ -16,10 +16,10 @@ auto ToLowerAscii(const std::string& str) -> std::string {
 }
 
 /// Check if string starts with prefix (case-insensitive)
-auto StartsWithIgnoreCase(const std::string& str, const std::string& prefix) -> bool {
+auto AutocompleteStartsWithIgnoreCase(const std::string& str, const std::string& prefix) -> bool {
     if (prefix.empty()) return true;
     if (str.length() < prefix.length()) return false;
-    return ToLowerAscii(str.substr(0, prefix.length())) == ToLowerAscii(prefix);
+    return AutocompleteToLowerAscii(str.substr(0, prefix.length())) == AutocompleteToLowerAscii(prefix);
 }
 
 } // anonymous namespace
@@ -104,7 +104,7 @@ auto AutocompleteEngine::CompleteCommand(const std::string& prefix)
 
     auto all_commands = metadata_->GetAllCommands();
     for (const auto& cmd : all_commands) {
-        if (StartsWithIgnoreCase(cmd.name, prefix)) {
+        if (AutocompleteStartsWithIgnoreCase(cmd.name, prefix)) {
             candidates.push_back({
                 .text = cmd.name,
                 .description = cmd.description,
@@ -124,7 +124,7 @@ auto AutocompleteEngine::CompleteSubcommand(const std::string& command,
 
     auto subcommands = metadata_->GetSubcommands(command);
     for (const auto& subcmd : subcommands) {
-        if (StartsWithIgnoreCase(subcmd, prefix)) {
+        if (AutocompleteStartsWithIgnoreCase(subcmd, prefix)) {
             candidates.push_back({
                 .text = subcmd,
                 .description = "Subcommand of " + command,
@@ -147,7 +147,7 @@ auto AutocompleteEngine::CompleteOption(const std::string& command,
         // Check long names (--option)
         for (const auto& long_name : opt.long_names) {
             std::string full_name = "--" + long_name;
-            if (StartsWithIgnoreCase(full_name, prefix)) {
+        if (AutocompleteStartsWithIgnoreCase(full_name, prefix)) {
                 candidates.push_back({
                     .text = full_name,
                     .description = opt.description,
@@ -160,7 +160,7 @@ auto AutocompleteEngine::CompleteOption(const std::string& command,
         // Check short names (-o)
         for (const auto& short_name : opt.short_names) {
             std::string full_name = "-" + short_name;
-            if (StartsWithIgnoreCase(full_name, prefix)) {
+        if (AutocompleteStartsWithIgnoreCase(full_name, prefix)) {
                 candidates.push_back({
                     .text = full_name,
                     .description = opt.description,
