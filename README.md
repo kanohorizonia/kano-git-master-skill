@@ -66,6 +66,40 @@ cd kano-git-master-skill
 ./scripts/worktree/create-worktree.sh --help
 ```
 
+### External Workspace Discovery
+
+Native workspace commands such as `kog status` can merge additional repo roots
+outside the current workspace through layered `kog_config.toml` settings.
+
+The shipped default enables nearby skill discovery under `~/.agents/skills`:
+
+```toml
+[workspace.external]
+roots = ["~/.agents/skills"]
+inherit = true
+```
+
+You can inspect or override these settings with:
+
+```bash
+kog config workspace.external.roots
+kog config --help workspace.external.roots
+```
+
+When external repos are merged into `kog status`, their type now keeps both the
+external scope and the repo role when possible:
+
+- `external-root` for the top-level repo discovered from an external root
+- `external-registered` for repos registered by that external root repo via `.gitmodules`
+- `external-unregistered` for direct child repos that are not registered there
+
+Plain `external` is no longer emitted. In this naming, `root` refers to the
+matched external discovery root repo, not the current workspace root.
+
+When an external root is a container directory such as `~/.agents/skills`,
+`kog status` first discovers child repo roots such as `~/.agents/skills/kano`,
+then merges that repo plus its registered repos.
+
 ## Requirements
 
 - Git 2.x or higher

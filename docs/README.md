@@ -48,6 +48,9 @@ This documentation is organized into the following categories:
 - [Orphan Branch Design](./design/orphan-branch.md) - Integration design
 - [Workspace Native Planner Contract](./design/workspace-native-planner-contract.md) - JSON contract for native planner and shell adapters
 
+### 🧩 API Reference
+- [API Overview](./api/overview.md) - Entry page for generated C++ API docs
+
 ### 📊 Project Information
 - [Changelog](./status/changelog.md) - Version history and release notes
 
@@ -109,6 +112,7 @@ docs/
 4. [Common Pitfalls](./guides/common-pitfalls.md)
 5. [Submodule vs Subtree](./comparisons/submodule-vs-subtree.md)
 6. [When to Use Scalar](./comparisons/when-to-use-scalar.md)
+7. [API Overview](./api/overview.md)
 
 ### For Migrations
 1. [Perforce to Git](./migrations/perforce-to-git.md)

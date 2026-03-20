@@ -1,0 +1,57 @@
+PROJECT_NAME           = Kano Git Master Skill
+PROJECT_BRIEF          = C++ API documentation for kano-git
+OUTPUT_DIRECTORY       = @OUTPUT_DIR@
+CREATE_SUBDIRS         = NO
+OUTPUT_LANGUAGE        = English
+USE_MDFILE_AS_MAINPAGE = @RAW_DIR@/src/cpp/README.md
+
+INPUT                  = @RAW_DIR@/src/cpp/README.md \
+                         @RAW_DIR@/src/cpp/code/systems/kano_git_core/shell/public \
+                         @RAW_DIR@/src/cpp/code/systems/kano_git_core/version/public \
+                         @RAW_DIR@/src/cpp/code/systems/kano_git_core/workspace/public \
+                         @RAW_DIR@/src/cpp/code/systems/kano_git_command/runtime/public \
+                         @RAW_DIR@/src/cpp/code/systems/kano_git_command/ui/public
+FILE_PATTERNS          = *.h *.hpp *.hh *.hxx *.c *.cc *.cpp *.cxx *.ixx *.cppm *.md
+RECURSIVE              = YES
+EXCLUDE_PATTERNS       = */thirdparty/* */build/* */_intermediate/* */private/* */tests/*
+
+EXTRACT_ALL            = NO
+EXTRACT_PRIVATE        = NO
+EXTRACT_STATIC         = NO
+EXTRACT_LOCAL_CLASSES  = NO
+HIDE_UNDOC_MEMBERS     = NO
+HIDE_UNDOC_CLASSES     = NO
+
+OPTIMIZE_OUTPUT_FOR_C  = NO
+OPTIMIZE_OUTPUT_JAVA   = NO
+OPTIMIZE_FOR_FORTRAN   = NO
+OPTIMIZE_OUTPUT_VHDL   = NO
+BUILTIN_STL_SUPPORT    = YES
+
+GENERATE_HTML          = YES
+HTML_OUTPUT            = .
+GENERATE_TREEVIEW      = YES
+DISABLE_INDEX          = NO
+FULL_SIDEBAR           = YES
+
+GENERATE_LATEX         = NO
+GENERATE_XML           = NO
+GENERATE_MAN           = NO
+GENERATE_RTF           = NO
+
+MARKDOWN_SUPPORT       = YES
+AUTOLINK_SUPPORT       = YES
+TOC_INCLUDE_HEADINGS   = 3
+
+HAVE_DOT               = YES
+CALL_GRAPH             = NO
+CALLER_GRAPH           = NO
+CLASS_GRAPH            = YES
+COLLABORATION_GRAPH    = YES
+INCLUDE_GRAPH          = YES
+INCLUDED_BY_GRAPH      = YES
+
+QUIET                  = YES
+WARN_IF_UNDOCUMENTED   = NO
+WARN_IF_DOC_ERROR      = YES
+WARN_NO_PARAMDOC       = NO

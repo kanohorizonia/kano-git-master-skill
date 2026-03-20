@@ -743,6 +743,30 @@ auto CollectRegisteredSubmodulesRecursive(const std::filesystem::path& InRepoPat
     }
 }
 
+auto CollectRegisteredSubmodulePaths(const std::filesystem::path& InRepoPath) -> std::vector<std::filesystem::path> {
+    std::vector<std::filesystem::path> out;
+    const auto gitmodulesPath = InRepoPath / ".gitmodules";
+    if (!std::filesystem::exists(gitmodulesPath)) {
+        return out;
+    }
+
+    const auto config = RunGitCapture(InRepoPath, {"config", "--file", ".gitmodules", "--get-regexp", "path"});
+    if (config.exitCode != 0) {
+        return out;
+    }
+
+    for (const auto& subPathRaw : ParseGitConfigPaths(config.stdoutStr)) {
+        out.push_back(Normalize(InRepoPath / subPathRaw));
+    }
+    std::sort(out.begin(), out.end(), [](const auto& A, const auto& B) {
+        return PathKey(A) < PathKey(B);
+    });
+    out.erase(std::unique(out.begin(), out.end(), [](const auto& A, const auto& B) {
+        return PathKey(A) == PathKey(B);
+    }), out.end());
+    return out;
+}
+
 auto DiscoverGitRepos(const std::filesystem::path& InRoot, const int InMaxDepth, const std::vector<IgnoreRule>& InIgnoreRules) -> std::vector<std::filesystem::path> {
     std::vector<std::filesystem::path> repos;
     std::set<std::string> unique;
@@ -1082,12 +1106,31 @@ auto GitmodulesFingerprint(const std::filesystem::path& InRepoPath) -> std::stri
 }
 
 auto RelativePathKeyOrDot(const std::filesystem::path& InRoot, const std::filesystem::path& InPath) -> std::string {
-    std::error_code ec;
-    auto relative = std::filesystem::relative(InPath, InRoot, ec);
-    if (ec || relative.empty()) {
-        relative = InPath.lexically_relative(InRoot);
+    const auto normalizedRoot = Normalize(InRoot);
+    const auto normalizedPath = Normalize(InPath);
+    const auto rootKey = PathKey(normalizedRoot);
+    const auto pathKey = PathKey(normalizedPath);
+    if (pathKey == rootKey) {
+        return ".";
     }
-    auto key = relative.empty() ? std::string(".") : PathKey(relative);
+
+    std::error_code ec;
+    auto relative = std::filesystem::relative(normalizedPath, normalizedRoot, ec);
+    if (ec || relative.empty()) {
+        ec.clear();
+        relative = normalizedPath.lexically_relative(normalizedRoot);
+    }
+
+    if (relative.empty()) {
+        return pathKey;
+    }
+
+    const auto relativeKey = PathKey(relative);
+    if (relativeKey.empty() || relativeKey == "." || relativeKey.starts_with("../")) {
+        return pathKey;
+    }
+
+    auto key = relativeKey;
     if (key.empty()) {
         key = ".";
     }
@@ -1414,10 +1457,24 @@ auto IsPrefixPath(const std::filesystem::path& InParent, const std::filesystem::
     return pit == parent.end() && parent != child;
 }
 
-auto ResolveSkillRootFromEnv() -> std::filesystem::path {
+auto IsSameOrNestedPath(const std::filesystem::path& InParent, const std::filesystem::path& InChild) -> bool {
+    const auto parent = Normalize(InParent);
+    const auto child = Normalize(InChild);
+    return PathKey(parent) == PathKey(child) || IsPrefixPath(parent, child);
+}
+
+auto ResolveSkillRoot(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path {
     if (const char* raw = std::getenv("KANO_GIT_SKILL_ROOT"); raw != nullptr && *raw != '\0') {
         return Normalize(std::filesystem::path(raw));
     }
+
+    const auto workspaceRoot = Normalize(std::filesystem::absolute(InWorkspaceRoot));
+    std::error_code ec;
+    const auto localSystemConfig = (workspaceRoot / ".kano" / "kog_config.toml").lexically_normal();
+    if (std::filesystem::exists(localSystemConfig, ec) && !ec) {
+        return workspaceRoot;
+    }
+
     return {};
 }
 
@@ -1429,26 +1486,86 @@ auto RepoIdentityName(const std::filesystem::path& InRepoPath) -> std::string {
     return name;
 }
 
+struct RepoCandidateSet {
+    std::vector<std::filesystem::path> paths;
+    std::unordered_map<std::string, std::string> types;
+};
+
+auto AppendRepoCandidate(RepoCandidateSet* IoCandidates,
+                         std::set<std::string>* IoSeen,
+                         const std::filesystem::path& InWorkspaceRoot,
+                         const std::filesystem::path& InCandidate,
+                         const std::string& InType) -> bool {
+    if (IoCandidates == nullptr || IoSeen == nullptr) {
+        return false;
+    }
+    const auto normalized = Normalize(InCandidate);
+    const auto key = PathKey(normalized);
+    if (IoSeen->contains(key)) {
+        return false;
+    }
+    if (IsSameOrNestedPath(InWorkspaceRoot, normalized)) {
+        return false;
+    }
+    if (!IsGitRepo(normalized)) {
+        return false;
+    }
+
+    IoSeen->insert(key);
+    IoCandidates->paths.push_back(normalized);
+    IoCandidates->types.insert_or_assign(key, InType);
+    return true;
+}
+
+auto CollectExternalRegisteredRepos(const std::filesystem::path& InWorkspaceRoot,
+                                    const std::filesystem::path& InExternalRepoRoot,
+                                    RepoCandidateSet* IoCandidates,
+                                    std::set<std::string>* IoSeen) -> void {
+    for (const auto& registeredPath : CollectRegisteredSubmodulePaths(InExternalRepoRoot)) {
+        (void)AppendRepoCandidate(IoCandidates,
+                                  IoSeen,
+                                  InWorkspaceRoot,
+                                  registeredPath,
+                                  "external-registered");
+    }
+}
+
+auto CollectExternalDirectChildRepos(const std::filesystem::path& InWorkspaceRoot,
+                                     const std::filesystem::path& InExternalRepoRoot,
+                                     RepoCandidateSet* IoCandidates,
+                                     std::set<std::string>* IoSeen) -> void {
+    std::set<std::string> registered;
+    CollectRegisteredSubmodulesRecursive(InExternalRepoRoot, registered);
+
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(InExternalRepoRoot, ec)) {
+        if (ec) {
+            break;
+        }
+        if (!entry.is_directory(ec) || ec) {
+            ec.clear();
+            continue;
+        }
+        if (entry.path().filename() == ".git") {
+            continue;
+        }
+
+        const auto entryPath = entry.path().lexically_normal();
+        const auto type = registered.contains(PathKey(entryPath))
+            ? std::string{"external-registered"}
+            : std::string{"external-unregistered"};
+        (void)AppendRepoCandidate(IoCandidates, IoSeen, InWorkspaceRoot, entryPath, type);
+    }
+}
+
 auto CollectExternalRootRepos(const std::filesystem::path& InWorkspaceRoot,
                               const std::vector<std::filesystem::path>& InExternalRoots,
                               int InMaxDepth,
-                              const std::vector<std::string>& InExcludePatterns) -> std::vector<std::filesystem::path> {
+                              const std::vector<std::string>& InExcludePatterns) -> RepoCandidateSet {
     (void)InMaxDepth;
     (void)InExcludePatterns;
-    std::vector<std::filesystem::path> repos;
+    RepoCandidateSet candidates;
     std::set<std::string> seen;
-    auto tryInsertRepo = [&](const std::filesystem::path& InCandidate) {
-        const auto normalized = Normalize(InCandidate);
-        const auto key = PathKey(normalized);
-        if (key == PathKey(InWorkspaceRoot) || seen.contains(key)) {
-            return;
-        }
-        if (RunGitCapture(normalized, {"rev-parse", "--git-dir"}).exitCode != 0) {
-            return;
-        }
-        seen.insert(key);
-        repos.push_back(normalized);
-    };
 
     for (const auto& root : InExternalRoots) {
         std::error_code ec;
@@ -1456,8 +1573,15 @@ auto CollectExternalRootRepos(const std::filesystem::path& InWorkspaceRoot,
         if (!std::filesystem::exists(expanded, ec) || ec || !std::filesystem::is_directory(expanded, ec)) {
             continue;
         }
+        if (IsSameOrNestedPath(InWorkspaceRoot, expanded)) {
+            continue;
+        }
 
-        tryInsertRepo(expanded);
+        if (AppendRepoCandidate(&candidates, &seen, InWorkspaceRoot, expanded, "external-root")) {
+            CollectExternalRegisteredRepos(InWorkspaceRoot, expanded, &candidates, &seen);
+            CollectExternalDirectChildRepos(InWorkspaceRoot, expanded, &candidates, &seen);
+            continue;
+        }
 
         for (const auto& entry : std::filesystem::directory_iterator(expanded, ec)) {
             if (ec) {
@@ -1470,17 +1594,68 @@ auto CollectExternalRootRepos(const std::filesystem::path& InWorkspaceRoot,
             if (entry.path().filename() == ".git") {
                 continue;
             }
-            tryInsertRepo(entry.path());
+            const auto candidateRoot = entry.path().lexically_normal();
+            if (!AppendRepoCandidate(&candidates, &seen, InWorkspaceRoot, candidateRoot, "external-root")) {
+                continue;
+            }
+            CollectExternalRegisteredRepos(InWorkspaceRoot, candidateRoot, &candidates, &seen);
+            CollectExternalDirectChildRepos(InWorkspaceRoot, candidateRoot, &candidates, &seen);
         }
     }
-    SortUniquePaths(&repos);
+    SortUniquePaths(&candidates.paths);
+    return candidates;
+}
+
+auto BuildRepoRecordsFromCandidates(
+    const std::vector<std::filesystem::path>& InCandidates,
+    const std::string& InMetadataLevel,
+    const std::function<std::string(const std::filesystem::path&)>& InResolveType) -> std::vector<RepoRecord> {
+    std::vector<std::filesystem::path> sorted = InCandidates;
+    SortUniquePaths(&sorted);
+
+    std::vector<RepoRecord> repos;
+    repos.reserve(sorted.size());
+    for (const auto& repoPath : sorted) {
+        RepoRecord record;
+        record.path = Normalize(repoPath);
+        record.type = InResolveType(record.path);
+        if (InMetadataLevel != "minimal") {
+            record.currentBranch = CurrentBranch(record.path);
+            record.remotes = JoinLinesWithComma(RunGitCapture(record.path, {"remote"}).stdoutStr);
+            record.hasChanges = HasChanges(record.path);
+        }
+        repos.push_back(std::move(record));
+    }
     return repos;
 }
 
+auto AttachNearestParentDependencies(std::vector<RepoRecord>* IoRepos) -> void {
+    if (IoRepos == nullptr) {
+        return;
+    }
+    for (std::size_t idx = 0; idx < IoRepos->size(); ++idx) {
+        std::optional<std::size_t> nearestParent;
+        for (std::size_t cand = 0; cand < IoRepos->size(); ++cand) {
+            if (cand == idx) {
+                continue;
+            }
+            if (!IsPrefixPath((*IoRepos)[cand].path, (*IoRepos)[idx].path)) {
+                continue;
+            }
+            if (!nearestParent || (*IoRepos)[cand].path.generic_string().size() > (*IoRepos)[*nearestParent].path.generic_string().size()) {
+                nearestParent = cand;
+            }
+        }
+        if (nearestParent) {
+            (*IoRepos)[idx].dependencies.push_back((*IoRepos)[*nearestParent].path);
+        }
+    }
+}
+
 auto MergeExternalReposWithOverride(std::vector<RepoRecord>* IoRepos,
-                                    const std::vector<std::filesystem::path>& InExternalRepos,
+                                    const RepoCandidateSet& InExternalRepos,
                                     const std::string& InMetadataLevel) -> void {
-    if (IoRepos == nullptr || InExternalRepos.empty()) {
+    if (IoRepos == nullptr || InExternalRepos.paths.empty()) {
         return;
     }
 
@@ -1491,23 +1666,23 @@ auto MergeExternalReposWithOverride(std::vector<RepoRecord>* IoRepos,
         existingNames.insert(RepoIdentityName(repo.path));
     }
 
-    for (const auto& repoPath : InExternalRepos) {
-        const auto normalized = Normalize(repoPath);
+    const auto externalRecords = BuildRepoRecordsFromCandidates(
+        InExternalRepos.paths,
+        InMetadataLevel,
+        [&](const std::filesystem::path& InRepoPath) {
+            const auto it = InExternalRepos.types.find(PathKey(InRepoPath));
+            return it == InExternalRepos.types.end() ? std::string{"external-root"} : it->second;
+        });
+
+    for (const auto& externalRepo : externalRecords) {
+        const auto normalized = Normalize(externalRepo.path);
         const auto pathKey = PathKey(normalized);
         const auto repoName = RepoIdentityName(normalized);
         if (existingPaths.contains(pathKey) || existingNames.contains(repoName)) {
             continue;
         }
 
-        RepoRecord record;
-        record.path = normalized;
-        record.type = "external";
-        if (InMetadataLevel != "minimal") {
-            record.currentBranch = CurrentBranch(normalized);
-            record.remotes = JoinLinesWithComma(RunGitCapture(normalized, {"remote"}).stdoutStr);
-            record.hasChanges = HasChanges(normalized);
-        }
-        IoRepos->push_back(std::move(record));
+        IoRepos->push_back(externalRepo);
         existingPaths.insert(pathKey);
         existingNames.insert(repoName);
     }
@@ -1522,75 +1697,52 @@ auto BuildRepoRecords(
     const std::vector<std::filesystem::path>& InDiscovered,
     const std::set<std::string>& InRegistered,
     const std::string& InMetadataLevel) -> std::vector<RepoRecord> {
-    std::vector<std::filesystem::path> sorted = InDiscovered;
-    std::sort(sorted.begin(), sorted.end(), [](const auto& A, const auto& B) {
-        return PathKey(A) < PathKey(B);
-    });
-
     const bool rootIsRepo = IsGitRepo(InRootAbs);
-    std::vector<RepoRecord> repos;
-    repos.reserve(sorted.size());
-
-    for (const auto& repoPath : sorted) {
-        RepoRecord record;
-        record.path = Normalize(repoPath);
-        if (rootIsRepo && PathKey(repoPath) == PathKey(InRootAbs)) {
-            record.type = "root";
-        } else if (InRegistered.contains(PathKey(repoPath))) {
-            record.type = "registered";
-        } else {
-            record.type = "unregistered";
-        }
-
-        if (InMetadataLevel != "minimal") {
-            record.currentBranch = CurrentBranch(repoPath);
-            record.remotes = JoinLinesWithComma(RunGitCapture(repoPath, {"remote"}).stdoutStr);
-            record.hasChanges = HasChanges(repoPath);
-        }
-        repos.push_back(std::move(record));
-    }
+    auto repos = BuildRepoRecordsFromCandidates(
+        InDiscovered,
+        InMetadataLevel,
+        [&](const std::filesystem::path& InRepoPath) {
+            if (rootIsRepo && PathKey(InRepoPath) == PathKey(InRootAbs)) {
+                return std::string{"root"};
+            }
+            if (InRegistered.contains(PathKey(InRepoPath))) {
+                return std::string{"registered"};
+            }
+            return std::string{"unregistered"};
+        });
 
     std::set<std::string> discoveredKeys;
-    for (const auto& repoPath : sorted) {
+    for (const auto& repoPath : InDiscovered) {
         discoveredKeys.insert(PathKey(repoPath));
     }
+    std::vector<std::filesystem::path> initializedRegistered;
     for (const auto& registeredKey : InRegistered) {
         if (discoveredKeys.contains(registeredKey)) {
             continue;
         }
         const std::filesystem::path registeredPath(registeredKey);
-        RepoRecord record;
-        record.path = Normalize(registeredPath);
         if (IsGitRepo(registeredPath)) {
-            record.type = "registered";
-            if (InMetadataLevel != "minimal") {
-                record.currentBranch = CurrentBranch(registeredPath);
-                record.remotes = JoinLinesWithComma(RunGitCapture(registeredPath, {"remote"}).stdoutStr);
-                record.hasChanges = HasChanges(registeredPath);
-            }
+            initializedRegistered.push_back(registeredPath);
         } else {
+            RepoRecord record;
+            record.path = Normalize(registeredPath);
             record.type = "registered-uninit";
+            repos.push_back(std::move(record));
         }
-        repos.push_back(std::move(record));
     }
+    const auto initializedRecords = BuildRepoRecordsFromCandidates(
+        initializedRegistered,
+        InMetadataLevel,
+        [&](const std::filesystem::path&) { return std::string{"registered"}; });
+    repos.insert(repos.end(), initializedRecords.begin(), initializedRecords.end());
 
-    for (std::size_t idx = 0; idx < repos.size(); ++idx) {
-        std::optional<std::size_t> nearestParent;
-        for (std::size_t cand = 0; cand < repos.size(); ++cand) {
-            if (cand == idx) {
-                continue;
-            }
-            if (!IsPrefixPath(repos[cand].path, repos[idx].path)) {
-                continue;
-            }
-            if (!nearestParent || repos[cand].path.generic_string().size() > repos[*nearestParent].path.generic_string().size()) {
-                nearestParent = cand;
-            }
-        }
-        if (nearestParent) {
-            repos[idx].dependencies.push_back(repos[*nearestParent].path);
-        }
-    }
+    std::sort(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
+        return PathKey(A.path) < PathKey(B.path);
+    });
+    repos.erase(std::unique(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
+        return PathKey(A.path) == PathKey(B.path);
+    }), repos.end());
+    AttachNearestParentDependencies(&repos);
 
     return repos;
 }
@@ -1940,7 +2092,7 @@ auto DiscoverRepos(const DiscoverOptions& InOptions) -> DiscoveryResult {
         options.maxStaleSeconds = 0;
     }
 
-    const auto externalRoots = kano::git::commands::kog_config::ResolveWorkspaceExternalRoots(rootAbs, ResolveSkillRootFromEnv());
+    const auto externalRoots = kano::git::commands::kog_config::ResolveWorkspaceExternalRoots(rootAbs, ResolveSkillRoot(rootAbs));
 
     reportProgress(std::format("discover: preparing scan root={} depth={}", rootAbs.generic_string(), options.maxDepth));
 

@@ -1,0 +1,12 @@
+{
+  "quartz": {
+    "version": "v4.4.0",
+    "repository": "https://github.com/jackyzha0/quartz.git"
+  },
+  "deployment": {
+    "site_url": "https://kanohorizonia.github.io/kano-git-master-skill/"
+  },
+  "build": {
+    "node_version": "22"
+  }
+}

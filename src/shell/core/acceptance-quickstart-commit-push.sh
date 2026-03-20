@@ -2,14 +2,16 @@
 #
 # acceptance-quickstart-commit-push.sh
 # Deterministic acceptance flow for quickstart commit/commit-push scenarios:
-# - commit -m (non-AI, commit-only)
+# - commit -m (non-AI, plan-first commit-only shorthand)
 # - cp -m (non-AI, commit+push)
 # - cpa single-change shortcut (auto route to cp -m)
 # - commit --plan-file --plan-stage commit (manual plan-driven)
+# - commit --agent -m (agent proxy mode + synthesized plan)
+# - invalid --plan-file + -m combination must fail
 
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 TIMESTAMP_UTC="$(date -u +%Y%m%dT%H%M%SZ)"
 TMP_ROOT="${KOG_ACCEPTANCE_TMP_ROOT:-${ROOT_DIR}/.kano/tmp/git/acceptance}"
 CASE_ROOT="${TMP_ROOT}/kog-quickstart-acceptance-${TIMESTAMP_UTC}-$$"
@@ -141,14 +143,17 @@ remote_subject() {
 
 scenario_commit_m() {
   local kog_cmd="$1"
-  local repo_dir msg actual
+  local repo_dir msg actual plan_count out
   repo_dir="$(setup_repo_case "scenario-commit-m")"
   msg="chore(test): commit-only manual message"
 
   printf 'case-commit\n' >> "${repo_dir}/README.md"
-  run_kog_in_repo "$kog_cmd" "$repo_dir" commit -m "$msg" >/dev/null 2>&1
+  out="$(run_kog_in_repo "$kog_cmd" "$repo_dir" commit -m "$msg" 2>&1)"
   actual="$(latest_subject "$repo_dir")"
-  [[ "$actual" == "$msg" ]]
+  plan_count="$(find "${repo_dir}/.kano/cache/git/plans" -maxdepth 1 -type f -name 'message-plan-*.json' 2>/dev/null | wc -l | tr -d ' ')"
+  [[ "$actual" == "$msg" ]] || return 1
+  [[ "$plan_count" -ge 1 ]] || return 1
+  [[ "$out" == *"synthesized plan file:"* ]]
 }
 
 scenario_commit_push_m() {
@@ -240,6 +245,69 @@ EOF
   [[ "$actual" == "$msg" ]]
 }
 
+scenario_agent_commit_m() {
+  local kog_cmd="$1"
+  local repo_dir msg actual out
+  repo_dir="$(setup_repo_case "scenario-agent-commit-m")"
+  msg="chore(test): agent plan-first commit"
+
+  printf 'case-agent-commit\n' >> "${repo_dir}/README.md"
+  out="$(
+    cd "$repo_dir"
+    KANO_GIT_MASTER_ROOT="$ROOT_DIR" \
+      KANO_GIT_BINARY_PATH="$kog_cmd" \
+      KOG_DISABLE_SECRET_GATE=1 \
+      "$kog_cmd" commit --agent codex -m "$msg" 2>&1
+  )"
+  actual="$(latest_subject "$repo_dir")"
+  [[ "$actual" == "$msg" ]] || return 1
+  [[ "$out" == *"agent proxy mode: agent=codex review=off"* ]] || return 1
+  [[ "$out" == *"synthesized plan file:"* ]]
+}
+
+scenario_invalid_plan_file_and_message() {
+  local kog_cmd="$1"
+  local repo_dir plan_dir plan_file out status
+  repo_dir="$(setup_repo_case "scenario-invalid-plan-plus-message")"
+  printf 'case-invalid-combo\n' >> "${repo_dir}/README.md"
+
+  plan_dir="${repo_dir}/.kano/tmp/git/plans"
+  plan_file="${plan_dir}/manual-plan.json"
+  mkdir -p "$plan_dir"
+  cat > "$plan_file" <<EOF
+{
+  "meta": {
+    "schema_version": "1",
+    "plan_id": "plan-invalid-combo-001",
+    "generated_at_utc": "2026-03-05T00:00:00Z",
+    "base_head_sha": "manual-base-sha",
+    "dirty_fingerprint_pre_ignore": "manual-dirty-fingerprint",
+    "dirty_fingerprint": "manual-dirty-fingerprint",
+    "planner": {
+      "provider": "manual",
+      "ai-model": "manual"
+    },
+    "review": {
+      "verdict": "pass",
+      "reason": "manual plan reviewed"
+    }
+  },
+  "stages": {
+    "commit": [],
+    "post_sync": []
+  }
+}
+EOF
+
+  set +e
+  out="$(run_kog_in_repo "$kog_cmd" "$repo_dir" commit --plan-file "$plan_file" -m "should fail" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 2 ]] || return 1
+  [[ "$out" == *"--plan-file cannot be combined with --message/-m"* ]]
+}
+
 run_case() {
   local name="$1"
   shift
@@ -285,6 +353,8 @@ main() {
   run_case "commit-push -m non-AI commit-push" scenario_commit_push_m "$kog_cmd"
   run_optional_case "cpa single-change shortcut" "$wrapper_enabled" scenario_cpa_shortcut "$wrapper_cmd"
   run_case "manual plan-driven commit --plan-file" scenario_manual_plan_commit "$kog_cmd"
+  run_case "commit --agent -m agent proxy plan-first" scenario_agent_commit_m "$kog_cmd"
+  run_case "commit rejects --plan-file plus -m" scenario_invalid_plan_file_and_message "$kog_cmd"
 
   echo "summary: pass=${PASS_COUNT} skip=${SKIP_COUNT} fail=${FAIL_COUNT}"
   if [[ "$FAIL_COUNT" -ne 0 ]]; then

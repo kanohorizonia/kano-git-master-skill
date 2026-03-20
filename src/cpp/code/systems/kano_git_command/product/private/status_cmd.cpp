@@ -115,7 +115,7 @@ auto ComputeTypeWidth(const std::vector<RepoView>& InRows) -> int {
     for (const auto& row : InRows) {
         width = std::max(width, DisplayWidthForContent(row.type));
     }
-    return std::clamp(width, 6, 18);
+    return std::clamp(width, 6, 24);
 }
 
 auto TruncateWithEllipsis(const std::string& InValue, int InWidth) -> std::string {
@@ -410,6 +410,7 @@ auto FormatTable(const std::vector<RepoView>& InRows) -> std::string {
         const auto branch = TruncateWithEllipsis(row.branch, std::max(1, layout.branchWidth - 1));
         const auto remote = TruncateWithEllipsis(row.remote, std::max(1, layout.remoteWidth - 1));
         const auto tracking = TruncateWithEllipsis(row.tracking, std::max(1, layout.trackingWidth - 1));
+        const auto type = TruncateWithEllipsis(row.type, std::max(1, layout.typeWidth - 1));
 
         oss << PadRight(std::to_string(i + 1), layout.indexWidth)
             << PadRight(repoName, layout.repoWidth)
@@ -418,7 +419,7 @@ auto FormatTable(const std::vector<RepoView>& InRows) -> std::string {
             << PadRight(tracking, layout.trackingWidth)
             << PadRight(row.repoDirty ? "yes" : "no", layout.dirtyWidth)
             << PadRight(row.hasDirtyWorktree ? "yes" : "no", layout.worktreeDirtyWidth)
-            << row.type << "\n";
+            << type << "\n";
     }
 
     return oss.str();

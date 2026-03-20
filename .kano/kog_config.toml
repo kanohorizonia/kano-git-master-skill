@@ -41,6 +41,16 @@ models = ["copilot/gpt-5-mini", "copilot/claude-haiku-4.5", "copilot/gpt-5.4"]
 [plan.ai]
 commit_generation_mode = "single"
 
+# Workspace discovery defaults.
+#
+# `kog status` and other workspace-aware commands merge these external roots
+# with the normal registered-workspace scan. This keeps nearby skill repos such
+# as `~/.agents/skills/*` visible without requiring them to be submodules of the
+# current workspace.
+[workspace.external]
+roots = ["~/.agents/skills"]
+inherit = true
+
 # Native self-build behavior.
 [self]
 compiler_launcher = "auto"

@@ -1,18 +1,17 @@
 # Testing Guide
 
-This guide explains how to test Git Master Skill scripts.
+This guide explains how to test Git Master Skill workflows.
 
 ## Test Structure
 
 ### Test Files
 
-Tests are located in `scripts/test/`:
+This repo is in the middle of a shell-layout migration.
 
-```
-scripts/test/
-├── test-revision-offset.sh      # Version info tests
-└── test-worktree-scripts.sh     # Worktree tests
-```
+- Legacy test entrypoints referenced by older docs may still point at `scripts/test/`.
+- Current native acceptance coverage for commit/commit-push quickstart lives under:
+  - `src/shell/core/acceptance-quickstart-commit-push.sh`
+  - `src/shell/core/acceptance-ignore-plan.sh`
 
 ### Test Format
 
@@ -59,7 +58,7 @@ echo "Failed: $TESTS_FAILED"
 
 ## Running Tests
 
-If `pixi` is available, use it as the default repo entrypoint. The tasks in `pixi.toml` call the existing test scripts and keep their behavior intact.
+If `pixi` is available, use it as the default repo entrypoint.
 
 ### All Tests
 
@@ -67,16 +66,17 @@ If `pixi` is available, use it as the default repo entrypoint. The tasks in `pix
 pixi install
 pixi run quick-test
 pixi run full-test
+pixi run acceptance-quickstart
 ```
 
 ### Specific Tests
 
 ```bash
-# Run specific test file
-./scripts/test/test-worktree-scripts.sh
+# Run the native quickstart acceptance flow directly
+bash src/shell/core/acceptance-quickstart-commit-push.sh
 
-# Run specific test within file
-./scripts/test/test-worktree-scripts.sh --test create
+# Run the ignore-plan acceptance flow directly
+bash src/shell/core/acceptance-ignore-plan.sh
 ```
 
 ### Verbose Output

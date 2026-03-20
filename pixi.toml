@@ -23,6 +23,7 @@ build-native-linux = "bash src/cpp/build/script/linux/build_linux_ninja_gcc_rele
 build-native-macos = "bash src/cpp/build/script/macos/build_macos_ninja_clang_arm64_release.sh"
 quick-test = "bash scripts/test/quick-test.sh"
 full-test = "bash scripts/test/run-all-tests.sh"
+acceptance-quickstart = "bash src/shell/core/acceptance-quickstart-commit-push.sh"
 
 [target.win-64.tasks]
 build-native = "bash src/cpp/build/script/windows/build_windows_ninja_msvc_release.sh"

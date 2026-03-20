@@ -1,6 +1,9 @@
 # AGENTS.md — kano-git-master-skill
 
-This repo is a **Bash script toolkit** (plus Bash-based tests) for Git automation.
+This repo is a **native `kog` / `kano-git` multi-repo Git toolkit** with C++-first
+implementation for core workflows. Bash still exists for wrappers, build/install
+helpers, compatibility layers, and some tests, but it is no longer the primary
+product surface for status/commit/commit-push/planner behavior.
 
 ## 1) Build / Lint / Test commands
 
@@ -61,7 +64,7 @@ Note: sourcing will also define globals used by those functions (see the script 
 
 ## 2) Code style & conventions (grounded in this repo)
 
-### Bash scripts (primary language)
+### Bash scripts (supporting language)
 
 #### File header + strict mode
 - Use `#!/usr/bin/env bash`.
@@ -185,15 +188,17 @@ Note: sourcing will also define globals used by those functions (see the script 
   - Always align submodules to the branch specified in `.gitmodules` during sync. Use `gith_checkout_branch` to handle detached HEADs and remote tracking safely.
   - Support flexible remote naming (e.g., `kog-remote-upstream`) without forcing protocol suffixes if a direct URL is provided.
 - **Root-Level Wrapper Pattern**:
-  - For complex multi-repo tools (e.g., `smart-commit`), provide simple entry-point wrappers in the project root.
+  - For complex multi-repo tools, provide simple entry-point wrappers in the project root.
+  - Prefer forwarding into native `kog` / `kano-git` commands rather than duplicating core workflow logic in shell.
   - This ensures "Git Bash Here" works correctly and provides a stable, context-aware interface for developers.
 - **AI Safety & Authentication**:
-  - Scripts like `smart-commit.sh` perform AI safety reviews. Note that **Copilot authentication has two layers**: the standalone CLI (`copilot login`) and the GitHub CLI extension (`gh auth login`).
+  - Native `kog` commit / commit-push flows can perform AI-assisted authoring and review gates. Note that **Copilot authentication has two layers**: the standalone CLI (`copilot login`) and the GitHub CLI extension (`gh auth login`).
   - **Commit Message Filtering**: The system automatically filters AI conversational preamble (e.g., "Certainly!", "I'll inspect..."). It prioritizes lines matching **Conventional Commits** (`type(scope): msg`) or **Bracketed Tags** (`[Tag][SubTag] msg`).
-- **Agent Proxy Contract (Required)**: For agent-proxy `smart-*` operations, pass `--agent <name>` to declare identity (e.g., `codex`, `copilot`, `cursor`, `kiro`, `claude`).
-- If `--agent` is provided and not `manual`, agent proxy mode (代理模式) is active: a fixed message (`-m/--message`) is required and in-script AI review is disabled (`--no-ai-review`) to avoid duplicate model cost.
+- **Agent Proxy Contract (Required)**: For agent-proxy native commit workflows, pass `--agent <name>` to declare identity (e.g., `codex`, `copilot`, `cursor`, `kiro`, `claude`).
+- If `--agent` is provided and not `manual`, agent proxy mode (代理模式) is active: provide either `-m/--message` or a prepared `--plan-file`, and in-process AI review is disabled (`--no-ai-review`) to avoid duplicate model cost.
 - **Launcher agent env (important)**: when invoking through `kog`/`kano-git`, set `KANO_AGENT_MODE=1` for agent runs so launcher update prompts/interactive flows are suppressed before command dispatch.
-  - Example: `KANO_AGENT_MODE=1 kog pa --agent codex -m "chore: update workspace"`
+  - Example: `KANO_AGENT_MODE=1 kog cpa`
+  - Example: `KANO_AGENT_MODE=1 kog commit --agent codex -m "chore: update workspace"`
 - Intent: commit/review decisions stay on the same agent model executing the command, not a second model pipeline.
 - **Agent-mode AI ownership rule (kog)**:
   - In `KANO_AGENT_MODE=1`, launcher treats `cpa` as `cp` (no extra launcher-side AI preflight injection).
@@ -237,6 +242,9 @@ Note: sourcing will also define globals used by those functions (see the script 
 - **Kano Backlog Init Location**:
   - Run `kano backlog admin init` from `_kano/backlog` to generate `.kano/config` for this repo.
 - When adding/adjusting behavior, update the relevant docs in `docs/` and add/extend tests in `scripts/test/`.
+- **External repo recursion is intentional**:
+  - External roots may expand recursively into discovered external repos and their relevant descendants when the workflow requires it.
+  - Do not "fix" recursive handling back to internal-only behavior unless a human explicitly changes that product decision.
 
 ## Recent learnings (2026-02)
 

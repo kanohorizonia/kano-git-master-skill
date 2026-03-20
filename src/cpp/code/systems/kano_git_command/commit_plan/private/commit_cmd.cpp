@@ -122,6 +122,11 @@ auto NormalizeAiModelKeyword(const std::string& InValue) -> std::string {
     return kog_config::NormalizeAiModelSelection(InValue);
 }
 
+auto IsAgentProxyMode(const std::string& InAgent) -> bool {
+    const auto normalized = ToLower(Trim(InAgent));
+    return !normalized.empty() && normalized != "manual";
+}
+
 auto WasOptionExplicitlyPassed(const std::string& InLongFlag) -> bool {
 #if defined(_WIN32)
     const int argc = *__p___argc();
@@ -2110,6 +2115,146 @@ auto ComputeWorkspaceDirtyFingerprint(const std::filesystem::path& InWorkspaceRo
         canonical << line << "\n";
     }
     return "ws-dirty-v2-" + Fnv1a64Hex(canonical.str());
+}
+
+auto JsonEscape(const std::string& InValue) -> std::string {
+    std::string out;
+    out.reserve(InValue.size() + 16);
+    for (const char ch : InValue) {
+        switch (ch) {
+        case '\\': out += "\\\\"; break;
+        case '"': out += "\\\""; break;
+        case '\n': out += "\\n"; break;
+        case '\r': out += "\\r"; break;
+        case '\t': out += "\\t"; break;
+        default: out.push_back(ch); break;
+        }
+    }
+    return out;
+}
+
+auto CurrentUtcTimestampCompactForSyntheticPlan() -> std::string {
+    const auto now = std::chrono::system_clock::now();
+    const auto tt = std::chrono::system_clock::to_time_t(now);
+    std::tm utc{};
+#if defined(_WIN32)
+    gmtime_s(&utc, &tt);
+#else
+    gmtime_r(&tt, &utc);
+#endif
+    char buffer[32] = {0};
+    std::strftime(buffer, sizeof(buffer), "%Y%m%dT%H%M%SZ", &utc);
+    return std::string(buffer);
+}
+
+auto CurrentUtcTimestampIso8601ForSyntheticPlan() -> std::string {
+    const auto now = std::chrono::system_clock::now();
+    const auto tt = std::chrono::system_clock::to_time_t(now);
+    std::tm utc{};
+#if defined(_WIN32)
+    gmtime_s(&utc, &tt);
+#else
+    gmtime_r(&tt, &utc);
+#endif
+    char buffer[32] = {0};
+    std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", &utc);
+    return std::string(buffer);
+}
+
+auto DefaultMessagePlanOutputPath(const std::filesystem::path& InWorkspaceRoot,
+                                  const std::string& InMessage) -> std::filesystem::path {
+    const auto stamp = CurrentUtcTimestampCompactForSyntheticPlan();
+    const auto digest = Fnv1a64Hex(InMessage).substr(0, 8);
+    auto root = ResolveGlobalCacheRoot();
+    if (root.empty()) {
+        root = (InWorkspaceRoot / ".kano" / "cache" / "git").lexically_normal();
+    }
+    return (root / "plans" / ("message-plan-" + stamp + "-" + digest + ".json")).lexically_normal();
+}
+
+auto WriteSyntheticMessageCommitPlan(const std::filesystem::path& InWorkspaceRoot,
+                                     const std::vector<workspace::RepoRecord>& InRepoRecords,
+                                     const std::string& InMessage,
+                                     const std::filesystem::path& InOutPath,
+                                     std::string* OutError) -> bool {
+    const auto generatedAtUtc = CurrentUtcTimestampIso8601ForSyntheticPlan();
+    const auto baseHeadSha = ComputeWorkspaceBaseHeadSha(InWorkspaceRoot);
+    const auto dirtyFingerprint = ComputeWorkspaceDirtyFingerprint(InWorkspaceRoot);
+    std::string repoKeySeed;
+    for (const auto& repo : InRepoRecords) {
+        repoKeySeed += WorkspaceRepoKey(InWorkspaceRoot, repo.path);
+        repoKeySeed += "\n";
+    }
+    const auto planId = std::string{"message-plan-"} +
+                        Fnv1a64Hex(baseHeadSha + "\n" + dirtyFingerprint + "\n" + InMessage + "\n" + repoKeySeed);
+    constexpr std::string_view kReviewReason = "message shorthand plan synthesized by kog commit";
+
+    std::ostringstream json;
+    json << "{\n";
+    json << "  \"meta\": {\n";
+    json << "    \"schema_version\": \"1\",\n";
+    json << "    \"plan_id\": \"" << JsonEscape(planId) << "\",\n";
+    json << "    \"generated_at_utc\": \"" << JsonEscape(generatedAtUtc) << "\",\n";
+    json << "    \"base_head_sha\": \"" << JsonEscape(baseHeadSha) << "\",\n";
+    json << "    \"dirty_fingerprint_pre_ignore\": \"" << JsonEscape(dirtyFingerprint) << "\",\n";
+    json << "    \"dirty_fingerprint\": \"" << JsonEscape(dirtyFingerprint) << "\",\n";
+    json << "    \"planner\": {\n";
+    json << "      \"provider\": \"native\",\n";
+    json << "      \"ai-model\": \"message-shorthand\",\n";
+    json << "      \"request_id\": \"message-shorthand\"\n";
+    json << "    },\n";
+    json << "    \"review\": {\n";
+    json << "      \"verdict\": \"pass\",\n";
+    json << "      \"reason\": \"" << JsonEscape(std::string(kReviewReason)) << "\"\n";
+    json << "    }\n";
+    json << "  },\n";
+    json << "  \"stages\": {\n";
+    json << "    \"commit\": [\n";
+    for (std::size_t idx = 0; idx < InRepoRecords.size(); ++idx) {
+        const auto& repo = InRepoRecords[idx];
+        json << "      {\n";
+        json << "        \"repo\": \"" << JsonEscape(WorkspaceRepoKey(InWorkspaceRoot, repo.path)) << "\",\n";
+        json << "        \"commits\": [\n";
+        json << "          {\n";
+        json << "            \"message\": \"" << JsonEscape(InMessage) << "\",\n";
+        json << "            \"review\": {\n";
+        json << "              \"verdict\": \"pass\",\n";
+        json << "              \"reason\": \"" << JsonEscape(std::string(kReviewReason)) << "\"\n";
+        json << "            }\n";
+        json << "          }\n";
+        json << "        ]\n";
+        json << "      }" << (idx + 1 < InRepoRecords.size() ? "," : "") << "\n";
+    }
+    json << "    ],\n";
+    json << "    \"post_sync\": []\n";
+    json << "  }\n";
+    json << "}\n";
+
+    std::error_code ec;
+    std::filesystem::create_directories(InOutPath.parent_path(), ec);
+    if (ec) {
+        if (OutError != nullptr) {
+            *OutError = std::string{"failed to create synthetic plan directory: "} + ec.message();
+        }
+        return false;
+    }
+
+    std::ofstream out(InOutPath, std::ios::out | std::ios::binary | std::ios::trunc);
+    if (!out) {
+        if (OutError != nullptr) {
+            *OutError = "failed to open synthetic plan file for write";
+        }
+        return false;
+    }
+    out << json.str();
+    out.close();
+    if (!out) {
+        if (OutError != nullptr) {
+            *OutError = "failed to write synthetic plan file";
+        }
+        return false;
+    }
+    return true;
 }
 
 auto BuildCommitScopeRecords(const std::filesystem::path& InWorkspaceRoot,
@@ -4686,7 +4831,7 @@ void RegisterCommit(CLI::App& InApp) {
         InCmd->add_option("--ai-model", *model, "AI model to use");
         InCmd->add_flag("--ai-auto", *bAiAuto, "Enable AI auto mode (provider auto + layered kog_config model selection)");
         InCmd->add_option("--ai-commit-generation-mode,--ai-fill-mode", *aiFillMode, "AI commit generation mode override (single|per-commit|adaptive)");
-        InCmd->add_option("--message,-m", *message, "Commit message (skips AI generation)");
+        InCmd->add_option("--message,-m", *message, "Commit message (synthesizes minimal commit plan; skips AI generation)");
         InCmd->add_option("--agent", *agent, "Agent proxy mode (codex, copilot, cursor, kiro, claude)");
         InCmd->add_flag("--push", *bPush, "Push after commit");
         InCmd->add_flag("--no-ai-review", *bNoAiReview, "Skip AI review gate");
@@ -4727,6 +4872,11 @@ void RegisterCommit(CLI::App& InApp) {
             std::cerr << "Error: positional target cannot be combined with --repos\n";
             std::exit(2);
         }
+        if (!commitPlanFile->empty() && !message->empty()) {
+            std::cerr << "Error: --plan-file cannot be combined with --message/-m\n";
+            std::cerr << "Hint: use --plan-file for plan-driven commit, or use -m to synthesize a minimal plan.\n";
+            std::exit(2);
+        }
 
         if (!*bNoNativePreflight || *bPreflightOnly) {
             const auto preflightStart = clock::now();
@@ -4758,14 +4908,23 @@ void RegisterCommit(CLI::App& InApp) {
         }
 
         NativeAiConfig ai;
+        const bool agentProxyMode = IsAgentProxyMode(*agent);
         const bool aiRequested = *bAiAuto || !provider->empty() || !model->empty();
         ai.provider = aiRequested ? ResolveProvider(*provider) : std::string{};
         ai.model = aiRequested ? ResolveModelForAi(ai.provider, *model, *bAiAuto, workspaceRoot) : std::string{};
-        ai.reviewEnabled = !*bNoAiReview;
+        ai.reviewEnabled = !*bNoAiReview && !agentProxyMode;
         ai.enabled = aiRequested && !ai.provider.empty();
 
-        if (!agent->empty()) {
-            std::cout << "[native-commit] --agent is currently ignored in native mode.\n";
+        if (agentProxyMode && commitPlanFile->empty() && message->empty()) {
+            std::cerr << "Error: agent proxy mode commit requires either --plan-file or --message/-m.\n";
+            std::cerr << "Hint: prepare/fill plan first, then run with --plan-file.\n";
+            std::cerr << "Hint: or provide explicit --message/-m for non-plan commit apply.\n";
+            std::exit(2);
+        }
+
+        if (agentProxyMode) {
+            std::cout << "[native-commit] agent proxy mode: agent=" << *agent
+                      << " review=off\n";
         }
 
         if (aiRequested && !ai.enabled) {
@@ -4781,9 +4940,15 @@ void RegisterCommit(CLI::App& InApp) {
                       << " review=" << (ai.reviewEnabled ? "on" : "off") << "\n";
         }
 
-        const bool explicitPlanFileRequested = WasOptionExplicitlyPassed("--plan-file");
-        const bool autoPlanAiMode = ai.enabled && message->empty() && !explicitPlanFileRequested;
+        const bool planFileRequested = !commitPlanFile->empty();
+        const bool autoPlanAiMode = ai.enabled && message->empty() && !planFileRequested;
         if (autoPlanAiMode) {
+            if (agentProxyMode) {
+                std::cerr << "Error: agent proxy mode commit cannot invoke internal AI auto-plan.\n";
+                std::cerr << "Hint: prepare the plan first, then run with --plan-file.\n";
+                std::cerr << "Hint: or provide explicit --message/-m for non-plan commit apply.\n";
+                std::exit(2);
+            }
             if (!repos->empty() || *bNoRecursive || *bNoDirtyOnly || *bStagedOnly || *bPush) {
                 std::cerr << "Error: commit auto-plan mode currently supports only workspace-scoped commit apply without --push.\n";
                 std::cerr << "Hint: use `kog plan runbook commit --plan-file <file>` then `kog commit --plan-file <file>` for custom scope.\n";
@@ -4804,6 +4969,36 @@ void RegisterCommit(CLI::App& InApp) {
         if (!aiRequested) {
             std::cout << "[native-commit] safety-gates: ignore + secret\n";
             RunPipelineSafetyGatesForNonAiCommit(workspaceRoot);
+        }
+
+        bool effectiveNoRecursive = *bNoRecursive;
+        if (!effectiveNoRecursive && repos->empty() && !target->empty()) {
+            const auto scopedRepos = DiscoverWorkspaceRepos(workspaceRoot);
+            if (scopedRepos.size() <= 1) {
+                effectiveNoRecursive = true;
+            }
+        }
+
+        bool synthesizedMessagePlan = false;
+        if (commitPlanFile->empty() && !message->empty()) {
+            const bool dirtyOnly = !*bNoDirtyOnly;
+            auto planRepos = BuildCommitScopeRecords(workspaceRoot, Trim(*repos), effectiveNoRecursive, dirtyOnly);
+            if (planRepos.empty()) {
+                workspace::RepoRecord fallback;
+                fallback.path = workspaceRoot;
+                fallback.type = "root";
+                planRepos.push_back(std::move(fallback));
+            }
+
+            const auto syntheticPlanPath = DefaultMessagePlanOutputPath(workspaceRoot, *message);
+            std::string syntheticPlanError;
+            if (!WriteSyntheticMessageCommitPlan(workspaceRoot, planRepos, *message, syntheticPlanPath, &syntheticPlanError)) {
+                std::cerr << "Error: failed to synthesize message-driven commit plan: " << syntheticPlanError << "\n";
+                std::exit(2);
+            }
+            *commitPlanFile = syntheticPlanPath.generic_string();
+            synthesizedMessagePlan = true;
+            std::cout << "[native-commit] synthesized plan file: " << *commitPlanFile << "\n";
         }
 
         if (!commitPlanFile->empty()) {
@@ -4828,7 +5023,7 @@ void RegisterCommit(CLI::App& InApp) {
         std::unordered_map<std::string, std::vector<RepoCommitPlanEntry::CommitItem>> stageMessages;
         std::optional<CommitPlanStage> selectedPlanStage;
         if (!commitPlanFile->empty()) {
-            if (!repos->empty()) {
+            if (!repos->empty() && !synthesizedMessagePlan) {
                 std::cerr << "Error: --plan-file cannot be combined with --repos\n";
                 std::exit(2);
             }
@@ -4906,14 +5101,6 @@ void RegisterCommit(CLI::App& InApp) {
                 if (preCommitCode != 0) {
                     std::exit(preCommitCode);
                 }
-            }
-        }
-
-        bool effectiveNoRecursive = *bNoRecursive;
-        if (!effectiveNoRecursive && repos->empty() && !target->empty()) {
-            const auto scopedRepos = DiscoverWorkspaceRepos(workspaceRoot);
-            if (scopedRepos.size() <= 1) {
-                effectiveNoRecursive = true;
             }
         }
 

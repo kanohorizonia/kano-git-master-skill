@@ -1,0 +1,86 @@
+name: CD Docs
+
+on:
+  push:
+    branches: ["main", "master"]
+    paths:
+      - "docs/**"
+      - "src/cpp/**"
+      - "src/shell/docs/**"
+      - "scripts/docs/**"
+      - ".github/workflows/cd-docs.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          path: _ws/src/raw
+
+      - name: Read docs build configuration
+        id: config
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+          config = json.loads(Path('_ws/src/raw/src/shell/docs/config/build.json').read_text(encoding='utf-8'))
+          print(f"quartz_version={config['quartz']['version']}")
+          print(f"node_version={config['build']['node_version']}")
+          PY
+
+      - name: Checkout Quartz
+        uses: actions/checkout@v4
+        with:
+          repository: jackyzha0/quartz
+          ref: ${{ steps.config.outputs.quartz_version }}
+          path: _ws/src/quartz
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.config.outputs.node_version }}
+          cache: npm
+          cache-dependency-path: _ws/src/quartz/package-lock.json
+
+      - name: Install Doxygen and Graphviz
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y doxygen graphviz
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Build docs site
+        shell: bash
+        run: |
+          chmod +x _ws/src/raw/src/shell/docs/build-and-deploy.sh
+          _ws/src/raw/src/shell/docs/build-and-deploy.sh --ci "$PWD"
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _ws/build/public
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

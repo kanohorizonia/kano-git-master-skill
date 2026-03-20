@@ -19,7 +19,7 @@ All verify/apply/execute gates are deterministic non-AI stages.
 | Semi-auto (AI generates plan, human reviews, then execute) | Prepare -> review -> execute | `./kog pia --force` -> review `.kano/tmp/git/plans/default-plan.json` -> `./kog pv` -> `./kog cpa` |
 | Manual plan-driven commit-only | Human fills plan | `./kog pi --force` -> edit plan -> `./kog pv` -> `./kog commit --plan-file .kano/tmp/git/plans/default-plan.json --plan-stage commit` |
 | Manual plan-driven commit-push | Human fills plan | `./kog pi --force` -> edit plan -> `./kog pv` -> `./kog cp --plan-file .kano/tmp/git/plans/default-plan.json` |
-| Non-AI inline commit-only | Manual message | `./kog commit -m "your message"` |
+| Non-AI inline commit-only | Manual message shorthand for a minimal synthesized plan | `./kog commit -m "your message"` |
 | Non-AI inline commit-push | Manual message | `./kog cp -m "your message"` or `./kog commit-push -m "your message"` |
 
 Notes:
@@ -153,12 +153,18 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A[Entry: kog commit -m or kog cp -m] --> B[verify ignore]
-    B --> C[verify secret context commit or commit-push]
+    A[Entry: kog commit -m or kog cp -m] --> B[synthesize minimal transient plan]
+    B --> C[plan-backed verify/apply path]
     C --> D{Target}
     D -->|Commit| E[kog commit execution]
     D -->|Commit-push| F[kog commit-push execution]
 ```
+
+Notes:
+- `kog commit -m "..."` is no longer a direct non-plan bypass; it now synthesizes a
+  minimal transient plan and then reuses the same plan-backed execution path as
+  `--plan-file`.
+- `--plan-file` and `-m/--message` are mutually exclusive.
 
 ## Stage Command Matrix
 

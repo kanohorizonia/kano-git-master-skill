@@ -18,7 +18,16 @@ auto ResolveSkillRoot(const std::filesystem::path& InWorkspaceRoot) -> std::file
     if (const char* envRoot = std::getenv("KANO_GIT_SKILL_ROOT"); envRoot != nullptr && std::string(envRoot).size() > 0) {
         return std::filesystem::path(envRoot).lexically_normal();
     }
-    return (InWorkspaceRoot / ".agents" / "kano" / "kano-git-master-skill").lexically_normal();
+
+    const auto workspaceRoot = InWorkspaceRoot.lexically_normal();
+    const auto localSystemConfig = (workspaceRoot / ".kano" / "kog_config.toml").lexically_normal();
+    std::error_code ec;
+    if (std::filesystem::exists(localSystemConfig, ec) && !ec) {
+        return workspaceRoot;
+    }
+
+    return (std::filesystem::path(std::getenv("USERPROFILE") != nullptr ? std::getenv("USERPROFILE") : "~")
+        / ".agents" / "skills" / "kano" / "kano-git-master-skill").lexically_normal();
 }
 
 auto ResolveTargetConfigPath(const std::filesystem::path& InWorkspaceRoot,
@@ -69,6 +78,10 @@ void RegisterConfig(CLI::App& InApp) {
         "      Array of integers defining change volume boundaries (e.g., [5, 10])\n"
         "  ai.model.auto.models\n"
         "      Array of strings matching thresholds (e.g., [\"...-mini\", \"...-haiku\", \"...-gpt-5.4\"])\n"
+        "  workspace.external.roots\n"
+        "      Array of external repo roots merged into workspace discovery (e.g., [\"~/.agents/skills\"])\n"
+        "  workspace.external.inherit\n"
+        "      true|false. When false, the current layer replaces inherited external roots instead of appending\n"
         "  plan.ai.commit_generation_mode\n"
         "      \"single\"           One AI pass generates all commit entries\n"
         "      \"per-commit\"       One AI pass per commit entry\n"
@@ -148,6 +161,18 @@ void RegisterConfig(CLI::App& InApp) {
                               << "  \"single\"           One AI pass generates all commit entries\n"
                               << "  \"per-commit\"       One AI pass per commit entry\n"
                               << "  \"adaptive\"         Per-commit with fallback for simple changes (default)\n";
+                } else if (key == "workspace.external.roots") {
+                    std::cout << "workspace.external.roots\n"
+                              << "  Array of external repo roots merged into workspace discovery.\n"
+                              << "  Example: [\"~/.agents/skills\"]\n"
+                              << "  Commands like `kog status` will scan each configured root and merge repo candidates as\n"
+                              << "  external-root, external-registered, or external-unregistered depending on how they relate\n"
+                              << "  to the discovered external workspace root. Plain `external` is no longer emitted.\n"
+                              << "  Here, `root` means the matched external discovery root repo, not the current workspace root.\n";
+                } else if (key == "workspace.external.inherit") {
+                    std::cout << "workspace.external.inherit\n"
+                              << "  true  -> append this layer's roots to inherited ones (default)\n"
+                              << "  false -> replace inherited external roots at this layer\n";
                 } else {
                     std::cout << "No detailed help available for config key: " << key << "\n"
                               << "Run 'kog config --help' to see known keys.\n";

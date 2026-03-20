@@ -9,7 +9,10 @@ version: 0.1.0-beta
 **Version**: 0.1.0-beta
 **Status**: Beta Release
 
-Comprehensive Git automation scripts for managing multi-repository workspaces. Works with any Git remote provider (GitHub, GitLab, Azure Repos, Bitbucket, self-hosted, etc.).
+Comprehensive multi-repo Git automation centered on the native `kog` / `kano-git`
+CLI. Current day-to-day workflows are implemented in C++ first; shell scripts are
+mainly build/install helpers, wrappers, compatibility shims, or support assets
+rather than the primary product surface.
 
 ## Quick Start
 
@@ -76,6 +79,33 @@ bash src/cpp/build/script/macos/build_macos_ninja_clang_release.sh
 ```
 
 Do not replace this with ad-hoc direct CMake/Ninja command sequences unless a maintainer explicitly asks for it.
+
+### Primary Command Surface
+
+Use the native CLI as the default interface:
+
+```bash
+# Help / discovery
+kog --help
+kog guide
+
+# Workspace inventory
+kog status
+kog status --format json
+
+# Commit / plan flows
+kog commit -m "chore: update workspace"
+kog commit-push -m "chore: update workspace"
+kog cpa
+
+# Config / completion / version
+kog config --help
+kog completion bash
+kog version
+```
+
+When documentation and implementation disagree, prefer native command help,
+`docs/`, and the current C++ command implementation over older shell examples.
 
 ### Guided Flows (Easy Win Before Full TUI)
 
@@ -162,69 +192,14 @@ Current TUI actions (v1):
   - title shows repo path, parent repo, child repo count, repo index, and page index
 - keyboard controls: `r` refresh, `d` dirty-only toggle, `f` fetch selected repo, `Enter` history pager, `q` quit
 
-### Update Repository + Registered Subrepos (Most Common)
+### Current Architecture Note
 
-```bash
-cd /path/to/your-repo
-./scripts/update-repo.sh
-```
-
-Updates your repository and all registered subrepos to the latest version with smart branch detection and auto-stash.
-
-### Smart Clone (Clone Fork with Upstream)
-
-```bash
-./scripts/smart-clone.sh \
-  https://github.com/yourname/fork.git \
-  https://github.com/original/repo.git
-```
-
-Perfect for contributing to open-source projects.
-
-### Manage Multiple Repositories
-
-```bash
-# Discover all repos
-./scripts/discover-repos.sh
-
-# Update all repos
-./scripts/update-workspace-repos.sh
-
-# Check status
-./scripts/status-all-repos.sh
-```
-
-## Script Organization
-
-Scripts are organized by category in the `scripts/` directory:
-
-```
-scripts/
-├── lib/                      # Shared helper library
-│   └── git-helpers.sh
-├── core/                     # Core operations
-│   ├── update-repo.sh
-│   ├── smart-clone.sh
-│   └── discover-repos.sh
-├── workspace/                # Multi-repository operations
-│   ├── update-workspace-repos.sh
-│   ├── foreach-repo.sh
-│   └── status-all-repos.sh
-├── branch-operations/        # Branch and commit operations
-│   ├── rebase-to-upstream-latest.sh
-│   ├── compare-branches.sh
-│   └── cherry-pick-batch.sh
-└── commit-tools/             # Commit automation
-    ├── commit/               # AI-powered commits
-    │   ├── smart-commit.sh
-    │   └── smart-commit-*.sh (provider wrappers)
-    ├── commit-push/          # Complete commit+push workflow
-    │   └── smart-commit-push-*.sh
-    ├── ignore/               # .gitignore management
-    ├── resolve/              # Conflict resolution
-    ├── sync/                 # Repository synchronization
-    └── smart-push.sh         # Multi-repo push
-```
+- Core multi-repo inventory, commit, commit-push, planner, status, completion,
+  config, and sync flows are implemented in native `kog` C++ commands.
+- The `scripts/` tree still exists, but it should not be treated as the canonical
+  source of truth for current core workflow behavior.
+- Historical `smart-*` shell workflows are now legacy or compatibility material
+  unless a current guide explicitly points to them.
 
 ## Terminology (Custom vs Git)
 
@@ -268,7 +243,7 @@ If a term is not listed here, assume standard Git meaning.
 
 - `agent proxy mode (代理模式)`
   - Activated when `--agent <name>` and name is not `manual`.
-  - Requires fixed `-m/--message` and auto-disables in-script AI review (`--no-ai-review`).
+  - Requires either `-m/--message` or a prepared `--plan-file`, and auto-disables in-script AI review (`--no-ai-review`).
   - Intent: use the current command agent/model as the single authority (no second review model).
 
 - `workflow lock marker`
@@ -290,21 +265,18 @@ If a term is not listed here, assume standard Git meaning.
 - `stash`
 - `tag`
 
-## Core Scripts
+## Core Commands
 
-| Script | Purpose | Use When |
+| Command | Purpose | Use When |
 |--------|---------|----------|
-| **update-repo.sh** | Update single repo + registered subrepos | Daily sync, quick updates |
-| **smart-clone.sh** | Clone with upstream remote | Fork setup, contribution workflow |
-| **init-empty-repo.sh** | Initialize empty remote repo | Quick repo setup, testing |
-| **rebase-to-upstream-latest.sh** | Rebase to upstream | Sync with upstream regularly |
-| **discover-repos.sh** | Find all repos in workspace | Multi-repo discovery |
-| **update-workspace-repos.sh** | Update multiple repos | Batch updates |
-| **foreach-repo.sh** | Run commands in all repos | Custom batch operations |
-| **status-all-repos.sh** | Generate status report | Monitoring, CI/CD |
-| **compare-branches.sh** | Compare commits between branches | Before merge, PR review |
-| **cherry-pick-batch.sh** | Batch cherry-pick from file | Selective commit porting |
-| **smart-commit-push** | AI commit+push workflow | Multi-repo commits with AI review and auto-push |
+| **kog status** | Discover and inspect workspace repos | Daily workspace visibility |
+| **kog commit** | Native multi-repo commit workflow | Commit changed repos without push |
+| **kog commit-push** | Commit, sync, and push workflow | End-to-end workspace publish flow |
+| **kog cpa** | Commit-push alias with plan/AI routing | One-command commit-push entry |
+| **kog plan ...** | Plan lifecycle / verify / apply | Deterministic plan-backed commit flows |
+| **kog config** | Inspect effective configuration | Debug config layering and defaults |
+| **kog completion** | Generate/install completion | Shell integration |
+| **kog version** | Provenance / build info | Diagnose binary/source state |
 
 ## Common Workflows
 
@@ -728,39 +700,33 @@ For full operational rules, see:
 
 **Features:** Batch cherry-pick, structured file support, conflict handling, validation
 
-### smart-commit.sh
+### Native Commit / Commit-Push
 
 ```bash
-# Basic usage (free model)
-./scripts/commit-tools/smart-commit.sh
+# Non-AI inline commit
+kog commit -m "chore: update workspace"
 
-# Use specific model
-./scripts/commit-tools/smart-commit.sh --model gpt-5-mini
+# Full commit + push
+kog commit-push -m "chore: update workspace"
 
-# Custom message
-./scripts/commit-tools/smart-commit.sh -m "feat: Add new feature"
-
-# Commit and push
-./scripts/commit-tools/smart-commit.sh --push
-
-# Skip AI review (only static checks)
-./scripts/commit-tools/smart-commit.sh --no-ai-review
+# Human full-auto plan path
+kog cpa
 ```
 
-**Features:** AI-generated commit messages, safety checks (secrets, large files), auto .gitignore updates, AI review gate, multi-repo support
+**Features:** native multi-repo scope resolution, safety gates, plan-backed workflows,
+dirty-only pruning, commit graph ordering, and native summary output.
 
 ## Common Options
 
-All scripts support:
+Common native commands support:
 - `--help` - Show help message
 - `--dry-run` - Preview mode (no changes)
 
-Most scripts support:
-- `--remote <name>` - Remote name (default: origin or upstream)
-- `--manifest <file>` - Use manifest file
-- `--include-types <types>` - Filter by type (root,registered,unregistered)
-- `--exclude <pattern>` - Exclude patterns (repeatable)
-- `--continue-on-error` - Don't stop on failures
+Important examples:
+- `kog status --format json`
+- `kog commit --plan-file <file>`
+- `kog commit-push --dry-run`
+- `kog config --help <key>`
 
 ## Best Practices
 
@@ -789,11 +755,8 @@ The following terms are project conventions in Kano Git Master and are **not** o
 | `unregistered subrepo` | nested/independent repo (non-standard) | Not declared in root `.gitmodules`. |
 | `leaf repo` | n/a (graph term) | Repo with no child repos in current workspace graph. |
 
-- `smart-*` scripts: Kano automation wrappers that orchestrate multiple Git steps with guardrails.
-  - Example: `smart-commit.sh`, `smart-sync.sh`, `smart-push.sh`.
 - `kano-git` / `kog`: CLI command aliases for the same tool; `kog` is shorthand of `kano-git`.
-- `smart-status`: Kano wrapper name for multi-repo status reporting (implemented via `status-all-repos.sh`).
-- `root wrapper`: Thin executable at workspace root that forwards to `.agents/kano/kano-git-master-skill/scripts/...`.
+- `root wrapper`: Thin executable or shell/batch shim at workspace root that forwards to native `kog` entrypoints or supported helper scripts.
 - `root repo`: the top-level repository that owns the workspace boundary and `.gitmodules`.
 - `parent repo`: any repo that directly contains another repo path under it in the workspace tree.
 - `child repo`: a repo viewed from a specific parent-child relation (topology term, relation-scoped).
@@ -806,7 +769,7 @@ The following terms are project conventions in Kano Git Master and are **not** o
   - use `subrepo` / `registered` / `unregistered` for classification/filtering operations.
 - `multi-repo workspace`: A workspace containing a root repo plus registered/unregistered subrepos managed together.
 - `stable-dev` flow: Kano-defined maintenance sync mode using stable-tag/cherry-pick strategy (not a Git built-in workflow name).
-- `dev` flow (in `smart-sync` context): Kano-defined sync mode based on upstream latest for active development.
+- `dev` flow: Kano-defined sync mode based on upstream latest for active development.
 - `stable branch` (in stable-dev context): Kano naming convention for maintenance target branch `branch_<target-tag>` (for example `branch_v1.2.6`).
 - `target branch` (stable-dev): the branch that will receive cherry-picked maintenance commits; usually equals `stable branch`.
 - `source branch` (stable-dev): maintenance commit source branch, defaulting to `origin/branch_<base-tag>` unless overridden by `--source-branch`.
@@ -816,29 +779,21 @@ The following terms are project conventions in Kano Git Master and are **not** o
 - `agent proxy mode` / `--agent`: Kano execution contract for agent proxy automation identity (for example `codex`, `copilot`).
 - `multi-remote push` policy: Kano policy to push to `origin-ssh`, `origin-http`, and `origin` with "any success" semantics.
 - `kog-*` keys/commands: Kano-specific namespace (for example `kog-submodule.sh`, `kog-protocol-priority`, `kog-remote-origin-ssh`).
-- `smart-submodule`: canonical submodule command entrypoint (`scripts/submodules/smart-submodule.sh`) that dispatches add/sync/update/remove/foreach/sync-urls.
 - `include-types`: Kano discovery filter values (`root`, `registered`, `unregistered`) used by workspace scripts (legacy aliases: `submodule`, `standalone`).
 - `manifest` (workspace manifest): Kano repo discovery output file consumed by batch scripts (not a Git native artifact).
 - `continue-on-error` batch mode: Kano batch execution behavior; continue processing other repos after a per-repo failure.
 
 When writing docs or scripts, use these terms consistently and avoid presenting them as native Git concepts.
 
-## Root Repo Wrapper Script Recommendation
+## Root Repo Wrapper Recommendation
 
-For workspace root scripts (for example `./smart-commit.sh`, `./smart-commit-push.sh`, `./smart-sync.sh`):
+For workspace root wrappers, keep them thin and route into native `kog` commands or
+supported installer/build helpers.
 
-1. Keep wrappers thin: only locate project root and `exec` the git-master skill script.
+1. Keep wrappers thin: only locate project root and dispatch into `kog` / `kano-git`.
 2. Always export `KANO_GIT_MASTER_ROOT="$ROOT"` before `exec` so repo discovery is stable.
-3. Put provider choice in wrapper (for example copilot wrapper), but pass through all user args.
-4. Do not duplicate business logic in root wrappers; logic must live in `.agents/kano/kano-git-master-skill/scripts/...`.
-5. Wrapper names should stay stable and user-facing; internal script path can evolve.
-
-Recommended root wrapper set:
-- `smart-commit.sh`
-- `smart-commit-push.sh`
-- `smart-sync.sh`
-- `smart-sync-upstream-stable-dev.sh`
-- `smart-status.sh` (recommended when the repository is a multi-repo workspace)
+3. Do not duplicate business logic in root wrappers; logic must live in the native command implementation.
+4. Wrapper names should stay stable and user-facing; internal script path can evolve.
 
 ## agent proxy mode (代理模式)
 
@@ -848,16 +803,16 @@ Use agent proxy mode (代理模式) when an agent/tool is executing commit workf
 - If commands are launched via `kog` / `kano-git`, set `KANO_AGENT_MODE=1` to suppress launcher-level interactive update checks before dispatch.
   - Example: `KANO_AGENT_MODE=1 kog pa --agent codex -m "chore: update workspace"`
 - If `--agent` is set and not `manual`:
-  - fixed commit message is required: `-m "..."` / `--message "..."`.
+  - provide either a fixed commit message (`-m "..."`) or a prepared `--plan-file`.
   - in-script AI review is disabled automatically (`--no-ai-review`) to avoid duplicate model cost.
   - this keeps commit/review decisions on the current command agent/model.
 - Use `--agent manual` for human-operated runs.
 
-Root-wrapper examples:
+Example:
 
 ```bash
-./smart-commit.sh --provider copilot --model gpt-5-mini --agent codex -m "chore: sync wrappers"
-./smart-commit-push.sh --provider copilot --model gpt-5-mini --agent codex -m "chore: apply stable-dev repair"
+KANO_AGENT_MODE=1 kog cpa
+kog commit --agent codex -m "chore: sync wrappers"
 ```
 
 Ready-to-copy templates:
@@ -1222,7 +1177,7 @@ git config --global core.whitespace trailing-space
 
 **Agent proxy mode note (required contract):**
 - For agent proxy execution, pass `--agent <name>` (for example: `codex`, `cursor`, `copilot`, `kiro`, `claude`).
-- When `--agent` is not `manual`, a fixed commit message (`-m/--message`) is required.
+- When `--agent` is not `manual`, provide either `-m/--message` or a prepared `--plan-file`.
 - Agent proxy runs disable in-script AI review (`--no-ai-review`) to avoid duplicate model calls.
 - This keeps commit/review authority on the same agent model that executes the command.
 
@@ -1268,32 +1223,31 @@ KOG_PROMPT_MODE=user KOG_RULES_FILE=.git/commit-rules.md ./scripts/commit-tools/
   - invalid/empty review verdicts are treated as warning and fail-open
 - Works with GitHub Copilot CLI
 
-### Smart Commit-Push (smart-commit-push.sh)
+### Native Commit-Push / CPA
 
-Complete workflow: commit and push all repositories in one step:
+Complete workflow: commit and push all repositories in one native flow:
 
 ```bash
-# Full workflow with Copilot
-./scripts/commit-tools/commit-push/smart-commit-push-copilot.sh
+# Full workflow with explicit message
+kog commit-push -m "chore: apply repair"
 
-# Or specify provider manually
-./scripts/commit-tools/commit-push/smart-commit-push.sh --provider copilot --model gpt-5-mini
+# Human full-auto route
+kog cpa
 
-# With verbose output
-./scripts/commit-tools/commit-push/smart-commit-push.sh --provider copilot --model gpt-5-mini --verbose
+# Plan-driven route
+kog commit-push --plan-file .kano/tmp/git/plans/default-plan.json
 ```
 
 **Agent proxy mode note (required contract):**
-- For agent-driven workflows, pass `--agent <name>` and provide a fixed commit message (`-m "..."`).
+- For agent-driven workflows, pass `--agent <name>` and provide either `-m "..."` or a prepared `--plan-file`.
 - When `--agent` is not `manual`, agent proxy mode (代理模式) disables in-script AI review (`--no-ai-review`) to avoid duplicate model usage.
 - This keeps commit/review authority on the same agent model that executes the command.
-- For human-run workflows, short flag `-noai` is available (same as `--no-ai-review`).
-- If you are modifying this skill itself (`kano-git-master-skill`), commit those edits first before running full `smart-commit-push`.
+- If you are modifying this skill itself (`kano-git-master-skill`), commit those edits first before running full `kog commit-push` / `kog cpa`.
 - Reason: Step 1 pre-sync now uses auto stash/pop, and ongoing edits in the skill repo can be disrupted by stash-pop conflict handling.
 
 **Workflow (4 steps):**
 1. **Pre-sync**: auto `stash -> sync -> pop` per repo to rebase/pull safely before committing.
-2. **Commit**: runs `smart-commit.sh` across discovered repos.
+2. **Commit**: runs native `kog commit` logic across discovered repos.
 3. **Post-sync**: `sync-only` again, but **fails if a repo is dirty** (no stash/pop) to prevent pushing an outdated branch tip.
 4. **Push**: pushes all repos to configured origin remotes (`origin-ssh`, `origin-http`, and `origin` when present).
 
@@ -1342,45 +1296,36 @@ backlog                       origin             main (no changes)
 Detailed policy reference:
 - `references/ops-policies.md`
 
-## Legacy Scripts
+## Legacy / Compatibility Scripts
 
-### ai-safe-commit-all-repos.sh (Deprecated)
-
-This script has been replaced by `smart-commit.sh` with improved features:
-- Better Copilot CLI detection
-- Free tier model defaults
-- Clearer error messages
-- Simplified naming
-
-Use `smart-commit.sh` instead.
+Older `smart-*` and script-first workflows should be treated as compatibility or
+migration material unless a current guide explicitly points to them. The native
+`kog` command surface is the primary source of truth.
 
 ## Summary
 
-The Git Master Skill provides a complete toolkit for multi-repository management:
+The Git Master Skill provides a native `kog` toolkit for multi-repository management:
 
-- **Quick updates**: `update-repo.sh` for fast single-repo updates
-- **Fork workflows**: `clone-with-upstream.sh` and `rebase-to-upstream-latest.sh`
-- **Multi-repo management**: Discovery, batch updates, status reporting
-- **Batch operations**: Execute custom commands across all repos
+- **Workspace visibility**: `kog status`, JSON inventory, and TUI
+- **Commit workflows**: `kog commit`, `kog commit-push`, `kog cpa`, and `kog plan ...`
+- **Repo operations**: sync, worktree, subtree, submodule, config, completion, version
 - **Vendor-agnostic**: Works with any Git provider
-- **Production-ready**: Error handling, dry-run, logging, stash management
+- **Production-oriented**: safety gates, dry-run support, planner verification, and summary output
 
-Start with `update-repo.sh` for simple cases, then explore the full suite for complex workflows.
+Start with `kog --help`, `kog guide`, and `kog status` for the current command surface.
 
 ## Quick Reference
 
 | Need | Command |
 |------|---------|
-| Update one repo | `./scripts/repo-management/update-repo.sh` |
-| Clone fork | `./scripts/smart-clone.sh <fork> <upstream>` |
-| Sync with upstream | `./scripts/branch-operations/rebase-to-upstream-latest.sh` |
-| Compare branches | `./scripts/branch-operations/compare-branches.sh <base> <compare>` |
-| Batch cherry-pick | `./scripts/branch-operations/cherry-pick-batch.sh <file>` |
-| Find all repos | `./scripts/repo-management/discover-repos.sh` |
-| Update all repos | `./scripts/workspace/update-workspace-repos.sh` |
-| Check status | `./scripts/workspace/status-all-repos.sh` |
-| Run command | `./scripts/workspace/foreach-repo.sh "command"` |
-| Smart commit | `./scripts/commit-tools/smart-commit.sh` |
+| Inspect workspace repos | `kog status` |
+| JSON inventory | `kog status --format json` |
+| Commit current workspace | `kog commit -m "..."` |
+| Commit and push | `kog commit-push -m "..."` |
+| Full-auto commit-push | `kog cpa` |
+| Verify a plan | `kog plan verify pre-apply --plan-file <file>` |
+| Inspect config | `kog config --help <key>` |
+| Show provenance | `kog version` |
 
 For detailed examples and workflows, see [docs/README.md](docs/README.md).
 

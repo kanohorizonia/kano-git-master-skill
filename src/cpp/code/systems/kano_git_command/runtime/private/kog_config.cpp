@@ -178,15 +178,29 @@ auto HomeDirectory() -> std::filesystem::path {
 auto ResolveConfigSearchPaths(const std::filesystem::path& InWorkspaceRoot,
                               const std::filesystem::path& InSkillRoot) -> std::vector<std::filesystem::path> {
     std::vector<std::filesystem::path> out;
+    std::set<std::string> seen;
+    auto tryAdd = [&](const std::filesystem::path& InPath) {
+        if (InPath.empty()) {
+            return;
+        }
+        const auto normalized = InPath.lexically_normal();
+        const auto key = normalized.generic_string();
+        if (key.empty() || seen.contains(key)) {
+            return;
+        }
+        seen.insert(key);
+        out.push_back(normalized);
+    };
+
     if (!InSkillRoot.empty()) {
-        out.push_back((InSkillRoot / ".kano" / "kog_config.toml").lexically_normal());
+        tryAdd(InSkillRoot / ".kano" / "kog_config.toml");
     }
     const auto home = HomeDirectory();
     if (!home.empty()) {
-        out.push_back((home / ".kano" / "kog_config.toml").lexically_normal());
+        tryAdd(home / ".kano" / "kog_config.toml");
     }
     if (!InWorkspaceRoot.empty()) {
-        out.push_back((InWorkspaceRoot / ".kano" / "kog_config.toml").lexically_normal());
+        tryAdd(InWorkspaceRoot / ".kano" / "kog_config.toml");
     }
     return out;
 }
