@@ -71,6 +71,24 @@ Enhanced submodule management with batch operations, recursive updates, and safe
 ./scripts/submodules/add-submodule.sh https://github.com/user/repo.git --branch develop
 ```
 
+Native `kog submodule add` now also handles the empty-remote bootstrap case.
+If the target remote is reachable but has no `HEAD` yet, `kog` seeds it with a
+minimal `README.md` initial commit on the requested branch (or the local
+`init.defaultBranch`, falling back to `main`) before retrying the normal
+submodule add flow.
+
+Example:
+
+```bash
+kog submodule add -b branch_v1.0 https://github.com/owner/new-empty-repo.git deps/new-lib
+```
+
+Notes:
+
+- this is intended for empty remotes that already exist but have no first commit
+- normal initialized remotes still use the regular native `git submodule add` path
+- auth/permission failures are not masked; the underlying git error still surfaces
+
 ### Remove Submodule
 
 ```bash

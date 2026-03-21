@@ -58,12 +58,27 @@ struct NestedWorkspaceContext {
     std::string nestedRepoPath;
 };
 
+struct StandaloneBareRemoteContext {
+    std::filesystem::path bareRemote;
+    std::filesystem::path seedRepo;
+    std::string branch;
+};
+
 auto RequireSuccess(const CommandResult& InResult, const std::string& InContext) -> void {
     INFO(InContext);
     INFO("exit=" << InResult.exitCode);
     INFO("stdout=" << InResult.stdoutText);
     INFO("stderr=" << InResult.stderrText);
     REQUIRE(InResult.exitCode == 0);
+}
+
+auto TrimCopy(const std::string& InValue) -> std::string {
+    const auto start = InValue.find_first_not_of(" \t\r\n");
+    if (start == std::string::npos) {
+        return {};
+    }
+    const auto end = InValue.find_last_not_of(" \t\r\n");
+    return InValue.substr(start, end - start + 1);
 }
 
 auto WriteTextFile(const std::filesystem::path& InPath, const std::string& InText) -> void {
@@ -178,6 +193,46 @@ auto InitPlainGitRepo(const std::filesystem::path& InRepo) -> void {
     WriteTextFile(InRepo / "README.md", "repo\n");
     RequireSuccess(RunGit({"add", "README.md"}, InRepo), "add plain repo readme");
     RequireSuccess(RunGit({"commit", "-m", "seed repo"}, InRepo), "commit plain repo readme");
+}
+
+auto ConfigureFileProtocolAlways(const std::filesystem::path& InRepo) -> void {
+    RequireSuccess(RunGit({"config", "protocol.file.allow", "always"}, InRepo), "config protocol.file.allow always");
+}
+
+auto RunKogAllowingFileProtocol(const std::vector<std::string>& InArgs,
+                                const std::filesystem::path& InWorkingDir) -> CommandResult {
+    return RunKogWithEnv(
+        InArgs,
+        InWorkingDir,
+        {
+            {"GIT_ALLOW_PROTOCOL", "file:https:ssh:git"}
+        });
+}
+
+auto CreateStandaloneBareRemote(const SandboxContext& InSandbox,
+                                const std::string& InName,
+                                const std::string& InBranch,
+                                const bool InSeedCommit) -> StandaloneBareRemoteContext {
+    StandaloneBareRemoteContext ctx;
+    ctx.bareRemote = (InSandbox.root / (InName + "-remote.git")).lexically_normal();
+    ctx.seedRepo = (InSandbox.root / (InName + "-seed")).lexically_normal();
+    ctx.branch = InBranch;
+
+    RequireSuccess(RunGit({"init", "--bare", ctx.bareRemote.string()}, InSandbox.root), "init standalone bare remote");
+    if (!InSeedCommit) {
+        return ctx;
+    }
+
+    RequireSuccess(RunGit({"init", ctx.seedRepo.string()}, InSandbox.root), "init standalone seed repo");
+    ConfigureIdentity(ctx.seedRepo);
+    RequireSuccess(RunGit({"checkout", "-b", ctx.branch}, ctx.seedRepo), "checkout standalone seed branch");
+    WriteTextFile(ctx.seedRepo / "README.md", InName + " seed\n");
+    RequireSuccess(RunGit({"add", "README.md"}, ctx.seedRepo), "standalone seed add");
+    RequireSuccess(RunGit({"commit", "-m", "seed standalone remote"}, ctx.seedRepo), "standalone seed commit");
+    RequireSuccess(RunGit({"remote", "add", "origin", ctx.bareRemote.string()}, ctx.seedRepo), "standalone add remote");
+    RequireSuccess(RunGit({"push", "-u", "origin", ctx.branch}, ctx.seedRepo), "standalone push");
+    RequireSuccess(RunGit({"symbolic-ref", "HEAD", ("refs/heads/" + ctx.branch)}, ctx.bareRemote), "standalone bare HEAD");
+    return ctx;
 }
 
 auto InstallCodexCaptureStub(const std::filesystem::path& InDir,
@@ -729,6 +784,54 @@ TEST_CASE("sync_registered_submodule_fails_when_refreshed_gitmodules_branch_is_m
     REQUIRE(CurrentBranch(ctx.cloneChildRepo) == childBranchBefore);
     REQUIRE(ReadTextFile(ctx.cloneChildRepo / "child.txt") == "child seed\nlocal dirty change\n");
     REQUIRE(ReadTextFile(ctx.cloneRootRepo / ".gitmodules").find("branch = " + missingBranch) != std::string::npos);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("submodule_add_bootstraps_empty_remote_on_requested_branch", "[functional][submodule][add]") {
+    const auto ctx = CreateRemoteWithClone("submodule-add-empty-remote");
+    ConfigureFileProtocolAlways(ctx.cloneRepo);
+    const auto child = CreateStandaloneBareRemote(ctx.sandbox, "empty-child", "branch_v1", false);
+    const auto submodulePath = std::string{"deps/empty-child"};
+
+    const auto result = RunKogAllowingFileProtocol(
+        {"submodule", "add", "-b", child.branch, child.bareRemote.string(), submodulePath},
+        ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    REQUIRE(result.stdoutText.find("Remote appears empty; bootstrapping initial commit") != std::string::npos);
+
+    const auto childRepo = (ctx.cloneRepo / std::filesystem::path(submodulePath)).lexically_normal();
+    REQUIRE(std::filesystem::exists(childRepo / "README.md"));
+    REQUIRE_FALSE(RefSha(child.bareRemote, "refs/heads/" + child.branch).empty());
+
+    const auto branchResult = RunGit(
+        {"config", "-f", ".gitmodules", "--get", "submodule." + submodulePath + ".branch"},
+        ctx.cloneRepo);
+    RequireSuccess(branchResult, "read gitmodules branch after kog submodule add");
+    REQUIRE(TrimCopy(branchResult.stdoutText) == child.branch);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("submodule_add_preserves_passthrough_for_initialized_remote", "[functional][submodule][add]") {
+    const auto ctx = CreateRemoteWithClone("submodule-add-existing-remote");
+    ConfigureFileProtocolAlways(ctx.cloneRepo);
+    const auto child = CreateStandaloneBareRemote(ctx.sandbox, "seeded-child", "main", true);
+    const auto submodulePath = std::string{"deps/seeded-child"};
+
+    const auto result = RunKogAllowingFileProtocol(
+        {"submodule", "add", child.bareRemote.string(), submodulePath},
+        ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    REQUIRE(result.stdoutText.find("Remote appears empty; bootstrapping initial commit") == std::string::npos);
+
+    const auto childRepo = (ctx.cloneRepo / std::filesystem::path(submodulePath)).lexically_normal();
+    REQUIRE(std::filesystem::exists(childRepo / "README.md"));
+    REQUIRE(CurrentHeadSha(childRepo) == RefSha(child.bareRemote, "refs/heads/" + child.branch));
 
     RemoveSandboxWorkspace(ctx.sandbox);
 }

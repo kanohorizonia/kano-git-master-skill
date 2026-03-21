@@ -1969,6 +1969,7 @@ auto RefreshWorkspaceManifestAfterRegisteredChange(const std::filesystem::path& 
     const auto rootAbs = Normalize(std::filesystem::absolute(InWorkspaceRoot));
     const auto existing = LoadWorkspaceManifestAny(rootAbs);
     const auto registered = DiscoverRegisteredPathsRecursive(rootAbs);
+    const auto externalRoots = kano::git::commands::kog_config::ResolveWorkspaceExternalRoots(rootAbs, ResolveSkillRoot(rootAbs));
 
     std::vector<RepoRecord> repos;
     RepoRecord rootRecord;
@@ -2007,6 +2008,11 @@ auto RefreshWorkspaceManifestAfterRegisteredChange(const std::filesystem::path& 
     repos.erase(std::unique(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
         return PathKey(A.path) == PathKey(B.path);
     }), repos.end());
+
+    if (!externalRoots.empty()) {
+        const auto externalRepos = CollectExternalRootRepos(rootAbs, externalRoots, 0, {});
+        MergeExternalReposWithOverride(&repos, externalRepos, "minimal");
+    }
 
     return SaveWorkspaceManifest(BuildWorkspaceManifest(rootAbs, repos));
 }

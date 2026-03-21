@@ -54,6 +54,25 @@ All documentation is in the `docs/` directory:
 - [Common Pitfalls](./docs/guides/common-pitfalls.md) - Troubleshooting guide
 - [Changelog](./docs/status/changelog.md)
 
+## Native Commit Semantics
+
+`kog commit` is plan-first.
+
+- `kog commit -m "..."` synthesizes a minimal transient commit plan, then reuses the
+  same plan-backed validation/apply path as `--plan-file`
+- `kog commit --plan-file <file>` applies an explicit prepared plan
+- `kog commit --agent <name> -m "..."` uses the same synthesized-plan path with
+  agent proxy rules
+- `kog commit --plan-file <file> -m "..."` is invalid and fails explicitly
+
+## Wrapper Entry Points
+
+- keep using `scripts/kano-git` and `scripts/kog` as the canonical wrapper names
+- on Windows CMD / PowerShell, the paired `scripts/kano-git.bat` and `scripts/kog.bat`
+  are provided so those shells can invoke the launcher without a shell-selection prompt
+- installer behavior is owned by native `kog` commands; separate installer wrapper names
+  are no longer kept in `scripts/`
+
 ## Installation
 
 No installation required. Clone and use:

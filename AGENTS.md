@@ -241,7 +241,8 @@ Note: sourcing will also define globals used by those functions (see the script 
     - Persist wave/order metadata into plan execution report for audit and replay.
 - **Kano Backlog Init Location**:
   - Run `kano backlog admin init` from `_kano/backlog` to generate `.kano/config` for this repo.
-- When adding/adjusting behavior, update the relevant docs in `docs/` and add/extend tests in `scripts/test/`.
+- When adding/adjusting behavior, update the relevant docs in `docs/` and add/extend current tests under `src/shell/test/` or native test locations as appropriate.
+- Shell support/scaffolding helpers that are not product runtime entrypoints belong under `src/shell/support/`, not `src/shell/core/`.
 - **External repo recursion is intentional**:
   - External roots may expand recursively into discovered external repos and their relevant descendants when the workflow requires it.
   - Do not "fix" recursive handling back to internal-only behavior unless a human explicitly changes that product decision.

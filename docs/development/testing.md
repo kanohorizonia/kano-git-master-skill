@@ -1,509 +1,128 @@
 # Testing Guide
 
-This guide explains how to test Git Master Skill workflows.
+This repo currently has two distinct test layers:
 
-## Test Structure
+- native test targets and native E2E harnesses under `src/cpp/code/tests/`
+- shell acceptance/workflow regressions under `src/shell/test/`
 
-### Test Files
+The important rule is to group tests by what they support, not by file extension.
+Shell or PowerShell files that exist only to drive native C++ test lanes stay under
+`src/cpp/code/tests/`. Product/workflow shell acceptance lives under
+`src/shell/test/`.
 
-This repo is in the middle of a shell-layout migration.
+## Current Test Topology
 
-- Legacy test entrypoints referenced by older docs may still point at `scripts/test/`.
-- Current native acceptance coverage for commit/commit-push quickstart lives under:
-  - `src/shell/core/acceptance-quickstart-commit-push.sh`
-  - `src/shell/core/acceptance-ignore-plan.sh`
+### Native test lanes
 
-### Test Format
+- `src/cpp/code/tests/run_tests.sh`
+- `src/cpp/code/tests/run_tests.ps1`
+- `src/cpp/code/tests/e2e/plan_commit_regression/`
 
-Each test file follows this structure:
+These drive the native test targets defined in `src/cpp/code/tests/CMakeLists.txt`:
 
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
+- `run_kano_git_tests`
+  - fast lane
+  - CLI + TUI tests
+- `run_kano_git_all_tests`
+  - full lane
+  - CLI + TUI + E2E
 
-# Test counter
-TESTS_RUN=0
-TESTS_PASSED=0
-TESTS_FAILED=0
+### Shell acceptance coverage
 
-# Test function
-test_feature() {
-    local test_name="$1"
-    TESTS_RUN=$((TESTS_RUN + 1))
-    
-    echo "Running: $test_name"
-    
-    # Test logic here
-    if [[ condition ]]; then
-        echo "  ✓ PASSED"
-        TESTS_PASSED=$((TESTS_PASSED + 1))
-    else
-        echo "  ✗ FAILED"
-        TESTS_FAILED=$((TESTS_FAILED + 1))
-    fi
-}
+- `src/shell/test/acceptance-commit-plan-first.sh`
+- `src/shell/test/acceptance-quickstart-commit-push.sh`
+- `src/shell/test/acceptance-ignore-plan.sh`
 
-# Run tests
-test_feature "Test description"
+These validate workflow behavior against built `kog` binaries and disposable repos.
 
-# Summary
-echo ""
-echo "Tests run: $TESTS_RUN"
-echo "Passed: $TESTS_PASSED"
-echo "Failed: $TESTS_FAILED"
+### Shell support helpers
 
-# Exit with appropriate code
-[[ $TESTS_FAILED -eq 0 ]]
-```
+- `src/shell/support/gen-root-wrappers.sh`
 
-## Running Tests
+This is scaffolding/support, not a product runtime entrypoint and not a test.
+
+## Recommended Entry Points
 
 If `pixi` is available, use it as the default repo entrypoint.
 
-### All Tests
-
 ```bash
 pixi install
+pixi run build-native
 pixi run quick-test
 pixi run full-test
+pixi run acceptance-commit-plan-first
 pixi run acceptance-quickstart
 ```
 
-### Specific Tests
+## Direct Invocation
+
+### Native test lanes
 
 ```bash
-# Run the native quickstart acceptance flow directly
-bash src/shell/core/acceptance-quickstart-commit-push.sh
+# Bash runner
+bash src/cpp/code/tests/run_tests.sh <preset>
 
-# Run the ignore-plan acceptance flow directly
-bash src/shell/core/acceptance-ignore-plan.sh
+# PowerShell runner
+pwsh -File src/cpp/code/tests/run_tests.ps1 -Preset <preset>
+
+# CMake targets
+cmake --build --preset <preset> --target run_kano_git_tests
+cmake --build --preset <preset> --target run_kano_git_all_tests
 ```
 
-### Verbose Output
+### Shell acceptance
 
 ```bash
-# Run with verbose output
-./scripts/test/test-worktree-scripts.sh --verbose
+bash src/shell/test/acceptance-commit-plan-first.sh
+bash src/shell/test/acceptance-quickstart-commit-push.sh
+bash src/shell/test/acceptance-ignore-plan.sh
 ```
 
-## Test Categories
+## Where New Tests Should Go
 
-### Unit Tests
+### Put tests under `src/cpp/code/tests/` when
 
-Test individual functions in isolation.
+- they are native C++ test targets
+- they are shell/PowerShell runners for native test lanes
+- they are E2E harnesses owned by native test execution
 
-**Example**:
-```bash
-test_parse_version() {
-    local version="1.2.3"
-    local result
-    result=$(parse_version "$version")
-    
-    if [[ "$result" == "1.2.3" ]]; then
-        echo "  ✓ PASSED"
-        TESTS_PASSED=$((TESTS_PASSED + 1))
-    else
-        echo "  ✗ FAILED: Expected 1.2.3, got $result"
-        TESTS_FAILED=$((TESTS_FAILED + 1))
-    fi
-}
-```
+### Put tests under `src/shell/test/` when
 
-### Integration Tests
+- they validate shell/native workflow behavior end to end
+- they create disposable repos and drive built `kog` commands directly
+- they represent product acceptance/regression scenarios
 
-Test scripts end-to-end.
+### Put helpers under `src/shell/support/` when
 
-**Example**:
-```bash
-test_create_worktree() {
-    local branch="test-branch"
-    
-    # Create worktree
-    ./scripts/worktree/create-worktree.sh "$branch"
-    
-    # Verify worktree exists
-    if git worktree list | grep -q "$branch"; then
-        echo "  ✓ PASSED"
-        TESTS_PASSED=$((TESTS_PASSED + 1))
-    else
-        echo "  ✗ FAILED: Worktree not created"
-        TESTS_FAILED=$((TESTS_FAILED + 1))
-    fi
-    
-    # Cleanup
-    git worktree remove "../repo-$branch" --force
-}
-```
+- they generate assets or wrappers
+- they are scaffolding/maintenance helpers
+- they are not runtime command flows and not tests
 
-### Error Handling Tests
+## Current Coverage Snapshot
 
-Test error conditions and edge cases.
+| Area | Location | Status |
+|---|---|---|
+| Native CLI/TUI lanes | `src/cpp/code/tests/` | Active |
+| Native E2E plan regression | `src/cpp/code/tests/e2e/plan_commit_regression/` | Active |
+| Commit plan-first acceptance | `src/shell/test/acceptance-commit-plan-first.sh` | Active |
+| Commit/commit-push quickstart acceptance | `src/shell/test/acceptance-quickstart-commit-push.sh` | Active |
+| Ignore-plan acceptance | `src/shell/test/acceptance-ignore-plan.sh` | Active |
 
-**Example**:
-```bash
-test_invalid_input() {
-    local result
-    
-    # Test with invalid input
-    if ./scripts/worktree/create-worktree.sh "" 2>/dev/null; then
-        echo "  ✗ FAILED: Should have rejected empty input"
-        TESTS_FAILED=$((TESTS_FAILED + 1))
-    else
-        echo "  ✓ PASSED: Correctly rejected empty input"
-        TESTS_PASSED=$((TESTS_PASSED + 1))
-    fi
-}
-```
+## Notes
 
-## Writing Tests
-
-### Test Template
+- Older references to `scripts/test/` are stale in this checkout and should not be
+  used as the source of truth.
+- On Windows, prefer the native Windows build script before running acceptance:
 
 ```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-# Script directory
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
-
-# Test counters
-TESTS_RUN=0
-TESTS_PASSED=0
-TESTS_FAILED=0
-
-# Test function
-run_test() {
-    local test_name="$1"
-    local test_func="$2"
-    
-    TESTS_RUN=$((TESTS_RUN + 1))
-    echo ""
-    echo "Test $TESTS_RUN: $test_name"
-    
-    if $test_func; then
-        echo "  ✓ PASSED"
-        TESTS_PASSED=$((TESTS_PASSED + 1))
-    else
-        echo "  ✗ FAILED"
-        TESTS_FAILED=$((TESTS_FAILED + 1))
-    fi
-}
-
-# Individual test functions
-test_basic_functionality() {
-    # Test logic here
-    return 0  # or 1 for failure
-}
-
-test_error_handling() {
-    # Test logic here
-    return 0  # or 1 for failure
-}
-
-# Run tests
-run_test "Basic functionality" test_basic_functionality
-run_test "Error handling" test_error_handling
-
-# Summary
-echo ""
-echo "================================"
-echo "Test Summary"
-echo "================================"
-echo "Tests run: $TESTS_RUN"
-echo "Passed: $TESTS_PASSED"
-echo "Failed: $TESTS_FAILED"
-echo ""
-
-# Exit with appropriate code
-[[ $TESTS_FAILED -eq 0 ]]
+bash src/cpp/build/script/windows/build_windows_ninja_msvc_release.sh
 ```
 
-### Best Practices
-
-#### 1. Test Setup and Cleanup
-
-```bash
-setup_test() {
-    # Create test environment
-    TEST_DIR=$(mktemp -d)
-    cd "$TEST_DIR"
-    git init
-}
-
-cleanup_test() {
-    # Clean up test environment
-    cd /
-    rm -rf "$TEST_DIR"
-}
-
-# Use in tests
-test_feature() {
-    setup_test
-    
-    # Test logic
-    
-    cleanup_test
-}
-```
-
-#### 2. Isolate Tests
-
-```bash
-# Each test should be independent
-test_feature_a() {
-    # Setup
-    local test_dir=$(mktemp -d)
-    
-    # Test
-    # ...
-    
-    # Cleanup
-    rm -rf "$test_dir"
-}
-
-test_feature_b() {
-    # Setup
-    local test_dir=$(mktemp -d)
-    
-    # Test
-    # ...
-    
-    # Cleanup
-    rm -rf "$test_dir"
-}
-```
-
-#### 3. Test Both Success and Failure
-
-```bash
-test_success_case() {
-    # Test successful execution
-    if ./script.sh valid-input; then
-        return 0
-    else
-        return 1
-    fi
-}
-
-test_failure_case() {
-    # Test error handling
-    if ./script.sh invalid-input 2>/dev/null; then
-        return 1  # Should have failed
-    else
-        return 0  # Correctly failed
-    fi
-}
-```
-
-#### 4. Use Descriptive Names
-
-```bash
-# Good
-test_create_worktree_with_new_branch()
-test_remove_worktree_with_uncommitted_changes()
-
-# Bad
-test_1()
-test_worktree()
-```
-
-#### 5. Test Edge Cases
-
-```bash
-test_empty_input()
-test_special_characters()
-test_very_long_input()
-test_concurrent_execution()
-```
-
-## Test Coverage
-
-### Current Coverage
-
-| Feature | Tests | Status |
-|---------|-------|--------|
-| Version Info | 6 | ✅ Complete |
-| Worktree | 10 | ✅ Complete |
-| Subtree | 0 | 🔲 Needed |
-| Submodule | 0 | 🔲 Needed |
-| Scalar | 0 | 🔲 Needed |
-| Git-P4 | 0 | 🔲 Needed |
-| Git-SVN | 0 | 🔲 Needed |
-
-### Adding Test Coverage
-
-To add tests for a feature:
-
-1. Create test file: `scripts/test/test-feature.sh`
-2. Implement test cases
-3. Run tests to verify
-4. Update coverage table above
-
-## Continuous Integration
-
-### GitHub Actions
-
-Create `.github/workflows/test.yml`:
-
-```yaml
-name: Tests
-
-on: [push, pull_request]
-
-jobs:
-  test:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    
-    steps:
-      - uses: actions/checkout@v2
-      - name: Install pixi
-        run: curl -fsSL https://pixi.sh/install.sh | bash
-      - name: Install workspace tools
-        run: pixi install --locked
-      
-      - name: Run tests
-        run: pixi run full-test
-```
-
-### Local CI Simulation
-
-```bash
-# Run all tests like CI would
-pixi install
-pixi run full-test
-```
-
-## Debugging Tests
-
-### Verbose Mode
-
-```bash
-# Add verbose output to tests
-set -x  # Enable command tracing
-
-# Run test
-./scripts/test/test-feature.sh
-
-set +x  # Disable command tracing
-```
-
-### Debugging Individual Tests
-
-```bash
-# Run specific test with debugging
-bash -x ./scripts/test/test-feature.sh --test specific-test
-```
-
-### Preserving Test Environment
-
-```bash
-# Don't cleanup on failure
-cleanup_test() {
-    if [[ $TESTS_FAILED -eq 0 ]]; then
-        rm -rf "$TEST_DIR"
-    else
-        echo "Test failed, preserving environment at: $TEST_DIR"
-    fi
-}
-```
-
-## Performance Testing
-
-### Timing Tests
-
-```bash
-test_performance() {
-    local start_time
-    local end_time
-    local duration
-    
-    start_time=$(date +%s)
-    
-    # Run operation
-    ./script.sh
-    
-    end_time=$(date +%s)
-    duration=$((end_time - start_time))
-    
-    echo "Duration: ${duration}s"
-    
-    # Assert performance requirement
-    if [[ $duration -lt 5 ]]; then
-        return 0
-    else
-        echo "Too slow: ${duration}s (expected < 5s)"
-        return 1
-    fi
-}
-```
-
-### Benchmarking
-
-```bash
-# Run operation multiple times
-benchmark_operation() {
-    local iterations=10
-    local total_time=0
-    
-    for ((i=1; i<=iterations; i++)); do
-        local start=$(date +%s%N)
-        ./script.sh
-        local end=$(date +%s%N)
-        local duration=$(( (end - start) / 1000000 ))
-        total_time=$((total_time + duration))
-    done
-    
-    local avg_time=$((total_time / iterations))
-    echo "Average time: ${avg_time}ms"
-}
-```
-
-## Test Reporting
-
-### JUnit XML Format
-
-```bash
-# Generate JUnit XML report
-generate_junit_report() {
-    cat > test-results.xml << EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="Git Master Skill Tests" tests="$TESTS_RUN" failures="$TESTS_FAILED">
-  <testcase name="Test 1" />
-  <testcase name="Test 2" />
-</testsuite>
-EOF
-}
-```
-
-### HTML Report
-
-```bash
-# Generate HTML report
-generate_html_report() {
-    cat > test-results.html << EOF
-<!DOCTYPE html>
-<html>
-<head><title>Test Results</title></head>
-<body>
-  <h1>Test Results</h1>
-  <p>Tests run: $TESTS_RUN</p>
-  <p>Passed: $TESTS_PASSED</p>
-  <p>Failed: $TESTS_FAILED</p>
-</body>
-</html>
-EOF
-}
-```
+- Acceptance scripts may emit Git CRLF warnings in disposable repos; those are not
+  failures by themselves.
 
 ## See Also
 
-- [Contributing Guide](./contributing.md)
-- [Release Process](./release-process.md)
-
----
-
-**Last Updated**: 2026-02-12
+- `src/cpp/code/tests/README.md`
+- `TESTING.md`
+- `docs/guides/cpa-commit-plan-workflow.md`

@@ -1,0 +1,22 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2012/06/nuspec.xsd">
+  <metadata>
+    <id>wix</id>
+    <version>6.0.2</version>
+    <title>The WiX Toolset command-line interface.</title>
+    <authors>WiX Toolset Team</authors>
+    <requireLicenseAcceptance>true</requireLicenseAcceptance>
+    <license type="file">OSMFEULA.txt</license>
+    <licenseUrl>https://aka.ms/deprecateLicenseUrl</licenseUrl>
+    <icon>icon.png</icon>
+    <readme>README.md</readme>
+    <projectUrl>https://wixtoolset.org/</projectUrl>
+    <description>The WiX Toolset lets developers create installers for Windows. This package contains the WiX Toolset command-line interface.</description>
+    <copyright>Copyright (c) .NET Foundation and contributors. All rights reserved.</copyright>
+    <tags>WiX MSI install setup</tags>
+    <packageTypes>
+      <packageType name="DotnetTool" />
+    </packageTypes>
+    <repository type="git" url="https://github.com/wixtoolset/wix" commit="b3f340393117094a75ea8ced77f2357e4aa095e7" />
+  </metadata>
+</package>

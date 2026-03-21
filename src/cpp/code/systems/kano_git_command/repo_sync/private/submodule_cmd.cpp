@@ -5,11 +5,15 @@
 #include "shell_executor.hpp"
 
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <optional>
 #include <sstream>
 #include <string>
+#include <system_error>
 #include <vector>
+
+#include <chrono>
 
 namespace {
 
@@ -17,6 +21,52 @@ struct SyncUrlEntry {
     std::string name;
     std::string path;
     std::string url;
+};
+
+struct ParsedSubmoduleAddArgs {
+    std::string url;
+    std::string path;
+    std::string branch;
+};
+
+enum class RemoteHeadProbe {
+    HasHead,
+    MissingHead,
+    ProbeError,
+};
+
+struct ScopedTempDir {
+    std::filesystem::path path;
+
+    ScopedTempDir() = default;
+    ScopedTempDir(const ScopedTempDir&) = delete;
+    auto operator=(const ScopedTempDir&) -> ScopedTempDir& = delete;
+
+    ScopedTempDir(ScopedTempDir&& InOther) noexcept
+        : path(std::move(InOther.path)) {
+        InOther.path.clear();
+    }
+
+    auto operator=(ScopedTempDir&& InOther) noexcept -> ScopedTempDir& {
+        if (this == &InOther) {
+            return *this;
+        }
+        std::error_code ec;
+        if (!path.empty()) {
+            std::filesystem::remove_all(path, ec);
+        }
+        path = std::move(InOther.path);
+        InOther.path.clear();
+        return *this;
+    }
+
+    ~ScopedTempDir() {
+        if (path.empty()) {
+            return;
+        }
+        std::error_code ec;
+        std::filesystem::remove_all(path, ec);
+    }
 };
 
 auto Trim(const std::string& InValue) -> std::string {
@@ -34,6 +84,12 @@ auto RunGitCapture(
     return kano::git::shell::ExecuteCommand("git", InGitArgs, kano::git::shell::ExecMode::Capture, InWorkingDir);
 }
 
+auto RunGitPassThrough(
+    const std::vector<std::string>& InGitArgs,
+    std::optional<std::filesystem::path> InWorkingDir = std::nullopt) -> kano::git::shell::ExecResult {
+    return kano::git::shell::ExecuteCommand("git", InGitArgs, kano::git::shell::ExecMode::PassThrough, InWorkingDir);
+}
+
 void PrintDryRunGit(const std::vector<std::string>& InGitArgs) {
     std::cout << "[DRY-RUN] Would execute: git";
     for (const auto& part : InGitArgs) {
@@ -49,6 +105,259 @@ auto ExtractSubmoduleNameFromUrlKey(const std::string& InKey) -> std::string {
         return {};
     }
     return InKey.substr(prefix.size(), InKey.size() - prefix.size() - suffix.size());
+}
+
+auto IsSubmoduleAddOptionWithValue(const std::string& InToken) -> bool {
+    return InToken == "-b" ||
+           InToken == "--branch" ||
+           InToken == "--name" ||
+           InToken == "--reference" ||
+           InToken == "--depth" ||
+           InToken == "--filter" ||
+           InToken == "--ref-format" ||
+           InToken == "--jobs";
+}
+
+auto IsSubmoduleAddOptionWithoutValue(const std::string& InToken) -> bool {
+    return InToken == "-f" ||
+           InToken == "--force" ||
+           InToken == "--progress" ||
+           InToken == "--quiet" ||
+           InToken == "--dissociate";
+}
+
+auto ParseInlineOptionValue(const std::string& InToken, const std::string& InPrefix) -> std::optional<std::string> {
+    if (!InToken.starts_with(InPrefix)) {
+        return std::nullopt;
+    }
+    return InToken.substr(InPrefix.size());
+}
+
+auto TryParseSubmoduleAddArgs(const std::vector<std::string>& InArgs) -> std::optional<ParsedSubmoduleAddArgs> {
+    ParsedSubmoduleAddArgs parsed;
+    std::vector<std::string> positional;
+    bool positionalOnly = false;
+
+    for (std::size_t index = 0; index < InArgs.size(); ++index) {
+        const auto& token = InArgs[index];
+        if (positionalOnly) {
+            positional.push_back(token);
+            continue;
+        }
+        if (token == "--") {
+            positionalOnly = true;
+            continue;
+        }
+        if (token.empty()) {
+            continue;
+        }
+        if (!token.starts_with("-")) {
+            positional.push_back(token);
+            continue;
+        }
+        if (const auto branchValue = ParseInlineOptionValue(token, "--branch="); branchValue.has_value()) {
+            parsed.branch = *branchValue;
+            continue;
+        }
+        if (const auto ignoredValue = ParseInlineOptionValue(token, "--name="); ignoredValue.has_value()) {
+            continue;
+        }
+        if (const auto ignoredValue = ParseInlineOptionValue(token, "--reference="); ignoredValue.has_value()) {
+            continue;
+        }
+        if (const auto ignoredValue = ParseInlineOptionValue(token, "--depth="); ignoredValue.has_value()) {
+            continue;
+        }
+        if (const auto ignoredValue = ParseInlineOptionValue(token, "--filter="); ignoredValue.has_value()) {
+            continue;
+        }
+        if (const auto ignoredValue = ParseInlineOptionValue(token, "--ref-format="); ignoredValue.has_value()) {
+            continue;
+        }
+        if (const auto ignoredValue = ParseInlineOptionValue(token, "--jobs="); ignoredValue.has_value()) {
+            continue;
+        }
+        if (IsSubmoduleAddOptionWithoutValue(token)) {
+            continue;
+        }
+        if (IsSubmoduleAddOptionWithValue(token)) {
+            if (index + 1 >= InArgs.size()) {
+                return std::nullopt;
+            }
+            const auto& optionValue = InArgs[++index];
+            if (token == "-b" || token == "--branch") {
+                parsed.branch = optionValue;
+            }
+            continue;
+        }
+        return std::nullopt;
+    }
+
+    if (positional.empty()) {
+        return std::nullopt;
+    }
+
+    parsed.url = positional.front();
+    if (positional.size() >= 2) {
+        parsed.path = positional[1];
+    }
+    return parsed;
+}
+
+auto ProbeRemoteHeadState(const std::string& InUrl) -> RemoteHeadProbe {
+    const auto result = RunGitCapture({"ls-remote", "--exit-code", InUrl, "HEAD"});
+    if (result.exitCode == 0) {
+        return RemoteHeadProbe::HasHead;
+    }
+    if (result.exitCode == 2) {
+        return RemoteHeadProbe::MissingHead;
+    }
+    return RemoteHeadProbe::ProbeError;
+}
+
+auto ResolveDefaultBootstrapBranch(const std::optional<ParsedSubmoduleAddArgs>& InParsed) -> std::string {
+    if (InParsed.has_value() && !InParsed->branch.empty()) {
+        return InParsed->branch;
+    }
+    const auto configResult = RunGitCapture({"config", "--get", "init.defaultBranch"});
+    const auto configured = configResult.exitCode == 0 ? Trim(configResult.stdoutStr) : std::string{};
+    if (!configured.empty()) {
+        return configured;
+    }
+    return "main";
+}
+
+auto DeriveRepoDisplayName(const std::string& InUrl) -> std::string {
+    auto normalized = Trim(InUrl);
+    while (!normalized.empty() && (normalized.back() == '/' || normalized.back() == '\\')) {
+        normalized.pop_back();
+    }
+    if (normalized.ends_with(".git")) {
+        normalized.resize(normalized.size() - 4);
+    }
+    const auto slashPos = normalized.find_last_of("/\\");
+    const auto colonPos = normalized.find_last_of(':');
+    const auto splitPos = std::max(slashPos, colonPos);
+    if (splitPos == std::string::npos || splitPos + 1 >= normalized.size()) {
+        return normalized.empty() ? std::string{"submodule"} : normalized;
+    }
+    return normalized.substr(splitPos + 1);
+}
+
+auto MakeBootstrapTempDir() -> std::optional<ScopedTempDir> {
+    const auto uniqueId = std::to_string(std::chrono::high_resolution_clock::now().time_since_epoch().count());
+    auto tempPath = std::filesystem::temp_directory_path() / ("kog-submodule-bootstrap-" + uniqueId);
+    std::error_code ec;
+    std::filesystem::create_directories(tempPath, ec);
+    if (ec) {
+        return std::nullopt;
+    }
+    ScopedTempDir scoped;
+    scoped.path = tempPath.lexically_normal();
+    return scoped;
+}
+
+auto TrySetLocalBareRemoteHead(const std::string& InUrl, const std::string& InBranch) -> void {
+    if (InUrl.empty() || InBranch.empty()) {
+        return;
+    }
+    const std::filesystem::path remotePath = std::filesystem::path(InUrl).lexically_normal();
+    if (!std::filesystem::exists(remotePath)) {
+        return;
+    }
+    const auto headFile = (remotePath / "HEAD").lexically_normal();
+    const auto objectsDir = (remotePath / "objects").lexically_normal();
+    if (!std::filesystem::exists(headFile) || !std::filesystem::exists(objectsDir)) {
+        return;
+    }
+    (void)RunGitCapture({"--git-dir", remotePath.string(), "symbolic-ref", "HEAD", "refs/heads/" + InBranch});
+}
+
+auto BootstrapEmptyRemoteForSubmodule(const ParsedSubmoduleAddArgs& InParsed, const std::string& InBranch) -> int {
+    const auto tempDir = MakeBootstrapTempDir();
+    if (!tempDir.has_value()) {
+        std::cerr << "Error: failed to create temporary bootstrap directory\n";
+        return 1;
+    }
+
+    const auto repoName = DeriveRepoDisplayName(InParsed.url);
+    const auto readmePath = (tempDir->path / "README.md").lexically_normal();
+    {
+        std::ofstream out(readmePath, std::ios::out | std::ios::binary | std::ios::trunc);
+        if (!out.good()) {
+            std::cerr << "Error: failed to write bootstrap README.md\n";
+            return 1;
+        }
+        out << "# " << (repoName.empty() ? std::string{"submodule"} : repoName) << "\n";
+    }
+
+    const auto initResult = RunGitPassThrough({"-C", tempDir->path.string(), "-c", "init.defaultBranch=" + InBranch, "init"});
+    if (initResult.exitCode != 0) {
+        return initResult.exitCode;
+    }
+    const auto addResult = RunGitPassThrough({"-C", tempDir->path.string(), "add", "README.md"});
+    if (addResult.exitCode != 0) {
+        return addResult.exitCode;
+    }
+    const auto commitResult = RunGitPassThrough(
+        {
+            "-C", tempDir->path.string(),
+            "-c", "user.name=kog bootstrap",
+            "-c", "user.email=kog-bootstrap@example.invalid",
+            "commit", "-m", "Initial commit"
+        }
+    );
+    if (commitResult.exitCode != 0) {
+        return commitResult.exitCode;
+    }
+    const auto remoteResult = RunGitPassThrough({"-C", tempDir->path.string(), "remote", "add", "origin", InParsed.url});
+    if (remoteResult.exitCode != 0) {
+        return remoteResult.exitCode;
+    }
+    const auto pushResult = RunGitPassThrough({"-C", tempDir->path.string(), "push", "-u", "origin", InBranch});
+    if (pushResult.exitCode != 0) {
+        return pushResult.exitCode;
+    }
+
+    TrySetLocalBareRemoteHead(InParsed.url, InBranch);
+    return 0;
+}
+
+auto RunNativeAddSubmodule(const std::vector<std::string>& InArgs) -> int {
+    if (InArgs.empty()) {
+        std::cerr << "Error: submodule add requires arguments (for example: <url> [path])\n";
+        return 1;
+    }
+
+    const auto parsed = TryParseSubmoduleAddArgs(InArgs);
+    if (parsed.has_value()) {
+        const auto probe = ProbeRemoteHeadState(parsed->url);
+        if (probe == RemoteHeadProbe::MissingHead) {
+            const auto bootstrapBranch = ResolveDefaultBootstrapBranch(parsed);
+            std::cout << "Remote appears empty; bootstrapping initial commit on branch '" << bootstrapBranch << "'...\n";
+            const auto bootstrapExitCode = BootstrapEmptyRemoteForSubmodule(*parsed, bootstrapBranch);
+            if (bootstrapExitCode != 0) {
+                if (ProbeRemoteHeadState(parsed->url) != RemoteHeadProbe::HasHead) {
+                    return bootstrapExitCode;
+                }
+                std::cout << "Remote became initialized during bootstrap attempt; retrying submodule add...\n";
+            }
+        }
+    }
+
+    std::vector<std::string> gitArgs = {"submodule", "add"};
+    gitArgs.insert(gitArgs.end(), InArgs.begin(), InArgs.end());
+    const auto result = kano::git::shell::ExecuteCommand("git", gitArgs, kano::git::shell::ExecMode::PassThrough);
+    if (result.exitCode == 0) {
+        const auto rootResult = RunGitCapture({"rev-parse", "--show-toplevel"});
+        if (rootResult.exitCode == 0) {
+            const auto root = Trim(rootResult.stdoutStr);
+            if (!kano::git::workspace::RefreshWorkspaceManifestAfterRegisteredChange(std::filesystem::path(root))) {
+                std::cerr << "[WARN] submodule add succeeded, but failed to refresh workspace manifest\n";
+            }
+        }
+    }
+    return result.exitCode;
 }
 
 auto ReadGitConfigValue(
@@ -358,25 +667,35 @@ void RegisterSubmodule(CLI::App& InApp) {
 
     auto* add = cmd->add_subcommand("add", "Add a submodule");
     add->allow_extras();
+    auto* addUrl = new std::string{};
+    auto* addPath = new std::string{};
+    auto* addBranch = new std::string{};
+    auto* addForce = new bool{false};
+    add->add_option("url", *addUrl, "Submodule repository URL");
+    add->add_option("path", *addPath, "Optional submodule path");
+    add->add_option("-b,--branch", *addBranch, "Branch to track while adding the submodule");
+    add->add_flag("-f,--force", *addForce, "Allow adding an existing local path as a submodule");
     add->callback([=]() {
-        auto extras = add->remaining();
-        if (extras.empty()) {
-            std::cerr << "Error: submodule add requires arguments (for example: <url> [path])\n";
-            std::exit(1);
+        std::vector<std::string> args;
+        if (*addForce) {
+            args.push_back("--force");
         }
-        std::vector<std::string> gitArgs = {"submodule", "add"};
-        gitArgs.insert(gitArgs.end(), extras.begin(), extras.end());
-        const auto result = shell::ExecuteCommand("git", gitArgs, shell::ExecMode::PassThrough);
-        if (result.exitCode == 0) {
-            const auto rootResult = RunGitCapture({"rev-parse", "--show-toplevel"});
-            if (rootResult.exitCode == 0) {
-                const auto root = Trim(rootResult.stdoutStr);
-                if (!kano::git::workspace::RefreshWorkspaceManifestAfterRegisteredChange(std::filesystem::path(root))) {
-                    std::cerr << "[WARN] submodule add succeeded, but failed to refresh workspace manifest\n";
-                }
+        if (!addBranch->empty()) {
+            args.push_back("--branch");
+            args.push_back(*addBranch);
+        }
+        if (addUrl->empty()) {
+            const auto extras = add->remaining();
+            args.insert(args.end(), extras.begin(), extras.end());
+        } else {
+            args.push_back(*addUrl);
+            if (!addPath->empty()) {
+                args.push_back(*addPath);
             }
+            const auto extras = add->remaining();
+            args.insert(args.end(), extras.begin(), extras.end());
         }
-        std::exit(result.exitCode);
+        std::exit(RunNativeAddSubmodule(args));
     });
 
     auto* sync = cmd->add_subcommand("sync", "Sync submodule URLs");
