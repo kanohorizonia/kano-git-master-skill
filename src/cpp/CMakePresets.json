@@ -7,9 +7,18 @@
     },
     "configurePresets": [
         {
+            "name": "kog-fetch-thirdparty-defaults",
+            "hidden": true,
+            "cacheVariables": {
+                "KOG_CLI11_SOURCE_MODE": "fetch",
+                "KOG_FTXUI_SOURCE_MODE": "fetch"
+            }
+        },
+        {
             "name": "windows-msbuild",
             "displayName": "Windows MSBuild",
             "description": "Uses Visual Studio 17 2022 generator",
+            "inherits": "kog-fetch-thirdparty-defaults",
             "generator": "Visual Studio 17 2022",
             "cacheVariables": {
                 "CMAKE_CXX_FLAGS": "/experimental:external-",
@@ -29,6 +38,7 @@
             "name": "windows-ninja-msvc",
             "displayName": "Windows Ninja Multi-Config (MSVC)",
             "description": "Uses Ninja Multi-Config with default MSVC compiler (requires vcvars64.bat)",
+            "inherits": "kog-fetch-thirdparty-defaults",
             "generator": "Ninja Multi-Config",
             "binaryDir": "${sourceDir}/build/_intermediate/windows-ninja-msvc",
             "cacheVariables": {
@@ -39,6 +49,7 @@
             "name": "windows-ninja-msvc-arm64",
             "displayName": "Windows Ninja Multi-Config (MSVC ARM64)",
             "description": "Uses Ninja Multi-Config with MSVC cross-compile toolchain (amd64_arm64)",
+            "inherits": "kog-fetch-thirdparty-defaults",
             "generator": "Ninja Multi-Config",
             "binaryDir": "${sourceDir}/build/_intermediate/windows-ninja-msvc-arm64",
             "cacheVariables": {
@@ -49,6 +60,7 @@
             "name": "windows-fastbuild-msvc",
             "displayName": "Windows FASTBuild (MSVC)",
             "description": "Uses FASTBuild generator with MSVC compiler (requires vcvars64.bat and CMake 4.2+)",
+            "inherits": "kog-fetch-thirdparty-defaults",
             "generator": "FASTBuild",
             "binaryDir": "${sourceDir}/build/_intermediate/windows-fastbuild-msvc",
             "cacheVariables": {
@@ -63,6 +75,7 @@
             "name": "windows-ninja-clang",
             "displayName": "Windows Ninja Multi-Config (Clang)",
             "description": "Uses Ninja Multi-Config with LLVM Clang compiler",
+            "inherits": "kog-fetch-thirdparty-defaults",
             "generator": "Ninja Multi-Config",
             "binaryDir": "${sourceDir}/build/_intermediate/windows-ninja-clang",
             "cacheVariables": {
@@ -75,6 +88,7 @@
             "name": "linux-ninja-gcc",
             "displayName": "Linux Ninja Multi-Config (GCC)",
             "description": "Uses Ninja Multi-Config with GCC 15 compiler",
+            "inherits": "kog-fetch-thirdparty-defaults",
             "generator": "Ninja Multi-Config",
             "binaryDir": "${sourceDir}/build/_intermediate/linux-ninja-gcc",
             "cacheVariables": {
@@ -88,6 +102,7 @@
             "name": "linux-ninja-clang",
             "displayName": "Linux Ninja Multi-Config (Clang)",
             "description": "Uses Ninja Multi-Config with Clang compiler",
+            "inherits": "kog-fetch-thirdparty-defaults",
             "generator": "Ninja Multi-Config",
             "binaryDir": "${sourceDir}/build/_intermediate/linux-ninja-clang",
             "cacheVariables": {
@@ -114,6 +129,7 @@
             "name": "macos-ninja-clang",
             "displayName": "macOS Ninja Multi-Config (Clang)",
             "description": "Uses Ninja Multi-Config with Apple Clang compiler",
+            "inherits": "kog-fetch-thirdparty-defaults",
             "generator": "Ninja Multi-Config",
             "binaryDir": "${sourceDir}/build/_intermediate/macos-ninja-clang",
             "cacheVariables": {
@@ -127,6 +143,7 @@
             "name": "macos-ninja-clang-x64",
             "displayName": "macOS Ninja Multi-Config (Clang x64)",
             "description": "Uses Ninja Multi-Config with Apple Clang targeting Intel x86_64",
+            "inherits": "kog-fetch-thirdparty-defaults",
             "generator": "Ninja Multi-Config",
             "binaryDir": "${sourceDir}/build/_intermediate/macos-ninja-clang-x64",
             "cacheVariables": {
@@ -141,6 +158,7 @@
             "name": "macos-ninja-clang-arm64",
             "displayName": "macOS Ninja Multi-Config (Clang arm64)",
             "description": "Uses Ninja Multi-Config with Apple Clang targeting Apple Silicon arm64",
+            "inherits": "kog-fetch-thirdparty-defaults",
             "generator": "Ninja Multi-Config",
             "binaryDir": "${sourceDir}/build/_intermediate/macos-ninja-clang-arm64",
             "cacheVariables": {

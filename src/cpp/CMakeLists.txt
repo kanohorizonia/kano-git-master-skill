@@ -357,16 +357,30 @@ endif()
 # CLI11 v2.4 uses <codecvt> which is removed in MSVC 19.50 (VS 2026)
 add_compile_definitions(CLI11_HAS_CODECVT=0)
 
-# Resolve CLI11 source strategy (submodule-managed by git)
-#   submodule (default): use code/thirdparty/cli11 from git submodule
+# Resolve CLI11 source strategy
+#   fetch (default): FetchContent from upstream release tag into CMake _deps
+#   submodule: use code/thirdparty/cli11 only for intentionally customized/forked dependency flows
 #   system: use find_package(CLI11)
-set(KOG_CLI11_SOURCE_MODE "submodule" CACHE STRING "CLI11 source mode: submodule|system")
-set_property(CACHE KOG_CLI11_SOURCE_MODE PROPERTY STRINGS submodule system)
+set(KOG_CLI11_SOURCE_MODE "fetch" CACHE STRING "CLI11 source mode: fetch|submodule|system")
+set_property(CACHE KOG_CLI11_SOURCE_MODE PROPERTY STRINGS fetch submodule system)
 
 set(KOG_CLI11_SUBMODULE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/code/thirdparty/cli11")
 set(KOG_CLI11_BINARY_DIR "${CMAKE_BINARY_DIR}/thirdparty/cli11-build")
 
-if(KOG_CLI11_SOURCE_MODE STREQUAL "submodule")
+if(KOG_CLI11_SOURCE_MODE STREQUAL "fetch")
+    include(FetchContent)
+    FetchContent_Declare(
+        cli11
+        GIT_REPOSITORY https://github.com/CLIUtils/CLI11.git
+        GIT_TAG v2.6.2
+    )
+    set(CLI11_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(CLI11_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+    set(CLI11_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(CLI11_PRECOMPILED OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(cli11)
+    set(cli11_SOURCE_DIR "${cli11_SOURCE_DIR}")
+elseif(KOG_CLI11_SOURCE_MODE STREQUAL "submodule")
     if(EXISTS "${KOG_CLI11_SUBMODULE_SOURCE_DIR}/CMakeLists.txt")
         add_subdirectory("${KOG_CLI11_SUBMODULE_SOURCE_DIR}" "${KOG_CLI11_BINARY_DIR}" EXCLUDE_FROM_ALL)
         set(cli11_SOURCE_DIR "${KOG_CLI11_SUBMODULE_SOURCE_DIR}")
@@ -376,17 +390,32 @@ if(KOG_CLI11_SOURCE_MODE STREQUAL "submodule")
 elseif(KOG_CLI11_SOURCE_MODE STREQUAL "system")
     find_package(CLI11 CONFIG REQUIRED)
 else()
-    message(FATAL_ERROR "Unsupported KOG_CLI11_SOURCE_MODE: ${KOG_CLI11_SOURCE_MODE} (expected submodule|system)")
+    message(FATAL_ERROR "Unsupported KOG_CLI11_SOURCE_MODE: ${KOG_CLI11_SOURCE_MODE} (expected fetch|submodule|system)")
 endif()
 
 set(KOG_FTXUI_SUBMODULE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/code/thirdparty/ftxui")
 set(KOG_FTXUI_BINARY_DIR "${CMAKE_BINARY_DIR}/thirdparty/ftxui-build")
+set(KOG_FTXUI_SOURCE_MODE "fetch" CACHE STRING "FTXUI source mode: fetch|submodule")
+set_property(CACHE KOG_FTXUI_SOURCE_MODE PROPERTY STRINGS fetch submodule)
 
-if(EXISTS "${KOG_FTXUI_SUBMODULE_SOURCE_DIR}/CMakeLists.txt")
-    add_subdirectory("${KOG_FTXUI_SUBMODULE_SOURCE_DIR}" "${KOG_FTXUI_BINARY_DIR}" EXCLUDE_FROM_ALL)
-    message(STATUS "FTXUI submodule found: enabling full tui")
+if(KOG_FTXUI_SOURCE_MODE STREQUAL "fetch")
+    include(FetchContent)
+    FetchContent_Declare(
+        ftxui
+        GIT_REPOSITORY https://github.com/ArthurSonzogni/FTXUI.git
+        GIT_TAG v5.0.0
+    )
+    FetchContent_MakeAvailable(ftxui)
+    message(STATUS "FTXUI fetched into CMake _deps: enabling full tui")
+elseif(KOG_FTXUI_SOURCE_MODE STREQUAL "submodule")
+    if(EXISTS "${KOG_FTXUI_SUBMODULE_SOURCE_DIR}/CMakeLists.txt")
+        add_subdirectory("${KOG_FTXUI_SUBMODULE_SOURCE_DIR}" "${KOG_FTXUI_BINARY_DIR}" EXCLUDE_FROM_ALL)
+        message(STATUS "FTXUI submodule found: enabling full tui")
+    else()
+        message(FATAL_ERROR "FTXUI submodule missing: ${KOG_FTXUI_SUBMODULE_SOURCE_DIR}. Run: git submodule update --init --recursive")
+    endif()
 else()
-    message(FATAL_ERROR "FTXUI submodule missing: ${KOG_FTXUI_SUBMODULE_SOURCE_DIR}. Run: git submodule update --init --recursive")
+    message(FATAL_ERROR "Unsupported KOG_FTXUI_SOURCE_MODE: ${KOG_FTXUI_SOURCE_MODE} (expected fetch|submodule)")
 endif()
 
 # Resolve toml++ source strategy

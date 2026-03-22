@@ -334,33 +334,3 @@ kog_collect_build_metadata() {
   export KOG_BUILD_PLATFORM="$(_kog_default_unknown "$(_kog_trim "$platform")")"
 }
 
-kog_ensure_ftxui_vendor() {
-  local root="${KOG_CPP_ROOT:-$(pwd)}"
-  local thirdparty_dir="$root/code/thirdparty"
-  local ftxui_dir="$thirdparty_dir/ftxui"
-  local ftxui_repo="${KOG_FTXUI_REPO_URL:-https://github.com/ArthurSonzogni/FTXUI.git}"
-
-  if [[ -f "$ftxui_dir/CMakeLists.txt" ]]; then
-    return 0
-  fi
-
-  if [[ -d "$ftxui_dir" ]]; then
-    if [[ -z "$(find "$ftxui_dir" -mindepth 1 -print -quit 2>/dev/null || true)" ]]; then
-      echo "Found empty vendored FTXUI directory. Recreating: $ftxui_dir" >&2
-      rmdir "$ftxui_dir" 2>/dev/null || rm -rf "$ftxui_dir"
-    else
-    echo "Found incomplete vendored FTXUI directory: $ftxui_dir" >&2
-    echo "Remove it and rerun, or ensure CMakeLists.txt exists in that directory." >&2
-    exit 1
-    fi
-  fi
-
-  if ! command -v git >/dev/null 2>&1; then
-    echo "git is required to fetch missing thirdparty/ftxui." >&2
-    exit 1
-  fi
-
-  mkdir -p "$thirdparty_dir"
-  echo "Vendored FTXUI not found. Cloning from $ftxui_repo ..."
-  git clone --depth 1 "$ftxui_repo" "$ftxui_dir"
-}

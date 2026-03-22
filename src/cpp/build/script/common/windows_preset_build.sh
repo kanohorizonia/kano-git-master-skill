@@ -145,7 +145,6 @@ kog_run_windows_preset() {
 
   local RootWin
 
-  kog_ensure_ftxui_vendor
   kog_apply_self_build_config
   kog_collect_build_metadata
 
