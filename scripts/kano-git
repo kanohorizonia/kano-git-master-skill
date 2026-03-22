@@ -347,8 +347,10 @@ prepare_cpp_build_submodules() {
 
   log_launcher_status "$context_label" "step" "prepare-submodules"
 
-  # Discover C++ build dependencies from .gitmodules dynamically.
-  # Any registered submodule under src/cpp/code/thirdparty/ is treated as build dependency.
+  # Discover explicitly vendored/forked C++ dependencies from .gitmodules dynamically.
+  # Only dependencies intentionally kept as submodules under src/cpp/code/thirdparty/
+  # should be prepared here. Upstream third-party libraries that can be consumed
+  # unmodified should use CMake FetchContent/_deps instead.
   while IFS= read -r line; do
     [[ -z "$line" ]] && continue
     path="${line#* }"
@@ -358,7 +360,7 @@ prepare_cpp_build_submodules() {
   done < <(git -C "$PROJECT_ROOT" config -f .gitmodules --get-regexp '^submodule\..*\.path$' 2>/dev/null || true)
 
   if [[ "${#discovered_paths[@]}" -eq 0 ]]; then
-    log_launcher_status "$context_label" "ok" "no C++ thirdparty submodules registered in .gitmodules"
+    log_launcher_status "$context_label" "ok" "no vendored C++ thirdparty submodules registered in .gitmodules"
     return 0
   fi
 
@@ -394,8 +396,8 @@ prepare_cpp_build_submodules() {
     git submodule sync -- "${update_paths[@]}" >/dev/null
     git submodule update --init --recursive -- "${update_paths[@]}"
   ) || {
-    echo "Error: failed to initialize required C++ thirdparty submodules." >&2
-    echo "Hint: run 'git submodule update --init --recursive -- src/cpp/code/thirdparty/*' and retry." >&2
+    echo "Error: failed to initialize required vendored C++ thirdparty submodules." >&2
+    echo "Hint: run 'git submodule update --init --recursive -- src/cpp/code/thirdparty/*' and retry only for intentionally forked/customized dependencies." >&2
     return 1
   }
 
@@ -1153,6 +1155,9 @@ Launcher commands:
     --remote <name>                   Preferred remote (default: upstream, fallback origin)
     --auto-sync                       Apply update without prompt when commits are available
     --non-interactive                 Do not prompt; report availability only unless --auto-sync
+  status                              Show dirty repositories across the workspace by default
+    --all                             Show all repos instead of only dirty ones
+  overview                            Show cached workspace repo overview without re-running discover
   discover                            Run manual repo discovery, refresh cache, and print cache file path
   plan new                           Write plan template from assets
     -ai, --ai-auto                    Generate and fill plan via one AI request

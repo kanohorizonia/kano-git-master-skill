@@ -1,4 +1,4 @@
-// status command — global cross-repo status view
+// status/overview commands — dirty-focused status plus cached workspace overview
 
 #include <CLI/CLI.hpp>
 #include "discovery.hpp"
@@ -41,6 +41,7 @@ struct RepoView {
     bool repoDirty = false;
     bool hasDirtyWorktree = false;
     std::string dirtyWorktrees;
+    std::vector<std::string> statusLines;
 };
 
 struct TableLayout {
@@ -63,6 +64,19 @@ auto Trim(std::string InValue) -> std::string {
         start += 1;
     }
     return InValue.substr(start);
+}
+
+auto SplitNonEmptyLines(const std::string& InText) -> std::vector<std::string> {
+    std::vector<std::string> out;
+    std::istringstream iss(InText);
+    std::string line;
+    while (std::getline(iss, line)) {
+        line = Trim(line);
+        if (!line.empty()) {
+            out.push_back(line);
+        }
+    }
+    return out;
 }
 
 auto GitCapture(const std::filesystem::path& InRepo, const std::vector<std::string>& InArgs) -> shell::ExecResult {
@@ -310,6 +324,61 @@ auto RepoNameFromPath(const std::filesystem::path& InPath) -> std::string {
     return InPath.lexically_normal().generic_string();
 }
 
+auto IsAttentionDirty(const RepoView& InRow) -> bool {
+    return InRow.repoDirty || InRow.hasDirtyWorktree;
+}
+
+auto FilterDirtyRows(const std::vector<RepoView>& InRows) -> std::vector<RepoView> {
+    std::vector<RepoView> filtered;
+    filtered.reserve(InRows.size());
+    for (const auto& row : InRows) {
+        if (IsAttentionDirty(row)) {
+            filtered.push_back(row);
+        }
+    }
+    return filtered;
+}
+
+auto LoadCachedWorkspaceReposOrThrow(const std::filesystem::path& InRoot) -> std::vector<workspace::RepoRecord> {
+    std::string reason;
+    const auto manifest = workspace::LoadTrustedWorkspaceManifest(InRoot, &reason);
+    if (!manifest.has_value()) {
+        std::ostringstream oss;
+        oss << "cached workspace overview unavailable";
+        if (!reason.empty()) {
+            oss << ": " << reason;
+        }
+        oss << ". Run 'kog discover' first to refresh the workspace manifest.";
+        throw std::runtime_error(oss.str());
+    }
+    return manifest->repos;
+}
+
+auto RefreshCachedRepoRecords(const std::vector<workspace::RepoRecord>& InRepos) -> std::vector<workspace::RepoRecord> {
+    std::vector<workspace::RepoRecord> refreshed;
+    refreshed.reserve(InRepos.size());
+    for (const auto& repo : InRepos) {
+        workspace::RepoRecord updated = repo;
+        updated.currentBranch = CurrentBranch(repo.path);
+        updated.remotes = CurrentRemote(repo.path);
+        const auto statusOut = GitCapture(repo.path, {"status", "--porcelain"});
+        updated.hasChanges = statusOut.exitCode == 0 && !Trim(statusOut.stdoutStr).empty();
+        refreshed.push_back(std::move(updated));
+    }
+    return refreshed;
+}
+
+auto NormalizeCachedRootRepoNames(std::vector<workspace::RepoRecord>* IoRepos) -> void {
+    if (IoRepos == nullptr) {
+        return;
+    }
+    for (auto& repo : *IoRepos) {
+        if (repo.type == "root") {
+            repo.path = repo.path.lexically_normal();
+        }
+    }
+}
+
 auto ResolveRepoFromSpec(const std::filesystem::path& InRoot,
                          const std::string& InSpec,
                          int InMaxDepth,
@@ -420,6 +489,18 @@ auto FormatTable(const std::vector<RepoView>& InRows) -> std::string {
             << PadRight(row.repoDirty ? "yes" : "no", layout.dirtyWidth)
             << PadRight(row.hasDirtyWorktree ? "yes" : "no", layout.worktreeDirtyWidth)
             << type << "\n";
+            
+        if (!row.statusLines.empty()) {
+            for (const auto& line : row.statusLines) {
+                oss << "    " << line << "\n";
+            }
+        }
+        if (row.hasDirtyWorktree) {
+            oss << "    dirty worktrees: " << row.dirtyWorktrees << "\n";
+        }
+        if (!row.statusLines.empty() || row.hasDirtyWorktree) {
+            oss << "\n";
+        }
     }
 
     return oss.str();
@@ -456,7 +537,21 @@ auto FormatJson(const std::vector<RepoView>& InRows) -> std::string {
         if (row.hasDirtyWorktree) {
             out << std::format(",\"dirty_worktrees\":\"{}\"", row.dirtyWorktrees);
         }
-        out << "}";
+        out << ",\"status_lines\":[";
+        for (std::size_t j = 0; j < row.statusLines.size(); ++j) {
+            if (j > 0) {
+                out << ",";
+            }
+            std::string escaped = row.statusLines[j];
+            std::string escapedOut;
+            for (char c : escaped) {
+                if (c == '"') escapedOut += "\\\"";
+                else if (c == '\\') escapedOut += "\\\\";
+                else escapedOut += c;
+            }
+            out << "\"" << escapedOut << "\"";
+        }
+        out << "]}";
     }
     out << "]}";
     return out.str();
@@ -501,6 +596,32 @@ auto MakeRepoView(const workspace::RepoRecord& InRepo, const std::filesystem::pa
     row.remote = CurrentRemote(InRepo.path);
     row.tracking = TrackingSummary(InRepo.path);
     row.hasDirtyWorktree = HasDirtyWorktrees(InRepo.path, row.dirtyWorktrees);
+    
+    if (row.repoDirty) {
+        const auto statusOut = GitCapture(InRepo.path, {"-c", "color.status=always", "status", "--short"});
+        if (statusOut.exitCode == 0) {
+            row.statusLines = SplitNonEmptyLines(statusOut.stdoutStr);
+        }
+        if (row.statusLines.empty()) {
+            row.repoDirty = false;
+        }
+    }
+    
+    return row;
+}
+
+auto MakeCachedRepoView(const workspace::RepoRecord& InRepo, const std::filesystem::path& InRoot) -> RepoView {
+    RepoView row;
+    row.path = InRepo.path;
+    const auto relativePath = RelativeDisplayPath(InRoot, InRepo.path);
+    row.group = GroupFromRelativePath(relativePath);
+    row.repoName = RepoNameFromPath(InRepo.path);
+    row.type = InRepo.type;
+    row.repoDirty = InRepo.hasChanges;
+    row.branch = InRepo.currentBranch.empty() ? "(detached)" : InRepo.currentBranch;
+    row.remote = "-";
+    row.tracking = "-";
+    row.hasDirtyWorktree = false;
     return row;
 }
 
@@ -542,6 +663,24 @@ auto BuildRepoViews(const std::vector<workspace::RepoRecord>& InRepos, const std
     return rows;
 }
 
+auto BuildCachedRepoViews(const std::vector<workspace::RepoRecord>& InRepos, const std::filesystem::path& InRoot) -> std::vector<RepoView> {
+    std::vector<RepoView> rows;
+    rows.reserve(InRepos.size());
+    for (const auto& repo : InRepos) {
+        rows.push_back(MakeCachedRepoView(repo, InRoot));
+    }
+    std::sort(rows.begin(), rows.end(), [](const RepoView& A, const RepoView& B) {
+        if (A.group != B.group) {
+            return A.group < B.group;
+        }
+        if (A.repoName != B.repoName) {
+            return A.repoName < B.repoName;
+        }
+        return A.path.lexically_normal().generic_string() < B.path.lexically_normal().generic_string();
+    });
+    return rows;
+}
+
 auto SelfBinaryPath() -> std::string {
     if (const char* path = std::getenv("KANO_GIT_BINARY_PATH"); path != nullptr && *path != '\0') {
         return std::string(path);
@@ -571,27 +710,59 @@ auto RunSelfScopedCommand(const std::string& InCommand,
 } // namespace
 
 void RegisterStatus(CLI::App& InApp) {
-    auto* cmd = InApp.add_subcommand("status", "Global cross-repo status view (branch/upstream/dirty/worktree)");
+    auto* cmd = InApp.add_subcommand("status", "Show dirty repositories across the workspace (git-status style)");
+    auto* overview = InApp.add_subcommand("overview", "Show cached workspace repo overview without re-running discover");
 
     auto* format = new std::string{"table"};
     auto* maxDepth = new int{8};
     auto* exclude = new std::vector<std::string>{};
     auto* noCache = new bool{false};
     auto* noRefreshCache = new bool{false};
+    auto* all = new bool{false};
     auto* repoRoot = new std::string{"."};
     auto* output = new std::string{};
     auto* target = new std::string{};
 
-    cmd->add_option("--format", *format, "Output format: table|json|markdown")->default_str("table");
+    auto configureOutput = [&](CLI::App* InCmd) {
+        InCmd->add_option("--format", *format, "Output format: table|json|markdown")->default_str("table");
+        InCmd->add_option("--repo-root", *repoRoot, "Repository root/start path");
+        InCmd->add_option("--output", *output, "Write output to file");
+        InCmd->add_option("target", *target, "Optional repo target (repo name or relative path)")->required(false);
+    };
+
+    configureOutput(cmd);
     cmd->add_option("--max-depth", *maxDepth, "Discovery max depth");
     cmd->add_option("--exclude", *exclude, "Temporary scan-scope exclude override for this invocation only (repeatable; prefer .gitignore/.kogignore for shared policy)");
     cmd->add_flag("--no-cache", *noCache, "Disable discovery cache for this run");
     cmd->add_flag("--no-refresh-cache", *noRefreshCache, "Do not force cache refresh");
-    cmd->add_option("--repo-root", *repoRoot, "Repository root/start path");
-    cmd->add_option("--output", *output, "Write output to file");
-    cmd->add_option("target", *target, "Optional repo target (repo name or relative path)")->required(false);
+    cmd->add_flag("--all", *all, "Show all discovered repos instead of only dirty ones");
 
-    cmd->callback([format, maxDepth, exclude, noCache, noRefreshCache, repoRoot, output, target]() {
+    configureOutput(overview);
+
+    auto renderRows = [=](const std::vector<RepoView>& InRows) {
+        if (*format != "table" && *format != "json" && *format != "markdown") {
+            std::cerr << "Error: invalid --format value: " << *format << " (expected table|json|markdown)\n";
+            std::exit(1);
+        }
+
+        std::string rendered;
+        if (*format == "json") {
+            rendered = FormatJson(InRows);
+        } else if (*format == "markdown") {
+            rendered = FormatMarkdown(InRows);
+        } else {
+            rendered = FormatTable(InRows);
+        }
+
+        if (!output->empty()) {
+            std::ofstream out(*output, std::ios::out | std::ios::binary | std::ios::trunc);
+            out << rendered;
+        } else {
+            std::cout << rendered << '\n';
+        }
+    };
+
+    cmd->callback([=]() {
         if (*format != "table" && *format != "json" && *format != "markdown") {
             std::cerr << "Error: invalid --format value: " << *format << " (expected table|json|markdown)\n";
             std::exit(1);
@@ -618,22 +789,38 @@ void RegisterStatus(CLI::App& InApp) {
         options.scope = workspace::DiscoverScope::RegisteredOnly;
 
         const auto discovery = workspace::DiscoverRepos(options);
-        const auto rows = BuildRepoViews(discovery.repos, options.rootDir);
+        auto rows = BuildRepoViews(discovery.repos, options.rootDir);
+        if (!*all) {
+            rows = FilterDirtyRows(rows);
+        }
+        renderRows(rows);
+    });
 
-        std::string rendered;
-        if (*format == "json") {
-            rendered = FormatJson(rows);
-        } else if (*format == "markdown") {
-            rendered = FormatMarkdown(rows);
-        } else {
-            rendered = FormatTable(rows);
+    overview->callback([=]() {
+        if (*format != "table" && *format != "json" && *format != "markdown") {
+            std::cerr << "Error: invalid --format value: " << *format << " (expected table|json|markdown)\n";
+            std::exit(1);
         }
 
-        if (!output->empty()) {
-            std::ofstream out(*output, std::ios::out | std::ios::binary | std::ios::trunc);
-            out << rendered;
-        } else {
-            std::cout << rendered << '\n';
+        auto root = repoRoot->empty() ? std::filesystem::current_path() : std::filesystem::path(*repoRoot);
+        root = std::filesystem::absolute(root).lexically_normal();
+        if (!target->empty()) {
+            try {
+                root = ResolveRepoFromSpec(root, *target, *maxDepth, true);
+            } catch (const std::exception& ex) {
+                std::cerr << "Error: " << ex.what() << "\n";
+                std::exit(1);
+            }
+        }
+
+        try {
+            auto repos = LoadCachedWorkspaceReposOrThrow(root);
+            NormalizeCachedRootRepoNames(&repos);
+            const auto rows = BuildCachedRepoViews(repos, root);
+            renderRows(rows);
+        } catch (const std::exception& ex) {
+            std::cerr << "Error: " << ex.what() << "\n";
+            std::exit(1);
         }
     });
 }

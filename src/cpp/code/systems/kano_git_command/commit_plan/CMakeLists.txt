@@ -4,7 +4,6 @@ target_sources(kano_git_cmd_commit_plan
   PRIVATE
     private/commit_cmd.cpp
     private/commit_push_cmd.cpp
-    private/dirty_cmd.cpp
     private/doctor_cmd.cpp
     private/plan_cmd.cpp
     private/resolve_cmd.cpp
