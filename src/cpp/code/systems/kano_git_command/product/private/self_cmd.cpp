@@ -6,13 +6,20 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cstdint>
+#include <cstdlib>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <format>
+#include <iomanip>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 #if defined(_WIN32)
@@ -186,6 +193,18 @@ auto ResolveBinaryCommand() -> std::string {
 
 auto ReadTextFileTrimmed(const std::filesystem::path& InPath) -> std::string;
 
+struct GitHubReleaseInfo {
+    std::string tagName;
+    std::string htmlUrl;
+};
+
+struct ParsedVersion {
+    int major{0};
+    int minor{0};
+    int patch{0};
+    std::vector<std::string> prereleaseParts;
+};
+
 auto ResolveInstallStatePath() -> std::filesystem::path {
     if (const char* state = std::getenv("KANO_GIT_INSTALL_STATE_FILE"); state != nullptr && std::string(state).size() > 0) {
         return std::filesystem::path(state).lexically_normal();
@@ -222,6 +241,289 @@ auto IsPackagedInstall(const std::filesystem::path& InRepoRoot) -> bool {
 auto ReadVersionFile(const std::filesystem::path& InRepoRoot) -> std::string {
   const auto versionPath = InRepoRoot / "VERSION";
   return ReadTextFileTrimmed(versionPath);
+}
+
+auto ReadPackagedVersionFile(const std::filesystem::path& InRepoRoot) -> std::string {
+    const auto versionPath = (InRepoRoot / "scripts" / "package-version.txt").lexically_normal();
+    return ReadTextFileTrimmed(versionPath);
+}
+
+auto ParseJsonStringField(const std::string& InJson, const std::string& InField) -> std::string {
+    const auto key = std::format("\"{}\"", InField);
+    const auto pos = InJson.find(key);
+    if (pos == std::string::npos) {
+        return {};
+    }
+    const auto colonPos = InJson.find(':', pos + key.size());
+    if (colonPos == std::string::npos) {
+        return {};
+    }
+    const auto firstQuote = InJson.find('"', colonPos + 1);
+    if (firstQuote == std::string::npos) {
+        return {};
+    }
+
+    std::string value;
+    value.reserve(64);
+    bool escaped = false;
+    for (std::size_t index = firstQuote + 1; index < InJson.size(); ++index) {
+        const char ch = InJson[index];
+        if (escaped) {
+            switch (ch) {
+            case 'n': value.push_back('\n'); break;
+            case 'r': value.push_back('\r'); break;
+            case 't': value.push_back('\t'); break;
+            case '\\': value.push_back('\\'); break;
+            case '"': value.push_back('"'); break;
+            default: value.push_back(ch); break;
+            }
+            escaped = false;
+            continue;
+        }
+        if (ch == '\\') {
+            escaped = true;
+            continue;
+        }
+        if (ch == '"') {
+            return value;
+        }
+        value.push_back(ch);
+    }
+    return {};
+}
+
+auto ParseMarkerField(const std::filesystem::path& InMarkerPath, const std::string& InField) -> std::string {
+    std::ifstream in(InMarkerPath, std::ios::in | std::ios::binary);
+    if (!in) {
+        return {};
+    }
+    std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    return ParseJsonStringField(content, InField);
+}
+
+auto NormalizeVersionTag(std::string InValue) -> std::string {
+    auto value = Trim(std::move(InValue));
+    if (!value.empty() && (value.front() == 'v' || value.front() == 'V')) {
+        value.erase(value.begin());
+    }
+    const auto plusPos = value.find('+');
+    if (plusPos != std::string::npos) {
+        value.erase(plusPos);
+    }
+    return value;
+}
+
+auto SplitString(const std::string& InValue, char InDelimiter) -> std::vector<std::string> {
+    std::vector<std::string> parts;
+    std::stringstream ss(InValue);
+    std::string token;
+    while (std::getline(ss, token, InDelimiter)) {
+        parts.push_back(token);
+    }
+    return parts;
+}
+
+auto IsAsciiDigits(const std::string& InValue) -> bool {
+    return !InValue.empty() && std::all_of(InValue.begin(), InValue.end(), [](unsigned char ch) { return std::isdigit(ch) != 0; });
+}
+
+auto TryParseVersion(const std::string& InValue) -> std::optional<ParsedVersion> {
+    const auto normalized = NormalizeVersionTag(InValue);
+    if (normalized.empty()) {
+        return std::nullopt;
+    }
+
+    ParsedVersion parsed;
+    auto core = normalized;
+    const auto dashPos = normalized.find('-');
+    if (dashPos != std::string::npos) {
+        core = normalized.substr(0, dashPos);
+        parsed.prereleaseParts = SplitString(normalized.substr(dashPos + 1), '.');
+    }
+
+    const auto coreParts = SplitString(core, '.');
+    if (coreParts.size() != 3) {
+        return std::nullopt;
+    }
+    if (!IsAsciiDigits(coreParts[0]) || !IsAsciiDigits(coreParts[1]) || !IsAsciiDigits(coreParts[2])) {
+        return std::nullopt;
+    }
+
+    try {
+        parsed.major = std::stoi(coreParts[0]);
+        parsed.minor = std::stoi(coreParts[1]);
+        parsed.patch = std::stoi(coreParts[2]);
+    } catch (...) {
+        return std::nullopt;
+    }
+
+    return parsed;
+}
+
+auto ComparePrereleaseParts(const std::vector<std::string>& InLeft, const std::vector<std::string>& InRight) -> int {
+    if (InLeft.empty() && InRight.empty()) {
+        return 0;
+    }
+    if (InLeft.empty()) {
+        return 1;
+    }
+    if (InRight.empty()) {
+        return -1;
+    }
+
+    const auto count = std::max(InLeft.size(), InRight.size());
+    for (std::size_t index = 0; index < count; ++index) {
+        if (index >= InLeft.size()) {
+            return -1;
+        }
+        if (index >= InRight.size()) {
+            return 1;
+        }
+        const auto& left = InLeft[index];
+        const auto& right = InRight[index];
+        const bool leftNumeric = IsAsciiDigits(left);
+        const bool rightNumeric = IsAsciiDigits(right);
+        if (leftNumeric && rightNumeric) {
+            const auto leftValue = std::stoll(left);
+            const auto rightValue = std::stoll(right);
+            if (leftValue < rightValue) {
+                return -1;
+            }
+            if (leftValue > rightValue) {
+                return 1;
+            }
+            continue;
+        }
+        if (leftNumeric != rightNumeric) {
+            return leftNumeric ? -1 : 1;
+        }
+        if (left < right) {
+            return -1;
+        }
+        if (left > right) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+auto CompareParsedVersions(const ParsedVersion& InLeft, const ParsedVersion& InRight) -> int {
+    if (InLeft.major != InRight.major) {
+        return InLeft.major < InRight.major ? -1 : 1;
+    }
+    if (InLeft.minor != InRight.minor) {
+        return InLeft.minor < InRight.minor ? -1 : 1;
+    }
+    if (InLeft.patch != InRight.patch) {
+        return InLeft.patch < InRight.patch ? -1 : 1;
+    }
+    return ComparePrereleaseParts(InLeft.prereleaseParts, InRight.prereleaseParts);
+}
+
+auto CompareVersionStrings(const std::string& InLeft, const std::string& InRight) -> std::optional<int> {
+    const auto left = TryParseVersion(InLeft);
+    const auto right = TryParseVersion(InRight);
+    if (!left.has_value() || !right.has_value()) {
+        return std::nullopt;
+    }
+    return CompareParsedVersions(*left, *right);
+}
+
+auto ReadInstalledVersion(const std::filesystem::path& InRepoRoot) -> std::string {
+    auto version = ReadPackagedVersionFile(InRepoRoot);
+    if (!version.empty()) {
+        return version;
+    }
+    version = ReadVersionFile(InRepoRoot);
+    if (!version.empty()) {
+        return version;
+    }
+    return ParseMarkerField(ResolveInstallStatePath(), "version");
+}
+
+void PrintPackageUpdateSummary(const std::string& InCurrentVersion,
+                               const std::string& InLatestVersion,
+                               const std::string& InStatus,
+                               const std::string& InGuidance) {
+    std::cout << std::format("Current: {}\n", InCurrentVersion.empty() ? "unknown" : InCurrentVersion);
+    std::cout << std::format("Latest: {}\n", InLatestVersion.empty() ? "unknown" : InLatestVersion);
+    std::cout << std::format("Status: {}\n", InStatus.empty() ? "unknown" : InStatus);
+    std::cout << std::format("Guidance: {}\n", InGuidance.empty() ? "Check the package channel for updates." : InGuidance);
+}
+
+auto DeterminePackageUpdateStatus(const std::string& InCurrentVersion,
+                                  const std::string& InLatestVersion) -> std::pair<std::string, std::string> {
+    if (InCurrentVersion.empty() || InLatestVersion.empty()) {
+        return {"unable-to-check", "Version metadata is incomplete; inspect the published package channel manually."};
+    }
+
+    if (const auto comparison = CompareVersionStrings(InCurrentVersion, InLatestVersion); comparison.has_value()) {
+        if (*comparison < 0) {
+            return {"update-available", {}};
+        }
+        if (*comparison == 0) {
+            return {"up-to-date", "No action needed."};
+        }
+        return {"ahead-of-stable", "Installed version is newer than the published stable release."};
+    }
+
+    if (InCurrentVersion == InLatestVersion) {
+        return {"up-to-date", "No action needed."};
+    }
+
+    return {"unable-to-compare", "Version formats differ; inspect the published package channel manually."};
+}
+
+auto DefaultPackageReleaseRepo() -> std::string {
+    if (const char* env = std::getenv("KANO_GIT_PACKAGE_RELEASE_REPO"); env != nullptr && std::string(env).size() > 0) {
+        return Trim(env);
+    }
+    return "kanohorizonia/kano-git-master-skill";
+}
+
+auto BuildGitHubApiCommand(const std::string& InRepo) -> std::string {
+    const auto apiUrl = std::format("https://api.github.com/repos/{}/releases/latest", InRepo);
+#if defined(_WIN32)
+    return std::format(
+        "$ProgressPreference='SilentlyContinue'; "
+        "$resp=Invoke-RestMethod -Headers @{{'Accept'='application/vnd.github+json';'X-GitHub-Api-Version'='2022-11-28'}} -Uri '{}' -Method Get; "
+        "$resp | ConvertTo-Json -Depth 16 -Compress",
+        apiUrl);
+#else
+    return std::format(
+        "curl -fsSL -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' '{}'",
+        apiUrl);
+#endif
+}
+
+auto TryFetchLatestGitHubRelease(const std::string& InRepo, const std::filesystem::path& InWorkdir) -> std::optional<GitHubReleaseInfo> {
+    if (InRepo.empty()) {
+        return std::nullopt;
+    }
+
+    shell::ExecResult result;
+#if defined(_WIN32)
+    result = shell::ExecuteCommand("powershell", {"-NoProfile", "-NonInteractive", "-Command", BuildGitHubApiCommand(InRepo)}, shell::ExecMode::Capture, InWorkdir);
+    if (result.exitCode != 0) {
+        result = shell::ExecuteCommand("gh", {"api", std::format("repos/{}/releases/latest", InRepo)}, shell::ExecMode::Capture, InWorkdir);
+    }
+#else
+    result = ExecuteBashLc(BuildGitHubApiCommand(InRepo), shell::ExecMode::Capture, InWorkdir);
+    if (result.exitCode != 0) {
+        result = shell::ExecuteCommand("gh", {"api", std::format("repos/{}/releases/latest", InRepo)}, shell::ExecMode::Capture, InWorkdir);
+    }
+#endif
+    if (result.exitCode != 0) {
+        return std::nullopt;
+    }
+
+    GitHubReleaseInfo info;
+    info.tagName = ParseJsonStringField(result.stdoutStr, "tag_name");
+    info.htmlUrl = ParseJsonStringField(result.stdoutStr, "html_url");
+    if (info.tagName.empty()) {
+        return std::nullopt;
+    }
+    return info;
 }
 
 auto FindKogLocation() -> std::string {
@@ -409,44 +711,64 @@ auto RunPackageUpdateCheck(const std::filesystem::path& InRepoRoot,
     }
     TouchStampFile(stampFile);
 
+    const auto installedVersion = NormalizeVersionTag(ReadInstalledVersion(InRepoRoot));
+    const auto releaseRepo = DefaultPackageReleaseRepo();
+    if (const auto release = TryFetchLatestGitHubRelease(releaseRepo, InRepoRoot); release.has_value()) {
+        const auto latestVersion = NormalizeVersionTag(release->tagName);
+        const auto currentVersion = installedVersion;
+        auto [status, comparisonGuidance] = DeterminePackageUpdateStatus(currentVersion, latestVersion);
+        std::string guidance = release->htmlUrl.empty()
+            ? std::format("Check GitHub Releases for {} manually.", releaseRepo)
+            : std::format("Download the latest release from {}", release->htmlUrl);
+        if (status == "up-to-date") {
+            guidance = "No action needed.";
+        } else if (status == "ahead-of-stable") {
+            guidance = "Installed version is newer than the published stable release.";
+        } else if (!comparisonGuidance.empty()) {
+            guidance = comparisonGuidance;
+        }
+
+        PrintPackageUpdateSummary(currentVersion, latestVersion, status, guidance);
+
+        if (InAutoUpdate) {
+            std::cout << "Note: packaged installs do not auto-update in place; use the published package channel instead.\n";
+        }
+        return 0;
+    }
+
     const auto checkCmd = Trim(InCheckCmd);
-    if (checkCmd.empty()) {
-        return 0;
+    if (!checkCmd.empty()) {
+        const auto check = ExecuteBashLc(checkCmd, shell::ExecMode::Capture, InRepoRoot);
+        if (check.exitCode == 0) {
+            const auto latestVersion = NormalizeVersionTag(Trim(check.stdoutStr));
+            auto [status, guidance] = DeterminePackageUpdateStatus(installedVersion, latestVersion);
+            if (status == "update-available") {
+                guidance = "A newer package version is available from the configured package channel.";
+            } else if (status == "up-to-date") {
+                guidance = "No action needed.";
+            } else if (status == "ahead-of-stable") {
+                guidance = "Installed version is newer than the configured package channel result.";
+            }
+            PrintPackageUpdateSummary(installedVersion, latestVersion, status, guidance);
+            if (InAutoUpdate) {
+                std::cout << "Note: packaged installs do not auto-update in place; use the published package channel instead.\n";
+            }
+            return 0;
+        }
     }
 
-    const auto check = ExecuteBashLc(checkCmd, shell::ExecMode::Capture, InRepoRoot);
-    if (check.exitCode != 0) {
-        return 0;
+    PrintPackageUpdateSummary(
+        installedVersion,
+        {},
+        "unable-to-check",
+        std::format("Unable to query GitHub Releases for {}; check the repository releases page manually.", releaseRepo));
+    if (InAutoUpdate) {
+        std::cout << "Note: packaged installs do not auto-update in place; use the published package channel instead.\n";
     }
-    const auto latestVersion = Trim(check.stdoutStr);
-    if (latestVersion.empty()) {
-        return 0;
+    if (!Trim(InUpdateCmd).empty()) {
+        std::cout << "Note: package update commands are advisory only in packaged mode; no in-place mutation was performed.\n";
     }
-
-    const auto currentVersion = ReadTextFileTrimmed((InRepoRoot / "VERSION").lexically_normal());
-    if (!currentVersion.empty() && latestVersion == currentVersion) {
-        return 0;
-    }
-
-    bool shouldUpdate = InAutoUpdate;
-    if (!shouldUpdate && !InNonInteractive && IsInteractiveTerminal()) {
-        shouldUpdate = PromptYesNo(
-            std::format("[launcher] New package version available ({} -> {}). Update now?",
-                        currentVersion.empty() ? "unknown" : currentVersion,
-                        latestVersion));
-    }
-    if (!shouldUpdate) {
-        return 0;
-    }
-
-    const auto updateCmd = Trim(InUpdateCmd);
-    if (updateCmd.empty()) {
-        std::cerr << "[launcher] Set KANO_GIT_PACKAGE_UPDATE_CMD to enable one-click package updates.\n";
-        return 0;
-    }
-
-    const auto update = ExecuteBashLc(updateCmd, shell::ExecMode::PassThrough, InRepoRoot);
-    return update.exitCode;
+    return 0;
 }
 
 auto IsUpdateSkipCommand(const std::string& InCommand) -> bool {

@@ -194,7 +194,6 @@ auto ResolveConfigSearchPaths(const std::filesystem::path& InWorkspaceRoot,
 
     if (!InSkillRoot.empty()) {
         tryAdd(InSkillRoot / ".kano" / "kog_config.toml");
-        tryAdd(InSkillRoot / "assets" / "kog_config.toml");
     }
     const auto home = HomeDirectory();
     if (!home.empty()) {

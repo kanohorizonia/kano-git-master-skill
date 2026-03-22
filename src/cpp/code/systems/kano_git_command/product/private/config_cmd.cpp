@@ -26,8 +26,29 @@ auto ResolveSkillRoot(const std::filesystem::path& InWorkspaceRoot) -> std::file
         return workspaceRoot;
     }
 
-    return (std::filesystem::path(std::getenv("USERPROFILE") != nullptr ? std::getenv("USERPROFILE") : "~")
-        / ".agents" / "skills" / "kano" / "kano-git-master-skill").lexically_normal();
+    auto tryHomeCandidate = [&](const char* baseRaw) -> std::filesystem::path {
+        if (baseRaw == nullptr || *baseRaw == '\0') {
+            return {};
+        }
+        const auto candidate = (std::filesystem::path(baseRaw)
+            / ".agents" / "skills" / "kano" / "kano-git-master-skill").lexically_normal();
+        const auto skillMarker = (candidate / "SKILL.md").lexically_normal();
+        std::error_code candidateEc;
+        if (std::filesystem::exists(skillMarker, candidateEc) && !candidateEc
+            && std::filesystem::is_regular_file(skillMarker, candidateEc)) {
+            return candidate;
+        }
+        return {};
+    };
+
+    if (const auto candidate = tryHomeCandidate(std::getenv("USERPROFILE")); !candidate.empty()) {
+        return candidate;
+    }
+    if (const auto candidate = tryHomeCandidate(std::getenv("HOME")); !candidate.empty()) {
+        return candidate;
+    }
+
+    return {};
 }
 
 auto ResolveTargetConfigPath(const std::filesystem::path& InWorkspaceRoot,

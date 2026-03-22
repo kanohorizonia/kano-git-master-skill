@@ -1475,6 +1475,29 @@ auto ResolveSkillRoot(const std::filesystem::path& InWorkspaceRoot) -> std::file
         return workspaceRoot;
     }
 
+    auto tryHomeCandidate = [&](const char* baseRaw) -> std::filesystem::path {
+        if (baseRaw == nullptr || *baseRaw == '\0') {
+            return {};
+        }
+        const auto candidate = Normalize(std::filesystem::path(baseRaw)
+            / ".agents" / "skills" / "kano" / "kano-git-master-skill");
+        const auto skillMarker = (candidate / "SKILL.md").lexically_normal();
+        std::error_code candidateEc;
+        if (std::filesystem::exists(skillMarker, candidateEc) && !candidateEc
+            && std::filesystem::is_regular_file(skillMarker, candidateEc)) {
+            return candidate;
+        }
+        return {};
+    };
+
+    if (const auto candidate = tryHomeCandidate(std::getenv("USERPROFILE")); !candidate.empty()) {
+        return candidate;
+    }
+
+    if (const auto candidate = tryHomeCandidate(std::getenv("HOME")); !candidate.empty()) {
+        return candidate;
+    }
+
     return {};
 }
 
