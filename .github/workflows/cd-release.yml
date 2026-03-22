@@ -74,6 +74,11 @@ jobs:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name || github.ref }}
           submodules: recursive
 
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -120,11 +125,6 @@ jobs:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name || github.ref }}
           submodules: recursive
 
-      - name: Setup .NET SDK
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: "8.0.x"
-
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -135,8 +135,8 @@ jobs:
         run: ./src/cpp/build/script/windows/build_windows_ninja_msvc_release.sh
 
       - name: Build MSI package
-        shell: pwsh
-        run: ./src/wix/build.ps1 -OutputDir ./src/wix/out
+        shell: bash
+        run: ./src/wix/scripts/build.sh
 
       - name: Upload MSI release asset
         uses: actions/upload-artifact@v4

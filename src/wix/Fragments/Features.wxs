@@ -1,4 +1,7 @@
 <Include xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <?ifndef HasAssets ?>
+  <?define HasAssets = 0 ?>
+  <?endif?>
   <Fragment>
     <Feature
       Id="CoreFiles"
@@ -8,7 +11,9 @@
       AllowAbsent="no"
       AllowAdvertise="no">
       <ComponentGroupRef Id="CoreFilesComponents" />
+      <?if $(var.HasAssets) = 1 ?>
       <ComponentGroupRef Id="CoreAssetsComponents" />
+      <?endif?>
       <ComponentGroupRef Id="CoreScriptsComponents" />
       <ComponentGroupRef Id="CoreBinComponents" />
     </Feature>

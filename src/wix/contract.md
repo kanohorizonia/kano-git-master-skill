@@ -175,3 +175,55 @@ All `CoreFiles` components install under `KanoSkillRoot`.
 * PATH updates that reference the launcher under `KanoSkillRoot`.
 
 No component is allowed to install outside the per user profile tree.
+
+Build pipeline
+--------------
+
+The MSI packaging entrypoint is `src/wix/scripts/build.sh`.
+
+Additional explicit entrypoints are also provided:
+
+- `src/wix/scripts/build.sh` — normal MSI build
+- `src/wix/scripts/rebuild.sh` — remove previous output and rebuild MSI from scratch
+- `src/wix/scripts/stage-only.sh` — prepare staged payload only for inspection/debugging
+- `src/wix/scripts/inspect-payload.sh` — stage payload and print the staged tree for inspection/debugging
+
+It follows the WiX v6 CLI flow:
+
+1. stage payload into `src/wix/out/payload`
+2. run `wix extension add` as needed for required extensions
+3. run `wix build` with `Product.wxs` plus bind-time variables such as `PayloadRoot`
+
+This repo intentionally targets the modern WiX CLI instead of the deprecated
+WiX v3 `heat.exe` / `candle.exe` / `light.exe` toolchain.
+
+The current package authoring uses built-in file harvesting via WiX v4+/v6
+authoring (`<Files ... />`) rooted at the staged `PayloadRoot`.
+
+Packaged vs developer script behavior
+------------------------------------
+
+The packaged MSI payload must not ship the developer checkout `scripts/`
+directory literally.
+
+Instead, `src/wix/scripts/build.sh` stages a packaged-specific `scripts/`
+payload with this contract:
+
+* packaged `kano-git` / `kog` remain runtime launchers for the installed
+  native binary
+* packaged `self build` and `self rebuild` are explicitly unsupported
+* packaged `self sync` and `self maybe-auto-update` are explicitly unsupported
+* packaged `self update` is guidance-only and must not mutate the MSI-owned
+  install tree
+* packaged `self update-check` may query release metadata through native
+  packaged-aware commands, but should first report installed version,
+  install root, distribution channel, and package-manager context
+* packaged payload includes metadata that marks the install as packaged,
+  including current version and distribution channel
+
+Developer-checkout behavior (git sync, self build, self rebuild, git-based
+manual self update) remains owned by the repo checkout scripts and is not a
+contract of the MSI payload.
+
+CI/release environments that build the MSI must provide WiX v6 CLI support,
+either from an installed `wix.exe` or from the .NET tool bootstrap path.

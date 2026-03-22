@@ -120,9 +120,14 @@ jobs:
         shell: bash
         run: ./src/cpp/build/script/windows/build_windows_ninja_msvc_release.sh
 
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
       - name: Build MSI package
-        shell: pwsh
-        run: ./src/wix/build.ps1 -OutputDir ./src/wix/out
+        shell: bash
+        run: ./src/wix/scripts/build.sh
 
       - name: Upload MSI artifact
         uses: actions/upload-artifact@v4

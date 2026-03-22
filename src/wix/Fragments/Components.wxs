@@ -1,4 +1,7 @@
 <Include xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <?ifndef HasAssets ?>
+  <?define HasAssets = 0 ?>
+  <?endif?>
   <Fragment>
     <ComponentGroup Id="CoreFilesComponents" Directory="KanoSkillRoot" Source="$(var.PayloadRoot)">
       <Component Id="CreateKanoSkillRootComponent" Guid="*">
@@ -18,11 +21,13 @@
       <Files Include="SKILL.md" />
     </ComponentGroup>
 
+    <?if $(var.HasAssets) = 1 ?>
     <ComponentGroup Id="CoreAssetsComponents" Directory="KanoAssetsDir" Source="$(var.PayloadRoot)\assets">
       <Files Include="**">
         <Exclude Files="ignore-sources\upstream\**" />
       </Files>
     </ComponentGroup>
+    <?endif?>
 
     <ComponentGroup Id="CoreScriptsComponents" Directory="KanoScriptsDir" Source="$(var.PayloadRoot)\scripts">
       <Files Include="**" />

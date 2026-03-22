@@ -87,7 +87,8 @@ source <(kano-git completion git-bash)
 
 ### Launcher mode (developer vs installed package)
 
-- Default behavior (no marker): launcher assumes **developer mode** and auto-runs prerequisite + build scripts when C++ binary is missing.
+- Default behavior (no marker): launcher assumes **developer mode**.
+- In manual developer runs, strict native-only mode is enforced: if the C++ binary is missing, the launcher tells you to run `./kog self build` (or `./kog self rebuild`) instead of auto-building implicitly.
 - Installed-package behavior: if marker file exists, launcher assumes **packaged install mode** and will **not** auto-build.
 - Marker path:
   - default: `.kano-installed-marker` at repo root
@@ -115,9 +116,8 @@ source <(kano-git completion git-bash)
   - `KANO_GIT_AUTO_UPDATE_CHECK=0` disables launcher update checks
 
 - Rebuild trigger (developer mode):
-  - launcher auto-rebuilds native binary when it detects stale build signals, including
-    - embedded `hash_short` differs from current Git `HEAD` short hash
-    - `VERSION`/`src/cpp/CMakeLists.txt`/`src/cpp/CMakePresets.json` newer than binary
+  - use `./kog self build` for an incremental rebuild
+  - use `./kog self rebuild` for a clean rebuild
 
 ## Command Tree
 
@@ -207,11 +207,11 @@ src/
 ├── cpp/
 │   ├── CMakeLists.txt          # Build configuration (C++20 modules)
 │   ├── CMakePresets.json       # Multi-config presets (Debug/Release)
-│   ├── vcpkg.json              # Dependencies (CLI11)
+│   ├── vcpkg.json              # Native package dependencies
 │   ├── build/script/           # Host/preset build wrappers
 │   ├── code/systems/kano_git_core/  # Core static library
 │   ├── code/apps/kano_git_cli/      # CLI executable
-│   ├── code/thirdparty/cli11/       # Vendored CLI11 source
+│   ├── code/thirdparty/             # Only for intentionally customized/forked deps
 │   ├── build/bin/              # Final executables by preset/config
 │   ├── build/lib/              # Libraries by preset/config
 │   └── build/_intermediate/    # CMake/Ninja/MSBuild intermediates
@@ -224,3 +224,9 @@ scripts/                        # Bash launchers
 ├── kano-git / kano-git.bat
 └── kog / kog.bat
 ```
+
+### Third-party dependency policy
+
+- Ordinary upstream C++ libraries should be fetched through CMake `FetchContent` and live under the build `_deps` area.
+- `src/cpp/code/thirdparty/` is reserved for dependencies we intentionally fork or customize in-repo.
+- `CLI11`, `FTXUI`, `Catch2`, and `tomlplusplus` all follow the fetch-first model unless a future Kano-specific fork requires a vendored submodule path.

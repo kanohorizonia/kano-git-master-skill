@@ -1,10 +1,5 @@
 <Include xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Fragment>
-    <!--
-      Git for Windows publishes a stable registry key for third-party installer discovery.
-      Prerequisite checks stay declarative via registry and file searches.
-      Developer-checkout conflict detection is anchored to repo markers at the fixed skill root.
-    -->
     <Property Id="KANO_GFW_INSTALLPATH_HKCU" Secure="yes">
       <RegistrySearch Id="KanoGitForWindowsInstallPathCurrentUserSearch" Root="HKCU" Key="Software\GitForWindows" Name="InstallPath" Type="raw" />
     </Property>
@@ -15,6 +10,16 @@
       <RegistrySearch Id="KanoGitForWindowsInstallPathWow6432Search" Root="HKLM" Key="Software\WOW6432Node\GitForWindows" Name="InstallPath" Type="raw" />
     </Property>
 
+    <Property Id="KANO_GFW_INSTALLLOCATION_UNINSTALL_HKCU" Secure="yes">
+      <RegistrySearch Id="KanoGitForWindowsUninstallInstallLocationCurrentUserSearch" Root="HKCU" Key="Software\Microsoft\Windows\CurrentVersion\Uninstall\Git_is1" Name="InstallLocation" Type="raw" />
+    </Property>
+    <Property Id="KANO_GFW_INSTALLLOCATION_UNINSTALL_HKLM" Secure="yes">
+      <RegistrySearch Id="KanoGitForWindowsUninstallInstallLocationMachineSearch" Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\Uninstall\Git_is1" Name="InstallLocation" Type="raw" />
+    </Property>
+    <Property Id="KANO_GFW_INSTALLLOCATION_UNINSTALL_HKLM32" Secure="yes">
+      <RegistrySearch Id="KanoGitForWindowsUninstallInstallLocationWow6432Search" Root="HKLM" Key="Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Git_is1" Name="InstallLocation" Type="raw" />
+    </Property>
+
     <Property Id="KANO_GFW_CURRENTVERSION_HKCU" Secure="yes">
       <RegistrySearch Id="KanoGitForWindowsCurrentVersionCurrentUserSearch" Root="HKCU" Key="Software\GitForWindows" Name="CurrentVersion" Type="raw" />
     </Property>
@@ -23,6 +28,64 @@
     </Property>
     <Property Id="KANO_GFW_CURRENTVERSION_HKLM32" Secure="yes">
       <RegistrySearch Id="KanoGitForWindowsCurrentVersionWow6432Search" Root="HKLM" Key="Software\WOW6432Node\GitForWindows" Name="CurrentVersion" Type="raw" />
+    </Property>
+
+    <Property Id="KANO_GFW_VERSION_UNINSTALL_HKCU" Secure="yes">
+      <RegistrySearch Id="KanoGitForWindowsUninstallDisplayVersionCurrentUserSearch" Root="HKCU" Key="Software\Microsoft\Windows\CurrentVersion\Uninstall\Git_is1" Name="DisplayVersion" Type="raw" />
+    </Property>
+    <Property Id="KANO_GFW_VERSION_UNINSTALL_HKLM" Secure="yes">
+      <RegistrySearch Id="KanoGitForWindowsUninstallDisplayVersionMachineSearch" Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\Uninstall\Git_is1" Name="DisplayVersion" Type="raw" />
+    </Property>
+    <Property Id="KANO_GFW_VERSION_UNINSTALL_HKLM32" Secure="yes">
+      <RegistrySearch Id="KanoGitForWindowsUninstallDisplayVersionWow6432Search" Root="HKLM" Key="Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Git_is1" Name="DisplayVersion" Type="raw" />
+    </Property>
+
+    <Property Id="KANO_GIT_EXE_DEFAULT_PROGRAMFILES64" Secure="yes">
+      <DirectorySearch Id="KanoGitDefaultProgramFiles64Search" Path="[ProgramFiles64Folder]Git\cmd" Depth="0">
+        <FileSearch Id="KanoGitExeDefaultProgramFiles64Search" Name="git.exe" />
+      </DirectorySearch>
+    </Property>
+    <Property Id="KANO_GIT_EXE_DEFAULT_PROGRAMFILES" Secure="yes">
+      <DirectorySearch Id="KanoGitDefaultProgramFilesSearch" Path="[ProgramFilesFolder]Git\cmd" Depth="0">
+        <FileSearch Id="KanoGitExeDefaultProgramFilesSearch" Name="git.exe" />
+      </DirectorySearch>
+    </Property>
+    <Property Id="KANO_GIT_EXE_DEFAULT_LOCALAPPDATA" Secure="yes">
+      <DirectorySearch Id="KanoGitDefaultLocalAppDataSearch" Path="[LocalAppDataFolder]Programs\Git\cmd" Depth="0">
+        <FileSearch Id="KanoGitExeDefaultLocalAppDataSearch" Name="git.exe" />
+      </DirectorySearch>
+    </Property>
+
+    <Property Id="KANO_BASH_EXE_DEFAULT_PROGRAMFILES64" Secure="yes">
+      <DirectorySearch Id="KanoBashDefaultProgramFiles64Search" Path="[ProgramFiles64Folder]Git\usr\bin" Depth="0">
+        <FileSearch Id="KanoBashExeDefaultProgramFiles64Search" Name="bash.exe" />
+      </DirectorySearch>
+    </Property>
+    <Property Id="KANO_BASH_EXE_DEFAULT_PROGRAMFILES" Secure="yes">
+      <DirectorySearch Id="KanoBashDefaultProgramFilesSearch" Path="[ProgramFilesFolder]Git\usr\bin" Depth="0">
+        <FileSearch Id="KanoBashExeDefaultProgramFilesSearch" Name="bash.exe" />
+      </DirectorySearch>
+    </Property>
+    <Property Id="KANO_BASH_EXE_DEFAULT_LOCALAPPDATA" Secure="yes">
+      <DirectorySearch Id="KanoBashDefaultLocalAppDataSearch" Path="[LocalAppDataFolder]Programs\Git\usr\bin" Depth="0">
+        <FileSearch Id="KanoBashExeDefaultLocalAppDataSearch" Name="bash.exe" />
+      </DirectorySearch>
+    </Property>
+
+    <Property Id="KANO_GIT_EXE_MIN244_DEFAULT_PROGRAMFILES64" Secure="yes">
+      <DirectorySearch Id="KanoGitExeMin244DefaultProgramFiles64Search" Path="[ProgramFiles64Folder]Git\cmd" Depth="0">
+        <FileSearch Id="KanoGitExeMin244DefaultProgramFiles64FileSearch" Name="git.exe" MinVersion="2.44.0.0" />
+      </DirectorySearch>
+    </Property>
+    <Property Id="KANO_GIT_EXE_MIN244_DEFAULT_PROGRAMFILES" Secure="yes">
+      <DirectorySearch Id="KanoGitExeMin244DefaultProgramFilesSearch" Path="[ProgramFilesFolder]Git\cmd" Depth="0">
+        <FileSearch Id="KanoGitExeMin244DefaultProgramFilesFileSearch" Name="git.exe" MinVersion="2.44.0.0" />
+      </DirectorySearch>
+    </Property>
+    <Property Id="KANO_GIT_EXE_MIN244_DEFAULT_LOCALAPPDATA" Secure="yes">
+      <DirectorySearch Id="KanoGitExeMin244DefaultLocalAppDataSearch" Path="[LocalAppDataFolder]Programs\Git\cmd" Depth="0">
+        <FileSearch Id="KanoGitExeMin244DefaultLocalAppDataFileSearch" Name="git.exe" MinVersion="2.44.0.0" />
+      </DirectorySearch>
     </Property>
 
     <Property Id="KANO_GIT_EXE_CMD_HKCU" Secure="yes">
