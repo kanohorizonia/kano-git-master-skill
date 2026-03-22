@@ -169,8 +169,8 @@ void SetSkillRootEnvFromBinaryPath() {
 
     auto current = binaryPath.parent_path();
     for (int i = 0; i < 8 && !current.empty(); ++i) {
-        const auto marker = (current / ".kano").lexically_normal();
-        if (std::filesystem::exists(marker, ec) && !ec && std::filesystem::is_directory(marker, ec)) {
+        const auto skillMarker = (current / "SKILL.md").lexically_normal();
+        if (std::filesystem::exists(skillMarker, ec) && !ec && std::filesystem::is_regular_file(skillMarker, ec)) {
 #if defined(_WIN32)
             _putenv_s("KANO_GIT_SKILL_ROOT", current.lexically_normal().string().c_str());
 #else
