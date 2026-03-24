@@ -571,15 +571,19 @@ auto FindKogRepoRoot() -> std::string {
     return {};
   }
 
-  auto scriptsDir = scriptPath.parent_path();
-  auto repoRoot = scriptsDir.parent_path();
-
-  const auto gitDir = repoRoot / ".git";
-  if (!std::filesystem::exists(gitDir)) {
-    return {};
+  // Traverse up from binary location until we find .git or reach filesystem root
+  // Binary is typically at: .../src/cpp/out/bin/[platform]/release/kano-git.exe
+  // .git is at the skill root
+  auto current = scriptPath.parent_path();
+  while (!current.empty() && current != current.parent_path()) {
+    const auto gitDir = current / ".git";
+    if (std::filesystem::exists(gitDir)) {
+      return current.generic_string();
+    }
+    current = current.parent_path();
   }
 
-  return repoRoot.generic_string();
+  return {};
 }
 
 auto GenerateInstallMarkerJson(const std::filesystem::path& InRepoRoot, const std::filesystem::path& InBinaryPath) -> std::string {
