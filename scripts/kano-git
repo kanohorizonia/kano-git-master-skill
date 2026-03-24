@@ -933,7 +933,6 @@ find_bash() {
 }
 
 find_binary() {
-  echo "DEBUG: Entering find_binary" >&2
   local exe_name build_dir candidate preset resolved_path resolved_dir os_name arch
   os_name="$(platform_name)"
   arch="$(arch_name)"
@@ -1355,7 +1354,6 @@ main() {
   fi
 
   # Manual mode: no auto-rebuild/auto-prepare in execution path.
-  echo "DEBUG: Calling find_binary from main" >&2
   if binary="$(find_binary)"; then
     if [[ -n "$binary" && -f "$binary" ]]; then
       run_native_binary "$binary" "${exec_args[@]}"
