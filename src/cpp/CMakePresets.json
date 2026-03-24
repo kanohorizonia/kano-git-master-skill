@@ -170,6 +170,68 @@
             }
         },
         {
+            "name": "macos-ninja-clang-pgo-collect",
+            "displayName": "macOS Ninja Clang (PGO Collect)",
+            "description": "macOS Clang with PGO instrumentation - run tests to collect profile data",
+            "inherits": "macos-ninja-clang",
+            "binaryDir": "${sourceDir}/out/obj/macos-ninja-clang-pgo-collect",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "clang",
+                "CMAKE_CXX_COMPILER": "clang++",
+                "KOG_ENABLE_MODULES": "OFF",
+                "KOG_PGO_MODE": "collect",
+                "KOG_BUILD_TYPE": "Debug",
+                "KOG_PRESET_NAME": "macos-ninja-clang-pgo-collect"
+            }
+        },
+        {
+            "name": "macos-ninja-clang-pgo-use",
+            "displayName": "macOS Ninja Clang (PGO Use)",
+            "description": "macOS Clang with PGO optimization for CI production builds",
+            "inherits": "macos-ninja-clang",
+            "binaryDir": "${sourceDir}/out/obj/macos-ninja-clang-pgo-use",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "clang",
+                "CMAKE_CXX_COMPILER": "clang++",
+                "KOG_ENABLE_MODULES": "OFF",
+                "KOG_PGO_MODE": "use",
+                "KOG_BUILD_TYPE": "Release",
+                "KOG_PRESET_NAME": "macos-ninja-clang-pgo-use"
+            }
+        },
+        {
+            "name": "macos-ninja-clang-arm64-pgo-collect",
+            "displayName": "macOS Ninja Clang ARM64 (PGO Collect)",
+            "description": "macOS Clang ARM64 with PGO instrumentation - run tests to collect profile data",
+            "inherits": "macos-ninja-clang-arm64",
+            "binaryDir": "${sourceDir}/out/obj/macos-ninja-clang-arm64-pgo-collect",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "clang",
+                "CMAKE_CXX_COMPILER": "clang++",
+                "CMAKE_OSX_ARCHITECTURES": "arm64",
+                "KOG_ENABLE_MODULES": "OFF",
+                "KOG_PGO_MODE": "collect",
+                "KOG_BUILD_TYPE": "Debug",
+                "KOG_PRESET_NAME": "macos-ninja-clang-arm64-pgo-collect"
+            }
+        },
+        {
+            "name": "macos-ninja-clang-arm64-pgo-use",
+            "displayName": "macOS Ninja Clang ARM64 (PGO Use)",
+            "description": "macOS Clang ARM64 with PGO optimization for CI production builds",
+            "inherits": "macos-ninja-clang-arm64",
+            "binaryDir": "${sourceDir}/out/obj/macos-ninja-clang-arm64-pgo-use",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "clang",
+                "CMAKE_CXX_COMPILER": "clang++",
+                "CMAKE_OSX_ARCHITECTURES": "arm64",
+                "KOG_ENABLE_MODULES": "OFF",
+                "KOG_PGO_MODE": "use",
+                "KOG_BUILD_TYPE": "Release",
+                "KOG_PRESET_NAME": "macos-ninja-clang-arm64-pgo-use"
+            }
+        },
+        {
             "name": "linux-ninja-gcc-coverage",
             "displayName": "Linux Ninja GCC (Coverage)",
             "description": "Linux GCC with coverage instrumentation for collecting test coverage data",
@@ -397,6 +459,26 @@
         {
             "name": "macos-ninja-clang-arm64-release",
             "configurePreset": "macos-ninja-clang-arm64",
+            "configuration": "Release"
+        },
+        {
+            "name": "macos-ninja-clang-pgo-collect-debug",
+            "configurePreset": "macos-ninja-clang-pgo-collect",
+            "configuration": "Debug"
+        },
+        {
+            "name": "macos-ninja-clang-pgo-use-release",
+            "configurePreset": "macos-ninja-clang-pgo-use",
+            "configuration": "Release"
+        },
+        {
+            "name": "macos-ninja-clang-arm64-pgo-collect-debug",
+            "configurePreset": "macos-ninja-clang-arm64-pgo-collect",
+            "configuration": "Debug"
+        },
+        {
+            "name": "macos-ninja-clang-arm64-pgo-use-release",
+            "configurePreset": "macos-ninja-clang-arm64-pgo-use",
             "configuration": "Release"
         },
         {
