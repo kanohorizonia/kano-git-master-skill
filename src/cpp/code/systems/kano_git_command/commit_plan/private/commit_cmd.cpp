@@ -39,10 +39,7 @@ namespace {
 
 auto DisplayRepoLabel(const std::filesystem::path& InWorkspaceRoot, const std::filesystem::path& InRepo) -> std::string;
 auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<std::filesystem::path>;
-auto ReadFileText(const std::filesystem::path& InPath) -> std::optional<std::string>;
-auto ResolveSkillRoot(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path;
 auto HomeDirectory() -> std::filesystem::path;
-auto Fnv1a64Hex(const std::string& InText) -> std::string;
 auto RunCommitPreflight(const std::filesystem::path& InRepo) -> CommitPreflightReport;
 
 auto NormalizeInputPathForCurrentPlatform(std::string InPath) -> std::string {
@@ -83,13 +80,6 @@ auto NormalizeInputPathForCurrentPlatform(std::string InPath) -> std::string {
     return path;
 }
 
-auto ToLower(std::string InValue) -> std::string {
-    std::transform(InValue.begin(), InValue.end(), InValue.begin(), [](unsigned char c) {
-        return static_cast<char>(std::tolower(c));
-    });
-    return InValue;
-}
-
 auto NormalizeAiModelKeyword(const std::string& InValue) -> std::string {
     return kog_config::NormalizeAiModelSelection(InValue);
 }
@@ -114,40 +104,6 @@ auto WasOptionExplicitlyPassed(const std::string& InLongFlag) -> bool {
     }
 #endif
     return false;
-}
-
-auto ReplaceAll(std::string InText, const std::string& InFrom, const std::string& InTo) -> std::string {
-    if (InFrom.empty()) {
-        return InText;
-    }
-    std::size_t pos = 0;
-    while ((pos = InText.find(InFrom, pos)) != std::string::npos) {
-        InText.replace(pos, InFrom.size(), InTo);
-        pos += InTo.size();
-    }
-    return InText;
-}
-
-auto LoadPromptAssetText(const std::filesystem::path& InWorkspaceRoot,
-                         const char* InEnvVar,
-                         const std::filesystem::path& InRelativeAssetPath) -> std::optional<std::string> {
-    std::vector<std::filesystem::path> candidates;
-    if (InEnvVar != nullptr) {
-        if (const char* custom = std::getenv(InEnvVar); custom != nullptr && std::string(custom).size() > 0) {
-            candidates.emplace_back(std::filesystem::path(custom).lexically_normal());
-        }
-    }
-    candidates.emplace_back((InWorkspaceRoot / InRelativeAssetPath).lexically_normal());
-    candidates.emplace_back((ResolveSkillRoot(InWorkspaceRoot) / InRelativeAssetPath.filename()).lexically_normal());
-    candidates.emplace_back((ResolveSkillRoot(InWorkspaceRoot) / InRelativeAssetPath).lexically_normal());
-    for (const auto& candidate : candidates) {
-        if (std::error_code ec; std::filesystem::exists(candidate, ec) && !ec) {
-            if (const auto text = ReadFileText(candidate); text.has_value()) {
-                return *text;
-            }
-        }
-    }
-    return std::nullopt;
 }
 
 auto LoadOptionalCommitConventionSkillText(const std::filesystem::path& InWorkspaceRoot) -> std::optional<std::string> {
@@ -410,120 +366,6 @@ auto HasStandaloneCopilotCommand() -> bool {
     return HasCommand(CopilotStandaloneCommand(), {"--help"}) || HasCommand("copilot", {"--help"});
 }
 
-auto ExecuteStandaloneCopilot(const std::vector<std::string>& InArgs,
-                              std::optional<std::filesystem::path> InWorkingDir) -> shell::ExecResult {
-    return shell::ExecuteCommand(CopilotStandaloneCommand(), InArgs, shell::ExecMode::Capture, InWorkingDir);
-}
-
-auto CurrentUtcCompact() -> std::string {
-    const auto now = std::chrono::system_clock::now();
-    const auto tt = std::chrono::system_clock::to_time_t(now);
-    std::tm utc{};
-#if defined(_WIN32)
-    gmtime_s(&utc, &tt);
-#else
-    gmtime_r(&tt, &utc);
-#endif
-    char buffer[32] = {0};
-    std::strftime(buffer, sizeof(buffer), "%Y%m%dT%H%M%SZ", &utc);
-    return std::string(buffer);
-}
-
-auto WriteFileText(const std::filesystem::path& InPath, const std::string& InText, std::string* OutError = nullptr) -> bool {
-    std::error_code ec;
-    const auto parent = InPath.parent_path();
-    if (!parent.empty()) {
-        std::filesystem::create_directories(parent, ec);
-        if (ec) {
-            if (OutError != nullptr) {
-                *OutError = std::format("create_directories failed: {}", ec.message());
-            }
-            return false;
-        }
-    }
-
-    std::ofstream out(InPath, std::ios::out | std::ios::binary | std::ios::trunc);
-    if (!out) {
-        if (OutError != nullptr) {
-            *OutError = std::format("open failed: {}", InPath.generic_string());
-        }
-        return false;
-    }
-    out << InText;
-    if (!out.good()) {
-        if (OutError != nullptr) {
-            *OutError = std::format("write failed: {}", InPath.generic_string());
-        }
-        return false;
-    }
-    return true;
-}
-
-auto WritePromptFile(const std::filesystem::path& InWorkdir,
-                     const std::string& InPrompt,
-                     const std::string& InPurpose,
-                     std::filesystem::path* OutPath,
-                     std::string* OutError = nullptr) -> bool {
-    if (OutPath == nullptr) {
-        if (OutError != nullptr) {
-            *OutError = "missing output path";
-        }
-        return false;
-    }
-
-    const auto promptDir = (InWorkdir / ".kano" / "tmp" / "git" / "provider-prompts").lexically_normal();
-    std::error_code ec;
-    std::filesystem::create_directories(promptDir, ec);
-    if (ec) {
-        if (OutError != nullptr) {
-            *OutError = std::format("create_directories failed: {}", ec.message());
-        }
-        return false;
-    }
-
-    const auto promptPath = (promptDir / std::format("{}-{}-{}.md",
-                                                      InPurpose,
-                                                      CurrentUtcCompact(),
-                                                      Fnv1a64Hex(InPrompt).substr(0, 8)))
-                                .lexically_normal();
-    if (!WriteFileText(promptPath, InPrompt, OutError)) {
-        return false;
-    }
-
-    *OutPath = promptPath;
-    return true;
-}
-
-auto BuildFileBackedPromptArgument(std::optional<std::filesystem::path> InWorkingDir,
-                                   const std::string& InPrompt,
-                                   const std::string& InPurpose) -> std::string {
-    if (!InWorkingDir.has_value()) {
-        return InPrompt;
-    }
-
-    std::filesystem::path promptPath;
-    if (!WritePromptFile(*InWorkingDir, InPrompt, InPurpose, &promptPath)) {
-        return InPrompt;
-    }
-
-    auto refPath = promptPath.lexically_relative(*InWorkingDir);
-    if (refPath.empty()) {
-        refPath = promptPath.lexically_normal();
-    }
-    auto refText = refPath.generic_string();
-#if defined(_WIN32)
-    const bool hasExplicitRelativePrefix =
-        refText.rfind("./", 0) == 0 || refText.rfind(".\\", 0) == 0;
-    if (!refPath.is_absolute() && !refText.empty() && !hasExplicitRelativePrefix &&
-        refText.front() != '/' && refText.front() != '\\') {
-        refText = "./" + refText;
-    }
-#endif
-    return std::format(
-        "Read @{} and follow it exactly. Treat that file as the complete task. Do not ask clarifying questions. Output only the final answer required by that file.",
-        refText);
-}
-
 auto WriteCodexResponseFilePath(const std::filesystem::path& InWorkdir,
                                 const std::string& InPurpose,
                                 const std::string& InPrompt,
@@ -563,43 +405,6 @@ void AppendSingleValueFlag(std::vector<std::string>* OutArgs,
 void AppendBoolFlag(std::vector<std::string>* OutArgs,
                     const char* InEnvVar,
                     const std::string& InFlag);
-
-auto ExecuteCodexExec(std::optional<std::filesystem::path> InWorkingDir,
-                      const std::string& InPrompt,
-                      const std::string& InPurpose,
-                      const std::string& InModel) -> shell::ExecResult {
-    const auto workdir = InWorkingDir.value_or(std::filesystem::current_path());
-    std::filesystem::path responsePath;
-    std::string responseError;
-    if (!WriteCodexResponseFilePath(workdir, InPurpose, InPrompt, &responsePath, &responseError)) {
-        return shell::ExecResult{.exitCode = 1, .stderrStr = std::format("codex response path error: {}", responseError)};
-    }
-
-    std::vector<std::string> args{"exec", "--skip-git-repo-check"};
-    AppendBoolFlag(&args, "KOG_CODEX_FULL_AUTO", "--full-auto");
-    AppendBoolFlag(&args, "KOG_CODEX_EPHEMERAL", "--ephemeral");
-    AppendBoolFlag(&args, "KOG_CODEX_JSON", "--json");
-    AppendSingleValueFlag(&args, "KOG_CODEX_SANDBOX", "--sandbox");
-    AppendSingleValueFlag(&args, "KOG_CODEX_PROFILE", "--profile");
-    AppendRepeatableFlag(&args, "KOG_CODEX_ADD_DIRS", "--add-dir");
-    args.push_back("-o");
-    args.push_back(responsePath.lexically_normal().generic_string());
-    args.push_back("--cd");
-    args.push_back(workdir.lexically_normal().generic_string());
-    if (!InModel.empty() && InModel != "auto") {
-        args.push_back("--model");
-        args.push_back(InModel);
-    }
-    args.push_back(InPrompt);
-
-    auto result = shell::ExecuteCommand(CodexStandaloneCommand(), args, shell::ExecMode::Capture, InWorkingDir);
-    if (result.exitCode == 0) {
-        if (const auto responseText = ReadFileText(responsePath); responseText.has_value()) {
-            result.stdoutStr = *responseText;
-        }
-    }
-    return result;
-}
 
 auto IsTruthyEnv(const char* InValue) -> bool {
     if (InValue == nullptr) {
@@ -741,13 +546,6 @@ void AppendFlagOrSingleValueFlag(std::vector<std::string>* OutArgs,
     if (!(lowered == "1" || lowered == "true" || lowered == "yes" || lowered == "on")) {
         OutArgs->push_back(trimmed);
     }
-}
-
-auto ResolveSkillRoot(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path {
-    if (const char* envRoot = std::getenv("KANO_GIT_SKILL_ROOT"); envRoot != nullptr && std::string(envRoot).size() > 0) {
-        return std::filesystem::path(envRoot).lexically_normal();
-    }
-    return (InWorkspaceRoot / ".agents" / "skills" / "kano" / "kano-git-master-skill").lexically_normal();
 }
 
 auto LoadNormalizedLineSet(const std::filesystem::path& InFile) -> std::unordered_set<std::string> {
@@ -1748,17 +1546,6 @@ auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<
     return repos;
 }
 
-auto Fnv1a64Hex(const std::string& InText) -> std::string {
-    std::uint64_t hash = 1469598103934665603ULL;
-    for (const unsigned char ch : InText) {
-        hash ^= static_cast<std::uint64_t>(ch);
-        hash *= 1099511628211ULL;
-    }
-    std::ostringstream oss;
-    oss << std::hex << std::setfill('0') << std::setw(16) << hash;
-    return oss.str();
-}
-
 auto WorkspaceRepoKey(const std::filesystem::path& InWorkspaceRoot, const std::filesystem::path& InRepo) -> std::string {
     const auto rootNorm = NormalizePath(InWorkspaceRoot);
     const auto repoNorm = NormalizePath(InRepo);
@@ -1970,16 +1757,6 @@ auto NormalizePlanKey(std::string InValue) -> std::string {
         return ".";
     }
     return key;
-}
-
-auto ReadFileText(const std::filesystem::path& InPath) -> std::optional<std::string> {
-    std::ifstream in(InPath, std::ios::in | std::ios::binary);
-    if (!in) {
-        return std::nullopt;
-    }
-    std::ostringstream buffer;
-    buffer << in.rdbuf();
-    return buffer.str();
 }
 
 auto UnescapeJsonString(std::string InValue) -> std::string {
