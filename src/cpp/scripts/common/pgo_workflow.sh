@@ -77,7 +77,9 @@ pgo_collect() {
     if [[ -z "$preset" ]]; then
         case "$compiler_id" in
             Clang)
-                if _is_unix; then
+                if [[ "$platform" == "Darwin" ]]; then
+                    preset="macos-ninja-clang-pgo-collect"
+                elif _is_unix; then
                     preset="linux-ninja-clang-pgo-collect"
                 else
                     preset="windows-ninja-clang-pgo-collect"
@@ -244,7 +246,9 @@ pgo_use() {
     if [[ -z "$preset" ]]; then
         case "$compiler_id" in
             Clang)
-                if _is_unix; then
+                if [[ "$platform" == "Darwin" ]]; then
+                    preset="macos-ninja-clang-pgo-use"
+                elif _is_unix; then
                     preset="linux-ninja-clang-pgo-use"
                 else
                     preset="windows-ninja-clang-pgo-use"
