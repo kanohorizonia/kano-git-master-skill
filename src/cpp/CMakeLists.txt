@@ -564,19 +564,18 @@ if(NOT KOG_PGO_MODE STREQUAL "off")
             add_link_options(-fprofile-instr-generate -fcoverage-mapping)
             message(STATUS "PGO: collect mode (Clang -fprofile-instr-generate)")
         elseif(KOG_PGO_MODE STREQUAL "use")
-            # Clang: use profile with -fprofile-instr-use
-            # Set KOG_PGO_PROFILE_DIR first, then use it for LLVM_PROFILE_FILE
+            # Clang: use profile with -fprofile-instr-use=<path>
+            # Set KOG_PGO_PROFILE_DIR first, then use it for the profile path
             set(KOG_PGO_PROFILE_DIR "${KOG_BUILD_ROOT}/pgo" CACHE PATH "PGO profile data directory")
             set(LLVM_PROFILE_FILE "${KOG_PGO_PROFILE_DIR}/merged.profdata")
-            set(ENV{LLVM_PROFILE_FILE} "${LLVM_PROFILE_FILE}")
-            add_compile_options(-fprofile-instr-use)
-            add_link_options(-fprofile-instr-use)
+            # Pass profile path directly to compiler via CMAKE_CXX_FLAGS
+            set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fprofile-instr-use=${LLVM_PROFILE_FILE}")
             if(NOT KOG_PGO_LTCG STREQUAL "off")
                 add_compile_options(-flto=thin)
                 add_link_options(-flto=thin)
-                message(STATUS "PGO: use mode with thin LTO (Clang -fprofile-instr-use LLVM_PROFILE_FILE=${LLVM_PROFILE_FILE})")
+                message(STATUS "PGO: use mode with thin LTO (Clang -fprofile-instr-use=${LLVM_PROFILE_FILE})")
             else()
-                message(STATUS "PGO: use mode (Clang -fprofile-instr-use LLVM_PROFILE_FILE=${LLVM_PROFILE_FILE})")
+                message(STATUS "PGO: use mode (Clang -fprofile-instr-use=${LLVM_PROFILE_FILE})")
             endif()
         endif()
     else()
