@@ -1,6 +1,7 @@
 #include "functional_test_support.hpp"
 #include "shell_executor.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <tuple>
 

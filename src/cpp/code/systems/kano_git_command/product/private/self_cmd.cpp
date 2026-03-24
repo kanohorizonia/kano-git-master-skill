@@ -498,6 +498,9 @@ auto BuildGitHubApiCommand(const std::string& InRepo) -> std::string {
 #endif
 }
 
+// Forward declaration for ExecuteBashLc (used in non-Windows branch)
+auto ExecuteBashLc(const std::string& InCommand, shell::ExecMode InMode, const std::filesystem::path& InWorkdir) -> shell::ExecResult;
+
 auto TryFetchLatestGitHubRelease(const std::string& InRepo, const std::filesystem::path& InWorkdir) -> std::optional<GitHubReleaseInfo> {
     if (InRepo.empty()) {
         return std::nullopt;
