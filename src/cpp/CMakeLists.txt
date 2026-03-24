@@ -461,12 +461,12 @@ else()
 endif()
 
 # Output directories
-set(KOG_BUILD_ROOT "${CMAKE_SOURCE_DIR}/build")
+set(KOG_BUILD_ROOT "${CMAKE_SOURCE_DIR}/out")
 set(KOG_PRESET_NAME "unknown-preset" CACHE STRING "CMake preset name for artifact layout")
 
 set(KOG_BIN_ROOT "${KOG_BUILD_ROOT}/bin/${KOG_PRESET_NAME}")
 set(KOG_LIB_ROOT "${KOG_BUILD_ROOT}/lib/${KOG_PRESET_NAME}")
-set(KOG_SYMBOL_ROOT "${KOG_BUILD_ROOT}/_intermediate/${KOG_PRESET_NAME}/symbols")
+set(KOG_SYMBOL_ROOT "${KOG_BUILD_ROOT}/obj/${KOG_PRESET_NAME}/symbols")
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${KOG_BIN_ROOT}")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${KOG_LIB_ROOT}")

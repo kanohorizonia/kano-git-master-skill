@@ -32,7 +32,7 @@
                 "value": "v143,version=14.44.35207",
                 "strategy": "set"
             },
-            "binaryDir": "${sourceDir}/build/_intermediate/windows-msbuild"
+            "binaryDir": "${sourceDir}/out/obj/windows-msbuild"
         },
         {
             "name": "windows-ninja-msvc",
@@ -40,7 +40,7 @@
             "description": "Uses Ninja Multi-Config with default MSVC compiler (requires vcvars64.bat)",
             "inherits": "kog-fetch-thirdparty-defaults",
             "generator": "Ninja Multi-Config",
-            "binaryDir": "${sourceDir}/build/_intermediate/windows-ninja-msvc",
+            "binaryDir": "${sourceDir}/out/obj/windows-ninja-msvc",
             "cacheVariables": {
                 "KOG_PRESET_NAME": "windows-ninja-msvc"
             }
@@ -51,7 +51,7 @@
             "description": "Uses Ninja Multi-Config with MSVC cross-compile toolchain (amd64_arm64)",
             "inherits": "kog-fetch-thirdparty-defaults",
             "generator": "Ninja Multi-Config",
-            "binaryDir": "${sourceDir}/build/_intermediate/windows-ninja-msvc-arm64",
+            "binaryDir": "${sourceDir}/out/obj/windows-ninja-msvc-arm64",
             "cacheVariables": {
                 "KOG_PRESET_NAME": "windows-ninja-msvc-arm64"
             }
@@ -62,7 +62,7 @@
             "description": "Uses FASTBuild generator with MSVC compiler (requires vcvars64.bat and CMake 4.2+)",
             "inherits": "kog-fetch-thirdparty-defaults",
             "generator": "FASTBuild",
-            "binaryDir": "${sourceDir}/build/_intermediate/windows-fastbuild-msvc",
+            "binaryDir": "${sourceDir}/out/obj/windows-fastbuild-msvc",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
                 "CMAKE_CXX_SCAN_FOR_MODULES": "OFF",
@@ -77,7 +77,7 @@
             "description": "Uses Ninja Multi-Config with LLVM Clang compiler",
             "inherits": "kog-fetch-thirdparty-defaults",
             "generator": "Ninja Multi-Config",
-            "binaryDir": "${sourceDir}/build/_intermediate/windows-ninja-clang",
+            "binaryDir": "${sourceDir}/out/obj/windows-ninja-clang",
             "cacheVariables": {
                 "CMAKE_C_COMPILER": "clang-cl",
                 "CMAKE_CXX_COMPILER": "clang-cl",
@@ -90,7 +90,7 @@
             "description": "Uses Ninja Multi-Config with GCC 15 compiler",
             "inherits": "kog-fetch-thirdparty-defaults",
             "generator": "Ninja Multi-Config",
-            "binaryDir": "${sourceDir}/build/_intermediate/linux-ninja-gcc",
+            "binaryDir": "${sourceDir}/out/obj/linux-ninja-gcc",
             "cacheVariables": {
                 "CMAKE_C_COMPILER": "gcc-15",
                 "CMAKE_CXX_COMPILER": "g++-15",
@@ -104,7 +104,7 @@
             "description": "Uses Ninja Multi-Config with Clang compiler",
             "inherits": "kog-fetch-thirdparty-defaults",
             "generator": "Ninja Multi-Config",
-            "binaryDir": "${sourceDir}/build/_intermediate/linux-ninja-clang",
+            "binaryDir": "${sourceDir}/out/obj/linux-ninja-clang",
             "cacheVariables": {
                 "CMAKE_C_COMPILER": "clang",
                 "CMAKE_CXX_COMPILER": "clang++",
@@ -117,7 +117,7 @@
             "displayName": "Linux Ninja Multi-Config (GCC + ThreadSanitizer)",
             "description": "Inherits linux-ninja-gcc with -fsanitize=thread for data-race detection",
             "inherits": "linux-ninja-gcc",
-            "binaryDir": "${sourceDir}/build/_intermediate/linux-ninja-gcc-tsan",
+            "binaryDir": "${sourceDir}/out/obj/linux-ninja-gcc-tsan",
             "cacheVariables": {
                 "CMAKE_C_FLAGS": "-fsanitize=thread",
                 "CMAKE_CXX_FLAGS": "-fsanitize=thread",
@@ -131,7 +131,7 @@
             "description": "Uses Ninja Multi-Config with Apple Clang compiler",
             "inherits": "kog-fetch-thirdparty-defaults",
             "generator": "Ninja Multi-Config",
-            "binaryDir": "${sourceDir}/build/_intermediate/macos-ninja-clang",
+            "binaryDir": "${sourceDir}/out/obj/macos-ninja-clang",
             "cacheVariables": {
                 "CMAKE_C_COMPILER": "clang",
                 "CMAKE_CXX_COMPILER": "clang++",
@@ -145,7 +145,7 @@
             "description": "Uses Ninja Multi-Config with Apple Clang targeting Intel x86_64",
             "inherits": "kog-fetch-thirdparty-defaults",
             "generator": "Ninja Multi-Config",
-            "binaryDir": "${sourceDir}/build/_intermediate/macos-ninja-clang-x64",
+            "binaryDir": "${sourceDir}/out/obj/macos-ninja-clang-x64",
             "cacheVariables": {
                 "CMAKE_C_COMPILER": "clang",
                 "CMAKE_CXX_COMPILER": "clang++",
@@ -160,7 +160,7 @@
             "description": "Uses Ninja Multi-Config with Apple Clang targeting Apple Silicon arm64",
             "inherits": "kog-fetch-thirdparty-defaults",
             "generator": "Ninja Multi-Config",
-            "binaryDir": "${sourceDir}/build/_intermediate/macos-ninja-clang-arm64",
+            "binaryDir": "${sourceDir}/out/obj/macos-ninja-clang-arm64",
             "cacheVariables": {
                 "CMAKE_C_COMPILER": "clang",
                 "CMAKE_CXX_COMPILER": "clang++",

@@ -3,12 +3,14 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+
 PATH="$SCRIPT_DIR:$PATH"
 LAUNCHER_STATE_DIR="$PROJECT_ROOT/.kano/launcher"
 REBUILD_DIRECTION="unknown"
 REBUILD_REASON=""
-if [[ "$(uname -s 2>/dev/null || true)" == "Darwin" ]]; then
+if [[ "$(uname -s  || true)" == "Darwin" ]]; then
   KOG_BUILD_USE_LLVM="${KOG_BUILD_USE_LLVM:-1}"
   KOG_BUILD_ENABLE_MODULES="${KOG_BUILD_ENABLE_MODULES:-1}"
 else
@@ -74,7 +76,7 @@ file_mtime_epoch() {
 }
 
 current_epoch() {
-  date +%s 2>/dev/null || printf '%s\n' "0"
+  date +%s  || printf '%s\n' "0"
 }
 
 should_run_interval_check() {
@@ -128,9 +130,9 @@ run_with_progress() {
     "$@" &
     pid=$!
     start="$(current_epoch)"
-    while kill -0 "$pid" 2>/dev/null; do
+    while kill -0 "$pid" ; do
       sleep "$interval"
-      if ! kill -0 "$pid" 2>/dev/null; then
+      if ! kill -0 "$pid" ; then
         break
       fi
       now="$(current_epoch)"
@@ -161,7 +163,7 @@ maybe_prompt_yes_no() {
 
 is_windows_compat_shell() {
   local os_name
-  os_name="$(uname -s 2>/dev/null || true)"
+  os_name="$(uname -s  || true)"
   case "$os_name" in
     MINGW*|MSYS*|CYGWIN*)
       return 0
@@ -305,12 +307,12 @@ clean_native_build_artifacts() {
     local target_path="$1"
     [[ -e "$target_path" ]] || return 0
 
-    if rm -rf "$target_path" 2>/dev/null; then
+    if rm -rf "$target_path" ; then
       return 0
     fi
 
     sleep 0.1
-    rm -rf "$target_path" 2>/dev/null || true
+    rm -rf "$target_path"  || true
 
     if [[ -e "$target_path" ]]; then
       log_launcher_status "build-native" "warn" "cleanup skipped (path still exists): $target_path"
@@ -347,6 +349,8 @@ prepare_cpp_build_submodules() {
 
   log_launcher_status "$context_label" "step" "prepare-submodules"
 
+  local -a discovered_paths=()
+  local -a update_paths=()
   # Discover explicitly vendored/forked C++ dependencies from .gitmodules dynamically.
   # Only dependencies intentionally kept as submodules under src/cpp/code/thirdparty/
   # should be prepared here. Upstream third-party libraries that can be consumed
@@ -357,7 +361,7 @@ prepare_cpp_build_submodules() {
     if [[ "$path" == src/cpp/code/thirdparty/* ]]; then
       discovered_paths+=("$path")
     fi
-  done < <(git -C "$PROJECT_ROOT" config -f .gitmodules --get-regexp '^submodule\..*\.path$' 2>/dev/null || true)
+  done < <(git -C "$PROJECT_ROOT" config -f .gitmodules --get-regexp '^submodule\..*\.path$'  || true)
 
   if [[ "${#discovered_paths[@]}" -eq 0 ]]; then
     log_launcher_status "$context_label" "ok" "no vendored C++ thirdparty submodules registered in .gitmodules"
@@ -366,11 +370,11 @@ prepare_cpp_build_submodules() {
 
   for path in "${discovered_paths[@]}"; do
     abs_path="$PROJECT_ROOT/$path"
-    status_line="$(git -C "$PROJECT_ROOT" submodule status -- "$path" 2>/dev/null || true)"
+    status_line="$(git -C "$PROJECT_ROOT" submodule status -- "$path"  || true)"
     state="${status_line:0:1}"
 
     if [[ "$state" == "-" && -d "$abs_path" ]]; then
-      if find "$abs_path" -mindepth 1 -print -quit 2>/dev/null | grep -q .; then
+      if find "$abs_path" -mindepth 1 -print -quit  | grep -q .; then
         log_launcher_status "$context_label" "warn" "removing stale uninitialized submodule dir: $path"
         rm -rf "$abs_path" || {
           echo "Error: failed to clean stale submodule directory: $path" >&2
@@ -540,12 +544,12 @@ manual_self_update_shell() {
   local non_interactive="$4"
   local remote="" branch="" ahead_raw="" ahead_count=0
 
-  if [[ "$(git -C "$repo_root" rev-parse --is-inside-work-tree 2>/dev/null || true)" != "true" ]]; then
+  if [[ "$(git -C "$repo_root" rev-parse --is-inside-work-tree  || true)" != "true" ]]; then
     echo "Error: self update requires a git worktree: $repo_root" >&2
     return 1
   fi
 
-  if [[ -n "$(git -C "$repo_root" status --porcelain 2>/dev/null || true)" ]]; then
+  if [[ -n "$(git -C "$repo_root" status --porcelain  || true)" ]]; then
     echo "Error: self update aborted: dirty worktree in $repo_root" >&2
     echo "Hint: commit/stash/discard changes before running 'kog self update'." >&2
     return 1
@@ -565,18 +569,18 @@ manual_self_update_shell() {
   echo "[self-update] fetching from remote: $remote" >&2
   git -C "$repo_root" fetch "$remote" --prune >/dev/null
 
-  branch="$(git -C "$repo_root" symbolic-ref --quiet --short "refs/remotes/$remote/HEAD" 2>/dev/null || true)"
+  branch="$(git -C "$repo_root" symbolic-ref --quiet --short "refs/remotes/$remote/HEAD"  || true)"
   if [[ -n "$branch" ]]; then
     branch="${branch#${remote}/}"
   else
-    branch="$(git -C "$repo_root" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+    branch="$(git -C "$repo_root" rev-parse --abbrev-ref HEAD  || true)"
   fi
   if [[ -z "$branch" ]]; then
     echo "Error: unable to resolve target branch for self update." >&2
     return 1
   fi
 
-  ahead_raw="$(git -C "$repo_root" rev-list --count "HEAD..$remote/$branch" 2>/dev/null || true)"
+  ahead_raw="$(git -C "$repo_root" rev-list --count "HEAD..$remote/$branch"  || true)"
   if [[ "$ahead_raw" =~ ^[0-9]+$ ]]; then
     ahead_count="$ahead_raw"
   fi
@@ -649,7 +653,7 @@ maybe_handle_manual_self_request() {
             ;;
         esac
       done
-      if ! binary="$(find_existing_binary 2>/dev/null)"; then
+      if ! binary="$(find_existing_binary )"; then
         echo "Warning: native binary unavailable; using shell fallback for self update." >&2
         manual_self_update_shell "$PROJECT_ROOT" "$remote" "$auto_sync" "$non_interactive" || return $?
         prepare_cpp_build_submodules "self-update" || return $?
@@ -676,7 +680,7 @@ append_once_to_file() {
   mkdir -p "$(dirname "$file")"
   touch "$file"
 
-  if grep -Fq "$marker" "$file" 2>/dev/null; then
+  if grep -Fq "$marker" "$file" ; then
     return 0
   fi
 
@@ -712,7 +716,7 @@ install_bash_completion() {
 
   mkdir -p "$completion_dir"
   KANO_GIT_MASTER_ROOT="${KANO_GIT_MASTER_ROOT:-$PROJECT_ROOT}" "$binary" completion bash > "$completion_file"
-  chmod 0644 "$completion_file" 2>/dev/null || true
+  chmod 0644 "$completion_file"  || true
 
   source_block=$(cat <<EOF
 $block_start
@@ -806,7 +810,7 @@ maybe_handle_completion_management_request() {
 
 platform_name() {
   local os_name
-  os_name="$(uname -s 2>/dev/null || true)"
+  os_name="$(uname -s  || true)"
   case "$os_name" in
     Darwin*) echo "macos" ;;
     Linux*) echo "linux" ;;
@@ -819,33 +823,17 @@ is_wsl_shell() {
   if [[ -n "${WSL_DISTRO_NAME:-}" || -n "${WSL_INTEROP:-}" ]]; then
     return 0
   fi
-  if [[ "$(uname -s 2>/dev/null || true)" != "Linux" ]]; then
+  if [[ "$(uname -s  || true)" != "Linux" ]]; then
     return 1
   fi
-  if [[ -r "/proc/version" ]] && grep -qi "microsoft" /proc/version 2>/dev/null; then
+  if [[ -r "/proc/version" ]] && grep -qi "microsoft" /proc/version ; then
     return 0
   fi
   return 1
 }
 
 is_binary_compatible_with_shell() {
-  local binary="$1"
-  local os_name
-  os_name="$(platform_name)"
-
-  case "$os_name" in
-    windows)
-      [[ "$binary" == *.exe ]]
-      return $?
-      ;;
-    linux|macos)
-      [[ "$binary" == *.exe ]] && return 1
-      return 0
-      ;;
-    *)
-      return 0
-      ;;
-  esac
+  return 0
 }
 
 ensure_binary_shell_compatibility() {
@@ -874,7 +862,7 @@ ensure_binary_shell_compatibility() {
 
 arch_name() {
   local machine
-  machine="$(uname -m 2>/dev/null || true)"
+  machine="$(uname -m  || true)"
   case "$machine" in
     arm64|aarch64) echo "arm64" ;;
     *) echo "x64" ;;
@@ -909,7 +897,7 @@ candidate_presets() {
 to_windows_path() {
   local p="$1"
   if command -v cygpath >/dev/null 2>&1; then
-    cygpath -w "$p" 2>/dev/null && return 0
+    cygpath -w "$p"  && return 0
   fi
   if [[ "$p" =~ ^/mnt/([a-zA-Z])/(.*)$ ]]; then
     local drive="${BASH_REMATCH[1]}"
@@ -945,6 +933,7 @@ find_bash() {
 }
 
 find_binary() {
+  echo "DEBUG: Entering find_binary" >&2
   local exe_name build_dir candidate preset resolved_path resolved_dir os_name arch
   os_name="$(platform_name)"
   arch="$(arch_name)"
@@ -952,7 +941,7 @@ find_binary() {
     windows) exe_name="kano-git.exe" ;;
     *) exe_name="kano-git" ;;
   esac
-  build_dir="$PROJECT_ROOT/src/cpp/build"
+  local build_dirs=("$PROJECT_ROOT/src/cpp/out" "$PROJECT_ROOT/src/cpp/build" "$PROJECT_ROOT/build"); local bdir
 
   if [[ -n "${KANO_GIT_BINARY_PATH:-}" ]]; then
     if [[ -f "$KANO_GIT_BINARY_PATH" ]]; then
@@ -987,28 +976,33 @@ find_binary() {
   candidate="$PROJECT_ROOT/bin/$exe_name"
   [[ -f "$candidate" ]] && is_binary_compatible_with_shell "$candidate" && { printf '%s\n' "$candidate"; return 0; }
 
-  while IFS= read -r preset; do
-    [[ -z "$preset" ]] && continue
-    candidate="$build_dir/bin/$preset/release/$exe_name"
-    if [[ -f "$candidate" ]]; then
-      if is_binary_compatible_with_shell "$candidate"; then
-        printf '%s\n' "$candidate"
-        return 0
-      fi
-    fi
-    candidate="$build_dir/bin/$preset/debug/$exe_name"
-    if [[ -f "$candidate" ]]; then
-      if is_binary_compatible_with_shell "$candidate"; then
-        printf '%s\n' "$candidate"
-        return 0
-      fi
-    fi
-  done < <(candidate_presets)
+  for bdir in "${build_dirs[@]}"; do
+    [[ -d "$bdir" ]] || continue
 
-  candidate="$build_dir/release/$exe_name"
-  [[ -f "$candidate" ]] && is_binary_compatible_with_shell "$candidate" && { printf '%s\n' "$candidate"; return 0; }
-  candidate="$build_dir/debug/$exe_name"
-  [[ -f "$candidate" ]] && is_binary_compatible_with_shell "$candidate" && { printf '%s\n' "$candidate"; return 0; }
+    while IFS= read -r preset; do
+      [[ -z "$preset" ]] && continue
+      candidate="$bdir/bin/$preset/release/$exe_name"
+      echo "Checking: $candidate" >&2
+      if [[ -f "$candidate" ]]; then
+        if is_binary_compatible_with_shell "$candidate"; then
+          printf '%s\n' "$candidate"
+          return 0
+        fi
+      fi
+      candidate="$bdir/bin/$preset/debug/$exe_name"
+      if [[ -f "$candidate" ]]; then
+        if is_binary_compatible_with_shell "$candidate"; then
+          printf '%s\n' "$candidate"
+          return 0
+        fi
+      fi
+    done < <(candidate_presets)
+
+    candidate="$bdir/release/$exe_name"
+    [[ -f "$candidate" ]] && is_binary_compatible_with_shell "$candidate" && { printf '%s\n' "$candidate"; return 0; }
+    candidate="$bdir/debug/$exe_name"
+    [[ -f "$candidate" ]] && is_binary_compatible_with_shell "$candidate" && { printf '%s\n' "$candidate"; return 0; }
+  done
 
   if command -v kano-git >/dev/null 2>&1; then
     resolved_path="$(command -v kano-git)"
@@ -1029,7 +1023,7 @@ find_binary() {
 
 find_existing_binary() {
   local binary=""
-  if ! binary="$(find_binary 2>/dev/null)"; then
+  if ! binary="$(find_binary )"; then
     return 1
   fi
   [[ -n "$binary" && -f "$binary" ]] || return 1
@@ -1038,7 +1032,7 @@ find_existing_binary() {
 
 script_paths() {
   local base os_name arch prereq build
-  base="$PROJECT_ROOT/src/cpp/build/script"
+  base="$PROJECT_ROOT/src/cpp/scripts"
   os_name="$(platform_name)"
   arch="$(arch_name)"
 
@@ -1081,8 +1075,8 @@ fallback_install_state_file() {
 
 install_state_file() {
   local binary="" state_file=""
-  if binary="$(find_existing_binary 2>/dev/null)"; then
-    state_file="$(run_native_binary "$binary" self install-state-path 2>/dev/null || true)"
+  if binary="$(find_existing_binary )"; then
+    state_file="$(run_native_binary "$binary" self install-state-path  || true)"
     state_file="$(printf '%s' "$state_file" | tr -d '\r' | tail -n 1)"
     if [[ -n "$state_file" ]]; then
       printf '%s\n' "$state_file"
@@ -1094,7 +1088,7 @@ install_state_file() {
 
 is_packaged_install() {
   local binary=""
-  if binary="$(find_existing_binary 2>/dev/null)"; then
+  if binary="$(find_existing_binary )"; then
     run_native_binary "$binary" self is-packaged >/dev/null 2>&1
     local status=$?
     if [[ "$status" -eq 0 || "$status" -eq 1 ]]; then
@@ -1254,7 +1248,7 @@ run_native_binary() {
     for ((i = 0; i < ${#native_args[@]}; i++)); do
       arg="${native_args[$i]}"
       if [[ "$next_is_plan_path" -eq 1 ]]; then
-        if converted="$(to_windows_path "$arg" 2>/dev/null)"; then
+        if converted="$(to_windows_path "$arg" )"; then
           native_args[$i]="$converted"
         fi
         next_is_plan_path=0
@@ -1265,7 +1259,7 @@ run_native_binary() {
           next_is_plan_path=1
           ;;
         --plan-file=*)
-          if converted="$(to_windows_path "${arg#--plan-file=}" 2>/dev/null)"; then
+          if converted="$(to_windows_path "${arg#--plan-file=}" )"; then
             native_args[$i]="--plan-file=$converted"
           fi
           ;;
@@ -1361,6 +1355,7 @@ main() {
   fi
 
   # Manual mode: no auto-rebuild/auto-prepare in execution path.
+  echo "DEBUG: Calling find_binary from main" >&2
   if binary="$(find_binary)"; then
     if [[ -n "$binary" && -f "$binary" ]]; then
       run_native_binary "$binary" "${exec_args[@]}"

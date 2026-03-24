@@ -24,6 +24,6 @@ target_include_directories(kano_git_cmd_product
     ${KANO_GIT_COMMAND_ROOT}/product/private
 )
 
-target_link_libraries(kano_git_cmd_product PUBLIC kano::git_shell kano::git_workspace kano::git_command_runtime kano::git_version)
+target_link_libraries(kano_git_cmd_product PUBLIC kano::git_shell kano::git_workspace kano::git_command_runtime kano::git_build_info)
 
 add_library(kano::git_cmd_product ALIAS kano_git_cmd_product)

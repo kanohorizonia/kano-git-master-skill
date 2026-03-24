@@ -16,7 +16,7 @@ MSI fixed install root
 
 The MSI owns a single, fixed install root:
 
-* `%USERPROFILE%\\.agents\\skills\\kano\\kano-git-master-skill`
+* `%USERPROFILE%\\.agents\\skills\\kano_installed`
 
 The install root is not configurable. Any existing directory at this
 path that looks like a developer checkout or non MSI managed content is
@@ -42,7 +42,7 @@ MSI owned installed files
 -------------------------
 
 All paths below are relative to the fixed install root
-`%USERPROFILE%\\.agents\\skills\\kano\\kano-git-master-skill`.
+`%USERPROFILE%\\.agents\\skills\\kano_installed`.
 
 Exact file names and sub directories are defined by the packaging input
 layout, but the contract is:
@@ -92,9 +92,10 @@ The following artifacts are explicitly outside MSI ownership.
   hooks. These are managed by the existing installer and user dotfiles
   flow, not by the MSI.
 * Any developer checkouts of the kano git skill, even if placed under
-  `%USERPROFILE%\\.agents\\skills`. The MSI must treat developer
-  checkouts as external content and fail with a clear error when they
-  conflict with the fixed install root.
+  `%USERPROFILE%\\.agents\\skills`. The MSI install root is a separate
+  sibling path, so normal developer checkouts do not collide by default.
+  If a manual checkout exists directly at the fixed install root, the MSI
+  must still treat that as external content and fail with a clear error.
 
 Shell integration ownership model
 ---------------------------------
@@ -146,7 +147,7 @@ On uninstall, the MSI cleanup scope is:
 * Remove all MSI owned generated/runtime files under the fixed
   install root.
 * Remove the fixed install root directory
-  `%USERPROFILE%\\.agents\\skills\\kano\\kano-git-master-skill`
+  `%USERPROFILE%\\.agents\\skills\\kano_installed`
   if it is empty after file removal.
 * For the optional `ShellIntegration` feature, revert any PATH entries
   or shortcuts that were created by this MSI.
@@ -166,7 +167,7 @@ Canonical directory ids for WiX authoring are:
 * `KanoUserProfile`  maps to `%USERPROFILE%` using the appropriate WiX
   per user profile resolution.
 * `KanoSkillRoot`  child of `KanoUserProfile`, path
-  `.agents\\skills\\kano\\kano-git-master-skill`.
+  `.agents\\skills\\kano_installed`.
 
 All `CoreFiles` components install under `KanoSkillRoot`.
 
@@ -192,7 +193,7 @@ It follows the WiX v6 CLI flow:
 
 1. stage payload into `src/wix/out/payload`
 2. run `wix extension add` as needed for required extensions
-3. run `wix build` with `Product.wxs` plus bind-time variables such as `PayloadRoot`
+3. run `wix build` with `src/wix/code/Product.wxs` plus bind-time variables such as `PayloadRoot`
 
 This repo intentionally targets the modern WiX CLI instead of the deprecated
 WiX v3 `heat.exe` / `candle.exe` / `light.exe` toolchain.
@@ -206,8 +207,9 @@ Packaged vs developer script behavior
 The packaged MSI payload must not ship the developer checkout `scripts/`
 directory literally.
 
-Instead, `src/wix/scripts/build.sh` stages a packaged-specific `scripts/`
-payload with this contract:
+Instead, `src/wix/scripts/build.sh` stages packaged-specific launcher
+templates from `src/wix/payload/scripts/` into the MSI `scripts/` payload
+with this contract:
 
 * packaged `kano-git` / `kog` remain runtime launchers for the installed
   native binary

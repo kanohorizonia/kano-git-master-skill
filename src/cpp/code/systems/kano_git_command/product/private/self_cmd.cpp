@@ -22,11 +22,7 @@
 #include <utility>
 #include <vector>
 
-#if defined(KOG_USE_MODULES)
-import kano.git.version;
-#else
-#include "version.hpp"
-#endif
+#include "build_info.hpp"
 
 #if defined(_WIN32)
 #include <io.h>
@@ -818,22 +814,22 @@ auto BuildInfoField(const std::string& InInfo, const std::string& InField) -> st
 
 auto BuildInfoEntries() -> std::vector<std::pair<std::string, std::string>> {
     return {
-        {"version", std::string(kano::git::GetBuildVersion())},
-        {"vcs", std::string(kano::git::GetBuildVCS())},
-        {"branch", std::string(kano::git::GetBuildBranch())},
-        {"rev", std::string(kano::git::GetBuildRevision())},
-        {"hash_short", std::string(kano::git::GetBuildRevisionHashShort())},
-        {"hash", std::string(kano::git::GetBuildRevisionHash())},
-        {"dirty", std::string(kano::git::GetBuildDirty())},
-        {"host", std::string(kano::git::BuildHostName())},
-        {"host_platform", std::string(kano::git::BuildHostPlatform())},
-        {"toolchain", std::string(kano::git::GetBuildToolchain())},
-        {"generator", std::string(kano::git::GetBuildGenerator())},
-        {"preset", std::string(kano::git::GetBuildPreset())},
-        {"config", std::string(kano::git::GetBuildConfiguration())},
-        {"ci", std::string(kano::git::GetBuildCI())},
-        {"context", std::string(kano::git::GetBuildContext())},
-        {"pipeline", std::string(kano::git::GetBuildPipelineId())},
+        {"version", std::string(::kano::git::GetBuildVersion())},
+        {"vcs", std::string(::kano::git::GetBuildVCS())},
+        {"branch", std::string(::kano::git::GetBuildBranch())},
+        {"rev", std::string(::kano::git::GetBuildRevision())},
+        {"hash_short", std::string(::kano::git::GetBuildRevisionHashShort())},
+        {"hash", std::string(::kano::git::GetBuildRevisionHash())},
+        {"dirty", std::string(::kano::git::GetBuildDirty())},
+        {"host", std::string(::kano::git::BuildHostName())},
+        {"host_platform", std::string(::kano::git::BuildHostPlatform())},
+        {"toolchain", std::string(::kano::git::GetBuildToolchain())},
+        {"generator", std::string(::kano::git::GetBuildGenerator())},
+        {"preset", std::string(::kano::git::GetBuildPreset())},
+        {"config", std::string(::kano::git::GetBuildConfiguration())},
+        {"ci", std::string(::kano::git::GetBuildCI())},
+        {"context", std::string(::kano::git::GetBuildContext())},
+        {"pipeline", std::string(::kano::git::GetBuildPipelineId())},
     };
 }
 

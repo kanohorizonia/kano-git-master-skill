@@ -49,11 +49,8 @@ _ws/
 cli/build/
 cli/out/
 
-# Local C++ build artifacts (keep only checked-in wrappers)
-src/cpp/build/**
-!src/cpp/build/
-!src/cpp/build/script/
-!src/cpp/build/script/**
+# Local C++ build artifacts
+src/cpp/out/
 src/cpp/compile_commands.json
 src/cpp/releases/
 src/cpp/cmake_ninja_out.txt

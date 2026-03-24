@@ -115,7 +115,7 @@ bash src/shell/test/acceptance-ignore-plan.sh
 - On Windows, prefer the native Windows build script before running acceptance:
 
 ```bash
-bash src/cpp/build/script/windows/build_windows_ninja_msvc_release.sh
+bash src/cpp/scripts/windows/build_windows_ninja_msvc_release.sh
 ```
 
 - Acceptance scripts may emit Git CRLF warnings in disposable repos; those are not

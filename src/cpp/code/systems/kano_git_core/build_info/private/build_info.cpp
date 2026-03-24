@@ -1,8 +1,8 @@
-#include "version.hpp"
+#include "build_info.hpp"
 
 namespace kano::git {
 
-auto VersionTranslationUnitAnchor() -> std::string_view {
+auto BuildInfoTranslationUnitAnchor() -> std::string_view {
     return GetVersion();
 }
 

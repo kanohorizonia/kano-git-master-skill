@@ -1,7 +1,6 @@
-// version command — project version management (show, set, bump, tag, next)
+// version command — project version overview
 
 #include <CLI/CLI.hpp>
-#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -10,61 +9,13 @@
 #include <string>
 #include <vector>
 
+#include "discovery.hpp"
 #include "shell_executor.hpp"
+#include "ai_utils.hpp"
 
 namespace kano::git::commands {
 
 namespace {
-
-struct SemVer {
-    int major = 0;
-    int minor = 0;
-    int patch = 0;
-    std::string prerelease;
-    std::string build;
-
-    std::string ToString() const {
-        std::string out = std::to_string(major) + "." + std::to_string(minor) + "." + std::to_string(patch);
-        if (!prerelease.empty()) {
-            out += "-" + prerelease;
-        }
-        if (!build.empty()) {
-            out += "+" + build;
-        }
-        return out;
-    }
-};
-
-auto Trim(std::string InValue) -> std::string {
-    while (!InValue.empty() && (InValue.back() == '\n' || InValue.back() == '\r' || InValue.back() == ' ' || InValue.back() == '\t')) {
-        InValue.pop_back();
-    }
-    std::size_t start = 0;
-    while (start < InValue.size() && (InValue[start] == ' ' || InValue[start] == '\t')) {
-        start += 1;
-    }
-    return InValue.substr(start);
-}
-
-auto ParseSemVer(const std::string& InValue) -> std::optional<SemVer> {
-    static const std::regex re(R"(^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z\.-]+))?(?:\+([0-9A-Za-z\.-]+))?$)");
-    std::smatch match;
-    if (!std::regex_match(InValue, match, re)) {
-        return std::nullopt;
-    }
-
-    try {
-        SemVer v;
-        v.major = std::stoi(match[1].str());
-        v.minor = std::stoi(match[2].str());
-        v.patch = std::stoi(match[3].str());
-        v.prerelease = match[4].str();
-        v.build = match[5].str();
-        return v;
-    } catch (...) {
-        return std::nullopt;
-    }
-}
 
 auto ReadVersionFile(const std::filesystem::path& InRepo) -> std::optional<std::string> {
     const auto versionPath = InRepo / "VERSION";
@@ -80,130 +31,142 @@ auto ReadVersionFile(const std::filesystem::path& InRepo) -> std::optional<std::
     return Trim(version);
 }
 
-auto WriteVersionFile(const std::filesystem::path& InRepo, const std::string& InVersion) -> bool {
-    const auto versionPath = InRepo / "VERSION";
-    std::ofstream out(versionPath, std::ios::out | std::ios::trunc);
-    if (!out) {
-        return false;
+auto ReadUnrealProjectVersion(const std::filesystem::path& InRepo) -> std::optional<std::string> {
+    const auto iniPath = (InRepo / "Config" / "DefaultGame.ini").lexically_normal();
+    if (!std::filesystem::exists(iniPath)) {
+        return std::nullopt;
     }
-    out << InVersion << "\n";
-    return static_cast<bool>(out);
+    std::ifstream in(iniPath);
+    if (!in) {
+        return std::nullopt;
+    }
+    std::string line;
+    static const std::regex re(R"(ProjectVersion\s*=\s*([^\s\r\n]+))");
+    while (std::getline(in, line)) {
+        std::smatch match;
+        if (std::regex_search(line, match, re)) {
+            return Trim(match[1].str());
+        }
+    }
+    return std::nullopt;
+}
+
+struct ProjectVersionInfo {
+    std::string repoPath;
+    std::string repoName;
+    std::string version;
+    std::string versionSource;
+    std::string branch;
+    std::string revisionCount;
+    std::string hash;
+    bool isDirty = false;
+};
+
+auto AnalyzeRepoVersion(const std::filesystem::path& InRepoPath, const std::filesystem::path& InRootPath) -> ProjectVersionInfo {
+    ProjectVersionInfo info;
+    info.repoPath = std::filesystem::relative(InRepoPath, InRootPath).lexically_normal().generic_string();
+    if (info.repoPath == "" || info.repoPath == ".") {
+        info.repoPath = ".";
+    }
+    info.repoName = InRepoPath.filename().generic_string();
+
+    if (auto v = ReadUnrealProjectVersion(InRepoPath)) {
+        info.version = *v;
+        info.versionSource = "Config/DefaultGame.ini";
+    } else if (auto v = ReadVersionFile(InRepoPath)) {
+        info.version = *v;
+        info.versionSource = "VERSION";
+    } else {
+        info.version = "-";
+        info.versionSource = "";
+    }
+
+    // Git info
+    const auto branchResult = shell::ExecuteCommand("git", {"rev-parse", "--abbrev-ref", "HEAD"}, shell::ExecMode::Capture, InRepoPath);
+    info.branch = branchResult.exitCode == 0 ? Trim(branchResult.stdoutStr) : "unknown";
+
+    const auto revResult = shell::ExecuteCommand("git", {"rev-list", "--count", "--first-parent", "HEAD"}, shell::ExecMode::Capture, InRepoPath);
+    info.revisionCount = revResult.exitCode == 0 ? Trim(revResult.stdoutStr) : "0";
+
+    const auto hashResult = shell::ExecuteCommand("git", {"rev-parse", "--short", "HEAD"}, shell::ExecMode::Capture, InRepoPath);
+    info.hash = hashResult.exitCode == 0 ? Trim(hashResult.stdoutStr) : "unknown";
+
+    const auto dirtyResult = shell::ExecuteCommand("git", {"status", "--porcelain"}, shell::ExecMode::Capture, InRepoPath);
+    info.isDirty = dirtyResult.exitCode == 0 && !Trim(dirtyResult.stdoutStr).empty();
+
+    return info;
 }
 
 } // namespace
 
 void RegisterVersion(CLI::App& InApp) {
-    auto* cmd = InApp.add_subcommand("version", "Project version management");
+    auto* cmd = InApp.add_subcommand("version", "Overview project versions in the workspace");
     
-    auto* repo = new std::string{"."};
-    cmd->add_option("--repo", *repo, "Project repository root path")->default_str(".");
+    auto repo = std::make_shared<std::string>(".");
+    auto recursive = std::make_shared<bool>(true);
+    auto field = std::make_shared<std::string>("");
 
-    auto* show = cmd->add_subcommand("show", "Show current project version (default)");
-    auto* set = cmd->add_subcommand("set", "Set project version");
-    auto* bump = cmd->add_subcommand("bump", "Bump project version (major, minor, or patch)");
-    auto* tag = cmd->add_subcommand("tag", "Create a git tag for the current version");
-    auto* next = cmd->add_subcommand("next", "Show what the next version would be");
+    cmd->add_option("repo", *repo, "Workspace or project root path")->default_val(".");
+    cmd->add_flag("-r,--recursive,!--no-recursive", *recursive, "Recursive repository discovery")->default_val(true);
+    cmd->add_option("-f,--field", *field, "Output specific field of the current repo (sha, revision, branch, version, human)");
 
-    // set arguments
-    auto* newVersion = new std::string{};
-    set->add_option("version", *newVersion, "New version string")->required();
-
-    // bump/next arguments
-    auto* bumpPart = new std::string{"patch"};
-    bump->add_option("part", *bumpPart, "Part to bump: major|minor|patch")->default_str("patch");
-    next->add_option("part", *bumpPart, "Part to bump: major|minor|patch")->default_str("patch");
-
-    auto getVersionOrExit = [=](const std::filesystem::path& repoPath) -> SemVer {
-        auto verStr = ReadVersionFile(repoPath);
-        if (!verStr) {
-            std::cerr << "Error: VERSION file not found in " << repoPath.generic_string() << "\n";
-            std::exit(1);
-        }
-        auto v = ParseSemVer(*verStr);
-        if (!v) {
-            std::cerr << "Error: Invalid version format in VERSION file: " << *verStr << "\n";
-            std::exit(1);
-        }
-        return *v;
-    };
-
-    auto bumpVersion = [](SemVer v, const std::string& part) -> SemVer {
-        if (part == "major") {
-            v.major += 1;
-            v.minor = 0;
-            v.patch = 0;
-        } else if (part == "minor") {
-            v.minor += 1;
-            v.patch = 0;
-        } else {
-            v.patch += 1;
-        }
-        v.prerelease.clear();
-        v.build.clear();
-        return v;
-    };
-
-    show->callback([=]() {
-        const auto repoPath = std::filesystem::absolute(*repo).lexically_normal();
-        auto verStr = ReadVersionFile(repoPath);
-        if (verStr) {
-            std::cout << *verStr << "\n";
-        } else {
-            std::cerr << "Error: VERSION file not found\n";
-            std::exit(1);
-        }
-    });
-
-    set->callback([=]() {
-        const auto repoPath = std::filesystem::absolute(*repo).lexically_normal();
-        auto v = ParseSemVer(*newVersion);
-        if (!v) {
-            std::cerr << "Error: Invalid version format: " << *newVersion << "\n";
-            std::exit(1);
-        }
-        if (!WriteVersionFile(repoPath, v->ToString())) {
-            std::cerr << "Error: Failed to write VERSION file\n";
-            std::exit(1);
-        }
-        std::cout << "Version set to " << v->ToString() << "\n";
-    });
-
-    bump->callback([=]() {
-        const auto repoPath = std::filesystem::absolute(*repo).lexically_normal();
-        auto v = getVersionOrExit(repoPath);
-        auto nextV = bumpVersion(v, *bumpPart);
-        if (!WriteVersionFile(repoPath, nextV.ToString())) {
-            std::cerr << "Error: Failed to write VERSION file\n";
-            std::exit(1);
-        }
-        std::cout << "Version bumped from " << v.ToString() << " to " << nextV.ToString() << "\n";
-    });
-
-    next->callback([=]() {
-        const auto repoPath = std::filesystem::absolute(*repo).lexically_normal();
-        auto v = getVersionOrExit(repoPath);
-        auto nextV = bumpVersion(v, *bumpPart);
-        std::cout << nextV.ToString() << "\n";
-    });
-
-    tag->callback([=]() {
-        const auto repoPath = std::filesystem::absolute(*repo).lexically_normal();
-        auto v = getVersionOrExit(repoPath);
-        std::string tagName = "v" + v.ToString();
+    cmd->callback([repo, recursive, field]() {
+        const auto rootPath = std::filesystem::weakly_canonical(std::filesystem::path(*repo));
         
-        std::cout << "Creating git tag " << tagName << "...\n";
-        auto result = shell::ExecuteCommand("git", {"tag", "-a", tagName, "-m", "Release " + tagName}, shell::ExecMode::PassThrough, repoPath);
-        if (result.exitCode != 0) {
-            std::cerr << "Error: Failed to create git tag\n";
+        std::vector<std::filesystem::path> repoPaths;
+
+        if (*recursive) {
+            kano::git::workspace::DiscoverOptions opts;
+            opts.rootDir = rootPath;
+            opts.maxDepth = 3;
+            opts.useCache = true;
+            const auto result = kano::git::workspace::DiscoverRepos(opts);
+
+            for (const auto& r : result.repos) {
+                repoPaths.push_back(r.path);
+            }
+        } else {
+            repoPaths.push_back(rootPath);
+        }
+
+        if (repoPaths.empty()) {
+            std::cerr << "Error: No git repositories found.\n";
             std::exit(1);
         }
-        std::cout << "Tag created successfully.\n";
-    });
 
-    // Default action: show
-    cmd->callback([=]() {
-        if (cmd->get_subcommands().empty()) {
-            show->execute();
+        if (!field->empty()) {
+            auto info = AnalyzeRepoVersion(rootPath, rootPath);
+            std::string targetField = *field;
+            std::string out;
+
+            if (targetField == "sha" || targetField == "hash") out = info.hash;
+            else if (targetField == "revision" || targetField == "rev") out = info.revisionCount;
+            else if (targetField == "branch") out = info.branch;
+            else if (targetField == "version") out = info.version;
+            else if (targetField == "human") out = info.branch + " (rev " + info.revisionCount + ") " + info.hash;
+            else {
+                std::cerr << "Error: Unknown field: " << targetField << "\n";
+                std::exit(1);
+            }
+            std::cout << (out.empty() ? "-" : out) << "\n";
+            return;
+        }
+
+        std::vector<ProjectVersionInfo> projects;
+        for (const auto& p : repoPaths) {
+            projects.push_back(AnalyzeRepoVersion(p, rootPath));
+        }
+
+        for (const auto& info : projects) {
+            std::cout << "[" << info.repoPath << "] " << info.repoName << "\n";
+            std::cout << "    Version:  " << info.version;
+            if (!info.versionSource.empty()) {
+                std::cout << " (source: " << info.versionSource << ")";
+            }
+            std::cout << "\n";
+            std::cout << "    Revision: " << info.branch << " (rev " << info.revisionCount << ") " << info.hash << "\n";
+            std::cout << "    Status:   " << (info.isDirty ? "Dirty" : "Clean") << "\n";
+            std::cout << "\n";
         }
     });
 }

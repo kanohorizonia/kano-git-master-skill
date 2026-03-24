@@ -14,7 +14,7 @@ function Resolve-WorkspaceRoot {
     param([string]$StartDir)
     $cursor = (Resolve-Path $StartDir).Path
     while ($true) {
-        if (Test-Path (Join-Path $cursor "kog")) {
+        if (Test-Path (Join-Path $cursor "scripts\kog.bat")) {
             return $cursor
         }
         $parent = Split-Path -Parent $cursor
@@ -31,16 +31,16 @@ function Resolve-BinDir {
         [string]$CppDir,
         [string]$PresetName
     )
-    $direct = Join-Path $CppDir "build/bin/$PresetName"
+    $direct = Join-Path $CppDir "out/bin/$PresetName"
     if (Test-Path $direct) {
         return $direct
     }
     $canonical = $PresetName -replace '-(debug|release|relwithdebinfo|minsizerel)$', ''
-    $fallback = Join-Path $CppDir "build/bin/$canonical"
+    $fallback = Join-Path $CppDir "out/bin/$canonical"
     if (Test-Path $fallback) {
         return $fallback
     }
-    throw "Cannot resolve build/bin directory for preset: $PresetName"
+    throw "Cannot resolve out/bin directory for preset: $PresetName"
 }
 
 Write-Host "Building kano-git tests with preset: $Preset"
@@ -52,7 +52,7 @@ if ([string]::IsNullOrWhiteSpace($WorkspaceRoot)) {
 }
 
 Write-Host "Building via kog self build..."
-& (Join-Path $WorkspaceRoot "kog") self build
+& (Join-Path $WorkspaceRoot "scripts\kog.bat") self build
 
 $BinDir = Resolve-BinDir -CppDir $CppRoot -PresetName $Preset
 $ExeDir = Join-Path $BinDir "release"

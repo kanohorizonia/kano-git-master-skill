@@ -1,8 +1,8 @@
 module;
 
-#include "version.hpp"
+#include "build_info.hpp"
 
-export module kano.git.version;
+export module kano.git.build_info;
 
 export namespace kano::git {
 using ::kano::git::GetBuildVersion;

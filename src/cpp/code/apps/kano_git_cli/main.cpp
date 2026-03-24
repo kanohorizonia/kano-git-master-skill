@@ -18,11 +18,9 @@
 #include <windows.h>
 #endif
 
-#if defined(KOG_USE_MODULES)
-import kano.git.version;
-#else
-#include "version.hpp"
-#endif
+#include "build_info.hpp"
+
+using namespace kano::git;
 
 namespace {
 
@@ -493,7 +491,7 @@ int main(int InArgc, char* InArgv[]) {
         "kano-git"
     };
 
-    app.set_version_flag("--version,-V", std::string{kano::git::GetBuildVersion()});
+    app.set_version_flag("--version,-V", std::string{::kano::git::GetBuildVersion()});
     app.require_subcommand(0);  // Allow running with no subcommand (shows help)
     app.fallthrough();
 

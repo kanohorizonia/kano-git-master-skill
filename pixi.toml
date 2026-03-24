@@ -15,33 +15,33 @@ ripgrep = "*"
 
 [tasks]
 env-summary = "python --version && git --version && cmake --version && ninja --version"
-bootstrap-windows-system = "bash src/cpp/build/script/windows/prerequisite_windows.sh"
-bootstrap-linux-system = "bash src/cpp/build/script/linux/prerequisite_linux.sh"
-bootstrap-macos-system = "bash src/cpp/build/script/macos/prerequisite_macos.sh"
-build-native = "bash src/cpp/build/script/windows/build_windows_ninja_msvc_release.sh"
-build-native-linux = "bash src/cpp/build/script/linux/build_linux_ninja_gcc_release.sh"
-build-native-macos = "bash src/cpp/build/script/macos/build_macos_ninja_clang_arm64_release.sh"
+bootstrap-windows-system = "bash src/cpp/scripts/windows/prerequisite_windows.sh"
+bootstrap-linux-system = "bash src/cpp/scripts/linux/prerequisite_linux.sh"
+bootstrap-macos-system = "bash src/cpp/scripts/macos/prerequisite_macos.sh"
+build-native = "bash src/cpp/scripts/windows/build_windows_ninja_msvc_release.sh"
+build-native-linux = "bash src/cpp/scripts/linux/build_linux_ninja_gcc_release.sh"
+build-native-macos = "bash src/cpp/scripts/macos/build_macos_ninja_clang_arm64_release.sh"
 quick-test = "bash src/cpp/code/tests/run_tests.sh linux-ninja-gcc-release"
 full-test = "bash src/cpp/code/tests/run_tests.sh linux-ninja-gcc-release --with-e2e"
 acceptance-quickstart = "bash src/shell/test/acceptance-quickstart-commit-push.sh"
 acceptance-commit-plan-first = "bash src/shell/test/acceptance-commit-plan-first.sh"
 
 [target.win-64.tasks]
-build-native = "bash src/cpp/build/script/windows/build_windows_ninja_msvc_release.sh"
+build-native = "bash src/cpp/scripts/windows/build_windows_ninja_msvc_release.sh"
 quick-test = "bash src/cpp/code/tests/run_tests.sh windows-ninja-msvc-release"
 full-test = "bash src/cpp/code/tests/run_tests.sh windows-ninja-msvc-release --with-e2e"
 
 [target.linux-64.tasks]
-build-native = "bash src/cpp/build/script/linux/build_linux_ninja_gcc_release.sh"
+build-native = "bash src/cpp/scripts/linux/build_linux_ninja_gcc_release.sh"
 quick-test = "bash src/cpp/code/tests/run_tests.sh linux-ninja-gcc-release"
 full-test = "bash src/cpp/code/tests/run_tests.sh linux-ninja-gcc-release --with-e2e"
 
 [target.osx-64.tasks]
-build-native = "bash src/cpp/build/script/macos/build_macos_ninja_clang_x64_release.sh"
+build-native = "bash src/cpp/scripts/macos/build_macos_ninja_clang_x64_release.sh"
 quick-test = "bash src/cpp/code/tests/run_tests.sh macos-ninja-clang-x64-release"
 full-test = "bash src/cpp/code/tests/run_tests.sh macos-ninja-clang-x64-release --with-e2e"
 
 [target.osx-arm64.tasks]
-build-native = "bash src/cpp/build/script/macos/build_macos_ninja_clang_arm64_release.sh"
+build-native = "bash src/cpp/scripts/macos/build_macos_ninja_clang_arm64_release.sh"
 quick-test = "bash src/cpp/code/tests/run_tests.sh macos-ninja-clang-arm64-release"
 full-test = "bash src/cpp/code/tests/run_tests.sh macos-ninja-clang-arm64-release --with-e2e"

@@ -1,28 +1,28 @@
-add_library(kano_git_version STATIC)
+add_library(kano_git_build_info STATIC)
 
-target_sources(kano_git_version
+target_sources(kano_git_build_info
   PRIVATE
-    public/version.hpp
+    public/build_info.hpp
 )
 
 if(NOT KOG_ENABLE_MODULES)
-  target_sources(kano_git_version
+  target_sources(kano_git_build_info
     PRIVATE
-      private/version.cpp
+      private/build_info.cpp
   )
 endif()
 
 if(KOG_ENABLE_MODULES)
-  target_sources(kano_git_version
+  target_sources(kano_git_build_info
     PUBLIC
       FILE_SET cxx_modules TYPE CXX_MODULES FILES
-        public/version.cppm
+        public/build_info.cppm
   )
 endif()
 
-kog_configure_kano_module(kano_git_version)
+kog_configure_kano_module(kano_git_build_info)
 
-target_compile_definitions(kano_git_version
+target_compile_definitions(kano_git_build_info
   PUBLIC
     KOG_BUILD_VERSION="${KOG_BUILD_VERSION_STR}"
     KOG_BUILD_VCS="${KOG_BUILD_VCS_STR}"
@@ -42,9 +42,9 @@ target_compile_definitions(kano_git_version
     KOG_BUILD_CONFIGURATION="${KOG_BUILD_CONFIGURATION_STR}"
 )
 
-target_include_directories(kano_git_version
+target_include_directories(kano_git_build_info
   PUBLIC
     public
 )
 
-add_library(kano::git_version ALIAS kano_git_version)
+add_library(kano::git_build_info ALIAS kano_git_build_info)

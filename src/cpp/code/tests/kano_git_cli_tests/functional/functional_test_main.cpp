@@ -97,7 +97,7 @@ auto SeedSelfBuildScaffolding(const RemoteCloneContext& InCtx) -> void {
     WriteTextFile(InCtx.seedRepo / "scripts/kano-git", "#!/usr/bin/env bash\nset -euo pipefail\n");
 
     const std::string buildScript = "#!/usr/bin/env bash\nset -euo pipefail\nprintf 'built\\n' > .kano-self-build-ran\n";
-    WriteTextFile(InCtx.seedRepo / "src/cpp/build/script/windows/build_windows_ninja_msvc_release.sh", buildScript);
+    WriteTextFile(InCtx.seedRepo / "src/cpp/scripts/windows/build_windows_ninja_msvc_release.sh", buildScript);
     WriteTextFile(InCtx.seedRepo / "src/cpp/build/script/windows/build_windows_ninja_msvc_arm64_release.sh", buildScript);
     WriteTextFile(InCtx.seedRepo / "src/cpp/build/script/linux/build_linux_ninja_gcc_release.sh", buildScript);
     WriteTextFile(InCtx.seedRepo / "src/cpp/build/script/macos/build_macos_ninja_clang_x64_release.sh", buildScript);

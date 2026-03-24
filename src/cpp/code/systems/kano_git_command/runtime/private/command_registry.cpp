@@ -10,6 +10,7 @@ void RegisterAll(CLI::App& InApp) {
     RegisterAmend(InApp);
     RegisterBranch(InApp);
     RegisterCache(InApp);
+    RegisterCherryPick(InApp);
     RegisterClone(InApp);
     RegisterCommit(InApp);
     RegisterCommitPush(InApp);

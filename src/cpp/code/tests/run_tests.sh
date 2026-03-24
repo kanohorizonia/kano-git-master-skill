@@ -10,7 +10,7 @@ resolve_workspace_root() {
   local cursor
   cursor="$(cd "$1" && pwd)"
   while true; do
-    if [[ -f "$cursor/kog" ]]; then
+    if [[ -f "$cursor/scripts/kog" ]]; then
       printf '%s\n' "$cursor"
       return 0
     fi
@@ -26,14 +26,14 @@ resolve_workspace_root() {
 resolve_bin_dir() {
   local cpp_dir="$1"
   local preset_name="$2"
-  if [[ -d "$cpp_dir/build/bin/$preset_name" ]]; then
-    printf '%s\n' "$cpp_dir/build/bin/$preset_name"
+  if [[ -d "$cpp_dir/out/bin/$preset_name" ]]; then
+    printf '%s\n' "$cpp_dir/out/bin/$preset_name"
     return 0
   fi
   local canonical
   canonical="$(printf '%s' "$preset_name" | sed -E 's/-(debug|release|relwithdebinfo|minsizerel)$//')"
-  if [[ -d "$cpp_dir/build/bin/$canonical" ]]; then
-    printf '%s\n' "$cpp_dir/build/bin/$canonical"
+  if [[ -d "$cpp_dir/out/bin/$canonical" ]]; then
+    printf '%s\n' "$cpp_dir/out/bin/$canonical"
     return 0
   fi
   return 1
@@ -53,7 +53,7 @@ if [[ -z "$WORKSPACE_ROOT" ]]; then
 fi
 
 echo "Building via kog self build..."
-"$WORKSPACE_ROOT/kog" self build
+"$WORKSPACE_ROOT/scripts/kog" self build
 
 BIN_DIR="$(resolve_bin_dir "$CPP_ROOT" "$PRESET")"
 EXE_DIR="$BIN_DIR/release"

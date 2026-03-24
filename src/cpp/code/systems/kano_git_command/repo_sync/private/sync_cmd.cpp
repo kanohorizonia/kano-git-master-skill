@@ -1,5 +1,5 @@
 // sync command — Repository synchronization workflows
-// Delegates to: scripts/commit-tools/sync/smart-sync*.sh
+// Uses native Git synchronization and kog-managed workflows
 
 #include <CLI/CLI.hpp>
 #include "discovery.hpp"
@@ -106,7 +106,7 @@ auto IsGitRepo(const std::filesystem::path& InRepo) -> bool {
 }
 
 auto LooksLikeSelfRepoRoot(const std::filesystem::path& InRepo) -> bool {
-    return std::filesystem::exists((InRepo / "src/cpp/build/script").lexically_normal()) &&
+    return std::filesystem::exists((InRepo / "src/cpp/scripts").lexically_normal()) &&
            std::filesystem::exists((InRepo / "scripts/kano-git").lexically_normal());
 }
 
@@ -160,7 +160,7 @@ auto HeadRangeTouchesSelfCpp(const std::filesystem::path& InRepo,
 }
 
 auto ResolveSelfBuildScript(const std::filesystem::path& InSelfRepoRoot) -> std::filesystem::path {
-    const auto base = (InSelfRepoRoot / "src/cpp/build/script").lexically_normal();
+    const auto base = (InSelfRepoRoot / "src/cpp/scripts").lexically_normal();
 #if defined(_WIN32)
 #if defined(_M_ARM64)
     return (base / "windows/build_windows_ninja_msvc_arm64_release.sh").lexically_normal();
