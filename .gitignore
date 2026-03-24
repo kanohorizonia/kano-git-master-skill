@@ -26,8 +26,13 @@ _kano/
 skills/
 *.bak
 *.code-workspace
+*.gcda
+*.gcno
 *.local
 *.log
+*.pgc
+*.pgd
+*.profraw
 *.pyc
 *.swo
 *.swp

@@ -486,6 +486,102 @@ foreach(cfg IN ITEMS Debug Release RelWithDebInfo MinSizeRel)
     set(CMAKE_COMPILE_PDB_OUTPUT_DIRECTORY_${cfg_upper} "${KOG_SYMBOL_ROOT}/${cfg_lower}")
 endforeach()
 
+# =============================================================================
+# Coverage and Profile-Guided Optimization (PGO) Options
+# =============================================================================
+option(KOG_ENABLE_COVERAGE "Enable code coverage instrumentation" OFF)
+set(KOG_PGO_MODE "off" CACHE STRING "PGO mode: off|collect|use")
+set_property(CACHE KOG_PGO_MODE PROPERTY STRINGS off collect use)
+set(KOG_PGO_LTCG "auto" CACHE STRING "PGO LTCG/LTO: auto|off (auto enables LTCG when PGO_MODE=use)")
+set_property(CACHE KOG_PGO_LTCG PROPERTY STRINGS auto off)
+
+# Coverage flags
+if(KOG_ENABLE_COVERAGE)
+    if(MSVC)
+        # MSVC /PROFILE enables coverage with profiler
+        add_compile_options(/PROFILE)
+        add_link_options(/PROFILE)
+        set(KOG_COVERAGE_OUTPUT_DIR "${KOG_BUILD_ROOT}/coverage" CACHE PATH "Coverage output directory")
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        # GCC/Clang coverage flags
+        add_compile_options(-fprofile-arcs -ftest-coverage -fno-exceptions)
+        add_link_options(-fprofile-arcs -ftest-coverage)
+        set(KOG_COVERAGE_OUTPUT_DIR "${KOG_BUILD_ROOT}/coverage" CACHE PATH "Coverage output directory")
+    else()
+        message(WARNING "Coverage not supported for compiler: ${CMAKE_CXX_COMPILER_ID}")
+    endif()
+    message(STATUS "Coverage enabled (output: ${KOG_COVERAGE_OUTPUT_DIR})")
+endif()
+
+# PGO flags
+if(NOT KOG_PGO_MODE STREQUAL "off")
+    if(MSVC)
+        if(KOG_PGO_MODE STREQUAL "collect")
+            # Collect profile data using /GL (whole program optimization) + /LTCG /GENPROFILE (instrumented build)
+            # /GL enables whole program optimization for all compiled modules
+            # /LTCG /GENPROFILE creates instrumented build that generates .pgd file on execution
+            add_compile_options(/GL)
+            add_link_options(/LTCG /GENPROFILE)
+            message(STATUS "PGO: collect mode (MSVC /GL /LTCG /GENPROFILE - run tests to generate .pgd)")
+        elseif(KOG_PGO_MODE STREQUAL "use")
+            # Use existing profile data with /GL (whole program optimization) + /LTCG /USEPROFILE
+            # /USEPROFILE replaces the deprecated /PROFILE:Optimize
+            # PGO use mode automatically enables /LTCG for better optimization
+            add_compile_options(/GL)
+            if(NOT KOG_PGO_LTCG STREQUAL "off")
+                add_link_options(/LTCG /USEPROFILE)
+                message(STATUS "PGO: use mode with LTCG (MSVC /GL /LTCG /USEPROFILE)")
+            else()
+                add_link_options(/LTCG /USEPROFILE)
+                message(STATUS "PGO: use mode (MSVC /GL /LTCG /USEPROFILE)")
+            endif()
+        endif()
+        set(KOG_PGO_PROFILE_DIR "${KOG_BUILD_ROOT}/pgo" CACHE PATH "PGO profile data directory")
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
+        if(KOG_PGO_MODE STREQUAL "collect")
+            # GCC: instrument with -fprofile-generate
+            add_compile_options(-fprofile-generate)
+            add_link_options(-fprofile-generate)
+            message(STATUS "PGO: collect mode (GCC -fprofile-generate)")
+        elseif(KOG_PGO_MODE STREQUAL "use")
+            # GCC: use profile with -fprofile-use
+            # PGO use mode automatically enables LTO for better optimization
+            if(NOT KOG_PGO_LTCG STREQUAL "off")
+                add_compile_options(-fprofile-use -flto -fno-peel-loops -fno-tracer)
+                add_link_options(-fprofile-use -flto)
+                message(STATUS "PGO: use mode with LTO (GCC -fprofile-use -flto)")
+            else()
+                add_compile_options(-fprofile-use -fno-peel-loops -fno-tracer)
+                add_link_options(-fprofile-use)
+                message(STATUS "PGO: use mode (GCC -fprofile-use)")
+            endif()
+        endif()
+        set(KOG_PGO_PROFILE_DIR "${KOG_BUILD_ROOT}/pgo" CACHE PATH "PGO profile data directory")
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        if(KOG_PGO_MODE STREQUAL "collect")
+            # Clang: instrument with -fprofile-instr-generate
+            add_compile_options(-fprofile-instr-generate -fcoverage-mapping)
+            add_link_options(-fprofile-instr-generate -fcoverage-mapping)
+            message(STATUS "PGO: collect mode (Clang -fprofile-instr-generate)")
+        elseif(KOG_PGO_MODE STREQUAL "use")
+            # Clang: use profile with -fprofile-instr-use
+            # PGO use mode automatically enables thin LTO for better optimization
+            if(NOT KOG_PGO_LTCG STREQUAL "off")
+                add_compile_options(-fprofile-instr-use -flto=thin -fcoverage-mapping)
+                add_link_options(-fprofile-instr-use -flto=thin -fcoverage-mapping)
+                message(STATUS "PGO: use mode with thin LTO (Clang -fprofile-instr-use -flto=thin)")
+            else()
+                add_compile_options(-fprofile-instr-use -fcoverage-mapping)
+                add_link_options(-fprofile-instr-use -fcoverage-mapping)
+                message(STATUS "PGO: use mode (Clang -fprofile-instr-use)")
+            endif()
+        endif()
+        set(KOG_PGO_PROFILE_DIR "${KOG_BUILD_ROOT}/pgo" CACHE PATH "PGO profile data directory")
+    else()
+        message(WARNING "PGO not supported for compiler: ${CMAKE_CXX_COMPILER_ID}")
+    endif()
+endif()
+
 function(kog_configure_kano_module target_name)
   target_compile_features(${target_name} PUBLIC cxx_std_23)
   if(KOG_ENABLE_MODULES)

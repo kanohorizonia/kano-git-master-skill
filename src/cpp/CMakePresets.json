@@ -168,6 +168,135 @@
                 "KOG_ENABLE_MODULES": "OFF",
                 "KOG_PRESET_NAME": "macos-ninja-clang-arm64"
             }
+        },
+        {
+            "name": "linux-ninja-gcc-coverage",
+            "displayName": "Linux Ninja GCC (Coverage)",
+            "description": "Linux GCC with coverage instrumentation for collecting test coverage data",
+            "inherits": "linux-ninja-gcc",
+            "binaryDir": "${sourceDir}/out/obj/linux-ninja-gcc-coverage",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "gcc-15",
+                "CMAKE_CXX_COMPILER": "g++-15",
+                "KOG_ENABLE_MODULES": "OFF",
+                "KOG_ENABLE_COVERAGE": "ON",
+                "KOG_BUILD_TYPE": "Debug",
+                "KOG_PRESET_NAME": "linux-ninja-gcc-coverage"
+            }
+        },
+        {
+            "name": "linux-ninja-clang-coverage",
+            "displayName": "Linux Ninja Clang (Coverage)",
+            "description": "Linux Clang with coverage instrumentation for collecting test coverage data",
+            "inherits": "linux-ninja-clang",
+            "binaryDir": "${sourceDir}/out/obj/linux-ninja-clang-coverage",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "clang",
+                "CMAKE_CXX_COMPILER": "clang++",
+                "KOG_ENABLE_MODULES": "OFF",
+                "KOG_ENABLE_COVERAGE": "ON",
+                "KOG_BUILD_TYPE": "Debug",
+                "KOG_PRESET_NAME": "linux-ninja-clang-coverage"
+            }
+        },
+        {
+            "name": "windows-ninja-msvc-coverage",
+            "displayName": "Windows Ninja MSVC (Coverage)",
+            "description": "Windows MSVC with /PROFILE for coverage instrumentation",
+            "inherits": "windows-ninja-msvc",
+            "binaryDir": "${sourceDir}/out/obj/windows-ninja-msvc-coverage",
+            "cacheVariables": {
+                "KOG_ENABLE_COVERAGE": "ON",
+                "KOG_BUILD_TYPE": "Debug",
+                "KOG_PRESET_NAME": "windows-ninja-msvc-coverage"
+            }
+        },
+        {
+            "name": "linux-ninja-gcc-pgo-collect",
+            "displayName": "Linux Ninja GCC (PGO Collect)",
+            "description": "Linux GCC with PGO instrumentation - run tests to collect profile data",
+            "inherits": "linux-ninja-gcc",
+            "binaryDir": "${sourceDir}/out/obj/linux-ninja-gcc-pgo-collect",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "gcc-15",
+                "CMAKE_CXX_COMPILER": "g++-15",
+                "KOG_ENABLE_MODULES": "OFF",
+                "KOG_PGO_MODE": "collect",
+                "KOG_BUILD_TYPE": "Debug",
+                "KOG_PRESET_NAME": "linux-ninja-gcc-pgo-collect"
+            }
+        },
+        {
+            "name": "linux-ninja-gcc-pgo-use",
+            "displayName": "Linux Ninja GCC (PGO Use + LTO)",
+            "description": "Linux GCC with PGO optimization + LTO for CI production builds",
+            "inherits": "linux-ninja-gcc",
+            "binaryDir": "${sourceDir}/out/obj/linux-ninja-gcc-pgo-use",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "gcc-15",
+                "CMAKE_CXX_COMPILER": "g++-15",
+                "KOG_ENABLE_MODULES": "OFF",
+                "KOG_PGO_MODE": "use",
+                "KOG_PGO_LTCG": "auto",
+                "KOG_BUILD_TYPE": "Release",
+                "KOG_PRESET_NAME": "linux-ninja-gcc-pgo-use"
+            }
+        },
+        {
+            "name": "linux-ninja-clang-pgo-collect",
+            "displayName": "Linux Ninja Clang (PGO Collect)",
+            "description": "Linux Clang with PGO instrumentation - run tests to collect profile data",
+            "inherits": "linux-ninja-clang",
+            "binaryDir": "${sourceDir}/out/obj/linux-ninja-clang-pgo-collect",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "clang",
+                "CMAKE_CXX_COMPILER": "clang++",
+                "KOG_ENABLE_MODULES": "OFF",
+                "KOG_PGO_MODE": "collect",
+                "KOG_BUILD_TYPE": "Debug",
+                "KOG_PRESET_NAME": "linux-ninja-clang-pgo-collect"
+            }
+        },
+        {
+            "name": "linux-ninja-clang-pgo-use",
+            "displayName": "Linux Ninja Clang (PGO Use + LTO)",
+            "description": "Linux Clang with PGO optimization + thin LTO for CI production builds",
+            "inherits": "linux-ninja-clang",
+            "binaryDir": "${sourceDir}/out/obj/linux-ninja-clang-pgo-use",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "clang",
+                "CMAKE_CXX_COMPILER": "clang++",
+                "KOG_ENABLE_MODULES": "OFF",
+                "KOG_PGO_MODE": "use",
+                "KOG_PGO_LTCG": "auto",
+                "KOG_BUILD_TYPE": "Release",
+                "KOG_PRESET_NAME": "linux-ninja-clang-pgo-use"
+            }
+        },
+        {
+            "name": "windows-ninja-msvc-pgo-collect",
+            "displayName": "Windows Ninja MSVC (PGO Collect)",
+            "description": "Windows MSVC with /PROFILE - run tests to collect profile data",
+            "inherits": "windows-ninja-msvc",
+            "binaryDir": "${sourceDir}/out/obj/windows-ninja-msvc-pgo-collect",
+            "cacheVariables": {
+                "KOG_PGO_MODE": "collect",
+                "KOG_BUILD_TYPE": "Debug",
+                "KOG_PRESET_NAME": "windows-ninja-msvc-pgo-collect"
+            }
+        },
+        {
+            "name": "windows-ninja-msvc-pgo-use",
+            "displayName": "Windows Ninja MSVC (PGO Use + LTCG)",
+            "description": "Windows MSVC with /PROFILE:Optimize + /LTCG for CI production builds",
+            "inherits": "windows-ninja-msvc",
+            "binaryDir": "${sourceDir}/out/obj/windows-ninja-msvc-pgo-use",
+            "cacheVariables": {
+                "KOG_PGO_MODE": "use",
+                "KOG_PGO_LTCG": "auto",
+                "KOG_BUILD_TYPE": "Release",
+                "KOG_PRESET_NAME": "windows-ninja-msvc-pgo-use"
+            }
         }
     ],
     "buildPresets": [
@@ -268,6 +397,51 @@
         {
             "name": "macos-ninja-clang-arm64-release",
             "configurePreset": "macos-ninja-clang-arm64",
+            "configuration": "Release"
+        },
+        {
+            "name": "linux-ninja-gcc-coverage-debug",
+            "configurePreset": "linux-ninja-gcc-coverage",
+            "configuration": "Debug"
+        },
+        {
+            "name": "linux-ninja-clang-coverage-debug",
+            "configurePreset": "linux-ninja-clang-coverage",
+            "configuration": "Debug"
+        },
+        {
+            "name": "windows-ninja-msvc-coverage-debug",
+            "configurePreset": "windows-ninja-msvc-coverage",
+            "configuration": "Debug"
+        },
+        {
+            "name": "linux-ninja-gcc-pgo-collect-debug",
+            "configurePreset": "linux-ninja-gcc-pgo-collect",
+            "configuration": "Debug"
+        },
+        {
+            "name": "linux-ninja-gcc-pgo-use-release",
+            "configurePreset": "linux-ninja-gcc-pgo-use",
+            "configuration": "Release"
+        },
+        {
+            "name": "linux-ninja-clang-pgo-collect-debug",
+            "configurePreset": "linux-ninja-clang-pgo-collect",
+            "configuration": "Debug"
+        },
+        {
+            "name": "linux-ninja-clang-pgo-use-release",
+            "configurePreset": "linux-ninja-clang-pgo-use",
+            "configuration": "Release"
+        },
+        {
+            "name": "windows-ninja-msvc-pgo-collect-debug",
+            "configurePreset": "windows-ninja-msvc-pgo-collect",
+            "configuration": "Debug"
+        },
+        {
+            "name": "windows-ninja-msvc-pgo-use-release",
+            "configurePreset": "windows-ninja-msvc-pgo-use",
             "configuration": "Release"
         }
     ]
