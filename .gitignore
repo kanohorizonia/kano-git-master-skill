@@ -65,3 +65,19 @@ src/cpp/test_1444.bat
 src/cpp/test_env.bat
 src/cpp/patch_extras.py
 
+# Mock/test artifacts
+mock_*.txt
+mock_ue_project/
+mock_output_*.txt
+
+# Wix build artifacts
+src/wix/code/
+src/wix/payload/
+src/wix/scripts/
+
+# Build logs
+build_full_log.txt
+
+# Kano cache
+src/.kano/
+
