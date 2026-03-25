@@ -94,9 +94,76 @@ bash src/shell/test/acceptance-ignore-plan.sh
 
 ### Put helpers under `src/shell/support/` when
 
-- they generate assets or wrappers
 - they are scaffolding/maintenance helpers
 - they are not runtime command flows and not tests
+
+## User Story Coverage Mapping
+
+Each user story maps to CLI commands and their test coverage.
+
+### Command Inventory
+
+| Command | Description | Test Coverage |
+|---------|-------------|--------------|
+| `discover` | Discover repositories in workspace | CLI: 5 tests (discovery, gitignore, kogignore, external) |
+| `init` | Initialize a new workspace | Not yet tested |
+| `plan` | Plan repository updates | CLI: 2 tests (freshness verification) |
+| `commit` | AI-powered commit message generation | CLI: 10+ tests (commit-push workflow, secret gate, detached HEAD) |
+| `push` | Multi-remote push workflow | CLI: 3 tests (policy enforcement) |
+| `sync` | Repository synchronization | CLI: 5 tests (post-sync, locks, Windows, self-build) |
+| `pr` | GitHub PR workflow | Not yet tested |
+| `status` | Repository status display | CLI: 1 test (table width adaptation) |
+| `clone` | Clone with upstream support | Not yet tested |
+| `branch` | Branch operations | Not yet tested |
+| `cache` | Cache management | Not yet tested |
+| `config` | Configuration management | Not yet tested |
+| `log` | Git log with AI enhancement | Not yet tested |
+| `resolve` | AI-powered conflict resolution | Not yet tested |
+| `doctor` | Environment health checks | Not yet tested |
+| `worktree` | Git worktree management | Not yet tested |
+| `submodule` | Enhanced submodule management | CLI: 2 tests (add, passthrough) |
+| `subtree` | Git subtree operations | Not yet tested |
+| `scalar` | Git Scalar mono-repo | Not yet tested |
+| `p4` | Git-Perforce bridge | Not yet tested |
+| `svn` | Git-Subversion bridge | Not yet tested |
+
+### User Story to Test Mapping
+
+| US-ID | User Story | CLI Command(s) | Test Location | Status |
+|-------|------------|----------------|---------------|--------|
+| US-001 | As a developer, I want to discover all repositories in my workspace | `discover` | `functional_test_main.cpp: workspace_discover_*` | ✅ Covered |
+| US-002 | As a developer, I want to initialize a new workspace | `init` | — | ❌ Missing |
+| US-003 | As a developer, I want to plan repository updates before applying | `plan` | `functional_test_main.cpp: plan_*` | ✅ Covered |
+| US-004 | As a developer, I want to commit with AI-generated messages | `commit` | `functional_test_main.cpp: commit_push_*` | ✅ Covered |
+| US-005 | As a developer, I want to push to multiple remotes | `push` | `functional_test_main.cpp: push_*` | ✅ Covered |
+| US-006 | As a developer, I want to sync repositories with upstream | `sync` | `functional_test_main.cpp: sync_*` | ✅ Covered |
+| US-007 | As a developer, I want to create GitHub PRs | `pr` | — | ❌ Missing |
+| US-008 | As a developer, I want to see repository status | `status` | `functional_test_main.cpp: repo_status_*` | ✅ Covered |
+| US-009 | As a developer, I want to clone repos with upstream setup | `clone` | — | ❌ Missing |
+| US-010 | As a developer, I want to manage branches | `branch` | — | ❌ Missing |
+| US-011 | As a developer, I want to resolve merge conflicts with AI | `resolve` | — | ❌ Missing |
+| US-012 | As a developer, I want to manage git worktrees | `worktree` | — | ❌ Missing |
+| US-013 | As a developer, I want to manage submodules | `submodule` | `functional_test_main.cpp: submodule_*` | ✅ Covered |
+| US-014 | As a developer, I want to check environment health | `doctor` | — | ❌ Missing |
+| US-015 | As a developer, I want to protect secrets in commits | `commit` (secret-gate) | `functional_test_main.cpp: secret_gate_*` | ✅ Covered |
+
+### TUI Component Coverage
+
+TUI tests cover the terminal UI components, not individual commands:
+
+| Component | Test Location | Coverage |
+|-----------|---------------|----------|
+| AutocompleteEngine | `test_autocomplete_engine.cpp` | Command/option completion |
+| CommandExecutor | `test_command_executor.cpp` | Command parsing and execution |
+| CommandModeState | `test_command_mode_state.cpp` | Input buffer, candidate selection |
+| MetadataCache | `test_metadata_cache.cpp` | CLI metadata extraction |
+| TuiState | `test_tui_state.cpp` | Mode transitions, state management |
+
+### Coverage Targets
+
+- **Current baseline**: 86.48% line coverage (TUI tests only)
+- **Target**: 80% coverage across all user stories
+- **Priority gaps**: US-002 (init), US-007 (pr), US-009 (clone), US-011 (resolve)
 
 ## Current Coverage Snapshot
 
