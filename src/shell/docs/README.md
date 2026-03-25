@@ -8,7 +8,7 @@ The pipeline keeps the source of truth inside this repository:
 
 - `docs/` provides the markdown source content
 - `src/shell/docs/` prepares and builds the static site
-- `.github/workflows/docs-deploy.yml` publishes the built site to GitHub Pages
+- `.github/workflows/cd-docs.yml` publishes the built site to GitHub Pages
 
 ## Local usage
 
@@ -16,20 +16,21 @@ The pipeline keeps the source of truth inside this repository:
 ./src/shell/docs/build-and-deploy.sh
 ```
 
-This creates a local workspace under `_ws/` and writes the built site to `_ws/build/public`.
+This creates a local workspace under `_site/` and writes the built site to `_site/build/public`.
 
 ## Workspace layout
 
 ```text
-_ws/
+_site/
 ├── src/
-│   ├── raw/        # primary documentation source checkout
-│   ├── raw_xxx/    # optional additional raw sources
-│   └── quartz/     # Quartz engine checkout
+│   ├── raw_skillrepo/        # primary documentation source checkout
+│   ├── raw_test/             # test reports from CI artifacts (CI mode)
+│   ├── raw_coverage/         # coverage reports from CI artifacts (CI mode)
+│   └── quartz/               # Quartz engine checkout
 ├── build/
 │   ├── content_quartz/
 │   ├── content_api/
-│   └── public/
+│   └── public/               # Quartz output (deploy to GitHub Pages)
 └── deploy/
     └── gh-pages/   # optional local branch checkout for manual publish flows
 ```
@@ -40,8 +41,8 @@ _ws/
 
 ## API docs
 
-- `src/shell/docs/04-build-api-docs.sh` generates C++ API docs with Doxygen into `_ws/build/content_api/doxygen-html`.
-- `src/shell/docs/05-stage-api-docs.sh` stages that output into `_ws/build/public/api-docs`.
+- `src/shell/docs/04-build-api-docs.sh` generates C++ API docs with Doxygen into `_site/build/content_api/doxygen-html`.
+- `src/shell/docs/05-stage-api-docs.sh` stages that output into `_site/build/public/api-docs`.
 - If `doxygen` is unavailable locally, API docs generation is skipped with a warning so narrative docs can still be built.
 
 ## CI usage
@@ -50,4 +51,4 @@ _ws/
 ./src/shell/docs/build-and-deploy.sh --ci "$(pwd)"
 ```
 
-In CI mode, the workflow pre-checks out Quartz and the current repository, then uploads `_ws/build/public` as the Pages artifact.
+In CI mode, the workflow pre-checks out Quartz and the current repository, then uploads `_site/build/public` as the Pages artifact.

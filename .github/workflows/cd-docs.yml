@@ -30,7 +30,7 @@ jobs:
       - name: Checkout skill repo (raw_skillrepo)
         uses: actions/checkout@v4
         with:
-          path: _ws/src/raw_skillrepo
+          path: _site/src/raw_skillrepo
 
       - name: Read docs build configuration
         id: config
@@ -39,7 +39,7 @@ jobs:
           python - <<'PY' >> "$GITHUB_OUTPUT"
           import json
           from pathlib import Path
-          config = json.loads(Path('_ws/src/raw_skillrepo/src/shell/docs/config/build.json').read_text(encoding='utf-8'))
+          config = json.loads(Path('_site/src/raw_skillrepo/src/shell/docs/config/build.json').read_text(encoding='utf-8'))
           print(f"quartz_version={config['quartz']['version']}")
           print(f"node_version={config['build']['node_version']}")
           PY
@@ -49,14 +49,14 @@ jobs:
         with:
           repository: jackyzha0/quartz
           ref: ${{ steps.config.outputs.quartz_version }}
-          path: _ws/src/quartz
+          path: _site/src/quartz
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: ${{ steps.config.outputs.node_version }}
           cache: npm
-          cache-dependency-path: _ws/src/quartz/package-lock.json
+          cache-dependency-path: _site/src/quartz/package-lock.json
 
       - name: Install Doxygen and Graphviz
         run: |
@@ -74,7 +74,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: coverage-reports
-          path: _ws/src/raw_coverage_report/docs/coverage
+          path: _site/src/raw_coverage/docs/coverage
           workflow: ${{ github.event.workflow_run.workflow_id }}
           run-id: ${{ github.event.workflow_run.workflow_id }}
 
@@ -83,10 +83,10 @@ jobs:
         shell: bash
         run: |
           # Ensure coverage directory exists even if no artifacts
-          mkdir -p _ws/src/raw_coverage_report/docs/coverage
+          mkdir -p _site/src/raw_coverage/docs/coverage
           # List what we got
           echo "Coverage artifacts downloaded:"
-          ls -la _ws/src/raw_coverage_report/docs/coverage/ 2>/dev/null || echo "(none)"
+          ls -la _site/src/raw_coverage/docs/coverage/ 2>/dev/null || echo "(none)"
 
       # ─────────────────────────────────────────────────────────────────────────
       # Build docs site
@@ -94,8 +94,8 @@ jobs:
       - name: Build docs site
         shell: bash
         run: |
-          chmod +x _ws/src/raw_skillrepo/src/shell/docs/build-and-deploy.sh
-          _ws/src/raw_skillrepo/src/shell/docs/build-and-deploy.sh --ci "$PWD"
+          chmod +x _site/src/raw_skillrepo/src/shell/docs/build-and-deploy.sh
+          _site/src/raw_skillrepo/src/shell/docs/build-and-deploy.sh --ci "$PWD"
 
       # ─────────────────────────────────────────────────────────────────────────
       # Copy coverage into public output
@@ -104,8 +104,8 @@ jobs:
         if: github.event_name == 'workflow_run'
         shell: bash
         run: |
-          COVERAGE_SRC="_ws/src/raw_coverage_report/docs/coverage"
-          COVERAGE_DST="_ws/build/public/coverage"
+          COVERAGE_SRC="_site/src/raw_coverage/docs/coverage"
+          COVERAGE_DST="_site/build/public/coverage"
           if [[ -d "$COVERAGE_SRC" ]] && [[ -n "$(ls -A "$COVERAGE_SRC" 2>/dev/null)" ]]; then
             echo "Copying coverage reports to output..."
             mkdir -p "$COVERAGE_DST"
@@ -119,7 +119,7 @@ jobs:
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: _ws/build/public
+          path: _site/build/public
 
   deploy:
     environment:

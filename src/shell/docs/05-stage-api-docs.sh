@@ -6,7 +6,7 @@ if [ $# -eq 1 ]; then
 else
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-  BUILD_DIR="$REPO_ROOT/_ws/build"
+  BUILD_DIR="$REPO_ROOT/_site/build"
 fi
 
 API_HTML_DIR="$BUILD_DIR/content_api/doxygen-html"

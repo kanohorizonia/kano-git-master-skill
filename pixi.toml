@@ -13,35 +13,105 @@ ninja = "*"
 python = "3.12.*"
 ripgrep = "*"
 
+# =============================================================================
+# Universal tasks (work on all platforms)
+# =============================================================================
 [tasks]
 env-summary = "python --version && git --version && cmake --version && ninja --version"
+
+# Bootstrap
 bootstrap-windows-system = "bash src/cpp/scripts/windows/prerequisite_windows.sh"
 bootstrap-linux-system = "bash src/cpp/scripts/linux/prerequisite_linux.sh"
 bootstrap-macos-system = "bash src/cpp/scripts/macos/prerequisite_macos.sh"
-build-native = "bash src/cpp/scripts/windows/build_windows_ninja_msvc_release.sh"
-build-native-linux = "bash src/cpp/scripts/linux/build_linux_ninja_gcc_release.sh"
-build-native-macos = "bash src/cpp/scripts/macos/build_macos_ninja_clang_arm64_release.sh"
+
+# Development build (Debug preset - fast iteration)
+# kog self-build is for human developers; use this for skill development
+build-dev = "bash src/cpp/scripts/windows/ninja-msvc-debug.sh"
+build-dev-linux = "bash src/cpp/scripts/linux/ninja-clang-debug.sh"
+build-dev-macos = "bash src/cpp/scripts/macos/ninja-clang-debug.sh"
+
+# Release build (optimized)
+build-release = "bash src/cpp/scripts/windows/build_windows_ninja_msvc_release.sh"
+build-release-linux = "bash src/cpp/scripts/linux/build_linux_ninja_gcc_release.sh"
+build-release-macos = "bash src/cpp/scripts/macos/build_macos_ninja_clang_arm64_release.sh"
+
+# Coverage workflow (CI-ready)
+build-coverage-win = "bash src/cpp/scripts/windows/ninja-msvc-coverage-build.sh"
+build-coverage-linux = "bash src/cpp/scripts/linux/ninja-clang-coverage-build.sh"
+build-coverage-macos = "bash src/cpp/scripts/macos/ninja-clang-coverage-build.sh"
+test-coverage-win = "bash src/cpp/scripts/windows/ninja-msvc-coverage-run.sh"
+test-coverage-linux = "bash src/cpp/scripts/linux/ninja-clang-coverage-run.sh"
+test-coverage-macos = "bash src/cpp/scripts/macos/ninja-clang-coverage-run.sh"
+report-coverage-win = "bash src/cpp/scripts/windows/ninja-msvc-coverage-report.sh"
+report-coverage-linux = "bash src/cpp/scripts/linux/ninja-clang-coverage-report.sh"
+report-coverage-macos = "bash src/cpp/scripts/macos/ninja-clang-coverage-report.sh"
+
+# Full coverage workflow: build + test + report
+coverage-all-win = "bash src/cpp/scripts/windows/ninja-msvc-coverage-build.sh && bash src/cpp/scripts/windows/ninja-msvc-coverage-run.sh && bash src/cpp/scripts/windows/ninja-msvc-coverage-report.sh"
+coverage-all-linux = "bash src/cpp/scripts/linux/ninja-clang-coverage-build.sh && bash src/cpp/scripts/linux/ninja-clang-coverage-run.sh && bash src/cpp/scripts/linux/ninja-clang-coverage-report.sh"
+coverage-all-macos = "bash src/cpp/scripts/macos/ninja-clang-coverage-build.sh && bash src/cpp/scripts/macos/ninja-clang-coverage-run.sh && bash src/cpp/scripts/macos/ninja-clang-coverage-report.sh"
+
+# Tests
 quick-test = "bash src/cpp/code/tests/run_tests.sh linux-ninja-gcc-release"
 full-test = "bash src/cpp/code/tests/run_tests.sh linux-ninja-gcc-release --with-e2e"
+
+# Acceptance tests
 acceptance-quickstart = "bash src/shell/test/acceptance-quickstart-commit-push.sh"
 acceptance-commit-plan-first = "bash src/shell/test/acceptance-commit-plan-first.sh"
 
+# Docs site
+docs = "bash src/shell/docs/build-and-deploy.sh"
+docs-ci = "bash src/shell/docs/build-and-deploy.sh --ci $(pwd)"
+
+# =============================================================================
+# Windows-specific (win-64)
+# =============================================================================
 [target.win-64.tasks]
-build-native = "bash src/cpp/scripts/windows/build_windows_ninja_msvc_release.sh"
+# Default build = debug (fast for development)
+build = "bash src/cpp/scripts/windows/ninja-msvc-debug.sh"
+build-release = "bash src/cpp/scripts/windows/build_windows_ninja_msvc_release.sh"
+build-coverage = "bash src/cpp/scripts/windows/ninja-msvc-coverage-build.sh"
+test-coverage = "bash src/cpp/scripts/windows/ninja-msvc-coverage-run.sh"
+report-coverage = "bash src/cpp/scripts/windows/ninja-msvc-coverage-report.sh"
+coverage-all = "bash src/cpp/scripts/windows/ninja-msvc-coverage-build.sh && bash src/cpp/scripts/windows/ninja-msvc-coverage-run.sh && bash src/cpp/scripts/windows/ninja-msvc-coverage-report.sh"
 quick-test = "bash src/cpp/code/tests/run_tests.sh windows-ninja-msvc-release"
 full-test = "bash src/cpp/code/tests/run_tests.sh windows-ninja-msvc-release --with-e2e"
 
+# =============================================================================
+# Linux-specific (linux-64)
+# =============================================================================
 [target.linux-64.tasks]
-build-native = "bash src/cpp/scripts/linux/build_linux_ninja_gcc_release.sh"
+build = "bash src/cpp/scripts/linux/ninja-clang-debug.sh"
+build-release = "bash src/cpp/scripts/linux/build_linux_ninja_gcc_release.sh"
+build-coverage = "bash src/cpp/scripts/linux/ninja-clang-coverage-build.sh"
+test-coverage = "bash src/cpp/scripts/linux/ninja-clang-coverage-run.sh"
+report-coverage = "bash src/cpp/scripts/linux/ninja-clang-coverage-report.sh"
+coverage-all = "bash src/cpp/scripts/linux/ninja-clang-coverage-build.sh && bash src/cpp/scripts/linux/ninja-clang-coverage-run.sh && bash src/cpp/scripts/linux/ninja-clang-coverage-report.sh"
 quick-test = "bash src/cpp/code/tests/run_tests.sh linux-ninja-gcc-release"
 full-test = "bash src/cpp/code/tests/run_tests.sh linux-ninja-gcc-release --with-e2e"
 
+# =============================================================================
+# macOS x64-specific (osx-64)
+# =============================================================================
 [target.osx-64.tasks]
-build-native = "bash src/cpp/scripts/macos/build_macos_ninja_clang_x64_release.sh"
+build = "bash src/cpp/scripts/macos/ninja-clang-x64-debug.sh"
+build-release = "bash src/cpp/scripts/macos/build_macos_ninja_clang_x64_release.sh"
+build-coverage = "bash src/cpp/scripts/macos/ninja-clang-coverage-build.sh"
+test-coverage = "bash src/cpp/scripts/macos/ninja-clang-coverage-run.sh"
+report-coverage = "bash src/cpp/scripts/macos/ninja-clang-coverage-report.sh"
+coverage-all = "bash src/cpp/scripts/macos/ninja-clang-coverage-build.sh && bash src/cpp/scripts/macos/ninja-clang-coverage-run.sh && bash src/cpp/scripts/macos/ninja-clang-coverage-report.sh"
 quick-test = "bash src/cpp/code/tests/run_tests.sh macos-ninja-clang-x64-release"
 full-test = "bash src/cpp/code/tests/run_tests.sh macos-ninja-clang-x64-release --with-e2e"
 
+# =============================================================================
+# macOS ARM64-specific (osx-arm64)
+# =============================================================================
 [target.osx-arm64.tasks]
-build-native = "bash src/cpp/scripts/macos/build_macos_ninja_clang_arm64_release.sh"
+build = "bash src/cpp/scripts/macos/ninja-clang-arm64-debug.sh"
+build-release = "bash src/cpp/scripts/macos/build_macos_ninja_clang_arm64_release.sh"
+build-coverage = "bash src/cpp/scripts/macos/ninja-clang-arm64-coverage-build.sh"
+test-coverage = "bash src/cpp/scripts/macos/ninja-clang-arm64-coverage-run.sh"
+report-coverage = "bash src/cpp/scripts/macos/ninja-clang-arm64-coverage-report.sh"
+coverage-all = "bash src/cpp/scripts/macos/ninja-clang-arm64-coverage-build.sh && bash src/cpp/scripts/macos/ninja-clang-arm64-coverage-run.sh && bash src/cpp/scripts/macos/ninja-clang-arm64-coverage-report.sh"
 quick-test = "bash src/cpp/code/tests/run_tests.sh macos-ninja-clang-arm64-release"
 full-test = "bash src/cpp/code/tests/run_tests.sh macos-ninja-clang-arm64-release --with-e2e"

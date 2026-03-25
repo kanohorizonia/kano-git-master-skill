@@ -159,18 +159,13 @@ coverage_build() {
     fi
 
     # Try to source private repo for remote builds
+    source "$SCRIPT_DIR/private_repo_path.sh"
     local private_script=""
-    for path in \
-        "/c/Users/dorgon.chang/.agents/skills/kano-git-master-skill-private/scripts/macos_private.sh" \
-        "$HOME/.agents/skills/kano-git-master-skill-private/scripts/macos_private.sh" \
-        "/c/Users/dorgon.chang/.agents/skills/kano-git-master-skill-private/scripts/linux_private.sh" \
-        "$HOME/.agents/skills/kano-git-master-skill-private/scripts/linux_private.sh"
-    do
-        if [[ -f "$path" ]]; then
-            private_script="$path"
-            break
-        fi
-    done
+    if [[ -f "$(kog_private_script macos_private.sh)" ]]; then
+        private_script="$(kog_private_script macos_private.sh)"
+    elif [[ -f "$(kog_private_script linux_private.sh)" ]]; then
+        private_script="$(kog_private_script linux_private.sh)"
+    fi
 
     local host_os
     host_os="$(detect_host_os)"

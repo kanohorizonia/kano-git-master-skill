@@ -15,11 +15,8 @@ source "$SCRIPT_DIR/../common/unix_preset_build.sh"
 
 # Try to source private repo for remote build
 PRIVATE_SCRIPT=""
-if [[ -f "/c/Users/dorgon.chang/.agents/skills/kano-git-master-skill-private/scripts/macos_private.sh" ]]; then
-    PRIVATE_SCRIPT="/c/Users/dorgon.chang/.agents/skills/kano-git-master-skill-private/scripts/macos_private.sh"
-elif [[ -f "$HOME/.agents/skills/kano-git-master-skill-private/scripts/macos_private.sh" ]]; then
-    PRIVATE_SCRIPT="$HOME/.agents/skills/kano-git-master-skill-private/scripts/macos_private.sh"
-fi
+source "$SCRIPT_DIR/../common/private_repo_path.sh"
+PRIVATE_SCRIPT="$(kog_private_script macos_private.sh)"
 
 detect_host_and_build() {
     local InConfigurePreset="$1"

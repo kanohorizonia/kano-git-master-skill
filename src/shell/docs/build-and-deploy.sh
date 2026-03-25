@@ -31,19 +31,19 @@ if [ "$CI_MODE" = false ]; then
 else
   bash "$REPO_ROOT/src/shell/docs/02-prepare-content.sh" \
     "$REPO_ROOT" \
-    "$REPO_ROOT/_ws/src/raw" \
-    "$REPO_ROOT/_ws/build"
+    "$REPO_ROOT/_site/src/raw" \
+    "$REPO_ROOT/_site/build"
   bash "$REPO_ROOT/src/shell/docs/03-build-site.sh" \
     "$REPO_ROOT" \
-    "$REPO_ROOT/_ws/src/quartz" \
-    "$REPO_ROOT/_ws/build" \
-    "$REPO_ROOT/_ws/src/raw/src/shell/docs/config/quartz.config.template.txt"
+    "$REPO_ROOT/_site/src/quartz" \
+    "$REPO_ROOT/_site/build" \
+    "$REPO_ROOT/_site/src/raw/src/shell/docs/config/quartz.config.template.txt"
   bash "$REPO_ROOT/src/shell/docs/04-build-api-docs.sh" \
     "$REPO_ROOT" \
-    "$REPO_ROOT/_ws/src/raw" \
-    "$REPO_ROOT/_ws/build"
+    "$REPO_ROOT/_site/src/raw" \
+    "$REPO_ROOT/_site/build"
   bash "$REPO_ROOT/src/shell/docs/05-stage-api-docs.sh" \
-    "$REPO_ROOT/_ws/build"
+    "$REPO_ROOT/_site/build"
 fi
 
-echo "Docs site ready at: $REPO_ROOT/_ws/build/public"
+echo "Docs site ready at: $REPO_ROOT/_site/build/public"

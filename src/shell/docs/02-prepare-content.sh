@@ -8,8 +8,8 @@ if [ $# -eq 3 ]; then
 else
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-  RAW_DIR="$REPO_ROOT/_ws/src/raw"
-  BUILD_DIR="$REPO_ROOT/_ws/build"
+  RAW_DIR="$REPO_ROOT/_site/src/raw"
+  BUILD_DIR="$REPO_ROOT/_site/build"
 fi
 
 CONTENT_DIR="$BUILD_DIR/content_quartz"
