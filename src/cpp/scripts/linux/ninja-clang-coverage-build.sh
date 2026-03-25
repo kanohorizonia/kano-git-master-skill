@@ -22,8 +22,8 @@ source "$SCRIPT_DIR/../common/docker_linux_build.sh"
 
 echo "[coverage-build-linux] Starting Docker-based coverage build..."
 
-# Start container with source mounted
-local container_name="kano-git-coverage-$$"
+# Container name
+container_name="kano-git-coverage-$$"
 
 docker run -d \
     --name "$container_name" \
