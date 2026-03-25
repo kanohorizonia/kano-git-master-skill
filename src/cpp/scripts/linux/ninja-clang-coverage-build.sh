@@ -17,17 +17,33 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export KOG_CPP_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 KOG_COVERAGE_ROOT="${KOG_COVERAGE_ROOT:-${KOG_CPP_ROOT}/out/coverage}"
 
-# Source Docker helper
-source "$SCRIPT_DIR/../common/docker_linux_build.sh"
+# Convert Windows path to Docker-compatible format
+# On Windows with Git Bash, convert C:/path to /c/path
+to_docker_path() {
+    local p="$1"
+    if [[ "$p" =~ ^[A-Za-z]: ]]; then
+        # Convert C:/path to /c/path
+        echo "/${p:0:1:1}${p:2}" | tr '\\' '/'
+    else
+        echo "$p"
+    fi
+}
+
+# Prevent Git Bash from converting paths
+export MSYS_NO_PATHCONV=1
 
 echo "[coverage-build-linux] Starting Docker-based coverage build..."
 
 # Container name
 container_name="kano-git-coverage-$$"
 
+# Convert paths for Docker on Windows
+DOCKER_CPP_ROOT="$(to_docker_path "$KOG_CPP_ROOT")"
+DOCKER_COVERAGE_ROOT="$(to_docker_path "$KOG_COVERAGE_ROOT")"
+
 docker run -d \
     --name "$container_name" \
-    -v "$KOG_CPP_ROOT:/workspace/src/cpp:ro" \
+    -v "$DOCKER_CPP_ROOT:/workspace/src/cpp" \
     -w /workspace/src/cpp \
     ubuntu:24.04 sleep infinity \
     2>&1 || {
@@ -45,7 +61,7 @@ trap cleanup EXIT
 echo "[coverage-build-linux] Installing tools..."
 docker exec "$container_name" bash -c "
     apt-get update -qq
-    apt-get install -y -qq cmake ninja-build clang llvm > /dev/null 2>&1
+    apt-get install -y -qq cmake ninja-build clang llvm git > /dev/null 2>&1
 "
 
 echo "[coverage-build-linux] Configuring coverage build..."

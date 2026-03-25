@@ -17,13 +17,27 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export KOG_CPP_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 KOG_COVERAGE_ROOT="${KOG_COVERAGE_ROOT:-${KOG_CPP_ROOT}/out/coverage}"
 
-# Source private repo helper
-source "$SCRIPT_DIR/../common/private_repo_path.sh"
+# Convert Windows path to Docker-compatible format
+to_docker_path() {
+    local p="$1"
+    if [[ "$p" =~ ^[A-Za-z]: ]]; then
+        echo "/${p:0:1:1}${p:2}" | tr '\\' '/'
+    else
+        echo "$p"
+    fi
+}
+
+# Prevent Git Bash from converting paths
+export MSYS_NO_PATHCONV=1
 
 echo "[coverage-run-linux] Starting Docker-based coverage test run..."
 
 # Container name
 container_name="kano-git-coverage-$$"
+
+# Convert paths for Docker on Windows
+DOCKER_CPP_ROOT="$(to_docker_path "$KOG_CPP_ROOT")"
+DOCKER_COVERAGE_ROOT="$(to_docker_path "$KOG_COVERAGE_ROOT")"
 
 # Check if container already exists from build step
 if docker ps -a --format '{{.Names}}' | grep -q "^${container_name}$"; then
@@ -34,7 +48,7 @@ else
     echo "[coverage-run-linux] Starting Docker container..."
     docker run -d \
         --name "$container_name" \
-        -v "$KOG_CPP_ROOT:/workspace/src/cpp:ro" \
+        -v "$DOCKER_CPP_ROOT:/workspace/src/cpp" \
         -w /workspace/src/cpp \
         ubuntu:24.04 sleep infinity \
         2>&1 || {
