@@ -212,10 +212,26 @@ jobs:
         env:
           KOG_CPP_ROOT: ${{ github.workspace }}/src/cpp
         run: |
-          mkdir -p coverage
+          mkdir -p coverage test-results
           cd src/cpp
           $env:PATH = "$env:USERPROFILE\.dotnet\tools;$env:PATH"
+          # Run tests and capture exit code
           ./out/bin/${{ matrix.build_preset }}/${{ matrix.test_target }}
+          # Copy test output if any
+          cp -r src/cpp/out/test-results/* ../test-results/ 2>/dev/null || true
+
+      # ─── Run Tests (produces .profraw on Unix) ───────────────────────────────
+      - name: Run tests with coverage (Unix)
+        if: runner.os != 'Windows'
+        env:
+          KOG_COVERAGE_ROOT: ${{ github.workspace }}/coverage
+          LLVM_PROFILE_FILE: ${{ github.workspace }}/coverage/${{ matrix.name }}_%m.profraw
+        run: |
+          mkdir -p coverage test-results
+          cd src/cpp
+          # Run tests with JUnit output if supported
+          # Catch2 supports: --reporter junit
+          ./out/bin/${{ matrix.build_preset }}/${{ matrix.test_target }} --reporter junit --out "${{ github.workspace }}/test-results/${{ matrix.name }}.xml" || true
 
       # ─── Run Tests (produces .profraw on Unix) ───────────────────────────────
       - name: Run tests with coverage (Unix)
@@ -280,20 +296,55 @@ jobs:
           <body>
           <h1>Code Coverage Reports</h1>
           <ul>
-            <li><a href="coverage-macos-x64/index.html">macOS x64</a></li>
-            <li><a href="coverage-macos-arm64/index.html">macOS ARM64</a></li>
-            <li><a href="coverage-linux-x64/index.html">Linux x64</a></li>
-            <li><a href="coverage-windows-x64/index.html">Windows x64</a></li>
+            <li><a href="macos-x64/index.html">macOS x64</a></li>
+            <li><a href="macos-arm64/index.html">macOS ARM64</a></li>
+            <li><a href="linux-x64/index.html">Linux x64</a></li>
+            <li><a href="windows-x64/index.html">Windows x64</a></li>
           </ul>
           </body></html>
           HTMLEOF
-          tar -czf coverage-reports.tar.gz coverage/
+          # Package contents of coverage/ directly (not the directory itself)
+          tar -czf coverage-reports.tar.gz -C coverage .
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
         with:
           name: coverage-reports
           path: coverage-reports.tar.gz
+          if-no-files-found: warning
+
+      # ─── Package test results ───────────────────────────────────────────────
+      - name: Package test report
+        run: |
+          cd ${{ github.workspace }}
+          # Rename test results with platform prefix for clarity
+          for f in test-results/*.xml 2>/dev/null; do
+            if [[ -f "$f" ]]; then
+              platform="${{ matrix.name }}"
+              mv "$f" "test-results/${platform}.xml"
+            fi
+          done
+          # Create combined test results index
+          cat > test-results/index.html << 'HTMLEOF'
+          <!DOCTYPE html>
+          <html><head><title>Test Reports</title></head>
+          <body>
+          <h1>Test Reports</h1>
+          <ul>
+            <li><a href="macos-x64.xml">macOS x64</a></li>
+            <li><a href="macos-arm64.xml">macOS ARM64</a></li>
+            <li><a href="linux-x64.xml">Linux x64</a></li>
+            <li><a href="windows-x64.xml">Windows x64</a></li>
+          </ul>
+          </body></html>
+          HTMLEOF
+          tar -czf test-reports.tar.gz -C test-results .
+
+      - name: Upload test artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: test-reports.tar.gz
           if-no-files-found: warning
 
   build-windows-msi:

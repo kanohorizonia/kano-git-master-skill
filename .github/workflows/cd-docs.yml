@@ -67,26 +67,35 @@ jobs:
         uses: actions/configure-pages@v5
 
       # ─────────────────────────────────────────────────────────────────────────
-      # Coverage report: download from CI Build workflow
+      # Download artifacts from CI Build workflow
       # ─────────────────────────────────────────────────────────────────────────
       - name: Download coverage artifacts from CI Build
         if: github.event_name == 'workflow_run'
         uses: actions/download-artifact@v4
         with:
           name: coverage-reports
-          path: _site/src/raw_coverage/docs/coverage
+          path: _site/src/raw_coverage
           workflow: ${{ github.event.workflow_run.workflow_id }}
           run-id: ${{ github.event.workflow_run.workflow_id }}
 
-      - name: Prepare coverage merged report
+      - name: Download test artifacts from CI Build
+        if: github.event_name == 'workflow_run'
+        uses: actions/download-artifact@v4
+        with:
+          name: test-reports
+          path: _site/src/raw_test
+          workflow: ${{ github.event.workflow_run.workflow_id }}
+          run-id: ${{ github.event.workflow_run.workflow_id }}
+
+      - name: List downloaded artifacts
         if: github.event_name == 'workflow_run'
         shell: bash
         run: |
-          # Ensure coverage directory exists even if no artifacts
-          mkdir -p _site/src/raw_coverage/docs/coverage
-          # List what we got
-          echo "Coverage artifacts downloaded:"
-          ls -la _site/src/raw_coverage/docs/coverage/ 2>/dev/null || echo "(none)"
+          echo "Coverage artifacts:"
+          ls -la _site/src/raw_coverage/ 2>/dev/null || echo "(none)"
+          echo ""
+          echo "Test artifacts:"
+          ls -la _site/src/raw_test/ 2>/dev/null || echo "(none)"
 
       # ─────────────────────────────────────────────────────────────────────────
       # Build docs site
@@ -104,7 +113,7 @@ jobs:
         if: github.event_name == 'workflow_run'
         shell: bash
         run: |
-          COVERAGE_SRC="_site/src/raw_coverage/docs/coverage"
+          COVERAGE_SRC="_site/src/raw_coverage"
           COVERAGE_DST="_site/build/public/coverage"
           if [[ -d "$COVERAGE_SRC" ]] && [[ -n "$(ls -A "$COVERAGE_SRC" 2>/dev/null)" ]]; then
             echo "Copying coverage reports to output..."
@@ -114,6 +123,25 @@ jobs:
             ls -la "$COVERAGE_DST/"
           else
             echo "No coverage artifacts to stage (CI Build may not have produced any)"
+          fi
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # Copy test reports into public output
+      # ─────────────────────────────────────────────────────────────────────────
+      - name: Stage test report in output
+        if: github.event_name == 'workflow_run'
+        shell: bash
+        run: |
+          TEST_SRC="_site/src/raw_test"
+          TEST_DST="_site/build/public/test"
+          if [[ -d "$TEST_SRC" ]] && [[ -n "$(ls -A "$TEST_SRC" 2>/dev/null)" ]]; then
+            echo "Copying test reports to output..."
+            mkdir -p "$TEST_DST"
+            cp -r "$TEST_SRC"/* "$TEST_DST/"
+            echo "Test reports staged at: $TEST_DST"
+            ls -la "$TEST_DST/"
+          else
+            echo "No test artifacts to stage (CI Build may not have produced any)"
           fi
 
       - name: Upload Pages artifact
