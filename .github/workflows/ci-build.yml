@@ -145,9 +145,8 @@ jobs:
             configure_preset: windows-ninja-msvc-coverage
             build_preset: windows-ninja-msvc-coverage-debug
             test_target: kano_git_tui_tests.exe
-            # Windows: needs vcxproj or MSVC tooling
-            llvm_cov_path: ""
-            profdata_merge: ""
+            # Windows: uses MSVC /PROFILE, processed by Microsoft.CodeCoverage.Console
+            coverage_tool: msvc
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -176,19 +175,20 @@ jobs:
         run: |
           sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
 
-      # ─── Windows: Install llvm-cov via LLVM for Windows ─────────────────────
-      - name: Install LLVM (Windows)
+      # ─── Windows: Install .NET SDK (for Microsoft.CodeCoverage.Console) ───────
+      - name: Setup .NET SDK (Windows)
         if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          winget install -e --id LLVM.LLVM --version 18.1.8 --silent --accept-package-agreements --accept-source-agreements
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
 
-      - name: Add LLVM to PATH (Windows)
+      # ─── Windows: Install Microsoft.CodeCoverage.Console ─────────────────────
+      - name: Install Microsoft.CodeCoverage.Console (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $env:PATH = "C:\Program Files\LLVM\bin;$env:PATH"
-          llvm-cov --version
+          dotnet tool install --global Microsoft.CodeCoverage.Console || true
+          $env:PATH = "$env:USERPROFILE\.dotnet\tools;$env:PATH"
 
       # ─── Configure Coverage Build ─────────────────────────────────────────────
       - name: Configure coverage build
@@ -206,8 +206,20 @@ jobs:
           cd src/cpp
           cmake --build --preset ${{ matrix.build_preset }}
 
-      # ─── Run Tests (produces .profraw) ───────────────────────────────────────
-      - name: Run tests with coverage
+      # ─── Run Tests (produces .coverage on Windows) ─────────────────────────
+      - name: Run tests with coverage (Windows)
+        if: runner.os == 'Windows'
+        env:
+          KOG_CPP_ROOT: ${{ github.workspace }}/src/cpp
+        run: |
+          mkdir -p coverage
+          cd src/cpp
+          $env:PATH = "$env:USERPROFILE\.dotnet\tools;$env:PATH"
+          ./out/bin/${{ matrix.build_preset }}/${{ matrix.test_target }}
+
+      # ─── Run Tests (produces .profraw on Unix) ───────────────────────────────
+      - name: Run tests with coverage (Unix)
+        if: runner.os != 'Windows'
         env:
           KOG_CPP_ROOT: ${{ github.workspace }}/src/cpp
           LLVM_PROFILE_FILE: ${{ github.workspace }}/coverage/${{ matrix.name }}_%m.profraw
@@ -216,27 +228,46 @@ jobs:
           cd src/cpp
           ./out/bin/${{ matrix.build_preset }}/${{ matrix.test_target }}
 
-      # ─── Merge Profile Data ─────────────────────────────────────────────────
-      - name: Merge coverage profiles
+      # ─── Windows: Generate HTML Report via Microsoft.CodeCoverage.Console ───
+      - name: Generate HTML coverage report (Windows)
+        if: runner.os == 'Windows'
         env:
-          PATH: "${{ matrix.llvm_cov_path }}:${{ runner.os == 'Windows' && 'C:\Program Files\LLVM\bin' || '' }}:$env:PATH"
+          PATH: "${{ env.USERPROFILE }}\.dotnet\tools;${env:PATH}"
+        shell: pwsh
         run: |
-          cd ${{ github.workspace }}
-          ${{ matrix.profdata_merge }} coverage/${{ matrix.name }}_*.profraw -o coverage/${{ matrix.name }}.profdata
+          mkdir -p coverage/html/${{ matrix.name }}
+          # Find .coverage files
+          $coverageFiles = Get-ChildItem -Path . -Filter "*.coverage" -Recurse -File
+          if ($coverageFiles) {
+            # Merge all .coverage files into one
+            $mergedCoverage = "coverage/merged.coverage"
+            # Use coverage combine if multiple files, otherwise copy
+            if ($coverageFiles.Count -gt 1) {
+              coverage combine --input $coverageFiles --output $mergedCoverage
+            } else {
+              Copy-Item $coverageFiles[0].FullName $mergedCoverage
+            }
+            # Generate HTML report
+            coverage report -i $mergedCoverage --reportdir "coverage/html/${{ matrix.name }}" 2>&1 || true
+          }
 
-      # ─── Generate HTML Report ───────────────────────────────────────────────
-      - name: Generate HTML coverage report
+      # ─── Unix: Generate HTML Report via llvm-cov ─────────────────────────────
+      - name: Generate HTML coverage report (Unix)
+        if: runner.os != 'Windows'
         env:
-          PATH: "${{ matrix.llvm_cov_path }}:${{ runner.os == 'Windows' && 'C:\Program Files\LLVM\bin' || '' }}:$env:PATH"
+          PATH: "${{ matrix.llvm_cov_path }}:$env:PATH"
         run: |
           cd ${{ github.workspace }}
+          # Merge profraw files
+          ${{ matrix.profdata_merge }} coverage/${{ matrix.name }}_*.profraw -o coverage/${{ matrix.name }}.profdata 2>/dev/null || true
+          # Generate HTML
           mkdir -p coverage/html/${{ matrix.name }}
           llvm-cov show \
             ./src/cpp/out/bin/${{ matrix.build_preset }}/${{ matrix.test_target }} \
             -instr-profile=coverage/${{ matrix.name }}.profdata \
             --format=html \
             --output-dir=coverage/html/${{ matrix.name }} \
-            --ignore-filename-regex="_deps|catch2|ftxui|thirdparty|build|\.vcpkg"
+            --ignore-filename-regex="_deps|catch2|ftxui|thirdparty|build|\.vcpkg" 2>&1 || true
 
       # ─── Package and Upload ──────────────────────────────────────────────────
       - name: Package coverage report

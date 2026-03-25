@@ -229,38 +229,49 @@ coverage_build() {
 
 # ─────────────────────────────────────────────────────────────────────────────
 # coverage_build_linux_via_docker
+# Uses docker cp pattern: build inside container, copy results out
 # ─────────────────────────────────────────────────────────────────────────────
 coverage_build_linux_via_docker() {
     local preset="${1:-linux-ninja-clang-coverage}"
     local cpp_root="${KOG_CPP_ROOT:-$(pwd)/src/cpp}"
     local container_name="kano-git-coverage-$$"
-
-    # Get docker image for Linux coverage build
     local docker_image="ubuntu:24.04"
 
     echo "[coverage_build_linux_docker] Starting Docker container..."
 
-    docker run --rm \
+    # Start container in background, mount source read-only
+    docker run -d \
         --name "$container_name" \
         -v "$cpp_root:/workspace/src/cpp:ro" \
-        -v "$KOG_COVERAGE_ROOT:/workspace/coverage" \
-        -w /workspace \
-        -u "$(id -u):$(id -g)" \
-        "$docker_image" bash -c "
-            set -e
-            apt-get update
-            apt-get install -y cmake ninja-build clang llvm llvm-tools python3
-            export KOG_CPP_ROOT=/workspace/src/cpp
-            export KOG_COVERAGE_ROOT=/workspace/coverage
-            cd /workspace/src/cpp
-            cmake --preset ${preset}
-            cmake --build --preset ${preset}
-        " 2>&1 || {
-        echo "[coverage_build_linux_docker] ERROR: Docker build failed" >&2
+        -w /workspace/src/cpp \
+        "$docker_image" sleep infinity \
+        2>&1 || {
+        echo "[coverage_build_linux_docker] ERROR: Failed to start container" >&2
         return 1
     }
 
-    echo "[coverage_build_linux_docker] Done. Coverage data in: $KOG_COVERAGE_ROOT"
+    # Install tools and build inside container
+    docker exec "$container_name" bash -c "
+        set -e
+        apt-get update
+        apt-get install -y cmake ninja-build clang llvm llvm-tools python3 git
+        cmake --preset ${preset}
+        cmake --build --preset ${preset}
+    " 2>&1 || {
+        echo "[coverage_build_linux_docker] ERROR: Docker build failed" >&2
+        docker rm -f "$container_name" 2>/dev/null
+        return 1
+    }
+
+    # Copy build output back to host
+    docker cp "$container_name:/workspace/src/cpp/out" "$KOG_COVERAGE_ROOT/linux-out" 2>&1
+    docker cp "$container_name:/workspace/src/cpp/_deps" "$KOG_COVERAGE_ROOT/linux-deps" 2>&1 || true
+
+    # Cleanup
+    docker rm -f "$container_name" 2>/dev/null
+
+    echo "[coverage_build_linux_docker] Done."
+    echo "[coverage_build_linux_docker] Build output copied to: $KOG_COVERAGE_ROOT/linux-out"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -322,21 +333,30 @@ coverage_run_tests() {
     fi
 
     # Determine binary path from preset
+    # Note: Linux Docker builds copy output to $KOG_COVERAGE_ROOT/linux-out/
     local binary_dir=""
+    local cpp_root="${KOG_CPP_ROOT:-$(pwd)/src/cpp}"
+    local binary_path=""
+
     case "$preset" in
         macos-*)
             binary_dir="out/bin/${preset}"
+            binary_path="$cpp_root/$binary_dir/$test_binary"
             ;;
         linux-*)
-            binary_dir="out/bin/${preset}"
+            # Check if Docker build was used (output copied to $KOG_COVERAGE_ROOT/linux-out)
+            if [[ -d "$KOG_COVERAGE_ROOT/linux-out/bin/${preset}" ]]; then
+                binary_path="$KOG_COVERAGE_ROOT/linux-out/bin/${preset}/$test_binary"
+            else
+                binary_dir="out/bin/${preset}"
+                binary_path="$cpp_root/$binary_dir/$test_binary"
+            fi
             ;;
         windows-*)
             binary_dir="out/bin/${preset}"
+            binary_path="$cpp_root/$binary_dir/$test_binary"
             ;;
     esac
-
-    local cpp_root="${KOG_CPP_ROOT:-$(pwd)/src/cpp}"
-    local binary_path="$cpp_root/$binary_dir/$test_binary"
 
     if [[ ! -f "$binary_path" ]]; then
         echo "[coverage_run_tests] ERROR: Binary not found: $binary_path" >&2
