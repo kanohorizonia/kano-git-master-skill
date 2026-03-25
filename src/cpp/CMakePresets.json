@@ -232,6 +232,37 @@
             }
         },
         {
+            "name": "macos-ninja-clang-coverage",
+            "displayName": "macOS Ninja Clang (Coverage)",
+            "description": "macOS Clang with coverage instrumentation for collecting test coverage data (unified with PGO collect)",
+            "inherits": "macos-ninja-clang",
+            "binaryDir": "${sourceDir}/out/obj/macos-ninja-clang-coverage",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "clang",
+                "CMAKE_CXX_COMPILER": "clang++",
+                "KOG_ENABLE_MODULES": "OFF",
+                "KOG_ENABLE_COVERAGE": "ON",
+                "KOG_BUILD_TYPE": "Debug",
+                "KOG_PRESET_NAME": "macos-ninja-clang-coverage"
+            }
+        },
+        {
+            "name": "macos-ninja-clang-arm64-coverage",
+            "displayName": "macOS Ninja Clang ARM64 (Coverage)",
+            "description": "macOS Clang ARM64 with coverage instrumentation for collecting test coverage data (unified with PGO collect)",
+            "inherits": "macos-ninja-clang-arm64",
+            "binaryDir": "${sourceDir}/out/obj/macos-ninja-clang-arm64-coverage",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "clang",
+                "CMAKE_CXX_COMPILER": "clang++",
+                "CMAKE_OSX_ARCHITECTURES": "arm64",
+                "KOG_ENABLE_MODULES": "OFF",
+                "KOG_ENABLE_COVERAGE": "ON",
+                "KOG_BUILD_TYPE": "Debug",
+                "KOG_PRESET_NAME": "macos-ninja-clang-arm64-coverage"
+            }
+        },
+        {
             "name": "linux-ninja-gcc-coverage",
             "displayName": "Linux Ninja GCC (Coverage)",
             "description": "Linux GCC with coverage instrumentation for collecting test coverage data",
@@ -480,6 +511,16 @@
             "name": "macos-ninja-clang-arm64-pgo-use-release",
             "configurePreset": "macos-ninja-clang-arm64-pgo-use",
             "configuration": "Release"
+        },
+        {
+            "name": "macos-ninja-clang-coverage-debug",
+            "configurePreset": "macos-ninja-clang-coverage",
+            "configuration": "Debug"
+        },
+        {
+            "name": "macos-ninja-clang-arm64-coverage-debug",
+            "configurePreset": "macos-ninja-clang-arm64-coverage",
+            "configuration": "Debug"
         },
         {
             "name": "linux-ninja-gcc-coverage-debug",

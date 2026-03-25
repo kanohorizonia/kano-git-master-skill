@@ -496,17 +496,30 @@ set(KOG_PGO_LTCG "auto" CACHE STRING "PGO LTCG/LTO: auto|off (auto enables LTCG 
 set_property(CACHE KOG_PGO_LTCG PROPERTY STRINGS auto off)
 
 # Coverage flags
+# NOTE: For Clang, we use PGO-style instrumentation (-fprofile-instr-generate -fcoverage-mapping)
+# which produces .profraw files. This unifies coverage and PGO collect: one test run generates
+# data for both coverage report AND PGO profile. llvm-cov is used for reporting.
+# For GCC, we fall back to traditional -fprofile-arcs -ftest-coverage (gcov style).
+# For MSVC, /PROFILE works for both.
 if(KOG_ENABLE_COVERAGE)
     if(MSVC)
         # MSVC /PROFILE enables coverage with profiler
         add_compile_options(/PROFILE)
         add_link_options(/PROFILE)
         set(KOG_COVERAGE_OUTPUT_DIR "${KOG_BUILD_ROOT}/coverage" CACHE PATH "Coverage output directory")
-    elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-        # GCC/Clang coverage flags
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        # Clang-native PGO-style instrumentation: works for both coverage AND PGO collect
+        # NOTE: Do NOT add -fno-exceptions - the codebase uses exceptions
+        add_compile_options(-fprofile-instr-generate -fcoverage-mapping)
+        add_link_options(-fprofile-instr-generate -fcoverage-mapping)
+        set(KOG_COVERAGE_OUTPUT_DIR "${KOG_BUILD_ROOT}/coverage" CACHE PATH "Coverage output directory")
+        message(STATUS "Coverage: Clang PGO-style (llvm-cov reporting, unified with PGO collect)")
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
+        # GCC traditional coverage
         add_compile_options(-fprofile-arcs -ftest-coverage -fno-exceptions)
         add_link_options(-fprofile-arcs -ftest-coverage)
         set(KOG_COVERAGE_OUTPUT_DIR "${KOG_BUILD_ROOT}/coverage" CACHE PATH "Coverage output directory")
+        message(STATUS "Coverage: GCC traditional (gcov reporting)")
     else()
         message(WARNING "Coverage not supported for compiler: ${CMAKE_CXX_COMPILER_ID}")
     endif()
