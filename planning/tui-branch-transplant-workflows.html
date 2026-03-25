@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="en"><head><title>tui-branch-transplant-workflows</title><meta charset="utf-8"/><link rel="preconnect" href="https://fonts.googleapis.com"/><link rel="preconnect" href="https://fonts.gstatic.com"/><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM Plex Mono&amp;family=Schibsted Grotesk:wght@400;700&amp;family=Source Sans Pro:ital,wght@0,400;0,600;1,400;1,600&amp;display=swap"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><meta property="og:title" content="tui-branch-transplant-workflows"/><meta property="og:description" content="TUI Branch Transplant Workflows Date: 2026-03-13 Status: Planning Scope: kog tui branch-to-branch transplant UX for cherry-pick and rebase assist Overview This document defines ..."/><meta property="og:image" content="https://kanohorizonia.github.io/kano-git-master-skill/static/og-image.png"/><meta property="og:width" content="1200"/><meta property="og:height" content="675"/><link rel="icon" href="../static/icon.png"/><meta name="description" content="TUI Branch Transplant Workflows Date: 2026-03-13 Status: Planning Scope: kog tui branch-to-branch transplant UX for cherry-pick and rebase assist Overview This document defines ..."/><meta name="generator" content="Quartz"/><link href="../index.css" rel="stylesheet" type="text/css" spa-preserve/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css" rel="stylesheet" type="text/css" spa-preserve/><script src="../prescript.js" type="application/javascript" spa-preserve></script><script type="application/javascript" spa-preserve>const fetchData = fetch("../static/contentIndex.json").then(data => data.json())</script></head><body data-slug="planning/tui-branch-transplant-workflows"><div id="quartz-root" class="page"><div id="quartz-body"><div class="left sidebar"><h2 class="page-title"><a href="..">Kano Git Master Skill</a></h2><div class="spacer mobile-only"></div><div class="search"><button class="search-button" id="search-button"><p>Search</p><svg role="img" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 19.9 19.7"><title>Search</title><g class="search-path" fill="none"><path stroke-linecap="square" d="M18.5 18.3l-5.4-5.4"></path><circle cx="8" cy="8" r="7"></circle></g></svg></button><div id="search-container"><div id="search-space"><input autocomplete="off" id="search-bar" name="search" type="text" aria-label="Search for something" placeholder="Search for something"/><div id="search-layout" data-preview="true"></div></div></div></div><button class="darkmode" id="darkmode"><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" id="dayIcon" x="0px" y="0px" viewBox="0 0 35 35" style="enable-background:new 0 0 35 35" xml:space="preserve" aria-label="Dark mode"><title>Dark mode</title><path d="M6,17.5C6,16.672,5.328,16,4.5,16h-3C0.672,16,0,16.672,0,17.5    S0.672,19,1.5,19h3C5.328,19,6,18.328,6,17.5z M7.5,26c-0.414,0-0.789,0.168-1.061,0.439l-2,2C4.168,28.711,4,29.086,4,29.5    C4,30.328,4.671,31,5.5,31c0.414,0,0.789-0.168,1.06-0.44l2-2C8.832,28.289,9,27.914,9,27.5C9,26.672,8.329,26,7.5,26z M17.5,6    C18.329,6,19,5.328,19,4.5v-3C19,0.672,18.329,0,17.5,0S16,0.672,16,1.5v3C16,5.328,16.671,6,17.5,6z M27.5,9    c0.414,0,0.789-0.168,1.06-0.439l2-2C30.832,6.289,31,5.914,31,5.5C31,4.672,30.329,4,29.5,4c-0.414,0-0.789,0.168-1.061,0.44    l-2,2C26.168,6.711,26,7.086,26,7.5C26,8.328,26.671,9,27.5,9z M6.439,8.561C6.711,8.832,7.086,9,7.5,9C8.328,9,9,8.328,9,7.5    c0-0.414-0.168-0.789-0.439-1.061l-2-2C6.289,4.168,5.914,4,5.5,4C4.672,4,4,4.672,4,5.5c0,0.414,0.168,0.789,0.439,1.06    L6.439,8.561z M33.5,16h-3c-0.828,0-1.5,0.672-1.5,1.5s0.672,1.5,1.5,1.5h3c0.828,0,1.5-0.672,1.5-1.5S34.328,16,33.5,16z     M28.561,26.439C28.289,26.168,27.914,26,27.5,26c-0.828,0-1.5,0.672-1.5,1.5c0,0.414,0.168,0.789,0.439,1.06l2,2    C28.711,30.832,29.086,31,29.5,31c0.828,0,1.5-0.672,1.5-1.5c0-0.414-0.168-0.789-0.439-1.061L28.561,26.439z M17.5,29    c-0.829,0-1.5,0.672-1.5,1.5v3c0,0.828,0.671,1.5,1.5,1.5s1.5-0.672,1.5-1.5v-3C19,29.672,18.329,29,17.5,29z M17.5,7    C11.71,7,7,11.71,7,17.5S11.71,28,17.5,28S28,23.29,28,17.5S23.29,7,17.5,7z M17.5,25c-4.136,0-7.5-3.364-7.5-7.5    c0-4.136,3.364-7.5,7.5-7.5c4.136,0,7.5,3.364,7.5,7.5C25,21.636,21.636,25,17.5,25z"></path></svg><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" id="nightIcon" x="0px" y="0px" viewBox="0 0 100 100" style="enable-background:new 0 0 100 100" xml:space="preserve" aria-label="Light mode"><title>Light mode</title><path d="M96.76,66.458c-0.853-0.852-2.15-1.064-3.23-0.534c-6.063,2.991-12.858,4.571-19.655,4.571  C62.022,70.495,50.88,65.88,42.5,57.5C29.043,44.043,25.658,23.536,34.076,6.47c0.532-1.08,0.318-2.379-0.534-3.23  c-0.851-0.852-2.15-1.064-3.23-0.534c-4.918,2.427-9.375,5.619-13.246,9.491c-9.447,9.447-14.65,22.008-14.65,35.369  c0,13.36,5.203,25.921,14.65,35.368s22.008,14.65,35.368,14.65c13.361,0,25.921-5.203,35.369-14.65  c3.872-3.871,7.064-8.328,9.491-13.246C97.826,68.608,97.611,67.309,96.76,66.458z"></path></svg></button><div class="explorer desktop-only"><button type="button" id="explorer" data-behavior="collapse" data-collapsed="collapsed" data-savestate="true" data-tree="[{&quot;path&quot;:&quot;api&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;comparisons&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;design&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;development&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;examples&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;guides&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;migrations&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;planning&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;status&quot;,&quot;collapsed&quot;:true}]" aria-controls="explorer-content" aria-expanded="false"><h2>Explorer</h2><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="fold"><polyline points="6 9 12 15 18 9"></polyline></svg></button><div id="explorer-content"><ul class="overflow" id="explorer-ul"><li><div class="folder-outer open"><ul style="padding-left:0;" class="content" data-folderul><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="api"><button class="folder-button"><span class="folder-title">api</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="api"><li><a href="../api/overview" data-for="api/overview">API Overview</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="comparisons"><button class="folder-button"><span class="folder-title">comparisons</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="comparisons"><li><a href="../comparisons/git-p4-vs-git-svn" data-for="comparisons/git-p4-vs-git-svn">git-p4-vs-git-svn</a></li><li><a href="../comparisons/submodule-vs-subtree" data-for="comparisons/submodule-vs-subtree">submodule-vs-subtree</a></li><li><a href="../comparisons/when-to-use-scalar" data-for="comparisons/when-to-use-scalar">when-to-use-scalar</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="design"><button class="folder-button"><span class="folder-title">design</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="design"><li><a href="../design/orphan-branch" data-for="design/orphan-branch">orphan-branch</a></li><li><a href="../design/workspace-native-planner-contract" data-for="design/workspace-native-planner-contract">workspace-native-planner-contract</a></li><li><a href="../design/worktree-scalar" data-for="design/worktree-scalar">worktree-scalar</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="development"><button class="folder-button"><span class="folder-title">development</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="development"><li><a href="../development/contributing" data-for="development/contributing">contributing</a></li><li><a href="../development/kano-cpp-dev-convention" data-for="development/kano-cpp-dev-convention">kano-cpp-dev-convention</a></li><li><a href="../development/pixi" data-for="development/pixi">pixi</a></li><li><a href="../development/testing" data-for="development/testing">testing</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="examples"><button class="folder-button"><span class="folder-title">examples</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="examples"><li><a href="../examples/commit-rules-example" data-for="examples/commit-rules-example">commit-rules-example</a></li><li><a href="../examples/init-kano-dev-skill-example" data-for="examples/init-kano-dev-skill-example">init-kano-dev-skill-example</a></li><li><a href="../examples/repo-initialization-workflow-examples" data-for="examples/repo-initialization-workflow-examples">repo-initialization-workflow-examples</a></li><li><a href="../examples/root-repo-multi-remote-examples" data-for="examples/root-repo-multi-remote-examples">root-repo-multi-remote-examples</a></li><li><a href="../examples/WORKFLOW-SUMMARY" data-for="examples/WORKFLOW-SUMMARY">WORKFLOW-SUMMARY</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="guides"><button class="folder-button"><span class="folder-title">guides</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="guides"><li><a href="../guides/auto-fallback-complete" data-for="guides/auto-fallback-complete">auto-fallback-complete</a></li><li><a href="../guides/common-pitfalls" data-for="guides/common-pitfalls">common-pitfalls</a></li><li><a href="../guides/cpa-commit-plan-workflow" data-for="guides/cpa-commit-plan-workflow">cpa-commit-plan-workflow</a></li><li><a href="../guides/git-p4" data-for="guides/git-p4">git-p4</a></li><li><a href="../guides/git-svn" data-for="guides/git-svn">git-svn</a></li><li><a href="../guides/ignore-datasource-sync-policy" data-for="guides/ignore-datasource-sync-policy">ignore-datasource-sync-policy</a></li><li><a href="../guides/ignore-plan-operator-workflow" data-for="guides/ignore-plan-operator-workflow">ignore-plan-operator-workflow</a></li><li><a href="../guides/new-features" data-for="guides/new-features">new-features</a></li><li><a href="../guides/quick-start" data-for="guides/quick-start">quick-start</a></li><li><a href="../guides/repo-initialization-workflow" data-for="guides/repo-initialization-workflow">repo-initialization-workflow</a></li><li><a href="../guides/scalar" data-for="guides/scalar">scalar</a></li><li><a href="../guides/submodule" data-for="guides/submodule">submodule</a></li><li><a href="../guides/subtree" data-for="guides/subtree">subtree</a></li><li><a href="../guides/version-info" data-for="guides/version-info">version-info</a></li><li><a href="../guides/worktree" data-for="guides/worktree">worktree</a></li></ul></div></li><li><div class="folder-outer "><ul style="padding-left:0;" class="content" data-folderul></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="migrations"><button class="folder-button"><span class="folder-title">migrations</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="migrations"><li><a href="../migrations/perforce-to-git" data-for="migrations/perforce-to-git">perforce-to-git</a></li><li><a href="../migrations/svn-to-git" data-for="migrations/svn-to-git">svn-to-git</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="planning"><button class="folder-button"><span class="folder-title">planning</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="planning"><li><a href="../planning/cli-architecture-proposal" data-for="planning/cli-architecture-proposal">cli-architecture-proposal</a></li><li><a href="../planning/tui-branch-transplant-workflows" data-for="planning/tui-branch-transplant-workflows">tui-branch-transplant-workflows</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="status"><button class="folder-button"><span class="folder-title">status</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="status"><li><a href="../status/changelog" data-for="status/changelog">changelog</a></li></ul></div></li><li><a href="../README" data-for="README">README</a></li></ul></div></li><li id="explorer-end"></li></ul></div></div></div><div class="center"><div class="page-header"><div class="popover-hint"><nav class="breadcrumb-container" aria-label="breadcrumbs"><div class="breadcrumb-element"><a href="../">Home</a><p> ❯ </p></div><div class="breadcrumb-element"><a href="../planning/">planning</a><p> ❯ </p></div><div class="breadcrumb-element"><a href>tui-branch-transplant-workflows</a></div></nav><h1 class="article-title">tui-branch-transplant-workflows</h1><p show-comma="true" class="content-meta"><span>Mar 25, 2026</span><span>12 min read</span></p></div></div><article class="popover-hint"><h1 id="tui-branch-transplant-workflows">TUI Branch Transplant Workflows<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#tui-branch-transplant-workflows" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p><strong>Date</strong>: 2026-03-13<br/>
+<strong>Status</strong>: Planning<br/>
+<strong>Scope</strong>: <code>kog tui</code> branch-to-branch transplant UX for cherry-pick and rebase assist</p>
+<hr/>
+<h2 id="overview">Overview<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#overview" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>This document defines the planning topic, UX contract, work items, test strategy, and phased delivery plan for branch-to-branch transplant workflows in the native C++ TUI.</p>
+<p>The user goal is to make <code>kog tui</code> capable of:</p>
+<ul>
+<li>comparing commit history across two branches inside one selected repo,</li>
+<li>selecting one or more commits to transplant,</li>
+<li>executing cherry-pick and rebase workflows with clear progress,</li>
+<li>surfacing conflicts in a safe and understandable way,</li>
+<li>supporting manual conflict resolution outside the TUI while keeping the TUI as the operation monitor and control surface.</li>
+</ul>
+<p>This document is planning-only. It does <strong>not</strong> authorize implementation shortcuts that bypass the UX and safety contracts described below.</p>
+<hr/>
+<h2 id="goals">Goals<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#goals" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<ol>
+<li>Add a keyboard-first TUI workflow for branch-to-branch commit transplant operations.</li>
+<li>Make cherry-pick and rebase understandable without assuming deep Git internals knowledge.</li>
+<li>Provide explicit, recoverable operation states for in-progress cherry-pick and rebase sequences.</li>
+<li>Make conflicts actionable by showing the current operation, affected commit, unresolved files, and exact next steps.</li>
+<li>Keep the TUI deterministic and safe by using Git itself as the source of truth for operation state.</li>
+</ol>
+<hr/>
+<h2 id="non-goals-v1">Non-Goals (v1)<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#non-goals-v1" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<ul>
+<li>No inline merge editor inside the TUI.</li>
+<li>No PNG/image-based UI.</li>
+<li>No automatic force push or hidden history rewrite repairs.</li>
+<li>No silent auto-stage of unrelated files.</li>
+<li>No fully automated conflict resolution.</li>
+<li>No cross-repo transplant workflow in one action; scope is one selected repo at a time.</li>
+</ul>
+<hr/>
+<h2 id="grounding-in-current-code">Grounding in Current Code<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#grounding-in-current-code" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>Primary file:</p>
+<ul>
+<li><code>src/cpp/code/systems/kano_git_command/ui/private/tui_dashboard_runner.cpp</code></li>
+</ul>
+<p>Existing relevant state and helpers already present:</p>
+<ul>
+<li><code>CherryPickCandidate</code></li>
+<li><code>CherryPickPreflightState</code></li>
+<li><code>CherryPickRunnerState</code></li>
+<li><code>RebasePreflightState</code></li>
+<li><code>RebasePlannerState</code></li>
+<li><code>RebaseRunnerState</code></li>
+<li><code>ListBranches()</code></li>
+<li><code>CommitFileSet()</code></li>
+<li><code>HasPatchEquivalentInTarget()</code></li>
+<li><code>BuildCherryPickPreflight()</code></li>
+<li><code>CollectRebasePreflight()</code></li>
+<li><code>BuildRebasePlanner()</code></li>
+<li><code>RunRebaseContinue()</code> / <code>RunRebaseSkip()</code> / <code>RunRebaseAbort()</code></li>
+<li><code>RunRebaseStep()</code></li>
+<li><code>RunCherryPickOne()</code></li>
+<li><code>CherryPickContinue()</code> / <code>CherryPickSkip()</code> / <code>CherryPickAbort()</code></li>
+</ul>
+<p>Existing TUI patterns that this work must reuse:</p>
+<ul>
+<li>right-side dominant panel rendering,</li>
+<li>async background operations via <code>AsyncWorkState</code> and <code>screen.PostEvent(Event::Custom)</code>,</li>
+<li>keyboard-first control model,</li>
+<li>history page/detail model,</li>
+<li>preview/result panel model.</li>
+</ul>
+<p>Current gap:</p>
+<ul>
+<li>the code has preflight/planner/runner pieces, but the UX contract is incomplete,</li>
+<li>conflict handling is currently too raw,</li>
+<li>there is no clear dual-branch history compare flow,</li>
+<li>operation recovery/re-entry is not yet a first-class concept,</li>
+<li>branch-aware history caching is not yet designed.</li>
+</ul>
+<hr/>
+<h2 id="topic">Topic<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#topic" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p><strong>Topic name</strong>: TUI Branch Transplant Workflows<br/>
+<strong>Feature area</strong>: <code>kog tui</code><br/>
+<strong>Operator domain</strong>: cherry-pick + rebase assist</p>
+<p>This topic covers all TUI interactions where a user wants to move commits from one branch context to another inside the selected repo.</p>
+<hr/>
+<h2 id="user-problems-to-solve">User Problems to Solve<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#user-problems-to-solve" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<h3 id="1-cherry-pick-across-two-histories">1. Cherry-pick across two histories<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#1-cherry-pick-across-two-histories" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>The user needs to see source and target branch context clearly enough to choose the right commit(s) without guessing.</p>
+<h3 id="2-rebase-planning-inside-the-tui">2. Rebase planning inside the TUI<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#2-rebase-planning-inside-the-tui" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>The user needs a structured way to inspect local commits, choose actions (<code>pick</code>, <code>squash</code>, <code>fixup</code>, <code>drop</code>), and understand the resulting plan before running it.</p>
+<h3 id="3-conflict-interruption">3. Conflict interruption<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#3-conflict-interruption" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>When an operation stops on conflict, the current raw runner model is not enough. The TUI must clearly answer:</p>
+<ul>
+<li>what operation is in progress,</li>
+<li>which commit caused the stop,</li>
+<li>which files are unresolved,</li>
+<li>what the user must do next,</li>
+<li>which resume/skip/abort actions are available.</li>
+</ul>
+<h3 id="4-recovery-and-continuity">4. Recovery and continuity<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#4-recovery-and-continuity" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>If the user closes the panel, restarts <code>kog tui</code>, or resumes later, the TUI must be able to rediscover and re-present the active operation.</p>
+<hr/>
+<h2 id="ux-principles">UX Principles<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#ux-principles" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<ol>
+<li><strong>Keyboard-first</strong>: no mouse dependency.</li>
+<li><strong>One selected repo at a time</strong>: branch transplant workflows always operate in the currently selected repo.</li>
+<li><strong>Git is the state engine</strong>: the TUI reflects Git’s actual in-progress state instead of inventing shadow truth.</li>
+<li><strong>Operation-first visibility</strong>: when cherry-pick or rebase is active, the operation panel becomes the most important screen.</li>
+<li><strong>Safe by default</strong>: warn early, do not auto-force, do not silently mutate unrelated files.</li>
+<li><strong>Manual conflict resolution in v1</strong>: the TUI explains and coordinates; the user resolves conflicts in shell/editor/IDE.</li>
+<li><strong>Recoverable flow</strong>: closing a panel must not destroy the operation context.</li>
+</ol>
+<hr/>
+<h2 id="high-level-ux-model">High-Level UX Model<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#high-level-ux-model" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<h3 id="core-screens">Core screens<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#core-screens" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ol>
+<li>
+<p><strong>Branch Compare Screen</strong></p>
+<ul>
+<li>selected repo only</li>
+<li>source branch and target branch visible together</li>
+<li>commit list and diff preview</li>
+<li>supports single commit selection and range selection</li>
+</ul>
+</li>
+<li>
+<p><strong>Cherry-pick Preflight Screen</strong></p>
+<ul>
+<li>source branch</li>
+<li>target branch</li>
+<li>candidate commits (<code>target..source</code>)</li>
+<li>duplicate-equivalent markers</li>
+<li>risk markers</li>
+<li>planned queue preview</li>
+</ul>
+</li>
+<li>
+<p><strong>Cherry-pick Runner Screen</strong></p>
+<ul>
+<li>current commit</li>
+<li>queue progress</li>
+<li>live output / last output</li>
+<li>dominant action hints</li>
+<li>conflict state handoff</li>
+</ul>
+</li>
+<li>
+<p><strong>Rebase Preflight Screen</strong></p>
+<ul>
+<li>current branch</li>
+<li>base/upstream ref</li>
+<li>merge base</li>
+<li>candidate commits</li>
+<li>risk and notes</li>
+</ul>
+</li>
+<li>
+<p><strong>Rebase Planner Screen</strong></p>
+<ul>
+<li>editable todo-style plan</li>
+<li>actions: <code>pick</code>, <code>squash</code>, <code>fixup</code>, <code>drop</code></li>
+<li>preview text</li>
+</ul>
+</li>
+<li>
+<p><strong>Conflict Resolution Screen</strong></p>
+<ul>
+<li>operation type</li>
+<li>repo path</li>
+<li>current commit</li>
+<li>unresolved file list</li>
+<li>next-step checklist</li>
+<li>continue / skip / abort actions</li>
+</ul>
+</li>
+<li>
+<p><strong>Recovery / Resume Screen</strong></p>
+<ul>
+<li>shown when Git indicates in-progress cherry-pick or rebase at startup or on refresh</li>
+<li>offer inspect / resume / abort</li>
+</ul>
+</li>
+</ol>
+<hr/>
+<h2 id="state-model">State Model<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#state-model" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<h3 id="problem-with-current-shape">Problem with current shape<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#problem-with-current-shape" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>Current runner states use booleans such as <code>waitingConflictResolution</code>. That is too weak for a multi-step workflow.</p>
+<h3 id="planned-explicit-runner-state">Planned explicit runner state<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#planned-explicit-runner-state" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>Each operation runner should move to an explicit state enum.</p>
+<figure data-rehype-pretty-code-figure><pre tabindex="0" data-language="cpp" data-theme="github-light tokyo-night"><code data-language="cpp" data-theme="github-light tokyo-night" style="display:grid;"><span data-line><span style="--shiki-light:#D73A49;--shiki-dark:#BB9AF7;">enum</span><span style="--shiki-light:#D73A49;--shiki-dark:#BB9AF7;"> class</span><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;"> RunnerState</span><span style="--shiki-light:#24292E;--shiki-dark:#9ABDF5;"> {</span></span>
+<span data-line><span style="--shiki-light:#005CC5;--shiki-dark:#7AA2F7;">    Idle</span><span style="--shiki-light:#24292E;--shiki-dark:#89DDFF;">,</span></span>
+<span data-line><span style="--shiki-light:#005CC5;--shiki-dark:#7AA2F7;">    Preflight</span><span style="--shiki-light:#24292E;--shiki-dark:#89DDFF;">,</span></span>
+<span data-line><span style="--shiki-light:#005CC5;--shiki-dark:#7AA2F7;">    Planning</span><span style="--shiki-light:#24292E;--shiki-dark:#89DDFF;">,</span></span>
+<span data-line><span style="--shiki-light:#005CC5;--shiki-dark:#7AA2F7;">    Ready</span><span style="--shiki-light:#24292E;--shiki-dark:#89DDFF;">,</span></span>
+<span data-line><span style="--shiki-light:#005CC5;--shiki-dark:#7AA2F7;">    Running</span><span style="--shiki-light:#24292E;--shiki-dark:#89DDFF;">,</span></span>
+<span data-line><span style="--shiki-light:#005CC5;--shiki-dark:#7AA2F7;">    ConflictDetected</span><span style="--shiki-light:#24292E;--shiki-dark:#89DDFF;">,</span></span>
+<span data-line><span style="--shiki-light:#005CC5;--shiki-dark:#7AA2F7;">    ConflictGuidance</span><span style="--shiki-light:#24292E;--shiki-dark:#89DDFF;">,</span></span>
+<span data-line><span style="--shiki-light:#005CC5;--shiki-dark:#7AA2F7;">    ReadyToContinue</span><span style="--shiki-light:#24292E;--shiki-dark:#89DDFF;">,</span></span>
+<span data-line><span style="--shiki-light:#005CC5;--shiki-dark:#7AA2F7;">    Completed</span><span style="--shiki-light:#24292E;--shiki-dark:#89DDFF;">,</span></span>
+<span data-line><span style="--shiki-light:#005CC5;--shiki-dark:#7AA2F7;">    Aborted</span><span style="--shiki-light:#24292E;--shiki-dark:#89DDFF;">,</span></span>
+<span data-line><span style="--shiki-light:#005CC5;--shiki-dark:#7AA2F7;">    Failed</span></span>
+<span data-line><span style="--shiki-light:#24292E;--shiki-dark:#9ABDF5;">}</span><span style="--shiki-light:#24292E;--shiki-dark:#89DDFF;">;</span></span></code></pre></figure>
+<h3 id="planned-operation-state-invariants">Planned operation state invariants<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#planned-operation-state-invariants" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ul>
+<li><code>Running</code> <span>⇒</span> current queue index is valid.</li>
+<li><code>ConflictDetected</code> / <code>ConflictGuidance</code> <span>⇒</span> unresolved file list is non-empty or Git reports operation-in-progress stop state.</li>
+<li><code>ReadyToContinue</code> <span>⇒</span> no unresolved entries remain.</li>
+<li><code>Completed</code> <span>⇒</span> queue index equals queue size.</li>
+<li><code>Aborted</code> <span>⇒</span> Git operation state is no longer active.</li>
+</ul>
+<h3 id="planned-ui-mode-addition">Planned UI mode addition<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#planned-ui-mode-addition" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>Current TUI modes already include normal/command/help/palette/confirm style behavior. This topic will add a dedicated conflict-facing mode or equivalent dominant screen contract so that manual resolution guidance is not mixed with generic command mode.</p>
+<hr/>
+<h2 id="branch-compare-ux-plan">Branch Compare UX Plan<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#branch-compare-ux-plan" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<h3 id="why-this-matters">Why this matters<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#why-this-matters" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>Cherry-pick across branches is hard if the user cannot clearly compare source and target context.</p>
+<h3 id="planned-compare-model">Planned compare model<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#planned-compare-model" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ul>
+<li>repo scope: selected repo only</li>
+<li>branch scope: explicit <code>source</code> and <code>target</code></li>
+<li>default target: current checked out branch</li>
+<li>default source: chosen by user from local branches first; remote branches may be added later</li>
+</ul>
+<h3 id="planned-compare-layout-v1">Planned compare layout (v1)<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#planned-compare-layout-v1" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ul>
+<li>left rail: branch selectors and compare summary</li>
+<li>center list: source-side candidate commits</li>
+<li>right panel: diff / details for current commit or selected range</li>
+<li>footer / header: current compare mode, selected range, action hints</li>
+</ul>
+<h3 id="selection-modes">Selection modes<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#selection-modes" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ol>
+<li><strong>Single commit selection</strong></li>
+<li><strong>Contiguous range selection</strong></li>
+<li><strong>Multi-select by marking individual commits</strong> (optional if low-cost after range mode)</li>
+</ol>
+<h3 id="minimum-v1-selection-promise">Minimum v1 selection promise<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#minimum-v1-selection-promise" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>Single selection and contiguous range selection must be supported before multi-mark workflows.</p>
+<hr/>
+<h2 id="cherry-pick-ux-plan">Cherry-pick UX Plan<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#cherry-pick-ux-plan" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<h3 id="preflight-data">Preflight data<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#preflight-data" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>For the selected repo, preflight must show:</p>
+<ul>
+<li>source branch</li>
+<li>target branch</li>
+<li>candidate commit list from <code>target..source</code></li>
+<li>whether each commit has a patch-equivalent already in target</li>
+<li>simple risk tier from touched file count or other deterministic heuristics</li>
+<li>final queued commit order</li>
+</ul>
+<h3 id="runner-contract">Runner contract<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#runner-contract" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>Once started, the runner panel becomes dominant and must show:</p>
+<ul>
+<li>operation: cherry-pick</li>
+<li>repo path</li>
+<li>source and target branch labels if known</li>
+<li>queue progress (<code>current/total</code>)</li>
+<li>current commit SHA and title</li>
+<li>current state (<code>running</code>, <code>waiting conflict guidance</code>, <code>ready to continue</code>, <code>completed</code>, <code>aborted</code>, <code>failed</code>)</li>
+<li>last Git output</li>
+</ul>
+<h3 id="conflict-handoff-contract">Conflict handoff contract<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#conflict-handoff-contract" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>When a cherry-pick stops on conflict:</p>
+<ol>
+<li>Runner state changes to <code>ConflictDetected</code>.</li>
+<li>TUI gathers unresolved file info.</li>
+<li>TUI enters <code>ConflictGuidance</code> display.</li>
+<li>TUI shows exact instructions:
+<ul>
+<li>open shell/editor/IDE,</li>
+<li>resolve conflicted files,</li>
+<li><code>git add &lt;resolved-files></code>,</li>
+<li>return and continue, or skip, or abort.</li>
+</ul>
+</li>
+<li>TUI must not auto-stage unrelated files.</li>
+<li>TUI may offer explicit stage shortcuts later, but not as an invisible side effect.</li>
+</ol>
+<hr/>
+<h2 id="rebase-ux-plan">Rebase UX Plan<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#rebase-ux-plan" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<h3 id="preflight-data-1">Preflight data<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#preflight-data-1" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>Rebase preflight must show:</p>
+<ul>
+<li>repo path</li>
+<li>current branch</li>
+<li>upstream/base ref</li>
+<li>merge base</li>
+<li>tracking summary</li>
+<li>candidate commits</li>
+<li>risk and note summary</li>
+</ul>
+<h3 id="planner-contract">Planner contract<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#planner-contract" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>Rebase planner must support:</p>
+<ul>
+<li>per-item action change</li>
+<li>current selected line</li>
+<li>preview of the effective todo plan</li>
+<li>clear operator control hints</li>
+</ul>
+<h3 id="runner-contract-1">Runner contract<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#runner-contract-1" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>Rebase runner mirrors cherry-pick runner, but labels the operation as rebase and shows plan item action where relevant.</p>
+<h3 id="v1-simplification">v1 simplification<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#v1-simplification" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>The planner may internally execute <code>pick</code>/<code>squash</code>/<code>fixup</code> through a staged deterministic sequence rather than full interactive todo-file editing, as long as the user-facing plan remains explicit and recoverable.</p>
+<hr/>
+<h2 id="conflict-resolution-ux-contract">Conflict Resolution UX Contract<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#conflict-resolution-ux-contract" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<h3 id="v1-contract">v1 contract<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#v1-contract" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>Conflict resolution happens <strong>outside</strong> the TUI. The TUI is the control surface.</p>
+<h3 id="mandatory-information-on-the-conflict-screen">Mandatory information on the conflict screen<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#mandatory-information-on-the-conflict-screen" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ul>
+<li>operation type</li>
+<li>repo path</li>
+<li>source/target/base context if known</li>
+<li>current commit SHA + title</li>
+<li>unresolved file list</li>
+<li>latest Git output snippet</li>
+<li>exact next-step checklist</li>
+<li>actions available now: continue / skip / abort / close panel</li>
+</ul>
+<h3 id="mandatory-wording-intent">Mandatory wording intent<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#mandatory-wording-intent" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>The user should be able to understand the next step without Git expertise.</p>
+<p>Example shape:</p>
+<figure data-rehype-pretty-code-figure><pre tabindex="0" data-language="text" data-theme="github-light tokyo-night"><code data-language="text" data-theme="github-light tokyo-night" style="display:grid;"><span data-line><span>state: conflict detected</span></span>
+<span data-line><span>current: abc1234 feat: port auth flow</span></span>
+<span data-line> </span>
+<span data-line><span>unresolved files:</span></span>
+<span data-line><span>- src/auth/login.cpp</span></span>
+<span data-line><span>- src/auth/session.hpp</span></span>
+<span data-line> </span>
+<span data-line><span>next steps:</span></span>
+<span data-line><span>1. Open your editor or shell and resolve the conflicted files.</span></span>
+<span data-line><span>2. Stage the resolved files with git add.</span></span>
+<span data-line><span>3. Return here and press continue.</span></span>
+<span data-line> </span>
+<span data-line><span>actions:</span></span>
+<span data-line><span>- continue</span></span>
+<span data-line><span>- skip current commit</span></span>
+<span data-line><span>- abort operation</span></span></code></pre></figure>
+<h3 id="v1-forbidden-behavior">v1 forbidden behavior<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#v1-forbidden-behavior" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ul>
+<li>no inline merge block editing,</li>
+<li>no silent auto-stage of unrelated files,</li>
+<li>no hidden reset/abort on panel close,</li>
+<li>no assumption that <code>git add .</code> is always correct.</li>
+</ul>
+<hr/>
+<h2 id="recovery--resume-contract">Recovery / Resume Contract<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#recovery--resume-contract" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>The TUI must be able to detect active Git operation state from the repo itself.</p>
+<h3 id="detectable-signals">Detectable signals<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#detectable-signals" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ul>
+<li><code>CHERRY_PICK_HEAD</code></li>
+<li>rebase metadata directories/files</li>
+<li>unresolved index entries</li>
+<li>sequencer/todo state where available</li>
+</ul>
+<h3 id="planned-recovery-behavior">Planned recovery behavior<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#planned-recovery-behavior" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>On startup, refresh, or when opening branch-transplant screens:</p>
+<ol>
+<li>inspect Git operation state,</li>
+<li>if an operation is already active, show a recovery banner or panel,</li>
+<li>offer resume / inspect / abort,</li>
+<li>restore the dominant operation screen instead of pretending the repo is idle.</li>
+</ol>
+<h3 id="close-behavior">Close behavior<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#close-behavior" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ul>
+<li><code>q</code> closes the panel only,</li>
+<li>operation continues to exist until Git says otherwise,</li>
+<li>reopening the panel should reconstruct the state from Git.</li>
+</ul>
+<hr/>
+<h2 id="safety-rules">Safety Rules<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#safety-rules" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<ol>
+<li>Warn or block when the working tree is dirty before starting transplant operations.</li>
+<li>Warn when target branch is <code>main</code> / <code>master</code> or otherwise protected-like.</li>
+<li>Warn when a commit appears patch-equivalent in target.</li>
+<li>Never auto-force.</li>
+<li>Never hide Git failure output.</li>
+<li>Record original head for possible undo/recovery hints.</li>
+<li>Do not treat a closed panel as a cancelled operation.</li>
+</ol>
+<hr/>
+<h2 id="caching-and-data-model-work">Caching and Data Model Work<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#caching-and-data-model-work" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<h3 id="branch-aware-history-caching">Branch-aware history caching<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#branch-aware-history-caching" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>Current history cache is effectively repo-path-oriented. Branch transplant workflows need branch-aware history and details caching.</p>
+<h3 id="planned-direction">Planned direction<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#planned-direction" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>Introduce a key shape equivalent to:</p>
+<ul>
+<li>repo path</li>
+<li>ref / branch name</li>
+<li>maybe compare mode if needed</li>
+</ul>
+<p>This avoids reusing one branch’s cached history while the user is browsing another branch.</p>
+<hr/>
+<h2 id="detailed-work-items">Detailed Work Items<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#detailed-work-items" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<h3 id="workstream-a--operation-state-foundation">Workstream A — operation state foundation<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#workstream-a--operation-state-foundation" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ol>
+<li>Replace boolean conflict-wait flags with explicit runner state enum.</li>
+<li>Define state transition helpers and invariants.</li>
+<li>Add operation-state detection from Git repo metadata.</li>
+</ol>
+<h3 id="workstream-b--branch-compare-model">Workstream B — branch compare model<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#workstream-b--branch-compare-model" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ol>
+<li>Add source/target branch selection model.</li>
+<li>Add branch-aware history caching.</li>
+<li>Add compare screen layout and selection behavior.</li>
+</ol>
+<h3 id="workstream-c--cherry-pick-workflow">Workstream C — cherry-pick workflow<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#workstream-c--cherry-pick-workflow" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ol>
+<li>Refine candidate enumeration and duplicate detection.</li>
+<li>Add queue preview.</li>
+<li>Upgrade runner panel to explicit operation-first UI.</li>
+<li>Add conflict guidance screen.</li>
+</ol>
+<h3 id="workstream-d--rebase-workflow">Workstream D — rebase workflow<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#workstream-d--rebase-workflow" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ol>
+<li>Refine preflight risk output.</li>
+<li>Harden planner editing and preview.</li>
+<li>Upgrade runner panel to explicit operation-first UI.</li>
+<li>Reuse conflict guidance model.</li>
+</ol>
+<h3 id="workstream-e--recovery-and-undo-hints">Workstream E — recovery and undo hints<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#workstream-e--recovery-and-undo-hints" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ol>
+<li>Detect active operation on startup and refresh.</li>
+<li>Re-enter the correct panel from repo state.</li>
+<li>Surface original head / undo hints after success.</li>
+</ol>
+<h3 id="workstream-f--testing-and-docs">Workstream F — testing and docs<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#workstream-f--testing-and-docs" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ol>
+<li>Add unit/property/integration coverage.</li>
+<li>Add user-facing help copy inside TUI.</li>
+<li>Update docs after implementation lands.</li>
+</ol>
+<hr/>
+<h2 id="test-strategy">Test Strategy<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#test-strategy" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>Test lanes already exist under <code>src/cpp/code/tests/kano_git_tui_tests/</code> with:</p>
+<ul>
+<li><code>unit/</code></li>
+<li><code>property/</code></li>
+<li><code>integration/</code></li>
+</ul>
+<h3 id="required-test-categories">Required test categories<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#required-test-categories" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<h4 id="1-unit-tests">1. Unit tests<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#1-unit-tests" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h4>
+<ul>
+<li>candidate enumeration helpers</li>
+<li>duplicate detection helpers</li>
+<li>unresolved-file parsing helpers</li>
+<li>state transition validation</li>
+<li>queue progress calculations</li>
+<li>branch compare mapping helpers</li>
+</ul>
+<h4 id="2-property-tests">2. Property tests<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#2-property-tests" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h4>
+<ul>
+<li>state machine never enters invalid state,</li>
+<li>runner invariants hold across random transition sequences,</li>
+<li>selection math remains stable across page and branch switches.</li>
+</ul>
+<h4 id="3-integration-tests">3. Integration tests<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#3-integration-tests" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h4>
+<ul>
+<li>cherry-pick preflight from known branch fixture,</li>
+<li>cherry-pick conflict flow,</li>
+<li>cherry-pick abort flow,</li>
+<li>rebase planner flow,</li>
+<li>recovery after simulated in-progress operation,</li>
+<li>reopen panel and reconstruct state from Git metadata.</li>
+</ul>
+<h3 id="example-acceptance-test-intent">Example acceptance-test intent<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#example-acceptance-test-intent" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ul>
+<li><code>CherryPickRunner_ConflictFlow_EntersConflictGuidance</code></li>
+<li><code>CherryPickRunner_ContinueAfterResolved_CompletesQueue</code></li>
+<li><code>RebasePlanner_ActionEdits_UpdatePreview</code></li>
+<li><code>OperationRecovery_ExistingCherryPickState_ReopensRunner</code></li>
+<li><code>BranchHistoryCache_SwitchRef_UsesIndependentEntries</code></li>
+</ul>
+<hr/>
+<h2 id="atomic-commit-plan">Atomic Commit Plan<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#atomic-commit-plan" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<h3 id="commit-1">Commit 1<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#commit-1" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p><code>refactor: introduce explicit runner state for branch transplant workflows</code></p>
+<ul>
+<li>add runner state enum</li>
+<li>preserve behavior with minimal UI change</li>
+<li>add unit tests for state transitions</li>
+</ul>
+<h3 id="commit-2">Commit 2<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#commit-2" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p><code>feat: detect in-progress cherry-pick and rebase state from git metadata</code></p>
+<ul>
+<li>repo-state detection helpers</li>
+<li>startup/reopen integration tests</li>
+</ul>
+<h3 id="commit-3">Commit 3<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#commit-3" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p><code>feat: add branch-aware history cache for transplant planning</code></p>
+<ul>
+<li>history cache key changes</li>
+<li>branch switch tests</li>
+</ul>
+<h3 id="commit-4">Commit 4<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#commit-4" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p><code>feat: add branch compare and cherry-pick preflight workflow</code></p>
+<ul>
+<li>source/target selection</li>
+<li>candidate list UI</li>
+<li>duplicate/risk display</li>
+</ul>
+<h3 id="commit-5">Commit 5<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#commit-5" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p><code>feat: add cherry-pick runner conflict guidance panel</code></p>
+<ul>
+<li>dominant operation screen</li>
+<li>unresolved file display</li>
+<li>continue/skip/abort guidance</li>
+</ul>
+<h3 id="commit-6">Commit 6<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#commit-6" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p><code>feat: upgrade rebase planner and runner workflow</code></p>
+<ul>
+<li>planner polish</li>
+<li>runner state UI</li>
+<li>conflict guidance reuse</li>
+</ul>
+<h3 id="commit-7">Commit 7<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#commit-7" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p><code>docs: document tui branch transplant workflows</code></p>
+<ul>
+<li>help text</li>
+<li>docs updates</li>
+<li>examples if needed</li>
+</ul>
+<hr/>
+<h2 id="delivery-phases">Delivery Phases<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#delivery-phases" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<h3 id="phase-0--planning-only">Phase 0 — planning only<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#phase-0--planning-only" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ul>
+<li>finalize this document</li>
+<li>review for missing UX and safety edges</li>
+</ul>
+<h3 id="phase-1--state-and-recovery-foundation">Phase 1 — state and recovery foundation<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#phase-1--state-and-recovery-foundation" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ul>
+<li>explicit runner states</li>
+<li>repo-state detection</li>
+<li>recovery entry points</li>
+</ul>
+<h3 id="phase-2--branch-compare-and-cherry-pick-preflight">Phase 2 — branch compare and cherry-pick preflight<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#phase-2--branch-compare-and-cherry-pick-preflight" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ul>
+<li>source/target compare model</li>
+<li>branch-aware cache</li>
+<li>queue preview</li>
+</ul>
+<h3 id="phase-3--cherry-pick-runner-and-conflict-guidance">Phase 3 — cherry-pick runner and conflict guidance<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#phase-3--cherry-pick-runner-and-conflict-guidance" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ul>
+<li>dominant operation panel</li>
+<li>conflict guidance contract</li>
+<li>continue/skip/abort polish</li>
+</ul>
+<h3 id="phase-4--rebase-planner-and-runner-hardening">Phase 4 — rebase planner and runner hardening<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#phase-4--rebase-planner-and-runner-hardening" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ul>
+<li>planner UX</li>
+<li>runner UX</li>
+<li>conflict/recovery reuse</li>
+</ul>
+<h3 id="phase-5--docs-help-and-polish">Phase 5 — docs, help, and polish<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#phase-5--docs-help-and-polish" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ul>
+<li>in-TUI hints</li>
+<li>docs updates</li>
+<li>test expansion</li>
+</ul>
+<hr/>
+<h2 id="open-decisions-keep-explicit">Open Decisions (Keep Explicit)<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#open-decisions-keep-explicit" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>These are design decisions to resolve during implementation planning, not reasons to skip the work:</p>
+<ol>
+<li>Whether v1 branch compare uses side-by-side branch lists or a single branch-focused list with source/target headers.</li>
+<li>Whether v1 supports multi-mark commit selection or only single + contiguous range.</li>
+<li>Whether continue should become available automatically when unresolved entries reach zero, or only after explicit refresh/probe.</li>
+<li>Whether undo after completion is only a hint or includes a first-class guided action.</li>
+</ol>
+<hr/>
+<h2 id="recommended-next-execution-step">Recommended Next Execution Step<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#recommended-next-execution-step" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>Use this document as the canonical planning artifact, then implement in the atomic order above, with tests added before behavior changes where practical.</p>
+<p>Before any code changes for this topic:</p>
+<ol>
+<li>review this plan,</li>
+<li>confirm the state model and v1 conflict handoff contract,</li>
+<li>start with the state/recovery foundation rather than with visual polish.</li>
+</ol></article><hr/><div class="page-footer"></div></div><div class="right sidebar"><div class="graph"><h3>Graph View</h3><div class="graph-outer"><div id="graph-container" data-cfg="{&quot;drag&quot;:true,&quot;zoom&quot;:true,&quot;depth&quot;:1,&quot;scale&quot;:1.1,&quot;repelForce&quot;:0.5,&quot;centerForce&quot;:0.3,&quot;linkDistance&quot;:30,&quot;fontSize&quot;:0.6,&quot;opacityScale&quot;:1,&quot;showTags&quot;:true,&quot;removeTags&quot;:[],&quot;focusOnHover&quot;:false}"></div><button id="global-graph-icon" aria-label="Global Graph"><svg version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 55 55" fill="currentColor" xml:space="preserve"><path d="M49,0c-3.309,0-6,2.691-6,6c0,1.035,0.263,2.009,0.726,2.86l-9.829,9.829C32.542,17.634,30.846,17,29,17
+                s-3.542,0.634-4.898,1.688l-7.669-7.669C16.785,10.424,17,9.74,17,9c0-2.206-1.794-4-4-4S9,6.794,9,9s1.794,4,4,4
+                c0.74,0,1.424-0.215,2.019-0.567l7.669,7.669C21.634,21.458,21,23.154,21,25s0.634,3.542,1.688,4.897L10.024,42.562
+                C8.958,41.595,7.549,41,6,41c-3.309,0-6,2.691-6,6s2.691,6,6,6s6-2.691,6-6c0-1.035-0.263-2.009-0.726-2.86l12.829-12.829
+                c1.106,0.86,2.44,1.436,3.898,1.619v10.16c-2.833,0.478-5,2.942-5,5.91c0,3.309,2.691,6,6,6s6-2.691,6-6c0-2.967-2.167-5.431-5-5.91
+                v-10.16c1.458-0.183,2.792-0.759,3.898-1.619l7.669,7.669C41.215,39.576,41,40.26,41,41c0,2.206,1.794,4,4,4s4-1.794,4-4
+                s-1.794-4-4-4c-0.74,0-1.424,0.215-2.019,0.567l-7.669-7.669C36.366,28.542,37,26.846,37,25s-0.634-3.542-1.688-4.897l9.665-9.665
+                C46.042,11.405,47.451,12,49,12c3.309,0,6-2.691,6-6S52.309,0,49,0z M11,9c0-1.103,0.897-2,2-2s2,0.897,2,2s-0.897,2-2,2
+                S11,10.103,11,9z M6,51c-2.206,0-4-1.794-4-4s1.794-4,4-4s4,1.794,4,4S8.206,51,6,51z M33,49c0,2.206-1.794,4-4,4s-4-1.794-4-4
+                s1.794-4,4-4S33,46.794,33,49z M29,31c-3.309,0-6-2.691-6-6s2.691-6,6-6s6,2.691,6,6S32.309,31,29,31z M47,41c0,1.103-0.897,2-2,2
+                s-2-0.897-2-2s0.897-2,2-2S47,39.897,47,41z M49,10c-2.206,0-4-1.794-4-4s1.794-4,4-4s4,1.794,4,4S51.206,10,49,10z"></path></svg></button></div><div id="global-graph-outer"><div id="global-graph-container" data-cfg="{&quot;drag&quot;:true,&quot;zoom&quot;:true,&quot;depth&quot;:-1,&quot;scale&quot;:0.9,&quot;repelForce&quot;:0.5,&quot;centerForce&quot;:0.3,&quot;linkDistance&quot;:30,&quot;fontSize&quot;:0.6,&quot;opacityScale&quot;:1,&quot;showTags&quot;:true,&quot;removeTags&quot;:[],&quot;focusOnHover&quot;:true}"></div></div></div><div class="toc desktop-only"><button type="button" id="toc" class aria-controls="toc-content" aria-expanded="true"><h3>Table of Contents</h3><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="fold"><polyline points="6 9 12 15 18 9"></polyline></svg></button><div id="toc-content" class><ul class="overflow"><li class="depth-0"><a href="#tui-branch-transplant-workflows" data-for="tui-branch-transplant-workflows">TUI Branch Transplant Workflows</a></li><li class="depth-1"><a href="#overview" data-for="overview">Overview</a></li><li class="depth-1"><a href="#goals" data-for="goals">Goals</a></li><li class="depth-1"><a href="#non-goals-v1" data-for="non-goals-v1">Non-Goals (v1)</a></li><li class="depth-1"><a href="#grounding-in-current-code" data-for="grounding-in-current-code">Grounding in Current Code</a></li><li class="depth-1"><a href="#topic" data-for="topic">Topic</a></li><li class="depth-1"><a href="#user-problems-to-solve" data-for="user-problems-to-solve">User Problems to Solve</a></li><li class="depth-2"><a href="#1-cherry-pick-across-two-histories" data-for="1-cherry-pick-across-two-histories">1. Cherry-pick across two histories</a></li><li class="depth-2"><a href="#2-rebase-planning-inside-the-tui" data-for="2-rebase-planning-inside-the-tui">2. Rebase planning inside the TUI</a></li><li class="depth-2"><a href="#3-conflict-interruption" data-for="3-conflict-interruption">3. Conflict interruption</a></li><li class="depth-2"><a href="#4-recovery-and-continuity" data-for="4-recovery-and-continuity">4. Recovery and continuity</a></li><li class="depth-1"><a href="#ux-principles" data-for="ux-principles">UX Principles</a></li><li class="depth-1"><a href="#high-level-ux-model" data-for="high-level-ux-model">High-Level UX Model</a></li><li class="depth-2"><a href="#core-screens" data-for="core-screens">Core screens</a></li><li class="depth-1"><a href="#state-model" data-for="state-model">State Model</a></li><li class="depth-2"><a href="#problem-with-current-shape" data-for="problem-with-current-shape">Problem with current shape</a></li><li class="depth-2"><a href="#planned-explicit-runner-state" data-for="planned-explicit-runner-state">Planned explicit runner state</a></li><li class="depth-2"><a href="#planned-operation-state-invariants" data-for="planned-operation-state-invariants">Planned operation state invariants</a></li><li class="depth-2"><a href="#planned-ui-mode-addition" data-for="planned-ui-mode-addition">Planned UI mode addition</a></li><li class="depth-1"><a href="#branch-compare-ux-plan" data-for="branch-compare-ux-plan">Branch Compare UX Plan</a></li><li class="depth-2"><a href="#why-this-matters" data-for="why-this-matters">Why this matters</a></li><li class="depth-2"><a href="#planned-compare-model" data-for="planned-compare-model">Planned compare model</a></li><li class="depth-2"><a href="#planned-compare-layout-v1" data-for="planned-compare-layout-v1">Planned compare layout (v1)</a></li><li class="depth-2"><a href="#selection-modes" data-for="selection-modes">Selection modes</a></li><li class="depth-2"><a href="#minimum-v1-selection-promise" data-for="minimum-v1-selection-promise">Minimum v1 selection promise</a></li><li class="depth-1"><a href="#cherry-pick-ux-plan" data-for="cherry-pick-ux-plan">Cherry-pick UX Plan</a></li><li class="depth-2"><a href="#preflight-data" data-for="preflight-data">Preflight data</a></li><li class="depth-2"><a href="#runner-contract" data-for="runner-contract">Runner contract</a></li><li class="depth-2"><a href="#conflict-handoff-contract" data-for="conflict-handoff-contract">Conflict handoff contract</a></li><li class="depth-1"><a href="#rebase-ux-plan" data-for="rebase-ux-plan">Rebase UX Plan</a></li><li class="depth-2"><a href="#preflight-data-1" data-for="preflight-data-1">Preflight data</a></li><li class="depth-2"><a href="#planner-contract" data-for="planner-contract">Planner contract</a></li><li class="depth-2"><a href="#runner-contract-1" data-for="runner-contract-1">Runner contract</a></li><li class="depth-2"><a href="#v1-simplification" data-for="v1-simplification">v1 simplification</a></li><li class="depth-1"><a href="#conflict-resolution-ux-contract" data-for="conflict-resolution-ux-contract">Conflict Resolution UX Contract</a></li><li class="depth-2"><a href="#v1-contract" data-for="v1-contract">v1 contract</a></li><li class="depth-2"><a href="#mandatory-information-on-the-conflict-screen" data-for="mandatory-information-on-the-conflict-screen">Mandatory information on the conflict screen</a></li><li class="depth-2"><a href="#mandatory-wording-intent" data-for="mandatory-wording-intent">Mandatory wording intent</a></li><li class="depth-2"><a href="#v1-forbidden-behavior" data-for="v1-forbidden-behavior">v1 forbidden behavior</a></li><li class="depth-1"><a href="#recovery--resume-contract" data-for="recovery--resume-contract">Recovery / Resume Contract</a></li><li class="depth-2"><a href="#detectable-signals" data-for="detectable-signals">Detectable signals</a></li><li class="depth-2"><a href="#planned-recovery-behavior" data-for="planned-recovery-behavior">Planned recovery behavior</a></li><li class="depth-2"><a href="#close-behavior" data-for="close-behavior">Close behavior</a></li><li class="depth-1"><a href="#safety-rules" data-for="safety-rules">Safety Rules</a></li><li class="depth-1"><a href="#caching-and-data-model-work" data-for="caching-and-data-model-work">Caching and Data Model Work</a></li><li class="depth-2"><a href="#branch-aware-history-caching" data-for="branch-aware-history-caching">Branch-aware history caching</a></li><li class="depth-2"><a href="#planned-direction" data-for="planned-direction">Planned direction</a></li><li class="depth-1"><a href="#detailed-work-items" data-for="detailed-work-items">Detailed Work Items</a></li><li class="depth-2"><a href="#workstream-a--operation-state-foundation" data-for="workstream-a--operation-state-foundation">Workstream A — operation state foundation</a></li><li class="depth-2"><a href="#workstream-b--branch-compare-model" data-for="workstream-b--branch-compare-model">Workstream B — branch compare model</a></li><li class="depth-2"><a href="#workstream-c--cherry-pick-workflow" data-for="workstream-c--cherry-pick-workflow">Workstream C — cherry-pick workflow</a></li><li class="depth-2"><a href="#workstream-d--rebase-workflow" data-for="workstream-d--rebase-workflow">Workstream D — rebase workflow</a></li><li class="depth-2"><a href="#workstream-e--recovery-and-undo-hints" data-for="workstream-e--recovery-and-undo-hints">Workstream E — recovery and undo hints</a></li><li class="depth-2"><a href="#workstream-f--testing-and-docs" data-for="workstream-f--testing-and-docs">Workstream F — testing and docs</a></li><li class="depth-1"><a href="#test-strategy" data-for="test-strategy">Test Strategy</a></li><li class="depth-2"><a href="#required-test-categories" data-for="required-test-categories">Required test categories</a></li><li class="depth-2"><a href="#example-acceptance-test-intent" data-for="example-acceptance-test-intent">Example acceptance-test intent</a></li><li class="depth-1"><a href="#atomic-commit-plan" data-for="atomic-commit-plan">Atomic Commit Plan</a></li><li class="depth-2"><a href="#commit-1" data-for="commit-1">Commit 1</a></li><li class="depth-2"><a href="#commit-2" data-for="commit-2">Commit 2</a></li><li class="depth-2"><a href="#commit-3" data-for="commit-3">Commit 3</a></li><li class="depth-2"><a href="#commit-4" data-for="commit-4">Commit 4</a></li><li class="depth-2"><a href="#commit-5" data-for="commit-5">Commit 5</a></li><li class="depth-2"><a href="#commit-6" data-for="commit-6">Commit 6</a></li><li class="depth-2"><a href="#commit-7" data-for="commit-7">Commit 7</a></li><li class="depth-1"><a href="#delivery-phases" data-for="delivery-phases">Delivery Phases</a></li><li class="depth-2"><a href="#phase-0--planning-only" data-for="phase-0--planning-only">Phase 0 — planning only</a></li><li class="depth-2"><a href="#phase-1--state-and-recovery-foundation" data-for="phase-1--state-and-recovery-foundation">Phase 1 — state and recovery foundation</a></li><li class="depth-2"><a href="#phase-2--branch-compare-and-cherry-pick-preflight" data-for="phase-2--branch-compare-and-cherry-pick-preflight">Phase 2 — branch compare and cherry-pick preflight</a></li><li class="depth-2"><a href="#phase-3--cherry-pick-runner-and-conflict-guidance" data-for="phase-3--cherry-pick-runner-and-conflict-guidance">Phase 3 — cherry-pick runner and conflict guidance</a></li><li class="depth-2"><a href="#phase-4--rebase-planner-and-runner-hardening" data-for="phase-4--rebase-planner-and-runner-hardening">Phase 4 — rebase planner and runner hardening</a></li><li class="depth-2"><a href="#phase-5--docs-help-and-polish" data-for="phase-5--docs-help-and-polish">Phase 5 — docs, help, and polish</a></li><li class="depth-1"><a href="#open-decisions-keep-explicit" data-for="open-decisions-keep-explicit">Open Decisions (Keep Explicit)</a></li><li class="depth-1"><a href="#recommended-next-execution-step" data-for="recommended-next-execution-step">Recommended Next Execution Step</a></li></ul></div></div><div class="backlinks"><h3>Backlinks</h3><ul class="overflow"><li>No backlinks found</li></ul></div></div><footer class><p>Created with <a href="https://quartz.jzhao.xyz/">Quartz v4.4.0</a> © 2026</p><ul><li><a href="https://github.com/jackyzha0/quartz">GitHub</a></li><li><a href="https://discord.gg/cRFFHYye7t">Discord Community</a></li></ul></footer></div></div></body><script type="application/javascript">function c(){let t=this.parentElement;t.classList.toggle("is-collapsed");let l=t.classList.contains("is-collapsed")?this.scrollHeight:t.scrollHeight;t.style.maxHeight=l+"px";let o=t,e=t.parentElement;for(;e;){if(!e.classList.contains("callout"))return;let n=e.classList.contains("is-collapsed")?e.scrollHeight:e.scrollHeight+o.scrollHeight;e.style.maxHeight=n+"px",o=e,e=e.parentElement}}function i(){let t=document.getElementsByClassName("callout is-collapsible");for(let s of t){let l=s.firstElementChild;if(l){l.addEventListener("click",c),window.addCleanup(()=>l.removeEventListener("click",c));let e=s.classList.contains("is-collapsed")?l.scrollHeight:s.scrollHeight;s.style.maxHeight=e+"px"}}}document.addEventListener("nav",i);window.addEventListener("resize",i);
+</script><script type="module">
+          let mermaidImport = undefined
+          document.addEventListener('nav', async () => {
+            if (document.querySelector("code.mermaid")) {
+              mermaidImport ||= await import('https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.7.0/mermaid.esm.min.mjs')
+              const mermaid = mermaidImport.default
+              const darkMode = document.documentElement.getAttribute('saved-theme') === 'dark'
+              mermaid.initialize({
+                startOnLoad: false,
+                securityLevel: 'loose',
+                theme: darkMode ? 'dark' : 'default'
+              })
+
+              await mermaid.run({
+                querySelector: '.mermaid'
+              })
+            }
+          });
+          </script><script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/contrib/copy-tex.min.js" type="application/javascript"></script><script src="../postscript.js" type="module"></script></html>

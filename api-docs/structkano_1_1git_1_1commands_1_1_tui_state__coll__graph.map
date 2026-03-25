@@ -1,0 +1,40 @@
+<map id="kano::git::commands::TuiState" name="kano::git::commands::TuiState">
+<area shape="rect" id="Node000001" title=" " alt="" coords="1843,259,1987,299"/>
+<area shape="rect" id="Node000002" href="$structkano_1_1git_1_1commands_1_1_command_mode_state.html" title=" " alt="" coords="1463,131,1615,171"/>
+<area shape="poly" id="edge1_Node000001_Node000002" title=" " alt="" coords="1630,151,1723,165,1773,178,1820,196,1864,225,1897,256,1894,260,1860,229,1817,201,1771,183,1722,170,1629,157"/>
+<area shape="rect" id="Node000003" href="$structkano_1_1git_1_1commands_1_1_input_buffer.html" title=" " alt="" coords="549,65,693,105"/>
+<area shape="poly" id="edge2_Node000002_Node000003" title=" " alt="" coords="707,83,1010,92,1201,104,1392,121,1464,132,1463,138,1392,127,1200,109,1010,98,707,89"/>
+<area shape="rect" id="Node000004" title=" " alt="" coords="181,182,261,207"/>
+<area shape="poly" id="edge17_Node000001_Node000004" title=" " alt="" coords="224,168,231,140,242,109,260,78,284,53,325,29,363,22,452,25,1541,25,1626,30,1660,37,1692,48,1752,81,1820,133,1850,162,1875,197,1907,257,1903,260,1870,199,1846,166,1817,137,1749,85,1690,53,1659,42,1625,36,1541,31,452,31,363,27,327,34,287,57,264,81,247,111,236,142,229,169"/>
+<area shape="poly" id="edge3_Node000003_Node000004" title=" " alt="" coords="231,168,252,135,267,119,284,106,316,91,350,80,421,68,489,66,549,71,549,76,489,72,421,73,352,85,318,96,287,110,270,122,256,138,236,171"/>
+<area shape="rect" id="Node000008" href="$structkano_1_1git_1_1commands_1_1_candidate_item.html" title="A single autocomplete candidate." alt="" coords="381,137,525,177"/>
+<area shape="poly" id="edge8_Node000008_Node000004" title=" " alt="" coords="274,184,381,166,382,171,275,189"/>
+<area shape="rect" id="Node000009" href="$structkano_1_1git_1_1commands_1_1_command_palette_state.html" title="State for command palette mode." alt="" coords="1120,197,1281,237"/>
+<area shape="poly" id="edge13_Node000009_Node000004" title=" " alt="" coords="275,193,1120,213,1120,218,275,199"/>
+<area shape="rect" id="Node000011" href="$structkano_1_1git_1_1commands_1_1_palette_item.html" title=" " alt="" coords="381,256,525,296"/>
+<area shape="poly" id="edge12_Node000011_Node000004" title=" " alt="" coords="233,219,252,261,268,280,287,295,315,305,346,306,377,302,406,294,407,299,378,307,347,312,314,310,284,300,264,284,248,263,228,222"/>
+<area shape="rect" id="Node000013" href="$structkano_1_1git_1_1commands_1_1_confirm_state.html" title="State for confirmation dialogs (already exists in tui_cmd.cpp)." alt="" coords="952,316,1096,356"/>
+<area shape="poly" id="edge16_Node000013_Node000004" title=" " alt="" coords="231,220,250,269,266,294,287,314,310,326,331,329,381,328,541,337,700,340,952,336,952,341,700,345,541,342,381,333,330,334,308,331,284,318,262,297,246,271,226,222"/>
+<area shape="rect" id="Node000005" title=" " alt="" coords="5,175,132,215"/>
+<area shape="poly" id="edge4_Node000004_Node000005" title=" " alt="" coords="146,192,181,192,181,197,146,197"/>
+<area shape="rect" id="Node000006" href="$structkano_1_1git_1_1commands_1_1_candidate_selection.html" title="CandidateSelection manages circular navigation through candidate items." alt="" coords="1129,132,1273,172"/>
+<area shape="poly" id="edge5_Node000002_Node000006" title=" " alt="" coords="1286,149,1463,148,1463,154,1286,154"/>
+<area shape="rect" id="Node000007" title=" " alt="" coords="717,132,928,172"/>
+<area shape="poly" id="edge6_Node000006_Node000007" title=" " alt="" coords="942,149,1128,149,1128,155,942,155"/>
+<area shape="poly" id="edge7_Node000007_Node000008" title=" " alt="" coords="539,153,717,151,717,156,539,159"/>
+<area shape="poly" id="edge9_Node000001_Node000009" title=" " alt="" coords="1295,217,1533,230,1676,241,1819,257,1843,261,1842,266,1818,263,1676,247,1533,235,1295,223"/>
+<area shape="rect" id="Node000010" title=" " alt="" coords="725,257,920,297"/>
+<area shape="poly" id="edge10_Node000009_Node000010" title=" " alt="" coords="933,290,1014,290,1055,285,1095,275,1107,268,1118,258,1158,235,1161,240,1122,262,1110,272,1097,280,1056,290,1014,295,933,295"/>
+<area shape="poly" id="edge11_Node000010_Node000011" title=" " alt="" coords="539,274,725,274,725,280,539,279"/>
+<area shape="rect" id="Node000012" href="$structkano_1_1git_1_1commands_1_1_help_panel_state.html" title="State for help panel mode." alt="" coords="1467,316,1611,356"/>
+<area shape="poly" id="edge14_Node000001_Node000012" title=" " alt="" coords="1625,336,1718,332,1769,327,1818,317,1875,296,1877,301,1819,323,1770,332,1719,338,1625,341"/>
+<area shape="poly" id="edge15_Node000001_Node000013" title=" " alt="" coords="1109,326,1416,301,1842,279,1843,284,1416,307,1110,331"/>
+<area shape="rect" id="Node000014" title=" " alt="" coords="1437,381,1641,435"/>
+<area shape="poly" id="edge18_Node000001_Node000014" title=" " alt="" coords="1655,403,1737,390,1778,379,1817,363,1841,349,1862,332,1896,297,1900,301,1866,336,1844,353,1820,368,1780,384,1738,395,1656,408"/>
+<area shape="rect" id="Node000015" href="$classkano_1_1git_1_1commands_1_1_autocomplete_engine.html" title=" " alt="" coords="1125,388,1276,428"/>
+<area shape="poly" id="edge19_Node000014_Node000015" title=" " alt="" coords="1290,405,1437,405,1437,411,1290,411"/>
+<area shape="rect" id="Node000016" title=" " alt="" coords="1416,460,1663,500"/>
+<area shape="poly" id="edge20_Node000001_Node000016" title=" " alt="" coords="1676,475,1749,459,1785,445,1817,427,1849,398,1874,363,1892,328,1904,298,1909,300,1897,330,1878,366,1853,402,1820,431,1787,450,1751,464,1677,480"/>
+<area shape="rect" id="Node000017" href="$classkano_1_1git_1_1commands_1_1_command_executor.html" title="Executes commands parsed from command input." alt="" coords="1129,460,1273,500"/>
+<area shape="poly" id="edge21_Node000016_Node000017" title=" " alt="" coords="1286,477,1416,477,1416,483,1286,483"/>
+</map>

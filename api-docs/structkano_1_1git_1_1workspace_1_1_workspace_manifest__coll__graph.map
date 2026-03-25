@@ -1,0 +1,16 @@
+<map id="kano::git::workspace::WorkspaceManifest" name="kano::git::workspace::WorkspaceManifest">
+<area shape="rect" id="Node000001" title=" " alt="" coords="1112,47,1257,87"/>
+<area shape="rect" id="Node000002" title=" " alt="" coords="825,89,1023,129"/>
+<area shape="poly" id="edge1_Node000001_Node000002" title=" " alt="" coords="1036,88,1111,76,1112,81,1037,94"/>
+<area shape="rect" id="Node000003" href="$structkano_1_1git_1_1workspace_1_1_repo_record.html" title=" " alt="" coords="497,103,640,143"/>
+<area shape="poly" id="edge2_Node000002_Node000003" title=" " alt="" coords="653,117,825,110,825,115,654,123"/>
+<area shape="rect" id="Node000004" title=" " alt="" coords="231,63,311,88"/>
+<area shape="poly" id="edge3_Node000003_Node000004" title=" " alt="" coords="309,92,345,108,385,119,442,126,497,126,497,132,441,132,383,125,343,113,307,97"/>
+<area shape="rect" id="Node000007" title=" " alt="" coords="664,5,801,60"/>
+<area shape="poly" id="edge7_Node000007_Node000004" title=" " alt="" coords="324,65,384,57,534,43,664,34,664,39,534,48,384,62,324,70"/>
+<area shape="rect" id="Node000005" title=" " alt="" coords="5,55,132,95"/>
+<area shape="poly" id="edge4_Node000004_Node000005" title=" " alt="" coords="146,73,230,73,230,78,146,78"/>
+<area shape="rect" id="Node000006" title=" " alt="" coords="181,157,360,197"/>
+<area shape="poly" id="edge5_Node000003_Node000006" title=" " alt="" coords="374,169,473,154,517,141,519,146,474,159,374,174"/>
+<area shape="poly" id="edge6_Node000001_Node000007" title=" " alt="" coords="816,34,1088,53,1112,55,1111,60,1088,58,815,39"/>
+</map>

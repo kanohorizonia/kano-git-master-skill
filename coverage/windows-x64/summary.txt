@@ -1,0 +1,2 @@
+Could not generate summary via PowerShell (requires VS SDK)
+Open  in Visual Studio for interactive report

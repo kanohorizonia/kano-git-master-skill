@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en"><head><title>testing</title><meta charset="utf-8"/><link rel="preconnect" href="https://fonts.googleapis.com"/><link rel="preconnect" href="https://fonts.gstatic.com"/><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM Plex Mono&amp;family=Schibsted Grotesk:wght@400;700&amp;family=Source Sans Pro:ital,wght@0,400;0,600;1,400;1,600&amp;display=swap"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><meta property="og:title" content="testing"/><meta property="og:description" content="Testing Guide This repo currently has two distinct test layers: native test targets and native E2E harnesses under src/cpp/code/tests/ shell acceptance/workflow regressions ..."/><meta property="og:image" content="https://kanohorizonia.github.io/kano-git-master-skill/static/og-image.png"/><meta property="og:width" content="1200"/><meta property="og:height" content="675"/><link rel="icon" href="../static/icon.png"/><meta name="description" content="Testing Guide This repo currently has two distinct test layers: native test targets and native E2E harnesses under src/cpp/code/tests/ shell acceptance/workflow regressions ..."/><meta name="generator" content="Quartz"/><link href="../index.css" rel="stylesheet" type="text/css" spa-preserve/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css" rel="stylesheet" type="text/css" spa-preserve/><script src="../prescript.js" type="application/javascript" spa-preserve></script><script type="application/javascript" spa-preserve>const fetchData = fetch("../static/contentIndex.json").then(data => data.json())</script></head><body data-slug="development/testing"><div id="quartz-root" class="page"><div id="quartz-body"><div class="left sidebar"><h2 class="page-title"><a href="..">Kano Git Master Skill</a></h2><div class="spacer mobile-only"></div><div class="search"><button class="search-button" id="search-button"><p>Search</p><svg role="img" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 19.9 19.7"><title>Search</title><g class="search-path" fill="none"><path stroke-linecap="square" d="M18.5 18.3l-5.4-5.4"></path><circle cx="8" cy="8" r="7"></circle></g></svg></button><div id="search-container"><div id="search-space"><input autocomplete="off" id="search-bar" name="search" type="text" aria-label="Search for something" placeholder="Search for something"/><div id="search-layout" data-preview="true"></div></div></div></div><button class="darkmode" id="darkmode"><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" id="dayIcon" x="0px" y="0px" viewBox="0 0 35 35" style="enable-background:new 0 0 35 35" xml:space="preserve" aria-label="Dark mode"><title>Dark mode</title><path d="M6,17.5C6,16.672,5.328,16,4.5,16h-3C0.672,16,0,16.672,0,17.5    S0.672,19,1.5,19h3C5.328,19,6,18.328,6,17.5z M7.5,26c-0.414,0-0.789,0.168-1.061,0.439l-2,2C4.168,28.711,4,29.086,4,29.5    C4,30.328,4.671,31,5.5,31c0.414,0,0.789-0.168,1.06-0.44l2-2C8.832,28.289,9,27.914,9,27.5C9,26.672,8.329,26,7.5,26z M17.5,6    C18.329,6,19,5.328,19,4.5v-3C19,0.672,18.329,0,17.5,0S16,0.672,16,1.5v3C16,5.328,16.671,6,17.5,6z M27.5,9    c0.414,0,0.789-0.168,1.06-0.439l2-2C30.832,6.289,31,5.914,31,5.5C31,4.672,30.329,4,29.5,4c-0.414,0-0.789,0.168-1.061,0.44    l-2,2C26.168,6.711,26,7.086,26,7.5C26,8.328,26.671,9,27.5,9z M6.439,8.561C6.711,8.832,7.086,9,7.5,9C8.328,9,9,8.328,9,7.5    c0-0.414-0.168-0.789-0.439-1.061l-2-2C6.289,4.168,5.914,4,5.5,4C4.672,4,4,4.672,4,5.5c0,0.414,0.168,0.789,0.439,1.06    L6.439,8.561z M33.5,16h-3c-0.828,0-1.5,0.672-1.5,1.5s0.672,1.5,1.5,1.5h3c0.828,0,1.5-0.672,1.5-1.5S34.328,16,33.5,16z     M28.561,26.439C28.289,26.168,27.914,26,27.5,26c-0.828,0-1.5,0.672-1.5,1.5c0,0.414,0.168,0.789,0.439,1.06l2,2    C28.711,30.832,29.086,31,29.5,31c0.828,0,1.5-0.672,1.5-1.5c0-0.414-0.168-0.789-0.439-1.061L28.561,26.439z M17.5,29    c-0.829,0-1.5,0.672-1.5,1.5v3c0,0.828,0.671,1.5,1.5,1.5s1.5-0.672,1.5-1.5v-3C19,29.672,18.329,29,17.5,29z M17.5,7    C11.71,7,7,11.71,7,17.5S11.71,28,17.5,28S28,23.29,28,17.5S23.29,7,17.5,7z M17.5,25c-4.136,0-7.5-3.364-7.5-7.5    c0-4.136,3.364-7.5,7.5-7.5c4.136,0,7.5,3.364,7.5,7.5C25,21.636,21.636,25,17.5,25z"></path></svg><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" id="nightIcon" x="0px" y="0px" viewBox="0 0 100 100" style="enable-background:new 0 0 100 100" xml:space="preserve" aria-label="Light mode"><title>Light mode</title><path d="M96.76,66.458c-0.853-0.852-2.15-1.064-3.23-0.534c-6.063,2.991-12.858,4.571-19.655,4.571  C62.022,70.495,50.88,65.88,42.5,57.5C29.043,44.043,25.658,23.536,34.076,6.47c0.532-1.08,0.318-2.379-0.534-3.23  c-0.851-0.852-2.15-1.064-3.23-0.534c-4.918,2.427-9.375,5.619-13.246,9.491c-9.447,9.447-14.65,22.008-14.65,35.369  c0,13.36,5.203,25.921,14.65,35.368s22.008,14.65,35.368,14.65c13.361,0,25.921-5.203,35.369-14.65  c3.872-3.871,7.064-8.328,9.491-13.246C97.826,68.608,97.611,67.309,96.76,66.458z"></path></svg></button><div class="explorer desktop-only"><button type="button" id="explorer" data-behavior="collapse" data-collapsed="collapsed" data-savestate="true" data-tree="[{&quot;path&quot;:&quot;api&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;comparisons&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;design&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;development&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;examples&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;guides&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;migrations&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;planning&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;status&quot;,&quot;collapsed&quot;:true}]" aria-controls="explorer-content" aria-expanded="false"><h2>Explorer</h2><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="fold"><polyline points="6 9 12 15 18 9"></polyline></svg></button><div id="explorer-content"><ul class="overflow" id="explorer-ul"><li><div class="folder-outer open"><ul style="padding-left:0;" class="content" data-folderul><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="api"><button class="folder-button"><span class="folder-title">api</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="api"><li><a href="../api/overview" data-for="api/overview">API Overview</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="comparisons"><button class="folder-button"><span class="folder-title">comparisons</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="comparisons"><li><a href="../comparisons/git-p4-vs-git-svn" data-for="comparisons/git-p4-vs-git-svn">git-p4-vs-git-svn</a></li><li><a href="../comparisons/submodule-vs-subtree" data-for="comparisons/submodule-vs-subtree">submodule-vs-subtree</a></li><li><a href="../comparisons/when-to-use-scalar" data-for="comparisons/when-to-use-scalar">when-to-use-scalar</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="design"><button class="folder-button"><span class="folder-title">design</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="design"><li><a href="../design/orphan-branch" data-for="design/orphan-branch">orphan-branch</a></li><li><a href="../design/workspace-native-planner-contract" data-for="design/workspace-native-planner-contract">workspace-native-planner-contract</a></li><li><a href="../design/worktree-scalar" data-for="design/worktree-scalar">worktree-scalar</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="development"><button class="folder-button"><span class="folder-title">development</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="development"><li><a href="../development/contributing" data-for="development/contributing">contributing</a></li><li><a href="../development/kano-cpp-dev-convention" data-for="development/kano-cpp-dev-convention">kano-cpp-dev-convention</a></li><li><a href="../development/pixi" data-for="development/pixi">pixi</a></li><li><a href="../development/testing" data-for="development/testing">testing</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="examples"><button class="folder-button"><span class="folder-title">examples</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="examples"><li><a href="../examples/commit-rules-example" data-for="examples/commit-rules-example">commit-rules-example</a></li><li><a href="../examples/init-kano-dev-skill-example" data-for="examples/init-kano-dev-skill-example">init-kano-dev-skill-example</a></li><li><a href="../examples/repo-initialization-workflow-examples" data-for="examples/repo-initialization-workflow-examples">repo-initialization-workflow-examples</a></li><li><a href="../examples/root-repo-multi-remote-examples" data-for="examples/root-repo-multi-remote-examples">root-repo-multi-remote-examples</a></li><li><a href="../examples/WORKFLOW-SUMMARY" data-for="examples/WORKFLOW-SUMMARY">WORKFLOW-SUMMARY</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="guides"><button class="folder-button"><span class="folder-title">guides</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="guides"><li><a href="../guides/auto-fallback-complete" data-for="guides/auto-fallback-complete">auto-fallback-complete</a></li><li><a href="../guides/common-pitfalls" data-for="guides/common-pitfalls">common-pitfalls</a></li><li><a href="../guides/cpa-commit-plan-workflow" data-for="guides/cpa-commit-plan-workflow">cpa-commit-plan-workflow</a></li><li><a href="../guides/git-p4" data-for="guides/git-p4">git-p4</a></li><li><a href="../guides/git-svn" data-for="guides/git-svn">git-svn</a></li><li><a href="../guides/ignore-datasource-sync-policy" data-for="guides/ignore-datasource-sync-policy">ignore-datasource-sync-policy</a></li><li><a href="../guides/ignore-plan-operator-workflow" data-for="guides/ignore-plan-operator-workflow">ignore-plan-operator-workflow</a></li><li><a href="../guides/new-features" data-for="guides/new-features">new-features</a></li><li><a href="../guides/quick-start" data-for="guides/quick-start">quick-start</a></li><li><a href="../guides/repo-initialization-workflow" data-for="guides/repo-initialization-workflow">repo-initialization-workflow</a></li><li><a href="../guides/scalar" data-for="guides/scalar">scalar</a></li><li><a href="../guides/submodule" data-for="guides/submodule">submodule</a></li><li><a href="../guides/subtree" data-for="guides/subtree">subtree</a></li><li><a href="../guides/version-info" data-for="guides/version-info">version-info</a></li><li><a href="../guides/worktree" data-for="guides/worktree">worktree</a></li></ul></div></li><li><div class="folder-outer "><ul style="padding-left:0;" class="content" data-folderul></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="migrations"><button class="folder-button"><span class="folder-title">migrations</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="migrations"><li><a href="../migrations/perforce-to-git" data-for="migrations/perforce-to-git">perforce-to-git</a></li><li><a href="../migrations/svn-to-git" data-for="migrations/svn-to-git">svn-to-git</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="planning"><button class="folder-button"><span class="folder-title">planning</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="planning"><li><a href="../planning/cli-architecture-proposal" data-for="planning/cli-architecture-proposal">cli-architecture-proposal</a></li><li><a href="../planning/tui-branch-transplant-workflows" data-for="planning/tui-branch-transplant-workflows">tui-branch-transplant-workflows</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="status"><button class="folder-button"><span class="folder-title">status</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="status"><li><a href="../status/changelog" data-for="status/changelog">changelog</a></li></ul></div></li><li><a href="../README" data-for="README">README</a></li></ul></div></li><li id="explorer-end"></li></ul></div></div></div><div class="center"><div class="page-header"><div class="popover-hint"><nav class="breadcrumb-container" aria-label="breadcrumbs"><div class="breadcrumb-element"><a href="../">Home</a><p> ❯ </p></div><div class="breadcrumb-element"><a href="../development/">development</a><p> ❯ </p></div><div class="breadcrumb-element"><a href>testing</a></div></nav><h1 class="article-title">testing</h1><p show-comma="true" class="content-meta"><span>Mar 25, 2026</span><span>4 min read</span></p></div></div><article class="popover-hint"><h1 id="testing-guide">Testing Guide<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#testing-guide" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>This repo currently has two distinct test layers:</p>
+<ul>
+<li>native test targets and native E2E harnesses under <code>src/cpp/code/tests/</code></li>
+<li>shell acceptance/workflow regressions under <code>src/shell/test/</code></li>
+</ul>
+<p>The important rule is to group tests by what they support, not by file extension.
+Shell or PowerShell files that exist only to drive native C++ test lanes stay under
+<code>src/cpp/code/tests/</code>. Product/workflow shell acceptance lives under
+<code>src/shell/test/</code>.</p>
+<h2 id="current-test-topology">Current Test Topology<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#current-test-topology" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<h3 id="native-test-lanes">Native test lanes<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#native-test-lanes" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ul>
+<li><code>src/cpp/code/tests/run_tests.sh</code></li>
+<li><code>src/cpp/code/tests/run_tests.ps1</code></li>
+<li><code>src/cpp/code/tests/e2e/plan_commit_regression/</code></li>
+</ul>
+<p>These drive the native test targets defined in <code>src/cpp/code/tests/CMakeLists.txt</code>:</p>
+<ul>
+<li><code>run_kano_git_tests</code>
+<ul>
+<li>fast lane</li>
+<li>CLI + TUI tests</li>
+</ul>
+</li>
+<li><code>run_kano_git_all_tests</code>
+<ul>
+<li>full lane</li>
+<li>CLI + TUI + E2E</li>
+</ul>
+</li>
+</ul>
+<h3 id="shell-acceptance-coverage">Shell acceptance coverage<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#shell-acceptance-coverage" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ul>
+<li><code>src/shell/test/acceptance-commit-plan-first.sh</code></li>
+<li><code>src/shell/test/acceptance-quickstart-commit-push.sh</code></li>
+<li><code>src/shell/test/acceptance-ignore-plan.sh</code></li>
+</ul>
+<p>These validate workflow behavior against built <code>kog</code> binaries and disposable repos.</p>
+<h3 id="shell-support-helpers">Shell support helpers<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#shell-support-helpers" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ul>
+<li><code>src/shell/support/gen-root-wrappers.sh</code></li>
+</ul>
+<p>This is scaffolding/support, not a product runtime entrypoint and not a test.</p>
+<h2 id="recommended-entry-points">Recommended Entry Points<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#recommended-entry-points" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>If <code>pixi</code> is available, use it as the default repo entrypoint.</p>
+<figure data-rehype-pretty-code-figure><pre tabindex="0" data-language="bash" data-theme="github-light tokyo-night"><code data-language="bash" data-theme="github-light tokyo-night" style="display:grid;"><span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">pixi</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> install</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">pixi</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> run</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> build-native</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">pixi</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> run</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> quick-test</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">pixi</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> run</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> full-test</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">pixi</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> run</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> acceptance-commit-plan-first</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">pixi</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> run</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> acceptance-quickstart</span></span></code></pre></figure>
+<h2 id="direct-invocation">Direct Invocation<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#direct-invocation" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<h3 id="native-test-lanes-1">Native test lanes<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#native-test-lanes-1" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<figure data-rehype-pretty-code-figure><pre tabindex="0" data-language="bash" data-theme="github-light tokyo-night"><code data-language="bash" data-theme="github-light tokyo-night" style="display:grid;"><span data-line><span style="--shiki-light:#6A737D;--shiki-dark:#51597D;--shiki-light-font-style:inherit;--shiki-dark-font-style:italic;"># Bash runner</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">bash</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> src/cpp/code/tests/run_tests.sh</span><span style="--shiki-light:#D73A49;--shiki-dark:#89DDFF;"> &lt;</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;">prese</span><span style="--shiki-light:#24292E;--shiki-dark:#A9B1D6;">t</span><span style="--shiki-light:#D73A49;--shiki-dark:#89DDFF;">></span></span>
+<span data-line> </span>
+<span data-line><span style="--shiki-light:#6A737D;--shiki-dark:#51597D;--shiki-light-font-style:inherit;--shiki-dark-font-style:italic;"># PowerShell runner</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">pwsh</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> -File</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> src/cpp/code/tests/run_tests.ps1</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> -Preset</span><span style="--shiki-light:#D73A49;--shiki-dark:#89DDFF;"> &lt;</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;">prese</span><span style="--shiki-light:#24292E;--shiki-dark:#A9B1D6;">t</span><span style="--shiki-light:#D73A49;--shiki-dark:#89DDFF;">></span></span>
+<span data-line> </span>
+<span data-line><span style="--shiki-light:#6A737D;--shiki-dark:#51597D;--shiki-light-font-style:inherit;--shiki-dark-font-style:italic;"># CMake targets</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">cmake</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --build</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --preset</span><span style="--shiki-light:#D73A49;--shiki-dark:#89DDFF;"> &lt;</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;">prese</span><span style="--shiki-light:#24292E;--shiki-dark:#A9B1D6;">t</span><span style="--shiki-light:#D73A49;--shiki-dark:#89DDFF;">></span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --target</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> run_kano_git_tests</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">cmake</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --build</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --preset</span><span style="--shiki-light:#D73A49;--shiki-dark:#89DDFF;"> &lt;</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;">prese</span><span style="--shiki-light:#24292E;--shiki-dark:#A9B1D6;">t</span><span style="--shiki-light:#D73A49;--shiki-dark:#89DDFF;">></span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --target</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> run_kano_git_all_tests</span></span></code></pre></figure>
+<h3 id="shell-acceptance">Shell acceptance<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#shell-acceptance" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<figure data-rehype-pretty-code-figure><pre tabindex="0" data-language="bash" data-theme="github-light tokyo-night"><code data-language="bash" data-theme="github-light tokyo-night" style="display:grid;"><span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">bash</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> src/shell/test/acceptance-commit-plan-first.sh</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">bash</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> src/shell/test/acceptance-quickstart-commit-push.sh</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">bash</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> src/shell/test/acceptance-ignore-plan.sh</span></span></code></pre></figure>
+<h2 id="where-new-tests-should-go">Where New Tests Should Go<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#where-new-tests-should-go" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<h3 id="put-tests-under-srccppcodetests-when">Put tests under <code>src/cpp/code/tests/</code> when<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#put-tests-under-srccppcodetests-when" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ul>
+<li>they are native C++ test targets</li>
+<li>they are shell/PowerShell runners for native test lanes</li>
+<li>they are E2E harnesses owned by native test execution</li>
+</ul>
+<h3 id="put-tests-under-srcshelltest-when">Put tests under <code>src/shell/test/</code> when<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#put-tests-under-srcshelltest-when" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ul>
+<li>they validate shell/native workflow behavior end to end</li>
+<li>they create disposable repos and drive built <code>kog</code> commands directly</li>
+<li>they represent product acceptance/regression scenarios</li>
+</ul>
+<h3 id="put-helpers-under-srcshellsupport-when">Put helpers under <code>src/shell/support/</code> when<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#put-helpers-under-srcshellsupport-when" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ul>
+<li>they are scaffolding/maintenance helpers</li>
+<li>they are not runtime command flows and not tests</li>
+</ul>
+<h2 id="user-story-coverage-mapping">User Story Coverage Mapping<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#user-story-coverage-mapping" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>Each user story maps to CLI commands and their test coverage.</p>
+<h3 id="command-inventory">Command Inventory<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#command-inventory" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="table-container"><table><thead><tr><th>Command</th><th>Description</th><th>Test Coverage</th></tr></thead><tbody><tr><td><code>discover</code></td><td>Discover repositories in workspace</td><td>CLI: 5 tests (discovery, gitignore, kogignore, external)</td></tr><tr><td><code>init</code></td><td>Initialize a new workspace</td><td>Not yet tested</td></tr><tr><td><code>plan</code></td><td>Plan repository updates</td><td>CLI: 2 tests (freshness verification)</td></tr><tr><td><code>commit</code></td><td>AI-powered commit message generation</td><td>CLI: 10+ tests (commit-push workflow, secret gate, detached HEAD)</td></tr><tr><td><code>push</code></td><td>Multi-remote push workflow</td><td>CLI: 3 tests (policy enforcement)</td></tr><tr><td><code>sync</code></td><td>Repository synchronization</td><td>CLI: 5 tests (post-sync, locks, Windows, self-build)</td></tr><tr><td><code>pr</code></td><td>GitHub PR workflow</td><td>Not yet tested</td></tr><tr><td><code>status</code></td><td>Repository status display</td><td>CLI: 1 test (table width adaptation)</td></tr><tr><td><code>clone</code></td><td>Clone with upstream support</td><td>Not yet tested</td></tr><tr><td><code>branch</code></td><td>Branch operations</td><td>Not yet tested</td></tr><tr><td><code>cache</code></td><td>Cache management</td><td>Not yet tested</td></tr><tr><td><code>config</code></td><td>Configuration management</td><td>Not yet tested</td></tr><tr><td><code>log</code></td><td>Git log with AI enhancement</td><td>Not yet tested</td></tr><tr><td><code>resolve</code></td><td>AI-powered conflict resolution</td><td>Not yet tested</td></tr><tr><td><code>doctor</code></td><td>Environment health checks</td><td>Not yet tested</td></tr><tr><td><code>worktree</code></td><td>Git worktree management</td><td>Not yet tested</td></tr><tr><td><code>submodule</code></td><td>Enhanced submodule management</td><td>CLI: 2 tests (add, passthrough)</td></tr><tr><td><code>subtree</code></td><td>Git subtree operations</td><td>Not yet tested</td></tr><tr><td><code>scalar</code></td><td>Git Scalar mono-repo</td><td>Not yet tested</td></tr><tr><td><code>p4</code></td><td>Git-Perforce bridge</td><td>Not yet tested</td></tr><tr><td><code>svn</code></td><td>Git-Subversion bridge</td><td>Not yet tested</td></tr></tbody></table></div>
+<h3 id="user-story-to-test-mapping">User Story to Test Mapping<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#user-story-to-test-mapping" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="table-container"><table><thead><tr><th>US-ID</th><th>User Story</th><th>CLI Command(s)</th><th>Test Location</th><th>Status</th></tr></thead><tbody><tr><td>US-001</td><td>As a developer, I want to discover all repositories in my workspace</td><td><code>discover</code></td><td><code>functional_test_main.cpp: workspace_discover_*</code></td><td>✅ Covered</td></tr><tr><td>US-002</td><td>As a developer, I want to initialize a new workspace</td><td><code>init</code></td><td>—</td><td>❌ Missing</td></tr><tr><td>US-003</td><td>As a developer, I want to plan repository updates before applying</td><td><code>plan</code></td><td><code>functional_test_main.cpp: plan_*</code></td><td>✅ Covered</td></tr><tr><td>US-004</td><td>As a developer, I want to commit with AI-generated messages</td><td><code>commit</code></td><td><code>functional_test_main.cpp: commit_push_*</code></td><td>✅ Covered</td></tr><tr><td>US-005</td><td>As a developer, I want to push to multiple remotes</td><td><code>push</code></td><td><code>functional_test_main.cpp: push_*</code></td><td>✅ Covered</td></tr><tr><td>US-006</td><td>As a developer, I want to sync repositories with upstream</td><td><code>sync</code></td><td><code>functional_test_main.cpp: sync_*</code></td><td>✅ Covered</td></tr><tr><td>US-007</td><td>As a developer, I want to create GitHub PRs</td><td><code>pr</code></td><td>—</td><td>❌ Missing</td></tr><tr><td>US-008</td><td>As a developer, I want to see repository status</td><td><code>status</code></td><td><code>functional_test_main.cpp: repo_status_*</code></td><td>✅ Covered</td></tr><tr><td>US-009</td><td>As a developer, I want to clone repos with upstream setup</td><td><code>clone</code></td><td>—</td><td>❌ Missing</td></tr><tr><td>US-010</td><td>As a developer, I want to manage branches</td><td><code>branch</code></td><td>—</td><td>❌ Missing</td></tr><tr><td>US-011</td><td>As a developer, I want to resolve merge conflicts with AI</td><td><code>resolve</code></td><td>—</td><td>❌ Missing</td></tr><tr><td>US-012</td><td>As a developer, I want to manage git worktrees</td><td><code>worktree</code></td><td>—</td><td>❌ Missing</td></tr><tr><td>US-013</td><td>As a developer, I want to manage submodules</td><td><code>submodule</code></td><td><code>functional_test_main.cpp: submodule_*</code></td><td>✅ Covered</td></tr><tr><td>US-014</td><td>As a developer, I want to check environment health</td><td><code>doctor</code></td><td>—</td><td>❌ Missing</td></tr><tr><td>US-015</td><td>As a developer, I want to protect secrets in commits</td><td><code>commit</code> (secret-gate)</td><td><code>functional_test_main.cpp: secret_gate_*</code></td><td>✅ Covered</td></tr></tbody></table></div>
+<h3 id="tui-component-coverage">TUI Component Coverage<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#tui-component-coverage" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>TUI tests cover the terminal UI components, not individual commands:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="table-container"><table><thead><tr><th>Component</th><th>Test Location</th><th>Coverage</th></tr></thead><tbody><tr><td>AutocompleteEngine</td><td><code>test_autocomplete_engine.cpp</code></td><td>Command/option completion</td></tr><tr><td>CommandExecutor</td><td><code>test_command_executor.cpp</code></td><td>Command parsing and execution</td></tr><tr><td>CommandModeState</td><td><code>test_command_mode_state.cpp</code></td><td>Input buffer, candidate selection</td></tr><tr><td>MetadataCache</td><td><code>test_metadata_cache.cpp</code></td><td>CLI metadata extraction</td></tr><tr><td>TuiState</td><td><code>test_tui_state.cpp</code></td><td>Mode transitions, state management</td></tr></tbody></table></div>
+<h3 id="coverage-targets">Coverage Targets<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#coverage-targets" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ul>
+<li><strong>Current baseline</strong>: 86.48% line coverage (TUI tests only)</li>
+<li><strong>Target</strong>: 80% coverage across all user stories</li>
+<li><strong>Priority gaps</strong>: US-002 (init), US-007 (pr), US-009 (clone), US-011 (resolve)</li>
+</ul>
+<h2 id="current-coverage-snapshot">Current Coverage Snapshot<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#current-coverage-snapshot" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="table-container"><table><thead><tr><th>Area</th><th>Location</th><th>Status</th></tr></thead><tbody><tr><td>Native CLI/TUI lanes</td><td><code>src/cpp/code/tests/</code></td><td>Active</td></tr><tr><td>Native E2E plan regression</td><td><code>src/cpp/code/tests/e2e/plan_commit_regression/</code></td><td>Active</td></tr><tr><td>Commit plan-first acceptance</td><td><code>src/shell/test/acceptance-commit-plan-first.sh</code></td><td>Active</td></tr><tr><td>Commit/commit-push quickstart acceptance</td><td><code>src/shell/test/acceptance-quickstart-commit-push.sh</code></td><td>Active</td></tr><tr><td>Ignore-plan acceptance</td><td><code>src/shell/test/acceptance-ignore-plan.sh</code></td><td>Active</td></tr></tbody></table></div>
+<h2 id="notes">Notes<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#notes" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<ul>
+<li>Older references to <code>scripts/test/</code> are stale in this checkout and should not be
+used as the source of truth.</li>
+<li>On Windows, prefer the native Windows build script before running acceptance:</li>
+</ul>
+<figure data-rehype-pretty-code-figure><pre tabindex="0" data-language="bash" data-theme="github-light tokyo-night"><code data-language="bash" data-theme="github-light tokyo-night" style="display:grid;"><span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">bash</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> src/cpp/scripts/windows/build_windows_ninja_msvc_release.sh</span></span></code></pre></figure>
+<ul>
+<li>Acceptance scripts may emit Git CRLF warnings in disposable repos; those are not
+failures by themselves.</li>
+</ul>
+<h2 id="see-also">See Also<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#see-also" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<ul>
+<li><code>src/cpp/code/tests/README.md</code></li>
+<li><code>TESTING.md</code></li>
+<li><code>docs/guides/cpa-commit-plan-workflow.md</code></li>
+</ul></article><hr/><div class="page-footer"></div></div><div class="right sidebar"><div class="graph"><h3>Graph View</h3><div class="graph-outer"><div id="graph-container" data-cfg="{&quot;drag&quot;:true,&quot;zoom&quot;:true,&quot;depth&quot;:1,&quot;scale&quot;:1.1,&quot;repelForce&quot;:0.5,&quot;centerForce&quot;:0.3,&quot;linkDistance&quot;:30,&quot;fontSize&quot;:0.6,&quot;opacityScale&quot;:1,&quot;showTags&quot;:true,&quot;removeTags&quot;:[],&quot;focusOnHover&quot;:false}"></div><button id="global-graph-icon" aria-label="Global Graph"><svg version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 55 55" fill="currentColor" xml:space="preserve"><path d="M49,0c-3.309,0-6,2.691-6,6c0,1.035,0.263,2.009,0.726,2.86l-9.829,9.829C32.542,17.634,30.846,17,29,17
+                s-3.542,0.634-4.898,1.688l-7.669-7.669C16.785,10.424,17,9.74,17,9c0-2.206-1.794-4-4-4S9,6.794,9,9s1.794,4,4,4
+                c0.74,0,1.424-0.215,2.019-0.567l7.669,7.669C21.634,21.458,21,23.154,21,25s0.634,3.542,1.688,4.897L10.024,42.562
+                C8.958,41.595,7.549,41,6,41c-3.309,0-6,2.691-6,6s2.691,6,6,6s6-2.691,6-6c0-1.035-0.263-2.009-0.726-2.86l12.829-12.829
+                c1.106,0.86,2.44,1.436,3.898,1.619v10.16c-2.833,0.478-5,2.942-5,5.91c0,3.309,2.691,6,6,6s6-2.691,6-6c0-2.967-2.167-5.431-5-5.91
+                v-10.16c1.458-0.183,2.792-0.759,3.898-1.619l7.669,7.669C41.215,39.576,41,40.26,41,41c0,2.206,1.794,4,4,4s4-1.794,4-4
+                s-1.794-4-4-4c-0.74,0-1.424,0.215-2.019,0.567l-7.669-7.669C36.366,28.542,37,26.846,37,25s-0.634-3.542-1.688-4.897l9.665-9.665
+                C46.042,11.405,47.451,12,49,12c3.309,0,6-2.691,6-6S52.309,0,49,0z M11,9c0-1.103,0.897-2,2-2s2,0.897,2,2s-0.897,2-2,2
+                S11,10.103,11,9z M6,51c-2.206,0-4-1.794-4-4s1.794-4,4-4s4,1.794,4,4S8.206,51,6,51z M33,49c0,2.206-1.794,4-4,4s-4-1.794-4-4
+                s1.794-4,4-4S33,46.794,33,49z M29,31c-3.309,0-6-2.691-6-6s2.691-6,6-6s6,2.691,6,6S32.309,31,29,31z M47,41c0,1.103-0.897,2-2,2
+                s-2-0.897-2-2s0.897-2,2-2S47,39.897,47,41z M49,10c-2.206,0-4-1.794-4-4s1.794-4,4-4s4,1.794,4,4S51.206,10,49,10z"></path></svg></button></div><div id="global-graph-outer"><div id="global-graph-container" data-cfg="{&quot;drag&quot;:true,&quot;zoom&quot;:true,&quot;depth&quot;:-1,&quot;scale&quot;:0.9,&quot;repelForce&quot;:0.5,&quot;centerForce&quot;:0.3,&quot;linkDistance&quot;:30,&quot;fontSize&quot;:0.6,&quot;opacityScale&quot;:1,&quot;showTags&quot;:true,&quot;removeTags&quot;:[],&quot;focusOnHover&quot;:true}"></div></div></div><div class="toc desktop-only"><button type="button" id="toc" class aria-controls="toc-content" aria-expanded="true"><h3>Table of Contents</h3><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="fold"><polyline points="6 9 12 15 18 9"></polyline></svg></button><div id="toc-content" class><ul class="overflow"><li class="depth-0"><a href="#testing-guide" data-for="testing-guide">Testing Guide</a></li><li class="depth-1"><a href="#current-test-topology" data-for="current-test-topology">Current Test Topology</a></li><li class="depth-2"><a href="#native-test-lanes" data-for="native-test-lanes">Native test lanes</a></li><li class="depth-2"><a href="#shell-acceptance-coverage" data-for="shell-acceptance-coverage">Shell acceptance coverage</a></li><li class="depth-2"><a href="#shell-support-helpers" data-for="shell-support-helpers">Shell support helpers</a></li><li class="depth-1"><a href="#recommended-entry-points" data-for="recommended-entry-points">Recommended Entry Points</a></li><li class="depth-1"><a href="#direct-invocation" data-for="direct-invocation">Direct Invocation</a></li><li class="depth-2"><a href="#native-test-lanes-1" data-for="native-test-lanes-1">Native test lanes</a></li><li class="depth-2"><a href="#shell-acceptance" data-for="shell-acceptance">Shell acceptance</a></li><li class="depth-1"><a href="#where-new-tests-should-go" data-for="where-new-tests-should-go">Where New Tests Should Go</a></li><li class="depth-2"><a href="#put-tests-under-srccppcodetests-when" data-for="put-tests-under-srccppcodetests-when">Put tests under src/cpp/code/tests/ when</a></li><li class="depth-2"><a href="#put-tests-under-srcshelltest-when" data-for="put-tests-under-srcshelltest-when">Put tests under src/shell/test/ when</a></li><li class="depth-2"><a href="#put-helpers-under-srcshellsupport-when" data-for="put-helpers-under-srcshellsupport-when">Put helpers under src/shell/support/ when</a></li><li class="depth-1"><a href="#user-story-coverage-mapping" data-for="user-story-coverage-mapping">User Story Coverage Mapping</a></li><li class="depth-2"><a href="#command-inventory" data-for="command-inventory">Command Inventory</a></li><li class="depth-2"><a href="#user-story-to-test-mapping" data-for="user-story-to-test-mapping">User Story to Test Mapping</a></li><li class="depth-2"><a href="#tui-component-coverage" data-for="tui-component-coverage">TUI Component Coverage</a></li><li class="depth-2"><a href="#coverage-targets" data-for="coverage-targets">Coverage Targets</a></li><li class="depth-1"><a href="#current-coverage-snapshot" data-for="current-coverage-snapshot">Current Coverage Snapshot</a></li><li class="depth-1"><a href="#notes" data-for="notes">Notes</a></li><li class="depth-1"><a href="#see-also" data-for="see-also">See Also</a></li></ul></div></div><div class="backlinks"><h3>Backlinks</h3><ul class="overflow"><li><a href="../README" class="internal">README</a></li><li><a href="../guides/common-pitfalls" class="internal">common-pitfalls</a></li><li><a href="../" class="internal">index</a></li></ul></div></div><footer class><p>Created with <a href="https://quartz.jzhao.xyz/">Quartz v4.4.0</a> © 2026</p><ul><li><a href="https://github.com/jackyzha0/quartz">GitHub</a></li><li><a href="https://discord.gg/cRFFHYye7t">Discord Community</a></li></ul></footer></div></div></body><script type="application/javascript">function c(){let t=this.parentElement;t.classList.toggle("is-collapsed");let l=t.classList.contains("is-collapsed")?this.scrollHeight:t.scrollHeight;t.style.maxHeight=l+"px";let o=t,e=t.parentElement;for(;e;){if(!e.classList.contains("callout"))return;let n=e.classList.contains("is-collapsed")?e.scrollHeight:e.scrollHeight+o.scrollHeight;e.style.maxHeight=n+"px",o=e,e=e.parentElement}}function i(){let t=document.getElementsByClassName("callout is-collapsible");for(let s of t){let l=s.firstElementChild;if(l){l.addEventListener("click",c),window.addCleanup(()=>l.removeEventListener("click",c));let e=s.classList.contains("is-collapsed")?l.scrollHeight:s.scrollHeight;s.style.maxHeight=e+"px"}}}document.addEventListener("nav",i);window.addEventListener("resize",i);
+</script><script type="module">
+          let mermaidImport = undefined
+          document.addEventListener('nav', async () => {
+            if (document.querySelector("code.mermaid")) {
+              mermaidImport ||= await import('https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.7.0/mermaid.esm.min.mjs')
+              const mermaid = mermaidImport.default
+              const darkMode = document.documentElement.getAttribute('saved-theme') === 'dark'
+              mermaid.initialize({
+                startOnLoad: false,
+                securityLevel: 'loose',
+                theme: darkMode ? 'dark' : 'default'
+              })
+
+              await mermaid.run({
+                querySelector: '.mermaid'
+              })
+            }
+          });
+          </script><script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/contrib/copy-tex.min.js" type="application/javascript"></script><script src="../postscript.js" type="module"></script></html>

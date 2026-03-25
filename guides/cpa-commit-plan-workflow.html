@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en"><head><title>cpa-commit-plan-workflow</title><meta charset="utf-8"/><link rel="preconnect" href="https://fonts.googleapis.com"/><link rel="preconnect" href="https://fonts.gstatic.com"/><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM Plex Mono&amp;family=Schibsted Grotesk:wght@400;700&amp;family=Source Sans Pro:ital,wght@0,400;0,600;1,400;1,600&amp;display=swap"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><meta property="og:title" content="cpa-commit-plan-workflow"/><meta property="og:description" content="KOG Commit and Push Workflow This guide describes how kog commit and commit-push flows work today, including: full-auto semi-auto manual plan-driven vs -m message-driven AI is ..."/><meta property="og:image" content="https://kanohorizonia.github.io/kano-git-master-skill/static/og-image.png"/><meta property="og:width" content="1200"/><meta property="og:height" content="675"/><link rel="icon" href="../static/icon.png"/><meta name="description" content="KOG Commit and Push Workflow This guide describes how kog commit and commit-push flows work today, including: full-auto semi-auto manual plan-driven vs -m message-driven AI is ..."/><meta name="generator" content="Quartz"/><link href="../index.css" rel="stylesheet" type="text/css" spa-preserve/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css" rel="stylesheet" type="text/css" spa-preserve/><script src="../prescript.js" type="application/javascript" spa-preserve></script><script type="application/javascript" spa-preserve>const fetchData = fetch("../static/contentIndex.json").then(data => data.json())</script></head><body data-slug="guides/cpa-commit-plan-workflow"><div id="quartz-root" class="page"><div id="quartz-body"><div class="left sidebar"><h2 class="page-title"><a href="..">Kano Git Master Skill</a></h2><div class="spacer mobile-only"></div><div class="search"><button class="search-button" id="search-button"><p>Search</p><svg role="img" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 19.9 19.7"><title>Search</title><g class="search-path" fill="none"><path stroke-linecap="square" d="M18.5 18.3l-5.4-5.4"></path><circle cx="8" cy="8" r="7"></circle></g></svg></button><div id="search-container"><div id="search-space"><input autocomplete="off" id="search-bar" name="search" type="text" aria-label="Search for something" placeholder="Search for something"/><div id="search-layout" data-preview="true"></div></div></div></div><button class="darkmode" id="darkmode"><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" id="dayIcon" x="0px" y="0px" viewBox="0 0 35 35" style="enable-background:new 0 0 35 35" xml:space="preserve" aria-label="Dark mode"><title>Dark mode</title><path d="M6,17.5C6,16.672,5.328,16,4.5,16h-3C0.672,16,0,16.672,0,17.5    S0.672,19,1.5,19h3C5.328,19,6,18.328,6,17.5z M7.5,26c-0.414,0-0.789,0.168-1.061,0.439l-2,2C4.168,28.711,4,29.086,4,29.5    C4,30.328,4.671,31,5.5,31c0.414,0,0.789-0.168,1.06-0.44l2-2C8.832,28.289,9,27.914,9,27.5C9,26.672,8.329,26,7.5,26z M17.5,6    C18.329,6,19,5.328,19,4.5v-3C19,0.672,18.329,0,17.5,0S16,0.672,16,1.5v3C16,5.328,16.671,6,17.5,6z M27.5,9    c0.414,0,0.789-0.168,1.06-0.439l2-2C30.832,6.289,31,5.914,31,5.5C31,4.672,30.329,4,29.5,4c-0.414,0-0.789,0.168-1.061,0.44    l-2,2C26.168,6.711,26,7.086,26,7.5C26,8.328,26.671,9,27.5,9z M6.439,8.561C6.711,8.832,7.086,9,7.5,9C8.328,9,9,8.328,9,7.5    c0-0.414-0.168-0.789-0.439-1.061l-2-2C6.289,4.168,5.914,4,5.5,4C4.672,4,4,4.672,4,5.5c0,0.414,0.168,0.789,0.439,1.06    L6.439,8.561z M33.5,16h-3c-0.828,0-1.5,0.672-1.5,1.5s0.672,1.5,1.5,1.5h3c0.828,0,1.5-0.672,1.5-1.5S34.328,16,33.5,16z     M28.561,26.439C28.289,26.168,27.914,26,27.5,26c-0.828,0-1.5,0.672-1.5,1.5c0,0.414,0.168,0.789,0.439,1.06l2,2    C28.711,30.832,29.086,31,29.5,31c0.828,0,1.5-0.672,1.5-1.5c0-0.414-0.168-0.789-0.439-1.061L28.561,26.439z M17.5,29    c-0.829,0-1.5,0.672-1.5,1.5v3c0,0.828,0.671,1.5,1.5,1.5s1.5-0.672,1.5-1.5v-3C19,29.672,18.329,29,17.5,29z M17.5,7    C11.71,7,7,11.71,7,17.5S11.71,28,17.5,28S28,23.29,28,17.5S23.29,7,17.5,7z M17.5,25c-4.136,0-7.5-3.364-7.5-7.5    c0-4.136,3.364-7.5,7.5-7.5c4.136,0,7.5,3.364,7.5,7.5C25,21.636,21.636,25,17.5,25z"></path></svg><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" id="nightIcon" x="0px" y="0px" viewBox="0 0 100 100" style="enable-background:new 0 0 100 100" xml:space="preserve" aria-label="Light mode"><title>Light mode</title><path d="M96.76,66.458c-0.853-0.852-2.15-1.064-3.23-0.534c-6.063,2.991-12.858,4.571-19.655,4.571  C62.022,70.495,50.88,65.88,42.5,57.5C29.043,44.043,25.658,23.536,34.076,6.47c0.532-1.08,0.318-2.379-0.534-3.23  c-0.851-0.852-2.15-1.064-3.23-0.534c-4.918,2.427-9.375,5.619-13.246,9.491c-9.447,9.447-14.65,22.008-14.65,35.369  c0,13.36,5.203,25.921,14.65,35.368s22.008,14.65,35.368,14.65c13.361,0,25.921-5.203,35.369-14.65  c3.872-3.871,7.064-8.328,9.491-13.246C97.826,68.608,97.611,67.309,96.76,66.458z"></path></svg></button><div class="explorer desktop-only"><button type="button" id="explorer" data-behavior="collapse" data-collapsed="collapsed" data-savestate="true" data-tree="[{&quot;path&quot;:&quot;api&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;comparisons&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;design&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;development&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;examples&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;guides&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;migrations&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;planning&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;status&quot;,&quot;collapsed&quot;:true}]" aria-controls="explorer-content" aria-expanded="false"><h2>Explorer</h2><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="fold"><polyline points="6 9 12 15 18 9"></polyline></svg></button><div id="explorer-content"><ul class="overflow" id="explorer-ul"><li><div class="folder-outer open"><ul style="padding-left:0;" class="content" data-folderul><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="api"><button class="folder-button"><span class="folder-title">api</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="api"><li><a href="../api/overview" data-for="api/overview">API Overview</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="comparisons"><button class="folder-button"><span class="folder-title">comparisons</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="comparisons"><li><a href="../comparisons/git-p4-vs-git-svn" data-for="comparisons/git-p4-vs-git-svn">git-p4-vs-git-svn</a></li><li><a href="../comparisons/submodule-vs-subtree" data-for="comparisons/submodule-vs-subtree">submodule-vs-subtree</a></li><li><a href="../comparisons/when-to-use-scalar" data-for="comparisons/when-to-use-scalar">when-to-use-scalar</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="design"><button class="folder-button"><span class="folder-title">design</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="design"><li><a href="../design/orphan-branch" data-for="design/orphan-branch">orphan-branch</a></li><li><a href="../design/workspace-native-planner-contract" data-for="design/workspace-native-planner-contract">workspace-native-planner-contract</a></li><li><a href="../design/worktree-scalar" data-for="design/worktree-scalar">worktree-scalar</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="development"><button class="folder-button"><span class="folder-title">development</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="development"><li><a href="../development/contributing" data-for="development/contributing">contributing</a></li><li><a href="../development/kano-cpp-dev-convention" data-for="development/kano-cpp-dev-convention">kano-cpp-dev-convention</a></li><li><a href="../development/pixi" data-for="development/pixi">pixi</a></li><li><a href="../development/testing" data-for="development/testing">testing</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="examples"><button class="folder-button"><span class="folder-title">examples</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="examples"><li><a href="../examples/commit-rules-example" data-for="examples/commit-rules-example">commit-rules-example</a></li><li><a href="../examples/init-kano-dev-skill-example" data-for="examples/init-kano-dev-skill-example">init-kano-dev-skill-example</a></li><li><a href="../examples/repo-initialization-workflow-examples" data-for="examples/repo-initialization-workflow-examples">repo-initialization-workflow-examples</a></li><li><a href="../examples/root-repo-multi-remote-examples" data-for="examples/root-repo-multi-remote-examples">root-repo-multi-remote-examples</a></li><li><a href="../examples/WORKFLOW-SUMMARY" data-for="examples/WORKFLOW-SUMMARY">WORKFLOW-SUMMARY</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="guides"><button class="folder-button"><span class="folder-title">guides</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="guides"><li><a href="../guides/auto-fallback-complete" data-for="guides/auto-fallback-complete">auto-fallback-complete</a></li><li><a href="../guides/common-pitfalls" data-for="guides/common-pitfalls">common-pitfalls</a></li><li><a href="../guides/cpa-commit-plan-workflow" data-for="guides/cpa-commit-plan-workflow">cpa-commit-plan-workflow</a></li><li><a href="../guides/git-p4" data-for="guides/git-p4">git-p4</a></li><li><a href="../guides/git-svn" data-for="guides/git-svn">git-svn</a></li><li><a href="../guides/ignore-datasource-sync-policy" data-for="guides/ignore-datasource-sync-policy">ignore-datasource-sync-policy</a></li><li><a href="../guides/ignore-plan-operator-workflow" data-for="guides/ignore-plan-operator-workflow">ignore-plan-operator-workflow</a></li><li><a href="../guides/new-features" data-for="guides/new-features">new-features</a></li><li><a href="../guides/quick-start" data-for="guides/quick-start">quick-start</a></li><li><a href="../guides/repo-initialization-workflow" data-for="guides/repo-initialization-workflow">repo-initialization-workflow</a></li><li><a href="../guides/scalar" data-for="guides/scalar">scalar</a></li><li><a href="../guides/submodule" data-for="guides/submodule">submodule</a></li><li><a href="../guides/subtree" data-for="guides/subtree">subtree</a></li><li><a href="../guides/version-info" data-for="guides/version-info">version-info</a></li><li><a href="../guides/worktree" data-for="guides/worktree">worktree</a></li></ul></div></li><li><div class="folder-outer "><ul style="padding-left:0;" class="content" data-folderul></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="migrations"><button class="folder-button"><span class="folder-title">migrations</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="migrations"><li><a href="../migrations/perforce-to-git" data-for="migrations/perforce-to-git">perforce-to-git</a></li><li><a href="../migrations/svn-to-git" data-for="migrations/svn-to-git">svn-to-git</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="planning"><button class="folder-button"><span class="folder-title">planning</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="planning"><li><a href="../planning/cli-architecture-proposal" data-for="planning/cli-architecture-proposal">cli-architecture-proposal</a></li><li><a href="../planning/tui-branch-transplant-workflows" data-for="planning/tui-branch-transplant-workflows">tui-branch-transplant-workflows</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="status"><button class="folder-button"><span class="folder-title">status</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="status"><li><a href="../status/changelog" data-for="status/changelog">changelog</a></li></ul></div></li><li><a href="../README" data-for="README">README</a></li></ul></div></li><li id="explorer-end"></li></ul></div></div></div><div class="center"><div class="page-header"><div class="popover-hint"><nav class="breadcrumb-container" aria-label="breadcrumbs"><div class="breadcrumb-element"><a href="../">Home</a><p> ❯ </p></div><div class="breadcrumb-element"><a href="../guides/">guides</a><p> ❯ </p></div><div class="breadcrumb-element"><a href>cpa-commit-plan-workflow</a></div></nav><h1 class="article-title">cpa-commit-plan-workflow</h1><p show-comma="true" class="content-meta"><span>Mar 25, 2026</span><span>5 min read</span></p></div></div><article class="popover-hint"><h1 id="kog-commit-and-push-workflow">KOG Commit and Push Workflow<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#kog-commit-and-push-workflow" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>This guide describes how <code>kog</code> commit and commit-push flows work today, including:</p>
+<ul>
+<li>full-auto</li>
+<li>semi-auto</li>
+<li>manual</li>
+<li>plan-driven vs <code>-m</code> message-driven</li>
+</ul>
+<p>AI is only used when generating/filling plan content.<br/>
+All verify/apply/execute gates are deterministic non-AI stages.</p>
+<h2 id="quickstart-by-scenario">Quickstart by Scenario<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#quickstart-by-scenario" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="table-container"><table><thead><tr><th>Scenario</th><th>Use this</th><th>Commands</th></tr></thead><tbody><tr><td>Full auto commit-push (human mode)</td><td>One command</td><td><code>./kog cpa</code> or <code>./kog commit-push --ai-auto</code></td></tr><tr><td>Full auto commit-push (agent mode)</td><td>One command</td><td><code>KANO_AGENT_MODE=1 ./kog cpa</code></td></tr><tr><td>Full auto commit-only</td><td>One command</td><td><code>./kog commit --ai-auto</code></td></tr><tr><td>Semi-auto (AI generates plan, human reviews, then execute)</td><td>Prepare <span>→</span> review <span>→</span> execute</td><td><code>./kog pia --force</code> <span>→</span> review <code>.kano/tmp/git/plans/default-plan.json</code> <span>→</span> <code>./kog pv</code> <span>→</span> <code>./kog cpa</code></td></tr><tr><td>Manual plan-driven commit-only</td><td>Human fills plan</td><td><code>./kog pi --force</code> <span>→</span> edit plan <span>→</span> <code>./kog pv</code> <span>→</span> <code>./kog commit --plan-file .kano/tmp/git/plans/default-plan.json --plan-stage commit</code></td></tr><tr><td>Manual plan-driven commit-push</td><td>Human fills plan</td><td><code>./kog pi --force</code> <span>→</span> edit plan <span>→</span> <code>./kog pv</code> <span>→</span> <code>./kog cp --plan-file .kano/tmp/git/plans/default-plan.json</code></td></tr><tr><td>Non-AI inline commit-only</td><td>Manual message shorthand for a minimal synthesized plan</td><td><code>./kog commit -m &quot;your message&quot;</code></td></tr><tr><td>Non-AI inline commit-push</td><td>Manual message</td><td><code>./kog cp -m &quot;your message&quot;</code> or <code>./kog commit-push -m &quot;your message&quot;</code></td></tr></tbody></table></div>
+<p>Notes:</p>
+<ul>
+<li><code>cpa</code> can auto-shortcut to <code>cp -m</code> when scope is <code>1 dirty repo + 1 change</code>.</li>
+<li>Use <code>KOG_CPA_DISABLE_SINGLE_CHANGE_SHORTCUT=1</code> to disable that shortcut.</li>
+</ul>
+<h2 id="aliases">Aliases<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#aliases" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<ul>
+<li><code>cp</code> <span>→</span> <code>commit-push</code></li>
+<li><code>cpa</code> <span>→</span> human mode: <code>commit-push --ai-auto</code></li>
+<li><code>KANO_AGENT_MODE=1 cpa</code> <span>→</span> agent-mode shared-plan path (deterministic plan bootstrap/refresh + <code>commit-push --plan-file ...</code>)</li>
+<li><code>pi</code> <span>→</span> <code>plan new</code></li>
+<li><code>pia</code> <span>→</span> <code>plan new --ai-auto</code></li>
+<li><code>pv</code> <span>→</span> <code>plan verify pre-apply</code></li>
+</ul>
+<h2 id="agent-mode-ownership-contract">Agent-Mode Ownership Contract<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#agent-mode-ownership-contract" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>In <code>KANO_AGENT_MODE=1</code>:</p>
+<ul>
+<li>external agent owns semantic authoring decisions</li>
+<li><code>kog</code> owns deterministic plan bootstrap, freshness refresh, verification, execution, sync, and push</li>
+<li>agent mode must not fall back to internal provider-driven <code>--ai-auto</code> planning</li>
+</ul>
+<p>Operationally this means:</p>
+<ul>
+<li>human <code>cpa</code> may invoke internal AI plan preparation</li>
+<li>agent-mode <code>cpa</code> must use the shared plan file path</li>
+<li>deterministic metadata such as <code>plan_id</code> and planner identity should be produced by tooling, not hand-patched by the agent</li>
+</ul>
+<h2 id="copilot-chat-session-note">Copilot Chat Session Note<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#copilot-chat-session-note" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<ul>
+<li>Observed behavior: human-mode <code>cpa</code> may create a new Copilot Chat session on each run.</li>
+<li>Current workflow should assume chat-session continuity is unreliable.</li>
+<li>Prompt files, shared plan files, and canonical workspace state are the reliable continuity mechanisms.</li>
+</ul>
+<h2 id="plan-lifecycle">Plan Lifecycle<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#plan-lifecycle" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>Current lifecycle model:</p>
+<p><code>new -> init -> prepare -> verify(pre-apply) -> apply -> verify(post-apply) -> finish</code></p>
+<p>Mapped commands:</p>
+<ul>
+<li><code>new</code>
+<ul>
+<li><code>kog plan new</code></li>
+</ul>
+</li>
+<li><code>init</code> (stage-specific bootstrap)
+<ul>
+<li><code>kog plan ignore-init</code></li>
+</ul>
+</li>
+<li><code>prepare</code>
+<ul>
+<li><code>kog plan ensure-prepare-ready</code></li>
+<li><code>kog plan runbook commit</code> (aggregated prepare flow for commit stage)</li>
+<li><code>kog plan runbook ignore</code> (aggregated init + verify for ignore stage)</li>
+<li><code>kog plan runbook full</code> (aggregated ignore + commit prepare and verify)</li>
+</ul>
+</li>
+<li><code>verify pre-apply</code>
+<ul>
+<li><code>kog plan verify pre-apply</code></li>
+<li><code>kog plan verify ignore</code></li>
+<li><code>kog plan verify secret</code></li>
+</ul>
+</li>
+<li><code>apply</code>
+<ul>
+<li><code>kog plan apply --stage ignore</code></li>
+<li><code>kog plan apply --stage commit</code></li>
+</ul>
+</li>
+<li><code>verify post-apply</code>
+<ul>
+<li><code>kog plan verify post-apply</code></li>
+</ul>
+</li>
+<li><code>finish</code>
+<ul>
+<li><code>kog plan finish-report</code></li>
+</ul>
+</li>
+</ul>
+<p>Auxiliary:</p>
+<ul>
+<li><code>kog plan prepare-scope</code> (counts dirty repos and changed entries; used by <code>cpa</code> shortcut routing)</li>
+<li><code>kog plan refresh-check</code> (plan freshness guard)</li>
+</ul>
+<h2 id="what-ensure-prepare-ready-does">What <code>ensure-prepare-ready</code> Does<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#what-ensure-prepare-ready-does" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p><code>kog plan ensure-prepare-ready</code> is the prepare-stage orchestrator for commit plan readiness.</p>
+<p>It performs:</p>
+<ol>
+<li>Ensure a plan file exists (or fail with hint to create one).</li>
+<li>Initialize/refresh commit stage scaffold when needed.</li>
+<li>Fill missing commit-plan content through selected AI provider when required.</li>
+<li>Validate required commit-plan fields and completeness.</li>
+<li>Fail fast if still incomplete; pass only when executable.</li>
+</ol>
+<p>It is still a prepare-stage action.<br/>
+No commit/push execution happens here.</p>
+<h2 id="what-post-apply-verifies">What Post-Apply Verifies<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#what-post-apply-verifies" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p><code>kog plan verify post-apply</code> checks the result state after apply/execution, for example:</p>
+<ul>
+<li>plan execution markers updated correctly</li>
+<li>stage completion status consistent</li>
+<li>expected stage outputs exist</li>
+</ul>
+<p><code>kog plan apply</code> already auto-triggers post-apply verify for corresponding stages.</p>
+<h2 id="flow-overview">Flow Overview<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#flow-overview" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>Execution ordering semantics:</p>
+<ul>
+<li><code>sync</code> is <code>parent-first convergence</code></li>
+<li><code>commit-push</code> is <code>child-first convergence</code></li>
+</ul>
+<p>Rationale:</p>
+<ul>
+<li><code>sync</code> updates parent repos first so refreshed <code>.gitmodules</code> branch policy can be applied to registered children in the same run.</li>
+<li><code>commit-push</code> commits and pushes child repos first, then lets parent repos absorb the final gitlink pointer and push parent repos last.</li>
+<li>first-run correctness is the target; “run it a second time” is not an acceptable steady-state convergence model.</li>
+</ul>
+<h3 id="entry-routing">Entry Routing<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#entry-routing" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<pre><code class="mermaid">flowchart TD
+    A[Dirty workspace] --> B{Message source}
+    B -->|Plan-driven| C[kog cpa or kog commit --ai-auto or plan commands]
+    B -->|Inline -m| D[kog commit -m or kog cp -m]
+    C --> E{Target}
+    D --> E
+    E -->|Commit only| F[Commit pipeline]
+    E -->|Commit push| G[Commit-push pipeline]
+</code></pre>
+<h3 id="plan-driven-ai-path">Plan-Driven AI Path<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#plan-driven-ai-path" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<pre><code class="mermaid">flowchart TD
+    A[Entry: cpa or commit --ai-auto] --> B[kog plan runbook commit]
+    B --> C[ensure-prepare-ready]
+    C --> D[finish-report]
+    D --> E[verify pre-apply]
+    E --> F[verify secret context ai-commit]
+    F --> G{Target}
+    G -->|Commit| H[kog commit execution]
+    G -->|Commit-push| I[kog commit-push execution]
+</code></pre>
+<h3 id="non-ai-inline-message-path">Non-AI Inline Message Path<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#non-ai-inline-message-path" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<pre><code class="mermaid">flowchart TD
+    A[Entry: kog commit -m or kog cp -m] --> B[synthesize minimal transient plan]
+    B --> C[plan-backed verify/apply path]
+    C --> D{Target}
+    D -->|Commit| E[kog commit execution]
+    D -->|Commit-push| F[kog commit-push execution]
+</code></pre>
+<p>Notes:</p>
+<ul>
+<li><code>kog commit -m &quot;...&quot;</code> is no longer a direct non-plan bypass; it now synthesizes a
+minimal transient plan and then reuses the same plan-backed execution path as
+<code>--plan-file</code>.</li>
+<li><code>--plan-file</code> and <code>-m/--message</code> are mutually exclusive.</li>
+</ul>
+<h2 id="stage-command-matrix">Stage Command Matrix<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#stage-command-matrix" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="table-container"><table><thead><tr><th>Stage</th><th>Commands</th></tr></thead><tbody><tr><td>New</td><td><code>kog plan new</code></td></tr><tr><td>Init (stage seed)</td><td><code>kog plan ignore-init</code></td></tr><tr><td>Prepare</td><td><code>kog plan ensure-prepare-ready</code>, <code>kog plan runbook commit</code>, <code>kog plan runbook ignore</code>, <code>kog plan runbook full</code></td></tr><tr><td>Verify pre-apply</td><td><code>kog plan verify pre-apply</code>, <code>kog plan verify ignore</code>, <code>kog plan verify secret</code></td></tr><tr><td>Apply</td><td><code>kog plan apply --stage ignore</code>, <code>kog plan apply --stage commit</code></td></tr><tr><td>Verify post-apply</td><td><code>kog plan verify post-apply</code></td></tr><tr><td>Finish</td><td><code>kog plan finish-report</code></td></tr></tbody></table></div>
+<h2 id="gate-and-override-flags">Gate and Override Flags<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#gate-and-override-flags" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<ul>
+<li>Ignore gate override: <code>--allow-ignore-gate</code></li>
+<li>Secret gate override: <code>KOG_DISABLE_SECRET_GATE=1</code></li>
+<li>AI provider/model pin:
+<ul>
+<li><code>--ai-provider [provider]</code></li>
+<li><code>--ai-model [model]</code></li>
+</ul>
+</li>
+<li>Disable plan auto behavior:
+<ul>
+<li><code>--no-plan-auto</code></li>
+</ul>
+</li>
+</ul>
+<h2 id="ignore-datasource">Ignore Datasource<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#ignore-datasource" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>Ignore planning can reference datasource content from:</p>
+<ul>
+<li>skill-local rules</li>
+<li>upstream templates (for example <code>github/gitignore</code>)</li>
+</ul>
+<p>Manifest paths should be explicit and operator-readable (relative or absolute path), not ambiguous folder labels.</p>
+<h2 id="see-also">See Also<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#see-also" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<ul>
+<li><a href="../guides/ignore-plan-operator-workflow" class="internal alias" data-slug="guides/ignore-plan-operator-workflow">Ignore Plan Operator Workflow</a></li>
+<li><a href="../guides/quick-start" class="internal alias" data-slug="guides/quick-start">Quick Start</a></li>
+</ul></article><hr/><div class="page-footer"></div></div><div class="right sidebar"><div class="graph"><h3>Graph View</h3><div class="graph-outer"><div id="graph-container" data-cfg="{&quot;drag&quot;:true,&quot;zoom&quot;:true,&quot;depth&quot;:1,&quot;scale&quot;:1.1,&quot;repelForce&quot;:0.5,&quot;centerForce&quot;:0.3,&quot;linkDistance&quot;:30,&quot;fontSize&quot;:0.6,&quot;opacityScale&quot;:1,&quot;showTags&quot;:true,&quot;removeTags&quot;:[],&quot;focusOnHover&quot;:false}"></div><button id="global-graph-icon" aria-label="Global Graph"><svg version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 55 55" fill="currentColor" xml:space="preserve"><path d="M49,0c-3.309,0-6,2.691-6,6c0,1.035,0.263,2.009,0.726,2.86l-9.829,9.829C32.542,17.634,30.846,17,29,17
+                s-3.542,0.634-4.898,1.688l-7.669-7.669C16.785,10.424,17,9.74,17,9c0-2.206-1.794-4-4-4S9,6.794,9,9s1.794,4,4,4
+                c0.74,0,1.424-0.215,2.019-0.567l7.669,7.669C21.634,21.458,21,23.154,21,25s0.634,3.542,1.688,4.897L10.024,42.562
+                C8.958,41.595,7.549,41,6,41c-3.309,0-6,2.691-6,6s2.691,6,6,6s6-2.691,6-6c0-1.035-0.263-2.009-0.726-2.86l12.829-12.829
+                c1.106,0.86,2.44,1.436,3.898,1.619v10.16c-2.833,0.478-5,2.942-5,5.91c0,3.309,2.691,6,6,6s6-2.691,6-6c0-2.967-2.167-5.431-5-5.91
+                v-10.16c1.458-0.183,2.792-0.759,3.898-1.619l7.669,7.669C41.215,39.576,41,40.26,41,41c0,2.206,1.794,4,4,4s4-1.794,4-4
+                s-1.794-4-4-4c-0.74,0-1.424,0.215-2.019,0.567l-7.669-7.669C36.366,28.542,37,26.846,37,25s-0.634-3.542-1.688-4.897l9.665-9.665
+                C46.042,11.405,47.451,12,49,12c3.309,0,6-2.691,6-6S52.309,0,49,0z M11,9c0-1.103,0.897-2,2-2s2,0.897,2,2s-0.897,2-2,2
+                S11,10.103,11,9z M6,51c-2.206,0-4-1.794-4-4s1.794-4,4-4s4,1.794,4,4S8.206,51,6,51z M33,49c0,2.206-1.794,4-4,4s-4-1.794-4-4
+                s1.794-4,4-4S33,46.794,33,49z M29,31c-3.309,0-6-2.691-6-6s2.691-6,6-6s6,2.691,6,6S32.309,31,29,31z M47,41c0,1.103-0.897,2-2,2
+                s-2-0.897-2-2s0.897-2,2-2S47,39.897,47,41z M49,10c-2.206,0-4-1.794-4-4s1.794-4,4-4s4,1.794,4,4S51.206,10,49,10z"></path></svg></button></div><div id="global-graph-outer"><div id="global-graph-container" data-cfg="{&quot;drag&quot;:true,&quot;zoom&quot;:true,&quot;depth&quot;:-1,&quot;scale&quot;:0.9,&quot;repelForce&quot;:0.5,&quot;centerForce&quot;:0.3,&quot;linkDistance&quot;:30,&quot;fontSize&quot;:0.6,&quot;opacityScale&quot;:1,&quot;showTags&quot;:true,&quot;removeTags&quot;:[],&quot;focusOnHover&quot;:true}"></div></div></div><div class="toc desktop-only"><button type="button" id="toc" class aria-controls="toc-content" aria-expanded="true"><h3>Table of Contents</h3><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="fold"><polyline points="6 9 12 15 18 9"></polyline></svg></button><div id="toc-content" class><ul class="overflow"><li class="depth-0"><a href="#kog-commit-and-push-workflow" data-for="kog-commit-and-push-workflow">KOG Commit and Push Workflow</a></li><li class="depth-1"><a href="#quickstart-by-scenario" data-for="quickstart-by-scenario">Quickstart by Scenario</a></li><li class="depth-1"><a href="#aliases" data-for="aliases">Aliases</a></li><li class="depth-1"><a href="#agent-mode-ownership-contract" data-for="agent-mode-ownership-contract">Agent-Mode Ownership Contract</a></li><li class="depth-1"><a href="#copilot-chat-session-note" data-for="copilot-chat-session-note">Copilot Chat Session Note</a></li><li class="depth-1"><a href="#plan-lifecycle" data-for="plan-lifecycle">Plan Lifecycle</a></li><li class="depth-1"><a href="#what-ensure-prepare-ready-does" data-for="what-ensure-prepare-ready-does">What ensure-prepare-ready Does</a></li><li class="depth-1"><a href="#what-post-apply-verifies" data-for="what-post-apply-verifies">What Post-Apply Verifies</a></li><li class="depth-1"><a href="#flow-overview" data-for="flow-overview">Flow Overview</a></li><li class="depth-2"><a href="#entry-routing" data-for="entry-routing">Entry Routing</a></li><li class="depth-2"><a href="#plan-driven-ai-path" data-for="plan-driven-ai-path">Plan-Driven AI Path</a></li><li class="depth-2"><a href="#non-ai-inline-message-path" data-for="non-ai-inline-message-path">Non-AI Inline Message Path</a></li><li class="depth-1"><a href="#stage-command-matrix" data-for="stage-command-matrix">Stage Command Matrix</a></li><li class="depth-1"><a href="#gate-and-override-flags" data-for="gate-and-override-flags">Gate and Override Flags</a></li><li class="depth-1"><a href="#ignore-datasource" data-for="ignore-datasource">Ignore Datasource</a></li><li class="depth-1"><a href="#see-also" data-for="see-also">See Also</a></li></ul></div></div><div class="backlinks"><h3>Backlinks</h3><ul class="overflow"><li><a href="../README" class="internal">README</a></li><li><a href="../guides/quick-start" class="internal">quick-start</a></li><li><a href="../" class="internal">index</a></li></ul></div></div><footer class><p>Created with <a href="https://quartz.jzhao.xyz/">Quartz v4.4.0</a> © 2026</p><ul><li><a href="https://github.com/jackyzha0/quartz">GitHub</a></li><li><a href="https://discord.gg/cRFFHYye7t">Discord Community</a></li></ul></footer></div></div></body><script type="application/javascript">function c(){let t=this.parentElement;t.classList.toggle("is-collapsed");let l=t.classList.contains("is-collapsed")?this.scrollHeight:t.scrollHeight;t.style.maxHeight=l+"px";let o=t,e=t.parentElement;for(;e;){if(!e.classList.contains("callout"))return;let n=e.classList.contains("is-collapsed")?e.scrollHeight:e.scrollHeight+o.scrollHeight;e.style.maxHeight=n+"px",o=e,e=e.parentElement}}function i(){let t=document.getElementsByClassName("callout is-collapsible");for(let s of t){let l=s.firstElementChild;if(l){l.addEventListener("click",c),window.addCleanup(()=>l.removeEventListener("click",c));let e=s.classList.contains("is-collapsed")?l.scrollHeight:s.scrollHeight;s.style.maxHeight=e+"px"}}}document.addEventListener("nav",i);window.addEventListener("resize",i);
+</script><script type="module">
+          let mermaidImport = undefined
+          document.addEventListener('nav', async () => {
+            if (document.querySelector("code.mermaid")) {
+              mermaidImport ||= await import('https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.7.0/mermaid.esm.min.mjs')
+              const mermaid = mermaidImport.default
+              const darkMode = document.documentElement.getAttribute('saved-theme') === 'dark'
+              mermaid.initialize({
+                startOnLoad: false,
+                securityLevel: 'loose',
+                theme: darkMode ? 'dark' : 'default'
+              })
+
+              await mermaid.run({
+                querySelector: '.mermaid'
+              })
+            }
+          });
+          </script><script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/contrib/copy-tex.min.js" type="application/javascript"></script><script src="../postscript.js" type="module"></script></html>

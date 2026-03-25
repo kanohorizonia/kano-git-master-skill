@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="en"><head><title>worktree</title><meta charset="utf-8"/><link rel="preconnect" href="https://fonts.googleapis.com"/><link rel="preconnect" href="https://fonts.gstatic.com"/><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM Plex Mono&amp;family=Schibsted Grotesk:wght@400;700&amp;family=Source Sans Pro:ital,wght@0,400;0,600;1,400;1,600&amp;display=swap"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><meta property="og:title" content="worktree"/><meta property="og:description" content="Phase 2: Worktree Implementation - Complete Overview Successfully implemented comprehensive worktree management functionality for kano-git-master-skill ..."/><meta property="og:image" content="https://kanohorizonia.github.io/kano-git-master-skill/static/og-image.png"/><meta property="og:width" content="1200"/><meta property="og:height" content="675"/><link rel="icon" href="../static/icon.png"/><meta name="description" content="Phase 2: Worktree Implementation - Complete Overview Successfully implemented comprehensive worktree management functionality for kano-git-master-skill ..."/><meta name="generator" content="Quartz"/><link href="../index.css" rel="stylesheet" type="text/css" spa-preserve/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css" rel="stylesheet" type="text/css" spa-preserve/><script src="../prescript.js" type="application/javascript" spa-preserve></script><script type="application/javascript" spa-preserve>const fetchData = fetch("../static/contentIndex.json").then(data => data.json())</script></head><body data-slug="guides/worktree"><div id="quartz-root" class="page"><div id="quartz-body"><div class="left sidebar"><h2 class="page-title"><a href="..">Kano Git Master Skill</a></h2><div class="spacer mobile-only"></div><div class="search"><button class="search-button" id="search-button"><p>Search</p><svg role="img" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 19.9 19.7"><title>Search</title><g class="search-path" fill="none"><path stroke-linecap="square" d="M18.5 18.3l-5.4-5.4"></path><circle cx="8" cy="8" r="7"></circle></g></svg></button><div id="search-container"><div id="search-space"><input autocomplete="off" id="search-bar" name="search" type="text" aria-label="Search for something" placeholder="Search for something"/><div id="search-layout" data-preview="true"></div></div></div></div><button class="darkmode" id="darkmode"><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" id="dayIcon" x="0px" y="0px" viewBox="0 0 35 35" style="enable-background:new 0 0 35 35" xml:space="preserve" aria-label="Dark mode"><title>Dark mode</title><path d="M6,17.5C6,16.672,5.328,16,4.5,16h-3C0.672,16,0,16.672,0,17.5    S0.672,19,1.5,19h3C5.328,19,6,18.328,6,17.5z M7.5,26c-0.414,0-0.789,0.168-1.061,0.439l-2,2C4.168,28.711,4,29.086,4,29.5    C4,30.328,4.671,31,5.5,31c0.414,0,0.789-0.168,1.06-0.44l2-2C8.832,28.289,9,27.914,9,27.5C9,26.672,8.329,26,7.5,26z M17.5,6    C18.329,6,19,5.328,19,4.5v-3C19,0.672,18.329,0,17.5,0S16,0.672,16,1.5v3C16,5.328,16.671,6,17.5,6z M27.5,9    c0.414,0,0.789-0.168,1.06-0.439l2-2C30.832,6.289,31,5.914,31,5.5C31,4.672,30.329,4,29.5,4c-0.414,0-0.789,0.168-1.061,0.44    l-2,2C26.168,6.711,26,7.086,26,7.5C26,8.328,26.671,9,27.5,9z M6.439,8.561C6.711,8.832,7.086,9,7.5,9C8.328,9,9,8.328,9,7.5    c0-0.414-0.168-0.789-0.439-1.061l-2-2C6.289,4.168,5.914,4,5.5,4C4.672,4,4,4.672,4,5.5c0,0.414,0.168,0.789,0.439,1.06    L6.439,8.561z M33.5,16h-3c-0.828,0-1.5,0.672-1.5,1.5s0.672,1.5,1.5,1.5h3c0.828,0,1.5-0.672,1.5-1.5S34.328,16,33.5,16z     M28.561,26.439C28.289,26.168,27.914,26,27.5,26c-0.828,0-1.5,0.672-1.5,1.5c0,0.414,0.168,0.789,0.439,1.06l2,2    C28.711,30.832,29.086,31,29.5,31c0.828,0,1.5-0.672,1.5-1.5c0-0.414-0.168-0.789-0.439-1.061L28.561,26.439z M17.5,29    c-0.829,0-1.5,0.672-1.5,1.5v3c0,0.828,0.671,1.5,1.5,1.5s1.5-0.672,1.5-1.5v-3C19,29.672,18.329,29,17.5,29z M17.5,7    C11.71,7,7,11.71,7,17.5S11.71,28,17.5,28S28,23.29,28,17.5S23.29,7,17.5,7z M17.5,25c-4.136,0-7.5-3.364-7.5-7.5    c0-4.136,3.364-7.5,7.5-7.5c4.136,0,7.5,3.364,7.5,7.5C25,21.636,21.636,25,17.5,25z"></path></svg><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" id="nightIcon" x="0px" y="0px" viewBox="0 0 100 100" style="enable-background:new 0 0 100 100" xml:space="preserve" aria-label="Light mode"><title>Light mode</title><path d="M96.76,66.458c-0.853-0.852-2.15-1.064-3.23-0.534c-6.063,2.991-12.858,4.571-19.655,4.571  C62.022,70.495,50.88,65.88,42.5,57.5C29.043,44.043,25.658,23.536,34.076,6.47c0.532-1.08,0.318-2.379-0.534-3.23  c-0.851-0.852-2.15-1.064-3.23-0.534c-4.918,2.427-9.375,5.619-13.246,9.491c-9.447,9.447-14.65,22.008-14.65,35.369  c0,13.36,5.203,25.921,14.65,35.368s22.008,14.65,35.368,14.65c13.361,0,25.921-5.203,35.369-14.65  c3.872-3.871,7.064-8.328,9.491-13.246C97.826,68.608,97.611,67.309,96.76,66.458z"></path></svg></button><div class="explorer desktop-only"><button type="button" id="explorer" data-behavior="collapse" data-collapsed="collapsed" data-savestate="true" data-tree="[{&quot;path&quot;:&quot;api&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;comparisons&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;design&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;development&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;examples&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;guides&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;migrations&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;planning&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;status&quot;,&quot;collapsed&quot;:true}]" aria-controls="explorer-content" aria-expanded="false"><h2>Explorer</h2><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="fold"><polyline points="6 9 12 15 18 9"></polyline></svg></button><div id="explorer-content"><ul class="overflow" id="explorer-ul"><li><div class="folder-outer open"><ul style="padding-left:0;" class="content" data-folderul><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="api"><button class="folder-button"><span class="folder-title">api</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="api"><li><a href="../api/overview" data-for="api/overview">API Overview</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="comparisons"><button class="folder-button"><span class="folder-title">comparisons</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="comparisons"><li><a href="../comparisons/git-p4-vs-git-svn" data-for="comparisons/git-p4-vs-git-svn">git-p4-vs-git-svn</a></li><li><a href="../comparisons/submodule-vs-subtree" data-for="comparisons/submodule-vs-subtree">submodule-vs-subtree</a></li><li><a href="../comparisons/when-to-use-scalar" data-for="comparisons/when-to-use-scalar">when-to-use-scalar</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="design"><button class="folder-button"><span class="folder-title">design</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="design"><li><a href="../design/orphan-branch" data-for="design/orphan-branch">orphan-branch</a></li><li><a href="../design/workspace-native-planner-contract" data-for="design/workspace-native-planner-contract">workspace-native-planner-contract</a></li><li><a href="../design/worktree-scalar" data-for="design/worktree-scalar">worktree-scalar</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="development"><button class="folder-button"><span class="folder-title">development</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="development"><li><a href="../development/contributing" data-for="development/contributing">contributing</a></li><li><a href="../development/kano-cpp-dev-convention" data-for="development/kano-cpp-dev-convention">kano-cpp-dev-convention</a></li><li><a href="../development/pixi" data-for="development/pixi">pixi</a></li><li><a href="../development/testing" data-for="development/testing">testing</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="examples"><button class="folder-button"><span class="folder-title">examples</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="examples"><li><a href="../examples/commit-rules-example" data-for="examples/commit-rules-example">commit-rules-example</a></li><li><a href="../examples/init-kano-dev-skill-example" data-for="examples/init-kano-dev-skill-example">init-kano-dev-skill-example</a></li><li><a href="../examples/repo-initialization-workflow-examples" data-for="examples/repo-initialization-workflow-examples">repo-initialization-workflow-examples</a></li><li><a href="../examples/root-repo-multi-remote-examples" data-for="examples/root-repo-multi-remote-examples">root-repo-multi-remote-examples</a></li><li><a href="../examples/WORKFLOW-SUMMARY" data-for="examples/WORKFLOW-SUMMARY">WORKFLOW-SUMMARY</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="guides"><button class="folder-button"><span class="folder-title">guides</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="guides"><li><a href="../guides/auto-fallback-complete" data-for="guides/auto-fallback-complete">auto-fallback-complete</a></li><li><a href="../guides/common-pitfalls" data-for="guides/common-pitfalls">common-pitfalls</a></li><li><a href="../guides/cpa-commit-plan-workflow" data-for="guides/cpa-commit-plan-workflow">cpa-commit-plan-workflow</a></li><li><a href="../guides/git-p4" data-for="guides/git-p4">git-p4</a></li><li><a href="../guides/git-svn" data-for="guides/git-svn">git-svn</a></li><li><a href="../guides/ignore-datasource-sync-policy" data-for="guides/ignore-datasource-sync-policy">ignore-datasource-sync-policy</a></li><li><a href="../guides/ignore-plan-operator-workflow" data-for="guides/ignore-plan-operator-workflow">ignore-plan-operator-workflow</a></li><li><a href="../guides/new-features" data-for="guides/new-features">new-features</a></li><li><a href="../guides/quick-start" data-for="guides/quick-start">quick-start</a></li><li><a href="../guides/repo-initialization-workflow" data-for="guides/repo-initialization-workflow">repo-initialization-workflow</a></li><li><a href="../guides/scalar" data-for="guides/scalar">scalar</a></li><li><a href="../guides/submodule" data-for="guides/submodule">submodule</a></li><li><a href="../guides/subtree" data-for="guides/subtree">subtree</a></li><li><a href="../guides/version-info" data-for="guides/version-info">version-info</a></li><li><a href="../guides/worktree" data-for="guides/worktree">worktree</a></li></ul></div></li><li><div class="folder-outer "><ul style="padding-left:0;" class="content" data-folderul></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="migrations"><button class="folder-button"><span class="folder-title">migrations</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="migrations"><li><a href="../migrations/perforce-to-git" data-for="migrations/perforce-to-git">perforce-to-git</a></li><li><a href="../migrations/svn-to-git" data-for="migrations/svn-to-git">svn-to-git</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="planning"><button class="folder-button"><span class="folder-title">planning</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="planning"><li><a href="../planning/cli-architecture-proposal" data-for="planning/cli-architecture-proposal">cli-architecture-proposal</a></li><li><a href="../planning/tui-branch-transplant-workflows" data-for="planning/tui-branch-transplant-workflows">tui-branch-transplant-workflows</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="status"><button class="folder-button"><span class="folder-title">status</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="status"><li><a href="../status/changelog" data-for="status/changelog">changelog</a></li></ul></div></li><li><a href="../README" data-for="README">README</a></li></ul></div></li><li id="explorer-end"></li></ul></div></div></div><div class="center"><div class="page-header"><div class="popover-hint"><nav class="breadcrumb-container" aria-label="breadcrumbs"><div class="breadcrumb-element"><a href="../">Home</a><p> ❯ </p></div><div class="breadcrumb-element"><a href="../guides/">guides</a><p> ❯ </p></div><div class="breadcrumb-element"><a href>worktree</a></div></nav><h1 class="article-title">worktree</h1><p show-comma="true" class="content-meta"><span>Mar 25, 2026</span><span>7 min read</span></p></div></div><article class="popover-hint"><h1 id="phase-2-worktree-implementation---complete">Phase 2: Worktree Implementation - Complete<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#phase-2-worktree-implementation---complete" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<h2 id="overview">Overview<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#overview" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>Successfully implemented comprehensive worktree management functionality for kano-git-master-skill. This phase adds 6 new scripts and a shared helper library for managing Git worktrees, enabling parallel work on multiple branches without context switching.</p>
+<h2 id="implementation-summary">Implementation Summary<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#implementation-summary" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<h3 id="files-created">Files Created<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#files-created" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ol>
+<li>
+<p><strong><code>scripts/lib/worktree-helpers.sh</code></strong></p>
+<ul>
+<li>Shared helper library for worktree operations</li>
+<li>Functions prefixed with <code>wth_</code> (worktree-helper)</li>
+<li>Path generation, orphan branch detection, IDE integration</li>
+<li>Status checking and metadata collection</li>
+</ul>
+</li>
+<li>
+<p><strong><code>scripts/worktree/create-worktree.sh</code></strong></p>
+<ul>
+<li>Create worktree for any branch (existing or new)</li>
+<li>Auto-generate path: <code>../{repo}-{branch}</code></li>
+<li>Support custom path, new branch creation</li>
+<li>Optional IDE integration</li>
+</ul>
+</li>
+<li>
+<p><strong><code>scripts/worktree/create-orphan-worktree.sh</code></strong></p>
+<ul>
+<li>Create orphan branch with worktree in one step</li>
+<li>Initialize with custom content</li>
+<li>Support for docs, gh-pages, configuration branches</li>
+<li>Optional push to remote</li>
+</ul>
+</li>
+<li>
+<p><strong><code>scripts/worktree/list-worktrees.sh</code></strong></p>
+<ul>
+<li>List all worktrees with metadata</li>
+<li>Table and JSON output formats</li>
+<li>Show orphan status, changes, last commit</li>
+<li>Detailed mode for more information</li>
+</ul>
+</li>
+<li>
+<p><strong><code>scripts/worktree/remove-worktree.sh</code></strong></p>
+<ul>
+<li>Safely remove worktree with checks</li>
+<li>Warn before deletion</li>
+<li>Optional force removal</li>
+<li>Optional branch deletion</li>
+</ul>
+</li>
+<li>
+<p><strong><code>scripts/worktree/sync-worktrees.sh</code></strong></p>
+<ul>
+<li>Sync all worktrees (fetch, pull)</li>
+<li>Filter by specific worktrees</li>
+<li>Show status after sync</li>
+<li>Batch operation support</li>
+</ul>
+</li>
+<li>
+<p><strong><code>scripts/worktree/open-worktree.sh</code></strong></p>
+<ul>
+<li>Open worktree in IDE</li>
+<li>Support VS Code, IntelliJ, Vim, terminal</li>
+<li>Auto-detect available IDE</li>
+</ul>
+</li>
+<li>
+<p><strong><code>scripts/test/test-worktree-scripts.sh</code></strong></p>
+<ul>
+<li>Comprehensive test suite</li>
+<li>10 test cases covering all functionality</li>
+<li>Automated setup and cleanup</li>
+</ul>
+</li>
+</ol>
+<h2 id="features">Features<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#features" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<h3 id="core-worktree-management">Core Worktree Management<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#core-worktree-management" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p><strong>Create Worktree for Any Branch</strong>:</p>
+<figure data-rehype-pretty-code-figure><pre tabindex="0" data-language="bash" data-theme="github-light tokyo-night"><code data-language="bash" data-theme="github-light tokyo-night" style="display:grid;"><span data-line><span style="--shiki-light:#6A737D;--shiki-dark:#51597D;--shiki-light-font-style:inherit;--shiki-dark-font-style:italic;"># Existing branch</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./create-worktree.sh</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> main</span></span>
+<span data-line> </span>
+<span data-line><span style="--shiki-light:#6A737D;--shiki-dark:#51597D;--shiki-light-font-style:inherit;--shiki-dark-font-style:italic;"># New branch</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./create-worktree.sh</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> feature/new</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --new-branch</span></span>
+<span data-line> </span>
+<span data-line><span style="--shiki-light:#6A737D;--shiki-dark:#51597D;--shiki-light-font-style:inherit;--shiki-dark-font-style:italic;"># Custom path</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./create-worktree.sh</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> docs</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --path</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> ~/my-docs</span></span>
+<span data-line> </span>
+<span data-line><span style="--shiki-light:#6A737D;--shiki-dark:#51597D;--shiki-light-font-style:inherit;--shiki-dark-font-style:italic;"># Open in IDE</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./create-worktree.sh</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> main</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --open</span></span></code></pre></figure>
+<p><strong>Create Orphan Branch with Worktree</strong>:</p>
+<figure data-rehype-pretty-code-figure><pre tabindex="0" data-language="bash" data-theme="github-light tokyo-night"><code data-language="bash" data-theme="github-light tokyo-night" style="display:grid;"><span data-line><span style="--shiki-light:#6A737D;--shiki-dark:#51597D;--shiki-light-font-style:inherit;--shiki-dark-font-style:italic;"># Documentation branch</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./create-orphan-worktree.sh</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> docs</span></span>
+<span data-line> </span>
+<span data-line><span style="--shiki-light:#6A737D;--shiki-dark:#51597D;--shiki-light-font-style:inherit;--shiki-dark-font-style:italic;"># GitHub Pages</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./create-orphan-worktree.sh</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> gh-pages</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --file</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> index.html</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --open</span></span>
+<span data-line> </span>
+<span data-line><span style="--shiki-light:#6A737D;--shiki-dark:#51597D;--shiki-light-font-style:inherit;--shiki-dark-font-style:italic;"># With custom content</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./create-orphan-worktree.sh</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> docs</span><span style="--shiki-light:#005CC5;--shiki-dark:#89DDFF;"> \</span></span>
+<span data-line><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;">  --file</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> README.md</span><span style="--shiki-light:#005CC5;--shiki-dark:#89DDFF;"> \</span></span>
+<span data-line><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;">  --content</span><span style="--shiki-light:#032F62;--shiki-dark:#89DDFF;"> &quot;</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"># Documentation</span><span style="--shiki-light:#032F62;--shiki-dark:#89DDFF;">&quot;</span><span style="--shiki-light:#005CC5;--shiki-dark:#89DDFF;"> \</span></span>
+<span data-line><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;">  --push</span></span></code></pre></figure>
+<h3 id="worktree-visibility">Worktree Visibility<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#worktree-visibility" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p><strong>List All Worktrees</strong>:</p>
+<figure data-rehype-pretty-code-figure><pre tabindex="0" data-language="bash" data-theme="github-light tokyo-night"><code data-language="bash" data-theme="github-light tokyo-night" style="display:grid;"><span data-line><span style="--shiki-light:#6A737D;--shiki-dark:#51597D;--shiki-light-font-style:inherit;--shiki-dark-font-style:italic;"># Table format</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./list-worktrees.sh</span></span>
+<span data-line> </span>
+<span data-line><span style="--shiki-light:#6A737D;--shiki-dark:#51597D;--shiki-light-font-style:inherit;--shiki-dark-font-style:italic;"># JSON format</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./list-worktrees.sh</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --format</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> json</span></span>
+<span data-line> </span>
+<span data-line><span style="--shiki-light:#6A737D;--shiki-dark:#51597D;--shiki-light-font-style:inherit;--shiki-dark-font-style:italic;"># Detailed view</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./list-worktrees.sh</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --detailed</span></span></code></pre></figure>
+<p><strong>Output Example</strong>:</p>
+<pre><code>Worktree                        Branch      Orphan  Status      Last Commit
+========                        ======      ======  ======      ===========
+/home/user/repo                 main        No      Clean       abc123 feat: Add
+/home/user/repo-docs            docs        Yes     Modified    def456 docs: Update
+/home/user/repo-gh-pages        gh-pages    Yes     Clean       789abc chore: Update
+</code></pre>
+<h3 id="worktree-cleanup">Worktree Cleanup<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#worktree-cleanup" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p><strong>Remove Worktree</strong>:</p>
+<figure data-rehype-pretty-code-figure><pre tabindex="0" data-language="bash" data-theme="github-light tokyo-night"><code data-language="bash" data-theme="github-light tokyo-night" style="display:grid;"><span data-line><span style="--shiki-light:#6A737D;--shiki-dark:#51597D;--shiki-light-font-style:inherit;--shiki-dark-font-style:italic;"># Safe removal (checks for changes)</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./remove-worktree.sh</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> docs</span></span>
+<span data-line> </span>
+<span data-line><span style="--shiki-light:#6A737D;--shiki-dark:#51597D;--shiki-light-font-style:inherit;--shiki-dark-font-style:italic;"># Force removal</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./remove-worktree.sh</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> docs</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --force</span></span>
+<span data-line> </span>
+<span data-line><span style="--shiki-light:#6A737D;--shiki-dark:#51597D;--shiki-light-font-style:inherit;--shiki-dark-font-style:italic;"># Remove and delete branch</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./remove-worktree.sh</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> docs</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --delete-branch</span></span></code></pre></figure>
+<h3 id="batch-operations">Batch Operations<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#batch-operations" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p><strong>Sync All Worktrees</strong>:</p>
+<figure data-rehype-pretty-code-figure><pre tabindex="0" data-language="bash" data-theme="github-light tokyo-night"><code data-language="bash" data-theme="github-light tokyo-night" style="display:grid;"><span data-line><span style="--shiki-light:#6A737D;--shiki-dark:#51597D;--shiki-light-font-style:inherit;--shiki-dark-font-style:italic;"># Sync all</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./sync-worktrees.sh</span></span>
+<span data-line> </span>
+<span data-line><span style="--shiki-light:#6A737D;--shiki-dark:#51597D;--shiki-light-font-style:inherit;--shiki-dark-font-style:italic;"># Sync and show status</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./sync-worktrees.sh</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --status</span></span>
+<span data-line> </span>
+<span data-line><span style="--shiki-light:#6A737D;--shiki-dark:#51597D;--shiki-light-font-style:inherit;--shiki-dark-font-style:italic;"># Sync specific worktrees</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./sync-worktrees.sh</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --worktrees</span><span style="--shiki-light:#032F62;--shiki-dark:#89DDFF;"> &quot;</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;">main,docs</span><span style="--shiki-light:#032F62;--shiki-dark:#89DDFF;">&quot;</span></span></code></pre></figure>
+<h3 id="ide-integration">IDE Integration<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#ide-integration" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p><strong>Open in IDE</strong>:</p>
+<figure data-rehype-pretty-code-figure><pre tabindex="0" data-language="bash" data-theme="github-light tokyo-night"><code data-language="bash" data-theme="github-light tokyo-night" style="display:grid;"><span data-line><span style="--shiki-light:#6A737D;--shiki-dark:#51597D;--shiki-light-font-style:inherit;--shiki-dark-font-style:italic;"># Auto-detect IDE</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./open-worktree.sh</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> docs</span></span>
+<span data-line> </span>
+<span data-line><span style="--shiki-light:#6A737D;--shiki-dark:#51597D;--shiki-light-font-style:inherit;--shiki-dark-font-style:italic;"># Specific IDE</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./open-worktree.sh</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> docs</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --ide</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> code</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./open-worktree.sh</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> docs</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --ide</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> idea</span></span>
+<span data-line> </span>
+<span data-line><span style="--shiki-light:#6A737D;--shiki-dark:#51597D;--shiki-light-font-style:inherit;--shiki-dark-font-style:italic;"># Terminal</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./open-worktree.sh</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> docs</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --terminal</span></span></code></pre></figure>
+<p><strong>Supported IDEs</strong>:</p>
+<ul>
+<li>VS Code (<code>code</code>)</li>
+<li>IntelliJ IDEA (<code>idea</code>)</li>
+<li>Vim/Neovim (<code>vim</code>)</li>
+<li>Terminal (fallback)</li>
+</ul>
+<h2 id="use-cases">Use Cases<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#use-cases" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<h3 id="1-documentation-management">1. Documentation Management<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#1-documentation-management" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p><strong>Problem</strong>: Docs mixed with code, slow to build</p>
+<p><strong>Solution</strong>: Orphan branch + worktree for docs</p>
+<figure data-rehype-pretty-code-figure><pre tabindex="0" data-language="bash" data-theme="github-light tokyo-night"><code data-language="bash" data-theme="github-light tokyo-night" style="display:grid;"><span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./create-orphan-worktree.sh</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> docs</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --open</span></span>
+<span data-line><span style="--shiki-light:#005CC5;--shiki-dark:#0DB9D7;">cd</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> ../repo-docs</span></span>
+<span data-line><span style="--shiki-light:#6A737D;--shiki-dark:#51597D;--shiki-light-font-style:inherit;--shiki-dark-font-style:italic;"># Work on docs independently</span></span></code></pre></figure>
+<p><strong>Benefits</strong>: Independent versioning, faster builds, clean separation</p>
+<h3 id="2-github-pages">2. GitHub Pages<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#2-github-pages" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p><strong>Problem</strong>: Static site in same branch as code</p>
+<p><strong>Solution</strong>: gh-pages orphan branch + worktree</p>
+<figure data-rehype-pretty-code-figure><pre tabindex="0" data-language="bash" data-theme="github-light tokyo-night"><code data-language="bash" data-theme="github-light tokyo-night" style="display:grid;"><span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./create-orphan-worktree.sh</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> gh-pages</span><span style="--shiki-light:#005CC5;--shiki-dark:#89DDFF;"> \</span></span>
+<span data-line><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;">  --file</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> index.html</span><span style="--shiki-light:#005CC5;--shiki-dark:#89DDFF;"> \</span></span>
+<span data-line><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;">  --content</span><span style="--shiki-light:#032F62;--shiki-dark:#89DDFF;"> &quot;</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;">&lt;h1>Welcome&lt;/h1></span><span style="--shiki-light:#032F62;--shiki-dark:#89DDFF;">&quot;</span><span style="--shiki-light:#005CC5;--shiki-dark:#89DDFF;"> \</span></span>
+<span data-line><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;">  --open</span></span>
+<span data-line> </span>
+<span data-line><span style="--shiki-light:#005CC5;--shiki-dark:#0DB9D7;">cd</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> ../repo-gh-pages</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">npm</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> run</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> dev</span><span style="--shiki-light:#6A737D;--shiki-dark:#51597D;--shiki-light-font-style:inherit;--shiki-dark-font-style:italic;">  # Live preview</span></span></code></pre></figure>
+<p><strong>Benefits</strong>: Live preview, independent deployment, no code pollution</p>
+<h3 id="3-multi-project-mono-repo">3. Multi-Project Mono-repo<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#3-multi-project-mono-repo" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p><strong>Problem</strong>: Large repo, slow operations, context switching</p>
+<p><strong>Solution</strong>: Orphan branches per project + worktrees</p>
+<figure data-rehype-pretty-code-figure><pre tabindex="0" data-language="bash" data-theme="github-light tokyo-night"><code data-language="bash" data-theme="github-light tokyo-night" style="display:grid;"><span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./create-orphan-worktree.sh</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> project-a</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --open</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./create-orphan-worktree.sh</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> project-b</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --open</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./create-orphan-worktree.sh</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> project-c</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --open</span></span>
+<span data-line> </span>
+<span data-line><span style="--shiki-light:#6A737D;--shiki-dark:#51597D;--shiki-light-font-style:inherit;--shiki-dark-font-style:italic;"># Each project in separate directory</span></span>
+<span data-line><span style="--shiki-light:#005CC5;--shiki-dark:#0DB9D7;">cd</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> ../repo-project-a</span><span style="--shiki-light:#24292E;--shiki-dark:#89DDFF;"> &amp;&amp;</span><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;"> code</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> .</span></span>
+<span data-line><span style="--shiki-light:#005CC5;--shiki-dark:#0DB9D7;">cd</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> ../repo-project-b</span><span style="--shiki-light:#24292E;--shiki-dark:#89DDFF;"> &amp;&amp;</span><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;"> code</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> .</span></span></code></pre></figure>
+<p><strong>Benefits</strong>: Fast operations, parallel work, isolated projects</p>
+<h3 id="4-configuration-management">4. Configuration Management<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#4-configuration-management" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p><strong>Problem</strong>: Environment configs mixed with code</p>
+<p><strong>Solution</strong>: config orphan branch + worktree</p>
+<figure data-rehype-pretty-code-figure><pre tabindex="0" data-language="bash" data-theme="github-light tokyo-night"><code data-language="bash" data-theme="github-light tokyo-night" style="display:grid;"><span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./create-orphan-worktree.sh</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> config</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --open</span></span></code></pre></figure>
+<p><strong>Benefits</strong>: Secure configs, independent versioning, easy rollback</p>
+<h3 id="5-localization-i18n">5. Localization (i18n)<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#5-localization-i18n" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p><strong>Problem</strong>: Translation files clutter main branch</p>
+<p><strong>Solution</strong>: i18n orphan branch per language + worktrees</p>
+<figure data-rehype-pretty-code-figure><pre tabindex="0" data-language="bash" data-theme="github-light tokyo-night"><code data-language="bash" data-theme="github-light tokyo-night" style="display:grid;"><span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./create-orphan-worktree.sh</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> i18n-en</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --open</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./create-orphan-worktree.sh</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> i18n-zh</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --open</span></span></code></pre></figure>
+<p><strong>Benefits</strong>: Independent translation workflow, parallel work, clean history</p>
+<h3 id="6-api-documentation">6. API Documentation<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#6-api-documentation" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p><strong>Problem</strong>: Generated API docs in repo</p>
+<p><strong>Solution</strong>: api-docs orphan branch + worktree</p>
+<figure data-rehype-pretty-code-figure><pre tabindex="0" data-language="bash" data-theme="github-light tokyo-night"><code data-language="bash" data-theme="github-light tokyo-night" style="display:grid;"><span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./create-orphan-worktree.sh</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> api-docs</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --open</span></span></code></pre></figure>
+<p><strong>Benefits</strong>: Auto-generated, independent versioning, no code pollution</p>
+<h3 id="7-experimental-features">7. Experimental Features<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#7-experimental-features" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p><strong>Problem</strong>: Experimental code mixed with stable code</p>
+<p><strong>Solution</strong>: experimental orphan branch + worktree</p>
+<figure data-rehype-pretty-code-figure><pre tabindex="0" data-language="bash" data-theme="github-light tokyo-night"><code data-language="bash" data-theme="github-light tokyo-night" style="display:grid;"><span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./create-orphan-worktree.sh</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> experimental</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --open</span></span></code></pre></figure>
+<p><strong>Benefits</strong>: Safe experimentation, easy cleanup, no history pollution</p>
+<h2 id="technical-implementation">Technical Implementation<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#technical-implementation" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<h3 id="worktree-path-convention">Worktree Path Convention<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#worktree-path-convention" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>Default pattern: <code>../{repo-name}-{branch-name}</code></p>
+<p>Example:</p>
+<ul>
+<li>Repo: <code>/home/user/my-project</code></li>
+<li>Branch: <code>docs</code></li>
+<li>Worktree: <code>/home/user/my-project-docs</code></li>
+</ul>
+<p>Branch names with slashes are sanitized (e.g., <code>feature/new</code> → <code>feature-new</code>)</p>
+<h3 id="orphan-branch-detection">Orphan Branch Detection<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#orphan-branch-detection" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<figure data-rehype-pretty-code-figure><pre tabindex="0" data-language="bash" data-theme="github-light tokyo-night"><code data-language="bash" data-theme="github-light tokyo-night" style="display:grid;"><span data-line><span style="--shiki-light:#6A737D;--shiki-dark:#51597D;--shiki-light-font-style:inherit;--shiki-dark-font-style:italic;"># Check if branch has no parent commits</span></span>
+<span data-line><span style="--shiki-light:#24292E;--shiki-dark:#C0CAF5;">parent_count</span><span style="--shiki-light:#D73A49;--shiki-dark:#89DDFF;">=</span><span style="--shiki-light:#24292E;--shiki-dark:#89DDFF;">$(</span><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">git</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> rev-list</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --parents</span><span style="--shiki-light:#032F62;--shiki-dark:#89DDFF;"> &quot;</span><span style="--shiki-light:#24292E;--shiki-dark:#C0CAF5;">$branch</span><span style="--shiki-light:#032F62;--shiki-dark:#89DDFF;">&quot;</span><span style="--shiki-light:#D73A49;--shiki-dark:#89DDFF;"> |</span><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;"> tail</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> -1</span><span style="--shiki-light:#D73A49;--shiki-dark:#89DDFF;"> |</span><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;"> wc</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> -w</span><span style="--shiki-light:#24292E;--shiki-dark:#89DDFF;">)</span></span>
+<span data-line><span style="--shiki-light:#24292E;--shiki-dark:#89DDFF;">[[</span><span style="--shiki-light:#032F62;--shiki-dark:#89DDFF;"> &quot;</span><span style="--shiki-light:#24292E;--shiki-dark:#C0CAF5;">$parent_count</span><span style="--shiki-light:#032F62;--shiki-dark:#89DDFF;">&quot;</span><span style="--shiki-light:#D73A49;--shiki-dark:#BB9AF7;"> -eq</span><span style="--shiki-light:#005CC5;--shiki-dark:#FF9E64;"> 1</span><span style="--shiki-light:#24292E;--shiki-dark:#89DDFF;"> ]]</span><span style="--shiki-light:#6A737D;--shiki-dark:#51597D;--shiki-light-font-style:inherit;--shiki-dark-font-style:italic;">  # True if orphan</span></span></code></pre></figure>
+<h3 id="ide-detection-and-opening">IDE Detection and Opening<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#ide-detection-and-opening" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>Auto-detection order:</p>
+<ol>
+<li>VS Code (<code>code</code>)</li>
+<li>IntelliJ IDEA (<code>idea</code>)</li>
+<li>Terminal (fallback)</li>
+</ol>
+<h3 id="status-checking">Status Checking<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#status-checking" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>Worktree status categories:</p>
+<ul>
+<li><strong>Clean</strong>: No uncommitted changes</li>
+<li><strong>Modified</strong>: Tracked files modified</li>
+<li><strong>Untracked</strong>: Untracked files present</li>
+</ul>
+<h2 id="testing">Testing<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#testing" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<h3 id="test-suite">Test Suite<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#test-suite" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>Created comprehensive test suite with 10 test cases:</p>
+<ol>
+<li>✅ Create worktree for existing branch</li>
+<li>✅ Create worktree with custom path</li>
+<li>✅ Create worktree for new branch</li>
+<li>✅ Create orphan branch with worktree</li>
+<li>✅ List worktrees (table and JSON)</li>
+<li>✅ Remove worktree</li>
+<li>✅ Remove worktree with branch deletion</li>
+<li>✅ Dry-run mode</li>
+<li>✅ Error handling - worktree already exists</li>
+<li>✅ Error handling - branch doesn’t exist</li>
+</ol>
+<h3 id="run-tests">Run Tests<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#run-tests" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<figure data-rehype-pretty-code-figure><pre tabindex="0" data-language="bash" data-theme="github-light tokyo-night"><code data-language="bash" data-theme="github-light tokyo-night" style="display:grid;"><span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./scripts/test/test-worktree-scripts.sh</span></span></code></pre></figure>
+<h2 id="integration-with-existing-scripts">Integration with Existing Scripts<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#integration-with-existing-scripts" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<h3 id="folder-structure">Folder Structure<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#folder-structure" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<pre><code>scripts/
+├── lib/
+│   ├── git-helpers.sh          # Existing
+│   ├── version-helpers.sh      # Existing
+│   └── worktree-helpers.sh     # NEW
+├── core/                       # Existing
+├── branches/                   # Existing
+├── worktree/                   # NEW
+│   ├── create-worktree.sh
+│   ├── create-orphan-worktree.sh
+│   ├── list-worktrees.sh
+│   ├── remove-worktree.sh
+│   ├── sync-worktrees.sh
+│   └── open-worktree.sh
+└── test/
+    ├── test-revision-offset.sh # Existing
+    └── test-worktree-scripts.sh # NEW
+</code></pre>
+<h3 id="conventions-followed">Conventions Followed<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#conventions-followed" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>All scripts follow existing conventions:</p>
+<ul>
+<li>✅ <code>#!/usr/bin/env bash</code></li>
+<li>✅ <code>set -euo pipefail</code></li>
+<li>✅ <code>usage()</code> function with clear help text</li>
+<li>✅ Support <code>--help</code> and <code>-h</code> flags</li>
+<li>✅ Support <code>--dry-run</code> for preview mode</li>
+<li>✅ All parameters optional with sensible defaults</li>
+<li>✅ Cross-platform compatible (Git Bash on Windows, Unix shells)</li>
+</ul>
+<h2 id="documentation">Documentation<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#documentation" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<h3 id="updated-files">Updated Files<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#updated-files" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ol>
+<li><strong>requirements.md</strong> - Added Epic 2: Worktree Management with 6 user stories</li>
+<li><strong>PHASE2-WORKTREE-COMPLETE.md</strong> - This document</li>
+</ol>
+<h3 id="usage-examples">Usage Examples<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#usage-examples" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>All scripts include comprehensive usage examples in their help text:</p>
+<figure data-rehype-pretty-code-figure><pre tabindex="0" data-language="bash" data-theme="github-light tokyo-night"><code data-language="bash" data-theme="github-light tokyo-night" style="display:grid;"><span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./create-worktree.sh</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --help</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./create-orphan-worktree.sh</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --help</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./list-worktrees.sh</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --help</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./remove-worktree.sh</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --help</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./sync-worktrees.sh</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --help</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./open-worktree.sh</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --help</span></span></code></pre></figure>
+<h2 id="comparison-worktree-vs-branch-switching">Comparison: Worktree vs Branch Switching<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#comparison-worktree-vs-branch-switching" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<h3 id="traditional-approach-branch-switching">Traditional Approach (Branch Switching)<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#traditional-approach-branch-switching" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<figure data-rehype-pretty-code-figure><pre tabindex="0" data-language="bash" data-theme="github-light tokyo-night"><code data-language="bash" data-theme="github-light tokyo-night" style="display:grid;"><span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">git</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> checkout</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> main</span></span>
+<span data-line><span style="--shiki-light:#6A737D;--shiki-dark:#51597D;--shiki-light-font-style:inherit;--shiki-dark-font-style:italic;"># ... work on main ...</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">git</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> checkout</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> docs</span><span style="--shiki-light:#6A737D;--shiki-dark:#51597D;--shiki-light-font-style:inherit;--shiki-dark-font-style:italic;">  # Lose context</span></span>
+<span data-line><span style="--shiki-light:#6A737D;--shiki-dark:#51597D;--shiki-light-font-style:inherit;--shiki-dark-font-style:italic;"># ... work on docs ...</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">git</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> checkout</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> main</span><span style="--shiki-light:#6A737D;--shiki-dark:#51597D;--shiki-light-font-style:inherit;--shiki-dark-font-style:italic;">  # Lose context again</span></span></code></pre></figure>
+<p><strong>Problems</strong>:</p>
+<ul>
+<li>❌ Switching branches is slow in large repos</li>
+<li>❌ Lose IDE state, build artifacts, running processes</li>
+<li>❌ Can’t work on multiple branches simultaneously</li>
+<li>❌ Risk of uncommitted changes</li>
+</ul>
+<h3 id="worktree-approach-recommended">Worktree Approach (Recommended)<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#worktree-approach-recommended" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<figure data-rehype-pretty-code-figure><pre tabindex="0" data-language="bash" data-theme="github-light tokyo-night"><code data-language="bash" data-theme="github-light tokyo-night" style="display:grid;"><span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./create-worktree.sh</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> main</span></span>
+<span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./create-orphan-worktree.sh</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> docs</span></span>
+<span data-line> </span>
+<span data-line><span style="--shiki-light:#005CC5;--shiki-dark:#0DB9D7;">cd</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> ../repo-main</span><span style="--shiki-light:#24292E;--shiki-dark:#89DDFF;"> &amp;&amp;</span><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;"> code</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> .</span><span style="--shiki-light:#6A737D;--shiki-dark:#51597D;--shiki-light-font-style:inherit;--shiki-dark-font-style:italic;">     # IDE on main</span></span>
+<span data-line><span style="--shiki-light:#005CC5;--shiki-dark:#0DB9D7;">cd</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> ../repo-docs</span><span style="--shiki-light:#24292E;--shiki-dark:#89DDFF;"> &amp;&amp;</span><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;"> code</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> .</span><span style="--shiki-light:#6A737D;--shiki-dark:#51597D;--shiki-light-font-style:inherit;--shiki-dark-font-style:italic;">     # IDE on docs</span></span></code></pre></figure>
+<p><strong>Benefits</strong>:</p>
+<ul>
+<li>✅ Work on multiple branches simultaneously</li>
+<li>✅ Each worktree has independent IDE state</li>
+<li>✅ No context switching overhead</li>
+<li>✅ Perfect for orphan branches (completely isolated)</li>
+<li>✅ Ideal for mono-repo with multiple projects</li>
+</ul>
+<h2 id="next-steps">Next Steps<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#next-steps" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<h3 id="phase-3-subtree-management-planned">Phase 3: Subtree Management (Planned)<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#phase-3-subtree-management-planned" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>Next priority features:</p>
+<ul>
+<li><code>add-subtree.sh</code> - Add subtree from another repository</li>
+<li><code>pull-subtree.sh</code> - Pull updates from subtree source</li>
+<li><code>push-subtree.sh</code> - Push changes back to subtree source</li>
+<li><code>split-subtree.sh</code> - Split subtree to new branch</li>
+<li><code>list-subtrees.sh</code> - List all subtrees with metadata</li>
+</ul>
+<h3 id="phase-4-submodule-enhancement-planned">Phase 4: Submodule Enhancement (Planned)<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#phase-4-submodule-enhancement-planned" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>Enhance submodule management:</p>
+<ul>
+<li><code>add-submodule.sh</code> - Add submodule with options</li>
+<li><code>update-submodules.sh</code> - Update all submodules</li>
+<li><code>remove-submodule.sh</code> - Remove submodule safely</li>
+<li><code>foreach-submodule.sh</code> - Execute commands in submodules</li>
+</ul>
+<h3 id="phase-5-mono-repo-tools-planned">Phase 5: Mono-repo Tools (Planned)<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#phase-5-mono-repo-tools-planned" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>Git Scalar integration:</p>
+<ul>
+<li><code>scalar/register.sh</code> - Register repo with Scalar</li>
+<li><code>scalar/status.sh</code> - Show Scalar status and performance</li>
+<li><code>scalar/optimize.sh</code> - Run Scalar optimizations</li>
+<li><code>scalar/unregister.sh</code> - Unregister from Scalar</li>
+</ul>
+<h3 id="phase-6-git-p4-integration-planned">Phase 6: Git-P4 Integration (Planned)<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#phase-6-git-p4-integration-planned" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>Perforce bridge:</p>
+<ul>
+<li><code>vcs-bridges/p4/clone.sh</code> - Clone from Perforce</li>
+<li><code>vcs-bridges/p4/sync.sh</code> - Sync from Perforce</li>
+<li><code>vcs-bridges/p4/submit.sh</code> - Submit to Perforce</li>
+<li><code>vcs-bridges/p4/strip-metadata.sh</code> - Strip git-p4 metadata</li>
+</ul>
+<h3 id="phase-7-git-svn-integration-planned">Phase 7: Git-SVN Integration (Planned)<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#phase-7-git-svn-integration-planned" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>Subversion bridge:</p>
+<ul>
+<li><code>vcs-bridges/svn/clone.sh</code> - Clone from Subversion</li>
+<li><code>vcs-bridges/svn/fetch.sh</code> - Fetch from Subversion</li>
+<li><code>vcs-bridges/svn/dcommit.sh</code> - Commit to Subversion</li>
+</ul>
+<h2 id="summary">Summary<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#summary" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>✅ <strong>Phase 2 Complete</strong></p>
+<ul>
+<li>6 worktree management scripts implemented</li>
+<li>1 shared helper library created</li>
+<li>1 comprehensive test suite added</li>
+<li>All scripts follow existing conventions</li>
+<li>Cross-platform compatible</li>
+<li>Comprehensive documentation</li>
+<li>Ready for production use</li>
+</ul>
+<h3 id="key-benefits">Key Benefits<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#key-benefits" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ol>
+<li><strong>Parallel Work</strong>: Work on multiple branches simultaneously</li>
+<li><strong>No Context Switching</strong>: Each worktree maintains independent state</li>
+<li><strong>Orphan Branch Support</strong>: Perfect for docs, gh-pages, configs</li>
+<li><strong>IDE Integration</strong>: Open worktrees in VS Code, IntelliJ, Vim</li>
+<li><strong>Batch Operations</strong>: Sync all worktrees with one command</li>
+<li><strong>Safe Operations</strong>: Checks for uncommitted changes before removal</li>
+<li><strong>Flexible</strong>: Custom paths, dry-run mode, force options</li>
+</ol>
+<h3 id="usage-recommendation">Usage Recommendation<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#usage-recommendation" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>For projects with:</p>
+<ul>
+<li>Documentation in separate branch</li>
+<li>GitHub Pages static site</li>
+<li>Multiple projects in mono-repo</li>
+<li>Configuration management needs</li>
+<li>Localization workflows</li>
+<li>API documentation generation</li>
+<li>Experimental feature development</li>
+</ul>
+<p>Use worktrees instead of branch switching for better productivity and cleaner workflow.</p>
+<hr/>
+<p><strong>Status</strong>: ✅ Complete and tested
+<strong>Date</strong>: 2026-02-12
+<strong>Scripts</strong>: 6 worktree scripts + 1 helper library + 1 test suite
+<strong>Next Phase</strong>: Phase 3 - Subtree Management</p></article><hr/><div class="page-footer"></div></div><div class="right sidebar"><div class="graph"><h3>Graph View</h3><div class="graph-outer"><div id="graph-container" data-cfg="{&quot;drag&quot;:true,&quot;zoom&quot;:true,&quot;depth&quot;:1,&quot;scale&quot;:1.1,&quot;repelForce&quot;:0.5,&quot;centerForce&quot;:0.3,&quot;linkDistance&quot;:30,&quot;fontSize&quot;:0.6,&quot;opacityScale&quot;:1,&quot;showTags&quot;:true,&quot;removeTags&quot;:[],&quot;focusOnHover&quot;:false}"></div><button id="global-graph-icon" aria-label="Global Graph"><svg version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 55 55" fill="currentColor" xml:space="preserve"><path d="M49,0c-3.309,0-6,2.691-6,6c0,1.035,0.263,2.009,0.726,2.86l-9.829,9.829C32.542,17.634,30.846,17,29,17
+                s-3.542,0.634-4.898,1.688l-7.669-7.669C16.785,10.424,17,9.74,17,9c0-2.206-1.794-4-4-4S9,6.794,9,9s1.794,4,4,4
+                c0.74,0,1.424-0.215,2.019-0.567l7.669,7.669C21.634,21.458,21,23.154,21,25s0.634,3.542,1.688,4.897L10.024,42.562
+                C8.958,41.595,7.549,41,6,41c-3.309,0-6,2.691-6,6s2.691,6,6,6s6-2.691,6-6c0-1.035-0.263-2.009-0.726-2.86l12.829-12.829
+                c1.106,0.86,2.44,1.436,3.898,1.619v10.16c-2.833,0.478-5,2.942-5,5.91c0,3.309,2.691,6,6,6s6-2.691,6-6c0-2.967-2.167-5.431-5-5.91
+                v-10.16c1.458-0.183,2.792-0.759,3.898-1.619l7.669,7.669C41.215,39.576,41,40.26,41,41c0,2.206,1.794,4,4,4s4-1.794,4-4
+                s-1.794-4-4-4c-0.74,0-1.424,0.215-2.019,0.567l-7.669-7.669C36.366,28.542,37,26.846,37,25s-0.634-3.542-1.688-4.897l9.665-9.665
+                C46.042,11.405,47.451,12,49,12c3.309,0,6-2.691,6-6S52.309,0,49,0z M11,9c0-1.103,0.897-2,2-2s2,0.897,2,2s-0.897,2-2,2
+                S11,10.103,11,9z M6,51c-2.206,0-4-1.794-4-4s1.794-4,4-4s4,1.794,4,4S8.206,51,6,51z M33,49c0,2.206-1.794,4-4,4s-4-1.794-4-4
+                s1.794-4,4-4S33,46.794,33,49z M29,31c-3.309,0-6-2.691-6-6s2.691-6,6-6s6,2.691,6,6S32.309,31,29,31z M47,41c0,1.103-0.897,2-2,2
+                s-2-0.897-2-2s0.897-2,2-2S47,39.897,47,41z M49,10c-2.206,0-4-1.794-4-4s1.794-4,4-4s4,1.794,4,4S51.206,10,49,10z"></path></svg></button></div><div id="global-graph-outer"><div id="global-graph-container" data-cfg="{&quot;drag&quot;:true,&quot;zoom&quot;:true,&quot;depth&quot;:-1,&quot;scale&quot;:0.9,&quot;repelForce&quot;:0.5,&quot;centerForce&quot;:0.3,&quot;linkDistance&quot;:30,&quot;fontSize&quot;:0.6,&quot;opacityScale&quot;:1,&quot;showTags&quot;:true,&quot;removeTags&quot;:[],&quot;focusOnHover&quot;:true}"></div></div></div><div class="toc desktop-only"><button type="button" id="toc" class aria-controls="toc-content" aria-expanded="true"><h3>Table of Contents</h3><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="fold"><polyline points="6 9 12 15 18 9"></polyline></svg></button><div id="toc-content" class><ul class="overflow"><li class="depth-0"><a href="#phase-2-worktree-implementation---complete" data-for="phase-2-worktree-implementation---complete">Phase 2: Worktree Implementation - Complete</a></li><li class="depth-1"><a href="#overview" data-for="overview">Overview</a></li><li class="depth-1"><a href="#implementation-summary" data-for="implementation-summary">Implementation Summary</a></li><li class="depth-2"><a href="#files-created" data-for="files-created">Files Created</a></li><li class="depth-1"><a href="#features" data-for="features">Features</a></li><li class="depth-2"><a href="#core-worktree-management" data-for="core-worktree-management">Core Worktree Management</a></li><li class="depth-2"><a href="#worktree-visibility" data-for="worktree-visibility">Worktree Visibility</a></li><li class="depth-2"><a href="#worktree-cleanup" data-for="worktree-cleanup">Worktree Cleanup</a></li><li class="depth-2"><a href="#batch-operations" data-for="batch-operations">Batch Operations</a></li><li class="depth-2"><a href="#ide-integration" data-for="ide-integration">IDE Integration</a></li><li class="depth-1"><a href="#use-cases" data-for="use-cases">Use Cases</a></li><li class="depth-2"><a href="#1-documentation-management" data-for="1-documentation-management">1. Documentation Management</a></li><li class="depth-2"><a href="#2-github-pages" data-for="2-github-pages">2. GitHub Pages</a></li><li class="depth-2"><a href="#3-multi-project-mono-repo" data-for="3-multi-project-mono-repo">3. Multi-Project Mono-repo</a></li><li class="depth-2"><a href="#4-configuration-management" data-for="4-configuration-management">4. Configuration Management</a></li><li class="depth-2"><a href="#5-localization-i18n" data-for="5-localization-i18n">5. Localization (i18n)</a></li><li class="depth-2"><a href="#6-api-documentation" data-for="6-api-documentation">6. API Documentation</a></li><li class="depth-2"><a href="#7-experimental-features" data-for="7-experimental-features">7. Experimental Features</a></li><li class="depth-1"><a href="#technical-implementation" data-for="technical-implementation">Technical Implementation</a></li><li class="depth-2"><a href="#worktree-path-convention" data-for="worktree-path-convention">Worktree Path Convention</a></li><li class="depth-2"><a href="#orphan-branch-detection" data-for="orphan-branch-detection">Orphan Branch Detection</a></li><li class="depth-2"><a href="#ide-detection-and-opening" data-for="ide-detection-and-opening">IDE Detection and Opening</a></li><li class="depth-2"><a href="#status-checking" data-for="status-checking">Status Checking</a></li><li class="depth-1"><a href="#testing" data-for="testing">Testing</a></li><li class="depth-2"><a href="#test-suite" data-for="test-suite">Test Suite</a></li><li class="depth-2"><a href="#run-tests" data-for="run-tests">Run Tests</a></li><li class="depth-1"><a href="#integration-with-existing-scripts" data-for="integration-with-existing-scripts">Integration with Existing Scripts</a></li><li class="depth-2"><a href="#folder-structure" data-for="folder-structure">Folder Structure</a></li><li class="depth-2"><a href="#conventions-followed" data-for="conventions-followed">Conventions Followed</a></li><li class="depth-1"><a href="#documentation" data-for="documentation">Documentation</a></li><li class="depth-2"><a href="#updated-files" data-for="updated-files">Updated Files</a></li><li class="depth-2"><a href="#usage-examples" data-for="usage-examples">Usage Examples</a></li><li class="depth-1"><a href="#comparison-worktree-vs-branch-switching" data-for="comparison-worktree-vs-branch-switching">Comparison: Worktree vs Branch Switching</a></li><li class="depth-2"><a href="#traditional-approach-branch-switching" data-for="traditional-approach-branch-switching">Traditional Approach (Branch Switching)</a></li><li class="depth-2"><a href="#worktree-approach-recommended" data-for="worktree-approach-recommended">Worktree Approach (Recommended)</a></li><li class="depth-1"><a href="#next-steps" data-for="next-steps">Next Steps</a></li><li class="depth-2"><a href="#phase-3-subtree-management-planned" data-for="phase-3-subtree-management-planned">Phase 3: Subtree Management (Planned)</a></li><li class="depth-2"><a href="#phase-4-submodule-enhancement-planned" data-for="phase-4-submodule-enhancement-planned">Phase 4: Submodule Enhancement (Planned)</a></li><li class="depth-2"><a href="#phase-5-mono-repo-tools-planned" data-for="phase-5-mono-repo-tools-planned">Phase 5: Mono-repo Tools (Planned)</a></li><li class="depth-2"><a href="#phase-6-git-p4-integration-planned" data-for="phase-6-git-p4-integration-planned">Phase 6: Git-P4 Integration (Planned)</a></li><li class="depth-2"><a href="#phase-7-git-svn-integration-planned" data-for="phase-7-git-svn-integration-planned">Phase 7: Git-SVN Integration (Planned)</a></li><li class="depth-1"><a href="#summary" data-for="summary">Summary</a></li><li class="depth-2"><a href="#key-benefits" data-for="key-benefits">Key Benefits</a></li><li class="depth-2"><a href="#usage-recommendation" data-for="usage-recommendation">Usage Recommendation</a></li></ul></div></div><div class="backlinks"><h3>Backlinks</h3><ul class="overflow"><li><a href="../README" class="internal">README</a></li><li><a href="../guides/scalar" class="internal">scalar</a></li><li><a href="../" class="internal">index</a></li></ul></div></div><footer class><p>Created with <a href="https://quartz.jzhao.xyz/">Quartz v4.4.0</a> © 2026</p><ul><li><a href="https://github.com/jackyzha0/quartz">GitHub</a></li><li><a href="https://discord.gg/cRFFHYye7t">Discord Community</a></li></ul></footer></div></div></body><script type="application/javascript">function c(){let t=this.parentElement;t.classList.toggle("is-collapsed");let l=t.classList.contains("is-collapsed")?this.scrollHeight:t.scrollHeight;t.style.maxHeight=l+"px";let o=t,e=t.parentElement;for(;e;){if(!e.classList.contains("callout"))return;let n=e.classList.contains("is-collapsed")?e.scrollHeight:e.scrollHeight+o.scrollHeight;e.style.maxHeight=n+"px",o=e,e=e.parentElement}}function i(){let t=document.getElementsByClassName("callout is-collapsible");for(let s of t){let l=s.firstElementChild;if(l){l.addEventListener("click",c),window.addCleanup(()=>l.removeEventListener("click",c));let e=s.classList.contains("is-collapsed")?l.scrollHeight:s.scrollHeight;s.style.maxHeight=e+"px"}}}document.addEventListener("nav",i);window.addEventListener("resize",i);
+</script><script type="module">
+          let mermaidImport = undefined
+          document.addEventListener('nav', async () => {
+            if (document.querySelector("code.mermaid")) {
+              mermaidImport ||= await import('https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.7.0/mermaid.esm.min.mjs')
+              const mermaid = mermaidImport.default
+              const darkMode = document.documentElement.getAttribute('saved-theme') === 'dark'
+              mermaid.initialize({
+                startOnLoad: false,
+                securityLevel: 'loose',
+                theme: darkMode ? 'dark' : 'default'
+              })
+
+              await mermaid.run({
+                querySelector: '.mermaid'
+              })
+            }
+          });
+          </script><script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/contrib/copy-tex.min.js" type="application/javascript"></script><script src="../postscript.js" type="module"></script></html>
