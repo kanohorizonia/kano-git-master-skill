@@ -51,7 +51,7 @@ else
         -v "$DOCKER_CPP_ROOT:/workspace/src/cpp" \
         -v "$DOCKER_COVERAGE_ROOT:/workspace/coverage:rw" \
         -w /workspace/src/cpp \
-        ubuntu:24.04 sleep infinity \
+        archlinux:latest sleep infinity \
         2>&1 || {
         echo "[ERROR] Failed to start Docker container" >&2
         exit 1
@@ -60,8 +60,7 @@ else
     # Install tools
     echo "[coverage-report-linux] Installing tools..."
     docker exec "$container_name" bash -c "
-        apt-get update -qq
-        apt-get install -y -qq clang llvm llvm-tools > /dev/null 2>&1
+        pacman -Sy --noconfirm clang llvm > /dev/null 2>&1
     "
 fi
 

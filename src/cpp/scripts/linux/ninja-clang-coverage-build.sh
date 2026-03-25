@@ -45,7 +45,7 @@ docker run -d \
     --name "$container_name" \
     -v "$DOCKER_CPP_ROOT:/workspace/src/cpp" \
     -w /workspace/src/cpp \
-    ubuntu:24.04 sleep infinity \
+    archlinux:latest sleep infinity \
     2>&1 || {
     echo "[ERROR] Failed to start Docker container" >&2
     exit 1
@@ -60,8 +60,7 @@ trap cleanup EXIT
 # Install tools and build
 echo "[coverage-build-linux] Installing tools..."
 docker exec "$container_name" bash -c "
-    apt-get update -qq
-    apt-get install -y -qq cmake ninja-build clang llvm git > /dev/null 2>&1
+    pacman -Sy --noconfirm cmake ninja clang llvm git > /dev/null 2>&1
 "
 
 echo "[coverage-build-linux] Configuring coverage build..."
