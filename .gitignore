@@ -47,6 +47,7 @@ Thumbs.db
 tmp/
 vendor/
 venv/
+_site/
 _ws/
 # <<< STATIC-GITIGNORE
 
