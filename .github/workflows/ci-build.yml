@@ -22,6 +22,9 @@ permissions:
   contents: read
 
 jobs:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Native Build Jobs (existing)
+  # ─────────────────────────────────────────────────────────────────────────────
   build-native:
     strategy:
       fail-fast: false
@@ -101,6 +104,166 @@ jobs:
           name: kano-git-${{ matrix.name }}
           path: ci-assets/${{ matrix.archive_name }}
           if-no-files-found: error
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Coverage Build Jobs (new)
+  # ─────────────────────────────────────────────────────────────────────────────
+  build-coverage:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: coverage-macos-x64
+            os: macos-13
+            shell: bash
+            configure_preset: macos-ninja-clang-coverage
+            build_preset: macos-ninja-clang-coverage-debug
+            test_target: kano_git_tui_tests
+            # macOS uses llvm-cov from Xcode
+            llvm_cov_path: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin
+            profdata_merge: llvm-profdata merge
+          - name: coverage-macos-arm64
+            os: macos-14
+            shell: bash
+            configure_preset: macos-ninja-clang-arm64-coverage
+            build_preset: macos-ninja-clang-arm64-coverage-debug
+            test_target: kano_git_tui_tests
+            llvm_cov_path: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin
+            profdata_merge: llvm-profdata merge
+          - name: coverage-linux-x64
+            os: ubuntu-latest
+            shell: bash
+            configure_preset: linux-ninja-clang-coverage
+            build_preset: linux-ninja-clang-coverage-debug
+            test_target: kano_git_tui_tests
+            # Linux: install llvm-cov via apt
+            llvm_cov_path: /usr/lib/llvm-18/bin
+            profdata_merge: llvm-profdata merge
+          - name: coverage-windows-x64
+            os: windows-latest
+            shell: pwsh
+            configure_preset: windows-ninja-msvc-coverage
+            build_preset: windows-ninja-msvc-coverage-debug
+            test_target: kano_git_tui_tests.exe
+            # Windows: needs vcxproj or MSVC tooling
+            llvm_cov_path: ""
+            profdata_merge: ""
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # ─── Linux: Install LLVM for llvm-cov ───────────────────────────────────
+      - name: Install LLVM (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm-18 llvm-18-tools clang-18
+
+      # ─── macOS: Ensure Xcode tools available ─────────────────────────────────
+      - name: Setup Xcode CLI tools (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
+
+      # ─── Windows: Install llvm-cov via LLVM for Windows ─────────────────────
+      - name: Install LLVM (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          winget install -e --id LLVM.LLVM --version 18.1.8 --silent --accept-package-agreements --accept-source-agreements
+
+      - name: Add LLVM to PATH (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\Program Files\LLVM\bin;$env:PATH"
+          llvm-cov --version
+
+      # ─── Configure Coverage Build ─────────────────────────────────────────────
+      - name: Configure coverage build
+        env:
+          KOG_CPP_ROOT: ${{ github.workspace }}/src/cpp
+        run: |
+          cd src/cpp
+          cmake --preset ${{ matrix.configure_preset }}
+
+      # ─── Build ─────────────────────────────────────────────────────────────
+      - name: Build coverage binary
+        env:
+          KOG_CPP_ROOT: ${{ github.workspace }}/src/cpp
+        run: |
+          cd src/cpp
+          cmake --build --preset ${{ matrix.build_preset }}
+
+      # ─── Run Tests (produces .profraw) ───────────────────────────────────────
+      - name: Run tests with coverage
+        env:
+          KOG_CPP_ROOT: ${{ github.workspace }}/src/cpp
+          LLVM_PROFILE_FILE: ${{ github.workspace }}/coverage/${{ matrix.name }}_%m.profraw
+        run: |
+          mkdir -p coverage
+          cd src/cpp
+          ./out/bin/${{ matrix.build_preset }}/${{ matrix.test_target }}
+
+      # ─── Merge Profile Data ─────────────────────────────────────────────────
+      - name: Merge coverage profiles
+        env:
+          PATH: "${{ matrix.llvm_cov_path }}:${{ runner.os == 'Windows' && 'C:\Program Files\LLVM\bin' || '' }}:$env:PATH"
+        run: |
+          cd ${{ github.workspace }}
+          ${{ matrix.profdata_merge }} coverage/${{ matrix.name }}_*.profraw -o coverage/${{ matrix.name }}.profdata
+
+      # ─── Generate HTML Report ───────────────────────────────────────────────
+      - name: Generate HTML coverage report
+        env:
+          PATH: "${{ matrix.llvm_cov_path }}:${{ runner.os == 'Windows' && 'C:\Program Files\LLVM\bin' || '' }}:$env:PATH"
+        run: |
+          cd ${{ github.workspace }}
+          mkdir -p coverage/html/${{ matrix.name }}
+          llvm-cov show \
+            ./src/cpp/out/bin/${{ matrix.build_preset }}/${{ matrix.test_target }} \
+            -instr-profile=coverage/${{ matrix.name }}.profdata \
+            --format=html \
+            --output-dir=coverage/html/${{ matrix.name }} \
+            --ignore-filename-regex="_deps|catch2|ftxui|thirdparty|build|\.vcpkg"
+
+      # ─── Package and Upload ──────────────────────────────────────────────────
+      - name: Package coverage report
+        run: |
+          cd ${{ github.workspace }}
+          # Create index that links all platforms
+          cat > coverage/index.html << 'HTMLEOF'
+          <!DOCTYPE html>
+          <html><head><title>Code Coverage Reports</title></head>
+          <body>
+          <h1>Code Coverage Reports</h1>
+          <ul>
+            <li><a href="coverage-macos-x64/index.html">macOS x64</a></li>
+            <li><a href="coverage-macos-arm64/index.html">macOS ARM64</a></li>
+            <li><a href="coverage-linux-x64/index.html">Linux x64</a></li>
+            <li><a href="coverage-windows-x64/index.html">Windows x64</a></li>
+          </ul>
+          </body></html>
+          HTMLEOF
+          tar -czf coverage-reports.tar.gz coverage/
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-reports
+          path: coverage-reports.tar.gz
+          if-no-files-found: warning
 
   build-windows-msi:
     runs-on: windows-latest
