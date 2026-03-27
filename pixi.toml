@@ -31,9 +31,9 @@ build-dev-linux = "bash src/cpp/scripts/linux/ninja-clang-debug.sh"
 build-dev-macos = "bash src/cpp/scripts/macos/ninja-clang-debug.sh"
 
 # Release build (optimized)
-build-release = "bash src/cpp/scripts/windows/build_windows_ninja_msvc_release.sh"
-build-release-linux = "bash src/cpp/scripts/linux/build_linux_ninja_gcc_release.sh"
-build-release-macos = "bash src/cpp/scripts/macos/build_macos_ninja_clang_arm64_release.sh"
+build-release = "bash src/cpp/scripts/windows/ninja-msvc-release.sh"
+build-release-linux = "bash src/cpp/scripts/linux/ninja-gcc-release.sh"
+build-release-macos = "bash src/cpp/scripts/macos/ninja-clang-arm64-release.sh"
 
 # Coverage workflow (CI-ready)
 build-coverage-win = "bash src/cpp/scripts/windows/ninja-msvc-coverage-build.sh"
@@ -43,6 +43,7 @@ test-coverage-win = "bash src/cpp/scripts/windows/ninja-msvc-coverage-run.sh"
 test-coverage-linux = "bash src/cpp/scripts/linux/ninja-clang-coverage-run.sh"
 test-coverage-macos = "bash src/cpp/scripts/macos/ninja-clang-coverage-run.sh"
 report-coverage-win = "bash src/cpp/scripts/windows/ninja-msvc-coverage-report.sh"
+report-coverage-win-opencppcoverage = "bash src/cpp/scripts/windows/ninja-msvc-opencppcoverage-run.sh"
 report-coverage-linux = "bash src/cpp/scripts/linux/ninja-clang-coverage-report.sh"
 report-coverage-macos = "bash src/cpp/scripts/macos/ninja-clang-coverage-report.sh"
 
@@ -69,10 +70,12 @@ docs-ci = "bash src/shell/docs/build-and-deploy.sh --ci $(pwd)"
 [target.win-64.tasks]
 # Default build = debug (fast for development)
 build = "bash src/cpp/scripts/windows/ninja-msvc-debug.sh"
-build-release = "bash src/cpp/scripts/windows/build_windows_ninja_msvc_release.sh"
+build-native = "bash src/cpp/scripts/windows/ninja-msvc-debug.sh"
+build-release = "bash src/cpp/scripts/windows/ninja-msvc-release.sh"
 build-coverage = "bash src/cpp/scripts/windows/ninja-msvc-coverage-build.sh"
 test-coverage = "bash src/cpp/scripts/windows/ninja-msvc-coverage-run.sh"
 report-coverage = "bash src/cpp/scripts/windows/ninja-msvc-coverage-report.sh"
+report-coverage-opencppcoverage = "bash src/cpp/scripts/windows/ninja-msvc-opencppcoverage-run.sh"
 coverage-all = "bash src/cpp/scripts/windows/ninja-msvc-coverage-build.sh && bash src/cpp/scripts/windows/ninja-msvc-coverage-run.sh && bash src/cpp/scripts/windows/ninja-msvc-coverage-report.sh"
 quick-test = "bash src/cpp/code/tests/run_tests.sh windows-ninja-msvc-release"
 full-test = "bash src/cpp/code/tests/run_tests.sh windows-ninja-msvc-release --with-e2e"
@@ -82,7 +85,8 @@ full-test = "bash src/cpp/code/tests/run_tests.sh windows-ninja-msvc-release --w
 # =============================================================================
 [target.linux-64.tasks]
 build = "bash src/cpp/scripts/linux/ninja-clang-debug.sh"
-build-release = "bash src/cpp/scripts/linux/build_linux_ninja_gcc_release.sh"
+build-native = "bash src/cpp/scripts/linux/ninja-clang-debug.sh"
+build-release = "bash src/cpp/scripts/linux/ninja-gcc-release.sh"
 build-coverage = "bash src/cpp/scripts/linux/ninja-clang-coverage-build.sh"
 test-coverage = "bash src/cpp/scripts/linux/ninja-clang-coverage-run.sh"
 report-coverage = "bash src/cpp/scripts/linux/ninja-clang-coverage-report.sh"
@@ -95,7 +99,8 @@ full-test = "bash src/cpp/code/tests/run_tests.sh linux-ninja-gcc-release --with
 # =============================================================================
 [target.osx-64.tasks]
 build = "bash src/cpp/scripts/macos/ninja-clang-x64-debug.sh"
-build-release = "bash src/cpp/scripts/macos/build_macos_ninja_clang_x64_release.sh"
+build-native = "bash src/cpp/scripts/macos/ninja-clang-x64-debug.sh"
+build-release = "bash src/cpp/scripts/macos/ninja-clang-x64-release.sh"
 build-coverage = "bash src/cpp/scripts/macos/ninja-clang-coverage-build.sh"
 test-coverage = "bash src/cpp/scripts/macos/ninja-clang-coverage-run.sh"
 report-coverage = "bash src/cpp/scripts/macos/ninja-clang-coverage-report.sh"
@@ -108,7 +113,8 @@ full-test = "bash src/cpp/code/tests/run_tests.sh macos-ninja-clang-x64-release 
 # =============================================================================
 [target.osx-arm64.tasks]
 build = "bash src/cpp/scripts/macos/ninja-clang-arm64-debug.sh"
-build-release = "bash src/cpp/scripts/macos/build_macos_ninja_clang_arm64_release.sh"
+build-native = "bash src/cpp/scripts/macos/ninja-clang-arm64-debug.sh"
+build-release = "bash src/cpp/scripts/macos/ninja-clang-arm64-release.sh"
 build-coverage = "bash src/cpp/scripts/macos/ninja-clang-arm64-coverage-build.sh"
 test-coverage = "bash src/cpp/scripts/macos/ninja-clang-arm64-coverage-run.sh"
 report-coverage = "bash src/cpp/scripts/macos/ninja-clang-arm64-coverage-report.sh"

@@ -17,8 +17,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export KOG_CPP_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 KOG_COVERAGE_ROOT="${KOG_COVERAGE_ROOT:-${KOG_CPP_ROOT}/out/coverage}"
 
-source "$SCRIPT_DIR/../common/private_repo_path.sh"
-
 echo "[coverage-report-macos-arm64] Starting..."
 
 # Binary path

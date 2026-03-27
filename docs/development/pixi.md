@@ -31,7 +31,7 @@ pixi run bootstrap-linux-system
 pixi run bootstrap-macos-system
 
 # Build the native CLI for the current host platform
-pixi run build-native
+pixi run build
 
 # Run repo tests
 pixi run quick-test
@@ -62,7 +62,13 @@ System compiler/toolchain ownership still stays outside pixi:
 - Linux: compiler packages such as `gcc-15`, `g++-15`, `clang`, and `pkg-config` remain in the apt-based bootstrap path
 - macOS: Xcode Command Line Tools remain required, and the script still keeps the Homebrew LLVM path available
 
+## Task naming notes
+
+- `pixi run build` is the host-default native build entrypoint
+- `pixi run build-release` is the host-default release build entrypoint
+- `pixi run build-dev`, `build-dev-linux`, and `build-dev-macos` remain explicit helper tasks for skill development workflows
+
 ## Next integration targets
 
-- let `scripts/kano-git` prefer `pixi run build-native` when `pixi.toml` is present
+- keep launcher/self-build and pixi task names aligned when new native build flows are added
 - add CI steps that run `pixi install --locked` before native build/test entrypoints

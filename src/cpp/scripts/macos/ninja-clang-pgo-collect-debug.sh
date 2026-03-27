@@ -11,11 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export KOG_CPP_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 source "$SCRIPT_DIR/../common/unix_preset_build.sh"
-
-# Try to source private repo for remote build
-PRIVATE_SCRIPT=""
-source "$SCRIPT_DIR/../common/private_repo_path.sh"
-PRIVATE_SCRIPT="$(kog_private_script macos_private.sh)"
+source "$SCRIPT_DIR/../common/macos_remote_build.sh"
 
 detect_host_and_build() {
     local host_os
@@ -32,14 +28,8 @@ detect_host_and_build() {
             )
             ;;
         *)
-            if [[ -n "$PRIVATE_SCRIPT" ]]; then
-                echo "[INFO] Non-macOS host detected → remote build via macBuilder"
-                source "$PRIVATE_SCRIPT"
-                kog_remote_build_macos "macos-ninja-clang-pgo-collect" "Debug"
-            else
-                echo "[ERROR] Private repo not found. Cannot remote build macOS on non-macOS host." >&2
-                exit 1
-            fi
+            echo "[INFO] Non-macOS host detected → remote build via macBuilder"
+            kog_remote_build_macos "macos-ninja-clang-pgo-collect" "Debug"
             ;;
     esac
 }

@@ -13,13 +13,14 @@ product surface for status/commit/commit-push/planner behavior.
 
 ### Build
 - Shell scripts: no build step.
-- C++ native CLI (`kano-git`/`kog`): **must** use platform build scripts under `src/cpp/build/script/`.
+- C++ native CLI (`kano-git`/`kog`): **must** use platform build scripts under `src/cpp/scripts/`.
   - Windows (recommended):
-    - `bash src/cpp/build/script/windows/build_windows_ninja_msvc_release.sh`
+    - `bash src/cpp/scripts/windows/ninja-msvc-release.sh`
   - Linux (example):
-    - `bash src/cpp/build/script/linux/build_linux_ninja_gcc_release.sh`
+    - `bash src/cpp/scripts/linux/ninja-gcc-release.sh`
   - macOS (example):
-    - `bash src/cpp/build/script/macos/build_macos_ninja_clang_release.sh`
+    - `bash src/cpp/scripts/macos/ninja-clang-release.sh`
+- Host-default `pixi` alias: `pixi run build`
 - Do not use ad-hoc direct CMake/Ninja command sequences when working in this repo unless explicitly requested by a human maintainer.
 
 ### Lint / format

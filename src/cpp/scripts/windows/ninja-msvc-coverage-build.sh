@@ -16,6 +16,12 @@ source "$SCRIPT_DIR/../common/windows_preset_build.sh"
 # Windows coverage: /PROFILE flag via KOG_ENABLE_COVERAGE=ON
 export KOG_ENABLE_COVERAGE=1
 
+# Native MSVC coverage instrumentation is sensitive to path aliasing and cached
+# compiler outputs. Build coverage binaries from real paths with no compiler
+# launcher so Microsoft.CodeCoverage.Console can instrument them reliably.
+export KOG_SUBST_MODE=off
+export KOG_COMPILER_LAUNCHER=none
+
 # Detect if running in CI (GitHub Actions) to enable artifact output
 if [[ -n "${CI:-}" ]]; then
     echo "[ninja-msvc-coverage-build] CI mode: enabling coverage build"

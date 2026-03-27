@@ -503,8 +503,7 @@ set_property(CACHE KOG_PGO_LTCG PROPERTY STRINGS auto off)
 # For MSVC, /PROFILE works for both.
 if(KOG_ENABLE_COVERAGE)
     if(MSVC)
-        # MSVC /PROFILE enables coverage with profiler
-        add_compile_options(/PROFILE)
+        # MSVC /PROFILE is a linker option only - enables profiler/coverage instrumentation
         add_link_options(/PROFILE)
         set(KOG_COVERAGE_OUTPUT_DIR "${KOG_BUILD_ROOT}/coverage" CACHE PATH "Coverage output directory")
     elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")

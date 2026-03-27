@@ -33,45 +33,79 @@ Recommended repo-root flow:
 ```bash
 pixi install
 pixi run env-summary
-pixi run build-native
+pixi run build
 ```
 
 Direct script flow remains the source of truth and is what the pixi tasks call:
 
 ```bash
 # Windows host (Git Bash)
-./src/cpp/build/script/windows/build_windows_ninja_msvc_debug.sh
-./src/cpp/build/script/windows/build_windows_ninja_msvc_release.sh
-
-# Windows host -> Linux via Docker
-./src/cpp/build/script/windows/build_linux_ninja_gcc_debug_via_docker.sh
-./src/cpp/build/script/windows/build_linux_ninja_gcc_release_via_docker.sh
+bash src/cpp/scripts/windows/ninja-msvc-debug.sh
+bash src/cpp/scripts/windows/ninja-msvc-release.sh
+bash src/cpp/scripts/windows/msbuild-generate-sln.sh
+bash src/cpp/scripts/windows/msbuild-generate-sln.sh --open
 
 # Linux host
-./src/cpp/build/script/linux/build_linux_ninja_gcc_debug.sh
-./src/cpp/build/script/linux/build_linux_ninja_gcc_release.sh
+bash src/cpp/scripts/linux/ninja-gcc-debug.sh
+bash src/cpp/scripts/linux/ninja-gcc-release.sh
 
 # macOS host (Intel)
-./src/cpp/build/script/macos/build_macos_ninja_clang_x64_debug.sh
-./src/cpp/build/script/macos/build_macos_ninja_clang_x64_release.sh
+bash src/cpp/scripts/macos/ninja-clang-x64-debug.sh
+bash src/cpp/scripts/macos/ninja-clang-x64-release.sh
 
 # macOS host (Apple Silicon)
-./src/cpp/build/script/macos/build_macos_ninja_clang_arm64_debug.sh
-./src/cpp/build/script/macos/build_macos_ninja_clang_arm64_release.sh
+bash src/cpp/scripts/macos/ninja-clang-arm64-debug.sh
+bash src/cpp/scripts/macos/ninja-clang-arm64-release.sh
 ```
 
 ### Run
 
 ```bash
 # Windows (MSVC Ninja preset)
-./src/cpp/build/bin/windows-ninja-msvc/release/kano-git.exe version
+./src/cpp/out/bin/windows-ninja-msvc/release/kano-git.exe version
 
 # Linux (GCC Ninja preset)
-./src/cpp/build/bin/linux-ninja-gcc/release/kano-git version
+./src/cpp/out/bin/linux-ninja-gcc/release/kano-git version
 
 # Generic artifact layout
-./src/cpp/build/bin/<preset>/<config>/kano-git[.exe]
+./src/cpp/out/bin/<preset>/<config>/kano-git[.exe]
 ```
+
+### Visual Studio solution workflow (Windows)
+
+If you want a `.sln` for Visual Studio debugging or to open `windows.coverage` in the native Microsoft tooling, generate the Visual Studio preset once:
+
+```bash
+bash src/cpp/scripts/windows/msbuild-generate-sln.sh
+```
+
+This configures the `windows-msbuild` preset and generates a solution under:
+
+```text
+src/cpp/out/obj/windows-msbuild/*.sln
+```
+
+To generate and open it immediately:
+
+```bash
+bash src/cpp/scripts/windows/msbuild-generate-sln.sh --open
+```
+
+### Windows dual coverage workflow
+
+Windows now has two report lanes so you can compare Microsoft native coverage against OpenCppCoverage:
+
+```bash
+# Microsoft native coverage
+bash src/cpp/scripts/windows/ninja-msvc-coverage-build.sh
+bash src/cpp/scripts/windows/ninja-msvc-coverage-run.sh
+bash src/cpp/scripts/windows/ninja-msvc-coverage-report.sh
+
+# OpenCppCoverage tool-native HTML
+bash src/cpp/scripts/windows/ninja-msvc-opencppcoverage-run.sh
+```
+
+`ninja-msvc-opencppcoverage-run.sh` reuses the Windows coverage test binary and emits tool-native HTML plus Cobertura and binary exports. Set `KOG_OPENCPPCOVERAGE_EXE` if the tool is installed outside the default path.
 
 ### CLI launcher scripts (alternative)
 
@@ -188,17 +222,22 @@ About `cppm`:
 ```
 src/
 ├── cpp/
-│   ├── code/systems/kano_git_core/ # static library (C++20)
-│   │   ├── shell_executor   # Process spawning
-│   │   ├── command_registry # Command routing
-│   │   └── commands/        # Command implementations
-│   └── code/apps/kano_git_cli/   # Thin CLI frontend
-│       └── main.cpp         # CLI11 entry point
-└── shell/                   # Shell scripts execution backend
+│   ├── code/systems/kano_git_core/    # shared native domain logic
+│   ├── code/systems/kano_git_command/ # command/product/runtime layers
+│   ├── code/systems/kano_git_test_core/ # shared native test helpers
+│   ├── code/apps/kano_git_cli/        # CLI frontend
+│   ├── code/apps/kano_git_tui/        # TUI frontend
+│   ├── code/tests/                    # native test targets + runners
+│   ├── scripts/                       # canonical native build/test/coverage scripts
+│   └── out/                           # native artifacts by preset/config
+└── shell/                             # support, docs automation, acceptance tests
 ```
 
-The CLI is a thin orchestrator — all actual Git logic lives in the existing shell scripts under `src/shell/`.
-The `kano_git_core` library is designed for reuse by future TUI/GUI frontends.
+The native CLI/TUI are no longer just thin shells over script logic.
+
+- core workspace, planner, status, commit, and runtime behavior now lives in native C++ systems
+- shell under `src/shell/` remains for support helpers, docs automation, wrappers, and acceptance flows
+- `kano_git_core` and sibling systems are designed for reuse across CLI, TUI, and future frontends
 
 ## Project Structure
 
@@ -208,17 +247,21 @@ src/
 │   ├── CMakeLists.txt          # Build configuration (C++20 modules)
 │   ├── CMakePresets.json       # Multi-config presets (Debug/Release)
 │   ├── vcpkg.json              # Native package dependencies
-│   ├── build/script/           # Host/preset build wrappers
+│   ├── scripts/                # Host/preset build wrappers
 │   ├── code/systems/kano_git_core/  # Core static library
+│   ├── code/systems/kano_git_command/ # Native command/product/runtime layers
+│   ├── code/systems/kano_git_test_core/ # Shared native test helpers
 │   ├── code/apps/kano_git_cli/      # CLI executable
-│   ├── code/thirdparty/             # Only for intentionally customized/forked deps
-│   ├── build/bin/              # Final executables by preset/config
-│   ├── build/lib/              # Libraries by preset/config
-│   └── build/_intermediate/    # CMake/Ninja/MSBuild intermediates
-└── shell/                      # Shell execution backend
-    ├── core/
-    ├── workspace/
-    └── ...
+│   ├── code/apps/kano_git_tui/      # TUI executable
+│   ├── code/tests/                  # Native test targets + runners
+│   ├── out/bin/                # Final executables by preset/config
+│   ├── out/lib/                # Libraries by preset/config
+│   ├── out/obj/                # CMake/Ninja/MSBuild intermediates
+│   └── out/coverage/           # Coverage artifacts and reports
+└── shell/                      # Support helpers / docs / acceptance
+    ├── support/
+    ├── docs/
+    └── test/
 
 scripts/                        # Bash launchers
 ├── kano-git / kano-git.bat

@@ -4,7 +4,7 @@
 # =============================================================================
 # Build with Clang coverage instrumentation for ARM64.
 # On macOS ARM64: native build.
-# On non-macOS: remote build via macBuilder (requires private repo).
+# On non-macOS: remote build via macBuilder.
 #
 # Usage:
 #   bash ninja-clang-arm64-coverage-build.sh
@@ -14,7 +14,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export KOG_CPP_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-source "$SCRIPT_DIR/../common/private_repo_path.sh"
+source "$SCRIPT_DIR/../common/unix_preset_build.sh"
+source "$SCRIPT_DIR/../common/macos_remote_build.sh"
 
 detect_host_and_build() {
     local host_os
@@ -33,30 +34,14 @@ detect_host_and_build() {
                 )
             else
                 echo "[coverage-build-macos-arm64] macOS x64 host but ARM64 target → remote build via macBuilder"
-                source_private_and_build
+                kog_remote_build_macos "macos-ninja-clang-arm64-coverage" "Debug"
             fi
             ;;
         *)
             echo "[coverage-build-macos-arm64] Non-macOS host → remote build via macBuilder"
-            source_private_and_build
+            kog_remote_build_macos "macos-ninja-clang-arm64-coverage" "Debug"
             ;;
     esac
-}
-
-source_private_and_build() {
-    local private_script
-    private_script="$(kog_private_script macos_private.sh)"
-    if [[ -z "$private_script" || ! -f "$private_script" ]]; then
-        echo "[ERROR] Private repo not found. Cannot remote build macOS on non-macOS host." >&2
-        exit 1
-    fi
-    source "$private_script"
-    if declare -f kog_remote_build_macos >/dev/null 2>&1; then
-        kog_remote_build_macos "macos-ninja-clang-arm64-coverage" "Debug"
-    else
-        echo "[ERROR] kog_remote_build_macos not found in $private_script" >&2
-        exit 1
-    fi
 }
 
 detect_host_and_build

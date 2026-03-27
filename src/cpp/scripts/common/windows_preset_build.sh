@@ -191,3 +191,90 @@ kog_run_windows_preset() {
   kog_cleanup_windows_subst_drive "$SubstDrive" "$SubstCleanupFlag" "$InSubstPurpose"
   return "$ExitCode"
 }
+
+kog_configure_windows_preset() {
+  local InConfigurePreset="$1"
+  local InVcvarsArch="$2"
+  local InSubstPurpose="${KOG_SUBST_PURPOSE:-kano-git cpp configure}"
+  local InPreferredSubstDrive="${KOG_SUBST_DRIVE:-}"
+
+  if ! command -v cmd.exe >/dev/null 2>&1; then
+    echo "cmd.exe is required." >&2
+    exit 1
+  fi
+
+  if ! kog_powershell_bin >/dev/null 2>&1; then
+    echo "powershell is required." >&2
+    exit 1
+  fi
+
+  if [[ ! -f "$KOG_WINDOWS_PS_HELPER" ]]; then
+    echo "windows preset helper script not found: $KOG_WINDOWS_PS_HELPER" >&2
+    exit 1
+  fi
+
+  local RequestedVcvars="${KOG_VCVARSALL:-}"
+  local ResolvedVcvars=""
+  if [[ -n "$RequestedVcvars" ]]; then
+    ResolvedVcvars="$RequestedVcvars"
+  else
+    ResolvedVcvars="$(kog_detect_vcvarsall || true)"
+  fi
+
+  if ! kog_windows_file_exists "$ResolvedVcvars"; then
+    echo "vcvarsall.bat not found." >&2
+    echo "Set KOG_VCVARSALL explicitly, e.g.:" >&2
+    echo "  KOG_VCVARSALL='C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Auxiliary\\Build\\vcvarsall.bat'" >&2
+    exit 1
+  fi
+
+  local RootWin
+  kog_apply_self_build_config
+  kog_collect_build_metadata
+
+  if command -v cygpath >/dev/null 2>&1; then
+    RootWin="$(cygpath -w "$KOG_CPP_ROOT")"
+  else
+    RootWin="$(cd "$KOG_CPP_ROOT" && pwd -W)"
+  fi
+
+  local BuildRootWin="$RootWin"
+  local EffectiveRootWin=""
+  local SubstDrive=""
+  local SubstCleanupFlag="0"
+  local SubstLine=""
+
+  SubstLine="$(kog_prepare_windows_subst_root "$BuildRootWin" "$InConfigurePreset" "$InSubstPurpose" "$InPreferredSubstDrive")"
+  if [[ -n "$SubstLine" ]]; then
+    BuildRootWin="${SubstLine%%$'\t'*}"
+    local _rest="${SubstLine#*$'\t'}"
+    SubstDrive="${_rest%%$'\t'*}"
+    SubstCleanupFlag="${SubstLine##*$'\t'}"
+  fi
+  if [[ -n "$SubstDrive" && "$BuildRootWin" != "$RootWin" ]]; then
+    echo "[launcher][subst][info] mapped $SubstDrive -> $RootWin (purpose: $InSubstPurpose)" >&2
+  fi
+
+  EffectiveRootWin="$(kog_resolve_windows_source_root "$BuildRootWin" "$InConfigurePreset")"
+  if [[ -n "$EffectiveRootWin" ]]; then
+    BuildRootWin="$EffectiveRootWin"
+  fi
+
+  local SolutionPath=""
+  local ExitCode=0
+  SolutionPath="$({ kog_run_windows_ps_helper \
+    -Action configure-preset \
+    -Root "$BuildRootWin" \
+    -Vcvars "$ResolvedVcvars" \
+    -Arch "$InVcvarsArch" \
+    -ConfigurePreset "$InConfigurePreset"; } 2>&1)" || ExitCode=$?
+
+  kog_cleanup_windows_subst_drive "$SubstDrive" "$SubstCleanupFlag" "$InSubstPurpose"
+  if [[ "$ExitCode" -ne 0 ]]; then
+    printf '%s\n' "$SolutionPath" >&2
+    return "$ExitCode"
+  fi
+
+  SolutionPath="$(printf '%s\n' "$SolutionPath" | tr -d '\r' | tail -n 1)"
+  printf '%s\n' "$SolutionPath"
+}

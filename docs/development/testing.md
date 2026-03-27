@@ -47,12 +47,17 @@ If `pixi` is available, use it as the default repo entrypoint.
 
 ```bash
 pixi install
-pixi run build-native
+pixi run build
 pixi run quick-test
 pixi run full-test
 pixi run acceptance-commit-plan-first
 pixi run acceptance-quickstart
 ```
+
+Notes:
+
+- `pixi run build` resolves to the current host-default native build task
+- the native test runners also know how to trigger `scripts/kog self build` when needed
 
 ## Direct Invocation
 
@@ -183,7 +188,12 @@ TUI tests cover the terminal UI components, not individual commands:
 
 ```bash
 bash src/cpp/scripts/windows/build_windows_ninja_msvc_release.sh
+bash src/cpp/scripts/windows/ninja-msvc-release.sh
 ```
+
+- For repo-local tool orchestration, `pixi run build`, `pixi run quick-test`, and
+  `pixi run full-test` are the preferred entrypoints over stale `build-native`
+  examples.
 
 - Acceptance scripts may emit Git CRLF warnings in disposable repos; those are not
   failures by themselves.

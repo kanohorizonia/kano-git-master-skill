@@ -18,7 +18,7 @@ fi
 usage() {
   cat <<'EOF'
 Usage:
-  bash src/cpp/build/script/common/measure_iteration_baseline.sh \
+  bash src/cpp/scripts/common/measure_iteration_baseline.sh \
     --configure-preset <name> \
     --build-preset <name> \
     --build-dir <path> \

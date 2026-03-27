@@ -28,6 +28,7 @@ if [ "$CI_MODE" = false ]; then
   bash "$REPO_ROOT/src/shell/docs/03-build-site.sh"
   bash "$REPO_ROOT/src/shell/docs/04-build-api-docs.sh"
   bash "$REPO_ROOT/src/shell/docs/05-stage-api-docs.sh"
+  python "$REPO_ROOT/src/shell/docs/render_raw_reports.py" "$REPO_ROOT/_site/src"
 else
   bash "$REPO_ROOT/src/shell/docs/02-prepare-content.sh" \
     "$REPO_ROOT" \
@@ -44,6 +45,7 @@ else
     "$REPO_ROOT/_site/build"
   bash "$REPO_ROOT/src/shell/docs/05-stage-api-docs.sh" \
     "$REPO_ROOT/_site/build"
+  python "$REPO_ROOT/src/shell/docs/render_raw_reports.py" "$REPO_ROOT/_site/src"
 fi
 
 echo "Docs site ready at: $REPO_ROOT/_site/build/public"

@@ -158,15 +158,6 @@ coverage_build() {
         return 1
     fi
 
-    # Try to source private repo for remote builds
-    source "$SCRIPT_DIR/private_repo_path.sh"
-    local private_script=""
-    if [[ -f "$(kog_private_script macos_private.sh)" ]]; then
-        private_script="$(kog_private_script macos_private.sh)"
-    elif [[ -f "$(kog_private_script linux_private.sh)" ]]; then
-        private_script="$(kog_private_script linux_private.sh)"
-    fi
-
     local host_os
     host_os="$(detect_host_os)"
 
@@ -193,16 +184,11 @@ coverage_build() {
             cmake --preset "$preset"
             cmake --build --preset "${preset}"
         )
-    elif [[ "$target_platform" == "macos" && -n "$private_script" ]]; then
+    elif [[ "$target_platform" == "macos" ]]; then
         # macOS build from non-macOS host → use macBuilder
         echo "[coverage_build] Remote macOS build via macBuilder"
-        source "$private_script"
-        if declare -f kog_remote_build_macos >/dev/null 2>&1; then
-            kog_remote_build_macos "$preset"
-        else
-            echo "[coverage_build] ERROR: kog_remote_build_macos not found in $private_script" >&2
-            return 1
-        fi
+        source "$SCRIPT_DIR/macos_remote_build.sh"
+        kog_remote_build_macos "$preset" "Debug"
     elif [[ "$target_platform" == "linux" ]]; then
         # Linux build from non-Linux host → use Docker
         if command -v docker >/dev/null 2>&1; then

@@ -33,26 +33,26 @@ jobs:
           - name: windows-x64
             os: windows-latest
             shell: bash
-            build_script: ./src/cpp/build/script/windows/build_windows_ninja_msvc_release.sh
-            binary_glob: src/cpp/build/bin/windows-ninja-msvc/release/*
+            build_script: ./src/cpp/scripts/windows/ninja-msvc-release.sh
+            binary_glob: src/cpp/out/bin/windows-ninja-msvc/release/*
             archive_name: kano-git-windows-x64.zip
           - name: linux-x64
             os: ubuntu-latest
             shell: bash
-            build_script: ./src/cpp/build/script/linux/build_linux_ninja_gcc_release.sh
-            binary_glob: src/cpp/build/bin/linux-ninja-gcc/release/*
+            build_script: ./src/cpp/scripts/linux/ninja-gcc-release.sh
+            binary_glob: src/cpp/out/bin/linux-ninja-gcc/release/*
             archive_name: kano-git-linux-x64.tar.gz
           - name: macos-x64
             os: macos-13
             shell: bash
-            build_script: ./src/cpp/build/script/macos/build_macos_ninja_clang_x64_release.sh
-            binary_glob: src/cpp/build/bin/macos-ninja-clang-x64/release/*
+            build_script: ./src/cpp/scripts/macos/ninja-clang-x64-release.sh
+            binary_glob: src/cpp/out/bin/macos-ninja-clang-x64/release/*
             archive_name: kano-git-macos-x64.tar.gz
           - name: macos-arm64
             os: macos-14
             shell: bash
-            build_script: ./src/cpp/build/script/macos/build_macos_ninja_clang_arm64_release.sh
-            binary_glob: src/cpp/build/bin/macos-ninja-clang-arm64/release/*
+            build_script: ./src/cpp/scripts/macos/ninja-clang-arm64-release.sh
+            binary_glob: src/cpp/out/bin/macos-ninja-clang-arm64/release/*
             archive_name: kano-git-macos-arm64.tar.gz
     runs-on: ${{ matrix.os }}
     defaults:
@@ -95,7 +95,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path ci-assets/root/bin | Out-Null
-          Copy-Item -Path src/cpp/build/bin/windows-ninja-msvc/release/* -Destination ci-assets/root/bin -Recurse -Force
+          Copy-Item -Path src/cpp/out/bin/windows-ninja-msvc/release/* -Destination ci-assets/root/bin -Recurse -Force
           Compress-Archive -Path ci-assets/root/* -DestinationPath ci-assets/${{ matrix.archive_name }} -Force
 
       - name: Upload native build artifact
@@ -114,6 +114,7 @@ jobs:
       matrix:
         include:
           - name: coverage-macos-x64
+            report_slug: macos-x64
             os: macos-13
             shell: bash
             configure_preset: macos-ninja-clang-coverage
@@ -123,6 +124,7 @@ jobs:
             llvm_cov_path: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin
             profdata_merge: llvm-profdata merge
           - name: coverage-macos-arm64
+            report_slug: macos-arm64
             os: macos-14
             shell: bash
             configure_preset: macos-ninja-clang-arm64-coverage
@@ -131,6 +133,7 @@ jobs:
             llvm_cov_path: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin
             profdata_merge: llvm-profdata merge
           - name: coverage-linux-x64
+            report_slug: linux-x64
             os: ubuntu-latest
             shell: bash
             configure_preset: linux-ninja-clang-coverage
@@ -140,6 +143,7 @@ jobs:
             llvm_cov_path: /usr/lib/llvm-18/bin
             profdata_merge: llvm-profdata merge
           - name: coverage-windows-x64
+            report_slug: windows-x64
             os: windows-latest
             shell: pwsh
             configure_preset: windows-ninja-msvc-coverage
@@ -182,13 +186,42 @@ jobs:
         with:
           dotnet-version: "8.0.x"
 
-      # ─── Windows: Install Microsoft.CodeCoverage.Console ─────────────────────
-      - name: Install Microsoft.CodeCoverage.Console (Windows)
+      # ─── Windows: Locate Microsoft.CodeCoverage.Console ──────────────────────
+      - name: Locate Microsoft.CodeCoverage.Console (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          dotnet tool install --global Microsoft.CodeCoverage.Console || true
-          $env:PATH = "$env:USERPROFILE\.dotnet\tools;$env:PATH"
+          $candidates = @(
+            'C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\IDE\Extensions\Microsoft\CodeCoverage.Console\Microsoft.CodeCoverage.Console.exe',
+            'C:\Program Files\Microsoft Visual Studio\2022\Professional\Common7\IDE\Extensions\Microsoft\CodeCoverage.Console\Microsoft.CodeCoverage.Console.exe',
+            'C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\Extensions\Microsoft\CodeCoverage.Console\Microsoft.CodeCoverage.Console.exe',
+            'C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\Extensions\Microsoft\CodeCoverage.Console\Microsoft.CodeCoverage.Console.exe',
+            'C:\Program Files\Microsoft Visual Studio\18\Professional\Common7\IDE\Extensions\Microsoft\CodeCoverage.Console\Microsoft.CodeCoverage.Console.exe',
+            'C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\Extensions\Microsoft\CodeCoverage.Console\Microsoft.CodeCoverage.Console.exe'
+          )
+          $tool = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $tool) {
+            throw 'Microsoft.CodeCoverage.Console.exe not found on runner'
+          }
+          "KOG_WINDOWS_COVERAGE_TOOL=$tool" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Locate or install OpenCppCoverage (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $candidates = @(
+            'C:\Program Files\OpenCppCoverage\OpenCppCoverage.exe',
+            'C:\tools\OpenCppCoverage\OpenCppCoverage.exe'
+          )
+          $tool = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $tool) {
+            choco install OpenCppCoverage -y --no-progress
+            $tool = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+          if (-not $tool) {
+            throw 'OpenCppCoverage.exe not found on runner'
+          }
+          "KOG_OPENCPPCOVERAGE_EXE=$tool" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       # ─── Configure Coverage Build ─────────────────────────────────────────────
       - name: Configure coverage build
@@ -212,13 +245,38 @@ jobs:
         env:
           KOG_CPP_ROOT: ${{ github.workspace }}/src/cpp
         run: |
-          mkdir -p coverage test-results
+          New-Item -ItemType Directory -Force -Path coverage/${{ matrix.name }} | Out-Null
+          New-Item -ItemType Directory -Force -Path test-results/${{ matrix.report_slug }} | Out-Null
           cd src/cpp
-          $env:PATH = "$env:USERPROFILE\.dotnet\tools;$env:PATH"
-          # Run tests and capture exit code
-          ./out/bin/${{ matrix.build_preset }}/${{ matrix.test_target }}
-          # Copy test output if any
-          cp -r src/cpp/out/test-results/* ../test-results/ 2>/dev/null || true
+          $tool = $env:KOG_WINDOWS_COVERAGE_TOOL
+          $settingsPath = Join-Path ${{ github.workspace }} 'coverage\windows-coverage.config'
+          @"
+<?xml version="1.0" encoding="utf-8"?>
+<Configuration>
+  <CodeCoverage>
+    <ModulePaths>
+      <Include>
+        <ModulePath>.*kano_git_tui_tests\.exe$</ModulePath>
+        <ModulePath>.*kano-git\.exe$</ModulePath>
+        <ModulePath>.*kano-git-tui\.exe$</ModulePath>
+      </Include>
+      <IncludeDirectories>
+        <Directory Recursive="true">${{ github.workspace }}\src\cpp\out\bin\windows-ninja-msvc-coverage\debug</Directory>
+      </IncludeDirectories>
+    </ModulePaths>
+    <SymbolSearchPaths>
+      <Path>${{ github.workspace }}\src\cpp\out\bin\windows-ninja-msvc-coverage\debug</Path>
+      <Path>${{ github.workspace }}\src\cpp\out\obj\windows-ninja-msvc-coverage\symbols\debug</Path>
+    </SymbolSearchPaths>
+    <EnableStaticNativeInstrumentation>True</EnableStaticNativeInstrumentation>
+    <EnableDynamicNativeInstrumentation>False</EnableDynamicNativeInstrumentation>
+    <EnableStaticNativeInstrumentationRestore>True</EnableStaticNativeInstrumentationRestore>
+    <IncludeTestAssembly>True</IncludeTestAssembly>
+  </CodeCoverage>
+</Configuration>
+"@ | Set-Content $settingsPath
+          ./out/bin/${{ matrix.build_preset }}/${{ matrix.test_target }} --reporter junit --out "${{ github.workspace }}/test-results/${{ matrix.report_slug }}/tests.xml"
+          & $tool collect --settings $settingsPath "./out/bin/${{ matrix.build_preset }}/${{ matrix.test_target }}" -o "${{ github.workspace }}/coverage/${{ matrix.name }}/windows.coverage" -f coverage
 
       # ─── Run Tests (produces .profraw on Unix) ───────────────────────────────
       - name: Run tests with coverage (Unix)
@@ -227,11 +285,11 @@ jobs:
           KOG_COVERAGE_ROOT: ${{ github.workspace }}/coverage
           LLVM_PROFILE_FILE: ${{ github.workspace }}/coverage/${{ matrix.name }}_%m.profraw
         run: |
-          mkdir -p coverage test-results
+          mkdir -p coverage test-results/${{ matrix.report_slug }}
           cd src/cpp
           # Run tests with JUnit output if supported
           # Catch2 supports: --reporter junit
-          ./out/bin/${{ matrix.build_preset }}/${{ matrix.test_target }} --reporter junit --out "${{ github.workspace }}/test-results/${{ matrix.name }}.xml" || true
+          ./out/bin/${{ matrix.build_preset }}/${{ matrix.test_target }} --reporter junit --out "${{ github.workspace }}/test-results/${{ matrix.report_slug }}/tests.xml" || true
 
       # ─── Run Tests (produces .profraw on Unix) ───────────────────────────────
       - name: Run tests with coverage (Unix)
@@ -244,28 +302,31 @@ jobs:
           cd src/cpp
           ./out/bin/${{ matrix.build_preset }}/${{ matrix.test_target }}
 
-      # ─── Windows: Generate HTML Report via Microsoft.CodeCoverage.Console ───
-      - name: Generate HTML coverage report (Windows)
+      # ─── Windows: Export XML/Cobertura via dotnet-coverage ─────────────────
+      - name: Generate coverage report (Windows)
         if: runner.os == 'Windows'
-        env:
-          PATH: "${{ env.USERPROFILE }}\.dotnet\tools;${env:PATH}"
         shell: pwsh
         run: |
-          mkdir -p coverage/html/${{ matrix.name }}
-          # Find .coverage files
-          $coverageFiles = Get-ChildItem -Path . -Filter "*.coverage" -Recurse -File
-          if ($coverageFiles) {
-            # Merge all .coverage files into one
-            $mergedCoverage = "coverage/merged.coverage"
-            # Use coverage combine if multiple files, otherwise copy
-            if ($coverageFiles.Count -gt 1) {
-              coverage combine --input $coverageFiles --output $mergedCoverage
-            } else {
-              Copy-Item $coverageFiles[0].FullName $mergedCoverage
-            }
-            # Generate HTML report
-            coverage report -i $mergedCoverage --reportdir "coverage/html/${{ matrix.name }}" 2>&1 || true
+          $tool = $env:KOG_WINDOWS_COVERAGE_TOOL
+          $coverageDir = "coverage/${{ matrix.name }}"
+          $coverageFile = "$coverageDir/windows.coverage"
+          if (Test-Path $coverageFile) {
+            & $tool merge $coverageFile -o "$coverageDir/coverage.xml" -f xml
+            & $tool merge $coverageFile -o "$coverageDir/coverage.cobertura.xml" -f cobertura
+            @(
+              'Windows coverage collected via Microsoft.CodeCoverage.Console with MSVC /PROFILE.',
+              'If the profiler fails to initialize on a runner, coverage.xml may contain only skipped modules.'
+            ) | Set-Content "$coverageDir/summary.txt"
           }
+
+      - name: Generate OpenCppCoverage report (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          KOG_OPENCPPCOVERAGE_EXE: ${{ env.KOG_OPENCPPCOVERAGE_EXE }}
+          KOG_COVERAGE_ROOT: ${{ github.workspace }}/coverage/windows-x64-opencppcoverage
+        run: |
+          bash src/cpp/scripts/windows/ninja-msvc-opencppcoverage-run.sh
 
       # ─── Unix: Generate HTML Report via llvm-cov ─────────────────────────────
       - name: Generate HTML coverage report (Unix)
@@ -300,6 +361,8 @@ jobs:
             <li><a href="macos-arm64/index.html">macOS ARM64</a></li>
             <li><a href="linux-x64/index.html">Linux x64</a></li>
             <li><a href="windows-x64/index.html">Windows x64</a></li>
+            <li><a href="windows-x64-opencppcoverage/index.html">Windows x64 OpenCppCoverage</a></li>
+            <li><a href="windows-x64-compare/index.html">Windows x64 Compare</a></li>
           </ul>
           </body></html>
           HTMLEOF
@@ -317,13 +380,6 @@ jobs:
       - name: Package test report
         run: |
           cd ${{ github.workspace }}
-          # Rename test results with platform prefix for clarity
-          for f in test-results/*.xml 2>/dev/null; do
-            if [[ -f "$f" ]]; then
-              platform="${{ matrix.name }}"
-              mv "$f" "test-results/${platform}.xml"
-            fi
-          done
           # Create combined test results index
           cat > test-results/index.html << 'HTMLEOF'
           <!DOCTYPE html>
@@ -331,13 +387,29 @@ jobs:
           <body>
           <h1>Test Reports</h1>
           <ul>
-            <li><a href="macos-x64.xml">macOS x64</a></li>
-            <li><a href="macos-arm64.xml">macOS ARM64</a></li>
-            <li><a href="linux-x64.xml">Linux x64</a></li>
-            <li><a href="windows-x64.xml">Windows x64</a></li>
+            <li><a href="macos-x64/index.html">macOS x64</a></li>
+            <li><a href="macos-arm64/index.html">macOS ARM64</a></li>
+            <li><a href="linux-x64/index.html">Linux x64</a></li>
+            <li><a href="windows-x64/index.html">Windows x64</a></li>
           </ul>
           </body></html>
           HTMLEOF
+          for platform_dir in test-results/*; do
+            if [[ -d "$platform_dir" ]] && [[ -f "$platform_dir/tests.xml" ]]; then
+              platform_name="$(basename "$platform_dir")"
+              cat > "$platform_dir/index.html" <<HTMLEOF
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${platform_name} Test Report</title></head>
+<body>
+<h1>${platform_name} Test Report</h1>
+<p>Raw JUnit XML artifact for this platform:</p>
+<p><a href="tests.xml">tests.xml</a></p>
+</body>
+</html>
+HTMLEOF
+            fi
+          done
           tar -czf test-reports.tar.gz -C test-results .
 
       - name: Upload test artifact
@@ -363,7 +435,7 @@ jobs:
 
       - name: Build Windows native binary
         shell: bash
-        run: ./src/cpp/build/script/windows/build_windows_ninja_msvc_release.sh
+        run: ./src/cpp/scripts/windows/ninja-msvc-release.sh
 
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4

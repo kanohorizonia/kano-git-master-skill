@@ -3,7 +3,7 @@
 **Version**: 0.1.0-beta
 **Status**: Beta Release
 
-Advanced Git automation scripts for power users and teams.
+Advanced Git automation for multi-repository workspaces with a native `kog` / `kano-git` command surface.
 
 ## Quick Start
 
@@ -21,13 +21,13 @@ When building native `kano-git` / `kog`, use the platform scripts under `src/cpp
 
 ```bash
 # Windows (recommended)
-bash src/cpp/scripts/windows/build_windows_ninja_msvc_release.sh
+bash src/cpp/scripts/windows/ninja-msvc-release.sh
 
 # Linux (example)
-bash src/cpp/scripts/linux/build_linux_ninja_gcc_release.sh
+bash src/cpp/scripts/linux/ninja-gcc-release.sh
 
 # macOS (example)
-bash src/cpp/scripts/macos/build_macos_ninja_clang_release.sh
+bash src/cpp/scripts/macos/ninja-clang-release.sh
 ```
 
 Do not use ad-hoc direct CMake/Ninja command sequences in this repo unless a maintainer explicitly asks for it.
@@ -129,15 +129,20 @@ then merges that repo plus its registered repos.
 
 ```
 kano-git-master-skill/
-├── VERSION                 # Version number (single source of truth)
-├── SKILL.md                # Skill documentation
-├── docs/                   # User documentation
-│   ├── README.md           # Documentation index
-│   ├── guides/             # User guides
-│   ├── comparisons/        # Feature comparisons
-│   ├── migrations/         # Migration guides
-│   └── status/             # Changelog
-└── scripts/                # All automation scripts
+├── VERSION                     # Version number (single source of truth)
+├── SKILL.md                    # Skill documentation
+├── docs/                       # User documentation
+├── pixi.toml                   # Repo-local tool/task environment
+├── src/
+│   ├── cpp/                    # Native product/build root
+│   │   ├── CMakeLists.txt
+│   │   ├── CMakePresets.json
+│   │   ├── vcpkg.json
+│   │   ├── code/              # systems, apps, tests
+│   │   ├── scripts/           # Canonical native build/test/coverage scripts
+│   │   └── out/               # Native artifacts
+│   └── shell/                 # Support helpers, docs automation, acceptance tests
+└── scripts/                    # Thin launchers and shell automation
     ├── internal/           # Skill maintenance scripts
     │   ├── show-version.sh # Show skill version
     │   ├── bump-version.sh # Bump skill version
@@ -166,6 +171,12 @@ kano-git-master-skill/
     ├── vcs-bridges/        # VCS integration (P4, SVN)
     └── lib/                # Helper libraries
 ```
+
+Current architecture rule:
+
+- native product behavior lives under `src/cpp/`
+- root `scripts/` remain launchers, compatibility entrypoints, and shell automation
+- when docs and older shell-era assumptions disagree, prefer `src/cpp/`, `src/cpp/scripts/`, `src/cpp/out/`, and the current native command implementation
 
 ## Usage Examples
 

@@ -747,6 +747,76 @@ function Run-Preset([string]$InRoot,
   exit $LASTEXITCODE
 }
 
+function Configure-Preset([string]$InRoot,
+                          [string]$InVcvars,
+                          [string]$InArch,
+                          [string]$InConfigurePreset,
+                          [string]$InVcvarsVersion) {
+  Set-Location -LiteralPath $InRoot
+  Normalize-CompilerCacheEnvironment
+  Ensure-CompilerCacheServerConfiguration
+
+  $buildDir = Join-Path $InRoot "out\obj\$InConfigurePreset"
+  $currentFingerprint = Get-CMakeInputsFingerprint -InRoot $InRoot
+  $storedFingerprint = Get-StoredConfigureFingerprint -InBuildDir $buildDir
+
+  $shouldConfigure = $true
+  if ($currentFingerprint -and $storedFingerprint -and ($currentFingerprint -eq $storedFingerprint)) {
+    $shouldConfigure = $false
+    Write-Host "[launcher][cmake][skip] Configure inputs unchanged, skipping cmake --preset"
+  }
+
+  if (-not $shouldConfigure) {
+    if (-not (Test-CompilerLauncherMatchesCache -InBuildDir $buildDir)) {
+      $shouldConfigure = $true
+      Write-Host "[launcher][cmake][info] Compiler launcher cache mismatch detected, rerunning cmake --preset"
+    }
+  }
+
+  $quotedVcvars = '"' + $InVcvars + '"'
+
+  if ($shouldConfigure) {
+    $configureCommand = "cmake --preset $InConfigurePreset"
+    foreach ($additionalArgument in (Get-AdditionalCMakeCacheArguments)) {
+      $configureCommand += " " + $additionalArgument
+    }
+    $launcherPath = Get-EffectiveCompilerLauncherPath
+    $isFastBuild = ($env:KOG_FASTBUILD_ENABLED -eq "1")
+    if ($isFastBuild) {
+      if (-not [string]::IsNullOrWhiteSpace($env:FASTBUILD_CACHE_PATH)) {
+        $configureCommand += " " + (Format-CMakeCacheArgument -Name "CMAKE_FASTBUILD_CACHE_PATH" -Value (Resolve-AbsoluteWindowsPath $env:FASTBUILD_CACHE_PATH))
+      }
+      if (-not [string]::IsNullOrWhiteSpace($env:KOG_FASTBUILD_EXECUTABLE)) {
+        $configureCommand += " " + (Format-CMakeCacheArgument -Name "CMAKE_MAKE_PROGRAM" -Value (Resolve-AbsoluteWindowsPath $env:KOG_FASTBUILD_EXECUTABLE))
+        $configureCommand += " " + (Format-CMakeCacheArgument -Name "CMAKE_FASTBUILD_EXECUTABLE" -Value (Resolve-AbsoluteWindowsPath $env:KOG_FASTBUILD_EXECUTABLE))
+      }
+    } elseif (-not [string]::IsNullOrWhiteSpace($launcherPath)) {
+      $env:KOG_COMPILER_LAUNCHER = $launcherPath
+      $configureCommand += " " + (Format-CMakeCacheArgument -Name "KOG_COMPILER_LAUNCHER" -Value $launcherPath)
+      $configureCommand += " " + (Format-CMakeCacheArgument -Name "CMAKE_C_COMPILER_LAUNCHER" -Value $launcherPath)
+      $configureCommand += " " + (Format-CMakeCacheArgument -Name "CMAKE_CXX_COMPILER_LAUNCHER" -Value $launcherPath)
+    }
+    $cmd = "call $quotedVcvars $InArch -vcvars_ver=$InVcvarsVersion && $configureCommand"
+    cmd.exe /d /s /c $cmd
+    $configureExitCode = $LASTEXITCODE
+    if ($configureExitCode -ne 0) {
+      Write-Error "cmake --preset failed with exit code $configureExitCode"
+      exit $configureExitCode
+    }
+    if ($currentFingerprint) {
+      Set-StoredConfigureFingerprint -InBuildDir $buildDir -InFingerprint $currentFingerprint
+    }
+  }
+
+  $solution = Get-ChildItem -LiteralPath $buildDir -Filter *.sln -Recurse -ErrorAction SilentlyContinue |
+    Sort-Object FullName |
+    Select-Object -First 1 -ExpandProperty FullName
+  if ($solution) {
+    Write-Output $solution
+  }
+  exit 0
+}
+
 switch ($Action.ToLowerInvariant()) {
   "test-path" {
     if (Test-Path -LiteralPath $Path) { exit 0 } else { exit 1 }
@@ -775,6 +845,9 @@ switch ($Action.ToLowerInvariant()) {
   }
   "run-preset" {
     Run-Preset $Root $Vcvars $Arch $ConfigurePreset $BuildPreset $VcvarsVersion
+  }
+  "configure-preset" {
+    Configure-Preset $Root $Vcvars $Arch $ConfigurePreset $VcvarsVersion
   }
   default {
     Write-Error "Unknown action: $Action"
