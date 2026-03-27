@@ -609,6 +609,22 @@ endfunction()
 set(KANO_GIT_CORE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/code/systems/kano_git_core")
 set(KANO_GIT_COMMAND_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/code/systems/kano_git_command")
 
+set(KOG_INFRA_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/code/shared/infra")
+if(EXISTS "${KOG_INFRA_SOURCE_DIR}/CMakeLists.txt")
+    add_subdirectory("${KOG_INFRA_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/shared/infra")
+    if(TARGET kano_infra_build_info)
+        target_compile_definitions(kano_infra_build_info PRIVATE
+            KANO_INFRA_BUILD_VERSION="${KOG_BUILD_VERSION_STR}"
+            KANO_INFRA_BUILD_REVISION="${KOG_BUILD_REVISION_STR}"
+            KANO_INFRA_BUILD_BRANCH="${KOG_BUILD_BRANCH_STR}"
+            KANO_INFRA_BUILD_TYPE="${KOG_BUILD_CONFIGURATION_STR}"
+            KANO_INFRA_BUILD_COMPILER="${KOG_BUILD_TOOLCHAIN_STR}"
+            KANO_INFRA_BUILD_TIMESTAMP="unknown"
+            KANO_INFRA_BUILD_VCS_STATUS="${KOG_BUILD_DIRTY_STR}"
+        )
+    endif()
+endif()
+
 # Add subdirectories
 add_subdirectory(code/systems/kano_git_core)
 add_subdirectory(code/systems/kano_git_command)

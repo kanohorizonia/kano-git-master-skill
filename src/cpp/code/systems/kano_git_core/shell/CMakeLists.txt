@@ -23,4 +23,10 @@ target_include_directories(kano_git_shell
     private
 )
 
+target_link_libraries(kano_git_shell
+  PUBLIC
+    KanoInfra::platform
+    KanoInfra::process
+)
+
 add_library(kano::git_shell ALIAS kano_git_shell)

@@ -1,137 +1,212 @@
 #pragma once
+#include <kano_build_info.h>
 #include <string>
 #include <string_view>
 
 namespace kano::git {
 
-constexpr std::string_view GetBuildVersion() {
+namespace detail {
+
+struct InfraBuildInfoSnapshot {
+    std::string version;
+    std::string vcs;
+    std::string branch;
+    std::string revision;
+    std::string revision_hash_short;
+    std::string revision_hash;
+    std::string dirty;
+    std::string host;
+    std::string ci;
+    std::string context;
+    std::string pipeline;
+    std::string toolchain;
+    std::string generator;
+    std::string preset;
+    std::string configuration;
+    std::string platform;
+};
+
+inline std::string CopyOrFallback(const char* value, std::string_view fallback) {
+    if (value != nullptr && value[0] != '\0') {
+        return value;
+    }
+    return std::string(fallback);
+}
+
+inline const InfraBuildInfoSnapshot& GetInfraBuildInfoSnapshot() {
+    static const InfraBuildInfoSnapshot snapshot = [] {
+        KanoBuildInfo info = kano_build_info_discover();
+
+        InfraBuildInfoSnapshot out{
+            CopyOrFallback(kano_build_info_get_version(info),
 #ifdef KOG_BUILD_VERSION
-    return KOG_BUILD_VERSION;
+                KOG_BUILD_VERSION
 #elif defined(KOG_VERSION)
-    return KOG_VERSION;
+                KOG_VERSION
 #else
-    return "unknown";
+                "unknown"
 #endif
-}
-
-constexpr std::string_view GetBuildVCS() {
+            ),
+            CopyOrFallback(kano_build_info_get_vcs_status(info),
 #ifdef KOG_BUILD_VCS
-    return KOG_BUILD_VCS;
+                KOG_BUILD_VCS
 #else
-    return "unknown";
+                "unknown"
 #endif
-}
-
-constexpr std::string_view GetBuildBranch() {
+            ),
+            CopyOrFallback(kano_build_info_get_vcs_branch(info),
 #ifdef KOG_BUILD_BRANCH
-    return KOG_BUILD_BRANCH;
+                KOG_BUILD_BRANCH
 #else
-    return "unknown";
+                "unknown"
 #endif
-}
-
-constexpr std::string_view GetBuildRevision() {
+            ),
+            CopyOrFallback(kano_build_info_get_vcs_revision(info),
 #ifdef KOG_BUILD_REVISION
-    return KOG_BUILD_REVISION;
+                KOG_BUILD_REVISION
 #else
-    return "unknown";
+                "unknown"
 #endif
-}
-
-constexpr std::string_view GetBuildRevisionHashShort() {
+            ),
 #ifdef KOG_BUILD_REVISION_HASH_SHORT
-    return KOG_BUILD_REVISION_HASH_SHORT;
+            std::string(KOG_BUILD_REVISION_HASH_SHORT),
 #else
-    return "unknown";
+            std::string("unknown"),
 #endif
-}
-
-constexpr std::string_view GetBuildRevisionHash() {
 #ifdef KOG_BUILD_REVISION_HASH
-    return KOG_BUILD_REVISION_HASH;
+            std::string(KOG_BUILD_REVISION_HASH),
 #else
-    return "unknown";
+            std::string("unknown"),
 #endif
-}
-
-constexpr std::string_view GetBuildDirty() {
+            CopyOrFallback(kano_build_info_get_vcs_status(info),
 #ifdef KOG_BUILD_DIRTY
-    return KOG_BUILD_DIRTY;
+                KOG_BUILD_DIRTY
 #else
-    return "unknown";
+                "unknown"
 #endif
-}
-
-constexpr std::string_view BuildHostName() {
+            ),
 #ifdef KOG_BUILD_HOST_NAME
-    return KOG_BUILD_HOST_NAME;
+            std::string(KOG_BUILD_HOST_NAME),
 #else
-    return "unknown";
+            std::string("unknown"),
 #endif
-}
-
-constexpr std::string_view GetBuildCI() {
 #ifdef KOG_BUILD_CI
-    return KOG_BUILD_CI;
+            std::string(KOG_BUILD_CI),
 #else
-    return "false";
+            std::string("false"),
 #endif
-}
-
-constexpr std::string_view GetBuildContext() {
 #ifdef KOG_BUILD_CONTEXT
-    return KOG_BUILD_CONTEXT;
+            std::string(KOG_BUILD_CONTEXT),
 #else
-    return "local-manual";
+            std::string("local-manual"),
 #endif
-}
-
-constexpr std::string_view GetBuildPipelineId() {
 #ifdef KOG_BUILD_PIPELINE_ID
-    return KOG_BUILD_PIPELINE_ID;
+            std::string(KOG_BUILD_PIPELINE_ID),
 #else
-    return "unknown";
+            std::string("unknown"),
 #endif
-}
-
-constexpr std::string_view GetBuildToolchain() {
+            CopyOrFallback(kano_build_info_get_compiler(info),
 #ifdef KOG_BUILD_TOOLCHAIN
-    return KOG_BUILD_TOOLCHAIN;
+                KOG_BUILD_TOOLCHAIN
 #else
-    return "unknown";
+                "unknown"
 #endif
-}
-
-constexpr std::string_view GetBuildGenerator() {
+            ),
 #ifdef KOG_BUILD_GENERATOR
-    return KOG_BUILD_GENERATOR;
+            std::string(KOG_BUILD_GENERATOR),
 #else
-    return "unknown";
+            std::string("unknown"),
 #endif
-}
-
-constexpr std::string_view GetBuildPreset() {
 #ifdef KOG_BUILD_PRESET
-    return KOG_BUILD_PRESET;
+            std::string(KOG_BUILD_PRESET),
 #else
-    return "unknown-preset";
+            std::string("unknown-preset"),
 #endif
-}
-
-constexpr std::string_view GetBuildConfiguration() {
+            CopyOrFallback(kano_build_info_get_build_type(info),
 #ifdef KOG_BUILD_CONFIGURATION
-    return KOG_BUILD_CONFIGURATION;
+                KOG_BUILD_CONFIGURATION
 #else
-    return "unknown";
+                "unknown"
 #endif
+            ),
+#ifdef KOG_BUILD_PLATFORM
+            std::string(KOG_BUILD_PLATFORM),
+#else
+            std::string("unknown"),
+#endif
+        };
+
+        kano_build_info_free(info);
+        return out;
+    }();
+
+    return snapshot;
 }
 
-constexpr std::string_view BuildHostPlatform() {
-#ifdef KOG_BUILD_PLATFORM
-    return KOG_BUILD_PLATFORM;
-#else
-    return "unknown";
-#endif
+} // namespace detail
+
+inline std::string_view GetBuildVersion() {
+    return detail::GetInfraBuildInfoSnapshot().version;
+}
+
+inline std::string_view GetBuildVCS() {
+    return detail::GetInfraBuildInfoSnapshot().vcs;
+}
+
+inline std::string_view GetBuildBranch() {
+    return detail::GetInfraBuildInfoSnapshot().branch;
+}
+
+inline std::string_view GetBuildRevision() {
+    return detail::GetInfraBuildInfoSnapshot().revision;
+}
+
+inline std::string_view GetBuildRevisionHashShort() {
+    return detail::GetInfraBuildInfoSnapshot().revision_hash_short;
+}
+
+inline std::string_view GetBuildRevisionHash() {
+    return detail::GetInfraBuildInfoSnapshot().revision_hash;
+}
+
+inline std::string_view GetBuildDirty() {
+    return detail::GetInfraBuildInfoSnapshot().dirty;
+}
+
+inline std::string_view BuildHostName() {
+    return detail::GetInfraBuildInfoSnapshot().host;
+}
+
+inline std::string_view GetBuildCI() {
+    return detail::GetInfraBuildInfoSnapshot().ci;
+}
+
+inline std::string_view GetBuildContext() {
+    return detail::GetInfraBuildInfoSnapshot().context;
+}
+
+inline std::string_view GetBuildPipelineId() {
+    return detail::GetInfraBuildInfoSnapshot().pipeline;
+}
+
+inline std::string_view GetBuildToolchain() {
+    return detail::GetInfraBuildInfoSnapshot().toolchain;
+}
+
+inline std::string_view GetBuildGenerator() {
+    return detail::GetInfraBuildInfoSnapshot().generator;
+}
+
+inline std::string_view GetBuildPreset() {
+    return detail::GetInfraBuildInfoSnapshot().preset;
+}
+
+inline std::string_view GetBuildConfiguration() {
+    return detail::GetInfraBuildInfoSnapshot().configuration;
+}
+
+inline std::string_view BuildHostPlatform() {
+    return detail::GetInfraBuildInfoSnapshot().platform;
 }
 
 inline std::string GetBuildInfo() {
@@ -172,7 +247,7 @@ inline std::string GetBuildInfo() {
     return out;
 }
 
-constexpr std::string_view GetVersion() {
+inline std::string_view GetVersion() {
     return GetBuildVersion();
 }
 

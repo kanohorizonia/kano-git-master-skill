@@ -1,7 +1,11 @@
 // Shell script executor implementation
 // Cross-platform process spawning for shell scripts
+// Delegates to KanoInfra::process (kano_process_run_ex)
 
 #include "shell_executor.hpp"
+#include <kano_platform.h>
+#include <kano_process.h>
+
 #include <format>
 #include <cstdlib>
 #include <array>
@@ -16,6 +20,7 @@
 #include <string_view>
 #include <cerrno>
 #include <cstring>
+#include <memory>
 
 #ifdef KOG_PLATFORM_WINDOWS
 #include <windows.h>
@@ -26,6 +31,29 @@
 
 namespace kano::git::shell {
 
+namespace {
+
+auto GetEnvPath(const char* InKey) -> std::optional<std::filesystem::path> {
+    const char* raw = kano_platform_get_env(InKey);
+    if (raw == nullptr || raw[0] == '\0') {
+        return std::nullopt;
+    }
+    return std::filesystem::path(raw);
+}
+
+auto GetEnvTimeoutMs(const char* InKey) -> std::optional<DWORD> {
+    int raw = 0;
+    if (!kano_platform_get_env_int(InKey, &raw)) {
+        return std::nullopt;
+    }
+    if (raw <= 0) {
+        return std::nullopt;
+    }
+    return static_cast<DWORD>(raw);
+}
+
+}
+
 auto GetScriptsDir() -> std::filesystem::path {
     namespace fs = std::filesystem;
 
@@ -34,14 +62,14 @@ auto GetScriptsDir() -> std::filesystem::path {
     // Scripts are at ../../shell/ relative to the project root
 
     // 1. Try KANO_GIT_SCRIPTS_DIR env var first
-    if (auto* env = std::getenv("KANO_GIT_SCRIPTS_DIR")) {
-        fs::path p{env};
+    if (auto env = GetEnvPath("KANO_GIT_SCRIPTS_DIR")) {
+        fs::path p = *env;
         if (fs::is_directory(p)) return p;
     }
 
     // 2. Try KANO_GIT_MASTER_ROOT env var
-    if (auto* env = std::getenv("KANO_GIT_MASTER_ROOT")) {
-        fs::path p = fs::path{env} / "src" / "shell";
+    if (auto env = GetEnvPath("KANO_GIT_MASTER_ROOT")) {
+        fs::path p = *env / "src" / "shell";
         if (fs::is_directory(p)) return p;
     }
 
@@ -63,8 +91,6 @@ auto GetScriptsDir() -> std::filesystem::path {
         "KANO_GIT_MASTER_ROOT environment variable, or run from the project root."
     );
 }
-
-namespace {
 
 #ifdef KOG_PLATFORM_WINDOWS
 
@@ -180,12 +206,12 @@ auto NormalizeTimeoutOverride(const std::optional<DWORD>& InValue) -> std::optio
 auto ResolveTimeoutMs(const std::string& InCommand,
                       const std::vector<std::string>& InArgs,
                       const ExecMode InMode) -> std::optional<DWORD> {
-    if (const auto timeoutRaw = ParseTimeoutMsRaw(std::getenv("KOG_SHELL_TIMEOUT_MS")); timeoutRaw.has_value()) {
+    if (const auto timeoutRaw = GetEnvTimeoutMs("KOG_SHELL_TIMEOUT_MS"); timeoutRaw.has_value()) {
         return NormalizeTimeoutOverride(timeoutRaw);
     }
 
     if (InMode == ExecMode::Capture) {
-        if (const auto timeoutRaw = ParseTimeoutMsRaw(std::getenv("KOG_SHELL_CAPTURE_TIMEOUT_MS")); timeoutRaw.has_value()) {
+        if (const auto timeoutRaw = GetEnvTimeoutMs("KOG_SHELL_CAPTURE_TIMEOUT_MS"); timeoutRaw.has_value()) {
             return NormalizeTimeoutOverride(timeoutRaw);
         }
         if (IsLongRunningGitOperation(InCommand, InArgs)) {
@@ -203,201 +229,86 @@ auto RunProcess(const std::string& cmdLine, ExecMode InMode,
                 const std::optional<std::filesystem::path>& InWorkingDir,
                 ProgressCallback InProgressCallback) -> ExecResult
 {
-    ExecResult result;
+    // Convert cmdLine narrow string to wide for CommandLineToArgvW
+    int wideLen = ::MultiByteToWideChar(CP_UTF8, 0, cmdLine.c_str(), -1, nullptr, 0);
+    if (wideLen == 0) {
+        return ExecResult{-1, {}, "Failed to convert command line to wide char"};
+    }
+    std::vector<wchar_t> wideCmd(wideLen);
+    if (::MultiByteToWideChar(CP_UTF8, 0, cmdLine.c_str(), -1, wideCmd.data(), wideLen) == 0) {
+        return ExecResult{-1, {}, "Failed to convert command line to wide char"};
+    }
 
-    SECURITY_ATTRIBUTES sa{};
-    sa.nLength = sizeof(sa);
-    sa.bInheritHandle = TRUE;
+    // Parse wide cmdLine into argv
+    std::unique_ptr<wchar_t*, decltype(&::LocalFree)> wideArgv(
+        ::CommandLineToArgvW(wideCmd.data(), nullptr), &::LocalFree);
 
-    HANDLE hStdOutRead = nullptr, hStdOutWrite = nullptr;
-    HANDLE hStdErrRead = nullptr, hStdErrWrite = nullptr;
+    if (!wideArgv) {
+        return ExecResult{-1, {}, "Failed to parse command line"};
+    }
 
-    if (InMode == ExecMode::Capture) {
-        if (!CreatePipe(&hStdOutRead, &hStdOutWrite, &sa, 0) ||
-            !CreatePipe(&hStdErrRead, &hStdErrWrite, &sa, 0)) {
-            result.exitCode = -1;
-            result.stderrStr = std::format("Failed to create output pipes: {}", GetLastError());
-            if (hStdOutRead != nullptr) CloseHandle(hStdOutRead);
-            if (hStdOutWrite != nullptr) CloseHandle(hStdOutWrite);
-            if (hStdErrRead != nullptr) CloseHandle(hStdErrRead);
-            if (hStdErrWrite != nullptr) CloseHandle(hStdErrWrite);
-            return result;
+    int argc = 0;
+    for (wchar_t** p = wideArgv.get(); *p; ++p) {
+        ++argc;
+    }
+
+    // Convert wide argv to narrow UTF-8 for kano_process
+    std::vector<std::string> narrowArgs;
+    narrowArgs.reserve(static_cast<std::size_t>(argc));
+    for (int i = 0; i < argc; ++i) {
+        int needed = ::WideCharToMultiByte(CP_UTF8, 0, wideArgv.get()[i], -1, nullptr, 0, nullptr, nullptr);
+        if (needed > 0) {
+            std::string narrow(static_cast<std::size_t>(needed - 1), '\0');
+            ::WideCharToMultiByte(CP_UTF8, 0, wideArgv.get()[i], -1, &narrow[0], needed, nullptr, nullptr);
+            narrowArgs.push_back(std::move(narrow));
         }
-        SetHandleInformation(hStdOutRead, HANDLE_FLAG_INHERIT, 0);
-        SetHandleInformation(hStdErrRead, HANDLE_FLAG_INHERIT, 0);
     }
 
-    STARTUPINFOA si{};
-    si.cb = sizeof(si);
-    if (InMode == ExecMode::Capture) {
-        si.dwFlags |= STARTF_USESTDHANDLES;
-        si.hStdOutput = hStdOutWrite;
-        si.hStdError = hStdErrWrite;
-        si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    if (narrowArgs.empty()) {
+        return ExecResult{-1, {}, "Empty command line"};
     }
 
-    PROCESS_INFORMATION pi{};
-    HANDLE hJob = nullptr;
-
-    std::string mutable_cmd = cmdLine;  // CreateProcess needs mutable string
-
-    std::string work_dir_str;
-    LPCSTR work_dir_ptr = nullptr;
-    if (InWorkingDir) {
-        work_dir_str = InWorkingDir->string();
-        work_dir_ptr = work_dir_str.c_str();
+    const char* executable = narrowArgs[0].c_str();
+    std::vector<const char*> argv;
+    argv.reserve(narrowArgs.size() + 1);
+    for (const auto& arg : narrowArgs) {
+        argv.push_back(arg.c_str());
     }
+    argv.push_back(nullptr);
 
-    BOOL ok = CreateProcessA(
-        nullptr,
-        mutable_cmd.data(),
-        nullptr, nullptr,
-        InMode == ExecMode::Capture ? TRUE : FALSE,
-        CREATE_SUSPENDED,
-        nullptr,
-        work_dir_ptr,
-        &si, &pi
-    );
+    KanoProcessOptions opts{};
+    opts.executable = executable;
+    opts.working_dir = InWorkingDir ? InWorkingDir->string().c_str() : nullptr;
+    opts.argv = argv.data();
+    opts.argv_count = argv.size() - 1;  // exclude terminating nullptr
+    opts.mode = (InMode == ExecMode::Capture) ? KANO_PROCESS_MODE_CAPTURE : KANO_PROCESS_MODE_PASS_THROUGH;
+    opts.timeout_ms = InTimeoutMs ? static_cast<int>(*InTimeoutMs) : 0;
+    opts.output_callback = InProgressCallback ? [](KanoProcessStream stream, const char* chunk, size_t chunk_size, void* user_data) {
+        reinterpret_cast<ProgressCallback*>(user_data)->operator()(
+            std::string_view(chunk, chunk_size), stream == KANO_PROCESS_STREAM_STDERR);
+    } : nullptr;
+    opts.user_data = InProgressCallback ? reinterpret_cast<void*>(&InProgressCallback) : nullptr;
+
+    KanoProcessResult kresult{};
+    bool ok = kano_process_run_ex(&opts, &kresult);
 
     if (!ok) {
-        result.exitCode = -1;
-        result.stderrStr = std::format("Failed to create process: {}", GetLastError());
-        if (hStdOutRead != nullptr) CloseHandle(hStdOutRead);
-        if (hStdOutWrite != nullptr) CloseHandle(hStdOutWrite);
-        if (hStdErrRead != nullptr) CloseHandle(hStdErrRead);
-        if (hStdErrWrite != nullptr) CloseHandle(hStdErrWrite);
-        return result;
+        return ExecResult{-1, {}, "kano_process_run_ex failed"};
     }
 
-    hJob = CreateJobObjectA(nullptr, nullptr);
-    if (hJob != nullptr) {
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION limitInfo{};
-        limitInfo.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        SetInformationJobObject(
-            hJob,
-            JobObjectExtendedLimitInformation,
-            &limitInfo,
-            sizeof(limitInfo)
-        );
-        if (!AssignProcessToJobObject(hJob, pi.hProcess)) {
-            // Fallback: keep running without job guard but do not fail execution path.
-            CloseHandle(hJob);
-            hJob = nullptr;
-        }
+    ExecResult result;
+    result.exitCode = kresult.exit_code;
+    if (kresult.stdout_data) {
+        result.stdoutStr = kresult.stdout_data;
     }
-
-    ResumeThread(pi.hThread);
-
-    const auto timeoutMs = InTimeoutMs;
-
-    if (InMode == ExecMode::Capture) {
-        CloseHandle(hStdOutWrite);
-        CloseHandle(hStdErrWrite);
-
-        ThreadSafeLogBuffer logBuffer;
-        auto reader = [&](HANDLE InReadHandle, const bool InIsStdErr) {
-            std::array<char, 8192> buf{};
-            std::string localBatch;
-            localBatch.reserve(64 * 1024);
-            DWORD bytesRead = 0;
-            while (ReadFile(InReadHandle, buf.data(), static_cast<DWORD>(buf.size()), &bytesRead, nullptr) && bytesRead > 0) {
-                if (InProgressCallback) {
-                    InProgressCallback(std::string_view(buf.data(), bytesRead), InIsStdErr);
-                }
-                localBatch.append(buf.data(), bytesRead);
-                if (localBatch.size() >= 64 * 1024) {
-                    if (InIsStdErr) {
-                        logBuffer.AppendStderr(localBatch);
-                    } else {
-                        logBuffer.AppendStdout(localBatch);
-                    }
-                    localBatch.clear();
-                }
-            }
-            if (!localBatch.empty()) {
-                if (InIsStdErr) {
-                    logBuffer.AppendStderr(localBatch);
-                } else {
-                    logBuffer.AppendStdout(localBatch);
-                }
-            }
-        };
-
-        std::thread stdoutReader(reader, hStdOutRead, false);
-        std::thread stderrReader(reader, hStdErrRead, true);
-
-        DWORD waitResult = WAIT_OBJECT_0;
-        if (timeoutMs.has_value()) {
-            waitResult = WaitForSingleObject(pi.hProcess, *timeoutMs);
-        } else {
-            waitResult = WaitForSingleObject(pi.hProcess, INFINITE);
-        }
-        if (waitResult == WAIT_TIMEOUT) {
-            result.exitCode = 124;
-            result.stderrStr = std::format(
-                "Process timeout after {} ms (capture mode). Command terminated.",
-                *timeoutMs
-            );
-            if (hJob != nullptr) {
-                TerminateJobObject(hJob, static_cast<UINT>(result.exitCode));
-            } else {
-                TerminateProcess(pi.hProcess, static_cast<UINT>(result.exitCode));
-            }
-            WaitForSingleObject(pi.hProcess, 5000);
-        }
-
-        if (stdoutReader.joinable()) {
-            stdoutReader.join();
-        }
-        if (stderrReader.joinable()) {
-            stderrReader.join();
-        }
-
-        result.stdoutStr = logBuffer.Stdout();
-        const auto capturedStderr = logBuffer.Stderr();
-        if (!capturedStderr.empty()) {
-            if (!result.stderrStr.empty()) {
-                result.stderrStr += "\n";
-            }
-            result.stderrStr += capturedStderr;
-        }
-
-        CloseHandle(hStdOutRead);
-        CloseHandle(hStdErrRead);
-    } else {
-        DWORD waitResult = WAIT_OBJECT_0;
-        if (timeoutMs.has_value()) {
-            waitResult = WaitForSingleObject(pi.hProcess, *timeoutMs);
-        } else {
-            waitResult = WaitForSingleObject(pi.hProcess, INFINITE);
-        }
-        if (waitResult == WAIT_TIMEOUT) {
-            result.exitCode = 124;
-            result.stderrStr = std::format(
-                "Process timeout after {} ms. Command terminated.",
-                *timeoutMs
-            );
-            if (hJob != nullptr) {
-                TerminateJobObject(hJob, static_cast<UINT>(result.exitCode));
-            } else {
-                TerminateProcess(pi.hProcess, static_cast<UINT>(result.exitCode));
-            }
-            WaitForSingleObject(pi.hProcess, 5000);
-        }
+    if (kresult.stderr_data) {
+        result.stderrStr = kresult.stderr_data;
     }
-
-    if (result.exitCode == 0) {
-        DWORD exitCode = 0;
-        GetExitCodeProcess(pi.hProcess, &exitCode);
-        result.exitCode = static_cast<int>(exitCode);
+    if (kresult.timed_out) {
+        if (!result.stderrStr.empty()) result.stderrStr += "\n";
+        result.stderrStr += "Process timed out";
     }
-
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
-    if (hJob != nullptr) {
-        CloseHandle(hJob);
-    }
-
+    kano_process_free_result(&kresult);
     return result;
 }
 
@@ -410,142 +321,54 @@ auto RunProcess(const std::string& cmdLine, ExecMode InMode,
 
 #else  // Unix
 
-auto BuildExecArgv(const std::string& InCommand,
-                   const std::vector<std::string>& InArgs,
-                   std::vector<std::string>& InOwned) -> std::vector<char*> {
-    InOwned.clear();
-    InOwned.reserve(InArgs.size() + 1);
-    InOwned.push_back(InCommand);
-    for (const auto& arg : InArgs) {
-        InOwned.push_back(arg);
-    }
-
-    std::vector<char*> argv;
-    argv.reserve(InOwned.size() + 1);
-    for (auto& token : InOwned) {
-        argv.push_back(token.data());
-    }
-    argv.push_back(nullptr);
-    return argv;
-}
-
-auto WaitForPid(const pid_t InPid) -> int {
-    int status = 0;
-    while (true) {
-        const auto waited = ::waitpid(InPid, &status, 0);
-        if (waited < 0 && errno == EINTR) {
-            continue;
-        }
-        if (waited < 0) {
-            return -1;
-        }
-        break;
-    }
-
-    if (WIFEXITED(status)) {
-        return WEXITSTATUS(status);
-    }
-    if (WIFSIGNALED(status)) {
-        return 128 + WTERMSIG(status);
-    }
-    return -1;
-}
-
 auto RunProcessUnix(const std::string& InCommand,
                     const std::vector<std::string>& InArgs,
                     ExecMode InMode,
                     const std::optional<unsigned int>& InTimeoutMs,
                     const std::optional<std::filesystem::path>& InWorkingDir,
                     ProgressCallback InProgressCallback) -> ExecResult {
-    (void)InTimeoutMs;
+    // Build argv array: [InCommand, InArgs...]
+    std::vector<const char*> argv;
+    argv.reserve(InArgs.size() + 2);
+    argv.push_back(InCommand.c_str());
+    for (const auto& arg : InArgs) {
+        argv.push_back(arg.c_str());
+    }
+    argv.push_back(nullptr);
+
+    KanoProcessOptions opts{};
+    opts.executable = InCommand.c_str();
+    opts.working_dir = InWorkingDir ? InWorkingDir->string().c_str() : nullptr;
+    opts.argv = argv.data();
+    opts.argv_count = argv.size() - 1;  // exclude terminating nullptr
+    opts.mode = (InMode == ExecMode::Capture) ? KANO_PROCESS_MODE_CAPTURE : KANO_PROCESS_MODE_PASS_THROUGH;
+    opts.timeout_ms = InTimeoutMs ? static_cast<int>(*InTimeoutMs) : 0;
+    opts.output_callback = InProgressCallback ? [](KanoProcessStream stream, const char* chunk, size_t chunk_size, void* user_data) {
+        reinterpret_cast<ProgressCallback*>(user_data)->operator()(
+            std::string_view(chunk, chunk_size), stream == KANO_PROCESS_STREAM_STDERR);
+    } : nullptr;
+    opts.user_data = InProgressCallback ? reinterpret_cast<void*>(&InProgressCallback) : nullptr;
+
+    KanoProcessResult kresult{};
+    bool ok = kano_process_run_ex(&opts, &kresult);
+
+    if (!ok) {
+        return ExecResult{-1, {}, "kano_process_run_ex failed"};
+    }
 
     ExecResult result;
-    std::vector<std::string> ownedArgs;
-    auto argv = BuildExecArgv(InCommand, InArgs, ownedArgs);
-
-    if (InMode == ExecMode::PassThrough) {
-        const auto pid = ::fork();
-        if (pid < 0) {
-            result.exitCode = -1;
-            result.stderrStr = std::format("fork failed: {}", std::strerror(errno));
-            return result;
-        }
-        if (pid == 0) {
-            if (InWorkingDir && ::chdir(InWorkingDir->c_str()) != 0) {
-                std::fprintf(stderr, "chdir failed: %s\n", std::strerror(errno));
-                std::fflush(stderr);
-                _exit(127);
-            }
-            ::execvp(InCommand.c_str(), argv.data());
-            std::fprintf(stderr, "execvp failed: %s\n", std::strerror(errno));
-            std::fflush(stderr);
-            _exit(127);
-        }
-
-        result.exitCode = WaitForPid(pid);
-        return result;
+    result.exitCode = kresult.exit_code;
+    if (kresult.stdout_data) {
+        result.stdoutStr = kresult.stdout_data;
     }
-
-    int pipefd[2] = {-1, -1};
-    if (::pipe(pipefd) != 0) {
-        result.exitCode = -1;
-        result.stderrStr = std::format("pipe failed: {}", std::strerror(errno));
-        return result;
+    if (kresult.stderr_data) {
+        result.stderrStr = kresult.stderr_data;
     }
-
-    const auto pid = ::fork();
-    if (pid < 0) {
-        ::close(pipefd[0]);
-        ::close(pipefd[1]);
-        result.exitCode = -1;
-        result.stderrStr = std::format("fork failed: {}", std::strerror(errno));
-        return result;
+    if (kresult.timed_out) {
+        if (!result.stderrStr.empty()) result.stderrStr += "\n";
+        result.stderrStr += "Process timed out";
     }
-
-    if (pid == 0) {
-        ::close(pipefd[0]);
-        if (::dup2(pipefd[1], STDOUT_FILENO) < 0 || ::dup2(pipefd[1], STDERR_FILENO) < 0) {
-            std::fprintf(stderr, "dup2 failed: %s\n", std::strerror(errno));
-            std::fflush(stderr);
-            _exit(127);
-        }
-        ::close(pipefd[1]);
-
-        if (InWorkingDir && ::chdir(InWorkingDir->c_str()) != 0) {
-            std::fprintf(stderr, "chdir failed: %s\n", std::strerror(errno));
-            std::fflush(stderr);
-            _exit(127);
-        }
-
-        ::execvp(InCommand.c_str(), argv.data());
-        std::fprintf(stderr, "execvp failed: %s\n", std::strerror(errno));
-        std::fflush(stderr);
-        _exit(127);
-    }
-
-    ::close(pipefd[1]);
-    std::array<char, 4096> buf{};
-    while (true) {
-        const auto n = ::read(pipefd[0], buf.data(), buf.size());
-        if (n > 0) {
-            result.stdoutStr.append(buf.data(), static_cast<std::size_t>(n));
-            if (InProgressCallback) {
-                InProgressCallback(std::string_view(buf.data(), static_cast<std::size_t>(n)), false);
-            }
-            continue;
-        }
-        if (n == 0) {
-            break;
-        }
-        if (errno == EINTR) {
-            continue;
-        }
-        result.stderrStr = std::format("read failed: {}", std::strerror(errno));
-        break;
-    }
-    ::close(pipefd[0]);
-
-    result.exitCode = WaitForPid(pid);
+    kano_process_free_result(&kresult);
     return result;
 }
 
@@ -744,7 +567,7 @@ auto ExecuteCommand(
     auto cmd = BuildCommandLine(InCommand, effectiveArgs);
     return RunProcess(cmd, InMode, timeoutMs, InWorkingDir, InProgressCallback);
 #else
-    const std::optional<unsigned int> timeoutMs = std::nullopt;
+    const auto timeoutMs = ResolveTimeoutMs(InCommand, effectiveArgs, InMode);
     return RunProcessUnix(InCommand, effectiveArgs, InMode, timeoutMs, InWorkingDir, InProgressCallback);
 #endif
 }
