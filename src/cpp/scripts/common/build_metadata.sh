@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+KOG_SHARED_BUILD_METADATA_SH="${KOG_CPP_ROOT:-$SCRIPT_DIR/../../shared/infra}/shared/infra/scripts/common/build_metadata.sh"
+if [[ ! -f "$KOG_SHARED_BUILD_METADATA_SH" ]]; then
+  KOG_SHARED_BUILD_METADATA_SH="$SCRIPT_DIR/../../shared/infra/scripts/common/build_metadata.sh"
+fi
+if [[ -f "$KOG_SHARED_BUILD_METADATA_SH" ]]; then
+  source "$KOG_SHARED_BUILD_METADATA_SH"
+fi
+
 _kog_trim() {
   local value="$1"
   value="${value#"${value%%[![:space:]]*}"}"
@@ -157,11 +166,19 @@ _kog_select_compiler_launcher() {
 }
 
 kog_workspace_root() {
+  if declare -F kano_cpp_workspace_root >/dev/null 2>&1; then
+    kano_cpp_workspace_root
+    return 0
+  fi
   local cpp_root="${KOG_CPP_ROOT:-$(pwd)}"
   (cd "$cpp_root/../.." && pwd)
 }
 
 _kog_extract_toml_section_value() {
+  if declare -F _kano_cpp_extract_toml_section_value >/dev/null 2>&1; then
+    _kano_cpp_extract_toml_section_value "$@"
+    return 0
+  fi
   local file_path="$1"
   local section_name="$2"
   local key_name="$3"
@@ -198,6 +215,10 @@ _kog_extract_toml_section_value() {
 }
 
 kog_resolve_self_config_value() {
+  if declare -F kano_cpp_resolve_self_config_value >/dev/null 2>&1; then
+    kano_cpp_resolve_self_config_value "$1"
+    return 0
+  fi
   local key_name="$1"
   local workspace_root
   local home_dir="${HOME:-}"
@@ -333,4 +354,3 @@ kog_collect_build_metadata() {
   export KOG_BUILD_PIPELINE_ID="$(_kog_default_unknown "$(_kog_trim "$pipeline_id")")"
   export KOG_BUILD_PLATFORM="$(_kog_default_unknown "$(_kog_trim "$platform")")"
 }
-

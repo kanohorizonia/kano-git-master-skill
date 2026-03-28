@@ -609,7 +609,7 @@ endfunction()
 set(KANO_GIT_CORE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/code/systems/kano_git_core")
 set(KANO_GIT_COMMAND_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/code/systems/kano_git_command")
 
-set(KOG_INFRA_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/code/shared/infra")
+set(KOG_INFRA_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/shared/infra")
 if(EXISTS "${KOG_INFRA_SOURCE_DIR}/CMakeLists.txt")
     add_subdirectory("${KOG_INFRA_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/shared/infra")
     if(TARGET kano_infra_build_info)

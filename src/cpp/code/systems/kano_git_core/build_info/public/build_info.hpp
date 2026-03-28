@@ -1,5 +1,7 @@
 #pragma once
-#include <kano_build_info.h>
+
+#include <kano_build_info.hpp>
+
 #include <string>
 #include <string_view>
 
@@ -7,137 +9,62 @@ namespace kano::git {
 
 namespace detail {
 
-struct InfraBuildInfoSnapshot {
-    std::string version;
-    std::string vcs;
-    std::string branch;
-    std::string revision;
-    std::string revision_hash_short;
-    std::string revision_hash;
-    std::string dirty;
-    std::string host;
-    std::string ci;
-    std::string context;
-    std::string pipeline;
-    std::string toolchain;
-    std::string generator;
-    std::string preset;
-    std::string configuration;
-    std::string platform;
-};
-
-inline std::string CopyOrFallback(const char* value, std::string_view fallback) {
-    if (value != nullptr && value[0] != '\0') {
-        return value;
-    }
-    return std::string(fallback);
-}
+using InfraBuildInfoSnapshot = kano::infra::build_info::Snapshot;
 
 inline const InfraBuildInfoSnapshot& GetInfraBuildInfoSnapshot() {
     static const InfraBuildInfoSnapshot snapshot = [] {
-        KanoBuildInfo info = kano_build_info_discover();
-
-        InfraBuildInfoSnapshot out{
-            CopyOrFallback(kano_build_info_get_version(info),
+        return kano::infra::build_info::discover_snapshot({
 #ifdef KOG_BUILD_VERSION
-                KOG_BUILD_VERSION
+            .version = KOG_BUILD_VERSION,
 #elif defined(KOG_VERSION)
-                KOG_VERSION
-#else
-                "unknown"
+            .version = KOG_VERSION,
 #endif
-            ),
-            CopyOrFallback(kano_build_info_get_vcs_status(info),
 #ifdef KOG_BUILD_VCS
-                KOG_BUILD_VCS
-#else
-                "unknown"
+            .vcs = KOG_BUILD_VCS,
 #endif
-            ),
-            CopyOrFallback(kano_build_info_get_vcs_branch(info),
 #ifdef KOG_BUILD_BRANCH
-                KOG_BUILD_BRANCH
-#else
-                "unknown"
+            .branch = KOG_BUILD_BRANCH,
 #endif
-            ),
-            CopyOrFallback(kano_build_info_get_vcs_revision(info),
 #ifdef KOG_BUILD_REVISION
-                KOG_BUILD_REVISION
-#else
-                "unknown"
+            .revision = KOG_BUILD_REVISION,
 #endif
-            ),
 #ifdef KOG_BUILD_REVISION_HASH_SHORT
-            std::string(KOG_BUILD_REVISION_HASH_SHORT),
-#else
-            std::string("unknown"),
+            .revisionHashShort = KOG_BUILD_REVISION_HASH_SHORT,
 #endif
 #ifdef KOG_BUILD_REVISION_HASH
-            std::string(KOG_BUILD_REVISION_HASH),
-#else
-            std::string("unknown"),
+            .revisionHash = KOG_BUILD_REVISION_HASH,
 #endif
-            CopyOrFallback(kano_build_info_get_vcs_status(info),
 #ifdef KOG_BUILD_DIRTY
-                KOG_BUILD_DIRTY
-#else
-                "unknown"
+            .dirty = KOG_BUILD_DIRTY,
 #endif
-            ),
 #ifdef KOG_BUILD_HOST_NAME
-            std::string(KOG_BUILD_HOST_NAME),
-#else
-            std::string("unknown"),
+            .host = KOG_BUILD_HOST_NAME,
 #endif
 #ifdef KOG_BUILD_CI
-            std::string(KOG_BUILD_CI),
-#else
-            std::string("false"),
+            .ci = KOG_BUILD_CI,
 #endif
 #ifdef KOG_BUILD_CONTEXT
-            std::string(KOG_BUILD_CONTEXT),
-#else
-            std::string("local-manual"),
+            .context = KOG_BUILD_CONTEXT,
 #endif
 #ifdef KOG_BUILD_PIPELINE_ID
-            std::string(KOG_BUILD_PIPELINE_ID),
-#else
-            std::string("unknown"),
+            .pipeline = KOG_BUILD_PIPELINE_ID,
 #endif
-            CopyOrFallback(kano_build_info_get_compiler(info),
 #ifdef KOG_BUILD_TOOLCHAIN
-                KOG_BUILD_TOOLCHAIN
-#else
-                "unknown"
+            .toolchain = KOG_BUILD_TOOLCHAIN,
 #endif
-            ),
 #ifdef KOG_BUILD_GENERATOR
-            std::string(KOG_BUILD_GENERATOR),
-#else
-            std::string("unknown"),
+            .generator = KOG_BUILD_GENERATOR,
 #endif
 #ifdef KOG_BUILD_PRESET
-            std::string(KOG_BUILD_PRESET),
-#else
-            std::string("unknown-preset"),
+            .preset = KOG_BUILD_PRESET,
 #endif
-            CopyOrFallback(kano_build_info_get_build_type(info),
 #ifdef KOG_BUILD_CONFIGURATION
-                KOG_BUILD_CONFIGURATION
-#else
-                "unknown"
+            .configuration = KOG_BUILD_CONFIGURATION,
 #endif
-            ),
 #ifdef KOG_BUILD_PLATFORM
-            std::string(KOG_BUILD_PLATFORM),
-#else
-            std::string("unknown"),
+            .platform = KOG_BUILD_PLATFORM,
 #endif
-        };
-
-        kano_build_info_free(info);
-        return out;
+        });
     }();
 
     return snapshot;
@@ -162,11 +89,11 @@ inline std::string_view GetBuildRevision() {
 }
 
 inline std::string_view GetBuildRevisionHashShort() {
-    return detail::GetInfraBuildInfoSnapshot().revision_hash_short;
+    return detail::GetInfraBuildInfoSnapshot().revisionHashShort;
 }
 
 inline std::string_view GetBuildRevisionHash() {
-    return detail::GetInfraBuildInfoSnapshot().revision_hash;
+    return detail::GetInfraBuildInfoSnapshot().revisionHash;
 }
 
 inline std::string_view GetBuildDirty() {
