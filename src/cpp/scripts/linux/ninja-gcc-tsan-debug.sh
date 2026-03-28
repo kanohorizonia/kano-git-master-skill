@@ -11,7 +11,7 @@ export KOG_CPP_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # docker-build.sh (infra): provides kano_cpp_run_linux_preset_via_docker
 source "$SCRIPT_DIR/../common/unix_preset_build.sh"
 # shellcheck disable=SC1091
-source "$SCRIPT_DIR/../../../shared/infra/scripts/linux/docker-build.sh"
+source "$SCRIPT_DIR/../../shared/infra/scripts/linux/docker-build.sh"
 
 detect_host_and_build() {
     local InConfigurePreset="$1"

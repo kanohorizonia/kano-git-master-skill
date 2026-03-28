@@ -15,6 +15,13 @@
 # =============================================================================
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+KOG_REMOTE_HOST_RESOLVER_SH="$SCRIPT_DIR/../../shared/infra/scripts/common/remote_host_resolver.sh"
+if [[ -f "$KOG_REMOTE_HOST_RESOLVER_SH" ]]; then
+    # shellcheck disable=SC1091
+    source "$KOG_REMOTE_HOST_RESOLVER_SH"
+fi
+
 # -----------------------------------------------------------------------------
 # Default remote build parameters (used when kano-remote-host is unavailable)
 # -----------------------------------------------------------------------------
@@ -43,36 +50,18 @@ kog_remote_build_macos() {
         return 1
     fi
 
-    # Resolve host address
+    # Resolve host address via shared infra helper, then fallback env.
     local host_addr=""
     local host_with_user=""
 
-    if command -v kano-remote-host &>/dev/null; then
-        echo "[INFO] Resolving macOS build host via kano-remote-host..."
-        local krh_output=""
-        if krh_output="$(kano-remote-host pick mac-local --route auto 2>&1)"; then
-            host_with_user="$(echo "$krh_output" | jq -r '.address_with_user' 2>/dev/null || true)"
-            host_addr="$(echo "$krh_output" | jq -r '.address' 2>/dev/null || true)"
-            if [[ -n "$host_addr" && "$host_addr" != "null" ]]; then
-                echo "[INFO] kano-remote-host resolved: $host_with_user"
-            else
-                echo "[WARN] kano-remote-host returned empty address, using fallback"
-                host_addr=""
-                host_with_user=""
-            fi
-        else
-            echo "[WARN] kano-remote-host pick failed: $krh_output"
-        fi
-    else
-        echo "[INFO] kano-remote-host not found, using fallback host"
+    if declare -F kano_cpp_pick_remote_host >/dev/null 2>&1; then
+        host_with_user="$(kano_cpp_pick_remote_host "${KANO_REMOTE_HOST_GROUP:-mac-local}" "${KANO_REMOTE_HOST_ROUTE:-auto}" "$KOB_MACBUILDER_HOST" || true)"
     fi
-
-    # Fallback to hardcoded host if not resolved
-    if [[ -z "$host_addr" ]]; then
+    if [[ -z "$host_with_user" ]]; then
         host_with_user="$KOB_MACBUILDER_HOST"
-        host_addr="${KOB_MACBUILDER_HOST#*@}"  # strip user@ if present
-        echo "[INFO] Using fallback macOS builder: $host_with_user"
     fi
+    host_addr="${host_with_user#*@}"
+    echo "[INFO] Using macOS builder: $host_with_user"
 
     # SSH reachability check
     echo "[INFO] Testing SSH connection to $host_with_user..."
