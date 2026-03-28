@@ -7,11 +7,22 @@ if [[ -z "${KOG_CPP_ROOT:-}" ]]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Source infra's generic unix preset runner (provides kano_cpp_run_unix_preset)
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/../../../shared/infra/scripts/common/unix_preset_build.sh"
+
+# Source local build_metadata.sh (already sources infra via shared/infra)
 source "$SCRIPT_DIR/build_metadata.sh"
 
+# =============================================================================
+# kog_run_unix_preset — git-master wrapper around kano_cpp_run_unix_preset
+# =============================================================================
+# Applies git-master-specific overrides (LLVM prefix, modules) then delegates.
+# =============================================================================
 kog_run_unix_preset() {
-  local InConfigurePreset="$1"
-  local InBuildPreset="$2"
+  local in_configure_preset="$1"
+  local in_build_preset="$2"
   local -a extra_args=()
   local llvm_prefix=""
   local sdk_path=""
@@ -54,7 +65,7 @@ kog_run_unix_preset() {
     cd "$KOG_CPP_ROOT"
     kog_apply_self_build_config
     kog_collect_build_metadata
-    cmake --preset "$InConfigurePreset" "${extra_args[@]}"
-    cmake --build --preset "$InBuildPreset"
+    cmake --preset "$in_configure_preset" "${extra_args[@]}"
+    cmake --build --preset "$in_build_preset"
   )
 }

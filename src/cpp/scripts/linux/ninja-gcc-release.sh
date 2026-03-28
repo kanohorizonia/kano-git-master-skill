@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Linux Build - Host Auto-Detection
-# =============================================================================
-# Detects host OS and runs appropriate build:
-#   - Linux host → native build
-#   - Windows/macOS host + Docker → Docker build
+# Linux Build - Host Auto-Detection (delegates to infra)
 # =============================================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export KOG_CPP_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
+# unix_preset_build.sh: sources infra build_metadata.sh, provides kog_run_unix_preset
+# docker-build.sh (infra): provides kano_cpp_run_linux_preset_via_docker
 source "$SCRIPT_DIR/../common/unix_preset_build.sh"
-source "$SCRIPT_DIR/../common/docker_linux_build.sh"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/../../../shared/infra/scripts/linux/docker-build.sh"
 
 detect_host_and_build() {
     local InConfigurePreset="$1"
@@ -28,7 +27,7 @@ detect_host_and_build() {
         Darwin|MINGW*|MSYS*|CYGWIN*)
             if command -v docker >/dev/null 2>&1; then
                 echo "[INFO] Non-Linux host + Docker detected → Docker build"
-                kog_run_linux_preset_via_docker "$InConfigurePreset" "$InBuildPreset"
+                kano_cpp_run_linux_preset_via_docker "$InConfigurePreset" "$InBuildPreset"
             else
                 echo "[ERROR] Docker required for Linux builds on non-Linux host" >&2
                 exit 1
