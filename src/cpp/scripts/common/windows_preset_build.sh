@@ -6,6 +6,12 @@ if [[ -z "${KOG_CPP_ROOT:-}" ]]; then
   exit 1
 fi
 
+if [[ -n "${KOG_EXPERT_SKILL_ROOT:-}" ]] && [[ -f "$KOG_EXPERT_SKILL_ROOT/src/shell/build/windows/windows_preset_build.sh" ]]; then
+  # shellcheck source=../../../../../.agents/skills/kano/kano-cpp-expert-skill/src/shell/build/windows/windows_preset_build.sh
+  source "$KOG_EXPERT_SKILL_ROOT/src/shell/build/windows/windows_preset_build.sh"
+  return 0
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/build_metadata.sh"
 
