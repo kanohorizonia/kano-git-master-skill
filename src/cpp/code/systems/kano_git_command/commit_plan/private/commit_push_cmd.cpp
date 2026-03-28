@@ -2041,13 +2041,17 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
         pushMillis = std::chrono::duration_cast<std::chrono::milliseconds>(pushEnd - pushStart).count();
         const auto totalEnd = std::chrono::steady_clock::now();
         const auto totalMillis = std::chrono::duration_cast<std::chrono::milliseconds>(totalEnd - totalStart).count();
-        std::string stampError;
-        if (!StampCommitPlanExecutedAt(planPath, &stampError)) {
-            std::cerr << "Warning: failed to stamp plan executed_at_utc: " << planPath.generic_string();
-            if (!stampError.empty()) {
-                std::cerr << " (" << stampError << ")";
+        std::error_code planEc;
+        const bool planFileExists = std::filesystem::exists(planPath, planEc) && !planEc;
+        if (hasWorkingChanges && planFileExists) {
+            std::string stampError;
+            if (!StampCommitPlanExecutedAt(planPath, &stampError)) {
+                std::cerr << "Warning: failed to stamp plan executed_at_utc: " << planPath.generic_string();
+                if (!stampError.empty()) {
+                    std::cerr << " (" << stampError << ")";
+                }
+                std::cerr << "\n";
             }
-            std::cerr << "\n";
         }
         PrintCommitPushStageTimings("plan-file",
                                     safetyGatesMillis,
@@ -2057,7 +2061,9 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
                                     postSyncMillis,
                                     pushMillis,
                                     totalMillis);
-        PrintExecutedPlanSummary(std::filesystem::path(InNormalizedPlanFile).lexically_normal(), 10);
+        if (hasWorkingChanges && planFileExists) {
+            PrintExecutedPlanSummary(std::filesystem::path(InNormalizedPlanFile).lexically_normal(), 10);
+        }
         return pushCode;
     }
 }
@@ -2147,13 +2153,16 @@ void RegisterCommitPush(CLI::App& InApp) {
             std::cerr << "Error: positional target cannot be combined with --repos\n";
             std::exit(2);
         }
-        const auto repoList = ResolveRepoList(workspaceRoot, ParseReposCsv(*repos));
+        auto repoList = ResolveRepoList(workspaceRoot, ParseReposCsv(*repos));
         bool effectiveNoRecursive = *noRecursive;
         if (!effectiveNoRecursive && repoList.empty() && !target->empty()) {
             const auto scopedRepos = DiscoverWorkspaceRepos(workspaceRoot);
             if (scopedRepos.size() <= 1) {
                 effectiveNoRecursive = true;
             }
+        }
+        if (effectiveNoRecursive && repoList.empty()) {
+            repoList.push_back(".");
         }
 
         if (*writeCommitPlanTemplate) {
@@ -2538,7 +2547,9 @@ void RegisterCommitPush(CLI::App& InApp) {
         if (hasCommitPlan) {
             std::string stampError;
             const auto planPath = std::filesystem::path(normalizedCommitPlanFile).lexically_normal();
-            if (!StampCommitPlanExecutedAt(planPath, &stampError)) {
+            std::error_code planEc;
+            const bool planFileExists = std::filesystem::exists(planPath, planEc) && !planEc;
+            if (hasWorkingChanges && planFileExists && !StampCommitPlanExecutedAt(planPath, &stampError)) {
                 std::cerr << "Warning: failed to stamp plan executed_at_utc: "
                           << planPath.generic_string();
                 if (!stampError.empty()) {
@@ -2546,7 +2557,9 @@ void RegisterCommitPush(CLI::App& InApp) {
                 }
                 std::cerr << "\n";
             }
-            PrintExecutedPlanSummary(planPath, 10);
+            if (hasWorkingChanges && planFileExists) {
+                PrintExecutedPlanSummary(planPath, 10);
+            }
         }
 
         std::exit(pushExitCode);
