@@ -518,6 +518,8 @@ auto WithGitNonInteractiveDefaults(const std::string& InCommand,
 
 } // anonymous namespace
 
+namespace kano::git::shell {
+
 auto ExecuteScript(
     std::string_view InRelativeScript,
     const std::vector<std::string>& InArgs,
