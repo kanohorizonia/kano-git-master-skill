@@ -86,4 +86,6 @@ build_full_log.txt
 
 # Kano cache
 src/.kano/
+src/cpp/.kano/
+pixi.lock
 

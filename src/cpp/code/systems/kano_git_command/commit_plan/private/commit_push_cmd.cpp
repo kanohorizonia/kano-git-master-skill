@@ -1406,8 +1406,29 @@ auto StampCommitPlanExecutedAt(const std::filesystem::path& InPath,
     return WriteTextFile(InPath, text, OutError);
 }
 
-auto RunPipelineSafetyGatesForNonAiCommitPush(const std::filesystem::path& InWorkspaceRoot) -> void {
+auto ResolveSafetyGateRepos(const std::filesystem::path& InWorkspaceRoot,
+                            const std::vector<std::string>& InRepoList,
+                            bool InNoRecursive) -> std::vector<std::filesystem::path> {
+    std::vector<std::filesystem::path> repos;
+    if (!InRepoList.empty()) {
+        repos.reserve(InRepoList.size());
+        for (const auto& repo : InRepoList) {
+            repos.push_back(ResolveRepoFromSpec(InWorkspaceRoot, std::filesystem::path(repo), 12, true));
+        }
+        return repos;
+    }
+    if (InNoRecursive) {
+        repos.push_back(InWorkspaceRoot.lexically_normal());
+        return repos;
+    }
+    return DiscoverWorkspaceRepos(InWorkspaceRoot);
+}
+
+auto RunPipelineSafetyGatesForNonAiCommitPush(const std::filesystem::path& InWorkspaceRoot,
+                                              const std::vector<std::string>& InRepoList,
+                                              bool InNoRecursive) -> void {
     const auto workspaceRoot = InWorkspaceRoot.lexically_normal();
+    const auto repos = ResolveSafetyGateRepos(workspaceRoot, InRepoList, InNoRecursive);
 
     const auto allowIgnoreGate = ToLower(Trim(std::getenv("KOG_ALLOW_IGNORE_GATE") == nullptr ? "" : std::getenv("KOG_ALLOW_IGNORE_GATE")));
     const auto ignoreGateMode = ToLower(Trim(std::getenv("KOG_IGNORE_GATE") == nullptr ? "on" : std::getenv("KOG_IGNORE_GATE")));
@@ -1416,7 +1437,6 @@ auto RunPipelineSafetyGatesForNonAiCommitPush(const std::filesystem::path& InWor
             (ResolveSkillRoot(workspaceRoot) / "assets" / "ignore-sources" / "local" / "ignore-gate-allowlist.txt").lexically_normal();
         const auto allowlist = LoadNormalizedLineSet(allowlistPath);
 
-        auto repos = DiscoverWorkspaceRepos(workspaceRoot);
         std::vector<std::string> findings;
         findings.reserve(20);
         for (const auto& repo : repos) {
@@ -1471,7 +1491,6 @@ auto RunPipelineSafetyGatesForNonAiCommitPush(const std::filesystem::path& InWor
     if (rules.empty()) {
         return;
     }
-    auto repos = DiscoverWorkspaceRepos(workspaceRoot);
     std::vector<SecretFinding> findings;
     findings.reserve(20);
     for (const auto& repo : repos) {
@@ -1932,7 +1951,7 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
 
     std::cout << "=== commit-push stage: safety-gates ===\n";
     const auto safetyStart = std::chrono::steady_clock::now();
-    RunPipelineSafetyGatesForNonAiCommitPush(InWorkspaceRoot);
+    RunPipelineSafetyGatesForNonAiCommitPush(InWorkspaceRoot, {}, false);
     const auto safetyEnd = std::chrono::steady_clock::now();
     safetyGatesMillis = std::chrono::duration_cast<std::chrono::milliseconds>(safetyEnd - safetyStart).count();
 
@@ -2329,7 +2348,7 @@ void RegisterCommitPush(CLI::App& InApp) {
         if (!effectiveAiModeRequested) {
             std::cout << "=== commit-push stage: safety-gates ===\n";
             const auto safetyStart = std::chrono::steady_clock::now();
-            RunPipelineSafetyGatesForNonAiCommitPush(workspaceRoot);
+            RunPipelineSafetyGatesForNonAiCommitPush(workspaceRoot, repoList, effectiveNoRecursive);
             const auto safetyEnd = std::chrono::steady_clock::now();
             safetyGatesMillis = std::chrono::duration_cast<std::chrono::milliseconds>(safetyEnd - safetyStart).count();
         }

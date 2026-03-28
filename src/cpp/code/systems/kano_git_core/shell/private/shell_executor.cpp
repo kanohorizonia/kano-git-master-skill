@@ -276,9 +276,16 @@ auto RunProcess(const std::string& cmdLine, ExecMode InMode,
     }
     argv.push_back(nullptr);
 
+    std::string workingDirStorage;
+    if (InWorkingDir.has_value()) {
+        auto preferred = InWorkingDir->lexically_normal();
+        preferred.make_preferred();
+        workingDirStorage = preferred.string();
+    }
+
     KanoProcessOptions opts{};
     opts.executable = executable;
-    opts.working_dir = InWorkingDir ? InWorkingDir->string().c_str() : nullptr;
+    opts.working_dir = workingDirStorage.empty() ? nullptr : workingDirStorage.c_str();
     opts.argv = argv.data();
     opts.argv_count = argv.size() - 1;  // exclude terminating nullptr
     opts.mode = (InMode == ExecMode::Capture) ? KANO_PROCESS_MODE_CAPTURE : KANO_PROCESS_MODE_PASS_THROUGH;

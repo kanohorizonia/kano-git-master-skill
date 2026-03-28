@@ -40,9 +40,7 @@ docs-ci = "bash src/shell/docs/build-and-deploy.sh --ci $(pwd)"
 bootstrap-system = "bash src/cpp/scripts/windows/prerequisite_windows.sh"
 
 # Development build (Debug preset - fast iteration)
-build = "bash src/cpp/scripts/windows/ninja-msvc-debug.sh"
-build-dev = "bash src/cpp/scripts/windows/ninja-msvc-debug.sh"
-build-native = "bash src/cpp/scripts/windows/ninja-msvc-debug.sh"
+build-debug = "bash src/cpp/scripts/windows/ninja-msvc-debug.sh"
 
 # Release build (optimized)
 build-release = "bash src/cpp/scripts/windows/ninja-msvc-release.sh"
@@ -68,9 +66,7 @@ full-test = "bash src/cpp/code/tests/run_tests.sh windows-ninja-msvc-release --w
 bootstrap-system = "bash src/cpp/scripts/linux/prerequisite_linux.sh"
 
 # Development build (Debug preset - fast iteration)
-build = "bash src/cpp/scripts/linux/ninja-clang-debug.sh"
-build-dev = "bash src/cpp/scripts/linux/ninja-clang-debug.sh"
-build-native = "bash src/cpp/scripts/linux/ninja-clang-debug.sh"
+build-debug = "bash src/cpp/scripts/linux/ninja-clang-debug.sh"
 
 # Release build (optimized)
 build-release = "bash src/cpp/scripts/linux/ninja-gcc-release.sh"
@@ -95,9 +91,7 @@ full-test = "bash src/cpp/code/tests/run_tests.sh linux-ninja-gcc-release --with
 bootstrap-system = "bash src/cpp/scripts/macos/prerequisite_macos.sh"
 
 # Development build (Debug preset - fast iteration)
-build = "bash src/cpp/scripts/macos/ninja-clang-x64-debug.sh"
-build-dev = "bash src/cpp/scripts/macos/ninja-clang-x64-debug.sh"
-build-native = "bash src/cpp/scripts/macos/ninja-clang-x64-debug.sh"
+build-debug  = "bash src/cpp/scripts/macos/ninja-clang-x64-debug.sh"
 
 # Release build (optimized)
 build-release = "bash src/cpp/scripts/macos/ninja-clang-x64-release.sh"
@@ -122,9 +116,7 @@ full-test = "bash src/cpp/code/tests/run_tests.sh macos-ninja-clang-x64-release 
 bootstrap-system = "bash src/cpp/scripts/macos/prerequisite_macos.sh"
 
 # Development build (Debug preset - fast iteration)
-build = "bash src/cpp/scripts/macos/ninja-clang-arm64-debug.sh"
-build-dev = "bash src/cpp/scripts/macos/ninja-clang-arm64-debug.sh"
-build-native = "bash src/cpp/scripts/macos/ninja-clang-arm64-debug.sh"
+build-debug = "bash src/cpp/scripts/macos/ninja-clang-arm64-debug.sh"
 
 # Release build (optimized)
 build-release = "bash src/cpp/scripts/macos/ninja-clang-arm64-release.sh"
