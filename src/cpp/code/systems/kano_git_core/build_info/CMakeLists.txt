@@ -47,4 +47,9 @@ target_include_directories(kano_git_build_info
     public
 )
 
+target_link_libraries(kano_git_build_info
+  PUBLIC
+    KanoInfra::build_info
+)
+
 add_library(kano::git_build_info ALIAS kano_git_build_info)
