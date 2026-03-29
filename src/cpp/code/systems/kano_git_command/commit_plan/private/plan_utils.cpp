@@ -1481,7 +1481,11 @@ auto IsProbableIgnoreArtifactPath(const std::string& InPath) -> bool {
     for (const auto& ext : extensions) {
         if (p.ends_with(ext)) return true;
     }
-    return p.find("node_modules/") != std::string::npos || 
+    // Shell scripts are never compiled artifacts — skip them early so that
+    // credential helpers (e.g. bin/get_credential.sh, bin/dump_secrets.sh)
+    // in untracked script directories do not trigger false-positive ignore suggestions.
+    if (p.ends_with(".sh")) return false;
+    return p.find("node_modules/") != std::string::npos ||
            p.find("build/") != std::string::npos ||
            p.find("bin/") != std::string::npos ||
            p.find("obj/") != std::string::npos ||
