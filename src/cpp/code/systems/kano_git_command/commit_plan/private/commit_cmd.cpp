@@ -294,7 +294,12 @@ auto MaybeWarnAboutReservedPaths(const std::filesystem::path& InRepo,
 }
 
 auto GitCapture(const std::filesystem::path& InRepo, const std::vector<std::string>& InArgs) -> shell::ExecResult {
-    return shell::ExecuteCommand("git", InArgs, shell::ExecMode::Capture, InRepo);
+    std::vector<std::string> args;
+    args.reserve(InArgs.size() + 2);
+    args.push_back("-C");
+    args.push_back(InRepo.lexically_normal().generic_string());
+    args.insert(args.end(), InArgs.begin(), InArgs.end());
+    return shell::ExecuteCommand("git", args, shell::ExecMode::Capture);
 }
 
 auto IsGitRepo(const std::filesystem::path& InRepo) -> bool {

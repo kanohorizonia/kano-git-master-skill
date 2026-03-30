@@ -240,26 +240,27 @@ auto RunProcess(const std::string& cmdLine, ExecMode InMode,
     }
 
     // Parse wide cmdLine into argv
-    std::unique_ptr<wchar_t*, decltype(&::LocalFree)> wideArgv(
-        ::CommandLineToArgvW(wideCmd.data(), nullptr), &::LocalFree);
+    LPWSTR* wideArgv = nullptr;
+    int argc = 0;
+    wideArgv = ::CommandLineToArgvW(wideCmd.data(), &argc);
 
     if (!wideArgv) {
         return ExecResult{-1, {}, "Failed to parse command line"};
     }
 
-    int argc = 0;
-    for (wchar_t** p = wideArgv.get(); *p; ++p) {
-        ++argc;
+    int argcOut = 0;
+    for (wchar_t** p = wideArgv; *p; ++p) {
+        ++argcOut;
     }
 
     // Convert wide argv to narrow UTF-8 for kano_process
     std::vector<std::string> narrowArgs;
-    narrowArgs.reserve(static_cast<std::size_t>(argc));
-    for (int i = 0; i < argc; ++i) {
-        int needed = ::WideCharToMultiByte(CP_UTF8, 0, wideArgv.get()[i], -1, nullptr, 0, nullptr, nullptr);
+    narrowArgs.reserve(static_cast<std::size_t>(argcOut));
+    for (int i = 0; i < argcOut; ++i) {
+        int needed = ::WideCharToMultiByte(CP_UTF8, 0, wideArgv[i], -1, nullptr, 0, nullptr, nullptr);
         if (needed > 0) {
             std::string narrow(static_cast<std::size_t>(needed - 1), '\0');
-            ::WideCharToMultiByte(CP_UTF8, 0, wideArgv.get()[i], -1, &narrow[0], needed, nullptr, nullptr);
+            ::WideCharToMultiByte(CP_UTF8, 0, wideArgv[i], -1, &narrow[0], needed, nullptr, nullptr);
             narrowArgs.push_back(std::move(narrow));
         }
     }
@@ -573,6 +574,7 @@ auto ExecuteCommand(
         const auto wrapped = BuildCommandLine("cmd.exe", wrappedArgs);
         return RunProcess(wrapped, InMode, timeoutMs, InWorkingDir, InProgressCallback);
     }
+    // Build command line with executable at start (for CreateProcessA parsing)
     auto cmd = BuildCommandLine(InCommand, effectiveArgs);
     return RunProcess(cmd, InMode, timeoutMs, InWorkingDir, InProgressCallback);
 #else
