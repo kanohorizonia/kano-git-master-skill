@@ -410,47 +410,18 @@ auto SelfBinaryPath() -> std::string {
 }
 
 auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<std::filesystem::path> {
-    static std::unordered_map<std::string, std::vector<std::filesystem::path>> cache;
-        const auto cacheKey = RepoKey(InRoot);
-    if (const auto cached = cache.find(cacheKey); cached != cache.end()) {
-        return cached->second;
-    }
-
+    // Always use DiscoverRepos with fresh discovery to ensure consistency between
+    // fingerprint computation and manifest loading. Previously this used manifest->repos
+    // when available, but manifest and discoveryCache can diverge, causing workspace
+    // state drift. Force fresh discovery (useCache=false) to avoid cache inconsistencies.
+    // Note: This version also includes DiscoverRegisteredPathsRecursive for completeness.
     const auto root = std::filesystem::weakly_canonical(InRoot).lexically_normal();
-    std::string manifestReason;
-    if (const auto manifest = workspace::LoadTrustedWorkspaceManifest(InRoot, &manifestReason); manifest.has_value()) {
-        std::vector<std::filesystem::path> repos;
-        repos.reserve(manifest->repos.size() + 4);
-        repos.push_back(root);
-        for (const auto& repo : manifest->repos) {
-            repos.push_back(repo.path.lexically_normal());
-        }
-        for (const auto& repo : DiscoverRegisteredPathsRecursive(root)) {
-            repos.push_back(repo);
-        }
-        if (repos.empty()) {
-            repos.push_back(InRoot.lexically_normal());
-        }
-        std::sort(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
-            return RepoKey(A) < RepoKey(B);
-        });
-        repos.erase(std::unique(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
-            return RepoKey(A) == RepoKey(B);
-        }), repos.end());
-        cache.emplace(cacheKey, repos);
-        return repos;
-    }
-
-    std::cerr << "[commit-push] workspace manifest untrusted (" << manifestReason
-              << "); running full scan under " << cacheKey << "...\n";
-    std::cerr.flush();
-
     workspace::DiscoverOptions options;
     options.rootDir = InRoot;
     options.maxDepth = 12;
     options.scope = workspace::DiscoverScope::Full;
-    options.useCache = false;
-    options.refreshCache = true;
+    options.useCache = false;  // Force fresh discovery for fingerprint stability
+    options.refreshCache = true; // Update cache after discovery
     options.incremental = false;
     options.metadataLevel = "minimal";
     const auto discovery = workspace::DiscoverRepos(options);
@@ -472,12 +443,6 @@ auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<
     repos.erase(std::unique(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
         return RepoKey(A) == RepoKey(B);
     }), repos.end());
-    const auto manifest = workspace::BuildWorkspaceManifest(InRoot, discovery.repos);
-    if (!workspace::SaveWorkspaceManifest(manifest)) {
-        std::cerr << "[commit-push] WARN: failed to refresh workspace manifest at "
-                  << manifest.manifestFile.lexically_normal().generic_string() << "\n";
-    }
-    cache.emplace(cacheKey, repos);
     return repos;
 }
 

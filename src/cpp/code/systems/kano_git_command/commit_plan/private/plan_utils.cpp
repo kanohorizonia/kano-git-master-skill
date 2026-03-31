@@ -195,33 +195,33 @@ auto ResolveAiModelDirective(const std::string& InProvider,
 }
 
 auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<std::filesystem::path> {
+    // Always use DiscoverRepos with fresh discovery to ensure consistency between
+    // fingerprint computation and manifest loading. Previously this used manifest->repos
+    // when available, but manifest and discoveryCache can diverge, causing workspace
+    // state drift. Force fresh discovery (useCache=false) to avoid cache inconsistencies.
+    workspace::DiscoverOptions options;
+    options.rootDir = InRoot;
+    options.maxDepth = 12;
+    options.useCache = false;  // Force fresh discovery for fingerprint stability
+    options.refreshCache = true; // Update cache after discovery
+    options.incremental = false;
+    options.metadataLevel = "minimal";
+    const auto discovery = workspace::DiscoverRepos(options);
+    std::cerr << "[DEBUG] DiscoverWorkspaceRepos: root=" << InRoot.generic_string() << " discovery.repos.size=" << discovery.repos.size() << " mode=" << discovery.mode << "\n";
+    for (const auto& repo : discovery.repos) {
+        std::cerr << "[DEBUG] DiscoverWorkspaceRepos:   repo=" << repo.path.generic_string() << " type=" << repo.type << "\n";
+    }
     std::vector<std::filesystem::path> repos;
-    std::string ignoredReason;
-    if (const auto manifest = workspace::LoadTrustedWorkspaceManifest(InRoot, &ignoredReason); manifest.has_value()) {
-        repos.reserve(manifest->repos.size());
-        for (const auto& repo : manifest->repos) {
-            repos.push_back(repo.path.lexically_normal());
-        }
-    } else {
-        workspace::DiscoverOptions options;
-        options.rootDir = InRoot;
-        options.maxDepth = 12;
-        options.useCache = true;
-        options.cacheTtlSeconds = 900;
-        options.incremental = true;
-        options.maxStaleSeconds = 86400;
-        options.metadataLevel = "minimal";
-        const auto discovery = workspace::DiscoverRepos(options);
-        repos.reserve(discovery.repos.size());
-        for (const auto& repo : discovery.repos) {
-            repos.push_back(repo.path.lexically_normal());
-        }
+    repos.reserve(discovery.repos.size());
+    for (const auto& repo : discovery.repos) {
+        repos.push_back(repo.path.lexically_normal());
     }
     std::sort(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
         return A.generic_string() < B.generic_string();
     });
     repos.erase(std::unique(repos.begin(), repos.end()), repos.end());
     if (repos.empty()) {
+        std::cerr << "[DEBUG] DiscoverWorkspaceRepos: repos empty, using root fallback=" << InRoot.lexically_normal().generic_string() << "\n";
         repos.push_back(InRoot.lexically_normal());
     }
     return repos;
@@ -287,18 +287,23 @@ auto ResolveAiModelForChangeCount(const std::string& InProvider,
 auto ComputeWorkspaceBaseHeadSha(const std::filesystem::path& InWorkspaceRoot) -> std::string {
     std::vector<std::string> lines;
     const auto repos = DiscoverWorkspaceRepos(InWorkspaceRoot);
+    std::cerr << "[DEBUG] ComputeWorkspaceBaseHeadSha: repos=" << repos.size() << "\n";
     lines.reserve(repos.size());
     for (const auto& repo : repos) {
         const auto head = GitCapture(repo, {"rev-parse", "HEAD"});
         const auto sha = (head.exitCode == 0) ? Trim(head.stdoutStr) : std::string("0000000000000000000000000000000000000000");
-        lines.push_back(WorkspaceRepoKey(InWorkspaceRoot, repo) + "\t" + sha);
+        const auto repoKey = WorkspaceRepoKey(InWorkspaceRoot, repo);
+        std::cerr << "[DEBUG] ComputeWorkspaceBaseHeadSha:   repo=" << repo.generic_string() << " key=" << repoKey << " sha=" << sha << "\n";
+        lines.push_back(repoKey + "\t" + sha);
     }
     std::sort(lines.begin(), lines.end());
     std::ostringstream canonical;
     for (const auto& line : lines) {
         canonical << line << "\n";
     }
-    return "ws-head-v2-" + Fnv1a64Hex(canonical.str());
+    const auto result = "ws-head-v2-" + Fnv1a64Hex(canonical.str());
+    std::cerr << "[DEBUG] ComputeWorkspaceBaseHeadSha: result=" << result << "\n";
+    return result;
 }
 
 auto BuildDeterministicPlanId(const std::filesystem::path& InWorkspaceRoot,
@@ -763,12 +768,35 @@ auto ExtractBranchOidFromStatusV2(const std::string& InStatus) -> std::string {
     return "no-head";
 }
 
+static void DebugPrintStatusOutput(const std::filesystem::path& repo, const std::string& statusOutput) {
+    std::istringstream iss(statusOutput);
+    std::string line;
+    int lineNum = 0;
+    while (std::getline(iss, line)) {
+        lineNum++;
+        const auto trimmed = Trim(line);
+        if (trimmed.empty()) continue;
+        std::cerr << "[DEBUG] StatusLine repo=" << repo.generic_string() << " line=" << lineNum << " raw_len=" << line.size() << " trimmed_len=" << trimmed.size() << "\n";
+        if (trimmed.rfind("# ", 0) == 0) {
+            std::cerr << "[DEBUG]   TYPE=comment: " << trimmed.substr(0, 60) << "\n";
+        } else {
+            const auto maybePath = ParseStatusChangedPath(trimmed);
+            if (!maybePath.has_value()) {
+                std::cerr << "[DEBUG]   TYPE=status path=nullopt: " << trimmed.substr(0, 60) << "\n";
+            } else {
+                std::cerr << "[DEBUG]   TYPE=status path=[" << *maybePath << "] is_artifact=" << IsInternalPipelineArtifactPath(*maybePath) << "\n";
+            }
+        }
+    }
+}
+
 auto ComputeWorkspaceDirtyFingerprint(const std::filesystem::path& InWorkspaceRoot) -> std::string {
     std::vector<std::string> lines;
     const auto repos = DiscoverWorkspaceRepos(InWorkspaceRoot);
     lines.reserve(repos.size());
     for (const auto& repo : repos) {
-        const auto status = GitCapture(repo, {"status", "--porcelain=v2", "--branch", "--untracked-files=normal", "--ignore-submodules=none"});
+        // Use basic --porcelain format for compatibility with ParseStatusChangedPath
+        const auto status = GitCapture(repo, {"status", "--porcelain", "--branch", "--untracked-files=normal", "--ignore-submodules=none"});
         if (status.exitCode != 0) {
             continue;
         }
@@ -780,20 +808,48 @@ auto ComputeWorkspaceDirtyFingerprint(const std::filesystem::path& InWorkspaceRo
             if (trimmed.empty()) {
                 continue;
             }
-            if (trimmed.rfind("# ", 0) == 0) {
-                filtered << trimmed << "\n";
+            // Skip branch header lines (## BranchName in basic porcelain, # comment in v2)
+            if (trimmed.rfind("## ", 0) == 0 || trimmed.rfind("# ", 0) == 0) {
                 continue;
             }
 
+            // Check if this line contains a .kano/ path BEFORE calling ParseStatusChangedPath
+            // because ParseStatusChangedPath returns nullopt for deleted files (D)
+            // and we still need to filter deleted .kano/ artifacts
+            if (trimmed.find(".kano/") != std::string::npos) {
+                // Extract the path from the line - format is "XY pathname" where XY is status
+                // For deleted files, ParseStatusChangedPath returns nullopt, so we extract manually
+                const auto pathStart = trimmed.find(".kano/");
+                const auto pathStartBefore = (pathStart > 0) ? pathStart - 1 : 0;
+                // Find the space before the path to get the actual start
+                auto spacePos = trimmed.rfind(' ', pathStartBefore);
+                if (spacePos == std::string::npos) {
+                    spacePos = 0;
+                } else {
+                    spacePos = spacePos + 1;
+                }
+                const auto path = Trim(trimmed.substr(spacePos));
+                if (IsInternalPipelineArtifactPath(path)) {
+                    continue; // Skip internal artifacts
+                }
+            }
+
+            // Use ParseStatusChangedPath to extract path and check for internal artifacts
             const auto maybePath = ParseStatusChangedPath(trimmed);
             if (maybePath.has_value() && IsInternalPipelineArtifactPath(*maybePath)) {
-                continue;
+                continue; // Skip internal artifacts
             }
 
             filtered << trimmed << "\n";
         }
         const auto normalized = Trim(filtered.str());
-        const auto head = ExtractBranchOidFromStatusV2(normalized);
+        // Debug: show what was included for UnrealEngine
+        if (repo.generic_string().find("UnrealEngine") != std::string::npos && !normalized.empty()) {
+            std::cerr << "[DEBUG] Fingerprint UnrealEngine normalized=[" << normalized << "]\n";
+        }
+        // Get HEAD SHA directly via git rev-parse (not from status output)
+        const auto headResult = GitCapture(repo, {"rev-parse", "HEAD"});
+        const auto head = (headResult.exitCode == 0) ? Trim(headResult.stdoutStr) : std::string("0000000000000000000000000000000000000000");
         const auto statusFingerprint = normalized.empty() ? std::string("clean") : Fnv1a64Hex(normalized);
         lines.push_back(std::format("{}|{}|{}",
                                     WorkspaceRepoKey(InWorkspaceRoot, repo),
@@ -803,7 +859,16 @@ auto ComputeWorkspaceDirtyFingerprint(const std::filesystem::path& InWorkspaceRo
     std::sort(lines.begin(), lines.end());
     std::ostringstream canonical;
     for (const auto& line : lines) canonical << line << "\n";
-    return "ws-dirty-v2-" + Fnv1a64Hex(canonical.str());
+    const auto canonicalStr = canonical.str();
+    const auto result = "ws-dirty-v2-" + Fnv1a64Hex(canonicalStr);
+    // Debug: print final fingerprint and canonical for first call only
+    static int callCount = 0;
+    callCount++;
+    if (callCount == 1) {
+        std::cerr << "[DEBUG] ComputeWorkspaceDirtyFingerprint: canonical=\n" << canonicalStr << "\n";
+    }
+    std::cerr << "[DEBUG] ComputeWorkspaceDirtyFingerprint: result=" << result << "\n";
+    return result;
 }
 
 auto ExtractPlanWorkspaceHashes(const std::string& InPlanText, std::string* OutBaseHeadSha, std::string* OutDirtyFingerprint) -> bool {
@@ -1513,7 +1578,10 @@ auto IsProbableIgnoreArtifactPath(const std::string& InPath) -> bool {
 auto IsInternalPipelineArtifactPath(const std::string& InPath) -> bool {
     auto lower = ToLower(InPath);
     std::replace(lower.begin(), lower.end(), '\\', '/');
-    return lower == ".kano" || lower.rfind(".kano/", 0) == 0 || lower.find("/.kano/") != std::string::npos;
+    // Also check for kano/ without leading dot (for paths extracted from modified status lines)
+    return lower == ".kano" || lower == "kano" || 
+           lower.rfind(".kano/", 0) == 0 || lower.rfind("kano/", 0) == 0 ||
+           lower.find("/.kano/") != std::string::npos || lower.find("/kano/") != std::string::npos;
 }
 
 auto DefaultSecretRulesPath(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path {

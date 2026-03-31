@@ -592,7 +592,10 @@ auto IsProbableIgnoreArtifactPath(const std::string& InPath) -> bool {
 auto IsInternalPipelineArtifactPath(const std::string& InPath) -> bool {
     auto lower = ToLower(InPath);
     std::replace(lower.begin(), lower.end(), '\\', '/');
-    return lower == ".kano" || lower.rfind(".kano/", 0) == 0 || lower.find("/.kano/") != std::string::npos;
+    // Also check for kano/ without leading dot (for paths extracted from modified status lines)
+    return lower == ".kano" || lower == "kano" || 
+           lower.rfind(".kano/", 0) == 0 || lower.rfind("kano/", 0) == 0 ||
+           lower.find("/.kano/") != std::string::npos || lower.find("/kano/") != std::string::npos;
 }
 
 auto ParseStatusChangedPath(const std::string& InLine) -> std::optional<std::string> {
@@ -1525,28 +1528,31 @@ auto DiscoverWorkspaceRepoRecords(const std::filesystem::path& InRoot,
 }
 
 auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<std::filesystem::path> {
+    // Always use DiscoverRepos with fresh discovery to ensure consistency between
+    // fingerprint computation and manifest loading. Previously this used manifest->repos
+    // when available, but manifest and discoveryCache can diverge, causing workspace
+    // state drift. Force fresh discovery (useCache=false) to avoid cache inconsistencies.
+    workspace::DiscoverOptions options;
+    options.rootDir = InRoot;
+    options.maxDepth = 12;
+    options.useCache = false;  // Force fresh discovery for fingerprint stability
+    options.refreshCache = true; // Update cache after discovery
+    options.incremental = false;
+    options.metadataLevel = "minimal";
+    const auto discovery = workspace::DiscoverRepos(options);
     std::vector<std::filesystem::path> repos;
-    std::string manifestReason;
-    if (const auto manifest = workspace::LoadTrustedWorkspaceManifest(InRoot, &manifestReason); manifest.has_value()) {
-        repos.reserve(manifest->repos.size());
-        for (const auto& repo : manifest->repos) {
-            repos.push_back(repo.path.lexically_normal());
-        }
-        if (repos.empty()) {
-            repos.push_back(InRoot.lexically_normal());
-        }
-        std::sort(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
-            return RepoKey(A) < RepoKey(B);
-        });
-        repos.erase(std::unique(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
-            return RepoKey(A) == RepoKey(B);
-        }), repos.end());
-        return repos;
-    }
-    const auto discovered = DiscoverWorkspaceRepoRecords(InRoot, "minimal");
-    repos.reserve(discovered.size());
-    for (const auto& repo : discovered) {
+    repos.reserve(discovery.repos.size());
+    for (const auto& repo : discovery.repos) {
         repos.push_back(repo.path.lexically_normal());
+    }
+    std::sort(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
+        return RepoKey(A) < RepoKey(B);
+    });
+    repos.erase(std::unique(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
+        return RepoKey(A) == RepoKey(B);
+    }), repos.end());
+    if (repos.empty()) {
+        repos.push_back(InRoot.lexically_normal());
     }
     return repos;
 }
@@ -1602,7 +1608,8 @@ auto ComputeWorkspaceDirtyFingerprint(const std::filesystem::path& InWorkspaceRo
     const auto repos = DiscoverWorkspaceRepos(InWorkspaceRoot);
     lines.reserve(repos.size());
     for (const auto& repo : repos) {
-        const auto status = GitCapture(repo, {"status", "--porcelain=v2", "--branch", "--untracked-files=normal", "--ignore-submodules=none"});
+        // Use basic --porcelain format for compatibility with ParseStatusChangedPath
+        const auto status = GitCapture(repo, {"status", "--porcelain", "--branch", "--untracked-files=normal", "--ignore-submodules=none"});
         if (status.exitCode != 0) {
             continue;
         }
@@ -1614,20 +1621,44 @@ auto ComputeWorkspaceDirtyFingerprint(const std::filesystem::path& InWorkspaceRo
             if (trimmed.empty()) {
                 continue;
             }
-            if (trimmed.rfind("# ", 0) == 0) {
-                filtered << trimmed << "\n";
+            // Skip branch header lines (## BranchName in basic porcelain, # comment in v2)
+            if (trimmed.rfind("## ", 0) == 0 || trimmed.rfind("# ", 0) == 0) {
                 continue;
             }
 
+            // Check if this line contains a .kano/ path BEFORE calling ParseStatusChangedPath
+            // because ParseStatusChangedPath returns nullopt for deleted files (D)
+            // and we still need to filter deleted .kano/ artifacts
+            if (trimmed.find(".kano/") != std::string::npos) {
+                // Extract the path from the line - format is "XY pathname" where XY is status
+                // For deleted files, ParseStatusChangedPath returns nullopt, so we extract manually
+                const auto pathStart = trimmed.find(".kano/");
+                const auto pathStartBefore = (pathStart > 0) ? pathStart - 1 : 0;
+                // Find the space before the path to get the actual start
+                auto spacePos = trimmed.rfind(' ', pathStartBefore);
+                if (spacePos == std::string::npos) {
+                    spacePos = 0;
+                } else {
+                    spacePos = spacePos + 1;
+                }
+                const auto path = Trim(trimmed.substr(spacePos));
+                if (IsInternalPipelineArtifactPath(path)) {
+                    continue; // Skip internal artifacts
+                }
+            }
+
+            // Use ParseStatusChangedPath to extract path and check for internal artifacts
             const auto maybePath = ParseStatusChangedPath(trimmed);
             if (maybePath.has_value() && IsInternalPipelineArtifactPath(*maybePath)) {
-                continue;
+                continue; // Skip internal artifacts
             }
 
             filtered << trimmed << "\n";
         }
         const auto normalized = Trim(filtered.str());
-        const auto head = ExtractBranchOidFromStatusV2(normalized);
+        // Get HEAD SHA directly via git rev-parse (not from status output)
+        const auto headResult = GitCapture(repo, {"rev-parse", "HEAD"});
+        const auto head = (headResult.exitCode == 0) ? Trim(headResult.stdoutStr) : std::string("0000000000000000000000000000000000000000");
         const auto statusFingerprint = normalized.empty() ? std::string("clean") : Fnv1a64Hex(normalized);
         lines.push_back(std::format("{}|{}|{}",
                                     WorkspaceRepoKey(InWorkspaceRoot, repo),
@@ -1639,7 +1670,10 @@ auto ComputeWorkspaceDirtyFingerprint(const std::filesystem::path& InWorkspaceRo
     for (const auto& line : lines) {
         canonical << line << "\n";
     }
-    return "ws-dirty-v2-" + Fnv1a64Hex(canonical.str());
+    const auto result = "ws-dirty-v2-" + Fnv1a64Hex(canonical.str());
+    // Debug: print final fingerprint
+    std::cerr << "[DEBUG] ComputeWorkspaceDirtyFingerprint: result=" << result << "\n";
+    return result;
 }
 
 auto JsonEscape(const std::string& InValue) -> std::string {
