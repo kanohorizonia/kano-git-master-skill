@@ -23,6 +23,23 @@ product surface for status/commit/commit-push/planner behavior.
 - Host-default `pixi` alias: `pixi run build`
 - Do not use ad-hoc direct CMake/Ninja command sequences when working in this repo unless explicitly requested by a human maintainer.
 
+#### Windows MSVC Toolchain Requirements
+- **Required**: MSVC toolset v143/v144 with version 14.44.35207 or newer
+- **Error indicator**: If you see `static_assert failed: 'error STL1001: Unexpected compiler version, expected MSVC 19.44 or newer'`, your MSVC installation is too old or incomplete
+- **Build script uses vswhere**: The `ninja-msvc-release.sh` script automatically detects vcvarsall.bat via vswhere. If vswhere fails to find a valid toolchain, you may need to set `KOG_VCVARSALL` explicitly:
+  ```bash
+  export KOG_VCVARSALL="C:/Program Files/Microsoft Visual Studio/18/Community/VC/Auxiliary/Build/vcvarsall.bat"
+  bash src/cpp/scripts/windows/ninja-msvc-release.sh
+  ```
+- **Fix via VS Installer**: Install/repair Visual Studio with the required MSVC toolset
+  ```powershell
+  # In Visual Studio Installer, modify your VS installation:
+  # - Individual Components tab
+  # - Search for "MSVC v143" or "MSVC v144"
+  # - Select version 14.44 or newer
+  # - Also ensure "C++ ATL for latest build tools" is selected if needed
+  ```
+
 ### Lint / format
 - No repo-provided lint/format commands (no shellcheck/shfmt config found).
 

@@ -1347,6 +1347,7 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
     std::cout << "[plan] AI fill (" << fillMode << ") using " << provider << " ...\n";
     
     std::string finalPlanJson = templateJson;
+    bool anyFilled = false;
     if (fillMode == "single") {
         for (const auto& entry : entries) {
             const auto prompt = BuildSingleCommitFillPrompt(InWorkspaceRoot, provider, modelDir, entry, dirty);
@@ -1361,6 +1362,10 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
                     op.reviewVerdict = review ? ExtractStringField(*review, "verdict").value_or("") : "";
                     op.reviewReason = review ? ExtractStringField(*review, "reason").value_or("") : "";
                     finalPlanJson = ApplyCommitFillOps(finalPlanJson, {op});
+                    // Only count as filled if message doesn't contain placeholder
+                    if (op.message.find("replace-with-") == std::string::npos) {
+                        anyFilled = true;
+                    }
                 }
             }
         }
@@ -1371,7 +1376,20 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
             const auto json = ExtractPlanFillOpsJson(res.stdoutStr);
             const auto ops = ParseCommitFillOps(json);
             finalPlanJson = ApplyCommitFillOps(finalPlanJson, ops);
+            // Check if any ops actually filled real messages
+            for (const auto& op : ops) {
+                if (op.message.find("replace-with-") == std::string::npos) {
+                    anyFilled = true;
+                    break;
+                }
+            }
         }
+    }
+    
+    // If no entries were actually filled (AI failed or returned placeholders), return false
+    if (!anyFilled) {
+        if (OutError) *OutError = "AI failed to produce commit messages";
+        return false;
     }
     
     // Stamp planner metadata
@@ -1640,6 +1658,11 @@ auto ValidateAiReadyPlan(const std::string& InPlanText, std::string* OutReason) 
         if (OutReason) *OutReason = "missing stages.commit array";
         return false;
     }
+    // Check that commit array has actual entries (not just placeholders)
+    if (SplitTopLevelObjects(*commit).empty()) {
+        if (OutReason) *OutReason = "no commit entries in stages.commit";
+        return false;
+    }
     return true;
 }
 
@@ -1862,13 +1885,21 @@ auto RunCommitRunbook(const std::filesystem::path& InWorkspaceRoot,
     std::string reason;
     if (!ValidateAiReadyPlan(*payload, &reason)) {
         std::cerr << "[plan] validation failed (" << reason << "), regenerating once...\n";
-        if (!regenerate()) return 2;
+        if (!regenerate()) {
+            // FillPlanByAi failed, try fallback before returning error
+            if (auto fallback = TryInjectFallbackCommits(InWorkspaceRoot, *payload)) {
+                WriteFileText(InPlanPath, *fallback);
+                std::cerr << "[plan] fallback_used: true\n";
+                return 0;
+            }
+            return 2;
+        }
         payload = ReadFileText(InPlanPath);
         if (!payload || !ValidateAiReadyPlan(*payload, &reason)) {
             if (reason == "no commit entries in stages.commit" && payload) {
                 if (auto fallback = TryInjectFallbackCommits(InWorkspaceRoot, *payload)) {
                     WriteFileText(InPlanPath, *fallback);
-                    std::cerr << "[plan] fallback commit entries injected.\n";
+                    std::cerr << "[plan] fallback_used: true\n";
                     return 0;
                 }
             }

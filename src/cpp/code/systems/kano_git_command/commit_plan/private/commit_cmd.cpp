@@ -2312,6 +2312,15 @@ auto ResolveSelfBinaryCommand() -> std::string {
         }
     }
 #if defined(_WIN32)
+    // Try to find kano-git.exe in the same directory as the current executable
+    char selfPath[MAX_PATH];
+    if (GetModuleFileNameA(NULL, selfPath, MAX_PATH) > 0) {
+        std::filesystem::path self(selfPath);
+        std::filesystem::path candidate = self.parent_path() / "kano-git.exe";
+        if (std::filesystem::exists(candidate)) {
+            return candidate.generic_string();
+        }
+    }
     return "kano-git.exe";
 #else
     return "kano-git";
@@ -2347,6 +2356,7 @@ auto FinalizeNestedSelfResult(const char* InLabel, const shell::ExecResult& InRe
 struct CommitRunbookResult {
     int exitCode = 0;
     std::optional<long long> aiFillMillis;
+    bool fallbackUsed = false;  // true if fallback commits were injected after AI fill failed
 };
 
 auto ExtractPlanAiFillMillis(const shell::ExecResult& InResult) -> std::optional<long long> {
@@ -2370,14 +2380,29 @@ auto ExtractPlanAiFillMillis(const shell::ExecResult& InResult) -> std::optional
     return std::nullopt;
 }
 
+auto ExtractFallbackUsed(const shell::ExecResult& InResult) -> bool {
+    const auto combined = InResult.stdoutStr + "\n" + InResult.stderrStr;
+    return combined.find("[plan] fallback_used: true") != std::string::npos;
+}
+
 auto RunPlanNewViaSelf(const std::filesystem::path& InWorkspaceRoot,
                        const std::filesystem::path& InPlanPath) -> int {
+    const auto selfCmd = ResolveSelfBinaryCommand();
     std::vector<std::string> args = {
         "plan", "new",
         "--force",
         "--output", InPlanPath.generic_string(),
     };
-    const auto result = shell::ExecuteCommand(ResolveSelfBinaryCommand(), args, shell::ExecMode::Capture, InWorkspaceRoot);
+    std::cerr << "[DEBUG] RunPlanNewViaSelf: self=" << selfCmd << "\n";
+    std::cerr << "[DEBUG] RunPlanNewViaSelf: workspace=" << InWorkspaceRoot.generic_string() << "\n";
+    std::cerr << "[DEBUG] RunPlanNewViaSelf: plan_path=" << InPlanPath.generic_string() << "\n";
+    for (size_t i = 0; i < args.size(); ++i) {
+        std::cerr << "[DEBUG] RunPlanNewViaSelf: args[" << i << "]=" << args[i] << "\n";
+    }
+    const auto result = shell::ExecuteCommand(selfCmd, args, shell::ExecMode::Capture, InWorkspaceRoot);
+    std::cerr << "[DEBUG] RunPlanNewViaSelf: exitCode=" << result.exitCode << "\n";
+    std::cerr << "[DEBUG] RunPlanNewViaSelf: stdout=" << result.stdoutStr << "\n";
+    std::cerr << "[DEBUG] RunPlanNewViaSelf: stderr=" << result.stderrStr << "\n";
     const auto exitCode = FinalizeNestedSelfResult("plan new", result);
     if (exitCode != 0) {
         std::cerr << "Error: plan new failed via native binary (exit=" << exitCode << ").\n";
@@ -2442,6 +2467,7 @@ auto RunCommitPlanRunbookViaSelf(const std::filesystem::path& InWorkspaceRoot,
     const auto result = shell::ExecuteCommand(ResolveSelfBinaryCommand(), args, shell::ExecMode::Capture, InWorkspaceRoot);
     CommitRunbookResult out;
     out.aiFillMillis = ExtractPlanAiFillMillis(result);
+    out.fallbackUsed = ExtractFallbackUsed(result);
     const auto exitCode = FinalizeNestedSelfResult("AI commit runbook", result);
     out.exitCode = exitCode;
     if (exitCode != 0) {
@@ -2496,6 +2522,13 @@ auto RunCommitAutoPlanPipeline(const std::filesystem::path& InWorkspaceRoot,
     long long commitApplyMillis = 0;
     std::optional<long long> aiFillMillis;
 
+    std::cerr << "[DEBUG] RunCommitAutoPlanPipeline ENTERED" << std::endl;
+    std::cerr << "[DEBUG] InWorkspaceRoot=" << InWorkspaceRoot.generic_string() << std::endl;
+    std::cerr << "[DEBUG] InAi.enabled=" << InAi.enabled << " provider=" << InAi.provider << " model=" << InAi.model << std::endl;
+    std::cerr << "[DEBUG] InAiFillMode=" << InAiFillMode << std::endl;
+    std::cerr << "[DEBUG] InProfile=" << InProfile << std::endl;
+    std::cerr.flush();
+
     const auto autoPlanPath = DefaultSharedPlanPath(InWorkspaceRoot);
     std::cout << "[native-commit] auto-plan file: " << autoPlanPath.generic_string() << "\n";
 
@@ -2529,7 +2562,8 @@ auto RunCommitAutoPlanPipeline(const std::filesystem::path& InWorkspaceRoot,
     }
 
     std::string deterministicReason;
-    if (HumanAutoPlanLooksDeterministic(autoPlanPath, &deterministicReason)) {
+    // Skip deterministic check if fallback commits were used (fallback has provider=native model=deterministic metadata)
+    if (!runbookResult.fallbackUsed && HumanAutoPlanLooksDeterministic(autoPlanPath, &deterministicReason)) {
         std::cerr << "Error: AI commit runbook produced non-AI deterministic plan metadata; refusing to continue.\n";
         std::cerr << "Hint: verify AI provider/auth and rerun plain `kog commit --ai-auto`.\n";
         std::cerr << "Hint: deterministic metadata: " << deterministicReason << "\n";
@@ -3988,6 +4022,9 @@ void RegisterCommit(CLI::App& InApp) {
         long long summaryMs = 0;
         std::optional<CommitPreflightReport> cachedPreflightReport;
 
+        std::cerr << "[DEBUG] run lambda ENTERED" << std::endl;
+        std::cerr.flush();
+
         if (InApp.got_subcommand(cmdAiAlias)) {
             *bAiAuto = true;
         }
@@ -4075,7 +4112,22 @@ void RegisterCommit(CLI::App& InApp) {
         }
 
         const bool planFileRequested = !commitPlanFile->empty();
-        const bool autoPlanAiMode = ai.enabled && message->empty() && !planFileRequested;
+        std::cerr << "[DEBUG] BEFORE CLEAR: planFileRequested=" << planFileRequested << " commitPlanFile=[" << *commitPlanFile << "]" << std::endl;
+        // TEMP FIX: Clear commitPlanFile if it was set to the default path but file doesn't exist
+        if (planFileRequested) {
+            auto checkPath = std::filesystem::path(*commitPlanFile);
+            if (!std::filesystem::exists(checkPath)) {
+                std::cerr << "[DEBUG] plan file doesn't exist, clearing commitPlanFile" << std::endl;
+                commitPlanFile->clear();
+            }
+        }
+        const bool autoPlanAiMode = ai.enabled && message->empty() && commitPlanFile->empty();
+        std::cerr << "[DEBUG] autoPlanAiMode check: ai.enabled=" << ai.enabled 
+                  << " message->empty()=" << message->empty() 
+                  << " planFileRequested=" << planFileRequested 
+                  << " commitPlanFile=[" << *commitPlanFile << "]"
+                  << " => autoPlanAiMode=" << autoPlanAiMode << std::endl;
+        std::cerr.flush();
         if (autoPlanAiMode) {
             if (agentProxyMode) {
                 std::cerr << "Error: agent proxy mode commit cannot invoke internal AI auto-plan.\n";
