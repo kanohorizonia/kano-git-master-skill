@@ -1039,9 +1039,9 @@ script_paths() {
     windows)
       prereq="$base/windows/prerequisite_windows.sh"
       if [[ "$arch" == "arm64" ]]; then
-        build="$base/windows/build_windows_ninja_msvc_arm64_release.sh"
+        build="$base/windows/ninja-msvc-arm64-release.sh"
       else
-        build="$base/windows/build_windows_ninja_msvc_release.sh"
+        build="$base/windows/ninja-msvc-release.sh"
       fi
       ;;
     linux)

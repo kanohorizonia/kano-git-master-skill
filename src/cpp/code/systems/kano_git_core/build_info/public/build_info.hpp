@@ -1,7 +1,5 @@
 #pragma once
 
-#include <kano_build_info.hpp>
-
 #include <string>
 #include <string_view>
 
@@ -9,62 +7,111 @@ namespace kano::git {
 
 namespace detail {
 
-using InfraBuildInfoSnapshot = kano::infra::build_info::Snapshot;
+struct InfraBuildInfoSnapshot {
+    std::string_view version;
+    std::string_view vcs;
+    std::string_view branch;
+    std::string_view revision;
+    std::string_view revisionHashShort;
+    std::string_view revisionHash;
+    std::string_view dirty;
+    std::string_view host;
+    std::string_view ci;
+    std::string_view context;
+    std::string_view pipeline;
+    std::string_view toolchain;
+    std::string_view generator;
+    std::string_view preset;
+    std::string_view configuration;
+    std::string_view platform;
+};
 
 inline const InfraBuildInfoSnapshot& GetInfraBuildInfoSnapshot() {
     static const InfraBuildInfoSnapshot snapshot = [] {
-        return kano::infra::build_info::discover_snapshot({
+        return InfraBuildInfoSnapshot{
 #ifdef KOG_BUILD_VERSION
-            .version = KOG_BUILD_VERSION,
+            KOG_BUILD_VERSION,
 #elif defined(KOG_VERSION)
-            .version = KOG_VERSION,
+            KOG_VERSION,
+#else
+            "",
 #endif
 #ifdef KOG_BUILD_VCS
-            .vcs = KOG_BUILD_VCS,
+            KOG_BUILD_VCS,
+#else
+            "",
 #endif
 #ifdef KOG_BUILD_BRANCH
-            .branch = KOG_BUILD_BRANCH,
+            KOG_BUILD_BRANCH,
+#else
+            "",
 #endif
 #ifdef KOG_BUILD_REVISION
-            .revision = KOG_BUILD_REVISION,
+            KOG_BUILD_REVISION,
+#else
+            "",
 #endif
 #ifdef KOG_BUILD_REVISION_HASH_SHORT
-            .revisionHashShort = KOG_BUILD_REVISION_HASH_SHORT,
+            KOG_BUILD_REVISION_HASH_SHORT,
+#else
+            "",
 #endif
 #ifdef KOG_BUILD_REVISION_HASH
-            .revisionHash = KOG_BUILD_REVISION_HASH,
+            KOG_BUILD_REVISION_HASH,
+#else
+            "",
 #endif
 #ifdef KOG_BUILD_DIRTY
-            .dirty = KOG_BUILD_DIRTY,
+            KOG_BUILD_DIRTY,
+#else
+            "",
 #endif
 #ifdef KOG_BUILD_HOST_NAME
-            .host = KOG_BUILD_HOST_NAME,
+            KOG_BUILD_HOST_NAME,
+#else
+            "",
 #endif
 #ifdef KOG_BUILD_CI
-            .ci = KOG_BUILD_CI,
+            KOG_BUILD_CI,
+#else
+            "",
 #endif
 #ifdef KOG_BUILD_CONTEXT
-            .context = KOG_BUILD_CONTEXT,
+            KOG_BUILD_CONTEXT,
+#else
+            "",
 #endif
 #ifdef KOG_BUILD_PIPELINE_ID
-            .pipeline = KOG_BUILD_PIPELINE_ID,
+            KOG_BUILD_PIPELINE_ID,
+#else
+            "",
 #endif
 #ifdef KOG_BUILD_TOOLCHAIN
-            .toolchain = KOG_BUILD_TOOLCHAIN,
+            KOG_BUILD_TOOLCHAIN,
+#else
+            "",
 #endif
 #ifdef KOG_BUILD_GENERATOR
-            .generator = KOG_BUILD_GENERATOR,
+            KOG_BUILD_GENERATOR,
+#else
+            "",
 #endif
 #ifdef KOG_BUILD_PRESET
-            .preset = KOG_BUILD_PRESET,
+            KOG_BUILD_PRESET,
+#else
+            "",
 #endif
 #ifdef KOG_BUILD_CONFIGURATION
-            .configuration = KOG_BUILD_CONFIGURATION,
+            KOG_BUILD_CONFIGURATION,
+#else
+            "",
 #endif
 #ifdef KOG_BUILD_PLATFORM
-            .platform = KOG_BUILD_PLATFORM,
+            KOG_BUILD_PLATFORM,
+#else
+            "",
 #endif
-        });
+        };
     }();
 
     return snapshot;

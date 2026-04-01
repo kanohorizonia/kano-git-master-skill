@@ -74,6 +74,13 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Checkout kano-cpp-test-skill
+        uses: actions/checkout@v4
+        with:
+          repository: kanohorizonia/kano-cpp-test-skill
+          ref: main
+          path: _tools/kano-cpp-test-skill
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -166,6 +173,13 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Checkout kano-cpp-test-skill
+        uses: actions/checkout@v4
+        with:
+          repository: kanohorizonia/kano-cpp-test-skill
+          ref: main
+          path: _tools/kano-cpp-test-skill
+
       # ─── Linux: Install LLVM for llvm-cov ───────────────────────────────────
       - name: Install LLVM (Linux)
         if: runner.os == 'Linux'
@@ -239,18 +253,19 @@ jobs:
           cd src/cpp
           cmake --build --preset ${{ matrix.build_preset }}
 
-      # ─── Run Tests (produces .coverage on Windows) ─────────────────────────
-      - name: Run tests with coverage (Windows)
+      # ─── Run Tests + Coverage via shared skill (Windows Microsoft) ─────────
+      - name: Run tests and Microsoft coverage report (Windows)
         if: runner.os == 'Windows'
+        shell: bash
         env:
-          KOG_CPP_ROOT: ${{ github.workspace }}/src/cpp
+          KANO_REPORT_ROOT: ${{ github.workspace }}
+          KANO_REPORT_SLUG: ${{ matrix.report_slug }}
+          KANO_COVERAGE_TOOL: ${{ env.KOG_WINDOWS_COVERAGE_TOOL }}
+          KANO_RUNSETTINGS: ${{ github.workspace }}/coverage/windows-coverage.config
         run: |
-          New-Item -ItemType Directory -Force -Path coverage/${{ matrix.name }} | Out-Null
-          New-Item -ItemType Directory -Force -Path test-results/${{ matrix.report_slug }} | Out-Null
           cd src/cpp
-          $tool = $env:KOG_WINDOWS_COVERAGE_TOOL
-          $settingsPath = Join-Path ${{ github.workspace }} 'coverage\windows-coverage.config'
-          @"
+          mkdir -p "$GITHUB_WORKSPACE/coverage"
+          cat > "$KANO_RUNSETTINGS" <<EOF
 <?xml version="1.0" encoding="utf-8"?>
 <Configuration>
   <CodeCoverage>
@@ -261,12 +276,12 @@ jobs:
         <ModulePath>.*kano-git-tui\.exe$</ModulePath>
       </Include>
       <IncludeDirectories>
-        <Directory Recursive="true">${{ github.workspace }}\src\cpp\out\bin\windows-ninja-msvc-coverage\debug</Directory>
+        <Directory Recursive="true">${GITHUB_WORKSPACE}\src\cpp\out\bin\windows-ninja-msvc-coverage\debug</Directory>
       </IncludeDirectories>
     </ModulePaths>
     <SymbolSearchPaths>
-      <Path>${{ github.workspace }}\src\cpp\out\bin\windows-ninja-msvc-coverage\debug</Path>
-      <Path>${{ github.workspace }}\src\cpp\out\obj\windows-ninja-msvc-coverage\symbols\debug</Path>
+      <Path>${GITHUB_WORKSPACE}\src\cpp\out\bin\windows-ninja-msvc-coverage\debug</Path>
+      <Path>${GITHUB_WORKSPACE}\src\cpp\out\obj\windows-ninja-msvc-coverage\symbols\debug</Path>
     </SymbolSearchPaths>
     <EnableStaticNativeInstrumentation>True</EnableStaticNativeInstrumentation>
     <EnableDynamicNativeInstrumentation>False</EnableDynamicNativeInstrumentation>
@@ -274,100 +289,67 @@ jobs:
     <IncludeTestAssembly>True</IncludeTestAssembly>
   </CodeCoverage>
 </Configuration>
-"@ | Set-Content $settingsPath
-          ./out/bin/${{ matrix.build_preset }}/${{ matrix.test_target }} --reporter junit --out "${{ github.workspace }}/test-results/${{ matrix.report_slug }}/tests.xml"
-          & $tool collect --settings $settingsPath "./out/bin/${{ matrix.build_preset }}/${{ matrix.test_target }}" -o "${{ github.workspace }}/coverage/${{ matrix.name }}/windows.coverage" -f coverage
+EOF
+          export KANO_TEST_COMMAND='./out/bin/${{ matrix.build_preset }}/${{ matrix.test_target }} --reporter junit --out "$KANO_TEST_XML"'
+          export KANO_COVERAGE_COMMAND='./out/bin/${{ matrix.build_preset }}/${{ matrix.test_target }}'
+          bash "$GITHUB_WORKSPACE/_tools/kano-cpp-test-skill/src/shell/reports/windows/microsoft-report.sh"
 
-      # ─── Run Tests (produces .profraw on Unix) ───────────────────────────────
-      - name: Run tests with coverage (Unix)
-        if: runner.os != 'Windows'
+      # ─── Run Tests + Coverage via shared skill (Linux LLVM) ──────────────────
+      - name: Run tests and LLVM coverage report (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
         env:
-          KOG_COVERAGE_ROOT: ${{ github.workspace }}/coverage
-          LLVM_PROFILE_FILE: ${{ github.workspace }}/coverage/${{ matrix.name }}_%m.profraw
+          KANO_REPORT_ROOT: ${{ github.workspace }}
+          KANO_REPORT_SLUG: ${{ matrix.report_slug }}
+          KANO_LLVM_PROFDATA: llvm-profdata
+          KANO_LLVM_COV: llvm-cov
+          KANO_LLVM_IGNORE_FILENAME_REGEX: _deps|catch2|ftxui|thirdparty|build|\.vcpkg
         run: |
-          mkdir -p coverage test-results/${{ matrix.report_slug }}
+          export PATH="${{ matrix.llvm_cov_path }}:$PATH"
           cd src/cpp
-          # Run tests with JUnit output if supported
-          # Catch2 supports: --reporter junit
-          ./out/bin/${{ matrix.build_preset }}/${{ matrix.test_target }} --reporter junit --out "${{ github.workspace }}/test-results/${{ matrix.report_slug }}/tests.xml" || true
+          export KANO_TEST_COMMAND='./out/bin/${{ matrix.build_preset }}/${{ matrix.test_target }} --reporter junit --out "$KANO_TEST_XML" || true'
+          export KANO_TEST_BINARY="./out/bin/${{ matrix.build_preset }}/${{ matrix.test_target }}"
+          bash "$GITHUB_WORKSPACE/_tools/kano-cpp-test-skill/src/shell/reports/linux/llvm-report.sh"
 
-      # ─── Run Tests (produces .profraw on Unix) ───────────────────────────────
-      - name: Run tests with coverage (Unix)
-        if: runner.os != 'Windows'
+      - name: Run tests and LLVM coverage report (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
         env:
-          KOG_CPP_ROOT: ${{ github.workspace }}/src/cpp
-          LLVM_PROFILE_FILE: ${{ github.workspace }}/coverage/${{ matrix.name }}_%m.profraw
+          KANO_REPORT_ROOT: ${{ github.workspace }}
+          KANO_REPORT_SLUG: ${{ matrix.report_slug }}
+          KANO_LLVM_PROFDATA: llvm-profdata
+          KANO_LLVM_COV: llvm-cov
+          KANO_LLVM_IGNORE_FILENAME_REGEX: _deps|catch2|ftxui|thirdparty|build|\.vcpkg
         run: |
-          mkdir -p coverage
+          export PATH="${{ matrix.llvm_cov_path }}:$PATH"
           cd src/cpp
-          ./out/bin/${{ matrix.build_preset }}/${{ matrix.test_target }}
-
-      # ─── Windows: Export XML/Cobertura via dotnet-coverage ─────────────────
-      - name: Generate coverage report (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $tool = $env:KOG_WINDOWS_COVERAGE_TOOL
-          $coverageDir = "coverage/${{ matrix.name }}"
-          $coverageFile = "$coverageDir/windows.coverage"
-          if (Test-Path $coverageFile) {
-            & $tool merge $coverageFile -o "$coverageDir/coverage.xml" -f xml
-            & $tool merge $coverageFile -o "$coverageDir/coverage.cobertura.xml" -f cobertura
-            @(
-              'Windows coverage collected via Microsoft.CodeCoverage.Console with MSVC /PROFILE.',
-              'If the profiler fails to initialize on a runner, coverage.xml may contain only skipped modules.'
-            ) | Set-Content "$coverageDir/summary.txt"
-          }
+          export KANO_TEST_COMMAND='./out/bin/${{ matrix.build_preset }}/${{ matrix.test_target }} --reporter junit --out "$KANO_TEST_XML" || true'
+          export KANO_TEST_BINARY="./out/bin/${{ matrix.build_preset }}/${{ matrix.test_target }}"
+          bash "$GITHUB_WORKSPACE/_tools/kano-cpp-test-skill/src/shell/reports/macos/llvm-report.sh"
 
       - name: Generate OpenCppCoverage report (Windows)
         if: runner.os == 'Windows'
         shell: bash
         env:
-          KOG_OPENCPPCOVERAGE_EXE: ${{ env.KOG_OPENCPPCOVERAGE_EXE }}
-          KOG_COVERAGE_ROOT: ${{ github.workspace }}/coverage/windows-x64-opencppcoverage
+          KANO_REPORT_ROOT: ${{ github.workspace }}
+          KANO_REPORT_SLUG: windows-x64-opencppcoverage
+          KANO_OPENCPPCOVERAGE_EXE: ${{ env.KOG_OPENCPPCOVERAGE_EXE }}
+          KANO_OPENCPPCOVERAGE_SOURCES: ${{ github.workspace }}/src/cpp/code
+          KANO_OPENCPPCOVERAGE_MODULES: '*kano*'
+          KANO_OPENCPPCOVERAGE_EXCLUDED_SOURCES: ${{ github.workspace }}/src/cpp/out/obj/*;${{ github.workspace }}/src/cpp/out/bin/*
         run: |
-          bash src/cpp/scripts/windows/ninja-msvc-opencppcoverage-run.sh
-
-      # ─── Unix: Generate HTML Report via llvm-cov ─────────────────────────────
-      - name: Generate HTML coverage report (Unix)
-        if: runner.os != 'Windows'
-        env:
-          PATH: "${{ matrix.llvm_cov_path }}:$env:PATH"
-        run: |
-          cd ${{ github.workspace }}
-          # Merge profraw files
-          ${{ matrix.profdata_merge }} coverage/${{ matrix.name }}_*.profraw -o coverage/${{ matrix.name }}.profdata 2>/dev/null || true
-          # Generate HTML
-          mkdir -p coverage/html/${{ matrix.name }}
-          llvm-cov show \
-            ./src/cpp/out/bin/${{ matrix.build_preset }}/${{ matrix.test_target }} \
-            -instr-profile=coverage/${{ matrix.name }}.profdata \
-            --format=html \
-            --output-dir=coverage/html/${{ matrix.name }} \
-            --ignore-filename-regex="_deps|catch2|ftxui|thirdparty|build|\.vcpkg" 2>&1 || true
+          cd src/cpp
+          export KANO_TEST_COMMAND='./out/bin/${{ matrix.build_preset }}/${{ matrix.test_target }} --reporter junit --out "$KANO_TEST_XML"'
+          export KANO_OPENCPPCOVERAGE_TEST_COMMAND="$KANO_TEST_COMMAND"
+          bash "$GITHUB_WORKSPACE/_tools/kano-cpp-test-skill/src/shell/reports/windows/opencppcoverage-report.sh"
 
       # ─── Package and Upload ──────────────────────────────────────────────────
-      - name: Package coverage report
+      - name: Package normalized reports
+        shell: bash
         run: |
-          cd ${{ github.workspace }}
-          # Create index that links all platforms
-          cat > coverage/index.html << 'HTMLEOF'
-          <!DOCTYPE html>
-          <html><head><title>Code Coverage Reports</title></head>
-          <body>
-          <h1>Code Coverage Reports</h1>
-          <ul>
-            <li><a href="macos-x64/index.html">macOS x64</a></li>
-            <li><a href="macos-arm64/index.html">macOS ARM64</a></li>
-            <li><a href="linux-x64/index.html">Linux x64</a></li>
-            <li><a href="windows-x64/index.html">Windows x64</a></li>
-            <li><a href="windows-x64-opencppcoverage/index.html">Windows x64 OpenCppCoverage</a></li>
-            <li><a href="windows-x64-compare/index.html">Windows x64 Compare</a></li>
-          </ul>
-          </body></html>
-          HTMLEOF
-          # Package contents of coverage/ directly (not the directory itself)
-          tar -czf coverage-reports.tar.gz -C coverage .
+          export KANO_REPORT_ROOT="$GITHUB_WORKSPACE"
+          export KANO_REPORT_SLUG=package-all
+          bash "$GITHUB_WORKSPACE/_tools/kano-cpp-test-skill/src/shell/reports/common/package-reports.sh"
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
@@ -375,42 +357,6 @@ jobs:
           name: coverage-reports
           path: coverage-reports.tar.gz
           if-no-files-found: warning
-
-      # ─── Package test results ───────────────────────────────────────────────
-      - name: Package test report
-        run: |
-          cd ${{ github.workspace }}
-          # Create combined test results index
-          cat > test-results/index.html << 'HTMLEOF'
-          <!DOCTYPE html>
-          <html><head><title>Test Reports</title></head>
-          <body>
-          <h1>Test Reports</h1>
-          <ul>
-            <li><a href="macos-x64/index.html">macOS x64</a></li>
-            <li><a href="macos-arm64/index.html">macOS ARM64</a></li>
-            <li><a href="linux-x64/index.html">Linux x64</a></li>
-            <li><a href="windows-x64/index.html">Windows x64</a></li>
-          </ul>
-          </body></html>
-          HTMLEOF
-          for platform_dir in test-results/*; do
-            if [[ -d "$platform_dir" ]] && [[ -f "$platform_dir/tests.xml" ]]; then
-              platform_name="$(basename "$platform_dir")"
-              cat > "$platform_dir/index.html" <<HTMLEOF
-<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${platform_name} Test Report</title></head>
-<body>
-<h1>${platform_name} Test Report</h1>
-<p>Raw JUnit XML artifact for this platform:</p>
-<p><a href="tests.xml">tests.xml</a></p>
-</body>
-</html>
-HTMLEOF
-            fi
-          done
-          tar -czf test-reports.tar.gz -C test-results .
 
       - name: Upload test artifact
         uses: actions/upload-artifact@v4
