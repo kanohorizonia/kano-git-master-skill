@@ -1548,13 +1548,19 @@ auto BuildSyncPlans(
                 branchSource = "root detached -> remote default";
             }
         } else if (isRegistered) {
-            const auto configured = GitmodulesBranchForPath(root, repoPath);
-            if (configured.has_value() && !configured->empty()) {
-                targetBranch = *configured;
-                branchSource = "registered .gitmodules branch";
+            const auto latestTag = ResolveLatestStableTag(repoPath);
+            if (!latestTag.empty()) {
+                targetBranch = std::string{"branch_"} + latestTag;
+                branchSource = "registered latest upstream stable tag";
             } else {
-                targetBranch = DetectRemoteDefaultBranch(repoPath, remote);
-                branchSource = "registered remote default branch";
+                const auto configured = GitmodulesBranchForPath(root, repoPath);
+                if (configured.has_value() && !configured->empty()) {
+                    targetBranch = *configured;
+                    branchSource = "registered .gitmodules branch";
+                } else {
+                    targetBranch = DetectRemoteDefaultBranch(repoPath, remote);
+                    branchSource = "registered remote default branch";
+                }
             }
         } else {
             if (!current.empty()) {
@@ -1707,7 +1713,7 @@ auto RunNativeOriginLatestSync(
         std::string branchSource = plan.branchSource;
         const bool isSelfRepo = selfRepoRoot.has_value() && std::filesystem::weakly_canonical(plan.path) == *selfRepoRoot;
         const auto headBeforeSync = isSelfRepo ? CurrentHeadCommit(plan.path) : std::string{};
-        if (plan.type == "registered") {
+        if (plan.type == "registered" && targetBranch.empty()) {
             const auto refreshed = GitmodulesBranchForPath(root, plan.path);
             if (refreshed.has_value() && !refreshed->empty() && *refreshed != targetBranch) {
                 targetBranch = *refreshed;
@@ -2026,7 +2032,7 @@ auto RunNativePreCommitRepair(
         std::string branchSource;
         std::string targetBranch;
 
-        if (isRegistered) {
+        if (isRegistered && InBranchMode != BranchMode::StableDev) {
             const auto configured = GitmodulesBranchForPath(root, repoPath);
             if (configured.has_value() && !configured->empty()) {
                 targetBranch = *configured;

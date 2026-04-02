@@ -2,6 +2,7 @@ add_library(kano_git_version STATIC)
 
 target_sources(kano_git_version
   PRIVATE
+    private/version.cpp
     public/version.hpp
 )
 

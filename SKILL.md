@@ -534,6 +534,9 @@ Two explicit sync workflows:
 
 **Stable-dev mode selection rule (generic):**
 - Repos with `upstream` run stable-dev tag + cherry-pick flow.
+- In `stable-dev`, the target line is derived from the latest upstream stable tag first:
+  - infer target branch as `branch_<latest-stable-tag>`
+  - after successful retarget/sync, write that branch back into the nearest superproject `.gitmodules`
 - Repos without `upstream` use fallback branch sync:
   - first read branch from nearest superproject `.gitmodules`
   - if not defined, fallback to remote default branch
