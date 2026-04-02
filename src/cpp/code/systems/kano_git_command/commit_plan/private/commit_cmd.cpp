@@ -241,40 +241,62 @@ auto PathHasWindowsReservedDeviceComponent(const std::string& InPath) -> bool {
 #endif
 }
 
+auto IsInternalPipelineArtifactPathForStaging(const std::string& InPath) -> bool {
+    auto path = InPath;
+    std::replace(path.begin(), path.end(), '\\', '/');
+    const auto lower = ToLower(path);
+    auto startsWith = [&](const char* token) {
+        return lower == token ||
+               lower.rfind(token, 0) == 0 ||
+               lower.find(std::string("/") + token) != std::string::npos;
+    };
+    return startsWith(".kano") || startsWith(".sisyphus") ||
+           startsWith("kano") || startsWith("sisyphus");
+}
+
 auto BuildGitAddAllArgs(const CommitPreflightReport& InReport, std::vector<std::string>* OutExcluded = nullptr)
     -> std::vector<std::string> {
     std::vector<std::string> args{"add", "-A"};
-#if defined(_WIN32)
+
     std::vector<std::string> excluded;
     std::set<std::string> seen;
-    auto collect = [&](const std::vector<std::string>& paths) {
+
+#if defined(_WIN32)
+    auto collectReserved = [&](const std::vector<std::string>& paths) {
         for (const auto& path : paths) {
-            if (!PathHasWindowsReservedDeviceComponent(path)) {
-                continue;
-            }
-            if (!seen.insert(path).second) {
-                continue;
-            }
+            if (!PathHasWindowsReservedDeviceComponent(path)) continue;
+            if (!seen.insert(path).second) continue;
             excluded.push_back(path);
         }
     };
-    collect(InReport.untrackedFiles);
-    collect(InReport.unstagedFiles);
-    collect(InReport.stagedFiles);
+    collectReserved(InReport.untrackedFiles);
+    collectReserved(InReport.unstagedFiles);
+    collectReserved(InReport.stagedFiles);
+#endif
+
+    // Always exclude internal pipeline artifacts on all platforms
+    auto collectArtifact = [&](const std::vector<std::string>& paths) {
+        for (const auto& path : paths) {
+            if (!IsInternalPipelineArtifactPathForStaging(path)) continue;
+            if (!seen.insert(path).second) continue;
+            excluded.push_back(path);
+        }
+    };
+    collectArtifact(InReport.untrackedFiles);
+    collectArtifact(InReport.unstagedFiles);
+    collectArtifact(InReport.stagedFiles);
+
     if (!excluded.empty()) {
         args.push_back("--");
         args.push_back(".");
         for (const auto& path : excluded) {
             args.push_back(std::string(":(exclude)") + path);
         }
-        if (OutExcluded != nullptr) {
-            *OutExcluded = std::move(excluded);
-        }
     }
-#else
-    (void)InReport;
-    (void)OutExcluded;
-#endif
+
+    if (OutExcluded != nullptr) {
+        *OutExcluded = std::move(excluded);
+    }
     return args;
 }
 
@@ -4503,6 +4525,12 @@ void RegisterAmend(CLI::App& InApp) {
     auto* bAiAuto = new bool{false};
     cmd->add_flag("--ai-auto,--ai", *bAiAuto, "Enable AI auto mode (provider auto + layered kog_config model selection)");
 
+    auto* amendPlanFile = new std::string{};
+    cmd->add_option("--plan-file", *amendPlanFile, "Plan JSON file used to source amend message(s)");
+
+    auto* amendPlanStage = new std::string{"commit"};
+    cmd->add_option("--plan-stage", *amendPlanStage, "Plan stage: commit|post_sync|both")->default_str("commit");
+
     auto* message = new std::string{};
     cmd->add_option("--message,-m", *message, "Amend commit message (skips AI generation)");
 
@@ -4547,6 +4575,11 @@ void RegisterAmend(CLI::App& InApp) {
             std::exit(2);
         }
 
+        if (!amendPlanFile->empty() && !message->empty()) {
+            std::cerr << "Error: --plan-file cannot be combined with --message/-m\n";
+            std::exit(2);
+        }
+
         auto reposCsv = Trim(*repos);
         std::vector<std::filesystem::path> repoList;
         if (!reposCsv.empty()) {
@@ -4560,13 +4593,58 @@ void RegisterAmend(CLI::App& InApp) {
             repoList.push_back(std::filesystem::current_path().lexically_normal());
         }
 
+        std::unordered_map<std::string, std::vector<RepoCommitPlanEntry::CommitItem>> stageMessages;
+        if (!amendPlanFile->empty()) {
+            std::string planError;
+            const auto normalizedPlanPath = NormalizeInputPathForCurrentPlatform(*amendPlanFile);
+            const auto parsed = ParseCommitPlan(std::filesystem::path(normalizedPlanPath), &planError);
+            if (!parsed.has_value()) {
+                std::cerr << "Error: invalid --plan-file: " << normalizedPlanPath;
+                if (!planError.empty()) {
+                    std::cerr << " (" << planError << ")";
+                }
+                std::cerr << "\n";
+                std::exit(2);
+            }
+
+            std::string validationError;
+            if (!ValidateCommitPlanForAiMode(*parsed, &validationError)) {
+                std::cerr << "Error: invalid --plan-file: " << normalizedPlanPath;
+                if (!validationError.empty()) {
+                    std::cerr << " (" << validationError << ")";
+                }
+                std::cerr << "\n";
+                std::exit(2);
+            }
+
+            const auto selectedPlanStage = ParseCommitPlanStage(*amendPlanStage);
+            if (!selectedPlanStage.has_value()) {
+                std::cerr << "Error: invalid --plan-stage value: " << *amendPlanStage
+                          << " (expected commit|post_sync|both)\n";
+                std::exit(2);
+            }
+
+            stageMessages = BuildStageMessageMap(*parsed, *selectedPlanStage);
+            if (stageMessages.empty()) {
+                std::cerr << "Error: no amend messages found in selected --plan-stage\n";
+                std::exit(2);
+            }
+        }
+
         std::vector<RepoAmendResult> results;
         results.reserve(repoList.size());
 
         for (const auto& repo : repoList) {
             const auto label = DisplayRepoLabel(workspaceRoot, repo);
             std::cout << "\n[amend] " << label << "\n";
-            const auto one = AmendSingleRepo(workspaceRoot, repo, *message, *bStagedOnly, *bCombineUnpushed, ai);
+            std::string effectiveMessage = *message;
+            if (effectiveMessage.empty() && !stageMessages.empty()) {
+                const auto planned = ResolveRepoMessages(stageMessages, workspaceRoot, repo, "");
+                if (!planned.empty()) {
+                    effectiveMessage = Trim(planned.front().message);
+                }
+            }
+            const auto one = AmendSingleRepo(workspaceRoot, repo, effectiveMessage, *bStagedOnly, *bCombineUnpushed, ai);
             results.push_back(one);
         }
 

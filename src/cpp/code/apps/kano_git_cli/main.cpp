@@ -185,10 +185,7 @@ std::string DefaultPlanPath() {
     if (const char* explicitPlan = std::getenv("KOG_PLAN_FILE"); explicitPlan != nullptr && *explicitPlan != '\0') {
         return std::string{explicitPlan};
     }
-    std::filesystem::path root = std::filesystem::current_path();
-    if (const char* rootEnv = std::getenv("KANO_GIT_MASTER_ROOT"); rootEnv != nullptr && *rootEnv != '\0') {
-        root = std::filesystem::path{rootEnv};
-    }
+    const std::filesystem::path root = std::filesystem::current_path();
     return (root / ".kano" / "tmp" / "git" / "plans" / "default-plan.json").lexically_normal().generic_string();
 }
 
@@ -410,7 +407,7 @@ void RewriteCommitAiFlagsAndPlan(std::vector<std::string>& InOutArgs) {
         return;
     }
     const std::string& cmd = InOutArgs[1];
-    if (cmd != "commit" && cmd != "amend" && cmd != "commit-push") {
+    if (cmd != "commit" && cmd != "amend" && cmd != "commit-push" && cmd != "cherry-pick") {
         return;
     }
 
