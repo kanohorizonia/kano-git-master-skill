@@ -35,6 +35,11 @@
 #include <utility>
 
 namespace kano::git::commands {
+
+auto IsProbableIgnoreArtifactPath(const std::string& InPath) -> bool;
+auto IsInternalPipelineArtifactPath(const std::string& InPath) -> bool;
+auto ParseStatusChangedPath(const std::string& InLine) -> std::optional<std::string>;
+
 namespace {
 
 auto DisplayRepoLabel(const std::filesystem::path& InWorkspaceRoot, const std::filesystem::path& InRepo) -> std::string;
@@ -571,31 +576,32 @@ auto LoadNormalizedLineSet(const std::filesystem::path& InFile) -> std::unordere
     return out;
 }
 
-auto IsProbableIgnoreArtifactPath(const std::string& InPath) -> bool {
-    auto p = InPath;
-    std::replace(p.begin(), p.end(), '\\', '/');
-    const auto lower = ToLower(p);
-    auto contains = [&](const std::string& token) { return lower.find(token) != std::string::npos; };
-    if (lower == ".kano" || lower.rfind(".kano/", 0) == 0 || contains("/.kano/") ||
-        contains("/.cache/") || contains("/.pytest_cache/") || contains("/.mypy_cache/") || contains("/.idea/") || contains("/.vscode/")) {
-        return true;
-    }
-    if (contains("/node_modules/") || contains("/dist/") || contains("/build/") || contains("/bin/") || contains("/obj/") || contains("/target/")) {
-        return true;
-    }
-    return lower.ends_with(".log") || lower.ends_with(".tmp") || lower.ends_with(".temp") || lower.ends_with(".cache") ||
-           lower.ends_with(".bak") || lower.ends_with(".swp") || lower.ends_with(".swo") || lower.ends_with(".class") ||
-           lower.ends_with(".obj") || lower.ends_with(".o") || lower.ends_with(".pdb") || lower.ends_with(".ilk") ||
-           lower.ends_with(".dmp") || lower.ends_with(".pyc");
-}
+auto CollectIgnoreGateCandidatePaths(const std::filesystem::path& InRepo) -> std::vector<std::string> {
+    std::set<std::string> files;
 
-auto IsInternalPipelineArtifactPath(const std::string& InPath) -> bool {
-    auto lower = ToLower(InPath);
-    std::replace(lower.begin(), lower.end(), '\\', '/');
-    // Also check for kano/ without leading dot (for paths extracted from modified status lines)
-    return lower == ".kano" || lower == "kano" || 
-           lower.rfind(".kano/", 0) == 0 || lower.rfind("kano/", 0) == 0 ||
-           lower.find("/.kano/") != std::string::npos || lower.find("/kano/") != std::string::npos;
+    if (const auto untracked = GitCapture(InRepo, {"ls-files", "--others", "--exclude-standard"}); untracked.exitCode == 0) {
+        std::istringstream iss(untracked.stdoutStr);
+        std::string line;
+        while (std::getline(iss, line)) {
+            auto path = Trim(line);
+            if (!path.empty()) {
+                files.insert(path);
+            }
+        }
+    }
+
+    if (const auto status = GitCapture(InRepo, {"status", "--short"}); status.exitCode == 0) {
+        std::istringstream iss(status.stdoutStr);
+        std::string line;
+        while (std::getline(iss, line)) {
+            const auto maybePath = ParseStatusChangedPath(line);
+            if (maybePath.has_value() && !maybePath->empty()) {
+                files.insert(*maybePath);
+            }
+        }
+    }
+
+    return std::vector<std::string>(files.begin(), files.end());
 }
 
 auto ParseStatusChangedPath(const std::string& InLine) -> std::optional<std::string> {
@@ -742,14 +748,7 @@ auto RunPipelineSafetyGatesForNonAiCommit(const std::filesystem::path& InWorkspa
         for (const auto& repo : repos) {
             const auto rel = repo.lexically_relative(InWorkspaceRoot).generic_string();
             const auto repoLabel = rel.empty() ? "." : rel;
-            const auto untracked = GitCapture(repo, {"ls-files", "--others", "--exclude-standard"});
-            if (untracked.exitCode != 0) {
-                continue;
-            }
-            std::istringstream iss(untracked.stdoutStr);
-            std::string path;
-            while (std::getline(iss, path)) {
-                auto p = Trim(path);
+            for (auto p : CollectIgnoreGateCandidatePaths(repo)) {
                 if (p.empty() || !IsProbableIgnoreArtifactPath(p)) {
                     continue;
                 }
@@ -4145,20 +4144,27 @@ void RegisterCommit(CLI::App& InApp) {
                       << " review=" << (ai.reviewEnabled ? "on" : "off") << "\n";
         }
 
-        const bool planFileRequested = !commitPlanFile->empty();
-        std::cerr << "[DEBUG] BEFORE CLEAR: planFileRequested=" << planFileRequested << " commitPlanFile=[" << *commitPlanFile << "]" << std::endl;
-        // TEMP FIX: Clear commitPlanFile if it was set to the default path but file doesn't exist
-        if (planFileRequested) {
+        const auto defaultSharedPlanPath = DefaultSharedPlanPath(workspaceRoot).lexically_normal();
+        const auto currentPlanPath = commitPlanFile->empty() ? std::filesystem::path{} : std::filesystem::path(*commitPlanFile).lexically_normal();
+        const bool usingDefaultSharedPlanPath = !commitPlanFile->empty() && currentPlanPath == defaultSharedPlanPath;
+        const bool explicitPlanFileRequested = !commitPlanFile->empty() && !usingDefaultSharedPlanPath;
+        std::cerr << "[DEBUG] BEFORE CLEAR: explicitPlanFileRequested=" << explicitPlanFileRequested
+                  << " usingDefaultSharedPlanPath=" << usingDefaultSharedPlanPath
+                  << " commitPlanFile=[" << *commitPlanFile << "]" << std::endl;
+        if (usingDefaultSharedPlanPath && ai.enabled && message->empty()) {
+            std::cerr << "[DEBUG] AI auto mode ignoring cached default shared plan path" << std::endl;
+            commitPlanFile->clear();
+        } else if (explicitPlanFileRequested) {
             auto checkPath = std::filesystem::path(*commitPlanFile);
             if (!std::filesystem::exists(checkPath)) {
-                std::cerr << "[DEBUG] plan file doesn't exist, clearing commitPlanFile" << std::endl;
+                std::cerr << "[DEBUG] explicit plan file doesn't exist, clearing commitPlanFile" << std::endl;
                 commitPlanFile->clear();
             }
         }
         const bool autoPlanAiMode = ai.enabled && message->empty() && commitPlanFile->empty();
         std::cerr << "[DEBUG] autoPlanAiMode check: ai.enabled=" << ai.enabled 
                   << " message->empty()=" << message->empty() 
-                  << " planFileRequested=" << planFileRequested 
+                  << " explicitPlanFileRequested=" << explicitPlanFileRequested 
                   << " commitPlanFile=[" << *commitPlanFile << "]"
                   << " => autoPlanAiMode=" << autoPlanAiMode << std::endl;
         std::cerr.flush();

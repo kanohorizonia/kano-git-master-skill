@@ -25,6 +25,11 @@
 #include <vector>
 
 namespace kano::git::commands {
+
+auto IsProbableIgnoreArtifactPath(const std::string& InPath) -> bool;
+auto IsInternalPipelineArtifactPath(const std::string& InPath) -> bool;
+auto ParseStatusChangedPath(const std::string& InLine) -> std::optional<std::string>;
+
 namespace {
 
 auto Trim(std::string InValue) -> std::string {
@@ -471,28 +476,57 @@ auto LoadNormalizedLineSet(const std::filesystem::path& InFile) -> std::unordere
     return out;
 }
 
-auto IsProbableIgnoreArtifactPath(const std::string& InPath) -> bool {
-    auto p = InPath;
-    std::replace(p.begin(), p.end(), '\\', '/');
-    const auto lower = ToLower(p);
-    auto contains = [&](const std::string& token) { return lower.find(token) != std::string::npos; };
-    if (lower == ".kano" || lower.rfind(".kano/", 0) == 0 || contains("/.kano/") ||
-        contains("/.cache/") || contains("/.pytest_cache/") || contains("/.mypy_cache/") || contains("/.idea/") || contains("/.vscode/")) {
-        return true;
+auto ParseStatusChangedPath(const std::string& InLine) -> std::optional<std::string> {
+    if (InLine.size() < 4) {
+        return std::nullopt;
     }
-    if (contains("/node_modules/") || contains("/dist/") || contains("/build/") || contains("/bin/") || contains("/obj/") || contains("/target/")) {
-        return true;
+    const char x = InLine[0];
+    const char y = InLine[1];
+    if (x == 'D' || y == 'D') {
+        return std::nullopt;
     }
-    return lower.ends_with(".log") || lower.ends_with(".tmp") || lower.ends_with(".temp") || lower.ends_with(".cache") ||
-           lower.ends_with(".bak") || lower.ends_with(".swp") || lower.ends_with(".swo") || lower.ends_with(".class") ||
-           lower.ends_with(".obj") || lower.ends_with(".o") || lower.ends_with(".pdb") || lower.ends_with(".ilk") ||
-           lower.ends_with(".dmp") || lower.ends_with(".pyc");
+    if (x == '?' && y == '?') {
+        return Trim(InLine.substr(3));
+    }
+    auto path = Trim(InLine.substr(3));
+    const auto arrow = path.find(" -> ");
+    if (arrow != std::string::npos) {
+        path = Trim(path.substr(arrow + 4));
+    }
+    if (path.empty()) {
+        return std::nullopt;
+    }
+    return path;
 }
 
-auto IsInternalPipelineArtifactPath(const std::string& InPath) -> bool {
-    auto lower = ToLower(InPath);
-    std::replace(lower.begin(), lower.end(), '\\', '/');
-    return lower == ".kano" || lower.rfind(".kano/", 0) == 0 || lower.find("/.kano/") != std::string::npos;
+auto CollectIgnoreGateCandidatePaths(const std::filesystem::path& InRepo) -> std::vector<std::string> {
+    std::set<std::string> files;
+
+    if (const auto untracked = shell::ExecuteCommand("git", {"ls-files", "--others", "--exclude-standard"}, shell::ExecMode::Capture, InRepo);
+        untracked.exitCode == 0) {
+        std::istringstream iss(untracked.stdoutStr);
+        std::string line;
+        while (std::getline(iss, line)) {
+            auto path = Trim(line);
+            if (!path.empty()) {
+                files.insert(path);
+            }
+        }
+    }
+
+    if (const auto status = shell::ExecuteCommand("git", {"status", "--short"}, shell::ExecMode::Capture, InRepo);
+        status.exitCode == 0) {
+        std::istringstream iss(status.stdoutStr);
+        std::string line;
+        while (std::getline(iss, line)) {
+            const auto maybePath = ParseStatusChangedPath(line);
+            if (maybePath.has_value() && !maybePath->empty()) {
+                files.insert(*maybePath);
+            }
+        }
+    }
+
+    return std::vector<std::string>(files.begin(), files.end());
 }
 
 struct SecretRule {
@@ -1407,14 +1441,7 @@ auto RunPipelineSafetyGatesForNonAiCommitPush(const std::filesystem::path& InWor
         for (const auto& repo : repos) {
             const auto rel = repo.lexically_relative(workspaceRoot).generic_string();
             const auto repoLabel = rel.empty() ? "." : rel;
-            const auto untracked = shell::ExecuteCommand("git", {"ls-files", "--others", "--exclude-standard"}, shell::ExecMode::Capture, repo);
-            if (untracked.exitCode != 0) {
-                continue;
-            }
-            std::istringstream iss(untracked.stdoutStr);
-            std::string path;
-            while (std::getline(iss, path)) {
-                auto p = Trim(path);
+            for (auto p : CollectIgnoreGateCandidatePaths(repo)) {
                 if (p.empty() || !IsProbableIgnoreArtifactPath(p)) {
                     continue;
                 }

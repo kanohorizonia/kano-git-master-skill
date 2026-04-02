@@ -947,7 +947,17 @@ auto HasValidCommitItems(const std::string& InPlanText) -> bool {
     if (!stages.has_value()) return false;
     const auto commitArray = ExtractArrayBodyForKey(*stages, "commit");
     if (!commitArray.has_value()) return false;
-    return !SplitTopLevelObjects(*commitArray).empty();
+
+    static const std::regex messageRegex(R"KOG("message"\s*:\s*"([^"]+)")KOG");
+    const auto begin = std::sregex_iterator(commitArray->begin(), commitArray->end(), messageRegex);
+    const auto end = std::sregex_iterator();
+    for (auto it = begin; it != end; ++it) {
+        const auto value = Trim((*it)[1].str());
+        if (!value.empty() && value.rfind("replace-with-", 0) != 0) {
+            return true;
+        }
+    }
+    return false;
 }
 
 auto SeedCommitStage(const std::filesystem::path& InWorkspaceRoot,
@@ -1559,29 +1569,41 @@ auto RepoHasGitlinkOnlyChanges(const std::filesystem::path& InRepo) -> bool {
 }
 
 auto IsProbableIgnoreArtifactPath(const std::string& InPath) -> bool {
-    const std::string p = ToLower(InPath);
-    static const std::vector<std::string> extensions = {".exe", ".dll", ".so", ".a", ".o", ".obj", ".pyc", ".class"};
-    for (const auto& ext : extensions) {
-        if (p.ends_with(ext)) return true;
+    auto path = InPath;
+    std::replace(path.begin(), path.end(), '\\', '/');
+    const auto lower = ToLower(path);
+    auto contains = [&](const std::string& token) { return lower.find(token) != std::string::npos; };
+
+    if (lower == ".kano" || lower == ".sisyphus" ||
+        lower.rfind(".kano/", 0) == 0 || lower.rfind(".sisyphus/", 0) == 0 ||
+        contains("/.kano/") || contains("/.sisyphus/") ||
+        contains("/.cache/") || contains("/.pytest_cache/") || contains("/.mypy_cache/") ||
+        contains("/.idea/") || contains("/.vscode/") || contains("/.vs/")) {
+        return true;
     }
-    // Shell scripts are never compiled artifacts — skip them early so that
-    // credential helpers (e.g. bin/get_credential.sh, bin/dump_secrets.sh)
-    // in untracked script directories do not trigger false-positive ignore suggestions.
-    if (p.ends_with(".sh")) return false;
-    return p.find("node_modules/") != std::string::npos ||
-           p.find("build/") != std::string::npos ||
-           p.find("bin/") != std::string::npos ||
-           p.find("obj/") != std::string::npos ||
-           p.find(".vs/") != std::string::npos;
+
+    if (contains("/node_modules/") || contains("/dist/") || contains("/build/") ||
+        contains("/bin/") || contains("/obj/") || contains("/target/")) {
+        return true;
+    }
+
+    return lower.ends_with(".log") || lower.ends_with(".tmp") || lower.ends_with(".temp") ||
+           lower.ends_with(".cache") || lower.ends_with(".bak") || lower.ends_with(".swp") ||
+           lower.ends_with(".swo") || lower.ends_with(".class") || lower.ends_with(".obj") ||
+           lower.ends_with(".o") || lower.ends_with(".pdb") || lower.ends_with(".ilk") ||
+           lower.ends_with(".dmp") || lower.ends_with(".pyc") || lower.ends_with(".exe") ||
+           lower.ends_with(".dll") || lower.ends_with(".so") || lower.ends_with(".a");
 }
 
 auto IsInternalPipelineArtifactPath(const std::string& InPath) -> bool {
     auto lower = ToLower(InPath);
     std::replace(lower.begin(), lower.end(), '\\', '/');
-    // Also check for kano/ without leading dot (for paths extracted from modified status lines)
-    return lower == ".kano" || lower == "kano" || 
+    // Also check for names without leading dot when extracted from status lines.
+    return lower == ".kano" || lower == "kano" || lower == ".sisyphus" || lower == "sisyphus" ||
            lower.rfind(".kano/", 0) == 0 || lower.rfind("kano/", 0) == 0 ||
-           lower.find("/.kano/") != std::string::npos || lower.find("/kano/") != std::string::npos;
+           lower.rfind(".sisyphus/", 0) == 0 || lower.rfind("sisyphus/", 0) == 0 ||
+           lower.find("/.kano/") != std::string::npos || lower.find("/kano/") != std::string::npos ||
+           lower.find("/.sisyphus/") != std::string::npos || lower.find("/sisyphus/") != std::string::npos;
 }
 
 auto DefaultSecretRulesPath(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path {
@@ -1726,9 +1748,12 @@ auto ValidateAiReadyPlan(const std::string& InPlanText, std::string* OutReason) 
         if (OutReason) *OutReason = "missing stages.commit array";
         return false;
     }
-    // Check that commit array has actual entries (not just placeholders)
     if (SplitTopLevelObjects(*commit).empty()) {
         if (OutReason) *OutReason = "no commit entries in stages.commit";
+        return false;
+    }
+    if (!HasValidCommitItems(InPlanText)) {
+        if (OutReason) *OutReason = "no valid non-placeholder commit messages in stages.commit";
         return false;
     }
     return true;
@@ -1954,7 +1979,7 @@ auto RunCommitRunbook(const std::filesystem::path& InWorkspaceRoot,
     if (!ValidateAiReadyPlan(*payload, &reason)) {
         std::cerr << "[plan] validation failed (" << reason << "), regenerating once...\n";
         if (!regenerate()) {
-            // FillPlanByAi failed, try fallback before returning error
+            // FillPlanByAi failed, try fallback before returning error.
             if (auto fallback = TryInjectFallbackCommits(InWorkspaceRoot, *payload)) {
                 WriteFileText(InPlanPath, *fallback);
                 std::cerr << "[plan] fallback_used: true\n";
@@ -1964,7 +1989,7 @@ auto RunCommitRunbook(const std::filesystem::path& InWorkspaceRoot,
         }
         payload = ReadFileText(InPlanPath);
         if (!payload || !ValidateAiReadyPlan(*payload, &reason)) {
-            if (reason == "no commit entries in stages.commit" && payload) {
+            if (payload) {
                 if (auto fallback = TryInjectFallbackCommits(InWorkspaceRoot, *payload)) {
                     WriteFileText(InPlanPath, *fallback);
                     std::cerr << "[plan] fallback_used: true\n";
@@ -2169,6 +2194,7 @@ auto RunIgnoreGate(const std::filesystem::path& InWorkspaceRoot,
         while (std::getline(iss, line)) {
             const auto p = Trim(line);
             if (p.empty() || !IsProbableIgnoreArtifactPath(p)) continue;
+            if (IsInternalPipelineArtifactPath(p)) continue;
             if (allowlist.contains(ToLower(p))) continue;
             candidates.push_back((RelativeDisplayPath(InWorkspaceRoot, repo) == "." ? std::string{} : RelativeDisplayPath(InWorkspaceRoot, repo) + "/") + p);
             if (InLimit > 0 && static_cast<int>(candidates.size()) >= InLimit) break;

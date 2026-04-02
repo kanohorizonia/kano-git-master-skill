@@ -78,6 +78,8 @@ auto CurrentUtcIso8601() -> std::string;
 auto CurrentUtcCompact() -> std::string;
 auto HomeDirectory() -> std::filesystem::path;
 auto Fnv1a64Hex(const std::string& InText) -> std::string;
+auto IsProbableIgnoreArtifactPath(const std::string& InPath) -> bool;
+auto IsInternalPipelineArtifactPath(const std::string& InPath) -> bool;
 auto JsonEscape(std::string InValue) -> std::string;
 
 // Path utilities
