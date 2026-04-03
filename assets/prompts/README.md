@@ -145,3 +145,4 @@ Current config keys:
 - `[ai.model.auto]` — auto model thresholds/models
 - `[plan.ai]`
   - `commit_generation_mode = "single" | "per-commit" | "adaptive"`
+  - `require_success = true | false`

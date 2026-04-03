@@ -300,6 +300,13 @@ auto BuildGitAddAllArgs(const CommitPreflightReport& InReport, std::vector<std::
     return args;
 }
 
+auto RequireAiSuccessForCommitFlow(const std::filesystem::path& InWorkspaceRoot) -> bool {
+    return kog_config::ReadEffectiveBool(InWorkspaceRoot,
+                                         ResolveSkillRoot(InWorkspaceRoot),
+                                         "plan.ai.require_success",
+                                         false);
+}
+
 auto MaybeWarnAboutReservedPaths(const std::filesystem::path& InRepo,
                                  const std::vector<std::string>& InExcluded) -> void {
     if (InExcluded.empty()) {
@@ -3244,6 +3251,11 @@ auto CommitSingleRepo(const std::filesystem::path& InWorkspaceRoot,
         std::string aiFailureReason;
         commitMessage = GenerateAiCommitMessage(InWorkspaceRoot, InRepo, report, InAi, &aiFailureReason);
         if (commitMessage.empty()) {
+            if (InAi.enabled && RequireAiSuccessForCommitFlow(InWorkspaceRoot)) {
+                result.failed = true;
+                result.note = "ai message required by config: " + aiFailureReason;
+                return result;
+            }
             commitMessage = BuildAutoCommitMessage(InWorkspaceRoot, InRepo, report);
             result.note = "ai message unavailable (" + aiFailureReason + "); used native fallback";
         } else {
@@ -3373,6 +3385,11 @@ auto AmendSingleRepo(const std::filesystem::path& InWorkspaceRoot,
             std::string aiFailureReason;
             commitMessage = GenerateAiCommitMessage(InWorkspaceRoot, InRepo, report, InAi, &aiFailureReason);
             if (commitMessage.empty()) {
+                if (InAi.enabled && RequireAiSuccessForCommitFlow(InWorkspaceRoot)) {
+                    result.failed = true;
+                    result.note = "ai message required by config: " + aiFailureReason;
+                    return result;
+                }
                 commitMessage = BuildCombineFallbackMessage(InWorkspaceRoot, InRepo, unpushedCount, report);
                 result.note = "combined with native fallback message (ai unavailable: " + aiFailureReason + ")";
             } else {
@@ -3426,6 +3443,11 @@ auto AmendSingleRepo(const std::filesystem::path& InWorkspaceRoot,
         std::string aiFailureReason;
         commitMessage = GenerateAiCommitMessage(InWorkspaceRoot, InRepo, report, InAi, &aiFailureReason);
         if (commitMessage.empty()) {
+            if (RequireAiSuccessForCommitFlow(InWorkspaceRoot)) {
+                result.failed = true;
+                result.note = "ai message required by config: " + aiFailureReason;
+                return result;
+            }
             result.note = "ai message unavailable (" + aiFailureReason + "); amend keeps previous message";
         } else {
             result.note = "amended with ai-generated message";

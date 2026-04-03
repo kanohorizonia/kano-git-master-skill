@@ -40,6 +40,9 @@ models = ["copilot/gpt-5-mini", "copilot/claude-haiku-4.5", "copilot/gpt-5.4"]
 # Plan AI behavior defaults.
 [plan.ai]
 commit_generation_mode = "single"
+# When true, AI-assisted commit flows must fail instead of silently falling back
+# to deterministic/native commit messages or seeded plan repair.
+require_success = false
 
 # Workspace discovery defaults.
 #

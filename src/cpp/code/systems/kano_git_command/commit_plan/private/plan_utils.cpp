@@ -1016,6 +1016,13 @@ auto AllowDeterministicCommitFallbackForMode(const std::string& InFillMode) -> b
     return true;
 }
 
+auto RequireAiSuccessForPlanFlow(const std::filesystem::path& InWorkspaceRoot) -> bool {
+    return kog_config::ReadEffectiveBool(InWorkspaceRoot,
+                                         ResolveSkillRoot(InWorkspaceRoot),
+                                         "plan.ai.require_success",
+                                         false);
+}
+
 auto BuildSingleCommitFillPrompt(const std::filesystem::path& InWorkspaceRoot,
                                  const std::string& InProvider,
                                  const std::string& InModel,
@@ -1365,11 +1372,13 @@ auto BuildPlanFillOpsPrompt(const std::filesystem::path& InWorkspaceRoot,
                              const std::filesystem::path& InPlanPath,
                              const std::string& InPlanText,
                              const std::string& InDirtyContext) -> std::string {
-    if (const auto text = LoadPromptAssetText(InWorkspaceRoot, "KOG_PLAN_FILL_PROMPT_TEMPLATE", std::filesystem::path("assets") / "prompts" / "base" / "plan-fill.md")) {
+    if (const auto text = LoadPromptAssetText(InWorkspaceRoot, "KOG_PLAN_FILL_SINGLE_PROMPT_TEMPLATE", std::filesystem::path("assets") / "prompts" / "base" / "plan-fill-single.md")) {
         auto prompt = *text;
         prompt = ReplaceAll(std::move(prompt), "{{PROVIDER}}", InProvider);
         prompt = ReplaceAll(std::move(prompt), "{{MODEL}}", InModel.empty() ? std::string("auto") : InModel);
-        prompt = ReplaceAll(std::move(prompt), "{{PLAN_CONTENT}}", InPlanText);
+        prompt = ReplaceAll(std::move(prompt), "{{PLAN_PATH_ABSOLUTE}}", InPlanPath.lexically_normal().generic_string());
+        prompt = ReplaceAll(std::move(prompt), "{{PLAN_PATH}}", RelativeDisplayPath(InWorkspaceRoot, InPlanPath));
+        prompt = ReplaceAll(std::move(prompt), "{{PLAN_JSON}}", InPlanText);
         prompt = ReplaceAll(std::move(prompt), "{{DIRTY_CONTEXT}}", InDirtyContext);
         return AppendCommitConventionSkillSection(InWorkspaceRoot, std::move(prompt));
     }
@@ -1970,6 +1979,8 @@ auto RunCommitRunbook(const std::filesystem::path& InWorkspaceRoot,
         return FillPlanByAi(InWorkspaceRoot, InPlanPath, InProvider, InModel, InFillMode, InDebugAi, &aiError);
     };
 
+    const bool requireAiSuccess = RequireAiSuccessForPlanFlow(InWorkspaceRoot);
+
     if (needs && !regenerate()) return 2;
     
     payload = ReadFileText(InPlanPath);
@@ -1979,6 +1990,10 @@ auto RunCommitRunbook(const std::filesystem::path& InWorkspaceRoot,
     if (!ValidateAiReadyPlan(*payload, &reason)) {
         std::cerr << "[plan] validation failed (" << reason << "), regenerating once...\n";
         if (!regenerate()) {
+            if (requireAiSuccess) {
+                std::cerr << "Error: AI plan fill is required by config and regeneration failed.\n";
+                return 2;
+            }
             // FillPlanByAi failed, try fallback before returning error.
             if (auto fallback = TryInjectFallbackCommits(InWorkspaceRoot, *payload)) {
                 WriteFileText(InPlanPath, *fallback);
@@ -1989,6 +2004,10 @@ auto RunCommitRunbook(const std::filesystem::path& InWorkspaceRoot,
         }
         payload = ReadFileText(InPlanPath);
         if (!payload || !ValidateAiReadyPlan(*payload, &reason)) {
+            if (requireAiSuccess) {
+                std::cerr << "Error: AI-ready plan validation failed and deterministic fallback is disabled by config: " << reason << "\n";
+                return 2;
+            }
             if (payload) {
                 if (auto fallback = TryInjectFallbackCommits(InWorkspaceRoot, *payload)) {
                     WriteFileText(InPlanPath, *fallback);
