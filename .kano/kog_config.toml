@@ -1,0 +1,56 @@
+# kano-git layered config defaults
+#
+# Load order matches git-style override precedence:
+#   1. system: this file (<skill-root>/.kano/kog_config.toml)
+#   2. global: ~/.kano/kog_config.toml
+#   3. local:  <workspace>/.kano/kog_config.toml
+# Later files override earlier ones.
+
+# Effective default AI model selection.
+#
+# This is consulted when a command does not receive an explicit `--ai-model`
+# and there is no remembered provider model override.
+#
+# Available values:
+# - "auto"
+#   Use the provider's auto-selection behavior. For Copilot, this means the
+#   `[ai.model.auto]` ladder below.
+# - "provider-default"
+#   Use the provider's built-in recommended fixed default model.
+# - "provider/model"
+#   Provider-qualified exact model reference, for example:
+#   `copilot/gpt-5.4`
+# - "model"
+#   Bare model name for the active provider, for example:
+#   `gpt-5.4`
+#
+# Notes:
+# - Legacy alias `default` is still accepted and normalized to
+#   `provider-default`.
+# - If a `provider/model` entry names a different provider than the active one,
+#   it is ignored for that provider.
+[ai.model]
+selection = "auto"
+
+# Auto model selection policy for AI providers.
+[ai.model.auto]
+change_thresholds = [5, 10]
+models = ["copilot/gpt-5-mini", "copilot/claude-haiku-4.5", "copilot/gpt-5.4"]
+
+# Plan AI behavior defaults.
+[plan.ai]
+commit_generation_mode = "single"
+
+# Workspace discovery defaults.
+#
+# `kog status` and other workspace-aware commands merge these external roots
+# with the normal registered-workspace scan. This keeps nearby skill repos such
+# as `~/.agents/skills/*` visible without requiring them to be submodules of the
+# current workspace.
+[workspace.external]
+roots = ["~/.agents/skills"]
+inherit = true
+
+# Native self-build behavior.
+[self]
+compiler_launcher = "auto"
