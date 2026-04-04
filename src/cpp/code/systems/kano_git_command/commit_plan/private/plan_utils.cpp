@@ -1607,12 +1607,15 @@ auto IsProbableIgnoreArtifactPath(const std::string& InPath) -> bool {
 auto IsInternalPipelineArtifactPath(const std::string& InPath) -> bool {
     auto lower = ToLower(InPath);
     std::replace(lower.begin(), lower.end(), '\\', '/');
-    // Also check for names without leading dot when extracted from status lines.
-    return lower == ".kano" || lower == "kano" || lower == ".sisyphus" || lower == "sisyphus" ||
-           lower.rfind(".kano/", 0) == 0 || lower.rfind("kano/", 0) == 0 ||
-           lower.rfind(".sisyphus/", 0) == 0 || lower.rfind("sisyphus/", 0) == 0 ||
-           lower.find("/.kano/") != std::string::npos || lower.find("/kano/") != std::string::npos ||
-           lower.find("/.sisyphus/") != std::string::npos || lower.find("/sisyphus/") != std::string::npos;
+    auto matchDir = [&](const std::string& token) {
+        if (lower == token) return true;
+        if (lower.rfind(token + "/", 0) == 0) return true;
+        if (lower.find("/" + token + "/") != std::string::npos) return true;
+        if (lower.size() >= token.size() + 1 && lower.substr(lower.size() - token.size() - 1) == ("/" + token)) return true;
+        return false;
+    };
+    return matchDir(".kano") || matchDir(".sisyphus") ||
+           matchDir("kano") || matchDir("sisyphus");
 }
 
 auto DefaultSecretRulesPath(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path {

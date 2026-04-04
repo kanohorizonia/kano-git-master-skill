@@ -245,13 +245,15 @@ auto IsInternalPipelineArtifactPathForStaging(const std::string& InPath) -> bool
     auto path = InPath;
     std::replace(path.begin(), path.end(), '\\', '/');
     const auto lower = ToLower(path);
-    auto startsWith = [&](const char* token) {
-        return lower == token ||
-               lower.rfind(token, 0) == 0 ||
-               lower.find(std::string("/") + token) != std::string::npos;
+    auto matchDir = [&](const std::string& token) {
+        if (lower == token) return true;
+        if (lower.rfind(token + "/", 0) == 0) return true;
+        if (lower.find("/" + token + "/") != std::string::npos) return true;
+        if (lower.size() >= token.size() + 1 && lower.substr(lower.size() - token.size() - 1) == ("/" + token)) return true;
+        return false;
     };
-    return startsWith(".kano") || startsWith(".sisyphus") ||
-           startsWith("kano") || startsWith("sisyphus");
+    return matchDir(".kano") || matchDir(".sisyphus") ||
+           matchDir("kano") || matchDir("sisyphus");
 }
 
 auto BuildGitAddAllArgs(const CommitPreflightReport& InReport, std::vector<std::string>* OutExcluded = nullptr)
