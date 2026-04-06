@@ -50,9 +50,9 @@ require_success = false
 # with the normal registered-workspace scan. This keeps nearby skill repos such
 # as `~/.agents/skills/*` visible without requiring them to be submodules of the
 # current workspace.
-[workspace.external]
-roots = ["~/.agents/skills"]
-inherit = true
+#[workspace.external]
+# roots = ["~/.agents/skills"]
+#inherit = true
 
 # Native self-build behavior.
 [self]

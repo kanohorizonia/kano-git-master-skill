@@ -591,20 +591,28 @@ auto MakeRepoView(const workspace::RepoRecord& InRepo, const std::filesystem::pa
     row.group = GroupFromRelativePath(relativePath);
     row.repoName = RepoNameFromPath(InRepo.path);
     row.type = InRepo.type;
-    row.repoDirty = InRepo.hasChanges;
+
+    // Fast check: perform exactly 1 uncolored git status to see if it's strictly dirty.
+    // We skip the 4 expensive branch tracking operations if it's clean and just use the cache.
+    const auto statusQuick = GitCapture(InRepo.path, {"status", "--porcelain"});
+    row.repoDirty = statusQuick.exitCode == 0 && !Trim(statusQuick.stdoutStr).empty();
+
+    if (!row.repoDirty) {
+        row.branch = InRepo.currentBranch.empty() ? "(detached)" : InRepo.currentBranch;
+        row.remote = InRepo.remotes.empty() ? "-" : InRepo.remotes;
+        row.tracking = "-";
+        row.hasDirtyWorktree = false;
+        return row;
+    }
+
     row.branch = CurrentBranch(InRepo.path);
     row.remote = CurrentRemote(InRepo.path);
     row.tracking = TrackingSummary(InRepo.path);
     row.hasDirtyWorktree = HasDirtyWorktrees(InRepo.path, row.dirtyWorktrees);
     
-    if (row.repoDirty) {
-        const auto statusOut = GitCapture(InRepo.path, {"-c", "color.status=always", "status", "--short"});
-        if (statusOut.exitCode == 0) {
-            row.statusLines = SplitNonEmptyLines(statusOut.stdoutStr);
-        }
-        if (row.statusLines.empty()) {
-            row.repoDirty = false;
-        }
+    const auto statusOut = GitCapture(InRepo.path, {"-c", "color.status=always", "status", "--short"});
+    if (statusOut.exitCode == 0) {
+        row.statusLines = SplitNonEmptyLines(statusOut.stdoutStr);
     }
     
     return row;
@@ -634,20 +642,15 @@ auto BuildRepoViews(const std::vector<workspace::RepoRecord>& InRepos, const std
             rows.push_back(MakeRepoView(repo, InRoot));
         }
     } else {
-        const unsigned int hardware = std::thread::hardware_concurrency();
-        const std::size_t maxParallel = std::max<std::size_t>(1, hardware == 0 ? 4 : hardware);
-        for (std::size_t start = 0; start < InRepos.size(); start += maxParallel) {
-            const auto end = std::min(InRepos.size(), start + maxParallel);
-            std::vector<std::future<RepoView>> futures;
-            futures.reserve(end - start);
-            for (std::size_t idx = start; idx < end; ++idx) {
-                futures.push_back(std::async(std::launch::async, [&repo = InRepos[idx], &InRoot]() {
-                    return MakeRepoView(repo, InRoot);
-                }));
-            }
-            for (auto& future : futures) {
-                rows.push_back(future.get());
-            }
+        std::vector<std::future<RepoView>> futures;
+        futures.reserve(InRepos.size());
+        for (const auto& repo : InRepos) {
+            futures.push_back(std::async([&repo, &InRoot]() {
+                return MakeRepoView(repo, InRoot);
+            }));
+        }
+        for (auto& future : futures) {
+            rows.push_back(future.get());
         }
     }
 
@@ -717,7 +720,7 @@ void RegisterStatus(CLI::App& InApp) {
     auto* maxDepth = new int{8};
     auto* exclude = new std::vector<std::string>{};
     auto* noCache = new bool{false};
-    auto* noRefreshCache = new bool{false};
+    auto* refreshCache = new bool{false};
     auto* all = new bool{false};
     auto* repoRoot = new std::string{"."};
     auto* output = new std::string{};
@@ -734,7 +737,7 @@ void RegisterStatus(CLI::App& InApp) {
     cmd->add_option("--max-depth", *maxDepth, "Discovery max depth");
     cmd->add_option("--exclude", *exclude, "Temporary scan-scope exclude override for this invocation only (repeatable; prefer .gitignore/.kogignore for shared policy)");
     cmd->add_flag("--no-cache", *noCache, "Disable discovery cache for this run");
-    cmd->add_flag("--no-refresh-cache", *noRefreshCache, "Do not force cache refresh");
+    cmd->add_flag("--refresh-cache", *refreshCache, "Force cache refresh");
     cmd->add_flag("--all", *all, "Show all discovered repos instead of only dirty ones");
 
     configureOutput(overview);
@@ -763,6 +766,7 @@ void RegisterStatus(CLI::App& InApp) {
     };
 
     cmd->callback([=]() {
+        auto t_start = std::chrono::steady_clock::now();
         if (*format != "table" && *format != "json" && *format != "markdown") {
             std::cerr << "Error: invalid --format value: " << *format << " (expected table|json|markdown)\n";
             std::exit(1);
@@ -778,22 +782,37 @@ void RegisterStatus(CLI::App& InApp) {
                 std::exit(1);
             }
         }
+        
+        auto t_resolve = std::chrono::steady_clock::now();
 
         workspace::DiscoverOptions options;
         options.rootDir = root;
         options.maxDepth = *maxDepth;
         options.excludePatterns = *exclude;
         options.useCache = !*noCache;
-        options.refreshCache = !*noRefreshCache;
-        options.metadataLevel = "full";
+        options.refreshCache = *refreshCache;
+        options.cacheTtlSeconds = (std::numeric_limits<int>::max)();
+        options.maxStaleSeconds = (std::numeric_limits<int>::max)();
+        options.metadataLevel = "minimal";
         options.scope = workspace::DiscoverScope::RegisteredOnly;
 
         const auto discovery = workspace::DiscoverRepos(options);
+        auto t_discover = std::chrono::steady_clock::now();
+
         auto rows = BuildRepoViews(discovery.repos, options.rootDir);
+        auto t_build = std::chrono::steady_clock::now();
+
         if (!*all) {
             rows = FilterDirtyRows(rows);
         }
         renderRows(rows);
+        auto t_render = std::chrono::steady_clock::now();
+
+        auto ms = [](auto t1, auto t2) { return std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count(); };
+        std::cerr << "[DEBUG] Resolve: " << ms(t_start, t_resolve) << "ms\n";
+        std::cerr << "[DEBUG] Discover: " << ms(t_resolve, t_discover) << "ms\n";
+        std::cerr << "[DEBUG] Build: " << ms(t_discover, t_build) << "ms\n";
+        std::cerr << "[DEBUG] Render: " << ms(t_build, t_render) << "ms\n";
     });
 
     overview->callback([=]() {

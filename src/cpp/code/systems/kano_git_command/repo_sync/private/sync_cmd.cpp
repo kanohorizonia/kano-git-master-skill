@@ -1359,6 +1359,28 @@ auto CheckoutRecoveredBranch(
     }
 
     if (LocalBranchExists(InRepo, InBranch)) {
+        bool canFastForwardToHead = GitCapture(InRepo, {"merge-base", "--is-ancestor", InBranch, "HEAD"}).exitCode == 0;
+        
+        if (canFastForwardToHead) {
+            const auto headSha = Trim(GitCapture(InRepo, {"rev-parse", "HEAD"}).stdoutStr);
+            const auto branchSha = Trim(GitCapture(InRepo, {"rev-parse", InBranch}).stdoutStr);
+            if (!headSha.empty() && headSha != branchSha) {
+                if (OutDetail != nullptr) {
+                    *OutDetail = "fast-forward local branch to detached HEAD and checkout";
+                }
+                if (InDryRun) {
+                    std::cout << "[DRY RUN] Would run: git branch -f " << InBranch << " HEAD\n";
+                    std::cout << "[DRY RUN] Would run: git checkout -q " << InBranch << "\n";
+                    return true;
+                }
+                GitPassThrough(InRepo, {"branch", "-f", InBranch, "HEAD"});
+                const auto checkout = GitPassThrough(InRepo, {"checkout", "-q", InBranch});
+                if (checkout.exitCode == 0) {
+                    return true;
+                }
+            }
+        }
+
         if (OutDetail != nullptr) {
             *OutDetail = "checkout existing local branch";
         }
