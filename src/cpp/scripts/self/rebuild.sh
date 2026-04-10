@@ -10,4 +10,6 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 CPP_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 
 rm -rf "$CPP_ROOT/out" "$CPP_ROOT/build"
-exec bash "$SCRIPT_DIR/build.sh" "$@"
+. "$CPP_ROOT/shared/infra/scripts/orchestration/matrix.sh"
+build_script="$(kog_matrix_default_release_script)"
+exec bash "$build_script" "$@"
