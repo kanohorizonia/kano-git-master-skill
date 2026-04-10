@@ -1038,23 +1038,15 @@ script_paths() {
   case "$os_name" in
     windows)
       prereq="$base/windows/prerequisite_windows.sh"
-      if [[ "$arch" == "arm64" ]]; then
-        build="$base/windows/ninja-msvc-arm64-release.sh"
-      else
-        build="$base/windows/ninja-msvc-release.sh"
-      fi
+      build="$base/self/build.sh"
       ;;
     linux)
       prereq="$base/linux/prerequisite_linux.sh"
-      build="$base/linux/build_linux_ninja_gcc_release.sh"
+      build="$base/self/build.sh"
       ;;
     macos)
       prereq="$base/macos/prerequisite_macos.sh"
-      if [[ "$arch" == "arm64" ]]; then
-        build="$base/macos/build_macos_ninja_clang_arm64_release.sh"
-      else
-        build="$base/macos/build_macos_ninja_clang_x64_release.sh"
-      fi
+      build="$base/self/build.sh"
       ;;
     *)
       return 1

@@ -1,0 +1,19 @@
+{
+  "name": "unity",
+  "reportSlug": "unity-profile",
+  "defaults": {
+    "configurePreset": "windows-ninja-msvc",
+    "buildPreset": "windows-ninja-msvc-release",
+    "buildDir": "src/cpp/out/obj/windows-ninja-msvc",
+    "config": "Release",
+    "launcher": "auto",
+    "modules": "off",
+    "pgo": "off",
+    "workflow": "baseline"
+  },
+  "cases": [
+    { "id": "unity-off", "unity": "off" },
+    { "id": "unity-full", "unity": "full" },
+    { "id": "unity-changed", "unity": "changed" }
+  ]
+}

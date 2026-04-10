@@ -1068,6 +1068,21 @@ auto RunAiGenerate(const std::string& InProvider,
                    std::optional<std::filesystem::path> InWorkingDir = std::nullopt,
                    const std::string& InPurpose = "commit-ai") -> shell::ExecResult {
     const auto effectivePrompt = BuildFileBackedPromptArgument(InWorkingDir, InPrompt, InPurpose);
+
+    auto LogInvocation = [&](const std::string& binary, const std::vector<std::string>& args) {
+        static constexpr std::string_view kDivider = "────────────────────────────────────────";
+        std::cerr << "\n[kog ai] ── AI Invocation (" << InPurpose << ") ──\n";
+        std::cerr << "[kog ai] command : " << binary;
+        for (const auto& a : args) {
+            if (a.find(' ') != std::string::npos || a.empty()) std::cerr << " \"" << a << "\"";
+            else std::cerr << " " << a;
+        }
+        std::cerr << "\n[kog ai] model   : " << (InModel.empty() ? "auto" : InModel) << "\n";
+        std::cerr << "[kog ai] prompt  :\n" << kDivider << "\n" << InPrompt << "\n" << kDivider << "\n";
+        std::cerr << "[kog ai] Waiting for " << InProvider << " response...\n";
+        std::cerr.flush();
+    };
+
     if (InProvider == "opencode") {
         std::vector<std::string> args{"run"};
         AppendBoolFlag(&args, "KOG_OPENCODE_CONTINUE", "--continue");
@@ -1087,6 +1102,7 @@ auto RunAiGenerate(const std::string& InProvider,
             args.push_back(InModel);
         }
         args.push_back(effectivePrompt);
+        LogInvocation("opencode", args);
         return shell::ExecuteCommand("opencode", args, shell::ExecMode::Capture, InWorkingDir);
     }
 
@@ -1094,10 +1110,14 @@ auto RunAiGenerate(const std::string& InProvider,
         if (IsTruthyEnv(std::getenv("KOG_CODEX_USE_EXEC"))) {
             return ExecuteCodexExec(InWorkingDir, effectivePrompt, InPurpose, InModel);
         }
+        std::vector<std::string> args;
         if (!InModel.empty() && InModel != "auto") {
-            return shell::ExecuteCommand("codex", {"-q", "--model", InModel, effectivePrompt}, shell::ExecMode::Capture, InWorkingDir);
+            args = {"-q", "--model", InModel, effectivePrompt};
+        } else {
+            args = {"-q", effectivePrompt};
         }
-        return shell::ExecuteCommand("codex", {"-q", effectivePrompt}, shell::ExecMode::Capture, InWorkingDir);
+        LogInvocation("codex", args);
+        return shell::ExecuteCommand("codex", args, shell::ExecMode::Capture, InWorkingDir);
     }
 
     if (InProvider == "copilot") {
@@ -1130,6 +1150,7 @@ auto RunAiGenerate(const std::string& InProvider,
             AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL_URLS", "--allow-all-urls");
             AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL", "--allow-all");
             args.insert(args.end(), {"--no-color", "--stream", "off", "--no-ask-user"});
+            LogInvocation("copilot", args);
             return shell::ExecuteCommand("copilot", args, shell::ExecMode::Capture, InWorkingDir);
         }
 
@@ -3253,13 +3274,12 @@ auto CommitSingleRepo(const std::filesystem::path& InWorkspaceRoot,
         std::string aiFailureReason;
         commitMessage = GenerateAiCommitMessage(InWorkspaceRoot, InRepo, report, InAi, &aiFailureReason);
         if (commitMessage.empty()) {
-            if (InAi.enabled && RequireAiSuccessForCommitFlow(InWorkspaceRoot)) {
+            if (InAi.enabled) {
                 result.failed = true;
-                result.note = "ai message required by config: " + aiFailureReason;
+                result.note = "ai message generation failed: " + aiFailureReason;
                 return result;
             }
             commitMessage = BuildAutoCommitMessage(InWorkspaceRoot, InRepo, report);
-            result.note = "ai message unavailable (" + aiFailureReason + "); used native fallback";
         } else {
             result.note = "ai message generated";
         }
@@ -3387,13 +3407,12 @@ auto AmendSingleRepo(const std::filesystem::path& InWorkspaceRoot,
             std::string aiFailureReason;
             commitMessage = GenerateAiCommitMessage(InWorkspaceRoot, InRepo, report, InAi, &aiFailureReason);
             if (commitMessage.empty()) {
-                if (InAi.enabled && RequireAiSuccessForCommitFlow(InWorkspaceRoot)) {
+                if (InAi.enabled) {
                     result.failed = true;
-                    result.note = "ai message required by config: " + aiFailureReason;
+                    result.note = "ai message generation failed: " + aiFailureReason;
                     return result;
                 }
                 commitMessage = BuildCombineFallbackMessage(InWorkspaceRoot, InRepo, unpushedCount, report);
-                result.note = "combined with native fallback message (ai unavailable: " + aiFailureReason + ")";
             } else {
                 result.note = "combined with ai-generated message";
             }
@@ -3445,12 +3464,9 @@ auto AmendSingleRepo(const std::filesystem::path& InWorkspaceRoot,
         std::string aiFailureReason;
         commitMessage = GenerateAiCommitMessage(InWorkspaceRoot, InRepo, report, InAi, &aiFailureReason);
         if (commitMessage.empty()) {
-            if (RequireAiSuccessForCommitFlow(InWorkspaceRoot)) {
-                result.failed = true;
-                result.note = "ai message required by config: " + aiFailureReason;
-                return result;
-            }
-            result.note = "ai message unavailable (" + aiFailureReason + "); amend keeps previous message";
+            result.failed = true;
+            result.note = "ai message generation failed: " + aiFailureReason;
+            return result;
         } else {
             result.note = "amended with ai-generated message";
         }
@@ -4221,7 +4237,7 @@ void RegisterCommit(CLI::App& InApp) {
                 std::cerr << "Hint: or provide explicit --message/-m for non-plan commit apply.\n";
                 std::exit(2);
             }
-            if (!repos->empty() || *bNoRecursive || *bNoDirtyOnly || *bStagedOnly || *bPush) {
+            if (*bNoRecursive || *bNoDirtyOnly || *bStagedOnly || *bPush) {
                 std::cerr << "Error: commit auto-plan mode currently supports only workspace-scoped commit apply without --push.\n";
                 std::cerr << "Hint: use `kog plan runbook commit --plan-file <file>` then `kog commit --plan-file <file>` for custom scope.\n";
                 std::exit(2);

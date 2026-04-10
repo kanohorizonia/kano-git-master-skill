@@ -16,6 +16,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
   pages: write
   id-token: write
 
@@ -69,26 +70,23 @@ jobs:
       # ─────────────────────────────────────────────────────────────────────────
       # Download artifacts from CI Build workflow
       # ─────────────────────────────────────────────────────────────────────────
-      - name: Download coverage artifacts from CI Build
-        if: github.event_name == 'workflow_run'
-        uses: actions/download-artifact@v4
-        with:
-          name: coverage-reports
-          path: _site/src/raw_coverage
-          workflow: ${{ github.event.workflow_run.workflow_id }}
-          run-id: ${{ github.event.workflow_run.workflow_id }}
-
-      - name: Download test artifacts from CI Build
-        if: github.event_name == 'workflow_run'
-        uses: actions/download-artifact@v4
-        with:
-          name: test-reports
-          path: _site/src/raw_test
-          workflow: ${{ github.event.workflow_run.workflow_id }}
-          run-id: ${{ github.event.workflow_run.workflow_id }}
+      - name: Download CI Build artifacts
+        if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          mkdir -p _site/src/artifacts _site/src/raw_coverage _site/src/raw_test
+          gh run download "${{ github.event.workflow_run.id }}" -R "${{ github.repository }}" -D _site/src/artifacts
+          find _site/src/artifacts -type f -name 'coverage-reports*.tar.gz' -print0 | while IFS= read -r -d '' file; do
+            tar -xzf "$file" -C _site/src/raw_coverage
+          done
+          find _site/src/artifacts -type f -name 'test-reports*.tar.gz' -print0 | while IFS= read -r -d '' file; do
+            tar -xzf "$file" -C _site/src/raw_test
+          done
 
       - name: List downloaded artifacts
-        if: github.event_name == 'workflow_run'
+        if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
         shell: bash
         run: |
           echo "Coverage artifacts:"
@@ -110,7 +108,7 @@ jobs:
       # Copy coverage into public output
       # ─────────────────────────────────────────────────────────────────────────
       - name: Stage coverage report in output
-        if: github.event_name == 'workflow_run'
+        if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
         shell: bash
         run: |
           COVERAGE_SRC="_site/src/raw_coverage"
@@ -129,7 +127,7 @@ jobs:
       # Copy test reports into public output
       # ─────────────────────────────────────────────────────────────────────────
       - name: Stage test report in output
-        if: github.event_name == 'workflow_run'
+        if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
         shell: bash
         run: |
           TEST_SRC="_site/src/raw_test"

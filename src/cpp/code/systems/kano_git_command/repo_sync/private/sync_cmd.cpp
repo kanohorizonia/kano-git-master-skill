@@ -160,22 +160,7 @@ auto HeadRangeTouchesSelfCpp(const std::filesystem::path& InRepo,
 }
 
 auto ResolveSelfBuildScript(const std::filesystem::path& InSelfRepoRoot) -> std::filesystem::path {
-    const auto base = (InSelfRepoRoot / "src/cpp/scripts").lexically_normal();
-#if defined(_WIN32)
-#if defined(_M_ARM64)
-    return (base / "windows/build_windows_ninja_msvc_arm64_release.sh").lexically_normal();
-#else
-    return (base / "windows/build_windows_ninja_msvc_release.sh").lexically_normal();
-#endif
-#elif defined(__APPLE__)
-#if defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64)
-    return (base / "macos/build_macos_ninja_clang_arm64_release.sh").lexically_normal();
-#else
-    return (base / "macos/build_macos_ninja_clang_x64_release.sh").lexically_normal();
-#endif
-#else
-    return (base / "linux/build_linux_ninja_gcc_release.sh").lexically_normal();
-#endif
+    return (InSelfRepoRoot / "src/cpp/scripts/self/build.sh").lexically_normal();
 }
 
 auto RunSelfCppBuild(const std::filesystem::path& InSelfRepoRoot) -> int {

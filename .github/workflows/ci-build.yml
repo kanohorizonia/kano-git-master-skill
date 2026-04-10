@@ -7,6 +7,7 @@ on:
       - "src/**"
       - "scripts/**"
       - "pixi.toml"
+      - ".kano/**"
       - "VERSION"
       - ".github/workflows/ci-build.yml"
   pull_request:
@@ -14,6 +15,7 @@ on:
       - "src/**"
       - "scripts/**"
       - "pixi.toml"
+      - ".kano/**"
       - "VERSION"
       - ".github/workflows/ci-build.yml"
   workflow_dispatch: {}
@@ -73,13 +75,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Checkout kano-cpp-test-skill
-        uses: actions/checkout@v4
-        with:
-          repository: kanohorizonia/kano-cpp-test-skill
-          ref: main
-          path: _tools/kano-cpp-test-skill
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -258,112 +253,75 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         env:
-          KANO_REPORT_ROOT: ${{ github.workspace }}
           KANO_REPORT_SLUG: ${{ matrix.report_slug }}
-          KANO_COVERAGE_TOOL: ${{ env.KOG_WINDOWS_COVERAGE_TOOL }}
-          KANO_RUNSETTINGS: ${{ github.workspace }}/coverage/windows-coverage.config
+          KOG_REPORT_ROOT: ${{ github.workspace }}
+          KOG_WINDOWS_COVERAGE_TOOL: ${{ env.KOG_WINDOWS_COVERAGE_TOOL }}
+          KANO_CPP_TEST_SKILL_ROOT: ${{ github.workspace }}/_tools/kano-cpp-test-skill
         run: |
-          cd src/cpp
-          mkdir -p "$GITHUB_WORKSPACE/coverage"
-          cat > "$KANO_RUNSETTINGS" <<EOF
-<?xml version="1.0" encoding="utf-8"?>
-<Configuration>
-  <CodeCoverage>
-    <ModulePaths>
-      <Include>
-        <ModulePath>.*kano_git_tui_tests\.exe$</ModulePath>
-        <ModulePath>.*kano-git\.exe$</ModulePath>
-        <ModulePath>.*kano-git-tui\.exe$</ModulePath>
-      </Include>
-      <IncludeDirectories>
-        <Directory Recursive="true">${GITHUB_WORKSPACE}\src\cpp\out\bin\windows-ninja-msvc-coverage\debug</Directory>
-      </IncludeDirectories>
-    </ModulePaths>
-    <SymbolSearchPaths>
-      <Path>${GITHUB_WORKSPACE}\src\cpp\out\bin\windows-ninja-msvc-coverage\debug</Path>
-      <Path>${GITHUB_WORKSPACE}\src\cpp\out\obj\windows-ninja-msvc-coverage\symbols\debug</Path>
-    </SymbolSearchPaths>
-    <EnableStaticNativeInstrumentation>True</EnableStaticNativeInstrumentation>
-    <EnableDynamicNativeInstrumentation>False</EnableDynamicNativeInstrumentation>
-    <EnableStaticNativeInstrumentationRestore>True</EnableStaticNativeInstrumentationRestore>
-    <IncludeTestAssembly>True</IncludeTestAssembly>
-  </CodeCoverage>
-</Configuration>
-EOF
-          export KANO_TEST_COMMAND='./out/bin/${{ matrix.build_preset }}/${{ matrix.test_target }} --reporter junit --out "$KANO_TEST_XML"'
-          export KANO_COVERAGE_COMMAND='./out/bin/${{ matrix.build_preset }}/${{ matrix.test_target }}'
-          bash "$GITHUB_WORKSPACE/_tools/kano-cpp-test-skill/src/shell/reports/windows/microsoft-report.sh"
+          bash ./src/cpp/scripts/windows/ninja-msvc-kano-report.sh
 
       # ─── Run Tests + Coverage via shared skill (Linux LLVM) ──────────────────
       - name: Run tests and LLVM coverage report (Linux)
         if: runner.os == 'Linux'
         shell: bash
         env:
-          KANO_REPORT_ROOT: ${{ github.workspace }}
           KANO_REPORT_SLUG: ${{ matrix.report_slug }}
-          KANO_LLVM_PROFDATA: llvm-profdata
-          KANO_LLVM_COV: llvm-cov
-          KANO_LLVM_IGNORE_FILENAME_REGEX: _deps|catch2|ftxui|thirdparty|build|\.vcpkg
+          KOG_REPORT_ROOT: ${{ github.workspace }}
+          KANO_CPP_TEST_SKILL_ROOT: ${{ github.workspace }}/_tools/kano-cpp-test-skill
         run: |
           export PATH="${{ matrix.llvm_cov_path }}:$PATH"
-          cd src/cpp
-          export KANO_TEST_COMMAND='./out/bin/${{ matrix.build_preset }}/${{ matrix.test_target }} --reporter junit --out "$KANO_TEST_XML" || true'
-          export KANO_TEST_BINARY="./out/bin/${{ matrix.build_preset }}/${{ matrix.test_target }}"
-          bash "$GITHUB_WORKSPACE/_tools/kano-cpp-test-skill/src/shell/reports/linux/llvm-report.sh"
+          bash ./src/cpp/scripts/linux/ninja-clang-kano-report.sh
 
       - name: Run tests and LLVM coverage report (macOS)
         if: runner.os == 'macOS'
         shell: bash
         env:
-          KANO_REPORT_ROOT: ${{ github.workspace }}
           KANO_REPORT_SLUG: ${{ matrix.report_slug }}
-          KANO_LLVM_PROFDATA: llvm-profdata
-          KANO_LLVM_COV: llvm-cov
-          KANO_LLVM_IGNORE_FILENAME_REGEX: _deps|catch2|ftxui|thirdparty|build|\.vcpkg
+          KOG_REPORT_ROOT: ${{ github.workspace }}
+          KANO_CPP_TEST_SKILL_ROOT: ${{ github.workspace }}/_tools/kano-cpp-test-skill
         run: |
           export PATH="${{ matrix.llvm_cov_path }}:$PATH"
-          cd src/cpp
-          export KANO_TEST_COMMAND='./out/bin/${{ matrix.build_preset }}/${{ matrix.test_target }} --reporter junit --out "$KANO_TEST_XML" || true'
-          export KANO_TEST_BINARY="./out/bin/${{ matrix.build_preset }}/${{ matrix.test_target }}"
-          bash "$GITHUB_WORKSPACE/_tools/kano-cpp-test-skill/src/shell/reports/macos/llvm-report.sh"
+          if [[ "${{ matrix.report_slug }}" == "macos-arm64" ]]; then
+            bash ./src/cpp/scripts/macos/ninja-clang-arm64-kano-report.sh
+          else
+            bash ./src/cpp/scripts/macos/ninja-clang-kano-report.sh
+          fi
 
       - name: Generate OpenCppCoverage report (Windows)
         if: runner.os == 'Windows'
         shell: bash
         env:
-          KANO_REPORT_ROOT: ${{ github.workspace }}
           KANO_REPORT_SLUG: windows-x64-opencppcoverage
-          KANO_OPENCPPCOVERAGE_EXE: ${{ env.KOG_OPENCPPCOVERAGE_EXE }}
-          KANO_OPENCPPCOVERAGE_SOURCES: ${{ github.workspace }}/src/cpp/code
-          KANO_OPENCPPCOVERAGE_MODULES: '*kano*'
-          KANO_OPENCPPCOVERAGE_EXCLUDED_SOURCES: ${{ github.workspace }}/src/cpp/out/obj/*;${{ github.workspace }}/src/cpp/out/bin/*
+          KOG_REPORT_ROOT: ${{ github.workspace }}
+          KOG_OPENCPPCOVERAGE_EXE: ${{ env.KOG_OPENCPPCOVERAGE_EXE }}
+          KANO_CPP_TEST_SKILL_ROOT: ${{ github.workspace }}/_tools/kano-cpp-test-skill
         run: |
-          cd src/cpp
-          export KANO_TEST_COMMAND='./out/bin/${{ matrix.build_preset }}/${{ matrix.test_target }} --reporter junit --out "$KANO_TEST_XML"'
-          export KANO_OPENCPPCOVERAGE_TEST_COMMAND="$KANO_TEST_COMMAND"
-          bash "$GITHUB_WORKSPACE/_tools/kano-cpp-test-skill/src/shell/reports/windows/opencppcoverage-report.sh"
+          bash ./src/cpp/scripts/windows/ninja-msvc-kano-opencppcoverage-report.sh
 
       # ─── Package and Upload ──────────────────────────────────────────────────
       - name: Package normalized reports
         shell: bash
         run: |
-          export KANO_REPORT_ROOT="$GITHUB_WORKSPACE"
+          export KOG_REPORT_ROOT="$GITHUB_WORKSPACE"
           export KANO_REPORT_SLUG=package-all
-          bash "$GITHUB_WORKSPACE/_tools/kano-cpp-test-skill/src/shell/reports/common/package-reports.sh"
+          export KANO_CPP_TEST_SKILL_ROOT="$GITHUB_WORKSPACE/_tools/kano-cpp-test-skill"
+          bash ./src/cpp/scripts/common/package-reports-with-skill.sh
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-reports
+          name: coverage-reports-${{ matrix.report_slug }}
           path: coverage-reports.tar.gz
           if-no-files-found: warning
+          compression-level: 0
 
       - name: Upload test artifact
         uses: actions/upload-artifact@v4
         with:
-          name: test-reports
+          name: test-reports-${{ matrix.report_slug }}
           path: test-reports.tar.gz
           if-no-files-found: warning
+          compression-level: 0
 
   build-windows-msi:
     runs-on: windows-latest

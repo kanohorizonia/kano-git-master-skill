@@ -1,0 +1,4 @@
+coverage.provider = "auto"
+coverage.exclude.paths = ["src/cpp/out","src/cpp/_deps",".pixi","_site"]
+report.slug_template = "{platform}-{provider}"
+test.default_filter = ""

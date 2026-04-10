@@ -1314,11 +1314,27 @@ auto ResolveAiProvider(const std::string& InRequested) -> std::string {
 }
 
 auto RunAiGenerate(const std::string& InProvider,
-                    const std::string& InModel,
-                    const std::string& InPrompt,
-                    const std::filesystem::path& InWorkspaceRoot,
-                    bool InQuiet) -> shell::ExecResult {
+                     const std::string& InModel,
+                     const std::string& InPrompt,
+                     const std::filesystem::path& InWorkspaceRoot,
+                     bool InQuiet) -> shell::ExecResult {
+    auto LogInvocation = [&](const std::string& binary, const std::vector<std::string>& args) {
+        static constexpr std::string_view kDivider = "────────────────────────────────────────";
+        std::cerr << "\n[kog ai] ── AI Invocation (plan-fill) ──\n";
+        std::cerr << "[kog ai] command : " << binary;
+        for (const auto& a : args) {
+            if (a.find(' ') != std::string::npos || a.empty()) std::cerr << " \"" << a << "\"";
+            else std::cerr << " " << a;
+        }
+        std::cerr << "\n[kog ai] model   : " << (InModel.empty() ? "auto" : InModel) << "\n";
+        std::cerr << "[kog ai] prompt  :\n" << kDivider << "\n" << InPrompt << "\n" << kDivider << "\n";
+        std::cerr << "[kog ai] Waiting for " << InProvider << " response...\n";
+        std::cerr.flush();
+    };
+
     if (InProvider == "codex") {
+        const auto effectivePrompt = BuildFileBackedPromptArgument(InWorkspaceRoot, InPrompt, "plan-fill");
+        LogInvocation("codex", {"-q", effectivePrompt}); // Approximation for codex
         return ExecuteCodexExec(InWorkspaceRoot, InPrompt, "plan-fill", InModel);
     }
 
@@ -1336,6 +1352,7 @@ auto RunAiGenerate(const std::string& InProvider,
     args.push_back("--no-ask-user");
     args.push_back("-p");
     args.push_back(BuildFileBackedPromptArgument(InWorkspaceRoot, InPrompt, "plan-fill"));
+    LogInvocation("copilot", args);
     return ExecuteStandaloneCopilot(args, InWorkspaceRoot);
 }
 
@@ -1428,7 +1445,12 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
     const auto entries = CollectCommitPlanEntries(templateJson);
     if (entries.empty()) return true;
 
-    std::cout << "[plan] AI fill (" << fillMode << ") using " << provider << " ...\n";
+    static constexpr std::string_view kDivider = "────────────────────────────────────────";
+    std::cerr << "\n[plan] ── AI commit plan fill ──\n";
+    std::cerr << "[plan] mode     : " << fillMode << "\n";
+    std::cerr << "[plan] provider : " << provider << "\n";
+    std::cerr << "[plan] model    : " << (modelDir.empty() ? "auto" : modelDir) << "\n";
+    std::cerr << "[plan] entries  : " << entries.size() << "\n";
     
     std::string finalPlanJson = templateJson;
     bool anyFilled = false;
@@ -1436,42 +1458,55 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
         for (const auto& entry : entries) {
             const auto prompt = BuildSingleCommitFillPrompt(InWorkspaceRoot, provider, modelDir, entry, dirty);
             const auto res = RunAiGenerate(provider, modelDir, prompt, InWorkspaceRoot, true);
-            if (res.exitCode == 0) {
-                const auto json = ExtractJsonBetweenMarkers(res.stdoutStr, "```json", "```");
-                if (!json.empty()) {
-                    CommitFillOp op;
-                    op.index = entry.index;
-                    op.message = ExtractStringField(json, "message").value_or("");
-                    const auto review = ExtractObjectBodyForKey(json, "review");
-                    op.reviewVerdict = review ? ExtractStringField(*review, "verdict").value_or("") : "";
-                    op.reviewReason = review ? ExtractStringField(*review, "reason").value_or("") : "";
-                    finalPlanJson = ApplyCommitFillOps(finalPlanJson, {op});
-                    // Only count as filled if message doesn't contain placeholder
-                    if (op.message.find("replace-with-") == std::string::npos) {
-                        anyFilled = true;
-                    }
+            if (res.exitCode != 0) {
+                auto detail = Trim(res.stderrStr);
+                if (detail.empty()) detail = Trim(res.stdoutStr);
+                if (detail.empty()) detail = "ai provider returned no details";
+                if (detail.size() > 140) detail = detail.substr(0, 140) + "...";
+                if (OutError) *OutError = "AI generation failed for entry " + std::to_string(entry.index) + ": " + detail;
+                return false;
+            }
+            const auto json = ExtractJsonBetweenMarkers(res.stdoutStr, "```json", "```");
+            if (!json.empty()) {
+                CommitFillOp op;
+                op.index = entry.index;
+                op.message = ExtractStringField(json, "message").value_or("");
+                const auto review = ExtractObjectBodyForKey(json, "review");
+                op.reviewVerdict = review ? ExtractStringField(*review, "verdict").value_or("") : "";
+                op.reviewReason = review ? ExtractStringField(*review, "reason").value_or("") : "";
+                finalPlanJson = ApplyCommitFillOps(finalPlanJson, {op});
+                // Only count as filled if message doesn't contain placeholder
+                if (op.message.find("replace-with-") == std::string::npos) {
+                    anyFilled = true;
                 }
             }
         }
     } else {
         const auto prompt = BuildPlanFillOpsPrompt(InWorkspaceRoot, provider, modelDir, InPlanPath, templateJson, dirty);
         const auto res = RunAiGenerate(provider, modelDir, prompt, InWorkspaceRoot, true);
-        if (res.exitCode == 0) {
-            const auto json = ExtractPlanFillOpsJson(res.stdoutStr);
-            const auto ops = ParseCommitFillOps(json);
-            finalPlanJson = ApplyCommitFillOps(finalPlanJson, ops);
-            // Check if any ops actually filled real messages
-            for (const auto& op : ops) {
-                if (op.message.find("replace-with-") == std::string::npos) {
-                    anyFilled = true;
-                    break;
-                }
+        if (res.exitCode != 0) {
+            auto detail = Trim(res.stderrStr);
+            if (detail.empty()) detail = Trim(res.stdoutStr);
+            if (detail.empty()) detail = "ai provider returned no details";
+            if (detail.size() > 140) detail = detail.substr(0, 140) + "...";
+            if (OutError) *OutError = "AI generation failed: " + detail;
+            return false;
+        }
+        const auto json = ExtractPlanFillOpsJson(res.stdoutStr);
+        const auto ops = ParseCommitFillOps(json);
+        finalPlanJson = ApplyCommitFillOps(finalPlanJson, ops);
+        // Check if any ops actually filled real messages
+        for (const auto& op : ops) {
+            if (op.message.find("replace-with-") == std::string::npos) {
+                anyFilled = true;
+                break;
             }
         }
     }
     
-    // If no entries were actually filled (AI failed or returned placeholders), return false
+    // If no entries were actually filled (AI returned placeholders), return false
     if (!anyFilled) {
+        std::cerr << "[plan] AI failed to produce commit messages\n";
         if (OutError) *OutError = "AI failed to produce commit messages";
         return false;
     }

@@ -17,20 +17,86 @@ cat docs/README.md
 
 ## Native C++ Build (Required Method)
 
-When building native `kano-git` / `kog`, use the platform scripts under `src/cpp/scripts/`.
+When building native `kano-git` / `kog`, use the stable entrypoints under `src/cpp/scripts/`.
 
 ```bash
-# Windows (recommended)
-bash src/cpp/scripts/windows/ninja-msvc-release.sh
+# Default one-shot build / rebuild
+bash src/cpp/scripts/self/build.sh
+bash src/cpp/scripts/self/rebuild.sh
 
-# Linux (example)
-bash src/cpp/scripts/linux/ninja-gcc-release.sh
+# Atomic stages
+bash src/cpp/scripts/stages/build.sh
+bash src/cpp/scripts/stages/test.sh
+bash src/cpp/scripts/stages/test-report.sh
+bash src/cpp/scripts/stages/coverage-build.sh
+bash src/cpp/scripts/stages/coverage-gather.sh
+bash src/cpp/scripts/stages/coverage-report.sh
 
-# macOS (example)
-bash src/cpp/scripts/macos/ninja-clang-release.sh
+# Composed workflows
+bash src/cpp/scripts/workflows/coverage-all.sh
+bash src/cpp/scripts/workflows/pgo-rebuild.sh
+
+# Profiling matrices + profile report
+bash src/cpp/scripts/stages/profile.sh default
+bash src/cpp/scripts/stages/profile-report.sh default
 ```
 
 Do not use ad-hoc direct CMake/Ninja command sequences in this repo unless a maintainer explicitly asks for it.
+
+### Native Script Layers
+
+- `src/cpp/shared/infra/scripts/` — shared/base infra, toolchain helpers, metadata
+- `src/cpp/scripts/self/` — stable one-shot entrypoints (`build`, `rebuild`)
+- `src/cpp/scripts/stages/` — atomic stage entrypoints (`build`, `test`, `coverage-*`, `pgi-*`, `pgo-*`)
+- `src/cpp/scripts/workflows/` — composed workflows such as coverage-all and pgo-rebuild
+- `src/cpp/scripts/profiling/` — profiling matrices, matrix runner, and profile-report rendering
+- `src/cpp/scripts/<platform>/` — platform-specific leaf wrappers and compatibility shims
+
+### Report Kinds
+
+Native reporting is now modeled explicitly as two report kinds:
+
+- `test` — test-result rendering / static test report output
+- `coverage` — coverage collection / rendering output
+
+Older `*-kano-report.sh` scripts remain as compatibility wrappers but should be treated as legacy names.
+
+### Profiling Area
+
+The profiling area lives under `src/cpp/scripts/profiling/` and is designed for curated feature-combination runs such as:
+
+- compiler launcher comparisons (`none`, `ccache`, `sccache`, `auto`)
+- unity build comparisons (`off`, `full`, `changed`)
+- PGO workflow comparisons (`baseline` vs `pgo`)
+- mixed feature scenarios such as launcher + unity
+
+Shipped profiling matrices:
+
+- `src/cpp/scripts/profiling/matrices/default.json`
+- `src/cpp/scripts/profiling/matrices/launchers.json`
+- `src/cpp/scripts/profiling/matrices/unity.json`
+- `src/cpp/scripts/profiling/matrices/pgo.json`
+
+Entry points:
+
+```bash
+# Run a profiling matrix
+bash src/cpp/scripts/stages/profile.sh default
+
+# Render the JSON-first profile report
+bash src/cpp/scripts/stages/profile-report.sh default
+```
+
+Artifacts are written under:
+
+- raw per-case outputs: `.kano/tmp/profiling/<matrix>/<case>/`
+- merged report outputs: `docs/profiling/<slug>/`
+
+Each profile report emits:
+
+- `profile.json` — canonical structured artifact
+- `summary.md` — Markdown projection
+- `index.html` — lightweight HTML projection
 
 ## Features
 
@@ -139,7 +205,7 @@ kano-git-master-skill/
 │   │   ├── CMakePresets.json
 │   │   ├── vcpkg.json
 │   │   ├── code/              # systems, apps, tests
-│   │   ├── scripts/           # Canonical native build/test/coverage scripts
+│   │   ├── scripts/           # Canonical native self/stage/workflow/report scripts
 │   │   └── out/               # Native artifacts
 │   └── shell/                 # Support helpers, docs automation, acceptance tests
 └── scripts/                    # Thin launchers and shell automation
@@ -177,6 +243,13 @@ Current architecture rule:
 - native product behavior lives under `src/cpp/`
 - root `scripts/` remain launchers, compatibility entrypoints, and shell automation
 - when docs and older shell-era assumptions disagree, prefer `src/cpp/`, `src/cpp/scripts/`, `src/cpp/out/`, and the current native command implementation
+
+Current native script contract:
+
+- prefer `src/cpp/scripts/self/*` for default build / rebuild entrypoints
+- prefer `src/cpp/scripts/stages/*` for atomic stage automation
+- prefer `src/cpp/scripts/workflows/*` for composed flows
+- prefer explicit report kinds: `test-report` and `coverage-report`
 
 ## Usage Examples
 

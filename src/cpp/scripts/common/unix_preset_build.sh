@@ -24,10 +24,21 @@ kog_run_unix_preset() {
   local in_configure_preset="$1"
   local in_build_preset="$2"
   local -a extra_args=()
+  local -a cache_override_args=()
   local llvm_prefix=""
   local sdk_path=""
   local arch=""
   local preset_name=""
+
+  if [[ -n "${KOG_CMAKE_CACHE_ARGS_JSON:-}" ]]; then
+    cache_override_args+=("$(python - <<'PY'
+import json, os
+data = json.loads(os.environ['KOG_CMAKE_CACHE_ARGS_JSON'])
+for key, value in data.items():
+    print(f'-D{key}={value}')
+PY
+)")
+  fi
 
   if [[ "${KOG_BUILD_ENABLE_MODULES:-0}" == "1" ]]; then
     extra_args+=("-DKOG_ENABLE_MODULES=ON")
@@ -65,7 +76,9 @@ kog_run_unix_preset() {
     cd "$KOG_CPP_ROOT"
     kog_apply_self_build_config
     kog_collect_build_metadata
-    cmake --preset "$in_configure_preset" "${extra_args[@]}"
+    # shellcheck disable=SC2206
+    local _cache_args=( ${cache_override_args[*]:-} )
+    cmake --preset "$in_configure_preset" "${extra_args[@]}" "${_cache_args[@]}"
     cmake --build --preset "$in_build_preset"
   )
 }

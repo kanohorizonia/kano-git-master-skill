@@ -1,0 +1,18 @@
+{
+  "name": "pgo",
+  "reportSlug": "pgo-profile",
+  "defaults": {
+    "configurePreset": "windows-ninja-msvc",
+    "buildPreset": "windows-ninja-msvc-release",
+    "buildDir": "src/cpp/out/obj/windows-ninja-msvc",
+    "config": "Release",
+    "launcher": "none",
+    "unity": "off",
+    "modules": "off",
+    "workflow": "baseline"
+  },
+  "cases": [
+    { "id": "baseline", "pgo": "off", "workflow": "baseline" },
+    { "id": "pgo", "pgo": "use", "workflow": "pgo" }
+  ]
+}

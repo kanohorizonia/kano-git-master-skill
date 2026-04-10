@@ -23,6 +23,11 @@ bash = "*"
 # =============================================================================
 [tasks]
 env-summary = "git --version && cmake --version && ninja --version"
+package-reports = "bash src/cpp/scripts/common/package-reports-with-skill.sh"
+profile-default = "bash src/cpp/scripts/stages/profile.sh default && bash src/cpp/scripts/stages/profile-report.sh default"
+profile-launchers = "bash src/cpp/scripts/stages/profile.sh launchers && bash src/cpp/scripts/stages/profile-report.sh launchers"
+profile-unity = "bash src/cpp/scripts/stages/profile.sh unity && bash src/cpp/scripts/stages/profile-report.sh unity"
+profile-pgo = "bash src/cpp/scripts/stages/profile.sh pgo && bash src/cpp/scripts/stages/profile-report.sh pgo"
 
 # Acceptance tests (cross-platform)
 acceptance-quickstart = "bash src/shell/test/acceptance-quickstart-commit-push.sh"
@@ -43,16 +48,20 @@ bootstrap-system = "bash src/cpp/scripts/windows/prerequisite_windows.sh"
 build-debug = "bash src/cpp/scripts/windows/ninja-msvc-debug.sh"
 
 # Release build (optimized)
-build-release = "bash src/cpp/scripts/windows/ninja-msvc-release.sh"
+build-release = "bash src/cpp/scripts/self/build.sh"
 
 # Coverage workflow (CI-ready)
-build-coverage = "bash src/cpp/scripts/windows/ninja-msvc-coverage-build.sh"
-test-coverage = "bash src/cpp/scripts/windows/ninja-msvc-coverage-run.sh"
-report-coverage = "bash src/cpp/scripts/windows/ninja-msvc-coverage-report.sh"
+build-coverage = "bash src/cpp/scripts/stages/coverage-build.sh"
+test-coverage = "bash src/cpp/scripts/stages/coverage-gather.sh"
+report-coverage = "bash src/cpp/scripts/stages/coverage-report.sh"
 report-coverage-opencppcoverage = "bash src/cpp/scripts/windows/ninja-msvc-opencppcoverage-run.sh"
+skill-report-coverage = "bash src/cpp/scripts/stages/coverage-report.sh"
+skill-report-coverage-opencppcoverage = "bash src/cpp/scripts/stages/coverage-report.sh opencppcoverage"
+test-report = "bash src/cpp/scripts/stages/test-report.sh"
+pgo-rebuild = "bash src/cpp/scripts/workflows/pgo-rebuild.sh"
 
 # Full coverage workflow: build + test + report
-coverage-all = "bash src/cpp/scripts/windows/ninja-msvc-coverage-build.sh && bash src/cpp/scripts/windows/ninja-msvc-coverage-run.sh && bash src/cpp/scripts/windows/ninja-msvc-coverage-report.sh"
+coverage-all = "bash src/cpp/scripts/workflows/coverage-all.sh"
 
 # Tests
 quick-test = "bash src/cpp/code/tests/run_tests.sh windows-ninja-msvc-release"
@@ -69,15 +78,18 @@ bootstrap-system = "bash src/cpp/scripts/linux/prerequisite_linux.sh"
 build-debug = "bash src/cpp/scripts/linux/ninja-clang-debug.sh"
 
 # Release build (optimized)
-build-release = "bash src/cpp/scripts/linux/ninja-gcc-release.sh"
+build-release = "bash src/cpp/scripts/self/build.sh"
 
 # Coverage workflow (CI-ready)
-build-coverage = "bash src/cpp/scripts/linux/ninja-clang-coverage-build.sh"
-test-coverage = "bash src/cpp/scripts/linux/ninja-clang-coverage-run.sh"
-report-coverage = "bash src/cpp/scripts/linux/ninja-clang-coverage-report.sh"
+build-coverage = "bash src/cpp/scripts/stages/coverage-build.sh"
+test-coverage = "bash src/cpp/scripts/stages/coverage-gather.sh"
+report-coverage = "bash src/cpp/scripts/stages/coverage-report.sh"
+skill-report-coverage = "bash src/cpp/scripts/stages/coverage-report.sh"
+test-report = "bash src/cpp/scripts/stages/test-report.sh"
+pgo-rebuild = "bash src/cpp/scripts/workflows/pgo-rebuild.sh"
 
 # Full coverage workflow: build + test + report
-coverage-all = "bash src/cpp/scripts/linux/ninja-clang-coverage-build.sh && bash src/cpp/scripts/linux/ninja-clang-coverage-run.sh && bash src/cpp/scripts/linux/ninja-clang-coverage-report.sh"
+coverage-all = "bash src/cpp/scripts/workflows/coverage-all.sh"
 
 # Tests
 quick-test = "bash src/cpp/code/tests/run_tests.sh linux-ninja-gcc-release"
@@ -94,15 +106,18 @@ bootstrap-system = "bash src/cpp/scripts/macos/prerequisite_macos.sh"
 build-debug  = "bash src/cpp/scripts/macos/ninja-clang-x64-debug.sh"
 
 # Release build (optimized)
-build-release = "bash src/cpp/scripts/macos/ninja-clang-x64-release.sh"
+build-release = "bash src/cpp/scripts/self/build.sh"
 
 # Coverage workflow (CI-ready)
-build-coverage = "bash src/cpp/scripts/macos/ninja-clang-coverage-build.sh"
-test-coverage = "bash src/cpp/scripts/macos/ninja-clang-coverage-run.sh"
-report-coverage = "bash src/cpp/scripts/macos/ninja-clang-coverage-report.sh"
+build-coverage = "bash src/cpp/scripts/stages/coverage-build.sh"
+test-coverage = "bash src/cpp/scripts/stages/coverage-gather.sh"
+report-coverage = "bash src/cpp/scripts/stages/coverage-report.sh"
+skill-report-coverage = "bash src/cpp/scripts/stages/coverage-report.sh"
+test-report = "bash src/cpp/scripts/stages/test-report.sh"
+pgo-rebuild = "bash src/cpp/scripts/workflows/pgo-rebuild.sh"
 
 # Full coverage workflow: build + test + report
-coverage-all = "bash src/cpp/scripts/macos/ninja-clang-coverage-build.sh && bash src/cpp/scripts/macos/ninja-clang-coverage-run.sh && bash src/cpp/scripts/macos/ninja-clang-coverage-report.sh"
+coverage-all = "bash src/cpp/scripts/workflows/coverage-all.sh"
 
 # Tests
 quick-test = "bash src/cpp/code/tests/run_tests.sh macos-ninja-clang-x64-release"
@@ -119,15 +134,18 @@ bootstrap-system = "bash src/cpp/scripts/macos/prerequisite_macos.sh"
 build-debug = "bash src/cpp/scripts/macos/ninja-clang-arm64-debug.sh"
 
 # Release build (optimized)
-build-release = "bash src/cpp/scripts/macos/ninja-clang-arm64-release.sh"
+build-release = "bash src/cpp/scripts/self/build.sh"
 
 # Coverage workflow (CI-ready)
-build-coverage = "bash src/cpp/scripts/macos/ninja-clang-arm64-coverage-build.sh"
-test-coverage = "bash src/cpp/scripts/macos/ninja-clang-arm64-coverage-run.sh"
-report-coverage = "bash src/cpp/scripts/macos/ninja-clang-arm64-coverage-report.sh"
+build-coverage = "bash src/cpp/scripts/stages/coverage-build.sh"
+test-coverage = "bash src/cpp/scripts/stages/coverage-gather.sh"
+report-coverage = "bash src/cpp/scripts/stages/coverage-report.sh"
+skill-report-coverage = "bash src/cpp/scripts/stages/coverage-report.sh"
+test-report = "bash src/cpp/scripts/stages/test-report.sh"
+pgo-rebuild = "bash src/cpp/scripts/workflows/pgo-rebuild.sh"
 
 # Full coverage workflow: build + test + report
-coverage-all = "bash src/cpp/scripts/macos/ninja-clang-arm64-coverage-build.sh && bash src/cpp/scripts/macos/ninja-clang-arm64-coverage-run.sh && bash src/cpp/scripts/macos/ninja-clang-arm64-coverage-report.sh"
+coverage-all = "bash src/cpp/scripts/workflows/coverage-all.sh"
 
 # Tests
 quick-test = "bash src/cpp/code/tests/run_tests.sh macos-ninja-clang-arm64-release"

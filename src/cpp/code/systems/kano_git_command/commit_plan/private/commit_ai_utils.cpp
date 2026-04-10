@@ -557,6 +557,21 @@ auto RunAiGenerate(const std::string& InProvider,
                    std::optional<std::filesystem::path> InWorkingDir,
                    const std::string& InPurpose) -> shell::ExecResult {
     const auto effectivePrompt = BuildFileBackedPromptArgument(InWorkingDir, InPrompt, InPurpose);
+
+    auto LogInvocation = [&](const std::string& binary, const std::vector<std::string>& args) {
+        static constexpr std::string_view kDivider = "────────────────────────────────────────";
+        std::cerr << "\n[kog ai] ── AI Invocation (" << InPurpose << ") ──\n";
+        std::cerr << "[kog ai] command : " << binary;
+        for (const auto& a : args) {
+            if (a.find(' ') != std::string::npos || a.empty()) std::cerr << " \"" << a << "\"";
+            else std::cerr << " " << a;
+        }
+        std::cerr << "\n[kog ai] model   : " << (InModel.empty() ? "auto" : InModel) << "\n";
+        std::cerr << "[kog ai] prompt  :\n" << kDivider << "\n" << InPrompt << "\n" << kDivider << "\n";
+        std::cerr << "[kog ai] Waiting for " << InProvider << " response...\n";
+        std::cerr.flush();
+    };
+
     if (InProvider == "opencode") {
         std::vector<std::string> args{"run"};
         AppendBoolFlag(&args, "KOG_OPENCODE_CONTINUE", "--continue");
@@ -576,6 +591,7 @@ auto RunAiGenerate(const std::string& InProvider,
             args.push_back(InModel);
         }
         args.push_back(effectivePrompt);
+        LogInvocation("opencode", args);
         return shell::ExecuteCommand("opencode", args, shell::ExecMode::Capture, InWorkingDir);
     }
 
@@ -583,10 +599,14 @@ auto RunAiGenerate(const std::string& InProvider,
         if (IsTruthyEnv(std::getenv("KOG_CODEX_USE_EXEC"))) {
             return ExecuteCodexExec(InWorkingDir, effectivePrompt, InPurpose, InModel);
         }
+        std::vector<std::string> args;
         if (!InModel.empty() && InModel != "auto") {
-            return shell::ExecuteCommand("codex", {"-q", "--model", InModel, effectivePrompt}, shell::ExecMode::Capture, InWorkingDir);
+            args = {"-q", "--model", InModel, effectivePrompt};
+        } else {
+            args = {"-q", effectivePrompt};
         }
-        return shell::ExecuteCommand("codex", {"-q", effectivePrompt}, shell::ExecMode::Capture, InWorkingDir);
+        LogInvocation("codex", args);
+        return shell::ExecuteCommand("codex", args, shell::ExecMode::Capture, InWorkingDir);
     }
 
     if (InProvider == "copilot") {
@@ -619,6 +639,7 @@ auto RunAiGenerate(const std::string& InProvider,
             AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL_URLS", "--allow-all-urls");
             AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL", "--allow-all");
             args.insert(args.end(), {"--no-color", "--stream", "off", "--no-ask-user"});
+            LogInvocation("copilot", args);
             return shell::ExecuteCommand("copilot", args, shell::ExecMode::Capture, InWorkingDir);
         }
 
@@ -651,6 +672,7 @@ auto RunAiGenerate(const std::string& InProvider,
             AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL_URLS", "--allow-all-urls");
             AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL", "--allow-all");
             args.insert(args.end(), {"--no-color", "--stream", "off", "--no-ask-user"});
+            LogInvocation("gh", args);
             return shell::ExecuteCommand("gh", args, shell::ExecMode::Capture, InWorkingDir);
         }
     }
@@ -673,15 +695,19 @@ auto GenerateAiCommitMessage(const std::filesystem::path& InWorkspaceRoot,
     const auto prompt = BuildAiCommitPrompt(InWorkspaceRoot, InRepo, InReport);
     const auto out = RunAiGenerate(InAi.provider, InAi.model, prompt, InRepo, "commit-message");
     if (out.exitCode != 0) {
+        const auto reason = SummarizeAiFailure(out);
         if (OutFailureReason != nullptr) {
-            *OutFailureReason = SummarizeAiFailure(out);
+            *OutFailureReason = reason;
         }
         return {};
     }
 
     auto message = ExtractSingleLineMessage(out.stdoutStr + "\n" + out.stderrStr);
-    if (message.empty() && OutFailureReason != nullptr) {
-        *OutFailureReason = "ai provider returned empty message";
+    if (message.empty()) {
+        const std::string reason = "ai provider returned empty message";
+        if (OutFailureReason != nullptr) {
+            *OutFailureReason = reason;
+        }
     }
     return message;
 }
@@ -722,6 +748,9 @@ auto ShouldBlockByAiReview(const std::filesystem::path& InRepo,
 
     const auto out = RunAiGenerate(InAi.provider, InAi.model, promptText, InRepo, "commit-review");
     if (out.exitCode != 0) {
+        const auto reason = SummarizeAiFailure(out);
+        std::cerr << "[kog commit] AI review generation failed (exit=" << out.exitCode << "): " << reason << "\n";
+        OutReason = "AI review skipped due to execution error: " + reason;
         return false;
     }
 
