@@ -2,8 +2,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-KOG_SHARED_BUILD_METADATA_SH="${KOG_CPP_ROOT:-$SCRIPT_DIR/../../shared/infra}/shared/infra/build/base/script/common/build_metadata.sh"
-if [[ ! -f "$KOG_SHARED_BUILD_METADATA_SH" ]]; then
+if [[ -n "${KOG_CPP_ROOT:-}" ]]; then
+  KOG_SHARED_BUILD_METADATA_SH="$KOG_CPP_ROOT/shared/infra/build/base/script/common/build_metadata.sh"
+else
   KOG_SHARED_BUILD_METADATA_SH="$SCRIPT_DIR/../../shared/infra/build/base/script/common/build_metadata.sh"
 fi
 if [[ -f "$KOG_SHARED_BUILD_METADATA_SH" ]]; then

@@ -23,7 +23,7 @@ fi
 export KANO_TEST_COMMAND='./out/bin/macos-ninja-clang-coverage/debug/kano_git_tui_tests --reporter junit --out "$KANO_TEST_XML"'
 export KANO_TEST_BINARY='./out/bin/macos-ninja-clang-coverage/debug/kano_git_tui_tests'
 export KANO_LLVM_IGNORE_FILENAME_REGEX='_deps|catch2|ftxui|thirdparty|build|\.vcpkg'
-export KANO_LLVM_EXPORT_COMMAND='"$KANO_LLVM_COV" export "$KANO_TEST_BINARY" -instr-profile="$KANO_PROFILE_DATA" > "$KANO_COVERAGE_REPORT_DIR/llvm-export.json" && python "$KOG_CPP_ROOT/scripts/common/llvm_json_to_cobertura.py" "$KANO_COVERAGE_REPORT_DIR/llvm-export.json" "$KOG_REPO_ROOT" "$KANO_COVERAGE_XML"'
+export KANO_LLVM_EXPORT_COMMAND='"$KANO_LLVM_COV" export "$KANO_TEST_BINARY" -instr-profile="$KANO_PROFILE_DATA" > "$KANO_COVERAGE_REPORT_DIR/llvm-export.json" && python "$KOG_CPP_ROOT/shared/infra/build/base/script/common/llvm_json_to_cobertura.py" "$KANO_COVERAGE_REPORT_DIR/llvm-export.json" "$KOG_REPO_ROOT" "$KANO_COVERAGE_XML"'
 
 cd "$KOG_CPP_ROOT"
 bash "$KANO_CPP_TEST_SKILL_ROOT/src/shell/reports/macos/llvm-report.sh"

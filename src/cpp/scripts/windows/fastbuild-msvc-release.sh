@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export KOG_CPP_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-source "$SCRIPT_DIR/../common/windows_preset_build.sh"
+source "$SCRIPT_DIR/../../shared/infra/build/base/script/common/windows_preset_build.sh"
 
 export KOG_FASTBUILD_ENABLED=1
 kog_apply_fastbuild_env

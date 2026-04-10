@@ -12,5 +12,7 @@ export KOG_PROFILE_SCRIPT_ROOT="$INFRA_PROFILING_ROOT"
 # profile_matrix.sh lives in src/cpp/scripts/orchestration/, so ../../../.. reaches skill root
 export KOG_PROFILE_REPO_ROOT="$(cd -- "$SCRIPT_DIR/../../../.." && pwd)"
 export KOG_PROFILE_CPP_ROOT="$(cd -- "$SCRIPT_DIR/../../" && pwd)"
+export KOG_BASELINE_SCRIPT="$KOG_PROFILE_CPP_ROOT/scripts/common/measure_iteration_baseline.sh"
+export KOG_PGO_REBUILD_SCRIPT="$KOG_PROFILE_CPP_ROOT/scripts/workflows/pgo-rebuild.sh"
 
 exec bash "$INFRA_PROFILING_ROOT/run.sh" "$@"
