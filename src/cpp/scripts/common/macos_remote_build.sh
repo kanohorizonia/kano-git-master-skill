@@ -5,7 +5,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-KOG_INFRA_MACOS_REMOTE_BUILD_SH="$SCRIPT_DIR/../../shared/infra/scripts/common/macos_remote_build.sh"
+KOG_INFRA_MACOS_REMOTE_BUILD_SH="$SCRIPT_DIR/../../shared/infra/build/base/script/common/macos_remote_build.sh"
 if [[ ! -f "$KOG_INFRA_MACOS_REMOTE_BUILD_SH" ]]; then
     echo "shared infra macOS remote build script not found: $KOG_INFRA_MACOS_REMOTE_BUILD_SH" >&2
     exit 1

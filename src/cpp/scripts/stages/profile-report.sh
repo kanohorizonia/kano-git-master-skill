@@ -5,8 +5,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-INFRA_PROFILING_ROOT="$(cd -- "$SCRIPT_DIR/../../shared/infra/scripts/profiling" && pwd)"
-INFRA_SCRIPTS_ROOT="$(cd -- "$SCRIPT_DIR/../../shared/infra/scripts" && pwd)"
+INFRA_PROFILING_ROOT="$(cd -- "$SCRIPT_DIR/../../shared/infra/build/base/script/profiling" && pwd)"
+INFRA_SCRIPTS_ROOT="$(cd -- "$SCRIPT_DIR/../../shared/infra/build/base/script" && pwd)"
 export KOG_PROFILING_ROOT="$INFRA_PROFILING_ROOT"
 export KOG_PROFILE_SCRIPT_ROOT="$INFRA_PROFILING_ROOT"
 # Point to the actual project repo root (kano-git-master-skill), not the infra submodule dir
