@@ -45,7 +45,7 @@ docs-ci = "bash src/shell/docs/build-and-deploy.sh --ci $(pwd)"
 bootstrap-system = "bash src/cpp/scripts/windows/prerequisite_windows.sh"
 
 # Development build (Debug preset - fast iteration)
-build-debug = "bash src/cpp/scripts/windows/ninja-msvc-debug.sh"
+build-debug = "bash src/cpp/shared/infra/scripts/win64/ninja-msvc-debug.sh"
 
 # Release build (optimized)
 build-release = "bash src/cpp/scripts/self/build.sh"
@@ -54,7 +54,7 @@ build-release = "bash src/cpp/scripts/self/build.sh"
 build-coverage = "bash src/cpp/scripts/stages/coverage-build.sh"
 test-coverage = "bash src/cpp/scripts/stages/coverage-gather.sh"
 report-coverage = "bash src/cpp/scripts/stages/coverage-report.sh"
-report-coverage-opencppcoverage = "bash src/cpp/scripts/windows/ninja-msvc-opencppcoverage-run.sh"
+report-coverage-opencppcoverage = "bash src/cpp/shared/infra/scripts/win64/ninja-msvc-coverage-run.sh"
 skill-report-coverage = "bash src/cpp/scripts/stages/coverage-report.sh"
 skill-report-coverage-opencppcoverage = "bash src/cpp/scripts/stages/coverage-report.sh opencppcoverage"
 test-report = "bash src/cpp/scripts/stages/test-report.sh"
@@ -75,7 +75,7 @@ full-test = "bash src/cpp/code/tests/run_tests.sh windows-ninja-msvc-release --w
 bootstrap-system = "bash src/cpp/scripts/linux/prerequisite_linux.sh"
 
 # Development build (Debug preset - fast iteration)
-build-debug = "bash src/cpp/scripts/linux/ninja-clang-debug.sh"
+build-debug = "bash src/cpp/shared/infra/scripts/linux/native-build.sh"
 
 # Release build (optimized)
 build-release = "bash src/cpp/scripts/self/build.sh"
@@ -100,10 +100,10 @@ full-test = "bash src/cpp/code/tests/run_tests.sh linux-ninja-gcc-release --with
 # =============================================================================
 [target.osx-64.tasks]
 # Bootstrap
-bootstrap-system = "bash src/cpp/scripts/macos/prerequisite_macos.sh"
+# bootstrap-system = "bash src/cpp/scripts/macos/prerequisite_macos.sh"  # deleted - no replacement yet
 
 # Development build (Debug preset - fast iteration)
-build-debug  = "bash src/cpp/scripts/macos/ninja-clang-x64-debug.sh"
+build-debug  = "bash src/cpp/shared/infra/scripts/mac/native-build.sh"
 
 # Release build (optimized)
 build-release = "bash src/cpp/scripts/self/build.sh"
@@ -128,10 +128,10 @@ full-test = "bash src/cpp/code/tests/run_tests.sh macos-ninja-clang-x64-release 
 # =============================================================================
 [target.osx-arm64.tasks]
 # Bootstrap
-bootstrap-system = "bash src/cpp/scripts/macos/prerequisite_macos.sh"
+# bootstrap-system = "bash src/cpp/scripts/macos/prerequisite_macos.sh"  # deleted - no replacement yet
 
 # Development build (Debug preset - fast iteration)
-build-debug = "bash src/cpp/scripts/macos/ninja-clang-arm64-debug.sh"
+build-debug = "bash src/cpp/shared/infra/scripts/mac/native-build.sh"
 
 # Release build (optimized)
 build-release = "bash src/cpp/scripts/self/build.sh"
