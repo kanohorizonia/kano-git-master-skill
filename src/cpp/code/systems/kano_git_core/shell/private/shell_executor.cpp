@@ -314,7 +314,7 @@ auto RunProcess(const std::string& cmdLine, ExecMode InMode,
     }
     if (kresult.timed_out) {
         if (!result.stderrStr.empty()) result.stderrStr += "\n";
-        result.stderrStr += "Process timed out";
+        result.stderrStr += "Process timeout exceeded";
     }
     kano_process_free_result(&kresult);
     return result;
@@ -454,6 +454,19 @@ auto BuildCommandLine(const std::string& program, const std::vector<std::string>
 #endif
 }
 
+auto BuildWindowsCommandProcessorLine(const std::vector<std::string>& InArgs) -> std::string {
+    std::string cmd = "cmd.exe";
+    for (const auto& arg : InArgs) {
+        cmd += ' ';
+        if (!arg.empty() && (arg[0] == '/' || arg[0] == '-')) {
+            cmd += arg;
+        } else {
+            cmd += QuoteWindowsArg(arg);
+        }
+    }
+    return cmd;
+}
+
 auto ToLower(std::string in) -> std::string {
     std::transform(in.begin(), in.end(), in.begin(), [](unsigned char ch) {
         return static_cast<char>(std::tolower(ch));
@@ -465,6 +478,22 @@ auto BaseNameLower(const std::string& InCommand) -> std::string {
     auto pos = InCommand.find_last_of("/\\");
     const std::string base = (pos == std::string::npos) ? InCommand : InCommand.substr(pos + 1);
     return ToLower(base);
+}
+
+auto NormalizeWindowsExecutable(const std::string& InCommand) -> std::string {
+    const auto base = BaseNameLower(InCommand);
+    if (base == "cmd") {
+        return "cmd.exe";
+    }
+    if (base == "powershell") {
+        return "powershell.exe";
+    }
+    return InCommand;
+}
+
+auto IsWindowsCommandProcessor(const std::string& InCommand) -> bool {
+    const auto base = BaseNameLower(InCommand);
+    return base == "cmd" || base == "cmd.exe";
 }
 
 auto IsCmdScriptCommand(const std::string& InCommand) -> bool {
@@ -567,15 +596,22 @@ auto ExecuteCommand(
 {
     const auto effectiveArgs = WithGitNonInteractiveDefaults(InCommand, InArgs);
 #ifdef KOG_PLATFORM_WINDOWS
-    const auto timeoutMs = ResolveTimeoutMs(InCommand, effectiveArgs, InMode);
-    if (IsCmdScriptCommand(InCommand)) {
-        std::vector<std::string> wrappedArgs{"/d", "/s", "/c", InCommand};
+    const auto effectiveCommand = NormalizeWindowsExecutable(InCommand);
+    const auto timeoutMs = ResolveTimeoutMs(effectiveCommand, effectiveArgs, InMode);
+    if (IsWindowsCommandProcessor(effectiveCommand) && !effectiveArgs.empty()) {
+        std::vector<std::string> wrappedArgs{"/d", "/s"};
         wrappedArgs.insert(wrappedArgs.end(), effectiveArgs.begin(), effectiveArgs.end());
-        const auto wrapped = BuildCommandLine("cmd.exe", wrappedArgs);
+        const auto wrapped = BuildWindowsCommandProcessorLine(wrappedArgs);
+        return RunProcess(wrapped, InMode, timeoutMs, InWorkingDir, InProgressCallback);
+    }
+    if (IsCmdScriptCommand(effectiveCommand)) {
+        std::vector<std::string> wrappedArgs{"/d", "/s", "/c", effectiveCommand};
+        wrappedArgs.insert(wrappedArgs.end(), effectiveArgs.begin(), effectiveArgs.end());
+        const auto wrapped = BuildWindowsCommandProcessorLine(wrappedArgs);
         return RunProcess(wrapped, InMode, timeoutMs, InWorkingDir, InProgressCallback);
     }
     // Build command line with executable at start (for CreateProcessA parsing)
-    auto cmd = BuildCommandLine(InCommand, effectiveArgs);
+    auto cmd = BuildCommandLine(effectiveCommand, effectiveArgs);
     return RunProcess(cmd, InMode, timeoutMs, InWorkingDir, InProgressCallback);
 #else
     const auto timeoutMs = ResolveTimeoutMs(InCommand, effectiveArgs, InMode);

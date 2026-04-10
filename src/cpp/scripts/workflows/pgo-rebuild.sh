@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
-
+#
+# pgo-rebuild.sh — Full PGO pipeline (3-stage)
+#
+# Design doc: ../../../../shared/infra/docs/design/cpp-stage-contract.md
+# Implements: pgo_pipeline combination (matrix.yml)
+# Stage contract: pgi-build.sh → pgo-gather.sh → pgo-build.sh
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
