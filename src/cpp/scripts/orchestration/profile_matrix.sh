@@ -4,7 +4,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-# INFRA_PROFILING_ROOT: ../../ -> src/, then shared/infra/build/base/script/profiling
+# INFRA_PROFILING_ROOT: ../../ -> src/, then shared/infra/scripts/profiling
 INFRA_PROFILING_ROOT="$(cd -- "$SCRIPT_DIR/../../shared/infra/scripts/profiling" && pwd)"
 export KOG_PROFILING_ROOT="$INFRA_PROFILING_ROOT"
 export KOG_PROFILE_SCRIPT_ROOT="$INFRA_PROFILING_ROOT"
