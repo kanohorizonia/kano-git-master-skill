@@ -26,7 +26,7 @@ kog_run_test_report() {
     eval "$KANO_TEST_COMMAND"
   )
 
-  python "$SCRIPT_DIR/../../shared/infra/build/base/script/common/render_junit_test_report.py" "$KANO_TEST_XML" "$KANO_TEST_REPORT_DIR" "$report_title"
+python "$SCRIPT_DIR/../../shared/infra/scripts/common/render_junit_test_report.py" "$KANO_TEST_XML" "$KANO_TEST_REPORT_DIR" "$report_title"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CPP_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 REPO_ROOT="$(cd "$CPP_ROOT/../.." && pwd)"
-WINDOWS_PRESET_BUILD_SH="$SCRIPT_DIR/../../shared/infra/build/base/script/common/windows_preset_build.sh"
+WINDOWS_PRESET_BUILD_SH="$SCRIPT_DIR/../../shared/infra/scripts/common/windows_preset_build.sh"
 
 if [[ "${OSTYPE:-}" == msys* || "${OSTYPE:-}" == cygwin* ]]; then
   if [[ -f "$WINDOWS_PRESET_BUILD_SH" ]]; then
