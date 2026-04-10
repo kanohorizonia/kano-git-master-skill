@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-
+# coverage-report.sh — delegates to kano-cpp-infra matrix.sh for platform routing
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-. "$SCRIPT_DIR/../orchestration/matrix.sh"
+INFRA_SCRIPTS_ROOT="$(cd -- "$SCRIPT_DIR/../../shared/infra/scripts" && pwd)"
+. "$INFRA_SCRIPTS_ROOT/orchestration/matrix.sh"
 
 backend="${1:-default}"
 if [[ "$#" -gt 0 ]]; then
