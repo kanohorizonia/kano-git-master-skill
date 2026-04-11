@@ -19,17 +19,79 @@ bash = "*"
 bash = "*"
 
 # =============================================================================
+# CANONICAL SCRIPT TAXONOMY (src/cpp/shared/infra/scripts/)
+# =============================================================================
+# lib/         — Source-only: utility functions, preset runners, cross-platform helpers
+#               Do NOT run directly; platform/*.sh or stages/*.sh source them.
+# stages/      — Single-step executables: one atomic build/test/report operation
+# workflows/   — Multi-step executables: composes stages into a full pipeline
+# platform/    — Wrappers that detect host OS and route to ../lib/ by platform
+# self/        — Stable one-shot entrypoints (build, rebuild)
+# profiling/   — Profiling matrices and report rendering
+# cmake/       — Non-shell CMake configuration (CMakePresets.json etc.)
+#
+# Key lib/ scripts:
+#   build_metadata.sh         — Collects VCS/build metadata (branch, hash, CI, host)
+#   windows_preset_build.sh   — Windows CMake preset runner via PowerShell helper
+#   unix_preset_build.sh       — Unix/macOS CMake preset runner (gcc/clang/llvm)
+#   coverage_report.sh        — Full coverage pipeline: build+test+merge+report
+#   pgo_workflow.sh           — PGO collect/merge/use workflow
+#   measure_iteration_baseline.sh — Measures clean/no-op/edit rebuild times
+#   docker_linux_build.sh     — Linux Docker cross-host build via docker cp pattern
+#   macos_remote_build.sh     — macOS remote build via rsync+ssh to macBuilder
+#   matrix.sh                 — Matrix runner: selects platform-appropriate scripts
+#   remote_host_resolver.sh    — Resolves remote build hosts (kano-remote-host CLI)
+#   report_skill_adapter.sh   — Wires kano-cpp-test-skill report packaging
+#   test_report.sh            — Runs test suite + renders JUnit XML report
+#   package-reports-with-skill.sh — Packages all reports via report skill
+#   coverage_workflow.sh      — Compatibility alias over coverage_report.sh
+#   prerequisite.sh           — Linux bootstrap: installs cmake/ninja/gcc-15/clang/git
+#
+# Key stages/ scripts:
+#   test.sh                   — Runs unit/e2e tests (via run_tests.sh or env override)
+#   coverage-build.sh         — Builds with coverage instrumentation
+#   coverage-gather.sh        — Gathers coverage profile data (.profraw/.gcda)
+#   coverage-report.sh        — Generates HTML/text coverage report
+#   profile.sh                — Runs a profiling matrix (launcher/unity/PGO comparisons)
+#   profile-report.sh         — Renders profile JSON → summary.md + index.html
+#
+# Key workflows/ scripts:
+#   coverage-all.sh          — Full coverage pipeline: build + test + merge + report
+#   pgo-rebuild.sh            — Full PGO pipeline: collect + merge + optimized rebuild
+#
+# Key platform/ scripts:
+#   win64/ninja-msvc-*.sh     — Windows MSVC/Clang Ninja builds (debug/release/coverage)
+#   linux/native-build.sh     — Linux: native on Linux, Docker on Windows/macOS
+#   linux/docker-build.sh     — Linux Docker cross-host build helper
+#   mac/native-build.sh       — macOS native Clang build
+#
+# Key self/ scripts:
+#   build.sh                  — Default one-shot build (platform auto-detected)
+#   rebuild.sh                — Atomic clean rebuild
+# =============================================================================
+
+# =============================================================================
 # Universal tasks (work on all platforms)
 # =============================================================================
 [tasks]
+
+# Show toolchain versions
 env-summary = "git --version && cmake --version && ninja --version"
+
+# Package all reports (test + coverage) via kano-cpp-test-skill
 package-reports = "bash src/cpp/shared/infra/scripts/lib/package-reports-with-skill.sh"
+
+# Profiling matrices — runs a curated feature-combination matrix then renders report
+# profile-default   : launcher=none vs ccache vs sccache vs fastbuild
+# profile-launchers : launcher comparisons only
+# profile-unity     : unity=off vs full vs changed
+# profile-pgo       : baseline vs pgo
 profile-default = "bash src/cpp/shared/infra/scripts/stages/profile.sh default && bash src/cpp/shared/infra/scripts/stages/profile-report.sh default"
 profile-launchers = "bash src/cpp/shared/infra/scripts/stages/profile.sh launchers && bash src/cpp/shared/infra/scripts/stages/profile-report.sh launchers"
 profile-unity = "bash src/cpp/shared/infra/scripts/stages/profile.sh unity && bash src/cpp/shared/infra/scripts/stages/profile-report.sh unity"
 profile-pgo = "bash src/cpp/shared/infra/scripts/stages/profile.sh pgo && bash src/cpp/shared/infra/scripts/stages/profile-report.sh pgo"
 
-# Acceptance tests (cross-platform)
+# Acceptance tests (cross-platform CI gates)
 acceptance-quickstart = "bash src/shell/test/acceptance-quickstart-commit-push.sh"
 acceptance-commit-plan-first = "bash src/shell/test/acceptance-commit-plan-first.sh"
 
