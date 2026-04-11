@@ -17,9 +17,9 @@ The pipeline is organized into 4 layers, from most generic to most specific:
 | Layer | Path | Role |
 |---|---|---|
 | **Shared infra** | `src/cpp/shared/infra/scripts/` | Generic primitives, platform detection, environment utilities, orchestration helpers |
-| **Project stages** | `src/cpp/scripts/stages/` | Canonical atomic stage entrypoints — each must be independently executable |
-| **Project workflows** | `src/cpp/scripts/workflows/` | Composition of stages into named pipelines |
-| **Platform adapters** | `src/cpp/scripts/{windows,macos,linux}/` | Platform-specific leaf implementations selected by the matrix |
+| **Project stages** | `src/cpp/shared/infra/scripts/stages/` | Canonical atomic stage entrypoints — each must be independently executable |
+| **Project workflows** | `src/cpp/shared/infra/scripts/workflows/` | Composition of stages into named pipelines |
+| **Platform adapters** | `src/cpp/shared/infra/scripts/{windows,macos,linux}/` | Platform-specific leaf implementations selected by the matrix |
 
 ---
 
@@ -39,7 +39,7 @@ Every atomic stage MUST satisfy all of the following:
 
 ### `build` — Native project build
 
-**Path:** `src/cpp/scripts/stages/build.sh`
+**Path:** `src/cpp/shared/infra/scripts/stages/build.sh`
 
 **Delegates to:** `self/build.sh` → matrix → platform script
 
@@ -53,7 +53,7 @@ Every atomic stage MUST satisfy all of the following:
 
 ### `test` — Run tests
 
-**Path:** `src/cpp/scripts/stages/test.sh`
+**Path:** `src/cpp/shared/infra/scripts/stages/test.sh`
 
 **Input:**
 - `KOG_TEST_COMMAND` env var (takes precedence)
@@ -65,7 +65,7 @@ Every atomic stage MUST satisfy all of the following:
 
 ### `test-report` — Render test report
 
-**Path:** `src/cpp/scripts/stages/test-report.sh`
+**Path:** `src/cpp/shared/infra/scripts/stages/test-report.sh`
 
 **Delegates to:** matrix → `test-report.sh` on target platform
 
@@ -79,7 +79,7 @@ Every atomic stage MUST satisfy all of the following:
 
 ### `coverage-build` — Build with coverage instrumentation
 
-**Path:** `src/cpp/scripts/stages/coverage-build.sh`
+**Path:** `src/cpp/shared/infra/scripts/stages/coverage-build.sh`
 
 **Delegates to:** matrix → platform script
 
@@ -91,7 +91,7 @@ Every atomic stage MUST satisfy all of the following:
 
 ### `coverage-gather` — Run tests and collect raw coverage data
 
-**Path:** `src/cpp/scripts/stages/coverage-gather.sh`
+**Path:** `src/cpp/shared/infra/scripts/stages/coverage-gather.sh`
 
 **Delegates to:** matrix → platform script
 
@@ -103,7 +103,7 @@ Every atomic stage MUST satisfy all of the following:
 
 ### `coverage-report` — Render coverage report from raw data
 
-**Path:** `src/cpp/scripts/stages/coverage-report.sh`
+**Path:** `src/cpp/shared/infra/scripts/stages/coverage-report.sh`
 
 **Delegates to:** matrix → platform script (coverage-report-microsoft.sh, coverage-report-opencppcoverage.sh, coverage-report-llvm.sh)
 
@@ -115,7 +115,7 @@ Every atomic stage MUST satisfy all of the following:
 
 ### `pgi-build` — Phase 1 PGO: Instrumented build
 
-**Path:** `src/cpp/scripts/stages/pgi-build.sh`
+**Path:** `src/cpp/shared/infra/scripts/stages/pgi-build.sh`
 
 **Input:** Build preset
 
@@ -125,7 +125,7 @@ Every atomic stage MUST satisfy all of the following:
 
 ### `pgo-gather` — Phase 2 PGO: Gather profile data
 
-**Path:** `src/cpp/scripts/stages/pgo-gather.sh`
+**Path:** `src/cpp/shared/infra/scripts/stages/pgo-gather.sh`
 
 **Input:** `KOG_PGO_GATHER_COMMAND` or test runner
 
@@ -135,7 +135,7 @@ Every atomic stage MUST satisfy all of the following:
 
 ### `pgo-build` — Phase 3 PGO: Optimized build with profile
 
-**Path:** `src/cpp/scripts/stages/pgo-build.sh`
+**Path:** `src/cpp/shared/infra/scripts/stages/pgo-build.sh`
 
 **Input:** `merged.profdata`
 
@@ -145,7 +145,7 @@ Every atomic stage MUST satisfy all of the following:
 
 ### `profile` — Run profiling matrix
 
-**Path:** `src/cpp/scripts/stages/profile.sh`
+**Path:** `src/cpp/shared/infra/scripts/stages/profile.sh`
 
 **Input:** Matrix name (e.g., `default`, `pgo`, `launchers`)
 
@@ -155,7 +155,7 @@ Every atomic stage MUST satisfy all of the following:
 
 ### `profile-report` — Render profiling report
 
-**Path:** `src/cpp/scripts/stages/profile-report.sh`
+**Path:** `src/cpp/shared/infra/scripts/stages/profile-report.sh`
 
 **Input:** Matrix name
 
@@ -165,7 +165,7 @@ Every atomic stage MUST satisfy all of the following:
 
 ### `package-reports` — Package all reports into distribution artifact
 
-**Path:** `src/cpp/scripts/stages/package-reports.sh` (does not yet exist as a dedicated stage)
+**Path:** `src/cpp/shared/infra/scripts/stages/package-reports.sh` (does not yet exist as a dedicated stage)
 
 **Delegates to:** `scripts/common/package-reports-with-skill.sh`
 
@@ -181,7 +181,7 @@ These are **NOT** atomic stages. They are explicit composition of stages.
 
 ### `self-build` — Default one-shot build entry
 
-**Path:** `src/cpp/scripts/self/build.sh`
+**Path:** `src/cpp/shared/infra/scripts/self/build.sh`
 
 **Composition:** `matrix → platform/release script`
 
@@ -191,7 +191,7 @@ These are **NOT** atomic stages. They are explicit composition of stages.
 
 ### `self-rebuild` — Clean + one-shot build
 
-**Path:** `src/cpp/scripts/self/rebuild.sh`
+**Path:** `src/cpp/shared/infra/scripts/self/rebuild.sh`
 
 **Composition:** `rm -rf out/ + self-build`
 
@@ -201,7 +201,7 @@ These are **NOT** atomic stages. They are explicit composition of stages.
 
 ### `coverage-all` — Full coverage pipeline
 
-**Path:** `src/cpp/scripts/workflows/coverage-all.sh`
+**Path:** `src/cpp/shared/infra/scripts/workflows/coverage-all.sh`
 
 **Delegates to:** `coverage_report.sh all` in shared/infra
 
@@ -211,7 +211,7 @@ These are **NOT** atomic stages. They are explicit composition of stages.
 
 ### `pgo-rebuild` — Full PGO pipeline
 
-**Path:** `src/cpp/scripts/workflows/pgo-rebuild.sh`
+**Path:** `src/cpp/shared/infra/scripts/workflows/pgo-rebuild.sh`
 
 **Composition:** `pgi-build → pgo-gather → pgo_workflow.sh merge → pgo-build`
 
@@ -289,7 +289,7 @@ The matrix should only return paths to **scripts that exist and are maintained**
 
 ## Platform Adapter Layer
 
-**Path:** `src/cpp/scripts/{windows,macos,linux}/`
+**Path:** `src/cpp/shared/infra/scripts/{windows,macos,linux}/`
 
 These are the leaf implementations selected by the matrix. Each adapter:
 
@@ -302,9 +302,9 @@ These are the leaf implementations selected by the matrix. Each adapter:
 
 | Platform | Directory | Status |
 |---|---|---|
-| Windows | `src/cpp/scripts/windows/` | Partial — has coverage scripts but missing release, test-report |
-| macOS | `src/cpp/scripts/macos/` | Minimal — only `native-build.sh` |
-| Linux | `src/cpp/scripts/linux/` | Minimal — `docker-build.sh`, `native-build.sh` |
+| Windows | `src/cpp/shared/infra/scripts/windows/` | Partial — has coverage scripts but missing release, test-report |
+| macOS | `src/cpp/shared/infra/scripts/macos/` | Minimal — only `native-build.sh` |
+| Linux | `src/cpp/shared/infra/scripts/linux/` | Minimal — `docker-build.sh`, `native-build.sh` |
 
 ---
 
@@ -349,7 +349,7 @@ There must be no dead dispatcher targets.
 
 ### Shared infra vs project stages boundary
 
-The stages under `src/cpp/scripts/stages/` are the **canonical project-level entrypoints**. They may delegate to shared/infra utilities, but they must not re-implement stage logic in shared/infra. Shared/infra provides **primitives**; stages provide **contracts**.
+The stages under `src/cpp/shared/infra/scripts/stages/` are the **canonical project-level entrypoints**. They may delegate to shared/infra utilities, but they must not re-implement stage logic in shared/infra. Shared/infra provides **primitives**; stages provide **contracts**.
 
 ### External report skill adapter
 
@@ -370,7 +370,7 @@ External report/renderer integration (e.g., `kano-cpp-test-skill`) must be behin
 
 ## Appendix: Current File Inventory
 
-### `src/cpp/scripts/stages/` (canonical stage entrypoints)
+### `src/cpp/shared/infra/scripts/stages/` (canonical stage entrypoints)
 
 ```
 build.sh          — delegates to self/build.sh
@@ -386,14 +386,14 @@ profile.sh        — profiling matrix runner
 profile-report.sh — profiling report renderer
 ```
 
-### `src/cpp/scripts/workflows/` (orchestration)
+### `src/cpp/shared/infra/scripts/workflows/` (orchestration)
 
 ```
 coverage-all.sh   — full coverage pipeline
 pgo-rebuild.sh    — full PGO pipeline (reference clean composition)
 ```
 
-### `src/cpp/scripts/self/` (one-shot entrypoints)
+### `src/cpp/shared/infra/scripts/self/` (one-shot entrypoints)
 
 ```
 build.sh          — matrix → platform release build

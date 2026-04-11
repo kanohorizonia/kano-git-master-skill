@@ -59,7 +59,7 @@ Some orchestration remains embedded in shell scripts instead of being driven by 
 Make the stage layer complete enough that orchestration is only composition, not hidden execution logic.
 
 ### Problem
-`src/cpp/scripts/stages/` exists, but the implementation is still uneven.
+`src/cpp/shared/infra/scripts/stages/` exists, but the implementation is still uneven.
 Coverage/profile stages are clearer than the rest, and some flow ownership still lives in common workflow scripts.
 
 ### Scope

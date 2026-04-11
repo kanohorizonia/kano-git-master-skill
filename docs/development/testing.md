@@ -187,8 +187,8 @@ TUI tests cover the terminal UI components, not individual commands:
 - On Windows, prefer the native Windows build script before running acceptance:
 
 ```bash
-bash src/cpp/scripts/windows/build_windows_ninja_msvc_release.sh
-bash src/cpp/scripts/windows/ninja-msvc-release.sh
+bash src/cpp/shared/infra/scripts/windows/build_windows_ninja_msvc_release.sh
+bash src/cpp/shared/infra/scripts/windows/ninja-msvc-release.sh
 ```
 
 - For repo-local tool orchestration, `pixi run build`, `pixi run quick-test`, and

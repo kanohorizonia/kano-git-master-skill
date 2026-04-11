@@ -65,17 +65,17 @@ bash ./scripts/kano-git-installer
 
 ### Native C++ build rule (important)
 
-When building native `kano-git` / `kog`, use the platform scripts under `src/cpp/scripts/`.
+When building native `kano-git` / `kog`, use the shared infra entrypoints under `src/cpp/shared/infra/scripts/`.
 
 ```bash
 # Windows (recommended)
-bash src/cpp/scripts/windows/build_windows_ninja_msvc_release.sh
+bash src/cpp/shared/infra/scripts/self/build.sh
 
 # Linux (example)
-bash src/cpp/scripts/linux/build_linux_ninja_gcc_release.sh
+bash src/cpp/shared/infra/scripts/self/build.sh
 
 # macOS (example)
-bash src/cpp/scripts/macos/build_macos_ninja_clang_release.sh
+bash src/cpp/shared/infra/scripts/self/build.sh
 ```
 
 Do not replace this with ad-hoc direct CMake/Ninja command sequences unless a maintainer explicitly asks for it.

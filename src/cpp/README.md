@@ -40,22 +40,22 @@ Direct script flow remains the source of truth and is what the pixi tasks call:
 
 ```bash
 # Windows host (Git Bash)
-bash src/cpp/scripts/windows/ninja-msvc-debug.sh
-bash src/cpp/scripts/windows/ninja-msvc-release.sh
-bash src/cpp/scripts/windows/msbuild-generate-sln.sh
-bash src/cpp/scripts/windows/msbuild-generate-sln.sh --open
+bash src/cpp/shared/infra/scripts/platform/win64/ninja-msvc-debug.sh
+bash src/cpp/shared/infra/scripts/platform/win64/ninja-msvc-release.sh
+bash src/cpp/shared/infra/scripts/platform/win64/msbuild-generate-sln.sh
+bash src/cpp/shared/infra/scripts/platform/win64/msbuild-generate-sln.sh --open
 
 # Linux host
-bash src/cpp/scripts/linux/ninja-gcc-debug.sh
-bash src/cpp/scripts/linux/ninja-gcc-release.sh
+bash src/cpp/shared/infra/scripts/platform/linux/native-build.sh
+bash src/cpp/shared/infra/scripts/self/build.sh
 
 # macOS host (Intel)
-bash src/cpp/scripts/macos/ninja-clang-x64-debug.sh
-bash src/cpp/scripts/macos/ninja-clang-x64-release.sh
+bash src/cpp/shared/infra/scripts/platform/mac/native-build.sh
+bash src/cpp/shared/infra/scripts/self/build.sh
 
 # macOS host (Apple Silicon)
-bash src/cpp/scripts/macos/ninja-clang-arm64-debug.sh
-bash src/cpp/scripts/macos/ninja-clang-arm64-release.sh
+bash src/cpp/shared/infra/scripts/platform/mac/native-build.sh
+bash src/cpp/shared/infra/scripts/self/build.sh
 ```
 
 ### Run
@@ -76,7 +76,7 @@ bash src/cpp/scripts/macos/ninja-clang-arm64-release.sh
 If you want a `.sln` for Visual Studio debugging or to open `windows.coverage` in the native Microsoft tooling, generate the Visual Studio preset once:
 
 ```bash
-bash src/cpp/scripts/windows/msbuild-generate-sln.sh
+bash src/cpp/shared/infra/scripts/platform/win64/msbuild-generate-sln.sh
 ```
 
 This configures the `windows-msbuild` preset and generates a solution under:
@@ -88,7 +88,7 @@ src/cpp/out/obj/windows-msbuild/*.sln
 To generate and open it immediately:
 
 ```bash
-bash src/cpp/scripts/windows/msbuild-generate-sln.sh --open
+bash src/cpp/shared/infra/scripts/platform/win64/msbuild-generate-sln.sh --open
 ```
 
 ### Windows dual coverage workflow
@@ -97,12 +97,12 @@ Windows now has two report lanes so you can compare Microsoft native coverage ag
 
 ```bash
 # Microsoft native coverage
-bash src/cpp/scripts/windows/ninja-msvc-coverage-build.sh
-bash src/cpp/scripts/windows/ninja-msvc-coverage-run.sh
-bash src/cpp/scripts/windows/ninja-msvc-coverage-report.sh
+bash src/cpp/shared/infra/scripts/stages/coverage-build.sh
+bash src/cpp/shared/infra/scripts/stages/coverage-gather.sh
+bash src/cpp/shared/infra/scripts/stages/coverage-report.sh
 
 # OpenCppCoverage tool-native HTML
-bash src/cpp/scripts/windows/ninja-msvc-opencppcoverage-run.sh
+bash src/cpp/shared/infra/scripts/stages/coverage-report.sh opencppcoverage
 ```
 
 `ninja-msvc-opencppcoverage-run.sh` reuses the Windows coverage test binary and emits tool-native HTML plus Cobertura and binary exports. Set `KOG_OPENCPPCOVERAGE_EXE` if the tool is installed outside the default path.

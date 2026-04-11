@@ -42,25 +42,25 @@ jobs:
           - name: windows-x64
             os: windows-latest
             shell: bash
-            build_script: ./src/cpp/scripts/windows/ninja-msvc-release.sh
+            build_script: ./src/cpp/shared/infra/scripts/self/build.sh
             binary_glob: src/cpp/out/bin/windows-ninja-msvc/release/*
             archive_name: kano-git-windows-x64.zip
           - name: linux-x64
             os: ubuntu-latest
             shell: bash
-            build_script: ./src/cpp/scripts/linux/ninja-gcc-release.sh
+            build_script: ./src/cpp/shared/infra/scripts/self/build.sh
             binary_glob: src/cpp/out/bin/linux-ninja-gcc/release/*
             archive_name: kano-git-linux-x64.tar.gz
           - name: macos-x64
             os: macos-13
             shell: bash
-            build_script: ./src/cpp/scripts/macos/ninja-clang-x64-release.sh
+            build_script: ./src/cpp/shared/infra/scripts/self/build.sh
             binary_glob: src/cpp/out/bin/macos-ninja-clang-x64/release/*
             archive_name: kano-git-macos-x64.tar.gz
           - name: macos-arm64
             os: macos-14
             shell: bash
-            build_script: ./src/cpp/scripts/macos/ninja-clang-arm64-release.sh
+            build_script: ./src/cpp/shared/infra/scripts/self/build.sh
             binary_glob: src/cpp/out/bin/macos-ninja-clang-arm64/release/*
             archive_name: kano-git-macos-arm64.tar.gz
     runs-on: ${{ matrix.os }}
@@ -132,7 +132,7 @@ jobs:
 
       - name: Build Windows native binary
         shell: bash
-        run: ./src/cpp/scripts/windows/ninja-msvc-release.sh
+        run: ./src/cpp/shared/infra/scripts/self/build.sh
 
       - name: Build MSI package
         shell: bash

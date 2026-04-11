@@ -35,25 +35,25 @@ jobs:
           - name: windows-x64
             os: windows-latest
             shell: bash
-            build_script: ./src/cpp/scripts/windows/ninja-msvc-release.sh
+            build_script: ./src/cpp/shared/infra/scripts/self/build.sh
             binary_glob: src/cpp/out/bin/windows-ninja-msvc/release/*
             archive_name: kano-git-windows-x64.zip
           - name: linux-x64
             os: ubuntu-latest
             shell: bash
-            build_script: ./src/cpp/scripts/linux/ninja-gcc-release.sh
+            build_script: ./src/cpp/shared/infra/scripts/self/build.sh
             binary_glob: src/cpp/out/bin/linux-ninja-gcc/release/*
             archive_name: kano-git-linux-x64.tar.gz
           - name: macos-x64
             os: macos-13
             shell: bash
-            build_script: ./src/cpp/scripts/macos/ninja-clang-x64-release.sh
+            build_script: ./src/cpp/shared/infra/scripts/self/build.sh
             binary_glob: src/cpp/out/bin/macos-ninja-clang-x64/release/*
             archive_name: kano-git-macos-x64.tar.gz
           - name: macos-arm64
             os: macos-14
             shell: bash
-            build_script: ./src/cpp/scripts/macos/ninja-clang-arm64-release.sh
+            build_script: ./src/cpp/shared/infra/scripts/self/build.sh
             binary_glob: src/cpp/out/bin/macos-ninja-clang-arm64/release/*
             archive_name: kano-git-macos-arm64.tar.gz
     runs-on: ${{ matrix.os }}
@@ -258,7 +258,7 @@ jobs:
           KOG_WINDOWS_COVERAGE_TOOL: ${{ env.KOG_WINDOWS_COVERAGE_TOOL }}
           KANO_CPP_TEST_SKILL_ROOT: ${{ github.workspace }}/_tools/kano-cpp-test-skill
         run: |
-          bash ./src/cpp/scripts/windows/coverage-report-microsoft.sh
+          bash ./src/cpp/shared/infra/scripts/lib/coverage_report.sh report ${{ matrix.configure_preset }} ${{ matrix.test_target }}
 
       # ─── Run Tests + Coverage via shared skill (Linux LLVM) ──────────────────
       - name: Run tests and LLVM coverage report (Linux)
@@ -270,7 +270,7 @@ jobs:
           KANO_CPP_TEST_SKILL_ROOT: ${{ github.workspace }}/_tools/kano-cpp-test-skill
         run: |
           export PATH="${{ matrix.llvm_cov_path }}:$PATH"
-          bash ./src/cpp/scripts/linux/coverage-report-llvm.sh
+          bash ./src/cpp/shared/infra/scripts/lib/coverage_report.sh report ${{ matrix.configure_preset }} ${{ matrix.test_target }}
 
       - name: Run tests and LLVM coverage report (macOS)
         if: runner.os == 'macOS'
@@ -281,11 +281,7 @@ jobs:
           KANO_CPP_TEST_SKILL_ROOT: ${{ github.workspace }}/_tools/kano-cpp-test-skill
         run: |
           export PATH="${{ matrix.llvm_cov_path }}:$PATH"
-          if [[ "${{ matrix.report_slug }}" == "macos-arm64" ]]; then
-            bash ./src/cpp/scripts/macos/ninja-clang-arm64-kano-report.sh
-          else
-            bash ./src/cpp/scripts/macos/coverage-report-llvm.sh
-          fi
+          bash ./src/cpp/shared/infra/scripts/lib/coverage_report.sh report ${{ matrix.configure_preset }} ${{ matrix.test_target }}
 
       - name: Generate OpenCppCoverage report (Windows)
         if: runner.os == 'Windows'
@@ -296,7 +292,7 @@ jobs:
           KOG_OPENCPPCOVERAGE_EXE: ${{ env.KOG_OPENCPPCOVERAGE_EXE }}
           KANO_CPP_TEST_SKILL_ROOT: ${{ github.workspace }}/_tools/kano-cpp-test-skill
         run: |
-          bash ./src/cpp/scripts/windows/coverage-report-opencppcoverage.sh
+          bash ./src/cpp/shared/infra/scripts/lib/coverage_report.sh report ${{ matrix.configure_preset }} ${{ matrix.test_target }}
 
       # ─── Package and Upload ──────────────────────────────────────────────────
       - name: Package normalized reports
@@ -305,7 +301,7 @@ jobs:
           export KOG_REPORT_ROOT="$GITHUB_WORKSPACE"
           export KANO_REPORT_SLUG=package-all
           export KANO_CPP_TEST_SKILL_ROOT="$GITHUB_WORKSPACE/_tools/kano-cpp-test-skill"
-          bash ./src/cpp/scripts/common/package-reports-with-skill.sh
+          bash ./src/cpp/shared/infra/scripts/lib/package-reports-with-skill.sh
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
@@ -339,7 +335,7 @@ jobs:
 
       - name: Build Windows native binary
         shell: bash
-        run: ./src/cpp/scripts/windows/ninja-msvc-release.sh
+        run: ./src/cpp/shared/infra/scripts/self/build.sh
 
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4

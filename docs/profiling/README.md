@@ -8,15 +8,15 @@ This directory contains curated build-feature profiling matrices that measure th
 
 ```bash
 # Run the default matrix (launcher + unity + PGO scenarios)
-bash src/cpp/scripts/stages/profile.sh default
+bash src/cpp/shared/infra/scripts/stages/profile.sh default
 
 # Render the profile report
-bash src/cpp/scripts/stages/profile-report.sh default
+bash src/cpp/shared/infra/scripts/stages/profile-report.sh default
 
 # Other shipped matrices
-bash src/cpp/scripts/stages/profile.sh launchers    # none vs auto vs ccache vs sccache
-bash src/cpp/scripts/stages/profile.sh unity       # off vs full vs changed
-bash src/cpp/scripts/stages/profile.sh pgo         # baseline vs PGO use
+bash src/cpp/shared/infra/scripts/stages/profile.sh launchers    # none vs auto vs ccache vs sccache
+bash src/cpp/shared/infra/scripts/stages/profile.sh unity       # off vs full vs changed
+bash src/cpp/shared/infra/scripts/stages/profile.sh pgo         # baseline vs PGO use
 ```
 
 ## Report Output
@@ -46,7 +46,7 @@ docs/profiling/
 
 ## Matrix JSON Format
 
-Each matrix is a JSON file under `src/cpp/scripts/profiling/matrices/`:
+Each matrix is a JSON file under `src/cpp/shared/infra/scripts/profiling/matrices/`:
 
 ```json
 {
@@ -110,9 +110,9 @@ Any field in a case overrides the corresponding default. Common overrides:
 
 ## Adding a New Matrix
 
-1. Create `src/cpp/scripts/profiling/matrices/<name>.json`
-2. Run `bash src/cpp/scripts/stages/profile.sh <name>`
-3. Render: `bash src/cpp/scripts/stages/profile-report.sh <name>`
+1. Create `src/cpp/shared/infra/scripts/profiling/matrices/<name>.json`
+2. Run `bash src/cpp/shared/infra/scripts/stages/profile.sh <name>`
+3. Render: `bash src/cpp/shared/infra/scripts/stages/profile-report.sh <name>`
 4. Commit the matrix JSON; profile reports (`docs/profiling/<slug>/`) are generated artifacts and should also be committed
 
 ## Cross-Platform Matrices

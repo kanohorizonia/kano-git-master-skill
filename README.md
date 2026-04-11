@@ -17,40 +17,40 @@ cat docs/README.md
 
 ## Native C++ Build (Required Method)
 
-When building native `kano-git` / `kog`, use the stable entrypoints under `src/cpp/scripts/`.
+When building native `kano-git` / `kog`, use the stable entrypoints under `src/cpp/shared/infra/scripts/`.
 
 ```bash
 # Default one-shot build / rebuild
-bash src/cpp/scripts/self/build.sh
-bash src/cpp/scripts/self/rebuild.sh
+bash src/cpp/shared/infra/scripts/self/build.sh
+bash src/cpp/shared/infra/scripts/self/rebuild.sh
 
 # Atomic stages
-bash src/cpp/scripts/stages/build.sh
-bash src/cpp/scripts/stages/test.sh
-bash src/cpp/scripts/stages/test-report.sh
-bash src/cpp/scripts/stages/coverage-build.sh
-bash src/cpp/scripts/stages/coverage-gather.sh
-bash src/cpp/scripts/stages/coverage-report.sh
+bash src/cpp/shared/infra/scripts/self/build.sh
+bash src/cpp/shared/infra/scripts/stages/test.sh
+bash src/cpp/shared/infra/scripts/stages/test-report.sh
+bash src/cpp/shared/infra/scripts/stages/coverage-build.sh
+bash src/cpp/shared/infra/scripts/stages/coverage-gather.sh
+bash src/cpp/shared/infra/scripts/stages/coverage-report.sh
 
 # Composed workflows
-bash src/cpp/scripts/workflows/coverage-all.sh
-bash src/cpp/scripts/workflows/pgo-rebuild.sh
+bash src/cpp/shared/infra/scripts/workflows/coverage-all.sh
+bash src/cpp/shared/infra/scripts/workflows/pgo-rebuild.sh
 
 # Profiling matrices + profile report
-bash src/cpp/scripts/stages/profile.sh default
-bash src/cpp/scripts/stages/profile-report.sh default
+bash src/cpp/shared/infra/scripts/stages/profile.sh default
+bash src/cpp/shared/infra/scripts/stages/profile-report.sh default
 ```
 
 Do not use ad-hoc direct CMake/Ninja command sequences in this repo unless a maintainer explicitly asks for it.
 
 ### Native Script Layers
 
-- `src/cpp/shared/infra/scripts/` — shared/base infra, toolchain helpers, metadata
-- `src/cpp/scripts/self/` — stable one-shot entrypoints (`build`, `rebuild`)
-- `src/cpp/scripts/stages/` — atomic stage entrypoints (`build`, `test`, `coverage-*`, `pgi-*`, `pgo-*`)
-- `src/cpp/scripts/workflows/` — composed workflows such as coverage-all and pgo-rebuild
-- `src/cpp/scripts/profiling/` — profiling matrices, matrix runner, and profile-report rendering
-- `src/cpp/scripts/<platform>/` — platform-specific leaf wrappers and compatibility shims
+- `src/cpp/shared/infra/scripts/` — canonical shared/base infra, entrypoints, toolchain helpers, metadata
+- `src/cpp/shared/infra/scripts/self/` — stable one-shot entrypoints (`build`, `rebuild`)
+- `src/cpp/shared/infra/scripts/stages/` — atomic stage entrypoints (`test`, `coverage-*`, `profile*`)
+- `src/cpp/shared/infra/scripts/workflows/` — composed workflows such as coverage-all and pgo-rebuild
+- `src/cpp/shared/infra/scripts/profiling/` — profiling matrices, matrix runner, and profile-report rendering
+- `src/cpp/shared/infra/scripts/platform/` — platform-specific leaf wrappers
 
 ### Report Kinds
 
@@ -63,7 +63,7 @@ Older `*-kano-report.sh` scripts remain as compatibility wrappers but should be 
 
 ### Profiling Area
 
-The profiling area lives under `src/cpp/scripts/profiling/` and is designed for curated feature-combination runs such as:
+The profiling area lives under `src/cpp/shared/infra/scripts/profiling/` and is designed for curated feature-combination runs such as:
 
 - compiler launcher comparisons (`none`, `ccache`, `sccache`, `auto`)
 - unity build comparisons (`off`, `full`, `changed`)
@@ -72,19 +72,19 @@ The profiling area lives under `src/cpp/scripts/profiling/` and is designed for 
 
 Shipped profiling matrices:
 
-- `src/cpp/scripts/profiling/matrices/default.json`
-- `src/cpp/scripts/profiling/matrices/launchers.json`
-- `src/cpp/scripts/profiling/matrices/unity.json`
-- `src/cpp/scripts/profiling/matrices/pgo.json`
+- `src/cpp/shared/infra/scripts/profiling/matrices/default.json`
+- `src/cpp/shared/infra/scripts/profiling/matrices/launchers.json`
+- `src/cpp/shared/infra/scripts/profiling/matrices/unity.json`
+- `src/cpp/shared/infra/scripts/profiling/matrices/pgo.json`
 
 Entry points:
 
 ```bash
 # Run a profiling matrix
-bash src/cpp/scripts/stages/profile.sh default
+bash src/cpp/shared/infra/scripts/stages/profile.sh default
 
 # Render the JSON-first profile report
-bash src/cpp/scripts/stages/profile-report.sh default
+bash src/cpp/shared/infra/scripts/stages/profile-report.sh default
 ```
 
 Artifacts are written under:
@@ -205,7 +205,7 @@ kano-git-master-skill/
 │   │   ├── CMakePresets.json
 │   │   ├── vcpkg.json
 │   │   ├── code/              # systems, apps, tests
-│   │   ├── scripts/           # Canonical native self/stage/workflow/report scripts
+│   │   ├── shared/infra/scripts/ # Canonical native self/stage/workflow/report scripts
 │   │   └── out/               # Native artifacts
 │   └── shell/                 # Support helpers, docs automation, acceptance tests
 └── scripts/                    # Thin launchers and shell automation
@@ -242,13 +242,13 @@ Current architecture rule:
 
 - native product behavior lives under `src/cpp/`
 - root `scripts/` remain launchers, compatibility entrypoints, and shell automation
-- when docs and older shell-era assumptions disagree, prefer `src/cpp/`, `src/cpp/scripts/`, `src/cpp/out/`, and the current native command implementation
+- when docs and older shell-era assumptions disagree, prefer `src/cpp/`, `src/cpp/shared/infra/scripts/`, `src/cpp/out/`, and the current native command implementation
 
 Current native script contract:
 
-- prefer `src/cpp/scripts/self/*` for default build / rebuild entrypoints
-- prefer `src/cpp/scripts/stages/*` for atomic stage automation
-- prefer `src/cpp/scripts/workflows/*` for composed flows
+- prefer `src/cpp/shared/infra/scripts/self/*` for default build / rebuild entrypoints
+- prefer `src/cpp/shared/infra/scripts/stages/*` for atomic stage automation
+- prefer `src/cpp/shared/infra/scripts/workflows/*` for composed flows
 - prefer explicit report kinds: `test-report` and `coverage-report`
 
 ## Usage Examples
