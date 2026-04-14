@@ -47,6 +47,20 @@ auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<
 auto HomeDirectory() -> std::filesystem::path;
 auto RunCommitPreflight(const std::filesystem::path& InRepo) -> CommitPreflightReport;
 
+auto WarnPlanWorkspaceStateDrift(const std::string& InNormalizedCommitPlanPath,
+                                 const std::string& InPlanBaseHeadSha,
+                                 const std::string& InCurrentBaseHeadSha,
+                                 const std::string& InPlanDirtyFingerprint,
+                                 const std::string& InCurrentDirtyFingerprint) -> void {
+    std::cerr << "Warning: invalid --plan-file: workspace state drift detected. Continuing anyway.\n";
+    std::cerr << "  plan.path=" << InNormalizedCommitPlanPath << "\n";
+    std::cerr << "  plan.base_head_sha=" << InPlanBaseHeadSha << "\n";
+    std::cerr << "  current.base_head_sha=" << InCurrentBaseHeadSha << "\n";
+    std::cerr << "  plan.dirty_fingerprint=" << InPlanDirtyFingerprint << "\n";
+    std::cerr << "  current.dirty_fingerprint=" << InCurrentDirtyFingerprint << "\n";
+    std::cerr << "Hint: regenerate/refill plan before commit apply.\n";
+}
+
 auto NormalizeInputPathForCurrentPlatform(std::string InPath) -> std::string {
     auto path = Trim(std::move(InPath));
     if (path.empty()) {
@@ -3710,14 +3724,11 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
     const auto currentDirtyFingerprint = ComputeWorkspaceDirtyFingerprint(workspaceRoot);
     if (Trim(parsed->meta.baseHeadSha) != currentBaseHeadSha ||
         Trim(parsed->meta.dirtyFingerprint) != currentDirtyFingerprint) {
-        std::cerr << "Error: invalid --plan-file: workspace state drift detected.\n";
-        std::cerr << "  plan.path=" << normalizedCommitPlanPath << "\n";
-        std::cerr << "  plan.base_head_sha=" << parsed->meta.baseHeadSha << "\n";
-        std::cerr << "  current.base_head_sha=" << currentBaseHeadSha << "\n";
-        std::cerr << "  plan.dirty_fingerprint=" << parsed->meta.dirtyFingerprint << "\n";
-        std::cerr << "  current.dirty_fingerprint=" << currentDirtyFingerprint << "\n";
-        std::cerr << "Hint: regenerate/refill plan before commit apply.\n";
-        return 2;
+        WarnPlanWorkspaceStateDrift(normalizedCommitPlanPath,
+                                    parsed->meta.baseHeadSha,
+                                    currentBaseHeadSha,
+                                    parsed->meta.dirtyFingerprint,
+                                    currentDirtyFingerprint);
     }
 
     const auto stage = ParseCommitPlanStage(InPlanStage);
@@ -4341,14 +4352,11 @@ void RegisterCommit(CLI::App& InApp) {
             const auto currentDirtyFingerprint = ComputeWorkspaceDirtyFingerprint(workspaceRoot);
             if (Trim(parsed->meta.baseHeadSha) != currentBaseHeadSha ||
                 Trim(parsed->meta.dirtyFingerprint) != currentDirtyFingerprint) {
-                std::cerr << "Error: invalid --plan-file: workspace state drift detected.\n";
-                std::cerr << "  plan.path=" << normalizedCommitPlanPath << "\n";
-                std::cerr << "  plan.base_head_sha=" << parsed->meta.baseHeadSha << "\n";
-                std::cerr << "  current.base_head_sha=" << currentBaseHeadSha << "\n";
-                std::cerr << "  plan.dirty_fingerprint=" << parsed->meta.dirtyFingerprint << "\n";
-                std::cerr << "  current.dirty_fingerprint=" << currentDirtyFingerprint << "\n";
-                std::cerr << "Hint: regenerate/refill plan before commit apply.\n";
-                std::exit(2);
+                WarnPlanWorkspaceStateDrift(normalizedCommitPlanPath,
+                                            parsed->meta.baseHeadSha,
+                                            currentBaseHeadSha,
+                                            parsed->meta.dirtyFingerprint,
+                                            currentDirtyFingerprint);
             }
 
             if (!parsed->meta.planner.provider.empty() ||

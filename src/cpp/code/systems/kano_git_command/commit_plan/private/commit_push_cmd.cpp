@@ -6,6 +6,8 @@
 #include "secret_scan_utils.hpp"
 #include "shell_executor.hpp"
 
+#include <kano_timing.h>
+
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -2348,214 +2350,201 @@ void RegisterCommitPush(CLI::App& InApp) {
 
         if (!effectiveAiModeRequested) {
             std::cout << "=== commit-push stage: safety-gates ===\n";
-            const auto safetyStart = std::chrono::steady_clock::now();
-            RunPipelineSafetyGatesForNonAiCommitPush(workspaceRoot, repoList, effectiveNoRecursive);
-            const auto safetyEnd = std::chrono::steady_clock::now();
-            safetyGatesMillis = std::chrono::duration_cast<std::chrono::milliseconds>(safetyEnd - safetyStart).count();
+            {
+                SCOPED_TIMING_LOG("commit-push.safety-gates");
+                RunPipelineSafetyGatesForNonAiCommitPush(workspaceRoot, repoList, effectiveNoRecursive);
+            }
         }
 
         std::cout << "=== commit-push stage: pre-commit ===\n";
-        const auto preCommitStart = std::chrono::steady_clock::now();
-        if (!repoList.empty()) {
-            for (const auto& repo : repoList) {
-                const auto repoRoot = (workspaceRoot / std::filesystem::path(repo)).lexically_normal();
-                const auto preCommitCode = RunSyncPreCommitNative(repoRoot, false, *dryRun, *branchMode);
+        {
+            SCOPED_TIMING_LOG("commit-push.pre-commit");
+            if (!repoList.empty()) {
+                for (const auto& repo : repoList) {
+                    const auto repoRoot = (workspaceRoot / std::filesystem::path(repo)).lexically_normal();
+                    const auto preCommitCode = RunSyncPreCommitNative(repoRoot, false, *dryRun, *branchMode);
+                    if (preCommitCode != 0) {
+                        std::exit(preCommitCode);
+                    }
+                }
+            } else {
+                const auto preCommitCode = RunSyncPreCommitNative(workspaceRoot, !*noRecursive, *dryRun, *branchMode);
                 if (preCommitCode != 0) {
                     std::exit(preCommitCode);
                 }
             }
-        } else {
-            const auto preCommitCode = RunSyncPreCommitNative(workspaceRoot, !*noRecursive, *dryRun, *branchMode);
-            if (preCommitCode != 0) {
-                std::exit(preCommitCode);
-            }
         }
-        const auto preCommitEnd = std::chrono::steady_clock::now();
-        preCommitMillis = std::chrono::duration_cast<std::chrono::milliseconds>(preCommitEnd - preCommitStart).count();
 
         const bool hasWorkingChanges = NeedsPostSyncCommitNonPlan(workspaceRoot, repoList, effectiveNoRecursive);
         if (!hasWorkingChanges) {
             std::cout << "[commit-push] workspace clean; skipping commit/sync/post-sync and proceeding to push check.\n";
         } else {
             std::cout << "=== commit-push stage: commit ===\n";
-            const auto commitStart = std::chrono::steady_clock::now();
-            const auto commitResult = hasCommitPlan
-                ? shell::ExecResult{
-                    RunCommitNativePlanStage(workspaceRoot, normalizedCommitPlanFile, "commit", false), "", ""}
-                : shell::ExecResult{
-                    RunCommitNativeSimple(
-                        workspaceRoot,
-                        *repos,
-                        effectiveNoRecursive,
-                        *message,
-                        *stagedOnly,
-                        *dryRun,
-                        *aiProvider,
-                        *aiModel,
-                        *aiAuto,
-                        *noAiReview,
-                        false),
-                    "", ""};
-            const auto commitEnd = std::chrono::steady_clock::now();
-            commitMillis = std::chrono::duration_cast<std::chrono::milliseconds>(commitEnd - commitStart).count();
-            if (commitResult.exitCode != 0) {
-                std::exit(commitResult.exitCode);
+            {
+                SCOPED_TIMING_LOG("commit-push.commit");
+                const auto commitResult = hasCommitPlan
+                    ? shell::ExecResult{
+                        RunCommitNativePlanStage(workspaceRoot, normalizedCommitPlanFile, "commit", false), "", ""}
+                    : shell::ExecResult{
+                        RunCommitNativeSimple(
+                            workspaceRoot,
+                            *repos,
+                            effectiveNoRecursive,
+                            *message,
+                            *stagedOnly,
+                            *dryRun,
+                            *aiProvider,
+                            *aiModel,
+                            *aiAuto,
+                            *noAiReview,
+                            false),
+                        "", ""};
+                if (commitResult.exitCode != 0) {
+                    std::exit(commitResult.exitCode);
+                }
             }
 
             std::cout << "=== commit-push stage: sync ===\n";
-            const auto syncStart = std::chrono::steady_clock::now();
-            if (!repoList.empty()) {
-                for (const auto& repo : repoList) {
-                    const auto repoRoot = (workspaceRoot / std::filesystem::path(repo)).lexically_normal();
-                    const auto syncCode = RunSyncOriginLatestNative(repoRoot, false, *dryRun);
+            {
+                SCOPED_TIMING_LOG("commit-push.sync");
+                if (!repoList.empty()) {
+                    for (const auto& repo : repoList) {
+                        const auto repoRoot = (workspaceRoot / std::filesystem::path(repo)).lexically_normal();
+                        const auto syncCode = RunSyncOriginLatestNative(repoRoot, false, *dryRun);
+                        if (syncCode != 0) {
+                            std::exit(syncCode);
+                        }
+                    }
+                } else {
+                    const auto syncCode = RunSyncOriginLatestNative(workspaceRoot, !effectiveNoRecursive, *dryRun);
                     if (syncCode != 0) {
                         std::exit(syncCode);
                     }
                 }
-            } else {
-                const auto syncCode = RunSyncOriginLatestNative(workspaceRoot, !effectiveNoRecursive, *dryRun);
-                if (syncCode != 0) {
-                    std::exit(syncCode);
-                }
             }
-            const auto syncEnd = std::chrono::steady_clock::now();
-            syncMillis = std::chrono::duration_cast<std::chrono::milliseconds>(syncEnd - syncStart).count();
 
             std::cout << "=== commit-push stage: post-sync ===\n";
-            const auto postCommitStart = std::chrono::steady_clock::now();
-            shell::ExecResult postCommitResult{0, "", ""};
-            if (*dryRun) {
-                if (hasCommitPlan) {
-                    std::cout << "[commit-push] post-sync plan commit skipped in dry-run mode.\n";
+            {
+                SCOPED_TIMING_LOG("commit-push.post-sync");
+                shell::ExecResult postCommitResult{0, "", ""};
+                if (*dryRun) {
+                    if (hasCommitPlan) {
+                        std::cout << "[commit-push] post-sync plan commit skipped in dry-run mode.\n";
+                    } else {
+                        std::cout << "[commit-push] post-sync commit skipped in dry-run mode.\n";
+                    }
                 } else {
-                    std::cout << "[commit-push] post-sync commit skipped in dry-run mode.\n";
-                }
-            } else {
-                const auto summary = ClassifyPostSyncDelta(workspaceRoot, repoList, effectiveNoRecursive);
-                if (summary.kind == PostSyncDeltaKind::SemanticDrift) {
-                    std::cout << "[commit-push] post-sync semantic changes detected; proceeding to post-sync commit stage.\n";
-                    for (const auto& repo : summary.semanticRepos) {
-                        std::cout << "  repo: " << repo.generic_string() << "\n";
+                    const auto summary = ClassifyPostSyncDelta(workspaceRoot, repoList, effectiveNoRecursive);
+                    if (summary.kind == PostSyncDeltaKind::SemanticDrift) {
+                        std::cout << "[commit-push] post-sync semantic changes detected; proceeding to post-sync commit stage.\n";
+                        for (const auto& repo : summary.semanticRepos) {
+                            std::cout << "  repo: " << repo.generic_string() << "\n";
+                        }
                     }
-                }
-                if (summary.kind == PostSyncDeltaKind::GitlinkOnly) {
-                    const auto amendResult = AutoAmendGitlinkOnlyPostSyncRepos(workspaceRoot, repoList, effectiveNoRecursive);
-                    if (amendResult.first != 0) {
-                        std::exit(2);
-                    }
-                    std::cout << "[commit-push] post-sync gitlink-only auto-amend applied: repos=" << amendResult.second << "\n";
-                } else if (hasCommitPlan) {
-                    const bool hasPostSyncStage = PlanStageLikelyNonEmpty(std::filesystem::path(normalizedCommitPlanFile), "post_sync");
-                    if (!hasPostSyncStage) {
-                        std::cout << "[commit-push] post-sync plan stage is empty; skipping.\n";
+                    if (summary.kind == PostSyncDeltaKind::GitlinkOnly) {
+                        const auto amendResult = AutoAmendGitlinkOnlyPostSyncRepos(workspaceRoot, repoList, effectiveNoRecursive);
+                        if (amendResult.first != 0) {
+                            std::exit(2);
+                        }
+                        std::cout << "[commit-push] post-sync gitlink-only auto-amend applied: repos=" << amendResult.second << "\n";
+                    } else if (hasCommitPlan) {
+                        const bool hasPostSyncStage = PlanStageLikelyNonEmpty(std::filesystem::path(normalizedCommitPlanFile), "post_sync");
+                        if (!hasPostSyncStage) {
+                            std::cout << "[commit-push] post-sync plan stage is empty; skipping.\n";
+                        } else if (NeedsPostSyncCommitNonPlan(workspaceRoot, repoList, effectiveNoRecursive)) {
+                            postCommitResult =
+                                shell::ExecResult{RunCommitNativePlanStage(workspaceRoot, normalizedCommitPlanFile, "post_sync", false), "", ""};
+                        } else {
+                            std::cout << "[commit-push] post-sync plan commit skipped (no working tree changes).\n";
+                        }
                     } else if (NeedsPostSyncCommitNonPlan(workspaceRoot, repoList, effectiveNoRecursive)) {
                         postCommitResult =
-                            shell::ExecResult{RunCommitNativePlanStage(workspaceRoot, normalizedCommitPlanFile, "post_sync", false), "", ""};
+                            shell::ExecResult{
+                                RunCommitNativeSimple(
+                                    workspaceRoot,
+                                    *repos,
+                                    effectiveNoRecursive,
+                                    *message,
+                                    *stagedOnly,
+                                    *dryRun,
+                                    *aiProvider,
+                                    *aiModel,
+                                    *aiAuto,
+                                    *noAiReview,
+                                    false),
+                                "", ""};
                     } else {
-                        std::cout << "[commit-push] post-sync plan commit skipped (no working tree changes).\n";
+                        std::cout << "[commit-push] post-sync commit skipped (no working tree changes).\n";
                     }
-                } else if (NeedsPostSyncCommitNonPlan(workspaceRoot, repoList, effectiveNoRecursive)) {
-                    postCommitResult =
-                        shell::ExecResult{
-                            RunCommitNativeSimple(
-                                workspaceRoot,
-                                *repos,
-                                effectiveNoRecursive,
-                                *message,
-                                *stagedOnly,
-                                *dryRun,
-                                *aiProvider,
-                                *aiModel,
-                                *aiAuto,
-                                *noAiReview,
-                                false),
-                            "", ""};
+                }
+                if (postCommitResult.exitCode != 0) {
+                    std::exit(postCommitResult.exitCode);
+                }
+            }
+
+            std::cout << "=== commit-push stage: push ===\n";
+            int pushExitCode = 0;
+            {
+                SCOPED_TIMING_LOG("commit-push.push");
+                if (!repoList.empty()) {
+                    std::vector<std::string> pushArgs = {"push", "--repos", JoinReposCsv(repoList), "--no-recursive"};
+                    if (*dryRun) {
+                        pushArgs.push_back("--dry-run");
+                    }
+                    if (*profile) {
+                        pushArgs.push_back("--profile");
+                    }
+                    if (*forceWithLease) {
+                        pushArgs.push_back("--force-with-lease");
+                    }
+                    if (*noVerify) {
+                        pushArgs.push_back("--no-verify");
+                    }
+                    if (*verbose) {
+                        pushArgs.push_back("--verbose");
+                    }
+                    if (!remote->empty()) {
+                        pushArgs.push_back("--remote");
+                        pushArgs.push_back(*remote);
+                    }
+                    const auto pushResult = shell::ExecuteCommand(SelfBinaryPath(), pushArgs, shell::ExecMode::PassThrough, workspaceRoot);
+                    pushExitCode = pushResult.exitCode;
                 } else {
-                    std::cout << "[commit-push] post-sync commit skipped (no working tree changes).\n";
+                    // Keep commit-push convergence deterministic and avoid the known
+                    // parallel push worker hang path. Standalone `kog push` still exposes
+                    // configurable parallelism for operator-driven use.
+                    pushExitCode = RunPushNativeSimple(
+                        workspaceRoot,
+                        !effectiveNoRecursive,
+                        *dryRun,
+                        *profile,
+                        *forceWithLease,
+                        *noVerify,
+                        1,
+                        *verbose,
+                        *remote);
                 }
             }
-            const auto postCommitEnd = std::chrono::steady_clock::now();
-            postSyncMillis = std::chrono::duration_cast<std::chrono::milliseconds>(postCommitEnd - postCommitStart).count();
-            if (postCommitResult.exitCode != 0) {
-                std::exit(postCommitResult.exitCode);
-            }
-        }
 
-        std::cout << "=== commit-push stage: push ===\n";
-        const auto pushStart = std::chrono::steady_clock::now();
-        int pushExitCode = 0;
-        if (!repoList.empty()) {
-            std::vector<std::string> pushArgs = {"push", "--repos", JoinReposCsv(repoList), "--no-recursive"};
-            if (*dryRun) {
-                pushArgs.push_back("--dry-run");
-            }
-            if (*profile) {
-                pushArgs.push_back("--profile");
-            }
-            if (*forceWithLease) {
-                pushArgs.push_back("--force-with-lease");
-            }
-            if (*noVerify) {
-                pushArgs.push_back("--no-verify");
-            }
-            if (*verbose) {
-                pushArgs.push_back("--verbose");
-            }
-            if (!remote->empty()) {
-                pushArgs.push_back("--remote");
-                pushArgs.push_back(*remote);
-            }
-            const auto pushResult = shell::ExecuteCommand(SelfBinaryPath(), pushArgs, shell::ExecMode::PassThrough, workspaceRoot);
-            pushExitCode = pushResult.exitCode;
-        } else {
-            // Keep commit-push convergence deterministic and avoid the known
-            // parallel push worker hang path. Standalone `kog push` still exposes
-            // configurable parallelism for operator-driven use.
-            pushExitCode = RunPushNativeSimple(
-                workspaceRoot,
-                !effectiveNoRecursive,
-                *dryRun,
-                *profile,
-                *forceWithLease,
-                *noVerify,
-                1,
-                *verbose,
-                *remote);
-        }
-
-        const auto pushEnd = std::chrono::steady_clock::now();
-        pushMillis = std::chrono::duration_cast<std::chrono::milliseconds>(pushEnd - pushStart).count();
-        const auto totalEnd = std::chrono::steady_clock::now();
-        const auto totalMillis = std::chrono::duration_cast<std::chrono::milliseconds>(totalEnd - totalStart).count();
-        PrintCommitPushStageTimings("native",
-                                    safetyGatesMillis,
-                                    preCommitMillis,
-                                    commitMillis,
-                                    syncMillis,
-                                    postSyncMillis,
-                                    pushMillis,
-                                    totalMillis);
-
-        if (hasCommitPlan) {
-            std::string stampError;
-            const auto planPath = std::filesystem::path(normalizedCommitPlanFile).lexically_normal();
-            std::error_code planEc;
-            const bool planFileExists = std::filesystem::exists(planPath, planEc) && !planEc;
-            if (hasWorkingChanges && planFileExists && !StampCommitPlanExecutedAt(planPath, &stampError)) {
-                std::cerr << "Warning: failed to stamp plan executed_at_utc: "
-                          << planPath.generic_string();
-                if (!stampError.empty()) {
-                    std::cerr << " (" << stampError << ")";
+            if (hasCommitPlan) {
+                std::string stampError;
+                const auto planPath = std::filesystem::path(normalizedCommitPlanFile).lexically_normal();
+                std::error_code planEc;
+                const bool planFileExists = std::filesystem::exists(planPath, planEc) && !planEc;
+                if (hasWorkingChanges && planFileExists && !StampCommitPlanExecutedAt(planPath, &stampError)) {
+                    std::cerr << "Warning: failed to stamp plan executed_at_utc: "
+                              << planPath.generic_string();
+                    if (!stampError.empty()) {
+                        std::cerr << " (" << stampError << ")";
+                    }
+                    std::cerr << "\n";
                 }
-                std::cerr << "\n";
+                if (hasWorkingChanges && planFileExists) {
+                    PrintExecutedPlanSummary(planPath, 10);
+                }
             }
-            if (hasWorkingChanges && planFileExists) {
-                PrintExecutedPlanSummary(planPath, 10);
-            }
-        }
 
-        std::exit(pushExitCode);
+            std::exit(pushExitCode);
+        }
     });
 }
-
-} // namespace kano::git::commands

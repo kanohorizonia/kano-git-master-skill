@@ -942,6 +942,9 @@ find_binary() {
   esac
   local build_dirs=("$PROJECT_ROOT/src/cpp/out" "$PROJECT_ROOT/src/cpp/build" "$PROJECT_ROOT/build"); local bdir
 
+  local find_start now elapsed
+  find_start="$(current_epoch)"
+
   if [[ -n "${KANO_GIT_BINARY_PATH:-}" ]]; then
     if [[ -f "$KANO_GIT_BINARY_PATH" ]]; then
       if is_binary_compatible_with_shell "$KANO_GIT_BINARY_PATH"; then
@@ -981,16 +984,19 @@ find_binary() {
     while IFS= read -r preset; do
       [[ -z "$preset" ]] && continue
       candidate="$bdir/bin/$preset/release/$exe_name"
-      echo "Checking: $candidate" >&2
+      now="$(current_epoch)"; elapsed=$((now - find_start))
+      echo "[$elapsed ms] Checking: $candidate" >&2
       if [[ -f "$candidate" ]]; then
-        if is_binary_compatible_with_shell "$candidate"; then
+        if is_binary_compatible_with_shell "$candidate" ]; then
           printf '%s\n' "$candidate"
           return 0
         fi
       fi
       candidate="$bdir/bin/$preset/debug/$exe_name"
+      now="$(current_epoch)"; elapsed=$((now - find_start))
+      echo "[$elapsed ms] Checking: $candidate" >&2
       if [[ -f "$candidate" ]]; then
-        if is_binary_compatible_with_shell "$candidate"; then
+        if is_binary_compatible_with_shell "$candidate" ]; then
           printf '%s\n' "$candidate"
           return 0
         fi
@@ -998,8 +1004,12 @@ find_binary() {
     done < <(candidate_presets)
 
     candidate="$bdir/release/$exe_name"
+    now="$(current_epoch)"; elapsed=$((now - find_start))
+    echo "[$elapsed ms] Checking: $candidate" >&2
     [[ -f "$candidate" ]] && is_binary_compatible_with_shell "$candidate" && { printf '%s\n' "$candidate"; return 0; }
     candidate="$bdir/debug/$exe_name"
+    now="$(current_epoch)"; elapsed=$((now - find_start))
+    echo "[$elapsed ms] Checking: $candidate" >&2
     [[ -f "$candidate" ]] && is_binary_compatible_with_shell "$candidate" && { printf '%s\n' "$candidate"; return 0; }
   done
 
