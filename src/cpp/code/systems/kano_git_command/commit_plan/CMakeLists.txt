@@ -19,6 +19,6 @@ target_include_directories(kano_git_cmd_commit_plan
     ${KANO_GIT_COMMAND_ROOT}/commit_plan/private
 )
 
-target_link_libraries(kano_git_cmd_commit_plan PUBLIC kano::git_shell kano::git_workspace kano::git_command_runtime KanoInfra::timing)
+target_link_libraries(kano_git_cmd_commit_plan PUBLIC kano::git_shell kano::git_workspace kano::git_command_runtime KanoInfra::timing nlohmann_json::nlohmann_json)
 
 add_library(kano::git_cmd_commit_plan ALIAS kano_git_cmd_commit_plan)

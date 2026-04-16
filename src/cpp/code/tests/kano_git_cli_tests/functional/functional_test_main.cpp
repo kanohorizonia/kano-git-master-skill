@@ -573,6 +573,38 @@ TEST_CASE("sync_gitlink_only_auto_amends", "[functional][commit-push][post-sync]
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("amend_ai_auto_rewords_head_when_worktree_is_clean", "[functional][amend][ai]") {
+    const auto ctx = CreateRemoteWithClone("amend-ai-clean-reword");
+    WriteTextFile(ctx.cloneRepo / "README.md", "seed\namend ai reword\n");
+    RequireSuccess(RunGit({"add", "README.md"}, ctx.cloneRepo), "stage amend ai change");
+    RequireSuccess(RunGit({"commit", "-m", "chore: placeholder amend subject"}, ctx.cloneRepo), "seed amend target commit");
+    const auto beforeHead = CurrentHeadSha(ctx.cloneRepo);
+
+    std::vector<std::pair<std::string, std::string>> env{
+        {"KOG_TEST_AI_STDOUT", "docs(readme): refine amend ai subject\n"},
+        {"KOG_TEST_AI_EXIT_CODE", "0"},
+    };
+    if (const char* currentPath = std::getenv("PATH"); currentPath != nullptr) {
+        env.emplace_back("PATH", currentPath);
+    }
+
+    const auto result = RunKogWithEnv(
+        {"amend", "--ai-auto", "--ai-provider", "copilot", "--no-ai-review"},
+        ctx.cloneRepo,
+        env);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    REQUIRE(result.stdoutText.find("amended with ai-generated message") != std::string::npos);
+    REQUIRE(CurrentHeadSha(ctx.cloneRepo) != beforeHead);
+
+    const auto subject = RunGit({"log", "-1", "--pretty=%s"}, ctx.cloneRepo);
+    RequireSuccess(subject, "read amended subject");
+    REQUIRE(TrimCopy(subject.stdoutText) == "docs(readme): refine amend ai subject");
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("sync_semantic_drift_reaches_post_sync_commit_stage", "[functional][commit-push][post-sync]") {
     const auto ctx = CreateRemoteWithClone("sync-semantic-drift");
     WriteTextFile(ctx.cloneRepo / "staged.txt", "staged\n");
@@ -670,8 +702,11 @@ TEST_CASE("commit_push_ai_auto_codex_uses_explicit_workspace_relative_prompt_ref
 
     REQUIRE(std::filesystem::exists(capturePath));
     const auto capturedPrompt = ReadTextFile(capturePath);
-    REQUIRE(capturedPrompt.find("Read @./.kano/tmp/git/provider-prompts/plan-fill-structured-") != std::string::npos);
-    REQUIRE(capturedPrompt.find("Read @.kano/tmp/git/provider-prompts/plan-fill-structured-") == std::string::npos);
+    // Prompt reference must use an absolute path so the provider can resolve it
+    // regardless of working directory.
+    REQUIRE(capturedPrompt.find("Read @") != std::string::npos);
+    REQUIRE(capturedPrompt.find("plan-fill-structured-") != std::string::npos);
+    REQUIRE(capturedPrompt.find("Read @./") == std::string::npos);
 
     RemoveSandboxWorkspace(ctx.sandbox);
 #else

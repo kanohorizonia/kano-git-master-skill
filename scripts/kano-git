@@ -446,27 +446,7 @@ run_native_build_mode() {
   if run_shell_script "$build_script"; then
     log_launcher_status "build-native" "ok" "build completed"
   else
-    prereq_stamp="$(state_file_for build-prereq.stamp)"
-    prereq_interval="${KANO_GIT_PREREQ_RETRY_INTERVAL_SECONDS:-21600}"
-    if [[ ! "$prereq_interval" =~ ^[0-9]+$ || "$prereq_interval" -lt 0 ]]; then
-      prereq_interval=21600
-    fi
-
-    if should_run_interval_check "$prereq_stamp" "$prereq_interval"; then
-      log_launcher_status "build-native" "step" "install-prerequisites"
-      touch_stamp_file "$prereq_stamp"
-    else
-      now_epoch="$(current_epoch)"
-      last_epoch="$(file_mtime_epoch "$prereq_stamp")"
-      cooldown_left=$((prereq_interval - (now_epoch - last_epoch)))
-      if [[ "$cooldown_left" -lt 0 ]]; then
-        cooldown_left=0
-      fi
-      log_launcher_status "build-native" "warn" "skip prerequisite reinstall (cooldown=${cooldown_left}s)"
-      log_launcher_status "build-native" "fail" "build failed"
-      return 1
-    fi
-
+    log_launcher_status "build-native" "step" "install-prerequisites"
     run_shell_script "$prereq_script" || {
       log_launcher_status "build-native" "fail" "prerequisite install failed"
       return 1
@@ -1041,21 +1021,21 @@ find_existing_binary() {
 
 script_paths() {
   local base os_name arch prereq build
-  base="$PROJECT_ROOT/src/cpp/scripts"
+  base="$PROJECT_ROOT/src/cpp/shared/infra/scripts"
   os_name="$(platform_name)"
   arch="$(arch_name)"
 
   case "$os_name" in
     windows)
-      prereq="$base/windows/prerequisite_windows.sh"
+      prereq="$base/stages/prerequisite-windows.sh"
       build="$base/self/build.sh"
       ;;
     linux)
-      prereq="$base/linux/prerequisite_linux.sh"
+      prereq="$base/stages/prerequisite-linux.sh"
       build="$base/self/build.sh"
       ;;
     macos)
-      prereq="$base/macos/prerequisite_macos.sh"
+      prereq="$base/stages/prerequisite-macos.sh"
       build="$base/self/build.sh"
       ;;
     *)

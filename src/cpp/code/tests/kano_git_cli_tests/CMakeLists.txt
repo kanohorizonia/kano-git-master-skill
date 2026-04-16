@@ -1,5 +1,7 @@
 add_executable(kano_git_cli_tests
   functional/functional_test_main.cpp
+  functional/log_invocation_bug_condition_test.cpp
+  functional/log_invocation_preservation_test.cpp
 )
 
 target_link_libraries(kano_git_cli_tests

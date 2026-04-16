@@ -2548,3 +2548,5 @@ void RegisterCommitPush(CLI::App& InApp) {
         }
     });
 }
+
+} // namespace kano::git::commands

@@ -4,6 +4,8 @@
 #include "kog_config.hpp"
 #include "plan_utils.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <iostream>
 #include <string>
 #include <vector>
@@ -35,28 +37,30 @@ auto ParseCherryPickPlan(const std::filesystem::path& InPlanPath,
     }
 
     CherryPickPlan out;
-    if (const auto repo = ExtractStringField(text, "repo"); repo.has_value() && !Trim(*repo).empty()) {
-        out.repo = Trim(*repo);
-    }
+    try {
+        const auto doc = nlohmann::json::parse(text);
+        out.repo = Trim(doc.value("repo", "."));
+        if (out.repo.empty()) out.repo = ".";
 
-    const auto commitsArray = ExtractArrayBodyForKey(text, "commits");
-    if (!commitsArray.has_value()) {
-        if (OutError) *OutError = "missing commits array";
-        return std::nullopt;
-    }
-    out.commits = ParseJsonStringArrayBody("[" + *commitsArray + "]");
-    if (out.commits.empty()) {
-        if (OutError) *OutError = "commits array is empty";
-        return std::nullopt;
-    }
+        if (!doc.contains("commits") || !doc["commits"].is_array()) {
+            if (OutError) *OutError = "missing commits array";
+            return std::nullopt;
+        }
+        for (const auto& v : doc["commits"]) {
+            if (v.is_string()) out.commits.push_back(v.get<std::string>());
+        }
+        if (out.commits.empty()) {
+            if (OutError) *OutError = "commits array is empty";
+            return std::nullopt;
+        }
 
-    if (const auto aiObject = ExtractObjectBodyForKey(text, "ai"); aiObject.has_value()) {
-        if (const auto enabled = ExtractBoolField(*aiObject, "enabled"); enabled.has_value()) {
-            out.aiEnabled = *enabled;
+        if (doc.contains("ai") && doc["ai"].is_object()) {
+            out.aiEnabled  = doc["ai"].value("enabled", false);
+            out.aiProvider = Trim(doc["ai"].value("provider", ""));
         }
-        if (const auto provider = ExtractStringField(*aiObject, "provider"); provider.has_value()) {
-            out.aiProvider = Trim(*provider);
-        }
+    } catch (const nlohmann::json::parse_error& e) {
+        if (OutError) *OutError = std::string("JSON parse error: ") + e.what();
+        return std::nullopt;
     }
 
     return out;

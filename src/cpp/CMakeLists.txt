@@ -357,6 +357,29 @@ endif()
 # CLI11 v2.4 uses <codecvt> which is removed in MSVC 19.50 (VS 2026)
 add_compile_definitions(CLI11_HAS_CODECVT=0)
 
+# Resolve nlohmann/json source strategy
+#   fetch (default): FetchContent from upstream release tag into CMake _deps
+#   system: use find_package(nlohmann_json)
+set(KOG_NLOHMANN_JSON_SOURCE_MODE "fetch" CACHE STRING "nlohmann/json source mode: fetch|system")
+set_property(CACHE KOG_NLOHMANN_JSON_SOURCE_MODE PROPERTY STRINGS fetch system)
+
+if(KOG_NLOHMANN_JSON_SOURCE_MODE STREQUAL "fetch")
+    include(FetchContent)
+    FetchContent_Declare(
+        nlohmann_json
+        GIT_REPOSITORY https://github.com/nlohmann/json.git
+        GIT_TAG v3.11.3
+    )
+    set(NLOHMANN_JSON_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(NLOHMANN_JSON_INSTALL     OFF CACHE BOOL "" FORCE)
+    set(JSON_BuildTests           OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(nlohmann_json)
+elseif(KOG_NLOHMANN_JSON_SOURCE_MODE STREQUAL "system")
+    find_package(nlohmann_json CONFIG REQUIRED)
+else()
+    message(FATAL_ERROR "Unsupported KOG_NLOHMANN_JSON_SOURCE_MODE: ${KOG_NLOHMANN_JSON_SOURCE_MODE} (expected fetch|system)")
+endif()
+
 # Resolve CLI11 source strategy
 #   fetch (default): FetchContent from upstream release tag into CMake _deps
 #   submodule: use code/thirdparty/cli11 only for intentionally customized/forked dependency flows

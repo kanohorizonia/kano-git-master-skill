@@ -7,6 +7,8 @@
 #include "shell_executor.hpp"
 #include "secret_scan_utils.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <algorithm>
 #include <chrono>
 #include <cstring>
@@ -30,6 +32,15 @@ auto IsTruthyEnv(const char* InValue) -> bool {
     }
     const auto v = ToLower(Trim(std::string(InValue)));
     return v == "1" || v == "true" || v == "yes" || v == "on";
+}
+
+// Returns InDoc serialized as compact JSON, or pretty-printed with 2-space
+// indentation when KOG_DEBUG_PLAN is set to a truthy value.
+static auto SerializePlanJson(const nlohmann::json& InDoc) -> std::string {
+    if (IsTruthyEnv(std::getenv("KOG_DEBUG_PLAN"))) {
+        return InDoc.dump(2);
+    }
+    return InDoc.dump();
 }
 
 auto SplitEnvList(const char* InValue) -> std::vector<std::string> {
@@ -348,268 +359,47 @@ auto BuildDefaultPlanTemplate(const std::filesystem::path& InWorkspaceRoot,
     const auto baseHeadSha = ComputeWorkspaceBaseHeadSha(InWorkspaceRoot);
     const auto dirtyFingerprint = ComputeWorkspaceDirtyFingerprint(InWorkspaceRoot);
     const auto planId = BuildDeterministicPlanId(InWorkspaceRoot, baseHeadSha, dirtyFingerprint);
-    std::ostringstream oss;
-    oss << R"json({
-  "meta": {
-    "schema_version": "3",
-    "plan_id": ")json"
-        << planId << R"json(",
-    "generated_at_utc": ")json"
-        << CurrentUtcIso8601() << R"json(",
-    "executed_at_utc": "",
-    "base_head_sha": ")json"
-        << baseHeadSha << R"json(",
-    "dirty_fingerprint_pre_ignore": ")json"
-        << dirtyFingerprint << R"json(",
-    "dirty_fingerprint": ")json"
-        << dirtyFingerprint << R"json(",
-    "planner": {
-      "provider": ")json"
-        << DeterministicPlannerProvider() << R"json(",
-      "ai-model": ")json"
-        << DeterministicPlannerModel() << R"json("
-    },
-    "review": {
-      "verdict": "pass",
-      "reason": ")json"
-        << DeterministicReviewReason() << R"json("
-    },
-    "ignore_datasource": {
-      "root": ")json"
-        << dsRoot << R"json(",
-      "manifest": ")json"
-        << dsManifest << R"json(",
-      "prefer_sources": ["kano-local-rules", "github-gitignore"]
-    }
-  },
-  "stages": {
-    "ignore": [],
-    "commit": [],
-    "post_sync": []
-  }
-})json";
-    return oss.str();
+
+    nlohmann::json doc;
+    doc["meta"]["schema_version"]              = "3";
+    doc["meta"]["plan_id"]                     = planId;
+    doc["meta"]["generated_at_utc"]            = CurrentUtcIso8601();
+    doc["meta"]["executed_at_utc"]             = "";
+    doc["meta"]["base_head_sha"]               = baseHeadSha;
+    doc["meta"]["dirty_fingerprint_pre_ignore"] = dirtyFingerprint;
+    doc["meta"]["dirty_fingerprint"]           = dirtyFingerprint;
+    doc["meta"]["planner"]["provider"]         = DeterministicPlannerProvider();
+    doc["meta"]["planner"]["ai-model"]         = DeterministicPlannerModel();
+    doc["meta"]["review"]["verdict"]           = "pass";
+    doc["meta"]["review"]["reason"]            = DeterministicReviewReason();
+    doc["meta"]["ignore_datasource"]["root"]   = dsRoot;
+    doc["meta"]["ignore_datasource"]["manifest"] = dsManifest;
+    doc["meta"]["ignore_datasource"]["prefer_sources"] = {"kano-local-rules", "github-gitignore"};
+    doc["stages"]["ignore"]    = nlohmann::json::array();
+    doc["stages"]["commit"]    = nlohmann::json::array();
+    doc["stages"]["post_sync"] = nlohmann::json::array();
+
+    return SerializePlanJson(doc);
 }
 
 auto BuildDefaultPlanTemplate(const std::filesystem::path& InWorkspaceRoot) -> std::string {
     return BuildDefaultPlanTemplate(InWorkspaceRoot, std::nullopt, std::nullopt);
 }
 
-auto UnescapeJsonString(std::string InValue) -> std::string {
+auto JsonEscape(std::string InValue) -> std::string {
     std::string out;
-    out.reserve(InValue.size());
-    for (std::size_t i = 0; i < InValue.size(); ++i) {
-        const char ch = InValue[i];
-        if (ch != '\\' || i + 1 >= InValue.size()) {
-            out.push_back(ch);
-            continue;
-        }
-        const char next = InValue[i + 1];
-        switch (next) {
-        case '\\': out.push_back('\\'); break;
-        case '"': out.push_back('"'); break;
-        case '/': out.push_back('/'); break;
-        case 'n': out.push_back('\n'); break;
-        case 'r': out.push_back('\r'); break;
-        case 't': out.push_back('\t'); break;
-        default:
-            out.push_back('\\');
-            out.push_back(next);
-            break;
-        }
-        i += 1;
-    }
-    return out;
-}
-
-auto SkipJsonWhitespace(const std::string& InText, std::size_t InPos) -> std::size_t {
-    std::size_t pos = InPos;
-    while (pos < InText.size()) {
-        const char ch = InText[pos];
-        if (ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r') {
-            break;
-        }
-        pos += 1;
-    }
-    return pos;
-}
-
-auto ParseJsonStringAt(const std::string& InText, std::size_t InPos) -> std::optional<std::pair<std::string, std::size_t>> {
-    if (InPos >= InText.size() || InText[InPos] != '"') {
-        return std::nullopt;
-    }
-    std::string raw;
-    std::size_t pos = InPos + 1;
-    while (pos < InText.size()) {
-        const char ch = InText[pos];
-        if (ch == '\\') {
-            if (pos + 1 >= InText.size()) {
-                return std::nullopt;
-            }
-            raw.push_back(ch);
-            raw.push_back(InText[pos + 1]);
-            pos += 2;
-            continue;
-        }
-        if (ch == '"') {
-            return std::make_pair(UnescapeJsonString(raw), pos + 1);
-        }
-        raw.push_back(ch);
-        pos += 1;
-    }
-    return std::nullopt;
-}
-
-auto FindJsonKeyValueStart(const std::string& InText, const std::string& InKey, std::size_t InFrom) -> std::optional<std::size_t> {
-    std::size_t pos = InFrom;
-    while (pos < InText.size()) {
-        pos = InText.find('"', pos);
-        if (pos == std::string::npos) {
-            return std::nullopt;
-        }
-        const auto parsed = ParseJsonStringAt(InText, pos);
-        if (!parsed.has_value()) {
-            return std::nullopt;
-        }
-        const auto& [key, nextPos] = *parsed;
-        pos = SkipJsonWhitespace(InText, nextPos);
-        if (key == InKey && pos < InText.size() && InText[pos] == ':') {
-            return SkipJsonWhitespace(InText, pos + 1);
-        }
-    }
-    return std::nullopt;
-}
-
-auto ExtractBracketBody(const std::string& InText, std::size_t InStart, char InOpen, char InClose) -> std::optional<std::string> {
-    if (InStart >= InText.size() || InText[InStart] != InOpen) {
-        return std::nullopt;
-    }
-    bool inString = false;
-    bool escaped = false;
-    int depth = 0;
-    for (std::size_t pos = InStart; pos < InText.size(); ++pos) {
-        const char ch = InText[pos];
-        if (inString) {
-            if (escaped) {
-                escaped = false;
-            } else if (ch == '\\') {
-                escaped = true;
-            } else if (ch == '"') {
-                inString = false;
-            }
-            continue;
-        }
-        if (ch == '"') {
-            inString = true;
-            continue;
-        }
-        if (ch == InOpen) {
-            depth += 1;
-            continue;
-        }
-        if (ch == InClose) {
-            depth -= 1;
-            if (depth == 0) {
-                return InText.substr(InStart + 1, pos - InStart - 1);
-            }
-        }
-    }
-    return std::nullopt;
-}
-
-auto ExtractObjectBodyForKey(const std::string& InText, const std::string& InKey) -> std::optional<std::string> {
-    const std::string key = "\"" + InKey + "\":";
-    auto pos = InText.find(key);
-    if (pos == std::string::npos) return std::nullopt;
-    pos = InText.find('{', pos);
-    if (pos == std::string::npos) return std::nullopt;
-    int depth = 1;
-    std::size_t i = pos + 1;
-    bool inQuote = false;
-    while (depth > 0 && i < InText.size()) {
-        const char ch = InText[i];
-        if (ch == '\"' && InText[i - 1] != '\\') inQuote = !inQuote;
-        if (!inQuote) {
-            if (ch == '{') depth++;
-            else if (ch == '}') depth--;
-        }
-        i++;
-    }
-    if (depth == 0) return InText.substr(pos, i - pos);
-    return std::nullopt;
-}
-
-auto ExtractArrayBodyForKey(const std::string& InText, const std::string& InKey) -> std::optional<std::string> {
-    const std::string key = "\"" + InKey + "\":";
-    auto pos = InText.find(key);
-    if (pos == std::string::npos) return std::nullopt;
-    pos = InText.find('[', pos);
-    if (pos == std::string::npos) return std::nullopt;
-    int depth = 1;
-    std::size_t i = pos + 1;
-    bool inQuote = false;
-    while (depth > 0 && i < InText.size()) {
-        const char ch = InText[i];
-        if (ch == '\"' && InText[i - 1] != '\\') inQuote = !inQuote;
-        if (!inQuote) {
-            if (ch == '[') depth++;
-            else if (ch == ']') depth--;
-        }
-        i++;
-    }
-    if (depth == 0) return InText.substr(pos, i - pos);
-    return std::nullopt;
-}
-
-auto SplitTopLevelObjects(const std::string& InArrayBody) -> std::vector<std::string> {
-    std::vector<std::string> out;
-    if (InArrayBody.empty() || InArrayBody.front() != '[' || InArrayBody.back() != ']') return out;
-    std::size_t i = 1;
-    while (i < InArrayBody.size() - 1) {
-        while (i < InArrayBody.size() - 1 && (InArrayBody[i] == ' ' || InArrayBody[i] == '\t' || InArrayBody[i] == '\n' || InArrayBody[i] == '\r' || InArrayBody[i] == ',')) i++;
-        if (i >= InArrayBody.size() - 1) break;
-        if (InArrayBody[i] == '{') {
-            int depth = 1;
-            std::size_t start = i;
-            i++;
-            bool inQuote = false;
-            while (depth > 0 && i < InArrayBody.size() - 1) {
-                const char ch = InArrayBody[i];
-                if (ch == '\"' && InArrayBody[i - 1] != '\\') inQuote = !inQuote;
-                if (!inQuote) {
-                    if (ch == '{') depth++;
-                    else if (ch == '}') depth--;
-                }
-                i++;
-            }
-            if (depth == 0) out.push_back(InArrayBody.substr(start, i - start));
-        } else {
-            i++;
+    out.reserve(InValue.size() + 8);
+    for (const char ch : InValue) {
+        switch (ch) {
+        case '\\': out += "\\\\"; break;
+        case '"': out += "\\\""; break;
+        case '\n': out += "\\n"; break;
+        case '\r': out += "\\r"; break;
+        case '\t': out += "\\t"; break;
+        default: out.push_back(ch); break;
         }
     }
     return out;
-}
-
-auto ExtractStringField(const std::string& InObjectText, const std::string& InField) -> std::optional<std::string> {
-    const std::string key = "\"" + InField + "\":";
-    auto pos = InObjectText.find(key);
-    if (pos == std::string::npos) return std::nullopt;
-    pos = InObjectText.find('\"', pos + key.size());
-    if (pos == std::string::npos) return std::nullopt;
-    const auto end = InObjectText.find('\"', pos + 1);
-    if (end == std::string::npos) return std::nullopt;
-    return InObjectText.substr(pos + 1, end - pos - 1);
-}
-
-auto ExtractScalarFieldToken(const std::string& InObjectText, const std::string& InField) -> std::optional<std::string> {
-    const std::string key = "\"" + InField + "\":";
-    auto pos = InObjectText.find(key);
-    if (pos == std::string::npos) return std::nullopt;
-    pos += key.size();
-    while (pos < InObjectText.size() && (InObjectText[pos] == ' ' || InObjectText[pos] == '\t' || InObjectText[pos] == '\n' || InObjectText[pos] == '\r')) pos++;
-    std::size_t start = pos;
-    while (pos < InObjectText.size() && InObjectText[pos] != ',' && InObjectText[pos] != '}' && InObjectText[pos] != ' ' && InObjectText[pos] != '\t' && InObjectText[pos] != '\n' && InObjectText[pos] != '\r') pos++;
-    return InObjectText.substr(start, pos - start);
 }
 
 auto ExtractJsonBetweenMarkers(const std::string& InText) -> std::string {
@@ -641,101 +431,6 @@ auto ExtractJsonBetweenMarkers(const std::string& InText,
         return ExtractJsonBetweenMarkers(InText.substr(payloadStart));
     }
     return Trim(InText.substr(payloadStart, endPos - payloadStart));
-}
-
-auto ReplaceJsonStringFieldInObject(std::string InJson,
-                                    const std::string& InObjectKey,
-                                    const std::string& InFieldKey,
-                                    const std::string& InNewValue) -> std::optional<std::string> {
-    const std::string objKey = "\"" + InObjectKey + "\":";
-    auto objPos = InJson.find(objKey);
-    if (objPos == std::string::npos) return std::nullopt;
-    auto startBrace = InJson.find('{', objPos);
-    if (startBrace == std::string::npos) return std::nullopt;
-    
-    // Find matching brace for the object
-    int depth = 1;
-    std::size_t i = startBrace + 1;
-    bool inQuote = false;
-    while (depth > 0 && i < InJson.size()) {
-        const char ch = InJson[i];
-        if (ch == '\"' && InJson[i - 1] != '\\') inQuote = !inQuote;
-        if (!inQuote) {
-            if (ch == '{') depth++;
-            else if (ch == '}') depth--;
-        }
-        i++;
-    }
-    if (depth != 0) return std::nullopt;
-    std::size_t endBrace = i - 1;
-    
-    std::string objectBody = InJson.substr(startBrace, endBrace - startBrace + 1);
-    const std::string fieldKey = "\"" + InFieldKey + "\":";
-    auto fieldPos = objectBody.find(fieldKey);
-    if (fieldPos == std::string::npos) return std::nullopt;
-    
-    auto quoteStart = objectBody.find('\"', fieldPos + fieldKey.size());
-    if (quoteStart == std::string::npos) return std::nullopt;
-    auto quoteEnd = objectBody.find('\"', quoteStart + 1);
-    if (quoteEnd == std::string::npos) return std::nullopt;
-    
-    objectBody.replace(quoteStart + 1, quoteEnd - quoteStart - 1, InNewValue);
-    InJson.replace(startBrace, endBrace - startBrace + 1, objectBody);
-    return InJson;
-}
-
-auto JsonEscape(std::string InValue) -> std::string {
-    std::string out;
-    out.reserve(InValue.size() + 8);
-    for (const char ch : InValue) {
-        switch (ch) {
-        case '\\': out += "\\\\"; break;
-        case '"': out += "\\\""; break;
-        case '\n': out += "\\n"; break;
-        case '\r': out += "\\r"; break;
-        case '\t': out += "\\t"; break;
-        default: out.push_back(ch); break;
-        }
-    }
-    return out;
-}
-
-auto ExtractBoolField(const std::string& InObjectText, const std::string& InField) -> std::optional<bool> {
-    const std::string key = "\"" + InField + "\":";
-    auto pos = InObjectText.find(key);
-    if (pos == std::string::npos) return std::nullopt;
-    pos += key.size();
-    while (pos < InObjectText.size() && (InObjectText[pos] == ' ' || InObjectText[pos] == '\t' || InObjectText[pos] == '\n' || InObjectText[pos] == '\r')) pos++;
-    if (InObjectText.compare(pos, 4, "true") == 0) return true;
-    if (InObjectText.compare(pos, 5, "false") == 0) return false;
-    return std::nullopt;
-}
-
-auto ReplaceArrayBodyForKey(const std::string& InText, const std::string& InKey, const std::string& InNewBody) -> std::optional<std::string> {
-    const std::string key = "\"" + InKey + "\":";
-    auto pos = InText.find(key);
-    if (pos == std::string::npos) return std::nullopt;
-    pos = InText.find('[', pos);
-    if (pos == std::string::npos) return std::nullopt;
-    
-    int depth = 1;
-    std::size_t i = pos + 1;
-    bool inQuote = false;
-    while (depth > 0 && i < InText.size()) {
-        const char ch = InText[i];
-        if (ch == '\"' && InText[i - 1] != '\\') inQuote = !inQuote;
-        if (!inQuote) {
-            if (ch == '[') depth++;
-            else if (ch == ']') depth--;
-        }
-        i++;
-    }
-    if (depth != 0) return std::nullopt;
-    std::size_t endBracket = i - 1;
-    
-    std::string out = InText;
-    out.replace(pos + 1, endBracket - pos - 1, InNewBody);
-    return out;
 }
 
 auto PlanNeedsRefresh(const std::string& InPlanText) -> bool {
@@ -840,6 +535,12 @@ auto ComputeWorkspaceDirtyFingerprint(const std::filesystem::path& InWorkspaceRo
                 continue; // Skip internal artifacts
             }
 
+            // Skip external paths (starting with "../") which represent submodule changes
+            // outside this repo's root - these should not affect the fingerprint
+            if (trimmed.find(" ../") != std::string::npos || trimmed.rfind("../", 0) == 0) {
+                continue;
+            }
+
             filtered << trimmed << "\n";
         }
         const auto normalized = Trim(filtered.str());
@@ -872,14 +573,23 @@ auto ComputeWorkspaceDirtyFingerprint(const std::filesystem::path& InWorkspaceRo
 }
 
 auto ExtractPlanWorkspaceHashes(const std::string& InPlanText, std::string* OutBaseHeadSha, std::string* OutDirtyFingerprint) -> bool {
-    const auto meta = ExtractObjectBodyForKey(InPlanText, "meta");
-    if (!meta.has_value()) return false;
-    const auto baseHeadSha = Trim(ExtractStringField(*meta, "base_head_sha").value_or(""));
-    const auto dirtyFingerprint = Trim(ExtractStringField(*meta, "dirty_fingerprint").value_or(""));
-    if (baseHeadSha.empty() || dirtyFingerprint.empty()) return false;
-    if (OutBaseHeadSha) *OutBaseHeadSha = baseHeadSha;
-    if (OutDirtyFingerprint) *OutDirtyFingerprint = dirtyFingerprint;
-    return true;
+    try {
+        const auto doc = nlohmann::json::parse(InPlanText);
+        if (!doc.contains("meta") || !doc["meta"].is_object()) return false;
+        const auto& meta = doc["meta"];
+        const auto baseHeadSha      = Trim(meta.value("base_head_sha", ""));
+        const auto dirtyFingerprint = Trim(meta.value("dirty_fingerprint", ""));
+        if (baseHeadSha.empty() || dirtyFingerprint.empty()) return false;
+        if (OutBaseHeadSha)      *OutBaseHeadSha      = baseHeadSha;
+        if (OutDirtyFingerprint) *OutDirtyFingerprint = dirtyFingerprint;
+        return true;
+    } catch (const nlohmann::json::parse_error& e) {
+        std::cerr << "[plan] JSON parse error: " << e.what() << "\n";
+        return false;
+    } catch (const nlohmann::json::type_error& e) {
+        std::cerr << "[plan] JSON type error: " << e.what() << "\n";
+        return false;
+    }
 }
 
 auto PlanWorkspaceStateDrifted(const std::filesystem::path& InWorkspaceRoot, const std::string& InPlanText) -> bool {
@@ -890,12 +600,21 @@ auto PlanWorkspaceStateDrifted(const std::filesystem::path& InWorkspaceRoot, con
 }
 
 auto AppendCommitConventionSkillSection(const std::filesystem::path& InWorkspaceRoot, std::string InPrompt) -> std::string {
-    const char* env = std::getenv("KOG_COMMIT_CONVENTION_SKILL_MD");
+    // Resolution order:
+    // 1. KOG_COMMIT_CONVENTION_SKILL_MD env var (user override)
+    // 2. Sibling kano-commit-convention skill: <skillRoot>/../kano-commit-convention/references/Kano-commit-convention.md
+    // 3. Bundled fallback asset: <skillRoot>/assets/prompts/base/commit-convention-skill.md
     std::filesystem::path skillPath;
-    if (env != nullptr) {
+    if (const char* env = std::getenv("KOG_COMMIT_CONVENTION_SKILL_MD"); env != nullptr && *env != '\0') {
         skillPath = std::filesystem::path(env);
     } else {
-        skillPath = ResolveSkillRoot(InWorkspaceRoot) / "assets" / "prompts" / "base" / "commit-convention-skill.md";
+        const auto skillRoot = ResolveSkillRoot(InWorkspaceRoot);
+        const auto siblingSpec = (skillRoot.parent_path() / "kano-commit-convention" / "references" / "Kano-commit-convention.md").lexically_normal();
+        if (std::filesystem::exists(siblingSpec)) {
+            skillPath = siblingSpec;
+        } else {
+            skillPath = skillRoot / "assets" / "prompts" / "base" / "commit-convention-skill.md";
+        }
     }
 
     if (std::filesystem::exists(skillPath)) {
@@ -908,15 +627,15 @@ auto AppendCommitConventionSkillSection(const std::filesystem::path& InWorkspace
 }
 
 auto BuildCommitSeedEntriesJson(const std::filesystem::path& InWorkspaceRoot, const bool InUsePlaceholders) -> std::string {
-    std::vector<std::string> entries;
+    nlohmann::json entries = nlohmann::json::array();
     const auto repos = DiscoverWorkspaceRepos(InWorkspaceRoot);
     for (const auto& repo : repos) {
         const auto status = GitCapture(repo, {"status", "--porcelain", "--untracked-files=all"});
         if (status.exitCode != 0 || Trim(status.stdoutStr).empty()) continue;
-        
+
         const auto repoDisplay = RelativeDisplayPath(InWorkspaceRoot, repo);
         const auto scope = BuildFallbackCommitScope(repoDisplay);
-        
+
         std::istringstream iss(status.stdoutStr);
         int changed = 0;
         std::string line;
@@ -928,36 +647,53 @@ auto BuildCommitSeedEntriesJson(const std::filesystem::path& InWorkspaceRoot, co
         const auto reviewReason = InUsePlaceholders
                                      ? std::string("replace-with-review-reason")
                                      : std::string("seeded from current dirty status");
-        
-        entries.push_back(std::format("{{\"repo\":\"{}\",\"commits\":[{{\"message\":\"{}\",\"include\":[],\"exclude\":[],\"review\":{{\"verdict\":\"pass\",\"reason\":\"{}\"}}}}]}}",
-                                      JsonEscape(repoDisplay.empty() ? "." : repoDisplay),
-                                      JsonEscape(message),
-                                      JsonEscape(reviewReason)));
+
+        nlohmann::json commitObj;
+        commitObj["message"]           = message;
+        commitObj["include"]           = nlohmann::json::array();
+        commitObj["exclude"]           = nlohmann::json::array();
+        commitObj["review"]["verdict"] = "pass";
+        commitObj["review"]["reason"]  = reviewReason;
+
+        nlohmann::json repoObj;
+        repoObj["repo"]    = repoDisplay.empty() ? "." : repoDisplay;
+        repoObj["commits"] = nlohmann::json::array({commitObj});
+
+        entries.push_back(repoObj);
     }
-    std::ostringstream oss;
+
+    // Return the raw array body (no brackets) for backward compatibility with
+    // callers that pass it to ReplaceArrayBodyForKey.
+    if (entries.empty()) return "";
+    std::string body;
     for (std::size_t i = 0; i < entries.size(); ++i) {
-        if (i != 0) oss << ",";
-        oss << entries[i];
+        if (i != 0) body += ",";
+        body += entries[i].dump();
     }
-    return oss.str();
+    return body;
 }
 
 auto HasValidCommitItems(const std::string& InPlanText) -> bool {
-    const auto stages = ExtractObjectBodyForKey(InPlanText, "stages");
-    if (!stages.has_value()) return false;
-    const auto commitArray = ExtractArrayBodyForKey(*stages, "commit");
-    if (!commitArray.has_value()) return false;
-
-    static const std::regex messageRegex(R"KOG("message"\s*:\s*"([^"]+)")KOG");
-    const auto begin = std::sregex_iterator(commitArray->begin(), commitArray->end(), messageRegex);
-    const auto end = std::sregex_iterator();
-    for (auto it = begin; it != end; ++it) {
-        const auto value = Trim((*it)[1].str());
-        if (!value.empty() && value.rfind("replace-with-", 0) != 0) {
-            return true;
+    try {
+        const auto doc = nlohmann::json::parse(InPlanText);
+        if (!doc.contains("stages") || !doc["stages"].contains("commit")) return false;
+        const auto& commitStage = doc["stages"]["commit"];
+        if (!commitStage.is_array()) return false;
+        for (const auto& repoObj : commitStage) {
+            if (!repoObj.contains("commits") || !repoObj["commits"].is_array()) continue;
+            for (const auto& commitObj : repoObj["commits"]) {
+                const auto msg = Trim(commitObj.value("message", ""));
+                if (!msg.empty() && msg.rfind("replace-with-", 0) != 0) return true;
+            }
         }
+        return false;
+    } catch (const nlohmann::json::parse_error& e) {
+        std::cerr << "[plan] JSON parse error: " << e.what() << "\n";
+        return false;
+    } catch (const nlohmann::json::type_error& e) {
+        std::cerr << "[plan] JSON type error: " << e.what() << "\n";
+        return false;
     }
-    return false;
 }
 
 auto SeedCommitStage(const std::filesystem::path& InWorkspaceRoot,
@@ -965,14 +701,61 @@ auto SeedCommitStage(const std::filesystem::path& InWorkspaceRoot,
                      const bool InForce,
                      const bool InUsePlaceholders) -> std::optional<std::string> {
     if (!InForce && HasValidCommitItems(InPlanText)) return std::nullopt;
-    const auto body = BuildCommitSeedEntriesJson(InWorkspaceRoot, InUsePlaceholders);
-    auto updated = ReplaceArrayBodyForKey(InPlanText, "commit", body);
-    if (!updated.has_value()) return std::nullopt;
-    if (!InUsePlaceholders && updated->find("replace-with-") != std::string::npos) {
-        updated = BuildDefaultPlanTemplate(InWorkspaceRoot);
-        updated = ReplaceArrayBodyForKey(*updated, "commit", body);
+    try {
+        // Build the new commit stage as a JSON array using nlohmann
+        nlohmann::json commitStage = nlohmann::json::array();
+        const auto repos = DiscoverWorkspaceRepos(InWorkspaceRoot);
+        for (const auto& repo : repos) {
+            const auto status = GitCapture(repo, {"status", "--porcelain", "--untracked-files=all"});
+            if (status.exitCode != 0 || Trim(status.stdoutStr).empty()) continue;
+
+            const auto repoDisplay = RelativeDisplayPath(InWorkspaceRoot, repo);
+            const auto scope = BuildFallbackCommitScope(repoDisplay);
+
+            std::istringstream iss(status.stdoutStr);
+            int changed = 0;
+            std::string line;
+            while (std::getline(iss, line)) if (!Trim(line).empty()) changed++;
+
+            const auto message = InUsePlaceholders
+                                   ? std::string("replace-with-commit-message")
+                                   : std::format("chore({}): apply updates ({} files)", scope, changed);
+            const auto reviewReason = InUsePlaceholders
+                                         ? std::string("replace-with-review-reason")
+                                         : std::string("seeded from current dirty status");
+
+            nlohmann::json commitObj;
+            commitObj["message"]           = message;
+            commitObj["include"]           = nlohmann::json::array();
+            commitObj["exclude"]           = nlohmann::json::array();
+            commitObj["review"]["verdict"] = "pass";
+            commitObj["review"]["reason"]  = reviewReason;
+
+            nlohmann::json repoObj;
+            repoObj["repo"]    = repoDisplay.empty() ? "." : repoDisplay;
+            repoObj["commits"] = nlohmann::json::array({commitObj});
+            commitStage.push_back(repoObj);
+        }
+
+        auto doc = nlohmann::json::parse(InPlanText);
+        doc["stages"]["commit"] = commitStage;
+
+        // If not using placeholders but the result still has replace-with- tokens,
+        // rebuild from the default template.
+        auto result = SerializePlanJson(doc);
+        if (!InUsePlaceholders && result.find("replace-with-") != std::string::npos) {
+            auto freshDoc = nlohmann::json::parse(BuildDefaultPlanTemplate(InWorkspaceRoot));
+            freshDoc["stages"]["commit"] = commitStage;
+            result = SerializePlanJson(freshDoc);
+        }
+        return result;
+    } catch (const nlohmann::json::parse_error& e) {
+        std::cerr << "[plan] JSON parse error: " << e.what() << "\n";
+        return std::nullopt;
+    } catch (const nlohmann::json::type_error& e) {
+        std::cerr << "[plan] JSON type error: " << e.what() << "\n";
+        return std::nullopt;
     }
-    return updated;
 }
 
 auto BuildFallbackCommitEntriesJson(const std::filesystem::path& InWorkspaceRoot) -> std::string {
@@ -1050,27 +833,49 @@ auto BuildSingleCommitFillPrompt(const std::filesystem::path& InWorkspaceRoot,
 
 auto TryInjectFallbackCommits(const std::filesystem::path& InWorkspaceRoot, const std::string& InPlanText) -> std::optional<std::string> {
     if (HasValidCommitItems(InPlanText)) return std::nullopt;
-    const auto body = BuildFallbackCommitEntriesJson(InWorkspaceRoot);
-    if (body.empty()) return std::nullopt;
-    return ReplaceArrayBodyForKey(InPlanText, "commit", body);
+    try {
+        auto doc = nlohmann::json::parse(InPlanText);
+        // Build fallback commit stage using nlohmann
+        nlohmann::json commitStage = nlohmann::json::array();
+        const auto repos = DiscoverWorkspaceRepos(InWorkspaceRoot);
+        for (const auto& repo : repos) {
+            const auto status = GitCapture(repo, {"status", "--porcelain", "--untracked-files=all"});
+            if (status.exitCode != 0 || Trim(status.stdoutStr).empty()) continue;
+            const auto repoDisplay = RelativeDisplayPath(InWorkspaceRoot, repo);
+            const auto scope = BuildFallbackCommitScope(repoDisplay);
+            std::istringstream iss(status.stdoutStr);
+            int changed = 0;
+            std::string line;
+            while (std::getline(iss, line)) if (!Trim(line).empty()) changed++;
+            nlohmann::json commitObj;
+            commitObj["message"]           = std::format("chore({}): apply updates ({} files)", scope, changed);
+            commitObj["include"]           = nlohmann::json::array();
+            commitObj["exclude"]           = nlohmann::json::array();
+            commitObj["review"]["verdict"] = "pass";
+            commitObj["review"]["reason"]  = "seeded from current dirty status";
+            nlohmann::json repoObj;
+            repoObj["repo"]    = repoDisplay.empty() ? "." : repoDisplay;
+            repoObj["commits"] = nlohmann::json::array({commitObj});
+            commitStage.push_back(repoObj);
+        }
+        if (commitStage.empty()) return std::nullopt;
+        doc["stages"]["commit"] = commitStage;
+        return SerializePlanJson(doc);
+    } catch (const nlohmann::json::parse_error& e) {
+        std::cerr << "[plan] JSON parse error: " << e.what() << "\n";
+        return std::nullopt;
+    } catch (const nlohmann::json::type_error& e) {
+        std::cerr << "[plan] JSON type error: " << e.what() << "\n";
+        return std::nullopt;
+    }
 }
 
 auto BuildJsonStringArray(const std::vector<std::string>& InValues) -> std::string {
-    std::ostringstream oss;
-    for (std::size_t i = 0; i < InValues.size(); ++i) {
-        if (i != 0) oss << ",";
-        oss << "\"" << JsonEscape(InValues[i]) << "\"";
+    nlohmann::json arr = nlohmann::json::array();
+    for (const auto& v : InValues) {
+        arr.push_back(v);
     }
-    return oss.str();
-}
-
-auto RebuildCommitArrayBody(const std::vector<std::string>& InRepoObjects) -> std::string {
-    std::ostringstream oss;
-    for (std::size_t i = 0; i < InRepoObjects.size(); ++i) {
-        if (i != 0) oss << ",";
-        oss << InRepoObjects[i];
-    }
-    return oss.str();
+    return arr.dump();
 }
 
 auto BuildCommitObjectJson(const std::string& InMessage,
@@ -1080,60 +885,66 @@ auto BuildCommitObjectJson(const std::string& InMessage,
                            const std::string& InReviewReason,
                            const std::string& InPlannerProvider,
                            const std::string& InPlannerModel) -> std::string {
-    return std::format(
-        "{{\"message\":\"{}\",\"include\":[{}],\"exclude\":[{}],\"review\":{{\"verdict\":\"{}\",\"reason\":\"{}\"}},\"planner\":{{\"provider\":\"{}\",\"ai-model\":\"{}\"}}}}",
-        JsonEscape(InMessage),
-        InIncludeArrayBody,
-        InExcludeArrayBody,
-        JsonEscape(InReviewVerdict),
-        JsonEscape(InReviewReason),
-        JsonEscape(InPlannerProvider),
-        JsonEscape(InPlannerModel));
-}
+    // Parse the raw array body strings (e.g. "\"a\",\"b\"") back into JSON arrays.
+    // Wrap in brackets so nlohmann can parse them; fall back to empty array on error.
+    auto ParseArrayBody = [](const std::string& InBody) -> nlohmann::json {
+        if (Trim(InBody).empty()) return nlohmann::json::array();
+        try {
+            return nlohmann::json::parse("[" + InBody + "]");
+        } catch (...) {
+            return nlohmann::json::array();
+        }
+    };
 
-auto ParseJsonStringArrayBody(const std::string& InArrayBody) -> std::vector<std::string> {
-    std::vector<std::string> out;
-    if (InArrayBody.empty() || InArrayBody.front() != '[' || InArrayBody.back() != ']') return out;
-    std::size_t i = 1;
-    while (i < InArrayBody.size() - 1) {
-        while (i < InArrayBody.size() - 1 && (std::isspace(static_cast<unsigned char>(InArrayBody[i])) || InArrayBody[i] == ',')) i++;
-        if (i >= InArrayBody.size() - 1) break;
-        if (InArrayBody[i] == '\"') {
-            const auto res = ExtractStringField("{\"f\":" + InArrayBody.substr(i) + "}", "f");
-            if (res) {
-                out.push_back(*res);
-                i = InArrayBody.find('\"', i + 1);
-                if (i == std::string::npos) break;
-                i++;
-            } else break;
-        } else i++;
-    }
-    return out;
+    nlohmann::json obj;
+    obj["message"]            = InMessage;
+    obj["include"]            = ParseArrayBody(InIncludeArrayBody);
+    obj["exclude"]            = ParseArrayBody(InExcludeArrayBody);
+    obj["review"]["verdict"]  = InReviewVerdict;
+    obj["review"]["reason"]   = InReviewReason;
+    obj["planner"]["provider"]  = InPlannerProvider;
+    obj["planner"]["ai-model"]  = InPlannerModel;
+    return obj.dump();
 }
 
 auto CollectCommitPlanEntries(const std::string& InPlanText) -> std::vector<CommitPlanEntry> {
     std::vector<CommitPlanEntry> out;
-    const auto stages = ExtractObjectBodyForKey(InPlanText, "stages");
-    if (!stages) return out;
-    const auto commitArray = ExtractArrayBodyForKey(*stages, "commit");
-    if (!commitArray) return out;
+    try {
+        const auto doc = nlohmann::json::parse(InPlanText);
+        if (!doc.contains("stages") || !doc["stages"].contains("commit")) return out;
+        const auto& commitStage = doc["stages"]["commit"];
+        if (!commitStage.is_array()) return out;
 
-    int flatIndex = 0;
-    for (const auto& repoObj : SplitTopLevelObjects(*commitArray)) {
-        const auto repo = ExtractStringField(repoObj, "repo").value_or(".");
-        const auto commits = ExtractArrayBodyForKey(repoObj, "commits").value_or("[]");
-        for (const auto& commitObj : SplitTopLevelObjects(commits)) {
-            const auto reviewObj = ExtractObjectBodyForKey(commitObj, "review");
-            CommitPlanEntry entry;
-            entry.index = flatIndex++;
-            entry.repo = repo;
-            entry.message = ExtractStringField(commitObj, "message").value_or("");
-            entry.include = ParseJsonStringArrayBody(ExtractArrayBodyForKey(commitObj, "include").value_or("[]"));
-            entry.exclude = ParseJsonStringArrayBody(ExtractArrayBodyForKey(commitObj, "exclude").value_or("[]"));
-            entry.reviewVerdict = reviewObj ? ExtractStringField(*reviewObj, "verdict").value_or("") : "";
-            entry.reviewReason = reviewObj ? ExtractStringField(*reviewObj, "reason").value_or("") : "";
-            out.push_back(std::move(entry));
+        int flatIndex = 0;
+        for (const auto& repoObj : commitStage) {
+            const auto repo = repoObj.value("repo", ".");
+            if (!repoObj.contains("commits") || !repoObj["commits"].is_array()) continue;
+            for (const auto& commitObj : repoObj["commits"]) {
+                CommitPlanEntry entry;
+                entry.index   = flatIndex++;
+                entry.repo    = repo;
+                entry.message = commitObj.value("message", "");
+                if (commitObj.contains("include") && commitObj["include"].is_array()) {
+                    for (const auto& v : commitObj["include"]) {
+                        if (v.is_string()) entry.include.push_back(v.get<std::string>());
+                    }
+                }
+                if (commitObj.contains("exclude") && commitObj["exclude"].is_array()) {
+                    for (const auto& v : commitObj["exclude"]) {
+                        if (v.is_string()) entry.exclude.push_back(v.get<std::string>());
+                    }
+                }
+                if (commitObj.contains("review") && commitObj["review"].is_object()) {
+                    entry.reviewVerdict = commitObj["review"].value("verdict", "");
+                    entry.reviewReason  = commitObj["review"].value("reason", "");
+                }
+                out.push_back(std::move(entry));
+            }
         }
+    } catch (const nlohmann::json::parse_error& e) {
+        std::cerr << "[plan] JSON parse error: " << e.what() << "\n";
+    } catch (const nlohmann::json::type_error& e) {
+        std::cerr << "[plan] JSON type error: " << e.what() << "\n";
     }
     return out;
 }
@@ -1159,76 +970,89 @@ auto FindCommitEntryByFlatIndex(const std::string& InPlanText, int InCommitIndex
 
 auto ParseCommitFillOps(const std::string& InJson, std::string* OutError) -> std::vector<CommitFillOp> {
     std::vector<CommitFillOp> ops;
-    const auto commitsArray = ExtractArrayBodyForKey(InJson, "commits");
-    if (!commitsArray) {
-        if (OutError) *OutError = "missing commits array";
-        return ops;
-    }
-    for (const auto& obj : SplitTopLevelObjects(*commitsArray)) {
-        CommitFillOp op;
-        const auto idxStr = ExtractScalarFieldToken(obj, "index").value_or("-1");
-        op.index = std::stoi(idxStr);
-        op.message = ExtractStringField(obj, "message").value_or("");
-        const auto review = ExtractObjectBodyForKey(obj, "review");
-        op.reviewVerdict = review ? ExtractStringField(*review, "verdict").value_or("") : "";
-        op.reviewReason = review ? ExtractStringField(*review, "reason").value_or("") : "";
-        ops.push_back(std::move(op));
+    try {
+        const auto doc = nlohmann::json::parse(InJson);
+        if (!doc.contains("commits") || !doc["commits"].is_array()) {
+            if (OutError) *OutError = "missing commits array";
+            return ops;
+        }
+        for (const auto& obj : doc["commits"]) {
+            CommitFillOp op;
+            op.index          = obj.value("index", -1);
+            op.message        = obj.value("message", "");
+            op.plannerProvider = obj.value("plannerProvider", "");
+            op.plannerModel   = obj.value("plannerModel", "");
+            if (obj.contains("review") && obj["review"].is_object()) {
+                op.reviewVerdict = obj["review"].value("verdict", "");
+                op.reviewReason  = obj["review"].value("reason", "");
+            }
+            ops.push_back(std::move(op));
+        }
+    } catch (const nlohmann::json::parse_error& e) {
+        std::cerr << "[plan] JSON parse error: " << e.what() << "\n";
+        if (OutError) *OutError = e.what();
+    } catch (const nlohmann::json::type_error& e) {
+        std::cerr << "[plan] JSON type error: " << e.what() << "\n";
+        if (OutError) *OutError = e.what();
     }
     return ops;
 }
 
 auto ApplyCommitFillOps(std::string InPlanText, const std::vector<CommitFillOp>& InOps) -> std::string {
-    const auto stages = ExtractObjectBodyForKey(InPlanText, "stages");
-    if (!stages) return InPlanText;
-    const auto commitArray = ExtractArrayBodyForKey(*stages, "commit");
-    if (!commitArray) return InPlanText;
+    if (InOps.empty()) return InPlanText;
+    try {
+        auto doc = nlohmann::json::parse(InPlanText);
+        if (!doc.contains("stages") || !doc["stages"].contains("commit")) return InPlanText;
+        auto& commitStage = doc["stages"]["commit"];
+        if (!commitStage.is_array()) return InPlanText;
 
-    std::vector<std::string> repoObjects = SplitTopLevelObjects(*commitArray);
-    int flatIndex = 0;
-    for (auto& repoObj : repoObjects) {
-        const auto commits = ExtractArrayBodyForKey(repoObj, "commits").value_or("[]");
-        std::vector<std::string> commitObjects = SplitTopLevelObjects(commits);
-        bool changed = false;
-        for (auto& commitObj : commitObjects) {
-            for (const auto& op : InOps) {
-                if (op.index == flatIndex) {
-                    commitObj = ReplaceJsonStringFieldInObject(commitObj, "", "message", op.message).value_or(commitObj);
-                    const auto review = ExtractObjectBodyForKey(commitObj, "review").value_or("{}");
-                    auto newReview = ReplaceJsonStringFieldInObject(review, "", "verdict", op.reviewVerdict).value_or(review);
-                    newReview = ReplaceJsonStringFieldInObject(newReview, "", "reason", op.reviewReason).value_or(newReview);
-                    commitObj = ReplaceAll(commitObj, review, newReview);
-                    changed = true;
-                    break;
+        int flatIndex = 0;
+        for (auto& repoObj : commitStage) {
+            if (!repoObj.contains("commits") || !repoObj["commits"].is_array()) continue;
+            for (auto& commitObj : repoObj["commits"]) {
+                for (const auto& op : InOps) {
+                    if (op.index == flatIndex) {
+                        if (!op.message.empty())
+                            commitObj["message"] = op.message;
+                        if (!op.reviewVerdict.empty())
+                            commitObj["review"]["verdict"] = op.reviewVerdict;
+                        if (!op.reviewReason.empty())
+                            commitObj["review"]["reason"] = op.reviewReason;
+                        if (!op.plannerProvider.empty())
+                            commitObj["planner"]["provider"] = op.plannerProvider;
+                        if (!op.plannerModel.empty())
+                            commitObj["planner"]["ai-model"] = op.plannerModel;
+                        break;
+                    }
                 }
+                ++flatIndex;
             }
-            flatIndex++;
         }
-        if (changed) {
-            std::string newCommits = "[";
-            for (size_t i = 0; i < commitObjects.size(); ++i) {
-                if (i != 0) newCommits += ",";
-                newCommits += commitObjects[i];
-            }
-            newCommits += "]";
-            repoObj = ReplaceArrayBodyForKey(repoObj, "commits", newCommits).value_or(repoObj);
-        }
+        return SerializePlanJson(doc);
+    } catch (const nlohmann::json::parse_error& e) {
+        std::cerr << "[plan] JSON parse error: " << e.what() << "\n";
+        return InPlanText;
+    } catch (const nlohmann::json::type_error& e) {
+        std::cerr << "[plan] JSON type error: " << e.what() << "\n";
+        return InPlanText;
     }
-    
-    std::string newCommitArray = "[";
-    for (size_t i = 0; i < repoObjects.size(); ++i) {
-        if (i != 0) newCommitArray += ",";
-        newCommitArray += repoObjects[i];
-    }
-    newCommitArray += "]";
-    return ReplaceArrayBodyForKey(InPlanText, "commit", newCommitArray).value_or(InPlanText);
 }
 
 auto StampPlanAiPlannerMetadata(std::string InPlanText,
                                 const std::string& InProvider,
                                 const std::string& InModel) -> std::optional<std::string> {
-    auto updated = ReplaceJsonStringFieldInObject(std::move(InPlanText), "planner", "provider", InProvider);
-    if (!updated.has_value()) return std::nullopt;
-    return ReplaceJsonStringFieldInObject(*updated, "planner", "ai-model", InModel.empty() ? std::string("auto") : InModel);
+    try {
+        auto doc = nlohmann::json::parse(InPlanText);
+        doc["meta"]["planner"]["provider"]  = InProvider;
+        doc["meta"]["planner"]["ai-model"]  = InModel.empty() ? std::string("auto") : InModel;
+        return SerializePlanJson(doc);
+    } catch (const nlohmann::json::parse_error& e) {
+        std::cerr << "[plan] JSON parse error: " << e.what() << "\n";
+        return std::nullopt;
+    } catch (const nlohmann::json::type_error& e) {
+        std::cerr << "[plan] JSON type error: " << e.what() << "\n";
+        return std::nullopt;
+    }
 }
 
 auto UpsertCommitEntry(const std::string& InPlanText,
@@ -1238,36 +1062,46 @@ auto UpsertCommitEntry(const std::string& InPlanText,
                        const std::vector<std::string>& InExclude,
                        const std::string& InReviewVerdict,
                        const std::string& InReviewReason) -> std::optional<std::string> {
-    const auto item = std::format(
-        "{{\"message\":\"{}\",\"include\":[{}],\"exclude\":[{}],\"review\":{{\"verdict\":\"{}\",\"reason\":\"{}\"}}}}",
-        JsonEscape(InMessage),
-        BuildJsonStringArray(InInclude),
-        BuildJsonStringArray(InExclude),
-        JsonEscape(InReviewVerdict),
-        JsonEscape(InReviewReason));
+    try {
+        auto doc = nlohmann::json::parse(InPlanText);
+        if (!doc.contains("stages") || !doc["stages"].contains("commit")) return std::nullopt;
+        auto& commitStage = doc["stages"]["commit"];
+        if (!commitStage.is_array()) return std::nullopt;
 
-    const auto stages = ExtractObjectBodyForKey(InPlanText, "stages");
-    if (!stages) return std::nullopt;
-    const auto commitArray = ExtractArrayBodyForKey(*stages, "commit");
-    if (!commitArray) return std::nullopt;
+        // Build the new commit object
+        nlohmann::json newCommit;
+        newCommit["message"]           = InMessage;
+        newCommit["include"]           = InInclude;
+        newCommit["exclude"]           = InExclude;
+        newCommit["review"]["verdict"] = InReviewVerdict;
+        newCommit["review"]["reason"]  = InReviewReason;
 
-    auto repoObjects = SplitTopLevelObjects(*commitArray);
-    bool found = false;
-    for (auto& repoObj : repoObjects) {
-        if (ExtractStringField(repoObj, "repo").value_or("") == InRepo) {
-            const auto commits = ExtractArrayBodyForKey(repoObj, "commits").value_or("[]");
-            std::string newCommits = commits == "[]" ? item : commits.substr(0, commits.size() - 1) + "," + item + "]";
-            repoObj = ReplaceArrayBodyForKey(repoObj, "commits", newCommits).value_or(repoObj);
-            found = true;
-            break;
+        // Find existing repo entry or append a new one
+        bool found = false;
+        for (auto& repoObj : commitStage) {
+            if (repoObj.value("repo", "") == InRepo) {
+                if (!repoObj.contains("commits") || !repoObj["commits"].is_array())
+                    repoObj["commits"] = nlohmann::json::array();
+                repoObj["commits"].push_back(newCommit);
+                found = true;
+                break;
+            }
         }
-    }
+        if (!found) {
+            nlohmann::json repoObj;
+            repoObj["repo"]    = InRepo;
+            repoObj["commits"] = nlohmann::json::array({newCommit});
+            commitStage.push_back(repoObj);
+        }
 
-    if (!found) {
-        repoObjects.push_back(std::format("{{\"repo\":\"{}\",\"commits\":[{}]}}", JsonEscape(InRepo), item));
+        return SerializePlanJson(doc);
+    } catch (const nlohmann::json::parse_error& e) {
+        std::cerr << "[plan] JSON parse error: " << e.what() << "\n";
+        return std::nullopt;
+    } catch (const nlohmann::json::type_error& e) {
+        std::cerr << "[plan] JSON type error: " << e.what() << "\n";
+        return std::nullopt;
     }
-
-    return ReplaceArrayBodyForKey(InPlanText, "commit", RebuildCommitArrayBody(repoObjects));
 }
 
 auto FillCommitEntryByFlatIndex(const std::string& InPlanText,
@@ -1319,15 +1153,13 @@ auto RunAiGenerate(const std::string& InProvider,
                      const std::filesystem::path& InWorkspaceRoot,
                      bool InQuiet) -> shell::ExecResult {
     auto LogInvocation = [&](const std::string& binary, const std::vector<std::string>& args) {
-        static constexpr std::string_view kDivider = "────────────────────────────────────────";
-        std::cerr << "\n[kog ai] ── AI Invocation (plan-fill) ──\n";
+        std::cerr << "\n[kog ai] -- AI Invocation (plan-fill) --\n";
         std::cerr << "[kog ai] command : " << binary;
         for (const auto& a : args) {
             if (a.find(' ') != std::string::npos || a.empty()) std::cerr << " \"" << a << "\"";
             else std::cerr << " " << a;
         }
         std::cerr << "\n[kog ai] model   : " << (InModel.empty() ? "auto" : InModel) << "\n";
-        std::cerr << "[kog ai] prompt  :\n" << kDivider << "\n" << InPrompt << "\n" << kDivider << "\n";
         std::cerr << "[kog ai] Waiting for " << InProvider << " response...\n";
         std::cerr.flush();
     };
@@ -1403,6 +1235,10 @@ auto BuildPlanFillOpsPrompt(const std::filesystem::path& InWorkspaceRoot,
 }
 
 auto ExtractPlanFillOpsJson(const std::string& InAiCombined) -> std::string {
+    // Try the structured marker first (used by copilot and other providers)
+    const auto structured = ExtractJsonBetweenMarkers(InAiCombined, "BEGIN_KOG_PLAN_FILL_OPS", "END_KOG_PLAN_FILL_OPS");
+    if (!structured.empty()) return structured;
+    // Fall back to markdown code block
     return ExtractJsonBetweenMarkers(InAiCombined, "```json", "```");
 }
 
@@ -1445,8 +1281,7 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
     const auto entries = CollectCommitPlanEntries(templateJson);
     if (entries.empty()) return true;
 
-    static constexpr std::string_view kDivider = "────────────────────────────────────────";
-    std::cerr << "\n[plan] ── AI commit plan fill ──\n";
+    std::cerr << "\n[plan] -- AI commit plan fill --\n";
     std::cerr << "[plan] mode     : " << fillMode << "\n";
     std::cerr << "[plan] provider : " << provider << "\n";
     std::cerr << "[plan] model    : " << (modelDir.empty() ? "auto" : modelDir) << "\n";
@@ -1466,14 +1301,24 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
                 if (OutError) *OutError = "AI generation failed for entry " + std::to_string(entry.index) + ": " + detail;
                 return false;
             }
-            const auto json = ExtractJsonBetweenMarkers(res.stdoutStr, "```json", "```");
+            const auto json = [&] {
+                const auto s = ExtractJsonBetweenMarkers(res.stdoutStr, "BEGIN_KOG_PLAN_FILL_OPS", "END_KOG_PLAN_FILL_OPS");
+                if (!s.empty()) return s;
+                return ExtractJsonBetweenMarkers(res.stdoutStr, "```json", "```");
+            }();
             if (!json.empty()) {
                 CommitFillOp op;
                 op.index = entry.index;
-                op.message = ExtractStringField(json, "message").value_or("");
-                const auto review = ExtractObjectBodyForKey(json, "review");
-                op.reviewVerdict = review ? ExtractStringField(*review, "verdict").value_or("") : "";
-                op.reviewReason = review ? ExtractStringField(*review, "reason").value_or("") : "";
+                try {
+                    const auto jobj = nlohmann::json::parse(json);
+                    op.message       = jobj.value("message", "");
+                    if (jobj.contains("review") && jobj["review"].is_object()) {
+                        op.reviewVerdict = jobj["review"].value("verdict", "");
+                        op.reviewReason  = jobj["review"].value("reason", "");
+                    }
+                } catch (...) {
+                    // If the AI returned malformed JSON, skip this entry
+                }
                 finalPlanJson = ApplyCommitFillOps(finalPlanJson, {op});
                 // Only count as filled if message doesn't contain placeholder
                 if (op.message.find("replace-with-") == std::string::npos) {
@@ -1524,41 +1369,47 @@ auto DefaultPlanPath(const std::filesystem::path& InWorkspaceRoot) -> std::files
 }
 
 auto CountTopLevelObjects(const std::string& InArrayBody) -> std::size_t {
-    return SplitTopLevelObjects(InArrayBody).size();
+    // InArrayBody is a raw JSON array body (with or without brackets).
+    // Wrap in brackets if needed and parse with nlohmann.
+    try {
+        const auto trimmed = Trim(InArrayBody);
+        if (trimmed.empty()) return 0;
+        const std::string wrapped = (trimmed.front() == '[') ? trimmed : "[" + trimmed + "]";
+        const auto arr = nlohmann::json::parse(wrapped);
+        if (!arr.is_array()) return 0;
+        return arr.size();
+    } catch (...) {
+        return 0;
+    }
 }
 
 auto ParseIgnoreEntries(const std::string& InText) -> std::vector<IgnoreStageEntry> {
     std::vector<IgnoreStageEntry> out;
-    const auto stages = ExtractObjectBodyForKey(InText, "stages");
-    if (!stages.has_value()) {
-        return out;
-    }
-    const auto ignoreArray = ExtractArrayBodyForKey(*stages, "ignore");
-    if (!ignoreArray.has_value()) {
-        return out;
-    }
-    for (const auto& item : SplitTopLevelObjects(*ignoreArray)) {
-        IgnoreStageEntry entry;
-        if (const auto repo = ExtractStringField(item, "repo"); repo.has_value()) {
-            entry.repo = Trim(*repo);
-        }
-        if (const auto target = ExtractStringField(item, "apply_target"); target.has_value()) {
-            entry.applyTarget = Trim(*target);
-        }
-        if (const auto merged = ExtractStringField(item, "merged_output_path"); merged.has_value()) {
-            entry.mergedOutputPath = Trim(*merged);
-        }
-        if (const auto candidates = ExtractArrayBodyForKey(item, "candidates"); candidates.has_value()) {
-            for (const auto& c : SplitTopLevelObjects(*candidates)) {
-                if (const auto rule = ExtractStringField(c, "rule"); rule.has_value()) {
-                    const auto v = Trim(*rule);
-                    if (!v.empty()) {
-                        entry.rules.push_back(v);
+    try {
+        const auto doc = nlohmann::json::parse(InText);
+        if (!doc.contains("stages") || !doc["stages"].contains("ignore")) return out;
+        const auto& ignoreArray = doc["stages"]["ignore"];
+        if (!ignoreArray.is_array()) return out;
+
+        for (const auto& item : ignoreArray) {
+            IgnoreStageEntry entry;
+            entry.repo            = Trim(item.value("repo", "."));
+            entry.applyTarget     = Trim(item.value("apply_target", ".gitignore"));
+            entry.mergedOutputPath = Trim(item.value("merged_output_path", ""));
+            if (item.contains("candidates") && item["candidates"].is_array()) {
+                for (const auto& c : item["candidates"]) {
+                    if (c.contains("rule") && c["rule"].is_string()) {
+                        const auto v = Trim(c["rule"].get<std::string>());
+                        if (!v.empty()) entry.rules.push_back(v);
                     }
                 }
             }
+            out.push_back(std::move(entry));
         }
-        out.push_back(std::move(entry));
+    } catch (const nlohmann::json::parse_error& e) {
+        std::cerr << "[plan] JSON parse error: " << e.what() << "\n";
+    } catch (const nlohmann::json::type_error& e) {
+        std::cerr << "[plan] JSON type error: " << e.what() << "\n";
     }
     return out;
 }
@@ -1780,30 +1631,36 @@ auto ScanFileForSecretRules(const std::filesystem::path& InRepo,
 }
 
 auto ValidateAiReadyPlan(const std::string& InPlanText, std::string* OutReason) -> bool {
-    const auto meta = ExtractObjectBodyForKey(InPlanText, "meta");
-    if (!meta) {
-        if (OutReason) *OutReason = "missing meta object";
+    try {
+        const auto doc = nlohmann::json::parse(InPlanText);
+        if (!doc.contains("meta") || !doc["meta"].is_object()) {
+            if (OutReason) *OutReason = "missing meta object";
+            return false;
+        }
+        if (!doc.contains("stages") || !doc["stages"].is_object()) {
+            if (OutReason) *OutReason = "missing stages object";
+            return false;
+        }
+        if (!doc["stages"].contains("commit") || !doc["stages"]["commit"].is_array()) {
+            if (OutReason) *OutReason = "missing stages.commit array";
+            return false;
+        }
+        if (doc["stages"]["commit"].empty()) {
+            if (OutReason) *OutReason = "no commit entries in stages.commit";
+            return false;
+        }
+        if (!HasValidCommitItems(InPlanText)) {
+            if (OutReason) *OutReason = "no valid non-placeholder commit messages in stages.commit";
+            return false;
+        }
+        return true;
+    } catch (const nlohmann::json::parse_error& e) {
+        if (OutReason) *OutReason = std::string("JSON parse error: ") + e.what();
+        return false;
+    } catch (const nlohmann::json::type_error& e) {
+        if (OutReason) *OutReason = std::string("JSON type error: ") + e.what();
         return false;
     }
-    const auto stages = ExtractObjectBodyForKey(InPlanText, "stages");
-    if (!stages) {
-        if (OutReason) *OutReason = "missing stages object";
-        return false;
-    }
-    const auto commit = ExtractArrayBodyForKey(*stages, "commit");
-    if (!commit) {
-        if (OutReason) *OutReason = "missing stages.commit array";
-        return false;
-    }
-    if (SplitTopLevelObjects(*commit).empty()) {
-        if (OutReason) *OutReason = "no commit entries in stages.commit";
-        return false;
-    }
-    if (!HasValidCommitItems(InPlanText)) {
-        if (OutReason) *OutReason = "no valid non-placeholder commit messages in stages.commit";
-        return false;
-    }
-    return true;
 }
 
 auto CompactSingleLine(const std::string& InText, int InMax) -> std::string {
@@ -1847,60 +1704,69 @@ auto FindBracketRange(const std::string& InText, std::size_t InStart, char InOpe
 }
 
 auto InjectIgnoreEntries(std::string InPlanText, const std::vector<IgnoreStageEntry>& InEntries) -> std::optional<std::string> {
-    const auto stagesPos = FindJsonKeyValueStart(InPlanText, "stages");
-    if (!stagesPos) return std::nullopt;
-    const auto ignorePos = FindJsonKeyValueStart(InPlanText, "ignore", *stagesPos);
-    if (!ignorePos) return std::nullopt;
-    const auto arrRange = FindBracketRange(InPlanText, *ignorePos, '[', ']');
-    if (!arrRange) return std::nullopt;
-    
-    std::ostringstream oss;
-    oss << "[\n";
-    for (size_t i = 0; i < InEntries.size(); ++i) {
-        const auto& e = InEntries[i];
-        oss << "      {\n"
-            << "        \"repo\": \"" << JsonEscape(e.repo) << "\",\n"
-            << "        \"apply_target\": \"" << JsonEscape(e.applyTarget) << "\",\n"
-            << "        \"merged_output_path\": \"" << JsonEscape(e.mergedOutputPath) << "\",\n"
-            << "        \"applied_at_utc\": \"\",\n"
-            << "        \"candidates\": [\n";
-        for (size_t j = 0; j < e.rules.size(); ++j) {
-            oss << "          { \"rule\": \"" << JsonEscape(e.rules[j]) << "\", \"source\": \"working-tree\", \"reason\": \"untracked-artifact\" }";
-            if (j + 1 < e.rules.size()) oss << ",";
-            oss << "\n";
+    try {
+        auto doc = nlohmann::json::parse(InPlanText);
+        nlohmann::json ignoreStage = nlohmann::json::array();
+        for (const auto& e : InEntries) {
+            nlohmann::json candidates = nlohmann::json::array();
+            for (const auto& rule : e.rules) {
+                nlohmann::json c;
+                c["rule"]   = rule;
+                c["source"] = "working-tree";
+                c["reason"] = "untracked-artifact";
+                candidates.push_back(c);
+            }
+            nlohmann::json entry;
+            entry["repo"]               = e.repo;
+            entry["apply_target"]       = e.applyTarget;
+            entry["merged_output_path"] = e.mergedOutputPath;
+            entry["applied_at_utc"]     = "";
+            entry["candidates"]         = candidates;
+            ignoreStage.push_back(entry);
         }
-        oss << "        ]\n"
-            << "      }";
-        if (i + 1 < InEntries.size()) oss << ",";
-        oss << "\n";
+        doc["stages"]["ignore"] = ignoreStage;
+        return SerializePlanJson(doc);
+    } catch (const nlohmann::json::parse_error& e) {
+        std::cerr << "[plan] JSON parse error: " << e.what() << "\n";
+        return std::nullopt;
+    } catch (const nlohmann::json::type_error& e) {
+        std::cerr << "[plan] JSON type error: " << e.what() << "\n";
+        return std::nullopt;
     }
-    oss << "    ]";
-    
-    std::string out = InPlanText.substr(0, arrRange->first);
-    out.append(oss.str());
-    out.append(InPlanText.substr(arrRange->second));
-    return out;
 }
 
 auto ApplyIgnoreDatasourceOverrides(std::string InPlanText,
                                     const std::optional<std::filesystem::path>& InDatasourceRoot,
                                     const std::optional<std::filesystem::path>& InDatasourceManifest) -> std::optional<std::string> {
-    auto out = InPlanText;
-    if (InDatasourceRoot) {
-        const auto replaced = ReplaceJsonStringFieldInObject(out, "ignore_datasource", "root", InDatasourceRoot->generic_string());
-        if (!replaced) return std::nullopt;
-        out = *replaced;
+    if (!InDatasourceRoot && !InDatasourceManifest) return InPlanText;
+    try {
+        auto doc = nlohmann::json::parse(InPlanText);
+        if (InDatasourceRoot)
+            doc["meta"]["ignore_datasource"]["root"]     = InDatasourceRoot->generic_string();
+        if (InDatasourceManifest)
+            doc["meta"]["ignore_datasource"]["manifest"] = InDatasourceManifest->generic_string();
+        return SerializePlanJson(doc);
+    } catch (const nlohmann::json::parse_error& e) {
+        std::cerr << "[plan] JSON parse error: " << e.what() << "\n";
+        return std::nullopt;
+    } catch (const nlohmann::json::type_error& e) {
+        std::cerr << "[plan] JSON type error: " << e.what() << "\n";
+        return std::nullopt;
     }
-    if (InDatasourceManifest) {
-        const auto replaced = ReplaceJsonStringFieldInObject(out, "ignore_datasource", "manifest", InDatasourceManifest->generic_string());
-        if (!replaced) return std::nullopt;
-        out = *replaced;
-    }
-    return out;
 }
 
 auto ReplacePlanDirtyFingerprint(std::string InPlanText, const std::string& InNewDirtyFingerprint) -> std::optional<std::string> {
-    return ReplaceJsonStringFieldInObject(std::move(InPlanText), "meta", "dirty_fingerprint", InNewDirtyFingerprint);
+    try {
+        auto doc = nlohmann::json::parse(InPlanText);
+        doc["meta"]["dirty_fingerprint"] = InNewDirtyFingerprint;
+        return SerializePlanJson(doc);
+    } catch (const nlohmann::json::parse_error& e) {
+        std::cerr << "[plan] JSON parse error: " << e.what() << "\n";
+        return std::nullopt;
+    } catch (const nlohmann::json::type_error& e) {
+        std::cerr << "[plan] JSON type error: " << e.what() << "\n";
+        return std::nullopt;
+    }
 }
 
 auto BuildIgnoreEntriesFromWorkingTree(const std::filesystem::path& InWorkspaceRoot, int InMaxPerRepo) -> std::vector<IgnoreStageEntry> {
@@ -2069,20 +1935,25 @@ auto RunPreApplyVerify(const std::filesystem::path& InWorkspaceRoot,
         return 2;
     }
     const auto stage = ToLower(Trim(InStage));
-    const auto stages = ExtractObjectBodyForKey(*payload, "stages");
-    if (!stages) return 2;
-
-    if (stage == "ignore" || stage == "all") {
-        if (!ExtractArrayBodyForKey(*stages, "ignore")) {
-            std::cerr << "Error: stages.ignore missing\n";
-            return 2;
+    try {
+        const auto doc = nlohmann::json::parse(*payload);
+        if (!doc.contains("stages") || !doc["stages"].is_object()) return 2;
+        const auto& stages = doc["stages"];
+        if (stage == "ignore" || stage == "all") {
+            if (!stages.contains("ignore") || !stages["ignore"].is_array()) {
+                std::cerr << "Error: stages.ignore missing\n";
+                return 2;
+            }
         }
-    }
-    if (stage == "commit" || stage == "all") {
-        if (!ExtractArrayBodyForKey(*stages, "commit")) {
-            std::cerr << "Error: stages.commit missing\n";
-            return 2;
+        if (stage == "commit" || stage == "all") {
+            if (!stages.contains("commit") || !stages["commit"].is_array()) {
+                std::cerr << "Error: stages.commit missing\n";
+                return 2;
+            }
         }
+    } catch (const nlohmann::json::parse_error& e) {
+        std::cerr << "Error: plan JSON parse error: " << e.what() << "\n";
+        return 2;
     }
 
     std::string planBase, planDirty;

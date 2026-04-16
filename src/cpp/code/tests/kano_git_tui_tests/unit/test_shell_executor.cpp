@@ -3,6 +3,8 @@
 #include "shell_executor.hpp"
 
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -78,5 +80,34 @@ TEST_CASE("ShellExecutor capture preserves early-exit non-zero code", "[Unit][sh
     REQUIRE(result.stderrStr.find("EARLY-ERR") != std::string::npos);
 #else
     SUCCEED("Windows-specific early-exit test skipped on non-Windows platform");
+#endif
+}
+
+TEST_CASE("ShellExecutor executes cmd scripts with spaced paths and preserved args", "[Unit][shell-executor][windows]") {
+#if defined(_WIN32)
+    namespace fs = std::filesystem;
+
+    const auto tempRoot = fs::temp_directory_path() / "kog shell executor tests";
+    fs::create_directories(tempRoot);
+    const auto scriptPath = tempRoot / "echo-args.cmd";
+
+    {
+        std::ofstream script(scriptPath, std::ios::binary);
+        REQUIRE(script.good());
+        script << "@echo off\r\n";
+        script << "echo ARG1=%1\r\n";
+        script << "echo ARG2=%2\r\n";
+    }
+
+    const auto result = ExecuteCommand(scriptPath.string(), {"--model", "gpt-5.4"}, ExecMode::Capture);
+
+    REQUIRE(result.exitCode == 0);
+    REQUIRE(result.stdoutStr.find("ARG1=--model") != std::string::npos);
+    REQUIRE(result.stdoutStr.find("ARG2=gpt-5.4") != std::string::npos);
+
+    std::error_code ec;
+    fs::remove(scriptPath, ec);
+#else
+    SUCCEED("Windows-specific cmd script quoting test skipped on non-Windows platform");
 #endif
 }

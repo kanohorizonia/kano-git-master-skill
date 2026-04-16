@@ -247,7 +247,18 @@ auto WritePromptFile(const std::filesystem::path& InWorkdir,
         if (OutError) *OutError = ec.message();
         return false;
     }
-    const auto promptPath = (promptDir / std::format("{}-{}-{}.md", InPurpose, CurrentUtcCompact(), Fnv1a64Hex(InPrompt).substr(0, 8))).lexically_normal();
+    // Default: overwrite a fixed filename so old prompts don't accumulate.
+    // Set KOG_DEBUG_PROMPTS=1 to get timestamped filenames for debugging.
+    const bool debugPrompts = [] {
+        const char* v = std::getenv("KOG_DEBUG_PROMPTS");
+        if (v == nullptr) return false;
+        const auto s = std::string(v);
+        return s == "1" || s == "true" || s == "yes";
+    }();
+    const auto filename = debugPrompts
+        ? std::format("{}-{}-{}.md", InPurpose, CurrentUtcCompact(), Fnv1a64Hex(InPrompt).substr(0, 8))
+        : std::format("{}-default.md", InPurpose);
+    const auto promptPath = (promptDir / filename).lexically_normal();
     if (!WriteFileText(promptPath, InPrompt, OutError)) return false;
     if (OutPath) *OutPath = promptPath;
     return true;
@@ -259,14 +270,8 @@ auto BuildFileBackedPromptArgument(std::optional<std::filesystem::path> InWorkin
     if (!InWorkingDir.has_value()) return InPrompt;
     std::filesystem::path promptPath;
     if (!WritePromptFile(*InWorkingDir, InPrompt, InPurpose, &promptPath)) return InPrompt;
-    auto refPath = promptPath.lexically_relative(*InWorkingDir);
-    if (refPath.empty()) refPath = promptPath.lexically_normal();
-    auto refText = refPath.generic_string();
-#if defined(_WIN32)
-    if (!refPath.is_absolute() && !refText.empty() && refText.rfind("./", 0) != 0 && refText.rfind(".\\", 0) != 0 && refText.front() != '/' && refText.front() != '\\') {
-        refText = "./" + refText;
-    }
-#endif
+    // Use absolute path so copilot can resolve the @file reference regardless of cwd.
+    const auto refText = promptPath.lexically_normal().generic_string();
     return std::format("Read @{} and follow it exactly. Treat that file as the complete task. Do not ask clarifying questions. Output only the final answer required by that file.", refText);
 }
 

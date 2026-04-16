@@ -595,7 +595,23 @@ auto MakeRepoView(const workspace::RepoRecord& InRepo, const std::filesystem::pa
     // Fast check: perform exactly 1 uncolored git status to see if it's strictly dirty.
     // We skip the 4 expensive branch tracking operations if it's clean and just use the cache.
     const auto statusQuick = GitCapture(InRepo.path, {"status", "--porcelain"});
-    row.repoDirty = statusQuick.exitCode == 0 && !Trim(statusQuick.stdoutStr).empty();
+    // Filter out external paths (starting with "../") which represent submodule changes
+    // outside this repo's root - these should not mark the repo as dirty
+    if (statusQuick.exitCode == 0 && !Trim(statusQuick.stdoutStr).empty()) {
+        const auto allLines = SplitNonEmptyLines(statusQuick.stdoutStr);
+        bool hasInternalDirty = false;
+        for (const auto& line : allLines) {
+            // Skip lines with "../" paths - these are external submodules or paths
+            if (line.find(" ../") != std::string::npos || line.rfind("../", 0) == 0) {
+                continue;
+            }
+            hasInternalDirty = true;
+            break;
+        }
+        row.repoDirty = hasInternalDirty;
+    } else {
+        row.repoDirty = false;
+    }
 
     if (!row.repoDirty) {
         row.branch = InRepo.currentBranch.empty() ? "(detached)" : InRepo.currentBranch;
@@ -610,9 +626,17 @@ auto MakeRepoView(const workspace::RepoRecord& InRepo, const std::filesystem::pa
     row.tracking = TrackingSummary(InRepo.path);
     row.hasDirtyWorktree = HasDirtyWorktrees(InRepo.path, row.dirtyWorktrees);
     
-    const auto statusOut = GitCapture(InRepo.path, {"-c", "color.status=always", "status", "--short"});
+    const auto statusOut = GitCapture(InRepo.path, {"status", "--porcelain"});
     if (statusOut.exitCode == 0) {
-        row.statusLines = SplitNonEmptyLines(statusOut.stdoutStr);
+        // Filter to only include internal paths (not external "../" submodule paths)
+        const auto allLines = SplitNonEmptyLines(statusOut.stdoutStr);
+        for (const auto& line : allLines) {
+            // Skip lines with "../" paths - these are external submodules or paths outside this repo
+            if (line.find(" ../") != std::string::npos || line.rfind("../", 0) == 0) {
+                continue;
+            }
+            row.statusLines.push_back(line);
+        }
     }
     
     return row;

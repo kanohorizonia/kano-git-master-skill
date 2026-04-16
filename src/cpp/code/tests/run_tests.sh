@@ -72,6 +72,10 @@ echo "Running shell executor focused TUI tests..."
 "$EXE_DIR/kano_git_tui_tests" "[shell-executor]"
 
 echo ""
+echo "Running commit plan tests..."
+"$EXE_DIR/kano_git_commit_plan_tests"
+
+echo ""
 echo "All tests completed successfully!"
 
 if [[ "$WITH_E2E" == "1" || "$WITH_E2E" == "--with-e2e" ]]; then

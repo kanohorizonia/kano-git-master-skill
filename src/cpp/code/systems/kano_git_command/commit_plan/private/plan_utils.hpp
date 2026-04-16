@@ -98,26 +98,10 @@ auto GitCapture(const std::filesystem::path& InRepo, const std::vector<std::stri
 auto GitPassThrough(const std::filesystem::path& InRepo, const std::vector<std::string>& InArgs) -> shell::ExecResult;
 
 // JSON lightweight utilities
-auto UnescapeJsonString(std::string InValue) -> std::string;
-auto SkipJsonWhitespace(const std::string& InText, std::size_t InPos) -> std::size_t;
-auto ParseJsonStringAt(const std::string& InText, std::size_t InPos) -> std::optional<std::pair<std::string, std::size_t>>;
-auto FindJsonKeyValueStart(const std::string& InText, const std::string& InKey, std::size_t InFrom = 0) -> std::optional<std::size_t>;
-auto ExtractBracketBody(const std::string& InText, std::size_t InStart, char InOpen, char InClose) -> std::optional<std::string>;
-auto ExtractObjectBodyForKey(const std::string& InText, const std::string& InKey) -> std::optional<std::string>;
-auto ExtractArrayBodyForKey(const std::string& InText, const std::string& InKey) -> std::optional<std::string>;
-auto SplitTopLevelObjects(const std::string& InArrayBody) -> std::vector<std::string>;
-auto ExtractStringField(const std::string& InObjectText, const std::string& InField) -> std::optional<std::string>;
-auto ExtractScalarFieldToken(const std::string& InObjectText, const std::string& InField) -> std::optional<std::string>;
-auto ExtractBoolField(const std::string& InObjectText, const std::string& InField) -> std::optional<bool>;
 auto ExtractJsonBetweenMarkers(const std::string& InText) -> std::string;
 auto ExtractJsonBetweenMarkers(const std::string& InText,
                                const std::string& InBeginMarker,
                                const std::string& InEndMarker) -> std::string;
-auto ReplaceJsonStringFieldInObject(std::string InJson,
-                                    const std::string& InObjectKey,
-                                    const std::string& InFieldKey,
-                                    const std::string& InNewValue) -> std::optional<std::string>;
-auto ReplaceArrayBodyForKey(const std::string& InText, const std::string& InKey, const std::string& InNewBody) -> std::optional<std::string>;
 
 // AI Model resolution utilities
 auto ResolveSystemRecommendedModel(const std::string& InProvider) -> std::string;
@@ -173,7 +157,6 @@ auto BuildSingleCommitFillPrompt(const std::filesystem::path& InWorkspaceRoot,
                                  const std::string& InDirtyContext) -> std::string;
 auto TryInjectFallbackCommits(const std::filesystem::path& InWorkspaceRoot, const std::string& InPlanText) -> std::optional<std::string>;
 auto BuildJsonStringArray(const std::vector<std::string>& InValues) -> std::string;
-auto RebuildCommitArrayBody(const std::vector<std::string>& InRepoObjects) -> std::string;
 auto BuildCommitObjectJson(const std::string& InMessage,
                            const std::string& InIncludeArrayBody,
                            const std::string& InExcludeArrayBody,
@@ -181,7 +164,6 @@ auto BuildCommitObjectJson(const std::string& InMessage,
                            const std::string& InReviewReason,
                            const std::string& InPlannerProvider,
                            const std::string& InPlannerModel) -> std::string;
-auto ParseJsonStringArrayBody(const std::string& InArrayBody) -> std::vector<std::string>;
 auto CollectCommitPlanEntries(const std::string& InPlanText) -> std::vector<CommitPlanEntry>;
 auto CommitEntryNeedsReview(const CommitPlanEntry& InEntry) -> bool;
 auto CollectCommitIndexesNeedingReview(const std::vector<CommitPlanEntry>& InEntries) -> std::vector<int>;

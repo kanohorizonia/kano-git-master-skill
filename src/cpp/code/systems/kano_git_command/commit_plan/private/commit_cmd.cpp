@@ -39,6 +39,10 @@ namespace kano::git::commands {
 auto IsProbableIgnoreArtifactPath(const std::string& InPath) -> bool;
 auto IsInternalPipelineArtifactPath(const std::string& InPath) -> bool;
 auto ParseStatusChangedPath(const std::string& InLine) -> std::optional<std::string>;
+auto RunAmendNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
+                              const std::string& InPlanFile,
+                              const std::string& InPlanStage,
+                              const bool InProfile) -> int;
 
 namespace {
 
@@ -2704,6 +2708,94 @@ auto RunCommitAutoPlanPipeline(const std::filesystem::path& InWorkspaceRoot,
     return 0;
 }
 
+auto RunAmendAutoPlanPipeline(const std::filesystem::path& InWorkspaceRoot,
+                               const NativeAiConfig& InAi,
+                               const std::string& InAiFillMode,
+                               const bool InProfile) -> int {
+    using clock = std::chrono::steady_clock;
+    const auto totalStart = clock::now();
+    long long planNewMillis = 0;
+    long long ignoreRunbookMillis = 0;
+    long long ignoreApplyMillis = 0;
+    long long commitRunbookMillis = 0;
+    long long amendApplyMillis = 0;
+    std::optional<long long> aiFillMillis;
+
+    std::cerr << "[DEBUG] RunAmendAutoPlanPipeline ENTERED" << std::endl;
+    std::cerr << "[DEBUG] InWorkspaceRoot=" << InWorkspaceRoot.generic_string() << std::endl;
+    std::cerr << "[DEBUG] InAi.enabled=" << InAi.enabled << " provider=" << InAi.provider << " model=" << InAi.model << std::endl;
+    std::cerr << "[DEBUG] InAiFillMode=" << InAiFillMode << std::endl;
+    std::cerr << "[DEBUG] InProfile=" << InProfile << std::endl;
+    std::cerr.flush();
+
+    const auto autoPlanPath = DefaultSharedPlanPath(InWorkspaceRoot);
+    std::cout << "[native-amend] auto-plan file: " << autoPlanPath.generic_string() << "\n";
+
+    const auto planNewStart = clock::now();
+    const auto planNewCode = RunPlanNewViaSelf(InWorkspaceRoot, autoPlanPath);
+    planNewMillis = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - planNewStart).count();
+    if (planNewCode != 0) {
+        return planNewCode;
+    }
+
+    const auto ignoreRunbookStart = clock::now();
+    const auto ignoreRunbookCode = RunIgnorePlanRunbookViaSelf(InWorkspaceRoot, autoPlanPath);
+    ignoreRunbookMillis = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - ignoreRunbookStart).count();
+    if (ignoreRunbookCode != 0) {
+        return ignoreRunbookCode;
+    }
+
+    const auto ignoreApplyStart = clock::now();
+    const auto ignoreApplyCode = RunIgnorePlanApplyViaSelf(InWorkspaceRoot, autoPlanPath);
+    ignoreApplyMillis = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - ignoreApplyStart).count();
+    if (ignoreApplyCode != 0) {
+        return ignoreApplyCode;
+    }
+
+    const auto commitRunbookStart = clock::now();
+    const auto runbookResult = RunCommitPlanRunbookViaSelf(InWorkspaceRoot, autoPlanPath, InAi.provider, InAi.model, InAiFillMode);
+    commitRunbookMillis = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - commitRunbookStart).count();
+    aiFillMillis = runbookResult.aiFillMillis;
+    if (runbookResult.exitCode != 0) {
+        return runbookResult.exitCode;
+    }
+
+    std::string deterministicReason;
+    if (!runbookResult.fallbackUsed && HumanAutoPlanLooksDeterministic(autoPlanPath, &deterministicReason)) {
+        std::cerr << "Error: AI commit runbook produced non-AI deterministic plan metadata; refusing to continue.\n";
+        std::cerr << "Hint: verify AI provider/auth and rerun plain `kog amend --ai-auto`.\n";
+        std::cerr << "Hint: deterministic metadata: " << deterministicReason << "\n";
+        return 2;
+    }
+
+    // Apply plan via soft-reset + commit (rebuild history) instead of amend
+    const auto amendApplyStart = clock::now();
+    const auto amendApplyCode = RunAmendNativePlanStage(InWorkspaceRoot, autoPlanPath.generic_string(), "commit", false);
+    amendApplyMillis = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - amendApplyStart).count();
+    if (amendApplyCode != 0) {
+        return amendApplyCode;
+    }
+
+    if (InProfile) {
+        const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - totalStart).count();
+        std::cout << "\n=== Amend Auto-Plan Profile Summary ===\n";
+        std::cout << "mode: plan-first\n";
+        std::cout << "plan_new_ms: " << planNewMillis << "\n";
+        std::cout << "ignore_runbook_ms: " << ignoreRunbookMillis << "\n";
+        std::cout << "ignore_apply_ms: " << ignoreApplyMillis << "\n";
+        std::cout << "commit_runbook_ms: " << commitRunbookMillis << "\n";
+        if (aiFillMillis.has_value()) {
+            std::cout << "ai_fill_ms: " << *aiFillMillis << "\n";
+        } else {
+            std::cout << "ai_fill_ms: n/a\n";
+        }
+        std::cout << "amend_apply_ms: " << amendApplyMillis << "\n";
+        std::cout << "total_ms: " << totalMs << "\n";
+    }
+
+    return 0;
+}
+
 auto BuildStageMessageMap(const CommitPlanPayload& InPlan,
                           const CommitPlanStage InStage) -> std::unordered_map<std::string, std::vector<RepoCommitPlanEntry::CommitItem>> {
     std::unordered_map<std::string, std::vector<RepoCommitPlanEntry::CommitItem>> out;
@@ -3474,7 +3566,7 @@ auto AmendSingleRepo(const std::filesystem::path& InWorkspaceRoot,
     }
 
     std::string commitMessage = InMessage;
-    if (commitMessage.empty() && InAi.enabled && report.stagedCount > 0) {
+    if (commitMessage.empty() && InAi.enabled) {
         std::string aiFailureReason;
         commitMessage = GenerateAiCommitMessage(InWorkspaceRoot, InRepo, report, InAi, &aiFailureReason);
         if (commitMessage.empty()) {
@@ -3889,6 +3981,261 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
         std::cout << "preflight_ms: " << preflightMs << "\n";
         std::cout << "planning_ms: " << planningMs << "\n";
         std::cout << "commit_ms: " << commitMs << "\n";
+        std::cout << "summary_ms: " << summaryMs << "\n";
+        std::cout << "total_ms: " << totalMs << "\n";
+    }
+
+    return exitCode;
+}
+
+auto RunAmendNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
+                              const std::string& InPlanFile,
+                              const std::string& InPlanStage,
+                              const bool InProfile) -> int {
+    using clock = std::chrono::steady_clock;
+    const auto totalStart = clock::now();
+    long long preflightMs = 0;
+    long long planningMs = 0;
+    long long amendMs = 0;
+    long long summaryMs = 0;
+
+    const auto workspaceRoot = InWorkspaceRoot.lexically_normal();
+
+    const auto preflightStart = clock::now();
+    const auto report = RunCommitPreflight(workspaceRoot);
+    PrintCommitPreflight(report, false);
+    if (!report.inRepo) {
+        return 1;
+    }
+    preflightMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - preflightStart).count();
+
+    std::cout << "[native-amend] safety-gates: ignore + secret\n";
+    RunPipelineSafetyGatesForNonAiCommit(workspaceRoot);
+
+    std::string planError;
+    const auto normalizedCommitPlanPath = NormalizeInputPathForCurrentPlatform(InPlanFile);
+    const auto parsed = ParseCommitPlan(std::filesystem::path(normalizedCommitPlanPath), &planError);
+    if (!parsed.has_value()) {
+        std::cerr << "Error: invalid --plan-file: " << normalizedCommitPlanPath;
+        if (!planError.empty()) {
+            std::cerr << " (" << planError << ")";
+        }
+        std::cerr << "\n";
+        return 2;
+    }
+
+    std::string validationError;
+    if (!ValidateCommitPlanForAiMode(*parsed, &validationError)) {
+        std::cerr << "Error: invalid --plan-file: " << normalizedCommitPlanPath;
+        if (!validationError.empty()) {
+            std::cerr << " (" << validationError << ")";
+        }
+        std::cerr << "\n";
+        return 2;
+    }
+
+    const auto stage = ParseCommitPlanStage(InPlanStage);
+    if (!stage.has_value()) {
+        std::cerr << "Error: invalid --plan-stage value: " << InPlanStage
+                  << " (expected commit|post_sync|both)\n";
+        return 2;
+    }
+
+    auto stageMessages = BuildStageMessageMap(*parsed, *stage);
+    if (stageMessages.empty()) {
+        std::println("[native-amend] no entries found for selected --plan-stage; skipping amend.");
+        if (InProfile) {
+            const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - totalStart).count();
+            std::cout << "\n=== Amend Profile Summary ===\n";
+            std::cout << "mode: native\n";
+            std::cout << "repo_count: 0\n";
+            std::cout << "preflight_ms: " << preflightMs << "\n";
+            std::cout << "planning_ms: 0\n";
+            std::cout << "amend_ms: 0\n";
+            std::cout << "summary_ms: 0\n";
+            std::cout << "total_ms: " << totalMs << "\n";
+        }
+        return 0;
+    }
+
+    const auto planningStart = clock::now();
+    std::string planReposCsv;
+    for (const auto& [repoKey, items] : stageMessages) {
+        if (items.empty()) {
+            continue;
+        }
+        if (!planReposCsv.empty()) {
+            planReposCsv += ",";
+        }
+        planReposCsv += repoKey;
+    }
+    auto repoRecords = BuildCommitScopeRecords(workspaceRoot, planReposCsv, false, true);
+    if (repoRecords.empty()) {
+        workspace::RepoRecord fallback;
+        fallback.path = workspaceRoot;
+        fallback.type = "root";
+        repoRecords.push_back(std::move(fallback));
+    }
+    planningMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - planningStart).count();
+
+    const auto repoWaves = BuildExecutionWaves(repoRecords);
+    const auto runbooks = BuildRepoCommitRunbooks(repoRecords, stageMessages, workspaceRoot, "", true);
+    const auto taskGraph = BuildCommitTaskGraph(repoRecords, runbooks);
+    const int workers = ResolveCommitJobs("auto", taskGraph.tasks.size(), false);
+
+    std::vector<RepoAmendResult> results;
+    results.reserve(repoRecords.size() + taskGraph.tasks.size());
+    for (const auto& runbook : runbooks) {
+        if (runbook.valid) {
+            continue;
+        }
+        RepoAmendResult failed;
+        failed.repo = runbook.repo;
+        failed.failed = true;
+        failed.note = runbook.validationError;
+        results.push_back(std::move(failed));
+    }
+
+    NativeAiConfig ai{};
+    ai.enabled = false;
+    ai.reviewEnabled = false;
+
+    const auto amendStart = clock::now();
+    std::cout << "[native-amend] plan: repos=" << repoRecords.size()
+              << " repo_waves=" << repoWaves.size()
+              << " amends=" << taskGraph.tasks.size()
+              << " amend_waves=" << taskGraph.waves.size()
+              << " jobs=" << workers
+              << " dirty_only=on\n";
+    if (taskGraph.dependencyCycleDetected) {
+        std::cout << "[native-amend] warning: dependency cycle detected in amend graph; downgraded to serial fallback order.\n";
+    }
+
+    auto executeAmendTask = [&](const CommitTaskNode& InNode) -> RepoAmendResult {
+        const auto& repo = InNode.repo;
+        const auto& repoMessage = InNode.commit;
+
+        RepoAmendResult result;
+        result.repo = repo;
+
+        // Soft reset to parent of HEAD to "undo" the last commit
+        const auto headExists = GitCapture(repo, {"rev-parse", "--verify", "HEAD"});
+        if (headExists.exitCode != 0) {
+            result.failed = true;
+            result.note = "amend requires at least one existing commit";
+            return result;
+        }
+
+        // Get the upstream ref for combining unpushed commits
+        const auto upstream = ResolveUpstreamRef(repo);
+        const auto resetTarget = upstream.empty() ? "HEAD~1" : upstream;
+
+        const auto softReset = GitPassThrough(repo, {"reset", "--soft", resetTarget});
+        if (softReset.exitCode != 0) {
+            result.failed = true;
+            result.note = "git reset --soft failed";
+            return result;
+        }
+
+        // Stage all changes
+        std::vector<std::string> excludedReserved;
+        const auto add = GitPassThrough(repo, BuildGitAddAllArgs(RunCommitPreflight(repo), &excludedReserved));
+        if (add.exitCode != 0) {
+            result.failed = true;
+            result.note = "git add -A failed after reset";
+            return result;
+        }
+        MaybeWarnAboutReservedPaths(repo, excludedReserved);
+
+        const auto stagedReport = RunCommitPreflight(repo);
+        if (stagedReport.stagedCount == 0) {
+            result.note = "no staged content after amend preparation";
+            return result;
+        }
+
+        // Commit with the plan message
+        const auto commitMessage = repoMessage.message;
+        if (commitMessage.empty()) {
+            result.failed = true;
+            result.note = "plan message is empty";
+            return result;
+        }
+
+        const auto commit = GitPassThrough(repo, {"commit", "-m", commitMessage});
+        if (commit.exitCode != 0) {
+            result.failed = true;
+            result.note = "git commit failed after reset";
+            return result;
+        }
+
+        result.amended = true;
+        result.note = "amended via plan";
+        return result;
+    };
+
+    for (const auto& wave : taskGraph.waves) {
+        if (wave.empty()) {
+            continue;
+        }
+        const int waveWorkers = std::max(1, std::min(workers, static_cast<int>(wave.size())));
+        if (waveWorkers == 1) {
+            for (const auto nodeIndex : wave) {
+                const auto& task = taskGraph.tasks[nodeIndex];
+                const auto label = DisplayRepoLabel(workspaceRoot, task.repo);
+                std::cout << "\n[amend] " << label
+                          << " [" << (task.commitIndexInRepo + 1) << "/" << task.repoCommitCount << "]\n";
+                results.push_back(executeAmendTask(task));
+            }
+            continue;
+        }
+
+        std::vector<std::future<std::pair<std::size_t, RepoAmendResult>>> active;
+        active.reserve(static_cast<std::size_t>(waveWorkers));
+        std::size_t cursor = 0;
+        std::vector<std::pair<std::size_t, RepoAmendResult>> waveResults;
+        waveResults.reserve(wave.size());
+
+        while (cursor < wave.size() || !active.empty()) {
+            while (cursor < wave.size() && static_cast<int>(active.size()) < waveWorkers) {
+                const auto nodeIndex = wave[cursor++];
+                const auto& task = taskGraph.tasks[nodeIndex];
+                const auto label = DisplayRepoLabel(workspaceRoot, task.repo);
+                std::cout << "\n[amend] " << label
+                          << " [" << (task.commitIndexInRepo + 1) << "/" << task.repoCommitCount << "]\n";
+                active.push_back(std::async(std::launch::async, [&, nodeIndex]() {
+                    const auto one = executeAmendTask(taskGraph.tasks[nodeIndex]);
+                    return std::make_pair(nodeIndex, one);
+                }));
+            }
+
+            if (!active.empty()) {
+                waveResults.push_back(active.front().get());
+                active.erase(active.begin());
+            }
+        }
+
+        std::sort(waveResults.begin(), waveResults.end(), [&](const auto& A, const auto& B) {
+            return A.first < B.first;
+        });
+        for (auto& [idx, one] : waveResults) {
+            static_cast<void>(idx);
+            results.push_back(std::move(one));
+        }
+    }
+    amendMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - amendStart).count();
+
+    const auto summaryStart = clock::now();
+    const auto exitCode = PrintAmendSummary(workspaceRoot, results);
+    summaryMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - summaryStart).count();
+
+    if (InProfile) {
+        const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - totalStart).count();
+        std::cout << "\n=== Amend Profile Summary ===\n";
+        std::cout << "mode: native\n";
+        std::cout << "repo_count: " << repoRecords.size() << "\n";
+        std::cout << "preflight_ms: " << preflightMs << "\n";
+        std::cout << "planning_ms: " << planningMs << "\n";
+        std::cout << "amend_ms: " << amendMs << "\n";
         std::cout << "summary_ms: " << summaryMs << "\n";
         std::cout << "total_ms: " << totalMs << "\n";
     }
@@ -4616,6 +4963,13 @@ void RegisterAmend(CLI::App& InApp) {
             std::cout << "[native-amend] AI enabled: provider=" << ai.provider
                       << " model=" << ai.model
                       << " review=" << (ai.reviewEnabled ? "on" : "off") << "\n";
+        }
+
+        // autoPlanAiMode: ai.enabled && message.empty() && amendPlanFile.empty() && combineUnpushed
+        const bool autoPlanAiMode = ai.enabled && message->empty() && amendPlanFile->empty();
+        if (autoPlanAiMode && *bCombineUnpushed) {
+            const auto code = RunAmendAutoPlanPipeline(workspaceRoot, ai, "commit", false);
+            std::exit(code);
         }
 
         if (!repos->empty() && !target->empty()) {

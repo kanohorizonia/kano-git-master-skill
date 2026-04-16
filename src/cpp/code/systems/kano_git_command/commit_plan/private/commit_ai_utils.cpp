@@ -721,6 +721,12 @@ auto ShouldBlockByAiReview(const std::filesystem::path& InRepo,
     }
 
     auto stagedDiff = GitCapture(InRepo, {"diff", "--cached", "--", "."}).stdoutStr;
+    if (Trim(stagedDiff).empty()) {
+        const auto head = GitCapture(InRepo, {"show", "--format=", "--stat", "--patch", "HEAD", "--", "."});
+        if (head.exitCode == 0 && !Trim(head.stdoutStr).empty()) {
+            stagedDiff = "[context] worktree is clean; using HEAD patch for amend/reword.\n" + head.stdoutStr;
+        }
+    }
     constexpr std::size_t kMaxDiffChars = 10000;
     if (stagedDiff.size() > kMaxDiffChars) {
         stagedDiff = stagedDiff.substr(0, kMaxDiffChars) + "\n... (truncated)";
@@ -934,6 +940,12 @@ auto BuildAiCommitPrompt(const std::filesystem::path& InWorkspaceRoot,
     const auto label = DisplayRepoLabel(InWorkspaceRoot, InRepo);
     const auto diff = GitCapture(InRepo, {"diff", "--cached", "--", "."});
     std::string diffText = diff.stdoutStr;
+    if (Trim(diffText).empty()) {
+        const auto head = GitCapture(InRepo, {"show", "--format=", "--stat", "--patch", "HEAD", "--", "."});
+        if (head.exitCode == 0 && !Trim(head.stdoutStr).empty()) {
+            diffText = "[context] worktree is clean; using HEAD patch for amend/reword.\n" + head.stdoutStr;
+        }
+    }
     constexpr std::size_t kMaxDiffChars = 12000;
     if (diffText.size() > kMaxDiffChars) {
         diffText = diffText.substr(0, kMaxDiffChars) + "\n... (truncated)";
@@ -953,11 +965,24 @@ auto BuildAiCommitPrompt(const std::filesystem::path& InWorkspaceRoot,
     }
 
     std::ostringstream oss;
-    oss << "You are generating ONE git commit message.\n"
-        << "Requirements:\n"
-        << "- Output exactly one line\n"
-        << "- Use Conventional Commits format\n"
-        << "- No markdown, no code fences, no explanation\n\n"
+    oss << "You are a git commit assistant.\n"
+        << "Before generating the commit message, inspect git status and untracked files.\n"
+        << "If any untracked files are clearly build artifacts, cache files, generated files, logs, temp files, editor noise, or other local-only noise that should not be committed, update .gitignore first and exclude them before deciding the commit message.\n"
+        << "If .gitignore needs cleanup, do that work before writing the message. Only after ignore cleanup is complete should you summarize the remaining intended commit changes.\n"
+        << "Do not ignore real source files, config files, assets, or user-intended project files unless they are obviously local-only noise.\n\n"
+        << "Generate ONE git commit message following Kano Commit Convention (KCC) format:\n"
+        << "  [<Subsystem>][<Type>] <Summary> (<Ticket>)\n"
+        << "  Examples:\n"
+        << "    [UGS][BugFix] Retry tagged output parsing on proxy glitch (JIRA-1234)\n"
+        << "    [Build][Chore] Update CI bootstrap script (PIPE-88)\n"
+        << "    [Core][Refactor] Extract shared path resolver (TECH-204)\n\n"
+        << "Rules:\n"
+        << "- Subsystem: 2-24 chars, alphanumeric, PascalCase recommended (e.g. Core, UI, Build, Tools)\n"
+        << "- Type: Feature | BugFix | Refactor | Perf | Chore | Test | Docs\n"
+        << "- Summary: Start with verb (Add/Fix/Update/Remove/Refactor), ~50-72 chars\n"
+        << "- Ticket: (JIRA-1234) or (NO-TICKET) if none\n"
+        << "- Output exactly one line, no markdown, no code fences, no explanation\n"
+        << "- The one-line output must describe the post-.gitignore-cleanup commit intent, not the ignored noise\n\n"
         << "Repo: " << label << "\n"
         << "Staged: " << InReport.stagedCount << "\n"
         << "Unstaged: " << InReport.unstagedCount << "\n"

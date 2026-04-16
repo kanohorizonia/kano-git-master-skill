@@ -9,6 +9,8 @@
 #include "kog_config.hpp"
 #include "secret_scan_utils.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <algorithm>
 #include <chrono>
 #include <cctype>
@@ -176,10 +178,16 @@ void RegisterPlan(CLI::App& InApp) {
             std::cerr << "\n";
             std::exit(2);
         }
-        const auto stages = ExtractObjectBodyForKey(*seeded, "stages").value_or(std::string{});
-        const auto commitArray = ExtractArrayBodyForKey(stages, "commit").value_or(std::string{});
+        const auto stages = [&]() -> std::string {
+            try {
+                const auto doc = nlohmann::json::parse(*seeded);
+                if (doc.contains("stages") && doc["stages"].contains("commit"))
+                    return doc["stages"]["commit"].dump();
+                return "[]";
+            } catch (...) { return "[]"; }
+        }();
         std::cout << std::format("Plan commit-seed complete: repos={} file={}\n",
-                                 CountTopLevelObjects(commitArray),
+                                 CountTopLevelObjects(stages),
                                  planPath.generic_string());
     });
 
@@ -482,45 +490,49 @@ void RegisterPlan(CLI::App& InApp) {
             std::exit(2);
         }
         const auto text = *payload;
-        const auto meta = ExtractObjectBodyForKey(text, "meta");
-        const auto stages = ExtractObjectBodyForKey(text, "stages");
-        if (!meta.has_value() || !stages.has_value()) {
-            std::cerr << "Error: plan schema invalid: missing meta/stages\n";
-            std::exit(2);
-        }
-        const auto planner = ExtractObjectBodyForKey(*meta, "planner");
-        const auto planId = ExtractStringField(*meta, "plan_id").value_or("-");
-        const auto generated = ExtractStringField(*meta, "generated_at_utc").value_or("-");
-        const auto provider = planner.has_value() ? ExtractStringField(*planner, "provider").value_or("-") : "-";
-        const auto model = planner.has_value() ? ExtractStringField(*planner, "ai-model").value_or("-") : "-";
-        std::cout << std::format("[plan] meta: plan_id={} generated={} provider={} ai-model={}\n", planId, generated, provider, model);
+        try {
+            const auto doc = nlohmann::json::parse(text);
+            if (!doc.contains("meta") || !doc.contains("stages")) {
+                std::cerr << "Error: plan schema invalid: missing meta/stages\n";
+                std::exit(2);
+            }
+            const auto& meta    = doc["meta"];
+            const auto& stages  = doc["stages"];
+            const auto planId   = meta.value("plan_id", "-");
+            const auto generated = meta.value("generated_at_utc", "-");
+            const auto provider = meta.contains("planner") ? meta["planner"].value("provider", "-") : "-";
+            const auto model    = meta.contains("planner") ? meta["planner"].value("ai-model", "-") : "-";
+            std::cout << std::format("[plan] meta: plan_id={} generated={} provider={} ai-model={}\n", planId, generated, provider, model);
 
-        const auto commitArray = ExtractArrayBodyForKey(*stages, "commit").value_or(std::string{});
-        std::size_t repoCount = 0;
-        std::size_t commitCount = 0;
-        std::size_t flatIndex = 0;
-        std::vector<std::string> lines;
-        for (const auto& repoObj : SplitTopLevelObjects(commitArray)) {
-            const auto repo = ExtractStringField(repoObj, "repo").value_or("?");
-            const auto commits = ExtractArrayBodyForKey(repoObj, "commits").value_or(std::string{});
-            const auto commitObjects = SplitTopLevelObjects(commits);
-            if (!commitObjects.empty()) {
-                repoCount += 1;
+            std::size_t repoCount = 0;
+            std::size_t commitCount = 0;
+            std::size_t flatIndex = 0;
+            std::vector<std::string> lines;
+            if (stages.contains("commit") && stages["commit"].is_array()) {
+                for (const auto& repoObj : stages["commit"]) {
+                    const auto repo = repoObj.value("repo", "?");
+                    if (repoObj.contains("commits") && repoObj["commits"].is_array() && !repoObj["commits"].empty()) {
+                        repoCount += 1;
+                        commitCount += repoObj["commits"].size();
+                        for (const auto& commitObj : repoObj["commits"]) {
+                            const auto msg = commitObj.value("message", "");
+                            lines.push_back(std::format("[plan] - [{}] {}: {}", flatIndex, repo, msg));
+                            flatIndex += 1;
+                        }
+                    }
+                }
             }
-            commitCount += commitObjects.size();
-            for (const auto& commitObj : commitObjects) {
-                const auto msg = ExtractStringField(commitObj, "message").value_or("");
-                lines.push_back(std::format("[plan] - [{}] {}: {}", flatIndex, repo, msg));
-                flatIndex += 1;
+            std::cout << std::format("[plan] commits: repos={} total={}\n", repoCount, commitCount);
+            if (*summaryMax < 0) {
+                *summaryMax = 0;
             }
-        }
-        std::cout << std::format("[plan] commits: repos={} total={}\n", repoCount, commitCount);
-        if (*summaryMax < 0) {
-            *summaryMax = 0;
-        }
-        const auto limit = std::min<std::size_t>(lines.size(), static_cast<std::size_t>(*summaryMax));
-        for (std::size_t i = 0; i < limit; ++i) {
-            std::cout << lines[i] << "\n";
+            const auto limit = std::min<std::size_t>(lines.size(), static_cast<std::size_t>(*summaryMax));
+            for (std::size_t i = 0; i < limit; ++i) {
+                std::cout << lines[i] << "\n";
+            }
+        } catch (const nlohmann::json::parse_error& e) {
+            std::cerr << "Error: plan JSON parse error: " << e.what() << "\n";
+            std::exit(2);
         }
     });
 

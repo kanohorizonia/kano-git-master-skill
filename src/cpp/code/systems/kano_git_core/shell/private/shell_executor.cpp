@@ -467,6 +467,12 @@ auto BuildWindowsCommandProcessorLine(const std::vector<std::string>& InArgs) ->
     return cmd;
 }
 
+auto BuildWindowsBatchCommandLine(const std::string& InCommand,
+                                  const std::vector<std::string>& InArgs) -> std::string {
+    std::vector<std::string> wrappedArgs{"/d", "/s", "/c", BuildCommandLine(InCommand, InArgs)};
+    return BuildWindowsCommandProcessorLine(wrappedArgs);
+}
+
 auto ToLower(std::string in) -> std::string {
     std::transform(in.begin(), in.end(), in.begin(), [](unsigned char ch) {
         return static_cast<char>(std::tolower(ch));
@@ -605,9 +611,7 @@ auto ExecuteCommand(
         return RunProcess(wrapped, InMode, timeoutMs, InWorkingDir, InProgressCallback);
     }
     if (IsCmdScriptCommand(effectiveCommand)) {
-        std::vector<std::string> wrappedArgs{"/d", "/s", "/c", effectiveCommand};
-        wrappedArgs.insert(wrappedArgs.end(), effectiveArgs.begin(), effectiveArgs.end());
-        const auto wrapped = BuildWindowsCommandProcessorLine(wrappedArgs);
+        const auto wrapped = BuildWindowsBatchCommandLine(effectiveCommand, effectiveArgs);
         return RunProcess(wrapped, InMode, timeoutMs, InWorkingDir, InProgressCallback);
     }
     // Build command line with executable at start (for CreateProcessA parsing)

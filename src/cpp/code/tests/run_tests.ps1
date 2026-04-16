@@ -71,6 +71,10 @@ Write-Host "Running shell executor focused TUI tests..."
 & (Join-Path $ExeDir "kano_git_tui_tests.exe") "[shell-executor]"
 
 Write-Host ""
+Write-Host "Running commit plan tests..."
+& (Join-Path $ExeDir "kano_git_commit_plan_tests.exe")
+
+Write-Host ""
 Write-Host "All tests completed successfully!"
 
 if ($WithE2E) {
