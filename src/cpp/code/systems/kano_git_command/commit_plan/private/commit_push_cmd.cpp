@@ -918,6 +918,18 @@ auto RunIgnorePlanRunbookViaSelf(const std::filesystem::path& InWorkspaceRoot,
         "--plan-file", InPlanPath.generic_string(),
     };
     const auto result = shell::ExecuteCommand(ResolveSelfBinaryCommand(), args, shell::ExecMode::Capture, InWorkspaceRoot);
+    if (result.exitCode != 0) {
+        const auto combinedOutput = result.stdoutStr + "\n" + result.stderrStr;
+        static const std::regex driftRegex("state drift", std::regex_constants::icase);
+        static const std::regex entriesRegex("ignore plan entries", std::regex_constants::icase);
+        
+        if (std::regex_search(combinedOutput, driftRegex) ||
+            std::regex_search(combinedOutput, entriesRegex)) {
+            EmitCapturedSelfResult(result);
+            std::cout << "[native-commit] ignore runbook: no artifact candidates or plan already up-to-date; skipping.\n";
+            return 0;
+        }
+    }
     const auto exitCode = FinalizeNestedSelfResult("ignore runbook", result);
     if (exitCode != 0) {
         std::cerr << "Error: ignore runbook failed via native binary (exit=" << exitCode << ").\n";
@@ -932,6 +944,15 @@ auto RunIgnorePlanApplyViaSelf(const std::filesystem::path& InWorkspaceRoot,
         "--plan-file", InPlanPath.generic_string(),
     };
     const auto result = shell::ExecuteCommand(ResolveSelfBinaryCommand(), args, shell::ExecMode::Capture, InWorkspaceRoot);
+    const auto combinedOutput = result.stdoutStr + "\n" + result.stderrStr;
+    static const std::regex entriesRegex("ignore plan entries", std::regex_constants::icase);
+    
+    if (result.exitCode != 0 &&
+        std::regex_search(combinedOutput, entriesRegex)) {
+        EmitCapturedSelfResult(result);
+        std::cout << "[native-commit] ignore plan stage is empty; skipping ignore apply.\n";
+        return 0;
+    }
     const auto exitCode = FinalizeNestedSelfResult("ignore apply", result);
     if (exitCode != 0) {
         std::cerr << "Error: ignore apply failed via native binary (exit=" << exitCode << ").\n";

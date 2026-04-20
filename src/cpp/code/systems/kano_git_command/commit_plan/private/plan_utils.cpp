@@ -34,6 +34,10 @@ auto IsTruthyEnv(const char* InValue) -> bool {
     return v == "1" || v == "true" || v == "yes" || v == "on";
 }
 
+auto IsKogDebugEnabled() -> bool {
+    return IsTruthyEnv(std::getenv("KOG_DEBUG"));
+}
+
 // Returns InDoc serialized as compact JSON, or pretty-printed with 2-space
 // indentation when KOG_DEBUG_PLAN is set to a truthy value.
 static auto SerializePlanJson(const nlohmann::json& InDoc) -> std::string {
@@ -178,8 +182,11 @@ auto GitPassThrough(const std::filesystem::path& InRepo, const std::vector<std::
 
 // AI Model resolution utilities
 auto ResolveSystemRecommendedModel(const std::string& InProvider) -> std::string {
-    if (InProvider == "copilot" || InProvider == "opencode") {
+    if (InProvider == "copilot") {
         return "gpt-5-mini";
+    }
+    if (InProvider == "opencode") {
+        return "github-copilot/gpt-5-mini";
     }
     if (InProvider == "codex") {
         return "gpt-5.2-codex";
@@ -826,6 +833,7 @@ auto BuildSingleCommitFillPrompt(const std::filesystem::path& InWorkspaceRoot,
         prompt = ReplaceAll(std::move(prompt), "{{ENTRY_INDEX}}", std::to_string(InEntry.index));
         prompt = ReplaceAll(std::move(prompt), "{{TARGET_ENTRY_JSON}}", target.str());
         prompt = ReplaceAll(std::move(prompt), "{{DIRTY_CONTEXT}}", InDirtyContext);
+        prompt = ReplaceAll(std::move(prompt), "{{GITIGNORE_PATH}}", (InWorkspaceRoot / ".gitignore").lexically_normal().generic_string());
         return AppendCommitConventionSkillSection(InWorkspaceRoot, std::move(prompt));
     }
     return "Fallback prompt for index " + std::to_string(InEntry.index) + "\n" + target.str();
@@ -1160,13 +1168,30 @@ auto RunAiGenerate(const std::string& InProvider,
             else std::cerr << " " << a;
         }
         std::cerr << "\n[kog ai] model   : " << (InModel.empty() ? "auto" : InModel) << "\n";
+        static constexpr std::string_view kDivider = "----------------------------------------";
+        if (IsTruthyEnv(std::getenv("KOG_DEBUG_AI_PROMPT")) || IsTruthyEnv(std::getenv("KOG_DEBUG"))) {
+            std::cerr << "[kog ai] prompt  :\n" << kDivider << "\n" << InPrompt << "\n" << kDivider << "\n";
+        }
         std::cerr << "[kog ai] Waiting for " << InProvider << " response...\n";
         std::cerr.flush();
     };
 
+    if (InProvider == "opencode") {
+        std::vector<std::string> args{"run"};
+        if (!InModel.empty() && InModel != "auto") {
+            args.push_back("--model");
+            args.push_back(InModel);
+        }
+        args.push_back("--dir");
+        args.push_back(InWorkspaceRoot.lexically_normal().generic_string());
+        args.push_back(BuildFileBackedPromptArgument(InWorkspaceRoot, InPrompt, "plan-fill"));
+        LogInvocation("opencode", args);
+        return shell::ExecuteCommand("opencode", args, shell::ExecMode::Capture, InWorkspaceRoot);
+    }
+
     if (InProvider == "codex") {
         const auto effectivePrompt = BuildFileBackedPromptArgument(InWorkspaceRoot, InPrompt, "plan-fill");
-        LogInvocation("codex", {"-q", effectivePrompt}); // Approximation for codex
+        LogInvocation("codex", {"-q", effectivePrompt});
         return ExecuteCodexExec(InWorkspaceRoot, InPrompt, "plan-fill", InModel);
     }
 
@@ -1229,6 +1254,7 @@ auto BuildPlanFillOpsPrompt(const std::filesystem::path& InWorkspaceRoot,
         prompt = ReplaceAll(std::move(prompt), "{{PLAN_PATH}}", RelativeDisplayPath(InWorkspaceRoot, InPlanPath));
         prompt = ReplaceAll(std::move(prompt), "{{PLAN_JSON}}", InPlanText);
         prompt = ReplaceAll(std::move(prompt), "{{DIRTY_CONTEXT}}", InDirtyContext);
+        prompt = ReplaceAll(std::move(prompt), "{{GITIGNORE_PATH}}", (InWorkspaceRoot / ".gitignore").lexically_normal().generic_string());
         return AppendCommitConventionSkillSection(InWorkspaceRoot, std::move(prompt));
     }
     return "Fallback prompt for plan-fill:\n" + InPlanText;
@@ -1258,6 +1284,28 @@ auto BuildFillOpsRetryPrompt(const std::string& InBasePrompt,
     oss << "--- PREVIOUS OUTPUT ---\n" << InAiCombined << "\n"
         << "Please correct the output format and ensure all fields are valid JSON. Respond ONLY with the JSON block.\n";
     return oss.str();
+}
+
+auto WriteAiResponseFile(const std::filesystem::path& InWorkspaceRoot,
+                         const std::string& InPurpose,
+                         const shell::ExecResult& InResult,
+                         std::string* OutError = nullptr) -> bool {
+    const auto responseDir = (InWorkspaceRoot / ".kano" / "tmp" / "git" / "ai-responses").lexically_normal();
+    std::error_code ec;
+    std::filesystem::create_directories(responseDir, ec);
+    if (ec) {
+        if (OutError) *OutError = ec.message();
+        return false;
+    }
+    const auto filename = std::format("{}-{}-exit{}.txt",
+                                      InPurpose,
+                                      CurrentUtcCompact(),
+                                      InResult.exitCode);
+    const auto responsePath = (responseDir / filename).lexically_normal();
+    std::ostringstream combined;
+    combined << "=== STDOUT ===\n" << InResult.stdoutStr << "\n\n";
+    combined << "=== STDERR ===\n" << InResult.stderrStr << "\n";
+    return WriteFileText(responsePath, combined.str(), OutError);
 }
 
 auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
@@ -1293,6 +1341,7 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
         for (const auto& entry : entries) {
             const auto prompt = BuildSingleCommitFillPrompt(InWorkspaceRoot, provider, modelDir, entry, dirty);
             const auto res = RunAiGenerate(provider, modelDir, prompt, InWorkspaceRoot, true);
+            WriteAiResponseFile(InWorkspaceRoot, std::format("plan-fill-entry-{}", entry.index), res);
             if (res.exitCode != 0) {
                 auto detail = Trim(res.stderrStr);
                 if (detail.empty()) detail = Trim(res.stdoutStr);
@@ -1303,14 +1352,61 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
             }
             const auto json = [&] {
                 const auto s = ExtractJsonBetweenMarkers(res.stdoutStr, "BEGIN_KOG_PLAN_FILL_OPS", "END_KOG_PLAN_FILL_OPS");
-                if (!s.empty()) return s;
-                return ExtractJsonBetweenMarkers(res.stdoutStr, "```json", "```");
+                auto extracted = ExtractPlanFillOpsJson(res.stdoutStr);
+                if (extracted.empty()) extracted = res.stdoutStr;
+
+                std::string sanitized;
+                sanitized.reserve(extracted.size());
+                bool inString = false;
+                for (size_t i = 0; i < extracted.size(); ++i) {
+                    char c = extracted[i];
+                    if (c == '"' && (i == 0 || extracted[i - 1] != '\\')) {
+                        inString = !inString;
+                    }
+                    if (inString && (c == '\n' || c == '\r')) {
+                        sanitized += "\\n";
+                    } else {
+                        sanitized += c;
+                    }
+                }
+                return sanitized;
             }();
             if (!json.empty()) {
                 CommitFillOp op;
                 op.index = entry.index;
                 try {
-                    const auto jobj = nlohmann::json::parse(json);
+                    auto jobj = nlohmann::json::parse(json);
+                    
+                    // Robust check: AI might return {"commits": [...]} or just the object
+                    if (jobj.contains("commits") && jobj["commits"].is_array() && !jobj["commits"].empty()) {
+                        // Use the first item in the array for single-mode, or try to match index
+                        auto& array = jobj["commits"];
+                        bool found = false;
+                        for (const auto& item : array) {
+                            if (item.value("index", -1) == entry.index) {
+                                jobj = item;
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (!found) {
+                            jobj = array[0];
+                        }
+                    } else if (jobj.is_array() && !jobj.empty()) {
+                         // AI returned just the array [...]
+                         bool found = false;
+                         for (const auto& item : jobj) {
+                             if (item.value("index", -1) == entry.index) {
+                                 jobj = item;
+                                 found = true;
+                                 break;
+                             }
+                         }
+                         if (!found) {
+                             jobj = jobj[0];
+                         }
+                    }
+
                     op.message       = jobj.value("message", "");
                     if (jobj.contains("review") && jobj["review"].is_object()) {
                         op.reviewVerdict = jobj["review"].value("verdict", "");
@@ -1318,10 +1414,11 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
                     }
                 } catch (...) {
                     // If the AI returned malformed JSON, skip this entry
+                    std::cerr << "[plan] failed to parse AI JSON for entry " << entry.index << "\n";
                 }
                 finalPlanJson = ApplyCommitFillOps(finalPlanJson, {op});
                 // Only count as filled if message doesn't contain placeholder
-                if (op.message.find("replace-with-") == std::string::npos) {
+                if (op.message.find("replace-with-") == std::string::npos && !op.message.empty()) {
                     anyFilled = true;
                 }
             }
@@ -1329,6 +1426,7 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
     } else {
         const auto prompt = BuildPlanFillOpsPrompt(InWorkspaceRoot, provider, modelDir, InPlanPath, templateJson, dirty);
         const auto res = RunAiGenerate(provider, modelDir, prompt, InWorkspaceRoot, true);
+        WriteAiResponseFile(InWorkspaceRoot, "plan-fill-batch", res);
         if (res.exitCode != 0) {
             auto detail = Trim(res.stderrStr);
             if (detail.empty()) detail = Trim(res.stdoutStr);
@@ -2299,7 +2397,7 @@ auto RunPlanApply(const std::filesystem::path& InWorkspaceRoot,
             std::cerr << "Error: no ignore plan entries found in stages.ignore.\n";
             std::cerr << "Hint: run `kog plan ignore-init --plan-file \"" << InPlanPath.generic_string() << "\"` first.\n";
             if (stage == "ignore") {
-                return 2;
+                return 0;
             }
         }
         for (std::size_t idx = 0; idx < entries.size(); ++idx) {

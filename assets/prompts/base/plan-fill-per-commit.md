@@ -1,5 +1,12 @@
 You are filling exactly ONE commit plan entry for kano-git.
 
+Step 1 (ignore cleanup): Inspect untracked files in the dirty context. If any look like build artifacts,
+cache, generated output, logs, or editor noise, append them as patterns to `{{GITIGNORE_PATH}}`
+(one pattern per line, grouped under a `# kog-auto` comment). Use `git rm --cached <path>` to
+untrack any already-tracked artifacts. Only proceed to step 2 after ignore cleanup is complete.
+
+Step 2 (fill): Fill the commit entry below.
+
 Return STRICT JSON ONLY between markers:
 BEGIN_KOG_PLAN_FILL_OPS
 <json>
@@ -34,7 +41,9 @@ Target commit entry:
 Quality constraints:
 - Produce one concrete, commit-ready message.
 - Keep the message scoped to this entry only.
-- `review.reason` must explain why this single entry is acceptable.
+- `review.reason` must explain why this single entry is acceptable and confirm no secrets or
+  unintended files are included. This serves as the combined safety review — no separate review
+  pass will be run after this.
 - Do not mention hidden tools or internal workflow.
 
 Workspace dirty context:

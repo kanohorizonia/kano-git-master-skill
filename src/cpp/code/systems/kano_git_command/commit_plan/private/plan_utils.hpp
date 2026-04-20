@@ -71,6 +71,7 @@ auto ToLower(std::string InValue) -> std::string;
 auto ReplaceAll(std::string InText, const std::string& InSearch, const std::string& InReplace) -> std::string;
 auto NormalizeAiModelKeyword(const std::string& InValue) -> std::string;
 auto IsTruthyEnv(const char* InValue) -> bool;
+auto IsKogDebugEnabled() -> bool;
 auto IsAgentModeEnabled() -> bool;
 auto SplitEnvList(const char* InValue) -> std::vector<std::string>;
 auto StartsWith(const std::string& InValue, const std::string& InPrefix) -> bool;

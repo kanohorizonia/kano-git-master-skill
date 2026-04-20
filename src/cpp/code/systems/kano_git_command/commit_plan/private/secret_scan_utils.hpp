@@ -56,6 +56,12 @@ inline auto LooksLikeIntentionalPlaceholderValue(const std::string& InValue) -> 
 
 inline auto ShouldIgnoreSecretFinding(const std::string& InRuleId,
                                       const std::string& InLine) -> bool {
+    const auto lowerLine = ToLowerCopy(InLine);
+    if (lowerLine.find("gitleaks:allow") != std::string::npos ||
+        lowerLine.find("kog-secret:allow") != std::string::npos) {
+        return true;
+    }
+
     if (InRuleId != "generic_password_assignment") {
         return false;
     }

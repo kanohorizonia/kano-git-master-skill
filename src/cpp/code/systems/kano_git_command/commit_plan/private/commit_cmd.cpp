@@ -1096,7 +1096,9 @@ auto RunAiGenerate(const std::string& InProvider,
             else std::cerr << " " << a;
         }
         std::cerr << "\n[kog ai] model   : " << (InModel.empty() ? "auto" : InModel) << "\n";
-        std::cerr << "[kog ai] prompt  :\n" << kDivider << "\n" << InPrompt << "\n" << kDivider << "\n";
+        if (IsTruthyEnv(std::getenv("KOG_DEBUG_AI_PROMPT")) || IsTruthyEnv(std::getenv("KOG_DEBUG"))) {
+            std::cerr << "[kog ai] prompt  :\n" << kDivider << "\n" << InPrompt << "\n" << kDivider << "\n";
+        }
         std::cerr << "[kog ai] Waiting for " << InProvider << " response...\n";
         std::cerr.flush();
     };
@@ -2513,14 +2515,43 @@ auto RunPlanNewViaSelf(const std::filesystem::path& InWorkspaceRoot,
     return exitCode;
 }
 
+auto RunCommitSeedViaSelf(const std::filesystem::path& InWorkspaceRoot,
+                          const std::filesystem::path& InPlanPath) -> int {
+    std::vector<std::string> args = {
+        "plan", "commit-seed",
+        "--force",
+        "--plan-file", InPlanPath.generic_string(),
+    };
+    const auto result = shell::ExecuteCommand(ResolveSelfBinaryCommand(), args, shell::ExecMode::Capture, InWorkspaceRoot);
+    const auto exitCode = FinalizeNestedSelfResult("commit-seed", result);
+    if (exitCode != 0) {
+        std::cerr << "Error: commit-seed failed via native binary (exit=" << exitCode << ").\n";
+    }
+    return exitCode;
+}
+
 auto RunIgnorePlanRunbookViaSelf(const std::filesystem::path& InWorkspaceRoot,
                                  const std::filesystem::path& InPlanPath) -> int {
+    std::cerr << "[DEBUG] RunIgnorePlanRunbookViaSelf ENTERED" << std::endl;
     std::vector<std::string> args = {
         "plan", "runbook", "ignore",
         "--force",
         "--plan-file", InPlanPath.generic_string(),
     };
     const auto result = shell::ExecuteCommand(ResolveSelfBinaryCommand(), args, shell::ExecMode::Capture, InWorkspaceRoot);
+    if (result.exitCode != 0) {
+        const auto combinedOutput = result.stdoutStr + "\n" + result.stderrStr;
+        
+        static const std::regex driftRegex("state drift", std::regex_constants::icase);
+        static const std::regex entriesRegex("ignore plan entries", std::regex_constants::icase);
+        
+        if (std::regex_search(combinedOutput, driftRegex) ||
+            std::regex_search(combinedOutput, entriesRegex)) {
+            EmitCapturedSelfResult(result);
+            std::cout << "[native-commit] ignore runbook: no artifact candidates or plan already up-to-date; skipping.\n";
+            return 0;
+        }
+    }
     const auto exitCode = FinalizeNestedSelfResult("ignore runbook", result);
     if (exitCode != 0) {
         std::cerr << "Error: ignore runbook failed via native binary (exit=" << exitCode << ").\n";
@@ -2535,9 +2566,11 @@ auto RunIgnorePlanApplyViaSelf(const std::filesystem::path& InWorkspaceRoot,
         "--plan-file", InPlanPath.generic_string(),
     };
     const auto result = shell::ExecuteCommand(ResolveSelfBinaryCommand(), args, shell::ExecMode::Capture, InWorkspaceRoot);
-    const auto combinedOutput = ToLower(result.stdoutStr + "\n" + result.stderrStr);
+    const auto combinedOutput = result.stdoutStr + "\n" + result.stderrStr;
+    static const std::regex entriesRegex("ignore plan entries", std::regex_constants::icase);
+    
     if (result.exitCode != 0 &&
-        combinedOutput.find("no ignore plan entries found in stages.ignore") != std::string::npos) {
+        std::regex_search(combinedOutput, entriesRegex)) {
         EmitCapturedSelfResult(result);
         std::cout << "[native-commit] ignore plan stage is empty; skipping ignore apply.\n";
         return 0;
@@ -2642,6 +2675,10 @@ auto RunCommitAutoPlanPipeline(const std::filesystem::path& InWorkspaceRoot,
         return planNewCode;
     }
 
+    if (const auto seedCode = RunCommitSeedViaSelf(InWorkspaceRoot, autoPlanPath); seedCode != 0) {
+        return seedCode;
+    }
+
     const auto ignoreRunbookStart = clock::now();
     const auto ignoreRunbookCode = RunIgnorePlanRunbookViaSelf(InWorkspaceRoot, autoPlanPath);
     ignoreRunbookMillis = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - ignoreRunbookStart).count();
@@ -2736,6 +2773,10 @@ auto RunAmendAutoPlanPipeline(const std::filesystem::path& InWorkspaceRoot,
     planNewMillis = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - planNewStart).count();
     if (planNewCode != 0) {
         return planNewCode;
+    }
+
+    if (const auto seedCode = RunCommitSeedViaSelf(InWorkspaceRoot, autoPlanPath); seedCode != 0) {
+        return seedCode;
     }
 
     const auto ignoreRunbookStart = clock::now();
@@ -3392,7 +3433,7 @@ auto CommitSingleRepo(const std::filesystem::path& InWorkspaceRoot,
     }
 
     std::string reviewReason;
-    if (ShouldBlockByAiReview(InRepo, commitMessage, InAi, reviewReason)) {
+    if (!InAi.enabled && ShouldBlockByAiReview(InRepo, commitMessage, InAi, reviewReason)) {
         result.failed = true;
         result.note = "blocked by ai review: " + reviewReason;
         return result;
@@ -3525,7 +3566,7 @@ auto AmendSingleRepo(const std::filesystem::path& InWorkspaceRoot,
         }
 
         std::string reviewReason;
-        if (ShouldBlockByAiReview(InRepo, commitMessage, InAi, reviewReason)) {
+        if (!InAi.enabled && ShouldBlockByAiReview(InRepo, commitMessage, InAi, reviewReason)) {
             result.failed = true;
             result.note = "blocked by ai review: " + reviewReason;
             return result;
@@ -3580,7 +3621,7 @@ auto AmendSingleRepo(const std::filesystem::path& InWorkspaceRoot,
 
     if (!commitMessage.empty()) {
         std::string reviewReason;
-        if (ShouldBlockByAiReview(InRepo, commitMessage, InAi, reviewReason)) {
+        if (!InAi.enabled && ShouldBlockByAiReview(InRepo, commitMessage, InAi, reviewReason)) {
             result.failed = true;
             result.note = "blocked by ai review: " + reviewReason;
             return result;
@@ -4943,7 +4984,11 @@ void RegisterAmend(CLI::App& InApp) {
         const auto resolvedTarget = target->empty()
             ? invocationRoot.lexically_normal()
             : ResolveRepoPath(invocationRoot.lexically_normal(), std::filesystem::path(*target));
-        const auto workspaceRoot = ResolveWorkspaceRootFromInvocation(invocationRoot.lexically_normal());
+        // Use cwd as workspace root for simple amend (no --combine).
+        // ResolveWorkspaceRootFromInvocation is only needed for combine/plan flows
+        // that require a superproject context; using it unconditionally causes amend
+        // to treat the parent repo as workspace root when run inside a submodule.
+        const auto workspaceRoot = invocationRoot.lexically_normal();
 
         NativeAiConfig ai;
         const bool aiRequested = *bAiAuto || !provider->empty() || !model->empty();

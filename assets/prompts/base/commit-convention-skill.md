@@ -53,3 +53,4 @@ Allowed values: `Feature`, `BugFix`, `Refactor`, `Perf`, `Chore`, `Test`, `Docs`
 
 - Do NOT use Conventional Commits format (`feat:`, `fix:`, `chore:`) — use KCC `[Subsystem][Type]` format
 - Every commit message MUST end with a ticket in parentheses or `(NO-TICKET)`
+- If the diff includes `[context] worktree is clean; using HEAD patch for amend/reword.`, ignore it. Do NOT use `Context` as the subsystem or write summaries about the worktree being clean. Focus entirely on the actual code changes.

@@ -559,15 +559,17 @@ auto RunAiGenerate(const std::string& InProvider,
     const auto effectivePrompt = BuildFileBackedPromptArgument(InWorkingDir, InPrompt, InPurpose);
 
     auto LogInvocation = [&](const std::string& binary, const std::vector<std::string>& args) {
-        static constexpr std::string_view kDivider = "────────────────────────────────────────";
-        std::cerr << "\n[kog ai] ── AI Invocation (" << InPurpose << ") ──\n";
+        static constexpr std::string_view kDivider = "----------------------------------------";
+        std::cerr << "\n[kog ai] -- AI Invocation (" << InPurpose << ") --\n";
         std::cerr << "[kog ai] command : " << binary;
         for (const auto& a : args) {
             if (a.find(' ') != std::string::npos || a.empty()) std::cerr << " \"" << a << "\"";
             else std::cerr << " " << a;
         }
         std::cerr << "\n[kog ai] model   : " << (InModel.empty() ? "auto" : InModel) << "\n";
-        std::cerr << "[kog ai] prompt  :\n" << kDivider << "\n" << InPrompt << "\n" << kDivider << "\n";
+        if (IsTruthyEnv(std::getenv("KOG_DEBUG_AI_PROMPT")) || IsTruthyEnv(std::getenv("KOG_DEBUG"))) {
+            std::cerr << "[kog ai] prompt  :\n" << kDivider << "\n" << InPrompt << "\n" << kDivider << "\n";
+        }
         std::cerr << "[kog ai] Waiting for " << InProvider << " response...\n";
         std::cerr.flush();
     };
@@ -592,7 +594,11 @@ auto RunAiGenerate(const std::string& InProvider,
         }
         args.push_back(effectivePrompt);
         LogInvocation("opencode", args);
-        return shell::ExecuteCommand("opencode", args, shell::ExecMode::Capture, InWorkingDir);
+        auto result = shell::ExecuteCommand("opencode", args, shell::ExecMode::Capture, InWorkingDir);
+        if (IsTruthyEnv(std::getenv("KOG_DEBUG_AI_PROMPT")) || IsTruthyEnv(std::getenv("KOG_DEBUG"))) {
+            std::cerr << "[kog ai] response:\n" << "----------------------------------------\n" << result.stdoutStr << "\n" << result.stderrStr << "\n----------------------------------------\n";
+        }
+        return result;
     }
 
     if (InProvider == "codex") {
@@ -693,7 +699,7 @@ auto GenerateAiCommitMessage(const std::filesystem::path& InWorkspaceRoot,
     }
 
     const auto prompt = BuildAiCommitPrompt(InWorkspaceRoot, InRepo, InReport);
-    const auto out = RunAiGenerate(InAi.provider, InAi.model, prompt, InRepo, "commit-message");
+    const auto out = RunAiGenerate(InAi.provider, InAi.model, prompt, std::optional<std::filesystem::path>{InRepo}, "commit-message");
     if (out.exitCode != 0) {
         const auto reason = SummarizeAiFailure(out);
         if (OutFailureReason != nullptr) {
@@ -752,7 +758,7 @@ auto ShouldBlockByAiReview(const std::filesystem::path& InRepo,
 
     promptText = AppendCommitConventionSkillSection(std::filesystem::current_path().lexically_normal(), std::move(promptText));
 
-    const auto out = RunAiGenerate(InAi.provider, InAi.model, promptText, InRepo, "commit-review");
+    const auto out = RunAiGenerate(InAi.provider, InAi.model, promptText, std::optional<std::filesystem::path>{InRepo}, "commit-review");
     if (out.exitCode != 0) {
         const auto reason = SummarizeAiFailure(out);
         std::cerr << "[kog commit] AI review generation failed (exit=" << out.exitCode << "): " << reason << "\n";
@@ -1023,6 +1029,9 @@ auto ResolveModelForAi(const std::string& InProvider,
     auto resolveDefaultModel = [&]() -> std::string {
         if (provider == "codex") {
             return "gpt-5.2-codex";
+        }
+        if (provider == "opencode") {
+            return "github-copilot/gpt-5-mini";
         }
         return "gpt-5-mini";
     };
