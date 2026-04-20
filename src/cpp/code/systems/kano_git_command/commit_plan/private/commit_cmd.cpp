@@ -44,6 +44,8 @@ auto RunAmendNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
                               const std::string& InPlanStage,
                               const bool InProfile) -> int;
 
+auto IsKogDebugEnabled() -> bool;
+
 namespace {
 
 auto DisplayRepoLabel(const std::filesystem::path& InWorkspaceRoot, const std::filesystem::path& InRepo) -> std::string;
@@ -1742,8 +1744,9 @@ auto ComputeWorkspaceDirtyFingerprint(const std::filesystem::path& InWorkspaceRo
         canonical << line << "\n";
     }
     const auto result = "ws-dirty-v2-" + Fnv1a64Hex(canonical.str());
-    // Debug: print final fingerprint
-    std::cerr << "[DEBUG] ComputeWorkspaceDirtyFingerprint: result=" << result << "\n";
+    if (IsKogDebugEnabled()) {
+        std::cerr << "[DEBUG] ComputeWorkspaceDirtyFingerprint: result=" << result << "\n";
+    }
     return result;
 }
 
@@ -2498,16 +2501,20 @@ auto RunPlanNewViaSelf(const std::filesystem::path& InWorkspaceRoot,
         "--force",
         "--output", InPlanPath.generic_string(),
     };
-    std::cerr << "[DEBUG] RunPlanNewViaSelf: self=" << selfCmd << "\n";
-    std::cerr << "[DEBUG] RunPlanNewViaSelf: workspace=" << InWorkspaceRoot.generic_string() << "\n";
-    std::cerr << "[DEBUG] RunPlanNewViaSelf: plan_path=" << InPlanPath.generic_string() << "\n";
-    for (size_t i = 0; i < args.size(); ++i) {
-        std::cerr << "[DEBUG] RunPlanNewViaSelf: args[" << i << "]=" << args[i] << "\n";
+    if (IsKogDebugEnabled()) {
+        std::cerr << "[DEBUG] RunPlanNewViaSelf: self=" << selfCmd << "\n";
+        std::cerr << "[DEBUG] RunPlanNewViaSelf: workspace=" << InWorkspaceRoot.generic_string() << "\n";
+        std::cerr << "[DEBUG] RunPlanNewViaSelf: plan_path=" << InPlanPath.generic_string() << "\n";
+        for (std::size_t i = 0; i < args.size(); ++i) {
+            std::cerr << "[DEBUG] RunPlanNewViaSelf: args[" << i << "]=" << args[i] << "\n";
+        }
     }
     const auto result = shell::ExecuteCommand(selfCmd, args, shell::ExecMode::Capture, InWorkspaceRoot);
-    std::cerr << "[DEBUG] RunPlanNewViaSelf: exitCode=" << result.exitCode << "\n";
-    std::cerr << "[DEBUG] RunPlanNewViaSelf: stdout=" << result.stdoutStr << "\n";
-    std::cerr << "[DEBUG] RunPlanNewViaSelf: stderr=" << result.stderrStr << "\n";
+    if (IsKogDebugEnabled()) {
+        std::cerr << "[DEBUG] RunPlanNewViaSelf: exitCode=" << result.exitCode << "\n";
+        std::cerr << "[DEBUG] RunPlanNewViaSelf: stdout=" << result.stdoutStr << "\n";
+        std::cerr << "[DEBUG] RunPlanNewViaSelf: stderr=" << result.stderrStr << "\n";
+    }
     const auto exitCode = FinalizeNestedSelfResult("plan new", result);
     if (exitCode != 0) {
         std::cerr << "Error: plan new failed via native binary (exit=" << exitCode << ").\n";
@@ -2532,7 +2539,9 @@ auto RunCommitSeedViaSelf(const std::filesystem::path& InWorkspaceRoot,
 
 auto RunIgnorePlanRunbookViaSelf(const std::filesystem::path& InWorkspaceRoot,
                                  const std::filesystem::path& InPlanPath) -> int {
-    std::cerr << "[DEBUG] RunIgnorePlanRunbookViaSelf ENTERED" << std::endl;
+    if (IsKogDebugEnabled()) {
+        std::cerr << "[DEBUG] RunIgnorePlanRunbookViaSelf ENTERED" << std::endl;
+    }
     std::vector<std::string> args = {
         "plan", "runbook", "ignore",
         "--force",
@@ -2658,11 +2667,13 @@ auto RunCommitAutoPlanPipeline(const std::filesystem::path& InWorkspaceRoot,
     long long commitApplyMillis = 0;
     std::optional<long long> aiFillMillis;
 
-    std::cerr << "[DEBUG] RunCommitAutoPlanPipeline ENTERED" << std::endl;
-    std::cerr << "[DEBUG] InWorkspaceRoot=" << InWorkspaceRoot.generic_string() << std::endl;
-    std::cerr << "[DEBUG] InAi.enabled=" << InAi.enabled << " provider=" << InAi.provider << " model=" << InAi.model << std::endl;
-    std::cerr << "[DEBUG] InAiFillMode=" << InAiFillMode << std::endl;
-    std::cerr << "[DEBUG] InProfile=" << InProfile << std::endl;
+    if (IsKogDebugEnabled()) {
+        std::cerr << "[DEBUG] RunCommitAutoPlanPipeline ENTERED" << std::endl;
+        std::cerr << "[DEBUG] InWorkspaceRoot=" << InWorkspaceRoot.generic_string() << std::endl;
+        std::cerr << "[DEBUG] InAi.enabled=" << InAi.enabled << " provider=" << InAi.provider << " model=" << InAi.model << std::endl;
+        std::cerr << "[DEBUG] InAiFillMode=" << InAiFillMode << std::endl;
+        std::cerr << "[DEBUG] InProfile=" << InProfile << std::endl;
+    }
     std::cerr.flush();
 
     const auto autoPlanPath = DefaultSharedPlanPath(InWorkspaceRoot);
@@ -2758,11 +2769,13 @@ auto RunAmendAutoPlanPipeline(const std::filesystem::path& InWorkspaceRoot,
     long long amendApplyMillis = 0;
     std::optional<long long> aiFillMillis;
 
-    std::cerr << "[DEBUG] RunAmendAutoPlanPipeline ENTERED" << std::endl;
-    std::cerr << "[DEBUG] InWorkspaceRoot=" << InWorkspaceRoot.generic_string() << std::endl;
-    std::cerr << "[DEBUG] InAi.enabled=" << InAi.enabled << " provider=" << InAi.provider << " model=" << InAi.model << std::endl;
-    std::cerr << "[DEBUG] InAiFillMode=" << InAiFillMode << std::endl;
-    std::cerr << "[DEBUG] InProfile=" << InProfile << std::endl;
+    if (IsKogDebugEnabled()) {
+        std::cerr << "[DEBUG] RunAmendAutoPlanPipeline ENTERED" << std::endl;
+        std::cerr << "[DEBUG] InWorkspaceRoot=" << InWorkspaceRoot.generic_string() << std::endl;
+        std::cerr << "[DEBUG] InAi.enabled=" << InAi.enabled << " provider=" << InAi.provider << " model=" << InAi.model << std::endl;
+        std::cerr << "[DEBUG] InAiFillMode=" << InAiFillMode << std::endl;
+        std::cerr << "[DEBUG] InProfile=" << InProfile << std::endl;
+    }
     std::cerr.flush();
 
     const auto autoPlanPath = DefaultSharedPlanPath(InWorkspaceRoot);
@@ -4516,7 +4529,9 @@ void RegisterCommit(CLI::App& InApp) {
         long long summaryMs = 0;
         std::optional<CommitPreflightReport> cachedPreflightReport;
 
-        std::cerr << "[DEBUG] run lambda ENTERED" << std::endl;
+        if (IsKogDebugEnabled()) {
+            std::cerr << "[DEBUG] run lambda ENTERED" << std::endl;
+        }
         std::cerr.flush();
 
         if (InApp.got_subcommand(cmdAiAlias)) {
@@ -4601,33 +4616,41 @@ void RegisterCommit(CLI::App& InApp) {
 
         if (ai.enabled) {
             std::cout << "[native-commit] AI enabled: provider=" << ai.provider
-                      << " model=" << ai.model
-                      << " review=" << (ai.reviewEnabled ? "on" : "off") << "\n";
+                  << " model=" << ai.model
+                  << " review=" << (ai.reviewEnabled ? "on" : "off") << "\n";
         }
 
         const auto defaultSharedPlanPath = DefaultSharedPlanPath(workspaceRoot).lexically_normal();
         const auto currentPlanPath = commitPlanFile->empty() ? std::filesystem::path{} : std::filesystem::path(*commitPlanFile).lexically_normal();
         const bool usingDefaultSharedPlanPath = !commitPlanFile->empty() && currentPlanPath == defaultSharedPlanPath;
         const bool explicitPlanFileRequested = !commitPlanFile->empty() && !usingDefaultSharedPlanPath;
-        std::cerr << "[DEBUG] BEFORE CLEAR: explicitPlanFileRequested=" << explicitPlanFileRequested
-                  << " usingDefaultSharedPlanPath=" << usingDefaultSharedPlanPath
-                  << " commitPlanFile=[" << *commitPlanFile << "]" << std::endl;
+        if (IsKogDebugEnabled()) {
+            std::cerr << "[DEBUG] BEFORE CLEAR: explicitPlanFileRequested=" << explicitPlanFileRequested
+                      << " commitPlanFile=[" << *commitPlanFile << "]" << std::endl;
+        }
         if (usingDefaultSharedPlanPath && ai.enabled && message->empty()) {
-            std::cerr << "[DEBUG] AI auto mode ignoring cached default shared plan path" << std::endl;
-            commitPlanFile->clear();
-        } else if (explicitPlanFileRequested) {
-            auto checkPath = std::filesystem::path(*commitPlanFile);
-            if (!std::filesystem::exists(checkPath)) {
-                std::cerr << "[DEBUG] explicit plan file doesn't exist, clearing commitPlanFile" << std::endl;
-                commitPlanFile->clear();
+            if (IsKogDebugEnabled()) {
+                std::cerr << "[DEBUG] AI auto mode ignoring cached default shared plan path" << std::endl;
             }
+            commitPlanFile->clear();
+        } else if (explicitPlanFileRequested && !std::filesystem::exists(currentPlanPath)) {
+            if (IsKogDebugEnabled()) {
+                std::cerr << "[DEBUG] explicit plan file doesn't exist, clearing commitPlanFile" << std::endl;
+            }
+            commitPlanFile->clear();
+        }
+        if (IsKogDebugEnabled()) {
+            std::cerr << "[DEBUG] autoPlanAiMode check: ai.enabled=" << ai.enabled 
+                      << " commitPlanFile=[" << *commitPlanFile << "]" << std::endl;
         }
         const bool autoPlanAiMode = ai.enabled && message->empty() && commitPlanFile->empty();
-        std::cerr << "[DEBUG] autoPlanAiMode check: ai.enabled=" << ai.enabled 
-                  << " message->empty()=" << message->empty() 
-                  << " explicitPlanFileRequested=" << explicitPlanFileRequested 
-                  << " commitPlanFile=[" << *commitPlanFile << "]"
-                  << " => autoPlanAiMode=" << autoPlanAiMode << std::endl;
+        if (IsKogDebugEnabled()) {
+            std::cerr << "[DEBUG] autoPlanAiMode check: ai.enabled=" << ai.enabled 
+                      << " message->empty()=" << message->empty() 
+                      << " explicitPlanFileRequested=" << explicitPlanFileRequested 
+                      << " commitPlanFile=[" << *commitPlanFile << "]"
+                      << " => autoPlanAiMode=" << autoPlanAiMode << std::endl;
+        }
         std::cerr.flush();
         if (autoPlanAiMode) {
             if (agentProxyMode) {

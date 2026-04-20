@@ -225,9 +225,11 @@ auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<
     options.incremental = false;
     options.metadataLevel = "minimal";
     const auto discovery = workspace::DiscoverRepos(options);
-    std::cerr << "[DEBUG] DiscoverWorkspaceRepos: root=" << InRoot.generic_string() << " discovery.repos.size=" << discovery.repos.size() << " mode=" << discovery.mode << "\n";
-    for (const auto& repo : discovery.repos) {
-        std::cerr << "[DEBUG] DiscoverWorkspaceRepos:   repo=" << repo.path.generic_string() << " type=" << repo.type << "\n";
+    if (IsKogDebugEnabled()) {
+        std::cerr << "[DEBUG] DiscoverWorkspaceRepos: root=" << InRoot.generic_string() << " discovery.repos.size=" << discovery.repos.size() << " mode=" << discovery.mode << "\n";
+        for (const auto& repo : discovery.repos) {
+            std::cerr << "[DEBUG] DiscoverWorkspaceRepos:   repo=" << repo.path.generic_string() << " type=" << repo.type << "\n";
+        }
     }
     std::vector<std::filesystem::path> repos;
     repos.reserve(discovery.repos.size());
@@ -239,7 +241,9 @@ auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<
     });
     repos.erase(std::unique(repos.begin(), repos.end()), repos.end());
     if (repos.empty()) {
-        std::cerr << "[DEBUG] DiscoverWorkspaceRepos: repos empty, using root fallback=" << InRoot.lexically_normal().generic_string() << "\n";
+        if (IsKogDebugEnabled()) {
+            std::cerr << "[DEBUG] DiscoverWorkspaceRepos: repos empty, using root fallback=" << InRoot.lexically_normal().generic_string() << "\n";
+        }
         repos.push_back(InRoot.lexically_normal());
     }
     return repos;
@@ -305,13 +309,17 @@ auto ResolveAiModelForChangeCount(const std::string& InProvider,
 auto ComputeWorkspaceBaseHeadSha(const std::filesystem::path& InWorkspaceRoot) -> std::string {
     std::vector<std::string> lines;
     const auto repos = DiscoverWorkspaceRepos(InWorkspaceRoot);
-    std::cerr << "[DEBUG] ComputeWorkspaceBaseHeadSha: repos=" << repos.size() << "\n";
+    if (IsKogDebugEnabled()) {
+        std::cerr << "[DEBUG] ComputeWorkspaceBaseHeadSha: repos=" << repos.size() << "\n";
+    }
     lines.reserve(repos.size());
     for (const auto& repo : repos) {
         const auto head = GitCapture(repo, {"rev-parse", "HEAD"});
         const auto sha = (head.exitCode == 0) ? Trim(head.stdoutStr) : std::string("0000000000000000000000000000000000000000");
         const auto repoKey = WorkspaceRepoKey(InWorkspaceRoot, repo);
-        std::cerr << "[DEBUG] ComputeWorkspaceBaseHeadSha:   repo=" << repo.generic_string() << " key=" << repoKey << " sha=" << sha << "\n";
+        if (IsKogDebugEnabled()) {
+            std::cerr << "[DEBUG] ComputeWorkspaceBaseHeadSha:   repo=" << repo.generic_string() << " key=" << repoKey << " sha=" << sha << "\n";
+        }
         lines.push_back(repoKey + "\t" + sha);
     }
     std::sort(lines.begin(), lines.end());
@@ -320,7 +328,9 @@ auto ComputeWorkspaceBaseHeadSha(const std::filesystem::path& InWorkspaceRoot) -
         canonical << line << "\n";
     }
     const auto result = "ws-head-v2-" + Fnv1a64Hex(canonical.str());
-    std::cerr << "[DEBUG] ComputeWorkspaceBaseHeadSha: result=" << result << "\n";
+    if (IsKogDebugEnabled()) {
+        std::cerr << "[DEBUG] ComputeWorkspaceBaseHeadSha: result=" << result << "\n";
+    }
     return result;
 }
 
@@ -478,15 +488,23 @@ static void DebugPrintStatusOutput(const std::filesystem::path& repo, const std:
         lineNum++;
         const auto trimmed = Trim(line);
         if (trimmed.empty()) continue;
-        std::cerr << "[DEBUG] StatusLine repo=" << repo.generic_string() << " line=" << lineNum << " raw_len=" << line.size() << " trimmed_len=" << trimmed.size() << "\n";
+        if (IsKogDebugEnabled()) {
+            std::cerr << "[DEBUG] StatusLine repo=" << repo.generic_string() << " line=" << lineNum << " raw_len=" << line.size() << " trimmed_len=" << trimmed.size() << "\n";
+        }
         if (trimmed.rfind("# ", 0) == 0) {
-            std::cerr << "[DEBUG]   TYPE=comment: " << trimmed.substr(0, 60) << "\n";
+            if (IsKogDebugEnabled()) {
+                std::cerr << "[DEBUG]   TYPE=comment: " << trimmed.substr(0, 60) << "\n";
+            }
         } else {
             const auto maybePath = ParseStatusChangedPath(trimmed);
             if (!maybePath.has_value()) {
-                std::cerr << "[DEBUG]   TYPE=status path=nullopt: " << trimmed.substr(0, 60) << "\n";
+                if (IsKogDebugEnabled()) {
+                    std::cerr << "[DEBUG]   TYPE=status path=nullopt: " << trimmed.substr(0, 60) << "\n";
+                }
             } else {
-                std::cerr << "[DEBUG]   TYPE=status path=[" << *maybePath << "] is_artifact=" << IsInternalPipelineArtifactPath(*maybePath) << "\n";
+                if (IsKogDebugEnabled()) {
+                    std::cerr << "[DEBUG]   TYPE=status path=[" << *maybePath << "] is_artifact=" << IsInternalPipelineArtifactPath(*maybePath) << "\n";
+                }
             }
         }
     }
@@ -552,7 +570,7 @@ auto ComputeWorkspaceDirtyFingerprint(const std::filesystem::path& InWorkspaceRo
         }
         const auto normalized = Trim(filtered.str());
         // Debug: show what was included for UnrealEngine
-        if (repo.generic_string().find("UnrealEngine") != std::string::npos && !normalized.empty()) {
+        if (IsKogDebugEnabled() && repo.generic_string().find("UnrealEngine") != std::string::npos && !normalized.empty()) {
             std::cerr << "[DEBUG] Fingerprint UnrealEngine normalized=[" << normalized << "]\n";
         }
         // Get HEAD SHA directly via git rev-parse (not from status output)
@@ -572,10 +590,12 @@ auto ComputeWorkspaceDirtyFingerprint(const std::filesystem::path& InWorkspaceRo
     // Debug: print final fingerprint and canonical for first call only
     static int callCount = 0;
     callCount++;
-    if (callCount == 1) {
+    if (callCount == 1 && IsKogDebugEnabled()) {
         std::cerr << "[DEBUG] ComputeWorkspaceDirtyFingerprint: canonical=\n" << canonicalStr << "\n";
     }
-    std::cerr << "[DEBUG] ComputeWorkspaceDirtyFingerprint: result=" << result << "\n";
+    if (IsKogDebugEnabled()) {
+        std::cerr << "[DEBUG] ComputeWorkspaceDirtyFingerprint: result=" << result << "\n";
+    }
     return result;
 }
 
