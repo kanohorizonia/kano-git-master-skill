@@ -113,6 +113,7 @@ struct RepoAmendResult {
     bool combined = false;
     bool failed = false;
     std::string note;
+    std::string commitTitle;
 };
 
 } // namespace kano::git::commands

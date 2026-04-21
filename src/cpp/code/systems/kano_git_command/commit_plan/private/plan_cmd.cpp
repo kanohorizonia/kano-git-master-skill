@@ -48,6 +48,7 @@ void RegisterPlan(CLI::App& InApp) {
     auto* initAiModel = new std::string{};
     auto* initAiFillMode = new std::string{defaultCommitGenerationMode};
     auto* initDebugAi = new bool{false};
+    auto* initAllowEmptyDirty = new bool{false};
     auto* initAllowIgnoreGate = new bool{false};
     auto* initDatasourceRoot = new std::string{};
     auto* initDatasourceManifest = new std::string{};
@@ -61,6 +62,7 @@ void RegisterPlan(CLI::App& InApp) {
                      "AI commit generation mode: single=one workspace-wide pass, per-commit=one AI pass per commit, adaptive=per-commit + deterministic gitlink fallback (single|per-commit|adaptive)")
         ->default_str(defaultCommitGenerationMode);
     init->add_flag("--debug-ai", *initDebugAi, "Write AI prompt/raw/extracted debug artifacts");
+    init->add_flag("--allow-empty-dirty", *initAllowEmptyDirty, "Allow AI plan-fill to run even when workspace dirty context is empty");
     init->add_flag("--allow-ignore-gate", *initAllowIgnoreGate, "Compatibility flag (currently no-op in native plan new)");
     init->add_option("--ignore-datasource-root",
                      *initDatasourceRoot,
@@ -94,7 +96,7 @@ void RegisterPlan(CLI::App& InApp) {
 
         if (*initAiAuto) {
             std::string aiError;
-            if (!FillPlanByAi(workspaceRoot, outPath, *initAiProvider, *initAiModel, *initAiFillMode, *initDebugAi, &aiError)) {
+            if (!FillPlanByAi(workspaceRoot, outPath, *initAiProvider, *initAiModel, *initAiFillMode, *initDebugAi, &aiError, *initAllowEmptyDirty)) {
                 std::cerr << aiError << "\n";
                 std::exit(2);
             }
@@ -542,6 +544,7 @@ void RegisterPlan(CLI::App& InApp) {
     auto* ensureModel = new std::string{};
     auto* ensureFillMode = new std::string{defaultCommitGenerationMode};
     auto* ensureDebugAi = new bool{false};
+    auto* ensureAllowEmptyDirty = new bool{false};
     auto* ensureAllowIgnoreGate = new bool{false};
     auto* ensureForce = new bool{false};
     ensureAiReady->add_option("--plan-file", *ensureFile, "Plan file path");
@@ -552,6 +555,7 @@ void RegisterPlan(CLI::App& InApp) {
                               "AI commit generation mode: single=one workspace-wide pass, per-commit=one AI pass per commit, adaptive=per-commit + deterministic gitlink fallback (single|per-commit|adaptive)")
         ->default_str(defaultCommitGenerationMode);
     ensureAiReady->add_flag("--debug-ai", *ensureDebugAi, "Write AI prompt/raw/extracted debug artifacts");
+    ensureAiReady->add_flag("--allow-empty-dirty", *ensureAllowEmptyDirty, "Allow AI plan-fill to run even when workspace dirty context is empty");
     ensureAiReady->add_flag("--allow-ignore-gate", *ensureAllowIgnoreGate, "Compatibility flag (currently no-op in prepare)");
     ensureAiReady->add_flag("--force,-f", *ensureForce, "Force regenerate even if existing plan looks complete");
     ensureAiReady->callback([=]() {
@@ -584,7 +588,7 @@ void RegisterPlan(CLI::App& InApp) {
                 }
             }
             std::string aiError;
-            if (!FillPlanByAi(workspaceRoot, planPath, *ensureProvider, *ensureModel, *ensureFillMode, *ensureDebugAi, &aiError)) {
+            if (!FillPlanByAi(workspaceRoot, planPath, *ensureProvider, *ensureModel, *ensureFillMode, *ensureDebugAi, &aiError, *ensureAllowEmptyDirty)) {
                 std::cerr << aiError << "\n";
                 return false;
             }
@@ -644,6 +648,7 @@ void RegisterPlan(CLI::App& InApp) {
     auto* preflightModel = new std::string{};
     auto* preflightFillMode = new std::string{defaultCommitGenerationMode};
     auto* preflightDebugAi = new bool{false};
+    auto* preflightAllowEmptyDirty = new bool{false};
     auto* preflightAllowIgnoreGate = new bool{false};
     auto* preflightMaxCommits = new int{10};
     preflightAiCommit->add_option("--plan-file", *preflightFile, "Plan file path");
@@ -655,6 +660,7 @@ void RegisterPlan(CLI::App& InApp) {
                                   "AI commit generation mode: single=one workspace-wide pass, per-commit=one AI pass per commit, adaptive=per-commit + deterministic gitlink fallback (single|per-commit|adaptive)")
         ->default_str(defaultCommitGenerationMode);
     preflightAiCommit->add_flag("--debug-ai", *preflightDebugAi, "Write AI prompt/raw/extracted debug artifacts");
+    preflightAiCommit->add_flag("--allow-empty-dirty", *preflightAllowEmptyDirty, "Allow AI plan-fill to run even when workspace dirty context is empty");
     preflightAiCommit->add_flag("--allow-ignore-gate", *preflightAllowIgnoreGate, "Compatibility flag (currently no-op in runbook-commit)");
     preflightAiCommit->add_option("--max-commits", *preflightMaxCommits, "Max commit lines to print in summary")->default_val(10);
 
@@ -662,7 +668,7 @@ void RegisterPlan(CLI::App& InApp) {
         const auto workspaceRoot = std::filesystem::current_path().lexically_normal();
         const auto planPath = preflightFile->empty() ? DefaultPlanPath(workspaceRoot) : std::filesystem::path(*preflightFile).lexically_normal();
         const auto code = RunCommitRunbook(
-            workspaceRoot, planPath, *preflightProvider, *preflightModel, *preflightFillMode, *preflightDebugAi, *preflightMaxCommits);
+            workspaceRoot, planPath, *preflightProvider, *preflightModel, *preflightFillMode, *preflightDebugAi, *preflightMaxCommits, *preflightAllowEmptyDirty);
         std::exit(code);
     });
 
@@ -700,6 +706,7 @@ void RegisterPlan(CLI::App& InApp) {
     auto* runbookFullModel = new std::string{};
     auto* runbookFullFillMode = new std::string{defaultCommitGenerationMode};
     auto* runbookFullDebugAi = new bool{false};
+    auto* runbookFullAllowEmptyDirty = new bool{false};
     auto* runbookFullAllowIgnoreGate = new bool{false};
     auto* runbookFullForce = new bool{false};
     auto* runbookFullMaxCommits = new int{10};
@@ -712,6 +719,7 @@ void RegisterPlan(CLI::App& InApp) {
                             "AI commit generation mode: single=one workspace-wide pass, per-commit=one AI pass per commit, adaptive=per-commit + deterministic gitlink fallback (single|per-commit|adaptive)")
         ->default_str(defaultCommitGenerationMode);
     runbookFull->add_flag("--debug-ai", *runbookFullDebugAi, "Write AI prompt/raw/extracted debug artifacts");
+    runbookFull->add_flag("--allow-empty-dirty", *runbookFullAllowEmptyDirty, "Allow AI plan-fill to run even when workspace dirty context is empty");
     runbookFull->add_flag("--allow-ignore-gate", *runbookFullAllowIgnoreGate, "Compatibility flag (forwarded to commit runbook)");
     runbookFull->add_flag("--force,-f", *runbookFullForce, "Create default plan when file missing during ignore runbook");
     runbookFull->add_option("--max-commits", *runbookFullMaxCommits, "Max commit lines to print in summary")->default_val(10);
@@ -730,7 +738,8 @@ void RegisterPlan(CLI::App& InApp) {
                                                  *runbookFullModel,
                                                  *runbookFullFillMode,
                                                  *runbookFullDebugAi,
-                                                 *runbookFullMaxCommits);
+                                                 *runbookFullMaxCommits,
+                                                 *runbookFullAllowEmptyDirty);
         if (commitCode != 0) {
             std::exit(commitCode);
         }
@@ -746,6 +755,7 @@ void RegisterPlan(CLI::App& InApp) {
     auto* rbCommitModel = new std::string{};
     auto* rbCommitFillMode = new std::string{defaultCommitGenerationMode};
     auto* rbCommitDebugAi = new bool{false};
+    auto* rbCommitAllowEmptyDirty = new bool{false};
     auto* rbCommitAllowIgnoreGate = new bool{false};
     auto* rbCommitMaxCommits = new int{10};
     runbookCommit->add_option("--plan-file", *rbCommitFile, "Plan file path");
@@ -756,13 +766,14 @@ void RegisterPlan(CLI::App& InApp) {
                               "AI commit generation mode: single=one workspace-wide pass, per-commit=one AI pass per commit, adaptive=per-commit + deterministic gitlink fallback (single|per-commit|adaptive)")
         ->default_str(defaultCommitGenerationMode);
     runbookCommit->add_flag("--debug-ai", *rbCommitDebugAi, "Write AI prompt/raw/extracted debug artifacts");
+    runbookCommit->add_flag("--allow-empty-dirty", *rbCommitAllowEmptyDirty, "Allow AI plan-fill to run even when workspace dirty context is empty");
     runbookCommit->add_flag("--allow-ignore-gate", *rbCommitAllowIgnoreGate, "Forward allow-ignore-gate to commit runbook");
     runbookCommit->add_option("--max-commits", *rbCommitMaxCommits, "Max commit lines to print in summary")->default_val(10);
     runbookCommit->callback([=]() {
         const auto workspaceRoot = std::filesystem::current_path().lexically_normal();
         const auto planPath = rbCommitFile->empty() ? DefaultPlanPath(workspaceRoot) : std::filesystem::path(*rbCommitFile).lexically_normal();
         const auto code =
-            RunCommitRunbook(workspaceRoot, planPath, *rbCommitProvider, *rbCommitModel, *rbCommitFillMode, *rbCommitDebugAi, *rbCommitMaxCommits);
+            RunCommitRunbook(workspaceRoot, planPath, *rbCommitProvider, *rbCommitModel, *rbCommitFillMode, *rbCommitDebugAi, *rbCommitMaxCommits, *rbCommitAllowEmptyDirty);
         std::exit(code);
     });
 
@@ -791,6 +802,7 @@ void RegisterPlan(CLI::App& InApp) {
     auto* rbFullModel = new std::string{};
     auto* rbFullFillMode = new std::string{defaultCommitGenerationMode};
     auto* rbFullDebugAi = new bool{false};
+    auto* rbFullAllowEmptyDirty = new bool{false};
     auto* rbFullAllowIgnoreGate = new bool{false};
     auto* rbFullForce = new bool{false};
     auto* rbFullMaxCommits = new int{10};
@@ -803,6 +815,7 @@ void RegisterPlan(CLI::App& InApp) {
                                   "AI commit generation mode: single=one workspace-wide pass, per-commit=one AI pass per commit, adaptive=per-commit + deterministic gitlink fallback (single|per-commit|adaptive)")
         ->default_str(defaultCommitGenerationMode);
     runbookFullPublic->add_flag("--debug-ai", *rbFullDebugAi, "Write AI prompt/raw/extracted debug artifacts");
+    runbookFullPublic->add_flag("--allow-empty-dirty", *rbFullAllowEmptyDirty, "Allow AI plan-fill to run even when workspace dirty context is empty");
     runbookFullPublic->add_flag("--allow-ignore-gate", *rbFullAllowIgnoreGate, "Forward allow-ignore-gate to commit runbook");
     runbookFullPublic->add_flag("--force,-f", *rbFullForce, "Create default plan when file missing during ignore runbook");
     runbookFullPublic->add_option("--max-commits", *rbFullMaxCommits, "Max commit lines to print in summary")->default_val(10);
@@ -815,7 +828,7 @@ void RegisterPlan(CLI::App& InApp) {
             std::exit(ignoreCode);
         }
         const auto commitCode =
-            RunCommitRunbook(workspaceRoot, planPath, *rbFullProvider, *rbFullModel, *rbFullFillMode, *rbFullDebugAi, *rbFullMaxCommits);
+            RunCommitRunbook(workspaceRoot, planPath, *rbFullProvider, *rbFullModel, *rbFullFillMode, *rbFullDebugAi, *rbFullMaxCommits, *rbFullAllowEmptyDirty);
         if (commitCode != 0) {
             std::exit(commitCode);
         }

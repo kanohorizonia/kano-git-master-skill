@@ -68,6 +68,7 @@ struct CommitFillOp {
 // Common utilities
 auto Trim(std::string InValue) -> std::string;
 auto ToLower(std::string InValue) -> std::string;
+auto SplitNonEmptyLines(const std::string& InText) -> std::vector<std::string>;
 auto ReplaceAll(std::string InText, const std::string& InSearch, const std::string& InReplace) -> std::string;
 auto NormalizeAiModelKeyword(const std::string& InValue) -> std::string;
 auto IsTruthyEnv(const char* InValue) -> bool;
@@ -127,6 +128,8 @@ auto WorkspaceRepoKey(const std::filesystem::path& InWorkspaceRoot, const std::f
 auto ComputeWorkspaceBaseHeadSha(const std::filesystem::path& InWorkspaceRoot) -> std::string;
 auto ComputeWorkspaceDirtyFingerprint(const std::filesystem::path& InWorkspaceRoot) -> std::string;
 auto BuildFallbackCommitScope(const std::string& InRepoDisplay) -> std::string;
+auto ResolveUpstreamRef(const std::filesystem::path& InRepo) -> std::string;
+auto CountUnpushedCommits(const std::filesystem::path& InRepo, const std::string& InUpstreamRef) -> int;
 
 // Plan utilities
 auto PlanNeedsRefresh(const std::string& InPlanText) -> bool;
@@ -221,7 +224,8 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
                   const std::string& InRequestedModel,
                   const std::string& InRequestedFillMode,
                   bool InDebugAi,
-                  std::string* OutError = nullptr) -> bool;
+                  std::string* OutError = nullptr,
+                  bool InAllowEmptyDirty = false) -> bool;
 
 auto DefaultPlanPath(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path;
 auto ResolveSkillRoot(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path;
@@ -262,7 +266,8 @@ auto RunCommitRunbook(const std::filesystem::path& InWorkspaceRoot,
                       const std::string& InModel,
                       const std::string& InFillMode,
                       bool InDebugAi,
-                      int InMaxCommits) -> int;
+                      int InMaxCommits,
+                      bool InAllowEmptyDirty = false) -> int;
 
 auto RunPreApplyVerify(const std::filesystem::path& InWorkspaceRoot,
                         const std::filesystem::path& InPlanPath,

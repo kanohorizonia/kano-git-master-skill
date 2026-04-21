@@ -57,8 +57,8 @@ Rules:
 - Provider={{PROVIDER}} model={{MODEL}}
 
 Semantic quality constraints:
-- `message` must be concrete and commit-ready.
-- Use Conventional Commits where possible.
+- `message` MUST follow the Kano Commit Convention (KCC) specification (`[Subsystem][Type] Summary (Ticket)`) provided at the end of this prompt.
+- If the `message` in the plan JSON is a generic placeholder (e.g. starting with `chore(...)` and mentioning `apply updates` or `combine commits`), you MUST rewrite it into a specific, KCC-compliant summary based on the actual code changes visible in the Dirty Context.
 - `review.reason` must be specific to that commit index and repo scope, and confirm no secrets or
   unintended files are included. This serves as the combined safety review — no separate review pass
   will be run after this.

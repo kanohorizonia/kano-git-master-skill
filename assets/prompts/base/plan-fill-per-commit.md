@@ -17,6 +17,7 @@ Rules:
 - Do not output any other index.
 - Return one JSON object with a top-level `commits` array.
 - Each commits item must include `index`, `message`, and nested `review.verdict` + `review.reason` fields.
+- `message` MUST follow the Kano Commit Convention (KCC) specification (`[Subsystem][Type] Summary (Ticket)`) provided at the end of this prompt.
 - `review.verdict` must be `pass`.
 - No prose, no markdown fences, no commentary.
 - Provider={{PROVIDER}} model={{MODEL}}
@@ -40,6 +41,7 @@ Target commit entry:
 
 Quality constraints:
 - Produce one concrete, commit-ready message.
+- If the `message` in the `Target commit entry` below is a generic placeholder (e.g. starting with `chore(...)` and mentioning `apply updates` or `combine commits`), you MUST rewrite it into a specific, KCC-compliant summary based on the actual code changes visible in the Dirty Context.
 - Keep the message scoped to this entry only.
 - `review.reason` must explain why this single entry is acceptable and confirm no secrets or
   unintended files are included. This serves as the combined safety review — no separate review

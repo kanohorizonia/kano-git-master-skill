@@ -64,6 +64,19 @@ auto SplitEnvList(const char* InValue) -> std::vector<std::string> {
     return out;
 }
 
+auto SplitNonEmptyLines(const std::string& InText) -> std::vector<std::string> {
+    std::vector<std::string> out;
+    std::istringstream iss(InText);
+    std::string line;
+    while (std::getline(iss, line)) {
+        line = Trim(line);
+        if (!line.empty()) {
+            out.push_back(line);
+        }
+    }
+    return out;
+}
+
 auto StartsWith(const std::string& InValue, const std::string& InPrefix) -> bool {
     return InValue.rfind(InPrefix, 0) == 0;
 }
@@ -466,6 +479,31 @@ auto BuildFallbackCommitScope(const std::string& InRepoDisplay) -> std::string {
     return scope;
 }
 
+auto ResolveUpstreamRef(const std::filesystem::path& InRepo) -> std::string {
+    const auto out = GitCapture(InRepo, {"rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"});
+    if (out.exitCode != 0) {
+        return {};
+    }
+    return Trim(out.stdoutStr);
+}
+
+auto CountUnpushedCommits(const std::filesystem::path& InRepo, const std::string& InUpstreamRef) -> int {
+    if (InUpstreamRef.empty()) {
+        return 0;
+    }
+    const auto out = GitCapture(InRepo, {"rev-list", "--count", InUpstreamRef + "..HEAD"});
+    if (out.exitCode != 0) {
+        return 0;
+    }
+    try {
+        const auto value = Trim(out.stdoutStr);
+        if (value.empty()) return 0;
+        return std::max(0, std::stoi(value));
+    } catch (const std::exception&) {
+        return 0;
+    }
+}
+
 auto ExtractBranchOidFromStatusV2(const std::string& InStatus) -> std::string {
     std::istringstream iss(InStatus);
     std::string line;
@@ -734,22 +772,40 @@ auto SeedCommitStage(const std::filesystem::path& InWorkspaceRoot,
         const auto repos = DiscoverWorkspaceRepos(InWorkspaceRoot);
         for (const auto& repo : repos) {
             const auto status = GitCapture(repo, {"status", "--porcelain", "--untracked-files=all"});
-            if (status.exitCode != 0 || Trim(status.stdoutStr).empty()) continue;
+            const bool hasDirtyChanges = (status.exitCode == 0 && !Trim(status.stdoutStr).empty());
+
+            // Also check for unpushed commits (needed for --combine mode)
+            const auto upstream = ResolveUpstreamRef(repo);
+            const int unpushedCount = CountUnpushedCommits(repo, upstream);
+            const bool hasUnpushedCommits = unpushedCount > 0;
+
+            // Skip if no changes (neither dirty working dir nor unpushed commits)
+            if (!hasDirtyChanges && !hasUnpushedCommits) continue;
 
             const auto repoDisplay = RelativeDisplayPath(InWorkspaceRoot, repo);
             const auto scope = BuildFallbackCommitScope(repoDisplay);
 
-            std::istringstream iss(status.stdoutStr);
             int changed = 0;
-            std::string line;
-            while (std::getline(iss, line)) if (!Trim(line).empty()) changed++;
+            if (hasDirtyChanges) {
+                std::istringstream iss(status.stdoutStr);
+                std::string line;
+                while (std::getline(iss, line)) if (!Trim(line).empty()) changed++;
+            }
 
-            const auto message = InUsePlaceholders
-                                   ? std::string("replace-with-commit-message")
-                                   : std::format("chore({}): apply updates ({} files)", scope, changed);
-            const auto reviewReason = InUsePlaceholders
-                                         ? std::string("replace-with-review-reason")
-                                         : std::string("seeded from current dirty status");
+            // Use appropriate message based on what we're committing
+            std::string message;
+            std::string reviewReason;
+            if (InUsePlaceholders) {
+                message = "replace-with-commit-message";
+                reviewReason = "replace-with-review-reason";
+            } else if (hasDirtyChanges) {
+                message = std::format("chore({}): apply updates ({} files)", scope, changed);
+                reviewReason = "seeded from current dirty status";
+            } else {
+                // Only unpushed commits (for --combine mode)
+                message = std::format("chore({}): combine {} unpushed commit{}", scope, unpushedCount, unpushedCount == 1 ? "" : "s");
+                reviewReason = std::format("seeded from {} unpushed commit{}", unpushedCount, unpushedCount == 1 ? "" : "s");
+            }
 
             nlohmann::json commitObj;
             commitObj["message"]           = message;
@@ -1234,13 +1290,72 @@ auto RunAiGenerate(const std::string& InProvider,
 }
 
 auto CollectDirtyRepoContextText(const std::filesystem::path& InWorkspaceRoot) -> std::string {
+    constexpr std::size_t kMaxStatusChars = 3000;
+    constexpr std::size_t kMaxPatchCharsPerSection = 12000;
+    auto clip = [](const std::string& text, std::size_t maxChars) {
+        if (text.size() <= maxChars) return text;
+        return text.substr(0, maxChars) + "\n... (truncated)\n";
+    };
+
     std::ostringstream oss;
     const auto repos = DiscoverWorkspaceRepos(InWorkspaceRoot);
     for (const auto& repo : repos) {
         const auto status = GitCapture(repo, {"status", "--porcelain", "--untracked-files=all"});
-        if (status.exitCode == 0 && !Trim(status.stdoutStr).empty()) {
-            oss << "--- Repo: " << RelativeDisplayPath(InWorkspaceRoot, repo) << " ---\n"
-                << status.stdoutStr << "\n";
+        if (status.exitCode != 0) {
+            continue;
+        }
+
+        const auto repoDisplay = RelativeDisplayPath(InWorkspaceRoot, repo);
+        const auto stagedNameOnly = GitCapture(repo, {"diff", "--cached", "--name-status"});
+        const auto unstagedNameOnly = GitCapture(repo, {"diff", "--name-status"});
+        const auto stagedPatch = GitCapture(repo, {"diff", "--cached", "--", "."});
+        const auto unstagedPatch = GitCapture(repo, {"diff", "--", "."});
+
+        const bool hasDirty = !Trim(status.stdoutStr).empty();
+        if (hasDirty) {
+            oss << "--- Repo: " << repoDisplay << " ---\n";
+            oss << "[status --porcelain]\n" << clip(status.stdoutStr, kMaxStatusChars) << "\n";
+
+            if (stagedNameOnly.exitCode == 0 && !Trim(stagedNameOnly.stdoutStr).empty()) {
+                oss << "[staged name-status]\n" << clip(stagedNameOnly.stdoutStr, kMaxStatusChars) << "\n";
+            }
+            if (unstagedNameOnly.exitCode == 0 && !Trim(unstagedNameOnly.stdoutStr).empty()) {
+                oss << "[unstaged name-status]\n" << clip(unstagedNameOnly.stdoutStr, kMaxStatusChars) << "\n";
+            }
+
+            if (stagedPatch.exitCode == 0 && !Trim(stagedPatch.stdoutStr).empty()) {
+                oss << "[staged diff patch]\n" << clip(stagedPatch.stdoutStr, kMaxPatchCharsPerSection) << "\n";
+            }
+            if (unstagedPatch.exitCode == 0 && !Trim(unstagedPatch.stdoutStr).empty()) {
+                oss << "[unstaged diff patch]\n" << clip(unstagedPatch.stdoutStr, kMaxPatchCharsPerSection) << "\n";
+            }
+            continue;
+        }
+
+        // Combine/amend flow can be worktree-clean but still have unpushed commits.
+        const auto upstream = ResolveUpstreamRef(repo);
+        if (upstream.empty()) {
+            continue;
+        }
+        const auto unpushedCount = CountUnpushedCommits(repo, upstream);
+        if (unpushedCount <= 0) {
+            continue;
+        }
+
+        const auto range = upstream + "..HEAD";
+        const auto unpushedLog = GitCapture(repo, {"log", "--oneline", range});
+        const auto unpushedNameStatus = GitCapture(repo, {"diff", "--name-status", range});
+        const auto unpushedPatch = GitCapture(repo, {"diff", range});
+        oss << "--- Repo: " << repoDisplay << " ---\n";
+        oss << "[unpushed commits] count=" << unpushedCount << " range=" << range << "\n";
+        if (unpushedLog.exitCode == 0 && !Trim(unpushedLog.stdoutStr).empty()) {
+            oss << "[unpushed log]\n" << clip(unpushedLog.stdoutStr, kMaxStatusChars) << "\n";
+        }
+        if (unpushedNameStatus.exitCode == 0 && !Trim(unpushedNameStatus.stdoutStr).empty()) {
+            oss << "[unpushed name-status]\n" << clip(unpushedNameStatus.stdoutStr, kMaxStatusChars) << "\n";
+        }
+        if (unpushedPatch.exitCode == 0 && !Trim(unpushedPatch.stdoutStr).empty()) {
+            oss << "[unpushed diff patch]\n" << clip(unpushedPatch.stdoutStr, kMaxPatchCharsPerSection) << "\n";
         }
     }
     return oss.str();
@@ -1309,6 +1424,7 @@ auto BuildFillOpsRetryPrompt(const std::string& InBasePrompt,
 auto WriteAiResponseFile(const std::filesystem::path& InWorkspaceRoot,
                          const std::string& InPurpose,
                          const shell::ExecResult& InResult,
+                         std::filesystem::path* OutResponsePath = nullptr,
                          std::string* OutError = nullptr) -> bool {
     const auto responseDir = (InWorkspaceRoot / ".kano" / "tmp" / "git" / "ai-responses").lexically_normal();
     std::error_code ec;
@@ -1325,7 +1441,13 @@ auto WriteAiResponseFile(const std::filesystem::path& InWorkspaceRoot,
     std::ostringstream combined;
     combined << "=== STDOUT ===\n" << InResult.stdoutStr << "\n\n";
     combined << "=== STDERR ===\n" << InResult.stderrStr << "\n";
-    return WriteFileText(responsePath, combined.str(), OutError);
+    if (!WriteFileText(responsePath, combined.str(), OutError)) {
+        return false;
+    }
+    if (OutResponsePath != nullptr) {
+        *OutResponsePath = responsePath;
+    }
+    return true;
 }
 
 auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
@@ -1334,7 +1456,8 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
                   const std::string& InRequestedModel,
                   const std::string& InRequestedFillMode,
                   bool InDebugAi,
-                  std::string* OutError) -> bool {
+                  std::string* OutError,
+                  bool InAllowEmptyDirty) -> bool {
     const auto provider = ResolveAiProvider(InRequestedProvider);
     if (provider.empty()) {
         if (OutError) *OutError = "no AI provider found";
@@ -1343,7 +1466,12 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
     const auto modelDir = ResolveAiModelDirective(provider, InRequestedModel, InWorkspaceRoot);
     const auto fillMode = ResolvePlanCommitGenerationMode(InWorkspaceRoot, InRequestedFillMode);
     const auto dirty = CollectDirtyRepoContextText(InWorkspaceRoot);
-    if (Trim(dirty).empty()) return true;
+    if (Trim(dirty).empty() && !InAllowEmptyDirty) {
+        const std::string msg = "workspace clean: no dirty context for AI plan-fill";
+        std::cerr << "[plan] " << msg << "\n";
+        if (OutError) *OutError = msg;
+        return false;
+    }
 
     const auto templateJson = ReadFileText(InPlanPath).value_or("");
     const auto entries = CollectCommitPlanEntries(templateJson);
@@ -1361,7 +1489,17 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
         for (const auto& entry : entries) {
             const auto prompt = BuildSingleCommitFillPrompt(InWorkspaceRoot, provider, modelDir, entry, dirty);
             const auto res = RunAiGenerate(provider, modelDir, prompt, InWorkspaceRoot, true);
-            WriteAiResponseFile(InWorkspaceRoot, std::format("plan-fill-entry-{}", entry.index), res);
+            std::filesystem::path responsePath;
+            std::string responseWriteError;
+            if (WriteAiResponseFile(InWorkspaceRoot,
+                                    std::format("plan-fill-entry-{}", entry.index),
+                                    res,
+                                    &responsePath,
+                                    &responseWriteError)) {
+                std::cerr << "[plan] ai response file: " << responsePath.generic_string() << "\n";
+            } else {
+                std::cerr << "[plan] warning: failed to save ai response file: " << responseWriteError << "\n";
+            }
             if (res.exitCode != 0) {
                 auto detail = Trim(res.stderrStr);
                 if (detail.empty()) detail = Trim(res.stdoutStr);
@@ -1371,7 +1509,6 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
                 return false;
             }
             const auto json = [&] {
-                const auto s = ExtractJsonBetweenMarkers(res.stdoutStr, "BEGIN_KOG_PLAN_FILL_OPS", "END_KOG_PLAN_FILL_OPS");
                 auto extracted = ExtractPlanFillOpsJson(res.stdoutStr);
                 if (extracted.empty()) extracted = res.stdoutStr;
 
@@ -1389,7 +1526,33 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
                         sanitized += c;
                     }
                 }
-                return sanitized;
+
+                // Some providers occasionally emit Windows paths like C:\Users\... inside
+                // JSON strings without escaping '\' as '\\'. Repair those invalid escapes
+                // so JSON parsing can succeed.
+                std::string repaired;
+                repaired.reserve(sanitized.size() + 16);
+                inString = false;
+                for (size_t i = 0; i < sanitized.size(); ++i) {
+                    const char c = sanitized[i];
+                    if (c == '"' && (i == 0 || sanitized[i - 1] != '\\')) {
+                        inString = !inString;
+                        repaired += c;
+                        continue;
+                    }
+                    if (inString && c == '\\') {
+                        const char next = (i + 1 < sanitized.size()) ? sanitized[i + 1] : '\0';
+                        const bool validEscapeNext =
+                            next == '"' || next == '\\' || next == '/' ||
+                            next == 'b' || next == 'f' || next == 'n' ||
+                            next == 'r' || next == 't' || next == 'u';
+                        if (!validEscapeNext) {
+                            repaired += '\\';
+                        }
+                    }
+                    repaired += c;
+                }
+                return repaired;
             }();
             if (!json.empty()) {
                 CommitFillOp op;
@@ -1427,7 +1590,7 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
                          }
                     }
 
-                    op.message       = jobj.value("message", "");
+                    op.message       = CompactSingleLine(Trim(jobj.value("message", "")), 200);
                     if (jobj.contains("review") && jobj["review"].is_object()) {
                         op.reviewVerdict = jobj["review"].value("verdict", "");
                         op.reviewReason  = jobj["review"].value("reason", "");
@@ -1437,6 +1600,12 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
                     std::cerr << "[plan] failed to parse AI JSON for entry " << entry.index << "\n";
                 }
                 finalPlanJson = ApplyCommitFillOps(finalPlanJson, {op});
+                const auto finalMessage = Trim(op.message.empty() ? entry.message : op.message);
+                if (!finalMessage.empty()) {
+                    std::cerr << "[plan] filled entry " << entry.index << " message: " << finalMessage << "\n";
+                } else {
+                    std::cerr << "[plan] warning: entry " << entry.index << " message remains empty\n";
+                }
                 // Only count as filled if message doesn't contain placeholder
                 if (op.message.find("replace-with-") == std::string::npos && !op.message.empty()) {
                     anyFilled = true;
@@ -1446,7 +1615,13 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
     } else {
         const auto prompt = BuildPlanFillOpsPrompt(InWorkspaceRoot, provider, modelDir, InPlanPath, templateJson, dirty);
         const auto res = RunAiGenerate(provider, modelDir, prompt, InWorkspaceRoot, true);
-        WriteAiResponseFile(InWorkspaceRoot, "plan-fill-batch", res);
+        std::filesystem::path responsePath;
+        std::string responseWriteError;
+        if (WriteAiResponseFile(InWorkspaceRoot, "plan-fill-batch", res, &responsePath, &responseWriteError)) {
+            std::cerr << "[plan] ai response file: " << responsePath.generic_string() << "\n";
+        } else {
+            std::cerr << "[plan] warning: failed to save ai response file: " << responseWriteError << "\n";
+        }
         if (res.exitCode != 0) {
             auto detail = Trim(res.stderrStr);
             if (detail.empty()) detail = Trim(res.stdoutStr);
@@ -1784,6 +1959,21 @@ auto ValidateAiReadyPlan(const std::string& InPlanText, std::string* OutReason) 
 auto CompactSingleLine(const std::string& InText, int InMax) -> std::string {
     std::string out = ReplaceAll(InText, "\n", " ");
     out = ReplaceAll(std::move(out), "\r", "");
+    std::string collapsed;
+    collapsed.reserve(out.size());
+    bool prevSpace = false;
+    for (const char ch : out) {
+        const bool isSpace = (ch == ' ' || ch == '\t');
+        if (isSpace) {
+            if (!prevSpace) {
+                collapsed.push_back(' ');
+            }
+        } else {
+            collapsed.push_back(ch);
+        }
+        prevSpace = isSpace;
+    }
+    out = Trim(std::move(collapsed));
     if (static_cast<int>(out.size()) > InMax && InMax > 3) {
         out = out.substr(0, static_cast<size_t>(InMax - 3)) + "...";
     }
@@ -1895,16 +2085,37 @@ auto BuildIgnoreEntriesFromWorkingTree(const std::filesystem::path& InWorkspaceR
         if (status.exitCode != 0 || Trim(status.stdoutStr).empty()) continue;
         
         std::vector<std::string> candidates;
-        std::istringstream iss(status.stdoutStr);
-        std::string line;
-        while (std::getline(iss, line)) {
+        auto lines = SplitNonEmptyLines(status.stdoutStr);
+        std::set<std::string> artifactDirs;
+
+        for (const auto& line : lines) {
             if (line.size() < 4 || line[0] != '?' || line[1] != '?') continue;
             const auto path = Trim(line.substr(3));
-            if (IsProbableIgnoreArtifactPath(path)) {
+            
+            static const std::vector<std::string> artifactTokens = { ".kano/", ".sisyphus/", ".agents/" };
+            bool identifiedAsArtifactDir = false;
+            for (const auto& token : artifactTokens) {
+                const auto pos = path.find(token);
+                if (pos != std::string::npos) {
+                    artifactDirs.insert(path.substr(0, pos + token.size()));
+                    identifiedAsArtifactDir = true;
+                    break;
+                }
+            }
+            
+            if (!identifiedAsArtifactDir && IsProbableIgnoreArtifactPath(path)) {
                 candidates.push_back(path);
-                if (InMaxPerRepo > 0 && candidates.size() >= static_cast<size_t>(InMaxPerRepo)) break;
             }
         }
+        
+        for (const auto& dir : artifactDirs) {
+            candidates.push_back(dir);
+        }
+        
+        if (InMaxPerRepo > 0 && candidates.size() > static_cast<size_t>(InMaxPerRepo)) {
+            candidates.resize(static_cast<size_t>(InMaxPerRepo));
+        }
+
         if (candidates.empty()) continue;
         
         IgnoreStageEntry e;
@@ -1954,7 +2165,18 @@ auto MergeGitignore(const std::filesystem::path& InTarget, const std::vector<std
 }
 
 auto StampIgnoreAppliedAtAll(std::string InText, const std::string& InTimestamp) -> std::string {
-    return ReplaceAll(InText, "\"applied_at_utc\": \"\"", std::format("\"applied_at_utc\": \"{}\"", InTimestamp));
+    try {
+        auto doc = nlohmann::json::parse(InText);
+        if (doc.contains("stages") && doc["stages"].contains("ignore") && doc["stages"]["ignore"].is_array()) {
+            for (auto& entry : doc["stages"]["ignore"]) {
+                entry["applied_at_utc"] = InTimestamp;
+            }
+        }
+        return SerializePlanJson(doc);
+    } catch (const std::exception& e) {
+        std::cerr << "Warning: failed to stamp ignore applied_at_utc via JSON: " << e.what() << "\n";
+        return InText;
+    }
 }
 
 auto GitHeadSha(const std::filesystem::path& InRepo) -> std::optional<std::string> {
@@ -1978,10 +2200,29 @@ auto RunCommitRunbook(const std::filesystem::path& InWorkspaceRoot,
                       const std::string& InModel,
                       const std::string& InFillMode,
                       bool InDebugAi,
-                      int InMaxCommits) -> int {
+                      int InMaxCommits,
+                      bool InAllowEmptyDirty) -> int {
     const auto dirtyContext = CollectDirtyRepoContextText(InWorkspaceRoot);
     if (Trim(dirtyContext).empty()) {
-        std::cerr << "[plan] workspace clean; skip commit runbook (no-op).\n";
+        std::cerr << "[plan] workspace clean; skip dirty context collection.\n";
+        // Even when workspace is clean, stamp AI planner metadata so the plan
+        // reflects the intended AI provider (avoids "deterministic metadata" errors).
+        if (const auto payload = ReadFileText(InPlanPath)) {
+            const auto provider = ResolveAiProvider(InProvider);
+            if (!provider.empty()) {
+                const auto modelDir = ResolveAiModelDirective(provider, InModel, InWorkspaceRoot);
+                if (auto stamped = StampPlanAiPlannerMetadata(*payload, provider, modelDir)) {
+                    WriteFileText(InPlanPath, *stamped);
+                }
+                // For --combine mode: even with clean workspace, try to fill plan with AI
+                // to generate commit messages for the seeded entries.
+                std::string aiError;
+                if (!FillPlanByAi(InWorkspaceRoot, InPlanPath, InProvider, InModel, InFillMode, InDebugAi, &aiError, InAllowEmptyDirty)) {
+                    std::cerr << "[plan] AI fill failed: " << aiError << "\n";
+                    return InAllowEmptyDirty ? 0 : 2;
+                }
+            }
+        }
         return 0;
     }
     auto payload = ReadFileText(InPlanPath);
@@ -1998,13 +2239,27 @@ auto RunCommitRunbook(const std::filesystem::path& InWorkspaceRoot,
             WriteFileText(InPlanPath, *seeded);
         }
         std::string aiError;
-        return FillPlanByAi(InWorkspaceRoot, InPlanPath, InProvider, InModel, InFillMode, InDebugAi, &aiError);
+        return FillPlanByAi(InWorkspaceRoot, InPlanPath, InProvider, InModel, InFillMode, InDebugAi, &aiError, InAllowEmptyDirty);
     };
 
     const bool requireAiSuccess = RequireAiSuccessForPlanFlow(InWorkspaceRoot);
 
     if (needs && !regenerate()) return 2;
     
+    payload = ReadFileText(InPlanPath);
+    if (!payload) return 2;
+
+    // AI runbook must actively fill plan content even if the seeded plan already
+    // passes basic schema validation; otherwise deterministic seed metadata can
+    // leak through and trip downstream AI-metadata checks.
+    {
+        std::string aiError;
+        if (!FillPlanByAi(InWorkspaceRoot, InPlanPath, InProvider, InModel, InFillMode, InDebugAi, &aiError, InAllowEmptyDirty)) {
+            std::cerr << "[plan] AI fill failed: " << aiError << "\n";
+            return InAllowEmptyDirty ? 0 : 2;
+        }
+    }
+
     payload = ReadFileText(InPlanPath);
     if (!payload) return 2;
 
@@ -2100,21 +2355,36 @@ auto RunPostApplyVerify(const std::filesystem::path& InPlanPath,
         return 2;
     }
     const auto text = *payload;
-    if (stage == "ignore" || stage == "all") {
-        const std::regex ignoreAppliedPattern(R"("applied_at_utc"\s*:\s*"[0-9]{4}-[0-9]{2}-[0-9]{2}T[^"]+")");
-        if (!std::regex_search(text, ignoreAppliedPattern)) {
-            std::cerr << "Error: post-apply verify failed: no applied_at_utc found for ignore stage.\n";
+    try {
+        const auto doc = nlohmann::json::parse(text);
+        if (stage == "ignore" || stage == "all") {
+            bool foundApplied = false;
+            if (doc.contains("stages") && doc["stages"].contains("ignore") && doc["stages"]["ignore"].is_array()) {
+                for (const auto& entry : doc["stages"]["ignore"]) {
+                    const auto applied = entry.value("applied_at_utc", "");
+                    if (!applied.empty()) {
+                        foundApplied = true;
+                        break;
+                    }
+                }
+            }
+            if (!foundApplied) {
+                throw std::runtime_error("post-apply verify failed: no applied_at_utc found for ignore stage in any entry.");
+            }
+        }
+        if (stage == "commit" || stage == "all") {
+            if (!doc.contains("meta") || !doc["meta"].contains("executed_at_utc") || doc["meta"]["executed_at_utc"].get<std::string>().empty()) {
+                throw std::runtime_error("post-apply verify failed: meta.executed_at_utc is empty.");
+            }
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << "\n";
+        if (stage == "ignore" || stage == "all") {
             std::cerr << "Hint: run `kog plan apply --stage ignore --plan-file \"" << InPlanPath.generic_string() << "\"` first.\n";
-            return 2;
-        }
-    }
-    if (stage == "commit" || stage == "all") {
-        const std::regex commitExecutedPattern(R"("executed_at_utc"\s*:\s*"[0-9]{4}-[0-9]{2}-[0-9]{2}T[^"]+")");
-        if (!std::regex_search(text, commitExecutedPattern)) {
-            std::cerr << "Error: post-apply verify failed: meta.executed_at_utc is empty.\n";
+        } else if (stage == "commit" || stage == "all") {
             std::cerr << "Hint: run commit/commit-push apply path first so execution stamp is written.\n";
-            return 2;
         }
+        return 2;
     }
     std::cout << "Plan result-verify passed: " << InPlanPath.generic_string() << "\n";
     return 0;
@@ -2414,11 +2684,11 @@ auto RunPlanApply(const std::filesystem::path& InWorkspaceRoot,
     if (stage == "ignore" || stage == "all") {
         const auto entries = ParseIgnoreEntries(*payload);
         if (entries.empty()) {
-            std::cerr << "Error: no ignore plan entries found in stages.ignore.\n";
-            std::cerr << "Hint: run `kog plan ignore-init --plan-file \"" << InPlanPath.generic_string() << "\"` first.\n";
             if (stage == "ignore") {
+                std::cerr << "[plan][ignore] no ignore plan entries; skip ignore stage.\n";
                 return 0;
             }
+            std::cerr << "[plan][ignore] no ignore plan entries; skip ignore stage for --stage all.\n";
         }
         for (std::size_t idx = 0; idx < entries.size(); ++idx) {
             const auto& e = entries[idx];

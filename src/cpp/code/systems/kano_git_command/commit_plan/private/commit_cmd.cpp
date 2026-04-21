@@ -9,6 +9,7 @@
 #include "secret_scan_utils.hpp"
 #include "commit_ai_utils.hpp"
 #include "ai_utils.hpp"
+#include "plan_utils.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -49,8 +50,6 @@ auto IsKogDebugEnabled() -> bool;
 namespace {
 
 auto DisplayRepoLabel(const std::filesystem::path& InWorkspaceRoot, const std::filesystem::path& InRepo) -> std::string;
-auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<std::filesystem::path>;
-auto HomeDirectory() -> std::filesystem::path;
 auto RunCommitPreflight(const std::filesystem::path& InRepo) -> CommitPreflightReport;
 
 auto WarnPlanWorkspaceStateDrift(const std::string& InNormalizedCommitPlanPath,
@@ -65,48 +64,6 @@ auto WarnPlanWorkspaceStateDrift(const std::string& InNormalizedCommitPlanPath,
     std::cerr << "  plan.dirty_fingerprint=" << InPlanDirtyFingerprint << "\n";
     std::cerr << "  current.dirty_fingerprint=" << InCurrentDirtyFingerprint << "\n";
     std::cerr << "Hint: regenerate/refill plan before commit apply.\n";
-}
-
-auto NormalizeInputPathForCurrentPlatform(std::string InPath) -> std::string {
-    auto path = Trim(std::move(InPath));
-    if (path.empty()) {
-        return path;
-    }
-#if defined(_WIN32)
-    auto toWindowsPath = [](char drive, std::string rest) -> std::string {
-        for (auto& ch : rest) {
-            if (ch == '/') {
-                ch = '\\';
-            }
-        }
-        if (!rest.empty() && (rest.front() == '\\' || rest.front() == '/')) {
-            rest.erase(rest.begin());
-        }
-        std::string out;
-        out.reserve(rest.size() + 3);
-        out.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(drive))));
-        out.append(":\\");
-        out.append(rest);
-        return out;
-    };
-
-    if (path.rfind("/cygdrive/", 0) == 0 && path.size() > 11 && std::isalpha(static_cast<unsigned char>(path[10])) &&
-        path[11] == '/') {
-        return toWindowsPath(path[10], path.substr(12));
-    }
-    if (path.rfind("/mnt/", 0) == 0 && path.size() > 6 && std::isalpha(static_cast<unsigned char>(path[5])) &&
-        path[6] == '/') {
-        return toWindowsPath(path[5], path.substr(7));
-    }
-    if (path.size() > 3 && path[0] == '/' && std::isalpha(static_cast<unsigned char>(path[1])) && path[2] == '/') {
-        return toWindowsPath(path[1], path.substr(3));
-    }
-#endif
-    return path;
-}
-
-auto NormalizeAiModelKeyword(const std::string& InValue) -> std::string {
-    return kog_config::NormalizeAiModelSelection(InValue);
 }
 
 auto IsAgentProxyMode(const std::string& InAgent) -> bool {
@@ -349,15 +306,6 @@ auto MaybeWarnAboutReservedPaths(const std::filesystem::path& InRepo,
               << '\n';
 }
 
-auto GitCapture(const std::filesystem::path& InRepo, const std::vector<std::string>& InArgs) -> shell::ExecResult {
-    std::vector<std::string> args;
-    args.reserve(InArgs.size() + 2);
-    args.push_back("-C");
-    args.push_back(InRepo.lexically_normal().generic_string());
-    args.insert(args.end(), InArgs.begin(), InArgs.end());
-    return shell::ExecuteCommand("git", args, shell::ExecMode::Capture);
-}
-
 auto IsGitRepo(const std::filesystem::path& InRepo) -> bool {
     return GitCapture(InRepo, {"rev-parse", "--git-dir"}).exitCode == 0;
 }
@@ -396,10 +344,6 @@ auto ResolveWorkspaceRootFromInvocation(const std::filesystem::path& InStartPath
         return bestGitRoot.lexically_normal();
     }
     return current.lexically_normal();
-}
-
-auto GitPassThrough(const std::filesystem::path& InRepo, const std::vector<std::string>& InArgs) -> shell::ExecResult {
-    return shell::ExecuteCommand("git", InArgs, shell::ExecMode::PassThrough, InRepo);
 }
 
 auto HasCommand(const std::string& InCommand, const std::vector<std::string>& InArgs = {"--help"}) -> bool {
@@ -882,16 +826,6 @@ auto RunPipelineSafetyGatesForNonAiCommit(const std::filesystem::path& InWorkspa
     }
 }
 
-auto HomeDirectory() -> std::filesystem::path {
-    if (const char* home = std::getenv("HOME"); home != nullptr && std::string(home).size() > 0) {
-        return std::filesystem::path(home);
-    }
-    if (const char* userProfile = std::getenv("USERPROFILE"); userProfile != nullptr && std::string(userProfile).size() > 0) {
-        return std::filesystem::path(userProfile);
-    }
-    return {};
-}
-
 auto GitConfigPath(const std::string& InKey) -> std::string {
     const auto out = shell::ExecuteCommand("git", {"config", "--path", "--get", InKey}, shell::ExecMode::Capture, std::filesystem::current_path());
     if (out.exitCode != 0) {
@@ -1318,8 +1252,6 @@ auto DiscoverRegisteredPathsRecursive(const std::filesystem::path& InWorkspaceRo
     return out;
 }
 
-auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<std::filesystem::path>;
-
 auto NormalizePath(const std::filesystem::path& InPath) -> std::filesystem::path {
     return InPath.lexically_normal();
 }
@@ -1600,36 +1532,6 @@ auto DiscoverWorkspaceRepoRecords(const std::filesystem::path& InRoot,
     return repos;
 }
 
-auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<std::filesystem::path> {
-    // Always use DiscoverRepos with fresh discovery to ensure consistency between
-    // fingerprint computation and manifest loading. Previously this used manifest->repos
-    // when available, but manifest and discoveryCache can diverge, causing workspace
-    // state drift. Force fresh discovery (useCache=false) to avoid cache inconsistencies.
-    workspace::DiscoverOptions options;
-    options.rootDir = InRoot;
-    options.maxDepth = 12;
-    options.useCache = false;  // Force fresh discovery for fingerprint stability
-    options.refreshCache = true; // Update cache after discovery
-    options.incremental = false;
-    options.metadataLevel = "minimal";
-    const auto discovery = workspace::DiscoverRepos(options);
-    std::vector<std::filesystem::path> repos;
-    repos.reserve(discovery.repos.size());
-    for (const auto& repo : discovery.repos) {
-        repos.push_back(repo.path.lexically_normal());
-    }
-    std::sort(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
-        return RepoKey(A) < RepoKey(B);
-    });
-    repos.erase(std::unique(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
-        return RepoKey(A) == RepoKey(B);
-    }), repos.end());
-    if (repos.empty()) {
-        repos.push_back(InRoot.lexically_normal());
-    }
-    return repos;
-}
-
 auto WorkspaceRepoKey(const std::filesystem::path& InWorkspaceRoot, const std::filesystem::path& InRepo) -> std::string {
     const auto rootNorm = NormalizePath(InWorkspaceRoot);
     const auto repoNorm = NormalizePath(InRepo);
@@ -1657,97 +1559,6 @@ auto ExtractBranchOidFromStatusV2(const std::string& InStatus) -> std::string {
         }
     }
     return "no-head";
-}
-
-auto ComputeWorkspaceBaseHeadSha(const std::filesystem::path& InWorkspaceRoot) -> std::string {
-    std::vector<std::string> lines;
-    const auto repos = DiscoverWorkspaceRepos(InWorkspaceRoot);
-    lines.reserve(repos.size());
-    for (const auto& repo : repos) {
-        const auto head = GitCapture(repo, {"rev-parse", "HEAD"});
-        const auto sha = (head.exitCode == 0) ? Trim(head.stdoutStr) : std::string("0000000000000000000000000000000000000000");
-        lines.push_back(WorkspaceRepoKey(InWorkspaceRoot, repo) + "\t" + sha);
-    }
-    std::sort(lines.begin(), lines.end());
-    std::ostringstream canonical;
-    for (const auto& line : lines) {
-        canonical << line << "\n";
-    }
-    return "ws-head-v2-" + Fnv1a64Hex(canonical.str());
-}
-
-auto ComputeWorkspaceDirtyFingerprint(const std::filesystem::path& InWorkspaceRoot) -> std::string {
-    std::vector<std::string> lines;
-    const auto repos = DiscoverWorkspaceRepos(InWorkspaceRoot);
-    lines.reserve(repos.size());
-    for (const auto& repo : repos) {
-        // Use basic --porcelain format for compatibility with ParseStatusChangedPath
-        const auto status = GitCapture(repo, {"status", "--porcelain", "--branch", "--untracked-files=normal", "--ignore-submodules=none"});
-        if (status.exitCode != 0) {
-            continue;
-        }
-        std::istringstream iss(status.stdoutStr);
-        std::ostringstream filtered;
-        std::string line;
-        while (std::getline(iss, line)) {
-            const auto trimmed = Trim(line);
-            if (trimmed.empty()) {
-                continue;
-            }
-            // Skip branch header lines (## BranchName in basic porcelain, # comment in v2)
-            if (trimmed.rfind("## ", 0) == 0 || trimmed.rfind("# ", 0) == 0) {
-                continue;
-            }
-
-            // Check if this line contains a .kano/ path BEFORE calling ParseStatusChangedPath
-            // because ParseStatusChangedPath returns nullopt for deleted files (D)
-            // and we still need to filter deleted .kano/ artifacts
-            if (trimmed.find(".kano/") != std::string::npos) {
-                // Extract the path from the line - format is "XY pathname" where XY is status
-                // For deleted files, ParseStatusChangedPath returns nullopt, so we extract manually
-                const auto pathStart = trimmed.find(".kano/");
-                const auto pathStartBefore = (pathStart > 0) ? pathStart - 1 : 0;
-                // Find the space before the path to get the actual start
-                auto spacePos = trimmed.rfind(' ', pathStartBefore);
-                if (spacePos == std::string::npos) {
-                    spacePos = 0;
-                } else {
-                    spacePos = spacePos + 1;
-                }
-                const auto path = Trim(trimmed.substr(spacePos));
-                if (IsInternalPipelineArtifactPath(path)) {
-                    continue; // Skip internal artifacts
-                }
-            }
-
-            // Use ParseStatusChangedPath to extract path and check for internal artifacts
-            const auto maybePath = ParseStatusChangedPath(trimmed);
-            if (maybePath.has_value() && IsInternalPipelineArtifactPath(*maybePath)) {
-                continue; // Skip internal artifacts
-            }
-
-            filtered << trimmed << "\n";
-        }
-        const auto normalized = Trim(filtered.str());
-        // Get HEAD SHA directly via git rev-parse (not from status output)
-        const auto headResult = GitCapture(repo, {"rev-parse", "HEAD"});
-        const auto head = (headResult.exitCode == 0) ? Trim(headResult.stdoutStr) : std::string("0000000000000000000000000000000000000000");
-        const auto statusFingerprint = normalized.empty() ? std::string("clean") : Fnv1a64Hex(normalized);
-        lines.push_back(std::format("{}|{}|{}",
-                                    WorkspaceRepoKey(InWorkspaceRoot, repo),
-                                    head,
-                                    statusFingerprint));
-    }
-    std::sort(lines.begin(), lines.end());
-    std::ostringstream canonical;
-    for (const auto& line : lines) {
-        canonical << line << "\n";
-    }
-    const auto result = "ws-dirty-v2-" + Fnv1a64Hex(canonical.str());
-    if (IsKogDebugEnabled()) {
-        std::cerr << "[DEBUG] ComputeWorkspaceDirtyFingerprint: result=" << result << "\n";
-    }
-    return result;
 }
 
 auto JsonEscape(const std::string& InValue) -> std::string {
@@ -2150,7 +1961,7 @@ auto ParseStageEntries(const std::string& InStageArrayBody) -> std::vector<RepoC
                 if (!messageField.has_value()) {
                     continue;
                 }
-                const auto message = Trim(*messageField);
+                const auto message = CompactSingleLine(Trim(*messageField), 200);
                 if (!message.empty()) {
                     RepoCommitPlanEntry::CommitItem item;
                     item.message = message;
@@ -2527,6 +2338,7 @@ auto RunCommitSeedViaSelf(const std::filesystem::path& InWorkspaceRoot,
     std::vector<std::string> args = {
         "plan", "commit-seed",
         "--force",
+        "--deterministic",  // Generate actual messages, not placeholders (needed for --combine mode)
         "--plan-file", InPlanPath.generic_string(),
     };
     const auto result = shell::ExecuteCommand(ResolveSelfBinaryCommand(), args, shell::ExecMode::Capture, InWorkspaceRoot);
@@ -2595,7 +2407,8 @@ auto RunCommitPlanRunbookViaSelf(const std::filesystem::path& InWorkspaceRoot,
                                  const std::filesystem::path& InPlanPath,
                                  const std::string& InProvider,
                                  const std::string& InModel,
-                                 const std::string& InFillMode) -> CommitRunbookResult {
+                                 const std::string& InFillMode,
+                                 bool InAllowEmptyDirty) -> CommitRunbookResult {
     std::vector<std::string> args = {
         "plan", "runbook", "commit",
         "--plan-file", InPlanPath.generic_string(),
@@ -2608,6 +2421,9 @@ auto RunCommitPlanRunbookViaSelf(const std::filesystem::path& InWorkspaceRoot,
     if (!InFillMode.empty()) {
         args.push_back("--ai-fill-mode");
         args.push_back(InFillMode);
+    }
+    if (InAllowEmptyDirty) {
+        args.push_back("--allow-empty-dirty");
     }
     const auto result = shell::ExecuteCommand(ResolveSelfBinaryCommand(), args, shell::ExecMode::Capture, InWorkspaceRoot);
     CommitRunbookResult out;
@@ -2656,7 +2472,8 @@ auto HumanAutoPlanLooksDeterministic(const std::filesystem::path& InPlanPath,
 auto RunCommitAutoPlanPipeline(const std::filesystem::path& InWorkspaceRoot,
                                const NativeAiConfig& InAi,
                                const std::string& InAiFillMode,
-                               const bool InProfile) -> int {
+                               const bool InProfile,
+                               const bool InAllowEmptyDirty) -> int {
     using clock = std::chrono::steady_clock;
     const auto totalStart = clock::now();
     long long planNewMillis = 0;
@@ -2705,7 +2522,7 @@ auto RunCommitAutoPlanPipeline(const std::filesystem::path& InWorkspaceRoot,
     }
 
     const auto commitRunbookStart = clock::now();
-    const auto runbookResult = RunCommitPlanRunbookViaSelf(InWorkspaceRoot, autoPlanPath, InAi.provider, InAi.model, InAiFillMode);
+    const auto runbookResult = RunCommitPlanRunbookViaSelf(InWorkspaceRoot, autoPlanPath, InAi.provider, InAi.model, InAiFillMode, InAllowEmptyDirty);
     commitRunbookMillis = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - commitRunbookStart).count();
     aiFillMillis = runbookResult.aiFillMillis;
     if (runbookResult.exitCode != 0) {
@@ -2759,7 +2576,8 @@ auto RunCommitAutoPlanPipeline(const std::filesystem::path& InWorkspaceRoot,
 auto RunAmendAutoPlanPipeline(const std::filesystem::path& InWorkspaceRoot,
                                const NativeAiConfig& InAi,
                                const std::string& InAiFillMode,
-                               const bool InProfile) -> int {
+                               const bool InProfile,
+                               const bool InAllowEmptyDirty) -> int {
     using clock = std::chrono::steady_clock;
     const auto totalStart = clock::now();
     long long planNewMillis = 0;
@@ -2807,7 +2625,7 @@ auto RunAmendAutoPlanPipeline(const std::filesystem::path& InWorkspaceRoot,
     }
 
     const auto commitRunbookStart = clock::now();
-    const auto runbookResult = RunCommitPlanRunbookViaSelf(InWorkspaceRoot, autoPlanPath, InAi.provider, InAi.model, InAiFillMode);
+    const auto runbookResult = RunCommitPlanRunbookViaSelf(InWorkspaceRoot, autoPlanPath, InAi.provider, InAi.model, InAiFillMode, InAllowEmptyDirty);
     commitRunbookMillis = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - commitRunbookStart).count();
     aiFillMillis = runbookResult.aiFillMillis;
     if (runbookResult.exitCode != 0) {
@@ -3324,14 +3142,6 @@ auto CurrentBranch(const std::filesystem::path& InRepo) -> std::string {
     return value;
 }
 
-auto ResolveUpstreamRef(const std::filesystem::path& InRepo) -> std::string {
-    const auto out = GitCapture(InRepo, {"rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"});
-    if (out.exitCode != 0) {
-        return {};
-    }
-    return Trim(out.stdoutStr);
-}
-
 auto ParsePositiveInt(const std::string& InValue) -> int {
     try {
         const auto value = Trim(InValue);
@@ -3673,9 +3483,11 @@ auto PrintCommitSummary(const std::filesystem::path& InWorkspaceRoot,
     std::cout << "\n=== Native Commit Summary ===\n";
     std::cout << std::left << std::setw(36) << "Repo"
               << std::setw(12) << "Result"
+              << std::setw(36) << "Message"
               << "Detail\n";
     std::cout << std::left << std::setw(36) << "----"
               << std::setw(12) << "------"
+              << std::setw(36) << "-------"
               << "------\n";
 
     bool printedAnyCommitted = false;
@@ -3752,8 +3564,10 @@ auto PrintAmendSummary(const std::filesystem::path& InWorkspaceRoot,
             skipped += 1;
         }
 
+        const auto message = item.commitTitle.empty() ? std::string("-") : CompactSingleLine(item.commitTitle, 34);
         std::cout << std::left << std::setw(36) << repoLabel
                   << std::setw(12) << status
+                  << std::setw(36) << message
                   << item.note << "\n";
     }
 
@@ -4224,6 +4038,7 @@ auto RunAmendNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
 
         result.amended = true;
         result.note = "amended via plan";
+        result.commitTitle = CompactSingleLine(commitMessage, 200);
         return result;
     };
 
@@ -4492,6 +4307,7 @@ void RegisterCommit(CLI::App& InApp) {
     auto* bPreflightOnly = new bool{false};
     auto* bNoNativePreflight = new bool{false};
     auto* bProfile = new bool{false};
+    auto* bAllowEmptyDirty = new bool{false};
 
     auto configure = [&](CLI::App* InCmd) {
         InCmd->add_option("--repos", *repos, "Commit target repos (comma-separated). Default: auto-discover workspace repos");
@@ -4515,6 +4331,7 @@ void RegisterCommit(CLI::App& InApp) {
         InCmd->add_flag("--preflight-only", *bPreflightOnly, "Run native preflight checks and exit without commit");
         InCmd->add_flag("--no-native-preflight", *bNoNativePreflight, "Skip native preflight checks before shell commit");
         InCmd->add_flag("--profile", *bProfile, "Print native commit timing/profile summary");
+        InCmd->add_flag("--allow-empty-dirty", *bAllowEmptyDirty, "Allow AI plan-fill to run even when workspace dirty context is empty");
     };
 
     configure(cmd);
@@ -4672,7 +4489,7 @@ void RegisterCommit(CLI::App& InApp) {
             }
 
             commitPlanFile->clear();
-            const auto code = RunCommitAutoPlanPipeline(workspaceRoot, ai, *aiFillMode, *bProfile);
+            const auto code = RunCommitAutoPlanPipeline(workspaceRoot, ai, *aiFillMode, *bProfile, *bAllowEmptyDirty);
             std::exit(code);
         }
 
@@ -5001,6 +4818,8 @@ void RegisterAmend(CLI::App& InApp) {
 
     auto* bCombineUnpushed = new bool{false};
     cmd->add_flag("--combine,--combine-unpushed,-U", *bCombineUnpushed, "Combine all local commits not pushed to upstream into one commit");
+    auto* bAllowEmptyDirty = new bool{false};
+    cmd->add_flag("--allow-empty-dirty", *bAllowEmptyDirty, "Allow AI plan-fill to run even when workspace dirty context is empty");
 
     cmd->callback([=]() {
         const auto invocationRoot = repoRoot->empty() ? std::filesystem::current_path() : std::filesystem::path(*repoRoot);
@@ -5036,7 +4855,7 @@ void RegisterAmend(CLI::App& InApp) {
         // autoPlanAiMode: ai.enabled && message.empty() && amendPlanFile.empty() && combineUnpushed
         const bool autoPlanAiMode = ai.enabled && message->empty() && amendPlanFile->empty();
         if (autoPlanAiMode && *bCombineUnpushed) {
-            const auto code = RunAmendAutoPlanPipeline(workspaceRoot, ai, "commit", false);
+            const auto code = RunAmendAutoPlanPipeline(workspaceRoot, ai, "commit", false, *bAllowEmptyDirty);
             std::exit(code);
         }
 
