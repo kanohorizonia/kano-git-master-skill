@@ -3,6 +3,7 @@
 
 #include <CLI/CLI.hpp>
 #include "shell_executor.hpp"
+#include "terminal_color.hpp"
 
 #include <iostream>
 #include <string>
@@ -25,14 +26,14 @@ void RegisterDoctor(CLI::App& InApp) {
         }
 
         int failures = 0;
-        std::cout << "=== Native Doctor ===\n";
+        std::cout << kano::terminal::PreflightHeader("Native Doctor") << "\n";
 
         const auto gitVersion = shell::ExecuteCommand("git", {"--version"}, shell::ExecMode::Capture);
         if (gitVersion.exitCode != 0) {
-            std::cerr << "[FAIL] git is not available in PATH\n";
+            std::cerr << kano::terminal::FailTag() << " git is not available in PATH\n";
             std::exit(1);
         }
-        std::cout << "[PASS] " << gitVersion.stdoutStr;
+        std::cout << kano::terminal::PassTag() << " " << gitVersion.stdoutStr;
 
         const auto inRepo = shell::ExecuteCommand(
             "git",
@@ -40,10 +41,10 @@ void RegisterDoctor(CLI::App& InApp) {
             shell::ExecMode::Capture
         );
         if (inRepo.exitCode != 0 || inRepo.stdoutStr.find("true") == std::string::npos) {
-            std::cerr << "[FAIL] not inside a git repository\n";
+            std::cerr << kano::terminal::FailTag() << " not inside a git repository\n";
             std::exit(1);
         }
-        std::cout << "[PASS] inside git repository\n";
+        std::cout << kano::terminal::PassTag() << " inside git repository\n";
 
         const auto branch = shell::ExecuteCommand(
             "git",
@@ -51,7 +52,7 @@ void RegisterDoctor(CLI::App& InApp) {
             shell::ExecMode::Capture
         );
         if (branch.exitCode == 0) {
-            std::cout << "[INFO] current branch: " << branch.stdoutStr;
+            std::cout << kano::terminal::InfoTag() << " current branch: " << branch.stdoutStr;
         }
 
         const auto status = shell::ExecuteCommand(
@@ -61,12 +62,12 @@ void RegisterDoctor(CLI::App& InApp) {
         );
         if (status.exitCode == 0) {
             if (status.stdoutStr.empty()) {
-                std::cout << "[PASS] working tree is clean\n";
+                std::cout << kano::terminal::PassTag() << " working tree is clean\n";
             } else {
-                std::cout << "[WARN] working tree has local changes\n";
+                std::cout << kano::terminal::WarnTag() << " working tree has local changes\n";
             }
         } else {
-            std::cerr << "[FAIL] unable to read git status\n";
+            std::cerr << kano::terminal::FailTag() << " unable to read git status\n";
             failures += 1;
         }
 
@@ -76,9 +77,9 @@ void RegisterDoctor(CLI::App& InApp) {
             shell::ExecMode::Capture
         );
         if (origin.exitCode == 0) {
-            std::cout << "[PASS] origin remote configured\n";
+            std::cout << kano::terminal::PassTag() << " origin remote configured\n";
         } else {
-            std::cout << "[WARN] origin remote not configured\n";
+            std::cout << kano::terminal::WarnTag() << " origin remote not configured\n";
         }
 
         const auto upstream = shell::ExecuteCommand(
@@ -87,26 +88,26 @@ void RegisterDoctor(CLI::App& InApp) {
             shell::ExecMode::Capture
         );
         if (upstream.exitCode == 0) {
-            std::cout << "[PASS] upstream remote configured\n";
+            std::cout << kano::terminal::PassTag() << " upstream remote configured\n";
         } else {
-            std::cout << "[INFO] upstream remote not configured\n";
+            std::cout << kano::terminal::InfoTag() << " upstream remote not configured\n";
         }
 
         const auto scalar = shell::ExecuteCommand("git", {"scalar", "--help"}, shell::ExecMode::Capture);
         if (scalar.exitCode == 0) {
-            std::cout << "[PASS] git scalar available\n";
+            std::cout << kano::terminal::PassTag() << " git scalar available\n";
         } else {
-            std::cout << "[INFO] git scalar not available\n";
+            std::cout << kano::terminal::InfoTag() << " git scalar not available\n";
         }
 
         const auto bun = shell::ExecuteCommand("bun", {"--version"}, shell::ExecMode::Capture);
         if (bun.exitCode == 0) {
-            std::cout << "[PASS] bun available: " << bun.stdoutStr;
+            std::cout << kano::terminal::PassTag() << " bun available: " << bun.stdoutStr;
         } else {
-            std::cout << "[INFO] bun not available in PATH\n";
+            std::cout << kano::terminal::InfoTag() << " bun not available in PATH\n";
         }
 
-        std::cout << "=== Doctor complete ===\n";
+        std::cout << kano::terminal::PreflightHeader("Doctor complete") << "\n";
         std::exit(failures == 0 ? 0 : 1);
     });
 }

@@ -1,4 +1,5 @@
 #include "plan_utils.hpp"
+#include "terminal_color.hpp"
 #include "ai_utils.hpp"
 #include "command_runtime_ops.hpp"
 #include "kog_config.hpp"
@@ -648,11 +649,9 @@ auto ExtractPlanWorkspaceHashes(const std::string& InPlanText, std::string* OutB
         if (OutBaseHeadSha)      *OutBaseHeadSha      = baseHeadSha;
         if (OutDirtyFingerprint) *OutDirtyFingerprint = dirtyFingerprint;
         return true;
-    } catch (const nlohmann::json::parse_error& e) {
-        std::cerr << "[plan] JSON parse error: " << e.what() << "\n";
+    } catch (const nlohmann::json::parse_error& /*e*/) {
         return false;
-    } catch (const nlohmann::json::type_error& e) {
-        std::cerr << "[plan] JSON type error: " << e.what() << "\n";
+    } catch (const nlohmann::json::type_error& /*e*/) {
         return false;
     }
 }
@@ -752,11 +751,9 @@ auto HasValidCommitItems(const std::string& InPlanText) -> bool {
             }
         }
         return false;
-    } catch (const nlohmann::json::parse_error& e) {
-        std::cerr << "[plan] JSON parse error: " << e.what() << "\n";
+    } catch (const nlohmann::json::parse_error& /*e*/) {
         return false;
-    } catch (const nlohmann::json::type_error& e) {
-        std::cerr << "[plan] JSON type error: " << e.what() << "\n";
+    } catch (const nlohmann::json::type_error& /*e*/) {
         return false;
     }
 }
@@ -832,11 +829,9 @@ auto SeedCommitStage(const std::filesystem::path& InWorkspaceRoot,
             result = SerializePlanJson(freshDoc);
         }
         return result;
-    } catch (const nlohmann::json::parse_error& e) {
-        std::cerr << "[plan] JSON parse error: " << e.what() << "\n";
+    } catch (const nlohmann::json::parse_error& /*e*/) {
         return std::nullopt;
-    } catch (const nlohmann::json::type_error& e) {
-        std::cerr << "[plan] JSON type error: " << e.what() << "\n";
+    } catch (const nlohmann::json::type_error& /*e*/) {
         return std::nullopt;
     }
 }
@@ -945,11 +940,9 @@ auto TryInjectFallbackCommits(const std::filesystem::path& InWorkspaceRoot, cons
         if (commitStage.empty()) return std::nullopt;
         doc["stages"]["commit"] = commitStage;
         return SerializePlanJson(doc);
-    } catch (const nlohmann::json::parse_error& e) {
-        std::cerr << "[plan] JSON parse error: " << e.what() << "\n";
+    } catch (const nlohmann::json::parse_error& /*e*/) {
         return std::nullopt;
-    } catch (const nlohmann::json::type_error& e) {
-        std::cerr << "[plan] JSON type error: " << e.what() << "\n";
+    } catch (const nlohmann::json::type_error& /*e*/) {
         return std::nullopt;
     }
 }
@@ -1025,10 +1018,8 @@ auto CollectCommitPlanEntries(const std::string& InPlanText) -> std::vector<Comm
                 out.push_back(std::move(entry));
             }
         }
-    } catch (const nlohmann::json::parse_error& e) {
-        std::cerr << "[plan] JSON parse error: " << e.what() << "\n";
-    } catch (const nlohmann::json::type_error& e) {
-        std::cerr << "[plan] JSON type error: " << e.what() << "\n";
+    } catch (const nlohmann::json::parse_error& /*e*/) {
+    } catch (const nlohmann::json::type_error& /*e*/) {
     }
     return out;
 }
@@ -1072,12 +1063,10 @@ auto ParseCommitFillOps(const std::string& InJson, std::string* OutError) -> std
             }
             ops.push_back(std::move(op));
         }
-    } catch (const nlohmann::json::parse_error& e) {
-        std::cerr << "[plan] JSON parse error: " << e.what() << "\n";
-        if (OutError) *OutError = e.what();
-    } catch (const nlohmann::json::type_error& e) {
-        std::cerr << "[plan] JSON type error: " << e.what() << "\n";
-        if (OutError) *OutError = e.what();
+    } catch (const nlohmann::json::parse_error& /*e*/) {
+        if (OutError) *OutError = "JSON parse error";
+    } catch (const nlohmann::json::type_error& /*e*/) {
+        if (OutError) *OutError = "JSON type error";
     }
     return ops;
 }
@@ -1113,11 +1102,9 @@ auto ApplyCommitFillOps(std::string InPlanText, const std::vector<CommitFillOp>&
             }
         }
         return SerializePlanJson(doc);
-    } catch (const nlohmann::json::parse_error& e) {
-        std::cerr << "[plan] JSON parse error: " << e.what() << "\n";
+    } catch (const nlohmann::json::parse_error& /*e*/) {
         return InPlanText;
-    } catch (const nlohmann::json::type_error& e) {
-        std::cerr << "[plan] JSON type error: " << e.what() << "\n";
+    } catch (const nlohmann::json::type_error& /*e*/) {
         return InPlanText;
     }
 }
@@ -1130,11 +1117,9 @@ auto StampPlanAiPlannerMetadata(std::string InPlanText,
         doc["meta"]["planner"]["provider"]  = InProvider;
         doc["meta"]["planner"]["ai-model"]  = InModel.empty() ? std::string("auto") : InModel;
         return SerializePlanJson(doc);
-    } catch (const nlohmann::json::parse_error& e) {
-        std::cerr << "[plan] JSON parse error: " << e.what() << "\n";
+    } catch (const nlohmann::json::parse_error& /*e*/) {
         return std::nullopt;
-    } catch (const nlohmann::json::type_error& e) {
-        std::cerr << "[plan] JSON type error: " << e.what() << "\n";
+    } catch (const nlohmann::json::type_error& /*e*/) {
         return std::nullopt;
     }
 }
@@ -1179,11 +1164,9 @@ auto UpsertCommitEntry(const std::string& InPlanText,
         }
 
         return SerializePlanJson(doc);
-    } catch (const nlohmann::json::parse_error& e) {
-        std::cerr << "[plan] JSON parse error: " << e.what() << "\n";
+    } catch (const nlohmann::json::parse_error& /*e*/) {
         return std::nullopt;
-    } catch (const nlohmann::json::type_error& e) {
-        std::cerr << "[plan] JSON type error: " << e.what() << "\n";
+    } catch (const nlohmann::json::type_error& /*e*/) {
         return std::nullopt;
     }
 }
@@ -1237,18 +1220,18 @@ auto RunAiGenerate(const std::string& InProvider,
                      const std::filesystem::path& InWorkspaceRoot,
                      bool InQuiet) -> shell::ExecResult {
     auto LogInvocation = [&](const std::string& binary, const std::vector<std::string>& args) {
-        std::cerr << "\n[kog ai] -- AI Invocation (plan-fill) --\n";
-        std::cerr << "[kog ai] command : " << binary;
+        std::cerr << "\n" << kano::terminal::AiPrefix() << " -- AI Invocation (plan-fill) --\n";
+        std::cerr << kano::terminal::AiPrefix() << " command : " << binary;
         for (const auto& a : args) {
             if (a.find(' ') != std::string::npos || a.empty()) std::cerr << " \"" << a << "\"";
             else std::cerr << " " << a;
         }
-        std::cerr << "\n[kog ai] model   : " << (InModel.empty() ? "auto" : InModel) << "\n";
+        std::cerr << "\n" << kano::terminal::AiPrefix() << " model   : " << (InModel.empty() ? "auto" : InModel) << "\n";
         static constexpr std::string_view kDivider = "----------------------------------------";
         if (IsTruthyEnv(std::getenv("KOG_DEBUG_AI_PROMPT")) || IsTruthyEnv(std::getenv("KOG_DEBUG"))) {
-            std::cerr << "[kog ai] prompt  :\n" << kDivider << "\n" << InPrompt << "\n" << kDivider << "\n";
+            std::cerr << kano::terminal::AiPrefix() << " prompt  :\n" << kDivider << "\n" << InPrompt << "\n" << kDivider << "\n";
         }
-        std::cerr << "[kog ai] Waiting for " << InProvider << " response...\n";
+        std::cerr << kano::terminal::AiPrefix() << " Waiting for " << InProvider << " response...\n";
         std::cerr.flush();
     };
 
@@ -1468,7 +1451,7 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
     const auto dirty = CollectDirtyRepoContextText(InWorkspaceRoot);
     if (Trim(dirty).empty() && !InAllowEmptyDirty) {
         const std::string msg = "workspace clean: no dirty context for AI plan-fill";
-        std::cerr << "[plan] " << msg << "\n";
+        std::cerr << kano::terminal::PlanPrefix() << " " << msg << "\n";
         if (OutError) *OutError = msg;
         return false;
     }
@@ -1477,11 +1460,11 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
     const auto entries = CollectCommitPlanEntries(templateJson);
     if (entries.empty()) return true;
 
-    std::cerr << "\n[plan] -- AI commit plan fill --\n";
-    std::cerr << "[plan] mode     : " << fillMode << "\n";
-    std::cerr << "[plan] provider : " << provider << "\n";
-    std::cerr << "[plan] model    : " << (modelDir.empty() ? "auto" : modelDir) << "\n";
-    std::cerr << "[plan] entries  : " << entries.size() << "\n";
+    std::cerr << "\n" << kano::terminal::PlanPrefix() << " -- AI commit plan fill --\n";
+    std::cerr << kano::terminal::PlanPrefix() << " mode     : " << fillMode << "\n";
+    std::cerr << kano::terminal::PlanPrefix() << " provider : " << provider << "\n";
+    std::cerr << kano::terminal::PlanPrefix() << " model    : " << (modelDir.empty() ? "auto" : modelDir) << "\n";
+    std::cerr << kano::terminal::PlanPrefix() << " entries  : " << entries.size() << "\n";
     
     std::string finalPlanJson = templateJson;
     bool anyFilled = false;
@@ -1597,14 +1580,14 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
                     }
                 } catch (...) {
                     // If the AI returned malformed JSON, skip this entry
-                    std::cerr << "[plan] failed to parse AI JSON for entry " << entry.index << "\n";
+                    std::cerr << kano::terminal::PlanPrefix() << " failed to parse AI JSON for entry " << entry.index << "\n";
                 }
                 finalPlanJson = ApplyCommitFillOps(finalPlanJson, {op});
                 const auto finalMessage = Trim(op.message.empty() ? entry.message : op.message);
                 if (!finalMessage.empty()) {
-                    std::cerr << "[plan] filled entry " << entry.index << " message: " << finalMessage << "\n";
+                    std::cerr << kano::terminal::PlanPrefix() << " filled entry " << entry.index << " message: " << finalMessage << "\n";
                 } else {
-                    std::cerr << "[plan] warning: entry " << entry.index << " message remains empty\n";
+                    std::cerr << kano::terminal::PlanPrefix() << " warning: entry " << entry.index << " message remains empty\n";
                 }
                 // Only count as filled if message doesn't contain placeholder
                 if (op.message.find("replace-with-") == std::string::npos && !op.message.empty()) {
@@ -1644,7 +1627,7 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
     
     // If no entries were actually filled (AI returned placeholders), return false
     if (!anyFilled) {
-        std::cerr << "[plan] AI failed to produce commit messages\n";
+        std::cerr << kano::terminal::PlanPrefix() << " AI failed to produce commit messages\n";
         if (OutError) *OutError = "AI failed to produce commit messages";
         return false;
     }
@@ -1699,10 +1682,8 @@ auto ParseIgnoreEntries(const std::string& InText) -> std::vector<IgnoreStageEnt
             }
             out.push_back(std::move(entry));
         }
-    } catch (const nlohmann::json::parse_error& e) {
-        std::cerr << "[plan] JSON parse error: " << e.what() << "\n";
-    } catch (const nlohmann::json::type_error& e) {
-        std::cerr << "[plan] JSON type error: " << e.what() << "\n";
+    } catch (const nlohmann::json::parse_error& /*e*/) {
+    } catch (const nlohmann::json::type_error& /*e*/) {
     }
     return out;
 }
@@ -2034,11 +2015,9 @@ auto InjectIgnoreEntries(std::string InPlanText, const std::vector<IgnoreStageEn
         }
         doc["stages"]["ignore"] = ignoreStage;
         return SerializePlanJson(doc);
-    } catch (const nlohmann::json::parse_error& e) {
-        std::cerr << "[plan] JSON parse error: " << e.what() << "\n";
+    } catch (const nlohmann::json::parse_error& /*e*/) {
         return std::nullopt;
-    } catch (const nlohmann::json::type_error& e) {
-        std::cerr << "[plan] JSON type error: " << e.what() << "\n";
+    } catch (const nlohmann::json::type_error& /*e*/) {
         return std::nullopt;
     }
 }
@@ -2054,11 +2033,9 @@ auto ApplyIgnoreDatasourceOverrides(std::string InPlanText,
         if (InDatasourceManifest)
             doc["meta"]["ignore_datasource"]["manifest"] = InDatasourceManifest->generic_string();
         return SerializePlanJson(doc);
-    } catch (const nlohmann::json::parse_error& e) {
-        std::cerr << "[plan] JSON parse error: " << e.what() << "\n";
+    } catch (const nlohmann::json::parse_error& /*e*/) {
         return std::nullopt;
-    } catch (const nlohmann::json::type_error& e) {
-        std::cerr << "[plan] JSON type error: " << e.what() << "\n";
+    } catch (const nlohmann::json::type_error& /*e*/) {
         return std::nullopt;
     }
 }
@@ -2068,11 +2045,9 @@ auto ReplacePlanDirtyFingerprint(std::string InPlanText, const std::string& InNe
         auto doc = nlohmann::json::parse(InPlanText);
         doc["meta"]["dirty_fingerprint"] = InNewDirtyFingerprint;
         return SerializePlanJson(doc);
-    } catch (const nlohmann::json::parse_error& e) {
-        std::cerr << "[plan] JSON parse error: " << e.what() << "\n";
+    } catch (const nlohmann::json::parse_error& /*e*/) {
         return std::nullopt;
-    } catch (const nlohmann::json::type_error& e) {
-        std::cerr << "[plan] JSON type error: " << e.what() << "\n";
+    } catch (const nlohmann::json::type_error& /*e*/) {
         return std::nullopt;
     }
 }
@@ -2204,7 +2179,7 @@ auto RunCommitRunbook(const std::filesystem::path& InWorkspaceRoot,
                       bool InAllowEmptyDirty) -> int {
     const auto dirtyContext = CollectDirtyRepoContextText(InWorkspaceRoot);
     if (Trim(dirtyContext).empty()) {
-        std::cerr << "[plan] workspace clean; skip dirty context collection.\n";
+        std::cerr << kano::terminal::PlanPrefix() << " workspace clean; skip dirty context collection.\n";
         // Even when workspace is clean, stamp AI planner metadata so the plan
         // reflects the intended AI provider (avoids "deterministic metadata" errors).
         if (const auto payload = ReadFileText(InPlanPath)) {
@@ -2265,7 +2240,7 @@ auto RunCommitRunbook(const std::filesystem::path& InWorkspaceRoot,
 
     std::string reason;
     if (!ValidateAiReadyPlan(*payload, &reason)) {
-        std::cerr << "[plan] validation failed (" << reason << "), regenerating once...\n";
+        std::cerr << kano::terminal::PlanPrefix() << " validation failed (" << reason << "), regenerating once...\n";
         if (!regenerate()) {
             if (requireAiSuccess) {
                 std::cerr << "Error: AI plan fill is required by config and regeneration failed.\n";
@@ -2444,7 +2419,7 @@ auto RunIgnoreRunbook(const std::filesystem::path& InWorkspaceRoot,
     }
 
     WriteFileText(InPlanPath, *updated);
-    std::cout << "[plan] ignore-init complete: repos=" << entries.size() << "\n";
+    std::cout << kano::terminal::PlanPrefix() << " ignore-init complete: repos=" << entries.size() << "\n";
     return RunPreApplyVerify(InWorkspaceRoot, InPlanPath, "ignore");
 }
 
@@ -2707,7 +2682,7 @@ auto RunPlanApply(const std::filesystem::path& InWorkspaceRoot,
                 std::cerr << "Error: failed to apply ignore target: " << targetAbs.generic_string() << " (" << error << ")\n";
                 return 2;
             }
-            std::cout << "[plan][ignore] applied: repo=" << e.repo << " target=" << e.applyTarget
+            std::cout << kano::terminal::PlanPrefix() << "[ignore] applied: repo=" << e.repo << " target=" << e.applyTarget
                       << " merged=" << mergedAbs.generic_string() << "\n";
         }
         *payload = StampIgnoreAppliedAtAll(*payload, CurrentUtcIso8601());
@@ -2723,7 +2698,7 @@ auto RunPlanApply(const std::filesystem::path& InWorkspaceRoot,
             std::cerr << "Error: failed to stamp plan applied_at_utc: " << InPlanPath.generic_string() << " (" << error << ")\n";
             return 2;
         }
-        std::cout << "[plan][ignore] apply complete\n";
+        std::cout << kano::terminal::PlanPrefix() << "[ignore] apply complete\n";
         std::cout << "Next:\n";
         std::cout << "  kog plan verify pre-apply --stage ignore --plan-file \"" << InPlanPath.generic_string() << "\"\n";
         std::cout << "  kog plan verify ignore --context plan\n";

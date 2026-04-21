@@ -8,6 +8,7 @@
 #include "auto_model_policy.hpp"
 #include "kog_config.hpp"
 #include "secret_scan_utils.hpp"
+#include "terminal_color.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -418,15 +419,15 @@ void RegisterPlan(CLI::App& InApp) {
             return;
         }
 
-        std::cout << "[plan] commit[" << entry->index << "] repo=" << entry->repo << "\n";
-        std::cout << "[plan] message: " << entry->message << "\n";
-        std::cout << "[plan] review.verdict: " << entry->reviewVerdict << "\n";
-        std::cout << "[plan] review.reason: " << entry->reviewReason << "\n";
-        std::cout << "[plan] include:\n";
+        std::cout << kano::terminal::PlanPrefix() << " commit[" << entry->index << "] repo=" << entry->repo << "\n";
+        std::cout << kano::terminal::PlanPrefix() << " message: " << entry->message << "\n";
+        std::cout << kano::terminal::PlanPrefix() << " review.verdict: " << entry->reviewVerdict << "\n";
+        std::cout << kano::terminal::PlanPrefix() << " review.reason: " << entry->reviewReason << "\n";
+        std::cout << kano::terminal::PlanPrefix() << " include:\n";
         for (const auto& path : entry->include) {
             std::cout << "  - " << path << "\n";
         }
-        std::cout << "[plan] exclude:\n";
+        std::cout << kano::terminal::PlanPrefix() << " exclude:\n";
         for (const auto& path : entry->exclude) {
             std::cout << "  - " << path << "\n";
         }
@@ -465,9 +466,9 @@ void RegisterPlan(CLI::App& InApp) {
             std::cout << oss.str();
             return;
         }
-        std::cout << "[plan] total_commits: " << entries.size() << "\n";
-        std::cout << "[plan] review_needed_commits: " << reviewNeededIndexes.size() << "\n";
-        std::cout << "[plan] review_needed_indexes:";
+        std::cout << kano::terminal::PlanPrefix() << " total_commits: " << entries.size() << "\n";
+        std::cout << kano::terminal::PlanPrefix() << " review_needed_commits: " << reviewNeededIndexes.size() << "\n";
+        std::cout << kano::terminal::PlanPrefix() << " review_needed_indexes:";
         if (reviewNeededIndexes.empty()) {
             std::cout << " <none>\n";
             return;
@@ -504,7 +505,7 @@ void RegisterPlan(CLI::App& InApp) {
             const auto generated = meta.value("generated_at_utc", "-");
             const auto provider = meta.contains("planner") ? meta["planner"].value("provider", "-") : "-";
             const auto model    = meta.contains("planner") ? meta["planner"].value("ai-model", "-") : "-";
-            std::cout << std::format("[plan] meta: plan_id={} generated={} provider={} ai-model={}\n", planId, generated, provider, model);
+            std::cout << kano::terminal::PlanPrefix() << std::format(" meta: plan_id={} generated={} provider={} ai-model={}\n", planId, generated, provider, model);
 
             std::size_t repoCount = 0;
             std::size_t commitCount = 0;
@@ -518,13 +519,13 @@ void RegisterPlan(CLI::App& InApp) {
                         commitCount += repoObj["commits"].size();
                         for (const auto& commitObj : repoObj["commits"]) {
                             const auto msg = commitObj.value("message", "");
-                            lines.push_back(std::format("[plan] - [{}] {}: {}", flatIndex, repo, msg));
+                            lines.push_back(kano::terminal::PlanPrefix() + std::format(" - [{}] {}: {}", flatIndex, repo, msg));
                             flatIndex += 1;
                         }
                     }
                 }
             }
-            std::cout << std::format("[plan] commits: repos={} total={}\n", repoCount, commitCount);
+            std::cout << kano::terminal::PlanPrefix() << std::format(" commits: repos={} total={}\n", repoCount, commitCount);
             if (*summaryMax < 0) {
                 *summaryMax = 0;
             }
@@ -532,8 +533,7 @@ void RegisterPlan(CLI::App& InApp) {
             for (std::size_t i = 0; i < limit; ++i) {
                 std::cout << lines[i] << "\n";
             }
-        } catch (const nlohmann::json::parse_error& e) {
-            std::cerr << "Error: plan JSON parse error: " << e.what() << "\n";
+        } catch (const nlohmann::json::parse_error& /*e*/) {
             std::exit(2);
         }
     });
@@ -607,7 +607,7 @@ void RegisterPlan(CLI::App& InApp) {
 
         std::string reason;
         if (!ValidateAiReadyPlan(*latestPayload, &reason)) {
-            std::cerr << std::format("[plan] validation failed ({}), regenerating once...\n", reason);
+            std::cerr << kano::terminal::PlanPrefix() << std::format(" validation failed ({}), regenerating once...\n", reason);
             if (!regenerateOnce()) {
                 std::exit(2);
             }
@@ -628,7 +628,7 @@ void RegisterPlan(CLI::App& InApp) {
                         latestPayload = ReadFileText(planPath);
                         reason.clear();
                         if (latestPayload.has_value() && ValidateAiReadyPlan(*latestPayload, &reason)) {
-                            std::cerr << "[plan] fallback commit entries injected after empty AI commit stage.\n";
+                            std::cerr << kano::terminal::PlanPrefix() << " fallback commit entries injected after empty AI commit stage.\n";
                             std::cout << "Plan ensure-prepare-ready passed: " << planPath.generic_string() << "\n";
                             return;
                         }

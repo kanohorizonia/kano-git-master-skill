@@ -15,6 +15,7 @@ target_sources(kano_git_command_runtime
     public/command_executor.hpp
     public/kog_config.hpp
     public/ai_utils.hpp
+    public/terminal_color.hpp
 )
 
 if(KOG_ENABLE_MODULES)

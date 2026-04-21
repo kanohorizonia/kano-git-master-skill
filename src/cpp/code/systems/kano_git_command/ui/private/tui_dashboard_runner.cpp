@@ -2164,7 +2164,7 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
     std::vector<int> displayedRepoIndices;
     std::vector<std::string> menu;
     int selectedDisplayed = 0;
-    std::string footer = "startup: cached repo snapshot loaded | r refresh repo | :refresh all | :discover paged output | Enter history | q quit";
+    std::string footer = "startup: cached repo snapshot loaded | r refresh repo | :refresh | :discover | :init | Enter history | q quit";
     bool footerIsError = false;
     HistoryState history{};
     PreviewPanelState preview{};
@@ -2759,6 +2759,305 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
         footerIsError = false;
     };
 
+    auto begin_async_selected_submodule_init = [&]() -> bool {
+        const int selected = RepoIndexFromDisplayed(displayedRepoIndices, selectedDisplayed);
+        if (selected < 0 || static_cast<std::size_t>(selected) >= repos.size()) {
+            footer = "submodule init skipped: no selected repo";
+            footerIsError = true;
+            return false;
+        }
+        const auto& row = repos[selected];
+        if (row.type != "registered-uninit") {
+            footer = "submodule init: only available for uninitialized repos";
+            footerIsError = true;
+            return false;
+        }
+        if (row.parentRepo.empty()) {
+            footer = "submodule init: cannot determine parent repo";
+            footerIsError = true;
+            return false;
+        }
+        const auto parentPath = std::filesystem::path(row.parentRepo);
+        const auto relPath = row.path.lexically_relative(parentPath).generic_string();
+        const std::string commandText = "git -C \"" + parentPath.generic_string() + "\" submodule update --init --progress -- \"" + relPath + "\"";
+        const std::string label = "submodule init";
+
+        preview.active = true;
+        preview.running = true;
+        preview.isError = false;
+        preview.autoCloseAfterRefresh = false;
+        preview.title = label;
+        preview.body = "state: running\nrepo: " + row.path.lexically_normal().generic_string()
+            + "\nparent: " + parentPath.generic_string()
+            + "\ncommand: " + commandText
+            + "\n\n(waiting for command output...)";
+
+        if (!begin_async_operation(label, [&, parentPath, relPath, commandText, label]() {
+                TerminalModeGuard terminalModeGuard;
+
+                // --- Phase 1: Submodule init with streaming progress ---
+                std::string streamOutput;
+                std::mutex streamMu;
+
+                auto progressCb = [&](std::string_view chunk, bool isStderr) {
+                    (void)isStderr;
+                    std::string currentOutput;
+                    {
+                        std::lock_guard<std::mutex> slock(streamMu);
+                        streamOutput.append(chunk.data(), chunk.size());
+                        currentOutput = streamOutput;
+                    }
+                    std::string liveBody = "repo: " + std::filesystem::path(relPath).lexically_normal().generic_string() + "\n"
+                        + "parent: " + parentPath.generic_string() + "\n"
+                        + "command: " + commandText + "\n"
+                        + "state: running\n\n"
+                        + currentOutput;
+                    bool shouldPost = true;
+                    {
+                        std::lock_guard<std::mutex> lock(asyncMu);
+                        if (asyncState.hasResult || asyncState.hasError) {
+                            shouldPost = false;
+                        } else {
+                            asyncState.previewBody = std::move(liveBody);
+                            asyncState.showPreview = true;
+                        }
+                    }
+                    if (shouldPost) {
+                        request_async_ui_tick();
+                    }
+                };
+
+                const auto result = shell::ExecuteCommand("git",
+                    {"-C", parentPath.string(), "submodule", "update", "--init", "--progress", "--", relPath},
+                    shell::ExecMode::Capture, parentPath, progressCb);
+
+                // Build final body with both stdout and stderr
+                std::string body = "repo: " + std::filesystem::path(relPath).lexically_normal().generic_string() + "\n"
+                    + "parent: " + parentPath.generic_string() + "\n"
+                    + "command: " + commandText + "\n"
+                    + "exit: " + std::to_string(result.exitCode) + "\n";
+
+                if (!result.stdoutStr.empty()) {
+                    body += "\n--- stdout ---\n" + result.stdoutStr;
+                }
+                if (!result.stderrStr.empty()) {
+                    body += "\n--- stderr ---\n" + result.stderrStr;
+                }
+
+                // Helper: post live progress to preview panel during Phase 2
+                auto postProgress = [&](const std::string& InBody) {
+                    bool shouldPost = true;
+                    {
+                        std::lock_guard<std::mutex> lock(asyncMu);
+                        if (asyncState.hasResult || asyncState.hasError) {
+                            shouldPost = false;
+                        } else {
+                            asyncState.previewBody = InBody;
+                            asyncState.showPreview = true;
+                        }
+                    }
+                    if (shouldPost) {
+                        request_async_ui_tick();
+                    }
+                };
+
+                // --- Phase 2: Post-init branch checkout (only on success) ---
+                std::string branchLog;
+                if (result.exitCode == 0) {
+                    const auto repoPath = parentPath / relPath;
+
+                    postProgress(body + "\n--- branch ---\nresolving default branch...");
+
+                    // Step 2a: Find submodule prefix in .gitmodules
+                    std::string submodulePrefix;
+                    {
+                        const auto pathResult = GitCapture(parentPath, {"config", "-f", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$"});
+                        if (pathResult.exitCode == 0) {
+                            std::istringstream iss(pathResult.stdoutStr);
+                            std::string line;
+                            while (std::getline(iss, line)) {
+                                // Trim
+                                while (!line.empty() && (line.back() == '\r' || line.back() == '\n' || line.back() == ' ')) line.pop_back();
+                                while (!line.empty() && (line.front() == ' ')) line.erase(line.begin());
+                                if (line.empty()) continue;
+                                const auto sp = line.find(' ');
+                                if (sp == std::string::npos || sp + 1 >= line.size()) continue;
+                                const auto key = line.substr(0, sp);
+                                const auto value = line.substr(sp + 1);
+                                if (value == relPath && key.ends_with(".path")) {
+                                    submodulePrefix = key.substr(0, key.size() - 5);  // strip ".path"
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    // Step 2b: Resolve .gitmodules branch
+                    std::string targetBranch;
+                    bool branchFromGitmodules = false;
+                    if (!submodulePrefix.empty()) {
+                        const auto branchResult = GitCapture(parentPath, {"config", "-f", ".gitmodules", "--get", submodulePrefix + ".branch"});
+                        if (branchResult.exitCode == 0) {
+                            targetBranch = branchResult.stdoutStr;
+                            while (!targetBranch.empty() && (targetBranch.back() == '\r' || targetBranch.back() == '\n' || targetBranch.back() == ' ')) targetBranch.pop_back();
+                            while (!targetBranch.empty() && (targetBranch.front() == ' ')) targetBranch.erase(targetBranch.begin());
+                            if (!targetBranch.empty()) {
+                                branchFromGitmodules = true;
+                                branchLog += "default branch (from .gitmodules): " + targetBranch + "\n";
+                            }
+                        }
+                    }
+
+                    // Step 2c: If no .gitmodules branch, detect remote default
+                    if (targetBranch.empty()) {
+                        const auto remoteHead = GitCapture(repoPath, {"symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"});
+                        if (remoteHead.exitCode == 0) {
+                            auto ref = remoteHead.stdoutStr;
+                            while (!ref.empty() && (ref.back() == '\r' || ref.back() == '\n' || ref.back() == ' ')) ref.pop_back();
+                            const std::string marker = "refs/remotes/origin/";
+                            if (ref.starts_with(marker) && ref.size() > marker.size()) {
+                                targetBranch = ref.substr(marker.size());
+                            }
+                        }
+                        if (targetBranch.empty()) {
+                            for (const std::string& probe : {"main", "master", "dev", "develop", "trunk"}) {
+                                const auto exists = GitCapture(repoPath, {"show-ref", "--verify", "--quiet", "refs/remotes/origin/" + probe});
+                                if (exists.exitCode == 0) {
+                                    targetBranch = probe;
+                                    break;
+                                }
+                            }
+                        }
+                        if (!targetBranch.empty()) {
+                            branchLog += "default branch (detected from remote): " + targetBranch + "\n";
+                        }
+                    }
+
+                    // Step 2d: Checkout the branch
+                    if (!targetBranch.empty()) {
+                        postProgress(body + "\n--- branch ---\n" + branchLog + "checking out " + targetBranch + "...");
+
+                        // Step 2d-i: Stash any residual files before checkout to avoid conflicts
+                        bool stashCreated = false;
+                        {
+                            const auto statusCheck = GitCapture(repoPath, {"status", "--porcelain"});
+                            if (statusCheck.exitCode == 0 && !Trim(statusCheck.stdoutStr).empty()) {
+                                const auto stash = GitCapture(repoPath, {"stash", "push", "--include-untracked", "-m", "kano-init-stash"});
+                                stashCreated = stash.exitCode == 0;
+                                branchLog += "stash: " + std::string(stashCreated ? "ok" : "failed") + "\n";
+                                if (!stash.stderrStr.empty()) {
+                                    branchLog += stash.stderrStr + "\n";
+                                }
+                            } else {
+                                branchLog += "stash: skipped (working tree clean)\n";
+                            }
+                        }
+
+                        const auto localExists = GitCapture(repoPath, {"show-ref", "--verify", "--quiet", "refs/heads/" + targetBranch});
+                        int checkoutExit = -1;
+                        if (localExists.exitCode == 0) {
+                            const auto co = GitCapture(repoPath, {"checkout", targetBranch});
+                            checkoutExit = co.exitCode;
+                            branchLog += "checkout " + targetBranch + ": " + (co.exitCode == 0 ? "ok" : "failed") + "\n";
+                            if (co.exitCode != 0 && !co.stderrStr.empty()) {
+                                branchLog += co.stderrStr + "\n";
+                            }
+                        } else {
+                            const auto co = GitCapture(repoPath, {"checkout", "-b", targetBranch, "origin/" + targetBranch});
+                            checkoutExit = co.exitCode;
+                            branchLog += "checkout -b " + targetBranch + " origin/" + targetBranch + ": " + (co.exitCode == 0 ? "ok" : "failed") + "\n";
+                            if (co.exitCode != 0 && !co.stderrStr.empty()) {
+                                branchLog += co.stderrStr + "\n";
+                            }
+                        }
+
+                        // Step 2d-ii: Stash pop after checkout
+                        if (stashCreated) {
+                            postProgress(body + "\n--- branch ---\n" + branchLog + "restoring stash...");
+                            const auto pop = GitCapture(repoPath, {"stash", "pop"});
+                            if (pop.exitCode == 0) {
+                                branchLog += "stash pop: ok\n";
+                            } else {
+                                branchLog += "stash pop: conflict - working tree left in conflict state\n";
+                                if (!pop.stdoutStr.empty()) {
+                                    branchLog += pop.stdoutStr + "\n";
+                                }
+                                if (!pop.stderrStr.empty()) {
+                                    branchLog += pop.stderrStr + "\n";
+                                }
+                                branchLog += "WARNING: resolve conflicts manually, then run: git stash drop\n";
+                            }
+                        }
+
+                        // Step 2e: Write back to .gitmodules if we detected the branch (not from .gitmodules)
+                        if (checkoutExit == 0 && !branchFromGitmodules && !submodulePrefix.empty()) {
+                            postProgress(body + "\n--- branch ---\n" + branchLog + "writing .gitmodules...");
+                            const auto write = GitCapture(parentPath, {"config", "-f", ".gitmodules", "--replace-all", submodulePrefix + ".branch", targetBranch});
+                            branchLog += "write .gitmodules branch=" + targetBranch + ": " + (write.exitCode == 0 ? "ok" : "failed") + "\n";
+                        }
+                    } else {
+                        branchLog += "default branch: not detected (submodule remains in detached HEAD)\n";
+                    }
+                }
+
+                if (!branchLog.empty()) {
+                    body += "\n--- branch ---\n" + branchLog;
+                }
+
+                std::vector<RepoView> refreshedRepos;
+                try {
+                    // Refresh workspace manifest and immediately rebuild live repo views
+                    // in this same worker, so completion stays single-phase and doesn't
+                    // leave preview/modal state waiting on a second refresh async cycle.
+                    postProgress(body + "\nrefreshing workspace manifest...");
+                    workspace::RefreshWorkspaceManifestAfterRegisteredChange(workspaceRoot);
+
+                    postProgress(body + "\nreloading repo status...");
+                    refreshedRepos = DiscoverRepoViews(dirtyOnly, discover.active, true);
+                } catch (const std::exception& e) {
+                    body += std::string("\n--- refresh ---\nfailed: ") + e.what() + "\n";
+                    {
+                        std::lock_guard<std::mutex> lock(asyncMu);
+                        asyncState.showPreview = true;
+                        asyncState.previewTitle = label + " failed";
+                        asyncState.previewBody = std::move(body);
+                        asyncState.previewAutoCloseAfterRefresh = false;
+                        asyncState.hasResult = true;
+                        asyncState.hasError = true;
+                        asyncState.errorMessage = std::string("submodule init refresh failed: ") + e.what();
+                        asyncState.completionFooter = "command failed";
+                    }
+                    return;
+                }
+
+                {
+                    std::lock_guard<std::mutex> lock(asyncMu);
+                    asyncState.showPreview = true;
+                    asyncState.previewTitle = label + (result.exitCode == 0 ? " complete" : " failed");
+                    asyncState.previewBody = std::move(body);
+                    asyncState.previewAutoCloseAfterRefresh = result.exitCode == 0;
+                    asyncState.repos = refreshedRepos;
+                    asyncState.refreshRepos = true;
+                    asyncState.hasResult = true;
+                    asyncState.completionFooter = result.exitCode == 0 ? "command finished" : "command failed";
+                    if (result.exitCode != 0) {
+                        asyncState.hasError = true;
+                        asyncState.errorMessage = "submodule init failed";
+                    }
+                }
+            })) {
+            preview.active = false;
+            preview.running = false;
+            footer = label + " already running";
+            footerIsError = true;
+            return false;
+        }
+
+        footer = label + " started in background";
+        footerIsError = false;
+        return true;
+    };
+
     auto begin_async_discover = [&](const bool InDirtyOnly) {
         if (!begin_async_operation("discover", [&, InDirtyOnly]() {
                 auto progressCallback = [&](const std::string& InMessage) {
@@ -2937,7 +3236,10 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
         return row;
     };
     auto list = Menu(&menu, &selectedDisplayed, repoMenuOption);
-    auto root = Container::Vertical({list});
+    auto list_scrolled = Renderer(list, [&] {
+        return list->Render() | vscroll_indicator | yframe | size(HEIGHT, LESS_THAN, 12);
+    });
+    auto root = Container::Vertical({list_scrolled});
 
     auto map_event_to_tui = [&](const Event& event) -> std::optional<std::pair<std::string, char>> {
         if (event == Event::Escape) return std::make_pair(std::string("escape"), '\0');
@@ -3023,6 +3325,8 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                     begin_async_discover(true);
                 } else if (lower == "refresh") {
                     begin_async_refresh(discover.active);
+                } else if (lower == "init") {
+                    handledCommand = begin_async_selected_submodule_init();
                 } else {
                     handledCommand = false;
                 }
@@ -3475,295 +3779,7 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
 
         // --- 'I' key: initialize uninitialized submodule ---
         if (event == Event::Character('I') && !history.active && !discover.active && !preview.active) {
-            const int selected = RepoIndexFromDisplayed(displayedRepoIndices, selectedDisplayed);
-            if (selected < 0 || static_cast<std::size_t>(selected) >= repos.size()) {
-                footer = "submodule init skipped: no selected repo";
-                return true;
-            }
-            const auto& row = repos[selected];
-            if (row.type != "registered-uninit") {
-                footer = "submodule init: only available for uninitialized repos";
-                return true;
-            }
-            if (row.parentRepo.empty()) {
-                footer = "submodule init: cannot determine parent repo";
-                return true;
-            }
-            const auto parentPath = std::filesystem::path(row.parentRepo);
-            const auto relPath = row.path.lexically_relative(parentPath).generic_string();
-            const std::string commandText = "git -C \"" + parentPath.generic_string() + "\" submodule update --init --progress -- \"" + relPath + "\"";
-            const std::string label = "submodule init";
-
-            preview.active = true;
-            preview.running = true;
-            preview.isError = false;
-            preview.autoCloseAfterRefresh = false;
-            preview.title = label;
-            preview.body = "state: running\nrepo: " + row.path.lexically_normal().generic_string()
-                + "\nparent: " + parentPath.generic_string()
-                + "\ncommand: " + commandText
-                + "\n\n(waiting for command output...)";
-
-            if (!begin_async_operation(label, [&, parentPath, relPath, commandText, label]() {
-                    TerminalModeGuard terminalModeGuard;
-
-                    // --- Phase 1: Submodule init with streaming progress ---
-                    std::string streamOutput;
-                    std::mutex streamMu;
-
-                    auto progressCb = [&](std::string_view chunk, bool isStderr) {
-                        (void)isStderr;
-                        std::string currentOutput;
-                        {
-                            std::lock_guard<std::mutex> slock(streamMu);
-                            streamOutput.append(chunk.data(), chunk.size());
-                            currentOutput = streamOutput;
-                        }
-                        std::string liveBody = "repo: " + std::filesystem::path(relPath).lexically_normal().generic_string() + "\n"
-                            + "parent: " + parentPath.generic_string() + "\n"
-                            + "command: " + commandText + "\n"
-                            + "state: running\n\n"
-                            + currentOutput;
-                        bool shouldPost = true;
-                        {
-                            std::lock_guard<std::mutex> lock(asyncMu);
-                            if (asyncState.hasResult || asyncState.hasError) {
-                                shouldPost = false;
-                            } else {
-                                asyncState.previewBody = std::move(liveBody);
-                                asyncState.showPreview = true;
-                            }
-                        }
-                        if (shouldPost) {
-                            request_async_ui_tick();
-                        }
-                    };
-
-                    const auto result = shell::ExecuteCommand("git",
-                        {"-C", parentPath.string(), "submodule", "update", "--init", "--progress", "--", relPath},
-                        shell::ExecMode::Capture, parentPath, progressCb);
-
-                    // Build final body with both stdout and stderr
-                    std::string body = "repo: " + std::filesystem::path(relPath).lexically_normal().generic_string() + "\n"
-                        + "parent: " + parentPath.generic_string() + "\n"
-                        + "command: " + commandText + "\n"
-                        + "exit: " + std::to_string(result.exitCode) + "\n";
-
-                    if (!result.stdoutStr.empty()) {
-                        body += "\n--- stdout ---\n" + result.stdoutStr;
-                    }
-                    if (!result.stderrStr.empty()) {
-                        body += "\n--- stderr ---\n" + result.stderrStr;
-                    }
-
-                    // Helper: post live progress to preview panel during Phase 2
-                    auto postProgress = [&](const std::string& InBody) {
-                        bool shouldPost = true;
-                        {
-                            std::lock_guard<std::mutex> lock(asyncMu);
-                            if (asyncState.hasResult || asyncState.hasError) {
-                                shouldPost = false;
-                            } else {
-                                asyncState.previewBody = InBody;
-                                asyncState.showPreview = true;
-                            }
-                        }
-                        if (shouldPost) {
-                            request_async_ui_tick();
-                        }
-                    };
-
-                    // --- Phase 2: Post-init branch checkout (only on success) ---
-                    std::string branchLog;
-                    if (result.exitCode == 0) {
-                        const auto repoPath = parentPath / relPath;
-
-                        postProgress(body + "\n--- branch ---\nresolving default branch...");
-
-                        // Step 2a: Find submodule prefix in .gitmodules
-                        std::string submodulePrefix;
-                        {
-                            const auto pathResult = GitCapture(parentPath, {"config", "-f", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$"});
-                            if (pathResult.exitCode == 0) {
-                                std::istringstream iss(pathResult.stdoutStr);
-                                std::string line;
-                                while (std::getline(iss, line)) {
-                                    // Trim
-                                    while (!line.empty() && (line.back() == '\r' || line.back() == '\n' || line.back() == ' ')) line.pop_back();
-                                    while (!line.empty() && (line.front() == ' ')) line.erase(line.begin());
-                                    if (line.empty()) continue;
-                                    const auto sp = line.find(' ');
-                                    if (sp == std::string::npos || sp + 1 >= line.size()) continue;
-                                    const auto key = line.substr(0, sp);
-                                    const auto value = line.substr(sp + 1);
-                                    if (value == relPath && key.ends_with(".path")) {
-                                        submodulePrefix = key.substr(0, key.size() - 5);  // strip ".path"
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-
-                        // Step 2b: Resolve .gitmodules branch
-                        std::string targetBranch;
-                        bool branchFromGitmodules = false;
-                        if (!submodulePrefix.empty()) {
-                            const auto branchResult = GitCapture(parentPath, {"config", "-f", ".gitmodules", "--get", submodulePrefix + ".branch"});
-                            if (branchResult.exitCode == 0) {
-                                targetBranch = branchResult.stdoutStr;
-                                while (!targetBranch.empty() && (targetBranch.back() == '\r' || targetBranch.back() == '\n' || targetBranch.back() == ' ')) targetBranch.pop_back();
-                                while (!targetBranch.empty() && (targetBranch.front() == ' ')) targetBranch.erase(targetBranch.begin());
-                                if (!targetBranch.empty()) {
-                                    branchFromGitmodules = true;
-                                    branchLog += "default branch (from .gitmodules): " + targetBranch + "\n";
-                                }
-                            }
-                        }
-
-                        // Step 2c: If no .gitmodules branch, detect remote default
-                        if (targetBranch.empty()) {
-                            const auto remoteHead = GitCapture(repoPath, {"symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"});
-                            if (remoteHead.exitCode == 0) {
-                                auto ref = remoteHead.stdoutStr;
-                                while (!ref.empty() && (ref.back() == '\r' || ref.back() == '\n' || ref.back() == ' ')) ref.pop_back();
-                                const std::string marker = "refs/remotes/origin/";
-                                if (ref.starts_with(marker) && ref.size() > marker.size()) {
-                                    targetBranch = ref.substr(marker.size());
-                                }
-                            }
-                            if (targetBranch.empty()) {
-                                for (const std::string& probe : {"main", "master", "dev", "develop", "trunk"}) {
-                                    const auto exists = GitCapture(repoPath, {"show-ref", "--verify", "--quiet", "refs/remotes/origin/" + probe});
-                                    if (exists.exitCode == 0) {
-                                        targetBranch = probe;
-                                        break;
-                                    }
-                                }
-                            }
-                            if (!targetBranch.empty()) {
-                                branchLog += "default branch (detected from remote): " + targetBranch + "\n";
-                            }
-                        }
-
-                        // Step 2d: Checkout the branch
-                        if (!targetBranch.empty()) {
-                            postProgress(body + "\n--- branch ---\n" + branchLog + "checking out " + targetBranch + "...");
-
-                            // Step 2d-i: Stash any residual files before checkout to avoid conflicts
-                            bool stashCreated = false;
-                            {
-                                const auto statusCheck = GitCapture(repoPath, {"status", "--porcelain"});
-                                if (statusCheck.exitCode == 0 && !Trim(statusCheck.stdoutStr).empty()) {
-                                    const auto stash = GitCapture(repoPath, {"stash", "push", "--include-untracked", "-m", "kano-init-stash"});
-                                    stashCreated = stash.exitCode == 0;
-                                    branchLog += "stash: " + std::string(stashCreated ? "ok" : "failed") + "\n";
-                                    if (!stash.stderrStr.empty()) {
-                                        branchLog += stash.stderrStr + "\n";
-                                    }
-                                } else {
-                                    branchLog += "stash: skipped (working tree clean)\n";
-                                }
-                            }
-
-                            const auto localExists = GitCapture(repoPath, {"show-ref", "--verify", "--quiet", "refs/heads/" + targetBranch});
-                            int checkoutExit = -1;
-                            if (localExists.exitCode == 0) {
-                                const auto co = GitCapture(repoPath, {"checkout", targetBranch});
-                                checkoutExit = co.exitCode;
-                                branchLog += "checkout " + targetBranch + ": " + (co.exitCode == 0 ? "ok" : "failed") + "\n";
-                                if (co.exitCode != 0 && !co.stderrStr.empty()) {
-                                    branchLog += co.stderrStr + "\n";
-                                }
-                            } else {
-                                const auto co = GitCapture(repoPath, {"checkout", "-b", targetBranch, "origin/" + targetBranch});
-                                checkoutExit = co.exitCode;
-                                branchLog += "checkout -b " + targetBranch + " origin/" + targetBranch + ": " + (co.exitCode == 0 ? "ok" : "failed") + "\n";
-                                if (co.exitCode != 0 && !co.stderrStr.empty()) {
-                                    branchLog += co.stderrStr + "\n";
-                                }
-                            }
-
-                            // Step 2d-ii: Stash pop after checkout
-                            if (stashCreated) {
-                                postProgress(body + "\n--- branch ---\n" + branchLog + "restoring stash...");
-                                const auto pop = GitCapture(repoPath, {"stash", "pop"});
-                                if (pop.exitCode == 0) {
-                                    branchLog += "stash pop: ok\n";
-                                } else {
-                                    branchLog += "stash pop: conflict - working tree left in conflict state\n";
-                                    if (!pop.stdoutStr.empty()) {
-                                        branchLog += pop.stdoutStr + "\n";
-                                    }
-                                    if (!pop.stderrStr.empty()) {
-                                        branchLog += pop.stderrStr + "\n";
-                                    }
-                                    branchLog += "WARNING: resolve conflicts manually, then run: git stash drop\n";
-                                }
-                            }
-
-                            // Step 2e: Write back to .gitmodules if we detected the branch (not from .gitmodules)
-                            if (checkoutExit == 0 && !branchFromGitmodules && !submodulePrefix.empty()) {
-                                postProgress(body + "\n--- branch ---\n" + branchLog + "writing .gitmodules...");
-                                const auto write = GitCapture(parentPath, {"config", "-f", ".gitmodules", "--replace-all", submodulePrefix + ".branch", targetBranch});
-                                branchLog += "write .gitmodules branch=" + targetBranch + ": " + (write.exitCode == 0 ? "ok" : "failed") + "\n";
-                            }
-                        } else {
-                            branchLog += "default branch: not detected (submodule remains in detached HEAD)\n";
-                        }
-                    }
-
-                    if (!branchLog.empty()) {
-                        body += "\n--- branch ---\n" + branchLog;
-                    }
-
-                    std::vector<RepoView> refreshedRepos;
-                    try {
-                        // Refresh workspace manifest and immediately rebuild live repo views
-                        // in this same worker, so completion stays single-phase and doesn't
-                        // leave preview/modal state waiting on a second refresh async cycle.
-                        postProgress(body + "\nrefreshing workspace manifest...");
-                        workspace::RefreshWorkspaceManifestAfterRegisteredChange(workspaceRoot);
-
-                        postProgress(body + "\nreloading repo status...");
-                        refreshedRepos = DiscoverRepoViews(dirtyOnly, discover.active, true);
-                    } catch (const std::exception& e) {
-                        body += std::string("\n--- refresh ---\nfailed: ") + e.what() + "\n";
-                        {
-                            std::lock_guard<std::mutex> lock(asyncMu);
-                            asyncState.showPreview = true;
-                            asyncState.previewTitle = label + " failed";
-                            asyncState.previewBody = std::move(body);
-                            asyncState.previewAutoCloseAfterRefresh = false;
-                            asyncState.hasResult = true;
-                            asyncState.hasError = true;
-                            asyncState.errorMessage = std::string("submodule init refresh failed: ") + e.what();
-                            asyncState.completionFooter = "command failed";
-                        }
-                        return;
-                    }
-
-                    {
-                        std::lock_guard<std::mutex> lock(asyncMu);
-                        asyncState.showPreview = true;
-                        asyncState.previewTitle = label + (result.exitCode == 0 ? " complete" : " failed");
-                        asyncState.previewBody = std::move(body);
-                        asyncState.previewAutoCloseAfterRefresh = result.exitCode == 0;
-                        asyncState.repos = refreshedRepos;
-                        asyncState.refreshRepos = true;
-                        asyncState.hasResult = true;
-                        asyncState.completionFooter = result.exitCode == 0 ? "command finished" : "command failed";
-                        if (result.exitCode != 0) {
-                            asyncState.hasError = true;
-                            asyncState.errorMessage = "submodule init failed";
-                        }
-                    }
-                })) {
-                preview.active = false;
-                preview.running = false;
-            } else {
-                footer = label + " started in background";
-                footerIsError = false;
-            }
+            begin_async_selected_submodule_init();
             return true;
         }
 
@@ -4123,7 +4139,7 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                 separator(),
                 text("Command Mode") | kInfoStyle,
                 text(": enter command mode, Esc cancel, Enter execute") | kSecondaryStyle,
-                text("Try :refresh, :discover, or :discover dirty") | kSecondaryStyle,
+                text("Try :refresh, :discover, :init, or :discover dirty") | kSecondaryStyle,
                 text("Tab/Up/Down navigate candidates, Enter accepts selected candidate") | kSecondaryStyle,
                 separator(),
                 text("Shortcuts") | kInfoStyle,
@@ -4638,7 +4654,7 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                     paragraph("This registered source path exists in the workspace, but it is not an initialized git repository yet.") | kMutedStyle,
                     separator(),
                     text("suggested actions") | kInfoStyle,
-                    status_paragraph("hotkey: press I to initialize submodule"),
+                    status_paragraph("actions: press I or run :init to initialize submodule"),
                     status_paragraph("manual: git -C \"" + row.parentRepo + "\" submodule update --init -- \"" + (row.parentRepo.empty() ? row.path.lexically_normal().generic_string() : std::filesystem::path(row.path).lexically_relative(std::filesystem::path(row.parentRepo)).generic_string()) + "\""),
                     separator(),
                     paragraph("history, branch, upstream, tracking, and dirty-file details are unavailable until this source is initialized.") | kMutedStyle,
@@ -4765,7 +4781,7 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
         auto repoListPanel = vbox({
             status_title(history.active ? "Repos" : "Repositories"),
             separator(),
-            list->Render() | border,
+            list_scrolled->Render() | border,
         });
 
         // Compute a stable width for the left panel based on the longest

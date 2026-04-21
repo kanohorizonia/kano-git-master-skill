@@ -10,6 +10,7 @@
 #include "commit_ai_utils.hpp"
 #include "ai_utils.hpp"
 #include "plan_utils.hpp"
+#include "terminal_color.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -3480,7 +3481,7 @@ auto PrintCommitSummary(const std::filesystem::path& InWorkspaceRoot,
     int pushed = 0;
     int skipped = 0;
 
-    std::cout << "\n=== Native Commit Summary ===\n";
+    std::cout << "\n" << kano::terminal::PreflightHeader("Native Commit Summary") << "\n";
     std::cout << std::left << std::setw(36) << "Repo"
               << std::setw(12) << "Result"
               << std::setw(36) << "Message"
@@ -3539,7 +3540,7 @@ auto PrintAmendSummary(const std::filesystem::path& InWorkspaceRoot,
     int combined = 0;
     int skipped = 0;
 
-    std::cout << "\n=== Native Amend Summary ===\n";
+    std::cout << "\n" << kano::terminal::PreflightHeader("Native Amend Summary") << "\n";
     std::cout << std::left << std::setw(36) << "Repo"
               << std::setw(12) << "Result"
               << "Detail\n";
@@ -3580,7 +3581,7 @@ auto PrintAmendSummary(const std::filesystem::path& InWorkspaceRoot,
 }
 
 auto PrintCommitPreflight(const CommitPreflightReport& InReport, bool InStagedOnly) -> void {
-    std::cout << "=== Commit Preflight (native) ===\n";
+    std::cout << kano::terminal::PreflightHeader("Commit Preflight (native)") << "\n";
     if (!InReport.inRepo) {
         std::cout << "repo: not a git repository\n";
         return;
