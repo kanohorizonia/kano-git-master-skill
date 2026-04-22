@@ -142,6 +142,12 @@ auto AheadBehindCounts(const std::filesystem::path& InRepo) -> std::pair<int, in
     return {behind, ahead};
 }
 
+auto StatusPorcelain(const std::filesystem::path& InRepo) -> std::string {
+    const auto result = RunGit({"status", "--porcelain"}, InRepo);
+    RequireSuccess(result, "git status --porcelain");
+    return TrimCopy(result.stdoutText);
+}
+
 auto GitlinkHeadSha(const std::filesystem::path& InRepo, const std::string& InPath) -> std::string {
     const auto result = RunGit({"ls-tree", "HEAD", "--", InPath}, InRepo);
     RequireSuccess(result, "ls-tree gitlink");
@@ -1300,6 +1306,49 @@ TEST_CASE("commit_push_secret_gate_can_be_disabled_explicitly", "[functional][se
     const auto [behind, ahead] = AheadBehindCounts(ctx.cloneRepo);
     REQUIRE(behind == 0);
     REQUIRE(ahead == 0);
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("reset_stable_remote_fetches_and_attaches_detached_registered_submodule", "[functional][reset][stable-remote]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("reset-stable-remote-detached", "branch_v1.0.0");
+    REQUIRE(CurrentBranch(ctx.cloneChildRepo).empty());
+
+    WriteTextFile(ctx.childSeedRepo / "child.txt", "child advanced on remote\n");
+    RequireSuccess(RunGit({"add", "child.txt"}, ctx.childSeedRepo), "child remote add");
+    RequireSuccess(RunGit({"commit", "-m", "child remote advance"}, ctx.childSeedRepo), "child remote commit");
+    RequireSuccess(RunGit({"push"}, ctx.childSeedRepo), "child remote push");
+    const auto expectedChildHead = CurrentHeadSha(ctx.childSeedRepo);
+
+    WriteTextFile(ctx.cloneChildRepo / "child.txt", "dirty local child change\n");
+    WriteTextFile(ctx.cloneChildRepo / "scratch.txt", "remove me\n");
+
+    const auto result = RunKog({"reset", "stable-remote"}, ctx.cloneRootRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    REQUIRE(CurrentBranch(ctx.cloneChildRepo) == ctx.branch);
+    REQUIRE(CurrentHeadSha(ctx.cloneChildRepo) == expectedChildHead);
+    REQUIRE_FALSE(std::filesystem::exists(ctx.cloneChildRepo / "scratch.txt"));
+    REQUIRE(StatusPorcelain(ctx.cloneChildRepo).empty());
+    REQUIRE(result.stdoutText.find("registered .gitmodules stable branch") != std::string::npos);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("reset_stable_remote_does_not_fallback_to_non_stable_remote_branch", "[functional][reset][stable-remote]") {
+    const auto ctx = CreateRemoteWithClone("reset-stable-remote-no-fallback");
+    const auto beforeHead = CurrentHeadSha(ctx.cloneRepo);
+
+    const auto result = RunKog({"reset", "stable-remote", "--no-recursive"}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode != 0);
+
+    const auto merged = result.stdoutText + "\n" + result.stderrText;
+    REQUIRE(merged.find("could not resolve target reset ref") != std::string::npos);
+    REQUIRE(CurrentBranch(ctx.cloneRepo) == ctx.branch);
+    REQUIRE(CurrentHeadSha(ctx.cloneRepo) == beforeHead);
+
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 

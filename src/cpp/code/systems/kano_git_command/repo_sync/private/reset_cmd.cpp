@@ -320,10 +320,14 @@ auto TagRefExists(const std::filesystem::path& InRepo, const std::string& InTag)
     return !InTag.empty() && GitCapture(InRepo, {"show-ref", "--verify", "--quiet", std::format("refs/tags/{}", InTag)}).exitCode == 0;
 }
 
+auto IsStableBranchName(const std::string& InBranch) -> bool {
+    static const std::regex stableBranchPattern(R"(branch_((v)?[0-9]+(\.[0-9]+){1,3}))", std::regex::icase);
+    return !InBranch.empty() && std::regex_match(InBranch, stableBranchPattern);
+}
+
 auto ResolveLatestStableBranchRef(const std::filesystem::path& InRepo,
                                   const std::string& InRefPrefix,
                                   const std::string& InShortPrefix) -> std::string {
-    static const std::regex stableBranchPattern(R"(branch_(v[0-9]+(\.[0-9]+){1,3}))", std::regex::icase);
     const auto refs = GitCapture(InRepo, {"for-each-ref", "--sort=-version:refname", "--format=%(refname:short)", InRefPrefix});
     if (refs.exitCode != 0) {
         return {};
@@ -339,7 +343,7 @@ auto ResolveLatestStableBranchRef(const std::filesystem::path& InRepo,
         if (!InShortPrefix.empty() && line.starts_with(InShortPrefix)) {
             line = line.substr(InShortPrefix.size());
         }
-        if (std::regex_match(line, stableBranchPattern)) {
+        if (IsStableBranchName(line)) {
             return line;
         }
     }
@@ -411,7 +415,54 @@ auto ResolveRemoteTarget(const std::filesystem::path& InRoot, const ResetPlan& I
     };
 }
 
-auto ResolveStableTarget(const ResetPlan& InPlan, const ResetMode InMode) -> std::optional<ResetResolution> {
+auto ResolveStableTarget(const std::filesystem::path& InRoot,
+                         const ResetPlan& InPlan,
+                         const ResetMode InMode) -> std::optional<ResetResolution> {
+    const auto current = CurrentBranch(InPlan.path);
+    if (InMode == ResetMode::StableLocal && IsStableBranchName(current) && LocalRefExists(InPlan.path, current)) {
+        return ResetResolution{
+            .checkoutBranch = current,
+            .resetRef = std::format("refs/heads/{}", current),
+            .branchSource = "current stable branch",
+        };
+    }
+
+    if (InMode == ResetMode::StableRemote &&
+        !InPlan.remote.empty() &&
+        IsStableBranchName(current) &&
+        RemoteRefExists(InPlan.path, InPlan.remote, current)) {
+        return ResetResolution{
+            .checkoutBranch = current,
+            .resetRef = std::format("refs/remotes/{}/{}", InPlan.remote, current),
+            .branchSource = "current stable branch",
+            .shouldUpdateGitmodules = InPlan.type == "registered" && InPlan.relPath != ".",
+        };
+    }
+
+    if (InPlan.type == "registered") {
+        const auto gmBranch = ResolveGitmodulesBranch(InRoot, InPlan.relPath);
+        if (InMode == ResetMode::StableLocal &&
+            IsStableBranchName(gmBranch) &&
+            LocalRefExists(InPlan.path, gmBranch)) {
+            return ResetResolution{
+                .checkoutBranch = gmBranch,
+                .resetRef = std::format("refs/heads/{}", gmBranch),
+                .branchSource = "registered .gitmodules stable branch",
+            };
+        }
+        if (InMode == ResetMode::StableRemote &&
+            !InPlan.remote.empty() &&
+            IsStableBranchName(gmBranch) &&
+            RemoteRefExists(InPlan.path, InPlan.remote, gmBranch)) {
+            return ResetResolution{
+                .checkoutBranch = gmBranch,
+                .resetRef = std::format("refs/remotes/{}/{}", InPlan.remote, gmBranch),
+                .branchSource = "registered .gitmodules stable branch",
+                .shouldUpdateGitmodules = InPlan.relPath != ".",
+            };
+        }
+    }
+
     if (InMode == ResetMode::StableLocal) {
         const auto stableBranch = ResolveLatestStableBranchRef(InPlan.path, "refs/heads", "");
         if (!stableBranch.empty() && LocalRefExists(InPlan.path, stableBranch)) {
@@ -495,15 +546,12 @@ auto RunResetPlan(const std::filesystem::path& InRoot,
     } else if (InMode == ResetMode::Remote) {
         resolution = ResolveRemoteTarget(InRoot, InPlan);
     } else if (InMode == ResetMode::StableLocal) {
-        resolution = ResolveStableTarget(InPlan, InMode);
+        resolution = ResolveStableTarget(InRoot, InPlan, InMode);
         if (!resolution.has_value()) {
             resolution = ResolveLocalTarget(InRoot, InPlan);
         }
     } else if (InMode == ResetMode::StableRemote) {
-        resolution = ResolveStableTarget(InPlan, InMode);
-        if (!resolution.has_value()) {
-            resolution = ResolveRemoteTarget(InRoot, InPlan);
-        }
+        resolution = ResolveStableTarget(InRoot, InPlan, InMode);
     }
 
     if (!resolution.has_value()) {
