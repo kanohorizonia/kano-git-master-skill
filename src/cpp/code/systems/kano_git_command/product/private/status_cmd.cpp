@@ -3,6 +3,7 @@
 #include <CLI/CLI.hpp>
 #include "discovery.hpp"
 #include "shell_executor.hpp"
+#include "terminal_color.hpp"
 
 #include <algorithm>
 #include <array>
@@ -454,25 +455,31 @@ auto FormatTable(const std::vector<RepoView>& InRows) -> std::string {
         }
     }
 
-    oss << "SUMMARY: repos=" << InRows.size() << ", dirty=" << dirtyCount << ", groups=" << groups.size() << "\n";
+    oss << kano::terminal::Wrap(std::format("SUMMARY: repos={}, dirty={}, groups={}", InRows.size(), dirtyCount, groups.size()), kano::terminal::Color::BoldWhite) << "\n";
 
     if (!InRows.empty()) {
-        oss << PadRight("#", layout.indexWidth)
-            << PadRight("REPO", layout.repoWidth)
-            << PadRight("BRANCH", layout.branchWidth)
-            << PadRight("REMOTE", layout.remoteWidth)
-            << PadRight("TRACKING", layout.trackingWidth)
-            << PadRight("DIRTY", layout.dirtyWidth)
-            << PadRight("WT_DIRTY", layout.worktreeDirtyWidth)
-            << "TYPE\n";
+        std::string header = PadRight("#", layout.indexWidth)
+            + PadRight("REPO", layout.repoWidth)
+            + PadRight("BRANCH", layout.branchWidth)
+            + PadRight("REMOTE", layout.remoteWidth)
+            + PadRight("TRACKING", layout.trackingWidth)
+            + PadRight("DIRTY", layout.dirtyWidth)
+            + PadRight("WT_DIRTY", layout.worktreeDirtyWidth)
+            + "TYPE";
+        oss << kano::terminal::Wrap(header, kano::terminal::Color::Dim) << "\n";
     }
+
+    auto formatDirty = [](bool InDirty, int InWidth) {
+        std::string padded = PadRight(InDirty ? "yes" : "no", InWidth);
+        return kano::terminal::Wrap(padded, InDirty ? kano::terminal::Color::BoldRed : kano::terminal::Color::Green);
+    };
 
     std::string currentGroup;
     for (std::size_t i = 0; i < InRows.size(); ++i) {
         const auto& row = InRows[i];
         if (currentGroup != row.group) {
             currentGroup = row.group;
-            oss << "\nGROUP: " << currentGroup << "\n";
+            oss << "\n" << kano::terminal::Wrap("GROUP: " + currentGroup, kano::terminal::Color::BoldYellow) << "\n";
         }
 
         const auto repoName = TruncateWithEllipsis(row.repoName, std::max(1, layout.repoWidth - 1));
@@ -481,22 +488,22 @@ auto FormatTable(const std::vector<RepoView>& InRows) -> std::string {
         const auto tracking = TruncateWithEllipsis(row.tracking, std::max(1, layout.trackingWidth - 1));
         const auto type = TruncateWithEllipsis(row.type, std::max(1, layout.typeWidth - 1));
 
-        oss << PadRight(std::to_string(i + 1), layout.indexWidth)
-            << PadRight(repoName, layout.repoWidth)
-            << PadRight(branch, layout.branchWidth)
+        oss << kano::terminal::Wrap(PadRight(std::to_string(i + 1), layout.indexWidth), kano::terminal::Color::Dim)
+            << kano::terminal::Wrap(PadRight(repoName, layout.repoWidth), kano::terminal::Color::BoldCyan)
+            << kano::terminal::Wrap(PadRight(branch, layout.branchWidth), kano::terminal::Color::Green)
             << PadRight(remote, layout.remoteWidth)
-            << PadRight(tracking, layout.trackingWidth)
-            << PadRight(row.repoDirty ? "yes" : "no", layout.dirtyWidth)
-            << PadRight(row.hasDirtyWorktree ? "yes" : "no", layout.worktreeDirtyWidth)
-            << type << "\n";
+            << kano::terminal::Wrap(PadRight(tracking, layout.trackingWidth), row.tracking == "up-to-date" ? kano::terminal::Color::Dim : kano::terminal::Color::Yellow)
+            << formatDirty(row.repoDirty, layout.dirtyWidth)
+            << formatDirty(row.hasDirtyWorktree, layout.worktreeDirtyWidth)
+            << kano::terminal::Wrap(type, kano::terminal::Color::Dim) << "\n";
             
         if (!row.statusLines.empty()) {
             for (const auto& line : row.statusLines) {
-                oss << "    " << line << "\n";
+                oss << "    " << kano::terminal::Wrap(line, kano::terminal::Color::Yellow) << "\n";
             }
         }
         if (row.hasDirtyWorktree) {
-            oss << "    dirty worktrees: " << row.dirtyWorktrees << "\n";
+            oss << "    " << kano::terminal::Wrap("dirty worktrees: " + row.dirtyWorktrees, kano::terminal::Color::BoldRed) << "\n";
         }
         if (!row.statusLines.empty() || row.hasDirtyWorktree) {
             oss << "\n";
