@@ -69,6 +69,11 @@ auto IsGitRepo(const std::filesystem::path& InRepo) -> bool {
     return GitCapture(InRepo, {"rev-parse", "--git-dir"}).exitCode == 0;
 }
 
+auto IsWorkingTreeDirty(const std::filesystem::path& InRepo) -> bool {
+    const auto status = GitCapture(InRepo, {"status", "--porcelain"});
+    return status.exitCode == 0 && !Trim(status.stdoutStr).empty();
+}
+
 auto CurrentBranch(const std::filesystem::path& InRepo) -> std::string {
     const auto result = GitCapture(InRepo, {"symbolic-ref", "--quiet", "--short", "HEAD"});
     if (result.exitCode != 0) {
@@ -570,13 +575,24 @@ auto RunResetPlan(const std::filesystem::path& InRoot,
         if (resolution->shouldUpdateGitmodules) {
             out.message += std::format("; would update .gitmodules branch to '{}'", resolution->checkoutBranch);
         }
+        if (IsWorkingTreeDirty(InPlan.path)) {
+            out.message += "; would stash uncommitted changes";
+        }
         return out;
     }
 
-    const auto checkout = GitCapture(InPlan.path, {"checkout", "-q", "-B", resolution->checkoutBranch, resolution->resetRef});
+    if (IsWorkingTreeDirty(InPlan.path)) {
+        const auto stash = GitCapture(InPlan.path, {"stash", "push", "--include-untracked", "-m", "kog auto stash before reset"});
+        if (stash.exitCode != 0) {
+            out.message = "warning: stash failed";
+        }
+    }
+
+    const auto checkout = GitCapture(InPlan.path, {"checkout", "-q", "-f", "-B", resolution->checkoutBranch, resolution->resetRef});
     if (checkout.exitCode != 0) {
         out.exitCode = 1;
-        out.message = std::format("checkout -B failed for '{}'", resolution->checkoutBranch);
+        out.message = out.message.empty() ? std::format("checkout -f -B failed for '{}'", resolution->checkoutBranch)
+                                          : std::format("checkout -f -B failed for '{}' ({})", resolution->checkoutBranch, out.message);
         return out;
     }
 
@@ -601,7 +617,7 @@ auto RunResetPlan(const std::filesystem::path& InRoot,
         return out;
     }
 
-    out.message = "ok";
+    out.message = out.message.empty() ? "ok" : "ok (" + out.message + ")";
     return out;
 }
 
