@@ -4,6 +4,8 @@
 #include "discovery.hpp"
 #include "native_workspace.hpp"
 #include "shell_executor.hpp"
+#include "terminal_color.hpp"
+
 
 #include <algorithm>
 #include <filesystem>
@@ -622,18 +624,29 @@ auto RunResetPlan(const std::filesystem::path& InRoot,
 }
 
 void PrintResetResult(const ResetResult& InResult) {
-    std::cout << "["
-              << (InResult.repo.empty() ? "." : InResult.repo)
-              << "] ";
+    std::string repoName = InResult.repo.empty() ? "." : InResult.repo;
+    std::cout << "[" << kano::terminal::Wrap(repoName, kano::terminal::Color::BoldCyan) << "] ";
+    
     if (!InResult.branchSource.empty()) {
         std::cout << InResult.branchSource << " -> ";
     }
     if (!InResult.resetRef.empty()) {
         std::cout << InResult.resetRef << " ";
     }
-    std::cout << (InResult.exitCode == 0 ? "OK" : "FAIL");
+    
+    if (InResult.exitCode == 0) {
+        std::cout << kano::terminal::Wrap("OK", kano::terminal::Color::BoldGreen);
+    } else {
+        std::cout << kano::terminal::Wrap("FAIL", kano::terminal::Color::BoldRed);
+    }
+    
     if (!InResult.message.empty()) {
-        std::cout << " | " << InResult.message;
+        std::cout << " | ";
+        if (InResult.exitCode == 0) {
+            std::cout << kano::terminal::Wrap(InResult.message, kano::terminal::Color::Green);
+        } else {
+            std::cout << kano::terminal::Wrap(InResult.message, kano::terminal::Color::Red);
+        }
     }
     std::cout << "\n";
 }

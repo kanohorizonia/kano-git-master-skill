@@ -53,7 +53,17 @@ inline bool IsStdoutInteractive() {
         if (kogNoColor != nullptr && *kogNoColor != '\0') return false;
 
 #if defined(_WIN32)
-        return ISATTY(STDOUT_FILENO) != 0;
+        if (ISATTY(STDOUT_FILENO) != 0) {
+            HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+            if (hOut != INVALID_HANDLE_VALUE) {
+                DWORD dwMode = 0;
+                if (GetConsoleMode(hOut, &dwMode)) {
+                    SetConsoleMode(hOut, dwMode | 0x0004); // ENABLE_VIRTUAL_TERMINAL_PROCESSING
+                }
+            }
+            return true;
+        }
+        return false;
 #else
         return ISATTY(STDOUT_FILENO) != 0;
 #endif
@@ -67,7 +77,21 @@ inline bool IsStderrInteractive() {
         if (noColor != nullptr && *noColor != '\0') return false;
         const char* kogNoColor = std::getenv("KOG_NO_COLOR");
         if (kogNoColor != nullptr && *kogNoColor != '\0') return false;
+#if defined(_WIN32)
+        if (ISATTY(STDERR_FILENO) != 0) {
+            HANDLE hErr = GetStdHandle(STD_ERROR_HANDLE);
+            if (hErr != INVALID_HANDLE_VALUE) {
+                DWORD dwMode = 0;
+                if (GetConsoleMode(hErr, &dwMode)) {
+                    SetConsoleMode(hErr, dwMode | 0x0004); // ENABLE_VIRTUAL_TERMINAL_PROCESSING
+                }
+            }
+            return true;
+        }
+        return false;
+#else
         return ISATTY(STDERR_FILENO) != 0;
+#endif
     }();
     return enabled;
 }
