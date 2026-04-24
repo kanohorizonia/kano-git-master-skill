@@ -12,6 +12,7 @@
 #include "discovery.hpp"
 #include "shell_executor.hpp"
 #include "ai_utils.hpp"
+#include "terminal_color.hpp"
 
 namespace kano::git::commands {
 
@@ -158,14 +159,17 @@ void RegisterVersion(CLI::App& InApp) {
         }
 
         for (const auto& info : projects) {
-            std::cout << "[" << info.repoPath << "] " << info.repoName << "\n";
-            std::cout << "    Version:  " << info.version;
+            std::cout << "[" << kano::terminal::Wrap(info.repoPath, kano::terminal::Color::Dim) << "] " 
+                      << kano::terminal::Wrap(info.repoName, kano::terminal::Color::BoldCyan) << "\n";
+            std::cout << "    Version:  " << kano::terminal::Wrap(info.version, kano::terminal::Color::BoldGreen);
             if (!info.versionSource.empty()) {
-                std::cout << " (source: " << info.versionSource << ")";
+                std::cout << " " << kano::terminal::Wrap("(source: " + info.versionSource + ")", kano::terminal::Color::Dim);
             }
             std::cout << "\n";
-            std::cout << "    Revision: " << info.branch << " (rev " << info.revisionCount << ") " << info.hash << "\n";
-            std::cout << "    Status:   " << (info.isDirty ? "Dirty" : "Clean") << "\n";
+            std::cout << "    Revision: " << kano::terminal::Wrap(info.branch, kano::terminal::Color::BoldWhite) 
+                      << " " << kano::terminal::Wrap("(rev " + info.revisionCount + ")", kano::terminal::Color::Dim) 
+                      << " " << kano::terminal::Wrap(info.hash, kano::terminal::Color::BoldBlue) << "\n";
+            std::cout << "    Status:   " << (info.isDirty ? kano::terminal::Wrap("Dirty", kano::terminal::Color::BoldRed) : kano::terminal::Wrap("Clean", kano::terminal::Color::BoldGreen)) << "\n";
             std::cout << "\n";
         }
     });

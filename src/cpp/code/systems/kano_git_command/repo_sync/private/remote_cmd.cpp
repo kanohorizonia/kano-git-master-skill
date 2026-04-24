@@ -3,6 +3,7 @@
 #include <CLI/CLI.hpp>
 #include "discovery.hpp"
 #include "shell_executor.hpp"
+#include "terminal_color.hpp"
 
 #include <algorithm>
 #include <filesystem>
@@ -129,18 +130,19 @@ auto FormatTable(const std::filesystem::path& InRepo,
                  const std::string& InGroup,
                  const std::string& InRepoName) -> std::string {
     std::ostringstream oss;
-    oss << "[" << InRepoIndex << "/" << InRepoCount << "] REPO: " << InRepoName << "\n";
-    oss << "GROUP : " << InGroup << "\n";
-    oss << "BRANCH: " << InBranch << "\n";
-    oss << "REMOTE: " << InRemoteRef << "\n\n";
+    oss << "[" << kano::terminal::Wrap(std::to_string(InRepoIndex) + "/" + std::to_string(InRepoCount), kano::terminal::Color::Dim) 
+        << "] REPO: " << kano::terminal::Wrap(InRepoName, kano::terminal::Color::BoldCyan) << "\n";
+    oss << "GROUP : " << kano::terminal::Wrap(InGroup, kano::terminal::Color::BoldYellow) << "\n";
+    oss << "BRANCH: " << kano::terminal::Wrap(InBranch, kano::terminal::Color::BoldGreen) << "\n";
+    oss << "REMOTE: " << kano::terminal::Wrap(InRemoteRef, kano::terminal::Color::BoldBlue) << "\n\n";
 
-    oss << "Remotes: " << InRows.size() << "\n";
+    oss << "Remotes: " << kano::terminal::Wrap(std::to_string(InRows.size()), kano::terminal::Color::BoldWhite) << "\n";
 
     for (std::size_t i = 0; i < InRows.size(); ++i) {
         const auto& row = InRows[i];
-        oss << "  [" << (i + 1) << "] " << row.name << "\n";
-        oss << "      fetch: " << row.fetchUrl << "\n";
-        oss << "      push : " << row.pushUrl << "\n";
+        oss << "  [" << kano::terminal::Wrap(std::to_string(i + 1), kano::terminal::Color::Dim) << "] " << kano::terminal::Wrap(row.name, kano::terminal::Color::BoldCyan) << "\n";
+        oss << "      fetch: " << kano::terminal::Wrap(row.fetchUrl, kano::terminal::Color::Green) << "\n";
+        oss << "      push : " << kano::terminal::Wrap(row.pushUrl, kano::terminal::Color::Green) << "\n";
     }
 
     if (InRows.empty()) {
@@ -162,10 +164,10 @@ auto FormatWorkspaceTable(const std::vector<std::filesystem::path>& InRepos,
         groupedRepoIndexes[GroupFromRelativePath(relativePath)].push_back(i);
     }
 
-    out << "SUMMARY: repos=" << InRepos.size() << ", groups=" << groupedRepoIndexes.size() << "\n";
+    out << kano::terminal::Wrap(std::format("SUMMARY: repos={}, groups={}", InRepos.size(), groupedRepoIndexes.size()), kano::terminal::Color::BoldWhite) << "\n";
     std::size_t globalIndex = 0;
     for (const auto& [group, indexes] : groupedRepoIndexes) {
-        out << "\nGROUP: " << group << " (repos=" << indexes.size() << ")\n\n";
+        out << "\n" << kano::terminal::Wrap("GROUP: " + group, kano::terminal::Color::BoldYellow) << " (repos=" << indexes.size() << ")\n\n";
         for (const auto repoIdx : indexes) {
             globalIndex += 1;
             if (globalIndex > 1) {

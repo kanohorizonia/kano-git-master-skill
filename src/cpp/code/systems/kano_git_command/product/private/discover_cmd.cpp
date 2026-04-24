@@ -2,6 +2,7 @@
 
 #include <CLI/CLI.hpp>
 #include "discovery.hpp"
+#include "terminal_color.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -141,14 +142,15 @@ void RunDiscoverCommand(const std::string& InFormat,
     options.metadataLevel = InMetadata;
     options.scope = InScope;
     options.progressCallback = [](const std::string& InMessage) {
-        std::cerr << "[discover] " << InMessage << "\n";
+        std::cerr << kano::terminal::Wrap("[discover]", kano::terminal::Color::Dim) << " " << InMessage << "\n";
     };
 
-    std::cerr << "[discover] start root=" << options.rootDir.lexically_normal().generic_string()
-              << " cache=" << (options.useCache ? "on" : "off")
-              << " refresh=" << (options.refreshCache ? "on" : "off")
-              << " metadata=" << options.metadataLevel
-              << " scope=" << (options.scope == workspace::DiscoverScope::Full ? "full" : "registered-only")
+    std::cerr << kano::terminal::Wrap("[discover]", kano::terminal::Color::Dim) << " " 
+              << kano::terminal::Wrap("start", kano::terminal::Color::BoldWhite) << " root=" << options.rootDir.lexically_normal().generic_string()
+              << " cache=" << (options.useCache ? kano::terminal::Wrap("on", kano::terminal::Color::BoldGreen) : kano::terminal::Wrap("off", kano::terminal::Color::BoldRed))
+              << " refresh=" << (options.refreshCache ? kano::terminal::Wrap("on", kano::terminal::Color::BoldGreen) : kano::terminal::Wrap("off", kano::terminal::Color::BoldRed))
+              << " metadata=" << kano::terminal::Wrap(options.metadataLevel, kano::terminal::Color::BoldWhite)
+              << " scope=" << (options.scope == workspace::DiscoverScope::Full ? kano::terminal::Wrap("full", kano::terminal::Color::BoldYellow) : kano::terminal::Wrap("registered-only", kano::terminal::Color::BoldBlue))
               << (options.scope == workspace::DiscoverScope::Full ? std::string(" depth=") + std::to_string(options.maxDepth) : std::string(" recursive=registered"))
               << "\n";
 
@@ -164,10 +166,10 @@ void RunDiscoverCommand(const std::string& InFormat,
 
     const auto manifestStart = std::chrono::steady_clock::now();
     const auto manifest = workspace::BuildWorkspaceManifest(options.rootDir, repos);
-    std::cerr << "[discover] writing workspace manifest -> "
-              << manifest.manifestFile.lexically_normal().generic_string() << "\n";
+    std::cerr << kano::terminal::Wrap("[discover]", kano::terminal::Color::Dim) << " writing workspace manifest -> "
+              << kano::terminal::Wrap(manifest.manifestFile.lexically_normal().generic_string(), kano::terminal::Color::BoldCyan) << "\n";
     if (!workspace::SaveWorkspaceManifest(manifest)) {
-        std::cerr << "Error: failed to write workspace manifest: "
+        std::cerr << kano::terminal::Wrap("Error:", kano::terminal::Color::BoldRed) << " failed to write workspace manifest: "
                   << manifest.manifestFile.lexically_normal().generic_string() << "\n";
         std::exit(1);
     }
@@ -180,17 +182,18 @@ void RunDiscoverCommand(const std::string& InFormat,
     const auto discoverElapsedText = FormatHumanDuration(discoverElapsed);
     const auto manifestElapsedText = FormatHumanDuration(manifestElapsed);
     const auto totalElapsedText = FormatHumanDuration(totalElapsed);
-    std::cerr << "[discover] complete mode=" << discovery.mode << " repos=" << repos.size()
-              << " elapsed=" << totalElapsedText << "\n";
+    std::cerr << kano::terminal::Wrap("[discover]", kano::terminal::Color::Dim) << " " 
+              << kano::terminal::Wrap("complete", kano::terminal::Color::BoldGreen) << " mode=" << discovery.mode << " repos=" << repos.size()
+              << " elapsed=" << kano::terminal::Wrap(totalElapsedText, kano::terminal::Color::BoldWhite) << "\n";
 
-    std::cout << "Discovery mode: " << discovery.mode << "\n";
-    std::cout << "Discovery scope: " << (options.scope == workspace::DiscoverScope::Full ? "full" : "registered-only") << "\n";
-    std::cout << "Discovery cache: " << discovery.cacheFile.lexically_normal().generic_string() << "\n";
-    std::cout << "Workspace manifest: " << manifest.manifestFile.lexically_normal().generic_string() << "\n";
-    std::cout << "Repos discovered: " << repos.size() << "\n";
-    std::cout << "Discovery elapsed: " << discoverElapsedText << "\n";
-    std::cout << "Manifest write elapsed: " << manifestElapsedText << "\n";
-    std::cout << "Total elapsed: " << totalElapsedText << "\n\n";
+    std::cout << kano::terminal::Wrap("Discovery mode: ", kano::terminal::Color::BoldWhite) << discovery.mode << "\n";
+    std::cout << kano::terminal::Wrap("Discovery scope: ", kano::terminal::Color::BoldWhite) << (options.scope == workspace::DiscoverScope::Full ? "full" : "registered-only") << "\n";
+    std::cout << kano::terminal::Wrap("Discovery cache: ", kano::terminal::Color::BoldWhite) << kano::terminal::Wrap(discovery.cacheFile.lexically_normal().generic_string(), kano::terminal::Color::BoldCyan) << "\n";
+    std::cout << kano::terminal::Wrap("Workspace manifest: ", kano::terminal::Color::BoldWhite) << kano::terminal::Wrap(manifest.manifestFile.lexically_normal().generic_string(), kano::terminal::Color::BoldCyan) << "\n";
+    std::cout << kano::terminal::Wrap("Repos discovered: ", kano::terminal::Color::BoldWhite) << kano::terminal::Wrap(std::to_string(repos.size()), kano::terminal::Color::BoldGreen) << "\n";
+    std::cout << kano::terminal::Wrap("Discovery elapsed: ", kano::terminal::Color::BoldWhite) << discoverElapsedText << "\n";
+    std::cout << kano::terminal::Wrap("Manifest write elapsed: ", kano::terminal::Color::BoldWhite) << manifestElapsedText << "\n";
+    std::cout << kano::terminal::Wrap("Total elapsed: ", kano::terminal::Color::BoldWhite) << kano::terminal::Wrap(totalElapsedText, kano::terminal::Color::BoldGreen) << "\n\n";
 
     if (InFormat == "json") {
         std::cout << FormatNativeStatusJson(repos) << "\n";
@@ -231,38 +234,35 @@ auto FormatNativeStatusTable(const std::vector<workspace::RepoRecord>& InRepos, 
     }
 
     if (!InRepos.empty()) {
-        oss << std::left
-            << std::setw(6) << "#"
-            << std::setw(26) << "REPO"
-            << std::setw(20) << "BRANCH"
-            << std::setw(14) << "TYPE"
-            << std::setw(8) << "DIRTY"
+        oss << kano::terminal::Wrap(std::format("{:<6}{:<26}{:<20}{:<14}{:<8}", "#", "REPO", "BRANCH", "TYPE", "DIRTY"), kano::terminal::Color::Dim)
             << "\n";
     }
 
     std::size_t globalIndex = 0;
     for (const auto& [group, indexes] : groupedRepoIndexes) {
-        oss << "GROUP: " << group << "\n";
+        oss << kano::terminal::Wrap("GROUP: " + group, kano::terminal::Color::BoldYellow) << "\n";
         for (const auto repoIdx : indexes) {
             const auto& repo = InRepos[repoIdx];
             globalIndex += 1;
 
             auto repoName = RepoNameFromPath(repo.path);
+            const auto repoNameRaw = repoName;
             if (repoName.size() > 24) {
                 repoName = repoName.substr(0, 21) + "...";
             }
 
             auto branch = repo.currentBranch.empty() ? "(detached)" : repo.currentBranch;
+            const auto branchRaw = branch;
             if (branch.size() > 18) {
                 branch = branch.substr(0, 15) + "...";
             }
 
             oss << std::left
-                << std::setw(6) << std::to_string(globalIndex)
-                << std::setw(26) << repoName
-                << std::setw(20) << branch
+                << std::setw(6) << kano::terminal::Wrap(std::to_string(globalIndex), kano::terminal::Color::Dim)
+                << std::setw(26) << kano::terminal::Wrap(repoName, kano::terminal::Color::BoldCyan)
+                << std::setw(20) << kano::terminal::Wrap(branch, kano::terminal::Color::BoldGreen)
                 << std::setw(14) << repo.type
-                << std::setw(8) << (repo.hasChanges ? "yes" : "no")
+                << std::setw(8) << (repo.hasChanges ? kano::terminal::Wrap("yes", kano::terminal::Color::BoldRed) : kano::terminal::Wrap("no", kano::terminal::Color::BoldGreen))
                 << "\n";
         }
         oss << "\n";

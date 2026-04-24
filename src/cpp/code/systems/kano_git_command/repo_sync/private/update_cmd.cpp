@@ -4,6 +4,7 @@
 #include "shell_executor.hpp"
 #include "native_workspace.hpp"
 #include "discovery.hpp"
+#include "terminal_color.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -279,15 +280,15 @@ auto UpdateRepoNative(const workspace::RepoRecord& InRepo, const std::string& In
 }
 
 void PrintRepoUpdateResult(const RepoUpdateResult& InResult) {
-    std::cout << "\n==> [" << InResult.path << "] (" << InResult.type << ")\n";
+    std::cout << "\n==> [" << kano::terminal::Wrap(InResult.path, kano::terminal::Color::BoldCyan) << "] (" << InResult.type << ")\n";
     if (InResult.skipped) {
-        std::cout << InResult.message << "\n";
+        std::cout << kano::terminal::Wrap(InResult.message, kano::terminal::Color::Yellow) << "\n";
         return;
     }
     if (InResult.exitCode == 0) {
-        std::cout << InResult.message << "\n";
+        std::cout << kano::terminal::Wrap(InResult.message, kano::terminal::Color::BoldGreen) << "\n";
     } else {
-        std::cerr << InResult.message << "\n";
+        std::cerr << kano::terminal::Wrap(InResult.message, kano::terminal::Color::BoldRed) << "\n";
     }
 }
 
@@ -483,9 +484,10 @@ void RegisterUpdate(CLI::App& InApp) {
                 } else {
                     failureCount += 1;
                     if (!*updateContinueOnError) {
-                        std::cerr << "Error: update failed, stopping (use --continue-on-error to continue)\n";
+                        std::cerr << kano::terminal::Wrap("Error: update failed, stopping (use --continue-on-error to continue)", kano::terminal::Color::BoldRed) << "\n";
                         std::cout << "\nSummary: " << (successCount + failureCount) << " repos, "
-                                  << successCount << " succeeded, " << failureCount << " failed"
+                                  << kano::terminal::Wrap(std::to_string(successCount) + " succeeded", kano::terminal::Color::BoldGreen) << ", " 
+                                  << kano::terminal::Wrap(std::to_string(failureCount) + " failed", kano::terminal::Color::BoldRed)
                                   << " (" << skippedCount << " skipped)\n";
                         std::exit(1);
                     }
@@ -494,7 +496,8 @@ void RegisterUpdate(CLI::App& InApp) {
         }
 
         std::cout << "\nSummary: " << (successCount + failureCount) << " repos, "
-                  << successCount << " succeeded, " << failureCount << " failed"
+                  << kano::terminal::Wrap(std::to_string(successCount) + " succeeded", kano::terminal::Color::BoldGreen) << ", " 
+                  << kano::terminal::Wrap(std::to_string(failureCount) + " failed", kano::terminal::Color::BoldRed)
                   << " (" << skippedCount << " skipped)\n";
         std::exit(failureCount > 0 ? 1 : 0);
     });

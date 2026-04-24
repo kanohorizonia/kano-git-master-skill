@@ -4,6 +4,7 @@
 #include <CLI/CLI.hpp>
 #include "shell_executor.hpp"
 #include "discovery.hpp"
+#include "terminal_color.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -612,9 +613,11 @@ auto RunNativePush(
         {
             std::lock_guard<std::mutex> lock(outputMutex);
             if (repoIndex > 0) {
-                std::cout << "[" << repoIndex << "/" << InRepos.size() << "] Processing " << repoLabel << "\n";
+                std::cout << "[" << kano::terminal::Wrap(std::to_string(repoIndex) + "/" + std::to_string(InRepos.size()), kano::terminal::Color::Dim) 
+                          << "] Processing " << kano::terminal::Wrap(repoLabel, kano::terminal::Color::BoldCyan) << "\n";
             } else {
-                std::cout << "[?/?] Processing " << repoLabel << "\n";
+                std::cout << "[" << kano::terminal::Wrap("?/?", kano::terminal::Color::Dim) 
+                          << "] Processing " << kano::terminal::Wrap(repoLabel, kano::terminal::Color::BoldCyan) << "\n";
             }
         }
 
@@ -634,7 +637,7 @@ auto RunNativePush(
                     return {0, 1};
                 }
             }
-            std::cout << "[" << repoLabel << "] Fetch-only mode: skipping rebase and push\n";
+            std::cout << "[" << kano::terminal::Wrap(repoLabel, kano::terminal::Color::BoldCyan) << "] Fetch-only mode: skipping rebase and push\n";
             return {1, 0};
         }
 
@@ -686,7 +689,7 @@ auto RunNativePush(
                         }
                     }
                 } else {
-                    std::cout << "[" << repoLabel << "] Sync skipped: local changes present; proceeding to push\n";
+                    std::cout << "[" << kano::terminal::Wrap(repoLabel, kano::terminal::Color::BoldCyan) << "] Sync skipped: local changes present; proceeding to push\n";
                 }
             } else {
                 const auto upstreamRef = Trim(GitCapture(repoPath, {"rev-parse", "--abbrev-ref", "@{upstream}"}).stdoutStr);
@@ -720,7 +723,7 @@ auto RunNativePush(
                         return {0, 1};
                     }
                 } else {
-                    std::cout << "[" << repoLabel << "] Sync skipped: local branch is not behind upstream";
+                    std::cout << "[" << kano::terminal::Wrap(repoLabel, kano::terminal::Color::BoldCyan) << "] Sync skipped: local branch is not behind upstream";
                     if (aheadCount >= 0 && behindCount >= 0) {
                         std::cout << " (ahead=" << aheadCount << ", behind=" << behindCount << ")";
                     }
@@ -819,7 +822,8 @@ auto RunNativePush(
                 PrintCapturedOutputIfAny(result);
             }
             if (result.exitCode == 0) {
-                std::cout << "[" << repoLabel << "] Pushed (" << remote << ")\n";
+                std::cout << "[" << kano::terminal::Wrap(repoLabel, kano::terminal::Color::BoldCyan) << "] " 
+                          << kano::terminal::Wrap("Pushed", kano::terminal::Color::BoldGreen) << " (" << remote << ")\n";
                 repoSuccess = 1;
                 {
                     std::lock_guard<std::mutex> lock(statsMutex);
@@ -828,7 +832,8 @@ auto RunNativePush(
             } else {
                 bool recoveredByLfsRetry = false;
                 if (!InDryRun && LooksLikeLfsPushFailure(result)) {
-                    std::cerr << "[" << repoLabel << "] Push failed (" << remote
+                    std::cerr << "[" << kano::terminal::Wrap(repoLabel, kano::terminal::Color::BoldCyan) << "] "
+                              << kano::terminal::Wrap("Push failed", kano::terminal::Color::BoldRed) << " (" << remote
                               << ") due to LFS transport/auth issue; attempting git lfs push retry\n";
 
                     const auto lfsPush = GitCapture(repoPath, {"lfs", "push", remote, branch});
@@ -842,7 +847,8 @@ auto RunNativePush(
                             PrintCapturedOutputIfAny(retryResult);
                         }
                         if (retryResult.exitCode == 0) {
-                            std::cout << "[" << repoLabel << "] Pushed (" << remote
+                            std::cout << "[" << kano::terminal::Wrap(repoLabel, kano::terminal::Color::BoldCyan) << "] "
+                                      << kano::terminal::Wrap("Pushed", kano::terminal::Color::BoldGreen) << " (" << remote
                                       << ") after LFS retry\n";
                             repoSuccess = 1;
                             recoveredByLfsRetry = true;
@@ -859,7 +865,8 @@ auto RunNativePush(
                 if (!InVerbose) {
                     PrintCapturedOutputIfAny(result);
                 }
-                std::cerr << "[" << repoLabel << "] Push failed (" << remote << ")\n";
+                std::cerr << "[" << kano::terminal::Wrap(repoLabel, kano::terminal::Color::BoldCyan) << "] "
+                          << kano::terminal::Wrap("Push failed", kano::terminal::Color::BoldRed) << " (" << remote << ")\n";
             }
         }
 
@@ -927,24 +934,27 @@ auto RunNativePush(
                 std::get<2>(stat));
         }
 
-        std::cout << "\n=== Push Summary ===\n";
-        std::cout << "SUMMARY: pushed_entries=" << pushStats.size() << ", groups=" << grouped.size() << "\n\n";
+        std::cout << "\n=== " << kano::terminal::Wrap("Push Summary", kano::terminal::Color::BoldWhite) << " ===\n";
+        std::cout << kano::terminal::Wrap(std::format("SUMMARY: pushed_entries={}, groups={}", pushStats.size(), grouped.size()), kano::terminal::Color::BoldWhite) << "\n\n";
 
         std::size_t index = 0;
         for (const auto& [group, rows] : grouped) {
-            std::cout << "GROUP: " << group << "\n";
+            std::cout << kano::terminal::Wrap("GROUP: " + group, kano::terminal::Color::BoldYellow) << "\n";
             for (const auto& row : rows) {
                 index += 1;
-                std::cout << "[" << index << "] " << std::get<0>(row)
-                          << "  remote=" << std::get<1>(row)
-                          << "  branch=" << std::get<2>(row)
+                std::cout << kano::terminal::Wrap(std::format("[{}]", index), kano::terminal::Color::Dim) << " "
+                          << kano::terminal::Wrap(std::get<0>(row), kano::terminal::Color::BoldCyan)
+                          << "  remote=" << kano::terminal::Wrap(std::get<1>(row), kano::terminal::Color::Green)
+                          << "  branch=" << kano::terminal::Wrap(std::get<2>(row), kano::terminal::Color::BoldWhite)
                           << "\n";
             }
             std::cout << "\n";
         }
     }
 
-    std::cout << "\nSummary: " << successes << " succeeded, " << failures << " failed\n";
+    const auto summaryColor = failures == 0 ? kano::terminal::Color::BoldGreen : kano::terminal::Color::BoldRed;
+    std::cout << "\nSummary: " << kano::terminal::Wrap(std::to_string(successes) + " succeeded", kano::terminal::Color::BoldGreen) 
+              << ", " << kano::terminal::Wrap(std::to_string(failures) + " failed", kano::terminal::Color::BoldRed) << "\n";
     if (InProfile) {
         const auto totalEnd = std::chrono::steady_clock::now();
         const auto totalMillis = std::chrono::duration_cast<std::chrono::milliseconds>(totalEnd - totalStart).count();

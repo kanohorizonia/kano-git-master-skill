@@ -3,6 +3,7 @@
 #include "ai_utils.hpp"
 #include "kog_config.hpp"
 #include "plan_utils.hpp"
+#include "terminal_color.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -152,7 +153,7 @@ void RegisterCherryPick(CLI::App& InApp) {
         }
 
         for (const auto& commit : effectiveCommits) {
-            std::cout << ">>> Cherry-picking " << commit << "...\n";
+            std::cout << kano::terminal::Wrap(">>>", kano::terminal::Color::BoldCyan) << " Cherry-picking " << kano::terminal::Wrap(commit, kano::terminal::Color::BoldWhite) << "...\n";
             auto result = shell::ExecuteCommand("git", {"cherry-pick", commit}, shell::ExecMode::PassThrough, workspaceRoot);
             
             if (result.exitCode != 0) {
@@ -160,16 +161,16 @@ void RegisterCherryPick(CLI::App& InApp) {
                 if (status.find("You are currently cherry-picking commit") != std::string::npos && 
                     status.find("Unmerged paths:") != std::string::npos) {
                     
-                    std::cout << "Conflict detected during cherry-pick of " << commit << ".\n";
+                    std::cout << kano::terminal::Wrap("Conflict detected", kano::terminal::Color::BoldRed) << " during cherry-pick of " << kano::terminal::Wrap(commit, kano::terminal::Color::BoldWhite) << ".\n";
                     
                     bool shouldResolve = (*agentMode || *aiAuto || plan.aiEnabled || IsAgentModeEnabled()) && !(*noAiResolve);
                     if (shouldResolve) {
                         std::cout << "Attempting AI conflict resolution...\n";
                         if (AIResolveConflicts(workspaceRoot, *provider)) {
-                            std::cout << "Conflicts resolved. Continuing...\n";
+                            std::cout << kano::terminal::Wrap("Conflicts resolved.", kano::terminal::Color::BoldGreen) << " Continuing...\n";
                             shell::ExecuteCommand("git", {"cherry-pick", "--continue", "--no-edit"}, shell::ExecMode::PassThrough, workspaceRoot);
                         } else {
-                            std::cerr << "AI resolution failed. Please resolve conflicts manually and run 'kog cherry-pick --continue'.\n";
+                            std::cerr << kano::terminal::Wrap("AI resolution failed.", kano::terminal::Color::BoldRed) << " Please resolve conflicts manually and run 'kog cherry-pick --continue'.\n";
                             throw CLI::RuntimeError(1);
                         }
                     } else {
@@ -177,13 +178,13 @@ void RegisterCherryPick(CLI::App& InApp) {
                         throw CLI::RuntimeError(1);
                     }
                 } else {
-                    std::cerr << "Error: cherry-pick failed for " << commit << ".\n";
+                    std::cerr << kano::terminal::Wrap("Error:", kano::terminal::Color::BoldRed) << " cherry-pick failed for " << kano::terminal::Wrap(commit, kano::terminal::Color::BoldWhite) << ".\n";
                     throw CLI::RuntimeError(result.exitCode);
                 }
             }
         }
         
-        std::cout << "Cherry-pick sequence completed successfully.\n";
+        std::cout << kano::terminal::Wrap("Cherry-pick sequence completed successfully.", kano::terminal::Color::BoldGreen) << "\n";
     });
 }
 

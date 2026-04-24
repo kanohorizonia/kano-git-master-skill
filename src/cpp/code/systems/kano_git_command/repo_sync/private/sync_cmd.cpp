@@ -4,6 +4,7 @@
 #include <CLI/CLI.hpp>
 #include "discovery.hpp"
 #include "shell_executor.hpp"
+#include "terminal_color.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -1732,8 +1733,10 @@ auto RunNativeOriginLatestSync(
                                                         : std::vector<std::string>{};
         const auto stashArgs = BuildSyncStashArgs(reservedPaths);
 
-        std::cout << (InDryRun ? "[DRY RUN] " : "") << "Repo: " << name << "\n";
-        std::cout << (InDryRun ? "[DRY RUN] " : "") << "Branch source: " << branchSource << "\n";
+        std::cout << (InDryRun ? kano::terminal::Wrap("[DRY RUN] ", kano::terminal::Color::Yellow) : "") 
+                  << "Repo: " << kano::terminal::Wrap(name, kano::terminal::Color::BoldCyan) << "\n";
+        std::cout << (InDryRun ? kano::terminal::Wrap("[DRY RUN] ", kano::terminal::Color::Yellow) : "") 
+                  << "Branch source: " << kano::terminal::Wrap(branchSource, kano::terminal::Color::BoldWhite) << "\n";
 
         if (hasLocalChanges) {
             if (InAutoStashLocalChanges) {
@@ -1778,7 +1781,7 @@ auto RunNativeOriginLatestSync(
                         }
                     }
                     if (stash.exitCode != 0) {
-                        std::cerr << "ERROR: failed to auto-stash local changes for " << name << "\n";
+                        std::cerr << kano::terminal::Wrap("ERROR:", kano::terminal::Color::BoldRed) << " failed to auto-stash local changes for " << kano::terminal::Wrap(name, kano::terminal::Color::BoldCyan) << "\n";
                         failures += 1;
                         if (indexLockDiagnosis.has_value()) {
                             failureDetails.emplace_back(name, DescribeIndexLockFailure(*indexLockDiagnosis, InCleanupStaleLocks));
@@ -1791,7 +1794,7 @@ auto RunNativeOriginLatestSync(
                     const auto stashOut = Trim(stash.stdoutStr + "\n" + stash.stderrStr);
                     stashCreated = stashOut.find("No local changes to save") == std::string::npos;
                     if (stashCreated) {
-                        std::cout << "Auto-stashed local changes for " << name << "\n";
+                        std::cout << kano::terminal::Wrap("Auto-stashed", kano::terminal::Color::BoldGreen) << " local changes for " << kano::terminal::Wrap(name, kano::terminal::Color::BoldCyan) << "\n";
                     }
                 }
             } else {
@@ -1873,7 +1876,7 @@ auto RunNativeOriginLatestSync(
 
         const auto checkout = GitPassThrough(plan.path, checkoutArgs);
         if (checkout.exitCode != 0) {
-            std::cerr << "ERROR: checkout failed for " << name << "\n";
+            std::cerr << kano::terminal::Wrap("ERROR:", kano::terminal::Color::BoldRed) << " checkout failed for " << kano::terminal::Wrap(name, kano::terminal::Color::BoldCyan) << "\n";
             failures += 1;
             failureDetails.emplace_back(name, "checkout failed");
             if (!RestoreAutoStashIfNeeded(plan.path, name, stashCreated)) {
@@ -1901,7 +1904,7 @@ auto RunNativeOriginLatestSync(
                 if (iss >> aheadCount >> behindCount) {
                     shouldRebase = behindCount > 0;
                     if (!shouldRebase) {
-                        std::cout << "Skip rebase for " << name << ": local branch is not behind " << rebaseTarget
+                        std::cout << "Skip rebase for " << kano::terminal::Wrap(name, kano::terminal::Color::BoldCyan) << ": local branch is not behind " << kano::terminal::Wrap(rebaseTarget, kano::terminal::Color::BoldWhite)
                                   << " (ahead=" << aheadCount << ", behind=" << behindCount << ")\n";
                     }
                 }
@@ -1911,7 +1914,7 @@ auto RunNativeOriginLatestSync(
                 const auto rebase = GitPassThrough(plan.path, {"rebase", rebaseTarget});
                 if (rebase.exitCode != 0) {
                     if (HasRebaseInProgress(plan.path)) {
-                        std::cerr << "ERROR: rebase conflict detected for " << name
+                        std::cerr << kano::terminal::Wrap("ERROR:", kano::terminal::Color::BoldRed) << " rebase conflict detected for " << kano::terminal::Wrap(name, kano::terminal::Color::BoldCyan)
                                   << "; stopping sync and aborting rebase for manual review\n";
                         const auto abortRebase = GitPassThrough(plan.path, {"rebase", "--abort"});
                         if (abortRebase.exitCode != 0) {
@@ -1970,13 +1973,14 @@ auto RunNativeOriginLatestSync(
         }
     }
 
-    std::cout << "=== Sync Complete ===\n";
-    std::cout << "Succeeded: " << succeeded << "\n";
-    std::cout << "Failed: " << failures << "\n";
+    std::cout << "=== " << kano::terminal::Wrap("Sync Complete", kano::terminal::Color::BoldWhite) << " ===\n";
+    std::cout << "Succeeded: " << kano::terminal::Wrap(std::to_string(succeeded), kano::terminal::Color::BoldGreen) << "\n";
+    std::cout << "Failed: " << kano::terminal::Wrap(std::to_string(failures), kano::terminal::Color::BoldRed) << "\n";
     if (!failureDetails.empty()) {
-        std::cout << "\n=== FAILED REPOS ===\n";
+        std::cout << "\n=== " << kano::terminal::Wrap("FAILED REPOS", kano::terminal::Color::BoldRed) << " ===\n";
         for (const auto& [repo, reason] : failureDetails) {
-            std::cout << "[ERROR] " << repo << " | " << reason << "\n";
+            std::cout << kano::terminal::Wrap("[ERROR]", kano::terminal::Color::BoldRed) << " " 
+                      << kano::terminal::Wrap(repo, kano::terminal::Color::BoldCyan) << " | " << reason << "\n";
         }
     }
     return failures > 0 ? 1 : 0;
