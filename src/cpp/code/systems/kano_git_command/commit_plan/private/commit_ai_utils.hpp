@@ -30,6 +30,7 @@ struct CommitPreflightReport {
 struct NativeAiConfig {
     bool enabled = false;
     bool reviewEnabled = true;
+    bool yolo = false;
     std::string provider;
     std::string model;
 };

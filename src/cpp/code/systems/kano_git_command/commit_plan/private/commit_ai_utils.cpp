@@ -560,18 +560,18 @@ auto RunAiGenerate(const std::string& InProvider,
 
     auto LogInvocation = [&](const std::string& binary, const std::vector<std::string>& args) {
         static constexpr std::string_view kDivider = "----------------------------------------";
-        std::cerr << "\n[kog ai] -- AI Invocation (" << InPurpose << ") --\n";
-        std::cerr << "[kog ai] command : " << binary;
+        std::cout << "\n[kog ai] -- AI Invocation (" << InPurpose << ") --\n";
+        std::cout << "[kog ai] command : " << binary;
         for (const auto& a : args) {
-            if (a.find(' ') != std::string::npos || a.empty()) std::cerr << " \"" << a << "\"";
-            else std::cerr << " " << a;
+            if (a.find(' ') != std::string::npos || a.empty()) std::cout << " \"" << a << "\"";
+            else std::cout << " " << a;
         }
-        std::cerr << "\n[kog ai] model   : " << (InModel.empty() ? "auto" : InModel) << "\n";
+        std::cout << "\n[kog ai] model   : " << (InModel.empty() ? "auto" : InModel) << "\n";
         if (IsTruthyEnv(std::getenv("KOG_DEBUG_AI_PROMPT")) || IsTruthyEnv(std::getenv("KOG_DEBUG"))) {
-            std::cerr << "[kog ai] prompt  :\n" << kDivider << "\n" << InPrompt << "\n" << kDivider << "\n";
+            std::cout << "[kog ai] prompt  :\n" << kDivider << "\n" << InPrompt << "\n" << kDivider << "\n";
         }
-        std::cerr << "[kog ai] Waiting for " << InProvider << " response...\n";
-        std::cerr.flush();
+        std::cout << "[kog ai] Waiting for " << InProvider << " response...\n";
+        std::cout.flush();
     };
 
     if (InProvider == "opencode") {
@@ -977,16 +977,15 @@ auto BuildAiCommitPrompt(const std::filesystem::path& InWorkspaceRoot,
         << "If .gitignore needs cleanup, do that work before writing the message. Only after ignore cleanup is complete should you summarize the remaining intended commit changes.\n"
         << "Do not ignore real source files, config files, assets, or user-intended project files unless they are obviously local-only noise.\n\n"
         << "Generate ONE git commit message following Kano Commit Convention (KCC) format:\n"
-        << "  [<Subsystem>][<Type>] <Summary> (<Ticket>)\n"
+        << "  [<Subsystem>][<Type>] <Summary>\n"
         << "  Examples:\n"
-        << "    [UGS][BugFix] Retry tagged output parsing on proxy glitch (JIRA-1234)\n"
-        << "    [Build][Chore] Update CI bootstrap script (PIPE-88)\n"
-        << "    [Core][Refactor] Extract shared path resolver (TECH-204)\n\n"
+        << "    [UGS][BugFix] Retry tagged output parsing on proxy glitch\n"
+        << "    [Build][Chore] Update CI bootstrap script\n"
+        << "    [Core][Refactor] Extract shared path resolver\n\n"
         << "Rules:\n"
         << "- Subsystem: 2-24 chars, alphanumeric, PascalCase recommended (e.g. Core, UI, Build, Tools)\n"
         << "- Type: Feature | BugFix | Refactor | Perf | Chore | Test | Docs\n"
         << "- Summary: Start with verb (Add/Fix/Update/Remove/Refactor), ~50-72 chars\n"
-        << "- Ticket: (JIRA-1234) or (NO-TICKET) if none\n"
         << "- Output exactly one line, no markdown, no code fences, no explanation\n"
         << "- The one-line output must describe the post-.gitignore-cleanup commit intent, not the ignored noise\n\n"
         << "Repo: " << label << "\n"

@@ -1220,21 +1220,22 @@ auto RunAiGenerate(const std::string& InProvider,
                      const std::string& InModel,
                      const std::string& InPrompt,
                      const std::filesystem::path& InWorkspaceRoot,
-                     bool InQuiet) -> shell::ExecResult {
+                     bool InQuiet,
+                     bool InYolo) -> shell::ExecResult {
     auto LogInvocation = [&](const std::string& binary, const std::vector<std::string>& args) {
-        std::cerr << "\n" << kano::terminal::AiPrefix() << " -- AI Invocation (plan-fill) --\n";
-        std::cerr << kano::terminal::AiPrefix() << " command : " << binary;
+        std::cout << "\n" << kano::terminal::AiPrefix() << " -- AI Invocation (plan-fill) --\n";
+        std::cout << kano::terminal::AiPrefix() << " command : " << binary;
         for (const auto& a : args) {
-            if (a.find(' ') != std::string::npos || a.empty()) std::cerr << " \"" << a << "\"";
-            else std::cerr << " " << a;
+            if (a.find(' ') != std::string::npos || a.empty()) std::cout << " \"" << a << "\"";
+            else std::cout << " " << a;
         }
-        std::cerr << "\n" << kano::terminal::AiPrefix() << " model   : " << (InModel.empty() ? "auto" : InModel) << "\n";
+        std::cout << "\n" << kano::terminal::AiPrefix() << " model   : " << (InModel.empty() ? "auto" : InModel) << "\n";
         static constexpr std::string_view kDivider = "----------------------------------------";
         if (IsTruthyEnv(std::getenv("KOG_DEBUG_AI_PROMPT")) || IsTruthyEnv(std::getenv("KOG_DEBUG"))) {
-            std::cerr << kano::terminal::AiPrefix() << " prompt  :\n" << kDivider << "\n" << InPrompt << "\n" << kDivider << "\n";
+            std::cout << kano::terminal::AiPrefix() << " prompt  :\n" << kDivider << "\n" << InPrompt << "\n" << kDivider << "\n";
         }
-        std::cerr << kano::terminal::AiPrefix() << " Waiting for " << InProvider << " response...\n";
-        std::cerr.flush();
+        std::cout << kano::terminal::AiPrefix() << " Waiting for " << InProvider << " response...\n";
+        std::cout.flush();
     };
 
     if (InProvider == "opencode") {
@@ -1242,12 +1243,14 @@ auto RunAiGenerate(const std::string& InProvider,
         AppendModelArgs(args, InModel);
         args.push_back(BuildFileBackedPromptArgument(InWorkspaceRoot, InPrompt, "plan-fill"));
         LogInvocation("opencode", args);
+        SCOPED_TIMING_LOG("kog-ai.waiting-for-opencode-response");
         return shell::ExecuteCommand("opencode", args, shell::ExecMode::Capture, InWorkspaceRoot);
     }
 
     if (InProvider == "codex") {
         const auto effectivePrompt = BuildFileBackedPromptArgument(InWorkspaceRoot, InPrompt, "plan-fill");
         LogInvocation("codex", {"-q", effectivePrompt});
+        SCOPED_TIMING_LOG("kog-ai.waiting-for-codex-response");
         return ExecuteCodexExec(InWorkspaceRoot, InPrompt, "plan-fill", InModel);
     }
 
@@ -1285,10 +1288,13 @@ auto RunAiGenerate(const std::string& InProvider,
     //     --allow-path "<workspace>/.kano/tmp/git/plans/"
     //     --allow-path "<workspace>/.gitignore"
     //     --allow-tool=shell --allow-tool=edit-file
-    args.push_back("--yolo");
+    if (InYolo) {
+        args.push_back("--yolo");
+    }
     args.push_back("-p");
     args.push_back(BuildFileBackedPromptArgument(InWorkspaceRoot, InPrompt, "plan-fill"));
     LogInvocation("copilot", args);
+    SCOPED_TIMING_LOG("kog-ai.waiting-for-copilot-response");
     return ExecuteStandaloneCopilot(args, InWorkspaceRoot);
 }
 
@@ -1460,7 +1466,8 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
                   const std::string& InRequestedFillMode,
                   bool InDebugAi,
                   std::string* OutError,
-                  bool InAllowEmptyDirty) -> bool {
+                  bool InAllowEmptyDirty,
+                  bool InYolo) -> bool {
     SCOPED_TIMING_LOG("plan-utils.FillPlanByAi");
     const auto provider = ResolveAiProvider(InRequestedProvider);
     if (provider.empty()) {
@@ -1493,7 +1500,7 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
     // (Option A: no stdout parsing; plan file is the source of truth).
     if (fillMode == "single") {
         const auto prompt = BuildPlanFillOpsPrompt(InWorkspaceRoot, provider, modelDir, InPlanPath, templateJson, dirty);
-        const auto res = RunAiGenerate(provider, modelDir, prompt, InWorkspaceRoot, true);
+        const auto res = RunAiGenerate(provider, modelDir, prompt, InWorkspaceRoot, true, InYolo);
         std::filesystem::path responsePath;
         std::string responseWriteError;
         if (WriteAiResponseFile(InWorkspaceRoot, "plan-fill-all", res, &responsePath, &responseWriteError)) {
@@ -1513,7 +1520,7 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
         // Per-entry mode: one AI call per commit entry
         for (const auto& entry : entries) {
             const auto prompt = BuildSingleCommitFillPrompt(InWorkspaceRoot, provider, modelDir, entry, dirty);
-            const auto res = RunAiGenerate(provider, modelDir, prompt, InWorkspaceRoot, true);
+            const auto res = RunAiGenerate(provider, modelDir, prompt, InWorkspaceRoot, true, InYolo);
             std::filesystem::path responsePath;
             std::string responseWriteError;
             if (WriteAiResponseFile(InWorkspaceRoot,
@@ -2109,7 +2116,8 @@ auto RunCommitRunbook(const std::filesystem::path& InWorkspaceRoot,
                       const std::string& InFillMode,
                       bool InDebugAi,
                       int InMaxCommits,
-                      bool InAllowEmptyDirty) -> int {
+                      bool InAllowEmptyDirty,
+                      bool InYolo) -> int {
     const auto dirtyContext = CollectDirtyRepoContextText(InWorkspaceRoot);
     if (Trim(dirtyContext).empty()) {
         std::cerr << kano::terminal::PlanPrefix() << " workspace clean; skip dirty context collection.\n";

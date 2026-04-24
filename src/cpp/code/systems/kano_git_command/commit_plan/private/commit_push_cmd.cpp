@@ -787,7 +787,8 @@ auto RunCommitPlanRunbookViaSelf(const std::filesystem::path& InWorkspaceRoot,
                                  const std::filesystem::path& InPlanPath,
                                  const std::string& InProvider,
                                  const std::string& InModel,
-                                 const std::string& InFillMode) -> CommitRunbookResult {
+                                 const std::string& InFillMode,
+                                 bool InYolo) -> CommitRunbookResult {
     std::vector<std::string> args = {
         "plan", "runbook", "commit",
         "--plan-file", InPlanPath.generic_string(),
@@ -800,6 +801,9 @@ auto RunCommitPlanRunbookViaSelf(const std::filesystem::path& InWorkspaceRoot,
     if (!InFillMode.empty()) {
         args.push_back("--ai-fill-mode");
         args.push_back(InFillMode);
+    }
+    if (InYolo) {
+        args.push_back("--yolo");
     }
     const auto result = shell::ExecuteCommand(ResolveSelfBinaryCommand(), args, shell::ExecMode::Capture, InWorkspaceRoot);
     CommitRunbookResult out;
@@ -2118,6 +2122,7 @@ void RegisterCommitPush(CLI::App& InApp) {
     auto* remote = new std::string{};
     auto* repoRoot = new std::string{};
     auto* target = new std::string{};
+    auto* yolo = new bool{false};
 
     cmd->add_option("--repos", *repos, "Target repos (comma-separated)");
     cmd->add_option("--repo-root", *repoRoot, "Workspace root/start path used for repo-name lookup");
@@ -2141,6 +2146,7 @@ void RegisterCommitPush(CLI::App& InApp) {
     cmd->add_option("--jobs", *jobs, "Push parallel workers");
     cmd->add_flag("--verbose", *verbose, "Verbose push output");
     cmd->add_option("--remote", *remote, "Remote filter for push");
+    cmd->add_flag("--yolo", *yolo, "Enable all permissions for AI sub-agents");
 
     cmd->callback([=]() {
         const auto totalStart = std::chrono::steady_clock::now();
@@ -2299,7 +2305,7 @@ void RegisterCommitPush(CLI::App& InApp) {
                 }
                 std::cout << "[commit-push][auto-plan] stage=commit-runbook start\n";
                 const auto commitRunbookStart = std::chrono::steady_clock::now();
-                const auto runbookResult = RunCommitPlanRunbookViaSelf(workspaceRoot, autoPlanPath, *aiProvider, *aiModel, *aiFillMode);
+                const auto runbookResult = RunCommitPlanRunbookViaSelf(workspaceRoot, autoPlanPath, *aiProvider, *aiModel, *aiFillMode, *yolo);
                 const auto commitRunbookEnd = std::chrono::steady_clock::now();
                 commitRunbookMillis = std::chrono::duration_cast<std::chrono::milliseconds>(commitRunbookEnd - commitRunbookStart).count();
                 aiFillMillis = runbookResult.aiFillMillis;

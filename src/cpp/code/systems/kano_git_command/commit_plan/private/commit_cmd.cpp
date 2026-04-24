@@ -11,6 +11,7 @@
 #include "ai_utils.hpp"
 #include "plan_utils.hpp"
 #include "terminal_color.hpp"
+#include <kano_timing.h>
 
 #include <algorithm>
 #include <chrono>
@@ -2409,7 +2410,8 @@ auto RunCommitPlanRunbookViaSelf(const std::filesystem::path& InWorkspaceRoot,
                                  const std::string& InProvider,
                                  const std::string& InModel,
                                  const std::string& InFillMode,
-                                 bool InAllowEmptyDirty) -> CommitRunbookResult {
+                                 bool InAllowEmptyDirty,
+                                 bool InYolo) -> CommitRunbookResult {
     std::vector<std::string> args = {
         "plan", "runbook", "commit",
         "--plan-file", InPlanPath.generic_string(),
@@ -2426,7 +2428,19 @@ auto RunCommitPlanRunbookViaSelf(const std::filesystem::path& InWorkspaceRoot,
     if (InAllowEmptyDirty) {
         args.push_back("--allow-empty-dirty");
     }
-    const auto result = shell::ExecuteCommand(ResolveSelfBinaryCommand(), args, shell::ExecMode::Capture, InWorkspaceRoot);
+    if (InYolo) {
+        args.push_back("--yolo");
+    }
+
+    const auto binary = ResolveSelfBinaryCommand();
+    std::cout << "[plan] invoking internal AI runbook: " << binary;
+    for (const auto& a : args) {
+        if (a.find(' ') != std::string::npos || a.empty()) std::cout << " \"" << a << "\"";
+        else std::cout << " " << a;
+    }
+    std::cout << std::endl;
+
+    const auto result = shell::ExecuteCommand(binary, args, shell::ExecMode::Capture, InWorkspaceRoot);
     CommitRunbookResult out;
     out.aiFillMillis = ExtractPlanAiFillMillis(result);
     out.fallbackUsed = ExtractFallbackUsed(result);
@@ -2524,13 +2538,16 @@ auto RunCommitAutoPlanPipeline(const std::filesystem::path& InWorkspaceRoot,
         return ignoreApplyCode;
     }
 
-    std::cout << "[plan] preparing commit plan via AI...\n";
-    const auto commitRunbookStart = clock::now();
-    const auto runbookResult = RunCommitPlanRunbookViaSelf(InWorkspaceRoot, autoPlanPath, InAi.provider, InAi.model, InAiFillMode, InAllowEmptyDirty);
-    commitRunbookMillis = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - commitRunbookStart).count();
-    aiFillMillis = runbookResult.aiFillMillis;
-    if (runbookResult.exitCode != 0) {
-        return runbookResult.exitCode;
+    CommitRunbookResult runbookResult;
+    {
+        double elapsed = 0.0;
+        SCOPED_TIMING_LOG_WITH_ELAPSED("plan-utils.preparing-commit-plan-via-ai", elapsed);
+        runbookResult = RunCommitPlanRunbookViaSelf(InWorkspaceRoot, autoPlanPath, InAi.provider, InAi.model, InAiFillMode, InAllowEmptyDirty, InAi.yolo);
+        commitRunbookMillis = static_cast<long long>(elapsed);
+        aiFillMillis = runbookResult.aiFillMillis;
+        if (runbookResult.exitCode != 0) {
+            return runbookResult.exitCode;
+        }
     }
 
     std::string deterministicReason;
@@ -2630,13 +2647,16 @@ auto RunAmendAutoPlanPipeline(const std::filesystem::path& InWorkspaceRoot,
         return ignoreApplyCode;
     }
 
-    std::cout << "[plan] preparing commit plan via AI...\n";
-    const auto commitRunbookStart = clock::now();
-    const auto runbookResult = RunCommitPlanRunbookViaSelf(InWorkspaceRoot, autoPlanPath, InAi.provider, InAi.model, InAiFillMode, InAllowEmptyDirty);
-    commitRunbookMillis = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - commitRunbookStart).count();
-    aiFillMillis = runbookResult.aiFillMillis;
-    if (runbookResult.exitCode != 0) {
-        return runbookResult.exitCode;
+    CommitRunbookResult runbookResult;
+    {
+        double elapsed = 0.0;
+        SCOPED_TIMING_LOG_WITH_ELAPSED("plan-utils.preparing-commit-plan-via-ai", elapsed);
+        runbookResult = RunCommitPlanRunbookViaSelf(InWorkspaceRoot, autoPlanPath, InAi.provider, InAi.model, InAiFillMode, InAllowEmptyDirty, InAi.yolo);
+        commitRunbookMillis = static_cast<long long>(elapsed);
+        aiFillMillis = runbookResult.aiFillMillis;
+        if (runbookResult.exitCode != 0) {
+            return runbookResult.exitCode;
+        }
     }
 
     std::string deterministicReason;
@@ -4315,6 +4335,7 @@ void RegisterCommit(CLI::App& InApp) {
     auto* bNoNativePreflight = new bool{false};
     auto* bProfile = new bool{false};
     auto* bAllowEmptyDirty = new bool{false};
+    auto* bYolo = new bool{false};
 
     auto configure = [&](CLI::App* InCmd) {
         InCmd->add_option("--repos", *repos, "Commit target repos (comma-separated). Default: auto-discover workspace repos");
@@ -4339,6 +4360,7 @@ void RegisterCommit(CLI::App& InApp) {
         InCmd->add_flag("--no-native-preflight", *bNoNativePreflight, "Skip native preflight checks before shell commit");
         InCmd->add_flag("--profile", *bProfile, "Print native commit timing/profile summary");
         InCmd->add_flag("--allow-empty-dirty", *bAllowEmptyDirty, "Allow AI plan-fill to run even when workspace dirty context is empty");
+        InCmd->add_flag("--yolo", *bYolo, "Enable all permissions for AI sub-agents (Option A: direct file editing)");
     };
 
     configure(cmd);
@@ -4417,6 +4439,7 @@ void RegisterCommit(CLI::App& InApp) {
         ai.provider = aiRequested ? ResolveProvider(*provider) : std::string{};
         ai.model = aiRequested ? ResolveModelForAi(ai.provider, *model, *bAiAuto, workspaceRoot) : std::string{};
         ai.reviewEnabled = !*bNoAiReview && !agentProxyMode;
+        ai.yolo = *bYolo;
         ai.enabled = aiRequested && !ai.provider.empty();
 
         if (agentProxyMode && commitPlanFile->empty() && message->empty()) {
@@ -4828,6 +4851,9 @@ void RegisterAmend(CLI::App& InApp) {
     auto* bAllowEmptyDirty = new bool{false};
     cmd->add_flag("--allow-empty-dirty", *bAllowEmptyDirty, "Allow AI plan-fill to run even when workspace dirty context is empty");
 
+    auto* bYolo = new bool{false};
+    cmd->add_flag("--yolo", *bYolo, "Enable all permissions for AI sub-agents");
+
     cmd->callback([=]() {
         const auto invocationRoot = repoRoot->empty() ? std::filesystem::current_path() : std::filesystem::path(*repoRoot);
         const auto resolvedTarget = target->empty()
@@ -4844,6 +4870,7 @@ void RegisterAmend(CLI::App& InApp) {
         ai.provider = aiRequested ? ResolveProvider(*provider) : std::string{};
         ai.model = aiRequested ? ResolveModelForAi(ai.provider, *model, *bAiAuto, workspaceRoot) : std::string{};
         ai.reviewEnabled = !*bNoAiReview;
+        ai.yolo = *bYolo;
         ai.enabled = aiRequested && !ai.provider.empty();
 
         if (aiRequested && !ai.enabled) {

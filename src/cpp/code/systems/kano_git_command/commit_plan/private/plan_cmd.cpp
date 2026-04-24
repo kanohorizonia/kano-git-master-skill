@@ -53,9 +53,11 @@ void RegisterPlan(CLI::App& InApp) {
     auto* initAllowIgnoreGate = new bool{false};
     auto* initDatasourceRoot = new std::string{};
     auto* initDatasourceManifest = new std::string{};
+    auto* initYolo = new bool{false};
     init->add_option("--output,-o", *initOut, "Plan output path (default: .kano/tmp/git/plans/default-plan.json)");
     init->add_flag("--force,-f", *initForce, "Overwrite existing output");
     init->add_flag("--ai-auto,--ai", *initAiAuto, "Generate and fill plan by AI");
+    init->add_flag("--yolo", *initYolo, "Enable all permissions for AI sub-agents (Option A: direct file editing)");
     init->add_option("--ai-provider,--provider", *initAiProvider, "AI provider (copilot|codex|opencode|auto)")->default_str("auto");
     init->add_option("--ai-model,--model", *initAiModel, "AI model (default: layered kog_config -> auto policy)");
     init->add_option("--ai-commit-generation-mode,--ai-fill-mode",
@@ -97,7 +99,7 @@ void RegisterPlan(CLI::App& InApp) {
 
         if (*initAiAuto) {
             std::string aiError;
-            if (!FillPlanByAi(workspaceRoot, outPath, *initAiProvider, *initAiModel, *initAiFillMode, *initDebugAi, &aiError, *initAllowEmptyDirty)) {
+            if (!FillPlanByAi(workspaceRoot, outPath, *initAiProvider, *initAiModel, *initAiFillMode, *initDebugAi, &aiError, *initAllowEmptyDirty, *initYolo)) {
                 std::cerr << aiError << "\n";
                 std::exit(2);
             }
@@ -558,6 +560,8 @@ void RegisterPlan(CLI::App& InApp) {
     ensureAiReady->add_flag("--allow-empty-dirty", *ensureAllowEmptyDirty, "Allow AI plan-fill to run even when workspace dirty context is empty");
     ensureAiReady->add_flag("--allow-ignore-gate", *ensureAllowIgnoreGate, "Compatibility flag (currently no-op in prepare)");
     ensureAiReady->add_flag("--force,-f", *ensureForce, "Force regenerate even if existing plan looks complete");
+    auto* ensureYolo = new bool{false};
+    ensureAiReady->add_flag("--yolo", *ensureYolo, "Enable all permissions for AI sub-agents");
     ensureAiReady->callback([=]() {
         const auto workspaceRoot = std::filesystem::current_path().lexically_normal();
         const auto planPath = ensureFile->empty() ? DefaultPlanPath(workspaceRoot) : std::filesystem::path(*ensureFile).lexically_normal();
@@ -588,7 +592,7 @@ void RegisterPlan(CLI::App& InApp) {
                 }
             }
             std::string aiError;
-            if (!FillPlanByAi(workspaceRoot, planPath, *ensureProvider, *ensureModel, *ensureFillMode, *ensureDebugAi, &aiError, *ensureAllowEmptyDirty)) {
+            if (!FillPlanByAi(workspaceRoot, planPath, *ensureProvider, *ensureModel, *ensureFillMode, *ensureDebugAi, &aiError, *ensureAllowEmptyDirty, *ensureYolo)) {
                 std::cerr << aiError << "\n";
                 return false;
             }
@@ -769,11 +773,13 @@ void RegisterPlan(CLI::App& InApp) {
     runbookCommit->add_flag("--allow-empty-dirty", *rbCommitAllowEmptyDirty, "Allow AI plan-fill to run even when workspace dirty context is empty");
     runbookCommit->add_flag("--allow-ignore-gate", *rbCommitAllowIgnoreGate, "Forward allow-ignore-gate to commit runbook");
     runbookCommit->add_option("--max-commits", *rbCommitMaxCommits, "Max commit lines to print in summary")->default_val(10);
+    auto* rbCommitYolo = new bool{false};
+    runbookCommit->add_flag("--yolo", *rbCommitYolo, "Enable all permissions for AI sub-agents");
     runbookCommit->callback([=]() {
         const auto workspaceRoot = std::filesystem::current_path().lexically_normal();
         const auto planPath = rbCommitFile->empty() ? DefaultPlanPath(workspaceRoot) : std::filesystem::path(*rbCommitFile).lexically_normal();
         const auto code =
-            RunCommitRunbook(workspaceRoot, planPath, *rbCommitProvider, *rbCommitModel, *rbCommitFillMode, *rbCommitDebugAi, *rbCommitMaxCommits, *rbCommitAllowEmptyDirty);
+            RunCommitRunbook(workspaceRoot, planPath, *rbCommitProvider, *rbCommitModel, *rbCommitFillMode, *rbCommitDebugAi, *rbCommitMaxCommits, *rbCommitAllowEmptyDirty, *rbCommitYolo);
         std::exit(code);
     });
 
@@ -820,6 +826,8 @@ void RegisterPlan(CLI::App& InApp) {
     runbookFullPublic->add_flag("--force,-f", *rbFullForce, "Create default plan when file missing during ignore runbook");
     runbookFullPublic->add_option("--max-commits", *rbFullMaxCommits, "Max commit lines to print in summary")->default_val(10);
     runbookFullPublic->add_option("--max-per-repo", *rbFullMaxPerRepo, "Max ignore candidates per repo")->default_val(200);
+    auto* rbFullYolo = new bool{false};
+    runbookFullPublic->add_flag("--yolo", *rbFullYolo, "Enable all permissions for AI sub-agents");
     runbookFullPublic->callback([=]() {
         const auto workspaceRoot = std::filesystem::current_path().lexically_normal();
         const auto planPath = rbFullFile->empty() ? DefaultPlanPath(workspaceRoot) : std::filesystem::path(*rbFullFile).lexically_normal();
@@ -828,7 +836,7 @@ void RegisterPlan(CLI::App& InApp) {
             std::exit(ignoreCode);
         }
         const auto commitCode =
-            RunCommitRunbook(workspaceRoot, planPath, *rbFullProvider, *rbFullModel, *rbFullFillMode, *rbFullDebugAi, *rbFullMaxCommits, *rbFullAllowEmptyDirty);
+            RunCommitRunbook(workspaceRoot, planPath, *rbFullProvider, *rbFullModel, *rbFullFillMode, *rbFullDebugAi, *rbFullMaxCommits, *rbFullAllowEmptyDirty, *rbFullYolo);
         if (commitCode != 0) {
             std::exit(commitCode);
         }

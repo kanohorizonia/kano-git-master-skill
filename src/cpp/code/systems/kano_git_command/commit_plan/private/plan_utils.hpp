@@ -199,7 +199,8 @@ auto RunAiGenerate(const std::string& InProvider,
                     const std::string& InModel,
                     const std::string& InPrompt,
                     const std::filesystem::path& InWorkspaceRoot,
-                    bool InQuiet = false) -> shell::ExecResult;
+                    bool InQuiet = false,
+                    bool InYolo = false) -> shell::ExecResult;
 auto CollectDirtyRepoContextText(const std::filesystem::path& InWorkspaceRoot) -> std::string;
 auto BuildPlanPrompt(const std::filesystem::path& InWorkspaceRoot,
                       const std::string& InProvider,
@@ -225,7 +226,8 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
                   const std::string& InRequestedFillMode,
                   bool InDebugAi,
                   std::string* OutError = nullptr,
-                  bool InAllowEmptyDirty = false) -> bool;
+                  bool InAllowEmptyDirty = false,
+                  bool InYolo = false) -> bool;
 
 auto DefaultPlanPath(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path;
 auto ResolveSkillRoot(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path;
@@ -267,7 +269,8 @@ auto RunCommitRunbook(const std::filesystem::path& InWorkspaceRoot,
                       const std::string& InFillMode,
                       bool InDebugAi,
                       int InMaxCommits,
-                      bool InAllowEmptyDirty = false) -> int;
+                      bool InAllowEmptyDirty = false,
+                      bool InYolo = false) -> int;
 
 auto RunPreApplyVerify(const std::filesystem::path& InWorkspaceRoot,
                         const std::filesystem::path& InPlanPath,
