@@ -28,12 +28,12 @@ The CLI provides a unified binary (`kano-git` / `kog`) with:
 
 ### Build
 
-Recommended repo-root flow:
+Recommended shared-infra flow:
 
 ```bash
-pixi install
-pixi run env-summary
-pixi run build
+pixi install --manifest-path shared/infra/pixi.toml
+pixi run --manifest-path shared/infra/pixi.toml env-summary
+pixi run --manifest-path shared/infra/pixi.toml build
 ```
 
 Direct script flow remains the source of truth and is what the pixi tasks call:
@@ -70,6 +70,24 @@ bash src/cpp/shared/infra/scripts/self/build.sh
 # Generic artifact layout
 ./src/cpp/out/bin/<preset>/<config>/kano-git[.exe]
 ```
+
+Do not mirror `src/cpp/out/obj/`, `_deps/`, or the entire remote temp/build tree back to the local machine by default.
+
+### Remote macOS Build — Policy Decision Table
+
+The generic remote macOS build flow covers source sync, toolchain detection, cmake/ninja build, and artifact sync-back only. Keychain unlock is **not** part of the generic flow.
+
+| Scenario | Keychain unlock needed? | Where to add it |
+|---|---|---|
+| Plain cmake / ninja build | **No** | — |
+| Source sync / artifact sync-back | **No** | — |
+| Test / coverage run | **No** | — |
+| `codesign` with Apple signing identity | **Yes** | Repo/domain skill |
+| `notarization` / `stapling` | **Yes** | Repo/domain skill |
+| `xcodebuild` that reads signing credentials from keychain | **Yes** | Repo/domain skill |
+| Build reads a secret stored in login keychain | **Yes** | Repo/domain skill |
+
+**Rule:** Shared infra (`macos_remote_build.sh`) defines the capability as an **opt-in hook**. The trigger condition, env vars (`MAC_LOGIN_KEYCHAIN_PASSWORD`), and exact command phase belong to the project/domain skill or repo-local adapter — not in shared infra.
 
 ### Visual Studio solution workflow (Windows)
 

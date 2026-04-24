@@ -213,11 +213,11 @@ auto FormatLogLineWithMarkers(const std::filesystem::path& InRepo,
 
     std::ostringstream oss;
     if (isLocal && isRemote) {
-        oss << kano::terminal::Wrap("SYNCED ", kano::terminal::Color::BoldGreen);
+        oss << kano::terminal::Wrap("SYNCED", kano::terminal::Color::BoldCyan) << " ";
     } else if (isLocal) {
-        oss << kano::terminal::Wrap("LOCAL ", kano::terminal::Color::BoldYellow);
+        oss << kano::terminal::Wrap("LOCAL", kano::terminal::Color::BoldGreen) << " ";
     } else if (isRemote) {
-        oss << kano::terminal::Wrap("REMOTE ", kano::terminal::Color::BoldBlue);
+        oss << kano::terminal::Wrap("REMOTE", kano::terminal::Color::BoldYellow) << " ";
     }
 
     if (revision > 0) {
@@ -277,12 +277,14 @@ auto PrintSlog(const std::filesystem::path& InRepo, int InCount) -> int {
 
     const auto refs = ResolveRepoBranchRefs(InRepo);
 
-    std::cout << kano::terminal::Wrap("REPO: " + InRepo.lexically_normal().generic_string(), kano::terminal::Color::BoldCyan) << "\n";
+<<<<<<< Updated upstream
+    std::cout << kano::terminal::Wrap("REPO:", kano::terminal::Color::BoldCyan) << " "
+              << InRepo.lexically_normal().generic_string() << "\n";
     std::cout << kano::terminal::Wrap("SLOG(last " + std::to_string(InCount) + ")", kano::terminal::Color::BoldWhite) << "\n";
 
     const auto lines = SplitNonEmptyLines(logOut.stdoutStr);
     if (lines.empty()) {
-        std::cout << kano::terminal::Wrap("[?] (no commits)", kano::terminal::Color::Dim) << "\n";
+        std::cout << kano::terminal::Wrap("[?]", kano::terminal::Color::BoldYellow) << " (no commits)\n";
         return 0;
     }
 
@@ -346,12 +348,13 @@ auto PrintFullLog(const std::filesystem::path& InRepo, int InCount) -> int {
     }
 
     const auto refs = ResolveRepoBranchRefs(InRepo);
-    std::cout << kano::terminal::Wrap("REPO: " + InRepo.lexically_normal().generic_string(), kano::terminal::Color::BoldCyan) << "\n";
+    std::cout << kano::terminal::Wrap("REPO:", kano::terminal::Color::BoldCyan) << " "
+              << InRepo.lexically_normal().generic_string() << "\n";
     std::cout << kano::terminal::Wrap("LOG(last " + std::to_string(InCount) + ")", kano::terminal::Color::BoldWhite) << "\n";
 
     const auto lines = SplitNonEmptyLines(logOut.stdoutStr);
     if (lines.empty()) {
-        std::cout << kano::terminal::Wrap("[?] (no commits)", kano::terminal::Color::Dim) << "\n";
+        std::cout << kano::terminal::Wrap("[?]", kano::terminal::Color::BoldYellow) << " (no commits)\n";
         return 0;
     }
 
@@ -449,17 +452,17 @@ auto PrintUplog(const std::vector<UplogEntry>& InEntries) -> void {
         totalAhead += entry.aheadCount;
     }
 
-    std::cout << kano::terminal::Wrap(std::format("SUMMARY: repos_with_unpushed={}, commits={}, groups={}", InEntries.size(), totalAhead, grouped.size()), kano::terminal::Color::BoldWhite) << "\n\n";
+    std::cout << kano::terminal::Wrap("SUMMARY:", kano::terminal::Color::BoldCyan)
+              << " repos_with_unpushed=" << InEntries.size() << ", commits=" << totalAhead << ", groups=" << grouped.size() << "\n\n";
 
     std::size_t globalIndex = 0;
     for (const auto& [group, rows] : grouped) {
-        std::cout << kano::terminal::Wrap("GROUP: " + group, kano::terminal::Color::BoldYellow) << "\n";
+        std::cout << kano::terminal::Wrap("GROUP:", kano::terminal::Color::BoldWhite) << " " << group << "\n";
         for (const auto* row : rows) {
             globalIndex += 1;
-            std::cout << kano::terminal::Wrap(std::format("[{}]", globalIndex), kano::terminal::Color::Dim) << " "
+            std::cout << "[" << globalIndex << "] "
                       << kano::terminal::Wrap(row->repoName, kano::terminal::Color::BoldCyan)
-                      << "  (ahead " << kano::terminal::Wrap(std::to_string(row->aheadCount), kano::terminal::Color::BoldRed)
-                      << ", upstream " << kano::terminal::Wrap(row->upstream, kano::terminal::Color::Green) << ")\n";
+                      << "  (ahead " << row->aheadCount << ", upstream " << row->upstream << ")\n";
             if (row->shortLog.empty()) {
                 std::cout << kano::terminal::Wrap("  (no commits)", kano::terminal::Color::Dim) << "\n";
             } else {
@@ -477,7 +480,7 @@ auto PrintUplog(const std::vector<UplogEntry>& InEntries) -> void {
     }
 
     if (InEntries.empty()) {
-        std::cout << kano::terminal::Wrap("No unpushed commits found.", kano::terminal::Color::Green) << "\n";
+        std::cout << kano::terminal::Wrap("No unpushed commits found.", kano::terminal::Color::Dim) << "\n";
     }
 }
 

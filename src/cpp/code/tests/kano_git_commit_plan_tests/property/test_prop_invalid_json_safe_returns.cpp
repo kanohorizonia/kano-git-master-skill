@@ -97,6 +97,25 @@ TEST_CASE("Property 6: ParseCommitFillOps does not throw on invalid JSON",
 }
 
 // ---------------------------------------------------------------------------
+// Property 6: Invalid JSON returns safe empty values — ParseCommitFillOpsBatch
+// ---------------------------------------------------------------------------
+
+TEST_CASE("Property 6: ParseCommitFillOpsBatch does not throw on invalid JSON",
+          "[Feature: plan-json-library-refactor]"
+          "[Property 6: Invalid JSON returns safe empty values]"
+          "[property][ParseCommitFillOpsBatch][req-3.13]") {
+    rc::prop("ParseCommitFillOpsBatch returns empty batch for non-JSON input", []() {
+        const std::string input = GenNonJsonString();
+        CommitFillOpsBatch result;
+        bool threw = false;
+        try { result = ParseCommitFillOpsBatch(input); } catch (...) { threw = true; }
+        RC_ASSERT(!threw);
+        RC_ASSERT(result.ops.empty());
+        RC_ASSERT(!result.commitStageJson.has_value());
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Property 6: Invalid JSON returns safe empty values — ExtractPlanWorkspaceHashes
 // ---------------------------------------------------------------------------
 
@@ -185,6 +204,14 @@ TEST_CASE("Property 6: All Plan_Parser functions handle known-bad inputs safely"
 
         REQUIRE_NOTHROW(ParseCommitFillOps(input));
         REQUIRE(ParseCommitFillOps(input).empty());
+
+        REQUIRE_NOTHROW(ParseCommitFillOpsBatch(input));
+        REQUIRE(ParseCommitFillOpsBatch(input).ops.empty());
+        REQUIRE_FALSE(ParseCommitFillOpsBatch(input).commitStageJson.has_value());
+
+        REQUIRE_NOTHROW(ParseCommitFillOpsBatch(input));
+        REQUIRE(ParseCommitFillOpsBatch(input).ops.empty());
+        REQUIRE_FALSE(ParseCommitFillOpsBatch(input).commitStageJson.has_value());
 
         REQUIRE_NOTHROW(ExtractPlanWorkspaceHashes(input, nullptr, nullptr));
         REQUIRE_FALSE(ExtractPlanWorkspaceHashes(input, nullptr, nullptr));

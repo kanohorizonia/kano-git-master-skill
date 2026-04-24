@@ -7,6 +7,7 @@ on:
       - "src/**"
       - "scripts/**"
       - "pixi.toml"
+      - "src/cpp/shared/infra/pixi.toml"
       - ".kano/**"
       - "VERSION"
       - ".github/workflows/ci-build.yml"
@@ -15,6 +16,7 @@ on:
       - "src/**"
       - "scripts/**"
       - "pixi.toml"
+      - "src/cpp/shared/infra/pixi.toml"
       - ".kano/**"
       - "VERSION"
       - ".github/workflows/ci-build.yml"
@@ -76,13 +78,19 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Setup Pixi
+        uses: prefix-dev/setup-pixi@v0.8.14
+
+      - name: Install shared infra Pixi environment
+        run: pixi install --manifest-path src/cpp/shared/infra/pixi.toml
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "22"
 
       - name: Build native binary
-        run: ${{ matrix.build_script }}
+        run: pixi run --manifest-path src/cpp/shared/infra/pixi.toml build
 
       - name: Package CI archive (Unix)
         if: runner.os != 'Windows'
@@ -168,6 +176,13 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Setup Pixi
+        uses: prefix-dev/setup-pixi@v0.8.14
+
+      - name: Install shared infra Pixi environment
+        shell: bash
+        run: pixi install --manifest-path src/cpp/shared/infra/pixi.toml
+
       - name: Checkout kano-cpp-test-skill
         uses: actions/checkout@v4
         with:
@@ -238,7 +253,7 @@ jobs:
           KOG_CPP_ROOT: ${{ github.workspace }}/src/cpp
         run: |
           cd src/cpp
-          cmake --preset ${{ matrix.configure_preset }}
+          pixi run --manifest-path shared/infra/pixi.toml cmake --preset ${{ matrix.configure_preset }}
 
       # ─── Build ─────────────────────────────────────────────────────────────
       - name: Build coverage binary
@@ -246,7 +261,7 @@ jobs:
           KOG_CPP_ROOT: ${{ github.workspace }}/src/cpp
         run: |
           cd src/cpp
-          cmake --build --preset ${{ matrix.build_preset }}
+          pixi run --manifest-path shared/infra/pixi.toml cmake --build --preset ${{ matrix.build_preset }}
 
       # ─── Run Tests + Coverage via shared skill (Windows Microsoft) ─────────
       - name: Run tests and Microsoft coverage report (Windows)
@@ -333,9 +348,16 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Setup Pixi
+        uses: prefix-dev/setup-pixi@v0.8.14
+
+      - name: Install shared infra Pixi environment
+        shell: bash
+        run: pixi install --manifest-path src/cpp/shared/infra/pixi.toml
+
       - name: Build Windows native binary
         shell: bash
-        run: ./src/cpp/shared/infra/scripts/self/build.sh
+        run: pixi run --manifest-path src/cpp/shared/infra/pixi.toml build
 
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4

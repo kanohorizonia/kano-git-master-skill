@@ -443,7 +443,14 @@ auto ResolveRepoFromSpec(const std::filesystem::path& InRoot,
     return matches.front();
 }
 
-auto FormatTable(const std::vector<RepoView>& InRows) -> std::string {
+auto MaybeColorize(const std::string& InText, const char* InColor, bool InEnabled) -> std::string {
+    if (!InEnabled) {
+        return InText;
+    }
+    return kano::terminal::Wrap(InText, InColor);
+}
+
+auto FormatTable(const std::vector<RepoView>& InRows, bool InColorize = true) -> std::string {
     std::ostringstream oss;
     const auto layout = ComputeTableLayout(InRows);
     std::set<std::string> groups;
@@ -455,18 +462,18 @@ auto FormatTable(const std::vector<RepoView>& InRows) -> std::string {
         }
     }
 
-    oss << kano::terminal::Wrap(std::format("SUMMARY: repos={}, dirty={}, groups={}", InRows.size(), dirtyCount, groups.size()), kano::terminal::Color::BoldWhite) << "\n";
+    oss << MaybeColorize("SUMMARY:", kano::terminal::Color::BoldCyan, InColorize)
+        << " repos=" << InRows.size() << ", dirty=" << dirtyCount << ", groups=" << groups.size() << "\n";
 
     if (!InRows.empty()) {
-        std::string header = PadRight("#", layout.indexWidth)
-            + PadRight("REPO", layout.repoWidth)
-            + PadRight("BRANCH", layout.branchWidth)
-            + PadRight("REMOTE", layout.remoteWidth)
-            + PadRight("TRACKING", layout.trackingWidth)
-            + PadRight("DIRTY", layout.dirtyWidth)
-            + PadRight("WT_DIRTY", layout.worktreeDirtyWidth)
-            + "TYPE";
-        oss << kano::terminal::Wrap(header, kano::terminal::Color::Dim) << "\n";
+        oss << MaybeColorize(PadRight("#", layout.indexWidth), kano::terminal::Color::BoldWhite, InColorize)
+            << MaybeColorize(PadRight("REPO", layout.repoWidth), kano::terminal::Color::BoldWhite, InColorize)
+            << MaybeColorize(PadRight("BRANCH", layout.branchWidth), kano::terminal::Color::BoldWhite, InColorize)
+            << MaybeColorize(PadRight("REMOTE", layout.remoteWidth), kano::terminal::Color::BoldWhite, InColorize)
+            << MaybeColorize(PadRight("TRACKING", layout.trackingWidth), kano::terminal::Color::BoldWhite, InColorize)
+            << MaybeColorize(PadRight("DIRTY", layout.dirtyWidth), kano::terminal::Color::BoldWhite, InColorize)
+            << MaybeColorize(PadRight("WT_DIRTY", layout.worktreeDirtyWidth), kano::terminal::Color::BoldWhite, InColorize)
+            << MaybeColorize("TYPE", kano::terminal::Color::BoldWhite, InColorize) << "\n";
     }
 
     auto formatDirty = [](bool InDirty, int InWidth) {
@@ -479,7 +486,7 @@ auto FormatTable(const std::vector<RepoView>& InRows) -> std::string {
         const auto& row = InRows[i];
         if (currentGroup != row.group) {
             currentGroup = row.group;
-            oss << "\n" << kano::terminal::Wrap("GROUP: " + currentGroup, kano::terminal::Color::BoldYellow) << "\n";
+            oss << "\n" << MaybeColorize("GROUP:", kano::terminal::Color::BoldWhite, InColorize) << " " << currentGroup << "\n";
         }
 
         const auto repoName = TruncateWithEllipsis(row.repoName, std::max(1, layout.repoWidth - 1));
@@ -487,15 +494,24 @@ auto FormatTable(const std::vector<RepoView>& InRows) -> std::string {
         const auto remote = TruncateWithEllipsis(row.remote, std::max(1, layout.remoteWidth - 1));
         const auto tracking = TruncateWithEllipsis(row.tracking, std::max(1, layout.trackingWidth - 1));
         const auto type = TruncateWithEllipsis(row.type, std::max(1, layout.typeWidth - 1));
+        const auto dirtyCell = MaybeColorize(PadRight(row.repoDirty ? "yes" : "no", layout.dirtyWidth),
+                                             row.repoDirty ? kano::terminal::Color::BoldRed : kano::terminal::Color::Green,
+                                             InColorize);
+        const auto worktreeDirtyCell = MaybeColorize(PadRight(row.hasDirtyWorktree ? "yes" : "no", layout.worktreeDirtyWidth),
+                                                     row.hasDirtyWorktree ? kano::terminal::Color::BoldRed : kano::terminal::Color::Green,
+                                                     InColorize);
+        const auto typeCell = MaybeColorize(type,
+                                            row.type == "registered-uninit" ? kano::terminal::Color::BoldYellow : kano::terminal::Color::Dim,
+                                            InColorize);
 
         oss << kano::terminal::Wrap(PadRight(std::to_string(i + 1), layout.indexWidth), kano::terminal::Color::Dim)
             << kano::terminal::Wrap(PadRight(repoName, layout.repoWidth), kano::terminal::Color::BoldCyan)
             << kano::terminal::Wrap(PadRight(branch, layout.branchWidth), kano::terminal::Color::Green)
             << PadRight(remote, layout.remoteWidth)
-            << kano::terminal::Wrap(PadRight(tracking, layout.trackingWidth), row.tracking == "up-to-date" ? kano::terminal::Color::Dim : kano::terminal::Color::Yellow)
-            << formatDirty(row.repoDirty, layout.dirtyWidth)
-            << formatDirty(row.hasDirtyWorktree, layout.worktreeDirtyWidth)
-            << kano::terminal::Wrap(type, kano::terminal::Color::Dim) << "\n";
+            << PadRight(tracking, layout.trackingWidth)
+            << dirtyCell
+            << worktreeDirtyCell
+            << typeCell << "\n";
             
         if (!row.statusLines.empty()) {
             for (const auto& line : row.statusLines) {
@@ -785,7 +801,7 @@ void RegisterStatus(CLI::App& InApp) {
         } else if (*format == "markdown") {
             rendered = FormatMarkdown(InRows);
         } else {
-            rendered = FormatTable(InRows);
+            rendered = FormatTable(InRows, output->empty());
         }
 
         if (!output->empty()) {
@@ -920,7 +936,7 @@ void RegisterRepo(CLI::App& InApp) {
         } else if (*format == "markdown") {
             rendered = FormatMarkdown(rows);
         } else {
-            rendered = FormatTable(rows);
+            rendered = FormatTable(rows, output->empty());
         }
 
         if (!output->empty()) {

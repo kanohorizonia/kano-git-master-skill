@@ -32,6 +32,7 @@ These drive the native test targets defined in `src/cpp/code/tests/CMakeLists.tx
 - `src/shell/test/acceptance-commit-plan-first.sh`
 - `src/shell/test/acceptance-quickstart-commit-push.sh`
 - `src/shell/test/acceptance-ignore-plan.sh`
+- `src/shell/test/acceptance-remote-mac-build-policy.sh`
 
 These validate workflow behavior against built `kog` binaries and disposable repos.
 
@@ -43,20 +44,23 @@ This is scaffolding/support, not a product runtime entrypoint and not a test.
 
 ## Recommended Entry Points
 
-If `pixi` is available, use it as the default repo entrypoint.
+If `pixi` is available, use the shared infra manifest as the default entrypoint for native flows.
 
 ```bash
-pixi install
-pixi run build
-pixi run quick-test
-pixi run full-test
+pixi install --manifest-path src/cpp/shared/infra/pixi.toml
+pixi run --manifest-path src/cpp/shared/infra/pixi.toml build
+pixi run --manifest-path src/cpp/shared/infra/pixi.toml quick-test
+pixi run --manifest-path src/cpp/shared/infra/pixi.toml full-test
+
+# Repo-specific acceptance tasks stay at repo root
 pixi run acceptance-commit-plan-first
 pixi run acceptance-quickstart
+pixi run acceptance-pixi-bootstrap-parity
 ```
 
 Notes:
 
-- `pixi run build` resolves to the current host-default native build task
+- `pixi run --manifest-path src/cpp/shared/infra/pixi.toml build` resolves to the current host-default native build task
 - the native test runners also know how to trigger `scripts/kog self build` when needed
 
 ## Direct Invocation
@@ -81,6 +85,7 @@ cmake --build --preset <preset> --target run_kano_git_all_tests
 bash src/shell/test/acceptance-commit-plan-first.sh
 bash src/shell/test/acceptance-quickstart-commit-push.sh
 bash src/shell/test/acceptance-ignore-plan.sh
+bash src/shell/test/acceptance-remote-mac-build-policy.sh
 ```
 
 ## Where New Tests Should Go
@@ -191,9 +196,10 @@ bash src/cpp/shared/infra/scripts/windows/build_windows_ninja_msvc_release.sh
 bash src/cpp/shared/infra/scripts/windows/ninja-msvc-release.sh
 ```
 
-- For repo-local tool orchestration, `pixi run build`, `pixi run quick-test`, and
-  `pixi run full-test` are the preferred entrypoints over stale `build-native`
-  examples.
+- For repo-local tool orchestration, `pixi run --manifest-path src/cpp/shared/infra/pixi.toml build`,
+  `pixi run --manifest-path src/cpp/shared/infra/pixi.toml quick-test`, and
+  `pixi run --manifest-path src/cpp/shared/infra/pixi.toml full-test` are the preferred
+  entrypoints over stale repo-root examples.
 
 - Acceptance scripts may emit Git CRLF warnings in disposable repos; those are not
   failures by themselves.

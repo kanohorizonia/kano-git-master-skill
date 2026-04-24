@@ -65,6 +65,11 @@ struct CommitFillOp {
     std::string plannerModel;
 };
 
+struct CommitFillOpsBatch {
+    std::vector<CommitFillOp> ops;
+    std::optional<std::string> commitStageJson;
+};
+
 // Common utilities
 auto Trim(std::string InValue) -> std::string;
 auto ToLower(std::string InValue) -> std::string;
@@ -157,8 +162,12 @@ auto AllowDeterministicCommitFallbackForMode(const std::string& InFillMode) -> b
 auto BuildSingleCommitFillPrompt(const std::filesystem::path& InWorkspaceRoot,
                                  const std::string& InProvider,
                                  const std::string& InModel,
+                                 const std::filesystem::path& InPlanPath,
+                                 const std::filesystem::path& InWorkingPlanPath,
                                  const CommitPlanEntry& InEntry,
-                                 const std::string& InDirtyContext) -> std::string;
+                                 const std::string& InPlanText,
+                                 const std::string& InDirtyContext,
+                                 const std::filesystem::path& InWorkingGitignorePath) -> std::string;
 auto TryInjectFallbackCommits(const std::filesystem::path& InWorkspaceRoot, const std::string& InPlanText) -> std::optional<std::string>;
 auto BuildJsonStringArray(const std::vector<std::string>& InValues) -> std::string;
 auto BuildCommitObjectJson(const std::string& InMessage,
@@ -175,7 +184,11 @@ auto FindCommitEntryByFlatIndex(const std::string& InPlanText,
                                  int InCommitIndex,
                                  std::string* OutError = nullptr) -> std::optional<CommitPlanEntry>;
 auto ParseCommitFillOps(const std::string& InJson, std::string* OutError = nullptr) -> std::vector<CommitFillOp>;
+auto ParseCommitFillOpsBatch(const std::string& InJson, std::string* OutError = nullptr) -> CommitFillOpsBatch;
 auto ApplyCommitFillOps(std::string InPlanText, const std::vector<CommitFillOp>& InOps) -> std::string;
+auto ApplyCommitStageReplacement(std::string InPlanText,
+                                 const std::string& InCommitStageJson,
+                                 std::string* OutError = nullptr) -> std::optional<std::string>;
 auto StampPlanAiPlannerMetadata(std::string InPlanText,
                                 const std::string& InProvider,
                                 const std::string& InModel) -> std::optional<std::string>;
@@ -207,11 +220,13 @@ auto BuildPlanPrompt(const std::filesystem::path& InWorkspaceRoot,
                       const std::string& InModel,
                       const std::string& InDirtyContext) -> std::string;
 auto BuildPlanFillOpsPrompt(const std::filesystem::path& InWorkspaceRoot,
-                             const std::string& InProvider,
-                             const std::string& InModel,
-                             const std::filesystem::path& InPlanPath,
-                             const std::string& InPlanText,
-                             const std::string& InDirtyContext) -> std::string;
+                              const std::string& InProvider,
+                              const std::string& InModel,
+                              const std::filesystem::path& InPlanPath,
+                              const std::filesystem::path& InWorkingPlanPath,
+                              const std::string& InPlanText,
+                              const std::string& InDirtyContext,
+                              const std::filesystem::path& InWorkingGitignorePath) -> std::string;
 auto ExtractPlanFillOpsJson(const std::string& InAiCombined) -> std::string;
 auto BuildFillOpsRetryPrompt(const std::string& InBasePrompt,
                               std::size_t InExpectedCount,
@@ -230,6 +245,7 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
                   bool InYolo = false) -> bool;
 
 auto DefaultPlanPath(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path;
+auto ReplacePlanDirtyFingerprint(std::string InPlanText, const std::string& InNewDirtyFingerprint) -> std::optional<std::string>;
 auto ResolveSkillRoot(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path;
 auto ResolveIgnoreDatasourceRoot(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path;
 auto ResolveRepoPathFromDisplay(const std::filesystem::path& InWorkspaceRoot, const std::string& InRepoDisplay) -> std::filesystem::path;

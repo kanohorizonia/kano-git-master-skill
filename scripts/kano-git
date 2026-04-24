@@ -6,6 +6,25 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
+# Source shared pixi bootstrap helper (lib/, not directly executable)
+# This provides kano_pixi_bootstrap_activate() which activates the pixi environment
+# via shell-hook when not already active, and fail-fast when the canonical shared
+# Pixi manifest exists but
+# pixi is unavailable. PATH-first tool resolution is preserved.
+if [[ -f "$PROJECT_ROOT/src/cpp/shared/infra/scripts/lib/pixi_bootstrap.sh" ]]; then
+  # Deliberately no OPAM result capture — the eval inside activate() emits to the shell.
+  # Disable shellcheck SC1091 (not following resolved path) for this source directive.
+  # shellcheck source=/dev/null
+  source "$PROJECT_ROOT/src/cpp/shared/infra/scripts/lib/pixi_bootstrap.sh"
+fi
+
+# Activate pixi environment from the canonical shared infra manifest.
+# This ensures build tools (cmake, ninja, git, bash, python) are resolved from
+# the shared-infra pixi environment before any PATH lookups occur.
+# If that manifest is present but pixi is unavailable, bootstrap fails fast here
+# rather than silently falling back to system tools.
+kano_pixi_bootstrap_activate 2>&1 | head -1
+
 PATH="$SCRIPT_DIR:$PATH"
 LAUNCHER_STATE_DIR="$PROJECT_ROOT/.kano/launcher"
 REBUILD_DIRECTION="unknown"
@@ -213,6 +232,65 @@ EOF
   fi
 }
 
+resolve_pixi_command() {
+  if command -v pixi >/dev/null 2>&1; then
+    command -v pixi
+    return 0
+  fi
+
+  if [[ -n "${USERPROFILE:-}" && -x "${USERPROFILE}/.pixi/bin/pixi" ]]; then
+    printf '%s\n' "${USERPROFILE}/.pixi/bin/pixi"
+    return 0
+  fi
+
+  if [[ -n "${HOME:-}" && -x "${HOME}/.pixi/bin/pixi" ]]; then
+    printf '%s\n' "${HOME}/.pixi/bin/pixi"
+    return 0
+  fi
+
+  return 1
+}
+
+shared_pixi_manifest_path() {
+  if [[ -n "${KANO_PIXI_MANIFEST_PATH:-}" ]]; then
+    printf '%s\n' "$KANO_PIXI_MANIFEST_PATH"
+    return 0
+  fi
+  printf '%s\n' "$PROJECT_ROOT/src/cpp/shared/infra/pixi.toml"
+}
+
+shared_pixi_project_root() {
+  dirname "$(shared_pixi_manifest_path)"
+}
+
+windows_pixi_build_bin_dir() {
+  local pixi_bin_dir="$(shared_pixi_project_root)/.pixi/envs/default/Library/bin"
+  if [[ -x "$pixi_bin_dir/cmake.exe" && -x "$pixi_bin_dir/ninja.exe" ]]; then
+    printf '%s\n' "$pixi_bin_dir"
+    return 0
+  fi
+  return 1
+}
+
+run_pixi_build_task() {
+  local task_name="$1" pixi_cmd="" manifest_path=""
+
+  manifest_path="$(shared_pixi_manifest_path)"
+
+  if [[ ! -f "$manifest_path" ]]; then
+    echo "Error: shared Pixi manifest not found at $manifest_path" >&2
+    return 1
+  fi
+
+  if ! pixi_cmd="$(resolve_pixi_command)"; then
+    echo "Error: pixi is not available in this shell." >&2
+    echo "Hint: run './kog self install-prereq' first." >&2
+    return 1
+  fi
+
+  run_with_progress "build.sh" "$pixi_cmd" run --manifest-path "$manifest_path" "$task_name"
+}
+
 apply_launcher_env_overrides() {
   local arg
   for arg in "$@"; do
@@ -409,12 +487,61 @@ prepare_cpp_build_submodules() {
   return 0
 }
 
+check_build_prerequisites() {
+  local os_name="" missing=""
+  os_name="$(platform_name)"
+
+  if [[ "$os_name" == "windows" ]]; then
+    if ! resolve_pixi_command >/dev/null 2>&1; then
+      missing="$missing pixi"
+    fi
+    if ! windows_pixi_build_bin_dir >/dev/null 2>&1; then
+      missing="$missing pixi env (cmake+ninja)"
+    fi
+
+    if [[ -n "$missing" ]]; then
+      echo "Missing or broken build tools:$missing" >&2
+      echo "" >&2
+      echo "To install prerequisites, run:" >&2
+      echo "  ./kog self install-prereq" >&2
+      return 1
+    fi
+
+    return 0
+  fi
+
+  # Check cmake
+  if ! command -v cmake >/dev/null 2>&1; then
+    missing="$missing cmake"
+  elif ! cmake --version >/dev/null 2>&1; then
+    missing="$missing cmake (broken)"
+  fi
+
+  # Check ninja
+  if ! command -v ninja >/dev/null 2>&1; then
+    missing="$missing ninja"
+  elif ! ninja --version >/dev/null 2>&1; then
+    missing="$missing ninja (broken)"
+  fi
+
+  if [[ -n "$missing" ]]; then
+    echo "Missing or broken build tools:$missing" >&2
+    echo "" >&2
+    echo "To install prerequisites, run:" >&2
+    echo "  ./kog self install-prereq" >&2
+    return 1
+  fi
+
+  return 0
+}
+
 run_native_build_mode() {
   local mode="$1"
-  local prereq_script build_script prereq_stamp prereq_interval now_epoch last_epoch cooldown_left
+  local prereq_script build_script prereq_stamp prereq_interval now_epoch last_epoch cooldown_left os_name build_task
 
   ensure_windows_build_runtime_paths
   prepare_cpp_build_submodules "build-native" || return 1
+  os_name="$(platform_name)"
 
   if ! mapfile -t _scripts < <(script_paths); then
     echo "Error: no native build scripts for platform $(platform_name) ($(arch_name))." >&2
@@ -443,19 +570,33 @@ run_native_build_mode() {
       ;;
   esac
 
-  if run_shell_script "$build_script"; then
+  # Pre-check: verify toolchain availability before attempting build
+  if ! check_build_prerequisites; then
+    log_launcher_status "build-native" "fail" "prerequisites missing"
+    return 1
+  fi
+
+  if [[ "$os_name" == "windows" ]]; then
+    build_task="build-release"
+    if run_pixi_build_task "$build_task"; then
+      log_launcher_status "build-native" "ok" "build completed via pixi task=$build_task"
+    else
+      log_launcher_status "build-native" "fail" "build failed via pixi task=$build_task"
+      echo "" >&2
+      echo "Prerequisites may be missing. To install them manually, run:" >&2
+      echo "  ./kog self install-prereq" >&2
+      echo "" >&2
+      return 1
+    fi
+  elif run_shell_script "$build_script"; then
     log_launcher_status "build-native" "ok" "build completed"
   else
-    log_launcher_status "build-native" "step" "install-prerequisites"
-    run_shell_script "$prereq_script" || {
-      log_launcher_status "build-native" "fail" "prerequisite install failed"
-      return 1
-    }
-    run_shell_script "$build_script" || {
-      log_launcher_status "build-native" "fail" "build failed after prerequisite install"
-      return 1
-    }
-    log_launcher_status "build-native" "ok" "build completed after prerequisite install"
+    log_launcher_status "build-native" "fail" "build failed"
+    echo ""
+    echo "Prerequisites may be missing. To install them manually, run:" >&2
+    echo "  ./kog self install-prereq" >&2
+    echo ""
+    return 1
   fi
 
   local binary
@@ -605,6 +746,23 @@ maybe_handle_manual_self_request() {
     build|rebuild)
       maybe_handle_launcher_build_request "$second" "$@"
       return $?
+      ;;
+    install-prereq)
+      if ! mapfile -t _prereq_scripts < <(script_paths); then
+        echo "Error: no native build scripts for platform $(platform_name) ($(arch_name))." >&2
+        return 1
+      fi
+      local prereq_script="${_prereq_scripts[0]:-}"
+      if [[ -z "$prereq_script" ]]; then
+        echo "Error: missing prerequisite script for this platform." >&2
+        return 1
+      fi
+      run_shell_script "$prereq_script" || {
+        log_launcher_status "install-prereq" "fail" "prerequisite install failed"
+        return 1
+      }
+      log_launcher_status "install-prereq" "ok" "prerequisites installed"
+      return 0
       ;;
     update)
       local binary=""
@@ -1125,6 +1283,7 @@ print_launcher_help_extras() {
 Launcher commands:
   self build                          Build native binary (incremental)
   self rebuild                        Rebuild native binary (full clean rebuild)
+  self install-prereq                 Install build prerequisites (CMake, Ninja, MSVC)
   self update                         Run manual launcher update check flow
                                       When native binary is unavailable, fallback sync also prepares required C++ submodules.
     --remote <name>                   Preferred remote (default: upstream, fallback origin)
@@ -1301,7 +1460,7 @@ main() {
 
   if [[ "${args[0]:-}" == "self" ]]; then
     case "${args[1]:-}" in
-      build|rebuild|update)
+      build|rebuild|update|install-prereq)
         maybe_handle_manual_self_request "${args[@]}"
         exit $?
         ;;

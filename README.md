@@ -15,9 +15,32 @@ Advanced Git automation for multi-repository workspaces with a native `kog` / `k
 cat docs/README.md
 ```
 
-## Native C++ Build (Required Method)
+## Native C++ Build
 
-When building native `kano-git` / `kog`, use the stable entrypoints under `src/cpp/shared/infra/scripts/`.
+Use `pixi` as the primary build entrypoint. Shared native build/test/report/bootstrap flows now live in the canonical manifest at `src/cpp/shared/infra/pixi.toml`, while the repo-root manifest is reserved for repo-specific shell/docs/acceptance tasks.
+
+### Quick Start (Recommended)
+
+```bash
+# Install shared native tools and environment
+pixi install --manifest-path src/cpp/shared/infra/pixi.toml
+
+# Verify tool environment
+pixi run --manifest-path src/cpp/shared/infra/pixi.toml env-summary
+
+# Build native `kano-git` / `kog`
+pixi run --manifest-path src/cpp/shared/infra/pixi.toml build
+
+# Run tests
+pixi run --manifest-path src/cpp/shared/infra/pixi.toml quick-test
+
+# Repo-specific shell acceptance/docs tasks stay at repo root
+pixi run acceptance-quickstart
+```
+
+### Stable Underlying Entrypoints
+
+The stable native script entrypoints under `src/cpp/shared/infra/scripts/` are implemented as the backing layer for pixi tasks. You may use them directly if needed, but prefer pixi tasks above.
 
 ```bash
 # Default one-shot build / rebuild
@@ -25,7 +48,6 @@ bash src/cpp/shared/infra/scripts/self/build.sh
 bash src/cpp/shared/infra/scripts/self/rebuild.sh
 
 # Atomic stages
-bash src/cpp/shared/infra/scripts/self/build.sh
 bash src/cpp/shared/infra/scripts/stages/test.sh
 bash src/cpp/shared/infra/scripts/stages/test-report.sh
 bash src/cpp/shared/infra/scripts/stages/coverage-build.sh
@@ -198,13 +220,14 @@ kano-git-master-skill/
 ├── VERSION                     # Version number (single source of truth)
 ├── SKILL.md                    # Skill documentation
 ├── docs/                       # User documentation
-├── pixi.toml                   # Repo-local tool/task environment
+├── pixi.toml                   # Repo-specific Pixi extensions (docs/acceptance)
 ├── src/
 │   ├── cpp/                    # Native product/build root
 │   │   ├── CMakeLists.txt
 │   │   ├── CMakePresets.json
 │   │   ├── vcpkg.json
 │   │   ├── code/              # systems, apps, tests
+│   │   ├── shared/infra/pixi.toml # Canonical shared native Pixi manifest
 │   │   ├── shared/infra/scripts/ # Canonical native self/stage/workflow/report scripts
 │   │   └── out/               # Native artifacts
 │   └── shell/                 # Support helpers, docs automation, acceptance tests

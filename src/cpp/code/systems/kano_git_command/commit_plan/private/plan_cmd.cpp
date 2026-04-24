@@ -62,7 +62,7 @@ void RegisterPlan(CLI::App& InApp) {
     init->add_option("--ai-model,--model", *initAiModel, "AI model (default: layered kog_config -> auto policy)");
     init->add_option("--ai-commit-generation-mode,--ai-fill-mode",
                      *initAiFillMode,
-                     "AI commit generation mode: single=one workspace-wide pass, per-commit=one AI pass per commit, adaptive=per-commit + deterministic gitlink fallback (single|per-commit|adaptive)")
+                     "AI commit generation mode: single=one workspace-wide pass, per-commit=one AI pass per commit, adaptive=one workspace-wide pass with compatibility fallback (single|per-commit|adaptive)")
         ->default_str(defaultCommitGenerationMode);
     init->add_flag("--debug-ai", *initDebugAi, "Write AI prompt/raw/extracted debug artifacts");
     init->add_flag("--allow-empty-dirty", *initAllowEmptyDirty, "Allow AI plan-fill to run even when workspace dirty context is empty");
@@ -554,7 +554,7 @@ void RegisterPlan(CLI::App& InApp) {
     ensureAiReady->add_option("--ai-model,--model", *ensureModel, "AI model (default: layered kog_config -> auto policy)");
     ensureAiReady->add_option("--ai-commit-generation-mode,--ai-fill-mode",
                               *ensureFillMode,
-                              "AI commit generation mode: single=one workspace-wide pass, per-commit=one AI pass per commit, adaptive=per-commit + deterministic gitlink fallback (single|per-commit|adaptive)")
+                     "AI commit generation mode: single=one workspace-wide pass, per-commit=one AI pass per commit, adaptive=one workspace-wide pass with compatibility fallback (single|per-commit|adaptive)")
         ->default_str(defaultCommitGenerationMode);
     ensureAiReady->add_flag("--debug-ai", *ensureDebugAi, "Write AI prompt/raw/extracted debug artifacts");
     ensureAiReady->add_flag("--allow-empty-dirty", *ensureAllowEmptyDirty, "Allow AI plan-fill to run even when workspace dirty context is empty");
@@ -661,7 +661,7 @@ void RegisterPlan(CLI::App& InApp) {
     preflightAiCommit->add_option("--ai-model,--model", *preflightModel, "AI model (default: layered kog_config -> auto policy)");
     preflightAiCommit->add_option("--ai-commit-generation-mode,--ai-fill-mode",
                                   *preflightFillMode,
-                                  "AI commit generation mode: single=one workspace-wide pass, per-commit=one AI pass per commit, adaptive=per-commit + deterministic gitlink fallback (single|per-commit|adaptive)")
+                     "AI commit generation mode: single=one workspace-wide pass, per-commit=one AI pass per commit, adaptive=one workspace-wide pass with compatibility fallback (single|per-commit|adaptive)")
         ->default_str(defaultCommitGenerationMode);
     preflightAiCommit->add_flag("--debug-ai", *preflightDebugAi, "Write AI prompt/raw/extracted debug artifacts");
     preflightAiCommit->add_flag("--allow-empty-dirty", *preflightAllowEmptyDirty, "Allow AI plan-fill to run even when workspace dirty context is empty");
@@ -720,7 +720,7 @@ void RegisterPlan(CLI::App& InApp) {
     runbookFull->add_option("--ai-model,--model", *runbookFullModel, "AI model (default: config -> remembered -> auto)");
     runbookFull->add_option("--ai-commit-generation-mode,--ai-fill-mode",
                             *runbookFullFillMode,
-                            "AI commit generation mode: single=one workspace-wide pass, per-commit=one AI pass per commit, adaptive=per-commit + deterministic gitlink fallback (single|per-commit|adaptive)")
+                     "AI commit generation mode: single=one workspace-wide pass, per-commit=one AI pass per commit, adaptive=one workspace-wide pass with compatibility fallback (single|per-commit|adaptive)")
         ->default_str(defaultCommitGenerationMode);
     runbookFull->add_flag("--debug-ai", *runbookFullDebugAi, "Write AI prompt/raw/extracted debug artifacts");
     runbookFull->add_flag("--allow-empty-dirty", *runbookFullAllowEmptyDirty, "Allow AI plan-fill to run even when workspace dirty context is empty");
@@ -767,7 +767,7 @@ void RegisterPlan(CLI::App& InApp) {
     runbookCommit->add_option("--ai-model,--model", *rbCommitModel, "AI model (default: config -> remembered -> auto)");
     runbookCommit->add_option("--ai-commit-generation-mode,--ai-fill-mode",
                               *rbCommitFillMode,
-                              "AI commit generation mode: single=one workspace-wide pass, per-commit=one AI pass per commit, adaptive=per-commit + deterministic gitlink fallback (single|per-commit|adaptive)")
+                     "AI commit generation mode: single=one workspace-wide pass, per-commit=one AI pass per commit, adaptive=one workspace-wide pass with compatibility fallback (single|per-commit|adaptive)")
         ->default_str(defaultCommitGenerationMode);
     runbookCommit->add_flag("--debug-ai", *rbCommitDebugAi, "Write AI prompt/raw/extracted debug artifacts");
     runbookCommit->add_flag("--allow-empty-dirty", *rbCommitAllowEmptyDirty, "Allow AI plan-fill to run even when workspace dirty context is empty");
@@ -818,7 +818,7 @@ void RegisterPlan(CLI::App& InApp) {
     runbookFullPublic->add_option("--ai-model,--model", *rbFullModel, "AI model (default: config -> remembered -> auto)");
     runbookFullPublic->add_option("--ai-commit-generation-mode,--ai-fill-mode",
                                   *rbFullFillMode,
-                                  "AI commit generation mode: single=one workspace-wide pass, per-commit=one AI pass per commit, adaptive=per-commit + deterministic gitlink fallback (single|per-commit|adaptive)")
+                     "AI commit generation mode: single=one workspace-wide pass, per-commit=one AI pass per commit, adaptive=one workspace-wide pass with compatibility fallback (single|per-commit|adaptive)")
         ->default_str(defaultCommitGenerationMode);
     runbookFullPublic->add_flag("--debug-ai", *rbFullDebugAi, "Write AI prompt/raw/extracted debug artifacts");
     runbookFullPublic->add_flag("--allow-empty-dirty", *rbFullAllowEmptyDirty, "Allow AI plan-fill to run even when workspace dirty context is empty");

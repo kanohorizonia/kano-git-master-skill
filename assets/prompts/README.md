@@ -22,23 +22,35 @@ This directory stores prompt templates used by native C++ AI flows.
     - `{{DIRTY_CONTEXT}}`
 
 - `base/plan-fill-single.md`
-  - Purpose: fill all existing `stages.commit` entries in one AI pass
+  - Purpose: edit a copied working plan file in one AI pass, then let native validation promote it; also allows minimal edits to a copied `.gitignore`
   - Override env: `KOG_PLAN_FILL_SINGLE_PROMPT_TEMPLATE`
   - Placeholders:
     - `{{PROVIDER}}`
     - `{{MODEL}}`
+    - `{{PLAN_PATH_ABSOLUTE}}`
+    - `{{PLAN_PATH}}`
+    - `{{WORKING_PLAN_PATH_ABSOLUTE}}`
+    - `{{WORKING_PLAN_PATH}}`
     - `{{PLAN_JSON}}`
     - `{{DIRTY_CONTEXT}}`
+    - `{{GITIGNORE_PATH}}`
+    - `{{WORKING_GITIGNORE_PATH}}`
 
 - `base/plan-fill-per-commit.md`
-  - Purpose: fill exactly one commit entry in `per-commit` / `adaptive` modes
+  - Purpose: edit a copied working plan file to fill exactly one commit entry in explicit `per-commit` mode; also allows minimal edits to a copied `.gitignore`
   - Override env: `KOG_PLAN_FILL_PER_COMMIT_PROMPT_TEMPLATE`
   - Placeholders:
     - `{{PROVIDER}}`
     - `{{MODEL}}`
+    - `{{PLAN_PATH_ABSOLUTE}}`
+    - `{{WORKING_PLAN_PATH_ABSOLUTE}}`
+    - `{{WORKING_PLAN_PATH}}`
     - `{{ENTRY_INDEX}}`
     - `{{TARGET_ENTRY_JSON}}`
+    - `{{PLAN_JSON}}`
     - `{{DIRTY_CONTEXT}}`
+    - `{{GITIGNORE_PATH}}`
+    - `{{WORKING_GITIGNORE_PATH}}`
 
 - `base/plan-fill-retry.md`
   - Purpose: retry wrapper appended after validator rejection
@@ -72,7 +84,7 @@ This directory stores prompt templates used by native C++ AI flows.
 
 ## Editing guidance
 
-- Keep output contracts explicit and machine-parseable.
+- Keep output contracts explicit and machine-parseable when stdout is part of the contract; prefer native-validated working-file edits when the provider can be sandboxed to specific writable files.
 - Prefer moving workflow enforcement into code/validators rather than overloading prompts.
 - `single` prompts should be goal-oriented.
 - `per-commit` prompts can be more constrained because the task surface is smaller.
@@ -145,4 +157,7 @@ Current config keys:
 - `[ai.model.auto]` — auto model thresholds/models
 - `[plan.ai]`
   - `commit_generation_mode = "single" | "per-commit" | "adaptive"`
+    - `single`: one workspace-wide AI pass for the whole plan
+    - `per-commit`: one AI pass per commit entry
+    - `adaptive`: one workspace-wide AI pass with compatibility fallback behavior
   - `require_success = true | false`

@@ -160,3 +160,76 @@ TEST_CASE("Property 5: ApplyCommitFillOps with invalid JSON returns original str
     REQUIRE_NOTHROW(ApplyCommitFillOps("not json", {op}));
     REQUIRE(ApplyCommitFillOps("not json", {op}) == "not json");
 }
+
+TEST_CASE("Property 5: ApplyCommitStageReplacement replaces stages.commit atomically",
+          "[Feature: plan-json-library-refactor]"
+          "[Property 5: ApplyCommitFillOps updates exactly the targeted entries]"
+          "[unit][ApplyCommitStageReplacement]") {
+    const std::string planText = BuildPlanWithNEntries(2);
+    const std::string replacement = R"===([
+  {
+    "repo": ".",
+    "commits": [
+      {
+        "message": "[Infra][Feature] First split commit (NO-TICKET)",
+        "include": ["a.txt"],
+        "exclude": [],
+        "review": {
+          "verdict": "pass",
+          "reason": "Scoped to first file only."
+        }
+      },
+      {
+        "message": "[Infra][Docs] Second split commit (NO-TICKET)",
+        "include": ["b.txt"],
+        "exclude": [],
+        "review": {
+          "verdict": "pass",
+          "reason": "Scoped to second file only."
+        }
+      }
+    ]
+  }
+])===";
+
+    std::string error;
+    const auto updated = ApplyCommitStageReplacement(planText, replacement, &error);
+    REQUIRE(updated.has_value());
+    REQUIRE(error.empty());
+
+    const auto doc = nlohmann::json::parse(*updated);
+    const auto& commits = doc["stages"]["commit"][0]["commits"];
+    REQUIRE(commits.size() == 2);
+    REQUIRE(commits[0]["message"].get<std::string>() == "[Infra][Feature] First split commit (NO-TICKET)");
+    REQUIRE(commits[1]["message"].get<std::string>() == "[Infra][Docs] Second split commit (NO-TICKET)");
+    REQUIRE(commits[0]["include"][0].get<std::string>() == "a.txt");
+    REQUIRE(commits[1]["include"][0].get<std::string>() == "b.txt");
+}
+
+TEST_CASE("Property 5: ApplyCommitStageReplacement with invalid replacement fails safely",
+          "[Feature: plan-json-library-refactor]"
+          "[Property 5: ApplyCommitFillOps updates exactly the targeted entries]"
+          "[unit][ApplyCommitStageReplacement][req-3.13]") {
+    const std::string planText = BuildPlanWithNEntries(2);
+    const std::string invalidReplacement = R"===([
+  {
+    "repo": ".",
+    "commits": [
+      {
+        "message": "replace-with-commit-message",
+        "include": [],
+        "exclude": [],
+        "review": {
+          "verdict": "pass",
+          "reason": "placeholder"
+        }
+      }
+    ]
+  }
+])===";
+
+    std::string error;
+    const auto updated = ApplyCommitStageReplacement(planText, invalidReplacement, &error);
+    REQUIRE_FALSE(updated.has_value());
+    REQUIRE_FALSE(error.empty());
+}

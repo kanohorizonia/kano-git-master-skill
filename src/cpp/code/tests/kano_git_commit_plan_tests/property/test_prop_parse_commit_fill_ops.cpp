@@ -129,3 +129,97 @@ TEST_CASE("Property 4: ParseCommitFillOps returns empty vector for invalid JSON"
     REQUIRE(ParseCommitFillOps("").empty());
     REQUIRE(ParseCommitFillOps("{}").empty());  // missing commits key
 }
+
+TEST_CASE("Property 4: ParseCommitFillOpsBatch accepts valid commit-stage replacement",
+          "[Feature: plan-json-library-refactor]"
+          "[Property 4: Fill-ops round-trip]"
+          "[unit][ParseCommitFillOpsBatch]") {
+    const std::string json = R"===({
+  "commit_stage": [
+    {
+      "repo": ".",
+      "commits": [
+        {
+          "message": "[Infra][Feature] Split commit stage safely (NO-TICKET)",
+          "include": ["a.txt"],
+          "exclude": [],
+          "review": {
+            "verdict": "pass",
+            "reason": "Scoped to one file and contains no secret-like artifacts."
+          }
+        }
+      ]
+    }
+  ]
+})===";
+
+    std::string error;
+    const auto batch = ParseCommitFillOpsBatch(json, &error);
+    REQUIRE(error.empty());
+    REQUIRE(batch.commitStageJson.has_value());
+    REQUIRE(batch.ops.empty());
+
+    const auto parsed = nlohmann::json::parse(*batch.commitStageJson);
+    REQUIRE(parsed.is_array());
+    REQUIRE(parsed.size() == 1);
+    REQUIRE(parsed[0]["repo"].get<std::string>() == ".");
+}
+
+TEST_CASE("Property 4: ParseCommitFillOpsBatch accepts legacy commits patch shape",
+          "[Feature: plan-json-library-refactor]"
+          "[Property 4: Fill-ops round-trip]"
+          "[unit][ParseCommitFillOpsBatch]") {
+    const std::string json = R"===({
+  "commits": [
+    {
+      "index": 0,
+      "message": "[Infra][Feature] Commit patch (NO-TICKET)",
+      "review": {
+        "verdict": "pass",
+        "reason": "Patch format still supported."
+      },
+      "plannerProvider": "opencode",
+      "plannerModel": "gpt-5-mini"
+    }
+  ]
+})===";
+
+    std::string error;
+    const auto batch = ParseCommitFillOpsBatch(json, &error);
+    REQUIRE(error.empty());
+    REQUIRE_FALSE(batch.commitStageJson.has_value());
+    REQUIRE(batch.ops.size() == 1);
+    REQUIRE(batch.ops[0].index == 0);
+    REQUIRE(batch.ops[0].message == "[Infra][Feature] Commit patch (NO-TICKET)");
+    REQUIRE(batch.ops[0].plannerProvider == "opencode");
+    REQUIRE(batch.ops[0].plannerModel == "gpt-5-mini");
+ }
+
+TEST_CASE("Property 4: ParseCommitFillOpsBatch rejects malformed replacement safely",
+          "[Feature: plan-json-library-refactor]"
+          "[Property 4: Fill-ops round-trip]"
+          "[unit][ParseCommitFillOpsBatch][req-3.13]") {
+    std::string error;
+    const auto batch = ParseCommitFillOpsBatch(R"===({
+  "commit_stage": [
+    {
+      "repo": ".",
+      "commits": [
+        {
+          "message": "replace-with-commit-message",
+          "include": [],
+          "exclude": [],
+          "review": {
+            "verdict": "pass",
+            "reason": "placeholder"
+          }
+        }
+      ]
+    }
+  ]
+})===", &error);
+
+    REQUIRE_FALSE(batch.commitStageJson.has_value());
+    REQUIRE(batch.ops.empty());
+    REQUIRE_FALSE(error.empty());
+}

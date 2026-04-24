@@ -6,10 +6,10 @@ Canonical test documentation now lives in:
 
 - `docs/development/testing.md`
 
-Recommended repo-root flow:
+Recommended shared-infra flow for native tasks:
 
 ```bash
-pixi install
-pixi run quick-test
-pixi run full-test
+pixi install --manifest-path src/cpp/shared/infra/pixi.toml
+pixi run --manifest-path src/cpp/shared/infra/pixi.toml quick-test
+pixi run --manifest-path src/cpp/shared/infra/pixi.toml full-test
 ```

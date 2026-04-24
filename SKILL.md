@@ -65,20 +65,49 @@ bash ./scripts/kano-git-installer
 
 ### Native C++ build rule (important)
 
-When building native `kano-git` / `kog`, use the shared infra entrypoints under `src/cpp/shared/infra/scripts/`.
+Use `pixi` as the primary build entrypoint. Common native flows are owned by the canonical shared manifest at `src/cpp/shared/infra/pixi.toml`; repo-root Pixi usage is reserved for repo-specific extensions.
 
 ```bash
-# Windows (recommended)
-bash src/cpp/shared/infra/scripts/self/build.sh
+# Install shared native environment
+pixi install --manifest-path src/cpp/shared/infra/pixi.toml
 
-# Linux (example)
-bash src/cpp/shared/infra/scripts/self/build.sh
+# Show tool versions
+pixi run --manifest-path src/cpp/shared/infra/pixi.toml env-summary
 
-# macOS (example)
-bash src/cpp/shared/infra/scripts/self/build.sh
+# Windows / Linux / macOS - all use the same task names
+pixi run --manifest-path src/cpp/shared/infra/pixi.toml build
+pixi run --manifest-path src/cpp/shared/infra/pixi.toml quick-test
+pixi run --manifest-path src/cpp/shared/infra/pixi.toml full-test
 ```
 
-Do not replace this with ad-hoc direct CMake/Ninja command sequences unless a maintainer explicitly asks for it.
+The stable native script entrypoints under `src/cpp/shared/infra/scripts/` are the implemented backing layer for pixi tasks. Use them directly only if needed, but prefer pixi tasks above.
+
+```bash
+# Direct script examples (optional - prefer pixi tasks)
+bash src/cpp/shared/infra/scripts/self/build.sh
+bash src/cpp/shared/infra/scripts/self/rebuild.sh
+```
+
+Do not replace pixi tasks or the backing scripts with ad-hoc direct CMake/Ninja command sequences unless a maintainer explicitly asks for it.
+
+#### Pixi Bootstrap Helper (Direct Script Adoption)
+
+The `src/cpp/shared/infra/scripts/lib/pixi_bootstrap.sh` helper provides a reusable pattern for scripts that need to activate the canonical shared-infra Pixi environment before running build tools. This is the canonical adoption point for making build scripts environment-aware.
+
+The preset-build libraries (`unix_preset_build.sh` and `windows_preset_build.sh`) demonstrate this pattern:
+
+```bash
+# At the top of your script (after set -euo pipefail):
+source "$SCRIPT_DIR/pixi_bootstrap.sh"
+kano_pixi_bootstrap_activate
+```
+
+Key functions in the helper:
+- `kano_pixi_bootstrap_activate()` — Activates the Pixi environment (or reuses if already active)
+- `kano_pixi_bootstrap_is_active()` — Checks if the expected environment is already active
+- `kano_pixi_bootstrap_cpp_root()` — Resolves the C++ root path (supports `KANO_CPP_ROOT`, `INF_CPP_ROOT`, etc.)
+
+The helper is idempotent and safe to call multiple times. If the Pixi environment is already active, it logs a reuse message instead of re-activating.
 
 ### Primary Command Surface
 

@@ -12,6 +12,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstring>
 #include <fstream>
@@ -760,6 +761,74 @@ auto HasValidCommitItems(const std::string& InPlanText) -> bool {
     }
 }
 
+auto IsConcreteCommitMessage(const std::string& InMessage) -> bool {
+    const auto msg = Trim(InMessage);
+    return !msg.empty() && msg.rfind("replace-with-", 0) != 0;
+}
+
+auto ValidateReplacementCommitStage(const nlohmann::json& InCommitStage, std::string* OutError) -> bool {
+    if (!InCommitStage.is_array()) {
+        if (OutError) *OutError = "commit_stage must be an array";
+        return false;
+    }
+    if (InCommitStage.empty()) {
+        if (OutError) *OutError = "commit_stage must not be empty";
+        return false;
+    }
+
+    bool hasCommit = false;
+    for (const auto& repoObj : InCommitStage) {
+        if (!repoObj.is_object()) {
+            if (OutError) *OutError = "commit_stage repo entries must be objects";
+            return false;
+        }
+        if (!repoObj.contains("repo") || !repoObj["repo"].is_string() || Trim(repoObj["repo"].get<std::string>()).empty()) {
+            if (OutError) *OutError = "commit_stage repo entries must include a non-empty repo";
+            return false;
+        }
+        if (!repoObj.contains("commits") || !repoObj["commits"].is_array() || repoObj["commits"].empty()) {
+            if (OutError) *OutError = "commit_stage repo entries must include a non-empty commits array";
+            return false;
+        }
+        for (const auto& commitObj : repoObj["commits"]) {
+            if (!commitObj.is_object()) {
+                if (OutError) *OutError = "commit_stage commit entries must be objects";
+                return false;
+            }
+            if (!commitObj.contains("message") || !commitObj["message"].is_string() ||
+                !IsConcreteCommitMessage(commitObj["message"].get<std::string>())) {
+                if (OutError) *OutError = "commit_stage commit entries must include concrete non-placeholder messages";
+                return false;
+            }
+            if (!commitObj.contains("include") || !commitObj["include"].is_array()) {
+                if (OutError) *OutError = "commit_stage commit entries must include an include array";
+                return false;
+            }
+            if (!commitObj.contains("exclude") || !commitObj["exclude"].is_array()) {
+                if (OutError) *OutError = "commit_stage commit entries must include an exclude array";
+                return false;
+            }
+            if (!commitObj.contains("review") || !commitObj["review"].is_object()) {
+                if (OutError) *OutError = "commit_stage commit entries must include a review object";
+                return false;
+            }
+            const auto verdict = Trim(commitObj["review"].value("verdict", ""));
+            const auto reason = Trim(commitObj["review"].value("reason", ""));
+            if (ToLower(verdict) != "pass" || reason.empty()) {
+                if (OutError) *OutError = "commit_stage review must be pass with a non-empty reason";
+                return false;
+            }
+            hasCommit = true;
+        }
+    }
+
+    if (!hasCommit) {
+        if (OutError) *OutError = "commit_stage must contain at least one commit";
+        return false;
+    }
+    return true;
+}
+
 auto SeedCommitStage(const std::filesystem::path& InWorkspaceRoot,
                      const std::string& InPlanText,
                      const bool InForce,
@@ -870,7 +939,7 @@ auto ResolvePlanCommitGenerationMode(const std::filesystem::path& InWorkspaceRoo
     if (const char* env = std::getenv("KOG_PLAN_FILL_MODE")) {
         if (const auto e = kog_config::NormalizePlanCommitGenerationMode(env); !e.empty()) return e;
     }
-    return kog_config::ResolvePlanCommitGenerationMode(InWorkspaceRoot, ResolveSkillRoot(InWorkspaceRoot), "single");
+    return kog_config::ResolvePlanCommitGenerationMode(InWorkspaceRoot, ResolveSkillRoot(InWorkspaceRoot), "adaptive");
 }
 
 auto AllowDeterministicCommitFallbackForMode(const std::string& InFillMode) -> bool {
@@ -889,8 +958,12 @@ auto RequireAiSuccessForPlanFlow(const std::filesystem::path& InWorkspaceRoot) -
 auto BuildSingleCommitFillPrompt(const std::filesystem::path& InWorkspaceRoot,
                                  const std::string& InProvider,
                                  const std::string& InModel,
+                                 const std::filesystem::path& InPlanPath,
+                                 const std::filesystem::path& InWorkingPlanPath,
                                  const CommitPlanEntry& InEntry,
-                                 const std::string& InDirtyContext) -> std::string {
+                                 const std::string& InPlanText,
+                                 const std::string& InDirtyContext,
+                                 const std::filesystem::path& InWorkingGitignorePath) -> std::string {
     std::ostringstream target;
     target << "{\n"
            << "  \"index\": " << InEntry.index << ",\n"
@@ -903,11 +976,19 @@ auto BuildSingleCommitFillPrompt(const std::filesystem::path& InWorkspaceRoot,
         auto prompt = *text;
         prompt = ReplaceAll(std::move(prompt), "{{PROVIDER}}", InProvider);
         prompt = ReplaceAll(std::move(prompt), "{{MODEL}}", InModel.empty() ? std::string("auto") : InModel);
+        prompt = ReplaceAll(std::move(prompt), "{{PLAN_PATH_ABSOLUTE}}", InPlanPath.lexically_normal().generic_string());
+        prompt = ReplaceAll(std::move(prompt), "{{WORKING_PLAN_PATH_ABSOLUTE}}", InWorkingPlanPath.lexically_normal().generic_string());
+        prompt = ReplaceAll(std::move(prompt), "{{WORKING_PLAN_PATH}}", RelativeDisplayPath(InWorkspaceRoot, InWorkingPlanPath));
         prompt = ReplaceAll(std::move(prompt), "{{ENTRY_INDEX}}", std::to_string(InEntry.index));
         prompt = ReplaceAll(std::move(prompt), "{{TARGET_ENTRY_JSON}}", target.str());
+        prompt = ReplaceAll(std::move(prompt), "{{PLAN_JSON}}", InPlanText);
         prompt = ReplaceAll(std::move(prompt), "{{DIRTY_CONTEXT}}", InDirtyContext);
+<<<<<<< HEAD
         const auto repoPath = (InWorkspaceRoot / InEntry.repo).lexically_normal();
         prompt = ReplaceAll(std::move(prompt), "{{GITIGNORE_PATH}}", (repoPath / ".gitignore").lexically_normal().generic_string());
+=======
+        prompt = ReplaceAll(std::move(prompt), "{{GITIGNORE_PATH}}", (InWorkspaceRoot / ".gitignore").lexically_normal().generic_string());
+        prompt = ReplaceAll(std::move(prompt), "{{WORKING_GITIGNORE_PATH}}", InWorkingGitignorePath.lexically_normal().generic_string());
         return AppendCommitConventionSkillSection(InWorkspaceRoot, std::move(prompt));
     }
     return "Fallback prompt for index " + std::to_string(InEntry.index) + "\n" + target.str();
@@ -1074,6 +1155,31 @@ auto ParseCommitFillOps(const std::string& InJson, std::string* OutError) -> std
     return ops;
 }
 
+auto ParseCommitFillOpsBatch(const std::string& InJson, std::string* OutError) -> CommitFillOpsBatch {
+    CommitFillOpsBatch batch;
+    try {
+        const auto doc = nlohmann::json::parse(InJson);
+        if (doc.contains("commit_stage")) {
+            if (!ValidateReplacementCommitStage(doc["commit_stage"], OutError)) {
+                return CommitFillOpsBatch{};
+            }
+            batch.commitStageJson = doc["commit_stage"].dump();
+        }
+        if (doc.contains("commits")) {
+            if (!doc["commits"].is_array()) {
+                if (OutError) *OutError = "commits must be an array";
+                return CommitFillOpsBatch{};
+            }
+            batch.ops = ParseCommitFillOps(InJson, OutError);
+        }
+    } catch (const nlohmann::json::parse_error& /*e*/) {
+        if (OutError) *OutError = "JSON parse error";
+    } catch (const nlohmann::json::type_error& /*e*/) {
+        if (OutError) *OutError = "JSON type error";
+    }
+    return batch;
+}
+
 auto ApplyCommitFillOps(std::string InPlanText, const std::vector<CommitFillOp>& InOps) -> std::string {
     if (InOps.empty()) return InPlanText;
     try {
@@ -1109,6 +1215,30 @@ auto ApplyCommitFillOps(std::string InPlanText, const std::vector<CommitFillOp>&
         return InPlanText;
     } catch (const nlohmann::json::type_error& /*e*/) {
         return InPlanText;
+    }
+}
+
+auto ApplyCommitStageReplacement(std::string InPlanText,
+                                 const std::string& InCommitStageJson,
+                                 std::string* OutError) -> std::optional<std::string> {
+    try {
+        auto doc = nlohmann::json::parse(InPlanText);
+        if (!doc.contains("stages") || !doc["stages"].is_object()) {
+            if (OutError) *OutError = "missing stages object";
+            return std::nullopt;
+        }
+        const auto commitStage = nlohmann::json::parse(InCommitStageJson);
+        if (!ValidateReplacementCommitStage(commitStage, OutError)) {
+            return std::nullopt;
+        }
+        doc["stages"]["commit"] = commitStage;
+        return SerializePlanJson(doc);
+    } catch (const nlohmann::json::parse_error& /*e*/) {
+        if (OutError) *OutError = "JSON parse error";
+        return std::nullopt;
+    } catch (const nlohmann::json::type_error& /*e*/) {
+        if (OutError) *OutError = "JSON type error";
+        return std::nullopt;
     }
 }
 
@@ -1256,7 +1386,7 @@ auto RunAiGenerate(const std::string& InProvider,
     }
 
     std::vector<std::string> args;
-    if (!InQuiet) {
+    if (InQuiet) {
         args.push_back("-s");
     }
     AppendModelArgs(args, InModel);
@@ -1398,23 +1528,177 @@ auto BuildPlanPrompt(const std::filesystem::path& InWorkspaceRoot,
 }
 
 auto BuildPlanFillOpsPrompt(const std::filesystem::path& InWorkspaceRoot,
-                             const std::string& InProvider,
-                             const std::string& InModel,
-                             const std::filesystem::path& InPlanPath,
-                             const std::string& InPlanText,
-                             const std::string& InDirtyContext) -> std::string {
+                              const std::string& InProvider,
+                              const std::string& InModel,
+                              const std::filesystem::path& InPlanPath,
+                              const std::filesystem::path& InWorkingPlanPath,
+                              const std::string& InPlanText,
+                              const std::string& InDirtyContext,
+                              const std::filesystem::path& InWorkingGitignorePath) -> std::string {
     if (const auto text = LoadPromptAssetText(InWorkspaceRoot, "KOG_PLAN_FILL_SINGLE_PROMPT_TEMPLATE", std::filesystem::path("assets") / "prompts" / "base" / "plan-fill-single.md")) {
         auto prompt = *text;
         prompt = ReplaceAll(std::move(prompt), "{{PROVIDER}}", InProvider);
         prompt = ReplaceAll(std::move(prompt), "{{MODEL}}", InModel.empty() ? std::string("auto") : InModel);
         prompt = ReplaceAll(std::move(prompt), "{{PLAN_PATH_ABSOLUTE}}", InPlanPath.lexically_normal().generic_string());
         prompt = ReplaceAll(std::move(prompt), "{{PLAN_PATH}}", RelativeDisplayPath(InWorkspaceRoot, InPlanPath));
+        prompt = ReplaceAll(std::move(prompt), "{{WORKING_PLAN_PATH_ABSOLUTE}}", InWorkingPlanPath.lexically_normal().generic_string());
+        prompt = ReplaceAll(std::move(prompt), "{{WORKING_PLAN_PATH}}", RelativeDisplayPath(InWorkspaceRoot, InWorkingPlanPath));
         prompt = ReplaceAll(std::move(prompt), "{{PLAN_JSON}}", InPlanText);
         prompt = ReplaceAll(std::move(prompt), "{{DIRTY_CONTEXT}}", InDirtyContext);
         prompt = ReplaceAll(std::move(prompt), "{{GITIGNORE_PATH}}", (InWorkspaceRoot / ".gitignore").lexically_normal().generic_string());
+        prompt = ReplaceAll(std::move(prompt), "{{WORKING_GITIGNORE_PATH}}", InWorkingGitignorePath.lexically_normal().generic_string());
         return AppendCommitConventionSkillSection(InWorkspaceRoot, std::move(prompt));
     }
     return "Fallback prompt for plan-fill:\n" + InPlanText;
+}
+
+auto BuildPlanAiWorkingCopyPath(const std::filesystem::path& InPlanPath) -> std::filesystem::path {
+    const auto parent = InPlanPath.parent_path();
+    const auto stem = InPlanPath.stem().generic_string();
+    const auto ext = InPlanPath.extension().generic_string();
+    return (parent / std::format("{}.ai-working{}", stem, ext)).lexically_normal();
+}
+
+auto BuildGitignoreAiWorkingCopyPath(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path {
+    return (InWorkspaceRoot / ".kano" / "tmp" / "git" / "plans" / ".gitignore.ai-working").lexically_normal();
+}
+
+auto SeedWorkingCopyFile(const std::filesystem::path& InSourcePath,
+                         const std::filesystem::path& InWorkingPath,
+                         std::string* OutError) -> bool {
+    std::error_code ec;
+    std::filesystem::create_directories(InWorkingPath.parent_path(), ec);
+    if (ec) {
+        if (OutError) *OutError = ec.message();
+        return false;
+    }
+    const auto sourceText = ReadFileText(InSourcePath).value_or("");
+    return WriteFileText(InWorkingPath, sourceText, OutError);
+}
+
+auto CollectGitignoreRuleAdditions(const std::string& InOriginalText,
+                                   const std::string& InEditedText) -> std::vector<std::string> {
+    auto collectRules = [](const std::string& text) {
+        std::vector<std::string> out;
+        std::unordered_set<std::string> seen;
+        std::istringstream iss(text);
+        std::string line;
+        while (std::getline(iss, line)) {
+            const auto trimmed = Trim(line);
+            if (trimmed.empty() || trimmed[0] == '#') {
+                continue;
+            }
+            if (seen.insert(trimmed).second) {
+                out.push_back(trimmed);
+            }
+        }
+        return out;
+    };
+
+    const auto originalRules = collectRules(InOriginalText);
+    const auto editedRules = collectRules(InEditedText);
+    std::unordered_set<std::string> originalSet(originalRules.begin(), originalRules.end());
+    std::vector<std::string> additions;
+    for (const auto& rule : editedRules) {
+        if (!originalSet.contains(rule)) {
+            additions.push_back(rule);
+        }
+    }
+    return additions;
+}
+
+auto PromoteTextFileAtomically(const std::filesystem::path& InTargetPath,
+                               const std::string& InText,
+                               std::string* OutError) -> bool {
+    std::error_code ec;
+    std::filesystem::create_directories(InTargetPath.parent_path(), ec);
+    if (ec) {
+        if (OutError) *OutError = ec.message();
+        return false;
+    }
+
+    const auto tempPath = (InTargetPath.parent_path() /
+                           std::format("{}.tmp-{}{}",
+                                       InTargetPath.stem().generic_string(),
+                                       CurrentUtcCompact(),
+                                       InTargetPath.extension().generic_string())).lexically_normal();
+    const auto backupPath = (InTargetPath.parent_path() /
+                             std::format("{}.bak{}",
+                                         InTargetPath.filename().generic_string(),
+                                         CurrentUtcCompact())).lexically_normal();
+
+    if (!WriteFileText(tempPath, InText, OutError)) {
+        return false;
+    }
+
+    const bool targetExists = std::filesystem::exists(InTargetPath);
+    if (targetExists) {
+        std::filesystem::rename(InTargetPath, backupPath, ec);
+        if (ec) {
+            std::filesystem::remove(tempPath, ec);
+            if (OutError) *OutError = ec.message();
+            return false;
+        }
+    }
+
+    ec.clear();
+    std::filesystem::rename(tempPath, InTargetPath, ec);
+    if (ec) {
+        if (targetExists) {
+            std::error_code rollbackEc;
+            std::filesystem::rename(backupPath, InTargetPath, rollbackEc);
+        }
+        std::filesystem::remove(tempPath, ec);
+        if (OutError) *OutError = ec.message();
+        return false;
+    }
+
+    if (targetExists) {
+        std::filesystem::remove(backupPath, ec);
+    }
+    return true;
+}
+
+auto RunAiGenerateForWorkingEdit(const std::string& InProvider,
+                                 const std::string& InModel,
+                                 const std::string& InPrompt,
+                                 const std::filesystem::path& InWorkspaceRoot,
+                                 const std::filesystem::path& InWorkingPlanPath,
+                                 const std::filesystem::path& InWorkingGitignorePath,
+                                 bool InQuiet) -> shell::ExecResult {
+    if (InProvider != "copilot") {
+        return RunAiGenerate(InProvider, InModel, InPrompt, InWorkspaceRoot, InQuiet);
+    }
+
+    std::vector<std::string> args;
+    if (InQuiet) {
+        args.push_back("-s");
+    }
+    if (!InModel.empty() && InModel != "auto") {
+        args.push_back("--model");
+        args.push_back(InModel);
+    }
+    args.push_back("--no-color");
+    args.push_back("--stream");
+    args.push_back("off");
+    args.push_back("--no-ask-user");
+    args.push_back("--allow-tool");
+    args.push_back(std::format("write({})", InWorkingPlanPath.lexically_normal().generic_string()));
+    args.push_back("--allow-tool");
+    args.push_back(std::format("write({})", InWorkingGitignorePath.lexically_normal().generic_string()));
+    args.push_back("-p");
+    args.push_back(BuildFileBackedPromptArgument(InWorkspaceRoot, InPrompt, "plan-fill"));
+
+    std::cerr << "\n" << kano::terminal::AiPrefix() << " -- AI Invocation (plan-fill) --\n";
+    std::cerr << kano::terminal::AiPrefix() << " command : copilot";
+    for (const auto& a : args) {
+        if (a.find(' ') != std::string::npos || a.empty()) std::cerr << " \"" << a << "\"";
+        else std::cerr << " " << a;
+    }
+    std::cerr << "\n" << kano::terminal::AiPrefix() << " model   : " << (InModel.empty() ? "auto" : InModel) << "\n";
+    std::cerr << kano::terminal::AiPrefix() << " Waiting for " << InProvider << " response...\n";
+    std::cerr.flush();
+    return ExecuteStandaloneCopilot(args, InWorkspaceRoot);
 }
 
 auto ExtractPlanFillOpsJson(const std::string& InAiCombined) -> std::string {
@@ -1423,6 +1707,79 @@ auto ExtractPlanFillOpsJson(const std::string& InAiCombined) -> std::string {
     if (!structured.empty()) return structured;
     // Fall back to markdown code block
     return ExtractJsonBetweenMarkers(InAiCombined, "```json", "```");
+}
+
+static auto RepairAiJsonPayload(const std::string& InPayload) -> std::string {
+    std::string sanitized;
+    sanitized.reserve(InPayload.size());
+    bool inString = false;
+    std::string currentStringToken;
+    std::string activeKey;
+    for (size_t i = 0; i < InPayload.size(); ++i) {
+        const char c = InPayload[i];
+        if (c == '"' && (i == 0 || InPayload[i - 1] != '\\')) {
+            inString = !inString;
+            if (inString) {
+                currentStringToken.clear();
+            } else {
+                std::size_t lookahead = i + 1;
+                while (lookahead < InPayload.size() && std::isspace(static_cast<unsigned char>(InPayload[lookahead]))) {
+                    ++lookahead;
+                }
+                if (lookahead < InPayload.size() && InPayload[lookahead] == ':') {
+                    activeKey = currentStringToken;
+                }
+            }
+        }
+        if (inString) {
+            if (c == '\n' || c == '\r') {
+                const bool preserveWordBoundary = activeKey == "message" || activeKey == "reason";
+                if (preserveWordBoundary && !sanitized.empty() && sanitized.back() != ' ') {
+                    sanitized += ' ';
+                }
+                while (i + 1 < InPayload.size()) {
+                    const char next = InPayload[i + 1];
+                    if (next == '\n' || next == '\r' || next == ' ' || next == '\t') {
+                        ++i;
+                        continue;
+                    }
+                    break;
+                }
+                continue;
+            }
+            if (c != '"') {
+                currentStringToken += c;
+            }
+        }
+        sanitized += c;
+    }
+
+    // Some providers occasionally emit Windows paths like C:\Users\... inside
+    // JSON strings without escaping '\' as '\\'. Repair those invalid escapes
+    // so JSON parsing can succeed.
+    std::string repaired;
+    repaired.reserve(sanitized.size() + 16);
+    inString = false;
+    for (size_t i = 0; i < sanitized.size(); ++i) {
+        const char c = sanitized[i];
+        if (c == '"' && (i == 0 || sanitized[i - 1] != '\\')) {
+            inString = !inString;
+            repaired += c;
+            continue;
+        }
+        if (inString && c == '\\') {
+            const char next = (i + 1 < sanitized.size()) ? sanitized[i + 1] : '\0';
+            const bool validEscapeNext =
+                next == '"' || next == '\\' || next == '/' ||
+                next == 'b' || next == 'f' || next == 'n' ||
+                next == 'r' || next == 't' || next == 'u';
+            if (!validEscapeNext) {
+                repaired += '\\';
+            }
+        }
+        repaired += c;
+    }
+    return repaired;
 }
 
 auto BuildFillOpsRetryPrompt(const std::string& InBasePrompt,
@@ -1507,6 +1864,7 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
     std::cerr << kano::terminal::PlanPrefix() << " model    : " << (modelDir.empty() ? "auto" : modelDir) << "\n";
     std::cerr << kano::terminal::PlanPrefix() << " entries  : " << entries.size() << "\n";
     
+<<<<<<< HEAD
 
     // Run AI to fill the plan (single-call or per-entry mode)
     // In both modes the AI is expected to directly overwrite InPlanPath on disk
@@ -1534,6 +1892,40 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
         for (const auto& entry : entries) {
             const auto prompt = BuildSingleCommitFillPrompt(InWorkspaceRoot, provider, modelDir, entry, dirty);
             const auto res = RunAiGenerate(provider, modelDir, prompt, InWorkspaceRoot, true, InYolo);
+=======
+    std::string finalPlanJson = templateJson;
+    bool anyFilled = false;
+    if (fillMode == "per-commit") {
+        for (const auto& entry : entries) {
+            const auto workingPlanPath = BuildPlanAiWorkingCopyPath(InPlanPath);
+            const auto workingGitignorePath = BuildGitignoreAiWorkingCopyPath(InWorkspaceRoot);
+            std::string seedError;
+            if (!WriteFileText(workingPlanPath, finalPlanJson, &seedError)) {
+                if (OutError) *OutError = seedError.empty() ? std::string("failed to seed working plan file") : seedError;
+                return false;
+            }
+            if (!SeedWorkingCopyFile((InWorkspaceRoot / ".gitignore").lexically_normal(), workingGitignorePath, &seedError)) {
+                if (OutError) *OutError = seedError.empty() ? std::string("failed to seed working gitignore copy") : seedError;
+                return false;
+            }
+
+            const auto prompt = BuildSingleCommitFillPrompt(InWorkspaceRoot,
+                                                            provider,
+                                                            modelDir,
+                                                            InPlanPath,
+                                                            workingPlanPath,
+                                                            entry,
+                                                            finalPlanJson,
+                                                            dirty,
+                                                            workingGitignorePath);
+            const auto res = RunAiGenerateForWorkingEdit(provider,
+                                                         modelDir,
+                                                         prompt,
+                                                         InWorkspaceRoot,
+                                                         workingPlanPath,
+                                                         workingGitignorePath,
+                                                         true);
+>>>>>>> f974e92 ([CommitPlan][Feature] Add AI working-copy commit fill flow (NO-TICKET))
             std::filesystem::path responsePath;
             std::string responseWriteError;
             if (WriteAiResponseFile(InWorkspaceRoot,
@@ -1553,6 +1945,125 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
                 if (OutError) *OutError = "AI generation failed for entry " + std::to_string(entry.index) + ": " + detail;
                 return false;
             }
+<<<<<<< HEAD
+=======
+
+            const auto originalGitignoreText = ReadFileText((InWorkspaceRoot / ".gitignore").lexically_normal()).value_or("");
+            const auto editedGitignoreText = ReadFileText(workingGitignorePath).value_or(originalGitignoreText);
+            const auto addedGitignoreRules = CollectGitignoreRuleAdditions(originalGitignoreText, editedGitignoreText);
+
+            const auto candidatePlanText = ReadFileText(workingPlanPath);
+            if (!candidatePlanText.has_value()) {
+                if (OutError) *OutError = "AI did not produce an edited working plan file for entry " + std::to_string(entry.index);
+                return false;
+            }
+
+            std::string candidateReason;
+            if (!ValidateAiReadyPlan(*candidatePlanText, &candidateReason)) {
+                if (OutError) *OutError = "AI edited working plan failed validation for entry " + std::to_string(entry.index) + ": " + candidateReason;
+                return false;
+            }
+
+            finalPlanJson = *candidatePlanText;
+            const auto refreshedEntries = CollectCommitPlanEntries(finalPlanJson);
+            for (const auto& refreshed : refreshedEntries) {
+                if (refreshed.index == entry.index) {
+                    const auto finalMessage = Trim(refreshed.message);
+                    if (!finalMessage.empty()) {
+                        std::cerr << kano::terminal::PlanPrefix() << " filled entry " << entry.index << " message: " << finalMessage << "\n";
+                        if (finalMessage.find("replace-with-") == std::string::npos) {
+                            anyFilled = true;
+                        }
+                    } else {
+                        std::cerr << kano::terminal::PlanPrefix() << " warning: entry " << entry.index << " message remains empty\n";
+                    }
+                    break;
+                }
+            }
+
+            if (!addedGitignoreRules.empty()) {
+                const auto mergedGitignoreText = MergeGitignore((InWorkspaceRoot / ".gitignore").lexically_normal(), addedGitignoreRules);
+                std::string gitignoreError;
+                if (!PromoteTextFileAtomically((InWorkspaceRoot / ".gitignore").lexically_normal(), mergedGitignoreText, &gitignoreError)) {
+                    if (OutError) *OutError = gitignoreError.empty() ? std::string("failed to promote merged .gitignore") : gitignoreError;
+                    return false;
+                }
+                if (auto refreshed = ReplacePlanDirtyFingerprint(finalPlanJson, ComputeWorkspaceDirtyFingerprint(InWorkspaceRoot))) {
+                    finalPlanJson = *refreshed;
+                }
+            }
+        }
+    } else {
+        const auto workingPlanPath = BuildPlanAiWorkingCopyPath(InPlanPath);
+        const auto workingGitignorePath = BuildGitignoreAiWorkingCopyPath(InWorkspaceRoot);
+        if (!SeedWorkingCopyFile(InPlanPath, workingPlanPath, OutError)) {
+            return false;
+        }
+        if (!SeedWorkingCopyFile((InWorkspaceRoot / ".gitignore").lexically_normal(), workingGitignorePath, OutError)) {
+            return false;
+        }
+
+        const auto prompt = BuildPlanFillOpsPrompt(InWorkspaceRoot,
+                                                   provider,
+                                                   modelDir,
+                                                   InPlanPath,
+                                                   workingPlanPath,
+                                                   templateJson,
+                                                   dirty,
+                                                   workingGitignorePath);
+        const auto res = RunAiGenerateForWorkingEdit(provider,
+                                                     modelDir,
+                                                     prompt,
+                                                     InWorkspaceRoot,
+                                                     workingPlanPath,
+                                                     workingGitignorePath,
+                                                     true);
+        std::filesystem::path responsePath;
+        std::string responseWriteError;
+        if (WriteAiResponseFile(InWorkspaceRoot, "plan-fill-batch", res, &responsePath, &responseWriteError)) {
+            std::cerr << "[plan] ai response file: " << responsePath.generic_string() << "\n";
+        } else {
+            std::cerr << "[plan] warning: failed to save ai response file: " << responseWriteError << "\n";
+        }
+        if (res.exitCode != 0) {
+            auto detail = Trim(res.stderrStr);
+            if (detail.empty()) detail = Trim(res.stdoutStr);
+            if (detail.empty()) detail = "ai provider returned no details";
+            if (detail.size() > 140) detail = detail.substr(0, 140) + "...";
+            if (OutError) *OutError = "AI generation failed: " + detail;
+            return false;
+        }
+
+        const auto originalGitignoreText = ReadFileText((InWorkspaceRoot / ".gitignore").lexically_normal()).value_or("");
+        const auto editedGitignoreText = ReadFileText(workingGitignorePath).value_or(originalGitignoreText);
+        const auto addedGitignoreRules = CollectGitignoreRuleAdditions(originalGitignoreText, editedGitignoreText);
+
+        const auto candidatePlanText = ReadFileText(workingPlanPath);
+        if (!candidatePlanText.has_value()) {
+            if (OutError) *OutError = "AI did not produce an edited working plan file";
+            return false;
+        }
+
+        finalPlanJson = *candidatePlanText;
+        if (auto stamped = StampPlanAiPlannerMetadata(finalPlanJson, provider, modelDir)) {
+            finalPlanJson = *stamped;
+        }
+        anyFilled = ValidateAiReadyPlan(finalPlanJson, OutError);
+        if (!anyFilled) {
+            return false;
+        }
+
+        if (!addedGitignoreRules.empty()) {
+            const auto mergedGitignoreText = MergeGitignore((InWorkspaceRoot / ".gitignore").lexically_normal(), addedGitignoreRules);
+            std::string gitignoreError;
+            if (!PromoteTextFileAtomically((InWorkspaceRoot / ".gitignore").lexically_normal(), mergedGitignoreText, &gitignoreError)) {
+                if (OutError) *OutError = gitignoreError.empty() ? std::string("failed to promote merged .gitignore") : gitignoreError;
+                return false;
+            }
+            if (auto refreshed = ReplacePlanDirtyFingerprint(finalPlanJson, ComputeWorkspaceDirtyFingerprint(InWorkspaceRoot))) {
+                finalPlanJson = *refreshed;
+            }
+>>>>>>> f974e92 ([CommitPlan][Feature] Add AI working-copy commit fill flow (NO-TICKET))
         }
     }
 
@@ -1582,11 +2093,15 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
         return false;
     }
 
+<<<<<<< HEAD
     // Stamp planner metadata
     if (auto stamped = StampPlanAiPlannerMetadata(*finalPlanText, provider, modelDir)) {
         return WriteFileText(InPlanPath, *stamped, OutError);
     }
     return true;
+=======
+    return PromoteTextFileAtomically(InPlanPath, finalPlanJson, OutError);
+>>>>>>> f974e92 ([CommitPlan][Feature] Add AI working-copy commit fill flow (NO-TICKET))
 }
 
 

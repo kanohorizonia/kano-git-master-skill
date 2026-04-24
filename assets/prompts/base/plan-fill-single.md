@@ -3,38 +3,43 @@ The task is already fully specified in this prompt. Do not ask what task to perf
 
 Task:
 - Step 1 (ignore cleanup): Inspect untracked files in the dirty context. If any look like build artifacts,
-  cache, generated output, logs, or editor noise, you must update `{{GITIGNORE_PATH}}`. Do not just blindly
-  append to it. Instead, overview the entire current `.gitignore` content, deduplicate existing patterns,
-  and organize it into a readable, well-structured, and maintainable file. Add any newly discovered artifact
-  patterns logically within the file. Use `git rm --cached <path>` to untrack any already-tracked artifacts.
-  Only proceed to step 2 after ignore cleanup is complete.
-- Step 2 (fill): Directly update the authoritative plan file with commit messages and review fields.
-  Follow this SOP exactly:
-  1. Copy `{{PLAN_PATH_ABSOLUTE}}` to `{{PLAN_PATH_ABSOLUTE}}.tmp`.
-  2. Open the `.tmp` file and fill every `stages.commit[*].commits[*].message` field with a KCC-compliant
-     commit message, and set `stages.commit[*].commits[*].review.verdict` to `pass` with a specific reason.
-  3. Self-validate the `.tmp` file:
-     a. Confirm the file is valid JSON (can be parsed without error).
-     b. Confirm every `message` field matches KCC format: `[Subsystem][Type] Summary`.
-     c. Confirm no message is a placeholder (does not contain `replace-with-` or `chore(...): apply updates`).
-  4. If validation fails, correct the `.tmp` file and retry (up to 3 times).
-  5. Once validation passes, overwrite `{{PLAN_PATH_ABSOLUTE}}` with the contents of `{{PLAN_PATH_ABSOLUTE}}.tmp`,
-     then delete the `.tmp` file.
-  6. Do NOT print any JSON output. Do NOT output BEGIN_KOG_PLAN_FILL_OPS markers. The task is complete when
-     the plan file has been successfully overwritten.
+  cache, generated output, logs, or editor noise, update the working gitignore copy at
+  `{{WORKING_GITIGNORE_PATH}}` with only the minimal ignore-rule additions needed.
+  Append rules under a `# kog-auto` comment when appropriate. Do not rewrite unrelated sections.
+- Step 2 (fill): Complete the semantic fields for every existing commit entry by editing the working
+  plan file at `{{WORKING_PLAN_PATH_ABSOLUTE}}` directly. The working plan file already contains the
+  current plan snapshot. Produce the final `stages.commit` result for the whole plan in one pass.
+  You may keep the current grouping, or split a repo into multiple commits when the dirty changes
+  clearly separate into distinct commit-worthy groups.
+- Step 3 (finish): Save the working plan file and stop. Do not print JSON payloads.
 
 Execution context:
 - This subagent has no external conversation context beyond this prompt.
 - The authoritative plan file absolute path is `{{PLAN_PATH_ABSOLUTE}}`.
-- The workspace-relative plan file path is `{{PLAN_PATH}}`.
-- The .gitignore file to update is `{{GITIGNORE_PATH}}`.
+- The workspace-relative authoritative plan file path is `{{PLAN_PATH}}`.
+- The working plan file absolute path is `{{WORKING_PLAN_PATH_ABSOLUTE}}`.
+- The working plan file workspace-relative path is `{{WORKING_PLAN_PATH}}`.
+- The authoritative .gitignore path is `{{GITIGNORE_PATH}}`.
+- The working .gitignore copy to edit is `{{WORKING_GITIGNORE_PATH}}`.
 - Do not ask clarifying questions. Do not ask for more instructions. Execute the specified fill task directly.
 
 Critical interpretation rules:
 - "commit plan entries" means the JSON entries under `stages.commit[*].commits[*]` in the plan file.
-- Do not modify `include`, `exclude`, `repo`, or any non-semantic field. Only fill `message` and `review`.
-- Do not use placeholders like `replace-with-*`.
+- It does NOT mean tasks in `commit-plan.md`, project planning documents, TODO trackers, SQL tables, or any external planning system.
+- The "Current plan JSON" block below is the snapshot already written into the working plan file. Use it as your editing baseline.
+- You already have all required context in this prompt. Do not inspect or edit files other than the working plan file and working .gitignore copy.
+- Do not ask the user to restate the task. Do not say you are ready to help.
+- Do not describe what you are about to do. Do not narrate your reasoning. Output at most a brief single-line completion note.
+
+Rules:
+- Edit the working plan file in place. Do not emit replacement JSON on stdout.
+- Update `stages.commit` in the working plan file atomically as a complete result.
+- You MAY keep one commit per repo when separation is not justified.
+- You MAY split a single repo into multiple commits when the dirty changes clearly separate into distinct commit-worthy groups.
+- If you split one repo into multiple commits, each split commit MUST have explicit `include` paths that isolate its scope. Use `exclude` only when needed to avoid overlap.
+- Every resulting commit must include concrete non-placeholder `message` and `review.reason` values.
 - `review.verdict` must be `pass`.
+- Do not leave placeholders like `replace-with-*` in the working plan file.
 - Provider={{PROVIDER}} model={{MODEL}}
 
 Semantic quality constraints:

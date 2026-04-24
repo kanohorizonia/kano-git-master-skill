@@ -1,6 +1,11 @@
 # Pixi Development Environment
 
-`pixi` is the repo-level environment and task runner for `kano-git-master-skill`.
+This repo follows the **shared Pixi environment contract** defined in `kano-shell-master-skill/SKILL.md` under "Environment Activation via Pixi (PATH-First Pattern)".
+
+`pixi` is split into two layers for `kano-git-master-skill`.
+
+- `src/cpp/shared/infra/pixi.toml` is the canonical shared manifest for common native build/test/report/bootstrap flows
+- repo-root `pixi.toml` is reserved for repo-specific extension tasks such as shell acceptance and docs flows
 
 It does not replace `vcpkg`.
 
@@ -8,34 +13,77 @@ It does not replace `vcpkg`.
 - `vcpkg` continues to manage native C++ libraries declared in `src/cpp/vcpkg.json`
 - host-specific system prerequisites such as Visual Studio Build Tools still stay in the existing prerequisite scripts
 
-## Install pixi
+## Shared Pixi Bootstrap Contract
 
-Follow the official installation instructions from `https://pixi.sh`, then run from the repo root:
+### For Local Workflows (PRIMARY)
+
+Use `pixi run <task>` for reproducible environment setup:
 
 ```bash
-pixi install
-pixi run env-summary
+pixi install --manifest-path src/cpp/shared/infra/pixi.toml
+pixi run --manifest-path src/cpp/shared/infra/pixi.toml env-summary
+pixi run --manifest-path src/cpp/shared/infra/pixi.toml build
+pixi run --manifest-path src/cpp/shared/infra/pixi.toml quick-test
 ```
 
-## Current task model
-
-The initial integration keeps the existing build scripts as the source of truth.
+Or run from inside the shared infra directory:
 
 ```bash
-# Show tool versions from the pixi environment
+cd src/cpp/shared/infra
+pixi install
 pixi run env-summary
-
-# Run host-specific bootstrap scripts
-pixi run bootstrap-windows-system
-pixi run bootstrap-linux-system
-pixi run bootstrap-macos-system
-
-# Build the native CLI for the current host platform
 pixi run build
-
-# Run repo tests
 pixi run quick-test
-pixi run full-test
+```
+
+### For Direct Script Execution
+
+Core scripts under `src/cpp/shared/infra/scripts/` are PATH-first and should activate the Pixi environment via shared bootstrap:
+
+```bash
+# Direct execution should resolve tools the same way as `pixi run --manifest-path src/cpp/shared/infra/pixi.toml`
+bash src/cpp/shared/infra/scripts/self/build.sh
+bash src/cpp/shared/infra/scripts/stages/test.sh
+```
+
+**The reusable bootstrap pattern** (adoption point):
+
+Scripts that run build tools directly should source `src/cpp/shared/infra/scripts/lib/pixi_bootstrap.sh` and call its activation function:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Bootstrap pixi environment if not already active
+source "$SCRIPT_DIR/pixi_bootstrap.sh"
+kano_pixi_bootstrap_activate
+
+# Your script logic here...
+```
+
+This pattern is already adopted in:
+- `src/cpp/shared/infra/scripts/lib/unix_preset_build.sh`
+- `src/cpp/shared/infra/scripts/lib/windows_preset_build.sh`
+
+**Do NOT:**
+- Hardcode `.pixi/envs/...` paths in leaf scripts
+- Fall back silently to random system tools
+- Invoke `pixi install` from core scripts (only top-level wrappers do this)
+
+**DO:**
+- Activate Pixi environment via shared bootstrap (if not already active)
+- Fail fast if required tools are missing
+- Log which environment is active for debugging
+
+## Install pixi
+
+Follow the official installation instructions from `https://pixi.sh`, then run either from `src/cpp/shared/infra/` or with an explicit manifest path:
+
+```bash
+pixi install --manifest-path src/cpp/shared/infra/pixi.toml
+pixi run --manifest-path src/cpp/shared/infra/pixi.toml env-summary
 ```
 
 ## Why vcpkg stays
@@ -64,9 +112,9 @@ System compiler/toolchain ownership still stays outside pixi:
 
 ## Task naming notes
 
-- `pixi run build` is the host-default native build entrypoint
-- `pixi run build-release` is the host-default release build entrypoint
-- `pixi run build-dev`, `build-dev-linux`, and `build-dev-macos` remain explicit helper tasks for skill development workflows
+- `pixi run --manifest-path src/cpp/shared/infra/pixi.toml build` is the host-default native build entrypoint
+- `pixi run --manifest-path src/cpp/shared/infra/pixi.toml build-release` is the host-default release build entrypoint
+- `pixi run docs`, `pixi run docs-ci`, and shell acceptance tasks remain repo-root extensions because they are specific to this skill repo
 
 ## Next integration targets
 

@@ -23,6 +23,26 @@
 
 namespace kano::terminal {
 
+#if defined(_WIN32)
+inline bool EnableVirtualTerminalForHandle(HANDLE InHandle) {
+    if (InHandle == INVALID_HANDLE_VALUE || InHandle == nullptr) {
+        return false;
+    }
+
+    DWORD mode = 0;
+    if (!GetConsoleMode(InHandle, &mode)) {
+        return false;
+    }
+
+    if ((mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING) == 0) {
+        if (!SetConsoleMode(InHandle, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING)) {
+            return false;
+        }
+    }
+    return true;
+}
+#endif
+
 namespace Color {
     inline const char* Reset = "\033[0m";
     inline const char* Bold = "\033[1m";
@@ -53,17 +73,14 @@ inline bool IsStdoutInteractive() {
         if (kogNoColor != nullptr && *kogNoColor != '\0') return false;
 
 #if defined(_WIN32)
-        if (ISATTY(STDOUT_FILENO) != 0) {
-            HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
-            if (hOut != INVALID_HANDLE_VALUE) {
-                DWORD dwMode = 0;
-                if (GetConsoleMode(hOut, &dwMode)) {
-                    SetConsoleMode(hOut, dwMode | 0x0004); // ENABLE_VIRTUAL_TERMINAL_PROCESSING
-                }
-            }
+        if (EnableVirtualTerminalForHandle(GetStdHandle(STD_OUTPUT_HANDLE))) {
             return true;
         }
-        return false;
+        const char* term = std::getenv("TERM");
+        if (term != nullptr && *term != '\0' && std::string(term) != "dumb") {
+            return true;
+        }
+        return ISATTY(STDOUT_FILENO) != 0;
 #else
         return ISATTY(STDOUT_FILENO) != 0;
 #endif
@@ -78,20 +95,14 @@ inline bool IsStderrInteractive() {
         const char* kogNoColor = std::getenv("KOG_NO_COLOR");
         if (kogNoColor != nullptr && *kogNoColor != '\0') return false;
 #if defined(_WIN32)
-        if (ISATTY(STDERR_FILENO) != 0) {
-            HANDLE hErr = GetStdHandle(STD_ERROR_HANDLE);
-            if (hErr != INVALID_HANDLE_VALUE) {
-                DWORD dwMode = 0;
-                if (GetConsoleMode(hErr, &dwMode)) {
-                    SetConsoleMode(hErr, dwMode | 0x0004); // ENABLE_VIRTUAL_TERMINAL_PROCESSING
-                }
-            }
+        if (EnableVirtualTerminalForHandle(GetStdHandle(STD_ERROR_HANDLE))) {
             return true;
         }
-        return false;
-#else
+        const char* term = std::getenv("TERM");
+        if (term != nullptr && *term != '\0' && std::string(term) != "dumb") {
+            return true;
+        }
         return ISATTY(STDERR_FILENO) != 0;
-#endif
     }();
     return enabled;
 }

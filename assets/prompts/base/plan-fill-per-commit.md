@@ -1,25 +1,36 @@
-You are filling exactly ONE commit plan entry for kano-git.
+You are filling exactly ONE commit plan entry for kano-git by editing a working plan file.
 
 Step 1 (ignore cleanup): Inspect untracked files in the dirty context. If any look like build artifacts,
-cache, generated output, logs, or editor noise, you must update `{{GITIGNORE_PATH}}`. Do not just blindly
-append to it. Instead, overview the entire current `.gitignore` content, deduplicate existing patterns,
-and organize it into a readable, well-structured, and maintainable file. Add any newly discovered artifact
-patterns logically within the file. Use `git rm --cached <path>` to untrack any already-tracked artifacts.
-Only proceed to step 2 after ignore cleanup is complete.
+cache, generated output, logs, or editor noise, update the working gitignore copy at
+`{{WORKING_GITIGNORE_PATH}}` with only the minimal ignore-rule additions needed.
 
-Step 2 (fill): Directly update entry index {{ENTRY_INDEX}} in the authoritative plan file.
-Follow this SOP exactly:
-1. Copy `{{PLAN_PATH_ABSOLUTE}}` to `{{PLAN_PATH_ABSOLUTE}}.tmp`.
-2. In the `.tmp` file, find the commit entry at flat index {{ENTRY_INDEX}} under `stages.commit[*].commits[*]`
-   and fill its `message` field with a KCC-compliant commit message, and set `review.verdict` to `pass`
-   with a specific review reason.
-3. Self-validate the `.tmp` file:
-   a. Confirm the file is valid JSON (can be parsed without error).
-   b. Confirm the `message` matches KCC format: `[Subsystem][Type] Summary`.
-   c. Confirm the message is not a placeholder.
-4. If validation fails, correct the `.tmp` file and retry (up to 3 times).
-5. Once validation passes, overwrite `{{PLAN_PATH_ABSOLUTE}}` with the `.tmp` file contents, then delete `.tmp`.
-6. Do NOT print any JSON output. Do NOT output BEGIN_KOG_PLAN_FILL_OPS markers.
+Step 2 (fill): Edit the working plan file at `{{WORKING_PLAN_PATH_ABSOLUTE}}` so that only commit entry
+index `{{ENTRY_INDEX}}` is filled with a concrete message and review reason. Do not rewrite unrelated
+entries except for structural formatting needed to preserve valid JSON.
+
+Step 3 (finish): Save the working plan file and stop. Do not emit JSON payloads on stdout.
+
+Rules:
+- Edit the working plan file in place; do not return a replacement JSON payload.
+- Only fill the commit entry at index `{{ENTRY_INDEX}}`.
+- Leave other commit entries semantically unchanged.
+- `message` MUST follow the Kano Commit Convention (KCC) specification (`[Subsystem][Type] Summary (Ticket)`) provided at the end of this prompt.
+- `review.verdict` must be `pass`.
+- At most print a brief single-line completion note.
+- Provider={{PROVIDER}} model={{MODEL}}
+
+Execution context:
+- The authoritative plan file absolute path is `{{PLAN_PATH_ABSOLUTE}}`.
+- The working plan file absolute path is `{{WORKING_PLAN_PATH_ABSOLUTE}}`.
+- The working plan file workspace-relative path is `{{WORKING_PLAN_PATH}}`.
+- The authoritative .gitignore path is `{{GITIGNORE_PATH}}`.
+- The working .gitignore copy to edit is `{{WORKING_GITIGNORE_PATH}}`.
+
+Target commit entry:
+{{TARGET_ENTRY_JSON}}
+
+Current working plan JSON snapshot:
+{{PLAN_JSON}}
 
 Quality constraints:
 - `message` MUST follow the Kano Commit Convention (KCC) specification (`[Subsystem][Type] Summary`) provided at the end of this prompt.
