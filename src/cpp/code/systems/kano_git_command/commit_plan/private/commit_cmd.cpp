@@ -1,4 +1,4 @@
-// commit command â€” Native multi-repo commit workflow (pure C++)
+// commit command ??Native multi-repo commit workflow (pure C++)
 
 #include <CLI/CLI.hpp>
 #include "discovery.hpp"
@@ -865,11 +865,11 @@ auto ExtractSingleLineMessage(const std::string& InText) -> std::string {
     // --- Strip leading Unicode bullet/symbol characters (multi-byte UTF-8) ---
     auto StripLeadingUnicodeBullets = [](std::string s) -> std::string {
         // Common AI-output bullet/symbol UTF-8 byte sequences:
-        //   â— U+25CF (E2 97 8F)   â—† U+25C6 (E2 97 86)   â–¶ U+25B6 (E2 96 B6)
-        //   â–º U+25BA (E2 96 BA)   â—‹ U+25CB (E2 97 8B)   â—‰ U+25C9 (E2 97 89)
-        //   â†’ U+2192 (E2 86 92)   â€¢ U+2022 (E2 80 A2)   â€£ U+2023 (E2 80 A3)
-        //   âœ“ U+2713 (E2 9C 93)   âœ— U+2717 (E2 9C 97)   âœ¦ U+2726 (E2 9C A6)
-        //   â˜… U+2605 (E2 98 85)   â˜† U+2606 (E2 98 86)
+        //   ??U+25CF (E2 97 8F)   ??U+25C6 (E2 97 86)   ??U+25B6 (E2 96 B6)
+        //   ??U+25BA (E2 96 BA)   ??U+25CB (E2 97 8B)   ??U+25C9 (E2 97 89)
+        //   ??U+2192 (E2 86 92)   ??U+2022 (E2 80 A2)   ??U+2023 (E2 80 A3)
+        //   ??U+2713 (E2 9C 93)   ??U+2717 (E2 9C 97)   ??U+2726 (E2 9C A6)
+        //   ??U+2605 (E2 98 85)   ??U+2606 (E2 98 86)
         // All are 3-byte sequences starting with 0xE2.
         static const std::string kBulletPrefixes[] = {
             "\xE2\x97\x8F", "\xE2\x97\x86", "\xE2\x96\xB6", "\xE2\x96\xBA",
@@ -1014,7 +1014,7 @@ auto ExtractSingleLineMessage(const std::string& InText) -> std::string {
         }
     }
 
-    // Pass 2c: last resort â€” return first candidate even if it looks like preamble.
+    // Pass 2c: last resort ??return first candidate even if it looks like preamble.
     return candidates.front();
 }
 
@@ -1026,8 +1026,8 @@ auto RunAiGenerate(const std::string& InProvider,
     const auto effectivePrompt = BuildFileBackedPromptArgument(InWorkingDir, InPrompt, InPurpose);
 
     auto LogInvocation = [&](const std::string& binary, const std::vector<std::string>& args) {
-        static constexpr std::string_view kDivider = "â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€";
-        std::cerr << "\n[kog ai] â”€â”€ AI Invocation (" << InPurpose << ") â”€â”€\n";
+        static constexpr std::string_view kDivider = "?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€";
+        std::cerr << "\n[kog ai] ?€?€ AI Invocation (" << InPurpose << ") ?€?€\n";
         std::cerr << "[kog ai] command : " << binary;
         for (const auto& a : args) {
             if (a.find(' ') != std::string::npos || a.empty()) std::cerr << " \"" << a << "\"";
@@ -2490,7 +2490,7 @@ auto RunCommitAutoPlanPipeline(const std::filesystem::path& InWorkspaceRoot,
                                const bool InProfile,
                                const bool InAllowEmptyDirty) -> int {
     using clock = std::chrono::steady_clock;
-    const auto totalStart = clock::now();
+    const auto totalStart = std::chrono::steady_clock::now();
     long long planNewMillis = 0;
     long long ignoreRunbookMillis = 0;
     long long ignoreApplyMillis = 0;
@@ -2511,9 +2511,9 @@ auto RunCommitAutoPlanPipeline(const std::filesystem::path& InWorkspaceRoot,
     const auto autoPlanPath = DefaultSharedPlanPath(InWorkspaceRoot);
     std::cout << "[native-commit] auto-plan file: " << autoPlanPath.generic_string() << "\n";
 
-    const auto planNewStart = clock::now();
+    const auto planNewStart = std::chrono::steady_clock::now();
     const auto planNewCode = RunPlanNewViaSelf(InWorkspaceRoot, autoPlanPath);
-    planNewMillis = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - planNewStart).count();
+    planNewMillis = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - planNewStart).count();
     if (planNewCode != 0) {
         return planNewCode;
     }
@@ -2523,17 +2523,17 @@ auto RunCommitAutoPlanPipeline(const std::filesystem::path& InWorkspaceRoot,
     }
 
     std::cout << "[plan] initializing ignore stages...\n";
-    const auto ignoreRunbookStart = clock::now();
+    const auto ignoreRunbookStart = std::chrono::steady_clock::now();
     const auto ignoreRunbookCode = RunIgnorePlanRunbookViaSelf(InWorkspaceRoot, autoPlanPath);
-    ignoreRunbookMillis = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - ignoreRunbookStart).count();
+    ignoreRunbookMillis = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - ignoreRunbookStart).count();
     if (ignoreRunbookCode != 0) {
         return ignoreRunbookCode;
     }
 
     std::cout << "[plan] applying ignore rules...\n";
-    const auto ignoreApplyStart = clock::now();
+    const auto ignoreApplyStart = std::chrono::steady_clock::now();
     const auto ignoreApplyCode = RunIgnorePlanApplyViaSelf(InWorkspaceRoot, autoPlanPath);
-    ignoreApplyMillis = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - ignoreApplyStart).count();
+    ignoreApplyMillis = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - ignoreApplyStart).count();
     if (ignoreApplyCode != 0) {
         return ignoreApplyCode;
     }
@@ -2559,22 +2559,22 @@ auto RunCommitAutoPlanPipeline(const std::filesystem::path& InWorkspaceRoot,
         return 2;
     }
 
-    const auto preCommitStart = clock::now();
+    const auto preCommitStart = std::chrono::steady_clock::now();
     const auto preCommitCode = RunSyncPreCommitNative(InWorkspaceRoot, true, false, "default");
-    preCommitMillis = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - preCommitStart).count();
+    preCommitMillis = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - preCommitStart).count();
     if (preCommitCode != 0) {
         return preCommitCode;
     }
 
-    const auto commitApplyStart = clock::now();
+    const auto commitApplyStart = std::chrono::steady_clock::now();
     const auto commitApplyCode = RunCommitNativePlanStage(InWorkspaceRoot, autoPlanPath.generic_string(), "commit", false);
-    commitApplyMillis = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - commitApplyStart).count();
+    commitApplyMillis = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - commitApplyStart).count();
     if (commitApplyCode != 0) {
         return commitApplyCode;
     }
 
     if (InProfile) {
-        const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - totalStart).count();
+        const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - totalStart).count();
         std::cout << "\n=== Commit Auto-Plan Profile Summary ===\n";
         std::cout << "mode: plan-first\n";
         std::cout << "plan_new_ms: " << planNewMillis << "\n";
@@ -2600,7 +2600,7 @@ auto RunAmendAutoPlanPipeline(const std::filesystem::path& InWorkspaceRoot,
                                const bool InProfile,
                                const bool InAllowEmptyDirty) -> int {
     using clock = std::chrono::steady_clock;
-    const auto totalStart = clock::now();
+    const auto totalStart = std::chrono::steady_clock::now();
     long long planNewMillis = 0;
     long long ignoreRunbookMillis = 0;
     long long ignoreApplyMillis = 0;
@@ -2620,9 +2620,9 @@ auto RunAmendAutoPlanPipeline(const std::filesystem::path& InWorkspaceRoot,
     const auto autoPlanPath = DefaultSharedPlanPath(InWorkspaceRoot);
     std::cout << "[native-amend] auto-plan file: " << autoPlanPath.generic_string() << "\n";
 
-    const auto planNewStart = clock::now();
+    const auto planNewStart = std::chrono::steady_clock::now();
     const auto planNewCode = RunPlanNewViaSelf(InWorkspaceRoot, autoPlanPath);
-    planNewMillis = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - planNewStart).count();
+    planNewMillis = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - planNewStart).count();
     if (planNewCode != 0) {
         return planNewCode;
     }
@@ -2632,17 +2632,17 @@ auto RunAmendAutoPlanPipeline(const std::filesystem::path& InWorkspaceRoot,
     }
 
     std::cout << "[plan] initializing ignore stages...\n";
-    const auto ignoreRunbookStart = clock::now();
+    const auto ignoreRunbookStart = std::chrono::steady_clock::now();
     const auto ignoreRunbookCode = RunIgnorePlanRunbookViaSelf(InWorkspaceRoot, autoPlanPath);
-    ignoreRunbookMillis = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - ignoreRunbookStart).count();
+    ignoreRunbookMillis = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - ignoreRunbookStart).count();
     if (ignoreRunbookCode != 0) {
         return ignoreRunbookCode;
     }
 
     std::cout << "[plan] applying ignore rules...\n";
-    const auto ignoreApplyStart = clock::now();
+    const auto ignoreApplyStart = std::chrono::steady_clock::now();
     const auto ignoreApplyCode = RunIgnorePlanApplyViaSelf(InWorkspaceRoot, autoPlanPath);
-    ignoreApplyMillis = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - ignoreApplyStart).count();
+    ignoreApplyMillis = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - ignoreApplyStart).count();
     if (ignoreApplyCode != 0) {
         return ignoreApplyCode;
     }
@@ -2668,15 +2668,15 @@ auto RunAmendAutoPlanPipeline(const std::filesystem::path& InWorkspaceRoot,
     }
 
     // Apply plan via soft-reset + commit (rebuild history) instead of amend
-    const auto amendApplyStart = clock::now();
+    const auto amendApplyStart = std::chrono::steady_clock::now();
     const auto amendApplyCode = RunAmendNativePlanStage(InWorkspaceRoot, autoPlanPath.generic_string(), "commit", false);
-    amendApplyMillis = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - amendApplyStart).count();
+    amendApplyMillis = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - amendApplyStart).count();
     if (amendApplyCode != 0) {
         return amendApplyCode;
     }
 
     if (InProfile) {
-        const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - totalStart).count();
+        const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - totalStart).count();
         std::cout << "\n=== Amend Auto-Plan Profile Summary ===\n";
         std::cout << "mode: plan-first\n";
         std::cout << "plan_new_ms: " << planNewMillis << "\n";
@@ -3501,7 +3501,8 @@ auto AmendSingleRepo(const std::filesystem::path& InWorkspaceRoot,
 }
 
 auto PrintCommitSummary(const std::filesystem::path& InWorkspaceRoot,
-                        const std::vector<RepoCommitResult>& InResults) -> int {
+                        const std::vector<RepoCommitResult>& InResults,
+                        long long InTotalMs) -> int {
     int failed = 0;
     int committed = 0;
     int pushed = 0;
@@ -3556,11 +3557,27 @@ auto PrintCommitSummary(const std::filesystem::path& InWorkspaceRoot,
               << " skipped=" << skipped
               << " failed=" << failed << "\n";
 
+    if (InTotalMs > 0) {
+        char timeBuf[64];
+        double elapsed = static_cast<double>(InTotalMs);
+        if (elapsed < 1000.0) {
+            std::snprintf(timeBuf, sizeof(timeBuf), "%.2fms", elapsed);
+        } else if (elapsed < 60000.0) {
+            std::snprintf(timeBuf, sizeof(timeBuf), "%.2fs", elapsed / 1000.0);
+        } else if (elapsed < 3600000.0) {
+            std::snprintf(timeBuf, sizeof(timeBuf), "%.2fm", elapsed / 60000.0);
+        } else {
+            std::snprintf(timeBuf, sizeof(timeBuf), "%.2fh", elapsed / 3600000.0);
+        }
+        std::cout << "Total elapsed time: " << timeBuf << "\n";
+    }
+
     return failed == 0 ? 0 : 1;
 }
 
 auto PrintAmendSummary(const std::filesystem::path& InWorkspaceRoot,
-                       const std::vector<RepoAmendResult>& InResults) -> int {
+                       const std::vector<RepoAmendResult>& InResults,
+                       long long InTotalMs) -> int {
     int failed = 0;
     int amended = 0;
     int combined = 0;
@@ -3602,6 +3619,21 @@ auto PrintAmendSummary(const std::filesystem::path& InWorkspaceRoot,
               << " combined=" << combined
               << " skipped=" << skipped
               << " failed=" << failed << "\n";
+
+    if (InTotalMs > 0) {
+        char timeBuf[64];
+        double elapsed = static_cast<double>(InTotalMs);
+        if (elapsed < 1000.0) {
+            std::snprintf(timeBuf, sizeof(timeBuf), "%.2fms", elapsed);
+        } else if (elapsed < 60000.0) {
+            std::snprintf(timeBuf, sizeof(timeBuf), "%.2fs", elapsed / 1000.0);
+        } else if (elapsed < 3600000.0) {
+            std::snprintf(timeBuf, sizeof(timeBuf), "%.2fm", elapsed / 60000.0);
+        } else {
+            std::snprintf(timeBuf, sizeof(timeBuf), "%.2fh", elapsed / 3600000.0);
+        }
+        std::cout << "Total elapsed time: " << timeBuf << "\n";
+    }
 
     return failed == 0 ? 0 : 1;
 }
@@ -3667,7 +3699,7 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
                               const std::string& InPlanStage,
                               const bool InProfile) -> int {
     using clock = std::chrono::steady_clock;
-    const auto totalStart = clock::now();
+    const auto totalStart = std::chrono::steady_clock::now();
     long long preflightMs = 0;
     long long planningMs = 0;
     long long commitMs = 0;
@@ -3675,13 +3707,13 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
 
     const auto workspaceRoot = InWorkspaceRoot.lexically_normal();
 
-    const auto preflightStart = clock::now();
+    const auto preflightStart = std::chrono::steady_clock::now();
     const auto report = RunCommitPreflight(workspaceRoot);
     PrintCommitPreflight(report, false);
     if (!report.inRepo) {
         return 1;
     }
-    preflightMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - preflightStart).count();
+    preflightMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - preflightStart).count();
 
     std::cout << "[native-commit] safety-gates: ignore + secret\n";
     RunPipelineSafetyGatesForNonAiCommit(workspaceRoot);
@@ -3729,7 +3761,7 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
     if (stageMessages.empty()) {
         std::println("[native-commit] no entries found for selected --plan-stage; skipping commit.");
         if (InProfile) {
-            const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - totalStart).count();
+            const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - totalStart).count();
             std::cout << "\n=== Commit Profile Summary ===\n";
             std::cout << "mode: native\n";
             std::cout << "repo_count: 0\n";
@@ -3742,7 +3774,7 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
         return 0;
     }
 
-    const auto planningStart = clock::now();
+    const auto planningStart = std::chrono::steady_clock::now();
     std::string planReposCsv;
     for (const auto& [repoKey, items] : stageMessages) {
         if (items.empty()) {
@@ -3760,7 +3792,7 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
         fallback.type = "root";
         repoRecords.push_back(std::move(fallback));
     }
-    planningMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - planningStart).count();
+    planningMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - planningStart).count();
 
     const auto repoWaves = BuildExecutionWaves(repoRecords);
     const auto runbooks = BuildRepoCommitRunbooks(repoRecords, stageMessages, workspaceRoot, "", true);
@@ -3784,7 +3816,7 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
     ai.enabled = false;
     ai.reviewEnabled = false;
 
-    const auto commitStart = clock::now();
+    const auto commitStart = std::chrono::steady_clock::now();
     std::cout << "[native-commit] plan: repos=" << repoRecords.size()
               << " repo_waves=" << repoWaves.size()
               << " commits=" << taskGraph.tasks.size()
@@ -3862,14 +3894,15 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
             results.push_back(std::move(one));
         }
     }
-    commitMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - commitStart).count();
+    commitMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - commitStart).count();
 
-    const auto summaryStart = clock::now();
-    const auto exitCode = PrintCommitSummary(workspaceRoot, results);
-    summaryMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - summaryStart).count();
+    const auto totalElapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - totalStart).count();
+    const auto summaryStart = std::chrono::steady_clock::now();
+    const auto exitCode = PrintCommitSummary(workspaceRoot, results, totalElapsedMs);
+    summaryMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - summaryStart).count();
 
     if (InProfile) {
-        const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - totalStart).count();
+        const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - totalStart).count();
         std::cout << "\n=== Commit Profile Summary ===\n";
         std::cout << "mode: native\n";
         std::cout << "repo_count: " << repoRecords.size() << "\n";
@@ -3888,7 +3921,7 @@ auto RunAmendNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
                               const std::string& InPlanStage,
                               const bool InProfile) -> int {
     using clock = std::chrono::steady_clock;
-    const auto totalStart = clock::now();
+    const auto totalStart = std::chrono::steady_clock::now();
     long long preflightMs = 0;
     long long planningMs = 0;
     long long amendMs = 0;
@@ -3896,13 +3929,13 @@ auto RunAmendNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
 
     const auto workspaceRoot = InWorkspaceRoot.lexically_normal();
 
-    const auto preflightStart = clock::now();
+    const auto preflightStart = std::chrono::steady_clock::now();
     const auto report = RunCommitPreflight(workspaceRoot);
     PrintCommitPreflight(report, false);
     if (!report.inRepo) {
         return 1;
     }
-    preflightMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - preflightStart).count();
+    preflightMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - preflightStart).count();
 
     std::cout << "[native-amend] safety-gates: ignore + secret\n";
     RunPipelineSafetyGatesForNonAiCommit(workspaceRoot);
@@ -3940,7 +3973,7 @@ auto RunAmendNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
     if (stageMessages.empty()) {
         std::println("[native-amend] no entries found for selected --plan-stage; skipping amend.");
         if (InProfile) {
-            const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - totalStart).count();
+            const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - totalStart).count();
             std::cout << "\n=== Amend Profile Summary ===\n";
             std::cout << "mode: native\n";
             std::cout << "repo_count: 0\n";
@@ -3953,7 +3986,7 @@ auto RunAmendNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
         return 0;
     }
 
-    const auto planningStart = clock::now();
+    const auto planningStart = std::chrono::steady_clock::now();
     std::string planReposCsv;
     for (const auto& [repoKey, items] : stageMessages) {
         if (items.empty()) {
@@ -3971,7 +4004,7 @@ auto RunAmendNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
         fallback.type = "root";
         repoRecords.push_back(std::move(fallback));
     }
-    planningMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - planningStart).count();
+    planningMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - planningStart).count();
 
     const auto repoWaves = BuildExecutionWaves(repoRecords);
     const auto runbooks = BuildRepoCommitRunbooks(repoRecords, stageMessages, workspaceRoot, "", true);
@@ -3995,7 +4028,7 @@ auto RunAmendNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
     ai.enabled = false;
     ai.reviewEnabled = false;
 
-    const auto amendStart = clock::now();
+    const auto amendStart = std::chrono::steady_clock::now();
     std::cout << "[native-amend] plan: repos=" << repoRecords.size()
               << " repo_waves=" << repoWaves.size()
               << " amends=" << taskGraph.tasks.size()
@@ -4118,14 +4151,15 @@ auto RunAmendNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
             results.push_back(std::move(one));
         }
     }
-    amendMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - amendStart).count();
+    amendMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - amendStart).count();
 
-    const auto summaryStart = clock::now();
-    const auto exitCode = PrintAmendSummary(workspaceRoot, results);
-    summaryMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - summaryStart).count();
+    const auto totalElapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - totalStart).count();
+    const auto summaryStart = std::chrono::steady_clock::now();
+    const auto exitCode = PrintAmendSummary(workspaceRoot, results, totalElapsedMs);
+    summaryMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - summaryStart).count();
 
     if (InProfile) {
-        const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - totalStart).count();
+        const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - totalStart).count();
         std::cout << "\n=== Amend Profile Summary ===\n";
         std::cout << "mode: native\n";
         std::cout << "repo_count: " << repoRecords.size() << "\n";
@@ -4151,7 +4185,7 @@ auto RunCommitNativeSimple(const std::filesystem::path& InWorkspaceRoot,
                            const bool InNoAiReview,
                            const bool InProfile) -> int {
     using clock = std::chrono::steady_clock;
-    const auto totalStart = clock::now();
+    const auto totalStart = std::chrono::steady_clock::now();
     long long preflightMs = 0;
     long long planningMs = 0;
     long long commitMs = 0;
@@ -4167,7 +4201,7 @@ auto RunCommitNativeSimple(const std::filesystem::path& InWorkspaceRoot,
         std::cerr << "Preflight blocked: --staged-only but nothing staged\n";
         return 2;
     }
-    preflightMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - totalStart).count();
+    preflightMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - totalStart).count();
 
     NativeAiConfig ai;
     const bool aiRequested = InAiAuto || !InAiProvider.empty() || !InAiModel.empty();
@@ -4191,7 +4225,7 @@ auto RunCommitNativeSimple(const std::filesystem::path& InWorkspaceRoot,
         RunPipelineSafetyGatesForNonAiCommit(workspaceRoot);
     }
 
-    const auto planningStart = clock::now();
+    const auto planningStart = std::chrono::steady_clock::now();
     const bool dirtyOnly = true;
     auto repoRecords = BuildCommitScopeRecords(workspaceRoot, Trim(InReposCsv), InNoRecursive, dirtyOnly);
     if (repoRecords.empty()) {
@@ -4200,7 +4234,7 @@ auto RunCommitNativeSimple(const std::filesystem::path& InWorkspaceRoot,
         fallback.type = "root";
         repoRecords.push_back(std::move(fallback));
     }
-    planningMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - planningStart).count();
+    planningMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - planningStart).count();
 
     std::unordered_map<std::string, std::vector<RepoCommitPlanEntry::CommitItem>> emptyStages;
     const auto runbooks = BuildRepoCommitRunbooks(repoRecords, emptyStages, workspaceRoot, InMessage, false);
@@ -4230,7 +4264,7 @@ auto RunCommitNativeSimple(const std::filesystem::path& InWorkspaceRoot,
         results.push_back(std::move(failed));
     }
 
-    const auto commitStart = clock::now();
+    const auto commitStart = std::chrono::steady_clock::now();
     std::cout << "[native-commit] plan: repos=" << repoRecords.size()
               << " commits=" << taskGraph.tasks.size()
               << " commit_waves=" << taskGraph.waves.size()
@@ -4288,14 +4322,15 @@ auto RunCommitNativeSimple(const std::filesystem::path& InWorkspaceRoot,
             results.push_back(std::move(one));
         }
     }
-    commitMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - commitStart).count();
+    commitMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - commitStart).count();
 
-    const auto summaryStart = clock::now();
-    const auto exitCode = PrintCommitSummary(workspaceRoot, results);
-    summaryMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - summaryStart).count();
+    const auto totalElapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - totalStart).count();
+    const auto summaryStart = std::chrono::steady_clock::now();
+    const auto exitCode = PrintCommitSummary(workspaceRoot, results, totalElapsedMs);
+    summaryMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - summaryStart).count();
 
     if (InProfile) {
-        const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - totalStart).count();
+        const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - totalStart).count();
         std::cout << "\n=== Commit Profile Summary ===\n";
         std::cout << "mode: native\n";
         std::cout << "repo_count: " << repoRecords.size() << "\n";
@@ -4368,7 +4403,7 @@ void RegisterCommit(CLI::App& InApp) {
 
     auto run = [=, &InApp]() {
         using clock = std::chrono::steady_clock;
-        const auto totalStart = clock::now();
+        const auto totalStart = std::chrono::steady_clock::now();
         long long preflightMs = 0;
         long long planningMs = 0;
         long long commitMs = 0;
@@ -4405,7 +4440,7 @@ void RegisterCommit(CLI::App& InApp) {
         }
 
         if (!*bNoNativePreflight || *bPreflightOnly) {
-            const auto preflightStart = clock::now();
+            const auto preflightStart = std::chrono::steady_clock::now();
             const auto report = RunCommitPreflight(workspaceRoot);
             cachedPreflightReport = report;
             PrintCommitPreflight(report, *bStagedOnly);
@@ -4416,10 +4451,10 @@ void RegisterCommit(CLI::App& InApp) {
                 std::cerr << "Preflight blocked: --staged-only but nothing staged\n";
                 std::exit(2);
             }
-            preflightMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - preflightStart).count();
+            preflightMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - preflightStart).count();
             if (*bPreflightOnly) {
                 if (*bProfile) {
-                    const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - totalStart).count();
+                    const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - totalStart).count();
                     std::cout << "\n=== Commit Profile Summary ===\n";
                     std::cout << "mode: native\n";
                     std::cout << "repo_count: 1\n";
@@ -4563,7 +4598,7 @@ void RegisterCommit(CLI::App& InApp) {
             if (!HasAnyChanges(report)) {
                 std::println("[native-commit] workspace clean; skipping --plan-file validation and commit.");
                 if (*bProfile) {
-                    const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - totalStart).count();
+                    const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - totalStart).count();
                     std::cout << "\n=== Commit Profile Summary ===\n";
                     std::cout << "mode: native\n";
                     std::cout << "repo_count: 0\n";
@@ -4637,7 +4672,7 @@ void RegisterCommit(CLI::App& InApp) {
             if (stageMessages.empty()) {
                 std::println("[native-commit] no entries found for selected --plan-stage; skipping commit.");
                 if (*bProfile) {
-                    const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - totalStart).count();
+                    const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - totalStart).count();
                     std::cout << "\n=== Commit Profile Summary ===\n";
                     std::cout << "mode: native\n";
                     std::cout << "repo_count: 0\n";
@@ -4658,7 +4693,7 @@ void RegisterCommit(CLI::App& InApp) {
             }
         }
 
-        const auto planningStart = clock::now();
+        const auto planningStart = std::chrono::steady_clock::now();
         const bool dirtyOnly = !*bNoDirtyOnly;
         auto reposCsv = Trim(*repos);
         if (!stageMessages.empty()) {
@@ -4681,7 +4716,7 @@ void RegisterCommit(CLI::App& InApp) {
             fallback.type = "root";
             repoRecords.push_back(std::move(fallback));
         }
-        planningMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - planningStart).count();
+        planningMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - planningStart).count();
 
         const bool isPlanMode = !stageMessages.empty();
         const auto repoWaves = BuildExecutionWaves(repoRecords);
@@ -4702,7 +4737,7 @@ void RegisterCommit(CLI::App& InApp) {
             results.push_back(std::move(failed));
         }
 
-        const auto commitStart = clock::now();
+        const auto commitStart = std::chrono::steady_clock::now();
         std::cout << "[native-commit] plan: repos=" << repoRecords.size()
                   << " repo_waves=" << repoWaves.size()
                   << " commits=" << taskGraph.tasks.size()
@@ -4785,14 +4820,15 @@ void RegisterCommit(CLI::App& InApp) {
                 results.push_back(std::move(one));
             }
         }
-        commitMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - commitStart).count();
+        commitMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - commitStart).count();
 
-        const auto summaryStart = clock::now();
-        const auto exitCode = PrintCommitSummary(workspaceRoot, results);
-        summaryMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - summaryStart).count();
+        const auto totalElapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - totalStart).count();
+        const auto summaryStart = std::chrono::steady_clock::now();
+        const auto exitCode = PrintCommitSummary(workspaceRoot, results, totalElapsedMs);
+        summaryMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - summaryStart).count();
 
         if (*bProfile) {
-            const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - totalStart).count();
+            const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - totalStart).count();
             std::cout << "\n=== Commit Profile Summary ===\n";
             std::cout << "mode: native\n";
             std::cout << "repo_count: " << repoRecords.size() << "\n";
@@ -4855,6 +4891,7 @@ void RegisterAmend(CLI::App& InApp) {
     cmd->add_flag("--yolo", *bYolo, "Enable all permissions for AI sub-agents");
 
     cmd->callback([=]() {
+        const auto totalStart = std::chrono::steady_clock::now();
         const auto invocationRoot = repoRoot->empty() ? std::filesystem::current_path() : std::filesystem::path(*repoRoot);
         const auto resolvedTarget = target->empty()
             ? invocationRoot.lexically_normal()
@@ -4971,7 +5008,8 @@ void RegisterAmend(CLI::App& InApp) {
             results.push_back(one);
         }
 
-        const auto exitCode = PrintAmendSummary(workspaceRoot, results);
+        const auto totalElapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - totalStart).count();
+        const auto exitCode = PrintAmendSummary(workspaceRoot, results, totalElapsedMs);
         std::exit(exitCode);
     });
 }

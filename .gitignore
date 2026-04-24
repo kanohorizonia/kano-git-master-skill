@@ -91,6 +91,6 @@ src/cpp/.kano/
 pixi.lock
 
 # Kano workspace artifacts
-.kano/test.exe
 .kano/kano_cpp_test_config.toml
 .kano/kog_config.toml
+.kano/

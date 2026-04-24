@@ -906,7 +906,8 @@ auto BuildSingleCommitFillPrompt(const std::filesystem::path& InWorkspaceRoot,
         prompt = ReplaceAll(std::move(prompt), "{{ENTRY_INDEX}}", std::to_string(InEntry.index));
         prompt = ReplaceAll(std::move(prompt), "{{TARGET_ENTRY_JSON}}", target.str());
         prompt = ReplaceAll(std::move(prompt), "{{DIRTY_CONTEXT}}", InDirtyContext);
-        prompt = ReplaceAll(std::move(prompt), "{{GITIGNORE_PATH}}", (InWorkspaceRoot / ".gitignore").lexically_normal().generic_string());
+        const auto repoPath = (InWorkspaceRoot / InEntry.repo).lexically_normal();
+        prompt = ReplaceAll(std::move(prompt), "{{GITIGNORE_PATH}}", (repoPath / ".gitignore").lexically_normal().generic_string());
         return AppendCommitConventionSkillSection(InWorkspaceRoot, std::move(prompt));
     }
     return "Fallback prompt for index " + std::to_string(InEntry.index) + "\n" + target.str();
@@ -1290,7 +1291,19 @@ auto RunAiGenerate(const std::string& InProvider,
     //     --allow-tool=shell --allow-tool=edit-file
     if (InYolo) {
         args.push_back("--yolo");
+    } else {
+        // Internal plan-fill requires specific permissions to modify the plan JSON
+        // and update .gitignore files. We scope this to the current workspace.
+        args.push_back("--add-dir");
+        args.push_back(InWorkspaceRoot.lexically_normal().generic_string());
+        
+        args.push_back("--allow-tool");
+        args.push_back("edit-file");
+        
+        args.push_back("--allow-tool");
+        args.push_back("shell");
     }
+
     args.push_back("-p");
     args.push_back(BuildFileBackedPromptArgument(InWorkspaceRoot, InPrompt, "plan-fill"));
     LogInvocation("copilot", args);
@@ -1557,8 +1570,8 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
         const auto msg = Trim(entry.message);
         if (!msg.empty() &&
             msg.find("replace-with-") == std::string::npos &&
-            msg.find("apply updates") == std::string::npos) {
-            std::cerr << kano::terminal::PlanPrefix() << " filled entry " << entry.index << " message: " << msg << "\n";
+            msg != entries[entry.index].message) {
+            std::cout << kano::terminal::PlanPrefix() << " filled entry " << entry.index << " message: " << msg << "\n";
             anyFilled = true;
         }
     }
@@ -2037,6 +2050,9 @@ auto BuildIgnoreEntriesFromWorkingTree(const std::filesystem::path& InWorkspaceR
         e.applyTarget = ".gitignore";
         e.mergedOutputPath = (InWorkspaceRoot / ".kano" / "tmp" / "git" / "plans" / 
                               std::format("ignore-merged-{}.gitignore", e.repo == "." ? "root" : ReplaceAll(e.repo, "/", "_"))).generic_string();
+        for (const auto& r : candidates) {
+            std::cout << "[plan][ignore] auto-ignoring: " << r << " (in " << e.repo << ")\n";
+        }
         e.rules = std::move(candidates);
         out.push_back(std::move(e));
     }

@@ -40,6 +40,7 @@ Critical interpretation rules:
 Semantic quality constraints:
 - `message` MUST follow the Kano Commit Convention (KCC) specification (`[Subsystem][Type] Summary`) provided at the end of this prompt.
 - If the existing `message` is a generic placeholder (e.g. starting with `chore(...)` and mentioning `apply updates` or `combine commits`), you MUST rewrite it into a specific, KCC-compliant summary based on the actual code changes visible in the Dirty Context.
+  Even if the only change is to `.gitignore`, you MUST generate a specific KCC-compliant message (e.g., `[Build][Chore] Update .gitignore to exclude build artifacts`).
 - `review.reason` must be specific to that commit's repo scope, confirming no secrets or unintended files are included.
 
 Current plan JSON:
