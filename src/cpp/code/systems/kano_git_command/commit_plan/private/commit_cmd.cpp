@@ -2508,6 +2508,7 @@ auto RunCommitAutoPlanPipeline(const std::filesystem::path& InWorkspaceRoot,
         return seedCode;
     }
 
+    std::cout << "[plan] initializing ignore stages...\n";
     const auto ignoreRunbookStart = clock::now();
     const auto ignoreRunbookCode = RunIgnorePlanRunbookViaSelf(InWorkspaceRoot, autoPlanPath);
     ignoreRunbookMillis = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - ignoreRunbookStart).count();
@@ -2515,6 +2516,7 @@ auto RunCommitAutoPlanPipeline(const std::filesystem::path& InWorkspaceRoot,
         return ignoreRunbookCode;
     }
 
+    std::cout << "[plan] applying ignore rules...\n";
     const auto ignoreApplyStart = clock::now();
     const auto ignoreApplyCode = RunIgnorePlanApplyViaSelf(InWorkspaceRoot, autoPlanPath);
     ignoreApplyMillis = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - ignoreApplyStart).count();
@@ -2522,6 +2524,7 @@ auto RunCommitAutoPlanPipeline(const std::filesystem::path& InWorkspaceRoot,
         return ignoreApplyCode;
     }
 
+    std::cout << "[plan] preparing commit plan via AI...\n";
     const auto commitRunbookStart = clock::now();
     const auto runbookResult = RunCommitPlanRunbookViaSelf(InWorkspaceRoot, autoPlanPath, InAi.provider, InAi.model, InAiFillMode, InAllowEmptyDirty);
     commitRunbookMillis = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - commitRunbookStart).count();
@@ -2611,6 +2614,7 @@ auto RunAmendAutoPlanPipeline(const std::filesystem::path& InWorkspaceRoot,
         return seedCode;
     }
 
+    std::cout << "[plan] initializing ignore stages...\n";
     const auto ignoreRunbookStart = clock::now();
     const auto ignoreRunbookCode = RunIgnorePlanRunbookViaSelf(InWorkspaceRoot, autoPlanPath);
     ignoreRunbookMillis = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - ignoreRunbookStart).count();
@@ -2618,6 +2622,7 @@ auto RunAmendAutoPlanPipeline(const std::filesystem::path& InWorkspaceRoot,
         return ignoreRunbookCode;
     }
 
+    std::cout << "[plan] applying ignore rules...\n";
     const auto ignoreApplyStart = clock::now();
     const auto ignoreApplyCode = RunIgnorePlanApplyViaSelf(InWorkspaceRoot, autoPlanPath);
     ignoreApplyMillis = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - ignoreApplyStart).count();
@@ -2625,6 +2630,7 @@ auto RunAmendAutoPlanPipeline(const std::filesystem::path& InWorkspaceRoot,
         return ignoreApplyCode;
     }
 
+    std::cout << "[plan] preparing commit plan via AI...\n";
     const auto commitRunbookStart = clock::now();
     const auto runbookResult = RunCommitPlanRunbookViaSelf(InWorkspaceRoot, autoPlanPath, InAi.provider, InAi.model, InAiFillMode, InAllowEmptyDirty);
     commitRunbookMillis = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - commitRunbookStart).count();
