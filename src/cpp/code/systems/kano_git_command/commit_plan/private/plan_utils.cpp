@@ -1461,6 +1461,7 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
                   bool InDebugAi,
                   std::string* OutError,
                   bool InAllowEmptyDirty) -> bool {
+    SCOPED_TIMING_LOG("plan-utils.FillPlanByAi");
     const auto provider = ResolveAiProvider(InRequestedProvider);
     if (provider.empty()) {
         if (OutError) *OutError = "no AI provider found";
@@ -2098,6 +2099,8 @@ auto GitSubmoduleGitlinkShaAtHead(const std::filesystem::path& InRepo, const std
   if (iss >> mode >> type >> sha >> path) return sha;
   return std::nullopt;
 }
+
+
 
 auto RunCommitRunbook(const std::filesystem::path& InWorkspaceRoot,
                       const std::filesystem::path& InPlanPath,

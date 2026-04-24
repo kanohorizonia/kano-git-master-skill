@@ -19,6 +19,7 @@
 #endif
 
 #include "build_info.hpp"
+#include <kano_timing.h>
 
 using namespace kano::git;
 
@@ -491,6 +492,13 @@ int main(int InArgc, char* InArgv[]) {
     app.set_version_flag("--version,-V", std::string{::kano::git::GetBuildVersion()});
     app.require_subcommand(0);  // Allow running with no subcommand (shows help)
     app.fallthrough();
+
+    std::string cmdLabel = "kog";
+    for (int i = 1; i < InArgc; ++i) {
+        cmdLabel += " ";
+        cmdLabel += InArgv[i];
+    }
+    SCOPED_TIMING_LOG(cmdLabel);
 
     try {
         SetSelfBinaryPathEnv(InArgc > 0 ? InArgv[0] : nullptr);
