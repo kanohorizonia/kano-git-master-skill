@@ -202,6 +202,47 @@ auto WriteCodexResponseFilePath(const std::filesystem::path& InWorkdir,
     return true;
 }
 
+void AppendModelArgs(std::vector<std::string>& OutArgs, const std::string& InModel) {
+    if (InModel.empty() || InModel == "auto") {
+        return;
+    }
+    std::string actualModel = InModel;
+    std::string reasoningLevel;
+
+    const auto qmPos = actualModel.find('?');
+    if (qmPos != std::string::npos) {
+        const auto query = actualModel.substr(qmPos + 1);
+        actualModel = actualModel.substr(0, qmPos);
+        
+        const auto rPos = query.find("reasoning=");
+        if (rPos != std::string::npos) {
+            const auto ampPos = query.find('&', rPos);
+            const auto valStart = rPos + 10;
+            if (ampPos == std::string::npos) {
+                reasoningLevel = query.substr(valStart);
+            } else {
+                reasoningLevel = query.substr(valStart, ampPos - valStart);
+            }
+        }
+    }
+
+    if (actualModel.rfind("copilot/", 0) == 0) {
+        actualModel = actualModel.substr(8);
+    } else if (actualModel.rfind("codex/", 0) == 0) {
+        actualModel = actualModel.substr(6);
+    } else if (actualModel.rfind("opencode/", 0) == 0) {
+        actualModel = actualModel.substr(9);
+    }
+
+    OutArgs.push_back("--model");
+    OutArgs.push_back(actualModel);
+
+    if (!reasoningLevel.empty()) {
+        OutArgs.push_back("--reasoning-effort");
+        OutArgs.push_back(reasoningLevel);
+    }
+}
+
 auto ExecuteCodexExec(std::optional<std::filesystem::path> InWorkingDir,
                       const std::string& InPrompt,
                       const std::string& InPurpose,
@@ -223,10 +264,7 @@ auto ExecuteCodexExec(std::optional<std::filesystem::path> InWorkingDir,
     args.push_back(responsePath.generic_string());
     args.push_back("--cd");
     args.push_back(workdir.generic_string());
-    if (!InModel.empty() && InModel != "auto") {
-        args.push_back("--model");
-        args.push_back(InModel);
-    }
+    AppendModelArgs(args, InModel);
     args.push_back(InPrompt);
     auto result = shell::ExecuteCommand(CodexStandaloneCommand(), args, shell::ExecMode::Capture, InWorkingDir);
     if (result.exitCode == 0) {
@@ -297,7 +335,11 @@ auto AIResolveFile(const std::filesystem::path& InWorkspaceRoot,
     shell::ExecResult result;
     if (InProvider == "copilot") {
         const auto finalPrompt = BuildFileBackedPromptArgument(InWorkspaceRoot, *prompt, "resolve");
-        result = ExecuteStandaloneCopilot({finalPrompt}, InWorkspaceRoot);
+        std::vector<std::string> args;
+        AppendModelArgs(args, InModel);
+        args.push_back("-p");
+        args.push_back(finalPrompt);
+        result = ExecuteStandaloneCopilot(args, InWorkspaceRoot);
     } else if (InProvider == "codex") {
         result = ExecuteCodexExec(InWorkspaceRoot, *prompt, "resolve", InModel);
     } else {

@@ -1237,10 +1237,7 @@ auto RunAiGenerate(const std::string& InProvider,
 
     if (InProvider == "opencode") {
         std::vector<std::string> args{"run"};
-        if (!InModel.empty() && InModel != "auto") {
-            args.push_back("--model");
-            args.push_back(InModel);
-        }
+        AppendModelArgs(args, InModel);
         args.push_back("--dir");
         args.push_back(InWorkspaceRoot.lexically_normal().generic_string());
         args.push_back(BuildFileBackedPromptArgument(InWorkspaceRoot, InPrompt, "plan-fill"));
@@ -1258,10 +1255,7 @@ auto RunAiGenerate(const std::string& InProvider,
     if (!InQuiet) {
         args.push_back("-s");
     }
-    if (!InModel.empty() && InModel != "auto") {
-        args.push_back("--model");
-        args.push_back(InModel);
-    }
+    AppendModelArgs(args, InModel);
     args.push_back("--no-color");
     args.push_back("--stream");
     args.push_back("off");
