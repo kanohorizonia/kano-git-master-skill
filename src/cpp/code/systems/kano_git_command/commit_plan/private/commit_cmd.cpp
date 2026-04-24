@@ -230,8 +230,9 @@ auto IsInternalPipelineArtifactPathForStaging(const std::string& InPath) -> bool
         if (lower.size() >= token.size() + 1 && lower.substr(lower.size() - token.size() - 1) == ("/" + token)) return true;
         return false;
     };
-    return matchDir(".kano") || matchDir(".sisyphus") ||
-           matchDir("kano") || matchDir("sisyphus");
+    return matchDir(".kano/tmp") || matchDir(".kano/cache") ||
+           matchDir(".kano/launcher") || matchDir(".kano/reports") ||
+           matchDir(".sisyphus/tmp") || matchDir(".sisyphus/cache");
 }
 
 auto BuildGitAddAllArgs(const CommitPreflightReport& InReport, std::vector<std::string>* OutExcluded = nullptr)
@@ -254,7 +255,8 @@ auto BuildGitAddAllArgs(const CommitPreflightReport& InReport, std::vector<std::
     collectReserved(InReport.stagedFiles);
 #endif
 
-    // Always exclude internal pipeline artifacts on all platforms
+    // Always exclude internal pipeline artifacts on all platforms, but ONLY for untracked files.
+    // If a user has already tracked/force-added a file, we respect that.
     auto collectArtifact = [&](const std::vector<std::string>& paths) {
         for (const auto& path : paths) {
             if (!IsInternalPipelineArtifactPathForStaging(path)) continue;
@@ -263,8 +265,6 @@ auto BuildGitAddAllArgs(const CommitPreflightReport& InReport, std::vector<std::
         }
     };
     collectArtifact(InReport.untrackedFiles);
-    collectArtifact(InReport.unstagedFiles);
-    collectArtifact(InReport.stagedFiles);
 
     if (!excluded.empty()) {
         args.push_back("--");
@@ -287,7 +287,7 @@ auto RequireAiSuccessForCommitFlow(const std::filesystem::path& InWorkspaceRoot)
                                          false);
 }
 
-auto MaybeWarnAboutReservedPaths(const std::filesystem::path& InRepo,
+auto MaybeWarnAboutExcludedPaths(const std::filesystem::path& InRepo,
                                  const std::vector<std::string>& InExcluded) -> void {
     if (InExcluded.empty()) {
         return;
@@ -300,7 +300,7 @@ auto MaybeWarnAboutReservedPaths(const std::filesystem::path& InRepo,
         }
         stream << InExcluded[index];
     }
-    std::cerr << "[kog commit] warning: skipped Windows reserved path(s) in "
+    std::cerr << "[kog commit] warning: skipped internal artifacts or Windows reserved path(s) in "
               << InRepo.generic_string()
               << ": "
               << stream.str()
@@ -3229,7 +3229,7 @@ auto CommitSingleRepo(const std::filesystem::path& InWorkspaceRoot,
             result.note = "git add -A failed";
             return result;
         }
-        MaybeWarnAboutReservedPaths(InRepo, excludedReserved);
+        MaybeWarnAboutExcludedPaths(InRepo, excludedReserved);
         report = RunCommitPreflight(InRepo);
     }
 
@@ -3362,7 +3362,7 @@ auto AmendSingleRepo(const std::filesystem::path& InWorkspaceRoot,
                 result.note = "git add -A failed after combine reset";
                 return result;
             }
-            MaybeWarnAboutReservedPaths(InRepo, excludedReserved);
+            MaybeWarnAboutExcludedPaths(InRepo, excludedReserved);
         }
 
         report = RunCommitPreflight(InRepo);
@@ -3419,7 +3419,7 @@ auto AmendSingleRepo(const std::filesystem::path& InWorkspaceRoot,
             result.note = "git add -A failed";
             return result;
         }
-        MaybeWarnAboutReservedPaths(InRepo, excludedReserved);
+        MaybeWarnAboutExcludedPaths(InRepo, excludedReserved);
         report = RunCommitPreflight(InRepo);
     }
 
@@ -4014,7 +4014,7 @@ auto RunAmendNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
             result.note = "git add -A failed after reset";
             return result;
         }
-        MaybeWarnAboutReservedPaths(repo, excludedReserved);
+        MaybeWarnAboutExcludedPaths(repo, excludedReserved);
 
         const auto stagedReport = RunCommitPreflight(repo);
         if (stagedReport.stagedCount == 0) {

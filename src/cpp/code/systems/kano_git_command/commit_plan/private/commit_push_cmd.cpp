@@ -1935,6 +1935,7 @@ auto AutoAmendGitlinkOnlyPostSyncRepos(const std::filesystem::path& InWorkspaceR
 auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceRoot,
                                        const std::string& InNormalizedPlanFile,
                                        const std::vector<std::string>& InExtraArgs) -> int {
+    SCOPED_TIMING_LOG("commit-push.RunCommitPushPlanFilePipelineImpl");
     const bool agentMode = IsAgentModeEnabled();
     const auto totalStart = std::chrono::steady_clock::now();
     long long safetyGatesMillis = 0;

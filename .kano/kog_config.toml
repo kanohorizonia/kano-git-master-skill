@@ -34,8 +34,13 @@ selection = "auto"
 
 # Auto model selection policy for AI providers.
 [ai.model.auto]
-change_thresholds = [5, 10]
-models = ["copilot/gpt-5-mini", "copilot/claude-haiku-4.5", "copilot/gpt-5.4"]
+change_thresholds = [5, 40, 100]
+models = [
+    "copilot/gpt-5-mini",                  # <= 5 changes (minimal)
+    "copilot/claude-haiku-4.5",            # 6-40 changes (standard)
+    "copilot/gpt-5.4?reasoning=medium",    # 41-100 changes (complex/large)
+    "copilot/gpt-5.4?reasoning=high"       # > 100 changes (massive re-architecting)
+]
 
 # Plan AI behavior defaults.
 [plan.ai]

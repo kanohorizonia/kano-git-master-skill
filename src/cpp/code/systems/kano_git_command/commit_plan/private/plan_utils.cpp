@@ -7,6 +7,7 @@
 #include "auto_model_policy.hpp"
 #include "shell_executor.hpp"
 #include "secret_scan_utils.hpp"
+#include <kano_timing.h>
 
 #include <nlohmann/json.hpp>
 
@@ -550,6 +551,7 @@ static void DebugPrintStatusOutput(const std::filesystem::path& repo, const std:
 }
 
 auto ComputeWorkspaceDirtyFingerprint(const std::filesystem::path& InWorkspaceRoot) -> std::string {
+    SCOPED_TIMING_LOG("plan-utils.ComputeWorkspaceDirtyFingerprint");
     std::vector<std::string> lines;
     const auto repos = DiscoverWorkspaceRepos(InWorkspaceRoot);
     lines.reserve(repos.size());
@@ -1238,8 +1240,6 @@ auto RunAiGenerate(const std::string& InProvider,
     if (InProvider == "opencode") {
         std::vector<std::string> args{"run"};
         AppendModelArgs(args, InModel);
-        args.push_back("--dir");
-        args.push_back(InWorkspaceRoot.lexically_normal().generic_string());
         args.push_back(BuildFileBackedPromptArgument(InWorkspaceRoot, InPrompt, "plan-fill"));
         LogInvocation("opencode", args);
         return shell::ExecuteCommand("opencode", args, shell::ExecMode::Capture, InWorkspaceRoot);
@@ -1260,6 +1260,32 @@ auto RunAiGenerate(const std::string& InProvider,
     args.push_back("--stream");
     args.push_back("off");
     args.push_back("--no-ask-user");
+    // TODO(permissions): Currently using --yolo (all permissions) for the plan-fill invocation.
+    //   This is intentionally broad during the Option-A migration (AI directly overwrites plan files).
+    //   Analysis from .kano/tmp/git/ai-responses/plan-fill-all-*.txt shows the following
+    //   operations were attempted (and blocked without --yolo):
+    //
+    //   File-write operations (need --allow-all-paths OR scoped --allow-path):
+    //     • Edit tool on .gitignore
+    //       e.g. C:/Users/.../kano-git-master-skill/.gitignore
+    //     • Edit tool on plan file and its .tmp copy
+    //       e.g. C:/Users/.../plans/default-plan.json
+    //       e.g. C:/Users/.../plans/default-plan.json.tmp
+    //     • Shell (PowerShell) write: Out-File / Add-Content / [System.IO.File]::WriteAllText
+    //       on the same paths above
+    //
+    //   Shell execution (need --allow-all-tools OR --allow-tool=shell):
+    //     • PowerShell commands to read/write plan JSON via shell tool
+    //
+    //   No network/URL access was observed; --allow-all-urls is likely NOT needed.
+    //
+    //   Candidate minimal flag set (to replace --yolo once validated):
+    //     --allow-all-paths --allow-all-tools
+    //   Or even more scoped:
+    //     --allow-path "<workspace>/.kano/tmp/git/plans/"
+    //     --allow-path "<workspace>/.gitignore"
+    //     --allow-tool=shell --allow-tool=edit-file
+    args.push_back("--yolo");
     args.push_back("-p");
     args.push_back(BuildFileBackedPromptArgument(InWorkspaceRoot, InPrompt, "plan-fill"));
     LogInvocation("copilot", args);
@@ -1460,9 +1486,30 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
     std::cerr << kano::terminal::PlanPrefix() << " model    : " << (modelDir.empty() ? "auto" : modelDir) << "\n";
     std::cerr << kano::terminal::PlanPrefix() << " entries  : " << entries.size() << "\n";
     
-    std::string finalPlanJson = templateJson;
-    bool anyFilled = false;
+
+    // Run AI to fill the plan (single-call or per-entry mode)
+    // In both modes the AI is expected to directly overwrite InPlanPath on disk
+    // (Option A: no stdout parsing; plan file is the source of truth).
     if (fillMode == "single") {
+        const auto prompt = BuildPlanFillOpsPrompt(InWorkspaceRoot, provider, modelDir, InPlanPath, templateJson, dirty);
+        const auto res = RunAiGenerate(provider, modelDir, prompt, InWorkspaceRoot, true);
+        std::filesystem::path responsePath;
+        std::string responseWriteError;
+        if (WriteAiResponseFile(InWorkspaceRoot, "plan-fill-all", res, &responsePath, &responseWriteError)) {
+            std::cerr << "[plan] ai response file: " << responsePath.generic_string() << "\n";
+        } else {
+            std::cerr << "[plan] warning: failed to save ai response file: " << responseWriteError << "\n";
+        }
+        if (res.exitCode != 0) {
+            auto detail = Trim(res.stderrStr);
+            if (detail.empty()) detail = Trim(res.stdoutStr);
+            if (detail.empty()) detail = "ai provider returned no details";
+            if (detail.size() > 140) detail = detail.substr(0, 140) + "...";
+            if (OutError) *OutError = "AI generation failed: " + detail;
+            return false;
+        }
+    } else {
+        // Per-entry mode: one AI call per commit entry
         for (const auto& entry : entries) {
             const auto prompt = BuildSingleCommitFillPrompt(InWorkspaceRoot, provider, modelDir, entry, dirty);
             const auto res = RunAiGenerate(provider, modelDir, prompt, InWorkspaceRoot, true);
@@ -1485,154 +1532,42 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
                 if (OutError) *OutError = "AI generation failed for entry " + std::to_string(entry.index) + ": " + detail;
                 return false;
             }
-            const auto json = [&] {
-                auto extracted = ExtractPlanFillOpsJson(res.stdoutStr);
-                if (extracted.empty()) extracted = res.stdoutStr;
-
-                std::string sanitized;
-                sanitized.reserve(extracted.size());
-                bool inString = false;
-                for (size_t i = 0; i < extracted.size(); ++i) {
-                    char c = extracted[i];
-                    if (c == '"' && (i == 0 || extracted[i - 1] != '\\')) {
-                        inString = !inString;
-                    }
-                    if (inString && (c == '\n' || c == '\r')) {
-                        sanitized += "\\n";
-                    } else {
-                        sanitized += c;
-                    }
-                }
-
-                // Some providers occasionally emit Windows paths like C:\Users\... inside
-                // JSON strings without escaping '\' as '\\'. Repair those invalid escapes
-                // so JSON parsing can succeed.
-                std::string repaired;
-                repaired.reserve(sanitized.size() + 16);
-                inString = false;
-                for (size_t i = 0; i < sanitized.size(); ++i) {
-                    const char c = sanitized[i];
-                    if (c == '"' && (i == 0 || sanitized[i - 1] != '\\')) {
-                        inString = !inString;
-                        repaired += c;
-                        continue;
-                    }
-                    if (inString && c == '\\') {
-                        const char next = (i + 1 < sanitized.size()) ? sanitized[i + 1] : '\0';
-                        const bool validEscapeNext =
-                            next == '"' || next == '\\' || next == '/' ||
-                            next == 'b' || next == 'f' || next == 'n' ||
-                            next == 'r' || next == 't' || next == 'u';
-                        if (!validEscapeNext) {
-                            repaired += '\\';
-                        }
-                    }
-                    repaired += c;
-                }
-                return repaired;
-            }();
-            if (!json.empty()) {
-                CommitFillOp op;
-                op.index = entry.index;
-                try {
-                    auto jobj = nlohmann::json::parse(json);
-                    
-                    // Robust check: AI might return {"commits": [...]} or just the object
-                    if (jobj.contains("commits") && jobj["commits"].is_array() && !jobj["commits"].empty()) {
-                        // Use the first item in the array for single-mode, or try to match index
-                        auto& array = jobj["commits"];
-                        bool found = false;
-                        for (const auto& item : array) {
-                            if (item.value("index", -1) == entry.index) {
-                                jobj = item;
-                                found = true;
-                                break;
-                            }
-                        }
-                        if (!found) {
-                            jobj = array[0];
-                        }
-                    } else if (jobj.is_array() && !jobj.empty()) {
-                         // AI returned just the array [...]
-                         bool found = false;
-                         for (const auto& item : jobj) {
-                             if (item.value("index", -1) == entry.index) {
-                                 jobj = item;
-                                 found = true;
-                                 break;
-                             }
-                         }
-                         if (!found) {
-                             jobj = jobj[0];
-                         }
-                    }
-
-                    op.message       = CompactSingleLine(Trim(jobj.value("message", "")), 200);
-                    if (jobj.contains("review") && jobj["review"].is_object()) {
-                        op.reviewVerdict = jobj["review"].value("verdict", "");
-                        op.reviewReason  = jobj["review"].value("reason", "");
-                    }
-                } catch (...) {
-                    // If the AI returned malformed JSON, skip this entry
-                    std::cerr << kano::terminal::PlanPrefix() << " failed to parse AI JSON for entry " << entry.index << "\n";
-                }
-                finalPlanJson = ApplyCommitFillOps(finalPlanJson, {op});
-                const auto finalMessage = Trim(op.message.empty() ? entry.message : op.message);
-                if (!finalMessage.empty()) {
-                    std::cerr << kano::terminal::PlanPrefix() << " filled entry " << entry.index << " message: " << finalMessage << "\n";
-                } else {
-                    std::cerr << kano::terminal::PlanPrefix() << " warning: entry " << entry.index << " message remains empty\n";
-                }
-                // Only count as filled if message doesn't contain placeholder
-                if (op.message.find("replace-with-") == std::string::npos && !op.message.empty()) {
-                    anyFilled = true;
-                }
-            }
-        }
-    } else {
-        const auto prompt = BuildPlanFillOpsPrompt(InWorkspaceRoot, provider, modelDir, InPlanPath, templateJson, dirty);
-        const auto res = RunAiGenerate(provider, modelDir, prompt, InWorkspaceRoot, true);
-        std::filesystem::path responsePath;
-        std::string responseWriteError;
-        if (WriteAiResponseFile(InWorkspaceRoot, "plan-fill-batch", res, &responsePath, &responseWriteError)) {
-            std::cerr << "[plan] ai response file: " << responsePath.generic_string() << "\n";
-        } else {
-            std::cerr << "[plan] warning: failed to save ai response file: " << responseWriteError << "\n";
-        }
-        if (res.exitCode != 0) {
-            auto detail = Trim(res.stderrStr);
-            if (detail.empty()) detail = Trim(res.stdoutStr);
-            if (detail.empty()) detail = "ai provider returned no details";
-            if (detail.size() > 140) detail = detail.substr(0, 140) + "...";
-            if (OutError) *OutError = "AI generation failed: " + detail;
-            return false;
-        }
-        const auto json = ExtractPlanFillOpsJson(res.stdoutStr);
-        const auto ops = ParseCommitFillOps(json);
-        finalPlanJson = ApplyCommitFillOps(finalPlanJson, ops);
-        // Check if any ops actually filled real messages
-        for (const auto& op : ops) {
-            if (op.message.find("replace-with-") == std::string::npos) {
-                anyFilled = true;
-                break;
-            }
         }
     }
-    
-    // If no entries were actually filled (AI returned placeholders), return false
+
+    // Read the plan file as written by the AI (Option A: AI edits the file directly)
+    const auto finalPlanText = ReadFileText(InPlanPath);
+    if (!finalPlanText) {
+        if (OutError) *OutError = "plan file missing after AI fill";
+        return false;
+    }
+
+    // Validate that the AI actually filled real messages
+    const auto filledEntries = CollectCommitPlanEntries(*finalPlanText);
+    bool anyFilled = false;
+    for (const auto& entry : filledEntries) {
+        const auto msg = Trim(entry.message);
+        if (!msg.empty() &&
+            msg.find("replace-with-") == std::string::npos &&
+            msg.find("apply updates") == std::string::npos) {
+            std::cerr << kano::terminal::PlanPrefix() << " filled entry " << entry.index << " message: " << msg << "\n";
+            anyFilled = true;
+        }
+    }
+
     if (!anyFilled) {
         std::cerr << kano::terminal::PlanPrefix() << " AI failed to produce commit messages\n";
         if (OutError) *OutError = "AI failed to produce commit messages";
         return false;
     }
-    
-    // Stamp planner metadata
-    if (auto stamped = StampPlanAiPlannerMetadata(finalPlanJson, provider, modelDir)) {
-        finalPlanJson = *stamped;
-    }
 
-    return WriteFileText(InPlanPath, finalPlanJson, OutError);
+    // Stamp planner metadata
+    if (auto stamped = StampPlanAiPlannerMetadata(*finalPlanText, provider, modelDir)) {
+        return WriteFileText(InPlanPath, *stamped, OutError);
+    }
+    return true;
 }
+
 
 auto DefaultPlanPath(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path {
   return (InWorkspaceRoot / ".kano" / "tmp" / "git" / "plans" / "default-plan.json").lexically_normal();
@@ -2047,6 +1982,7 @@ auto ReplacePlanDirtyFingerprint(std::string InPlanText, const std::string& InNe
 }
 
 auto BuildIgnoreEntriesFromWorkingTree(const std::filesystem::path& InWorkspaceRoot, int InMaxPerRepo) -> std::vector<IgnoreStageEntry> {
+    SCOPED_TIMING_LOG("plan-utils.BuildIgnoreEntriesFromWorkingTree");
     std::vector<IgnoreStageEntry> out;
     const auto repos = DiscoverWorkspaceRepos(InWorkspaceRoot);
     for (const auto& repo : repos) {
@@ -2638,6 +2574,7 @@ auto RunPlanApply(const std::filesystem::path& InWorkspaceRoot,
                   const std::filesystem::path& InPlanPath,
                   const std::string& InStage,
                   const std::vector<std::string>& InExtraArgs) -> int {
+    SCOPED_TIMING_LOG("plan-utils.RunPlanApply");
     auto payload = ReadFileText(InPlanPath);
     if (!payload.has_value()) {
         std::cerr << "Error: plan file not found/readable: " << InPlanPath.generic_string() << "\n";
@@ -2651,6 +2588,7 @@ auto RunPlanApply(const std::filesystem::path& InWorkspaceRoot,
     }
 
     if (stage == "ignore" || stage == "all") {
+        SCOPED_TIMING_LOG("plan-utils.RunPlanApply.ignore");
         const auto entries = ParseIgnoreEntries(*payload);
         if (entries.empty()) {
             if (stage == "ignore") {
