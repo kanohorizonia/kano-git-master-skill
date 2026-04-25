@@ -52,6 +52,9 @@ _site/
 _ws/
 # <<< STATIC-GITIGNORE
 
+# Kiro specs
+.kiro/
+
 # CLI build artifacts
 cli/build/
 cli/out/
