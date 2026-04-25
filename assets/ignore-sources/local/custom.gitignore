@@ -3,6 +3,7 @@
 #   <pattern>
 #   <pattern> # optional comment
 
+.kiro/
 .kano/cache/
 *.tmp
 *.temp
