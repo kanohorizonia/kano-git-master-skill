@@ -103,6 +103,9 @@ inline bool IsStderrInteractive() {
             return true;
         }
         return ISATTY(STDERR_FILENO) != 0;
+#else
+        return ISATTY(STDERR_FILENO) != 0;
+#endif
     }();
     return enabled;
 }

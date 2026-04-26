@@ -977,19 +977,16 @@ auto BuildSingleCommitFillPrompt(const std::filesystem::path& InWorkspaceRoot,
         prompt = ReplaceAll(std::move(prompt), "{{PROVIDER}}", InProvider);
         prompt = ReplaceAll(std::move(prompt), "{{MODEL}}", InModel.empty() ? std::string("auto") : InModel);
         prompt = ReplaceAll(std::move(prompt), "{{PLAN_PATH_ABSOLUTE}}", InPlanPath.lexically_normal().generic_string());
-        prompt = ReplaceAll(std::move(prompt), "{{WORKING_PLAN_PATH_ABSOLUTE}}", InWorkingPlanPath.lexically_normal().generic_string());
-        prompt = ReplaceAll(std::move(prompt), "{{WORKING_PLAN_PATH}}", RelativeDisplayPath(InWorkspaceRoot, InWorkingPlanPath));
-        prompt = ReplaceAll(std::move(prompt), "{{ENTRY_INDEX}}", std::to_string(InEntry.index));
-        prompt = ReplaceAll(std::move(prompt), "{{TARGET_ENTRY_JSON}}", target.str());
-        prompt = ReplaceAll(std::move(prompt), "{{PLAN_JSON}}", InPlanText);
-        prompt = ReplaceAll(std::move(prompt), "{{DIRTY_CONTEXT}}", InDirtyContext);
-<<<<<<< HEAD
-        const auto repoPath = (InWorkspaceRoot / InEntry.repo).lexically_normal();
-        prompt = ReplaceAll(std::move(prompt), "{{GITIGNORE_PATH}}", (repoPath / ".gitignore").lexically_normal().generic_string());
-=======
-        prompt = ReplaceAll(std::move(prompt), "{{GITIGNORE_PATH}}", (InWorkspaceRoot / ".gitignore").lexically_normal().generic_string());
-        prompt = ReplaceAll(std::move(prompt), "{{WORKING_GITIGNORE_PATH}}", InWorkingGitignorePath.lexically_normal().generic_string());
-        return AppendCommitConventionSkillSection(InWorkspaceRoot, std::move(prompt));
+         prompt = ReplaceAll(std::move(prompt), "{{WORKING_PLAN_PATH_ABSOLUTE}}", InWorkingPlanPath.lexically_normal().generic_string());
+         prompt = ReplaceAll(std::move(prompt), "{{WORKING_PLAN_PATH}}", RelativeDisplayPath(InWorkspaceRoot, InWorkingPlanPath));
+         prompt = ReplaceAll(std::move(prompt), "{{ENTRY_INDEX}}", std::to_string(InEntry.index));
+         prompt = ReplaceAll(std::move(prompt), "{{TARGET_ENTRY_JSON}}", target.str());
+         prompt = ReplaceAll(std::move(prompt), "{{PLAN_JSON}}", InPlanText);
+         prompt = ReplaceAll(std::move(prompt), "{{DIRTY_CONTEXT}}", InDirtyContext);
+         const auto repoPath = (InWorkspaceRoot / InEntry.repo).lexically_normal();
+         prompt = ReplaceAll(std::move(prompt), "{{GITIGNORE_PATH}}", (repoPath / ".gitignore").lexically_normal().generic_string());
+         prompt = ReplaceAll(std::move(prompt), "{{WORKING_GITIGNORE_PATH}}", InWorkingGitignorePath.lexically_normal().generic_string());
+         return AppendCommitConventionSkillSection(InWorkspaceRoot, std::move(prompt));
     }
     return "Fallback prompt for index " + std::to_string(InEntry.index) + "\n" + target.str();
 }
@@ -1864,35 +1861,6 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
     std::cerr << kano::terminal::PlanPrefix() << " model    : " << (modelDir.empty() ? "auto" : modelDir) << "\n";
     std::cerr << kano::terminal::PlanPrefix() << " entries  : " << entries.size() << "\n";
     
-<<<<<<< HEAD
-
-    // Run AI to fill the plan (single-call or per-entry mode)
-    // In both modes the AI is expected to directly overwrite InPlanPath on disk
-    // (Option A: no stdout parsing; plan file is the source of truth).
-    if (fillMode == "single") {
-        const auto prompt = BuildPlanFillOpsPrompt(InWorkspaceRoot, provider, modelDir, InPlanPath, templateJson, dirty);
-        const auto res = RunAiGenerate(provider, modelDir, prompt, InWorkspaceRoot, true, InYolo);
-        std::filesystem::path responsePath;
-        std::string responseWriteError;
-        if (WriteAiResponseFile(InWorkspaceRoot, "plan-fill-all", res, &responsePath, &responseWriteError)) {
-            std::cerr << "[plan] ai response file: " << responsePath.generic_string() << "\n";
-        } else {
-            std::cerr << "[plan] warning: failed to save ai response file: " << responseWriteError << "\n";
-        }
-        if (res.exitCode != 0) {
-            auto detail = Trim(res.stderrStr);
-            if (detail.empty()) detail = Trim(res.stdoutStr);
-            if (detail.empty()) detail = "ai provider returned no details";
-            if (detail.size() > 140) detail = detail.substr(0, 140) + "...";
-            if (OutError) *OutError = "AI generation failed: " + detail;
-            return false;
-        }
-    } else {
-        // Per-entry mode: one AI call per commit entry
-        for (const auto& entry : entries) {
-            const auto prompt = BuildSingleCommitFillPrompt(InWorkspaceRoot, provider, modelDir, entry, dirty);
-            const auto res = RunAiGenerate(provider, modelDir, prompt, InWorkspaceRoot, true, InYolo);
-=======
     std::string finalPlanJson = templateJson;
     bool anyFilled = false;
     if (fillMode == "per-commit") {
@@ -1925,7 +1893,6 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
                                                          workingPlanPath,
                                                          workingGitignorePath,
                                                          true);
->>>>>>> f974e92 ([CommitPlan][Feature] Add AI working-copy commit fill flow (NO-TICKET))
             std::filesystem::path responsePath;
             std::string responseWriteError;
             if (WriteAiResponseFile(InWorkspaceRoot,
@@ -1945,8 +1912,6 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
                 if (OutError) *OutError = "AI generation failed for entry " + std::to_string(entry.index) + ": " + detail;
                 return false;
             }
-<<<<<<< HEAD
-=======
 
             const auto originalGitignoreText = ReadFileText((InWorkspaceRoot / ".gitignore").lexically_normal()).value_or("");
             const auto editedGitignoreText = ReadFileText(workingGitignorePath).value_or(originalGitignoreText);
@@ -2048,8 +2013,7 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
         if (auto stamped = StampPlanAiPlannerMetadata(finalPlanJson, provider, modelDir)) {
             finalPlanJson = *stamped;
         }
-        anyFilled = ValidateAiReadyPlan(finalPlanJson, OutError);
-        if (!anyFilled) {
+        if (!ValidateAiReadyPlan(finalPlanJson, OutError)) {
             return false;
         }
 
@@ -2063,45 +2027,10 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
             if (auto refreshed = ReplacePlanDirtyFingerprint(finalPlanJson, ComputeWorkspaceDirtyFingerprint(InWorkspaceRoot))) {
                 finalPlanJson = *refreshed;
             }
->>>>>>> f974e92 ([CommitPlan][Feature] Add AI working-copy commit fill flow (NO-TICKET))
         }
     }
 
-    // Read the plan file as written by the AI (Option A: AI edits the file directly)
-    const auto finalPlanText = ReadFileText(InPlanPath);
-    if (!finalPlanText) {
-        if (OutError) *OutError = "plan file missing after AI fill";
-        return false;
-    }
-
-    // Validate that the AI actually filled real messages
-    const auto filledEntries = CollectCommitPlanEntries(*finalPlanText);
-    bool anyFilled = false;
-    for (const auto& entry : filledEntries) {
-        const auto msg = Trim(entry.message);
-        if (!msg.empty() &&
-            msg.find("replace-with-") == std::string::npos &&
-            msg != entries[entry.index].message) {
-            std::cout << kano::terminal::PlanPrefix() << " filled entry " << entry.index << " message: " << msg << "\n";
-            anyFilled = true;
-        }
-    }
-
-    if (!anyFilled) {
-        std::cerr << kano::terminal::PlanPrefix() << " AI failed to produce commit messages\n";
-        if (OutError) *OutError = "AI failed to produce commit messages";
-        return false;
-    }
-
-<<<<<<< HEAD
-    // Stamp planner metadata
-    if (auto stamped = StampPlanAiPlannerMetadata(*finalPlanText, provider, modelDir)) {
-        return WriteFileText(InPlanPath, *stamped, OutError);
-    }
-    return true;
-=======
     return PromoteTextFileAtomically(InPlanPath, finalPlanJson, OutError);
->>>>>>> f974e92 ([CommitPlan][Feature] Add AI working-copy commit fill flow (NO-TICKET))
 }
 
 

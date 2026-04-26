@@ -277,7 +277,6 @@ auto PrintSlog(const std::filesystem::path& InRepo, int InCount) -> int {
 
     const auto refs = ResolveRepoBranchRefs(InRepo);
 
-<<<<<<< Updated upstream
     std::cout << kano::terminal::Wrap("REPO:", kano::terminal::Color::BoldCyan) << " "
               << InRepo.lexically_normal().generic_string() << "\n";
     std::cout << kano::terminal::Wrap("SLOG(last " + std::to_string(InCount) + ")", kano::terminal::Color::BoldWhite) << "\n";
