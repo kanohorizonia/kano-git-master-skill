@@ -1026,8 +1026,8 @@ auto RunAiGenerate(const std::string& InProvider,
     const auto effectivePrompt = BuildFileBackedPromptArgument(InWorkingDir, InPrompt, InPurpose);
 
     auto LogInvocation = [&](const std::string& binary, const std::vector<std::string>& args) {
-        static constexpr std::string_view kDivider = "?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€";
-        std::cerr << "\n[kog ai] ?€?€ AI Invocation (" << InPurpose << ") ?€?€\n";
+        static constexpr std::string_view kDivider = "?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½";
+        std::cerr << "\n[kog ai] ?ï¿½?ï¿½ AI Invocation (" << InPurpose << ") ?ï¿½?ï¿½\n";
         std::cerr << "[kog ai] command : " << binary;
         for (const auto& a : args) {
             if (a.find(' ') != std::string::npos || a.empty()) std::cerr << " \"" << a << "\"";
@@ -3715,8 +3715,71 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
     }
     preflightMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - preflightStart).count();
 
-    std::cout << "[native-commit] safety-gates: ignore + secret\n";
-    RunPipelineSafetyGatesForNonAiCommit(workspaceRoot);
+    const auto disableSecretGate = [&]() {
+        const auto* value = std::getenv("KOG_DISABLE_SECRET_GATE");
+        if (value == nullptr) {
+            return false;
+        }
+        const auto normalized = ToLower(Trim(std::string(value)));
+        return normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on";
+    }();
+    if (disableSecretGate) {
+        std::cout << "[native-commit] safety-gates: ignore only (secret gate disabled)\n";
+        const auto allowIgnoreGate = [&]() {
+            const auto* value = std::getenv("KOG_ALLOW_IGNORE_GATE");
+            if (value == nullptr) {
+                return false;
+            }
+            const auto normalized = ToLower(Trim(std::string(value)));
+            return normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on";
+        }();
+        if (!allowIgnoreGate &&
+            ToLower(Trim(std::getenv("KOG_IGNORE_GATE") == nullptr ? "on" : std::getenv("KOG_IGNORE_GATE"))) != "off") {
+            auto repos = DiscoverWorkspaceRepos(workspaceRoot);
+            if (repos.empty()) {
+                repos.push_back(workspaceRoot);
+            }
+            const auto allowlistPath = (ResolveSkillRoot(workspaceRoot) / "assets" / "ignore-sources" / "local" / "ignore-gate-allowlist.txt").lexically_normal();
+            const auto allowlist = LoadNormalizedLineSet(allowlistPath);
+            std::vector<std::string> findings;
+            for (const auto& repo : repos) {
+                const auto rel = repo.lexically_relative(workspaceRoot).generic_string();
+                const auto repoLabel = rel.empty() ? "." : rel;
+                for (auto p : CollectIgnoreGateCandidatePaths(repo)) {
+                    if (p.empty() || !IsProbableIgnoreArtifactPath(p)) {
+                        continue;
+                    }
+                    if (IsInternalPipelineArtifactPath(p)) {
+                        continue;
+                    }
+                    std::replace(p.begin(), p.end(), '\\', '/');
+                    const auto key = repoLabel == "." ? p : (repoLabel + "/" + p);
+                    if (allowlist.find(key) != allowlist.end()) {
+                        continue;
+                    }
+                    findings.push_back(key);
+                    if (findings.size() >= 20) {
+                        break;
+                    }
+                }
+                if (findings.size() >= 20) {
+                    break;
+                }
+            }
+            if (!findings.empty()) {
+                std::cerr << "Error: ignore gate failed (commit); unresolved untracked artifact-like files detected.\n";
+                for (const auto& f : findings) {
+                    std::cerr << "  - " << f << "\n";
+                }
+                std::cerr << "Hint: update .gitignore first, then regenerate plan.\n";
+                std::cerr << "Hint: override once with --allow-ignore-gate (or KOG_ALLOW_IGNORE_GATE=1).\n";
+                std::exit(3);
+            }
+        }
+    } else {
+        std::cout << "[native-commit] safety-gates: ignore + secret\n";
+        RunPipelineSafetyGatesForNonAiCommit(workspaceRoot);
+    }
 
     std::string planError;
     const auto normalizedCommitPlanPath = NormalizeInputPathForCurrentPlatform(InPlanFile);
