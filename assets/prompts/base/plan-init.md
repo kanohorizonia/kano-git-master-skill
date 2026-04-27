@@ -17,7 +17,7 @@ Rules:
 - stages.commit must contain dirty repos only.
 - For each repo entry, provide commits array.
 - Every commit item must include:
-  - message (Conventional Commit one-line)
+  - message: MUST follow Kano Commit Convention (KCC) format `[Subsystem][Type] Summary`. MUST NOT include any Ticket ID or `(NO-TICKET)` suffix.
   - review.verdict = "pass"
   - review.reason = concise reason
 - If commit stage is already seeded, keep repo grouping and only fill/adjust commit message + review fields.
