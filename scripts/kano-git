@@ -264,11 +264,33 @@ shared_pixi_project_root() {
 }
 
 windows_pixi_build_bin_dir() {
+  # 1. Per-project pixi env (pixi install)
   local pixi_bin_dir="$(shared_pixi_project_root)/.pixi/envs/default/Library/bin"
   if [[ -x "$pixi_bin_dir/cmake.exe" && -x "$pixi_bin_dir/ninja.exe" ]]; then
     printf '%s\n' "$pixi_bin_dir"
     return 0
   fi
+
+  # 2. pixi global tools (~/.pixi/bin via USERPROFILE or HOME)
+  local global_bin=""
+  if [[ -n "${USERPROFILE:-}" ]]; then
+    local win_home
+    win_home="$(printf '%s' "${USERPROFILE}" | sed 's|\\|/|g; s|^\([A-Za-z]\):|/\L\1|')"
+    global_bin="${win_home}/.pixi/bin"
+  fi
+  if [[ -z "$global_bin" || ! -d "$global_bin" ]]; then
+    global_bin="${HOME}/.pixi/bin"
+  fi
+  if [[ -x "${global_bin}/cmake.exe" && -x "${global_bin}/ninja.exe" ]]; then
+    printf '%s\n' "$global_bin"
+    return 0
+  fi
+  # cmake/ninja may be exposed without .exe suffix via pixi global shims
+  if command -v cmake >/dev/null 2>&1 && command -v ninja >/dev/null 2>&1; then
+    printf '%s\n' "$global_bin"
+    return 0
+  fi
+
   return 1
 }
 
@@ -284,7 +306,7 @@ run_pixi_build_task() {
 
   if ! pixi_cmd="$(resolve_pixi_command)"; then
     echo "Error: pixi is not available in this shell." >&2
-    echo "Hint: run './kog self install-prereq' first." >&2
+    echo "Hint: run 'kog self install-prereq' first." >&2
     return 1
   fi
 
@@ -503,7 +525,7 @@ check_build_prerequisites() {
       echo "Missing or broken build tools:$missing" >&2
       echo "" >&2
       echo "To install prerequisites, run:" >&2
-      echo "  ./kog self install-prereq" >&2
+      echo "  kog self install-prereq" >&2
       return 1
     fi
 
@@ -584,7 +606,7 @@ run_native_build_mode() {
       log_launcher_status "build-native" "fail" "build failed via pixi task=$build_task"
       echo "" >&2
       echo "Prerequisites may be missing. To install them manually, run:" >&2
-      echo "  ./kog self install-prereq" >&2
+      echo "  kog self install-prereq" >&2
       echo "" >&2
       return 1
     fi
@@ -594,7 +616,7 @@ run_native_build_mode() {
     log_launcher_status "build-native" "fail" "build failed"
     echo ""
     echo "Prerequisites may be missing. To install them manually, run:" >&2
-    echo "  ./kog self install-prereq" >&2
+    echo "  kog self install-prereq" >&2
     echo ""
     return 1
   fi
