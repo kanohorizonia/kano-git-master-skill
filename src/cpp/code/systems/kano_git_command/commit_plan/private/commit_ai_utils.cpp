@@ -254,6 +254,89 @@ auto ResolveRepoPath(const std::filesystem::path& InWorkspaceRoot, const std::fi
     return matches.front();
 }
 
+auto RepoHasPorcelainChanges(const std::filesystem::path& InRepo) -> bool {
+    const auto status = GitCapture(InRepo, {"status", "--porcelain"});
+    return status.exitCode == 0 && !Trim(status.stdoutStr).empty();
+}
+
+auto ParseRootStatusPath(std::string InLine) -> std::string {
+    while (!InLine.empty() && (InLine.back() == '\r' || InLine.back() == '\n')) {
+        InLine.pop_back();
+    }
+    if (InLine.size() < 4) {
+        return {};
+    }
+
+    auto relPath = Trim(InLine.substr(3));
+    const auto arrowPos = relPath.find(" -> ");
+    if (arrowPos != std::string::npos) {
+        relPath = Trim(relPath.substr(arrowPos + 4));
+    }
+    return relPath;
+}
+
+auto AddDirtyNestedReposFromRootStatus(const std::filesystem::path& InWorkspaceRoot,
+                                      const std::unordered_map<std::string, workspace::RepoRecord>& InRecordsByPath,
+                                      std::vector<workspace::RepoRecord>* InOutSelected) -> void {
+    if (InOutSelected == nullptr) {
+        return;
+    }
+
+    std::unordered_map<std::string, std::size_t> selectedByPath;
+    selectedByPath.reserve(InOutSelected->size());
+    for (std::size_t index = 0; index < InOutSelected->size(); ++index) {
+        selectedByPath.emplace(ToGeneric((*InOutSelected)[index].path), index);
+    }
+
+    const auto rootStatus = GitCapture(InWorkspaceRoot, {"status", "--porcelain"});
+    if (rootStatus.exitCode != 0) {
+        return;
+    }
+
+    std::istringstream iss(rootStatus.stdoutStr);
+    std::string line;
+    while (std::getline(iss, line)) {
+        const auto relPath = ParseRootStatusPath(std::move(line));
+        if (relPath.empty()) {
+            continue;
+        }
+
+        const auto candidate = ResolveRepoPath(InWorkspaceRoot, relPath);
+        if (candidate.empty()) {
+            continue;
+        }
+        const auto candidateKey = ToGeneric(candidate);
+        if (candidateKey.empty() || candidateKey == ToGeneric(InWorkspaceRoot)) {
+            continue;
+        }
+
+        const auto inGitRepo = GitCapture(candidate, {"rev-parse", "--is-inside-work-tree"});
+        if (inGitRepo.exitCode != 0 || Trim(inGitRepo.stdoutStr) != "true") {
+            continue;
+        }
+        if (!RepoHasPorcelainChanges(candidate)) {
+            continue;
+        }
+
+        if (const auto selected = selectedByPath.find(candidateKey); selected != selectedByPath.end()) {
+            (*InOutSelected)[selected->second].hasChanges = true;
+            continue;
+        }
+
+        workspace::RepoRecord record;
+        const auto found = InRecordsByPath.find(candidateKey);
+        if (found != InRecordsByPath.end()) {
+            record = found->second;
+        } else {
+            record.path = candidate;
+            record.type = "explicit-dirty-fallback";
+        }
+        record.hasChanges = true;
+        InOutSelected->push_back(std::move(record));
+        selectedByPath.emplace(candidateKey, InOutSelected->size() - 1);
+    }
+}
+
 
 
 
@@ -1298,41 +1381,8 @@ auto BuildCommitScopeRecords(const std::filesystem::path& InWorkspaceRoot,
         }
     }
 
-    if (InDirtyOnly && Trim(InReposCsv).empty() && !InNoRecursive && selected.size() <= 1) {
-        const auto rootStatus = GitCapture(InWorkspaceRoot, {"status", "--porcelain"});
-        if (rootStatus.exitCode == 0) {
-            std::istringstream iss(rootStatus.stdoutStr);
-            std::string line;
-            while (std::getline(iss, line)) {
-                while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) {
-                    line.pop_back();
-                }
-                if (line.size() < 4) {
-                    continue;
-                }
-                auto relPath = Trim(line.substr(3));
-                if (relPath.empty()) {
-                    continue;
-                }
-                const auto arrowPos = relPath.find(" -> ");
-                if (arrowPos != std::string::npos) {
-                    relPath = Trim(relPath.substr(arrowPos + 4));
-                }
-                const auto candidate = ResolveRepoPath(InWorkspaceRoot, relPath);
-                if (candidate.empty()) {
-                    continue;
-                }
-                const auto inGitRepo = GitCapture(candidate, {"rev-parse", "--is-inside-work-tree"});
-                if (inGitRepo.exitCode != 0 || Trim(inGitRepo.stdoutStr) != "true") {
-                    continue;
-                }
-                workspace::RepoRecord fallback;
-                fallback.path = candidate;
-                fallback.type = "explicit-dirty-fallback";
-                fallback.hasChanges = true;
-                selected.push_back(std::move(fallback));
-            }
-        }
+    if (InDirtyOnly && Trim(InReposCsv).empty() && !InNoRecursive) {
+        AddDirtyNestedReposFromRootStatus(InWorkspaceRoot, byPath, &selected);
     }
 
     std::unordered_map<std::string, std::size_t> idxByPath;
