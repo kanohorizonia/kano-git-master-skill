@@ -1671,10 +1671,7 @@ auto RunAiGenerateForWorkingEdit(const std::string& InProvider,
     if (InQuiet) {
         args.push_back("-s");
     }
-    if (!InModel.empty() && InModel != "auto") {
-        args.push_back("--model");
-        args.push_back(InModel);
-    }
+    AppendModelArgs(args, InModel);
     args.push_back("--no-color");
     args.push_back("--stream");
     args.push_back("off");
