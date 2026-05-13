@@ -576,6 +576,8 @@ auto LoadNormalizedLineSet(const std::filesystem::path& InFile) -> std::unordere
 auto CollectIgnoreGateCandidatePaths(const std::filesystem::path& InRepo) -> std::vector<std::string> {
     std::set<std::string> files;
 
+    // Only check untracked files for the ignore gate.
+    // Tracked modified files are legitimate changes and should not be blocked.
     if (const auto untracked = GitCapture(InRepo, {"ls-files", "--others", "--exclude-standard"}); untracked.exitCode == 0) {
         std::istringstream iss(untracked.stdoutStr);
         std::string line;
@@ -583,17 +585,6 @@ auto CollectIgnoreGateCandidatePaths(const std::filesystem::path& InRepo) -> std
             auto path = Trim(line);
             if (!path.empty()) {
                 files.insert(path);
-            }
-        }
-    }
-
-    if (const auto status = GitCapture(InRepo, {"status", "--short"}); status.exitCode == 0) {
-        std::istringstream iss(status.stdoutStr);
-        std::string line;
-        while (std::getline(iss, line)) {
-            const auto maybePath = ParseStatusChangedPath(line);
-            if (maybePath.has_value() && !maybePath->empty()) {
-                files.insert(*maybePath);
             }
         }
     }
