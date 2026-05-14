@@ -4,6 +4,7 @@
   "description": "Kano Git Master — AI-powered Git CLI tools",
   "dependencies": [
     "cli11",
-    "catch2"
+    "catch2",
+    "rapidcheck"
   ]
 }

@@ -19,6 +19,7 @@ void RegisterAll(CLI::App& InApp) {
     RegisterConfig(InApp);
     RegisterDiscover(InApp);
     RegisterDoctor(InApp);
+    RegisterExport(InApp);
     RegisterForeach(InApp);
     RegisterGuide(InApp);
     RegisterIgnore(InApp);

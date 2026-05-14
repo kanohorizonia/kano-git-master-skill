@@ -598,9 +598,6 @@ auto ParseStatusChangedPath(const std::string& InLine) -> std::optional<std::str
     }
     const char x = InLine[0];
     const char y = InLine[1];
-    if (x == 'D' || y == 'D') {
-        return std::nullopt;
-    }
     if (x == '?' && y == '?') {
         return Trim(InLine.substr(3));
     }

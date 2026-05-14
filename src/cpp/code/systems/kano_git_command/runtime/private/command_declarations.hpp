@@ -40,6 +40,7 @@ void RegisterUplog(CLI::App& InApp);
 void RegisterBranch(CLI::App& InApp);
 void RegisterClone(CLI::App& InApp);
 void RegisterDoctor(CLI::App& InApp);
+void RegisterExport(CLI::App& InApp);
 void RegisterIgnore(CLI::App& InApp);
 void RegisterCherryPick(CLI::App& InApp);
 

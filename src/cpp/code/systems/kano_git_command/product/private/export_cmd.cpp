@@ -1,0 +1,562 @@
+// export_cmd.cpp — kog export command implementation
+//
+// Packages a multi-repo workspace into a set of archive files, one per
+// repository. Follows the anonymous-namespace helper pattern from status_cmd.cpp.
+
+#include "export_helpers.hpp"
+
+#include <CLI/CLI.hpp>
+#include "discovery.hpp"
+#include "shell_executor.hpp"
+
+#include <algorithm>
+#include <chrono>
+#include <cstdlib>
+#include <ctime>
+#include <filesystem>
+#include <format>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <sstream>
+#include <string>
+#include <vector>
+
+namespace kano::git::commands {
+
+// ---------------------------------------------------------------------------
+// Pure helper function implementations
+// ---------------------------------------------------------------------------
+
+auto ValidateOptions(const ExportOptions& InOpts) -> bool {
+    bool ok = true;
+    if (InOpts.format != "tar" && InOpts.format != "zip") {
+        std::cerr << "kog export: invalid --format value '" << InOpts.format
+                  << "'; must be 'tar' or 'zip'\n";
+        ok = false;
+    }
+    if (InOpts.source != "head" && InOpts.source != "working-tree") {
+        std::cerr << "kog export: invalid --source value '" << InOpts.source
+                  << "'; must be 'head' or 'working-tree'\n";
+        ok = false;
+    }
+    if (InOpts.revPad <= 0) {
+        std::cerr << "kog export: invalid --rev-pad value " << InOpts.revPad
+                  << "; must be a positive integer\n";
+        ok = false;
+    }
+    return ok;
+}
+
+auto ResolveOutputDir(const std::filesystem::path& InCwd,
+                      const std::string& InExplicit) -> std::filesystem::path {
+    if (!InExplicit.empty()) {
+        return std::filesystem::path(InExplicit);
+    }
+    return InCwd / ".kano" / "tmp" / "git" / "export";
+}
+
+auto FormatRevision(int InRevision, int InPad) -> std::string {
+    std::ostringstream oss;
+    oss << std::setw(InPad) << std::setfill('0') << InRevision;
+    return oss.str();
+}
+
+auto ComputeArchiveName(const std::string& InRepoName,
+                        const std::string& InRevision,
+                        const std::string& InFormat) -> std::string {
+    return InRepoName + "_rev" + InRevision + "." + InFormat;
+}
+
+auto ComputePrefix(const std::string& InRepoName,
+                   const std::string& InExplicitPrefix) -> std::string {
+    if (!InExplicitPrefix.empty()) {
+        return InExplicitPrefix;
+    }
+    return InRepoName + "/";
+}
+
+auto BuildGitArchiveArgs(const std::string& InFormat,
+                         const std::string& InPrefix,
+                         const std::filesystem::path& InOutputPath) -> std::vector<std::string> {
+    return {
+        "archive",
+        "HEAD",
+        "--format=" + InFormat,
+        "--prefix=" + InPrefix,
+        "--output=" + InOutputPath.generic_string()
+    };
+}
+
+auto BuildWorkingTreeTarArgs(const std::filesystem::path& InRepoPath,
+                             const std::filesystem::path& InOutputPath,
+                             const std::vector<std::filesystem::path>& InExcludePaths) -> std::vector<std::string> {
+    std::vector<std::string> args;
+    args.push_back("-czf");
+    args.push_back(InOutputPath.generic_string());
+    args.push_back("--exclude=.git");
+    for (const auto& excludePath : InExcludePaths) {
+        args.push_back("--exclude=" + excludePath.generic_string());
+    }
+    args.push_back("-C");
+    args.push_back(InRepoPath.parent_path().generic_string());
+    args.push_back(InRepoPath.filename().generic_string());
+    return args;
+}
+
+auto ComputeManifestName(const std::string& InArchiveBaseName) -> std::string {
+    return InArchiveBaseName + "_manifest.txt";
+}
+
+auto ComputeChecksumFilename(const std::string& InFilename) -> std::string {
+    return InFilename + ".sha256";
+}
+
+namespace {
+
+auto CurrentUtcIso8601Export() -> std::string {
+    const auto now = std::chrono::system_clock::now();
+    const auto tt = std::chrono::system_clock::to_time_t(now);
+    std::tm utcTm{};
+#if defined(_WIN32)
+    gmtime_s(&utcTm, &tt);
+#else
+    gmtime_r(&tt, &utcTm);
+#endif
+    std::ostringstream oss;
+    oss << std::put_time(&utcTm, "%Y-%m-%dT%H:%M:%SZ");
+    return oss.str();
+}
+
+auto TrimExport(std::string InValue) -> std::string {
+    while (!InValue.empty() &&
+           (InValue.back() == '\n' || InValue.back() == '\r' ||
+            InValue.back() == ' ' || InValue.back() == '\t')) {
+        InValue.pop_back();
+    }
+    std::size_t start = 0;
+    while (start < InValue.size() &&
+           (InValue[start] == ' ' || InValue[start] == '\t')) {
+        start += 1;
+    }
+    return InValue.substr(start);
+}
+
+auto FirstNLines(const std::string& InText, int InN) -> std::string {
+    std::istringstream iss(InText);
+    std::string line;
+    std::ostringstream out;
+    int count = 0;
+    while (count < InN && std::getline(iss, line)) {
+        out << line << "\n";
+        count += 1;
+    }
+    return out.str();
+}
+
+} // anonymous namespace
+
+auto FormatManifest(const ExportRecord& InRecord,
+                    const ExportResult& InResult,
+                    const ExportOptions& InOpts,
+                    const std::string& InStatusOut,
+                    const std::string& InLsFilesOut) -> std::string {
+    const std::string archiveBase = InResult.archiveName.substr(
+        0, InResult.archiveName.rfind('.'));
+    const std::string prefix = ComputePrefix(InRecord.repoName, InOpts.prefix);
+
+    std::ostringstream oss;
+    oss << "Package: " << archiveBase << "\n";
+    oss << "Repo: " << InRecord.repoName << "\n";
+    oss << "RepoRoot: " << InRecord.repoPath.generic_string() << "\n";
+    oss << "ArchiveRoot: " << prefix << "\n";
+    oss << "RevisionFirstParentCount: " << "\n";
+    oss << "GitShortSHA: " << "\n";
+    oss << "Format: " << InOpts.format << "\n";
+    oss << "CreatedAtUTC: " << CurrentUtcIso8601Export() << "\n";
+    oss << "\n";
+    oss << "GitStatusShort:\n";
+    oss << TrimExport(InStatusOut) << "\n";
+    oss << "\n";
+    oss << "TrackedFilesSample:\n";
+    oss << FirstNLines(InLsFilesOut, 200);
+    return oss.str();
+}
+
+auto FormatProgressLine(const std::string& InRepoName,
+                        const std::filesystem::path& InArchivePath) -> std::string {
+    return "Exported " + InRepoName + " -> " + InArchivePath.generic_string();
+}
+
+auto FormatSummary(const std::filesystem::path& InOutputDir,
+                   const std::filesystem::path& InMetadataDir,
+                   const std::vector<ExportResult>& InResults) -> std::string {
+    std::ostringstream oss;
+    oss << "Export complete\n";
+    oss << "OutputDir: " << InOutputDir.generic_string() << "\n";
+    oss << "MetadataDir: " << InMetadataDir.generic_string() << "\n";
+    oss << "Archives:\n";
+    for (const auto& result : InResults) {
+        if (result.success) {
+            oss << "  " << result.archiveName << "\n";
+        }
+    }
+    return oss.str();
+}
+
+auto FormatDryRunPlan(const std::vector<ExportRecord>& InRecords,
+                      const ExportOptions& InOpts) -> std::string {
+    std::ostringstream oss;
+    oss << "Dry-run export plan\n";
+    oss << "OutputDir: " << InOpts.outputDir.generic_string() << "\n";
+    oss << "Repos to export:\n";
+    for (const auto& record : InRecords) {
+        // Use a placeholder revision for dry-run display
+        const std::string archiveName = ComputeArchiveName(
+            record.repoName, FormatRevision(0, InOpts.revPad), InOpts.format);
+        oss << "  " << record.repoName << " -> " << archiveName << "\n";
+    }
+    return oss.str();
+}
+
+auto BuildExportList(const std::filesystem::path& InRoot,
+                     const std::vector<workspace::RepoRecord>& InDiscovered,
+                     bool InNoRecursive) -> std::vector<ExportRecord> {
+    std::vector<ExportRecord> result;
+
+    // Always prepend the workspace root as the first entry
+    ExportRecord rootRecord;
+    rootRecord.repoPath = InRoot;
+    rootRecord.repoName = InRoot.filename().generic_string();
+    if (rootRecord.repoName.empty()) {
+        rootRecord.repoName = InRoot.lexically_normal().filename().generic_string();
+    }
+    rootRecord.isRoot = true;
+    result.push_back(std::move(rootRecord));
+
+    if (InNoRecursive) {
+        return result;
+    }
+
+    // Append discovered subrepos (skip any that match the root path)
+    const auto normalizedRoot = InRoot.lexically_normal();
+    for (const auto& repo : InDiscovered) {
+        const auto normalizedPath = repo.path.lexically_normal();
+        if (normalizedPath == normalizedRoot) {
+            continue;
+        }
+        ExportRecord rec;
+        rec.repoPath = repo.path;
+        rec.repoName = repo.path.filename().generic_string();
+        if (rec.repoName.empty()) {
+            rec.repoName = normalizedPath.generic_string();
+        }
+        rec.isRoot = false;
+        result.push_back(std::move(rec));
+    }
+
+    return result;
+}
+
+// ---------------------------------------------------------------------------
+// Shell-calling helpers (implemented in task 4)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+auto GitCapture(const std::filesystem::path& InRepo,
+                const std::vector<std::string>& InArgs,
+                const ShellExecutor& InExec) -> shell::ExecResult {
+    return InExec("git", InArgs, shell::ExecMode::Capture, InRepo);
+}
+
+auto ComputeRevision(const std::filesystem::path& InRepoPath, int InRevPad,
+                     const ShellExecutor& InExec) -> std::string {
+    const auto result = GitCapture(InRepoPath, {"rev-list", "--count", "--first-parent", "HEAD"}, InExec);
+    if (result.exitCode != 0 || result.stdoutStr.empty()) {
+        return FormatRevision(0, InRevPad);
+    }
+    try {
+        const int rev = std::stoi(result.stdoutStr);
+        return FormatRevision(rev, InRevPad);
+    } catch (const std::exception&) {
+        return FormatRevision(0, InRevPad);
+    }
+}
+
+auto WriteChecksumFile(const std::filesystem::path& InTargetFile,
+                       const std::filesystem::path& InMetadataDir,
+                       const ShellExecutor& InExec) -> bool {
+    const auto filename = InTargetFile.filename().generic_string();
+    const auto checksumPath = InMetadataDir / ComputeChecksumFilename(filename);
+
+    // Try sha256sum (Linux, Git Bash)
+    {
+        const auto r = InExec(
+            "sha256sum", {InTargetFile.generic_string()},
+            shell::ExecMode::Capture, InMetadataDir);
+        if (r.exitCode == 0 && !r.stdoutStr.empty()) {
+            std::ofstream f(checksumPath);
+            if (f) {
+                f << r.stdoutStr;
+                return true;
+            }
+        }
+    }
+
+    // Try shasum -a 256 (macOS)
+    {
+        const auto r = InExec(
+            "shasum", {"-a", "256", InTargetFile.generic_string()},
+            shell::ExecMode::Capture, InMetadataDir);
+        if (r.exitCode == 0 && !r.stdoutStr.empty()) {
+            std::ofstream f(checksumPath);
+            if (f) {
+                f << r.stdoutStr;
+                return true;
+            }
+        }
+    }
+
+    // Try PowerShell Get-FileHash (Windows fallback)
+    {
+        const auto r = InExec(
+            "powershell",
+            {"-NoProfile", "-Command",
+             "Get-FileHash -Algorithm SHA256 '" + InTargetFile.generic_string() + "' | Select-Object -ExpandProperty Hash"},
+            shell::ExecMode::Capture, InMetadataDir);
+        if (r.exitCode == 0 && !r.stdoutStr.empty()) {
+            std::ofstream f(checksumPath);
+            if (f) {
+                f << r.stdoutStr;
+                return true;
+            }
+        }
+    }
+
+    std::cerr << "kog export: warning: no sha256 tool found; skipping checksum for "
+              << InTargetFile.filename().generic_string() << "\n";
+    return false;
+}
+
+} // anonymous namespace
+
+// ---------------------------------------------------------------------------
+// Public shell-calling helpers (dependency-injected, exposed for unit tests)
+// ---------------------------------------------------------------------------
+
+auto ExportOneRepo(const ExportRecord& InRecord,
+                   const ExportOptions& InOpts,
+                   const std::filesystem::path& InOutputDir,
+                   const std::filesystem::path& InMetadataDir,
+                   const ShellExecutor& InExec) -> ExportResult {
+    ExportResult result;
+    result.success = false;
+
+    const std::string revision = ComputeRevision(InRecord.repoPath, InOpts.revPad, InExec);
+    result.archiveName = ComputeArchiveName(InRecord.repoName, revision, InOpts.format);
+    result.archivePath = InOutputDir / result.archiveName;
+
+    // Run archive
+    shell::ExecResult archiveResult;
+    if (InOpts.source == "head") {
+        const std::string prefix = ComputePrefix(InRecord.repoName, InOpts.prefix);
+        const auto args = BuildGitArchiveArgs(InOpts.format, prefix, result.archivePath);
+        archiveResult = InExec("git", args, shell::ExecMode::Capture, InRecord.repoPath);
+    } else {
+        // working-tree
+        std::vector<std::filesystem::path> excludes;
+        if (InRecord.isRoot) {
+            for (const auto& sub : InRecord.submodulePaths) {
+                excludes.push_back(sub);
+            }
+        }
+        const auto args = BuildWorkingTreeTarArgs(InRecord.repoPath, result.archivePath, excludes);
+        archiveResult = InExec("tar", args, shell::ExecMode::Capture, InRecord.repoPath);
+    }
+
+    if (archiveResult.exitCode != 0) {
+        result.errorMessage = "archive failed: " + archiveResult.stderrStr;
+        return result;
+    }
+
+    result.success = true;
+
+    if (InOpts.noMetadata) {
+        return result;
+    }
+
+    // Write manifest
+    const auto statusOut = GitCapture(InRecord.repoPath, {"status", "--short"}, InExec);
+    const auto lsFilesOut = GitCapture(InRecord.repoPath, {"ls-files"}, InExec);
+    const std::string manifestText = FormatManifest(
+        InRecord, result, InOpts,
+        statusOut.stdoutStr, lsFilesOut.stdoutStr);
+
+    const std::string archiveBase = result.archiveName.substr(
+        0, result.archiveName.rfind('.'));
+    const auto manifestName = ComputeManifestName(archiveBase);
+    const auto manifestPath = InMetadataDir / manifestName;
+
+    std::ofstream mf(manifestPath);
+    if (mf) {
+        mf << manifestText;
+    }
+
+    // Write checksums
+    WriteChecksumFile(result.archivePath, InMetadataDir, InExec);
+    WriteChecksumFile(manifestPath, InMetadataDir, InExec);
+
+    return result;
+}
+
+auto RunExportWithExecutor(const ExportOptions& InOpts,
+                           const std::vector<ExportRecord>& InExportList,
+                           const std::filesystem::path& InOutputDir,
+                           const std::filesystem::path& InMetadataDir,
+                           const ShellExecutor& InExec) -> int {
+    std::vector<ExportResult> results;
+    bool anyFailed = false;
+
+    for (const auto& record : InExportList) {
+        const auto result = ExportOneRepo(record, InOpts, InOutputDir, InMetadataDir, InExec);
+        if (!result.success) {
+            std::cerr << "kog export: failed to export '" << record.repoName
+                      << "': " << result.errorMessage << "\n";
+            anyFailed = true;
+        } else {
+            std::cout << FormatProgressLine(record.repoName, result.archivePath) << "\n";
+        }
+        results.push_back(result);
+    }
+
+    std::cout << FormatSummary(InOutputDir, InMetadataDir, results);
+
+    return anyFailed ? 1 : 0;
+}
+
+namespace {
+
+auto RunExport(const ExportOptions& InOpts) -> int {
+    if (!ValidateOptions(InOpts)) {
+        return 1;
+    }
+
+    const auto cwd = std::filesystem::current_path();
+
+    // Real shell executor wraps shell::ExecuteCommand
+    ShellExecutor realExec = [](const std::string& cmd,
+                                const std::vector<std::string>& args,
+                                shell::ExecMode mode,
+                                std::optional<std::filesystem::path> workDir) {
+        return shell::ExecuteCommand(cmd, args, mode, workDir);
+    };
+
+    // Validate workspace root is a git repo
+    const auto gitCheck = realExec(
+        "git", {"rev-parse", "--git-dir"},
+        shell::ExecMode::Capture, cwd);
+    if (gitCheck.exitCode != 0) {
+        std::cerr << "kog export: current directory is not a git repository\n";
+        return 1;
+    }
+
+    // Discover subrepos
+    workspace::DiscoverOptions discoverOpts;
+    discoverOpts.rootDir = cwd;
+    discoverOpts.scope = workspace::DiscoverScope::RegisteredOnly;
+    const auto discovery = workspace::DiscoverRepos(discoverOpts);
+
+    const auto outputDir = InOpts.outputDir.empty()
+        ? ResolveOutputDir(cwd, "")
+        : InOpts.outputDir;
+    const auto metadataDir = outputDir / "metadata";
+
+    const auto exportList = BuildExportList(cwd, discovery.repos, InOpts.noRecursive);
+
+    if (InOpts.dryRun) {
+        ExportOptions optsWithDir = InOpts;
+        optsWithDir.outputDir = outputDir;
+        std::cout << FormatDryRunPlan(exportList, optsWithDir);
+        return 0;
+    }
+
+    // Create output directories
+    std::error_code ec;
+    std::filesystem::create_directories(outputDir, ec);
+    if (ec) {
+        std::cerr << "kog export: failed to create output directory: " << ec.message() << "\n";
+        return 1;
+    }
+    std::filesystem::create_directories(metadataDir, ec);
+    if (ec) {
+        std::cerr << "kog export: failed to create metadata directory: " << ec.message() << "\n";
+        return 1;
+    }
+
+    return RunExportWithExecutor(InOpts, exportList, outputDir, metadataDir, realExec);
+}
+
+} // anonymous namespace
+
+} // namespace kano::git::commands
+
+// ---------------------------------------------------------------------------
+// Public registration function (task 5)
+// ---------------------------------------------------------------------------
+
+namespace kano::git::commands {
+
+void RegisterExport(CLI::App& InApp) {
+    auto* cmd = InApp.add_subcommand("export",
+        "Package a multi-repo workspace into archive files, one per repository");
+
+    auto* outputDir = new std::string{};
+    auto* format = new std::string{"tar"};
+    auto* prefix = new std::string{};
+    auto* includeSubmoduleStubs = new bool{false};
+    auto* noRecursive = new bool{false};
+    auto* dryRun = new bool{false};
+    auto* noMetadata = new bool{false};
+    auto* revPad = new int{3};
+    auto* source = new std::string{"head"};
+
+    cmd->add_option("--output", *outputDir,
+        "Output directory for archives (default: <cwd>/.kano/tmp/git/export/)");
+    cmd->add_option("--format", *format,
+        "Archive format: tar|zip (default: tar)");
+    cmd->add_option("--prefix", *prefix,
+        "Override archive root prefix (default: <repo-name>/)");
+    cmd->add_flag("--include-submodule-stubs", *includeSubmoduleStubs,
+        "Include empty submodule placeholder dirs in root archive (working-tree only)");
+    cmd->add_flag("--no-recursive", *noRecursive,
+        "Export only the workspace root repo, skip subrepos");
+    cmd->add_flag("--dry-run", *dryRun,
+        "Print what would be exported without creating files");
+    cmd->add_flag("--no-metadata", *noMetadata,
+        "Skip manifest and SHA-256 generation");
+    cmd->add_option("--rev-pad", *revPad,
+        "Revision zero-padding width (default: 3)");
+    cmd->add_option("--source", *source,
+        "Archive source: head|working-tree (default: head)");
+
+    cmd->callback([=]() {
+        ExportOptions opts;
+        opts.outputDir = *outputDir;
+        opts.format = *format;
+        opts.prefix = *prefix;
+        opts.includeSubmoduleStubs = *includeSubmoduleStubs;
+        opts.noRecursive = *noRecursive;
+        opts.dryRun = *dryRun;
+        opts.noMetadata = *noMetadata;
+        opts.revPad = *revPad;
+        opts.source = *source;
+
+        const int exitCode = RunExport(opts);
+        if (exitCode != 0) {
+            throw CLI::RuntimeError(exitCode);
+        }
+    });
+}
+
+} // namespace kano::git::commands

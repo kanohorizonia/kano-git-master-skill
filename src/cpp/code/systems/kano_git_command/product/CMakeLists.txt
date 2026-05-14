@@ -8,6 +8,7 @@ target_sources(kano_git_cmd_product
     private/complete_cmd.cpp
     private/completion_cmd.cpp
     private/config_cmd.cpp
+    private/export_cmd.cpp
     private/guide_cmd.cpp
     private/log_cmd.cpp
     private/meta_cmd.cpp

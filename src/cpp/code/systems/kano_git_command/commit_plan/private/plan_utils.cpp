@@ -575,27 +575,6 @@ auto ComputeWorkspaceDirtyFingerprint(const std::filesystem::path& InWorkspaceRo
                 continue;
             }
 
-            // Check if this line contains a .kano/ path BEFORE calling ParseStatusChangedPath
-            // because ParseStatusChangedPath returns nullopt for deleted files (D)
-            // and we still need to filter deleted .kano/ artifacts
-            if (trimmed.find(".kano/") != std::string::npos) {
-                // Extract the path from the line - format is "XY pathname" where XY is status
-                // For deleted files, ParseStatusChangedPath returns nullopt, so we extract manually
-                const auto pathStart = trimmed.find(".kano/");
-                const auto pathStartBefore = (pathStart > 0) ? pathStart - 1 : 0;
-                // Find the space before the path to get the actual start
-                auto spacePos = trimmed.rfind(' ', pathStartBefore);
-                if (spacePos == std::string::npos) {
-                    spacePos = 0;
-                } else {
-                    spacePos = spacePos + 1;
-                }
-                const auto path = Trim(trimmed.substr(spacePos));
-                if (IsInternalPipelineArtifactPath(path)) {
-                    continue; // Skip internal artifacts
-                }
-            }
-
             // Use ParseStatusChangedPath to extract path and check for internal artifacts
             const auto maybePath = ParseStatusChangedPath(trimmed);
             if (maybePath.has_value() && IsInternalPipelineArtifactPath(*maybePath)) {
@@ -2218,9 +2197,6 @@ auto ParseStatusChangedPath(const std::string& InLine) -> std::optional<std::str
     }
     const char x = InLine[0];
     const char y = InLine[1];
-    if (x == 'D' || y == 'D') {
-        return std::nullopt;
-    }
     if (x == '?' && y == '?') {
         return Trim(InLine.substr(3));
     }
