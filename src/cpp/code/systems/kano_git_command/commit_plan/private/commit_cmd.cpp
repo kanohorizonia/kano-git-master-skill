@@ -4981,6 +4981,30 @@ void RegisterAmend(CLI::App& InApp) {
             std::exit(code);
         }
 
+        // Agent Mode: generate plan and pause for agent to fill messages
+        if (IsAgentModeEnabled() && message->empty() && amendPlanFile->empty()) {
+            const auto agentPlanPath = DefaultSharedPlanPath(workspaceRoot);
+            std::cout << "[native-amend] agent mode detected; generating amend plan for agent review.\n";
+            std::cout << "[native-amend] plan file: " << agentPlanPath.generic_string() << "\n";
+            const auto planNewCode = RunPlanNewViaSelf(workspaceRoot, agentPlanPath);
+            if (planNewCode != 0) std::exit(planNewCode);
+            const auto seedCode = RunCommitSeedViaSelf(workspaceRoot, agentPlanPath);
+            if (seedCode != 0) std::exit(seedCode);
+
+            // Check if there is anything to commit
+            std::string parseErr;
+            const auto parsed = ParseCommitPlan(agentPlanPath, &parseErr);
+            if (!parsed.has_value() || parsed->commitEntries.empty()) {
+                std::cout << "[native-amend] workspace clean; nothing to amend.\n";
+                std::exit(0);
+            }
+
+            std::cerr << "\n[AGENT_PLAN_REQUIRED] Please fill commit messages in:\n";
+            std::cerr << "  " << agentPlanPath.generic_string() << "\n";
+            std::cerr << "After editing, run: kog amend --plan-file " << agentPlanPath.generic_string() << "\n\n";
+            std::exit(3);
+        }
+
         if (!repos->empty() && !target->empty()) {
             std::cerr << "Error: positional target cannot be combined with --repos\n";
             std::exit(2);

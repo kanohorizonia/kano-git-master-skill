@@ -1184,9 +1184,9 @@ void RegisterSelf(CLI::App& InApp) {
   });
 
   // ========================================================================
-  // self sync - Sync kog repo and rebuild
+  // self sync - Sync kog repo (fetch + rebase only, no rebuild)
   // ========================================================================
-  auto* selfSync = cmd->add_subcommand("sync", "Find and sync kog repo (git pull + rebuild)");
+  auto* selfSync = cmd->add_subcommand("sync", "Sync the kog skill repo (fetch + rebase, equivalent to running kog sync inside kano-git-master-skill)");
   auto* syncRemote = new std::string{"upstream"};
   auto* syncBranch = new std::string{};
   auto* syncAutoRebase = new bool{false};
@@ -1196,7 +1196,7 @@ void RegisterSelf(CLI::App& InApp) {
   selfSync->add_option("--remote", *syncRemote, "Remote to sync from (default: upstream, fallback: origin)");
   selfSync->add_option("--branch", *syncBranch, "Branch to sync (default: remote HEAD)");
   selfSync->add_flag("--auto-rebase", *syncAutoRebase, "Automatically rebase without prompting");
-  selfSync->add_flag("--skip-rebuild", *syncSkipRebuild, "Skip rebuild after sync");
+  selfSync->add_flag("--skip-rebuild", *syncSkipRebuild, "(Deprecated) No-op; rebuild is no longer automatic. Use 'kog self build' to rebuild.");
   selfSync->add_flag("--non-interactive", *syncNonInteractive, "Disable interactive prompts");
 
   selfSync->callback([=]() {
@@ -1307,44 +1307,7 @@ void RegisterSelf(CLI::App& InApp) {
     }
 
     std::cout << "[self sync] Rebase completed successfully.\n";
-
-    // Rebuild
-    if (*syncSkipRebuild) {
-      std::cout << "[self sync] Skipping rebuild (--skip-rebuild).\n";
-      std::cout << "Hint: Run 'kog self build' to rebuild the binary.\n";
-      std::exit(0);
-    }
-
-    std::cout << "[self sync] Rebuilding binary...\n";
-
-    // Find and run build script
-    const auto buildDir = repoRoot / "src" / "cpp" / "build" / "script";
-    std::string buildScript;
-
-#if defined(_WIN32)
-    buildScript = (buildDir / "windows" / "build_windows_ninja_msvc_release.sh").generic_string();
-#elif defined(__APPLE__)
-#if defined(__aarch64__) || defined(_M_ARM64)
-    buildScript = (buildDir / "macos" / "build_macos_ninja_clang_arm64_release.sh").generic_string();
-#else
-    buildScript = (buildDir / "macos" / "build_macos_ninja_clang_x64_release.sh").generic_string();
-#endif
-#else
-    buildScript = (buildDir / "linux" / "build_linux_ninja_gcc_release.sh").generic_string();
-#endif
-
-    if (!std::filesystem::exists(buildScript)) {
-      std::cerr << "Error: Build script not found: " << buildScript << "\n";
-      std::exit(1);
-    }
-
-    const auto buildResult = shell::ExecuteCommand("bash", {"-lc", buildScript}, shell::ExecMode::PassThrough, repoRoot);
-    if (buildResult.exitCode != 0) {
-      std::cerr << "Error: Build failed.\n";
-      std::exit(1);
-    }
-
-    std::cout << "[self sync] Sync complete: repo updated and binary rebuilt.\n";
+    std::cout << "[self sync] Sync complete. Run 'kog self build' to rebuild the binary if needed.\n";
     std::exit(0);
   });
 }

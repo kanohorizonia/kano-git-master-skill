@@ -7,6 +7,9 @@
 #include "terminal_color.hpp"
 
 
+#include <chrono>
+#include <ctime>
+#include <iomanip>
 #include <algorithm>
 #include <filesystem>
 #include <format>
@@ -51,6 +54,14 @@ struct ResetResult {
     std::string resetRef;
     std::string message;
 };
+
+auto GetTimestampString() -> std::string {
+    auto now = std::chrono::system_clock::now();
+    std::time_t now_c = std::chrono::system_clock::to_time_t(now);
+    std::stringstream ss;
+    ss << std::put_time(std::localtime(&now_c), "%Y-%m-%d %H:%M:%S");
+    return ss.str();
+}
 
 auto Trim(std::string InValue) -> std::string {
     while (!InValue.empty() && (InValue.back() == '\n' || InValue.back() == '\r' || InValue.back() == ' ' || InValue.back() == '\t')) {
@@ -584,7 +595,8 @@ auto RunResetPlan(const std::filesystem::path& InRoot,
     }
 
     if (IsWorkingTreeDirty(InPlan.path)) {
-        const auto stash = GitCapture(InPlan.path, {"stash", "push", "--include-untracked", "-m", "kog auto stash before reset"});
+        std::string stashMsg = "kog reset stash at " + GetTimestampString();
+        const auto stash = GitCapture(InPlan.path, {"stash", "push", "--include-untracked", "-m", stashMsg});
         if (stash.exitCode != 0) {
             out.message = "warning: stash failed";
         }
@@ -651,6 +663,52 @@ void PrintResetResult(const ResetResult& InResult) {
     std::cout << "\n";
 }
 
+void PerformReset(const std::filesystem::path& root, const std::string& remote, int maxDepth, bool noCache, bool refreshCache, bool noRecursive, bool dryRun, bool continueOnError, bool fetch, ResetMode InMode) {
+    std::vector<ResetPlan> plans;
+    try {
+        plans = BuildResetPlans(root, remote, maxDepth, noCache, refreshCache);
+    } catch (const std::exception& ex) {
+        std::cerr << "ERROR: reset discovery failed: " << ex.what() << "\n";
+        std::exit(1);
+    }
+
+    if (noRecursive) {
+        const auto resolvedRoot = ResolveRepoFromSpec(root, std::filesystem::path("."), maxDepth, !noCache);
+        plans.erase(
+            std::remove_if(plans.begin(), plans.end(), [&](const ResetPlan& InPlan) {
+                return std::filesystem::weakly_canonical(InPlan.path) != resolvedRoot;
+            }),
+            plans.end());
+    }
+
+    if (plans.empty()) {
+        std::cout << "No repositories found.\n";
+        std::exit(0);
+    }
+
+    const auto workspaceRoot = std::filesystem::weakly_canonical(root);
+    int successCount = 0;
+    int failureCount = 0;
+    for (const auto& plan : plans) {
+        const auto result = RunResetPlan(workspaceRoot, plan, InMode, dryRun, fetch);
+        PrintResetResult(result);
+        if (result.exitCode == 0) {
+            successCount += 1;
+        } else {
+            failureCount += 1;
+            if (!continueOnError) {
+                std::cout << "\nSummary: " << (successCount + failureCount) << " repos, "
+                          << successCount << " succeeded, " << failureCount << " failed\n";
+                std::exit(1);
+            }
+        }
+    }
+
+    std::cout << "\nSummary: " << (successCount + failureCount) << " repos, "
+              << successCount << " succeeded, " << failureCount << " failed\n";
+    std::exit(failureCount > 0 ? 1 : 0);
+}
+
 void RegisterResetMode(CLI::App* InCmd,
                        ResetMode InMode,
                        const std::string& InPreferredRemote,
@@ -679,49 +737,7 @@ void RegisterResetMode(CLI::App* InCmd,
 
     InCmd->callback([=]() {
         const auto root = std::filesystem::weakly_canonical(std::filesystem::path(*repo));
-        std::vector<ResetPlan> plans;
-        try {
-            plans = BuildResetPlans(root, *remote, *maxDepth, *noCache, *refreshCache);
-        } catch (const std::exception& ex) {
-            std::cerr << "ERROR: reset discovery failed: " << ex.what() << "\n";
-            std::exit(1);
-        }
-
-        if (*noRecursive) {
-            const auto resolvedRoot = ResolveRepoFromSpec(root, std::filesystem::path("."), *maxDepth, !*noCache);
-            plans.erase(
-                std::remove_if(plans.begin(), plans.end(), [&](const ResetPlan& InPlan) {
-                    return std::filesystem::weakly_canonical(InPlan.path) != resolvedRoot;
-                }),
-                plans.end());
-        }
-
-        if (plans.empty()) {
-            std::cout << "No repositories found.\n";
-            std::exit(0);
-        }
-
-        const auto workspaceRoot = std::filesystem::weakly_canonical(root);
-        int successCount = 0;
-        int failureCount = 0;
-        for (const auto& plan : plans) {
-            const auto result = RunResetPlan(workspaceRoot, plan, InMode, *dryRun, *fetch);
-            PrintResetResult(result);
-            if (result.exitCode == 0) {
-                successCount += 1;
-            } else {
-                failureCount += 1;
-                if (!*continueOnError) {
-                    std::cout << "\nSummary: " << (successCount + failureCount) << " repos, "
-                              << successCount << " succeeded, " << failureCount << " failed\n";
-                    std::exit(1);
-                }
-            }
-        }
-
-        std::cout << "\nSummary: " << (successCount + failureCount) << " repos, "
-                  << successCount << " succeeded, " << failureCount << " failed\n";
-        std::exit(failureCount > 0 ? 1 : 0);
+        PerformReset(root, *remote, *maxDepth, *noCache, *refreshCache, *noRecursive, *dryRun, *continueOnError, *fetch, InMode);
     });
 }
 
@@ -741,6 +757,37 @@ void RegisterReset(CLI::App& InApp) {
 
     auto* stableRemote = cmd->add_subcommand("stable-remote", "Hard reset to remote stable branch/tag concepts recursively");
     RegisterResetMode(stableRemote, ResetMode::StableRemote, "origin", true);
+
+    cmd->callback([cmd]() {
+        if (cmd->get_subcommands().size() > 0) {
+            return;
+        }
+        std::cout << "Target for reset not specified. Choose reset target:\n"
+                  << "  [l]ocal   (Reset to local branch concepts)\n"
+                  << "  [r]emote  (Reset to remote-tracking branch concepts)\n"
+                  << "  [sl]      (Reset to stable local concepts)\n"
+                  << "  [sr]      (Reset to stable remote concepts)\n"
+                  << "Choice [l/r/sl/sr]: ";
+        std::string choice;
+        if (!std::getline(std::cin, choice)) {
+            std::exit(1);
+        }
+        ResetMode mode = ResetMode::Local;
+        std::string remote = "";
+        bool fetch = false;
+        
+        if (choice == "r") { mode = ResetMode::Remote; remote = "origin"; fetch = true; }
+        else if (choice == "sl") { mode = ResetMode::StableLocal; }
+        else if (choice == "sr") { mode = ResetMode::StableRemote; remote = "origin"; fetch = true; }
+        else if (choice == "l" || choice.empty()) { mode = ResetMode::Local; }
+        else {
+             std::cerr << "Invalid choice.\n";
+             std::exit(1);
+        }
+        
+        const auto root = std::filesystem::weakly_canonical(std::filesystem::path("."));
+        PerformReset(root, remote, 12, false, false, false, false, false, fetch, mode);
+    });
 }
 
 } // namespace kano::git::commands

@@ -8,6 +8,7 @@ target_sources(kano_git_command_runtime
     private/command_executor.cpp
     private/kog_config.cpp
     private/ai_utils.cpp
+    private/repo_hygiene_cmd.cpp
   PUBLIC
     public/auto_model_policy.hpp
     public/command_registry.hpp
@@ -35,7 +36,7 @@ target_include_directories(kano_git_command_runtime
     ${KANO_GIT_COMMAND_ROOT}/runtime/private
 )
 
-target_link_libraries(kano_git_command_runtime PUBLIC CLI11::CLI11 kano::git_shell)
+target_link_libraries(kano_git_command_runtime PUBLIC CLI11::CLI11 kano::git_shell kano::git_workspace)
 target_link_libraries(kano_git_command_runtime PRIVATE tomlplusplus::tomlplusplus)
 
 add_library(kano::git_command_runtime ALIAS kano_git_command_runtime)

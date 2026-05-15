@@ -1,14 +1,39 @@
-# Enforce LF for shell scripts and source code
+* text=auto
+
+.gitattributes text eol=lf
+.gitignore text eol=lf
+.gitmodules text eol=lf
+.editorconfig text eol=lf
+.kogignore text eol=lf
+
 *.sh text eol=lf
 *.bash text eol=lf
-*.ps1 text eol=crlf
-*.bat text eol=crlf
-*.md text eol=lf
-*.toml text eol=lf
+*.py text eol=lf
 *.cpp text eol=lf
 *.hpp text eol=lf
+*.h text eol=lf
+*.c text eol=lf
 *.cmake text eol=lf
 CMakeLists.txt text eol=lf
+*.groovy text eol=lf
+*.md text eol=lf
+*.toml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+
+scripts/kog text eol=lf
+scripts/kano-git text eol=lf
+assets/root-wrapper-templates/common/kog text eol=lf
+assets/root-wrapper-templates/common/kog-*.sh text eol=lf
+.githooks/* text eol=lf
+
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.sln text eol=crlf
+*.vcxproj text eol=crlf
+*.vcxproj.filters text eol=crlf
 
 # Binary files
 *.png binary

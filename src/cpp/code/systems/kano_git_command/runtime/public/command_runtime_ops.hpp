@@ -20,6 +20,8 @@ auto RunSyncOriginLatestNative(const std::filesystem::path& InRepoRoot,
                                bool InDryRun,
                                bool InCleanupStaleLocks = false) -> int;
 
+void FixRepoHygieneRecursive(const std::filesystem::path& InWorkspaceRoot);
+
 auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
                               const std::string& InPlanFile,
                               const std::string& InPlanStage,

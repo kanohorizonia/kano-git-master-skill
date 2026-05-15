@@ -842,7 +842,12 @@ auto SeedCommitStage(const std::filesystem::path& InWorkspaceRoot,
             // Use appropriate message based on what we're committing
             std::string message;
             std::string reviewReason;
-            if (InUsePlaceholders) {
+            const bool isGitlinkOnly = RepoHasGitlinkOnlyChanges(repo);
+
+            if (isGitlinkOnly) {
+                message = std::format("chore({}): update submodule pointers", scope);
+                reviewReason = "pure gitlink update";
+            } else if (InUsePlaceholders || IsAgentModeEnabled()) {
                 message = "replace-with-commit-message";
                 reviewReason = "replace-with-review-reason";
             } else if (hasDirtyChanges) {
@@ -987,11 +992,19 @@ auto TryInjectFallbackCommits(const std::filesystem::path& InWorkspaceRoot, cons
             std::string line;
             while (std::getline(iss, line)) if (!Trim(line).empty()) changed++;
             nlohmann::json commitObj;
-            commitObj["message"]           = std::format("chore({}): apply updates ({} files)", scope, changed);
-            commitObj["include"]           = nlohmann::json::array();
-            commitObj["exclude"]           = nlohmann::json::array();
-            commitObj["review"]["verdict"] = "pass";
-            commitObj["review"]["reason"]  = "seeded from current dirty status";
+            if (RepoHasGitlinkOnlyChanges(repo)) {
+                commitObj["message"]           = std::format("chore({}): update submodule pointers", scope);
+                commitObj["include"]           = nlohmann::json::array();
+                commitObj["exclude"]           = nlohmann::json::array();
+                commitObj["review"]["verdict"] = "pass";
+                commitObj["review"]["reason"]  = "pure gitlink update";
+            } else {
+                commitObj["message"]           = std::format("chore({}): apply updates ({} files)", scope, changed);
+                commitObj["include"]           = nlohmann::json::array();
+                commitObj["exclude"]           = nlohmann::json::array();
+                commitObj["review"]["verdict"] = "pass";
+                commitObj["review"]["reason"]  = "seeded from current dirty status";
+            }
             nlohmann::json repoObj;
             repoObj["repo"]    = repoDisplay.empty() ? "." : repoDisplay;
             repoObj["commits"] = nlohmann::json::array({commitObj});
@@ -1841,6 +1854,10 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
     bool anyFilled = false;
     if (fillMode == "per-commit") {
         for (const auto& entry : entries) {
+            if (!CommitEntryNeedsReview(entry)) {
+                std::cerr << kano::terminal::PlanPrefix() << " entry " << entry.index << " (" << entry.repo << ") is deterministic; skipping AI fill.\n";
+                continue;
+            }
             const auto workingPlanPath = BuildPlanAiWorkingCopyPath(InPlanPath);
             const auto workingGitignorePath = BuildGitignoreAiWorkingCopyPath(InWorkspaceRoot);
             std::string seedError;
@@ -2091,18 +2108,37 @@ auto ResolveRepoPathFromDisplay(const std::filesystem::path& InWorkspaceRoot, co
     return (InWorkspaceRoot / InRepoDisplay).lexically_normal();
 }
 
-auto RepoHasGitlinkOnlyChanges(const std::filesystem::path& InRepo) -> bool {
-    const auto status = GitCapture(InRepo, {"status", "--porcelain"});
+auto IsGitlinkPathInHead(const std::filesystem::path& InRepoRoot, const std::string& InPath) -> bool {
+    const auto tree = GitCapture(InRepoRoot, {"ls-tree", "HEAD", "--", InPath});
+    if (tree.exitCode != 0) return false;
+    const auto out = Trim(tree.stdoutStr);
+    if (out.empty()) return false;
+    return out.rfind("160000 ", 0) == 0;
+}
+
+auto RepoHasGitlinkOnlyChanges(const std::filesystem::path& InRepoRoot) -> bool {
+    const auto status = GitCapture(InRepoRoot, {"status", "--porcelain"});
     if (status.exitCode != 0) return false;
-    std::istringstream iss(status.stdoutStr);
+    const auto& porcelain = status.stdoutStr;
+    if (Trim(porcelain).empty()) return false;
+
+    std::istringstream iss(porcelain);
     std::string line;
     bool hasAny = false;
     while (std::getline(iss, line)) {
-        if (Trim(line).empty()) continue;
+        if (line.size() < 4) continue;
+        if (line.rfind("?? ", 0) == 0) return false; // Untracked file means not gitlink-only
+
+        std::string path = Trim(line.substr(3));
+        const auto renamePos = path.find(" -> ");
+        if (renamePos != std::string::npos) {
+            path = Trim(path.substr(renamePos + 4));
+        }
+
+        if (path.empty()) continue;
+
+        if (!IsGitlinkPathInHead(InRepoRoot, path)) return false;
         hasAny = true;
-        // Simplified: if any line is NOT a submodule change, return false
-        // Real logic is more complex, but this is a helper migrated from plan_cmd.cpp
-        // For now, I'll stick to the simplified version or copy the exact one if I can find it.
     }
     return hasAny;
 }

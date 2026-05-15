@@ -6,6 +6,7 @@ target_sources(kano_git_cmd_repo_sync
     private/push_cmd.cpp
     private/reset_cmd.cpp
     private/remote_cmd.cpp
+    private/stash_cmd.cpp
     private/submodule_cmd.cpp
     private/subtree_cmd.cpp
     private/sync_cmd.cpp

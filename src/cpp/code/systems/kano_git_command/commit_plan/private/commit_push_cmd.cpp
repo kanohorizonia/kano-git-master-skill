@@ -901,6 +901,13 @@ auto EnsureAgentSharedPlanFresh(const std::filesystem::path& InWorkspaceRoot,
     refreshReason.clear();
     const auto verifyExit = CheckPlanRefreshNeededViaSelf(InWorkspaceRoot, InPlanPath, &refreshReason);
     if (verifyExit != 1) {
+        // In agent mode, if the plan needs to be filled, exit with 3 to signal the agent
+        if (refreshReason.find("placeholder-or-empty") != std::string::npos) {
+            std::cerr << "\n[AGENT_PLAN_REQUIRED] Commit messages need to be filled in:\n";
+            std::cerr << "  " << InPlanPath.generic_string() << "\n";
+            std::cerr << "After editing the plan, run the command again.\n\n";
+            return 3;
+        }
         std::cerr << "Error: refreshed shared agent plan is still not ready: " << InPlanPath.generic_string();
         if (!refreshReason.empty()) {
             std::cerr << " (" << refreshReason << ")";
@@ -1975,6 +1982,7 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
     std::cout << "=== commit-push stage: pre-commit ===\n";
     {
         const auto preCommitStart = std::chrono::steady_clock::now();
+        FixRepoHygieneRecursive(InWorkspaceRoot);
         const auto preCommitCode = RunSyncPreCommitNative(InWorkspaceRoot, true, false, "default");
         const auto preCommitEnd = std::chrono::steady_clock::now();
         preCommitMillis = std::chrono::duration_cast<std::chrono::milliseconds>(preCommitEnd - preCommitStart).count();
@@ -1987,6 +1995,21 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
         const auto refreshCode = EnsureAgentSharedPlanFresh(InWorkspaceRoot, planPath);
         if (refreshCode != 0) {
             return refreshCode;
+        }
+    }
+
+    if (agentMode) {
+        // Check the plan file directly for unfilled placeholder messages
+        std::ifstream planFile(planPath);
+        if (planFile.is_open()) {
+            std::string planContent((std::istreambuf_iterator<char>(planFile)),
+                                     std::istreambuf_iterator<char>());
+            if (planContent.find("\"replace-with-commit-message\"") != std::string::npos) {
+                std::cerr << "\n[AGENT_PLAN_REQUIRED] Commit messages need to be filled in:\n";
+                std::cerr << "  " << planPath.generic_string() << "\n";
+                std::cerr << "After editing the plan, run the command again.\n\n";
+                return 3;
+            }
         }
     }
 
