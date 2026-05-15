@@ -263,7 +263,7 @@ struct DiscoverPagerState {
     bool active = false;
     std::vector<std::string> lines;
     int pageIndex = 0;
-    int pageSize = 18;
+    int pageSize = 18; // Default, will be updated dynamically
     bool dirtyOnly = false;
     std::string title;
     bool loading = false;
@@ -1146,11 +1146,24 @@ auto BuildLiveRepoView(const std::filesystem::path& InWorkspaceRoot,
 }
 
 auto ComputeHistoryPageSize() -> int {
-    return std::max(5, ftxui::Terminal::Size().dimy - 14);
+    // Total chrome: Root (Title+Sep+Async+Sep+Sep+Footer+Border) ~ 8 lines
+    // + RightPanel (Title+Sep+Hbox1+Hbox2+Sep+ListBorder+Stats+Empty+Sep+Controls+Border) ~ 13 lines
+    // Total ~ 21 lines. Use 22 to be safe.
+    return std::max(5, ftxui::Terminal::Size().dimy - 22);
 }
 
 auto ComputeDetailBodyPageSize() -> int {
-    return std::max(5, ftxui::Terminal::Size().dimy - 12);
+    // Total chrome: Root ~ 8 lines
+    // + RightPanel (Title+Sep+Sep+Controls+Border) ~ 6 lines
+    // Total ~ 14 lines. Use 16 to be safe.
+    return std::max(5, ftxui::Terminal::Size().dimy - 16);
+}
+
+auto ComputeDiscoverPageSize() -> int {
+    // Total chrome: Root ~ 8 lines
+    // + RightPanel (Title+Sep+Cmd+State+Page+Controls+Sep+ListBorder+Border) ~ 11 lines
+    // Total ~ 19 lines. Use 20 to be safe.
+    return std::max(5, ftxui::Terminal::Size().dimy - 20);
 }
 
 auto ComputeHistoryRowWidthEstimate() -> int {
@@ -4106,6 +4119,7 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
         Element rightPanel;
 
         if (discover.active) {
+            discover.pageSize = ComputeDiscoverPageSize();
             const int totalPages = std::max(1, static_cast<int>((discover.lines.size() + static_cast<std::size_t>(discover.pageSize) - 1) / static_cast<std::size_t>(discover.pageSize)));
             const int clampedPage = std::clamp(discover.pageIndex, 0, totalPages - 1);
             const int start = clampedPage * discover.pageSize;
