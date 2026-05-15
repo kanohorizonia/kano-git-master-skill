@@ -3419,6 +3419,7 @@ auto AmendSingleRepo(const std::filesystem::path& InWorkspaceRoot,
 
         result.combined = true;
         result.amended = true;
+        result.commitTitle = HeadCommitTitle(InRepo);
         if (result.note.empty()) {
             result.note = "combined unpushed commits";
         }
@@ -3482,6 +3483,7 @@ auto AmendSingleRepo(const std::filesystem::path& InWorkspaceRoot,
     }
 
     result.amended = true;
+    result.commitTitle = HeadCommitTitle(InRepo);
     if (result.note.empty()) {
         result.note = "amended HEAD";
     }
@@ -3596,11 +3598,10 @@ auto PrintAmendSummary(const std::filesystem::path& InWorkspaceRoot,
             skipped += 1;
         }
 
-        const auto message = item.commitTitle.empty() ? std::string("-") : CompactSingleLine(item.commitTitle, 34);
+        const auto detail = item.commitTitle.empty() ? item.note : item.commitTitle;
         std::cout << std::left << std::setw(36) << repoLabel
                   << std::setw(12) << status
-                  << std::setw(36) << message
-                  << item.note << "\n";
+                  << detail << "\n";
     }
 
     std::cout << "\nTotals: amended=" << amended
