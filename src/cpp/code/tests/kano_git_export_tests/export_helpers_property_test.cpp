@@ -20,6 +20,7 @@
 #include <vector>
 
 using namespace kano::git::commands;
+using namespace kano::git::shell;
 namespace workspace = kano::git::workspace;
 
 // ---------------------------------------------------------------------------
@@ -166,6 +167,7 @@ auto GenExportRecords(const std::filesystem::path& InRoot) -> std::vector<Export
         ExportRecord rec;
         rec.repoPath = InRoot / ("repo-" + std::to_string(i));
         rec.repoName = "repo-" + std::to_string(i);
+        rec.relativeRepoPath = (i == 0) ? "." : ("repo-" + std::to_string(i));
         rec.isRoot = (i == 0);
         records.push_back(std::move(rec));
     }
@@ -200,9 +202,7 @@ bool Contains(const std::string& InHaystack, const std::string& InNeedle) {
 
 // Feature: kog-export-command, Property 1: Export list root-first ordering
 TEST_CASE("Property 1: BuildExportList always places workspace root first",
-          "[Feature: kog-export-command]"
-          "[Property 1: Export list root-first ordering]"
-          "[property][BuildExportList][req-1.2]") {
+          "[Feature: kog-export-command][Property 1: Export list root-first ordering][property][BuildExportList][req-1.2]") {
     // **Validates: Requirements 1.2**
     //
     // For any non-empty discovery result, BuildExportList shall have the
@@ -211,12 +211,16 @@ TEST_CASE("Property 1: BuildExportList always places workspace root first",
     rc::prop("BuildExportList places root first for any non-empty discovery result", []() {
         const auto root = std::filesystem::path("workspace") / GenPathComponent();
         const std::vector<workspace::RepoRecord> subrepos = GenSubrepoRecords(root);
+        const auto stubExec = [](const std::string&, const std::vector<std::string>&, ExecMode, std::optional<std::filesystem::path>) {
+            return ExecResult{0, "unspecified", ""}; // git check-attr default
+        };
 
-        const std::vector<ExportRecord> exportList = BuildExportList(root, subrepos, false);
+        const std::vector<ExportRecord> exportList = BuildExportList(root, subrepos, false, stubExec);
 
         RC_ASSERT(!exportList.empty());
         RC_ASSERT(exportList.front().isRoot);
         RC_ASSERT(exportList.front().repoPath == root);
+        RC_ASSERT(exportList.front().relativeRepoPath == ".");
     });
 }
 
@@ -226,9 +230,7 @@ TEST_CASE("Property 1: BuildExportList always places workspace root first",
 
 // Feature: kog-export-command, Property 2: No-recursive produces single-entry list
 TEST_CASE("Property 2: BuildExportList with noRecursive=true returns exactly one entry",
-          "[Feature: kog-export-command]"
-          "[Property 2: No-recursive produces single-entry list]"
-          "[property][BuildExportList][req-1.3]") {
+          "[Feature: kog-export-command][Property 2: No-recursive produces single-entry list][property][BuildExportList][req-1.3]") {
     // **Validates: Requirements 1.3**
     //
     // For any discovery result (including many subrepos), when noRecursive=true,
@@ -237,12 +239,16 @@ TEST_CASE("Property 2: BuildExportList with noRecursive=true returns exactly one
     rc::prop("BuildExportList with noRecursive=true returns exactly one entry", []() {
         const auto root = std::filesystem::path("workspace") / GenPathComponent();
         const std::vector<workspace::RepoRecord> subrepos = GenSubrepoRecords(root);
+        const auto stubExec = [](const std::string&, const std::vector<std::string>&, ExecMode, std::optional<std::filesystem::path>) {
+            return ExecResult{0, "unspecified", ""};
+        };
 
-        const std::vector<ExportRecord> exportList = BuildExportList(root, subrepos, true);
+        const std::vector<ExportRecord> exportList = BuildExportList(root, subrepos, true, stubExec);
 
         RC_ASSERT(exportList.size() == 1);
         RC_ASSERT(exportList.front().isRoot);
         RC_ASSERT(exportList.front().repoPath == root);
+        RC_ASSERT(exportList.front().relativeRepoPath == ".");
     });
 }
 
@@ -252,9 +258,7 @@ TEST_CASE("Property 2: BuildExportList with noRecursive=true returns exactly one
 
 // Feature: kog-export-command, Property 3: Revision zero-padding
 TEST_CASE("Property 3: FormatRevision produces string of length >= pad with correct numeric value",
-          "[Feature: kog-export-command]"
-          "[Property 3: Revision zero-padding]"
-          "[property][FormatRevision][req-2.2][req-2.5]") {
+          "[Feature: kog-export-command][Property 3: Revision zero-padding][property][FormatRevision][req-2.2][req-2.5]") {
     // **Validates: Requirements 2.2, 2.5**
     //
     // For any r >= 0 and n >= 1, FormatRevision(r, n) shall produce a string
@@ -461,6 +465,7 @@ TEST_CASE("Property 9: FormatManifest output contains all 10 required field labe
         ExportRecord record;
         record.repoPath = GenSimplePath();
         record.repoName = GenRepoName();
+        record.relativeRepoPath = record.repoName;
         record.isRoot = *rc::gen::arbitrary<bool>();
 
         ExportResult result;

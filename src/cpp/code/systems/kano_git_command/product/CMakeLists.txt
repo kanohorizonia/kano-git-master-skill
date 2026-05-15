@@ -16,6 +16,7 @@ target_sources(kano_git_cmd_product
     private/status_cmd.cpp
     private/version_cmd.cpp
     private/discover_cmd.cpp
+    private/repo_hygiene_cmd.cpp
 )
 
 kog_configure_kano_module(kano_git_cmd_product)

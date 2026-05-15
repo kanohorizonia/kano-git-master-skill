@@ -47,6 +47,7 @@ struct ExportOptions {
 struct ExportRecord {
     std::filesystem::path repoPath;
     std::string repoName;
+    std::string relativeRepoPath;
     bool isRoot = false;
     std::vector<std::filesystem::path> submodulePaths; // populated for root repo only
 };
@@ -133,8 +134,15 @@ auto FormatDryRunPlan(const std::vector<ExportRecord>& InRecords,
 // InRoot is the workspace root path; InDiscovered is the list returned by
 // DiscoverWorkspaceRepos (may include the root or not).
 auto BuildExportList(const std::filesystem::path& InRoot,
-                     const std::vector<workspace::RepoRecord>& InDiscovered,
-                     bool InNoRecursive) -> std::vector<ExportRecord>;
+                      const std::vector<workspace::RepoRecord>& InDiscovered,
+                      bool InNoRecursive,
+                      const ShellExecutor& InExec) -> std::vector<ExportRecord>;
+
+// Returns true if the given path is marked with 'export-ignore' attribute
+// in the context of InRepoPath.
+auto IsPathIgnoredByExport(const std::filesystem::path& InRepoPath,
+                           const std::filesystem::path& InTargetPath,
+                           const ShellExecutor& InExec) -> bool;
 
 // ---------------------------------------------------------------------------
 // Shell-calling helpers (exposed for unit testing via dependency injection)

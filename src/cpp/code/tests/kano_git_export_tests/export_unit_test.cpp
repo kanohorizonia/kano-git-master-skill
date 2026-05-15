@@ -122,10 +122,12 @@ auto MakeFailArchiveForRepoExecutor(const std::filesystem::path& InFailRepoPath)
 // Build a simple ExportRecord for a named repo under a given root.
 auto MakeRecord(const std::filesystem::path& InRepoPath,
                 const std::string& InRepoName,
+                const std::string& InRelativePath,
                 bool InIsRoot = false) -> ExportRecord {
     ExportRecord rec;
     rec.repoPath = InRepoPath;
     rec.repoName = InRepoName;
+    rec.relativeRepoPath = InRelativePath;
     rec.isRoot = InIsRoot;
     return rec;
 }
@@ -176,7 +178,7 @@ TEST_CASE("ExportOneRepo returns success=false when archive command fails",
     TempDir metadataDir;
 
     const auto repoPath = std::filesystem::path("workspace") / "MyRepo";
-    const auto record = MakeRecord(repoPath, "MyRepo", true);
+    const auto record = MakeRecord(repoPath, "MyRepo", "MyRepo", true);
     const auto opts = MakeTestOpts();
 
     // Executor that fails git archive for this repo
@@ -201,7 +203,7 @@ TEST_CASE("ExportOneRepo returns success=true when archive command succeeds",
     TempDir metadataDir;
 
     const auto repoPath = std::filesystem::path("workspace") / "MyRepo";
-    const auto record = MakeRecord(repoPath, "MyRepo", true);
+    const auto record = MakeRecord(repoPath, "MyRepo", "MyRepo", true);
     const auto opts = MakeTestOpts();
 
     const auto exec = MakeSuccessExecutor();
@@ -223,7 +225,7 @@ TEST_CASE("ExportOneRepo archive name follows <name>_rev<NNN>.<format> pattern",
     TempDir metadataDir;
 
     const auto repoPath = std::filesystem::path("workspace") / "KTOStudio";
-    const auto record = MakeRecord(repoPath, "KTOStudio", true);
+    const auto record = MakeRecord(repoPath, "KTOStudio", "KTOStudio", true);
     const auto opts = MakeTestOpts();
 
     const auto exec = MakeSuccessExecutor();
@@ -257,9 +259,9 @@ TEST_CASE("RunExportWithExecutor continues to next repo after one failure",
 
     // Sub1 will fail; Root and Sub2 will succeed
     const std::vector<ExportRecord> exportList = {
-        MakeRecord(rootPath, "Root", true),
-        MakeRecord(sub1Path, "Sub1", false),
-        MakeRecord(sub2Path, "Sub2", false),
+        MakeRecord(rootPath, "Root", ".", true),
+        MakeRecord(sub1Path, "Sub1", "Sub1", false),
+        MakeRecord(sub2Path, "Sub2", "Sub2", false),
     };
 
     const auto opts = MakeTestOpts();
@@ -305,8 +307,8 @@ TEST_CASE("RunExportWithExecutor returns non-zero exit code when at least one re
     const auto sub1Path = std::filesystem::path("workspace") / "Sub1";
 
     const std::vector<ExportRecord> exportList = {
-        MakeRecord(rootPath, "Root", true),
-        MakeRecord(sub1Path, "Sub1", false),
+        MakeRecord(rootPath, "Root", ".", true),
+        MakeRecord(sub1Path, "Sub1", "Sub1", false),
     };
 
     const auto opts = MakeTestOpts();
@@ -342,8 +344,8 @@ TEST_CASE("RunExportWithExecutor returns zero exit code when all repos succeed",
     const auto sub1Path = std::filesystem::path("workspace") / "Sub1";
 
     const std::vector<ExportRecord> exportList = {
-        MakeRecord(rootPath, "Root", true),
-        MakeRecord(sub1Path, "Sub1", false),
+        MakeRecord(rootPath, "Root", ".", true),
+        MakeRecord(sub1Path, "Sub1", "Sub1", false),
     };
 
     const auto opts = MakeTestOpts();
@@ -379,10 +381,10 @@ TEST_CASE("RunExportWithExecutor processes all repos even when first repo fails"
     const auto sub3Path = std::filesystem::path("workspace") / "Sub3";
 
     const std::vector<ExportRecord> exportList = {
-        MakeRecord(rootPath, "Root", true),   // fails
-        MakeRecord(sub1Path, "Sub1", false),  // succeeds
-        MakeRecord(sub2Path, "Sub2", false),  // succeeds
-        MakeRecord(sub3Path, "Sub3", false),  // succeeds
+        MakeRecord(rootPath, "Root", ".", true),   // fails
+        MakeRecord(sub1Path, "Sub1", "Sub1", false),  // succeeds
+        MakeRecord(sub2Path, "Sub2", "Sub2", false),  // succeeds
+        MakeRecord(sub3Path, "Sub3", "Sub3", false),  // succeeds
     };
 
     const auto opts = MakeTestOpts();
@@ -428,8 +430,8 @@ TEST_CASE("RunExportWithExecutor returns non-zero when all repos fail",
     const auto sub1Path = std::filesystem::path("workspace") / "Sub1";
 
     const std::vector<ExportRecord> exportList = {
-        MakeRecord(rootPath, "Root", true),
-        MakeRecord(sub1Path, "Sub1", false),
+        MakeRecord(rootPath, "Root", ".", true),
+        MakeRecord(sub1Path, "Sub1", "Sub1", false),
     };
 
     const auto opts = MakeTestOpts();
@@ -575,7 +577,7 @@ TEST_CASE("ComputeRevision falls back to '000' when git rev-list returns non-zer
     TempDir metadataDir;
 
     const auto repoPath = std::filesystem::path("workspace") / "MyRepo";
-    const auto record = MakeRecord(repoPath, "MyRepo", true);
+    const auto record = MakeRecord(repoPath, "MyRepo", "MyRepo", true);
     const auto opts = MakeTestOpts(/*noMetadata=*/true);
 
     const auto exec = MakeRevListFailExecutor();
@@ -599,7 +601,7 @@ TEST_CASE("ComputeRevision falls back to '000' when git rev-list returns empty s
     TempDir metadataDir;
 
     const auto repoPath = std::filesystem::path("workspace") / "EmptyRepo";
-    const auto record = MakeRecord(repoPath, "EmptyRepo", true);
+    const auto record = MakeRecord(repoPath, "EmptyRepo", "EmptyRepo", true);
     const auto opts = MakeTestOpts(/*noMetadata=*/true);
 
     const auto exec = MakeRevListEmptyOutputExecutor();
@@ -621,7 +623,7 @@ TEST_CASE("ComputeRevision falls back to '000' when git rev-list returns non-num
     TempDir metadataDir;
 
     const auto repoPath = std::filesystem::path("workspace") / "GarbageRepo";
-    const auto record = MakeRecord(repoPath, "GarbageRepo", true);
+    const auto record = MakeRecord(repoPath, "GarbageRepo", "GarbageRepo", true);
     const auto opts = MakeTestOpts(/*noMetadata=*/true);
 
     const auto exec = MakeRevListGarbageOutputExecutor();
@@ -643,7 +645,7 @@ TEST_CASE("ComputeRevision fallback respects custom revPad",
     TempDir metadataDir;
 
     const auto repoPath = std::filesystem::path("workspace") / "MyRepo";
-    const auto record = MakeRecord(repoPath, "MyRepo", true);
+    const auto record = MakeRecord(repoPath, "MyRepo", "MyRepo", true);
 
     ExportOptions opts = MakeTestOpts(/*noMetadata=*/true);
     opts.revPad = 5;
@@ -715,7 +717,7 @@ TEST_CASE("WriteChecksumFile failure is non-fatal: ExportOneRepo still returns s
     std::filesystem::create_directories(metadataDir.path);
 
     const auto repoPath = std::filesystem::path("workspace") / "MyRepo";
-    const auto record = MakeRecord(repoPath, "MyRepo", true);
+    const auto record = MakeRecord(repoPath, "MyRepo", "MyRepo", true);
 
     // noMetadata=false so WriteChecksumFile is actually called
     ExportOptions opts = MakeTestOpts(/*noMetadata=*/false);
@@ -748,7 +750,7 @@ TEST_CASE("WriteChecksumFile failure emits a warning to stderr",
     std::filesystem::create_directories(metadataDir.path);
 
     const auto repoPath = std::filesystem::path("workspace") / "MyRepo";
-    const auto record = MakeRecord(repoPath, "MyRepo", true);
+    const auto record = MakeRecord(repoPath, "MyRepo", "MyRepo", true);
 
     ExportOptions opts = MakeTestOpts(/*noMetadata=*/false);
 
@@ -785,8 +787,8 @@ TEST_CASE("WriteChecksumFile failure does not affect RunExportWithExecutor exit 
     const auto sub1Path = std::filesystem::path("workspace") / "Sub1";
 
     const std::vector<ExportRecord> exportList = {
-        MakeRecord(rootPath, "Root", true),
-        MakeRecord(sub1Path, "Sub1", false),
+        MakeRecord(rootPath, "Root", ".", true),
+        MakeRecord(sub1Path, "Sub1", "Sub1", false),
     };
 
     // noMetadata=false so WriteChecksumFile is called for each repo

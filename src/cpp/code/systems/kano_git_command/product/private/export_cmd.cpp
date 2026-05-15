@@ -142,6 +142,24 @@ auto TrimExport(std::string InValue) -> std::string {
     return InValue.substr(start);
 }
 
+auto RelativeDisplayPath(const std::filesystem::path& InRoot, const std::filesystem::path& InPath) -> std::filesystem::path {
+    const auto normalizedRoot = InRoot.lexically_normal();
+    const auto normalizedPath = InPath.lexically_normal();
+    const auto relative = normalizedPath.lexically_relative(normalizedRoot);
+    if (!relative.empty()) {
+        return relative;
+    }
+    return normalizedPath;
+}
+
+auto GroupFromRelativePath(const std::filesystem::path& InRelativePath) -> std::string {
+    const auto parent = InRelativePath.parent_path().generic_string();
+    if (parent.empty() || parent == ".") {
+        return ".";
+    }
+    return parent;
+}
+
 auto FirstNLines(const std::string& InText, int InN) -> std::string {
     std::istringstream iss(InText);
     std::string line;
@@ -183,9 +201,9 @@ auto FormatManifest(const ExportRecord& InRecord,
     return oss.str();
 }
 
-auto FormatProgressLine(const std::string& InRepoName,
+auto FormatProgressLine(const std::string& InDisplayName,
                         const std::filesystem::path& InArchivePath) -> std::string {
-    return "Exported " + InRepoName + " -> " + InArchivePath.generic_string();
+    return "  Exported " + InDisplayName + " -> " + InArchivePath.generic_string();
 }
 
 auto FormatSummary(const std::filesystem::path& InOutputDir,
@@ -205,23 +223,47 @@ auto FormatSummary(const std::filesystem::path& InOutputDir,
 }
 
 auto FormatDryRunPlan(const std::vector<ExportRecord>& InRecords,
-                      const ExportOptions& InOpts) -> std::string {
+                       const ExportOptions& InOpts) -> std::string {
     std::ostringstream oss;
     oss << "Dry-run export plan\n";
     oss << "OutputDir: " << InOpts.outputDir.generic_string() << "\n";
     oss << "Repos to export:\n";
+    std::string currentGroup;
     for (const auto& record : InRecords) {
+        const auto relativePath = std::filesystem::path(record.relativeRepoPath);
+        const auto group = GroupFromRelativePath(relativePath);
+        if (group != currentGroup) {
+            currentGroup = group;
+            oss << "\nGROUP: " << currentGroup << "\n";
+        }
         // Use a placeholder revision for dry-run display
         const std::string archiveName = ComputeArchiveName(
             record.repoName, FormatRevision(0, InOpts.revPad), InOpts.format);
-        oss << "  " << record.repoName << " -> " << archiveName << "\n";
+        oss << "  " << record.repoName << " (" << record.relativeRepoPath << ") -> " << archiveName << "\n";
     }
     return oss.str();
 }
 
+auto IsPathIgnoredByExport(const std::filesystem::path& InRepoPath,
+                           const std::filesystem::path& InTargetPath,
+                           const ShellExecutor& InExec) -> bool {
+    const auto relativePath = std::filesystem::relative(InTargetPath, InRepoPath);
+    if (relativePath.empty()) {
+        return false;
+    }
+    const auto result = InExec("git", {"check-attr", "export-ignore", relativePath.generic_string()},
+                               shell::ExecMode::Capture, InRepoPath);
+    if (result.exitCode != 0) {
+        return false;
+    }
+    // Expected output: <path>: export-ignore: set
+    return result.stdoutStr.find("export-ignore: set") != std::string::npos;
+}
+
 auto BuildExportList(const std::filesystem::path& InRoot,
-                     const std::vector<workspace::RepoRecord>& InDiscovered,
-                     bool InNoRecursive) -> std::vector<ExportRecord> {
+                      const std::vector<workspace::RepoRecord>& InDiscovered,
+                      bool InNoRecursive,
+                      const ShellExecutor& InExec) -> std::vector<ExportRecord> {
     std::vector<ExportRecord> result;
 
     // Always prepend the workspace root as the first entry
@@ -231,6 +273,7 @@ auto BuildExportList(const std::filesystem::path& InRoot,
     if (rootRecord.repoName.empty()) {
         rootRecord.repoName = InRoot.lexically_normal().filename().generic_string();
     }
+    rootRecord.relativeRepoPath = ".";
     rootRecord.isRoot = true;
     result.push_back(std::move(rootRecord));
 
@@ -245,15 +288,27 @@ auto BuildExportList(const std::filesystem::path& InRoot,
         if (normalizedPath == normalizedRoot) {
             continue;
         }
+
+        // Check if the repo path is ignored by the root repo
+        if (IsPathIgnoredByExport(normalizedRoot, normalizedPath, InExec)) {
+            continue;
+        }
+
         ExportRecord rec;
         rec.repoPath = repo.path;
         rec.repoName = repo.path.filename().generic_string();
         if (rec.repoName.empty()) {
             rec.repoName = normalizedPath.generic_string();
         }
+        rec.relativeRepoPath = RelativeDisplayPath(InRoot, repo.path).generic_string();
         rec.isRoot = false;
         result.push_back(std::move(rec));
     }
+
+    // Sort by relative path to ensure consistent grouping
+    std::sort(result.begin(), result.end(), [](const ExportRecord& A, const ExportRecord& B) {
+        return A.relativeRepoPath < B.relativeRepoPath;
+    });
 
     return result;
 }
@@ -418,19 +473,28 @@ auto RunExportWithExecutor(const ExportOptions& InOpts,
     std::vector<ExportResult> results;
     bool anyFailed = false;
 
+    std::string currentGroup;
     for (const auto& record : InExportList) {
+        const auto relativePath = std::filesystem::path(record.relativeRepoPath);
+        const auto group = GroupFromRelativePath(relativePath);
+        if (group != currentGroup) {
+            currentGroup = group;
+            std::cout << "\nGROUP: " << currentGroup << "\n";
+        }
+
         const auto result = ExportOneRepo(record, InOpts, InOutputDir, InMetadataDir, InExec);
         if (!result.success) {
             std::cerr << "kog export: failed to export '" << record.repoName
-                      << "': " << result.errorMessage << "\n";
+                      << "' (" << record.relativeRepoPath << "): " << result.errorMessage << "\n";
             anyFailed = true;
         } else {
-            std::cout << FormatProgressLine(record.repoName, result.archivePath) << "\n";
+            const std::string displayName = record.isRoot ? record.repoName : record.relativeRepoPath;
+            std::cout << FormatProgressLine(displayName, result.archivePath) << "\n";
         }
         results.push_back(result);
     }
 
-    std::cout << FormatSummary(InOutputDir, InMetadataDir, results);
+    std::cout << "\n" << FormatSummary(InOutputDir, InMetadataDir, results);
 
     return anyFailed ? 1 : 0;
 }
@@ -472,7 +536,7 @@ auto RunExport(const ExportOptions& InOpts) -> int {
         : InOpts.outputDir;
     const auto metadataDir = outputDir / "metadata";
 
-    const auto exportList = BuildExportList(cwd, discovery.repos, InOpts.noRecursive);
+    const auto exportList = BuildExportList(cwd, discovery.repos, InOpts.noRecursive, realExec);
 
     if (InOpts.dryRun) {
         ExportOptions optsWithDir = InOpts;
