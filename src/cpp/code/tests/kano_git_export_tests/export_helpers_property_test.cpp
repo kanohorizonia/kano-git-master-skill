@@ -405,7 +405,7 @@ TEST_CASE("Property 7: CollectWorkingTreeFiles includes submodule paths in singl
             return ExecResult{0, repoName + "_file.txt\n", ""};
         };
 
-        const std::vector<std::string> fileList = kano::git::commands::CollectWorkingTreeFiles(record, true, stubExec);
+        const std::vector<std::string> fileList = kano::git::commands::CollectWorkingTreeFiles(record, record.repoName + "/", true, stubExec);
 
         // Check that each submodule has its unique file in the list
         for (const auto& subPath : record.submodulePaths) {

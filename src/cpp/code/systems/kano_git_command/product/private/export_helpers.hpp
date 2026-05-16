@@ -100,6 +100,7 @@ auto BuildGitArchiveArgs(const std::string& InFormat,
 // Returns the list of files to be included in a working-tree export,
 // respecting .gitignore. If InSingle is true, also includes submodule contents.
 auto CollectWorkingTreeFiles(const ExportRecord& InRecord,
+                             const std::string& InPrefix,
                              bool InSingle,
                              const ShellExecutor& InExec) -> std::vector<std::string>;
 

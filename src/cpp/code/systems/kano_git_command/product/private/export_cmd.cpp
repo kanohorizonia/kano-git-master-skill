@@ -94,8 +94,7 @@ auto BuildGitArchiveArgs(const std::string& InFormat,
 }
 
 
-auto CollectWorkingTreeFiles(const ExportRecord& InRecord, bool InSingle, const ShellExecutor& InExec) -> std::vector<std::string> {
-    const std::string repoDirName = InRecord.repoPath.filename().generic_string();
+auto CollectWorkingTreeFiles(const ExportRecord& InRecord, const std::string& InPrefix, bool InSingle, const ShellExecutor& InExec) -> std::vector<std::string> {
     std::vector<std::string> allFiles;
 
     auto getFiles = [&](const std::filesystem::path& repoPath, const std::string& prefix, const std::vector<std::string>& skipList = {}) {
@@ -104,6 +103,9 @@ auto CollectWorkingTreeFiles(const ExportRecord& InRecord, bool InSingle, const 
             std::istringstream iss(res.stdoutStr);
             std::string line;
             while (std::getline(iss, line)) {
+                if (!line.empty() && line.back() == '\r') {
+                    line.pop_back();
+                }
                 if (!line.empty()) {
                     // Skip git metadata
                     if (line == ".git" || line.starts_with(".git/") || line.starts_with(".git\\") ||
@@ -129,12 +131,12 @@ auto CollectWorkingTreeFiles(const ExportRecord& InRecord, bool InSingle, const 
     }
 
     // Root repo files
-    getFiles(InRecord.repoPath, repoDirName + "/", rootSkips);
+    getFiles(InRecord.repoPath, InPrefix, rootSkips);
 
     // If single mode, recursively add submodule files
     if (InSingle && InRecord.isRoot) {
         for (const auto& subRelPath : InRecord.submodulePaths) {
-            const std::string subPrefix = repoDirName + "/" + subRelPath.generic_string() + "/";
+            const std::string subPrefix = InPrefix + subRelPath.generic_string() + "/";
             getFiles(InRecord.repoPath / subRelPath, subPrefix);
         }
     }
@@ -352,15 +354,15 @@ auto BuildExportList(const std::filesystem::path& InRoot,
 
     // Always prepend the workspace root as the first entry
     ExportRecord rootRecord;
-    rootRecord.repoPath = InRoot;
-    rootRecord.repoName = InRoot.filename().generic_string();
+    rootRecord.repoPath = InRoot.lexically_normal();
+    rootRecord.repoName = rootRecord.repoPath.filename().generic_string();
     if (rootRecord.repoName.empty()) {
         rootRecord.repoName = InRoot.lexically_normal().filename().generic_string();
     }
     const std::string rootName = rootRecord.repoName;
 
     rootRecord.isRoot = true;
-    const auto normalizedRoot = InRoot.lexically_normal();
+    const auto normalizedRoot = rootRecord.repoPath;
 
     // Collect submodule paths for exclusion (multi-repo) or history (single-repo)
     for (const auto& repo : InDiscovered) {
@@ -377,7 +379,7 @@ auto BuildExportList(const std::filesystem::path& InRoot,
         }
 
         if (!isRoot) {
-            rootRecord.submodulePaths.push_back(RelativeDisplayPath(InRoot, repo.path));
+            rootRecord.submodulePaths.push_back(RelativeDisplayPath(normalizedRoot, normalizedPath));
         }
     }
     std::sort(rootRecord.submodulePaths.begin(), rootRecord.submodulePaths.end());
@@ -626,37 +628,51 @@ auto ExportOneRepo(const ExportRecord& InRecord,
 
     // Run archive
     shell::ExecResult archiveResult;
+    const std::string prefix = ComputePrefix(InRecord.repoName, InOpts.prefix);
+
     if (InOpts.source == "head") {
-        const std::string prefix = ComputePrefix(InRecord.repoName, InOpts.prefix);
         const auto args = BuildGitArchiveArgs(InOpts.format, prefix, result.archivePath);
         archiveResult = InExec("git", args, shell::ExecMode::Capture, InRecord.repoPath);
     } else {
         // working-tree: Collect files via git ls-files to respect .gitignore
-        const auto fileList = CollectWorkingTreeFiles(InRecord, InOpts.single, InExec);
+        const auto fileList = CollectWorkingTreeFiles(InRecord, prefix, InOpts.single, InExec);
         if (fileList.empty()) {
             result.errorMessage = "no files found to export in working-tree";
             return result;
         }
 
+        std::cout << "Archiving " << fileList.size() << " files using GNU tar via bash..." << std::endl;
+
         const auto listPath = InMetadataDir / (InRecord.repoName + "_files.txt");
         {
-            std::ofstream lf(listPath);
+            std::ofstream lf(listPath, std::ios::binary);
             for (const auto& f : fileList) {
+                if (f.empty()) continue;
                 lf << f << "\n";
             }
         }
 
-        std::vector<std::string> args;
-        args.push_back("-czf");
-        args.push_back(result.archivePath.generic_string());
-        args.push_back("-C");
-        args.push_back(InRecord.repoPath.parent_path().generic_string());
-        args.push_back("--exclude=.git");
-        args.push_back("--no-recursion");
-        args.push_back("-T");
-        args.push_back(listPath.generic_string());
+        // Use bash -c to ensure we use the MSYS/Git tar which is much more robust than Windows tar.exe
+        // Compute relative paths from the working directory where bash will run
+        const auto workDir = InRecord.repoPath.parent_path();
+        const auto relArchivePath = std::filesystem::relative(result.archivePath, workDir);
+        const auto relListPath = std::filesystem::relative(listPath, workDir);
 
-        archiveResult = InExec("tar", args, shell::ExecMode::Capture, InRecord.repoPath);
+        // Convert to Unix-style paths (forward slashes)
+        auto toUnixPath = [](const std::filesystem::path& p) -> std::string {
+            return p.generic_string();
+        };
+
+        const auto unixArchivePath = toUnixPath(relArchivePath);
+        const auto unixListPath = toUnixPath(relListPath);
+
+        // Construct the tar command directly without bash -c variable substitution
+        std::string tarCmd = "tar -czf \"" + unixArchivePath + "\" --exclude=.git --no-recursion -T \"" + unixListPath + "\"";
+        std::vector<std::string> bashArgs;
+        bashArgs.push_back("-c");
+        bashArgs.push_back(tarCmd);
+
+        archiveResult = InExec("bash", bashArgs, shell::ExecMode::Capture, workDir);
         std::error_code ec;
         std::filesystem::remove(listPath, ec);
     }
@@ -760,7 +776,7 @@ auto RunExport(const ExportOptions& InOpts) -> int {
         return 1;
     }
 
-    const auto cwd = std::filesystem::current_path();
+    const auto cwd = std::filesystem::current_path().lexically_normal();
 
     // Real shell executor wraps shell::ExecuteCommand
     ShellExecutor realExec = [](const std::string& cmd,
