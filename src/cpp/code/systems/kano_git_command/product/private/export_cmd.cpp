@@ -88,21 +88,36 @@ auto BuildGitArchiveArgs(const std::string& InFormat,
     };
 }
 
-auto BuildWorkingTreeTarArgs(const std::filesystem::path& InRepoPath,
-                             const std::filesystem::path& InOutputPath,
-                             const std::vector<std::filesystem::path>& InExcludePaths) -> std::vector<std::string> {
-    std::vector<std::string> args;
-    args.push_back("-czf");
-    args.push_back(InOutputPath.generic_string());
-    args.push_back("--exclude=.git");
-    args.push_back("--exclude=.kano");
-    for (const auto& excludePath : InExcludePaths) {
-        args.push_back("--exclude=" + excludePath.generic_string());
+
+auto CollectWorkingTreeFiles(const ExportRecord& InRecord, bool InSingle, const ShellExecutor& InExec) -> std::vector<std::string> {
+    const std::string repoDirName = InRecord.repoPath.filename().generic_string();
+    std::vector<std::string> allFiles;
+
+    auto getFiles = [&](const std::filesystem::path& repoPath, const std::string& prefix) {
+        const auto res = InExec("git", {"ls-files", "--cached", "--others", "--exclude-standard"}, shell::ExecMode::Capture, repoPath);
+        if (res.exitCode == 0) {
+            std::istringstream iss(res.stdoutStr);
+            std::string line;
+            while (std::getline(iss, line)) {
+                if (!line.empty()) {
+                    allFiles.push_back(prefix + line);
+                }
+            }
+        }
+    };
+
+    // Root repo files
+    getFiles(InRecord.repoPath, repoDirName + "/");
+
+    // If single mode, recursively add submodule files
+    if (InSingle && InRecord.isRoot) {
+        for (const auto& subRelPath : InRecord.submodulePaths) {
+            const std::string subPrefix = repoDirName + "/" + subRelPath.generic_string() + "/";
+            getFiles(InRecord.repoPath / subRelPath, subPrefix);
+        }
     }
-    args.push_back("-C");
-    args.push_back(InRepoPath.parent_path().generic_string());
-    args.push_back(InRepoPath.filename().generic_string());
-    return args;
+
+    return allFiles;
 }
 
 auto ComputeManifestName(const std::string& InArchiveBaseName) -> std::string {
@@ -498,15 +513,32 @@ auto ExportOneRepo(const ExportRecord& InRecord,
         const auto args = BuildGitArchiveArgs(InOpts.format, prefix, result.archivePath);
         archiveResult = InExec("git", args, shell::ExecMode::Capture, InRecord.repoPath);
     } else {
-        // working-tree
-        std::vector<std::filesystem::path> excludes;
-        if (InRecord.isRoot && !InOpts.single) {
-            for (const auto& sub : InRecord.submodulePaths) {
-                excludes.push_back(sub);
+        // working-tree: Collect files via git ls-files to respect .gitignore
+        const auto fileList = CollectWorkingTreeFiles(InRecord, InOpts.single, InExec);
+        if (fileList.empty()) {
+            result.errorMessage = "no files found to export in working-tree";
+            return result;
+        }
+
+        const auto listPath = InMetadataDir / (InRecord.repoName + "_files.txt");
+        {
+            std::ofstream lf(listPath);
+            for (const auto& f : fileList) {
+                lf << f << "\n";
             }
         }
-        const auto args = BuildWorkingTreeTarArgs(InRecord.repoPath, result.archivePath, excludes);
+
+        std::vector<std::string> args;
+        args.push_back("-czf");
+        args.push_back(result.archivePath.generic_string());
+        args.push_back("-C");
+        args.push_back(InRecord.repoPath.parent_path().generic_string());
+        args.push_back("-T");
+        args.push_back(listPath.generic_string());
+
         archiveResult = InExec("tar", args, shell::ExecMode::Capture, InRecord.repoPath);
+        std::error_code ec;
+        std::filesystem::remove(listPath, ec);
     }
 
     if (archiveResult.exitCode != 0) {

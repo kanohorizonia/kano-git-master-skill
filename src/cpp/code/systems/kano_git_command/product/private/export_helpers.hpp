@@ -95,11 +95,11 @@ auto BuildGitArchiveArgs(const std::string& InFormat,
                          const std::string& InPrefix,
                          const std::filesystem::path& InOutputPath) -> std::vector<std::string>;
 
-// Returns the argument vector for a working-tree tar invocation that excludes
-// .git/ and each path in InExcludePaths.
-auto BuildWorkingTreeTarArgs(const std::filesystem::path& InRepoPath,
-                             const std::filesystem::path& InOutputPath,
-                             const std::vector<std::filesystem::path>& InExcludePaths) -> std::vector<std::string>;
+// Returns the list of files to be included in a working-tree export,
+// respecting .gitignore. If InSingle is true, also includes submodule contents.
+auto CollectWorkingTreeFiles(const ExportRecord& InRecord,
+                             bool InSingle,
+                             const ShellExecutor& InExec) -> std::vector<std::string>;
 
 // Returns "<InArchiveBaseName>_manifest.txt".
 auto ComputeManifestName(const std::string& InArchiveBaseName) -> std::string;
@@ -115,6 +115,13 @@ auto FormatManifest(const ExportRecord& InRecord,
                     const ExportOptions& InOpts,
                     const std::string& InStatusOut,
                     const std::string& InLsFilesOut) -> std::string;
+
+// Formats the human-readable metadata markdown text.
+auto FormatMarkdownMetadata(const ExportRecord& InRecord,
+                            const ExportResult& InResult,
+                            const ExportOptions& InOpts,
+                            const std::string& InRootLog,
+                            const std::vector<std::pair<std::string, std::string>>& InSubLogs) -> std::string;
 
 // Formats a single progress line: "Exported <InRepoName> -> <InArchivePath>".
 auto FormatProgressLine(const std::string& InRepoName,

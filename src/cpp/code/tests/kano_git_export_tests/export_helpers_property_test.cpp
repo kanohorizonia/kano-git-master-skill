@@ -381,31 +381,39 @@ TEST_CASE("Property 6: ResolveOutputDir returns default when explicit is empty",
 // Property 7: Working-tree tar excludes submodules
 // ===========================================================================
 
-// Feature: kog-export-command, Property 7: Working-tree tar excludes submodules
-TEST_CASE("Property 7: BuildWorkingTreeTarArgs contains one --exclude per submodule path",
+// Feature: kog-export-command, Property 7: Working-tree file collection includes submodules in single mode
+TEST_CASE("Property 7: CollectWorkingTreeFiles includes submodule paths in single mode",
           "[Feature: kog-export-command]"
-          "[Property 7: Working-tree tar excludes submodules]"
-          "[property][BuildWorkingTreeTarArgs][req-4.2]") {
+          "[Property 7: Working-tree file collection][property][CollectWorkingTreeFiles][req-4.2]") {
     // **Validates: Requirements 4.2**
     //
-    // For any non-empty list of submodule paths S, BuildWorkingTreeTarArgs
-    // shall contain an --exclude argument for every path in S.
+    // For any non-empty list of submodule paths S, CollectWorkingTreeFiles
+    // shall run git ls-files for each submodule when InSingle=true.
 
-    rc::prop("BuildWorkingTreeTarArgs has --exclude for each submodule path", []() {
-        const auto repoPath = GenSimplePath();
-        const auto outputPath = GenSimplePath() / (GenRepoName() + ".tar");
-        const auto submodulePaths = GenSubmodulePaths();
+    rc::prop("CollectWorkingTreeFiles includes submodule files in single mode", []() {
+        ExportRecord record;
+        record.repoPath = GenSimplePath();
+        record.repoName = GenRepoName();
+        record.submodulePaths = GenSubmodulePaths();
 
         // Only test with non-empty submodule lists for this property
-        RC_PRE(!submodulePaths.empty());
+        RC_PRE(!record.submodulePaths.empty());
 
-        const auto args = BuildWorkingTreeTarArgs(repoPath, outputPath, submodulePaths);
+        // Stub executor that returns a unique file for each repo
+        const auto stubExec = [](const std::string&, const std::vector<std::string>&, ExecMode, std::optional<std::filesystem::path> InCwd) {
+            std::string repoName = InCwd ? InCwd->filename().generic_string() : "root";
+            return ExecResult{0, repoName + "_file.txt\n", ""};
+        };
 
-        // Count --exclude arguments matching each submodule path
-        for (const auto& subPath : submodulePaths) {
-            const std::string excludeArg = "--exclude=" + subPath.generic_string();
-            const auto found = std::find(args.begin(), args.end(), excludeArg);
-            RC_ASSERT(found != args.end());
+        const std::vector<std::string> fileList = kano::git::commands::CollectWorkingTreeFiles(record, true, stubExec);
+
+        // Check that each submodule has its unique file in the list
+        for (const auto& subPath : record.submodulePaths) {
+            const std::string expectedSubFile = subPath.generic_string() + "_file.txt";
+            bool found = std::any_of(fileList.begin(), fileList.end(), [&](const std::string& f) {
+                return f.find(expectedSubFile) != std::string::npos;
+            });
+            RC_ASSERT(found);
         }
     });
 }
