@@ -45,6 +45,11 @@ auto ValidateOptions(const ExportOptions& InOpts) -> bool {
                   << "; must be a positive integer\n";
         ok = false;
     }
+    if (!InOpts.validateReleaseArchive && InOpts.forceValidateReleaseArchive) {
+        std::cerr << "kog export: --validate-release-archive conflicts with "
+                  << "--no-validate-release-archive\n";
+        ok = false;
+    }
     return ok;
 }
 
@@ -99,17 +104,9 @@ auto CollectWorkingTreeFiles(const ExportRecord& InRecord, bool InSingle, const 
             std::istringstream iss(res.stdoutStr);
             std::string line;
             while (std::getline(iss, line)) {
-                if (line.empty()) continue;
-                // Trim trailing \r if present (git output on Windows)
-                if (line.back() == '\r') line.pop_back();
-                if (line.empty()) continue;
-
-                // Skip .git and .kano entries
-                if (line == ".git" || line == ".kano") continue;
-                // Also skip if it's a directory (submodule) to prevent tar from recursing
-                if (std::filesystem::is_directory(repoPath / line)) continue;
-
-                allFiles.push_back(prefix + line);
+                if (!line.empty()) {
+                    allFiles.push_back(prefix + line);
+                }
             }
         }
     };
@@ -498,6 +495,97 @@ auto WriteChecksumFile(const std::filesystem::path& InTargetFile,
 
 } // anonymous namespace
 
+namespace {
+
+auto ResolveReleaseArchiveSmokeScript(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path {
+    const auto scriptPath = InWorkspaceRoot / "src" / "shell" / "test" / "smoke-release-archive.sh";
+    std::error_code ec;
+    if (std::filesystem::exists(scriptPath, ec) && std::filesystem::is_regular_file(scriptPath, ec)) {
+        return scriptPath;
+    }
+    return {};
+}
+
+auto HasBash(const std::filesystem::path& InWorkspaceRoot,
+             const ShellExecutor& InExec) -> bool {
+    const auto result = InExec("bash", {"-lc", "true"}, shell::ExecMode::Capture, InWorkspaceRoot);
+    return result.exitCode == 0;
+}
+
+auto AppendCapturedOutput(std::ostream& InStream,
+                          const std::string& InLabel,
+                          const std::string& InText) -> void {
+    const auto trimmed = TrimExport(InText);
+    if (!trimmed.empty()) {
+        InStream << InLabel << ":\n" << trimmed << "\n";
+    }
+}
+
+auto RunReleaseArchiveValidation(const ExportRecord& InRecord,
+                                 const ExportResult& InResult,
+                                 const ExportOptions& InOpts,
+                                 const std::filesystem::path& InWorkspaceRoot,
+                                 const ShellExecutor& InExec) -> int {
+    if (!InOpts.validateReleaseArchive) {
+        return 0;
+    }
+
+    if (!InRecord.isRoot) {
+        return 0;
+    }
+
+    auto skipOrFail = [&](const std::string& InReason) -> int {
+        if (InOpts.forceValidateReleaseArchive) {
+            std::cerr << "kog export: release archive validation required but unavailable: "
+                      << InReason << "\n";
+            return 1;
+        }
+        std::cout << "  Skipped release archive validation: " << InReason << "\n";
+        return 0;
+    };
+
+    if (!InResult.success) {
+        return 0;
+    }
+
+    if (InOpts.format != "tar" || InResult.archivePath.extension() != ".tar") {
+        return skipOrFail("only .tar archives are supported by smoke-release-archive.sh");
+    }
+
+    if (!InOpts.single) {
+        return skipOrFail("requires --single so submodule working-tree contents are included");
+    }
+
+    const auto smokeScript = ResolveReleaseArchiveSmokeScript(InWorkspaceRoot);
+    if (smokeScript.empty()) {
+        return skipOrFail("src/shell/test/smoke-release-archive.sh was not found");
+    }
+
+    if (!HasBash(InWorkspaceRoot, InExec)) {
+        return skipOrFail("bash is not available on PATH");
+    }
+
+    std::cout << "  Validating release archive -> " << InResult.archivePath.generic_string() << "\n";
+    const auto validation = InExec(
+        "bash",
+        {smokeScript.generic_string(), InResult.archivePath.generic_string()},
+        shell::ExecMode::Capture,
+        InWorkspaceRoot);
+
+    if (validation.exitCode != 0) {
+        std::cerr << "kog export: release archive validation failed for "
+                  << InResult.archivePath.generic_string() << "\n";
+        AppendCapturedOutput(std::cerr, "stdout", validation.stdoutStr);
+        AppendCapturedOutput(std::cerr, "stderr", validation.stderrStr);
+        return validation.exitCode == 0 ? 1 : validation.exitCode;
+    }
+
+    AppendCapturedOutput(std::cout, "  release-smoke", validation.stdoutStr);
+    return 0;
+}
+
+} // anonymous namespace
+
 // ---------------------------------------------------------------------------
 // Public shell-calling helpers (dependency-injected, exposed for unit tests)
 // ---------------------------------------------------------------------------
@@ -539,8 +627,6 @@ auto ExportOneRepo(const ExportRecord& InRecord,
         std::vector<std::string> args;
         args.push_back("-czf");
         args.push_back(result.archivePath.generic_string());
-        args.push_back("--exclude=.git");
-        args.push_back("--exclude=.kano");
         args.push_back("-C");
         args.push_back(InRecord.repoPath.parent_path().generic_string());
         args.push_back("-T");
@@ -630,6 +716,10 @@ auto RunExportWithExecutor(const ExportOptions& InOpts,
         } else {
             const std::string displayName = record.isRoot ? record.repoName : record.relativeRepoPath;
             std::cout << FormatProgressLine(displayName, result.archivePath) << "\n";
+            const int validationExit = RunReleaseArchiveValidation(record, result, InOpts, InExportList.front().repoPath, InExec);
+            if (validationExit != 0) {
+                anyFailed = true;
+            }
         }
         results.push_back(result);
     }
@@ -726,6 +816,8 @@ void RegisterExport(CLI::App& InApp) {
     auto* source = new std::string{"head"};
     auto* single = new bool{false};
     auto* logCount = new int{10};
+    auto* noValidateReleaseArchive = new bool{false};
+    auto* forceValidateReleaseArchive = new bool{false};
 
     cmd->add_option("--output", *outputDir,
         "Output directory for archives (default: <cwd>/.kano/tmp/git/export/)");
@@ -749,6 +841,10 @@ void RegisterExport(CLI::App& InApp) {
         "Export the entire workspace into a single archive (implies --no-recursive)");
     cmd->add_option("--log-count", *logCount,
         "Number of history log entries to include in metadata (default: 10)");
+    cmd->add_flag("--no-validate-release-archive", *noValidateReleaseArchive,
+        "Skip automatic smoke validation for single-file release archives");
+    cmd->add_flag("--validate-release-archive", *forceValidateReleaseArchive,
+        "Require smoke validation for the root release archive; fail if it cannot run");
 
     cmd->callback([=]() {
         ExportOptions opts;
@@ -763,6 +859,8 @@ void RegisterExport(CLI::App& InApp) {
         opts.source = *source;
         opts.single = *single;
         opts.logCount = *logCount;
+        opts.validateReleaseArchive = !*noValidateReleaseArchive;
+        opts.forceValidateReleaseArchive = *forceValidateReleaseArchive;
 
         // If --single is specified, default --source to "working-tree" unless explicitly overridden.
         if (opts.single && cmd->get_option("--source")->results().empty()) {

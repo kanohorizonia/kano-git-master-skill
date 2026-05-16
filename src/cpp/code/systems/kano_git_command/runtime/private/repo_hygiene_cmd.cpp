@@ -56,6 +56,53 @@ bool IsLfRequired(const std::string& path) {
     return false;
 }
 
+
+int RunArchiveSafeShellAudits(const std::filesystem::path& repoRoot) {
+    struct ShellAudit {
+        const char* label;
+        const char* script;
+    };
+
+    const std::vector<ShellAudit> audits = {
+        {"pre-commit-quality-gate", "src/shell/test/pre-commit-quality-gate.sh"},
+    };
+
+    int failures = 0;
+    std::cout << "--- Archive-safe shell audits ---\n";
+
+    for (const auto& audit : audits) {
+        const auto scriptPath = repoRoot / audit.script;
+        if (!std::filesystem::exists(scriptPath)) {
+            std::cerr << "[FAIL] " << audit.label << " missing script: " << audit.script << "\n";
+            failures += 1;
+            continue;
+        }
+
+        auto result = shell::ExecuteCommand("bash", {audit.script}, shell::ExecMode::Capture, repoRoot);
+        if (result.exitCode != 0) {
+            std::cerr << "[FAIL] " << audit.label << " exited with code " << result.exitCode << "\n";
+            if (!result.stdoutStr.empty()) {
+                std::cerr << "--- stdout ---\n" << result.stdoutStr;
+                if (result.stdoutStr.back() != '\n') {
+                    std::cerr << "\n";
+                }
+            }
+            if (!result.stderrStr.empty()) {
+                std::cerr << "--- stderr ---\n" << result.stderrStr;
+                if (result.stderrStr.back() != '\n') {
+                    std::cerr << "\n";
+                }
+            }
+            failures += 1;
+            continue;
+        }
+
+        std::cout << "[PASS] " << audit.label << "\n";
+    }
+
+    return failures;
+}
+
 void CheckRepoHygiene(const std::filesystem::path& repoRoot, bool fix, bool archiveSafe, bool recursive) {
     if (recursive) {
         workspace::DiscoverOptions options;
@@ -178,10 +225,15 @@ void CheckRepoHygiene(const std::filesystem::path& repoRoot, bool fix, bool arch
         }
 
         std::cout << "Fix complete.\n";
-    } else {
-        if (lfIssues > 0 || execIssues > 0) {
-            std::exit(1);
-        }
+    }
+
+    int archiveSafeIssues = 0;
+    if (archiveSafe) {
+        archiveSafeIssues = RunArchiveSafeShellAudits(repoRoot);
+    }
+
+    if (lfIssues > 0 || execIssues > 0 || archiveSafeIssues > 0) {
+        std::exit(1);
     }
 }
 

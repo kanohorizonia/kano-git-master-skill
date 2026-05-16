@@ -44,6 +44,8 @@ struct ExportOptions {
     std::string source;          // "head" or "working-tree"
     bool single = false;
     int logCount = 10;
+    bool validateReleaseArchive = true;      // Auto-run offline smoke for single root .tar archives when available.
+    bool forceValidateReleaseArchive = false; // Fail when validation is requested but unavailable or failing.
 };
 
 struct ExportRecord {
