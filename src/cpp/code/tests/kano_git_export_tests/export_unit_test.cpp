@@ -810,3 +810,195 @@ TEST_CASE("WriteChecksumFile failure does not affect RunExportWithExecutor exit 
     // Exit code must be 0 — checksum failure is non-fatal
     REQUIRE(exitCode == 0);
 }
+
+// ===========================================================================
+// FormatExportManifestJson — unit tests
+// ===========================================================================
+
+TEST_CASE("FormatExportManifestJson produces valid JSON with all required fields",
+          "[Unit][FormatExportManifestJson][export-manifest][req-manifest]") {
+    // Validates: export-manifest.json schema requirements
+    //
+    // FormatExportManifestJson must produce a string containing all required
+    // top-level keys.
+
+    ExportManifestData data;
+    data.projectName  = "my-skill";
+    data.repository   = "my-skill";
+    data.exportMode   = "single";
+    data.singleArchive = true;
+    data.createdAt    = "2026-01-01T00:00:00Z";
+    data.platform     = "linux";
+    data.rootCommit   = "abc1234";
+    data.rootBranch   = "main";
+    data.archiveFile  = ".kano/tmp/git/export/my-skill_rev001.tar";
+    data.format       = "tar";
+    data.sizeBytes    = 12345;
+    data.sha256       = "deadbeef";
+
+    const std::string json = FormatExportManifestJson(data);
+
+    REQUIRE(json.find("\"schemaVersion\"") != std::string::npos);
+    REQUIRE(json.find("\"generator\"") != std::string::npos);
+    REQUIRE(json.find("\"projectName\"") != std::string::npos);
+    REQUIRE(json.find("\"repository\"") != std::string::npos);
+    REQUIRE(json.find("\"exportMode\"") != std::string::npos);
+    REQUIRE(json.find("\"singleArchive\"") != std::string::npos);
+    REQUIRE(json.find("\"createdAt\"") != std::string::npos);
+    REQUIRE(json.find("\"platform\"") != std::string::npos);
+    REQUIRE(json.find("\"archiveFile\"") != std::string::npos);
+    REQUIRE(json.find("\"path\"") != std::string::npos);
+    REQUIRE(json.find("\"format\"") != std::string::npos);
+    REQUIRE(json.find("\"sizeBytes\"") != std::string::npos);
+    REQUIRE(json.find("\"sha256\"") != std::string::npos);
+    REQUIRE(json.find("\"archives\"") != std::string::npos);
+}
+
+TEST_CASE("FormatExportManifestJson archives[0] contains path and archiveFile",
+          "[Unit][FormatExportManifestJson][export-manifest][req-manifest]") {
+    ExportManifestData data;
+    data.projectName  = "my-skill";
+    data.repository   = "my-skill";
+    data.exportMode   = "single";
+    data.singleArchive = true;
+    data.createdAt    = "2026-01-01T00:00:00Z";
+    data.platform     = "linux";
+    data.archiveFile  = ".kano/tmp/git/export/my-skill_rev001.tar";
+    data.format       = "tar";
+    data.sizeBytes    = 99;
+    data.sha256       = "aabbcc";
+
+    const std::string json = FormatExportManifestJson(data);
+
+    // archives[0] must have path and archiveFile
+    REQUIRE(json.find("\"kind\": \"release-archive\"") != std::string::npos);
+    REQUIRE(json.find("\"path\": \".kano/tmp/git/export/my-skill_rev001.tar\"") != std::string::npos);
+    REQUIRE(json.find("\"archiveFile\": \".kano/tmp/git/export/my-skill_rev001.tar\"") != std::string::npos);
+}
+
+TEST_CASE("FormatExportManifestJson singleArchive=true produces 'true' literal",
+          "[Unit][FormatExportManifestJson][export-manifest][req-manifest]") {
+    ExportManifestData data;
+    data.singleArchive = true;
+    data.format = "tar";
+
+    const std::string json = FormatExportManifestJson(data);
+    REQUIRE(json.find("\"singleArchive\": true") != std::string::npos);
+}
+
+TEST_CASE("FormatExportManifestJson singleArchive=false produces 'false' literal",
+          "[Unit][FormatExportManifestJson][export-manifest][req-manifest]") {
+    ExportManifestData data;
+    data.singleArchive = false;
+    data.format = "tar";
+
+    const std::string json = FormatExportManifestJson(data);
+    REQUIRE(json.find("\"singleArchive\": false") != std::string::npos);
+}
+
+TEST_CASE("FormatExportManifestJson includes submodules when present",
+          "[Unit][FormatExportManifestJson][export-manifest][req-manifest]") {
+    ExportManifestData data;
+    data.projectName  = "my-skill";
+    data.format       = "tar";
+    data.submodules   = {{"src/cpp/shared/infra", "abc1234"}, {"assets/upstream", "def5678"}};
+
+    const std::string json = FormatExportManifestJson(data);
+
+    REQUIRE(json.find("\"submodules\"") != std::string::npos);
+    REQUIRE(json.find("\"src/cpp/shared/infra\"") != std::string::npos);
+    REQUIRE(json.find("\"abc1234\"") != std::string::npos);
+    REQUIRE(json.find("\"assets/upstream\"") != std::string::npos);
+    REQUIRE(json.find("\"def5678\"") != std::string::npos);
+}
+
+TEST_CASE("FormatExportManifestJson omits submodules key when list is empty",
+          "[Unit][FormatExportManifestJson][export-manifest][req-manifest]") {
+    ExportManifestData data;
+    data.format = "tar";
+    // submodules is empty by default
+
+    const std::string json = FormatExportManifestJson(data);
+    REQUIRE(json.find("\"submodules\"") == std::string::npos);
+}
+
+TEST_CASE("FormatExportManifestJson escapes special characters in string fields",
+          "[Unit][FormatExportManifestJson][export-manifest][req-manifest]") {
+    ExportManifestData data;
+    data.projectName = "my\"skill";  // quote in name
+    data.format = "tar";
+
+    const std::string json = FormatExportManifestJson(data);
+    // The quote must be escaped as \"
+    REQUIRE(json.find("my\\\"skill") != std::string::npos);
+}
+
+// ===========================================================================
+// NormalizePlatform — unit tests
+// ===========================================================================
+
+TEST_CASE("NormalizePlatform normalizes windows variants",
+          "[Unit][NormalizePlatform][export-manifest][req-manifest]") {
+    REQUIRE(NormalizePlatform("windows") == "windows");
+    REQUIRE(NormalizePlatform("Win64")   == "windows");
+    REQUIRE(NormalizePlatform("HostWin64") == "windows");
+    REQUIRE(NormalizePlatform("win32")   == "windows");
+    REQUIRE(NormalizePlatform("WIN64")   == "windows");
+}
+
+TEST_CASE("NormalizePlatform normalizes mac variants",
+          "[Unit][NormalizePlatform][export-manifest][req-manifest]") {
+    REQUIRE(NormalizePlatform("mac")    == "mac");
+    REQUIRE(NormalizePlatform("macOS")  == "mac");
+    REQUIRE(NormalizePlatform("Darwin") == "mac");
+    REQUIRE(NormalizePlatform("osx")    == "mac");
+    REQUIRE(NormalizePlatform("DARWIN") == "mac");
+}
+
+TEST_CASE("NormalizePlatform normalizes linux",
+          "[Unit][NormalizePlatform][export-manifest][req-manifest]") {
+    REQUIRE(NormalizePlatform("linux") == "linux");
+    REQUIRE(NormalizePlatform("Linux") == "linux");
+    REQUIRE(NormalizePlatform("LINUX") == "linux");
+}
+
+TEST_CASE("NormalizePlatform passes through unknown values lowercased",
+          "[Unit][NormalizePlatform][export-manifest][req-manifest]") {
+    REQUIRE(NormalizePlatform("freebsd") == "freebsd");
+}
+
+// ===========================================================================
+// ReadSha256FromSidecar — unit tests
+// ===========================================================================
+
+TEST_CASE("ReadSha256FromSidecar returns empty string for nonexistent file",
+          "[Unit][ReadSha256FromSidecar][export-manifest][req-manifest]") {
+    const auto result = ReadSha256FromSidecar(
+        std::filesystem::path("nonexistent_path_xyz") / "no.sha256");
+    REQUIRE(result.empty());
+}
+
+TEST_CASE("ReadSha256FromSidecar parses sha256sum format correctly",
+          "[Unit][ReadSha256FromSidecar][export-manifest][req-manifest]") {
+    TempDir tmp;
+    const auto sidecar = tmp.path / "archive.tar.sha256";
+    {
+        std::ofstream f(sidecar);
+        f << "abcdef1234567890  archive.tar\n";
+    }
+    const auto result = ReadSha256FromSidecar(sidecar);
+    REQUIRE(result == "abcdef1234567890");
+}
+
+TEST_CASE("ReadSha256FromSidecar normalizes uppercase hex to lowercase",
+          "[Unit][ReadSha256FromSidecar][export-manifest][req-manifest]") {
+    TempDir tmp;
+    const auto sidecar = tmp.path / "archive.tar.sha256";
+    {
+        std::ofstream f(sidecar);
+        // PowerShell Get-FileHash outputs uppercase
+        f << "ABCDEF1234567890\n";
+    }
+    const auto result = ReadSha256FromSidecar(sidecar);
+    REQUIRE(result == "abcdef1234567890");
+}

@@ -8,6 +8,7 @@
 #include "shell_executor.hpp"
 
 #include <CLI/CLI.hpp>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <string>
@@ -61,6 +62,11 @@ struct ExportResult {
     std::filesystem::path archivePath;
     bool success = false;
     std::string errorMessage;
+    // Populated after successful export (used to build export-manifest.json)
+    std::string sha256;
+    std::uintmax_t sizeBytes = 0;
+    std::string rootCommit;
+    std::string rootBranch;
 };
 
 // ---------------------------------------------------------------------------
@@ -109,6 +115,43 @@ auto ComputeManifestName(const std::string& InArchiveBaseName) -> std::string;
 
 // Returns "<InFilename>.sha256".
 auto ComputeChecksumFilename(const std::string& InFilename) -> std::string;
+
+// ---------------------------------------------------------------------------
+// Export manifest JSON (machine-readable, for Jenkins pipeline consumption)
+// ---------------------------------------------------------------------------
+
+// Normalizes a host OS string to one of: "windows", "linux", "mac".
+// Input may be any of the raw values returned by platform detection.
+auto NormalizePlatform(const std::string& InRawPlatform) -> std::string;
+
+// Returns the current host platform as a normalized string.
+auto DetectHostPlatform() -> std::string;
+
+// Data required to produce an export-manifest.json.
+struct ExportManifestData {
+    std::string schemaVersion = "1";
+    std::string generator = "kog export";
+    std::string projectName;
+    std::string repository;
+    std::string exportMode;       // "single" or "multi"
+    bool singleArchive = false;
+    std::string createdAt;        // ISO-8601 UTC
+    std::string platform;         // normalized: windows / linux / mac
+    std::string rootCommit;       // short SHA
+    std::string rootBranch;
+    std::string archiveFile;      // forward-slash path
+    std::string format;           // "tar" or "zip"
+    std::uintmax_t sizeBytes = 0;
+    std::string sha256;
+    std::vector<std::pair<std::string, std::string>> submodules; // {path, commit}
+};
+
+// Formats an ExportManifestData as a JSON string (no external dependencies).
+auto FormatExportManifestJson(const ExportManifestData& InData) -> std::string;
+
+// Reads the sha256 hex string from a .sha256 sidecar file produced by
+// WriteChecksumFile.  Returns empty string on failure.
+auto ReadSha256FromSidecar(const std::filesystem::path& InSidecarPath) -> std::string;
 
 // Formats the manifest text for one exported repo.
 // InStatusOut and InLsFilesOut are the raw outputs of git status --short and

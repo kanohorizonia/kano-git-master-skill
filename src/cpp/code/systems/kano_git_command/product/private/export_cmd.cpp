@@ -10,7 +10,9 @@
 #include "shell_executor.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <ctime>
 #include <filesystem>
@@ -156,7 +158,125 @@ auto ComputeChecksumFilename(const std::string& InFilename) -> std::string {
     return InFilename + ".sha256";
 }
 
-namespace {
+// ---------------------------------------------------------------------------
+// Export manifest JSON helpers
+// ---------------------------------------------------------------------------
+
+auto NormalizePlatform(const std::string& InRawPlatform) -> std::string {
+    // Normalize to: windows / linux / mac
+    std::string lower = InRawPlatform;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (lower == "windows" || lower == "win64" || lower == "hostwin64" ||
+        lower == "win32" || lower == "win") {
+        return "windows";
+    }
+    if (lower == "mac" || lower == "macos" || lower == "darwin" ||
+        lower == "osx" || lower == "macosx") {
+        return "mac";
+    }
+    if (lower == "linux") {
+        return "linux";
+    }
+    return lower; // pass through unknown values unchanged
+}
+
+auto DetectHostPlatform() -> std::string {
+#if defined(_WIN32)
+    return "windows";
+#elif defined(__APPLE__)
+    return "mac";
+#else
+    return "linux";
+#endif
+}
+
+auto ReadSha256FromSidecar(const std::filesystem::path& InSidecarPath) -> std::string {
+    std::ifstream f(InSidecarPath);
+    if (!f) {
+        return {};
+    }
+    std::string line;
+    if (!std::getline(f, line)) {
+        return {};
+    }
+    // sha256sum format: "<hex>  <filename>" or just "<hex>"
+    // PowerShell Get-FileHash format: just "<HEX>" (uppercase)
+    const auto spacePos = line.find(' ');
+    std::string hex = (spacePos != std::string::npos) ? line.substr(0, spacePos) : line;
+    // Trim trailing whitespace
+    while (!hex.empty() && (hex.back() == '\r' || hex.back() == '\n' || hex.back() == ' ')) {
+        hex.pop_back();
+    }
+    // Normalize to lowercase
+    std::transform(hex.begin(), hex.end(), hex.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return hex;
+}
+
+static auto JsonEscape(const std::string& InStr) -> std::string {
+    std::string out;
+    out.reserve(InStr.size() + 4);
+    for (const char c : InStr) {
+        switch (c) {
+            case '"':  out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n";  break;
+            case '\r': out += "\\r";  break;
+            case '\t': out += "\\t";  break;
+            default:   out += c;      break;
+        }
+    }
+    return out;
+}
+
+auto FormatExportManifestJson(const ExportManifestData& InData) -> std::string {
+    std::ostringstream j;
+    j << "{\n";
+    j << "  \"schemaVersion\": " << InData.schemaVersion << ",\n";
+    j << "  \"generator\": \"" << JsonEscape(InData.generator) << "\",\n";
+    j << "  \"projectName\": \"" << JsonEscape(InData.projectName) << "\",\n";
+    j << "  \"repository\": \"" << JsonEscape(InData.repository) << "\",\n";
+    j << "  \"exportMode\": \"" << JsonEscape(InData.exportMode) << "\",\n";
+    j << "  \"singleArchive\": " << (InData.singleArchive ? "true" : "false") << ",\n";
+    j << "  \"createdAt\": \"" << JsonEscape(InData.createdAt) << "\",\n";
+    j << "  \"platform\": \"" << JsonEscape(InData.platform) << "\",\n";
+    j << "  \"rootCommit\": \"" << JsonEscape(InData.rootCommit) << "\",\n";
+    j << "  \"rootBranch\": \"" << JsonEscape(InData.rootBranch) << "\",\n";
+    j << "  \"archiveFile\": \"" << JsonEscape(InData.archiveFile) << "\",\n";
+    j << "  \"path\": \"" << JsonEscape(InData.archiveFile) << "\",\n";
+    j << "  \"format\": \"" << JsonEscape(InData.format) << "\",\n";
+    j << "  \"sizeBytes\": " << InData.sizeBytes << ",\n";
+    j << "  \"sha256\": \"" << JsonEscape(InData.sha256) << "\",\n";
+    j << "  \"archives\": [\n";
+    j << "    {\n";
+    j << "      \"kind\": \"release-archive\",\n";
+    j << "      \"platform\": \"" << JsonEscape(InData.platform) << "\",\n";
+    j << "      \"path\": \"" << JsonEscape(InData.archiveFile) << "\",\n";
+    j << "      \"archiveFile\": \"" << JsonEscape(InData.archiveFile) << "\",\n";
+    j << "      \"format\": \"" << JsonEscape(InData.format) << "\",\n";
+    j << "      \"sizeBytes\": " << InData.sizeBytes << ",\n";
+    j << "      \"sha256\": \"" << JsonEscape(InData.sha256) << "\"\n";
+    j << "    }\n";
+    j << "  ]";
+    if (!InData.submodules.empty()) {
+        j << ",\n  \"submodules\": [\n";
+        for (std::size_t i = 0; i < InData.submodules.size(); ++i) {
+            j << "    {\n";
+            j << "      \"path\": \"" << JsonEscape(InData.submodules[i].first) << "\",\n";
+            j << "      \"commit\": \"" << JsonEscape(InData.submodules[i].second) << "\"\n";
+            j << "    }";
+            if (i + 1 < InData.submodules.size()) {
+                j << ",";
+            }
+            j << "\n";
+        }
+        j << "  ]";
+    }
+    j << "\n}\n";
+    return j.str();
+}
+
 
 auto CurrentUtcIso8601Export() -> std::string {
     const auto now = std::chrono::system_clock::now();
@@ -215,8 +335,6 @@ auto FirstNLines(const std::string& InText, int InN) -> std::string {
     }
     return out.str();
 }
-
-} // anonymous namespace
 
 auto FormatManifest(const ExportRecord& InRecord,
                     const ExportResult& InResult,
@@ -684,6 +802,27 @@ auto ExportOneRepo(const ExportRecord& InRecord,
 
     result.success = true;
 
+    // Populate result fields used by export-manifest.json generation
+    {
+        std::error_code ec;
+        result.sizeBytes = std::filesystem::file_size(result.archivePath, ec);
+        if (ec) {
+            result.sizeBytes = 0;
+        }
+    }
+    {
+        const auto shortSha = GitCapture(InRecord.repoPath, {"rev-parse", "--short", "HEAD"}, InExec);
+        if (shortSha.exitCode == 0) {
+            result.rootCommit = TrimExport(shortSha.stdoutStr);
+        }
+    }
+    {
+        const auto branch = GitCapture(InRecord.repoPath, {"rev-parse", "--abbrev-ref", "HEAD"}, InExec);
+        if (branch.exitCode == 0) {
+            result.rootBranch = TrimExport(branch.stdoutStr);
+        }
+    }
+
     if (InOpts.noMetadata) {
         return result;
     }
@@ -709,7 +848,10 @@ auto ExportOneRepo(const ExportRecord& InRecord,
     WriteChecksumFile(result.archivePath, InMetadataDir, InExec);
     WriteChecksumFile(manifestPath, InMetadataDir, InExec);
 
-    // Write human/agent metadata markdown file (alongside archive)
+    // Read back sha256 for manifest JSON
+    const auto sidecarPath = InMetadataDir / ComputeChecksumFilename(result.archiveName);
+    result.sha256 = ReadSha256FromSidecar(sidecarPath);
+
     const auto logArgs = std::vector<std::string>{"log", "-n", std::to_string(InOpts.logCount), "--oneline", "--decorate"};
     const auto rootLogOut = GitCapture(InRecord.repoPath, logArgs, InExec);
 
@@ -765,6 +907,72 @@ auto RunExportWithExecutor(const ExportOptions& InOpts,
     }
 
     std::cout << "\n" << FormatSummary(InOutputDir, InMetadataDir, results);
+
+    // Write export-manifest.json for --single mode
+    if (InOpts.single && !anyFailed) {
+        // Find the root result (first successful result from the root record)
+        const ExportResult* rootResult = nullptr;
+        const ExportRecord* rootRecord = nullptr;
+        for (std::size_t i = 0; i < results.size() && i < InExportList.size(); ++i) {
+            if (InExportList[i].isRoot && results[i].success) {
+                rootResult = &results[i];
+                rootRecord = &InExportList[i];
+                break;
+            }
+        }
+
+        if (rootResult != nullptr && rootRecord != nullptr) {
+            ExportManifestData manifest;
+            manifest.projectName = rootRecord->repoName;
+            manifest.repository  = rootRecord->repoName;
+            manifest.exportMode  = "single";
+            manifest.singleArchive = true;
+            manifest.createdAt   = CurrentUtcIso8601Export();
+            manifest.platform    = DetectHostPlatform();
+            manifest.rootCommit  = rootResult->rootCommit;
+            manifest.rootBranch  = rootResult->rootBranch;
+            manifest.archiveFile = rootResult->archivePath.generic_string();
+            manifest.format      = InOpts.format;
+            manifest.sizeBytes   = rootResult->sizeBytes;
+            manifest.sha256      = rootResult->sha256;
+
+            // Collect submodule commits
+            for (const auto& subRelPath : rootRecord->submodulePaths) {
+                const auto subRepoPath = rootRecord->repoPath / subRelPath;
+                const auto subSha = InExec("git", {"rev-parse", "--short", "HEAD"},
+                                           shell::ExecMode::Capture, subRepoPath);
+                std::string subCommit;
+                if (subSha.exitCode == 0) {
+                    subCommit = TrimExport(subSha.stdoutStr);
+                }
+                manifest.submodules.push_back({subRelPath.generic_string(), subCommit});
+            }
+
+            const std::string manifestJson = FormatExportManifestJson(manifest);
+
+            // Derive the base name from the archive: <name>_revNNN.export-manifest.json
+            const std::string archiveBase = rootResult->archiveName.substr(
+                0, rootResult->archiveName.rfind('.'));
+            const std::string manifestFilename = archiveBase + ".export-manifest.json";
+
+            // Canonical copy: <cwd>/.kano/tmp/<name>_revNNN.export-manifest.json
+            const auto canonicalDir = InExportList.front().repoPath / ".kano" / "tmp";
+            std::error_code ec;
+            std::filesystem::create_directories(canonicalDir, ec);
+            if (!ec) {
+                std::ofstream cf(canonicalDir / manifestFilename);
+                if (cf) {
+                    cf << manifestJson;
+                }
+            }
+
+            // Sibling copy: alongside the archive in the output directory
+            std::ofstream sf(InOutputDir / manifestFilename);
+            if (sf) {
+                sf << manifestJson;
+            }
+        }
+    }
 
     return anyFailed ? 1 : 0;
 }

@@ -490,3 +490,120 @@ TEST_CASE("kog export --output writes archives to the specified directory",
 
     RemoveSandboxWorkspace(ctx.sandbox);
 }
+
+// ===========================================================================
+// Test 7: --single produces export-manifest.json
+// ===========================================================================
+
+TEST_CASE("kog export --single produces export-manifest.json",
+          "[Integration][export][single][export-manifest][req-manifest]") {
+    // Validates: export-manifest.json generation requirements
+    //
+    // When --single is specified and export succeeds:
+    //   - .kano/tmp/export-manifest.json must exist (canonical copy)
+    //   - The sibling export-manifest.json must exist alongside the archive
+    //   - The manifest must be valid JSON
+    //   - The manifest must contain all required keys
+    //   - archiveFile / path must use forward slashes
+    //   - The archive file referenced by the manifest must exist
+    //   - exportMode must be "single"
+    //   - singleArchive must be true
+    //   - platform must be one of: windows / linux / mac
+
+    const auto ctx = CreateExportWorkspace("single-manifest-export");
+
+    RequireSuccess(RunKogDiscover(ctx), "kog discover");
+    const auto result = RunKogExport(ctx, {"--single", "--no-validate-release-archive"});
+
+    INFO("exit=" << result.exitCode);
+    INFO("stdout=" << result.stdoutText);
+    INFO("stderr=" << result.stderrText);
+
+    REQUIRE(result.exitCode == 0);
+
+    // Canonical manifest: <cwd>/.kano/tmp/<name>_revNNN.export-manifest.json
+    const auto kanoTmpDir = ctx.rootClone / ".kano" / "tmp";
+    REQUIRE(std::filesystem::exists(kanoTmpDir));
+    REQUIRE(AnyFileContainsRecursive(kanoTmpDir, ".export-manifest.json"));
+
+    // Find the actual manifest path
+    std::filesystem::path canonicalManifest;
+    for (const auto& entry : std::filesystem::directory_iterator(kanoTmpDir)) {
+        if (entry.is_regular_file() &&
+            entry.path().filename().string().find(".export-manifest.json") != std::string::npos) {
+            canonicalManifest = entry.path();
+            break;
+        }
+    }
+    REQUIRE_FALSE(canonicalManifest.empty());
+    REQUIRE(std::filesystem::exists(canonicalManifest));
+
+    // Read and parse the manifest
+    std::ifstream mf(canonicalManifest);
+    REQUIRE(mf.good());
+    const std::string manifestText((std::istreambuf_iterator<char>(mf)),
+                                    std::istreambuf_iterator<char>());
+    REQUIRE_FALSE(manifestText.empty());
+
+    // Must be valid JSON (check for required keys as substrings)
+    REQUIRE(manifestText.find("\"schemaVersion\"")  != std::string::npos);
+    REQUIRE(manifestText.find("\"exportMode\"")     != std::string::npos);
+    REQUIRE(manifestText.find("\"singleArchive\"")  != std::string::npos);
+    REQUIRE(manifestText.find("\"archiveFile\"")    != std::string::npos);
+    REQUIRE(manifestText.find("\"path\"")           != std::string::npos);
+    REQUIRE(manifestText.find("\"sha256\"")         != std::string::npos);
+    REQUIRE(manifestText.find("\"sizeBytes\"")      != std::string::npos);
+    REQUIRE(manifestText.find("\"platform\"")       != std::string::npos);
+    REQUIRE(manifestText.find("\"archives\"")       != std::string::npos);
+
+    // exportMode must be "single"
+    REQUIRE(manifestText.find("\"exportMode\": \"single\"") != std::string::npos);
+
+    // singleArchive must be true
+    REQUIRE(manifestText.find("\"singleArchive\": true") != std::string::npos);
+
+    // platform must be one of the normalized values
+    const bool hasValidPlatform =
+        manifestText.find("\"platform\": \"windows\"") != std::string::npos ||
+        manifestText.find("\"platform\": \"linux\"")   != std::string::npos ||
+        manifestText.find("\"platform\": \"mac\"")     != std::string::npos;
+    REQUIRE(hasValidPlatform);
+
+    // archiveFile must use forward slashes (no backslashes)
+    // Extract archiveFile value by finding it in the JSON text
+    const auto archiveFileKey = std::string("\"archiveFile\": \"");
+    const auto keyPos = manifestText.find(archiveFileKey);
+    REQUIRE(keyPos != std::string::npos);
+    const auto valueStart = keyPos + archiveFileKey.size();
+    const auto valueEnd = manifestText.find('"', valueStart);
+    REQUIRE(valueEnd != std::string::npos);
+    const std::string archiveFilePath = manifestText.substr(valueStart, valueEnd - valueStart);
+    REQUIRE(archiveFilePath.find('\\') == std::string::npos);
+
+    // The archive file referenced must exist
+    REQUIRE(std::filesystem::exists(std::filesystem::path(archiveFilePath)));
+
+    // Sibling copy alongside the archive
+    const auto outputDir = ctx.rootClone / ".kano" / "tmp" / "git" / "export";
+    REQUIRE(AnyFileContains(outputDir, ".export-manifest.json"));
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("kog export without --single does not produce export-manifest.json",
+          "[Integration][export][no-single][export-manifest][req-manifest]") {
+    // When --single is NOT specified, export-manifest.json must NOT be written.
+
+    const auto ctx = CreateExportWorkspace("no-single-no-manifest");
+
+    RequireSuccess(RunKogDiscover(ctx), "kog discover");
+    const auto result = RunKogExport(ctx, {});
+
+    INFO("exit=" << result.exitCode);
+    REQUIRE(result.exitCode == 0);
+
+    const auto kanoTmpDir = ctx.rootClone / ".kano" / "tmp";
+    REQUIRE_FALSE(AnyFileContainsRecursive(kanoTmpDir, ".export-manifest.json"));
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
