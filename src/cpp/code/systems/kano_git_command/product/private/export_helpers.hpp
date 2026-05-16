@@ -42,6 +42,8 @@ struct ExportOptions {
     bool noMetadata = false;
     int revPad = 3;
     std::string source;          // "head" or "working-tree"
+    bool single = false;
+    int logCount = 10;
 };
 
 struct ExportRecord {
@@ -136,6 +138,7 @@ auto FormatDryRunPlan(const std::vector<ExportRecord>& InRecords,
 auto BuildExportList(const std::filesystem::path& InRoot,
                       const std::vector<workspace::RepoRecord>& InDiscovered,
                       bool InNoRecursive,
+                      bool InSingle,
                       const ShellExecutor& InExec) -> std::vector<ExportRecord>;
 
 // Returns true if the given path is marked with 'export-ignore' attribute

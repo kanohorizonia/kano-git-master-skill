@@ -95,6 +95,7 @@ auto BuildWorkingTreeTarArgs(const std::filesystem::path& InRepoPath,
     args.push_back("-czf");
     args.push_back(InOutputPath.generic_string());
     args.push_back("--exclude=.git");
+    args.push_back("--exclude=.kano");
     for (const auto& excludePath : InExcludePaths) {
         args.push_back("--exclude=" + excludePath.generic_string());
     }
@@ -201,6 +202,47 @@ auto FormatManifest(const ExportRecord& InRecord,
     return oss.str();
 }
 
+auto FormatMarkdownMetadata(const ExportRecord& InRecord,
+                           const ExportResult& InResult,
+                           const ExportOptions& InOpts,
+                           const std::string& InRootLogOut,
+                           const std::vector<std::pair<std::string, std::string>>& InSubLogs) -> std::string {
+    const std::string archiveBase = InResult.archiveName.substr(
+        0, InResult.archiveName.rfind('.'));
+
+    std::ostringstream oss;
+    oss << "# Export Metadata: " << archiveBase << "\n\n";
+    oss << "## General Info\n";
+    oss << "- **Repository**: `" << InRecord.repoName << "`\n";
+    oss << "- **Source Path**: `" << InRecord.repoPath.generic_string() << "`\n";
+    oss << "- **Exported At**: " << CurrentUtcIso8601Export() << "\n";
+    oss << "- **Format**: " << InOpts.format << "\n";
+    oss << "- **Archive File**: `" << InResult.archiveName << "`\n\n";
+
+    oss << "## Project History (last " << InOpts.logCount << " entries)\n";
+    oss << "### Root Repository: " << InRecord.repoName << "\n";
+    oss << "```text\n";
+    if (InRootLogOut.empty()) {
+        oss << "(No history available)\n";
+    } else {
+        oss << InRootLogOut;
+    }
+    oss << "\n```\n\n";
+
+    for (const auto& [subPath, subLog] : InSubLogs) {
+        oss << "### Submodule: " << subPath << "\n";
+        oss << "```text\n";
+        if (subLog.empty()) {
+            oss << "(No history available)\n";
+        } else {
+            oss << subLog;
+        }
+        oss << "\n```\n\n";
+    }
+
+    return oss.str();
+}
+
 auto FormatProgressLine(const std::string& InDisplayName,
                         const std::filesystem::path& InArchivePath) -> std::string {
     return "  Exported " + InDisplayName + " -> " + InArchivePath.generic_string();
@@ -263,6 +305,7 @@ auto IsPathIgnoredByExport(const std::filesystem::path& InRepoPath,
 auto BuildExportList(const std::filesystem::path& InRoot,
                       const std::vector<workspace::RepoRecord>& InDiscovered,
                       bool InNoRecursive,
+                      bool InSingle,
                       const ShellExecutor& InExec) -> std::vector<ExportRecord> {
     std::vector<ExportRecord> result;
 
@@ -273,11 +316,34 @@ auto BuildExportList(const std::filesystem::path& InRoot,
     if (rootRecord.repoName.empty()) {
         rootRecord.repoName = InRoot.lexically_normal().filename().generic_string();
     }
-    rootRecord.relativeRepoPath = ".";
+    const std::string rootName = rootRecord.repoName;
+
     rootRecord.isRoot = true;
+    const auto normalizedRoot = InRoot.lexically_normal();
+
+    // Collect submodule paths for exclusion (multi-repo) or history (single-repo)
+    for (const auto& repo : InDiscovered) {
+        const auto normalizedPath = repo.path.lexically_normal();
+        bool isRoot = false;
+        std::error_code ec;
+        if (std::filesystem::exists(normalizedPath, ec) && std::filesystem::exists(normalizedRoot, ec)) {
+            if (std::filesystem::equivalent(normalizedPath, normalizedRoot, ec)) {
+                isRoot = true;
+            }
+        }
+        if (!isRoot && normalizedPath == normalizedRoot) {
+            isRoot = true;
+        }
+
+        if (!isRoot) {
+            rootRecord.submodulePaths.push_back(RelativeDisplayPath(InRoot, repo.path));
+        }
+    }
+    std::sort(rootRecord.submodulePaths.begin(), rootRecord.submodulePaths.end());
+
     result.push_back(std::move(rootRecord));
 
-    if (InNoRecursive) {
+    if (InNoRecursive || InSingle) {
         return result;
     }
 
@@ -308,9 +374,12 @@ auto BuildExportList(const std::filesystem::path& InRoot,
         ExportRecord rec;
         rec.repoPath = repo.path;
         rec.relativeRepoPath = RelativeDisplayPath(InRoot, repo.path).generic_string();
-        rec.repoName = rec.relativeRepoPath;
-        std::replace(rec.repoName.begin(), rec.repoName.end(), '/', '_');
-        std::replace(rec.repoName.begin(), rec.repoName.end(), '\\', '_');
+
+        // Include root repo name in subrepo names for clarity
+        std::string subName = rec.relativeRepoPath;
+        std::replace(subName.begin(), subName.end(), '/', '_');
+        std::replace(subName.begin(), subName.end(), '\\', '_');
+        rec.repoName = rootName + "_" + subName;
 
         rec.isRoot = false;
         result.push_back(std::move(rec));
@@ -432,7 +501,7 @@ auto ExportOneRepo(const ExportRecord& InRecord,
     } else {
         // working-tree
         std::vector<std::filesystem::path> excludes;
-        if (InRecord.isRoot) {
+        if (InRecord.isRoot && !InOpts.single) {
             for (const auto& sub : InRecord.submodulePaths) {
                 excludes.push_back(sub);
             }
@@ -472,6 +541,25 @@ auto ExportOneRepo(const ExportRecord& InRecord,
     // Write checksums
     WriteChecksumFile(result.archivePath, InMetadataDir, InExec);
     WriteChecksumFile(manifestPath, InMetadataDir, InExec);
+
+    // Write human/agent metadata markdown file (alongside archive)
+    const auto logArgs = std::vector<std::string>{"log", "-n", std::to_string(InOpts.logCount), "--oneline", "--decorate"};
+    const auto rootLogOut = GitCapture(InRecord.repoPath, logArgs, InExec);
+
+    std::vector<std::pair<std::string, std::string>> subLogs;
+    if (InOpts.single && InRecord.isRoot) {
+        for (const auto& subRelPath : InRecord.submodulePaths) {
+            const auto subLog = GitCapture(InRecord.repoPath / subRelPath, logArgs, InExec);
+            subLogs.push_back({subRelPath.generic_string(), subLog.stdoutStr});
+        }
+    }
+
+    const std::string mdText = FormatMarkdownMetadata(InRecord, result, InOpts, rootLogOut.stdoutStr, subLogs);
+    const auto mdPath = InOutputDir / (archiveBase + ".md");
+    std::ofstream mdf(mdPath);
+    if (mdf) {
+        mdf << mdText;
+    }
 
     return result;
 }
@@ -547,7 +635,7 @@ auto RunExport(const ExportOptions& InOpts) -> int {
         : InOpts.outputDir;
     const auto metadataDir = outputDir / "metadata";
 
-    const auto exportList = BuildExportList(cwd, discovery.repos, InOpts.noRecursive, realExec);
+    const auto exportList = BuildExportList(cwd, discovery.repos, InOpts.noRecursive, InOpts.single, realExec);
 
     if (InOpts.dryRun) {
         ExportOptions optsWithDir = InOpts;
@@ -595,6 +683,8 @@ void RegisterExport(CLI::App& InApp) {
     auto* noMetadata = new bool{false};
     auto* revPad = new int{3};
     auto* source = new std::string{"head"};
+    auto* single = new bool{false};
+    auto* logCount = new int{10};
 
     cmd->add_option("--output", *outputDir,
         "Output directory for archives (default: <cwd>/.kano/tmp/git/export/)");
@@ -614,6 +704,10 @@ void RegisterExport(CLI::App& InApp) {
         "Revision zero-padding width (default: 3)");
     cmd->add_option("--source", *source,
         "Archive source: head|working-tree (default: head)");
+    cmd->add_flag("--single", *single,
+        "Export the entire workspace into a single archive (implies --no-recursive)");
+    cmd->add_option("--log-count", *logCount,
+        "Number of history log entries to include in metadata (default: 10)");
 
     cmd->callback([=]() {
         ExportOptions opts;
@@ -626,6 +720,13 @@ void RegisterExport(CLI::App& InApp) {
         opts.noMetadata = *noMetadata;
         opts.revPad = *revPad;
         opts.source = *source;
+        opts.single = *single;
+        opts.logCount = *logCount;
+
+        // If --single is specified, default --source to "working-tree" unless explicitly overridden.
+        if (opts.single && cmd->get_option("--source")->results().empty()) {
+            opts.source = "working-tree";
+        }
 
         const int exitCode = RunExport(opts);
         if (exitCode != 0) {
