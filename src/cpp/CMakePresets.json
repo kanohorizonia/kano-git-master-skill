@@ -29,7 +29,7 @@
                 "strategy": "set"
             },
             "toolset": {
-                "value": "v143,version=14.44.35207",
+                "value": "v143",
                 "strategy": "set"
             },
             "binaryDir": "${sourceDir}/out/obj/windows-msbuild"

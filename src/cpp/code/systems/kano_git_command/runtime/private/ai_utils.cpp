@@ -248,6 +248,7 @@ auto ExecuteCodexExec(std::optional<std::filesystem::path> InWorkingDir,
                       const std::string& InPurpose,
                       const std::string& InModel) -> shell::ExecResult {
     const auto workdir = InWorkingDir.value_or(std::filesystem::current_path());
+    const auto effectivePrompt = BuildFileBackedPromptArgument(workdir, InPrompt, InPurpose);
     std::filesystem::path responsePath;
     std::string responseError;
     if (!WriteCodexResponseFilePath(workdir, InPurpose, InPrompt, &responsePath, &responseError)) {
@@ -265,7 +266,7 @@ auto ExecuteCodexExec(std::optional<std::filesystem::path> InWorkingDir,
     args.push_back("--cd");
     args.push_back(workdir.generic_string());
     AppendModelArgs(args, InModel);
-    args.push_back(InPrompt);
+    args.push_back(effectivePrompt);
     auto result = shell::ExecuteCommand(CodexStandaloneCommand(), args, shell::ExecMode::Capture, InWorkingDir);
     if (result.exitCode == 0) {
         if (const auto responseText = ReadFileText(responsePath); responseText) result.stdoutStr = *responseText;

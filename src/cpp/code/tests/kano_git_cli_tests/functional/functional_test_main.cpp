@@ -611,6 +611,40 @@ TEST_CASE("amend_ai_auto_rewords_head_when_worktree_is_clean", "[functional][ame
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("amend_ai_auto_rejects_status_only_ai_output", "[functional][amend][ai]") {
+    const auto ctx = CreateRemoteWithClone("amend-ai-status-only-output");
+    WriteTextFile(ctx.cloneRepo / "README.md", "seed\namend ai status-only\n");
+    RequireSuccess(RunGit({"add", "README.md"}, ctx.cloneRepo), "stage amend ai status-only change");
+    RequireSuccess(RunGit({"commit", "-m", "chore: placeholder amend status-only"}, ctx.cloneRepo), "seed amend status-only target");
+    const auto beforeHead = CurrentHeadSha(ctx.cloneRepo);
+
+    std::vector<std::pair<std::string, std::string>> env{
+        {"KOG_TEST_AI_STDOUT", "Reading\n"},
+        {"KOG_TEST_AI_EXIT_CODE", "0"},
+    };
+    if (const char* currentPath = std::getenv("PATH"); currentPath != nullptr) {
+        env.emplace_back("PATH", currentPath);
+    }
+
+    const auto result = RunKogWithEnv(
+        {"amend", "--ai-auto", "--ai-provider", "copilot", "--no-ai-review"},
+        ctx.cloneRepo,
+        env);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode != 0);
+
+    const auto merged = result.stdoutText + "\n" + result.stderrText;
+    REQUIRE(merged.find("ai message generation failed: ai provider returned empty message") != std::string::npos);
+    REQUIRE(CurrentHeadSha(ctx.cloneRepo) == beforeHead);
+
+    const auto subject = RunGit({"log", "-1", "--pretty=%s"}, ctx.cloneRepo);
+    RequireSuccess(subject, "read unchanged subject");
+    REQUIRE(TrimCopy(subject.stdoutText) == "chore: placeholder amend status-only");
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("sync_semantic_drift_reaches_post_sync_commit_stage", "[functional][commit-push][post-sync]") {
     const auto ctx = CreateRemoteWithClone("sync-semantic-drift");
     WriteTextFile(ctx.cloneRepo / "staged.txt", "staged\n");

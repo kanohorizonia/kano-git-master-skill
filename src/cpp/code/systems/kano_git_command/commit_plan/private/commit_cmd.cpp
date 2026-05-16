@@ -943,7 +943,7 @@ auto ExtractSingleLineMessage(const std::string& InText) -> std::string {
         // Case-insensitive prefix check for common AI narration patterns.
         auto lower = ToLower(s);
         static const std::string kPreamblePrefixes[] = {
-            "reading the ",    "let me ",        "i'll ",         "i will ",
+            "reading",         "let me ",        "i'll ",         "i will ",
             "here's ",         "here is ",       "based on ",     "looking at ",
             "analyzing ",      "certainly",       "sure",          "of course",
             "the commit ",     "this commit ",    "i've ",         "i have ",
@@ -961,6 +961,9 @@ auto ExtractSingleLineMessage(const std::string& InText) -> std::string {
         if (lower.find("commit message") != std::string::npos
             && (lower.find("reading") != std::string::npos || lower.find("generating") != std::string::npos
                 || lower.find("creating") != std::string::npos)) {
+            return true;
+        }
+        if (lower == "reading" || lower == "thinking" || lower == "analyzing" || lower == "processing") {
             return true;
         }
         return false;
@@ -1002,8 +1005,8 @@ auto ExtractSingleLineMessage(const std::string& InText) -> std::string {
         }
     }
 
-    // Pass 2c: last resort ??return first candidate even if it looks like preamble.
-    return candidates.front();
+    // Pass 2c: no meaningful message found.
+    return {};
 }
 
 auto RunAiGenerate(const std::string& InProvider,

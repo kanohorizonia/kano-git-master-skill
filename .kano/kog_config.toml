@@ -60,5 +60,48 @@ require_success = false
 #inherit = true
 
 # Native self-build behavior.
+#
+# Compiler launcher selection for local/self builds.
+#
+# Available values:
+# - "auto"
+#   Try to detect a supported launcher from PATH. Current preference order is
+#   `ccache` first, then `sccache`.
+# - "none"
+#   Disable compiler launcher usage.
+# - "ccache"
+#   Require `ccache` to be available and use it explicitly.
+# - "sccache"
+#   Require `sccache` to be available and use it explicitly.
+# - "<program-or-absolute-path>"
+#   Use an explicit launcher binary name or full path if your workflow needs a
+#   non-default wrapper.
+#
+# Notes:
+# - If `auto` is selected and no supported launcher is found, build falls back
+#   to a normal non-launcher compile path.
+# - `ccache` / `sccache` are mostly a local iteration optimization. They should
+#   not change build output semantics.
 [self]
 compiler_launcher = "auto"
+
+# Windows MSVC toolchain preference for self-build.
+#
+# Behavior:
+# - If set to "installed-latest", use the newest MSVC toolset already installed
+#   on this machine.
+# - If set to "channel-latest", `install-prereq` tries to sync/install the newest
+#   MSVC toolset available from the active Visual Studio channel, and self-build
+#   then uses the newest installed version.
+# - If the exact preferred toolset is installed, use it.
+# - If it is not installed, self-build may fall forward to a newer installed
+#   toolset version.
+# - Falling back to an older toolset is not allowed.
+#
+# Example:
+[toolchain]
+msvc_preferred_version = "14.44.35207"
+# or
+# msvc_preferred_version = "installed-latest"
+# or
+# msvc_preferred_version = "channel-latest"
