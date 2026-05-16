@@ -99,9 +99,17 @@ auto CollectWorkingTreeFiles(const ExportRecord& InRecord, bool InSingle, const 
             std::istringstream iss(res.stdoutStr);
             std::string line;
             while (std::getline(iss, line)) {
-                if (!line.empty()) {
-                    allFiles.push_back(prefix + line);
-                }
+                if (line.empty()) continue;
+                // Trim trailing \r if present (git output on Windows)
+                if (line.back() == '\r') line.pop_back();
+                if (line.empty()) continue;
+
+                // Skip .git and .kano entries
+                if (line == ".git" || line == ".kano") continue;
+                // Also skip if it's a directory (submodule) to prevent tar from recursing
+                if (std::filesystem::is_directory(repoPath / line)) continue;
+
+                allFiles.push_back(prefix + line);
             }
         }
     };
@@ -531,6 +539,8 @@ auto ExportOneRepo(const ExportRecord& InRecord,
         std::vector<std::string> args;
         args.push_back("-czf");
         args.push_back(result.archivePath.generic_string());
+        args.push_back("--exclude=.git");
+        args.push_back("--exclude=.kano");
         args.push_back("-C");
         args.push_back(InRecord.repoPath.parent_path().generic_string());
         args.push_back("-T");
