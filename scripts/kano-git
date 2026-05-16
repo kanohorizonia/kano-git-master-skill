@@ -11,11 +11,21 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 # via shell-hook when not already active, and fail-fast when the canonical shared
 # Pixi manifest exists but
 # pixi is unavailable. PATH-first tool resolution is preserved.
-if [[ -f "$PROJECT_ROOT/src/cpp/shared/infra/scripts/lib/pixi_bootstrap.sh" ]]; then
-  # Deliberately no OPAM result capture — the eval inside activate() emits to the shell.
-  # Disable shellcheck SC1091 (not following resolved path) for this source directive.
-  # shellcheck source=/dev/null
-  source "$PROJECT_ROOT/src/cpp/shared/infra/scripts/lib/pixi_bootstrap.sh"
+KANO_PIXI_BOOTSTRAP_SCRIPT="$PROJECT_ROOT/src/cpp/shared/infra/scripts/lib/pixi_bootstrap.sh"
+if [[ ! -f "$KANO_PIXI_BOOTSTRAP_SCRIPT" ]]; then
+  echo "Error: shared infra bootstrap is missing: $KANO_PIXI_BOOTSTRAP_SCRIPT" >&2
+  echo "Hint: initialize submodules, or use a release archive that includes shared infra." >&2
+  exit 1
+fi
+
+# Deliberately no OPAM result capture — the eval inside activate() emits to the shell.
+# Disable shellcheck SC1091 (not following resolved path) for this source directive.
+# shellcheck source=/dev/null
+source "$KANO_PIXI_BOOTSTRAP_SCRIPT"
+
+if ! declare -F kano_pixi_bootstrap_activate >/dev/null 2>&1; then
+  echo "Error: kano_pixi_bootstrap_activate was not loaded from shared infra." >&2
+  exit 1
 fi
 
 # Activate pixi environment from the canonical shared infra manifest.
@@ -313,6 +323,58 @@ run_pixi_build_task() {
   run_with_progress "build.sh" "$pixi_cmd" run --manifest-path "$manifest_path" "$task_name"
 }
 
+
+make_self_build_log_path() {
+  local mode="${1:-build}"
+  local log_dir="$PROJECT_ROOT/.kano/tmp/build"
+  mkdir -p "$log_dir"
+  printf '%s/self-%s-%s-%s.log\n' "$log_dir" "$mode" "$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || date +%s)" "$$"
+}
+
+looks_like_dependency_fetch_failure() {
+  local log_file="$1"
+  [[ -f "$log_file" ]] || return 1
+
+  grep -Eqi \
+    'FetchContent|GIT_REPOSITORY|github\.com|git clone|Failed to clone repository|Could not resolve host|Could not resolve proxy|Failed to connect|Network is unreachable|Operation timed out|Connection timed out|TLS|GnuTLS|SSL|unable to access .+https?://|The requested URL returned error' \
+    "$log_file"
+}
+
+print_dependency_fetch_failure_hint() {
+  local log_file="$1"
+  cat >&2 <<EOF
+
+Dependency fetch appears to have failed during native self build.
+This is expected when the build runs in an offline or DNS-restricted environment.
+
+Default source mode uses CMake FetchContent and may fetch third-party libraries
+from GitHub, such as nlohmann/json, CLI11, FTXUI, toml++, Catch2, or rapidcheck.
+
+This does not indicate a launcher or shared-infra script failure.
+Use one of these paths:
+  - Re-run with network access for normal developer builds.
+  - Use system/submodule source modes where available for controlled CI.
+  - Add a future vendor/offline dependency cache if offline self build is required.
+
+Build log:
+  $log_file
+EOF
+}
+
+print_generic_self_build_failure_hint() {
+  local log_file="$1"
+  cat >&2 <<EOF
+
+Self build failed. Check the build log before assuming the launcher is broken.
+
+Build log:
+  $log_file
+
+Prerequisites may be missing. To install them manually, run:
+  kog self install-prereq
+EOF
+}
+
 apply_launcher_env_overrides() {
   local arg
   for arg in "$@"; do
@@ -598,26 +660,31 @@ run_native_build_mode() {
     return 1
   fi
 
+  local build_log
+  build_log="$(make_self_build_log_path "$mode")"
+
   if [[ "$os_name" == "windows" ]]; then
     build_task="build-release"
-    if run_pixi_build_task "$build_task"; then
+    if run_pixi_build_task "$build_task" 2>&1 | tee "$build_log"; then
       log_launcher_status "build-native" "ok" "build completed via pixi task=$build_task"
     else
       log_launcher_status "build-native" "fail" "build failed via pixi task=$build_task"
-      echo "" >&2
-      echo "Prerequisites may be missing. To install them manually, run:" >&2
-      echo "  kog self install-prereq" >&2
-      echo "" >&2
+      if looks_like_dependency_fetch_failure "$build_log"; then
+        print_dependency_fetch_failure_hint "$build_log"
+      else
+        print_generic_self_build_failure_hint "$build_log"
+      fi
       return 1
     fi
-  elif run_shell_script "$build_script"; then
+  elif run_shell_script "$build_script" 2>&1 | tee "$build_log"; then
     log_launcher_status "build-native" "ok" "build completed"
   else
     log_launcher_status "build-native" "fail" "build failed"
-    echo ""
-    echo "Prerequisites may be missing. To install them manually, run:" >&2
-    echo "  kog self install-prereq" >&2
-    echo ""
+    if looks_like_dependency_fetch_failure "$build_log"; then
+      print_dependency_fetch_failure_hint "$build_log"
+    else
+      print_generic_self_build_failure_hint "$build_log"
+    fi
     return 1
   fi
 
@@ -1303,8 +1370,8 @@ print_launcher_help_extras() {
   cat >&2 <<'EOF'
 
 Launcher commands:
-  self build                          Build native binary (incremental)
-  self rebuild                        Rebuild native binary (full clean rebuild)
+  self build                          Build native binary (incremental; may fetch C++ dependencies from GitHub)
+  self rebuild                        Rebuild native binary (full clean rebuild; may fetch C++ dependencies from GitHub)
   self install-prereq                 Install build prerequisites (CMake, Ninja, MSVC)
   self update                         Run manual launcher update check flow
                                       When native binary is unavailable, fallback sync also prepares required C++ submodules.
@@ -1525,6 +1592,12 @@ main() {
   fi
 
   if is_lightweight_query_command "${exec_args[@]}"; then
+    if has_help_request_arg "${exec_args[@]}"; then
+      echo "kano-git native binary is not built for the current shell." >&2
+      echo "Run './scripts/kog self build' from the repository root, then retry the native command." >&2
+      print_launcher_help_extras
+      exit 0
+    fi
     echo "Error: no compatible native binary found for current shell." >&2
     echo "Hint: do not mix WSL shell with Windows .exe binary. Use Linux build in WSL, or run Git Bash/Cygwin for Windows build." >&2
     echo "Hint: run './kog self build' in the current shell environment." >&2

@@ -1,536 +1,120 @@
 # Git Master Skill
 
-**Version**: 0.1.0-beta
+**Version**: 0.1.0-beta  
 **Status**: Beta Release
 
-Advanced Git automation for multi-repository workspaces with a native `kog` / `kano-git` command surface.
+Advanced Git automation for multi-repository workspaces with a native `kog` /
+`kano-git` command surface.
 
 ## Quick Start
 
-```bash
-# Show skill version
-./scripts/internal/show-version.sh
-
-# Get started
-cat docs/README.md
-```
-
-## Native C++ Build
-
-Use `pixi` as the primary build entrypoint. Shared native build/test/report/bootstrap flows now live in the canonical manifest at `src/cpp/shared/infra/pixi.toml`, while the repo-root manifest is reserved for repo-specific shell/docs/acceptance tasks.
-
-### Quick Start (Recommended)
+Use the repo-local launcher first. It works even before the native binary is
+built and prints the current launcher-level command surface.
 
 ```bash
-# Install shared native tools and environment
-pixi install --manifest-path src/cpp/shared/infra/pixi.toml
-
-# Verify tool environment
-pixi run --manifest-path src/cpp/shared/infra/pixi.toml env-summary
-
-# Build native `kano-git` / `kog`
-pixi run --manifest-path src/cpp/shared/infra/pixi.toml build
-
-# Run tests
-pixi run --manifest-path src/cpp/shared/infra/pixi.toml quick-test
-
-# Repo-specific shell acceptance/docs tasks stay at repo root
-pixi run acceptance-quickstart
+./scripts/kog --help
 ```
 
-### Stable Underlying Entrypoints
-
-The stable native script entrypoints under `src/cpp/shared/infra/scripts/` are implemented as the backing layer for pixi tasks. You may use them directly if needed, but prefer pixi tasks above.
+Build the native CLI when you need the full command surface:
 
 ```bash
-# Default one-shot build / rebuild
-bash src/cpp/shared/infra/scripts/self/build.sh
-bash src/cpp/shared/infra/scripts/self/rebuild.sh
-
-# Atomic stages
-bash src/cpp/shared/infra/scripts/stages/test.sh
-bash src/cpp/shared/infra/scripts/stages/test-report.sh
-bash src/cpp/shared/infra/scripts/stages/coverage-build.sh
-bash src/cpp/shared/infra/scripts/stages/coverage-gather.sh
-bash src/cpp/shared/infra/scripts/stages/coverage-report.sh
-
-# Composed workflows
-bash src/cpp/shared/infra/scripts/workflows/coverage-all.sh
-bash src/cpp/shared/infra/scripts/workflows/pgo-rebuild.sh
-
-# Profiling matrices + profile report
-bash src/cpp/shared/infra/scripts/stages/profile.sh default
-bash src/cpp/shared/infra/scripts/stages/profile-report.sh default
+./scripts/kog self build
 ```
 
-Do not use ad-hoc direct CMake/Ninja command sequences in this repo unless a maintainer explicitly asks for it.
+The normal developer build may fetch C++ dependencies from GitHub through CMake
+FetchContent. That is expected for online developer and CI builds.
 
-### Native Script Layers
+## Current Command Surface
 
-- `src/cpp/shared/infra/scripts/` — canonical shared/base infra, entrypoints, toolchain helpers, metadata
-- `src/cpp/shared/infra/scripts/self/` — stable one-shot entrypoints (`build`, `rebuild`)
-- `src/cpp/shared/infra/scripts/stages/` — atomic stage entrypoints (`test`, `coverage-*`, `profile*`)
-- `src/cpp/shared/infra/scripts/workflows/` — composed workflows such as coverage-all and pgo-rebuild
-- `src/cpp/shared/infra/scripts/profiling/` — profiling matrices, matrix runner, and profile-report rendering
-- `src/cpp/shared/infra/scripts/platform/` — platform-specific leaf wrappers
+Start here when updating docs, writing agent prompts, or validating a release:
 
-### Report Kinds
+- [Current Command Surface](./docs/guides/current-command-surface.md)
+- [Documentation Index](./docs/README.md)
+- [CPA Commit Plan Workflow](./docs/guides/cpa-commit-plan-workflow.md)
+- [Repo Hygiene](./docs/repo-hygiene.md)
 
-Native reporting is now modeled explicitly as two report kinds:
-
-- `test` — test-result rendering / static test report output
-- `coverage` — coverage collection / rendering output
-
-Older `*-kano-report.sh` scripts remain as compatibility wrappers but should be treated as legacy names.
-
-### Profiling Area
-
-The profiling area lives under `src/cpp/shared/infra/scripts/profiling/` and is designed for curated feature-combination runs such as:
-
-- compiler launcher comparisons (`none`, `ccache`, `sccache`, `auto`)
-- unity build comparisons (`off`, `full`, `changed`)
-- PGO workflow comparisons (`baseline` vs `pgo`)
-- mixed feature scenarios such as launcher + unity
-
-Shipped profiling matrices:
-
-- `src/cpp/shared/infra/scripts/profiling/matrices/default.json`
-- `src/cpp/shared/infra/scripts/profiling/matrices/launchers.json`
-- `src/cpp/shared/infra/scripts/profiling/matrices/unity.json`
-- `src/cpp/shared/infra/scripts/profiling/matrices/pgo.json`
-
-Entry points:
+Common commands:
 
 ```bash
-# Run a profiling matrix
-bash src/cpp/shared/infra/scripts/stages/profile.sh default
+# Help / discovery
+./scripts/kog --help
+./scripts/kog status
+./scripts/kog overview
+./scripts/kog discover
 
-# Render the JSON-first profile report
-bash src/cpp/shared/infra/scripts/stages/profile-report.sh default
+# Commit / plan flows
+./scripts/kog plan new
+./scripts/kog plan runbook commit
+./scripts/kog commit -m "chore: update workspace"
+./scripts/kog commit-push -m "chore: update workspace"
+./scripts/kog cpa
+
+# Hygiene / export
+./scripts/kog repo-hygiene check
+./scripts/kog repo-hygiene fix
+./scripts/kog export --help
+./scripts/kog export --single
 ```
-
-Artifacts are written under:
-
-- raw per-case outputs: `.kano/tmp/profiling/<matrix>/<case>/`
-- merged report outputs: `docs/profiling/<slug>/`
-
-Each profile report emits:
-
-- `profile.json` — canonical structured artifact
-- `summary.md` — Markdown projection
-- `index.html` — lightweight HTML projection
-
-## Features
-
-- **Repository Initialization Workflow** - Automated repository setup with multi-remote, orphan branches, and submodules
-- **Version Information** - Extract version info from git, git-p4, git-svn
-- **Worktree Management** - Manage multiple working trees efficiently
-- **Subtree Management** - Include external repositories as subtrees
-- **Submodule Enhancement** - Enhanced submodule operations with multi-URL support
-- **Mono-repo Optimization** - Git Scalar for large repositories (10-20x faster)
-- **VCS Bridges** - Integrate with Perforce (git-p4) and Subversion (git-svn)
-
-## Documentation
-
-All documentation is in the `docs/` directory:
-
-- [Documentation Index](./docs/README.md) - Start here
-- [Quick Start Guide](./docs/guides/quick-start.md)
-- [CPA Commit Plan Workflow](./docs/guides/cpa-commit-plan-workflow.md) - Full-auto/semi-auto AI commit flows with stage diagram
-- [Repository Initialization Workflow Examples](./docs/examples/repo-initialization-workflow-examples.md) - Complete usage examples
-- [Submodule Guide](./docs/guides/submodule.md) - Enhanced submodule management
-- [Common Pitfalls](./docs/guides/common-pitfalls.md) - Troubleshooting guide
-- [Changelog](./docs/status/changelog.md)
-
-## Native Commit Semantics
-
-`kog commit` is plan-first.
-
-- `kog commit -m "..."` synthesizes a minimal transient commit plan, then reuses the
-  same plan-backed validation/apply path as `--plan-file`
-- `kog commit --plan-file <file>` applies an explicit prepared plan
-- `kog commit --agent <name> -m "..."` uses the same synthesized-plan path with
-  agent proxy rules
-- `kog commit --plan-file <file> -m "..."` is invalid and fails explicitly
 
 ## Wrapper Entry Points
 
-- keep using `scripts/kano-git` and `scripts/kog` as the canonical wrapper names
-- on Windows CMD / PowerShell, the paired `scripts/kano-git.bat` and `scripts/kog.bat`
-  are provided so those shells can invoke the launcher without a shell-selection prompt
-- installer behavior is owned by native `kog` commands; separate installer wrapper names
-  are no longer kept in `scripts/`
-
-## Installation
-
-No installation required. Clone and use:
+- `scripts/kog` and `scripts/kano-git` are the canonical Unix launchers.
+- `scripts/kog.bat` and `scripts/kano-git.bat` are the Windows CMD/PowerShell
+  launchers.
+- Do not use separate root installer wrappers such as `scripts/kog-installer` and `scripts/kano-git-installer`; they are not part of the current command surface.
+- Bash completion is installed through the native command surface:
 
 ```bash
-git clone <repo-url>
-cd kano-git-master-skill
-
-# Run any script
-./scripts/worktree/create-worktree.sh --help
+./scripts/kog completion install bash
 ```
 
-### External Workspace Discovery
+## Build and Test
 
-Native workspace commands such as `kog status` can merge additional repo roots
-outside the current workspace through layered `kog_config.toml` settings.
-
-The shipped default enables nearby skill discovery under `~/.agents/skills`:
-
-```toml
-[workspace.external]
-roots = ["~/.agents/skills"]
-inherit = true
-```
-
-You can inspect or override these settings with:
+Preferred local quality gate before committing:
 
 ```bash
-kog config workspace.external.roots
-kog config --help workspace.external.roots
+src/shell/test/pre-commit-quality-gate.sh
 ```
 
-When external repos are merged into `kog status`, their type now keeps both the
-external scope and the repo role when possible:
-
-- `external-root` for the top-level repo discovered from an external root
-- `external-registered` for repos registered by that external root repo via `.gitmodules`
-- `external-unregistered` for direct child repos that are not registered there
-
-Plain `external` is no longer emitted. In this naming, `root` refers to the
-matched external discovery root repo, not the current workspace root.
-
-When an external root is a container directory such as `~/.agents/skills`,
-`kog status` first discovers child repo roots such as `~/.agents/skills/kano`,
-then merges that repo plus its registered repos.
-
-## Requirements
-
-- Git 2.x or higher
-- Bash 4.x or higher (or Git Bash on Windows)
-- Git Scalar (optional, for mono-repo optimization)
-
-## Project Structure
-
-```
-kano-git-master-skill/
-├── VERSION                     # Version number (single source of truth)
-├── SKILL.md                    # Skill documentation
-├── docs/                       # User documentation
-├── pixi.toml                   # Repo-specific Pixi extensions (docs/acceptance)
-├── src/
-│   ├── cpp/                    # Native product/build root
-│   │   ├── CMakeLists.txt
-│   │   ├── CMakePresets.json
-│   │   ├── vcpkg.json
-│   │   ├── code/              # systems, apps, tests
-│   │   ├── shared/infra/pixi.toml # Canonical shared native Pixi manifest
-│   │   ├── shared/infra/scripts/ # Canonical native self/stage/workflow/report scripts
-│   │   └── out/               # Native artifacts
-│   └── shell/                 # Support helpers, docs automation, acceptance tests
-└── scripts/                    # Thin launchers and shell automation
-    ├── internal/           # Skill maintenance scripts
-    │   ├── show-version.sh # Show skill version
-    │   ├── bump-version.sh # Bump skill version
-    │   ├── create-tag.sh   # Create git tag
-    │   └── init-kano-dev-skill.sh  # Initialize Kano skill repos for development
-    ├── tags/               # Tag management
-    │   └── list-tags.sh    # List git tags
-    ├── core/               # Core operations
-    │   ├── init-repo-workflow.sh      # Complete initialization workflow
-    │   ├── setup-multi-remote.sh      # Multi-remote configuration
-    │   ├── create-orphan-branch.sh    # Orphan branch creation
-    │   ├── init-empty-repo.sh         # Initialize empty repository
-    │   ├── smart-clone.sh             # Clone with upstream remote
-    │   └── update-repo.sh             # Update repository
-    ├── worktree/           # Worktree management
-    ├── subtree/            # Subtree management
-    ├── submodules/         # Submodule operations
-    │   ├── smart-submodule.sh         # Canonical submodule entrypoint
-    │   ├── kog-submodule.sh           # Enhanced multi-remote submodule ops
-    │   ├── add-submodule.sh           # Compatibility wrapper (add)
-    │   ├── remove-submodule.sh        # Remove submodule
-    │   ├── update-submodules.sh       # Update all submodules
-    │   ├── sync-urls.sh               # Sync submodule URLs
-    │   └── submodule-common.sh        # Shared submodule helpers
-    ├── mono-repo/          # Mono-repo optimization
-    ├── vcs-bridges/        # VCS integration (P4, SVN)
-    └── lib/                # Helper libraries
-```
-
-Current architecture rule:
-
-- native product behavior lives under `src/cpp/`
-- root `scripts/` remain launchers, compatibility entrypoints, and shell automation
-- when docs and older shell-era assumptions disagree, prefer `src/cpp/`, `src/cpp/shared/infra/scripts/`, `src/cpp/out/`, and the current native command implementation
-
-Current native script contract:
-
-- prefer `src/cpp/shared/infra/scripts/self/*` for default build / rebuild entrypoints
-- prefer `src/cpp/shared/infra/scripts/stages/*` for atomic stage automation
-- prefer `src/cpp/shared/infra/scripts/workflows/*` for composed flows
-- prefer explicit report kinds: `test-report` and `coverage-report`
-
-## Usage Examples
-
-### Repository Initialization Workflow
-
-Initialize a new repository with multi-remote setup, orphan branch, and submodules:
+Enable the tracked Git hook when working on this repository:
 
 ```bash
-# Complete workflow with all features
-./scripts/core/init-repo-workflow.sh \
-  --repo-url git@github.com:myuser/myproject.git \
-  --repo-http-url https://github.com/myuser/myproject.git \
-  --upstream-ssh git@github.com:upstream/myproject.git \
-  --upstream-http https://github.com/upstream/myproject.git \
-  --repo-dir ./myproject \
-  --orphan-branch dev/tools \
-  --submodule "git@github.com:myuser/tool1.git:tools/tool1"
-
-# Simple initialization
-./scripts/core/init-repo-workflow.sh \
-  --repo-url git@github.com:myuser/myproject.git \
-  --repo-dir ./myproject
-
-# Preview with dry-run
-./scripts/core/init-repo-workflow.sh \
-  --repo-url git@github.com:myuser/myproject.git \
-  --dry-run
+git config core.hooksPath .githooks
 ```
 
-**Kano Skill Development Initialization** - Internal tool for setting up Kano skill repositories:
+Preferred native build:
 
 ```bash
-# Initialize kano-agent-skill with development skills
-# Tooling branch will be auto-named: dev/kano-agent-skill-tooling
-./scripts/internal/init-kano-dev-skill.sh \
-  --repo-ssh git@github.com:dorgonman/kano-agent-skill.git \
-  --repo-https https://github.com/dorgonman/kano-agent-skill.git \
-  --repo-dir .agents/kano \
-  --skill "git@github.com:user/skill1.git:https://github.com/user/skill1.git:skills/skill1" \
-  --skill "git@github.com:user/skill2.git:https://github.com/user/skill2.git:skills/skill2"
-
-# Preview with dry-run
-./scripts/internal/init-kano-dev-skill.sh \
-  --repo-ssh git@github.com:dorgonman/kano-agent-skill.git \
-  --repo-https https://github.com/dorgonman/kano-agent-skill.git \
-  --repo-dir .agents/kano \
-  --dry-run
+./scripts/kog self build
 ```
 
-See [Workflow Examples](./docs/examples/repo-initialization-workflow-examples.md) and [Kano Dev Skill Init Examples](./docs/examples/init-kano-dev-skill-example.md) for more usage patterns.
-
-### Multi-Remote Configuration
-
-Setup multiple remotes with SSH/HTTPS fallback:
+Offline archive smoke test:
 
 ```bash
-cd myproject
-./scripts/core/setup-multi-remote.sh \
-  --origin-ssh git@github.com:myuser/myproject.git \
-  --origin-http https://github.com/myuser/myproject.git \
-  --upstream-ssh git@github.com:upstream/myproject.git \
-  --upstream-http https://github.com/upstream/myproject.git
+src/shell/test/smoke-release-archive.sh <archive.tar>
 ```
 
-### Orphan Branch Management
-
-Create isolated orphan branches for development tools:
+Online build smoke test:
 
 ```bash
-# Create orphan branch
-./scripts/core/create-orphan-branch.sh \
-  --branch dev/tools \
-  --push
-
-# Create and return to original branch
-./scripts/core/create-orphan-branch.sh \
-  --branch dev/docs \
-  --return
+src/shell/test/smoke-release-online-build.sh <archive.tar>
 ```
 
-### Enhanced Submodule Management
-
-Manage submodules with multi-URL support and automatic fallback:
+Single-file release export automatically runs the offline archive smoke test
+when the smoke script is present:
 
 ```bash
-# Canonical entrypoint (recommended)
-./scripts/submodules/smart-submodule.sh add \
-  --path tools/formatter \
-  --remote origin \
-    --ssh git@github.com:myuser/formatter.git \
-    --https https://github.com/myuser/formatter.git \
-  --remote upstream \
-    --ssh git@github.com:original/formatter.git \
-    --https https://github.com/original/formatter.git
-
-# Equivalent direct command
-# Add submodule with multiple remotes
-./scripts/submodules/kog-submodule.sh add \
-  --path tools/formatter \
-  --remote origin \
-    --ssh git@github.com:myuser/formatter.git \
-    --https https://github.com/myuser/formatter.git \
-  --remote upstream \
-    --ssh git@github.com:original/formatter.git \
-    --https https://github.com/original/formatter.git
-
-# Sync remotes/branch alignment
-./scripts/submodules/smart-submodule.sh sync
-
-# Update submodule checkouts
-./scripts/submodules/smart-submodule.sh update --remote --recursive
+./scripts/kog export --single
+./scripts/kog export --single --validate-release-archive
 ```
 
-### Show Skill Version
+Shared native build/test/report/bootstrap helpers live in
+`src/cpp/shared/infra/scripts/`. Use them as infrastructure backing scripts, not
+as the primary Git workflow UX.
 
-```bash
-# Show full version info
-./scripts/internal/show-version.sh
+## Documentation Status
 
-# Show version number only
-./scripts/internal/show-version.sh --short
-```
-
-### Manage Skill Version
-
-```bash
-# Bump patch version (0.1.0 -> 0.1.1)
-./scripts/internal/bump-version.sh patch
-
-# Bump minor version (0.1.0 -> 0.2.0)
-./scripts/internal/bump-version.sh minor
-
-# Remove pre-release label (0.1.0-beta -> 0.1.0)
-./scripts/internal/bump-version.sh patch --remove-pre-release
-
-# Bump and create tag
-./scripts/internal/bump-version.sh minor --create-tag
-```
-
-### Manage Tags
-
-```bash
-# Create tag from VERSION file
-./scripts/internal/create-tag.sh --from-version-file -m "Beta release"
-
-# List all tags
-./scripts/tags/list-tags.sh
-
-# Show latest tag
-./scripts/tags/list-tags.sh --latest
-
-# List tags with details
-./scripts/tags/list-tags.sh --detailed
-```
-
-### Worktree Management
-
-```bash
-# Create worktree for a branch
-./scripts/worktree/create-worktree.sh feature-branch
-
-# List all worktrees
-./scripts/worktree/list-worktrees.sh
-```
-
-### Mono-repo Optimization
-
-```bash
-# Register with Git Scalar (10-20x faster)
-./scripts/mono-repo/scalar/register.sh
-
-# Check status
-./scripts/mono-repo/scalar/status.sh
-```
-
-### VCS Bridges
-
-```bash
-# Clone from Perforce
-./scripts/vcs-bridges/p4/clone.sh //depot/project/...
-
-# Clone from Subversion
-./scripts/vcs-bridges/svn/clone.sh https://svn.example.com/repo
-```
-
-## Beta Release
-
-This is a beta release. All core features are implemented and functional, but:
-
-- Test coverage is incomplete for some features
-- Performance benchmarks not yet available
-- Some edge cases may not be fully handled
-
-**Feedback welcome!** Please report issues or suggestions.
-
-## Troubleshooting
-
-### Common Issues
-
-**Branch Already Exists**
-```bash
-# Use different branch name or force overwrite
-./scripts/core/create-orphan-branch.sh --branch dev/tools-v2
-# OR (DANGEROUS)
-./scripts/core/create-orphan-branch.sh --branch dev/tools --force-overwrite-branch
-```
-
-**SSH Authentication Failure**
-```bash
-# System automatically falls back to HTTPS if provided
-# To fix SSH: check and add SSH key
-ssh-add -l
-ssh-add ~/.ssh/id_rsa
-ssh -T git@github.com
-```
-
-**Remote Not Accessible**
-```bash
-# Check network connectivity
-ping github.com
-# Try HTTPS instead of SSH
-./scripts/core/init-repo-workflow.sh --repo-url https://github.com/myuser/myproject.git
-```
-
-**Submodule Path Conflict**
-```bash
-# Use different path or remove existing directory
-rm -rf tools/formatter
-# OR remove existing submodule
-git submodule deinit tools/formatter
-git rm tools/formatter
-```
-
-**Not in Git Repository**
-```bash
-# Initialize Git repository first
-git init
-# OR use --dir option
-./scripts/core/create-orphan-branch.sh --branch dev/tools --dir /path/to/repo
-```
-
-See [Common Pitfalls Guide](./docs/guides/common-pitfalls.md) and [Workflow Examples](./docs/examples/repo-initialization-workflow-examples.md) for more troubleshooting help.
-
-## Contributing
-
-See [Contributing Guide](./docs/development/contributing.md) for details.
-
-## License
-
-[Add your license here]
-
-## Links
-
-- [Documentation](./docs/README.md)
-- [Changelog](./docs/status/changelog.md)
-- [Contributing](./docs/development/contributing.md)
-
----
-
-**Version**: See [VERSION](./VERSION) file
-**Last Updated**: 2026-02-13
+The native C++ CLI is now the source of truth for current workflows. Some older
+architecture notes and historical examples may still mention retired root shell
+scripts. Treat those as legacy notes unless they are referenced from
+[Current Command Surface](./docs/guides/current-command-surface.md).

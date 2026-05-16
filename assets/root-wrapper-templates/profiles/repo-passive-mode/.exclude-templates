@@ -1,3 +1,6 @@
-# Exclude optional AI-review entrypoint wrappers for base passive profile
+# Exclude optional AI-review entrypoint wrappers for base passive profile.
+kog-commit-with-ai-review.sh
+kog-commit-push-with-ai-review.sh
+# Historical smart-* aliases retained for compatibility if older templates appear.
 smart-commit-with-ai-review.sh
 smart-commit-push-with-ai-review.sh

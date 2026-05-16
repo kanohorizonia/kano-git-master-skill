@@ -41,28 +41,34 @@ These are recommended root-level wrappers for projects that use
 
 ## generate wrappers (recommended)
 
-Use generator script:
+Use the generator script from the skill checkout or submodule:
 
 ```bash
-./.agents/kano/kano-git-master-skill/scripts/core/gen-root-wrappers.sh --profile standalone --target .
+./.agents/kano/kano-git-master-skill/src/shell/core/gen-root-wrappers.sh --profile standalone --target . --force
 ```
 
 Open source contributor profile:
 
 ```bash
-./.agents/kano/kano-git-master-skill/scripts/core/gen-root-wrappers.sh --profile oss --target .
+./.agents/kano/kano-git-master-skill/src/shell/core/gen-root-wrappers.sh --profile oss --target . --force
 ```
 
 Repository passive mode profile (passive submodule mode):
 
 ```bash
-./.agents/kano/kano-git-master-skill/scripts/core/gen-root-wrappers.sh --profile repo-passive-mode --target .
+./.agents/kano/kano-git-master-skill/src/shell/core/gen-root-wrappers.sh --profile repo-passive-mode --target . --force
 ```
 
 Repository passive mode with extra with-ai-review wrappers:
 
 ```bash
-./.agents/kano/kano-git-master-skill/scripts/core/gen-root-wrappers.sh --profile repo-passive-mode-with-ai --target .
+./.agents/kano/kano-git-master-skill/src/shell/core/gen-root-wrappers.sh --profile repo-passive-mode-with-ai --target . --force
+```
+
+After wrappers are installed, refresh from the target root with:
+
+```bash
+./kog-refresh-wrappers.sh
 ```
 
 Options:
@@ -81,7 +87,7 @@ chmod +x kog kog-*.sh
 
 - wrappers are thin entrypoints only (no core business logic)
 - wrappers export `KANO_GIT_MASTER_ROOT="$ROOT"` when needed
-- implementation logic stays in `.agents/kano/kano-git-master-skill/scripts/...`
+- implementation logic stays in `.agents/kano/kano-git-master-skill/src/shell/core/gen-root-wrappers.sh and native kog commands`
 - generator composes wrappers from `common/` and then applies profile overrides
 - wrappers pause with `Press Enter to continue...` only for interactive human runs
 - wrappers do not pause for agent/CI/non-interactive runs (including `--agent` modes except `--agent manual`)

@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Repository-local pre-commit hook.
+# Enable with:
+#   git config core.hooksPath .githooks
+
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+if [[ "${KOG_SKIP_PRECOMMIT_QUALITY_GATE:-0}" == "1" ]]; then
+  echo "SKIP: KOG_SKIP_PRECOMMIT_QUALITY_GATE=1"
+  exit 0
+fi
+
+src/shell/test/pre-commit-quality-gate.sh

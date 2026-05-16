@@ -6,6 +6,12 @@ on:
     paths:
       - "src/**"
       - "scripts/**"
+      - ".githooks/**"
+      - "docs/**"
+      - "README.md"
+      - "SKILL.md"
+      - ".gitattributes"
+      - ".gitignore"
       - "pixi.toml"
       - "src/cpp/shared/infra/pixi.toml"
       - ".kano/**"
@@ -15,6 +21,12 @@ on:
     paths:
       - "src/**"
       - "scripts/**"
+      - ".githooks/**"
+      - "docs/**"
+      - "README.md"
+      - "SKILL.md"
+      - ".gitattributes"
+      - ".gitignore"
       - "pixi.toml"
       - "src/cpp/shared/infra/pixi.toml"
       - ".kano/**"
@@ -27,9 +39,25 @@ permissions:
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────────────
+  # Shell Quality Gate
+  # ─────────────────────────────────────────────────────────────────────────────
+  quality-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Run shell-only pre-commit quality gate
+        shell: bash
+        run: src/shell/test/pre-commit-quality-gate.sh
+
+  # ─────────────────────────────────────────────────────────────────────────────
   # Native Build Jobs (existing)
   # ─────────────────────────────────────────────────────────────────────────────
   build-native:
+    needs: quality-gate
     strategy:
       fail-fast: false
       matrix:
@@ -119,6 +147,7 @@ jobs:
   # Coverage Build Jobs (new)
   # ─────────────────────────────────────────────────────────────────────────────
   build-coverage:
+    needs: quality-gate
     strategy:
       fail-fast: false
       matrix:
