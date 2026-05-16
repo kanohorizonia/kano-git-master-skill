@@ -82,5 +82,6 @@ auto WriteCacheFileText(const std::filesystem::path& InFile,
 auto InspectCacheLocks(const std::filesystem::path& InCacheRoot) -> std::vector<CacheLockInfo>;
 auto CleanupStaleCacheLocks(const std::filesystem::path& InCacheRoot,
                             int InMinAgeSeconds = 30) -> std::vector<CacheLockInfo>;
+auto GetSubmoduleConfig(const std::filesystem::path& InRoot, const std::filesystem::path& InSubmodulePath, const std::string& InKey) -> std::string;
 
 } // namespace kano::git::workspace

@@ -214,11 +214,15 @@ ensure_windows_build_runtime_paths() {
     cmake_exe="/mnt/c/Program Files/CMake/bin/cmake.exe"
   elif [[ -x "/c/Program Files/CMake/bin/cmake.exe" ]]; then
     cmake_exe="/c/Program Files/CMake/bin/cmake.exe"
+  elif [[ -x "/cygdrive/c/Program Files/CMake/bin/cmake.exe" ]]; then
+    cmake_exe="/cygdrive/c/Program Files/CMake/bin/cmake.exe"
   fi
   if [[ -x "/mnt/c/Program Files/CMake/bin/ninja.exe" ]]; then
     ninja_exe="/mnt/c/Program Files/CMake/bin/ninja.exe"
   elif [[ -x "/c/Program Files/CMake/bin/ninja.exe" ]]; then
     ninja_exe="/c/Program Files/CMake/bin/ninja.exe"
+  elif [[ -x "/cygdrive/c/Program Files/CMake/bin/ninja.exe" ]]; then
+    ninja_exe="/cygdrive/c/Program Files/CMake/bin/ninja.exe"
   fi
 
   if [[ -n "$cmake_exe" || -n "$ninja_exe" ]]; then
@@ -285,7 +289,11 @@ windows_pixi_build_bin_dir() {
   local global_bin=""
   if [[ -n "${USERPROFILE:-}" ]]; then
     local win_home
-    win_home="$(printf '%s' "${USERPROFILE}" | sed 's|\\|/|g; s|^\([A-Za-z]\):|/\L\1|')"
+    if command -v cygpath >/dev/null 2>&1; then
+      win_home="$(cygpath -u "${USERPROFILE}")"
+    else
+      win_home="$(printf '%s' "${USERPROFILE}" | sed 's|\\|/|g; s|^\([A-Za-z]\):|/\L\1|')"
+    fi
     global_bin="${win_home}/.pixi/bin"
   fi
   if [[ -z "$global_bin" || ! -d "$global_bin" ]]; then

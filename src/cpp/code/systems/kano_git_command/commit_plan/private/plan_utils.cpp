@@ -250,7 +250,14 @@ auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<
     std::vector<std::filesystem::path> repos;
     repos.reserve(discovery.repos.size());
     for (const auto& repo : discovery.repos) {
-        repos.push_back(repo.path.lexically_normal());
+        const auto p = repo.path.lexically_normal();
+        if (workspace::GetSubmoduleConfig(InRoot, p, "kog-commit") == "false") {
+            if (IsKogDebugEnabled()) {
+                std::cerr << "[DEBUG] DiscoverWorkspaceRepos: skipping repo due to kog-commit=false: " << p.generic_string() << "\n";
+            }
+            continue;
+        }
+        repos.push_back(p);
     }
     std::sort(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
         return A.generic_string() < B.generic_string();
@@ -682,10 +689,19 @@ auto BuildCommitSeedEntriesJson(const std::filesystem::path& InWorkspaceRoot, co
         const auto repoDisplay = RelativeDisplayPath(InWorkspaceRoot, repo);
         const auto scope = BuildFallbackCommitScope(repoDisplay);
 
-        std::istringstream iss(status.stdoutStr);
-        int changed = 0;
-        std::string line;
-        while (std::getline(iss, line)) if (!Trim(line).empty()) changed++;
+        std::vector<std::string> includePaths;
+        std::istringstream issStatus(status.stdoutStr);
+        std::string statusLine;
+        while (std::getline(issStatus, statusLine)) {
+            if (auto p = ParseStatusChangedPath(statusLine)) {
+                includePaths.push_back(std::move(*p));
+                if (includePaths.size() >= 50) {
+                    includePaths.push_back("... (and more files)");
+                    break;
+                }
+            }
+        }
+        const int changed = static_cast<int>(includePaths.size());
 
         const auto message = InUsePlaceholders
                                ? std::string("replace-with-commit-message")
@@ -696,7 +712,7 @@ auto BuildCommitSeedEntriesJson(const std::filesystem::path& InWorkspaceRoot, co
 
         nlohmann::json commitObj;
         commitObj["message"]           = message;
-        commitObj["include"]           = nlohmann::json::array();
+        commitObj["include"]           = includePaths;
         commitObj["exclude"]           = nlohmann::json::array();
         commitObj["review"]["verdict"] = "pass";
         commitObj["review"]["reason"]  = reviewReason;
@@ -833,10 +849,20 @@ auto SeedCommitStage(const std::filesystem::path& InWorkspaceRoot,
             const auto scope = BuildFallbackCommitScope(repoDisplay);
 
             int changed = 0;
+            std::vector<std::string> includePaths;
             if (hasDirtyChanges) {
-                std::istringstream iss(status.stdoutStr);
-                std::string line;
-                while (std::getline(iss, line)) if (!Trim(line).empty()) changed++;
+                std::istringstream issStatus(status.stdoutStr);
+                std::string statusLine;
+                while (std::getline(issStatus, statusLine)) {
+                    if (auto p = ParseStatusChangedPath(statusLine)) {
+                        includePaths.push_back(std::move(*p));
+                        if (includePaths.size() >= 50) {
+                            includePaths.push_back("... (and more files)");
+                            break;
+                        }
+                    }
+                }
+                changed = static_cast<int>(includePaths.size());
             }
 
             // Use appropriate message based on what we're committing
@@ -861,7 +887,7 @@ auto SeedCommitStage(const std::filesystem::path& InWorkspaceRoot,
 
             nlohmann::json commitObj;
             commitObj["message"]           = message;
-            commitObj["include"]           = nlohmann::json::array();
+            commitObj["include"]           = includePaths;
             commitObj["exclude"]           = nlohmann::json::array();
             commitObj["review"]["verdict"] = "pass";
             commitObj["review"]["reason"]  = reviewReason;
@@ -1119,7 +1145,25 @@ auto FindCommitEntryByFlatIndex(const std::string& InPlanText, int InCommitIndex
 auto ParseCommitFillOps(const std::string& InJson, std::string* OutError) -> std::vector<CommitFillOp> {
     std::vector<CommitFillOp> ops;
     try {
-        const auto doc = nlohmann::json::parse(InJson);
+        std::string clean = Trim(InJson);
+        // Strip markdown code blocks if present
+        if (clean.find("```") != std::string::npos) {
+            std::istringstream iss(clean);
+            std::string line;
+            std::string code;
+            bool inBlock = false;
+            while (std::getline(iss, line)) {
+                if (line.starts_with("```")) {
+                    if (inBlock) break; // end of block
+                    inBlock = true;
+                    continue;
+                }
+                if (inBlock) code += line + "\n";
+            }
+            if (!code.empty()) clean = Trim(code);
+        }
+
+        const auto doc = nlohmann::json::parse(clean);
         if (!doc.contains("commits") || !doc["commits"].is_array()) {
             if (OutError) *OutError = "missing commits array";
             return ops;

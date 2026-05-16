@@ -277,6 +277,7 @@ auto MergeGitignore(const std::filesystem::path& InTarget, const std::vector<std
 auto StampIgnoreAppliedAtAll(std::string InText, const std::string& InTimestamp) -> std::string;
 auto GitHeadSha(const std::filesystem::path& InRepo) -> std::optional<std::string>;
 auto GitSubmoduleGitlinkShaAtHead(const std::filesystem::path& InRepo, const std::string& InSubmodulePath) -> std::optional<std::string>;
+auto IsGitlinkPathInHead(const std::filesystem::path& InRepoRoot, const std::string& InPath) -> bool;
 
 auto RunCommitRunbook(const std::filesystem::path& InWorkspaceRoot,
                       const std::filesystem::path& InPlanPath,

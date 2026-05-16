@@ -2228,4 +2228,41 @@ auto DiscoverRepos(const DiscoverOptions& InOptions) -> DiscoveryResult {
     return result;
 }
 
+auto GetSubmoduleConfig(const std::filesystem::path& InRoot, const std::filesystem::path& InSubmodulePath, const std::string& InKey) -> std::string {
+    std::error_code ec;
+    auto normalizedRoot = std::filesystem::weakly_canonical(InRoot, ec);
+    if (ec) normalizedRoot = InRoot;
+    auto normalizedSub = std::filesystem::weakly_canonical(InSubmodulePath, ec);
+    if (ec) normalizedSub = InSubmodulePath;
+
+    const auto relPath = normalizedSub.lexically_relative(normalizedRoot);
+    if (relPath.empty() || relPath == ".") {
+        return {};
+    }
+
+    const auto relPathStr = relPath.generic_string();
+    const auto config = RunGitCapture(normalizedRoot, {"config", "-f", ".gitmodules", "--get-regexp", "submodule\\..*\\.path", "^" + relPathStr + "$"});
+    if (config.exitCode != 0) {
+        return {};
+    }
+
+    std::istringstream iss(config.stdoutStr);
+    std::string line;
+    if (std::getline(iss, line)) {
+        line = Trim(line);
+        const auto sp = line.find(' ');
+        if (sp != std::string::npos) {
+            const auto key = line.substr(0, sp);
+            if (key.ends_with(".path")) {
+                const auto prefix = key.substr(0, key.size() - 5);
+                const auto val = RunGitCapture(normalizedRoot, {"config", "-f", ".gitmodules", "--get", prefix + "." + InKey});
+                if (val.exitCode == 0) {
+                    return Trim(val.stdoutStr);
+                }
+            }
+        }
+    }
+    return {};
+}
+
 } // namespace kano::git::workspace

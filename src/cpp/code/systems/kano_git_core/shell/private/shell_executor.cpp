@@ -11,6 +11,10 @@
 #include <array>
 #include <stdexcept>
 #include <iostream>
+#include <fstream>
+#include <chrono>
+#include <iomanip>
+#include <sstream>
 #include <algorithm>
 #include <cctype>
 #include <charconv>
@@ -601,6 +605,100 @@ auto ExecuteCommand(
 ) -> ExecResult
 {
     const auto effectiveArgs = WithGitNonInteractiveDefaults(InCommand, InArgs);
+
+    // Global command logging
+    static const bool logEnabled = std::getenv("KOG_LOG_COMMANDS") != nullptr || 
+                                   std::getenv("KANO_AGENT_MODE") != nullptr ||
+                                   std::getenv("KOG_DEBUG") != nullptr;
+    
+    if (logEnabled) {
+        static const bool verbose = std::getenv("KOG_VERBOSE") != nullptr;
+        
+        // Identify noisy commands
+        bool isNoisy = false;
+        if (BaseNameLower(InCommand) == "git" || BaseNameLower(InCommand) == "git.exe") {
+            const std::string sub = FirstGitSubcommand(InArgs);
+            if (sub == "rev-parse") {
+                for (const auto& arg : InArgs) {
+                    if (arg == "--is-inside-work-tree" || arg == "--show-toplevel" || arg == "HEAD") {
+                        isNoisy = true;
+                        break;
+                    }
+                }
+            } else if (sub == "check-ignore") {
+                isNoisy = true;
+            } else if (sub == "config") {
+                for (const auto& arg : InArgs) {
+                    if (arg == "kano.cache.local-dir" || arg == ".gitmodules" || arg == "--file") {
+                        isNoisy = true;
+                        break;
+                    }
+                }
+            } else if (sub == "remote") {
+                isNoisy = true; // remote get-url etc
+            }
+        }
+
+        if (verbose || !isNoisy) {
+            std::string logLine = "[run] " + BuildCommandLine(InCommand, InArgs);
+            if (InWorkingDir) {
+                logLine += " (cwd: " + InWorkingDir->generic_string() + ")";
+            }
+            
+            // Console output
+            std::cout << logLine << std::endl;
+
+            // File output if KOG_DEBUG is on
+            static const bool debugFile = std::getenv("KOG_DEBUG") != nullptr;
+            if (debugFile) {
+                // Determine log file path: we look for .kano/tmp/git relative to CWD or workspace
+                static std::filesystem::path logPath;
+                static std::once_flag logPathOnce;
+                std::call_once(logPathOnce, [&]() {
+                    // Generate timestamp: YYYYMMDDTHHMMSS
+                    auto now = std::chrono::system_clock::now();
+                    auto in_time_t = std::chrono::system_clock::to_time_t(now);
+                    std::stringstream ss;
+                    ss << std::put_time(std::gmtime(&in_time_t), "%Y%m%dT%H%M%SZ");
+                    std::string timestamp = ss.str();
+
+                    // Try to find .kano directory by walking up
+                    auto search = std::filesystem::current_path();
+                    while (search.has_parent_path() && search != search.root_path()) {
+                        if (std::filesystem::exists(search / ".kano")) {
+                            logPath = search / ".kano" / "tmp" / "git" / "log" / ("execute-" + timestamp + ".log");
+                            break;
+                        }
+                        search = search.parent_path();
+                    }
+                    if (logPath.empty()) {
+                        logPath = std::filesystem::temp_directory_path() / ("kog-execute-" + timestamp + ".log");
+                    }
+                    
+                    // Ensure directory exists
+                    std::error_code ec;
+                    std::filesystem::create_directories(logPath.parent_path(), ec);
+                    
+                    std::ofstream ofs(logPath, std::ios::app);
+                    if (ofs) {
+                        ofs << "--- Session Started: " << std::filesystem::current_path().string() << " ---\n";
+                    }
+                    
+                    std::cout << "[debug] commands logged to: " << logPath.generic_string() << std::endl;
+                });
+
+                if (!logPath.empty()) {
+                    static std::mutex logMu;
+                    std::lock_guard<std::mutex> lock(logMu);
+                    std::ofstream ofs(logPath, std::ios::app);
+                    if (ofs) {
+                        ofs << logLine << std::endl;
+                    }
+                }
+            }
+        }
+    }
+
 #ifdef KOG_PLATFORM_WINDOWS
     const auto effectiveCommand = NormalizeWindowsExecutable(InCommand);
     const auto timeoutMs = ResolveTimeoutMs(effectiveCommand, effectiveArgs, InMode);

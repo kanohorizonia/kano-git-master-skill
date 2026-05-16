@@ -2950,8 +2950,10 @@ auto BuildCommitTaskGraph(const std::vector<workspace::RepoRecord>& InRepoRecord
     return graph;
 }
 
-auto StageCommitItemForPlan(const std::filesystem::path& InRepo,
+auto StageCommitItemForPlan(const std::filesystem::path& InWorkspaceRoot,
+                            const std::filesystem::path& InRepo,
                             const RepoCommitPlanEntry::CommitItem& InItem,
+                            const std::unordered_set<std::string>& InPlanRepoKeys,
                             std::string* OutError) -> bool {
     const auto reset = GitPassThrough(InRepo, {"reset", "-q"});
     if (reset.exitCode != 0) {
@@ -2965,6 +2967,40 @@ auto StageCommitItemForPlan(const std::filesystem::path& InRepo,
     if (!InItem.include.empty()) {
         args.insert(args.end(), InItem.include.begin(), InItem.include.end());
     }
+
+    // Auto-include dirty gitlinks if they correspond to submodules being committed in this plan
+    const auto status = GitCapture(InRepo, {"status", "--porcelain"});
+    if (status.exitCode == 0) {
+        std::istringstream iss(status.stdoutStr);
+        std::string line;
+        while (std::getline(iss, line)) {
+            if (auto p = ParseStatusChangedPath(line)) {
+                const auto subPath = *p;
+                if (IsGitlinkPathInHead(InRepo, subPath)) {
+                    // Check if this submodule is part of the current workspace plan
+                    const auto absSub = (InRepo / subPath).lexically_normal();
+                    if (InPlanRepoKeys.contains(RepoKey(absSub))) {
+                        // Check if it's already in include or exclude
+                        bool alreadyHandled = false;
+                        for (const auto& inc : InItem.include) {
+                            if (inc == subPath) { alreadyHandled = true; break; }
+                        }
+                        if (!alreadyHandled) {
+                            for (const auto& exc : InItem.exclude) {
+                                if (exc == subPath || exc == (std::string(":(exclude)") + subPath)) {
+                                    alreadyHandled = true; break;
+                                }
+                            }
+                        }
+                        if (!alreadyHandled) {
+                            args.push_back(subPath);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     for (const auto& ex : InItem.exclude) {
         if (ex.rfind(":(exclude)", 0) == 0) {
             args.push_back(ex);
@@ -3879,14 +3915,19 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
         std::cout << "[native-commit] warning: dependency cycle detected in commit graph; downgraded to serial fallback order.\n";
     }
 
-    auto executeCommitTask = [&](const CommitTaskNode& InNode) -> RepoCommitResult {
-        const auto& repo = InNode.repo;
-        const auto& repoMessage = InNode.commit;
-        const bool needsPlanStaging =
-            InNode.repoCommitCount > 1 || !repoMessage.include.empty() || !repoMessage.exclude.empty();
-        if (needsPlanStaging) {
-            std::string stageError;
-            if (!StageCommitItemForPlan(repo, repoMessage, &stageError)) {
+        std::unordered_set<std::string> planRepoKeys;
+        for (const auto& rec : repoRecords) {
+            planRepoKeys.insert(kano::git::commands::RepoKey(rec.path));
+        }
+
+        auto executeCommitTask = [&](const CommitTaskNode& InNode) -> RepoCommitResult {
+            const auto& repo = InNode.repo;
+            const auto& repoMessage = InNode.commit;
+            const bool needsPlanStaging =
+                InNode.repoCommitCount > 1 || !repoMessage.include.empty() || !repoMessage.exclude.empty();
+            if (needsPlanStaging) {
+                std::string stageError;
+                if (!StageCommitItemForPlan(workspaceRoot, repo, repoMessage, planRepoKeys, &stageError)) {
                 RepoCommitResult failed;
                 failed.repo = repo;
                 failed.failed = true;
@@ -4800,6 +4841,11 @@ void RegisterCommit(CLI::App& InApp) {
             std::cout << "[native-commit] warning: dependency cycle detected in commit graph; downgraded to serial fallback order.\n";
         }
 
+        std::unordered_set<std::string> planRepoKeys;
+        for (const auto& rec : repoRecords) {
+            planRepoKeys.insert(kano::git::commands::RepoKey(rec.path));
+        }
+
         auto executeCommitTask = [&](const CommitTaskNode& InNode) -> RepoCommitResult {
             const auto& repo = InNode.repo;
             const auto& repoMessage = InNode.commit;
@@ -4807,7 +4853,7 @@ void RegisterCommit(CLI::App& InApp) {
                 isPlanMode && (InNode.repoCommitCount > 1 || !repoMessage.include.empty() || !repoMessage.exclude.empty());
             if (needsPlanStaging) {
                 std::string stageError;
-                if (!StageCommitItemForPlan(repo, repoMessage, &stageError)) {
+                if (!StageCommitItemForPlan(workspaceRoot, repo, repoMessage, planRepoKeys, &stageError)) {
                     RepoCommitResult failed;
                     failed.repo = repo;
                     failed.failed = true;

@@ -2,6 +2,8 @@
 	path = assets/ignore-sources/upstream/github-gitignore
 	url = https://github.com/github/gitignore.git
 	branch = main
+	kog-hygiene = false
+	kog-commit = false
 [submodule "src/cpp/shared/infra"]
 	path = src/cpp/shared/infra
 	url = https://github.com/kanohorizonia/kano-cpp-infra.git

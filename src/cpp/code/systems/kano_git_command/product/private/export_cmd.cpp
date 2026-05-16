@@ -98,21 +98,38 @@ auto CollectWorkingTreeFiles(const ExportRecord& InRecord, bool InSingle, const 
     const std::string repoDirName = InRecord.repoPath.filename().generic_string();
     std::vector<std::string> allFiles;
 
-    auto getFiles = [&](const std::filesystem::path& repoPath, const std::string& prefix) {
+    auto getFiles = [&](const std::filesystem::path& repoPath, const std::string& prefix, const std::vector<std::string>& skipList = {}) {
         const auto res = InExec("git", {"ls-files", "--cached", "--others", "--exclude-standard"}, shell::ExecMode::Capture, repoPath);
         if (res.exitCode == 0) {
             std::istringstream iss(res.stdoutStr);
             std::string line;
             while (std::getline(iss, line)) {
                 if (!line.empty()) {
+                    // Skip git metadata
+                    if (line == ".git" || line.starts_with(".git/") || line.starts_with(".git\\") ||
+                        line.find("/.git/") != std::string::npos || line.find("\\.git\\") != std::string::npos) {
+                        continue;
+                    }
+                    // Skip submodules if we are in single mode (we will add their contents explicitly)
+                    if (InSingle && std::find(skipList.begin(), skipList.end(), line) != skipList.end()) {
+                        continue;
+                    }
                     allFiles.push_back(prefix + line);
                 }
             }
         }
     };
 
+    // Prepare skip list for root repo
+    std::vector<std::string> rootSkips;
+    if (InSingle && InRecord.isRoot) {
+        for (const auto& p : InRecord.submodulePaths) {
+            rootSkips.push_back(p.generic_string());
+        }
+    }
+
     // Root repo files
-    getFiles(InRecord.repoPath, repoDirName + "/");
+    getFiles(InRecord.repoPath, repoDirName + "/", rootSkips);
 
     // If single mode, recursively add submodule files
     if (InSingle && InRecord.isRoot) {
@@ -121,6 +138,10 @@ auto CollectWorkingTreeFiles(const ExportRecord& InRecord, bool InSingle, const 
             getFiles(InRecord.repoPath / subRelPath, subPrefix);
         }
     }
+
+    // Final deduplication
+    std::sort(allFiles.begin(), allFiles.end());
+    allFiles.erase(std::unique(allFiles.begin(), allFiles.end()), allFiles.end());
 
     return allFiles;
 }
@@ -360,6 +381,7 @@ auto BuildExportList(const std::filesystem::path& InRoot,
         }
     }
     std::sort(rootRecord.submodulePaths.begin(), rootRecord.submodulePaths.end());
+    rootRecord.submodulePaths.erase(std::unique(rootRecord.submodulePaths.begin(), rootRecord.submodulePaths.end()), rootRecord.submodulePaths.end());
 
     result.push_back(std::move(rootRecord));
 
@@ -629,6 +651,8 @@ auto ExportOneRepo(const ExportRecord& InRecord,
         args.push_back(result.archivePath.generic_string());
         args.push_back("-C");
         args.push_back(InRecord.repoPath.parent_path().generic_string());
+        args.push_back("--exclude=.git");
+        args.push_back("--no-recursion");
         args.push_back("-T");
         args.push_back(listPath.generic_string());
 

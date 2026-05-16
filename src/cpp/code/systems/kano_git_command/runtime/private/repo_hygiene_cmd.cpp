@@ -36,10 +36,11 @@ auto GitCapture(const std::filesystem::path& InRepo, const std::vector<std::stri
 bool IsExecutableRequired(const std::string& path) {
     if (path == "scripts/kog" || path == "scripts/kano-git") return true;
     if (path == "assets/root-wrapper-templates/common/kog") return true;
-    if (path.starts_with("assets/root-wrapper-templates/common/kog-") && path.ends_with(".sh")) return true;
+    if (path.find("assets/root-wrapper-templates/") != std::string::npos && path.ends_with(".sh")) return true;
     if (path.starts_with("src/shell/") && path.ends_with(".sh")) return true;
     if (path.starts_with("scripts/") && path.ends_with(".sh")) return true;
     if (path.starts_with("tools/") && path.ends_with(".sh")) return true;
+    if (path.find('/') == std::string::npos && path.ends_with(".sh")) return true; // root level .sh
     if (path == ".githooks/pre-commit" || path == ".githooks/pre-push") return true;
     return false;
 }
@@ -110,6 +111,10 @@ void CheckRepoHygiene(const std::filesystem::path& repoRoot, bool fix, bool arch
         options.metadataLevel = "minimal";
         const auto discovery = workspace::DiscoverRepos(options);
         for (const auto& repo : discovery.repos) {
+            if (workspace::GetSubmoduleConfig(repoRoot, repo.path, "kog-hygiene") == "false") {
+                std::cout << "[SKIP] Repo hygiene skipped (kog-hygiene=false): " << repo.path.generic_string() << "\n";
+                continue;
+            }
             CheckRepoHygiene(repo.path, fix, archiveSafe, false);
         }
         return;

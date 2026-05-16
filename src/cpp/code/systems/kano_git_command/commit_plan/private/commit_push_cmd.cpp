@@ -436,9 +436,16 @@ auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<
     repos.reserve(discovery.repos.size() + 4);
     repos.push_back(root);
     for (const auto& repo : discovery.repos) {
-        repos.push_back(repo.path.lexically_normal());
+        const auto p = repo.path.lexically_normal();
+        if (workspace::GetSubmoduleConfig(InRoot, p, "kog-commit") == "false") {
+            continue;
+        }
+        repos.push_back(p);
     }
     for (const auto& repo : DiscoverRegisteredPathsRecursive(root)) {
+        if (workspace::GetSubmoduleConfig(InRoot, repo, "kog-commit") == "false") {
+            continue;
+        }
         repos.push_back(repo);
     }
     if (repos.empty()) {
