@@ -185,7 +185,7 @@ auto FormatManifest(const ExportRecord& InRecord,
 
     std::ostringstream oss;
     oss << "Package: " << archiveBase << "\n";
-    oss << "Repo: " << InRecord.repoName << "\n";
+    oss << "Repo: " << InRecord.repoPath.filename().generic_string() << "\n";
     oss << "RepoRoot: " << InRecord.repoPath.generic_string() << "\n";
     oss << "ArchiveRoot: " << prefix << "\n";
     oss << "RevisionFirstParentCount: " << "\n";
@@ -285,7 +285,18 @@ auto BuildExportList(const std::filesystem::path& InRoot,
     const auto normalizedRoot = InRoot.lexically_normal();
     for (const auto& repo : InDiscovered) {
         const auto normalizedPath = repo.path.lexically_normal();
-        if (normalizedPath == normalizedRoot) {
+        std::error_code ec;
+        bool isRoot = false;
+        if (std::filesystem::exists(normalizedPath, ec) && std::filesystem::exists(normalizedRoot, ec)) {
+            if (std::filesystem::equivalent(normalizedPath, normalizedRoot, ec)) {
+                isRoot = true;
+            }
+        }
+        if (!isRoot && normalizedPath == normalizedRoot) {
+            isRoot = true;
+        }
+
+        if (isRoot) {
             continue;
         }
 
@@ -296,11 +307,11 @@ auto BuildExportList(const std::filesystem::path& InRoot,
 
         ExportRecord rec;
         rec.repoPath = repo.path;
-        rec.repoName = repo.path.filename().generic_string();
-        if (rec.repoName.empty()) {
-            rec.repoName = normalizedPath.generic_string();
-        }
         rec.relativeRepoPath = RelativeDisplayPath(InRoot, repo.path).generic_string();
+        rec.repoName = rec.relativeRepoPath;
+        std::replace(rec.repoName.begin(), rec.repoName.end(), '/', '_');
+        std::replace(rec.repoName.begin(), rec.repoName.end(), '\\', '_');
+
         rec.isRoot = false;
         result.push_back(std::move(rec));
     }
