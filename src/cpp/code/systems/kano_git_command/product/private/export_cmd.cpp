@@ -348,7 +348,6 @@ auto BuildExportList(const std::filesystem::path& InRoot,
     }
 
     // Append discovered subrepos (skip any that match the root path)
-    const auto normalizedRoot = InRoot.lexically_normal();
     for (const auto& repo : InDiscovered) {
         const auto normalizedPath = repo.path.lexically_normal();
         std::error_code ec;
