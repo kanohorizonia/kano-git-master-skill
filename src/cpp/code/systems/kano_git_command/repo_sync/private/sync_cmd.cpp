@@ -1148,9 +1148,12 @@ auto RunStableDevWorkspace(
     return failed > 0 ? 1 : 0;
 }
 
-auto DiscoverRegisteredPathsRecursive(const std::filesystem::path& InWorkspaceRoot) -> std::set<std::string> {
+auto DiscoverRegisteredPathsRecursive(const std::filesystem::path& InWorkspaceRoot, const std::vector<std::filesystem::path>& InExtraSeeds = {}) -> std::set<std::string> {
     std::set<std::string> out;
     std::vector<std::filesystem::path> queue{InWorkspaceRoot};
+    for (const auto& seed : InExtraSeeds) {
+        queue.push_back(seed);
+    }
 
     while (!queue.empty()) {
         const auto current = queue.back();
@@ -1505,22 +1508,27 @@ auto BuildSyncPlans(
     bool InNoCache,
     bool InRefreshCache) -> std::pair<std::vector<SyncPlan>, std::string> {
     const auto root = std::filesystem::weakly_canonical(InRoot);
-    const auto registeredPaths = DiscoverRegisteredPathsRecursive(root);
 
-    std::vector<std::filesystem::path> discoveredPaths;
-    discoveredPaths.reserve(registeredPaths.size() + 1);
-    discoveredPaths.push_back(root);
-    for (const auto& registeredPath : registeredPaths) {
-        discoveredPaths.push_back(std::filesystem::path(registeredPath));
-    }
-
+    std::vector<std::filesystem::path> manifestRepoPaths;
     if (!InNoCache) {
         std::string manifestReason;
         if (const auto manifest = workspace::LoadTrustedWorkspaceManifest(root, &manifestReason); manifest.has_value()) {
             for (const auto& repo : manifest->repos) {
-                discoveredPaths.push_back(repo.path.lexically_normal());
+                manifestRepoPaths.push_back(repo.path.lexically_normal());
             }
         }
+    }
+
+    const auto registeredPaths = DiscoverRegisteredPathsRecursive(root, manifestRepoPaths);
+
+    std::vector<std::filesystem::path> discoveredPaths;
+    discoveredPaths.reserve(registeredPaths.size() + manifestRepoPaths.size() + 1);
+    discoveredPaths.push_back(root);
+    for (const auto& registeredPath : registeredPaths) {
+        discoveredPaths.push_back(std::filesystem::path(registeredPath));
+    }
+    for (const auto& manifestPath : manifestRepoPaths) {
+        discoveredPaths.push_back(manifestPath);
     }
 
     std::sort(discoveredPaths.begin(), discoveredPaths.end(), [](const auto& A, const auto& B) {

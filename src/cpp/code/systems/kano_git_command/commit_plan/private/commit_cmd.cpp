@@ -309,7 +309,18 @@ auto MaybeWarnAboutExcludedPaths(const std::filesystem::path& InRepo,
 }
 
 auto IsGitRepo(const std::filesystem::path& InRepo) -> bool {
-    return GitCapture(InRepo, {"rev-parse", "--git-dir"}).exitCode == 0;
+    const auto inside = GitCapture(InRepo, {"rev-parse", "--is-inside-work-tree"});
+    if (inside.exitCode != 0 || Trim(inside.stdoutStr) != "true") {
+        return false;
+    }
+    const auto topLevel = GitCapture(InRepo, {"rev-parse", "--show-toplevel"});
+    if (topLevel.exitCode != 0) {
+        return false;
+    }
+    std::error_code ec;
+    const auto repoAbs = std::filesystem::weakly_canonical(InRepo, ec);
+    const auto topAbs = std::filesystem::weakly_canonical(std::filesystem::path(Trim(topLevel.stdoutStr)), ec);
+    return repoAbs == topAbs;
 }
 
 auto ResolveWorkspaceRootFromInvocation(const std::filesystem::path& InStartPath) -> std::filesystem::path {
@@ -3538,18 +3549,17 @@ auto PrintCommitSummary(const std::filesystem::path& InWorkspaceRoot,
     int skipped = 0;
 
     std::cout << "\n" << kano::terminal::PreflightHeader("Native Commit Summary") << "\n";
-    std::cout << std::left << std::setw(36) << "Repo"
-              << std::setw(12) << "Result"
-              << std::setw(36) << "Message"
-              << "Detail\n";
-    std::cout << std::left << std::setw(36) << "----"
-              << std::setw(12) << "------"
-              << std::setw(36) << "-------"
-              << "------\n";
 
-    bool printedAnyCommitted = false;
+    struct CommitRow {
+        std::string group;
+        std::string repoName;
+        std::string status;
+        std::string detail;
+        bool isCommitted = false;
+    };
+
+    std::vector<CommitRow> rows;
     for (const auto& item : InResults) {
-        const auto repoLabel = DisplayRepoLabel(InWorkspaceRoot, item.repo);
         std::string status;
         if (item.failed) {
             status = "failed";
@@ -3565,20 +3575,34 @@ auto PrintCommitSummary(const std::filesystem::path& InWorkspaceRoot,
             skipped += 1;
         }
 
-        if (!item.committed) {
-            continue;
-        }
-
-        printedAnyCommitted = true;
+        const auto relativePath = NormalizePath(item.repo).lexically_relative(NormalizePath(InWorkspaceRoot));
+        const auto parent = relativePath.parent_path().generic_string();
+        const std::string group = (parent.empty() || parent == ".") ? "." : parent;
+        const auto repoName = NormalizePath(item.repo).filename().generic_string();
         const auto detail = item.commitTitle.empty() ? item.note : item.commitTitle;
 
-        std::cout << std::left << std::setw(36) << repoLabel
-                  << std::setw(12) << status
-                  << detail << "\n";
+        rows.push_back(CommitRow{group, repoName, status, detail, item.committed});
     }
 
-    if (!printedAnyCommitted) {
+    if (rows.empty()) {
         std::cout << "(no commits created)\n";
+    } else {
+        std::string currentGroup;
+        for (const auto& row : rows) {
+            if (row.group != currentGroup) {
+                currentGroup = row.group;
+                std::cout << "\nGROUP: " << currentGroup << "\n";
+                std::cout << std::left << std::setw(28) << "Repo"
+                          << std::setw(12) << "Result"
+                          << "Detail\n";
+                std::cout << std::left << std::setw(28) << "----"
+                          << std::setw(12) << "------"
+                          << "------\n";
+            }
+            std::cout << std::left << std::setw(28) << row.repoName
+                      << std::setw(12) << row.status
+                      << row.detail << "\n";
+        }
     }
 
     std::cout << "\nTotals: committed=" << committed

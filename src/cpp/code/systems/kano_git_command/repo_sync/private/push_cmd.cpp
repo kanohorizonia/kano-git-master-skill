@@ -72,7 +72,18 @@ auto GitCapture(const std::filesystem::path& InRepo, const std::vector<std::stri
 }
 
 auto IsGitRepo(const std::filesystem::path& InRepo) -> bool {
-    return GitCapture(InRepo, {"rev-parse", "--git-dir"}).exitCode == 0;
+    const auto inside = GitCapture(InRepo, {"rev-parse", "--is-inside-work-tree"});
+    if (inside.exitCode != 0 || Trim(inside.stdoutStr) != "true") {
+        return false;
+    }
+    const auto topLevel = GitCapture(InRepo, {"rev-parse", "--show-toplevel"});
+    if (topLevel.exitCode != 0) {
+        return false;
+    }
+    std::error_code ec;
+    const auto repoAbs = std::filesystem::weakly_canonical(InRepo, ec);
+    const auto topAbs = std::filesystem::weakly_canonical(std::filesystem::path(Trim(topLevel.stdoutStr)), ec);
+    return repoAbs == topAbs;
 }
 
 auto GitPassThrough(const std::filesystem::path& InRepo, const std::vector<std::string>& InArgs) -> shell::ExecResult {

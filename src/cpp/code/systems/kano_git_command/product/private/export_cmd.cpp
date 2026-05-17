@@ -147,6 +147,22 @@ auto CollectWorkingTreeFiles(const ExportRecord& InRecord, const std::string& In
     std::sort(allFiles.begin(), allFiles.end());
     allFiles.erase(std::unique(allFiles.begin(), allFiles.end()), allFiles.end());
 
+    // Move symlinks to the end so tar creates their targets before the links.
+    // This prevents "Cannot create symlink: No such file or directory" when
+    // the symlink target sorts alphabetically after the symlink itself.
+    std::stable_partition(allFiles.begin(), allFiles.end(),
+        [&](const std::string& InPrefixedPath) {
+            // Strip the archive prefix to get the repo-relative path
+            const std::string relPath = (InPrefixedPath.size() > InPrefix.size())
+                ? InPrefixedPath.substr(InPrefix.size())
+                : InPrefixedPath;
+            // Check against root repo path; submodule files use their own prefix
+            // but we only need to detect symlinks — false negatives are safe here.
+            std::error_code ec;
+            const auto fullPath = InRecord.repoPath / relPath;
+            return !std::filesystem::is_symlink(fullPath, ec);
+        });
+
     return allFiles;
 }
 
@@ -708,21 +724,39 @@ auto RunReleaseArchiveValidation(const ExportRecord& InRecord,
     }
 
     std::cout << "  Validating release archive -> " << InResult.archivePath.generic_string() << "\n";
+    // Build relative paths manually: strip the workspace root prefix so
+    // MSYS/Git Bash (cwd = InWorkspaceRoot) can resolve them without
+    // Windows absolute path issues.
+    auto toRelative = [](const std::filesystem::path& InFull,
+                         const std::filesystem::path& InBase) -> std::string {
+        // Normalize both to generic (forward-slash) strings for comparison
+        std::string fullStr = InFull.lexically_normal().generic_string();
+        std::string baseStr = InBase.lexically_normal().generic_string();
+        // Ensure base has no trailing slash
+        while (!baseStr.empty() && baseStr.back() == '/') {
+            baseStr.pop_back();
+        }
+        if (fullStr.size() > baseStr.size() &&
+            fullStr.substr(0, baseStr.size()) == baseStr &&
+            fullStr[baseStr.size()] == '/') {
+            return fullStr.substr(baseStr.size() + 1);
+        }
+        return fullStr; // last resort: absolute path
+    };
+    const auto relScript  = toRelative(smokeScript,            InWorkspaceRoot);
+    const auto relArchive = toRelative(InResult.archivePath,   InWorkspaceRoot);
     const auto validation = InExec(
         "bash",
-        {smokeScript.generic_string(), InResult.archivePath.generic_string()},
-        shell::ExecMode::Capture,
+        {relScript, relArchive},
+        shell::ExecMode::PassThrough,
         InWorkspaceRoot);
 
     if (validation.exitCode != 0) {
         std::cerr << "kog export: release archive validation failed for "
                   << InResult.archivePath.generic_string() << "\n";
-        AppendCapturedOutput(std::cerr, "stdout", validation.stdoutStr);
-        AppendCapturedOutput(std::cerr, "stderr", validation.stderrStr);
         return validation.exitCode == 0 ? 1 : validation.exitCode;
     }
 
-    AppendCapturedOutput(std::cout, "  release-smoke", validation.stdoutStr);
     return 0;
 }
 
@@ -879,7 +913,8 @@ auto RunExportWithExecutor(const ExportOptions& InOpts,
                            const std::filesystem::path& InMetadataDir,
                            const ShellExecutor& InExec) -> int {
     std::vector<ExportResult> results;
-    bool anyFailed = false;
+    bool anyArchiveFailed = false;
+    bool anyValidationFailed = false;
 
     std::string currentGroup;
     for (const auto& record : InExportList) {
@@ -894,13 +929,13 @@ auto RunExportWithExecutor(const ExportOptions& InOpts,
         if (!result.success) {
             std::cerr << "kog export: failed to export '" << record.repoName
                       << "' (" << record.relativeRepoPath << "): " << result.errorMessage << "\n";
-            anyFailed = true;
+            anyArchiveFailed = true;
         } else {
             const std::string displayName = record.isRoot ? record.repoName : record.relativeRepoPath;
             std::cout << FormatProgressLine(displayName, result.archivePath) << "\n";
             const int validationExit = RunReleaseArchiveValidation(record, result, InOpts, InExportList.front().repoPath, InExec);
             if (validationExit != 0) {
-                anyFailed = true;
+                anyValidationFailed = true;
             }
         }
         results.push_back(result);
@@ -908,8 +943,9 @@ auto RunExportWithExecutor(const ExportOptions& InOpts,
 
     std::cout << "\n" << FormatSummary(InOutputDir, InMetadataDir, results);
 
-    // Write export-manifest.json for --single mode
-    if (InOpts.single && !anyFailed) {
+    // Write export-manifest.json for --single mode.
+    // Conditioned on archive success only — validation failure does not block manifest.
+    if (InOpts.single && !anyArchiveFailed) {
         // Find the root result (first successful result from the root record)
         const ExportResult* rootResult = nullptr;
         const ExportRecord* rootRecord = nullptr;
@@ -974,7 +1010,7 @@ auto RunExportWithExecutor(const ExportOptions& InOpts,
         }
     }
 
-    return anyFailed ? 1 : 0;
+    return (anyArchiveFailed || anyValidationFailed) ? 1 : 0;
 }
 
 namespace {
