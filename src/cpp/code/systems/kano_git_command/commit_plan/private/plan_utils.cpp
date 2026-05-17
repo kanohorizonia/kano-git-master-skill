@@ -871,7 +871,7 @@ auto SeedCommitStage(const std::filesystem::path& InWorkspaceRoot,
             const bool isGitlinkOnly = RepoHasGitlinkOnlyChanges(repo);
 
             if (isGitlinkOnly) {
-                message = std::format("chore({}): update submodule pointers", scope);
+                message = BuildSubmoduleUpdateMessage(CollectChangedSubmoduleNames(repo));
                 reviewReason = "pure gitlink update";
             } else if (InUsePlaceholders || IsAgentModeEnabled()) {
                 message = "replace-with-commit-message";
@@ -1019,7 +1019,7 @@ auto TryInjectFallbackCommits(const std::filesystem::path& InWorkspaceRoot, cons
             while (std::getline(iss, line)) if (!Trim(line).empty()) changed++;
             nlohmann::json commitObj;
             if (RepoHasGitlinkOnlyChanges(repo)) {
-                commitObj["message"]           = std::format("chore({}): update submodule pointers", scope);
+                commitObj["message"]           = BuildSubmoduleUpdateMessage(CollectChangedSubmoduleNames(repo));
                 commitObj["include"]           = nlohmann::json::array();
                 commitObj["exclude"]           = nlohmann::json::array();
                 commitObj["review"]["verdict"] = "pass";
@@ -2185,6 +2185,62 @@ auto RepoHasGitlinkOnlyChanges(const std::filesystem::path& InRepoRoot) -> bool 
         hasAny = true;
     }
     return hasAny;
+}
+
+// Collects the leaf names of all changed gitlink (submodule) paths in a repo.
+// Returns e.g. {"infra", "github-gitignore"} for display in commit messages.
+auto CollectChangedSubmoduleNames(const std::filesystem::path& InRepoRoot) -> std::vector<std::string> {
+    const auto status = GitCapture(InRepoRoot, {"status", "--porcelain"});
+    if (status.exitCode != 0) return {};
+    std::vector<std::string> names;
+    std::istringstream iss(status.stdoutStr);
+    std::string line;
+    while (std::getline(iss, line)) {
+        if (line.size() < 4) continue;
+        if (line.rfind("?? ", 0) == 0) continue;
+        std::string path = Trim(line.substr(3));
+        const auto renamePos = path.find(" -> ");
+        if (renamePos != std::string::npos) {
+            path = Trim(path.substr(renamePos + 4));
+        }
+        if (path.empty()) continue;
+        if (!IsGitlinkPathInHead(InRepoRoot, path)) continue;
+        // Use the leaf directory name as the display name
+        const auto fsPath = std::filesystem::path(path);
+        auto name = fsPath.filename().generic_string();
+        if (name.empty()) {
+            name = path;
+        }
+        names.push_back(std::move(name));
+    }
+    // Deduplicate while preserving order
+    std::vector<std::string> deduped;
+    for (const auto& n : names) {
+        if (std::find(deduped.begin(), deduped.end(), n) == deduped.end()) {
+            deduped.push_back(n);
+        }
+    }
+    return deduped;
+}
+
+// Builds a human-readable commit message for a gitlink-only change.
+// Examples:
+//   [Submodule] Update infra
+//   [Submodule] Update infra, github-gitignore
+//   [Submodule] Update 4 submodules
+auto BuildSubmoduleUpdateMessage(const std::vector<std::string>& InNames) -> std::string {
+    if (InNames.empty()) {
+        return "[Submodule] Update submodule references";
+    }
+    if (InNames.size() <= 3) {
+        std::string joined;
+        for (std::size_t i = 0; i < InNames.size(); ++i) {
+            if (i > 0) joined += ", ";
+            joined += InNames[i];
+        }
+        return "[Submodule] Update " + joined;
+    }
+    return std::format("[Submodule] Update {} submodules", InNames.size());
 }
 
 auto IsProbableIgnoreArtifactPath(const std::string& InPath) -> bool {

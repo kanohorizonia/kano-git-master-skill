@@ -174,6 +174,22 @@ struct RepoBranchRefs {
     std::string upstreamCommit = "-";
 };
 
+enum class RepoSyncState { Synced, Ahead, Behind, Diverged, Detached, NoUpstream };
+
+struct RepoLogEntry {
+    std::filesystem::path repoPath;
+    std::string repoName;
+    std::string group;
+    std::string localBranch;
+    std::string upstreamBranch;
+    int aheadCount = 0;
+    int behindCount = 0;
+    RepoSyncState syncState = RepoSyncState::NoUpstream;
+    std::vector<std::string> logLines; // formatted with markers
+    bool failed = false;
+    bool dirty = false;  // has uncommitted changes
+};
+
 auto ExtractShaPrefix(const std::string& InLine) -> std::string {
     const auto trimmed = Trim(InLine);
     if (trimmed.empty()) {
@@ -261,6 +277,159 @@ auto ResolveRepoBranchRefs(const std::filesystem::path& InRepo) -> RepoBranchRef
     }
 
     return refs;
+}
+
+auto CollectRepoLogEntry(const std::filesystem::path& InRoot,
+                         const std::filesystem::path& InRepo,
+                         int InCount,
+                         bool InSlogFormat) -> RepoLogEntry {
+    RepoLogEntry entry;
+    entry.repoPath = InRepo;
+    entry.repoName = RepoNameFromPath(InRepo);
+    const auto rel = RelativeDisplayPath(InRoot, InRepo);
+    entry.group = GroupFromRelativePath(rel);
+
+    if (!IsGitRepo(InRepo)) {
+        entry.failed = true;
+        return entry;
+    }
+
+    const auto refs = ResolveRepoBranchRefs(InRepo);
+    entry.localBranch   = refs.localBranch;
+    entry.upstreamBranch = refs.upstreamBranch;
+
+    // Determine sync state
+    const bool isDetached = (refs.localBranch == "HEAD(detached)");
+    const bool hasUpstream = (refs.upstreamBranch != "(no upstream)");
+
+    if (isDetached) {
+        entry.syncState = RepoSyncState::Detached;
+    } else if (!hasUpstream) {
+        entry.syncState = RepoSyncState::NoUpstream;
+    } else {
+        const auto aheadOut  = GitCapture(InRepo, {"rev-list", "--count", "@{upstream}..HEAD"});
+        const auto behindOut = GitCapture(InRepo, {"rev-list", "--count", "HEAD..@{upstream}"});
+        entry.aheadCount  = (aheadOut.exitCode  == 0) ? ParsePositiveInt(aheadOut.stdoutStr,  0) : 0;
+        entry.behindCount = (behindOut.exitCode == 0) ? ParsePositiveInt(behindOut.stdoutStr, 0) : 0;
+
+        if (entry.aheadCount == 0 && entry.behindCount == 0) {
+            entry.syncState = RepoSyncState::Synced;
+        } else if (entry.aheadCount > 0 && entry.behindCount == 0) {
+            entry.syncState = RepoSyncState::Ahead;
+        } else if (entry.aheadCount == 0 && entry.behindCount > 0) {
+            entry.syncState = RepoSyncState::Behind;
+        } else {
+            entry.syncState = RepoSyncState::Diverged;
+        }
+    }
+
+    // Collect log lines
+    const auto fmt = InSlogFormat ? "--pretty=format:%h %an %s" : "--pretty=format:%h %an %s";
+    const auto logOut = GitCapture(InRepo, {"log", std::format("-{}", InCount), fmt});
+    if (logOut.exitCode == 0) {
+        for (const auto& line : SplitNonEmptyLines(logOut.stdoutStr)) {
+            const auto formatted = FormatLogLineWithMarkers(InRepo, refs, line);
+            if (!formatted.empty()) {
+                entry.logLines.push_back(formatted);
+            }
+        }
+    }
+
+    return entry;
+}
+
+auto PrintGroupedLog(const std::vector<RepoLogEntry>& InEntries, int InCount, bool InSlogFormat) -> void {
+    const std::string header = InSlogFormat
+        ? "SLOG(last " + std::to_string(InCount) + ")"
+        : "LOG(last "  + std::to_string(InCount) + ")";
+
+    std::string currentGroup;
+    for (const auto& entry : InEntries) {
+        if (entry.group != currentGroup) {
+            currentGroup = entry.group;
+            std::cout << "\n" << kano::terminal::Wrap("GROUP:", kano::terminal::Color::BoldWhite)
+                      << " " << currentGroup << "\n";
+        }
+
+        // Repo header line: name + branch + sync badge
+        std::ostringstream repoHeader;
+        repoHeader << kano::terminal::Wrap(entry.repoName, kano::terminal::Color::BoldCyan);
+        repoHeader << " [" << entry.localBranch << "]";
+        switch (entry.syncState) {
+            case RepoSyncState::Synced:
+                repoHeader << " " << kano::terminal::Wrap("synced", kano::terminal::Color::BoldGreen);
+                break;
+            case RepoSyncState::Ahead:
+                repoHeader << " " << kano::terminal::Wrap(
+                    "ahead " + std::to_string(entry.aheadCount), kano::terminal::Color::BoldYellow);
+                break;
+            case RepoSyncState::Behind:
+                repoHeader << " " << kano::terminal::Wrap(
+                    "behind " + std::to_string(entry.behindCount), kano::terminal::Color::BoldRed);
+                break;
+            case RepoSyncState::Diverged:
+                repoHeader << " " << kano::terminal::Wrap(
+                    "diverged +" + std::to_string(entry.aheadCount) +
+                    "/-" + std::to_string(entry.behindCount), kano::terminal::Color::BoldRed);
+                break;
+            case RepoSyncState::Detached:
+                repoHeader << " " << kano::terminal::Wrap("detached", kano::terminal::Color::Dim);
+                break;
+            case RepoSyncState::NoUpstream:
+                repoHeader << " " << kano::terminal::Wrap("no-upstream", kano::terminal::Color::Dim);
+                break;
+        }
+        std::cout << repoHeader.str() << "\n";
+
+        if (entry.failed) {
+            std::cout << kano::terminal::Wrap("  (not a git repo)", kano::terminal::Color::Dim) << "\n";
+            continue;
+        }
+        if (entry.logLines.empty()) {
+            std::cout << kano::terminal::Wrap("  (no commits)", kano::terminal::Color::Dim) << "\n";
+            continue;
+        }
+        for (const auto& line : entry.logLines) {
+            std::cout << "  " << line << "\n";
+        }
+    }
+}
+
+auto PrintLogSummary(const std::vector<RepoLogEntry>& InEntries) -> void {
+    int synced = 0, ahead = 0, behind = 0, diverged = 0, detached = 0, noUpstream = 0;
+    for (const auto& e : InEntries) {
+        switch (e.syncState) {
+            case RepoSyncState::Synced:     synced++;     break;
+            case RepoSyncState::Ahead:      ahead++;      break;
+            case RepoSyncState::Behind:     behind++;     break;
+            case RepoSyncState::Diverged:   diverged++;   break;
+            case RepoSyncState::Detached:   detached++;   break;
+            case RepoSyncState::NoUpstream: noUpstream++; break;
+        }
+    }
+
+    std::cout << "\n" << kano::terminal::Wrap("SUMMARY", kano::terminal::Color::BoldCyan)
+              << "  repos=" << InEntries.size();
+
+    if (synced > 0) {
+        std::cout << "  " << kano::terminal::Wrap("synced=" + std::to_string(synced), kano::terminal::Color::BoldGreen);
+    }
+    if (ahead > 0) {
+        std::cout << "  " << kano::terminal::Wrap("ahead=" + std::to_string(ahead), kano::terminal::Color::BoldYellow);
+    }
+    if (behind > 0) {
+        std::cout << "  " << kano::terminal::Wrap("behind=" + std::to_string(behind), kano::terminal::Color::BoldRed);
+    }
+    if (diverged > 0) {
+        std::cout << "  " << kano::terminal::Wrap("diverged=" + std::to_string(diverged), kano::terminal::Color::BoldRed);
+    }
+    if (detached > 0) {
+        std::cout << "  " << kano::terminal::Wrap("detached=" + std::to_string(detached), kano::terminal::Color::Dim);
+    }
+    if (noUpstream > 0) {
+        std::cout << "  " << kano::terminal::Wrap("no-upstream=" + std::to_string(noUpstream), kano::terminal::Color::Dim);
+    }
+    std::cout << "\n";
 }
 
 auto PrintSlog(const std::filesystem::path& InRepo, int InCount) -> int {
@@ -536,18 +705,21 @@ void RegisterSlog(CLI::App& InApp) {
                 std::exit(1);
             }
 
-            int failed = 0;
-            bool first = true;
-            for (const auto& target : targets) {
-                if (!first) {
-                    std::cout << "\n";
-                }
-                first = false;
-                const auto code = PrintSlog(target, *count);
-                if (code != 0) {
-                    failed += 1;
-                }
+            const auto rootPath = std::filesystem::path(*root).lexically_normal();
+            if (targets.size() == 1) {
+                std::exit(PrintSlog(targets.front(), *count));
             }
+
+            std::vector<RepoLogEntry> entries;
+            entries.reserve(targets.size());
+            int failed = 0;
+            for (const auto& target : targets) {
+                auto entry = CollectRepoLogEntry(rootPath, target, *count, true);
+                if (entry.failed) failed++;
+                entries.push_back(std::move(entry));
+            }
+            PrintGroupedLog(entries, *count, true);
+            PrintLogSummary(entries);
             std::exit(failed == 0 ? 0 : 1);
         } catch (const std::exception& ex) {
             std::cerr << "Error: " << ex.what() << "\n";
@@ -607,18 +779,21 @@ void RegisterLog(CLI::App& InApp) {
                 std::exit(1);
             }
 
-            int failed = 0;
-            bool first = true;
-            for (const auto& target : targets) {
-                if (!first) {
-                    std::cout << "\n";
-                }
-                first = false;
-                const auto code = PrintFullLog(target, *count);
-                if (code != 0) {
-                    failed += 1;
-                }
+            const auto rootPath = std::filesystem::path(*root).lexically_normal();
+            if (targets.size() == 1) {
+                std::exit(PrintFullLog(targets.front(), *count));
             }
+
+            std::vector<RepoLogEntry> entries;
+            entries.reserve(targets.size());
+            int failed = 0;
+            for (const auto& target : targets) {
+                auto entry = CollectRepoLogEntry(rootPath, target, *count, false);
+                if (entry.failed) failed++;
+                entries.push_back(std::move(entry));
+            }
+            PrintGroupedLog(entries, *count, false);
+            PrintLogSummary(entries);
             std::exit(failed == 0 ? 0 : 1);
         } catch (const std::exception& ex) {
             std::cerr << "Error: " << ex.what() << "\n";

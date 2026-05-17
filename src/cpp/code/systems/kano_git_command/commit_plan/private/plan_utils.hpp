@@ -250,6 +250,8 @@ auto ResolveSkillRoot(const std::filesystem::path& InWorkspaceRoot) -> std::file
 auto ResolveIgnoreDatasourceRoot(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path;
 auto ResolveRepoPathFromDisplay(const std::filesystem::path& InWorkspaceRoot, const std::string& InRepoDisplay) -> std::filesystem::path;
 auto RepoHasGitlinkOnlyChanges(const std::filesystem::path& InRepo) -> bool;
+auto CollectChangedSubmoduleNames(const std::filesystem::path& InRepo) -> std::vector<std::string>;
+auto BuildSubmoduleUpdateMessage(const std::vector<std::string>& InNames) -> std::string;
 auto IsProbableIgnoreArtifactPath(const std::string& InPath) -> bool;
 auto IsInternalPipelineArtifactPath(const std::string& InPath) -> bool;
 auto DefaultSecretRulesPath(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path;

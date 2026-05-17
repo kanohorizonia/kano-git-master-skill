@@ -3150,6 +3150,12 @@ auto HasAnyChanges(const CommitPreflightReport& InReport) -> bool {
 auto BuildAutoCommitMessage(const std::filesystem::path& InWorkspaceRoot,
                            const std::filesystem::path& InRepo,
                            const CommitPreflightReport& InReport) -> std::string {
+    // Gitlink-only: all changes are submodule pointer updates
+    if (RepoHasGitlinkOnlyChanges(InRepo)) {
+        const auto names = CollectChangedSubmoduleNames(InRepo);
+        return BuildSubmoduleUpdateMessage(names);
+    }
+
     std::string type = "chore";
     bool hasFiles = false;
     bool docsOnly = true;
