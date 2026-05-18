@@ -98,4 +98,5 @@ pixi.lock
 **/tmp/
 list.txt
 test.tar
+_exported_project
 
