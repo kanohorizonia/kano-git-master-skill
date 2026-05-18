@@ -16,6 +16,7 @@
 *.cmake text eol=lf
 CMakeLists.txt text eol=lf
 *.groovy text eol=lf
+*.Jenkinsfile text eol=lf
 *.md text eol=lf
 *.toml text eol=lf
 *.yml text eol=lf
