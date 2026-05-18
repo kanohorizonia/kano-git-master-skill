@@ -658,6 +658,117 @@ auto RunNativeSubmodule(
     return result.exitCode;
 }
 
+auto ListSubmodulePaths(const std::string& InRoot) -> std::vector<std::string> {
+    const auto result = RunGitCapture({"-C", InRoot, "submodule", "--quiet", "foreach", "--recursive", "echo $displaypath"});
+    if (result.exitCode != 0) {
+        // fallback: list top-level submodules only
+        const auto fallback = RunGitCapture({"-C", InRoot, "submodule", "--quiet", "foreach", "echo $displaypath"});
+        if (fallback.exitCode != 0) {
+            return {};
+        }
+        std::vector<std::string> paths;
+        std::istringstream stream(fallback.stdoutStr);
+        std::string line;
+        while (std::getline(stream, line)) {
+            const auto trimmed = Trim(line);
+            if (!trimmed.empty()) {
+                paths.push_back(trimmed);
+            }
+        }
+        return paths;
+    }
+    std::vector<std::string> paths;
+    std::istringstream stream(result.stdoutStr);
+    std::string line;
+    while (std::getline(stream, line)) {
+        const auto trimmed = Trim(line);
+        if (!trimmed.empty()) {
+            paths.push_back(trimmed);
+        }
+    }
+    return paths;
+}
+
+auto RunSubmoduleUpdateContinueOnError(
+    bool InRecursive,
+    bool InRemote,
+    const std::string& InPath,
+    bool InDryRun) -> int {
+    const auto rootResult = RunGitCapture({"rev-parse", "--show-toplevel"});
+    if (rootResult.exitCode != 0) {
+        std::cerr << "ERROR: not inside a git repository.\n";
+        return 1;
+    }
+    const auto root = Trim(rootResult.stdoutStr);
+
+    std::cout << "Updating submodules...\n";
+
+    // First, init all submodules so paths are known
+    {
+        std::vector<std::string> initArgs = {"-C", root, "submodule", "update", "--init"};
+        if (InRecursive) {
+            initArgs.push_back("--recursive");
+        }
+        if (!InPath.empty()) {
+            initArgs.push_back("--");
+            initArgs.push_back(InPath);
+        }
+        if (InDryRun) {
+            PrintDryRunGit(initArgs);
+        } else {
+            // Run init quietly to register submodules; ignore errors here since
+            // individual updates below will surface them per-submodule.
+            kano::git::shell::ExecuteCommand("git", initArgs, kano::git::shell::ExecMode::Capture);
+        }
+    }
+
+    // Collect submodule paths to update individually
+    std::vector<std::string> submodulePaths;
+    if (!InPath.empty()) {
+        submodulePaths.push_back(InPath);
+    } else {
+        submodulePaths = ListSubmodulePaths(root);
+        if (submodulePaths.empty()) {
+            // No submodules registered yet — fall back to a single update call
+            const auto gitArgs = BuildGitSubmoduleArgs("update", InRecursive, InRemote, {}, "--init");
+            return RunNativeSubmodule(gitArgs, InDryRun, "Updating submodules...");
+        }
+    }
+
+    std::vector<std::string> failed;
+    for (const auto& subPath : submodulePaths) {
+        std::vector<std::string> args = {"-C", root, "submodule", "update", "--init"};
+        if (InRemote) {
+            args.push_back("--remote");
+        }
+        args.push_back("--");
+        args.push_back(subPath);
+
+        if (InDryRun) {
+            PrintDryRunGit(args);
+            continue;
+        }
+
+        std::cout << "[" << subPath << "] updating...\n";
+        const auto result = kano::git::shell::ExecuteCommand("git", args, kano::git::shell::ExecMode::PassThrough);
+        if (result.exitCode != 0) {
+            std::cerr << "[" << subPath << "] FAILED (exit " << result.exitCode << "), continuing...\n";
+            failed.push_back(subPath);
+        }
+    }
+
+    if (!failed.empty()) {
+        std::cerr << "\nThe following submodules failed to update:\n";
+        for (const auto& f : failed) {
+            std::cerr << "  " << f << "\n";
+        }
+        return 1;
+    }
+
+    std::cout << "All submodules updated successfully.\n";
+    return 0;
+}
+
 } // namespace
 
 namespace kano::git::commands {
@@ -746,8 +857,7 @@ void RegisterSubmodule(CLI::App& InApp) {
             std::cerr << "Error: --shell is no longer supported; submodule update is fully native now\n";
             std::exit(2);
         }
-        const auto gitArgs = BuildGitSubmoduleArgs("update", *updateRecursive, *updateRemote, *updatePath, "--init");
-        std::exit(RunNativeSubmodule(gitArgs, *updateDryRun, "Updating submodules..."));
+        std::exit(RunSubmoduleUpdateContinueOnError(*updateRecursive, *updateRemote, *updatePath, *updateDryRun));
     });
 
     auto* remove = cmd->add_subcommand("remove", "Remove a submodule");
