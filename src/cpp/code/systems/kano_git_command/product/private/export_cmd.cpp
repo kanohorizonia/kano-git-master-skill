@@ -786,7 +786,9 @@ auto ExportOneRepo(const ExportRecord& InRecord,
         const auto args = BuildGitArchiveArgs(InOpts.format, prefix, result.archivePath);
         archiveResult = InExec("git", args, shell::ExecMode::Capture, InRecord.repoPath);
     } else {
-        // working-tree: Collect files via git ls-files to respect .gitignore
+        // working-tree: Collect files via git ls-files to respect .gitignore.
+        // Pass prefix so filelist entries are "<reponame>/file", matching the
+        // -C <parent_path> working directory used by the tar invocation below.
         const auto fileList = CollectWorkingTreeFiles(InRecord, prefix, InOpts.single, InExec);
         if (fileList.empty()) {
             result.errorMessage = "no files found to export in working-tree";
@@ -804,27 +806,21 @@ auto ExportOneRepo(const ExportRecord& InRecord,
             }
         }
 
-        // Use bash -c to ensure we use the MSYS/Git tar which is much more robust than Windows tar.exe
-        // Compute relative paths from the working directory where bash will run
-        const auto workDir = InRecord.repoPath.parent_path();
-        const auto relArchivePath = std::filesystem::relative(result.archivePath, workDir);
-        const auto relListPath = std::filesystem::relative(listPath, workDir);
+        // Run tar with -C <repoPath> so filelist paths are relative to the repo
+        // root. The prefix is already embedded in each filelist entry by
+        // CollectWorkingTreeFiles, so tar sees the correct archive layout without
+        // needing --transform (GNU-only) or --prefix (inconsistent with -T).
+        std::vector<std::string> args;
+        args.push_back("-czf");
+        args.push_back(result.archivePath.generic_string());
+        args.push_back("-C");
+        args.push_back(InRecord.repoPath.parent_path().generic_string());
+        args.push_back("--exclude=.git");
+        args.push_back("--no-recursion");
+        args.push_back("-T");
+        args.push_back(listPath.generic_string());
 
-        // Convert to Unix-style paths (forward slashes)
-        auto toUnixPath = [](const std::filesystem::path& p) -> std::string {
-            return p.generic_string();
-        };
-
-        const auto unixArchivePath = toUnixPath(relArchivePath);
-        const auto unixListPath = toUnixPath(relListPath);
-
-        // Construct the tar command directly without bash -c variable substitution
-        std::string tarCmd = "tar -czf \"" + unixArchivePath + "\" --exclude=.git --no-recursion -T \"" + unixListPath + "\"";
-        std::vector<std::string> bashArgs;
-        bashArgs.push_back("-c");
-        bashArgs.push_back(tarCmd);
-
-        archiveResult = InExec("bash", bashArgs, shell::ExecMode::Capture, workDir);
+        archiveResult = InExec("tar", args, shell::ExecMode::Capture, InRecord.repoPath);
         std::error_code ec;
         std::filesystem::remove(listPath, ec);
     }
