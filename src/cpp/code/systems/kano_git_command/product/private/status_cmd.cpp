@@ -39,6 +39,7 @@ struct RepoView {
     std::string branch;
     std::string remote;
     std::string tracking;
+    std::string revision;
     bool repoDirty = false;
     bool hasDirtyWorktree = false;
     std::string dirtyWorktrees;
@@ -51,6 +52,7 @@ struct TableLayout {
     int branchWidth = 12;
     int remoteWidth = 16;
     int trackingWidth = 14;
+    int revisionWidth = 6;
     int dirtyWidth = 7;
     int worktreeDirtyWidth = 10;
     int typeWidth = 8;
@@ -158,7 +160,7 @@ auto ComputeTableLayout(const std::vector<RepoView>& InRows) -> TableLayout {
     layout.typeWidth = ComputeTypeWidth(InRows);
 
     const int terminalWidth = DetectTerminalWidth();
-    const int fixedWidth = layout.indexWidth + layout.dirtyWidth + layout.worktreeDirtyWidth + layout.typeWidth;
+    const int fixedWidth = layout.indexWidth + layout.revisionWidth + layout.dirtyWidth + layout.worktreeDirtyWidth + layout.typeWidth;
 
     struct DynamicColumn {
         int minimum;
@@ -178,6 +180,7 @@ auto ComputeTableLayout(const std::vector<RepoView>& InRows) -> TableLayout {
         columns[1].desired = std::max(columns[1].desired, DisplayWidthForContent(row.branch));
         columns[2].desired = std::max(columns[2].desired, DisplayWidthForContent(row.remote));
         columns[3].desired = std::max(columns[3].desired, DisplayWidthForContent(row.tracking));
+        layout.revisionWidth = std::max(layout.revisionWidth, DisplayWidthForContent(row.revision));
     }
 
     columns[0].desired = std::clamp(columns[0].desired, columns[0].minimum, 80);
@@ -471,6 +474,7 @@ auto FormatTable(const std::vector<RepoView>& InRows, bool InColorize = true) ->
             << MaybeColorize(PadRight("BRANCH", layout.branchWidth), kano::terminal::Color::BoldWhite, InColorize)
             << MaybeColorize(PadRight("REMOTE", layout.remoteWidth), kano::terminal::Color::BoldWhite, InColorize)
             << MaybeColorize(PadRight("TRACKING", layout.trackingWidth), kano::terminal::Color::BoldWhite, InColorize)
+            << MaybeColorize(PadRight("REV", layout.revisionWidth), kano::terminal::Color::BoldWhite, InColorize)
             << MaybeColorize(PadRight("DIRTY", layout.dirtyWidth), kano::terminal::Color::BoldWhite, InColorize)
             << MaybeColorize(PadRight("WT_DIRTY", layout.worktreeDirtyWidth), kano::terminal::Color::BoldWhite, InColorize)
             << MaybeColorize("TYPE", kano::terminal::Color::BoldWhite, InColorize) << "\n";
@@ -504,11 +508,13 @@ auto FormatTable(const std::vector<RepoView>& InRows, bool InColorize = true) ->
                                             row.type == "registered-uninit" ? kano::terminal::Color::BoldYellow : kano::terminal::Color::Dim,
                                             InColorize);
 
+        const auto revision = TruncateWithEllipsis(row.revision, std::max(1, layout.revisionWidth - 1));
         oss << kano::terminal::Wrap(PadRight(std::to_string(i + 1), layout.indexWidth), kano::terminal::Color::Dim)
             << kano::terminal::Wrap(PadRight(repoName, layout.repoWidth), kano::terminal::Color::BoldCyan)
             << kano::terminal::Wrap(PadRight(branch, layout.branchWidth), kano::terminal::Color::Green)
             << PadRight(remote, layout.remoteWidth)
             << PadRight(tracking, layout.trackingWidth)
+            << kano::terminal::Wrap(PadRight(revision, layout.revisionWidth), kano::terminal::Color::Dim)
             << dirtyCell
             << worktreeDirtyCell
             << typeCell << "\n";
@@ -555,6 +561,7 @@ auto FormatJson(const std::vector<RepoView>& InRows) -> std::string {
         out << std::format("\"branch\":\"{}\",", row.branch);
         out << std::format("\"remote\":\"{}\",", row.remote);
         out << std::format("\"tracking\":\"{}\",", row.tracking);
+        out << std::format("\"revision\":\"{}\",", row.revision);
         out << std::format("\"dirty\":{},", row.repoDirty ? "true" : "false");
         out << std::format("\"worktree_dirty\":{}", row.hasDirtyWorktree ? "true" : "false");
         if (row.hasDirtyWorktree) {
@@ -592,14 +599,15 @@ auto FormatMarkdown(const std::vector<RepoView>& InRows) -> std::string {
     oss << "# Status\n\n";
     oss << "- Repos: " << InRows.size() << "\n";
     oss << "- Dirty: " << dirtyCount << "\n\n";
-    oss << "| Path | Branch | Remote | Tracking | Dirty | Worktree Dirty | Type |\n";
-    oss << "| --- | --- | --- | --- | --- | --- | --- |\n";
+    oss << "| Path | Branch | Remote | Tracking | Rev | Dirty | Worktree Dirty | Type |\n";
+    oss << "| --- | --- | --- | --- | --- | --- | --- | --- |\n";
     for (const auto& row : InRows) {
         oss << "| "
             << row.path.lexically_normal().generic_string() << " | "
             << row.branch << " | "
             << row.remote << " | "
             << row.tracking << " | "
+            << row.revision << " | "
             << (row.repoDirty ? "yes" : "no") << " | "
             << (row.hasDirtyWorktree ? "yes" : "no") << " | "
             << row.type << " |\n";
@@ -636,6 +644,11 @@ auto MakeRepoView(const workspace::RepoRecord& InRepo, const std::filesystem::pa
         row.repoDirty = false;
     }
 
+    {
+        const auto revOut = GitCapture(InRepo.path, {"rev-list", "--count", "--first-parent", "HEAD"});
+        row.revision = revOut.exitCode == 0 ? Trim(revOut.stdoutStr) : "-";
+    }
+
     if (!row.repoDirty) {
         row.branch = InRepo.currentBranch.empty() ? "(detached)" : InRepo.currentBranch;
         row.remote = InRepo.remotes.empty() ? "-" : InRepo.remotes;
@@ -648,6 +661,10 @@ auto MakeRepoView(const workspace::RepoRecord& InRepo, const std::filesystem::pa
     row.remote = CurrentRemote(InRepo.path);
     row.tracking = TrackingSummary(InRepo.path);
     row.hasDirtyWorktree = HasDirtyWorktrees(InRepo.path, row.dirtyWorktrees);
+    {
+        const auto revOut = GitCapture(InRepo.path, {"rev-list", "--count", "--first-parent", "HEAD"});
+        row.revision = revOut.exitCode == 0 ? Trim(revOut.stdoutStr) : "-";
+    }
     
     const auto statusOut = GitCapture(InRepo.path, {"status", "--porcelain"});
     if (statusOut.exitCode == 0) {
@@ -677,6 +694,10 @@ auto MakeCachedRepoView(const workspace::RepoRecord& InRepo, const std::filesyst
     row.remote = "-";
     row.tracking = "-";
     row.hasDirtyWorktree = false;
+    {
+        const auto revOut = GitCapture(InRepo.path, {"rev-list", "--count", "--first-parent", "HEAD"});
+        row.revision = revOut.exitCode == 0 ? Trim(revOut.stdoutStr) : "-";
+    }
     return row;
 }
 
