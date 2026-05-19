@@ -63,6 +63,43 @@ Notes:
 - `pixi run --manifest-path src/cpp/shared/infra/pixi.toml build` resolves to the current host-default native build task
 - the native test runners also know how to trigger `scripts/kog self build` when needed
 
+## PGO Test Suite (Coverage-Guided)
+
+Use the PGO pipeline entrypoint:
+
+```bash
+./scripts/kog self build --pgo
+```
+
+The gather phase now runs a representative default suite mapped to major
+product areas:
+
+- `kano_git_cli_tests` with functional coverage
+- `kano_git_commit_plan_tests` with unit/property coverage
+- `kano_git_export_tests` with unit/integration coverage
+- `kano_git_tui_tests` with unit/property coverage
+
+Gather artifacts are emitted to:
+
+- `.kano/tmp/pgo/gather-reports/junit/` (per-binary JUnit XML)
+- `.kano/tmp/pgo/gather-reports/logs/` (per-binary logs)
+
+This is intended to keep PGO profile data aligned with real test workloads
+instead of smoke-only checks.
+
+If you need to override the suite for a targeted run:
+
+```bash
+KOG_PGO_GATHER_COMMAND='ctest --test-dir src/cpp/out/obj/windows-ninja-msvc-pgo-collect -C Debug --output-on-failure' \
+  ./scripts/kog self build --pgo
+```
+
+For suite tuning, use coverage output as input:
+
+1. Generate coverage reports (`coverage-all` / `report-coverage`) on your target platform.
+2. Identify under-covered command areas.
+3. Add or adjust PGO gather workloads so those areas are exercised during collect.
+
 ## Direct Invocation
 
 ### Native test lanes
