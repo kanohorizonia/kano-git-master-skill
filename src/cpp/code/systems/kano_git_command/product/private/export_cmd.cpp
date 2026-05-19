@@ -92,19 +92,21 @@ auto ComputeArchiveName(const std::string& InRepoName,
 
 auto ComputePrefix(const std::string& InRepoName,
                    const std::string& InExplicitPrefix) -> std::string {
-    auto ensureSlash = [](std::string p) {
-        if (p.empty()) {
-            return p;
-        }
-        if (p.back() != '/') {
-            p.push_back('/');
-        }
-        return p;
-    };
     if (!InExplicitPrefix.empty()) {
-        return ensureSlash(InExplicitPrefix);
+        return NormalizeArchivePrefix(InExplicitPrefix);
     }
-    return ensureSlash(InRepoName);
+    return NormalizeArchivePrefix(InRepoName);
+}
+
+auto NormalizeArchivePrefix(const std::string& InPrefix) -> std::string {
+    if (InPrefix.empty()) {
+        return InPrefix;
+    }
+    std::string out = InPrefix;
+    if (out.back() != '/') {
+        out.push_back('/');
+    }
+    return out;
 }
 
 auto BuildGitArchiveArgs(const std::string& InFormat,
@@ -117,6 +119,66 @@ auto BuildGitArchiveArgs(const std::string& InFormat,
         "--prefix=" + InPrefix,
         "--output=" + InOutputPath.generic_string()
     };
+}
+
+auto BuildGitArchiveArgsForSubtree(const std::string& InFormat,
+                                   const std::string& InPrefix,
+                                   const std::filesystem::path& InOutputPath,
+                                   const std::string& InRepoRelativeSubtree,
+                                   bool InKeepSubtreePath) -> std::vector<std::string> {
+    if (InKeepSubtreePath) {
+        return {
+            "archive",
+            "HEAD",
+            "--format=" + InFormat,
+            "--prefix=" + InPrefix,
+            "--output=" + InOutputPath.generic_string(),
+            InRepoRelativeSubtree
+        };
+    }
+
+    return {
+        "archive",
+        "HEAD:" + InRepoRelativeSubtree,
+        "--format=" + InFormat,
+        "--prefix=" + InPrefix,
+        "--output=" + InOutputPath.generic_string()
+    };
+}
+
+auto CollectWorkingTreeFilesForSubtree(const std::filesystem::path& InRepoPath,
+                                       const std::filesystem::path& InRepoRelativeSubtree,
+                                       bool InKeepSubtreePath,
+                                       const ShellExecutor& InExec) -> std::vector<std::string> {
+    const std::string subtreeRel = InRepoRelativeSubtree.generic_string();
+    const auto lsRes = InExec("git", {"ls-files", "--cached", "--others", "--exclude-standard", "--", subtreeRel}, shell::ExecMode::Capture, InRepoPath);
+    if (lsRes.exitCode != 0) {
+        return {};
+    }
+
+    std::vector<std::string> out;
+    std::istringstream iss(lsRes.stdoutStr);
+    std::string relPath;
+    const std::string stripPrefix = subtreeRel + "/";
+    while (std::getline(iss, relPath)) {
+        if (!relPath.empty() && relPath.back() == '\r') {
+            relPath.pop_back();
+        }
+        if (relPath.empty()) {
+            continue;
+        }
+
+        std::string arcRel = relPath;
+        if (!InKeepSubtreePath && arcRel.rfind(stripPrefix, 0) == 0) {
+            arcRel = arcRel.substr(stripPrefix.size());
+        }
+        if (arcRel.empty()) {
+            continue;
+        }
+        out.push_back(arcRel);
+    }
+
+    return out;
 }
 
 
@@ -912,25 +974,12 @@ auto ExportOneRepo(const ExportRecord& InRecord,
     if (!useWorkingTree) {
         std::vector<std::string> args;
         if (InRecord.isSubtree) {
-            const std::string subtreeRel = InRecord.subtreeRepoRelativePath.generic_string();
-            if (InOpts.keepSubtreePath) {
-                args = {
-                    "archive",
-                    "HEAD",
-                    "--format=" + InOpts.format,
-                    "--prefix=" + prefix,
-                    "--output=" + result.archivePath.generic_string(),
-                    subtreeRel
-                };
-            } else {
-                args = {
-                    "archive",
-                    "HEAD:" + subtreeRel,
-                    "--format=" + InOpts.format,
-                    "--prefix=" + prefix,
-                    "--output=" + result.archivePath.generic_string()
-                };
-            }
+            args = BuildGitArchiveArgsForSubtree(
+                InOpts.format,
+                prefix,
+                result.archivePath,
+                InRecord.subtreeRepoRelativePath.generic_string(),
+                InOpts.keepSubtreePath);
         } else {
             args = BuildGitArchiveArgs(InOpts.format, prefix, result.archivePath);
         }
@@ -942,12 +991,11 @@ auto ExportOneRepo(const ExportRecord& InRecord,
             std::filesystem::create_directories(localTmpDir, mkEc);
             const auto manifestPath = localTmpDir / (InRecord.repoName + "_subtree_working_tree_manifest.tsv");
 
-            const std::string subtreeRel = InRecord.subtreeRepoRelativePath.generic_string();
-            const auto lsRes = InExec("git", {"ls-files", "--cached", "--others", "--exclude-standard", "--", subtreeRel}, shell::ExecMode::Capture, InRecord.repoPath);
-            if (lsRes.exitCode != 0) {
-                result.errorMessage = "failed to list subtree files";
-                return result;
-            }
+            std::vector<std::string> relFiles = CollectWorkingTreeFilesForSubtree(
+                InRecord.repoPath,
+                InRecord.subtreeRepoRelativePath,
+                InOpts.keepSubtreePath,
+                InExec);
 
             std::map<std::string, int> modeByPath;
             if (!CollectExecutablePathsWithPrefix(InRecord.repoPath, "", InExec, modeByPath)) {
@@ -957,26 +1005,13 @@ auto ExportOneRepo(const ExportRecord& InRecord,
 
             {
                 std::ofstream mf(manifestPath, std::ios::binary);
-                std::istringstream iss(lsRes.stdoutStr);
-                std::string relPath;
-                while (std::getline(iss, relPath)) {
-                    if (!relPath.empty() && relPath.back() == '\r') {
-                        relPath.pop_back();
-                    }
-                    if (relPath.empty()) {
-                        continue;
-                    }
-                    const auto full = (InRecord.repoPath / relPath).lexically_normal();
-                    const std::string stripPrefix = subtreeRel + "/";
-                    std::string arcRel = relPath;
-                    if (!InOpts.keepSubtreePath && arcRel.rfind(stripPrefix, 0) == 0) {
-                        arcRel = arcRel.substr(stripPrefix.size());
-                    }
-                    if (arcRel.empty()) {
-                        continue;
-                    }
-                    const int mode = modeByPath.contains(relPath) ? modeByPath[relPath] : 0644;
-                    mf << mode << "\t" << full.generic_string() << "\t" << (prefix + arcRel) << "\n";
+                for (const auto& rel : relFiles) {
+                    const std::string fullRel = InOpts.keepSubtreePath
+                                                    ? rel
+                                                    : (InRecord.subtreeRepoRelativePath.generic_string() + "/" + rel);
+                    const auto full = (InRecord.repoPath / fullRel).lexically_normal();
+                    const int mode = modeByPath.contains(fullRel) ? modeByPath[fullRel] : 0644;
+                    mf << mode << "\t" << full.generic_string() << "\t" << (prefix + rel) << "\n";
                 }
             }
 

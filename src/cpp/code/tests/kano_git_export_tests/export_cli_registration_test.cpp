@@ -530,6 +530,19 @@ TEST_CASE("RegisterExport registers --include-submodule-stubs flag",
     REQUIRE_NOTHROW(exportCmd->parse(std::string{"--include-submodule-stubs"}, false));
 }
 
+TEST_CASE("RegisterExport registers subtree standalone export options",
+          "[Unit][CLI][registration][subtree]") {
+    CLI::App app{"kog test"};
+    kano::git::commands::RegisterExport(app);
+
+    auto* exportCmd = app.get_subcommand("export");
+    REQUIRE(exportCmd != nullptr);
+
+    REQUIRE(exportCmd->get_option("--subtree") != nullptr);
+    REQUIRE(exportCmd->get_option("--name") != nullptr);
+    REQUIRE(exportCmd->get_option("--keep-subtree-path") != nullptr);
+}
+
 // ===========================================================================
 // Combined validation: multiple invalid fields
 // ===========================================================================

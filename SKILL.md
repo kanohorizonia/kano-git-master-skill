@@ -81,7 +81,14 @@ for it.
 ./scripts/kog export --help
 ./scripts/kog export --single
 ./scripts/kog export --subtree "E:/_gamedev/KanoTamaoProject/UnrealEngine/Engine/Source/Programs/UnrealGameSync" --name UnrealGameSync --source head
+./scripts/kog export --subtree Engine/Source/Programs/UnrealGameSync --source working-tree
 ```
+
+Subtree standalone export notes:
+- `--subtree` accepts absolute or relative paths and exports exactly one archive.
+- Default behavior strips parent directories so archive root starts at subtree basename.
+- Use `--keep-subtree-path` to preserve full repo-relative path in archive entries.
+- `--subtree` rejects `--single`, `--include-submodule-stubs`, and `--validate-release-archive`.
 
 ## Plan-Backed Commit Flow
 

@@ -20,6 +20,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -420,6 +421,7 @@ TEST_CASE("kog export --subtree exports standalone archive root",
     const auto outputDir = repo / ".kano" / "tmp" / "git" / "export";
     REQUIRE(std::filesystem::exists(outputDir));
     REQUIRE(AnyFileContains(outputDir, "UnrealGameSync_rev"));
+    REQUIRE(AnyFileContains(outputDir, ".export-manifest.json"));
 
     const auto list = RunCommand("python", {"-c",
         "import tarfile,glob; p=glob.glob(r'" + outputDir.generic_string() + "/UnrealGameSync_rev*.tar')[0]; "
@@ -429,6 +431,100 @@ TEST_CASE("kog export --subtree exports standalone archive root",
     REQUIRE(list.stdoutText.find("UnrealGameSync/Nested/File.txt") != std::string::npos);
     REQUIRE(list.stdoutText.find("README.md") == std::string::npos);
     REQUIRE(list.stdoutText.find("OtherTool/Other.txt") == std::string::npos);
+
+    std::filesystem::path manifestPath;
+    for (const auto& entry : std::filesystem::directory_iterator(outputDir)) {
+        if (entry.is_regular_file() &&
+            entry.path().filename().string().find(".export-manifest.json") != std::string::npos) {
+            manifestPath = entry.path();
+            break;
+        }
+    }
+    REQUIRE_FALSE(manifestPath.empty());
+    {
+        std::ifstream mf(manifestPath, std::ios::binary);
+        REQUIRE(mf.good());
+        const std::string text((std::istreambuf_iterator<char>(mf)), std::istreambuf_iterator<char>());
+        REQUIRE(text.find("\"exportMode\": \"subtree\"") != std::string::npos);
+        REQUIRE(text.find("\"subtree\": {") != std::string::npos);
+        REQUIRE(text.find("\"repoRelativePath\": \"Engine/Source/Programs/UnrealGameSync\"") != std::string::npos);
+        REQUIRE(text.find("\"stripSubtreePath\": true") != std::string::npos);
+    }
+
+    const auto canonicalManifest = repo / ".kano" / "tmp";
+    REQUIRE(AnyFileContainsRecursive(canonicalManifest, ".export-manifest.json"));
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
+TEST_CASE("kog export --subtree accepts relative path and defaults name to subtree basename",
+          "[Integration][export][subtree][relative-path]") {
+    const auto sandbox = CreateSandboxWorkspace("subtree-export-relative");
+    const auto repo = (sandbox.root / "root-clone").lexically_normal();
+    RequireSuccess(RunGit({"init", repo.string()}, sandbox.root), "init subtree repo");
+    ConfigureIdentity(repo);
+    RequireSuccess(RunGit({"checkout", "-b", "main"}, repo), "checkout main");
+
+    WriteTextFile(repo / "Engine/Source/Programs/UnrealGameSync/UGS.txt", "ugs\n");
+    RequireSuccess(RunGit({"add", "."}, repo), "add files");
+    RequireSuccess(RunGit({"commit", "-m", "seed"}, repo), "seed commit");
+
+    const auto result = RunKogWithEnv(
+        {"export", "--subtree", "Engine/Source/Programs/UnrealGameSync", "--source", "head", "--no-validate-release-archive"},
+        repo,
+        {{"GIT_ALLOW_PROTOCOL", "file:https:ssh:git"}});
+
+    INFO("exit=" << result.exitCode);
+    INFO("stdout=" << result.stdoutText);
+    INFO("stderr=" << result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    const auto outputDir = repo / ".kano" / "tmp" / "git" / "export";
+    REQUIRE(std::filesystem::exists(outputDir));
+    REQUIRE(AnyFileContains(outputDir, "UnrealGameSync_rev"));
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
+TEST_CASE("kog export --subtree --source working-tree includes untracked and excludes ignored files",
+          "[Integration][export][subtree][working-tree]") {
+    const auto sandbox = CreateSandboxWorkspace("subtree-export-working-tree");
+    const auto repo = (sandbox.root / "root-clone").lexically_normal();
+    RequireSuccess(RunGit({"init", repo.string()}, sandbox.root), "init subtree repo");
+    ConfigureIdentity(repo);
+    RequireSuccess(RunGit({"checkout", "-b", "main"}, repo), "checkout main");
+
+    WriteTextFile(repo / ".gitignore", "Engine/Source/Programs/UnrealGameSync/Ignored.txt\n");
+    WriteTextFile(repo / "Engine/Source/Programs/UnrealGameSync/Tracked.txt", "tracked\n");
+    WriteTextFile(repo / "Engine/Source/Programs/OtherTool/Outside.txt", "outside\n");
+    RequireSuccess(RunGit({"add", "."}, repo), "add baseline files");
+    RequireSuccess(RunGit({"commit", "-m", "seed"}, repo), "seed commit");
+
+    WriteTextFile(repo / "Engine/Source/Programs/UnrealGameSync/Untracked.txt", "untracked\n");
+    WriteTextFile(repo / "Engine/Source/Programs/UnrealGameSync/Ignored.txt", "ignored\n");
+    WriteTextFile(repo / "Engine/Source/Programs/OtherTool/OutsideUntracked.txt", "outside-untracked\n");
+
+    const auto result = RunKogWithEnv(
+        {"export", "--subtree", "Engine/Source/Programs/UnrealGameSync", "--name", "UnrealGameSync", "--source", "working-tree", "--no-validate-release-archive"},
+        repo,
+        {{"GIT_ALLOW_PROTOCOL", "file:https:ssh:git"}});
+
+    INFO("exit=" << result.exitCode);
+    INFO("stdout=" << result.stdoutText);
+    INFO("stderr=" << result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    const auto outputDir = repo / ".kano" / "tmp" / "git" / "export";
+    REQUIRE(std::filesystem::exists(outputDir));
+
+    const auto list = RunCommand("python", {"-c",
+        "import tarfile,glob; p=glob.glob(r'" + outputDir.generic_string() + "/UnrealGameSync_rev*.tar')[0]; "
+        "t=tarfile.open(p); print('\\n'.join(m.name for m in t.getmembers() if m.isfile()))"}, repo);
+    REQUIRE(list.exitCode == 0);
+    REQUIRE(list.stdoutText.find("UnrealGameSync/Tracked.txt") != std::string::npos);
+    REQUIRE(list.stdoutText.find("UnrealGameSync/Untracked.txt") != std::string::npos);
+    REQUIRE(list.stdoutText.find("Ignored.txt") == std::string::npos);
+    REQUIRE(list.stdoutText.find("Outside") == std::string::npos);
 
     RemoveSandboxWorkspace(sandbox);
 }

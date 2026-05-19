@@ -104,11 +104,33 @@ auto ComputeArchiveName(const std::string& InRepoName,
 auto ComputePrefix(const std::string& InRepoName,
                    const std::string& InExplicitPrefix) -> std::string;
 
+// Ensures archive prefixes always end with '/'. Empty input remains empty.
+auto NormalizeArchivePrefix(const std::string& InPrefix) -> std::string;
+
 // Returns the argument vector for:
 //   git archive HEAD --format=<InFormat> --prefix=<InPrefix> --output=<InOutputPath>
 auto BuildGitArchiveArgs(const std::string& InFormat,
                          const std::string& InPrefix,
                          const std::filesystem::path& InOutputPath) -> std::vector<std::string>;
+
+// Returns the argument vector for subtree head exports.
+// Strip mode uses:
+//   git archive HEAD:<InRepoRelativeSubtree> --format=<InFormat> --prefix=<InPrefix> --output=<InOutputPath>
+// Keep-path mode uses:
+//   git archive HEAD --format=<InFormat> --prefix=<InPrefix> --output=<InOutputPath> <InRepoRelativeSubtree>
+auto BuildGitArchiveArgsForSubtree(const std::string& InFormat,
+                                   const std::string& InPrefix,
+                                   const std::filesystem::path& InOutputPath,
+                                   const std::string& InRepoRelativeSubtree,
+                                   bool InKeepSubtreePath) -> std::vector<std::string>;
+
+// Collects working-tree file paths under a subtree. Returned paths use '/'
+// separators and are relative to the archive root (already stripped when
+// InKeepSubtreePath=false).
+auto CollectWorkingTreeFilesForSubtree(const std::filesystem::path& InRepoPath,
+                                       const std::filesystem::path& InRepoRelativeSubtree,
+                                       bool InKeepSubtreePath,
+                                       const ShellExecutor& InExec) -> std::vector<std::string>;
 
 // Returns the list of files to be included in a working-tree export,
 // respecting .gitignore. If InSingle is true, also includes submodule contents.

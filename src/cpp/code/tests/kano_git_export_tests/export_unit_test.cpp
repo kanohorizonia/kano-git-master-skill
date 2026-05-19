@@ -237,6 +237,103 @@ TEST_CASE("ExportOneRepo archive name follows <name>_rev<NNN>.<format> pattern",
     REQUIRE(result.archiveName == "KTOStudio_rev042.tar");
 }
 
+TEST_CASE("NormalizeArchivePrefix appends trailing slash only when needed",
+          "[Unit][ExportHelpers][subtree-prefix]") {
+    REQUIRE(NormalizeArchivePrefix("").empty());
+    REQUIRE(NormalizeArchivePrefix("UnrealGameSync") == "UnrealGameSync/");
+    REQUIRE(NormalizeArchivePrefix("UnrealGameSync/") == "UnrealGameSync/");
+}
+
+TEST_CASE("BuildGitArchiveArgsForSubtree strip mode archives HEAD:<subtree>",
+          "[Unit][ExportHelpers][subtree-archive-args]") {
+    const auto args = BuildGitArchiveArgsForSubtree(
+        "tar",
+        "UnrealGameSync/",
+        std::filesystem::path("out/UnrealGameSync_rev001.tar"),
+        "Engine/Source/Programs/UnrealGameSync",
+        false);
+
+    REQUIRE(args.size() == 5);
+    REQUIRE(args[0] == "archive");
+    REQUIRE(args[1] == "HEAD:Engine/Source/Programs/UnrealGameSync");
+    REQUIRE(args[2] == "--format=tar");
+    REQUIRE(args[3] == "--prefix=UnrealGameSync/");
+    REQUIRE(args[4].find("--output=out/UnrealGameSync_rev001.tar") == 0);
+}
+
+TEST_CASE("BuildGitArchiveArgsForSubtree keep-path mode passes subtree path argument",
+          "[Unit][ExportHelpers][subtree-archive-args]") {
+    const auto args = BuildGitArchiveArgsForSubtree(
+        "tar",
+        "UnrealGameSync/",
+        std::filesystem::path("out/UnrealGameSync_rev001.tar"),
+        "Engine/Source/Programs/UnrealGameSync",
+        true);
+
+    REQUIRE(args.size() == 6);
+    REQUIRE(args[0] == "archive");
+    REQUIRE(args[1] == "HEAD");
+    REQUIRE(args[2] == "--format=tar");
+    REQUIRE(args[3] == "--prefix=UnrealGameSync/");
+    REQUIRE(args[4].find("--output=out/UnrealGameSync_rev001.tar") == 0);
+    REQUIRE(args[5] == "Engine/Source/Programs/UnrealGameSync");
+}
+
+TEST_CASE("CollectWorkingTreeFilesForSubtree strips subtree prefix by default",
+          "[Unit][ExportHelpers][subtree-working-tree-files]") {
+    const auto exec = [](const std::string& InCommand,
+                         const std::vector<std::string>& InArgs,
+                         ExecMode,
+                         std::optional<std::filesystem::path>) -> ExecResult {
+        ExecResult result;
+        if (InCommand == "git" && !InArgs.empty() && InArgs[0] == "ls-files") {
+            result.exitCode = 0;
+            result.stdoutStr =
+                "Engine/Source/Programs/UnrealGameSync/UGS.txt\n"
+                "Engine/Source/Programs/UnrealGameSync/Nested/File.txt\r\n";
+            return result;
+        }
+        result.exitCode = 1;
+        return result;
+    };
+
+    const auto files = CollectWorkingTreeFilesForSubtree(
+        std::filesystem::path("repo"),
+        std::filesystem::path("Engine/Source/Programs/UnrealGameSync"),
+        false,
+        exec);
+
+    REQUIRE(files.size() == 2);
+    REQUIRE(files[0] == "UGS.txt");
+    REQUIRE(files[1] == "Nested/File.txt");
+}
+
+TEST_CASE("CollectWorkingTreeFilesForSubtree keeps subtree path when requested",
+          "[Unit][ExportHelpers][subtree-working-tree-files]") {
+    const auto exec = [](const std::string& InCommand,
+                         const std::vector<std::string>& InArgs,
+                         ExecMode,
+                         std::optional<std::filesystem::path>) -> ExecResult {
+        ExecResult result;
+        if (InCommand == "git" && !InArgs.empty() && InArgs[0] == "ls-files") {
+            result.exitCode = 0;
+            result.stdoutStr = "Engine/Source/Programs/UnrealGameSync/UGS.txt\n";
+            return result;
+        }
+        result.exitCode = 1;
+        return result;
+    };
+
+    const auto files = CollectWorkingTreeFilesForSubtree(
+        std::filesystem::path("repo"),
+        std::filesystem::path("Engine/Source/Programs/UnrealGameSync"),
+        true,
+        exec);
+
+    REQUIRE(files.size() == 1);
+    REQUIRE(files[0] == "Engine/Source/Programs/UnrealGameSync/UGS.txt");
+}
+
 // ===========================================================================
 // RunExportWithExecutor — continue-on-failure behavior
 // ===========================================================================

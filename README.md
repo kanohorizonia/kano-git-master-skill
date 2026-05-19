@@ -55,7 +55,15 @@ Common commands:
 ./scripts/kog export --help
 ./scripts/kog export --single
 ./scripts/kog export --subtree "E:/_gamedev/KanoTamaoProject/UnrealEngine/Engine/Source/Programs/UnrealGameSync" --name UnrealGameSync --source head
+./scripts/kog export --subtree Engine/Source/Programs/UnrealGameSync --source working-tree
 ```
+
+Subtree standalone export notes:
+- `--subtree` accepts absolute or relative paths.
+- Default archive root strips parent path (`UnrealGameSync/...`).
+- Use `--keep-subtree-path` to keep full repo-relative path in archive.
+- `--subtree` cannot be combined with `--single` or `--include-submodule-stubs`.
+- `--subtree` skips release archive smoke validation; `--validate-release-archive` is rejected.
 
 ## Wrapper Entry Points
 
