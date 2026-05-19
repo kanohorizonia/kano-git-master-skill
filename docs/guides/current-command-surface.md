@@ -96,6 +96,7 @@ src/shell/test/smoke-release-online-build.sh <archive.tar>
 ./scripts/kog export --help
 ./scripts/kog export --single
 ./scripts/kog export --single --validate-release-archive
+./scripts/kog export --subtree "E:/_gamedev/KanoTamaoProject/UnrealEngine/Engine/Source/Programs/UnrealGameSync" --name UnrealGameSync --source head
 
 # Bash completion
 ./scripts/kog completion install bash
@@ -128,6 +129,12 @@ Disable validation explicitly:
 
 ```bash
 ./scripts/kog export --single --no-validate-release-archive
+```
+
+Subtree-style standalone export (strip parent path by default):
+
+```bash
+./scripts/kog export --subtree "E:/_gamedev/KanoTamaoProject/UnrealEngine/Engine/Source/Programs/UnrealGameSync" --name UnrealGameSync --source head
 ```
 
 ## Shell script policy

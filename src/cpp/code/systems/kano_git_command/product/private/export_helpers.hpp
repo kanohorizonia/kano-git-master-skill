@@ -47,6 +47,9 @@ struct ExportOptions {
     int logCount = 10;
     bool validateReleaseArchive = true;      // Auto-run offline smoke for single root .tar archives when available.
     bool forceValidateReleaseArchive = false; // Fail when validation is requested but unavailable or failing.
+    std::filesystem::path subtreePath;
+    std::string exportName;
+    bool keepSubtreePath = false;
 };
 
 struct ExportRecord {
@@ -55,6 +58,10 @@ struct ExportRecord {
     std::string relativeRepoPath;
     bool isRoot = false;
     std::vector<std::filesystem::path> submodulePaths; // populated for root repo only
+    bool isSubtree = false;
+    std::filesystem::path subtreeAbsPath;
+    std::filesystem::path subtreeRepoRelativePath;
+    std::string subtreeDisplayPath;
 };
 
 struct ExportResult {
@@ -144,6 +151,12 @@ struct ExportManifestData {
     std::uintmax_t sizeBytes = 0;
     std::string sha256;
     std::vector<std::pair<std::string, std::string>> submodules; // {path, commit}
+    bool hasSubtree = false;
+    std::string subtreeName;
+    std::string subtreeSourcePath;
+    std::string subtreeRepositoryPath;
+    std::string subtreeRepoRelativePath;
+    bool subtreeStripPath = true;
 };
 
 // Formats an ExportManifestData as a JSON string (no external dependencies).

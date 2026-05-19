@@ -54,6 +54,7 @@ Common commands:
 ./scripts/kog repo-hygiene fix
 ./scripts/kog export --help
 ./scripts/kog export --single
+./scripts/kog export --subtree "E:/_gamedev/KanoTamaoProject/UnrealEngine/Engine/Source/Programs/UnrealGameSync" --name UnrealGameSync --source head
 ```
 
 ## Wrapper Entry Points

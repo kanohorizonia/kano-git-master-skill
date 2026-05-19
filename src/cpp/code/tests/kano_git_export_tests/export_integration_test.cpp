@@ -368,6 +368,48 @@ TEST_CASE("kog export --no-metadata skips manifest and sha256 files",
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("kog export --subtree exports standalone archive root",
+          "[Integration][export][subtree]") {
+    const auto sandbox = CreateSandboxWorkspace("subtree-export");
+    const auto repo = (sandbox.root / "root-clone").lexically_normal();
+    RequireSuccess(RunGit({"init", repo.string()}, sandbox.root), "init subtree repo");
+    ConfigureIdentity(repo);
+    RequireSuccess(RunGit({"checkout", "-b", "main"}, repo), "checkout main");
+
+    WriteTextFile(repo / "README.md", "root\n");
+    WriteTextFile(repo / "Engine/Source/Programs/UnrealGameSync/UGS.txt", "ugs\n");
+    WriteTextFile(repo / "Engine/Source/Programs/UnrealGameSync/Nested/File.txt", "nested\n");
+    WriteTextFile(repo / "Engine/Source/Programs/OtherTool/Other.txt", "other\n");
+    RequireSuccess(RunGit({"add", "."}, repo), "add files");
+    RequireSuccess(RunGit({"commit", "-m", "seed"}, repo), "seed commit");
+
+    const auto subtreePath = (repo / "Engine/Source/Programs/UnrealGameSync").generic_string();
+    const auto result = RunKogWithEnv(
+        {"export", "--subtree", subtreePath, "--name", "UnrealGameSync", "--source", "head", "--no-validate-release-archive"},
+        repo,
+        {{"GIT_ALLOW_PROTOCOL", "file:https:ssh:git"}});
+
+    INFO("exit=" << result.exitCode);
+    INFO("stdout=" << result.stdoutText);
+    INFO("stderr=" << result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    const auto outputDir = repo / ".kano" / "tmp" / "git" / "export";
+    REQUIRE(std::filesystem::exists(outputDir));
+    REQUIRE(AnyFileContains(outputDir, "UnrealGameSync_rev"));
+
+    const auto list = RunCommand("python", {"-c",
+        "import tarfile,glob; p=glob.glob(r'" + outputDir.generic_string() + "/UnrealGameSync_rev*.tar')[0]; "
+        "t=tarfile.open(p); print('\\n'.join(m.name for m in t.getmembers() if m.isfile()))"}, repo);
+    REQUIRE(list.exitCode == 0);
+    REQUIRE(list.stdoutText.find("UnrealGameSync/UGS.txt") != std::string::npos);
+    REQUIRE(list.stdoutText.find("UnrealGameSync/Nested/File.txt") != std::string::npos);
+    REQUIRE(list.stdoutText.find("README.md") == std::string::npos);
+    REQUIRE(list.stdoutText.find("OtherTool/Other.txt") == std::string::npos);
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
 // ===========================================================================
 // Test 4: --no-recursive exports only the root repo (single archive)
 // ===========================================================================

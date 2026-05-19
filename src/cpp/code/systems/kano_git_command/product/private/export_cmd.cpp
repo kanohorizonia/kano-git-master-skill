@@ -19,6 +19,7 @@
 #include <format>
 #include <fstream>
 #include <iomanip>
+#include <map>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -52,6 +53,20 @@ auto ValidateOptions(const ExportOptions& InOpts) -> bool {
                   << "--no-validate-release-archive\n";
         ok = false;
     }
+    if (!InOpts.subtreePath.empty()) {
+        if (InOpts.single) {
+            std::cerr << "kog export: --subtree cannot be combined with --single\n";
+            ok = false;
+        }
+        if (InOpts.includeSubmoduleStubs) {
+            std::cerr << "kog export: --subtree cannot be combined with --include-submodule-stubs\n";
+            ok = false;
+        }
+        if (InOpts.forceValidateReleaseArchive) {
+            std::cerr << "kog export: --validate-release-archive is not supported with --subtree\n";
+            ok = false;
+        }
+    }
     return ok;
 }
 
@@ -77,10 +92,19 @@ auto ComputeArchiveName(const std::string& InRepoName,
 
 auto ComputePrefix(const std::string& InRepoName,
                    const std::string& InExplicitPrefix) -> std::string {
+    auto ensureSlash = [](std::string p) {
+        if (p.empty()) {
+            return p;
+        }
+        if (p.back() != '/') {
+            p.push_back('/');
+        }
+        return p;
+    };
     if (!InExplicitPrefix.empty()) {
-        return InExplicitPrefix;
+        return ensureSlash(InExplicitPrefix);
     }
-    return InRepoName + "/";
+    return ensureSlash(InRepoName);
 }
 
 auto BuildGitArchiveArgs(const std::string& InFormat,
@@ -164,6 +188,84 @@ auto CollectWorkingTreeFiles(const ExportRecord& InRecord, const std::string& In
         });
 
     return allFiles;
+}
+
+auto CollectGitIndexEntriesWithPrefix(const std::filesystem::path& InRepoPath,
+                                      const std::string& InPathPrefix,
+                                      const ShellExecutor& InExec,
+                                      std::vector<std::string>& OutCacheInfoLines) -> bool {
+    const auto res = InExec("git", {"ls-files", "-s"}, shell::ExecMode::Capture, InRepoPath);
+    if (res.exitCode != 0) {
+        return false;
+    }
+
+    std::istringstream iss(res.stdoutStr);
+    std::string line;
+    while (std::getline(iss, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        if (line.empty()) {
+            continue;
+        }
+
+        const auto modeEnd = line.find(' ');
+        const auto space2 = (modeEnd == std::string::npos) ? std::string::npos : line.find(' ', modeEnd + 1);
+        const auto tabPos = line.find('\t');
+        if (modeEnd == std::string::npos || space2 == std::string::npos || tabPos == std::string::npos || tabPos + 1 >= line.size()) {
+            continue;
+        }
+
+        const std::string mode = line.substr(0, modeEnd);
+        const std::string oid = line.substr(modeEnd + 1, space2 - (modeEnd + 1));
+        const std::string stage = line.substr(space2 + 1, tabPos - (space2 + 1));
+        const std::string relPath = line.substr(tabPos + 1);
+        if (mode.empty() || oid.empty() || stage.empty() || relPath.empty()) {
+            continue;
+        }
+
+        OutCacheInfoLines.push_back(mode + " " + oid + " " + stage + "\t" + InPathPrefix + relPath);
+    }
+    return true;
+}
+
+auto CollectExecutablePathsWithPrefix(const std::filesystem::path& InRepoPath,
+                                      const std::string& InPathPrefix,
+                                      const ShellExecutor& InExec,
+                                      std::map<std::string, int>& OutModeByPath) -> bool {
+    const auto res = InExec("git", {"ls-files", "-s"}, shell::ExecMode::Capture, InRepoPath);
+    if (res.exitCode != 0) {
+        return false;
+    }
+
+    std::istringstream iss(res.stdoutStr);
+    std::string line;
+    while (std::getline(iss, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        if (line.empty()) {
+            continue;
+        }
+        const auto modeEnd = line.find(' ');
+        const auto tabPos = line.find('\t');
+        if (modeEnd == std::string::npos || tabPos == std::string::npos || tabPos + 1 >= line.size()) {
+            continue;
+        }
+        const std::string mode = line.substr(0, modeEnd);
+        const std::string relPath = line.substr(tabPos + 1);
+        if (relPath.empty()) {
+            continue;
+        }
+        int parsedMode = 0644;
+        if (mode == "100755") {
+            parsedMode = 0755;
+        } else if (mode == "120000") {
+            parsedMode = 0120000;
+        }
+        OutModeByPath[InPathPrefix + relPath] = parsedMode;
+    }
+    return true;
 }
 
 auto ComputeManifestName(const std::string& InArchiveBaseName) -> std::string {
@@ -289,6 +391,15 @@ auto FormatExportManifestJson(const ExportManifestData& InData) -> std::string {
         }
         j << "  ]";
     }
+    if (InData.hasSubtree) {
+        j << ",\n  \"subtree\": {\n";
+        j << "    \"name\": \"" << JsonEscape(InData.subtreeName) << "\",\n";
+        j << "    \"sourcePath\": \"" << JsonEscape(InData.subtreeSourcePath) << "\",\n";
+        j << "    \"repositoryPath\": \"" << JsonEscape(InData.subtreeRepositoryPath) << "\",\n";
+        j << "    \"repoRelativePath\": \"" << JsonEscape(InData.subtreeRepoRelativePath) << "\",\n";
+        j << "    \"stripSubtreePath\": " << (InData.subtreeStripPath ? "true" : "false") << "\n";
+        j << "  }";
+    }
     j << "\n}\n";
     return j.str();
 }
@@ -395,6 +506,16 @@ auto FormatMarkdownMetadata(const ExportRecord& InRecord,
     oss << "- **Exported At**: " << CurrentUtcIso8601Export() << "\n";
     oss << "- **Format**: " << InOpts.format << "\n";
     oss << "- **Archive File**: `" << InResult.archiveName << "`\n\n";
+
+    if (InRecord.isSubtree) {
+        oss << "## Subtree Export\n";
+        oss << "- **Export Mode**: subtree\n";
+        oss << "- **Export Name**: `" << InRecord.repoName << "`\n";
+        oss << "- **Git Repository Path**: `" << InRecord.repoPath.generic_string() << "`\n";
+        oss << "- **Subtree Absolute Path**: `" << InRecord.subtreeAbsPath.generic_string() << "`\n";
+        oss << "- **Subtree Repo-Relative Path**: `" << InRecord.subtreeRepoRelativePath.generic_string() << "`\n";
+        oss << "- **Strip Subtree Path**: " << (!InOpts.keepSubtreePath ? "true" : "false") << "\n\n";
+    }
 
     oss << "## Project History (last " << InOpts.logCount << " entries)\n";
     oss << "### Root Repository: " << InRecord.repoName << "\n";
@@ -688,6 +809,10 @@ auto RunReleaseArchiveValidation(const ExportRecord& InRecord,
         return 0;
     }
 
+    if (InRecord.isSubtree) {
+        return 0;
+    }
+
     if (!InRecord.isRoot) {
         return 0;
     }
@@ -783,46 +908,155 @@ auto ExportOneRepo(const ExportRecord& InRecord,
     const std::string prefix = ComputePrefix(InRecord.repoName, InOpts.prefix);
 
     if (InOpts.source == "head") {
-        const auto args = BuildGitArchiveArgs(InOpts.format, prefix, result.archivePath);
+        std::vector<std::string> args;
+        if (InRecord.isSubtree) {
+            const std::string subtreeRel = InRecord.subtreeRepoRelativePath.generic_string();
+            if (InOpts.keepSubtreePath) {
+                args = {
+                    "archive",
+                    "HEAD",
+                    "--format=" + InOpts.format,
+                    "--prefix=" + prefix,
+                    "--output=" + result.archivePath.generic_string(),
+                    subtreeRel
+                };
+            } else {
+                args = {
+                    "archive",
+                    "HEAD:" + subtreeRel,
+                    "--format=" + InOpts.format,
+                    "--prefix=" + prefix,
+                    "--output=" + result.archivePath.generic_string()
+                };
+            }
+        } else {
+            args = BuildGitArchiveArgs(InOpts.format, prefix, result.archivePath);
+        }
         archiveResult = InExec("git", args, shell::ExecMode::Capture, InRecord.repoPath);
     } else {
-        // working-tree: Collect files via git ls-files to respect .gitignore.
-        // Pass prefix so filelist entries are "<reponame>/file", matching the
-        // -C <parent_path> working directory used by the tar invocation below.
-        const auto fileList = CollectWorkingTreeFiles(InRecord, prefix, InOpts.single, InExec);
-        if (fileList.empty()) {
-            result.errorMessage = "no files found to export in working-tree";
+        if (InRecord.isSubtree) {
+            const auto localTmpDir = InRecord.repoPath / ".kano" / "tmp";
+            std::error_code mkEc;
+            std::filesystem::create_directories(localTmpDir, mkEc);
+            const auto manifestPath = localTmpDir / (InRecord.repoName + "_subtree_working_tree_manifest.tsv");
+
+            const std::string subtreeRel = InRecord.subtreeRepoRelativePath.generic_string();
+            const auto lsRes = InExec("git", {"ls-files", "--cached", "--others", "--exclude-standard", "--", subtreeRel}, shell::ExecMode::Capture, InRecord.repoPath);
+            if (lsRes.exitCode != 0) {
+                result.errorMessage = "failed to list subtree files";
+                return result;
+            }
+
+            std::map<std::string, int> modeByPath;
+            if (!CollectExecutablePathsWithPrefix(InRecord.repoPath, "", InExec, modeByPath)) {
+                result.errorMessage = "failed to collect subtree file modes";
+                return result;
+            }
+
+            {
+                std::ofstream mf(manifestPath, std::ios::binary);
+                std::istringstream iss(lsRes.stdoutStr);
+                std::string relPath;
+                while (std::getline(iss, relPath)) {
+                    if (!relPath.empty() && relPath.back() == '\r') {
+                        relPath.pop_back();
+                    }
+                    if (relPath.empty()) {
+                        continue;
+                    }
+                    const auto full = (InRecord.repoPath / relPath).lexically_normal();
+                    const std::string stripPrefix = subtreeRel + "/";
+                    std::string arcRel = relPath;
+                    if (!InOpts.keepSubtreePath && arcRel.rfind(stripPrefix, 0) == 0) {
+                        arcRel = arcRel.substr(stripPrefix.size());
+                    }
+                    if (arcRel.empty()) {
+                        continue;
+                    }
+                    const int mode = modeByPath.contains(relPath) ? modeByPath[relPath] : 0644;
+                    mf << mode << "\t" << full.generic_string() << "\t" << (prefix + arcRel) << "\n";
+                }
+            }
+
+            const std::string py =
+                "import tarfile,pathlib,sys; mf=pathlib.Path(sys.argv[1]); out=pathlib.Path(sys.argv[2]); "
+                "out.parent.mkdir(parents=True,exist_ok=True); t=tarfile.open(out,'w'); "
+                "\nfor line in mf.read_text(encoding='utf-8').splitlines():\n"
+                "  if not line.strip(): continue\n"
+                "  m,s,a=line.split('\\t',2); mode=int(m); sp=pathlib.Path(s); ap=a.replace('\\\\','/');\n"
+                "  if not sp.exists(): continue\n"
+                "  info=t.gettarinfo(str(sp),arcname=ap); info.mode=mode;\n"
+                "  with sp.open('rb') as f: t.addfile(info,f)\n"
+                "t.close()";
+
+            archiveResult = InExec("python", {"-c", py, manifestPath.generic_string(), result.archivePath.generic_string()}, shell::ExecMode::Capture, InRecord.repoPath);
+            std::error_code ec;
+            std::filesystem::remove(manifestPath, ec);
+        } else {
+        const auto localTmpDir = InRecord.repoPath / ".kano" / "tmp";
+        std::error_code mkEc;
+        std::filesystem::create_directories(localTmpDir, mkEc);
+        const auto manifestPath = localTmpDir / (InRecord.repoName + "_working_tree_manifest.tsv");
+
+        std::vector<std::string> relFiles = CollectWorkingTreeFiles(InRecord, "", InOpts.single, InExec);
+        if (relFiles.empty()) {
+            result.errorMessage = "no files found in working tree export";
             return result;
         }
 
-        std::cout << "Archiving " << fileList.size() << " files using GNU tar via bash..." << std::endl;
-
-        const auto listPath = InMetadataDir / (InRecord.repoName + "_files.txt");
-        {
-            std::ofstream lf(listPath, std::ios::binary);
-            for (const auto& f : fileList) {
-                if (f.empty()) continue;
-                lf << f << "\n";
+        std::map<std::string, int> modeByPath;
+        if (!CollectExecutablePathsWithPrefix(InRecord.repoPath, "", InExec, modeByPath)) {
+            result.errorMessage = "failed to collect root file modes";
+            return result;
+        }
+        if (InOpts.single) {
+            for (const auto& subRelPath : InRecord.submodulePaths) {
+                const auto subRepoPath = InRecord.repoPath / subRelPath;
+                const std::string subPrefix = subRelPath.generic_string() + "/";
+                if (!CollectExecutablePathsWithPrefix(subRepoPath, subPrefix, InExec, modeByPath)) {
+                    result.errorMessage = "failed to collect submodule file modes: " + subRelPath.generic_string();
+                    return result;
+                }
             }
         }
 
-        // Run tar with -C <repoPath> so filelist paths are relative to the repo
-        // root. The prefix is already embedded in each filelist entry by
-        // CollectWorkingTreeFiles, so tar sees the correct archive layout without
-        // needing --transform (GNU-only) or --prefix (inconsistent with -T).
-        std::vector<std::string> args;
-        args.push_back("-czf");
-        args.push_back(result.archivePath.generic_string());
-        args.push_back("-C");
-        args.push_back(InRecord.repoPath.parent_path().generic_string());
-        args.push_back("--exclude=.git");
-        args.push_back("--no-recursion");
-        args.push_back("-T");
-        args.push_back(listPath.generic_string());
+        {
+            std::ofstream mf(manifestPath, std::ios::binary);
+            for (const auto& rel : relFiles) {
+                const auto full = (InRecord.repoPath / rel).lexically_normal();
+                const int mode = modeByPath.contains(rel) ? modeByPath[rel] : 0644;
+                mf << mode << "\t" << full.generic_string() << "\t" << (prefix + rel) << "\n";
+            }
+        }
 
-        archiveResult = InExec("tar", args, shell::ExecMode::Capture, InRecord.repoPath);
+        const auto toQuoted = [](std::string p) {
+            std::replace(p.begin(), p.end(), '\\', '/');
+            return std::string("\"") + p + "\"";
+        };
+        const std::string py =
+            "import tarfile,pathlib,sys; "
+            "mf=pathlib.Path(sys.argv[1]); out=pathlib.Path(sys.argv[2]); "
+            "out.parent.mkdir(parents=True,exist_ok=True); "
+            "t=tarfile.open(out,'w'); "
+            "\nfor line in mf.read_text(encoding='utf-8').splitlines():\n"
+            "  if not line.strip():\n"
+            "    continue\n"
+            "  m,s,a=line.split('\\t',2); mode=int(m); sp=pathlib.Path(s); ap=a.replace('\\\\','/');\n"
+            "  if not sp.exists():\n"
+            "    continue\n"
+            "  info=t.gettarinfo(str(sp),arcname=ap); info.mode=mode;\n"
+            "  with sp.open('rb') as f: t.addfile(info,f)\n"
+            "t.close()";
+
+        archiveResult = InExec(
+            "python",
+            {"-c", py, manifestPath.generic_string(), result.archivePath.generic_string()},
+            shell::ExecMode::Capture,
+            InRecord.repoPath);
+
         std::error_code ec;
-        std::filesystem::remove(listPath, ec);
+        std::filesystem::remove(manifestPath, ec);
+        }
     }
 
     if (archiveResult.exitCode != 0) {
@@ -939,9 +1173,9 @@ auto RunExportWithExecutor(const ExportOptions& InOpts,
 
     std::cout << "\n" << FormatSummary(InOutputDir, InMetadataDir, results);
 
-    // Write export-manifest.json for --single mode.
+    // Write export-manifest.json for --single mode and --subtree mode.
     // Conditioned on archive success only — validation failure does not block manifest.
-    if (InOpts.single && !anyArchiveFailed) {
+    if ((InOpts.single || !InOpts.subtreePath.empty()) && !anyArchiveFailed) {
         // Find the root result (first successful result from the root record)
         const ExportResult* rootResult = nullptr;
         const ExportRecord* rootRecord = nullptr;
@@ -956,8 +1190,8 @@ auto RunExportWithExecutor(const ExportOptions& InOpts,
         if (rootResult != nullptr && rootRecord != nullptr) {
             ExportManifestData manifest;
             manifest.projectName = rootRecord->repoName;
-            manifest.repository  = rootRecord->repoName;
-            manifest.exportMode  = "single";
+            manifest.repository  = rootRecord->isSubtree ? rootRecord->repoPath.filename().generic_string() : rootRecord->repoName;
+            manifest.exportMode  = rootRecord->isSubtree ? "subtree" : "single";
             manifest.singleArchive = true;
             manifest.createdAt   = CurrentUtcIso8601Export();
             manifest.platform    = DetectHostPlatform();
@@ -968,16 +1202,25 @@ auto RunExportWithExecutor(const ExportOptions& InOpts,
             manifest.sizeBytes   = rootResult->sizeBytes;
             manifest.sha256      = rootResult->sha256;
 
-            // Collect submodule commits
-            for (const auto& subRelPath : rootRecord->submodulePaths) {
-                const auto subRepoPath = rootRecord->repoPath / subRelPath;
-                const auto subSha = InExec("git", {"rev-parse", "--short", "HEAD"},
-                                           shell::ExecMode::Capture, subRepoPath);
-                std::string subCommit;
-                if (subSha.exitCode == 0) {
-                    subCommit = TrimExport(subSha.stdoutStr);
+            // Collect submodule commits for non-subtree single exports
+            if (!rootRecord->isSubtree) {
+                for (const auto& subRelPath : rootRecord->submodulePaths) {
+                    const auto subRepoPath = rootRecord->repoPath / subRelPath;
+                    const auto subSha = InExec("git", {"rev-parse", "--short", "HEAD"},
+                                               shell::ExecMode::Capture, subRepoPath);
+                    std::string subCommit;
+                    if (subSha.exitCode == 0) {
+                        subCommit = TrimExport(subSha.stdoutStr);
+                    }
+                    manifest.submodules.push_back({subRelPath.generic_string(), subCommit});
                 }
-                manifest.submodules.push_back({subRelPath.generic_string(), subCommit});
+            } else {
+                manifest.hasSubtree = true;
+                manifest.subtreeName = rootRecord->repoName;
+                manifest.subtreeSourcePath = rootRecord->subtreeAbsPath.generic_string();
+                manifest.subtreeRepositoryPath = rootRecord->repoPath.generic_string();
+                manifest.subtreeRepoRelativePath = rootRecord->subtreeRepoRelativePath.generic_string();
+                manifest.subtreeStripPath = !InOpts.keepSubtreePath;
             }
 
             const std::string manifestJson = FormatExportManifestJson(manifest);
@@ -1011,6 +1254,48 @@ auto RunExportWithExecutor(const ExportOptions& InOpts,
 
 namespace {
 
+auto ResolveSubtreeExportRecord(const ExportOptions& InOpts,
+                                const std::filesystem::path& InCwd,
+                                const ShellExecutor& InExec,
+                                ExportRecord& OutRecord,
+                                std::string& OutError) -> bool {
+    std::error_code ec;
+    auto subtreeAbs = InOpts.subtreePath;
+    if (subtreeAbs.is_relative()) {
+        subtreeAbs = (InCwd / subtreeAbs).lexically_normal();
+    }
+    if (!std::filesystem::exists(subtreeAbs, ec) || !std::filesystem::is_directory(subtreeAbs, ec)) {
+        OutError = "kog export: --subtree must point to an existing directory";
+        return false;
+    }
+
+    const auto top = InExec("git", {"-C", subtreeAbs.generic_string(), "rev-parse", "--show-toplevel"}, shell::ExecMode::Capture, InCwd);
+    if (top.exitCode != 0) {
+        OutError = "kog export: failed to resolve containing git repository for --subtree";
+        return false;
+    }
+    auto repoRoot = std::filesystem::path(TrimExport(top.stdoutStr)).lexically_normal();
+    if (repoRoot.empty()) {
+        OutError = "kog export: failed to resolve repository root for --subtree";
+        return false;
+    }
+    const auto rel = std::filesystem::relative(subtreeAbs, repoRoot, ec);
+    if (ec || rel.empty() || rel.generic_string().rfind("..", 0) == 0) {
+        OutError = "kog export: --subtree must be inside its containing git repository";
+        return false;
+    }
+
+    OutRecord.repoPath = repoRoot;
+    OutRecord.relativeRepoPath = ".";
+    OutRecord.isRoot = true;
+    OutRecord.isSubtree = true;
+    OutRecord.subtreeAbsPath = subtreeAbs;
+    OutRecord.subtreeRepoRelativePath = rel.lexically_normal();
+    OutRecord.subtreeDisplayPath = rel.generic_string();
+    OutRecord.repoName = !InOpts.exportName.empty() ? InOpts.exportName : subtreeAbs.filename().generic_string();
+    return true;
+}
+
 auto RunExport(const ExportOptions& InOpts) -> int {
     if (!ValidateOptions(InOpts)) {
         return 1;
@@ -1026,31 +1311,60 @@ auto RunExport(const ExportOptions& InOpts) -> int {
         return shell::ExecuteCommand(cmd, args, mode, workDir);
     };
 
-    // Validate workspace root is a git repo
-    const auto gitCheck = realExec(
-        "git", {"rev-parse", "--git-dir"},
-        shell::ExecMode::Capture, cwd);
-    if (gitCheck.exitCode != 0) {
-        std::cerr << "kog export: current directory is not a git repository\n";
-        return 1;
+    if (InOpts.subtreePath.empty()) {
+        // Validate workspace root is a git repo
+        const auto gitCheck = realExec(
+            "git", {"rev-parse", "--git-dir"},
+            shell::ExecMode::Capture, cwd);
+        if (gitCheck.exitCode != 0) {
+            std::cerr << "kog export: current directory is not a git repository\n";
+            return 1;
+        }
     }
 
     // Discover subrepos
-    workspace::DiscoverOptions discoverOpts;
-    discoverOpts.rootDir = cwd;
-    discoverOpts.scope = workspace::DiscoverScope::RegisteredOnly;
-    const auto discovery = workspace::DiscoverRepos(discoverOpts);
+    workspace::DiscoveryResult discovery;
+    if (InOpts.subtreePath.empty()) {
+        workspace::DiscoverOptions discoverOpts;
+        discoverOpts.rootDir = cwd;
+        discoverOpts.scope = workspace::DiscoverScope::RegisteredOnly;
+        discovery = workspace::DiscoverRepos(discoverOpts);
+    }
 
     const auto outputDir = InOpts.outputDir.empty()
         ? ResolveOutputDir(cwd, "")
         : InOpts.outputDir;
     const auto metadataDir = outputDir / "metadata";
 
-    const auto exportList = BuildExportList(cwd, discovery.repos, InOpts.noRecursive, InOpts.single, realExec);
+    std::vector<ExportRecord> exportList;
+    if (!InOpts.subtreePath.empty()) {
+        ExportRecord subtreeRecord;
+        std::string err;
+        if (!ResolveSubtreeExportRecord(InOpts, cwd, realExec, subtreeRecord, err)) {
+            std::cerr << err << "\n";
+            return 1;
+        }
+        exportList.push_back(std::move(subtreeRecord));
+    } else {
+        exportList = BuildExportList(cwd, discovery.repos, InOpts.noRecursive, InOpts.single, realExec);
+    }
 
     if (InOpts.dryRun) {
         ExportOptions optsWithDir = InOpts;
         optsWithDir.outputDir = outputDir;
+        if (!optsWithDir.subtreePath.empty()) {
+            const auto& rec = exportList.front();
+            std::cout << "Dry-run export plan\n";
+            std::cout << "ExportMode: subtree\n";
+            std::cout << "GitRepoRoot: " << rec.repoPath.generic_string() << "\n";
+            std::cout << "SubtreeAbsolutePath: " << rec.subtreeAbsPath.generic_string() << "\n";
+            std::cout << "SubtreeRepoRelativePath: " << rec.subtreeRepoRelativePath.generic_string() << "\n";
+            std::cout << "StripSubtreePath: " << (!optsWithDir.keepSubtreePath ? "true" : "false") << "\n";
+            std::cout << "OutputDir: " << outputDir.generic_string() << "\n";
+            const auto fakeRev = FormatRevision(0, optsWithDir.revPad);
+            std::cout << "Archive: " << ComputeArchiveName(rec.repoName, fakeRev, optsWithDir.format) << "\n";
+            return 0;
+        }
         std::cout << FormatDryRunPlan(exportList, optsWithDir);
         return 0;
     }
@@ -1098,6 +1412,9 @@ void RegisterExport(CLI::App& InApp) {
     auto* logCount = new int{10};
     auto* noValidateReleaseArchive = new bool{false};
     auto* forceValidateReleaseArchive = new bool{false};
+    auto* subtree = new std::string{};
+    auto* exportName = new std::string{};
+    auto* keepSubtreePath = new bool{false};
 
     cmd->add_option("--output", *outputDir,
         "Output directory for archives (default: <cwd>/.kano/tmp/git/export/)");
@@ -1125,6 +1442,12 @@ void RegisterExport(CLI::App& InApp) {
         "Skip automatic smoke validation for single-file release archives");
     cmd->add_flag("--validate-release-archive", *forceValidateReleaseArchive,
         "Require smoke validation for the root release archive; fail if it cannot run");
+    cmd->add_option("--subtree", *subtree,
+        "Path to a directory to export as a standalone archive root");
+    cmd->add_option("--name", *exportName,
+        "Override export/archive name for --subtree mode (default: subtree basename)");
+    cmd->add_flag("--keep-subtree-path", *keepSubtreePath,
+        "Preserve repo-relative subtree path inside archive (default: strip subtree path)");
 
     cmd->callback([=]() {
         ExportOptions opts;
@@ -1141,11 +1464,12 @@ void RegisterExport(CLI::App& InApp) {
         opts.logCount = *logCount;
         opts.validateReleaseArchive = !*noValidateReleaseArchive;
         opts.forceValidateReleaseArchive = *forceValidateReleaseArchive;
+        opts.subtreePath = *subtree;
+        opts.exportName = *exportName;
+        opts.keepSubtreePath = *keepSubtreePath;
 
-        // If --single is specified, default --source to "working-tree" unless explicitly overridden.
-        if (opts.single && cmd->get_option("--source")->results().empty()) {
-            opts.source = "working-tree";
-        }
+        // Keep --source default as "head" for deterministic archive metadata
+        // and Git-index executable mode preservation across platforms.
 
         const int exitCode = RunExport(opts);
         if (exitCode != 0) {

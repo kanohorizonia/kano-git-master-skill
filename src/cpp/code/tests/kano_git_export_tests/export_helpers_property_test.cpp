@@ -279,6 +279,19 @@ TEST_CASE("Property 3: FormatRevision produces string of length >= pad with corr
     });
 }
 
+TEST_CASE("Property: ComputePrefix appends trailing slash",
+          "[Feature: kog-export-command][Property][ComputePrefix]") {
+    rc::prop("explicit prefix without slash gets normalized", []() {
+        const auto repo = GenRepoName();
+        std::string explicitPrefix = GenNonEmptyPrintableString(16);
+        explicitPrefix.erase(std::remove(explicitPrefix.begin(), explicitPrefix.end(), '/'), explicitPrefix.end());
+        RC_PRE(!explicitPrefix.empty());
+        const auto out = ComputePrefix(repo, explicitPrefix);
+        RC_ASSERT(!out.empty());
+        RC_ASSERT(out.back() == '/');
+    });
+}
+
 // ===========================================================================
 // Property 4: Archive naming pattern
 // ===========================================================================

@@ -273,6 +273,33 @@ TEST_CASE("ValidateOptions rejects rev-pad=0 and emits error to stderr",
     REQUIRE(errOutput.find("rev-pad") != std::string::npos);
 }
 
+TEST_CASE("ValidateOptions subtree mode rejects incompatible option combinations",
+          "[Unit][CLI][subtree-validation]") {
+    auto opts = MakeValidOpts();
+    opts.subtreePath = "Engine/Source/Programs/UnrealGameSync";
+
+    SECTION("--subtree + --single is rejected") {
+        auto c = opts;
+        c.single = true;
+        SuppressStderr suppress;
+        REQUIRE_FALSE(ValidateOptions(c));
+    }
+
+    SECTION("--subtree + --include-submodule-stubs is rejected") {
+        auto c = opts;
+        c.includeSubmoduleStubs = true;
+        SuppressStderr suppress;
+        REQUIRE_FALSE(ValidateOptions(c));
+    }
+
+    SECTION("--subtree + --validate-release-archive is rejected") {
+        auto c = opts;
+        c.forceValidateReleaseArchive = true;
+        SuppressStderr suppress;
+        REQUIRE_FALSE(ValidateOptions(c));
+    }
+}
+
 TEST_CASE("ValidateOptions rejects negative rev-pad and emits error to stderr",
           "[Unit][CLI][rev-pad-validation][req-7.4]") {
     // **Validates: Requirements 7.4**

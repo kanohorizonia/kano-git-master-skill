@@ -80,6 +80,7 @@ for it.
 ./scripts/kog repo-hygiene fix
 ./scripts/kog export --help
 ./scripts/kog export --single
+./scripts/kog export --subtree "E:/_gamedev/KanoTamaoProject/UnrealEngine/Engine/Source/Programs/UnrealGameSync" --name UnrealGameSync --source head
 ```
 
 ## Plan-Backed Commit Flow
