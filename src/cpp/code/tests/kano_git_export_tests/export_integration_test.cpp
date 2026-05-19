@@ -101,6 +101,16 @@ auto AnyFileContainsRecursive(const std::filesystem::path& InDir,
     return false;
 }
 
+// Check whether a tar archive contains a file path substring.
+auto ArchiveContainsPath(const std::filesystem::path& InArchive,
+                         const std::string& InSubstring,
+                         const std::filesystem::path& InRepo) -> bool {
+    const auto result = RunCommand("python", {"-c",
+        "import tarfile; t=tarfile.open(r'" + InArchive.generic_string() + "'); "
+        "print('\\n'.join(m.name for m in t.getmembers() if m.isfile()))"}, InRepo);
+    return result.exitCode == 0 && result.stdoutText.find(InSubstring) != std::string::npos;
+}
+
 // Count all regular files in a directory recursively.
 auto CountFilesRecursive(const std::filesystem::path& InDir) -> int {
     if (!std::filesystem::exists(InDir)) {
@@ -276,6 +286,19 @@ TEST_CASE("kog export default options produce one tar per repo in default output
 
     // The child submodule archive must be present
     REQUIRE(AnyFileContains(outputDir, ctx.childRepoName));
+
+    std::filesystem::path rootArchive;
+    for (const auto& entry : std::filesystem::directory_iterator(outputDir)) {
+        if (entry.is_regular_file() &&
+            entry.path().extension() == ".tar" &&
+            entry.path().filename().string().find(ctx.rootRepoName) != std::string::npos) {
+            rootArchive = entry.path();
+            break;
+        }
+    }
+    REQUIRE_FALSE(rootArchive.empty());
+    REQUIRE(ArchiveContainsPath(rootArchive, "src/cpp/shared/infra/scripts/platform/linux/native-build.sh", ctx.rootClone));
+    REQUIRE(ArchiveContainsPath(rootArchive, "src/cpp/shared/infra/scripts/platform/mac/native-build.sh", ctx.rootClone));
 
     // stdout must mention the output directory
     REQUIRE(result.stdoutText.find(".kano") != std::string::npos);

@@ -907,7 +907,9 @@ auto ExportOneRepo(const ExportRecord& InRecord,
     shell::ExecResult archiveResult;
     const std::string prefix = ComputePrefix(InRecord.repoName, InOpts.prefix);
 
-    if (InOpts.source == "head") {
+    const bool useWorkingTree = (InOpts.source == "working-tree") || (InOpts.single && InRecord.isRoot);
+
+    if (!useWorkingTree) {
         std::vector<std::string> args;
         if (InRecord.isSubtree) {
             const std::string subtreeRel = InRecord.subtreeRepoRelativePath.generic_string();
