@@ -556,7 +556,8 @@ if(NOT KOG_PGO_MODE STREQUAL "off")
             # /GL enables whole program optimization for all compiled modules
             # /LTCG /GENPROFILE creates instrumented build that generates .pgd file on execution
             add_compile_options(/GL)
-            add_link_options(/LTCG /GENPROFILE)
+            # Keep incremental mode consistent between collect/use to avoid LNK1268.
+            add_link_options(/LTCG /GENPROFILE /INCREMENTAL:NO)
             message(STATUS "PGO: collect mode (MSVC /GL /LTCG /GENPROFILE - run tests to generate .pgd)")
         elseif(KOG_PGO_MODE STREQUAL "use")
             # Use existing profile data with /GL (whole program optimization) + /LTCG /USEPROFILE

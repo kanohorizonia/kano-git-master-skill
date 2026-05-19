@@ -629,7 +629,8 @@ check_build_prerequisites() {
 
 run_native_build_mode() {
   local mode="$1"
-  local prereq_script build_script prereq_stamp prereq_interval now_epoch last_epoch cooldown_left os_name build_task
+  local build_task
+  local prereq_script build_script prereq_stamp prereq_interval now_epoch last_epoch cooldown_left os_name
 
   ensure_windows_build_runtime_paths
   prepare_cpp_build_submodules "build-native" || return 1
@@ -651,8 +652,24 @@ run_native_build_mode() {
     incremental)
       log_launcher_status "build-native" "start" "mode=incremental"
       ;;
+    incremental-debug)
+      log_launcher_status "build-native" "start" "mode=incremental-debug"
+      ;;
+    incremental-pgo)
+      log_launcher_status "build-native" "start" "mode=incremental-pgo"
+      ;;
     full)
       log_launcher_status "build-native" "start" "mode=full"
+      log_launcher_status "build-native" "step" "clean-artifacts"
+      clean_native_build_artifacts
+      ;;
+    full-debug)
+      log_launcher_status "build-native" "start" "mode=full-debug"
+      log_launcher_status "build-native" "step" "clean-artifacts"
+      clean_native_build_artifacts
+      ;;
+    full-pgo)
+      log_launcher_status "build-native" "start" "mode=full-pgo"
       log_launcher_status "build-native" "step" "clean-artifacts"
       clean_native_build_artifacts
       ;;
@@ -672,7 +689,11 @@ run_native_build_mode() {
   build_log="$(make_self_build_log_path "$mode")"
 
   if [[ "$os_name" == "windows" ]]; then
-    build_task="build-release"
+    case "$mode" in
+      *-debug) build_task="build-debug" ;;
+      *-pgo)   build_task="pgo-rebuild" ;;
+      *)        build_task="build-release" ;;
+    esac
     if run_pixi_build_task "$build_task" 2>&1 | tee "$build_log"; then
       log_launcher_status "build-native" "ok" "build completed via pixi task=$build_task"
     else
@@ -697,6 +718,21 @@ run_native_build_mode() {
   fi
 
   local binary
+  case "$mode" in
+    *-debug)
+      # For debug builds, report the debug binary directly
+      local os_name_bin
+      os_name_bin="$(platform_name)"
+      local exe_name_bin
+      [[ "$os_name_bin" == "windows" ]] && exe_name_bin="kano-git.exe" || exe_name_bin="kano-git"
+      local debug_bin="$PROJECT_ROOT/src/cpp/out/bin/windows-ninja-msvc/debug/$exe_name_bin"
+      if [[ -f "$debug_bin" ]]; then
+        echo "Debug binary ready: $debug_bin"
+        echo "  Use: KANO_GIT_BINARY_PATH=$debug_bin kog <command>"
+        return 0
+      fi
+      ;;
+  esac
   binary="$(find_binary || true)"
   if [[ -n "$binary" && -f "$binary" ]]; then
     echo "Native binary ready: $binary"
@@ -715,6 +751,8 @@ maybe_handle_launcher_build_request() {
   local first="$1"
   shift || true
   local mode=""
+  local debug_mode=0
+  local pgo_mode=0
   local extra
 
   case "$first" in
@@ -731,6 +769,12 @@ maybe_handle_launcher_build_request() {
 
   for extra in "$@"; do
     case "$extra" in
+      --pgo)
+        pgo_mode=1
+        ;;
+      --debug)
+        debug_mode=1
+        ;;
       --llvm)
         KOG_BUILD_USE_LLVM="1"
         ;;
@@ -745,11 +789,17 @@ maybe_handle_launcher_build_request() {
         ;;
       *)
         echo "Error: unsupported build option: $extra" >&2
-        echo "Hint: supported options are --llvm, --apple-clang, --modules, --no-modules" >&2
+        echo "Hint: supported options are --debug, --pgo, --llvm, --apple-clang, --modules, --no-modules" >&2
         return 2
         ;;
     esac
   done
+
+  if [[ "$pgo_mode" -eq 1 ]]; then
+    mode="${mode}-pgo"
+  elif [[ "$debug_mode" -eq 1 ]]; then
+    mode="${mode}-debug"
+  fi
 
   run_native_build_mode "$mode"
   return $?
@@ -1379,7 +1429,11 @@ print_launcher_help_extras() {
 
 Launcher commands:
   self build                          Build native binary (incremental; may fetch C++ dependencies from GitHub)
+    --debug                           Build Debug binary instead of Release (fast iteration)
+    --pgo                             Build with PGO (collect → gather → merge → use); replaces release binary
   self rebuild                        Rebuild native binary (full clean rebuild; may fetch C++ dependencies from GitHub)
+    --debug                           Rebuild Debug binary instead of Release
+    --pgo                             Full clean PGO rebuild
   self install-prereq                 Install build prerequisites (CMake, Ninja, MSVC)
   self update                         Run manual launcher update check flow
                                       When native binary is unavailable, fallback sync also prepares required C++ submodules.
