@@ -4,9 +4,13 @@
 #include "discovery.hpp"
 #include "shell_executor.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iostream>
+#include <map>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -14,6 +18,7 @@
 #include <vector>
 
 #include <chrono>
+#include <thread>
 
 namespace {
 
@@ -21,6 +26,12 @@ struct SyncUrlEntry {
     std::string name;
     std::string path;
     std::string url;
+};
+
+struct SubmoduleUpdateTask {
+    std::string displayPath;
+    std::filesystem::path repoRoot;
+    std::string localPath;
 };
 
 struct ParsedSubmoduleAddArgs {
@@ -371,6 +382,21 @@ auto ReadGitConfigValue(
     return Trim(valueResult.stdoutStr);
 }
 
+void PrintCapturedOutputIfAny(const kano::git::shell::ExecResult& InResult) {
+    if (!InResult.stdoutStr.empty()) {
+        std::cout << InResult.stdoutStr;
+        if (InResult.stdoutStr.back() != '\n') {
+            std::cout << "\n";
+        }
+    }
+    if (!InResult.stderrStr.empty()) {
+        std::cerr << InResult.stderrStr;
+        if (InResult.stderrStr.back() != '\n') {
+            std::cerr << "\n";
+        }
+    }
+}
+
 auto CollectSyncUrlEntries(const std::string& InRoot, const std::string& InGitmodulesPath) -> std::vector<SyncUrlEntry> {
     std::vector<SyncUrlEntry> entries;
     auto keyResult = RunGitCapture(
@@ -411,6 +437,62 @@ auto CollectSyncUrlEntries(const std::string& InRoot, const std::string& InGitmo
     }
 
     return entries;
+}
+
+auto DetectDefaultSubmoduleUpdateJobs() -> int {
+    const unsigned int cores = std::thread::hardware_concurrency();
+    if (cores == 0) {
+        return 1;
+    }
+    return static_cast<int>(cores);
+}
+
+auto DidSubmoduleUpdateSucceed(const std::filesystem::path& InRepoRoot, const std::string& InLocalPath) -> bool {
+    const auto result = RunGitCapture({"-C", InRepoRoot.string(), "submodule", "status", "--", InLocalPath});
+    if (result.exitCode != 0) {
+        return false;
+    }
+
+    const auto line = Trim(result.stdoutStr);
+    if (line.empty()) {
+        return false;
+    }
+
+    return line.front() != '-';
+}
+
+auto CollectRegisteredSubmodulePaths(const std::filesystem::path& InRepoRoot) -> std::vector<std::string> {
+    const auto gitmodulesPath = (InRepoRoot / ".gitmodules").lexically_normal();
+    if (!std::filesystem::exists(gitmodulesPath)) {
+        return {};
+    }
+
+    std::vector<std::string> paths;
+    const auto entries = CollectSyncUrlEntries(InRepoRoot.string(), gitmodulesPath.string());
+    paths.reserve(entries.size());
+    for (const auto& entry : entries) {
+        const auto path = Trim(entry.path);
+        if (!path.empty()) {
+            paths.push_back(std::filesystem::path(path).lexically_normal().generic_string());
+        }
+    }
+    return paths;
+}
+
+auto CollectNestedSubmoduleTasks(
+    const std::filesystem::path& InWorkspaceRoot,
+    const std::string& InParentDisplayPath) -> std::vector<SubmoduleUpdateTask> {
+    const auto parentRepoRoot = (InWorkspaceRoot / std::filesystem::path(InParentDisplayPath)).lexically_normal();
+    std::vector<SubmoduleUpdateTask> out;
+    for (const auto& nestedPath : CollectRegisteredSubmodulePaths(parentRepoRoot)) {
+        const auto combined = (std::filesystem::path(InParentDisplayPath) / std::filesystem::path(nestedPath)).lexically_normal();
+        out.push_back(SubmoduleUpdateTask{
+            .displayPath = combined.generic_string(),
+            .repoRoot = parentRepoRoot,
+            .localPath = nestedPath,
+        });
+    }
+    return out;
 }
 
 auto RunNativeSyncUrls(
@@ -658,37 +740,6 @@ auto RunNativeSubmodule(
     return result.exitCode;
 }
 
-auto ListSubmodulePaths(const std::string& InRoot) -> std::vector<std::string> {
-    const auto result = RunGitCapture({"-C", InRoot, "submodule", "--quiet", "foreach", "--recursive", "echo $displaypath"});
-    if (result.exitCode != 0) {
-        // fallback: list top-level submodules only
-        const auto fallback = RunGitCapture({"-C", InRoot, "submodule", "--quiet", "foreach", "echo $displaypath"});
-        if (fallback.exitCode != 0) {
-            return {};
-        }
-        std::vector<std::string> paths;
-        std::istringstream stream(fallback.stdoutStr);
-        std::string line;
-        while (std::getline(stream, line)) {
-            const auto trimmed = Trim(line);
-            if (!trimmed.empty()) {
-                paths.push_back(trimmed);
-            }
-        }
-        return paths;
-    }
-    std::vector<std::string> paths;
-    std::istringstream stream(result.stdoutStr);
-    std::string line;
-    while (std::getline(stream, line)) {
-        const auto trimmed = Trim(line);
-        if (!trimmed.empty()) {
-            paths.push_back(trimmed);
-        }
-    }
-    return paths;
-}
-
 auto RunSubmoduleUpdateContinueOnError(
     bool InRecursive,
     bool InRemote,
@@ -700,35 +751,27 @@ auto RunSubmoduleUpdateContinueOnError(
         return 1;
     }
     const auto root = Trim(rootResult.stdoutStr);
+    const auto rootPath = std::filesystem::path(root).lexically_normal();
 
     std::cout << "Updating submodules...\n";
 
-    // First, init all submodules so paths are known
-    {
-        std::vector<std::string> initArgs = {"-C", root, "submodule", "update", "--init"};
-        if (InRecursive) {
-            initArgs.push_back("--recursive");
-        }
-        if (!InPath.empty()) {
-            initArgs.push_back("--");
-            initArgs.push_back(InPath);
-        }
-        if (InDryRun) {
-            PrintDryRunGit(initArgs);
-        } else {
-            // Run init quietly to register submodules; ignore errors here since
-            // individual updates below will surface them per-submodule.
-            kano::git::shell::ExecuteCommand("git", initArgs, kano::git::shell::ExecMode::Capture);
-        }
-    }
-
-    // Collect submodule paths to update individually
-    std::vector<std::string> submodulePaths;
+    std::vector<SubmoduleUpdateTask> currentWave;
     if (!InPath.empty()) {
-        submodulePaths.push_back(InPath);
+        const auto normalized = std::filesystem::path(InPath).lexically_normal().generic_string();
+        currentWave.push_back(SubmoduleUpdateTask{
+            .displayPath = normalized,
+            .repoRoot = rootPath,
+            .localPath = normalized,
+        });
     } else {
-        submodulePaths = ListSubmodulePaths(root);
-        if (submodulePaths.empty()) {
+        for (const auto& path : CollectRegisteredSubmodulePaths(rootPath)) {
+            currentWave.push_back(SubmoduleUpdateTask{
+                .displayPath = path,
+                .repoRoot = rootPath,
+                .localPath = path,
+            });
+        }
+        if (currentWave.empty()) {
             // No submodules registered yet — fall back to a single update call
             const auto gitArgs = BuildGitSubmoduleArgs("update", InRecursive, InRemote, {}, "--init");
             return RunNativeSubmodule(gitArgs, InDryRun, "Updating submodules...");
@@ -736,25 +779,128 @@ auto RunSubmoduleUpdateContinueOnError(
     }
 
     std::vector<std::string> failed;
-    for (const auto& subPath : submodulePaths) {
-        std::vector<std::string> args = {"-C", root, "submodule", "update", "--init"};
-        if (InRemote) {
-            args.push_back("--remote");
-        }
-        args.push_back("--");
-        args.push_back(subPath);
+    const int jobs = DetectDefaultSubmoduleUpdateJobs();
+    std::mutex outputMutex;
 
+    while (!currentWave.empty()) {
         if (InDryRun) {
-            PrintDryRunGit(args);
-            continue;
+            for (const auto& task : currentWave) {
+                std::vector<std::string> args = {
+                    "-C", task.repoRoot.string(), "submodule", "update", "--init"
+                };
+                if (InRemote) {
+                    args.push_back("--remote");
+                }
+                args.push_back("--");
+                args.push_back(task.localPath);
+                PrintDryRunGit(args);
+            }
+            break;
         }
 
-        std::cout << "[" << subPath << "] updating...\n";
-        const auto result = kano::git::shell::ExecuteCommand("git", args, kano::git::shell::ExecMode::PassThrough);
-        if (result.exitCode != 0) {
-            std::cerr << "[" << subPath << "] FAILED (exit " << result.exitCode << "), continuing...\n";
-            failed.push_back(subPath);
+        std::vector<SubmoduleUpdateTask> nextWave;
+        struct TaskRunResult {
+            SubmoduleUpdateTask task;
+            kano::git::shell::ExecResult execResult;
+        };
+
+        std::map<std::string, std::vector<SubmoduleUpdateTask>> grouped;
+        for (const auto& task : currentWave) {
+            grouped[task.repoRoot.lexically_normal().generic_string()].push_back(task);
         }
+
+        auto runTaskGroup = [&](std::vector<SubmoduleUpdateTask> tasks) -> std::vector<TaskRunResult> {
+            std::vector<TaskRunResult> results;
+            results.reserve(tasks.size());
+            for (const auto& task : tasks) {
+                std::vector<std::string> args = {
+                    "-C", task.repoRoot.string(), "submodule", "update", "--init"
+                };
+                if (InRemote) {
+                    args.push_back("--remote");
+                }
+                args.push_back("--");
+                args.push_back(task.localPath);
+                results.push_back(TaskRunResult{
+                    .task = task,
+                    .execResult = kano::git::shell::ExecuteCommand("git", args, kano::git::shell::ExecMode::Capture),
+                });
+            }
+            return results;
+        };
+
+        std::vector<std::future<std::vector<TaskRunResult>>> active;
+        active.reserve(static_cast<std::size_t>(std::max(1, jobs)));
+
+        auto handleResult = [&](TaskRunResult&& result) {
+            {
+                std::lock_guard<std::mutex> lock(outputMutex);
+                PrintCapturedOutputIfAny(result.execResult);
+            }
+
+            if (!DidSubmoduleUpdateSucceed(result.task.repoRoot, result.task.localPath)) {
+                std::lock_guard<std::mutex> lock(outputMutex);
+                std::cerr << "[" << result.task.displayPath << "] FAILED";
+                if (result.execResult.exitCode != 0) {
+                    std::cerr << " (exit " << result.execResult.exitCode << ")";
+                }
+                std::cerr << ", continuing...\n";
+                failed.push_back(result.task.displayPath);
+                return;
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(outputMutex);
+                std::cout << "[" << result.task.displayPath << "] updated\n";
+            }
+
+            if (!InRecursive) {
+                return;
+            }
+
+            for (auto& nestedTask : CollectNestedSubmoduleTasks(rootPath, result.task.displayPath)) {
+                nextWave.push_back(std::move(nestedTask));
+            }
+        };
+
+        auto waitOne = [&]() {
+            if (active.empty()) {
+                return;
+            }
+            auto results = active.front().get();
+            for (auto& result : results) {
+                handleResult(std::move(result));
+            }
+            active.erase(active.begin());
+        };
+
+        for (auto& [repoRootString, tasks] : grouped) {
+            while (static_cast<int>(active.size()) >= std::max(1, jobs)) {
+                waitOne();
+            }
+            active.push_back(std::async(std::launch::async, [&, tasks]() mutable {
+                return runTaskGroup(std::move(tasks));
+            }));
+        }
+
+        while (!active.empty()) {
+            waitOne();
+        }
+
+        currentWave.clear();
+        if (!InRecursive) {
+            break;
+        }
+
+        std::sort(nextWave.begin(), nextWave.end(), [](const auto& left, const auto& right) {
+            return left.displayPath < right.displayPath;
+        });
+        nextWave.erase(
+            std::unique(nextWave.begin(), nextWave.end(), [](const auto& left, const auto& right) {
+                return left.displayPath == right.displayPath;
+            }),
+            nextWave.end());
+        currentWave = std::move(nextWave);
     }
 
     if (!failed.empty()) {

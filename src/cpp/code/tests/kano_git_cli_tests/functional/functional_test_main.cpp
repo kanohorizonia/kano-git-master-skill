@@ -46,6 +46,24 @@ struct SubmoduleBranchUpgradeContext {
     std::string submodulePath;
 };
 
+struct RecursiveSubmoduleUpdateContext {
+    SandboxContext sandbox;
+    std::filesystem::path nestedBareRemote;
+    std::filesystem::path nestedSeedRepo;
+    std::filesystem::path healthyBareRemote;
+    std::filesystem::path healthySeedRepo;
+    std::filesystem::path brokenBareRemote;
+    std::filesystem::path brokenSeedRepo;
+    std::filesystem::path rootBareRemote;
+    std::filesystem::path rootSeedRepo;
+    std::filesystem::path cloneRootRepo;
+    std::string branch;
+    std::string healthyPath;
+    std::string brokenPath;
+    std::string nestedPathWithinHealthy;
+    std::string nestedPathFromRoot;
+};
+
 struct NestedWorkspaceContext {
     SandboxContext sandbox;
     std::filesystem::path nestedBareRemote;
@@ -500,6 +518,100 @@ auto CreateRemoteWithNestedRepoClone(const std::string& InName, const std::strin
     return ctx;
 }
 
+auto CreateRecursiveSubmoduleUpdateClone(const std::string& InName, const std::string& InBranch = "main") -> RecursiveSubmoduleUpdateContext {
+    RecursiveSubmoduleUpdateContext ctx;
+    ctx.sandbox = CreateSandboxWorkspace(InName);
+    ctx.nestedBareRemote = (ctx.sandbox.root / "nested-remote.git").lexically_normal();
+    ctx.nestedSeedRepo = (ctx.sandbox.root / "nested-seed").lexically_normal();
+    ctx.healthyBareRemote = (ctx.sandbox.root / "healthy-remote.git").lexically_normal();
+    ctx.healthySeedRepo = (ctx.sandbox.root / "healthy-seed").lexically_normal();
+    ctx.brokenBareRemote = (ctx.sandbox.root / "broken-remote.git").lexically_normal();
+    ctx.brokenSeedRepo = (ctx.sandbox.root / "broken-seed").lexically_normal();
+    ctx.rootBareRemote = (ctx.sandbox.root / "root-remote.git").lexically_normal();
+    ctx.rootSeedRepo = (ctx.sandbox.root / "root-seed").lexically_normal();
+    ctx.cloneRootRepo = (ctx.sandbox.root / "root-clone").lexically_normal();
+    ctx.branch = InBranch;
+    ctx.healthyPath = "deps/healthy";
+    ctx.brokenPath = "deps/broken";
+    ctx.nestedPathWithinHealthy = "vendor/grandchild";
+    ctx.nestedPathFromRoot = ctx.healthyPath + "/" + ctx.nestedPathWithinHealthy;
+
+    RequireSuccess(RunGit({"init", "--bare", ctx.nestedBareRemote.string()}, ctx.sandbox.root), "init nested bare");
+    RequireSuccess(RunGit({"init", ctx.nestedSeedRepo.string()}, ctx.sandbox.root), "init nested seed");
+    ConfigureIdentity(ctx.nestedSeedRepo);
+    RequireSuccess(RunGit({"checkout", "-b", ctx.branch}, ctx.nestedSeedRepo), "checkout nested branch");
+    WriteTextFile(ctx.nestedSeedRepo / "nested.txt", "nested seed\n");
+    RequireSuccess(RunGit({"add", "nested.txt"}, ctx.nestedSeedRepo), "nested add");
+    RequireSuccess(RunGit({"commit", "-m", "nested seed"}, ctx.nestedSeedRepo), "nested commit");
+    RequireSuccess(RunGit({"remote", "add", "origin", ctx.nestedBareRemote.string()}, ctx.nestedSeedRepo), "nested add remote");
+    RequireSuccess(RunGit({"push", "-u", "origin", ctx.branch}, ctx.nestedSeedRepo), "nested push");
+    RequireSuccess(RunGit({"symbolic-ref", "HEAD", ("refs/heads/" + ctx.branch)}, ctx.nestedBareRemote), "nested bare HEAD");
+
+    RequireSuccess(RunGit({"init", "--bare", ctx.healthyBareRemote.string()}, ctx.sandbox.root), "init healthy bare");
+    RequireSuccess(RunGit({"init", ctx.healthySeedRepo.string()}, ctx.sandbox.root), "init healthy seed");
+    ConfigureIdentity(ctx.healthySeedRepo);
+    RequireSuccess(RunGit({"checkout", "-b", ctx.branch}, ctx.healthySeedRepo), "checkout healthy branch");
+    WriteTextFile(ctx.healthySeedRepo / "healthy.txt", "healthy seed\n");
+    RequireSuccess(RunGit({"add", "healthy.txt"}, ctx.healthySeedRepo), "healthy add base");
+    RequireSuccess(RunGit({"commit", "-m", "healthy seed"}, ctx.healthySeedRepo), "healthy base commit");
+    RequireSuccess(
+        RunGit({"-c", "protocol.file.allow=always", "submodule", "add", "-b", ctx.branch, ctx.nestedBareRemote.string(), ctx.nestedPathWithinHealthy},
+               ctx.healthySeedRepo),
+        "healthy add nested submodule");
+    RequireSuccess(RunGit({"commit", "-am", "add nested submodule"}, ctx.healthySeedRepo), "healthy commit nested submodule");
+    RequireSuccess(RunGit({"remote", "add", "origin", ctx.healthyBareRemote.string()}, ctx.healthySeedRepo), "healthy add remote");
+    RequireSuccess(RunGit({"push", "-u", "origin", ctx.branch}, ctx.healthySeedRepo), "healthy push");
+    RequireSuccess(RunGit({"symbolic-ref", "HEAD", ("refs/heads/" + ctx.branch)}, ctx.healthyBareRemote), "healthy bare HEAD");
+
+    RequireSuccess(RunGit({"init", "--bare", ctx.brokenBareRemote.string()}, ctx.sandbox.root), "init broken bare");
+    RequireSuccess(RunGit({"init", ctx.brokenSeedRepo.string()}, ctx.sandbox.root), "init broken seed");
+    ConfigureIdentity(ctx.brokenSeedRepo);
+    RequireSuccess(RunGit({"checkout", "-b", ctx.branch}, ctx.brokenSeedRepo), "checkout broken branch");
+    WriteTextFile(ctx.brokenSeedRepo / "broken.txt", "broken seed\n");
+    RequireSuccess(RunGit({"add", "broken.txt"}, ctx.brokenSeedRepo), "broken add");
+    RequireSuccess(RunGit({"commit", "-m", "broken seed"}, ctx.brokenSeedRepo), "broken commit");
+    RequireSuccess(RunGit({"remote", "add", "origin", ctx.brokenBareRemote.string()}, ctx.brokenSeedRepo), "broken add remote");
+    RequireSuccess(RunGit({"push", "-u", "origin", ctx.branch}, ctx.brokenSeedRepo), "broken push");
+    RequireSuccess(RunGit({"symbolic-ref", "HEAD", ("refs/heads/" + ctx.branch)}, ctx.brokenBareRemote), "broken bare HEAD");
+
+    RequireSuccess(RunGit({"init", "--bare", ctx.rootBareRemote.string()}, ctx.sandbox.root), "init root bare");
+    RequireSuccess(RunGit({"init", ctx.rootSeedRepo.string()}, ctx.sandbox.root), "init root seed");
+    ConfigureIdentity(ctx.rootSeedRepo);
+    RequireSuccess(RunGit({"checkout", "-b", ctx.branch}, ctx.rootSeedRepo), "checkout root branch");
+    WriteTextFile(ctx.rootSeedRepo / ".gitignore", ".kano/\n");
+    WriteTextFile(ctx.rootSeedRepo / "README.md", "root seed\n");
+    RequireSuccess(RunGit({"add", ".gitignore", "README.md"}, ctx.rootSeedRepo), "root add base");
+    RequireSuccess(RunGit({"commit", "-m", "root seed"}, ctx.rootSeedRepo), "root base commit");
+    RequireSuccess(
+        RunGit({"-c", "protocol.file.allow=always", "submodule", "add", "-b", ctx.branch, ctx.healthyBareRemote.string(), ctx.healthyPath},
+               ctx.rootSeedRepo),
+        "root add healthy submodule");
+    RequireSuccess(
+        RunGit({"-c", "protocol.file.allow=always", "submodule", "add", "-b", ctx.branch, ctx.brokenBareRemote.string(), ctx.brokenPath},
+               ctx.rootSeedRepo),
+        "root add broken submodule");
+    RequireSuccess(RunGit({"commit", "-am", "add submodules"}, ctx.rootSeedRepo), "root commit submodules");
+
+    const auto missingBrokenRemote = (ctx.sandbox.root / "missing-broken-remote.git").lexically_normal();
+    RequireSuccess(
+        RunGit({"config", "-f", ".gitmodules", ("submodule." + ctx.brokenPath + ".url"), missingBrokenRemote.string()}, ctx.rootSeedRepo),
+        "rewrite broken submodule url");
+    RequireSuccess(RunGit({"add", ".gitmodules"}, ctx.rootSeedRepo), "stage broken submodule url");
+    RequireSuccess(RunGit({"commit", "-m", "break broken submodule url"}, ctx.rootSeedRepo), "commit broken submodule url");
+    RequireSuccess(RunGit({"remote", "add", "origin", ctx.rootBareRemote.string()}, ctx.rootSeedRepo), "root add remote");
+    RequireSuccess(RunGit({"push", "-u", "origin", ctx.branch}, ctx.rootSeedRepo), "root push");
+    RequireSuccess(RunGit({"symbolic-ref", "HEAD", ("refs/heads/" + ctx.branch)}, ctx.rootBareRemote), "root bare HEAD");
+
+    RequireSuccess(
+        RunGit({"clone", ctx.rootBareRemote.string(), ctx.cloneRootRepo.string()}, ctx.sandbox.root),
+        "clone root without submodules");
+    ConfigureIdentity(ctx.cloneRootRepo);
+    RequireSuccess(
+        RunGit({"config", "kano.cache.local-dir", (ctx.sandbox.root / "_cache").string()}, ctx.cloneRootRepo),
+        "configure root external kano cache");
+    return ctx;
+}
+
 } // namespace
 
 TEST_CASE("Functional test harness creates isolated sandbox workspace", "[functional][infrastructure]") {
@@ -886,6 +998,28 @@ TEST_CASE("submodule_add_bootstraps_empty_remote_on_requested_branch", "[functio
         ctx.cloneRepo);
     RequireSuccess(branchResult, "read gitmodules branch after kog submodule add");
     REQUIRE(TrimCopy(branchResult.stdoutText) == child.branch);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("submodule_update_recursive_continues_past_failed_direct_submodule", "[functional][submodule][update][recursive]") {
+    const auto ctx = CreateRecursiveSubmoduleUpdateClone("submodule-update-recursive-continue");
+
+    const auto result = RunKogAllowingFileProtocol({"submodule", "update", "--recursive"}, ctx.cloneRootRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode != 0);
+
+    REQUIRE(std::filesystem::exists(ctx.cloneRootRepo / std::filesystem::path(ctx.healthyPath) / "healthy.txt"));
+    REQUIRE(std::filesystem::exists(ctx.cloneRootRepo / std::filesystem::path(ctx.nestedPathFromRoot) / "nested.txt"));
+
+    const auto brokenStatus = RunGit({"submodule", "status", "--", ctx.brokenPath}, ctx.cloneRootRepo);
+    RequireSuccess(brokenStatus, "probe broken submodule status");
+    REQUIRE_FALSE(TrimCopy(brokenStatus.stdoutText).empty());
+    REQUIRE(TrimCopy(brokenStatus.stdoutText).front() == '-');
+
+    const auto merged = result.stdoutText + "\n" + result.stderrText;
+    REQUIRE(merged.find(ctx.brokenPath) != std::string::npos);
 
     RemoveSandboxWorkspace(ctx.sandbox);
 }
