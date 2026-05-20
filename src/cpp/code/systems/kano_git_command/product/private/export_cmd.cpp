@@ -996,6 +996,10 @@ auto ExportOneRepo(const ExportRecord& InRecord,
                 InRecord.subtreeRepoRelativePath,
                 InOpts.keepSubtreePath,
                 InExec);
+            if (relFiles.empty()) {
+                result.errorMessage = "no files found in subtree working tree export";
+                return result;
+            }
 
             std::map<std::string, int> modeByPath;
             if (!CollectExecutablePathsWithPrefix(InRecord.repoPath, "", InExec, modeByPath)) {
@@ -1016,18 +1020,29 @@ auto ExportOneRepo(const ExportRecord& InRecord,
             }
 
             const std::string py =
-                "import tarfile,pathlib,sys; mf=pathlib.Path(sys.argv[1]); out=pathlib.Path(sys.argv[2]); "
-                "out.parent.mkdir(parents=True,exist_ok=True); t=tarfile.open(out,'w'); "
-                "\nfor line in mf.read_text(encoding='utf-8').splitlines():\n"
+                "import pathlib,sys,tarfile,zipfile; "
+                "mf=pathlib.Path(sys.argv[1]); out=pathlib.Path(sys.argv[2]); fmt=sys.argv[3]; "
+                "out.parent.mkdir(parents=True,exist_ok=True); "
+                "entries=[]\n"
+                "for line in mf.read_text(encoding='utf-8').splitlines():\n"
                 "  if not line.strip(): continue\n"
                 "  m,s,a=line.split('\\t',2); mode=int(m); sp=pathlib.Path(s); ap=a.replace('\\\\','/');\n"
-                "  if not sp.exists(): continue\n"
-                "  if not sp.is_file(): continue\n"
-                "  info=t.gettarinfo(str(sp),arcname=ap); info.mode=mode;\n"
-                "  with sp.open('rb') as f: t.addfile(info,f)\n"
-                "t.close()";
+                "  if not sp.exists() or not sp.is_file(): continue\n"
+                "  entries.append((mode,sp,ap))\n"
+                "if fmt == 'tar':\n"
+                "  with tarfile.open(out,'w') as t:\n"
+                "    for mode,sp,ap in entries:\n"
+                "      info=t.gettarinfo(str(sp),arcname=ap); info.mode=mode\n"
+                "      with sp.open('rb') as f: t.addfile(info,f)\n"
+                "elif fmt == 'zip':\n"
+                "  with zipfile.ZipFile(out,'w',compression=zipfile.ZIP_DEFLATED) as z:\n"
+                "    for mode,sp,ap in entries:\n"
+                "      zi=zipfile.ZipInfo(ap); zi.external_attr=(mode & 0xffff) << 16\n"
+                "      z.writestr(zi, sp.read_bytes())\n"
+                "else:\n"
+                "  raise SystemExit('unsupported archive format: ' + fmt)";
 
-            archiveResult = InExec("python", {"-c", py, manifestPath.generic_string(), result.archivePath.generic_string()}, shell::ExecMode::Capture, InRecord.repoPath);
+            archiveResult = InExec("python", {"-c", py, manifestPath.generic_string(), result.archivePath.generic_string(), InOpts.format}, shell::ExecMode::Capture, InRecord.repoPath);
             std::error_code ec;
             std::filesystem::remove(manifestPath, ec);
         } else {
@@ -1068,30 +1083,32 @@ auto ExportOneRepo(const ExportRecord& InRecord,
             }
         }
 
-        const auto toQuoted = [](std::string p) {
-            std::replace(p.begin(), p.end(), '\\', '/');
-            return std::string("\"") + p + "\"";
-        };
         const std::string py =
-            "import tarfile,pathlib,sys; "
-            "mf=pathlib.Path(sys.argv[1]); out=pathlib.Path(sys.argv[2]); "
+            "import pathlib,sys,tarfile,zipfile; "
+            "mf=pathlib.Path(sys.argv[1]); out=pathlib.Path(sys.argv[2]); fmt=sys.argv[3]; "
             "out.parent.mkdir(parents=True,exist_ok=True); "
-            "t=tarfile.open(out,'w'); "
-            "\nfor line in mf.read_text(encoding='utf-8').splitlines():\n"
-            "  if not line.strip():\n"
-            "    continue\n"
+            "entries=[]\n"
+            "for line in mf.read_text(encoding='utf-8').splitlines():\n"
+            "  if not line.strip(): continue\n"
             "  m,s,a=line.split('\\t',2); mode=int(m); sp=pathlib.Path(s); ap=a.replace('\\\\','/');\n"
-            "  if not sp.exists():\n"
-            "    continue\n"
-            "  if not sp.is_file():\n"
-            "    continue\n"
-            "  info=t.gettarinfo(str(sp),arcname=ap); info.mode=mode;\n"
-            "  with sp.open('rb') as f: t.addfile(info,f)\n"
-            "t.close()";
+            "  if not sp.exists() or not sp.is_file(): continue\n"
+            "  entries.append((mode,sp,ap))\n"
+            "if fmt == 'tar':\n"
+            "  with tarfile.open(out,'w') as t:\n"
+            "    for mode,sp,ap in entries:\n"
+            "      info=t.gettarinfo(str(sp),arcname=ap); info.mode=mode\n"
+            "      with sp.open('rb') as f: t.addfile(info,f)\n"
+            "elif fmt == 'zip':\n"
+            "  with zipfile.ZipFile(out,'w',compression=zipfile.ZIP_DEFLATED) as z:\n"
+            "    for mode,sp,ap in entries:\n"
+            "      zi=zipfile.ZipInfo(ap); zi.external_attr=(mode & 0xffff) << 16\n"
+            "      z.writestr(zi, sp.read_bytes())\n"
+            "else:\n"
+            "  raise SystemExit('unsupported archive format: ' + fmt)";
 
         archiveResult = InExec(
             "python",
-            {"-c", py, manifestPath.generic_string(), result.archivePath.generic_string()},
+            {"-c", py, manifestPath.generic_string(), result.archivePath.generic_string(), InOpts.format},
             shell::ExecMode::Capture,
             InRecord.repoPath);
 

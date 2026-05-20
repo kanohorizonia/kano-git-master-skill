@@ -529,6 +529,75 @@ TEST_CASE("kog export --subtree --source working-tree includes untracked and exc
     RemoveSandboxWorkspace(sandbox);
 }
 
+TEST_CASE("kog export --subtree --source working-tree fails when subtree has no exportable files",
+          "[Integration][export][subtree][working-tree][empty]") {
+    const auto sandbox = CreateSandboxWorkspace("subtree-export-working-tree-empty");
+    const auto repo = (sandbox.root / "root-clone").lexically_normal();
+    RequireSuccess(RunGit({"init", repo.string()}, sandbox.root), "init subtree repo");
+    ConfigureIdentity(repo);
+    RequireSuccess(RunGit({"checkout", "-b", "main"}, repo), "checkout main");
+
+    WriteTextFile(repo / "README.md", "root\n");
+    RequireSuccess(RunGit({"add", "README.md"}, repo), "add root file");
+    RequireSuccess(RunGit({"commit", "-m", "seed"}, repo), "seed commit");
+
+    const auto emptySubtree = repo / "Engine/Source/Programs/UnrealGameSync";
+    std::filesystem::create_directories(emptySubtree);
+
+    const auto result = RunKogWithEnv(
+        {"export", "--subtree", "Engine/Source/Programs/UnrealGameSync", "--name", "UnrealGameSync", "--source", "working-tree", "--no-validate-release-archive"},
+        repo,
+        {{"GIT_ALLOW_PROTOCOL", "file:https:ssh:git"}});
+
+    INFO("exit=" << result.exitCode);
+    INFO("stdout=" << result.stdoutText);
+    INFO("stderr=" << result.stderrText);
+    REQUIRE(result.exitCode != 0);
+    REQUIRE(result.stderrText.find("no files found in subtree working tree export") != std::string::npos);
+
+    const auto outputDir = repo / ".kano" / "tmp" / "git" / "export";
+    REQUIRE(CountFilesWithExtension(outputDir, ".tar") == 0);
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
+TEST_CASE("kog export --subtree --source working-tree supports zip archives",
+          "[Integration][export][subtree][working-tree][zip]") {
+    const auto sandbox = CreateSandboxWorkspace("subtree-export-working-tree-zip");
+    const auto repo = (sandbox.root / "root-clone").lexically_normal();
+    RequireSuccess(RunGit({"init", repo.string()}, sandbox.root), "init subtree repo");
+    ConfigureIdentity(repo);
+    RequireSuccess(RunGit({"checkout", "-b", "main"}, repo), "checkout main");
+
+    WriteTextFile(repo / "Engine/Source/Programs/UnrealGameSync/Tracked.txt", "tracked\n");
+    RequireSuccess(RunGit({"add", "."}, repo), "add baseline files");
+    RequireSuccess(RunGit({"commit", "-m", "seed"}, repo), "seed commit");
+
+    WriteTextFile(repo / "Engine/Source/Programs/UnrealGameSync/Untracked.txt", "untracked\n");
+
+    const auto result = RunKogWithEnv(
+        {"export", "--subtree", "Engine/Source/Programs/UnrealGameSync", "--name", "UnrealGameSync", "--source", "working-tree", "--format", "zip", "--no-validate-release-archive"},
+        repo,
+        {{"GIT_ALLOW_PROTOCOL", "file:https:ssh:git"}});
+
+    INFO("exit=" << result.exitCode);
+    INFO("stdout=" << result.stdoutText);
+    INFO("stderr=" << result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    const auto outputDir = repo / ".kano" / "tmp" / "git" / "export";
+    REQUIRE(std::filesystem::exists(outputDir));
+
+    const auto list = RunCommand("python", {"-c",
+        "import zipfile,glob; p=glob.glob(r'" + outputDir.generic_string() + "/UnrealGameSync_rev*.zip')[0]; "
+        "z=zipfile.ZipFile(p); print('\\n'.join(z.namelist()))"}, repo);
+    REQUIRE(list.exitCode == 0);
+    REQUIRE(list.stdoutText.find("UnrealGameSync/Tracked.txt") != std::string::npos);
+    REQUIRE(list.stdoutText.find("UnrealGameSync/Untracked.txt") != std::string::npos);
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
 // ===========================================================================
 // Test 4: --no-recursive exports only the root repo (single archive)
 // ===========================================================================

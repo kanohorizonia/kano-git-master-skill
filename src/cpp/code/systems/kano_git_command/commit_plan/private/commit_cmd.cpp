@@ -432,6 +432,28 @@ auto IsTruthyEnv(const char* InValue) -> bool {
     return v == "1" || v == "true" || v == "yes" || v == "on";
 }
 
+static auto TryRunTestAiStub() -> std::optional<shell::ExecResult> {
+    const char* stdoutRaw = std::getenv("KOG_TEST_AI_STDOUT");
+    const char* exitRaw = std::getenv("KOG_TEST_AI_EXIT_CODE");
+    if (stdoutRaw == nullptr && exitRaw == nullptr) {
+        return std::nullopt;
+    }
+
+    shell::ExecResult out;
+    if (stdoutRaw != nullptr) {
+        out.stdoutStr = stdoutRaw;
+    }
+    if (exitRaw != nullptr && exitRaw[0] != '\0') {
+        try {
+            out.exitCode = std::stoi(exitRaw);
+        } catch (...) {
+            out.exitCode = 1;
+            out.stderrStr = std::format("invalid KOG_TEST_AI_EXIT_CODE: {}", exitRaw);
+        }
+    }
+    return out;
+}
+
 auto SplitEnvList(const char* InValue) -> std::vector<std::string> {
     std::vector<std::string> out;
     if (InValue == nullptr) {
@@ -1025,11 +1047,15 @@ auto RunAiGenerate(const std::string& InProvider,
                    const std::string& InPrompt,
                    std::optional<std::filesystem::path> InWorkingDir = std::nullopt,
                    const std::string& InPurpose = "commit-ai") -> shell::ExecResult {
+    if (const auto testResult = TryRunTestAiStub(); testResult.has_value()) {
+        return *testResult;
+    }
+
     const auto effectivePrompt = BuildFileBackedPromptArgument(InWorkingDir, InPrompt, InPurpose);
 
     auto LogInvocation = [&](const std::string& binary, const std::vector<std::string>& args) {
-        static constexpr std::string_view kDivider = "?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�";
-        std::cerr << "\n[kog ai] ?�?� AI Invocation (" << InPurpose << ") ?�?�\n";
+        static constexpr std::string_view kDivider = "----------------------------------------";
+        std::cerr << "\n[kog ai] -- AI Invocation (" << InPurpose << ") --\n";
         std::cerr << "[kog ai] command : " << binary;
         for (const auto& a : args) {
             if (a.find(' ') != std::string::npos || a.empty()) std::cerr << " \"" << a << "\"";
@@ -1081,7 +1107,8 @@ auto RunAiGenerate(const std::string& InProvider,
     }
 
     if (InProvider == "copilot") {
-        if (HasCommand("copilot", {"--help"})) {
+        const auto standaloneCopilot = CopilotStandaloneCommand();
+        if (HasCommand(standaloneCopilot, {"--help"}) || HasCommand("copilot", {"--help"})) {
             std::vector<std::string> args{"-s", "-p", effectivePrompt};
             if (!InModel.empty() && InModel != "auto") {
                 args.push_back("--model");
@@ -1110,8 +1137,8 @@ auto RunAiGenerate(const std::string& InProvider,
             AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL_URLS", "--allow-all-urls");
             AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL", "--allow-all");
             args.insert(args.end(), {"--no-color", "--stream", "off", "--no-ask-user"});
-            LogInvocation("copilot", args);
-            return shell::ExecuteCommand("copilot", args, shell::ExecMode::Capture, InWorkingDir);
+            LogInvocation(standaloneCopilot, args);
+            return shell::ExecuteCommand(standaloneCopilot, args, shell::ExecMode::Capture, InWorkingDir);
         }
 
         if (HasCommand("gh", {"copilot", "--version"})) {

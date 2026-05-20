@@ -302,6 +302,70 @@ auto ContainsRawCheckoutChatter(const std::string& InPayload) -> bool {
            InPayload.find("Previous HEAD position was ") != std::string::npos;
 }
 
+auto StripAnsi(const std::string& InText) -> std::string {
+    std::string out;
+    out.reserve(InText.size());
+    bool inEsc = false;
+    for (const char ch : InText) {
+        if (!inEsc) {
+            if (ch == '\x1b') {
+                inEsc = true;
+                continue;
+            }
+            out.push_back(ch);
+            continue;
+        }
+        if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z')) {
+            inEsc = false;
+        }
+    }
+    return out;
+}
+
+auto InstallCopilotStub(const std::filesystem::path& InDir) -> std::filesystem::path {
+    const auto stubDir = (InDir / "fake-copilot-bin").lexically_normal();
+    std::filesystem::create_directories(stubDir);
+    const auto scriptPath = (stubDir / "copilot-stub.ps1").lexically_normal();
+    const auto cmdPath = (stubDir / "copilot.cmd").lexically_normal();
+    const auto ghScriptPath = (stubDir / "gh-stub.ps1").lexically_normal();
+    const auto ghCmdPath = (stubDir / "gh.cmd").lexically_normal();
+
+    std::ostringstream script;
+    script << "$stdout = [Environment]::GetEnvironmentVariable('KOG_TEST_AI_STDOUT')\n";
+    script << "if ($null -ne $stdout) { [Console]::Out.Write($stdout) }\n";
+    script << "$exitCode = [Environment]::GetEnvironmentVariable('KOG_TEST_AI_EXIT_CODE')\n";
+    script << "if ([string]::IsNullOrWhiteSpace($exitCode)) { exit 0 }\n";
+    script << "exit [int]$exitCode\n";
+    WriteTextFile(scriptPath, script.str());
+
+    std::ostringstream cmd;
+    cmd << "@echo off\r\n";
+    cmd << "powershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0copilot-stub.ps1\" %*\r\n";
+    WriteTextFile(cmdPath, cmd.str());
+
+    std::ostringstream ghScript;
+    ghScript << "$argList = @($args)\n";
+    ghScript << "if ($argList.Length -ge 2 -and $argList[0] -eq 'copilot' -and $argList[1] -eq '--version') {\n";
+    ghScript << "  [Console]::Out.Write('gh-copilot-stub 1.0')\n";
+    ghScript << "  exit 0\n";
+    ghScript << "}\n";
+    ghScript << "if ($argList.Length -ge 1 -and $argList[0] -eq 'copilot') {\n";
+    ghScript << "  $stdout = [Environment]::GetEnvironmentVariable('KOG_TEST_AI_STDOUT')\n";
+    ghScript << "  if ($null -ne $stdout) { [Console]::Out.Write($stdout) }\n";
+    ghScript << "  $exitCode = [Environment]::GetEnvironmentVariable('KOG_TEST_AI_EXIT_CODE')\n";
+    ghScript << "  if ([string]::IsNullOrWhiteSpace($exitCode)) { exit 0 }\n";
+    ghScript << "  exit [int]$exitCode\n";
+    ghScript << "}\n";
+    ghScript << "exit 1\n";
+    WriteTextFile(ghScriptPath, ghScript.str());
+
+    std::ostringstream ghCmd;
+    ghCmd << "@echo off\r\n";
+    ghCmd << "powershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0gh-stub.ps1\" %*\r\n";
+    WriteTextFile(ghCmdPath, ghCmd.str());
+    return stubDir;
+}
+
 auto ExtractJsonStringField(const std::string& InJson, const std::string& InKey) -> std::string {
     const auto keyToken = "\"" + InKey + "\"";
     const auto keyPos = InJson.find(keyToken);
@@ -693,6 +757,7 @@ TEST_CASE("sync_gitlink_only_auto_amends", "[functional][commit-push][post-sync]
 
 TEST_CASE("amend_ai_auto_rewords_head_when_worktree_is_clean", "[functional][amend][ai]") {
     const auto ctx = CreateRemoteWithClone("amend-ai-clean-reword");
+    const auto stubDir = InstallCopilotStub(ctx.sandbox.root);
     WriteTextFile(ctx.cloneRepo / "README.md", "seed\namend ai reword\n");
     RequireSuccess(RunGit({"add", "README.md"}, ctx.cloneRepo), "stage amend ai change");
     RequireSuccess(RunGit({"commit", "-m", "chore: placeholder amend subject"}, ctx.cloneRepo), "seed amend target commit");
@@ -702,9 +767,7 @@ TEST_CASE("amend_ai_auto_rewords_head_when_worktree_is_clean", "[functional][ame
         {"KOG_TEST_AI_STDOUT", "docs(readme): refine amend ai subject\n"},
         {"KOG_TEST_AI_EXIT_CODE", "0"},
     };
-    if (const char* currentPath = std::getenv("PATH"); currentPath != nullptr) {
-        env.emplace_back("PATH", currentPath);
-    }
+    env.emplace_back("PATH", stubDir.string() + ";" + (std::getenv("PATH") != nullptr ? std::getenv("PATH") : ""));
 
     const auto result = RunKogWithEnv(
         {"amend", "--ai-auto", "--ai-provider", "copilot", "--no-ai-review"},
@@ -725,6 +788,7 @@ TEST_CASE("amend_ai_auto_rewords_head_when_worktree_is_clean", "[functional][ame
 
 TEST_CASE("amend_ai_auto_rejects_status_only_ai_output", "[functional][amend][ai]") {
     const auto ctx = CreateRemoteWithClone("amend-ai-status-only-output");
+    const auto stubDir = InstallCopilotStub(ctx.sandbox.root);
     WriteTextFile(ctx.cloneRepo / "README.md", "seed\namend ai status-only\n");
     RequireSuccess(RunGit({"add", "README.md"}, ctx.cloneRepo), "stage amend ai status-only change");
     RequireSuccess(RunGit({"commit", "-m", "chore: placeholder amend status-only"}, ctx.cloneRepo), "seed amend status-only target");
@@ -734,9 +798,7 @@ TEST_CASE("amend_ai_auto_rejects_status_only_ai_output", "[functional][amend][ai
         {"KOG_TEST_AI_STDOUT", "Reading\n"},
         {"KOG_TEST_AI_EXIT_CODE", "0"},
     };
-    if (const char* currentPath = std::getenv("PATH"); currentPath != nullptr) {
-        env.emplace_back("PATH", currentPath);
-    }
+    env.emplace_back("PATH", stubDir.string() + ";" + (std::getenv("PATH") != nullptr ? std::getenv("PATH") : ""));
 
     const auto result = RunKogWithEnv(
         {"amend", "--ai-auto", "--ai-provider", "copilot", "--no-ai-review"},
@@ -805,9 +867,8 @@ TEST_CASE("commit_push_ai_auto_single_human_mode_fails_without_deterministic_fal
         {"KOG_TEST_AI_EXIT_CODE", "0"},
         {"KANO_AGENT_MODE", ""},
     };
-    if (const char* currentPath = std::getenv("PATH"); currentPath != nullptr) {
-        env.emplace_back("PATH", currentPath);
-    }
+    const auto stubDir = InstallCopilotStub(ctx.sandbox.root);
+    env.emplace_back("PATH", stubDir.string() + ";" + (std::getenv("PATH") != nullptr ? std::getenv("PATH") : ""));
 
     const auto result = RunKogWithEnv(
         {"commit-push", "--ai-auto", "--ai-provider", "copilot", "--ai-fill-mode", "single", "--no-ai-review"},
@@ -890,9 +951,8 @@ TEST_CASE("plan_runbook_commit_per_commit_accepts_flat_review_fill_ops_aliases",
         {"KOG_TEST_AI_STDOUT", aiPayload},
         {"KOG_TEST_AI_EXIT_CODE", "0"},
     };
-    if (const char* currentPath = std::getenv("PATH"); currentPath != nullptr) {
-        env.emplace_back("PATH", currentPath);
-    }
+    const auto stubDir = InstallCopilotStub(ctx.sandbox.root);
+    env.emplace_back("PATH", stubDir.string() + ";" + (std::getenv("PATH") != nullptr ? std::getenv("PATH") : ""));
 
     const auto result = RunKogWithEnv(
         {"plan", "runbook", "commit", "--plan-file", planPath.string(), "--ai-provider", "copilot", "--ai-fill-mode", "per-commit"},
@@ -930,10 +990,11 @@ TEST_CASE("sync_registered_submodule_refreshes_gitmodules_branch_after_parent_sy
     const auto result = RunKog({"sync"}, ctx.cloneRootRepo);
     INFO(result.stdoutText);
     INFO(result.stderrText);
+    const auto plainOutput = StripAnsi(result.stdoutText);
     REQUIRE(result.exitCode == 0);
-    REQUIRE(result.stdoutText.find("Branch source: registered .gitmodules branch (refreshed)") != std::string::npos);
-    REQUIRE(result.stdoutText.find("Auto-stashed local changes for deps/child") != std::string::npos);
-    REQUIRE(result.stdoutText.find("Restored auto-stash for deps/child") != std::string::npos);
+    REQUIRE(plainOutput.find("Branch source: registered .gitmodules branch (refreshed)") != std::string::npos);
+    REQUIRE(plainOutput.find("Auto-stashed local changes for deps/child") != std::string::npos);
+    REQUIRE(plainOutput.find("Restored auto-stash for deps/child") != std::string::npos);
 
     REQUIRE(CurrentBranch(ctx.cloneChildRepo) == ctx.upgradedChildBranch);
     REQUIRE(CurrentHeadSha(ctx.cloneChildRepo) == RefSha(ctx.childBareRemote, "refs/heads/" + ctx.upgradedChildBranch));

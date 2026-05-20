@@ -1380,12 +1380,38 @@ auto ResolveAiProvider(const std::string& InRequested) -> std::string {
     return "copilot";
 }
 
+static auto TryRunTestAiStub() -> std::optional<shell::ExecResult> {
+    const char* stdoutRaw = std::getenv("KOG_TEST_AI_STDOUT");
+    const char* exitRaw = std::getenv("KOG_TEST_AI_EXIT_CODE");
+    if (stdoutRaw == nullptr && exitRaw == nullptr) {
+        return std::nullopt;
+    }
+
+    shell::ExecResult out;
+    if (stdoutRaw != nullptr) {
+        out.stdoutStr = stdoutRaw;
+    }
+    if (exitRaw != nullptr && exitRaw[0] != '\0') {
+        try {
+            out.exitCode = std::stoi(exitRaw);
+        } catch (...) {
+            out.exitCode = 1;
+            out.stderrStr = std::format("invalid KOG_TEST_AI_EXIT_CODE: {}", exitRaw);
+        }
+    }
+    return out;
+}
+
 auto RunAiGenerate(const std::string& InProvider,
                      const std::string& InModel,
                      const std::string& InPrompt,
                      const std::filesystem::path& InWorkspaceRoot,
                      bool InQuiet,
                      bool InYolo) -> shell::ExecResult {
+    if (const auto testResult = TryRunTestAiStub(); testResult.has_value()) {
+        return *testResult;
+    }
+
     auto LogInvocation = [&](const std::string& binary, const std::vector<std::string>& args) {
         std::cout << "\n" << kano::terminal::AiPrefix() << " -- AI Invocation (plan-fill) --\n";
         std::cout << kano::terminal::AiPrefix() << " command : " << binary;
