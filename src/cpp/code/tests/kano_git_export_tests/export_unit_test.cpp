@@ -1009,6 +1009,30 @@ TEST_CASE("FormatExportManifestJson includes submodules when present",
     REQUIRE(json.find("\"def5678\"") != std::string::npos);
 }
 
+TEST_CASE("FormatExportManifestJson includes subrepoEntries and smokeTestResult",
+          "[Unit][FormatExportManifestJson][export-manifest]") {
+    ExportManifestData data;
+    data.projectName = "my-skill";
+    data.format = "tar";
+    data.smokeTestResult = "passed";
+
+    ExportSubrepoManifestEntry entry;
+    entry.path = "pipeline-libraries/unreal";
+    entry.commit = "abc1234";
+    entry.mode = "expanded";
+    entry.contentIncluded = true;
+    entry.remote = "https://example.invalid/unreal.git";
+    entry.status = "ok";
+    data.subrepoEntries.push_back(entry);
+
+    const std::string json = FormatExportManifestJson(data);
+    REQUIRE(json.find("\"subrepoEntries\"") != std::string::npos);
+    REQUIRE(json.find("\"pipeline-libraries/unreal\"") != std::string::npos);
+    REQUIRE(json.find("\"mode\": \"expanded\"") != std::string::npos);
+    REQUIRE(json.find("\"contentIncluded\": true") != std::string::npos);
+    REQUIRE(json.find("\"smokeTestResult\": \"passed\"") != std::string::npos);
+}
+
 TEST_CASE("FormatExportManifestJson omits submodules key when list is empty",
           "[Unit][FormatExportManifestJson][export-manifest][req-manifest]") {
     ExportManifestData data;

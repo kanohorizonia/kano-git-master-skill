@@ -575,6 +575,18 @@ TEST_CASE("RegisterExport registers --include-submodule-stubs flag",
     REQUIRE_NOTHROW(exportCmd->parse(std::string{"--include-submodule-stubs"}, false));
 }
 
+TEST_CASE("RegisterExport registers --include-subrepos and --allow-missing-subrepos flags",
+          "[Unit][CLI][registration]") {
+    CLI::App app{"kog test"};
+    kano::git::commands::RegisterExport(app);
+
+    auto* exportCmd = app.get_subcommand("export");
+    REQUIRE(exportCmd != nullptr);
+
+    REQUIRE(exportCmd->get_option("--include-subrepos") != nullptr);
+    REQUIRE(exportCmd->get_option("--allow-missing-subrepos") != nullptr);
+}
+
 TEST_CASE("RegisterExport registers subtree standalone export options",
           "[Unit][CLI][registration][subtree]") {
     CLI::App app{"kog test"};

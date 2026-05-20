@@ -50,7 +50,19 @@ struct ExportOptions {
     std::filesystem::path subtreePath;
     std::string exportName;
     bool keepSubtreePath = false;
-    int splitSubrepoDepth = 1;
+    int splitSubrepoDepth = 0;
+    bool includeSubrepos = false;
+    bool allowMissingSubrepos = false;
+};
+
+struct ExportSubrepoManifestEntry {
+    std::string path;
+    std::string commit;
+    std::string mode; // pointer-only | expanded
+    bool contentIncluded = false;
+    std::string remote;
+    std::string status; // ok | failed
+    std::string error;
 };
 
 struct ExportRecord {
@@ -174,6 +186,8 @@ struct ExportManifestData {
     std::uintmax_t sizeBytes = 0;
     std::string sha256;
     std::vector<std::pair<std::string, std::string>> submodules; // {path, commit}
+    std::vector<ExportSubrepoManifestEntry> subrepoEntries;
+    std::string smokeTestResult;
     bool hasSubtree = false;
     std::string subtreeName;
     std::string subtreeSourcePath;

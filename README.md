@@ -54,6 +54,7 @@ Common commands:
 ./scripts/kog repo-hygiene fix
 ./scripts/kog export --help
 ./scripts/kog export --single
+./scripts/kog export --single --include-subrepos
 ./scripts/kog export --subtree "E:/_gamedev/KanoTamaoProject/UnrealEngine/Engine/Source/Programs/UnrealGameSync" --name UnrealGameSync --source head
 ./scripts/kog export --subtree Engine/Source/Programs/UnrealGameSync --source working-tree
 ```
@@ -115,7 +116,21 @@ when the smoke script is present:
 ```bash
 ./scripts/kog export --single
 ./scripts/kog export --single --validate-release-archive
+
+# pointer-only (default) vs expanded subrepo export
+# pointer-only: root archive + subrepo pointers in manifest
+./scripts/kog export --single
+
+# expanded: include subrepo working-tree files in root archive
+./scripts/kog export --single --include-subrepos
+
+# expanded + tolerate missing subrepos (records failure in manifest)
+./scripts/kog export --single --include-subrepos --allow-missing-subrepos
 ```
+
+To debug shared-library failures in `kano-jenkins-skill` (for example
+`pipeline-libraries/unreal/vars/unrealBuild.groovy`), use expanded mode so
+the tar contains real subrepo files for offline review.
 
 Shared native build/test/report/bootstrap helpers live in
 `src/cpp/shared/infra/scripts/`. Use them as infrastructure backing scripts, not

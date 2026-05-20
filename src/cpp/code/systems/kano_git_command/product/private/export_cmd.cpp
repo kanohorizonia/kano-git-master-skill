@@ -76,6 +76,14 @@ auto ValidateOptions(const ExportOptions& InOpts) -> bool {
             ok = false;
         }
     }
+    if (InOpts.includeSubrepos && !InOpts.single) {
+        std::cerr << "kog export: --include-subrepos requires --single\n";
+        ok = false;
+    }
+    if (InOpts.allowMissingSubrepos && !InOpts.includeSubrepos) {
+        std::cerr << "kog export: --allow-missing-subrepos requires --include-subrepos\n";
+        ok = false;
+    }
     return ok;
 }
 
@@ -339,6 +347,51 @@ auto CollectExecutablePathsWithPrefix(const std::filesystem::path& InRepoPath,
     return true;
 }
 
+auto CollectSubmodulePathsFromGitStatus(const std::filesystem::path& InRepoPath,
+                                        const ShellExecutor& InExec) -> std::vector<std::filesystem::path> {
+    std::vector<std::filesystem::path> out;
+    const auto res = InExec("git", {"submodule", "status", "--recursive"}, shell::ExecMode::Capture, InRepoPath);
+    if (res.exitCode != 0) {
+        return out;
+    }
+    std::istringstream iss(res.stdoutStr);
+    std::string line;
+    while (std::getline(iss, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        if (line.size() < 3) {
+            continue;
+        }
+        // git submodule status format starts with one status char, then sha, then path.
+        std::size_t cursor = 1;
+        while (cursor < line.size() && line[cursor] == ' ') {
+            ++cursor;
+        }
+        const auto shaEnd = line.find(' ', cursor);
+        if (shaEnd == std::string::npos) {
+            continue;
+        }
+        cursor = shaEnd + 1;
+        while (cursor < line.size() && line[cursor] == ' ') {
+            ++cursor;
+        }
+        if (cursor >= line.size()) {
+            continue;
+        }
+        const auto pathEnd = line.find(' ', cursor);
+        const std::string pathToken = (pathEnd == std::string::npos)
+                                          ? line.substr(cursor)
+                                          : line.substr(cursor, pathEnd - cursor);
+        if (!pathToken.empty()) {
+            out.emplace_back(std::filesystem::path(pathToken));
+        }
+    }
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
+}
+
 auto ComputeManifestName(const std::string& InArchiveBaseName) -> std::string {
     return InArchiveBaseName + "_manifest.txt";
 }
@@ -461,6 +514,33 @@ auto FormatExportManifestJson(const ExportManifestData& InData) -> std::string {
             j << "\n";
         }
         j << "  ]";
+    }
+    if (!InData.subrepoEntries.empty()) {
+        j << ",\n  \"subrepoEntries\": [\n";
+        for (std::size_t i = 0; i < InData.subrepoEntries.size(); ++i) {
+            const auto& e = InData.subrepoEntries[i];
+            j << "    {\n";
+            j << "      \"path\": \"" << JsonEscape(e.path) << "\",\n";
+            j << "      \"commit\": \"" << JsonEscape(e.commit) << "\",\n";
+            j << "      \"mode\": \"" << JsonEscape(e.mode) << "\",\n";
+            j << "      \"contentIncluded\": " << (e.contentIncluded ? "true" : "false") << ",\n";
+            j << "      \"remote\": " << (e.remote.empty() ? "null" : ("\"" + JsonEscape(e.remote) + "\"")) << ",\n";
+            j << "      \"status\": \"" << JsonEscape(e.status) << "\"";
+            if (!e.error.empty()) {
+                j << ",\n      \"error\": \"" << JsonEscape(e.error) << "\"\n";
+            } else {
+                j << "\n";
+            }
+            j << "    }";
+            if (i + 1 < InData.subrepoEntries.size()) {
+                j << ",";
+            }
+            j << "\n";
+        }
+        j << "  ]";
+    }
+    if (!InData.smokeTestResult.empty()) {
+        j << ",\n  \"smokeTestResult\": \"" << JsonEscape(InData.smokeTestResult) << "\"";
     }
     if (InData.hasSubtree) {
         j << ",\n  \"subtree\": {\n";
@@ -675,8 +755,8 @@ auto BuildExportList(const std::filesystem::path& InRoot,
                        const std::vector<workspace::RepoRecord>& InDiscovered,
                        bool InNoRecursive,
                        bool InSingle,
-                       int InSplitSubrepoDepth,
-                       const ShellExecutor& InExec) -> std::vector<ExportRecord> {
+                        int InSplitSubrepoDepth,
+                        const ShellExecutor& InExec) -> std::vector<ExportRecord> {
     std::vector<ExportRecord> result;
 
     // Always prepend the workspace root as the first entry
@@ -710,6 +790,8 @@ auto BuildExportList(const std::filesystem::path& InRoot,
             rootRecord.submodulePaths.push_back(RelativeDisplayPath(normalizedRoot, normalizedPath));
         }
     }
+    const auto gitSubmodules = CollectSubmodulePathsFromGitStatus(normalizedRoot, InExec);
+    rootRecord.submodulePaths.insert(rootRecord.submodulePaths.end(), gitSubmodules.begin(), gitSubmodules.end());
     std::sort(rootRecord.submodulePaths.begin(), rootRecord.submodulePaths.end());
     rootRecord.submodulePaths.erase(std::unique(rootRecord.submodulePaths.begin(), rootRecord.submodulePaths.end()), rootRecord.submodulePaths.end());
 
@@ -969,6 +1051,9 @@ auto RunReleaseArchiveValidation(const ExportRecord& InRecord,
     if (!InOpts.single) {
         return skipOrFail("requires --single so submodule working-tree contents are included");
     }
+    if (!InOpts.includeSubrepos) {
+        return skipOrFail("requires --include-subrepos to include subrepo contents in root archive");
+    }
 
     const auto smokeScript = ResolveReleaseArchiveSmokeScript(InWorkspaceRoot);
     if (smokeScript.empty()) {
@@ -1038,7 +1123,7 @@ auto ExportOneRepo(const ExportRecord& InRecord,
     shell::ExecResult archiveResult;
     const std::string prefix = ComputePrefix(InRecord.repoName, InOpts.prefix);
 
-    const bool useWorkingTree = (InOpts.source == "working-tree") || (InOpts.single && InRecord.isRoot);
+    const bool useWorkingTree = (InOpts.source == "working-tree") || (InOpts.single && InRecord.isRoot && InOpts.includeSubrepos);
 
     if (!useWorkingTree) {
         std::vector<std::string> args;
@@ -1120,7 +1205,20 @@ auto ExportOneRepo(const ExportRecord& InRecord,
         std::filesystem::create_directories(localTmpDir, mkEc);
         const auto manifestPath = localTmpDir / (InRecord.repoName + "_working_tree_manifest.tsv");
 
-        std::vector<std::string> relFiles = CollectWorkingTreeFiles(InRecord, "", InOpts.single, InExec);
+        if (InOpts.single && InRecord.isRoot && InOpts.includeSubrepos) {
+            for (const auto& subRelPath : InRecord.submodulePaths) {
+                const auto subRepoPath = InRecord.repoPath / subRelPath;
+                std::error_code checkEc;
+                if (!std::filesystem::exists(subRepoPath, checkEc) || !std::filesystem::is_directory(subRepoPath, checkEc)) {
+                    if (!InOpts.allowMissingSubrepos) {
+                        result.errorMessage = "required subrepo missing: " + subRelPath.generic_string();
+                        return result;
+                    }
+                }
+            }
+        }
+
+        std::vector<std::string> relFiles = CollectWorkingTreeFiles(InRecord, "", InOpts.single && InOpts.includeSubrepos, InExec);
         if (relFiles.empty()) {
             result.errorMessage = "no files found in working tree export";
             return result;
@@ -1131,7 +1229,7 @@ auto ExportOneRepo(const ExportRecord& InRecord,
             result.errorMessage = "failed to collect root file modes";
             return result;
         }
-        if (InOpts.single) {
+        if (InOpts.single && InOpts.includeSubrepos) {
             for (const auto& subRelPath : InRecord.submodulePaths) {
                 const auto subRepoPath = InRecord.repoPath / subRelPath;
                 const std::string subPrefix = subRelPath.generic_string() + "/";
@@ -1272,6 +1370,7 @@ auto RunExportWithExecutor(const ExportOptions& InOpts,
     std::vector<ExportResult> results;
     bool anyArchiveFailed = false;
     bool anyValidationFailed = false;
+    bool rootSmokePassed = true;
 
     std::string currentGroup;
     for (const auto& record : InExportList) {
@@ -1293,6 +1392,9 @@ auto RunExportWithExecutor(const ExportOptions& InOpts,
             const int validationExit = RunReleaseArchiveValidation(record, result, InOpts, InExportList.front().repoPath, InExec);
             if (validationExit != 0) {
                 anyValidationFailed = true;
+                if (record.isRoot) {
+                    rootSmokePassed = false;
+                }
             }
         }
         results.push_back(result);
@@ -1335,11 +1437,25 @@ auto RunExportWithExecutor(const ExportOptions& InOpts,
                     const auto subRepoPath = rootRecord->repoPath / subRelPath;
                     const auto subSha = InExec("git", {"rev-parse", "--short", "HEAD"},
                                                shell::ExecMode::Capture, subRepoPath);
+                    const auto subRemote = InExec("git", {"remote", "get-url", "origin"},
+                                                  shell::ExecMode::Capture, subRepoPath);
                     std::string subCommit;
                     if (subSha.exitCode == 0) {
                         subCommit = TrimExport(subSha.stdoutStr);
                     }
                     manifest.submodules.push_back({subRelPath.generic_string(), subCommit});
+
+                    ExportSubrepoManifestEntry entry;
+                    entry.path = subRelPath.generic_string();
+                    entry.commit = subCommit;
+                    entry.mode = InOpts.includeSubrepos ? "expanded" : "pointer-only";
+                    entry.contentIncluded = InOpts.includeSubrepos && !subCommit.empty();
+                    entry.remote = (subRemote.exitCode == 0) ? TrimExport(subRemote.stdoutStr) : "";
+                    entry.status = (!InOpts.includeSubrepos || !subCommit.empty()) ? "ok" : "failed";
+                    if (entry.status == "failed") {
+                        entry.error = "unable to resolve subrepo commit";
+                    }
+                    manifest.subrepoEntries.push_back(std::move(entry));
                 }
             } else {
                 manifest.hasSubtree = true;
@@ -1349,6 +1465,7 @@ auto RunExportWithExecutor(const ExportOptions& InOpts,
                 manifest.subtreeRepoRelativePath = rootRecord->subtreeRepoRelativePath.generic_string();
                 manifest.subtreeStripPath = !InOpts.keepSubtreePath;
             }
+            manifest.smokeTestResult = rootSmokePassed ? "passed" : "failed";
 
             const std::string manifestJson = FormatExportManifestJson(manifest);
 
@@ -1559,7 +1676,9 @@ void RegisterExport(CLI::App& InApp) {
     auto* subtree = new std::string{};
     auto* exportName = new std::string{};
     auto* keepSubtreePath = new bool{false};
-    auto* splitSubrepoDepth = new int{1};
+    auto* splitSubrepoDepth = new int{0};
+    auto* includeSubrepos = new bool{false};
+    auto* allowMissingSubrepos = new bool{false};
 
     cmd->add_option("--output", *outputDir,
         "Output directory for archives (default: <cwd>/.kano/tmp/git/export/)");
@@ -1594,7 +1713,11 @@ void RegisterExport(CLI::App& InApp) {
     cmd->add_flag("--keep-subtree-path", *keepSubtreePath,
         "Preserve repo-relative subtree path inside archive (default: strip subtree path)");
     cmd->add_option("--split-subrepo-depth", *splitSubrepoDepth,
-        "Export child subrepos only (each as single repo), up to N relative-path levels from root. 0 keeps current mode (default: 1)");
+        "Export child subrepos only (each as single repo), up to N relative-path levels from root. 0 keeps current mode (default: 0)");
+    cmd->add_flag("--include-subrepos", *includeSubrepos,
+        "Expanded mode for --single export: include subrepo/submodule working-tree contents in the root archive");
+    cmd->add_flag("--allow-missing-subrepos", *allowMissingSubrepos,
+        "When used with --include-subrepos, continue export even if some subrepos are unavailable");
 
     cmd->callback([=]() {
         ExportOptions opts;
@@ -1615,6 +1738,8 @@ void RegisterExport(CLI::App& InApp) {
         opts.exportName = *exportName;
         opts.keepSubtreePath = *keepSubtreePath;
         opts.splitSubrepoDepth = *splitSubrepoDepth;
+        opts.includeSubrepos = *includeSubrepos;
+        opts.allowMissingSubrepos = *allowMissingSubrepos;
 
         // Keep --source default as "head" for deterministic archive metadata
         // and Git-index executable mode preservation across platforms.

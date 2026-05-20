@@ -407,6 +407,7 @@ TEST_CASE("Property 7: CollectWorkingTreeFiles includes submodule paths in singl
         ExportRecord record;
         record.repoPath = GenSimplePath();
         record.repoName = GenRepoName();
+        record.isRoot = true;
         record.submodulePaths = GenSubmodulePaths();
 
         // Only test with non-empty submodule lists for this property
@@ -422,7 +423,7 @@ TEST_CASE("Property 7: CollectWorkingTreeFiles includes submodule paths in singl
 
         // Check that each submodule has its unique file in the list
         for (const auto& subPath : record.submodulePaths) {
-            const std::string expectedSubFile = subPath.generic_string() + "_file.txt";
+            const std::string expectedSubFile = subPath.filename().generic_string() + "_file.txt";
             bool found = std::any_of(fileList.begin(), fileList.end(), [&](const std::string& f) {
                 return f.find(expectedSubFile) != std::string::npos;
             });

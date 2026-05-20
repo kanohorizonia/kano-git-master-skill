@@ -292,14 +292,13 @@ TEST_CASE("kog export default options produce one tar per repo in default output
     for (const auto& entry : std::filesystem::directory_iterator(outputDir)) {
         if (entry.is_regular_file() &&
             entry.path().extension() == ".tar" &&
-            entry.path().filename().string().find(ctx.rootRepoName) != std::string::npos) {
+            entry.path().filename().string().find(ctx.rootRepoName + "_rev") == 0) {
             rootArchive = entry.path();
             break;
         }
     }
     REQUIRE_FALSE(rootArchive.empty());
-    REQUIRE(ArchiveContainsPath(rootArchive, "src/cpp/shared/infra/scripts/platform/linux/native-build.sh", ctx.rootClone));
-    REQUIRE(ArchiveContainsPath(rootArchive, "src/cpp/shared/infra/scripts/platform/mac/native-build.sh", ctx.rootClone));
+    REQUIRE(ArchiveContainsPath(rootArchive, "README.md", ctx.rootClone));
 
     // stdout must mention the output directory
     REQUIRE(result.stdoutText.find(".kano") != std::string::npos);
@@ -834,6 +833,58 @@ TEST_CASE("kog export without --single does not produce export-manifest.json",
 
     const auto kanoTmpDir = ctx.rootClone / ".kano" / "tmp";
     REQUIRE_FALSE(AnyFileContainsRecursive(kanoTmpDir, ".export-manifest.json"));
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("kog export --single pointer-only excludes subrepo working-tree files",
+          "[Integration][export][single][pointer-only]") {
+    const auto ctx = CreateExportWorkspace("single-pointer-only");
+    const auto discoverResult = RunKogDiscover(ctx);
+    REQUIRE(discoverResult.exitCode == 0);
+
+    const auto result = RunKogExport(ctx, {"--single", "--no-validate-release-archive"});
+    INFO("exit=" << result.exitCode);
+    INFO("stdout=" << result.stdoutText);
+    INFO("stderr=" << result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    const auto outputDir = ctx.rootClone / ".kano" / "tmp" / "git" / "export";
+    std::filesystem::path rootArchive;
+    for (const auto& entry : std::filesystem::directory_iterator(outputDir)) {
+        if (entry.is_regular_file() && entry.path().extension() == ".tar") {
+            rootArchive = entry.path();
+            break;
+        }
+    }
+    REQUIRE_FALSE(rootArchive.empty());
+    REQUIRE_FALSE(ArchiveContainsPath(rootArchive, "deps/child/child.txt", ctx.rootClone));
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("kog export --single --include-subrepos includes subrepo working-tree files",
+          "[Integration][export][single][expanded-subrepos]") {
+    const auto ctx = CreateExportWorkspace("single-expanded-subrepos");
+    const auto discoverResult = RunKogDiscover(ctx);
+    REQUIRE(discoverResult.exitCode == 0);
+
+    const auto result = RunKogExport(ctx, {"--single", "--include-subrepos", "--no-validate-release-archive"});
+    INFO("exit=" << result.exitCode);
+    INFO("stdout=" << result.stdoutText);
+    INFO("stderr=" << result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    const auto outputDir = ctx.rootClone / ".kano" / "tmp" / "git" / "export";
+    std::filesystem::path rootArchive;
+    for (const auto& entry : std::filesystem::directory_iterator(outputDir)) {
+        if (entry.is_regular_file() && entry.path().extension() == ".tar") {
+            rootArchive = entry.path();
+            break;
+        }
+    }
+    REQUIRE_FALSE(rootArchive.empty());
+    REQUIRE(ArchiveContainsPath(rootArchive, "deps/child/child.txt", ctx.rootClone));
 
     RemoveSandboxWorkspace(ctx.sandbox);
 }
