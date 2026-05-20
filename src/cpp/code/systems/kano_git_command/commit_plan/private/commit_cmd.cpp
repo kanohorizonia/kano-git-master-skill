@@ -2520,10 +2520,6 @@ auto RunCommitAutoPlanPipeline(const std::filesystem::path& InWorkspaceRoot,
         return planNewCode;
     }
 
-    if (const auto seedCode = RunCommitSeedViaSelf(InWorkspaceRoot, autoPlanPath); seedCode != 0) {
-        return seedCode;
-    }
-
     std::cout << "[plan] initializing ignore stages...\n";
     const auto ignoreRunbookStart = std::chrono::steady_clock::now();
     const auto ignoreRunbookCode = RunIgnorePlanRunbookViaSelf(InWorkspaceRoot, autoPlanPath);
@@ -2538,6 +2534,10 @@ auto RunCommitAutoPlanPipeline(const std::filesystem::path& InWorkspaceRoot,
     ignoreApplyMillis = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - ignoreApplyStart).count();
     if (ignoreApplyCode != 0) {
         return ignoreApplyCode;
+    }
+
+    if (const auto seedCode = RunCommitSeedViaSelf(InWorkspaceRoot, autoPlanPath); seedCode != 0) {
+        return seedCode;
     }
 
     CommitRunbookResult runbookResult;
@@ -2629,10 +2629,6 @@ auto RunAmendAutoPlanPipeline(const std::filesystem::path& InWorkspaceRoot,
         return planNewCode;
     }
 
-    if (const auto seedCode = RunCommitSeedViaSelf(InWorkspaceRoot, autoPlanPath); seedCode != 0) {
-        return seedCode;
-    }
-
     std::cout << "[plan] initializing ignore stages...\n";
     const auto ignoreRunbookStart = std::chrono::steady_clock::now();
     const auto ignoreRunbookCode = RunIgnorePlanRunbookViaSelf(InWorkspaceRoot, autoPlanPath);
@@ -2647,6 +2643,10 @@ auto RunAmendAutoPlanPipeline(const std::filesystem::path& InWorkspaceRoot,
     ignoreApplyMillis = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - ignoreApplyStart).count();
     if (ignoreApplyCode != 0) {
         return ignoreApplyCode;
+    }
+
+    if (const auto seedCode = RunCommitSeedViaSelf(InWorkspaceRoot, autoPlanPath); seedCode != 0) {
+        return seedCode;
     }
 
     CommitRunbookResult runbookResult;
