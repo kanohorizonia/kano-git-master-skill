@@ -127,3 +127,6 @@ The native C++ CLI is now the source of truth for current workflows. Some older
 architecture notes and historical examples may still mention retired root shell
 scripts. Treat those as legacy notes unless they are referenced from
 [Current Command Surface](./docs/guides/current-command-surface.md).
+
+For C++ coverage/PGO provider semantics and guardrails, see
+[C++ coverage and PGO provider model](./docs/cpp-profile-coverage-pgo-model.md).

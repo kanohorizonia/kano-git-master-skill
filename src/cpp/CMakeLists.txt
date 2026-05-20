@@ -523,10 +523,11 @@ set_property(CACHE KOG_PGO_LTCG PROPERTY STRINGS auto off)
 # which produces .profraw files. This unifies coverage and PGO collect: one test run generates
 # data for both coverage report AND PGO profile. llvm-cov is used for reporting.
 # For GCC, we fall back to traditional -fprofile-arcs -ftest-coverage (gcov style).
-# For MSVC, /PROFILE works for both.
+# For MSVC, /PROFILE enables coverage-oriented instrumentation only; it is not MSVC PGO training data.
 if(KOG_ENABLE_COVERAGE)
     if(MSVC)
-        # MSVC /PROFILE is a linker option only - enables profiler/coverage instrumentation
+        # MSVC /PROFILE is a linker option for coverage/profiler scenarios.
+        # MSVC PGO training data is produced by /GENPROFILE (or /FASTGENPROFILE), then consumed by /USEPROFILE.
         add_link_options(/PROFILE)
         set(KOG_COVERAGE_OUTPUT_DIR "${KOG_BUILD_ROOT}/coverage" CACHE PATH "Coverage output directory")
     elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")

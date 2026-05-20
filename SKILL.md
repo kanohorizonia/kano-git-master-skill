@@ -211,9 +211,18 @@ Current docs:
 - `docs/guides/cpa-commit-plan-workflow.md`
 - `docs/repo-hygiene.md`
 - `docs/development/testing.md`
+- `docs/cpp-profile-coverage-pgo-model.md`
 
 Historical docs may preserve old shell workflows. They are useful design context,
 but they are not the current product surface.
+
+## Coverage and PGO guardrails
+
+- Microsoft.CodeCoverage.Console coverage output is not MSVC PGO training data.
+- MSVC unified PGO+coverage execution is only supported with OpenCppCoverage.
+- Microsoft.CodeCoverage.Console server-mode is local/session detached collection, not remote telemetry.
+- Keep `coverage-all` as canonical coverage lane.
+- Keep `pgo-gather` and `pgo-rebuild` as canonical release PGO lanes.
 
 ## Retired Root-Shell Surface
 
