@@ -125,6 +125,15 @@ bash src/cpp/shared/infra/scripts/stages/coverage-report.sh opencppcoverage
 
 `ninja-msvc-opencppcoverage-run.sh` reuses the Windows coverage test binary and emits tool-native HTML plus Cobertura and binary exports. Set `KOG_OPENCPPCOVERAGE_EXE` if the tool is installed outside the default path.
 
+When running `./scripts/kog self build --pgo` on Windows:
+
+- `KANO_CPP_INFRA_COVERAGE_TOOL=opencppcoverage` keeps a unified pass (coverage + PGO gather together).
+- `KANO_CPP_INFRA_COVERAGE_TOOL=microsoft` uses a split pass:
+  - run Microsoft coverage on the `windows-ninja-msvc-coverage` build first
+  - then run PGO collect/use on `windows-ninja-msvc-pgo-collect` and `windows-ninja-msvc-pgo-use`
+
+This split keeps Microsoft coverage aligned with its static instrumentation workflow while preserving the existing PGO optimization pipeline.
+
 ### CLI launcher scripts (alternative)
 
 ```bash

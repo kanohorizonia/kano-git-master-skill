@@ -87,6 +87,24 @@ Gather artifacts are emitted to:
 This is intended to keep PGO profile data aligned with real test workloads
 instead of smoke-only checks.
 
+### Windows Coverage Tool Policy for `kog self build --pgo`
+
+On Windows, `kog self build --pgo` now supports two distinct coverage behaviors:
+
+- `KANO_CPP_INFRA_COVERAGE_TOOL=opencppcoverage`
+  - single-pass gather in PGO collect mode
+  - one test pass produces both coverage artifacts and `.pgd` profile data
+
+- `KANO_CPP_INFRA_COVERAGE_TOOL=microsoft`
+  - split pipeline
+  - phase A: run a dedicated coverage pass on `windows-ninja-msvc-coverage` (Debug, `/PROFILE`) with Microsoft static instrumentation + collect
+  - phase B: run normal PGO collect/use flow (`windows-ninja-msvc-pgo-collect` -> merge -> `windows-ninja-msvc-pgo-use`)
+
+Rationale:
+
+- Microsoft static C++ coverage expects the documented static instrumentation flow for `/PROFILE` binaries.
+- OpenCppCoverage can collect coverage directly while running PGO collect binaries.
+
 If you need to override the suite for a targeted run:
 
 ```bash
