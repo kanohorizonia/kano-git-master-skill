@@ -300,6 +300,40 @@ TEST_CASE("ValidateOptions subtree mode rejects incompatible option combinations
     }
 }
 
+TEST_CASE("ValidateOptions split subrepo depth validation",
+          "[Unit][CLI][split-subrepo-depth-validation]") {
+    auto opts = MakeValidOpts();
+
+    SECTION("negative split depth is rejected") {
+        auto c = opts;
+        c.splitSubrepoDepth = -1;
+        SuppressStderr suppress;
+        REQUIRE_FALSE(ValidateOptions(c));
+    }
+
+    SECTION("split depth + single is accepted (single mode takes precedence)") {
+        auto c = opts;
+        c.splitSubrepoDepth = 1;
+        c.single = true;
+        REQUIRE(ValidateOptions(c));
+    }
+
+    SECTION("split depth + no-recursive is accepted (no-recursive mode takes precedence)") {
+        auto c = opts;
+        c.splitSubrepoDepth = 1;
+        c.noRecursive = true;
+        REQUIRE(ValidateOptions(c));
+    }
+
+    SECTION("split depth + subtree is rejected") {
+        auto c = opts;
+        c.splitSubrepoDepth = 1;
+        c.subtreePath = "Engine/Source/Programs/UnrealGameSync";
+        SuppressStderr suppress;
+        REQUIRE_FALSE(ValidateOptions(c));
+    }
+}
+
 TEST_CASE("ValidateOptions rejects negative rev-pad and emits error to stderr",
           "[Unit][CLI][rev-pad-validation][req-7.4]") {
     // **Validates: Requirements 7.4**
@@ -515,6 +549,17 @@ TEST_CASE("RegisterExport registers --prefix option",
     REQUIRE(exportCmd != nullptr);
 
     REQUIRE_NOTHROW(exportCmd->parse(std::string{"--prefix MyRepo/"}, false));
+}
+
+TEST_CASE("RegisterExport registers --split-subrepo-depth option",
+          "[Unit][CLI][registration]") {
+    CLI::App app{"kog test"};
+    kano::git::commands::RegisterExport(app);
+
+    auto* exportCmd = app.get_subcommand("export");
+    REQUIRE(exportCmd != nullptr);
+
+    REQUIRE_NOTHROW(exportCmd->parse(std::string{"--split-subrepo-depth 1"}, false));
 }
 
 TEST_CASE("RegisterExport registers --include-submodule-stubs flag",

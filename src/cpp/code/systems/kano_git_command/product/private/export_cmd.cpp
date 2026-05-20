@@ -48,6 +48,11 @@ auto ValidateOptions(const ExportOptions& InOpts) -> bool {
                   << "; must be a positive integer\n";
         ok = false;
     }
+    if (InOpts.splitSubrepoDepth < 0) {
+        std::cerr << "kog export: invalid --split-subrepo-depth value " << InOpts.splitSubrepoDepth
+                  << "; must be a non-negative integer\n";
+        ok = false;
+    }
     if (!InOpts.validateReleaseArchive && InOpts.forceValidateReleaseArchive) {
         std::cerr << "kog export: --validate-release-archive conflicts with "
                   << "--no-validate-release-archive\n";
@@ -64,6 +69,10 @@ auto ValidateOptions(const ExportOptions& InOpts) -> bool {
         }
         if (InOpts.forceValidateReleaseArchive) {
             std::cerr << "kog export: --validate-release-archive is not supported with --subtree\n";
+            ok = false;
+        }
+        if (InOpts.splitSubrepoDepth > 0) {
+            std::cerr << "kog export: --split-subrepo-depth cannot be combined with --subtree\n";
             ok = false;
         }
     }
@@ -663,16 +672,18 @@ auto IsPathIgnoredByExport(const std::filesystem::path& InRepoPath,
 }
 
 auto BuildExportList(const std::filesystem::path& InRoot,
-                      const std::vector<workspace::RepoRecord>& InDiscovered,
-                      bool InNoRecursive,
-                      bool InSingle,
-                      const ShellExecutor& InExec) -> std::vector<ExportRecord> {
+                       const std::vector<workspace::RepoRecord>& InDiscovered,
+                       bool InNoRecursive,
+                       bool InSingle,
+                       int InSplitSubrepoDepth,
+                       const ShellExecutor& InExec) -> std::vector<ExportRecord> {
     std::vector<ExportRecord> result;
 
     // Always prepend the workspace root as the first entry
     ExportRecord rootRecord;
     rootRecord.repoPath = InRoot.lexically_normal();
     rootRecord.repoName = rootRecord.repoPath.filename().generic_string();
+    rootRecord.relativeRepoPath = ".";
     if (rootRecord.repoName.empty()) {
         rootRecord.repoName = InRoot.lexically_normal().filename().generic_string();
     }
@@ -704,7 +715,65 @@ auto BuildExportList(const std::filesystem::path& InRoot,
 
     result.push_back(std::move(rootRecord));
 
+    auto depthFromRoot = [&](const std::filesystem::path& InRepoPath) -> int {
+        std::error_code ec;
+        auto rel = std::filesystem::relative(InRepoPath, InRoot, ec);
+        if (ec || rel.empty()) {
+            return 0;
+        }
+        int depth = 0;
+        for (const auto& part : rel) {
+            const auto piece = part.generic_string();
+            if (!piece.empty() && piece != ".") {
+                ++depth;
+            }
+        }
+        return depth;
+    };
+
     if (InNoRecursive || InSingle) {
+        return result;
+    }
+
+    if (InSplitSubrepoDepth > 0) {
+        result.clear();
+        for (const auto& repo : InDiscovered) {
+            const auto normalizedPath = repo.path.lexically_normal();
+            std::error_code ec;
+            bool isRoot = false;
+            if (std::filesystem::exists(normalizedPath, ec) && std::filesystem::exists(normalizedRoot, ec)) {
+                if (std::filesystem::equivalent(normalizedPath, normalizedRoot, ec)) {
+                    isRoot = true;
+                }
+            }
+            if (!isRoot && normalizedPath == normalizedRoot) {
+                isRoot = true;
+            }
+            if (isRoot) {
+                continue;
+            }
+
+            if (depthFromRoot(repo.path) > InSplitSubrepoDepth) {
+                continue;
+            }
+
+            if (IsPathIgnoredByExport(normalizedRoot, normalizedPath, InExec)) {
+                continue;
+            }
+
+            ExportRecord rec;
+            rec.repoPath = repo.path;
+            rec.relativeRepoPath = RelativeDisplayPath(InRoot, repo.path).generic_string();
+            std::string subName = rec.relativeRepoPath;
+            std::replace(subName.begin(), subName.end(), '/', '_');
+            std::replace(subName.begin(), subName.end(), '\\', '_');
+            rec.repoName = rootName + "_" + subName;
+            rec.isRoot = false;
+            result.push_back(std::move(rec));
+        }
+        std::sort(result.begin(), result.end(), [](const ExportRecord& A, const ExportRecord& B) {
+            return A.relativeRepoPath < B.relativeRepoPath;
+        });
         return result;
     }
 
@@ -1404,7 +1473,7 @@ auto RunExport(const ExportOptions& InOpts) -> int {
         }
         exportList.push_back(std::move(subtreeRecord));
     } else {
-        exportList = BuildExportList(cwd, discovery.repos, InOpts.noRecursive, InOpts.single, realExec);
+        exportList = BuildExportList(cwd, discovery.repos, InOpts.noRecursive, InOpts.single, InOpts.splitSubrepoDepth, realExec);
     }
 
     if (InOpts.dryRun) {
@@ -1423,7 +1492,24 @@ auto RunExport(const ExportOptions& InOpts) -> int {
             std::cout << "Archive: " << ComputeArchiveName(rec.repoName, fakeRev, optsWithDir.format) << "\n";
             return 0;
         }
+        if (optsWithDir.splitSubrepoDepth > 0) {
+            std::cout << "Dry-run export plan\n";
+            std::cout << "ExportMode: split-subrepos\n";
+            std::cout << "SplitSubrepoDepth: " << optsWithDir.splitSubrepoDepth << "\n";
+            std::cout << "RootRepoIncluded: false\n";
+            std::cout << "OutputDir: " << outputDir.generic_string() << "\n";
+            if (exportList.empty()) {
+                std::cout << "No matching child subrepos found for split export.\n";
+                return 0;
+            }
+        }
         std::cout << FormatDryRunPlan(exportList, optsWithDir);
+        return 0;
+    }
+
+    if (InOpts.splitSubrepoDepth > 0 && exportList.empty()) {
+        std::cout << "kog export: warning: no matching child subrepos found for --split-subrepo-depth="
+                  << InOpts.splitSubrepoDepth << "\n";
         return 0;
     }
 
@@ -1473,6 +1559,7 @@ void RegisterExport(CLI::App& InApp) {
     auto* subtree = new std::string{};
     auto* exportName = new std::string{};
     auto* keepSubtreePath = new bool{false};
+    auto* splitSubrepoDepth = new int{1};
 
     cmd->add_option("--output", *outputDir,
         "Output directory for archives (default: <cwd>/.kano/tmp/git/export/)");
@@ -1506,6 +1593,8 @@ void RegisterExport(CLI::App& InApp) {
         "Override export/archive name for --subtree mode (default: subtree basename)");
     cmd->add_flag("--keep-subtree-path", *keepSubtreePath,
         "Preserve repo-relative subtree path inside archive (default: strip subtree path)");
+    cmd->add_option("--split-subrepo-depth", *splitSubrepoDepth,
+        "Export child subrepos only (each as single repo), up to N relative-path levels from root. 0 keeps current mode (default: 1)");
 
     cmd->callback([=]() {
         ExportOptions opts;
@@ -1525,6 +1614,7 @@ void RegisterExport(CLI::App& InApp) {
         opts.subtreePath = *subtree;
         opts.exportName = *exportName;
         opts.keepSubtreePath = *keepSubtreePath;
+        opts.splitSubrepoDepth = *splitSubrepoDepth;
 
         // Keep --source default as "head" for deterministic archive metadata
         // and Git-index executable mode preservation across platforms.

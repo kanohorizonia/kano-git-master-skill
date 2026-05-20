@@ -50,6 +50,7 @@ struct ExportOptions {
     std::filesystem::path subtreePath;
     std::string exportName;
     bool keepSubtreePath = false;
+    int splitSubrepoDepth = 1;
 };
 
 struct ExportRecord {
@@ -224,10 +225,11 @@ auto FormatDryRunPlan(const std::vector<ExportRecord>& InRecords,
 // InRoot is the workspace root path; InDiscovered is the list returned by
 // DiscoverWorkspaceRepos (may include the root or not).
 auto BuildExportList(const std::filesystem::path& InRoot,
-                      const std::vector<workspace::RepoRecord>& InDiscovered,
-                      bool InNoRecursive,
-                      bool InSingle,
-                      const ShellExecutor& InExec) -> std::vector<ExportRecord>;
+                       const std::vector<workspace::RepoRecord>& InDiscovered,
+                       bool InNoRecursive,
+                       bool InSingle,
+                       int InSplitSubrepoDepth,
+                       const ShellExecutor& InExec) -> std::vector<ExportRecord>;
 
 // Returns true if the given path is marked with 'export-ignore' attribute
 // in the context of InRepoPath.

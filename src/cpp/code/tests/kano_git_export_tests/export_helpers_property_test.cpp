@@ -215,7 +215,7 @@ TEST_CASE("Property 1: BuildExportList always places workspace root first",
             return ExecResult{0, "unspecified", ""}; // git check-attr default
         };
 
-        const std::vector<ExportRecord> exportList = BuildExportList(root, subrepos, false, false, stubExec);
+        const std::vector<ExportRecord> exportList = BuildExportList(root, subrepos, false, false, 0, stubExec);
 
         RC_ASSERT(!exportList.empty());
         RC_ASSERT(exportList.front().isRoot);
@@ -243,7 +243,7 @@ TEST_CASE("Property 2: BuildExportList with noRecursive=true returns exactly one
             return ExecResult{0, "unspecified", ""};
         };
 
-        const std::vector<ExportRecord> exportList = BuildExportList(root, subrepos, true, false, stubExec);
+        const std::vector<ExportRecord> exportList = BuildExportList(root, subrepos, true, false, 0, stubExec);
 
         RC_ASSERT(exportList.size() == 1);
         RC_ASSERT(exportList.front().isRoot);
