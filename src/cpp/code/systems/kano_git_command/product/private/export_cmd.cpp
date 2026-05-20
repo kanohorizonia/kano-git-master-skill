@@ -1022,6 +1022,7 @@ auto ExportOneRepo(const ExportRecord& InRecord,
                 "  if not line.strip(): continue\n"
                 "  m,s,a=line.split('\\t',2); mode=int(m); sp=pathlib.Path(s); ap=a.replace('\\\\','/');\n"
                 "  if not sp.exists(): continue\n"
+                "  if not sp.is_file(): continue\n"
                 "  info=t.gettarinfo(str(sp),arcname=ap); info.mode=mode;\n"
                 "  with sp.open('rb') as f: t.addfile(info,f)\n"
                 "t.close()";
@@ -1051,8 +1052,9 @@ auto ExportOneRepo(const ExportRecord& InRecord,
                 const auto subRepoPath = InRecord.repoPath / subRelPath;
                 const std::string subPrefix = subRelPath.generic_string() + "/";
                 if (!CollectExecutablePathsWithPrefix(subRepoPath, subPrefix, InExec, modeByPath)) {
-                    result.errorMessage = "failed to collect submodule file modes: " + subRelPath.generic_string();
-                    return result;
+                    std::cerr << "kog export: warning: unable to collect submodule file modes for '"
+                              << subRelPath.generic_string()
+                              << "'; falling back to default mode 0644 for affected files\n";
                 }
             }
         }
@@ -1080,6 +1082,8 @@ auto ExportOneRepo(const ExportRecord& InRecord,
             "    continue\n"
             "  m,s,a=line.split('\\t',2); mode=int(m); sp=pathlib.Path(s); ap=a.replace('\\\\','/');\n"
             "  if not sp.exists():\n"
+            "    continue\n"
+            "  if not sp.is_file():\n"
             "    continue\n"
             "  info=t.gettarinfo(str(sp),arcname=ap); info.mode=mode;\n"
             "  with sp.open('rb') as f: t.addfile(info,f)\n"
