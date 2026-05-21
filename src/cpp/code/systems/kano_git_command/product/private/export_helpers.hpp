@@ -70,6 +70,7 @@ struct ExportRecord {
     std::string repoName;
     std::string relativeRepoPath;
     bool isRoot = false;
+    bool exportAsSingle = false; // for split mode: this record exports as integrated single archive
     std::vector<std::filesystem::path> submodulePaths; // populated for root repo only
     bool isSubtree = false;
     std::filesystem::path subtreeAbsPath;

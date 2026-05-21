@@ -229,7 +229,7 @@ auto CollectWorkingTreeFiles(const ExportRecord& InRecord, const std::string& In
 
     // Prepare skip list for root repo
     std::vector<std::string> rootSkips;
-    if (InSingle && InRecord.isRoot) {
+    if (InSingle) {
         for (const auto& p : InRecord.submodulePaths) {
             rootSkips.push_back(p.generic_string());
         }
@@ -239,7 +239,7 @@ auto CollectWorkingTreeFiles(const ExportRecord& InRecord, const std::string& In
     getFiles(InRecord.repoPath, InPrefix, rootSkips);
 
     // If single mode, recursively add submodule files
-    if (InSingle && InRecord.isRoot) {
+    if (InSingle) {
         for (const auto& subRelPath : InRecord.submodulePaths) {
             const std::string subPrefix = InPrefix + subRelPath.generic_string() + "/";
             getFiles(InRecord.repoPath / subRelPath, subPrefix);
@@ -797,20 +797,55 @@ auto BuildExportList(const std::filesystem::path& InRoot,
 
     result.push_back(std::move(rootRecord));
 
-    auto depthFromRoot = [&](const std::filesystem::path& InRepoPath) -> int {
-        std::error_code ec;
-        auto rel = std::filesystem::relative(InRepoPath, InRoot, ec);
-        if (ec || rel.empty()) {
-            return 0;
+    auto isDescendantRepoPath = [](const std::filesystem::path& InAncestor,
+                                   const std::filesystem::path& InCandidate) -> bool {
+        const auto relative = InCandidate.lexically_relative(InAncestor);
+        if (relative.empty()) {
+            return false;
         }
-        int depth = 0;
-        for (const auto& part : rel) {
-            const auto piece = part.generic_string();
-            if (!piece.empty() && piece != ".") {
-                ++depth;
+        const auto relStr = relative.generic_string();
+        return relStr != "." && relStr.rfind("..", 0) != 0;
+    };
+
+    std::vector<std::filesystem::path> discoveredPaths;
+    discoveredPaths.reserve(InDiscovered.size());
+    for (const auto& repo : InDiscovered) {
+        const auto p = repo.path.lexically_normal();
+        std::error_code ec;
+        if (std::filesystem::exists(p, ec) && std::filesystem::exists(normalizedRoot, ec) &&
+            std::filesystem::equivalent(p, normalizedRoot, ec)) {
+            continue;
+        }
+        if (p == normalizedRoot) {
+            continue;
+        }
+        discoveredPaths.push_back(p);
+    }
+
+    std::sort(discoveredPaths.begin(), discoveredPaths.end(), [](const auto& A, const auto& B) {
+        return A.generic_string().size() < B.generic_string().size();
+    });
+    discoveredPaths.erase(std::unique(discoveredPaths.begin(), discoveredPaths.end()), discoveredPaths.end());
+
+    std::map<std::string, int> repoDepthByPath;
+    repoDepthByPath[normalizedRoot.generic_string()] = 0;
+    for (const auto& path : discoveredPaths) {
+        int depth = isDescendantRepoPath(normalizedRoot, path) ? 1 : 0;
+        for (const auto& [ancestorPath, ancestorDepth] : repoDepthByPath) {
+            const auto ancestor = std::filesystem::path(ancestorPath);
+            if (isDescendantRepoPath(ancestor, path)) {
+                depth = std::max(depth, ancestorDepth + 1);
             }
         }
-        return depth;
+        repoDepthByPath[path.generic_string()] = depth;
+    }
+
+    auto depthFromRoot = [&](const std::filesystem::path& InRepoPath) -> int {
+        const auto key = InRepoPath.lexically_normal().generic_string();
+        if (repoDepthByPath.contains(key)) {
+            return repoDepthByPath[key];
+        }
+        return 0;
     };
 
     if (InNoRecursive || InSingle) {
@@ -818,7 +853,39 @@ auto BuildExportList(const std::filesystem::path& InRoot,
     }
 
     if (InSplitSubrepoDepth > 0) {
-        result.clear();
+        auto collectDescendantSubmodulePaths = [&](const std::filesystem::path& InRepoPath) -> std::vector<std::filesystem::path> {
+            std::vector<std::filesystem::path> submodulePaths;
+            const auto normalizedRepoPath = InRepoPath.lexically_normal();
+
+            for (const auto& repo : InDiscovered) {
+                const auto candidatePath = repo.path.lexically_normal();
+                std::error_code ec;
+                if (std::filesystem::exists(candidatePath, ec) && std::filesystem::exists(normalizedRepoPath, ec) &&
+                    std::filesystem::equivalent(candidatePath, normalizedRepoPath, ec)) {
+                    continue;
+                }
+                if (candidatePath == normalizedRepoPath) {
+                    continue;
+                }
+
+                const auto relative = candidatePath.lexically_relative(normalizedRepoPath);
+                if (relative.empty()) {
+                    continue;
+                }
+                const auto relStr = relative.generic_string();
+                if (relStr == "." || relStr.rfind("..", 0) == 0) {
+                    continue;
+                }
+                submodulePaths.push_back(relative);
+            }
+
+            const auto gitSubmodules = CollectSubmodulePathsFromGitStatus(normalizedRepoPath, InExec);
+            submodulePaths.insert(submodulePaths.end(), gitSubmodules.begin(), gitSubmodules.end());
+            std::sort(submodulePaths.begin(), submodulePaths.end());
+            submodulePaths.erase(std::unique(submodulePaths.begin(), submodulePaths.end()), submodulePaths.end());
+            return submodulePaths;
+        };
+
         for (const auto& repo : InDiscovered) {
             const auto normalizedPath = repo.path.lexically_normal();
             std::error_code ec;
@@ -846,14 +913,21 @@ auto BuildExportList(const std::filesystem::path& InRoot,
             ExportRecord rec;
             rec.repoPath = repo.path;
             rec.relativeRepoPath = RelativeDisplayPath(InRoot, repo.path).generic_string();
+            rec.exportAsSingle = (depthFromRoot(repo.path) == InSplitSubrepoDepth);
             std::string subName = rec.relativeRepoPath;
             std::replace(subName.begin(), subName.end(), '/', '_');
             std::replace(subName.begin(), subName.end(), '\\', '_');
             rec.repoName = rootName + "_" + subName;
             rec.isRoot = false;
+            if (rec.exportAsSingle) {
+                rec.submodulePaths = collectDescendantSubmodulePaths(rec.repoPath);
+            }
             result.push_back(std::move(rec));
         }
         std::sort(result.begin(), result.end(), [](const ExportRecord& A, const ExportRecord& B) {
+            if (A.isRoot != B.isRoot) {
+                return A.isRoot;
+            }
             return A.relativeRepoPath < B.relativeRepoPath;
         });
         return result;
@@ -999,9 +1073,69 @@ auto ResolveReleaseArchiveSmokeScript(const std::filesystem::path& InWorkspaceRo
 }
 
 auto HasBash(const std::filesystem::path& InWorkspaceRoot,
-             const ShellExecutor& InExec) -> bool {
-    const auto result = InExec("bash", {"-lc", "true"}, shell::ExecMode::Capture, InWorkspaceRoot);
+             const ShellExecutor& InExec,
+             const std::string& InBashCommand) -> bool {
+    const auto result = InExec(InBashCommand, {"-lc", "true"}, shell::ExecMode::Capture, InWorkspaceRoot);
     return result.exitCode == 0;
+}
+
+auto SplitNonEmptyLines(const std::string& InText) -> std::vector<std::string> {
+    std::vector<std::string> lines;
+    std::istringstream iss(InText);
+    std::string line;
+    while (std::getline(iss, line)) {
+        line = TrimExport(line);
+        if (!line.empty()) {
+            lines.push_back(line);
+        }
+    }
+    return lines;
+}
+
+auto ResolvePreferredBash(const std::filesystem::path& InWorkspaceRoot,
+                         const ShellExecutor& InExec) -> std::string {
+#ifdef KOG_PLATFORM_WINDOWS
+    auto isGitBashPath = [](const std::string& InPath) -> bool {
+        std::string lower = InPath;
+        std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
+        return lower.find("\\git\\usr\\bin\\bash.exe") != std::string::npos ||
+               lower.find("\\git\\bin\\bash.exe") != std::string::npos;
+    };
+
+    const auto whereBash = InExec("where.exe", {"bash"}, shell::ExecMode::Capture, InWorkspaceRoot);
+    const auto bashCandidates = SplitNonEmptyLines(whereBash.stdoutStr);
+    for (const auto& candidate : bashCandidates) {
+        if (isGitBashPath(candidate) && std::filesystem::exists(candidate)) {
+            return candidate;
+        }
+    }
+
+    const auto whereGit = InExec("where.exe", {"git"}, shell::ExecMode::Capture, InWorkspaceRoot);
+    const auto gitCandidates = SplitNonEmptyLines(whereGit.stdoutStr);
+    for (const auto& gitCandidate : gitCandidates) {
+        auto dir = std::filesystem::path(gitCandidate).parent_path();
+        for (int depth = 0; depth < 3 && !dir.empty(); ++depth) {
+            const auto gitUsrBash = dir / "usr" / "bin" / "bash.exe";
+            if (std::filesystem::exists(gitUsrBash)) {
+                return gitUsrBash.string();
+            }
+            const auto gitBinBash = dir / "bin" / "bash.exe";
+            if (std::filesystem::exists(gitBinBash)) {
+                return gitBinBash.string();
+            }
+            dir = dir.parent_path();
+        }
+    }
+
+    for (const auto& candidate : bashCandidates) {
+        if (std::filesystem::exists(candidate)) {
+            return candidate;
+        }
+    }
+#endif
+    return "bash";
 }
 
 auto AppendCapturedOutput(std::ostream& InStream,
@@ -1060,7 +1194,8 @@ auto RunReleaseArchiveValidation(const ExportRecord& InRecord,
         return skipOrFail("src/shell/test/smoke-release-archive.sh was not found");
     }
 
-    if (!HasBash(InWorkspaceRoot, InExec)) {
+    const auto bashCommand = ResolvePreferredBash(InWorkspaceRoot, InExec);
+    if (!HasBash(InWorkspaceRoot, InExec, bashCommand)) {
         return skipOrFail("bash is not available on PATH");
     }
 
@@ -1086,17 +1221,36 @@ auto RunReleaseArchiveValidation(const ExportRecord& InRecord,
     };
     const auto relScript  = toRelative(smokeScript,            InWorkspaceRoot);
     const auto relArchive = toRelative(InResult.archivePath,   InWorkspaceRoot);
+
+    auto shellQuote = [](const std::string& InText) -> std::string {
+        std::string out{"'"};
+        for (const char ch : InText) {
+            if (ch == '\'') {
+                out += "'\\''";
+            } else {
+                out.push_back(ch);
+            }
+        }
+        out.push_back('\'');
+        return out;
+    };
+
+    const std::string commandLine = shellQuote(relScript) + " " + shellQuote(relArchive);
     const auto validation = InExec(
-        "bash",
-        {relScript, relArchive},
-        shell::ExecMode::PassThrough,
+        bashCommand,
+        {"-lc", commandLine},
+        shell::ExecMode::Capture,
         InWorkspaceRoot);
 
     if (validation.exitCode != 0) {
         std::cerr << "kog export: release archive validation failed for "
                   << InResult.archivePath.generic_string() << "\n";
+        AppendCapturedOutput(std::cerr, "stdout", validation.stdoutStr);
+        AppendCapturedOutput(std::cerr, "stderr", validation.stderrStr);
         return validation.exitCode == 0 ? 1 : validation.exitCode;
     }
+
+    AppendCapturedOutput(std::cout, "stdout", validation.stdoutStr);
 
     return 0;
 }
@@ -1123,7 +1277,9 @@ auto ExportOneRepo(const ExportRecord& InRecord,
     shell::ExecResult archiveResult;
     const std::string prefix = ComputePrefix(InRecord.repoName, InOpts.prefix);
 
-    const bool useWorkingTree = (InOpts.source == "working-tree") || (InOpts.single && InRecord.isRoot && InOpts.includeSubrepos);
+    const bool singleForRecord = InOpts.single || InRecord.exportAsSingle;
+    const bool includeSubreposForRecord = InOpts.includeSubrepos || InRecord.exportAsSingle;
+    const bool useWorkingTree = (InOpts.source == "working-tree") || (singleForRecord && includeSubreposForRecord);
 
     if (!useWorkingTree) {
         std::vector<std::string> args;
@@ -1205,7 +1361,7 @@ auto ExportOneRepo(const ExportRecord& InRecord,
         std::filesystem::create_directories(localTmpDir, mkEc);
         const auto manifestPath = localTmpDir / (InRecord.repoName + "_working_tree_manifest.tsv");
 
-        if (InOpts.single && InRecord.isRoot && InOpts.includeSubrepos) {
+        if (singleForRecord && includeSubreposForRecord) {
             for (const auto& subRelPath : InRecord.submodulePaths) {
                 const auto subRepoPath = InRecord.repoPath / subRelPath;
                 std::error_code checkEc;
@@ -1218,7 +1374,7 @@ auto ExportOneRepo(const ExportRecord& InRecord,
             }
         }
 
-        std::vector<std::string> relFiles = CollectWorkingTreeFiles(InRecord, "", InOpts.single && InOpts.includeSubrepos, InExec);
+        std::vector<std::string> relFiles = CollectWorkingTreeFiles(InRecord, "", singleForRecord && includeSubreposForRecord, InExec);
         if (relFiles.empty()) {
             result.errorMessage = "no files found in working tree export";
             return result;
@@ -1229,7 +1385,7 @@ auto ExportOneRepo(const ExportRecord& InRecord,
             result.errorMessage = "failed to collect root file modes";
             return result;
         }
-        if (InOpts.single && InOpts.includeSubrepos) {
+        if (singleForRecord && includeSubreposForRecord) {
             for (const auto& subRelPath : InRecord.submodulePaths) {
                 const auto subRepoPath = InRecord.repoPath / subRelPath;
                 const std::string subPrefix = subRelPath.generic_string() + "/";
@@ -1345,7 +1501,7 @@ auto ExportOneRepo(const ExportRecord& InRecord,
     const auto rootLogOut = GitCapture(InRecord.repoPath, logArgs, InExec);
 
     std::vector<std::pair<std::string, std::string>> subLogs;
-    if (InOpts.single && InRecord.isRoot) {
+    if (singleForRecord) {
         for (const auto& subRelPath : InRecord.submodulePaths) {
             const auto subLog = GitCapture(InRecord.repoPath / subRelPath, logArgs, InExec);
             subLogs.push_back({subRelPath.generic_string(), subLog.stdoutStr});
@@ -1541,7 +1697,16 @@ auto ResolveSubtreeExportRecord(const ExportOptions& InOpts,
 }
 
 auto RunExport(const ExportOptions& InOpts) -> int {
-    if (!ValidateOptions(InOpts)) {
+    ExportOptions opts = InOpts;
+    if (!opts.single && opts.splitSubrepoDepth == 0 && opts.subtreePath.empty()) {
+        // Default behavior: split at root and export next layer as integrated single archives.
+        opts.splitSubrepoDepth = 1;
+    }
+    if (opts.single) {
+        opts.includeSubrepos = true;
+    }
+
+    if (!ValidateOptions(opts)) {
         return 1;
     }
 
@@ -1555,7 +1720,7 @@ auto RunExport(const ExportOptions& InOpts) -> int {
         return shell::ExecuteCommand(cmd, args, mode, workDir);
     };
 
-    if (InOpts.subtreePath.empty()) {
+    if (opts.subtreePath.empty()) {
         // Validate workspace root is a git repo
         const auto gitCheck = realExec(
             "git", {"rev-parse", "--git-dir"},
@@ -1568,33 +1733,33 @@ auto RunExport(const ExportOptions& InOpts) -> int {
 
     // Discover subrepos
     workspace::DiscoveryResult discovery;
-    if (InOpts.subtreePath.empty()) {
+    if (opts.subtreePath.empty()) {
         workspace::DiscoverOptions discoverOpts;
         discoverOpts.rootDir = cwd;
         discoverOpts.scope = workspace::DiscoverScope::RegisteredOnly;
         discovery = workspace::DiscoverRepos(discoverOpts);
     }
 
-    const auto outputDir = InOpts.outputDir.empty()
+    const auto outputDir = opts.outputDir.empty()
         ? ResolveOutputDir(cwd, "")
-        : InOpts.outputDir;
+        : opts.outputDir;
     const auto metadataDir = outputDir / "metadata";
 
     std::vector<ExportRecord> exportList;
-    if (!InOpts.subtreePath.empty()) {
+    if (!opts.subtreePath.empty()) {
         ExportRecord subtreeRecord;
         std::string err;
-        if (!ResolveSubtreeExportRecord(InOpts, cwd, realExec, subtreeRecord, err)) {
+        if (!ResolveSubtreeExportRecord(opts, cwd, realExec, subtreeRecord, err)) {
             std::cerr << err << "\n";
             return 1;
         }
         exportList.push_back(std::move(subtreeRecord));
     } else {
-        exportList = BuildExportList(cwd, discovery.repos, InOpts.noRecursive, InOpts.single, InOpts.splitSubrepoDepth, realExec);
+        exportList = BuildExportList(cwd, discovery.repos, opts.noRecursive, opts.single, opts.splitSubrepoDepth, realExec);
     }
 
-    if (InOpts.dryRun) {
-        ExportOptions optsWithDir = InOpts;
+    if (opts.dryRun) {
+        ExportOptions optsWithDir = opts;
         optsWithDir.outputDir = outputDir;
         if (!optsWithDir.subtreePath.empty()) {
             const auto& rec = exportList.front();
@@ -1613,7 +1778,9 @@ auto RunExport(const ExportOptions& InOpts) -> int {
             std::cout << "Dry-run export plan\n";
             std::cout << "ExportMode: split-subrepos\n";
             std::cout << "SplitSubrepoDepth: " << optsWithDir.splitSubrepoDepth << "\n";
-            std::cout << "RootRepoIncluded: false\n";
+            std::cout << "RootRepoIncluded: true\n";
+            std::cout << "SplitModeAtDepth<=" << (optsWithDir.splitSubrepoDepth - 1)
+                      << ", SingleModeAtDepth=" << optsWithDir.splitSubrepoDepth << "\n";
             std::cout << "OutputDir: " << outputDir.generic_string() << "\n";
             if (exportList.empty()) {
                 std::cout << "No matching child subrepos found for split export.\n";
@@ -1624,9 +1791,9 @@ auto RunExport(const ExportOptions& InOpts) -> int {
         return 0;
     }
 
-    if (InOpts.splitSubrepoDepth > 0 && exportList.empty()) {
+    if (opts.splitSubrepoDepth > 0 && exportList.empty()) {
         std::cout << "kog export: warning: no matching child subrepos found for --split-subrepo-depth="
-                  << InOpts.splitSubrepoDepth << "\n";
+                  << opts.splitSubrepoDepth << "\n";
         return 0;
     }
 
@@ -1643,7 +1810,7 @@ auto RunExport(const ExportOptions& InOpts) -> int {
         return 1;
     }
 
-    return RunExportWithExecutor(InOpts, exportList, outputDir, metadataDir, realExec);
+    return RunExportWithExecutor(opts, exportList, outputDir, metadataDir, realExec);
 }
 
 } // anonymous namespace
@@ -1676,7 +1843,7 @@ void RegisterExport(CLI::App& InApp) {
     auto* subtree = new std::string{};
     auto* exportName = new std::string{};
     auto* keepSubtreePath = new bool{false};
-    auto* splitSubrepoDepth = new int{0};
+    auto* splitSubrepoDepth = new int{1};
     auto* includeSubrepos = new bool{false};
     auto* allowMissingSubrepos = new bool{false};
 
@@ -1699,7 +1866,7 @@ void RegisterExport(CLI::App& InApp) {
     cmd->add_option("--source", *source,
         "Archive source: head|working-tree (default: head)");
     cmd->add_flag("--single", *single,
-        "Export the entire workspace into a single archive (implies --no-recursive)");
+        "Export the entire workspace into a single archive with subrepo/submodule contents included (implies --no-recursive)");
     cmd->add_option("--log-count", *logCount,
         "Number of history log entries to include in metadata (default: 10)");
     cmd->add_flag("--no-validate-release-archive", *noValidateReleaseArchive,
@@ -1713,9 +1880,9 @@ void RegisterExport(CLI::App& InApp) {
     cmd->add_flag("--keep-subtree-path", *keepSubtreePath,
         "Preserve repo-relative subtree path inside archive (default: strip subtree path)");
     cmd->add_option("--split-subrepo-depth", *splitSubrepoDepth,
-        "Export child subrepos only (each as single repo), up to N relative-path levels from root. 0 keeps current mode (default: 0)");
+        "Split export by depth: repos above N stay split archives, repos at depth N switch to integrated single-export behavior. Set 0 for full recursive split mode (default: 1)");
     cmd->add_flag("--include-subrepos", *includeSubrepos,
-        "Expanded mode for --single export: include subrepo/submodule working-tree contents in the root archive");
+        "Explicitly request expanded --single mode; retained for compatibility because --single now includes subrepo/submodule working-tree contents by default");
     cmd->add_flag("--allow-missing-subrepos", *allowMissingSubrepos,
         "When used with --include-subrepos, continue export even if some subrepos are unavailable");
 

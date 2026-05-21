@@ -637,6 +637,75 @@ TEST_CASE("kog export --no-recursive exports only the root repo",
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("kog export default uses split-depth=1 and exports depth-1 repos as integrated single archives",
+          "[Integration][export][default-split-depth][single-threshold]") {
+    const auto ctx = CreateExportWorkspace("default-split-depth-single-threshold");
+
+    const auto grandchildBareRemote = (ctx.sandbox.root / "grandchild-remote.git").lexically_normal();
+    const auto grandchildSeedRepo   = (ctx.sandbox.root / "grandchild-seed").lexically_normal();
+    const std::string branch = "main";
+
+    RequireSuccess(RunGit({"init", "--bare", grandchildBareRemote.string()}, ctx.sandbox.root),
+                   "init grandchild bare");
+    RequireSuccess(RunGit({"init", grandchildSeedRepo.string()}, ctx.sandbox.root),
+                   "init grandchild seed");
+    ConfigureIdentity(grandchildSeedRepo);
+    RequireSuccess(RunGit({"checkout", "-b", branch}, grandchildSeedRepo), "checkout grandchild branch");
+    WriteTextFile(grandchildSeedRepo / "grandchild.txt", "grandchild content\n");
+    RequireSuccess(RunGit({"add", "grandchild.txt"}, grandchildSeedRepo), "grandchild add");
+    RequireSuccess(RunGit({"commit", "-m", "grandchild seed"}, grandchildSeedRepo), "grandchild commit");
+    RequireSuccess(RunGit({"remote", "add", "origin", grandchildBareRemote.string()}, grandchildSeedRepo),
+                   "grandchild add remote");
+    RequireSuccess(RunGit({"push", "-u", "origin", branch}, grandchildSeedRepo), "grandchild push");
+    RequireSuccess(RunGit({"symbolic-ref", "HEAD", ("refs/heads/" + branch)}, grandchildBareRemote),
+                   "grandchild bare HEAD");
+
+    RequireSuccess(
+        RunGit({"-c", "protocol.file.allow=always",
+                "submodule", "add", "-b", branch,
+                grandchildBareRemote.string(), "deps/grandchild"},
+               ctx.childClone),
+        "child add grandchild submodule");
+    RequireSuccess(RunGit({"commit", "-am", "add grandchild submodule"}, ctx.childClone),
+                   "child commit grandchild submodule");
+    RequireSuccess(RunGit({"push", "origin", branch}, ctx.childClone),
+                   "child push updated submodule pointer");
+
+    RequireSuccess(RunGit({"add", ctx.submodulePath}, ctx.rootClone), "root add updated child pointer");
+    RequireSuccess(RunGit({"commit", "-m", "update child pointer"}, ctx.rootClone),
+                   "root commit child pointer");
+
+    RequireSuccess(RunKogDiscover(ctx), "kog discover");
+    const auto result = RunKogExport(ctx, {"--no-validate-release-archive"});
+
+    INFO("exit=" << result.exitCode);
+    INFO("stdout=" << result.stdoutText);
+    INFO("stderr=" << result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    const auto outputDir = ctx.rootClone / ".kano" / "tmp" / "git" / "export";
+    REQUIRE(std::filesystem::exists(outputDir));
+    REQUIRE(AnyFileContains(outputDir, ctx.rootRepoName));
+    REQUIRE(AnyFileContains(outputDir, "deps_child"));
+    REQUIRE_FALSE(AnyFileContains(outputDir, "deps_child_deps_grandchild"));
+
+    std::filesystem::path childArchive;
+    for (const auto& entry : std::filesystem::directory_iterator(outputDir)) {
+        if (!entry.is_regular_file()) {
+            continue;
+        }
+        const auto name = entry.path().filename().string();
+        if (entry.path().extension() == ".tar" && name.find("deps_child") != std::string::npos) {
+            childArchive = entry.path();
+            break;
+        }
+    }
+    REQUIRE(!childArchive.empty());
+    REQUIRE(ArchiveContainsPath(childArchive, "deps/grandchild/grandchild.txt", ctx.rootClone));
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 // ===========================================================================
 // Test 5: --format zip produces .zip archives
 // ===========================================================================
@@ -837,9 +906,9 @@ TEST_CASE("kog export without --single does not produce export-manifest.json",
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
-TEST_CASE("kog export --single pointer-only excludes subrepo working-tree files",
-          "[Integration][export][single][pointer-only]") {
-    const auto ctx = CreateExportWorkspace("single-pointer-only");
+TEST_CASE("kog export --single includes subrepo working-tree files by default",
+        "[Integration][export][single][default-expanded-subrepos]") {
+    const auto ctx = CreateExportWorkspace("single-default-expanded-subrepos");
     const auto discoverResult = RunKogDiscover(ctx);
     REQUIRE(discoverResult.exitCode == 0);
 
@@ -858,13 +927,13 @@ TEST_CASE("kog export --single pointer-only excludes subrepo working-tree files"
         }
     }
     REQUIRE_FALSE(rootArchive.empty());
-    REQUIRE_FALSE(ArchiveContainsPath(rootArchive, "deps/child/child.txt", ctx.rootClone));
+    REQUIRE(ArchiveContainsPath(rootArchive, "deps/child/child.txt", ctx.rootClone));
 
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
-TEST_CASE("kog export --single --include-subrepos includes subrepo working-tree files",
-          "[Integration][export][single][expanded-subrepos]") {
+TEST_CASE("kog export --single --include-subrepos remains accepted and includes subrepo working-tree files",
+          "[Integration][export][single][expanded-subrepos][compat]") {
     const auto ctx = CreateExportWorkspace("single-expanded-subrepos");
     const auto discoverResult = RunKogDiscover(ctx);
     REQUIRE(discoverResult.exitCode == 0);
