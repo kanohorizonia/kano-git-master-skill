@@ -1221,6 +1221,88 @@ TEST_CASE("push_skips_local_non_bare_remote_with_checked_out_branch", "[function
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("push_recursive_skips_workspace_root_without_remote_but_pushes_children", "[functional][push][recursive]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("push-root-no-remote-skip");
+
+    RequireSuccess(RunGit({"remote", "remove", "origin"}, ctx.cloneRootRepo), "remove root origin remote");
+
+    WriteTextFile(ctx.cloneChildRepo / "child.txt", "child update for root-no-remote case\n");
+    RequireSuccess(RunGit({"add", "child.txt"}, ctx.cloneChildRepo), "child add root-no-remote update");
+    RequireSuccess(RunGit({"commit", "-m", "child update root no remote"}, ctx.cloneChildRepo), "child commit root-no-remote update");
+
+    const auto childLocalHead = CurrentHeadSha(ctx.cloneChildRepo);
+    const auto result = RunKog({"push"}, ctx.cloneRootRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    const auto merged = result.stdoutText + "\n" + result.stderrText;
+    REQUIRE(merged.find("Push skipped: no pushable remote on workspace root container repo") != std::string::npos);
+    REQUIRE(RefSha(ctx.childBareRemote, "refs/heads/" + ctx.branch) == childLocalHead);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("push_recursive_blocks_parent_when_child_push_fails", "[functional][push][recursive]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("push-child-failure-block-parent");
+
+    WriteTextFile(ctx.cloneChildRepo / "child.txt", "child update that cannot be pushed\n");
+    RequireSuccess(RunGit({"add", "child.txt"}, ctx.cloneChildRepo), "child add failure case");
+    RequireSuccess(RunGit({"commit", "-m", "child update for failure case"}, ctx.cloneChildRepo), "child commit failure case");
+    RequireSuccess(
+        RunGit({"remote", "set-url", "origin", (ctx.sandbox.root / "missing-child-remote.git").string()}, ctx.cloneChildRepo),
+        "break child remote");
+
+    WriteTextFile(ctx.cloneRootRepo / "README.md", "root seed\nroot should be blocked when child fails\n");
+    RequireSuccess(RunGit({"add", "README.md"}, ctx.cloneRootRepo), "root add blocked update");
+    RequireSuccess(RunGit({"commit", "-m", "root update should be blocked"}, ctx.cloneRootRepo), "root commit blocked update");
+
+    const auto rootRemoteBefore = RefSha(ctx.rootBareRemote, "refs/heads/" + ctx.branch);
+    const auto rootLocalHead = CurrentHeadSha(ctx.cloneRootRepo);
+    REQUIRE(rootRemoteBefore != rootLocalHead);
+
+    const auto result = RunKog({"push"}, ctx.cloneRootRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode != 0);
+
+    const auto merged = result.stdoutText + "\n" + result.stderrText;
+    REQUIRE(merged.find("Push failed") != std::string::npos);
+    REQUIRE(merged.find("Push blocked: one or more nested repositories failed in earlier wave") != std::string::npos);
+    REQUIRE(RefSha(ctx.rootBareRemote, "refs/heads/" + ctx.branch) == rootRemoteBefore);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge_dry_run_completes_and_abort_clears_state", "[functional][converge]") {
+    const auto ctx = CreateRemoteWithClone("converge-dryrun-abort");
+
+    const auto dryRunResult = RunKog({"converge", "--dry-run", "--no-recursive"}, ctx.cloneRepo);
+    INFO(dryRunResult.stdoutText);
+    INFO(dryRunResult.stderrText);
+    REQUIRE(dryRunResult.exitCode == 0);
+    REQUIRE(dryRunResult.stdoutText.find("[converge] phase=sync") != std::string::npos);
+    REQUIRE(dryRunResult.stdoutText.find("[converge] phase=push") != std::string::npos);
+
+    const auto statusAfterDryRun = RunKog({"converge", "--status"}, ctx.cloneRepo);
+    INFO(statusAfterDryRun.stdoutText);
+    INFO(statusAfterDryRun.stderrText);
+    REQUIRE(statusAfterDryRun.exitCode == 0);
+    REQUIRE(statusAfterDryRun.stdoutText.find("converge state: none") != std::string::npos);
+
+    const auto statePath = (ctx.cloneRepo / ".kano" / "tmp" / "converge.state").lexically_normal();
+    WriteTextFile(statePath, "phase=push\n");
+    REQUIRE(std::filesystem::exists(statePath));
+
+    const auto abortResult = RunKog({"converge", "--abort"}, ctx.cloneRepo);
+    INFO(abortResult.stdoutText);
+    INFO(abortResult.stderrText);
+    REQUIRE(abortResult.exitCode == 0);
+    REQUIRE_FALSE(std::filesystem::exists(statePath));
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("workspace_discover_respects_gitignore_for_nested_repo", "[functional][workspace][discovery]") {
     const auto ctx = CreateRemoteWithNestedRepoClone("discover-gitignore");
     WriteTextFile(ctx.cloneRootRepo / ".gitignore", ".kano/\nnested/\n");

@@ -26,6 +26,7 @@ void RegisterResolve(CLI::App& InApp);
 void RegisterSelf(CLI::App& InApp);
 void RegisterSync(CLI::App& InApp);
 void RegisterPush(CLI::App& InApp);
+void RegisterConverge(CLI::App& InApp);
 void RegisterRepo(CLI::App& InApp);
 void RegisterReset(CLI::App& InApp);
 void RegisterWorktree(CLI::App& InApp);

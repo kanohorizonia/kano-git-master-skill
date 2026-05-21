@@ -17,6 +17,7 @@ void RegisterAll(CLI::App& InApp) {
     RegisterComplete(InApp);
     RegisterCompletion(InApp);
     RegisterConfig(InApp);
+    RegisterConverge(InApp);
     RegisterDiscover(InApp);
     RegisterDoctor(InApp);
     RegisterExport(InApp);
@@ -65,6 +66,7 @@ void RegisterAll(CLI::App& InApp) {
     setGroup("amend", commonGroup);
     setGroup("commit", commonGroup);
     setGroup("commit-push", commonGroup);
+    setGroup("converge", commonGroup);
     setGroup("push", commonGroup);
     setGroup("sync", commonGroup);
     setGroup("status", commonGroup);

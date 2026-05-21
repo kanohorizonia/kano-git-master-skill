@@ -585,6 +585,8 @@ auto DetectDefaultPushJobs() -> int {
 
 auto RunNativePush(
     const std::vector<std::filesystem::path>& InRepos,
+    const std::filesystem::path& InWorkspaceRoot,
+    const bool InRecursive,
     const bool InSkipSync,
     const bool InFetchOnly,
     const bool InDryRun,
@@ -605,6 +607,13 @@ auto RunNativePush(
     int failures = 0;
     int successes = 0;
     std::mutex outputMutex;
+    std::vector<std::filesystem::path> failedRepos;
+
+    struct RepoRunResult {
+        int successes{0};
+        int failures{0};
+        std::filesystem::path repo;
+    };
 
     std::unordered_map<std::string, std::size_t> repoOrderByPath;
     repoOrderByPath.reserve(InRepos.size());
@@ -613,7 +622,7 @@ auto RunNativePush(
         repoOrderByPath[repoPath] = i + 1;
     }
 
-    auto runOneRepo = [&](const std::filesystem::path& repoPathRaw) -> std::pair<int, int> {
+    auto runOneRepo = [&](const std::filesystem::path& repoPathRaw) -> RepoRunResult {
         const auto repoPath = std::filesystem::weakly_canonical(repoPathRaw);
         const auto repoLabel = repoPath.lexically_normal().generic_string();
         std::size_t repoIndex = 0;
@@ -635,7 +644,7 @@ auto RunNativePush(
         const auto gitDir = GitCapture(repoPath, {"rev-parse", "--git-dir"});
         if (gitDir.exitCode != 0) {
             std::cerr << "Error: Not a git repository: " << repoLabel << "\n";
-            return {0, 1};
+            return {0, 1, repoPath};
         }
 
         if (InFetchOnly) {
@@ -645,17 +654,17 @@ auto RunNativePush(
                 const auto fetch = GitPassThrough(repoPath, {"fetch", "--all", "--prune", "--tags"});
                 if (fetch.exitCode != 0) {
                     std::cerr << "[" << repoLabel << "] Fetch failed\n";
-                    return {0, 1};
+                    return {0, 1, repoPath};
                 }
             }
             std::cout << "[" << kano::terminal::Wrap(repoLabel, kano::terminal::Color::BoldCyan) << "] Fetch-only mode: skipping rebase and push\n";
-            return {1, 0};
+            return {1, 0, repoPath};
         }
 
         const auto pushPolicy = ResolveGitmodulesPushPolicy(repoPath);
         if (pushPolicy == "skip") {
             std::cout << "[" << repoLabel << "] Push skipped by .gitmodules policy (kog-push-policy=skip)\n";
-            return {1, 0};
+            return {1, 0, repoPath};
         }
         if (!pushPolicy.empty() && pushPolicy != "allow") {
             std::cerr << "[" << repoLabel << "] Warning: unknown .gitmodules kog-push-policy='" << pushPolicy
@@ -666,7 +675,7 @@ auto RunNativePush(
         const auto branch = Trim(branchOut.stdoutStr);
         if (branchOut.exitCode != 0 || branch.empty()) {
             std::cerr << "Error: Detached HEAD is not supported by native push flow: " << repoLabel << "\n";
-            return {0, 1};
+            return {0, 1, repoPath};
         }
 
         const bool hasUpstream = (GitCapture(repoPath, {"rev-parse", "--abbrev-ref", "@{upstream}"}).exitCode == 0);
@@ -679,7 +688,7 @@ auto RunNativePush(
             if (hasLocalChanges) {
                 if (InFailOnDirtySync) {
                     std::cerr << "[" << repoLabel << "] Sync failed: local changes present (--fail-on-dirty-sync)\n";
-                    return {0, 1};
+                    return {0, 1, repoPath};
                 }
 
                 if (InStashLocalChanges) {
@@ -691,7 +700,7 @@ auto RunNativePush(
                         const auto stash = GitCapture(repoPath, {"stash", "push", "-u", "-m", stashName});
                         if (stash.exitCode != 0) {
                             std::cerr << "[" << repoLabel << "] Failed to create auto-stash before sync\n";
-                            return {0, 1};
+                            return {0, 1, repoPath};
                         }
                         const auto stashOut = Trim(stash.stdoutStr);
                         hadStash = stashOut.find("No local changes to save") == std::string::npos;
@@ -731,7 +740,7 @@ auto RunNativePush(
                     const auto pull = GitPassThrough(repoPath, {"pull", "--rebase"});
                     if (pull.exitCode != 0) {
                         std::cerr << "[" << repoLabel << "] Sync failed before push\n";
-                        return {0, 1};
+                        return {0, 1, repoPath};
                     }
                 } else {
                     std::cout << "[" << kano::terminal::Wrap(repoLabel, kano::terminal::Color::BoldCyan) << "] Sync skipped: local branch is not behind upstream";
@@ -749,7 +758,7 @@ auto RunNativePush(
                     const auto pop = GitPassThrough(repoPath, {"stash", "pop"});
                     if (pop.exitCode != 0) {
                         std::cerr << "[" << repoLabel << "] Failed to restore auto-stash after sync\n";
-                        return {0, 1};
+                        return {0, 1, repoPath};
                     }
                 }
             }
@@ -775,8 +784,13 @@ auto RunNativePush(
         }
 
         if (pushRemotes.empty()) {
+            const auto workspaceRoot = std::filesystem::weakly_canonical(InWorkspaceRoot).lexically_normal();
+            if (InRecursive && repoPath == workspaceRoot) {
+                std::cout << "[" << repoLabel << "] Push skipped: no pushable remote on workspace root container repo\n";
+                return {1, 0, repoPath};
+            }
             std::cerr << "Error: No pushable origin remote found for " << repoLabel << "\n";
-            return {0, 1};
+            return {0, 1, repoPath};
         }
 
         std::vector<std::string> pushArgs;
@@ -882,39 +896,66 @@ auto RunNativePush(
         }
 
         if (repoSuccess == 0) {
-            return {0, 1};
+            return {0, 1, repoPath};
         }
         const auto pushEnd = std::chrono::steady_clock::now();
         pushMillis += std::chrono::duration_cast<std::chrono::milliseconds>(pushEnd - pushStart).count();
-        return {1, 0};
+        return {1, 0, repoPath};
     };
 
     const int jobs = InJobs < 1 ? 1 : InJobs;
     const auto waves = BuildPushWaves(InRepos);
     for (const auto& wave : waves) {
-        if (jobs == 1 || wave.size() <= 1) {
-            for (const auto& repoPathRaw : wave) {
-                const auto [s, f] = runOneRepo(repoPathRaw);
-                successes += s;
-                failures += f;
+        std::vector<std::filesystem::path> waveCandidates;
+        waveCandidates.reserve(wave.size());
+
+        for (const auto& repoPathRaw : wave) {
+            const auto repoPath = std::filesystem::weakly_canonical(repoPathRaw).lexically_normal();
+            const bool blockedByChildFailure = std::any_of(failedRepos.begin(), failedRepos.end(), [&](const auto& failedPath) {
+                return IsParentPath(repoPath, failedPath);
+            });
+            if (blockedByChildFailure) {
+                std::cerr << "[" << repoPath.generic_string() << "] Push blocked: one or more nested repositories failed in earlier wave\n";
+                failures += 1;
+                failedRepos.push_back(repoPath);
+                continue;
+            }
+            waveCandidates.push_back(repoPath);
+        }
+
+        if (waveCandidates.empty()) {
+            continue;
+        }
+
+        if (jobs == 1 || waveCandidates.size() <= 1) {
+            for (const auto& repoPathRaw : waveCandidates) {
+                const auto result = runOneRepo(repoPathRaw);
+                successes += result.successes;
+                failures += result.failures;
+                if (result.failures > 0) {
+                    failedRepos.push_back(result.repo.lexically_normal());
+                }
             }
             continue;
         }
 
-        std::vector<std::future<std::pair<int, int>>> active;
+        std::vector<std::future<RepoRunResult>> active;
         active.reserve(static_cast<std::size_t>(jobs));
 
         auto waitOne = [&]() {
             if (active.empty()) {
                 return;
             }
-            auto result = active.front().get();
-            successes += result.first;
-            failures += result.second;
+            const auto result = active.front().get();
+            successes += result.successes;
+            failures += result.failures;
+            if (result.failures > 0) {
+                failedRepos.push_back(result.repo.lexically_normal());
+            }
             active.erase(active.begin());
         };
 
-        for (const auto& repoPathRaw : wave) {
+        for (const auto& repoPathRaw : waveCandidates) {
             while (static_cast<int>(active.size()) >= jobs) {
                 waitOne();
             }
@@ -1004,6 +1045,8 @@ auto RunPushNativeSimple(const std::filesystem::path& InWorkspaceRoot,
 
     return RunNativePush(
         repos,
+        InWorkspaceRoot,
+        InRecursive,
         true,
         false,
         InDryRun,
@@ -1130,6 +1173,8 @@ void RegisterPush(CLI::App& InApp) {
 
         const auto code = RunNativePush(
             nativeRepos,
+            workspaceRoot,
+            !*noRecursive,
             effectiveSkipSync,
             *fetchOnly,
             *dryRun,
