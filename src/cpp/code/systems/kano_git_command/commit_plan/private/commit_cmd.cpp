@@ -3083,6 +3083,10 @@ auto StageCommitItemForPlan(const std::filesystem::path& InWorkspaceRoot,
     return true;
 }
 
+auto IsEmptyPlanStageError(const std::string& InError) -> bool {
+    return InError == "plan commit staged no files (check include/exclude pathspec)";
+}
+
 auto ParseJobsValue(const std::string& InValue) -> std::optional<int> {
     const auto value = ToLower(Trim(InValue));
     if (value.empty() || value == "auto") {
@@ -4003,15 +4007,20 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
             if (needsPlanStaging) {
                 std::string stageError;
                 if (!StageCommitItemForPlan(workspaceRoot, repo, repoMessage, planRepoKeys, &stageError)) {
-                RepoCommitResult failed;
-                failed.repo = repo;
-                failed.failed = true;
-                failed.note = std::format("plan commit[{}] stage failed: {}", InNode.commitIndexInRepo, stageError);
-                return failed;
+                    RepoCommitResult result;
+                    result.repo = repo;
+                    if (IsEmptyPlanStageError(stageError)) {
+                        result.note = std::format("plan commit[{}] skipped: no files matched include/exclude pathspec",
+                                                  InNode.commitIndexInRepo);
+                        return result;
+                    }
+                    result.failed = true;
+                    result.note = std::format("plan commit[{}] stage failed: {}", InNode.commitIndexInRepo, stageError);
+                    return result;
+                }
             }
-        }
-        return CommitSingleRepo(workspaceRoot, repo, repoMessage.message, needsPlanStaging, false, ai);
-    };
+            return CommitSingleRepo(workspaceRoot, repo, repoMessage.message, needsPlanStaging, false, ai);
+        };
 
     for (const auto& wave : taskGraph.waves) {
         if (wave.empty()) {
@@ -4929,11 +4938,16 @@ void RegisterCommit(CLI::App& InApp) {
             if (needsPlanStaging) {
                 std::string stageError;
                 if (!StageCommitItemForPlan(workspaceRoot, repo, repoMessage, planRepoKeys, &stageError)) {
-                    RepoCommitResult failed;
-                    failed.repo = repo;
-                    failed.failed = true;
-                    failed.note = std::format("plan commit[{}] stage failed: {}", InNode.commitIndexInRepo, stageError);
-                    return failed;
+                    RepoCommitResult result;
+                    result.repo = repo;
+                    if (IsEmptyPlanStageError(stageError)) {
+                        result.note = std::format("plan commit[{}] skipped: no files matched include/exclude pathspec",
+                                                  InNode.commitIndexInRepo);
+                        return result;
+                    }
+                    result.failed = true;
+                    result.note = std::format("plan commit[{}] stage failed: {}", InNode.commitIndexInRepo, stageError);
+                    return result;
                 }
             }
             return CommitSingleRepo(workspaceRoot,
