@@ -80,6 +80,8 @@ src/shell/test/smoke-release-online-build.sh <archive.tar>
 ./scripts/kog status
 ./scripts/kog overview
 ./scripts/kog discover
+./scripts/kog fetch
+./scripts/kog log --remote-count 3
 
 # AI/plan-assisted commit flows
 ./scripts/kog plan new
@@ -102,6 +104,15 @@ src/shell/test/smoke-release-online-build.sh <archive.tar>
 ./scripts/kog completion install bash
 ./scripts/kog completion uninstall bash
 ```
+
+Unknown top-level commands now return a git-style error and suggest the most similar public commands.
+
+`kog fetch` recursively discovers repositories and runs parallel `git fetch` with `--all --prune --tags` defaults. Use `--remote <name>` to target one remote, `--jobs/-j auto|N` for concurrency, and `--dry-run` to preview commands.
+
+`kog log` and `kog slog` now support behind/diverged remote preview controls:
+- `--remote-count <N>` limits remote-only preview lines.
+- `--no-remote-preview` disables remote-only preview lines.
+- Layered config key: `[log] remote_preview_count = 3`.
 
 ## Export release validation
 

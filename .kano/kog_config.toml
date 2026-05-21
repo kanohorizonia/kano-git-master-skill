@@ -85,6 +85,9 @@ require_success = false
 [self]
 compiler_launcher = "auto"
 
+[log]
+remote_preview_count = 3
+
 # Windows MSVC toolchain preference for self-build.
 #
 # Behavior:

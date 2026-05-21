@@ -67,6 +67,8 @@ for it.
 ./scripts/kog status
 ./scripts/kog overview
 ./scripts/kog discover
+./scripts/kog fetch
+./scripts/kog log --remote-count 3
 
 # Commit / plan flows
 ./scripts/kog plan new
@@ -107,6 +109,13 @@ Useful aliases:
 |---|---|
 | `cp` | `commit-push` |
 | `cpa` | commit-push automation entrypoint |
+
+For behind/diverged log readability, configure remote preview defaults in layered `kog_config.toml` files:
+
+```toml
+[log]
+remote_preview_count = 3
+```
 | `pi` | `plan new` |
 | `pia` | `plan new --ai-auto` |
 | `pv` | `plan verify pre-apply` |

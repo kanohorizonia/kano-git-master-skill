@@ -41,6 +41,8 @@ Common commands:
 ./scripts/kog status
 ./scripts/kog overview
 ./scripts/kog discover
+./scripts/kog fetch
+./scripts/kog log --remote-count 3
 
 # Commit / plan flows
 ./scripts/kog plan new
@@ -58,6 +60,8 @@ Common commands:
 ./scripts/kog export --subtree "E:/_gamedev/KanoTamaoProject/UnrealEngine/Engine/Source/Programs/UnrealGameSync" --name UnrealGameSync --source head
 ./scripts/kog export --subtree Engine/Source/Programs/UnrealGameSync --source working-tree
 ```
+
+Unknown top-level commands now print git-style guidance and suggest the most similar public command names.
 
 Subtree standalone export notes:
 - `--subtree` accepts absolute or relative paths.

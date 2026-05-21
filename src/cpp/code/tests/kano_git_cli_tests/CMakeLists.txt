@@ -1,5 +1,8 @@
 add_executable(kano_git_cli_tests
   functional/functional_test_main.cpp
+  functional/unknown_command_suggestions_test.cpp
+  functional/fetch_command_test.cpp
+  functional/log_remote_preview_test.cpp
   functional/log_invocation_bug_condition_test.cpp
   functional/log_invocation_preservation_test.cpp
 )

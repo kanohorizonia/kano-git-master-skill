@@ -2,11 +2,13 @@
 
 #include <CLI/CLI.hpp>
 #include "discovery.hpp"
+#include "kog_config.hpp"
 #include "shell_executor.hpp"
 #include "terminal_color.hpp"
 
 #include <algorithm>
 #include <charconv>
+#include <cstdlib>
 #include <format>
 #include <filesystem>
 #include <iomanip>
@@ -56,6 +58,21 @@ auto ParsePositiveInt(const std::string& InValue, int InDefault) -> int {
     const auto* end = value.data() + value.size();
     const auto result = std::from_chars(begin, end, parsed);
     if (result.ec != std::errc{} || result.ptr != end || parsed <= 0) {
+        return InDefault;
+    }
+    return parsed;
+}
+
+auto ParseNonNegativeInt(const std::string& InValue, int InDefault) -> int {
+    const auto value = Trim(InValue);
+    if (value.empty()) {
+        return InDefault;
+    }
+    int parsed = 0;
+    const auto* begin = value.data();
+    const auto* end = value.data() + value.size();
+    const auto result = std::from_chars(begin, end, parsed);
+    if (result.ec != std::errc{} || result.ptr != end || parsed < 0) {
         return InDefault;
     }
     return parsed;
@@ -185,10 +202,38 @@ struct RepoLogEntry {
     int aheadCount = 0;
     int behindCount = 0;
     RepoSyncState syncState = RepoSyncState::NoUpstream;
+    std::vector<std::string> remoteLogLines;
+    int remoteOmittedCount = 0;
     std::vector<std::string> logLines; // formatted with markers
     bool failed = false;
     bool dirty = false;  // has uncommitted changes
 };
+
+auto ResolveSkillRoot(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path {
+    if (const char* envValue = std::getenv("KANO_GIT_SKILL_ROOT"); envValue != nullptr && *envValue != '\0') {
+        return std::filesystem::path(envValue).lexically_normal();
+    }
+
+    auto current = InWorkspaceRoot.lexically_normal();
+    for (int i = 0; i < 8 && !current.empty(); ++i) {
+        const auto marker = (current / "SKILL.md").lexically_normal();
+        std::error_code ec;
+        if (std::filesystem::exists(marker, ec) && !ec && std::filesystem::is_regular_file(marker, ec)) {
+            return current;
+        }
+        current = current.parent_path();
+    }
+    return {};
+}
+
+auto ResolveLogRemotePreviewCount(const std::filesystem::path& InWorkspaceRoot,
+                                  int InFallback = 3) -> int {
+    const auto value = kog_config::ReadEffectiveValue(
+        InWorkspaceRoot,
+        ResolveSkillRoot(InWorkspaceRoot),
+        "log.remote_preview_count");
+    return std::max(0, ParseNonNegativeInt(value, InFallback));
+}
 
 auto ExtractShaPrefix(const std::string& InLine) -> std::string {
     const auto trimmed = Trim(InLine);
@@ -245,6 +290,29 @@ auto FormatLogLineWithMarkers(const std::filesystem::path& InRepo,
     return oss.str();
 }
 
+auto FormatLogLineWithExplicitMarker(const std::filesystem::path& InRepo,
+                                     const std::string& InMarker,
+                                     const char* InColor,
+                                     const std::string& InLine) -> std::string {
+    const auto trimmed = Trim(InLine);
+    if (trimmed.empty()) {
+        return {};
+    }
+
+    const auto sha = ExtractShaPrefix(trimmed);
+    const auto revision = FirstParentRevisionCount(InRepo, sha);
+
+    std::ostringstream oss;
+    oss << kano::terminal::Wrap(InMarker, InColor) << " ";
+    if (revision > 0) {
+        oss << kano::terminal::Wrap("[" + std::to_string(revision) + "] ", kano::terminal::Color::Dim);
+    } else {
+        oss << kano::terminal::Wrap("[?] ", kano::terminal::Color::Dim);
+    }
+    oss << trimmed;
+    return oss.str();
+}
+
 auto ResolveRepoBranchRefs(const std::filesystem::path& InRepo) -> RepoBranchRefs {
     RepoBranchRefs refs;
 
@@ -282,7 +350,8 @@ auto ResolveRepoBranchRefs(const std::filesystem::path& InRepo) -> RepoBranchRef
 auto CollectRepoLogEntry(const std::filesystem::path& InRoot,
                          const std::filesystem::path& InRepo,
                          int InCount,
-                         bool InSlogFormat) -> RepoLogEntry {
+                         bool InSlogFormat,
+                         int InRemotePreviewCount) -> RepoLogEntry {
     RepoLogEntry entry;
     entry.repoPath = InRepo;
     entry.repoName = RepoNameFromPath(InRepo);
@@ -323,8 +392,50 @@ auto CollectRepoLogEntry(const std::filesystem::path& InRoot,
         }
     }
 
-    // Collect log lines
     const auto fmt = InSlogFormat ? "--pretty=format:%h %an %s" : "--pretty=format:%h %an %s";
+
+    if (hasUpstream && entry.behindCount > 0 && InRemotePreviewCount > 0) {
+        const int remoteCount = std::min(InRemotePreviewCount, entry.behindCount);
+        const auto remoteOut = GitCapture(InRepo, {"log", std::format("-{}", remoteCount), fmt, "HEAD..@{upstream}"});
+        if (remoteOut.exitCode == 0) {
+            for (const auto& line : SplitNonEmptyLines(remoteOut.stdoutStr)) {
+                const auto formatted = FormatLogLineWithExplicitMarker(InRepo, "REMOTE", kano::terminal::Color::BoldYellow, line);
+                if (!formatted.empty()) {
+                    entry.remoteLogLines.push_back(formatted);
+                }
+            }
+        }
+        if (entry.behindCount > static_cast<int>(entry.remoteLogLines.size())) {
+            entry.remoteOmittedCount = entry.behindCount - static_cast<int>(entry.remoteLogLines.size());
+        }
+    }
+
+    if (entry.syncState == RepoSyncState::Behind && entry.aheadCount == 0) {
+        const auto localHeadOut = GitCapture(InRepo, {"log", "-1", fmt, "HEAD"});
+        if (localHeadOut.exitCode == 0) {
+            for (const auto& line : SplitNonEmptyLines(localHeadOut.stdoutStr)) {
+                const auto formatted = FormatLogLineWithExplicitMarker(InRepo, "LOCAL", kano::terminal::Color::BoldGreen, line);
+                if (!formatted.empty()) {
+                    entry.logLines.push_back(formatted);
+                }
+            }
+        }
+        return entry;
+    }
+
+    if (entry.syncState == RepoSyncState::Diverged && hasUpstream) {
+        const auto localDivergedOut = GitCapture(InRepo, {"log", std::format("-{}", InCount), fmt, "@{upstream}..HEAD"});
+        if (localDivergedOut.exitCode == 0) {
+            for (const auto& line : SplitNonEmptyLines(localDivergedOut.stdoutStr)) {
+                const auto formatted = FormatLogLineWithExplicitMarker(InRepo, "LOCAL", kano::terminal::Color::BoldGreen, line);
+                if (!formatted.empty()) {
+                    entry.logLines.push_back(formatted);
+                }
+            }
+            return entry;
+        }
+    }
+
     const auto logOut = GitCapture(InRepo, {"log", std::format("-{}", InCount), fmt});
     if (logOut.exitCode == 0) {
         for (const auto& line : SplitNonEmptyLines(logOut.stdoutStr)) {
@@ -385,9 +496,18 @@ auto PrintGroupedLog(const std::vector<RepoLogEntry>& InEntries, int InCount, bo
             std::cout << kano::terminal::Wrap("  (not a git repo)", kano::terminal::Color::Dim) << "\n";
             continue;
         }
-        if (entry.logLines.empty()) {
+        if (entry.remoteLogLines.empty() && entry.logLines.empty()) {
             std::cout << kano::terminal::Wrap("  (no commits)", kano::terminal::Color::Dim) << "\n";
             continue;
+        }
+
+        for (const auto& line : entry.remoteLogLines) {
+            std::cout << "  " << line << "\n";
+        }
+        if (entry.remoteOmittedCount > 0) {
+            std::cout << kano::terminal::Wrap(
+                "  ... " + std::to_string(entry.remoteOmittedCount) + " remote commits omitted",
+                kano::terminal::Color::Dim) << "\n";
         }
         for (const auto& line : entry.logLines) {
             std::cout << "  " << line << "\n";
@@ -664,6 +784,8 @@ void RegisterSlog(CLI::App& InApp) {
     auto* maxDepth = new int{8};
     auto* noCache = new bool{false};
     auto* noRecursive = new bool{false};
+    auto* remoteCount = new int{-1};
+    auto* noRemotePreview = new bool{false};
 
     cmd->add_option("--count,-n", *count, "Number of commits to show");
     cmd->add_option("--repo", *repo, "Repo path or repo name");
@@ -673,6 +795,8 @@ void RegisterSlog(CLI::App& InApp) {
     cmd->add_option("--max-depth", *maxDepth, "Discovery max depth for repo-name lookup");
     cmd->add_flag("--no-cache", *noCache, "Disable discovery cache for repo-name lookup");
     cmd->add_flag("--no-recursive,-N", *noRecursive, "Disable recursive discovery and show current repo only (when --repo is not provided)");
+    cmd->add_option("--remote-count", *remoteCount, "Remote-only preview lines when behind/diverged (default: layered config or 3)");
+    cmd->add_flag("--no-remote-preview", *noRemotePreview, "Disable remote-only preview lines (equivalent to --remote-count 0)");
 
     cmd->callback([=]() {
         if (!countPos->empty()) {
@@ -688,6 +812,16 @@ void RegisterSlog(CLI::App& InApp) {
             std::exit(1);
         }
 
+        const auto rootPath = std::filesystem::path(*root).lexically_normal();
+        int effectiveRemoteCount = *remoteCount >= 0 ? *remoteCount : ResolveLogRemotePreviewCount(rootPath, 3);
+        if (*noRemotePreview) {
+            effectiveRemoteCount = 0;
+        }
+        if (effectiveRemoteCount < 0) {
+            std::cerr << "Error: --remote-count must be >= 0\n";
+            std::exit(1);
+        }
+
         std::string repoSpec = *repo;
         if (repoSpec.empty() && !repoPos->empty()) {
             repoSpec = *repoPos;
@@ -695,26 +829,25 @@ void RegisterSlog(CLI::App& InApp) {
 
         try {
             if (!repoSpec.empty()) {
-                const auto repoPath = ResolveRepoFromSpec(std::filesystem::path(*root), repoSpec, *maxDepth, !*noCache);
-                std::exit(PrintSlog(repoPath, *count));
+                const auto repoPath = ResolveRepoFromSpec(rootPath, repoSpec, *maxDepth, !*noCache);
+                std::vector<RepoLogEntry> entries;
+                entries.push_back(CollectRepoLogEntry(rootPath, repoPath, *count, true, effectiveRemoteCount));
+                PrintGroupedLog(entries, *count, true);
+                PrintLogSummary(entries);
+                std::exit(entries.front().failed ? 1 : 0);
             }
 
-            const auto targets = CollectSlogTargets(std::filesystem::path(*root), *maxDepth, !*noCache, *noRecursive);
+            const auto targets = CollectSlogTargets(rootPath, *maxDepth, !*noCache, *noRecursive);
             if (targets.empty()) {
                 std::cerr << "Error: no git repositories found for slog target scope\n";
                 std::exit(1);
-            }
-
-            const auto rootPath = std::filesystem::path(*root).lexically_normal();
-            if (targets.size() == 1) {
-                std::exit(PrintSlog(targets.front(), *count));
             }
 
             std::vector<RepoLogEntry> entries;
             entries.reserve(targets.size());
             int failed = 0;
             for (const auto& target : targets) {
-                auto entry = CollectRepoLogEntry(rootPath, target, *count, true);
+                auto entry = CollectRepoLogEntry(rootPath, target, *count, true, effectiveRemoteCount);
                 if (entry.failed) failed++;
                 entries.push_back(std::move(entry));
             }
@@ -738,6 +871,8 @@ void RegisterLog(CLI::App& InApp) {
     auto* maxDepth = new int{8};
     auto* noCache = new bool{false};
     auto* noRecursive = new bool{false};
+    auto* remoteCount = new int{-1};
+    auto* noRemotePreview = new bool{false};
 
     cmd->add_option("--count,-n", *count, "Number of commits to show");
     cmd->add_option("--repo", *repo, "Repo path or repo name");
@@ -747,6 +882,8 @@ void RegisterLog(CLI::App& InApp) {
     cmd->add_option("--max-depth", *maxDepth, "Discovery max depth for repo-name lookup");
     cmd->add_flag("--no-cache", *noCache, "Disable discovery cache for repo-name lookup");
     cmd->add_flag("--no-recursive,-N", *noRecursive, "Disable recursive discovery and show current repo only (when --repo is not provided)");
+    cmd->add_option("--remote-count", *remoteCount, "Remote-only preview lines when behind/diverged (default: layered config or 3)");
+    cmd->add_flag("--no-remote-preview", *noRemotePreview, "Disable remote-only preview lines (equivalent to --remote-count 0)");
 
     cmd->callback([=]() {
         if (!countPos->empty()) {
@@ -762,6 +899,16 @@ void RegisterLog(CLI::App& InApp) {
             std::exit(1);
         }
 
+        const auto rootPath = std::filesystem::path(*root).lexically_normal();
+        int effectiveRemoteCount = *remoteCount >= 0 ? *remoteCount : ResolveLogRemotePreviewCount(rootPath, 3);
+        if (*noRemotePreview) {
+            effectiveRemoteCount = 0;
+        }
+        if (effectiveRemoteCount < 0) {
+            std::cerr << "Error: --remote-count must be >= 0\n";
+            std::exit(1);
+        }
+
         std::string repoSpec = *repo;
         if (repoSpec.empty() && !repoPos->empty()) {
             repoSpec = *repoPos;
@@ -769,26 +916,25 @@ void RegisterLog(CLI::App& InApp) {
 
         try {
             if (!repoSpec.empty()) {
-                const auto repoPath = ResolveRepoFromSpec(std::filesystem::path(*root), repoSpec, *maxDepth, !*noCache);
-                std::exit(PrintFullLog(repoPath, *count));
+                const auto repoPath = ResolveRepoFromSpec(rootPath, repoSpec, *maxDepth, !*noCache);
+                std::vector<RepoLogEntry> entries;
+                entries.push_back(CollectRepoLogEntry(rootPath, repoPath, *count, false, effectiveRemoteCount));
+                PrintGroupedLog(entries, *count, false);
+                PrintLogSummary(entries);
+                std::exit(entries.front().failed ? 1 : 0);
             }
 
-            const auto targets = CollectSlogTargets(std::filesystem::path(*root), *maxDepth, !*noCache, *noRecursive);
+            const auto targets = CollectSlogTargets(rootPath, *maxDepth, !*noCache, *noRecursive);
             if (targets.empty()) {
                 std::cerr << "Error: no git repositories found for log target scope\n";
                 std::exit(1);
-            }
-
-            const auto rootPath = std::filesystem::path(*root).lexically_normal();
-            if (targets.size() == 1) {
-                std::exit(PrintFullLog(targets.front(), *count));
             }
 
             std::vector<RepoLogEntry> entries;
             entries.reserve(targets.size());
             int failed = 0;
             for (const auto& target : targets) {
-                auto entry = CollectRepoLogEntry(rootPath, target, *count, false);
+                auto entry = CollectRepoLogEntry(rootPath, target, *count, false, effectiveRemoteCount);
                 if (entry.failed) failed++;
                 entries.push_back(std::move(entry));
             }
