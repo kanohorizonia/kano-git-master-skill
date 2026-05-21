@@ -127,6 +127,13 @@ auto LoadPromptAssetText(const std::filesystem::path& InWorkspaceRoot,
 
 auto CopilotStandaloneCommand() -> std::string {
 #if defined(_WIN32)
+    if (const char* appData = std::getenv("APPDATA"); appData != nullptr && appData[0] != '\0') {
+        const auto candidate = (std::filesystem::path(appData) / "npm" / "copilot.cmd").lexically_normal();
+        std::error_code ec;
+        if (std::filesystem::exists(candidate, ec) && !ec) {
+            return candidate.string();
+        }
+    }
     return "copilot.cmd";
 #else
     return "copilot";
@@ -141,9 +148,27 @@ auto CodexStandaloneCommand() -> std::string {
 #endif
 }
 
+static auto HasCommand(const std::string& InCommand, const std::vector<std::string>& InArgs = {"--help"}) -> bool {
+    const auto result = shell::ExecuteCommand(InCommand, InArgs, shell::ExecMode::Capture, std::filesystem::current_path());
+    return result.exitCode == 0;
+}
+
+static auto GhCopilotAvailable() -> bool {
+    return HasCommand("gh", {"copilot", "--help"});
+}
+
 auto ExecuteStandaloneCopilot(const std::vector<std::string>& InArgs,
                               std::optional<std::filesystem::path> InWorkingDir) -> shell::ExecResult {
-    return shell::ExecuteCommand(CopilotStandaloneCommand(), InArgs, shell::ExecMode::Capture, InWorkingDir);
+    const auto standaloneCopilot = CopilotStandaloneCommand();
+    if (HasCommand(standaloneCopilot, {"--help"})) {
+        return shell::ExecuteCommand(standaloneCopilot, InArgs, shell::ExecMode::Capture, InWorkingDir);
+    }
+    if (GhCopilotAvailable()) {
+        std::vector<std::string> ghArgs{"copilot", "--"};
+        ghArgs.insert(ghArgs.end(), InArgs.begin(), InArgs.end());
+        return shell::ExecuteCommand("gh", ghArgs, shell::ExecMode::Capture, InWorkingDir);
+    }
+    return shell::ExecuteCommand(standaloneCopilot, InArgs, shell::ExecMode::Capture, InWorkingDir);
 }
 
 static auto IsTruthyEnv(const char* InValue) -> bool {

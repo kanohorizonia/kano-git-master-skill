@@ -29,6 +29,13 @@ auto HasCommand(const std::string& InCommand, const std::vector<std::string>& In
 
 static auto CopilotStandaloneCommand() -> std::string {
 #if defined(_WIN32)
+    if (const char* appData = std::getenv("APPDATA"); appData != nullptr && appData[0] != '\0') {
+        const auto candidate = (std::filesystem::path(appData) / "npm" / "copilot.cmd").lexically_normal();
+        std::error_code ec;
+        if (std::filesystem::exists(candidate, ec) && !ec) {
+            return candidate.string();
+        }
+    }
     return "copilot.cmd";
 #else
     return "copilot";
@@ -74,6 +81,37 @@ auto AiCacheDir() -> std::filesystem::path {
     return (root / "ai").lexically_normal();
 }
 
+auto GhCopilotAvailable() -> bool {
+    // Use --help rather than --version; newer gh versions ship copilot as a
+    // built-in and --version may not be a valid flag.
+    return HasCommand("gh", {"copilot", "--help"});
+}
+
+auto TryAutoInstallCopilotViaGh() -> bool {
+    if (!HasCommand("gh", {"--version"})) {
+        return false;
+    }
+    // If copilot is already a gh built-in it will report it as available now.
+    if (GhCopilotAvailable()) {
+        return true;
+    }
+    std::cout << "[kog ai] gh found but gh-copilot not available — installing github/gh-copilot ...\n";
+    const auto result = shell::ExecuteCommand(
+        "gh",
+        {"extension", "install", "github/gh-copilot"},
+        shell::ExecMode::PassThrough,
+        std::filesystem::current_path()
+    );
+    // exit 1 with "built-in" in stderr means copilot is already a built-in subcommand.
+    const bool alreadyBuiltin = result.exitCode != 0 &&
+        result.stderrStr.find("built-in") != std::string::npos;
+    if (result.exitCode != 0 && !alreadyBuiltin) {
+        std::cerr << "[kog ai] gh extension install failed (exit " << result.exitCode << "); try manually: gh extension install github/gh-copilot\n";
+        return false;
+    }
+    return GhCopilotAvailable();
+}
+
 auto ResolveProvider(const std::string& InProviderRaw) -> std::string {
     const auto provider = ToLower(Trim(InProviderRaw));
     if (!provider.empty() && provider != "auto") {
@@ -81,7 +119,7 @@ auto ResolveProvider(const std::string& InProviderRaw) -> std::string {
     }
 
     if (HasCommand(CopilotStandaloneCommand(), {"--help"}) || HasCommand("copilot", {"--help"}) ||
-        HasCommand("gh", {"copilot", "--version"})) {
+        GhCopilotAvailable()) {
         return "copilot";
     }
     if (HasCommand("codex", {"--help"})) {
@@ -89,6 +127,12 @@ auto ResolveProvider(const std::string& InProviderRaw) -> std::string {
     }
     if (HasCommand("opencode", {"--help"})) {
         return "opencode";
+    }
+
+    // No provider detected. If gh is available, auto-install the gh-copilot extension
+    // and retry so subsequent commands can use it without manual intervention.
+    if (TryAutoInstallCopilotViaGh()) {
+        return "copilot";
     }
     return {};
 }
@@ -738,7 +782,11 @@ auto RunAiGenerate(const std::string& InProvider,
 
     if (InProvider == "copilot") {
         const auto standaloneCopilot = CopilotStandaloneCommand();
-        if (HasCommand(standaloneCopilot, {"--help"}) || HasCommand("copilot", {"--help"})) {
+        // Avoid false-positive: HasCommand("copilot") can match gh's built-in shim on Windows.
+        // Only fall back to the bare "copilot" probe when gh-copilot is NOT the available route.
+        const bool standaloneAvail = HasCommand(standaloneCopilot, {"--help"}) ||
+                                     (!GhCopilotAvailable() && HasCommand("copilot", {"--help"}));
+        if (standaloneAvail) {
             std::vector<std::string> args{"-s", "-p", effectivePrompt};
             if (!InModel.empty() && InModel != "auto") {
                 args.push_back("--model");
@@ -771,7 +819,7 @@ auto RunAiGenerate(const std::string& InProvider,
             return shell::ExecuteCommand(standaloneCopilot, args, shell::ExecMode::Capture, InWorkingDir);
         }
 
-        if (HasCommand("gh", {"copilot", "--version"})) {
+        if (GhCopilotAvailable()) {
             std::vector<std::string> args{"copilot", "--", "-s", "-p", effectivePrompt};
             if (!InModel.empty() && InModel != "auto") {
                 args.push_back("--model");

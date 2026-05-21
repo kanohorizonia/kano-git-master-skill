@@ -24,6 +24,11 @@
 - Do **not** patch this class of problem by hardcoding user-specific paths, adding ad-hoc launcher PATH hacks, or preferring random system installations over the repo `.pixi` environment.
 - On Windows, verify the actual execution path before editing: launcher `self build` → pixi task / native build entrypoint → PowerShell preset helper → CMake preset.
 - If the observed failure involves tool selection, confirm whether the active command is running inside the pixi environment before changing launcher shell shims or prerequisite scripts.
+- **Build Command Prioritization**: When building the workspace or the CLI itself, prioritize build tools and commands in the following order:
+  1. **Primary Entrypoint**: `kog self build` (e.g. `./scripts/kog self build` or `scripts\kog.bat self build`). This is the preferred, top-level launcher entrypoint that bootstraps the environment and verifies prerequisite states.
+  2. **Secondary Entrypoint**: `pixi run <build-task>` (e.g. `pixi run build` or using the shared manifest `pixi run --manifest-path src/cpp/shared/infra/pixi.toml build`).
+  3. **Fallback Entrypoint**: Direct `cmake` / `ninja` commands. Use these only for low-level debugging or when custom options are strictly necessary. However, **any custom/direct `cmake` build command MUST also be registered/written as a task inside `pixi.toml`** (specifically `src/cpp/shared/infra/pixi.toml` or `pixi.toml` under the target's platform tasks). This maintains `pixi.toml` as the single source of truth for all build tool chains.
+
 
 ## Pixi environment activation and launcher responsibilities
 

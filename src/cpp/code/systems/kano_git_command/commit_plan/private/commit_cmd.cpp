@@ -366,6 +366,13 @@ auto HasCommand(const std::string& InCommand, const std::vector<std::string>& In
 
 auto CopilotStandaloneCommand() -> std::string {
 #if defined(_WIN32)
+    if (const char* appData = std::getenv("APPDATA"); appData != nullptr && appData[0] != '\0') {
+        const auto candidate = (std::filesystem::path(appData) / "npm" / "copilot.cmd").lexically_normal();
+        std::error_code ec;
+        if (std::filesystem::exists(candidate, ec) && !ec) {
+            return candidate.string();
+        }
+    }
     return "copilot.cmd";
 #else
     return "copilot";
@@ -380,8 +387,15 @@ auto CodexStandaloneCommand() -> std::string {
 #endif
 }
 
+auto GhCopilotAvailable() -> bool {
+    // Use --help rather than --version; newer gh versions ship copilot as a
+    // built-in command where --version is not the right capability probe.
+    return HasCommand("gh", {"copilot", "--help"});
+}
+
 auto HasStandaloneCopilotCommand() -> bool {
-    return HasCommand(CopilotStandaloneCommand(), {"--help"}) || HasCommand("copilot", {"--help"});
+    return HasCommand(CopilotStandaloneCommand(), {"--help"}) ||
+           (!GhCopilotAvailable() && HasCommand("copilot", {"--help"}));
 }
 
 auto WriteCodexResponseFilePath(const std::filesystem::path& InWorkdir,
@@ -1108,7 +1122,8 @@ auto RunAiGenerate(const std::string& InProvider,
 
     if (InProvider == "copilot") {
         const auto standaloneCopilot = CopilotStandaloneCommand();
-        if (HasCommand(standaloneCopilot, {"--help"}) || HasCommand("copilot", {"--help"})) {
+        if (HasCommand(standaloneCopilot, {"--help"}) ||
+            (!GhCopilotAvailable() && HasCommand("copilot", {"--help"}))) {
             std::vector<std::string> args{"-s", "-p", effectivePrompt};
             if (!InModel.empty() && InModel != "auto") {
                 args.push_back("--model");
@@ -1141,7 +1156,7 @@ auto RunAiGenerate(const std::string& InProvider,
             return shell::ExecuteCommand(standaloneCopilot, args, shell::ExecMode::Capture, InWorkingDir);
         }
 
-        if (HasCommand("gh", {"copilot", "--version"})) {
+        if (GhCopilotAvailable()) {
             std::vector<std::string> args{"copilot", "--", "-s", "-p", effectivePrompt};
             if (!InModel.empty() && InModel != "auto") {
                 args.push_back("--model");
