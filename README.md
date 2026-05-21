@@ -140,6 +140,34 @@ Shared native build/test/report/bootstrap helpers live in
 `src/cpp/shared/infra/scripts/`. Use them as infrastructure backing scripts, not
 as the primary Git workflow UX.
 
+## Canonical Test and Report Tasks
+
+Root Pixi task facade:
+
+- `pixi run quick-test`: fast local deterministic confidence lane.
+- `pixi run test`: default local deterministic validation lane.
+- `pixi run full-test`: broad deterministic local validation lane.
+- `pixi run test-report`: normalize and validate test report rendering inputs.
+- `pixi run coverage-report`: render normalized coverage outputs.
+- `pixi run gather-reports`: gather raw evidence and delegate final rendering.
+
+Report rendering ownership:
+
+- Raw evidence (JUnit/CTest/Cobertura/logs) is produced by this repo.
+- Final human and machine summaries are rendered by `kano-cpp-test-skill`.
+- Canonical outputs are feature-first summaries:
+  - `test-summary.json`
+  - `test-summary.md`
+  - `html/index.html`
+  - `suites/<suite-id>/summary.json`
+- Internal temporary paths such as `.tmp-test-result` are raw artifact paths only
+  and must not appear as public suite titles.
+
+Legacy note:
+
+- Local scripts that directly render per-run JUnit HTML are legacy compatibility
+  helpers and are not the canonical CI report renderer.
+
 ## Documentation Status
 
 The native C++ CLI is now the source of truth for current workflows. Some older

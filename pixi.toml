@@ -31,6 +31,13 @@ bash = "*"
 # =============================================================================
 
 [tasks]
+quick-test = "pixi run --manifest-path src/cpp/shared/infra/pixi.toml quick-test"
+test = "pixi run --manifest-path src/cpp/shared/infra/pixi.toml test"
+full-test = "pixi run --manifest-path src/cpp/shared/infra/pixi.toml full-test"
+test-report = "pixi run --manifest-path src/cpp/shared/infra/pixi.toml test-report"
+coverage-report = "pixi run --manifest-path src/cpp/shared/infra/pixi.toml coverage-report"
+gather-reports = "pixi run --manifest-path src/cpp/shared/infra/pixi.toml gather-reports"
+
 acceptance-quickstart = "bash src/shell/test/acceptance-quickstart-commit-push.sh"
 acceptance-commit-plan-first = "bash src/shell/test/acceptance-commit-plan-first.sh"
 acceptance-ignore-plan = "bash src/shell/test/acceptance-ignore-plan.sh"
