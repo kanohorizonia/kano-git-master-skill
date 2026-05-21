@@ -20,6 +20,7 @@ void RegisterAll(CLI::App& InApp) {
     RegisterDiscover(InApp);
     RegisterDoctor(InApp);
     RegisterExport(InApp);
+    RegisterFetch(InApp);
     RegisterForeach(InApp);
     RegisterGuide(InApp);
     RegisterIgnore(InApp);
@@ -71,6 +72,7 @@ void RegisterAll(CLI::App& InApp) {
     setGroup("slog", commonGroup);
     setGroup("reset", commonGroup);
     setGroup("update", commonGroup);
+    setGroup("fetch", commonGroup);
     setGroup("tui", commonGroup);
 
     // 2. Repository Management
