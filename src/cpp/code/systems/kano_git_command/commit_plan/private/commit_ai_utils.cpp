@@ -8,6 +8,7 @@
 #include <CLI/CLI.hpp>
 #include <algorithm>
 #include <chrono>
+#include <deque>
 #include <cstring>
 #include <ctime>
 #include <format>
@@ -341,52 +342,101 @@ auto AddDirtyNestedReposFromRootStatus(const std::filesystem::path& InWorkspaceR
         selectedByPath.emplace(ToGeneric((*InOutSelected)[index].path), index);
     }
 
-    const auto rootStatus = GitCapture(InWorkspaceRoot, {"status", "--porcelain"});
-    if (rootStatus.exitCode != 0) {
-        return;
+    const auto workspaceRootKey = ToGeneric(InWorkspaceRoot);
+    std::deque<std::filesystem::path> pending;
+    std::unordered_set<std::string> scanned;
+
+    pending.push_back(InWorkspaceRoot);
+    for (const auto& repo : *InOutSelected) {
+        pending.push_back(repo.path);
     }
 
-    std::istringstream iss(rootStatus.stdoutStr);
-    std::string line;
-    while (std::getline(iss, line)) {
-        const auto relPath = ParseRootStatusPath(std::move(line));
-        if (relPath.empty()) {
+    while (!pending.empty()) {
+        const auto scanRepo = pending.front().lexically_normal();
+        pending.pop_front();
+
+        const auto scanRepoKey = ToGeneric(scanRepo);
+        if (scanRepoKey.empty() || !scanned.insert(scanRepoKey).second) {
             continue;
         }
 
-        const auto candidate = ResolveRepoPath(InWorkspaceRoot, relPath);
-        if (candidate.empty()) {
-            continue;
-        }
-        const auto candidateKey = ToGeneric(candidate);
-        if (candidateKey.empty() || candidateKey == ToGeneric(InWorkspaceRoot)) {
+        const auto status = GitCapture(scanRepo, {"status", "--porcelain"});
+        if (status.exitCode != 0) {
             continue;
         }
 
-        const auto inGitRepo = GitCapture(candidate, {"rev-parse", "--is-inside-work-tree"});
-        if (inGitRepo.exitCode != 0 || Trim(inGitRepo.stdoutStr) != "true") {
-            continue;
-        }
-        if (!RepoHasPorcelainChanges(candidate)) {
-            continue;
-        }
+        std::istringstream iss(status.stdoutStr);
+        std::string line;
+        while (std::getline(iss, line)) {
+            const auto relPath = ParseRootStatusPath(std::move(line));
+            if (relPath.empty() || relPath.rfind("../", 0) == 0) {
+                continue;
+            }
+            if (IsProbableIgnoreArtifactPath(relPath) || IsInternalPipelineArtifactPath(relPath)) {
+                continue;
+            }
 
-        if (const auto selected = selectedByPath.find(candidateKey); selected != selectedByPath.end()) {
-            (*InOutSelected)[selected->second].hasChanges = true;
-            continue;
-        }
+            const auto candidate = ResolveRepoPath(scanRepo, relPath);
+            if (candidate.empty()) {
+                continue;
+            }
+            const auto candidateKey = ToGeneric(candidate);
+            if (candidateKey.empty() || candidateKey == workspaceRootKey || candidateKey == scanRepoKey) {
+                continue;
+            }
+            if (!IsParentRepoPath(InWorkspaceRoot, candidate) && candidateKey != workspaceRootKey) {
+                continue;
+            }
 
-        workspace::RepoRecord record;
-        const auto found = InRecordsByPath.find(candidateKey);
-        if (found != InRecordsByPath.end()) {
-            record = found->second;
-        } else {
-            record.path = candidate;
-            record.type = "explicit-dirty-fallback";
+            const auto inGitRepo = GitCapture(candidate, {"rev-parse", "--is-inside-work-tree"});
+            if (inGitRepo.exitCode != 0 || Trim(inGitRepo.stdoutStr) != "true") {
+                continue;
+            }
+            if (!RepoHasPorcelainChanges(candidate)) {
+                continue;
+            }
+
+            if (const auto selected = selectedByPath.find(candidateKey); selected != selectedByPath.end()) {
+                auto& selectedRecord = (*InOutSelected)[selected->second];
+                selectedRecord.hasChanges = true;
+                if (candidateKey != scanRepoKey && scanRepoKey != workspaceRootKey) {
+                    const auto depKey = ToGeneric(scanRepo);
+                    const bool hasDependency = std::any_of(selectedRecord.dependencies.begin(),
+                                                           selectedRecord.dependencies.end(),
+                                                           [&](const auto& dep) {
+                                                               return ToGeneric(dep) == depKey;
+                                                           });
+                    if (!hasDependency) {
+                        selectedRecord.dependencies.push_back(scanRepo);
+                    }
+                }
+                pending.push_back(candidate);
+                continue;
+            }
+
+            workspace::RepoRecord record;
+            const auto found = InRecordsByPath.find(candidateKey);
+            if (found != InRecordsByPath.end()) {
+                record = found->second;
+            } else {
+                record.path = candidate;
+                record.type = "explicit-dirty-fallback";
+            }
+            record.hasChanges = true;
+            if (candidateKey != scanRepoKey && scanRepoKey != workspaceRootKey) {
+                const bool hasDependency = std::any_of(record.dependencies.begin(),
+                                                       record.dependencies.end(),
+                                                       [&](const auto& dep) {
+                                                           return ToGeneric(dep) == scanRepoKey;
+                                                       });
+                if (!hasDependency) {
+                    record.dependencies.push_back(scanRepo);
+                }
+            }
+            InOutSelected->push_back(std::move(record));
+            selectedByPath.emplace(candidateKey, InOutSelected->size() - 1);
+            pending.push_back(candidate);
         }
-        record.hasChanges = true;
-        InOutSelected->push_back(std::move(record));
-        selectedByPath.emplace(candidateKey, InOutSelected->size() - 1);
     }
 }
 

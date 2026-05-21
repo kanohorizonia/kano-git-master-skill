@@ -1,4 +1,5 @@
 #include "plan_utils.hpp"
+#include "commit_ai_utils.hpp"
 #include "terminal_color.hpp"
 #include "ai_utils.hpp"
 #include "command_runtime_ops.hpp"
@@ -679,9 +680,39 @@ auto AppendCommitConventionSkillSection(const std::filesystem::path& InWorkspace
     return InPrompt;
 }
 
+namespace {
+
+auto DiscoverSeedableCommitRepos(const std::filesystem::path& InWorkspaceRoot) -> std::vector<std::filesystem::path> {
+    std::vector<std::filesystem::path> ordered;
+    std::unordered_set<std::string> seen;
+
+    auto appendRepo = [&](const std::filesystem::path& InRepo) {
+        const auto normalized = InRepo.lexically_normal();
+        const auto key = ToGeneric(normalized);
+        if (key.empty()) {
+            return;
+        }
+        if (seen.insert(key).second) {
+            ordered.push_back(normalized);
+        }
+    };
+
+    for (const auto& record : BuildCommitScopeRecords(InWorkspaceRoot, "", false, true)) {
+        appendRepo(record.path);
+    }
+
+    for (const auto& repo : DiscoverWorkspaceRepos(InWorkspaceRoot)) {
+        appendRepo(repo);
+    }
+
+    return ordered;
+}
+
+} // namespace
+
 auto BuildCommitSeedEntriesJson(const std::filesystem::path& InWorkspaceRoot, const bool InUsePlaceholders) -> std::string {
     nlohmann::json entries = nlohmann::json::array();
-    const auto repos = DiscoverWorkspaceRepos(InWorkspaceRoot);
+    const auto repos = DiscoverSeedableCommitRepos(InWorkspaceRoot);
     for (const auto& repo : repos) {
         const auto status = GitCapture(repo, {"status", "--porcelain", "--untracked-files=all"});
         if (status.exitCode != 0 || Trim(status.stdoutStr).empty()) continue;
@@ -832,7 +863,7 @@ auto SeedCommitStage(const std::filesystem::path& InWorkspaceRoot,
     try {
         // Build the new commit stage as a JSON array using nlohmann
         nlohmann::json commitStage = nlohmann::json::array();
-        const auto repos = DiscoverWorkspaceRepos(InWorkspaceRoot);
+        const auto repos = DiscoverSeedableCommitRepos(InWorkspaceRoot);
         for (const auto& repo : repos) {
             const auto status = GitCapture(repo, {"status", "--porcelain", "--untracked-files=all"});
             const bool hasDirtyChanges = (status.exitCode == 0 && !Trim(status.stdoutStr).empty());
@@ -1290,6 +1321,54 @@ auto StampPlanAiPlannerMetadata(std::string InPlanText,
     }
 }
 
+auto NormalizeAiReadyPlanReviewVerdicts(std::string InPlanText) -> std::optional<std::string> {
+    try {
+        auto doc = nlohmann::json::parse(InPlanText);
+        if (!doc.contains("meta") || !doc["meta"].is_object()) {
+            return InPlanText;
+        }
+        if (!doc["meta"].contains("review") || !doc["meta"]["review"].is_object()) {
+            doc["meta"]["review"] = nlohmann::json::object();
+        }
+        const auto metaVerdict = Trim(doc["meta"]["review"].value("verdict", ""));
+        if (metaVerdict.empty()) {
+            doc["meta"]["review"]["verdict"] = "pass";
+        }
+
+        if (doc.contains("stages") && doc["stages"].is_object()) {
+            auto normalizeStage = [&](const char* stageName) {
+                if (!doc["stages"].contains(stageName) || !doc["stages"][stageName].is_array()) {
+                    return;
+                }
+                for (auto& repoObj : doc["stages"][stageName]) {
+                    if (!repoObj.is_object() || !repoObj.contains("commits") || !repoObj["commits"].is_array()) {
+                        continue;
+                    }
+                    for (auto& commitObj : repoObj["commits"]) {
+                        if (!commitObj.is_object()) {
+                            continue;
+                        }
+                        if (!commitObj.contains("review") || !commitObj["review"].is_object()) {
+                            commitObj["review"] = nlohmann::json::object();
+                        }
+                        const auto verdict = Trim(commitObj["review"].value("verdict", ""));
+                        if (verdict.empty()) {
+                            commitObj["review"]["verdict"] = "pass";
+                        }
+                    }
+                }
+            };
+            normalizeStage("commit");
+            normalizeStage("post_sync");
+        }
+        return SerializePlanJson(doc);
+    } catch (const nlohmann::json::parse_error& /*e*/) {
+        return std::nullopt;
+    } catch (const nlohmann::json::type_error& /*e*/) {
+        return std::nullopt;
+    }
+}
+
 auto UpsertCommitEntry(const std::string& InPlanText,
                        const std::string& InRepo,
                        const std::string& InMessage,
@@ -1509,7 +1588,7 @@ auto CollectDirtyRepoContextText(const std::filesystem::path& InWorkspaceRoot) -
     };
 
     std::ostringstream oss;
-    const auto repos = DiscoverWorkspaceRepos(InWorkspaceRoot);
+    const auto repos = DiscoverSeedableCommitRepos(InWorkspaceRoot);
     for (const auto& repo : repos) {
         const auto status = GitCapture(repo, {"status", "--porcelain", "--untracked-files=all"});
         if (status.exitCode != 0) {
@@ -1985,14 +2064,19 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
                 if (OutError) *OutError = "AI did not produce an edited working plan file for entry " + std::to_string(entry.index);
                 return false;
             }
+            auto normalizedCandidatePlan = NormalizeAiReadyPlanReviewVerdicts(*candidatePlanText);
+            if (!normalizedCandidatePlan.has_value()) {
+                if (OutError) *OutError = "AI edited working plan could not be normalized for entry " + std::to_string(entry.index);
+                return false;
+            }
 
             std::string candidateReason;
-            if (!ValidateAiReadyPlan(*candidatePlanText, &candidateReason)) {
+            if (!ValidateAiReadyPlan(*normalizedCandidatePlan, &candidateReason)) {
                 if (OutError) *OutError = "AI edited working plan failed validation for entry " + std::to_string(entry.index) + ": " + candidateReason;
                 return false;
             }
 
-            finalPlanJson = *candidatePlanText;
+            finalPlanJson = *normalizedCandidatePlan;
             const auto refreshedEntries = CollectCommitPlanEntries(finalPlanJson);
             for (const auto& refreshed : refreshedEntries) {
                 if (refreshed.index == entry.index) {
@@ -2072,7 +2156,13 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
             return false;
         }
 
-        finalPlanJson = *candidatePlanText;
+        auto normalizedCandidatePlan = NormalizeAiReadyPlanReviewVerdicts(*candidatePlanText);
+        if (!normalizedCandidatePlan.has_value()) {
+            if (OutError) *OutError = "AI edited working plan could not be normalized";
+            return false;
+        }
+
+        finalPlanJson = *normalizedCandidatePlan;
         if (auto stamped = StampPlanAiPlannerMetadata(finalPlanJson, provider, modelDir)) {
             finalPlanJson = *stamped;
         }
@@ -2455,6 +2545,42 @@ auto ValidateAiReadyPlan(const std::string& InPlanText, std::string* OutReason) 
         if (!HasValidCommitItems(InPlanText)) {
             if (OutReason) *OutReason = "no valid non-placeholder commit messages in stages.commit";
             return false;
+        }
+        if (!doc["meta"].contains("review") || !doc["meta"]["review"].is_object()) {
+            if (OutReason) *OutReason = "missing meta.review object";
+            return false;
+        }
+        if (ToLower(Trim(doc["meta"]["review"].value("verdict", ""))) != "pass") {
+            if (OutReason) *OutReason = "meta.review.verdict must be pass";
+            return false;
+        }
+        if (Trim(doc["meta"]["review"].value("reason", "")).empty()) {
+            if (OutReason) *OutReason = "meta.review.reason must be non-empty";
+            return false;
+        }
+        for (const auto& repoObj : doc["stages"]["commit"]) {
+            if (!repoObj.is_object() || !repoObj.contains("commits") || !repoObj["commits"].is_array()) {
+                if (OutReason) *OutReason = "stages.commit repo entries must contain commits arrays";
+                return false;
+            }
+            for (const auto& commitObj : repoObj["commits"]) {
+                if (!commitObj.is_object()) {
+                    if (OutReason) *OutReason = "stages.commit commit entries must be objects";
+                    return false;
+                }
+                if (!commitObj.contains("review") || !commitObj["review"].is_object()) {
+                    if (OutReason) *OutReason = "stages.commit commit entries must include review objects";
+                    return false;
+                }
+                if (ToLower(Trim(commitObj["review"].value("verdict", ""))) != "pass") {
+                    if (OutReason) *OutReason = "stages.commit commit review.verdict must be pass";
+                    return false;
+                }
+                if (Trim(commitObj["review"].value("reason", "")).empty()) {
+                    if (OutReason) *OutReason = "stages.commit commit review.reason must be non-empty";
+                    return false;
+                }
+            }
         }
         return true;
     } catch (const nlohmann::json::parse_error& e) {

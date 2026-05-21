@@ -192,6 +192,7 @@ auto ApplyCommitStageReplacement(std::string InPlanText,
 auto StampPlanAiPlannerMetadata(std::string InPlanText,
                                 const std::string& InProvider,
                                 const std::string& InModel) -> std::optional<std::string>;
+auto NormalizeAiReadyPlanReviewVerdicts(std::string InPlanText) -> std::optional<std::string>;
 auto UpsertCommitEntry(const std::string& InPlanText,
                        const std::string& InRepo,
                        const std::string& InMessage,

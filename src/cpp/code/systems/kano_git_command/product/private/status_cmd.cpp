@@ -82,6 +82,72 @@ auto SplitNonEmptyLines(const std::string& InText) -> std::vector<std::string> {
     return out;
 }
 
+auto ParseStatusChangedPath(std::string InLine) -> std::string {
+    while (!InLine.empty() && (InLine.back() == '\r' || InLine.back() == '\n')) {
+        InLine.pop_back();
+    }
+    if (InLine.size() < 4) {
+        return {};
+    }
+
+    auto relPath = Trim(InLine.substr(3));
+    const auto arrowPos = relPath.find(" -> ");
+    if (arrowPos != std::string::npos) {
+        relPath = Trim(relPath.substr(arrowPos + 4));
+    }
+    return relPath;
+}
+
+auto IsInternalArtifactPath(const std::string& InPath) -> bool {
+    auto lower = InPath;
+    std::replace(lower.begin(), lower.end(), '\\', '/');
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+
+    auto matchDir = [&](const std::string& token) {
+        if (lower == token) return true;
+        if (lower.rfind(token + "/", 0) == 0) return true;
+        if (lower.find("/" + token + "/") != std::string::npos) return true;
+        if (lower.size() >= token.size() + 1 && lower.substr(lower.size() - token.size() - 1) == ("/" + token)) return true;
+        return false;
+    };
+
+    return matchDir(".kano") || matchDir(".sisyphus");
+}
+
+auto FilterVisibleStatusLines(const std::string& InStatusText) -> std::vector<std::string> {
+    std::vector<std::string> filtered;
+    std::istringstream iss(InStatusText);
+    std::string rawLine;
+    while (std::getline(iss, rawLine)) {
+        while (!rawLine.empty() && (rawLine.back() == '\r' || rawLine.back() == '\n')) {
+            rawLine.pop_back();
+        }
+        if (Trim(rawLine).empty()) {
+            continue;
+        }
+        if (rawLine.find(" ../") != std::string::npos || rawLine.rfind("../", 0) == 0) {
+            continue;
+        }
+        auto normalizedLine = rawLine;
+        std::replace(normalizedLine.begin(), normalizedLine.end(), '\\', '/');
+        std::transform(normalizedLine.begin(), normalizedLine.end(), normalizedLine.begin(), [](unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
+        if (normalizedLine.find(" .kano/") != std::string::npos ||
+            normalizedLine.find(" .sisyphus/") != std::string::npos) {
+            continue;
+        }
+        const auto path = ParseStatusChangedPath(rawLine);
+        if (!path.empty() && IsInternalArtifactPath(path)) {
+            continue;
+        }
+        filtered.push_back(rawLine);
+    }
+    return filtered;
+}
+
 auto GitCapture(const std::filesystem::path& InRepo, const std::vector<std::string>& InArgs) -> shell::ExecResult {
     return shell::ExecuteCommand("git", InArgs, shell::ExecMode::Capture, InRepo);
 }
@@ -366,7 +432,7 @@ auto RefreshCachedRepoRecords(const std::vector<workspace::RepoRecord>& InRepos)
         updated.currentBranch = CurrentBranch(repo.path);
         updated.remotes = CurrentRemote(repo.path);
         const auto statusOut = GitCapture(repo.path, {"status", "--porcelain"});
-        updated.hasChanges = statusOut.exitCode == 0 && !Trim(statusOut.stdoutStr).empty();
+        updated.hasChanges = statusOut.exitCode == 0 && !FilterVisibleStatusLines(statusOut.stdoutStr).empty();
         refreshed.push_back(std::move(updated));
     }
     return refreshed;
@@ -629,17 +695,7 @@ auto MakeRepoView(const workspace::RepoRecord& InRepo, const std::filesystem::pa
     // Filter out external paths (starting with "../") which represent submodule changes
     // outside this repo's root - these should not mark the repo as dirty
     if (statusQuick.exitCode == 0 && !Trim(statusQuick.stdoutStr).empty()) {
-        const auto allLines = SplitNonEmptyLines(statusQuick.stdoutStr);
-        bool hasInternalDirty = false;
-        for (const auto& line : allLines) {
-            // Skip lines with "../" paths - these are external submodules or paths
-            if (line.find(" ../") != std::string::npos || line.rfind("../", 0) == 0) {
-                continue;
-            }
-            hasInternalDirty = true;
-            break;
-        }
-        row.repoDirty = hasInternalDirty;
+        row.repoDirty = !FilterVisibleStatusLines(statusQuick.stdoutStr).empty();
     } else {
         row.repoDirty = false;
     }
@@ -668,15 +724,8 @@ auto MakeRepoView(const workspace::RepoRecord& InRepo, const std::filesystem::pa
     
     const auto statusOut = GitCapture(InRepo.path, {"status", "--porcelain"});
     if (statusOut.exitCode == 0) {
-        // Filter to only include internal paths (not external "../" submodule paths)
-        const auto allLines = SplitNonEmptyLines(statusOut.stdoutStr);
-        for (const auto& line : allLines) {
-            // Skip lines with "../" paths - these are external submodules or paths outside this repo
-            if (line.find(" ../") != std::string::npos || line.rfind("../", 0) == 0) {
-                continue;
-            }
-            row.statusLines.push_back(line);
-        }
+        row.statusLines = FilterVisibleStatusLines(statusOut.stdoutStr);
+        row.repoDirty = !row.statusLines.empty();
     }
     
     return row;
@@ -946,8 +995,8 @@ void RegisterRepo(CLI::App& InApp) {
         workspace::RepoRecord record;
         record.path = repoPath;
         record.type = (repoPath == root) ? "root" : "direct";
-        record.hasChanges = GitCapture(repoPath, {"status", "--porcelain"}).exitCode == 0 &&
-                            !Trim(GitCapture(repoPath, {"status", "--porcelain"}).stdoutStr).empty();
+        const auto statusOut = GitCapture(repoPath, {"status", "--porcelain"});
+        record.hasChanges = statusOut.exitCode == 0 && !FilterVisibleStatusLines(statusOut.stdoutStr).empty();
 
         const auto rows = BuildRepoViews({record}, repoPath);
 

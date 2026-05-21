@@ -281,3 +281,31 @@ TEST_CASE("FillPlanByAi uses working-copy flow for per-commit mode",
     REQUIRE(finalDoc["meta"]["planner"]["provider"].get<std::string>() == "copilot");
     REQUIRE(finalDoc["meta"]["planner"]["ai-model"].get<std::string>() == "gpt-5.4");
 }
+
+TEST_CASE("FillPlanByAi restores missing commit review verdicts in edited working plans",
+          "[unit][FillPlanByAi][working-copy][review-verdict][deterministic]") {
+    const auto workspaceRoot = UniqueTempWorkspace("single-missing-review-verdict");
+    const auto initialPlan = BuildSingleEntryPlan(workspaceRoot,
+                                                  "replace-with-commit-message",
+                                                  "replace-with-review-reason");
+    auto candidateDoc = nlohmann::json::parse(initialPlan);
+    candidateDoc["stages"]["commit"][0]["commits"][0]["message"] =
+        "[Build][Chore] Normalize AI plan review verdict defaults (NO-TICKET)";
+    candidateDoc["stages"]["commit"][0]["commits"][0]["include"] = nlohmann::json::array(
+        {"src/cpp/code/systems/kano_git_command/commit_plan/private/plan_utils.cpp"});
+    candidateDoc["stages"]["commit"][0]["commits"][0]["review"]["reason"] =
+        "Only commit-plan working-copy normalization logic is included and no unrelated files or secrets are part of this commit.";
+    candidateDoc["stages"]["commit"][0]["commits"][0]["review"].erase("verdict");
+
+    std::string validationError;
+    REQUIRE_FALSE(ValidateAiReadyPlan(candidateDoc.dump(), &validationError));
+
+    const auto normalizedPlan = NormalizeAiReadyPlanReviewVerdicts(candidateDoc.dump());
+    REQUIRE(normalizedPlan.has_value());
+    REQUIRE(ValidateAiReadyPlan(*normalizedPlan, &validationError));
+
+    const auto finalDoc = nlohmann::json::parse(*normalizedPlan);
+    REQUIRE(finalDoc["stages"]["commit"][0]["commits"][0]["review"]["verdict"].get<std::string>() == "pass");
+    REQUIRE(finalDoc["stages"]["commit"][0]["commits"][0]["review"]["reason"].get<std::string>() ==
+            "Only commit-plan working-copy normalization logic is included and no unrelated files or secrets are part of this commit.");
+}
