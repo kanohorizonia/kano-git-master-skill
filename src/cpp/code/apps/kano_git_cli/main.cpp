@@ -5,11 +5,13 @@
 
 #include <CLI/CLI.hpp>
 #include "command_registry.hpp"
+#include <algorithm>
 #include <cctype>
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <iostream>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -24,6 +26,159 @@
 using namespace kano::git;
 
 namespace {
+
+auto ToLower(std::string InValue) -> std::string {
+    std::transform(InValue.begin(), InValue.end(), InValue.begin(), [](unsigned char InChar) {
+        return static_cast<char>(std::tolower(InChar));
+    });
+    return InValue;
+}
+
+auto CollectTopLevelCommandNames(const CLI::App& InApp) -> std::vector<std::string> {
+    const auto subcommands = InApp.get_subcommands([](const CLI::App*) {
+        return true;
+    });
+
+    std::vector<std::string> out;
+    out.reserve(subcommands.size());
+    static const std::vector<std::string> kHiddenInternal = {
+        "complete",
+        "repo",
+    };
+
+    for (const auto* subcommand : subcommands) {
+        const auto name = subcommand->get_name();
+        if (name.empty()) {
+            continue;
+        }
+        if (std::find(kHiddenInternal.begin(), kHiddenInternal.end(), name) != kHiddenInternal.end()) {
+            continue;
+        }
+        out.push_back(name);
+    }
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
+}
+
+auto IsKnownTopLevelCommand(const std::string& InCommand,
+                            const std::vector<std::string>& InTopLevelCommands) -> bool {
+    return std::find(InTopLevelCommands.begin(), InTopLevelCommands.end(), InCommand) != InTopLevelCommands.end();
+}
+
+auto ComputeEditDistance(const std::string& InLhs, const std::string& InRhs) -> int {
+    const int lhsLength = static_cast<int>(InLhs.size());
+    const int rhsLength = static_cast<int>(InRhs.size());
+    std::vector<std::vector<int>> dp(lhsLength + 1, std::vector<int>(rhsLength + 1, 0));
+
+    for (int i = 0; i <= lhsLength; ++i) {
+        dp[i][0] = i;
+    }
+    for (int j = 0; j <= rhsLength; ++j) {
+        dp[0][j] = j;
+    }
+
+    for (int i = 1; i <= lhsLength; ++i) {
+        for (int j = 1; j <= rhsLength; ++j) {
+            const int cost = (InLhs[i - 1] == InRhs[j - 1]) ? 0 : 1;
+            dp[i][j] = std::min({
+                dp[i - 1][j] + 1,
+                dp[i][j - 1] + 1,
+                dp[i - 1][j - 1] + cost,
+            });
+            if (i > 1 && j > 1 && InLhs[i - 1] == InRhs[j - 2] && InLhs[i - 2] == InRhs[j - 1]) {
+                dp[i][j] = std::min(dp[i][j], dp[i - 2][j - 2] + cost);
+            }
+        }
+    }
+
+    return dp[lhsLength][rhsLength];
+}
+
+auto SuggestSimilarCommands(const std::string& InInput,
+                            const std::vector<std::string>& InTopLevelCommands) -> std::vector<std::string> {
+    struct Candidate {
+        std::string canonical;
+        int distance = 0;
+    };
+
+    static const std::vector<std::pair<std::string, std::string>> kLegacyAliases = {
+        {"pi", "plan"},
+        {"pia", "plan"},
+        {"pv", "plan"},
+        {"cp", "commit-push"},
+        {"cpa", "commit-push"},
+    };
+
+    const auto inputLower = ToLower(InInput);
+
+    std::vector<std::pair<std::string, std::string>> matchCandidates;
+    matchCandidates.reserve(InTopLevelCommands.size() + kLegacyAliases.size());
+    for (const auto& command : InTopLevelCommands) {
+        matchCandidates.emplace_back(command, command);
+    }
+    for (const auto& [alias, canonical] : kLegacyAliases) {
+        if (IsKnownTopLevelCommand(canonical, InTopLevelCommands)) {
+            matchCandidates.emplace_back(alias, canonical);
+        }
+    }
+
+    std::map<std::string, int> bestByCanonical;
+    for (const auto& [spelling, canonical] : matchCandidates) {
+        const auto spellingLower = ToLower(spelling);
+        const int distance = ComputeEditDistance(inputLower, spellingLower);
+        const int maxLen = std::max(static_cast<int>(inputLower.size()), static_cast<int>(spellingLower.size()));
+        const int threshold = std::min(3, std::max(1, maxLen / 3));
+        if (distance > threshold) {
+            continue;
+        }
+        const auto found = bestByCanonical.find(canonical);
+        if (found == bestByCanonical.end() || distance < found->second) {
+            bestByCanonical[canonical] = distance;
+        }
+    }
+
+    std::vector<Candidate> ranked;
+    ranked.reserve(bestByCanonical.size());
+    for (const auto& [canonical, distance] : bestByCanonical) {
+        ranked.push_back(Candidate{canonical, distance});
+    }
+
+    std::sort(ranked.begin(), ranked.end(), [](const Candidate& InLhs, const Candidate& InRhs) {
+        if (InLhs.distance != InRhs.distance) {
+            return InLhs.distance < InRhs.distance;
+        }
+        return InLhs.canonical < InRhs.canonical;
+    });
+
+    std::vector<std::string> out;
+    for (const auto& candidate : ranked) {
+        out.push_back(candidate.canonical);
+        if (out.size() >= 3) {
+            break;
+        }
+    }
+    return out;
+}
+
+void PrintUnknownCommandError(const std::string& InCommand,
+                              const std::vector<std::string>& InSuggestions) {
+    std::cerr << "kog: '" << InCommand << "' is not a kog command. See 'kog --help'.\n";
+
+    if (InSuggestions.empty()) {
+        return;
+    }
+
+    if (InSuggestions.size() == 1) {
+        std::cerr << "\nThe most similar command is\n\n";
+    } else {
+        std::cerr << "\nThe most similar commands are\n\n";
+    }
+
+    for (const auto& suggestion : InSuggestions) {
+        std::cerr << "        " << suggestion << "\n";
+    }
+}
 
 int DiscoverDefaultMaxDepth() {
     const char* envValue = std::getenv("KOG_DISCOVER_MAX_DEPTH");
@@ -514,6 +669,19 @@ int main(int InArgc, char* InArgv[]) {
 
         char** utf8Argv = app.ensure_utf8(InArgv);
         auto normalizedArgs = NormalizeLegacyArgs(InArgc, utf8Argv);
+        
+        if (normalizedArgs.size() > 1) {
+            const std::string& inputCommand = normalizedArgs[1];
+            if (!inputCommand.empty() && inputCommand[0] != '-') {
+                const auto topLevelCommands = CollectTopLevelCommandNames(app);
+                if (!IsKnownTopLevelCommand(inputCommand, topLevelCommands)) {
+                    const auto suggestions = SuggestSimilarCommands(inputCommand, topLevelCommands);
+                    PrintUnknownCommandError(inputCommand, suggestions);
+                    return 1;
+                }
+            }
+        }
+
         std::vector<char*> parseArgv;
         parseArgv.reserve(normalizedArgs.size());
         for (auto& arg : normalizedArgs) {
