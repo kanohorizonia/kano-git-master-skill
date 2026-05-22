@@ -22,6 +22,6 @@ target_include_directories(kano_git_cmd_repo_sync
     ${KANO_GIT_COMMAND_ROOT}/repo_sync/private
 )
 
-target_link_libraries(kano_git_cmd_repo_sync PUBLIC kano::git_shell kano::git_workspace kano::git_command_runtime)
+target_link_libraries(kano_git_cmd_repo_sync PUBLIC kano::git_shell kano::git_workspace kano::git_command_runtime nlohmann_json::nlohmann_json)
 
 add_library(kano::git_cmd_repo_sync ALIAS kano_git_cmd_repo_sync)

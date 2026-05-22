@@ -143,6 +143,35 @@ auto RunKogWithEnv(const std::vector<std::string>& InArgs,
                    const std::filesystem::path& InWorkingDir,
                    const std::vector<std::pair<std::string, std::string>>& InEnv) -> CommandResult {
     auto env = InEnv;
+    const auto hasEnvKey = [&env](const std::string& InKey) {
+        return std::any_of(env.begin(), env.end(), [&InKey](const auto& entry) {
+            return entry.first == InKey;
+        });
+    };
+
+    // Force non-interactive Git flows for functional tests.
+    if (!hasEnvKey("GIT_TERMINAL_PROMPT")) {
+        env.emplace_back("GIT_TERMINAL_PROMPT", "0");
+    }
+    if (!hasEnvKey("GCM_INTERACTIVE")) {
+        env.emplace_back("GCM_INTERACTIVE", "never");
+    }
+    if (!hasEnvKey("GIT_ASKPASS")) {
+        env.emplace_back("GIT_ASKPASS", "true");
+    }
+    if (!hasEnvKey("SSH_ASKPASS")) {
+        env.emplace_back("SSH_ASKPASS", "true");
+    }
+    if (!hasEnvKey("KOG_PROCESS_DIAGNOSTICS")) {
+        env.emplace_back("KOG_PROCESS_DIAGNOSTICS", "1");
+    }
+    if (!hasEnvKey("KOG_PROCESS_DIAGNOSTICS_LOG")) {
+        const auto diagPath = (InWorkingDir / ".kano" / "tmp" / "functional-process-diag.log").lexically_normal();
+        std::error_code ec;
+        std::filesystem::create_directories(diagPath.parent_path(), ec);
+        env.emplace_back("KOG_PROCESS_DIAGNOSTICS_LOG", diagPath.string());
+    }
+
     const auto hasExplicitSkillRoot = std::any_of(env.begin(), env.end(), [](const auto& entry) {
         return entry.first == "KANO_GIT_SKILL_ROOT";
     });

@@ -230,29 +230,26 @@ auto ResolveAiModelDirective(const std::string& InProvider,
 }
 
 auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<std::filesystem::path> {
-    // Always use DiscoverRepos with fresh discovery to ensure consistency between
-    // fingerprint computation and manifest loading. Previously this used manifest->repos
-    // when available, but manifest and discoveryCache can diverge, causing workspace
-    // state drift. Force fresh discovery (useCache=false) to avoid cache inconsistencies.
-    workspace::DiscoverOptions options;
+    workspace::WorkspaceInventoryOptions options;
     options.rootDir = InRoot;
-    options.maxDepth = 12;
-    options.useCache = false;  // Force fresh discovery for fingerprint stability
-    options.refreshCache = true; // Update cache after discovery
-    options.incremental = false;
+    options.unregisteredDepth = 2;
+    options.useCache = false;
+    options.refreshCache = true;
     options.metadataLevel = "minimal";
-    const auto discovery = workspace::DiscoverRepos(options);
+    options.scope = workspace::DiscoverScope::RegisteredOnly;
+    options.includeTrustedUnregistered = true;
+    const auto records = workspace::DiscoverWorkspaceInventory(options);
     if (IsKogDebugEnabled()) {
-        std::cerr << "[DEBUG] DiscoverWorkspaceRepos: root=" << InRoot.generic_string() << " discovery.repos.size=" << discovery.repos.size() << " mode=" << discovery.mode << "\n";
-        for (const auto& repo : discovery.repos) {
+        std::cerr << "[DEBUG] DiscoverWorkspaceRepos: root=" << InRoot.generic_string() << " records.size=" << records.size() << "\n";
+        for (const auto& repo : records) {
             std::cerr << "[DEBUG] DiscoverWorkspaceRepos:   repo=" << repo.path.generic_string() << " type=" << repo.type << "\n";
         }
     }
     std::vector<std::filesystem::path> repos;
-    repos.reserve(discovery.repos.size());
-    for (const auto& repo : discovery.repos) {
+    repos.reserve(records.size());
+    for (const auto& repo : records) {
         const auto p = repo.path.lexically_normal();
-        if (workspace::GetSubmoduleConfig(InRoot, p, "kog-commit") == "false") {
+        if (repo.kogCommitPolicy == "false") {
             if (IsKogDebugEnabled()) {
                 std::cerr << "[DEBUG] DiscoverWorkspaceRepos: skipping repo due to kog-commit=false: " << p.generic_string() << "\n";
             }
@@ -261,9 +258,11 @@ auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<
         repos.push_back(p);
     }
     std::sort(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
-        return A.generic_string() < B.generic_string();
+        return RepoKey(A) < RepoKey(B);
     });
-    repos.erase(std::unique(repos.begin(), repos.end()), repos.end());
+    repos.erase(std::unique(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
+        return RepoKey(A) == RepoKey(B);
+    }), repos.end());
     if (repos.empty()) {
         if (IsKogDebugEnabled()) {
             std::cerr << "[DEBUG] DiscoverWorkspaceRepos: repos empty, using root fallback=" << InRoot.lexically_normal().generic_string() << "\n";
@@ -1157,6 +1156,9 @@ auto CollectCommitPlanEntries(const std::string& InPlanText) -> std::vector<Comm
 auto CommitEntryNeedsReview(const CommitPlanEntry& InEntry) -> bool {
     if (Trim(InEntry.message).empty() || ToLower(Trim(InEntry.reviewVerdict)) != "pass") return true;
     if (InEntry.message.find("replace-with-") != std::string::npos) return true;
+    const auto reviewReason = ToLower(Trim(InEntry.reviewReason));
+    if (reviewReason.find("seeded from current dirty status") != std::string::npos) return true;
+    if (reviewReason.find("seeded by plan commit-seed") != std::string::npos) return true;
     return false;
 }
 
@@ -1203,11 +1205,14 @@ auto ParseCommitFillOps(const std::string& InJson, std::string* OutError) -> std
             CommitFillOp op;
             op.index          = obj.value("index", -1);
             op.message        = obj.value("message", "");
-            op.plannerProvider = obj.value("plannerProvider", "");
-            op.plannerModel   = obj.value("plannerModel", "");
+            op.plannerProvider = obj.value("plannerProvider", obj.value("planner_provider", ""));
+            op.plannerModel   = obj.value("plannerModel", obj.value("planner_model", ""));
             if (obj.contains("review") && obj["review"].is_object()) {
                 op.reviewVerdict = obj["review"].value("verdict", "");
                 op.reviewReason  = obj["review"].value("reason", "");
+            } else {
+                op.reviewVerdict = obj.value("reviewVerdict", obj.value("review_verdict", ""));
+                op.reviewReason  = obj.value("reviewReason", obj.value("review_reason", ""));
             }
             ops.push_back(std::move(op));
         }
@@ -1804,6 +1809,36 @@ auto RunAiGenerateForWorkingEdit(const std::string& InProvider,
                                  const std::filesystem::path& InWorkingPlanPath,
                                  const std::filesystem::path& InWorkingGitignorePath,
                                  bool InQuiet) -> shell::ExecResult {
+    // In-process test stub: if KOG_TEST_AI_STDOUT/KOG_TEST_AI_EXIT_CODE are set,
+    // write the stub content to the working plan file to simulate bad AI file edit.
+    {
+        const char* stdoutRaw = std::getenv("KOG_TEST_AI_STDOUT");
+        const char* exitRaw   = std::getenv("KOG_TEST_AI_EXIT_CODE");
+        if (stdoutRaw != nullptr || exitRaw != nullptr) {
+            shell::ExecResult stubResult;
+            if (stdoutRaw != nullptr) {
+                stubResult.stdoutStr = stdoutRaw;
+                const auto trimmedStdout = Trim(stubResult.stdoutStr);
+                const bool looksLikeFullPlanJson =
+                    !trimmedStdout.empty() &&
+                    trimmedStdout.front() == '{' &&
+                    trimmedStdout.find("\"meta\"") != std::string::npos &&
+                    trimmedStdout.find("\"stages\"") != std::string::npos;
+                if (looksLikeFullPlanJson) {
+                    std::ofstream f(InWorkingPlanPath, std::ios::trunc);
+                    f << stubResult.stdoutStr;
+                }
+            }
+            if (exitRaw != nullptr && exitRaw[0] != '\0') {
+                try { stubResult.exitCode = std::stoi(exitRaw); } catch (...) { stubResult.exitCode = 1; }
+            }
+            if (const char* logPath = std::getenv("KOG_TEST_AI_STUB_LOG"); logPath && logPath[0]) {
+                std::ofstream lf(logPath, std::ios::app);
+                lf << "copilot (in-process-stub via RunAiGenerateForWorkingEdit)\n";
+            }
+            return stubResult;
+        }
+    }
     if (InProvider != "copilot") {
         return RunAiGenerate(InProvider, InModel, InPrompt, InWorkspaceRoot, InQuiet);
     }
@@ -2064,7 +2099,28 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
                 if (OutError) *OutError = "AI did not produce an edited working plan file for entry " + std::to_string(entry.index);
                 return false;
             }
-            auto normalizedCandidatePlan = NormalizeAiReadyPlanReviewVerdicts(*candidatePlanText);
+            std::string candidatePlanPayload = *candidatePlanText;
+            bool usedStdoutFallback = false;
+            // Some providers return edited payload on stdout without mutating the working file.
+            // In that case, treat stdout as the candidate so invalid payloads fail normalization.
+            if (candidatePlanPayload == finalPlanJson) {
+                if (Trim(res.stdoutStr).empty()) {
+                    if (OutError) *OutError = "AI edited working plan could not be normalized for entry " + std::to_string(entry.index);
+                    return false;
+                }
+                candidatePlanPayload = res.stdoutStr;
+                usedStdoutFallback = true;
+            }
+            auto normalizedCandidatePlan = NormalizeAiReadyPlanReviewVerdicts(candidatePlanPayload);
+            if (!normalizedCandidatePlan.has_value() && usedStdoutFallback) {
+                const auto opsJson = ExtractPlanFillOpsJson(res.stdoutStr);
+                std::string opsError;
+                const auto batch = ParseCommitFillOpsBatch(opsJson, &opsError);
+                if (!batch.ops.empty()) {
+                    const auto applied = ApplyCommitFillOps(finalPlanJson, batch.ops);
+                    normalizedCandidatePlan = NormalizeAiReadyPlanReviewVerdicts(applied);
+                }
+            }
             if (!normalizedCandidatePlan.has_value()) {
                 if (OutError) *OutError = "AI edited working plan could not be normalized for entry " + std::to_string(entry.index);
                 return false;
@@ -2156,7 +2212,18 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
             return false;
         }
 
-        auto normalizedCandidatePlan = NormalizeAiReadyPlanReviewVerdicts(*candidatePlanText);
+        std::string candidatePlanPayload = *candidatePlanText;
+        // Some providers return edited payload on stdout without mutating the working file.
+        // In that case, treat stdout as the candidate so invalid payloads fail normalization.
+        if (candidatePlanPayload == templateJson) {
+            if (Trim(res.stdoutStr).empty()) {
+                if (OutError) *OutError = "AI edited working plan could not be normalized";
+                return false;
+            }
+            candidatePlanPayload = res.stdoutStr;
+        }
+
+        auto normalizedCandidatePlan = NormalizeAiReadyPlanReviewVerdicts(candidatePlanPayload);
         if (!normalizedCandidatePlan.has_value()) {
             if (OutError) *OutError = "AI edited working plan could not be normalized";
             return false;
@@ -2181,6 +2248,10 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
                 finalPlanJson = *refreshed;
             }
         }
+    }
+
+    if (auto stamped = StampPlanAiPlannerMetadata(finalPlanJson, provider, modelDir)) {
+        finalPlanJson = *stamped;
     }
 
     return PromoteTextFileAtomically(InPlanPath, finalPlanJson, OutError);
@@ -2880,6 +2951,7 @@ auto RunCommitRunbook(const std::filesystem::path& InWorkspaceRoot,
     };
 
     const bool requireAiSuccess = RequireAiSuccessForPlanFlow(InWorkspaceRoot);
+    const bool allowDeterministicFallback = AllowDeterministicCommitFallbackForMode(InFillMode);
 
     if (needs && !regenerate()) return 2;
     
@@ -2909,10 +2981,12 @@ auto RunCommitRunbook(const std::filesystem::path& InWorkspaceRoot,
                 return 2;
             }
             // FillPlanByAi failed, try fallback before returning error.
-            if (auto fallback = TryInjectFallbackCommits(InWorkspaceRoot, *payload)) {
-                WriteFileText(InPlanPath, *fallback);
-                std::cerr << "[plan] fallback_used: true\n";
-                return 0;
+            if (allowDeterministicFallback) {
+                if (auto fallback = TryInjectFallbackCommits(InWorkspaceRoot, *payload)) {
+                    WriteFileText(InPlanPath, *fallback);
+                    std::cerr << "[plan] fallback_used: true\n";
+                    return 0;
+                }
             }
             return 2;
         }
@@ -2922,7 +2996,7 @@ auto RunCommitRunbook(const std::filesystem::path& InWorkspaceRoot,
                 std::cerr << "Error: AI-ready plan validation failed and deterministic fallback is disabled by config: " << reason << "\n";
                 return 2;
             }
-            if (payload) {
+            if (allowDeterministicFallback && payload) {
                 if (auto fallback = TryInjectFallbackCommits(InWorkspaceRoot, *payload)) {
                     WriteFileText(InPlanPath, *fallback);
                     std::cerr << "[plan] fallback_used: true\n";
@@ -2971,9 +3045,14 @@ auto RunPreApplyVerify(const std::filesystem::path& InWorkspaceRoot,
         std::cerr << "Error: workspace hashes missing in plan\n";
         return 2;
     }
-    if (planBase != ComputeWorkspaceBaseHeadSha(InWorkspaceRoot) ||
-        planDirty != ComputeWorkspaceDirtyFingerprint(InWorkspaceRoot)) {
+    const auto currentBase = ComputeWorkspaceBaseHeadSha(InWorkspaceRoot);
+    const auto currentDirty = ComputeWorkspaceDirtyFingerprint(InWorkspaceRoot);
+    if (planBase != currentBase || planDirty != currentDirty) {
         std::cerr << "Error: workspace state drift detected\n";
+        std::cerr << "  plan.base_head_sha=" << planBase << "\n";
+        std::cerr << "  current.base_head_sha=" << currentBase << "\n";
+        std::cerr << "  plan.dirty_fingerprint=" << planDirty << "\n";
+        std::cerr << "  current.dirty_fingerprint=" << currentDirty << "\n";
         return 2;
     }
     return 0;

@@ -4,12 +4,12 @@
 #include <CLI/CLI.hpp>
 #include "shell_executor.hpp"
 #include "discovery.hpp"
+#include "repo_operation_scheduler.hpp"
 #include "terminal_color.hpp"
 
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
-#include <future>
 #include <iomanip>
 #include <iostream>
 #include <map>
@@ -18,6 +18,7 @@
 #include <string>
 #include <chrono>
 #include <unordered_map>
+#include <unordered_set>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -163,103 +164,168 @@ auto RepoKey(const std::filesystem::path& InPath) -> std::string {
 #endif
 }
 
-auto DiscoverRegisteredPathsRecursive(const std::filesystem::path& InWorkspaceRoot) -> std::vector<std::filesystem::path> {
-    std::vector<std::filesystem::path> out;
-    std::vector<std::filesystem::path> queue{std::filesystem::weakly_canonical(InWorkspaceRoot)};
+auto GitCommonDirKey(const std::filesystem::path& InRepo) -> std::string {
+    const auto out = GitCapture(InRepo, {"rev-parse", "--git-common-dir"});
+    if (out.exitCode != 0) {
+        return {};
+    }
+    auto raw = Trim(out.stdoutStr);
+    if (raw.empty()) {
+        return {};
+    }
+    std::filesystem::path commonDir(raw);
+    if (commonDir.is_relative()) {
+        commonDir = (InRepo / commonDir).lexically_normal();
+    }
+    return RepoKey(commonDir);
+}
 
-    while (!queue.empty()) {
-        const auto current = queue.back();
-        queue.pop_back();
+auto IsFalsePolicy(std::string InValue) -> bool {
+    InValue = ToLower(Trim(std::move(InValue)));
+    return InValue == "false" || InValue == "0" || InValue == "no" || InValue == "off" || InValue == "disabled";
+}
 
-        const auto gitmodules = current / ".gitmodules";
-        if (!std::filesystem::exists(gitmodules)) {
+auto RepoTypeRank(const std::string& InType) -> int {
+    if (InType == "root") {
+        return 0;
+    }
+    if (InType == "registered") {
+        return 1;
+    }
+    if (InType == "unregistered") {
+        return 2;
+    }
+    return 3;
+}
+
+auto NormalizeRepoRecord(workspace::RepoRecord InRecord) -> workspace::RepoRecord {
+    std::error_code ec;
+    auto path = std::filesystem::weakly_canonical(InRecord.path, ec);
+    if (ec) {
+        path = std::filesystem::absolute(InRecord.path, ec);
+    }
+    if (!ec) {
+        InRecord.path = path.lexically_normal();
+    } else {
+        InRecord.path = InRecord.path.lexically_normal();
+    }
+
+    if (!InRecord.registrationRelativeTo.empty() && InRecord.registrationRelativeTo != ".") {
+        ec.clear();
+        auto parent = std::filesystem::weakly_canonical(InRecord.registrationRelativeTo, ec);
+        if (ec) {
+            parent = std::filesystem::absolute(InRecord.registrationRelativeTo, ec);
+        }
+        InRecord.registrationRelativeTo = ec ? InRecord.registrationRelativeTo.lexically_normal() : parent.lexically_normal();
+    }
+
+    return InRecord;
+}
+
+auto DedupePushRepoRecords(std::vector<workspace::RepoRecord> InRepos) -> std::vector<workspace::RepoRecord> {
+    for (auto& repo : InRepos) {
+        repo = NormalizeRepoRecord(std::move(repo));
+    }
+    std::sort(InRepos.begin(), InRepos.end(), [](const auto& A, const auto& B) {
+        const auto rankA = RepoTypeRank(A.type);
+        const auto rankB = RepoTypeRank(B.type);
+        if (rankA != rankB) {
+            return rankA < rankB;
+        }
+        return RepoKey(A.path) < RepoKey(B.path);
+    });
+
+    std::unordered_set<std::string> seenWorktrees;
+    std::unordered_set<std::string> seenCommonDirs;
+    std::vector<workspace::RepoRecord> out;
+    out.reserve(InRepos.size());
+    for (auto& repo : InRepos) {
+        if (!IsGitRepo(repo.path)) {
             continue;
         }
-
-        const auto pathsResult = GitCapture(current, {"config", "-f", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$"});
-        if (pathsResult.exitCode != 0) {
+        const auto worktreeKey = RepoKey(repo.path);
+        const auto commonDirKey = GitCommonDirKey(repo.path);
+        if (seenWorktrees.contains(worktreeKey)) {
             continue;
         }
-
-        std::istringstream iss(pathsResult.stdoutStr);
-        std::string line;
-        while (std::getline(iss, line)) {
-            line = Trim(line);
-            if (line.empty()) {
-                continue;
-            }
-            const auto sp = line.find(' ');
-            if (sp == std::string::npos || sp + 1 >= line.size()) {
-                continue;
-            }
-            const auto relPath = line.substr(sp + 1);
-            const auto full = std::filesystem::weakly_canonical(current / relPath).lexically_normal();
-            const auto fullKey = RepoKey(full);
-            const bool existsAlready = std::any_of(out.begin(), out.end(), [&](const auto& candidate) {
-                return RepoKey(candidate) == fullKey;
-            });
-            if (!existsAlready) {
-                out.push_back(full);
-                queue.push_back(full);
-            }
+        if (!commonDirKey.empty() && seenCommonDirs.contains(commonDirKey)) {
+            continue;
         }
+        seenWorktrees.insert(worktreeKey);
+        if (!commonDirKey.empty()) {
+            seenCommonDirs.insert(commonDirKey);
+        }
+        out.push_back(std::move(repo));
     }
 
     std::sort(out.begin(), out.end(), [](const auto& A, const auto& B) {
-        return RepoKey(A) < RepoKey(B);
+        return RepoKey(A.path) < RepoKey(B.path);
     });
-    out.erase(std::unique(out.begin(), out.end(), [](const auto& A, const auto& B) {
-        return RepoKey(A) == RepoKey(B);
-    }), out.end());
     return out;
 }
 
-auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<std::filesystem::path> {
-    std::vector<std::filesystem::path> repos;
-    const auto root = std::filesystem::weakly_canonical(InRoot).lexically_normal();
-    repos.push_back(root);
+auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<workspace::RepoRecord> {
+    workspace::WorkspaceInventoryOptions options;
+    options.rootDir = InRoot;
+    options.unregisteredDepth = 3;
+    options.useCache = false;
+    options.refreshCache = true;
+    options.metadataLevel = "minimal";
+    options.scope = workspace::DiscoverScope::Full;
+    options.includeTrustedUnregistered = true;
+    auto repos = workspace::DiscoverWorkspaceInventory(options);
 
-    std::string manifestReason;
-    if (const auto manifest = workspace::LoadTrustedWorkspaceManifest(InRoot, &manifestReason); manifest.has_value()) {
-        for (const auto& repo : manifest->repos) {
-            repos.push_back(repo.path.lexically_normal());
-        }
+    std::error_code ec;
+    auto rootPath = std::filesystem::weakly_canonical(InRoot, ec);
+    if (ec) {
+        ec.clear();
+        rootPath = std::filesystem::absolute(InRoot, ec);
+    }
+    if (!ec) {
+        rootPath = rootPath.lexically_normal();
     } else {
-        std::cerr << "[push] workspace manifest untrusted (" << manifestReason
-                  << "); running full scan under " << InRoot.lexically_normal().generic_string() << "...\n";
-        workspace::DiscoverOptions options;
-        options.rootDir = InRoot;
-        options.maxDepth = 12;
-        options.scope = workspace::DiscoverScope::Full;
-        options.useCache = false;
-        options.refreshCache = true;
-        options.incremental = false;
-        options.metadataLevel = "minimal";
-        options.excludePatterns.clear();
-
-        const auto discovery = workspace::DiscoverRepos(options);
-        repos.reserve(discovery.repos.size());
-        for (const auto& repo : discovery.repos) {
-            repos.push_back(repo.path.lexically_normal());
-        }
-        const auto refreshedManifest = workspace::BuildWorkspaceManifest(InRoot, discovery.repos);
-        if (!workspace::SaveWorkspaceManifest(refreshedManifest)) {
-            std::cerr << "[push] WARN: failed to refresh workspace manifest at "
-                      << refreshedManifest.manifestFile.lexically_normal().generic_string() << "\n";
-        }
+        rootPath = InRoot.lexically_normal();
     }
 
-    for (const auto& repo : DiscoverRegisteredPathsRecursive(root)) {
-        repos.push_back(repo);
-    }
-
-    std::sort(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
-        return RepoKey(A) < RepoKey(B);
+    const auto rootKey = RepoKey(rootPath);
+    const bool hasRoot = std::any_of(repos.begin(), repos.end(), [&](const auto& repo) {
+        return RepoKey(repo.path) == rootKey;
     });
-    repos.erase(std::unique(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
-        return RepoKey(A) == RepoKey(B);
-    }), repos.end());
-    return repos;
+    if (!hasRoot && IsGitRepo(rootPath)) {
+        workspace::RepoRecord rootRecord;
+        rootRecord.path = rootPath;
+        rootRecord.type = "root";
+        rootRecord.registrationRelativeTo = std::filesystem::path{"."};
+        repos.push_back(std::move(rootRecord));
+    }
+
+    return DedupePushRepoRecords(std::move(repos));
+}
+
+auto BuildExplicitRepoRecords(const std::filesystem::path& InWorkspaceRoot,
+                              const std::vector<std::filesystem::path>& InRepos) -> std::vector<workspace::RepoRecord> {
+    auto inventory = DiscoverWorkspaceRepos(InWorkspaceRoot);
+    std::unordered_map<std::string, workspace::RepoRecord> byPath;
+    byPath.reserve(inventory.size());
+    for (auto& repo : inventory) {
+        byPath.emplace(RepoKey(repo.path), std::move(repo));
+    }
+
+    std::vector<workspace::RepoRecord> out;
+    out.reserve(InRepos.size());
+    for (const auto& path : InRepos) {
+        const auto key = RepoKey(path);
+        if (const auto it = byPath.find(key); it != byPath.end()) {
+            out.push_back(it->second);
+            continue;
+        }
+        workspace::RepoRecord record;
+        record.path = path;
+        record.type = RepoKey(path) == RepoKey(InWorkspaceRoot) ? "root" : "unregistered";
+        record.registrationRelativeTo = record.type == "root" ? std::filesystem::path{"."} : InWorkspaceRoot;
+        out.push_back(std::move(record));
+    }
+    return DedupePushRepoRecords(std::move(out));
 }
 
 auto RelativeDisplayPath(const std::filesystem::path& InRoot, const std::filesystem::path& InPath) -> std::filesystem::path {
@@ -516,63 +582,69 @@ auto IsParentPath(const std::filesystem::path& InParent, const std::filesystem::
     return child.rfind(prefix, 0) == 0;
 }
 
-auto BuildPushWaves(const std::vector<std::filesystem::path>& InRepos) -> std::vector<std::vector<std::filesystem::path>> {
-    const std::size_t n = InRepos.size();
-    if (n <= 1) {
-        return {InRepos};
+auto AddUniqueDependency(std::vector<std::filesystem::path>* OutDependencies, const std::filesystem::path& InDependency) -> void {
+    if (OutDependencies == nullptr || InDependency.empty()) {
+        return;
+    }
+    const auto dependencyKey = RepoKey(InDependency);
+    const bool exists = std::any_of(OutDependencies->begin(), OutDependencies->end(), [&](const auto& candidate) {
+        return RepoKey(candidate) == dependencyKey;
+    });
+    if (!exists) {
+        OutDependencies->push_back(InDependency);
+    }
+}
+
+auto BuildPushSchedulerInputs(const std::vector<workspace::RepoRecord>& InRepos) -> std::vector<workspace::RepoOperationInput> {
+    std::unordered_map<std::string, std::size_t> byPath;
+    byPath.reserve(InRepos.size());
+    for (std::size_t idx = 0; idx < InRepos.size(); ++idx) {
+        byPath.emplace(RepoKey(InRepos[idx].path), idx);
     }
 
-    std::vector<int> indegree(n, 0);
-    std::vector<std::vector<std::size_t>> reverseEdges(n);
+    std::vector<workspace::RepoOperationInput> inputs;
+    inputs.reserve(InRepos.size());
+    for (const auto& repo : InRepos) {
+        workspace::RepoOperationInput input;
+        input.id = RepoKey(repo.path);
+        input.path = repo.path;
+        input.type = repo.type;
+        inputs.push_back(std::move(input));
+    }
 
-    for (std::size_t parent = 0; parent < n; ++parent) {
-        for (std::size_t child = 0; child < n; ++child) {
-            if (parent == child) {
+    // Primary graph edge source: discover-owned .gitmodules/gitlink registration metadata.
+    // The scheduler interprets dependencies as prerequisites, so parent repos depend on their children.
+    std::unordered_set<std::string> childrenWithGraphParent;
+    for (const auto& child : InRepos) {
+        if (child.registrationRelativeTo.empty() || child.registrationRelativeTo == ".") {
+            continue;
+        }
+        const auto parentIt = byPath.find(RepoKey(child.registrationRelativeTo));
+        const auto childIt = byPath.find(RepoKey(child.path));
+        if (parentIt == byPath.end() || childIt == byPath.end() || parentIt->second == childIt->second) {
+            continue;
+        }
+        AddUniqueDependency(&inputs[parentIt->second].dependencies, child.path);
+        childrenWithGraphParent.insert(RepoKey(child.path));
+    }
+
+    // Fallback ordering only: nested workspace repos without explicit graph metadata still run bottom-up.
+    for (std::size_t parentIdx = 0; parentIdx < InRepos.size(); ++parentIdx) {
+        for (std::size_t childIdx = 0; childIdx < InRepos.size(); ++childIdx) {
+            if (parentIdx == childIdx) {
                 continue;
             }
-            if (IsParentPath(InRepos[parent], InRepos[child])) {
-                indegree[parent] += 1;
-                reverseEdges[child].push_back(parent);
+            if (!IsParentPath(InRepos[parentIdx].path, InRepos[childIdx].path)) {
+                continue;
             }
-        }
-    }
-
-    std::vector<std::size_t> frontier;
-    frontier.reserve(n);
-    for (std::size_t i = 0; i < n; ++i) {
-        if (indegree[i] == 0) {
-            frontier.push_back(i);
-        }
-    }
-
-    std::vector<std::vector<std::filesystem::path>> waves;
-    std::size_t processed = 0;
-    while (!frontier.empty()) {
-        std::sort(frontier.begin(), frontier.end(), [&](const std::size_t A, const std::size_t B) {
-            return InRepos[A].lexically_normal().generic_string() < InRepos[B].lexically_normal().generic_string();
-        });
-
-        std::vector<std::filesystem::path> wave;
-        wave.reserve(frontier.size());
-        std::vector<std::size_t> next;
-        for (const auto idx : frontier) {
-            wave.push_back(InRepos[idx]);
-            processed += 1;
-            for (const auto dependent : reverseEdges[idx]) {
-                indegree[dependent] -= 1;
-                if (indegree[dependent] == 0) {
-                    next.push_back(dependent);
-                }
+            if (childrenWithGraphParent.contains(RepoKey(InRepos[childIdx].path))) {
+                continue;
             }
+            AddUniqueDependency(&inputs[parentIdx].dependencies, InRepos[childIdx].path);
         }
-        waves.push_back(std::move(wave));
-        frontier = std::move(next);
     }
 
-    if (processed != n) {
-        return {InRepos};
-    }
-    return waves;
+    return inputs;
 }
 
 auto DetectDefaultPushJobs() -> int {
@@ -583,8 +655,224 @@ auto DetectDefaultPushJobs() -> int {
     return static_cast<int>(cores);
 }
 
+struct PushSummaryEntry {
+    std::filesystem::path repo;
+    std::string outcome;
+    std::string remote;
+    std::string branch;
+    std::string reason;
+};
+
+auto PrintCapturedOutputToStreams(const shell::ExecResult& InResult, std::ostream& OutStdout, std::ostream& OutStderr) -> void {
+    if (!InResult.stdoutStr.empty()) {
+        OutStdout << InResult.stdoutStr;
+    }
+    if (!InResult.stderrStr.empty()) {
+        OutStderr << InResult.stderrStr;
+    }
+}
+
+auto GitConfigValue(const std::filesystem::path& InRepo, const std::string& InKey) -> std::optional<std::string> {
+    const auto out = GitCapture(InRepo, {"config", "--get", InKey});
+    if (out.exitCode != 0) {
+        return std::nullopt;
+    }
+    const auto value = Trim(out.stdoutStr);
+    if (value.empty()) {
+        return std::nullopt;
+    }
+    return value;
+}
+
+auto AddExistingRemote(std::vector<std::string>* OutRemotes,
+                       const std::filesystem::path& InRepo,
+                       const std::string& InRemote) -> void {
+    if (OutRemotes == nullptr || InRemote.empty() || !HasRemote(InRepo, InRemote)) {
+        return;
+    }
+    if (std::find(OutRemotes->begin(), OutRemotes->end(), InRemote) == OutRemotes->end()) {
+        OutRemotes->push_back(InRemote);
+    }
+}
+
+auto ResolvePushRemotePriority(const std::filesystem::path& InRepo,
+                               const std::string& InBranch,
+                               const std::string& InRemoteFilter) -> std::optional<std::string> {
+    if (!InRemoteFilter.empty()) {
+        return HasRemote(InRepo, InRemoteFilter) ? std::optional<std::string>{InRemoteFilter} : std::nullopt;
+    }
+
+    std::vector<std::string> candidates;
+    if (!InBranch.empty()) {
+        if (const auto branchPushRemote = GitConfigValue(InRepo, "branch." + InBranch + ".pushRemote"); branchPushRemote.has_value()) {
+            AddExistingRemote(&candidates, InRepo, *branchPushRemote);
+        }
+    }
+    if (const auto pushDefault = GitConfigValue(InRepo, "remote.pushDefault"); pushDefault.has_value()) {
+        AddExistingRemote(&candidates, InRepo, *pushDefault);
+    }
+
+    for (const auto& remote : {"origin-ssh", "origin", "origin-http", "upstream-ssh", "upstream", "upstream-http"}) {
+        AddExistingRemote(&candidates, InRepo, remote);
+    }
+
+    if (candidates.empty()) {
+        return std::nullopt;
+    }
+    return candidates.front();
+}
+
+auto HasAnyCommit(const std::filesystem::path& InRepo) -> bool {
+    return GitCapture(InRepo, {"rev-parse", "--verify", "HEAD"}).exitCode == 0;
+}
+
+auto ParentGitlinkHeadForPush(const std::filesystem::path& InParent, const std::filesystem::path& InChild) -> std::string {
+    const auto rel = InChild.lexically_normal().lexically_relative(InParent.lexically_normal()).generic_string();
+    if (rel.empty() || rel.starts_with("..")) {
+        return {};
+    }
+    const auto out = GitCapture(InParent, {"ls-tree", "HEAD", "--", rel});
+    if (out.exitCode != 0) {
+        return {};
+    }
+    std::istringstream iss(out.stdoutStr);
+    std::string mode;
+    std::string type;
+    std::string sha;
+    iss >> mode >> type >> sha;
+    if (mode == "160000" && type == "commit") {
+        return sha;
+    }
+    return {};
+}
+
+auto CommitIsKnownOnRemoteTrackingRef(const std::filesystem::path& InRepo, const std::string& InCommit) -> bool {
+    if (InCommit.empty()) {
+        return true;
+    }
+    const auto contains = GitCapture(InRepo, {"branch", "-r", "--contains", InCommit});
+    return contains.exitCode == 0 && !Trim(contains.stdoutStr).empty();
+}
+
+auto ParsePorcelainPath(std::string InLine) -> std::string {
+    while (!InLine.empty() && (InLine.back() == '\r' || InLine.back() == '\n')) {
+        InLine.pop_back();
+    }
+    if (InLine.size() < 4) {
+        return {};
+    }
+    auto path = Trim(InLine.substr(3));
+    const auto renamePos = path.find(" -> ");
+    if (renamePos != std::string::npos) {
+        path = Trim(path.substr(renamePos + 4));
+    }
+    return path;
+}
+
+auto HasContentChangesOutsideDependencies(const std::filesystem::path& InRepo,
+                                          const std::vector<std::filesystem::path>& InDependencies) -> bool {
+    const auto status = GitCapture(InRepo, {"status", "--porcelain", "--untracked-files=all"});
+    if (status.exitCode != 0) {
+        return true;
+    }
+
+    std::vector<std::string> dependencyRelPaths;
+    dependencyRelPaths.reserve(InDependencies.size());
+    for (const auto& dependency : InDependencies) {
+        const auto rel = dependency.lexically_normal().lexically_relative(InRepo.lexically_normal()).generic_string();
+        if (!rel.empty() && !rel.starts_with("..")) {
+            dependencyRelPaths.push_back(rel);
+        }
+    }
+
+    std::istringstream iss(status.stdoutStr);
+    std::string line;
+    while (std::getline(iss, line)) {
+        const auto changedPath = ParsePorcelainPath(line);
+        if (changedPath.empty()) {
+            continue;
+        }
+        auto normalizedChangedPath = changedPath;
+        std::replace(normalizedChangedPath.begin(), normalizedChangedPath.end(), '\\', '/');
+        while (normalizedChangedPath.size() > 1 && normalizedChangedPath.back() == '/') {
+            normalizedChangedPath.pop_back();
+        }
+        if (normalizedChangedPath == ".gitmodules" ||
+            normalizedChangedPath == ".kano" || normalizedChangedPath.rfind(".kano/", 0) == 0 ||
+            normalizedChangedPath == ".sisyphus" || normalizedChangedPath.rfind(".sisyphus/", 0) == 0) {
+            continue;
+        }
+        const auto nestedCandidate = (InRepo / std::filesystem::path(normalizedChangedPath)).lexically_normal();
+        if (std::filesystem::exists(nestedCandidate) && IsGitRepo(nestedCandidate)) {
+            continue;
+        }
+        const bool dependencyOnly = std::any_of(dependencyRelPaths.begin(), dependencyRelPaths.end(), [&](const auto& depRel) {
+            return normalizedChangedPath == depRel ||
+                normalizedChangedPath.rfind(depRel + "/", 0) == 0 ||
+                depRel.rfind(normalizedChangedPath + "/", 0) == 0;
+        });
+        if (!dependencyOnly) {
+            return true;
+        }
+    }
+    return false;
+}
+
+auto HasNestedRepoChildren(const std::filesystem::path& InRepo,
+                           const std::unordered_map<std::string, workspace::RepoRecord>& InReposByPath) -> bool {
+    for (const auto& [key, record] : InReposByPath) {
+        (void)key;
+        if (RepoKey(record.path) == RepoKey(InRepo)) {
+            continue;
+        }
+        if (IsParentPath(InRepo, record.path)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+auto BuildContainerChildPaths(const std::filesystem::path& InRepo,
+                              const std::vector<std::filesystem::path>& InDependencies,
+                              const std::unordered_map<std::string, workspace::RepoRecord>& InReposByPath) -> std::vector<std::filesystem::path> {
+    std::vector<std::filesystem::path> out = InDependencies;
+    for (const auto& [key, record] : InReposByPath) {
+        (void)key;
+        if (RepoKey(record.path) == RepoKey(InRepo) || !IsParentPath(InRepo, record.path)) {
+            continue;
+        }
+        AddUniqueDependency(&out, record.path);
+    }
+    return out;
+}
+
+auto ClassifyPushFailure(const shell::ExecResult& InResult) -> std::string {
+    const auto merged = ToLower(InResult.stdoutStr + "\n" + InResult.stderrStr);
+    if (merged.find("authentication failed") != std::string::npos ||
+        merged.find("permission denied") != std::string::npos ||
+        merged.find("publickey") != std::string::npos ||
+        merged.find("access denied") != std::string::npos ||
+        merged.find("unauthorized") != std::string::npos ||
+        merged.find("could not read username") != std::string::npos) {
+        return "FAILED_AUTH";
+    }
+    if (merged.find("could not resolve host") != std::string::npos ||
+        merged.find("failed to connect") != std::string::npos ||
+        merged.find("connection timed out") != std::string::npos ||
+        merged.find("network is unreachable") != std::string::npos ||
+        merged.find("couldn't connect") != std::string::npos) {
+        return "FAILED_CONNECTION";
+    }
+    if (merged.find("does not appear to be a git repository") != std::string::npos ||
+        merged.find("repository not found") != std::string::npos ||
+        merged.find("no such remote") != std::string::npos) {
+        return "FAILED_MISSING_REMOTE";
+    }
+    return "FAILED_PUSH";
+}
+
 auto RunNativePush(
-    const std::vector<std::filesystem::path>& InRepos,
+    const std::vector<workspace::RepoRecord>& InRepos,
     const std::filesystem::path& InWorkspaceRoot,
     const bool InRecursive,
     const bool InSkipSync,
@@ -603,79 +891,141 @@ auto RunNativePush(
     long long pushMillis = 0;
     int maxParallelObserved = 1;
     std::mutex statsMutex;
-    std::vector<std::tuple<std::string, std::string, std::string>> pushStats;
+    std::vector<PushSummaryEntry> pushStats;
+    std::unordered_map<std::string, PushSummaryEntry> pushSummaryByRepo;
     int failures = 0;
     int successes = 0;
-    std::mutex outputMutex;
-    std::vector<std::filesystem::path> failedRepos;
+    std::mutex profileMutex;
+    int activeRepoRuns = 0;
 
     struct RepoRunResult {
-        int successes{0};
-        int failures{0};
+        workspace::RepoOperationStatus status{workspace::RepoOperationStatus::Succeeded};
+        int exitCode{0};
+        std::string stdoutText;
+        std::string stderrText;
+        std::string failureCategory;
+        std::string message;
+        std::string skipReason;
+        PushSummaryEntry summary;
         std::filesystem::path repo;
     };
 
     std::unordered_map<std::string, std::size_t> repoOrderByPath;
+    std::unordered_map<std::string, workspace::RepoRecord> repoRecordsByPath;
     repoOrderByPath.reserve(InRepos.size());
+    repoRecordsByPath.reserve(InRepos.size());
     for (std::size_t i = 0; i < InRepos.size(); ++i) {
-        const auto repoPath = std::filesystem::weakly_canonical(InRepos[i]).lexically_normal().generic_string();
+        const auto repoPath = std::filesystem::weakly_canonical(InRepos[i].path).lexically_normal().generic_string();
         repoOrderByPath[repoPath] = i + 1;
+        repoRecordsByPath[RepoKey(InRepos[i].path)] = InRepos[i];
     }
 
-    auto runOneRepo = [&](const std::filesystem::path& repoPathRaw) -> RepoRunResult {
+    auto runOneRepo = [&](const workspace::RepoOperationInput& operation) -> RepoRunResult {
+        const auto& repoPathRaw = operation.path;
         const auto repoPath = std::filesystem::weakly_canonical(repoPathRaw);
         const auto repoLabel = repoPath.lexically_normal().generic_string();
+        std::ostringstream out;
+        std::ostringstream err;
         std::size_t repoIndex = 0;
         if (const auto it = repoOrderByPath.find(repoLabel); it != repoOrderByPath.end()) {
             repoIndex = it->second;
         }
 
-        {
-            std::lock_guard<std::mutex> lock(outputMutex);
-            if (repoIndex > 0) {
-                std::cout << "[" << kano::terminal::Wrap(std::to_string(repoIndex) + "/" + std::to_string(InRepos.size()), kano::terminal::Color::Dim) 
-                          << "] Processing " << kano::terminal::Wrap(repoLabel, kano::terminal::Color::BoldCyan) << "\n";
-            } else {
-                std::cout << "[" << kano::terminal::Wrap("?/?", kano::terminal::Color::Dim) 
-                          << "] Processing " << kano::terminal::Wrap(repoLabel, kano::terminal::Color::BoldCyan) << "\n";
-            }
+        RepoRunResult run;
+        run.repo = repoPath;
+        run.summary.repo = repoPath;
+
+        auto finishSuccess = [&](const std::string& outcome, const std::string& remote, const std::string& branch, const std::string& reason) {
+            run.status = workspace::RepoOperationStatus::Succeeded;
+            run.exitCode = 0;
+            run.summary = PushSummaryEntry{repoPath, outcome, remote, branch, reason};
+            run.stdoutText = out.str();
+            run.stderrText = err.str();
+            return run;
+        };
+
+        auto finishSkipped = [&](const std::string& outcome, const std::string& remote, const std::string& branch, const std::string& reason) {
+            run.status = workspace::RepoOperationStatus::Skipped;
+            run.exitCode = 0;
+            run.skipReason = reason;
+            run.message = reason;
+            run.summary = PushSummaryEntry{repoPath, outcome, remote, branch, reason};
+            run.stdoutText = out.str();
+            run.stderrText = err.str();
+            return run;
+        };
+
+        auto finishFailed = [&](const std::string& category, const std::string& remote, const std::string& branch, const std::string& reason) {
+            run.status = category == "BLOCKED_BY_CHILD_FAILURE"
+                ? workspace::RepoOperationStatus::Blocked
+                : workspace::RepoOperationStatus::Failed;
+            run.exitCode = 1;
+            run.failureCategory = category;
+            run.message = reason;
+            run.summary = PushSummaryEntry{repoPath, category, remote, branch, reason};
+            run.stdoutText = out.str();
+            run.stderrText = err.str();
+            return run;
+        };
+
+        if (repoIndex > 0) {
+            out << "[" << kano::terminal::Wrap(std::to_string(repoIndex) + "/" + std::to_string(InRepos.size()), kano::terminal::Color::Dim)
+                << "] Processing " << kano::terminal::Wrap(repoLabel, kano::terminal::Color::BoldCyan) << "\n";
+        } else {
+            out << "[" << kano::terminal::Wrap("?/?", kano::terminal::Color::Dim)
+                << "] Processing " << kano::terminal::Wrap(repoLabel, kano::terminal::Color::BoldCyan) << "\n";
         }
 
         const auto gitDir = GitCapture(repoPath, {"rev-parse", "--git-dir"});
         if (gitDir.exitCode != 0) {
-            std::cerr << "Error: Not a git repository: " << repoLabel << "\n";
-            return {0, 1, repoPath};
+            err << "[" << repoLabel << "] FAILED_PUSH: not a git repository\n";
+            return finishFailed("FAILED_PUSH", {}, {}, "not a git repository");
         }
 
         if (InFetchOnly) {
             if (InDryRun) {
-                std::cout << "[DRY RUN] [" << repoLabel << "] Would run: git fetch --all --prune --tags\n";
+                out << "[DRY RUN] [" << repoLabel << "] Would run: git fetch --all --prune --tags\n";
             } else {
-                const auto fetch = GitPassThrough(repoPath, {"fetch", "--all", "--prune", "--tags"});
+                const auto fetch = GitCapture(repoPath, {"fetch", "--all", "--prune", "--tags"});
                 if (fetch.exitCode != 0) {
-                    std::cerr << "[" << repoLabel << "] Fetch failed\n";
-                    return {0, 1, repoPath};
+                    PrintCapturedOutputToStreams(fetch, out, err);
+                    err << "[" << repoLabel << "] FAILED_CONNECTION: fetch failed\n";
+                    return finishFailed("FAILED_CONNECTION", {}, {}, "fetch failed");
                 }
             }
-            std::cout << "[" << kano::terminal::Wrap(repoLabel, kano::terminal::Color::BoldCyan) << "] Fetch-only mode: skipping rebase and push\n";
-            return {1, 0, repoPath};
+            out << "[" << kano::terminal::Wrap(repoLabel, kano::terminal::Color::BoldCyan) << "] Fetch-only mode: skipping rebase and push\n";
+            return finishSkipped("SKIPPED_FETCH_ONLY", {}, {}, "fetch-only mode");
+        }
+
+        const auto repoRecordIt = repoRecordsByPath.find(RepoKey(repoPath));
+        const bool pushDisabledByCommandPolicy = repoRecordIt != repoRecordsByPath.end() && IsFalsePolicy(repoRecordIt->second.kogPushPolicy);
+        if (pushDisabledByCommandPolicy) {
+            const std::string reason = "commandPolicy.push=false / kog-push=false";
+            out << "[" << repoLabel << "] SKIPPED_BY_POLICY: " << reason << "\n";
+            return finishSkipped("SKIPPED_BY_POLICY", {}, {}, reason);
         }
 
         const auto pushPolicy = ResolveGitmodulesPushPolicy(repoPath);
         if (pushPolicy == "skip") {
-            std::cout << "[" << repoLabel << "] Push skipped by .gitmodules policy (kog-push-policy=skip)\n";
-            return {1, 0, repoPath};
+            const std::string reason = ".gitmodules policy kog-push-policy=skip";
+            out << "[" << repoLabel << "] SKIPPED_BY_POLICY: " << reason << "\n";
+            return finishSkipped("SKIPPED_BY_POLICY", {}, {}, reason);
         }
         if (!pushPolicy.empty() && pushPolicy != "allow") {
-            std::cerr << "[" << repoLabel << "] Warning: unknown .gitmodules kog-push-policy='" << pushPolicy
-                      << "'; expected skip|allow, treating as allow\n";
+            err << "[" << repoLabel << "] Warning: unknown .gitmodules kog-push-policy='" << pushPolicy
+                << "'; expected skip|allow, treating as allow\n";
+        }
+
+        if (!HasAnyCommit(repoPath)) {
+            err << "[" << repoLabel << "] FAILED_PUSH: repository has no commits to push\n";
+            return finishFailed("FAILED_PUSH", {}, {}, "repository has no commits to push");
         }
 
         const auto branchOut = GitCapture(repoPath, {"symbolic-ref", "--quiet", "--short", "HEAD"});
         const auto branch = Trim(branchOut.stdoutStr);
         if (branchOut.exitCode != 0 || branch.empty()) {
-            std::cerr << "Error: Detached HEAD is not supported by native push flow: " << repoLabel << "\n";
-            return {0, 1, repoPath};
+            err << "[" << repoLabel << "] FAILED_PUSH: detached HEAD is not supported by native push flow\n";
+            return finishFailed("FAILED_PUSH", {}, {}, "detached HEAD is not supported by native push flow");
         }
 
         const bool hasUpstream = (GitCapture(repoPath, {"rev-parse", "--abbrev-ref", "@{upstream}"}).exitCode == 0);
@@ -687,29 +1037,30 @@ auto RunNativePush(
             std::string stashName;
             if (hasLocalChanges) {
                 if (InFailOnDirtySync) {
-                    std::cerr << "[" << repoLabel << "] Sync failed: local changes present (--fail-on-dirty-sync)\n";
-                    return {0, 1, repoPath};
+                    err << "[" << repoLabel << "] FAILED_PUSH: sync failed because local changes are present (--fail-on-dirty-sync)\n";
+                    return finishFailed("FAILED_PUSH", {}, branch, "sync failed because local changes are present");
                 }
 
                 if (InStashLocalChanges) {
                     stashName = "kano-native-push-autostash";
                     if (InDryRun) {
-                        std::cout << "[DRY RUN] [" << repoLabel << "] Would run: git stash push -u -m " << stashName << "\n";
+                        out << "[DRY RUN] [" << repoLabel << "] Would run: git stash push -u -m " << stashName << "\n";
                         hadStash = true;
                     } else {
                         const auto stash = GitCapture(repoPath, {"stash", "push", "-u", "-m", stashName});
                         if (stash.exitCode != 0) {
-                            std::cerr << "[" << repoLabel << "] Failed to create auto-stash before sync\n";
-                            return {0, 1, repoPath};
+                            PrintCapturedOutputToStreams(stash, out, err);
+                            err << "[" << repoLabel << "] FAILED_PUSH: failed to create auto-stash before sync\n";
+                            return finishFailed("FAILED_PUSH", {}, branch, "failed to create auto-stash before sync");
                         }
                         const auto stashOut = Trim(stash.stdoutStr);
                         hadStash = stashOut.find("No local changes to save") == std::string::npos;
                         if (hadStash) {
-                            std::cout << "[" << repoLabel << "] Auto-stashed local changes for sync\n";
+                            out << "[" << repoLabel << "] Auto-stashed local changes for sync\n";
                         }
                     }
                 } else {
-                    std::cout << "[" << kano::terminal::Wrap(repoLabel, kano::terminal::Color::BoldCyan) << "] Sync skipped: local changes present; proceeding to push\n";
+                    out << "[" << kano::terminal::Wrap(repoLabel, kano::terminal::Color::BoldCyan) << "] Sync skipped: local changes present; proceeding to push\n";
                 }
             } else {
                 const auto upstreamRef = Trim(GitCapture(repoPath, {"rev-parse", "--abbrev-ref", "@{upstream}"}).stdoutStr);
@@ -728,70 +1079,84 @@ auto RunNativePush(
 
                 if (InDryRun) {
                     if (shouldPullRebase) {
-                        std::cout << "[DRY RUN] [" << repoLabel << "] Would run: git pull --rebase\n";
+                        out << "[DRY RUN] [" << repoLabel << "] Would run: git pull --rebase\n";
                     } else {
-                        std::cout << "[DRY RUN] [" << repoLabel << "] Skip sync pull: local branch is not behind upstream";
+                        out << "[DRY RUN] [" << repoLabel << "] Skip sync pull: local branch is not behind upstream";
                         if (aheadCount >= 0 && behindCount >= 0) {
-                            std::cout << " (ahead=" << aheadCount << ", behind=" << behindCount << ")";
+                            out << " (ahead=" << aheadCount << ", behind=" << behindCount << ")";
                         }
-                        std::cout << "\n";
+                        out << "\n";
                     }
                 } else if (shouldPullRebase) {
-                    const auto pull = GitPassThrough(repoPath, {"pull", "--rebase"});
+                    const auto pull = GitCapture(repoPath, {"pull", "--rebase"});
                     if (pull.exitCode != 0) {
-                        std::cerr << "[" << repoLabel << "] Sync failed before push\n";
-                        return {0, 1, repoPath};
+                        PrintCapturedOutputToStreams(pull, out, err);
+                        err << "[" << repoLabel << "] FAILED_PUSH: sync failed before push\n";
+                        return finishFailed("FAILED_PUSH", {}, branch, "sync failed before push");
                     }
                 } else {
-                    std::cout << "[" << kano::terminal::Wrap(repoLabel, kano::terminal::Color::BoldCyan) << "] Sync skipped: local branch is not behind upstream";
+                    out << "[" << kano::terminal::Wrap(repoLabel, kano::terminal::Color::BoldCyan) << "] Sync skipped: local branch is not behind upstream";
                     if (aheadCount >= 0 && behindCount >= 0) {
-                        std::cout << " (ahead=" << aheadCount << ", behind=" << behindCount << ")";
+                        out << " (ahead=" << aheadCount << ", behind=" << behindCount << ")";
                     }
-                    std::cout << "\n";
+                    out << "\n";
                 }
             }
 
             if (InStashLocalChanges && hasLocalChanges && hadStash) {
                 if (InDryRun) {
-                    std::cout << "[DRY RUN] [" << repoLabel << "] Would run: git stash pop\n";
+                    out << "[DRY RUN] [" << repoLabel << "] Would run: git stash pop\n";
                 } else {
-                    const auto pop = GitPassThrough(repoPath, {"stash", "pop"});
+                    const auto pop = GitCapture(repoPath, {"stash", "pop"});
                     if (pop.exitCode != 0) {
-                        std::cerr << "[" << repoLabel << "] Failed to restore auto-stash after sync\n";
-                        return {0, 1, repoPath};
+                        PrintCapturedOutputToStreams(pop, out, err);
+                        err << "[" << repoLabel << "] FAILED_PUSH: failed to restore auto-stash after sync\n";
+                        return finishFailed("FAILED_PUSH", {}, branch, "failed to restore auto-stash after sync");
                     }
                 }
             }
             const auto syncEnd = std::chrono::steady_clock::now();
-            syncMillis += std::chrono::duration_cast<std::chrono::milliseconds>(syncEnd - syncStart).count();
-        }
-
-        std::vector<std::string> pushRemotes;
-        if (!InRemoteFilter.empty()) {
-            if (HasRemote(repoPath, InRemoteFilter)) {
-                pushRemotes.push_back(InRemoteFilter);
-            }
-        } else {
-            if (HasRemote(repoPath, "origin-ssh")) {
-                pushRemotes.push_back("origin-ssh");
-            }
-            if (HasRemote(repoPath, "origin-http")) {
-                pushRemotes.push_back("origin-http");
-            }
-            if (HasRemote(repoPath, "origin")) {
-                pushRemotes.push_back("origin");
+            {
+                std::lock_guard<std::mutex> lock(profileMutex);
+                syncMillis += std::chrono::duration_cast<std::chrono::milliseconds>(syncEnd - syncStart).count();
             }
         }
 
-        if (pushRemotes.empty()) {
+        for (const auto& dependency : operation.dependencies) {
+            const auto childIt = repoRecordsByPath.find(RepoKey(dependency));
+            if (childIt == repoRecordsByPath.end() || !IsFalsePolicy(childIt->second.kogPushPolicy)) {
+                continue;
+            }
+            const auto gitlinkHead = ParentGitlinkHeadForPush(repoPath, childIt->second.path);
+            if (!gitlinkHead.empty() && !CommitIsKnownOnRemoteTrackingRef(childIt->second.path, gitlinkHead)) {
+                const auto reason = std::format(
+                    "push-disabled child {} points at commit {} that is not available on a remote-tracking ref",
+                    childIt->second.path.lexically_normal().generic_string(),
+                    gitlinkHead);
+                err << "[" << repoLabel << "] BLOCKED_BY_CHILD_FAILURE: " << reason << "\n";
+                return finishFailed("BLOCKED_BY_CHILD_FAILURE", {}, branch, reason);
+            }
+        }
+
+        const auto selectedRemote = ResolvePushRemotePriority(repoPath, branch, InRemoteFilter);
+        if (!selectedRemote.has_value()) {
             const auto workspaceRoot = std::filesystem::weakly_canonical(InWorkspaceRoot).lexically_normal();
-            if (InRecursive && repoPath == workspaceRoot) {
-                std::cout << "[" << repoLabel << "] Push skipped: no pushable remote on workspace root container repo\n";
-                return {1, 0, repoPath};
+            const auto containerChildPaths = BuildContainerChildPaths(repoPath, operation.dependencies, repoRecordsByPath);
+            const bool rootHasChildren = !containerChildPaths.empty() || HasNestedRepoChildren(repoPath, repoRecordsByPath);
+            if (InRecursive && repoPath == workspaceRoot && rootHasChildren && !HasContentChangesOutsideDependencies(repoPath, containerChildPaths)) {
+                const std::string reason = "no pushable remote on clean workspace root container repo";
+                out << "[" << repoLabel << "] Push skipped: no pushable remote on workspace root container repo\n";
+                out << "[" << repoLabel << "] SKIPPED_NO_REMOTE: Push skipped: " << reason << "\n";
+                return finishSkipped("SKIPPED_NO_REMOTE", {}, branch, reason);
             }
-            std::cerr << "Error: No pushable origin remote found for " << repoLabel << "\n";
-            return {0, 1, repoPath};
+            const std::string reason = InRemoteFilter.empty()
+                ? "no usable push remote found; configure origin-ssh, origin, origin-http, upstream-ssh, upstream, upstream-http, branch.<name>.pushRemote, or remote.pushDefault"
+                : "requested push remote '" + InRemoteFilter + "' is not configured";
+            err << "[" << repoLabel << "] FAILED_MISSING_REMOTE: " << reason << "\n";
+            return finishFailed("FAILED_MISSING_REMOTE", {}, branch, reason);
         }
+
+        const auto remote = *selectedRemote;
 
         std::vector<std::string> pushArgs;
         if (InForceWithLease) {
@@ -800,220 +1165,245 @@ auto RunNativePush(
         if (InNoVerify) {
             pushArgs.push_back("--no-verify");
         }
-        if (!hasUpstream) {
-            pushArgs.push_back("-u");
+
+        const auto pushStart = std::chrono::steady_clock::now();
+        const bool hasSomethingToPush = HasCommitsToPush(repoPath, remote, branch);
+        if (!hasSomethingToPush) {
+            const auto reason = "remote branch already contains local branch";
+            out << "[" << repoLabel << "] SKIPPED_UP_TO_DATE (" << remote << ", " << branch << "): " << reason << "\n";
+            return finishSkipped("SKIPPED_UP_TO_DATE", remote, branch, reason);
         }
 
-        int repoSuccess = 0;
-        const auto pushStart = std::chrono::steady_clock::now();
-        for (const auto& remote : pushRemotes) {
-            const bool hasSomethingToPush = HasCommitsToPush(repoPath, remote, branch);
-            if (!hasSomethingToPush) {
-                if (InVerbose) {
-                    std::cout << "[" << repoLabel << "] Unchanged (" << remote << ")\n";
-                }
-                repoSuccess = 1;
-                continue;
-            }
+        std::string skipReason;
+        if (ShouldSkipLocalCheckedOutRemotePush(repoPath, remote, branch, &skipReason)) {
+            out << "[" << repoLabel << "] SKIPPED_BY_POLICY (" << remote << ", " << branch << "): " << skipReason << "\n";
+            return finishSkipped("SKIPPED_BY_POLICY", remote, branch, skipReason);
+        }
 
-            std::string skipReason;
-            if (ShouldSkipLocalCheckedOutRemotePush(repoPath, remote, branch, &skipReason)) {
-                std::cout << "[" << repoLabel << "] Push skipped (" << remote << "): " << skipReason << "\n";
-                repoSuccess = 1;
-                continue;
-            }
+        std::vector<std::string> args = {"push"};
+        args.insert(args.end(), pushArgs.begin(), pushArgs.end());
+        args.push_back(remote);
+        args.push_back(branch);
 
-            std::vector<std::string> args = {"push"};
-            args.insert(args.end(), pushArgs.begin(), pushArgs.end());
-            args.push_back(remote);
-            args.push_back(branch);
-
-            if (InDryRun) {
-                std::cout << "[DRY RUN] [" << repoLabel << "] Would run: git";
-                for (const auto& arg : args) {
-                    std::cout << " " << arg;
-                }
-                std::cout << "\n";
-                repoSuccess = 1;
-                {
-                    std::lock_guard<std::mutex> lock(statsMutex);
-                    pushStats.emplace_back(repoLabel, remote, branch);
-                }
-                continue;
+        if (InDryRun) {
+            out << "[DRY RUN] [" << repoLabel << "] Would run: git";
+            for (const auto& arg : args) {
+                out << " " << arg;
             }
+            out << "\n";
+            return finishSuccess("PUSHED_DRY_RUN", remote, branch, "dry-run planned push");
+        }
 
-            auto result = GitCapture(repoPath, args);
-            if (InVerbose) {
-                PrintCapturedOutputIfAny(result);
+        auto result = GitCapture(repoPath, args);
+        if (InVerbose) {
+            PrintCapturedOutputToStreams(result, out, err);
+        }
+        if (result.exitCode == 0) {
+            out << "[" << kano::terminal::Wrap(repoLabel, kano::terminal::Color::BoldCyan) << "] "
+                << kano::terminal::Wrap("Pushed", kano::terminal::Color::BoldGreen) << " (" << remote << ", " << branch << ")\n";
+            const auto pushEnd = std::chrono::steady_clock::now();
+            {
+                std::lock_guard<std::mutex> lock(profileMutex);
+                pushMillis += std::chrono::duration_cast<std::chrono::milliseconds>(pushEnd - pushStart).count();
             }
-            if (result.exitCode == 0) {
-                std::cout << "[" << kano::terminal::Wrap(repoLabel, kano::terminal::Color::BoldCyan) << "] " 
-                          << kano::terminal::Wrap("Pushed", kano::terminal::Color::BoldGreen) << " (" << remote << ")\n";
-                repoSuccess = 1;
-                {
-                    std::lock_guard<std::mutex> lock(statsMutex);
-                    pushStats.emplace_back(repoLabel, remote, branch);
-                }
-            } else {
+            return finishSuccess("PUSHED", remote, branch, "pushed successfully");
+        }
+
                 bool recoveredByLfsRetry = false;
                 if (!InDryRun && LooksLikeLfsPushFailure(result)) {
-                    std::cerr << "[" << kano::terminal::Wrap(repoLabel, kano::terminal::Color::BoldCyan) << "] "
-                              << kano::terminal::Wrap("Push failed", kano::terminal::Color::BoldRed) << " (" << remote
-                              << ") due to LFS transport/auth issue; attempting git lfs push retry\n";
+                    err << "[" << kano::terminal::Wrap(repoLabel, kano::terminal::Color::BoldCyan) << "] "
+                        << kano::terminal::Wrap("Push failed", kano::terminal::Color::BoldRed) << " (" << remote
+                        << ") due to LFS transport/auth issue; attempting git lfs push retry\n";
 
                     const auto lfsPush = GitCapture(repoPath, {"lfs", "push", remote, branch});
                     if (InVerbose || lfsPush.exitCode != 0) {
-                        PrintCapturedOutputIfAny(lfsPush);
+                        PrintCapturedOutputToStreams(lfsPush, out, err);
                     }
 
                     if (lfsPush.exitCode == 0) {
                         auto retryResult = GitCapture(repoPath, args);
                         if (InVerbose || retryResult.exitCode != 0) {
-                            PrintCapturedOutputIfAny(retryResult);
+                            PrintCapturedOutputToStreams(retryResult, out, err);
                         }
                         if (retryResult.exitCode == 0) {
-                            std::cout << "[" << kano::terminal::Wrap(repoLabel, kano::terminal::Color::BoldCyan) << "] "
-                                      << kano::terminal::Wrap("Pushed", kano::terminal::Color::BoldGreen) << " (" << remote
-                                      << ") after LFS retry\n";
-                            repoSuccess = 1;
+                            out << "[" << kano::terminal::Wrap(repoLabel, kano::terminal::Color::BoldCyan) << "] "
+                                << kano::terminal::Wrap("Pushed", kano::terminal::Color::BoldGreen) << " (" << remote
+                                << ", " << branch << ") after LFS retry\n";
                             recoveredByLfsRetry = true;
-                            std::lock_guard<std::mutex> lock(statsMutex);
-                            pushStats.emplace_back(repoLabel, remote, branch);
                         }
                     }
                 }
 
                 if (recoveredByLfsRetry) {
-                    continue;
+                    const auto pushEnd = std::chrono::steady_clock::now();
+                    {
+                        std::lock_guard<std::mutex> lock(profileMutex);
+                        pushMillis += std::chrono::duration_cast<std::chrono::milliseconds>(pushEnd - pushStart).count();
+                    }
+                    return finishSuccess("PUSHED", remote, branch, "pushed successfully after LFS retry");
                 }
 
                 if (!InVerbose) {
-                    PrintCapturedOutputIfAny(result);
+                    PrintCapturedOutputToStreams(result, out, err);
                 }
-                std::cerr << "[" << kano::terminal::Wrap(repoLabel, kano::terminal::Color::BoldCyan) << "] "
-                          << kano::terminal::Wrap("Push failed", kano::terminal::Color::BoldRed) << " (" << remote << ")\n";
-            }
-        }
-
-        if (repoSuccess == 0) {
-            return {0, 1, repoPath};
-        }
-        const auto pushEnd = std::chrono::steady_clock::now();
-        pushMillis += std::chrono::duration_cast<std::chrono::milliseconds>(pushEnd - pushStart).count();
-        return {1, 0, repoPath};
+                const auto category = ClassifyPushFailure(result);
+                err << "[" << kano::terminal::Wrap(repoLabel, kano::terminal::Color::BoldCyan) << "] "
+                    << category << ": " << kano::terminal::Wrap("Push failed", kano::terminal::Color::BoldRed)
+                    << " (" << remote << ", " << branch << ")\n";
+                return finishFailed(category, remote, branch, "git push failed");
     };
 
-    const int jobs = InJobs < 1 ? 1 : InJobs;
-    const auto waves = BuildPushWaves(InRepos);
-    for (const auto& wave : waves) {
-        std::vector<std::filesystem::path> waveCandidates;
-        waveCandidates.reserve(wave.size());
+    auto schedulerInputs = BuildPushSchedulerInputs(InRepos);
 
-        for (const auto& repoPathRaw : wave) {
-            const auto repoPath = std::filesystem::weakly_canonical(repoPathRaw).lexically_normal();
-            const bool blockedByChildFailure = std::any_of(failedRepos.begin(), failedRepos.end(), [&](const auto& failedPath) {
-                return IsParentPath(repoPath, failedPath);
-            });
-            if (blockedByChildFailure) {
-                std::cerr << "[" << repoPath.generic_string() << "] Push blocked: one or more nested repositories failed in earlier wave\n";
-                failures += 1;
-                failedRepos.push_back(repoPath);
-                continue;
+    workspace::RepoOperationSchedulerOptions schedulerOptions;
+    schedulerOptions.operationName = "push";
+    schedulerOptions.mode = workspace::RepoOperationMode::MutatingDependencyWaves;
+    schedulerOptions.jobs = InDryRun ? 1 : (InJobs < 1 ? 1 : InJobs);
+
+    const auto aggregate = workspace::RunRepoOperationScheduler(
+        schedulerInputs,
+        schedulerOptions,
+        [&](const workspace::RepoOperationInput& operation) {
+            {
+                std::lock_guard<std::mutex> lock(profileMutex);
+                activeRepoRuns += 1;
+                maxParallelObserved = std::max(maxParallelObserved, activeRepoRuns);
             }
-            waveCandidates.push_back(repoPath);
-        }
 
-        if (waveCandidates.empty()) {
+            const auto result = runOneRepo(operation);
+
+            {
+                std::lock_guard<std::mutex> lock(profileMutex);
+                activeRepoRuns -= 1;
+            }
+
+            workspace::RepoOperationWorkerResult out;
+            out.status = result.status;
+            out.exitCode = result.exitCode;
+            out.stdoutText = result.stdoutText;
+            out.stderrText = result.stderrText;
+            out.failureCategory = result.failureCategory;
+            out.message = result.message;
+            out.skipReason = result.skipReason;
+            {
+                std::lock_guard<std::mutex> lock(statsMutex);
+                pushSummaryByRepo[RepoKey(result.repo)] = result.summary;
+            }
+            return out;
+        });
+
+    successes = static_cast<int>(aggregate.succeeded);
+    failures = static_cast<int>(aggregate.failed + aggregate.blocked + aggregate.pending);
+
+    for (const auto& result : aggregate.results) {
+        if (!result.stdoutText.empty()) {
+            std::cout << result.stdoutText;
+        }
+        if (!result.stderrText.empty()) {
+            std::cerr << result.stderrText;
+        }
+    }
+
+    for (const auto& result : aggregate.results) {
+        if (result.status == workspace::RepoOperationStatus::Blocked) {
+            const auto reason = result.blockReason.empty()
+                ? std::string{"one or more nested repositories failed in earlier wave"}
+                : result.blockReason;
+            std::cerr << "[" << result.repoPath.generic_string() << "] BLOCKED_BY_CHILD_FAILURE: " << reason << "\n";
+            std::cerr << "[" << result.repoPath.generic_string() << "] Push blocked: one or more nested repositories failed in earlier wave\n";
+        } else if (result.status == workspace::RepoOperationStatus::Pending) {
+            std::cerr << "[" << result.repoPath.generic_string() << "] Push pending: scheduler did not execute repository\n";
+        }
+    }
+
+    pushStats.clear();
+    pushStats.reserve(aggregate.results.size());
+    for (const auto& result : aggregate.results) {
+        const auto key = RepoKey(result.repoPath);
+        if (const auto it = pushSummaryByRepo.find(key); it != pushSummaryByRepo.end()) {
+            pushStats.push_back(it->second);
             continue;
         }
-
-        if (jobs == 1 || waveCandidates.size() <= 1) {
-            for (const auto& repoPathRaw : waveCandidates) {
-                const auto result = runOneRepo(repoPathRaw);
-                successes += result.successes;
-                failures += result.failures;
-                if (result.failures > 0) {
-                    failedRepos.push_back(result.repo.lexically_normal());
-                }
-            }
-            continue;
-        }
-
-        std::vector<std::future<RepoRunResult>> active;
-        active.reserve(static_cast<std::size_t>(jobs));
-
-        auto waitOne = [&]() {
-            if (active.empty()) {
-                return;
-            }
-            const auto result = active.front().get();
-            successes += result.successes;
-            failures += result.failures;
-            if (result.failures > 0) {
-                failedRepos.push_back(result.repo.lexically_normal());
-            }
-            active.erase(active.begin());
-        };
-
-        for (const auto& repoPathRaw : waveCandidates) {
-            while (static_cast<int>(active.size()) >= jobs) {
-                waitOne();
-            }
-            active.push_back(std::async(std::launch::async, [&, repoPathRaw]() {
-                return runOneRepo(repoPathRaw);
-            }));
-            if (static_cast<int>(active.size()) > maxParallelObserved) {
-                maxParallelObserved = static_cast<int>(active.size());
-            }
-        }
-
-        while (!active.empty()) {
-            waitOne();
+        if (result.status == workspace::RepoOperationStatus::Blocked) {
+            pushStats.push_back(PushSummaryEntry{
+                result.repoPath,
+                "BLOCKED_BY_CHILD_FAILURE",
+                {},
+                {},
+                result.blockReason.empty() ? std::string{"dependency failed in an earlier phase"} : result.blockReason});
+        } else if (result.status == workspace::RepoOperationStatus::Pending) {
+            pushStats.push_back(PushSummaryEntry{result.repoPath, "PENDING", {}, {}, "scheduler did not execute repository"});
         }
     }
 
     if (!pushStats.empty()) {
         const auto root = std::filesystem::current_path().lexically_normal();
-        std::map<std::string, std::vector<std::tuple<std::string, std::string, std::string>>> grouped;
+        std::vector<std::string> groupOrder;
+        std::map<std::string, std::vector<PushSummaryEntry>> grouped;
+        std::map<std::string, int> outcomeCounts;
 
         for (const auto& stat : pushStats) {
-            const std::filesystem::path repoPath(std::get<0>(stat));
+            const std::filesystem::path repoPath(stat.repo);
             const auto relative = RelativeDisplayPath(root, repoPath);
             const auto group = GroupFromRelativePath(relative);
-            grouped[group].emplace_back(
-                RepoNameFromPath(repoPath),
-                std::get<1>(stat),
-                std::get<2>(stat));
+            if (!grouped.contains(group)) {
+                groupOrder.push_back(group);
+            }
+            grouped[group].push_back(stat);
+            outcomeCounts[stat.outcome] += 1;
         }
 
         std::cout << "\n=== " << kano::terminal::Wrap("Push Summary", kano::terminal::Color::BoldWhite) << " ===\n";
-        std::cout << kano::terminal::Wrap(std::format("SUMMARY: pushed_entries={}, groups={}", pushStats.size(), grouped.size()), kano::terminal::Color::BoldWhite) << "\n\n";
+        std::cout << kano::terminal::Wrap(
+            std::format(
+                "SUMMARY: repos={}, pushed={}, skipped_no_remote={}, skipped_by_policy={}, skipped_up_to_date={}, blocked={}, failed={}",
+                pushStats.size(),
+                outcomeCounts["PUSHED"] + outcomeCounts["PUSHED_DRY_RUN"],
+                outcomeCounts["SKIPPED_NO_REMOTE"],
+                outcomeCounts["SKIPPED_BY_POLICY"],
+                outcomeCounts["SKIPPED_UP_TO_DATE"],
+                outcomeCounts["BLOCKED_BY_CHILD_FAILURE"],
+                outcomeCounts["FAILED_PUSH"] + outcomeCounts["FAILED_CONNECTION"] + outcomeCounts["FAILED_AUTH"] + outcomeCounts["FAILED_MISSING_REMOTE"]),
+            kano::terminal::Color::BoldWhite) << "\n\n";
 
         std::size_t index = 0;
-        for (const auto& [group, rows] : grouped) {
+        for (const auto& group : groupOrder) {
+            const auto rowsIt = grouped.find(group);
+            if (rowsIt == grouped.end()) {
+                continue;
+            }
             std::cout << kano::terminal::Wrap("GROUP: " + group, kano::terminal::Color::BoldYellow) << "\n";
-            for (const auto& row : rows) {
+            for (const auto& row : rowsIt->second) {
                 index += 1;
                 std::cout << kano::terminal::Wrap(std::format("[{}]", index), kano::terminal::Color::Dim) << " "
-                          << kano::terminal::Wrap(std::get<0>(row), kano::terminal::Color::BoldCyan)
-                          << "  remote=" << kano::terminal::Wrap(std::get<1>(row), kano::terminal::Color::Green)
-                          << "  branch=" << kano::terminal::Wrap(std::get<2>(row), kano::terminal::Color::BoldWhite)
-                          << "\n";
+                          << kano::terminal::Wrap(RepoNameFromPath(row.repo), kano::terminal::Color::BoldCyan)
+                          << "  outcome=" << row.outcome;
+                if (!row.remote.empty()) {
+                    std::cout << "  remote=" << kano::terminal::Wrap(row.remote, kano::terminal::Color::Green);
+                }
+                if (!row.branch.empty()) {
+                    std::cout << "  branch=" << kano::terminal::Wrap(row.branch, kano::terminal::Color::BoldWhite);
+                }
+                if (!row.reason.empty()) {
+                    std::cout << "  reason=" << row.reason;
+                }
+                std::cout << "\n";
             }
             std::cout << "\n";
         }
     }
 
-    const auto summaryColor = failures == 0 ? kano::terminal::Color::BoldGreen : kano::terminal::Color::BoldRed;
-    std::cout << "\nSummary: " << kano::terminal::Wrap(std::to_string(successes) + " succeeded", kano::terminal::Color::BoldGreen) 
-              << ", " << kano::terminal::Wrap(std::to_string(failures) + " failed", kano::terminal::Color::BoldRed) << "\n";
+    std::cout << "\nSummary: " << kano::terminal::Wrap(std::to_string(successes) + " pushed", kano::terminal::Color::BoldGreen)
+              << ", " << kano::terminal::Wrap(std::to_string(static_cast<int>(aggregate.skipped)) + " skipped", kano::terminal::Color::BoldYellow)
+              << ", " << kano::terminal::Wrap(std::to_string(static_cast<int>(aggregate.blocked)) + " blocked", kano::terminal::Color::BoldRed)
+              << ", " << kano::terminal::Wrap(std::to_string(static_cast<int>(aggregate.failed + aggregate.pending)) + " failed", kano::terminal::Color::BoldRed) << "\n";
     if (InProfile) {
         const auto totalEnd = std::chrono::steady_clock::now();
         const auto totalMillis = std::chrono::duration_cast<std::chrono::milliseconds>(totalEnd - totalStart).count();
         std::cout << "\n=== Profile Summary ===\n";
         std::cout << "mode: native\n";
         std::cout << "repo_count: " << InRepos.size() << "\n";
-        std::cout << "jobs_requested: " << jobs << "\n";
+        std::cout << "jobs_requested: " << schedulerOptions.jobs << "\n";
         std::cout << "max_parallel_observed: " << maxParallelObserved << "\n";
         std::cout << "sync_ms: " << syncMillis << "\n";
         std::cout << "push_ms: " << pushMillis << "\n";
@@ -1025,22 +1415,22 @@ auto RunNativePush(
 } // namespace
 
 auto RunPushNativeSimple(const std::filesystem::path& InWorkspaceRoot,
-                         const bool InRecursive,
-                         const bool InDryRun,
+                          const bool InRecursive,
+                          const bool InDryRun,
                          const bool InProfile,
                          const bool InForceWithLease,
                          const bool InNoVerify,
-                         const int InJobs,
-                         const bool InVerbose,
-                         const std::string& InRemote) -> int {
-    std::vector<std::filesystem::path> repos;
+                          const int InJobs,
+                          const bool InVerbose,
+                          const std::string& InRemote) -> int {
+    std::vector<workspace::RepoRecord> repos;
     if (InRecursive) {
         repos = DiscoverWorkspaceRepos(InWorkspaceRoot);
         if (repos.empty()) {
-            repos.push_back(InWorkspaceRoot);
+            repos = BuildExplicitRepoRecords(InWorkspaceRoot, {InWorkspaceRoot});
         }
     } else {
-        repos.push_back(InWorkspaceRoot);
+        repos = BuildExplicitRepoRecords(InWorkspaceRoot, {InWorkspaceRoot});
     }
 
     return RunNativePush(
@@ -1065,7 +1455,9 @@ void RegisterPush(CLI::App& InApp) {
     cmd->allow_extras();
 
     auto* shellMode = new bool{false};
+    auto* recursive = new bool{false};
     auto* noRecursive = new bool{false};
+    auto* bottomUp = new bool{false};
     auto* repos = new std::string{};
     auto* repoRoot = new std::string{};
     auto* target = new std::string{};
@@ -1084,8 +1476,10 @@ void RegisterPush(CLI::App& InApp) {
     auto* remote = new std::string{};
 
     cmd->add_flag("--shell", *shellMode, "Deprecated compatibility flag (shell path removed)");
+    cmd->add_flag("--recursive", *recursive, "Push workspace repositories recursively (default unless --no-recursive is set)");
     cmd->add_flag("--no-recursive,-N", *noRecursive, "Only push current repository (disable workspace recursive discovery)");
     cmd->add_flag("--current-only", *noRecursive, "Alias of --no-recursive (backward compatible)");
+    cmd->add_flag("--bottom-up", *bottomUp, "Plan recursive push bottom-up so child repositories run before parents");
     cmd->add_option("--repos", *repos, "Repo filter (comma-separated paths, native mode)");
     cmd->add_option("--repo-root", *repoRoot, "Workspace root/start path used for repo-name lookup");
     cmd->add_option("target", *target, "Optional repo target root (repo name or relative path)")->required(false);
@@ -1111,6 +1505,16 @@ void RegisterPush(CLI::App& InApp) {
             std::exit(2);
         }
 
+        if (*recursive && *noRecursive) {
+            std::cerr << "Error: --recursive cannot be combined with --no-recursive/--current-only\n";
+            std::exit(2);
+        }
+
+        if (*bottomUp && *noRecursive) {
+            std::cerr << "Error: --bottom-up requires recursive push planning; remove --no-recursive/--current-only\n";
+            std::exit(2);
+        }
+
         if (!extras.empty()) {
             std::cerr << "Error: unsupported extra arguments in native push mode:";
             for (const auto& extra : extras) {
@@ -1130,9 +1534,9 @@ void RegisterPush(CLI::App& InApp) {
             std::exit(2);
         }
 
-        std::vector<std::filesystem::path> nativeRepos;
+        std::vector<workspace::RepoRecord> nativeRepos;
         if (!repos->empty()) {
-            nativeRepos = ResolveReposCsv(workspaceRoot, *repos);
+            nativeRepos = BuildExplicitRepoRecords(workspaceRoot, ResolveReposCsv(workspaceRoot, *repos));
         }
 
         if (nativeRepos.empty() && !*noRecursive) {
@@ -1140,7 +1544,7 @@ void RegisterPush(CLI::App& InApp) {
         }
 
         if (nativeRepos.empty()) {
-            nativeRepos.push_back(workspaceRoot);
+            nativeRepos = BuildExplicitRepoRecords(workspaceRoot, {workspaceRoot});
         }
 
         if (*stashLocalChanges && *failOnDirtySync) {

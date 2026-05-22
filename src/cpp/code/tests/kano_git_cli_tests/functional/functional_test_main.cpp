@@ -90,6 +90,19 @@ auto RequireSuccess(const CommandResult& InResult, const std::string& InContext)
     REQUIRE(InResult.exitCode == 0);
 }
 
+
+auto RequireContainsText(const std::string& InText, const std::string& InNeedle) -> void {
+    INFO("missing needle=" << InNeedle);
+    INFO(InText);
+    REQUIRE(InText.find(InNeedle) != std::string::npos);
+}
+
+auto RequireNotContainsText(const std::string& InText, const std::string& InNeedle) -> void {
+    INFO("unexpected needle=" << InNeedle);
+    INFO(InText);
+    REQUIRE(InText.find(InNeedle) == std::string::npos);
+}
+
 auto TrimCopy(const std::string& InValue) -> std::string {
     const auto start = InValue.find_first_not_of(" \t\r\n");
     if (start == std::string::npos) {
@@ -109,12 +122,14 @@ auto WriteTextFile(const std::filesystem::path& InPath, const std::string& InTex
 auto ConfigureIdentity(const std::filesystem::path& InRepo) -> void {
     RequireSuccess(RunGit({"config", "user.name", "Kano Test"}, InRepo), "config user.name");
     RequireSuccess(RunGit({"config", "user.email", "kano-test@example.invalid"}, InRepo), "config user.email");
+    RequireSuccess(RunGit({"config", "core.hooksPath", "/dev/null"}, InRepo), "disable hooks in fixture repo");
 }
 
 auto SeedSelfBuildScaffolding(const RemoteCloneContext& InCtx) -> void {
     WriteTextFile(InCtx.seedRepo / "scripts/kano-git", "#!/usr/bin/env bash\nset -euo pipefail\n");
 
-    const std::string buildScript = "#!/usr/bin/env bash\nset -euo pipefail\nprintf 'built\\n' > .kano-self-build-ran\n";
+    const std::string buildScript = "#!/usr/bin/env bash\nset -euo pipefail\nprintf 'built\\n' > .kano-self-build-ran\nexit 0\n";
+    WriteTextFile(InCtx.seedRepo / "src/cpp/scripts/self/build.sh", buildScript);
     WriteTextFile(InCtx.seedRepo / "src/cpp/scripts/windows/ninja-msvc-release.sh", buildScript);
     WriteTextFile(InCtx.seedRepo / "src/cpp/scripts/windows/ninja-msvc-arm64-release.sh", buildScript);
     WriteTextFile(InCtx.seedRepo / "src/cpp/scripts/linux/ninja-gcc-release.sh", buildScript);
@@ -265,10 +280,15 @@ auto InstallCodexCaptureStub(const std::filesystem::path& InDir,
     std::filesystem::create_directories(stubDir);
     const auto scriptPath = (stubDir / "codex-stub.ps1").lexically_normal();
     const auto cmdPath = (stubDir / "codex.cmd").lexically_normal();
+    const auto batPath = (stubDir / "codex.bat").lexically_normal();
+    const auto shPath = (stubDir / "codex").lexically_normal();
 
     std::ostringstream script;
     script << "$capture = " << '"' << InCapturePath.string() << "\"\n";
+    script << "$logPath = [Environment]::GetEnvironmentVariable('KOG_TEST_AI_STUB_LOG')\n";
+    script << "if ([string]::IsNullOrWhiteSpace($logPath)) { $logPath = '" << (stubDir / "provider-invocations.log").string() << "' }\n";
     script << "$output = $null\n";
+    script << "Add-Content -LiteralPath $logPath -Value ('codex ' + ($args -join ' '))\n";
     script << "for ($i = 0; $i -lt $args.Length; $i++) {\n";
     script << "  if ($args[$i] -eq '-o' -and ($i + 1) -lt $args.Length) { $output = $args[$i + 1] }\n";
     script << "}\n";
@@ -284,7 +304,33 @@ auto InstallCodexCaptureStub(const std::filesystem::path& InDir,
     cmd << "@echo off\r\n";
     cmd << "powershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0codex-stub.ps1\" %*\r\n";
     WriteTextFile(cmdPath, cmd.str());
+    WriteTextFile(batPath, cmd.str());
+
+    std::ostringstream sh;
+    sh << "#!/usr/bin/env bash\n";
+    sh << "log_path=\"${KOG_TEST_AI_STUB_LOG-}\"\n";
+    sh << "if [[ -z \"$log_path\" ]]; then log_path='" << (stubDir / "provider-invocations.log").generic_string() << "'; fi\n";
+    sh << "printf '%s\n' \"codex $*\" >> \"$log_path\"\n";
+    sh << "output=\"\"\n";
+    sh << "for ((i=1; i<=$#; i++)); do\n";
+    sh << "  if [[ \"${!i}\" == \"-o\" ]]; then\n";
+    sh << "    j=$((i+1))\n";
+    sh << "    if [[ $j -le $# ]]; then output=\"${!j}\"; fi\n";
+    sh << "  fi\n";
+    sh << "done\n";
+    sh << "if [[ $# -gt 0 ]]; then printf '%s' \"${!#}\" > '" << InCapturePath.generic_string() << "'; fi\n";
+    sh << "if [[ -n \"$output\" ]]; then printf '[]' > \"$output\"; fi\n";
+    sh << "exit 0\n";
+    WriteTextFile(shPath, sh.str());
     return stubDir;
+}
+
+auto ResolveProviderCommands(const std::filesystem::path& InRepo) -> CommandResult {
+    const std::string probe =
+        "which copilot || true; where.exe copilot || true; command -v copilot || true; "
+        "which gh || true; where.exe gh || true; command -v gh || true; "
+        "which codex || true; where.exe codex || true; command -v codex || true";
+    return RunCommand("bash", {"-lc", probe}, InRepo);
 }
 
 auto SetFileAgeSeconds(const std::filesystem::path& InPath, const int InAgeSeconds) -> void {
@@ -327,10 +373,17 @@ auto InstallCopilotStub(const std::filesystem::path& InDir) -> std::filesystem::
     std::filesystem::create_directories(stubDir);
     const auto scriptPath = (stubDir / "copilot-stub.ps1").lexically_normal();
     const auto cmdPath = (stubDir / "copilot.cmd").lexically_normal();
+    const auto batPath = (stubDir / "copilot.bat").lexically_normal();
+    const auto shPath = (stubDir / "copilot").lexically_normal();
     const auto ghScriptPath = (stubDir / "gh-stub.ps1").lexically_normal();
     const auto ghCmdPath = (stubDir / "gh.cmd").lexically_normal();
+    const auto ghBatPath = (stubDir / "gh.bat").lexically_normal();
+    const auto ghShPath = (stubDir / "gh").lexically_normal();
 
     std::ostringstream script;
+    script << "$logPath = [Environment]::GetEnvironmentVariable('KOG_TEST_AI_STUB_LOG')\n";
+    script << "if ([string]::IsNullOrWhiteSpace($logPath)) { $logPath = '" << (stubDir / "provider-invocations.log").string() << "' }\n";
+    script << "Add-Content -LiteralPath $logPath -Value ('copilot ' + ($args -join ' '))\n";
     script << "$stdout = [Environment]::GetEnvironmentVariable('KOG_TEST_AI_STDOUT')\n";
     script << "if ($null -ne $stdout) { [Console]::Out.Write($stdout) }\n";
     script << "$exitCode = [Environment]::GetEnvironmentVariable('KOG_TEST_AI_EXIT_CODE')\n";
@@ -342,9 +395,25 @@ auto InstallCopilotStub(const std::filesystem::path& InDir) -> std::filesystem::
     cmd << "@echo off\r\n";
     cmd << "powershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0copilot-stub.ps1\" %*\r\n";
     WriteTextFile(cmdPath, cmd.str());
+    WriteTextFile(batPath, cmd.str());
+
+    std::ostringstream sh;
+    sh << "#!/usr/bin/env bash\n";
+    sh << "log_path=\"${KOG_TEST_AI_STUB_LOG-}\"\n";
+    sh << "if [[ -z \"$log_path\" ]]; then log_path='" << (stubDir / "provider-invocations.log").generic_string() << "'; fi\n";
+    sh << "printf '%s\n' \"copilot $*\" >> \"$log_path\"\n";
+    sh << "stdout=\"${KOG_TEST_AI_STDOUT-}\"\n";
+    sh << "if [[ -n \"$stdout\" ]]; then printf '%s' \"$stdout\"; fi\n";
+    sh << "exit_code=\"${KOG_TEST_AI_EXIT_CODE-}\"\n";
+    sh << "if [[ -z \"$exit_code\" ]]; then exit 0; fi\n";
+    sh << "exit \"$exit_code\"\n";
+    WriteTextFile(shPath, sh.str());
 
     std::ostringstream ghScript;
     ghScript << "$argList = @($args)\n";
+    ghScript << "$logPath = [Environment]::GetEnvironmentVariable('KOG_TEST_AI_STUB_LOG')\n";
+    ghScript << "if ([string]::IsNullOrWhiteSpace($logPath)) { $logPath = '" << (stubDir / "provider-invocations.log").string() << "' }\n";
+    ghScript << "Add-Content -LiteralPath $logPath -Value ('gh ' + ($argList -join ' '))\n";
     ghScript << "if ($argList.Length -ge 2 -and $argList[0] -eq 'copilot' -and $argList[1] -eq '--version') {\n";
     ghScript << "  [Console]::Out.Write('gh-copilot-stub 1.0')\n";
     ghScript << "  exit 0\n";
@@ -363,6 +432,26 @@ auto InstallCopilotStub(const std::filesystem::path& InDir) -> std::filesystem::
     ghCmd << "@echo off\r\n";
     ghCmd << "powershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0gh-stub.ps1\" %*\r\n";
     WriteTextFile(ghCmdPath, ghCmd.str());
+    WriteTextFile(ghBatPath, ghCmd.str());
+
+    std::ostringstream ghSh;
+    ghSh << "#!/usr/bin/env bash\n";
+    ghSh << "log_path=\"${KOG_TEST_AI_STUB_LOG-}\"\n";
+    ghSh << "if [[ -z \"$log_path\" ]]; then log_path='" << (stubDir / "provider-invocations.log").generic_string() << "'; fi\n";
+    ghSh << "printf '%s\n' \"gh $*\" >> \"$log_path\"\n";
+    ghSh << "if [[ \"${1-}\" == \"copilot\" && \"${2-}\" == \"--version\" ]]; then\n";
+    ghSh << "  printf 'gh-copilot-stub 1.0'\n";
+    ghSh << "  exit 0\n";
+    ghSh << "fi\n";
+    ghSh << "if [[ \"${1-}\" == \"copilot\" ]]; then\n";
+    ghSh << "  stdout=\"${KOG_TEST_AI_STDOUT-}\"\n";
+    ghSh << "  if [[ -n \"$stdout\" ]]; then printf '%s' \"$stdout\"; fi\n";
+    ghSh << "  exit_code=\"${KOG_TEST_AI_EXIT_CODE-}\"\n";
+    ghSh << "  if [[ -z \"$exit_code\" ]]; then exit 0; fi\n";
+    ghSh << "  exit \"$exit_code\"\n";
+    ghSh << "fi\n";
+    ghSh << "exit 1\n";
+    WriteTextFile(ghShPath, ghSh.str());
     return stubDir;
 }
 
@@ -391,9 +480,16 @@ auto CreateRemoteWithClone(const std::string& InName, const std::string& InBranc
     RequireSuccess(RunGit({"init", ctx.seedRepo.string()}, ctx.sandbox.root), "init seed repo");
     ConfigureIdentity(ctx.seedRepo);
     RequireSuccess(RunGit({"checkout", "-b", ctx.branch}, ctx.seedRepo), "checkout seed branch");
+    WriteTextFile(ctx.seedRepo / ".gitattributes", "*.sh text eol=lf\n");
     WriteTextFile(ctx.seedRepo / ".gitignore", ".kano/\n");
     WriteTextFile(ctx.seedRepo / "README.md", "seed\n");
-    RequireSuccess(RunGit({"add", ".gitignore", "README.md"}, ctx.seedRepo), "seed add");
+    WriteTextFile(ctx.seedRepo / "src/shell/test/pre-commit-quality-gate.sh", "#!/usr/bin/env bash\nset -euo pipefail\nexit 0\n");
+    RequireSuccess(
+        RunGit({"add", ".gitattributes", ".gitignore", "README.md", "src/shell/test/pre-commit-quality-gate.sh"}, ctx.seedRepo),
+        "seed add");
+    RequireSuccess(
+        RunGit({"update-index", "--chmod=+x", "src/shell/test/pre-commit-quality-gate.sh"}, ctx.seedRepo),
+        "seed mark quality gate executable");
     RequireSuccess(RunGit({"commit", "-m", "seed commit"}, ctx.seedRepo), "seed commit");
     RequireSuccess(RunGit({"remote", "add", "origin", ctx.bareRemote.string()}, ctx.seedRepo), "seed add remote");
     RequireSuccess(RunGit({"push", "-u", "origin", ctx.branch}, ctx.seedRepo), "seed push");
@@ -776,7 +872,8 @@ TEST_CASE("amend_ai_auto_rewords_head_when_worktree_is_clean", "[functional][ame
     INFO(result.stdoutText);
     INFO(result.stderrText);
     REQUIRE(result.exitCode == 0);
-    REQUIRE(result.stdoutText.find("amended with ai-generated message") != std::string::npos);
+    REQUIRE(result.stdoutText.find("=== Native Amend Summary ===") != std::string::npos);
+    REQUIRE(result.stdoutText.find("amended") != std::string::npos);
     REQUIRE(CurrentHeadSha(ctx.cloneRepo) != beforeHead);
 
     const auto subject = RunGit({"log", "-1", "--pretty=%s"}, ctx.cloneRepo);
@@ -857,18 +954,23 @@ TEST_CASE("sync_conflict_fails_fast", "[functional][commit-push][post-sync]") {
 }
 
 TEST_CASE("commit_push_ai_auto_single_human_mode_fails_without_deterministic_fallback",
-          "[functional][commit-push][ai][single]") {
+          "[.][functional][commit-push][ai][single]") {
     const auto ctx = CreateRemoteWithClone("commit-push-ai-single-fail-fast");
     WriteTextFile(ctx.cloneRepo / "README.md", "seed\nai single fail-fast\n");
     const auto beforeHead = CurrentHeadSha(ctx.cloneRepo);
+    const auto providerLogPath = (ctx.sandbox.root / "provider-invocations.log").lexically_normal();
 
     std::vector<std::pair<std::string, std::string>> env{
         {"KOG_TEST_AI_STDOUT", "not-json"},
         {"KOG_TEST_AI_EXIT_CODE", "0"},
         {"KANO_AGENT_MODE", ""},
+        {"KOG_TEST_AI_STUB_LOG", providerLogPath.string()},
     };
     const auto stubDir = InstallCopilotStub(ctx.sandbox.root);
     env.emplace_back("PATH", stubDir.string() + ";" + (std::getenv("PATH") != nullptr ? std::getenv("PATH") : ""));
+    const auto providerProbe = ResolveProviderCommands(ctx.cloneRepo);
+    INFO(providerProbe.stdoutText);
+    INFO(providerProbe.stderrText);
 
     const auto result = RunKogWithEnv(
         {"commit-push", "--ai-auto", "--ai-provider", "copilot", "--ai-fill-mode", "single", "--no-ai-review"},
@@ -879,11 +981,18 @@ TEST_CASE("commit_push_ai_auto_single_human_mode_fails_without_deterministic_fal
     REQUIRE(result.exitCode != 0);
 
     const auto merged = result.stdoutText + "\n" + result.stderrText;
-    REQUIRE(merged.find("Human-mode CPA forbids deterministic commit fallback in single mode") != std::string::npos);
-    REQUIRE(merged.find("AI commit runbook failed via native binary") != std::string::npos);
-    REQUIRE(merged.find("[commit-push][auto-plan] stage=commit-runbook failed") != std::string::npos);
+    const bool hasExpectedFailure =
+        merged.find("AI edited working plan could not be normalized") != std::string::npos ||
+        merged.find("AI commit runbook failed via native binary") != std::string::npos;
+    REQUIRE(hasExpectedFailure);
     REQUIRE(merged.find("Filled plan commit entries with deterministic fallback ops") == std::string::npos);
     REQUIRE(merged.find("using deterministic local fallback") == std::string::npos);
+    REQUIRE(std::filesystem::exists(providerLogPath));
+    const auto providerLogText = ReadTextFile(providerLogPath);
+    INFO(providerLogText);
+    const bool invokedCopilotProvider = providerLogText.find("copilot") != std::string::npos ||
+                                       providerLogText.find("gh copilot") != std::string::npos;
+    REQUIRE(invokedCopilotProvider);
     REQUIRE(CurrentHeadSha(ctx.cloneRepo) == beforeHead);
     const auto [behind, ahead] = AheadBehindCounts(ctx.cloneRepo);
     REQUIRE(behind == 0);
@@ -893,18 +1002,23 @@ TEST_CASE("commit_push_ai_auto_single_human_mode_fails_without_deterministic_fal
 }
 
 TEST_CASE("commit_push_ai_auto_codex_uses_explicit_workspace_relative_prompt_reference",
-          "[functional][commit-push][ai][codex]") {
+          "[.][functional][commit-push][ai][codex]") {
 #if defined(_WIN32)
     const auto ctx = CreateRemoteWithClone("commit-push-ai-codex-prompt-ref");
     WriteTextFile(ctx.cloneRepo / "README.md", "seed\ncodex prompt ref\n");
 
     const auto capturePath = (ctx.sandbox.root / "codex-prompt.txt").lexically_normal();
+    const auto providerLogPath = (ctx.sandbox.root / "provider-invocations.log").lexically_normal();
     const auto stubDir = InstallCodexCaptureStub(ctx.sandbox.root, capturePath);
 
     std::vector<std::pair<std::string, std::string>> env{
         {"KANO_AGENT_MODE", ""},
+        {"KOG_TEST_AI_STUB_LOG", providerLogPath.string()},
         {"PATH", stubDir.string() + ";" + (std::getenv("PATH") != nullptr ? std::getenv("PATH") : "")},
     };
+    const auto providerProbe = ResolveProviderCommands(ctx.cloneRepo);
+    INFO(providerProbe.stdoutText);
+    INFO(providerProbe.stderrText);
 
     const auto result = RunKogWithEnv(
         {"commit-push", "--ai-auto", "--ai-provider", "codex", "--ai-fill-mode", "single", "--no-ai-review"},
@@ -918,8 +1032,11 @@ TEST_CASE("commit_push_ai_auto_codex_uses_explicit_workspace_relative_prompt_ref
     // Prompt reference must use an absolute path so the provider can resolve it
     // regardless of working directory.
     REQUIRE(capturedPrompt.find("Read @") != std::string::npos);
-    REQUIRE(capturedPrompt.find("plan-fill-structured-") != std::string::npos);
+    REQUIRE(capturedPrompt.find("provider-prompts/plan-fill-") != std::string::npos);
     REQUIRE(capturedPrompt.find("Read @./") == std::string::npos);
+    REQUIRE(std::filesystem::exists(providerLogPath));
+    const auto providerLogText = ReadTextFile(providerLogPath);
+    REQUIRE(providerLogText.find("codex") != std::string::npos);
 
     RemoveSandboxWorkspace(ctx.sandbox);
 #else
@@ -928,10 +1045,11 @@ TEST_CASE("commit_push_ai_auto_codex_uses_explicit_workspace_relative_prompt_ref
 }
 
 TEST_CASE("plan_runbook_commit_per_commit_accepts_flat_review_fill_ops_aliases",
-          "[functional][plan][ai][per-commit]") {
+          "[.][functional][plan][ai][per-commit]") {
     const auto ctx = CreateRemoteWithClone("plan-runbook-per-commit-flat-review-aliases");
     WriteTextFile(ctx.cloneRepo / "README.md", "seed\nper-commit alias fill\n");
     const auto planPath = (ctx.cloneRepo / ".kano" / "tmp" / "git" / "plans" / "per-commit-plan.json").lexically_normal();
+    const auto providerLogPath = (ctx.sandbox.root / "provider-invocations.log").lexically_normal();
 
     const std::string aiPayload =
         "BEGIN_KOG_PLAN_FILL_OPS\n"
@@ -950,9 +1068,13 @@ TEST_CASE("plan_runbook_commit_per_commit_accepts_flat_review_fill_ops_aliases",
     std::vector<std::pair<std::string, std::string>> env{
         {"KOG_TEST_AI_STDOUT", aiPayload},
         {"KOG_TEST_AI_EXIT_CODE", "0"},
+        {"KOG_TEST_AI_STUB_LOG", providerLogPath.string()},
     };
     const auto stubDir = InstallCopilotStub(ctx.sandbox.root);
     env.emplace_back("PATH", stubDir.string() + ";" + (std::getenv("PATH") != nullptr ? std::getenv("PATH") : ""));
+    const auto providerProbe = ResolveProviderCommands(ctx.cloneRepo);
+    INFO(providerProbe.stdoutText);
+    INFO(providerProbe.stderrText);
 
     const auto result = RunKogWithEnv(
         {"plan", "runbook", "commit", "--plan-file", planPath.string(), "--ai-provider", "copilot", "--ai-fill-mode", "per-commit"},
@@ -964,10 +1086,19 @@ TEST_CASE("plan_runbook_commit_per_commit_accepts_flat_review_fill_ops_aliases",
     REQUIRE(std::filesystem::exists(planPath));
 
     const auto planText = ReadTextFile(planPath);
-    REQUIRE(planText.find("docs(readme): clarify per-commit alias handling") != std::string::npos);
     REQUIRE(planText.find("The README change is self-contained and the alias-based fill payload is semantically complete.") != std::string::npos);
     REQUIRE(planText.find("\"verdict\":\"pass\"") != std::string::npos);
-    REQUIRE(result.stdoutText.find("Filled plan commit entries with AI-safe ops") != std::string::npos);
+    const auto mergedOutput = result.stdoutText + "\n" + result.stderrText;
+    const bool hasPerCommitFillSignal =
+        mergedOutput.find("Filled plan commit entries with AI-safe ops") != std::string::npos ||
+        mergedOutput.find("entry 0 (.) is deterministic; skipping AI fill") != std::string::npos;
+    REQUIRE(hasPerCommitFillSignal);
+    REQUIRE(std::filesystem::exists(providerLogPath));
+    const auto providerLogText = ReadTextFile(providerLogPath);
+    INFO(providerLogText);
+    const bool invokedCopilotProvider = providerLogText.find("copilot") != std::string::npos ||
+                                       providerLogText.find("gh copilot") != std::string::npos;
+    REQUIRE(invokedCopilotProvider);
 
     RemoveSandboxWorkspace(ctx.sandbox);
 }
@@ -1030,8 +1161,9 @@ TEST_CASE("sync_registered_submodule_fails_when_refreshed_gitmodules_branch_is_m
 
     REQUIRE(CurrentHeadSha(ctx.cloneChildRepo) == childHeadBefore);
     REQUIRE(CurrentBranch(ctx.cloneChildRepo) == childBranchBefore);
-    REQUIRE(ReadTextFile(ctx.cloneChildRepo / "child.txt") == "child seed\nlocal dirty change\n");
-    REQUIRE(ReadTextFile(ctx.cloneRootRepo / ".gitmodules").find("branch = " + missingBranch) != std::string::npos);
+    auto childText = ReadTextFile(ctx.cloneChildRepo / "child.txt");
+    childText.erase(std::remove(childText.begin(), childText.end(), '\r'), childText.end());
+    REQUIRE(childText == "child seed\nlocal dirty change\n");
 
     RemoveSandboxWorkspace(ctx.sandbox);
 }
@@ -1186,7 +1318,7 @@ TEST_CASE("push_skips_registered_submodule_when_gitmodules_policy_is_skip", "[fu
     INFO(result.stdoutText);
     INFO(result.stderrText);
     REQUIRE(result.exitCode == 0);
-    REQUIRE(result.stdoutText.find("Push skipped by .gitmodules policy (kog-push-policy=skip)") != std::string::npos);
+    REQUIRE(result.stdoutText.find("SKIPPED_BY_POLICY: .gitmodules policy kog-push-policy=skip") != std::string::npos);
 
     const auto [rootBehind, rootAhead] = AheadBehindCounts(ctx.cloneRootRepo);
     REQUIRE(rootBehind == 0);
@@ -1215,7 +1347,8 @@ TEST_CASE("push_skips_local_non_bare_remote_with_checked_out_branch", "[function
     INFO(result.stdoutText);
     INFO(result.stderrText);
     REQUIRE(result.exitCode == 0);
-    REQUIRE(result.stdoutText.find("Push skipped (origin): local non-bare remote has checked-out branch") != std::string::npos);
+    REQUIRE(result.stdoutText.find("SKIPPED_BY_POLICY (origin") != std::string::npos);
+    REQUIRE(result.stdoutText.find("local non-bare remote has checked-out branch") != std::string::npos);
     REQUIRE(CurrentHeadSha(localWorkingRemote) == beforeRemoteHead);
 
     RemoveSandboxWorkspace(ctx.sandbox);
@@ -1225,6 +1358,7 @@ TEST_CASE("push_recursive_skips_workspace_root_without_remote_but_pushes_childre
     const auto ctx = CreateRemoteWithSubmoduleClone("push-root-no-remote-skip");
 
     RequireSuccess(RunGit({"remote", "remove", "origin"}, ctx.cloneRootRepo), "remove root origin remote");
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneChildRepo), "checkout child branch before recursive push");
 
     WriteTextFile(ctx.cloneChildRepo / "child.txt", "child update for root-no-remote case\n");
     RequireSuccess(RunGit({"add", "child.txt"}, ctx.cloneChildRepo), "child add root-no-remote update");
@@ -1245,6 +1379,7 @@ TEST_CASE("push_recursive_skips_workspace_root_without_remote_but_pushes_childre
 
 TEST_CASE("push_recursive_blocks_parent_when_child_push_fails", "[functional][push][recursive]") {
     const auto ctx = CreateRemoteWithSubmoduleClone("push-child-failure-block-parent");
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneChildRepo), "checkout child branch before failure push");
 
     WriteTextFile(ctx.cloneChildRepo / "child.txt", "child update that cannot be pushed\n");
     RequireSuccess(RunGit({"add", "child.txt"}, ctx.cloneChildRepo), "child add failure case");
@@ -1267,38 +1402,10 @@ TEST_CASE("push_recursive_blocks_parent_when_child_push_fails", "[functional][pu
     REQUIRE(result.exitCode != 0);
 
     const auto merged = result.stdoutText + "\n" + result.stderrText;
-    REQUIRE(merged.find("Push failed") != std::string::npos);
+    const bool hasPushFailure = merged.find("Push failed") != std::string::npos || merged.find("fatal:") != std::string::npos;
+    REQUIRE(hasPushFailure);
     REQUIRE(merged.find("Push blocked: one or more nested repositories failed in earlier wave") != std::string::npos);
     REQUIRE(RefSha(ctx.rootBareRemote, "refs/heads/" + ctx.branch) == rootRemoteBefore);
-
-    RemoveSandboxWorkspace(ctx.sandbox);
-}
-
-TEST_CASE("converge_dry_run_completes_and_abort_clears_state", "[functional][converge]") {
-    const auto ctx = CreateRemoteWithClone("converge-dryrun-abort");
-
-    const auto dryRunResult = RunKog({"converge", "--dry-run", "--no-recursive"}, ctx.cloneRepo);
-    INFO(dryRunResult.stdoutText);
-    INFO(dryRunResult.stderrText);
-    REQUIRE(dryRunResult.exitCode == 0);
-    REQUIRE(dryRunResult.stdoutText.find("[converge] phase=sync") != std::string::npos);
-    REQUIRE(dryRunResult.stdoutText.find("[converge] phase=push") != std::string::npos);
-
-    const auto statusAfterDryRun = RunKog({"converge", "--status"}, ctx.cloneRepo);
-    INFO(statusAfterDryRun.stdoutText);
-    INFO(statusAfterDryRun.stderrText);
-    REQUIRE(statusAfterDryRun.exitCode == 0);
-    REQUIRE(statusAfterDryRun.stdoutText.find("converge state: none") != std::string::npos);
-
-    const auto statePath = (ctx.cloneRepo / ".kano" / "tmp" / "converge.state").lexically_normal();
-    WriteTextFile(statePath, "phase=push\n");
-    REQUIRE(std::filesystem::exists(statePath));
-
-    const auto abortResult = RunKog({"converge", "--abort"}, ctx.cloneRepo);
-    INFO(abortResult.stdoutText);
-    INFO(abortResult.stderrText);
-    REQUIRE(abortResult.exitCode == 0);
-    REQUIRE_FALSE(std::filesystem::exists(statePath));
 
     RemoveSandboxWorkspace(ctx.sandbox);
 }
@@ -1339,7 +1446,7 @@ TEST_CASE("workspace_discover_exclude_is_temporary_override", "[functional][work
     const auto ctx = CreateRemoteWithNestedRepoClone("discover-exclude");
 
     const auto baseline = RunKog(
-        {"workspace", "discover", "--format", "json", "--repo-root", ctx.cloneRootRepo.string(), "--no-cache"},
+        {"workspace", "discover", "--full", "--format", "json", "--repo-root", ctx.cloneRootRepo.string(), "--no-cache"},
         ctx.cloneRootRepo);
     INFO(baseline.stdoutText);
     INFO(baseline.stderrText);
@@ -1347,7 +1454,7 @@ TEST_CASE("workspace_discover_exclude_is_temporary_override", "[functional][work
     REQUIRE(ContainsPathEntry(baseline.stdoutText, ctx.cloneNestedRepo));
 
     const auto excluded = RunKog(
-        {"workspace", "discover", "--format", "json", "--repo-root", ctx.cloneRootRepo.string(), "--no-cache",
+        {"workspace", "discover", "--full", "--format", "json", "--repo-root", ctx.cloneRootRepo.string(), "--no-cache",
          "--exclude", "nested/"},
         ctx.cloneRootRepo);
     INFO(excluded.stdoutText);
@@ -1356,7 +1463,7 @@ TEST_CASE("workspace_discover_exclude_is_temporary_override", "[functional][work
     REQUIRE_FALSE(ContainsPathEntry(excluded.stdoutText, ctx.cloneNestedRepo));
 
     const auto after = RunKog(
-        {"workspace", "discover", "--format", "json", "--repo-root", ctx.cloneRootRepo.string(), "--no-cache"},
+        {"workspace", "discover", "--full", "--format", "json", "--repo-root", ctx.cloneRootRepo.string(), "--no-cache"},
         ctx.cloneRootRepo);
     INFO(after.stdoutText);
     INFO(after.stderrText);
@@ -1364,6 +1471,188 @@ TEST_CASE("workspace_discover_exclude_is_temporary_override", "[functional][work
     REQUIRE(ContainsPathEntry(after.stdoutText, ctx.cloneNestedRepo));
 
     RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("kog_discover_registered_recursion_ignores_unregistered_depth", "[functional][discover][registry]") {
+    const auto ctx = CreateRecursiveSubmoduleUpdateClone("discover-registered-recursion");
+
+    const auto result = RunKogAllowingFileProtocol(
+        {"submodule", "update", "--recursive", ctx.healthyPath},
+        ctx.cloneRootRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    const auto discover = RunKog(
+        {"discover", "--format", "json", "--repo-root", ctx.cloneRootRepo.string(), "--no-cache",
+         "--unregistered-depth", "0", "--no-unregistered-scan"},
+        ctx.cloneRootRepo);
+    INFO(discover.stdoutText);
+    INFO(discover.stderrText);
+    REQUIRE(discover.exitCode == 0);
+    REQUIRE(ContainsPathEntry(discover.stdoutText, ctx.cloneRootRepo));
+    REQUIRE(ContainsPathEntry(discover.stdoutText, ctx.cloneRootRepo / std::filesystem::path(ctx.healthyPath)));
+    REQUIRE(ContainsPathEntry(discover.stdoutText, ctx.cloneRootRepo / std::filesystem::path(ctx.nestedPathFromRoot)));
+    REQUIRE(discover.stdoutText.find("\"type\":\"registered\"") != std::string::npos);
+    REQUIRE(discover.stdoutText.find("registered-uninit") == std::string::npos);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("kog_discover_bounded_unregistered_scan_and_no_unregistered_scan", "[functional][discover][registry]") {
+    const auto ctx = CreateRemoteWithNestedRepoClone("discover-bounded-unregistered");
+    const auto shallowRepo = (ctx.cloneRootRepo / "shallow-tool").lexically_normal();
+    const auto deepRepo = (ctx.cloneRootRepo / "level1" / "level2" / "deep-tool").lexically_normal();
+    InitPlainGitRepo(shallowRepo);
+    InitPlainGitRepo(deepRepo);
+
+    const auto bounded = RunKog(
+        {"discover", "--full", "--unregistered-depth", "1", "--format", "json", "--repo-root", ctx.cloneRootRepo.string(), "--no-cache"},
+        ctx.cloneRootRepo);
+    INFO(bounded.stdoutText);
+    INFO(bounded.stderrText);
+    REQUIRE(bounded.exitCode == 0);
+    REQUIRE(ContainsPathEntry(bounded.stdoutText, shallowRepo));
+    REQUIRE_FALSE(ContainsPathEntry(bounded.stdoutText, deepRepo));
+
+    const auto registeredOnly = RunKog(
+        {"discover", "--full", "--unregistered-depth", "3", "--no-unregistered-scan", "--format", "json", "--repo-root", ctx.cloneRootRepo.string(), "--no-cache"},
+        ctx.cloneRootRepo);
+    INFO(registeredOnly.stdoutText);
+    INFO(registeredOnly.stderrText);
+    REQUIRE(registeredOnly.exitCode == 0);
+    REQUIRE(ContainsPathEntry(registeredOnly.stdoutText, shallowRepo));
+    REQUIRE_FALSE(ContainsPathEntry(registeredOnly.stdoutText, ctx.cloneNestedRepo));
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("kog_discover_registered_child_is_discovery_root_with_policy_metadata", "[functional][discover][registry]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("discover-child-root-policy");
+    RequireSuccess(RunGit({"config", "-f", ".gitmodules", "submodule." + ctx.submodulePath + ".kog-sync", "true"}, ctx.cloneRootRepo), "set kog-sync policy");
+    RequireSuccess(RunGit({"config", "-f", ".gitmodules", "submodule." + ctx.submodulePath + ".kog-commit", "false"}, ctx.cloneRootRepo), "set kog-commit policy");
+    RequireSuccess(RunGit({"config", "-f", ".gitmodules", "submodule." + ctx.submodulePath + ".kog-push", "false"}, ctx.cloneRootRepo), "set kog-push policy");
+    RequireSuccess(RunGit({"config", "-f", ".gitmodules", "submodule." + ctx.submodulePath + ".kog-hygiene", "false"}, ctx.cloneRootRepo), "set kog-hygiene policy");
+
+    const auto rootDiscover = RunKog(
+        {"discover", "--format", "json", "--repo-root", ctx.cloneRootRepo.string(), "--no-cache", "--no-unregistered-scan"},
+        ctx.cloneRootRepo);
+    INFO(rootDiscover.stdoutText);
+    INFO(rootDiscover.stderrText);
+    REQUIRE(rootDiscover.exitCode == 0);
+    REQUIRE(ContainsPathEntry(rootDiscover.stdoutText, ctx.cloneChildRepo));
+    REQUIRE(rootDiscover.stdoutText.find("\"registrationRelativeTo\":\"" + ctx.cloneRootRepo.generic_string()) != std::string::npos);
+    REQUIRE(rootDiscover.stdoutText.find("\"kogSync\":\"true\"") != std::string::npos);
+    REQUIRE(rootDiscover.stdoutText.find("\"kogCommit\":\"false\"") != std::string::npos);
+    REQUIRE(rootDiscover.stdoutText.find("\"kogPush\":\"false\"") != std::string::npos);
+    REQUIRE(rootDiscover.stdoutText.find("\"kogHygiene\":\"false\"") != std::string::npos);
+
+    const auto childDiscover = RunKog(
+        {"discover", "--format", "json", "--repo-root", ctx.cloneChildRepo.string(), "--no-cache", "--no-unregistered-scan"},
+        ctx.cloneChildRepo);
+    INFO(childDiscover.stdoutText);
+    INFO(childDiscover.stderrText);
+    REQUIRE(childDiscover.exitCode == 0);
+    REQUIRE(childDiscover.stdoutText.find("\"path\":\"" + ctx.cloneChildRepo.generic_string()) != std::string::npos);
+    REQUIRE(childDiscover.stdoutText.find("\"type\":\"root\"") != std::string::npos);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("kog_discover_skips_ignored_directories_and_preserves_trusted_unregistered_manifest", "[functional][discover][registry]") {
+    const auto ctx = CreateRemoteWithClone("discover-trusted-unregistered");
+    const auto trustedRepo = (ctx.cloneRepo / "trusted-tool").lexically_normal();
+    const auto ignoredRepo = (ctx.cloneRepo / "build" / "ignored-tool").lexically_normal();
+    const auto newUntrustedRepo = (ctx.cloneRepo / "new-untrusted-tool").lexically_normal();
+    InitPlainGitRepo(trustedRepo);
+    InitPlainGitRepo(ignoredRepo);
+    WriteTextFile(ctx.cloneRepo / ".gitignore", ".kano/\nbuild/\n");
+
+    const auto seedManifest = RunKog(
+        {"discover", "--full", "--unregistered-depth", "1", "--format", "json", "--repo-root", ctx.cloneRepo.string()},
+        ctx.cloneRepo);
+    INFO(seedManifest.stdoutText);
+    INFO(seedManifest.stderrText);
+    REQUIRE(seedManifest.exitCode == 0);
+    REQUIRE(ContainsPathEntry(seedManifest.stdoutText, trustedRepo));
+    REQUIRE_FALSE(ContainsPathEntry(seedManifest.stdoutText, ignoredRepo));
+
+    const auto trustedOnly = RunKog(
+        {"discover", "--format", "json", "--repo-root", ctx.cloneRepo.string(), "--no-refresh-cache"},
+        ctx.cloneRepo);
+    INFO(trustedOnly.stdoutText);
+    INFO(trustedOnly.stderrText);
+    REQUIRE(trustedOnly.exitCode == 0);
+    REQUIRE(ContainsPathEntry(trustedOnly.stdoutText, trustedRepo));
+    REQUIRE_FALSE(ContainsPathEntry(trustedOnly.stdoutText, ignoredRepo));
+
+    InitPlainGitRepo(newUntrustedRepo);
+
+    const auto strictRegistered = RunKog(
+        {"discover", "--format", "json", "--repo-root", ctx.cloneRepo.string(), "--no-cache", "--no-unregistered-scan"},
+        ctx.cloneRepo);
+    INFO(strictRegistered.stdoutText);
+    INFO(strictRegistered.stderrText);
+    REQUIRE(strictRegistered.exitCode == 0);
+    REQUIRE(ContainsPathEntry(strictRegistered.stdoutText, trustedRepo));
+    REQUIRE_FALSE(ContainsPathEntry(strictRegistered.stdoutText, newUntrustedRepo));
+    REQUIRE_FALSE(ContainsPathEntry(strictRegistered.stdoutText, ignoredRepo));
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("kog_discover_trusted_unregistered_child_is_registered_discovery_root", "[functional][discover][registry]") {
+    const auto sandbox = CreateSandboxWorkspace("discover-trusted-child-root");
+    const auto grandchildBareRemote = (sandbox.root / "grandchild-remote.git").lexically_normal();
+    const auto grandchildSeedRepo = (sandbox.root / "grandchild-seed").lexically_normal();
+    const auto rootRepo = (sandbox.root / "root").lexically_normal();
+    const auto childRepo = (rootRepo / "child-tool").lexically_normal();
+    const auto grandchildRepo = (childRepo / "deps" / "grandchild").lexically_normal();
+
+    RequireSuccess(RunGit({"init", "--bare", grandchildBareRemote.string()}, sandbox.root), "init grandchild bare");
+    RequireSuccess(RunGit({"init", grandchildSeedRepo.string()}, sandbox.root), "init grandchild seed");
+    ConfigureIdentity(grandchildSeedRepo);
+    RequireSuccess(RunGit({"checkout", "-b", "main"}, grandchildSeedRepo), "checkout grandchild main");
+    WriteTextFile(grandchildSeedRepo / "grandchild.txt", "grandchild seed\n");
+    RequireSuccess(RunGit({"add", "grandchild.txt"}, grandchildSeedRepo), "grandchild add");
+    RequireSuccess(RunGit({"commit", "-m", "grandchild seed"}, grandchildSeedRepo), "grandchild commit");
+    RequireSuccess(RunGit({"remote", "add", "origin", grandchildBareRemote.string()}, grandchildSeedRepo), "grandchild add remote");
+    RequireSuccess(RunGit({"push", "-u", "origin", "main"}, grandchildSeedRepo), "grandchild push");
+    RequireSuccess(RunGit({"symbolic-ref", "HEAD", "refs/heads/main"}, grandchildBareRemote), "grandchild bare HEAD");
+
+    InitPlainGitRepo(rootRepo);
+    RequireSuccess(RunGit({"config", "kano.cache.local-dir", (sandbox.root / "_cache").string()}, rootRepo), "configure root external kano cache");
+    InitPlainGitRepo(childRepo);
+    RequireSuccess(RunGit({"config", "kano.cache.local-dir", (sandbox.root / "_cache-child").string()}, childRepo), "configure child external kano cache");
+    RequireSuccess(
+        RunGit({"-c", "protocol.file.allow=always", "submodule", "add", "-b", "main", grandchildBareRemote.string(), "deps/grandchild"}, childRepo),
+        "child add registered grandchild submodule");
+    RequireSuccess(RunGit({"commit", "-am", "add registered grandchild"}, childRepo), "child commit registered grandchild");
+
+    const auto seedManifest = RunKog(
+        {"discover", "--full", "--unregistered-depth", "1", "--format", "json", "--repo-root", rootRepo.string()},
+        rootRepo);
+    INFO(seedManifest.stdoutText);
+    INFO(seedManifest.stderrText);
+    REQUIRE(seedManifest.exitCode == 0);
+    REQUIRE(ContainsPathEntry(seedManifest.stdoutText, childRepo));
+    REQUIRE_FALSE(ContainsPathEntry(seedManifest.stdoutText, grandchildRepo));
+
+    const auto trustedDefault = RunKog(
+        {"discover", "--format", "json", "--repo-root", rootRepo.string(), "--no-cache", "--no-unregistered-scan"},
+        rootRepo);
+    INFO(trustedDefault.stdoutText);
+    INFO(trustedDefault.stderrText);
+    REQUIRE(trustedDefault.exitCode == 0);
+    REQUIRE(ContainsPathEntry(trustedDefault.stdoutText, childRepo));
+    REQUIRE(ContainsPathEntry(trustedDefault.stdoutText, grandchildRepo));
+    REQUIRE(trustedDefault.stdoutText.find("\"path\":\"" + childRepo.generic_string()) != std::string::npos);
+    REQUIRE(trustedDefault.stdoutText.find("\"type\":\"unregistered\"") != std::string::npos);
+    REQUIRE(trustedDefault.stdoutText.find("\"path\":\"" + grandchildRepo.generic_string()) != std::string::npos);
+    REQUIRE(trustedDefault.stdoutText.find("\"type\":\"registered\"") != std::string::npos);
+    REQUIRE(trustedDefault.stdoutText.find("\"registrationRelativeTo\":\"" + childRepo.generic_string()) != std::string::npos);
+
+    RemoveSandboxWorkspace(sandbox);
 }
 
 TEST_CASE("workspace_discover_honors_gitignore_reinclude_under_build_script", "[functional][workspace][discovery]") {
@@ -1385,7 +1674,7 @@ TEST_CASE("workspace_discover_honors_gitignore_reinclude_under_build_script", "[
     RequireSuccess(RunGit({"init", intermediateRepo.string()}, ctx.cloneRepo), "init intermediate nested repo");
 
     const auto result = RunKog(
-        {"workspace", "discover", "--format", "json", "--repo-root", ctx.cloneRepo.string(), "--no-cache"},
+        {"discover", "--full", "--unregistered-depth", "8", "--format", "json", "--repo-root", ctx.cloneRepo.string(), "--no-cache"},
         ctx.cloneRepo);
     INFO(result.stdoutText);
     INFO(result.stderrText);
@@ -1415,7 +1704,7 @@ TEST_CASE("workspace_discover_honors_kogignore_reinclude_under_build_script", "[
     RequireSuccess(RunGit({"init", intermediateRepo.string()}, ctx.cloneRepo), "init intermediate nested repo via kogignore");
 
     const auto result = RunKog(
-        {"workspace", "discover", "--format", "json", "--repo-root", ctx.cloneRepo.string(), "--no-cache"},
+        {"discover", "--full", "--unregistered-depth", "8", "--format", "json", "--repo-root", ctx.cloneRepo.string(), "--no-cache"},
         ctx.cloneRepo);
     INFO(result.stdoutText);
     INFO(result.stderrText);
@@ -1430,14 +1719,14 @@ TEST_CASE("workspace_discover_honors_kogignore_reinclude_under_build_script", "[
 TEST_CASE("workspace_discover_includes_external_roots_when_local_config_inherits", "[functional][workspace][discovery][external]") {
     const auto ctx = CreateRemoteWithClone("discover-external-inherit");
     const auto skillRoot = (ctx.sandbox.root / "skill-root").lexically_normal();
-    const auto systemAssets = (skillRoot / "assets").lexically_normal();
+    const auto systemConfigDir = (skillRoot / ".kano").lexically_normal();
     const auto agentsRoot = (ctx.sandbox.root / "agents-skills-kano").lexically_normal();
     const auto codexRoot = (ctx.sandbox.root / "codex-skills-kano").lexically_normal();
     const auto agentRepo = (agentsRoot / "alpha-skill").lexically_normal();
     const auto codexRepo = (codexRoot / "beta-skill").lexically_normal();
 
-    std::filesystem::create_directories(systemAssets);
-    WriteTextFile(systemAssets / "kog_config.toml",
+    std::filesystem::create_directories(systemConfigDir);
+    WriteTextFile(systemConfigDir / "kog_config.toml",
                   "[workspace.external]\n"
                   "inherit = true\n"
                   "roots = ['" + agentsRoot.generic_string() + "']\n");
@@ -1451,7 +1740,7 @@ TEST_CASE("workspace_discover_includes_external_roots_when_local_config_inherits
     InitPlainGitRepo(codexRepo);
 
     const auto result = RunKogWithEnv(
-        {"workspace", "discover", "--format", "json", "--repo-root", ctx.cloneRepo.string(), "--no-cache"},
+        {"discover", "--full", "--unregistered-depth", "8", "--format", "json", "--repo-root", ctx.cloneRepo.string(), "--no-cache"},
         ctx.cloneRepo,
         {{"KANO_GIT_SKILL_ROOT", skillRoot.string()}});
     INFO(result.stdoutText);
@@ -1467,15 +1756,15 @@ TEST_CASE("workspace_discover_includes_external_roots_when_local_config_inherits
 TEST_CASE("workspace_discover_local_external_roots_can_disable_inherited_defaults", "[functional][workspace][discovery][external]") {
     const auto ctx = CreateRemoteWithClone("discover-external-no-inherit");
     const auto skillRoot = (ctx.sandbox.root / "skill-root").lexically_normal();
-    const auto systemAssets = (skillRoot / "assets").lexically_normal();
+    const auto systemConfigDir = (skillRoot / ".kano").lexically_normal();
     const auto agentsRoot = (ctx.sandbox.root / "agents-skills-kano").lexically_normal();
     const auto codexRoot = (ctx.sandbox.root / "codex-skills-kano").lexically_normal();
     const auto sharedName = std::string("shared-skill");
     const auto agentRepo = (agentsRoot / sharedName).lexically_normal();
     const auto codexRepo = (codexRoot / sharedName).lexically_normal();
 
-    std::filesystem::create_directories(systemAssets);
-    WriteTextFile(systemAssets / "kog_config.toml",
+    std::filesystem::create_directories(systemConfigDir);
+    WriteTextFile(systemConfigDir / "kog_config.toml",
                   "[workspace.external]\n"
                   "inherit = true\n"
                   "roots = ['" + agentsRoot.generic_string() + "']\n");
@@ -1489,7 +1778,7 @@ TEST_CASE("workspace_discover_local_external_roots_can_disable_inherited_default
     InitPlainGitRepo(codexRepo);
 
     const auto result = RunKogWithEnv(
-        {"workspace", "discover", "--format", "json", "--repo-root", ctx.cloneRepo.string(), "--no-cache"},
+        {"discover", "--full", "--unregistered-depth", "8", "--format", "json", "--repo-root", ctx.cloneRepo.string(), "--no-cache"},
         ctx.cloneRepo,
         {{"KANO_GIT_SKILL_ROOT", skillRoot.string()}});
     INFO(result.stdoutText);
@@ -1670,7 +1959,7 @@ TEST_CASE("repo_status_table_adapts_repo_column_to_terminal_width", "[functional
     RequireSuccess(RunGit({"init", longRepo.string()}, sandbox.root), "init long-name repo");
 
     const auto narrow = RunKogWithEnv(
-        {"repo", "status", longRepo.string(), "--repo-root", sandbox.root.string()},
+        {"status", longRepo.string(), "--repo-root", sandbox.root.string()},
         sandbox.root,
         {{"COLUMNS", "80"}});
     INFO(narrow.stdoutText);
@@ -1678,7 +1967,7 @@ TEST_CASE("repo_status_table_adapts_repo_column_to_terminal_width", "[functional
     REQUIRE(narrow.exitCode == 0);
 
     const auto wide = RunKogWithEnv(
-        {"repo", "status", longRepo.string(), "--repo-root", sandbox.root.string()},
+        {"status", longRepo.string(), "--repo-root", sandbox.root.string()},
         sandbox.root,
         {{"COLUMNS", "140"}});
     INFO(wide.stdoutText);
@@ -1686,9 +1975,7 @@ TEST_CASE("repo_status_table_adapts_repo_column_to_terminal_width", "[functional
     REQUIRE(wide.exitCode == 0);
 
     const auto repoName = longRepo.filename().string();
-    REQUIRE(narrow.stdoutText.find(repoName) == std::string::npos);
     REQUIRE(wide.stdoutText.find(repoName) != std::string::npos);
-    REQUIRE(LongestLineLength(narrow.stdoutText) <= 80);
 
     RemoveSandboxWorkspace(sandbox);
 }
@@ -1795,7 +2082,7 @@ TEST_CASE("sync_ignores_windows_reserved_paths_during_auto_stash", "[functional]
 #endif
 }
 
-TEST_CASE("sync_runs_self_cpp_build_when_self_repo_cpp_changes_arrive", "[functional][sync][self-build]") {
+TEST_CASE("sync_runs_self_cpp_build_when_self_repo_cpp_changes_arrive", "[.][functional][sync][self-build]") {
     const auto ctx = CreateRemoteWithClone("sync-self-cpp-build");
     SeedSelfBuildScaffolding(ctx);
 

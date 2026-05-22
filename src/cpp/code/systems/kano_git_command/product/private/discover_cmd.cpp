@@ -117,6 +117,7 @@ auto FormatHumanDuration(std::chrono::milliseconds InDuration) -> std::string {
 void RunDiscoverCommand(const std::string& InFormat,
                         const std::string& InRoot,
                         int InMaxDepth,
+                        int InUnregisteredDepth,
                         const std::vector<std::string>& InExclude,
                         bool InNoCache,
                         bool InNoRefresh,
@@ -124,7 +125,8 @@ void RunDiscoverCommand(const std::string& InFormat,
                         int InCacheTtl,
                         int InMaxStale,
                         const std::string& InMetadata,
-                        workspace::DiscoverScope InScope) {
+                        workspace::DiscoverScope InScope,
+                        bool InNoUnregisteredScan) {
     if (InFormat != "table" && InFormat != "json") {
         std::cerr << "Error: invalid --format value: " << InFormat << " (expected table|json)\n";
         std::exit(1);
@@ -132,7 +134,7 @@ void RunDiscoverCommand(const std::string& InFormat,
 
     workspace::DiscoverOptions options;
     options.rootDir = InRoot.empty() ? std::filesystem::current_path() : std::filesystem::path(InRoot);
-    options.maxDepth = InMaxDepth;
+    options.maxDepth = InScope == workspace::DiscoverScope::Full ? InUnregisteredDepth : InMaxDepth;
     options.excludePatterns = InExclude;
     options.useCache = !InNoCache;
     options.cacheTtlSeconds = InCacheTtl;
@@ -140,7 +142,8 @@ void RunDiscoverCommand(const std::string& InFormat,
     options.incremental = !InNoIncremental;
     options.maxStaleSeconds = InMaxStale;
     options.metadataLevel = InMetadata;
-    options.scope = InScope;
+    options.scope = InNoUnregisteredScan ? workspace::DiscoverScope::RegisteredOnly : InScope;
+    options.includeTrustedUnregistered = true;
     options.progressCallback = [](const std::string& InMessage) {
         std::cerr << kano::terminal::Wrap("[discover]", kano::terminal::Color::Dim) << " " << InMessage << "\n";
     };
@@ -216,6 +219,11 @@ auto FormatNativeStatusJson(const std::vector<workspace::RepoRecord>& InRepos) -
         out += "{";
         out += "\"path\":\"" + EscapeJson(repo.path.lexically_normal().generic_string()) + "\",";
         out += "\"type\":\"" + EscapeJson(repo.type) + "\",";
+        out += "\"registrationRelativeTo\":\"" + EscapeJson(repo.registrationRelativeTo.lexically_normal().generic_string()) + "\",";
+        out += "\"kogSync\":\"" + EscapeJson(repo.kogSyncPolicy) + "\",";
+        out += "\"kogCommit\":\"" + EscapeJson(repo.kogCommitPolicy) + "\",";
+        out += "\"kogPush\":\"" + EscapeJson(repo.kogPushPolicy) + "\",";
+        out += "\"kogHygiene\":\"" + EscapeJson(repo.kogHygienePolicy) + "\",";
         out += "\"branch\":\"" + EscapeJson(repo.currentBranch.empty() ? "(detached)" : repo.currentBranch) + "\",";
         out += "\"dirty\":";
         out += repo.hasChanges ? "true" : "false";
@@ -283,16 +291,22 @@ void RegisterDiscover(CLI::App& InApp) {
     auto* discoverFormat = new std::string{"table"};
     auto* discoverRoot = new std::string{"."};
     auto* discoverMaxDepth = new int{8};
+    auto* discoverUnregisteredDepth = new int{2};
     auto* discoverExclude = new std::vector<std::string>{};
     auto* discoverNoCache = new bool{false};
     auto* discoverNoRefresh = new bool{false};
     auto* discoverNoIncremental = new bool{false};
+    auto* discoverFull = new bool{false};
+    auto* discoverNoUnregisteredScan = new bool{false};
     auto* discoverCacheTtl = new int{60};
     auto* discoverMaxStale = new int{900};
     auto* discoverMetadata = new std::string{"full"};
 
     cmd->add_option("--format", *discoverFormat, "Output format: table|json")->default_str("table");
     cmd->add_option("--repo-root", *discoverRoot, "Repository root/start path");
+    cmd->add_flag("--full", *discoverFull, "Include bounded unregistered filesystem probing");
+    cmd->add_option("--unregistered-depth", *discoverUnregisteredDepth, "Bounded unregistered scan depth")->default_str("2");
+    cmd->add_flag("--no-unregistered-scan", *discoverNoUnregisteredScan, "Disable new unregistered filesystem probing while keeping trusted manifest/cache repos");
     cmd->add_option("--exclude", *discoverExclude, "Temporary scan-scope exclude override for this invocation only (repeatable; prefer .gitignore/.kogignore for shared policy)");
     cmd->add_flag("--no-cache", *discoverNoCache, "Disable discovery cache for this run");
     cmd->add_flag("--no-refresh-cache", *discoverNoRefresh, "Do not force cache refresh");
@@ -303,6 +317,8 @@ void RegisterDiscover(CLI::App& InApp) {
     full->add_option("--format", *discoverFormat, "Output format: table|json")->default_str("table");
     full->add_option("--repo-root", *discoverRoot, "Repository root/start path");
     full->add_option("--max-depth", *discoverMaxDepth, "Full discovery max depth");
+    full->add_option("--unregistered-depth", *discoverUnregisteredDepth, "Bounded unregistered scan depth")->default_str("2");
+    full->add_flag("--no-unregistered-scan", *discoverNoUnregisteredScan, "Disable new unregistered filesystem probing while keeping trusted manifest/cache repos");
     full->add_option("--exclude", *discoverExclude, "Temporary scan-scope exclude override for this invocation only (repeatable; prefer .gitignore/.kogignore for shared policy)");
     full->add_flag("--no-cache", *discoverNoCache, "Disable discovery cache for this run");
     full->add_flag("--no-refresh-cache", *discoverNoRefresh, "Do not force cache refresh");
@@ -316,6 +332,7 @@ void RegisterDiscover(CLI::App& InApp) {
             *discoverFormat,
             *discoverRoot,
             *discoverMaxDepth,
+            *discoverUnregisteredDepth,
             *discoverExclude,
             *discoverNoCache,
             *discoverNoRefresh,
@@ -323,7 +340,8 @@ void RegisterDiscover(CLI::App& InApp) {
             *discoverCacheTtl,
             *discoverMaxStale,
             *discoverMetadata,
-            workspace::DiscoverScope::RegisteredOnly);
+            *discoverFull ? workspace::DiscoverScope::Full : workspace::DiscoverScope::RegisteredOnly,
+            *discoverNoUnregisteredScan);
     });
 
     full->callback([=]() {
@@ -331,6 +349,7 @@ void RegisterDiscover(CLI::App& InApp) {
             *discoverFormat,
             *discoverRoot,
             *discoverMaxDepth,
+            *discoverUnregisteredDepth,
             *discoverExclude,
             *discoverNoCache,
             *discoverNoRefresh,
@@ -338,7 +357,8 @@ void RegisterDiscover(CLI::App& InApp) {
             *discoverCacheTtl,
             *discoverMaxStale,
             *discoverMetadata,
-            workspace::DiscoverScope::Full);
+            workspace::DiscoverScope::Full,
+            *discoverNoUnregisteredScan);
     });
 }
 
@@ -349,16 +369,22 @@ void RegisterWorkspace(CLI::App& InApp) {
     auto* discoverFormat = new std::string{"table"};
     auto* discoverRoot = new std::string{"."};
     auto* discoverMaxDepth = new int{8};
+    auto* discoverUnregisteredDepth = new int{2};
     auto* discoverExclude = new std::vector<std::string>{};
     auto* discoverNoCache = new bool{false};
     auto* discoverNoRefresh = new bool{false};
     auto* discoverNoIncremental = new bool{false};
+    auto* discoverFull = new bool{false};
+    auto* discoverNoUnregisteredScan = new bool{false};
     auto* discoverCacheTtl = new int{60};
     auto* discoverMaxStale = new int{900};
     auto* discoverMetadata = new std::string{"full"};
 
     cmd->add_option("--format", *discoverFormat, "Output format: table|json")->default_str("table");
     cmd->add_option("--repo-root", *discoverRoot, "Repository root/start path");
+    cmd->add_flag("--full", *discoverFull, "Include bounded unregistered filesystem probing");
+    cmd->add_option("--unregistered-depth", *discoverUnregisteredDepth, "Bounded unregistered scan depth")->default_str("2");
+    cmd->add_flag("--no-unregistered-scan", *discoverNoUnregisteredScan, "Disable new unregistered filesystem probing while keeping trusted manifest/cache repos");
     cmd->add_option("--exclude", *discoverExclude, "Temporary scan-scope exclude override for this invocation only (repeatable; prefer .gitignore/.kogignore for shared policy)");
     cmd->add_flag("--no-cache", *discoverNoCache, "Disable discovery cache for this run");
     cmd->add_flag("--no-refresh-cache", *discoverNoRefresh, "Do not force cache refresh");
@@ -369,6 +395,8 @@ void RegisterWorkspace(CLI::App& InApp) {
     full->add_option("--format", *discoverFormat, "Output format: table|json")->default_str("table");
     full->add_option("--repo-root", *discoverRoot, "Repository root/start path");
     full->add_option("--max-depth", *discoverMaxDepth, "Full discovery max depth");
+    full->add_option("--unregistered-depth", *discoverUnregisteredDepth, "Bounded unregistered scan depth")->default_str("2");
+    full->add_flag("--no-unregistered-scan", *discoverNoUnregisteredScan, "Disable new unregistered filesystem probing while keeping trusted manifest/cache repos");
     full->add_option("--exclude", *discoverExclude, "Temporary scan-scope exclude override for this invocation only (repeatable; prefer .gitignore/.kogignore for shared policy)");
     full->add_flag("--no-cache", *discoverNoCache, "Disable discovery cache for this run");
     full->add_flag("--no-refresh-cache", *discoverNoRefresh, "Do not force cache refresh");
@@ -382,6 +410,7 @@ void RegisterWorkspace(CLI::App& InApp) {
             *discoverFormat,
             *discoverRoot,
             *discoverMaxDepth,
+            *discoverUnregisteredDepth,
             *discoverExclude,
             *discoverNoCache,
             *discoverNoRefresh,
@@ -389,7 +418,8 @@ void RegisterWorkspace(CLI::App& InApp) {
             *discoverCacheTtl,
             *discoverMaxStale,
             *discoverMetadata,
-            workspace::DiscoverScope::Full);
+            *discoverFull ? workspace::DiscoverScope::Full : workspace::DiscoverScope::RegisteredOnly,
+            *discoverNoUnregisteredScan);
     });
 
     full->callback([=]() {
@@ -397,6 +427,7 @@ void RegisterWorkspace(CLI::App& InApp) {
             *discoverFormat,
             *discoverRoot,
             *discoverMaxDepth,
+            *discoverUnregisteredDepth,
             *discoverExclude,
             *discoverNoCache,
             *discoverNoRefresh,
@@ -404,7 +435,8 @@ void RegisterWorkspace(CLI::App& InApp) {
             *discoverCacheTtl,
             *discoverMaxStale,
             *discoverMetadata,
-            workspace::DiscoverScope::Full);
+            workspace::DiscoverScope::Full,
+            *discoverNoUnregisteredScan);
     });
 }
 

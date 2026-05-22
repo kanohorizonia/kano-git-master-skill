@@ -17,6 +17,11 @@ enum class DiscoverScope {
 struct RepoRecord {
     std::filesystem::path path;
     std::string type;
+    std::filesystem::path registrationRelativeTo;
+    std::string kogSyncPolicy;
+    std::string kogCommitPolicy;
+    std::string kogPushPolicy;
+    std::string kogHygienePolicy;
     std::string currentBranch;
     std::string remotes;
     bool hasChanges = false;
@@ -36,6 +41,7 @@ struct DiscoverOptions {
     int maxStaleSeconds = 900;
     std::string metadataLevel = "full";
     DiscoverScope scope = DiscoverScope::RegisteredOnly;
+    bool includeTrustedUnregistered = true;
     std::function<void(const std::string&)> progressCallback;
 };
 
@@ -53,6 +59,24 @@ struct WorkspaceManifest {
     std::filesystem::path manifestFile;
 };
 
+enum class WorkspacePolicyFilter {
+    None,
+    Sync,
+    Commit,
+    Push,
+    Hygiene,
+};
+
+struct WorkspaceInventoryOptions {
+    std::filesystem::path rootDir = ".";
+    int unregisteredDepth = 2;
+    bool useCache = true;
+    bool refreshCache = false;
+    bool includeTrustedUnregistered = true;
+    std::string metadataLevel = "minimal";
+    DiscoverScope scope = DiscoverScope::RegisteredOnly;
+};
+
 struct CacheLockInfo {
     std::filesystem::path lockPath;
     std::filesystem::path targetPath;
@@ -65,6 +89,9 @@ struct CacheLockInfo {
 };
 
 auto DiscoverRepos(const DiscoverOptions& InOptions) -> DiscoveryResult;
+auto DiscoverWorkspaceInventory(const WorkspaceInventoryOptions& InOptions) -> std::vector<RepoRecord>;
+auto DiscoverWorkspaceRepoPaths(const WorkspaceInventoryOptions& InOptions,
+                               WorkspacePolicyFilter InPolicyFilter = WorkspacePolicyFilter::None) -> std::vector<std::filesystem::path>;
 auto ReposToJson(const std::vector<RepoRecord>& InRepos) -> std::string;
 auto ManifestToJson(const std::filesystem::path& InWorkspaceRoot, const std::vector<RepoRecord>& InRepos) -> std::string;
 auto DiscoverRegisteredPathsRecursive(const std::filesystem::path& InWorkspaceRoot) -> std::vector<std::filesystem::path>;

@@ -606,13 +606,20 @@ auto ShouldExcludePath(const std::filesystem::path& InRoot, const std::filesyste
 
     // Check cheap rule matching FIRST (before expensive git subprocess calls).
     bool excluded = false;
+    bool includedByRule = false;
     for (const auto& rule : InRules) {
         if (RuleMatchesPath(relKey, rule)) {
             excluded = !rule.include;
+            if (rule.include) {
+                includedByRule = true;
+            }
         }
     }
     if (excluded) {
         return true;
+    }
+    if (includedByRule) {
+        return false;
     }
 
     auto owner = InPath.parent_path();
@@ -639,14 +646,60 @@ auto ShouldExcludePath(const std::filesystem::path& InRoot, const std::filesyste
     return false;
 }
 
+auto HasDescendantIncludeRule(const std::filesystem::path& InRoot,
+                              const std::filesystem::path& InPath,
+                              const std::vector<IgnoreRule>& InRules) -> bool {
+    std::error_code ec;
+    const auto rel = std::filesystem::relative(InPath, InRoot, ec);
+    const auto relKey = (!ec && !rel.empty() && rel != ".") ? PathKey(rel) : PathKey(InPath);
+    if (relKey.empty()) {
+        return false;
+    }
+
+    for (const auto& rule : InRules) {
+        if (!rule.include) {
+            continue;
+        }
+
+        const auto& pattern = rule.pattern;
+        if (pattern.empty()) {
+            continue;
+        }
+
+        if (rule.directoryOnly) {
+            if (pattern.starts_with(relKey + "/")) {
+                return true;
+            }
+            continue;
+        }
+
+        if (pattern.size() > 3 && pattern.ends_with("/**")) {
+            const auto base = pattern.substr(0, pattern.size() - 3);
+            if (base == relKey || base.starts_with(relKey + "/")) {
+                return true;
+            }
+        }
+
+        if (pattern.starts_with(relKey + "/")) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 auto ShouldPrePrune(const std::filesystem::path& InRoot, const std::filesystem::path& InPath, const std::vector<std::string>& InPrePrune, const std::vector<IgnoreRule>& InRules) -> bool {
     const auto base = InPath.filename().generic_string();
     for (const auto& name : InPrePrune) {
         if (base == name) {
-            return true;
+            return !HasDescendantIncludeRule(InRoot, InPath, InRules);
         }
     }
-    return ShouldExcludePath(InRoot, InPath, InRules);
+    if (!ShouldExcludePath(InRoot, InPath, InRules)) {
+        return false;
+    }
+    // Keep traversing ignored parents when a deeper include rule may re-include descendants.
+    return !HasDescendantIncludeRule(InRoot, InPath, InRules);
 }
 
 auto RunGitCapture(const std::filesystem::path& InRepoPath, const std::vector<std::string>& InArgs) -> shell::ExecResult {
@@ -778,10 +831,10 @@ auto DiscoverGitRepos(const std::filesystem::path& InRoot, const int InMaxDepth,
     // Fast-reject common non-repo directory names to avoid expensive
     // ShouldExcludePath() calls (which spawn git subprocesses per parent).
     const std::vector<std::string> prePrune{
-        "node_modules", ".cache", ".turbo", "__pycache__", ".mypy_cache",
+        "node_modules", ".git", ".kano", ".cache", ".turbo", "__pycache__", ".mypy_cache",
         ".ruff_cache", ".pytest_cache", ".venv", "venv", ".next", "dist",
-        "out", "coverage", ".pnpm", "vendor", ".tox",
-        ".sisyphus", ".tmp", "tmp",
+        "build", "cmake-build-debug", "cmake-build-release", "out", "coverage", ".pnpm", "vendor", ".tox",
+        ".sisyphus", ".tmp", "tmp", "temp",
     };
     std::error_code ec;
     std::filesystem::recursive_directory_iterator it(
@@ -809,6 +862,14 @@ auto DiscoverGitRepos(const std::filesystem::path& InRoot, const int InMaxDepth,
         }
 
         if (!it->is_directory(ec)) {
+            continue;
+        }
+
+        // Detect repository roots at the directory node itself so full scans
+        // still find nested repos even when .git directories are pre-pruned.
+        if (depth <= InMaxDepth && IsGitRepo(currentPath)) {
+            unique.insert(PathKey(Normalize(currentPath)));
+            it.disable_recursion_pending();
             continue;
         }
 
@@ -876,10 +937,10 @@ auto ComputeMarker(const std::filesystem::path& InRoot, const int InMaxDepth, co
     std::filesystem::recursive_directory_iterator end;
 
     const std::vector<std::string> prePrune{
-        "node_modules", ".cache", ".turbo", "__pycache__", ".mypy_cache",
+        "node_modules", ".git", ".kano", ".cache", ".turbo", "__pycache__", ".mypy_cache",
         ".ruff_cache", ".pytest_cache", ".venv", "venv", ".next", "dist",
-        "out", "coverage", ".pnpm", "vendor", ".tox",
-        ".sisyphus", ".tmp", "tmp",
+        "build", "cmake-build-debug", "cmake-build-release", "out", "coverage", ".pnpm", "vendor", ".tox",
+        ".sisyphus", ".tmp", "tmp", "temp",
     };
     for (; it != end; ++it) {
         if (it.depth() + 1 > 2) {
@@ -1021,6 +1082,11 @@ auto ParseReposArray(const std::string& InRawArray) -> std::vector<RepoRecord> {
         }
         record.path = Normalize(std::filesystem::path(*path));
         record.type = ExtractStringField(obj, "type").value_or("unregistered");
+        record.registrationRelativeTo = ExtractStringField(obj, "registration_relative_to").value_or("");
+        record.kogSyncPolicy = ExtractStringField(obj, "kog_sync").value_or("");
+        record.kogCommitPolicy = ExtractStringField(obj, "kog_commit").value_or("");
+        record.kogPushPolicy = ExtractStringField(obj, "kog_push").value_or("");
+        record.kogHygienePolicy = ExtractStringField(obj, "kog_hygiene").value_or("");
         record.currentBranch = ExtractStringField(obj, "current_branch").value_or("");
         record.remotes = ExtractStringField(obj, "remotes").value_or("");
         const auto hasChangesField = std::regex("\\\"has_changes\\\":(true|false)");
@@ -1158,7 +1224,12 @@ auto ManifestReposToJson(const WorkspaceManifest& InManifest) -> std::string {
         const auto& repo = InManifest.repos[idx];
         json += "{";
         json += std::format("\"path\":\"{}\",", EscapeJson(RelativePathKeyOrDot(InManifest.workspaceRoot, repo.path)));
-        json += std::format("\"type\":\"{}\"", EscapeJson(repo.type));
+        json += std::format("\"type\":\"{}\",", EscapeJson(repo.type));
+        json += std::format("\"registration_relative_to\":\"{}\",", EscapeJson(RelativePathKeyOrDot(InManifest.workspaceRoot, repo.registrationRelativeTo)));
+        json += std::format("\"kog_sync\":\"{}\",", EscapeJson(repo.kogSyncPolicy));
+        json += std::format("\"kog_commit\":\"{}\",", EscapeJson(repo.kogCommitPolicy));
+        json += std::format("\"kog_push\":\"{}\",", EscapeJson(repo.kogPushPolicy));
+        json += std::format("\"kog_hygiene\":\"{}\"", EscapeJson(repo.kogHygienePolicy));
         json += "}";
     }
     json += "]";
@@ -1176,6 +1247,11 @@ auto RepoRecordsToRelativeJson(const std::filesystem::path& InWorkspaceRoot,
         json += "{";
         json += std::format("\"path\":\"{}\",", EscapeJson(RelativePathKeyOrDot(InWorkspaceRoot, repo.path)));
         json += std::format("\"type\":\"{}\",", EscapeJson(repo.type));
+        json += std::format("\"registration_relative_to\":\"{}\",", EscapeJson(RelativePathKeyOrDot(InWorkspaceRoot, repo.registrationRelativeTo)));
+        json += std::format("\"kog_sync\":\"{}\",", EscapeJson(repo.kogSyncPolicy));
+        json += std::format("\"kog_commit\":\"{}\",", EscapeJson(repo.kogCommitPolicy));
+        json += std::format("\"kog_push\":\"{}\",", EscapeJson(repo.kogPushPolicy));
+        json += std::format("\"kog_hygiene\":\"{}\",", EscapeJson(repo.kogHygienePolicy));
         json += std::format("\"current_branch\":\"{}\",", EscapeJson(repo.currentBranch));
         json += std::format("\"remotes\":\"{}\",", EscapeJson(repo.remotes));
         json += std::format("\"has_changes\":{},", repo.hasChanges ? "true" : "false");
@@ -1271,6 +1347,13 @@ auto AbsolutizeRepoRecords(const std::filesystem::path& InWorkspaceRoot, std::ve
                 dep = (InWorkspaceRoot / dep).lexically_normal();
             } else {
                 dep = dep.lexically_normal();
+            }
+        }
+        if (!repo.registrationRelativeTo.empty() && repo.registrationRelativeTo != ".") {
+            if (repo.registrationRelativeTo.is_relative()) {
+                repo.registrationRelativeTo = (InWorkspaceRoot / repo.registrationRelativeTo).lexically_normal();
+            } else {
+                repo.registrationRelativeTo = repo.registrationRelativeTo.lexically_normal();
             }
         }
     }
@@ -1514,6 +1597,76 @@ struct RepoCandidateSet {
     std::unordered_map<std::string, std::string> types;
 };
 
+struct RegisteredRepoMetadata {
+    std::filesystem::path registeredPath;
+    std::filesystem::path registrationRoot;
+    std::string kogSyncPolicy;
+    std::string kogCommitPolicy;
+    std::string kogPushPolicy;
+    std::string kogHygienePolicy;
+};
+
+using RegisteredRepoMetadataMap = std::unordered_map<std::string, RegisteredRepoMetadata>;
+
+auto GetSubmoduleConfigFromPrefix(const std::filesystem::path& InRoot,
+                                  const std::string& InPrefix,
+                                  const std::string& InKey) -> std::string {
+    const auto val = RunGitCapture(InRoot, {"config", "-f", ".gitmodules", "--get", InPrefix + "." + InKey});
+    if (val.exitCode == 0) {
+        return Trim(val.stdoutStr);
+    }
+    return {};
+}
+
+auto CollectRegisteredSubmodulesRecursiveWithMetadata(const std::filesystem::path& InRepoPath,
+                                                      std::set<std::string>& IoPaths,
+                                                      RegisteredRepoMetadataMap* IoMetadata) -> void {
+    const auto gitmodulesPath = InRepoPath / ".gitmodules";
+    if (!std::filesystem::exists(gitmodulesPath)) {
+        return;
+    }
+
+    const auto config = RunGitCapture(InRepoPath, {"config", "--file", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$"});
+    if (config.exitCode != 0) {
+        return;
+    }
+
+    std::istringstream configLines(config.stdoutStr);
+    std::string line;
+    while (std::getline(configLines, line)) {
+        line = Trim(line);
+        if (line.empty()) {
+            continue;
+        }
+        const auto sp = line.find(' ');
+        if (sp == std::string::npos || sp + 1 >= line.size()) {
+            continue;
+        }
+        const auto key = line.substr(0, sp);
+        if (!key.ends_with(".path")) {
+            continue;
+        }
+        const auto prefix = key.substr(0, key.size() - 5);
+        const auto subPathRaw = line.substr(sp + 1);
+        const auto fullPath = Normalize(InRepoPath / subPathRaw);
+        const auto fullKey = PathKey(fullPath);
+        const auto inserted = IoPaths.insert(fullKey).second;
+        if (IoMetadata != nullptr) {
+            IoMetadata->insert_or_assign(fullKey, RegisteredRepoMetadata{
+                .registeredPath = fullPath,
+                .registrationRoot = Normalize(InRepoPath),
+                .kogSyncPolicy = GetSubmoduleConfigFromPrefix(InRepoPath, prefix, "kog-sync"),
+                .kogCommitPolicy = GetSubmoduleConfigFromPrefix(InRepoPath, prefix, "kog-commit"),
+                .kogPushPolicy = GetSubmoduleConfigFromPrefix(InRepoPath, prefix, "kog-push"),
+                .kogHygienePolicy = GetSubmoduleConfigFromPrefix(InRepoPath, prefix, "kog-hygiene"),
+            });
+        }
+        if (inserted && IsGitRepo(fullPath)) {
+            CollectRegisteredSubmodulesRecursiveWithMetadata(fullPath, IoPaths, IoMetadata);
+        }
+    }
+}
+
 auto AppendRepoCandidate(RepoCandidateSet* IoCandidates,
                          std::set<std::string>* IoSeen,
                          const std::filesystem::path& InWorkspaceRoot,
@@ -1549,7 +1702,7 @@ auto CollectExternalRegisteredRepos(const std::filesystem::path& InWorkspaceRoot
                                   IoSeen,
                                   InWorkspaceRoot,
                                   registeredPath,
-                                  "external-registered");
+                                  "registered");
     }
 }
 
@@ -1575,8 +1728,8 @@ auto CollectExternalDirectChildRepos(const std::filesystem::path& InWorkspaceRoo
 
         const auto entryPath = entry.path().lexically_normal();
         const auto type = registered.contains(PathKey(entryPath))
-            ? std::string{"external-registered"}
-            : std::string{"external-unregistered"};
+            ? std::string{"registered"}
+            : std::string{"unregistered"};
         (void)AppendRepoCandidate(IoCandidates, IoSeen, InWorkspaceRoot, entryPath, type);
     }
 }
@@ -1600,7 +1753,7 @@ auto CollectExternalRootRepos(const std::filesystem::path& InWorkspaceRoot,
             continue;
         }
 
-        if (AppendRepoCandidate(&candidates, &seen, InWorkspaceRoot, expanded, "external-root")) {
+        if (AppendRepoCandidate(&candidates, &seen, InWorkspaceRoot, expanded, "unregistered")) {
             CollectExternalRegisteredRepos(InWorkspaceRoot, expanded, &candidates, &seen);
             CollectExternalDirectChildRepos(InWorkspaceRoot, expanded, &candidates, &seen);
             continue;
@@ -1618,7 +1771,7 @@ auto CollectExternalRootRepos(const std::filesystem::path& InWorkspaceRoot,
                 continue;
             }
             const auto candidateRoot = entry.path().lexically_normal();
-            if (!AppendRepoCandidate(&candidates, &seen, InWorkspaceRoot, candidateRoot, "external-root")) {
+            if (!AppendRepoCandidate(&candidates, &seen, InWorkspaceRoot, candidateRoot, "unregistered")) {
                 continue;
             }
             CollectExternalRegisteredRepos(InWorkspaceRoot, candidateRoot, &candidates, &seen);
@@ -1694,7 +1847,7 @@ auto MergeExternalReposWithOverride(std::vector<RepoRecord>* IoRepos,
         InMetadataLevel,
         [&](const std::filesystem::path& InRepoPath) {
             const auto it = InExternalRepos.types.find(PathKey(InRepoPath));
-            return it == InExternalRepos.types.end() ? std::string{"external-root"} : it->second;
+            return it == InExternalRepos.types.end() ? std::string{"unregistered"} : it->second;
         });
 
     for (const auto& externalRepo : externalRecords) {
@@ -1719,6 +1872,7 @@ auto BuildRepoRecords(
     const std::filesystem::path& InRootAbs,
     const std::vector<std::filesystem::path>& InDiscovered,
     const std::set<std::string>& InRegistered,
+    const RegisteredRepoMetadataMap& InRegisteredMetadata,
     const std::string& InMetadataLevel) -> std::vector<RepoRecord> {
     const bool rootIsRepo = IsGitRepo(InRootAbs);
     auto repos = BuildRepoRecordsFromCandidates(
@@ -1733,6 +1887,20 @@ auto BuildRepoRecords(
             }
             return std::string{"unregistered"};
         });
+
+    for (auto& repo : repos) {
+        if (repo.type == "root") {
+            repo.registrationRelativeTo = std::filesystem::path{"."};
+        } else if (const auto it = InRegisteredMetadata.find(PathKey(repo.path)); it != InRegisteredMetadata.end()) {
+            repo.registrationRelativeTo = Normalize(it->second.registrationRoot);
+            repo.kogSyncPolicy = it->second.kogSyncPolicy;
+            repo.kogCommitPolicy = it->second.kogCommitPolicy;
+            repo.kogPushPolicy = it->second.kogPushPolicy;
+            repo.kogHygienePolicy = it->second.kogHygienePolicy;
+        } else {
+            repo.registrationRelativeTo = InRootAbs;
+        }
+    }
 
     std::set<std::string> discoveredKeys;
     for (const auto& repoPath : InDiscovered) {
@@ -1749,7 +1917,16 @@ auto BuildRepoRecords(
         } else {
             RepoRecord record;
             record.path = Normalize(registeredPath);
-            record.type = "registered-uninit";
+            record.type = "registered";
+            if (const auto it = InRegisteredMetadata.find(PathKey(record.path)); it != InRegisteredMetadata.end()) {
+                record.registrationRelativeTo = Normalize(it->second.registrationRoot);
+                record.kogSyncPolicy = it->second.kogSyncPolicy;
+                record.kogCommitPolicy = it->second.kogCommitPolicy;
+                record.kogPushPolicy = it->second.kogPushPolicy;
+                record.kogHygienePolicy = it->second.kogHygienePolicy;
+            } else {
+                record.registrationRelativeTo = InRootAbs;
+            }
             repos.push_back(std::move(record));
         }
     }
@@ -1757,7 +1934,18 @@ auto BuildRepoRecords(
         initializedRegistered,
         InMetadataLevel,
         [&](const std::filesystem::path&) { return std::string{"registered"}; });
-    repos.insert(repos.end(), initializedRecords.begin(), initializedRecords.end());
+    for (auto record : initializedRecords) {
+        if (const auto it = InRegisteredMetadata.find(PathKey(record.path)); it != InRegisteredMetadata.end()) {
+            record.registrationRelativeTo = Normalize(it->second.registrationRoot);
+            record.kogSyncPolicy = it->second.kogSyncPolicy;
+            record.kogCommitPolicy = it->second.kogCommitPolicy;
+            record.kogPushPolicy = it->second.kogPushPolicy;
+            record.kogHygienePolicy = it->second.kogHygienePolicy;
+        } else {
+            record.registrationRelativeTo = InRootAbs;
+        }
+        repos.push_back(std::move(record));
+    }
 
     std::sort(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
         return PathKey(A.path) < PathKey(B.path);
@@ -1766,6 +1954,15 @@ auto BuildRepoRecords(
         return PathKey(A.path) == PathKey(B.path);
     }), repos.end());
     AttachNearestParentDependencies(&repos);
+    for (auto& repo : repos) {
+        if (repo.type == "root") {
+            repo.registrationRelativeTo = std::filesystem::path{"."};
+        } else if (repo.type == "unregistered" && !repo.dependencies.empty()) {
+            repo.registrationRelativeTo = repo.dependencies.front();
+        } else if (repo.registrationRelativeTo.empty()) {
+            repo.registrationRelativeTo = InRootAbs;
+        }
+    }
 
     return repos;
 }
@@ -1782,6 +1979,11 @@ auto ReposToJson(const std::vector<RepoRecord>& InRepos) -> std::string {
         json += "{";
         json += std::format("\"path\":\"{}\",", EscapeJson(PathKey(repo.path)));
         json += std::format("\"type\":\"{}\",", EscapeJson(repo.type));
+        json += std::format("\"registration_relative_to\":\"{}\",", EscapeJson(PathKey(repo.registrationRelativeTo)));
+        json += std::format("\"kog_sync\":\"{}\",", EscapeJson(repo.kogSyncPolicy));
+        json += std::format("\"kog_commit\":\"{}\",", EscapeJson(repo.kogCommitPolicy));
+        json += std::format("\"kog_push\":\"{}\",", EscapeJson(repo.kogPushPolicy));
+        json += std::format("\"kog_hygiene\":\"{}\",", EscapeJson(repo.kogHygienePolicy));
         json += std::format("\"current_branch\":\"{}\",", EscapeJson(repo.currentBranch));
         json += std::format("\"remotes\":\"{}\",", EscapeJson(repo.remotes));
         json += std::format("\"has_changes\":{},", repo.hasChanges ? "true" : "false");
@@ -1811,7 +2013,8 @@ auto ManifestToJson(const std::filesystem::path& InWorkspaceRoot, const std::vec
         }
         json += "{";
         json += std::format("\"path\":\"{}\",", EscapeJson(PathKey(InRepos[idx].path)));
-        json += std::format("\"type\":\"{}\"", EscapeJson(InRepos[idx].type));
+        json += std::format("\"type\":\"{}\",", EscapeJson(InRepos[idx].type));
+        json += std::format("\"registration_relative_to\":\"{}\"", EscapeJson(PathKey(InRepos[idx].registrationRelativeTo)));
         json += "}";
     }
     json += "]}";
@@ -1930,6 +2133,16 @@ auto MergePersistedUnregisteredRepos(const std::filesystem::path& InWorkspaceRoo
     IoRepos->erase(std::unique(IoRepos->begin(), IoRepos->end(), [](const auto& A, const auto& B) {
         return PathKey(A.path) == PathKey(B.path);
     }), IoRepos->end());
+    AttachNearestParentDependencies(IoRepos);
+    for (auto& repo : *IoRepos) {
+        if (repo.type == "root") {
+            repo.registrationRelativeTo = std::filesystem::path{"."};
+        } else if (repo.type == "unregistered" && !repo.dependencies.empty()) {
+            repo.registrationRelativeTo = repo.dependencies.front();
+        } else if (repo.registrationRelativeTo.empty()) {
+            repo.registrationRelativeTo = InWorkspaceRoot;
+        }
+    }
 }
 
 auto LoadTrustedWorkspaceManifest(const std::filesystem::path& InWorkspaceRoot, std::string* OutReason) -> std::optional<WorkspaceManifest> {
@@ -1998,12 +2211,27 @@ auto RefreshWorkspaceManifestAfterRegisteredChange(const std::filesystem::path& 
     RepoRecord rootRecord;
     rootRecord.path = rootAbs;
     rootRecord.type = "root";
+    rootRecord.registrationRelativeTo = std::filesystem::path{"."};
     repos.push_back(rootRecord);
 
+    RegisteredRepoMetadataMap registeredMetadata;
+    if (IsGitRepo(rootAbs)) {
+        std::set<std::string> ignoredRegisteredSet;
+        CollectRegisteredSubmodulesRecursiveWithMetadata(rootAbs, ignoredRegisteredSet, &registeredMetadata);
+    }
     for (const auto& repoPath : registered) {
         RepoRecord record;
         record.path = repoPath;
         record.type = "registered";
+        if (const auto it = registeredMetadata.find(PathKey(repoPath)); it != registeredMetadata.end()) {
+            record.registrationRelativeTo = it->second.registrationRoot;
+            record.kogSyncPolicy = it->second.kogSyncPolicy;
+            record.kogCommitPolicy = it->second.kogCommitPolicy;
+            record.kogPushPolicy = it->second.kogPushPolicy;
+            record.kogHygienePolicy = it->second.kogHygienePolicy;
+        } else {
+            record.registrationRelativeTo = rootAbs;
+        }
         repos.push_back(std::move(record));
     }
 
@@ -2179,8 +2407,19 @@ auto DiscoverRepos(const DiscoverOptions& InOptions) -> DiscoveryResult {
 
     reportProgress("discover: collecting registered submodules");
     std::set<std::string> registered;
+    RegisteredRepoMetadataMap registeredMetadata;
     if (IsGitRepo(rootAbs)) {
-        CollectRegisteredSubmodulesRecursive(rootAbs, registered);
+        CollectRegisteredSubmodulesRecursiveWithMetadata(rootAbs, registered, &registeredMetadata);
+    }
+    if (options.includeTrustedUnregistered) {
+        if (const auto trusted = LoadTrustedWorkspaceManifest(rootAbs); trusted.has_value()) {
+            for (const auto& repo : trusted->repos) {
+                if (repo.type != "unregistered" || !IsGitRepo(repo.path)) {
+                    continue;
+                }
+                CollectRegisteredSubmodulesRecursiveWithMetadata(repo.path, registered, &registeredMetadata);
+            }
+        }
     }
 
     if (options.scope == DiscoverScope::RegisteredOnly) {
@@ -2193,8 +2432,10 @@ auto DiscoverRepos(const DiscoverOptions& InOptions) -> DiscoveryResult {
         SortUniquePaths(&discovered);
         result.mode = "registered-only-scan";
         reportProgress(std::format("discover: building repo metadata for {} registered repos", discovered.size()));
-        result.repos = BuildRepoRecords(rootAbs, discovered, registered, options.metadataLevel);
-        MergePersistedUnregisteredRepos(rootAbs, &result.repos);
+        result.repos = BuildRepoRecords(rootAbs, discovered, registered, registeredMetadata, options.metadataLevel);
+        if (options.includeTrustedUnregistered) {
+            MergePersistedUnregisteredRepos(rootAbs, &result.repos);
+        }
 
         if (!externalRoots.empty()) {
             reportProgress(std::format("discover: scanning {} external root(s)", externalRoots.size()));
@@ -2205,7 +2446,7 @@ auto DiscoverRepos(const DiscoverOptions& InOptions) -> DiscoveryResult {
         reportProgress("discover: scanning filesystem for git repos");
         const auto discovered = DiscoverGitRepos(rootAbs, options.maxDepth, ignoreRules);
         reportProgress(std::format("discover: building repo metadata for {} repos", discovered.size()));
-        result.repos = BuildRepoRecords(rootAbs, discovered, registered, options.metadataLevel);
+        result.repos = BuildRepoRecords(rootAbs, discovered, registered, registeredMetadata, options.metadataLevel);
 
         if (!externalRoots.empty()) {
             reportProgress(std::format("discover: scanning {} external root(s)", externalRoots.size()));
@@ -2226,6 +2467,89 @@ auto DiscoverRepos(const DiscoverOptions& InOptions) -> DiscoveryResult {
     reportProgress(std::format("discover: done mode={} repos={}", result.mode, result.repos.size()));
 
     return result;
+}
+
+auto DiscoverWorkspaceInventory(const WorkspaceInventoryOptions& InOptions) -> std::vector<RepoRecord> {
+    auto rootAbs = Normalize(std::filesystem::absolute(InOptions.rootDir));
+    if (rootAbs.empty()) {
+        rootAbs = std::filesystem::current_path();
+    }
+
+    if (InOptions.useCache && !InOptions.refreshCache) {
+        if (const auto manifest = LoadTrustedWorkspaceManifest(rootAbs); manifest.has_value()) {
+            auto repos = manifest->repos;
+            if (InOptions.scope == DiscoverScope::RegisteredOnly && !InOptions.includeTrustedUnregistered) {
+                repos.erase(std::remove_if(repos.begin(), repos.end(), [](const RepoRecord& InRepo) {
+                    return InRepo.type == "unregistered";
+                }), repos.end());
+            }
+            if (InOptions.scope == DiscoverScope::Full) {
+                const bool hasUnregistered = std::any_of(repos.begin(), repos.end(), [](const RepoRecord& InRepo) {
+                    return InRepo.type == "unregistered";
+                });
+                if (!hasUnregistered) {
+                    repos.clear();
+                }
+            }
+            if (repos.empty() && InOptions.scope == DiscoverScope::Full) {
+                // Fall through to bounded discovery so callers requesting a full inventory do not
+                // accidentally receive a registered-only manifest.
+            } else {
+            std::sort(repos.begin(), repos.end(), [](const RepoRecord& A, const RepoRecord& B) {
+                return PathKey(A.path) < PathKey(B.path);
+            });
+            return repos;
+            }
+        }
+    }
+
+    DiscoverOptions options;
+    options.rootDir = rootAbs;
+    options.maxDepth = InOptions.unregisteredDepth;
+    options.useCache = InOptions.useCache;
+    options.refreshCache = InOptions.refreshCache;
+    options.incremental = !InOptions.refreshCache;
+    options.metadataLevel = InOptions.metadataLevel;
+    options.scope = InOptions.scope;
+    options.includeTrustedUnregistered = InOptions.includeTrustedUnregistered;
+    auto discovery = DiscoverRepos(options);
+    if (InOptions.refreshCache || !InOptions.useCache) {
+        (void)SaveWorkspaceManifest(BuildWorkspaceManifest(rootAbs, discovery.repos));
+    }
+    return discovery.repos;
+}
+
+auto DiscoverWorkspaceRepoPaths(const WorkspaceInventoryOptions& InOptions, const WorkspacePolicyFilter InPolicyFilter) -> std::vector<std::filesystem::path> {
+    auto repos = DiscoverWorkspaceInventory(InOptions);
+    auto isPolicyDisabled = [&](const RepoRecord& InRepo) {
+        switch (InPolicyFilter) {
+        case WorkspacePolicyFilter::Sync:
+            return InRepo.kogSyncPolicy == "false";
+        case WorkspacePolicyFilter::Commit:
+            return InRepo.kogCommitPolicy == "false";
+        case WorkspacePolicyFilter::Push:
+            return InRepo.kogPushPolicy == "false";
+        case WorkspacePolicyFilter::Hygiene:
+            return InRepo.kogHygienePolicy == "false";
+        case WorkspacePolicyFilter::None:
+            return false;
+        }
+        return false;
+    };
+
+    std::vector<std::filesystem::path> paths;
+    paths.reserve(repos.size());
+    for (const auto& repo : repos) {
+        if (isPolicyDisabled(repo)) {
+            continue;
+        }
+        paths.push_back(Normalize(repo.path));
+    }
+    SortUniquePaths(&paths);
+    if (paths.empty()) {
+        paths.push_back(Normalize(std::filesystem::absolute(InOptions.rootDir)));
+    }
+    return paths;
 }
 
 auto GetSubmoduleConfig(const std::filesystem::path& InRoot, const std::filesystem::path& InSubmodulePath, const std::string& InKey) -> std::string {

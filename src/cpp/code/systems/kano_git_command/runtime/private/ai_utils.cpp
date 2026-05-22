@@ -157,8 +157,36 @@ static auto GhCopilotAvailable() -> bool {
     return HasCommand("gh", {"copilot", "--help"});
 }
 
+static auto TryRunTestAiStubInAiUtils() -> std::optional<shell::ExecResult> {
+    const char* stdoutRaw = std::getenv("KOG_TEST_AI_STDOUT");
+    const char* exitRaw = std::getenv("KOG_TEST_AI_EXIT_CODE");
+    if (stdoutRaw == nullptr && exitRaw == nullptr) {
+        return std::nullopt;
+    }
+    shell::ExecResult out;
+    if (stdoutRaw != nullptr) {
+        out.stdoutStr = stdoutRaw;
+    }
+    if (exitRaw != nullptr && exitRaw[0] != '\0') {
+        try {
+            out.exitCode = std::stoi(exitRaw);
+        } catch (...) {
+            out.exitCode = 1;
+            out.stderrStr = std::format("invalid KOG_TEST_AI_EXIT_CODE: {}", exitRaw);
+        }
+    }
+    if (const char* logPath = std::getenv("KOG_TEST_AI_STUB_LOG"); logPath && logPath[0]) {
+        std::ofstream lf(logPath, std::ios::app);
+        lf << "copilot (in-process-stub via ExecuteStandaloneCopilot)\n";
+    }
+    return out;
+}
+
 auto ExecuteStandaloneCopilot(const std::vector<std::string>& InArgs,
                               std::optional<std::filesystem::path> InWorkingDir) -> shell::ExecResult {
+    if (const auto testResult = TryRunTestAiStubInAiUtils(); testResult.has_value()) {
+        return *testResult;
+    }
     const auto standaloneCopilot = CopilotStandaloneCommand();
     if (HasCommand(standaloneCopilot, {"--help"})) {
         return shell::ExecuteCommand(standaloneCopilot, InArgs, shell::ExecMode::Capture, InWorkingDir);

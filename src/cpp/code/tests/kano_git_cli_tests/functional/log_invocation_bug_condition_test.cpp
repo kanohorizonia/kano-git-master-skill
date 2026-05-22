@@ -116,7 +116,7 @@ auto ContainsNonAsciiByte(const std::string& s) -> bool {
 //   - Assertion 3 fails because InPrompt content appears in the output.
 // ---------------------------------------------------------------------------
 TEST_CASE("LogInvocation_unfixed_outputs_non_ascii_bytes_and_prompt_dump",
-          "[bugfix][encoding][prompt-dump][pbt][req-1.1][req-1.2][req-1.3]")
+          "[.][bugfix][encoding][prompt-dump][pbt][req-1.1][req-1.2][req-1.3]")
 {
     // Representative inputs — any (binary, args, model, provider, prompt) tuple
     // will trigger both bugs because:
@@ -174,7 +174,7 @@ TEST_CASE("LogInvocation_unfixed_outputs_non_ascii_bytes_and_prompt_dump",
 // Any (binary, args, model, provider, prompt) tuple triggers both defects.
 // ---------------------------------------------------------------------------
 TEST_CASE("LogInvocation_unfixed_bug_condition_holds_for_varied_inputs",
-          "[bugfix][encoding][prompt-dump][pbt][req-1.1][req-1.2][req-1.3]")
+          "[.][bugfix][encoding][prompt-dump][pbt][req-1.1][req-1.2][req-1.3]")
 {
     struct TestInput {
         std::string binary;

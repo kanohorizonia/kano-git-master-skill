@@ -2,23 +2,28 @@
 
 #include <CLI/CLI.hpp>
 #include "discovery.hpp"
+#include "repo_operation_scheduler.hpp"
 #include "shell_executor.hpp"
 #include "terminal_color.hpp"
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <format>
-#include <future>
 #include <iomanip>
 #include <iostream>
+#include <map>
+#include <mutex>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <set>
 #include <string>
-#include <thread>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #if defined(_WIN32)
@@ -45,6 +50,52 @@ struct RepoView {
     std::string dirtyWorktrees;
     std::vector<std::string> statusLines;
 };
+
+struct RecursiveRepoStatus {
+    workspace::RepoRecord repo;
+    std::string id;
+    std::string relativePath;
+    std::string absolutePath;
+    int depth = 0;
+    bool isWorkspaceRoot = false;
+    bool isContainerRoot = false;
+    bool isSubmodule = false;
+    std::vector<std::string> parentRepos;
+    std::vector<std::string> childRepos;
+    std::string branch;
+    std::string head;
+    std::string remote;
+    std::string upstream;
+    int ahead = 0;
+    int behind = 0;
+    std::string dirtyKind = "CLEAN";
+    std::vector<std::string> statusFlags;
+    std::vector<std::string> submoduleFacts;
+    bool conflicted = false;
+    bool pushable = false;
+    std::string selectedPushRemote;
+    std::string registrationSource;
+    std::string registrationRelativeTo;
+    bool isPersistedInWorkspaceManifest = false;
+    std::string containingRepo;
+    std::string containingRelation;
+    bool isGitlinkInContainingRepo = false;
+    bool isIgnoredByContainingRepo = false;
+    bool isExplicitlyAllowed = false;
+    std::string managementPolicy;
+    bool blocksConverge = false;
+    std::string blockReason;
+    std::map<std::string, std::string> commandPolicy;
+    std::vector<std::string> diagnostics;
+};
+
+struct RecursiveStatusSnapshot {
+    std::filesystem::path workspaceRoot;
+    std::vector<RecursiveRepoStatus> repos;
+};
+
+std::mutex gRecursiveStatusMutex;
+std::unordered_map<std::string, RecursiveRepoStatus> gRecursiveStatusResults;
 
 struct TableLayout {
     int indexWidth = 6;
@@ -80,6 +131,35 @@ auto SplitNonEmptyLines(const std::string& InText) -> std::vector<std::string> {
         }
     }
     return out;
+}
+
+auto EscapeJson(std::string InValue) -> std::string {
+    std::string out;
+    out.reserve(InValue.size() + 8);
+    for (const char ch : InValue) {
+        switch (ch) {
+        case '\\': out += "\\\\"; break;
+        case '"': out += "\\\""; break;
+        case '\n': out += "\\n"; break;
+        case '\r': out += "\\r"; break;
+        case '\t': out += "\\t"; break;
+        default: out.push_back(ch); break;
+        }
+    }
+    return out;
+}
+
+auto PathKey(const std::filesystem::path& InPath) -> std::string {
+    auto key = InPath.lexically_normal().generic_string();
+    while (key.size() > 1 && key.back() == '/') {
+        key.pop_back();
+    }
+#if defined(_WIN32)
+    std::transform(key.begin(), key.end(), key.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+#endif
+    return key;
 }
 
 auto ParseStatusChangedPath(std::string InLine) -> std::string {
@@ -150,6 +230,12 @@ auto FilterVisibleStatusLines(const std::string& InStatusText) -> std::vector<st
 
 auto GitCapture(const std::filesystem::path& InRepo, const std::vector<std::string>& InArgs) -> shell::ExecResult {
     return shell::ExecuteCommand("git", InArgs, shell::ExecMode::Capture, InRepo);
+}
+
+auto GitCaptureNoOptionalLocks(const std::filesystem::path& InRepo, const std::vector<std::string>& InArgs) -> shell::ExecResult {
+    std::vector<std::string> args{"-c", "core.optionalLocks=false"};
+    args.insert(args.end(), InArgs.begin(), InArgs.end());
+    return GitCapture(InRepo, args);
 }
 
 auto ParsePositiveIntEnv(const char* InName) -> int {
@@ -326,6 +412,175 @@ auto TrackingSummary(const std::filesystem::path& InRepo) -> std::string {
     }
 
     return "no-upstream";
+}
+
+auto ShortHead(const std::filesystem::path& InRepo) -> std::string {
+    const auto out = GitCaptureNoOptionalLocks(InRepo, {"rev-parse", "--short=12", "HEAD"});
+    return out.exitCode == 0 ? Trim(out.stdoutStr) : std::string{};
+}
+
+auto FullHead(const std::filesystem::path& InRepo) -> std::string {
+    const auto out = GitCaptureNoOptionalLocks(InRepo, {"rev-parse", "HEAD"});
+    return out.exitCode == 0 ? Trim(out.stdoutStr) : std::string{};
+}
+
+auto CurrentBranchForSnapshot(const std::filesystem::path& InRepo) -> std::string {
+    const auto out = GitCaptureNoOptionalLocks(InRepo, {"symbolic-ref", "--quiet", "--short", "HEAD"});
+    return out.exitCode == 0 ? Trim(out.stdoutStr) : std::string{"(detached)"};
+}
+
+auto UpstreamForSnapshot(const std::filesystem::path& InRepo) -> std::string {
+    const auto out = GitCaptureNoOptionalLocks(InRepo, {"rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"});
+    return out.exitCode == 0 ? Trim(out.stdoutStr) : std::string{};
+}
+
+auto RemoteFromUpstream(const std::string& InUpstream) -> std::string {
+    const auto slash = InUpstream.find('/');
+    if (slash == std::string::npos) {
+        return {};
+    }
+    return InUpstream.substr(0, slash);
+}
+
+auto PushRemoteForSnapshot(const std::filesystem::path& InRepo, const std::string& InBranch, const std::string& InRemote) -> std::string {
+    if (!InBranch.empty() && InBranch != "(detached)") {
+        const auto branchRemote = GitCaptureNoOptionalLocks(InRepo, {"config", "--get", "branch." + InBranch + ".pushRemote"});
+        if (branchRemote.exitCode == 0 && !Trim(branchRemote.stdoutStr).empty()) {
+            return Trim(branchRemote.stdoutStr);
+        }
+    }
+    const auto pushDefault = GitCaptureNoOptionalLocks(InRepo, {"config", "--get", "remote.pushDefault"});
+    if (pushDefault.exitCode == 0 && !Trim(pushDefault.stdoutStr).empty()) {
+        return Trim(pushDefault.stdoutStr);
+    }
+    return InRemote;
+}
+
+auto AheadBehindForSnapshot(const std::filesystem::path& InRepo, const std::string& InUpstream) -> std::pair<int, int> {
+    if (InUpstream.empty()) {
+        return {0, 0};
+    }
+    const auto out = GitCaptureNoOptionalLocks(InRepo, {"rev-list", "--left-right", "--count", InUpstream + "...HEAD"});
+    if (out.exitCode != 0) {
+        return {0, 0};
+    }
+    std::istringstream iss(out.stdoutStr);
+    int behind = 0;
+    int ahead = 0;
+    iss >> behind >> ahead;
+    return {ahead, behind};
+}
+
+auto ParseStatusFlag(const std::string& InLine) -> std::string {
+    if (InLine.size() >= 2) {
+        return InLine.substr(0, 2);
+    }
+    return InLine;
+}
+
+auto PushUnique(std::vector<std::string>* IoValues, const std::string& InValue) -> void {
+    if (IoValues == nullptr || InValue.empty()) {
+        return;
+    }
+    if (std::find(IoValues->begin(), IoValues->end(), InValue) == IoValues->end()) {
+        IoValues->push_back(InValue);
+    }
+}
+
+auto HasUnpushedCommit(const std::filesystem::path& InRepo, const std::string& InUpstream) -> bool {
+    if (InUpstream.empty()) {
+        return false;
+    }
+    const auto out = GitCaptureNoOptionalLocks(InRepo, {"rev-list", "--count", InUpstream + "..HEAD"});
+    if (out.exitCode != 0) {
+        return false;
+    }
+    try {
+        return std::stoi(Trim(out.stdoutStr)) > 0;
+    } catch (...) {
+        return false;
+    }
+}
+
+auto ParentGitlinkHead(const std::filesystem::path& InParent, const std::filesystem::path& InChild) -> std::string {
+    const auto rel = InChild.lexically_normal().lexically_relative(InParent.lexically_normal()).generic_string();
+    if (rel.empty() || rel.starts_with("..")) {
+        return {};
+    }
+    const auto out = GitCaptureNoOptionalLocks(InParent, {"ls-tree", "HEAD", "--", rel});
+    if (out.exitCode != 0) {
+        return {};
+    }
+    std::istringstream iss(out.stdoutStr);
+    std::string mode;
+    std::string type;
+    std::string sha;
+    iss >> mode >> type >> sha;
+    if (mode == "160000" && type == "commit") {
+        return sha;
+    }
+    return {};
+}
+
+auto IsIgnoredByContainingRepo(const std::filesystem::path& InParent, const std::filesystem::path& InChild) -> bool {
+    const auto rel = InChild.lexically_normal().lexically_relative(InParent.lexically_normal()).generic_string();
+    if (rel.empty() || rel.starts_with("..")) {
+        return false;
+    }
+    const auto out = GitCaptureNoOptionalLocks(InParent, {"check-ignore", "-q", "--no-index", rel});
+    return out.exitCode == 0;
+}
+
+auto LoadTrustedManifestPathKeys(const std::filesystem::path& InWorkspaceRoot) -> std::unordered_set<std::string> {
+    std::unordered_set<std::string> out;
+    std::string ignoredReason;
+    const auto manifest = workspace::LoadTrustedWorkspaceManifest(InWorkspaceRoot, &ignoredReason);
+    if (!manifest.has_value()) {
+        return out;
+    }
+    for (const auto& repo : manifest->repos) {
+        out.insert(PathKey(repo.path));
+    }
+    return out;
+}
+
+auto HasDiscoverCommandPolicy(const workspace::RepoRecord& InRepo) -> bool {
+    return !InRepo.kogSyncPolicy.empty()
+        || !InRepo.kogCommitPolicy.empty()
+        || !InRepo.kogPushPolicy.empty()
+        || !InRepo.kogHygienePolicy.empty();
+}
+
+auto RelativeId(const std::filesystem::path& InWorkspaceRoot, const std::filesystem::path& InPath) -> std::string {
+    const auto root = InWorkspaceRoot.lexically_normal();
+    const auto path = InPath.lexically_normal();
+    if (PathKey(root) == PathKey(path)) {
+        return ".";
+    }
+    const auto relative = path.lexically_relative(root);
+    if (!relative.empty() && !relative.generic_string().starts_with("..")) {
+        return relative.generic_string();
+    }
+    return path.generic_string();
+}
+
+auto PathDepth(const std::string& InRelativePath) -> int {
+    if (InRelativePath.empty() || InRelativePath == ".") {
+        return 0;
+    }
+    return static_cast<int>(std::count(InRelativePath.begin(), InRelativePath.end(), '/')) + 1;
+}
+
+auto JsonArray(const std::vector<std::string>& InValues) -> std::string {
+    std::string out = "[";
+    for (std::size_t i = 0; i < InValues.size(); ++i) {
+        if (i > 0) {
+            out += ",";
+        }
+        out += std::format("\"{}\"", EscapeJson(InValues[i]));
+    }
+    out += "]";
+    return out;
 }
 
 auto HasDirtyWorktrees(const std::filesystem::path& InRepo, std::string& OutDirtyList) -> bool {
@@ -570,9 +825,7 @@ auto FormatTable(const std::vector<RepoView>& InRows, bool InColorize = true) ->
         const auto worktreeDirtyCell = MaybeColorize(PadRight(row.hasDirtyWorktree ? "yes" : "no", layout.worktreeDirtyWidth),
                                                      row.hasDirtyWorktree ? kano::terminal::Color::BoldRed : kano::terminal::Color::Green,
                                                      InColorize);
-        const auto typeCell = MaybeColorize(type,
-                                            row.type == "registered-uninit" ? kano::terminal::Color::BoldYellow : kano::terminal::Color::Dim,
-                                            InColorize);
+        const auto typeCell = MaybeColorize(type, kano::terminal::Color::Dim, InColorize);
 
         const auto revision = TruncateWithEllipsis(row.revision, std::max(1, layout.revisionWidth - 1));
         oss << kano::terminal::Wrap(PadRight(std::to_string(i + 1), layout.indexWidth), kano::terminal::Color::Dim)
@@ -731,6 +984,403 @@ auto MakeRepoView(const workspace::RepoRecord& InRepo, const std::filesystem::pa
     return row;
 }
 
+auto BuildRecursiveRepoStatus(const workspace::RepoRecord& InRepo,
+                              const std::filesystem::path& InWorkspaceRoot,
+                              const std::unordered_map<std::string, workspace::RepoRecord>& InReposByPath,
+                              const std::unordered_set<std::string>& InTrustedManifestPathKeys) -> RecursiveRepoStatus {
+    RecursiveRepoStatus out;
+    out.repo = InRepo;
+    out.id = RelativeId(InWorkspaceRoot, InRepo.path);
+    out.relativePath = out.id;
+    out.absolutePath = InRepo.path.lexically_normal().generic_string();
+    out.depth = PathDepth(out.relativePath);
+    out.isWorkspaceRoot = InRepo.type == "root" || PathKey(InRepo.path) == PathKey(InWorkspaceRoot);
+    out.registrationRelativeTo = InRepo.registrationRelativeTo.empty()
+        ? std::string{}
+        : RelativeId(InWorkspaceRoot, InRepo.registrationRelativeTo);
+    out.registrationSource = out.isWorkspaceRoot ? "workspace-root" : (InRepo.type == "registered" ? ".gitmodules" : "discover");
+    out.isPersistedInWorkspaceManifest = InTrustedManifestPathKeys.contains(PathKey(InRepo.path));
+    out.commandPolicy = {
+        {"sync", InRepo.kogSyncPolicy},
+        {"commit", InRepo.kogCommitPolicy},
+        {"push", InRepo.kogPushPolicy},
+        {"hygiene", InRepo.kogHygienePolicy},
+        {"source", HasDiscoverCommandPolicy(InRepo) ? std::string{".gitmodules"} : std::string{"default"}},
+    };
+
+    for (const auto& dep : InRepo.dependencies) {
+        out.parentRepos.push_back(RelativeId(InWorkspaceRoot, dep));
+    }
+    std::sort(out.parentRepos.begin(), out.parentRepos.end());
+    out.parentRepos.erase(std::unique(out.parentRepos.begin(), out.parentRepos.end()), out.parentRepos.end());
+
+    for (const auto& [pathKey, candidate] : InReposByPath) {
+        (void)pathKey;
+        for (const auto& dep : candidate.dependencies) {
+            if (PathKey(dep) == PathKey(InRepo.path)) {
+                out.childRepos.push_back(RelativeId(InWorkspaceRoot, candidate.path));
+            }
+        }
+    }
+    std::sort(out.childRepos.begin(), out.childRepos.end());
+    out.childRepos.erase(std::unique(out.childRepos.begin(), out.childRepos.end()), out.childRepos.end());
+    out.isContainerRoot = !out.childRepos.empty();
+
+    if (!InRepo.dependencies.empty()) {
+        const auto parentIt = InReposByPath.find(PathKey(InRepo.dependencies.front()));
+        if (parentIt != InReposByPath.end()) {
+            out.containingRepo = RelativeId(InWorkspaceRoot, parentIt->second.path);
+            out.isIgnoredByContainingRepo = IsIgnoredByContainingRepo(parentIt->second.path, InRepo.path);
+            const auto parentGitlink = ParentGitlinkHead(parentIt->second.path, InRepo.path);
+            out.isGitlinkInContainingRepo = !parentGitlink.empty();
+            out.isSubmodule = out.isGitlinkInContainingRepo || InRepo.type == "registered";
+            out.containingRelation = out.isGitlinkInContainingRepo ? "gitlink" : "nested";
+        }
+    }
+
+    out.branch = CurrentBranchForSnapshot(InRepo.path);
+    out.head = FullHead(InRepo.path);
+    out.upstream = UpstreamForSnapshot(InRepo.path);
+    out.remote = RemoteFromUpstream(out.upstream);
+    const auto [ahead, behind] = AheadBehindForSnapshot(InRepo.path, out.upstream);
+    out.ahead = ahead;
+    out.behind = behind;
+    out.selectedPushRemote = PushRemoteForSnapshot(InRepo.path, out.branch, out.remote);
+    out.pushable = !out.selectedPushRemote.empty() && out.branch != "(detached)";
+
+    const auto statusOut = GitCaptureNoOptionalLocks(InRepo.path, {"status", "--porcelain=v1", "--untracked-files=normal"});
+    std::vector<std::string> visibleStatus;
+    if (statusOut.exitCode == 0) {
+        visibleStatus = FilterVisibleStatusLines(statusOut.stdoutStr);
+    } else {
+        out.diagnostics.push_back("git status failed: " + Trim(statusOut.stderrStr));
+    }
+
+    bool hasContentDirty = false;
+    bool hasGitlinkDirty = false;
+    bool hasUntracked = false;
+    bool hasIndexDirty = false;
+    bool hasConflict = false;
+
+    for (const auto& line : visibleStatus) {
+        const auto flag = ParseStatusFlag(line);
+        PushUnique(&out.statusFlags, flag);
+        const auto path = ParseStatusChangedPath(line);
+        const bool isGitlinkPath = std::any_of(out.childRepos.begin(), out.childRepos.end(), [&](const std::string& childId) {
+            return path == childId || path.ends_with("/" + childId);
+        });
+        if (flag == "??") {
+            hasUntracked = true;
+        }
+        if (!flag.empty() && flag[0] != ' ' && flag[0] != '?') {
+            hasIndexDirty = true;
+        }
+        if (flag.find('U') != std::string::npos || flag == "AA" || flag == "DD") {
+            hasConflict = true;
+        }
+        if (isGitlinkPath) {
+            hasGitlinkDirty = true;
+            PushUnique(&out.submoduleFacts, "ParentGitlinkDirty");
+        } else {
+            hasContentDirty = true;
+        }
+    }
+
+    if (out.isSubmodule && !out.containingRepo.empty()) {
+        const auto parentIt = std::find_if(InReposByPath.begin(), InReposByPath.end(), [&](const auto& entry) {
+            return RelativeId(InWorkspaceRoot, entry.second.path) == out.containingRepo;
+        });
+        if (parentIt != InReposByPath.end()) {
+            const auto parentGitlink = ParentGitlinkHead(parentIt->second.path, InRepo.path);
+            if (!parentGitlink.empty() && !out.head.empty() && parentGitlink != out.head) {
+                PushUnique(&out.submoduleFacts, "SubmoduleHeadMoved");
+            }
+        }
+    }
+    if (out.isSubmodule && !visibleStatus.empty()) {
+        PushUnique(&out.submoduleFacts, "SubmoduleWorktreeDirty");
+    }
+    if (out.isSubmodule && HasUnpushedCommit(InRepo.path, out.upstream)) {
+        PushUnique(&out.submoduleFacts, "SubmoduleCommitUnpushed");
+        PushUnique(&out.statusFlags, "UNPUSHED_SUBMODULE_COMMIT");
+    }
+
+    out.conflicted = hasConflict;
+    if (hasConflict) {
+        out.dirtyKind = "CONFLICTED";
+    } else if (hasIndexDirty) {
+        out.dirtyKind = "INDEX_DIRTY";
+    } else if (hasContentDirty && hasGitlinkDirty) {
+        out.dirtyKind = "CONTENT_AND_GITLINK_DIRTY";
+    } else if (hasGitlinkDirty) {
+        out.dirtyKind = "GITLINK_DIRTY_ONLY";
+    } else if (hasContentDirty) {
+        out.dirtyKind = hasUntracked && visibleStatus.size() == 1 ? "UNTRACKED_ONLY" : "CONTENT_DIRTY";
+    } else if (out.branch == "(detached)") {
+        out.dirtyKind = "DETACHED_HEAD";
+    } else if (out.upstream.empty()) {
+        out.dirtyKind = out.remote.empty() ? "MISSING_REMOTE" : "CLEAN";
+    } else if (out.ahead > 0 && out.behind > 0) {
+        out.dirtyKind = "DIVERGED";
+    } else if (out.ahead > 0) {
+        out.dirtyKind = "AHEAD_ONLY";
+    } else if (out.behind > 0) {
+        out.dirtyKind = "BEHIND_ONLY";
+    }
+
+    if (out.dirtyKind != "CLEAN") {
+        PushUnique(&out.statusFlags, out.dirtyKind);
+    }
+    if (out.upstream.empty() && out.remote.empty()) {
+        PushUnique(&out.statusFlags, "MISSING_REMOTE");
+    }
+    if (out.branch == "(detached)") {
+        PushUnique(&out.statusFlags, "DETACHED_HEAD");
+    }
+
+    if (InRepo.type == "unregistered") {
+        out.isExplicitlyAllowed = out.isPersistedInWorkspaceManifest || out.isIgnoredByContainingRepo;
+        if (out.isIgnoredByContainingRepo) {
+            out.managementPolicy = "ignored";
+            out.blocksConverge = false;
+        } else if (out.isPersistedInWorkspaceManifest) {
+            out.managementPolicy = "manifest-trusted";
+            out.blocksConverge = false;
+        } else if (out.depth <= 1) {
+            out.isExplicitlyAllowed = true;
+            out.managementPolicy = "discovered-top-level";
+            out.blocksConverge = false;
+        } else {
+            out.managementPolicy = "discovered-untrusted";
+            out.blocksConverge = true;
+            out.blockReason = "Discovered unregistered nested Git repository that is not in the trusted workspace manifest. Register it as a submodule/subrepo, ignore it, or move it outside the workspace.";
+        }
+    } else {
+        out.isExplicitlyAllowed = true;
+        out.managementPolicy = InRepo.type == "root" ? "workspace-root" : "registered";
+        out.blocksConverge = false;
+    }
+
+    if (out.isSubmodule && std::find(out.submoduleFacts.begin(), out.submoduleFacts.end(), "SubmoduleCommitUnpushed") != out.submoduleFacts.end()) {
+        PushUnique(&out.statusFlags, "UNPUSHED_SUBMODULE_COMMIT");
+    }
+
+    std::sort(out.statusFlags.begin(), out.statusFlags.end());
+    std::sort(out.submoduleFacts.begin(), out.submoduleFacts.end());
+    std::sort(out.diagnostics.begin(), out.diagnostics.end());
+    return out;
+}
+
+auto BuildRecursiveStatusSnapshot(const std::filesystem::path& InWorkspaceRoot,
+                                  bool InUseCache,
+                                  bool InRefreshCache,
+                                  int InUnregisteredDepth,
+                                  int InJobs) -> RecursiveStatusSnapshot {
+    workspace::WorkspaceInventoryOptions inventoryOptions;
+    inventoryOptions.rootDir = InWorkspaceRoot;
+    inventoryOptions.unregisteredDepth = InUnregisteredDepth;
+    inventoryOptions.useCache = InUseCache;
+    inventoryOptions.refreshCache = InRefreshCache;
+    inventoryOptions.includeTrustedUnregistered = true;
+    inventoryOptions.metadataLevel = "minimal";
+    inventoryOptions.scope = InUnregisteredDepth > 0 ? workspace::DiscoverScope::Full : workspace::DiscoverScope::RegisteredOnly;
+
+    const auto trustedManifestPathKeys = LoadTrustedManifestPathKeys(InWorkspaceRoot);
+    auto repos = workspace::DiscoverWorkspaceInventory(inventoryOptions);
+    std::sort(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
+        return PathKey(A.path) < PathKey(B.path);
+    });
+
+    std::unordered_map<std::string, workspace::RepoRecord> reposByPath;
+    reposByPath.reserve(repos.size());
+    for (const auto& repo : repos) {
+        reposByPath.emplace(PathKey(repo.path), repo);
+    }
+
+    auto inputs = workspace::MakeRepoOperationInputs(repos);
+    workspace::RepoOperationSchedulerOptions schedulerOptions;
+    schedulerOptions.operationName = "recursive-status";
+    schedulerOptions.mode = workspace::RepoOperationMode::ReadOnlyParallel;
+    schedulerOptions.jobs = std::max(1, InJobs);
+    schedulerOptions.resolveGitCommonDirLocks = true;
+
+    {
+        std::lock_guard lock(gRecursiveStatusMutex);
+        gRecursiveStatusResults.clear();
+    }
+
+    const auto aggregate = workspace::RunRepoOperationScheduler(inputs, schedulerOptions, [&](const workspace::RepoOperationInput& InInput) {
+        workspace::RepoOperationWorkerResult result;
+        const auto it = reposByPath.find(PathKey(InInput.path));
+        if (it == reposByPath.end()) {
+            result.status = workspace::RepoOperationStatus::Failed;
+            result.exitCode = 1;
+            result.failureCategory = "repo-missing";
+            result.message = "repo missing from discovery inventory";
+            return result;
+        }
+        const auto status = BuildRecursiveRepoStatus(it->second, InWorkspaceRoot, reposByPath, trustedManifestPathKeys);
+        {
+            std::lock_guard lock(gRecursiveStatusMutex);
+            gRecursiveStatusResults.insert_or_assign(PathKey(InInput.path), status);
+        }
+        std::ostringstream payload;
+        payload << status.id << "\n";
+        payload << status.dirtyKind << "\n";
+        for (const auto& diagnostic : status.diagnostics) {
+            payload << "diagnostic:" << diagnostic << "\n";
+        }
+        result.stdoutText = payload.str();
+        return result;
+    });
+
+    RecursiveStatusSnapshot snapshot;
+    snapshot.workspaceRoot = InWorkspaceRoot.lexically_normal();
+    snapshot.repos.reserve(aggregate.results.size());
+    for (const auto& result : aggregate.results) {
+        RecursiveRepoStatus status;
+        const auto resultKey = PathKey(result.repoPath);
+        {
+            std::lock_guard lock(gRecursiveStatusMutex);
+            const auto statusIt = gRecursiveStatusResults.find(resultKey);
+            if (statusIt == gRecursiveStatusResults.end()) {
+                continue;
+            }
+            status = statusIt->second;
+            gRecursiveStatusResults.erase(statusIt);
+        }
+        if (result.status != workspace::RepoOperationStatus::Succeeded) {
+            status.diagnostics.push_back(result.message.empty() ? "scheduler status check failed" : result.message);
+        }
+        snapshot.repos.push_back(std::move(status));
+    }
+    std::sort(snapshot.repos.begin(), snapshot.repos.end(), [](const auto& A, const auto& B) {
+        return A.id < B.id;
+    });
+    return snapshot;
+}
+
+auto FormatRecursiveStatusJson(const RecursiveStatusSnapshot& InSnapshot) -> std::string {
+    std::size_t dirty = 0;
+    std::size_t blocked = 0;
+    std::map<std::string, std::size_t> byType;
+    std::map<std::string, std::size_t> byDirtyKind;
+    for (const auto& repo : InSnapshot.repos) {
+        byType[repo.repo.type] += 1;
+        byDirtyKind[repo.dirtyKind] += 1;
+        if (repo.dirtyKind != "CLEAN") {
+            dirty += 1;
+        }
+        if (repo.blocksConverge) {
+            blocked += 1;
+        }
+    }
+
+    std::ostringstream out;
+    out << "{";
+    out << "\"schemaName\":\"kog.recursiveStatusSnapshot\",";
+    out << "\"schemaVersion\":1,";
+    out << "\"workspaceRoot\":\"" << EscapeJson(InSnapshot.workspaceRoot.generic_string()) << "\",";
+    out << "\"repos\":[";
+    for (std::size_t i = 0; i < InSnapshot.repos.size(); ++i) {
+        if (i > 0) {
+            out << ",";
+        }
+        const auto& repo = InSnapshot.repos[i];
+        out << "{";
+        out << "\"id\":\"" << EscapeJson(repo.id) << "\",";
+        out << "\"type\":\"" << EscapeJson(repo.repo.type) << "\",";
+        out << "\"path\":\"" << EscapeJson(repo.relativePath) << "\",";
+        out << "\"absolutePath\":\"" << EscapeJson(repo.absolutePath) << "\",";
+        out << "\"depth\":" << repo.depth << ",";
+        out << "\"isWorkspaceRoot\":" << (repo.isWorkspaceRoot ? "true" : "false") << ",";
+        out << "\"isContainerRoot\":" << (repo.isContainerRoot ? "true" : "false") << ",";
+        out << "\"isSubmodule\":" << (repo.isSubmodule ? "true" : "false") << ",";
+        out << "\"parentRepos\":" << JsonArray(repo.parentRepos) << ",";
+        out << "\"childRepos\":" << JsonArray(repo.childRepos) << ",";
+        out << "\"branch\":\"" << EscapeJson(repo.branch) << "\",";
+        out << "\"head\":\"" << EscapeJson(repo.head) << "\",";
+        out << "\"remote\":\"" << EscapeJson(repo.remote) << "\",";
+        out << "\"upstream\":\"" << EscapeJson(repo.upstream) << "\",";
+        out << "\"ahead\":" << repo.ahead << ",";
+        out << "\"behind\":" << repo.behind << ",";
+        out << "\"dirtyKind\":\"" << EscapeJson(repo.dirtyKind) << "\",";
+        out << "\"statusFlags\":" << JsonArray(repo.statusFlags) << ",";
+        out << "\"submoduleFacts\":" << JsonArray(repo.submoduleFacts) << ",";
+        out << "\"conflicted\":" << (repo.conflicted ? "true" : "false") << ",";
+        out << "\"pushable\":" << (repo.pushable ? "true" : "false") << ",";
+        out << "\"selectedPushRemote\":\"" << EscapeJson(repo.selectedPushRemote) << "\",";
+        out << "\"registrationSource\":\"" << EscapeJson(repo.registrationSource) << "\",";
+        out << "\"registrationRelativeTo\":\"" << EscapeJson(repo.registrationRelativeTo) << "\",";
+        out << "\"isPersistedInWorkspaceManifest\":" << (repo.isPersistedInWorkspaceManifest ? "true" : "false") << ",";
+        out << "\"containingRepo\":\"" << EscapeJson(repo.containingRepo) << "\",";
+        out << "\"containingRelation\":\"" << EscapeJson(repo.containingRelation) << "\",";
+        out << "\"isGitlinkInContainingRepo\":" << (repo.isGitlinkInContainingRepo ? "true" : "false") << ",";
+        out << "\"isIgnoredByContainingRepo\":" << (repo.isIgnoredByContainingRepo ? "true" : "false") << ",";
+        out << "\"isExplicitlyAllowed\":" << (repo.isExplicitlyAllowed ? "true" : "false") << ",";
+        out << "\"managementPolicy\":\"" << EscapeJson(repo.managementPolicy) << "\",";
+        out << "\"blocksConverge\":" << (repo.blocksConverge ? "true" : "false") << ",";
+        out << "\"blockReason\":\"" << EscapeJson(repo.blockReason) << "\",";
+        out << "\"commandPolicy\":{";
+        std::size_t policyIndex = 0;
+        for (const auto& [key, value] : repo.commandPolicy) {
+            if (policyIndex++ > 0) {
+                out << ",";
+            }
+            out << "\"" << EscapeJson(key) << "\":\"" << EscapeJson(value) << "\"";
+        }
+        out << "},";
+        out << "\"diagnostics\":" << JsonArray(repo.diagnostics);
+        out << "}";
+    }
+    out << "],";
+    out << "\"summary\":{";
+    out << "\"repoCount\":" << InSnapshot.repos.size() << ",";
+    out << "\"dirtyCount\":" << dirty << ",";
+    out << "\"blocksConvergeCount\":" << blocked << ",";
+    out << "\"byType\":{";
+    std::size_t typeIndex = 0;
+    for (const auto& [key, value] : byType) {
+        if (typeIndex++ > 0) {
+            out << ",";
+        }
+        out << "\"" << EscapeJson(key) << "\":" << value;
+    }
+    out << "},\"byDirtyKind\":{";
+    std::size_t dirtyIndex = 0;
+    for (const auto& [key, value] : byDirtyKind) {
+        if (dirtyIndex++ > 0) {
+            out << ",";
+        }
+        out << "\"" << EscapeJson(key) << "\":" << value;
+    }
+    out << "}}";
+    out << "}";
+    return out.str();
+}
+
+auto FormatRecursiveStatusSummary(const RecursiveStatusSnapshot& InSnapshot) -> std::string {
+    std::ostringstream out;
+    std::size_t dirty = 0;
+    std::size_t blocked = 0;
+    for (const auto& repo : InSnapshot.repos) {
+        dirty += repo.dirtyKind == "CLEAN" ? 0 : 1;
+        blocked += repo.blocksConverge ? 1 : 0;
+    }
+    out << "Recursive status summary\n";
+    out << "workspaceRoot=" << InSnapshot.workspaceRoot.generic_string() << "\n";
+    out << "repos=" << InSnapshot.repos.size() << " dirty=" << dirty << " blocksConverge=" << blocked << "\n";
+    for (const auto& repo : InSnapshot.repos) {
+        out << repo.id << " type=" << repo.repo.type << " dirtyKind=" << repo.dirtyKind
+            << " policy=" << repo.managementPolicy;
+        if (repo.blocksConverge) {
+            out << " blocksConverge=true reason=\"" << repo.blockReason << "\"";
+        }
+        out << "\n";
+    }
+    return out.str();
+}
+
 auto MakeCachedRepoView(const workspace::RepoRecord& InRepo, const std::filesystem::path& InRoot) -> RepoView {
     RepoView row;
     row.path = InRepo.path;
@@ -754,21 +1404,8 @@ auto BuildRepoViews(const std::vector<workspace::RepoRecord>& InRepos, const std
     std::vector<RepoView> rows;
     rows.reserve(InRepos.size());
 
-    if (InRepos.size() <= 1) {
-        for (const auto& repo : InRepos) {
-            rows.push_back(MakeRepoView(repo, InRoot));
-        }
-    } else {
-        std::vector<std::future<RepoView>> futures;
-        futures.reserve(InRepos.size());
-        for (const auto& repo : InRepos) {
-            futures.push_back(std::async([&repo, &InRoot]() {
-                return MakeRepoView(repo, InRoot);
-            }));
-        }
-        for (auto& future : futures) {
-            rows.push_back(future.get());
-        }
+    for (const auto& repo : InRepos) {
+        rows.push_back(MakeRepoView(repo, InRoot));
     }
 
     std::sort(rows.begin(), rows.end(), [](const RepoView& A, const RepoView& B) {
@@ -839,6 +1476,12 @@ void RegisterStatus(CLI::App& InApp) {
     auto* noCache = new bool{false};
     auto* refreshCache = new bool{false};
     auto* all = new bool{false};
+    auto* recursive = new bool{false};
+    auto* json = new bool{false};
+    auto* summary = new bool{false};
+    auto* jobs = new int{1};
+    auto* noUnregisteredScan = new bool{false};
+    auto* unregisteredDepth = new int{2};
     auto* repoRoot = new std::string{"."};
     auto* output = new std::string{};
     auto* target = new std::string{};
@@ -856,6 +1499,12 @@ void RegisterStatus(CLI::App& InApp) {
     cmd->add_flag("--no-cache", *noCache, "Disable discovery cache for this run");
     cmd->add_flag("--refresh-cache", *refreshCache, "Force cache refresh");
     cmd->add_flag("--all", *all, "Show all discovered repos instead of only dirty ones");
+    cmd->add_flag("--recursive", *recursive, "Emit recursive workspace status snapshot using discover inventory");
+    cmd->add_flag("--json", *json, "Shortcut for --recursive --format json");
+    cmd->add_flag("--summary", *summary, "Shortcut for --recursive --format summary");
+    cmd->add_option("--jobs", *jobs, "Parallel read-only status checks for recursive snapshot")->default_str("1");
+    cmd->add_option("--unregistered-depth", *unregisteredDepth, "Bounded unregistered discovery depth when refresh is requested")->default_str("2");
+    cmd->add_flag("--no-unregistered-scan", *noUnregisteredScan, "Do not perform new unregistered filesystem probing; keep discover trusted manifest/cache repos");
 
     configureOutput(overview);
 
@@ -884,8 +1533,9 @@ void RegisterStatus(CLI::App& InApp) {
 
     cmd->callback([=]() {
         auto t_start = std::chrono::steady_clock::now();
-        if (*format != "table" && *format != "json" && *format != "markdown") {
-            std::cerr << "Error: invalid --format value: " << *format << " (expected table|json|markdown)\n";
+        const auto effectiveFormat = *json ? std::string{"json"} : (*summary ? std::string{"summary"} : *format);
+        if (effectiveFormat != "table" && effectiveFormat != "json" && effectiveFormat != "markdown" && effectiveFormat != "summary") {
+            std::cerr << "Error: invalid --format value: " << effectiveFormat << " (expected table|json|markdown|summary)\n";
             std::exit(1);
         }
 
@@ -899,7 +1549,26 @@ void RegisterStatus(CLI::App& InApp) {
                 std::exit(1);
             }
         }
-        
+
+        if (*recursive || *json || *summary || effectiveFormat == "summary") {
+            const auto snapshot = BuildRecursiveStatusSnapshot(
+                root,
+                !*noCache,
+                *refreshCache && !*noUnregisteredScan,
+                *noUnregisteredScan ? 0 : *unregisteredDepth,
+                *jobs);
+            const auto rendered = effectiveFormat == "json"
+                ? FormatRecursiveStatusJson(snapshot)
+                : FormatRecursiveStatusSummary(snapshot);
+            if (!output->empty()) {
+                std::ofstream out(*output, std::ios::out | std::ios::binary | std::ios::trunc);
+                out << rendered;
+            } else {
+                std::cout << rendered << '\n';
+            }
+            return;
+        }
+         
         auto t_resolve = std::chrono::steady_clock::now();
 
         workspace::DiscoverOptions options;

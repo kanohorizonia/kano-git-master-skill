@@ -417,37 +417,15 @@ auto SelfBinaryPath() -> std::string {
 }
 
 auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<std::filesystem::path> {
-    // Always use DiscoverRepos with fresh discovery to ensure consistency between
-    // fingerprint computation and manifest loading. Previously this used manifest->repos
-    // when available, but manifest and discoveryCache can diverge, causing workspace
-    // state drift. Force fresh discovery (useCache=false) to avoid cache inconsistencies.
-    // Note: This version also includes DiscoverRegisteredPathsRecursive for completeness.
-    const auto root = std::filesystem::weakly_canonical(InRoot).lexically_normal();
-    workspace::DiscoverOptions options;
+    workspace::WorkspaceInventoryOptions options;
     options.rootDir = InRoot;
-    options.maxDepth = 12;
+    options.unregisteredDepth = 3;
     options.scope = workspace::DiscoverScope::Full;
-    options.useCache = false;  // Force fresh discovery for fingerprint stability
-    options.refreshCache = true; // Update cache after discovery
-    options.incremental = false;
+    options.useCache = false;
+    options.refreshCache = true;
     options.metadataLevel = "minimal";
-    const auto discovery = workspace::DiscoverRepos(options);
-    std::vector<std::filesystem::path> repos;
-    repos.reserve(discovery.repos.size() + 4);
-    repos.push_back(root);
-    for (const auto& repo : discovery.repos) {
-        const auto p = repo.path.lexically_normal();
-        if (workspace::GetSubmoduleConfig(InRoot, p, "kog-commit") == "false") {
-            continue;
-        }
-        repos.push_back(p);
-    }
-    for (const auto& repo : DiscoverRegisteredPathsRecursive(root)) {
-        if (workspace::GetSubmoduleConfig(InRoot, repo, "kog-commit") == "false") {
-            continue;
-        }
-        repos.push_back(repo);
-    }
+    options.includeTrustedUnregistered = true;
+    auto repos = workspace::DiscoverWorkspaceRepoPaths(options, workspace::WorkspacePolicyFilter::Commit);
     if (repos.empty()) {
         repos.push_back(InRoot.lexically_normal());
     }
@@ -1304,7 +1282,9 @@ auto HumanAutoPlanLooksDeterministic(const std::filesystem::path& InPlanPath,
     bool hasCommitItems = false;
     bool hasLikelyAiContent = false;
     const auto commitArray = ExtractArrayBodyForKey(*stages, "commit").value_or(std::string{});
-    const std::regex fallbackMessagePattern(R"(^chore\(.+\): apply workspace updates \([0-9]+ files?\)$)", std::regex::icase);
+    const std::regex fallbackMessagePattern(
+        R"(^chore\(.+\): apply( workspace)? updates \([0-9]+ files?\)$)",
+        std::regex::icase);
     for (const auto& repoObj : SplitTopLevelObjects(commitArray)) {
         const auto commits = ExtractArrayBodyForKey(repoObj, "commits").value_or(std::string{});
         for (const auto& commitObj : SplitTopLevelObjects(commits)) {
@@ -1314,7 +1294,9 @@ auto HumanAutoPlanLooksDeterministic(const std::filesystem::path& InPlanPath,
             const auto commitReason = ToLower(
                 commitReview.has_value() ? ExtractStringField(*commitReview, "reason").value_or("") : std::string{});
             const bool isFallbackMessage = std::regex_match(msg, fallbackMessagePattern);
-            const bool isFallbackReason = commitReason.find("seeded by plan commit-seed") != std::string::npos;
+            const bool isFallbackReason =
+                commitReason.find("seeded by plan commit-seed") != std::string::npos ||
+                commitReason.find("seeded from current dirty status") != std::string::npos;
             const bool isPlaceholder = msg.find("replace-with-") != std::string::npos ||
                                        commitReason.find("replace-with-") != std::string::npos;
             if (!isFallbackMessage && !isFallbackReason && !isPlaceholder) {
@@ -1690,6 +1672,40 @@ auto IsGitlinkPathInHead(const std::filesystem::path& InRepoRoot, const std::str
     return out.rfind("160000 ", 0) == 0;
 }
 
+auto IsRegisteredSubmodulePath(const std::filesystem::path& InRepoRoot, const std::string& InPath) -> bool {
+    const auto normalizedPath = Trim(InPath);
+    if (normalizedPath.empty()) {
+        return false;
+    }
+
+    const auto config = shell::ExecuteCommand(
+        "git",
+        {"config", "-f", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$"},
+        shell::ExecMode::Capture,
+        InRepoRoot);
+    if (config.exitCode != 0) {
+        return false;
+    }
+
+    std::istringstream iss(config.stdoutStr);
+    std::string line;
+    while (std::getline(iss, line)) {
+        line = Trim(line);
+        if (line.empty()) {
+            continue;
+        }
+        const auto sp = line.find(' ');
+        if (sp == std::string::npos || sp + 1 >= line.size()) {
+            continue;
+        }
+        const auto submodulePath = Trim(line.substr(sp + 1));
+        if (!submodulePath.empty() && submodulePath == normalizedPath) {
+            return true;
+        }
+    }
+    return false;
+}
+
 auto CollectGitlinkOnlyChangedPaths(const std::filesystem::path& InRepoRoot) -> std::vector<std::string> {
     const auto status = shell::ExecuteCommand("git", {"status", "--porcelain"}, shell::ExecMode::Capture, InRepoRoot);
     if (status.exitCode != 0) {
@@ -1704,6 +1720,9 @@ auto CollectGitlinkOnlyChangedPaths(const std::filesystem::path& InRepoRoot) -> 
         return {};
     }
     for (const auto& path : changedPaths) {
+        if (!IsRegisteredSubmodulePath(InRepoRoot, path)) {
+            return {};
+        }
         if (!IsGitlinkPathInHead(InRepoRoot, path)) {
             return {};
         }
@@ -2536,71 +2555,71 @@ void RegisterCommitPush(CLI::App& InApp) {
                     std::exit(postCommitResult.exitCode);
                 }
             }
-
-            std::cout << "=== commit-push stage: push ===\n";
-            int pushExitCode = 0;
-            {
-                SCOPED_TIMING_LOG("commit-push.push");
-                if (!repoList.empty()) {
-                    std::vector<std::string> pushArgs = {"push", "--repos", JoinReposCsv(repoList), "--no-recursive"};
-                    if (*dryRun) {
-                        pushArgs.push_back("--dry-run");
-                    }
-                    if (*profile) {
-                        pushArgs.push_back("--profile");
-                    }
-                    if (*forceWithLease) {
-                        pushArgs.push_back("--force-with-lease");
-                    }
-                    if (*noVerify) {
-                        pushArgs.push_back("--no-verify");
-                    }
-                    if (*verbose) {
-                        pushArgs.push_back("--verbose");
-                    }
-                    if (!remote->empty()) {
-                        pushArgs.push_back("--remote");
-                        pushArgs.push_back(*remote);
-                    }
-                    const auto pushResult = shell::ExecuteCommand(SelfBinaryPath(), pushArgs, shell::ExecMode::PassThrough, workspaceRoot);
-                    pushExitCode = pushResult.exitCode;
-                } else {
-                    // Keep commit-push convergence deterministic and avoid the known
-                    // parallel push worker hang path. Standalone `kog push` still exposes
-                    // configurable parallelism for operator-driven use.
-                    pushExitCode = RunPushNativeSimple(
-                        workspaceRoot,
-                        !effectiveNoRecursive,
-                        *dryRun,
-                        *profile,
-                        *forceWithLease,
-                        *noVerify,
-                        1,
-                        *verbose,
-                        *remote);
-                }
-            }
-
-            if (hasCommitPlan) {
-                std::string stampError;
-                const auto planPath = std::filesystem::path(normalizedCommitPlanFile).lexically_normal();
-                std::error_code planEc;
-                const bool planFileExists = std::filesystem::exists(planPath, planEc) && !planEc;
-                if (hasWorkingChanges && planFileExists && !StampCommitPlanExecutedAt(planPath, &stampError)) {
-                    std::cerr << "Warning: failed to stamp plan executed_at_utc: "
-                              << planPath.generic_string();
-                    if (!stampError.empty()) {
-                        std::cerr << " (" << stampError << ")";
-                    }
-                    std::cerr << "\n";
-                }
-                if (hasWorkingChanges && planFileExists) {
-                    PrintExecutedPlanSummary(planPath, 10);
-                }
-            }
-
-            std::exit(pushExitCode);
         }
+
+        std::cout << "=== commit-push stage: push ===\n";
+        int pushExitCode = 0;
+        {
+            SCOPED_TIMING_LOG("commit-push.push");
+            if (!repoList.empty()) {
+                std::vector<std::string> pushArgs = {"push", "--repos", JoinReposCsv(repoList), "--no-recursive"};
+                if (*dryRun) {
+                    pushArgs.push_back("--dry-run");
+                }
+                if (*profile) {
+                    pushArgs.push_back("--profile");
+                }
+                if (*forceWithLease) {
+                    pushArgs.push_back("--force-with-lease");
+                }
+                if (*noVerify) {
+                    pushArgs.push_back("--no-verify");
+                }
+                if (*verbose) {
+                    pushArgs.push_back("--verbose");
+                }
+                if (!remote->empty()) {
+                    pushArgs.push_back("--remote");
+                    pushArgs.push_back(*remote);
+                }
+                const auto pushResult = shell::ExecuteCommand(SelfBinaryPath(), pushArgs, shell::ExecMode::PassThrough, workspaceRoot);
+                pushExitCode = pushResult.exitCode;
+            } else {
+                // Keep commit-push convergence deterministic and avoid the known
+                // parallel push worker hang path. Standalone `kog push` still exposes
+                // configurable parallelism for operator-driven use.
+                pushExitCode = RunPushNativeSimple(
+                    workspaceRoot,
+                    !effectiveNoRecursive,
+                    *dryRun,
+                    *profile,
+                    *forceWithLease,
+                    *noVerify,
+                    1,
+                    *verbose,
+                    *remote);
+            }
+        }
+
+        if (hasCommitPlan) {
+            std::string stampError;
+            const auto planPath = std::filesystem::path(normalizedCommitPlanFile).lexically_normal();
+            std::error_code planEc;
+            const bool planFileExists = std::filesystem::exists(planPath, planEc) && !planEc;
+            if (hasWorkingChanges && planFileExists && !StampCommitPlanExecutedAt(planPath, &stampError)) {
+                std::cerr << "Warning: failed to stamp plan executed_at_utc: "
+                          << planPath.generic_string();
+                if (!stampError.empty()) {
+                    std::cerr << " (" << stampError << ")";
+                }
+                std::cerr << "\n";
+            }
+            if (hasWorkingChanges && planFileExists) {
+                PrintExecutedPlanSummary(planPath, 10);
+            }
+        }
+
+        std::exit(pushExitCode);
     });
 }
 

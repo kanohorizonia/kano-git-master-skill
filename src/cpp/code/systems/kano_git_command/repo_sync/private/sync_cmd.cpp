@@ -14,14 +14,19 @@
 #include <format>
 #include <cstdlib>
 #include <iostream>
+#include <mutex>
 #include <regex>
 #include <optional>
 #include <set>
 #include <sstream>
 #include <string>
+#include <thread>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 #include <fstream>
+
+#include "repo_operation_scheduler.hpp"
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -40,6 +45,9 @@ struct SyncPlan {
     std::string remote;
     std::string targetBranch;
     std::string branchSource;
+    std::string kogSyncPolicy;
+    std::filesystem::path registrationRelativeTo;
+    std::vector<std::filesystem::path> dependencies;
 };
 
 enum class BranchMode {
@@ -171,10 +179,14 @@ auto RunSelfCppBuild(const std::filesystem::path& InSelfRepoRoot) -> int {
         return 1;
     }
 
+    std::error_code relEc;
+    const auto relativeScript = std::filesystem::relative(buildScript, InSelfRepoRoot, relEc);
+    const auto scriptArg = relEc ? buildScript.generic_string() : relativeScript.generic_string();
+
     std::cout << "[sync] self repo C++ changes detected; running build: " << buildScript.generic_string() << "\n";
     const auto run = shell::ExecuteCommand(
         "bash",
-        {buildScript.generic_string()},
+        {scriptArg},
         shell::ExecMode::PassThrough,
         InSelfRepoRoot);
     if (run.exitCode != 0) {
@@ -205,6 +217,31 @@ auto ToLower(std::string InValue) -> std::string {
         return static_cast<char>(std::tolower(ch));
     });
     return InValue;
+}
+
+auto IsFalsePolicy(std::string InValue) -> bool {
+    InValue = ToLower(Trim(std::move(InValue)));
+    return InValue == "false" || InValue == "0" || InValue == "no" || InValue == "off" || InValue == "disabled";
+}
+
+auto RepoPathKey(const std::filesystem::path& InPath) -> std::string {
+    std::error_code ec;
+    auto path = std::filesystem::weakly_canonical(InPath, ec);
+    if (ec) {
+        path = std::filesystem::absolute(InPath, ec);
+    }
+    if (ec) {
+        path = InPath;
+    }
+    auto key = path.lexically_normal().generic_string();
+    while (key.size() > 1 && key.back() == '/') {
+        key.pop_back();
+    }
+#if defined(_WIN32)
+    return ToLower(key);
+#else
+    return key;
+#endif
 }
 
 auto IsWindowsReservedDeviceComponent(std::string InComponent) -> bool {
@@ -814,6 +851,28 @@ auto RelativePathDepth(const std::filesystem::path& InRoot, const std::filesyste
         return static_cast<std::size_t>(std::distance(InPath.begin(), InPath.end()));
     }
     return static_cast<std::size_t>(std::distance(rel.begin(), rel.end()));
+}
+
+auto IsParentPath(const std::filesystem::path& InParent, const std::filesystem::path& InChild) -> bool {
+    const auto parent = InParent.lexically_normal().generic_string();
+    const auto child = InChild.lexically_normal().generic_string();
+    if (parent.empty() || child.empty() || parent == child) {
+        return false;
+    }
+    return child.rfind(parent + "/", 0) == 0;
+}
+
+auto AddUniqueDependency(std::vector<std::filesystem::path>* OutDependencies, const std::filesystem::path& InDependency) -> void {
+    if (OutDependencies == nullptr || InDependency.empty()) {
+        return;
+    }
+    const auto dependencyKey = RepoPathKey(InDependency);
+    const bool exists = std::any_of(OutDependencies->begin(), OutDependencies->end(), [&](const auto& candidate) {
+        return RepoPathKey(candidate) == dependencyKey;
+    });
+    if (!exists) {
+        OutDependencies->push_back(InDependency);
+    }
 }
 
 auto ResolveStableRef(const std::filesystem::path& InRoot, const std::filesystem::path& InRepo, const std::string& InCurrentBranch, const std::string& InRelPath) -> std::string {
@@ -1501,57 +1560,111 @@ auto ResolveUnmergedByTheirs(const std::filesystem::path& InRepo, bool InDryRun)
     return CollectUnmergedPaths(InRepo).empty();
 }
 
+auto GitmodulesBranchForPathFromBlobRef(
+    const std::filesystem::path& InParentRepoPath,
+    const std::string& InBlobRef,
+    const std::filesystem::path& InChildPath) -> std::optional<std::string> {
+    std::error_code ec;
+    const auto target = std::filesystem::weakly_canonical(InChildPath);
+    const auto parent = std::filesystem::weakly_canonical(InParentRepoPath);
+    const auto rel = std::filesystem::relative(target, parent, ec);
+    if (ec) {
+        return std::nullopt;
+    }
+    const auto relPath = rel.generic_string();
+    const auto blobOpt = std::format("--blob={}", InBlobRef);
+    const auto pathResult = GitCapture(InParentRepoPath, {"config", blobOpt, "--get-regexp", "^submodule\\..*\\.path$"});
+    if (pathResult.exitCode != 0) {
+        return std::nullopt;
+    }
+    std::istringstream iss(pathResult.stdoutStr);
+    std::string line;
+    while (std::getline(iss, line)) {
+        line = Trim(line);
+        if (line.empty()) {
+            continue;
+        }
+        const auto sp = line.find(' ');
+        if (sp == std::string::npos || sp + 1 >= line.size()) {
+            continue;
+        }
+        const auto key = line.substr(0, sp);
+        const auto value = line.substr(sp + 1);
+        if (value != relPath) {
+            continue;
+        }
+        const std::string suffix = ".path";
+        if (!key.ends_with(suffix)) {
+            continue;
+        }
+        const auto prefix = key.substr(0, key.size() - suffix.size());
+        const auto branchResult = GitCapture(InParentRepoPath, {"config", blobOpt, "--get", prefix + ".branch"});
+        if (branchResult.exitCode == 0) {
+            const auto branch = Trim(branchResult.stdoutStr);
+            if (!branch.empty()) {
+                return branch;
+            }
+        }
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+
 auto BuildSyncPlans(
     const std::filesystem::path& InRoot,
     const std::string& InPreferredRemote,
     int InMaxDepth,
     bool InNoCache,
     bool InRefreshCache) -> std::pair<std::vector<SyncPlan>, std::string> {
+    (void)InMaxDepth;
     const auto root = std::filesystem::weakly_canonical(InRoot);
 
-    std::vector<std::filesystem::path> manifestRepoPaths;
-    if (!InNoCache) {
-        std::string manifestReason;
-        if (const auto manifest = workspace::LoadTrustedWorkspaceManifest(root, &manifestReason); manifest.has_value()) {
-            for (const auto& repo : manifest->repos) {
-                manifestRepoPaths.push_back(repo.path.lexically_normal());
-            }
-        }
-    }
-
-    const auto registeredPaths = DiscoverRegisteredPathsRecursive(root, manifestRepoPaths);
-
-    std::vector<std::filesystem::path> discoveredPaths;
-    discoveredPaths.reserve(registeredPaths.size() + manifestRepoPaths.size() + 1);
-    discoveredPaths.push_back(root);
-    for (const auto& registeredPath : registeredPaths) {
-        discoveredPaths.push_back(std::filesystem::path(registeredPath));
-    }
-    for (const auto& manifestPath : manifestRepoPaths) {
-        discoveredPaths.push_back(manifestPath);
-    }
-
-    std::sort(discoveredPaths.begin(), discoveredPaths.end(), [](const auto& A, const auto& B) {
-        return A.generic_string() < B.generic_string();
-    });
-    discoveredPaths.erase(std::unique(discoveredPaths.begin(), discoveredPaths.end(), [](const auto& A, const auto& B) {
-        return A.generic_string() == B.generic_string();
-    }), discoveredPaths.end());
+    workspace::WorkspaceInventoryOptions inventoryOptions;
+    inventoryOptions.rootDir = root;
+    inventoryOptions.unregisteredDepth = 2;
+    inventoryOptions.useCache = !InNoCache;
+    inventoryOptions.refreshCache = InRefreshCache;
+    inventoryOptions.metadataLevel = "minimal";
+    inventoryOptions.scope = workspace::DiscoverScope::RegisteredOnly;
+    inventoryOptions.includeTrustedUnregistered = true;
+    auto discoveredRepos = workspace::DiscoverWorkspaceInventory(inventoryOptions);
 
     std::vector<SyncPlan> plans;
-    plans.reserve(discoveredPaths.size());
+    plans.reserve(discoveredRepos.size());
 
-    for (const auto& discoveredPath : discoveredPaths) {
-        const auto repoPath = std::filesystem::weakly_canonical(discoveredPath);
+    for (const auto& discoveredRepo : discoveredRepos) {
+        const auto repoPath = std::filesystem::weakly_canonical(discoveredRepo.path);
+        if (IsFalsePolicy(discoveredRepo.kogSyncPolicy)) {
+            plans.push_back(SyncPlan{
+                .path = repoPath,
+                .type = discoveredRepo.type,
+                .remote = {},
+                .targetBranch = {},
+                .branchSource = "commandPolicy.sync=false / kog-sync=false",
+                .kogSyncPolicy = discoveredRepo.kogSyncPolicy,
+                .registrationRelativeTo = discoveredRepo.registrationRelativeTo,
+                .dependencies = discoveredRepo.dependencies,
+            });
+            continue;
+        }
         const auto remote = ResolveRemote(repoPath, InPreferredRemote);
         if (remote.empty()) {
-            std::cerr << "WARN: Skip repo without remotes: " << repoPath.generic_string() << "\n";
+            plans.push_back(SyncPlan{
+                .path = repoPath,
+                .type = discoveredRepo.type,
+                .remote = {},
+                .targetBranch = {},
+                .branchSource = "missing remote",
+                .kogSyncPolicy = discoveredRepo.kogSyncPolicy,
+                .registrationRelativeTo = discoveredRepo.registrationRelativeTo,
+                .dependencies = discoveredRepo.dependencies,
+            });
             continue;
         }
 
         const auto current = CurrentBranch(repoPath);
         const bool isRoot = (repoPath == root);
-        const bool isRegistered = registeredPaths.contains(repoPath.generic_string());
+        const bool isRegistered = discoveredRepo.type == "registered";
 
         std::string branchSource;
         std::string targetBranch;
@@ -1583,16 +1696,28 @@ auto BuildSyncPlans(
         }
 
         if (targetBranch.empty()) {
-            std::cerr << "ERROR: Could not determine target branch for repo: " << repoPath.generic_string() << "\n";
+            plans.push_back(SyncPlan{
+                .path = repoPath,
+                .type = discoveredRepo.type,
+                .remote = remote,
+                .targetBranch = {},
+                .branchSource = "unresolved target branch",
+                .kogSyncPolicy = discoveredRepo.kogSyncPolicy,
+                .registrationRelativeTo = discoveredRepo.registrationRelativeTo,
+                .dependencies = discoveredRepo.dependencies,
+            });
             continue;
         }
 
         plans.push_back(SyncPlan{
             .path = repoPath,
-            .type = isRoot ? "root" : (isRegistered ? "registered" : "unregistered"),
+            .type = discoveredRepo.type,
             .remote = remote,
             .targetBranch = targetBranch,
             .branchSource = branchSource,
+            .kogSyncPolicy = discoveredRepo.kogSyncPolicy,
+            .registrationRelativeTo = discoveredRepo.registrationRelativeTo,
+            .dependencies = discoveredRepo.dependencies,
         });
     }
 
@@ -1604,6 +1729,36 @@ auto BuildSyncPlans(
         }
         return A.path.generic_string() < B.path.generic_string();
     });
+
+    // Refresh registered child branches from parent's remote tracking ref.
+    // This allows gitmodules branch updates to be seen even when children run before parent.
+    for (auto& plan : plans) {
+        if (plan.type != "registered" || plan.targetBranch.empty()) {
+            continue;
+        }
+        const auto parentPath = plan.registrationRelativeTo.empty() || plan.registrationRelativeTo == "."
+            ? root
+            : std::filesystem::weakly_canonical(plan.registrationRelativeTo);
+        std::string parentBranch;
+        for (const auto& p : plans) {
+            if (std::filesystem::weakly_canonical(p.path) == parentPath) {
+                parentBranch = p.targetBranch;
+                break;
+            }
+        }
+        if (parentBranch.empty()) {
+            parentBranch = CurrentBranch(parentPath);
+        }
+        if (parentBranch.empty()) {
+            continue;
+        }
+        const auto blobRef = std::format("refs/remotes/{}/{}:.gitmodules", InPreferredRemote, parentBranch);
+        const auto remoteRefBranch = GitmodulesBranchForPathFromBlobRef(parentPath, blobRef, plan.path);
+        if (remoteRefBranch.has_value() && !remoteRefBranch->empty() && *remoteRefBranch != plan.targetBranch) {
+            plan.targetBranch = *remoteRefBranch;
+            plan.branchSource = "registered .gitmodules branch (refreshed)";
+        }
+    }
 
     return {plans, "registered-only-scan"};
 }
@@ -1663,6 +1818,98 @@ auto RestoreWorkingTreeFileSnapshots(const std::filesystem::path& InRepo,
     return true;
 }
 
+auto ClassifySyncFailure(const shell::ExecResult& InResult, const std::string& InFallback = "FAILED_SYNC") -> std::string {
+    const auto merged = ToLower(InResult.stdoutStr + "\n" + InResult.stderrStr);
+    if (merged.find("authentication failed") != std::string::npos ||
+        merged.find("permission denied") != std::string::npos ||
+        merged.find("publickey") != std::string::npos ||
+        merged.find("access denied") != std::string::npos ||
+        merged.find("unauthorized") != std::string::npos ||
+        merged.find("could not read username") != std::string::npos) {
+        return "FAILED_AUTH";
+    }
+    if (merged.find("could not resolve host") != std::string::npos ||
+        merged.find("failed to connect") != std::string::npos ||
+        merged.find("connection timed out") != std::string::npos ||
+        merged.find("network is unreachable") != std::string::npos ||
+        merged.find("couldn't connect") != std::string::npos) {
+        return "FAILED_CONNECTION";
+    }
+    if (merged.find("does not appear to be a git repository") != std::string::npos ||
+        merged.find("repository not found") != std::string::npos ||
+        merged.find("no such remote") != std::string::npos) {
+        return "FAILED_MISSING_REMOTE";
+    }
+    return InFallback;
+}
+
+struct SyncSummaryEntry {
+    std::filesystem::path repo;
+    std::string outcome;
+    std::string type;
+    std::string remote;
+    std::string branch;
+    std::string reason;
+};
+
+auto MakeSyncSchedulerInputs(const std::vector<SyncPlan>& InPlans) -> std::vector<workspace::RepoOperationInput> {
+    std::unordered_map<std::string, std::size_t> byPath;
+    byPath.reserve(InPlans.size());
+    for (std::size_t idx = 0; idx < InPlans.size(); ++idx) {
+        byPath.emplace(RepoPathKey(InPlans[idx].path), idx);
+    }
+
+    std::vector<workspace::RepoOperationInput> inputs;
+    inputs.reserve(InPlans.size());
+    for (const auto& plan : InPlans) {
+        inputs.push_back(workspace::RepoOperationInput{
+            .id = RepoPathKey(plan.path),
+            .path = plan.path,
+            .type = plan.type,
+            .dependencies = {},
+        });
+    }
+
+    std::unordered_set<std::string> childrenWithGraphParent;
+    for (const auto& child : InPlans) {
+        if (child.registrationRelativeTo.empty() || child.registrationRelativeTo == ".") {
+            continue;
+        }
+        const auto parentIt = byPath.find(RepoPathKey(child.registrationRelativeTo));
+        const auto childIt = byPath.find(RepoPathKey(child.path));
+        if (parentIt == byPath.end() || childIt == byPath.end() || parentIt->second == childIt->second) {
+            continue;
+        }
+        AddUniqueDependency(&inputs[parentIt->second].dependencies, child.path);
+        childrenWithGraphParent.insert(RepoPathKey(child.path));
+    }
+
+    for (std::size_t parentIdx = 0; parentIdx < InPlans.size(); ++parentIdx) {
+        for (std::size_t childIdx = 0; childIdx < InPlans.size(); ++childIdx) {
+            if (parentIdx == childIdx) {
+                continue;
+            }
+            if (!IsParentPath(InPlans[parentIdx].path, InPlans[childIdx].path)) {
+                continue;
+            }
+            if (childrenWithGraphParent.contains(RepoPathKey(InPlans[childIdx].path))) {
+                continue;
+            }
+            AddUniqueDependency(&inputs[parentIdx].dependencies, InPlans[childIdx].path);
+        }
+    }
+
+    return inputs;
+}
+
+auto DetectDefaultSyncJobs() -> int {
+    const unsigned int cores = std::thread::hardware_concurrency();
+    if (cores == 0) {
+        return 1;
+    }
+    return static_cast<int>(cores);
+}
+
 auto RunNativeOriginLatestSync(
     const std::filesystem::path& InRepoRoot,
     const std::string& InRemote,
@@ -1672,10 +1919,16 @@ auto RunNativeOriginLatestSync(
     bool InRefreshCache,
     bool InRecursive,
     bool InAutoStashLocalChanges,
-    bool InCleanupStaleLocks) -> int {
+    bool InCleanupStaleLocks,
+    int InJobs) -> int {
     std::vector<SyncPlan> plans;
     std::string mode;
     try {
+        // Pre-fetch root to update remote tracking refs so BuildSyncPlans can read refreshed
+        // .gitmodules branch config from the remote even when children run before parent.
+        if (InRecursive && !InDryRun) {
+            (void)GitCapture(InRepoRoot, {"fetch", InRemote, "--prune", "--quiet"});
+        }
         auto planResult = BuildSyncPlans(InRepoRoot, InRemote, InMaxDepth, InNoCache, InRefreshCache);
         plans = std::move(planResult.first);
         mode = std::move(planResult.second);
@@ -1712,24 +1965,87 @@ auto RunNativeOriginLatestSync(
 
     const auto root = std::filesystem::weakly_canonical(InRepoRoot);
     const auto selfRepoRoot = ResolveSelfRepoRoot(root);
-    int failures = 0;
-    int succeeded = 0;
-    std::vector<std::pair<std::string, std::string>> failureDetails;
-    bool shouldBuildSelfCpp = false;
+    std::unordered_map<std::string, SyncPlan> plansByPath;
+    plansByPath.reserve(plans.size());
     for (const auto& plan : plans) {
+        plansByPath.emplace(RepoPathKey(plan.path), plan);
+    }
+
+    bool shouldBuildSelfCpp = false;
+    std::mutex selfBuildMutex;
+
+    auto runOnePlan = [&](const workspace::RepoOperationInput& operation) -> workspace::RepoOperationWorkerResult {
+        workspace::RepoOperationWorkerResult result;
+        const auto planIt = plansByPath.find(RepoPathKey(operation.path));
+        if (planIt == plansByPath.end()) {
+            result.status = workspace::RepoOperationStatus::Failed;
+            result.exitCode = 1;
+            result.failureCategory = "FAILED_SYNC";
+            result.message = "repo missing from sync plan";
+            return result;
+        }
+
+        const auto& plan = planIt->second;
         const auto rel = std::filesystem::relative(plan.path, InRepoRoot).generic_string();
         const auto name = (rel.empty() || rel == ".") ? "." : rel;
+        std::ostringstream out;
+        std::ostringstream err;
+
+        auto finishSuccess = [&](const std::string& outcome, const std::string& reason) {
+            result.status = workspace::RepoOperationStatus::Succeeded;
+            result.exitCode = 0;
+            result.failureCategory.clear();
+            result.message = reason;
+            result.stdoutText = out.str();
+            result.stderrText = err.str();
+            return result;
+        };
+
+        auto finishSkipped = [&](const std::string& reason) {
+            result.status = workspace::RepoOperationStatus::Skipped;
+            result.exitCode = 0;
+            result.skipReason = reason;
+            result.message = reason;
+            result.stdoutText = out.str();
+            result.stderrText = err.str();
+            return result;
+        };
+
+        auto finishFailed = [&](const std::string& category, const std::string& reason) {
+            result.status = workspace::RepoOperationStatus::Failed;
+            result.exitCode = 1;
+            result.failureCategory = category;
+            result.message = reason;
+            result.stdoutText = out.str();
+            result.stderrText = err.str();
+            return result;
+        };
+
+        out << (InDryRun ? "[DRY RUN] " : "") << "Repo: " << name << "\n";
+        out << (InDryRun ? "[DRY RUN] " : "") << "Taxonomy: " << plan.type << "\n";
+
+        if (IsFalsePolicy(plan.kogSyncPolicy)) {
+            const std::string reason = "commandPolicy.sync=false / kog-sync=false";
+            out << "[" << name << "] SKIPPED_BY_POLICY: " << reason << "\n";
+            return finishSkipped(reason);
+        }
+
+        if (plan.remote.empty()) {
+            const std::string reason = "no usable sync remote found";
+            err << "[" << name << "] FAILED_MISSING_REMOTE: " << reason << "\n";
+            return finishFailed("FAILED_MISSING_REMOTE", reason);
+        }
+
+        if (plan.targetBranch.empty()) {
+            const std::string reason = "target branch could not be resolved";
+            err << "[" << name << "] FAILED_MISSING_REMOTE: " << reason << "\n";
+            return finishFailed("FAILED_MISSING_REMOTE", reason);
+        }
+
         std::string targetBranch = plan.targetBranch;
         std::string branchSource = plan.branchSource;
         const bool isSelfRepo = selfRepoRoot.has_value() && std::filesystem::weakly_canonical(plan.path) == *selfRepoRoot;
         const auto headBeforeSync = isSelfRepo ? CurrentHeadCommit(plan.path) : std::string{};
-        if (plan.type == "registered") {
-            const auto refreshed = GitmodulesBranchForPath(root, plan.path);
-            if (refreshed.has_value() && !refreshed->empty() && *refreshed != targetBranch) {
-                targetBranch = *refreshed;
-                branchSource = "registered .gitmodules branch (refreshed)";
-            }
-        }
         const auto status = GitCapture(plan.path, {"status", "--porcelain"});
         const bool hasLocalChanges = status.exitCode == 0 && !Trim(status.stdoutStr).empty();
         bool stashCreated = false;
@@ -1741,81 +2057,78 @@ auto RunNativeOriginLatestSync(
                                                         : std::vector<std::string>{};
         const auto stashArgs = BuildSyncStashArgs(reservedPaths);
 
-        std::cout << (InDryRun ? kano::terminal::Wrap("[DRY RUN] ", kano::terminal::Color::Yellow) : "") 
-                  << "Repo: " << kano::terminal::Wrap(name, kano::terminal::Color::BoldCyan) << "\n";
-        std::cout << (InDryRun ? kano::terminal::Wrap("[DRY RUN] ", kano::terminal::Color::Yellow) : "") 
-                  << "Branch source: " << kano::terminal::Wrap(branchSource, kano::terminal::Color::BoldWhite) << "\n";
+        out << (InDryRun ? "[DRY RUN] " : "") << "Branch source: " << branchSource << "\n";
 
         if (hasLocalChanges) {
             if (InAutoStashLocalChanges) {
                 if (InDryRun) {
-                    std::cout << "[DRY RUN] Would run: git stash push -u -m kano-native-sync-autostash";
+                    out << "[DRY RUN] Would run: git stash push -u -m kano-native-sync-autostash";
                     if (!reservedPaths.empty()) {
-                        std::cout << " -- .";
+                        out << " -- .";
                         for (const auto& path : reservedPaths) {
-                            std::cout << " :(exclude)" << path;
+                            out << " :(exclude)" << path;
                         }
                     }
-                    std::cout << "\n";
+                    out << "\n";
                     stashCreated = true;
                 } else {
-                    MaybeWarnAboutReservedSyncPaths(plan.path, reservedPaths);
+                    if (!reservedPaths.empty()) {
+                        err << "[kog sync] warning: skipped Windows reserved path(s) in " << plan.path.generic_string() << "\n";
+                    }
                     auto stash = GitCapture(plan.path, stashArgs);
                     std::optional<IndexLockDiagnosis> indexLockDiagnosis;
                     if (stash.exitCode != 0 && IsIndexLockFailure(stash)) {
                         const auto diagnosis = DiagnoseIndexLock(plan.path);
                         indexLockDiagnosis = diagnosis;
-                        PrintIndexLockDiagnosis(name, diagnosis);
                         if (InCleanupStaleLocks) {
                             if (TryCleanupStaleIndexLock(name, diagnosis)) {
                                 stash = GitCapture(plan.path, stashArgs);
                             }
-                        } else if (diagnosis.lockExists && !diagnosis.activeGitProcessDetected) {
-                            std::cerr << "Hint: rerun with --cleanup-stale-locks to remove the stale index.lock automatically.\n";
                         }
                     }
                     if (stash.exitCode != 0 && !indexLockDiagnosis.has_value()) {
                         const auto diagnosis = DiagnoseIndexLock(plan.path);
                         if (diagnosis.lockExists) {
                             indexLockDiagnosis = diagnosis;
-                            PrintIndexLockDiagnosis(name, diagnosis);
                             if (InCleanupStaleLocks && !diagnosis.activeGitProcessDetected) {
                                 if (TryCleanupStaleIndexLock(name, diagnosis)) {
                                     stash = GitCapture(plan.path, stashArgs);
                                 }
-                            } else if (!diagnosis.activeGitProcessDetected) {
-                                std::cerr << "Hint: rerun with --cleanup-stale-locks to remove the stale index.lock automatically.\n";
                             }
                         }
                     }
                     if (stash.exitCode != 0) {
-                        std::cerr << kano::terminal::Wrap("ERROR:", kano::terminal::Color::BoldRed) << " failed to auto-stash local changes for " << kano::terminal::Wrap(name, kano::terminal::Color::BoldCyan) << "\n";
-                        failures += 1;
+                        err << "[" << name << "] FAILED_SYNC: failed to auto-stash local changes\n";
                         if (indexLockDiagnosis.has_value()) {
-                            failureDetails.emplace_back(name, DescribeIndexLockFailure(*indexLockDiagnosis, InCleanupStaleLocks));
-                        } else {
-                            failureDetails.emplace_back(name, "auto-stash failed");
+                            PrintIndexLockDiagnosis(name, *indexLockDiagnosis);
+                            return finishFailed("FAILED_SYNC", DescribeIndexLockFailure(*indexLockDiagnosis, InCleanupStaleLocks));
                         }
-                        continue;
+                        return finishFailed("FAILED_SYNC", "auto-stash failed");
                     }
 
                     const auto stashOut = Trim(stash.stdoutStr + "\n" + stash.stderrStr);
                     stashCreated = stashOut.find("No local changes to save") == std::string::npos;
                     if (stashCreated) {
-                        std::cout << kano::terminal::Wrap("Auto-stashed", kano::terminal::Color::BoldGreen) << " local changes for " << kano::terminal::Wrap(name, kano::terminal::Color::BoldCyan) << "\n";
+                        out << "Auto-stashed local changes for " << name << "\n";
                     }
                 }
             } else {
-                std::cerr << "ERROR: local changes detected for " << name << " (auto-stash disabled)\n";
-                failures += 1;
-                failureDetails.emplace_back(name, "local changes present and auto-stash disabled");
-                continue;
+                err << "[" << name << "] FAILED_SYNC: local changes detected (auto-stash disabled)\n";
+                return finishFailed("FAILED_SYNC", "local changes present and auto-stash disabled");
             }
         }
 
-        const auto fetch = GitCapture(plan.path, {"fetch", plan.remote, "--prune", "--tags"});
-        if (!InDryRun && fetch.exitCode != 0) {
-            std::cerr << "WARN: fetch failed for " << name << "\n";
+        if (InDryRun) {
+            out << "[DRY RUN] Would run: git fetch " << plan.remote << " --prune --tags\n";
+        } else {
+            const auto fetch = GitCapture(plan.path, {"fetch", plan.remote, "--prune", "--tags"});
+            if (fetch.exitCode != 0) {
+                out << fetch.stdoutStr;
+                err << fetch.stderrStr;
+                const auto category = ClassifySyncFailure(fetch, "FAILED_CONNECTION");
+                err << "[" << name << "] " << category << ": fetch failed\n";
+                return finishFailed(category, "fetch failed");
+            }
         }
 
         const auto hasLocal = GitCapture(plan.path, {"show-ref", "--verify", "--quiet", std::format("refs/heads/{}", targetBranch)}).exitCode == 0;
@@ -1829,32 +2142,31 @@ auto RunNativeOriginLatestSync(
         } else {
             if (plan.type == "unregistered") {
                 checkoutArgs = {"checkout", "-q", targetBranch};
-                std::cout << "WARN: Unregistered repo branch has no remote ref, keeping local branch: " << name << "\n";
+                out << "WARN: Unregistered repo branch has no remote ref, keeping local branch: " << name << "\n";
             } else {
                 std::string tagRef;
                 if (TryResolveTagRefForBranch(plan.path, targetBranch, &tagRef)) {
                     checkoutArgs = {"checkout", "-q", "-B", targetBranch, tagRef};
-                    std::cout << "INFO: Target branch missing for " << name << "; creating from tag " << tagRef << "\n";
+                    out << "INFO: Target branch missing for " << name << "; creating from tag " << tagRef << "\n";
                 } else {
-                    std::cerr << "ERROR: Target branch not found for " << name << "\n";
-                    failures += 1;
-                    failureDetails.emplace_back(name, "target branch and matching tag not found");
-                    if (!RestoreAutoStashIfNeeded(plan.path, name, stashCreated)) {
-                        failureDetails.emplace_back(name, "stash pop failed after target-branch lookup failure");
-                    } else if (stashCreated && !workingTreeSnapshots.empty()) {
-                        (void)RestoreWorkingTreeFileSnapshots(plan.path, workingTreeSnapshots, name);
+                    err << "[" << name << "] FAILED_MISSING_REMOTE: target branch and matching tag not found\n";
+                    err << "Target branch not found for " << name << "\n";
+                    if (stashCreated && !InDryRun) {
+                        const auto pop = GitCapture(plan.path, {"stash", "pop"});
+                        out << pop.stdoutStr;
+                        err << pop.stderrStr;
                     }
-                    continue;
+                    return finishFailed("FAILED_MISSING_REMOTE", "target branch and matching tag not found");
                 }
             }
         }
 
         if (InDryRun) {
-            std::cout << "[DRY RUN] Would run: git";
+            out << "[DRY RUN] Would run: git";
             for (const auto& arg : checkoutArgs) {
-                std::cout << " " << arg;
+                out << " " << arg;
             }
-            std::cout << "\n";
+            out << "\n";
             if (hasRemote) {
                 const auto rebaseTarget = std::format("{}/{}", plan.remote, targetBranch);
                 const auto aheadBehind = GitCapture(plan.path, {"rev-list", "--left-right", "--count", std::format("HEAD...{}", rebaseTarget)});
@@ -1866,40 +2178,44 @@ auto RunNativeOriginLatestSync(
                     if (iss >> aheadCount >> behindCount) {
                         shouldRebase = behindCount > 0;
                         if (!shouldRebase) {
-                            std::cout << "[DRY RUN] Skip rebase: local branch is not behind " << rebaseTarget << " (ahead=" << aheadCount << ", behind=" << behindCount << ")\n";
+                            out << "[DRY RUN] Skip rebase: local branch is not behind " << rebaseTarget << " (ahead=" << aheadCount << ", behind=" << behindCount << ")\n";
                         }
                     }
                 }
                 if (shouldRebase) {
-                    std::cout << "[DRY RUN] Would run: git rebase " << rebaseTarget << "\n";
+                    out << "[DRY RUN] Would run: git rebase " << rebaseTarget << "\n";
                 }
             } else {
-                std::cout << "[DRY RUN] Skip pull: missing remote branch " << plan.remote << "/" << plan.targetBranch << "\n";
+                out << "[DRY RUN] Skip pull: missing remote branch " << plan.remote << "/" << plan.targetBranch << "\n";
             }
             if (stashCreated) {
-                std::cout << "[DRY RUN] Would run: git stash pop\n";
+                out << "[DRY RUN] Would run: git stash pop\n";
             }
-            continue;
+            return finishSuccess("SYNCED_DRY_RUN", "dry-run planned sync");
         }
 
-        const auto checkout = GitPassThrough(plan.path, checkoutArgs);
+        const auto checkout = GitCapture(plan.path, checkoutArgs);
         if (checkout.exitCode != 0) {
-            std::cerr << kano::terminal::Wrap("ERROR:", kano::terminal::Color::BoldRed) << " checkout failed for " << kano::terminal::Wrap(name, kano::terminal::Color::BoldCyan) << "\n";
-            failures += 1;
-            failureDetails.emplace_back(name, "checkout failed");
-            if (!RestoreAutoStashIfNeeded(plan.path, name, stashCreated)) {
-                failureDetails.emplace_back(name, "stash pop failed after checkout failure");
-            } else if (stashCreated && !workingTreeSnapshots.empty()) {
-                (void)RestoreWorkingTreeFileSnapshots(plan.path, workingTreeSnapshots, name);
+            out << checkout.stdoutStr;
+            err << checkout.stderrStr;
+            err << "[" << name << "] FAILED_SYNC: checkout failed\n";
+            if (stashCreated) {
+                const auto pop = GitCapture(plan.path, {"stash", "pop"});
+                out << pop.stdoutStr;
+                err << pop.stderrStr;
             }
-            continue;
+            return finishFailed("FAILED_SYNC", "checkout failed");
         }
 
         if (hasRemote) {
-            if (!RecoverRebaseState(plan.path, name, InDryRun)) {
-                failures += 1;
-                failureDetails.emplace_back(name, "rebase state recovery failed");
-                continue;
+            if (HasRebaseInProgress(plan.path)) {
+                const auto abort = GitCapture(plan.path, {"rebase", "--abort"});
+                out << abort.stdoutStr;
+                err << abort.stderrStr;
+                if (abort.exitCode != 0) {
+                    err << "[" << name << "] SYNC_CONFLICT: rebase state recovery failed\n";
+                    return finishFailed("SYNC_CONFLICT", "rebase state recovery failed");
+                }
             }
 
             const auto rebaseTarget = std::format("{}/{}", plan.remote, targetBranch);
@@ -1912,67 +2228,119 @@ auto RunNativeOriginLatestSync(
                 if (iss >> aheadCount >> behindCount) {
                     shouldRebase = behindCount > 0;
                     if (!shouldRebase) {
-                        std::cout << "Skip rebase for " << kano::terminal::Wrap(name, kano::terminal::Color::BoldCyan) << ": local branch is not behind " << kano::terminal::Wrap(rebaseTarget, kano::terminal::Color::BoldWhite)
-                                  << " (ahead=" << aheadCount << ", behind=" << behindCount << ")\n";
+                        out << "Skip rebase for " << name << ": local branch is not behind " << rebaseTarget
+                            << " (ahead=" << aheadCount << ", behind=" << behindCount << ")\n";
                     }
                 }
             }
 
             if (shouldRebase) {
-                const auto rebase = GitPassThrough(plan.path, {"rebase", rebaseTarget});
+                const auto rebase = GitCapture(plan.path, {"rebase", rebaseTarget});
                 if (rebase.exitCode != 0) {
+                    out << rebase.stdoutStr;
+                    err << rebase.stderrStr;
                     if (HasRebaseInProgress(plan.path)) {
-                        std::cerr << kano::terminal::Wrap("ERROR:", kano::terminal::Color::BoldRed) << " rebase conflict detected for " << kano::terminal::Wrap(name, kano::terminal::Color::BoldCyan)
-                                  << "; stopping sync and aborting rebase for manual review\n";
-                        const auto abortRebase = GitPassThrough(plan.path, {"rebase", "--abort"});
+                        err << "[" << name << "] SYNC_CONFLICT: rebase conflict detected; aborting rebase for manual review\n";
+                        const auto abortRebase = GitCapture(plan.path, {"rebase", "--abort"});
+                        out << abortRebase.stdoutStr;
+                        err << abortRebase.stderrStr;
                         if (abortRebase.exitCode != 0) {
-                            std::cerr << "WARN: failed to abort rebase after conflict for " << name << "\n";
+                            err << "WARN: failed to abort rebase after conflict for " << name << "\n";
                         }
-                        failures += 1;
-                        failureDetails.emplace_back(name, "rebase conflict");
-                        if (!RestoreAutoStashIfNeeded(plan.path, name, stashCreated)) {
-                            failureDetails.emplace_back(name, "stash pop failed after rebase conflict");
-                        } else if (stashCreated && !workingTreeSnapshots.empty()) {
-                            (void)RestoreWorkingTreeFileSnapshots(plan.path, workingTreeSnapshots, name);
+                        if (stashCreated) {
+                            const auto pop = GitCapture(plan.path, {"stash", "pop"});
+                            out << pop.stdoutStr;
+                            err << pop.stderrStr;
                         }
-                        continue;
+                        return finishFailed("SYNC_CONFLICT", "rebase conflict");
                     }
-                    std::cerr << "ERROR: rebase failed for " << name << "\n";
-                    failures += 1;
-                    failureDetails.emplace_back(name, "rebase failed");
-                    if (!RestoreAutoStashIfNeeded(plan.path, name, stashCreated)) {
-                        failureDetails.emplace_back(name, "stash pop failed after rebase failure");
-                    } else if (stashCreated && !workingTreeSnapshots.empty()) {
-                        (void)RestoreWorkingTreeFileSnapshots(plan.path, workingTreeSnapshots, name);
+                    const auto category = ClassifySyncFailure(rebase, "FAILED_SYNC");
+                    err << "[" << name << "] " << category << ": rebase failed\n";
+                    if (stashCreated) {
+                        const auto pop = GitCapture(plan.path, {"stash", "pop"});
+                        out << pop.stdoutStr;
+                        err << pop.stderrStr;
                     }
-                    continue;
+                    return finishFailed(category, "rebase failed");
                 }
                 performedRebase = true;
             }
         }
 
-        if (!RestoreAutoStashIfNeeded(plan.path, name, stashCreated)) {
-            failures += 1;
-            failureDetails.emplace_back(name, "stash pop failed after sync");
-            continue;
+        if (stashCreated) {
+            const auto pop = GitCapture(plan.path, {"stash", "pop"});
+            out << pop.stdoutStr;
+            err << pop.stderrStr;
+            if (pop.exitCode != 0) {
+                err << "[" << name << "] FAILED_SYNC: stash pop failed after sync\n";
+                return finishFailed("FAILED_SYNC", "stash pop failed after sync");
+            }
+            out << "Restored auto-stash for " << name << "\n";
         }
         if (stashCreated && !performedRebase && !workingTreeSnapshots.empty()) {
             (void)RestoreWorkingTreeFileSnapshots(plan.path, workingTreeSnapshots, name);
         }
 
-        succeeded += 1;
         if (isSelfRepo) {
             const auto headAfterSync = CurrentHeadCommit(plan.path);
             if (HeadRangeTouchesSelfCpp(plan.path, headBeforeSync, headAfterSync)) {
+                std::lock_guard lock(selfBuildMutex);
                 shouldBuildSelfCpp = true;
             }
         }
+
+        out << "[" << name << "] SYNCED (" << plan.remote << ", " << targetBranch << ")\n";
+        return finishSuccess("SYNCED", "synced successfully");
+    };
+
+    auto schedulerInputs = MakeSyncSchedulerInputs(plans);
+    workspace::RepoOperationSchedulerOptions schedulerOptions;
+    schedulerOptions.operationName = "sync";
+    schedulerOptions.mode = workspace::RepoOperationMode::MutatingDependencyWaves;
+    schedulerOptions.jobs = InJobs < 1 ? 1 : InJobs;
+    schedulerOptions.resolveGitCommonDirLocks = true;
+
+    const auto aggregate = workspace::RunRepoOperationScheduler(
+        schedulerInputs,
+        schedulerOptions,
+        runOnePlan);
+
+    for (const auto& result : aggregate.results) {
+        if (!result.stdoutText.empty()) {
+            std::cout << result.stdoutText;
+        }
+        if (!result.stderrText.empty()) {
+            std::cerr << result.stderrText;
+        }
     }
 
-    if (failures == 0 && shouldBuildSelfCpp && selfRepoRoot.has_value() && !InDryRun) {
+    for (const auto& result : aggregate.results) {
+        if (result.status == workspace::RepoOperationStatus::Blocked) {
+            std::cerr << "[" << result.repoPath.generic_string() << "] BLOCKED_BY_CHILD_FAILURE: "
+                      << (result.blockReason.empty() ? "dependency failed in an earlier phase" : result.blockReason) << "\n";
+        } else if (result.status == workspace::RepoOperationStatus::Pending) {
+            std::cerr << "[" << result.repoPath.generic_string() << "] FAILED_SYNC: scheduler did not execute repository\n";
+        }
+    }
+
+    std::size_t selfBuildFailure = 0;
+    std::vector<std::pair<std::string, std::string>> failureDetails;
+    for (const auto& result : aggregate.results) {
+        if (result.status == workspace::RepoOperationStatus::Failed ||
+            result.status == workspace::RepoOperationStatus::Blocked ||
+            result.status == workspace::RepoOperationStatus::Pending) {
+            failureDetails.emplace_back(
+                std::filesystem::relative(result.repoPath, InRepoRoot).generic_string().empty()
+                    ? std::string{"."}
+                    : std::filesystem::relative(result.repoPath, InRepoRoot).generic_string(),
+                result.failureCategory.empty() ? result.message : result.failureCategory + (result.message.empty() ? std::string{} : ": " + result.message));
+        }
+    }
+
+    if (!aggregate.hasFailure && shouldBuildSelfCpp && selfRepoRoot.has_value() && !InDryRun) {
         const auto buildCode = RunSelfCppBuild(*selfRepoRoot);
         if (buildCode != 0) {
-            failures += 1;
+            selfBuildFailure = 1;
             failureDetails.emplace_back(
                 std::filesystem::relative(*selfRepoRoot, InRepoRoot).generic_string().empty()
                     ? std::string{"."}
@@ -1982,8 +2350,16 @@ auto RunNativeOriginLatestSync(
     }
 
     std::cout << "=== " << kano::terminal::Wrap("Sync Complete", kano::terminal::Color::BoldWhite) << " ===\n";
-    std::cout << "Succeeded: " << kano::terminal::Wrap(std::to_string(succeeded), kano::terminal::Color::BoldGreen) << "\n";
-    std::cout << "Failed: " << kano::terminal::Wrap(std::to_string(failures), kano::terminal::Color::BoldRed) << "\n";
+    std::cout << "SUMMARY: repos=" << aggregate.results.size()
+              << ", synced=" << aggregate.succeeded
+              << ", skipped=" << aggregate.skipped
+              << ", blocked=" << aggregate.blocked
+              << ", failed=" << (aggregate.failed + aggregate.pending + selfBuildFailure)
+              << "\n";
+    std::cout << "Succeeded: " << kano::terminal::Wrap(std::to_string(aggregate.succeeded), kano::terminal::Color::BoldGreen) << "\n";
+    std::cout << "Skipped: " << kano::terminal::Wrap(std::to_string(aggregate.skipped), kano::terminal::Color::BoldYellow) << "\n";
+    std::cout << "Blocked: " << kano::terminal::Wrap(std::to_string(aggregate.blocked), kano::terminal::Color::BoldRed) << "\n";
+    std::cout << "Failed: " << kano::terminal::Wrap(std::to_string(aggregate.failed + aggregate.pending + selfBuildFailure), kano::terminal::Color::BoldRed) << "\n";
     if (!failureDetails.empty()) {
         std::cout << "\n=== " << kano::terminal::Wrap("FAILED REPOS", kano::terminal::Color::BoldRed) << " ===\n";
         for (const auto& [repo, reason] : failureDetails) {
@@ -1991,7 +2367,7 @@ auto RunNativeOriginLatestSync(
                       << kano::terminal::Wrap(repo, kano::terminal::Color::BoldCyan) << " | " << reason << "\n";
         }
     }
-    return failures > 0 ? 1 : 0;
+    return (aggregate.hasFailure || selfBuildFailure > 0) ? 1 : 0;
 }
 
 auto RunNativePreCommitRepair(
@@ -2262,6 +2638,7 @@ void RegisterSync(CLI::App& InApp) {
     auto* originLatestNoRecursive = new bool{false};
     auto* originLatestNoAutoStash = new bool{false};
     auto* originLatestCleanupStaleLocks = new bool{false};
+    auto* originLatestJobs = new int{DetectDefaultSyncJobs()};
     auto* originLatestProfile = new bool{false};
 
     origin_latest->add_flag("--shell", *originLatestShell, "Deprecated compatibility flag (shell path removed)");
@@ -2274,6 +2651,7 @@ void RegisterSync(CLI::App& InApp) {
     origin_latest->add_flag("--no-recursive,-N", *originLatestNoRecursive, "Sync only current repository");
     origin_latest->add_flag("--no-auto-stash", *originLatestNoAutoStash, "Do not auto-stash local changes before sync");
     origin_latest->add_flag("--cleanup-stale-locks", *originLatestCleanupStaleLocks, "When auto-stash fails on index.lock and no git/kano-git process is active, remove the stale lock and retry once");
+    origin_latest->add_option("--jobs", *originLatestJobs, "Number of parallel repo workers for recursive sync (default: CPU cores)");
     origin_latest->add_flag("--profile", *originLatestProfile, "Print native sync timing/profile summary");
 
     origin_latest->callback([=]() {
@@ -2281,6 +2659,10 @@ void RegisterSync(CLI::App& InApp) {
         if (*originLatestShell) {
             std::cerr << "Error: --shell is no longer supported; sync origin-latest is fully native now\n";
             std::exit(2);
+        }
+        if (*originLatestJobs < 1) {
+            std::cerr << "Error: --jobs must be a positive integer\n";
+            std::exit(1);
         }
         if (!extras.empty()) {
             std::cerr << "Error: unsupported extra arguments in native sync origin-latest mode:";
@@ -2302,7 +2684,8 @@ void RegisterSync(CLI::App& InApp) {
             *originLatestRefreshCache,
             !*originLatestNoRecursive,
             !*originLatestNoAutoStash,
-            *originLatestCleanupStaleLocks);
+            *originLatestCleanupStaleLocks,
+            *originLatestJobs);
         if (*originLatestProfile) {
             const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
             std::cout << "\n=== Sync Profile Summary ===\n";
@@ -2461,6 +2844,7 @@ void RegisterSync(CLI::App& InApp) {
     auto* devRefreshCache = new bool{false};
     auto* devNoRecursive = new bool{false};
     auto* devCleanupStaleLocks = new bool{false};
+    auto* devJobs = new int{DetectDefaultSyncJobs()};
     auto* devProfile = new bool{false};
     dev->add_option("--repo", *devRepo, "Target repository root path");
     dev->add_flag("--dry-run", *devDryRun, "Preview sync actions without modifying repositories");
@@ -2469,6 +2853,7 @@ void RegisterSync(CLI::App& InApp) {
     dev->add_flag("--native-refresh-cache", *devRefreshCache, "Force native cache refresh");
     dev->add_flag("--no-recursive,-N", *devNoRecursive, "Sync only current repository");
     dev->add_flag("--cleanup-stale-locks", *devCleanupStaleLocks, "When auto-stash fails on index.lock and no git/kano-git process is active, remove the stale lock and retry once");
+    dev->add_option("--jobs", *devJobs, "Number of parallel repo workers for recursive sync (default: CPU cores)");
     dev->add_flag("--profile", *devProfile, "Print native sync timing/profile summary");
     dev->callback([=]() {
         auto extras = dev->remaining();
@@ -2479,6 +2864,10 @@ void RegisterSync(CLI::App& InApp) {
             }
             std::cerr << "\n";
             std::exit(2);
+        }
+        if (*devJobs < 1) {
+            std::cerr << "Error: --jobs must be a positive integer\n";
+            std::exit(1);
         }
 
         const auto start = std::chrono::steady_clock::now();
@@ -2492,7 +2881,8 @@ void RegisterSync(CLI::App& InApp) {
             *devRefreshCache,
             !*devNoRecursive,
             true,
-            *devCleanupStaleLocks);
+            *devCleanupStaleLocks,
+            *devJobs);
         if (*devProfile) {
             const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
             std::cout << "\n=== Sync Profile Summary ===\n";
@@ -2581,16 +2971,19 @@ void RegisterSync(CLI::App& InApp) {
             false,
             false,
             true,
-            false);
+            false,
+            1);
         std::exit(code);
     });
 
     // --- sync (default: auto-detect) ---
     auto* defaultNoRecursive = new bool{false};
     auto* defaultCleanupStaleLocks = new bool{false};
+    auto* defaultJobs = new int{DetectDefaultSyncJobs()};
     auto* defaultProfile = new bool{false};
     cmd->add_flag("--no-recursive,-N", *defaultNoRecursive, "Default sync: only current repository");
     cmd->add_flag("--cleanup-stale-locks", *defaultCleanupStaleLocks, "Default sync: remove stale index.lock automatically when no git/kano-git process is active");
+    cmd->add_option("--jobs", *defaultJobs, "Default sync: number of parallel repo workers for recursive sync (default: CPU cores)");
     cmd->add_flag("--profile", *defaultProfile, "Default sync: print native timing/profile summary");
     cmd->allow_extras();
     cmd->callback([=]() {
@@ -2600,6 +2993,10 @@ void RegisterSync(CLI::App& InApp) {
                 std::cerr << "Error: default sync in native-only mode does not accept extra args.\n";
                 std::cerr << "Hint: use explicit subcommands, e.g. 'kog sync origin-latest'.\n";
                 std::exit(2);
+            }
+            if (*defaultJobs < 1) {
+                std::cerr << "Error: --jobs must be a positive integer\n";
+                std::exit(1);
             }
 
             const auto start = std::chrono::steady_clock::now();
@@ -2612,7 +3009,8 @@ void RegisterSync(CLI::App& InApp) {
                 false,
                 !*defaultNoRecursive,
                 true,
-                *defaultCleanupStaleLocks);
+                *defaultCleanupStaleLocks,
+                *defaultJobs);
             if (*defaultProfile) {
                 const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
                 std::cout << "\n=== Sync Profile Summary ===\n";
@@ -2660,7 +3058,8 @@ auto RunSyncOriginLatestNative(const std::filesystem::path& InRepoRoot,
         false,
         InRecursive,
         true,
-        InCleanupStaleLocks);
+        InCleanupStaleLocks,
+        1);
 }
 
 } // namespace kano::git::commands

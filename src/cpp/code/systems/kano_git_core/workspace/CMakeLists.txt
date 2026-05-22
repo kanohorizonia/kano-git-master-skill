@@ -4,9 +4,9 @@ target_sources(kano_git_workspace
   PRIVATE
     public/discovery.hpp
     public/native_workspace.hpp
+    public/repo_operation_scheduler.hpp
     private/discovery.cpp
-    private/scheduler.hpp
-    private/scheduler.cpp
+    private/repo_operation_scheduler.cpp
     private/native_workspace.cpp
 )
 

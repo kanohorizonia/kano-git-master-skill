@@ -25,6 +25,7 @@
 #include <cerrno>
 #include <cstring>
 #include <memory>
+#include <array>
 
 #ifdef KOG_PLATFORM_WINDOWS
 #include <windows.h>
@@ -226,6 +227,96 @@ auto ResolveTimeoutMs(const std::string& InCommand,
     }
     // PassThrough: default no timeout.
     return std::nullopt;
+}
+
+auto IsProcessDiagnosticsEnabled() -> bool {
+    if (const auto* raw = std::getenv("KOG_PROCESS_DIAGNOSTICS"); raw != nullptr) {
+        const auto value = ToLower(std::string(raw));
+        return value == "1" || value == "true" || value == "yes" || value == "on";
+    }
+    return false;
+}
+
+auto CurrentUtcTimestamp() -> std::string {
+    const auto now = std::chrono::system_clock::now();
+    const auto tt = std::chrono::system_clock::to_time_t(now);
+    std::tm utc{};
+#if defined(_WIN32)
+    gmtime_s(&utc, &tt);
+#else
+    gmtime_r(&tt, &utc);
+#endif
+    std::ostringstream oss;
+    oss << std::put_time(&utc, "%Y-%m-%dT%H:%M:%SZ");
+    return oss.str();
+}
+
+auto JoinArgs(const std::vector<std::string>& InArgs) -> std::string {
+    std::ostringstream oss;
+    for (std::size_t i = 0; i < InArgs.size(); ++i) {
+        if (i > 0) {
+            oss << ' ';
+        }
+        oss << InArgs[i];
+    }
+    return oss.str();
+}
+
+auto BuildProcessDiagBlock(const std::string& InStartTs,
+                           const std::string& InEndTs,
+                           const std::filesystem::path& InCwd,
+                           const std::string& InExecutable,
+                           const std::vector<std::string>& InArgv,
+                           const int InExitCode,
+                           const bool InTimedOut) -> std::string {
+    std::ostringstream oss;
+    const auto commandLine = InArgv.empty() ? InExecutable : (InExecutable + " " + JoinArgs(InArgv));
+    const auto pathRaw = std::getenv("PATH");
+
+    oss << "[process-diag] cwd=" << InCwd.generic_string() << "\n";
+    oss << "[process-diag] executable=" << InExecutable << "\n";
+    oss << "[process-diag] argv=" << JoinArgs(InArgv) << "\n";
+    oss << "[process-diag] selected_PATH=" << (pathRaw != nullptr ? pathRaw : "") << "\n";
+    oss << "[process-diag] start_ts=" << InStartTs << "\n";
+    oss << "[process-diag] end_ts=" << InEndTs << "\n";
+    oss << "[process-diag] exit_code=" << InExitCode << "\n";
+    if (InTimedOut) {
+        oss << "[process-diag] timeout_kill_marker=1\n";
+        oss << "[process-diag] last_running_child_command=" << commandLine << "\n";
+    }
+
+    static constexpr std::array<const char*, 10> kRelevantEnvKeys = {
+        "KOG_GIT_INTERACTIVE",
+        "GIT_TERMINAL_PROMPT",
+        "GCM_INTERACTIVE",
+        "GIT_ASKPASS",
+        "SSH_ASKPASS",
+        "KANO_GIT_SKILL_ROOT",
+        "KOG_PROCESS_DIAGNOSTICS",
+        "KOG_PROCESS_DIAGNOSTICS_LOG",
+        "KOG_TEST_AI_STDOUT",
+        "KOG_TEST_AI_EXIT_CODE",
+    };
+    for (const auto* key : kRelevantEnvKeys) {
+        if (const auto* value = std::getenv(key); value != nullptr) {
+            oss << "[process-diag] env_" << key << "=" << value << "\n";
+        }
+    }
+
+    return oss.str();
+}
+
+auto EmitProcessDiag(const std::string& InText) -> void {
+    std::cerr << InText;
+    if (const auto* pathRaw = std::getenv("KOG_PROCESS_DIAGNOSTICS_LOG"); pathRaw != nullptr && pathRaw[0] != '\0') {
+        std::error_code ec;
+        const std::filesystem::path path(pathRaw);
+        std::filesystem::create_directories(path.parent_path(), ec);
+        std::ofstream ofs(path, std::ios::app);
+        if (ofs) {
+            ofs << InText;
+        }
+    }
 }
 
 auto RunProcess(const std::string& cmdLine, ExecMode InMode,
@@ -605,6 +696,9 @@ auto ExecuteCommand(
 ) -> ExecResult
 {
     const auto effectiveArgs = WithGitNonInteractiveDefaults(InCommand, InArgs);
+    const bool processDiagEnabled = IsProcessDiagnosticsEnabled();
+    const auto processDiagStartTs = processDiagEnabled ? CurrentUtcTimestamp() : std::string{};
+    const auto processDiagCwd = InWorkingDir.has_value() ? InWorkingDir->lexically_normal() : std::filesystem::current_path();
 
     // Global command logging
     static const bool logEnabled = std::getenv("KOG_LOG_COMMANDS") != nullptr || 
@@ -702,22 +796,50 @@ auto ExecuteCommand(
 #ifdef KOG_PLATFORM_WINDOWS
     const auto effectiveCommand = NormalizeWindowsExecutable(InCommand);
     const auto timeoutMs = ResolveTimeoutMs(effectiveCommand, effectiveArgs, InMode);
+    ExecResult result;
     if (IsWindowsCommandProcessor(effectiveCommand) && !effectiveArgs.empty()) {
         std::vector<std::string> wrappedArgs{"/d", "/s"};
         wrappedArgs.insert(wrappedArgs.end(), effectiveArgs.begin(), effectiveArgs.end());
         const auto wrapped = BuildWindowsCommandProcessorLine(wrappedArgs);
-        return RunProcess(wrapped, InMode, timeoutMs, InWorkingDir, InProgressCallback);
-    }
-    if (IsCmdScriptCommand(effectiveCommand)) {
+        result = RunProcess(wrapped, InMode, timeoutMs, InWorkingDir, InProgressCallback);
+    } else if (IsCmdScriptCommand(effectiveCommand)) {
         const auto wrapped = BuildWindowsBatchCommandLine(effectiveCommand, effectiveArgs);
-        return RunProcess(wrapped, InMode, timeoutMs, InWorkingDir, InProgressCallback);
+        result = RunProcess(wrapped, InMode, timeoutMs, InWorkingDir, InProgressCallback);
+    } else {
+        // Build command line with executable at start (for CreateProcessA parsing)
+        auto cmd = BuildCommandLine(effectiveCommand, effectiveArgs);
+        result = RunProcess(cmd, InMode, timeoutMs, InWorkingDir, InProgressCallback);
     }
-    // Build command line with executable at start (for CreateProcessA parsing)
-    auto cmd = BuildCommandLine(effectiveCommand, effectiveArgs);
-    return RunProcess(cmd, InMode, timeoutMs, InWorkingDir, InProgressCallback);
+
+    if (processDiagEnabled) {
+        const bool timedOut = result.stderrStr.find("Process timeout") != std::string::npos ||
+                              result.stderrStr.find("Process timed out") != std::string::npos;
+        EmitProcessDiag(BuildProcessDiagBlock(
+            processDiagStartTs,
+            CurrentUtcTimestamp(),
+            processDiagCwd,
+            effectiveCommand,
+            effectiveArgs,
+            result.exitCode,
+            timedOut));
+    }
+    return result;
 #else
     const auto timeoutMs = ResolveTimeoutMs(InCommand, effectiveArgs, InMode);
-    return RunProcessUnix(InCommand, effectiveArgs, InMode, timeoutMs, InWorkingDir, InProgressCallback);
+    auto result = RunProcessUnix(InCommand, effectiveArgs, InMode, timeoutMs, InWorkingDir, InProgressCallback);
+    if (processDiagEnabled) {
+        const bool timedOut = result.stderrStr.find("Process timeout") != std::string::npos ||
+                              result.stderrStr.find("Process timed out") != std::string::npos;
+        EmitProcessDiag(BuildProcessDiagBlock(
+            processDiagStartTs,
+            CurrentUtcTimestamp(),
+            processDiagCwd,
+            InCommand,
+            effectiveArgs,
+            result.exitCode,
+            timedOut));
+    }
+    return result;
 #endif
 }
 

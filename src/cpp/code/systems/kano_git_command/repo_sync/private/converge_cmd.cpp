@@ -1,81 +1,649 @@
 // converge command — deterministic sync+push with resumable state
 
 #include <CLI/CLI.hpp>
+#include <nlohmann/json.hpp>
 
 #include "command_runtime_ops.hpp"
+#include "shell_executor.hpp"
 
+#include <algorithm>
+#include <cctype>
+#include <chrono>
 #include <cstdlib>
+#include <ctime>
 #include <filesystem>
+#include <format>
 #include <fstream>
+#include <functional>
 #include <iostream>
+#include <map>
+#include <set>
+#include <sstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace kano::git::commands {
 namespace {
 
-auto Trim(std::string InValue) -> std::string {
-    while (!InValue.empty() && (InValue.back() == '\n' || InValue.back() == '\r' || InValue.back() == ' ' || InValue.back() == '\t')) {
-        InValue.pop_back();
-    }
-    std::size_t start = 0;
-    while (start < InValue.size() && (InValue[start] == ' ' || InValue[start] == '\t')) {
-        start += 1;
-    }
-    return InValue.substr(start);
+struct RepoStatus {
+    std::string id;
+    std::string dirtyKind;
+    std::string branch;
+    std::string head;
+    std::string remote;
+    std::string upstream;
+    std::vector<std::string> childRepos;
+    std::vector<std::string> statusFlags;
+    std::vector<std::string> submoduleFacts;
+    bool blocksConverge = false;
+    std::string blockReason;
+    int ahead = 0;
+    std::map<std::string, std::string> commandPolicy;
+};
+
+struct Snapshot {
+    std::filesystem::path workspaceRoot;
+    std::vector<RepoStatus> repos;
+};
+
+struct PlanLine {
+    std::string repo;
+    std::string text;
+};
+
+struct Plan {
+    std::map<std::string, std::size_t> dirtyCounts;
+    std::vector<std::vector<std::string>> waves;
+    std::vector<PlanLine> sync;
+    std::vector<PlanLine> commit;
+    std::vector<PlanLine> push;
+    std::vector<PlanLine> skipped;
+    std::vector<PlanLine> policy;
+    std::vector<PlanLine> blocked;
+};
+
+struct PhaseSummary {
+    std::vector<std::string> succeeded;
+    std::vector<std::string> failed;
+    std::vector<std::string> blocked;
+    std::vector<std::string> skipped;
+    std::vector<std::string> pending;
+    std::map<std::string, std::string> failureCategory;
+    std::map<std::string, std::string> failureMessage;
+    std::map<std::string, std::string> blockedBy;
+    std::map<std::string, bool> retryEligible;
+};
+
+struct WorkflowState {
+    std::string workflow = "converge";
+    std::string schemaName = "kog.convergeWorkflowState";
+    int schemaVersion = 1;
+    std::filesystem::path workspaceRoot;
+    std::string startedAt;
+    std::string currentPhase;
+    bool recursive = true;
+    bool dryRunRequested = false;
+    std::vector<std::string> completedPhases;
+    std::string blockedReason;
+    std::vector<std::string> blockedRepos;
+    std::string resumeCommand;
+    std::map<std::string, PhaseSummary> phaseResults;
+    std::map<std::string, std::vector<std::string>> commandLinesUsed;
+    std::vector<std::string> plannedSyncRepos;
+    std::vector<std::string> plannedCommitRepos;
+    std::vector<std::string> plannedPushRepos;
+    std::vector<std::string> plannedBlockedRepos;
+    std::vector<std::vector<std::string>> plannedWaves;
+    std::string repoGraphFingerprint;
+    std::vector<std::string> repoBaselines;
+    std::map<std::string, std::string> repoManagementPolicy;
+    std::map<std::string, std::string> repoType;
+    std::map<std::string, std::map<std::string, std::string>> repoCommandPolicy;
+    std::string detectedConflictInfo;
+    std::vector<std::string> succeededRepos;
+    std::vector<std::string> failedRepos;
+    std::vector<std::string> blockedRepoSet;
+    std::vector<std::string> skippedRepos;
+    std::vector<std::string> pendingRepos;
+};
+
+constexpr const char* kPointerSingleMessage = "[Submodule][Chore] Update Build/Base pointer (NO-TICKET)";
+constexpr const char* kPointerMultipleMessage = "[Submodule][Chore] Update shared dependency pointers (NO-TICKET)";
+constexpr const char* kPushDisabledPointerBlockReason = "parent pointer references commit from push-disabled repo that is not available remotely";
+const std::vector<std::string> kConvergePhases = {
+    "status-preflight-plan",
+    "commit-local-changes-if-needed",
+    "sync-before-push",
+    "push-nested-bottom-up",
+    "sync-converge-dependent-repos",
+    "status-delta-after-sync",
+    "commit-pointer-updates-if-needed",
+    "push-parents-bottom-up",
+    "final-status-summary",
+};
+
+std::string Trim(std::string v) {
+    while (!v.empty() && (v.back() == '\n' || v.back() == '\r' || v.back() == ' ' || v.back() == '\t')) v.pop_back();
+    std::size_t s = 0;
+    while (s < v.size() && (v[s] == ' ' || v[s] == '\t')) ++s;
+    return v.substr(s);
 }
 
-auto ConvergeStatePath(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path {
-    return (InWorkspaceRoot / ".kano" / "tmp" / "converge.state").lexically_normal();
+std::string ToLower(std::string v) {
+    std::transform(v.begin(), v.end(), v.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return v;
 }
 
-auto ReadState(const std::filesystem::path& InStatePath) -> std::unordered_map<std::string, std::string> {
-    std::unordered_map<std::string, std::string> out;
-    std::ifstream in(InStatePath, std::ios::binary);
-    if (!in.good()) {
-        return out;
-    }
+bool IsFalsePolicy(const std::map<std::string, std::string>& policy, const std::string& key) {
+    const auto it = policy.find(key);
+    if (it == policy.end()) return false;
+    const auto value = ToLower(Trim(it->second));
+    return value == "false" || value == "0" || value == "no" || value == "off" || value == "disabled";
+}
 
-    std::string line;
-    while (std::getline(in, line)) {
-        line = Trim(line);
-        if (line.empty()) {
-            continue;
-        }
-        const auto eq = line.find('=');
-        if (eq == std::string::npos) {
-            continue;
-        }
-        const auto key = Trim(line.substr(0, eq));
-        const auto value = Trim(line.substr(eq + 1));
-        if (!key.empty()) {
-            out[key] = value;
-        }
+bool Allows(const RepoStatus& repo, const std::string& key) { return !IsFalsePolicy(repo.commandPolicy, key); }
+
+std::string PolicyValue(const RepoStatus& repo, const std::string& key) {
+    const auto it = repo.commandPolicy.find(key);
+    return it == repo.commandPolicy.end() || Trim(it->second).empty() ? "default-true" : it->second;
+}
+
+bool Contains(const std::vector<std::string>& values, const std::string& needle) {
+    return std::find(values.begin(), values.end(), needle) != values.end();
+}
+
+std::string Csv(const std::vector<std::string>& values) {
+    std::ostringstream out;
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        if (i > 0) out << ",";
+        out << values[i];
     }
+    return out.str();
+}
+
+std::filesystem::path ConvergeStatePath(const std::filesystem::path& root) {
+    return (root / ".kano" / "tmp" / "workflows" / "converge" / "state.json").lexically_normal();
+}
+
+std::string UtcNowIso8601() {
+    const auto now = std::chrono::system_clock::now();
+    const auto tt = std::chrono::system_clock::to_time_t(now);
+    std::tm tm{};
+#if defined(_WIN32)
+    gmtime_s(&tm, &tt);
+#else
+    gmtime_r(&tt, &tm);
+#endif
+    char buffer[64] = {};
+    std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", &tm);
+    return buffer;
+}
+
+nlohmann::json ToJson(const PhaseSummary& summary) {
+    nlohmann::json out;
+    out["succeeded"] = summary.succeeded;
+    out["failed"] = summary.failed;
+    out["blocked"] = summary.blocked;
+    out["skipped"] = summary.skipped;
+    out["pending"] = summary.pending;
+    out["failureCategory"] = summary.failureCategory;
+    out["failureMessage"] = summary.failureMessage;
+    out["blockedBy"] = summary.blockedBy;
+    out["retryEligible"] = summary.retryEligible;
     return out;
 }
 
-auto WriteState(const std::filesystem::path& InStatePath,
-                const std::filesystem::path& InWorkspaceRoot,
-                const std::string& InPhase,
-                const bool InRecursive,
-                const bool InDryRun) -> bool {
-    std::error_code ec;
-    std::filesystem::create_directories(InStatePath.parent_path(), ec);
-    std::ofstream out(InStatePath, std::ios::binary | std::ios::trunc);
-    if (!out.good()) {
-        return false;
-    }
-    out << "phase=" << InPhase << "\n";
-    out << "workspace_root=" << InWorkspaceRoot.lexically_normal().generic_string() << "\n";
-    out << "recursive=" << (InRecursive ? "1" : "0") << "\n";
-    out << "dry_run=" << (InDryRun ? "1" : "0") << "\n";
-    return out.good();
+PhaseSummary PhaseSummaryFromJson(const nlohmann::json& value) {
+    PhaseSummary summary;
+    if (const auto it = value.find("succeeded"); it != value.end() && it->is_array()) summary.succeeded = it->get<std::vector<std::string>>();
+    if (const auto it = value.find("failed"); it != value.end() && it->is_array()) summary.failed = it->get<std::vector<std::string>>();
+    if (const auto it = value.find("blocked"); it != value.end() && it->is_array()) summary.blocked = it->get<std::vector<std::string>>();
+    if (const auto it = value.find("skipped"); it != value.end() && it->is_array()) summary.skipped = it->get<std::vector<std::string>>();
+    if (const auto it = value.find("pending"); it != value.end() && it->is_array()) summary.pending = it->get<std::vector<std::string>>();
+    if (const auto it = value.find("failureCategory"); it != value.end() && it->is_object()) summary.failureCategory = it->get<std::map<std::string, std::string>>();
+    if (const auto it = value.find("failureMessage"); it != value.end() && it->is_object()) summary.failureMessage = it->get<std::map<std::string, std::string>>();
+    if (const auto it = value.find("blockedBy"); it != value.end() && it->is_object()) summary.blockedBy = it->get<std::map<std::string, std::string>>();
+    if (const auto it = value.find("retryEligible"); it != value.end() && it->is_object()) summary.retryEligible = it->get<std::map<std::string, bool>>();
+    return summary;
 }
 
-auto DeleteState(const std::filesystem::path& InStatePath) -> void {
+nlohmann::json ToJson(const WorkflowState& state) {
+    nlohmann::json phaseResults = nlohmann::json::object();
+    for (const auto& [phase, summary] : state.phaseResults) phaseResults[phase] = ToJson(summary);
+
+    nlohmann::json out;
+    out["workflow"] = state.workflow;
+    out["schemaName"] = state.schemaName;
+    out["schemaVersion"] = state.schemaVersion;
+    out["workspaceRoot"] = state.workspaceRoot.generic_string();
+    out["startedAt"] = state.startedAt;
+    out["currentPhase"] = state.currentPhase;
+    out["recursive"] = state.recursive;
+    out["dryRunRequested"] = state.dryRunRequested;
+    out["completedPhases"] = state.completedPhases;
+    out["blockedReason"] = state.blockedReason;
+    out["blockedRepos"] = state.blockedRepos;
+    out["resumeCommand"] = state.resumeCommand;
+    out["phaseResults"] = phaseResults;
+    out["commandLinesUsed"] = state.commandLinesUsed;
+    out["convergePlan"] = {
+        {"sync", state.plannedSyncRepos},
+        {"commit", state.plannedCommitRepos},
+        {"push", state.plannedPushRepos},
+        {"blocked", state.plannedBlockedRepos},
+        {"waves", state.plannedWaves},
+    };
+    out["repoGraphFingerprint"] = state.repoGraphFingerprint;
+    out["repoBaselines"] = state.repoBaselines;
+    out["repoTaxonomy"] = {
+        {"type", state.repoType},
+        {"managementPolicy", state.repoManagementPolicy},
+    };
+    out["commandPolicy"] = state.repoCommandPolicy;
+    out["detectedConflictInfo"] = state.detectedConflictInfo;
+    out["results"] = {
+        {"succeeded", state.succeededRepos},
+        {"failed", state.failedRepos},
+        {"blocked", state.blockedRepoSet},
+        {"skipped", state.skippedRepos},
+        {"pending", state.pendingRepos},
+    };
+    return out;
+}
+
+WorkflowState WorkflowStateFromJson(const nlohmann::json& value) {
+    WorkflowState state;
+    state.workflow = value.value("workflow", std::string{"converge"});
+    state.schemaName = value.value("schemaName", std::string{"kog.convergeWorkflowState"});
+    state.schemaVersion = value.value("schemaVersion", 1);
+    state.workspaceRoot = std::filesystem::path(value.value("workspaceRoot", std::string{})).lexically_normal();
+    state.startedAt = value.value("startedAt", std::string{});
+    state.currentPhase = value.value("currentPhase", std::string{});
+    state.recursive = value.value("recursive", true);
+    state.dryRunRequested = value.value("dryRunRequested", false);
+    if (const auto it = value.find("completedPhases"); it != value.end() && it->is_array()) state.completedPhases = it->get<std::vector<std::string>>();
+    state.blockedReason = value.value("blockedReason", std::string{});
+    if (const auto it = value.find("blockedRepos"); it != value.end() && it->is_array()) state.blockedRepos = it->get<std::vector<std::string>>();
+    state.resumeCommand = value.value("resumeCommand", std::string{});
+    if (const auto it = value.find("phaseResults"); it != value.end() && it->is_object()) {
+        for (const auto& [phase, summary] : it->items()) state.phaseResults[phase] = PhaseSummaryFromJson(summary);
+    }
+    if (const auto it = value.find("commandLinesUsed"); it != value.end() && it->is_object()) {
+        state.commandLinesUsed = it->get<std::map<std::string, std::vector<std::string>>>();
+    }
+    if (const auto it = value.find("convergePlan"); it != value.end() && it->is_object()) {
+        if (const auto p = it->find("sync"); p != it->end() && p->is_array()) state.plannedSyncRepos = p->get<std::vector<std::string>>();
+        if (const auto p = it->find("commit"); p != it->end() && p->is_array()) state.plannedCommitRepos = p->get<std::vector<std::string>>();
+        if (const auto p = it->find("push"); p != it->end() && p->is_array()) state.plannedPushRepos = p->get<std::vector<std::string>>();
+        if (const auto p = it->find("blocked"); p != it->end() && p->is_array()) state.plannedBlockedRepos = p->get<std::vector<std::string>>();
+        if (const auto p = it->find("waves"); p != it->end() && p->is_array()) state.plannedWaves = p->get<std::vector<std::vector<std::string>>>();
+    }
+    state.repoGraphFingerprint = value.value("repoGraphFingerprint", std::string{});
+    if (const auto it = value.find("repoBaselines"); it != value.end() && it->is_array()) state.repoBaselines = it->get<std::vector<std::string>>();
+    if (const auto it = value.find("repoTaxonomy"); it != value.end() && it->is_object()) {
+        if (const auto p = it->find("type"); p != it->end() && p->is_object()) state.repoType = p->get<std::map<std::string, std::string>>();
+        if (const auto p = it->find("managementPolicy"); p != it->end() && p->is_object()) state.repoManagementPolicy = p->get<std::map<std::string, std::string>>();
+    }
+    if (const auto it = value.find("commandPolicy"); it != value.end() && it->is_object()) {
+        state.repoCommandPolicy = it->get<std::map<std::string, std::map<std::string, std::string>>>();
+    }
+    state.detectedConflictInfo = value.value("detectedConflictInfo", std::string{});
+    if (const auto it = value.find("results"); it != value.end() && it->is_object()) {
+        if (const auto p = it->find("succeeded"); p != it->end() && p->is_array()) state.succeededRepos = p->get<std::vector<std::string>>();
+        if (const auto p = it->find("failed"); p != it->end() && p->is_array()) state.failedRepos = p->get<std::vector<std::string>>();
+        if (const auto p = it->find("blocked"); p != it->end() && p->is_array()) state.blockedRepoSet = p->get<std::vector<std::string>>();
+        if (const auto p = it->find("skipped"); p != it->end() && p->is_array()) state.skippedRepos = p->get<std::vector<std::string>>();
+        if (const auto p = it->find("pending"); p != it->end() && p->is_array()) state.pendingRepos = p->get<std::vector<std::string>>();
+    }
+    return state;
+}
+
+bool WriteState(const std::filesystem::path& statePath, const WorkflowState& state) {
     std::error_code ec;
-    std::filesystem::remove(InStatePath, ec);
+    std::filesystem::create_directories(statePath.parent_path(), ec);
+    const auto tmpPath = (statePath.parent_path() / (statePath.filename().string() + ".tmp")).lexically_normal();
+    std::ofstream out(tmpPath, std::ios::binary | std::ios::trunc);
+    if (!out.good()) return false;
+    out << ToJson(state).dump(2) << "\n";
+    out.close();
+    if (!out.good()) return false;
+    std::filesystem::rename(tmpPath, statePath, ec);
+    if (ec) {
+        std::filesystem::remove(statePath, ec);
+        ec.clear();
+        std::filesystem::rename(tmpPath, statePath, ec);
+        if (ec) return false;
+    }
+    return true;
+}
+
+bool ReadState(const std::filesystem::path& statePath, WorkflowState& state) {
+    std::ifstream in(statePath, std::ios::binary);
+    if (!in.good()) return false;
+    nlohmann::json parsed;
+    in >> parsed;
+    if (!in.good() && !in.eof()) return false;
+    state = WorkflowStateFromJson(parsed);
+    return true;
+}
+
+void DeleteState(const std::filesystem::path& statePath) {
+    std::error_code ec;
+    std::filesystem::remove(statePath, ec);
+}
+
+std::string SelfBinaryPath() {
+    if (const char* path = std::getenv("KANO_GIT_BINARY_PATH"); path != nullptr && *path != '\0') return std::string(path);
+#if defined(_WIN32)
+    std::string buffer(MAX_PATH, '\0');
+    const auto written = GetModuleFileNameA(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+    if (written > 0) {
+        buffer.resize(written);
+        return std::filesystem::path(buffer).lexically_normal().string();
+    }
+#else
+    std::string buffer(4096, '\0');
+    const auto written = readlink("/proc/self/exe", buffer.data(), buffer.size() - 1);
+    if (written > 0) {
+        buffer.resize(static_cast<std::size_t>(written));
+        return std::filesystem::path(buffer).lexically_normal().string();
+    }
+#endif
+    return "kano-git";
+}
+
+std::vector<std::string> JsonStringArray(const nlohmann::json& item, const char* key) {
+    std::vector<std::string> out;
+    const auto it = item.find(key);
+    if (it == item.end() || !it->is_array()) return out;
+    for (const auto& v : *it) if (v.is_string()) out.push_back(v.get<std::string>());
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
+}
+
+std::map<std::string, std::string> JsonPolicy(const nlohmann::json& item) {
+    std::map<std::string, std::string> out;
+    const auto it = item.find("commandPolicy");
+    if (it == item.end() || !it->is_object()) return out;
+    for (const auto& [key, value] : it->items()) if (value.is_string()) out[key] = value.get<std::string>();
+    return out;
+}
+
+Snapshot ParseSnapshot(const std::string& jsonText) {
+    const auto root = nlohmann::json::parse(jsonText);
+    if (root.value("schemaName", std::string{}) != "kog.recursiveStatusSnapshot") {
+        throw std::runtime_error("status JSON is not kog.recursiveStatusSnapshot");
+    }
+    Snapshot snapshot;
+    snapshot.workspaceRoot = std::filesystem::path(root.value("workspaceRoot", std::string{})).lexically_normal();
+    for (const auto& item : root.value("repos", nlohmann::json::array())) {
+        RepoStatus repo;
+        repo.id = item.value("id", std::string{});
+        repo.dirtyKind = item.value("dirtyKind", std::string{"CLEAN"});
+        repo.branch = item.value("branch", std::string{});
+        repo.head = item.value("head", std::string{});
+        repo.remote = item.value("remote", std::string{});
+        repo.upstream = item.value("upstream", std::string{});
+        repo.childRepos = JsonStringArray(item, "childRepos");
+        repo.statusFlags = JsonStringArray(item, "statusFlags");
+        repo.submoduleFacts = JsonStringArray(item, "submoduleFacts");
+        repo.blocksConverge = item.value("blocksConverge", false);
+        repo.blockReason = item.value("blockReason", std::string{});
+        repo.ahead = item.value("ahead", 0);
+        repo.commandPolicy = JsonPolicy(item);
+        if (!repo.id.empty()) snapshot.repos.push_back(std::move(repo));
+    }
+    std::sort(snapshot.repos.begin(), snapshot.repos.end(), [](const auto& a, const auto& b) { return a.id < b.id; });
+    return snapshot;
+}
+
+Snapshot LoadSnapshot(const std::filesystem::path& root, int jobs, bool unregisteredScan) {
+    std::vector<std::string> args{"status", "--recursive", "--format", "json", "--repo-root", root.generic_string(), "--jobs", std::to_string(std::max(1, jobs))};
+    if (!unregisteredScan) {
+        args.push_back("--no-unregistered-scan");
+    } else {
+        args.push_back("--refresh-cache");
+        args.push_back("--unregistered-depth");
+        args.push_back("3");
+    }
+    const auto result = shell::ExecuteCommand(SelfBinaryPath(), args, shell::ExecMode::Capture, root);
+    if (result.exitCode != 0) throw std::runtime_error("failed to read recursive status snapshot via kog status: " + Trim(result.stderrStr));
+    const auto start = result.stdoutStr.find("{\"schemaName\":\"kog.recursiveStatusSnapshot\"");
+    const auto end = result.stdoutStr.rfind('}');
+    if (start == std::string::npos || end == std::string::npos || end < start) {
+        throw std::runtime_error("failed to locate kog.recursiveStatusSnapshot JSON in status output");
+    }
+    return ParseSnapshot(result.stdoutStr.substr(start, end - start + 1));
+}
+
+std::vector<std::vector<std::string>> Waves(const Snapshot& snapshot) {
+    std::unordered_map<std::string, RepoStatus> byId;
+    for (const auto& repo : snapshot.repos) byId.emplace(repo.id, repo);
+    std::unordered_map<std::string, int> memo;
+    std::function<int(const std::string&, std::unordered_set<std::string>&)> waveFor = [&](const std::string& id, std::unordered_set<std::string>& visiting) {
+        if (memo.contains(id)) return memo[id];
+        if (visiting.contains(id)) return memo[id] = 0;
+        visiting.insert(id);
+        int wave = 0;
+        if (const auto it = byId.find(id); it != byId.end()) {
+            for (const auto& child : it->second.childRepos) if (byId.contains(child)) wave = std::max(wave, waveFor(child, visiting) + 1);
+        }
+        visiting.erase(id);
+        return memo[id] = wave;
+    };
+    int maxWave = 0;
+    for (const auto& repo : snapshot.repos) {
+        std::unordered_set<std::string> visiting;
+        maxWave = std::max(maxWave, waveFor(repo.id, visiting));
+    }
+    std::vector<std::vector<std::string>> waves(static_cast<std::size_t>(maxWave + 1));
+    for (const auto& repo : snapshot.repos) waves[static_cast<std::size_t>(memo[repo.id])].push_back(repo.id);
+    for (auto& wave : waves) std::sort(wave.begin(), wave.end());
+    return waves;
+}
+
+std::string PointerMessage(const RepoStatus& repo) {
+    return std::max<std::size_t>(repo.childRepos.size(), 1) == 1 ? kPointerSingleMessage : kPointerMultipleMessage;
+}
+
+void Add(std::vector<PlanLine>& lines, const std::string& repo, const std::string& text) {
+    if (std::none_of(lines.begin(), lines.end(), [&](const auto& line) { return line.repo == repo && line.text == text; })) lines.push_back({repo, text});
+}
+
+bool HasUnpushedSubmoduleCommit(const RepoStatus& repo) {
+    return Contains(repo.submoduleFacts, "SubmoduleCommitUnpushed") || Contains(repo.statusFlags, "UNPUSHED_SUBMODULE_COMMIT");
+}
+
+Plan BuildPlan(const Snapshot& snapshot) {
+    Plan plan;
+    plan.waves = Waves(snapshot);
+    std::unordered_map<std::string, RepoStatus> byId;
+    for (const auto& repo : snapshot.repos) {
+        byId.emplace(repo.id, repo);
+        plan.dirtyCounts[repo.dirtyKind] += 1;
+    }
+    for (const auto& repo : snapshot.repos) {
+        if (IsFalsePolicy(repo.commandPolicy, "sync") || IsFalsePolicy(repo.commandPolicy, "commit") || IsFalsePolicy(repo.commandPolicy, "push") || IsFalsePolicy(repo.commandPolicy, "hygiene")) {
+            Add(plan.policy, repo.id, std::format("sync={} commit={} push={} hygiene={}", PolicyValue(repo, "sync"), PolicyValue(repo, "commit"), PolicyValue(repo, "push"), PolicyValue(repo, "hygiene")));
+        }
+        if (repo.blocksConverge) {
+            Add(plan.blocked, repo.id, repo.blockReason.empty() ? "status snapshot blocks converge" : repo.blockReason);
+            Add(plan.skipped, repo.id, "blocked by recursive status preflight");
+            continue;
+        }
+        if (repo.dirtyKind == "CONFLICTED") { Add(plan.blocked, repo.id, "CONFLICTED: resolve conflicts before converge mutation"); continue; }
+        if (repo.dirtyKind == "DIVERGED") { Add(plan.blocked, repo.id, "DIVERGED: no conflict-safe converge sync policy is configured"); continue; }
+
+        std::vector<std::string> unpushedChildren;
+        for (const auto& child : repo.childRepos) if (const auto it = byId.find(child); it != byId.end() && HasUnpushedSubmoduleCommit(it->second)) unpushedChildren.push_back(child);
+        if (!unpushedChildren.empty()) {
+            std::sort(unpushedChildren.begin(), unpushedChildren.end());
+            for (const auto& child : unpushedChildren) {
+                const auto& childRepo = byId.at(child);
+                if (Allows(childRepo, "push")) {
+                    Add(plan.push, child, "push child first before parent pointer commit/push");
+                    Add(plan.blocked, repo.id, "PARENT_POINTS_TO_UNPUSHED_SUBMODULE: waiting for child push to succeed (" + child + ")");
+                } else {
+                    Add(plan.blocked, repo.id, kPushDisabledPointerBlockReason);
+                }
+            }
+            continue;
+        }
+
+        if (repo.dirtyKind == "BEHIND_ONLY") { Allows(repo, "sync") ? Add(plan.sync, repo.id, "kog sync origin-latest before commit/push decisions") : Add(plan.skipped, repo.id, "sync skipped by commandPolicy.sync=false"); Add(plan.skipped, repo.id, "commit skipped: BEHIND_ONLY"); continue; }
+        if (repo.dirtyKind == "CLEAN") { Add(plan.skipped, repo.id, "commit skipped: CLEAN"); continue; }
+        if (repo.dirtyKind == "AHEAD_ONLY") { Add(plan.skipped, repo.id, "commit skipped: AHEAD_ONLY"); Allows(repo, "push") ? Add(plan.push, repo.id, "kog push --repos " + repo.id) : Add(plan.skipped, repo.id, "push skipped by commandPolicy.push=false"); continue; }
+        if (repo.dirtyKind == "GITLINK_DIRTY_ONLY") { Add(plan.skipped, repo.id, "kog commit -ai skipped: GITLINK_DIRTY_ONLY"); Allows(repo, "commit") ? Add(plan.commit, repo.id, "deterministic pointer commit: " + PointerMessage(repo)) : Add(plan.skipped, repo.id, "pointer commit skipped by commandPolicy.commit=false"); continue; }
+        if (repo.dirtyKind == "CONTENT_DIRTY") { Allows(repo, "commit") ? Add(plan.commit, repo.id, "kog commit -ai --repos " + repo.id) : Add(plan.skipped, repo.id, "commit skipped by commandPolicy.commit=false"); continue; }
+        if (repo.dirtyKind == "CONTENT_AND_GITLINK_DIRTY") { Allows(repo, "commit") ? Add(plan.commit, repo.id, "kog commit -ai --repos " + repo.id + " (combined content/pointer context)") : Add(plan.skipped, repo.id, "commit skipped by commandPolicy.commit=false"); continue; }
+        if (repo.dirtyKind == "UNTRACKED_ONLY") { Allows(repo, "commit") ? Add(plan.commit, repo.id, "kog commit -ai --repos " + repo.id + " (untracked files included by git add -A policy)") : Add(plan.blocked, repo.id, "DIRTY_WORKTREE: UNTRACKED_ONLY but commandPolicy.commit=false"); continue; }
+        if (repo.ahead > 0) Allows(repo, "push") ? Add(plan.push, repo.id, "kog push --repos " + repo.id) : Add(plan.skipped, repo.id, "push skipped by commandPolicy.push=false");
+        else Add(plan.skipped, repo.id, "no converge action for dirtyKind=" + repo.dirtyKind);
+    }
+    auto sortLines = [](std::vector<PlanLine>& lines) { std::sort(lines.begin(), lines.end(), [](const auto& a, const auto& b) { return a.repo == b.repo ? a.text < b.text : a.repo < b.repo; }); };
+    sortLines(plan.sync); sortLines(plan.commit); sortLines(plan.push); sortLines(plan.skipped); sortLines(plan.policy); sortLines(plan.blocked);
+    return plan;
+}
+
+std::vector<std::string> UniqueRepos(const std::vector<PlanLine>& lines) {
+    std::vector<std::string> repos;
+    repos.reserve(lines.size());
+    for (const auto& line : lines) repos.push_back(line.repo);
+    std::sort(repos.begin(), repos.end());
+    repos.erase(std::unique(repos.begin(), repos.end()), repos.end());
+    return repos;
+}
+
+std::string SnapshotFingerprint(const Snapshot& snapshot) {
+    std::vector<std::string> parts;
+    for (const auto& repo : snapshot.repos) {
+        std::vector<std::string> policyParts;
+        for (const auto& [key, value] : repo.commandPolicy) policyParts.push_back(key + "=" + value);
+        std::sort(policyParts.begin(), policyParts.end());
+        parts.push_back(repo.id + "|" + repo.dirtyKind + "|" + std::to_string(repo.ahead) + "|" + Csv(repo.childRepos) + "|" + Csv(policyParts));
+    }
+    std::sort(parts.begin(), parts.end());
+    return std::to_string(std::hash<std::string>{}(Csv(parts)));
+}
+
+std::vector<std::string> RepoBaselines(const Snapshot& snapshot) {
+    std::vector<std::string> out;
+    out.reserve(snapshot.repos.size());
+    for (const auto& repo : snapshot.repos) {
+        out.push_back(
+            repo.id +
+            " branch=" + repo.branch +
+            " head=" + repo.head +
+            " remote=" + repo.remote +
+            " upstream=" + repo.upstream +
+            " dirtyKind=" + repo.dirtyKind +
+            " ahead=" + std::to_string(repo.ahead));
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+void MergeUnique(std::vector<std::string>& target, const std::vector<std::string>& values) {
+    target.insert(target.end(), values.begin(), values.end());
+    std::sort(target.begin(), target.end());
+    target.erase(std::unique(target.begin(), target.end()), target.end());
+}
+
+void RemoveRepos(std::vector<std::string>& target, const std::vector<std::string>& repos) {
+    if (repos.empty() || target.empty()) {
+        return;
+    }
+    for (const auto& repo : repos) {
+        target.erase(std::remove(target.begin(), target.end(), repo), target.end());
+    }
+}
+
+void RecordPhaseState(WorkflowState& state, const std::string& phase, const PhaseSummary& summary) {
+    state.phaseResults[phase] = summary;
+    if (std::none_of(state.completedPhases.begin(), state.completedPhases.end(), [&](const auto& p) { return p == phase; })) {
+        state.completedPhases.push_back(phase);
+    }
+    MergeUnique(state.succeededRepos, summary.succeeded);
+    MergeUnique(state.failedRepos, summary.failed);
+    MergeUnique(state.blockedRepoSet, summary.blocked);
+    MergeUnique(state.skippedRepos, summary.skipped);
+    MergeUnique(state.pendingRepos, summary.pending);
+}
+
+bool PhaseAlreadyCompleted(const WorkflowState& state, const std::string& phase) {
+    return std::find(state.completedPhases.begin(), state.completedPhases.end(), phase) != state.completedPhases.end();
+}
+
+std::set<std::string> ToSet(const std::vector<std::string>& values) {
+    return std::set<std::string>(values.begin(), values.end());
+}
+
+void PrintStatusPhaseSummary(const WorkflowState& state) {
+    for (const auto& [phase, summary] : state.phaseResults) {
+        std::cout << "phase=" << phase
+                  << " succeeded=" << summary.succeeded.size()
+                  << " failed=" << summary.failed.size()
+                  << " blocked=" << summary.blocked.size()
+                  << " skipped=" << summary.skipped.size()
+                  << " pending=" << summary.pending.size() << "\n";
+        for (const auto& [repo, category] : summary.failureCategory) {
+            const auto messageIt = summary.failureMessage.find(repo);
+            const auto blockedByIt = summary.blockedBy.find(repo);
+            std::cout << "  repo=" << repo
+                      << " failureCategory=" << category
+                      << " failureMessage=" << (messageIt == summary.failureMessage.end() ? std::string{} : messageIt->second)
+                      << " blockedBy=" << (blockedByIt == summary.blockedBy.end() ? std::string{} : blockedByIt->second)
+                      << "\n";
+        }
+    }
+}
+
+void PrintLines(const std::string& title, const std::vector<PlanLine>& lines) {
+    std::cout << title << "\n";
+    if (lines.empty()) { std::cout << "  - (none)\n"; return; }
+    for (const auto& line : lines) std::cout << "  - " << line.repo << ": " << line.text << "\n";
+}
+
+void PrintPlan(const Snapshot& snapshot, const Plan& plan, bool unregisteredScan) {
+    std::size_t dirty = 0;
+    for (const auto& repo : snapshot.repos) dirty += repo.dirtyKind == "CLEAN" ? 0 : 1;
+    std::cout << "Converge Plan\n";
+    std::cout << "Status preflight counts\n";
+    std::cout << "  repos=" << snapshot.repos.size() << " dirty=" << dirty << " blocked=" << plan.blocked.size() << " unregisteredScan=" << (unregisteredScan ? "bounded" : "disabled") << "\n";
+    std::cout << "  dirtyKindCounts";
+    for (const auto& [kind, count] : plan.dirtyCounts) std::cout << " " << kind << "=" << count;
+    std::cout << "\nRuntime phases\n";
+    for (std::size_t i = 0; i < kConvergePhases.size(); ++i) std::cout << "  " << (i + 1) << ". " << kConvergePhases[i] << "\n";
+    std::cout << "  behavior=dependency-aware best-effort (non-fail-fast)\n";
+    std::cout << "\nDependency waves\n";
+    for (std::size_t i = 0; i < plan.waves.size(); ++i) std::cout << "  - wave " << i << ": " << (plan.waves[i].empty() ? "(none)" : Csv(plan.waves[i])) << "\n";
+    PrintLines("Command-policy decisions", plan.policy);
+    PrintLines("Phase sync actions", plan.sync);
+    PrintLines("Phase commit actions", plan.commit);
+    PrintLines("Phase push actions", plan.push);
+    PrintLines("Skipped repos", plan.skipped);
+    PrintLines("Blocked repos", plan.blocked);
+}
+
+int RunDryRunPlanner(const std::filesystem::path& root, int jobs, bool unregisteredScan) {
+    try {
+        const auto snapshot = LoadSnapshot(root, jobs, unregisteredScan);
+        const auto plan = BuildPlan(snapshot);
+        PrintPlan(snapshot, plan, unregisteredScan);
+        return plan.blocked.empty() ? 0 : 1;
+    } catch (const std::exception& ex) {
+        std::cerr << "Error: " << ex.what() << "\n";
+        return 1;
+    }
 }
 
 } // namespace
@@ -92,6 +660,7 @@ void RegisterConverge(CLI::App& InApp) {
     auto* verbose = new bool{false};
     auto* forceWithLease = new bool{false};
     auto* noVerify = new bool{false};
+    auto* unregisteredScan = new bool{false};
     auto* jobs = new int{1};
     auto* remote = new std::string{};
 
@@ -104,7 +673,8 @@ void RegisterConverge(CLI::App& InApp) {
     cmd->add_flag("--verbose", *verbose, "Verbose push output");
     cmd->add_flag("--force-with-lease", *forceWithLease, "Pass --force-with-lease to converge push stage");
     cmd->add_flag("--no-verify", *noVerify, "Pass --no-verify to converge push stage");
-    cmd->add_option("--jobs", *jobs, "Parallel workers for converge push stage");
+    cmd->add_flag("--unregistered-scan", *unregisteredScan, "Opt in to bounded unregistered discovery during dry-run status preflight");
+    cmd->add_option("--jobs", *jobs, "Parallel workers for converge status/push stages");
     cmd->add_option("--remote", *remote, "Optional remote filter for converge push stage");
 
     cmd->callback([=]() {
@@ -113,96 +683,315 @@ void RegisterConverge(CLI::App& InApp) {
         const auto statePath = ConvergeStatePath(workspaceRoot);
 
         const int controlFlags = (*statusOnly ? 1 : 0) + (*resume ? 1 : 0) + (*abort ? 1 : 0);
-        if (controlFlags > 1) {
-            std::cerr << "Error: --status, --resume, and --abort are mutually exclusive\n";
-            std::exit(2);
-        }
-
-        if (*jobs < 1) {
-            std::cerr << "Error: --jobs must be a positive integer\n";
-            std::exit(2);
-        }
+        if (controlFlags > 1) { std::cerr << "Error: --status, --resume, and --abort are mutually exclusive\n"; std::exit(2); }
+        if (*jobs < 1) { std::cerr << "Error: --jobs must be a positive integer\n"; std::exit(2); }
 
         if (*statusOnly) {
-            const auto state = ReadState(statePath);
-            if (state.empty()) {
-                std::cout << "converge state: none\n";
-                std::exit(0);
-            }
-
+            WorkflowState state;
+            if (!ReadState(statePath, state)) { std::cout << "converge state: none\n"; std::exit(0); }
             std::cout << "converge state file: " << statePath.generic_string() << "\n";
-            for (const auto& [key, value] : state) {
-                std::cout << key << "=" << value << "\n";
-            }
+            std::cout << "workflow=" << state.workflow << "\n";
+            std::cout << "currentPhase=" << state.currentPhase << "\n";
+            std::cout << "completedPhases=" << Csv(state.completedPhases) << "\n";
+            std::cout << "succeeded=" << state.succeededRepos.size() << " failed=" << state.failedRepos.size() << " blocked=" << state.blockedRepoSet.size() << " skipped=" << state.skippedRepos.size() << " pending=" << state.pendingRepos.size() << "\n";
+            std::cout << "repoGraphFingerprint=" << state.repoGraphFingerprint << "\n";
+            std::cout << "resumePossible=" << (!state.currentPhase.empty() ? "yes" : "no") << "\n";
+            std::cout << "suggestedNextAction=" << (state.resumeCommand.empty() ? "kog converge" : state.resumeCommand) << "\n";
+            if (!state.blockedReason.empty()) std::cout << "blockedReason=" << state.blockedReason << "\n";
+            if (!state.blockedRepos.empty()) std::cout << "blockedRepos=" << Csv(state.blockedRepos) << "\n";
+            if (!state.resumeCommand.empty()) std::cout << "resumeCommand=" << state.resumeCommand << "\n";
+            PrintStatusPhaseSummary(state);
             std::exit(0);
         }
-
         if (*abort) {
             DeleteState(statePath);
             std::cout << "converge state removed: " << statePath.generic_string() << "\n";
             std::exit(0);
         }
-
-        std::string phase = "sync";
-        if (*resume) {
-            const auto state = ReadState(statePath);
-            if (state.empty()) {
-                std::cerr << "Error: no converge state to resume\n";
-                std::exit(1);
-            }
-            const auto it = state.find("phase");
-            if (it != state.end() && !it->second.empty()) {
-                phase = it->second;
-            }
-            std::cout << "Resuming converge from phase: " << phase << "\n";
+        if (*dryRun) {
+            if (!recursive) { std::cerr << "Error: converge --dry-run planner requires recursive status snapshot; omit --no-recursive\n"; std::exit(2); }
+            std::exit(RunDryRunPlanner(workspaceRoot, *jobs, *unregisteredScan));
         }
 
-        if (!WriteState(statePath, workspaceRoot, phase, recursive, *dryRun)) {
+        if (!recursive) {
+            std::cerr << "Error: converge runtime orchestration requires recursive mode\n";
+            std::exit(2);
+        }
+
+        WorkflowState state;
+        Snapshot snapshot;
+        Plan plan;
+        std::size_t startPhaseIndex = 0;
+
+        if (*resume) {
+            if (!ReadState(statePath, state)) { std::cerr << "Error: no converge state to resume\n"; std::exit(1); }
+            if (state.workspaceRoot.lexically_normal() != workspaceRoot) {
+                std::cerr << "Error: converge state workspace mismatch; expected " << state.workspaceRoot.generic_string() << " got " << workspaceRoot.generic_string() << "\n";
+                std::exit(1);
+            }
+            if (state.recursive != recursive) {
+                std::cerr << "Error: converge resume refused due to recursive-mode mismatch\n";
+                std::exit(1);
+            }
+            if (state.dryRunRequested) {
+                std::cerr << "Error: converge resume refused because saved state was created from dry-run mode\n";
+                std::exit(1);
+            }
+            try {
+                snapshot = LoadSnapshot(workspaceRoot, *jobs, false);
+            } catch (const std::exception& ex) {
+                std::cerr << "Error: failed to load recursive status snapshot during resume: " << ex.what() << "\n";
+                std::exit(1);
+            }
+            const auto resumeFingerprint = SnapshotFingerprint(snapshot);
+            if (!state.repoGraphFingerprint.empty() && state.repoGraphFingerprint != resumeFingerprint) {
+                std::cerr << "Error: converge resume refused due to changed repo graph fingerprint\n";
+                std::cerr << "saved=" << state.repoGraphFingerprint << " current=" << resumeFingerprint << "\n";
+                std::exit(1);
+            }
+            const auto savedBaselines = ToSet(state.repoBaselines);
+            const auto currentBaselines = ToSet(RepoBaselines(snapshot));
+            if (!savedBaselines.empty() && savedBaselines != currentBaselines) {
+                std::cerr << "Error: converge resume refused due to changed repo branch/HEAD/remote baseline\n";
+                std::exit(1);
+            }
+            state.repoGraphFingerprint = resumeFingerprint;
+            plan = BuildPlan(snapshot);
+            const auto phaseIt = std::find(kConvergePhases.begin(), kConvergePhases.end(), state.currentPhase);
+            startPhaseIndex = phaseIt == kConvergePhases.end() ? 0 : static_cast<std::size_t>(std::distance(kConvergePhases.begin(), phaseIt));
+            std::cout << "Resuming converge from phase: " << state.currentPhase << "\n";
+        } else {
+            try {
+                snapshot = LoadSnapshot(workspaceRoot, *jobs, false);
+            } catch (const std::exception& ex) {
+                std::cerr << "Error: failed to load recursive status snapshot: " << ex.what() << "\n";
+                std::exit(1);
+            }
+            plan = BuildPlan(snapshot);
+            state.workflow = "converge";
+            state.schemaName = "kog.convergeWorkflowState";
+            state.schemaVersion = 1;
+            state.workspaceRoot = workspaceRoot;
+            state.startedAt = UtcNowIso8601();
+            state.currentPhase = kConvergePhases.front();
+            state.recursive = recursive;
+            state.dryRunRequested = *dryRun;
+            state.completedPhases.clear();
+            state.blockedReason.clear();
+            state.blockedRepos.clear();
+            state.resumeCommand = "kog converge --resume";
+            state.phaseResults.clear();
+            state.commandLinesUsed.clear();
+            state.plannedSyncRepos = UniqueRepos(plan.sync);
+            state.plannedCommitRepos = UniqueRepos(plan.commit);
+            state.plannedPushRepos = UniqueRepos(plan.push);
+            state.plannedBlockedRepos = UniqueRepos(plan.blocked);
+            state.plannedWaves = plan.waves;
+            state.repoGraphFingerprint = SnapshotFingerprint(snapshot);
+            state.repoBaselines = RepoBaselines(snapshot);
+            state.repoManagementPolicy.clear();
+            state.repoType.clear();
+            state.repoCommandPolicy.clear();
+            for (const auto& repo : snapshot.repos) {
+                state.repoManagementPolicy[repo.id] = repo.blocksConverge ? "discovered-untrusted" : "managed";
+                state.repoType[repo.id] = repo.id == "." ? "root" : "registered";
+                state.repoCommandPolicy[repo.id] = repo.commandPolicy;
+            }
+            state.detectedConflictInfo.clear();
+            state.succeededRepos.clear();
+            state.failedRepos.clear();
+            state.blockedRepoSet.clear();
+            state.skippedRepos.clear();
+            state.pendingRepos.clear();
+            for (const auto& repo : snapshot.repos) state.pendingRepos.push_back(repo.id);
+            std::sort(state.pendingRepos.begin(), state.pendingRepos.end());
+        }
+
+        if (!WriteState(statePath, state)) {
             std::cerr << "Error: failed to write converge state file: " << statePath.generic_string() << "\n";
             std::exit(1);
         }
 
-        if (phase == "sync") {
-            std::cout << "[converge] phase=sync\n";
-            const auto syncCode = RunSyncOriginLatestNative(workspaceRoot, recursive, *dryRun, false);
-            if (syncCode != 0) {
-                WriteState(statePath, workspaceRoot, "sync", recursive, *dryRun);
-                std::exit(syncCode);
+        auto persist = [&]() {
+            if (!WriteState(statePath, state)) {
+                std::cerr << "Error: failed to persist converge state file: " << statePath.generic_string() << "\n";
+                std::exit(1);
             }
-            phase = "push";
-            if (!WriteState(statePath, workspaceRoot, phase, recursive, *dryRun)) {
-                std::cerr << "Error: failed to write converge state transition to push\n";
+        };
+
+        for (std::size_t idx = startPhaseIndex; idx < kConvergePhases.size(); ++idx) {
+            const auto& phase = kConvergePhases[idx];
+            if (PhaseAlreadyCompleted(state, phase)) continue;
+
+            state.currentPhase = phase;
+            persist();
+            std::cout << "[converge] phase=" << phase << "\n";
+
+            PhaseSummary summary;
+            summary.pending = state.pendingRepos;
+
+            if (phase == "status-preflight-plan") {
+                PrintPlan(snapshot, plan, false);
+                summary.succeeded = UniqueRepos(plan.sync);
+                MergeUnique(summary.succeeded, UniqueRepos(plan.commit));
+                MergeUnique(summary.succeeded, UniqueRepos(plan.push));
+                summary.skipped = UniqueRepos(plan.skipped);
+                summary.blocked = UniqueRepos(plan.blocked);
+                if (!summary.blocked.empty()) {
+                    state.blockedReason = "status preflight detected blocked repositories";
+                    state.blockedRepos = summary.blocked;
+                    for (const auto& repo : summary.blocked) {
+                        summary.failureCategory[repo] = "BLOCKED_BY_POLICY";
+                        summary.failureMessage[repo] = state.blockedReason;
+                        summary.retryEligible[repo] = true;
+                    }
+                }
+            } else if (phase == "commit-local-changes-if-needed") {
+                for (const auto& line : plan.commit) {
+                    if (std::find(state.succeededRepos.begin(), state.succeededRepos.end(), line.repo) != state.succeededRepos.end()) {
+                        summary.skipped.push_back(line.repo);
+                        continue;
+                    }
+                    if (std::find(state.skippedRepos.begin(), state.skippedRepos.end(), line.repo) != state.skippedRepos.end()) {
+                        summary.skipped.push_back(line.repo);
+                        continue;
+                    }
+                    const bool pointerCommit = line.text.find("deterministic pointer commit") != std::string::npos;
+                    const std::string message = pointerCommit ? (line.text.find(kPointerMultipleMessage) != std::string::npos ? kPointerMultipleMessage : kPointerSingleMessage) : std::string{};
+                    const auto code = RunCommitNativeSimple(workspaceRoot, line.repo, true, message, false, false, "", "", false, true, false);
+                    state.commandLinesUsed[phase].push_back("kog commit -ai --repos " + line.repo);
+                    if (code == 0) {
+                        summary.succeeded.push_back(line.repo);
+                    } else {
+                        summary.failed.push_back(line.repo);
+                        summary.failureCategory[line.repo] = "FAILED_COMMIT";
+                        summary.failureMessage[line.repo] = "commit-local-changes-if-needed failed";
+                        summary.retryEligible[line.repo] = true;
+                    }
+                }
+                for (const auto& line : plan.skipped) {
+                    if (line.text.find("commit skipped") != std::string::npos || line.text.find("kog commit -ai skipped") != std::string::npos || line.text.find("pointer commit skipped") != std::string::npos) {
+                        summary.skipped.push_back(line.repo);
+                    }
+                }
+            } else if (phase == "sync-before-push" || phase == "sync-converge-dependent-repos") {
+                if (std::find(state.succeededRepos.begin(), state.succeededRepos.end(), ".") != state.succeededRepos.end()) {
+                    summary.skipped.push_back(".");
+                    summary.failureCategory["."] = "SKIPPED_BY_POLICY";
+                    summary.failureMessage["."] = "sync phase already succeeded in previous run";
+                    summary.retryEligible["."] = true;
+                    RecordPhaseState(state, phase, summary);
+                    persist();
+                    continue;
+                }
+                state.commandLinesUsed[phase].push_back("kog sync origin-latest --recursive");
+                const auto code = RunSyncOriginLatestNative(workspaceRoot, true, false, false);
+                if (code == 0) summary.succeeded.push_back(".");
+                else {
+                    summary.failed.push_back(".");
+                    summary.failureCategory["."] = "SYNC_CONFLICT";
+                    summary.failureMessage["."] = "sync phase failed";
+                    summary.retryEligible["."] = true;
+                }
+            } else if (phase == "push-nested-bottom-up" || phase == "push-parents-bottom-up") {
+                if (std::find(state.succeededRepos.begin(), state.succeededRepos.end(), ".") != state.succeededRepos.end()) {
+                    summary.skipped.push_back(".");
+                    summary.failureCategory["."] = "SKIPPED_BY_POLICY";
+                    summary.failureMessage["."] = "push phase already succeeded in previous run";
+                    summary.retryEligible["."] = true;
+                    RecordPhaseState(state, phase, summary);
+                    persist();
+                    continue;
+                }
+                state.commandLinesUsed[phase].push_back("kog push --recursive --jobs " + std::to_string(*jobs));
+                const auto code = RunPushNativeSimple(workspaceRoot, true, false, *profile, *forceWithLease, *noVerify, *jobs, *verbose, *remote);
+                if (code == 0) summary.succeeded.push_back(".");
+                else {
+                    summary.failed.push_back(".");
+                    summary.failureCategory["."] = "FAILED_PUSH";
+                    summary.failureMessage["."] = "push phase failed";
+                    summary.retryEligible["."] = true;
+                }
+            } else if (phase == "status-delta-after-sync") {
+                try {
+                    snapshot = LoadSnapshot(workspaceRoot, *jobs, false);
+                    plan = BuildPlan(snapshot);
+                    state.repoGraphFingerprint = SnapshotFingerprint(snapshot);
+                    state.repoBaselines = RepoBaselines(snapshot);
+                    summary.succeeded.push_back(".");
+                } catch (const std::exception& ex) {
+                    summary.failed.push_back(".");
+                    summary.failureCategory["."] = "FAILED_STATUS";
+                    summary.failureMessage["."] = ex.what();
+                    summary.retryEligible["."] = true;
+                }
+            } else if (phase == "commit-pointer-updates-if-needed") {
+                for (const auto& line : plan.commit) {
+                    if (line.text.find("deterministic pointer commit") == std::string::npos) continue;
+                    if (std::find(state.succeededRepos.begin(), state.succeededRepos.end(), line.repo) != state.succeededRepos.end()) {
+                        summary.skipped.push_back(line.repo);
+                        continue;
+                    }
+                    if (std::find(state.skippedRepos.begin(), state.skippedRepos.end(), line.repo) != state.skippedRepos.end()) {
+                        summary.skipped.push_back(line.repo);
+                        continue;
+                    }
+                    const std::string message = line.text.find(kPointerMultipleMessage) != std::string::npos ? kPointerMultipleMessage : kPointerSingleMessage;
+                    const auto code = RunCommitNativeSimple(workspaceRoot, line.repo, true, message, false, false, "", "", false, true, false);
+                    state.commandLinesUsed[phase].push_back("kog commit -ai --repos " + line.repo + " --message \"" + message + "\"");
+                    if (code == 0) summary.succeeded.push_back(line.repo);
+                    else {
+                        summary.failed.push_back(line.repo);
+                        summary.failureCategory[line.repo] = "FAILED_COMMIT";
+                        summary.failureMessage[line.repo] = "pointer commit failed";
+                        summary.retryEligible[line.repo] = true;
+                    }
+                }
+                for (const auto& line : plan.skipped) if (line.text.find("pointer commit skipped") != std::string::npos) summary.skipped.push_back(line.repo);
+            } else if (phase == "final-status-summary") {
+                std::cout << "Converge final summary\n";
+                std::cout << "  succeeded=" << state.succeededRepos.size() << " failed=" << state.failedRepos.size() << " blocked=" << state.blockedRepoSet.size() << " skipped=" << state.skippedRepos.size() << " pending=" << state.pendingRepos.size() << "\n";
+                summary.succeeded.push_back(".");
+            }
+
+            std::sort(summary.succeeded.begin(), summary.succeeded.end());
+            summary.succeeded.erase(std::unique(summary.succeeded.begin(), summary.succeeded.end()), summary.succeeded.end());
+            std::sort(summary.failed.begin(), summary.failed.end());
+            summary.failed.erase(std::unique(summary.failed.begin(), summary.failed.end()), summary.failed.end());
+            std::sort(summary.blocked.begin(), summary.blocked.end());
+            summary.blocked.erase(std::unique(summary.blocked.begin(), summary.blocked.end()), summary.blocked.end());
+            std::sort(summary.skipped.begin(), summary.skipped.end());
+            summary.skipped.erase(std::unique(summary.skipped.begin(), summary.skipped.end()), summary.skipped.end());
+
+            for (const auto& repo : summary.succeeded) {
+                state.pendingRepos.erase(std::remove(state.pendingRepos.begin(), state.pendingRepos.end(), repo), state.pendingRepos.end());
+            }
+            for (const auto& repo : summary.failed) {
+                state.pendingRepos.erase(std::remove(state.pendingRepos.begin(), state.pendingRepos.end(), repo), state.pendingRepos.end());
+            }
+            // Resumed phases can turn previously failed/blocked repos into success;
+            // keep aggregate result sets convergent instead of append-only.
+            RemoveRepos(state.failedRepos, summary.succeeded);
+            RemoveRepos(state.blockedRepoSet, summary.succeeded);
+            RemoveRepos(state.blockedRepos, summary.succeeded);
+            summary.pending = state.pendingRepos;
+            RecordPhaseState(state, phase, summary);
+            persist();
+
+            if (!summary.failed.empty() || !summary.blocked.empty()) {
+                state.blockedReason = !summary.failed.empty() ? (phase + " encountered failures") : "blocked repositories present";
+                if (!summary.failed.empty()) state.blockedRepos = summary.failed;
+                else state.blockedRepos = summary.blocked;
+                if (idx + 1 < kConvergePhases.size()) state.currentPhase = kConvergePhases[idx + 1];
+                persist();
                 std::exit(1);
             }
         }
 
-        if (phase == "push") {
-            std::cout << "[converge] phase=push\n";
-            const auto pushCode = RunPushNativeSimple(
-                workspaceRoot,
-                recursive,
-                *dryRun,
-                *profile,
-                *forceWithLease,
-                *noVerify,
-                *jobs,
-                *verbose,
-                *remote);
-            if (pushCode != 0) {
-                WriteState(statePath, workspaceRoot, "push", recursive, *dryRun);
-                std::exit(pushCode);
-            }
-            phase = "done";
-        }
-
-        if (!WriteState(statePath, workspaceRoot, phase, recursive, *dryRun)) {
-            std::cerr << "Error: failed to finalize converge state\n";
-            std::exit(1);
-        }
-
         DeleteState(statePath);
+        const bool hasFailures = !state.failedRepos.empty() || !state.blockedRepoSet.empty();
         std::cout << "[converge] completed\n";
-        std::exit(0);
+        std::exit(hasFailures ? 1 : 0);
     });
 }
 
