@@ -85,6 +85,7 @@ struct RecursiveRepoStatus {
     std::string managementPolicy;
     bool blocksConverge = false;
     std::string blockReason;
+    std::string commandPolicySource;
     std::map<std::string, std::string> commandPolicy;
     std::vector<std::string> diagnostics;
 };
@@ -118,6 +119,13 @@ auto Trim(std::string InValue) -> std::string {
         start += 1;
     }
     return InValue.substr(start);
+}
+
+auto ToLower(std::string InValue) -> std::string {
+    std::transform(InValue.begin(), InValue.end(), InValue.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return InValue;
 }
 
 auto SplitNonEmptyLines(const std::string& InText) -> std::vector<std::string> {
@@ -544,11 +552,39 @@ auto LoadTrustedManifestPathKeys(const std::filesystem::path& InWorkspaceRoot) -
     return out;
 }
 
-auto HasDiscoverCommandPolicy(const workspace::RepoRecord& InRepo) -> bool {
-    return !InRepo.kogSyncPolicy.empty()
-        || !InRepo.kogCommitPolicy.empty()
-        || !InRepo.kogPushPolicy.empty()
-        || !InRepo.kogHygienePolicy.empty();
+auto IsPolicyEnabled(const std::string& InValue) -> bool {
+    const auto lowered = ToLower(Trim(InValue));
+    if (lowered.empty()) {
+        return true;
+    }
+    return lowered != "false" && lowered != "0" && lowered != "no" && lowered != "off" && lowered != "disabled";
+}
+
+auto PolicyEnabled(const std::map<std::string, std::string>& InPolicy, const char* InKey) -> bool {
+    const auto it = InPolicy.find(InKey);
+    if (it == InPolicy.end()) {
+        return true;
+    }
+    return IsPolicyEnabled(it->second);
+}
+
+auto ResolveCommandPolicySource(const workspace::RepoRecord& InRepo,
+                                bool InPersistedInManifest,
+                                int InDepth,
+                                bool InWorkspaceRoot) -> std::string {
+    if (InWorkspaceRoot) {
+        return "workspace-root";
+    }
+    if (InRepo.type == "registered") {
+        return "gitmodules";
+    }
+    if (InPersistedInManifest) {
+        return "workspace-manifest";
+    }
+    if (InDepth <= 1) {
+        return "shallow-unregistered-probe";
+    }
+    return "full-scan";
 }
 
 auto RelativeId(const std::filesystem::path& InWorkspaceRoot, const std::filesystem::path& InPath) -> std::string {
@@ -998,14 +1034,14 @@ auto BuildRecursiveRepoStatus(const workspace::RepoRecord& InRepo,
     out.registrationRelativeTo = InRepo.registrationRelativeTo.empty()
         ? std::string{}
         : RelativeId(InWorkspaceRoot, InRepo.registrationRelativeTo);
-    out.registrationSource = out.isWorkspaceRoot ? "workspace-root" : (InRepo.type == "registered" ? ".gitmodules" : "discover");
+    out.registrationSource = out.isWorkspaceRoot ? "workspace-root" : (InRepo.type == "registered" ? "gitmodules" : "discover");
     out.isPersistedInWorkspaceManifest = InTrustedManifestPathKeys.contains(PathKey(InRepo.path));
+    out.commandPolicySource = ResolveCommandPolicySource(InRepo, out.isPersistedInWorkspaceManifest, out.depth, out.isWorkspaceRoot);
     out.commandPolicy = {
         {"sync", InRepo.kogSyncPolicy},
         {"commit", InRepo.kogCommitPolicy},
         {"push", InRepo.kogPushPolicy},
         {"hygiene", InRepo.kogHygienePolicy},
-        {"source", HasDiscoverCommandPolicy(InRepo) ? std::string{".gitmodules"} : std::string{"default"}},
     };
 
     for (const auto& dep : InRepo.dependencies) {
@@ -1061,6 +1097,7 @@ auto BuildRecursiveRepoStatus(const workspace::RepoRecord& InRepo,
     bool hasUntracked = false;
     bool hasIndexDirty = false;
     bool hasConflict = false;
+    bool allVisibleUntracked = !visibleStatus.empty();
 
     for (const auto& line : visibleStatus) {
         const auto flag = ParseStatusFlag(line);
@@ -1071,6 +1108,8 @@ auto BuildRecursiveRepoStatus(const workspace::RepoRecord& InRepo,
         });
         if (flag == "??") {
             hasUntracked = true;
+        } else {
+            allVisibleUntracked = false;
         }
         if (!flag.empty() && flag[0] != ' ' && flag[0] != '?') {
             hasIndexDirty = true;
@@ -1105,6 +1144,33 @@ auto BuildRecursiveRepoStatus(const workspace::RepoRecord& InRepo,
         PushUnique(&out.statusFlags, "UNPUSHED_SUBMODULE_COMMIT");
     }
 
+    bool childWorktreeDirty = false;
+    bool childCommitUnpushed = false;
+    for (const auto& childId : out.childRepos) {
+        const auto childIt = std::find_if(InReposByPath.begin(), InReposByPath.end(), [&](const auto& entry) {
+            return RelativeId(InWorkspaceRoot, entry.second.path) == childId;
+        });
+        if (childIt == InReposByPath.end()) {
+            continue;
+        }
+        const auto childStatusOut = GitCaptureNoOptionalLocks(childIt->second.path, {"status", "--porcelain=v1", "--untracked-files=normal"});
+        if (childStatusOut.exitCode == 0 && !FilterVisibleStatusLines(childStatusOut.stdoutStr).empty()) {
+            childWorktreeDirty = true;
+        }
+        if (HasUnpushedCommit(childIt->second.path, UpstreamForSnapshot(childIt->second.path))) {
+            childCommitUnpushed = true;
+        }
+    }
+    if (hasGitlinkDirty && childWorktreeDirty) {
+        PushUnique(&out.submoduleFacts, "SubmoduleWorktreeDirty");
+        PushUnique(&out.statusFlags, "CHILD_WORKTREE_DIRTY");
+    }
+    if (hasGitlinkDirty && childCommitUnpushed) {
+        PushUnique(&out.submoduleFacts, "SubmoduleCommitUnpushed");
+        PushUnique(&out.statusFlags, "CHILD_COMMIT_UNPUSHED");
+        PushUnique(&out.statusFlags, "PARENT_POINTER_UNSAFE");
+    }
+
     out.conflicted = hasConflict;
     if (hasConflict) {
         out.dirtyKind = "CONFLICTED";
@@ -1113,9 +1179,9 @@ auto BuildRecursiveRepoStatus(const workspace::RepoRecord& InRepo,
     } else if (hasContentDirty && hasGitlinkDirty) {
         out.dirtyKind = "CONTENT_AND_GITLINK_DIRTY";
     } else if (hasGitlinkDirty) {
-        out.dirtyKind = "GITLINK_DIRTY_ONLY";
+        out.dirtyKind = (childWorktreeDirty || childCommitUnpushed) ? "GITLINK_DIRTY_UNSAFE" : "GITLINK_DIRTY_ONLY";
     } else if (hasContentDirty) {
-        out.dirtyKind = hasUntracked && visibleStatus.size() == 1 ? "UNTRACKED_ONLY" : "CONTENT_DIRTY";
+        out.dirtyKind = hasUntracked && allVisibleUntracked ? "UNTRACKED_ONLY" : "CONTENT_DIRTY";
     } else if (out.branch == "(detached)") {
         out.dirtyKind = "DETACHED_HEAD";
     } else if (out.upstream.empty()) {
@@ -1153,11 +1219,11 @@ auto BuildRecursiveRepoStatus(const workspace::RepoRecord& InRepo,
         } else {
             out.managementPolicy = "discovered-untrusted";
             out.blocksConverge = true;
-            out.blockReason = "Discovered unregistered nested Git repository that is not in the trusted workspace manifest. Register it as a submodule/subrepo, ignore it, or move it outside the workspace.";
+            out.blockReason = "Discovered unregistered nested Git repository that is not in the trusted workspace manifest. Register it as a submodule/subrepo, ignore it, or move it outside the workspace. If this is intended, run: kog discover --unregistered-depth 1";
         }
     } else {
         out.isExplicitlyAllowed = true;
-        out.managementPolicy = InRepo.type == "root" ? "workspace-root" : "registered";
+        out.managementPolicy = InRepo.type == "root" ? "workspace-root" : "managed";
         out.blocksConverge = false;
     }
 
@@ -1307,6 +1373,16 @@ auto FormatRecursiveStatusJson(const RecursiveStatusSnapshot& InSnapshot) -> std
         out << "\"dirtyKind\":\"" << EscapeJson(repo.dirtyKind) << "\",";
         out << "\"statusFlags\":" << JsonArray(repo.statusFlags) << ",";
         out << "\"submoduleFacts\":" << JsonArray(repo.submoduleFacts) << ",";
+        const bool submoduleWorktreeDirty = std::find(repo.submoduleFacts.begin(), repo.submoduleFacts.end(), "SubmoduleWorktreeDirty") != repo.submoduleFacts.end();
+        const bool submoduleHeadMoved = std::find(repo.submoduleFacts.begin(), repo.submoduleFacts.end(), "SubmoduleHeadMoved") != repo.submoduleFacts.end();
+        const bool submoduleCommitUnpushed = std::find(repo.submoduleFacts.begin(), repo.submoduleFacts.end(), "SubmoduleCommitUnpushed") != repo.submoduleFacts.end();
+        const bool parentGitlinkDirty = std::find(repo.submoduleFacts.begin(), repo.submoduleFacts.end(), "ParentGitlinkDirty") != repo.submoduleFacts.end();
+        out << "\"submoduleSafety\":{";
+        out << "\"submoduleWorktreeDirty\":" << (submoduleWorktreeDirty ? "true" : "false") << ",";
+        out << "\"submoduleHeadMoved\":" << (submoduleHeadMoved ? "true" : "false") << ",";
+        out << "\"submoduleCommitUnpushed\":" << (submoduleCommitUnpushed ? "true" : "false") << ",";
+        out << "\"parentGitlinkDirty\":" << (parentGitlinkDirty ? "true" : "false");
+        out << "},";
         out << "\"conflicted\":" << (repo.conflicted ? "true" : "false") << ",";
         out << "\"pushable\":" << (repo.pushable ? "true" : "false") << ",";
         out << "\"selectedPushRemote\":\"" << EscapeJson(repo.selectedPushRemote) << "\",";
@@ -1322,13 +1398,11 @@ auto FormatRecursiveStatusJson(const RecursiveStatusSnapshot& InSnapshot) -> std
         out << "\"blocksConverge\":" << (repo.blocksConverge ? "true" : "false") << ",";
         out << "\"blockReason\":\"" << EscapeJson(repo.blockReason) << "\",";
         out << "\"commandPolicy\":{";
-        std::size_t policyIndex = 0;
-        for (const auto& [key, value] : repo.commandPolicy) {
-            if (policyIndex++ > 0) {
-                out << ",";
-            }
-            out << "\"" << EscapeJson(key) << "\":\"" << EscapeJson(value) << "\"";
-        }
+        out << "\"sync\":" << (PolicyEnabled(repo.commandPolicy, "sync") ? "true" : "false") << ",";
+        out << "\"commit\":" << (PolicyEnabled(repo.commandPolicy, "commit") ? "true" : "false") << ",";
+        out << "\"push\":" << (PolicyEnabled(repo.commandPolicy, "push") ? "true" : "false") << ",";
+        out << "\"hygiene\":" << (PolicyEnabled(repo.commandPolicy, "hygiene") ? "true" : "false") << ",";
+        out << "\"source\":\"" << EscapeJson(repo.commandPolicySource) << "\"";
         out << "},";
         out << "\"diagnostics\":" << JsonArray(repo.diagnostics);
         out << "}";

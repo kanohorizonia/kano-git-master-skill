@@ -3961,7 +3961,7 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
     }
     planningMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - planningStart).count();
 
-    const auto repoWaves = BuildExecutionWaves(repoRecords);
+    const auto repoWaves = kano::git::commands::BuildExecutionWaves(repoRecords);
     const auto runbooks = BuildRepoCommitRunbooks(repoRecords, stageMessages, workspaceRoot, "", true);
     const auto taskGraph = BuildCommitTaskGraph(repoRecords, runbooks);
     const int workers = ResolveCommitJobs("auto", taskGraph.tasks.size(), false);
@@ -4183,7 +4183,7 @@ auto RunAmendNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
     }
     planningMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - planningStart).count();
 
-    const auto repoWaves = BuildExecutionWaves(repoRecords);
+    const auto repoWaves = kano::git::commands::BuildExecutionWaves(repoRecords);
     const auto runbooks = BuildRepoCommitRunbooks(repoRecords, stageMessages, workspaceRoot, "", true);
     const auto taskGraph = BuildCommitTaskGraph(repoRecords, runbooks);
     const int workers = ResolveCommitJobs("auto", taskGraph.tasks.size(), false);
@@ -4896,7 +4896,7 @@ void RegisterCommit(CLI::App& InApp) {
         planningMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - planningStart).count();
 
         const bool isPlanMode = !stageMessages.empty();
-        const auto repoWaves = BuildExecutionWaves(repoRecords);
+        const auto repoWaves = kano::git::commands::BuildExecutionWaves(repoRecords);
         const auto runbooks = BuildRepoCommitRunbooks(repoRecords, stageMessages, workspaceRoot, *message, isPlanMode);
         const auto taskGraph = BuildCommitTaskGraph(repoRecords, runbooks);
         const int workers = ResolveCommitJobs(*jobs, taskGraph.tasks.size(), ai.enabled);

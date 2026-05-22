@@ -1621,7 +1621,7 @@ auto BuildSyncPlans(
 
     workspace::WorkspaceInventoryOptions inventoryOptions;
     inventoryOptions.rootDir = root;
-    inventoryOptions.unregisteredDepth = 2;
+    inventoryOptions.unregisteredDepth = 1;
     inventoryOptions.useCache = !InNoCache;
     inventoryOptions.refreshCache = InRefreshCache;
     inventoryOptions.metadataLevel = "minimal";
@@ -1920,7 +1920,8 @@ auto RunNativeOriginLatestSync(
     bool InRecursive,
     bool InAutoStashLocalChanges,
     bool InCleanupStaleLocks,
-    int InJobs) -> int {
+    int InJobs,
+    workspace::RepoOperationAggregate* OutAggregate = nullptr) -> int {
     std::vector<SyncPlan> plans;
     std::string mode;
     try {
@@ -2304,6 +2305,10 @@ auto RunNativeOriginLatestSync(
         schedulerInputs,
         schedulerOptions,
         runOnePlan);
+
+    if (OutAggregate != nullptr) {
+        *OutAggregate = aggregate;
+    }
 
     for (const auto& result : aggregate.results) {
         if (!result.stdoutText.empty()) {
@@ -3045,11 +3050,29 @@ auto RunSyncPreCommitNative(const std::filesystem::path& InRepoRoot,
         *branchMode);
 }
 
+    auto RunSyncOriginLatestNativeDetailed(const std::filesystem::path& InRepoRoot,
+                           bool InRecursive,
+                           bool InDryRun,
+                           bool InCleanupStaleLocks) -> std::pair<int, workspace::RepoOperationAggregate>;
+
 auto RunSyncOriginLatestNative(const std::filesystem::path& InRepoRoot,
                                const bool InRecursive,
                                const bool InDryRun,
                                const bool InCleanupStaleLocks) -> int {
-    return RunNativeOriginLatestSync(
+    const auto detailed = RunSyncOriginLatestNativeDetailed(
+        InRepoRoot,
+        InRecursive,
+        InDryRun,
+        InCleanupStaleLocks);
+    return detailed.first;
+}
+
+auto RunSyncOriginLatestNativeDetailed(const std::filesystem::path& InRepoRoot,
+                                       const bool InRecursive,
+                                       const bool InDryRun,
+                                       const bool InCleanupStaleLocks) -> std::pair<int, workspace::RepoOperationAggregate> {
+    workspace::RepoOperationAggregate aggregate;
+    const auto code = RunNativeOriginLatestSync(
         InRepoRoot,
         "origin",
         12,
@@ -3059,7 +3082,9 @@ auto RunSyncOriginLatestNative(const std::filesystem::path& InRepoRoot,
         InRecursive,
         true,
         InCleanupStaleLocks,
-        1);
+        1,
+        &aggregate);
+    return {code, std::move(aggregate)};
 }
 
 } // namespace kano::git::commands

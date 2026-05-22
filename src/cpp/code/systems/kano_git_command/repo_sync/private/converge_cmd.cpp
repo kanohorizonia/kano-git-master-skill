@@ -35,6 +35,8 @@ namespace {
 
 struct RepoStatus {
     std::string id;
+    std::string type;
+    std::string managementPolicy;
     std::string dirtyKind;
     std::string branch;
     std::string head;
@@ -79,6 +81,7 @@ struct PhaseSummary {
     std::map<std::string, std::string> failureCategory;
     std::map<std::string, std::string> failureMessage;
     std::map<std::string, std::string> blockedBy;
+    std::map<std::string, std::string> policySkipReason;
     std::map<std::string, bool> retryEligible;
 };
 
@@ -197,6 +200,7 @@ nlohmann::json ToJson(const PhaseSummary& summary) {
     out["failureCategory"] = summary.failureCategory;
     out["failureMessage"] = summary.failureMessage;
     out["blockedBy"] = summary.blockedBy;
+    out["policySkipReason"] = summary.policySkipReason;
     out["retryEligible"] = summary.retryEligible;
     return out;
 }
@@ -211,6 +215,7 @@ PhaseSummary PhaseSummaryFromJson(const nlohmann::json& value) {
     if (const auto it = value.find("failureCategory"); it != value.end() && it->is_object()) summary.failureCategory = it->get<std::map<std::string, std::string>>();
     if (const auto it = value.find("failureMessage"); it != value.end() && it->is_object()) summary.failureMessage = it->get<std::map<std::string, std::string>>();
     if (const auto it = value.find("blockedBy"); it != value.end() && it->is_object()) summary.blockedBy = it->get<std::map<std::string, std::string>>();
+    if (const auto it = value.find("policySkipReason"); it != value.end() && it->is_object()) summary.policySkipReason = it->get<std::map<std::string, std::string>>();
     if (const auto it = value.find("retryEligible"); it != value.end() && it->is_object()) summary.retryEligible = it->get<std::map<std::string, bool>>();
     return summary;
 }
@@ -374,7 +379,10 @@ std::map<std::string, std::string> JsonPolicy(const nlohmann::json& item) {
     std::map<std::string, std::string> out;
     const auto it = item.find("commandPolicy");
     if (it == item.end() || !it->is_object()) return out;
-    for (const auto& [key, value] : it->items()) if (value.is_string()) out[key] = value.get<std::string>();
+    for (const auto& [key, value] : it->items()) {
+        if (value.is_string()) out[key] = value.get<std::string>();
+        else if (value.is_boolean()) out[key] = value.get<bool>() ? "true" : "false";
+    }
     return out;
 }
 
@@ -388,6 +396,8 @@ Snapshot ParseSnapshot(const std::string& jsonText) {
     for (const auto& item : root.value("repos", nlohmann::json::array())) {
         RepoStatus repo;
         repo.id = item.value("id", std::string{});
+        repo.type = item.value("type", std::string{});
+        repo.managementPolicy = item.value("managementPolicy", std::string{});
         repo.dirtyKind = item.value("dirtyKind", std::string{"CLEAN"});
         repo.branch = item.value("branch", std::string{});
         repo.head = item.value("head", std::string{});
@@ -503,6 +513,7 @@ Plan BuildPlan(const Snapshot& snapshot) {
         if (repo.dirtyKind == "CLEAN") { Add(plan.skipped, repo.id, "commit skipped: CLEAN"); continue; }
         if (repo.dirtyKind == "AHEAD_ONLY") { Add(plan.skipped, repo.id, "commit skipped: AHEAD_ONLY"); Allows(repo, "push") ? Add(plan.push, repo.id, "kog push --repos " + repo.id) : Add(plan.skipped, repo.id, "push skipped by commandPolicy.push=false"); continue; }
         if (repo.dirtyKind == "GITLINK_DIRTY_ONLY") { Add(plan.skipped, repo.id, "kog commit -ai skipped: GITLINK_DIRTY_ONLY"); Allows(repo, "commit") ? Add(plan.commit, repo.id, "deterministic pointer commit: " + PointerMessage(repo)) : Add(plan.skipped, repo.id, "pointer commit skipped by commandPolicy.commit=false"); continue; }
+        if (repo.dirtyKind == "GITLINK_DIRTY_UNSAFE") { Add(plan.blocked, repo.id, "PARENT_POINTER_UNSAFE: child worktree/commit state is not safe for deterministic pointer-only commit"); continue; }
         if (repo.dirtyKind == "CONTENT_DIRTY") { Allows(repo, "commit") ? Add(plan.commit, repo.id, "kog commit -ai --repos " + repo.id) : Add(plan.skipped, repo.id, "commit skipped by commandPolicy.commit=false"); continue; }
         if (repo.dirtyKind == "CONTENT_AND_GITLINK_DIRTY") { Allows(repo, "commit") ? Add(plan.commit, repo.id, "kog commit -ai --repos " + repo.id + " (combined content/pointer context)") : Add(plan.skipped, repo.id, "commit skipped by commandPolicy.commit=false"); continue; }
         if (repo.dirtyKind == "UNTRACKED_ONLY") { Allows(repo, "commit") ? Add(plan.commit, repo.id, "kog commit -ai --repos " + repo.id + " (untracked files included by git add -A policy)") : Add(plan.blocked, repo.id, "DIRTY_WORKTREE: UNTRACKED_ONLY but commandPolicy.commit=false"); continue; }
@@ -529,7 +540,7 @@ std::string SnapshotFingerprint(const Snapshot& snapshot) {
         std::vector<std::string> policyParts;
         for (const auto& [key, value] : repo.commandPolicy) policyParts.push_back(key + "=" + value);
         std::sort(policyParts.begin(), policyParts.end());
-        parts.push_back(repo.id + "|" + repo.dirtyKind + "|" + std::to_string(repo.ahead) + "|" + Csv(repo.childRepos) + "|" + Csv(policyParts));
+        parts.push_back(repo.id + "|" + repo.type + "|" + repo.managementPolicy + "|" + Csv(repo.childRepos) + "|" + Csv(policyParts));
     }
     std::sort(parts.begin(), parts.end());
     return std::to_string(std::hash<std::string>{}(Csv(parts)));
@@ -549,6 +560,18 @@ std::vector<std::string> RepoBaselines(const Snapshot& snapshot) {
             " ahead=" + std::to_string(repo.ahead));
     }
     std::sort(out.begin(), out.end());
+    return out;
+}
+
+std::map<std::string, std::string> BaselineByRepo(const std::vector<std::string>& baselines) {
+    std::map<std::string, std::string> out;
+    for (const auto& line : baselines) {
+        const auto split = line.find(' ');
+        const auto id = split == std::string::npos ? line : line.substr(0, split);
+        if (!id.empty()) {
+            out[id] = line;
+        }
+    }
     return out;
 }
 
@@ -585,6 +608,66 @@ bool PhaseAlreadyCompleted(const WorkflowState& state, const std::string& phase)
 
 std::set<std::string> ToSet(const std::vector<std::string>& values) {
     return std::set<std::string>(values.begin(), values.end());
+}
+
+std::string MapSyncFailureCategoryToReason(const std::string& category) {
+    if (category == "SYNC_CONFLICT") return "CONFLICT_DETECTED";
+    if (category == "FAILED_MISSING_REMOTE") return "REMOTE_MISSING";
+    if (category == "FAILED_AUTH") return "AUTH_REQUIRED";
+    if (category == "FAILED_CONNECTION") return "NETWORK_ERROR";
+    if (category.rfind("SKIPPED_", 0) == 0) return "SKIPPED_BY_POLICY";
+    return "SYNC_ERROR";
+}
+
+std::string MapPushFailureCategoryToReason(const std::string& category) {
+    if (category == "FAILED_PUSH_NONFASTFORWARD") return "NON_FAST_FORWARD";
+    if (category == "FAILED_AUTH") return "AUTH_REQUIRED";
+    if (category == "FAILED_CONNECTION") return "NETWORK_ERROR";
+    if (category == "FAILED_MISSING_REMOTE") return "REMOTE_MISSING";
+    if (category.rfind("SKIPPED_", 0) == 0) return "SKIPPED_BY_POLICY";
+    return "PUSH_ERROR";
+}
+
+void PopulatePhaseSummaryFromAggregate(const workspace::RepoOperationAggregate& aggregate,
+                                       bool isPushPhase,
+                                       PhaseSummary& summary) {
+    for (const auto& result : aggregate.results) {
+        const auto repo = result.repoId.empty() ? result.repoPath.generic_string() : result.repoId;
+        switch (result.status) {
+            case workspace::RepoOperationStatus::Succeeded:
+                summary.succeeded.push_back(repo);
+                summary.retryEligible[repo] = false;
+                break;
+            case workspace::RepoOperationStatus::Skipped:
+                summary.skipped.push_back(repo);
+                summary.failureCategory[repo] = "SKIPPED_BY_POLICY";
+                summary.policySkipReason[repo] = result.skipReason;
+                summary.failureMessage[repo] = result.message.empty() ? result.skipReason : result.message;
+                summary.retryEligible[repo] = result.resumeRetryEligible;
+                break;
+            case workspace::RepoOperationStatus::Blocked:
+                summary.blocked.push_back(repo);
+                summary.failureCategory[repo] = "BLOCKED_BY_CHILD_FAILURE";
+                summary.failureMessage[repo] = result.blockReason;
+                summary.blockedBy[repo] = result.blockedBy;
+                summary.retryEligible[repo] = result.resumeRetryEligible;
+                break;
+            case workspace::RepoOperationStatus::Failed:
+                summary.failed.push_back(repo);
+                summary.failureCategory[repo] = isPushPhase
+                    ? MapPushFailureCategoryToReason(result.failureCategory)
+                    : MapSyncFailureCategoryToReason(result.failureCategory);
+                summary.failureMessage[repo] = result.message;
+                summary.retryEligible[repo] = result.resumeRetryEligible;
+                break;
+            case workspace::RepoOperationStatus::Pending:
+                summary.pending.push_back(repo);
+                summary.failureCategory[repo] = "PENDING";
+                summary.failureMessage[repo] = "scheduler did not execute repository";
+                summary.retryEligible[repo] = true;
+                break;
+        }
+    }
 }
 
 void PrintStatusPhaseSummary(const WorkflowState& state) {
@@ -749,11 +832,15 @@ void RegisterConverge(CLI::App& InApp) {
                 std::cerr << "saved=" << state.repoGraphFingerprint << " current=" << resumeFingerprint << "\n";
                 std::exit(1);
             }
-            const auto savedBaselines = ToSet(state.repoBaselines);
-            const auto currentBaselines = ToSet(RepoBaselines(snapshot));
-            if (!savedBaselines.empty() && savedBaselines != currentBaselines) {
-                std::cerr << "Error: converge resume refused due to changed repo branch/HEAD/remote baseline\n";
-                std::exit(1);
+            const auto savedBaselines = BaselineByRepo(state.repoBaselines);
+            const auto currentBaselines = BaselineByRepo(RepoBaselines(snapshot));
+            for (const auto& repo : state.succeededRepos) {
+                const auto savedIt = savedBaselines.find(repo);
+                const auto currentIt = currentBaselines.find(repo);
+                if (savedIt == savedBaselines.end() || currentIt == currentBaselines.end() || savedIt->second != currentIt->second) {
+                    std::cerr << "Error: converge resume refused because successful repo baseline changed: " << repo << "\n";
+                    std::exit(1);
+                }
             }
             state.repoGraphFingerprint = resumeFingerprint;
             plan = BuildPlan(snapshot);
@@ -793,8 +880,8 @@ void RegisterConverge(CLI::App& InApp) {
             state.repoType.clear();
             state.repoCommandPolicy.clear();
             for (const auto& repo : snapshot.repos) {
-                state.repoManagementPolicy[repo.id] = repo.blocksConverge ? "discovered-untrusted" : "managed";
-                state.repoType[repo.id] = repo.id == "." ? "root" : "registered";
+                state.repoManagementPolicy[repo.id] = repo.managementPolicy;
+                state.repoType[repo.id] = repo.type;
                 state.repoCommandPolicy[repo.id] = repo.commandPolicy;
             }
             state.detectedConflictInfo.clear();
@@ -832,9 +919,6 @@ void RegisterConverge(CLI::App& InApp) {
 
             if (phase == "status-preflight-plan") {
                 PrintPlan(snapshot, plan, false);
-                summary.succeeded = UniqueRepos(plan.sync);
-                MergeUnique(summary.succeeded, UniqueRepos(plan.commit));
-                MergeUnique(summary.succeeded, UniqueRepos(plan.push));
                 summary.skipped = UniqueRepos(plan.skipped);
                 summary.blocked = UniqueRepos(plan.blocked);
                 if (!summary.blocked.empty()) {
@@ -875,40 +959,22 @@ void RegisterConverge(CLI::App& InApp) {
                     }
                 }
             } else if (phase == "sync-before-push" || phase == "sync-converge-dependent-repos") {
-                if (std::find(state.succeededRepos.begin(), state.succeededRepos.end(), ".") != state.succeededRepos.end()) {
-                    summary.skipped.push_back(".");
-                    summary.failureCategory["."] = "SKIPPED_BY_POLICY";
-                    summary.failureMessage["."] = "sync phase already succeeded in previous run";
-                    summary.retryEligible["."] = true;
-                    RecordPhaseState(state, phase, summary);
-                    persist();
-                    continue;
-                }
                 state.commandLinesUsed[phase].push_back("kog sync origin-latest --recursive");
-                const auto code = RunSyncOriginLatestNative(workspaceRoot, true, false, false);
-                if (code == 0) summary.succeeded.push_back(".");
-                else {
+                const auto detailed = RunSyncOriginLatestNativeDetailed(workspaceRoot, true, false, false);
+                PopulatePhaseSummaryFromAggregate(detailed.second, false, summary);
+                if (detailed.first != 0 && summary.failed.empty() && summary.blocked.empty()) {
                     summary.failed.push_back(".");
-                    summary.failureCategory["."] = "SYNC_CONFLICT";
+                    summary.failureCategory["."] = "SYNC_ERROR";
                     summary.failureMessage["."] = "sync phase failed";
                     summary.retryEligible["."] = true;
                 }
             } else if (phase == "push-nested-bottom-up" || phase == "push-parents-bottom-up") {
-                if (std::find(state.succeededRepos.begin(), state.succeededRepos.end(), ".") != state.succeededRepos.end()) {
-                    summary.skipped.push_back(".");
-                    summary.failureCategory["."] = "SKIPPED_BY_POLICY";
-                    summary.failureMessage["."] = "push phase already succeeded in previous run";
-                    summary.retryEligible["."] = true;
-                    RecordPhaseState(state, phase, summary);
-                    persist();
-                    continue;
-                }
                 state.commandLinesUsed[phase].push_back("kog push --recursive --jobs " + std::to_string(*jobs));
-                const auto code = RunPushNativeSimple(workspaceRoot, true, false, *profile, *forceWithLease, *noVerify, *jobs, *verbose, *remote);
-                if (code == 0) summary.succeeded.push_back(".");
-                else {
+                const auto detailed = RunPushNativeSimpleDetailed(workspaceRoot, true, false, *profile, *forceWithLease, *noVerify, *jobs, *verbose, *remote);
+                PopulatePhaseSummaryFromAggregate(detailed.second, true, summary);
+                if (detailed.first != 0 && summary.failed.empty() && summary.blocked.empty()) {
                     summary.failed.push_back(".");
-                    summary.failureCategory["."] = "FAILED_PUSH";
+                    summary.failureCategory["."] = "PUSH_ERROR";
                     summary.failureMessage["."] = "push phase failed";
                     summary.retryEligible["."] = true;
                 }
@@ -982,7 +1048,8 @@ void RegisterConverge(CLI::App& InApp) {
                 state.blockedReason = !summary.failed.empty() ? (phase + " encountered failures") : "blocked repositories present";
                 if (!summary.failed.empty()) state.blockedRepos = summary.failed;
                 else state.blockedRepos = summary.blocked;
-                if (idx + 1 < kConvergePhases.size()) state.currentPhase = kConvergePhases[idx + 1];
+                state.completedPhases.erase(std::remove(state.completedPhases.begin(), state.completedPhases.end(), phase), state.completedPhases.end());
+                state.currentPhase = phase;
                 persist();
                 std::exit(1);
             }

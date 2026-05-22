@@ -421,7 +421,7 @@ TEST_CASE("converge status prints none when no state exists", "[functional][conv
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
-TEST_CASE("converge resume rejects changed branch head baseline", "[functional][converge][state]") {
+TEST_CASE("converge resume allows baseline drift on failed repos", "[functional][converge][state]") {
     const auto ctx = CreateRemoteWithClone("converge-runtime-resume-baseline");
     const auto statePath = ConvergeStatePath(ctx.cloneRepo);
 
@@ -438,9 +438,8 @@ TEST_CASE("converge resume rejects changed branch head baseline", "[functional][
     const auto resumeRun = RunKog({"converge", "--resume", "--jobs", "1"}, ctx.cloneRepo);
     INFO(resumeRun.stdoutText);
     INFO(resumeRun.stderrText);
-    REQUIRE(resumeRun.exitCode != 0);
-    RequireContains(resumeRun.stderrText, "changed repo branch/HEAD/remote baseline");
-    REQUIRE(std::filesystem::exists(statePath));
+    REQUIRE(resumeRun.exitCode == 0);
+    REQUIRE_FALSE(std::filesystem::exists(statePath));
 
     RemoveSandboxWorkspace(ctx.sandbox);
 }

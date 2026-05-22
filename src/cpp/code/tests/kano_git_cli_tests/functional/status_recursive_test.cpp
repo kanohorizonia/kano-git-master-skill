@@ -140,7 +140,7 @@ TEST_CASE("status recursive json emits Task 4A schema and deterministic schedule
     RequireContains(jsonJobs1, "\"type\":\"registered\"");
     RequireContains(jsonJobs1, "\"type\":\"unregistered\"");
     RequireContains(jsonJobs1, "\"dirtyKind\":\"UNTRACKED_ONLY\"");
-    RequireContains(jsonJobs1, "\"commandPolicy\":{\"commit\":\"true\",\"hygiene\":\"true\",\"push\":\"false\",\"source\":\".gitmodules\",\"sync\":\"true\"}");
+    RequireContains(jsonJobs1, "\"commandPolicy\":{\"sync\":true,\"commit\":true,\"push\":false,\"hygiene\":true,\"source\":\"gitmodules\"}");
     RequireNotContains(jsonJobs1, "\"kog-push\"");
     RequireNotContains(jsonJobs1, "\"kog-sync\"");
     RequireNotContains(jsonJobs1, "registered-uninit");
@@ -164,7 +164,7 @@ TEST_CASE("status recursive bounded scan reports newly discovered nested unregis
     RequireContains(json, "\"type\":\"unregistered\"");
     RequireContains(json, "\"managementPolicy\":\"discovered-untrusted\"");
     RequireContains(json, "\"blocksConverge\":true");
-    RequireContains(json, "\"blockReason\":\"Discovered unregistered nested Git repository that is not in the trusted workspace manifest. Register it as a submodule/subrepo, ignore it, or move it outside the workspace.\"");
+    RequireContains(json, "\"blockReason\":\"Discovered unregistered nested Git repository that is not in the trusted workspace manifest. Register it as a submodule/subrepo, ignore it, or move it outside the workspace. If this is intended, run: kog discover --unregistered-depth 1\"");
 
     RemoveSandboxWorkspace(sandbox);
 }

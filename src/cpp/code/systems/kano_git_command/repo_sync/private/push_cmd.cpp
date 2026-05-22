@@ -267,11 +267,11 @@ auto DedupePushRepoRecords(std::vector<workspace::RepoRecord> InRepos) -> std::v
 auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<workspace::RepoRecord> {
     workspace::WorkspaceInventoryOptions options;
     options.rootDir = InRoot;
-    options.unregisteredDepth = 3;
-    options.useCache = false;
-    options.refreshCache = true;
+    options.unregisteredDepth = 1;
+    options.useCache = true;
+    options.refreshCache = false;
     options.metadataLevel = "minimal";
-    options.scope = workspace::DiscoverScope::Full;
+    options.scope = workspace::DiscoverScope::RegisteredOnly;
     options.includeTrustedUnregistered = true;
     auto repos = workspace::DiscoverWorkspaceInventory(options);
 
@@ -885,7 +885,8 @@ auto RunNativePush(
     const int InJobs,
     const bool InProfile,
     const bool InVerbose,
-    const std::string& InRemoteFilter) -> int {
+    const std::string& InRemoteFilter,
+    workspace::RepoOperationAggregate* OutAggregate = nullptr) -> int {
     const auto totalStart = std::chrono::steady_clock::now();
     long long syncMillis = 0;
     long long pushMillis = 0;
@@ -1292,6 +1293,10 @@ auto RunNativePush(
             return out;
         });
 
+    if (OutAggregate != nullptr) {
+        *OutAggregate = aggregate;
+    }
+
     successes = static_cast<int>(aggregate.succeeded);
     failures = static_cast<int>(aggregate.failed + aggregate.blocked + aggregate.pending);
 
@@ -1414,6 +1419,16 @@ auto RunNativePush(
 
 } // namespace
 
+auto RunPushNativeSimpleDetailed(const std::filesystem::path& InWorkspaceRoot,
+                                 bool InRecursive,
+                                 bool InDryRun,
+                                 bool InProfile,
+                                 bool InForceWithLease,
+                                 bool InNoVerify,
+                                 int InJobs,
+                                 bool InVerbose,
+                                 const std::string& InRemote) -> std::pair<int, workspace::RepoOperationAggregate>;
+
 auto RunPushNativeSimple(const std::filesystem::path& InWorkspaceRoot,
                           const bool InRecursive,
                           const bool InDryRun,
@@ -1423,6 +1438,28 @@ auto RunPushNativeSimple(const std::filesystem::path& InWorkspaceRoot,
                           const int InJobs,
                           const bool InVerbose,
                           const std::string& InRemote) -> int {
+    const auto detailed = RunPushNativeSimpleDetailed(
+        InWorkspaceRoot,
+        InRecursive,
+        InDryRun,
+        InProfile,
+        InForceWithLease,
+        InNoVerify,
+        InJobs,
+        InVerbose,
+        InRemote);
+    return detailed.first;
+}
+
+auto RunPushNativeSimpleDetailed(const std::filesystem::path& InWorkspaceRoot,
+                                 const bool InRecursive,
+                                 const bool InDryRun,
+                                 const bool InProfile,
+                                 const bool InForceWithLease,
+                                 const bool InNoVerify,
+                                 const int InJobs,
+                                 const bool InVerbose,
+                                 const std::string& InRemote) -> std::pair<int, workspace::RepoOperationAggregate> {
     std::vector<workspace::RepoRecord> repos;
     if (InRecursive) {
         repos = DiscoverWorkspaceRepos(InWorkspaceRoot);
@@ -1433,7 +1470,8 @@ auto RunPushNativeSimple(const std::filesystem::path& InWorkspaceRoot,
         repos = BuildExplicitRepoRecords(InWorkspaceRoot, {InWorkspaceRoot});
     }
 
-    return RunNativePush(
+    workspace::RepoOperationAggregate aggregate;
+    const auto code = RunNativePush(
         repos,
         InWorkspaceRoot,
         InRecursive,
@@ -1447,7 +1485,9 @@ auto RunPushNativeSimple(const std::filesystem::path& InWorkspaceRoot,
         InJobs,
         InProfile,
         InVerbose,
-        InRemote);
+        InRemote,
+        &aggregate);
+    return {code, std::move(aggregate)};
 }
 
 void RegisterPush(CLI::App& InApp) {

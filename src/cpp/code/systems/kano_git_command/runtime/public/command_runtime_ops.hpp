@@ -1,7 +1,10 @@
 #pragma once
 
+#include "repo_operation_scheduler.hpp"
+
 #include <filesystem>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace kano::git::commands {
@@ -19,6 +22,11 @@ auto RunSyncOriginLatestNative(const std::filesystem::path& InRepoRoot,
                                bool InRecursive,
                                bool InDryRun,
                                bool InCleanupStaleLocks = false) -> int;
+
+auto RunSyncOriginLatestNativeDetailed(const std::filesystem::path& InRepoRoot,
+                                       bool InRecursive,
+                                       bool InDryRun,
+                                       bool InCleanupStaleLocks = false) -> std::pair<int, workspace::RepoOperationAggregate>;
 
 void FixRepoHygieneRecursive(const std::filesystem::path& InWorkspaceRoot);
 
@@ -48,5 +56,15 @@ auto RunPushNativeSimple(const std::filesystem::path& InWorkspaceRoot,
                          int InJobs,
                          bool InVerbose,
                          const std::string& InRemote) -> int;
+
+auto RunPushNativeSimpleDetailed(const std::filesystem::path& InWorkspaceRoot,
+                                 bool InRecursive,
+                                 bool InDryRun,
+                                 bool InProfile,
+                                 bool InForceWithLease,
+                                 bool InNoVerify,
+                                 int InJobs,
+                                 bool InVerbose,
+                                 const std::string& InRemote) -> std::pair<int, workspace::RepoOperationAggregate>;
 
 } // namespace kano::git::commands
