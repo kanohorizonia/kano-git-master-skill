@@ -126,10 +126,11 @@ void RegisterPlan(CLI::App& InApp) {
         }
         const auto modelLower = NormalizeAiModelKeyword(model);
         if (model.empty()) {
-            std::cerr << "Error: --ai-model must be a model name or special keyword (provider-default|auto).\n";
+            std::cerr << "Error: --ai-model must be a model name or special keyword (auto|provider-auto|kog-auto|provider-default).\n";
             std::exit(2);
         }
-        const auto configValue = (modelLower == "auto" || modelLower == "provider-default")
+        const auto configValue = (modelLower == "auto" || modelLower == "provider-auto" ||
+                                  modelLower == "kog-auto" || modelLower == "provider-default")
             ? modelLower
             : provider + "/" + model;
         const auto localConfig = kog_config::LocalConfigPath(workspaceRoot);

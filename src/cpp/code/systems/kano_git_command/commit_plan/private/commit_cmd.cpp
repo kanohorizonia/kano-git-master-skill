@@ -4383,11 +4383,47 @@ auto RunCommitNativeSimple(const std::filesystem::path& InWorkspaceRoot,
     NativeAiConfig ai;
     const bool aiRequested = InAiAuto || !InAiProvider.empty() || !InAiModel.empty();
     ai.provider = aiRequested ? ResolveProvider(InAiProvider) : std::string{};
-    ai.model = aiRequested ? ResolveModelForAi(ai.provider, InAiModel, InAiAuto, workspaceRoot) : std::string{};
+    const auto modelResolution = aiRequested
+        ? ResolveModelResolutionForAi(ai.provider, InAiModel, InAiAuto, workspaceRoot)
+        : AiModelResolution{};
+    ai.model = modelResolution.modelValue;
+    ai.modelMode = modelResolution.modelMode;
+    ai.fallbackUsed = modelResolution.fallbackUsed;
+    ai.fallbackReason = modelResolution.fallbackReason;
+    ai.selectionRaw = modelResolution.selectionRaw;
     ai.reviewEnabled = !InNoAiReview;
     ai.enabled = aiRequested && !ai.provider.empty();
 
+    const auto requestedProvider = ToLower(Trim(InAiProvider));
+    const bool copilotRequested = requestedProvider.empty() || requestedProvider == "auto" || requestedProvider == "copilot";
+    if (aiRequested && !ai.enabled && copilotRequested) {
+        const bool autoInstall = kog_config::ReadEffectiveBool(
+            workspaceRoot,
+            ResolveSkillRoot(workspaceRoot),
+            "ai.provider.copilot.bootstrap.auto_install",
+            false);
+        if (autoInstall) {
+            std::cout << "[native-commit] Copilot missing; auto_install=true, invoking bootstrap path...\n";
+            std::string bootstrapError;
+            if (TryBootstrapCopilotCli(workspaceRoot, false, &bootstrapError)) {
+                ai.provider = ResolveProvider(InAiProvider);
+                const auto retried = ResolveModelResolutionForAi(ai.provider, InAiModel, InAiAuto, workspaceRoot);
+                ai.model = retried.modelValue;
+                ai.modelMode = retried.modelMode;
+                ai.fallbackUsed = retried.fallbackUsed;
+                ai.fallbackReason = retried.fallbackReason;
+                ai.selectionRaw = retried.selectionRaw;
+                ai.enabled = aiRequested && !ai.provider.empty();
+            } else {
+                std::cerr << "[native-commit] bootstrap failed: " << bootstrapError << "\n";
+            }
+        }
+    }
+
     if (aiRequested && !ai.enabled) {
+        if (copilotRequested) {
+            std::cerr << BuildMissingCopilotSetupMessage() << "\n";
+        }
         std::cerr << "Error: AI mode requested, but provider is unavailable.\n";
         std::cerr << "- provider resolved: " << (ai.provider.empty() ? "<none>" : ai.provider) << "\n";
         std::cerr << "- model: " << (ai.model.empty() ? "<none>" : ai.model) << "\n";
@@ -4396,6 +4432,9 @@ auto RunCommitNativeSimple(const std::filesystem::path& InWorkspaceRoot,
     if (ai.enabled) {
         std::cout << "[native-commit] AI enabled: provider=" << ai.provider
                   << " model=" << ai.model
+                  << " mode=" << ai.modelMode
+                  << " selection=" << ai.selectionRaw
+                  << (ai.fallbackUsed ? (" fallback=" + ai.fallbackReason) : std::string{})
                   << " review=" << (ai.reviewEnabled ? "on" : "off") << "\n";
     } else {
         std::cout << "[native-commit] safety-gates: ignore + secret\n";
@@ -4649,10 +4688,43 @@ void RegisterCommit(CLI::App& InApp) {
         const bool agentProxyMode = IsAgentProxyMode(*agent);
         const bool aiRequested = *bAiAuto || !provider->empty() || !model->empty();
         ai.provider = aiRequested ? ResolveProvider(*provider) : std::string{};
-        ai.model = aiRequested ? ResolveModelForAi(ai.provider, *model, *bAiAuto, workspaceRoot) : std::string{};
+        const auto modelResolution = aiRequested
+            ? ResolveModelResolutionForAi(ai.provider, *model, *bAiAuto, workspaceRoot)
+            : AiModelResolution{};
+        ai.model = modelResolution.modelValue;
+        ai.modelMode = modelResolution.modelMode;
+        ai.fallbackUsed = modelResolution.fallbackUsed;
+        ai.fallbackReason = modelResolution.fallbackReason;
+        ai.selectionRaw = modelResolution.selectionRaw;
         ai.reviewEnabled = !*bNoAiReview && !agentProxyMode;
         ai.yolo = *bYolo;
         ai.enabled = aiRequested && !ai.provider.empty();
+
+        const auto requestedProvider = ToLower(Trim(*provider));
+        const bool copilotRequested = requestedProvider.empty() || requestedProvider == "auto" || requestedProvider == "copilot";
+        if (aiRequested && !ai.enabled && copilotRequested) {
+            const bool autoInstall = kog_config::ReadEffectiveBool(
+                workspaceRoot,
+                ResolveSkillRoot(workspaceRoot),
+                "ai.provider.copilot.bootstrap.auto_install",
+                false);
+            if (autoInstall) {
+                std::cout << "[native-commit] Copilot missing; auto_install=true, invoking bootstrap path...\n";
+                std::string bootstrapError;
+                if (TryBootstrapCopilotCli(workspaceRoot, false, &bootstrapError)) {
+                    ai.provider = ResolveProvider(*provider);
+                    const auto retried = ResolveModelResolutionForAi(ai.provider, *model, *bAiAuto, workspaceRoot);
+                    ai.model = retried.modelValue;
+                    ai.modelMode = retried.modelMode;
+                    ai.fallbackUsed = retried.fallbackUsed;
+                    ai.fallbackReason = retried.fallbackReason;
+                    ai.selectionRaw = retried.selectionRaw;
+                    ai.enabled = aiRequested && !ai.provider.empty();
+                } else {
+                    std::cerr << "[native-commit] bootstrap failed: " << bootstrapError << "\n";
+                }
+            }
+        }
 
         if (agentProxyMode && commitPlanFile->empty() && message->empty()) {
             std::cerr << "Error: agent proxy mode commit requires either --plan-file or --message/-m.\n";
@@ -4667,6 +4739,9 @@ void RegisterCommit(CLI::App& InApp) {
         }
 
         if (aiRequested && !ai.enabled) {
+            if (copilotRequested) {
+                std::cerr << BuildMissingCopilotSetupMessage() << "\n";
+            }
             std::cerr << "Error: AI mode requested, but provider is unavailable.\n";
             std::cerr << "- provider resolved: " << (ai.provider.empty() ? "<none>" : ai.provider) << "\n";
             std::cerr << "- model: " << (ai.model.empty() ? "<none>" : ai.model) << "\n";
@@ -4676,6 +4751,9 @@ void RegisterCommit(CLI::App& InApp) {
         if (ai.enabled) {
             std::cout << "[native-commit] AI enabled: provider=" << ai.provider
                   << " model=" << ai.model
+                  << " mode=" << ai.modelMode
+                  << " selection=" << ai.selectionRaw
+                  << (ai.fallbackUsed ? (" fallback=" + ai.fallbackReason) : std::string{})
                   << " review=" << (ai.reviewEnabled ? "on" : "off") << "\n";
         }
 
@@ -5092,12 +5170,48 @@ void RegisterAmend(CLI::App& InApp) {
         NativeAiConfig ai;
         const bool aiRequested = *bAiAuto || !provider->empty() || !model->empty();
         ai.provider = aiRequested ? ResolveProvider(*provider) : std::string{};
-        ai.model = aiRequested ? ResolveModelForAi(ai.provider, *model, *bAiAuto, workspaceRoot) : std::string{};
+        const auto modelResolution = aiRequested
+            ? ResolveModelResolutionForAi(ai.provider, *model, *bAiAuto, workspaceRoot)
+            : AiModelResolution{};
+        ai.model = modelResolution.modelValue;
+        ai.modelMode = modelResolution.modelMode;
+        ai.fallbackUsed = modelResolution.fallbackUsed;
+        ai.fallbackReason = modelResolution.fallbackReason;
+        ai.selectionRaw = modelResolution.selectionRaw;
         ai.reviewEnabled = !*bNoAiReview;
         ai.yolo = *bYolo;
         ai.enabled = aiRequested && !ai.provider.empty();
 
+        const auto requestedProvider = ToLower(Trim(*provider));
+        const bool copilotRequested = requestedProvider.empty() || requestedProvider == "auto" || requestedProvider == "copilot";
+        if (aiRequested && !ai.enabled && copilotRequested) {
+            const bool autoInstall = kog_config::ReadEffectiveBool(
+                workspaceRoot,
+                ResolveSkillRoot(workspaceRoot),
+                "ai.provider.copilot.bootstrap.auto_install",
+                false);
+            if (autoInstall) {
+                std::cout << "[native-amend] Copilot missing; auto_install=true, invoking bootstrap path...\n";
+                std::string bootstrapError;
+                if (TryBootstrapCopilotCli(workspaceRoot, false, &bootstrapError)) {
+                    ai.provider = ResolveProvider(*provider);
+                    const auto retried = ResolveModelResolutionForAi(ai.provider, *model, *bAiAuto, workspaceRoot);
+                    ai.model = retried.modelValue;
+                    ai.modelMode = retried.modelMode;
+                    ai.fallbackUsed = retried.fallbackUsed;
+                    ai.fallbackReason = retried.fallbackReason;
+                    ai.selectionRaw = retried.selectionRaw;
+                    ai.enabled = aiRequested && !ai.provider.empty();
+                } else {
+                    std::cerr << "[native-amend] bootstrap failed: " << bootstrapError << "\n";
+                }
+            }
+        }
+
         if (aiRequested && !ai.enabled) {
+            if (copilotRequested) {
+                std::cerr << BuildMissingCopilotSetupMessage() << "\n";
+            }
             std::cerr << "Error: AI mode requested, but provider is unavailable.\n";
             std::cerr << "- provider resolved: " << (ai.provider.empty() ? "<none>" : ai.provider) << "\n";
             std::cerr << "- model: " << (ai.model.empty() ? "<none>" : ai.model) << "\n";
@@ -5107,6 +5221,9 @@ void RegisterAmend(CLI::App& InApp) {
         if (ai.enabled) {
             std::cout << "[native-amend] AI enabled: provider=" << ai.provider
                       << " model=" << ai.model
+                      << " mode=" << ai.modelMode
+                      << " selection=" << ai.selectionRaw
+                      << (ai.fallbackUsed ? (" fallback=" + ai.fallbackReason) : std::string{})
                       << " review=" << (ai.reviewEnabled ? "on" : "off") << "\n";
         }
 

@@ -8,6 +8,7 @@ namespace kano::git::commands {
 void RegisterAll(CLI::App& InApp) {
     // Top-level commands sorted A-Z for predictable help output
     RegisterAmend(InApp);
+    RegisterAi(InApp);
     RegisterBranch(InApp);
     RegisterCache(InApp);
     RegisterCherryPick(InApp);
@@ -95,6 +96,7 @@ void RegisterAll(CLI::App& InApp) {
     setGroup("resolve", aiGroup);
     setGroup("doctor", aiGroup);
     setGroup("ignore", aiGroup);
+    setGroup("ai", aiGroup);
 
     // 4. Advanced Operations
     const std::string advancedGroup = "4. Advanced Operations";

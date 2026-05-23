@@ -32,6 +32,7 @@ if(NOT TARGET rapidcheck_catch)
 endif()
 
 add_executable(kano_git_commit_plan_tests
+  unit/test_ai_model_resolution.cpp
   unit/test_ai_working_copy_flow.cpp
   unit/test_commit_scope_dirty_nested_repo.cpp
   unit/test_serialize_plan_json.cpp

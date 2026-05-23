@@ -86,6 +86,8 @@ src/shell/test/smoke-release-online-build.sh <archive.tar>
 # AI/plan-assisted commit flows
 ./scripts/kog plan new
 ./scripts/kog plan runbook commit
+./scripts/kog ai bootstrap copilot --dry-run
+./scripts/kog ai bootstrap copilot
 ./scripts/kog commit -m "chore: update workspace"
 ./scripts/kog commit-push -m "chore: update workspace"
 ./scripts/kog cpa
@@ -113,6 +115,16 @@ Unknown top-level commands now return a git-style error and suggest the most sim
 - `--remote-count <N>` limits remote-only preview lines.
 - `--no-remote-preview` disables remote-only preview lines.
 - Layered config key: `[log] remote_preview_count = 3`.
+
+AI model selection keywords:
+- `auto`: provider-native auto first, fallback to KOG auto if unsupported.
+- `provider-auto`: force provider-native auto mode.
+- `kog-auto`: force KOG change-count policy.
+- `provider-default`: omit provider model argument and use provider default.
+
+Copilot bootstrap scope:
+- Automatic bootstrap command support is Windows/WinGet only in this release.
+- Linux/macOS are detection-only/manual setup paths for Copilot CLI.
 
 ## Export release validation
 

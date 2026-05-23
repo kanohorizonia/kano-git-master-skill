@@ -1487,23 +1487,28 @@ static auto TryRunTestAiStub() -> std::optional<shell::ExecResult> {
 }
 
 auto RunAiGenerate(const std::string& InProvider,
-                     const std::string& InModel,
-                     const std::string& InPrompt,
-                     const std::filesystem::path& InWorkspaceRoot,
-                     bool InQuiet,
-                     bool InYolo) -> shell::ExecResult {
+                   const std::string& InModelMode,
+                   const std::string& InModel,
+                   const std::string& InPrompt,
+                   const std::filesystem::path& InWorkspaceRoot,
+                   bool InQuiet,
+                   bool InYolo) -> shell::ExecResult {
     if (const auto testResult = TryRunTestAiStub(); testResult.has_value()) {
         return *testResult;
     }
 
     auto LogInvocation = [&](const std::string& binary, const std::vector<std::string>& args) {
+        const auto modelForDisplay = (InModelMode == "provider-auto")
+            ? std::string("auto")
+            : (InModel.empty() ? std::string("<provider-default>") : InModel);
         std::cout << "\n" << kano::terminal::AiPrefix() << " -- AI Invocation (plan-fill) --\n";
         std::cout << kano::terminal::AiPrefix() << " command : " << binary;
         for (const auto& a : args) {
             if (a.find(' ') != std::string::npos || a.empty()) std::cout << " \"" << a << "\"";
             else std::cout << " " << a;
         }
-        std::cout << "\n" << kano::terminal::AiPrefix() << " model   : " << (InModel.empty() ? "auto" : InModel) << "\n";
+        std::cout << "\n" << kano::terminal::AiPrefix() << " model   : " << modelForDisplay << "\n";
+        std::cout << kano::terminal::AiPrefix() << " mode    : " << InModelMode << "\n";
         static constexpr std::string_view kDivider = "----------------------------------------";
         if (IsTruthyEnv(std::getenv("KOG_DEBUG_AI_PROMPT")) || IsTruthyEnv(std::getenv("KOG_DEBUG"))) {
             std::cout << kano::terminal::AiPrefix() << " prompt  :\n" << kDivider << "\n" << InPrompt << "\n" << kDivider << "\n";
@@ -1514,7 +1519,7 @@ auto RunAiGenerate(const std::string& InProvider,
 
     if (InProvider == "opencode") {
         std::vector<std::string> args{"run"};
-        AppendModelArgs(args, InModel);
+        AppendModelArgsForProvider(args, InProvider, InModelMode, InModel);
         args.push_back(BuildFileBackedPromptArgument(InWorkspaceRoot, InPrompt, "plan-fill"));
         LogInvocation("opencode", args);
         SCOPED_TIMING_LOG("kog-ai.waiting-for-opencode-response");
@@ -1532,7 +1537,7 @@ auto RunAiGenerate(const std::string& InProvider,
     if (InQuiet) {
         args.push_back("-s");
     }
-    AppendModelArgs(args, InModel);
+    AppendModelArgsForProvider(args, InProvider, InModelMode, InModel);
     args.push_back("--no-color");
     args.push_back("--stream");
     args.push_back("off");
@@ -1803,6 +1808,7 @@ auto PromoteTextFileAtomically(const std::filesystem::path& InTargetPath,
 }
 
 auto RunAiGenerateForWorkingEdit(const std::string& InProvider,
+                                 const std::string& InModelMode,
                                  const std::string& InModel,
                                  const std::string& InPrompt,
                                  const std::filesystem::path& InWorkspaceRoot,
@@ -1840,14 +1846,14 @@ auto RunAiGenerateForWorkingEdit(const std::string& InProvider,
         }
     }
     if (InProvider != "copilot") {
-        return RunAiGenerate(InProvider, InModel, InPrompt, InWorkspaceRoot, InQuiet);
+        return RunAiGenerate(InProvider, InModelMode, InModel, InPrompt, InWorkspaceRoot, InQuiet, false);
     }
 
     std::vector<std::string> args;
     if (InQuiet) {
         args.push_back("-s");
     }
-    AppendModelArgs(args, InModel);
+    AppendModelArgsForProvider(args, InProvider, InModelMode, InModel);
     args.push_back("--no-color");
     args.push_back("--stream");
     args.push_back("off");
@@ -1859,13 +1865,17 @@ auto RunAiGenerateForWorkingEdit(const std::string& InProvider,
     args.push_back("-p");
     args.push_back(BuildFileBackedPromptArgument(InWorkspaceRoot, InPrompt, "plan-fill"));
 
+    const auto modelForDisplay = (InModelMode == "provider-auto")
+        ? std::string("auto")
+        : (InModel.empty() ? std::string("<provider-default>") : InModel);
     std::cerr << "\n" << kano::terminal::AiPrefix() << " -- AI Invocation (plan-fill) --\n";
     std::cerr << kano::terminal::AiPrefix() << " command : copilot";
     for (const auto& a : args) {
         if (a.find(' ') != std::string::npos || a.empty()) std::cerr << " \"" << a << "\"";
         else std::cerr << " " << a;
     }
-    std::cerr << "\n" << kano::terminal::AiPrefix() << " model   : " << (InModel.empty() ? "auto" : InModel) << "\n";
+    std::cerr << "\n" << kano::terminal::AiPrefix() << " model   : " << modelForDisplay << "\n";
+    std::cerr << kano::terminal::AiPrefix() << " mode    : " << InModelMode << "\n";
     std::cerr << kano::terminal::AiPrefix() << " Waiting for " << InProvider << " response...\n";
     std::cerr.flush();
     return ExecuteStandaloneCopilot(args, InWorkspaceRoot);
@@ -2014,7 +2024,10 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
         if (OutError) *OutError = "no AI provider found";
         return false;
     }
-    const auto modelDir = ResolveAiModelDirective(provider, InRequestedModel, InWorkspaceRoot);
+    const auto modelResolution = ResolveModelResolutionForAi(provider, InRequestedModel, false, InWorkspaceRoot);
+    const auto modelForPrompt = (modelResolution.modelMode == "provider-auto")
+        ? std::string("auto")
+        : (modelResolution.modelMode == "provider-default" ? std::string("provider-default") : modelResolution.modelValue);
     const auto fillMode = ResolvePlanCommitGenerationMode(InWorkspaceRoot, InRequestedFillMode);
     const auto dirty = CollectDirtyRepoContextText(InWorkspaceRoot);
     if (Trim(dirty).empty() && !InAllowEmptyDirty) {
@@ -2031,7 +2044,11 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
     std::cerr << "\n" << kano::terminal::PlanPrefix() << " -- AI commit plan fill --\n";
     std::cerr << kano::terminal::PlanPrefix() << " mode     : " << fillMode << "\n";
     std::cerr << kano::terminal::PlanPrefix() << " provider : " << provider << "\n";
-    std::cerr << kano::terminal::PlanPrefix() << " model    : " << (modelDir.empty() ? "auto" : modelDir) << "\n";
+    std::cerr << kano::terminal::PlanPrefix() << " model    : " << (modelForPrompt.empty() ? "<none>" : modelForPrompt) << "\n";
+    std::cerr << kano::terminal::PlanPrefix() << " modelMode: " << modelResolution.modelMode << "\n";
+    if (modelResolution.fallbackUsed) {
+        std::cerr << kano::terminal::PlanPrefix() << " fallback : " << modelResolution.fallbackReason << "\n";
+    }
     std::cerr << kano::terminal::PlanPrefix() << " entries  : " << entries.size() << "\n";
     
     std::string finalPlanJson = templateJson;
@@ -2056,7 +2073,7 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
 
             const auto prompt = BuildSingleCommitFillPrompt(InWorkspaceRoot,
                                                             provider,
-                                                            modelDir,
+                                                                                modelForPrompt,
                                                             InPlanPath,
                                                             workingPlanPath,
                                                             entry,
@@ -2064,7 +2081,8 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
                                                             dirty,
                                                             workingGitignorePath);
             const auto res = RunAiGenerateForWorkingEdit(provider,
-                                                         modelDir,
+                                                                            modelResolution.modelMode,
+                                                                            modelResolution.modelValue,
                                                          prompt,
                                                          InWorkspaceRoot,
                                                          workingPlanPath,
@@ -2173,14 +2191,15 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
 
         const auto prompt = BuildPlanFillOpsPrompt(InWorkspaceRoot,
                                                    provider,
-                                                   modelDir,
+                                                                                                     modelForPrompt,
                                                    InPlanPath,
                                                    workingPlanPath,
                                                    templateJson,
                                                    dirty,
                                                    workingGitignorePath);
         const auto res = RunAiGenerateForWorkingEdit(provider,
-                                                     modelDir,
+                                                                                                         modelResolution.modelMode,
+                                                                                                         modelResolution.modelValue,
                                                      prompt,
                                                      InWorkspaceRoot,
                                                      workingPlanPath,
@@ -2230,7 +2249,7 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
         }
 
         finalPlanJson = *normalizedCandidatePlan;
-        if (auto stamped = StampPlanAiPlannerMetadata(finalPlanJson, provider, modelDir)) {
+        if (auto stamped = StampPlanAiPlannerMetadata(finalPlanJson, provider, modelForPrompt)) {
             finalPlanJson = *stamped;
         }
         if (!ValidateAiReadyPlan(finalPlanJson, OutError)) {
@@ -2250,7 +2269,7 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
         }
     }
 
-    if (auto stamped = StampPlanAiPlannerMetadata(finalPlanJson, provider, modelDir)) {
+    if (auto stamped = StampPlanAiPlannerMetadata(finalPlanJson, provider, modelForPrompt)) {
         finalPlanJson = *stamped;
     }
 
@@ -2918,8 +2937,11 @@ auto RunCommitRunbook(const std::filesystem::path& InWorkspaceRoot,
         if (const auto payload = ReadFileText(InPlanPath)) {
             const auto provider = ResolveAiProvider(InProvider);
             if (!provider.empty()) {
-                const auto modelDir = ResolveAiModelDirective(provider, InModel, InWorkspaceRoot);
-                if (auto stamped = StampPlanAiPlannerMetadata(*payload, provider, modelDir)) {
+                const auto modelResolution = ResolveModelResolutionForAi(provider, InModel, false, InWorkspaceRoot);
+                const auto modelForPrompt = (modelResolution.modelMode == "provider-auto")
+                    ? std::string("auto")
+                    : (modelResolution.modelMode == "provider-default" ? std::string("provider-default") : modelResolution.modelValue);
+                if (auto stamped = StampPlanAiPlannerMetadata(*payload, provider, modelForPrompt)) {
                     WriteFileText(InPlanPath, *stamped);
                 }
                 // For --combine mode: even with clean workspace, try to fill plan with AI

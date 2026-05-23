@@ -13,8 +13,12 @@
 #
 # Available values:
 # - "auto"
-#   Use the provider's auto-selection behavior. For Copilot, this means the
-#   `[ai.model.auto]` ladder below.
+#   Use provider-native auto first. If the provider does not support native
+#   auto, KOG falls back to `[ai.model.kog_auto]` routing.
+# - "provider-auto"
+#   Force provider-native auto mode.
+# - "kog-auto"
+#   Force KOG change-count routing from `[ai.model.kog_auto]`.
 # - "provider-default"
 #   Use the provider's built-in recommended fixed default model.
 # - "provider/model"
@@ -32,8 +36,8 @@
 [ai.model]
 selection = "auto"
 
-# Auto model selection policy for AI providers.
-[ai.model.auto]
+# KOG auto routing policy for AI providers.
+[ai.model.kog_auto]
 change_thresholds = [5, 40, 100]
 models = [
     "copilot/gpt-5-mini",                  # <= 5 changes (minimal)
@@ -41,6 +45,9 @@ models = [
     "copilot/gpt-5.4?reasoning=medium",    # 41-100 changes (complex/large)
     "copilot/gpt-5.4?reasoning=high"       # > 100 changes (massive re-architecting)
 ]
+
+# Deprecated legacy alias kept for compatibility in user overrides:
+# [ai.model.auto]
 
 # Plan AI behavior defaults.
 [plan.ai]

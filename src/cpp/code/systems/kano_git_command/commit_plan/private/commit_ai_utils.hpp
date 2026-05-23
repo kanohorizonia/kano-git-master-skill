@@ -33,6 +33,19 @@ struct NativeAiConfig {
     bool yolo = false;
     std::string provider;
     std::string model;
+    std::string modelMode;
+    bool fallbackUsed = false;
+    std::string fallbackReason;
+    std::string selectionRaw;
+};
+
+struct AiModelResolution {
+    std::string provider;
+    std::string modelMode;
+    std::string modelValue;
+    bool fallbackUsed = false;
+    std::string fallbackReason;
+    std::string selectionRaw;
 };
 
 auto BuildAiCommitPrompt(const std::filesystem::path& InWorkspaceRoot,
@@ -73,6 +86,15 @@ auto WriteSyntheticMessageCommitPlan(const std::filesystem::path& InWorkspaceRoo
 
 // Config/Cache helpers
 auto ResolveProvider(const std::string& InProviderRaw) -> std::string;
+auto DetectWinGetCommandPath() -> std::string;
+auto BuildMissingCopilotSetupMessage() -> std::string;
+auto TryBootstrapCopilotCli(const std::filesystem::path& InWorkspaceRoot,
+                            bool InDryRun,
+                            std::string* OutError = nullptr) -> bool;
+auto ResolveModelResolutionForAi(const std::string& InProvider,
+                                 const std::string& InModelRaw,
+                                 bool InAiAuto,
+                                 const std::filesystem::path& InWorkspaceRoot) -> AiModelResolution;
 auto ResolveModelForAi(const std::string& InProvider,
                        const std::string& InModelRaw,
                        bool InAiAuto,

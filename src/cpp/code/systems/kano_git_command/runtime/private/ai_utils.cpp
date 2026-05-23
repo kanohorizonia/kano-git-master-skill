@@ -296,6 +296,28 @@ void AppendModelArgs(std::vector<std::string>& OutArgs, const std::string& InMod
     }
 }
 
+void AppendModelArgsForProvider(std::vector<std::string>& OutArgs,
+                                const std::string& InProvider,
+                                const std::string& InModelMode,
+                                const std::string& InModel) {
+    const auto provider = ToLower(Trim(InProvider));
+    const auto mode = ToLower(Trim(InModelMode));
+
+    if (mode == "provider-default") {
+        return;
+    }
+
+    if (mode == "provider-auto") {
+        if (provider == "copilot") {
+            OutArgs.push_back("--model");
+            OutArgs.push_back("auto");
+        }
+        return;
+    }
+
+    AppendModelArgs(OutArgs, InModel);
+}
+
 auto ExecuteCodexExec(std::optional<std::filesystem::path> InWorkingDir,
                       const std::string& InPrompt,
                       const std::string& InPurpose,

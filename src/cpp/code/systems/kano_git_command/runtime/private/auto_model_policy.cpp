@@ -76,7 +76,9 @@ void ApplyAutoModelPolicyConfig(const std::filesystem::path& InConfigPath,
             section = aiModelPolicy;
         } else if (const auto* ai = parsed["ai"].as_table(); ai != nullptr) {
             if (const auto* model = (*ai)["model"].as_table(); model != nullptr) {
-                if (const auto* autoTable = (*model)["auto"].as_table(); autoTable != nullptr) {
+                if (const auto* kogAutoTable = (*model)["kog_auto"].as_table(); kogAutoTable != nullptr) {
+                    section = kogAutoTable;
+                } else if (const auto* autoTable = (*model)["auto"].as_table(); autoTable != nullptr) {
                     section = autoTable;
                 }
             }

@@ -14,6 +14,8 @@ auto ResolveConfigSearchPaths(const std::filesystem::path& InWorkspaceRoot,
 
 auto NormalizeAiModelSelection(const std::string& InValue) -> std::string;
 
+auto ProviderSupportsNativeAuto(const std::string& InProvider) -> bool;
+
 auto ResolveDefaultAiModelSelection(const std::string& InProvider,
                                     const std::filesystem::path& InWorkspaceRoot,
                                     const std::filesystem::path& InSkillRoot,

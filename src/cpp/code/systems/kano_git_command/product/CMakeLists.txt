@@ -2,6 +2,7 @@ add_library(kano_git_cmd_product STATIC)
 
 target_sources(kano_git_cmd_product
   PRIVATE
+    private/ai_cmd.cpp
     private/branch_cmd.cpp
     private/cache_cmd.cpp
     private/clone_cmd.cpp

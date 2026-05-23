@@ -73,6 +73,8 @@ for it.
 # Commit / plan flows
 ./scripts/kog plan new
 ./scripts/kog plan runbook commit
+./scripts/kog ai bootstrap copilot --dry-run
+./scripts/kog ai bootstrap copilot
 ./scripts/kog commit -m "chore: update workspace"
 ./scripts/kog commit-push -m "chore: update workspace"
 ./scripts/kog cpa
@@ -116,6 +118,16 @@ For behind/diverged log readability, configure remote preview defaults in layere
 [log]
 remote_preview_count = 3
 ```
+
+AI model selection keywords:
+- `auto`: provider-native auto first, fallback to KOG auto when unsupported.
+- `provider-auto`: force provider-native auto.
+- `kog-auto`: force KOG change-count policy.
+- `provider-default`: provider default model behavior.
+
+Copilot bootstrap support in this release:
+- Windows/WinGet: supported via `kog ai bootstrap copilot`.
+- Linux/macOS: detection-only/manual setup (no automatic installer path).
 | `pi` | `plan new` |
 | `pia` | `plan new --ai-auto` |
 | `pv` | `plan verify pre-apply` |

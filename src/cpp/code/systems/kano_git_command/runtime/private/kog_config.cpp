@@ -210,10 +210,21 @@ auto NormalizeAiModelSelection(const std::string& InValue) -> std::string {
     if (lowered == "default" || lowered == "provider-default") {
         return "provider-default";
     }
+    if (lowered == "provider-auto") {
+        return "provider-auto";
+    }
+    if (lowered == "kog-auto") {
+        return "kog-auto";
+    }
     if (lowered == "auto") {
         return "auto";
     }
     return Trim(InValue);
+}
+
+auto ProviderSupportsNativeAuto(const std::string& InProvider) -> bool {
+    const auto provider = ToLower(Trim(InProvider));
+    return provider == "copilot";
 }
 
 auto ResolveDefaultAiModelSelection(const std::string& InProvider,

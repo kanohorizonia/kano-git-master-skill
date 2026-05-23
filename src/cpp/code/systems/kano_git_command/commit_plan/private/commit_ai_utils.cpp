@@ -88,31 +88,6 @@ auto GhCopilotAvailable() -> bool {
     return HasCommand("gh", {"copilot", "--help"});
 }
 
-auto TryAutoInstallCopilotViaGh() -> bool {
-    if (!HasCommand("gh", {"--version"})) {
-        return false;
-    }
-    // If copilot is already a gh built-in it will report it as available now.
-    if (GhCopilotAvailable()) {
-        return true;
-    }
-    std::cout << "[kog ai] gh found but gh-copilot not available — installing github/gh-copilot ...\n";
-    const auto result = shell::ExecuteCommand(
-        "gh",
-        {"extension", "install", "github/gh-copilot"},
-        shell::ExecMode::PassThrough,
-        std::filesystem::current_path()
-    );
-    // exit 1 with "built-in" in stderr means copilot is already a built-in subcommand.
-    const bool alreadyBuiltin = result.exitCode != 0 &&
-        result.stderrStr.find("built-in") != std::string::npos;
-    if (result.exitCode != 0 && !alreadyBuiltin) {
-        std::cerr << "[kog ai] gh extension install failed (exit " << result.exitCode << "); try manually: gh extension install github/gh-copilot\n";
-        return false;
-    }
-    return GhCopilotAvailable();
-}
-
 auto ResolveProvider(const std::string& InProviderRaw) -> std::string {
     const auto provider = ToLower(Trim(InProviderRaw));
     if (!provider.empty() && provider != "auto") {
@@ -129,13 +104,115 @@ auto ResolveProvider(const std::string& InProviderRaw) -> std::string {
     if (HasCommand("opencode", {"--help"})) {
         return "opencode";
     }
+    return {};
+}
 
-    // No provider detected. If gh is available, auto-install the gh-copilot extension
-    // and retry so subsequent commands can use it without manual intervention.
-    if (TryAutoInstallCopilotViaGh()) {
-        return "copilot";
+auto DetectWinGetCommandPath() -> std::string {
+#if !defined(_WIN32)
+    return {};
+#else
+    const auto fromPath = shell::ExecuteCommand("winget", {"--version"}, shell::ExecMode::Capture, std::filesystem::current_path());
+    if (fromPath.exitCode == 0) {
+        return "winget";
+    }
+
+    if (const char* localAppData = std::getenv("LOCALAPPDATA"); localAppData != nullptr && localAppData[0] != '\0') {
+        const auto windowsAppsWinget = (std::filesystem::path(localAppData) / "Microsoft" / "WindowsApps" / "winget.exe").lexically_normal();
+        std::error_code ec;
+        if (std::filesystem::exists(windowsAppsWinget, ec) && !ec) {
+            const auto probe = shell::ExecuteCommand(windowsAppsWinget.generic_string(), {"--version"}, shell::ExecMode::Capture, std::filesystem::current_path());
+            if (probe.exitCode == 0) {
+                return windowsAppsWinget.generic_string();
+            }
+        }
     }
     return {};
+#endif
+}
+
+auto BuildMissingCopilotSetupMessage() -> std::string {
+#if defined(_WIN32)
+    const auto winget = DetectWinGetCommandPath();
+    std::ostringstream oss;
+    if (!winget.empty()) {
+        oss << "Copilot CLI is not installed.\n\n"
+            << "Recommended Windows install:\n"
+            << "  winget install GitHub.Copilot\n\n"
+            << "Or run:\n"
+            << "  kog ai bootstrap copilot\n";
+        return oss.str();
+    }
+
+    oss << "Copilot CLI is not installed and WinGet is unavailable.\n"
+        << "WinGet is provided by Windows Package Manager / App Installer.\n"
+        << "Install or repair App Installer / WinGet, then run:\n"
+        << "  winget install GitHub.Copilot\n";
+    return oss.str();
+#else
+    return "Copilot CLI is not installed. Automatic bootstrap is currently supported only on Windows/WinGet. Install Copilot CLI manually for this platform, then re-run the command.";
+#endif
+}
+
+auto TryBootstrapCopilotCli(const std::filesystem::path& InWorkspaceRoot,
+                            bool InDryRun,
+                            std::string* OutError) -> bool {
+#if !defined(_WIN32)
+    if (OutError != nullptr) {
+        *OutError = "Copilot bootstrap is supported only on Windows/WinGet in this release.";
+    }
+    return false;
+#else
+    const auto skillRoot = ResolveSkillRoot(InWorkspaceRoot);
+    auto scriptPath = (skillRoot / "src" / "shell" / "bootstrap" / "windows" / "ensure-copilot-cli.ps1").lexically_normal();
+    std::error_code ec;
+    if (!std::filesystem::exists(scriptPath, ec) || ec) {
+        scriptPath = (InWorkspaceRoot / "src" / "shell" / "bootstrap" / "windows" / "ensure-copilot-cli.ps1").lexically_normal();
+    }
+    if (!std::filesystem::exists(scriptPath, ec) || ec) {
+        if (OutError != nullptr) {
+            *OutError = "missing bootstrap script: " + scriptPath.generic_string();
+        }
+        return false;
+    }
+
+    std::string shellName;
+    if (HasCommand("pwsh", {"-NoProfile", "-Command", "$PSVersionTable.PSVersion.ToString()"})) {
+        shellName = "pwsh";
+    } else if (HasCommand("powershell.exe", {"-NoProfile", "-Command", "$PSVersionTable.PSVersion.ToString()"})) {
+        shellName = "powershell.exe";
+    } else {
+        if (OutError != nullptr) {
+            *OutError = "neither pwsh nor powershell.exe is available";
+        }
+        return false;
+    }
+
+    std::vector<std::string> args{
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", scriptPath.generic_string(),
+        "-Install"
+    };
+    if (InDryRun) {
+        args.push_back("-DryRun");
+    }
+
+    const auto result = shell::ExecuteCommand(shellName, args, shell::ExecMode::PassThrough, InWorkspaceRoot);
+    if (result.exitCode != 0) {
+        if (OutError != nullptr) {
+            auto detail = Trim(result.stderrStr);
+            if (detail.empty()) {
+                detail = Trim(result.stdoutStr);
+            }
+            if (detail.empty()) {
+                detail = std::format("bootstrap script failed with exit code {}", result.exitCode);
+            }
+            *OutError = detail;
+        }
+        return false;
+    }
+    return true;
+#endif
 }
 
 auto ParseReposCsv(const std::string& InCsv) -> std::vector<std::filesystem::path> {
@@ -838,7 +915,7 @@ auto RunAiGenerate(const std::string& InProvider,
                                      (!GhCopilotAvailable() && HasCommand("copilot", {"--help"}));
         if (standaloneAvail) {
             std::vector<std::string> args{"-s", "-p", effectivePrompt};
-            if (!InModel.empty() && InModel != "auto") {
+            if (!InModel.empty()) {
                 args.push_back("--model");
                 args.push_back(InModel);
             }
@@ -871,7 +948,7 @@ auto RunAiGenerate(const std::string& InProvider,
 
         if (GhCopilotAvailable()) {
             std::vector<std::string> args{"copilot", "--", "-s", "-p", effectivePrompt};
-            if (!InModel.empty() && InModel != "auto") {
+            if (!InModel.empty()) {
                 args.push_back("--model");
                 args.push_back(InModel);
             }
@@ -1217,16 +1294,17 @@ auto BuildAiCommitPrompt(const std::filesystem::path& InWorkspaceRoot,
     return AppendCommitConventionSkillSection(InWorkspaceRoot, oss.str());
 }
 
-auto ResolveModelForAi(const std::string& InProvider,
-                       const std::string& InModelRaw,
-                       bool InAiAuto,
-                       const std::filesystem::path& InWorkspaceRoot) -> std::string {
+auto ResolveModelResolutionForAi(const std::string& InProvider,
+                                 const std::string& InModelRaw,
+                                 bool InAiAuto,
+                                 const std::filesystem::path& InWorkspaceRoot) -> AiModelResolution {
+    AiModelResolution out;
+    out.provider = ToLower(Trim(InProvider));
     auto model = Trim(InModelRaw);
-    const auto modelLower = NormalizeAiModelKeyword(model);
-    const auto provider = ToLower(Trim(InProvider));
+    auto modelLower = NormalizeAiModelKeyword(model);
 
     auto resolvePolicy = [&]() -> auto_model_policy::AutoModelPolicy {
-        return auto_model_policy::ResolveAutoModelPolicy(provider, InWorkspaceRoot, ResolveSkillRoot(InWorkspaceRoot));
+        return auto_model_policy::ResolveAutoModelPolicy(out.provider, InWorkspaceRoot, ResolveSkillRoot(InWorkspaceRoot));
     };
     auto countDirtyEntries = [&]() -> int {
         int total = 0;
@@ -1246,16 +1324,16 @@ auto ResolveModelForAi(const std::string& InProvider,
         return total;
     };
     auto resolveDefaultModel = [&]() -> std::string {
-        if (provider == "codex") {
+        if (out.provider == "codex") {
             return "gpt-5.2-codex";
         }
-        if (provider == "opencode") {
+        if (out.provider == "opencode") {
             return "github-copilot/gpt-5-mini";
         }
         return "gpt-5-mini";
     };
-    auto resolveAutoModel = [&]() -> std::string {
-        if (provider != "copilot") {
+    auto resolveKogAutoModel = [&]() -> std::string {
+        if (out.provider != "copilot") {
             return resolveDefaultModel();
         }
         const auto policy = resolvePolicy();
@@ -1263,33 +1341,86 @@ auto ResolveModelForAi(const std::string& InProvider,
         return auto_model_policy::ResolveModelForChangeCount(policy, changedEntries);
     };
 
-    if (!model.empty() && modelLower != "auto") {
-        if (modelLower == "provider-default") {
-            return resolveDefaultModel();
+    auto applyProviderAutoOrFallback = [&](const std::string& InSelectionRaw) {
+        out.selectionRaw = InSelectionRaw;
+        if (kog_config::ProviderSupportsNativeAuto(out.provider)) {
+            out.modelMode = "provider-auto";
+            out.modelValue = "auto";
+            out.fallbackUsed = false;
+            out.fallbackReason.clear();
+            return;
         }
-        return model;
+
+        out.modelMode = "kog-auto";
+        out.modelValue = resolveKogAutoModel();
+        out.fallbackUsed = true;
+        out.fallbackReason = "provider-auto-unsupported";
+    };
+
+    if (!model.empty() && modelLower != "auto") {
+        out.selectionRaw = model;
+        if (modelLower == "provider-default") {
+            out.modelMode = "provider-default";
+            out.modelValue.clear();
+            return out;
+        }
+        if (modelLower == "provider-auto") {
+            applyProviderAutoOrFallback("provider-auto");
+            return out;
+        }
+        if (modelLower == "kog-auto") {
+            out.modelMode = "kog-auto";
+            out.modelValue = resolveKogAutoModel();
+            return out;
+        }
+        out.modelMode = "explicit";
+        out.modelValue = model;
+        return out;
     }
 
-    const auto configuredSelection = kog_config::ResolveDefaultAiModelSelection(provider,
+    const auto configuredSelection = kog_config::ResolveDefaultAiModelSelection(out.provider,
                                                                                 InWorkspaceRoot,
                                                                                 ResolveSkillRoot(InWorkspaceRoot),
                                                                                 "auto");
     const auto configuredLower = NormalizeAiModelKeyword(configuredSelection);
     if (!Trim(configuredSelection).empty()) {
+        out.selectionRaw = configuredSelection;
         if (configuredLower == "provider-default") {
-            return resolveDefaultModel();
+            out.modelMode = "provider-default";
+            out.modelValue.clear();
+            return out;
         }
-        if (configuredLower == "auto") {
-            return resolveAutoModel();
+        if (configuredLower == "auto" || configuredLower == "provider-auto") {
+            applyProviderAutoOrFallback(configuredLower == "auto" ? "auto" : "provider-auto");
+            return out;
         }
-        return configuredSelection;
+        if (configuredLower == "kog-auto") {
+            out.modelMode = "kog-auto";
+            out.modelValue = resolveKogAutoModel();
+            return out;
+        }
+        out.modelMode = "explicit";
+        out.modelValue = configuredSelection;
+        return out;
     }
 
     if (InAiAuto || modelLower == "auto") {
-        return resolveAutoModel();
+        applyProviderAutoOrFallback("auto");
+        return out;
     }
 
-    return {};
+    out.modelMode = "provider-default";
+    out.modelValue.clear();
+    out.selectionRaw = "provider-default";
+    return out;
+}
+
+auto ResolveModelForAi(const std::string& InProvider,
+                       const std::string& InModelRaw,
+                       bool InAiAuto,
+                       const std::filesystem::path& InWorkspaceRoot) -> std::string {
+    const auto resolution = ResolveModelResolutionForAi(InProvider, InModelRaw, InAiAuto, InWorkspaceRoot);
+    return resolution.modelValue;
 }
 
 

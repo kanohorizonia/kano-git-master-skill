@@ -31,6 +31,10 @@ auto LoadPromptAssetText(const std::filesystem::path& InWorkspaceRoot,
 
 // --- AI Provider Executors ---
 void AppendModelArgs(std::vector<std::string>& OutArgs, const std::string& InModel);
+void AppendModelArgsForProvider(std::vector<std::string>& OutArgs,
+                                const std::string& InProvider,
+                                const std::string& InModelMode,
+                                const std::string& InModel);
 auto ExecuteStandaloneCopilot(const std::vector<std::string>& InArgs,
                               std::optional<std::filesystem::path> InWorkingDir = std::nullopt) -> shell::ExecResult;
 auto ExecuteCodexExec(std::optional<std::filesystem::path> InWorkingDir,

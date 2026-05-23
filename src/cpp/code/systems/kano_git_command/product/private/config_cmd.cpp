@@ -91,14 +91,18 @@ void RegisterConfig(CLI::App& InApp) {
         "  local:  .kano/kog_config.toml\n\n"
         "Known Keys & Values:\n"
         "  ai.model.selection\n"
-        "      \"auto\"             Use the provider's auto-selection behavior (default)\n"
+        "      \"auto\"             Use provider-native auto first; fallback to KOG auto when unsupported (default)\n"
+        "      \"provider-auto\"    Force provider-native auto mode\n"
+        "      \"kog-auto\"         Force KOG change-count auto routing\n"
         "      \"provider-default\" Use the provider's built-in recommended fixed model\n"
         "      \"provider/model\"   Exact model reference (e.g., \"copilot/gpt-5.4\")\n"
         "      \"model\"            Bare model name for the active provider\n"
-        "  ai.model.auto.change_thresholds\n"
+        "  ai.model.kog_auto.change_thresholds\n"
         "      Array of integers defining change volume boundaries (e.g., [5, 10])\n"
-        "  ai.model.auto.models\n"
+        "  ai.model.kog_auto.models\n"
         "      Array of strings matching thresholds (e.g., [\"...-mini\", \"...-haiku\", \"...-gpt-5.4\"])\n"
+        "  ai.model.auto.* (deprecated)\n"
+        "      Backward-compatible legacy keys. Prefer ai.model.kog_auto.*\n"
         "  workspace.external.roots\n"
         "      Array of external repo roots merged into workspace discovery (e.g., [\"~/.agents/skills\"])\n"
         "  workspace.external.inherit\n"
@@ -152,7 +156,9 @@ void RegisterConfig(CLI::App& InApp) {
                 const auto& key = args[0];
                 if (key == "ai.model.selection") {
                     std::cout << "ai.model.selection\n"
-                              << "  \"auto\"             Use the provider's auto-selection behavior (default)\n"
+                              << "  \"auto\"             Use provider-native auto first; fallback to kog-auto (default)\n"
+                              << "  \"provider-auto\"    Force provider-native auto mode\n"
+                              << "  \"kog-auto\"         Force KOG change-count auto routing\n"
                               << "  \"provider-default\" Use the provider's built-in recommended fixed default model\n"
                               << "  \"provider/model\"   Exact model reference (e.g., \"copilot/gpt-5.4\")\n"
                               << "  \"model\"            Bare model name for the active provider\n\n"
@@ -171,11 +177,11 @@ void RegisterConfig(CLI::App& InApp) {
                     }
                     std::cout << "\nExperimental Providers (hidden from catalog):\n"
                               << "  codex, opencode\n";
-                } else if (key == "ai.model.auto.change_thresholds") {
-                    std::cout << "ai.model.auto.change_thresholds\n"
+                } else if (key == "ai.model.kog_auto.change_thresholds" || key == "ai.model.auto.change_thresholds") {
+                    std::cout << "ai.model.kog_auto.change_thresholds\n"
                               << "  Array of integers defining change volume boundaries (e.g., [5, 10])\n";
-                } else if (key == "ai.model.auto.models") {
-                    std::cout << "ai.model.auto.models\n"
+                } else if (key == "ai.model.kog_auto.models" || key == "ai.model.auto.models") {
+                    std::cout << "ai.model.kog_auto.models\n"
                               << "  Array of strings matching thresholds (e.g., [\"...-mini\", \"...-haiku\", \"...-gpt-5.4\"])\n";
                 } else if (key == "plan.ai.commit_generation_mode") {
                     std::cout << "plan.ai.commit_generation_mode\n"
