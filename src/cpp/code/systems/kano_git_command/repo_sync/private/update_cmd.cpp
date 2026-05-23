@@ -203,8 +203,27 @@ auto UpdateRepoNative(const workspace::RepoRecord& InRepo, const std::string& In
 
     const auto repoCheck = GitCapture(InRepo.path, {"rev-parse", "--git-dir"});
     if (repoCheck.exitCode != 0) {
-        out.exitCode = 1;
-        out.message = "Not a git repository";
+        out.exitCode = 0;
+        out.skipped = true;
+        out.message = "Skip: not a git repository";
+        return out;
+    }
+
+    const auto rebaseApply = Trim(GitCapture(InRepo.path, {"rev-parse", "--git-path", "rebase-apply"}).stdoutStr);
+    const auto rebaseMerge = Trim(GitCapture(InRepo.path, {"rev-parse", "--git-path", "rebase-merge"}).stdoutStr);
+    if ((!rebaseApply.empty() && std::filesystem::exists(std::filesystem::path(rebaseApply))) ||
+        (!rebaseMerge.empty() && std::filesystem::exists(std::filesystem::path(rebaseMerge)))) {
+        out.exitCode = 0;
+        out.skipped = true;
+        out.message = "Skip: rebase in progress";
+        return out;
+    }
+
+    const auto unmerged = GitCapture(InRepo.path, {"diff", "--name-only", "--diff-filter=U"});
+    if (unmerged.exitCode == 0 && !Trim(unmerged.stdoutStr).empty()) {
+        out.exitCode = 0;
+        out.skipped = true;
+        out.message = "Skip: unresolved merge conflicts present";
         return out;
     }
 
@@ -246,7 +265,13 @@ auto UpdateRepoNative(const workspace::RepoRecord& InRepo, const std::string& In
     const auto changes = GitCapture(InRepo.path, {"status", "--porcelain"});
     if (changes.exitCode == 0 && !Trim(changes.stdoutStr).empty()) {
         const auto stashPush = GitCapture(InRepo.path, {"stash", "push", "-m", "auto-stash-workspace-update"});
-        if (stashPush.exitCode == 0 && stashPush.stdoutStr.find("No local changes to save") == std::string::npos) {
+        if (stashPush.exitCode != 0) {
+            out.exitCode = 0;
+            out.skipped = true;
+            out.message = "Skip: working tree changes could not be stashed";
+            return out;
+        }
+        if (stashPush.stdoutStr.find("No local changes to save") == std::string::npos) {
             stashCreated = true;
         }
     }
