@@ -46,7 +46,7 @@ auto GetEnvPath(const char* InKey) -> std::optional<std::filesystem::path> {
     return std::filesystem::path(raw);
 }
 
-auto GetEnvTimeoutMs(const char* InKey) -> std::optional<DWORD> {
+auto GetEnvTimeoutMs(const char* InKey) -> std::optional<unsigned int> {
     int raw = 0;
     if (!kano_platform_get_env_int(InKey, &raw)) {
         return std::nullopt;
@@ -54,7 +54,7 @@ auto GetEnvTimeoutMs(const char* InKey) -> std::optional<DWORD> {
     if (raw <= 0) {
         return std::nullopt;
     }
-    return static_cast<DWORD>(raw);
+    return static_cast<unsigned int>(raw);
 }
 
 }
@@ -97,6 +97,9 @@ auto GetScriptsDir() -> std::filesystem::path {
     );
 }
 
+auto ToLower(std::string in) -> std::string;
+auto BaseNameLower(const std::string& InCommand) -> std::string;
+
 #ifdef KOG_PLATFORM_WINDOWS
 
 class ThreadSafeLogBuffer {
@@ -138,7 +141,7 @@ private:
 auto ToLower(std::string in) -> std::string;
 auto BaseNameLower(const std::string& InCommand) -> std::string;
 
-auto ParseTimeoutMsRaw(const char* InValue) -> std::optional<DWORD> {
+auto ParseTimeoutMsRaw(const char* InValue) -> std::optional<unsigned int> {
     if (InValue == nullptr) {
         return std::nullopt;
     }
@@ -153,10 +156,10 @@ auto ParseTimeoutMsRaw(const char* InValue) -> std::optional<DWORD> {
     if (ec != std::errc() || ptr != end) {
         return std::nullopt;
     }
-    if (parsed > static_cast<unsigned long long>((std::numeric_limits<DWORD>::max)())) {
-        return (std::numeric_limits<DWORD>::max)();
+    if (parsed > static_cast<unsigned long long>((std::numeric_limits<unsigned int>::max)())) {
+        return (std::numeric_limits<unsigned int>::max)();
     }
-    return static_cast<DWORD>(parsed);
+    return static_cast<unsigned int>(parsed);
 }
 
 auto FirstGitSubcommand(const std::vector<std::string>& InArgs) -> std::string {
@@ -198,7 +201,7 @@ auto IsLongRunningGitOperation(const std::string& InCommand,
            sub == "lfs";
 }
 
-auto NormalizeTimeoutOverride(const std::optional<DWORD>& InValue) -> std::optional<DWORD> {
+auto NormalizeTimeoutOverride(const std::optional<unsigned int>& InValue) -> std::optional<unsigned int> {
     if (!InValue.has_value()) {
         return std::nullopt;
     }
@@ -210,7 +213,7 @@ auto NormalizeTimeoutOverride(const std::optional<DWORD>& InValue) -> std::optio
 
 auto ResolveTimeoutMs(const std::string& InCommand,
                       const std::vector<std::string>& InArgs,
-                      const ExecMode InMode) -> std::optional<DWORD> {
+                      const ExecMode InMode) -> std::optional<unsigned int> {
     if (const auto timeoutRaw = GetEnvTimeoutMs("KOG_SHELL_TIMEOUT_MS"); timeoutRaw.has_value()) {
         return NormalizeTimeoutOverride(timeoutRaw);
     }
@@ -223,7 +226,7 @@ auto ResolveTimeoutMs(const std::string& InCommand,
             return std::nullopt;
         }
         // Capture path keeps a default safety timeout, but large enough for most operations.
-        return static_cast<DWORD>(30 * 60 * 1000);
+        return static_cast<unsigned int>(30 * 60 * 1000);
     }
     // PassThrough: default no timeout.
     return std::nullopt;
@@ -441,7 +444,11 @@ auto RunProcessUnix(const std::string& InCommand,
 
     KanoProcessOptions opts{};
     opts.executable = InCommand.c_str();
-    opts.working_dir = InWorkingDir ? InWorkingDir->string().c_str() : nullptr;
+    std::string workingDirStorage;
+    if (InWorkingDir.has_value()) {
+        workingDirStorage = InWorkingDir->string();
+    }
+    opts.working_dir = workingDirStorage.empty() ? nullptr : workingDirStorage.c_str();
     opts.argv = argv.data();
     opts.argv_count = argv.size() - 1;  // exclude terminating nullptr
     opts.mode = (InMode == ExecMode::Capture) ? KANO_PROCESS_MODE_CAPTURE : KANO_PROCESS_MODE_PASS_THROUGH;
@@ -481,6 +488,74 @@ auto RunProcessUnix(const std::string& InCommand,
                     const std::optional<unsigned int>& InTimeoutMs,
                     const std::optional<std::filesystem::path>& InWorkingDir) -> ExecResult {
     return RunProcessUnix(InCommand, InArgs, InMode, InTimeoutMs, InWorkingDir, ProgressCallback{});
+}
+
+auto FirstGitSubcommand(const std::vector<std::string>& InArgs) -> std::string {
+    for (std::size_t i = 0; i < InArgs.size(); ++i) {
+        const auto token = InArgs[i];
+        if (token.empty()) {
+            continue;
+        }
+        if (token == "--") {
+            if ((i + 1) < InArgs.size()) {
+                return ToLower(InArgs[i + 1]);
+            }
+            break;
+        }
+        if (token == "-c" || token == "-C" || token == "--work-tree" || token == "--git-dir" || token == "--namespace") {
+            i += 1;
+            continue;
+        }
+        if (token.rfind("-", 0) == 0) {
+            continue;
+        }
+        return ToLower(token);
+    }
+    return {};
+}
+
+auto IsLongRunningGitOperation(const std::string& InCommand,
+                               const std::vector<std::string>& InArgs) -> bool {
+    const auto base = BaseNameLower(InCommand);
+    if (base != "git" && base != "git.exe") {
+        return false;
+    }
+
+    const auto sub = FirstGitSubcommand(InArgs);
+    return sub == "fetch" ||
+           sub == "pull" ||
+           sub == "clone" ||
+           sub == "submodule" ||
+           sub == "lfs";
+}
+
+auto NormalizeTimeoutOverride(const std::optional<unsigned int>& InValue) -> std::optional<unsigned int> {
+    if (!InValue.has_value()) {
+        return std::nullopt;
+    }
+    if (*InValue == 0) {
+        return std::nullopt;
+    }
+    return InValue;
+}
+
+auto ResolveTimeoutMs(const std::string& InCommand,
+                      const std::vector<std::string>& InArgs,
+                      const ExecMode InMode) -> std::optional<unsigned int> {
+    if (const auto timeoutRaw = GetEnvTimeoutMs("KOG_SHELL_TIMEOUT_MS"); timeoutRaw.has_value()) {
+        return NormalizeTimeoutOverride(timeoutRaw);
+    }
+
+    if (InMode == ExecMode::Capture) {
+        if (const auto timeoutRaw = GetEnvTimeoutMs("KOG_SHELL_CAPTURE_TIMEOUT_MS"); timeoutRaw.has_value()) {
+            return NormalizeTimeoutOverride(timeoutRaw);
+        }
+        if (IsLongRunningGitOperation(InCommand, InArgs)) {
+            return std::nullopt;
+        }
+        return static_cast<unsigned int>(30 * 60 * 1000);
+    }
+    return std::nullopt;
 }
 
 #endif

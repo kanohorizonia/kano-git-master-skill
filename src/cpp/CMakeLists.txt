@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.21)
 project(KanoGit DESCRIPTION "CLI" VERSION 0.1.0 LANGUAGES C CXX)
 
+if(APPLE)
+    # The static-library graph intentionally shares transitive dependencies.
+    # Suppress duplicate-library linker warnings on Apple ld for cleaner builds.
+    add_link_options(-Wl,-no_warn_duplicate_libraries)
+endif()
+
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(KOG_ENABLE_MODULES "Enable C++20 modules" ON)
 option(KOG_ENABLE_UNITY_BUILD "Enable unity build for eligible targets" OFF)

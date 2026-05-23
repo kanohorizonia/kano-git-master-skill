@@ -56,4 +56,9 @@ target_include_directories(kano_git_commit_plan_tests
   PRIVATE "${KANO_GIT_COMMAND_ROOT}/commit_plan/private"
 )
 
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  # rapidcheck currently uses deprecated std::aligned_storage on libc++ C++23.
+  target_compile_options(kano_git_commit_plan_tests PRIVATE -Wno-deprecated-declarations)
+endif()
+
 catch_discover_tests(kano_git_commit_plan_tests)

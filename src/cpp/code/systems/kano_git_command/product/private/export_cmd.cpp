@@ -584,7 +584,7 @@ auto TrimExport(std::string InValue) -> std::string {
     return InValue.substr(start);
 }
 
-auto RelativeDisplayPath(const std::filesystem::path& InRoot, const std::filesystem::path& InPath) -> std::filesystem::path {
+auto RelativeDisplayPathForExport(const std::filesystem::path& InRoot, const std::filesystem::path& InPath) -> std::filesystem::path {
     const auto normalizedRoot = InRoot.lexically_normal();
     const auto normalizedPath = InPath.lexically_normal();
     const auto relative = normalizedPath.lexically_relative(normalizedRoot);
@@ -787,7 +787,7 @@ auto BuildExportList(const std::filesystem::path& InRoot,
         }
 
         if (!isRoot) {
-            rootRecord.submodulePaths.push_back(RelativeDisplayPath(normalizedRoot, normalizedPath));
+            rootRecord.submodulePaths.push_back(RelativeDisplayPathForExport(normalizedRoot, normalizedPath));
         }
     }
     const auto gitSubmodules = CollectSubmodulePathsFromGitStatus(normalizedRoot, InExec);
@@ -912,7 +912,7 @@ auto BuildExportList(const std::filesystem::path& InRoot,
 
             ExportRecord rec;
             rec.repoPath = repo.path;
-            rec.relativeRepoPath = RelativeDisplayPath(InRoot, repo.path).generic_string();
+            rec.relativeRepoPath = RelativeDisplayPathForExport(InRoot, repo.path).generic_string();
             rec.exportAsSingle = (depthFromRoot(repo.path) == InSplitSubrepoDepth);
             std::string subName = rec.relativeRepoPath;
             std::replace(subName.begin(), subName.end(), '/', '_');
@@ -958,7 +958,7 @@ auto BuildExportList(const std::filesystem::path& InRoot,
 
         ExportRecord rec;
         rec.repoPath = repo.path;
-        rec.relativeRepoPath = RelativeDisplayPath(InRoot, repo.path).generic_string();
+        rec.relativeRepoPath = RelativeDisplayPathForExport(InRoot, repo.path).generic_string();
 
         // Include root repo name in subrepo names for clarity
         std::string subName = rec.relativeRepoPath;

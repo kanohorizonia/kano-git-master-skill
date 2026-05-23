@@ -229,7 +229,7 @@ void CheckRepoHygiene(const std::filesystem::path& repoRoot, bool fix, bool arch
 
 } // namespace
 
-void RegisterRepoHygiene(CLI::App& InApp) {
+void RegisterRepoHygieneProduct(CLI::App& InApp) {
     auto* cmd = InApp.add_subcommand("repo-hygiene", "Detect and fix Git-index executable bits and CRLF/LF issues");
 
     auto* repo = new std::string{"."};
