@@ -347,6 +347,61 @@ auto CollectExecutablePathsWithPrefix(const std::filesystem::path& InRepoPath,
     return true;
 }
 
+auto ShouldNormalizePathToLfByAttributes(const std::filesystem::path& InRepoPath,
+                                         const std::string& InRepoRelativePath,
+                                         const ShellExecutor& InExec) -> bool {
+    if (InRepoRelativePath.empty()) {
+        return false;
+    }
+
+    const auto res = InExec(
+        "git",
+        {"check-attr", "text", "eol", "--", InRepoRelativePath},
+        shell::ExecMode::Capture,
+        InRepoPath);
+    if (res.exitCode != 0) {
+        return false;
+    }
+
+    bool hasEolLf = false;
+    bool textUnset = false;
+
+    std::istringstream iss(res.stdoutStr);
+    std::string line;
+    while (std::getline(iss, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        if (line.empty()) {
+            continue;
+        }
+
+        // git check-attr text eol -- <path> returns lines like:
+        //   <path>: text: set
+        //   <path>: eol: lf
+        const auto firstSep = line.find(": ");
+        if (firstSep == std::string::npos) {
+            continue;
+        }
+        const auto secondSep = line.find(": ", firstSep + 2);
+        if (secondSep == std::string::npos) {
+            continue;
+        }
+
+        const std::string attr = line.substr(firstSep + 2, secondSep - (firstSep + 2));
+        const std::string value = line.substr(secondSep + 2);
+
+        if (attr == "eol" && value == "lf") {
+            hasEolLf = true;
+        }
+        if (attr == "text" && value == "unset") {
+            textUnset = true;
+        }
+    }
+
+    return hasEolLf && !textUnset;
+}
+
 auto CollectSubmodulePathsFromGitStatus(const std::filesystem::path& InRepoPath,
                                         const ShellExecutor& InExec) -> std::vector<std::filesystem::path> {
     std::vector<std::filesystem::path> out;
@@ -1325,30 +1380,40 @@ auto ExportOneRepo(const ExportRecord& InRecord,
                                                     : (InRecord.subtreeRepoRelativePath.generic_string() + "/" + rel);
                     const auto full = (InRecord.repoPath / fullRel).lexically_normal();
                     const int mode = modeByPath.contains(fullRel) ? modeByPath[fullRel] : 0644;
-                    mf << mode << "\t" << full.generic_string() << "\t" << (prefix + rel) << "\n";
+                    const bool normalizeLf = ShouldNormalizePathToLfByAttributes(InRecord.repoPath, fullRel, InExec);
+                    mf << mode << "\t" << full.generic_string() << "\t" << (prefix + rel) << "\t"
+                       << (normalizeLf ? "1" : "0") << "\n";
                 }
             }
 
             const std::string py =
-                "import pathlib,sys,tarfile,zipfile; "
+                "import io,pathlib,sys,tarfile,zipfile; "
                 "mf=pathlib.Path(sys.argv[1]); out=pathlib.Path(sys.argv[2]); fmt=sys.argv[3]; "
                 "out.parent.mkdir(parents=True,exist_ok=True); "
                 "entries=[]\n"
+                "def maybe_norm(data,norm):\n"
+                "  if not norm: return data\n"
+                "  if b'\\0' in data: return data\n"
+                "  return data.replace(b'\\r\\n',b'\\n').replace(b'\\r',b'\\n')\n"
                 "for line in mf.read_text(encoding='utf-8').splitlines():\n"
                 "  if not line.strip(): continue\n"
-                "  m,s,a=line.split('\\t',2); mode=int(m); sp=pathlib.Path(s); ap=a.replace('\\\\','/');\n"
+                "  parts=line.split('\\t');\n"
+                "  if len(parts) < 3: continue\n"
+                "  m,s,a=parts[0],parts[1],parts[2]; norm=(len(parts) > 3 and parts[3] == '1'); mode=int(m); sp=pathlib.Path(s); ap=a.replace('\\\\','/');\n"
                 "  if not sp.exists() or not sp.is_file(): continue\n"
-                "  entries.append((mode,sp,ap))\n"
+                "  entries.append((mode,sp,ap,norm))\n"
                 "if fmt == 'tar':\n"
                 "  with tarfile.open(out,'w') as t:\n"
-                "    for mode,sp,ap in entries:\n"
-                "      info=t.gettarinfo(str(sp),arcname=ap); info.mode=mode\n"
-                "      with sp.open('rb') as f: t.addfile(info,f)\n"
+                "    for mode,sp,ap,norm in entries:\n"
+                "      data=maybe_norm(sp.read_bytes(),norm)\n"
+                "      info=t.gettarinfo(str(sp),arcname=ap); info.mode=mode; info.size=len(data)\n"
+                "      t.addfile(info,io.BytesIO(data))\n"
                 "elif fmt == 'zip':\n"
                 "  with zipfile.ZipFile(out,'w',compression=zipfile.ZIP_DEFLATED) as z:\n"
-                "    for mode,sp,ap in entries:\n"
+                "    for mode,sp,ap,norm in entries:\n"
+                "      data=maybe_norm(sp.read_bytes(),norm)\n"
                 "      zi=zipfile.ZipInfo(ap); zi.external_attr=(mode & 0xffff) << 16\n"
-                "      z.writestr(zi, sp.read_bytes())\n"
+                "      z.writestr(zi, data)\n"
                 "else:\n"
                 "  raise SystemExit('unsupported archive format: ' + fmt)";
 
@@ -1402,30 +1467,54 @@ auto ExportOneRepo(const ExportRecord& InRecord,
             for (const auto& rel : relFiles) {
                 const auto full = (InRecord.repoPath / rel).lexically_normal();
                 const int mode = modeByPath.contains(rel) ? modeByPath[rel] : 0644;
-                mf << mode << "\t" << full.generic_string() << "\t" << (prefix + rel) << "\n";
+                bool normalizeLf = false;
+                if (singleForRecord && includeSubreposForRecord) {
+                    for (const auto& subRelPath : InRecord.submodulePaths) {
+                        const std::string subPrefix = subRelPath.generic_string() + "/";
+                        if (rel.rfind(subPrefix, 0) == 0) {
+                            const auto subRepoPath = InRecord.repoPath / subRelPath;
+                            const std::string subRepoRel = rel.substr(subPrefix.size());
+                            normalizeLf = ShouldNormalizePathToLfByAttributes(subRepoPath, subRepoRel, InExec);
+                            break;
+                        }
+                    }
+                }
+                if (!normalizeLf) {
+                    normalizeLf = ShouldNormalizePathToLfByAttributes(InRecord.repoPath, rel, InExec);
+                }
+                mf << mode << "\t" << full.generic_string() << "\t" << (prefix + rel) << "\t"
+                   << (normalizeLf ? "1" : "0") << "\n";
             }
         }
 
         const std::string py =
-            "import pathlib,sys,tarfile,zipfile; "
+            "import io,pathlib,sys,tarfile,zipfile; "
             "mf=pathlib.Path(sys.argv[1]); out=pathlib.Path(sys.argv[2]); fmt=sys.argv[3]; "
             "out.parent.mkdir(parents=True,exist_ok=True); "
             "entries=[]\n"
+            "def maybe_norm(data,norm):\n"
+            "  if not norm: return data\n"
+            "  if b'\\0' in data: return data\n"
+            "  return data.replace(b'\\r\\n',b'\\n').replace(b'\\r',b'\\n')\n"
             "for line in mf.read_text(encoding='utf-8').splitlines():\n"
             "  if not line.strip(): continue\n"
-            "  m,s,a=line.split('\\t',2); mode=int(m); sp=pathlib.Path(s); ap=a.replace('\\\\','/');\n"
+            "  parts=line.split('\\t');\n"
+            "  if len(parts) < 3: continue\n"
+            "  m,s,a=parts[0],parts[1],parts[2]; norm=(len(parts) > 3 and parts[3] == '1'); mode=int(m); sp=pathlib.Path(s); ap=a.replace('\\\\','/');\n"
             "  if not sp.exists() or not sp.is_file(): continue\n"
-            "  entries.append((mode,sp,ap))\n"
+            "  entries.append((mode,sp,ap,norm))\n"
             "if fmt == 'tar':\n"
             "  with tarfile.open(out,'w') as t:\n"
-            "    for mode,sp,ap in entries:\n"
-            "      info=t.gettarinfo(str(sp),arcname=ap); info.mode=mode\n"
-            "      with sp.open('rb') as f: t.addfile(info,f)\n"
+            "    for mode,sp,ap,norm in entries:\n"
+            "      data=maybe_norm(sp.read_bytes(),norm)\n"
+            "      info=t.gettarinfo(str(sp),arcname=ap); info.mode=mode; info.size=len(data)\n"
+            "      t.addfile(info,io.BytesIO(data))\n"
             "elif fmt == 'zip':\n"
             "  with zipfile.ZipFile(out,'w',compression=zipfile.ZIP_DEFLATED) as z:\n"
-            "    for mode,sp,ap in entries:\n"
+            "    for mode,sp,ap,norm in entries:\n"
+            "      data=maybe_norm(sp.read_bytes(),norm)\n"
             "      zi=zipfile.ZipInfo(ap); zi.external_attr=(mode & 0xffff) << 16\n"
-            "      z.writestr(zi, sp.read_bytes())\n"
+            "      z.writestr(zi, data)\n"
             "else:\n"
             "  raise SystemExit('unsupported archive format: ' + fmt)";
 

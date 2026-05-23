@@ -50,6 +50,16 @@ auto WriteTextFile(const std::filesystem::path& InPath, const std::string& InTex
     out << InText;
 }
 
+auto FileContainsCRLF(const std::filesystem::path& InPath) -> bool {
+    std::ifstream in(InPath, std::ios::binary);
+    if (!in.good()) {
+        return false;
+    }
+    const std::string text((std::istreambuf_iterator<char>(in)),
+                           std::istreambuf_iterator<char>());
+    return text.find("\r\n") != std::string::npos;
+}
+
 // Configure git identity in a repo (required for commits in a fresh sandbox).
 auto ConfigureIdentity(const std::filesystem::path& InRepo) -> void {
     RequireSuccess(RunGit({"config", "user.name", "Kano Test"}, InRepo), "config user.name");
@@ -954,6 +964,81 @@ TEST_CASE("kog export --single --include-subrepos remains accepted and includes 
     }
     REQUIRE_FALSE(rootArchive.empty());
     REQUIRE(ArchiveContainsPath(rootArchive, "deps/child/child.txt", ctx.rootClone));
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("kog export normalizes LF-enforced scripts in single expanded exports",
+          "[Integration][export][single][line-endings][gitattributes]") {
+    const auto ctx = CreateExportWorkspace("single-line-ending-normalization");
+
+    const auto rootScript = ctx.rootClone / "scripts" / "root_crlf.sh";
+    WriteTextFile(ctx.rootClone / ".gitattributes", "*.sh text eol=lf\n*.groovy text eol=lf\n");
+    WriteTextFile(rootScript, "#!/usr/bin/env bash\r\necho root\r\n");
+    RequireSuccess(RunGit({"add", ".gitattributes", "scripts/root_crlf.sh"}, ctx.rootClone), "root add gitattributes/script");
+    RequireSuccess(RunGit({"commit", "-m", "add root lf attrs"}, ctx.rootClone), "root commit gitattributes/script");
+
+    const auto childScript = ctx.childClone / "scripts" / "child_crlf.sh";
+    WriteTextFile(ctx.childClone / ".gitattributes", "*.sh text eol=lf\n");
+    WriteTextFile(childScript, "#!/usr/bin/env bash\r\necho child\r\n");
+    RequireSuccess(RunGit({"add", ".gitattributes", "scripts/child_crlf.sh"}, ctx.childClone), "child add gitattributes/script");
+    RequireSuccess(RunGit({"commit", "-m", "add child lf attrs"}, ctx.childClone), "child commit gitattributes/script");
+    RequireSuccess(RunGit({"add", ctx.submodulePath}, ctx.rootClone), "root add child pointer update");
+    RequireSuccess(RunGit({"commit", "-m", "update child pointer for lf attrs"}, ctx.rootClone), "root commit child pointer update");
+
+    // Simulate Windows working-tree CRLF noise after commits.
+    WriteTextFile(rootScript, "#!/usr/bin/env bash\r\necho root\r\n");
+    WriteTextFile(childScript, "#!/usr/bin/env bash\r\necho child\r\n");
+    REQUIRE(FileContainsCRLF(rootScript));
+    REQUIRE(FileContainsCRLF(childScript));
+
+    RequireSuccess(RunKogDiscover(ctx), "kog discover");
+    const auto result = RunKogExport(ctx, {"--single", "--include-subrepos", "--source", "working-tree", "--no-validate-release-archive"});
+    INFO("exit=" << result.exitCode);
+    INFO("stdout=" << result.stdoutText);
+    INFO("stderr=" << result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    const auto outputDir = ctx.rootClone / ".kano" / "tmp" / "git" / "export";
+    REQUIRE(std::filesystem::exists(outputDir));
+
+    std::filesystem::path rootArchive;
+    for (const auto& entry : std::filesystem::directory_iterator(outputDir)) {
+        if (entry.is_regular_file() && entry.path().extension() == ".tar") {
+            rootArchive = entry.path();
+            break;
+        }
+    }
+    REQUIRE_FALSE(rootArchive.empty());
+
+    const std::string rootArchiveMember = ctx.rootRepoName + "/scripts/root_crlf.sh";
+    const std::string childArchiveMember = ctx.rootRepoName + "/deps/child/scripts/child_crlf.sh";
+
+    const auto verify = RunCommand(
+        "python",
+        {
+            "-c",
+            "import pathlib,subprocess,sys,tarfile,tempfile; "
+            "archive=pathlib.Path(sys.argv[1]); root_member=sys.argv[2]; child_member=sys.argv[3]; "
+            "members=[root_member,child_member]; "
+            "with tempfile.TemporaryDirectory() as td: "
+            "  td_path=pathlib.Path(td); "
+            "  with tarfile.open(archive,'r') as t: t.extractall(td_path); "
+            "  for member in members: "
+            "    p=td_path/member; data=p.read_bytes(); "
+            "    if b'\\r' in data: raise SystemExit(f'CR byte found in {member}'); "
+            "    subprocess.check_call(['bash','-n',str(p)]); "
+            "print('OK')",
+            rootArchive.generic_string(),
+            rootArchiveMember,
+            childArchiveMember,
+        },
+        ctx.rootClone);
+
+    INFO("verify exit=" << verify.exitCode);
+    INFO("verify stdout=" << verify.stdoutText);
+    INFO("verify stderr=" << verify.stderrText);
+    REQUIRE(verify.exitCode == 0);
 
     RemoveSandboxWorkspace(ctx.sandbox);
 }
