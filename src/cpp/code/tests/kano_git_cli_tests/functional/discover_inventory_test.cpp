@@ -96,7 +96,7 @@ auto CommitGitmodules(const std::filesystem::path& InRepo) -> void {
 
 } // namespace
 
-TEST_CASE("discover keeps registered recursion separate from bounded unregistered probing", "[functional][discover][inventory]") {
+TEST_CASE("discover keeps registered recursion separate from bounded unregistered probing", "[functional][discover][inventory][bdd][feature:discover][scenario:KOG-BDD-DISCOVERY-001]") {
     const auto sandbox = CreateSandboxWorkspace("discover-registered-recursion");
     const auto root = (sandbox.root / "root").lexically_normal();
     InitRepo(root);

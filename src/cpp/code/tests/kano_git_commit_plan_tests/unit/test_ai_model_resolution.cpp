@@ -9,7 +9,7 @@
 
 using namespace kano::git::commands;
 
-TEST_CASE("ResolveModelResolutionForAi uses provider-native auto for copilot", "[unit][ai][model-resolution]") {
+TEST_CASE("ResolveModelResolutionForAi uses provider-native auto for copilot", "[unit][ai][model-resolution][bdd][feature:ai-provider-bootstrap][scenario:KOG-BDD-AI-001][featured]") {
     const auto workspace = std::filesystem::temp_directory_path();
     const auto resolved = ResolveModelResolutionForAi("copilot", "auto", false, workspace);
 
@@ -42,7 +42,7 @@ TEST_CASE("ResolveModelResolutionForAi supports provider-default and explicit mo
     REQUIRE(explicitModel.modelValue == "gpt-5-mini");
 }
 
-TEST_CASE("NormalizeAiModelSelection recognizes provider-auto and kog-auto", "[unit][ai][model-selection]") {
+TEST_CASE("NormalizeAiModelSelection recognizes provider-auto and kog-auto", "[unit][ai][model-selection][bdd][feature:ai-provider-bootstrap][scenario:KOG-BDD-AI-002]") {
     REQUIRE(kog_config::NormalizeAiModelSelection("provider-auto") == "provider-auto");
     REQUIRE(kog_config::NormalizeAiModelSelection("kog-auto") == "kog-auto");
     REQUIRE(kog_config::NormalizeAiModelSelection("default") == "provider-default");

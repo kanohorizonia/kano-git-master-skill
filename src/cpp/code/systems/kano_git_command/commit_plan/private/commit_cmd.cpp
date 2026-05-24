@@ -1391,14 +1391,7 @@ auto ResolveRepoPath(const std::filesystem::path& InWorkspaceRoot, const std::fi
     }), matches.end());
 
     if (matches.empty()) {
-        // Only fall back to the raw candidate path if it is a genuine git
-        // repository root.  Returning a non-root directory (e.g. a test
-        // fixture subdirectory that happens to live inside a repo) causes
-        // the commit executor to attempt `git add` there and fail.
-        if (std::filesystem::exists(candidate) && IsGitRepo(candidate)) {
-            return candidate;
-        }
-        return {};
+        return candidate;
     }
     if (matches.size() > 1) {
         std::ostringstream oss;

@@ -102,7 +102,7 @@ auto RequireNotContains(const std::string& InText, const std::string& InNeedle) 
 
 } // namespace
 
-TEST_CASE("status recursive json emits Task 4A schema and deterministic scheduler order", "[functional][status][recursive]") {
+TEST_CASE("status recursive json emits Task 4A schema and deterministic scheduler order", "[functional][status][recursive][bdd][feature:status][scenario:KOG-BDD-STATUS-001]") {
     const auto sandbox = CreateSandboxWorkspace("status-recursive-schema");
     const auto root = (sandbox.root / "root").lexically_normal();
     InitRepo(root);

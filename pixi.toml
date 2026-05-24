@@ -42,5 +42,6 @@ acceptance-quickstart = "bash src/shell/test/acceptance-quickstart-commit-push.s
 acceptance-commit-plan-first = "bash src/shell/test/acceptance-commit-plan-first.sh"
 acceptance-ignore-plan = "bash src/shell/test/acceptance-ignore-plan.sh"
 acceptance-pixi-bootstrap-parity = "bash src/shell/test/acceptance-pixi-bootstrap-parity.sh"
+smoke-bdd-reporting = "bash src/shell/test/smoke-bdd-reporting.sh"
 docs = "bash src/shell/docs/build-and-deploy.sh"
 docs-ci = "bash src/shell/docs/build-and-deploy.sh --ci $(pwd)"

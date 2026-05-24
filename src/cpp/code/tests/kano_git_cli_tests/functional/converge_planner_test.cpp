@@ -174,7 +174,7 @@ auto RunDiscoverFull(const std::filesystem::path& InRoot, int InDepth = 3) -> vo
 
 } // namespace
 
-TEST_CASE("converge planner dry-run prints deterministic executable plan", "[functional][converge][planner]") {
+TEST_CASE("converge planner dry-run prints deterministic executable plan", "[functional][converge][planner][bdd][feature:converge][scenario:KOG-BDD-CONVERGE-001][featured]") {
     const auto ctx = CreateRemoteWithClone("converge-planner-plan");
     const auto beforeStatus = GitStatusShort(ctx.cloneRepo);
 
@@ -365,7 +365,7 @@ TEST_CASE("converge planner default avoids full scan and opt-in blocks untrusted
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
-TEST_CASE("converge runtime writes JSON state and supports status/abort", "[functional][converge][state]") {
+TEST_CASE("converge runtime writes JSON state and supports status/abort", "[functional][converge][state][bdd][feature:converge][scenario:KOG-BDD-CONVERGE-002]") {
     const auto ctx = CreateRemoteWithClone("converge-runtime-state");
     const auto beforeStatus = GitStatusShort(ctx.cloneRepo);
     const auto statePath = ConvergeStatePath(ctx.cloneRepo);

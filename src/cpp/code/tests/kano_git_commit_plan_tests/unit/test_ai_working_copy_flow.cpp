@@ -143,7 +143,7 @@ auto LoadJson(const std::filesystem::path& path) -> nlohmann::json {
 } // namespace
 
 TEST_CASE("FillPlanByAi promotes edited working plan and merges new gitignore rules in single mode",
-          "[unit][FillPlanByAi][working-copy][gitignore]") {
+          "[unit][FillPlanByAi][working-copy][gitignore][bdd][feature:ai-provider-bootstrap][scenario:KOG-BDD-AI-003][featured]") {
     const auto workspaceRoot = UniqueTempWorkspace("single-success");
     InstallFakeCopilot(workspaceRoot);
 
