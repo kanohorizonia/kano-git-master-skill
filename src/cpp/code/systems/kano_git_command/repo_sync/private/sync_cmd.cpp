@@ -44,6 +44,9 @@ struct SyncPlan {
     std::filesystem::path path;
     std::string type;
     std::string remote;
+    std::string remoteSelectionSource;
+    std::string remoteSelectionError;
+    std::string remoteSelectionDetail;
     std::string targetBranch;
     std::string branchSource;
     std::string kogSyncPolicy;
@@ -426,13 +429,247 @@ auto ResolveRemote(const std::filesystem::path& InRepo, const std::string& InPre
     return {};
 }
 
+struct RemoteSelectionResult {
+    std::string remote;
+    std::string source;
+    std::string error;
+    std::string detail;
+    std::vector<std::string> candidates;
+    std::vector<std::string> ignoredRemotes;
+};
+
+auto ListRemotes(const std::filesystem::path& InRepo) -> std::vector<std::string> {
+    std::vector<std::string> out;
+    const auto remotes = GitCapture(InRepo, {"remote"});
+    if (remotes.exitCode != 0) {
+        return out;
+    }
+    std::istringstream iss(remotes.stdoutStr);
+    std::string line;
+    while (std::getline(iss, line)) {
+        line = Trim(line);
+        if (!line.empty()) {
+            out.push_back(line);
+        }
+    }
+    return out;
+}
+
+auto RemoteUrl(const std::filesystem::path& InRepo, const std::string& InRemote) -> std::string {
+    const auto out = GitCapture(InRepo, {"remote", "get-url", InRemote});
+    if (out.exitCode != 0) {
+        return {};
+    }
+    return Trim(out.stdoutStr);
+}
+
+auto NormalizeRemoteUrlForMatch(std::string InUrl) -> std::string {
+    InUrl = Trim(std::move(InUrl));
+    if (InUrl.empty()) {
+        return InUrl;
+    }
+    if (InUrl.ends_with(".git")) {
+        InUrl = InUrl.substr(0, InUrl.size() - 4);
+    }
+    const auto schemePos = InUrl.find("://");
+    if (schemePos != std::string::npos) {
+        const auto authorityStart = schemePos + 3;
+        const auto pathPos = InUrl.find('/', authorityStart);
+        const auto authorityEnd = (pathPos == std::string::npos) ? InUrl.size() : pathPos;
+        auto authority = InUrl.substr(authorityStart, authorityEnd - authorityStart);
+        const auto atPos = authority.find('@');
+        if (atPos != std::string::npos) {
+            authority = authority.substr(atPos + 1);
+        }
+        std::transform(authority.begin(), authority.end(), authority.begin(), [](unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
+        InUrl = InUrl.substr(0, authorityStart) + authority + InUrl.substr(authorityEnd);
+    }
+    return InUrl;
+}
+
+auto GitmodulesUrlForPath(const std::filesystem::path& InWorkspaceRoot, const std::filesystem::path& InRepoPath) -> std::optional<std::string> {
+    auto current = InRepoPath.parent_path();
+    const auto workspace = std::filesystem::weakly_canonical(InWorkspaceRoot);
+    const auto target = std::filesystem::weakly_canonical(InRepoPath);
+
+    while (!current.empty()) {
+        const auto candidateGitmodules = current / ".gitmodules";
+        if (std::filesystem::exists(candidateGitmodules)) {
+            std::error_code ec;
+            auto rel = std::filesystem::relative(target, current, ec);
+            if (!ec) {
+                const auto relPath = rel.generic_string();
+                const auto pathResult = GitCapture(current, {"config", "-f", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$"});
+                if (pathResult.exitCode == 0) {
+                    std::istringstream iss(pathResult.stdoutStr);
+                    std::string line;
+                    while (std::getline(iss, line)) {
+                        line = Trim(line);
+                        if (line.empty()) {
+                            continue;
+                        }
+                        const auto sp = line.find(' ');
+                        if (sp == std::string::npos || sp + 1 >= line.size()) {
+                            continue;
+                        }
+                        const auto key = line.substr(0, sp);
+                        const auto value = line.substr(sp + 1);
+                        if (value != relPath || !key.ends_with(".path")) {
+                            continue;
+                        }
+                        const auto prefix = key.substr(0, key.size() - 5);
+                        const auto urlResult = GitCapture(current, {"config", "-f", ".gitmodules", "--get", prefix + ".url"});
+                        if (urlResult.exitCode == 0) {
+                            const auto url = Trim(urlResult.stdoutStr);
+                            if (!url.empty()) {
+                                return url;
+                            }
+                        }
+                        return std::nullopt;
+                    }
+                }
+            }
+        }
+        if (std::filesystem::weakly_canonical(current) == workspace) {
+            break;
+        }
+        const auto next = current.parent_path();
+        if (next == current) {
+            break;
+        }
+        current = next;
+    }
+    return std::nullopt;
+}
+
+auto UpstreamRemote(const std::filesystem::path& InRepo) -> std::string {
+    const auto upstreamOut = GitCapture(InRepo, {"rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"});
+    if (upstreamOut.exitCode != 0) {
+        return {};
+    }
+    const auto upstream = Trim(upstreamOut.stdoutStr);
+    const auto slash = upstream.find('/');
+    if (slash == std::string::npos) {
+        return {};
+    }
+    return upstream.substr(0, slash);
+}
+
+auto SelectSyncRemote(const std::filesystem::path& InWorkspaceRoot,
+                      const std::filesystem::path& InRepo,
+                      const std::string& InPreferredRemote,
+                      bool InIsRegistered,
+                      bool InIsRoot,
+                      bool InIsDetached) -> RemoteSelectionResult {
+    RemoteSelectionResult out;
+    const auto remotes = ListRemotes(InRepo);
+    out.candidates = remotes;
+    if (remotes.empty()) {
+        out.error = "REMOTE_NOT_FOUND";
+        out.detail = "no remotes configured";
+        return out;
+    }
+
+    if (!InPreferredRemote.empty() && std::find(remotes.begin(), remotes.end(), InPreferredRemote) != remotes.end()) {
+        out.remote = InPreferredRemote;
+        out.source = "explicit policy";
+    }
+
+    if (out.remote.empty() && InIsRegistered && !InIsRoot) {
+        if (const auto gmUrl = GitmodulesUrlForPath(InWorkspaceRoot, InRepo); gmUrl.has_value()) {
+            const auto normalizedRegistered = NormalizeRemoteUrlForMatch(*gmUrl);
+            for (const auto& remote : remotes) {
+                const auto normalizedRemoteUrl = NormalizeRemoteUrlForMatch(RemoteUrl(InRepo, remote));
+                if (!normalizedRemoteUrl.empty() && normalizedRemoteUrl == normalizedRegistered) {
+                    out.remote = remote;
+                    out.source = "registered .gitmodules URL match";
+                    break;
+                }
+            }
+        }
+    }
+
+    if (out.remote.empty() && std::find(remotes.begin(), remotes.end(), "origin") != remotes.end()) {
+        out.remote = "origin";
+        out.source = "origin-priority";
+    }
+
+    if (out.remote.empty() && remotes.size() == 1) {
+        out.remote = remotes.front();
+        out.source = "sole-remote";
+    }
+
+    if (out.remote.empty() && !InIsDetached) {
+        const auto upstreamRemote = UpstreamRemote(InRepo);
+        if (!upstreamRemote.empty() && std::find(remotes.begin(), remotes.end(), upstreamRemote) != remotes.end()) {
+            out.remote = upstreamRemote;
+            out.source = "upstream-remote";
+        }
+    }
+
+    if (out.remote.empty()) {
+        out.error = "REMOTE_SELECTION_AMBIGUOUS";
+        std::ostringstream detail;
+        detail << "candidate remotes=";
+        for (std::size_t i = 0; i < remotes.size(); ++i) {
+            if (i > 0) {
+                detail << ",";
+            }
+            detail << remotes[i];
+        }
+        detail << "; configure explicit sync remote policy or add origin";
+        out.detail = detail.str();
+        return out;
+    }
+
+    for (const auto& remote : remotes) {
+        if (remote != out.remote) {
+            out.ignoredRemotes.push_back(remote);
+        }
+    }
+    return out;
+}
+
 auto DetectRemoteDefaultBranch(const std::filesystem::path& InRepo, const std::string& InRemote) -> std::string {
-    const auto remoteHead = GitCapture(InRepo, {"symbolic-ref", "--quiet", std::format("refs/remotes/{}/HEAD", InRemote)});
-    if (remoteHead.exitCode == 0) {
-        const auto ref = Trim(remoteHead.stdoutStr);
-        const auto marker = std::format("refs/remotes/{}/", InRemote);
+    const auto remoteHeadShort = GitCapture(InRepo, {"symbolic-ref", "--quiet", "--short", std::format("refs/remotes/{}/HEAD", InRemote)});
+    if (remoteHeadShort.exitCode == 0) {
+        const auto ref = Trim(remoteHeadShort.stdoutStr);
+        const auto marker = InRemote + "/";
         if (ref.starts_with(marker) && ref.size() > marker.size()) {
             return ref.substr(marker.size());
+        }
+    }
+
+    (void)GitCapture(InRepo, {"remote", "set-head", InRemote, "--auto"});
+    const auto remoteHead = GitCapture(InRepo, {"symbolic-ref", "--quiet", "--short", std::format("refs/remotes/{}/HEAD", InRemote)});
+    if (remoteHead.exitCode == 0) {
+        const auto ref = Trim(remoteHead.stdoutStr);
+        const auto marker = InRemote + "/";
+        if (ref.starts_with(marker) && ref.size() > marker.size()) {
+            return ref.substr(marker.size());
+        }
+    }
+
+    const auto lsRemote = GitCapture(InRepo, {"ls-remote", "--symref", InRemote, "HEAD"});
+    if (lsRemote.exitCode == 0) {
+        std::istringstream iss(lsRemote.stdoutStr);
+        std::string line;
+        while (std::getline(iss, line)) {
+            line = Trim(line);
+            if (!line.starts_with("ref:")) {
+                continue;
+            }
+            const auto headPos = line.find("\tHEAD");
+            if (headPos == std::string::npos) {
+                continue;
+            }
+            const auto refName = Trim(line.substr(4, headPos - 4));
+            const std::string prefix = "refs/heads/";
+            if (refName.starts_with(prefix) && refName.size() > prefix.size()) {
+                return refName.substr(prefix.size());
+            }
         }
     }
 
@@ -1640,6 +1877,9 @@ auto BuildSyncPlans(
                 .path = repoPath,
                 .type = discoveredRepo.type,
                 .remote = {},
+                .remoteSelectionSource = "policy-disabled",
+                .remoteSelectionError = {},
+                .remoteSelectionDetail = {},
                 .targetBranch = {},
                 .branchSource = "commandPolicy.sync=false / kog-sync=false",
                 .kogSyncPolicy = discoveredRepo.kogSyncPolicy,
@@ -1648,12 +1888,19 @@ auto BuildSyncPlans(
             });
             continue;
         }
-        const auto remote = ResolveRemote(repoPath, InPreferredRemote);
+        const auto current = CurrentBranch(repoPath);
+        const bool isRoot = (repoPath == root);
+        const bool isRegistered = discoveredRepo.type == "registered";
+        const auto remoteSelection = SelectSyncRemote(root, repoPath, InPreferredRemote, isRegistered, isRoot, current.empty());
+        const auto remote = remoteSelection.remote;
         if (remote.empty()) {
             plans.push_back(SyncPlan{
                 .path = repoPath,
                 .type = discoveredRepo.type,
                 .remote = {},
+                .remoteSelectionSource = remoteSelection.source,
+                .remoteSelectionError = remoteSelection.error.empty() ? "missing remote" : remoteSelection.error,
+                .remoteSelectionDetail = remoteSelection.detail,
                 .targetBranch = {},
                 .branchSource = "missing remote",
                 .kogSyncPolicy = discoveredRepo.kogSyncPolicy,
@@ -1662,10 +1909,6 @@ auto BuildSyncPlans(
             });
             continue;
         }
-
-        const auto current = CurrentBranch(repoPath);
-        const bool isRoot = (repoPath == root);
-        const bool isRegistered = discoveredRepo.type == "registered";
 
         std::string branchSource;
         std::string targetBranch;
@@ -1701,6 +1944,9 @@ auto BuildSyncPlans(
                 .path = repoPath,
                 .type = discoveredRepo.type,
                 .remote = remote,
+                .remoteSelectionSource = remoteSelection.source,
+                .remoteSelectionError = {},
+                .remoteSelectionDetail = {},
                 .targetBranch = {},
                 .branchSource = "unresolved target branch",
                 .kogSyncPolicy = discoveredRepo.kogSyncPolicy,
@@ -1714,6 +1960,9 @@ auto BuildSyncPlans(
             .path = repoPath,
             .type = discoveredRepo.type,
             .remote = remote,
+            .remoteSelectionSource = remoteSelection.source,
+            .remoteSelectionError = {},
+            .remoteSelectionDetail = {},
             .targetBranch = targetBranch,
             .branchSource = branchSource,
             .kogSyncPolicy = discoveredRepo.kogSyncPolicy,
@@ -2043,12 +2292,21 @@ auto RunNativeOriginLatestSync(
         }
 
         if (plan.remote.empty()) {
-            const std::string reason = "no usable sync remote found";
-            err << "[" << name << "] FAILED_MISSING_REMOTE: " << reason << "\n";
-            return finishFailed("FAILED_MISSING_REMOTE", reason);
+            const std::string reason = plan.remoteSelectionError.empty() ? "no usable sync remote found" : plan.remoteSelectionError;
+            err << "[" << name << "] BLOCKED_PRECHECK: " << reason;
+            if (!plan.remoteSelectionDetail.empty()) {
+                err << " (" << plan.remoteSelectionDetail << ")";
+            }
+            err << "\n";
+            return finishBlocked("BLOCKED_PRECHECK", reason);
         }
 
         if (plan.targetBranch.empty()) {
+            const auto currentBranch = CurrentBranch(plan.path);
+            if (currentBranch.empty()) {
+                err << "[" << name << "] STABLE_BRANCH_NOT_FOUND: detached repo has no resolvable stable branch\n";
+                return finishBlocked("BLOCKED_PRECHECK", "STABLE_BRANCH_NOT_FOUND");
+            }
             const std::string reason = "target branch could not be resolved";
             err << "[" << name << "] FAILED_MISSING_REMOTE: " << reason << "\n";
             return finishFailed("FAILED_MISSING_REMOTE", reason);
@@ -2070,23 +2328,76 @@ auto RunNativeOriginLatestSync(
         const auto stashArgs = BuildSyncStashArgs(reservedPaths);
 
         out << (InDryRun ? "[DRY RUN] " : "") << "Branch source: " << branchSource << "\n";
+        out << (InDryRun ? "[DRY RUN] " : "") << "Selected remote: " << plan.remote << "\n";
+        out << (InDryRun ? "[DRY RUN] " : "") << "Remote selection source: "
+            << (plan.remoteSelectionSource.empty() ? "unknown" : plan.remoteSelectionSource) << "\n";
 
         const auto health = workspace::ScanRepoHealth(plan.path, workspace::RepoHealthOptions{
             .checkFetchRemotes = true,
             .checkSubmoduleStatus = true,
             .checkGitlinkReachability = true,
             .fetchDryRun = true,
-            .blockOnDetachedHead = true,
-            .blockOnNoUpstream = true,
+            .fetchRemoteOnly = plan.remote,
+            .blockOnDetachedHead = false,
+            .blockOnNoUpstream = false,
             .blockOnUnpushedCommits = false,
             .blockOnDirtyWorktree = !InAutoStashLocalChanges,
             .blockOnDirtySubmodule = false,
         });
+        if (health.detachedHead) {
+            out << "[" << name << "] DETACHED_HEAD: switching to stable branch " << targetBranch << "\n";
+            if (health.hasDirtyWorktree) {
+                err << "[" << name << "] DETACHED_HEAD_DIRTY_WORKTREE: detached HEAD has local working tree changes\n";
+                return finishBlocked("BLOCKED_PRECHECK", "DETACHED_HEAD_DIRTY_WORKTREE");
+            }
+            const auto hasRemoteStable = GitCapture(plan.path, {"show-ref", "--verify", "--quiet", std::format("refs/remotes/{}/{}", plan.remote, targetBranch)}).exitCode == 0;
+            if (!hasRemoteStable) {
+                err << "[" << name << "] STABLE_BRANCH_NOT_FOUND: missing remote branch " << plan.remote << "/" << targetBranch << "\n";
+                return finishBlocked("BLOCKED_PRECHECK", "STABLE_BRANCH_NOT_FOUND");
+            }
+            const auto localOnlyCountOut = GitCapture(plan.path, {"rev-list", "--count", std::format("{}/{}..HEAD", plan.remote, targetBranch)});
+            if (localOnlyCountOut.exitCode == 0) {
+                const auto localOnlyCount = Trim(localOnlyCountOut.stdoutStr);
+                if (localOnlyCount != "0") {
+                    err << "[" << name << "] DETACHED_HEAD_UNSAFE_LOCAL_COMMITS: detached HEAD has commits not reachable from "
+                        << plan.remote << "/" << targetBranch << "\n";
+                    return finishBlocked("BLOCKED_PRECHECK", "DETACHED_HEAD_UNSAFE_LOCAL_COMMITS");
+                }
+            }
+            std::string repairDetail;
+            if (!CheckoutRecoveredBranch(plan.path, plan.remote, targetBranch, BranchMode::Default, InDryRun, &repairDetail)) {
+                err << "[" << name << "] BRANCH_REPAIR_FAILED: unable to attach detached HEAD to stable branch " << targetBranch << "\n";
+                return finishBlocked("BLOCKED_PRECHECK", "BRANCH_REPAIR_FAILED");
+            }
+            out << "[" << name << "] DETACHED_HEAD: repaired to stable branch " << targetBranch << " (" << repairDetail << ")\n";
+        }
+
         if (!health.blockers.empty()) {
             for (const auto& blocker : health.blockers) {
                 err << "[" << name << "] " << blocker.reasonCode << ": " << blocker.detail << "\n";
             }
             return finishBlocked("BLOCKED_PRECHECK", "repo health preflight detected blocking conditions");
+        }
+
+        const auto upstreamOut = GitCapture(plan.path, {"rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"});
+        if (upstreamOut.exitCode != 0) {
+            const auto hasRemoteStable = GitCapture(plan.path, {"show-ref", "--verify", "--quiet", std::format("refs/remotes/{}/{}", plan.remote, targetBranch)}).exitCode == 0;
+            const auto currentBranch = CurrentBranch(plan.path);
+            if (!currentBranch.empty() && currentBranch == targetBranch && hasRemoteStable) {
+                if (InDryRun) {
+                    out << "[DRY RUN] [" << name << "] NO_UPSTREAM: would set upstream to " << plan.remote << "/" << targetBranch << "\n";
+                } else {
+                    const auto setUpstream = GitCapture(plan.path, {"branch", "--set-upstream-to", std::format("{}/{}", plan.remote, targetBranch), targetBranch});
+                    if (setUpstream.exitCode != 0) {
+                        err << "[" << name << "] UPSTREAM_REPAIR_FAILED: failed to set upstream " << plan.remote << "/" << targetBranch << "\n";
+                        return finishBlocked("BLOCKED_PRECHECK", "UPSTREAM_REPAIR_FAILED");
+                    }
+                    out << "[" << name << "] NO_UPSTREAM: setting upstream to " << plan.remote << "/" << targetBranch << "\n";
+                }
+            } else if (!health.detachedHead) {
+                err << "[" << name << "] NO_UPSTREAM: branch has no upstream tracking ref\n";
+                return finishBlocked("BLOCKED_PRECHECK", "NO_UPSTREAM");
+            }
         }
 
         if (hasLocalChanges) {

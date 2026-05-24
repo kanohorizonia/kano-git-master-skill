@@ -180,6 +180,27 @@ TEST_CASE("repo health scanner detects fetch failure and branch divergence", "[f
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("repo health scanner fetches only selected remote when configured", "[functional][health][fetch][selected-remote]") {
+    auto ctx = CreateRemoteWithClone("repo-health-fetch-selected-remote");
+    RequireSuccess(RunGit({"remote", "add", "broken", "file:///missing/path/for/fetch"}, ctx.clone), "add invalid remote");
+
+    auto health = kano::git::workspace::ScanRepoHealth(ctx.clone, RepoHealthOptions{
+        .checkFetchRemotes = true,
+        .checkSubmoduleStatus = true,
+        .checkGitlinkReachability = true,
+        .fetchDryRun = true,
+        .fetchRemoteOnly = "origin",
+        .blockOnDetachedHead = true,
+        .blockOnNoUpstream = true,
+        .blockOnUnpushedCommits = false,
+        .blockOnDirtyWorktree = false,
+        .blockOnDirtySubmodule = false,
+    });
+
+    REQUIRE_FALSE(HasBlocker(health, RepoBlockerKind::FetchFailed));
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("submodule status parser flags U000 unresolved gitlink marker", "[functional][health][submodule][parser]") {
     const auto parsed = kano::git::workspace::ParseSubmoduleStatusLine(
         "U0000000000000000000000000000000000000000 src/cpp/shared/infra");

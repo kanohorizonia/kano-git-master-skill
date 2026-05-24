@@ -335,7 +335,19 @@ auto ScanRepoHealth(const std::filesystem::path& InRepo,
         if (remotesOut.exitCode != 0) {
             AddBlocker(&out, RepoBlockerKind::KogPlanUnauditable, "git remote failed: " + FirstLine(remotesOut.stderrStr));
         } else {
-            for (const auto& remote : SplitLines(remotesOut.stdoutStr)) {
+            auto remotes = SplitLines(remotesOut.stdoutStr);
+            if (!InOptions.fetchRemoteOnly.empty()) {
+                const auto selected = Trim(InOptions.fetchRemoteOnly);
+                const auto found = std::find(remotes.begin(), remotes.end(), selected) != remotes.end();
+                if (!found) {
+                    AddBlocker(&out, RepoBlockerKind::FetchFailed,
+                               std::format("remote={} is not configured locally", selected));
+                    remotes.clear();
+                } else {
+                    remotes = {selected};
+                }
+            }
+            for (const auto& remote : remotes) {
                 std::vector<std::string> fetchArgs{"fetch", remote, "--prune", "--tags"};
                 if (InOptions.fetchDryRun) {
                     fetchArgs.push_back("--dry-run");

@@ -37,6 +37,7 @@ struct RepoHealthOptions {
     bool checkSubmoduleStatus = true;
     bool checkGitlinkReachability = true;
     bool fetchDryRun = true;
+    std::string fetchRemoteOnly;
     bool blockOnDetachedHead = true;
     bool blockOnNoUpstream = false;
     bool blockOnUnpushedCommits = false;

@@ -290,4 +290,20 @@ TEST_CASE("recursive_sync_conflict_is_best_effort_and_blocks_ancestor_only", "[f
     RemoveSandboxWorkspace(sandbox);
 }
 
+TEST_CASE("recursive_sync_ignores_non_selected_remote_fetch_failures", "[functional][sync][remote-selection]") {
+    const auto sandbox = CreateSandboxWorkspace("recursive-sync-remote-selection-origin");
+    auto rootRemote = CreateRemote(sandbox, "root");
+    const auto root = rootRemote.clone;
+
+    RequireSuccess(RunGit({"remote", "add", "gitlab_local", "file:///missing/path/for/fetch"}, root), "add broken non-selected remote");
+
+    const auto result = RunSyncRecursive(root, {"--jobs", "1"});
+    const auto output = StripAnsi(result.stdoutText + "\n" + result.stderrText);
+    RequireSuccess(result, "sync should use origin only");
+    RequireContains(output, "Selected remote: origin");
+    REQUIRE(output.find("remote=gitlab_local fetch failed") == std::string::npos);
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
 } // namespace kano::git::tests::functional
