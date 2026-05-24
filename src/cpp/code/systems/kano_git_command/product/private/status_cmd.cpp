@@ -2,6 +2,7 @@
 
 #include <CLI/CLI.hpp>
 #include "discovery.hpp"
+#include "repo_health.hpp"
 #include "repo_operation_scheduler.hpp"
 #include "shell_executor.hpp"
 #include "terminal_color.hpp"
@@ -1229,6 +1230,40 @@ auto BuildRecursiveRepoStatus(const workspace::RepoRecord& InRepo,
 
     if (out.isSubmodule && std::find(out.submoduleFacts.begin(), out.submoduleFacts.end(), "SubmoduleCommitUnpushed") != out.submoduleFacts.end()) {
         PushUnique(&out.statusFlags, "UNPUSHED_SUBMODULE_COMMIT");
+    }
+
+    const auto health = workspace::ScanRepoHealth(InRepo.path, workspace::RepoHealthOptions{
+        .checkFetchRemotes = true,
+        .checkSubmoduleStatus = true,
+        .checkGitlinkReachability = true,
+        .fetchDryRun = true,
+        .blockOnDetachedHead = true,
+        .blockOnNoUpstream = true,
+        .blockOnUnpushedCommits = false,
+        .blockOnDirtyWorktree = false,
+        .blockOnDirtySubmodule = false,
+    });
+
+    for (const auto& flag : health.statusFlags) {
+        PushUnique(&out.statusFlags, flag);
+    }
+    for (const auto& diagnostic : health.diagnostics) {
+        PushUnique(&out.diagnostics, diagnostic);
+    }
+    if (health.hasUnmergedPaths) {
+        out.conflicted = true;
+        out.dirtyKind = "CONFLICTED";
+    } else if (health.detachedHead && out.dirtyKind == "CLEAN") {
+        out.dirtyKind = "DETACHED_HEAD";
+    }
+
+    for (const auto& blocker : health.blockers) {
+        PushUnique(&out.statusFlags, blocker.reasonCode);
+        PushUnique(&out.diagnostics, "preflight " + blocker.reasonCode + ": " + blocker.detail);
+        if (out.blockReason.empty()) {
+            out.blockReason = blocker.reasonCode + ": " + blocker.detail;
+        }
+        out.blocksConverge = true;
     }
 
     std::sort(out.statusFlags.begin(), out.statusFlags.end());

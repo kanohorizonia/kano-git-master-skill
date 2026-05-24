@@ -3,6 +3,7 @@
 
 #include <CLI/CLI.hpp>
 #include "discovery.hpp"
+#include "repo_health.hpp"
 #include "shell_executor.hpp"
 #include "terminal_color.hpp"
 
@@ -2022,6 +2023,16 @@ auto RunNativeOriginLatestSync(
             return result;
         };
 
+        auto finishBlocked = [&](const std::string& category, const std::string& reason) {
+            result.status = workspace::RepoOperationStatus::Blocked;
+            result.exitCode = 1;
+            result.failureCategory = category;
+            result.message = reason;
+            result.stdoutText = out.str();
+            result.stderrText = err.str();
+            return result;
+        };
+
         out << (InDryRun ? "[DRY RUN] " : "") << "Repo: " << name << "\n";
         out << (InDryRun ? "[DRY RUN] " : "") << "Taxonomy: " << plan.type << "\n";
 
@@ -2059,6 +2070,24 @@ auto RunNativeOriginLatestSync(
         const auto stashArgs = BuildSyncStashArgs(reservedPaths);
 
         out << (InDryRun ? "[DRY RUN] " : "") << "Branch source: " << branchSource << "\n";
+
+        const auto health = workspace::ScanRepoHealth(plan.path, workspace::RepoHealthOptions{
+            .checkFetchRemotes = true,
+            .checkSubmoduleStatus = true,
+            .checkGitlinkReachability = true,
+            .fetchDryRun = true,
+            .blockOnDetachedHead = true,
+            .blockOnNoUpstream = true,
+            .blockOnUnpushedCommits = false,
+            .blockOnDirtyWorktree = !InAutoStashLocalChanges,
+            .blockOnDirtySubmodule = false,
+        });
+        if (!health.blockers.empty()) {
+            for (const auto& blocker : health.blockers) {
+                err << "[" << name << "] " << blocker.reasonCode << ": " << blocker.detail << "\n";
+            }
+            return finishBlocked("BLOCKED_PRECHECK", "repo health preflight detected blocking conditions");
+        }
 
         if (hasLocalChanges) {
             if (InAutoStashLocalChanges) {

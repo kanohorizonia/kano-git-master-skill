@@ -111,6 +111,21 @@ Unknown top-level commands now return a git-style error and suggest the most sim
 
 `kog fetch` recursively discovers repositories and runs parallel `git fetch` with `--all --prune --tags` defaults. Use `--remote <name>` to target one remote, `--jobs/-j auto|N` for concurrency, and `--dry-run` to preview commands.
 
+## Sync and converge dry-run preflight
+
+`kog sync origin-latest --dry-run` and `kog converge --dry-run` are branch-preserving
+preflight flows. They now surface explicit blocker reason codes for unsafe states,
+including active rebase/merge/cherry-pick/revert/bisect operations, unmerged paths,
+detached HEAD, unresolved submodule/gitlink markers, fetch failures, branch divergence,
+and unreachable gitlink commits.
+
+Dry-run summaries are audit-first and must not be treated as clean when blockers exist.
+If blockers are reported, resolve them first or run explicit Kano repair flows
+(`kog sync pre-commit`, `kog sync origin-latest`, `kog converge`) after reviewing
+the dry-run plan.
+
+Do not treat raw `git submodule update` as the default repair path for these cases.
+
 `kog log` and `kog slog` now support behind/diverged remote preview controls:
 - `--remote-count <N>` limits remote-only preview lines.
 - `--no-remote-preview` disables remote-only preview lines.

@@ -9,6 +9,7 @@ add_executable(kano_git_cli_tests
   functional/log_invocation_preservation_test.cpp
   functional/recursive_push_fixture_test.cpp
   functional/recursive_sync_fixture_test.cpp
+  functional/repo_health_preflight_test.cpp
   functional/repo_operation_scheduler_test.cpp
   functional/status_recursive_test.cpp
 )
