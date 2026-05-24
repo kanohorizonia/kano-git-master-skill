@@ -23,6 +23,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace kano::git::commands {
@@ -400,6 +401,105 @@ auto ShouldNormalizePathToLfByAttributes(const std::filesystem::path& InRepoPath
     }
 
     return hasEolLf && !textUnset;
+}
+
+auto CollectLfNormalizationByAttributes(const std::filesystem::path& InRepoPath,
+                                        const std::vector<std::string>& InRepoRelativePaths,
+                                        const ShellExecutor& InExec) -> std::unordered_map<std::string, bool> {
+    std::unordered_map<std::string, bool> normalizedByPath;
+    if (InRepoRelativePaths.empty()) {
+        return normalizedByPath;
+    }
+
+    std::vector<std::string> paths;
+    paths.reserve(InRepoRelativePaths.size());
+    for (const auto& path : InRepoRelativePaths) {
+        if (!path.empty()) {
+            paths.push_back(path);
+        }
+    }
+    if (paths.empty()) {
+        return normalizedByPath;
+    }
+
+    std::sort(paths.begin(), paths.end());
+    paths.erase(std::unique(paths.begin(), paths.end()), paths.end());
+
+    struct AttrState {
+        bool hasEolLf = false;
+        bool textUnset = false;
+    };
+    std::unordered_map<std::string, AttrState> states;
+    states.reserve(paths.size());
+
+    constexpr std::size_t kMaxBatchCount = 256;
+    constexpr std::size_t kMaxBatchChars = 12000;
+    std::size_t index = 0;
+    while (index < paths.size()) {
+        std::vector<std::string> args{"check-attr", "text", "eol", "--"};
+        std::size_t batchChars = 0;
+        std::size_t batchCount = 0;
+
+        while (index < paths.size() && batchCount < kMaxBatchCount) {
+            const auto& path = paths[index];
+            if (batchCount > 0 && batchChars + path.size() > kMaxBatchChars) {
+                break;
+            }
+            args.push_back(path);
+            batchChars += path.size();
+            batchCount += 1;
+            index += 1;
+        }
+
+        if (batchCount == 0) {
+            args.push_back(paths[index]);
+            index += 1;
+        }
+
+        const auto res = InExec("git", args, shell::ExecMode::Capture, InRepoPath);
+        if (res.exitCode != 0) {
+            continue;
+        }
+
+        std::istringstream iss(res.stdoutStr);
+        std::string line;
+        while (std::getline(iss, line)) {
+            if (!line.empty() && line.back() == '\r') {
+                line.pop_back();
+            }
+            if (line.empty()) {
+                continue;
+            }
+
+            const auto firstSep = line.find(": ");
+            if (firstSep == std::string::npos) {
+                continue;
+            }
+            const auto secondSep = line.find(": ", firstSep + 2);
+            if (secondSep == std::string::npos) {
+                continue;
+            }
+
+            const std::string path = line.substr(0, firstSep);
+            const std::string attr = line.substr(firstSep + 2, secondSep - (firstSep + 2));
+            const std::string value = line.substr(secondSep + 2);
+
+            auto& state = states[path];
+            if (attr == "eol" && value == "lf") {
+                state.hasEolLf = true;
+            }
+            if (attr == "text" && value == "unset") {
+                state.textUnset = true;
+            }
+        }
+    }
+
+    normalizedByPath.reserve(states.size());
+    for (const auto& [path, state] : states) {
+        normalizedByPath[path] = state.hasEolLf && !state.textUnset;
+    }
+
+    return normalizedByPath;
 }
 
 auto CollectSubmodulePathsFromGitStatus(const std::filesystem::path& InRepoPath,
@@ -1464,23 +1564,69 @@ auto ExportOneRepo(const ExportRecord& InRecord,
 
         {
             std::ofstream mf(manifestPath, std::ios::binary);
+            std::vector<std::pair<std::string, std::filesystem::path>> submodulePrefixes;
+            submodulePrefixes.reserve(InRecord.submodulePaths.size());
+            if (singleForRecord && includeSubreposForRecord) {
+                for (const auto& subRelPath : InRecord.submodulePaths) {
+                    submodulePrefixes.push_back({subRelPath.generic_string() + "/", subRelPath});
+                }
+                std::sort(submodulePrefixes.begin(), submodulePrefixes.end(), [](const auto& A, const auto& B) {
+                    return A.first.size() > B.first.size();
+                });
+            }
+
+            std::vector<std::string> rootPathsForAttr;
+            rootPathsForAttr.reserve(relFiles.size());
+            std::unordered_map<std::string, std::vector<std::string>> submodulePathsForAttr;
+            std::unordered_map<std::string, std::pair<std::string, std::string>> submodulePathByRel;
+            if (singleForRecord && includeSubreposForRecord) {
+                for (const auto& rel : relFiles) {
+                    bool matchedSubmodule = false;
+                    for (const auto& [subPrefix, subRelPath] : submodulePrefixes) {
+                        if (rel.rfind(subPrefix, 0) != 0) {
+                            continue;
+                        }
+                        const std::string subRepoRel = rel.substr(subPrefix.size());
+                        const std::string submoduleKey = subRelPath.generic_string();
+                        submodulePathsForAttr[submoduleKey].push_back(subRepoRel);
+                        submodulePathByRel[rel] = {submoduleKey, subRepoRel};
+                        matchedSubmodule = true;
+                        break;
+                    }
+                    if (!matchedSubmodule) {
+                        rootPathsForAttr.push_back(rel);
+                    }
+                }
+            } else {
+                rootPathsForAttr = relFiles;
+            }
+
+            const auto rootNormalizeByPath = CollectLfNormalizationByAttributes(InRecord.repoPath, rootPathsForAttr, InExec);
+            std::unordered_map<std::string, std::unordered_map<std::string, bool>> submoduleNormalizeByPath;
+            for (const auto& [submoduleKey, subPaths] : submodulePathsForAttr) {
+                const auto subRepoPath = InRecord.repoPath / std::filesystem::path(submoduleKey);
+                submoduleNormalizeByPath[submoduleKey] = CollectLfNormalizationByAttributes(subRepoPath, subPaths, InExec);
+            }
+
             for (const auto& rel : relFiles) {
                 const auto full = (InRecord.repoPath / rel).lexically_normal();
                 const int mode = modeByPath.contains(rel) ? modeByPath[rel] : 0644;
                 bool normalizeLf = false;
-                if (singleForRecord && includeSubreposForRecord) {
-                    for (const auto& subRelPath : InRecord.submodulePaths) {
-                        const std::string subPrefix = subRelPath.generic_string() + "/";
-                        if (rel.rfind(subPrefix, 0) == 0) {
-                            const auto subRepoPath = InRecord.repoPath / subRelPath;
-                            const std::string subRepoRel = rel.substr(subPrefix.size());
-                            normalizeLf = ShouldNormalizePathToLfByAttributes(subRepoPath, subRepoRel, InExec);
-                            break;
+                const auto subLookup = submodulePathByRel.find(rel);
+                if (subLookup != submodulePathByRel.end()) {
+                    const auto& [submoduleKey, subRepoRel] = subLookup->second;
+                    const auto normalizeMapIt = submoduleNormalizeByPath.find(submoduleKey);
+                    if (normalizeMapIt != submoduleNormalizeByPath.end()) {
+                        const auto pathNormalizeIt = normalizeMapIt->second.find(subRepoRel);
+                        if (pathNormalizeIt != normalizeMapIt->second.end()) {
+                            normalizeLf = pathNormalizeIt->second;
                         }
                     }
-                }
-                if (!normalizeLf) {
-                    normalizeLf = ShouldNormalizePathToLfByAttributes(InRecord.repoPath, rel, InExec);
+                } else {
+                    const auto rootNormalizeIt = rootNormalizeByPath.find(rel);
+                    if (rootNormalizeIt != rootNormalizeByPath.end()) {
+                        normalizeLf = rootNormalizeIt->second;
+                    }
                 }
                 mf << mode << "\t" << full.generic_string() << "\t" << (prefix + rel) << "\t"
                    << (normalizeLf ? "1" : "0") << "\n";
