@@ -6,6 +6,74 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
+launcher_resolve_pixi_path() {
+  if command -v pixi >/dev/null 2>&1; then
+    command -v pixi
+    return 0
+  fi
+
+  if [[ -n "${USERPROFILE:-}" && -x "${USERPROFILE}/.pixi/bin/pixi" ]]; then
+    printf '%s\n' "${USERPROFILE}/.pixi/bin/pixi"
+    return 0
+  fi
+
+  if [[ -n "${HOME:-}" && -x "${HOME}/.pixi/bin/pixi" ]]; then
+    printf '%s\n' "${HOME}/.pixi/bin/pixi"
+    return 0
+  fi
+
+  return 1
+}
+
+launcher_try_ensure_pixi() {
+  local pixi_path=""
+  local prereq_script=""
+  local os_name=""
+
+  if pixi_path="$(launcher_resolve_pixi_path)"; then
+    export PATH="$(dirname "$pixi_path"):$PATH"
+    return 0
+  fi
+
+  os_name="$(uname -s 2>/dev/null || true)"
+  case "$os_name" in
+    MINGW*|MSYS*|CYGWIN*|Windows_NT)
+      prereq_script="$PROJECT_ROOT/src/cpp/shared/infra/scripts/stages/prerequisite-windows.sh"
+      ;;
+    Darwin*)
+      prereq_script="$PROJECT_ROOT/src/cpp/shared/infra/scripts/stages/prerequisite-macos.sh"
+      ;;
+    Linux*)
+      prereq_script="$PROJECT_ROOT/src/cpp/shared/infra/scripts/stages/prerequisite-linux.sh"
+      ;;
+    *)
+      echo "Error: unsupported platform for pixi bootstrap: $os_name" >&2
+      return 1
+      ;;
+  esac
+
+  if [[ ! -f "$prereq_script" ]]; then
+    echo "Error: prerequisite bootstrap script not found: $prereq_script" >&2
+    return 1
+  fi
+
+  echo "[launcher][pixi-bootstrap][step] pixi not found; running prerequisite bootstrap..." >&2
+  if ! bash "$prereq_script"; then
+    echo "Error: failed to install prerequisites automatically via: $prereq_script" >&2
+    return 1
+  fi
+
+  if pixi_path="$(launcher_resolve_pixi_path)"; then
+    export PATH="$(dirname "$pixi_path"):$PATH"
+    echo "[launcher][pixi-bootstrap][ok] pixi ready: $pixi_path" >&2
+    return 0
+  fi
+
+  echo "Error: pixi install completed but pixi executable is still not discoverable." >&2
+  echo "Hint: restart your terminal and run 'kog self build' again." >&2
+  return 1
+}
+
 # Source shared pixi bootstrap helper (lib/, not directly executable)
 # This provides kano_pixi_bootstrap_activate() which activates the pixi environment
 # via shell-hook when not already active, and fail-fast when the canonical shared
@@ -18,6 +86,8 @@ if [[ ! -f "$KANO_PIXI_BOOTSTRAP_SCRIPT" ]]; then
   exit 1
 fi
 
+launcher_try_ensure_pixi
+
 # Deliberately no OPAM result capture — the eval inside activate() emits to the shell.
 # Disable shellcheck SC1091 (not following resolved path) for this source directive.
 # shellcheck source=/dev/null
@@ -29,11 +99,25 @@ if ! declare -F kano_pixi_bootstrap_activate >/dev/null 2>&1; then
 fi
 
 # Activate pixi environment from the canonical shared infra manifest.
-# This ensures build tools (cmake, ninja, git, bash, python) are resolved from
-# the shared-infra pixi environment before any PATH lookups occur.
-# If that manifest is present but pixi is unavailable, bootstrap fails fast here
-# rather than silently falling back to system tools.
-kano_pixi_bootstrap_activate 2>&1 | head -1
+# On Windows-compat shells, pixi shell-hook may emit cmd activation scripts;
+# skip startup shell-hook there and rely on PATH/global tools or explicit pixi run.
+case "$(uname -s 2>/dev/null || true)" in
+  MINGW*|MSYS*|CYGWIN*|Windows_NT)
+    kano_pixi_bootstrap_expose_global_tools || true
+    ;;
+  *)
+    if ! __kano_pixi_bootstrap_log="$(kano_pixi_bootstrap_activate 2>&1)"; then
+      if IFS= read -r __kano_pixi_bootstrap_first_line <<< "$__kano_pixi_bootstrap_log"; then
+        echo "$__kano_pixi_bootstrap_first_line" >&2
+      fi
+      exit 1
+    fi
+    if IFS= read -r __kano_pixi_bootstrap_first_line <<< "$__kano_pixi_bootstrap_log"; then
+      echo "$__kano_pixi_bootstrap_first_line" >&2
+    fi
+    unset __kano_pixi_bootstrap_log __kano_pixi_bootstrap_first_line
+    ;;
+esac
 
 PATH="$SCRIPT_DIR:$PATH"
 LAUNCHER_STATE_DIR="$PROJECT_ROOT/.kano/launcher"
@@ -159,9 +243,9 @@ run_with_progress() {
     "$@" &
     pid=$!
     start="$(current_epoch)"
-    while kill -0 "$pid" ; do
+    while kill -0 "$pid" 2>/dev/null; do
       sleep "$interval"
-      if ! kill -0 "$pid" ; then
+      if ! kill -0 "$pid" 2>/dev/null; then
         break
       fi
       now="$(current_epoch)"
@@ -173,6 +257,38 @@ run_with_progress() {
   fi
 
   "$@"
+}
+
+detect_windows_vcvarsall_path() {
+  local candidate=""
+
+  if [[ -n "${KANO_VCVARSALL:-}" && -f "${KANO_VCVARSALL}" ]]; then
+    printf '%s\n' "${KANO_VCVARSALL}"
+    return 0
+  fi
+
+  shopt -s nullglob
+  for candidate in \
+    /c/Program\ Files/Microsoft\ Visual\ Studio/*/*/VC/Auxiliary/Build/vcvarsall.bat \
+    /c/Program\ Files\ \(x86\)/Microsoft\ Visual\ Studio/*/*/VC/Auxiliary/Build/vcvarsall.bat; do
+    if [[ -f "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      shopt -u nullglob
+      return 0
+    fi
+  done
+  shopt -u nullglob
+
+  return 1
+}
+
+maybe_export_windows_vcvarsall() {
+  local vcvars_path=""
+  if vcvars_path="$(detect_windows_vcvarsall_path)"; then
+    export KANO_VCVARSALL="$vcvars_path"
+    return 0
+  fi
+  return 1
 }
 
 maybe_prompt_yes_no() {
@@ -199,6 +315,63 @@ is_windows_compat_shell() {
       ;;
   esac
   return 1
+}
+
+ensure_windows_copilot_cli_paths() {
+  if ! is_windows_compat_shell; then
+    return 0
+  fi
+
+  local user_home=""
+  local bash_rc="${HOME}/.bashrc"
+  local block_start="# >>> kano-git copilot path >>>"
+  local block_end="# <<< kano-git copilot path <<<"
+  local source_block=""
+  local path_lines=""
+  local dir
+  local -a candidate_dirs=()
+
+  if [[ -n "${USERPROFILE:-}" ]]; then
+    if command -v cygpath >/dev/null 2>&1; then
+      user_home="$(cygpath -u "${USERPROFILE}")"
+    else
+      user_home="$(printf '%s' "${USERPROFILE}" | sed 's|\\|/|g; s|^\([A-Za-z]\):|/\L\1|')"
+    fi
+  fi
+
+  if [[ -n "$user_home" ]]; then
+    candidate_dirs+=("$user_home/AppData/Local/Microsoft/WinGet/Links")
+    candidate_dirs+=("$user_home/AppData/Local/Microsoft/WindowsApps")
+  fi
+
+  for dir in "${candidate_dirs[@]}"; do
+    [[ -d "$dir" ]] || continue
+    if [[ ":$PATH:" != *":$dir:"* ]]; then
+      export PATH="$dir:$PATH"
+    fi
+    path_lines+="if [[ -d \"$dir\" && \":\\$PATH:\" != *\":$dir:\"* ]]; then\n"
+    path_lines+="  export PATH=\"$dir:\\$PATH\"\n"
+    path_lines+="fi\n"
+    ensure_windows_user_path_contains "$dir" || true
+  done
+
+  if [[ -n "$path_lines" ]]; then
+    source_block=$(printf '%s\n%b%s\n' "$block_start" "$path_lines" "$block_end")
+    append_once_to_file "$bash_rc" "$block_start" "$source_block"
+  fi
+}
+
+print_copilot_bootstrap_guidance() {
+  echo "Copilot CLI next steps:"
+  if command -v copilot >/dev/null 2>&1; then
+    echo "  copilot --version"
+  else
+    echo "  source ~/.bashrc"
+    echo "  hash -r"
+    echo "  copilot --version"
+  fi
+  echo "  copilot login"
+  echo "  copilot -s --model auto --no-color --stream off --no-ask-user -p \"Reply exactly: hello world\""
 }
 
 ensure_windows_build_runtime_paths() {
@@ -244,6 +417,23 @@ EOF
     fi
     PATH="$shim_dir:$PATH"
   fi
+}
+
+clear_stale_windows_cmake_cache() {
+  if ! is_windows_compat_shell; then
+    return 0
+  fi
+
+  local cache
+  for cache in \
+    "$PROJECT_ROOT/src/cpp/out/obj/windows-ninja-msvc/CMakeCache.txt" \
+    "$PROJECT_ROOT/src/cpp/out/obj/windows-ninja-msvc-arm64/CMakeCache.txt"; do
+    [[ -f "$cache" ]] || continue
+    if grep -Fq 'CMAKE_MT:FILEPATH=CMAKE_MT-NOTFOUND' "$cache"; then
+      rm -f "$cache" || true
+      log_launcher_status "build-native" "info" "removed stale CMake cache (CMAKE_MT-NOTFOUND): $cache"
+    fi
+  done
 }
 
 resolve_pixi_command() {
@@ -587,9 +777,6 @@ check_build_prerequisites() {
     if ! resolve_pixi_command >/dev/null 2>&1; then
       missing="$missing pixi"
     fi
-    if ! windows_pixi_build_bin_dir >/dev/null 2>&1; then
-      missing="$missing pixi env (cmake+ninja)"
-    fi
 
     if [[ -n "$missing" ]]; then
       echo "Missing or broken build tools:$missing" >&2
@@ -623,6 +810,133 @@ check_build_prerequisites() {
     echo "  ./kog self install-prereq" >&2
     return 1
   fi
+
+  return 0
+}
+
+ensure_build_prerequisites_ready() {
+  if check_build_prerequisites; then
+    return 0
+  fi
+
+  log_launcher_status "build-native" "step" "auto-install-prereq"
+
+  run_prerequisite_script_for_platform || return 1
+
+  check_build_prerequisites
+}
+
+run_prerequisite_script_for_platform() {
+
+  # Ensure launcher command discoverability first, even if later prerequisite
+  # steps (e.g. MSVC install) fail.
+  ensure_launcher_path_integration || true
+
+  local -a _prereq_scripts
+  if ! mapfile -t _prereq_scripts < <(script_paths); then
+    echo "Error: no native build scripts for platform $(platform_name) ($(arch_name))." >&2
+    return 1
+  fi
+
+  local prereq_script="${_prereq_scripts[0]:-}"
+  if [[ -z "$prereq_script" ]]; then
+    echo "Error: missing prerequisite script for this platform." >&2
+    return 1
+  fi
+
+  local prereq_log=""
+  local bash_path=""
+  prereq_log="$(make_self_build_log_path "prereq")"
+
+  if ! bash_path="$(find_bash)"; then
+    echo "Warning: bash not found; cannot run shell script automation." >&2
+    return 1
+  fi
+
+  if ! env KANO_GIT_MASTER_ROOT="${KANO_GIT_MASTER_ROOT:-$PROJECT_ROOT}" KOG_BUILD_USE_LLVM="$KOG_BUILD_USE_LLVM" KOG_BUILD_ENABLE_MODULES="$KOG_BUILD_ENABLE_MODULES" "$bash_path" "$prereq_script" 2>&1 | tee "$prereq_log"; then
+    log_launcher_status "build-native" "fail" "auto prerequisite install failed"
+    return 1
+  fi
+
+  if [[ "$(platform_name)" == "windows" ]]; then
+    if grep -Fq "[launcher][prereq:Microsoft.VisualStudio.2022.BuildTools][fail]" "$prereq_log" ||
+       grep -Fq "installer busy (exit 1618)" "$prereq_log"; then
+      log_launcher_status "build-native" "fail" "windows prerequisites reported BuildTools install failure"
+      echo "Error: Visual Studio Build Tools installation did not complete." >&2
+      echo "Hint: another installer is running (1618) or Build Tools install failed." >&2
+      echo "Hint: finish/close other installers, then rerun 'kog self build'." >&2
+      return 1
+    fi
+  fi
+
+  ensure_launcher_path_integration
+
+  return 0
+}
+
+ensure_launcher_path_integration() {
+  local launcher_dir="$SCRIPT_DIR"
+  local bash_rc="${HOME}/.bashrc"
+  local block_start="# >>> kano-git launcher PATH >>>"
+  local block_end="# <<< kano-git launcher PATH <<<"
+  local source_block=""
+
+  if [[ -d "$launcher_dir" && ":$PATH:" != *":$launcher_dir:"* ]]; then
+    export PATH="$launcher_dir:$PATH"
+  fi
+
+  source_block=$(cat <<EOF
+$block_start
+if [[ -d "$launcher_dir" && ":\$PATH:" != *":$launcher_dir:"* ]]; then
+  export PATH="$launcher_dir:\$PATH"
+fi
+$block_end
+EOF
+)
+  append_once_to_file "$bash_rc" "$block_start" "$source_block"
+
+  if is_windows_compat_shell; then
+    ensure_windows_user_path_contains "$launcher_dir" || true
+  fi
+}
+
+ensure_windows_user_path_contains() {
+  local posix_path="$1"
+  local win_path=""
+  local powershell_bin=""
+
+  if command -v cygpath >/dev/null 2>&1; then
+    win_path="$(cygpath -w "$posix_path")"
+  else
+    win_path="$posix_path"
+  fi
+
+  if [[ -z "$win_path" ]]; then
+    return 1
+  fi
+
+  for powershell_bin in powershell powershell.exe pwsh pwsh.exe; do
+    if command -v "$powershell_bin" >/dev/null 2>&1; then
+      break
+    fi
+    powershell_bin=""
+  done
+
+  if [[ -z "$powershell_bin" ]]; then
+    return 1
+  fi
+
+  local escaped_win_path="${win_path//\'/\'\'}"
+  "$powershell_bin" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "\
+    \$target = '$escaped_win_path'; \
+    \$current = [Environment]::GetEnvironmentVariable('Path','User'); \
+    \$parts = @(); if (-not [string]::IsNullOrWhiteSpace(\$current)) { \$parts = \$current -split ';' }; \
+    \$exists = \$false; \
+    foreach (\$p in \$parts) { if (\$p.TrimEnd('\\') -ieq \$target.TrimEnd('\\')) { \$exists = \$true; break } }; \
+    if (-not \$exists) { \
+      if ([string]::IsNullOrWhiteSpace(\$current)) { \$new = \$target } else { \$new = \"\$current;\$target\" }; \
+      [Environment]::SetEnvironmentVariable('Path', \$new, 'User'); \
+    }" >/dev/null 2>&1 || return 1
 
   return 0
 }
@@ -680,7 +994,8 @@ run_native_build_mode() {
   esac
 
   # Pre-check: verify toolchain availability before attempting build
-  if ! check_build_prerequisites; then
+  # and auto-bootstrap prerequisites once when missing.
+  if ! ensure_build_prerequisites_ready; then
     log_launcher_status "build-native" "fail" "prerequisites missing"
     return 1
   fi
@@ -689,6 +1004,9 @@ run_native_build_mode() {
   build_log="$(make_self_build_log_path "$mode")"
 
   if [[ "$os_name" == "windows" ]]; then
+    maybe_export_windows_vcvarsall || true
+    clear_stale_windows_cmake_cache
+
     case "$mode" in
       *-debug) build_task="build-debug" ;;
       *-pgo)   build_task="pgo-rebuild" ;;
@@ -696,6 +1014,32 @@ run_native_build_mode() {
     esac
     if run_pixi_build_task "$build_task" 2>&1 | tee "$build_log"; then
       log_launcher_status "build-native" "ok" "build completed via pixi task=$build_task"
+    elif grep -Fq "vcvarsall.bat not found" "$build_log"; then
+      log_launcher_status "build-native" "step" "auto-install-prereq-msvc"
+      if ! run_prerequisite_script_for_platform; then
+        log_launcher_status "build-native" "fail" "auto prerequisite install failed for missing vcvarsall"
+        print_generic_self_build_failure_hint "$build_log"
+        return 1
+      fi
+
+      maybe_export_windows_vcvarsall || true
+      clear_stale_windows_cmake_cache
+
+      local retry_log
+      retry_log="$(make_self_build_log_path "${mode}-retry")"
+      if run_pixi_build_task "$build_task" 2>&1 | tee "$retry_log"; then
+        log_launcher_status "build-native" "ok" "build completed via pixi task=$build_task after auto-prereq"
+        build_log="$retry_log"
+      else
+        build_log="$retry_log"
+        log_launcher_status "build-native" "fail" "build failed via pixi task=$build_task after auto-prereq"
+        if looks_like_dependency_fetch_failure "$build_log"; then
+          print_dependency_fetch_failure_hint "$build_log"
+        else
+          print_generic_self_build_failure_hint "$build_log"
+        fi
+        return 1
+      fi
     else
       log_launcher_status "build-native" "fail" "build failed via pixi task=$build_task"
       if looks_like_dependency_fetch_failure "$build_log"; then
@@ -895,16 +1239,8 @@ maybe_handle_manual_self_request() {
       return $?
       ;;
     install-prereq)
-      if ! mapfile -t _prereq_scripts < <(script_paths); then
-        echo "Error: no native build scripts for platform $(platform_name) ($(arch_name))." >&2
-        return 1
-      fi
-      local prereq_script="${_prereq_scripts[0]:-}"
-      if [[ -z "$prereq_script" ]]; then
-        echo "Error: missing prerequisite script for this platform." >&2
-        return 1
-      fi
-      run_shell_script "$prereq_script" || {
+      ensure_launcher_path_integration || true
+      run_prerequisite_script_for_platform || {
         log_launcher_status "install-prereq" "fail" "prerequisite install failed"
         return 1
       }
@@ -1573,6 +1909,11 @@ run_native_binary() {
   fi
 
   if [[ "$status" -eq 0 ]]; then
+    if [[ "${native_args[0]:-}" == "ai" && "${native_args[1]:-}" == "bootstrap" && "${native_args[2]:-}" == "copilot" ]]; then
+      ensure_windows_copilot_cli_paths || true
+      print_copilot_bootstrap_guidance
+    fi
+
     case "$first" in
       ""|-h|--help|help)
         if [[ "$arg_count" -le 1 ]]; then
@@ -1594,6 +1935,7 @@ main() {
   args=("$@")
   apply_launcher_env_overrides "${args[@]}"
   apply_agent_mode_from_args "${args[@]}"
+  ensure_windows_copilot_cli_paths || true
 
   # Fail fast when user explicitly points to an incompatible binary for current shell.
   if [[ -n "${KANO_GIT_BIN:-}" ]]; then
