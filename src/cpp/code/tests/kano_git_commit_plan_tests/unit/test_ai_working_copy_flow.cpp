@@ -143,7 +143,7 @@ auto LoadJson(const std::filesystem::path& path) -> nlohmann::json {
 } // namespace
 
 TEST_CASE("FillPlanByAi promotes edited working plan and merges new gitignore rules in single mode",
-          "[unit][FillPlanByAi][working-copy][gitignore][bdd][feature:ai-provider-bootstrap][scenario:KOG-BDD-AI-003][featured]") {
+          "[tdd][unit][feature:ai-provider-bootstrap][FillPlanByAi][working-copy][gitignore]") {
     const auto workspaceRoot = UniqueTempWorkspace("single-success");
     InstallFakeCopilot(workspaceRoot);
 
@@ -202,7 +202,7 @@ TEST_CASE("FillPlanByAi promotes edited working plan and merges new gitignore ru
 }
 
 TEST_CASE("FillPlanByAi leaves authoritative plan unchanged when edited working plan fails validation",
-          "[unit][FillPlanByAi][working-copy][validation]") {
+          "[tdd][unit][feature:ai-provider-bootstrap][FillPlanByAi][working-copy][validation]") {
     const auto workspaceRoot = UniqueTempWorkspace("single-invalid");
     InstallFakeCopilot(workspaceRoot);
 
@@ -232,7 +232,7 @@ TEST_CASE("FillPlanByAi leaves authoritative plan unchanged when edited working 
 }
 
 TEST_CASE("FillPlanByAi uses working-copy flow for per-commit mode",
-          "[unit][FillPlanByAi][working-copy][per-commit]") {
+          "[tdd][unit][feature:ai-provider-bootstrap][FillPlanByAi][working-copy][per-commit]") {
     const auto workspaceRoot = UniqueTempWorkspace("per-commit-success");
     InstallFakeCopilot(workspaceRoot);
 
@@ -283,7 +283,7 @@ TEST_CASE("FillPlanByAi uses working-copy flow for per-commit mode",
 }
 
 TEST_CASE("FillPlanByAi restores missing commit review verdicts in edited working plans",
-          "[unit][FillPlanByAi][working-copy][review-verdict][deterministic]") {
+          "[tdd][unit][feature:ai-provider-bootstrap][FillPlanByAi][working-copy][review-verdict][deterministic]") {
     const auto workspaceRoot = UniqueTempWorkspace("single-missing-review-verdict");
     const auto initialPlan = BuildSingleEntryPlan(workspaceRoot,
                                                   "replace-with-commit-message",

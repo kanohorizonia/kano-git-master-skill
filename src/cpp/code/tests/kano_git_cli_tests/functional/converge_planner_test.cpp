@@ -1,7 +1,9 @@
+#include "bdd_scenario_recorder.hpp"
 #include "functional_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -51,6 +53,13 @@ auto RequireNotContains(const std::string& InText, const std::string& InNeedle) 
     REQUIRE(InText.find(InNeedle) == std::string::npos);
 }
 
+auto ScenarioMetadataPath(const std::string& InScenarioId) -> std::filesystem::path {
+    if (const char* metadataDir = std::getenv("KANO_BDD_METADATA_DIR"); metadataDir != nullptr && metadataDir[0] != '\0') {
+        return (std::filesystem::path(metadataDir) / (InScenarioId + ".json")).lexically_normal();
+    }
+    return (std::filesystem::current_path() / ".kano" / "tmp" / "test-metadata" / "bdd" / (InScenarioId + ".json")).lexically_normal();
+}
+
 auto WriteTextFile(const std::filesystem::path& InPath, const std::string& InText) -> void {
     std::filesystem::create_directories(InPath.parent_path());
     std::ofstream out(InPath, std::ios::binary | std::ios::trunc);
@@ -62,6 +71,24 @@ auto ReadTextFile(const std::filesystem::path& InPath) -> std::string {
     std::ifstream in(InPath, std::ios::binary);
     REQUIRE(in.good());
     return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+auto RequireScenarioMetadata(const std::string& InScenarioId,
+                             const std::string& InFeature,
+                             const std::string& InDiagramType) -> std::filesystem::path {
+    const auto sidecar = ScenarioMetadataPath(InScenarioId);
+    REQUIRE(std::filesystem::exists(sidecar));
+    const auto json = ReadTextFile(sidecar);
+    RequireContains(json, "\"style\": \"bdd\"");
+    RequireContains(json, "\"feature\": \"" + InFeature + "\"");
+    RequireContains(json, "\"scenarioId\": \"" + InScenarioId + "\"");
+    RequireContains(json, "\"featured\": true");
+    RequireContains(json, "\"diagramType\": \"" + InDiagramType + "\"");
+    RequireContains(json, "\"bdd\"");
+    RequireContains(json, "\"feature:" + InFeature + "\"");
+    RequireContains(json, "\"scenario:" + InScenarioId + "\"");
+    RequireContains(json, "\"featured\"");
+    return sidecar;
 }
 
 auto ConvergeStatePath(const std::filesystem::path& InRoot) -> std::filesystem::path {
@@ -174,7 +201,7 @@ auto RunDiscoverFull(const std::filesystem::path& InRoot, int InDepth = 3) -> vo
 
 } // namespace
 
-TEST_CASE("converge planner dry-run prints deterministic executable plan", "[functional][converge][planner][bdd][feature:converge][scenario:KOG-BDD-CONVERGE-001][featured]") {
+TEST_CASE("converge planner dry-run prints deterministic executable plan", "[tdd][unit][feature:converge-state][feature:dirty-kind][functional][converge][planner]") {
     const auto ctx = CreateRemoteWithClone("converge-planner-plan");
     const auto beforeStatus = GitStatusShort(ctx.cloneRepo);
 
@@ -202,7 +229,7 @@ TEST_CASE("converge planner dry-run prints deterministic executable plan", "[fun
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
-TEST_CASE("converge planner gitlink only uses deterministic pointer commit", "[functional][converge][planner]") {
+TEST_CASE("converge planner gitlink only uses deterministic pointer commit", "[tdd][unit][feature:converge-state][feature:dirty-kind][functional][converge][planner]") {
     const auto ctx = CreateRemoteWithSubmoduleClone("converge-planner-gitlink");
     const auto beforeRootStatus = GitStatusShort(ctx.cloneRootRepo);
     WriteTextFile(ctx.cloneChildRepo / "child.txt", "child moved\n");
@@ -223,7 +250,7 @@ TEST_CASE("converge planner gitlink only uses deterministic pointer commit", "[f
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
-TEST_CASE("converge planner blocks conflicted repo before mutation", "[functional][converge][planner]") {
+TEST_CASE("converge planner blocks conflicted repo before mutation", "[tdd][unit][feature:converge-state][feature:dirty-kind][functional][converge][planner]") {
     const auto ctx = CreateRemoteWithClone("converge-planner-conflict");
     RequireSuccess(RunGit({"checkout", "-b", "side"}, ctx.cloneRepo), "checkout side");
     WriteTextFile(ctx.cloneRepo / "README.md", "side\n");
@@ -247,7 +274,7 @@ TEST_CASE("converge planner blocks conflicted repo before mutation", "[functiona
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
-TEST_CASE("converge planner states untracked policy and commit-ai decision", "[functional][converge][planner]") {
+TEST_CASE("converge planner states untracked policy and commit-ai decision", "[tdd][unit][feature:converge-state][feature:dirty-kind][functional][converge][planner]") {
     const auto ctx = CreateRemoteWithClone("converge-planner-untracked");
     WriteTextFile(ctx.cloneRepo / "new-file.txt", "new\n");
     const auto dirtyStatus = GitStatusShort(ctx.cloneRepo);
@@ -264,7 +291,7 @@ TEST_CASE("converge planner states untracked policy and commit-ai decision", "[f
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
-TEST_CASE("converge planner makes command policy skips explicit", "[functional][converge][planner]") {
+TEST_CASE("converge planner makes command policy skips explicit", "[tdd][unit][feature:converge-state][feature:dirty-kind][functional][converge][planner]") {
     const auto ctx = CreateRemoteWithSubmoduleClone("converge-planner-policy");
     RequireSuccess(RunGit({"config", "-f", ".gitmodules", "submodule." + ctx.submodulePath + ".kog-sync", "false"}, ctx.cloneRootRepo), "set kog-sync policy");
     RequireSuccess(RunGit({"config", "-f", ".gitmodules", "submodule." + ctx.submodulePath + ".kog-commit", "false"}, ctx.cloneRootRepo), "set kog-commit policy");
@@ -290,32 +317,70 @@ TEST_CASE("converge planner makes command policy skips explicit", "[functional][
 }
 
 
-TEST_CASE("converge planner blocks parent pointer when child push is disabled", "[functional][converge][planner]") {
+TEST_CASE("KOG-BDD-CONVERGE-001 child push failure blocks only dependent parent", "[bdd][functional][feature:converge][scenario:KOG-BDD-CONVERGE-001][featured][converge][planner]") {
+    const auto scenarioId = std::string{"KOG-BDD-CONVERGE-001"};
     const auto ctx = CreateRemoteWithSubmoduleClone("converge-planner-push-disabled");
-    RequireSuccess(RunGit({"config", "-f", ".gitmodules", "submodule." + ctx.submodulePath + ".kog-sync", "true"}, ctx.cloneRootRepo), "set kog-sync policy");
-    RequireSuccess(RunGit({"config", "-f", ".gitmodules", "submodule." + ctx.submodulePath + ".kog-commit", "true"}, ctx.cloneRootRepo), "set kog-commit policy");
-    RequireSuccess(RunGit({"config", "-f", ".gitmodules", "submodule." + ctx.submodulePath + ".kog-push", "false"}, ctx.cloneRootRepo), "set kog-push policy");
-    RequireSuccess(RunGit({"config", "-f", ".gitmodules", "submodule." + ctx.submodulePath + ".kog-hygiene", "true"}, ctx.cloneRootRepo), "set kog-hygiene policy");
-    RequireSuccess(RunGit({"add", ".gitmodules"}, ctx.cloneRootRepo), "add push-disabled policy");
-    RequireSuccess(RunGit({"commit", "-m", "set push disabled policy"}, ctx.cloneRootRepo), "commit push-disabled policy");
-    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.cloneRootRepo), "push push-disabled policy");
-    RunDiscoverFull(ctx.cloneRootRepo);
+    const auto productB = CreateRemoteWithClone("converge-planner-product-b");
+    {
+        ScenarioRecorder recorder(scenarioId,
+                                  "converge",
+                                  "child repo push failure blocks only the dependent parent",
+                                  "KOG-BDD-CONVERGE-001 child push failure blocks only dependent parent");
+        recorder.SetFeatured(true)
+            .SetDiagramType("flowchart")
+            .AddTag("bdd")
+            .AddTag("feature:converge")
+            .AddTag("scenario:" + scenarioId)
+            .AddTag("featured")
+            .AddActor("ProductA")
+            .AddActor("Build/Base")
+            .AddActor("ProductB")
+            .Given("ProductA depends on Build/Base through a submodule pointer")
+            .AndGiven("Build/Base has an unpublished commit while kog-push=false")
+            .AndGiven("ProductB is an unrelated clean repository")
+            .When("kog converge --dry-run plans ProductA")
+            .Then("ProductA is blocked from committing a pointer to the unavailable Build/Base commit")
+            .AndThen("ProductB can still produce an independent safe converge plan");
 
-    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneChildRepo), "checkout child branch for push-disabled test");
-    WriteTextFile(ctx.cloneChildRepo / "child.txt", "unpushed child\n");
-    RequireSuccess(RunGit({"commit", "-am", "unpushed child"}, ctx.cloneChildRepo), "commit unpushed child");
+        RequireSuccess(RunGit({"config", "-f", ".gitmodules", "submodule." + ctx.submodulePath + ".kog-sync", "true"}, ctx.cloneRootRepo), "set kog-sync policy");
+        RequireSuccess(RunGit({"config", "-f", ".gitmodules", "submodule." + ctx.submodulePath + ".kog-commit", "true"}, ctx.cloneRootRepo), "set kog-commit policy");
+        RequireSuccess(RunGit({"config", "-f", ".gitmodules", "submodule." + ctx.submodulePath + ".kog-push", "false"}, ctx.cloneRootRepo), "set kog-push policy");
+        RequireSuccess(RunGit({"config", "-f", ".gitmodules", "submodule." + ctx.submodulePath + ".kog-hygiene", "true"}, ctx.cloneRootRepo), "set kog-hygiene policy");
+        RequireSuccess(RunGit({"add", ".gitmodules"}, ctx.cloneRootRepo), "add push-disabled policy");
+        RequireSuccess(RunGit({"commit", "-m", "set push disabled policy"}, ctx.cloneRootRepo), "commit push-disabled policy");
+        RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.cloneRootRepo), "push push-disabled policy");
+        RunDiscoverFull(ctx.cloneRootRepo);
 
-    const auto result = RunConvergeDryRun(ctx.cloneRootRepo);
-    INFO(result.stdoutText);
-    INFO(result.stderrText);
-    REQUIRE(result.exitCode != 0);
-    RequireContains(result.stdoutText, "sync=true commit=true push=false hygiene=true");
-    RequireContains(result.stdoutText, "parent pointer references commit from push-disabled repo that is not available remotely");
+        RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneChildRepo), "checkout child branch for push-disabled test");
+        WriteTextFile(ctx.cloneChildRepo / "child.txt", "unpushed child\n");
+        RequireSuccess(RunGit({"commit", "-am", "unpushed child"}, ctx.cloneChildRepo), "commit unpushed child");
 
+        const auto result = RunConvergeDryRun(ctx.cloneRootRepo);
+        INFO(result.stdoutText);
+        INFO(result.stderrText);
+        REQUIRE(result.exitCode != 0);
+        RequireContains(result.stdoutText, "sync=true commit=true push=false hygiene=true");
+        RequireContains(result.stdoutText, "push skipped by commandPolicy.push=false");
+        RequireContains(result.stdoutText, "Blocked repos");
+        RequireContains(result.stdoutText, ".: GITLINK_UNREACHABLE");
+        RequireContains(result.stdoutText, "gitlink commit is not reachable from remote");
+        RequireNotContains(result.stdoutText, "ProductB");
+
+        const auto productBPlan = RunConvergeDryRun(productB.cloneRepo);
+        INFO(productBPlan.stdoutText);
+        INFO(productBPlan.stderrText);
+        REQUIRE(productBPlan.exitCode == 0);
+        RequireContains(productBPlan.stdoutText, "Converge Plan");
+        RequireNotContains(productBPlan.stdoutText, "parent pointer references commit from push-disabled repo");
+    }
+
+    RequireScenarioMetadata(scenarioId, "converge", "flowchart");
+
+    RemoveSandboxWorkspace(productB.sandbox);
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
-TEST_CASE("converge planner sync false policy skips behind-only repo", "[functional][converge][planner]") {
+TEST_CASE("converge planner sync false policy skips behind-only repo", "[tdd][unit][feature:converge-state][feature:dirty-kind][functional][converge][planner]") {
     const auto ctx = CreateRemoteWithSubmoduleClone("converge-planner-sync-policy");
     RequireSuccess(RunGit({"config", "-f", ".gitmodules", "submodule." + ctx.submodulePath + ".kog-sync", "false"}, ctx.cloneRootRepo), "set kog-sync false");
     RequireSuccess(RunGit({"config", "-f", ".gitmodules", "submodule." + ctx.submodulePath + ".kog-commit", "true"}, ctx.cloneRootRepo), "set kog-commit true");
@@ -343,7 +408,7 @@ TEST_CASE("converge planner sync false policy skips behind-only repo", "[functio
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
-TEST_CASE("converge planner default avoids full scan and opt-in blocks untrusted nested repo", "[functional][converge][planner]") {
+TEST_CASE("converge planner default avoids full scan and opt-in blocks untrusted nested repo", "[tdd][unit][feature:converge-state][feature:dirty-kind][functional][converge][planner]") {
     const auto ctx = CreateRemoteWithClone("converge-planner-no-full-scan");
     const auto nested = (ctx.cloneRepo / "nested" / "untrusted").lexically_normal();
     InitPlainGitRepo(nested);
@@ -365,7 +430,7 @@ TEST_CASE("converge planner default avoids full scan and opt-in blocks untrusted
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
-TEST_CASE("converge runtime writes JSON state and supports status/abort", "[functional][converge][state][bdd][feature:converge][scenario:KOG-BDD-CONVERGE-002]") {
+TEST_CASE("converge runtime writes JSON state and supports status/abort", "[tdd][unit][feature:converge-state][functional][converge][state]") {
     const auto ctx = CreateRemoteWithClone("converge-runtime-state");
     const auto beforeStatus = GitStatusShort(ctx.cloneRepo);
     const auto statePath = ConvergeStatePath(ctx.cloneRepo);
@@ -407,7 +472,7 @@ TEST_CASE("converge runtime writes JSON state and supports status/abort", "[func
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
-TEST_CASE("converge status prints none when no state exists", "[functional][converge][state]") {
+TEST_CASE("converge status prints none when no state exists", "[tdd][unit][feature:converge-state][functional][converge][state]") {
     const auto ctx = CreateRemoteWithClone("converge-runtime-status-none");
     const auto statePath = ConvergeStatePath(ctx.cloneRepo);
     REQUIRE_FALSE(std::filesystem::exists(statePath));
@@ -421,30 +486,54 @@ TEST_CASE("converge status prints none when no state exists", "[functional][conv
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
-TEST_CASE("converge resume allows baseline drift on failed repos", "[functional][converge][state]") {
+TEST_CASE("KOG-BDD-CONVERGE-002 resume allows baseline drift on failed repos", "[bdd][functional][feature:converge][scenario:KOG-BDD-CONVERGE-002][featured][converge][state]") {
+    const auto scenarioId = std::string{"KOG-BDD-CONVERGE-002"};
     const auto ctx = CreateRemoteWithClone("converge-runtime-resume-baseline");
     const auto statePath = ConvergeStatePath(ctx.cloneRepo);
+    {
+        ScenarioRecorder recorder(scenarioId,
+                                  "converge",
+                                  "resume accepts repaired failed repo live-state drift",
+                                  "KOG-BDD-CONVERGE-002 resume allows baseline drift on failed repos");
+        recorder.SetFeatured(true)
+            .SetDiagramType("state")
+            .AddTag("bdd")
+            .AddTag("feature:converge")
+            .AddTag("scenario:" + scenarioId)
+            .AddTag("featured")
+            .AddActor("developer")
+            .AddActor("kog")
+            .Given("a converge run fails and writes saved workflow state")
+            .AndGiven("the failed repo is repaired without changing the repo graph topology")
+            .AndGiven("the failed repo live branch drifts but still has upstream tracking before resume")
+            .When("the developer runs kog converge --resume")
+            .Then("resume succeeds instead of rejecting baseline drift on the failed repo")
+            .AndThen("the saved converge state is removed after success");
 
-    RequireSuccess(RunGit({"remote", "remove", "origin"}, ctx.cloneRepo), "remove origin to force initial failure");
-    const auto firstRun = RunKog({"converge", "--jobs", "1"}, ctx.cloneRepo);
-    INFO(firstRun.stdoutText);
-    INFO(firstRun.stderrText);
-    REQUIRE(firstRun.exitCode != 0);
-    REQUIRE(std::filesystem::exists(statePath));
+        RequireSuccess(RunGit({"remote", "remove", "origin"}, ctx.cloneRepo), "remove origin to force initial failure");
+        const auto firstRun = RunKog({"converge", "--jobs", "1"}, ctx.cloneRepo);
+        INFO(firstRun.stdoutText);
+        INFO(firstRun.stderrText);
+        REQUIRE(firstRun.exitCode != 0);
+        REQUIRE(std::filesystem::exists(statePath));
 
-    RequireSuccess(RunGit({"remote", "add", "origin", ctx.bareRemote.string()}, ctx.cloneRepo), "restore origin before resume baseline check");
-    RequireSuccess(RunGit({"checkout", "-b", "resume-alt-branch"}, ctx.cloneRepo), "switch to alternate branch before resume");
+        RequireSuccess(RunGit({"remote", "add", "origin", ctx.bareRemote.string()}, ctx.cloneRepo), "restore origin before resume baseline check");
+        RequireSuccess(RunGit({"checkout", "-b", "resume-alt-branch"}, ctx.cloneRepo), "switch to alternate branch before resume");
+        RequireSuccess(RunGit({"push", "-u", "origin", "resume-alt-branch"}, ctx.cloneRepo), "publish alternate branch before resume");
 
-    const auto resumeRun = RunKog({"converge", "--resume", "--jobs", "1"}, ctx.cloneRepo);
-    INFO(resumeRun.stdoutText);
-    INFO(resumeRun.stderrText);
-    REQUIRE(resumeRun.exitCode == 0);
-    REQUIRE_FALSE(std::filesystem::exists(statePath));
+        const auto resumeRun = RunKog({"converge", "--resume", "--jobs", "1"}, ctx.cloneRepo);
+        INFO(resumeRun.stdoutText);
+        INFO(resumeRun.stderrText);
+        REQUIRE(resumeRun.exitCode == 0);
+        REQUIRE_FALSE(std::filesystem::exists(statePath));
+    }
+
+    RequireScenarioMetadata(scenarioId, "converge", "state");
 
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
-TEST_CASE("converge runtime resume continues from saved phase", "[functional][converge][state]") {
+TEST_CASE("converge runtime resume continues from saved phase", "[tdd][unit][feature:converge-state][functional][converge][state]") {
     const auto ctx = CreateRemoteWithClone("converge-runtime-resume");
     const auto statePath = ConvergeStatePath(ctx.cloneRepo);
 

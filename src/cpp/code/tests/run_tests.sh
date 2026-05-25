@@ -46,8 +46,21 @@ WITH_E2E="${3:-0}"
 TEST_XML_OUTPUT="${KANO_TEST_XML:-}"
 TEST_XML_DIR=""
 
+run_test_binary() {
+  local binary_name="$1"
+  shift
+  KANO_TEST_BINARY_NAME="$binary_name" "$@"
+}
+
+if [[ -n "${KANO_REPORT_ROOT:-}" ]]; then
+  export KANO_BDD_METADATA_DIR="${KANO_BDD_METADATA_DIR:-$KANO_REPORT_ROOT/raw/bdd-metadata}"
+  rm -rf -- "$KANO_BDD_METADATA_DIR"
+  mkdir -p "$KANO_BDD_METADATA_DIR"
+fi
+
 if [[ -n "$TEST_XML_OUTPUT" ]]; then
   TEST_XML_DIR="$(dirname "$TEST_XML_OUTPUT")/.tmp-test-result"
+  rm -rf -- "$TEST_XML_DIR"
   mkdir -p "$TEST_XML_DIR"
 fi
 
@@ -89,9 +102,9 @@ run_cli_tests() {
       ;;
   esac
   if [[ -n "$TEST_XML_DIR" ]]; then
-    "$EXE_DIR/kano_git_cli_tests" "${args[@]}" --reporter junit --out "$TEST_XML_DIR/kano_git_cli_tests.xml"
+    run_test_binary "kano_git_cli_tests" "$EXE_DIR/kano_git_cli_tests" "${args[@]}" --reporter junit --out "$TEST_XML_DIR/kano_git_cli_tests.xml"
   else
-    "$EXE_DIR/kano_git_cli_tests" "${args[@]}"
+    run_test_binary "kano_git_cli_tests" "$EXE_DIR/kano_git_cli_tests" "${args[@]}"
   fi
 }
 
@@ -112,9 +125,9 @@ run_tui_tests() {
       ;;
   esac
   if [[ -n "$TEST_XML_DIR" ]]; then
-    "$EXE_DIR/kano_git_tui_tests" "${args[@]}" --reporter junit --out "$TEST_XML_DIR/kano_git_tui_tests.xml"
+    run_test_binary "kano_git_tui_tests" "$EXE_DIR/kano_git_tui_tests" "${args[@]}" --reporter junit --out "$TEST_XML_DIR/kano_git_tui_tests.xml"
   else
-    "$EXE_DIR/kano_git_tui_tests" "${args[@]}"
+    run_test_binary "kano_git_tui_tests" "$EXE_DIR/kano_git_tui_tests" "${args[@]}"
   fi
 }
 
@@ -130,9 +143,9 @@ if [[ "$LANE_MODE" == "full" && "${KANO_FULL_LANE_EXTRA:-0}" == "1" ]]; then
   echo ""
   echo "Running shell executor focused TUI tests..."
   if [[ -n "$TEST_XML_DIR" ]]; then
-    "$EXE_DIR/kano_git_tui_tests" "[shell-executor]" --reporter junit --out "$TEST_XML_DIR/kano_git_tui_tests_shell_executor.xml"
+    run_test_binary "kano_git_tui_tests" "$EXE_DIR/kano_git_tui_tests" "[shell-executor]" --reporter junit --out "$TEST_XML_DIR/kano_git_tui_tests_shell_executor.xml"
   else
-    "$EXE_DIR/kano_git_tui_tests" "[shell-executor]"
+    run_test_binary "kano_git_tui_tests" "$EXE_DIR/kano_git_tui_tests" "[shell-executor]"
   fi
 fi
 
@@ -140,9 +153,9 @@ if [[ "$LANE_MODE" == "full" && "${KANO_FULL_LANE_EXTRA:-0}" == "1" ]]; then
   echo ""
   echo "Running commit plan tests..."
   if [[ -n "$TEST_XML_DIR" ]]; then
-    "$EXE_DIR/kano_git_commit_plan_tests" --reporter junit --out "$TEST_XML_DIR/kano_git_commit_plan_tests.xml"
+    run_test_binary "kano_git_commit_plan_tests" "$EXE_DIR/kano_git_commit_plan_tests" --reporter junit --out "$TEST_XML_DIR/kano_git_commit_plan_tests.xml"
   else
-    "$EXE_DIR/kano_git_commit_plan_tests"
+    run_test_binary "kano_git_commit_plan_tests" "$EXE_DIR/kano_git_commit_plan_tests"
   fi
 fi
 

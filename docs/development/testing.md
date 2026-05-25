@@ -162,6 +162,44 @@ bash src/shell/test/acceptance-remote-mac-build-policy.sh
 - they are scaffolding/maintenance helpers
 - they are not runtime command flows and not tests
 
+## TDD/BDD Taxonomy and Feature Mapping
+
+KOG uses focused Catch2 tags to feed the shared Kano report renderer without
+requiring every legacy test to be retagged in one pass. New or touched
+low-level checks should use this TDD shape:
+
+```text
+[tdd][unit][feature:<feature>]
+```
+
+BDD scenario tests should use this shape, with the scenario id matching the
+`ScenarioRecorder` sidecar metadata:
+
+```text
+[bdd][functional][feature:<feature>][scenario:<id>][featured]
+```
+
+Additional domain tags such as `[converge]`, `[planner]`, `[status]`, or
+`[inventory]` may follow the required taxonomy tags. The current initial feature
+map intentionally covers only high-signal tests touched during the TDD/BDD
+reporting pass instead of retagging the whole suite:
+
+| Feature | Initial TDD sources | BDD scenarios |
+|---|---|---|
+| `ai-provider-bootstrap` | AI working-copy/bootstrap unit flow tests | `KOG-BDD-AI-001`, `KOG-BDD-AI-002`, `KOG-BDD-AI-003` |
+| `ai-model-resolution` | model resolution, model selection, and model arg unit tests | - |
+| `converge-state` | converge planner/state functional regression checks | `KOG-BDD-CONVERGE-002` through feature `converge` |
+| `status-policy` | recursive status policy regression checks | `KOG-BDD-STATUS-001` |
+| `discovery` | discover inventory regression checks | `KOG-BDD-DISCOVERY-001` |
+| `dirty-kind` | converge/status checks that assert dirty-kind decisions | - |
+| `repo-operation-scheduler` | scheduler lock, ordering, and partial-failure checks | - |
+
+The shared renderer consumes these tags and BDD metadata to produce
+`tdd-bdd-summary.json` and `tdd-bdd-summary.md`, mapping TDD tests and BDD
+scenarios by feature. Generated scenario Markdown, Mermaid diagrams,
+`feature-highlights-source.*`, and TDD/BDD summary files are derived report
+artifacts under `.kano/tmp/` and must not be manually edited or checked in.
+
 ## User Story Coverage Mapping
 
 Each user story maps to CLI commands and their test coverage.

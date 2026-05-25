@@ -38,7 +38,7 @@ auto Success(std::string InStdout = {}) -> RepoOperationWorkerResult {
 
 } // namespace
 
-TEST_CASE("repo operation scheduler serializes identical common-dir locks", "[functional][scheduler]") {
+TEST_CASE("repo operation scheduler serializes identical common-dir locks", "[tdd][unit][feature:repo-operation-scheduler][functional][scheduler]") {
     std::vector<RepoOperationInput> repos{
         MakeRepo("repo-a", "workspace/repo-a", "common-dir/shared"),
         MakeRepo("repo-b", "workspace/repo-b", "common-dir/shared"),
@@ -65,7 +65,7 @@ TEST_CASE("repo operation scheduler serializes identical common-dir locks", "[fu
     REQUIRE(maxActive.load() == 1);
 }
 
-TEST_CASE("repo operation scheduler runs independent repos concurrently with deterministic buffered results", "[functional][scheduler]") {
+TEST_CASE("repo operation scheduler runs independent repos concurrently with deterministic buffered results", "[tdd][unit][feature:repo-operation-scheduler][functional][scheduler]") {
     std::vector<RepoOperationInput> repos{
         MakeRepo("repo-b", "workspace/b", "lock-b"),
         MakeRepo("repo-a", "workspace/a", "lock-a"),
@@ -103,7 +103,7 @@ TEST_CASE("repo operation scheduler runs independent repos concurrently with det
     REQUIRE(aggregate.results[1].stdoutText == "stdout:repo-b\n");
 }
 
-TEST_CASE("repo operation scheduler mutating waves order children before parents", "[functional][scheduler]") {
+TEST_CASE("repo operation scheduler mutating waves order children before parents", "[tdd][unit][feature:repo-operation-scheduler][functional][scheduler]") {
     auto child = MakeRepo("child", "workspace/child", "lock-child");
     auto parent = MakeRepo("parent", "workspace/parent", "lock-parent");
     parent.dependencies.push_back(child.path);
@@ -132,7 +132,7 @@ TEST_CASE("repo operation scheduler mutating waves order children before parents
     REQUIRE(aggregate.results[1].phase == 1);
 }
 
-TEST_CASE("repo operation scheduler aggregates partial failures and blocks only dependent ancestors", "[functional][scheduler]") {
+TEST_CASE("repo operation scheduler aggregates partial failures and blocks only dependent ancestors", "[tdd][unit][feature:repo-operation-scheduler][functional][scheduler]") {
     auto child = MakeRepo("child", "workspace/child", "lock-child");
     auto parent = MakeRepo("parent", "workspace/parent", "lock-parent");
     parent.dependencies.push_back(child.path);

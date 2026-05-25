@@ -66,6 +66,20 @@ cmake --build --preset <your-preset> --target kano_git_cli_tests kano_git_tui_te
 ./build/bin/<preset>/kano_git_tui_tests
 ```
 
+## TDD/BDD Tags
+
+Use focused tags for tests that participate in feature-first reporting:
+
+- TDD/unit checks: `[tdd][unit][feature:<feature>]`
+- BDD functional scenarios: `[bdd][functional][feature:<feature>][scenario:<id>][featured]`
+
+Do not retag the whole legacy suite just to satisfy a report lane. The current
+initial feature map is limited to high-signal tests for `ai-provider-bootstrap`,
+`ai-model-resolution`, `converge-state`, `status-policy`, `discovery`,
+`dirty-kind`, and `repo-operation-scheduler`. Scenario Markdown, Mermaid
+diagrams, feature-highlight source, and TDD/BDD summaries are generated derived
+artifacts under `.kano/tmp/`; regenerate them instead of editing them manually.
+
 ## Test Lanes
 
 - `run_kano_git_tests`

@@ -4,10 +4,12 @@ target_sources(kano_git_test_core
   PRIVATE
     generators/public/tui_state_generator.hpp
     generators/public/command_string_generator.hpp
+    support/public/bdd_scenario_recorder.hpp
     support/public/functional_test_support.hpp
 
     generators/private/tui_state_generator.cpp
     generators/private/command_string_generator.cpp
+    support/private/bdd_scenario_recorder.cpp
     support/private/functional_test_support.cpp
 )
 

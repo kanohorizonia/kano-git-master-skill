@@ -1,9 +1,12 @@
+#include "bdd_scenario_recorder.hpp"
 #include "functional_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <sstream>
 #include <string>
 
@@ -94,9 +97,52 @@ auto CommitGitmodules(const std::filesystem::path& InRepo) -> void {
     RequireSuccess(RunGit({"commit", "-m", "configure submodules"}, InRepo), "commit .gitmodules");
 }
 
+auto RequireContains(const std::string& InText, const std::string& InNeedle) -> void {
+    INFO("missing needle=" << InNeedle);
+    INFO(InText);
+    REQUIRE(InText.find(InNeedle) != std::string::npos);
+}
+
+auto RequireNotContains(const std::string& InText, const std::string& InNeedle) -> void {
+    INFO("unexpected needle=" << InNeedle);
+    INFO(InText);
+    REQUIRE(InText.find(InNeedle) == std::string::npos);
+}
+
+auto ScenarioMetadataPath(const std::string& InScenarioId) -> std::filesystem::path {
+    if (const char* metadataDir = std::getenv("KANO_BDD_METADATA_DIR"); metadataDir != nullptr && metadataDir[0] != '\0') {
+        return (std::filesystem::path(metadataDir) / (InScenarioId + ".json")).lexically_normal();
+    }
+    return (std::filesystem::current_path() / ".kano" / "tmp" / "test-metadata" / "bdd" / (InScenarioId + ".json")).lexically_normal();
+}
+
+auto ReadTextFile(const std::filesystem::path& InPath) -> std::string {
+    std::ifstream in(InPath, std::ios::binary);
+    REQUIRE(in.good());
+    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+auto RequireScenarioMetadata(const std::string& InScenarioId,
+                             const std::string& InFeature,
+                             const std::string& InDiagramType) -> std::filesystem::path {
+    const auto sidecar = ScenarioMetadataPath(InScenarioId);
+    REQUIRE(std::filesystem::exists(sidecar));
+    const auto json = ReadTextFile(sidecar);
+    RequireContains(json, "\"style\": \"bdd\"");
+    RequireContains(json, "\"feature\": \"" + InFeature + "\"");
+    RequireContains(json, "\"scenarioId\": \"" + InScenarioId + "\"");
+    RequireContains(json, "\"featured\": true");
+    RequireContains(json, "\"diagramType\": \"" + InDiagramType + "\"");
+    RequireContains(json, "\"bdd\"");
+    RequireContains(json, "\"feature:" + InFeature + "\"");
+    RequireContains(json, "\"scenario:" + InScenarioId + "\"");
+    RequireContains(json, "\"featured\"");
+    return sidecar;
+}
+
 } // namespace
 
-TEST_CASE("discover keeps registered recursion separate from bounded unregistered probing", "[functional][discover][inventory][bdd][feature:discover][scenario:KOG-BDD-DISCOVERY-001]") {
+TEST_CASE("discover keeps registered recursion separate from bounded unregistered probing", "[tdd][unit][feature:discovery][functional][discover][inventory]") {
     const auto sandbox = CreateSandboxWorkspace("discover-registered-recursion");
     const auto root = (sandbox.root / "root").lexically_normal();
     InitRepo(root);
@@ -126,7 +172,7 @@ TEST_CASE("discover keeps registered recursion separate from bounded unregistere
     RemoveSandboxWorkspace(sandbox);
 }
 
-TEST_CASE("discover no-unregistered-scan keeps trusted unregistered manifest entries", "[functional][discover][inventory]") {
+TEST_CASE("discover no-unregistered-scan keeps trusted unregistered manifest entries", "[tdd][unit][feature:discovery][functional][discover][inventory]") {
     const auto sandbox = CreateSandboxWorkspace("discover-no-unregistered-scan");
     const auto root = (sandbox.root / "root").lexically_normal();
     InitRepo(root);
@@ -150,30 +196,56 @@ TEST_CASE("discover no-unregistered-scan keeps trusted unregistered manifest ent
     RemoveSandboxWorkspace(sandbox);
 }
 
-TEST_CASE("discover treats trusted unregistered repo as registered discovery root", "[functional][discover][inventory]") {
-    const auto sandbox = CreateSandboxWorkspace("discover-unregistered-root");
-    const auto root = (sandbox.root / "root").lexically_normal();
-    const auto loose = root / "loose";
-    InitRepo(root);
-    InitRepo(loose);
-    InitRepo(loose / "child");
-    AddGitmodulesEntry(loose, "child", "child", "\tkog-sync = true\n");
-    CommitGitmodules(loose);
+TEST_CASE("discover treats trusted unregistered repo as registered discovery root", "[bdd][functional][feature:discovery][scenario:KOG-BDD-DISCOVERY-001][featured][discover][inventory]") {
+    const auto scenarioId = std::string{"KOG-BDD-DISCOVERY-001"};
+    const auto sandbox = CreateSandboxWorkspace("discover-producta-build-base-root");
+    {
+        ScenarioRecorder recorder(scenarioId,
+                                  "discovery",
+                                  "trusted unregistered Build/Base root participates in registered recursion",
+                                  "discover treats trusted unregistered repo as registered discovery root");
+        recorder.SetFeatured(true)
+            .SetDiagramType("graph")
+            .AddTag("bdd")
+            .AddTag("feature:discovery")
+            .AddTag("scenario:" + scenarioId)
+            .AddTag("featured")
+            .AddActor("developer")
+            .AddActor("kog")
+            .Given("ProductA contains an unregistered Build/Base Git repository")
+            .AndGiven("Build/Base registers a child repository through its own .gitmodules file")
+            .When("a full discover run first records Build/Base as trusted workspace inventory")
+            .AndWhen("the developer runs discover again without full unregistered scanning")
+            .Then("ProductA still includes the trusted Build/Base repository")
+            .AndThen("Build/Base is traversed as a registered discovery root and emits exactly one child relationship");
 
-    const auto full = RunDiscoverJson(root, {"--full", "--unregistered-depth", "2"});
-    INFO(full);
-    REQUIRE(full.find("loose") != std::string::npos);
+        const auto root = (sandbox.root / "ProductA").lexically_normal();
+        const auto buildBase = root / "Build" / "Base";
+        InitRepo(root);
+        InitRepo(buildBase);
+        InitRepo(buildBase / "child");
+        AddGitmodulesEntry(buildBase, "child", "child", "\tkog-sync = true\n");
+        CommitGitmodules(buildBase);
 
-    const auto trusted = RunDiscoverJson(root, {});
-    INFO(trusted);
-    REQUIRE(trusted.find("loose") != std::string::npos);
-    REQUIRE(trusted.find("child") != std::string::npos);
-    REQUIRE(JsonPathCount(trusted, "child") == 1);
+        const auto full = RunDiscoverJson(root, {"--full", "--unregistered-depth", "2"});
+        INFO(full);
+        RequireContains(full, "Build/Base");
 
+        const auto trusted = RunDiscoverJson(root, {});
+        INFO(trusted);
+        RequireContains(trusted, "ProductA");
+        RequireContains(trusted, "Build/Base");
+        RequireContains(trusted, "child");
+        REQUIRE(JsonPathCount(trusted, "Build/Base") >= 1);
+        REQUIRE(JsonPathCount(trusted, "Build/Base/child\",\"type\":\"registered\"") == 1);
+        RequireNotContains(trusted, "too-far");
+    }
+
+    RequireScenarioMetadata(scenarioId, "discovery", "graph");
     RemoveSandboxWorkspace(sandbox);
 }
 
-TEST_CASE("discover full scan prunes ignored build cache and temp directories", "[functional][discover][inventory]") {
+TEST_CASE("discover full scan prunes ignored build cache and temp directories", "[tdd][unit][feature:discovery][functional][discover][inventory]") {
     const auto sandbox = CreateSandboxWorkspace("discover-ignored-dirs");
     const auto root = (sandbox.root / "root").lexically_normal();
     InitRepo(root);

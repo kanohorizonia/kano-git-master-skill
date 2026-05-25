@@ -1,9 +1,12 @@
+#include "bdd_scenario_recorder.hpp"
 #include "functional_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -100,56 +103,124 @@ auto RequireNotContains(const std::string& InText, const std::string& InNeedle) 
     REQUIRE(InText.find(InNeedle) == std::string::npos);
 }
 
+auto ScenarioMetadataPath(const std::string& InScenarioId) -> std::filesystem::path {
+    if (const char* metadataDir = std::getenv("KANO_BDD_METADATA_DIR"); metadataDir != nullptr && metadataDir[0] != '\0') {
+        return (std::filesystem::path(metadataDir) / (InScenarioId + ".json")).lexically_normal();
+    }
+    return (std::filesystem::current_path() / ".kano" / "tmp" / "test-metadata" / "bdd" / (InScenarioId + ".json")).lexically_normal();
+}
+
+auto ReadTextFile(const std::filesystem::path& InPath) -> std::string {
+    std::ifstream in(InPath, std::ios::binary);
+    REQUIRE(in.good());
+    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+auto RequireScenarioMetadata(const std::string& InScenarioId,
+                             const std::string& InFeature,
+                             const std::string& InDiagramType) -> std::filesystem::path {
+    const auto sidecar = ScenarioMetadataPath(InScenarioId);
+    REQUIRE(std::filesystem::exists(sidecar));
+    const auto json = ReadTextFile(sidecar);
+    RequireContains(json, "\"style\": \"bdd\"");
+    RequireContains(json, "\"feature\": \"" + InFeature + "\"");
+    RequireContains(json, "\"scenarioId\": \"" + InScenarioId + "\"");
+    RequireContains(json, "\"featured\": true");
+    RequireContains(json, "\"diagramType\": \"" + InDiagramType + "\"");
+    RequireContains(json, "\"bdd\"");
+    RequireContains(json, "\"feature:" + InFeature + "\"");
+    RequireContains(json, "\"scenario:" + InScenarioId + "\"");
+    RequireContains(json, "\"featured\"");
+    return sidecar;
+}
+
+auto RequireRepoCommandPolicy(const std::string& InJson,
+                              const std::string& InRepoId,
+                              const std::string& InExpectedPolicy) -> void {
+    const auto idNeedle = "\"id\":\"" + InRepoId + "\"";
+    const auto idPos = InJson.find(idNeedle);
+    INFO("repo id=" << InRepoId);
+    INFO(InJson);
+    REQUIRE(idPos != std::string::npos);
+    const auto nextRepo = InJson.find("{\"id\":", idPos + idNeedle.size());
+    const auto repoJson = nextRepo == std::string::npos ? InJson.substr(idPos) : InJson.substr(idPos, nextRepo - idPos);
+    RequireContains(repoJson, InExpectedPolicy);
+}
+
 } // namespace
 
-TEST_CASE("status recursive json emits Task 4A schema and deterministic scheduler order", "[functional][status][recursive][bdd][feature:status][scenario:KOG-BDD-STATUS-001]") {
+TEST_CASE("status recursive json emits Task 4A schema and deterministic scheduler order", "[bdd][functional][feature:status-policy][scenario:KOG-BDD-STATUS-001][featured][status][recursive]") {
+    const auto scenarioId = std::string{"KOG-BDD-STATUS-001"};
     const auto sandbox = CreateSandboxWorkspace("status-recursive-schema");
-    const auto root = (sandbox.root / "root").lexically_normal();
-    InitRepo(root);
-    InitRepo(root / "registered");
-    InitRepo(root / "loose");
+    {
+        ScenarioRecorder recorder(scenarioId,
+                                  "status-policy",
+                                  "recursive status exposes structured command policies",
+                                  "status recursive json emits Task 4A schema and deterministic scheduler order");
+        recorder.SetFeatured(true)
+            .SetDiagramType("flowchart")
+            .AddTag("bdd")
+            .AddTag("feature:status-policy")
+            .AddTag("scenario:" + scenarioId)
+            .AddTag("featured")
+            .AddActor("developer")
+            .AddActor("kog")
+            .Given("a workspace root with one registered repo and one trusted unregistered repo")
+            .AndGiven("the registered repo defines kog sync, commit, push, and hygiene policy in .gitmodules")
+            .When("the developer runs kog status --recursive --json with one and four scheduler jobs")
+            .Then("both scheduler runs emit the same Task 4A recursive status schema")
+            .AndThen("each relevant repo entry exposes commandPolicy sync, commit, push, hygiene, and source");
 
-    AddGitmodulesEntry(root, "registered", "registered", "\tkog-sync = true\n\tkog-commit = true\n\tkog-push = false\n\tkog-hygiene = true\n");
-    CommitGitmodules(root);
+        const auto root = (sandbox.root / "root").lexically_normal();
+        InitRepo(root);
+        InitRepo(root / "registered");
+        InitRepo(root / "loose");
 
-    WriteTextFile(root / "registered" / "dirty.txt", "dirty\n");
-    RunDiscover(root);
+        AddGitmodulesEntry(root, "registered", "registered", "\tkog-sync = true\n\tkog-commit = true\n\tkog-push = false\n\tkog-hygiene = true\n");
+        CommitGitmodules(root);
 
-    const auto jsonJobs1 = ExtractStatusJsonPayload(RunRecursiveJson(root, 1));
-    const auto jsonJobs4 = ExtractStatusJsonPayload(RunRecursiveJson(root, 4));
-    INFO(jsonJobs1);
-    REQUIRE(jsonJobs1 == jsonJobs4);
+        WriteTextFile(root / "registered" / "dirty.txt", "dirty\n");
+        RunDiscover(root);
 
-    RequireContains(jsonJobs1, "\"schemaName\":\"kog.recursiveStatusSnapshot\"");
-    RequireContains(jsonJobs1, "\"schemaVersion\":1");
-    RequireContains(jsonJobs1, "\"workspaceRoot\":");
-    RequireContains(jsonJobs1, "\"repos\":[");
-    RequireContains(jsonJobs1, "\"summary\":");
+        const auto jsonJobs1 = ExtractStatusJsonPayload(RunRecursiveJson(root, 1));
+        const auto jsonJobs4 = ExtractStatusJsonPayload(RunRecursiveJson(root, 4));
+        INFO(jsonJobs1);
+        REQUIRE(jsonJobs1 == jsonJobs4);
 
-    for (const std::string field : {
-             "id", "type", "path", "absolutePath", "depth", "isWorkspaceRoot", "isContainerRoot",
-             "isSubmodule", "parentRepos", "childRepos", "branch", "head", "remote", "upstream",
-             "ahead", "behind", "dirtyKind", "statusFlags", "submoduleFacts", "conflicted", "pushable",
-             "selectedPushRemote", "registrationSource", "registrationRelativeTo", "isPersistedInWorkspaceManifest",
-             "containingRepo", "containingRelation", "isGitlinkInContainingRepo", "isIgnoredByContainingRepo",
-             "isExplicitlyAllowed", "managementPolicy", "blocksConverge", "blockReason", "commandPolicy", "diagnostics"}) {
-        RequireContains(jsonJobs1, "\"" + field + "\"");
+        RequireContains(jsonJobs1, "\"schemaName\":\"kog.recursiveStatusSnapshot\"");
+        RequireContains(jsonJobs1, "\"schemaVersion\":1");
+        RequireContains(jsonJobs1, "\"workspaceRoot\":");
+        RequireContains(jsonJobs1, "\"repos\":[");
+        RequireContains(jsonJobs1, "\"summary\":");
+
+        for (const std::string field : {
+                 "id", "type", "path", "absolutePath", "depth", "isWorkspaceRoot", "isContainerRoot",
+                 "isSubmodule", "parentRepos", "childRepos", "branch", "head", "remote", "upstream",
+                 "ahead", "behind", "dirtyKind", "statusFlags", "submoduleFacts", "conflicted", "pushable",
+                 "selectedPushRemote", "registrationSource", "registrationRelativeTo", "isPersistedInWorkspaceManifest",
+                 "containingRepo", "containingRelation", "isGitlinkInContainingRepo", "isIgnoredByContainingRepo",
+                 "isExplicitlyAllowed", "managementPolicy", "blocksConverge", "blockReason", "commandPolicy", "diagnostics"}) {
+            RequireContains(jsonJobs1, "\"" + field + "\"");
+        }
+
+        RequireContains(jsonJobs1, "\"type\":\"root\"");
+        RequireContains(jsonJobs1, "\"type\":\"registered\"");
+        RequireContains(jsonJobs1, "\"type\":\"unregistered\"");
+        RequireContains(jsonJobs1, "\"dirtyKind\":\"UNTRACKED_ONLY\"");
+        RequireRepoCommandPolicy(jsonJobs1, ".", "\"commandPolicy\":{\"sync\":true,\"commit\":true,\"push\":true,\"hygiene\":true,\"source\":\"workspace-root\"}");
+        RequireRepoCommandPolicy(jsonJobs1, "registered", "\"commandPolicy\":{\"sync\":true,\"commit\":true,\"push\":false,\"hygiene\":true,\"source\":\"gitmodules\"}");
+        RequireRepoCommandPolicy(jsonJobs1, "loose", "\"commandPolicy\":{\"sync\":true,\"commit\":true,\"push\":true,\"hygiene\":true,\"source\":\"workspace-manifest\"}");
+        RequireNotContains(jsonJobs1, "\"kog-push\"");
+        RequireNotContains(jsonJobs1, "\"kog-sync\"");
+        RequireNotContains(jsonJobs1, "registered-uninit");
+        RequireNotContains(jsonJobs1, "external-");
     }
 
-    RequireContains(jsonJobs1, "\"type\":\"root\"");
-    RequireContains(jsonJobs1, "\"type\":\"registered\"");
-    RequireContains(jsonJobs1, "\"type\":\"unregistered\"");
-    RequireContains(jsonJobs1, "\"dirtyKind\":\"UNTRACKED_ONLY\"");
-    RequireContains(jsonJobs1, "\"commandPolicy\":{\"sync\":true,\"commit\":true,\"push\":false,\"hygiene\":true,\"source\":\"gitmodules\"}");
-    RequireNotContains(jsonJobs1, "\"kog-push\"");
-    RequireNotContains(jsonJobs1, "\"kog-sync\"");
-    RequireNotContains(jsonJobs1, "registered-uninit");
-    RequireNotContains(jsonJobs1, "external-");
-
+    RequireScenarioMetadata(scenarioId, "status-policy", "flowchart");
     RemoveSandboxWorkspace(sandbox);
 }
 
-TEST_CASE("status recursive bounded scan reports newly discovered nested unregistered repo as blocking", "[functional][status][recursive]") {
+TEST_CASE("status recursive bounded scan reports newly discovered nested unregistered repo as blocking", "[tdd][unit][feature:status-policy][feature:dirty-kind][functional][status][recursive]") {
     const auto sandbox = CreateSandboxWorkspace("status-recursive-untrusted");
     const auto root = (sandbox.root / "root").lexically_normal();
     InitRepo(root);
@@ -169,7 +240,7 @@ TEST_CASE("status recursive bounded scan reports newly discovered nested unregis
     RemoveSandboxWorkspace(sandbox);
 }
 
-TEST_CASE("status recursive summary reports trusted unregistered repos without full scan", "[functional][status][recursive]") {
+TEST_CASE("status recursive summary reports trusted unregistered repos without full scan", "[tdd][unit][feature:status-policy][feature:dirty-kind][functional][status][recursive]") {
     const auto sandbox = CreateSandboxWorkspace("status-recursive-no-full-scan");
     const auto root = (sandbox.root / "root").lexically_normal();
     InitRepo(root);

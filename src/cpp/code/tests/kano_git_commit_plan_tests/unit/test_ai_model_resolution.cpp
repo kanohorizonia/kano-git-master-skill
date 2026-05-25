@@ -9,7 +9,7 @@
 
 using namespace kano::git::commands;
 
-TEST_CASE("ResolveModelResolutionForAi uses provider-native auto for copilot", "[unit][ai][model-resolution][bdd][feature:ai-provider-bootstrap][scenario:KOG-BDD-AI-001][featured]") {
+TEST_CASE("ResolveModelResolutionForAi uses provider-native auto for copilot", "[tdd][unit][feature:ai-provider-bootstrap][feature:ai-model-resolution][ai][model-resolution]") {
     const auto workspace = std::filesystem::temp_directory_path();
     const auto resolved = ResolveModelResolutionForAi("copilot", "auto", false, workspace);
 
@@ -19,7 +19,7 @@ TEST_CASE("ResolveModelResolutionForAi uses provider-native auto for copilot", "
     REQUIRE_FALSE(resolved.fallbackUsed);
 }
 
-TEST_CASE("ResolveModelResolutionForAi falls back to kog-auto for providers without native auto", "[unit][ai][model-resolution]") {
+TEST_CASE("ResolveModelResolutionForAi falls back to kog-auto for providers without native auto", "[tdd][unit][feature:ai-model-resolution][ai][model-resolution]") {
     const auto workspace = std::filesystem::temp_directory_path();
     const auto resolved = ResolveModelResolutionForAi("codex", "auto", false, workspace);
 
@@ -30,7 +30,7 @@ TEST_CASE("ResolveModelResolutionForAi falls back to kog-auto for providers with
     REQUIRE(resolved.fallbackReason == "provider-auto-unsupported");
 }
 
-TEST_CASE("ResolveModelResolutionForAi supports provider-default and explicit modes", "[unit][ai][model-resolution]") {
+TEST_CASE("ResolveModelResolutionForAi supports provider-default and explicit modes", "[tdd][unit][feature:ai-model-resolution][ai][model-resolution]") {
     const auto workspace = std::filesystem::temp_directory_path();
 
     const auto providerDefault = ResolveModelResolutionForAi("copilot", "provider-default", false, workspace);
@@ -42,13 +42,13 @@ TEST_CASE("ResolveModelResolutionForAi supports provider-default and explicit mo
     REQUIRE(explicitModel.modelValue == "gpt-5-mini");
 }
 
-TEST_CASE("NormalizeAiModelSelection recognizes provider-auto and kog-auto", "[unit][ai][model-selection][bdd][feature:ai-provider-bootstrap][scenario:KOG-BDD-AI-002]") {
+TEST_CASE("NormalizeAiModelSelection recognizes provider-auto and kog-auto", "[tdd][unit][feature:ai-model-resolution][ai][model-selection]") {
     REQUIRE(kog_config::NormalizeAiModelSelection("provider-auto") == "provider-auto");
     REQUIRE(kog_config::NormalizeAiModelSelection("kog-auto") == "kog-auto");
     REQUIRE(kog_config::NormalizeAiModelSelection("default") == "provider-default");
 }
 
-TEST_CASE("AppendModelArgsForProvider emits mode-aware copilot model args", "[unit][ai][model-args]") {
+TEST_CASE("AppendModelArgsForProvider emits mode-aware copilot model args", "[tdd][unit][feature:ai-model-resolution][ai][model-args]") {
     std::vector<std::string> args;
     AppendModelArgsForProvider(args, "copilot", "provider-auto", "auto");
     REQUIRE(args == std::vector<std::string>{"--model", "auto"});

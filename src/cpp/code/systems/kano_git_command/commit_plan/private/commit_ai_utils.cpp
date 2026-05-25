@@ -8,6 +8,7 @@
 #include <CLI/CLI.hpp>
 #include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <deque>
 #include <cstring>
 #include <ctime>
@@ -23,7 +24,64 @@
 
 namespace kano::git::commands {
 
+namespace {
+
+auto IsKogTestMode() -> bool {
+    const auto* raw = std::getenv("KOG_TEST_MODE");
+    if (raw == nullptr) {
+        return false;
+    }
+    auto value = ToLower(Trim(std::string(raw)));
+    return value == "1" || value == "true" || value == "yes" || value == "on";
+}
+
+auto CommandProbeKey(std::string InCommand) -> std::string {
+    auto normalized = ToLower(Trim(std::move(InCommand)));
+    const auto slash = normalized.find_last_of("/\\");
+    if (slash != std::string::npos) {
+        normalized = normalized.substr(slash + 1);
+    }
+    for (const std::string suffix : {".exe", ".cmd", ".bat"}) {
+        if (normalized.size() > suffix.size() && normalized.ends_with(suffix)) {
+            normalized.resize(normalized.size() - suffix.size());
+            break;
+        }
+    }
+    return normalized;
+}
+
+auto TestModeCommandAvailability(const std::string& InCommand) -> std::optional<bool> {
+    if (!IsKogTestMode()) {
+        return std::nullopt;
+    }
+
+    const auto target = CommandProbeKey(InCommand);
+    const auto* raw = std::getenv("KOG_TEST_AVAILABLE_COMMANDS");
+    if (raw == nullptr || raw[0] == '\0') {
+        return false;
+    }
+
+    std::string token;
+    std::istringstream tokens(raw);
+    while (std::getline(tokens, token, ',')) {
+        std::istringstream semiTokens(token);
+        std::string semiToken;
+        while (std::getline(semiTokens, semiToken, ';')) {
+            if (CommandProbeKey(semiToken) == target) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+} // namespace
+
 auto HasCommand(const std::string& InCommand, const std::vector<std::string>& InArgs = {"--help"}) -> bool {
+    if (const auto testAvailability = TestModeCommandAvailability(InCommand); testAvailability.has_value()) {
+        return *testAvailability;
+    }
+
     const auto result = shell::ExecuteCommand(InCommand, InArgs, shell::ExecMode::Capture, std::filesystem::current_path());
     return result.exitCode == 0;
 }
@@ -111,6 +169,10 @@ auto DetectWinGetCommandPath() -> std::string {
 #if !defined(_WIN32)
     return {};
 #else
+    if (const auto testAvailability = TestModeCommandAvailability("winget"); testAvailability.has_value()) {
+        return *testAvailability ? "winget" : std::string{};
+    }
+
     const auto fromPath = shell::ExecuteCommand("winget", {"--version"}, shell::ExecMode::Capture, std::filesystem::current_path());
     if (fromPath.exitCode == 0) {
         return "winget";
