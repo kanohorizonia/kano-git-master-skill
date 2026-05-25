@@ -18,6 +18,23 @@ struct ExecResult {
 
 using ProgressCallback = std::function<void(std::string_view chunk, bool isStderr)>;
 
+struct CommandLogCallbacks {
+    std::function<void(const std::string&)> onStdout;
+    std::function<void(const std::string&)> onStderr;
+};
+
+class ScopedCommandLogCapture {
+  public:
+    explicit ScopedCommandLogCapture(CommandLogCallbacks InCallbacks);
+    ~ScopedCommandLogCapture();
+
+    ScopedCommandLogCapture(const ScopedCommandLogCapture&) = delete;
+    auto operator=(const ScopedCommandLogCapture&) -> ScopedCommandLogCapture& = delete;
+
+  private:
+    bool active_ = false;
+};
+
 auto GetScriptsDir() -> std::filesystem::path;
 
 auto ExecuteScript(

@@ -38,6 +38,24 @@ namespace kano::git::shell {
 
 namespace {
 
+thread_local std::vector<kano::git::shell::CommandLogCallbacks> g_commandLogCallbacksStack;
+
+auto EmitStdoutLine(const std::string& InText) -> void {
+    if (!g_commandLogCallbacksStack.empty() && g_commandLogCallbacksStack.back().onStdout) {
+        g_commandLogCallbacksStack.back().onStdout(InText);
+        return;
+    }
+    std::cout << InText;
+}
+
+auto EmitStderrLine(const std::string& InText) -> void {
+    if (!g_commandLogCallbacksStack.empty() && g_commandLogCallbacksStack.back().onStderr) {
+        g_commandLogCallbacksStack.back().onStderr(InText);
+        return;
+    }
+    std::cerr << InText;
+}
+
 auto GetEnvPath(const char* InKey) -> std::optional<std::filesystem::path> {
     const char* raw = kano_platform_get_env(InKey);
     if (raw == nullptr || raw[0] == '\0') {
@@ -335,7 +353,7 @@ auto BuildProcessDiagBlock(const std::string& InStartTs,
 }
 
 auto EmitProcessDiag(const std::string& InText) -> void {
-    std::cerr << InText;
+    EmitStderrLine(InText);
     if (const auto* pathRaw = std::getenv("KOG_PROCESS_DIAGNOSTICS_LOG"); pathRaw != nullptr && pathRaw[0] != '\0') {
         std::error_code ec;
         const std::filesystem::path path(pathRaw);
@@ -660,7 +678,7 @@ auto BuildProcessDiagBlock(const std::string& InStartTs,
 }
 
 auto EmitProcessDiag(const std::string& InText) -> void {
-    std::cerr << InText;
+    EmitStderrLine(InText);
     if (const auto* pathRaw = std::getenv("KOG_PROCESS_DIAGNOSTICS_LOG"); pathRaw != nullptr && pathRaw[0] != '\0') {
         std::error_code ec;
         const std::filesystem::path path(pathRaw);
@@ -847,6 +865,20 @@ auto WithGitNonInteractiveDefaults(const std::string& InCommand,
 
 namespace kano::git::shell {
 
+ScopedCommandLogCapture::ScopedCommandLogCapture(CommandLogCallbacks InCallbacks) {
+    g_commandLogCallbacksStack.push_back(std::move(InCallbacks));
+    active_ = true;
+}
+
+ScopedCommandLogCapture::~ScopedCommandLogCapture() {
+    if (!active_) {
+        return;
+    }
+    if (!g_commandLogCallbacksStack.empty()) {
+        g_commandLogCallbacksStack.pop_back();
+    }
+}
+
 auto ExecuteScript(
     std::string_view InRelativeScript,
     const std::vector<std::string>& InArgs,
@@ -929,7 +961,7 @@ auto ExecuteCommand(
             }
             
             // Console output
-            std::cout << logLine << std::endl;
+            EmitStdoutLine(logLine + "\n");
 
             // File output if KOG_DEBUG is on
             static const bool debugFile = std::getenv("KOG_DEBUG") != nullptr;
@@ -967,7 +999,7 @@ auto ExecuteCommand(
                         ofs << "--- Session Started: " << std::filesystem::current_path().string() << " ---\n";
                     }
                     
-                    std::cout << "[debug] commands logged to: " << logPath.generic_string() << std::endl;
+                    EmitStdoutLine("[debug] commands logged to: " + logPath.generic_string() + "\n");
                 });
 
                 if (!logPath.empty()) {

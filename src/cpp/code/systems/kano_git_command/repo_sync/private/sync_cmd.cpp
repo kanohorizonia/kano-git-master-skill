@@ -2242,13 +2242,36 @@ auto RunNativeOriginLatestSync(
         std::ostringstream out;
         std::ostringstream err;
 
+        const auto normalizeCapturedText = [](std::string text) {
+            std::string normalized;
+            normalized.reserve(text.size() + 8);
+            for (std::size_t i = 0; i < text.size(); ++i) {
+                const char ch = text[i];
+                if (ch == '\r') {
+                    if ((i + 1) < text.size() && text[i + 1] == '\n') {
+                        continue;
+                    }
+                    normalized.push_back('\n');
+                    continue;
+                }
+                normalized.push_back(ch);
+            }
+            while (!normalized.empty() && normalized.back() == '\n') {
+                normalized.pop_back();
+            }
+            if (!normalized.empty()) {
+                normalized.push_back('\n');
+            }
+            return normalized;
+        };
+
         auto finishSuccess = [&](const std::string& outcome, const std::string& reason) {
             result.status = workspace::RepoOperationStatus::Succeeded;
             result.exitCode = 0;
             result.failureCategory.clear();
             result.message = reason;
-            result.stdoutText = out.str();
-            result.stderrText = err.str();
+            result.stdoutText = normalizeCapturedText(out.str());
+            result.stderrText = normalizeCapturedText(err.str());
             return result;
         };
 
@@ -2257,8 +2280,8 @@ auto RunNativeOriginLatestSync(
             result.exitCode = 0;
             result.skipReason = reason;
             result.message = reason;
-            result.stdoutText = out.str();
-            result.stderrText = err.str();
+            result.stdoutText = normalizeCapturedText(out.str());
+            result.stderrText = normalizeCapturedText(err.str());
             return result;
         };
 
@@ -2267,8 +2290,8 @@ auto RunNativeOriginLatestSync(
             result.exitCode = 1;
             result.failureCategory = category;
             result.message = reason;
-            result.stdoutText = out.str();
-            result.stderrText = err.str();
+            result.stdoutText = normalizeCapturedText(out.str());
+            result.stderrText = normalizeCapturedText(err.str());
             return result;
         };
 
@@ -2277,10 +2300,19 @@ auto RunNativeOriginLatestSync(
             result.exitCode = 1;
             result.failureCategory = category;
             result.message = reason;
-            result.stdoutText = out.str();
-            result.stderrText = err.str();
+            result.stdoutText = normalizeCapturedText(out.str());
+            result.stderrText = normalizeCapturedText(err.str());
             return result;
         };
+
+        shell::ScopedCommandLogCapture commandLogCapture(shell::CommandLogCallbacks{
+            .onStdout = [&](const std::string& line) {
+                out << line;
+            },
+            .onStderr = [&](const std::string& line) {
+                err << line;
+            },
+        });
 
         out << (InDryRun ? "[DRY RUN] " : "") << "Repo: " << name << "\n";
         out << (InDryRun ? "[DRY RUN] " : "") << "Taxonomy: " << plan.type << "\n";
@@ -2655,30 +2687,36 @@ auto RunNativeOriginLatestSync(
             std::cout << result.stdoutText;
         }
         if (!result.stderrText.empty()) {
-            std::cerr << result.stderrText;
+            std::cout << result.stderrText;
         }
     }
 
     for (const auto& result : aggregate.results) {
         if (result.status == workspace::RepoOperationStatus::Blocked) {
-            std::cerr << "[" << result.repoPath.generic_string() << "] BLOCKED_BY_CHILD_FAILURE: "
+            std::cout << "[" << result.repoPath.generic_string() << "] BLOCKED_BY_CHILD_FAILURE: "
                       << (result.blockReason.empty() ? "dependency failed in an earlier phase" : result.blockReason) << "\n";
         } else if (result.status == workspace::RepoOperationStatus::Pending) {
-            std::cerr << "[" << result.repoPath.generic_string() << "] FAILED_SYNC: scheduler did not execute repository\n";
+            std::cout << "[" << result.repoPath.generic_string() << "] FAILED_SYNC: scheduler did not execute repository\n";
         }
     }
 
     std::size_t selfBuildFailure = 0;
-    std::vector<std::pair<std::string, std::string>> failureDetails;
+    std::vector<std::pair<std::string, std::string>> failedDetails;
+    std::vector<std::pair<std::string, std::string>> blockedDetails;
+    std::vector<std::pair<std::string, std::string>> skippedDetails;
     for (const auto& result : aggregate.results) {
-        if (result.status == workspace::RepoOperationStatus::Failed ||
-            result.status == workspace::RepoOperationStatus::Blocked ||
-            result.status == workspace::RepoOperationStatus::Pending) {
-            failureDetails.emplace_back(
-                std::filesystem::relative(result.repoPath, InRepoRoot).generic_string().empty()
-                    ? std::string{"."}
-                    : std::filesystem::relative(result.repoPath, InRepoRoot).generic_string(),
+        const auto relative = std::filesystem::relative(result.repoPath, InRepoRoot).generic_string().empty()
+            ? std::string{"."}
+            : std::filesystem::relative(result.repoPath, InRepoRoot).generic_string();
+        if (result.status == workspace::RepoOperationStatus::Failed || result.status == workspace::RepoOperationStatus::Pending) {
+            failedDetails.emplace_back(relative,
                 result.failureCategory.empty() ? result.message : result.failureCategory + (result.message.empty() ? std::string{} : ": " + result.message));
+        } else if (result.status == workspace::RepoOperationStatus::Blocked) {
+            blockedDetails.emplace_back(relative,
+                result.failureCategory.empty() ? result.message : result.failureCategory + (result.message.empty() ? std::string{} : ": " + result.message));
+        } else if (result.status == workspace::RepoOperationStatus::Skipped) {
+            skippedDetails.emplace_back(relative,
+                result.skipReason.empty() ? result.message : result.skipReason);
         }
     }
 
@@ -2686,7 +2724,7 @@ auto RunNativeOriginLatestSync(
         const auto buildCode = RunSelfCppBuild(*selfRepoRoot);
         if (buildCode != 0) {
             selfBuildFailure = 1;
-            failureDetails.emplace_back(
+            failedDetails.emplace_back(
                 std::filesystem::relative(*selfRepoRoot, InRepoRoot).generic_string().empty()
                     ? std::string{"."}
                     : std::filesystem::relative(*selfRepoRoot, InRepoRoot).generic_string(),
@@ -2705,10 +2743,24 @@ auto RunNativeOriginLatestSync(
     std::cout << "Skipped: " << kano::terminal::Wrap(std::to_string(aggregate.skipped), kano::terminal::Color::BoldYellow) << "\n";
     std::cout << "Blocked: " << kano::terminal::Wrap(std::to_string(aggregate.blocked), kano::terminal::Color::BoldRed) << "\n";
     std::cout << "Failed: " << kano::terminal::Wrap(std::to_string(aggregate.failed + aggregate.pending + selfBuildFailure), kano::terminal::Color::BoldRed) << "\n";
-    if (!failureDetails.empty()) {
+    if (!failedDetails.empty()) {
         std::cout << "\n=== " << kano::terminal::Wrap("FAILED REPOS", kano::terminal::Color::BoldRed) << " ===\n";
-        for (const auto& [repo, reason] : failureDetails) {
+        for (const auto& [repo, reason] : failedDetails) {
             std::cout << kano::terminal::Wrap("[ERROR]", kano::terminal::Color::BoldRed) << " " 
+                      << kano::terminal::Wrap(repo, kano::terminal::Color::BoldCyan) << " | " << reason << "\n";
+        }
+    }
+    if (!blockedDetails.empty()) {
+        std::cout << "\n=== " << kano::terminal::Wrap("BLOCKED REPOS", kano::terminal::Color::BoldRed) << " ===\n";
+        for (const auto& [repo, reason] : blockedDetails) {
+            std::cout << kano::terminal::Wrap("[BLOCKED]", kano::terminal::Color::BoldRed) << " "
+                      << kano::terminal::Wrap(repo, kano::terminal::Color::BoldCyan) << " | " << reason << "\n";
+        }
+    }
+    if (!skippedDetails.empty()) {
+        std::cout << "\n=== " << kano::terminal::Wrap("SKIPPED REPOS", kano::terminal::Color::BoldYellow) << " ===\n";
+        for (const auto& [repo, reason] : skippedDetails) {
+            std::cout << kano::terminal::Wrap("[SKIPPED]", kano::terminal::Color::BoldYellow) << " "
                       << kano::terminal::Wrap(repo, kano::terminal::Color::BoldCyan) << " | " << reason << "\n";
         }
     }

@@ -82,6 +82,22 @@ auto StripAnsi(const std::string& InText) -> std::string {
     return out;
 }
 
+auto NormalizeLineEndings(const std::string& InText) -> std::string {
+    std::string out;
+    out.reserve(InText.size());
+    for (std::size_t i = 0; i < InText.size(); ++i) {
+        if (InText[i] == '\r') {
+            if ((i + 1) < InText.size() && InText[i + 1] == '\n') {
+                continue;
+            }
+            out.push_back('\n');
+            continue;
+        }
+        out.push_back(InText[i]);
+    }
+    return out;
+}
+
 auto CurrentHeadSha(const std::filesystem::path& InRepo) -> std::string {
     const auto result = RunGit({"rev-parse", "HEAD"}, InRepo);
     RequireSuccess(result, "rev-parse HEAD");
@@ -188,6 +204,23 @@ auto PositionOf(const std::string& InText, const std::string& InNeedle) -> std::
     return pos;
 }
 
+auto CountOccurrences(const std::string& InText, const std::string& InNeedle) -> std::size_t {
+    if (InNeedle.empty()) {
+        return 0;
+    }
+    std::size_t count = 0;
+    std::size_t pos = 0;
+    while (true) {
+        pos = InText.find(InNeedle, pos);
+        if (pos == std::string::npos) {
+            break;
+        }
+        count += 1;
+        pos += InNeedle.size();
+    }
+    return count;
+}
+
 } // namespace
 
 TEST_CASE("recursive_sync_dry_run_is_deterministic_across_jobs", "[functional][sync][recursive][determinism]") {
@@ -209,6 +242,56 @@ TEST_CASE("recursive_sync_dry_run_is_deterministic_across_jobs", "[functional][s
     RequireSuccess(jobs1, "sync dry-run jobs 1");
     RequireSuccess(jobs4, "sync dry-run jobs 4");
     REQUIRE(NormalizedDryRun(jobs1.stdoutText + "\n" + jobs1.stderrText) == NormalizedDryRun(jobs4.stdoutText + "\n" + jobs4.stderrText));
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
+TEST_CASE("recursive_sync_parallel_output_blocks_are_not_corrupted", "[functional][sync][recursive][determinism][output]") {
+    const auto sandbox = CreateSandboxWorkspace("recursive-sync-output-stability");
+    auto rootRemote = CreateRemote(sandbox, "root");
+    auto childA = CreateRemote(sandbox, "child-a");
+    auto childB = CreateRemote(sandbox, "child-b");
+    const auto root = rootRemote.clone;
+    AddSubmodule(root, childA, "deps/a", "\tkog-sync = true\n\tkog-commit = true\n\tkog-push = true\n");
+    AddSubmodule(root, childB, "deps/b", "\tkog-sync = true\n\tkog-commit = true\n\tkog-push = true\n");
+    RequireSuccess(RunGit({"push", "origin", rootRemote.branch}, root), "push registration");
+
+    const auto result = RunSyncRecursive(root, {"--jobs", "4", "--dry-run"});
+    const auto output = NormalizeLineEndings(StripAnsi(result.stdoutText + "\n" + result.stderrText));
+    RequireSuccess(result, "sync output stability jobs=4");
+    REQUIRE(output.find("(origin, main)\n(origin, main)") == std::string::npos);
+    REQUIRE(output.find("\nn)\n") == std::string::npos);
+    REQUIRE(CountOccurrences(output, "Repo: .") == 1);
+    REQUIRE(CountOccurrences(output, "Repo: deps/a") == 1);
+    REQUIRE(CountOccurrences(output, "Repo: deps/b") == 1);
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
+TEST_CASE("recursive_sync_with_command_logging_env_keeps_repo_output_associated", "[functional][sync][recursive][determinism][logging]") {
+    const auto sandbox = CreateSandboxWorkspace("recursive-sync-command-log-capture");
+    auto rootRemote = CreateRemote(sandbox, "root");
+    auto childA = CreateRemote(sandbox, "child-a");
+    auto childB = CreateRemote(sandbox, "child-b");
+    const auto root = rootRemote.clone;
+    AddSubmodule(root, childA, "deps/a", "\tkog-sync = true\n\tkog-commit = true\n\tkog-push = true\n");
+    AddSubmodule(root, childB, "deps/b", "\tkog-sync = true\n\tkog-commit = true\n\tkog-push = true\n");
+    RequireSuccess(RunGit({"push", "origin", rootRemote.branch}, root), "push registration");
+
+    const auto result = RunKogWithEnv(
+        {"sync", "origin-latest", "--dry-run", "--jobs", "4"},
+        root,
+        {
+            {"KOG_LOG_COMMANDS", "1"},
+            {"KOG_DEBUG", "1"},
+            {"KANO_AGENT_MODE", "1"},
+        });
+    const auto output = NormalizeLineEndings(StripAnsi(result.stdoutText + "\n" + result.stderrText));
+    RequireSuccess(result, "sync with command logging env");
+    REQUIRE(output.find("[run] git") != std::string::npos);
+    REQUIRE(output.find("(origin, main)\n(origin, main)") == std::string::npos);
+    REQUIRE(CountOccurrences(output, "Repo: deps/a") == 1);
+    REQUIRE(CountOccurrences(output, "Repo: deps/b") == 1);
 
     RemoveSandboxWorkspace(sandbox);
 }
@@ -283,6 +366,8 @@ TEST_CASE("recursive_sync_conflict_is_best_effort_and_blocks_ancestor_only", "[f
     RequireFailure(result, "recursive sync conflict best effort");
     RequireContains(output, "SYNC_CONFLICT");
     RequireContains(output, "BLOCKED_BY_CHILD_FAILURE");
+    RequireContains(output, "FAILED REPOS");
+    RequireContains(output, "BLOCKED REPOS");
     RequireContains(output, "deps/healthy");
     REQUIRE(CurrentHeadSha(healthyPath) == healthyRemoteHead);
     REQUIRE(CurrentHeadSha(conflictPath) == conflictLocalHead);
