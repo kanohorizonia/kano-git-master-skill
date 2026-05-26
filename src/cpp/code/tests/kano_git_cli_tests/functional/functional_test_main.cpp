@@ -1213,6 +1213,104 @@ TEST_CASE("submodule_update_recursive_continues_past_failed_direct_submodule", "
 
     const auto merged = result.stdoutText + "\n" + result.stderrText;
     REQUIRE(merged.find(ctx.brokenPath) != std::string::npos);
+    REQUIRE(merged.find("All submodules updated successfully") == std::string::npos);
+    REQUIRE(merged.find("=== Submodule Update Complete ===") != std::string::npos);
+    REQUIRE(merged.find("Failed:") != std::string::npos);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("submodule_update_clean_summary_reports_clean_counts", "[functional][submodule][update][summary]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("submodule-update-clean-summary");
+
+    const auto result = RunKogAllowingFileProtocol({"submodule", "update", "--recursive"}, ctx.cloneRootRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    const auto merged = result.stdoutText + "\n" + result.stderrText;
+    REQUIRE(merged.find("=== Submodule Update Complete ===") != std::string::npos);
+    REQUIRE(merged.find("Updated cleanly:") != std::string::npos);
+    REQUIRE(merged.find("Failed: 0") != std::string::npos);
+    REQUIRE(merged.find("Blocked: 0") != std::string::npos);
+    REQUIRE(merged.find("All submodules updated successfully") == std::string::npos);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("submodule_update_repairs_invalid_gitdir_state_when_safe", "[functional][submodule][update][repair]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("submodule-update-repair-safe");
+
+    const auto submodulePath = (ctx.cloneRootRepo / std::filesystem::path(ctx.submodulePath)).lexically_normal();
+    const auto modulePathResult = RunGit({"-C", ctx.cloneRootRepo.string(), "rev-parse", "--git-path", "modules/" + ctx.submodulePath}, ctx.cloneRootRepo);
+    RequireSuccess(modulePathResult, "resolve module path");
+    const auto modulePath = std::filesystem::path(TrimCopy(modulePathResult.stdoutText)).lexically_normal();
+
+    std::error_code ec;
+    std::filesystem::remove_all(modulePath, ec);
+    REQUIRE(!ec);
+    WriteTextFile(submodulePath / ".git", "gitdir: ../../.git/modules/" + ctx.submodulePath + "\n");
+
+    const auto result = RunKogAllowingFileProtocol({"submodule", "update", ctx.submodulePath}, ctx.cloneRootRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    const auto merged = result.stdoutText + "\n" + result.stderrText;
+    REQUIRE(merged.find("Repaired and updated: 1") != std::string::npos);
+    REQUIRE(merged.find("Failed: 0") != std::string::npos);
+    REQUIRE(merged.find("Blocked: 0") != std::string::npos);
+
+    const auto childHead = CurrentHeadSha(submodulePath);
+    REQUIRE(childHead == GitlinkHeadSha(ctx.cloneRootRepo, ctx.submodulePath));
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("submodule_update_blocks_unsafe_repair_for_local_user_files", "[functional][submodule][update][repair][unsafe]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("submodule-update-repair-unsafe");
+
+    const auto submodulePath = (ctx.cloneRootRepo / std::filesystem::path(ctx.submodulePath)).lexically_normal();
+    const auto modulePathResult = RunGit({"-C", ctx.cloneRootRepo.string(), "rev-parse", "--git-path", "modules/" + ctx.submodulePath}, ctx.cloneRootRepo);
+    RequireSuccess(modulePathResult, "resolve module path");
+    const auto modulePath = std::filesystem::path(TrimCopy(modulePathResult.stdoutText)).lexically_normal();
+
+    std::error_code ec;
+    std::filesystem::remove_all(modulePath, ec);
+    REQUIRE(!ec);
+    WriteTextFile(submodulePath / "user-note.txt", "keep me\n");
+
+    const auto result = RunKogAllowingFileProtocol({"submodule", "update", ctx.submodulePath}, ctx.cloneRootRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode != 0);
+
+    const auto merged = result.stdoutText + "\n" + result.stderrText;
+    REQUIRE(merged.find("BLOCKED_SUBMODULE_REPAIR_UNSAFE") != std::string::npos);
+    REQUIRE(merged.find("Blocked: 1") != std::string::npos);
+    REQUIRE(std::filesystem::exists(submodulePath / "user-note.txt"));
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("submodule_update_classifies_lfs_pointer_mismatch_warning", "[functional][submodule][update][lfs]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("submodule-update-lfs-warning");
+
+    const auto result = RunKogWithEnv(
+        {"submodule", "update", ctx.submodulePath},
+        ctx.cloneRootRepo,
+        {
+            {"GIT_ALLOW_PROTOCOL", "file:https:ssh:git"},
+            {"KOG_TEST_SUBMODULE_UPDATE_STDERR", "Encountered 2 files that should have been pointers, but weren't:\n  a.bin\n  b.bin\n"},
+        });
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    const auto merged = result.stdoutText + "\n" + result.stderrText;
+    REQUIRE(merged.find("Updated with warnings: 1") != std::string::npos);
+    REQUIRE(merged.find("LFS_POINTER_MISMATCH") != std::string::npos);
+    REQUIRE(merged.find("All submodules updated successfully") == std::string::npos);
 
     RemoveSandboxWorkspace(ctx.sandbox);
 }

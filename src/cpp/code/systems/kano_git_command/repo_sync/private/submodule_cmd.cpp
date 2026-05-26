@@ -5,6 +5,8 @@
 #include "shell_executor.hpp"
 
 #include <algorithm>
+#include <cctype>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -33,6 +35,44 @@ struct SubmoduleUpdateTask {
     std::filesystem::path repoRoot;
     std::string localPath;
 };
+
+enum class SubmoduleUpdateOutcomeKind {
+    UpdatedCleanly,
+    UpdatedWithWarnings,
+    RepairedAndUpdated,
+    Failed,
+    Blocked,
+};
+
+struct SubmoduleWarning {
+    std::string code;
+    std::string message;
+};
+
+struct SubmoduleIssue {
+    std::string code;
+    std::string message;
+};
+
+struct SubmoduleUpdateOutcome {
+    SubmoduleUpdateTask task;
+    SubmoduleUpdateOutcomeKind kind = SubmoduleUpdateOutcomeKind::Failed;
+    std::vector<SubmoduleWarning> warnings;
+    std::vector<SubmoduleIssue> issues;
+    bool attemptedRepair = false;
+};
+
+struct SubmoduleRepairSafety {
+    bool safe = false;
+    std::string reason;
+    std::filesystem::path modulePath;
+};
+
+auto DidSubmoduleUpdateSucceed(const std::filesystem::path& InRepoRoot, const std::string& InLocalPath) -> bool;
+auto CollectRegisteredSubmodulePaths(const std::filesystem::path& InRepoRoot) -> std::vector<std::string>;
+auto CollectNestedSubmoduleTasks(
+    const std::filesystem::path& InWorkspaceRoot,
+    const std::string& InParentDisplayPath) -> std::vector<SubmoduleUpdateTask>;
 
 struct ParsedSubmoduleAddArgs {
     std::string url;
@@ -87,6 +127,33 @@ auto Trim(const std::string& InValue) -> std::string {
     }
     const auto end = InValue.find_last_not_of(" \t\r\n");
     return InValue.substr(start, end - start + 1);
+}
+
+auto ToLower(std::string InValue) -> std::string {
+    std::transform(InValue.begin(), InValue.end(), InValue.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return InValue;
+}
+
+auto ContainsCaseInsensitive(const std::string& InText, const std::string& InNeedle) -> bool {
+    if (InNeedle.empty()) {
+        return true;
+    }
+    return ToLower(InText).find(ToLower(InNeedle)) != std::string::npos;
+}
+
+auto SplitLines(const std::string& InText) -> std::vector<std::string> {
+    std::vector<std::string> out;
+    std::istringstream iss(InText);
+    std::string line;
+    while (std::getline(iss, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        out.push_back(line);
+    }
+    return out;
 }
 
 auto RunGitCapture(
@@ -382,21 +449,6 @@ auto ReadGitConfigValue(
     return Trim(valueResult.stdoutStr);
 }
 
-void PrintCapturedOutputIfAny(const kano::git::shell::ExecResult& InResult) {
-    if (!InResult.stdoutStr.empty()) {
-        std::cout << InResult.stdoutStr;
-        if (InResult.stdoutStr.back() != '\n') {
-            std::cout << "\n";
-        }
-    }
-    if (!InResult.stderrStr.empty()) {
-        std::cerr << InResult.stderrStr;
-        if (InResult.stderrStr.back() != '\n') {
-            std::cerr << "\n";
-        }
-    }
-}
-
 auto CollectSyncUrlEntries(const std::string& InRoot, const std::string& InGitmodulesPath) -> std::vector<SyncUrlEntry> {
     std::vector<SyncUrlEntry> entries;
     auto keyResult = RunGitCapture(
@@ -445,6 +497,431 @@ auto DetectDefaultSubmoduleUpdateJobs() -> int {
         return 1;
     }
     return static_cast<int>(cores);
+}
+
+auto PathKey(const std::filesystem::path& InPath) -> std::string {
+    std::error_code ec;
+    auto canonical = std::filesystem::weakly_canonical(InPath, ec);
+    if (ec) {
+        canonical = std::filesystem::absolute(InPath, ec);
+    }
+    if (ec) {
+        canonical = InPath;
+    }
+    auto out = canonical.lexically_normal().generic_string();
+#if defined(_WIN32)
+    std::transform(out.begin(), out.end(), out.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+#endif
+    return out;
+}
+
+auto IsInsideWorkTreeAtPath(const std::filesystem::path& InPath) -> bool {
+    if (!std::filesystem::exists(InPath)) {
+        return false;
+    }
+    const auto inside = RunGitCapture({"-C", InPath.string(), "rev-parse", "--is-inside-work-tree"});
+    if (inside.exitCode != 0 || Trim(inside.stdoutStr) != "true") {
+        return false;
+    }
+    const auto top = RunGitCapture({"-C", InPath.string(), "rev-parse", "--show-toplevel"});
+    if (top.exitCode != 0) {
+        return false;
+    }
+    return PathKey(Trim(top.stdoutStr)) == PathKey(InPath);
+}
+
+auto GetExpectedGitlinkHead(const std::filesystem::path& InRepoRoot, const std::string& InLocalPath) -> std::optional<std::string> {
+    const auto tree = RunGitCapture({"-C", InRepoRoot.string(), "ls-tree", "HEAD", "--", InLocalPath});
+    if (tree.exitCode != 0) {
+        return std::nullopt;
+    }
+
+    std::istringstream iss(tree.stdoutStr);
+    std::string mode;
+    std::string type;
+    std::string sha;
+    iss >> mode >> type >> sha;
+    if (mode != "160000" || type != "commit" || sha.size() != 40) {
+        return std::nullopt;
+    }
+    return sha;
+}
+
+auto ResolveModulePathForSubmodule(const std::filesystem::path& InRepoRoot, const std::string& InLocalPath) -> std::filesystem::path {
+    const auto out = RunGitCapture({"-C", InRepoRoot.string(), "rev-parse", "--git-path", "modules/" + InLocalPath});
+    if (out.exitCode != 0) {
+        return {};
+    }
+    const auto path = Trim(out.stdoutStr);
+    if (path.empty()) {
+        return {};
+    }
+    return std::filesystem::path(path).lexically_normal();
+}
+
+auto TryReadGitdirReference(const std::filesystem::path& InSubmodulePath) -> std::optional<std::filesystem::path> {
+    const auto gitPath = (InSubmodulePath / ".git").lexically_normal();
+    if (!std::filesystem::exists(gitPath) || std::filesystem::is_directory(gitPath)) {
+        return std::nullopt;
+    }
+
+    std::ifstream in(gitPath, std::ios::binary);
+    if (!in.good()) {
+        return std::nullopt;
+    }
+    std::string line;
+    std::getline(in, line);
+    line = Trim(line);
+    constexpr std::string_view prefix = "gitdir:";
+    if (!line.starts_with(prefix)) {
+        return std::nullopt;
+    }
+    auto raw = Trim(line.substr(prefix.size()));
+    if (raw.empty()) {
+        return std::nullopt;
+    }
+
+    auto resolved = std::filesystem::path(raw);
+    if (resolved.is_relative()) {
+        resolved = (InSubmodulePath / resolved).lexically_normal();
+    }
+    return resolved;
+}
+
+auto HasInvalidSubmoduleGitdirReference(const std::filesystem::path& InSubmodulePath) -> bool {
+    const auto ref = TryReadGitdirReference(InSubmodulePath);
+    if (!ref.has_value()) {
+        return false;
+    }
+    return !std::filesystem::exists(*ref);
+}
+
+auto DirectoryHasUserContentBeyondDotGit(const std::filesystem::path& InPath) -> bool {
+    if (!std::filesystem::exists(InPath) || !std::filesystem::is_directory(InPath)) {
+        return false;
+    }
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(InPath, ec)) {
+        if (ec) {
+            return true;
+        }
+        if (entry.path().filename() != ".git") {
+            return true;
+        }
+    }
+    return false;
+}
+
+auto IsDirectoryEmpty(const std::filesystem::path& InPath) -> bool {
+    if (!std::filesystem::exists(InPath)) {
+        return true;
+    }
+    std::error_code ec;
+    return std::filesystem::is_directory(InPath) && std::filesystem::is_empty(InPath, ec) && !ec;
+}
+
+auto ModulePathBelongsToSubmodule(
+    const std::filesystem::path& InModulePath,
+    const std::filesystem::path& InSubmodulePath) -> bool {
+    if (!std::filesystem::exists(InModulePath)) {
+        return true;
+    }
+
+    const auto worktreeOut = RunGitCapture({"--git-dir", InModulePath.string(), "config", "--get", "core.worktree"});
+    if (worktreeOut.exitCode != 0) {
+        return false;
+    }
+    auto worktree = Trim(worktreeOut.stdoutStr);
+    if (worktree.empty()) {
+        return false;
+    }
+
+    auto resolved = std::filesystem::path(worktree);
+    if (resolved.is_relative()) {
+        resolved = (InModulePath / resolved).lexically_normal();
+    }
+    return PathKey(resolved) == PathKey(InSubmodulePath);
+}
+
+auto HasRetryableCloneFailureSignal(const std::string& InText) -> bool {
+    static const std::vector<std::string> needles = {
+        "initial ref transaction called with existing refs",
+        "submodule considered for cloning, doesn't need cloning any more",
+        "retry scheduled",
+        "failed to clone",
+        "clone of",
+        "already exists and is not empty",
+    };
+    for (const auto& needle : needles) {
+        if (ContainsCaseInsensitive(InText, needle)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+auto ParseLfsPointerMismatchCount(const std::string& InText) -> int {
+    const auto lines = SplitLines(InText);
+    int count = 0;
+    bool collecting = false;
+
+    for (const auto& rawLine : lines) {
+        const auto line = Trim(rawLine);
+        if (!collecting) {
+            if (ContainsCaseInsensitive(rawLine, "Encountered") &&
+                ContainsCaseInsensitive(rawLine, "should have been pointers, but weren't")) {
+                collecting = true;
+            }
+            continue;
+        }
+
+        if (line.empty()) {
+            if (count > 0) {
+                break;
+            }
+            continue;
+        }
+
+        if (rawLine.size() > 1 && std::isspace(static_cast<unsigned char>(rawLine.front()))) {
+            count += 1;
+            continue;
+        }
+
+        break;
+    }
+
+    if (collecting && count == 0) {
+        return 1;
+    }
+    return count;
+}
+
+auto EvaluateSubmoduleRepairSafety(
+    const SubmoduleUpdateTask& InTask,
+    const std::string& InOutput) -> SubmoduleRepairSafety {
+    SubmoduleRepairSafety out;
+    const auto repoRoot = InTask.repoRoot.lexically_normal();
+    const auto submodulePath = (repoRoot / std::filesystem::path(InTask.localPath)).lexically_normal();
+
+    const auto declared = CollectRegisteredSubmodulePaths(repoRoot);
+    const auto normalizedLocalPath = std::filesystem::path(InTask.localPath).lexically_normal().generic_string();
+    const auto isDeclared = std::find(declared.begin(), declared.end(), normalizedLocalPath) != declared.end();
+    if (!isDeclared) {
+        out.reason = "path is not declared in .gitmodules";
+        return out;
+    }
+
+    if (!GetExpectedGitlinkHead(repoRoot, InTask.localPath).has_value()) {
+        out.reason = "path is not a gitlink in parent HEAD";
+        return out;
+    }
+
+    out.modulePath = ResolveModulePathForSubmodule(repoRoot, InTask.localPath);
+    if (out.modulePath.empty()) {
+        out.reason = "unable to resolve .git/modules path for submodule";
+        return out;
+    }
+    if (!ModulePathBelongsToSubmodule(out.modulePath, submodulePath)) {
+        out.reason = ".git/modules state does not belong to this submodule";
+        return out;
+    }
+
+    if (IsInsideWorkTreeAtPath(submodulePath)) {
+        const auto status = RunGitCapture({"-C", submodulePath.string(), "status", "--porcelain"});
+        if (status.exitCode != 0) {
+            out.reason = "failed to evaluate submodule dirtiness";
+            return out;
+        }
+        if (!Trim(status.stdoutStr).empty()) {
+            out.reason = "submodule has local dirty user changes";
+            return out;
+        }
+        out.safe = true;
+        return out;
+    }
+
+    if (!std::filesystem::exists(submodulePath) || IsDirectoryEmpty(submodulePath)) {
+        out.safe = true;
+        return out;
+    }
+
+    const bool invalidGitdirRef = HasInvalidSubmoduleGitdirReference(submodulePath);
+    const bool retryableSignal = HasRetryableCloneFailureSignal(InOutput);
+    const bool hasOnlyDotGit = !DirectoryHasUserContentBeyondDotGit(submodulePath);
+
+    if ((invalidGitdirRef && hasOnlyDotGit) || (retryableSignal && hasOnlyDotGit)) {
+        out.safe = true;
+        return out;
+    }
+
+    out.reason = "submodule path is non-empty and cannot be proven as safe failed clone state";
+    return out;
+}
+
+auto RemovePathIfExists(const std::filesystem::path& InPath) -> bool {
+    if (!std::filesystem::exists(InPath)) {
+        return true;
+    }
+    std::error_code ec;
+    std::filesystem::remove_all(InPath, ec);
+    return !ec;
+}
+
+auto AttemptSafeSubmoduleRepair(
+    const SubmoduleUpdateTask& InTask,
+    const SubmoduleRepairSafety& InSafety,
+    bool InRemote) -> kano::git::shell::ExecResult {
+    const auto repoRoot = InTask.repoRoot.lexically_normal();
+    const auto submodulePath = (repoRoot / std::filesystem::path(InTask.localPath)).lexically_normal();
+
+    const auto deinit = RunGitCapture({"-C", repoRoot.string(), "submodule", "deinit", "-f", "--", InTask.localPath});
+    (void)deinit;
+
+    if (!RemovePathIfExists(submodulePath)) {
+        return kano::git::shell::ExecResult{.exitCode = 1, .stderrStr = "failed to remove submodule worktree path"};
+    }
+    if (!RemovePathIfExists(InSafety.modulePath)) {
+        return kano::git::shell::ExecResult{.exitCode = 1, .stderrStr = "failed to remove .git/modules entry"};
+    }
+
+    std::vector<std::string> retryArgs = {
+        "-C", repoRoot.string(), "submodule", "update", "--init"
+    };
+    if (InRemote) {
+        retryArgs.push_back("--remote");
+    }
+    retryArgs.push_back("--");
+    retryArgs.push_back(InTask.localPath);
+    return RunGitCapture(retryArgs);
+}
+
+auto BuildLfsPointerMismatchWarning(int InCount) -> SubmoduleWarning {
+    std::ostringstream oss;
+    if (InCount <= 1) {
+        oss << "1 file should have been an LFS pointer but was a full file";
+    } else {
+        oss << InCount << " files should have been LFS pointers but were full files";
+    }
+    return SubmoduleWarning{.code = "LFS_POINTER_MISMATCH", .message = oss.str()};
+}
+
+auto ValidateUpdatedSubmodule(
+    const SubmoduleUpdateTask& InTask,
+    const std::string& InCombinedOutput,
+    std::vector<SubmoduleWarning>* IoWarnings,
+    std::vector<SubmoduleIssue>* IoIssues) -> bool {
+    const auto repoRoot = InTask.repoRoot.lexically_normal();
+    const auto submodulePath = (repoRoot / std::filesystem::path(InTask.localPath)).lexically_normal();
+
+    if (!std::filesystem::exists(submodulePath)) {
+        IoIssues->push_back(SubmoduleIssue{.code = "SUBMODULE_NOT_INITIALIZED", .message = "submodule path does not exist after update"});
+        return false;
+    }
+
+    if (!IsInsideWorkTreeAtPath(submodulePath)) {
+        IoIssues->push_back(SubmoduleIssue{.code = "SUBMODULE_GITDIR_BROKEN", .message = "submodule is not a valid git worktree"});
+        return false;
+    }
+
+    const auto expectedHead = GetExpectedGitlinkHead(repoRoot, InTask.localPath);
+    if (!expectedHead.has_value()) {
+        IoIssues->push_back(SubmoduleIssue{.code = "SUBMODULE_NOT_INITIALIZED", .message = "parent gitlink commit is missing for submodule path"});
+        return false;
+    }
+
+    const auto childHead = RunGitCapture({"-C", submodulePath.string(), "rev-parse", "HEAD"});
+    if (childHead.exitCode != 0) {
+        IoIssues->push_back(SubmoduleIssue{.code = "SUBMODULE_GITDIR_BROKEN", .message = "failed to resolve submodule HEAD"});
+        return false;
+    }
+    if (Trim(childHead.stdoutStr) != *expectedHead) {
+        IoIssues->push_back(SubmoduleIssue{.code = "SUBMODULE_HEAD_MISMATCH", .message = "submodule HEAD does not match parent gitlink commit"});
+        return false;
+    }
+
+    if (!DidSubmoduleUpdateSucceed(repoRoot, InTask.localPath)) {
+        IoIssues->push_back(SubmoduleIssue{.code = "SUBMODULE_NOT_INITIALIZED", .message = "submodule status indicates unresolved initialization"});
+        return false;
+    }
+
+    int mismatchCount = ParseLfsPointerMismatchCount(InCombinedOutput);
+
+    const auto lfsVersion = RunGitCapture({"-C", submodulePath.string(), "lfs", "version"});
+    if (lfsVersion.exitCode == 0) {
+        const auto lfsTracked = RunGitCapture({"-C", submodulePath.string(), "lfs", "ls-files", "-n"});
+        if (lfsTracked.exitCode == 0 && !Trim(lfsTracked.stdoutStr).empty()) {
+            const auto fsck = RunGitCapture({"-C", submodulePath.string(), "lfs", "fsck"});
+            mismatchCount = std::max(mismatchCount, ParseLfsPointerMismatchCount(fsck.stdoutStr + "\n" + fsck.stderrStr));
+        }
+    }
+
+    if (mismatchCount > 0) {
+        IoWarnings->push_back(BuildLfsPointerMismatchWarning(mismatchCount));
+    }
+
+    return true;
+}
+
+auto ExecuteSubmoduleUpdateTask(
+    const SubmoduleUpdateTask& InTask,
+    bool InRemote) -> SubmoduleUpdateOutcome {
+    SubmoduleUpdateOutcome outcome;
+    outcome.task = InTask;
+
+    std::vector<std::string> args = {
+        "-C", InTask.repoRoot.string(), "submodule", "update", "--init"
+    };
+    if (InRemote) {
+        args.push_back("--remote");
+    }
+    args.push_back("--");
+    args.push_back(InTask.localPath);
+
+    auto firstRun = RunGitCapture(args);
+    std::string combinedOutput = firstRun.stdoutStr + "\n" + firstRun.stderrStr;
+
+    if (const char* testStderr = std::getenv("KOG_TEST_SUBMODULE_UPDATE_STDERR"); testStderr != nullptr) {
+        combinedOutput += "\n" + std::string(testStderr);
+    }
+
+    bool shouldAttemptRepair = firstRun.exitCode != 0 ||
+                               HasRetryableCloneFailureSignal(combinedOutput) ||
+                               HasInvalidSubmoduleGitdirReference((InTask.repoRoot / std::filesystem::path(InTask.localPath)).lexically_normal());
+
+    if (shouldAttemptRepair) {
+        const auto safety = EvaluateSubmoduleRepairSafety(InTask, combinedOutput);
+        if (!safety.safe) {
+            outcome.kind = SubmoduleUpdateOutcomeKind::Blocked;
+            outcome.issues.push_back(SubmoduleIssue{.code = "BLOCKED_SUBMODULE_REPAIR_UNSAFE", .message = safety.reason});
+            return outcome;
+        }
+
+        outcome.attemptedRepair = true;
+        const auto repair = AttemptSafeSubmoduleRepair(InTask, safety, InRemote);
+        combinedOutput += "\n" + repair.stdoutStr + "\n" + repair.stderrStr;
+        if (repair.exitCode != 0) {
+            outcome.kind = SubmoduleUpdateOutcomeKind::Failed;
+            outcome.issues.push_back(SubmoduleIssue{.code = "SUBMODULE_REPAIR_FAILED", .message = "safe cleanup/retry failed"});
+            return outcome;
+        }
+    }
+
+    if (!ValidateUpdatedSubmodule(InTask, combinedOutput, &outcome.warnings, &outcome.issues)) {
+        outcome.kind = SubmoduleUpdateOutcomeKind::Failed;
+        return outcome;
+    }
+
+    if (outcome.attemptedRepair) {
+        outcome.kind = SubmoduleUpdateOutcomeKind::RepairedAndUpdated;
+    } else if (!outcome.warnings.empty()) {
+        outcome.kind = SubmoduleUpdateOutcomeKind::UpdatedWithWarnings;
+    } else {
+        outcome.kind = SubmoduleUpdateOutcomeKind::UpdatedCleanly;
+    }
+
+    return outcome;
 }
 
 auto DidSubmoduleUpdateSucceed(const std::filesystem::path& InRepoRoot, const std::string& InLocalPath) -> bool {
@@ -778,7 +1255,7 @@ auto RunSubmoduleUpdateContinueOnError(
         }
     }
 
-    std::vector<std::string> failed;
+    std::vector<SubmoduleUpdateOutcome> outcomes;
     const int jobs = DetectDefaultSubmoduleUpdateJobs();
     std::mutex outputMutex;
 
@@ -800,8 +1277,7 @@ auto RunSubmoduleUpdateContinueOnError(
 
         std::vector<SubmoduleUpdateTask> nextWave;
         struct TaskRunResult {
-            SubmoduleUpdateTask task;
-            kano::git::shell::ExecResult execResult;
+            SubmoduleUpdateOutcome outcome;
         };
 
         std::map<std::string, std::vector<SubmoduleUpdateTask>> grouped;
@@ -813,17 +1289,8 @@ auto RunSubmoduleUpdateContinueOnError(
             std::vector<TaskRunResult> results;
             results.reserve(tasks.size());
             for (const auto& task : tasks) {
-                std::vector<std::string> args = {
-                    "-C", task.repoRoot.string(), "submodule", "update", "--init"
-                };
-                if (InRemote) {
-                    args.push_back("--remote");
-                }
-                args.push_back("--");
-                args.push_back(task.localPath);
                 results.push_back(TaskRunResult{
-                    .task = task,
-                    .execResult = kano::git::shell::ExecuteCommand("git", args, kano::git::shell::ExecMode::Capture),
+                    .outcome = ExecuteSubmoduleUpdateTask(task, InRemote),
                 });
             }
             return results;
@@ -833,33 +1300,38 @@ auto RunSubmoduleUpdateContinueOnError(
         active.reserve(static_cast<std::size_t>(std::max(1, jobs)));
 
         auto handleResult = [&](TaskRunResult&& result) {
-            {
-                std::lock_guard<std::mutex> lock(outputMutex);
-                PrintCapturedOutputIfAny(result.execResult);
+            std::lock_guard<std::mutex> lock(outputMutex);
+            const auto& task = result.outcome.task;
+            switch (result.outcome.kind) {
+            case SubmoduleUpdateOutcomeKind::UpdatedCleanly:
+                std::cout << "[" << task.displayPath << "] updated\n";
+                break;
+            case SubmoduleUpdateOutcomeKind::UpdatedWithWarnings:
+                std::cout << "[" << task.displayPath << "] updated (warnings)\n";
+                break;
+            case SubmoduleUpdateOutcomeKind::RepairedAndUpdated:
+                std::cout << "[" << task.displayPath << "] repaired and updated\n";
+                break;
+            case SubmoduleUpdateOutcomeKind::Blocked:
+                std::cerr << "[" << task.displayPath << "] BLOCKED\n";
+                break;
+            case SubmoduleUpdateOutcomeKind::Failed:
+            default:
+                std::cerr << "[" << task.displayPath << "] FAILED\n";
+                break;
             }
-
-            if (!DidSubmoduleUpdateSucceed(result.task.repoRoot, result.task.localPath)) {
-                std::lock_guard<std::mutex> lock(outputMutex);
-                std::cerr << "[" << result.task.displayPath << "] FAILED";
-                if (result.execResult.exitCode != 0) {
-                    std::cerr << " (exit " << result.execResult.exitCode << ")";
-                }
-                std::cerr << ", continuing...\n";
-                failed.push_back(result.task.displayPath);
-                return;
-            }
-
-            {
-                std::lock_guard<std::mutex> lock(outputMutex);
-                std::cout << "[" << result.task.displayPath << "] updated\n";
-            }
+            outcomes.push_back(std::move(result.outcome));
 
             if (!InRecursive) {
                 return;
             }
 
-            for (auto& nestedTask : CollectNestedSubmoduleTasks(rootPath, result.task.displayPath)) {
-                nextWave.push_back(std::move(nestedTask));
+            if (result.outcome.kind == SubmoduleUpdateOutcomeKind::UpdatedCleanly ||
+                result.outcome.kind == SubmoduleUpdateOutcomeKind::UpdatedWithWarnings ||
+                result.outcome.kind == SubmoduleUpdateOutcomeKind::RepairedAndUpdated) {
+                for (auto& nestedTask : CollectNestedSubmoduleTasks(rootPath, task.displayPath)) {
+                    nextWave.push_back(std::move(nestedTask));
+                }
             }
         };
 
@@ -903,15 +1375,77 @@ auto RunSubmoduleUpdateContinueOnError(
         currentWave = std::move(nextWave);
     }
 
-    if (!failed.empty()) {
-        std::cerr << "\nThe following submodules failed to update:\n";
-        for (const auto& f : failed) {
-            std::cerr << "  " << f << "\n";
+    int cleanCount = 0;
+    int warningCount = 0;
+    int repairedCount = 0;
+    int failedCount = 0;
+    int blockedCount = 0;
+    std::vector<std::pair<std::string, SubmoduleWarning>> warningDetails;
+    std::vector<std::pair<std::string, SubmoduleIssue>> issueDetails;
+
+    for (const auto& outcome : outcomes) {
+        switch (outcome.kind) {
+        case SubmoduleUpdateOutcomeKind::UpdatedCleanly:
+            cleanCount += 1;
+            break;
+        case SubmoduleUpdateOutcomeKind::UpdatedWithWarnings:
+            warningCount += 1;
+            break;
+        case SubmoduleUpdateOutcomeKind::RepairedAndUpdated:
+            repairedCount += 1;
+            break;
+        case SubmoduleUpdateOutcomeKind::Failed:
+            failedCount += 1;
+            break;
+        case SubmoduleUpdateOutcomeKind::Blocked:
+            blockedCount += 1;
+            break;
         }
+
+        for (const auto& warning : outcome.warnings) {
+            warningDetails.emplace_back(outcome.task.displayPath, warning);
+        }
+        for (const auto& issue : outcome.issues) {
+            issueDetails.emplace_back(outcome.task.displayPath, issue);
+        }
+    }
+
+    std::cout << "\n=== Submodule Update Complete ===\n";
+    std::cout << "Updated cleanly: " << cleanCount << "\n";
+    std::cout << "Updated with warnings: " << warningCount << "\n";
+    std::cout << "Repaired and updated: " << repairedCount << "\n";
+    std::cout << "Failed: " << failedCount << "\n";
+    std::cout << "Blocked: " << blockedCount << "\n";
+
+    if (!warningDetails.empty()) {
+        std::cout << "\n=== WARNINGS ===\n";
+        for (const auto& [path, warning] : warningDetails) {
+            std::cout << "[" << path << "] " << warning.code << ": " << warning.message << "\n";
+        }
+    }
+
+    if (!issueDetails.empty()) {
+        std::cerr << "\n=== ISSUES ===\n";
+        for (const auto& [path, issue] : issueDetails) {
+            std::cerr << "[" << path << "] " << issue.code << ": " << issue.message << "\n";
+        }
+    }
+
+    if (failedCount > 0 || blockedCount > 0) {
         return 1;
     }
 
-    std::cout << "All submodules updated successfully.\n";
+    if (outcomes.empty()) {
+        std::cout << "No submodules required updates.\n";
+    }
+
+    if (warningCount > 0 || repairedCount > 0) {
+        return 0;
+    }
+
+    if (cleanCount == 0 && !InPath.empty()) {
+        std::cerr << "No matching submodule tasks were executed for path: " << InPath << "\n";
+        }
     return 0;
 }
 
