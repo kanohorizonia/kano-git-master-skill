@@ -46,6 +46,14 @@ auto RequireSuccess(const CommandResult& InResult, const std::string& InContext)
     REQUIRE(InResult.exitCode == 0);
 }
 
+auto RequireFailure(const CommandResult& InResult, const std::string& InContext) -> void {
+    INFO(InContext);
+    INFO("exit=" << InResult.exitCode);
+    INFO("stdout=" << InResult.stdoutText);
+    INFO("stderr=" << InResult.stderrText);
+    REQUIRE(InResult.exitCode != 0);
+}
+
 auto WriteTextFile(const std::filesystem::path& InPath, const std::string& InText) -> void {
     std::filesystem::create_directories(InPath.parent_path());
     std::ofstream out(InPath, std::ios::binary | std::ios::trunc);
@@ -190,6 +198,31 @@ TEST_CASE("slog diverged shows remote and local preview", "[functional][slog][re
     REQUIRE(result.exitCode == 0);
     REQUIRE(CountLinesWithToken(plain, "REMOTE [") >= 1);
     REQUIRE(CountLinesWithToken(plain, "LOCAL [") >= 1);
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("log marks conflicted repo headers", "[functional][log][conflict]") {
+    const auto ctx = CreateRemoteWithClone("log-conflict-header");
+
+    WriteTextFile(ctx.cloneRepo / "README.md", "local conflict\n");
+    RequireSuccess(RunGit({"add", "README.md"}, ctx.cloneRepo), "clone add local conflict");
+    RequireSuccess(RunGit({"commit", "-m", "local conflict"}, ctx.cloneRepo), "clone commit local conflict");
+
+    WriteTextFile(ctx.seedRepo / "README.md", "remote conflict\n");
+    RequireSuccess(RunGit({"add", "README.md"}, ctx.seedRepo), "seed add remote conflict");
+    RequireSuccess(RunGit({"commit", "-m", "remote conflict"}, ctx.seedRepo), "seed commit remote conflict");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.seedRepo), "seed push remote conflict");
+    RequireSuccess(RunGit({"fetch", "origin", ctx.branch}, ctx.cloneRepo), "clone fetch remote conflict");
+
+    const auto mergeResult = RunGit({"merge", "origin/" + ctx.branch}, ctx.cloneRepo);
+    RequireFailure(mergeResult, "merge should leave conflicted worktree");
+
+    const auto result = RunKog({"log", "--no-recursive", "--remote-count", "1"}, ctx.cloneRepo);
+    const auto plain = StripAnsi(result.stdoutText + "\n" + result.stderrText);
+    INFO(plain);
+    REQUIRE(result.exitCode == 0);
+    REQUIRE(plain.find("conflict") != std::string::npos);
+    REQUIRE(plain.find("conflicted=1") != std::string::npos);
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 

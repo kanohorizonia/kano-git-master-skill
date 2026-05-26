@@ -1,4 +1,5 @@
 #include "functional_test_support.hpp"
+#include "../../../systems/kano_git_command/repo_sync/public/sync_output_sanitizer.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -39,6 +40,12 @@ auto RequireContains(const std::string& InText, const std::string& InNeedle) -> 
     INFO("missing needle=" << InNeedle);
     INFO(InText);
     REQUIRE(InText.find(InNeedle) != std::string::npos);
+}
+
+auto RequireNotContains(const std::string& InText, const std::string& InNeedle) -> void {
+    INFO("unexpected needle=" << InNeedle);
+    INFO(InText);
+    REQUIRE(InText.find(InNeedle) == std::string::npos);
 }
 
 auto WriteTextFile(const std::filesystem::path& InPath, const std::string& InText) -> void {
@@ -261,6 +268,7 @@ TEST_CASE("recursive_sync_parallel_output_blocks_are_not_corrupted", "[functiona
     RequireSuccess(result, "sync output stability jobs=4");
     REQUIRE(output.find("(origin, main)\n(origin, main)") == std::string::npos);
     REQUIRE(output.find("\nn)\n") == std::string::npos);
+    REQUIRE(output.find("\n/backlog] ") == std::string::npos);
     REQUIRE(CountOccurrences(output, "Repo: .") == 1);
     REQUIRE(CountOccurrences(output, "Repo: deps/a") == 1);
     REQUIRE(CountOccurrences(output, "Repo: deps/b") == 1);
@@ -290,6 +298,7 @@ TEST_CASE("recursive_sync_with_command_logging_env_keeps_repo_output_associated"
     RequireSuccess(result, "sync with command logging env");
     REQUIRE(output.find("[run] git") != std::string::npos);
     REQUIRE(output.find("(origin, main)\n(origin, main)") == std::string::npos);
+    REQUIRE(output.find("\n/backlog] ") == std::string::npos);
     REQUIRE(CountOccurrences(output, "Repo: deps/a") == 1);
     REQUIRE(CountOccurrences(output, "Repo: deps/b") == 1);
 
@@ -375,6 +384,54 @@ TEST_CASE("recursive_sync_conflict_is_best_effort_and_blocks_ancestor_only", "[f
     RemoveSandboxWorkspace(sandbox);
 }
 
+TEST_CASE("recursive_sync_rebases_non_conflicting_diverged_repo", "[functional][sync][recursive][diverged][rebase]") {
+    const auto sandbox = CreateSandboxWorkspace("recursive-sync-diverged-rebase");
+    auto rootRemote = CreateRemote(sandbox, "root");
+    const auto root = rootRemote.clone;
+
+    const auto localHead = CommitFile(root, "local.txt", "local commit\n", "local diverged commit");
+    const auto remoteHead = CommitFile(rootRemote.seed, "remote.txt", "remote commit\n", "remote diverged commit");
+    RequireSuccess(RunGit({"push", "origin", rootRemote.branch}, rootRemote.seed), "push diverged remote update");
+
+    const auto result = RunSyncRecursive(root, {"--jobs", "1"});
+    const auto output = StripAnsi(result.stdoutText + "\n" + result.stderrText);
+    RequireSuccess(result, "recursive sync rebase diverged repo");
+    RequireContains(output, "continuing with fetch/rebase sync flow");
+    RequireContains(output, "[.] SYNCED (origin, main)");
+    REQUIRE(CurrentHeadSha(root) != localHead);
+    REQUIRE(RefSha(root, "origin/main") == remoteHead);
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
+TEST_CASE("recursive_sync_detached_head_with_local_commits_is_recovered_and_replayed", "[functional][sync][recursive][detached][replay]") {
+    const auto sandbox = CreateSandboxWorkspace("recursive-sync-detached-replay");
+    auto rootRemote = CreateRemote(sandbox, "root");
+    const auto root = rootRemote.clone;
+
+    const auto detachTarget = CurrentHeadSha(root);
+    RequireSuccess(RunGit({"checkout", "--detach", detachTarget}, root), "detach HEAD for replay scenario");
+    const auto detachedHead = CommitFile(root, "detached.txt", "detached commit\n", "detached local commit");
+
+    const auto result = RunSyncRecursive(root, {"--jobs", "1"});
+    const auto output = StripAnsi(result.stdoutText + "\n" + result.stderrText);
+    RequireSuccess(result, "recursive sync should recover detached local commits");
+    RequireContains(output, "DETACHED_HEAD_UNSAFE_LOCAL_COMMITS");
+    const bool replayed = output.find("DETACHED_HEAD_REPLAY: replayed") != std::string::npos;
+    const bool replayNotNeeded = output.find("DETACHED_HEAD_REPLAY: no detached commits needed replay") != std::string::npos;
+    REQUIRE((replayed || replayNotNeeded));
+    RequireNotContains(output, "BLOCKED_PRECHECK: DETACHED_HEAD_UNSAFE_LOCAL_COMMITS");
+    RequireContains(output, "[.] SYNCED (origin, main)");
+
+    const auto branchOut = RunGit({"rev-parse", "--abbrev-ref", "HEAD"}, root);
+    RequireSuccess(branchOut, "resolve current branch after sync detached recovery");
+    REQUIRE(TrimCopy(branchOut.stdoutText) == "main");
+    REQUIRE(CurrentHeadSha(root) != detachTarget);
+    RequireSuccess(RunGit({"merge-base", "--is-ancestor", detachedHead, "HEAD"}, root), "detached commit should be reachable from current branch");
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
 TEST_CASE("recursive_sync_ignores_non_selected_remote_fetch_failures", "[functional][sync][remote-selection]") {
     const auto sandbox = CreateSandboxWorkspace("recursive-sync-remote-selection-origin");
     auto rootRemote = CreateRemote(sandbox, "root");
@@ -383,10 +440,94 @@ TEST_CASE("recursive_sync_ignores_non_selected_remote_fetch_failures", "[functio
     RequireSuccess(RunGit({"remote", "add", "gitlab_local", "file:///missing/path/for/fetch"}, root), "add broken non-selected remote");
 
     const auto result = RunSyncRecursive(root, {"--jobs", "1"});
-    const auto output = StripAnsi(result.stdoutText + "\n" + result.stderrText);
+    const auto output = NormalizeLineEndings(StripAnsi(result.stdoutText + "\n" + result.stderrText));
     RequireSuccess(result, "sync should use origin only");
+    RequireContains(output, "Repo: .");
+    RequireContains(output, "Taxonomy: root");
     RequireContains(output, "Selected remote: origin");
+    RequireContains(output, "Repo: .\nTaxonomy:");
     REQUIRE(output.find("remote=gitlab_local fetch failed") == std::string::npos);
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
+TEST_CASE("sync_output_sanitizer_preserves_newlines", "[functional][sync][output][sanitize]") {
+    using kano::git::commands::NormalizeSyncCapturedText;
+    using kano::git::commands::SyncOutputSanitizeMode;
+
+    REQUIRE(
+        NormalizeSyncCapturedText("Repo: Fonts\r\nTaxonomy: registered\r\n", SyncOutputSanitizeMode::Human)
+        == "Repo: Fonts\nTaxonomy: registered\n");
+
+    REQUIRE(
+        NormalizeSyncCapturedText("Repo: Fonts\rTaxonomy: registered\r", SyncOutputSanitizeMode::Human)
+        == "Repo: Fonts\nTaxonomy: registered\n");
+
+    const auto human = NormalizeSyncCapturedText(std::string("Repo:\x1b[2m Fonts\x1b[0m\n"), SyncOutputSanitizeMode::Human);
+    REQUIRE(human == "Repo: Fonts\n");
+    REQUIRE(human.find("\x1b") == std::string::npos);
+}
+
+TEST_CASE("recursive_sync_repo_context_uses_real_newlines_without_visible_control_glyphs", "[functional][sync][output][glyph-regression]") {
+    const auto sandbox = CreateSandboxWorkspace("recursive-sync-visible-control-glyph-regression");
+    auto rootRemote = CreateRemote(sandbox, "root");
+    auto fontsRemote = CreateRemote(sandbox, "fonts");
+    const auto root = rootRemote.clone;
+    AddSubmodule(root, fontsRemote, "Fonts", "\tkog-sync = true\n\tkog-commit = true\n\tkog-push = true\n");
+    RequireSuccess(RunGit({"push", "origin", rootRemote.branch}, root), "push Fonts registration");
+
+    const auto result = RunSyncRecursive(root, {"--jobs", "2"});
+    const auto mergedRaw = result.stdoutText + "\n" + result.stderrText;
+    const auto output = NormalizeLineEndings(StripAnsi(mergedRaw));
+    RequireSuccess(result, "sync output should be human-readable");
+
+    const auto repoLine = PositionOf(output, "Repo: Fonts\n");
+    const auto taxonomyLine = output.find("Taxonomy: registered\n", repoLine);
+    const auto branchSourceLine = output.find("Branch source: ", taxonomyLine);
+    const auto selectedRemoteLine = output.find("Selected remote: origin\n", branchSourceLine);
+    const auto sourceLine = output.find("Remote selection source: explicit policy\n", selectedRemoteLine);
+    REQUIRE(taxonomyLine != std::string::npos);
+    REQUIRE(branchSourceLine != std::string::npos);
+    REQUIRE(selectedRemoteLine != std::string::npos);
+    REQUIRE(sourceLine != std::string::npos);
+
+    RequireNotContains(mergedRaw, "♪");
+    RequireNotContains(mergedRaw, "◙");
+    RequireNotContains(mergedRaw, "←[");
+    RequireNotContains(output, "FontsTaxonomy");
+    RequireNotContains(output, "Repo: Fonts♪");
+    RequireNotContains(output, "♪◙Taxonomy");
+    RequireNotContains(output, "Remote selection sourc◙");
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
+TEST_CASE("recursive_sync_repo_context_remains_clean_with_debug_logging_env", "[functional][sync][output][glyph-regression][env]") {
+    const auto sandbox = CreateSandboxWorkspace("recursive-sync-visible-control-glyph-env");
+    auto rootRemote = CreateRemote(sandbox, "root");
+    auto fontsRemote = CreateRemote(sandbox, "fonts");
+    const auto root = rootRemote.clone;
+    AddSubmodule(root, fontsRemote, "Fonts", "\tkog-sync = true\n\tkog-commit = true\n\tkog-push = true\n");
+    RequireSuccess(RunGit({"push", "origin", rootRemote.branch}, root), "push Fonts registration env");
+
+    const auto result = RunKogWithEnv(
+        {"sync", "origin-latest", "--jobs", "2"},
+        root,
+        {
+            {"KOG_FORCE_COLOR", "1"},
+            {"KOG_LOG_COMMANDS", "1"},
+            {"KOG_DEBUG", "1"},
+            {"KANO_AGENT_MODE", "1"},
+        });
+    const auto mergedRaw = result.stdoutText + "\n" + result.stderrText;
+    const auto output = NormalizeLineEndings(StripAnsi(mergedRaw));
+    RequireSuccess(result, "sync output remains clean with debug/log env");
+    const auto repoLine = PositionOf(output, "Repo: Fonts\n");
+    const auto taxonomyLine = output.find("Taxonomy: registered\n", repoLine);
+    REQUIRE(taxonomyLine != std::string::npos);
+    RequireNotContains(mergedRaw, "♪");
+    RequireNotContains(mergedRaw, "◙");
+    RequireNotContains(mergedRaw, "←[");
 
     RemoveSandboxWorkspace(sandbox);
 }

@@ -395,10 +395,29 @@ auto ScanRepoHealth(const std::filesystem::path& InRepo,
                 continue;
             }
 
+            // Only validate reachability for direct submodules declared in this repo's .gitmodules.
+            // Recursive `git submodule status --recursive` also returns nested paths (e.g. a/b/c),
+            // which belong to descendant repos and must be validated when scanning those repos.
+            if (!pathToName.contains(entry.path)) {
+                continue;
+            }
+
             const auto childRepo = (InRepo / std::filesystem::path(entry.path)).lexically_normal();
             if (!std::filesystem::exists(childRepo)) {
                 AddBlocker(&out, RepoBlockerKind::GitlinkUnreachable,
                            "submodule path missing locally for gitlink reachability: " + entry.path);
+                continue;
+            }
+
+            const auto childTopOut = GitCapture(childRepo, {"rev-parse", "--show-toplevel"});
+            if (childTopOut.exitCode != 0) {
+                // Submodule path exists but is not initialized as a standalone repo yet.
+                // Skip reachability checks here; they will be validated once initialized.
+                continue;
+            }
+            if (RepoPathKey(Trim(childTopOut.stdoutStr)) != RepoPathKey(childRepo)) {
+                // Git command resolved to an ancestor repository (common when nested submodule
+                // worktree is not initialized). Treat as not initialized and skip.
                 continue;
             }
 

@@ -80,6 +80,32 @@ auto RepoNameFromPath(const std::filesystem::path& InPath) -> std::string {
     return normalized.generic_string();
 }
 
+auto FitCell(const std::string& InValue, std::size_t InWidth) -> std::string {
+    if (InWidth == 0) {
+        return {};
+    }
+    if (InValue.size() >= InWidth) {
+        if (InWidth <= 3) {
+            return InValue.substr(0, InWidth);
+        }
+        return InValue.substr(0, InWidth - 3) + "...";
+    }
+    return InValue + std::string(InWidth - InValue.size(), ' ');
+}
+
+auto TruncateCell(const std::string& InValue, std::size_t InWidth) -> std::string {
+    if (InWidth == 0) {
+        return {};
+    }
+    if (InValue.size() <= InWidth) {
+        return InValue;
+    }
+    if (InWidth <= 3) {
+        return InValue.substr(0, InWidth);
+    }
+    return InValue.substr(0, InWidth - 3) + "...";
+}
+
 auto FormatNativeStatusJson(const std::vector<workspace::RepoRecord>& InRepos) -> std::string;
 auto FormatNativeStatusTable(const std::vector<workspace::RepoRecord>& InRepos, const std::filesystem::path& InRoot) -> std::string;
 
@@ -235,6 +261,12 @@ auto FormatNativeStatusJson(const std::vector<workspace::RepoRecord>& InRepos) -
 
 auto FormatNativeStatusTable(const std::vector<workspace::RepoRecord>& InRepos, const std::filesystem::path& InRoot) -> std::string {
     std::ostringstream oss;
+    constexpr std::size_t kIndexWidth = 4;
+    constexpr std::size_t kRepoWidth = 26;
+    constexpr std::size_t kBranchWidth = 20;
+    constexpr std::size_t kTypeWidth = 14;
+    constexpr std::size_t kDirtyWidth = 8;
+    constexpr const char* kColSep = "  ";
     std::map<std::string, std::vector<std::size_t>> groupedRepoIndexes;
     for (std::size_t i = 0; i < InRepos.size(); ++i) {
         const auto relativePath = RelativeDisplayPath(InRoot, InRepos[i].path);
@@ -242,7 +274,13 @@ auto FormatNativeStatusTable(const std::vector<workspace::RepoRecord>& InRepos, 
     }
 
     if (!InRepos.empty()) {
-        oss << kano::terminal::Wrap(std::format("{:<6}{:<26}{:<20}{:<14}{:<8}", "#", "REPO", "BRANCH", "TYPE", "DIRTY"), kano::terminal::Color::Dim)
+        oss << kano::terminal::Wrap(
+            FitCell("#", kIndexWidth) + kColSep +
+            FitCell("REPO", kRepoWidth) + kColSep +
+            FitCell("BRANCH", kBranchWidth) + kColSep +
+            FitCell("TYPE", kTypeWidth) + kColSep +
+            FitCell("DIRTY", kDirtyWidth),
+            kano::terminal::Color::Dim)
             << "\n";
     }
 
@@ -254,24 +292,43 @@ auto FormatNativeStatusTable(const std::vector<workspace::RepoRecord>& InRepos, 
             globalIndex += 1;
 
             auto repoName = RepoNameFromPath(repo.path);
-            const auto repoNameRaw = repoName;
-            if (repoName.size() > 24) {
-                repoName = repoName.substr(0, 21) + "...";
-            }
 
-            auto branch = repo.currentBranch.empty() ? "(detached)" : repo.currentBranch;
-            const auto branchRaw = branch;
-            if (branch.size() > 18) {
-                branch = branch.substr(0, 15) + "...";
-            }
+            auto branch = repo.currentBranch.empty() ? "-" : repo.currentBranch;
 
-            oss << std::left
-                << std::setw(6) << kano::terminal::Wrap(std::to_string(globalIndex), kano::terminal::Color::Dim)
-                << std::setw(26) << kano::terminal::Wrap(repoName, kano::terminal::Color::BoldCyan)
-                << std::setw(20) << kano::terminal::Wrap(branch, kano::terminal::Color::BoldGreen)
-                << std::setw(14) << repo.type
-                << std::setw(8) << (repo.hasChanges ? kano::terminal::Wrap("yes", kano::terminal::Color::BoldRed) : kano::terminal::Wrap("no", kano::terminal::Color::BoldGreen))
-                << "\n";
+            const std::string indexRaw = std::to_string(globalIndex);
+            const std::string repoRaw = TruncateCell(repoName, kRepoWidth);
+            const std::string branchRaw = TruncateCell(branch, kBranchWidth);
+            const std::string typeRaw = TruncateCell(repo.type, kTypeWidth);
+            const std::string dirtyRaw = TruncateCell(repo.hasChanges ? "yes" : "no", kDirtyWidth);
+
+            const auto savedFlags = oss.flags();
+            oss << std::left;
+            oss << kano::terminal::Wrap(indexRaw, kano::terminal::Color::Dim);
+            if (indexRaw.size() < kIndexWidth) {
+                oss << std::string(kIndexWidth - indexRaw.size(), ' ');
+            }
+            oss << kColSep;
+            oss << kano::terminal::Wrap(repoRaw, kano::terminal::Color::BoldCyan);
+            if (repoRaw.size() < kRepoWidth) {
+                oss << std::string(kRepoWidth - repoRaw.size(), ' ');
+            }
+            oss << kColSep;
+            oss << kano::terminal::Wrap(branchRaw, kano::terminal::Color::BoldGreen);
+            if (branchRaw.size() < kBranchWidth) {
+                oss << std::string(kBranchWidth - branchRaw.size(), ' ');
+            }
+            oss << kColSep;
+            oss << typeRaw;
+            if (typeRaw.size() < kTypeWidth) {
+                oss << std::string(kTypeWidth - typeRaw.size(), ' ');
+            }
+            oss << kColSep;
+            oss << kano::terminal::Wrap(dirtyRaw, repo.hasChanges ? kano::terminal::Color::BoldRed : kano::terminal::Color::BoldGreen);
+            if (dirtyRaw.size() < kDirtyWidth) {
+                oss << std::string(kDirtyWidth - dirtyRaw.size(), ' ');
+            }
+            oss << "\n";
+            oss.flags(savedFlags);
         }
         oss << "\n";
     }

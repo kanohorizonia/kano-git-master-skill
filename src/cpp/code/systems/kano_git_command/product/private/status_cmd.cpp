@@ -1472,16 +1472,24 @@ auto FormatRecursiveStatusSummary(const RecursiveStatusSnapshot& InSnapshot) -> 
     std::ostringstream out;
     std::size_t dirty = 0;
     std::size_t blocked = 0;
+    std::size_t conflicted = 0;
     for (const auto& repo : InSnapshot.repos) {
         dirty += repo.dirtyKind == "CLEAN" ? 0 : 1;
         blocked += repo.blocksConverge ? 1 : 0;
+        conflicted += repo.conflicted ? 1 : 0;
     }
     out << "Recursive status summary\n";
     out << "workspaceRoot=" << InSnapshot.workspaceRoot.generic_string() << "\n";
-    out << "repos=" << InSnapshot.repos.size() << " dirty=" << dirty << " blocksConverge=" << blocked << "\n";
+    out << "repos=" << InSnapshot.repos.size() << " dirty=" << dirty << " conflicted=" << conflicted << " blocksConverge=" << blocked << "\n";
     for (const auto& repo : InSnapshot.repos) {
+        if (repo.conflicted) {
+            out << "[CONFLICT] ";
+        }
         out << repo.id << " type=" << repo.repo.type << " dirtyKind=" << repo.dirtyKind
             << " policy=" << repo.managementPolicy;
+        if (repo.conflicted) {
+            out << " conflicted=true";
+        }
         if (repo.blocksConverge) {
             out << " blocksConverge=true reason=\"" << repo.blockReason << "\"";
         }

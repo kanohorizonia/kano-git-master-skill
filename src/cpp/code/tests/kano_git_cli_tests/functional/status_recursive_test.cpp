@@ -33,6 +33,12 @@ auto ConfigureIdentity(const std::filesystem::path& InRepo) -> void {
     RequireSuccess(RunGit({"config", "user.email", "kano-test@example.invalid"}, InRepo), "config user.email");
 }
 
+auto CurrentBranchName(const std::filesystem::path& InRepo) -> std::string {
+    const auto result = RunGit({"branch", "--show-current"}, InRepo);
+    RequireSuccess(result, "read current branch");
+    return result.stdoutText.substr(0, result.stdoutText.find_first_of("\r\n"));
+}
+
 auto InitRepo(const std::filesystem::path& InRepo) -> void {
     std::filesystem::create_directories(InRepo);
     RequireSuccess(RunGit({"init", InRepo.string()}, InRepo.parent_path()), "init repo");
@@ -259,6 +265,36 @@ TEST_CASE("status recursive summary reports trusted unregistered repos without f
     RequireContains(json, "\"id\":\"trusted-loose\"");
     RequireNotContains(json, "\"id\":\"new-loose-after-manifest\"");
     RequireContains(json, "\"managementPolicy\":\"manifest-trusted\"");
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
+TEST_CASE("status recursive summary highlights conflicted repos", "[functional][status][recursive][conflict]") {
+    const auto sandbox = CreateSandboxWorkspace("status-recursive-conflict");
+    const auto root = (sandbox.root / "root").lexically_normal();
+    InitRepo(root);
+    const auto defaultBranch = CurrentBranchName(root);
+
+    RequireSuccess(RunGit({"checkout", "-b", "feature/conflict"}, root), "checkout feature branch");
+    WriteTextFile(root / "README.md", "feature change\n");
+    RequireSuccess(RunGit({"add", "README.md"}, root), "add feature change");
+    RequireSuccess(RunGit({"commit", "-m", "feature conflict change"}, root), "commit feature change");
+    RequireSuccess(RunGit({"checkout", defaultBranch}, root), "checkout default branch");
+    WriteTextFile(root / "README.md", "master change\n");
+    RequireSuccess(RunGit({"add", "README.md"}, root), "add master change");
+    RequireSuccess(RunGit({"commit", "-m", "master conflict change"}, root), "commit master change");
+
+    const auto mergeResult = RunGit({"merge", "feature/conflict"}, root);
+    INFO(mergeResult.stdoutText);
+    INFO(mergeResult.stderrText);
+    REQUIRE(mergeResult.exitCode != 0);
+
+    const auto result = RunKog({"status", "--recursive", "--summary", "--repo-root", root.string(), "--no-unregistered-scan"}, root);
+    RequireSuccess(result, "kog status recursive summary conflict highlight");
+    INFO(result.stdoutText);
+    RequireContains(result.stdoutText, "conflicted=1");
+    RequireContains(result.stdoutText, "[CONFLICT] . type=root dirtyKind=CONFLICTED");
+    RequireContains(result.stdoutText, "conflicted=true");
 
     RemoveSandboxWorkspace(sandbox);
 }

@@ -5,6 +5,7 @@
 #include "discovery.hpp"
 #include "repo_health.hpp"
 #include "shell_executor.hpp"
+#include "../public/sync_output_sanitizer.hpp"
 #include "terminal_color.hpp"
 
 #include <algorithm>
@@ -326,6 +327,18 @@ auto ParseStatusPaths(const std::string& InStatusText) -> std::vector<std::strin
         }
     }
     return paths;
+}
+
+auto AppendSyncRepoContext(std::ostream& InOut,
+                           const std::string& InName,
+                           const SyncPlan& InPlan,
+                           bool InDryRun) -> void {
+    const std::string dryRunPrefix = InDryRun ? "[DRY RUN] " : "";
+    InOut << dryRunPrefix << "Repo: " << InName << "\n";
+    InOut << "Taxonomy: " << InPlan.type << "\n";
+    InOut << "Branch source: " << InPlan.branchSource << "\n";
+    InOut << "Selected remote: " << (InPlan.remote.empty() ? "(none)" : InPlan.remote) << "\n";
+    InOut << "Remote selection source: " << (InPlan.remoteSelectionSource.empty() ? "unknown" : InPlan.remoteSelectionSource) << "\n";
 }
 
 auto CollectWindowsReservedStatusPaths(const std::string& InStatusText) -> std::vector<std::string> {
@@ -1739,6 +1752,54 @@ auto CheckoutRecoveredBranch(
     return false;
 }
 
+auto HasCherryPickInProgress(const std::filesystem::path& InRepo) -> bool {
+    return GitCapture(InRepo, {"rev-parse", "-q", "--verify", "CHERRY_PICK_HEAD"}).exitCode == 0;
+}
+
+auto MakeDetachedSafetyBranchName(const std::filesystem::path& InRepo) -> std::string {
+    auto shortHead = Trim(GitCapture(InRepo, {"rev-parse", "--short", "HEAD"}).stdoutStr);
+    if (shortHead.empty()) {
+        shortHead = "head";
+    }
+
+    const std::string base = std::format("kano/sync-detached-backup-{}", shortHead);
+    std::string candidate = base;
+    int suffix = 0;
+    while (GitCapture(InRepo, {"show-ref", "--verify", "--quiet", std::format("refs/heads/{}", candidate)}).exitCode == 0) {
+        suffix += 1;
+        candidate = std::format("{}-{}", base, suffix);
+    }
+    return candidate;
+}
+
+auto CommitsToReplayFromDetached(const std::filesystem::path& InRepo, const std::string& InDetachedRef, const std::string& InTargetRef) -> std::vector<std::string> {
+    std::vector<std::string> commits;
+    const auto mergeBaseOut = GitCapture(InRepo, {"merge-base", InDetachedRef, InTargetRef});
+    if (mergeBaseOut.exitCode != 0) {
+        return commits;
+    }
+
+    const auto mergeBase = Trim(mergeBaseOut.stdoutStr);
+    if (mergeBase.empty()) {
+        return commits;
+    }
+
+    const auto revListOut = GitCapture(InRepo, {"rev-list", "--reverse", std::format("{}..{}", mergeBase, InDetachedRef)});
+    if (revListOut.exitCode != 0) {
+        return commits;
+    }
+
+    std::istringstream iss(revListOut.stdoutStr);
+    std::string line;
+    while (std::getline(iss, line)) {
+        line = Trim(line);
+        if (!line.empty()) {
+            commits.push_back(line);
+        }
+    }
+    return commits;
+}
+
 auto CollectUnmergedPaths(const std::filesystem::path& InRepo) -> std::vector<std::string> {
     std::vector<std::string> paths;
     const auto unmerged = GitCapture(InRepo, {"ls-files", "-u"});
@@ -2242,36 +2303,13 @@ auto RunNativeOriginLatestSync(
         std::ostringstream out;
         std::ostringstream err;
 
-        const auto normalizeCapturedText = [](std::string text) {
-            std::string normalized;
-            normalized.reserve(text.size() + 8);
-            for (std::size_t i = 0; i < text.size(); ++i) {
-                const char ch = text[i];
-                if (ch == '\r') {
-                    if ((i + 1) < text.size() && text[i + 1] == '\n') {
-                        continue;
-                    }
-                    normalized.push_back('\n');
-                    continue;
-                }
-                normalized.push_back(ch);
-            }
-            while (!normalized.empty() && normalized.back() == '\n') {
-                normalized.pop_back();
-            }
-            if (!normalized.empty()) {
-                normalized.push_back('\n');
-            }
-            return normalized;
-        };
-
         auto finishSuccess = [&](const std::string& outcome, const std::string& reason) {
             result.status = workspace::RepoOperationStatus::Succeeded;
             result.exitCode = 0;
             result.failureCategory.clear();
             result.message = reason;
-            result.stdoutText = normalizeCapturedText(out.str());
-            result.stderrText = normalizeCapturedText(err.str());
+            result.stdoutText = NormalizeSyncCapturedText(out.str(), SyncOutputSanitizeMode::Human);
+            result.stderrText = NormalizeSyncCapturedText(err.str(), SyncOutputSanitizeMode::Human);
             return result;
         };
 
@@ -2280,8 +2318,8 @@ auto RunNativeOriginLatestSync(
             result.exitCode = 0;
             result.skipReason = reason;
             result.message = reason;
-            result.stdoutText = normalizeCapturedText(out.str());
-            result.stderrText = normalizeCapturedText(err.str());
+            result.stdoutText = NormalizeSyncCapturedText(out.str(), SyncOutputSanitizeMode::Human);
+            result.stderrText = NormalizeSyncCapturedText(err.str(), SyncOutputSanitizeMode::Human);
             return result;
         };
 
@@ -2290,8 +2328,8 @@ auto RunNativeOriginLatestSync(
             result.exitCode = 1;
             result.failureCategory = category;
             result.message = reason;
-            result.stdoutText = normalizeCapturedText(out.str());
-            result.stderrText = normalizeCapturedText(err.str());
+            result.stdoutText = NormalizeSyncCapturedText(out.str(), SyncOutputSanitizeMode::Human);
+            result.stderrText = NormalizeSyncCapturedText(err.str(), SyncOutputSanitizeMode::Human);
             return result;
         };
 
@@ -2300,8 +2338,8 @@ auto RunNativeOriginLatestSync(
             result.exitCode = 1;
             result.failureCategory = category;
             result.message = reason;
-            result.stdoutText = normalizeCapturedText(out.str());
-            result.stderrText = normalizeCapturedText(err.str());
+            result.stdoutText = NormalizeSyncCapturedText(out.str(), SyncOutputSanitizeMode::Human);
+            result.stderrText = NormalizeSyncCapturedText(err.str(), SyncOutputSanitizeMode::Human);
             return result;
         };
 
@@ -2313,9 +2351,9 @@ auto RunNativeOriginLatestSync(
                 err << line;
             },
         });
+        shell::ScopedConsoleWriteSuppression suppressShellConsoleWrites;
 
-        out << (InDryRun ? "[DRY RUN] " : "") << "Repo: " << name << "\n";
-        out << (InDryRun ? "[DRY RUN] " : "") << "Taxonomy: " << plan.type << "\n";
+        AppendSyncRepoContext(out, name, plan, InDryRun);
 
         if (IsFalsePolicy(plan.kogSyncPolicy)) {
             const std::string reason = "commandPolicy.sync=false / kog-sync=false";
@@ -2359,11 +2397,6 @@ auto RunNativeOriginLatestSync(
                                                         : std::vector<std::string>{};
         const auto stashArgs = BuildSyncStashArgs(reservedPaths);
 
-        out << (InDryRun ? "[DRY RUN] " : "") << "Branch source: " << branchSource << "\n";
-        out << (InDryRun ? "[DRY RUN] " : "") << "Selected remote: " << plan.remote << "\n";
-        out << (InDryRun ? "[DRY RUN] " : "") << "Remote selection source: "
-            << (plan.remoteSelectionSource.empty() ? "unknown" : plan.remoteSelectionSource) << "\n";
-
         const auto health = workspace::ScanRepoHealth(plan.path, workspace::RepoHealthOptions{
             .checkFetchRemotes = true,
             .checkSubmoduleStatus = true,
@@ -2387,13 +2420,27 @@ auto RunNativeOriginLatestSync(
                 err << "[" << name << "] STABLE_BRANCH_NOT_FOUND: missing remote branch " << plan.remote << "/" << targetBranch << "\n";
                 return finishBlocked("BLOCKED_PRECHECK", "STABLE_BRANCH_NOT_FOUND");
             }
+            bool detachedHasLocalOnlyCommits = false;
+            std::string detachedSafetyBranch;
             const auto localOnlyCountOut = GitCapture(plan.path, {"rev-list", "--count", std::format("{}/{}..HEAD", plan.remote, targetBranch)});
             if (localOnlyCountOut.exitCode == 0) {
                 const auto localOnlyCount = Trim(localOnlyCountOut.stdoutStr);
                 if (localOnlyCount != "0") {
-                    err << "[" << name << "] DETACHED_HEAD_UNSAFE_LOCAL_COMMITS: detached HEAD has commits not reachable from "
-                        << plan.remote << "/" << targetBranch << "\n";
-                    return finishBlocked("BLOCKED_PRECHECK", "DETACHED_HEAD_UNSAFE_LOCAL_COMMITS");
+                    detachedHasLocalOnlyCommits = true;
+                    detachedSafetyBranch = MakeDetachedSafetyBranchName(plan.path);
+                    out << "[" << name << "] DETACHED_HEAD_UNSAFE_LOCAL_COMMITS: preserving detached commits in backup branch "
+                        << detachedSafetyBranch << " and replaying onto " << targetBranch << "\n";
+                    if (InDryRun) {
+                        out << "[DRY RUN] [" << name << "] Would run: git branch " << detachedSafetyBranch << " HEAD\n";
+                    } else {
+                        const auto backup = GitCapture(plan.path, {"branch", detachedSafetyBranch, "HEAD"});
+                        if (backup.exitCode != 0) {
+                            out << backup.stdoutStr;
+                            err << backup.stderrStr;
+                            err << "[" << name << "] DETACHED_HEAD_BACKUP_FAILED: unable to create backup branch for detached commits\n";
+                            return finishBlocked("BLOCKED_PRECHECK", "DETACHED_HEAD_BACKUP_FAILED");
+                        }
+                    }
                 }
             }
             std::string repairDetail;
@@ -2402,10 +2449,51 @@ auto RunNativeOriginLatestSync(
                 return finishBlocked("BLOCKED_PRECHECK", "BRANCH_REPAIR_FAILED");
             }
             out << "[" << name << "] DETACHED_HEAD: repaired to stable branch " << targetBranch << " (" << repairDetail << ")\n";
+            if (detachedHasLocalOnlyCommits) {
+                const auto commitsToReplay = CommitsToReplayFromDetached(plan.path, detachedSafetyBranch, "HEAD");
+                if (commitsToReplay.empty()) {
+                    out << "[" << name << "] DETACHED_HEAD_REPLAY: no detached commits needed replay after branch repair\n";
+                } else if (InDryRun) {
+                    out << "[DRY RUN] [" << name << "] Would run: git cherry-pick <" << commitsToReplay.size()
+                        << " commit(s)> from " << detachedSafetyBranch << " onto " << targetBranch << "\n";
+                } else {
+                    std::vector<std::string> cherryPickArgs{"cherry-pick"};
+                    cherryPickArgs.insert(cherryPickArgs.end(), commitsToReplay.begin(), commitsToReplay.end());
+                    const auto replay = GitCapture(plan.path, cherryPickArgs);
+                    if (replay.exitCode != 0) {
+                        out << replay.stdoutStr;
+                        err << replay.stderrStr;
+                        if (HasCherryPickInProgress(plan.path)) {
+                            err << "[" << name << "] DETACHED_HEAD_REPLAY_CONFLICT: cherry-pick conflict detected; aborting replay\n";
+                            const auto abortCherryPick = GitCapture(plan.path, {"cherry-pick", "--abort"});
+                            out << abortCherryPick.stdoutStr;
+                            err << abortCherryPick.stderrStr;
+                            if (abortCherryPick.exitCode != 0) {
+                                err << "WARN: failed to abort cherry-pick replay for " << name << "\n";
+                            }
+                            return finishBlocked("BLOCKED_PRECHECK", "DETACHED_HEAD_REPLAY_CONFLICT");
+                        }
+                        err << "[" << name << "] DETACHED_HEAD_REPLAY_FAILED: failed to replay detached commits\n";
+                        return finishBlocked("BLOCKED_PRECHECK", "DETACHED_HEAD_REPLAY_FAILED");
+                    }
+                    out << "[" << name << "] DETACHED_HEAD_REPLAY: replayed " << commitsToReplay.size()
+                        << " commit(s) from " << detachedSafetyBranch << " onto " << targetBranch << "\n";
+                }
+            }
         }
 
-        if (!health.blockers.empty()) {
-            for (const auto& blocker : health.blockers) {
+        std::vector<workspace::RepoBlocker> effectiveBlockers;
+        effectiveBlockers.reserve(health.blockers.size());
+        for (const auto& blocker : health.blockers) {
+            if (blocker.kind == workspace::RepoBlockerKind::BranchDiverged) {
+                out << "[" << name << "] INFO: " << blocker.detail << "; continuing with fetch/rebase sync flow\n";
+                continue;
+            }
+            effectiveBlockers.push_back(blocker);
+        }
+
+        if (!effectiveBlockers.empty()) {
+            for (const auto& blocker : effectiveBlockers) {
                 err << "[" << name << "] " << blocker.reasonCode << ": " << blocker.detail << "\n";
             }
             return finishBlocked("BLOCKED_PRECHECK", "repo health preflight detected blocking conditions");
@@ -2687,7 +2775,7 @@ auto RunNativeOriginLatestSync(
             std::cout << result.stdoutText;
         }
         if (!result.stderrText.empty()) {
-            std::cout << result.stderrText;
+            std::cerr << result.stderrText;
         }
     }
 

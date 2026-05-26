@@ -35,6 +35,18 @@ class ScopedCommandLogCapture {
     bool active_ = false;
 };
 
+class ScopedConsoleWriteSuppression {
+  public:
+    ScopedConsoleWriteSuppression();
+    ~ScopedConsoleWriteSuppression();
+
+    ScopedConsoleWriteSuppression(const ScopedConsoleWriteSuppression&) = delete;
+    auto operator=(const ScopedConsoleWriteSuppression&) -> ScopedConsoleWriteSuppression& = delete;
+
+  private:
+    bool active_ = false;
+};
+
 auto GetScriptsDir() -> std::filesystem::path;
 
 auto ExecuteScript(

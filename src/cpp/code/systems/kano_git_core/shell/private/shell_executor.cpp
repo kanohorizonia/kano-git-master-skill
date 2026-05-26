@@ -9,6 +9,7 @@
 #include <format>
 #include <cstdlib>
 #include <array>
+#include <atomic>
 #include <stdexcept>
 #include <iostream>
 #include <fstream>
@@ -39,12 +40,18 @@ namespace kano::git::shell {
 namespace {
 
 thread_local std::vector<kano::git::shell::CommandLogCallbacks> g_commandLogCallbacksStack;
+std::atomic<int> g_consoleWriteSuppressionDepth{0};
+std::mutex g_consoleWriteMutex;
 
 auto EmitStdoutLine(const std::string& InText) -> void {
     if (!g_commandLogCallbacksStack.empty() && g_commandLogCallbacksStack.back().onStdout) {
         g_commandLogCallbacksStack.back().onStdout(InText);
         return;
     }
+    if (g_consoleWriteSuppressionDepth.load(std::memory_order_relaxed) > 0) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(g_consoleWriteMutex);
     std::cout << InText;
 }
 
@@ -53,6 +60,10 @@ auto EmitStderrLine(const std::string& InText) -> void {
         g_commandLogCallbacksStack.back().onStderr(InText);
         return;
     }
+    if (g_consoleWriteSuppressionDepth.load(std::memory_order_relaxed) > 0) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(g_consoleWriteMutex);
     std::cerr << InText;
 }
 
@@ -877,6 +888,18 @@ ScopedCommandLogCapture::~ScopedCommandLogCapture() {
     if (!g_commandLogCallbacksStack.empty()) {
         g_commandLogCallbacksStack.pop_back();
     }
+}
+
+ScopedConsoleWriteSuppression::ScopedConsoleWriteSuppression() {
+    g_consoleWriteSuppressionDepth.fetch_add(1, std::memory_order_relaxed);
+    active_ = true;
+}
+
+ScopedConsoleWriteSuppression::~ScopedConsoleWriteSuppression() {
+    if (!active_) {
+        return;
+    }
+    g_consoleWriteSuppressionDepth.fetch_sub(1, std::memory_order_relaxed);
 }
 
 auto ExecuteScript(

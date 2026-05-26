@@ -70,6 +70,14 @@ auto RunDiscoverJson(const std::filesystem::path& InRoot, const std::vector<std:
     return StripAnsi(result.stdoutText + "\n" + result.stderrText);
 }
 
+auto RunDiscoverTable(const std::filesystem::path& InRoot, const std::vector<std::string>& InExtraArgs = {}) -> std::string {
+    std::vector<std::string> args{"discover", "--format", "table", "--repo-root", InRoot.string(), "--no-cache"};
+    args.insert(args.end(), InExtraArgs.begin(), InExtraArgs.end());
+    const auto result = RunKog(args, InRoot);
+    RequireSuccess(result, "kog discover table");
+    return StripAnsi(result.stdoutText + "\n" + result.stderrText);
+}
+
 auto JsonPathCount(const std::string& InJson, const std::string& InPathFragment) -> int {
     int count = 0;
     std::size_t pos = 0;
@@ -260,6 +268,69 @@ TEST_CASE("discover full scan prunes ignored build cache and temp directories", 
     REQUIRE(json.find("cached-repo") == std::string::npos);
     REQUIRE(json.find("build-repo") == std::string::npos);
     REQUIRE(json.find("tmp-repo") == std::string::npos);
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
+TEST_CASE("discover table keeps fixed-width readable columns", "[functional][discover][table][format]") {
+    const auto sandbox = CreateSandboxWorkspace("discover-table-format");
+    const auto root = (sandbox.root / "root").lexically_normal();
+    InitRepo(root);
+    InitRepo(root / "kano");
+    InitRepo(root / "child-repo");
+    AddGitmodulesEntry(root, "kano", "kano", "\tkog-sync = true\n");
+    AddGitmodulesEntry(root, "child-repo", "child-repo", "\tkog-sync = true\n");
+    CommitGitmodules(root);
+
+    const auto table = RunDiscoverTable(root);
+    INFO(table);
+    RequireContains(table, "#");
+    RequireContains(table, "REPO");
+    RequireContains(table, "BRANCH");
+    RequireContains(table, "GROUP: .");
+    RequireNotContains(table, "1kano");
+    RequireNotContains(table, "2child-repo");
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
+TEST_CASE("discover table truncates long repo names with separation", "[functional][discover][table][format]") {
+    const auto sandbox = CreateSandboxWorkspace("discover-table-long-repo");
+    const auto root = (sandbox.root / "root").lexically_normal();
+    InitRepo(root);
+    InitRepo(root / "kano-filesystem-safe-ops-skill");
+    AddGitmodulesEntry(root, "kano-filesystem-safe-ops-skill", "kano-filesystem-safe-ops-skill", "\tkog-sync = true\n");
+    CommitGitmodules(root);
+
+    const auto table = RunDiscoverTable(root);
+    INFO(table);
+    RequireContains(table, "kano-filesystem-safe-op...");
+    RequireNotContains(table, "skillmain");
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
+TEST_CASE("discover table aligns two digit index and missing branch placeholder", "[functional][discover][table][format]") {
+    const auto sandbox = CreateSandboxWorkspace("discover-table-index-branch");
+    const auto root = (sandbox.root / "root").lexically_normal();
+    InitRepo(root);
+
+    for (int i = 0; i < 10; ++i) {
+        const auto name = std::string{"repo-"} + std::to_string(i);
+        InitRepo(root / name);
+        AddGitmodulesEntry(root, name, name, "\tkog-sync = true\n");
+    }
+    CommitGitmodules(root);
+
+    // Force missing branch (detached HEAD) for one repo.
+    RequireSuccess(RunGit({"checkout", "--detach"}, root / "repo-9"), "detach repo branch");
+
+    const auto table = RunDiscoverTable(root);
+    INFO(table);
+    RequireContains(table, "10");
+    RequireContains(table, "repo-9");
+    RequireContains(table, "-");
+    RequireNotContains(table, "10repo-9");
 
     RemoveSandboxWorkspace(sandbox);
 }

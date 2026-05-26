@@ -207,6 +207,12 @@ struct RepoLogEntry {
     std::vector<std::string> logLines; // formatted with markers
     bool failed = false;
     bool dirty = false;  // has uncommitted changes
+    bool conflicted = false;
+};
+
+struct RepoWorktreeState {
+    bool dirty = false;
+    bool conflicted = false;
 };
 
 auto ResolveSkillRoot(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path {
@@ -347,6 +353,31 @@ auto ResolveRepoBranchRefs(const std::filesystem::path& InRepo) -> RepoBranchRef
     return refs;
 }
 
+auto CollectRepoWorktreeState(const std::filesystem::path& InRepo) -> RepoWorktreeState {
+    RepoWorktreeState state;
+    const auto statusOut = GitCapture(InRepo, {"status", "--porcelain=v1"});
+    if (statusOut.exitCode != 0) {
+        return state;
+    }
+
+    for (const auto& line : SplitNonEmptyLines(statusOut.stdoutStr)) {
+        if (line.size() < 2) {
+            continue;
+        }
+        state.dirty = true;
+        const char indexState = line[0];
+        const char worktreeState = line[1];
+        const bool unmerged = indexState == 'U' || worktreeState == 'U' ||
+                              (indexState == 'A' && worktreeState == 'A') ||
+                              (indexState == 'D' && worktreeState == 'D');
+        if (unmerged) {
+            state.conflicted = true;
+        }
+    }
+
+    return state;
+}
+
 auto CollectRepoLogEntry(const std::filesystem::path& InRoot,
                          const std::filesystem::path& InRepo,
                          int InCount,
@@ -366,6 +397,9 @@ auto CollectRepoLogEntry(const std::filesystem::path& InRoot,
     const auto refs = ResolveRepoBranchRefs(InRepo);
     entry.localBranch   = refs.localBranch;
     entry.upstreamBranch = refs.upstreamBranch;
+    const auto worktreeState = CollectRepoWorktreeState(InRepo);
+    entry.dirty = worktreeState.dirty;
+    entry.conflicted = worktreeState.conflicted;
 
     // Determine sync state
     const bool isDetached = (refs.localBranch == "HEAD(detached)");
@@ -466,6 +500,9 @@ auto PrintGroupedLog(const std::vector<RepoLogEntry>& InEntries, int InCount, bo
         std::ostringstream repoHeader;
         repoHeader << kano::terminal::Wrap(entry.repoName, kano::terminal::Color::BoldCyan);
         repoHeader << " [" << entry.localBranch << "]";
+        if (entry.conflicted) {
+            repoHeader << " " << kano::terminal::Wrap("conflict", kano::terminal::Color::BoldRed);
+        }
         switch (entry.syncState) {
             case RepoSyncState::Synced:
                 repoHeader << " " << kano::terminal::Wrap("synced", kano::terminal::Color::BoldGreen);
@@ -516,8 +553,9 @@ auto PrintGroupedLog(const std::vector<RepoLogEntry>& InEntries, int InCount, bo
 }
 
 auto PrintLogSummary(const std::vector<RepoLogEntry>& InEntries) -> void {
-    int synced = 0, ahead = 0, behind = 0, diverged = 0, detached = 0, noUpstream = 0;
+    int synced = 0, ahead = 0, behind = 0, diverged = 0, detached = 0, noUpstream = 0, conflicted = 0;
     for (const auto& e : InEntries) {
+        conflicted += e.conflicted ? 1 : 0;
         switch (e.syncState) {
             case RepoSyncState::Synced:     synced++;     break;
             case RepoSyncState::Ahead:      ahead++;      break;
@@ -542,6 +580,9 @@ auto PrintLogSummary(const std::vector<RepoLogEntry>& InEntries) -> void {
     }
     if (diverged > 0) {
         std::cout << "  " << kano::terminal::Wrap("diverged=" + std::to_string(diverged), kano::terminal::Color::BoldRed);
+    }
+    if (conflicted > 0) {
+        std::cout << "  " << kano::terminal::Wrap("conflicted=" + std::to_string(conflicted), kano::terminal::Color::BoldRed);
     }
     if (detached > 0) {
         std::cout << "  " << kano::terminal::Wrap("detached=" + std::to_string(detached), kano::terminal::Color::Dim);

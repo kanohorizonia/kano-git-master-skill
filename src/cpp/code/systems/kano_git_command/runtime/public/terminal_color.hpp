@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <string>
+#include <algorithm>
 
 #if defined(_WIN32)
 #include <io.h>
@@ -22,6 +23,17 @@
 #endif
 
 namespace kano::terminal {
+
+inline bool EnvIsTruthy(const char* InValue) {
+    if (InValue == nullptr || *InValue == '\0') {
+        return false;
+    }
+    std::string value(InValue);
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return !(value == "0" || value == "false" || value == "off" || value == "no");
+}
 
 #if defined(_WIN32)
 inline bool EnableVirtualTerminalForHandle(HANDLE InHandle) {
@@ -67,6 +79,10 @@ namespace Color {
 
 inline bool IsStdoutInteractive() {
     static bool enabled = []() {
+        const char* forceColor = std::getenv("KOG_FORCE_COLOR");
+        if (EnvIsTruthy(forceColor)) return true;
+        const char* commonForceColor = std::getenv("FORCE_COLOR");
+        if (EnvIsTruthy(commonForceColor)) return true;
         const char* noColor = std::getenv("NO_COLOR");
         if (noColor != nullptr && *noColor != '\0') return false;
         const char* kogNoColor = std::getenv("KOG_NO_COLOR");
@@ -90,6 +106,10 @@ inline bool IsStdoutInteractive() {
 
 inline bool IsStderrInteractive() {
     static bool enabled = []() {
+        const char* forceColor = std::getenv("KOG_FORCE_COLOR");
+        if (EnvIsTruthy(forceColor)) return true;
+        const char* commonForceColor = std::getenv("FORCE_COLOR");
+        if (EnvIsTruthy(commonForceColor)) return true;
         const char* noColor = std::getenv("NO_COLOR");
         if (noColor != nullptr && *noColor != '\0') return false;
         const char* kogNoColor = std::getenv("KOG_NO_COLOR");

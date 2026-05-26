@@ -927,6 +927,37 @@ auto RunNativePush(
         const auto repoLabel = repoPath.lexically_normal().generic_string();
         std::ostringstream out;
         std::ostringstream err;
+        const auto normalizeCapturedText = [](std::string text) {
+            std::string normalized;
+            normalized.reserve(text.size() + 8);
+            for (std::size_t i = 0; i < text.size(); ++i) {
+                const char ch = text[i];
+                if (ch == '\r') {
+                    if ((i + 1) < text.size() && text[i + 1] == '\n') {
+                        continue;
+                    }
+                    normalized.push_back('\n');
+                    continue;
+                }
+                normalized.push_back(ch);
+            }
+            while (!normalized.empty() && normalized.back() == '\n') {
+                normalized.pop_back();
+            }
+            if (!normalized.empty()) {
+                normalized.push_back('\n');
+            }
+            return normalized;
+        };
+        shell::ScopedCommandLogCapture commandLogCapture(shell::CommandLogCallbacks{
+            .onStdout = [&](const std::string& line) {
+                out << line;
+            },
+            .onStderr = [&](const std::string& line) {
+                err << line;
+            },
+        });
+        shell::ScopedConsoleWriteSuppression suppressShellConsoleWrites;
         std::size_t repoIndex = 0;
         if (const auto it = repoOrderByPath.find(repoLabel); it != repoOrderByPath.end()) {
             repoIndex = it->second;
@@ -940,8 +971,8 @@ auto RunNativePush(
             run.status = workspace::RepoOperationStatus::Succeeded;
             run.exitCode = 0;
             run.summary = PushSummaryEntry{repoPath, outcome, remote, branch, reason};
-            run.stdoutText = out.str();
-            run.stderrText = err.str();
+            run.stdoutText = normalizeCapturedText(out.str());
+            run.stderrText = normalizeCapturedText(err.str());
             return run;
         };
 
@@ -951,8 +982,8 @@ auto RunNativePush(
             run.skipReason = reason;
             run.message = reason;
             run.summary = PushSummaryEntry{repoPath, outcome, remote, branch, reason};
-            run.stdoutText = out.str();
-            run.stderrText = err.str();
+            run.stdoutText = normalizeCapturedText(out.str());
+            run.stderrText = normalizeCapturedText(err.str());
             return run;
         };
 
@@ -964,8 +995,8 @@ auto RunNativePush(
             run.failureCategory = category;
             run.message = reason;
             run.summary = PushSummaryEntry{repoPath, category, remote, branch, reason};
-            run.stdoutText = out.str();
-            run.stderrText = err.str();
+            run.stdoutText = normalizeCapturedText(out.str());
+            run.stderrText = normalizeCapturedText(err.str());
             return run;
         };
 
@@ -1305,7 +1336,7 @@ auto RunNativePush(
             std::cout << result.stdoutText;
         }
         if (!result.stderrText.empty()) {
-            std::cerr << result.stderrText;
+            std::cout << result.stderrText;
         }
     }
 
@@ -1314,10 +1345,10 @@ auto RunNativePush(
             const auto reason = result.blockReason.empty()
                 ? std::string{"one or more nested repositories failed in earlier wave"}
                 : result.blockReason;
-            std::cerr << "[" << result.repoPath.generic_string() << "] BLOCKED_BY_CHILD_FAILURE: " << reason << "\n";
-            std::cerr << "[" << result.repoPath.generic_string() << "] Push blocked: one or more nested repositories failed in earlier wave\n";
+            std::cout << "[" << result.repoPath.generic_string() << "] BLOCKED_BY_CHILD_FAILURE: " << reason << "\n";
+            std::cout << "[" << result.repoPath.generic_string() << "] Push blocked: one or more nested repositories failed in earlier wave\n";
         } else if (result.status == workspace::RepoOperationStatus::Pending) {
-            std::cerr << "[" << result.repoPath.generic_string() << "] Push pending: scheduler did not execute repository\n";
+            std::cout << "[" << result.repoPath.generic_string() << "] Push pending: scheduler did not execute repository\n";
         }
     }
 

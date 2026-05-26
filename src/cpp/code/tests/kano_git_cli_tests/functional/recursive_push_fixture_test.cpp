@@ -88,6 +88,24 @@ auto StripAnsi(const std::string& InText) -> std::string {
     return out;
 }
 
+auto StripProcessDiagnostics(const std::string& InText) -> std::string {
+    std::istringstream input(InText);
+    std::ostringstream output;
+    std::string line;
+    bool first = true;
+    while (std::getline(input, line)) {
+        if (line.find("[process-diag]") != std::string::npos) {
+            continue;
+        }
+        if (!first) {
+            output << '\n';
+        }
+        output << line;
+        first = false;
+    }
+    return output.str();
+}
+
 auto CurrentHeadSha(const std::filesystem::path& InRepo) -> std::string {
     const auto result = RunGit({"rev-parse", "HEAD"}, InRepo);
     RequireSuccess(result, "rev-parse HEAD");
@@ -250,7 +268,7 @@ TEST_CASE("recursive_push_root_no_remote_skips_container_and_pushes_child", "[fu
     const auto beforeRootHead = CurrentHeadSha(root);
 
     const auto result = RunPushRecursive(root);
-    const auto output = StripAnsi(result.stdoutText + "\n" + result.stderrText);
+    const auto output = StripProcessDiagnostics(StripAnsi(result.stdoutText + "\n" + result.stderrText));
     RequireSuccess(result, "recursive push root no remote");
     RequireContains(output, "SKIPPED_NO_REMOTE");
     RequireContains(output, "skipped_no_remote=1");
