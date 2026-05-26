@@ -266,6 +266,9 @@ auto ScanFileForSecretRules(const std::filesystem::path& InRepo,
                             std::vector<SecretFinding>* OutFindings) -> void;
 auto BuildSetAiModelHelpFooter() -> std::string;
 auto ValidateAiReadyPlan(const std::string& InPlanText, std::string* OutReason = nullptr) -> bool;
+auto NormalizeCommitPlanRepoPaths(const std::filesystem::path& InWorkspaceRoot,
+                                  const std::string& InPlanText,
+                                  std::string* OutError = nullptr) -> std::optional<std::string>;
 auto CompactSingleLine(const std::string& InText, int InMax) -> std::string;
 
 auto FindBracketRange(const std::string& InText, std::size_t InStart, char InOpen, char InClose) -> std::optional<std::pair<std::size_t, std::size_t>>;

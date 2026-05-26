@@ -911,21 +911,18 @@ auto RunAiGenerate(const std::string& InProvider,
     }
 
     const auto effectivePrompt = BuildFileBackedPromptArgument(InWorkingDir, InPrompt, InPurpose);
-
-    auto LogInvocation = [&](const std::string& binary, const std::vector<std::string>& args) {
-        static constexpr std::string_view kDivider = "----------------------------------------";
-        std::cout << "\n[kog ai] -- AI Invocation (" << InPurpose << ") --\n";
-        std::cout << "[kog ai] command : " << binary;
-        for (const auto& a : args) {
-            if (a.find(' ') != std::string::npos || a.empty()) std::cout << " \"" << a << "\"";
-            else std::cout << " " << a;
-        }
-        std::cout << "\n[kog ai] model   : " << (InModel.empty() ? "auto" : InModel) << "\n";
-        if (IsTruthyEnv(std::getenv("KOG_DEBUG_AI_PROMPT")) || IsTruthyEnv(std::getenv("KOG_DEBUG"))) {
-            std::cout << "[kog ai] prompt  :\n" << kDivider << "\n" << InPrompt << "\n" << kDivider << "\n";
-        }
-        std::cout << "[kog ai] Waiting for " << InProvider << " response...\n";
-        std::cout.flush();
+    const AiInvocationDiagnostics diagnostics{
+        .purpose = InPurpose,
+        .requestedProvider = InProvider,
+        .resolvedProvider = InProvider,
+        .requestedModel = InModel.empty() ? "auto" : InModel,
+        .effectiveModel = InModel.empty() ? "auto" : InModel,
+        .modelMode = InModel.empty() ? "auto" : "explicit",
+        .yolo = false,
+        .promptFile = std::nullopt,
+        .workingFile = std::nullopt,
+        .responseFile = std::nullopt,
+        .timeout = std::nullopt,
     };
 
     if (InProvider == "opencode") {
@@ -947,8 +944,8 @@ auto RunAiGenerate(const std::string& InProvider,
             args.push_back(InModel);
         }
         args.push_back(effectivePrompt);
-        LogInvocation("opencode", args);
-        auto result = shell::ExecuteCommand("opencode", args, shell::ExecMode::Capture, InWorkingDir);
+        PrintAiInvocationDiagnostics("opencode", args, diagnostics);
+        auto result = ExecuteCommandWithHeartbeat("opencode", args, shell::ExecMode::Capture, InWorkingDir, diagnostics);
         if (IsTruthyEnv(std::getenv("KOG_DEBUG_AI_PROMPT")) || IsTruthyEnv(std::getenv("KOG_DEBUG"))) {
             std::cerr << "[kog ai] response:\n" << "----------------------------------------\n" << result.stdoutStr << "\n" << result.stderrStr << "\n----------------------------------------\n";
         }
@@ -965,8 +962,8 @@ auto RunAiGenerate(const std::string& InProvider,
         } else {
             args = {"-q", effectivePrompt};
         }
-        LogInvocation("codex", args);
-        return shell::ExecuteCommand("codex", args, shell::ExecMode::Capture, InWorkingDir);
+        PrintAiInvocationDiagnostics("codex", args, diagnostics);
+        return ExecuteCommandWithHeartbeat("codex", args, shell::ExecMode::Capture, InWorkingDir, diagnostics);
     }
 
     if (InProvider == "copilot") {
@@ -1004,8 +1001,8 @@ auto RunAiGenerate(const std::string& InProvider,
             AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL_URLS", "--allow-all-urls");
             AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL", "--allow-all");
             args.insert(args.end(), {"--no-color", "--stream", "off", "--no-ask-user"});
-            LogInvocation(standaloneCopilot, args);
-            return shell::ExecuteCommand(standaloneCopilot, args, shell::ExecMode::Capture, InWorkingDir);
+            PrintAiInvocationDiagnostics(standaloneCopilot, args, diagnostics);
+            return ExecuteCommandWithHeartbeat(standaloneCopilot, args, shell::ExecMode::Capture, InWorkingDir, diagnostics);
         }
 
         if (GhCopilotAvailable()) {
@@ -1037,8 +1034,8 @@ auto RunAiGenerate(const std::string& InProvider,
             AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL_URLS", "--allow-all-urls");
             AppendBoolFlag(&args, "KOG_COPILOT_ALLOW_ALL", "--allow-all");
             args.insert(args.end(), {"--no-color", "--stream", "off", "--no-ask-user"});
-            LogInvocation("gh", args);
-            return shell::ExecuteCommand("gh", args, shell::ExecMode::Capture, InWorkingDir);
+            PrintAiInvocationDiagnostics("gh", args, diagnostics);
+            return ExecuteCommandWithHeartbeat("gh", args, shell::ExecMode::Capture, InWorkingDir, diagnostics);
         }
     }
 

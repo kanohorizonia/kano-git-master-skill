@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -10,7 +11,7 @@
 #include <iomanip>
 #include <sstream>
 
-#include "shell_executor.hpp"
+#include "ai_utils.hpp"
 #include "discovery.hpp"
 
 namespace kano::git::commands {
@@ -99,6 +100,7 @@ auto ResolveModelForAi(const std::string& InProvider,
                        const std::string& InModelRaw,
                        bool InAiAuto,
                        const std::filesystem::path& InWorkspaceRoot) -> std::string;
+
 auto GitConfigPath(const std::string& InKey) -> std::string;
 auto ResolveGlobalCacheRoot() -> std::filesystem::path;
 auto AiCacheDir() -> std::filesystem::path;
@@ -128,6 +130,8 @@ struct RepoCommitResult {
     bool failed = false;
     std::string note;
     std::string commitTitle;
+    std::string stdoutText;
+    std::string stderrText;
 };
 
 struct RepoAmendResult {
@@ -137,6 +141,8 @@ struct RepoAmendResult {
     bool failed = false;
     std::string note;
     std::string commitTitle;
+    std::string stdoutText;
+    std::string stderrText;
 };
 
 } // namespace kano::git::commands

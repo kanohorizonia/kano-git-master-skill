@@ -2,6 +2,7 @@
 
 #include <CLI/CLI.hpp>
 #include "command_runtime_ops.hpp"
+#include "ai_utils.hpp"
 #include "discovery.hpp"
 #include "secret_scan_utils.hpp"
 #include "shell_executor.hpp"
@@ -622,7 +623,7 @@ auto ScanFileForSecretRules(const std::filesystem::path& InRepo,
     }
 }
 
-auto IsAgentModeEnabled() -> bool {
+auto IsAgentModeEnabledLocal() -> bool {
     const char* raw = std::getenv("KANO_AGENT_MODE");
     if (raw == nullptr) {
         return false;
@@ -760,6 +761,16 @@ auto ExtractPlanAiFillMillis(const shell::ExecResult& InResult) -> std::optional
     return std::nullopt;
 }
 
+auto LogAutoPlanStageDetails(const std::string& InStage,
+                             const std::string& InCommand,
+                             const std::vector<std::pair<std::string, std::string>>& InFields) -> void {
+    std::cout << "[commit-push][auto-plan] stage=" << InStage << " start\n";
+    std::cout << "[commit-push][auto-plan] command: " << InCommand << "\n";
+    for (const auto& [label, value] : InFields) {
+        std::cout << "[commit-push][auto-plan] " << label << ": " << value << "\n";
+    }
+}
+
 struct CommitRunbookResult {
     int exitCode = 0;
     std::optional<long long> aiFillMillis;
@@ -787,7 +798,17 @@ auto RunCommitPlanRunbookViaSelf(const std::filesystem::path& InWorkspaceRoot,
     if (InYolo) {
         args.push_back("--yolo");
     }
-    const auto result = shell::ExecuteCommand(ResolveSelfBinaryCommand(), args, shell::ExecMode::Capture, InWorkspaceRoot);
+    const auto selfBinary = ResolveSelfBinaryCommand();
+    const auto workingPlan = (InPlanPath.parent_path() / std::format("{}.ai-working{}", InPlanPath.stem().generic_string(), InPlanPath.extension().generic_string())).lexically_normal();
+    const auto promptDir = (InWorkspaceRoot / ".kano" / "tmp" / "git" / "provider-prompts").lexically_normal();
+    const auto responseDir = (InWorkspaceRoot / ".kano" / "tmp" / "git" / "ai-responses").lexically_normal();
+    LogAutoPlanStageDetails("commit-runbook",
+                            FormatCommandLineForLog(selfBinary, args),
+                            {{"plan file", InPlanPath.generic_string()},
+                             {"working plan", workingPlan.generic_string()},
+                             {"prompt dir", promptDir.generic_string()},
+                             {"response dir", responseDir.generic_string()}});
+    const auto result = shell::ExecuteCommand(selfBinary, args, shell::ExecMode::Capture, InWorkspaceRoot);
     CommitRunbookResult out;
     out.aiFillMillis = ExtractPlanAiFillMillis(result);
     const auto exitCode = FinalizeNestedSelfResult("AI commit runbook", result);
@@ -827,7 +848,11 @@ auto RunPlanCommitSeedViaSelf(const std::filesystem::path& InWorkspaceRoot,
     if (InDeterministic) {
         args.push_back("--deterministic");
     }
-    const auto result = shell::ExecuteCommand(ResolveSelfBinaryCommand(), args, shell::ExecMode::Capture, InWorkspaceRoot);
+    const auto selfBinary = ResolveSelfBinaryCommand();
+    LogAutoPlanStageDetails("plan-new",
+                            FormatCommandLineForLog(selfBinary, args),
+                            {{"plan file", InPlanPath.generic_string()}});
+    const auto result = shell::ExecuteCommand(selfBinary, args, shell::ExecMode::Capture, InWorkspaceRoot);
     const auto exitCode = FinalizeNestedSelfResult("plan commit-seed", result);
     if (exitCode != 0) {
         std::cerr << "Error: plan commit-seed failed via native binary (exit=" << exitCode << ").\n";
@@ -910,7 +935,11 @@ auto RunIgnorePlanRunbookViaSelf(const std::filesystem::path& InWorkspaceRoot,
         "--force",
         "--plan-file", InPlanPath.generic_string(),
     };
-    const auto result = shell::ExecuteCommand(ResolveSelfBinaryCommand(), args, shell::ExecMode::Capture, InWorkspaceRoot);
+    const auto selfBinary = ResolveSelfBinaryCommand();
+    LogAutoPlanStageDetails("ignore-runbook",
+                            FormatCommandLineForLog(selfBinary, args),
+                            {{"plan file", InPlanPath.generic_string()}});
+    const auto result = shell::ExecuteCommand(selfBinary, args, shell::ExecMode::Capture, InWorkspaceRoot);
     if (result.exitCode != 0) {
         const auto combinedOutput = result.stdoutStr + "\n" + result.stderrStr;
         static const std::regex driftRegex("state drift", std::regex_constants::icase);
@@ -936,7 +965,11 @@ auto RunIgnorePlanApplyViaSelf(const std::filesystem::path& InWorkspaceRoot,
         "plan", "apply", "--stage", "ignore",
         "--plan-file", InPlanPath.generic_string(),
     };
-    const auto result = shell::ExecuteCommand(ResolveSelfBinaryCommand(), args, shell::ExecMode::Capture, InWorkspaceRoot);
+    const auto selfBinary = ResolveSelfBinaryCommand();
+    LogAutoPlanStageDetails("ignore-apply",
+                            FormatCommandLineForLog(selfBinary, args),
+                            {{"plan file", InPlanPath.generic_string()}});
+    const auto result = shell::ExecuteCommand(selfBinary, args, shell::ExecMode::Capture, InWorkspaceRoot);
     const auto combinedOutput = result.stdoutStr + "\n" + result.stderrStr;
     static const std::regex entriesRegex("ignore plan entries", std::regex_constants::icase);
     
@@ -1970,7 +2003,7 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
                                        const std::string& InNormalizedPlanFile,
                                        const std::vector<std::string>& InExtraArgs) -> int {
     SCOPED_TIMING_LOG("commit-push.RunCommitPushPlanFilePipelineImpl");
-    const bool agentMode = IsAgentModeEnabled();
+    const bool agentMode = IsAgentModeEnabledLocal();
     const auto totalStart = std::chrono::steady_clock::now();
     long long safetyGatesMillis = 0;
     long long preCommitMillis = 0;
@@ -1983,6 +2016,12 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
         return 2;
     }
     std::cout << "[commit-push] using plan file: " << InNormalizedPlanFile << "\n";
+    const auto logPipelineStage = [&](const std::string& stage, const std::vector<std::pair<std::string, std::string>>& fields) {
+        std::cout << "[commit-push][plan-pipeline] stage=" << stage << " start\n";
+        for (const auto& [label, value] : fields) {
+            std::cout << "[commit-push][plan-pipeline] " << label << ": " << value << "\n";
+        }
+    };
 
     if (!InExtraArgs.empty()) {
         std::cerr << "Error: unsupported extra arguments in plan pipeline mode:";
@@ -1999,13 +2038,18 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
         std::cout << "[commit-push] agent mode + --plan-file detected; using plan-driven flow.\n";
     }
 
-    std::cout << "=== commit-push stage: safety-gates ===\n";
+    logPipelineStage("safety-gates",
+                     {{"workspace root", InWorkspaceRoot.lexically_normal().generic_string()},
+                      {"plan file", planPath.generic_string()}});
     const auto safetyStart = std::chrono::steady_clock::now();
     RunPipelineSafetyGatesForNonAiCommitPush(InWorkspaceRoot, {}, false);
     const auto safetyEnd = std::chrono::steady_clock::now();
     safetyGatesMillis = std::chrono::duration_cast<std::chrono::milliseconds>(safetyEnd - safetyStart).count();
 
-    std::cout << "=== commit-push stage: pre-commit ===\n";
+    logPipelineStage("pre-commit",
+                     {{"workspace root", InWorkspaceRoot.lexically_normal().generic_string()},
+                      {"plan file", planPath.generic_string()},
+                      {"branch mode", "default"}});
     {
         const auto preCommitStart = std::chrono::steady_clock::now();
         FixRepoHygieneRecursive(InWorkspaceRoot);
@@ -2043,7 +2087,9 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
     if (!hasWorkingChanges) {
         std::cout << "[commit-push] workspace clean; skipping commit/sync/post-sync and proceeding to push check.\n";
     } else {
-        std::cout << "=== commit-push stage: commit ===\n";
+        logPipelineStage("commit",
+                         {{"workspace root", InWorkspaceRoot.lexically_normal().generic_string()},
+                          {"plan file", planPath.generic_string()}});
         {
             const auto commitStart = std::chrono::steady_clock::now();
             const auto commitCode = RunCommitNativePlanStage(InWorkspaceRoot, InNormalizedPlanFile, "commit", false);
@@ -2054,7 +2100,9 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
             }
         }
 
-        std::cout << "=== commit-push stage: sync ===\n";
+        logPipelineStage("sync",
+                         {{"workspace root", InWorkspaceRoot.lexically_normal().generic_string()},
+                          {"plan file", planPath.generic_string()}});
         {
             const auto syncStart = std::chrono::steady_clock::now();
             const auto syncCode = RunSyncOriginLatestNative(InWorkspaceRoot, true, false);
@@ -2065,7 +2113,9 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
             }
         }
 
-        std::cout << "=== commit-push stage: post-sync ===\n";
+        logPipelineStage("post-sync",
+                         {{"workspace root", InWorkspaceRoot.lexically_normal().generic_string()},
+                          {"plan file", planPath.generic_string()}});
         {
             const auto postSyncStart = std::chrono::steady_clock::now();
             const auto summary = ClassifyPostSyncDelta(InWorkspaceRoot, {}, false);
@@ -2099,7 +2149,9 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
         }
     }
 
-    std::cout << "=== commit-push stage: push ===\n";
+    logPipelineStage("push",
+                     {{"workspace root", InWorkspaceRoot.lexically_normal().generic_string()},
+                      {"plan file", planPath.generic_string()}});
     {
         const auto pushStart = std::chrono::steady_clock::now();
         const auto pushCode = RunPushNativeSimple(InWorkspaceRoot, true, false, false, false, false, 0, false, "");
@@ -2256,7 +2308,7 @@ void RegisterCommitPush(CLI::App& InApp) {
 
         const auto normalizedCommitPlanFile = NormalizeInputPathForCurrentPlatform(*commitPlanFile);
         const bool hasCommitPlan = !normalizedCommitPlanFile.empty();
-        const bool agentMode = IsAgentModeEnabled();
+        const bool agentMode = IsAgentModeEnabledLocal();
         const bool aiModeRequested = *aiAuto || !aiProvider->empty() || !aiModel->empty();
         const bool autoPlanAiMode = aiModeRequested && !hasCommitPlan && message->empty();
         const bool hasWorkingChangesAtStart = NeedsPostSyncCommitNonPlan(workspaceRoot, repoList, effectiveNoRecursive);
@@ -2368,6 +2420,11 @@ void RegisterCommitPush(CLI::App& InApp) {
                     std::exit(2);
                 }
                 std::cout << "[commit-push][auto-plan] stage=plan-pipeline start\n";
+                std::cout << "[commit-push][auto-plan] command: "
+                          << FormatCommandLineForLog(ResolveSelfBinaryCommand(),
+                                                     {"commit-push", "--plan-file", autoPlanPath.generic_string()})
+                          << "\n";
+                std::cout << "[commit-push][auto-plan] plan file: " << autoPlanPath.generic_string() << "\n";
                 const auto planPipelineStart = std::chrono::steady_clock::now();
                 const auto pipelineCode = RunCommitPushPlanFilePipeline(workspaceRoot, autoPlanPath.generic_string(), {});
                 const auto planPipelineEnd = std::chrono::steady_clock::now();

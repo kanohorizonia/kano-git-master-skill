@@ -927,6 +927,7 @@ TEST_CASE("kog export --single includes subrepo working-tree files by default",
     INFO("stdout=" << result.stdoutText);
     INFO("stderr=" << result.stderrText);
     REQUIRE(result.exitCode == 0);
+    REQUIRE(result.stdoutText.find("Skip export for deps/child: .gitmodules policy kog-export=false") != std::string::npos);
 
     const auto outputDir = ctx.rootClone / ".kano" / "tmp" / "git" / "export";
     std::filesystem::path rootArchive;
@@ -964,6 +965,39 @@ TEST_CASE("kog export --single --include-subrepos remains accepted and includes 
     }
     REQUIRE_FALSE(rootArchive.empty());
     REQUIRE(ArchiveContainsPath(rootArchive, "deps/child/child.txt", ctx.rootClone));
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("kog export --single respects .gitmodules kog-export=false",
+          "[Integration][export][single][policy][kog-export]") {
+    const auto ctx = CreateExportWorkspace("single-respects-kog-export-policy");
+
+    RequireSuccess(
+        RunGit({"config", "-f", ".gitmodules", "submodule.deps/child.kog-export", "false"}, ctx.rootClone),
+        "set kog-export policy false");
+    RequireSuccess(RunGit({"add", ".gitmodules"}, ctx.rootClone), "stage gitmodules policy change");
+    RequireSuccess(RunGit({"commit", "-m", "set child kog-export false"}, ctx.rootClone), "commit gitmodules policy change");
+
+    const auto discoverResult = RunKogDiscover(ctx);
+    REQUIRE(discoverResult.exitCode == 0);
+
+    const auto result = RunKogExport(ctx, {"--single", "--no-validate-release-archive"});
+    INFO("exit=" << result.exitCode);
+    INFO("stdout=" << result.stdoutText);
+    INFO("stderr=" << result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    const auto outputDir = ctx.rootClone / ".kano" / "tmp" / "git" / "export";
+    std::filesystem::path rootArchive;
+    for (const auto& entry : std::filesystem::directory_iterator(outputDir)) {
+        if (entry.is_regular_file() && entry.path().extension() == ".tar") {
+            rootArchive = entry.path();
+            break;
+        }
+    }
+    REQUIRE_FALSE(rootArchive.empty());
+    REQUIRE_FALSE(ArchiveContainsPath(rootArchive, "deps/child/child.txt", ctx.rootClone));
 
     RemoveSandboxWorkspace(ctx.sandbox);
 }

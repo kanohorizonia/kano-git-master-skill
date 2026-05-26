@@ -21,6 +21,7 @@
 #include <iomanip>
 #include <map>
 #include <iostream>
+#include <set>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -913,6 +914,62 @@ auto BuildExportList(const std::filesystem::path& InRoot,
                         int InSplitSubrepoDepth,
                         const ShellExecutor& InExec) -> std::vector<ExportRecord> {
     std::vector<ExportRecord> result;
+    std::set<std::string> skippedByPolicy;
+
+    auto normalizePolicyToken = [](std::string InValue) {
+        InValue = TrimExport(InValue);
+        std::transform(InValue.begin(), InValue.end(), InValue.begin(), [](unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
+        return InValue;
+    };
+
+    auto isExportDisabledByPolicy = [&](const std::filesystem::path& InParentRepo,
+                                        const std::filesystem::path& InSubmoduleRelPath) {
+        const auto value = normalizePolicyToken(
+            workspace::GetSubmoduleConfig(InParentRepo, InSubmoduleRelPath, "kog-export"));
+        return value == "false" || value == "0" || value == "off" || value == "no" || value == "skip";
+    };
+
+    auto isRepoExportEnabled = [&](const workspace::RepoRecord& InRepo) {
+        const auto normalizedPath = InRepo.path.lexically_normal();
+        const auto parent = InRepo.registrationRelativeTo.lexically_normal();
+        if (parent.empty()) {
+            return true;
+        }
+        std::error_code ec;
+        if (std::filesystem::exists(parent, ec) && std::filesystem::exists(normalizedPath, ec) &&
+            std::filesystem::equivalent(parent, normalizedPath, ec)) {
+            return true;
+        }
+        if (parent == normalizedPath) {
+            return true;
+        }
+        const auto relToParent = normalizedPath.lexically_relative(parent);
+        if (relToParent.empty() || relToParent.generic_string().rfind("..", 0) == 0) {
+            return true;
+        }
+        if (isExportDisabledByPolicy(parent, relToParent)) {
+            skippedByPolicy.insert(RelativeDisplayPathForExport(InRoot, normalizedPath).generic_string());
+            return false;
+        }
+        return true;
+    };
+
+    auto isRootSubmoduleExportEnabled = [&](const std::filesystem::path& InSubmoduleRelPath) {
+        if (isExportDisabledByPolicy(InRoot.lexically_normal(), InSubmoduleRelPath)) {
+            skippedByPolicy.insert(InSubmoduleRelPath.generic_string());
+            return false;
+        }
+        return true;
+    };
+
+    auto emitPolicySkipHints = [&]() {
+        for (const auto& rel : skippedByPolicy) {
+            std::cout << "Skip export for " << rel
+                      << ": .gitmodules policy kog-export=false\n";
+        }
+    };
 
     // Always prepend the workspace root as the first entry
     ExportRecord rootRecord;
@@ -929,6 +986,9 @@ auto BuildExportList(const std::filesystem::path& InRoot,
 
     // Collect submodule paths for exclusion (multi-repo) or history (single-repo)
     for (const auto& repo : InDiscovered) {
+        if (!isRepoExportEnabled(repo)) {
+            continue;
+        }
         const auto normalizedPath = repo.path.lexically_normal();
         bool isRoot = false;
         std::error_code ec;
@@ -946,9 +1006,20 @@ auto BuildExportList(const std::filesystem::path& InRoot,
         }
     }
     const auto gitSubmodules = CollectSubmodulePathsFromGitStatus(normalizedRoot, InExec);
-    rootRecord.submodulePaths.insert(rootRecord.submodulePaths.end(), gitSubmodules.begin(), gitSubmodules.end());
+    for (const auto& relPath : gitSubmodules) {
+        if (!isRootSubmoduleExportEnabled(relPath)) {
+            continue;
+        }
+        rootRecord.submodulePaths.push_back(relPath);
+    }
     std::sort(rootRecord.submodulePaths.begin(), rootRecord.submodulePaths.end());
     rootRecord.submodulePaths.erase(std::unique(rootRecord.submodulePaths.begin(), rootRecord.submodulePaths.end()), rootRecord.submodulePaths.end());
+    rootRecord.submodulePaths.erase(
+        std::remove_if(rootRecord.submodulePaths.begin(), rootRecord.submodulePaths.end(),
+                       [&](const std::filesystem::path& InSubmoduleRelPath) {
+                           return !isRootSubmoduleExportEnabled(InSubmoduleRelPath);
+                       }),
+        rootRecord.submodulePaths.end());
 
     result.push_back(std::move(rootRecord));
 
@@ -965,6 +1036,9 @@ auto BuildExportList(const std::filesystem::path& InRoot,
     std::vector<std::filesystem::path> discoveredPaths;
     discoveredPaths.reserve(InDiscovered.size());
     for (const auto& repo : InDiscovered) {
+        if (!isRepoExportEnabled(repo)) {
+            continue;
+        }
         const auto p = repo.path.lexically_normal();
         std::error_code ec;
         if (std::filesystem::exists(p, ec) && std::filesystem::exists(normalizedRoot, ec) &&
@@ -1004,6 +1078,7 @@ auto BuildExportList(const std::filesystem::path& InRoot,
     };
 
     if (InNoRecursive || InSingle) {
+        emitPolicySkipHints();
         return result;
     }
 
@@ -1013,6 +1088,9 @@ auto BuildExportList(const std::filesystem::path& InRoot,
             const auto normalizedRepoPath = InRepoPath.lexically_normal();
 
             for (const auto& repo : InDiscovered) {
+                if (!isRepoExportEnabled(repo)) {
+                    continue;
+                }
                 const auto candidatePath = repo.path.lexically_normal();
                 std::error_code ec;
                 if (std::filesystem::exists(candidatePath, ec) && std::filesystem::exists(normalizedRepoPath, ec) &&
@@ -1035,13 +1113,21 @@ auto BuildExportList(const std::filesystem::path& InRoot,
             }
 
             const auto gitSubmodules = CollectSubmodulePathsFromGitStatus(normalizedRepoPath, InExec);
-            submodulePaths.insert(submodulePaths.end(), gitSubmodules.begin(), gitSubmodules.end());
+            for (const auto& relPath : gitSubmodules) {
+                if (isExportDisabledByPolicy(normalizedRepoPath, relPath)) {
+                    continue;
+                }
+                submodulePaths.push_back(relPath);
+            }
             std::sort(submodulePaths.begin(), submodulePaths.end());
             submodulePaths.erase(std::unique(submodulePaths.begin(), submodulePaths.end()), submodulePaths.end());
             return submodulePaths;
         };
 
         for (const auto& repo : InDiscovered) {
+            if (!isRepoExportEnabled(repo)) {
+                continue;
+            }
             const auto normalizedPath = repo.path.lexically_normal();
             std::error_code ec;
             bool isRoot = false;
@@ -1085,11 +1171,15 @@ auto BuildExportList(const std::filesystem::path& InRoot,
             }
             return A.relativeRepoPath < B.relativeRepoPath;
         });
+        emitPolicySkipHints();
         return result;
     }
 
     // Append discovered subrepos (skip any that match the root path)
     for (const auto& repo : InDiscovered) {
+        if (!isRepoExportEnabled(repo)) {
+            continue;
+        }
         const auto normalizedPath = repo.path.lexically_normal();
         std::error_code ec;
         bool isRoot = false;
@@ -1129,6 +1219,8 @@ auto BuildExportList(const std::filesystem::path& InRoot,
     std::sort(result.begin(), result.end(), [](const ExportRecord& A, const ExportRecord& B) {
         return A.relativeRepoPath < B.relativeRepoPath;
     });
+
+    emitPolicySkipHints();
 
     return result;
 }

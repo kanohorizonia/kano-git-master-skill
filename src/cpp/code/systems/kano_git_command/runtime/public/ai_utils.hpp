@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -7,6 +8,20 @@
 #include "shell_executor.hpp"
 
 namespace kano::git::commands {
+
+struct AiInvocationDiagnostics {
+    std::string purpose;
+    std::string requestedProvider;
+    std::string resolvedProvider;
+    std::string requestedModel;
+    std::string effectiveModel;
+    std::string modelMode;
+    bool yolo = false;
+    std::optional<std::filesystem::path> promptFile;
+    std::optional<std::filesystem::path> workingFile;
+    std::optional<std::filesystem::path> responseFile;
+    std::optional<std::chrono::seconds> timeout;
+};
 
 // --- String & Path Utilities ---
 auto Trim(std::string InValue) -> std::string;
@@ -37,6 +52,18 @@ void AppendModelArgsForProvider(std::vector<std::string>& OutArgs,
                                 const std::string& InModel);
 auto ExecuteStandaloneCopilot(const std::vector<std::string>& InArgs,
                               std::optional<std::filesystem::path> InWorkingDir = std::nullopt) -> shell::ExecResult;
+auto FormatCommandLineForLog(const std::string& InBinary, const std::vector<std::string>& InArgs) -> std::string;
+auto PrintAiInvocationDiagnostics(const std::string& InBinary,
+                                  const std::vector<std::string>& InArgs,
+                                  const AiInvocationDiagnostics& InDiagnostics) -> void;
+auto ExecuteCommandWithHeartbeat(const std::string& InBinary,
+                                 const std::vector<std::string>& InArgs,
+                                 shell::ExecMode InMode,
+                                 std::optional<std::filesystem::path> InWorkingDir,
+                                 const AiInvocationDiagnostics& InDiagnostics) -> shell::ExecResult;
+auto ExecuteStandaloneCopilotWithDiagnostics(const std::vector<std::string>& InArgs,
+                                             std::optional<std::filesystem::path> InWorkingDir,
+                                             const AiInvocationDiagnostics& InDiagnostics) -> shell::ExecResult;
 auto ExecuteCodexExec(std::optional<std::filesystem::path> InWorkingDir,
                       const std::string& InPrompt,
                       const std::string& InPurpose,

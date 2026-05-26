@@ -95,6 +95,8 @@ src/shell/test/smoke-release-online-build.sh <archive.tar>
 # Repo hygiene
 ./scripts/kog repo-hygiene check
 ./scripts/kog repo-hygiene fix
+./scripts/kog auth doctor
+./scripts/kog auth test --selected-remotes
 
 # Product export
 ./scripts/kog export --help
@@ -111,6 +113,10 @@ Unknown top-level commands now return a git-style error and suggest the most sim
 
 `kog fetch` recursively discovers repositories and runs parallel `git fetch` with `--all --prune --tags` defaults. Use `--remote <name>` to target one remote, `--jobs/-j auto|N` for concurrency, and `--dry-run` to preview commands.
 
+`kog auth doctor` inspects Git Credential Manager-facing configuration without storing tokens. It redacts credentials in any explicit `--url` input and reports the selected remote auth surface for the current repo or discovered workspace repos.
+
+`kog auth test` runs a non-interactive `git ls-remote ... HEAD` probe against the selected remote set, a single configured remote, all local remotes, or an explicit URL. It does not write tokens into remotes, does not persist credentials, and treats file/local remotes as skipped rather than failed.
+
 ## Sync and converge dry-run preflight
 
 `kog sync origin-latest --dry-run` and `kog converge --dry-run` are branch-preserving
@@ -123,6 +129,8 @@ Dry-run summaries are audit-first and must not be treated as clean when blockers
 If blockers are reported, resolve them first or run explicit Kano repair flows
 (`kog sync pre-commit`, `kog sync origin-latest`, `kog converge`) after reviewing
 the dry-run plan.
+
+`kog sync origin-latest`, `kog sync dev`, and default `kog sync` now run a Git Credential Manager-focused auth preflight against the selected HTTP(S) remote before fetch/rebase work begins. Use `--no-auth-preflight` to skip that check when you explicitly need old behavior.
 
 Do not treat raw `git submodule update` as the default repair path for these cases.
 

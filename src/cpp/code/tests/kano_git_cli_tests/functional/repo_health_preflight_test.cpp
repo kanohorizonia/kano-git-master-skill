@@ -38,6 +38,12 @@ auto RequireContains(const std::string& InText, const std::string& InNeedle) -> 
     REQUIRE(InText.find(InNeedle) != std::string::npos);
 }
 
+auto RequireNotContains(const std::string& InText, const std::string& InNeedle) -> void {
+    INFO("unexpected needle=" << InNeedle);
+    INFO(InText);
+    REQUIRE(InText.find(InNeedle) == std::string::npos);
+}
+
 auto WriteTextFile(const std::filesystem::path& InPath, const std::string& InText) -> void {
     std::filesystem::create_directories(InPath.parent_path());
     std::ofstream out(InPath, std::ios::binary | std::ios::trunc);
@@ -224,6 +230,55 @@ TEST_CASE("sync dry-run summary reports blockers instead of clean success", "[fu
     REQUIRE(output.find("blocked=0") == std::string::npos);
 
     RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("auth doctor redacts credentials in explicit URLs", "[functional][auth][doctor][redaction]") {
+    const auto sandbox = CreateSandboxWorkspace("auth-doctor-redaction");
+    const auto repo = (sandbox.root / "repo").lexically_normal();
+    InitRepo(repo);
+
+    const auto result = RunKog({
+        "auth",
+        "doctor",
+        "--repo",
+        repo.string(),
+        "--url",
+        "https://user:super-secret@example.invalid/org/repo.git",
+    }, repo);
+    const auto output = result.stdoutText + "\n" + result.stderrText;
+    RequireSuccess(result, "auth doctor explicit url should succeed");
+    RequireContains(output, "<redacted>@example.invalid");
+    RequireNotContains(output, "super-secret");
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
+TEST_CASE("auth test selected-remotes ignores non-selected broken remotes", "[functional][auth][test][selected-remotes]") {
+    auto ctx = CreateRemoteWithClone("auth-test-selected-remotes");
+    RequireSuccess(RunGit({"remote", "add", "broken", "file:///missing/path/for/fetch"}, ctx.clone), "add invalid remote");
+
+    const auto result = RunKog({"auth", "test", "--repo", ctx.clone.string(), "--selected-remotes"}, ctx.clone);
+    const auto output = result.stdoutText + "\n" + result.stderrText;
+    RequireSuccess(result, "auth test selected-remotes should only inspect the selected origin remote");
+    RequireContains(output, "AUTH_TEST_SKIPPED");
+    RequireContains(output, "failed=0");
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("sync dry-run blocks early on HTTP auth preflight failures", "[functional][sync][auth-preflight][connection]") {
+    const auto sandbox = CreateSandboxWorkspace("sync-auth-preflight-http");
+    const auto repo = (sandbox.root / "repo").lexically_normal();
+    InitRepo(repo);
+    RequireSuccess(RunGit({"remote", "add", "origin", "http://127.0.0.1:1/repo.git"}, repo), "add http origin");
+
+    const auto result = RunKog({"sync", "origin-latest", "--dry-run", "--jobs", "1", "--no-recursive"}, repo);
+    const auto output = result.stdoutText + "\n" + result.stderrText;
+    RequireFailure(result, "sync dry-run should fail before fetch when auth preflight cannot reach selected HTTP remote");
+    RequireContains(output, "AUTH_TEST_FAILED");
+    RequireContains(output, "FAILED_CONNECTION");
+
+    RemoveSandboxWorkspace(sandbox);
 }
 
 TEST_CASE("converge dry-run summary reports blockers from status preflight", "[functional][converge][dry-run][blockers]") {

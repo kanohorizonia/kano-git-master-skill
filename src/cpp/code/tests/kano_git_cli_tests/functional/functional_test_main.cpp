@@ -953,6 +953,53 @@ TEST_CASE("sync_conflict_fails_fast", "[functional][commit-push][post-sync]") {
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("agent_mode_commit_push_ai_auto_requires_prepared_plan_boundary",
+          "[functional][commit-push][agent-mode]") {
+    const auto ctx = CreateRemoteWithClone("agent-mode-cpa-boundary");
+    WriteTextFile(ctx.cloneRepo / "README.md", "seed\nagent mode boundary\n");
+
+    const auto result = RunKogWithEnv(
+        {"commit-push", "--ai-auto"},
+        ctx.cloneRepo,
+        {{"KANO_AGENT_MODE", "1"}});
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+
+    REQUIRE(result.exitCode != 0);
+    const auto merged = result.stdoutText + "\n" + result.stderrText;
+    REQUIRE(merged.find("agent mode cpa/commit-push cannot invoke internal AI auto-plan") != std::string::npos);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("repo_hygiene_archive_safe_prereq_failure_skips_fix_mutations",
+          "[functional][repo-hygiene][archive-safe]") {
+    const auto ctx = CreateRemoteWithClone("repo-hygiene-prereq-ordering");
+    const std::string scriptPath = "src/shell/test/pre-commit-quality-gate.sh";
+
+    RequireSuccess(
+        RunGit({"update-index", "--chmod=-x", scriptPath}, ctx.cloneRepo),
+        "mark quality gate non-executable");
+    std::error_code ec;
+    std::filesystem::remove((ctx.cloneRepo / scriptPath).lexically_normal(), ec);
+
+    const auto result = RunKog(
+        {"repo-hygiene", "--repo", ctx.cloneRepo.string(), "fix", "--archive-safe"},
+        ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode != 0);
+
+    const auto modeCheck = RunGit({"ls-files", "-s", "--", scriptPath}, ctx.cloneRepo);
+    RequireSuccess(modeCheck, "check script mode after failed archive-safe prereq");
+    REQUIRE(modeCheck.stdoutText.find("100644") != std::string::npos);
+
+    const auto merged = result.stdoutText + "\n" + result.stderrText;
+    REQUIRE(merged.find("Fixes skipped due to archive-safe prerequisite failures") != std::string::npos);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("commit_push_ai_auto_single_human_mode_fails_without_deterministic_fallback",
           "[.][functional][commit-push][ai][single]") {
     const auto ctx = CreateRemoteWithClone("commit-push-ai-single-fail-fast");

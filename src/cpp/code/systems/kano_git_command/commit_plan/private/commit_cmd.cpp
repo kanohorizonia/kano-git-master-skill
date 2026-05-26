@@ -2051,17 +2051,9 @@ auto PlanStageNeedsPreCommit(const CommitPlanStage InStage) -> bool {
     return InStage == CommitPlanStage::Commit || InStage == CommitPlanStage::Both;
 }
 
-auto ParseCommitPlan(const std::filesystem::path& InFile,
-                     std::string* OutError) -> std::optional<CommitPlanPayload> {
-    const auto payload = ReadFileText(InFile);
-    if (!payload.has_value()) {
-        if (OutError != nullptr) {
-            *OutError = "cannot read plan file";
-        }
-        return std::nullopt;
-    }
-
-    const auto text = Trim(*payload);
+auto ParseCommitPlanText(const std::string& InText,
+                         std::string* OutError) -> std::optional<CommitPlanPayload> {
+    const auto text = Trim(InText);
     if (text.empty()) {
         if (OutError != nullptr) {
             *OutError = "plan file is empty";
@@ -2139,6 +2131,42 @@ auto ParseCommitPlan(const std::filesystem::path& InFile,
         return std::nullopt;
     }
     return out;
+}
+
+auto ParseCommitPlan(const std::filesystem::path& InFile,
+                     std::string* OutError) -> std::optional<CommitPlanPayload> {
+    const auto payload = ReadFileText(InFile);
+    if (!payload.has_value()) {
+        if (OutError != nullptr) {
+            *OutError = "cannot read plan file";
+        }
+        return std::nullopt;
+    }
+
+    return ParseCommitPlanText(*payload, OutError);
+}
+
+auto LoadNormalizedCommitPlan(const std::filesystem::path& InWorkspaceRoot,
+                              const std::filesystem::path& InPlanFile,
+                              std::string* OutError) -> std::optional<CommitPlanPayload> {
+    const auto payload = ReadFileText(InPlanFile);
+    if (!payload.has_value()) {
+        if (OutError != nullptr) {
+            *OutError = "cannot read plan file";
+        }
+        return std::nullopt;
+    }
+
+    std::string normalizeError;
+    const auto normalized = NormalizeCommitPlanRepoPaths(InWorkspaceRoot, *payload, &normalizeError);
+    if (!normalized.has_value()) {
+        if (OutError != nullptr) {
+            *OutError = normalizeError.empty() ? std::string("invalid plan repo paths") : normalizeError;
+        }
+        return std::nullopt;
+    }
+
+    return ParseCommitPlanText(*normalized, OutError);
 }
 
 auto IsPlaceholderValue(const std::string& InValue) -> bool {
@@ -3006,12 +3034,17 @@ auto BuildCommitTaskGraph(const std::vector<workspace::RepoRecord>& InRepoRecord
     return graph;
 }
 
+auto AppendExecResult(std::string* OutStdout, std::string* OutStderr, const shell::ExecResult& InResult) -> void;
+
 auto StageCommitItemForPlan(const std::filesystem::path& InWorkspaceRoot,
                             const std::filesystem::path& InRepo,
                             const RepoCommitPlanEntry::CommitItem& InItem,
                             const std::unordered_set<std::string>& InPlanRepoKeys,
+                            std::string* OutStdout,
+                            std::string* OutStderr,
                             std::string* OutError) -> bool {
-    const auto reset = GitPassThrough(InRepo, {"reset", "-q"});
+    const auto reset = GitCapture(InRepo, {"reset", "-q"});
+    AppendExecResult(OutStdout, OutStderr, reset);
     if (reset.exitCode != 0) {
         if (OutError != nullptr) {
             *OutError = "git reset failed before plan-staged commit";
@@ -3065,7 +3098,8 @@ auto StageCommitItemForPlan(const std::filesystem::path& InWorkspaceRoot,
         }
     }
 
-    const auto add = GitPassThrough(InRepo, args);
+    const auto add = GitCapture(InRepo, args);
+    AppendExecResult(OutStdout, OutStderr, add);
     if (add.exitCode != 0) {
         if (OutError != nullptr) {
             *OutError = "git add failed for plan include/exclude pathspec";
@@ -3287,7 +3321,10 @@ auto HasRemote(const std::filesystem::path& InRepo, const std::string& InRemote)
     return out.exitCode == 0;
 }
 
-auto PushRepo(const std::filesystem::path& InRepo, const std::string& InBranch) -> bool {
+auto PushRepo(const std::filesystem::path& InRepo,
+             const std::string& InBranch,
+             std::string* OutStdout,
+             std::string* OutStderr) -> bool {
     const std::vector<std::string> remotes = {"origin-ssh", "origin-http", "origin"};
     bool triedRemote = false;
     for (const auto& remote : remotes) {
@@ -3295,7 +3332,8 @@ auto PushRepo(const std::filesystem::path& InRepo, const std::string& InBranch) 
             continue;
         }
         triedRemote = true;
-        const auto push = GitPassThrough(InRepo, {"push", remote, InBranch});
+        const auto push = GitCapture(InRepo, {"push", remote, InBranch});
+        AppendExecResult(OutStdout, OutStderr, push);
         if (push.exitCode == 0) {
             return true;
         }
@@ -3311,6 +3349,39 @@ auto HeadCommitTitle(const std::filesystem::path& InRepo) -> std::string {
     return Trim(out.stdoutStr);
 }
 
+auto AppendExecResult(std::string* OutStdout, std::string* OutStderr, const shell::ExecResult& InResult) -> void;
+
+auto AppendExecResult(std::string* OutStdout, std::string* OutStderr, const shell::ExecResult& InResult) -> void {
+    if (OutStdout != nullptr && !InResult.stdoutStr.empty()) {
+        OutStdout->append(InResult.stdoutStr);
+    }
+    if (OutStderr != nullptr && !InResult.stderrStr.empty()) {
+        OutStderr->append(InResult.stderrStr);
+    }
+}
+
+template <typename TRepoResult>
+auto PrintBufferedRepoOutput(const std::filesystem::path& InWorkspaceRoot, const TRepoResult& InResult) -> void {
+    if (InResult.stdoutText.empty() && InResult.stderrText.empty()) {
+        return;
+    }
+
+    const auto label = DisplayRepoLabel(InWorkspaceRoot, InResult.repo);
+    std::cout << "\n[" << label << "] output\n";
+    if (!InResult.stdoutText.empty()) {
+        std::cout << "stdout:\n" << InResult.stdoutText;
+        if (!InResult.stdoutText.ends_with('\n')) {
+            std::cout << '\n';
+        }
+    }
+    if (!InResult.stderrText.empty()) {
+        std::cout << "stderr:\n" << InResult.stderrText;
+        if (!InResult.stderrText.ends_with('\n')) {
+            std::cout << '\n';
+        }
+    }
+}
+
 auto CommitSingleRepo(const std::filesystem::path& InWorkspaceRoot,
                      const std::filesystem::path& InRepo,
                      const std::string& InMessage,
@@ -3319,30 +3390,53 @@ auto CommitSingleRepo(const std::filesystem::path& InWorkspaceRoot,
                      const NativeAiConfig& InAi) -> RepoCommitResult {
     RepoCommitResult result;
     result.repo = InRepo;
+    std::string capturedStdout;
+    std::string capturedStderr;
+    shell::ScopedCommandLogCapture commandLogCapture(shell::CommandLogCallbacks{
+        .onStdout = [&](const std::string& line) {
+            capturedStdout.append(line);
+        },
+        .onStderr = [&](const std::string& line) {
+            capturedStderr.append(line);
+        },
+    });
+    shell::ScopedConsoleWriteSuppression suppressShellConsoleWrites;
+    auto appendResult = [&](const shell::ExecResult& exec) {
+        AppendExecResult(&capturedStdout, &capturedStderr, exec);
+    };
 
     auto report = RunCommitPreflight(InRepo);
     if (!report.inRepo) {
         result.failed = true;
         result.note = "not a git repository";
+        result.stdoutText = std::move(capturedStdout);
+        result.stderrText = std::move(capturedStderr);
         return result;
     }
 
     if (!HasAnyChanges(report)) {
         result.note = "no changes";
+        result.stdoutText = std::move(capturedStdout);
+        result.stderrText = std::move(capturedStderr);
         return result;
     }
 
     if (InStagedOnly && report.stagedCount == 0) {
         result.note = "staged-only with nothing staged";
+        result.stdoutText = std::move(capturedStdout);
+        result.stderrText = std::move(capturedStderr);
         return result;
     }
 
     if (!InStagedOnly && (report.unstagedCount > 0 || report.untrackedCount > 0)) {
         std::vector<std::string> excludedReserved;
-        const auto add = GitPassThrough(InRepo, BuildGitAddAllArgs(report, &excludedReserved));
+        const auto add = GitCapture(InRepo, BuildGitAddAllArgs(report, &excludedReserved));
+        appendResult(add);
         if (add.exitCode != 0) {
             result.failed = true;
             result.note = "git add -A failed";
+            result.stdoutText = std::move(capturedStdout);
+            result.stderrText = std::move(capturedStderr);
             return result;
         }
         MaybeWarnAboutExcludedPaths(InRepo, excludedReserved);
@@ -3351,6 +3445,8 @@ auto CommitSingleRepo(const std::filesystem::path& InWorkspaceRoot,
 
     if (report.stagedCount == 0) {
         result.note = "nothing staged after preparation";
+        result.stdoutText = std::move(capturedStdout);
+        result.stderrText = std::move(capturedStderr);
         return result;
     }
 
@@ -3364,6 +3460,8 @@ auto CommitSingleRepo(const std::filesystem::path& InWorkspaceRoot,
             if (InAi.enabled) {
                 result.failed = true;
                 result.note = "ai message generation failed: " + aiFailureReason;
+                result.stdoutText = std::move(capturedStdout);
+                result.stderrText = std::move(capturedStderr);
                 return result;
             }
             commitMessage = BuildAutoCommitMessage(InWorkspaceRoot, InRepo, report);
@@ -3376,18 +3474,25 @@ auto CommitSingleRepo(const std::filesystem::path& InWorkspaceRoot,
     if (!InAi.enabled && ShouldBlockByAiReview(InRepo, commitMessage, InAi, reviewReason)) {
         result.failed = true;
         result.note = "blocked by ai review: " + reviewReason;
+        result.stdoutText = std::move(capturedStdout);
+        result.stderrText = std::move(capturedStderr);
         return result;
     }
 
-    const auto commit = GitPassThrough(InRepo, {"commit", "-m", commitMessage});
+    const auto commit = GitCapture(InRepo, {"commit", "-m", commitMessage});
+    appendResult(commit);
     if (commit.exitCode != 0) {
         const auto status = RunCommitPreflight(InRepo);
         if (status.stagedCount == 0) {
             result.note = "nothing to commit";
+            result.stdoutText = std::move(capturedStdout);
+            result.stderrText = std::move(capturedStderr);
             return result;
         }
         result.failed = true;
         result.note = "git commit failed";
+        result.stdoutText = std::move(capturedStdout);
+        result.stderrText = std::move(capturedStderr);
         return result;
     }
 
@@ -3402,17 +3507,24 @@ auto CommitSingleRepo(const std::filesystem::path& InWorkspaceRoot,
         if (branch.empty()) {
             result.failed = true;
             result.note = "cannot push: detached HEAD or unknown branch";
+            result.stdoutText = std::move(capturedStdout);
+            result.stderrText = std::move(capturedStderr);
             return result;
         }
 
-        if (!PushRepo(InRepo, branch)) {
+        if (!PushRepo(InRepo, branch, &capturedStdout, &capturedStderr)) {
             result.failed = true;
             result.note = "push failed on all origin remotes";
+            result.stdoutText = std::move(capturedStdout);
+            result.stderrText = std::move(capturedStderr);
             return result;
         }
         result.pushed = true;
         result.note += result.note.empty() ? "committed + pushed" : " + pushed";
     }
+
+    result.stdoutText = std::move(capturedStdout);
+    result.stderrText = std::move(capturedStderr);
 
     return result;
 }
@@ -3441,11 +3553,27 @@ auto AmendSingleRepo(const std::filesystem::path& InWorkspaceRoot,
                     const NativeAiConfig& InAi) -> RepoAmendResult {
     RepoAmendResult result;
     result.repo = InRepo;
+    std::string capturedStdout;
+    std::string capturedStderr;
+    shell::ScopedCommandLogCapture commandLogCapture(shell::CommandLogCallbacks{
+        .onStdout = [&](const std::string& line) {
+            capturedStdout.append(line);
+        },
+        .onStderr = [&](const std::string& line) {
+            capturedStderr.append(line);
+        },
+    });
+    shell::ScopedConsoleWriteSuppression suppressShellConsoleWrites;
+    auto appendResult = [&](const shell::ExecResult& exec) {
+        AppendExecResult(&capturedStdout, &capturedStderr, exec);
+    };
 
     auto report = RunCommitPreflight(InRepo);
     if (!report.inRepo) {
         result.failed = true;
         result.note = "not a git repository";
+        result.stdoutText = std::move(capturedStdout);
+        result.stderrText = std::move(capturedStderr);
         return result;
     }
 
@@ -3454,28 +3582,38 @@ auto AmendSingleRepo(const std::filesystem::path& InWorkspaceRoot,
         if (upstream.empty()) {
             result.failed = true;
             result.note = "combine requires tracking upstream (@{upstream})";
+            result.stdoutText = std::move(capturedStdout);
+            result.stderrText = std::move(capturedStderr);
             return result;
         }
 
         const int unpushedCount = CountUnpushedCommits(InRepo, upstream);
         if (unpushedCount <= 0) {
             result.note = "no local unpushed commits to combine";
+            result.stdoutText = std::move(capturedStdout);
+            result.stderrText = std::move(capturedStderr);
             return result;
         }
 
-        const auto softReset = GitPassThrough(InRepo, {"reset", "--soft", upstream});
+        const auto softReset = GitCapture(InRepo, {"reset", "--soft", upstream});
+        appendResult(softReset);
         if (softReset.exitCode != 0) {
             result.failed = true;
             result.note = "git reset --soft to upstream failed";
+            result.stdoutText = std::move(capturedStdout);
+            result.stderrText = std::move(capturedStderr);
             return result;
         }
 
         if (!InStagedOnly) {
             std::vector<std::string> excludedReserved;
-            const auto add = GitPassThrough(InRepo, BuildGitAddAllArgs(report, &excludedReserved));
+            const auto add = GitCapture(InRepo, BuildGitAddAllArgs(report, &excludedReserved));
+            appendResult(add);
             if (add.exitCode != 0) {
                 result.failed = true;
                 result.note = "git add -A failed after combine reset";
+                result.stdoutText = std::move(capturedStdout);
+                result.stderrText = std::move(capturedStderr);
                 return result;
             }
             MaybeWarnAboutExcludedPaths(InRepo, excludedReserved);
@@ -3484,6 +3622,8 @@ auto AmendSingleRepo(const std::filesystem::path& InWorkspaceRoot,
         report = RunCommitPreflight(InRepo);
         if (report.stagedCount == 0) {
             result.note = "no staged content after combine preparation";
+            result.stdoutText = std::move(capturedStdout);
+            result.stderrText = std::move(capturedStderr);
             return result;
         }
 
@@ -3497,6 +3637,8 @@ auto AmendSingleRepo(const std::filesystem::path& InWorkspaceRoot,
                 if (InAi.enabled) {
                     result.failed = true;
                     result.note = "ai message generation failed: " + aiFailureReason;
+                    result.stdoutText = std::move(capturedStdout);
+                    result.stderrText = std::move(capturedStderr);
                     return result;
                 }
                 commitMessage = BuildCombineFallbackMessage(InWorkspaceRoot, InRepo, unpushedCount, report);
@@ -3509,13 +3651,18 @@ auto AmendSingleRepo(const std::filesystem::path& InWorkspaceRoot,
         if (!InAi.enabled && ShouldBlockByAiReview(InRepo, commitMessage, InAi, reviewReason)) {
             result.failed = true;
             result.note = "blocked by ai review: " + reviewReason;
+            result.stdoutText = std::move(capturedStdout);
+            result.stderrText = std::move(capturedStderr);
             return result;
         }
 
-        const auto commit = GitPassThrough(InRepo, {"commit", "-m", commitMessage});
+        const auto commit = GitCapture(InRepo, {"commit", "-m", commitMessage});
+        appendResult(commit);
         if (commit.exitCode != 0) {
             result.failed = true;
             result.note = "git commit failed after combine";
+            result.stdoutText = std::move(capturedStdout);
+            result.stderrText = std::move(capturedStderr);
             return result;
         }
 
@@ -3525,15 +3672,20 @@ auto AmendSingleRepo(const std::filesystem::path& InWorkspaceRoot,
         if (result.note.empty()) {
             result.note = "combined unpushed commits";
         }
+        result.stdoutText = std::move(capturedStdout);
+        result.stderrText = std::move(capturedStderr);
         return result;
     }
 
     if (!InStagedOnly && (report.unstagedCount > 0 || report.untrackedCount > 0)) {
         std::vector<std::string> excludedReserved;
-        const auto add = GitPassThrough(InRepo, BuildGitAddAllArgs(report, &excludedReserved));
+        const auto add = GitCapture(InRepo, BuildGitAddAllArgs(report, &excludedReserved));
+        appendResult(add);
         if (add.exitCode != 0) {
             result.failed = true;
             result.note = "git add -A failed";
+            result.stdoutText = std::move(capturedStdout);
+            result.stderrText = std::move(capturedStderr);
             return result;
         }
         MaybeWarnAboutExcludedPaths(InRepo, excludedReserved);
@@ -3541,9 +3693,12 @@ auto AmendSingleRepo(const std::filesystem::path& InWorkspaceRoot,
     }
 
     const auto headExists = GitCapture(InRepo, {"rev-parse", "--verify", "HEAD"});
+    appendResult(headExists);
     if (headExists.exitCode != 0) {
         result.failed = true;
         result.note = "amend requires at least one existing commit";
+        result.stdoutText = std::move(capturedStdout);
+        result.stderrText = std::move(capturedStderr);
         return result;
     }
 
@@ -3554,6 +3709,8 @@ auto AmendSingleRepo(const std::filesystem::path& InWorkspaceRoot,
         if (commitMessage.empty()) {
             result.failed = true;
             result.note = "ai message generation failed: " + aiFailureReason;
+            result.stdoutText = std::move(capturedStdout);
+            result.stderrText = std::move(capturedStderr);
             return result;
         } else {
             result.note = "amended with ai-generated message";
@@ -3565,6 +3722,8 @@ auto AmendSingleRepo(const std::filesystem::path& InWorkspaceRoot,
         if (!InAi.enabled && ShouldBlockByAiReview(InRepo, commitMessage, InAi, reviewReason)) {
             result.failed = true;
             result.note = "blocked by ai review: " + reviewReason;
+            result.stdoutText = std::move(capturedStdout);
+            result.stderrText = std::move(capturedStderr);
             return result;
         }
     }
@@ -3577,10 +3736,13 @@ auto AmendSingleRepo(const std::filesystem::path& InWorkspaceRoot,
         amendArgs.push_back("--no-edit");
     }
 
-    const auto amend = GitPassThrough(InRepo, amendArgs);
+    const auto amend = GitCapture(InRepo, amendArgs);
+    appendResult(amend);
     if (amend.exitCode != 0) {
         result.failed = true;
         result.note = "git commit --amend failed";
+        result.stdoutText = std::move(capturedStdout);
+        result.stderrText = std::move(capturedStderr);
         return result;
     }
 
@@ -3589,6 +3751,8 @@ auto AmendSingleRepo(const std::filesystem::path& InWorkspaceRoot,
     if (result.note.empty()) {
         result.note = "amended HEAD";
     }
+    result.stdoutText = std::move(capturedStdout);
+    result.stderrText = std::move(capturedStderr);
     return result;
 }
 
@@ -3657,6 +3821,10 @@ auto PrintCommitSummary(const std::filesystem::path& InWorkspaceRoot,
         }
     }
 
+    for (const auto& item : InResults) {
+        PrintBufferedRepoOutput(InWorkspaceRoot, item);
+    }
+
     std::cout << "\nTotals: committed=" << committed
               << " pushed=" << pushed
               << " skipped=" << skipped
@@ -3717,6 +3885,10 @@ auto PrintAmendSummary(const std::filesystem::path& InWorkspaceRoot,
         std::cout << std::left << std::setw(36) << repoLabel
                   << std::setw(12) << status
                   << detail << "\n";
+    }
+
+    for (const auto& item : InResults) {
+        PrintBufferedRepoOutput(InWorkspaceRoot, item);
     }
 
     std::cout << "\nTotals: amended=" << amended
@@ -3887,7 +4059,7 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
 
     std::string planError;
     const auto normalizedCommitPlanPath = NormalizeInputPathForCurrentPlatform(InPlanFile);
-    const auto parsed = ParseCommitPlan(std::filesystem::path(normalizedCommitPlanPath), &planError);
+    const auto parsed = LoadNormalizedCommitPlan(workspaceRoot, std::filesystem::path(normalizedCommitPlanPath), &planError);
     if (!parsed.has_value()) {
         std::cerr << "Error: invalid --plan-file: " << normalizedCommitPlanPath;
         if (!planError.empty()) {
@@ -4006,7 +4178,7 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
                 InNode.repoCommitCount > 1 || !repoMessage.include.empty() || !repoMessage.exclude.empty();
             if (needsPlanStaging) {
                 std::string stageError;
-                if (!StageCommitItemForPlan(workspaceRoot, repo, repoMessage, planRepoKeys, &stageError)) {
+                if (!StageCommitItemForPlan(workspaceRoot, repo, repoMessage, planRepoKeys, nullptr, nullptr, &stageError)) {
                     RepoCommitResult result;
                     result.repo = repo;
                     if (IsEmptyPlanStageError(stageError)) {
@@ -4119,7 +4291,7 @@ auto RunAmendNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
 
     std::string planError;
     const auto normalizedCommitPlanPath = NormalizeInputPathForCurrentPlatform(InPlanFile);
-    const auto parsed = ParseCommitPlan(std::filesystem::path(normalizedCommitPlanPath), &planError);
+    const auto parsed = LoadNormalizedCommitPlan(workspaceRoot, std::filesystem::path(normalizedCommitPlanPath), &planError);
     if (!parsed.has_value()) {
         std::cerr << "Error: invalid --plan-file: " << normalizedCommitPlanPath;
         if (!planError.empty()) {
@@ -4877,7 +5049,7 @@ void RegisterCommit(CLI::App& InApp) {
 
             std::string planError;
             const auto normalizedCommitPlanPath = NormalizeInputPathForCurrentPlatform(*commitPlanFile);
-            const auto parsed = ParseCommitPlan(std::filesystem::path(normalizedCommitPlanPath), &planError);
+            const auto parsed = LoadNormalizedCommitPlan(workspaceRoot, std::filesystem::path(normalizedCommitPlanPath), &planError);
             if (!parsed.has_value()) {
                 std::cerr << "Error: invalid --plan-file: " << normalizedCommitPlanPath;
                 if (!planError.empty()) {
@@ -5015,7 +5187,7 @@ void RegisterCommit(CLI::App& InApp) {
                 isPlanMode && (InNode.repoCommitCount > 1 || !repoMessage.include.empty() || !repoMessage.exclude.empty());
             if (needsPlanStaging) {
                 std::string stageError;
-                if (!StageCommitItemForPlan(workspaceRoot, repo, repoMessage, planRepoKeys, &stageError)) {
+                if (!StageCommitItemForPlan(workspaceRoot, repo, repoMessage, planRepoKeys, nullptr, nullptr, &stageError)) {
                     RepoCommitResult result;
                     result.repo = repo;
                     if (IsEmptyPlanStageError(stageError)) {
@@ -5285,7 +5457,7 @@ void RegisterAmend(CLI::App& InApp) {
         if (!amendPlanFile->empty()) {
             std::string planError;
             const auto normalizedPlanPath = NormalizeInputPathForCurrentPlatform(*amendPlanFile);
-            const auto parsed = ParseCommitPlan(std::filesystem::path(normalizedPlanPath), &planError);
+            const auto parsed = LoadNormalizedCommitPlan(workspaceRoot, std::filesystem::path(normalizedPlanPath), &planError);
             if (!parsed.has_value()) {
                 std::cerr << "Error: invalid --plan-file: " << normalizedPlanPath;
                 if (!planError.empty()) {

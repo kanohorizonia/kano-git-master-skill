@@ -1,15 +1,117 @@
 #include "ai_utils.hpp"
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <fstream>
+#include <future>
 #include <sstream>
 #include <iomanip>
 #include <iostream>
+#include <thread>
 
 #include <format>
 
 namespace kano::git::commands {
+
+namespace {
+
+auto LooksSensitiveKey(const std::string& InValue) -> bool {
+    const auto value = ToLower(InValue);
+    return value.find("token") != std::string::npos ||
+           value.find("secret") != std::string::npos ||
+           value.find("password") != std::string::npos ||
+           value.find("authorization") != std::string::npos ||
+           value.find("bearer") != std::string::npos ||
+           value.find("api-key") != std::string::npos ||
+           value.find("apikey") != std::string::npos ||
+           value.find("access_token") != std::string::npos ||
+           value.find("refresh_token") != std::string::npos;
+}
+
+auto QuoteForShellLog(const std::string& InValue) -> std::string {
+    if (InValue.find_first_of(" \t\"'") == std::string::npos) {
+        return InValue;
+    }
+    std::string quoted = "\"";
+    for (const char ch : InValue) {
+        if (ch == '"' || ch == '\\') {
+            quoted.push_back('\\');
+        }
+        quoted.push_back(ch);
+    }
+    quoted.push_back('"');
+    return quoted;
+}
+
+auto RedactCommandTokens(std::vector<std::string> InTokens) -> std::vector<std::string> {
+    bool redactNext = false;
+    for (auto& token : InTokens) {
+        if (redactNext) {
+            token = "<redacted>";
+            redactNext = false;
+            continue;
+        }
+
+        const auto lower = ToLower(token);
+        const auto eqPos = token.find('=');
+        if (eqPos != std::string::npos) {
+            const auto key = token.substr(0, eqPos);
+            if (LooksSensitiveKey(key)) {
+                token = key + "=<redacted>";
+                continue;
+            }
+        }
+
+        if (LooksSensitiveKey(token) || lower == "--token" || lower == "--api-key" || lower == "--password" ||
+            lower == "--authorization" || lower == "-h") {
+            token = "<redacted>";
+            redactNext = true;
+            continue;
+        }
+
+        if (lower.rfind("bearer ", 0) == 0 || lower.find("authorization:") != std::string::npos) {
+            token = "<redacted>";
+        }
+    }
+    return InTokens;
+}
+
+auto ParseHeartbeatIntervalSeconds() -> std::chrono::seconds {
+    const auto defaultInterval = std::chrono::seconds{30};
+    const char* overrideRaw = std::getenv("KOG_AI_HEARTBEAT_SECONDS");
+    if (overrideRaw == nullptr || overrideRaw[0] == '\0') {
+        return defaultInterval;
+    }
+    try {
+        const int value = std::stoi(overrideRaw);
+        if (value <= 0) {
+            return defaultInterval;
+        }
+        auto isTruthy = [](const char* InValue) {
+            if (InValue == nullptr) {
+                return false;
+            }
+            const std::string text = ToLower(Trim(std::string(InValue)));
+            return text == "1" || text == "true" || text == "yes" || text == "on";
+        };
+        if (!isTruthy(std::getenv("KOG_DEBUG")) && !isTruthy(std::getenv("KOG_TEST_AI_HEARTBEAT"))) {
+            return defaultInterval;
+        }
+        return std::chrono::seconds{value};
+    } catch (...) {
+        return defaultInterval;
+    }
+}
+
+auto FormatOptionalPath(const std::optional<std::filesystem::path>& InPath) -> std::string {
+    if (!InPath.has_value()) {
+        return "<unknown>";
+    }
+    return InPath->lexically_normal().generic_string();
+}
+
+} // namespace
 
 auto Trim(std::string InValue) -> std::string {
     while (!InValue.empty() && (InValue.back() == '\n' || InValue.back() == '\r' || InValue.back() == ' ' || InValue.back() == '\t')) {
@@ -182,6 +284,89 @@ static auto TryRunTestAiStubInAiUtils() -> std::optional<shell::ExecResult> {
     return out;
 }
 
+auto FormatCommandLineForLog(const std::string& InBinary, const std::vector<std::string>& InArgs) -> std::string {
+    std::vector<std::string> tokens;
+    tokens.reserve(InArgs.size() + 1);
+    tokens.push_back(InBinary);
+    tokens.insert(tokens.end(), InArgs.begin(), InArgs.end());
+    const auto redacted = RedactCommandTokens(std::move(tokens));
+    std::ostringstream oss;
+    for (std::size_t i = 0; i < redacted.size(); ++i) {
+        if (i > 0) {
+            oss << ' ';
+        }
+        oss << QuoteForShellLog(redacted[i]);
+    }
+    return oss.str();
+}
+
+auto PrintAiInvocationDiagnostics(const std::string& InBinary,
+                                  const std::vector<std::string>& InArgs,
+                                  const AiInvocationDiagnostics& InDiagnostics) -> void {
+    std::cout << "\n[kog ai] -- AI Invocation (" << InDiagnostics.purpose << ") --\n";
+    std::cout << "[kog ai] requested provider : " << InDiagnostics.requestedProvider << "\n";
+    std::cout << "[kog ai] resolved provider  : " << InDiagnostics.resolvedProvider << "\n";
+    std::cout << "[kog ai] requested model    : " << InDiagnostics.requestedModel << "\n";
+    std::cout << "[kog ai] effective model    : " << InDiagnostics.effectiveModel << "\n";
+    std::cout << "[kog ai] model mode         : " << InDiagnostics.modelMode << "\n";
+    std::cout << "[kog ai] yolo               : " << (InDiagnostics.yolo ? "true" : "false") << "\n";
+    std::cout << "[kog ai] timeout            : ";
+    if (InDiagnostics.timeout.has_value()) {
+        std::cout << InDiagnostics.timeout->count() << "s";
+    } else {
+        std::cout << "none";
+    }
+    std::cout << "\n";
+    std::cout << "[kog ai] prompt dir         : ";
+    if (InDiagnostics.promptFile.has_value()) {
+        std::cout << InDiagnostics.promptFile->lexically_normal().parent_path().generic_string();
+    } else {
+        std::cout << "<unknown>";
+    }
+    std::cout << "\n";
+    std::cout << "[kog ai] prompt file        : " << FormatOptionalPath(InDiagnostics.promptFile) << "\n";
+    std::cout << "[kog ai] working plan       : " << FormatOptionalPath(InDiagnostics.workingFile) << "\n";
+    std::cout << "[kog ai] response file      : " << FormatOptionalPath(InDiagnostics.responseFile) << "\n";
+    std::cout << "[kog ai] response dir       : ";
+    if (InDiagnostics.responseFile.has_value()) {
+        std::cout << InDiagnostics.responseFile->lexically_normal().parent_path().generic_string();
+    } else {
+        std::cout << "<unknown>";
+    }
+    std::cout << "\n";
+    std::cout << "[kog ai] command            : " << FormatCommandLineForLog(InBinary, InArgs) << "\n";
+    std::cout.flush();
+}
+
+auto ExecuteCommandWithHeartbeat(const std::string& InBinary,
+                                 const std::vector<std::string>& InArgs,
+                                 shell::ExecMode InMode,
+                                 std::optional<std::filesystem::path> InWorkingDir,
+                                 const AiInvocationDiagnostics& InDiagnostics) -> shell::ExecResult {
+    const auto heartbeatInterval = ParseHeartbeatIntervalSeconds();
+    auto worker = std::async(std::launch::async, [&]() {
+        return shell::ExecuteCommand(InBinary, InArgs, InMode, InWorkingDir);
+    });
+
+    const auto start = std::chrono::steady_clock::now();
+    while (worker.wait_for(heartbeatInterval) != std::future_status::ready) {
+        const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - start).count();
+        std::cout << "[kog ai] waiting for " << InDiagnostics.resolvedProvider << " response... elapsed=" << elapsed << "s";
+        if (InDiagnostics.responseFile.has_value()) {
+            std::error_code ec;
+            const auto& responsePath = *InDiagnostics.responseFile;
+            const bool exists = std::filesystem::exists(responsePath, ec) && !ec;
+            std::cout << " response_exists=" << (exists ? "true" : "false");
+            if (exists) {
+                std::cout << " response_size=" << std::filesystem::file_size(responsePath, ec);
+            }
+        }
+        std::cout << "\n";
+        std::cout.flush();
+    }
+    return worker.get();
+}
+
 auto ExecuteStandaloneCopilot(const std::vector<std::string>& InArgs,
                               std::optional<std::filesystem::path> InWorkingDir) -> shell::ExecResult {
     if (const auto testResult = TryRunTestAiStubInAiUtils(); testResult.has_value()) {
@@ -197,6 +382,24 @@ auto ExecuteStandaloneCopilot(const std::vector<std::string>& InArgs,
         return shell::ExecuteCommand("gh", ghArgs, shell::ExecMode::Capture, InWorkingDir);
     }
     return shell::ExecuteCommand(standaloneCopilot, InArgs, shell::ExecMode::Capture, InWorkingDir);
+}
+
+auto ExecuteStandaloneCopilotWithDiagnostics(const std::vector<std::string>& InArgs,
+                                             std::optional<std::filesystem::path> InWorkingDir,
+                                             const AiInvocationDiagnostics& InDiagnostics) -> shell::ExecResult {
+    if (const auto testResult = TryRunTestAiStubInAiUtils(); testResult.has_value()) {
+        return *testResult;
+    }
+    const auto standaloneCopilot = CopilotStandaloneCommand();
+    if (HasCommand(standaloneCopilot, {"--help"})) {
+        return ExecuteCommandWithHeartbeat(standaloneCopilot, InArgs, shell::ExecMode::Capture, InWorkingDir, InDiagnostics);
+    }
+    if (GhCopilotAvailable()) {
+        std::vector<std::string> ghArgs{"copilot", "--"};
+        ghArgs.insert(ghArgs.end(), InArgs.begin(), InArgs.end());
+        return ExecuteCommandWithHeartbeat("gh", ghArgs, shell::ExecMode::Capture, InWorkingDir, InDiagnostics);
+    }
+    return ExecuteCommandWithHeartbeat(standaloneCopilot, InArgs, shell::ExecMode::Capture, InWorkingDir, InDiagnostics);
 }
 
 static auto IsTruthyEnv(const char* InValue) -> bool {

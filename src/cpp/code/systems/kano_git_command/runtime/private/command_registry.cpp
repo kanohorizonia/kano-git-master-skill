@@ -9,6 +9,7 @@ void RegisterAll(CLI::App& InApp) {
     // Top-level commands sorted A-Z for predictable help output
     RegisterAmend(InApp);
     RegisterAi(InApp);
+    RegisterAuth(InApp);
     RegisterBranch(InApp);
     RegisterCache(InApp);
     RegisterCherryPick(InApp);
@@ -80,6 +81,7 @@ void RegisterAll(CLI::App& InApp) {
 
     // 2. Repository Management
     const std::string repoGroup = "2. Repository Management";
+    setGroup("auth", repoGroup);
     setGroup("clone", repoGroup);
     setGroup("branch", repoGroup);
     setGroup("remote", repoGroup);

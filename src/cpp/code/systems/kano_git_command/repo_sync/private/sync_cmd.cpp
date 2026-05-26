@@ -451,6 +451,59 @@ struct RemoteSelectionResult {
     std::vector<std::string> ignoredRemotes;
 };
 
+struct AuthTarget {
+    std::filesystem::path repoPath;
+    std::string repoLabel;
+    std::string remoteName;
+    std::string remoteUrl;
+    std::string source;
+    std::string detail;
+    bool explicitUrl{false};
+};
+
+struct AuthProbeResult {
+    bool success{false};
+    bool skipped{false};
+    std::string category;
+    std::string summary;
+    std::string stdoutText;
+    std::string stderrText;
+};
+
+enum class AuthProbeScope {
+    CommandTest,
+    SyncPreflight,
+};
+
+struct AuthTargetSelectionOptions {
+    std::filesystem::path repoRoot;
+    std::string explicitRemote;
+    std::string explicitUrl;
+    bool selectedRemotes{false};
+    bool allLocalRemotes{false};
+    bool recursive{true};
+    bool noCache{false};
+    bool refreshCache{false};
+};
+
+auto SelectSyncRemote(const std::filesystem::path& InWorkspaceRoot,
+                      const std::filesystem::path& InRepo,
+                      const std::string& InPreferredRemote,
+                      bool InIsRegistered,
+                      bool InIsRoot,
+                      bool InIsDetached) -> RemoteSelectionResult;
+
+auto CurrentBranch(const std::filesystem::path& InRepo) -> std::string;
+
+auto BuildSyncPlans(
+    const std::filesystem::path& InRoot,
+    const std::string& InPreferredRemote,
+    int InMaxDepth,
+    bool InNoCache,
+    bool InRefreshCache) -> std::pair<std::vector<SyncPlan>, std::string>;
+
+auto ClassifySyncFailure(const shell::ExecResult& InResult, const std::string& InFallback) -> std::string;
+
 auto ListRemotes(const std::filesystem::path& InRepo) -> std::vector<std::string> {
     std::vector<std::string> out;
     const auto remotes = GitCapture(InRepo, {"remote"});
@@ -500,6 +553,409 @@ auto NormalizeRemoteUrlForMatch(std::string InUrl) -> std::string {
         InUrl = InUrl.substr(0, authorityStart) + authority + InUrl.substr(authorityEnd);
     }
     return InUrl;
+}
+
+class ScopedEnvOverride {
+  public:
+    explicit ScopedEnvOverride(const std::vector<std::pair<std::string, std::string>>& InEntries) {
+        previousValues_.reserve(InEntries.size());
+        for (const auto& [key, value] : InEntries) {
+            if (key.empty()) {
+                continue;
+            }
+            if (const auto* previous = std::getenv(key.c_str()); previous != nullptr) {
+                previousValues_.push_back({key, std::string(previous)});
+            } else {
+                previousValues_.push_back({key, std::nullopt});
+            }
+#if defined(_WIN32)
+            _putenv_s(key.c_str(), value.c_str());
+#else
+            setenv(key.c_str(), value.c_str(), 1);
+#endif
+        }
+    }
+
+    ~ScopedEnvOverride() {
+        for (auto it = previousValues_.rbegin(); it != previousValues_.rend(); ++it) {
+            const auto& [key, previous] = *it;
+#if defined(_WIN32)
+            if (previous.has_value()) {
+                _putenv_s(key.c_str(), previous->c_str());
+            } else {
+                _putenv_s(key.c_str(), "");
+            }
+#else
+            if (previous.has_value()) {
+                setenv(key.c_str(), previous->c_str(), 1);
+            } else {
+                unsetenv(key.c_str());
+            }
+#endif
+        }
+    }
+
+    ScopedEnvOverride(const ScopedEnvOverride&) = delete;
+    auto operator=(const ScopedEnvOverride&) -> ScopedEnvOverride& = delete;
+
+  private:
+    std::vector<std::pair<std::string, std::optional<std::string>>> previousValues_;
+};
+
+auto MakeNonInteractiveGitEnvOverrides() -> const std::vector<std::pair<std::string, std::string>>& {
+    static const std::vector<std::pair<std::string, std::string>> kOverrides = {
+        {"KOG_GIT_INTERACTIVE", "0"},
+        {"GIT_TERMINAL_PROMPT", "0"},
+        {"GCM_INTERACTIVE", "never"},
+        {"GIT_ASKPASS", "true"},
+        {"SSH_ASKPASS", "true"},
+    };
+    return kOverrides;
+}
+
+auto RedactUrlCredentials(std::string InText) -> std::string {
+    static const std::regex kCredentialRegex(R"(((?:[a-z][a-z0-9+.-]*://))([^/\s@]+)@)", std::regex::icase);
+    return std::regex_replace(InText, kCredentialRegex, "$1<redacted>@");
+}
+
+auto SanitizeAuthText(std::string InText) -> std::string {
+    InText = NormalizeSyncCapturedText(InText, SyncOutputSanitizeMode::Human);
+    return RedactUrlCredentials(std::move(InText));
+}
+
+auto IsTruthyValue(std::string InValue) -> bool {
+    InValue = ToLower(Trim(std::move(InValue)));
+    return InValue == "1" || InValue == "true" || InValue == "yes" || InValue == "on";
+}
+
+auto AuthProtocolForUrl(const std::string& InUrl) -> std::string {
+    const auto url = ToLower(Trim(InUrl));
+    if (url.empty()) {
+        return "unknown";
+    }
+    if (url.rfind("https://", 0) == 0) {
+        return "https";
+    }
+    if (url.rfind("http://", 0) == 0) {
+        return "http";
+    }
+    if (url.rfind("ssh://", 0) == 0) {
+        return "ssh";
+    }
+    if (url.rfind("file://", 0) == 0) {
+        return "file";
+    }
+#if defined(_WIN32)
+    if (url.size() > 2 && std::isalpha(static_cast<unsigned char>(url[0])) && url[1] == ':' && (url[2] == '/' || url[2] == '\\')) {
+        return "file";
+    }
+#endif
+    if (url.rfind("./", 0) == 0 || url.rfind("../", 0) == 0 || url.rfind('/', 0) == 0 || url.rfind('\\', 0) == 0) {
+        return "file";
+    }
+    const auto atPos = url.find('@');
+    const auto colonPos = url.find(':');
+    const auto slashPos = url.find('/');
+    if (atPos != std::string::npos && colonPos != std::string::npos && (slashPos == std::string::npos || colonPos < slashPos)) {
+        return "ssh";
+    }
+    return "other";
+}
+
+auto ShouldSkipCommandAuthProbe(const std::string& InUrl) -> bool {
+    return AuthProtocolForUrl(InUrl) == "file";
+}
+
+auto ShouldRunSyncAuthPreflight(const std::string& InUrl) -> bool {
+    const auto protocol = AuthProtocolForUrl(InUrl);
+    return protocol == "http" || protocol == "https";
+}
+
+auto LastNonEmptyLine(const std::string& InText) -> std::string {
+    std::istringstream iss(InText);
+    std::string line;
+    std::string last;
+    while (std::getline(iss, line)) {
+        line = Trim(line);
+        if (!line.empty()) {
+            last = line;
+        }
+    }
+    return last;
+}
+
+auto MakeRepoDisplayName(const std::filesystem::path& InRoot, const std::filesystem::path& InRepo) -> std::string {
+    std::error_code ec;
+    const auto rel = std::filesystem::relative(InRepo, InRoot, ec);
+    if (!ec) {
+        const auto text = rel.generic_string();
+        if (text.empty() || text == ".") {
+            return ".";
+        }
+        return text;
+    }
+    return InRepo.generic_string();
+}
+
+auto MakeAuthTarget(const std::filesystem::path& InWorkspaceRoot,
+                    const std::filesystem::path& InRepo,
+                    const std::string& InRemote,
+                    const std::string& InSource,
+                    const std::string& InDetail,
+                    bool InExplicitUrl = false,
+                    const std::string& InExplicitUrlValue = {}) -> AuthTarget {
+    AuthTarget target;
+    target.repoPath = InRepo;
+    target.repoLabel = MakeRepoDisplayName(InWorkspaceRoot, InRepo);
+    target.remoteName = InRemote;
+    target.remoteUrl = InExplicitUrl ? InExplicitUrlValue : RemoteUrl(InRepo, InRemote);
+    target.source = InSource;
+    target.detail = InDetail;
+    target.explicitUrl = InExplicitUrl;
+    return target;
+}
+
+auto RunGitCaptureNonInteractive(const std::filesystem::path& InRepo, const std::vector<std::string>& InArgs) -> shell::ExecResult {
+    shell::ScopedConsoleWriteSuppression suppressConsoleWrites;
+    ScopedEnvOverride envOverride(MakeNonInteractiveGitEnvOverrides());
+    return GitCapture(InRepo, InArgs);
+}
+
+auto ClassifyAuthProbeFailure(const shell::ExecResult& InResult) -> std::string {
+    const auto merged = ToLower(InResult.stdoutStr + "\n" + InResult.stderrStr);
+    if (merged.find("terminal prompts disabled") != std::string::npos ||
+        merged.find("could not read password") != std::string::npos ||
+        merged.find("credential manager") != std::string::npos ||
+        merged.find("interaction required") != std::string::npos ||
+        merged.find("user interaction") != std::string::npos) {
+        return "FAILED_AUTH";
+    }
+    return ClassifySyncFailure(InResult, "FAILED_AUTH");
+}
+
+auto RunAuthProbe(const AuthTarget& InTarget, AuthProbeScope InScope) -> AuthProbeResult {
+    AuthProbeResult result;
+    const auto protocol = AuthProtocolForUrl(InTarget.remoteUrl);
+    const auto redactedUrl = RedactUrlCredentials(Trim(InTarget.remoteUrl));
+    const auto remoteDisplay = InTarget.explicitUrl
+        ? std::string("<url>")
+        : (InTarget.remoteName.empty() ? std::string("(none)") : InTarget.remoteName);
+
+    if (InTarget.remoteName.empty() && InTarget.remoteUrl.empty()) {
+        result.category = "FAILED_MISSING_REMOTE";
+        result.summary = InTarget.detail.empty() ? "no usable auth target found" : InTarget.detail;
+        result.stderrText = std::format(
+            "[{}] AUTH_TEST_FAILED: {} remote={} protocol={}\n",
+            InTarget.repoLabel,
+            result.category,
+            remoteDisplay,
+            protocol);
+        if (!result.summary.empty()) {
+            result.stderrText += std::format("[{}] detail: {}\n", InTarget.repoLabel, result.summary);
+        }
+        return result;
+    }
+
+    if (InScope == AuthProbeScope::CommandTest && ShouldSkipCommandAuthProbe(InTarget.remoteUrl)) {
+        result.success = true;
+        result.skipped = true;
+        result.category = "SKIPPED_LOCAL_REMOTE";
+        result.summary = "local/file remotes do not use Git Credential Manager";
+        result.stdoutText = std::format(
+            "[{}] AUTH_TEST_SKIPPED: remote={} protocol={} url={}\n",
+            InTarget.repoLabel,
+            remoteDisplay,
+            protocol,
+            redactedUrl.empty() ? std::string("(none)") : redactedUrl);
+        return result;
+    }
+
+    if (InScope == AuthProbeScope::SyncPreflight && !ShouldRunSyncAuthPreflight(InTarget.remoteUrl)) {
+        result.success = true;
+        result.skipped = true;
+        result.category = "SKIPPED_NON_HTTP";
+        return result;
+    }
+
+    std::vector<std::string> args{"ls-remote", "--exit-code"};
+    if (InTarget.explicitUrl) {
+        args.push_back(InTarget.remoteUrl);
+    } else {
+        args.push_back(InTarget.remoteName);
+    }
+    args.push_back("HEAD");
+
+    const auto exec = RunGitCaptureNonInteractive(InTarget.repoPath, args);
+    const auto sanitizedStdout = SanitizeAuthText(exec.stdoutStr);
+    const auto sanitizedStderr = SanitizeAuthText(exec.stderrStr);
+
+    if (exec.exitCode == 0) {
+        result.success = true;
+        result.category = "PASS";
+        result.summary = "non-interactive ls-remote HEAD succeeded";
+        result.stdoutText = std::format(
+            "[{}] AUTH_TEST_OK: remote={} protocol={} url={}\n",
+            InTarget.repoLabel,
+            remoteDisplay,
+            protocol,
+            redactedUrl.empty() ? std::string("(none)") : redactedUrl);
+        return result;
+    }
+
+    result.category = ClassifyAuthProbeFailure(exec);
+    result.summary = LastNonEmptyLine(!sanitizedStderr.empty() ? sanitizedStderr : sanitizedStdout);
+    if (result.summary.empty()) {
+        result.summary = "non-interactive ls-remote HEAD failed";
+    }
+    result.stderrText = std::format(
+        "[{}] AUTH_TEST_FAILED: {} remote={} protocol={} url={}\n",
+        InTarget.repoLabel,
+        result.category,
+        remoteDisplay,
+        protocol,
+        redactedUrl.empty() ? std::string("(none)") : redactedUrl);
+    result.stderrText += std::format("[{}] detail: {}\n", InTarget.repoLabel, result.summary);
+    return result;
+}
+
+auto CollectSelectedAuthTargets(const AuthTargetSelectionOptions& InOptions) -> std::vector<AuthTarget> {
+    auto planResult = BuildSyncPlans(
+        InOptions.repoRoot,
+        "origin",
+        0,
+        InOptions.noCache,
+        InOptions.refreshCache);
+    auto plans = std::move(planResult.first);
+    if (!InOptions.recursive) {
+        const auto root = std::filesystem::weakly_canonical(InOptions.repoRoot);
+        plans.erase(
+            std::remove_if(plans.begin(), plans.end(), [&](const SyncPlan& InPlan) {
+                return std::filesystem::weakly_canonical(InPlan.path) != root;
+            }),
+            plans.end());
+    }
+
+    std::vector<AuthTarget> targets;
+    targets.reserve(plans.size());
+    for (const auto& plan : plans) {
+        if (IsFalsePolicy(plan.kogSyncPolicy)) {
+            continue;
+        }
+        if (plan.remote.empty()) {
+            targets.push_back(MakeAuthTarget(
+                InOptions.repoRoot,
+                plan.path,
+                {},
+                plan.remoteSelectionSource,
+                plan.remoteSelectionError.empty() ? plan.remoteSelectionDetail : plan.remoteSelectionError,
+                false));
+            continue;
+        }
+        targets.push_back(MakeAuthTarget(
+            InOptions.repoRoot,
+            plan.path,
+            plan.remote,
+            plan.remoteSelectionSource,
+            plan.remoteSelectionDetail,
+            false));
+    }
+    return targets;
+}
+
+auto CollectAuthTargets(const AuthTargetSelectionOptions& InOptions) -> std::vector<AuthTarget> {
+    const auto repoRoot = std::filesystem::weakly_canonical(InOptions.repoRoot);
+    if (!InOptions.explicitUrl.empty()) {
+        return {MakeAuthTarget(repoRoot, repoRoot, {}, "explicit-url", {}, true, InOptions.explicitUrl)};
+    }
+
+    if (!InOptions.explicitRemote.empty()) {
+        if (!HasRemote(repoRoot, InOptions.explicitRemote)) {
+            return {MakeAuthTarget(repoRoot, repoRoot, {}, "explicit-remote", std::format("remote '{}' is not configured", InOptions.explicitRemote), false)};
+        }
+        return {MakeAuthTarget(repoRoot, repoRoot, InOptions.explicitRemote, "explicit-remote", {}, false)};
+    }
+
+    if (InOptions.allLocalRemotes) {
+        const auto remotes = ListRemotes(repoRoot);
+        std::vector<AuthTarget> targets;
+        if (remotes.empty()) {
+            targets.push_back(MakeAuthTarget(repoRoot, repoRoot, {}, "all-local-remotes", "no remotes configured", false));
+            return targets;
+        }
+        targets.reserve(remotes.size());
+        for (const auto& remote : remotes) {
+            targets.push_back(MakeAuthTarget(repoRoot, repoRoot, remote, "all-local-remotes", {}, false));
+        }
+        return targets;
+    }
+
+    if (InOptions.selectedRemotes) {
+        return CollectSelectedAuthTargets(InOptions);
+    }
+
+    const auto selected = SelectSyncRemote(repoRoot, repoRoot, {}, false, true, CurrentBranch(repoRoot).empty());
+    if (selected.remote.empty()) {
+        return {MakeAuthTarget(repoRoot, repoRoot, {}, selected.source, selected.error.empty() ? selected.detail : selected.error, false)};
+    }
+    return {MakeAuthTarget(repoRoot, repoRoot, selected.remote, selected.source, selected.detail, false)};
+}
+
+auto GitConfigGetAllWithOrigin(const std::filesystem::path& InRepo, const std::string& InKey) -> std::vector<std::string> {
+    std::vector<std::string> values;
+    const auto result = GitCapture(InRepo, {"config", "--show-origin", "--get-all", InKey});
+    if (result.exitCode != 0) {
+        return values;
+    }
+    std::istringstream iss(result.stdoutStr);
+    std::string line;
+    while (std::getline(iss, line)) {
+        line = Trim(line);
+        if (!line.empty()) {
+            values.push_back(line);
+        }
+    }
+    return values;
+}
+
+auto GitConfigGetValue(const std::filesystem::path& InRepo, const std::string& InKey) -> std::optional<std::string> {
+    const auto result = GitCapture(InRepo, {"config", "--get", InKey});
+    if (result.exitCode != 0) {
+        return std::nullopt;
+    }
+    const auto value = Trim(result.stdoutStr);
+    if (value.empty()) {
+        return std::nullopt;
+    }
+    return value;
+}
+
+auto ProbeGitCredentialManagerVersion(const std::filesystem::path& InRepo) -> shell::ExecResult {
+    const auto gitSubcommand = shell::ExecuteCommand("git", {"credential-manager", "version"}, shell::ExecMode::Capture, InRepo);
+    if (gitSubcommand.exitCode == 0) {
+        return gitSubcommand;
+    }
+    const auto managerCore = shell::ExecuteCommand("git-credential-manager-core", {"--version"}, shell::ExecMode::Capture, InRepo);
+    if (managerCore.exitCode == 0) {
+        return managerCore;
+    }
+    return shell::ExecuteCommand("git-credential-manager", {"--version"}, shell::ExecMode::Capture, InRepo);
+}
+
+auto HasGitCredentialManagerHelper(const std::vector<std::string>& InHelpers) -> bool {
+    return std::any_of(InHelpers.begin(), InHelpers.end(), [](const std::string& line) {
+        const auto lowered = ToLower(line);
+        return lowered.find("manager-core") != std::string::npos ||
+               lowered.find("credential-manager") != std::string::npos ||
+               lowered.find(" helper=manager") != std::string::npos ||
+               lowered.ends_with(" manager");
+    });
+}
+
+auto HasAzureDevOpsTarget(const std::vector<AuthTarget>& InTargets) -> bool {
+    return std::any_of(InTargets.begin(), InTargets.end(), [](const AuthTarget& target) {
+        const auto lowered = ToLower(target.remoteUrl);
+        return lowered.find("dev.azure.com") != std::string::npos || lowered.find("visualstudio.com") != std::string::npos;
+    });
 }
 
 auto GitmodulesUrlForPath(const std::filesystem::path& InWorkspaceRoot, const std::filesystem::path& InRepoPath) -> std::optional<std::string> {
@@ -2232,7 +2688,8 @@ auto RunNativeOriginLatestSync(
     bool InAutoStashLocalChanges,
     bool InCleanupStaleLocks,
     int InJobs,
-    workspace::RepoOperationAggregate* OutAggregate = nullptr) -> int {
+    workspace::RepoOperationAggregate* OutAggregate = nullptr,
+    bool InAuthPreflight = true) -> int {
     std::vector<SyncPlan> plans;
     std::string mode;
     try {
@@ -2281,6 +2738,22 @@ auto RunNativeOriginLatestSync(
     plansByPath.reserve(plans.size());
     for (const auto& plan : plans) {
         plansByPath.emplace(RepoPathKey(plan.path), plan);
+    }
+
+    std::unordered_map<std::string, AuthProbeResult> authPreflightByPath;
+    if (InAuthPreflight) {
+        authPreflightByPath.reserve(plans.size());
+        for (const auto& plan : plans) {
+            if (IsFalsePolicy(plan.kogSyncPolicy) || plan.remote.empty()) {
+                continue;
+            }
+            const auto preflight = RunAuthProbe(
+                MakeAuthTarget(root, plan.path, plan.remote, plan.remoteSelectionSource, plan.remoteSelectionDetail, false),
+                AuthProbeScope::SyncPreflight);
+            if (!preflight.skipped || !preflight.success) {
+                authPreflightByPath.emplace(RepoPathKey(plan.path), preflight);
+            }
+        }
     }
 
     bool shouldBuildSelfCpp = false;
@@ -2369,6 +2842,16 @@ auto RunNativeOriginLatestSync(
             }
             err << "\n";
             return finishBlocked("BLOCKED_PRECHECK", reason);
+        }
+
+        if (const auto authIt = authPreflightByPath.find(RepoPathKey(plan.path)); authIt != authPreflightByPath.end()) {
+            out << authIt->second.stdoutText;
+            err << authIt->second.stderrText;
+            if (!authIt->second.success) {
+                return finishBlocked(
+                    authIt->second.category.empty() ? "FAILED_AUTH" : authIt->second.category,
+                    authIt->second.summary.empty() ? "auth preflight failed" : authIt->second.summary);
+            }
         }
 
         if (plan.targetBranch.empty()) {
@@ -3043,6 +3526,211 @@ auto RunNativeUpstreamForcePush(
 
 } // namespace
 
+void RegisterAuth(CLI::App& InApp) {
+    auto* cmd = InApp.add_subcommand("auth", "Credential manager diagnostics and non-interactive auth probes");
+
+    auto* doctor = cmd->add_subcommand("doctor", "Inspect Git Credential Manager and selected remote auth configuration");
+    auto* doctorRepo = new std::string{"."};
+    auto* doctorRemote = new std::string{};
+    auto* doctorUrl = new std::string{};
+    auto* doctorSelectedRemotes = new bool{false};
+    auto* doctorAllLocalRemotes = new bool{false};
+    auto* doctorNoRecursive = new bool{false};
+    auto* doctorNoCache = new bool{false};
+    auto* doctorRefreshCache = new bool{false};
+    doctor->add_option("--repo", *doctorRepo, "Repository root used for config inspection and target discovery");
+    doctor->add_option("--remote", *doctorRemote, "Inspect a single configured remote in the current repository");
+    doctor->add_option("--url", *doctorUrl, "Inspect an explicit remote URL without storing credentials");
+    doctor->add_flag("--selected-remotes", *doctorSelectedRemotes, "Inspect the sync-selected remote for each discovered repo");
+    doctor->add_flag("--all-local-remotes", *doctorAllLocalRemotes, "Inspect every configured remote in the current repository");
+    doctor->add_flag("--no-recursive,-N", *doctorNoRecursive, "When used with --selected-remotes, inspect only the current repository");
+    doctor->add_flag("--native-no-cache", *doctorNoCache, "Disable native discovery cache for --selected-remotes");
+    doctor->add_flag("--native-refresh-cache", *doctorRefreshCache, "Force native discovery cache refresh for --selected-remotes");
+    doctor->callback([=]() {
+        const int selectorCount = (!doctorRemote->empty() ? 1 : 0) + (!doctorUrl->empty() ? 1 : 0) + (*doctorSelectedRemotes ? 1 : 0) + (*doctorAllLocalRemotes ? 1 : 0);
+        if (selectorCount > 1) {
+            std::cerr << "Error: choose at most one of --remote, --url, --selected-remotes, or --all-local-remotes\n";
+            std::exit(2);
+        }
+
+        const auto repoRoot = std::filesystem::weakly_canonical(std::filesystem::path(*doctorRepo));
+        const auto gitVersion = shell::ExecuteCommand("git", {"--version"}, shell::ExecMode::Capture, repoRoot);
+        if (gitVersion.exitCode != 0) {
+            std::cerr << kano::terminal::FailTag() << " git is not available in PATH\n";
+            std::exit(1);
+        }
+
+        std::vector<AuthTarget> targets;
+        try {
+            targets = CollectAuthTargets(AuthTargetSelectionOptions{
+                .repoRoot = repoRoot,
+                .explicitRemote = *doctorRemote,
+                .explicitUrl = *doctorUrl,
+                .selectedRemotes = *doctorSelectedRemotes,
+                .allLocalRemotes = *doctorAllLocalRemotes,
+                .recursive = !*doctorNoRecursive,
+                .noCache = *doctorNoCache,
+                .refreshCache = *doctorRefreshCache,
+            });
+        } catch (const std::exception& ex) {
+            std::cerr << "ERROR: failed to collect auth targets: " << ex.what() << "\n";
+            std::exit(1);
+        }
+
+        const auto helperLines = GitConfigGetAllWithOrigin(repoRoot, "credential.helper");
+        const auto credentialInteractive = GitConfigGetValue(repoRoot, "credential.interactive");
+        const auto useHttpPath = GitConfigGetValue(repoRoot, "credential.useHttpPath");
+        const auto gcmVersion = ProbeGitCredentialManagerVersion(repoRoot);
+        const bool hasGcmHelper = HasGitCredentialManagerHelper(helperLines);
+        const bool hasHttpsTarget = std::any_of(targets.begin(), targets.end(), [](const AuthTarget& target) {
+            const auto protocol = AuthProtocolForUrl(target.remoteUrl);
+            return protocol == "http" || protocol == "https";
+        });
+
+        int failures = 0;
+        int warnings = 0;
+
+        std::cout << kano::terminal::PreflightHeader("Auth Doctor") << "\n";
+        std::cout << kano::terminal::PassTag() << " " << Trim(gitVersion.stdoutStr) << "\n";
+
+        if (helperLines.empty()) {
+            if (hasHttpsTarget) {
+                std::cerr << kano::terminal::FailTag() << " no credential.helper is configured for HTTPS remotes\n";
+                failures += 1;
+            } else {
+                std::cout << kano::terminal::InfoTag() << " no credential.helper configured\n";
+            }
+        } else {
+            std::cout << (hasGcmHelper ? kano::terminal::PassTag() : kano::terminal::WarnTag())
+                      << " credential.helper configuration:\n";
+            if (!hasGcmHelper && hasHttpsTarget) {
+                warnings += 1;
+            }
+            for (const auto& line : helperLines) {
+                std::cout << "  - " << line << "\n";
+            }
+        }
+
+        if (gcmVersion.exitCode == 0) {
+            std::cout << kano::terminal::PassTag() << " Git Credential Manager detected: " << Trim(gcmVersion.stdoutStr + gcmVersion.stderrStr) << "\n";
+        } else if (hasHttpsTarget) {
+            std::cerr << kano::terminal::WarnTag() << " Git Credential Manager executable was not detected via 'git credential-manager version'\n";
+            warnings += 1;
+        } else {
+            std::cout << kano::terminal::InfoTag() << " Git Credential Manager executable not detected\n";
+        }
+
+        if (credentialInteractive.has_value()) {
+            std::cout << kano::terminal::InfoTag() << " credential.interactive=" << *credentialInteractive << "\n";
+        } else {
+            std::cout << kano::terminal::InfoTag() << " credential.interactive is unset\n";
+        }
+
+        if (useHttpPath.has_value()) {
+            std::cout << kano::terminal::InfoTag() << " credential.useHttpPath=" << *useHttpPath << "\n";
+        } else {
+            std::cout << kano::terminal::InfoTag() << " credential.useHttpPath is unset\n";
+        }
+
+        if (HasAzureDevOpsTarget(targets) && (!useHttpPath.has_value() || !IsTruthyValue(*useHttpPath))) {
+            std::cerr << kano::terminal::WarnTag() << " Azure DevOps remotes usually need credential.useHttpPath=true for reliable account matching\n";
+            warnings += 1;
+        }
+
+        for (const auto& target : targets) {
+            const auto protocol = AuthProtocolForUrl(target.remoteUrl);
+            const auto redactedUrl = RedactUrlCredentials(Trim(target.remoteUrl));
+            const auto remoteDisplay = target.explicitUrl ? std::string("<url>") : (target.remoteName.empty() ? std::string("(none)") : target.remoteName);
+            if (target.remoteName.empty() && target.remoteUrl.empty()) {
+                std::cerr << kano::terminal::FailTag() << " [" << target.repoLabel << "] no usable auth target: "
+                          << (target.detail.empty() ? "missing remote" : target.detail) << "\n";
+                failures += 1;
+                continue;
+            }
+            std::cout << kano::terminal::InfoTag() << " [" << target.repoLabel << "] remote=" << remoteDisplay
+                      << " protocol=" << protocol;
+            if (!redactedUrl.empty()) {
+                std::cout << " url=" << redactedUrl;
+            }
+            if (!target.source.empty()) {
+                std::cout << " source=" << target.source;
+            }
+            std::cout << "\n";
+
+            if ((protocol == "http" || protocol == "https") && !hasGcmHelper) {
+                std::cerr << kano::terminal::FailTag() << " [" << target.repoLabel << "] HTTPS remote is selected but no Git Credential Manager helper is configured\n";
+                failures += 1;
+            }
+        }
+
+        std::cout << kano::terminal::PreflightHeader("Auth Doctor Complete") << "\n";
+        std::cout << "failures=" << failures << " warnings=" << warnings << " targets=" << targets.size() << "\n";
+        std::exit(failures == 0 ? 0 : 1);
+    });
+
+    auto* test = cmd->add_subcommand("test", "Run a non-interactive git ls-remote auth probe");
+    auto* testRepo = new std::string{"."};
+    auto* testRemote = new std::string{};
+    auto* testUrl = new std::string{};
+    auto* testSelectedRemotes = new bool{false};
+    auto* testAllLocalRemotes = new bool{false};
+    auto* testNoRecursive = new bool{false};
+    auto* testNoCache = new bool{false};
+    auto* testRefreshCache = new bool{false};
+    test->add_option("--repo", *testRepo, "Repository root used for target discovery and ls-remote working directory");
+    test->add_option("--remote", *testRemote, "Probe one configured remote in the current repository");
+    test->add_option("--url", *testUrl, "Probe an explicit remote URL without storing credentials");
+    test->add_flag("--selected-remotes", *testSelectedRemotes, "Probe the sync-selected remote for each discovered repo");
+    test->add_flag("--all-local-remotes", *testAllLocalRemotes, "Probe every configured remote in the current repository");
+    test->add_flag("--no-recursive,-N", *testNoRecursive, "When used with --selected-remotes, probe only the current repository");
+    test->add_flag("--native-no-cache", *testNoCache, "Disable native discovery cache for --selected-remotes");
+    test->add_flag("--native-refresh-cache", *testRefreshCache, "Force native discovery cache refresh for --selected-remotes");
+    test->callback([=]() {
+        const int selectorCount = (!testRemote->empty() ? 1 : 0) + (!testUrl->empty() ? 1 : 0) + (*testSelectedRemotes ? 1 : 0) + (*testAllLocalRemotes ? 1 : 0);
+        if (selectorCount > 1) {
+            std::cerr << "Error: choose at most one of --remote, --url, --selected-remotes, or --all-local-remotes\n";
+            std::exit(2);
+        }
+
+        std::vector<AuthTarget> targets;
+        try {
+            targets = CollectAuthTargets(AuthTargetSelectionOptions{
+                .repoRoot = std::filesystem::weakly_canonical(std::filesystem::path(*testRepo)),
+                .explicitRemote = *testRemote,
+                .explicitUrl = *testUrl,
+                .selectedRemotes = *testSelectedRemotes,
+                .allLocalRemotes = *testAllLocalRemotes,
+                .recursive = !*testNoRecursive,
+                .noCache = *testNoCache,
+                .refreshCache = *testRefreshCache,
+            });
+        } catch (const std::exception& ex) {
+            std::cerr << "ERROR: failed to collect auth targets: " << ex.what() << "\n";
+            std::exit(1);
+        }
+
+        int passed = 0;
+        int skipped = 0;
+        int failed = 0;
+        std::cout << kano::terminal::PreflightHeader("Auth Test") << "\n";
+        for (const auto& target : targets) {
+            const auto probe = RunAuthProbe(target, AuthProbeScope::CommandTest);
+            std::cout << probe.stdoutText;
+            std::cerr << probe.stderrText;
+            if (probe.skipped) {
+                skipped += 1;
+            } else if (probe.success) {
+                passed += 1;
+            } else {
+                failed += 1;
+            }
+        }
+        std::cout << kano::terminal::PreflightHeader("Auth Test Complete") << "\n";
+        std::cout << "passed=" << passed << " skipped=" << skipped << " failed=" << failed << "\n";
+        std::exit(failed == 0 ? 0 : 1);
+    });
+}
+
 void RegisterSync(CLI::App& InApp) {
     auto* cmd = InApp.add_subcommand("sync", "Pipeline sync stage (origin-latest by default) plus specialized sync workflows");
 
@@ -3122,6 +3810,7 @@ void RegisterSync(CLI::App& InApp) {
     auto* originLatestRefreshCache = new bool{false};
     auto* originLatestNoRecursive = new bool{false};
     auto* originLatestNoAutoStash = new bool{false};
+    auto* originLatestNoAuthPreflight = new bool{false};
     auto* originLatestCleanupStaleLocks = new bool{false};
     auto* originLatestJobs = new int{DetectDefaultSyncJobs()};
     auto* originLatestProfile = new bool{false};
@@ -3135,6 +3824,7 @@ void RegisterSync(CLI::App& InApp) {
     origin_latest->add_flag("--native-refresh-cache", *originLatestRefreshCache, "Force native cache refresh");
     origin_latest->add_flag("--no-recursive,-N", *originLatestNoRecursive, "Sync only current repository");
     origin_latest->add_flag("--no-auto-stash", *originLatestNoAutoStash, "Do not auto-stash local changes before sync");
+    origin_latest->add_flag("--no-auth-preflight", *originLatestNoAuthPreflight, "Skip Git Credential Manager-focused non-interactive auth preflight before sync");
     origin_latest->add_flag("--cleanup-stale-locks", *originLatestCleanupStaleLocks, "When auto-stash fails on index.lock and no git/kano-git process is active, remove the stale lock and retry once");
     origin_latest->add_option("--jobs", *originLatestJobs, "Number of parallel repo workers for recursive sync (default: CPU cores)");
     origin_latest->add_flag("--profile", *originLatestProfile, "Print native sync timing/profile summary");
@@ -3170,7 +3860,9 @@ void RegisterSync(CLI::App& InApp) {
             !*originLatestNoRecursive,
             !*originLatestNoAutoStash,
             *originLatestCleanupStaleLocks,
-            *originLatestJobs);
+            *originLatestJobs,
+            nullptr,
+            !*originLatestNoAuthPreflight);
         if (*originLatestProfile) {
             const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
             std::cout << "\n=== Sync Profile Summary ===\n";
@@ -3328,6 +4020,7 @@ void RegisterSync(CLI::App& InApp) {
     auto* devNoCache = new bool{false};
     auto* devRefreshCache = new bool{false};
     auto* devNoRecursive = new bool{false};
+    auto* devNoAuthPreflight = new bool{false};
     auto* devCleanupStaleLocks = new bool{false};
     auto* devJobs = new int{DetectDefaultSyncJobs()};
     auto* devProfile = new bool{false};
@@ -3337,6 +4030,7 @@ void RegisterSync(CLI::App& InApp) {
     dev->add_flag("--native-no-cache", *devNoCache, "Disable native discovery cache");
     dev->add_flag("--native-refresh-cache", *devRefreshCache, "Force native cache refresh");
     dev->add_flag("--no-recursive,-N", *devNoRecursive, "Sync only current repository");
+    dev->add_flag("--no-auth-preflight", *devNoAuthPreflight, "Skip Git Credential Manager-focused non-interactive auth preflight before sync");
     dev->add_flag("--cleanup-stale-locks", *devCleanupStaleLocks, "When auto-stash fails on index.lock and no git/kano-git process is active, remove the stale lock and retry once");
     dev->add_option("--jobs", *devJobs, "Number of parallel repo workers for recursive sync (default: CPU cores)");
     dev->add_flag("--profile", *devProfile, "Print native sync timing/profile summary");
@@ -3367,7 +4061,9 @@ void RegisterSync(CLI::App& InApp) {
             !*devNoRecursive,
             true,
             *devCleanupStaleLocks,
-            *devJobs);
+            *devJobs,
+            nullptr,
+            !*devNoAuthPreflight);
         if (*devProfile) {
             const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
             std::cout << "\n=== Sync Profile Summary ===\n";
@@ -3463,10 +4159,12 @@ void RegisterSync(CLI::App& InApp) {
 
     // --- sync (default: auto-detect) ---
     auto* defaultNoRecursive = new bool{false};
+    auto* defaultNoAuthPreflight = new bool{false};
     auto* defaultCleanupStaleLocks = new bool{false};
     auto* defaultJobs = new int{DetectDefaultSyncJobs()};
     auto* defaultProfile = new bool{false};
     cmd->add_flag("--no-recursive,-N", *defaultNoRecursive, "Default sync: only current repository");
+    cmd->add_flag("--no-auth-preflight", *defaultNoAuthPreflight, "Default sync: skip Git Credential Manager-focused non-interactive auth preflight");
     cmd->add_flag("--cleanup-stale-locks", *defaultCleanupStaleLocks, "Default sync: remove stale index.lock automatically when no git/kano-git process is active");
     cmd->add_option("--jobs", *defaultJobs, "Default sync: number of parallel repo workers for recursive sync (default: CPU cores)");
     cmd->add_flag("--profile", *defaultProfile, "Default sync: print native timing/profile summary");
@@ -3495,7 +4193,9 @@ void RegisterSync(CLI::App& InApp) {
                 !*defaultNoRecursive,
                 true,
                 *defaultCleanupStaleLocks,
-                *defaultJobs);
+                *defaultJobs,
+                nullptr,
+                !*defaultNoAuthPreflight);
             if (*defaultProfile) {
                 const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
                 std::cout << "\n=== Sync Profile Summary ===\n";

@@ -104,6 +104,27 @@ int RunArchiveSafeShellAudits(const std::filesystem::path& repoRoot) {
     return failures;
 }
 
+int CheckArchiveSafePrerequisites(const std::filesystem::path& repoRoot) {
+    struct ShellAudit {
+        const char* label;
+        const char* script;
+    };
+
+    const std::vector<ShellAudit> audits = {
+        {"pre-commit-quality-gate", "src/shell/test/pre-commit-quality-gate.sh"},
+    };
+
+    int failures = 0;
+    for (const auto& audit : audits) {
+        const auto scriptPath = repoRoot / audit.script;
+        if (!std::filesystem::exists(scriptPath)) {
+            std::cerr << "[FAIL] " << audit.label << " missing script: " << audit.script << "\n";
+            failures += 1;
+        }
+    }
+    return failures;
+}
+
 void CheckRepoHygiene(const std::filesystem::path& repoRoot, bool fix, bool archiveSafe, bool recursive) {
     if (recursive) {
         workspace::DiscoverOptions options;
@@ -207,7 +228,15 @@ void CheckRepoHygiene(const std::filesystem::path& repoRoot, bool fix, bool arch
         std::cout << "[PASS] Repo hygiene is healthy\n";
     }
 
-    if (fix) {
+    int archiveSafePrereqIssues = 0;
+    if (archiveSafe) {
+        archiveSafePrereqIssues = CheckArchiveSafePrerequisites(repoRoot);
+        if (archiveSafePrereqIssues > 0) {
+            std::cerr << "[repo-hygiene] Archive-safe prerequisites failed before mutation checks.\n";
+        }
+    }
+
+    if (fix && archiveSafePrereqIssues == 0) {
         std::cout << "--- Applying Fixes ---\n";
         
         if (needsGitattributesFix) {
@@ -230,14 +259,17 @@ void CheckRepoHygiene(const std::filesystem::path& repoRoot, bool fix, bool arch
         }
 
         std::cout << "Fix complete.\n";
+    } else if (fix && archiveSafePrereqIssues > 0) {
+        std::cout << "--- Applying Fixes ---\n";
+        std::cout << "Fixes skipped due to archive-safe prerequisite failures.\n";
     }
 
     int archiveSafeIssues = 0;
-    if (archiveSafe) {
+    if (archiveSafe && archiveSafePrereqIssues == 0) {
         archiveSafeIssues = RunArchiveSafeShellAudits(repoRoot);
     }
 
-    if (lfIssues > 0 || execIssues > 0 || archiveSafeIssues > 0) {
+    if (lfIssues > 0 || execIssues > 0 || archiveSafeIssues > 0 || archiveSafePrereqIssues > 0) {
         std::exit(1);
     }
 }
