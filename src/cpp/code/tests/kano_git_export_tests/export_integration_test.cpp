@@ -969,6 +969,38 @@ TEST_CASE("kog export --single --include-subrepos remains accepted and includes 
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("kog export --single skips missing subrepo working-tree directories",
+          "[Integration][export][single][missing-subrepo][skip]") {
+    const auto ctx = CreateExportWorkspace("single-skip-missing-subrepo");
+    const auto discoverResult = RunKogDiscover(ctx);
+    REQUIRE(discoverResult.exitCode == 0);
+
+    const auto missingSubrepoPath = ctx.rootClone / std::filesystem::path(ctx.submodulePath);
+    std::error_code removeEc;
+    std::filesystem::remove_all(missingSubrepoPath, removeEc);
+    REQUIRE_FALSE(std::filesystem::exists(missingSubrepoPath));
+
+    const auto result = RunKogExport(ctx, {"--single", "--no-validate-release-archive"});
+    INFO("exit=" << result.exitCode);
+    INFO("stdout=" << result.stdoutText);
+    INFO("stderr=" << result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    REQUIRE(result.stderrText.find("warning: skipping missing subrepo") != std::string::npos);
+
+    const auto outputDir = ctx.rootClone / ".kano" / "tmp" / "git" / "export";
+    std::filesystem::path rootArchive;
+    for (const auto& entry : std::filesystem::directory_iterator(outputDir)) {
+        if (entry.is_regular_file() && entry.path().extension() == ".tar") {
+            rootArchive = entry.path();
+            break;
+        }
+    }
+    REQUIRE_FALSE(rootArchive.empty());
+    REQUIRE_FALSE(ArchiveContainsPath(rootArchive, "deps/child/child.txt", ctx.rootClone));
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("kog export --single respects .gitmodules kog-export=false",
           "[Integration][export][single][policy][kog-export]") {
     const auto ctx = CreateExportWorkspace("single-respects-kog-export-policy");

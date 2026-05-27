@@ -1623,10 +1623,9 @@ auto ExportOneRepo(const ExportRecord& InRecord,
                 const auto subRepoPath = InRecord.repoPath / subRelPath;
                 std::error_code checkEc;
                 if (!std::filesystem::exists(subRepoPath, checkEc) || !std::filesystem::is_directory(subRepoPath, checkEc)) {
-                    if (!InOpts.allowMissingSubrepos) {
-                        result.errorMessage = "required subrepo missing: " + subRelPath.generic_string();
-                        return result;
-                    }
+                    std::cerr << "kog export: warning: skipping missing subrepo '"
+                              << subRelPath.generic_string()
+                              << "' (not initialized or unavailable)\n";
                 }
             }
         }
