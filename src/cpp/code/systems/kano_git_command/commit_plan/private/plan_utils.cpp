@@ -3331,6 +3331,27 @@ auto ReplacePlanDirtyFingerprint(std::string InPlanText, const std::string& InNe
     }
 }
 
+auto RefreshPlanWorkspaceHashes(const std::filesystem::path& InPlanPath,
+                                const std::filesystem::path& InWorkspaceRoot) -> bool {
+    const auto text = ReadFileText(InPlanPath);
+    if (!text.has_value()) {
+        return false;
+    }
+    try {
+        auto doc = nlohmann::json::parse(*text);
+        const auto newBaseHeadSha      = ComputeWorkspaceBaseHeadSha(InWorkspaceRoot);
+        const auto newDirtyFingerprint = ComputeWorkspaceDirtyFingerprint(InWorkspaceRoot);
+        doc["meta"]["base_head_sha"]   = newBaseHeadSha;
+        doc["meta"]["dirty_fingerprint"] = newDirtyFingerprint;
+        const auto updated = SerializePlanJson(doc);
+        return WriteFileText(InPlanPath, updated);
+    } catch (const nlohmann::json::parse_error& /*e*/) {
+        return false;
+    } catch (const nlohmann::json::type_error& /*e*/) {
+        return false;
+    }
+}
+
 auto BuildIgnoreEntriesFromWorkingTree(const std::filesystem::path& InWorkspaceRoot, int InMaxPerRepo) -> std::vector<IgnoreStageEntry> {
     SCOPED_TIMING_LOG("plan-utils.BuildIgnoreEntriesFromWorkingTree");
     std::vector<IgnoreStageEntry> out;

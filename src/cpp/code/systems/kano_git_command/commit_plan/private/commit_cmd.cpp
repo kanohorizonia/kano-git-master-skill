@@ -2638,6 +2638,14 @@ auto RunCommitAutoPlanPipeline(const std::filesystem::path& InWorkspaceRoot,
         return preCommitCode;
     }
 
+    // Refresh plan workspace hashes after pre-commit repair:
+    // RunSyncPreCommitNative may write to .gitmodules (branch bindings), which changes
+    // the workspace dirty fingerprint and base HEAD SHA captured in the plan.
+    // Updating them here prevents a spurious workspace-state-drift failure in commit apply.
+    if (!RefreshPlanWorkspaceHashes(autoPlanPath, InWorkspaceRoot)) {
+        std::cerr << "Warning: failed to refresh plan workspace hashes after pre-commit repair; drift check may trigger.\n";
+    }
+
     const auto commitApplyStart = std::chrono::steady_clock::now();
     const auto commitApplyCode = RunCommitNativePlanStage(InWorkspaceRoot, autoPlanPath.generic_string(), "commit", false);
     commitApplyMillis = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - commitApplyStart).count();

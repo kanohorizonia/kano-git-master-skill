@@ -247,6 +247,8 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
 
 auto DefaultPlanPath(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path;
 auto ReplacePlanDirtyFingerprint(std::string InPlanText, const std::string& InNewDirtyFingerprint) -> std::optional<std::string>;
+auto RefreshPlanWorkspaceHashes(const std::filesystem::path& InPlanPath,
+                                const std::filesystem::path& InWorkspaceRoot) -> bool;
 auto ResolveSkillRoot(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path;
 auto ResolveIgnoreDatasourceRoot(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path;
 auto ResolveRepoPathFromDisplay(const std::filesystem::path& InWorkspaceRoot, const std::string& InRepoDisplay) -> std::filesystem::path;
