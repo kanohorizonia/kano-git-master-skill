@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "commit_ai_utils.hpp"
+#include "secret_scan_utils.hpp"
 
 #include <cstdlib>
 #include <filesystem>
@@ -114,4 +115,22 @@ TEST_CASE("ExecuteCommandWithHeartbeat emits heartbeat while waiting", "[Unit][C
 #else
     SUCCEED("Windows-specific heartbeat test skipped on non-Windows platform");
 #endif
+}
+
+TEST_CASE("ShouldIgnoreSecretFinding ignores dynamic Horde token assignments", "[Unit][CommitPlan][Diagnostics][SecretScan]") {
+    using kano::git::commands::secret_scan::ShouldIgnoreSecretFinding;
+
+    REQUIRE(ShouldIgnoreSecretFinding(
+        "generic_password_assignment",
+        "resolved_horde_token=\"$(build_resolve_horde_token || true)\""));
+    REQUIRE(ShouldIgnoreSecretFinding(
+        "generic_password_assignment",
+        "DE_TOKEN=\"$UE_HORDE_TOKEN\""));
+    REQUIRE(ShouldIgnoreSecretFinding(
+        "generic_password_assignment",
+        "DE_TOKEN=\"\\$UE_HORDE_TOKEN\""));
+
+    REQUIRE_FALSE(ShouldIgnoreSecretFinding(
+        "generic_password_assignment",
+        "api_token=\"abcd1234efgh5678\""));
 }

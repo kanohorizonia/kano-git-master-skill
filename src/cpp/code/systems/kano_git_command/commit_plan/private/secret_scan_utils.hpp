@@ -54,6 +54,18 @@ inline auto LooksLikeIntentionalPlaceholderValue(const std::string& InValue) -> 
     return false;
 }
 
+inline auto LooksLikeDynamicSecretReferenceValue(const std::string& InValue) -> bool {
+    if (InValue.empty()) {
+        return false;
+    }
+
+    static const std::regex kDynamicReferencePattern(
+        R"(^\s*(?:\\?\$\([^)]+\)|\\?\$\{[^}]+\}|\\?\$[A-Za-z_][A-Za-z0-9_]*)\s*$)",
+        std::regex::ECMAScript);
+
+    return std::regex_match(InValue, kDynamicReferencePattern);
+}
+
 inline auto ShouldIgnoreSecretFinding(const std::string& InRuleId,
                                       const std::string& InLine) -> bool {
     const auto lowerLine = ToLowerCopy(InLine);
@@ -75,7 +87,9 @@ inline auto ShouldIgnoreSecretFinding(const std::string& InRuleId,
         return false;
     }
 
-    return LooksLikeIntentionalPlaceholderValue(match[2].str());
+    const auto assignedValue = match[2].str();
+    return LooksLikeIntentionalPlaceholderValue(assignedValue)
+        || LooksLikeDynamicSecretReferenceValue(assignedValue);
 }
 
 } // namespace kano::git::commands::secret_scan

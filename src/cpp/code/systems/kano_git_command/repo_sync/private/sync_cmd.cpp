@@ -2371,18 +2371,24 @@ auto BuildSyncPlans(
     int InMaxDepth,
     bool InNoCache,
     bool InRefreshCache) -> std::pair<std::vector<SyncPlan>, std::string> {
-    (void)InMaxDepth;
     const auto root = std::filesystem::weakly_canonical(InRoot);
 
-    workspace::WorkspaceInventoryOptions inventoryOptions;
-    inventoryOptions.rootDir = root;
-    inventoryOptions.unregisteredDepth = 1;
-    inventoryOptions.useCache = !InNoCache;
-    inventoryOptions.refreshCache = InRefreshCache;
-    inventoryOptions.metadataLevel = "minimal";
-    inventoryOptions.scope = workspace::DiscoverScope::RegisteredOnly;
-    inventoryOptions.includeTrustedUnregistered = true;
-    auto discoveredRepos = workspace::DiscoverWorkspaceInventory(inventoryOptions);
+    workspace::DiscoverOptions discoverOptions;
+    discoverOptions.rootDir = root;
+    discoverOptions.maxDepth = InMaxDepth;
+    discoverOptions.useCache = !InNoCache;
+    discoverOptions.refreshCache = InRefreshCache;
+    discoverOptions.incremental = !InRefreshCache;
+    discoverOptions.metadataLevel = "minimal";
+    // Recursive sync should cover the full workspace tree so nested repos are not skipped.
+    discoverOptions.scope = workspace::DiscoverScope::Full;
+    discoverOptions.includeTrustedUnregistered = true;
+    auto discovery = workspace::DiscoverRepos(discoverOptions);
+    auto discoveredRepos = std::move(discovery.repos);
+    auto discoverMode = std::move(discovery.mode);
+    if (discoverMode.empty()) {
+        discoverMode = "full-scan";
+    }
 
     std::vector<SyncPlan> plans;
     plans.reserve(discoveredRepos.size());
@@ -2527,7 +2533,7 @@ auto BuildSyncPlans(
         }
     }
 
-    return {plans, "registered-only-scan"};
+    return {plans, discoverMode};
 }
 
 auto CaptureWorkingTreeFileSnapshots(const std::filesystem::path& InRepo,
@@ -3065,7 +3071,7 @@ auto RunNativeOriginLatestSync(
         if (InDryRun) {
             out << "[DRY RUN] Would run: git fetch " << plan.remote << " --prune --tags\n";
         } else {
-            const auto fetch = GitCapture(plan.path, {"fetch", plan.remote, "--prune", "--tags"});
+            const auto fetch = GitCapture(plan.path, {"fetch", plan.remote, "--prune", "--tags", "--quiet"});
             if (fetch.exitCode != 0) {
                 out << fetch.stdoutStr;
                 err << fetch.stderrStr;
@@ -3179,7 +3185,7 @@ auto RunNativeOriginLatestSync(
             }
 
             if (shouldRebase) {
-                const auto rebase = GitCapture(plan.path, {"rebase", rebaseTarget});
+                const auto rebase = GitCapture(plan.path, {"rebase", "--quiet", rebaseTarget});
                 if (rebase.exitCode != 0) {
                     out << rebase.stdoutStr;
                     err << rebase.stderrStr;
