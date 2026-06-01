@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace kano::git::workspace {
@@ -23,6 +24,7 @@ enum class RepoBlockerKind {
     UnpushedCommits,
     GitlinkUnreachable,
     SubmoduleStatusUnresolved,
+    SubmoduleMappingMissing,
     KogPlanUnauditable,
 };
 
@@ -43,6 +45,8 @@ struct RepoHealthOptions {
     bool blockOnUnpushedCommits = false;
     bool blockOnDirtyWorktree = false;
     bool blockOnDirtySubmodule = false;
+    bool strictSubmoduleMappings = false;
+    std::unordered_set<std::string> managedSubmodulePaths;
 };
 
 struct RepoHealth {

@@ -4,9 +4,11 @@
 
 #include "repo_health.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace kano::git::tests::functional {
@@ -214,6 +216,74 @@ TEST_CASE("submodule status parser flags U000 unresolved gitlink marker", "[func
     REQUIRE(parsed.marker == 'U');
     REQUIRE(parsed.shaAllZero);
     REQUIRE(parsed.path == "src/cpp/shared/infra");
+}
+
+TEST_CASE("repo health skips unregistered gitlink when submodule mapping is missing", "[functional][health][submodule][unregistered]") {
+    const auto sandbox = CreateSandboxWorkspace("repo-health-unregistered-gitlink-skip");
+    const auto root = (sandbox.root / "root").lexically_normal();
+    const auto child = (root / "HorizonDialogueDemo").lexically_normal();
+    InitRepo(root);
+    InitRepo(child);
+
+    RequireSuccess(RunGit({"add", "HorizonDialogueDemo"}, root), "stage unregistered gitlink");
+    RequireSuccess(RunGit({"commit", "-m", "add unregistered gitlink"}, root), "commit unregistered gitlink");
+
+    WriteTextFile(child / "README.md", "seed\nchild moved\n");
+    RequireSuccess(RunGit({"commit", "-am", "child moved"}, child), "advance child head");
+
+    const auto health = kano::git::workspace::ScanRepoHealth(root, RepoHealthOptions{
+        .checkFetchRemotes = false,
+        .checkSubmoduleStatus = true,
+        .checkGitlinkReachability = false,
+        .fetchDryRun = true,
+        .blockOnDetachedHead = false,
+        .blockOnNoUpstream = false,
+        .blockOnUnpushedCommits = false,
+        .blockOnDirtyWorktree = false,
+        .blockOnDirtySubmodule = false,
+        .strictSubmoduleMappings = false,
+        .managedSubmodulePaths = {},
+    });
+
+    REQUIRE_FALSE(HasBlocker(health, RepoBlockerKind::KogPlanUnauditable));
+    REQUIRE_FALSE(HasBlocker(health, RepoBlockerKind::SubmoduleMappingMissing));
+    REQUIRE(std::find(health.statusFlags.begin(), health.statusFlags.end(), "UNREGISTERED_GITLINK_SKIPPED") != health.statusFlags.end());
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
+TEST_CASE("repo health blocks managed submodule when mapping is missing", "[functional][health][submodule][managed-missing-mapping]") {
+    const auto sandbox = CreateSandboxWorkspace("repo-health-managed-gitlink-missing-mapping");
+    const auto root = (sandbox.root / "root").lexically_normal();
+    const auto child = (root / "HorizonDialogueDemo").lexically_normal();
+    InitRepo(root);
+    InitRepo(child);
+
+    RequireSuccess(RunGit({"add", "HorizonDialogueDemo"}, root), "stage managed gitlink fixture");
+    RequireSuccess(RunGit({"commit", "-m", "add managed gitlink fixture"}, root), "commit managed gitlink fixture");
+
+    WriteTextFile(child / "README.md", "seed\nchild moved\n");
+    RequireSuccess(RunGit({"commit", "-am", "child moved"}, child), "advance child head");
+
+    std::unordered_set<std::string> managedPaths;
+    managedPaths.insert("HorizonDialogueDemo");
+    const auto health = kano::git::workspace::ScanRepoHealth(root, RepoHealthOptions{
+        .checkFetchRemotes = false,
+        .checkSubmoduleStatus = true,
+        .checkGitlinkReachability = false,
+        .fetchDryRun = true,
+        .blockOnDetachedHead = false,
+        .blockOnNoUpstream = false,
+        .blockOnUnpushedCommits = false,
+        .blockOnDirtyWorktree = false,
+        .blockOnDirtySubmodule = false,
+        .strictSubmoduleMappings = false,
+        .managedSubmodulePaths = managedPaths,
+    });
+
+    REQUIRE(HasBlocker(health, RepoBlockerKind::SubmoduleMappingMissing));
+
+    RemoveSandboxWorkspace(sandbox);
 }
 
 TEST_CASE("sync dry-run summary reports blockers instead of clean success", "[functional][sync][dry-run][blockers]") {

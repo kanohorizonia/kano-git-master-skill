@@ -563,7 +563,7 @@ void RewriteCommitAiFlagsAndPlan(std::vector<std::string>& InOutArgs) {
         return;
     }
     const std::string& cmd = InOutArgs[1];
-    if (cmd != "commit" && cmd != "amend" && cmd != "commit-push" && cmd != "cherry-pick") {
+    if (cmd != "commit" && cmd != "amend" && cmd != "commit-push" && cmd != "cherry-pick" && cmd != "converge") {
         return;
     }
 
@@ -580,8 +580,12 @@ void RewriteCommitAiFlagsAndPlan(std::vector<std::string>& InOutArgs) {
     for (std::size_t i = 2; i < InOutArgs.size(); ++i) {
         const std::string& arg = InOutArgs[i];
         if (arg == "-ai") {
-            rewritten.push_back("--ai-auto");
-            aiRequested = true;
+            if (cmd == "converge") {
+                rewritten.push_back("--ai");
+            } else {
+                rewritten.push_back("--ai-auto");
+                aiRequested = true;
+            }
             continue;
         }
         if (arg == "--allow-ignore-gate") {

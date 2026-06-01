@@ -531,6 +531,37 @@ auto ParentGitlinkHead(const std::filesystem::path& InParent, const std::filesys
     return {};
 }
 
+auto IsGitlinkPathInHead(const std::filesystem::path& InRepoRoot, const std::string& InPath) -> bool {
+    if (InPath.empty()) {
+        return false;
+    }
+    const auto out = GitCaptureNoOptionalLocks(InRepoRoot, {"ls-tree", "HEAD", "--", InPath});
+    if (out.exitCode != 0) {
+        return false;
+    }
+    const auto tree = Trim(out.stdoutStr);
+    return !tree.empty() && tree.rfind("160000 ", 0) == 0;
+}
+
+auto ManagedSubmodulePathsFromGitmodules(const std::filesystem::path& InRepoRoot) -> std::unordered_set<std::string> {
+    std::unordered_set<std::string> out;
+    const auto cfg = GitCaptureNoOptionalLocks(InRepoRoot, {"config", "-f", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$"});
+    if (cfg.exitCode != 0) {
+        return out;
+    }
+    for (const auto& line : SplitNonEmptyLines(cfg.stdoutStr)) {
+        const auto split = line.find(' ');
+        if (split == std::string::npos) {
+            continue;
+        }
+        const auto path = Trim(line.substr(split + 1));
+        if (!path.empty()) {
+            out.insert(path);
+        }
+    }
+    return out;
+}
+
 auto IsIgnoredByContainingRepo(const std::filesystem::path& InParent, const std::filesystem::path& InChild) -> bool {
     const auto rel = InChild.lexically_normal().lexically_relative(InParent.lexically_normal()).generic_string();
     if (rel.empty() || rel.starts_with("..")) {
@@ -1100,13 +1131,31 @@ auto BuildRecursiveRepoStatus(const workspace::RepoRecord& InRepo,
     bool hasConflict = false;
     bool allVisibleUntracked = !visibleStatus.empty();
 
+    auto managedGitlinkPaths = ManagedSubmodulePathsFromGitmodules(InRepo.path);
+    for (const auto& childId : out.childRepos) {
+        const auto childIt = std::find_if(InReposByPath.begin(), InReposByPath.end(), [&](const auto& entry) {
+            return RelativeId(InWorkspaceRoot, entry.second.path) == childId;
+        });
+        if (childIt == InReposByPath.end()) {
+            continue;
+        }
+        if (childIt->second.type != "registered") {
+            continue;
+        }
+        const auto rel = childIt->second.path.lexically_normal().lexically_relative(InRepo.path.lexically_normal()).generic_string();
+        if (!rel.empty() && !rel.starts_with("..")) {
+            managedGitlinkPaths.insert(rel);
+        }
+    }
+
+    std::vector<std::string> unregisteredGitlinkPaths;
+
     for (const auto& line : visibleStatus) {
         const auto flag = ParseStatusFlag(line);
         PushUnique(&out.statusFlags, flag);
         const auto path = ParseStatusChangedPath(line);
-        const bool isGitlinkPath = std::any_of(out.childRepos.begin(), out.childRepos.end(), [&](const std::string& childId) {
-            return path == childId || path.ends_with("/" + childId);
-        });
+        const bool isGitlinkPath = IsGitlinkPathInHead(InRepo.path, path);
+        const bool isManagedGitlinkPath = isGitlinkPath && managedGitlinkPaths.contains(path);
         if (flag == "??") {
             hasUntracked = true;
         } else {
@@ -1118,12 +1167,23 @@ auto BuildRecursiveRepoStatus(const workspace::RepoRecord& InRepo,
         if (flag.find('U') != std::string::npos || flag == "AA" || flag == "DD") {
             hasConflict = true;
         }
-        if (isGitlinkPath) {
+        if (isManagedGitlinkPath) {
             hasGitlinkDirty = true;
             PushUnique(&out.submoduleFacts, "ParentGitlinkDirty");
+        } else if (isGitlinkPath) {
+            unregisteredGitlinkPaths.push_back(path);
         } else {
             hasContentDirty = true;
         }
+    }
+
+    std::sort(unregisteredGitlinkPaths.begin(), unregisteredGitlinkPaths.end());
+    unregisteredGitlinkPaths.erase(std::unique(unregisteredGitlinkPaths.begin(), unregisteredGitlinkPaths.end()), unregisteredGitlinkPaths.end());
+    for (const auto& path : unregisteredGitlinkPaths) {
+        PushUnique(&out.submoduleFacts, "UnregisteredGitlinkSkipped:" + path);
+        PushUnique(&out.diagnostics,
+                   "UNREGISTERED_GITLINK_SKIPPED: " + path +
+                       " no .gitmodules mapping; not registered as managed submodule; skipped parent pointer update");
     }
 
     if (out.isSubmodule && !out.containingRepo.empty()) {
@@ -1181,6 +1241,8 @@ auto BuildRecursiveRepoStatus(const workspace::RepoRecord& InRepo,
         out.dirtyKind = "CONTENT_AND_GITLINK_DIRTY";
     } else if (hasGitlinkDirty) {
         out.dirtyKind = (childWorktreeDirty || childCommitUnpushed) ? "GITLINK_DIRTY_UNSAFE" : "GITLINK_DIRTY_ONLY";
+    } else if (!unregisteredGitlinkPaths.empty() && !hasContentDirty) {
+        out.dirtyKind = "UNREGISTERED_GITLINK_DIRTY_ONLY_SKIPPED";
     } else if (hasContentDirty) {
         out.dirtyKind = hasUntracked && allVisibleUntracked ? "UNTRACKED_ONLY" : "CONTENT_DIRTY";
     } else if (out.branch == "(detached)") {
@@ -1242,6 +1304,8 @@ auto BuildRecursiveRepoStatus(const workspace::RepoRecord& InRepo,
         .blockOnUnpushedCommits = false,
         .blockOnDirtyWorktree = false,
         .blockOnDirtySubmodule = false,
+        .strictSubmoduleMappings = false,
+        .managedSubmodulePaths = std::move(managedGitlinkPaths),
     });
 
     for (const auto& flag : health.statusFlags) {

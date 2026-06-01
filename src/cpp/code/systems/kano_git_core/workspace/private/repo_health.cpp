@@ -7,6 +7,7 @@
 #include <format>
 #include <set>
 #include <sstream>
+#include <string_view>
 #include <unordered_set>
 
 namespace kano::git::workspace {
@@ -125,6 +126,20 @@ auto FirstLine(const std::string& InText) -> std::string {
     return Trim(line);
 }
 
+auto ExtractMissingSubmoduleMappingPath(const std::string& InText) -> std::string {
+    constexpr std::string_view kNeedle = "no submodule mapping found in .gitmodules for path '";
+    const auto pos = InText.find(kNeedle);
+    if (pos == std::string::npos) {
+        return {};
+    }
+    const auto begin = pos + kNeedle.size();
+    const auto end = InText.find('\'', begin);
+    if (end == std::string::npos || end <= begin) {
+        return {};
+    }
+    return Trim(InText.substr(begin, end - begin));
+}
+
 auto ParseSubmoduleStatusText(const std::string& InText) -> std::vector<ParsedSubmoduleStatusLine> {
     std::vector<ParsedSubmoduleStatusLine> out;
     for (const auto& line : SplitLines(InText)) {
@@ -197,6 +212,7 @@ auto RepoBlockerKindToReasonCode(const RepoBlockerKind InKind) -> std::string {
     case RepoBlockerKind::UnpushedCommits: return "UNPUSHED_COMMITS";
     case RepoBlockerKind::GitlinkUnreachable: return "GITLINK_UNREACHABLE";
     case RepoBlockerKind::SubmoduleStatusUnresolved: return "SUBMODULE_STATUS_UNRESOLVED";
+    case RepoBlockerKind::SubmoduleMappingMissing: return "KOG_SUBMODULE_MAPPING_MISSING";
     case RepoBlockerKind::KogPlanUnauditable: return "KOG_PLAN_UNAUDITABLE";
     }
     return "KOG_PLAN_UNAUDITABLE";
@@ -370,8 +386,25 @@ auto ScanRepoHealth(const std::filesystem::path& InRepo,
             if (submoduleStatusOut.exitCode == 0) {
                 submoduleStatusText = submoduleStatusOut.stdoutStr;
             } else {
-                AddBlocker(&out, RepoBlockerKind::KogPlanUnauditable,
-                           "git submodule status --recursive failed: " + FirstLine(submoduleStatusOut.stderrStr));
+                const auto missingPath = ExtractMissingSubmoduleMappingPath(submoduleStatusOut.stderrStr);
+                if (!missingPath.empty()) {
+                    const bool managedByGraph = InOptions.managedSubmodulePaths.contains(missingPath);
+                    if (InOptions.strictSubmoduleMappings || managedByGraph) {
+                        AddBlocker(&out,
+                                   RepoBlockerKind::SubmoduleMappingMissing,
+                                   "managed submodule path missing in .gitmodules: " + missingPath +
+                                       " | repair: git config -f .gitmodules submodule.<name>.path '" + missingPath +
+                                       "' && git config -f .gitmodules submodule.<name>.url <url> && git add .gitmodules");
+                    } else {
+                        AddUnique(&out.statusFlags, "UNREGISTERED_GITLINK_SKIPPED");
+                        AddUnique(&out.diagnostics,
+                                  "UNREGISTERED_GITLINK_SKIPPED: " + missingPath +
+                                      " no .gitmodules mapping; not registered as managed submodule; skipped parent pointer update");
+                    }
+                } else {
+                    AddBlocker(&out, RepoBlockerKind::KogPlanUnauditable,
+                               "git submodule status --recursive failed: " + FirstLine(submoduleStatusOut.stderrStr));
+                }
             }
         }
 

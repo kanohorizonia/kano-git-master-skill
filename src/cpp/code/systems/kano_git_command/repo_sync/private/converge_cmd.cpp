@@ -20,6 +20,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -67,6 +68,7 @@ struct Plan {
     std::vector<PlanLine> sync;
     std::vector<PlanLine> commit;
     std::vector<PlanLine> push;
+    std::vector<PlanLine> skippedUnregisteredGitlinks;
     std::vector<PlanLine> skipped;
     std::vector<PlanLine> policy;
     std::vector<PlanLine> blocked;
@@ -465,6 +467,22 @@ std::string PointerMessage(const RepoStatus& repo) {
     return std::max<std::size_t>(repo.childRepos.size(), 1) == 1 ? kPointerSingleMessage : kPointerMultipleMessage;
 }
 
+std::vector<std::string> ExtractUnregisteredGitlinkPaths(const RepoStatus& repo) {
+    constexpr std::string_view kPrefix = "UnregisteredGitlinkSkipped:";
+    std::vector<std::string> out;
+    for (const auto& fact : repo.submoduleFacts) {
+        if (fact.rfind(kPrefix, 0) == 0) {
+            const auto path = Trim(fact.substr(kPrefix.size()));
+            if (!path.empty()) {
+                out.push_back(path);
+            }
+        }
+    }
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
+}
+
 void Add(std::vector<PlanLine>& lines, const std::string& repo, const std::string& text) {
     if (std::none_of(lines.begin(), lines.end(), [&](const auto& line) { return line.repo == repo && line.text == text; })) lines.push_back({repo, text});
 }
@@ -484,6 +502,11 @@ Plan BuildPlan(const Snapshot& snapshot) {
     for (const auto& repo : snapshot.repos) {
         if (IsFalsePolicy(repo.commandPolicy, "sync") || IsFalsePolicy(repo.commandPolicy, "commit") || IsFalsePolicy(repo.commandPolicy, "push") || IsFalsePolicy(repo.commandPolicy, "hygiene")) {
             Add(plan.policy, repo.id, std::format("sync={} commit={} push={} hygiene={}", PolicyValue(repo, "sync"), PolicyValue(repo, "commit"), PolicyValue(repo, "push"), PolicyValue(repo, "hygiene")));
+        }
+        for (const auto& path : ExtractUnregisteredGitlinkPaths(repo)) {
+            Add(plan.skippedUnregisteredGitlinks,
+                path,
+                "no .gitmodules mapping; not registered as managed submodule; skipped parent pointer update");
         }
         if (repo.blocksConverge) {
             Add(plan.blocked, repo.id, repo.blockReason.empty() ? "status snapshot blocks converge" : repo.blockReason);
@@ -513,6 +536,7 @@ Plan BuildPlan(const Snapshot& snapshot) {
         if (repo.dirtyKind == "CLEAN") { Add(plan.skipped, repo.id, "commit skipped: CLEAN"); continue; }
         if (repo.dirtyKind == "AHEAD_ONLY") { Add(plan.skipped, repo.id, "commit skipped: AHEAD_ONLY"); Allows(repo, "push") ? Add(plan.push, repo.id, "kog push --repos " + repo.id) : Add(plan.skipped, repo.id, "push skipped by commandPolicy.push=false"); continue; }
         if (repo.dirtyKind == "GITLINK_DIRTY_ONLY") { Add(plan.skipped, repo.id, "kog commit -ai skipped: GITLINK_DIRTY_ONLY"); Allows(repo, "commit") ? Add(plan.commit, repo.id, "deterministic pointer commit: " + PointerMessage(repo)) : Add(plan.skipped, repo.id, "pointer commit skipped by commandPolicy.commit=false"); continue; }
+        if (repo.dirtyKind == "UNREGISTERED_GITLINK_DIRTY_ONLY_SKIPPED") { Add(plan.skipped, repo.id, "kog commit -ai skipped: UNREGISTERED_GITLINK_DIRTY_ONLY_SKIPPED"); continue; }
         if (repo.dirtyKind == "GITLINK_DIRTY_UNSAFE") { Add(plan.blocked, repo.id, "PARENT_POINTER_UNSAFE: child worktree/commit state is not safe for deterministic pointer-only commit"); continue; }
         if (repo.dirtyKind == "CONTENT_DIRTY") { Allows(repo, "commit") ? Add(plan.commit, repo.id, "kog commit -ai --repos " + repo.id) : Add(plan.skipped, repo.id, "commit skipped by commandPolicy.commit=false"); continue; }
         if (repo.dirtyKind == "CONTENT_AND_GITLINK_DIRTY") { Allows(repo, "commit") ? Add(plan.commit, repo.id, "kog commit -ai --repos " + repo.id + " (combined content/pointer context)") : Add(plan.skipped, repo.id, "commit skipped by commandPolicy.commit=false"); continue; }
@@ -521,7 +545,7 @@ Plan BuildPlan(const Snapshot& snapshot) {
         else Add(plan.skipped, repo.id, "no converge action for dirtyKind=" + repo.dirtyKind);
     }
     auto sortLines = [](std::vector<PlanLine>& lines) { std::sort(lines.begin(), lines.end(), [](const auto& a, const auto& b) { return a.repo == b.repo ? a.text < b.text : a.repo < b.repo; }); };
-    sortLines(plan.sync); sortLines(plan.commit); sortLines(plan.push); sortLines(plan.skipped); sortLines(plan.policy); sortLines(plan.blocked);
+    sortLines(plan.sync); sortLines(plan.commit); sortLines(plan.push); sortLines(plan.skippedUnregisteredGitlinks); sortLines(plan.skipped); sortLines(plan.policy); sortLines(plan.blocked);
     return plan;
 }
 
@@ -713,6 +737,7 @@ void PrintPlan(const Snapshot& snapshot, const Plan& plan, bool unregisteredScan
     PrintLines("Phase sync actions", plan.sync);
     PrintLines("Phase commit actions", plan.commit);
     PrintLines("Phase push actions", plan.push);
+    PrintLines("Skipped unregistered gitlinks", plan.skippedUnregisteredGitlinks);
     PrintLines("Skipped repos", plan.skipped);
     PrintLines("Blocked repos", plan.blocked);
 }
@@ -743,6 +768,7 @@ void RegisterConverge(CLI::App& InApp) {
     auto* verbose = new bool{false};
     auto* forceWithLease = new bool{false};
     auto* noVerify = new bool{false};
+    auto* aiCompat = new bool{false};
     auto* unregisteredScan = new bool{false};
     auto* jobs = new int{1};
     auto* remote = new std::string{};
@@ -756,6 +782,7 @@ void RegisterConverge(CLI::App& InApp) {
     cmd->add_flag("--verbose", *verbose, "Verbose push output");
     cmd->add_flag("--force-with-lease", *forceWithLease, "Pass --force-with-lease to converge push stage");
     cmd->add_flag("--no-verify", *noVerify, "Pass --no-verify to converge push stage");
+    cmd->add_flag("--ai", *aiCompat, "Compatibility flag accepted for converge orchestration (currently no-op)");
     cmd->add_flag("--unregistered-scan", *unregisteredScan, "Opt in to bounded unregistered discovery during dry-run status preflight");
     cmd->add_option("--jobs", *jobs, "Parallel workers for converge status/push stages");
     cmd->add_option("--remote", *remote, "Optional remote filter for converge push stage");

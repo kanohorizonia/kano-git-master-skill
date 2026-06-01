@@ -250,6 +250,31 @@ TEST_CASE("converge planner gitlink only uses deterministic pointer commit", "[t
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge planner skips unregistered gitlink missing gitmodules mapping", "[functional][converge][planner][unregistered-gitlink]") {
+    const auto ctx = CreateRemoteWithClone("converge-planner-unregistered-gitlink");
+    const auto child = (ctx.cloneRepo / "HorizonDialogueDemo").lexically_normal();
+    InitPlainGitRepo(child);
+
+    RequireSuccess(RunGit({"add", "HorizonDialogueDemo"}, ctx.cloneRepo), "stage unregistered gitlink");
+    RequireSuccess(RunGit({"commit", "-m", "add unregistered gitlink"}, ctx.cloneRepo), "commit unregistered gitlink");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.cloneRepo), "push unregistered gitlink baseline");
+
+    WriteTextFile(child / "README.md", "repo\nchild moved\n");
+    RequireSuccess(RunGit({"commit", "-am", "child moved"}, child), "advance child gitlink commit");
+
+    const auto result = RunConvergeDryRun(ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContains(result.stdoutText, "Skipped unregistered gitlinks");
+    RequireContains(result.stdoutText, "HorizonDialogueDemo: no .gitmodules mapping; not registered as managed submodule; skipped parent pointer update");
+    RequireContains(result.stdoutText, "UNREGISTERED_GITLINK_DIRTY_ONLY_SKIPPED");
+    RequireNotContains(result.stdoutText, "KOG_PLAN_UNAUDITABLE");
+    RequireNotContains(result.stdoutText, "deterministic pointer commit");
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("converge planner blocks conflicted repo before mutation", "[tdd][unit][feature:converge-state][feature:dirty-kind][functional][converge][planner]") {
     const auto ctx = CreateRemoteWithClone("converge-planner-conflict");
     RequireSuccess(RunGit({"checkout", "-b", "side"}, ctx.cloneRepo), "checkout side");

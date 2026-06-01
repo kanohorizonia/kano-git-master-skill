@@ -2626,6 +2626,36 @@ auto IsGitlinkPathInHead(const std::filesystem::path& InRepoRoot, const std::str
     return out.rfind("160000 ", 0) == 0;
 }
 
+auto IsRegisteredSubmodulePath(const std::filesystem::path& InRepoRoot, const std::string& InPath) -> bool {
+    const auto normalizedPath = Trim(InPath);
+    if (normalizedPath.empty()) {
+        return false;
+    }
+
+    const auto config = GitCapture(InRepoRoot, {"config", "-f", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$"});
+    if (config.exitCode != 0) {
+        return false;
+    }
+
+    std::istringstream iss(config.stdoutStr);
+    std::string line;
+    while (std::getline(iss, line)) {
+        line = Trim(line);
+        if (line.empty()) {
+            continue;
+        }
+        const auto sp = line.find(' ');
+        if (sp == std::string::npos || sp + 1 >= line.size()) {
+            continue;
+        }
+        const auto submodulePath = Trim(line.substr(sp + 1));
+        if (!submodulePath.empty() && submodulePath == normalizedPath) {
+            return true;
+        }
+    }
+    return false;
+}
+
 auto RepoHasGitlinkOnlyChanges(const std::filesystem::path& InRepoRoot) -> bool {
     const auto status = GitCapture(InRepoRoot, {"status", "--porcelain"});
     if (status.exitCode != 0) return false;
@@ -2648,6 +2678,7 @@ auto RepoHasGitlinkOnlyChanges(const std::filesystem::path& InRepoRoot) -> bool 
         if (path.empty()) continue;
 
         if (!IsGitlinkPathInHead(InRepoRoot, path)) return false;
+        if (!IsRegisteredSubmodulePath(InRepoRoot, path)) return false;
         hasAny = true;
     }
     return hasAny;
@@ -2671,6 +2702,7 @@ auto CollectChangedSubmoduleNames(const std::filesystem::path& InRepoRoot) -> st
         }
         if (path.empty()) continue;
         if (!IsGitlinkPathInHead(InRepoRoot, path)) continue;
+        if (!IsRegisteredSubmodulePath(InRepoRoot, path)) continue;
         // Use the leaf directory name as the display name
         const auto fsPath = std::filesystem::path(path);
         auto name = fsPath.filename().generic_string();
@@ -3177,6 +3209,12 @@ auto NormalizeCommitPlanRepoPaths(const std::filesystem::path& InWorkspaceRoot,
                             if (!normalizedToken.has_value()) {
                                 return false;
                             }
+
+                            if (IsGitlinkPathInHead(repoContext->repoRoot, *normalizedToken) &&
+                                !IsRegisteredSubmodulePath(repoContext->repoRoot, *normalizedToken)) {
+                                continue;
+                            }
+
                             normalizedValues.push_back(*normalizedToken);
                         }
                         commitObject[InFieldName] = normalizedValues;

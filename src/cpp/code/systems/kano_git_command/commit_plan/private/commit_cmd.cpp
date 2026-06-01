@@ -3060,9 +3060,34 @@ auto StageCommitItemForPlan(const std::filesystem::path& InWorkspaceRoot,
         return false;
     }
 
+    auto isManagedGitlinkPath = [&](const std::string& InPath) -> bool {
+        if (!IsGitlinkPathInHead(InRepo, InPath)) {
+            return false;
+        }
+        if (IsRegisteredSubmodulePath(InRepo, InPath)) {
+            return true;
+        }
+        const auto absSub = (InRepo / std::filesystem::path(InPath)).lexically_normal();
+        return InPlanRepoKeys.contains(RepoKey(absSub));
+    };
+
+    std::vector<std::string> include;
+    include.reserve(InItem.include.size());
+    std::vector<std::string> forcedExcludes;
+    for (const auto& path : InItem.include) {
+        if (IsGitlinkPathInHead(InRepo, path) && !isManagedGitlinkPath(path)) {
+            forcedExcludes.push_back(path);
+            std::cerr << "PLAN_UNREGISTERED_GITLINK_PATH_SKIPPED: repo=" << InRepo.generic_string()
+                      << " path=" << path
+                      << " reason=unregistered gitlink path cannot be committed by parent plan\n";
+            continue;
+        }
+        include.push_back(path);
+    }
+
     std::vector<std::string> args{"add", "-A", "--"};
-    if (!InItem.include.empty()) {
-        args.insert(args.end(), InItem.include.begin(), InItem.include.end());
+    if (!include.empty()) {
+        args.insert(args.end(), include.begin(), include.end());
     }
 
     // Auto-include dirty gitlinks if they correspond to submodules being committed in this plan
@@ -3074,12 +3099,19 @@ auto StageCommitItemForPlan(const std::filesystem::path& InWorkspaceRoot,
             if (auto p = ParseStatusChangedPath(line)) {
                 const auto subPath = *p;
                 if (IsGitlinkPathInHead(InRepo, subPath)) {
+                    if (!isManagedGitlinkPath(subPath)) {
+                        forcedExcludes.push_back(subPath);
+                        std::cerr << "PLAN_UNREGISTERED_GITLINK_PATH_SKIPPED: repo=" << InRepo.generic_string()
+                                  << " path=" << subPath
+                                  << " reason=detected dirty unregistered gitlink; skip parent pointer staging\n";
+                        continue;
+                    }
                     // Check if this submodule is part of the current workspace plan
                     const auto absSub = (InRepo / subPath).lexically_normal();
                     if (InPlanRepoKeys.contains(RepoKey(absSub))) {
                         // Check if it's already in include or exclude
                         bool alreadyHandled = false;
-                        for (const auto& inc : InItem.include) {
+                        for (const auto& inc : include) {
                             if (inc == subPath) { alreadyHandled = true; break; }
                         }
                         if (!alreadyHandled) {
@@ -3104,6 +3136,11 @@ auto StageCommitItemForPlan(const std::filesystem::path& InWorkspaceRoot,
         } else {
             args.push_back(std::string(":(exclude)") + ex);
         }
+    }
+    std::sort(forcedExcludes.begin(), forcedExcludes.end());
+    forcedExcludes.erase(std::unique(forcedExcludes.begin(), forcedExcludes.end()), forcedExcludes.end());
+    for (const auto& ex : forcedExcludes) {
+        args.push_back(std::string(":(exclude)") + ex);
     }
 
     const auto add = GitCapture(InRepo, args);

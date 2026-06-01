@@ -6,6 +6,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -165,4 +166,46 @@ TEST_CASE("SeedCommitStage includes recursively dirty nested git repos in plan o
     REQUIRE(rootIndex.has_value());
     REQUIRE(*childIndex < *parentIndex);
     REQUIRE(*parentIndex < *rootIndex);
+}
+
+TEST_CASE("NormalizeCommitPlanRepoPaths strips unregistered gitlink include pathspec",
+          "[Unit][CommitPlan][Normalize][Gitlink]") {
+    const auto root = UniqueTempWorkspace("normalize-unregistered-gitlink-pathspec");
+    const auto child = (root / "HorizonDialogueDemo").lexically_normal();
+
+    RequireGit(root, {"init"});
+    RequireGit(root, {"config", "user.email", "tests@example.invalid"});
+    RequireGit(root, {"config", "user.name", "Kog Tests"});
+
+    WriteTextFile(root / "README.md", "root\n");
+    RequireGit(root, {"add", "README.md"});
+    RequireGit(root, {"commit", "-m", "docs: seed root"});
+
+    std::filesystem::create_directories(child);
+    RequireGit(child, {"init"});
+    RequireGit(child, {"config", "user.email", "tests@example.invalid"});
+    RequireGit(child, {"config", "user.name", "Kog Tests"});
+    WriteTextFile(child / "README.md", "child\n");
+    RequireGit(child, {"add", "README.md"});
+    RequireGit(child, {"commit", "-m", "docs: seed child"});
+
+    RequireGit(root, {"add", "HorizonDialogueDemo"});
+    RequireGit(root, {"commit", "-m", "chore: add unregistered gitlink"});
+
+    WriteTextFile(root / "README.md", "root changed\n");
+    WriteTextFile(child / "README.md", "child moved\n");
+    RequireGit(child, {"commit", "-am", "child moved"});
+
+    const auto planText = std::string(R"({"stages":{"commit":[{"repo":".","commits":[{"message":"docs: update root","include":["README.md","HorizonDialogueDemo"],"exclude":[]}]}]}})");
+    std::string error;
+    const auto normalized = NormalizeCommitPlanRepoPaths(root, planText, &error);
+
+    INFO(error);
+    REQUIRE(normalized.has_value());
+    REQUIRE(error.empty());
+
+    const auto doc = nlohmann::json::parse(*normalized);
+    const auto include = doc["stages"]["commit"][0]["commits"][0]["include"].get<std::vector<std::string>>();
+    REQUIRE(std::find(include.begin(), include.end(), "README.md") != include.end());
+    REQUIRE(std::find(include.begin(), include.end(), "HorizonDialogueDemo") == include.end());
 }
