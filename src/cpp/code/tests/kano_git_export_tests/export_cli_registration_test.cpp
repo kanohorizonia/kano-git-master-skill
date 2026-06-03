@@ -551,6 +551,18 @@ TEST_CASE("RegisterExport registers --prefix option",
     REQUIRE_NOTHROW(exportCmd->parse(std::string{"--prefix MyRepo/"}, false));
 }
 
+TEST_CASE("RegisterExport registers --include-path and --exclude-path options",
+          "[Unit][CLI][registration][path-filters]") {
+    CLI::App app{"kog test"};
+    kano::git::commands::RegisterExport(app);
+
+    auto* exportCmd = app.get_subcommand("export");
+    REQUIRE(exportCmd != nullptr);
+
+    REQUIRE(exportCmd->get_option("--include-path") != nullptr);
+    REQUIRE(exportCmd->get_option("--exclude-path") != nullptr);
+}
+
 TEST_CASE("RegisterExport registers --split-subrepo-depth option",
           "[Unit][CLI][registration]") {
     CLI::App app{"kog test"};

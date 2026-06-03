@@ -466,6 +466,44 @@ TEST_CASE("kog export --subtree exports standalone archive root",
     RemoveSandboxWorkspace(sandbox);
 }
 
+TEST_CASE("kog export path filters exclude matching root directories",
+          "[Integration][export][path-filters][exclude]") {
+    const auto ctx = CreateExportWorkspace("exclude-root-directories");
+
+    WriteTextFile(ctx.rootClone / "Content/Maps/Start.umap", "map\n");
+    WriteTextFile(ctx.rootClone / "Plugins/MyPlugin/MyPlugin.uplugin", "{ }\n");
+    RequireSuccess(RunGit({"add", "Content", "Plugins"}, ctx.rootClone), "root add content/plugins");
+    RequireSuccess(RunGit({"commit", "-m", "add content and plugin roots"}, ctx.rootClone), "root commit content/plugins");
+
+    RequireSuccess(RunKogDiscover(ctx), "kog discover");
+    const auto result = RunKogExport(ctx, {"--exclude-path", "Content", "--exclude-path", "Plugins", "--no-validate-release-archive"});
+
+    INFO("exit=" << result.exitCode);
+    INFO("stdout=" << result.stdoutText);
+    INFO("stderr=" << result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    const auto outputDir = ctx.rootClone / ".kano" / "tmp" / "git" / "export";
+    REQUIRE(std::filesystem::exists(outputDir));
+
+    std::filesystem::path rootArchive;
+    for (const auto& entry : std::filesystem::directory_iterator(outputDir)) {
+        if (entry.is_regular_file() &&
+            entry.path().extension() == ".tar" &&
+            entry.path().filename().string().find(ctx.rootRepoName + "_rev") == 0) {
+            rootArchive = entry.path();
+            break;
+        }
+    }
+    REQUIRE_FALSE(rootArchive.empty());
+    REQUIRE(ArchiveContainsPath(rootArchive, "README.md", ctx.rootClone));
+    REQUIRE_FALSE(ArchiveContainsPath(rootArchive, "Content/Maps/Start.umap", ctx.rootClone));
+    REQUIRE_FALSE(ArchiveContainsPath(rootArchive, "Plugins/MyPlugin/MyPlugin.uplugin", ctx.rootClone));
+    REQUIRE_FALSE(ArchiveContainsPath(rootArchive, ".kano/", ctx.rootClone));
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("kog export --subtree accepts relative path and defaults name to subtree basename",
           "[Integration][export][subtree][relative-path]") {
     const auto sandbox = CreateSandboxWorkspace("subtree-export-relative");

@@ -21,6 +21,7 @@
 #include <iomanip>
 #include <map>
 #include <iostream>
+#include <regex>
 #include <set>
 #include <sstream>
 #include <string>
@@ -32,6 +33,102 @@ namespace kano::git::commands {
 // ---------------------------------------------------------------------------
 // Pure helper function implementations
 // ---------------------------------------------------------------------------
+
+namespace {
+
+auto NormalizeFilterPath(std::string InValue) -> std::string {
+    std::replace(InValue.begin(), InValue.end(), '\\', '/');
+    while (InValue.starts_with("./")) {
+        InValue.erase(0, 2);
+    }
+    while (!InValue.empty() && InValue.front() == '/') {
+        InValue.erase(InValue.begin());
+    }
+    while (InValue.size() > 1 && InValue.ends_with('/')) {
+        InValue.pop_back();
+    }
+    return InValue;
+}
+
+auto ContainsGlobMagic(const std::string& InValue) -> bool {
+    return InValue.find('*') != std::string::npos || InValue.find('?') != std::string::npos;
+}
+
+auto GlobToRegex(const std::string& InPattern) -> std::regex {
+    std::string regexText = "^";
+    for (std::size_t i = 0; i < InPattern.size(); ++i) {
+        const char ch = InPattern[i];
+        if (ch == '*') {
+            const bool isDoubleStar = (i + 1 < InPattern.size() && InPattern[i + 1] == '*');
+            if (isDoubleStar) {
+                regexText += ".*";
+                ++i;
+            } else {
+                regexText += "[^/]*";
+            }
+            continue;
+        }
+        if (ch == '?') {
+            regexText += "[^/]";
+            continue;
+        }
+        if (ch == '.' || ch == '^' || ch == '$' || ch == '|' || ch == '(' || ch == ')' ||
+            ch == '[' || ch == ']' || ch == '{' || ch == '}' || ch == '+' || ch == '\\') {
+            regexText.push_back('\\');
+        }
+        regexText.push_back(ch);
+    }
+    regexText += "$";
+    return std::regex(regexText, std::regex::ECMAScript);
+}
+
+auto PathMatchesFilter(std::string InPath, std::string InFilter) -> bool {
+    InPath = NormalizeFilterPath(std::move(InPath));
+    InFilter = NormalizeFilterPath(std::move(InFilter));
+    if (InPath.empty() || InFilter.empty()) {
+        return false;
+    }
+
+    if (!ContainsGlobMagic(InFilter)) {
+        return InPath == InFilter || InPath.starts_with(InFilter + "/");
+    }
+
+    return std::regex_match(InPath, GlobToRegex(InFilter));
+}
+
+auto HasPathFilters(const ExportOptions& InOpts) -> bool {
+    return !InOpts.includePaths.empty() || !InOpts.excludePaths.empty();
+}
+
+auto ShouldIncludePathByFilters(const std::string& InRepoRelativePath,
+                                const ExportOptions& InOpts) -> bool {
+    const std::string normalizedPath = NormalizeFilterPath(InRepoRelativePath);
+    bool includeMatched = InOpts.includePaths.empty();
+    for (const auto& include : InOpts.includePaths) {
+        if (PathMatchesFilter(normalizedPath, include)) {
+            includeMatched = true;
+            break;
+        }
+    }
+    if (!includeMatched) {
+        return false;
+    }
+
+    for (const auto& exclude : InOpts.excludePaths) {
+        if (PathMatchesFilter(normalizedPath, exclude)) {
+            for (const auto& include : InOpts.includePaths) {
+                if (PathMatchesFilter(normalizedPath, include)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+
+    return true;
+}
+
+} // anonymous namespace
 
 auto ValidateOptions(const ExportOptions& InOpts) -> bool {
     bool ok = true;
@@ -217,6 +314,11 @@ auto CollectWorkingTreeFiles(const ExportRecord& InRecord, const std::string& In
                     // Skip git metadata
                     if (line == ".git" || line.starts_with(".git/") || line.starts_with(".git\\") ||
                         line.find("/.git/") != std::string::npos || line.find("\\.git\\") != std::string::npos) {
+                        continue;
+                    }
+                    // Skip kog workspace metadata/cache
+                    if (line == ".kano" || line.starts_with(".kano/") || line.starts_with(".kano\\") ||
+                        line.find("/.kano/") != std::string::npos || line.find("\\.kano\\") != std::string::npos) {
                         continue;
                     }
                     // Skip submodules if we are in single mode (we will add their contents explicitly)
@@ -1526,7 +1628,7 @@ auto ExportOneRepo(const ExportRecord& InRecord,
 
     const bool singleForRecord = InOpts.single || InRecord.exportAsSingle;
     const bool includeSubreposForRecord = InOpts.includeSubrepos || InRecord.exportAsSingle;
-    const bool useWorkingTree = (InOpts.source == "working-tree") || (singleForRecord && includeSubreposForRecord);
+    const bool useWorkingTree = (InOpts.source == "working-tree") || (singleForRecord && includeSubreposForRecord) || HasPathFilters(InOpts);
 
     if (!useWorkingTree) {
         std::vector<std::string> args;
@@ -1553,6 +1655,17 @@ auto ExportOneRepo(const ExportRecord& InRecord,
                 InRecord.subtreeRepoRelativePath,
                 InOpts.keepSubtreePath,
                 InExec);
+            relFiles.erase(
+                std::remove_if(
+                    relFiles.begin(),
+                    relFiles.end(),
+                    [&](const std::string& rel) {
+                        const std::string repoRelativePath = InOpts.keepSubtreePath
+                            ? rel
+                            : (InRecord.subtreeRepoRelativePath.generic_string() + "/" + rel);
+                        return !ShouldIncludePathByFilters(repoRelativePath, InOpts);
+                    }),
+                relFiles.end());
             if (relFiles.empty()) {
                 result.errorMessage = "no files found in subtree working tree export";
                 return result;
@@ -1631,6 +1744,14 @@ auto ExportOneRepo(const ExportRecord& InRecord,
         }
 
         std::vector<std::string> relFiles = CollectWorkingTreeFiles(InRecord, "", singleForRecord && includeSubreposForRecord, InExec);
+        relFiles.erase(
+            std::remove_if(
+                relFiles.begin(),
+                relFiles.end(),
+                [&](const std::string& rel) {
+                    return !ShouldIncludePathByFilters(rel, InOpts);
+                }),
+            relFiles.end());
         if (relFiles.empty()) {
             result.errorMessage = "no files found in working tree export";
             return result;
@@ -2156,6 +2277,8 @@ void RegisterExport(CLI::App& InApp) {
     auto* outputDir = new std::string{};
     auto* format = new std::string{"tar"};
     auto* prefix = new std::string{};
+    auto* includePaths = new std::vector<std::string>{};
+    auto* excludePaths = new std::vector<std::string>{};
     auto* includeSubmoduleStubs = new bool{false};
     auto* noRecursive = new bool{false};
     auto* dryRun = new bool{false};
@@ -2179,6 +2302,10 @@ void RegisterExport(CLI::App& InApp) {
         "Archive format: tar|zip (default: tar)");
     cmd->add_option("--prefix", *prefix,
         "Override archive root prefix (default: <repo-name>/)");
+    cmd->add_option("--include-path", *includePaths,
+        "Include only repo-relative paths matching this prefix or glob; repeatable");
+    cmd->add_option("--exclude-path", *excludePaths,
+        "Exclude repo-relative paths matching this prefix or glob; repeatable");
     cmd->add_flag("--include-submodule-stubs", *includeSubmoduleStubs,
         "Include empty submodule placeholder dirs in root archive (working-tree only)");
     cmd->add_flag("--no-recursive", *noRecursive,
@@ -2217,6 +2344,8 @@ void RegisterExport(CLI::App& InApp) {
         opts.outputDir = *outputDir;
         opts.format = *format;
         opts.prefix = *prefix;
+        opts.includePaths = *includePaths;
+        opts.excludePaths = *excludePaths;
         opts.includeSubmoduleStubs = *includeSubmoduleStubs;
         opts.noRecursive = *noRecursive;
         opts.dryRun = *dryRun;
@@ -2245,3 +2374,4 @@ void RegisterExport(CLI::App& InApp) {
 }
 
 } // namespace kano::git::commands
+

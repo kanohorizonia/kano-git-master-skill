@@ -37,6 +37,8 @@ struct ExportOptions {
     std::filesystem::path outputDir;
     std::string format;          // "tar" or "zip"
     std::string prefix;          // empty = use repo name
+    std::vector<std::string> includePaths; // repo-relative path filters; repeatable
+    std::vector<std::string> excludePaths; // repo-relative path filters; repeatable
     bool includeSubmoduleStubs = false;
     bool noRecursive = false;
     bool dryRun = false;
