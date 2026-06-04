@@ -138,6 +138,15 @@ int CheckArchiveSafePrerequisites(const std::filesystem::path& repoRoot) {
     return failures;
 }
 
+bool IsVendoredUpstreamRepo(const std::filesystem::path& workspaceRoot, const std::filesystem::path& repoPath) {
+    auto relative = repoPath.lexically_relative(workspaceRoot).generic_string();
+    if (relative == "." || relative.empty()) return false;
+    if (relative.starts_with("src/upstream/")) return true;
+    if (relative.find("/src/upstream/") != std::string::npos) return true;
+    if (relative.find("/upstream/") != std::string::npos) return true;
+    return false;
+}
+
 void CheckRepoHygiene(const std::filesystem::path& repoRoot, bool fix, bool archiveSafe, bool recursive) {
     if (recursive) {
         workspace::DiscoverOptions options;
@@ -145,6 +154,10 @@ void CheckRepoHygiene(const std::filesystem::path& repoRoot, bool fix, bool arch
         options.metadataLevel = "minimal";
         const auto discovery = workspace::DiscoverRepos(options);
         for (const auto& repo : discovery.repos) {
+            if (IsVendoredUpstreamRepo(repoRoot, repo.path)) {
+                std::cout << "[SKIP] Repo hygiene skipped (vendored upstream): " << repo.path.generic_string() << "\n";
+                continue;
+            }
             if (workspace::GetSubmoduleConfig(repoRoot, repo.path, "kog-hygiene") == "false") {
                 std::cout << "[SKIP] Repo hygiene skipped (kog-hygiene=false): " << repo.path.generic_string() << "\n";
                 continue;
