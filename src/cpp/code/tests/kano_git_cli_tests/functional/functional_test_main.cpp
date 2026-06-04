@@ -996,6 +996,31 @@ TEST_CASE("repo_hygiene_archive_safe_prereq_failure_skips_fix_mutations",
 
     const auto merged = result.stdoutText + "\n" + result.stderrText;
     REQUIRE(merged.find("Fixes skipped due to archive-safe prerequisite failures") != std::string::npos);
+    REQUIRE(merged.find("tracked script missing from working tree") != std::string::npos);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("repo_hygiene_archive_safe_skips_untracked_optional_quality_gate",
+          "[functional][repo-hygiene][archive-safe]") {
+    const auto ctx = CreateRemoteWithClone("repo-hygiene-optional-quality-gate");
+    const std::string scriptPath = "src/shell/test/pre-commit-quality-gate.sh";
+
+    RequireSuccess(RunGit({"rm", scriptPath}, ctx.cloneRepo), "remove optional quality gate from repo");
+    RequireSuccess(
+        RunGit({"commit", "-m", "remove optional quality gate"}, ctx.cloneRepo),
+        "commit optional quality gate removal");
+
+    const auto result = RunKog(
+        {"repo-hygiene", "--repo", ctx.cloneRepo.string(), "fix", "--archive-safe"},
+        ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    const auto merged = result.stdoutText + "\n" + result.stderrText;
+    REQUIRE(merged.find("[SKIP] pre-commit-quality-gate optional script not tracked in this repo") != std::string::npos);
+    REQUIRE(merged.find("Archive-safe prerequisites failed") == std::string::npos);
 
     RemoveSandboxWorkspace(ctx.sandbox);
 }

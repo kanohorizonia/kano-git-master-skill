@@ -33,6 +33,11 @@ auto GitCapture(const std::filesystem::path& InRepo, const std::vector<std::stri
     return shell::ExecuteCommand("git", InArgs, shell::ExecMode::Capture, InRepo);
 }
 
+bool IsTrackedPath(const std::filesystem::path& repoRoot, const std::string& path) {
+    const auto result = GitCapture(repoRoot, {"ls-files", "--error-unmatch", "--", path});
+    return result.exitCode == 0;
+}
+
 bool IsExecutableRequired(const std::string& path) {
     if (path == "scripts/kog" || path == "scripts/kano-git") return true;
     if (path == "assets/root-wrapper-templates/common/kog") return true;
@@ -73,8 +78,12 @@ int RunArchiveSafeShellAudits(const std::filesystem::path& repoRoot) {
     for (const auto& audit : audits) {
         const auto scriptPath = repoRoot / audit.script;
         if (!std::filesystem::exists(scriptPath)) {
-            std::cerr << "[FAIL] " << audit.label << " missing script: " << audit.script << "\n";
-            failures += 1;
+            if (IsTrackedPath(repoRoot, audit.script)) {
+                std::cerr << "[FAIL] " << audit.label << " tracked script missing from working tree: " << audit.script << "\n";
+                failures += 1;
+            } else {
+                std::cout << "[SKIP] " << audit.label << " optional script not tracked in this repo: " << audit.script << "\n";
+            }
             continue;
         }
 
@@ -117,8 +126,12 @@ int CheckArchiveSafePrerequisites(const std::filesystem::path& repoRoot) {
     for (const auto& audit : audits) {
         const auto scriptPath = repoRoot / audit.script;
         if (!std::filesystem::exists(scriptPath)) {
-            std::cerr << "[FAIL] " << audit.label << " missing script: " << audit.script << "\n";
-            failures += 1;
+            if (IsTrackedPath(repoRoot, audit.script)) {
+                std::cerr << "[FAIL] " << audit.label << " tracked script missing from working tree: " << audit.script << "\n";
+                failures += 1;
+            } else {
+                std::cout << "[SKIP] " << audit.label << " optional script not tracked in this repo: " << audit.script << "\n";
+            }
         }
     }
     return failures;

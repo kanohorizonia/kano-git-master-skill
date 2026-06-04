@@ -26,9 +26,12 @@ You can also run a strict archive-safe check:
 kog repo-hygiene check --archive-safe
 ```
 
-Archive-safe mode also runs the shell-only pre-commit quality gate when the
-script is available. That gate covers current public docs references, root
-wrapper generator smoke tests, launcher shell syntax, and Git-index hygiene.
+Archive-safe mode also runs the shell-only pre-commit quality gate when that
+script is tracked by the current repository. Repos that do not own
+`src/shell/test/pre-commit-quality-gate.sh` are reported as skipped instead of
+failed; a tracked script that is missing from the working tree is still a hard
+failure. That gate covers current public docs references, root wrapper generator
+smoke tests, launcher shell syntax, and Git-index hygiene.
 
 ### Fix Mode
 
