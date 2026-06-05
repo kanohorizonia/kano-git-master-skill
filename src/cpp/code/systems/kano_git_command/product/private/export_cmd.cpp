@@ -1428,6 +1428,13 @@ auto HasBash(const std::filesystem::path& InWorkspaceRoot,
     return result.exitCode == 0;
 }
 
+auto HasPython(const std::filesystem::path& InWorkspaceRoot,
+               const ShellExecutor& InExec,
+               const std::string& InPythonCommand) -> bool {
+    const auto result = InExec(InPythonCommand, {"-c", "import sys"}, shell::ExecMode::Capture, InWorkspaceRoot);
+    return result.exitCode == 0;
+}
+
 auto SplitNonEmptyLines(const std::string& InText) -> std::vector<std::string> {
     std::vector<std::string> lines;
     std::istringstream iss(InText);
@@ -1442,7 +1449,7 @@ auto SplitNonEmptyLines(const std::string& InText) -> std::vector<std::string> {
 }
 
 auto ResolvePreferredBash(const std::filesystem::path& InWorkspaceRoot,
-                         const ShellExecutor& InExec) -> std::string {
+                          const ShellExecutor& InExec) -> std::string {
 #ifdef KOG_PLATFORM_WINDOWS
     auto isGitBashPath = [](const std::string& InPath) -> bool {
         std::string lower = InPath;
@@ -1485,6 +1492,21 @@ auto ResolvePreferredBash(const std::filesystem::path& InWorkspaceRoot,
     }
 #endif
     return "bash";
+}
+
+auto ResolvePreferredPython(const std::filesystem::path& InWorkspaceRoot,
+                            const ShellExecutor& InExec) -> std::string {
+#ifdef KOG_PLATFORM_WINDOWS
+    const char* candidates[] = {"python", "python3"};
+#else
+    const char* candidates[] = {"python3", "python"};
+#endif
+    for (const char* candidate : candidates) {
+        if (HasPython(InWorkspaceRoot, InExec, candidate)) {
+            return candidate;
+        }
+    }
+    return {};
 }
 
 auto AppendCapturedOutput(std::ostream& InStream,
@@ -1629,6 +1651,7 @@ auto ExportOneRepo(const ExportRecord& InRecord,
     const bool singleForRecord = InOpts.single || InRecord.exportAsSingle;
     const bool includeSubreposForRecord = InOpts.includeSubrepos || InRecord.exportAsSingle;
     const bool useWorkingTree = (InOpts.source == "working-tree") || (singleForRecord && includeSubreposForRecord) || HasPathFilters(InOpts);
+    const std::string pythonCommand = useWorkingTree ? ResolvePreferredPython(InRecord.repoPath, InExec) : "";
 
     if (!useWorkingTree) {
         std::vector<std::string> args;
@@ -1722,7 +1745,11 @@ auto ExportOneRepo(const ExportRecord& InRecord,
                 "else:\n"
                 "  raise SystemExit('unsupported archive format: ' + fmt)";
 
-            archiveResult = InExec("python", {"-c", py, manifestPath.generic_string(), result.archivePath.generic_string(), InOpts.format}, shell::ExecMode::Capture, InRecord.repoPath);
+            if (pythonCommand.empty()) {
+                result.errorMessage = "working-tree export requires python3 or python";
+                return result;
+            }
+            archiveResult = InExec(pythonCommand, {"-c", py, manifestPath.generic_string(), result.archivePath.generic_string(), InOpts.format}, shell::ExecMode::Capture, InRecord.repoPath);
             std::error_code ec;
             std::filesystem::remove(manifestPath, ec);
         } else {
@@ -1876,8 +1903,12 @@ auto ExportOneRepo(const ExportRecord& InRecord,
             "else:\n"
             "  raise SystemExit('unsupported archive format: ' + fmt)";
 
+        if (pythonCommand.empty()) {
+            result.errorMessage = "working-tree export requires python3 or python";
+            return result;
+        }
         archiveResult = InExec(
-            "python",
+            pythonCommand,
             {"-c", py, manifestPath.generic_string(), result.archivePath.generic_string(), InOpts.format},
             shell::ExecMode::Capture,
             InRecord.repoPath);

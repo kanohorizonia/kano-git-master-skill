@@ -66,6 +66,21 @@ auto ConfigureIdentity(const std::filesystem::path& InRepo) -> void {
     RequireSuccess(RunGit({"config", "user.email", "kano-test@example.invalid"}, InRepo), "config user.email");
 }
 
+auto ResolvePythonCommand(const std::filesystem::path& InRepo) -> std::string {
+    for (const char* candidate : {"python3", "python"}) {
+        const auto probe = RunCommand(candidate, {"-c", "import sys"}, InRepo);
+        if (probe.exitCode == 0) {
+            return candidate;
+        }
+    }
+    return "python";
+}
+
+auto RunPythonCommand(const std::vector<std::string>& InArgs,
+                      const std::filesystem::path& InRepo) -> CommandResult {
+    return RunCommand(ResolvePythonCommand(InRepo), InArgs, InRepo);
+}
+
 // Count files in a directory matching a given extension (non-recursive).
 auto CountFilesWithExtension(const std::filesystem::path& InDir,
                               const std::string& InExt) -> int {
@@ -116,7 +131,7 @@ auto AnyFileContainsRecursive(const std::filesystem::path& InDir,
 auto ArchiveContainsPath(const std::filesystem::path& InArchive,
                          const std::string& InSubstring,
                          const std::filesystem::path& InRepo) -> bool {
-    const auto result = RunCommand("python", {"-c",
+    const auto result = RunPythonCommand({"-c",
         "import tarfile; t=tarfile.open(r'" + InArchive.generic_string() + "'); "
         "print('\\n'.join(m.name for m in t.getmembers() if m.isfile()))"}, InRepo);
     return result.exitCode == 0 && result.stdoutText.find(InSubstring) != std::string::npos;
@@ -432,7 +447,7 @@ TEST_CASE("kog export --subtree exports standalone archive root",
     REQUIRE(AnyFileContains(outputDir, "UnrealGameSync_rev"));
     REQUIRE(AnyFileContains(outputDir, ".export-manifest.json"));
 
-    const auto list = RunCommand("python", {"-c",
+    const auto list = RunPythonCommand({"-c",
         "import tarfile,glob; p=glob.glob(r'" + outputDir.generic_string() + "/UnrealGameSync_rev*.tar')[0]; "
         "t=tarfile.open(p); print('\\n'.join(m.name for m in t.getmembers() if m.isfile()))"}, repo);
     REQUIRE(list.exitCode == 0);
@@ -564,7 +579,7 @@ TEST_CASE("kog export --subtree --source working-tree includes untracked and exc
     const auto outputDir = repo / ".kano" / "tmp" / "git" / "export";
     REQUIRE(std::filesystem::exists(outputDir));
 
-    const auto list = RunCommand("python", {"-c",
+    const auto list = RunPythonCommand({"-c",
         "import tarfile,glob; p=glob.glob(r'" + outputDir.generic_string() + "/UnrealGameSync_rev*.tar')[0]; "
         "t=tarfile.open(p); print('\\n'.join(m.name for m in t.getmembers() if m.isfile()))"}, repo);
     REQUIRE(list.exitCode == 0);
@@ -635,7 +650,7 @@ TEST_CASE("kog export --subtree --source working-tree supports zip archives",
     const auto outputDir = repo / ".kano" / "tmp" / "git" / "export";
     REQUIRE(std::filesystem::exists(outputDir));
 
-    const auto list = RunCommand("python", {"-c",
+    const auto list = RunPythonCommand({"-c",
         "import zipfile,glob; p=glob.glob(r'" + outputDir.generic_string() + "/UnrealGameSync_rev*.zip')[0]; "
         "z=zipfile.ZipFile(p); print('\\n'.join(z.namelist()))"}, repo);
     REQUIRE(list.exitCode == 0);
@@ -1118,8 +1133,7 @@ TEST_CASE("kog export normalizes LF-enforced scripts in single expanded exports"
     const std::string rootArchiveMember = ctx.rootRepoName + "/scripts/root_crlf.sh";
     const std::string childArchiveMember = ctx.rootRepoName + "/deps/child/scripts/child_crlf.sh";
 
-    const auto verify = RunCommand(
-        "python",
+    const auto verify = RunPythonCommand(
         {
             "-c",
             "import pathlib,subprocess,sys,tarfile,tempfile; "

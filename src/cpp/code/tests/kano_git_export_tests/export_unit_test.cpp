@@ -22,6 +22,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <optional>
 #include <sstream>
@@ -213,6 +214,71 @@ TEST_CASE("ExportOneRepo returns success=true when archive command succeeds",
     REQUIRE(result.success);
     REQUIRE(result.errorMessage.empty());
     REQUIRE_FALSE(result.archiveName.empty());
+}
+
+TEST_CASE("ExportOneRepo working-tree export falls back to python3 when python is unavailable",
+          "[Unit][ExportOneRepo][working-tree][python3-fallback]") {
+    TempDir repoDir;
+    TempDir outputDir;
+    TempDir metadataDir;
+
+    const auto repoPath = repoDir.path / "MyRepo";
+    std::filesystem::create_directories(repoPath);
+    {
+        std::ofstream out(repoPath / "README.md", std::ios::binary | std::ios::trunc);
+        REQUIRE(out.good());
+        out << "hello\n";
+    }
+
+    const auto record = MakeRecord(repoPath, "MyRepo", ".", true);
+    ExportOptions opts = MakeTestOpts();
+    opts.source = "working-tree";
+
+    bool usedPython3 = false;
+    const auto exec = [&usedPython3](const std::string& InCommand,
+                                     const std::vector<std::string>& InArgs,
+                                     ExecMode /*InMode*/,
+                                     std::optional<std::filesystem::path> /*InWorkingDir*/) -> ExecResult {
+        ExecResult result;
+        result.exitCode = 0;
+
+        if (InCommand == "python") {
+            result.exitCode = 127;
+            result.stderrStr = "python: command not found";
+            return result;
+        }
+        if (InCommand == "python3") {
+            usedPython3 = true;
+            return result;
+        }
+        if (InCommand == "git" && !InArgs.empty() && InArgs[0] == "rev-list") {
+            result.stdoutStr = "1\n";
+            return result;
+        }
+        if (InCommand == "git" && !InArgs.empty() && InArgs[0] == "ls-files") {
+            const bool isModeQuery =
+                std::find(InArgs.begin(), InArgs.end(), "-s") != InArgs.end();
+            result.stdoutStr = isModeQuery ? "100644 deadbeef 0\tREADME.md\n" : "README.md\n";
+            return result;
+        }
+        if (InCommand == "git" && !InArgs.empty() && InArgs[0] == "check-attr") {
+            result.stdoutStr = "";
+            return result;
+        }
+        if (InCommand == "git") {
+            result.stdoutStr = "";
+            return result;
+        }
+
+        result.exitCode = 1;
+        result.stderrStr = "unexpected command";
+        return result;
+    };
+
+    const ExportResult result = ExportOneRepo(record, opts, outputDir.path, metadataDir.path, exec);
+
+    REQUIRE(result.success);
+    REQUIRE(usedPython3);
 }
 
 TEST_CASE("ExportOneRepo archive name follows <name>_rev<NNN>.<format> pattern",
