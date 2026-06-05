@@ -4,6 +4,7 @@
 ]) _
 
 agentSkillPipelineFromProjectConfig(
+    bootstrapAgentLabel: 'windows && lightweight',
     configPath: '.jenkins/config/agent-skill-pipeline.json',
     config: [
         bDryRun: params.DRY_RUN,
