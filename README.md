@@ -148,8 +148,18 @@ Root Pixi task facade:
 - `pixi run test`: default local deterministic validation lane.
 - `pixi run full-test`: broad deterministic local validation lane.
 - `pixi run test-report`: normalize and validate test report rendering inputs.
-- `pixi run coverage-report`: render normalized coverage outputs.
+- `pixi run coverage-report`: render-only coverage report stage.
+- `pixi run coverage-all`: canonical coverage lane (`build -> gather -> report`).
 - `pixi run gather-reports`: gather raw evidence and delegate final rendering.
+- `pixi run pgo-gather`: canonical PGO training lane.
+- `pixi run pgo-rebuild`: canonical release PGO lane (`pgi-build -> pgo-gather -> pgo-build`).
+- `pixi run pgo-gather-with-coverage`: optional unified training-observation lane for supported backends.
+- `pixi run profile-run-manifest`: emit the coverage/PGO capability manifest for the selected lane.
+- `pixi run ci-linux-build`: Linux release build on a native Linux node or any Docker-capable host.
+- `pixi run ci-linux-quick-test`: Linux quick-test lane on a native Linux node or any Docker-capable host.
+- `pixi run ci-linux-test-report`: Linux report-collection lane that writes canonical raw test evidence.
+- `pixi run ci-linux-coverage-all`: Linux coverage gather lane that writes canonical raw coverage evidence.
+- `pixi run ci-linux-export`: Linux export lane that runs the native Linux binary for `kog export`.
 
 Report rendering ownership:
 
@@ -167,6 +177,8 @@ Legacy note:
 
 - Local scripts that directly render per-run JUnit HTML are legacy compatibility
   helpers and are not the canonical CI report renderer.
+- CI jobs that need actual coverage evidence should prefer `coverage-all`; `coverage-report`
+  alone is only the render stage and does not perform the build/gather work.
 
 ## Documentation Status
 

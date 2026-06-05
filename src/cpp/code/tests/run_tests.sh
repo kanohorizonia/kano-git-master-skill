@@ -39,6 +39,17 @@ resolve_bin_dir() {
   return 1
 }
 
+has_test_binaries_for_preset() {
+  local cpp_dir="$1"
+  local preset_name="$2"
+  local bin_dir=""
+  if ! bin_dir="$(resolve_bin_dir "$cpp_dir" "$preset_name")"; then
+    return 1
+  fi
+  [[ ( -x "$bin_dir/release/kano_git_cli_tests" || -x "$bin_dir/release/kano_git_cli_tests.exe" ) &&
+     ( -x "$bin_dir/release/kano_git_tui_tests" || -x "$bin_dir/release/kano_git_tui_tests.exe" ) ]]
+}
+
 # Default preset (can be overridden)
 PRESET="${1:-linux-ninja-gcc-release}"
 LANE_MODE="${2:-default}"
@@ -78,8 +89,14 @@ if [[ -z "$WORKSPACE_ROOT" ]]; then
   exit 1
 fi
 
-echo "Building via kog self build..."
-"$WORKSPACE_ROOT/scripts/kog" self build
+if [[ "${KANO_SKIP_TEST_BUILD:-0}" == "1" || "${KANO_SKIP_TEST_BUILD:-}" == "true" ]]; then
+  echo "Skipping build before tests because KANO_SKIP_TEST_BUILD is enabled."
+elif has_test_binaries_for_preset "$CPP_ROOT" "$PRESET"; then
+  echo "Skipping build before tests because preset '$PRESET' binaries already exist."
+else
+  echo "Building via kog self build..."
+  "$WORKSPACE_ROOT/scripts/kog" self build
+fi
 
 BIN_DIR="$(resolve_bin_dir "$CPP_ROOT" "$PRESET")"
 EXE_DIR="$BIN_DIR/release"
