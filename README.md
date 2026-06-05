@@ -183,8 +183,13 @@ Legacy note:
 
 - Local scripts that directly render per-run JUnit HTML are legacy compatibility
   helpers and are not the canonical CI report renderer.
+- Jenkins jobs that must emit canonical test + coverage reports should run
+  `test-report -> coverage-all -> gather-reports`; `coverage-all` does not
+  replace the separate test-report lane.
 - CI jobs that need actual coverage evidence should prefer `coverage-all`; `coverage-report`
   alone is only the render stage and does not perform the build/gather work.
+- Release/profile optimization jobs should use `pgo-rebuild`; that is a separate
+  `pgi-build -> pgo-gather -> pgo-build` flow and is not the default CI report lane.
 
 ## Documentation Status
 

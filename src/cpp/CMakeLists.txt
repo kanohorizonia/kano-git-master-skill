@@ -363,6 +363,61 @@ endif()
 # CLI11 v2.4 uses <codecvt> which is removed in MSVC 19.50 (VS 2026)
 add_compile_definitions(CLI11_HAS_CODECVT=0)
 
+include(FetchContent)
+
+# Shared FetchContent git defaults:
+# - Jenkins Linux/mac lanes have shown intermittent HTTP/2 clone failures when
+#   CMake shells out to git for upstream dependencies.
+# - Force git to use HTTP/1.1 for FetchContent clones by default.
+# - Prefer shallow clones for tag/branch pins, but keep full history for commit
+#   hashes because CMake disallows GIT_SHALLOW with commit-pinned GIT_TAG values.
+set(KOG_FETCHCONTENT_GIT_HTTP_VERSION "HTTP/1.1" CACHE STRING
+    "Git http.version override for FetchContent dependencies; set empty to use git defaults")
+option(KOG_FETCHCONTENT_GIT_ENABLE_PROGRESS "Enable progress output for FetchContent git downloads" ON)
+option(KOG_FETCHCONTENT_GIT_SHALLOW_TAGS "Use shallow FetchContent git clones for tag/branch-pinned dependencies" ON)
+
+function(kog_fetchcontent_declare_git dependency_name)
+    set(options)
+    set(one_value_args REPOSITORY TAG)
+    set(multi_value_args EXTRA_ARGS)
+    cmake_parse_arguments(KOG_FETCH "${options}" "${one_value_args}" "${multi_value_args}" ${ARGN})
+
+    if(NOT KOG_FETCH_REPOSITORY OR NOT KOG_FETCH_TAG)
+        message(FATAL_ERROR
+            "kog_fetchcontent_declare_git(${dependency_name}) requires REPOSITORY and TAG")
+    endif()
+
+    set(fetch_args
+        GIT_REPOSITORY "${KOG_FETCH_REPOSITORY}"
+        GIT_TAG "${KOG_FETCH_TAG}"
+    )
+
+    if(KOG_FETCHCONTENT_GIT_ENABLE_PROGRESS)
+        list(APPEND fetch_args GIT_PROGRESS TRUE)
+    endif()
+
+    if(NOT KOG_FETCHCONTENT_GIT_HTTP_VERSION STREQUAL "")
+        list(APPEND fetch_args GIT_CONFIG "http.version=${KOG_FETCHCONTENT_GIT_HTTP_VERSION}")
+    endif()
+
+    if(KOG_FETCHCONTENT_GIT_SHALLOW_TAGS)
+        string(LENGTH "${KOG_FETCH_TAG}" fetch_tag_length)
+        set(tag_is_commit_hash FALSE)
+        if(KOG_FETCH_TAG MATCHES "^[0-9A-Fa-f]+$" AND fetch_tag_length GREATER_EQUAL 7 AND fetch_tag_length LESS_EQUAL 40)
+            set(tag_is_commit_hash TRUE)
+        endif()
+        if(NOT tag_is_commit_hash)
+            list(APPEND fetch_args GIT_SHALLOW TRUE)
+        endif()
+    endif()
+
+    if(KOG_FETCH_EXTRA_ARGS)
+        list(APPEND fetch_args ${KOG_FETCH_EXTRA_ARGS})
+    endif()
+
+    FetchContent_Declare(${dependency_name} ${fetch_args})
+endfunction()
+
 # Resolve nlohmann/json source strategy
 #   fetch (default): FetchContent from upstream release tag into CMake _deps
 #   system: use find_package(nlohmann_json)
@@ -370,11 +425,10 @@ set(KOG_NLOHMANN_JSON_SOURCE_MODE "fetch" CACHE STRING "nlohmann/json source mod
 set_property(CACHE KOG_NLOHMANN_JSON_SOURCE_MODE PROPERTY STRINGS fetch system)
 
 if(KOG_NLOHMANN_JSON_SOURCE_MODE STREQUAL "fetch")
-    include(FetchContent)
-    FetchContent_Declare(
+    kog_fetchcontent_declare_git(
         nlohmann_json
-        GIT_REPOSITORY https://github.com/nlohmann/json.git
-        GIT_TAG v3.11.3
+        REPOSITORY https://github.com/nlohmann/json.git
+        TAG v3.11.3
     )
     set(NLOHMANN_JSON_BUILD_TESTS OFF CACHE BOOL "" FORCE)
     set(NLOHMANN_JSON_INSTALL     OFF CACHE BOOL "" FORCE)
@@ -397,11 +451,10 @@ set(KOG_CLI11_SUBMODULE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/code/thirdparty/
 set(KOG_CLI11_BINARY_DIR "${CMAKE_BINARY_DIR}/thirdparty/cli11-build")
 
 if(KOG_CLI11_SOURCE_MODE STREQUAL "fetch")
-    include(FetchContent)
-    FetchContent_Declare(
+    kog_fetchcontent_declare_git(
         cli11
-        GIT_REPOSITORY https://github.com/CLIUtils/CLI11.git
-        GIT_TAG v2.6.2
+        REPOSITORY https://github.com/CLIUtils/CLI11.git
+        TAG v2.6.2
     )
     set(CLI11_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
     set(CLI11_BUILD_DOCS OFF CACHE BOOL "" FORCE)
@@ -428,11 +481,10 @@ set(KOG_FTXUI_SOURCE_MODE "fetch" CACHE STRING "FTXUI source mode: fetch|submodu
 set_property(CACHE KOG_FTXUI_SOURCE_MODE PROPERTY STRINGS fetch submodule)
 
 if(KOG_FTXUI_SOURCE_MODE STREQUAL "fetch")
-    include(FetchContent)
-    FetchContent_Declare(
+    kog_fetchcontent_declare_git(
         ftxui
-        GIT_REPOSITORY https://github.com/ArthurSonzogni/FTXUI.git
-        GIT_TAG v5.0.0
+        REPOSITORY https://github.com/ArthurSonzogni/FTXUI.git
+        TAG v5.0.0
     )
     FetchContent_MakeAvailable(ftxui)
     message(STATUS "FTXUI fetched into CMake _deps: enabling full tui")
@@ -464,11 +516,10 @@ if(KOG_TOMLPP_SOURCE_MODE STREQUAL "submodule")
         message(FATAL_ERROR "toml++ submodule missing: ${KOG_TOMLPP_SUBMODULE_SOURCE_DIR}. Run: git submodule update --init --recursive")
     endif()
 elseif(KOG_TOMLPP_SOURCE_MODE STREQUAL "fetch")
-    include(FetchContent)
-    FetchContent_Declare(
+    kog_fetchcontent_declare_git(
         tomlplusplus
-        GIT_REPOSITORY https://github.com/marzer/tomlplusplus.git
-        GIT_TAG v3.4.0
+        REPOSITORY https://github.com/marzer/tomlplusplus.git
+        TAG v3.4.0
     )
     set(TOMLPLUSPLUS_BUILD_TESTS OFF CACHE BOOL "" FORCE)
     set(TOMLPLUSPLUS_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)

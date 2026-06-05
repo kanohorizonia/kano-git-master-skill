@@ -644,13 +644,36 @@ auto JoinArgs(const std::vector<std::string>& InArgs) -> std::string {
     return oss.str();
 }
 
+auto TailLines(const std::string& InText, std::size_t InMaxLines) -> std::string {
+    if (InText.empty() || InMaxLines == 0) {
+        return {};
+    }
+    std::vector<std::string> lines;
+    std::istringstream iss(InText);
+    std::string line;
+    while (std::getline(iss, line)) {
+        lines.push_back(line);
+    }
+    const std::size_t start = lines.size() > InMaxLines ? (lines.size() - InMaxLines) : 0;
+    std::ostringstream out;
+    for (std::size_t i = start; i < lines.size(); ++i) {
+        if (i > start) {
+            out << "\\n";
+        }
+        out << lines[i];
+    }
+    return out.str();
+}
+
 auto BuildProcessDiagBlock(const std::string& InStartTs,
                            const std::string& InEndTs,
                            const std::filesystem::path& InCwd,
                            const std::string& InExecutable,
                            const std::vector<std::string>& InArgv,
                            const int InExitCode,
-                           const bool InTimedOut) -> std::string {
+                           const bool InTimedOut,
+                           const std::string& InStdout,
+                           const std::string& InStderr) -> std::string {
     std::ostringstream oss;
     const auto commandLine = InArgv.empty() ? InExecutable : (InExecutable + " " + JoinArgs(InArgv));
     const auto pathRaw = std::getenv("PATH");
@@ -665,6 +688,8 @@ auto BuildProcessDiagBlock(const std::string& InStartTs,
     if (InTimedOut) {
         oss << "[process-diag] timeout_kill_marker=1\n";
         oss << "[process-diag] last_running_child_command=" << commandLine << "\n";
+        oss << "[process-diag] stdout_tail=" << TailLines(InStdout, 20) << "\n";
+        oss << "[process-diag] stderr_tail=" << TailLines(InStderr, 20) << "\n";
     }
 
     static constexpr std::array<const char*, 10> kRelevantEnvKeys = {

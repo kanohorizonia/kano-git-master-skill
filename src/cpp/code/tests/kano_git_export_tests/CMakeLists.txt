@@ -4,10 +4,10 @@
 # Catch2 FetchContent target.  We add the extras/catch INTERFACE target
 # manually after FetchContent_MakeAvailable.
 include(FetchContent)
-FetchContent_Declare(
+kog_fetchcontent_declare_git(
     rapidcheck
-    GIT_REPOSITORY https://github.com/emil-e/rapidcheck.git
-    GIT_TAG ff6af6fc683159deb51c543b065eba14dfcf329b
+    REPOSITORY https://github.com/emil-e/rapidcheck.git
+    TAG ff6af6fc683159deb51c543b065eba14dfcf329b
 )
 set(RC_ENABLE_TESTS    OFF CACHE BOOL "" FORCE)
 set(RC_ENABLE_EXAMPLES OFF CACHE BOOL "" FORCE)

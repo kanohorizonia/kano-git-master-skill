@@ -3,10 +3,10 @@ cmake_minimum_required(VERSION 3.21)
 
 # Fetch Catch2 for testing
 include(FetchContent)
-FetchContent_Declare(
+kog_fetchcontent_declare_git(
     Catch2
-    GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-    GIT_TAG v3.5.2
+    REPOSITORY https://github.com/catchorg/Catch2.git
+    TAG v3.5.2
 )
 FetchContent_MakeAvailable(Catch2)
 

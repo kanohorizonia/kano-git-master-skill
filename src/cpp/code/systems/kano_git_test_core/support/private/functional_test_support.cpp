@@ -4,9 +4,15 @@
 #include <algorithm>
 #include <cstdlib>
 #include <tuple>
+#include <vector>
 
 #if defined(_WIN32)
 #include <windows.h>
+#elif defined(__APPLE__)
+#include <mach-o/dyld.h>
+#include <unistd.h>
+#else
+#include <unistd.h>
 #endif
 
 namespace kano::git::tests::functional {
@@ -26,8 +32,37 @@ auto CurrentExecutablePath() -> std::filesystem::path {
     }
     buffer.resize(written);
     return std::filesystem::path(buffer).lexically_normal();
+#elif defined(__APPLE__)
+    uint32_t size = 0;
+    _NSGetExecutablePath(nullptr, &size);
+    if (size == 0) {
+        return {};
+    }
+
+    std::vector<char> buffer(size + 1, '\0');
+    if (_NSGetExecutablePath(buffer.data(), &size) != 0) {
+        return {};
+    }
+
+    std::error_code ec;
+    const auto resolved = std::filesystem::weakly_canonical(std::filesystem::path(buffer.data()), ec);
+    if (!ec) {
+        return resolved.lexically_normal();
+    }
+    return std::filesystem::path(buffer.data()).lexically_normal();
 #else
-    return {};
+    std::vector<char> buffer(256, '\0');
+    while (true) {
+        const auto written = readlink("/proc/self/exe", buffer.data(), buffer.size() - 1);
+        if (written < 0) {
+            return {};
+        }
+        if (static_cast<std::size_t>(written) < (buffer.size() - 1)) {
+            buffer[static_cast<std::size_t>(written)] = '\0';
+            return std::filesystem::path(buffer.data()).lexically_normal();
+        }
+        buffer.resize(buffer.size() * 2, '\0');
+    }
 #endif
 }
 
