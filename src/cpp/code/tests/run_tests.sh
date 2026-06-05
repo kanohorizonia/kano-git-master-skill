@@ -26,16 +26,29 @@ resolve_workspace_root() {
 resolve_bin_dir() {
   local cpp_dir="$1"
   local preset_name="$2"
-  if [[ -d "$cpp_dir/out/bin/$preset_name" ]]; then
-    printf '%s\n' "$cpp_dir/out/bin/$preset_name"
-    return 0
-  fi
-  local canonical
+  local canonical archless candidate
   canonical="$(printf '%s' "$preset_name" | sed -E 's/-(debug|release|relwithdebinfo|minsizerel)$//')"
-  if [[ -d "$cpp_dir/out/bin/$canonical" ]]; then
-    printf '%s\n' "$cpp_dir/out/bin/$canonical"
-    return 0
-  fi
+  archless="$(printf '%s' "$canonical" | sed -E 's/-(x64|arm64)$//')"
+  for candidate in "$preset_name" "$canonical" "$archless"; do
+    [[ -n "$candidate" ]] || continue
+    if [[ -d "$cpp_dir/out/bin/$candidate" ]]; then
+      printf '%s\n' "$cpp_dir/out/bin/$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+resolve_test_exe_dir() {
+  local bin_dir="$1"
+  local config_dir=""
+  for config_dir in release relwithdebinfo minsizerel debug; do
+    if [[ ( -x "$bin_dir/$config_dir/kano_git_cli_tests" || -x "$bin_dir/$config_dir/kano_git_cli_tests.exe" ) &&
+          ( -x "$bin_dir/$config_dir/kano_git_tui_tests" || -x "$bin_dir/$config_dir/kano_git_tui_tests.exe" ) ]]; then
+      printf '%s\n' "$bin_dir/$config_dir"
+      return 0
+    fi
+  done
   return 1
 }
 
@@ -46,8 +59,7 @@ has_test_binaries_for_preset() {
   if ! bin_dir="$(resolve_bin_dir "$cpp_dir" "$preset_name")"; then
     return 1
   fi
-  [[ ( -x "$bin_dir/release/kano_git_cli_tests" || -x "$bin_dir/release/kano_git_cli_tests.exe" ) &&
-     ( -x "$bin_dir/release/kano_git_tui_tests" || -x "$bin_dir/release/kano_git_tui_tests.exe" ) ]]
+  resolve_test_exe_dir "$bin_dir" >/dev/null
 }
 
 # Default preset (can be overridden)
@@ -98,8 +110,17 @@ else
   "$WORKSPACE_ROOT/scripts/kog" self build
 fi
 
-BIN_DIR="$(resolve_bin_dir "$CPP_ROOT" "$PRESET")"
-EXE_DIR="$BIN_DIR/release"
+BIN_DIR="$(resolve_bin_dir "$CPP_ROOT" "$PRESET" || true)"
+if [[ -z "$BIN_DIR" ]]; then
+  echo "Could not resolve build output directory for preset '$PRESET'." >&2
+  exit 1
+fi
+EXE_DIR="$(resolve_test_exe_dir "$BIN_DIR" || true)"
+if [[ -z "$EXE_DIR" ]]; then
+  echo "Could not locate CLI/TUI test binaries under '$BIN_DIR' for preset '$PRESET'." >&2
+  exit 1
+fi
+echo "Using test binaries from: $EXE_DIR"
 
 # Run tests
 run_cli_tests() {
