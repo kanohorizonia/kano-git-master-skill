@@ -56,6 +56,7 @@ ci-linux-build = "cd src/cpp/shared/infra && pixi run ci-linux-build"
 ci-linux-quick-test = "cd src/cpp/shared/infra && pixi run ci-linux-quick-test"
 ci-linux-test-report = "cd src/cpp/shared/infra && pixi run ci-linux-test-report"
 ci-linux-coverage-all = "cd src/cpp/shared/infra && pixi run ci-linux-coverage-all"
+ci-linux-validate = "cd src/cpp/shared/infra && pixi run ci-linux-validate"
 ci-linux-export = "cd src/cpp/shared/infra && pixi run ci-linux-export"
 
 acceptance-quickstart = "bash src/shell/test/acceptance-quickstart-commit-push.sh"
