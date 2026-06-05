@@ -144,6 +144,7 @@ as the primary Git workflow UX.
 
 Root Pixi task facade:
 
+- `pixi run build`: canonical repo-root native build wrapper; enters `src/cpp/shared/infra` before running the shared manifest build lane.
 - `pixi run quick-test`: fast local deterministic confidence lane.
 - `pixi run test`: default local deterministic validation lane.
 - `pixi run full-test`: broad deterministic local validation lane.
@@ -160,6 +161,11 @@ Root Pixi task facade:
 - `pixi run ci-linux-test-report`: Linux report-collection lane that writes canonical raw test evidence.
 - `pixi run ci-linux-coverage-all`: Linux coverage gather lane that writes canonical raw coverage evidence.
 - `pixi run ci-linux-export`: Linux export lane that runs the native Linux binary for `kog export`.
+
+Wrapper note:
+
+- Repo-root Pixi wrappers `cd src/cpp/shared/infra && pixi run <task>` on purpose.
+- Build-style tasks that invoke CMake presets must run with `src/cpp/` as the effective project root; direct `--manifest-path` forwarding can incorrectly make CMake search for `src/cpp/shared/infra/CMakePresets.json`.
 
 Report rendering ownership:
 

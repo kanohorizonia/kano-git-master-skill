@@ -24,29 +24,39 @@ bash = "*"
 # shared manifest at `src/cpp/shared/infra/pixi.toml`.
 #
 # Prefer:
-#   pixi run --manifest-path src/cpp/shared/infra/pixi.toml <task>
 #   cd src/cpp/shared/infra && pixi run <task>
+#   pixi run <task>
 #
-# Keep only repo-specific shell/docs/acceptance tasks here.
+# Repo-root wrapper tasks must `cd` into `src/cpp/shared/infra` instead of
+# forwarding with `--manifest-path` for build/test/report lanes. Some shared
+# CMake preset flows resolve against the current working directory and expect
+# `src/cpp/CMakePresets.json`, not `src/cpp/shared/infra/CMakePresets.json`.
+#
+# Keep only repo-specific shell/docs/acceptance tasks here, plus safe repo-root
+# wrapper tasks for the shared infra manifest.
 # =============================================================================
 
 [tasks]
-quick-test = "pixi run --manifest-path src/cpp/shared/infra/pixi.toml quick-test"
-test = "pixi run --manifest-path src/cpp/shared/infra/pixi.toml test"
-full-test = "pixi run --manifest-path src/cpp/shared/infra/pixi.toml full-test"
-test-report = "pixi run --manifest-path src/cpp/shared/infra/pixi.toml test-report"
-coverage-report = "pixi run --manifest-path src/cpp/shared/infra/pixi.toml coverage-report"
-coverage-all = "pixi run --manifest-path src/cpp/shared/infra/pixi.toml coverage-all"
-gather-reports = "pixi run --manifest-path src/cpp/shared/infra/pixi.toml gather-reports"
-pgo-gather = "pixi run --manifest-path src/cpp/shared/infra/pixi.toml pgo-gather"
-pgo-rebuild = "pixi run --manifest-path src/cpp/shared/infra/pixi.toml pgo-rebuild"
-pgo-gather-with-coverage = "pixi run --manifest-path src/cpp/shared/infra/pixi.toml pgo-gather-with-coverage"
-profile-run-manifest = "pixi run --manifest-path src/cpp/shared/infra/pixi.toml profile-run-manifest"
-ci-linux-build = "pixi run --manifest-path src/cpp/shared/infra/pixi.toml ci-linux-build"
-ci-linux-quick-test = "pixi run --manifest-path src/cpp/shared/infra/pixi.toml ci-linux-quick-test"
-ci-linux-test-report = "pixi run --manifest-path src/cpp/shared/infra/pixi.toml ci-linux-test-report"
-ci-linux-coverage-all = "pixi run --manifest-path src/cpp/shared/infra/pixi.toml ci-linux-coverage-all"
-ci-linux-export = "pixi run --manifest-path src/cpp/shared/infra/pixi.toml ci-linux-export"
+build-debug = "cd src/cpp/shared/infra && pixi run build-debug"
+build-release = "cd src/cpp/shared/infra && pixi run build-release"
+build = "cd src/cpp/shared/infra && pixi run build"
+rebuild = "cd src/cpp/shared/infra && pixi run rebuild"
+quick-test = "cd src/cpp/shared/infra && pixi run quick-test"
+test = "cd src/cpp/shared/infra && pixi run test"
+full-test = "cd src/cpp/shared/infra && pixi run full-test"
+test-report = "cd src/cpp/shared/infra && pixi run test-report"
+coverage-report = "cd src/cpp/shared/infra && pixi run coverage-report"
+coverage-all = "cd src/cpp/shared/infra && pixi run coverage-all"
+gather-reports = "cd src/cpp/shared/infra && pixi run gather-reports"
+pgo-gather = "cd src/cpp/shared/infra && pixi run pgo-gather"
+pgo-rebuild = "cd src/cpp/shared/infra && pixi run pgo-rebuild"
+pgo-gather-with-coverage = "cd src/cpp/shared/infra && pixi run pgo-gather-with-coverage"
+profile-run-manifest = "cd src/cpp/shared/infra && pixi run profile-run-manifest"
+ci-linux-build = "cd src/cpp/shared/infra && pixi run ci-linux-build"
+ci-linux-quick-test = "cd src/cpp/shared/infra && pixi run ci-linux-quick-test"
+ci-linux-test-report = "cd src/cpp/shared/infra && pixi run ci-linux-test-report"
+ci-linux-coverage-all = "cd src/cpp/shared/infra && pixi run ci-linux-coverage-all"
+ci-linux-export = "cd src/cpp/shared/infra && pixi run ci-linux-export"
 
 acceptance-quickstart = "bash src/shell/test/acceptance-quickstart-commit-push.sh"
 acceptance-commit-plan-first = "bash src/shell/test/acceptance-commit-plan-first.sh"
