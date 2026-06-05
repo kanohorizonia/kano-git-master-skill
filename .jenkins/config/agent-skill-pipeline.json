@@ -13,6 +13,7 @@
   "linuxBuildTasks": ["ci-linux-build"],
   "linuxTestTasks": ["ci-linux-quick-test"],
   "linuxReportTasks": ["ci-linux-test-report", "ci-linux-coverage-all", "gather-reports"],
+  "linuxValidateCommand": "pixi run ci-linux-validate",
   "requiredPixiTasks": [
     "build",
     "quick-test",
@@ -23,6 +24,7 @@
     "ci-linux-quick-test",
     "ci-linux-test-report",
     "ci-linux-coverage-all",
+    "ci-linux-validate",
     "ci-linux-export"
   ],
   "reportRoot": "out/reports",
