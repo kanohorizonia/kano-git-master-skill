@@ -3,7 +3,7 @@
   "skillName": "kano-git-master-skill",
   "bootstrapAgentLabel": "windows && lightweight",
   "windowsAgentLabel": "windows && lightweight",
-  "linuxAgentLabel": "lightweight && (linux || docker)",
+  "linuxAgentLabel": "lightweight && (linux || docker) && !jenkins-controller && !built-in",
   "macAgentLabel": "mac && lightweight",
   "bRunReleasePhase": false,
   "bRunTests": true,
