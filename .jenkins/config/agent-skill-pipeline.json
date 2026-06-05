@@ -1,7 +1,7 @@
 {
   "projectName": "kano-git-master-skill",
   "skillName": "kano-git-master-skill",
-  "bootstrapAgentLabel": "windows && lightweight",
+  "bootstrapAgentLabel": "lightweight",
   "windowsAgentLabel": "windows && lightweight",
   "linuxAgentLabel": "lightweight && (linux || docker) && !jenkins-controller && !built-in",
   "macAgentLabel": "mac && lightweight",
