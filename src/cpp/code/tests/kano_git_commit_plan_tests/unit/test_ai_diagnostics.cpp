@@ -129,6 +129,9 @@ TEST_CASE("ShouldIgnoreSecretFinding ignores dynamic Horde token assignments", "
     REQUIRE(ShouldIgnoreSecretFinding(
         "generic_password_assignment",
         "DE_TOKEN=\"\\$UE_HORDE_TOKEN\""));
+    REQUIRE(ShouldIgnoreSecretFinding(
+        "generic_password_assignment",
+        "DE_TOKEN=\"$(printenv \"KOG_TOKEN\")\""));
 
     REQUIRE_FALSE(ShouldIgnoreSecretFinding(
         "generic_password_assignment",

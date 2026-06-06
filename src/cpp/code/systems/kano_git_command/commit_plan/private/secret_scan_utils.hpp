@@ -79,7 +79,7 @@ inline auto ShouldIgnoreSecretFinding(const std::string& InRuleId,
     }
 
     static const std::regex kAssignmentPattern(
-        R"(([Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Ss][Ss][Ww][Dd]|[Pp][Ww][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Aa][Pp][Ii][_ -]?[Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn])\s*[:=]\s*['\"]([^'\"]{8,})['\"])",
+        R"(([Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Ss][Ss][Ww][Dd]|[Pp][Ww][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Aa][Pp][Ii][_ -]?[Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn])\s*[:=]\s*(?:'((?:\\.|[^'\\]){8,})'|\"((?:\\.|[^\\"\\]){8,})\"))",
         std::regex::ECMAScript | std::regex::icase);
 
     std::smatch match;
@@ -87,7 +87,7 @@ inline auto ShouldIgnoreSecretFinding(const std::string& InRuleId,
         return false;
     }
 
-    const auto assignedValue = match[2].str();
+    const auto assignedValue = !match[2].str().empty() ? match[2].str() : match[3].str();
     return LooksLikeIntentionalPlaceholderValue(assignedValue)
         || LooksLikeDynamicSecretReferenceValue(assignedValue);
 }
