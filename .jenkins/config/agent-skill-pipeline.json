@@ -45,7 +45,7 @@
   "platformPackageExportManifestFiles": "export-manifest.json, .kano/tmp/export-manifest.json, .kano/tmp/*.export-manifest.json, .kano/tmp/git/export/*.export-manifest.json, artifacts/export-manifest.json, artifacts/**/*.export-manifest.json, Release/export-manifest.json, Release/**/*.export-manifest.json",
   "linuxExportCommand": "pixi run ci-linux-export",
   "bBuildInstallers": true,
-  "windowsInstallerCommand": "bash src/wix/scripts/build.sh && mkdir -p artifacts/installers/windows && cp -f src/wix/out/*.msi artifacts/installers/windows/",
+  "windowsInstallerCommand": "bash -lc \"src/wix/scripts/build.sh && mkdir -p artifacts/installers/windows && cp -f src/wix/out/*.msi artifacts/installers/windows/\"",
   "bGeneratePackageManagerRecipes": true,
   "bGenerateWingetRecipe": true,
   "wingetPackageId": "Kanohorizonia.KanoGitMasterSkill",
