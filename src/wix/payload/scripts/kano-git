@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+INSTALL_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+VERSION_FILE="${SCRIPT_DIR}/package-version.txt"
+CHANNEL_FILE="${SCRIPT_DIR}/package-channel.txt"
+PACKAGE_MANAGER_FILE="${SCRIPT_DIR}/package-manager.txt"
+NATIVE_BINARY="${INSTALL_ROOT}/bin/kano-git.exe"
+
+read_metadata_file() {
+  local file_path="$1"
+  local fallback="$2"
+  if [[ -f "$file_path" ]]; then
+    local value
+    value="$(tr -d '\r' < "$file_path")"
+    if [[ -n "$value" ]]; then
+      printf '%s' "$value"
+      return 0
+    fi
+  fi
+  printf '%s' "$fallback"
+}
+
+VERSION="$(read_metadata_file "$VERSION_FILE" "unknown")"
+CHANNEL="$(read_metadata_file "$CHANNEL_FILE" "github-release")"
+PACKAGE_MANAGER="$(read_metadata_file "$PACKAGE_MANAGER_FILE" "msi")"
+
+run_native() {
+  exec "$NATIVE_BINARY" "$@"
+}
+
+print_packaged_update_guidance() {
+  cat >&2 <<GUIDE
+kano-git-master-skill is installed as a packaged build.
+
+Installed version: ${VERSION}
+Install root: ${INSTALL_ROOT}
+Update channel: ${CHANNEL}
+Package manager: ${PACKAGE_MANAGER}
+
+Recommended update flow right now:
+  1. Check the latest GitHub Release for kano-git-master-skill.
+  2. Download and install the newer MSI if available.
+
+Future package-manager channels:
+  - winget: prefer 'winget upgrade kano-git-master-skill' when the manifest is published
+  - Homebrew: prefer 'brew upgrade kano-git-master-skill' when the formula is published
+
+Packaged installs do not support git-based self-mutation.
+GUIDE
+}
+
+print_packaged_update_check_banner() {
+  cat >&2 <<BANNER
+[packaged-update-check]
+installed-version=${VERSION}
+install-root=${INSTALL_ROOT}
+channel=${CHANNEL}
+package-manager=${PACKAGE_MANAGER}
+BANNER
+}
+
+print_packaged_mutation_blocked() {
+  local command_name="$1"
+  cat >&2 <<BLOCKED
+Error: 'self ${command_name}' is not available for packaged installs.
+
+This copy of kano-git-master-skill is managed as an installed package, not a developer checkout.
+
+Use instead:
+  - 'kog self update-check' to inspect availability information
+  - GitHub Releases to install a newer MSI today
+  - later: 'winget upgrade kano-git-master-skill' or 'brew upgrade kano-git-master-skill' when those channels are published
+BLOCKED
+}
+
+run_packaged_self() {
+  local subcommand="${1:-}"
+  shift || true
+
+  case "$subcommand" in
+    ""|-h|--help|help)
+      cat <<'EOF_HELP'
+Packaged self-management commands:
+  self update-check   Query the native binary for update availability information
+  self update         Show packaged update guidance (non-mutating)
+  self build          Unsupported in packaged mode
+  self rebuild        Unsupported in packaged mode
+  self sync           Unsupported in packaged mode
+  self maybe-auto-update Unsupported in packaged mode
+EOF_HELP
+      return 0
+      ;;
+    build|rebuild|sync|maybe-auto-update)
+      print_packaged_mutation_blocked "$subcommand"
+      return 2
+      ;;
+    update)
+      print_packaged_update_guidance
+      return 0
+      ;;
+    update-check)
+      print_packaged_update_check_banner
+      run_native self "$subcommand" --mode package --repo "$INSTALL_ROOT" "$@"
+      ;;
+    *)
+      run_native self "$subcommand" --repo "$INSTALL_ROOT" "$@"
+      ;;
+  esac
+}
+
+main() {
+  if [[ ! -f "$NATIVE_BINARY" ]]; then
+    echo "Error: packaged native binary is missing: $NATIVE_BINARY" >&2
+    exit 1
+  fi
+
+  if [[ "$#" -gt 0 && "$1" == "self" ]]; then
+    shift
+    run_packaged_self "$@"
+    return
+  fi
+
+  run_native "$@"
+}
+
+main "$@"

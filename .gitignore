@@ -81,9 +81,7 @@ mock_ue_project/
 mock_output_*.txt
 
 # Wix build artifacts
-src/wix/code/
-src/wix/payload/
-src/wix/scripts/
+src/wix/out/
 
 # Build logs
 build_full_log.txt
@@ -99,4 +97,3 @@ pixi.lock
 list.txt
 test.tar
 _exported_project
-
