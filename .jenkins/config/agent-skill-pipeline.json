@@ -35,6 +35,7 @@
   "releaseJobName": "Release_Publish",
   "upstreamBuildJob": "KanoAgentSkills/kano-git-master-skill/Build_CI",
   "gitUrl": "https://github.com/kanohorizonia/kano-git-master-skill.git",
+  "gitCredentialsId": "github-kanohorizonia-jenkins",
   "gitBranch": "__BUILD_BRANCH__",
   "bRunWindowsBuild": true,
   "bRunLinuxBuild": true,
