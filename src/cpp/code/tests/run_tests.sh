@@ -75,6 +75,19 @@ run_test_binary() {
   KANO_TEST_BINARY_NAME="$binary_name" "$@"
 }
 
+resolve_python() {
+  if command -v python3 >/dev/null 2>&1; then
+    command -v python3
+    return 0
+  fi
+  if command -v python >/dev/null 2>&1; then
+    command -v python
+    return 0
+  fi
+  echo "ERROR: python3 or python is required to merge JUnit XML." >&2
+  return 1
+}
+
 if [[ -n "${KANO_REPORT_ROOT:-}" ]]; then
   export KANO_BDD_METADATA_DIR="${KANO_BDD_METADATA_DIR:-$KANO_REPORT_ROOT/raw/bdd-metadata}"
   rm -rf -- "$KANO_BDD_METADATA_DIR"
@@ -207,7 +220,8 @@ if [[ "$WITH_E2E" == "1" || "$WITH_E2E" == "--with-e2e" ]]; then
 fi
 
 if [[ -n "$TEST_XML_OUTPUT" ]]; then
-  python - "$TEST_XML_DIR" "$TEST_XML_OUTPUT" <<'PY'
+  PYTHON_BIN="$(resolve_python)"
+  "$PYTHON_BIN" - "$TEST_XML_DIR" "$TEST_XML_OUTPUT" <<'PY'
 from __future__ import annotations
 import sys
 import xml.etree.ElementTree as ET
