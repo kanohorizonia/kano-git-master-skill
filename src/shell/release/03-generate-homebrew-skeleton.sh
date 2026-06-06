@@ -26,10 +26,18 @@ PY
 }
 
 find_first() {
-  local pattern
-  for pattern in "$@"; do
-    find "$ARTIFACT_DIR" -type f -name "$pattern" 2>/dev/null | sort | head -n 1
-  done | awk 'NF { print; exit }'
+  python - "$ARTIFACT_DIR" "$@" <<'PY'
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+if root.is_dir():
+    for pattern in sys.argv[2:]:
+        matches = sorted(path for path in root.rglob(pattern) if path.is_file())
+        if matches:
+            print(matches[0].as_posix())
+            break
+PY
 }
 
 mkdir -p "$OUTPUT_DIR"

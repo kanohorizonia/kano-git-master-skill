@@ -16,11 +16,19 @@ PACKAGE_ID="${KANO_WINGET_PACKAGE_ID:-Kanohorizonia.KanoGitMasterSkill}"
 ASSET_BASE_URL="${KANO_RELEASE_ASSET_BASE_URL:-https://github.com/${REPO_SLUG}/releases/download/${TAG_NAME}}"
 
 find_msi() {
-  local root
-  for root in "$ARTIFACT_DIR" artifacts/installers src/wix/out; do
-    [ -d "$root" ] || continue
-    find "$root" -type f -name '*.msi' | sort | head -n 1
-  done | awk 'NF { print; exit }'
+  python - "$ARTIFACT_DIR" artifacts/installers src/wix/out <<'PY'
+from pathlib import Path
+import sys
+
+for root_arg in sys.argv[1:]:
+    root = Path(root_arg)
+    if not root.is_dir():
+        continue
+    matches = sorted(path for path in root.rglob("*.msi") if path.is_file())
+    if matches:
+        print(matches[0].as_posix())
+        break
+PY
 }
 
 calc_sha() {
