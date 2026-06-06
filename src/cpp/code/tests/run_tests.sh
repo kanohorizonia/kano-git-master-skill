@@ -76,14 +76,14 @@ run_test_binary() {
 }
 
 resolve_python() {
-  if command -v python3 >/dev/null 2>&1; then
-    command -v python3
-    return 0
-  fi
-  if command -v python >/dev/null 2>&1; then
-    command -v python
-    return 0
-  fi
+  local candidate
+  for candidate in python3 python; do
+    if command -v "$candidate" >/dev/null 2>&1 &&
+       "$candidate" -c 'import sys' >/dev/null 2>&1; then
+      command -v "$candidate"
+      return 0
+    fi
+  done
   echo "ERROR: python3 or python is required to merge JUnit XML." >&2
   return 1
 }
