@@ -2,3 +2,36 @@
 # Use this for source paths that would otherwise match broad artifact patterns.
 
 src/cpp/scripts/**
+kano-secret-manager-skill/scripts/bash/bin/bitwarden/get_bitwarden_credential.sh
+kano-secret-manager-skill/scripts/bash/bin/bitwarden/set_bitwarden_credential.sh
+kano-secret-manager-skill/scripts/bash/bin/bitwarden_sm/get_bitwarden_sm_credential.sh
+kano-secret-manager-skill/scripts/bash/bin/bitwarden_sm/install_bitwarden_sm_cli.sh
+kano-secret-manager-skill/scripts/bash/bin/bitwarden_sm/set_bitwarden_sm_credential.sh
+kano-secret-manager-skill/scripts/bash/bin/dump_secrets.sh
+kano-secret-manager-skill/scripts/bash/bin/local/get_linux_credential.sh
+kano-secret-manager-skill/scripts/bash/bin/local/get_macos_credential.sh
+kano-secret-manager-skill/scripts/bash/bin/local/get_windows_credential.sh
+kano-secret-manager-skill/scripts/bash/bin/local/set_linux_credential.sh
+kano-secret-manager-skill/scripts/bash/bin/local/set_macos_credential.sh
+kano-secret-manager-skill/scripts/bash/bin/local/set_windows_credential.sh
+kano-secret-manager-skill/scripts/bash/bin/run_with_project_secrets.sh
+kano-secret-manager-skill/scripts/bash/bin/set_credential.sh
+kano-secret-manager-skill/scripts/bash/bin/sync_secrets.sh
+kano-secret-manager-skill/src/shell/support/bash/bin/bitwarden/get_bitwarden_credential.sh
+kano-secret-manager-skill/src/shell/support/bash/bin/bitwarden/set_bitwarden_credential.sh
+kano-secret-manager-skill/src/shell/support/bash/bin/bitwarden/set_credential.sh
+kano-secret-manager-skill/src/shell/support/bash/bin/bitwarden_sm/get_bitwarden_sm_credential.sh
+kano-secret-manager-skill/src/shell/support/bash/bin/bitwarden_sm/install_bitwarden_sm_cli.sh
+kano-secret-manager-skill/src/shell/support/bash/bin/bitwarden_sm/set_bitwarden_sm_credential.sh
+kano-secret-manager-skill/src/shell/support/bash/bin/dump_secrets.sh
+kano-secret-manager-skill/src/shell/support/bash/bin/local/get_linux_credential.sh
+kano-secret-manager-skill/src/shell/support/bash/bin/local/get_macos_credential.sh
+kano-secret-manager-skill/src/shell/support/bash/bin/local/get_windows_credential.sh
+kano-secret-manager-skill/src/shell/support/bash/bin/local/set_linux_credential.sh
+kano-secret-manager-skill/src/shell/support/bash/bin/local/set_macos_credential.sh
+kano-secret-manager-skill/src/shell/support/bash/bin/local/set_windows_credential.sh
+kano-secret-manager-skill/src/shell/support/bash/bin/run_with_project_secrets.sh
+kano-secret-manager-skill/src/shell/support/bash/bin/set_credential.sh
+kano-secret-manager-skill/src/shell/support/bash/bin/sync_secrets.sh
+scripts/bash/bin/**
+src/shell/support/bash/bin/**

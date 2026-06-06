@@ -30,7 +30,19 @@ cleanup() {
 }
 trap cleanup EXIT
 
-tar -xf "$archive_path" -C "$tmp_root"
+if command -v python3 >/dev/null 2>&1; then
+  python3 - "$archive_path" "$tmp_root" <<"PY"
+import sys
+import tarfile
+from pathlib import Path
+archive_path = Path(sys.argv[1])
+extract_root = Path(sys.argv[2])
+with tarfile.open(archive_path, "r:*") as tf:
+  tf.extractall(extract_root)
+PY
+else
+  tar -xf "$archive_path" -C "$tmp_root"
+fi
 
 repo_root=""
 if [[ -d "$tmp_root/kano-git-master-skill" ]]; then

@@ -40,7 +40,7 @@
             "description": "Uses Ninja Multi-Config with default MSVC compiler (requires vcvars64.bat)",
             "inherits": "kog-fetch-thirdparty-defaults",
             "generator": "Ninja Multi-Config",
-            "binaryDir": "${sourceDir}/out/obj/windows-ninja-msvc",
+            "binaryDir": "${sourceDir}/out/obj/win-ninja-msvc",
             "cacheVariables": {
                 "KOG_PRESET_NAME": "windows-ninja-msvc"
             }
@@ -298,7 +298,7 @@
             "displayName": "Windows Ninja MSVC (Coverage)",
             "description": "Windows MSVC with /PROFILE for coverage instrumentation",
             "inherits": "windows-ninja-msvc",
-            "binaryDir": "${sourceDir}/out/obj/windows-ninja-msvc-coverage",
+            "binaryDir": "${sourceDir}/out/obj/win-msvc-cov",
             "cacheVariables": {
                 "KOG_ENABLE_COVERAGE": "ON",
                 "KOG_BUILD_TYPE": "Debug",
@@ -372,7 +372,7 @@
             "displayName": "Windows Ninja MSVC (PGO Collect)",
             "description": "Windows MSVC with /PROFILE - run tests to collect profile data",
             "inherits": "windows-ninja-msvc",
-            "binaryDir": "${sourceDir}/out/obj/windows-ninja-msvc-pgo-collect",
+            "binaryDir": "${sourceDir}/out/obj/win-msvc-pgo-c",
             "cacheVariables": {
                 "KOG_PGO_MODE": "collect",
                 "KOG_BUILD_TYPE": "Debug",
@@ -384,7 +384,7 @@
             "displayName": "Windows Ninja MSVC (PGO Use + LTCG)",
             "description": "Windows MSVC with /PROFILE:Optimize + /LTCG for CI production builds",
             "inherits": "windows-ninja-msvc",
-            "binaryDir": "${sourceDir}/out/obj/windows-ninja-msvc-pgo-use",
+            "binaryDir": "${sourceDir}/out/obj/win-msvc-pgo-u",
             "cacheVariables": {
                 "KOG_PGO_MODE": "use",
                 "KOG_PGO_LTCG": "auto",
@@ -570,3 +570,4 @@
         }
     ]
 }
+
