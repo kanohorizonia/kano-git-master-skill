@@ -17,6 +17,7 @@
 #include <ctime>
 #include <filesystem>
 #include <format>
+#include <functional>
 #include <fstream>
 #include <iomanip>
 #include <map>
@@ -300,6 +301,7 @@ auto CollectWorkingTreeFilesForSubtree(const std::filesystem::path& InRepoPath,
 
 auto CollectWorkingTreeFiles(const ExportRecord& InRecord, const std::string& InPrefix, bool InSingle, const ShellExecutor& InExec) -> std::vector<std::string> {
     std::vector<std::string> allFiles;
+    std::map<std::string, std::filesystem::path> sourcePathByArchivePath;
 
     auto getFiles = [&](const std::filesystem::path& repoPath, const std::string& prefix, const std::vector<std::string>& skipList = {}) {
         const auto res = InExec("git", {"ls-files", "--cached", "--others", "--exclude-standard"}, shell::ExecMode::Capture, repoPath);
@@ -325,7 +327,9 @@ auto CollectWorkingTreeFiles(const ExportRecord& InRecord, const std::string& In
                     if (InSingle && std::find(skipList.begin(), skipList.end(), line) != skipList.end()) {
                         continue;
                     }
-                    allFiles.push_back(prefix + line);
+                    const std::string archivePath = prefix + line;
+                    allFiles.push_back(archivePath);
+                    sourcePathByArchivePath[archivePath] = repoPath / std::filesystem::path(line);
                 }
             }
         }
@@ -354,23 +358,68 @@ auto CollectWorkingTreeFiles(const ExportRecord& InRecord, const std::string& In
     std::sort(allFiles.begin(), allFiles.end());
     allFiles.erase(std::unique(allFiles.begin(), allFiles.end()), allFiles.end());
 
-    // Move symlinks to the end so tar creates their targets before the links.
-    // This prevents "Cannot create symlink: No such file or directory" when
-    // the symlink target sorts alphabetically after the symlink itself.
-    std::stable_partition(allFiles.begin(), allFiles.end(),
-        [&](const std::string& InPrefixedPath) {
-            // Strip the archive prefix to get the repo-relative path
-            const std::string relPath = (InPrefixedPath.size() > InPrefix.size())
-                ? InPrefixedPath.substr(InPrefix.size())
-                : InPrefixedPath;
-            // Check against root repo path; submodule files use their own prefix
-            // but we only need to detect symlinks — false negatives are safe here.
-            std::error_code ec;
-            const auto fullPath = InRecord.repoPath / relPath;
-            return !std::filesystem::is_symlink(fullPath, ec);
-        });
+    std::set<std::string> allFileSet(allFiles.begin(), allFiles.end());
+    std::map<std::string, std::string> symlinkTargetByPath;
 
-    return allFiles;
+    auto normalizeArchivePath = [](const std::filesystem::path& InPath) {
+        std::string out = InPath.lexically_normal().generic_string();
+        while (out.starts_with("./")) {
+            out.erase(0, 2);
+        }
+        return out;
+    };
+
+    for (const auto& archivePath : allFiles) {
+        const auto sourceIt = sourcePathByArchivePath.find(archivePath);
+        if (sourceIt == sourcePathByArchivePath.end()) {
+            continue;
+        }
+        std::error_code ec;
+        if (!std::filesystem::is_symlink(sourceIt->second, ec) || ec) {
+            continue;
+        }
+        const auto target = std::filesystem::read_symlink(sourceIt->second, ec);
+        if (ec || target.empty() || target.is_absolute()) {
+            continue;
+        }
+
+        const auto targetArchivePath = normalizeArchivePath(
+            std::filesystem::path(archivePath).parent_path() / target);
+        if (!targetArchivePath.empty() && allFileSet.contains(targetArchivePath)) {
+            symlinkTargetByPath[archivePath] = targetArchivePath;
+        }
+    }
+
+    // Keep natural archive order except where Windows/GNU tar needs a symlink's
+    // in-archive target to be emitted first.
+    std::vector<std::string> orderedFiles;
+    orderedFiles.reserve(allFiles.size());
+    std::set<std::string> emitted;
+    std::set<std::string> visiting;
+    std::function<void(const std::string&)> emit = [&](const std::string& archivePath) {
+        if (emitted.contains(archivePath)) {
+            return;
+        }
+        if (visiting.contains(archivePath)) {
+            return;
+        }
+        visiting.insert(archivePath);
+        const auto targetIt = symlinkTargetByPath.find(archivePath);
+        if (targetIt != symlinkTargetByPath.end()) {
+            emit(targetIt->second);
+        }
+        visiting.erase(archivePath);
+        if (!emitted.contains(archivePath)) {
+            emitted.insert(archivePath);
+            orderedFiles.push_back(archivePath);
+        }
+    };
+
+    for (const auto& archivePath : allFiles) {
+        emit(archivePath);
+    }
+
+    return orderedFiles;
 }
 
 auto CollectGitIndexEntriesWithPrefix(const std::filesystem::path& InRepoPath,
@@ -1715,7 +1764,7 @@ auto ExportOneRepo(const ExportRecord& InRecord,
             }
 
             const std::string py =
-                "import io,pathlib,sys,tarfile,zipfile; "
+                "import io,os,pathlib,sys,tarfile,zipfile; "
                 "mf=pathlib.Path(sys.argv[1]); out=pathlib.Path(sys.argv[2]); fmt=sys.argv[3]; "
                 "out.parent.mkdir(parents=True,exist_ok=True); "
                 "entries=[]\n"
@@ -1723,25 +1772,45 @@ auto ExportOneRepo(const ExportRecord& InRecord,
                 "  if not norm: return data\n"
                 "  if b'\\0' in data: return data\n"
                 "  return data.replace(b'\\r\\n',b'\\n').replace(b'\\r',b'\\n')\n"
+                "def apply_mode(info,mode):\n"
+                "  perm=(mode & 0o777) or (info.mode & 0o777) or 0o777\n"
+                "  info.mode=perm\n"
+                "def add_tar_entry(t,mode,sp,ap,norm):\n"
+                "  info=t.gettarinfo(str(sp),arcname=ap)\n"
+                "  if info is None: return\n"
+                "  apply_mode(info,mode)\n"
+                "  if info.issym():\n"
+                "    info.type=tarfile.SYMTYPE; info.linkname=os.readlink(sp); info.size=0; t.addfile(info); return\n"
+                "  if info.islnk():\n"
+                "    info.size=0; t.addfile(info); return\n"
+                "  if info.isdir():\n"
+                "    info.size=0; t.addfile(info); return\n"
+                "  if not info.isfile(): return\n"
+                "  data=maybe_norm(sp.read_bytes(),norm)\n"
+                "  info.size=len(data)\n"
+                "  t.addfile(info,io.BytesIO(data))\n"
+                "def add_zip_entry(z,mode,sp,ap,norm):\n"
+                "  if sp.is_symlink():\n"
+                "    zi=zipfile.ZipInfo(ap); zi.create_system=3; perm=(mode & 0o777) or 0o777; zi.external_attr=((0o120000 | perm) & 0xffff) << 16; z.writestr(zi, os.readlink(sp)); return\n"
+                "  if not sp.is_file(): return\n"
+                "  data=maybe_norm(sp.read_bytes(),norm)\n"
+                "  zi=zipfile.ZipInfo(ap); zi.external_attr=(mode & 0xffff) << 16\n"
+                "  z.writestr(zi, data)\n"
                 "for line in mf.read_text(encoding='utf-8').splitlines():\n"
                 "  if not line.strip(): continue\n"
                 "  parts=line.split('\\t');\n"
                 "  if len(parts) < 3: continue\n"
                 "  m,s,a=parts[0],parts[1],parts[2]; norm=(len(parts) > 3 and parts[3] == '1'); mode=int(m); sp=pathlib.Path(s); ap=a.replace('\\\\','/');\n"
-                "  if not sp.exists() or not sp.is_file(): continue\n"
+                "  if not sp.exists() and not sp.is_symlink(): continue\n"
                 "  entries.append((mode,sp,ap,norm))\n"
                 "if fmt == 'tar':\n"
                 "  with tarfile.open(out,'w') as t:\n"
                 "    for mode,sp,ap,norm in entries:\n"
-                "      data=maybe_norm(sp.read_bytes(),norm)\n"
-                "      info=t.gettarinfo(str(sp),arcname=ap); info.mode=mode; info.size=len(data)\n"
-                "      t.addfile(info,io.BytesIO(data))\n"
+                "      add_tar_entry(t,mode,sp,ap,norm)\n"
                 "elif fmt == 'zip':\n"
                 "  with zipfile.ZipFile(out,'w',compression=zipfile.ZIP_DEFLATED) as z:\n"
                 "    for mode,sp,ap,norm in entries:\n"
-                "      data=maybe_norm(sp.read_bytes(),norm)\n"
-                "      zi=zipfile.ZipInfo(ap); zi.external_attr=(mode & 0xffff) << 16\n"
-                "      z.writestr(zi, data)\n"
+                "      add_zip_entry(z,mode,sp,ap,norm)\n"
                 "else:\n"
                 "  raise SystemExit('unsupported archive format: ' + fmt)";
 
@@ -1873,7 +1942,7 @@ auto ExportOneRepo(const ExportRecord& InRecord,
         }
 
         const std::string py =
-            "import io,pathlib,sys,tarfile,zipfile; "
+            "import io,os,pathlib,sys,tarfile,zipfile; "
             "mf=pathlib.Path(sys.argv[1]); out=pathlib.Path(sys.argv[2]); fmt=sys.argv[3]; "
             "out.parent.mkdir(parents=True,exist_ok=True); "
             "entries=[]\n"
@@ -1881,25 +1950,45 @@ auto ExportOneRepo(const ExportRecord& InRecord,
             "  if not norm: return data\n"
             "  if b'\\0' in data: return data\n"
             "  return data.replace(b'\\r\\n',b'\\n').replace(b'\\r',b'\\n')\n"
+            "def apply_mode(info,mode):\n"
+            "  perm=(mode & 0o777) or (info.mode & 0o777) or 0o777\n"
+            "  info.mode=perm\n"
+            "def add_tar_entry(t,mode,sp,ap,norm):\n"
+            "  info=t.gettarinfo(str(sp),arcname=ap)\n"
+            "  if info is None: return\n"
+            "  apply_mode(info,mode)\n"
+            "  if info.issym():\n"
+            "    info.type=tarfile.SYMTYPE; info.linkname=os.readlink(sp); info.size=0; t.addfile(info); return\n"
+            "  if info.islnk():\n"
+            "    info.size=0; t.addfile(info); return\n"
+            "  if info.isdir():\n"
+            "    info.size=0; t.addfile(info); return\n"
+            "  if not info.isfile(): return\n"
+            "  data=maybe_norm(sp.read_bytes(),norm)\n"
+            "  info.size=len(data)\n"
+            "  t.addfile(info,io.BytesIO(data))\n"
+            "def add_zip_entry(z,mode,sp,ap,norm):\n"
+            "  if sp.is_symlink():\n"
+            "    zi=zipfile.ZipInfo(ap); zi.create_system=3; perm=(mode & 0o777) or 0o777; zi.external_attr=((0o120000 | perm) & 0xffff) << 16; z.writestr(zi, os.readlink(sp)); return\n"
+            "  if not sp.is_file(): return\n"
+            "  data=maybe_norm(sp.read_bytes(),norm)\n"
+            "  zi=zipfile.ZipInfo(ap); zi.external_attr=(mode & 0xffff) << 16\n"
+            "  z.writestr(zi, data)\n"
             "for line in mf.read_text(encoding='utf-8').splitlines():\n"
             "  if not line.strip(): continue\n"
             "  parts=line.split('\\t');\n"
             "  if len(parts) < 3: continue\n"
             "  m,s,a=parts[0],parts[1],parts[2]; norm=(len(parts) > 3 and parts[3] == '1'); mode=int(m); sp=pathlib.Path(s); ap=a.replace('\\\\','/');\n"
-            "  if not sp.exists() or not sp.is_file(): continue\n"
+            "  if not sp.exists() and not sp.is_symlink(): continue\n"
             "  entries.append((mode,sp,ap,norm))\n"
             "if fmt == 'tar':\n"
             "  with tarfile.open(out,'w') as t:\n"
             "    for mode,sp,ap,norm in entries:\n"
-            "      data=maybe_norm(sp.read_bytes(),norm)\n"
-            "      info=t.gettarinfo(str(sp),arcname=ap); info.mode=mode; info.size=len(data)\n"
-            "      t.addfile(info,io.BytesIO(data))\n"
+            "      add_tar_entry(t,mode,sp,ap,norm)\n"
             "elif fmt == 'zip':\n"
             "  with zipfile.ZipFile(out,'w',compression=zipfile.ZIP_DEFLATED) as z:\n"
             "    for mode,sp,ap,norm in entries:\n"
-            "      data=maybe_norm(sp.read_bytes(),norm)\n"
-            "      zi=zipfile.ZipInfo(ap); zi.external_attr=(mode & 0xffff) << 16\n"
-            "      z.writestr(zi, data)\n"
+            "      add_zip_entry(z,mode,sp,ap,norm)\n"
             "else:\n"
             "  raise SystemExit('unsupported archive format: ' + fmt)";
 

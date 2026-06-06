@@ -262,6 +262,16 @@ auto RunKogExport(const ExportWorkspaceContext& InCtx,
                          {{"GIT_ALLOW_PROTOCOL", "file:https:ssh:git"}});
 }
 
+auto CreateFileSymlinkOrSkip(const std::filesystem::path& InLinkPath,
+                             const std::filesystem::path& InTarget) -> void {
+    std::filesystem::create_directories(InLinkPath.parent_path());
+    std::error_code ec;
+    std::filesystem::create_symlink(InTarget, InLinkPath, ec);
+    if (ec) {
+        SKIP("filesystem symlink creation is unavailable: " << ec.message());
+    }
+}
+
 } // anonymous namespace
 
 // ===========================================================================
@@ -1085,6 +1095,116 @@ TEST_CASE("kog export --single respects .gitmodules kog-export=false",
     REQUIRE_FALSE(ArchiveContainsPath(rootArchive, "deps/child/child.txt", ctx.rootClone));
 
     RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("kog export working-tree tar preserves symlink headers and stream alignment",
+          "[Integration][export][single][symlink][tar]") {
+    const auto sandbox = CreateSandboxWorkspace("single-symlink-tar-export");
+    const auto repo = (sandbox.root / "root-clone").lexically_normal();
+
+    RequireSuccess(RunGit({"init", repo.string()}, sandbox.root), "init symlink repo");
+    ConfigureIdentity(repo);
+    RequireSuccess(RunGit({"checkout", "-b", "main"}, repo), "checkout main");
+    RequireSuccess(RunGit({"config", "core.symlinks", "true"}, repo), "enable git symlink tracking");
+
+    WriteTextFile(repo / ".gitignore", ".kano/\n");
+    WriteTextFile(repo / "file-a.txt", "normal file content\n");
+    CreateFileSymlinkOrSkip(repo / "link-a.txt", std::filesystem::path("file-a.txt"));
+    WriteTextFile(repo / "zz_after.txt", "regular file after symlink\n");
+
+    const auto observedDir = repo / "assets" / "ignore-sources" / "upstream" / "github-gitignore";
+    WriteTextFile(observedDir / "Leiningen.gitignore", "pom.xml\npom.xml.asc\n*.jar\n");
+    WriteTextFile(observedDir / "C++.gitignore", "# Prerequisites\n*.d\n\n# Compiled Object files\n*.slo\n*.lo\n*.o\n*.obj\n");
+    WriteTextFile(observedDir / "Global" / "MATLAB.gitignore", "# Autosave files\n*.asv\n*.m~\n");
+    CreateFileSymlinkOrSkip(observedDir / "Clojure.gitignore", std::filesystem::path("Leiningen.gitignore"));
+    CreateFileSymlinkOrSkip(observedDir / "Fortran.gitignore", std::filesystem::path("C++.gitignore"));
+    CreateFileSymlinkOrSkip(observedDir / "Global" / "Octave.gitignore", std::filesystem::path("MATLAB.gitignore"));
+    WriteTextFile(observedDir / "ZzzAfter.gitignore", "regular file after observed symlinks\n");
+
+    RequireSuccess(RunGit({"add", "."}, repo), "add symlink fixture");
+    RequireSuccess(RunGit({"commit", "-m", "seed symlink fixture"}, repo), "commit symlink fixture");
+
+    const auto result = RunKogWithEnv(
+        {"export", "--single", "--include-subrepos", "--source", "working-tree", "--no-validate-release-archive"},
+        repo,
+        {{"GIT_ALLOW_PROTOCOL", "file:https:ssh:git"}});
+
+    INFO("exit=" << result.exitCode);
+    INFO("stdout=" << result.stdoutText);
+    INFO("stderr=" << result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    const auto outputDir = repo / ".kano" / "tmp" / "git" / "export";
+    std::filesystem::path rootArchive;
+    for (const auto& entry : std::filesystem::directory_iterator(outputDir)) {
+        if (entry.is_regular_file() && entry.path().extension() == ".tar") {
+            rootArchive = entry.path();
+            break;
+        }
+    }
+    REQUIRE_FALSE(rootArchive.empty());
+
+    const std::string prefix = repo.filename().generic_string();
+    const auto verify = RunPythonCommand(
+        {
+            "-c",
+            "import pathlib,sys,tarfile,tempfile\n"
+            "archive=pathlib.Path(sys.argv[1])\n"
+            "prefix=sys.argv[2]\n"
+            "expected={\n"
+            "  'link-a.txt':'file-a.txt',\n"
+            "  'assets/ignore-sources/upstream/github-gitignore/Clojure.gitignore':'Leiningen.gitignore',\n"
+            "  'assets/ignore-sources/upstream/github-gitignore/Fortran.gitignore':'C++.gitignore',\n"
+            "  'assets/ignore-sources/upstream/github-gitignore/Global/Octave.gitignore':'MATLAB.gitignore',\n"
+            "}\n"
+            "after=prefix + '/zz_after.txt'\n"
+            "observed_after=prefix + '/assets/ignore-sources/upstream/github-gitignore/ZzzAfter.gitignore'\n"
+            "with tarfile.open(archive,'r') as t:\n"
+            "  ordered=t.getmembers()\n"
+            "  names=[m.name for m in ordered]\n"
+            "  members={m.name:m for m in ordered}\n"
+            "  first_link=prefix + '/link-a.txt'\n"
+            "  assert after in members and members[after].isfile(), after\n"
+            "  assert observed_after in members and members[observed_after].isfile(), observed_after\n"
+            "  assert names.index(after) > names.index(first_link), names\n"
+            "  for rel,target in expected.items():\n"
+            "    name=prefix + '/' + rel\n"
+            "    member=members[name]\n"
+            "    assert member.issym(), (name, member.type)\n"
+            "    assert member.linkname == target, (name, member.linkname)\n"
+            "    assert member.size == 0, (name, member.size)\n"
+            "  with tempfile.TemporaryDirectory() as td:\n"
+            "    t.extractall(pathlib.Path(td))\n"
+            "print('OK')\n",
+            rootArchive.generic_string(),
+            prefix,
+        },
+        repo);
+
+    INFO("verify exit=" << verify.exitCode);
+    INFO("verify stdout=" << verify.stdoutText);
+    INFO("verify stderr=" << verify.stderrText);
+    REQUIRE(verify.exitCode == 0);
+
+    const auto tarProbe = RunCommand("tar", {"--version"}, repo);
+    if (tarProbe.exitCode == 0) {
+        const auto tarList = RunCommand("tar", {"-tf", rootArchive.generic_string()}, repo);
+        INFO("tar -tf stdout=" << tarList.stdoutText);
+        INFO("tar -tf stderr=" << tarList.stderrText);
+        REQUIRE(tarList.exitCode == 0);
+        REQUIRE(tarList.stderrText.find("Skipping to next header") == std::string::npos);
+        REQUIRE(tarList.stdoutText.find(prefix + "/zz_after.txt") != std::string::npos);
+
+        const auto extractDir = (sandbox.root / "gnu-tar-extract").lexically_normal();
+        std::filesystem::create_directories(extractDir);
+        const auto tarExtract = RunCommand("tar", {"-xf", rootArchive.generic_string(), "-C", extractDir.generic_string()}, repo);
+        INFO("tar -xf stdout=" << tarExtract.stdoutText);
+        INFO("tar -xf stderr=" << tarExtract.stderrText);
+        REQUIRE(tarExtract.exitCode == 0);
+        REQUIRE(tarExtract.stderrText.find("Skipping to next header") == std::string::npos);
+    }
+
+    RemoveSandboxWorkspace(sandbox);
 }
 
 TEST_CASE("kog export normalizes LF-enforced scripts in single expanded exports",
