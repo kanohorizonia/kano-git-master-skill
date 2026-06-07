@@ -68,6 +68,14 @@ auto InitRepo(const std::filesystem::path& InRepo) -> void {
     RequireSuccess(RunGit({"commit", "-m", "seed"}, InRepo), "commit seed");
 }
 
+auto IsolatedGitConfigEnv(const SandboxContext& InSandbox) -> std::vector<std::pair<std::string, std::string>> {
+    return {
+        {"GIT_CONFIG_NOSYSTEM", "1"},
+        {"GIT_CONFIG_GLOBAL", (InSandbox.root / "global.gitconfig").string()},
+        {"KOG_PROCESS_DIAGNOSTICS", "0"},
+    };
+}
+
 struct RemoteClone {
     SandboxContext sandbox;
     std::filesystem::path bare;
@@ -306,19 +314,58 @@ TEST_CASE("auth doctor redacts credentials in explicit URLs", "[functional][auth
     const auto sandbox = CreateSandboxWorkspace("auth-doctor-redaction");
     const auto repo = (sandbox.root / "repo").lexically_normal();
     InitRepo(repo);
+    RequireSuccess(RunGit({"config", "--local", "--add", "credential.helper", "manager"}, repo), "config local GCM helper");
 
-    const auto result = RunKog({
+    const auto result = RunKogWithEnv({
         "auth",
         "doctor",
         "--repo",
         repo.string(),
         "--url",
         "https://user:super-secret@example.invalid/org/repo.git",
-    }, repo);
+    }, repo, IsolatedGitConfigEnv(sandbox));
     const auto output = result.stdoutText + "\n" + result.stderrText;
     RequireSuccess(result, "auth doctor explicit url should succeed");
     RequireContains(output, "<redacted>@example.invalid");
     RequireNotContains(output, "super-secret");
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
+TEST_CASE("auth doctor fails when stale manager-core helper is configured", "[functional][auth][doctor][gcm][manager-core]") {
+    const auto sandbox = CreateSandboxWorkspace("auth-doctor-manager-core");
+    const auto repo = (sandbox.root / "repo").lexically_normal();
+    InitRepo(repo);
+    RequireSuccess(RunGit({"remote", "add", "origin", "https://example.invalid/org/repo.git"}, repo), "add https remote");
+    RequireSuccess(RunGit({"config", "--local", "--add", "credential.helper", "manager"}, repo), "config valid GCM helper");
+    RequireSuccess(RunGit({"config", "--local", "--add", "credential.helper", "manager-core"}, repo), "config stale GCM helper");
+
+    const auto result = RunKogWithEnv({"auth", "doctor", "--repo", repo.string()}, repo, IsolatedGitConfigEnv(sandbox));
+    const auto output = result.stdoutText + "\n" + result.stderrText;
+    RequireFailure(result, "auth doctor should fail on stale manager-core");
+    RequireContains(output, "stale credential.helper=manager-core");
+    RequireContains(output, "kog auth doctor --fix");
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
+TEST_CASE("auth doctor fix removes stale manager-core helper", "[functional][auth][doctor][gcm][fix]") {
+    const auto sandbox = CreateSandboxWorkspace("auth-doctor-manager-core-fix");
+    const auto repo = (sandbox.root / "repo").lexically_normal();
+    InitRepo(repo);
+    RequireSuccess(RunGit({"remote", "add", "origin", "https://example.invalid/org/repo.git"}, repo), "add https remote");
+    RequireSuccess(RunGit({"config", "--local", "--add", "credential.helper", "manager"}, repo), "config valid GCM helper");
+    RequireSuccess(RunGit({"config", "--local", "--add", "credential.helper", "manager-core"}, repo), "config stale GCM helper");
+
+    const auto result = RunKogWithEnv({"auth", "doctor", "--repo", repo.string(), "--fix"}, repo, IsolatedGitConfigEnv(sandbox));
+    const auto output = result.stdoutText + "\n" + result.stderrText;
+    RequireSuccess(result, "auth doctor --fix should remove stale manager-core");
+    RequireContains(output, "removing stale credential.helper=manager-core");
+
+    const auto helpers = RunGit({"config", "--local", "--get-all", "credential.helper"}, repo);
+    RequireSuccess(helpers, "read local credential helpers");
+    RequireContains(helpers.stdoutText, "manager");
+    RequireNotContains(helpers.stdoutText, "manager-core");
 
     RemoveSandboxWorkspace(sandbox);
 }

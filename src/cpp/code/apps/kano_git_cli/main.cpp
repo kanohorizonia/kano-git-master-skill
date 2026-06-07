@@ -34,6 +34,75 @@ auto ToLower(std::string InValue) -> std::string {
     return InValue;
 }
 
+auto LooksSensitiveCommandKey(const std::string& InValue) -> bool {
+    const auto value = ToLower(InValue);
+    return value.find("token") != std::string::npos ||
+           value.find("secret") != std::string::npos ||
+           value.find("password") != std::string::npos ||
+           value.find("authorization") != std::string::npos ||
+           value.find("bearer") != std::string::npos ||
+           value.find("api-key") != std::string::npos ||
+           value.find("apikey") != std::string::npos ||
+           value.find("access_token") != std::string::npos ||
+           value.find("refresh_token") != std::string::npos;
+}
+
+auto RedactUrlCredentialsForLog(std::string InValue) -> std::string {
+    const auto lowered = ToLower(InValue);
+    const auto schemePos = lowered.find("://");
+    if (schemePos == std::string::npos) {
+        return InValue;
+    }
+    const auto authorityStart = schemePos + 3;
+    const auto pathPos = InValue.find('/', authorityStart);
+    const auto authorityEnd = pathPos == std::string::npos ? InValue.size() : pathPos;
+    const auto atPos = InValue.find('@', authorityStart);
+    if (atPos == std::string::npos || atPos >= authorityEnd) {
+        return InValue;
+    }
+    InValue.replace(authorityStart, atPos - authorityStart, "<redacted>");
+    return InValue;
+}
+
+auto RedactCommandArgForLog(const std::string& InArg, bool& InOutRedactNext, bool& InOutRedactUrlNext) -> std::string {
+    if (InOutRedactNext) {
+        InOutRedactNext = false;
+        return "<redacted>";
+    }
+    if (InOutRedactUrlNext) {
+        InOutRedactUrlNext = false;
+        return RedactUrlCredentialsForLog(InArg);
+    }
+
+    const auto lower = ToLower(InArg);
+    const auto eqPos = InArg.find('=');
+    if (eqPos != std::string::npos) {
+        const auto key = InArg.substr(0, eqPos);
+        const auto value = InArg.substr(eqPos + 1);
+        if (ToLower(key) == "--url") {
+            return key + "=" + RedactUrlCredentialsForLog(value);
+        }
+        if (LooksSensitiveCommandKey(key)) {
+            return key + "=<redacted>";
+        }
+        return RedactUrlCredentialsForLog(InArg);
+    }
+
+    if (lower == "--url") {
+        InOutRedactUrlNext = true;
+        return InArg;
+    }
+    if (lower == "--token" ||
+        lower == "--api-key" ||
+        lower == "--password" ||
+        lower == "--authorization" ||
+        (!InArg.empty() && InArg[0] == '-' && LooksSensitiveCommandKey(InArg))) {
+        InOutRedactNext = true;
+        return InArg;
+    }
+    return RedactUrlCredentialsForLog(InArg);
+}
+
 auto CollectTopLevelCommandNames(const CLI::App& InApp) -> std::vector<std::string> {
     const auto subcommands = InApp.get_subcommands([](const CLI::App*) {
         return true;
@@ -653,9 +722,11 @@ int main(int InArgc, char* InArgv[]) {
     app.fallthrough();
 
     std::string cmdLabel = "kog";
+    bool redactNext = false;
+    bool redactUrlNext = false;
     for (int i = 1; i < InArgc; ++i) {
         cmdLabel += " ";
-        cmdLabel += InArgv[i];
+        cmdLabel += RedactCommandArgForLog(InArgv[i] == nullptr ? "" : std::string{InArgv[i]}, redactNext, redactUrlNext);
     }
     SCOPED_TIMING_LOG(cmdLabel);
 

@@ -930,24 +930,73 @@ auto GitConfigGetValue(const std::filesystem::path& InRepo, const std::string& I
 }
 
 auto ProbeGitCredentialManagerVersion(const std::filesystem::path& InRepo) -> shell::ExecResult {
-    const auto gitSubcommand = shell::ExecuteCommand("git", {"credential-manager", "version"}, shell::ExecMode::Capture, InRepo);
+    const auto gitSubcommand = shell::ExecuteCommand("git", {"credential-manager", "--version"}, shell::ExecMode::Capture, InRepo);
     if (gitSubcommand.exitCode == 0) {
         return gitSubcommand;
-    }
-    const auto managerCore = shell::ExecuteCommand("git-credential-manager-core", {"--version"}, shell::ExecMode::Capture, InRepo);
-    if (managerCore.exitCode == 0) {
-        return managerCore;
     }
     return shell::ExecuteCommand("git-credential-manager", {"--version"}, shell::ExecMode::Capture, InRepo);
 }
 
-auto HasGitCredentialManagerHelper(const std::vector<std::string>& InHelpers) -> bool {
-    return std::any_of(InHelpers.begin(), InHelpers.end(), [](const std::string& line) {
-        const auto lowered = ToLower(line);
-        return lowered.find("manager-core") != std::string::npos ||
-               lowered.find("credential-manager") != std::string::npos ||
-               lowered.find(" helper=manager") != std::string::npos ||
-               lowered.ends_with(" manager");
+struct CredentialHelperEntry {
+    std::string raw;
+    std::string origin;
+    std::string value;
+};
+
+auto ParseCredentialHelperEntry(const std::string& InLine) -> CredentialHelperEntry {
+    CredentialHelperEntry entry{.raw = InLine};
+    const auto tabPos = InLine.find('\t');
+    if (tabPos != std::string::npos) {
+        entry.origin = Trim(InLine.substr(0, tabPos));
+        entry.value = Trim(InLine.substr(tabPos + 1));
+        return entry;
+    }
+
+    const auto spacePos = InLine.find_last_of(" \r\n");
+    if (spacePos != std::string::npos && spacePos + 1 < InLine.size()) {
+        entry.origin = Trim(InLine.substr(0, spacePos));
+        entry.value = Trim(InLine.substr(spacePos + 1));
+    } else {
+        entry.value = Trim(InLine);
+    }
+    return entry;
+}
+
+auto ParseCredentialHelperEntries(const std::vector<std::string>& InHelpers) -> std::vector<CredentialHelperEntry> {
+    std::vector<CredentialHelperEntry> entries;
+    entries.reserve(InHelpers.size());
+    for (const auto& line : InHelpers) {
+        entries.push_back(ParseCredentialHelperEntry(line));
+    }
+    return entries;
+}
+
+auto IsStaleCredentialManagerCoreHelper(const CredentialHelperEntry& InEntry) -> bool {
+    const auto lowered = ToLower(InEntry.value);
+    return lowered == "manager-core" ||
+           lowered.find("git-credential-manager-core") != std::string::npos ||
+           lowered.find("credential-manager-core") != std::string::npos;
+}
+
+auto IsGitCredentialManagerHelper(const CredentialHelperEntry& InEntry) -> bool {
+    const auto lowered = ToLower(InEntry.value);
+    if (IsStaleCredentialManagerCoreHelper(InEntry)) {
+        return false;
+    }
+    return lowered == "manager" ||
+           lowered.find("git-credential-manager") != std::string::npos ||
+           lowered.find("credential-manager") != std::string::npos;
+}
+
+auto HasGitCredentialManagerHelper(const std::vector<CredentialHelperEntry>& InHelpers) -> bool {
+    return std::any_of(InHelpers.begin(), InHelpers.end(), [](const CredentialHelperEntry& entry) {
+        return IsGitCredentialManagerHelper(entry);
+    });
+}
+
+auto HasStaleCredentialManagerCoreHelper(const std::vector<CredentialHelperEntry>& InHelpers) -> bool {
+    return std::any_of(InHelpers.begin(), InHelpers.end(), [](const CredentialHelperEntry& entry) {
+        return IsStaleCredentialManagerCoreHelper(entry);
     });
 }
 
@@ -3544,6 +3593,7 @@ void RegisterAuth(CLI::App& InApp) {
     auto* doctorNoRecursive = new bool{false};
     auto* doctorNoCache = new bool{false};
     auto* doctorRefreshCache = new bool{false};
+    auto* doctorFix = new bool{false};
     doctor->add_option("--repo", *doctorRepo, "Repository root used for config inspection and target discovery");
     doctor->add_option("--remote", *doctorRemote, "Inspect a single configured remote in the current repository");
     doctor->add_option("--url", *doctorUrl, "Inspect an explicit remote URL without storing credentials");
@@ -3552,6 +3602,7 @@ void RegisterAuth(CLI::App& InApp) {
     doctor->add_flag("--no-recursive,-N", *doctorNoRecursive, "When used with --selected-remotes, inspect only the current repository");
     doctor->add_flag("--native-no-cache", *doctorNoCache, "Disable native discovery cache for --selected-remotes");
     doctor->add_flag("--native-refresh-cache", *doctorRefreshCache, "Force native discovery cache refresh for --selected-remotes");
+    doctor->add_flag("--fix", *doctorFix, "Remove stale credential.helper=manager-core entries and configure modern Git Credential Manager if needed");
     doctor->callback([=]() {
         const int selectorCount = (!doctorRemote->empty() ? 1 : 0) + (!doctorUrl->empty() ? 1 : 0) + (*doctorSelectedRemotes ? 1 : 0) + (*doctorAllLocalRemotes ? 1 : 0);
         if (selectorCount > 1) {
@@ -3583,11 +3634,13 @@ void RegisterAuth(CLI::App& InApp) {
             std::exit(1);
         }
 
-        const auto helperLines = GitConfigGetAllWithOrigin(repoRoot, "credential.helper");
+        auto helperLines = GitConfigGetAllWithOrigin(repoRoot, "credential.helper");
+        auto helperEntries = ParseCredentialHelperEntries(helperLines);
         const auto credentialInteractive = GitConfigGetValue(repoRoot, "credential.interactive");
         const auto useHttpPath = GitConfigGetValue(repoRoot, "credential.useHttpPath");
         const auto gcmVersion = ProbeGitCredentialManagerVersion(repoRoot);
-        const bool hasGcmHelper = HasGitCredentialManagerHelper(helperLines);
+        bool hasGcmHelper = HasGitCredentialManagerHelper(helperEntries);
+        bool hasStaleManagerCoreHelper = HasStaleCredentialManagerCoreHelper(helperEntries);
         const bool hasHttpsTarget = std::any_of(targets.begin(), targets.end(), [](const AuthTarget& target) {
             const auto protocol = AuthProtocolForUrl(target.remoteUrl);
             return protocol == "http" || protocol == "https";
@@ -3598,6 +3651,36 @@ void RegisterAuth(CLI::App& InApp) {
 
         std::cout << kano::terminal::PreflightHeader("Auth Doctor") << "\n";
         std::cout << kano::terminal::PassTag() << " " << Trim(gitVersion.stdoutStr) << "\n";
+
+        if (*doctorFix) {
+            if (hasStaleManagerCoreHelper) {
+                std::cout << kano::terminal::InfoTag() << " removing stale credential.helper=manager-core entries from local/global config\n";
+                const auto unsetLocal = GitCapture(repoRoot, {"config", "--local", "--unset-all", "credential.helper", "manager-core"});
+                const auto unsetGlobal = GitCapture(repoRoot, {"config", "--global", "--unset-all", "credential.helper", "manager-core"});
+                if (unsetLocal.exitCode != 0 && unsetGlobal.exitCode != 0) {
+                    std::cout << kano::terminal::InfoTag() << " no local/global manager-core value was removed; stale value may come from a custom config file\n";
+                }
+            }
+
+            helperLines = GitConfigGetAllWithOrigin(repoRoot, "credential.helper");
+            helperEntries = ParseCredentialHelperEntries(helperLines);
+            hasGcmHelper = HasGitCredentialManagerHelper(helperEntries);
+            hasStaleManagerCoreHelper = HasStaleCredentialManagerCoreHelper(helperEntries);
+
+            if (hasHttpsTarget && !hasGcmHelper && gcmVersion.exitCode == 0) {
+                const auto addManager = GitCapture(repoRoot, {"config", "--global", "--add", "credential.helper", "manager"});
+                if (addManager.exitCode == 0) {
+                    std::cout << kano::terminal::PassTag() << " configured credential.helper=manager in global Git config\n";
+                    helperLines = GitConfigGetAllWithOrigin(repoRoot, "credential.helper");
+                    helperEntries = ParseCredentialHelperEntries(helperLines);
+                    hasGcmHelper = HasGitCredentialManagerHelper(helperEntries);
+                    hasStaleManagerCoreHelper = HasStaleCredentialManagerCoreHelper(helperEntries);
+                } else {
+                    std::cerr << kano::terminal::FailTag() << " failed to configure credential.helper=manager in global Git config\n";
+                    failures += 1;
+                }
+            }
+        }
 
         if (helperLines.empty()) {
             if (hasHttpsTarget) {
@@ -3617,10 +3700,26 @@ void RegisterAuth(CLI::App& InApp) {
             }
         }
 
+        if (hasStaleManagerCoreHelper) {
+            const auto tag = hasHttpsTarget ? kano::terminal::FailTag() : kano::terminal::WarnTag();
+            std::cerr << tag << " stale credential.helper=manager-core is configured; current Git for Windows expects credential.helper=manager\n";
+            std::cerr << kano::terminal::InfoTag() << " repair with: kog auth doctor --fix\n";
+            for (const auto& entry : helperEntries) {
+                if (IsStaleCredentialManagerCoreHelper(entry)) {
+                    std::cerr << "  - " << entry.raw << "\n";
+                }
+            }
+            if (hasHttpsTarget) {
+                failures += 1;
+            } else {
+                warnings += 1;
+            }
+        }
+
         if (gcmVersion.exitCode == 0) {
             std::cout << kano::terminal::PassTag() << " Git Credential Manager detected: " << Trim(gcmVersion.stdoutStr + gcmVersion.stderrStr) << "\n";
         } else if (hasHttpsTarget) {
-            std::cerr << kano::terminal::WarnTag() << " Git Credential Manager executable was not detected via 'git credential-manager version'\n";
+            std::cerr << kano::terminal::WarnTag() << " Git Credential Manager executable was not detected via 'git credential-manager --version'\n";
             warnings += 1;
         } else {
             std::cout << kano::terminal::InfoTag() << " Git Credential Manager executable not detected\n";
