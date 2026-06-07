@@ -353,8 +353,8 @@
         },
         {
             "name": "linux-ninja-clang-pgo-use",
-            "displayName": "Linux Ninja Clang (PGO Use + LTO)",
-            "description": "Linux Clang with PGO optimization + thin LTO for CI production builds",
+            "displayName": "Linux Ninja Clang (PGO Use)",
+            "description": "Linux Clang with PGO optimization for CI production builds",
             "inherits": "linux-ninja-clang",
             "binaryDir": "${sourceDir}/out/obj/linux-ninja-clang-pgo-use",
             "cacheVariables": {
@@ -362,7 +362,7 @@
                 "CMAKE_CXX_COMPILER": "clang++",
                 "KOG_ENABLE_MODULES": "OFF",
                 "KOG_PGO_MODE": "use",
-                "KOG_PGO_LTCG": "auto",
+                "KOG_PGO_LTCG": "off",
                 "KOG_BUILD_TYPE": "Release",
                 "KOG_PRESET_NAME": "linux-ninja-clang-pgo-use"
             }
@@ -570,4 +570,3 @@
         }
     ]
 }
-
