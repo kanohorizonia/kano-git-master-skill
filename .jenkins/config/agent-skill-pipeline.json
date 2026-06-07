@@ -3,7 +3,7 @@
   "skillName": "kano-git-master-skill",
   "bootstrapAgentLabel": "lightweight",
   "windowsAgentLabel": "windows && lightweight",
-  "linuxAgentLabel": "lightweight && (linux || docker) && !jenkins-controller && !built-in",
+  "linuxAgentLabel": "mac && docker && lightweight",
   "macAgentLabel": "mac && lightweight",
   "platformSharedWorkspaceRoots": {
     "windows": "C:/Mount/s/jenkins_ws/KanoAgentSkills",
