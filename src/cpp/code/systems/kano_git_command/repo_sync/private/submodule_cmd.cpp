@@ -1302,6 +1302,8 @@ auto RunSubmoduleUpdateContinueOnError(
         auto handleResult = [&](TaskRunResult&& result) {
             std::lock_guard<std::mutex> lock(outputMutex);
             const auto& task = result.outcome.task;
+            const auto taskDisplayPath = task.displayPath;
+            const auto taskKind = result.outcome.kind;
             switch (result.outcome.kind) {
             case SubmoduleUpdateOutcomeKind::UpdatedCleanly:
                 std::cout << "[" << task.displayPath << "] updated\n";
@@ -1326,10 +1328,10 @@ auto RunSubmoduleUpdateContinueOnError(
                 return;
             }
 
-            if (result.outcome.kind == SubmoduleUpdateOutcomeKind::UpdatedCleanly ||
-                result.outcome.kind == SubmoduleUpdateOutcomeKind::UpdatedWithWarnings ||
-                result.outcome.kind == SubmoduleUpdateOutcomeKind::RepairedAndUpdated) {
-                for (auto& nestedTask : CollectNestedSubmoduleTasks(rootPath, task.displayPath)) {
+            if (taskKind == SubmoduleUpdateOutcomeKind::UpdatedCleanly ||
+                taskKind == SubmoduleUpdateOutcomeKind::UpdatedWithWarnings ||
+                taskKind == SubmoduleUpdateOutcomeKind::RepairedAndUpdated) {
+                for (auto& nestedTask : CollectNestedSubmoduleTasks(rootPath, taskDisplayPath)) {
                     nextWave.push_back(std::move(nestedTask));
                 }
             }

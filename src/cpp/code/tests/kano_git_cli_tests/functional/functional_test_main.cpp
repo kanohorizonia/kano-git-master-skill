@@ -1652,6 +1652,8 @@ TEST_CASE("kog_discover_registered_recursion_ignores_unregistered_depth", "[func
     INFO(result.stdoutText);
     INFO(result.stderrText);
     REQUIRE(result.exitCode == 0);
+    const auto mergedUpdateOutput = result.stdoutText + "\n" + result.stderrText;
+    REQUIRE(mergedUpdateOutput.find(ctx.brokenPath) == std::string::npos);
 
     const auto discover = RunKog(
         {"discover", "--format", "json", "--repo-root", ctx.cloneRootRepo.string(), "--no-cache",
