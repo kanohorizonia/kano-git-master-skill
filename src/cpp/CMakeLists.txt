@@ -574,6 +574,7 @@ set(KOG_PGO_MODE "off" CACHE STRING "PGO mode: off|collect|use")
 set_property(CACHE KOG_PGO_MODE PROPERTY STRINGS off collect use)
 set(KOG_PGO_LTCG "auto" CACHE STRING "PGO LTCG/LTO: auto|off (auto enables LTCG when PGO_MODE=use)")
 set_property(CACHE KOG_PGO_LTCG PROPERTY STRINGS auto off)
+option(KOG_PGO_COLLECT_ENABLE_COVERAGE_MAPPING "Enable Clang coverage mapping during PGO collect builds" ON)
 
 # Coverage flags
 # NOTE: For Clang, we use PGO-style instrumentation (-fprofile-instr-generate -fcoverage-mapping)
@@ -654,9 +655,15 @@ if(NOT KOG_PGO_MODE STREQUAL "off")
     elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         if(KOG_PGO_MODE STREQUAL "collect")
             # Clang: instrument with -fprofile-instr-generate
-            add_compile_options(-fprofile-instr-generate -fcoverage-mapping)
-            add_link_options(-fprofile-instr-generate -fcoverage-mapping)
-            message(STATUS "PGO: collect mode (Clang -fprofile-instr-generate)")
+            add_compile_options(-fprofile-instr-generate)
+            add_link_options(-fprofile-instr-generate)
+            if(KOG_PGO_COLLECT_ENABLE_COVERAGE_MAPPING)
+                add_compile_options(-fcoverage-mapping)
+                add_link_options(-fcoverage-mapping)
+                message(STATUS "PGO: collect mode (Clang -fprofile-instr-generate -fcoverage-mapping)")
+            else()
+                message(STATUS "PGO: collect mode (Clang -fprofile-instr-generate, coverage mapping disabled)")
+            endif()
         elseif(KOG_PGO_MODE STREQUAL "use")
             # Clang: use profile with -fprofile-instr-use=<path>
             # Set KOG_PGO_PROFILE_DIR first, then use it for the profile path
