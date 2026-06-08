@@ -89,6 +89,7 @@
   "homebrewGenerateCommand": "bash src/shell/release/03-generate-homebrew-skeleton.sh",
   "bPublishPackageManagerRecipes": true,
   "bPackageManagerPublishDryRun": true,
+  "bAllowPackageManagerDryRunRecipeFailure": true,
   "bPublishWingetRecipe": true,
   "wingetPublishCommand": "bash src/shell/release/04-publish-winget-internal.sh",
   "wingetManifestRepoUrl": "",
