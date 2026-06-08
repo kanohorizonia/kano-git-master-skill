@@ -8,7 +8,7 @@ agentSkillPipelineFromProjectConfig(
     config: [
         bDryRun: params.DRY_RUN,
         bRunBuildPhase: false,
-        bRunReleasePhase: params.PUBLISH_RELEASE,
+        bRunReleasePhase: true,
         releaseTag: params.RELEASE_TAG,
         releaseTitle: params.RELEASE_TAG
     ]
