@@ -54,6 +54,16 @@
   "coverageRoot": "out/coverage",
   "distRoot": "dist",
   "jenkinsRoot": "out/jenkins",
+  "cppTestSkillRoot": "_tools/kano-cpp-test-skill",
+  "workspaceDependencyCheckouts": [
+    {
+      "name": "kano-cpp-test-skill",
+      "url": "https://github.com/kanohorizonia/kano-cpp-test-skill.git",
+      "branch": "main",
+      "path": "_tools/kano-cpp-test-skill",
+      "credentialsId": "github-kanohorizonia-jenkins"
+    }
+  ],
   "bUseGlobReportDiscovery": true,
   "buildJobName": "Build_CI",
   "releaseJobName": "Release_Publish",
