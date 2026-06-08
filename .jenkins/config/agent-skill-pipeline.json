@@ -102,7 +102,7 @@
   "releaseAssetBaseUrl": "",
   "githubRepository": "kanohorizonia/kano-git-master-skill",
   "githubTokenCredentialId": "github-release-token",
-  "siteBuildCommand": "pixi run docs-ci",
+  "siteBuildCommand": "bash -lc 'export PATH=\"$HOME/.pixi/bin:$PIXI_HOME/bin:$PATH\"; pixi run docs-ci'",
   "sitePublishCommand": "bash src/shell/docs/06-publish-github-pages.sh",
   "siteProvider": "github-pages",
   "siteEnvironment": "production",
