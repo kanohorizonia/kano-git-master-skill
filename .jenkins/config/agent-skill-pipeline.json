@@ -26,6 +26,7 @@
   "linuxPgoBuildTasks": ["ci-linux-pgo-build"],
   "linuxTestTasks": ["ci-linux-quick-test"],
   "linuxPgoTestTasks": ["ci-linux-pgo-test"],
+  "linuxCoverageTasks": ["ci-linux-coverage-all"],
   "linuxReportTasks": ["gather-reports"],
   "linuxValidateCommand": "pixi run ci-linux-validate",
   "requiredPixiTasks": [
