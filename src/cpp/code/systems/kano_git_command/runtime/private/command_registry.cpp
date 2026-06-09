@@ -35,10 +35,12 @@ void RegisterAll(CLI::App& InApp) {
     RegisterRepo(InApp);
     RegisterRemote(InApp);
     RegisterRepoHygiene(InApp);
+    RegisterRelease(InApp);
     RegisterReset(InApp);
     RegisterResolve(InApp);
     RegisterSelf(InApp);
     RegisterScalar(InApp);
+    RegisterSkill(InApp);
     RegisterSlog(InApp);
     RegisterStash(InApp);
     RegisterStatus(InApp);
@@ -116,6 +118,8 @@ void RegisterAll(CLI::App& InApp) {
     setGroup("config", maintenanceGroup);
     setGroup("export", maintenanceGroup);
     setGroup("meta", maintenanceGroup);
+    setGroup("release", maintenanceGroup);
+    setGroup("skill", maintenanceGroup);
 
     // Hidden commands
     setGroup("complete", "");

@@ -34,6 +34,7 @@ endif()
 add_executable(kano_git_export_tests
   export_helpers_property_test.cpp
   export_unit_test.cpp
+  export_upload_tdd_test.cpp
   export_cli_registration_test.cpp
   export_integration_test.cpp
 )

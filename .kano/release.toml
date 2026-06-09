@@ -1,0 +1,70 @@
+[release]
+package_id = "KanoHorizonia.KanoGit"
+package_name = "Kano Git"
+publisher = "Kano Horizonia"
+moniker = "kog"
+description = "Kano Git automation toolkit with the KOG CLI and released skill payload."
+license = "Proprietary"
+homepage = "https://github.com/kanohorizonia/kano-git-master-skill"
+
+[release.skill]
+skill_name = "kano-git-master-skill"
+default_install_target = "~/agents/skills/kano-git-master-skill"
+developer_protected_prefix = "~/.agents/skills/kano"
+
+[release.windows]
+enabled = true
+architectures = ["x64"]
+
+[release.cloud_build]
+enabled = false
+dry_run = true
+allow_fallback = false
+repo = "kanohorizonia/kano-git-master-skill"
+workflow = "kano-cloud-build.yml"
+ref = "main"
+artifact_retention_days = 1
+expected_max_minutes = 60
+allow_private_quota_use = false
+
+[release.platforms.windows-x64]
+required = true
+experimental = false
+cloud_build = true
+runner = "windows-2025"
+
+[release.platforms.windows-arm64]
+required = false
+experimental = true
+cloud_build = true
+runner = "windows-11-arm"
+
+[release.platforms.linux-x64]
+required = false
+experimental = false
+cloud_build = true
+runner = "ubuntu-24.04"
+
+[release.platforms.linux-arm64]
+required = false
+experimental = true
+cloud_build = true
+runner = "ubuntu-24.04-arm"
+
+[release.platforms.macos-x64]
+required = false
+experimental = false
+cloud_build = true
+runner = "macos-15-intel"
+
+[release.platforms.macos-arm64]
+required = false
+experimental = true
+cloud_build = true
+runner = "macos-15"
+
+[release.winget]
+enabled = true
+package_identifier = "KanoHorizonia.KanoGit"
+fork_repo = "https://github.com/kanohorizonia/winget-pkgs"
+upstream_repo = "https://github.com/microsoft/winget-pkgs"

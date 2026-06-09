@@ -1,0 +1,329 @@
+name: Kano Cloud Build
+
+run-name: kano-cloud-build ${{ inputs.request_id }} ${{ inputs.platform }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: Jenkins request identifier.
+        required: true
+        type: string
+      package_id:
+        description: Public package identifier.
+        required: true
+        type: string
+      package_version:
+        description: Package version.
+        required: true
+        type: string
+      platform:
+        description: Target platform.
+        required: true
+        type: choice
+        options:
+          - windows-x64
+          - windows-arm64
+          - linux-x64
+          - linux-arm64
+          - macos-x64
+          - macos-arm64
+      source_commit:
+        description: Source commit expected by Jenkins.
+        required: true
+        type: string
+      source_ref:
+        description: Source ref to checkout.
+        required: true
+        type: string
+      release_mode:
+        description: ci or release.
+        required: true
+        type: choice
+        options:
+          - ci
+          - release
+      artifact_contract_version:
+        description: Artifact manifest contract version.
+        required: true
+        default: "1"
+        type: string
+      retention_days:
+        description: Temporary artifact retention days.
+        required: true
+        default: "1"
+        type: string
+      required:
+        description: Whether this platform is release-blocking.
+        required: true
+        default: false
+        type: boolean
+      experimental:
+        description: Whether this platform is experimental.
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kano-cloud-build-${{ inputs.request_id }}-${{ inputs.platform }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ${{ fromJSON('{"windows-x64":"windows-2025","windows-arm64":"windows-11-arm","linux-x64":"ubuntu-24.04","linux-arm64":"ubuntu-24.04-arm","macos-x64":"macos-15-intel","macos-arm64":"macos-15"}')[inputs.platform] }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    env:
+      KANO_PLATFORM: ${{ inputs.platform }}
+      KANO_PACKAGE_ID: ${{ inputs.package_id }}
+      KANO_PACKAGE_VERSION: ${{ inputs.package_version }}
+      KANO_REQUEST_ID: ${{ inputs.request_id }}
+      KANO_SOURCE_COMMIT: ${{ inputs.source_commit }}
+      KANO_SOURCE_REF: ${{ inputs.source_ref }}
+      KANO_RELEASE_MODE: ${{ inputs.release_mode }}
+      KANO_ARTIFACT_CONTRACT_VERSION: ${{ inputs.artifact_contract_version }}
+      KANO_REQUIRED: ${{ inputs.required }}
+      KANO_EXPERIMENTAL: ${{ inputs.experimental }}
+    steps:
+      - name: Validate request
+        run: |
+          case "$KANO_PLATFORM" in
+            windows-x64|windows-arm64|linux-x64|linux-arm64|macos-x64|macos-arm64) ;;
+            *) echo "Unsupported platform: $KANO_PLATFORM" >&2; exit 2 ;;
+          esac
+          case "$KANO_ARTIFACT_CONTRACT_VERSION" in
+            1) ;;
+            *) echo "Unsupported artifact contract version: $KANO_ARTIFACT_CONTRACT_VERSION" >&2; exit 2 ;;
+          esac
+
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Checkout requested commit
+        run: |
+          if [[ -n "$KANO_SOURCE_COMMIT" && "$KANO_SOURCE_COMMIT" != "HEAD" ]]; then
+            git checkout --detach "$KANO_SOURCE_COMMIT"
+          fi
+
+      - name: Checkout kano-cpp-test-skill
+        uses: actions/checkout@v4
+        with:
+          repository: kanohorizonia/kano-cpp-test-skill
+          ref: main
+          path: _tools/kano-cpp-test-skill
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup .NET SDK
+        if: startsWith(inputs.platform, 'windows-')
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Setup Pixi
+        uses: prefix-dev/setup-pixi@v0.8.14
+
+      - name: Install shared infra Pixi environment
+        run: pixi install --manifest-path src/cpp/shared/infra/pixi.toml
+
+      - name: Build native release binary
+        run: |
+          set -euo pipefail
+          cd src/cpp/shared/infra
+          case "$KANO_PLATFORM" in
+            windows-x64)
+              bash scripts/platform/win64/windows_preset_build.sh windows-ninja-msvc windows-ninja-msvc-release
+              ;;
+            windows-arm64)
+              bash scripts/platform/win64/windows_preset_build.sh windows-ninja-msvc-arm64 windows-ninja-msvc-arm64-release
+              ;;
+            macos-x64)
+              bash scripts/self/build.sh macos-ninja-clang-x64 macos-ninja-clang-x64-release
+              ;;
+            macos-arm64)
+              bash scripts/self/build.sh macos-ninja-clang-arm64 macos-ninja-clang-arm64-release
+              ;;
+            linux-x64|linux-arm64)
+              pixi run build
+              ;;
+          esac
+
+      - name: Run smoke tests
+        run: |
+          set -euo pipefail
+          cd src/cpp/shared/infra
+          case "$KANO_PLATFORM" in
+            windows-x64)
+              bash scripts/stages/test-lane.sh quick windows-ninja-msvc-release
+              ;;
+            windows-arm64)
+              bash scripts/stages/test-lane.sh quick windows-ninja-msvc-arm64-release
+              ;;
+            macos-x64)
+              bash scripts/stages/test-lane.sh quick macos-ninja-clang-x64-release
+              ;;
+            macos-arm64)
+              bash scripts/stages/test-lane.sh quick macos-ninja-clang-arm64-release
+              ;;
+            linux-x64|linux-arm64)
+              pixi run quick-test
+              ;;
+          esac
+
+      - name: Package cloud artifact
+        run: |
+          python - <<'PY'
+          import csv
+          import hashlib
+          import json
+          import os
+          import shutil
+          import tarfile
+          import zipfile
+          from pathlib import Path
+
+          platform = os.environ["KANO_PLATFORM"]
+          package_id = os.environ["KANO_PACKAGE_ID"]
+          version = os.environ["KANO_PACKAGE_VERSION"]
+          request_id = os.environ["KANO_REQUEST_ID"]
+          required = os.environ.get("KANO_REQUIRED", "false").lower() == "true"
+          experimental = os.environ.get("KANO_EXPERIMENTAL", "false").lower() == "true"
+          source_commit = os.environ.get("KANO_SOURCE_COMMIT", "")
+          source_ref = os.environ.get("KANO_SOURCE_REF", "")
+          release_mode = os.environ.get("KANO_RELEASE_MODE", "ci")
+
+          binary_dirs = {
+              "windows-x64": Path("src/cpp/out/bin/windows-ninja-msvc/release"),
+              "windows-arm64": Path("src/cpp/out/bin/windows-ninja-msvc-arm64/release"),
+              "linux-x64": Path("src/cpp/out/bin/linux-ninja-gcc/release"),
+              "linux-arm64": Path("src/cpp/out/bin/linux-ninja-gcc/release"),
+              "macos-x64": Path("src/cpp/out/bin/macos-ninja-clang-x64/release"),
+              "macos-arm64": Path("src/cpp/out/bin/macos-ninja-clang-arm64/release"),
+          }
+          bin_dir = binary_dirs[platform]
+          if not bin_dir.is_dir():
+              raise SystemExit(f"missing release binary directory: {bin_dir}")
+
+          artifact_root = Path("cloud-artifacts")
+          payload_root = Path("cloud-payload/root")
+          if artifact_root.exists():
+              shutil.rmtree(artifact_root)
+          if payload_root.parent.exists():
+              shutil.rmtree(payload_root.parent)
+          artifact_root.mkdir(parents=True)
+          (payload_root / "bin").mkdir(parents=True)
+          (payload_root / "scripts").mkdir(parents=True)
+
+          for path in sorted(p for p in bin_dir.rglob("*") if p.is_file()):
+              rel = path.relative_to(bin_dir)
+              target = payload_root / "bin" / rel
+              target.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copy2(path, target)
+
+          for name in ["SKILL.md", "README.md", "VERSION"]:
+              src = Path(name)
+              if src.is_file():
+                  shutil.copy2(src, payload_root / name)
+          for name in ["kog", "kog.bat", "kano-git", "kano-git.bat"]:
+              src = Path("scripts") / name
+              if src.is_file():
+                  shutil.copy2(src, payload_root / "scripts" / name)
+
+          safe_version = "".join(ch if ch.isalnum() or ch in "._+-" else "-" for ch in version)
+          archive_name = f"KanoGit-{safe_version}-{platform}.zip" if platform.startswith("windows-") else f"KanoGit-{safe_version}-{platform}.tar.gz"
+          archive_path = artifact_root / archive_name
+          entries = []
+          if archive_name.endswith(".zip"):
+              with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                  for path in sorted(p for p in payload_root.rglob("*") if p.is_file()):
+                      arcname = path.relative_to(payload_root).as_posix()
+                      archive.write(path, arcname)
+                      entries.append({"path": arcname, "sizeBytes": path.stat().st_size})
+          else:
+              with tarfile.open(archive_path, "w:gz") as archive:
+                  for path in sorted(p for p in payload_root.rglob("*") if p.is_file()):
+                      arcname = path.relative_to(payload_root).as_posix()
+                      archive.add(path, arcname=arcname)
+                      entries.append({"path": arcname, "sizeBytes": path.stat().st_size})
+
+          csv_path = artifact_root / f"{archive_name}.manifest.csv"
+          with csv_path.open("w", encoding="utf-8", newline="") as handle:
+              writer = csv.DictWriter(handle, fieldnames=["path", "sizeBytes"])
+              writer.writeheader()
+              writer.writerows(entries)
+
+          sha = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+          (artifact_root / "release-artifacts.sha256.txt").write_text(f"{sha}  {archive_name}\n", encoding="utf-8")
+          (artifact_root / "release-artifacts.manifest.json").write_text(json.dumps({
+              "schemaVersion": 1,
+              "description": "Root-level cloud build artifact checksums and publish classification.",
+              "artifacts": [{
+                  "path": archive_name,
+                  "fileName": archive_name,
+                  "sha256": sha,
+                  "sizeBytes": archive_path.stat().st_size,
+                  "kind": "package",
+                  "platform": platform,
+              }],
+          }, indent=2) + "\n", encoding="utf-8")
+
+          manifest = {
+              "schemaVersion": 1,
+              "kind": "kano-platform-build-artifact",
+              "platform": platform,
+              "required": required,
+              "experimental": experimental,
+              "buildBackend": "github-actions",
+              "backendStatus": "GITHUB_ACTIONS_BACKEND_SUCCEEDED",
+              "built": True,
+              "tested": True,
+              "supported": (not experimental),
+              "skipped": False,
+              "skipReason": "",
+              "message": "GitHub Actions cloud build completed.",
+              "requestId": request_id,
+              "sourceCommit": source_commit,
+              "sourceRef": source_ref,
+              "releaseMode": release_mode,
+              "artifacts": [{
+                  "path": archive_name,
+                  "sha256": sha,
+                  "sizeBytes": archive_path.stat().st_size,
+                  "kind": "package",
+              }],
+              "githubActions": {
+                  "runId": os.environ.get("GITHUB_RUN_ID", ""),
+                  "runAttempt": os.environ.get("GITHUB_RUN_ATTEMPT", ""),
+                  "runnerName": os.environ.get("RUNNER_NAME", ""),
+                  "runnerOs": os.environ.get("RUNNER_OS", ""),
+                  "runnerArch": os.environ.get("RUNNER_ARCH", ""),
+              },
+          }
+          (artifact_root / "release-artifact-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+          PY
+
+      - name: Upload cloud build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.package_id }}-${{ inputs.platform }}-${{ inputs.request_id }}
+          path: cloud-artifacts/*
+          if-no-files-found: error
+          retention-days: ${{ inputs.retention_days }}
+          compression-level: 0

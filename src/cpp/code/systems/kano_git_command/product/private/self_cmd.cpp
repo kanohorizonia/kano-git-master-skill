@@ -1095,6 +1095,50 @@ void RegisterSelf(CLI::App& InApp) {
   });
 
   // ========================================================================
+  // self upgrade/finalize-upgrade - Package-manager upgrade seams
+  // ========================================================================
+  auto* selfUpgrade = cmd->add_subcommand("upgrade", "Render Kano Git package upgrade steps");
+  auto* selfUpgradeDryRun = new bool{true};
+  auto* selfUpgradeYes = new bool{false};
+  selfUpgrade->add_flag("--dry-run,!--no-dry-run", *selfUpgradeDryRun, "Render upgrade plan without invoking package-manager commands");
+  selfUpgrade->add_flag("--yes", *selfUpgradeYes, "Required with --no-dry-run");
+  selfUpgrade->callback([=]() {
+    std::cout << "packageIdentifier=KanoHorizonia.KanoGit\n";
+    std::cout << "packageName=Kano Git\n";
+    std::cout << "moniker=kog\n";
+    std::cout << "planCommand=winget upgrade --id KanoHorizonia.KanoGit -e\n";
+    std::cout << "postUpgradeCommand=kog self finalize-upgrade\n";
+    if (*selfUpgradeDryRun) {
+      std::exit(0);
+    }
+    if (!*selfUpgradeYes) {
+      std::cerr << "Error: SELF_UPGRADE_REQUIRES_YES\n";
+      std::exit(1);
+    }
+    std::cerr << "Error: SELF_UPGRADE_EXECUTION_NOT_ENABLED_IN_THIS_BUILD\n";
+    std::exit(1);
+  });
+
+  auto* selfFinalizeUpgrade = cmd->add_subcommand("finalize-upgrade", "Render post-upgrade skill finalization steps");
+  auto* selfFinalizeDryRun = new bool{true};
+  auto* selfFinalizeYes = new bool{false};
+  selfFinalizeUpgrade->add_flag("--dry-run,!--no-dry-run", *selfFinalizeDryRun, "Render finalize plan without writing skill state");
+  selfFinalizeUpgrade->add_flag("--yes", *selfFinalizeYes, "Required with --no-dry-run");
+  selfFinalizeUpgrade->callback([=]() {
+    std::cout << "planCommand=kog skill doctor\n";
+    std::cout << "planCommand=kog skill install\n";
+    if (*selfFinalizeDryRun) {
+      std::exit(0);
+    }
+    if (!*selfFinalizeYes) {
+      std::cerr << "Error: SELF_FINALIZE_UPGRADE_REQUIRES_YES\n";
+      std::exit(1);
+    }
+    std::cerr << "Error: SELF_FINALIZE_UPGRADE_EXECUTION_NOT_ENABLED_IN_THIS_BUILD\n";
+    std::exit(1);
+  });
+
+  // ========================================================================
   // self install - Generate/update install state
   // ========================================================================
   auto* selfInstall = cmd->add_subcommand("install", "Generate or update install state file");

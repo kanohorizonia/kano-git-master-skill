@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -90,6 +91,77 @@ struct ExportResult {
     std::uintmax_t sizeBytes = 0;
     std::string rootCommit;
     std::string rootBranch;
+};
+
+struct ExportUploadConfig {
+    std::string target; // empty | local-sync-folder | rclone | gdrive-api
+    std::filesystem::path localSyncFolder;
+    std::string rcloneRemote;
+    std::string rcloneDestination;
+    std::string layout; // safe relative subdirectory under the sync root / remote destination
+    bool copyManifest = false;
+    bool copySha256 = false;
+    bool returnUrl = true;
+    std::string linkMode = "private"; // private | public-link
+    std::string backend;
+    std::string connectorHint;
+    bool publicLink = false;
+    bool yes = false;
+};
+
+struct ExportUploadConfigLayer {
+    std::optional<std::string> target;
+    std::optional<std::filesystem::path> localSyncFolder;
+    std::optional<std::string> rcloneRemote;
+    std::optional<std::string> rcloneDestination;
+    std::optional<std::string> layout;
+    std::optional<bool> copyManifest;
+    std::optional<bool> copySha256;
+    std::optional<bool> returnUrl;
+    std::optional<std::string> linkMode;
+    std::optional<std::string> backend;
+    std::optional<std::string> connectorHint;
+    std::optional<bool> publicLink;
+    std::optional<bool> yes;
+};
+
+struct ExportUploadDoctorResult {
+    bool ok = false;
+    std::string status; // OK | MISSING_PATH | RCLONE_NOT_FOUND | RCLONE_REMOTE_MISSING | INVALID_CONFIG | NOT_CONFIGURED | FUTURE_BACKEND
+    std::string backendLabel;
+    bool thirdParty = false;
+    std::string guidance;
+    std::string output;
+};
+
+struct ExportUploadRequest {
+    std::filesystem::path archivePath;
+    std::filesystem::path manifestPath;
+    std::string archiveName;
+    ExportUploadConfig config;
+};
+
+struct ExportUploadResult {
+    bool success = false;
+    std::filesystem::path copiedArchivePath;
+    std::filesystem::path copiedManifestPath;
+    std::filesystem::path sha256SidecarPath;
+    std::filesystem::path uploadManifestPath;
+    std::filesystem::path localTargetPath;
+    std::filesystem::path syncFolderPath;
+    std::string remotePath;
+    std::string remoteArchiveName;
+    std::string sourceArchive;
+    std::string sourceSha256;
+    std::string backend;
+    std::string connectorHint;
+    std::optional<std::string> fileId;
+    std::optional<std::string> webUrl;
+    std::string visibility; // private | preserve | public-link
+    bool permissionChanged = false;
+    std::string urlStatus; // empty | URL_UNAVAILABLE
+    std::string output;
+    std::string errorMessage;
 };
 
 // ---------------------------------------------------------------------------
@@ -205,6 +277,26 @@ auto FormatExportManifestJson(const ExportManifestData& InData) -> std::string;
 // Reads the sha256 hex string from a .sha256 sidecar file produced by
 // WriteChecksumFile.  Returns empty string on failure.
 auto ReadSha256FromSidecar(const std::filesystem::path& InSidecarPath) -> std::string;
+
+// Resolves export upload configuration using safe precedence:
+// user/global < repo/local < CLI. Defaults must not enable upload or public links.
+auto ResolveExportUploadConfig(const ExportUploadConfigLayer& InUserConfig,
+                               const ExportUploadConfigLayer& InRepoConfig,
+                               const ExportUploadConfigLayer& InCliConfig) -> ExportUploadConfig;
+
+// Performs setup diagnostics for the selected upload target without mutating
+// local files, remotes, permissions, OAuth state, or network resources.
+auto DoctorExportUploadWithExecutor(const ExportUploadConfig& InConfig,
+                                    const ShellExecutor& InExec) -> ExportUploadDoctorResult;
+
+// Uploads/copies the archive and manifest to the configured target using only
+// the injected shell executor for process work. Implementations must not call
+// real rclone/network in tests; tests inject fake executors.
+auto UploadExportArtifactsWithExecutor(const ExportUploadRequest& InRequest,
+                                       const ShellExecutor& InExec) -> ExportUploadResult;
+
+// Redacts token/password-like values from upload diagnostics and command output.
+auto RedactExportUploadText(const std::string& InText) -> std::string;
 
 // Formats the manifest text for one exported repo.
 // InStatusOut and InLsFilesOut are the raw outputs of git status --short and

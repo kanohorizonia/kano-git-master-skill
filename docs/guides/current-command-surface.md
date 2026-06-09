@@ -103,6 +103,9 @@ src/shell/test/smoke-release-online-build.sh <archive.tar>
 ./scripts/kog export --single
 ./scripts/kog export --single --validate-release-archive
 ./scripts/kog export --subtree "E:/_gamedev/KanoTamaoProject/UnrealEngine/Engine/Source/Programs/UnrealGameSync" --name UnrealGameSync --source head
+./scripts/kog export upload doctor
+./scripts/kog export upload --last
+./scripts/kog export upload --archive .kano/tmp/git/export/<archive>.tar --target drive_sync
 
 # Bash completion
 ./scripts/kog completion install bash
@@ -189,6 +192,75 @@ Subtree mode compatibility:
 - `--subtree` is standalone export mode and cannot be combined with `--single` or `--include-submodule-stubs`.
 - `--subtree` skips release archive validation; explicit `--validate-release-archive` is rejected.
 - Use `--keep-subtree-path` if archive entries should retain full repo-relative subtree path.
+
+## Export upload
+
+`kog export upload` uploads or copies an existing export archive after `kog export`.
+It supports a local sync folder backend and an rclone backend. The Google Drive
+API backend is guidance-only for now; `doctor` does not start OAuth or store
+tokens.
+
+```bash
+./scripts/kog export upload doctor
+./scripts/kog export upload doctor --target gdrive-api
+./scripts/kog export upload --last
+./scripts/kog export upload --archive .kano/tmp/git/export/<archive>.tar --target drive_sync
+./scripts/kog export upload --last --target drive_sync --layout Kano/kog --copy-manifest --copy-sha256
+```
+
+Configure upload targets in layered TOML config files:
+
+```text
+user: ~/.kano/kog_config.toml
+repo: .kano/kog_config.toml
+precedence: user < repo < CLI
+```
+
+```toml
+[export.upload]
+default_target = "drive_sync"
+
+[export.upload.targets.drive_sync]
+type = "local-sync-folder"
+path = "E:/_gamedev/ChatGPT_Export"
+layout = "Kano/kog"
+copy_manifest = true
+copy_sha256 = true
+return_url = false
+
+[export.upload.targets.gdrive]
+type = "rclone"
+remote = "kog-drive"
+destination = "exports/kog"
+layout = "ChatGPT_Export"
+copy_manifest = true
+copy_sha256 = true
+return_url = true
+```
+
+Target behavior:
+- `local-sync-folder` must be an existing sync root, for example a Google
+  Drive/Desktop folder such as `E:/_gamedev/ChatGPT_Export`. KOG creates only
+  the safe relative `layout` directories under that root, copies the archive,
+  and leaves cloud propagation to the sync client. It never fabricates a cloud
+  URL for ChatGPT's Google connector.
+- `rclone` uses `copyto` against an existing configured remote and destination.
+  The optional original export manifest and `.sha256` sidecar are uploaded only
+  when enabled by `copy_manifest` / `copy_sha256` or CLI flags. KOG does not
+  install rclone, start Google OAuth, or store tokens.
+- For Google Drive remotes, KOG derives a private Drive URL only when
+  `rclone lsjson --stat -M` returns a file ID. If no ID is available, the upload
+  manifest records `URL_UNAVAILABLE` instead of pretending a URL exists.
+
+Upload safety rules:
+- Uploads preserve the target backend's existing private/default visibility.
+- `rclone link` is not called by default.
+- Public links require explicit CLI confirmation: `--public-link --yes`.
+- Config-file `public_link` or `yes` values do not enable permission mutation.
+- Treat `--public-link --yes` as a sharing-permission change; it may create or
+  retrieve a public link through rclone.
+- rclone targets must name an existing configured remote; inline credentials or
+  credential-looking remote/destination strings are rejected before invoking rclone.
 
 ## Shell script policy
 

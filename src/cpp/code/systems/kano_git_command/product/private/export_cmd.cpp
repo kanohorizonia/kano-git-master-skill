@@ -10,6 +10,7 @@
 #include "shell_executor.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <chrono>
 #include <cstdint>
@@ -26,6 +27,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -889,6 +891,1241 @@ auto TrimExport(std::string InValue) -> std::string {
         start += 1;
     }
     return InValue.substr(start);
+}
+
+namespace {
+
+auto ToLowerExportUpload(std::string InValue) -> std::string {
+    std::transform(InValue.begin(), InValue.end(), InValue.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return InValue;
+}
+
+auto EndsWithCaseInsensitive(const std::string& InValue, const std::string& InSuffix) -> bool {
+    if (InValue.size() < InSuffix.size()) {
+        return false;
+    }
+    return ToLowerExportUpload(InValue.substr(InValue.size() - InSuffix.size())) == ToLowerExportUpload(InSuffix);
+}
+
+auto NormalizeRcloneRemote(std::string InRemote) -> std::string {
+    InRemote = TrimExport(std::move(InRemote));
+    if (!InRemote.empty() && InRemote.back() == ':') {
+        InRemote.pop_back();
+    }
+    return InRemote;
+}
+
+auto TrimSlashes(std::string InValue) -> std::string {
+    InValue = TrimExport(std::move(InValue));
+    while (!InValue.empty() && (InValue.front() == '/' || InValue.front() == '\\')) {
+        InValue.erase(InValue.begin());
+    }
+    while (!InValue.empty() && (InValue.back() == '/' || InValue.back() == '\\')) {
+        InValue.pop_back();
+    }
+    std::replace(InValue.begin(), InValue.end(), '\\', '/');
+    return InValue;
+}
+
+auto NormalizeUploadLayout(std::string InValue) -> std::string {
+    InValue = TrimSlashes(std::move(InValue));
+    while (InValue.rfind("./", 0) == 0) {
+        InValue.erase(0, 2);
+    }
+    return InValue;
+}
+
+auto IsSafeRelativeUploadLayout(const std::string& InLayout) -> bool {
+    if (InLayout.empty()) {
+        return true;
+    }
+    const bool hasControlCharacter = std::any_of(InLayout.begin(), InLayout.end(), [](unsigned char ch) {
+        return ch < 0x20U || ch == 0x7fU;
+    });
+    if (hasControlCharacter || InLayout.find(':') != std::string::npos) {
+        return false;
+    }
+    const auto path = std::filesystem::path(InLayout);
+    if (path.is_absolute()) {
+        return false;
+    }
+    for (const auto& part : path) {
+        const auto text = part.generic_string();
+        if (text.empty() || text == ".") {
+            continue;
+        }
+        if (text == "..") {
+            return false;
+        }
+    }
+    return true;
+}
+
+auto ResolveLocalUploadTargetPath(const ExportUploadConfig& InConfig) -> std::filesystem::path {
+    const std::string layout = NormalizeUploadLayout(InConfig.layout);
+    if (layout.empty()) {
+        return InConfig.localSyncFolder;
+    }
+    return InConfig.localSyncFolder / std::filesystem::path(layout);
+}
+
+auto BuildRcloneObjectPath(const ExportUploadConfig& InConfig, const std::string& InFilename) -> std::string {
+    const std::string remote = NormalizeRcloneRemote(InConfig.rcloneRemote);
+    std::string destination = TrimSlashes(InConfig.rcloneDestination);
+    const std::string layout = NormalizeUploadLayout(InConfig.layout);
+    if (!layout.empty()) {
+        destination = destination.empty() ? layout : (destination + "/" + layout);
+    }
+    if (destination.empty()) {
+        return remote + ":" + InFilename;
+    }
+    return remote + ":" + destination + "/" + InFilename;
+}
+
+auto ContainsControlCharacter(const std::string& InValue) -> bool {
+    return std::any_of(InValue.begin(), InValue.end(), [](unsigned char ch) {
+        return ch < 0x20U || ch == 0x7fU;
+    });
+}
+
+auto ContainsCredentialMarker(const std::string& InValue) -> bool {
+    const auto lower = ToLowerExportUpload(InValue);
+    static constexpr std::array<std::string_view, 8> markers{
+        "token", "password", "passwd", "secret", "api_key", "apikey", "authorization", "bearer"
+    };
+    for (const auto marker : markers) {
+        if (lower.find(marker) != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
+auto IsSafeRcloneRemoteName(const std::string& InRemote) -> bool {
+    const std::string remote = NormalizeRcloneRemote(InRemote);
+    if (remote.empty() || remote.front() == '-' || ContainsControlCharacter(remote) || ContainsCredentialMarker(remote)) {
+        return false;
+    }
+    for (const unsigned char ch : remote) {
+        if (!(std::isalnum(ch) != 0 || ch == '_' || ch == '-' || ch == '.')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+auto IsSafeRcloneDestination(const std::string& InDestination) -> bool {
+    if (ContainsControlCharacter(InDestination) || ContainsCredentialMarker(InDestination)) {
+        return false;
+    }
+    return InDestination.find(':') == std::string::npos;
+}
+
+auto ValidateRcloneUploadConfig(const ExportUploadConfig& InConfig, std::string& OutError) -> bool {
+    if (!IsSafeRcloneRemoteName(InConfig.rcloneRemote)) {
+        OutError = "rclone remote must be a configured remote name without inline credentials";
+        return false;
+    }
+    if (!IsSafeRcloneDestination(InConfig.rcloneDestination)) {
+        OutError = "rclone destination must not contain credentials, control characters, or remote separators";
+        return false;
+    }
+    if (!IsSafeRelativeUploadLayout(NormalizeUploadLayout(InConfig.layout))) {
+        OutError = "upload layout must be a safe relative path without '..', drive names, or control characters";
+        return false;
+    }
+    return true;
+}
+
+auto IsPathWithinDirectory(const std::filesystem::path& InPath,
+                           const std::filesystem::path& InDirectory) -> bool {
+    std::error_code ec;
+    const auto base = std::filesystem::weakly_canonical(InDirectory, ec);
+    if (ec || base.empty()) {
+        return false;
+    }
+    const auto path = std::filesystem::weakly_canonical(InPath, ec);
+    if (ec || path.empty()) {
+        return false;
+    }
+    const auto relative = path.lexically_relative(base);
+    const auto relativeText = relative.generic_string();
+    return !relativeText.empty() && relativeText != ".." && relativeText.rfind("../", 0) != 0;
+}
+
+auto RotateRight32(std::uint32_t InValue, int InBits) -> std::uint32_t {
+    return (InValue >> InBits) | (InValue << (32 - InBits));
+}
+
+auto FormatSha256State(const std::array<std::uint32_t, 8>& InState) -> std::string {
+    std::ostringstream out;
+    out << std::hex << std::setfill('0');
+    for (const auto part : InState) {
+        out << std::setw(8) << part;
+    }
+    return out.str();
+}
+
+void ProcessSha256Block(const unsigned char* InBlock,
+                        std::array<std::uint32_t, 8>& InOutState) {
+    static constexpr std::array<std::uint32_t, 64> kConstants{
+        0x428a2f98U, 0x71374491U, 0xb5c0fbcfU, 0xe9b5dba5U, 0x3956c25bU, 0x59f111f1U, 0x923f82a4U, 0xab1c5ed5U,
+        0xd807aa98U, 0x12835b01U, 0x243185beU, 0x550c7dc3U, 0x72be5d74U, 0x80deb1feU, 0x9bdc06a7U, 0xc19bf174U,
+        0xe49b69c1U, 0xefbe4786U, 0x0fc19dc6U, 0x240ca1ccU, 0x2de92c6fU, 0x4a7484aaU, 0x5cb0a9dcU, 0x76f988daU,
+        0x983e5152U, 0xa831c66dU, 0xb00327c8U, 0xbf597fc7U, 0xc6e00bf3U, 0xd5a79147U, 0x06ca6351U, 0x14292967U,
+        0x27b70a85U, 0x2e1b2138U, 0x4d2c6dfcU, 0x53380d13U, 0x650a7354U, 0x766a0abbU, 0x81c2c92eU, 0x92722c85U,
+        0xa2bfe8a1U, 0xa81a664bU, 0xc24b8b70U, 0xc76c51a3U, 0xd192e819U, 0xd6990624U, 0xf40e3585U, 0x106aa070U,
+        0x19a4c116U, 0x1e376c08U, 0x2748774cU, 0x34b0bcb5U, 0x391c0cb3U, 0x4ed8aa4aU, 0x5b9cca4fU, 0x682e6ff3U,
+        0x748f82eeU, 0x78a5636fU, 0x84c87814U, 0x8cc70208U, 0x90befffaU, 0xa4506cebU, 0xbef9a3f7U, 0xc67178f2U
+    };
+
+    std::array<std::uint32_t, 64> words{};
+    for (std::size_t i = 0; i < 16; ++i) {
+        const std::size_t p = i * 4;
+        words[i] = (static_cast<std::uint32_t>(InBlock[p]) << 24) |
+                   (static_cast<std::uint32_t>(InBlock[p + 1]) << 16) |
+                   (static_cast<std::uint32_t>(InBlock[p + 2]) << 8) |
+                   static_cast<std::uint32_t>(InBlock[p + 3]);
+    }
+    for (std::size_t i = 16; i < 64; ++i) {
+        const std::uint32_t s0 = RotateRight32(words[i - 15], 7) ^ RotateRight32(words[i - 15], 18) ^ (words[i - 15] >> 3);
+        const std::uint32_t s1 = RotateRight32(words[i - 2], 17) ^ RotateRight32(words[i - 2], 19) ^ (words[i - 2] >> 10);
+        words[i] = words[i - 16] + s0 + words[i - 7] + s1;
+    }
+
+    std::uint32_t a = InOutState[0];
+    std::uint32_t b = InOutState[1];
+    std::uint32_t c = InOutState[2];
+    std::uint32_t d = InOutState[3];
+    std::uint32_t e = InOutState[4];
+    std::uint32_t f = InOutState[5];
+    std::uint32_t g = InOutState[6];
+    std::uint32_t h = InOutState[7];
+
+    for (std::size_t i = 0; i < 64; ++i) {
+        const std::uint32_t s1 = RotateRight32(e, 6) ^ RotateRight32(e, 11) ^ RotateRight32(e, 25);
+        const std::uint32_t ch = (e & f) ^ ((~e) & g);
+        const std::uint32_t temp1 = h + s1 + ch + kConstants[i] + words[i];
+        const std::uint32_t s0 = RotateRight32(a, 2) ^ RotateRight32(a, 13) ^ RotateRight32(a, 22);
+        const std::uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+        const std::uint32_t temp2 = s0 + maj;
+        h = g;
+        g = f;
+        f = e;
+        e = d + temp1;
+        d = c;
+        c = b;
+        b = a;
+        a = temp1 + temp2;
+    }
+
+    InOutState[0] += a;
+    InOutState[1] += b;
+    InOutState[2] += c;
+    InOutState[3] += d;
+    InOutState[4] += e;
+    InOutState[5] += f;
+    InOutState[6] += g;
+    InOutState[7] += h;
+}
+
+class Sha256Stream {
+public:
+    void Update(const unsigned char* InData, std::size_t InSize) {
+        totalBytes_ += static_cast<std::uint64_t>(InSize);
+        std::size_t offset = 0;
+        if (bufferSize_ > 0) {
+            const std::size_t toCopy = std::min(InSize, buffer_.size() - bufferSize_);
+            std::copy_n(InData, toCopy, buffer_.begin() + static_cast<std::ptrdiff_t>(bufferSize_));
+            bufferSize_ += toCopy;
+            offset += toCopy;
+            if (bufferSize_ == buffer_.size()) {
+                ProcessSha256Block(buffer_.data(), state_);
+                bufferSize_ = 0;
+            }
+        }
+
+        while (offset + buffer_.size() <= InSize) {
+            ProcessSha256Block(InData + offset, state_);
+            offset += buffer_.size();
+        }
+
+        if (offset < InSize) {
+            bufferSize_ = InSize - offset;
+            std::copy_n(InData + offset, bufferSize_, buffer_.begin());
+        }
+    }
+
+    auto Finalize() -> std::string {
+        const std::uint64_t bitLength = totalBytes_ * 8ULL;
+        buffer_[bufferSize_++] = 0x80U;
+        if (bufferSize_ > 56U) {
+            std::fill(buffer_.begin() + static_cast<std::ptrdiff_t>(bufferSize_), buffer_.end(), 0U);
+            ProcessSha256Block(buffer_.data(), state_);
+            bufferSize_ = 0;
+        }
+        std::fill(buffer_.begin() + static_cast<std::ptrdiff_t>(bufferSize_), buffer_.begin() + 56, 0U);
+        for (std::size_t i = 0; i < 8; ++i) {
+            buffer_[56 + i] = static_cast<unsigned char>((bitLength >> ((7 - i) * 8)) & 0xffU);
+        }
+        ProcessSha256Block(buffer_.data(), state_);
+        return FormatSha256State(state_);
+    }
+
+private:
+    std::array<std::uint32_t, 8> state_{0x6a09e667U, 0xbb67ae85U, 0x3c6ef372U, 0xa54ff53aU,
+                                        0x510e527fU, 0x9b05688cU, 0x1f83d9abU, 0x5be0cd19U};
+    std::array<unsigned char, 64> buffer_{};
+    std::size_t bufferSize_ = 0;
+    std::uint64_t totalBytes_ = 0;
+};
+
+auto ComputeFileSha256(const std::filesystem::path& InPath) -> std::string {
+    std::ifstream in(InPath, std::ios::binary);
+    if (!in) {
+        return {};
+    }
+    Sha256Stream stream;
+    std::array<char, 65536> buffer{};
+    while (in.read(buffer.data(), static_cast<std::streamsize>(buffer.size())) || in.gcount() > 0) {
+        const auto count = in.gcount();
+        stream.Update(reinterpret_cast<const unsigned char*>(buffer.data()), static_cast<std::size_t>(count));
+    }
+    return stream.Finalize();
+}
+
+auto WriteUploadSha256Sidecar(const std::filesystem::path& InFilePath,
+                              const std::filesystem::path& InSidecarPath) -> std::string {
+    const std::string sha = ComputeFileSha256(InFilePath);
+    if (sha.empty()) {
+        return {};
+    }
+    std::ofstream out(InSidecarPath, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        return {};
+    }
+    out << sha << "  " << InFilePath.filename().generic_string() << "\n";
+    return sha;
+}
+
+auto CopyFileNoOverwrite(const std::filesystem::path& InSource,
+                         const std::filesystem::path& InDestination,
+                         std::string& OutError) -> bool {
+    std::error_code ec;
+    if (std::filesystem::exists(InDestination, ec)) {
+        OutError = "destination already exists: " + InDestination.generic_string();
+        return false;
+    }
+    if (!std::filesystem::copy_file(InSource, InDestination, std::filesystem::copy_options::none, ec)) {
+        OutError = "failed to copy " + InSource.generic_string() + " to " + InDestination.generic_string();
+        if (ec) {
+            OutError += ": " + ec.message();
+        }
+        return false;
+    }
+    return true;
+}
+
+auto VerifyCopiedFile(const std::filesystem::path& InSource,
+                      const std::filesystem::path& InDestination,
+                      const std::string& InExpectedSha,
+                      std::string& OutError) -> bool {
+    std::error_code ec;
+    const auto sourceSize = std::filesystem::file_size(InSource, ec);
+    if (ec) {
+        OutError = "failed to read source archive size: " + ec.message();
+        return false;
+    }
+    const auto destinationSize = std::filesystem::file_size(InDestination, ec);
+    if (ec) {
+        OutError = "failed to read copied archive size: " + ec.message();
+        return false;
+    }
+    if (sourceSize != destinationSize) {
+        OutError = "copied archive size mismatch";
+        return false;
+    }
+    const std::string copiedSha = ComputeFileSha256(InDestination);
+    if (copiedSha.empty() || copiedSha != InExpectedSha) {
+        OutError = "copied archive sha256 mismatch";
+        return false;
+    }
+    return true;
+}
+
+auto WriteUploadManifestJson(const ExportUploadRequest& InRequest,
+                             const ExportUploadResult& InResult,
+                             const std::filesystem::path& InOutputPath,
+                             const std::string& InSha256) -> bool {
+    std::ofstream out(InOutputPath, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        return false;
+    }
+    std::error_code ec;
+    const auto sourceSize = std::filesystem::file_size(InRequest.archivePath, ec);
+    out << "{\n";
+    out << "  \"schemaVersion\": 1,\n";
+    out << "  \"kind\": \"kog-export-upload\",\n";
+    out << "  \"generator\": \"kog export upload\",\n";
+    out << "  \"createdAt\": \"" << JsonEscape(CurrentUtcIso8601Export()) << "\",\n";
+    out << "  \"uploadedAt\": \"" << JsonEscape(CurrentUtcIso8601Export()) << "\",\n";
+    out << "  \"target\": \"" << JsonEscape(InRequest.config.target) << "\",\n";
+    out << "  \"backend\": \"" << JsonEscape(!InResult.backend.empty() ? InResult.backend : InRequest.config.target) << "\",\n";
+    out << "  \"connectorHint\": \"" << JsonEscape(!InResult.connectorHint.empty() ? InResult.connectorHint : InRequest.config.connectorHint) << "\",\n";
+    out << "  \"layout\": \"" << JsonEscape(NormalizeUploadLayout(InRequest.config.layout)) << "\",\n";
+    out << "  \"copyManifest\": " << (InRequest.config.copyManifest ? "true" : "false") << ",\n";
+    out << "  \"copySha256\": " << (InRequest.config.copySha256 ? "true" : "false") << ",\n";
+    out << "  \"returnUrl\": " << (InRequest.config.returnUrl ? "true" : "false") << ",\n";
+    out << "  \"linkMode\": \"" << JsonEscape(InRequest.config.linkMode) << "\",\n";
+    out << "  \"archiveFile\": \"" << JsonEscape(InRequest.archivePath.generic_string()) << "\",\n";
+    out << "  \"sourceArchive\": \"" << JsonEscape(InRequest.archivePath.generic_string()) << "\",\n";
+    out << "  \"archiveName\": \"" << JsonEscape(InRequest.archiveName) << "\",\n";
+    out << "  \"remoteArchiveName\": \"" << JsonEscape(InResult.remoteArchiveName) << "\",\n";
+    out << "  \"sourceSizeBytes\": " << (ec ? 0 : sourceSize) << ",\n";
+    out << "  \"remotePath\": \"" << JsonEscape(InResult.remotePath) << "\",\n";
+    out << "  \"localTargetPath\": \"" << JsonEscape(InResult.localTargetPath.generic_string()) << "\",\n";
+    out << "  \"syncFolderPath\": \"" << JsonEscape(InResult.syncFolderPath.generic_string()) << "\",\n";
+    out << "  \"copiedArchivePath\": \"" << JsonEscape(InResult.copiedArchivePath.generic_string()) << "\",\n";
+    out << "  \"copiedManifestPath\": \"" << JsonEscape(InResult.copiedManifestPath.generic_string()) << "\",\n";
+    out << "  \"sha256SidecarPath\": \"" << JsonEscape(InResult.sha256SidecarPath.generic_string()) << "\",\n";
+    out << "  \"sha256\": \"" << JsonEscape(InSha256) << "\",\n";
+    out << "  \"sourceSha256\": \"" << JsonEscape(!InResult.sourceSha256.empty() ? InResult.sourceSha256 : InSha256) << "\",\n";
+    out << "  \"visibility\": \"" << JsonEscape(InResult.visibility) << "\",\n";
+    out << "  \"permissionChanged\": " << (InResult.permissionChanged ? "true" : "false") << ",\n";
+    out << "  \"fileId\": ";
+    if (InResult.fileId.has_value()) {
+        out << "\"" << JsonEscape(*InResult.fileId) << "\"";
+    } else {
+        out << "null";
+    }
+    out << ",\n";
+    out << "  \"webUrl\": ";
+    if (InResult.webUrl.has_value()) {
+        out << "\"" << JsonEscape(*InResult.webUrl) << "\"";
+    } else {
+        out << "null";
+    }
+    out << ",\n";
+    out << "  \"urlStatus\": ";
+    if (!InResult.urlStatus.empty()) {
+        out << "\"" << JsonEscape(InResult.urlStatus) << "\"\n";
+    } else {
+        out << "null\n";
+    }
+    out << "}\n";
+    return true;
+}
+
+auto ExtractDriveIdFromLsJson(const std::string& InText) -> std::optional<std::string> {
+    const std::regex idRegex("\\\"ID\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"");
+    std::smatch match;
+    if (std::regex_search(InText, match, idRegex) && match.size() > 1) {
+        return match[1].str();
+    }
+    return std::nullopt;
+}
+
+auto ExtractRcloneRemoteType(const std::string& InText) -> std::string {
+    std::istringstream input(InText);
+    std::string line;
+    while (std::getline(input, line)) {
+        const auto equalsPos = line.find('=');
+        if (equalsPos == std::string::npos) {
+            continue;
+        }
+        const std::string key = ToLowerExportUpload(TrimExport(line.substr(0, equalsPos)));
+        if (key == "type") {
+            return TrimExport(line.substr(equalsPos + 1));
+        }
+    }
+    return {};
+}
+
+auto FindNewestExportManifest(const std::filesystem::path& InRoot) -> std::filesystem::path {
+    const auto tmpRoot = InRoot / ".kano" / "tmp";
+    std::error_code ec;
+    if (!std::filesystem::exists(tmpRoot, ec)) {
+        return {};
+    }
+    std::filesystem::path newest;
+    std::filesystem::file_time_type newestTime{};
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(tmpRoot, std::filesystem::directory_options::skip_permission_denied, ec)) {
+        if (ec) {
+            break;
+        }
+        if (!entry.is_regular_file(ec)) {
+            continue;
+        }
+        const auto path = entry.path();
+        if (!EndsWithCaseInsensitive(path.filename().generic_string(), ".export-manifest.json")) {
+            continue;
+        }
+        const auto modified = std::filesystem::last_write_time(path, ec);
+        if (ec) {
+            continue;
+        }
+        if (newest.empty() || modified > newestTime) {
+            newest = path;
+            newestTime = modified;
+        }
+    }
+    return newest;
+}
+
+auto ReadTextFileForUpload(const std::filesystem::path& InPath) -> std::string {
+    std::ifstream in(InPath, std::ios::binary);
+    if (!in) {
+        return {};
+    }
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    return buffer.str();
+}
+
+auto ExtractJsonStringField(const std::string& InJson, const std::string& InField) -> std::string {
+    const std::regex fieldRegex("\\\"" + InField + "\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"");
+    std::smatch match;
+    if (std::regex_search(InJson, match, fieldRegex) && match.size() > 1) {
+        std::string value = match[1].str();
+        std::replace(value.begin(), value.end(), '\\', '/');
+        return value;
+    }
+    return {};
+}
+
+auto ResolveArchiveFromExportManifest(const std::filesystem::path& InManifestPath,
+                                      const std::filesystem::path& InCwd) -> std::filesystem::path {
+    const auto archiveText = ExtractJsonStringField(ReadTextFileForUpload(InManifestPath), "archiveFile");
+    if (archiveText.empty()) {
+        return {};
+    }
+    std::filesystem::path archivePath = archiveText;
+    if (archivePath.is_relative()) {
+        archivePath = (InManifestPath.parent_path() / archivePath).lexically_normal();
+        std::error_code ec;
+        if (!std::filesystem::exists(archivePath, ec)) {
+            archivePath = (InCwd / archiveText).lexically_normal();
+        }
+    }
+    return archivePath;
+}
+
+auto GuessManifestForArchive(const std::filesystem::path& InArchivePath,
+                             const std::filesystem::path& InCwd) -> std::filesystem::path {
+    const auto archiveBase = InArchivePath.filename().generic_string().substr(
+        0, InArchivePath.filename().generic_string().rfind('.'));
+    const std::vector<std::filesystem::path> candidates{
+        InArchivePath.parent_path() / (archiveBase + ".export-manifest.json"),
+        InArchivePath.parent_path() / "metadata" / ComputeManifestName(archiveBase),
+        InCwd / ".kano" / "tmp" / (archiveBase + ".export-manifest.json")
+    };
+    std::error_code ec;
+    for (const auto& candidate : candidates) {
+        if (std::filesystem::exists(candidate, ec) && std::filesystem::is_regular_file(candidate, ec)) {
+            return candidate;
+        }
+    }
+    return {};
+}
+
+auto ParseBoolConfigValue(const std::string& InValue) -> std::optional<bool> {
+    const auto lower = ToLowerExportUpload(TrimExport(InValue));
+    if (lower == "true" || lower == "1" || lower == "yes" || lower == "on") {
+        return true;
+    }
+    if (lower == "false" || lower == "0" || lower == "no" || lower == "off") {
+        return false;
+    }
+    return std::nullopt;
+}
+
+auto StripConfigQuotes(std::string InValue) -> std::string {
+    InValue = TrimExport(std::move(InValue));
+    if (InValue.size() >= 2 && ((InValue.front() == '"' && InValue.back() == '"') ||
+                                (InValue.front() == '\'' && InValue.back() == '\''))) {
+        return InValue.substr(1, InValue.size() - 2);
+    }
+    return InValue;
+}
+
+auto IsDirectUploadBackendName(const std::string& InTargetName) -> bool {
+    return InTargetName == "local-sync-folder" || InTargetName == "rclone" || InTargetName == "gdrive-api";
+}
+
+auto NormalizeUploadTargetType(std::string InValue) -> std::string {
+    InValue = ToLowerExportUpload(TrimExport(std::move(InValue)));
+    std::replace(InValue.begin(), InValue.end(), '_', '-');
+    if (InValue == "local-sync-folder" || InValue == "local-sync" || InValue == "local") {
+        return "local-sync-folder";
+    }
+    if (InValue == "rclone") {
+        return "rclone";
+    }
+    if (InValue == "gdrive-api" || InValue == "google-drive-api") {
+        return "gdrive-api";
+    }
+    return InValue;
+}
+
+auto UploadLayerHasAnyValue(const ExportUploadConfigLayer& InLayer) -> bool {
+    return InLayer.target.has_value() || InLayer.localSyncFolder.has_value() || InLayer.rcloneRemote.has_value() ||
+           InLayer.rcloneDestination.has_value() || InLayer.layout.has_value() || InLayer.copyManifest.has_value() ||
+           InLayer.copySha256.has_value() || InLayer.returnUrl.has_value() || InLayer.linkMode.has_value() ||
+           InLayer.backend.has_value() || InLayer.connectorHint.has_value() || InLayer.publicLink.has_value() ||
+           InLayer.yes.has_value();
+}
+
+auto HomeDirectoryForExportUpload() -> std::filesystem::path {
+#if defined(_WIN32)
+    if (const char* userProfile = std::getenv("USERPROFILE"); userProfile != nullptr && *userProfile != '\0') {
+        return std::filesystem::path(userProfile);
+    }
+    const char* homeDrive = std::getenv("HOMEDRIVE");
+    const char* homePath = std::getenv("HOMEPATH");
+    if (homeDrive != nullptr && homePath != nullptr && *homeDrive != '\0' && *homePath != '\0') {
+        return std::filesystem::path(std::string(homeDrive) + std::string(homePath));
+    }
+#endif
+    if (const char* home = std::getenv("HOME"); home != nullptr && *home != '\0') {
+        return std::filesystem::path(home);
+    }
+    return {};
+}
+
+auto UserKogConfigPathForExportUpload() -> std::filesystem::path {
+    const auto home = HomeDirectoryForExportUpload();
+    if (home.empty()) {
+        return {};
+    }
+    return home / ".kano" / "kog_config.toml";
+}
+
+auto RepoKogConfigPathForExportUpload(const std::filesystem::path& InCwd) -> std::filesystem::path {
+    return InCwd / ".kano" / "kog_config.toml";
+}
+
+auto ExpandLeadingHomeForExportUpload(std::string InValue) -> std::filesystem::path {
+    InValue = TrimExport(std::move(InValue));
+    if (InValue == "~" || InValue.rfind("~/", 0) == 0 || InValue.rfind("~\\", 0) == 0) {
+        const auto home = HomeDirectoryForExportUpload();
+        if (!home.empty()) {
+            if (InValue.size() == 1) {
+                return home;
+            }
+            return home / InValue.substr(2);
+        }
+    }
+    return std::filesystem::path(InValue);
+}
+
+auto StripInlineTomlComment(std::string InLine) -> std::string {
+    bool inSingle = false;
+    bool inDouble = false;
+    for (std::size_t i = 0; i < InLine.size(); ++i) {
+        const char ch = InLine[i];
+        if (ch == '"' && !inSingle) {
+            inDouble = !inDouble;
+            continue;
+        }
+        if (ch == '\'' && !inDouble) {
+            inSingle = !inSingle;
+            continue;
+        }
+        if (ch == '#' && !inSingle && !inDouble) {
+            return InLine.substr(0, i);
+        }
+    }
+    return InLine;
+}
+
+auto ApplyUploadTargetConfigField(ExportUploadConfigLayer& OutLayer,
+                                  const std::string& InKey,
+                                  const std::string& InValue) -> void {
+    const std::string key = TrimExport(InKey);
+    const std::string value = StripConfigQuotes(InValue);
+    if (key == "type" || key == "target") {
+        OutLayer.target = NormalizeUploadTargetType(value);
+    } else if (key == "path" || key == "localSyncFolder" || key == "local-sync-folder" || key == "local_sync_folder") {
+        OutLayer.localSyncFolder = ExpandLeadingHomeForExportUpload(value);
+    } else if (key == "remote" || key == "rcloneRemote" || key == "rclone-remote" || key == "rclone_remote") {
+        OutLayer.rcloneRemote = value;
+    } else if (key == "folder" || key == "destination" || key == "rcloneDestination" || key == "rclone-destination" || key == "rclone_destination") {
+        OutLayer.rcloneDestination = value;
+    } else if (key == "layout") {
+        OutLayer.layout = NormalizeUploadLayout(value);
+    } else if (key == "copy_manifest" || key == "copyManifest" || key == "copy-manifest") {
+        OutLayer.copyManifest = ParseBoolConfigValue(value);
+    } else if (key == "copy_sha256" || key == "copySha256" || key == "copy-sha256") {
+        OutLayer.copySha256 = ParseBoolConfigValue(value);
+    } else if (key == "return_url" || key == "returnUrl" || key == "return-url") {
+        OutLayer.returnUrl = ParseBoolConfigValue(value);
+    } else if (key == "link_mode" || key == "linkMode" || key == "link-mode") {
+        OutLayer.linkMode = ToLowerExportUpload(TrimExport(value));
+    } else if (key == "backend") {
+        OutLayer.backend = value;
+    } else if (key == "connector_hint" || key == "connectorHint" || key == "connector-hint") {
+        OutLayer.connectorHint = value;
+    } else if (key == "public_link" || key == "publicLink" || key == "public-link") {
+        OutLayer.publicLink = ParseBoolConfigValue(value);
+    } else if (key == "yes") {
+        OutLayer.yes = ParseBoolConfigValue(value);
+    }
+}
+
+auto ReadUploadDefaultTargetFromFile(const std::filesystem::path& InPath) -> std::optional<std::string> {
+    std::ifstream in(InPath, std::ios::binary);
+    if (!in) {
+        return std::nullopt;
+    }
+
+    bool inUploadSection = false;
+    std::string line;
+    while (std::getline(in, line)) {
+        line = TrimExport(StripInlineTomlComment(std::move(line)));
+        if (line.empty()) {
+            continue;
+        }
+        if (line.front() == '[' && line.back() == ']') {
+            inUploadSection = (line.substr(1, line.size() - 2) == "export.upload");
+            continue;
+        }
+        const auto equalsPos = line.find('=');
+        if (equalsPos == std::string::npos) {
+            continue;
+        }
+        const std::string key = TrimExport(line.substr(0, equalsPos));
+        if (key == "export.upload.default_target" || (inUploadSection && key == "default_target")) {
+            const std::string value = StripConfigQuotes(line.substr(equalsPos + 1));
+            if (!value.empty()) {
+                return value;
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+auto LoadUploadTargetLayerFromFile(const std::filesystem::path& InPath,
+                                   const std::string& InTargetName) -> ExportUploadConfigLayer {
+    ExportUploadConfigLayer layer;
+    std::ifstream in(InPath, std::ios::binary);
+    if (!in) {
+        return layer;
+    }
+
+    const std::string targetSection = "export.upload.targets." + InTargetName;
+    bool inTargetSection = false;
+    bool enabled = true;
+    std::string line;
+    while (std::getline(in, line)) {
+        line = TrimExport(StripInlineTomlComment(std::move(line)));
+        if (line.empty()) {
+            continue;
+        }
+        if (line.front() == '[' && line.back() == ']') {
+            inTargetSection = (line.substr(1, line.size() - 2) == targetSection);
+            continue;
+        }
+        if (!inTargetSection) {
+            continue;
+        }
+
+        const auto equalsPos = line.find('=');
+        if (equalsPos == std::string::npos) {
+            continue;
+        }
+        const std::string key = TrimExport(line.substr(0, equalsPos));
+        const std::string value = StripConfigQuotes(line.substr(equalsPos + 1));
+        const std::string dottedPrefix = targetSection + ".";
+        if (key == "enabled") {
+            enabled = ParseBoolConfigValue(value).value_or(enabled);
+        } else if (inTargetSection) {
+            ApplyUploadTargetConfigField(layer, key, value);
+        } else if (key.rfind(dottedPrefix, 0) == 0) {
+            const std::string fieldKey = key.substr(dottedPrefix.size());
+            if (fieldKey == "enabled") {
+                enabled = ParseBoolConfigValue(value).value_or(enabled);
+            } else {
+                ApplyUploadTargetConfigField(layer, fieldKey, value);
+            }
+        }
+    }
+    return enabled ? layer : ExportUploadConfigLayer{};
+}
+
+auto DirectBackendLayerFromTargetName(const std::string& InTargetName) -> ExportUploadConfigLayer {
+    ExportUploadConfigLayer layer;
+    if (IsDirectUploadBackendName(InTargetName)) {
+        layer.target = InTargetName;
+    }
+    return layer;
+}
+
+auto ResolveUploadTargetNameForCli(const std::filesystem::path& InUserConfigPath,
+                                   const std::filesystem::path& InRepoConfigPath,
+                                   const std::string& InCliTargetName) -> std::string {
+    const std::string cliTarget = TrimExport(InCliTargetName);
+    if (!cliTarget.empty()) {
+        return cliTarget;
+    }
+    const auto repoDefault = ReadUploadDefaultTargetFromFile(InRepoConfigPath);
+    if (repoDefault.has_value()) {
+        return *repoDefault;
+    }
+    const auto userDefault = ReadUploadDefaultTargetFromFile(InUserConfigPath);
+    if (userDefault.has_value()) {
+        return *userDefault;
+    }
+    return {};
+}
+
+auto ResolveUploadConfigForCli(const std::filesystem::path& InCwd,
+                                const std::string& InTargetName,
+                                const CLI::Option* InLayoutOpt,
+                                const std::string& InLayout,
+                                const CLI::Option* InCopyManifestOpt,
+                                bool InCopyManifest,
+                                const CLI::Option* InCopySha256Opt,
+                                bool InCopySha256,
+                                const CLI::Option* InNoReturnUrlOpt,
+                                bool InNoReturnUrl,
+                                const CLI::Option* InPublicLinkOpt,
+                                bool InPublicLink,
+                                const CLI::Option* InYesOpt,
+                                bool InYes) -> ExportUploadConfig {
+    ExportUploadConfigLayer userLayer;
+    ExportUploadConfigLayer repoLayer;
+    ExportUploadConfigLayer cliLayer;
+
+    const auto userConfigPath = UserKogConfigPathForExportUpload();
+    const auto repoConfigPath = RepoKogConfigPathForExportUpload(InCwd);
+    const std::string selectedTarget = ResolveUploadTargetNameForCli(userConfigPath, repoConfigPath, InTargetName);
+
+    if (!selectedTarget.empty()) {
+        if (IsDirectUploadBackendName(selectedTarget)) {
+            cliLayer = DirectBackendLayerFromTargetName(selectedTarget);
+        } else {
+            userLayer = LoadUploadTargetLayerFromFile(userConfigPath, selectedTarget);
+            repoLayer = LoadUploadTargetLayerFromFile(repoConfigPath, selectedTarget);
+            if (!UploadLayerHasAnyValue(userLayer) && !UploadLayerHasAnyValue(repoLayer)) {
+                cliLayer.target = selectedTarget;
+            }
+        }
+    }
+    if (InPublicLinkOpt != nullptr && InPublicLinkOpt->count() > 0) {
+        cliLayer.publicLink = InPublicLink;
+    }
+    if (InLayoutOpt != nullptr && InLayoutOpt->count() > 0) {
+        cliLayer.layout = NormalizeUploadLayout(InLayout);
+    }
+    if (InCopyManifestOpt != nullptr && InCopyManifestOpt->count() > 0) {
+        cliLayer.copyManifest = InCopyManifest;
+    }
+    if (InCopySha256Opt != nullptr && InCopySha256Opt->count() > 0) {
+        cliLayer.copySha256 = InCopySha256;
+    }
+    if (InNoReturnUrlOpt != nullptr && InNoReturnUrlOpt->count() > 0) {
+        cliLayer.returnUrl = !InNoReturnUrl;
+    }
+    if (InYesOpt != nullptr && InYesOpt->count() > 0) {
+        cliLayer.yes = InYes;
+    }
+    return ResolveExportUploadConfig(userLayer, repoLayer, cliLayer);
+}
+
+} // anonymous namespace
+
+auto ResolveExportUploadConfig(const ExportUploadConfigLayer& InUserConfig,
+                               const ExportUploadConfigLayer& InRepoConfig,
+                               const ExportUploadConfigLayer& InCliConfig) -> ExportUploadConfig {
+    ExportUploadConfig out;
+
+    auto applyLayer = [&](const ExportUploadConfigLayer& InLayer) {
+        if (InLayer.target.has_value()) {
+            out.target = *InLayer.target;
+        }
+        if (InLayer.localSyncFolder.has_value()) {
+            out.localSyncFolder = *InLayer.localSyncFolder;
+        }
+        if (InLayer.rcloneRemote.has_value()) {
+            out.rcloneRemote = *InLayer.rcloneRemote;
+        }
+        if (InLayer.rcloneDestination.has_value()) {
+            out.rcloneDestination = *InLayer.rcloneDestination;
+        }
+        if (InLayer.layout.has_value()) {
+            out.layout = NormalizeUploadLayout(*InLayer.layout);
+        }
+        if (InLayer.copyManifest.has_value()) {
+            out.copyManifest = *InLayer.copyManifest;
+        }
+        if (InLayer.copySha256.has_value()) {
+            out.copySha256 = *InLayer.copySha256;
+        }
+        if (InLayer.returnUrl.has_value()) {
+            out.returnUrl = *InLayer.returnUrl;
+        }
+        if (InLayer.linkMode.has_value()) {
+            out.linkMode = ToLowerExportUpload(TrimExport(*InLayer.linkMode));
+        }
+        if (InLayer.backend.has_value()) {
+            out.backend = *InLayer.backend;
+        }
+        if (InLayer.connectorHint.has_value()) {
+            out.connectorHint = *InLayer.connectorHint;
+        }
+    };
+
+    applyLayer(InUserConfig);
+    applyLayer(InRepoConfig);
+    applyLayer(InCliConfig);
+
+    out.publicLink = InCliConfig.publicLink.value_or(false);
+    out.yes = InCliConfig.yes.value_or(false);
+    if (out.publicLink) {
+        out.linkMode = "public-link";
+    } else if (out.linkMode == "public-link") {
+        out.linkMode = "private";
+    } else if (out.linkMode.empty()) {
+        out.linkMode = "private";
+    }
+
+    return out;
+}
+
+auto DoctorExportUploadWithExecutor(const ExportUploadConfig& InConfig,
+                                    const ShellExecutor& InExec) -> ExportUploadDoctorResult {
+    ExportUploadDoctorResult result;
+    result.status = "NOT_CONFIGURED";
+    result.backendLabel = "export upload";
+    result.guidance = "Configure export.upload.targets.<name> before running kog export upload.";
+
+    if (InConfig.target.empty()) {
+        return result;
+    }
+
+    if (InConfig.target == "gdrive-api") {
+        result.status = "FUTURE_BACKEND";
+        result.backendLabel = "Google Drive API (future backend)";
+        result.guidance = "Google Drive API upload is FUTURE_BACKEND guidance only in this release; doctor does not start OAuth, store tokens, or configure Google credentials. Use a local Google Drive sync folder or an existing rclone remote instead.";
+        return result;
+    }
+
+    if (InConfig.target == "local-sync-folder") {
+        result.backendLabel = "local-sync-folder";
+        std::error_code ec;
+        if (InConfig.localSyncFolder.empty() ||
+            !std::filesystem::exists(InConfig.localSyncFolder, ec) ||
+            !std::filesystem::is_directory(InConfig.localSyncFolder, ec)) {
+            result.status = "MISSING_PATH";
+            result.guidance = "Configure local-sync-folder as an existing sync root before running upload; kog creates only the safe relative layout below that root and cloud sync is handled externally.";
+            return result;
+        }
+        if (!IsSafeRelativeUploadLayout(NormalizeUploadLayout(InConfig.layout))) {
+            result.status = "INVALID_CONFIG";
+            result.guidance = "local-sync-folder layout must be a safe relative path without '..', drive names, or control characters.";
+            return result;
+        }
+        result.ok = true;
+        result.status = "OK";
+        result.guidance = "local-sync-folder root is present; upload copies into the configured layout and external Google Drive/Desktop sync handles cloud propagation.";
+        const auto targetPath = ResolveLocalUploadTargetPath(InConfig);
+        result.output = "local-sync-folder OK\nSync root: " + InConfig.localSyncFolder.generic_string() +
+            "\nLocal target path: " + targetPath.generic_string() +
+            "\ncopy_manifest: " + (InConfig.copyManifest ? std::string("true") : std::string("false")) +
+            "\ncopy_sha256: " + (InConfig.copySha256 ? std::string("true") : std::string("false"));
+        return result;
+    }
+
+    if (InConfig.target == "rclone") {
+        result.backendLabel = "rclone third-party backend";
+        result.thirdParty = true;
+        std::string configError;
+        if (!ValidateRcloneUploadConfig(InConfig, configError)) {
+            result.status = "INVALID_CONFIG";
+            result.guidance = configError;
+            return result;
+        }
+
+        const auto version = InExec("rclone", {"version"}, shell::ExecMode::Capture, std::nullopt);
+        if (version.exitCode != 0) {
+            result.status = "RCLONE_NOT_FOUND";
+            result.guidance = "install rclone and ensure it is on PATH before using the rclone export upload backend.";
+            result.output = RedactExportUploadText(version.stdoutStr + version.stderrStr);
+            return result;
+        }
+
+        const std::string remote = NormalizeRcloneRemote(InConfig.rcloneRemote);
+        const auto remotes = InExec("rclone", {"listremotes"}, shell::ExecMode::Capture, std::nullopt);
+        if (remotes.exitCode != 0 || remote.empty() || remotes.stdoutStr.find(remote + ":") == std::string::npos) {
+            result.status = "RCLONE_REMOTE_MISSING";
+            result.guidance = "Run rclone config to create the configured remote: " + remote;
+            result.output = RedactExportUploadText(remotes.stdoutStr + remotes.stderrStr);
+            return result;
+        }
+
+        std::string remoteType;
+        const auto remoteConfig = InExec("rclone", {"config", "show", remote + ":"}, shell::ExecMode::Capture, std::nullopt);
+        if (remoteConfig.exitCode == 0) {
+            remoteType = ExtractRcloneRemoteType(remoteConfig.stdoutStr);
+        }
+
+        result.ok = true;
+        result.status = "OK";
+        result.guidance = "rclone is installed and the configured remote exists. Uploads remain private/default; private Google Drive URLs are derived only when lsjson exposes a Drive file ID. Use --public-link --yes only when you explicitly accept permission mutation.";
+        result.output = "rclone version probe:\n" + RedactExportUploadText(version.stdoutStr + version.stderrStr) +
+            "Configured remote: " + remote + ":\n" +
+            "Remote type: " + (remoteType.empty() ? std::string("unknown") : remoteType) + "\n" +
+            "Destination: " + TrimSlashes(InConfig.rcloneDestination) + "\n" +
+            "Layout: " + NormalizeUploadLayout(InConfig.layout) + "\n" +
+            "URL support: private Drive URL only when rclone lsjson --stat -M returns an ID; otherwise URL_UNAVAILABLE.";
+        return result;
+    }
+
+    result.status = "NOT_CONFIGURED";
+    result.guidance = "Unsupported export upload target: " + InConfig.target;
+    return result;
+}
+
+auto UploadExportArtifactsWithExecutor(const ExportUploadRequest& InRequest,
+                                       const ShellExecutor& InExec) -> ExportUploadResult {
+    ExportUploadResult result;
+    result.visibility = "unknown-private";
+    result.permissionChanged = false;
+
+    std::error_code ec;
+    if (InRequest.archivePath.empty() ||
+        !std::filesystem::exists(InRequest.archivePath, ec) ||
+        !std::filesystem::is_regular_file(InRequest.archivePath, ec)) {
+        result.errorMessage = "source archive does not exist: " + InRequest.archivePath.generic_string();
+        return result;
+    }
+
+    const std::string archiveName = !InRequest.archiveName.empty()
+        ? InRequest.archiveName
+        : InRequest.archivePath.filename().generic_string();
+    const std::string sourceSha = ComputeFileSha256(InRequest.archivePath);
+    if (sourceSha.empty()) {
+        result.errorMessage = "failed to compute source archive sha256";
+        return result;
+    }
+    result.sourceArchive = InRequest.archivePath.generic_string();
+    result.sourceSha256 = sourceSha;
+    result.remoteArchiveName = archiveName;
+    result.backend = !InRequest.config.backend.empty() ? InRequest.config.backend : InRequest.config.target;
+    result.connectorHint = InRequest.config.connectorHint;
+
+    if (InRequest.config.target == "local-sync-folder") {
+        result.visibility = "private";
+        result.syncFolderPath = InRequest.config.localSyncFolder;
+        const auto syncRoot = InRequest.config.localSyncFolder;
+        if (syncRoot.empty()) {
+            result.errorMessage = "local-sync-folder target is not configured";
+            return result;
+        }
+        if (!IsSafeRelativeUploadLayout(NormalizeUploadLayout(InRequest.config.layout))) {
+            result.errorMessage = "local-sync-folder layout must be a safe relative path without '..', drive names, or control characters";
+            return result;
+        }
+        if (!std::filesystem::exists(syncRoot, ec) || !std::filesystem::is_directory(syncRoot, ec)) {
+            result.errorMessage = "local-sync-folder sync root path is missing: " + syncRoot.generic_string();
+            return result;
+        }
+        const auto target = ResolveLocalUploadTargetPath(InRequest.config);
+        result.localTargetPath = target;
+        std::filesystem::create_directories(target, ec);
+        if (ec) {
+            result.errorMessage = "failed to create local-sync-folder layout directory: " + ec.message();
+            return result;
+        }
+        if (!std::filesystem::is_directory(target, ec)) {
+            result.errorMessage = "local-sync-folder target is not a directory: " + target.generic_string();
+            return result;
+        }
+
+        result.copiedArchivePath = target / archiveName;
+        result.uploadManifestPath = target / (archiveName + ".upload-manifest.json");
+        if (InRequest.config.copyManifest && !InRequest.manifestPath.empty()) {
+            result.copiedManifestPath = target / InRequest.manifestPath.filename();
+        }
+        if (InRequest.config.copySha256) {
+            result.sha256SidecarPath = target / ComputeChecksumFilename(archiveName);
+        }
+
+        std::string copyError;
+        if (!CopyFileNoOverwrite(InRequest.archivePath, result.copiedArchivePath, copyError)) {
+            result.errorMessage = copyError;
+            return result;
+        }
+        if (InRequest.config.copyManifest && !InRequest.manifestPath.empty() && std::filesystem::exists(InRequest.manifestPath, ec)) {
+            if (!CopyFileNoOverwrite(InRequest.manifestPath, result.copiedManifestPath, copyError)) {
+                result.errorMessage = copyError;
+                return result;
+            }
+        }
+
+        if (InRequest.config.copySha256) {
+            const std::string sidecarSha = WriteUploadSha256Sidecar(InRequest.archivePath, result.sha256SidecarPath);
+            if (sidecarSha.empty()) {
+                result.errorMessage = "failed to write archive sha256 sidecar";
+                return result;
+            }
+        }
+        if (!VerifyCopiedFile(InRequest.archivePath, result.copiedArchivePath, sourceSha, result.errorMessage)) {
+            return result;
+        }
+
+        result.urlStatus = InRequest.config.returnUrl ? "URL_UNAVAILABLE" : "";
+        if (!WriteUploadManifestJson(InRequest, result, result.uploadManifestPath, sourceSha)) {
+            result.errorMessage = "failed to write upload manifest";
+            return result;
+        }
+        result.success = true;
+        result.output = "Copied export archive to local-sync-folder layout. Cloud sync is handled externally and is not claimed complete by kog.";
+        return result;
+    }
+
+    if (InRequest.config.target == "rclone") {
+        std::string configError;
+        if (!ValidateRcloneUploadConfig(InRequest.config, configError)) {
+            result.errorMessage = configError;
+            return result;
+        }
+
+        result.visibility = "private";
+        result.remotePath = BuildRcloneObjectPath(InRequest.config, archiveName);
+        result.uploadManifestPath = InRequest.archivePath.parent_path() / (archiveName + ".upload-manifest.json");
+        if (InRequest.config.copySha256) {
+            result.sha256SidecarPath = InRequest.archivePath.parent_path() / ComputeChecksumFilename(archiveName);
+            const std::string sidecarSha = WriteUploadSha256Sidecar(InRequest.archivePath, result.sha256SidecarPath);
+            if (sidecarSha.empty()) {
+                result.errorMessage = "failed to write archive sha256 sidecar";
+                return result;
+            }
+        }
+
+        const auto copyArchive = InExec(
+            "rclone",
+            {"copyto", InRequest.archivePath.generic_string(), result.remotePath},
+            shell::ExecMode::Capture,
+            std::nullopt);
+        if (copyArchive.exitCode != 0) {
+            result.errorMessage = "rclone copyto failed: " + RedactExportUploadText(copyArchive.stderrStr);
+            return result;
+        }
+
+        if (InRequest.config.copySha256) {
+            const auto sidecarRemotePath = BuildRcloneObjectPath(InRequest.config, ComputeChecksumFilename(archiveName));
+            const auto copySidecar = InExec(
+                "rclone",
+                {"copyto", result.sha256SidecarPath.generic_string(), sidecarRemotePath},
+                shell::ExecMode::Capture,
+                std::nullopt);
+            if (copySidecar.exitCode != 0) {
+                result.errorMessage = "rclone sha256 sidecar copy failed: " + RedactExportUploadText(copySidecar.stderrStr);
+                return result;
+            }
+        }
+
+        if (InRequest.config.copyManifest && !InRequest.manifestPath.empty() && std::filesystem::exists(InRequest.manifestPath, ec)) {
+            result.copiedManifestPath = InRequest.manifestPath;
+            const auto manifestRemotePath = BuildRcloneObjectPath(InRequest.config, InRequest.manifestPath.filename().generic_string());
+            const auto copyOriginalManifest = InExec(
+                "rclone",
+                {"copyto", InRequest.manifestPath.generic_string(), manifestRemotePath},
+                shell::ExecMode::Capture,
+                std::nullopt);
+            if (copyOriginalManifest.exitCode != 0) {
+                result.errorMessage = "rclone export manifest copy failed: " + RedactExportUploadText(copyOriginalManifest.stderrStr);
+                return result;
+            }
+        }
+
+        if (InRequest.config.returnUrl) {
+            const auto metadata = InExec(
+                "rclone",
+                {"lsjson", "--stat", "-M", result.remotePath},
+                shell::ExecMode::Capture,
+                std::nullopt);
+            if (metadata.exitCode != 0) {
+                result.errorMessage = "rclone lsjson verification failed: " + RedactExportUploadText(metadata.stderrStr);
+                return result;
+            }
+
+            result.fileId = ExtractDriveIdFromLsJson(metadata.stdoutStr);
+            if (result.fileId.has_value()) {
+                result.webUrl = "https://drive.google.com/file/d/" + *result.fileId + "/view";
+            } else {
+                result.urlStatus = "URL_UNAVAILABLE";
+            }
+        }
+
+        if (InRequest.config.publicLink && InRequest.config.yes) {
+            result.output += "Warning: public link requested; invoking rclone link may mutate sharing permissions.\n";
+            const auto link = InExec("rclone", {"link", result.remotePath}, shell::ExecMode::Capture, std::nullopt);
+            const auto linkUrl = TrimExport(link.stdoutStr);
+            if (link.exitCode != 0) {
+                result.errorMessage = "rclone public link failed: " + RedactExportUploadText(link.stderrStr);
+                return result;
+            }
+            if (linkUrl.empty()) {
+                result.errorMessage = "rclone public link did not return a URL";
+                return result;
+            }
+            result.visibility = "public-link";
+            result.permissionChanged = true;
+            result.webUrl = linkUrl;
+            result.urlStatus.clear();
+        } else if (InRequest.config.publicLink && !InRequest.config.yes) {
+            result.output += "Warning: --public-link was requested without --yes; keeping upload private and not calling rclone link.\n";
+        }
+
+        if (!WriteUploadManifestJson(InRequest, result, result.uploadManifestPath, sourceSha)) {
+            result.errorMessage = "failed to write upload manifest";
+            return result;
+        }
+        const auto manifestRemotePath = BuildRcloneObjectPath(InRequest.config, archiveName + ".upload-manifest.json");
+        const auto copyUploadManifest = InExec(
+            "rclone",
+            {"copyto", result.uploadManifestPath.generic_string(), manifestRemotePath},
+            shell::ExecMode::Capture,
+            std::nullopt);
+        if (copyUploadManifest.exitCode != 0) {
+            result.errorMessage = "rclone upload manifest copy failed: " + RedactExportUploadText(copyUploadManifest.stderrStr);
+            return result;
+        }
+
+        result.success = true;
+        if (result.output.empty()) {
+            result.output = "Uploaded export archive with rclone copyto.";
+        }
+        result.output = RedactExportUploadText(result.output);
+        return result;
+    }
+
+    if (InRequest.config.target == "gdrive-api") {
+        result.errorMessage = "Google Drive API backend is not configured; OAuth is intentionally not implemented.";
+        return result;
+    }
+
+    result.errorMessage = "export upload target is not configured";
+    return result;
+}
+
+auto RedactExportUploadText(const std::string& InText) -> std::string {
+    std::string out = InText;
+    out = std::regex_replace(out, std::regex(R"((https?://)[^\s/@:]+:[^\s/@]+@)", std::regex_constants::icase), "$1<redacted>@");
+    out = std::regex_replace(
+        out,
+        std::regex(R"(((?:--[^\s]*(?:token|password|passwd|secret|api[-_]?key|authorization|bearer)[^\s]*)\s+)([^\s]+))", std::regex_constants::icase),
+        "$1<redacted>");
+    out = std::regex_replace(
+        out,
+        std::regex(R"(((?:[A-Za-z0-9_.-]*(?:token|password|passwd|secret|api[-_]?key|authorization|bearer)[A-Za-z0-9_.-]*)\s*=\s*)([^\s]+))", std::regex_constants::icase),
+        "$1<redacted>");
+    out = std::regex_replace(out, std::regex(R"((Bearer\s+)([^\s]+))", std::regex_constants::icase), "$1<redacted>");
+    return out;
 }
 
 auto RelativeDisplayPathForExport(const std::filesystem::path& InRoot, const std::filesystem::path& InPath) -> std::filesystem::path {
@@ -2412,7 +3649,7 @@ void RegisterExport(CLI::App& InApp) {
     auto* subtree = new std::string{};
     auto* exportName = new std::string{};
     auto* keepSubtreePath = new bool{false};
-    auto* splitSubrepoDepth = new int{1};
+    auto* splitSubrepoDepth = new int{0};
     auto* includeSubrepos = new bool{false};
     auto* allowMissingSubrepos = new bool{false};
 
@@ -2459,7 +3696,191 @@ void RegisterExport(CLI::App& InApp) {
     cmd->add_flag("--allow-missing-subrepos", *allowMissingSubrepos,
         "When used with --include-subrepos, continue export even if some subrepos are unavailable");
 
+    auto* upload = cmd->add_subcommand("upload",
+        "Upload or copy an existing kog export archive to a configured target");
+    auto* uploadLast = new bool{false};
+    auto* uploadArchive = new std::string{};
+    auto* uploadTarget = new std::string{};
+    auto* uploadLayout = new std::string{};
+    auto* uploadCopyManifest = new bool{false};
+    auto* uploadCopySha256 = new bool{false};
+    auto* uploadNoReturnUrl = new bool{false};
+    auto* uploadPublicLink = new bool{false};
+    auto* uploadYes = new bool{false};
+    auto* uploadLastOpt = upload->add_flag("--last", *uploadLast,
+        "Upload the newest canonical .kano/tmp/*.export-manifest.json archive");
+    auto* uploadArchiveOpt = upload->add_option("--archive", *uploadArchive,
+        "Path to an existing export archive to upload");
+    upload->add_option("--target", *uploadTarget,
+        "Upload target name or backend: local-sync-folder|rclone|gdrive-api");
+    auto* uploadLayoutOpt = upload->add_option("--layout", *uploadLayout,
+        "Safe relative layout under the sync root or rclone destination (for example ChatGPT_Export/kog)");
+    auto* uploadCopyManifestOpt = upload->add_flag("--copy-manifest", *uploadCopyManifest,
+        "Copy the original export manifest alongside the uploaded archive");
+    auto* uploadCopySha256Opt = upload->add_flag("--copy-sha256", *uploadCopySha256,
+        "Write/copy an archive .sha256 sidecar alongside the uploaded archive");
+    auto* uploadNoReturnUrlOpt = upload->add_flag("--no-return-url", *uploadNoReturnUrl,
+        "Do not attempt to resolve a cloud URL; upload manifest records no URL state");
+    auto* uploadPublicLinkOpt = upload->add_flag("--public-link", *uploadPublicLink,
+        "Explicitly request a public link when supported; requires --yes");
+    auto* uploadYesOpt = upload->add_flag("--yes", *uploadYes,
+        "Confirm permission-mutating upload actions such as public-link creation");
+
+    auto* uploadDoctor = upload->add_subcommand("doctor",
+        "Diagnose export upload target setup without uploading or mutating permissions");
+    auto* doctorTarget = new std::string{};
+    auto* doctorLayout = new std::string{};
+    auto* doctorCopyManifest = new bool{false};
+    auto* doctorCopySha256 = new bool{false};
+    auto* doctorNoReturnUrl = new bool{false};
+    auto* doctorPublicLink = new bool{false};
+    auto* doctorYes = new bool{false};
+    uploadDoctor->add_option("--target", *doctorTarget,
+        "Upload target name or backend: local-sync-folder|rclone|gdrive-api");
+    auto* doctorLayoutOpt = uploadDoctor->add_option("--layout", *doctorLayout,
+        "Preview a safe relative upload layout under the configured target");
+    auto* doctorCopyManifestOpt = uploadDoctor->add_flag("--copy-manifest", *doctorCopyManifest,
+        "Preview original export manifest copy behavior");
+    auto* doctorCopySha256Opt = uploadDoctor->add_flag("--copy-sha256", *doctorCopySha256,
+        "Preview sha256 sidecar copy behavior");
+    auto* doctorNoReturnUrlOpt = uploadDoctor->add_flag("--no-return-url", *doctorNoReturnUrl,
+        "Preview upload behavior without URL lookup");
+    auto* doctorPublicLinkOpt = uploadDoctor->add_flag("--public-link", *doctorPublicLink,
+        "Include public-link opt-in in the effective config preview");
+    auto* doctorYesOpt = uploadDoctor->add_flag("--yes", *doctorYes,
+        "Include yes confirmation in the effective config preview");
+
+    ShellExecutor realUploadExec = [](const std::string& cmdName,
+                                      const std::vector<std::string>& args,
+                                      shell::ExecMode mode,
+                                      std::optional<std::filesystem::path> workDir) {
+        return shell::ExecuteCommand(cmdName, args, mode, workDir);
+    };
+
+    uploadDoctor->callback([=]() {
+        const auto cwd = std::filesystem::current_path().lexically_normal();
+        const auto config = ResolveUploadConfigForCli(
+            cwd,
+            *doctorTarget,
+            doctorLayoutOpt,
+            *doctorLayout,
+            doctorCopyManifestOpt,
+            *doctorCopyManifest,
+            doctorCopySha256Opt,
+            *doctorCopySha256,
+            doctorNoReturnUrlOpt,
+            *doctorNoReturnUrl,
+            doctorPublicLinkOpt,
+            *doctorPublicLink,
+            doctorYesOpt,
+            *doctorYes);
+        const auto lastManifest = FindNewestExportManifest(cwd);
+        std::cout << "Effective upload target: " << (config.target.empty() ? std::string("<not configured>") : config.target) << "\n";
+        if (!lastManifest.empty()) {
+            std::cout << "Last export manifest: " << lastManifest.generic_string() << "\n";
+        } else {
+            std::cout << "Last export manifest: <none under .kano/tmp>\n";
+        }
+        const auto result = DoctorExportUploadWithExecutor(config, realUploadExec);
+        std::cout << "export upload doctor: " << result.status << "\n";
+        if (!result.backendLabel.empty()) {
+            std::cout << "Backend: " << result.backendLabel << "\n";
+        }
+        if (!result.guidance.empty()) {
+            std::cout << result.guidance << "\n";
+        }
+        if (!result.output.empty()) {
+            std::cout << RedactExportUploadText(result.output) << "\n";
+        }
+        if (!result.ok) {
+            throw CLI::RuntimeError(1);
+        }
+    });
+
+    upload->callback([=]() {
+        if (uploadDoctor->parsed()) {
+            return;
+        }
+
+        const auto cwd = std::filesystem::current_path().lexically_normal();
+        const auto config = ResolveUploadConfigForCli(
+            cwd,
+            *uploadTarget,
+            uploadLayoutOpt,
+            *uploadLayout,
+            uploadCopyManifestOpt,
+            *uploadCopyManifest,
+            uploadCopySha256Opt,
+            *uploadCopySha256,
+            uploadNoReturnUrlOpt,
+            *uploadNoReturnUrl,
+            uploadPublicLinkOpt,
+            *uploadPublicLink,
+            uploadYesOpt,
+            *uploadYes);
+
+        std::filesystem::path manifestPath;
+        std::filesystem::path archivePath;
+        if (uploadLastOpt->count() > 0 && uploadArchiveOpt->count() > 0) {
+            std::cerr << "kog export upload: --last cannot be combined with --archive\n";
+            throw CLI::RuntimeError(1);
+        }
+        if (uploadLastOpt->count() > 0) {
+            manifestPath = FindNewestExportManifest(cwd);
+            if (manifestPath.empty()) {
+                std::cerr << "kog export upload: no .kano/tmp/*.export-manifest.json file found for --last\n";
+                throw CLI::RuntimeError(1);
+            }
+            archivePath = ResolveArchiveFromExportManifest(manifestPath, cwd);
+            if (!archivePath.empty() && !IsPathWithinDirectory(archivePath, cwd / ".kano" / "tmp")) {
+                std::cerr << "kog export upload: --last archive path must stay under .kano/tmp\n";
+                throw CLI::RuntimeError(1);
+            }
+        } else if (uploadArchiveOpt->count() > 0) {
+            archivePath = std::filesystem::path(*uploadArchive);
+            if (archivePath.is_relative()) {
+                archivePath = (cwd / archivePath).lexically_normal();
+            }
+            manifestPath = GuessManifestForArchive(archivePath, cwd);
+        } else {
+            std::cerr << "kog export upload: provide --last or --archive <path>\n";
+            throw CLI::RuntimeError(1);
+        }
+
+        std::error_code ec;
+        if (archivePath.empty() || !std::filesystem::exists(archivePath, ec) || !std::filesystem::is_regular_file(archivePath, ec)) {
+            std::cerr << "kog export upload: archive not found: " << archivePath.generic_string() << "\n";
+            throw CLI::RuntimeError(1);
+        }
+
+        ExportUploadRequest request;
+        request.archivePath = archivePath;
+        request.manifestPath = manifestPath;
+        request.archiveName = archivePath.filename().generic_string();
+        request.config = config;
+
+        const auto result = UploadExportArtifactsWithExecutor(request, realUploadExec);
+        if (!result.output.empty()) {
+            std::cout << RedactExportUploadText(result.output) << "\n";
+        }
+        if (result.success) {
+            std::cout << "Upload manifest: " << result.uploadManifestPath.generic_string() << "\n";
+            if (result.webUrl.has_value()) {
+                std::cout << "URL: " << *result.webUrl << "\n";
+            } else if (!result.urlStatus.empty()) {
+                std::cout << "URL status: " << result.urlStatus << "\n";
+            }
+            return;
+        }
+
+        std::cerr << "kog export upload: " << RedactExportUploadText(result.errorMessage) << "\n";
+        throw CLI::RuntimeError(1);
+    });
+
     cmd->callback([=]() {
+        if (upload->parsed()) {
+            return;
+        }
         ExportOptions opts;
         opts.outputDir = *outputDir;
         opts.format = *format;

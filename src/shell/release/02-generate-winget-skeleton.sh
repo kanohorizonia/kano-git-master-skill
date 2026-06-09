@@ -12,7 +12,7 @@ TAG_NAME="${2:-${KANO_RELEASE_TAG:-v${VERSION_TEXT}}}"
 REPO_SLUG="${3:-${KANO_GITHUB_REPOSITORY:-kanohorizonia/kano-git-master-skill}}"
 ARTIFACT_DIR="${4:-${KANO_INSTALLER_OUTPUT_ROOT:-artifacts/installers}}"
 OUTPUT_DIR="${5:-${KANO_PACKAGE_MANAGER_RECIPE_ROOT:-Release/package-managers}/winget}"
-PACKAGE_ID="${KANO_WINGET_PACKAGE_ID:-Kanohorizonia.KanoGitMasterSkill}"
+PACKAGE_ID="${KANO_WINGET_PACKAGE_ID:-KanoHorizonia.KanoGit}"
 ASSET_BASE_URL="${KANO_RELEASE_ASSET_BASE_URL:-https://github.com/${REPO_SLUG}/releases/download/${TAG_NAME}}"
 
 find_msi() {
@@ -71,12 +71,8 @@ mkdir -p "$OUTPUT_DIR"
 cat > "$OUTPUT_DIR/${PACKAGE_ID}.yaml" <<EOF
 PackageIdentifier: ${PACKAGE_ID}
 PackageVersion: ${VERSION_TEXT}
-PackageLocale: en-US
-Publisher: Kanohorizonia
-PackageName: kano-git-master-skill
-ShortDescription: Kano Git Master Skill
-License: Proprietary
-ManifestType: defaultLocale
+DefaultLocale: en-US
+ManifestType: version
 ManifestVersion: 1.6.0
 EOF
 
@@ -92,10 +88,16 @@ ManifestType: installer
 ManifestVersion: 1.6.0
 EOF
 
-cat > "$OUTPUT_DIR/${PACKAGE_ID}.version.yaml" <<EOF
+cat > "$OUTPUT_DIR/${PACKAGE_ID}.locale.en-US.yaml" <<EOF
 PackageIdentifier: ${PACKAGE_ID}
 PackageVersion: ${VERSION_TEXT}
-ManifestType: version
+PackageLocale: en-US
+Publisher: Kano Horizonia
+PackageName: Kano Git
+Moniker: kog
+ShortDescription: Kano Git automation toolkit with the KOG CLI and released skill payload.
+License: Proprietary
+ManifestType: defaultLocale
 ManifestVersion: 1.6.0
 EOF
 

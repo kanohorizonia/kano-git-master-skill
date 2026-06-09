@@ -86,6 +86,9 @@ for it.
 ./scripts/kog export --single
 ./scripts/kog export --subtree "E:/_gamedev/KanoTamaoProject/UnrealEngine/Engine/Source/Programs/UnrealGameSync" --name UnrealGameSync --source head
 ./scripts/kog export --subtree Engine/Source/Programs/UnrealGameSync --source working-tree
+./scripts/kog export upload doctor
+./scripts/kog export upload --last
+./scripts/kog export upload --last --target drive_sync --layout Kano/kog --copy-manifest --copy-sha256
 ```
 
 Subtree standalone export notes:
@@ -93,6 +96,39 @@ Subtree standalone export notes:
 - Default behavior strips parent directories so archive root starts at subtree basename.
 - Use `--keep-subtree-path` to preserve full repo-relative path in archive entries.
 - `--subtree` rejects `--single`, `--include-submodule-stubs`, and `--validate-release-archive`.
+
+Export upload notes:
+- `kog export upload` uploads or copies an existing export archive after `kog export`.
+- Configure targets in `~/.kano/kog_config.toml` and repo `.kano/kog_config.toml`; precedence is user < repo < CLI.
+- Supported live backends are `local-sync-folder` and `rclone`; `gdrive-api` is guidance-only and does not start OAuth.
+- `local-sync-folder` points at an existing sync root such as `E:/_gamedev/ChatGPT_Export`; `layout` is a safe relative path that KOG may create under that root.
+- The archive is copied always. The original export manifest and `.sha256` sidecar are copied only when `copy_manifest` / `copy_sha256` are enabled by config or CLI flags.
+- `rclone` uses an existing configured remote and never starts Google OAuth from KOG. Private Google Drive URLs are built only from a Drive file ID returned by `rclone lsjson --stat -M`; otherwise the upload manifest records `URL_UNAVAILABLE`.
+- Uploads preserve private/default backend visibility. Public links require explicit CLI confirmation with `--public-link --yes` because `rclone link` may create or retrieve public sharing permissions.
+
+Example upload config:
+
+```toml
+[export.upload]
+default_target = "drive_sync"
+
+[export.upload.targets.drive_sync]
+type = "local-sync-folder"
+path = "E:/_gamedev/ChatGPT_Export"
+layout = "Kano/kog"
+copy_manifest = true
+copy_sha256 = true
+return_url = false
+
+[export.upload.targets.gdrive]
+type = "rclone"
+remote = "kog-drive"
+destination = "exports/kog"
+layout = "ChatGPT_Export"
+copy_manifest = true
+copy_sha256 = true
+return_url = true
+```
 
 ## Plan-Backed Commit Flow
 

@@ -49,5 +49,7 @@ void RegisterIgnore(CLI::App& InApp);
 void RegisterCherryPick(CLI::App& InApp);
 void RegisterStash(CLI::App& InApp);
 void RegisterRepoHygiene(CLI::App& InApp);
+void RegisterRelease(CLI::App& InApp);
+void RegisterSkill(CLI::App& InApp);
 
 } // namespace kano::git::commands

@@ -19,6 +19,9 @@ target_sources(kano_git_cmd_product
     private/version_cmd.cpp
     private/discover_cmd.cpp
     private/repo_hygiene_cmd.cpp
+    private/release_cmd.cpp
+    private/release_helpers.cpp
+    private/skill_cmd.cpp
 )
 
 kog_configure_kano_module(kano_git_cmd_product)
@@ -28,6 +31,15 @@ target_include_directories(kano_git_cmd_product
     ${KANO_GIT_COMMAND_ROOT}/product/private
 )
 
-target_link_libraries(kano_git_cmd_product PUBLIC kano::git_shell kano::git_workspace kano::git_command_runtime kano::git_build_info)
+target_link_libraries(kano_git_cmd_product
+  PUBLIC
+    kano::git_shell
+    kano::git_workspace
+    kano::git_command_runtime
+    kano::git_build_info
+  PRIVATE
+    nlohmann_json::nlohmann_json
+    tomlplusplus::tomlplusplus
+)
 
 add_library(kano::git_cmd_product ALIAS kano_git_cmd_product)

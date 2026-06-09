@@ -4,7 +4,7 @@ set -euo pipefail
 SOURCE_DIR="${1:-${KANO_PACKAGE_MANAGER_RECIPE_ROOT:-Release/package-managers}/winget}"
 REPO_URL="${KANO_WINGET_MANIFEST_REPO_URL:-}"
 TARGET_BRANCH="${KANO_WINGET_TARGET_BRANCH:-main}"
-PACKAGE_ID="${KANO_WINGET_PACKAGE_ID:-Kanohorizonia.KanoGitMasterSkill}"
+PACKAGE_ID="${KANO_WINGET_PACKAGE_ID:-KanoHorizonia.KanoGit}"
 VERSION_TEXT="$(tr -d '[:space:]' < VERSION)"
 
 if [ -z "$REPO_URL" ]; then
@@ -44,6 +44,6 @@ fi
 
 git -c user.name="${KANO_PACKAGE_MANAGER_GIT_USER_NAME:-Kano Jenkins}" \
     -c user.email="${KANO_PACKAGE_MANAGER_GIT_USER_EMAIL:-jenkins@kanohorizonia.local}" \
-    commit -m "Update ${PACKAGE_ID} ${VERSION_TEXT}" >/dev/null
+    commit -m "New version: ${PACKAGE_ID} version ${VERSION_TEXT}" >/dev/null
 git push origin "HEAD:${TARGET_BRANCH}" >/dev/null
 echo "Published winget manifests to ${TARGET_BRANCH}: ${package_path}"

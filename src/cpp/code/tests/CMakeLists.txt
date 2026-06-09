@@ -22,6 +22,7 @@ add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../systems/kano_git_test_core
                  ${CMAKE_BINARY_DIR}/code/systems/kano_git_test_core)
 add_subdirectory(kano_git_cli_tests)
 add_subdirectory(kano_git_export_tests)
+add_subdirectory(kano_git_release_tests)
 add_subdirectory(kano_git_tui_tests)
 add_subdirectory(kano_git_commit_plan_tests)
 add_subdirectory(e2e)

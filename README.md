@@ -59,6 +59,9 @@ Common commands:
 ./scripts/kog export --single --include-subrepos
 ./scripts/kog export --subtree "E:/_gamedev/KanoTamaoProject/UnrealEngine/Engine/Source/Programs/UnrealGameSync" --name UnrealGameSync --source head
 ./scripts/kog export --subtree Engine/Source/Programs/UnrealGameSync --source working-tree
+./scripts/kog export upload doctor
+./scripts/kog export upload --last
+./scripts/kog export upload --last --target drive_sync --layout Kano/kog --copy-manifest --copy-sha256
 ```
 
 Unknown top-level commands now print git-style guidance and suggest the most similar public command names.
@@ -69,6 +72,38 @@ Subtree standalone export notes:
 - Use `--keep-subtree-path` to keep full repo-relative path in archive.
 - `--subtree` cannot be combined with `--single` or `--include-submodule-stubs`.
 - `--subtree` skips release archive smoke validation; `--validate-release-archive` is rejected.
+
+Export upload notes:
+- `kog export upload` uploads or copies an existing export archive after `kog export`.
+- Configure targets in `~/.kano/kog_config.toml` and repo `.kano/kog_config.toml`; repo config overrides user config, and CLI flags override both.
+- Supported live backends are `local-sync-folder` and `rclone`; `gdrive-api` is guidance-only in this release.
+- For `local-sync-folder`, configure an existing sync root such as `E:/_gamedev/ChatGPT_Export`; `layout` is a safe relative subfolder created below that root. The archive is copied always, while the original export manifest and `.sha256` sidecar require `copy_manifest = true` / `copy_sha256 = true` or matching CLI flags.
+- For `rclone`, use an existing configured remote such as `remote = "kog-drive"` and `destination = "exports/kog"`; no Google OAuth backend is started or configured by KOG.
+- Uploads preserve private/default backend visibility. Private Google Drive URLs are returned only when rclone exposes a Drive file ID; local sync never invents a cloud URL. Public links require explicit CLI confirmation with `--public-link --yes` because `rclone link` may mutate sharing permissions.
+
+Example upload config:
+
+```toml
+[export.upload]
+default_target = "drive_sync"
+
+[export.upload.targets.drive_sync]
+type = "local-sync-folder"
+path = "E:/_gamedev/ChatGPT_Export"
+layout = "Kano/kog"
+copy_manifest = true
+copy_sha256 = true
+return_url = false
+
+[export.upload.targets.gdrive]
+type = "rclone"
+remote = "kog-drive"
+destination = "exports/kog"
+layout = "ChatGPT_Export"
+copy_manifest = true
+copy_sha256 = true
+return_url = true
+```
 
 ## Wrapper Entry Points
 
