@@ -28,7 +28,7 @@ if [ -z "$PYTHON_BIN" ]; then
 fi
 
 find_msi() {
-  "$PYTHON_BIN" - "$ARTIFACT_DIR" artifacts/installers src/wix/out <<'PY'
+  "$PYTHON_BIN" - "$ARTIFACT_DIR" artifacts artifacts/installers src/wix/out <<'PY'
 from pathlib import Path
 import sys
 
@@ -55,7 +55,7 @@ PY
 
 MSI_PATH="$(find_msi)"
 if [ -z "$MSI_PATH" ]; then
-  echo "ERROR: required MSI artifact not found under $ARTIFACT_DIR, artifacts/installers, or src/wix/out" >&2
+  echo "ERROR: required MSI artifact not found under $ARTIFACT_DIR, artifacts, artifacts/installers, or src/wix/out" >&2
   exit 1
 fi
 

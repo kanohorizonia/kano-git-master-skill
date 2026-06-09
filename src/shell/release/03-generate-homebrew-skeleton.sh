@@ -38,17 +38,25 @@ PY
 }
 
 find_first() {
-  "$PYTHON_BIN" - "$ARTIFACT_DIR" "$@" <<'PY'
+  "$PYTHON_BIN" - "$ARTIFACT_DIR" artifacts artifacts/packages "$@" <<'PY'
 from pathlib import Path
 import sys
 
-root = Path(sys.argv[1])
-if root.is_dir():
-    for pattern in sys.argv[2:]:
+roots = [Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])]
+patterns = sys.argv[4:]
+seen = set()
+for root in roots:
+    if not root.is_dir():
+        continue
+    key = root.resolve()
+    if key in seen:
+        continue
+    seen.add(key)
+    for pattern in patterns:
         matches = sorted(path for path in root.rglob(pattern) if path.is_file())
         if matches:
             print(matches[0].as_posix())
-            break
+            raise SystemExit(0)
 PY
 }
 
@@ -123,7 +131,7 @@ if [ -n "$ARM64_PATH" ] && [ -n "$X64_PATH" ]; then
 elif [ -n "$GENERIC_PATH" ]; then
   write_url_block "$GENERIC_PATH"
 else
-  echo "ERROR: required macOS release archive not found under $ARTIFACT_DIR" >&2
+  echo "ERROR: required macOS release archive not found under $ARTIFACT_DIR, artifacts, or artifacts/packages" >&2
   exit 1
 fi
 write_install_block
