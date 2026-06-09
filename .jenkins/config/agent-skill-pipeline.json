@@ -126,7 +126,7 @@
   "wingetForkRepo": "https://github.com/kanohorizonia/winget-pkgs",
   "wingetUpstreamRepo": "https://github.com/microsoft/winget-pkgs",
   "wingetPrBranch": "",
-  "wingetGenerateCommand": "bash -lc 'set -euo pipefail; installer=\"$(find artifacts -maxdepth 1 -type f -name \"*.msi\" | sort | head -n 1)\"; if [ -z \"$installer\" ]; then echo \"ERROR: winget MSI installer not found in artifacts\" >&2; exit 114; fi; sha=\"$(sha256sum \"$installer\" | cut -d \" \" -f 1)\"; ./scripts/kog release winget generate --repo . --no-dry-run --installer \"$installer\" --installer-sha256 \"$sha\" --release-asset-base-url \"$KANO_RELEASE_ASSET_BASE_URL\"'",
+  "wingetGenerateCommand": "bash src/shell/release/02-generate-winget-from-artifacts.sh",
   "bGenerateHomebrewFormula": true,
   "homebrewFormulaName": "kano-git-master-skill",
   "homebrewGenerateCommand": "bash src/shell/release/03-generate-homebrew-skeleton.sh",
