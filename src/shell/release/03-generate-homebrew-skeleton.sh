@@ -15,49 +15,57 @@ OUTPUT_DIR="${5:-${KANO_PACKAGE_MANAGER_RECIPE_ROOT:-Release/package-managers}/h
 FORMULA_NAME="${KANO_HOMEBREW_FORMULA_NAME:-kano-git-master-skill}"
 ASSET_BASE_URL="${KANO_RELEASE_ASSET_BASE_URL:-https://github.com/${REPO_SLUG}/releases/download/${TAG_NAME}}"
 
-PYTHON_BIN="${PYTHON_BIN:-}"
-if [ -z "$PYTHON_BIN" ]; then
-  if command -v python3 >/dev/null 2>&1; then
-    PYTHON_BIN="python3"
-  elif command -v python >/dev/null 2>&1; then
-    PYTHON_BIN="python"
-  else
-    echo "ERROR: python3 or python is required to generate Homebrew formula" >&2
-    exit 1
-  fi
-fi
-
 calc_sha() {
-  "$PYTHON_BIN" - "$1" <<'PY'
-from pathlib import Path
-import hashlib
-import sys
-path = Path(sys.argv[1])
-print(hashlib.sha256(path.read_bytes()).hexdigest())
-PY
+  local path="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$path" | awk '{print $1}'
+    return 0
+  fi
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$path" | awk '{print $1}'
+    return 0
+  fi
+  if command -v openssl >/dev/null 2>&1; then
+    openssl dgst -sha256 "$path" | awk '{print $NF}'
+    return 0
+  fi
+  local ps path_arg
+  path_arg="$path"
+  if command -v cygpath >/dev/null 2>&1; then
+    path_arg="$(cygpath -w "$path")"
+  fi
+  for ps in pwsh powershell powershell.exe; do
+    if command -v "$ps" >/dev/null 2>&1; then
+      "$ps" -NoProfile -Command 'param([string]$Path) (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()' "$path_arg" | tr -d '\r'
+      return 0
+    fi
+  done
+  echo "ERROR: sha256sum, shasum, openssl, or PowerShell is required to hash $path" >&2
+  exit 1
 }
 
 find_first() {
-  "$PYTHON_BIN" - "$ARTIFACT_DIR" artifacts artifacts/packages "$@" <<'PY'
-from pathlib import Path
-import sys
-
-roots = [Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])]
-patterns = sys.argv[4:]
-seen = set()
-for root in roots:
-    if not root.is_dir():
-        continue
-    key = root.resolve()
-    if key in seen:
-        continue
-    seen.add(key)
-    for pattern in patterns:
-        matches = sorted(path for path in root.rglob(pattern) if path.is_file())
-        if matches:
-            print(matches[0].as_posix())
-            raise SystemExit(0)
-PY
+  local root pattern found seen_key
+  local -a roots=("$ARTIFACT_DIR" artifacts artifacts/packages)
+  local -a seen=()
+  for root in "${roots[@]}"; do
+    [ -d "$root" ] || continue
+    seen_key="$root"
+    if command -v cygpath >/dev/null 2>&1; then
+      seen_key="$(cygpath -a "$root")"
+    fi
+    case " ${seen[*]} " in
+      *" $seen_key "*) continue ;;
+    esac
+    seen+=("$seen_key")
+    for pattern in "$@"; do
+      found="$(find "$root" -type f -iname "$pattern" | sort | head -n 1 || true)"
+      if [ -n "$found" ]; then
+        printf '%s\n' "$found"
+        return 0
+      fi
+    done
+  done
 }
 
 mkdir -p "$OUTPUT_DIR"

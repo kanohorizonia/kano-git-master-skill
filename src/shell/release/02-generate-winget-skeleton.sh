@@ -15,42 +15,45 @@ OUTPUT_DIR="${5:-${KANO_PACKAGE_MANAGER_RECIPE_ROOT:-Release/package-managers}/w
 PACKAGE_ID="${KANO_WINGET_PACKAGE_ID:-Kanohorizonia.KanoGitMasterSkill}"
 ASSET_BASE_URL="${KANO_RELEASE_ASSET_BASE_URL:-https://github.com/${REPO_SLUG}/releases/download/${TAG_NAME}}"
 
-PYTHON_BIN="${PYTHON_BIN:-}"
-if [ -z "$PYTHON_BIN" ]; then
-  if command -v python3 >/dev/null 2>&1; then
-    PYTHON_BIN="python3"
-  elif command -v python >/dev/null 2>&1; then
-    PYTHON_BIN="python"
-  else
-    echo "ERROR: python3 or python is required to generate winget manifests" >&2
-    exit 1
-  fi
-fi
-
 find_msi() {
-  "$PYTHON_BIN" - "$ARTIFACT_DIR" artifacts artifacts/installers src/wix/out <<'PY'
-from pathlib import Path
-import sys
-
-for root_arg in sys.argv[1:]:
-    root = Path(root_arg)
-    if not root.is_dir():
-        continue
-    matches = sorted(path for path in root.rglob("*.msi") if path.is_file())
-    if matches:
-        print(matches[0].as_posix())
-        break
-PY
+  local root found
+  for root in "$ARTIFACT_DIR" artifacts artifacts/installers src/wix/out; do
+    [ -d "$root" ] || continue
+    found="$(find "$root" -type f -iname '*.msi' | sort | head -n 1 || true)"
+    if [ -n "$found" ]; then
+      printf '%s\n' "$found"
+      return 0
+    fi
+  done
 }
 
 calc_sha() {
-  "$PYTHON_BIN" - "$1" <<'PY'
-from pathlib import Path
-import hashlib
-import sys
-path = Path(sys.argv[1])
-print(hashlib.sha256(path.read_bytes()).hexdigest())
-PY
+  local path="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$path" | awk '{print $1}'
+    return 0
+  fi
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$path" | awk '{print $1}'
+    return 0
+  fi
+  if command -v openssl >/dev/null 2>&1; then
+    openssl dgst -sha256 "$path" | awk '{print $NF}'
+    return 0
+  fi
+  local ps path_arg
+  path_arg="$path"
+  if command -v cygpath >/dev/null 2>&1; then
+    path_arg="$(cygpath -w "$path")"
+  fi
+  for ps in pwsh powershell powershell.exe; do
+    if command -v "$ps" >/dev/null 2>&1; then
+      "$ps" -NoProfile -Command 'param([string]$Path) (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()' "$path_arg" | tr -d '\r'
+      return 0
+    fi
+  done
+  echo "ERROR: sha256sum, shasum, openssl, or PowerShell is required to hash $path" >&2
+  exit 1
 }
 
 MSI_PATH="$(find_msi)"
