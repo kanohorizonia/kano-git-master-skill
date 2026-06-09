@@ -15,8 +15,20 @@ OUTPUT_DIR="${5:-${KANO_PACKAGE_MANAGER_RECIPE_ROOT:-Release/package-managers}/w
 PACKAGE_ID="${KANO_WINGET_PACKAGE_ID:-Kanohorizonia.KanoGitMasterSkill}"
 ASSET_BASE_URL="${KANO_RELEASE_ASSET_BASE_URL:-https://github.com/${REPO_SLUG}/releases/download/${TAG_NAME}}"
 
+PYTHON_BIN="${PYTHON_BIN:-}"
+if [ -z "$PYTHON_BIN" ]; then
+  if command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="python3"
+  elif command -v python >/dev/null 2>&1; then
+    PYTHON_BIN="python"
+  else
+    echo "ERROR: python3 or python is required to generate winget manifests" >&2
+    exit 1
+  fi
+fi
+
 find_msi() {
-  python - "$ARTIFACT_DIR" artifacts/installers src/wix/out <<'PY'
+  "$PYTHON_BIN" - "$ARTIFACT_DIR" artifacts/installers src/wix/out <<'PY'
 from pathlib import Path
 import sys
 
@@ -32,7 +44,7 @@ PY
 }
 
 calc_sha() {
-  python - "$1" <<'PY'
+  "$PYTHON_BIN" - "$1" <<'PY'
 from pathlib import Path
 import hashlib
 import sys

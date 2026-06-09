@@ -15,8 +15,20 @@ OUTPUT_DIR="${5:-${KANO_PACKAGE_MANAGER_RECIPE_ROOT:-Release/package-managers}/h
 FORMULA_NAME="${KANO_HOMEBREW_FORMULA_NAME:-kano-git-master-skill}"
 ASSET_BASE_URL="${KANO_RELEASE_ASSET_BASE_URL:-https://github.com/${REPO_SLUG}/releases/download/${TAG_NAME}}"
 
+PYTHON_BIN="${PYTHON_BIN:-}"
+if [ -z "$PYTHON_BIN" ]; then
+  if command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="python3"
+  elif command -v python >/dev/null 2>&1; then
+    PYTHON_BIN="python"
+  else
+    echo "ERROR: python3 or python is required to generate Homebrew formula" >&2
+    exit 1
+  fi
+fi
+
 calc_sha() {
-  python - "$1" <<'PY'
+  "$PYTHON_BIN" - "$1" <<'PY'
 from pathlib import Path
 import hashlib
 import sys
@@ -26,7 +38,7 @@ PY
 }
 
 find_first() {
-  python - "$ARTIFACT_DIR" "$@" <<'PY'
+  "$PYTHON_BIN" - "$ARTIFACT_DIR" "$@" <<'PY'
 from pathlib import Path
 import sys
 
