@@ -2,7 +2,7 @@
   "projectName": "kano-git-master-skill",
   "skillName": "kano-git-master-skill",
   "bootstrapAgentLabel": "lightweight",
-  "windowsAgentLabel": "windows && lightweight",
+  "windowsAgentLabel": "pc-dorgonchang-rtx3090.local",
   "linuxAgentLabel": "mac && docker && lightweight",
   "macAgentLabel": "mac && lightweight",
   "platformSharedWorkspaceRoots": {
