@@ -11,6 +11,10 @@
     "mac": "/Users/Shared/jenkins_ws/KanoAgentSkills"
   },
   "bRunReleasePhase": false,
+  "bDefaultPublishGitHubPages": true,
+  "bDefaultPublishWinget": true,
+  "bDefaultPublishApt": false,
+  "bDefaultPublishHomebrew": false,
   "bRunTests": true,
   "bRunCoverage": true,
   "buildTasks": ["build"],
