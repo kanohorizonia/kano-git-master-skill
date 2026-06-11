@@ -110,7 +110,7 @@
   "upstreamBuildJob": "KanoAgentSkills/kano-git-master-skill/Build_CI",
   "gitUrl": "https://github.com/kanohorizonia/kano-git-master-skill.git",
   "gitCredentialsId": "github-kanohorizonia-jenkins",
-  "gitBranch": "__BUILD_BRANCH__",
+  "gitBranch": "__DEFAULT_BRANCH__",
   "bRunWindowsBuild": true,
   "bRunLinuxBuild": true,
   "bRunMacBuild": true,
@@ -171,7 +171,7 @@
   "bForceUpdateReleaseTag": true,
   "releaseApprovalMessage": "Approve kano-git-master-skill Release/Publish? Confirm tag, artifacts, docs, and release plan before proceeding.",
   "branchPolicy": {
-    "parameterName": "BUILD_BRANCH",
+    "parameterName": "SOURCE_BRANCH",
     "defaultBranch": "main",
     "mode": "git-parameter",
     "type": "PT_BRANCH",
