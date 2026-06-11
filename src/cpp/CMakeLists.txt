@@ -583,18 +583,17 @@ option(KOG_PGO_COLLECT_ENABLE_COVERAGE_MAPPING "Enable Clang coverage mapping du
 # For GCC, we fall back to traditional -fprofile-arcs -ftest-coverage (gcov style).
 # For MSVC, /PROFILE enables coverage-oriented instrumentation only; it is not MSVC PGO training data.
 if(KOG_ENABLE_COVERAGE)
-    if(MSVC)
-        # MSVC /PROFILE is a linker option for coverage/profiler scenarios.
-        # MSVC PGO training data is produced by /GENPROFILE (or /FASTGENPROFILE), then consumed by /USEPROFILE.
-        add_link_options(/PROFILE)
-        set(KOG_COVERAGE_OUTPUT_DIR "${KOG_BUILD_ROOT}/coverage" CACHE PATH "Coverage output directory")
-    elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         # Clang-native PGO-style instrumentation: works for both coverage AND PGO collect
         # NOTE: Do NOT add -fno-exceptions - the codebase uses exceptions
         add_compile_options(-fprofile-instr-generate -fcoverage-mapping)
         add_link_options(-fprofile-instr-generate -fcoverage-mapping)
         set(KOG_COVERAGE_OUTPUT_DIR "${KOG_BUILD_ROOT}/coverage" CACHE PATH "Coverage output directory")
         message(STATUS "Coverage: Clang PGO-style (llvm-cov reporting, unified with PGO collect)")
+    elseif(MSVC)
+        # OpenCppCoverage reads MSVC PDB line tables directly. Adding /PROFILE
+        # makes this project's Cobertura export lose repo source entries.
+        set(KOG_COVERAGE_OUTPUT_DIR "${KOG_BUILD_ROOT}/coverage" CACHE PATH "Coverage output directory")
     elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
         # GCC traditional coverage
         add_compile_options(-fprofile-arcs -ftest-coverage -fno-exceptions)

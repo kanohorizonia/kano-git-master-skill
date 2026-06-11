@@ -85,6 +85,20 @@
             }
         },
         {
+            "name": "windows-ninja-clang-coverage",
+            "displayName": "Windows Ninja Clang (Coverage)",
+            "description": "Windows Clang with source-based coverage instrumentation",
+            "inherits": "windows-ninja-clang",
+            "binaryDir": "${sourceDir}/out/obj/windows-ninja-clang-coverage",
+            "cacheVariables": {
+                "BUILD_SHARED_LIBS": "OFF",
+                "KOG_ENABLE_MODULES": "OFF",
+                "KOG_ENABLE_COVERAGE": "ON",
+                "KOG_BUILD_TYPE": "Debug",
+                "KOG_PRESET_NAME": "windows-ninja-clang-coverage"
+            }
+        },
+        {
             "name": "linux-ninja-gcc",
             "displayName": "Linux Ninja Multi-Config (GCC)",
             "description": "Uses Ninja Multi-Config with GCC 15 compiler",
@@ -302,6 +316,7 @@
             "inherits": "windows-ninja-msvc",
             "binaryDir": "${sourceDir}/out/obj/win-msvc-cov",
             "cacheVariables": {
+                "BUILD_SHARED_LIBS": "OFF",
                 "KOG_ENABLE_COVERAGE": "ON",
                 "KOG_BUILD_TYPE": "Debug",
                 "KOG_PRESET_NAME": "windows-ninja-msvc-coverage"
@@ -439,6 +454,11 @@
             "name": "windows-ninja-clang-release",
             "configurePreset": "windows-ninja-clang",
             "configuration": "Release"
+        },
+        {
+            "name": "windows-ninja-clang-coverage-debug",
+            "configurePreset": "windows-ninja-clang-coverage",
+            "configuration": "Debug"
         },
         {
             "name": "linux-ninja-gcc-debug",
