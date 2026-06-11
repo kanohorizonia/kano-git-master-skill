@@ -196,6 +196,7 @@
                 "CMAKE_CXX_COMPILER": "clang++",
                 "KOG_ENABLE_MODULES": "OFF",
                 "KOG_PGO_MODE": "use",
+                "KOG_PGO_LTCG": "off",
                 "KOG_BUILD_TYPE": "Release",
                 "KOG_PRESET_NAME": "macos-ninja-clang-pgo-use"
             }
@@ -228,6 +229,7 @@
                 "CMAKE_OSX_ARCHITECTURES": "arm64",
                 "KOG_ENABLE_MODULES": "OFF",
                 "KOG_PGO_MODE": "use",
+                "KOG_PGO_LTCG": "off",
                 "KOG_BUILD_TYPE": "Release",
                 "KOG_PRESET_NAME": "macos-ninja-clang-arm64-pgo-use"
             }
