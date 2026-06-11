@@ -52,6 +52,19 @@ resolve_test_exe_dir() {
   return 1
 }
 
+resolve_app_exe_dir() {
+  local bin_dir="$1"
+  local config_dir=""
+  for config_dir in release relwithdebinfo minsizerel debug; do
+    if [[ ( -x "$bin_dir/$config_dir/kano-git" || -x "$bin_dir/$config_dir/kano-git.exe" ) &&
+          ( -x "$bin_dir/$config_dir/kano-git-tui" || -x "$bin_dir/$config_dir/kano-git-tui.exe" ) ]]; then
+      printf '%s\n' "$bin_dir/$config_dir"
+      return 0
+    fi
+  done
+  return 1
+}
+
 has_test_binaries_for_preset() {
   local cpp_dir="$1"
   local preset_name="$2"
@@ -75,6 +88,13 @@ run_test_binary() {
   KANO_TEST_BINARY_NAME="$binary_name" "$@"
 }
 
+is_truthy() {
+  case "${1:-}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 resolve_python() {
   local candidate
   for candidate in python3 python; do
@@ -86,6 +106,75 @@ resolve_python() {
   done
   echo "ERROR: python3 or python is required to merge JUnit XML." >&2
   return 1
+}
+
+write_app_smoke_junit() {
+  local output_path="$1"
+  local failures="$2"
+  local version_status="$3"
+  local cli_help_status="$4"
+  local tui_help_status="$5"
+
+  mkdir -p "$(dirname "$output_path")"
+  {
+    printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>'
+    printf '%s\n' '<testsuites>'
+    printf '  <testsuite name="pgo_app_smoke" errors="0" failures="%s" skipped="0" tests="3" time="0">\n' "$failures"
+    printf '%s\n' '    <testcase classname="pgo_app_smoke" name="kano_git_version" time="0">'
+    if [[ "$version_status" -ne 0 ]]; then
+      printf '      <failure message="kano-git --version failed with exit code %s"/>\n' "$version_status"
+    fi
+    printf '%s\n' '    </testcase>'
+    printf '%s\n' '    <testcase classname="pgo_app_smoke" name="kano_git_help" time="0">'
+    if [[ "$cli_help_status" -ne 0 ]]; then
+      printf '      <failure message="kano-git --help failed with exit code %s"/>\n' "$cli_help_status"
+    fi
+    printf '%s\n' '    </testcase>'
+    printf '%s\n' '    <testcase classname="pgo_app_smoke" name="kano_git_tui_help" time="0">'
+    if [[ "$tui_help_status" -ne 0 ]]; then
+      printf '      <failure message="kano-git-tui --help failed with exit code %s"/>\n' "$tui_help_status"
+    fi
+    printf '%s\n' '    </testcase>'
+    printf '%s\n' '  </testsuite>'
+    printf '%s\n' '</testsuites>'
+  } > "$output_path"
+}
+
+run_app_smoke_fallback() {
+  local app_dir="$1"
+  local exe_ext=""
+  if [[ -x "$app_dir/kano-git.exe" ]]; then
+    exe_ext=".exe"
+  fi
+
+  local smoke_log_dir="${TEST_XML_DIR:-$CPP_ROOT/.kano/tmp/pgo/app-smoke}/logs"
+  mkdir -p "$smoke_log_dir"
+
+  echo "Using PGO app smoke binaries from: $app_dir"
+  set +e
+  "$app_dir/kano-git$exe_ext" --version >"$smoke_log_dir/kano_git_version.log" 2>&1
+  local version_status="$?"
+  "$app_dir/kano-git$exe_ext" --help >"$smoke_log_dir/kano_git_help.log" 2>&1
+  local cli_help_status="$?"
+  "$app_dir/kano-git-tui$exe_ext" --help >"$smoke_log_dir/kano_git_tui_help.log" 2>&1
+  local tui_help_status="$?"
+  set -e
+
+  local failures=0
+  [[ "$version_status" -eq 0 ]] || failures=$((failures + 1))
+  [[ "$cli_help_status" -eq 0 ]] || failures=$((failures + 1))
+  [[ "$tui_help_status" -eq 0 ]] || failures=$((failures + 1))
+
+  if [[ -n "$TEST_XML_OUTPUT" ]]; then
+    write_app_smoke_junit "$TEST_XML_OUTPUT" "$failures" "$version_status" "$cli_help_status" "$tui_help_status"
+  fi
+
+  if [[ "$failures" -gt 0 ]]; then
+    echo "PGO app smoke failed ($failures failure(s)); see $smoke_log_dir" >&2
+    return 1
+  fi
+
+  echo "PGO app smoke completed successfully."
 }
 
 if [[ -n "${KANO_REPORT_ROOT:-}" ]]; then
@@ -130,6 +219,14 @@ if [[ -z "$BIN_DIR" ]]; then
 fi
 EXE_DIR="$(resolve_test_exe_dir "$BIN_DIR" || true)"
 if [[ -z "$EXE_DIR" ]]; then
+  if is_truthy "${KANO_ALLOW_APP_SMOKE_FALLBACK:-0}"; then
+    APP_EXE_DIR="$(resolve_app_exe_dir "$BIN_DIR" || true)"
+    if [[ -n "$APP_EXE_DIR" ]]; then
+      echo "Could not locate CLI/TUI test binaries under '$BIN_DIR' for preset '$PRESET'; running app smoke fallback."
+      run_app_smoke_fallback "$APP_EXE_DIR"
+      exit 0
+    fi
+  fi
   echo "Could not locate CLI/TUI test binaries under '$BIN_DIR' for preset '$PRESET'." >&2
   exit 1
 fi
