@@ -196,7 +196,6 @@ jobs:
           import os
           import shutil
           import tarfile
-          import zipfile
           from pathlib import Path
 
           platform = os.environ["KANO_PLATFORM"]
@@ -247,21 +246,14 @@ jobs:
                   shutil.copy2(src, payload_root / "scripts" / name)
 
           safe_version = "".join(ch if ch.isalnum() or ch in "._+-" else "-" for ch in version)
-          archive_name = f"KanoGit-{safe_version}-{platform}.zip" if platform.startswith("windows-") else f"KanoGit-{safe_version}-{platform}.tar.gz"
+          archive_name = f"KanoGit-{safe_version}-{platform}.tar.gz"
           archive_path = artifact_root / archive_name
           entries = []
-          if archive_name.endswith(".zip"):
-              with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-                  for path in sorted(p for p in payload_root.rglob("*") if p.is_file()):
-                      arcname = path.relative_to(payload_root).as_posix()
-                      archive.write(path, arcname)
-                      entries.append({"path": arcname, "sizeBytes": path.stat().st_size})
-          else:
-              with tarfile.open(archive_path, "w:gz") as archive:
-                  for path in sorted(p for p in payload_root.rglob("*") if p.is_file()):
-                      arcname = path.relative_to(payload_root).as_posix()
-                      archive.add(path, arcname=arcname)
-                      entries.append({"path": arcname, "sizeBytes": path.stat().st_size})
+          with tarfile.open(archive_path, "w:gz") as archive:
+              for path in sorted(p for p in payload_root.rglob("*") if p.is_file()):
+                  arcname = path.relative_to(payload_root).as_posix()
+                  archive.add(path, arcname=arcname)
+                  entries.append({"path": arcname, "sizeBytes": path.stat().st_size})
 
           csv_path = artifact_root / f"{archive_name}.manifest.csv"
           with csv_path.open("w", encoding="utf-8", newline="") as handle:
