@@ -66,6 +66,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: kano-cloud-build-${{ inputs.request_id }}-${{ inputs.platform }}
@@ -89,6 +90,7 @@ jobs:
       KANO_ARTIFACT_CONTRACT_VERSION: ${{ inputs.artifact_contract_version }}
       KANO_REQUIRED: ${{ inputs.required }}
       KANO_EXPERIMENTAL: ${{ inputs.experimental }}
+      GIT_TERMINAL_PROMPT: "0"
     steps:
       - name: Validate request
         run: |
@@ -101,12 +103,42 @@ jobs:
             *) echo "Unsupported artifact contract version: $KANO_ARTIFACT_CONTRACT_VERSION" >&2; exit 2 ;;
           esac
 
+      - name: Create kanohorizonia Jenkins app token from client id
+        id: jenkins-app-token-client-id
+        if: ${{ vars.KANO_JENKINS_APP_CLIENT_ID != '' }}
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.KANO_JENKINS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.KANO_JENKINS_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            kano-git-master-skill
+            kano-cpp-infra
+            kano-cpp-test-skill
+          permission-contents: read
+
+      - name: Create kanohorizonia Jenkins app token from app id
+        id: jenkins-app-token-app-id
+        if: ${{ vars.KANO_JENKINS_APP_CLIENT_ID == '' && vars.KANO_JENKINS_APP_ID != '' }}
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.KANO_JENKINS_APP_ID }}
+          private-key: ${{ secrets.KANO_JENKINS_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            kano-git-master-skill
+            kano-cpp-infra
+            kano-cpp-test-skill
+          permission-contents: read
+
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.source_ref }}
           fetch-depth: 0
           submodules: recursive
+          token: ${{ steps.jenkins-app-token-client-id.outputs.token || steps.jenkins-app-token-app-id.outputs.token || github.token }}
+          persist-credentials: false
 
       - name: Checkout requested commit
         run: |
@@ -120,6 +152,8 @@ jobs:
           repository: kanohorizonia/kano-cpp-test-skill
           ref: main
           path: _tools/kano-cpp-test-skill
+          token: ${{ steps.jenkins-app-token-client-id.outputs.token || steps.jenkins-app-token-app-id.outputs.token || github.token }}
+          persist-credentials: false
 
       - name: Setup Python
         uses: actions/setup-python@v5
