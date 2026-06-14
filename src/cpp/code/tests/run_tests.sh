@@ -75,10 +75,25 @@ has_test_binaries_for_preset() {
   resolve_test_exe_dir "$bin_dir" >/dev/null
 }
 
-# Default preset (can be overridden)
+# Default preset (can be overridden). Accept both historical
+# run_tests.sh <preset> <lane> [e2e] and staged
+# run_tests.sh <preset> <config> <lane> [e2e] call shapes.
 PRESET="${1:-linux-ninja-gcc-release}"
-LANE_MODE="${2:-default}"
-WITH_E2E="${3:-0}"
+CONFIG_OR_LANE="${2:-default}"
+LANE_OR_WITH_E2E="${3:-0}"
+WITH_E2E_ARG="${4:-0}"
+case "$CONFIG_OR_LANE" in
+  Debug|debug|Release|release|RelWithDebInfo|relwithdebinfo|MinSizeRel|minsizerel)
+    TEST_CONFIG="$CONFIG_OR_LANE"
+    LANE_MODE="${3:-default}"
+    WITH_E2E="$WITH_E2E_ARG"
+    ;;
+  *)
+    TEST_CONFIG=""
+    LANE_MODE="$CONFIG_OR_LANE"
+    WITH_E2E="$LANE_OR_WITH_E2E"
+    ;;
+esac
 TEST_XML_OUTPUT="${KANO_TEST_XML:-}"
 TEST_XML_DIR=""
 
@@ -195,6 +210,11 @@ if [[ "$LANE_MODE" == "--with-e2e" ]]; then
 fi
 
 echo "Building kano-git tests with preset: $PRESET"
+if [[ -n "$TEST_CONFIG" ]]; then
+  echo "Running kano-git test lane: $LANE_MODE (config: $TEST_CONFIG)"
+else
+  echo "Running kano-git test lane: $LANE_MODE"
+fi
 cd "$CPP_ROOT"
 
 WORKSPACE_ROOT="$(resolve_workspace_root "$CPP_ROOT")"
