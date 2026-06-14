@@ -6,6 +6,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
+lowercase_text() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
+
 launcher_resolve_pixi_path() {
   if command -v pixi >/dev/null 2>&1; then
     command -v pixi
@@ -137,7 +141,7 @@ KOG_GIT_INTERACTIVE="${KOG_GIT_INTERACTIVE:-auto}"
 # - agent mode => non-interactive by default
 # - human/manual mode => interactive by default
 # Override with KOG_GIT_INTERACTIVE=1|true|0|false.
-__kog_git_interactive_mode="${KOG_GIT_INTERACTIVE,,}"
+__kog_git_interactive_mode="$(lowercase_text "$KOG_GIT_INTERACTIVE")"
 if [[ "$__kog_git_interactive_mode" == "auto" || -z "$__kog_git_interactive_mode" ]]; then
   if [[ "${KANO_AGENT_MODE:-0}" == "1" || "${KANO_AGENT_MODE:-}" == "true" ]]; then
     __kog_git_interactive_mode="0"
@@ -300,7 +304,7 @@ maybe_prompt_yes_no() {
   fi
 
   read -r -p "$prompt [y/N]: " answer
-  case "${answer,,}" in
+  case "$(lowercase_text "$answer")" in
     y|yes) return 0 ;;
   esac
   return 1
@@ -1436,7 +1440,7 @@ platform_name() {
     Darwin*) echo "macos" ;;
     Linux*) echo "linux" ;;
     MINGW*|MSYS*|CYGWIN*|Windows_NT) echo "windows" ;;
-    *) echo "${os_name,,}" ;;
+    *) lowercase_text "$os_name" ;;
   esac
 }
 

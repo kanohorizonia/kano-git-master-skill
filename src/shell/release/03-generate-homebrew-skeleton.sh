@@ -54,7 +54,7 @@ find_first() {
     if command -v cygpath >/dev/null 2>&1; then
       seen_key="$(cygpath -a "$root")"
     fi
-    case " ${seen[*]} " in
+    case " ${seen[*]-} " in
       *" $seen_key "*) continue ;;
     esac
     seen+=("$seen_key")
