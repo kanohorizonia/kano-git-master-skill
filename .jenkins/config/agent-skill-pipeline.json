@@ -121,6 +121,8 @@
   "bBuildPlatformPackageFromPayload": true,
   "platformPackagePayloadIncludeFiles": "VERSION,SKILL.md,README.md,AGENTS.md,TESTING.md,LICENSE,CHANGELOG.md",
   "platformPackagePayloadIncludeDirs": "assets,docs,references,scripts",
+  "platformPackagePayloadBinaryIncludes": "kano-git,kano-git.exe,kano-git-tui,kano-git-tui.exe",
+  "platformPackagePayloadBinaryExcludes": "*.pgd,*.pgc,*.ilk,*.exp,*.lib,*_tests,*_tests.exe,*_test,*_test.exe,*-tests,*-tests.exe,kano-cpp-infra-tool,kano-cpp-infra-tool.exe",
   "linuxExportCommand": "pixi run ci-linux-export",
   "bBuildInstallers": true,
   "windowsInstallerCommand": "bash -lc \"src/wix/scripts/build.sh && mkdir -p artifacts/installers/windows && cp -f src/wix/out/*.msi artifacts/installers/windows/\"",
