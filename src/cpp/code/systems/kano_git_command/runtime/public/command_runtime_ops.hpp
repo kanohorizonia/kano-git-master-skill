@@ -67,4 +67,15 @@ auto RunPushNativeSimpleDetailed(const std::filesystem::path& InWorkspaceRoot,
                                  bool InVerbose,
                                  const std::string& InRemote) -> std::pair<int, workspace::RepoOperationAggregate>;
 
+auto RunPushNativeSimpleDetailed(const std::filesystem::path& InWorkspaceRoot,
+                                 bool InRecursive,
+                                 bool InDryRun,
+                                 bool InProfile,
+                                 bool InForceWithLease,
+                                 bool InNoVerify,
+                                 int InJobs,
+                                 bool InVerbose,
+                                 const std::string& InRemote,
+                                 const std::vector<std::string>& InRepoFilters) -> std::pair<int, workspace::RepoOperationAggregate>;
+
 } // namespace kano::git::commands

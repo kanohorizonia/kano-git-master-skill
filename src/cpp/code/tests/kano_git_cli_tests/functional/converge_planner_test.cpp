@@ -423,8 +423,7 @@ TEST_CASE("KOG-BDD-CONVERGE-001 child push failure blocks only dependent parent"
         RequireContains(result.stdoutText, "sync=true commit=true push=false hygiene=true");
         RequireContains(result.stdoutText, "push skipped by commandPolicy.push=false");
         RequireContains(result.stdoutText, "Blocked repos");
-        RequireContains(result.stdoutText, ".: GITLINK_UNREACHABLE");
-        RequireContains(result.stdoutText, "gitlink commit is not reachable from remote");
+        RequireContains(result.stdoutText, "parent pointer references commit from push-disabled repo that is not available remotely");
         RequireNotContains(result.stdoutText, "ProductB");
 
         const auto productBPlan = RunConvergeDryRun(productB.cloneRepo);

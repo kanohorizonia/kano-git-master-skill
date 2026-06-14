@@ -468,6 +468,20 @@ auto ResolveReposCsv(const std::filesystem::path& InRoot, const std::string& InC
     return out;
 }
 
+auto BuildExplicitRepoRecordsFromFilters(const std::filesystem::path& InWorkspaceRoot,
+                                         const std::vector<std::string>& InRepoFilters) -> std::vector<workspace::RepoRecord> {
+    std::vector<std::filesystem::path> repos;
+    repos.reserve(InRepoFilters.size());
+    for (const auto& filter : InRepoFilters) {
+        const auto trimmed = Trim(filter);
+        if (trimmed.empty()) {
+            continue;
+        }
+        repos.push_back(ResolveRepoFromSpec(InWorkspaceRoot, std::filesystem::path(trimmed), 12, true));
+    }
+    return BuildExplicitRepoRecords(InWorkspaceRoot, repos);
+}
+
 auto ResolveGitmodulesPushPolicy(const std::filesystem::path& InRepo) -> std::string {
     auto repo = std::filesystem::weakly_canonical(InRepo).lexically_normal();
     auto current = repo.parent_path();
@@ -1460,6 +1474,17 @@ auto RunPushNativeSimpleDetailed(const std::filesystem::path& InWorkspaceRoot,
                                  bool InVerbose,
                                  const std::string& InRemote) -> std::pair<int, workspace::RepoOperationAggregate>;
 
+auto RunPushNativeSimpleDetailed(const std::filesystem::path& InWorkspaceRoot,
+                                 bool InRecursive,
+                                 bool InDryRun,
+                                 bool InProfile,
+                                 bool InForceWithLease,
+                                 bool InNoVerify,
+                                 int InJobs,
+                                 bool InVerbose,
+                                 const std::string& InRemote,
+                                 const std::vector<std::string>& InRepoFilters) -> std::pair<int, workspace::RepoOperationAggregate>;
+
 auto RunPushNativeSimple(const std::filesystem::path& InWorkspaceRoot,
                           const bool InRecursive,
                           const bool InDryRun,
@@ -1491,8 +1516,33 @@ auto RunPushNativeSimpleDetailed(const std::filesystem::path& InWorkspaceRoot,
                                  const int InJobs,
                                  const bool InVerbose,
                                  const std::string& InRemote) -> std::pair<int, workspace::RepoOperationAggregate> {
+    return RunPushNativeSimpleDetailed(
+        InWorkspaceRoot,
+        InRecursive,
+        InDryRun,
+        InProfile,
+        InForceWithLease,
+        InNoVerify,
+        InJobs,
+        InVerbose,
+        InRemote,
+        {});
+}
+
+auto RunPushNativeSimpleDetailed(const std::filesystem::path& InWorkspaceRoot,
+                                 const bool InRecursive,
+                                 const bool InDryRun,
+                                 const bool InProfile,
+                                 const bool InForceWithLease,
+                                 const bool InNoVerify,
+                                 const int InJobs,
+                                 const bool InVerbose,
+                                 const std::string& InRemote,
+                                 const std::vector<std::string>& InRepoFilters) -> std::pair<int, workspace::RepoOperationAggregate> {
     std::vector<workspace::RepoRecord> repos;
-    if (InRecursive) {
+    if (!InRepoFilters.empty()) {
+        repos = BuildExplicitRepoRecordsFromFilters(InWorkspaceRoot, InRepoFilters);
+    } else if (InRecursive) {
         repos = DiscoverWorkspaceRepos(InWorkspaceRoot);
         if (repos.empty()) {
             repos = BuildExplicitRepoRecords(InWorkspaceRoot, {InWorkspaceRoot});

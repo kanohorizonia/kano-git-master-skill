@@ -487,6 +487,14 @@ void Add(std::vector<PlanLine>& lines, const std::string& repo, const std::strin
     if (std::none_of(lines.begin(), lines.end(), [&](const auto& line) { return line.repo == repo && line.text == text; })) lines.push_back({repo, text});
 }
 
+void AddPushAfterCommit(Plan& plan, const RepoStatus& repo, const std::string& reason) {
+    if (Allows(repo, "push")) {
+        Add(plan.push, repo.id, "kog push --repos " + repo.id + " after " + reason);
+    } else {
+        Add(plan.skipped, repo.id, "push skipped by commandPolicy.push=false");
+    }
+}
+
 bool HasUnpushedSubmoduleCommit(const RepoStatus& repo) {
     return Contains(repo.submoduleFacts, "SubmoduleCommitUnpushed") || Contains(repo.statusFlags, "UNPUSHED_SUBMODULE_COMMIT");
 }
@@ -520,38 +528,84 @@ Plan BuildPlan(const Snapshot& snapshot) {
             Add(plan.skipped, repo.id, "preflight-only clean nested repo skipped: " + repo.dirtyKind);
             continue;
         }
+
+        std::vector<std::string> unpushedChildren;
+        for (const auto& child : repo.childRepos) if (const auto it = byId.find(child); it != byId.end() && HasUnpushedSubmoduleCommit(it->second)) unpushedChildren.push_back(child);
+        if (!unpushedChildren.empty()) {
+            std::sort(unpushedChildren.begin(), unpushedChildren.end());
+            bool blockedByPolicy = false;
+            for (const auto& child : unpushedChildren) {
+                const auto& childRepo = byId.at(child);
+                if (Allows(childRepo, "push")) {
+                    Add(plan.push, child, "push child first before parent pointer commit/push");
+                } else {
+                    Add(plan.blocked, repo.id, kPushDisabledPointerBlockReason);
+                    blockedByPolicy = true;
+                }
+            }
+            if (!blockedByPolicy) {
+                Add(plan.skipped, repo.id, "parent pointer commit waits for child push");
+            }
+            continue;
+        }
+
         if (repo.blocksConverge) {
             Add(plan.blocked, repo.id, repo.blockReason.empty() ? "status snapshot blocks converge" : repo.blockReason);
             Add(plan.skipped, repo.id, "blocked by recursive status preflight");
             continue;
         }
 
-        std::vector<std::string> unpushedChildren;
-        for (const auto& child : repo.childRepos) if (const auto it = byId.find(child); it != byId.end() && HasUnpushedSubmoduleCommit(it->second)) unpushedChildren.push_back(child);
-        if (!unpushedChildren.empty()) {
-            std::sort(unpushedChildren.begin(), unpushedChildren.end());
-            for (const auto& child : unpushedChildren) {
-                const auto& childRepo = byId.at(child);
-                if (Allows(childRepo, "push")) {
-                    Add(plan.push, child, "push child first before parent pointer commit/push");
-                    Add(plan.blocked, repo.id, "PARENT_POINTS_TO_UNPUSHED_SUBMODULE: waiting for child push to succeed (" + child + ")");
-                } else {
-                    Add(plan.blocked, repo.id, kPushDisabledPointerBlockReason);
-                }
-            }
-            continue;
-        }
-
         if (repo.dirtyKind == "BEHIND_ONLY") { Allows(repo, "sync") ? Add(plan.sync, repo.id, "kog sync origin-latest before commit/push decisions") : Add(plan.skipped, repo.id, "sync skipped by commandPolicy.sync=false"); Add(plan.skipped, repo.id, "commit skipped: BEHIND_ONLY"); continue; }
         if (repo.dirtyKind == "CLEAN") { Add(plan.skipped, repo.id, "commit skipped: CLEAN"); continue; }
         if (repo.dirtyKind == "AHEAD_ONLY") { Add(plan.skipped, repo.id, "commit skipped: AHEAD_ONLY"); Allows(repo, "push") ? Add(plan.push, repo.id, "kog push --repos " + repo.id) : Add(plan.skipped, repo.id, "push skipped by commandPolicy.push=false"); continue; }
-        if (repo.dirtyKind == "GITLINK_DIRTY_ONLY") { Add(plan.skipped, repo.id, "kog commit -ai skipped: GITLINK_DIRTY_ONLY"); Allows(repo, "commit") ? Add(plan.commit, repo.id, "deterministic pointer commit: " + PointerMessage(repo)) : Add(plan.skipped, repo.id, "pointer commit skipped by commandPolicy.commit=false"); continue; }
+        if (repo.dirtyKind == "GITLINK_DIRTY_ONLY") {
+            Add(plan.skipped, repo.id, "kog commit -ai skipped: GITLINK_DIRTY_ONLY");
+            if (Allows(repo, "commit")) {
+                Add(plan.commit, repo.id, "deterministic pointer commit: " + PointerMessage(repo));
+                AddPushAfterCommit(plan, repo, "pointer commit");
+            } else {
+                Add(plan.skipped, repo.id, "pointer commit skipped by commandPolicy.commit=false");
+            }
+            continue;
+        }
         if (repo.dirtyKind == "UNREGISTERED_GITLINK_DIRTY_ONLY_SKIPPED") { Add(plan.skipped, repo.id, "kog commit -ai skipped: UNREGISTERED_GITLINK_DIRTY_ONLY_SKIPPED"); continue; }
         if (repo.dirtyKind == "GITLINK_DIRTY_UNSAFE") { Add(plan.blocked, repo.id, "PARENT_POINTER_UNSAFE: child worktree/commit state is not safe for deterministic pointer-only commit"); continue; }
-        if (repo.dirtyKind == "INDEX_DIRTY") { Allows(repo, "commit") ? Add(plan.commit, repo.id, "kog commit -ai --repos " + repo.id + " (staged/index changes included by commit policy)") : Add(plan.skipped, repo.id, "commit skipped by commandPolicy.commit=false"); continue; }
-        if (repo.dirtyKind == "CONTENT_DIRTY") { Allows(repo, "commit") ? Add(plan.commit, repo.id, "kog commit -ai --repos " + repo.id) : Add(plan.skipped, repo.id, "commit skipped by commandPolicy.commit=false"); continue; }
-        if (repo.dirtyKind == "CONTENT_AND_GITLINK_DIRTY") { Allows(repo, "commit") ? Add(plan.commit, repo.id, "kog commit -ai --repos " + repo.id + " (combined content/pointer context)") : Add(plan.skipped, repo.id, "commit skipped by commandPolicy.commit=false"); continue; }
-        if (repo.dirtyKind == "UNTRACKED_ONLY") { Allows(repo, "commit") ? Add(plan.commit, repo.id, "kog commit -ai --repos " + repo.id + " (untracked files included by git add -A policy)") : Add(plan.blocked, repo.id, "DIRTY_WORKTREE: UNTRACKED_ONLY but commandPolicy.commit=false"); continue; }
+        if (repo.dirtyKind == "INDEX_DIRTY") {
+            if (Allows(repo, "commit")) {
+                Add(plan.commit, repo.id, "kog commit -ai --repos " + repo.id + " (staged/index changes included by commit policy)");
+                AddPushAfterCommit(plan, repo, "commit");
+            } else {
+                Add(plan.skipped, repo.id, "commit skipped by commandPolicy.commit=false");
+            }
+            continue;
+        }
+        if (repo.dirtyKind == "CONTENT_DIRTY") {
+            if (Allows(repo, "commit")) {
+                Add(plan.commit, repo.id, "kog commit -ai --repos " + repo.id);
+                AddPushAfterCommit(plan, repo, "commit");
+            } else {
+                Add(plan.skipped, repo.id, "commit skipped by commandPolicy.commit=false");
+            }
+            continue;
+        }
+        if (repo.dirtyKind == "CONTENT_AND_GITLINK_DIRTY") {
+            if (Allows(repo, "commit")) {
+                Add(plan.commit, repo.id, "kog commit -ai --repos " + repo.id + " (combined content/pointer context)");
+                AddPushAfterCommit(plan, repo, "commit");
+            } else {
+                Add(plan.skipped, repo.id, "commit skipped by commandPolicy.commit=false");
+            }
+            continue;
+        }
+        if (repo.dirtyKind == "UNTRACKED_ONLY") {
+            if (Allows(repo, "commit")) {
+                Add(plan.commit, repo.id, "kog commit -ai --repos " + repo.id + " (untracked files included by git add -A policy)");
+                AddPushAfterCommit(plan, repo, "commit");
+            } else {
+                Add(plan.blocked, repo.id, "DIRTY_WORKTREE: UNTRACKED_ONLY but commandPolicy.commit=false");
+            }
+            continue;
+        }
         if (repo.ahead > 0) Allows(repo, "push") ? Add(plan.push, repo.id, "kog push --repos " + repo.id) : Add(plan.skipped, repo.id, "push skipped by commandPolicy.push=false");
         else Add(plan.skipped, repo.id, "no converge action for dirtyKind=" + repo.dirtyKind);
     }
@@ -641,6 +695,18 @@ bool PhaseAlreadyCompleted(const WorkflowState& state, const std::string& phase)
     return std::find(state.completedPhases.begin(), state.completedPhases.end(), phase) != state.completedPhases.end();
 }
 
+bool PhaseSummaryContainsRepo(const WorkflowState& state,
+                              const std::string& phase,
+                              const std::string& repo,
+                              const std::vector<std::string> PhaseSummary::* field) {
+    const auto it = state.phaseResults.find(phase);
+    if (it == state.phaseResults.end()) {
+        return false;
+    }
+    const auto& values = it->second.*field;
+    return std::find(values.begin(), values.end(), repo) != values.end();
+}
+
 std::set<std::string> ToSet(const std::vector<std::string>& values) {
     return std::set<std::string>(values.begin(), values.end());
 }
@@ -668,6 +734,62 @@ void PopulatePhaseSummaryFromAggregate(const workspace::RepoOperationAggregate& 
                                        PhaseSummary& summary) {
     for (const auto& result : aggregate.results) {
         const auto repo = result.repoId.empty() ? result.repoPath.generic_string() : result.repoId;
+        switch (result.status) {
+            case workspace::RepoOperationStatus::Succeeded:
+                summary.succeeded.push_back(repo);
+                summary.retryEligible[repo] = false;
+                break;
+            case workspace::RepoOperationStatus::Skipped:
+                summary.skipped.push_back(repo);
+                summary.failureCategory[repo] = "SKIPPED_BY_POLICY";
+                summary.policySkipReason[repo] = result.skipReason;
+                summary.failureMessage[repo] = result.message.empty() ? result.skipReason : result.message;
+                summary.retryEligible[repo] = result.resumeRetryEligible;
+                break;
+            case workspace::RepoOperationStatus::Blocked:
+                summary.blocked.push_back(repo);
+                summary.failureCategory[repo] = "BLOCKED_BY_CHILD_FAILURE";
+                summary.failureMessage[repo] = result.blockReason;
+                summary.blockedBy[repo] = result.blockedBy;
+                summary.retryEligible[repo] = result.resumeRetryEligible;
+                break;
+            case workspace::RepoOperationStatus::Failed:
+                summary.failed.push_back(repo);
+                summary.failureCategory[repo] = isPushPhase
+                    ? MapPushFailureCategoryToReason(result.failureCategory)
+                    : MapSyncFailureCategoryToReason(result.failureCategory);
+                summary.failureMessage[repo] = result.message;
+                summary.retryEligible[repo] = result.resumeRetryEligible;
+                break;
+            case workspace::RepoOperationStatus::Pending:
+                summary.pending.push_back(repo);
+                summary.failureCategory[repo] = "PENDING";
+                summary.failureMessage[repo] = "scheduler did not execute repository";
+                summary.retryEligible[repo] = true;
+                break;
+        }
+    }
+}
+
+void PopulatePhaseSummaryFromSingleRepoAggregate(const std::string& repo,
+                                                const workspace::RepoOperationAggregate& aggregate,
+                                                bool isPushPhase,
+                                                int exitCode,
+                                                PhaseSummary& summary) {
+    if (aggregate.results.empty()) {
+        if (exitCode == 0) {
+            summary.succeeded.push_back(repo);
+            summary.retryEligible[repo] = false;
+        } else {
+            summary.failed.push_back(repo);
+            summary.failureCategory[repo] = isPushPhase ? "PUSH_ERROR" : "SYNC_ERROR";
+            summary.failureMessage[repo] = isPushPhase ? "push failed" : "sync failed";
+            summary.retryEligible[repo] = true;
+        }
+        return;
+    }
+
+    for (const auto& result : aggregate.results) {
         switch (result.status) {
             case workspace::RepoOperationStatus::Succeeded:
                 summary.succeeded.push_back(repo);
@@ -970,11 +1092,11 @@ void RegisterConverge(CLI::App& InApp) {
                 }
             } else if (phase == "commit-local-changes-if-needed") {
                 for (const auto& line : plan.commit) {
-                    if (std::find(state.succeededRepos.begin(), state.succeededRepos.end(), line.repo) != state.succeededRepos.end()) {
+                    if (PhaseSummaryContainsRepo(state, phase, line.repo, &PhaseSummary::succeeded)) {
                         summary.skipped.push_back(line.repo);
                         continue;
                     }
-                    if (std::find(state.skippedRepos.begin(), state.skippedRepos.end(), line.repo) != state.skippedRepos.end()) {
+                    if (PhaseSummaryContainsRepo(state, phase, line.repo, &PhaseSummary::skipped)) {
                         summary.skipped.push_back(line.repo);
                         continue;
                     }
@@ -997,29 +1119,44 @@ void RegisterConverge(CLI::App& InApp) {
                     }
                 }
             } else if (phase == "sync-before-push" || phase == "sync-converge-dependent-repos") {
-                state.commandLinesUsed[phase].push_back("kog sync origin-latest --recursive");
-                const auto detailed = RunSyncOriginLatestNativeDetailed(workspaceRoot, true, false, false);
-                PopulatePhaseSummaryFromAggregate(detailed.second, false, summary);
-                if (detailed.first != 0 && summary.failed.empty() && summary.blocked.empty()) {
-                    summary.failed.push_back(".");
-                    summary.failureCategory["."] = "SYNC_ERROR";
-                    summary.failureMessage["."] = "sync phase failed";
-                    summary.retryEligible["."] = true;
+                for (const auto& line : plan.sync) {
+                    const auto repoPath = line.repo == "."
+                        ? workspaceRoot
+                        : (workspaceRoot / std::filesystem::path(line.repo)).lexically_normal();
+                    state.commandLinesUsed[phase].push_back("kog sync origin-latest --repo " + repoPath.generic_string() + " --no-recursive");
+                    const auto detailed = RunSyncOriginLatestNativeDetailed(repoPath, false, false, false);
+                    PopulatePhaseSummaryFromSingleRepoAggregate(line.repo, detailed.second, false, detailed.first, summary);
+                    if (detailed.first != 0 && summary.failed.empty() && summary.blocked.empty()) {
+                        summary.failed.push_back(line.repo);
+                        summary.failureCategory[line.repo] = "SYNC_ERROR";
+                        summary.failureMessage[line.repo] = "sync phase failed";
+                        summary.retryEligible[line.repo] = true;
+                    }
                 }
             } else if (phase == "push-nested-bottom-up" || phase == "push-parents-bottom-up") {
-                state.commandLinesUsed[phase].push_back("kog push --recursive --jobs " + std::to_string(*jobs));
-                const auto detailed = RunPushNativeSimpleDetailed(workspaceRoot, true, false, *profile, *forceWithLease, *noVerify, *jobs, *verbose, *remote);
-                PopulatePhaseSummaryFromAggregate(detailed.second, true, summary);
-                if (detailed.first != 0 && summary.failed.empty() && summary.blocked.empty()) {
-                    summary.failed.push_back(".");
-                    summary.failureCategory["."] = "PUSH_ERROR";
-                    summary.failureMessage["."] = "push phase failed";
-                    summary.retryEligible["."] = true;
+                const auto pushRepos = UniqueRepos(plan.push);
+                if (pushRepos.empty()) {
+                    state.commandLinesUsed[phase].push_back("kog push skipped: no planned repositories");
+                } else {
+                    state.commandLinesUsed[phase].push_back("kog push --recursive --repos " + Csv(pushRepos) + " --jobs " + std::to_string(*jobs));
+                    const auto detailed = RunPushNativeSimpleDetailed(workspaceRoot, true, false, *profile, *forceWithLease, *noVerify, *jobs, *verbose, *remote, pushRepos);
+                    PopulatePhaseSummaryFromAggregate(detailed.second, true, summary);
+                    if (detailed.first != 0 && summary.failed.empty() && summary.blocked.empty()) {
+                        summary.failed.push_back(".");
+                        summary.failureCategory["."] = "PUSH_ERROR";
+                        summary.failureMessage["."] = "push phase failed";
+                        summary.retryEligible["."] = true;
+                    }
                 }
             } else if (phase == "status-delta-after-sync") {
                 try {
                     snapshot = LoadSnapshot(workspaceRoot, *jobs, false);
                     plan = BuildPlan(snapshot);
+                    state.plannedSyncRepos = UniqueRepos(plan.sync);
+                    state.plannedCommitRepos = UniqueRepos(plan.commit);
+                    state.plannedPushRepos = UniqueRepos(plan.push);
+                    state.plannedBlockedRepos = UniqueRepos(plan.blocked);
+                    state.plannedWaves = plan.waves;
                     state.repoGraphFingerprint = SnapshotFingerprint(snapshot);
                     state.repoBaselines = RepoBaselines(snapshot);
                     summary.succeeded.push_back(".");
@@ -1032,11 +1169,11 @@ void RegisterConverge(CLI::App& InApp) {
             } else if (phase == "commit-pointer-updates-if-needed") {
                 for (const auto& line : plan.commit) {
                     if (line.text.find("deterministic pointer commit") == std::string::npos) continue;
-                    if (std::find(state.succeededRepos.begin(), state.succeededRepos.end(), line.repo) != state.succeededRepos.end()) {
+                    if (PhaseSummaryContainsRepo(state, phase, line.repo, &PhaseSummary::succeeded)) {
                         summary.skipped.push_back(line.repo);
                         continue;
                     }
-                    if (std::find(state.skippedRepos.begin(), state.skippedRepos.end(), line.repo) != state.skippedRepos.end()) {
+                    if (PhaseSummaryContainsRepo(state, phase, line.repo, &PhaseSummary::skipped)) {
                         summary.skipped.push_back(line.repo);
                         continue;
                     }
