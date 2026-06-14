@@ -251,6 +251,54 @@ TEST_CASE("converge planner gitlink only uses deterministic pointer commit", "[t
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge planner defers unsafe parent pointer while child can converge", "[tdd][unit][feature:converge-state][feature:dirty-kind][functional][converge][planner]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("converge-planner-defer-parent-unsafe");
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneChildRepo), "checkout child branch for deferred parent test");
+    WriteTextFile(ctx.cloneChildRepo / "child.txt", "child seed\nlocal child change\n");
+    const auto dirtyRootStatus = GitStatusShort(ctx.cloneRootRepo);
+
+    const auto result = RunConvergeDryRun(ctx.cloneRootRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContains(result.stdoutText, "GITLINK_DIRTY_UNSAFE");
+    RequireContains(result.stdoutText, ctx.submodulePath + ": kog commit -ai --repos " + ctx.submodulePath);
+    RequireContains(result.stdoutText, ".: parent pointer commit waits for child worktree converge");
+    RequireNotContains(result.stdoutText, "PARENT_POINTER_UNSAFE");
+    REQUIRE(GitStatusShort(ctx.cloneRootRepo) == dirtyRootStatus);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge runtime commits dirty child before parent pointer", "[tdd][functional][feature:converge-state][feature:dirty-kind][converge][planner]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("converge-runtime-child-before-parent");
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneChildRepo), "checkout child branch for runtime child converge");
+    WriteTextFile(ctx.cloneChildRepo / "child.txt", "child seed\nruntime child change\n");
+
+    const auto result = RunKog({"converge", "--jobs", "1"}, ctx.cloneRootRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContains(result.stdoutText, "[converge] phase=commit-local-changes-if-needed");
+    RequireContains(result.stdoutText, "[converge] phase=commit-pointer-updates-if-needed");
+    RequireContains(result.stdoutText, "[converge] completed");
+    REQUIRE(GitStatusShort(ctx.cloneChildRepo).empty());
+    REQUIRE(GitStatusShort(ctx.cloneRootRepo).empty());
+
+    const auto childHead = RunGit({"rev-parse", "HEAD"}, ctx.cloneChildRepo);
+    const auto childOrigin = RunGit({"rev-parse", "origin/" + ctx.branch}, ctx.cloneChildRepo);
+    const auto rootHead = RunGit({"rev-parse", "HEAD"}, ctx.cloneRootRepo);
+    const auto rootOrigin = RunGit({"rev-parse", "origin/" + ctx.branch}, ctx.cloneRootRepo);
+    RequireSuccess(childHead, "child rev-parse HEAD");
+    RequireSuccess(childOrigin, "child rev-parse origin");
+    RequireSuccess(rootHead, "root rev-parse HEAD");
+    RequireSuccess(rootOrigin, "root rev-parse origin");
+    REQUIRE(childHead.stdoutText == childOrigin.stdoutText);
+    REQUIRE(rootHead.stdoutText == rootOrigin.stdoutText);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("converge planner skips unregistered gitlink missing gitmodules mapping", "[functional][converge][planner][unregistered-gitlink]") {
     const auto ctx = CreateRemoteWithClone("converge-planner-unregistered-gitlink");
     const auto child = (ctx.cloneRepo / "HorizonDialogueDemo").lexically_normal();

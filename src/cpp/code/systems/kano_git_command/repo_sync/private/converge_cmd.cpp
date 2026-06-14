@@ -506,6 +506,106 @@ bool IsCleanNestedPreflightOnlyBlocker(const RepoStatus& repo) {
     return repo.dirtyKind == "DETACHED_HEAD" || repo.dirtyKind == "MISSING_REMOTE";
 }
 
+bool CanPublishLocalMutation(const RepoStatus& repo) {
+    return Allows(repo, "commit") && Allows(repo, "push") && !repo.remote.empty();
+}
+
+bool CanRepoConvergeBeforeParent(const RepoStatus& repo,
+                                 const std::unordered_map<std::string, RepoStatus>& byId,
+                                 std::unordered_set<std::string>& visiting);
+
+bool ChildrenCanConvergeBeforeParent(const RepoStatus& repo,
+                                     const std::unordered_map<std::string, RepoStatus>& byId,
+                                     std::unordered_set<std::string>& visiting) {
+    for (const auto& child : repo.childRepos) {
+        const auto it = byId.find(child);
+        if (it == byId.end()) {
+            return false;
+        }
+        const auto& childRepo = it->second;
+        const bool childNeedsAction =
+            childRepo.dirtyKind != "CLEAN" ||
+            HasUnpushedSubmoduleCommit(childRepo) ||
+            Contains(childRepo.statusFlags, "CHILD_WORKTREE_DIRTY") ||
+            Contains(childRepo.statusFlags, "CHILD_COMMIT_UNPUSHED");
+        if (childNeedsAction && !CanRepoConvergeBeforeParent(childRepo, byId, visiting)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool CanRepoConvergeBeforeParent(const RepoStatus& repo,
+                                 const std::unordered_map<std::string, RepoStatus>& byId,
+                                 std::unordered_set<std::string>& visiting) {
+    if (!visiting.insert(repo.id).second) {
+        return false;
+    }
+
+    const auto finish = [&](bool result) {
+        visiting.erase(repo.id);
+        return result;
+    };
+
+    if (repo.dirtyKind == "CONFLICTED" || repo.dirtyKind == "DIVERGED") {
+        return finish(false);
+    }
+    if (repo.blocksConverge && !IsCleanNestedPreflightOnlyBlocker(repo)) {
+        return finish(false);
+    }
+    if (repo.dirtyKind == "CLEAN") {
+        return finish(true);
+    }
+    if (repo.dirtyKind == "DETACHED_HEAD" || repo.dirtyKind == "MISSING_REMOTE") {
+        return finish(IsCleanNestedPreflightOnlyBlocker(repo));
+    }
+    if (repo.dirtyKind == "BEHIND_ONLY") {
+        return finish(Allows(repo, "sync"));
+    }
+    if (repo.dirtyKind == "AHEAD_ONLY") {
+        return finish(Allows(repo, "push") && !repo.remote.empty());
+    }
+    if (repo.dirtyKind == "GITLINK_DIRTY_ONLY") {
+        return finish(CanPublishLocalMutation(repo));
+    }
+    if (repo.dirtyKind == "GITLINK_DIRTY_UNSAFE") {
+        return finish(CanPublishLocalMutation(repo) && ChildrenCanConvergeBeforeParent(repo, byId, visiting));
+    }
+    if (repo.dirtyKind == "CONTENT_AND_GITLINK_DIRTY") {
+        return finish(CanPublishLocalMutation(repo) && ChildrenCanConvergeBeforeParent(repo, byId, visiting));
+    }
+    if (repo.dirtyKind == "INDEX_DIRTY" || repo.dirtyKind == "CONTENT_DIRTY" || repo.dirtyKind == "UNTRACKED_ONLY") {
+        return finish(CanPublishLocalMutation(repo));
+    }
+    return finish(false);
+}
+
+bool UnsafeParentCanWaitForChildConverge(const RepoStatus& repo,
+                                         const std::unordered_map<std::string, RepoStatus>& byId) {
+    bool foundRemediableChild = false;
+    std::unordered_set<std::string> visiting{repo.id};
+    for (const auto& child : repo.childRepos) {
+        const auto it = byId.find(child);
+        if (it == byId.end()) {
+            return false;
+        }
+        const auto& childRepo = it->second;
+        const bool childNeedsAction =
+            childRepo.dirtyKind != "CLEAN" ||
+            HasUnpushedSubmoduleCommit(childRepo) ||
+            Contains(childRepo.statusFlags, "CHILD_WORKTREE_DIRTY") ||
+            Contains(childRepo.statusFlags, "CHILD_COMMIT_UNPUSHED");
+        if (!childNeedsAction) {
+            continue;
+        }
+        if (!CanRepoConvergeBeforeParent(childRepo, byId, visiting)) {
+            return false;
+        }
+        foundRemediableChild = true;
+    }
+    return foundRemediableChild;
+}
+
 Plan BuildPlan(const Snapshot& snapshot) {
     Plan plan;
     plan.waves = Waves(snapshot);
@@ -570,7 +670,14 @@ Plan BuildPlan(const Snapshot& snapshot) {
             continue;
         }
         if (repo.dirtyKind == "UNREGISTERED_GITLINK_DIRTY_ONLY_SKIPPED") { Add(plan.skipped, repo.id, "kog commit -ai skipped: UNREGISTERED_GITLINK_DIRTY_ONLY_SKIPPED"); continue; }
-        if (repo.dirtyKind == "GITLINK_DIRTY_UNSAFE") { Add(plan.blocked, repo.id, "PARENT_POINTER_UNSAFE: child worktree/commit state is not safe for deterministic pointer-only commit"); continue; }
+        if (repo.dirtyKind == "GITLINK_DIRTY_UNSAFE") {
+            if (UnsafeParentCanWaitForChildConverge(repo, byId)) {
+                Add(plan.skipped, repo.id, "parent pointer commit waits for child worktree converge");
+            } else {
+                Add(plan.blocked, repo.id, "PARENT_POINTER_UNSAFE: child worktree/commit state is not safe for deterministic pointer-only commit");
+            }
+            continue;
+        }
         if (repo.dirtyKind == "INDEX_DIRTY") {
             if (Allows(repo, "commit")) {
                 Add(plan.commit, repo.id, "kog commit -ai --repos " + repo.id + " (staged/index changes included by commit policy)");
