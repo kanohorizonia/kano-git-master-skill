@@ -501,6 +501,7 @@ bool HasUnpushedSubmoduleCommit(const RepoStatus& repo) {
 
 bool IsCleanNestedPreflightOnlyBlocker(const RepoStatus& repo) {
     if (repo.type == "root") return false;
+    if (repo.managementPolicy == "discovered-untrusted") return false;
     if (repo.ahead > 0) return false;
     return repo.dirtyKind == "DETACHED_HEAD" || repo.dirtyKind == "MISSING_REMOTE";
 }
