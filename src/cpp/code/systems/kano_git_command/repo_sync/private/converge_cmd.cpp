@@ -491,6 +491,12 @@ bool HasUnpushedSubmoduleCommit(const RepoStatus& repo) {
     return Contains(repo.submoduleFacts, "SubmoduleCommitUnpushed") || Contains(repo.statusFlags, "UNPUSHED_SUBMODULE_COMMIT");
 }
 
+bool IsCleanNestedPreflightOnlyBlocker(const RepoStatus& repo) {
+    if (repo.type == "root") return false;
+    if (repo.ahead > 0) return false;
+    return repo.dirtyKind == "DETACHED_HEAD" || repo.dirtyKind == "MISSING_REMOTE";
+}
+
 Plan BuildPlan(const Snapshot& snapshot) {
     Plan plan;
     plan.waves = Waves(snapshot);
@@ -508,13 +514,17 @@ Plan BuildPlan(const Snapshot& snapshot) {
                 path,
                 "no .gitmodules mapping; not registered as managed submodule; skipped parent pointer update");
         }
+        if (repo.dirtyKind == "CONFLICTED") { Add(plan.blocked, repo.id, "CONFLICTED: resolve conflicts before converge mutation"); continue; }
+        if (repo.dirtyKind == "DIVERGED") { Add(plan.blocked, repo.id, "DIVERGED: no conflict-safe converge sync policy is configured"); continue; }
+        if (repo.blocksConverge && IsCleanNestedPreflightOnlyBlocker(repo)) {
+            Add(plan.skipped, repo.id, "preflight-only clean nested repo skipped: " + repo.dirtyKind);
+            continue;
+        }
         if (repo.blocksConverge) {
             Add(plan.blocked, repo.id, repo.blockReason.empty() ? "status snapshot blocks converge" : repo.blockReason);
             Add(plan.skipped, repo.id, "blocked by recursive status preflight");
             continue;
         }
-        if (repo.dirtyKind == "CONFLICTED") { Add(plan.blocked, repo.id, "CONFLICTED: resolve conflicts before converge mutation"); continue; }
-        if (repo.dirtyKind == "DIVERGED") { Add(plan.blocked, repo.id, "DIVERGED: no conflict-safe converge sync policy is configured"); continue; }
 
         std::vector<std::string> unpushedChildren;
         for (const auto& child : repo.childRepos) if (const auto it = byId.find(child); it != byId.end() && HasUnpushedSubmoduleCommit(it->second)) unpushedChildren.push_back(child);
@@ -538,6 +548,7 @@ Plan BuildPlan(const Snapshot& snapshot) {
         if (repo.dirtyKind == "GITLINK_DIRTY_ONLY") { Add(plan.skipped, repo.id, "kog commit -ai skipped: GITLINK_DIRTY_ONLY"); Allows(repo, "commit") ? Add(plan.commit, repo.id, "deterministic pointer commit: " + PointerMessage(repo)) : Add(plan.skipped, repo.id, "pointer commit skipped by commandPolicy.commit=false"); continue; }
         if (repo.dirtyKind == "UNREGISTERED_GITLINK_DIRTY_ONLY_SKIPPED") { Add(plan.skipped, repo.id, "kog commit -ai skipped: UNREGISTERED_GITLINK_DIRTY_ONLY_SKIPPED"); continue; }
         if (repo.dirtyKind == "GITLINK_DIRTY_UNSAFE") { Add(plan.blocked, repo.id, "PARENT_POINTER_UNSAFE: child worktree/commit state is not safe for deterministic pointer-only commit"); continue; }
+        if (repo.dirtyKind == "INDEX_DIRTY") { Allows(repo, "commit") ? Add(plan.commit, repo.id, "kog commit -ai --repos " + repo.id + " (staged/index changes included by commit policy)") : Add(plan.skipped, repo.id, "commit skipped by commandPolicy.commit=false"); continue; }
         if (repo.dirtyKind == "CONTENT_DIRTY") { Allows(repo, "commit") ? Add(plan.commit, repo.id, "kog commit -ai --repos " + repo.id) : Add(plan.skipped, repo.id, "commit skipped by commandPolicy.commit=false"); continue; }
         if (repo.dirtyKind == "CONTENT_AND_GITLINK_DIRTY") { Allows(repo, "commit") ? Add(plan.commit, repo.id, "kog commit -ai --repos " + repo.id + " (combined content/pointer context)") : Add(plan.skipped, repo.id, "commit skipped by commandPolicy.commit=false"); continue; }
         if (repo.dirtyKind == "UNTRACKED_ONLY") { Allows(repo, "commit") ? Add(plan.commit, repo.id, "kog commit -ai --repos " + repo.id + " (untracked files included by git add -A policy)") : Add(plan.blocked, repo.id, "DIRTY_WORKTREE: UNTRACKED_ONLY but commandPolicy.commit=false"); continue; }

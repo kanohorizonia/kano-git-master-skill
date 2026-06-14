@@ -278,61 +278,192 @@ if(MSVC)
     )
 endif()
 
-# Get version from parent VERSION file
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../VERSION")
-    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../../VERSION" KOG_VERSION_FILE_CONTENT)
+# ---------------------------------------------------------------------------
+# Version and build metadata resolution
+#
+# Priority for each field: env var > git auto-detection > safe fallback
+# ---------------------------------------------------------------------------
+
+# 1. Read base version from repo root VERSION file
+if(EXISTS "${KOG_REPO_ROOT}/VERSION")
+    file(READ "${KOG_REPO_ROOT}/VERSION" KOG_VERSION_FILE_CONTENT)
     string(STRIP "${KOG_VERSION_FILE_CONTENT}" KOG_VERSION_STR)
 else()
     set(KOG_VERSION_STR "0.0.0-dev")
 endif()
 add_compile_definitions(KOG_VERSION="${KOG_VERSION_STR}")
 
-set(KOG_BUILD_VERSION_STR "${KOG_VERSION_STR}")
-set(KOG_BUILD_VCS_STR "$ENV{KOG_BUILD_VCS}")
-set(KOG_BUILD_BRANCH_STR "$ENV{KOG_BUILD_BRANCH}")
-set(KOG_BUILD_REVISION_STR "$ENV{KOG_BUILD_REVISION}")
-set(KOG_BUILD_REVISION_HASH_SHORT_STR "$ENV{KOG_BUILD_REVISION_HASH_SHORT}")
-set(KOG_BUILD_REVISION_HASH_STR "$ENV{KOG_BUILD_REVISION_HASH}")
-set(KOG_BUILD_DIRTY_STR "$ENV{KOG_BUILD_DIRTY}")
-set(KOG_BUILD_HOST_NAME_STR "$ENV{KOG_BUILD_HOST_NAME}")
-set(KOG_BUILD_CI_STR "$ENV{KOG_BUILD_CI}")
-set(KOG_BUILD_CONTEXT_STR "$ENV{KOG_BUILD_CONTEXT}")
-set(KOG_BUILD_PIPELINE_ID_STR "$ENV{KOG_BUILD_PIPELINE_ID}")
-set(KOG_BUILD_PLATFORM_STR "$ENV{KOG_BUILD_PLATFORM}")
-set(KOG_BUILD_TOOLCHAIN_STR "${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
-set(KOG_BUILD_GENERATOR_STR "${CMAKE_GENERATOR}")
-set(KOG_BUILD_PRESET_STR "${KOG_PRESET_NAME}")
+# ---------------------------------------------------------------------------
+# Helper: run a git command in KOG_REPO_ROOT, store trimmed stdout in out_var
+# ---------------------------------------------------------------------------
+function(kog_git out_var)
+    execute_process(
+        COMMAND git -C "${KOG_REPO_ROOT}" ${ARGN}
+        OUTPUT_VARIABLE _kog_git_out
+        ERROR_QUIET
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    set(${out_var} "${_kog_git_out}" PARENT_SCOPE)
+endfunction()
 
-if(CMAKE_CONFIGURATION_TYPES)
-    set(KOG_BUILD_CONFIGURATION_STR "$<CONFIG>")
+# ---------------------------------------------------------------------------
+# Helper: env var if set, else run git, else fallback value
+# ---------------------------------------------------------------------------
+function(kog_env_or_git out_var env_name fallback)
+    if(NOT "$ENV{${env_name}}" STREQUAL "")
+        set(${out_var} "$ENV{${env_name}}" PARENT_SCOPE)
+    else()
+        set(_args ${ARGN})
+        execute_process(
+            COMMAND git -C "${KOG_REPO_ROOT}" ${_args}
+            OUTPUT_VARIABLE _kog_eog_out
+            ERROR_QUIET
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+        )
+        if(NOT _kog_eog_out STREQUAL "")
+            set(${out_var} "${_kog_eog_out}" PARENT_SCOPE)
+        else()
+            set(${out_var} "${fallback}" PARENT_SCOPE)
+        endif()
+    endif()
+endfunction()
+
+# ---------------------------------------------------------------------------
+# Helper: compute revision-aware version
+#
+# Input:  base_version (e.g. "0.1.0-beta"), revision (e.g. "423")
+# Output: e.g. "0.1.0.423-beta"
+#
+# Rules:
+#   - Strip whitespace
+#   - Match ^([0-9]+(\.[0-9]+)*)(.*)$  ->  numeric prefix + suffix
+#   - Split numeric prefix by "."
+#   - If component count > 4: fatal error
+#   - If component count == 4: replace index 3 with revision
+#   - If component count  < 4: append revision
+#   - Join with "." then append suffix
+# ---------------------------------------------------------------------------
+function(kog_compute_revision_version base_version revision out_var)
+    string(STRIP "${base_version}" _base)
+    string(STRIP "${revision}" _rev)
+
+    # Match numeric prefix and suffix
+    string(REGEX MATCH "^([0-9]+(\\.[0-9]+)*)(.*)$" _match "${_base}")
+    if(NOT _match)
+        message(FATAL_ERROR "kog_compute_revision_version: cannot parse VERSION '${_base}'")
+    endif()
+    set(_numeric_prefix "${CMAKE_MATCH_1}")
+    set(_suffix "${CMAKE_MATCH_3}")
+
+    # Split numeric components
+    string(REPLACE "." ";" _components "${_numeric_prefix}")
+    list(LENGTH _components _count)
+
+    if(_count GREATER 4)
+        message(FATAL_ERROR "Unsupported VERSION numeric component count > 4 in '${_base}'")
+    elseif(_count EQUAL 4)
+        # Replace index 3
+        list(REMOVE_AT _components 3)
+        list(APPEND _components "${_rev}")
+    else()
+        # Append revision
+        list(APPEND _components "${_rev}")
+    endif()
+
+    string(JOIN "." _joined ${_components})
+    set(${out_var} "${_joined}${_suffix}" PARENT_SCOPE)
+endfunction()
+
+# ---------------------------------------------------------------------------
+# 2. VCS detection
+# ---------------------------------------------------------------------------
+if(NOT "$ENV{KOG_BUILD_VCS}" STREQUAL "")
+    set(KOG_BUILD_VCS_STR "$ENV{KOG_BUILD_VCS}")
 else()
-    set(KOG_BUILD_CONFIGURATION_STR "${CMAKE_BUILD_TYPE}")
+    kog_git(_kog_inside rev-parse --is-inside-work-tree)
+    if(_kog_inside STREQUAL "true")
+        set(KOG_BUILD_VCS_STR "git")
+    else()
+        set(KOG_BUILD_VCS_STR "unknown")
+    endif()
 endif()
 
-if(KOG_BUILD_VCS_STR STREQUAL "")
-    set(KOG_BUILD_VCS_STR "unknown")
+# ---------------------------------------------------------------------------
+# 3. Branch
+# ---------------------------------------------------------------------------
+if(NOT "$ENV{KOG_BUILD_BRANCH}" STREQUAL "")
+    set(KOG_BUILD_BRANCH_STR "$ENV{KOG_BUILD_BRANCH}")
+else()
+    kog_git(_kog_branch branch --show-current)
+    if(_kog_branch STREQUAL "")
+        kog_git(_kog_branch rev-parse --abbrev-ref HEAD)
+    endif()
+    if(_kog_branch STREQUAL "" OR _kog_branch STREQUAL "HEAD")
+        set(KOG_BUILD_BRANCH_STR "detached")
+    else()
+        set(KOG_BUILD_BRANCH_STR "${_kog_branch}")
+    endif()
 endif()
-if(KOG_BUILD_BRANCH_STR STREQUAL "")
-    set(KOG_BUILD_BRANCH_STR "unknown")
+
+# ---------------------------------------------------------------------------
+# 4. Revision (commit count)
+# ---------------------------------------------------------------------------
+if(NOT "$ENV{KOG_BUILD_REVISION}" STREQUAL "")
+    set(KOG_BUILD_REVISION_STR "$ENV{KOG_BUILD_REVISION}")
+else()
+    kog_git(_kog_rev rev-list --count HEAD)
+    if(NOT _kog_rev STREQUAL "")
+        set(KOG_BUILD_REVISION_STR "${_kog_rev}")
+    else()
+        set(KOG_BUILD_REVISION_STR "0")
+    endif()
 endif()
-if(KOG_BUILD_REVISION_STR STREQUAL "")
-    set(KOG_BUILD_REVISION_STR "unknown")
-endif()
-if(KOG_BUILD_REVISION_HASH_SHORT_STR STREQUAL "")
-    set(KOG_BUILD_REVISION_HASH_SHORT_STR "unknown")
-endif()
-if(KOG_BUILD_REVISION_HASH_STR STREQUAL "")
-    set(KOG_BUILD_REVISION_HASH_STR "unknown")
-endif()
-if(KOG_BUILD_DIRTY_STR STREQUAL "")
+
+# ---------------------------------------------------------------------------
+# 5. Hashes
+# ---------------------------------------------------------------------------
+kog_env_or_git(KOG_BUILD_REVISION_HASH_SHORT_STR KOG_BUILD_REVISION_HASH_SHORT
+    "unknown" rev-parse --short=12 HEAD)
+kog_env_or_git(KOG_BUILD_REVISION_HASH_STR KOG_BUILD_REVISION_HASH
+    "unknown" rev-parse HEAD)
+
+# ---------------------------------------------------------------------------
+# 6. Dirty flag
+# ---------------------------------------------------------------------------
+if(NOT "$ENV{KOG_BUILD_DIRTY}" STREQUAL "")
+    set(KOG_BUILD_DIRTY_STR "$ENV{KOG_BUILD_DIRTY}")
+elseif(KOG_BUILD_VCS_STR STREQUAL "git")
+    kog_git(_kog_dirty status --porcelain --untracked-files=no)
+    if(NOT _kog_dirty STREQUAL "")
+        set(KOG_BUILD_DIRTY_STR "true")
+    else()
+        set(KOG_BUILD_DIRTY_STR "false")
+    endif()
+else()
     set(KOG_BUILD_DIRTY_STR "unknown")
 endif()
-if(KOG_BUILD_HOST_NAME_STR STREQUAL "")
-    set(KOG_BUILD_HOST_NAME_STR "unknown")
+
+# ---------------------------------------------------------------------------
+# 7. Hostname
+# ---------------------------------------------------------------------------
+if(NOT "$ENV{KOG_BUILD_HOST_NAME}" STREQUAL "")
+    set(KOG_BUILD_HOST_NAME_STR "$ENV{KOG_BUILD_HOST_NAME}")
+else()
+    cmake_host_system_information(RESULT KOG_BUILD_HOST_NAME_STR QUERY HOSTNAME)
+    if(KOG_BUILD_HOST_NAME_STR STREQUAL "")
+        set(KOG_BUILD_HOST_NAME_STR "unknown")
+    endif()
 endif()
+
+# ---------------------------------------------------------------------------
+# 8. CI / context / pipeline
+# ---------------------------------------------------------------------------
+set(KOG_BUILD_CI_STR "$ENV{KOG_BUILD_CI}")
 if(KOG_BUILD_CI_STR STREQUAL "")
     set(KOG_BUILD_CI_STR "false")
 endif()
+
+set(KOG_BUILD_CONTEXT_STR "$ENV{KOG_BUILD_CONTEXT}")
 if(KOG_BUILD_CONTEXT_STR STREQUAL "")
     if(KOG_BUILD_CI_STR STREQUAL "true")
         set(KOG_BUILD_CONTEXT_STR "ci")
@@ -340,6 +471,8 @@ if(KOG_BUILD_CONTEXT_STR STREQUAL "")
         set(KOG_BUILD_CONTEXT_STR "local-manual")
     endif()
 endif()
+
+set(KOG_BUILD_PIPELINE_ID_STR "$ENV{KOG_BUILD_PIPELINE_ID}")
 if(KOG_BUILD_PIPELINE_ID_STR STREQUAL "")
     if(KOG_BUILD_CI_STR STREQUAL "true")
         set(KOG_BUILD_PIPELINE_ID_STR "unknown")
@@ -347,19 +480,47 @@ if(KOG_BUILD_PIPELINE_ID_STR STREQUAL "")
         set(KOG_BUILD_PIPELINE_ID_STR "local-manual")
     endif()
 endif()
+
+# ---------------------------------------------------------------------------
+# 9. Platform, toolchain, generator, preset, configuration
+# ---------------------------------------------------------------------------
+set(KOG_BUILD_PLATFORM_STR "$ENV{KOG_BUILD_PLATFORM}")
 if(KOG_BUILD_PLATFORM_STR STREQUAL "")
     set(KOG_BUILD_PLATFORM_STR "${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
 endif()
+
+set(KOG_BUILD_TOOLCHAIN_STR "${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
+set(KOG_BUILD_GENERATOR_STR "${CMAKE_GENERATOR}")
 if(KOG_BUILD_GENERATOR_STR STREQUAL "")
     set(KOG_BUILD_GENERATOR_STR "unknown")
 endif()
+
+set(KOG_BUILD_PRESET_STR "${KOG_PRESET_NAME}")
 if(KOG_BUILD_PRESET_STR STREQUAL "")
     set(KOG_BUILD_PRESET_STR "unknown-preset")
+endif()
+
+if(CMAKE_CONFIGURATION_TYPES)
+    set(KOG_BUILD_CONFIGURATION_STR "$<CONFIG>")
+else()
+    set(KOG_BUILD_CONFIGURATION_STR "${CMAKE_BUILD_TYPE}")
 endif()
 if(KOG_BUILD_CONFIGURATION_STR STREQUAL "")
     set(KOG_BUILD_CONFIGURATION_STR "unknown")
 endif()
 
+# ---------------------------------------------------------------------------
+# 10. Revision-aware build version: e.g. "0.1.0-beta" + rev "423" -> "0.1.0.423-beta"
+# ---------------------------------------------------------------------------
+kog_compute_revision_version("${KOG_VERSION_STR}" "${KOG_BUILD_REVISION_STR}" KOG_BUILD_VERSION_STR)
+
+message(STATUS "KOG version base:    ${KOG_VERSION_STR}")
+message(STATUS "KOG revision:        ${KOG_BUILD_REVISION_STR}")
+message(STATUS "KOG build version:   ${KOG_BUILD_VERSION_STR}")
+message(STATUS "KOG branch:          ${KOG_BUILD_BRANCH_STR}")
+message(STATUS "KOG hash_short:      ${KOG_BUILD_REVISION_HASH_SHORT_STR}")
+message(STATUS "KOG dirty:           ${KOG_BUILD_DIRTY_STR}")
+message(STATUS "KOG host:            ${KOG_BUILD_HOST_NAME_STR}")
 # CLI11 v2.4 uses <codecvt> which is removed in MSVC 19.50 (VS 2026)
 add_compile_definitions(CLI11_HAS_CODECVT=0)
 

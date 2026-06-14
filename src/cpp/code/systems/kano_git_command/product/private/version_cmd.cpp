@@ -1,4 +1,4 @@
-// version command — project version overview
+// version command — binary build version + optional workspace project version overview
 
 #include <CLI/CLI.hpp>
 #include <filesystem>
@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "build_info.hpp"
 #include "discovery.hpp"
 #include "shell_executor.hpp"
 #include "ai_utils.hpp"
@@ -82,7 +83,6 @@ auto AnalyzeRepoVersion(const std::filesystem::path& InRepoPath, const std::file
         info.versionSource = "";
     }
 
-    // Git info
     const auto branchResult = shell::ExecuteCommand("git", {"rev-parse", "--abbrev-ref", "HEAD"}, shell::ExecMode::Capture, InRepoPath);
     info.branch = branchResult.exitCode == 0 ? Trim(branchResult.stdoutStr) : "unknown";
 
@@ -101,76 +101,90 @@ auto AnalyzeRepoVersion(const std::filesystem::path& InRepoPath, const std::file
 } // namespace
 
 void RegisterVersion(CLI::App& InApp) {
-    auto* cmd = InApp.add_subcommand("version", "Overview project versions in the workspace");
-    
-    auto repo = std::make_shared<std::string>(".");
+    auto* cmd = InApp.add_subcommand("version", "Show binary build version");
+
+    auto verbose  = std::make_shared<bool>(false);
+    auto workspace = std::make_shared<bool>(false);
+    auto repo     = std::make_shared<std::string>(".");
     auto recursive = std::make_shared<bool>(true);
-    auto field = std::make_shared<std::string>("");
+    auto field    = std::make_shared<std::string>("");
 
-    cmd->add_option("repo", *repo, "Workspace or project root path")->default_val(".");
-    cmd->add_flag("-r,--recursive,!--no-recursive", *recursive, "Recursive repository discovery")->default_val(true);
-    cmd->add_option("-f,--field", *field, "Output specific field of the current repo (sha, revision, branch, version, human)");
+    cmd->add_flag("-v,--verbose",      *verbose,   "Show full build metadata (branch, revision, hash, toolchain, etc.)");
+    cmd->add_flag("-w,--workspace",    *workspace, "Show project version info for repositories in the workspace");
+    cmd->add_option("repo",            *repo,      "Workspace or project root path (used with --workspace)")->default_val(".");
+    cmd->add_flag("-r,--recursive,!--no-recursive", *recursive, "Recursive repository discovery (used with --workspace)")->default_val(true);
+    cmd->add_option("-f,--field",      *field,     "Output a specific field of the current repo: sha, revision, branch, version, human (used with --workspace)");
 
-    cmd->callback([repo, recursive, field]() {
-        const auto rootPath = std::filesystem::weakly_canonical(std::filesystem::path(*repo));
-        
-        std::vector<std::filesystem::path> repoPaths;
+    cmd->callback([verbose, workspace, repo, recursive, field]() {
+        // --workspace: show workspace project versions (legacy behaviour)
+        if (*workspace || !field->empty()) {
+            const auto rootPath = std::filesystem::weakly_canonical(std::filesystem::path(*repo));
 
-        if (*recursive) {
-            kano::git::workspace::DiscoverOptions opts;
-            opts.rootDir = rootPath;
-            opts.maxDepth = 3;
-            opts.useCache = true;
-            const auto result = kano::git::workspace::DiscoverRepos(opts);
-
-            for (const auto& r : result.repos) {
-                repoPaths.push_back(r.path);
+            std::vector<std::filesystem::path> repoPaths;
+            if (*recursive) {
+                kano::git::workspace::DiscoverOptions opts;
+                opts.rootDir = rootPath;
+                opts.maxDepth = 3;
+                opts.useCache = true;
+                const auto result = kano::git::workspace::DiscoverRepos(opts);
+                for (const auto& r : result.repos) {
+                    repoPaths.push_back(r.path);
+                }
+            } else {
+                repoPaths.push_back(rootPath);
             }
-        } else {
-            repoPaths.push_back(rootPath);
-        }
 
-        if (repoPaths.empty()) {
-            std::cerr << "Error: No git repositories found.\n";
-            std::exit(1);
-        }
-
-        if (!field->empty()) {
-            auto info = AnalyzeRepoVersion(rootPath, rootPath);
-            std::string targetField = *field;
-            std::string out;
-
-            if (targetField == "sha" || targetField == "hash") out = info.hash;
-            else if (targetField == "revision" || targetField == "rev") out = info.revisionCount;
-            else if (targetField == "branch") out = info.branch;
-            else if (targetField == "version") out = info.version;
-            else if (targetField == "human") out = info.branch + " (rev " + info.revisionCount + ") " + info.hash;
-            else {
-                std::cerr << "Error: Unknown field: " << targetField << "\n";
+            if (repoPaths.empty()) {
+                std::cerr << "Error: No git repositories found.\n";
                 std::exit(1);
             }
-            std::cout << (out.empty() ? "-" : out) << "\n";
+
+            if (!field->empty()) {
+                auto info = AnalyzeRepoVersion(rootPath, rootPath);
+                std::string targetField = *field;
+                std::string out;
+                if (targetField == "sha" || targetField == "hash") out = info.hash;
+                else if (targetField == "revision" || targetField == "rev") out = info.revisionCount;
+                else if (targetField == "branch") out = info.branch;
+                else if (targetField == "version") out = info.version;
+                else if (targetField == "human") out = info.branch + " (rev " + info.revisionCount + ") " + info.hash;
+                else {
+                    std::cerr << "Error: Unknown field: " << targetField << "\n";
+                    std::exit(1);
+                }
+                std::cout << (out.empty() ? "-" : out) << "\n";
+                return;
+            }
+
+            std::vector<ProjectVersionInfo> projects;
+            for (const auto& p : repoPaths) {
+                projects.push_back(AnalyzeRepoVersion(p, rootPath));
+            }
+            for (const auto& info : projects) {
+                std::cout << "[" << kano::terminal::Wrap(info.repoPath, kano::terminal::Color::Dim) << "] "
+                          << kano::terminal::Wrap(info.repoName, kano::terminal::Color::BoldCyan) << "\n";
+                std::cout << "    Version:  " << kano::terminal::Wrap(info.version, kano::terminal::Color::BoldGreen);
+                if (!info.versionSource.empty()) {
+                    std::cout << " " << kano::terminal::Wrap("(source: " + info.versionSource + ")", kano::terminal::Color::Dim);
+                }
+                std::cout << "\n";
+                std::cout << "    Revision: " << kano::terminal::Wrap(info.branch, kano::terminal::Color::BoldWhite)
+                          << " " << kano::terminal::Wrap("(rev " + info.revisionCount + ")", kano::terminal::Color::Dim)
+                          << " " << kano::terminal::Wrap(info.hash, kano::terminal::Color::BoldBlue) << "\n";
+                std::cout << "    Status:   " << (info.isDirty
+                    ? kano::terminal::Wrap("Dirty", kano::terminal::Color::BoldRed)
+                    : kano::terminal::Wrap("Clean", kano::terminal::Color::BoldGreen)) << "\n";
+                std::cout << "\n";
+            }
             return;
         }
 
-        std::vector<ProjectVersionInfo> projects;
-        for (const auto& p : repoPaths) {
-            projects.push_back(AnalyzeRepoVersion(p, rootPath));
-        }
-
-        for (const auto& info : projects) {
-            std::cout << "[" << kano::terminal::Wrap(info.repoPath, kano::terminal::Color::Dim) << "] " 
-                      << kano::terminal::Wrap(info.repoName, kano::terminal::Color::BoldCyan) << "\n";
-            std::cout << "    Version:  " << kano::terminal::Wrap(info.version, kano::terminal::Color::BoldGreen);
-            if (!info.versionSource.empty()) {
-                std::cout << " " << kano::terminal::Wrap("(source: " + info.versionSource + ")", kano::terminal::Color::Dim);
-            }
-            std::cout << "\n";
-            std::cout << "    Revision: " << kano::terminal::Wrap(info.branch, kano::terminal::Color::BoldWhite) 
-                      << " " << kano::terminal::Wrap("(rev " + info.revisionCount + ")", kano::terminal::Color::Dim) 
-                      << " " << kano::terminal::Wrap(info.hash, kano::terminal::Color::BoldBlue) << "\n";
-            std::cout << "    Status:   " << (info.isDirty ? kano::terminal::Wrap("Dirty", kano::terminal::Color::BoldRed) : kano::terminal::Wrap("Clean", kano::terminal::Color::BoldGreen)) << "\n";
-            std::cout << "\n";
+        // Default: binary build version
+        if (*verbose) {
+            std::cout << kano::git::GetBuildInfo() << "\n";
+        } else {
+            const auto ver = kano::git::GetBuildVersion();
+            std::cout << (ver.empty() ? "0.0.0-dev" : std::string(ver)) << "\n";
         }
     });
 }

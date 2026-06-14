@@ -73,6 +73,34 @@ GitHub access for FetchContent dependencies.
 src/shell/test/smoke-release-online-build.sh <archive.tar>
 ```
 
+## Version
+
+```bash
+# Binary build version (short)
+./scripts/kog version
+
+# Full build metadata: branch, revision, hash, toolchain, preset, configuration, CI context
+./scripts/kog version --verbose
+
+# Workspace project version overview (reads VERSION files from discovered repos)
+./scripts/kog version --workspace
+./scripts/kog version --workspace --repo <path>
+```
+
+`kog version` reports the version string embedded in the native binary at build time.
+`kog version --verbose` emits all build metadata fields in `key=value` format.
+`kog version --workspace` is the project-version scanner for multi-repo workspaces.
+
+`kog self status` reports install and checkout state (repo path, binary path,
+installed version, install timestamp, packaged/developer checkout).
+
+```bash
+./scripts/kog self status
+./scripts/kog self status --json
+```
+
+> **Note:** `kog self version` is deprecated. Use `kog version` for the binary
+> build version, or `kog self status` for install/checkout state.
 ## Common workflows
 
 ```bash

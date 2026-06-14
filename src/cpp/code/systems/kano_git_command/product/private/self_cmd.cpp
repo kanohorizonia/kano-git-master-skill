@@ -858,14 +858,43 @@ auto BuildInfoJson() -> std::string {
 void RegisterSelf(CLI::App& InApp) {
     auto* cmd = InApp.add_subcommand("self", "Launcher self-management commands");
 
-    auto* selfVersion = cmd->add_subcommand("version", "Show launcher version and build information");
-    auto* versionFormat = new std::string{"plain"};
-    selfVersion->add_option("--format", *versionFormat, "Output format: plain|json")->default_str("plain");
-    selfVersion->callback([=]() {
-        if (*versionFormat == "json") {
-            std::cout << BuildInfoJson() << "\n";
+    // -------------------------------------------------------------------------
+    // self status — install / checkout state overview
+    // -------------------------------------------------------------------------
+    auto* selfStatus = cmd->add_subcommand(
+        "status",
+        "Show install and checkout state (repo path, binary path, installed version, install timestamp)");
+    auto* statusJson = new bool{false};
+    selfStatus->add_flag("--json", *statusJson, "Output as JSON");
+    selfStatus->callback([=]() {
+        const auto kogRepoRoot   = FindKogRepoRoot();
+        const auto kogLocation   = FindKogLocation();
+        const auto installedVer  = kogRepoRoot.empty()
+            ? std::string{}
+            : ReadTextFileTrimmed(std::filesystem::path(kogRepoRoot) / "VERSION");
+        const auto binaryVersion = std::string(::kano::git::GetBuildVersion());
+        const auto markerPath    = ResolveInstallMarkerPath(
+            kogRepoRoot.empty() ? std::filesystem::path(".") : std::filesystem::path(kogRepoRoot));
+        const bool isPackaged    = kogRepoRoot.empty()
+            ? IsPackagedInstall()
+            : IsPackagedInstall(std::filesystem::path(kogRepoRoot));
+
+        if (*statusJson) {
+            std::cout << "{"
+                << "\"repo_path\":"         << "\"" << JsonEscape(kogRepoRoot)    << "\","
+                << "\"bin_path\":"          << "\"" << JsonEscape(kogLocation)    << "\","
+                << "\"installed_version\":" << "\"" << JsonEscape(installedVer)   << "\","
+                << "\"binary_version\":"    << "\"" << JsonEscape(binaryVersion)  << "\","
+                << "\"install_state_path\":" << "\"" << JsonEscape(markerPath.generic_string()) << "\","
+                << "\"packaged\":"          << (isPackaged ? "true" : "false")
+                << "}\n";
         } else {
-            std::cout << kano::git::GetBuildInfo() << "\n";
+            std::cout << "repo_path:          " << (kogRepoRoot.empty()   ? "(not found)" : kogRepoRoot)              << "\n";
+            std::cout << "bin_path:           " << (kogLocation.empty()   ? "(not found)" : kogLocation)              << "\n";
+            std::cout << "installed_version:  " << (installedVer.empty()  ? "(unknown)"   : installedVer)             << "\n";
+            std::cout << "binary_version:     " << (binaryVersion.empty() ? "0.0.0-dev"   : binaryVersion)            << "\n";
+            std::cout << "install_state_path: " << markerPath.generic_string()                                         << "\n";
+            std::cout << "packaged:           " << (isPackaged ? "yes" : "no")                                        << "\n";
         }
     });
 

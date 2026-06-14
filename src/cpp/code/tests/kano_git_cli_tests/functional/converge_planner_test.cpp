@@ -232,6 +232,7 @@ TEST_CASE("converge planner dry-run prints deterministic executable plan", "[tdd
 TEST_CASE("converge planner gitlink only uses deterministic pointer commit", "[tdd][unit][feature:converge-state][feature:dirty-kind][functional][converge][planner]") {
     const auto ctx = CreateRemoteWithSubmoduleClone("converge-planner-gitlink");
     const auto beforeRootStatus = GitStatusShort(ctx.cloneRootRepo);
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneChildRepo), "checkout child branch for pointer commit test");
     WriteTextFile(ctx.cloneChildRepo / "child.txt", "child moved\n");
     RequireSuccess(RunGit({"commit", "-am", "move child"}, ctx.cloneChildRepo), "commit child move");
     RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.cloneChildRepo), "push child move");
@@ -312,6 +313,41 @@ TEST_CASE("converge planner states untracked policy and commit-ai decision", "[t
     RequireContains(result.stdoutText, "kog commit -ai --repos .");
     RequireContains(result.stdoutText, "untracked files included by git add -A policy");
     REQUIRE(GitStatusShort(ctx.cloneRepo) == dirtyStatus);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge planner commits staged index changes", "[tdd][unit][feature:converge-state][feature:dirty-kind][functional][converge][planner]") {
+    const auto ctx = CreateRemoteWithClone("converge-planner-index-dirty");
+    WriteTextFile(ctx.cloneRepo / "README.md", "seed\nstaged change\n");
+    RequireSuccess(RunGit({"add", "README.md"}, ctx.cloneRepo), "stage README change");
+    const auto dirtyStatus = GitStatusShort(ctx.cloneRepo);
+
+    const auto result = RunConvergeDryRun(ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContains(result.stdoutText, "INDEX_DIRTY");
+    RequireContains(result.stdoutText, "kog commit -ai --repos .");
+    RequireContains(result.stdoutText, "staged/index changes included by commit policy");
+    REQUIRE(GitStatusShort(ctx.cloneRepo) == dirtyStatus);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge planner skips clean nested preflight-only branch blockers", "[tdd][unit][feature:converge-state][feature:dirty-kind][functional][converge][planner]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("converge-planner-clean-nested-detached");
+    RequireSuccess(RunGit({"checkout", "--detach", "HEAD"}, ctx.cloneChildRepo), "detach clean child");
+    const auto rootStatus = GitStatusShort(ctx.cloneRootRepo);
+
+    const auto result = RunConvergeDryRun(ctx.cloneRootRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContains(result.stdoutText, "DETACHED_HEAD");
+    RequireContains(result.stdoutText, "preflight-only clean nested repo skipped: DETACHED_HEAD");
+    RequireNotContains(result.stdoutText, "blocked by recursive status preflight");
+    REQUIRE(GitStatusShort(ctx.cloneRootRepo) == rootStatus);
 
     RemoveSandboxWorkspace(ctx.sandbox);
 }
