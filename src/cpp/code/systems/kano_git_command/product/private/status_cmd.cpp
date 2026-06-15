@@ -1055,7 +1055,8 @@ auto MakeRepoView(const workspace::RepoRecord& InRepo, const std::filesystem::pa
 auto BuildRecursiveRepoStatus(const workspace::RepoRecord& InRepo,
                               const std::filesystem::path& InWorkspaceRoot,
                               const std::unordered_map<std::string, workspace::RepoRecord>& InReposByPath,
-                              const std::unordered_set<std::string>& InTrustedManifestPathKeys) -> RecursiveRepoStatus {
+                              const std::unordered_set<std::string>& InTrustedManifestPathKeys,
+                              bool InSkipFetchHealth) -> RecursiveRepoStatus {
     RecursiveRepoStatus out;
     out.repo = InRepo;
     out.id = RelativeId(InWorkspaceRoot, InRepo.path);
@@ -1295,10 +1296,10 @@ auto BuildRecursiveRepoStatus(const workspace::RepoRecord& InRepo,
     }
 
     const auto health = workspace::ScanRepoHealth(InRepo.path, workspace::RepoHealthOptions{
-        .checkFetchRemotes = true,
+        .checkFetchRemotes = !InSkipFetchHealth,
         .checkSubmoduleStatus = true,
         .checkGitlinkReachability = true,
-        .fetchDryRun = true,
+        .fetchDryRun = !InSkipFetchHealth,
         .blockOnDetachedHead = true,
         .blockOnNoUpstream = true,
         .blockOnUnpushedCommits = false,
@@ -1340,7 +1341,8 @@ auto BuildRecursiveStatusSnapshot(const std::filesystem::path& InWorkspaceRoot,
                                   bool InUseCache,
                                   bool InRefreshCache,
                                   int InUnregisteredDepth,
-                                  int InJobs) -> RecursiveStatusSnapshot {
+                                  int InJobs,
+                                  bool InSkipFetchHealth) -> RecursiveStatusSnapshot {
     workspace::WorkspaceInventoryOptions inventoryOptions;
     inventoryOptions.rootDir = InWorkspaceRoot;
     inventoryOptions.unregisteredDepth = InUnregisteredDepth;
@@ -1384,7 +1386,7 @@ auto BuildRecursiveStatusSnapshot(const std::filesystem::path& InWorkspaceRoot,
             result.message = "repo missing from discovery inventory";
             return result;
         }
-        const auto status = BuildRecursiveRepoStatus(it->second, InWorkspaceRoot, reposByPath, trustedManifestPathKeys);
+        const auto status = BuildRecursiveRepoStatus(it->second, InWorkspaceRoot, reposByPath, trustedManifestPathKeys, InSkipFetchHealth);
         {
             std::lock_guard lock(gRecursiveStatusMutex);
             gRecursiveStatusResults.insert_or_assign(PathKey(InInput.path), status);
@@ -1662,6 +1664,7 @@ void RegisterStatus(CLI::App& InApp) {
     auto* summary = new bool{false};
     auto* jobs = new int{1};
     auto* noUnregisteredScan = new bool{false};
+    auto* noFetchHealth = new bool{false};
     auto* unregisteredDepth = new int{2};
     auto* repoRoot = new std::string{"."};
     auto* output = new std::string{};
@@ -1686,6 +1689,7 @@ void RegisterStatus(CLI::App& InApp) {
     cmd->add_option("--jobs", *jobs, "Parallel read-only status checks for recursive snapshot")->default_str("1");
     cmd->add_option("--unregistered-depth", *unregisteredDepth, "Bounded unregistered discovery depth when refresh is requested")->default_str("2");
     cmd->add_flag("--no-unregistered-scan", *noUnregisteredScan, "Do not perform new unregistered filesystem probing; keep discover trusted manifest/cache repos");
+    cmd->add_flag("--no-fetch-health", *noFetchHealth, "Skip remote fetch dry-run health checks in recursive status snapshots");
 
     configureOutput(overview);
 
@@ -1737,7 +1741,8 @@ void RegisterStatus(CLI::App& InApp) {
                 !*noCache,
                 *refreshCache && !*noUnregisteredScan,
                 *noUnregisteredScan ? 0 : *unregisteredDepth,
-                *jobs);
+                *jobs,
+                *noFetchHealth);
             const auto rendered = effectiveFormat == "json"
                 ? FormatRecursiveStatusJson(snapshot)
                 : FormatRecursiveStatusSummary(snapshot);

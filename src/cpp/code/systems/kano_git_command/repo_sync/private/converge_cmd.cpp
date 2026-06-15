@@ -420,6 +420,7 @@ Snapshot ParseSnapshot(const std::string& jsonText) {
 
 Snapshot LoadSnapshot(const std::filesystem::path& root, int jobs, bool unregisteredScan) {
     std::vector<std::string> args{"status", "--recursive", "--format", "json", "--repo-root", root.generic_string(), "--jobs", std::to_string(std::max(1, jobs))};
+    args.push_back("--no-fetch-health");
     if (!unregisteredScan) {
         args.push_back("--no-unregistered-scan");
     } else {

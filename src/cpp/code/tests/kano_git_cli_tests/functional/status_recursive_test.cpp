@@ -88,6 +88,12 @@ auto RunRecursiveJsonNoUnregisteredScan(const std::filesystem::path& InRoot) -> 
     return result.stdoutText;
 }
 
+auto RunRecursiveJsonNoFetchHealth(const std::filesystem::path& InRoot) -> std::string {
+    const auto result = RunKog({"status", "--recursive", "--json", "--repo-root", InRoot.string(), "--no-unregistered-scan", "--no-fetch-health"}, InRoot);
+    RequireSuccess(result, "kog status recursive json no fetch health");
+    return result.stdoutText;
+}
+
 auto ExtractStatusJsonPayload(const std::string& InText) -> std::string {
     const auto start = InText.find("{\"schemaName\":\"kog.recursiveStatusSnapshot\"");
     REQUIRE(start != std::string::npos);
@@ -265,6 +271,27 @@ TEST_CASE("status recursive summary reports trusted unregistered repos without f
     RequireContains(json, "\"id\":\"trusted-loose\"");
     RequireNotContains(json, "\"id\":\"new-loose-after-manifest\"");
     RequireContains(json, "\"managementPolicy\":\"manifest-trusted\"");
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
+TEST_CASE("status recursive can skip remote fetch health checks", "[functional][status][recursive][fetch]") {
+    const auto sandbox = CreateSandboxWorkspace("status-recursive-no-fetch-health");
+    const auto root = (sandbox.root / "root").lexically_normal();
+    const auto bare = (sandbox.root / "origin.git").lexically_normal();
+    InitRepo(root);
+    const auto branch = CurrentBranchName(root);
+
+    RequireSuccess(RunGit({"init", "--bare", bare.string()}, sandbox.root), "init bare origin");
+    RequireSuccess(RunGit({"remote", "add", "origin", bare.string()}, root), "add origin");
+    RequireSuccess(RunGit({"push", "-u", "origin", branch}, root), "push origin");
+    RequireSuccess(RunGit({"remote", "add", "broken", "file:///missing/path/for/fetch"}, root), "add broken remote");
+
+    const auto json = ExtractStatusJsonPayload(RunRecursiveJsonNoFetchHealth(root));
+    INFO(json);
+    RequireContains(json, "\"id\":\".\"");
+    RequireNotContains(json, "FETCH_FAILED");
+    RequireNotContains(json, "preflight FETCH_FAILED");
 
     RemoveSandboxWorkspace(sandbox);
 }
