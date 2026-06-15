@@ -33,6 +33,22 @@ struct SubmoduleWorkspaceContext {
     std::string submodulePath;
 };
 
+struct NestedSubmoduleWorkspaceContext {
+    SandboxContext sandbox;
+    std::filesystem::path leafBareRemote;
+    std::filesystem::path leafSeedRepo;
+    std::filesystem::path midBareRemote;
+    std::filesystem::path midSeedRepo;
+    std::filesystem::path rootBareRemote;
+    std::filesystem::path rootSeedRepo;
+    std::filesystem::path cloneRootRepo;
+    std::filesystem::path cloneMidRepo;
+    std::filesystem::path cloneLeafRepo;
+    std::string branch;
+    std::string midSubmodulePath;
+    std::string leafSubmodulePath;
+};
+
 auto RequireSuccess(const CommandResult& InResult, const std::string& InContext) -> void {
     INFO(InContext);
     INFO("exit=" << InResult.exitCode);
@@ -182,6 +198,70 @@ auto CreateRemoteWithSubmoduleClone(const std::string& InName, const std::string
     return ctx;
 }
 
+auto CreateRemoteWithNestedSubmoduleClone(const std::string& InName, const std::string& InBranch = "main") -> NestedSubmoduleWorkspaceContext {
+    NestedSubmoduleWorkspaceContext ctx;
+    ctx.sandbox = CreateSandboxWorkspace(InName);
+    ctx.leafBareRemote = (ctx.sandbox.root / "leaf-remote.git").lexically_normal();
+    ctx.leafSeedRepo = (ctx.sandbox.root / "leaf-seed").lexically_normal();
+    ctx.midBareRemote = (ctx.sandbox.root / "mid-remote.git").lexically_normal();
+    ctx.midSeedRepo = (ctx.sandbox.root / "mid-seed").lexically_normal();
+    ctx.rootBareRemote = (ctx.sandbox.root / "root-remote.git").lexically_normal();
+    ctx.rootSeedRepo = (ctx.sandbox.root / "root-seed").lexically_normal();
+    ctx.cloneRootRepo = (ctx.sandbox.root / "root-clone").lexically_normal();
+    ctx.branch = InBranch;
+    ctx.midSubmodulePath = "deps/mid";
+    ctx.leafSubmodulePath = "deps/leaf";
+
+    RequireSuccess(RunGit({"init", "--bare", ctx.leafBareRemote.string()}, ctx.sandbox.root), "init leaf bare");
+    RequireSuccess(RunGit({"init", ctx.leafSeedRepo.string()}, ctx.sandbox.root), "init leaf seed");
+    ConfigureIdentity(ctx.leafSeedRepo);
+    RequireSuccess(RunGit({"checkout", "-b", ctx.branch}, ctx.leafSeedRepo), "checkout leaf branch");
+    WriteTextFile(ctx.leafSeedRepo / "leaf.txt", "leaf seed\n");
+    RequireSuccess(RunGit({"add", "leaf.txt"}, ctx.leafSeedRepo), "leaf add");
+    RequireSuccess(RunGit({"commit", "-m", "leaf seed"}, ctx.leafSeedRepo), "leaf commit");
+    RequireSuccess(RunGit({"remote", "add", "origin", ctx.leafBareRemote.string()}, ctx.leafSeedRepo), "leaf add remote");
+    RequireSuccess(RunGit({"push", "-u", "origin", ctx.branch}, ctx.leafSeedRepo), "leaf push");
+    RequireSuccess(RunGit({"symbolic-ref", "HEAD", "refs/heads/" + ctx.branch}, ctx.leafBareRemote), "leaf bare HEAD");
+
+    RequireSuccess(RunGit({"init", "--bare", ctx.midBareRemote.string()}, ctx.sandbox.root), "init mid bare");
+    RequireSuccess(RunGit({"init", ctx.midSeedRepo.string()}, ctx.sandbox.root), "init mid seed");
+    ConfigureIdentity(ctx.midSeedRepo);
+    RequireSuccess(RunGit({"checkout", "-b", ctx.branch}, ctx.midSeedRepo), "checkout mid branch");
+    WriteTextFile(ctx.midSeedRepo / ".gitignore", ".kano/\n");
+    WriteTextFile(ctx.midSeedRepo / "mid.txt", "mid seed\n");
+    RequireSuccess(RunGit({"add", ".gitignore", "mid.txt"}, ctx.midSeedRepo), "mid add base");
+    RequireSuccess(RunGit({"commit", "-m", "mid seed"}, ctx.midSeedRepo), "mid base commit");
+    RequireSuccess(RunGit({"-c", "protocol.file.allow=always", "submodule", "add", "-b", ctx.branch, ctx.leafBareRemote.string(), ctx.leafSubmodulePath}, ctx.midSeedRepo), "mid add leaf submodule");
+    RequireSuccess(RunGit({"commit", "-am", "add leaf submodule"}, ctx.midSeedRepo), "mid commit leaf submodule");
+    RequireSuccess(RunGit({"remote", "add", "origin", ctx.midBareRemote.string()}, ctx.midSeedRepo), "mid add remote");
+    RequireSuccess(RunGit({"push", "-u", "origin", ctx.branch}, ctx.midSeedRepo), "mid push");
+    RequireSuccess(RunGit({"symbolic-ref", "HEAD", "refs/heads/" + ctx.branch}, ctx.midBareRemote), "mid bare HEAD");
+
+    RequireSuccess(RunGit({"init", "--bare", ctx.rootBareRemote.string()}, ctx.sandbox.root), "init root bare");
+    RequireSuccess(RunGit({"init", ctx.rootSeedRepo.string()}, ctx.sandbox.root), "init root seed");
+    ConfigureIdentity(ctx.rootSeedRepo);
+    RequireSuccess(RunGit({"checkout", "-b", ctx.branch}, ctx.rootSeedRepo), "checkout root branch");
+    WriteTextFile(ctx.rootSeedRepo / ".gitignore", ".kano/\n");
+    WriteTextFile(ctx.rootSeedRepo / "README.md", "root seed\n");
+    RequireSuccess(RunGit({"add", ".gitignore", "README.md"}, ctx.rootSeedRepo), "root add base");
+    RequireSuccess(RunGit({"commit", "-m", "root seed"}, ctx.rootSeedRepo), "root base commit");
+    RequireSuccess(RunGit({"-c", "protocol.file.allow=always", "submodule", "add", "-b", ctx.branch, ctx.midBareRemote.string(), ctx.midSubmodulePath}, ctx.rootSeedRepo), "root add mid submodule");
+    RequireSuccess(RunGit({"commit", "-am", "add mid submodule"}, ctx.rootSeedRepo), "root commit mid submodule");
+    RequireSuccess(RunGit({"remote", "add", "origin", ctx.rootBareRemote.string()}, ctx.rootSeedRepo), "root add remote");
+    RequireSuccess(RunGit({"push", "-u", "origin", ctx.branch}, ctx.rootSeedRepo), "root push");
+    RequireSuccess(RunGit({"symbolic-ref", "HEAD", "refs/heads/" + ctx.branch}, ctx.rootBareRemote), "root bare HEAD");
+
+    RequireSuccess(RunGit({"-c", "protocol.file.allow=always", "clone", "--recurse-submodules", ctx.rootBareRemote.string(), ctx.cloneRootRepo.string()}, ctx.sandbox.root), "clone nested root");
+    ConfigureIdentity(ctx.cloneRootRepo);
+    ctx.cloneMidRepo = (ctx.cloneRootRepo / std::filesystem::path(ctx.midSubmodulePath)).lexically_normal();
+    ctx.cloneLeafRepo = (ctx.cloneMidRepo / std::filesystem::path(ctx.leafSubmodulePath)).lexically_normal();
+    ConfigureIdentity(ctx.cloneMidRepo);
+    ConfigureIdentity(ctx.cloneLeafRepo);
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneMidRepo), "checkout mid clone branch");
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneLeafRepo), "checkout leaf clone branch");
+    return ctx;
+}
+
 auto RunConvergeDryRun(const std::filesystem::path& InRoot, std::vector<std::string> InExtraArgs = {}) -> CommandResult {
     std::vector<std::string> args{"converge", "--dry-run"};
     args.insert(args.end(), InExtraArgs.begin(), InExtraArgs.end());
@@ -294,6 +374,41 @@ TEST_CASE("converge runtime commits dirty child before parent pointer", "[tdd][f
     RequireSuccess(rootHead, "root rev-parse HEAD");
     RequireSuccess(rootOrigin, "root rev-parse origin");
     REQUIRE(childHead.stdoutText == childOrigin.stdoutText);
+    REQUIRE(rootHead.stdoutText == rootOrigin.stdoutText);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge runtime repeats passes until nested parent pointers are clean", "[tdd][functional][feature:converge-state][feature:dirty-kind][converge][planner]") {
+    const auto ctx = CreateRemoteWithNestedSubmoduleClone("converge-runtime-nested-fixpoint");
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneLeafRepo), "checkout leaf branch for nested fixpoint");
+    WriteTextFile(ctx.cloneLeafRepo / "leaf.txt", "leaf seed\nnested runtime change\n");
+
+    const auto result = RunKog({"converge", "--jobs", "1"}, ctx.cloneRootRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContains(result.stdoutText, "[converge] remaining actions detected; next pass required");
+    RequireContains(result.stdoutText, "[converge] pass=2");
+    RequireContains(result.stdoutText, "[converge] completed");
+    REQUIRE(GitStatusShort(ctx.cloneLeafRepo).empty());
+    REQUIRE(GitStatusShort(ctx.cloneMidRepo).empty());
+    REQUIRE(GitStatusShort(ctx.cloneRootRepo).empty());
+
+    const auto leafHead = RunGit({"rev-parse", "HEAD"}, ctx.cloneLeafRepo);
+    const auto leafOrigin = RunGit({"rev-parse", "origin/" + ctx.branch}, ctx.cloneLeafRepo);
+    const auto midHead = RunGit({"rev-parse", "HEAD"}, ctx.cloneMidRepo);
+    const auto midOrigin = RunGit({"rev-parse", "origin/" + ctx.branch}, ctx.cloneMidRepo);
+    const auto rootHead = RunGit({"rev-parse", "HEAD"}, ctx.cloneRootRepo);
+    const auto rootOrigin = RunGit({"rev-parse", "origin/" + ctx.branch}, ctx.cloneRootRepo);
+    RequireSuccess(leafHead, "leaf rev-parse HEAD");
+    RequireSuccess(leafOrigin, "leaf rev-parse origin");
+    RequireSuccess(midHead, "mid rev-parse HEAD");
+    RequireSuccess(midOrigin, "mid rev-parse origin");
+    RequireSuccess(rootHead, "root rev-parse HEAD");
+    RequireSuccess(rootOrigin, "root rev-parse origin");
+    REQUIRE(leafHead.stdoutText == leafOrigin.stdoutText);
+    REQUIRE(midHead.stdoutText == midOrigin.stdoutText);
     REQUIRE(rootHead.stdoutText == rootOrigin.stdoutText);
 
     RemoveSandboxWorkspace(ctx.sandbox);

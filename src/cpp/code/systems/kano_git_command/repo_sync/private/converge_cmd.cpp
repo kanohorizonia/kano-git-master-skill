@@ -134,6 +134,7 @@ const std::vector<std::string> kConvergePhases = {
     "push-parents-bottom-up",
     "final-status-summary",
 };
+constexpr int kMaxConvergePasses = 8;
 
 std::string Trim(std::string v) {
     while (!v.empty() && (v.back() == '\n' || v.back() == '\r' || v.back() == ' ' || v.back() == '\t')) v.pop_back();
@@ -732,6 +733,10 @@ std::vector<std::string> UniqueRepos(const std::vector<PlanLine>& lines) {
     return repos;
 }
 
+bool PlanHasRunnableActions(const Plan& plan) {
+    return !plan.sync.empty() || !plan.commit.empty() || !plan.push.empty();
+}
+
 std::string SnapshotFingerprint(const Snapshot& snapshot) {
     std::vector<std::string> parts;
     for (const auto& repo : snapshot.repos) {
@@ -771,6 +776,38 @@ std::map<std::string, std::string> BaselineByRepo(const std::vector<std::string>
         }
     }
     return out;
+}
+
+void ResetStateForPlan(WorkflowState& state, const Snapshot& snapshot, const Plan& plan) {
+    state.currentPhase = kConvergePhases.front();
+    state.completedPhases.clear();
+    state.blockedReason.clear();
+    state.blockedRepos.clear();
+    state.phaseResults.clear();
+    state.commandLinesUsed.clear();
+    state.plannedSyncRepos = UniqueRepos(plan.sync);
+    state.plannedCommitRepos = UniqueRepos(plan.commit);
+    state.plannedPushRepos = UniqueRepos(plan.push);
+    state.plannedBlockedRepos = UniqueRepos(plan.blocked);
+    state.plannedWaves = plan.waves;
+    state.repoGraphFingerprint = SnapshotFingerprint(snapshot);
+    state.repoBaselines = RepoBaselines(snapshot);
+    state.repoManagementPolicy.clear();
+    state.repoType.clear();
+    state.repoCommandPolicy.clear();
+    for (const auto& repo : snapshot.repos) {
+        state.repoManagementPolicy[repo.id] = repo.managementPolicy;
+        state.repoType[repo.id] = repo.type;
+        state.repoCommandPolicy[repo.id] = repo.commandPolicy;
+    }
+    state.detectedConflictInfo.clear();
+    state.succeededRepos.clear();
+    state.failedRepos.clear();
+    state.blockedRepoSet.clear();
+    state.skippedRepos.clear();
+    state.pendingRepos.clear();
+    for (const auto& repo : snapshot.repos) state.pendingRepos.push_back(repo.id);
+    std::sort(state.pendingRepos.begin(), state.pendingRepos.end());
 }
 
 void MergeUnique(std::vector<std::string>& target, const std::vector<std::string>& values) {
@@ -1129,38 +1166,10 @@ void RegisterConverge(CLI::App& InApp) {
             state.schemaVersion = 1;
             state.workspaceRoot = workspaceRoot;
             state.startedAt = UtcNowIso8601();
-            state.currentPhase = kConvergePhases.front();
             state.recursive = recursive;
             state.dryRunRequested = *dryRun;
-            state.completedPhases.clear();
-            state.blockedReason.clear();
-            state.blockedRepos.clear();
             state.resumeCommand = "kog converge --resume";
-            state.phaseResults.clear();
-            state.commandLinesUsed.clear();
-            state.plannedSyncRepos = UniqueRepos(plan.sync);
-            state.plannedCommitRepos = UniqueRepos(plan.commit);
-            state.plannedPushRepos = UniqueRepos(plan.push);
-            state.plannedBlockedRepos = UniqueRepos(plan.blocked);
-            state.plannedWaves = plan.waves;
-            state.repoGraphFingerprint = SnapshotFingerprint(snapshot);
-            state.repoBaselines = RepoBaselines(snapshot);
-            state.repoManagementPolicy.clear();
-            state.repoType.clear();
-            state.repoCommandPolicy.clear();
-            for (const auto& repo : snapshot.repos) {
-                state.repoManagementPolicy[repo.id] = repo.managementPolicy;
-                state.repoType[repo.id] = repo.type;
-                state.repoCommandPolicy[repo.id] = repo.commandPolicy;
-            }
-            state.detectedConflictInfo.clear();
-            state.succeededRepos.clear();
-            state.failedRepos.clear();
-            state.blockedRepoSet.clear();
-            state.skippedRepos.clear();
-            state.pendingRepos.clear();
-            for (const auto& repo : snapshot.repos) state.pendingRepos.push_back(repo.id);
-            std::sort(state.pendingRepos.begin(), state.pendingRepos.end());
+            ResetStateForPlan(state, snapshot, plan);
         }
 
         if (!WriteState(statePath, state)) {
@@ -1175,18 +1184,27 @@ void RegisterConverge(CLI::App& InApp) {
             }
         };
 
-        for (std::size_t idx = startPhaseIndex; idx < kConvergePhases.size(); ++idx) {
-            const auto& phase = kConvergePhases[idx];
-            if (PhaseAlreadyCompleted(state, phase)) continue;
+        int passIndex = 0;
+        while (true) {
+            bool runAnotherPass = false;
+            Snapshot nextSnapshot;
+            Plan nextPlan;
+            if (passIndex > 0) {
+                std::cout << "[converge] pass=" << (passIndex + 1) << "\n";
+            }
 
-            state.currentPhase = phase;
-            persist();
-            std::cout << "[converge] phase=" << phase << "\n";
+            for (std::size_t idx = startPhaseIndex; idx < kConvergePhases.size(); ++idx) {
+                const auto& phase = kConvergePhases[idx];
+                if (PhaseAlreadyCompleted(state, phase)) continue;
 
-            PhaseSummary summary;
-            summary.pending = state.pendingRepos;
+                state.currentPhase = phase;
+                persist();
+                std::cout << "[converge] phase=" << phase << "\n";
 
-            if (phase == "status-preflight-plan") {
+                PhaseSummary summary;
+                summary.pending = state.pendingRepos;
+
+                if (phase == "status-preflight-plan") {
                 PrintPlan(snapshot, plan, false);
                 summary.skipped = UniqueRepos(plan.skipped);
                 summary.blocked = UniqueRepos(plan.blocked);
@@ -1298,13 +1316,41 @@ void RegisterConverge(CLI::App& InApp) {
                     }
                 }
                 for (const auto& line : plan.skipped) if (line.text.find("pointer commit skipped") != std::string::npos) summary.skipped.push_back(line.repo);
-            } else if (phase == "final-status-summary") {
-                std::cout << "Converge final summary\n";
-                std::cout << "  succeeded=" << state.succeededRepos.size() << " failed=" << state.failedRepos.size() << " blocked=" << state.blockedRepoSet.size() << " skipped=" << state.skippedRepos.size() << " pending=" << state.pendingRepos.size() << "\n";
-                summary.succeeded.push_back(".");
-            }
+                } else if (phase == "final-status-summary") {
+                    std::cout << "Converge final summary\n";
+                    std::cout << "  succeeded=" << state.succeededRepos.size() << " failed=" << state.failedRepos.size() << " blocked=" << state.blockedRepoSet.size() << " skipped=" << state.skippedRepos.size() << " pending=" << state.pendingRepos.size() << "\n";
+                    try {
+                        nextSnapshot = LoadSnapshot(workspaceRoot, *jobs, false);
+                        nextPlan = BuildPlan(nextSnapshot);
+                        if (!nextPlan.blocked.empty()) {
+                            summary.blocked = UniqueRepos(nextPlan.blocked);
+                            state.blockedReason = "final status detected blocked repositories";
+                            state.blockedRepos = summary.blocked;
+                            for (const auto& repo : summary.blocked) {
+                                summary.failureCategory[repo] = "BLOCKED_BY_POLICY";
+                                summary.failureMessage[repo] = state.blockedReason;
+                                summary.retryEligible[repo] = true;
+                            }
+                        } else if (PlanHasRunnableActions(nextPlan)) {
+                            runAnotherPass = true;
+                            std::cout << "[converge] remaining actions detected; next pass required"
+                                      << " sync=" << nextPlan.sync.size()
+                                      << " commit=" << nextPlan.commit.size()
+                                      << " push=" << nextPlan.push.size()
+                                      << "\n";
+                        }
+                        if (summary.failed.empty() && summary.blocked.empty()) {
+                            summary.succeeded.push_back(".");
+                        }
+                    } catch (const std::exception& ex) {
+                        summary.failed.push_back(".");
+                        summary.failureCategory["."] = "FAILED_STATUS";
+                        summary.failureMessage["."] = ex.what();
+                        summary.retryEligible["."] = true;
+                    }
+                }
 
-            std::sort(summary.succeeded.begin(), summary.succeeded.end());
+                std::sort(summary.succeeded.begin(), summary.succeeded.end());
             summary.succeeded.erase(std::unique(summary.succeeded.begin(), summary.succeeded.end()), summary.succeeded.end());
             std::sort(summary.failed.begin(), summary.failed.end());
             summary.failed.erase(std::unique(summary.failed.begin(), summary.failed.end()), summary.failed.end());
@@ -1328,15 +1374,42 @@ void RegisterConverge(CLI::App& InApp) {
             RecordPhaseState(state, phase, summary);
             persist();
 
-            if (!summary.failed.empty() || !summary.blocked.empty()) {
-                state.blockedReason = !summary.failed.empty() ? (phase + " encountered failures") : "blocked repositories present";
-                if (!summary.failed.empty()) state.blockedRepos = summary.failed;
-                else state.blockedRepos = summary.blocked;
-                state.completedPhases.erase(std::remove(state.completedPhases.begin(), state.completedPhases.end(), phase), state.completedPhases.end());
-                state.currentPhase = phase;
-                persist();
-                std::exit(1);
+                if (!summary.failed.empty() || !summary.blocked.empty()) {
+                    state.blockedReason = !summary.failed.empty() ? (phase + " encountered failures") : "blocked repositories present";
+                    if (!summary.failed.empty()) state.blockedRepos = summary.failed;
+                    else state.blockedRepos = summary.blocked;
+                    state.completedPhases.erase(std::remove(state.completedPhases.begin(), state.completedPhases.end(), phase), state.completedPhases.end());
+                    state.currentPhase = phase;
+                    persist();
+                    std::exit(1);
+                }
             }
+
+            if (runAnotherPass) {
+                ++passIndex;
+                if (passIndex >= kMaxConvergePasses) {
+                    std::vector<std::string> remaining = UniqueRepos(nextPlan.sync);
+                    MergeUnique(remaining, UniqueRepos(nextPlan.commit));
+                    MergeUnique(remaining, UniqueRepos(nextPlan.push));
+                    state.blockedReason = "converge did not reach a fixpoint after " + std::to_string(kMaxConvergePasses) + " passes";
+                    state.blockedRepos = remaining;
+                    state.blockedRepoSet = remaining;
+                    state.currentPhase = "final-status-summary";
+                    persist();
+                    std::cerr << "Error: " << state.blockedReason << "\n";
+                    if (!remaining.empty()) {
+                        std::cerr << "remainingRepos=" << Csv(remaining) << "\n";
+                    }
+                    std::exit(1);
+                }
+                snapshot = std::move(nextSnapshot);
+                plan = std::move(nextPlan);
+                ResetStateForPlan(state, snapshot, plan);
+                startPhaseIndex = 0;
+                persist();
+                continue;
+            }
+            break;
         }
 
         DeleteState(statePath);
