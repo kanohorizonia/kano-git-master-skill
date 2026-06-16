@@ -120,6 +120,43 @@ TEST_CASE("BuildCommitScopeRecords includes recursively dirty nested git repos s
     REQUIRE(ContainsRepoPath(records, parent));
 }
 
+TEST_CASE("BuildCommitScopeRecords keeps explicit dirty-only scope constrained to requested repo",
+          "[Unit][CommitScope][Explicit]") {
+    const auto root = UniqueTempWorkspace("explicit-dirty-scope");
+    const auto target = (root / "target-skill").lexically_normal();
+    const auto unrelated = (root / "unrelated-skill").lexically_normal();
+
+    RequireGit(root, {"init"});
+    RequireGit(root, {"config", "user.email", "tests@example.invalid"});
+    RequireGit(root, {"config", "user.name", "Kog Tests"});
+
+    std::filesystem::create_directories(target);
+    RequireGit(target, {"init"});
+    RequireGit(target, {"config", "user.email", "tests@example.invalid"});
+    RequireGit(target, {"config", "user.name", "Kog Tests"});
+    WriteTextFile(target / "README.md", "target\n");
+    RequireGit(target, {"add", "README.md"});
+    RequireGit(target, {"commit", "-m", "docs: seed target"});
+
+    std::filesystem::create_directories(unrelated);
+    RequireGit(unrelated, {"init"});
+    RequireGit(unrelated, {"config", "user.email", "tests@example.invalid"});
+    RequireGit(unrelated, {"config", "user.name", "Kog Tests"});
+    WriteTextFile(unrelated / "README.md", "unrelated\n");
+    RequireGit(unrelated, {"add", "README.md"});
+    RequireGit(unrelated, {"commit", "-m", "docs: seed unrelated"});
+
+    WriteTextFile(target / "README.md", "target\nchanged\n");
+    WriteTextFile(unrelated / "README.md", "unrelated\nchanged\n");
+
+    const auto records = BuildCommitScopeRecords(root, "target-skill", false, true);
+
+    REQUIRE(records.size() == 1);
+    REQUIRE(ContainsRepoPath(records, target));
+    REQUIRE_FALSE(ContainsRepoPath(records, unrelated));
+    REQUIRE(records.front().hasChanges);
+}
+
 TEST_CASE("SeedCommitStage includes recursively dirty nested git repos in plan order",
           "[Unit][CommitPlan][CommitSeed][Subrepo]") {
     const auto root = UniqueTempWorkspace("commit-seed-recursive-nested-repo");

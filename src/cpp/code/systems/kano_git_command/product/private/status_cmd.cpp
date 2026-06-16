@@ -1295,40 +1295,56 @@ auto BuildRecursiveRepoStatus(const workspace::RepoRecord& InRepo,
         PushUnique(&out.statusFlags, "UNPUSHED_SUBMODULE_COMMIT");
     }
 
-    const auto health = workspace::ScanRepoHealth(InRepo.path, workspace::RepoHealthOptions{
-        .checkFetchRemotes = !InSkipFetchHealth,
-        .checkSubmoduleStatus = true,
-        .checkGitlinkReachability = true,
-        .fetchDryRun = !InSkipFetchHealth,
-        .blockOnDetachedHead = true,
-        .blockOnNoUpstream = true,
-        .blockOnUnpushedCommits = false,
-        .blockOnDirtyWorktree = false,
-        .blockOnDirtySubmodule = false,
-        .strictSubmoduleMappings = false,
-        .managedSubmodulePaths = std::move(managedGitlinkPaths),
-    });
+    const bool needsSubmoduleHealth = !InSkipFetchHealth && (out.isContainerRoot ||
+        !managedGitlinkPaths.empty() ||
+        hasGitlinkDirty ||
+        !unregisteredGitlinkPaths.empty());
 
-    for (const auto& flag : health.statusFlags) {
-        PushUnique(&out.statusFlags, flag);
-    }
-    for (const auto& diagnostic : health.diagnostics) {
-        PushUnique(&out.diagnostics, diagnostic);
-    }
-    if (health.hasUnmergedPaths) {
-        out.conflicted = true;
-        out.dirtyKind = "CONFLICTED";
-    } else if (health.detachedHead && out.dirtyKind == "CLEAN") {
-        out.dirtyKind = "DETACHED_HEAD";
-    }
+    if (!InSkipFetchHealth || needsSubmoduleHealth) {
+        const auto health = workspace::ScanRepoHealth(InRepo.path, workspace::RepoHealthOptions{
+            .checkFetchRemotes = !InSkipFetchHealth,
+            .checkSubmoduleStatus = needsSubmoduleHealth,
+            .checkGitlinkReachability = needsSubmoduleHealth,
+            .fetchDryRun = !InSkipFetchHealth,
+            .blockOnDetachedHead = true,
+            .blockOnNoUpstream = true,
+            .blockOnUnpushedCommits = false,
+            .blockOnDirtyWorktree = false,
+            .blockOnDirtySubmodule = false,
+            .strictSubmoduleMappings = false,
+            .managedSubmodulePaths = std::move(managedGitlinkPaths),
+        });
 
-    for (const auto& blocker : health.blockers) {
-        PushUnique(&out.statusFlags, blocker.reasonCode);
-        PushUnique(&out.diagnostics, "preflight " + blocker.reasonCode + ": " + blocker.detail);
-        if (out.blockReason.empty()) {
-            out.blockReason = blocker.reasonCode + ": " + blocker.detail;
+        for (const auto& flag : health.statusFlags) {
+            PushUnique(&out.statusFlags, flag);
         }
+        for (const auto& diagnostic : health.diagnostics) {
+            PushUnique(&out.diagnostics, diagnostic);
+        }
+        if (health.hasUnmergedPaths) {
+            out.conflicted = true;
+            out.dirtyKind = "CONFLICTED";
+        } else if (health.detachedHead && out.dirtyKind == "CLEAN") {
+            out.dirtyKind = "DETACHED_HEAD";
+        }
+
+        for (const auto& blocker : health.blockers) {
+            PushUnique(&out.statusFlags, blocker.reasonCode);
+            PushUnique(&out.diagnostics, "preflight " + blocker.reasonCode + ": " + blocker.detail);
+            if (out.blockReason.empty()) {
+                out.blockReason = blocker.reasonCode + ": " + blocker.detail;
+            }
+            out.blocksConverge = true;
+        }
+    }
+    if (InSkipFetchHealth &&
+        !out.isWorkspaceRoot &&
+        out.ahead <= 0 &&
+        (out.dirtyKind == "DETACHED_HEAD" || out.dirtyKind == "MISSING_REMOTE")) {
         out.blocksConverge = true;
+        if (out.blockReason.empty()) {
+            out.blockReason = out.dirtyKind + ": clean nested preflight-only branch blocker";
+        }
     }
 
     std::sort(out.statusFlags.begin(), out.statusFlags.end());

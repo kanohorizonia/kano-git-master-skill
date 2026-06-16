@@ -439,6 +439,24 @@ Snapshot LoadSnapshot(const std::filesystem::path& root, int jobs, bool unregist
     return ParseSnapshot(result.stdoutStr.substr(start, end - start + 1));
 }
 
+Snapshot CurrentRepoOnlySnapshot(Snapshot snapshot) {
+    const auto it = std::find_if(snapshot.repos.begin(), snapshot.repos.end(), [](const auto& repo) {
+        return repo.id == ".";
+    });
+    if (it == snapshot.repos.end()) {
+        throw std::runtime_error("status snapshot did not include current repository");
+    }
+    RepoStatus current = *it;
+    snapshot.repos.clear();
+    snapshot.repos.push_back(std::move(current));
+    return snapshot;
+}
+
+Snapshot LoadConvergeSnapshot(const std::filesystem::path& root, int jobs, bool unregisteredScan, bool recursive) {
+    auto snapshot = LoadSnapshot(root, jobs, unregisteredScan);
+    return recursive ? std::move(snapshot) : CurrentRepoOnlySnapshot(std::move(snapshot));
+}
+
 std::vector<std::vector<std::string>> Waves(const Snapshot& snapshot) {
     std::unordered_map<std::string, RepoStatus> byId;
     for (const auto& repo : snapshot.repos) byId.emplace(repo.id, repo);
@@ -1021,9 +1039,9 @@ void PrintPlan(const Snapshot& snapshot, const Plan& plan, bool unregisteredScan
     PrintLines("Blocked repos", plan.blocked);
 }
 
-int RunDryRunPlanner(const std::filesystem::path& root, int jobs, bool unregisteredScan) {
+int RunDryRunPlanner(const std::filesystem::path& root, int jobs, bool unregisteredScan, bool recursive) {
     try {
-        const auto snapshot = LoadSnapshot(root, jobs, unregisteredScan);
+        const auto snapshot = LoadConvergeSnapshot(root, jobs, unregisteredScan, recursive);
         const auto plan = BuildPlan(snapshot);
         PrintPlan(snapshot, plan, unregisteredScan);
         return plan.blocked.empty() ? 0 : 1;
@@ -1098,13 +1116,7 @@ void RegisterConverge(CLI::App& InApp) {
             std::exit(0);
         }
         if (*dryRun) {
-            if (!recursive) { std::cerr << "Error: converge --dry-run planner requires recursive status snapshot; omit --no-recursive\n"; std::exit(2); }
-            std::exit(RunDryRunPlanner(workspaceRoot, *jobs, *unregisteredScan));
-        }
-
-        if (!recursive) {
-            std::cerr << "Error: converge runtime orchestration requires recursive mode\n";
-            std::exit(2);
+            std::exit(RunDryRunPlanner(workspaceRoot, *jobs, *unregisteredScan, recursive));
         }
 
         WorkflowState state;
@@ -1127,9 +1139,9 @@ void RegisterConverge(CLI::App& InApp) {
                 std::exit(1);
             }
             try {
-                snapshot = LoadSnapshot(workspaceRoot, *jobs, false);
+                snapshot = LoadConvergeSnapshot(workspaceRoot, *jobs, false, recursive);
             } catch (const std::exception& ex) {
-                std::cerr << "Error: failed to load recursive status snapshot during resume: " << ex.what() << "\n";
+                std::cerr << "Error: failed to load status snapshot during resume: " << ex.what() << "\n";
                 std::exit(1);
             }
             const auto resumeFingerprint = SnapshotFingerprint(snapshot);
@@ -1155,9 +1167,9 @@ void RegisterConverge(CLI::App& InApp) {
             std::cout << "Resuming converge from phase: " << state.currentPhase << "\n";
         } else {
             try {
-                snapshot = LoadSnapshot(workspaceRoot, *jobs, false);
+                snapshot = LoadConvergeSnapshot(workspaceRoot, *jobs, false, recursive);
             } catch (const std::exception& ex) {
-                std::cerr << "Error: failed to load recursive status snapshot: " << ex.what() << "\n";
+                std::cerr << "Error: failed to load status snapshot: " << ex.what() << "\n";
                 std::exit(1);
             }
             plan = BuildPlan(snapshot);
@@ -1168,7 +1180,7 @@ void RegisterConverge(CLI::App& InApp) {
             state.startedAt = UtcNowIso8601();
             state.recursive = recursive;
             state.dryRunRequested = *dryRun;
-            state.resumeCommand = "kog converge --resume";
+            state.resumeCommand = recursive ? "kog converge --resume" : "kog converge --resume --no-recursive";
             ResetStateForPlan(state, snapshot, plan);
         }
 
@@ -1260,13 +1272,17 @@ void RegisterConverge(CLI::App& InApp) {
                         summary.retryEligible[line.repo] = true;
                     }
                 }
-            } else if (phase == "push-nested-bottom-up" || phase == "push-parents-bottom-up") {
+                } else if (phase == "push-nested-bottom-up" || phase == "push-parents-bottom-up") {
                 const auto pushRepos = UniqueRepos(plan.push);
                 if (pushRepos.empty()) {
                     state.commandLinesUsed[phase].push_back("kog push skipped: no planned repositories");
                 } else {
-                    state.commandLinesUsed[phase].push_back("kog push --recursive --repos " + Csv(pushRepos) + " --jobs " + std::to_string(*jobs));
-                    const auto detailed = RunPushNativeSimpleDetailed(workspaceRoot, true, false, *profile, *forceWithLease, *noVerify, *jobs, *verbose, *remote, pushRepos);
+                    state.commandLinesUsed[phase].push_back(
+                        recursive
+                            ? ("kog push --recursive --repos " + Csv(pushRepos) + " --jobs " + std::to_string(*jobs))
+                            : ("kog push --no-recursive --jobs " + std::to_string(*jobs)));
+                    const auto pushFilters = recursive ? pushRepos : std::vector<std::string>{};
+                    const auto detailed = RunPushNativeSimpleDetailed(workspaceRoot, recursive, false, *profile, *forceWithLease, *noVerify, *jobs, *verbose, *remote, pushFilters);
                     PopulatePhaseSummaryFromAggregate(detailed.second, true, summary);
                     if (detailed.first != 0 && summary.failed.empty() && summary.blocked.empty()) {
                         summary.failed.push_back(".");
@@ -1277,7 +1293,7 @@ void RegisterConverge(CLI::App& InApp) {
                 }
             } else if (phase == "status-delta-after-sync") {
                 try {
-                    snapshot = LoadSnapshot(workspaceRoot, *jobs, false);
+                    snapshot = LoadConvergeSnapshot(workspaceRoot, *jobs, false, recursive);
                     plan = BuildPlan(snapshot);
                     state.plannedSyncRepos = UniqueRepos(plan.sync);
                     state.plannedCommitRepos = UniqueRepos(plan.commit);
@@ -1320,7 +1336,7 @@ void RegisterConverge(CLI::App& InApp) {
                     std::cout << "Converge final summary\n";
                     std::cout << "  succeeded=" << state.succeededRepos.size() << " failed=" << state.failedRepos.size() << " blocked=" << state.blockedRepoSet.size() << " skipped=" << state.skippedRepos.size() << " pending=" << state.pendingRepos.size() << "\n";
                     try {
-                        nextSnapshot = LoadSnapshot(workspaceRoot, *jobs, false);
+                        nextSnapshot = LoadConvergeSnapshot(workspaceRoot, *jobs, false, recursive);
                         nextPlan = BuildPlan(nextSnapshot);
                         if (!nextPlan.blocked.empty()) {
                             summary.blocked = UniqueRepos(nextPlan.blocked);

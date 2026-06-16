@@ -768,12 +768,41 @@ auto ScanFileForSecretRules(const std::filesystem::path& InRepo,
     }
 }
 
-auto RunPipelineSafetyGatesForNonAiCommit(const std::filesystem::path& InWorkspaceRoot) -> void {
-    if (!IsTruthyEnv(std::getenv("KOG_ALLOW_IGNORE_GATE")) && ToLower(Trim(std::getenv("KOG_IGNORE_GATE") == nullptr ? "on" : std::getenv("KOG_IGNORE_GATE"))) != "off") {
-        auto repos = DiscoverWorkspaceRepos(InWorkspaceRoot);
+auto ResolveSafetyGateRepos(const std::filesystem::path& InWorkspaceRoot,
+                            const std::vector<workspace::RepoRecord>& InScopedRepos) -> std::vector<std::filesystem::path> {
+    std::vector<std::filesystem::path> repos;
+    std::unordered_set<std::string> seen;
+
+    if (!InScopedRepos.empty()) {
+        repos.reserve(InScopedRepos.size());
+        for (const auto& record : InScopedRepos) {
+            auto repo = record.path.empty() ? InWorkspaceRoot : record.path;
+            if (repo.is_relative()) {
+                repo = InWorkspaceRoot / repo;
+            }
+            repo = repo.lexically_normal();
+            const auto key = ToGeneric(repo);
+            if (!key.empty() && seen.insert(key).second) {
+                repos.push_back(std::move(repo));
+            }
+        }
+    }
+
+    if (repos.empty()) {
+        repos = DiscoverWorkspaceRepos(InWorkspaceRoot);
         if (repos.empty()) {
             repos.push_back(InWorkspaceRoot);
         }
+    }
+
+    return repos;
+}
+
+auto RunPipelineSafetyGatesForNonAiCommit(const std::filesystem::path& InWorkspaceRoot,
+                                          const std::vector<workspace::RepoRecord>& InScopedRepos = {}) -> void {
+    const auto repos = ResolveSafetyGateRepos(InWorkspaceRoot, InScopedRepos);
+
+    if (!IsTruthyEnv(std::getenv("KOG_ALLOW_IGNORE_GATE")) && ToLower(Trim(std::getenv("KOG_IGNORE_GATE") == nullptr ? "on" : std::getenv("KOG_IGNORE_GATE"))) != "off") {
         const auto allowlistPath = (ResolveSkillRoot(InWorkspaceRoot) / "assets" / "ignore-sources" / "local" / "ignore-gate-allowlist.txt").lexically_normal();
         const auto allowlist = LoadNormalizedLineSet(allowlistPath);
         std::vector<std::string> findings;
@@ -819,10 +848,6 @@ auto RunPipelineSafetyGatesForNonAiCommit(const std::filesystem::path& InWorkspa
     const auto rules = LoadSecretRules(rulesPath);
     if (rules.empty()) {
         return;
-    }
-    auto repos = DiscoverWorkspaceRepos(InWorkspaceRoot);
-    if (repos.empty()) {
-        repos.push_back(InWorkspaceRoot);
     }
     std::vector<SecretFinding> findings;
     findings.reserve(20);
@@ -4331,9 +4356,6 @@ auto RunAmendNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
     }
     preflightMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - preflightStart).count();
 
-    std::cout << "[native-amend] safety-gates: ignore + secret\n";
-    RunPipelineSafetyGatesForNonAiCommit(workspaceRoot);
-
     std::string planError;
     const auto normalizedCommitPlanPath = NormalizeInputPathForCurrentPlatform(InPlanFile);
     const auto parsed = LoadNormalizedCommitPlan(workspaceRoot, std::filesystem::path(normalizedCommitPlanPath), &planError);
@@ -4399,6 +4421,9 @@ auto RunAmendNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
         repoRecords.push_back(std::move(fallback));
     }
     planningMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - planningStart).count();
+
+    std::cout << "[native-amend] safety-gates: ignore + secret (repos=" << repoRecords.size() << ")\n";
+    RunPipelineSafetyGatesForNonAiCommit(workspaceRoot, repoRecords);
 
     const auto repoWaves = kano::git::commands::BuildExecutionWaves(repoRecords);
     const auto runbooks = BuildRepoCommitRunbooks(repoRecords, stageMessages, workspaceRoot, "", true);
@@ -4653,9 +4678,6 @@ auto RunCommitNativeSimple(const std::filesystem::path& InWorkspaceRoot,
                   << " selection=" << ai.selectionRaw
                   << (ai.fallbackUsed ? (" fallback=" + ai.fallbackReason) : std::string{})
                   << " review=" << (ai.reviewEnabled ? "on" : "off") << "\n";
-    } else {
-        std::cout << "[native-commit] safety-gates: ignore + secret\n";
-        RunPipelineSafetyGatesForNonAiCommit(workspaceRoot);
     }
 
     const auto planningStart = std::chrono::steady_clock::now();
@@ -4668,6 +4690,11 @@ auto RunCommitNativeSimple(const std::filesystem::path& InWorkspaceRoot,
         repoRecords.push_back(std::move(fallback));
     }
     planningMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - planningStart).count();
+
+    if (!ai.enabled) {
+        std::cout << "[native-commit] safety-gates: ignore + secret (repos=" << repoRecords.size() << ")\n";
+        RunPipelineSafetyGatesForNonAiCommit(workspaceRoot, repoRecords);
+    }
 
     std::unordered_map<std::string, std::vector<RepoCommitPlanEntry::CommitItem>> emptyStages;
     const auto runbooks = BuildRepoCommitRunbooks(repoRecords, emptyStages, workspaceRoot, InMessage, false);
@@ -5030,11 +5057,6 @@ void RegisterCommit(CLI::App& InApp) {
             std::exit(code);
         }
 
-        if (!aiRequested) {
-            std::cout << "[native-commit] safety-gates: ignore + secret\n";
-            RunPipelineSafetyGatesForNonAiCommit(workspaceRoot);
-        }
-
         bool effectiveNoRecursive = *bNoRecursive;
         if (!effectiveNoRecursive && repos->empty() && !target->empty()) {
             const auto scopedRepos = DiscoverWorkspaceRepos(workspaceRoot);
@@ -5189,6 +5211,11 @@ void RegisterCommit(CLI::App& InApp) {
             repoRecords.push_back(std::move(fallback));
         }
         planningMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - planningStart).count();
+
+        if (!aiRequested) {
+            std::cout << "[native-commit] safety-gates: ignore + secret (repos=" << repoRecords.size() << ")\n";
+            RunPipelineSafetyGatesForNonAiCommit(workspaceRoot, repoRecords);
+        }
 
         const bool isPlanMode = !stageMessages.empty();
         const auto repoWaves = kano::git::commands::BuildExecutionWaves(repoRecords);

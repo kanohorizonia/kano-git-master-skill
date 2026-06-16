@@ -379,6 +379,40 @@ TEST_CASE("converge runtime commits dirty child before parent pointer", "[tdd][f
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge no-recursive scopes planner and runtime to current repo", "[tdd][functional][feature:converge-state][converge][planner][no-recursive]") {
+    const auto plannerCtx = CreateRemoteWithSubmoduleClone("converge-no-recursive-plan");
+    WriteTextFile(plannerCtx.cloneRootRepo / "root-only.txt", "current repo change\n");
+
+    const auto planResult = RunConvergeDryRun(plannerCtx.cloneRootRepo, {"--no-recursive", "--jobs", "1"});
+    INFO(planResult.stdoutText);
+    INFO(planResult.stderrText);
+    REQUIRE(planResult.exitCode == 0);
+    const auto plan = PlanPayload(planResult.stdoutText);
+    RequireContains(plan, "repos=1 dirty=1");
+    RequireContains(plan, ".: kog commit -ai --repos .");
+    RequireNotContains(plan, plannerCtx.submodulePath);
+
+    RemoveSandboxWorkspace(plannerCtx.sandbox);
+
+    const auto runtimeCtx = CreateRemoteWithClone("converge-no-recursive-runtime");
+    WriteTextFile(runtimeCtx.cloneRepo / "runtime.txt", "runtime current repo change\n");
+
+    const auto result = RunKog({"converge", "--no-recursive", "--jobs", "1"}, runtimeCtx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContains(result.stdoutText, "[converge] completed");
+    REQUIRE(GitStatusShort(runtimeCtx.cloneRepo).empty());
+
+    const auto head = RunGit({"rev-parse", "HEAD"}, runtimeCtx.cloneRepo);
+    const auto origin = RunGit({"rev-parse", "origin/" + runtimeCtx.branch}, runtimeCtx.cloneRepo);
+    RequireSuccess(head, "runtime no-recursive rev-parse HEAD");
+    RequireSuccess(origin, "runtime no-recursive rev-parse origin");
+    REQUIRE(head.stdoutText == origin.stdoutText);
+
+    RemoveSandboxWorkspace(runtimeCtx.sandbox);
+}
+
 TEST_CASE("converge runtime repeats passes until nested parent pointers are clean", "[tdd][functional][feature:converge-state][feature:dirty-kind][converge][planner]") {
     const auto ctx = CreateRemoteWithNestedSubmoduleClone("converge-runtime-nested-fixpoint");
     RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneLeafRepo), "checkout leaf branch for nested fixpoint");

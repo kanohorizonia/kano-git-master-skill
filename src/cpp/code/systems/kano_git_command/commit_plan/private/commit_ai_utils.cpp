@@ -579,6 +579,67 @@ auto AddDirtyNestedReposFromRootStatus(const std::filesystem::path& InWorkspaceR
     }
 }
 
+auto FinalizeCommitScopeRecords(const std::filesystem::path& InWorkspaceRoot,
+                                std::vector<workspace::RepoRecord> InSelected) -> std::vector<workspace::RepoRecord> {
+    std::unordered_set<std::string> keep;
+    keep.reserve(InSelected.size());
+    for (const auto& repo : InSelected) {
+        keep.insert(ToGeneric(repo.path));
+    }
+
+    for (auto& repo : InSelected) {
+        std::vector<std::filesystem::path> deps;
+        deps.reserve(repo.dependencies.size());
+        std::unordered_set<std::string> seenDeps;
+        for (const auto& dep : repo.dependencies) {
+            const auto key = ToGeneric(dep);
+            if (keep.contains(key) && seenDeps.insert(key).second) {
+                deps.push_back(dep);
+            }
+        }
+        repo.dependencies = std::move(deps);
+    }
+
+    std::sort(InSelected.begin(), InSelected.end(), [&](const auto& A, const auto& B) {
+        const auto aKey = ToGeneric(A.path);
+        const auto bKey = ToGeneric(B.path);
+        const bool aIsRoot = aKey == ToGeneric(InWorkspaceRoot);
+        const bool bIsRoot = bKey == ToGeneric(InWorkspaceRoot);
+        if (aIsRoot != bIsRoot) {
+            return !aIsRoot && bIsRoot;
+        }
+        const auto aDepth = PathDepth(A.path);
+        const auto bDepth = PathDepth(B.path);
+        if (aDepth != bDepth) {
+            return aDepth > bDepth;
+        }
+        return aKey < bKey;
+    });
+
+    return InSelected;
+}
+
+auto BuildExplicitCommitScopeRecords(const std::filesystem::path& InWorkspaceRoot,
+                                     const std::string& InReposCsv,
+                                     const bool InDirtyOnly) -> std::vector<workspace::RepoRecord> {
+    std::vector<workspace::RepoRecord> selected;
+    for (const auto& item : ParseReposCsv(InReposCsv)) {
+        const auto resolved = ResolveRepoPath(InWorkspaceRoot, item);
+        const auto key = ToGeneric(resolved);
+        if (key.empty()) {
+            continue;
+        }
+
+        workspace::RepoRecord record;
+        record.path = resolved;
+        record.type = key == ToGeneric(InWorkspaceRoot) ? "root" : "explicit";
+        record.hasChanges = InDirtyOnly && RepoHasPorcelainChanges(resolved);
+        selected.push_back(std::move(record));
+    }
+
+    return FinalizeCommitScopeRecords(InWorkspaceRoot, std::move(selected));
+}
+
 
 
 
@@ -1650,7 +1711,12 @@ auto BuildCommitScopeRecords(const std::filesystem::path& InWorkspaceRoot,
                              const std::string& InReposCsv,
                              const bool InNoRecursive,
                              const bool InDirtyOnly) -> std::vector<workspace::RepoRecord> {
-    const bool forceFreshDirtyScope = InDirtyOnly && Trim(InReposCsv).empty() && !InNoRecursive;
+    auto reposCsv = Trim(InReposCsv);
+    if (!reposCsv.empty()) {
+        return BuildExplicitCommitScopeRecords(InWorkspaceRoot, reposCsv, InDirtyOnly);
+    }
+
+    const bool forceFreshDirtyScope = InDirtyOnly && !InNoRecursive;
     auto all = DiscoverWorkspaceRepoRecords(
         InWorkspaceRoot,
         "full",
@@ -1673,25 +1739,7 @@ auto BuildCommitScopeRecords(const std::filesystem::path& InWorkspaceRoot,
     }
 
     std::vector<workspace::RepoRecord> selected;
-    auto reposCsv = Trim(InReposCsv);
-    if (!reposCsv.empty()) {
-        for (const auto& item : ParseReposCsv(reposCsv)) {
-            const auto resolved = ResolveRepoPath(InWorkspaceRoot, item);
-            const auto key = ToGeneric(resolved);
-            if (key.empty()) {
-                continue;
-            }
-            const auto found = byPath.find(key);
-            if (found != byPath.end()) {
-                selected.push_back(found->second);
-            } else {
-                workspace::RepoRecord fallback;
-                fallback.path = resolved;
-                fallback.type = "explicit";
-                selected.push_back(std::move(fallback));
-            }
-        }
-    } else if (InNoRecursive) {
+    if (InNoRecursive) {
         const auto rootKey = ToGeneric(InWorkspaceRoot);
         const auto found = byPath.find(rootKey);
         if (found != byPath.end()) {
@@ -1708,7 +1756,7 @@ auto BuildCommitScopeRecords(const std::filesystem::path& InWorkspaceRoot,
         }
     }
 
-    if (InDirtyOnly && Trim(InReposCsv).empty() && !InNoRecursive) {
+    if (InDirtyOnly && !InNoRecursive) {
         AddDirtyNestedReposFromRootStatus(InWorkspaceRoot, byPath, &selected);
     }
 
@@ -1718,7 +1766,7 @@ auto BuildCommitScopeRecords(const std::filesystem::path& InWorkspaceRoot,
         idxByPath.emplace(ToGeneric(selected[i].path), i);
     }
 
-    if (InDirtyOnly && reposCsv.empty() && !InNoRecursive) {
+    if (InDirtyOnly && !InNoRecursive) {
         std::vector<std::vector<std::size_t>> children(selected.size());
         for (std::size_t i = 0; i < selected.size(); ++i) {
             for (const auto& dep : selected[i].dependencies) {
@@ -1754,42 +1802,7 @@ auto BuildCommitScopeRecords(const std::filesystem::path& InWorkspaceRoot,
         selected = std::move(filtered);
     }
 
-    std::unordered_set<std::string> keep;
-    keep.reserve(selected.size());
-    for (const auto& repo : selected) {
-        keep.insert(ToGeneric(repo.path));
-    }
-
-    for (auto& repo : selected) {
-        std::vector<std::filesystem::path> deps;
-        deps.reserve(repo.dependencies.size());
-        std::unordered_set<std::string> seenDeps;
-        for (const auto& dep : repo.dependencies) {
-            const auto key = ToGeneric(dep);
-            if (keep.contains(key) && seenDeps.insert(key).second) {
-                deps.push_back(dep);
-            }
-        }
-        repo.dependencies = std::move(deps);
-    }
-
-    std::sort(selected.begin(), selected.end(), [&](const auto& A, const auto& B) {
-        const auto aKey = ToGeneric(A.path);
-        const auto bKey = ToGeneric(B.path);
-        const bool aIsRoot = aKey == ToGeneric(InWorkspaceRoot);
-        const bool bIsRoot = bKey == ToGeneric(InWorkspaceRoot);
-        if (aIsRoot != bIsRoot) {
-            return !aIsRoot && bIsRoot;
-        }
-        const auto aDepth = PathDepth(A.path);
-        const auto bDepth = PathDepth(B.path);
-        if (aDepth != bDepth) {
-            return aDepth > bDepth;
-        }
-        return aKey < bKey;
-    });
-
-    return selected;
+    return FinalizeCommitScopeRecords(InWorkspaceRoot, std::move(selected));
 }
 
 auto BuildExecutionWaves(const std::vector<workspace::RepoRecord>& InRepos) -> std::vector<std::vector<std::size_t>> {
