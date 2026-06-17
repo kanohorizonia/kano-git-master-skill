@@ -132,6 +132,9 @@ TEST_CASE("ShouldIgnoreSecretFinding ignores dynamic Horde token assignments", "
     REQUIRE(ShouldIgnoreSecretFinding(
         "generic_password_assignment",
         "DE_TOKEN=\"$(printenv \"KOG_TOKEN\")\""));
+    REQUIRE(ShouldIgnoreSecretFinding(
+        "generic_password_assignment",
+        "api_key: \"env:CONTROL_PLANE_API_KEY\""));
 
     REQUIRE_FALSE(ShouldIgnoreSecretFinding(
         "generic_password_assignment",

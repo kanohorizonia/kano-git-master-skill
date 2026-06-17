@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <optional>
 #include <regex>
 #include <string>
 #include <string_view>
@@ -60,10 +61,29 @@ inline auto LooksLikeDynamicSecretReferenceValue(const std::string& InValue) -> 
     }
 
     static const std::regex kDynamicReferencePattern(
-        R"(^\s*(?:\\?\$\([^)]+\)|\\?\$\{[^}]+\}|\\?\$[A-Za-z_][A-Za-z0-9_]*)\s*$)",
+        R"(^\s*(?:\\?\$\([^)]+\)|\\?\$\{[^}]+\}|\\?\$[A-Za-z_][A-Za-z0-9_]*|env\s*:\s*[A-Za-z_][A-Za-z0-9_]*)\s*$)",
         std::regex::ECMAScript);
 
     return std::regex_match(InValue, kDynamicReferencePattern);
+}
+
+inline auto ExtractQuotedSecretAssignmentValue(const std::string& InLine) -> std::optional<std::string> {
+    static const std::regex kSecretAssignmentStartPattern(
+        R"((password|passwd|pwd|secret|api[_ -]?key|token)\s*[:=]\s*(['"]))",
+        std::regex::ECMAScript | std::regex::icase);
+
+    std::smatch match;
+    if (!std::regex_search(InLine, match, kSecretAssignmentStartPattern) || match.size() < 3) {
+        return std::nullopt;
+    }
+
+    const char quote = match[2].str().front();
+    const auto valueStart = static_cast<std::size_t>(match.position(2) + match.length(2));
+    const auto valueEnd = InLine.find_last_of(quote);
+    if (valueEnd == std::string::npos || valueEnd <= valueStart) {
+        return std::nullopt;
+    }
+    return InLine.substr(valueStart, valueEnd - valueStart);
 }
 
 inline auto ShouldIgnoreSecretFinding(const std::string& InRuleId,
@@ -78,18 +98,13 @@ inline auto ShouldIgnoreSecretFinding(const std::string& InRuleId,
         return false;
     }
 
-    static const std::regex kAssignmentPattern(
-        R"(([Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Ss][Ss][Ww][Dd]|[Pp][Ww][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Aa][Pp][Ii][_ -]?[Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn])\s*[:=]\s*(?:'((?:\\.|[^'\\]){8,})'|\"((?:\\.|[^\\"\\]){8,})\"))",
-        std::regex::ECMAScript | std::regex::icase);
-
-    std::smatch match;
-    if (!std::regex_search(InLine, match, kAssignmentPattern) || match.size() < 3) {
+    const auto assignedValue = ExtractQuotedSecretAssignmentValue(InLine);
+    if (!assignedValue.has_value() || assignedValue->size() < 8) {
         return false;
     }
 
-    const auto assignedValue = !match[2].str().empty() ? match[2].str() : match[3].str();
-    return LooksLikeIntentionalPlaceholderValue(assignedValue)
-        || LooksLikeDynamicSecretReferenceValue(assignedValue);
+    return LooksLikeIntentionalPlaceholderValue(*assignedValue)
+        || LooksLikeDynamicSecretReferenceValue(*assignedValue);
 }
 
 } // namespace kano::git::commands::secret_scan
