@@ -87,6 +87,12 @@ auto HasCommand(const std::string& InCommand, const std::vector<std::string>& In
 }
 
 static auto CopilotStandaloneCommand() -> std::string {
+    if (IsKogTestMode()) {
+        if (const char* overrideCommand = std::getenv("KOG_TEST_COPILOT_COMMAND");
+            overrideCommand != nullptr && overrideCommand[0] != '\0') {
+            return overrideCommand;
+        }
+    }
 #if defined(_WIN32)
     if (const char* appData = std::getenv("APPDATA"); appData != nullptr && appData[0] != '\0') {
         const auto candidate = (std::filesystem::path(appData) / "npm" / "copilot.cmd").lexically_normal();

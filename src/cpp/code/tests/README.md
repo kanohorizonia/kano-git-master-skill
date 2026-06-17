@@ -15,6 +15,10 @@ tests/
 |  |- unit/
 |  |- property/
 |  \- integration/
+|- kano_git_commit_plan_tests/
+|  |- CMakeLists.txt
+|  |- unit/
+|  \- property/
 |- kano_git_gui_tests/
 |  \- README.md
 \- e2e/
@@ -31,6 +35,10 @@ tests/
 - `kano_git_tui_tests.exe`
   - source root: `code/tests/kano_git_tui_tests/`
   - current focus: TUI-facing unit/property/integration tests
+
+- `kano_git_commit_plan_tests.exe`
+  - source root: `code/tests/kano_git_commit_plan_tests/`
+  - current focus: commit-plan schema, AI fill, pathspec, and freshness regressions
 
 - `kano_git_gui_tests`
   - reserved only
@@ -56,15 +64,35 @@ That subsystem provides:
 ```bash
 cd src/cpp
 cmake --preset <your-preset>
-cmake --build --preset <your-preset> --target kano_git_cli_tests kano_git_tui_tests
+cmake --build --preset <your-preset> --target kano_git_cli_tests kano_git_tui_tests kano_git_commit_plan_tests
 ```
 
 ## Run
 
 ```bash
-./build/bin/<preset>/kano_git_cli_tests
-./build/bin/<preset>/kano_git_tui_tests
+./out/bin/<preset>/release/kano_git_cli_tests
+./out/bin/<preset>/release/kano_git_tui_tests
+./out/bin/<preset>/release/kano_git_commit_plan_tests
 ```
+
+For the default Windows MSVC preset, use `out/bin/windows-ninja-msvc/release/*.exe`.
+
+Focused examples:
+
+```powershell
+.\out\bin\windows-ninja-msvc\release\kano_git_commit_plan_tests.exe "[Unit][CommitPlan][Normalize]"
+.\out\bin\windows-ninja-msvc\release\kano_git_cli_tests.exe "[functional][plan][freshness]"
+```
+
+## Commit-Plan Regression Fixtures
+
+Prefer table-driven native fixtures in `kano_git_commit_plan_tests` when the
+case must prove real git pathspec behavior against a temporary repository.
+Name each row after the dogfood failure mode, then assert either the normalized
+pathspec list or the stable `INVALID_PLAN_*` error prefix.
+
+Use file-backed JSON/golden fixtures only when the raw payload shape itself is
+the behavior under test and the case does not need per-run temp paths.
 
 ## TDD/BDD Tags
 
@@ -84,11 +112,11 @@ artifacts under `.kano/tmp/`; regenerate them instead of editing them manually.
 
 - `run_kano_git_tests`
   - fast lane
-  - runs CLI + TUI tests only
+  - runs CLI + TUI + commit-plan tests
 
 - `run_kano_git_all_tests`
   - full lane
-  - runs CLI + TUI + E2E
+  - runs CLI + TUI + commit-plan + E2E
 
 ## E2E Scripts
 

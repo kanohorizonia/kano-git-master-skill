@@ -100,8 +100,8 @@ TEST_CASE("ExecuteCommandWithHeartbeat emits heartbeat while waiting", "[Unit][C
     diagnostics.responseFile = std::filesystem::path("C:/tmp/heartbeat-response.json");
 
     const auto result = ExecuteCommandWithHeartbeat(
-        "cmd",
-        {"/c", "timeout /t 2 /nobreak >nul & echo done"},
+        "powershell",
+        {"-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 2; Write-Output done"},
         kano::git::shell::ExecMode::Capture,
         std::nullopt,
         diagnostics);

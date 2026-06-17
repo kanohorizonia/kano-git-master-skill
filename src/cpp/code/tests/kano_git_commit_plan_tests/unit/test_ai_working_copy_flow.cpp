@@ -77,7 +77,7 @@ auto BuildSingleEntryPlan(const std::filesystem::path& workspaceRoot,
     return *updated;
 }
 
-void InstallFakeCopilot(const std::filesystem::path& workspaceRoot) {
+auto InstallFakeCopilot(const std::filesystem::path& workspaceRoot) -> std::filesystem::path {
     const auto binDir = (workspaceRoot / "fake-bin").lexically_normal();
     const auto cmdPath = (binDir / "copilot.cmd").lexically_normal();
     const auto psPath = (binDir / "fake_copilot.ps1").lexically_normal();
@@ -140,6 +140,7 @@ if ($env:KOG_TEST_GITIGNORE_APPEND -and $gitignorePath) {
 Write-Output "Done."
 )PS";
     REQUIRE(WriteFileText(psPath, script, &error));
+    return cmdPath;
 }
 
 auto LoadJson(const std::filesystem::path& path) -> nlohmann::json {
@@ -153,7 +154,7 @@ auto LoadJson(const std::filesystem::path& path) -> nlohmann::json {
 TEST_CASE("FillPlanByAi promotes edited working plan and merges new gitignore rules in single mode",
           "[tdd][unit][feature:ai-provider-bootstrap][FillPlanByAi][working-copy][gitignore]") {
     const auto workspaceRoot = UniqueTempWorkspace("single-success");
-    InstallFakeCopilot(workspaceRoot);
+    const auto fakeCopilot = InstallFakeCopilot(workspaceRoot);
 
     const auto planPath = (workspaceRoot / ".kano" / "tmp" / "git" / "plans" / "default-plan.json").lexically_normal();
     const auto gitignorePath = (workspaceRoot / ".gitignore").lexically_normal();
@@ -190,6 +191,10 @@ TEST_CASE("FillPlanByAi promotes edited working plan and merges new gitignore ru
     const auto originalPath = std::getenv("PATH") != nullptr ? std::string(std::getenv("PATH")) : std::string();
     const auto fakePath = (workspaceRoot / "fake-bin").lexically_normal().string() + PathEnvSeparator() + originalPath;
     const ScopedEnv pathEnv("PATH", fakePath.c_str());
+    const ScopedEnv testModeEnv("KOG_TEST_MODE", "1");
+    const ScopedEnv availableCommandsEnv("KOG_TEST_AVAILABLE_COMMANDS", "copilot");
+    const auto fakeCopilotCommand = fakeCopilot.string();
+    const ScopedEnv copilotCommandEnv("KOG_TEST_COPILOT_COMMAND", fakeCopilotCommand.c_str());
     const ScopedEnv planEnv("KOG_TEST_PLAN_SOURCE", sourcePlanPath.string().c_str());
     const ScopedEnv gitignoreEnv("KOG_TEST_GITIGNORE_APPEND", "new-generated-rule/");
 
@@ -212,7 +217,7 @@ TEST_CASE("FillPlanByAi promotes edited working plan and merges new gitignore ru
 TEST_CASE("FillPlanByAi resolves auto provider before applying permission profile",
           "[tdd][unit][FillPlanByAi][working-copy][provider-resolution]") {
     const auto workspaceRoot = UniqueTempWorkspace("auto-provider-profile");
-    InstallFakeCopilot(workspaceRoot);
+    const auto fakeCopilot = InstallFakeCopilot(workspaceRoot);
 
     const auto planPath = (workspaceRoot / ".kano" / "tmp" / "git" / "plans" / "default-plan.json").lexically_normal();
     const auto sourcePlanPath = (workspaceRoot / "expected-plan.json").lexically_normal();
@@ -247,6 +252,10 @@ TEST_CASE("FillPlanByAi resolves auto provider before applying permission profil
     const auto originalPath = std::getenv("PATH") != nullptr ? std::string(std::getenv("PATH")) : std::string();
     const auto fakePath = (workspaceRoot / "fake-bin").lexically_normal().string() + PathEnvSeparator() + originalPath;
     const ScopedEnv pathEnv("PATH", fakePath.c_str());
+    const ScopedEnv testModeEnv("KOG_TEST_MODE", "1");
+    const ScopedEnv availableCommandsEnv("KOG_TEST_AVAILABLE_COMMANDS", "copilot");
+    const auto fakeCopilotCommand = fakeCopilot.string();
+    const ScopedEnv copilotCommandEnv("KOG_TEST_COPILOT_COMMAND", fakeCopilotCommand.c_str());
     const ScopedEnv planEnv("KOG_TEST_PLAN_SOURCE", sourcePlanPath.string().c_str());
     const ScopedEnv logEnv("KOG_TEST_AI_STUB_LOG", providerLogPath.string().c_str());
 
@@ -302,7 +311,7 @@ TEST_CASE("FillPlanByAi returns AI_PLAN_WRITEBACK_PERMISSION_DENIED when provide
 TEST_CASE("FillPlanByAi returns AI_PLAN_WRITEBACK_INVALID_JSON when AI writes malformed JSON",
           "[tdd][unit][FillPlanByAi][working-copy][writeback]") {
     const auto workspaceRoot = UniqueTempWorkspace("writeback-invalid-json");
-    InstallFakeCopilot(workspaceRoot);
+    const auto fakeCopilot = InstallFakeCopilot(workspaceRoot);
 
     const auto planPath = (workspaceRoot / ".kano" / "tmp" / "git" / "plans" / "default-plan.json").lexically_normal();
 
@@ -315,6 +324,10 @@ TEST_CASE("FillPlanByAi returns AI_PLAN_WRITEBACK_INVALID_JSON when AI writes ma
     const auto originalPath = std::getenv("PATH") != nullptr ? std::string(std::getenv("PATH")) : std::string();
     const auto fakePath = (workspaceRoot / "fake-bin").lexically_normal().string() + PathEnvSeparator() + originalPath;
     const ScopedEnv pathEnv("PATH", fakePath.c_str());
+    const ScopedEnv testModeEnv("KOG_TEST_MODE", "1");
+    const ScopedEnv availableCommandsEnv("KOG_TEST_AVAILABLE_COMMANDS", "copilot");
+    const auto fakeCopilotCommand = fakeCopilot.string();
+    const ScopedEnv copilotCommandEnv("KOG_TEST_COPILOT_COMMAND", fakeCopilotCommand.c_str());
     const ScopedEnv literalPlanEnv("KOG_TEST_PLAN_LITERAL", "{\"meta\":");
 
     std::string fillError;
@@ -325,7 +338,7 @@ TEST_CASE("FillPlanByAi returns AI_PLAN_WRITEBACK_INVALID_JSON when AI writes ma
 TEST_CASE("FillPlanByAi returns AI_PLAN_EMPTY_COMMIT_ENTRIES when edited plan removes commits",
           "[tdd][unit][FillPlanByAi][working-copy][writeback]") {
     const auto workspaceRoot = UniqueTempWorkspace("writeback-empty-entries");
-    InstallFakeCopilot(workspaceRoot);
+    const auto fakeCopilot = InstallFakeCopilot(workspaceRoot);
 
     const auto planPath = (workspaceRoot / ".kano" / "tmp" / "git" / "plans" / "default-plan.json").lexically_normal();
     const auto sourcePlanPath = (workspaceRoot / "empty-entries-plan.json").lexically_normal();
@@ -343,6 +356,10 @@ TEST_CASE("FillPlanByAi returns AI_PLAN_EMPTY_COMMIT_ENTRIES when edited plan re
     const auto originalPath = std::getenv("PATH") != nullptr ? std::string(std::getenv("PATH")) : std::string();
     const auto fakePath = (workspaceRoot / "fake-bin").lexically_normal().string() + PathEnvSeparator() + originalPath;
     const ScopedEnv pathEnv("PATH", fakePath.c_str());
+    const ScopedEnv testModeEnv("KOG_TEST_MODE", "1");
+    const ScopedEnv availableCommandsEnv("KOG_TEST_AVAILABLE_COMMANDS", "copilot");
+    const auto fakeCopilotCommand = fakeCopilot.string();
+    const ScopedEnv copilotCommandEnv("KOG_TEST_COPILOT_COMMAND", fakeCopilotCommand.c_str());
     const ScopedEnv planEnv("KOG_TEST_PLAN_SOURCE", sourcePlanPath.string().c_str());
 
     std::string fillError;
@@ -353,7 +370,7 @@ TEST_CASE("FillPlanByAi returns AI_PLAN_EMPTY_COMMIT_ENTRIES when edited plan re
 TEST_CASE("FillPlanByAi leaves authoritative plan unchanged when edited working plan fails validation",
           "[tdd][unit][feature:ai-provider-bootstrap][FillPlanByAi][working-copy][validation]") {
     const auto workspaceRoot = UniqueTempWorkspace("single-invalid");
-    InstallFakeCopilot(workspaceRoot);
+    const auto fakeCopilot = InstallFakeCopilot(workspaceRoot);
 
     const auto planPath = (workspaceRoot / ".kano" / "tmp" / "git" / "plans" / "default-plan.json").lexically_normal();
     const auto sourcePlanPath = (workspaceRoot / "invalid-plan.json").lexically_normal();
@@ -368,6 +385,10 @@ TEST_CASE("FillPlanByAi leaves authoritative plan unchanged when edited working 
     const auto originalPath = std::getenv("PATH") != nullptr ? std::string(std::getenv("PATH")) : std::string();
     const auto fakePath = (workspaceRoot / "fake-bin").lexically_normal().string() + PathEnvSeparator() + originalPath;
     const ScopedEnv pathEnv("PATH", fakePath.c_str());
+    const ScopedEnv testModeEnv("KOG_TEST_MODE", "1");
+    const ScopedEnv availableCommandsEnv("KOG_TEST_AVAILABLE_COMMANDS", "copilot");
+    const auto fakeCopilotCommand = fakeCopilot.string();
+    const ScopedEnv copilotCommandEnv("KOG_TEST_COPILOT_COMMAND", fakeCopilotCommand.c_str());
     const ScopedEnv planEnv("KOG_TEST_PLAN_SOURCE", sourcePlanPath.string().c_str());
     const ScopedEnv gitignoreEnv("KOG_TEST_GITIGNORE_APPEND", "");
 
@@ -383,15 +404,15 @@ TEST_CASE("FillPlanByAi leaves authoritative plan unchanged when edited working 
 TEST_CASE("FillPlanByAi uses working-copy flow for per-commit mode",
           "[tdd][unit][feature:ai-provider-bootstrap][FillPlanByAi][working-copy][per-commit]") {
     const auto workspaceRoot = UniqueTempWorkspace("per-commit-success");
-    InstallFakeCopilot(workspaceRoot);
+    const auto fakeCopilot = InstallFakeCopilot(workspaceRoot);
 
     const auto planPath = (workspaceRoot / ".kano" / "tmp" / "git" / "plans" / "default-plan.json").lexically_normal();
     const auto sourcePlanPath = (workspaceRoot / "expected-plan.json").lexically_normal();
 
     std::string error;
     const auto initialPlan = BuildSingleEntryPlan(workspaceRoot,
-                                                  "[Seed][Chore] Deterministic placeholder scope (NO-TICKET)",
-                                                  "Deterministic placeholder review reason.");
+                                                  "replace-with-commit-message",
+                                                  "replace-with-review-reason");
     REQUIRE(WriteFileText(planPath, initialPlan, &error));
 
     const auto replacementCommitStage = R"===([
@@ -417,6 +438,10 @@ TEST_CASE("FillPlanByAi uses working-copy flow for per-commit mode",
     const auto originalPath = std::getenv("PATH") != nullptr ? std::string(std::getenv("PATH")) : std::string();
     const auto fakePath = (workspaceRoot / "fake-bin").lexically_normal().string() + PathEnvSeparator() + originalPath;
     const ScopedEnv pathEnv("PATH", fakePath.c_str());
+    const ScopedEnv testModeEnv("KOG_TEST_MODE", "1");
+    const ScopedEnv availableCommandsEnv("KOG_TEST_AVAILABLE_COMMANDS", "copilot");
+    const auto fakeCopilotCommand = fakeCopilot.string();
+    const ScopedEnv copilotCommandEnv("KOG_TEST_COPILOT_COMMAND", fakeCopilotCommand.c_str());
     const ScopedEnv planEnv("KOG_TEST_PLAN_SOURCE", sourcePlanPath.string().c_str());
     const ScopedEnv gitignoreEnv("KOG_TEST_GITIGNORE_APPEND", "");
 
@@ -457,4 +482,16 @@ TEST_CASE("FillPlanByAi restores missing commit review verdicts in edited workin
     REQUIRE(finalDoc["stages"]["commit"][0]["commits"][0]["review"]["verdict"].get<std::string>() == "pass");
     REQUIRE(finalDoc["stages"]["commit"][0]["commits"][0]["review"]["reason"].get<std::string>() ==
             "Only commit-plan working-copy normalization logic is included and no unrelated files or secrets are part of this commit.");
+}
+
+TEST_CASE("ValidateAiReadyPlan rejects placeholder commit content even when reviews pass",
+          "[tdd][unit][CommitPlan][Validation][Placeholder]") {
+    const auto workspaceRoot = UniqueTempWorkspace("validate-placeholder-commit-content");
+    const auto plan = BuildSingleEntryPlan(workspaceRoot,
+                                           "replace-with-commit-message",
+                                           "replace-with-review-reason");
+
+    std::string validationError;
+    REQUIRE_FALSE(ValidateAiReadyPlan(plan, &validationError));
+    REQUIRE(validationError.find("no valid non-placeholder commit messages") != std::string::npos);
 }
