@@ -426,6 +426,6 @@ git gc --aggressive
 ---
 
 **See Also**:
-- [Scalar Scripts Documentation](../scripts/mono-repo/scalar/)
+- [Scalar Guide](../guides/scalar.md)
 - [Git Scalar Official Docs](https://github.com/microsoft/scalar)
-- [Performance Benchmarks](./PERFORMANCE-BENCHMARKS.md) (to be created)
+- [Profiling Matrices](../profiling/README.md)

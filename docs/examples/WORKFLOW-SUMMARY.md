@@ -68,7 +68,7 @@ This document summarizes the implementation of the repository initialization wor
 #### User Guides
 - [Repository Initialization Workflow Guide](../guides/repo-initialization-workflow.md)
 - [Workflow Examples](./repo-initialization-workflow-examples.md)
-- [Kano Init Examples](./init-kano-repo-example.md)
+- [Kano Init Examples](./init-kano-dev-skill-example.md)
 - [Root Repo Multi-Remote Examples](./root-repo-multi-remote-examples.md)
 
 #### Example Commands
@@ -269,5 +269,5 @@ Difference from stable-dev:
 
 - [Repository Initialization Workflow Guide](../guides/repo-initialization-workflow.md)
 - [Workflow Examples](./repo-initialization-workflow-examples.md)
-- [Kano Init Examples](./init-kano-repo-example.md)
+- [Kano Init Examples](./init-kano-dev-skill-example.md)
 - [Root Repo Multi-Remote Examples](./root-repo-multi-remote-examples.md)

@@ -558,4 +558,4 @@ git diff --cached --name-only | grep -E '(cache/|collected/)' && echo "ERROR: Ca
 
 - [Testing Guide](../development/testing.md) - How to test scripts in different environments
 - [Contributing Guide](../development/contributing.md) - Code style and conventions
-- [Git Helpers](../../scripts/lib/git-helpers.sh) - Reusable Git utility functions
+- `scripts/lib/git-helpers.sh` - Historical reusable Git utility functions; not part of the current launcher surface

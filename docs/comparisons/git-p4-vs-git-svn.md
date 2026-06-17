@@ -506,7 +506,7 @@ git svn clone --depth 1 <svn-url>
 ---
 
 **See Also**:
-- [Git-P4 Scripts Documentation](../scripts/vcs-bridges/p4/)
-- [Git-SVN Scripts Documentation](../scripts/vcs-bridges/svn/)
-- [Perforce Migration Guide](./PERFORCE-MIGRATION.md) (to be created)
-- [SVN Migration Guide](./SVN-MIGRATION.md) (to be created)
+- [Git-P4 Guide](../guides/git-p4.md)
+- [Git-SVN Guide](../guides/git-svn.md)
+- [Perforce Migration Guide](../migrations/perforce-to-git.md)
+- [SVN Migration Guide](../migrations/svn-to-git.md)

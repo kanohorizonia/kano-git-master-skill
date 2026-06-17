@@ -411,7 +411,7 @@ Brief description of changes.
 
 ## Release Process
 
-See [Release Process](./release-process.md) for details on how releases are created.
+See [Release Tooling](../../src/shell/release/README.md) for details on how releases are created.
 
 ## Getting Help
 
@@ -463,4 +463,3 @@ By contributing, you agree that your contributions will be licensed under the sa
 ---
 
 **Thank you for contributing!**
-

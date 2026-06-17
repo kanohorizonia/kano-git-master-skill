@@ -373,7 +373,7 @@ jobs:
 
 ## Cheat Sheets
 - [Git Cheat Sheet](https://education.github.com/git-cheat-sheet-education.pdf)
-- [Perforce to Git Command Mapping](./P4-TO-GIT-COMMANDS.md)
+- Perforce to Git command mapping (historical)
 
 ## Internal Resources
 - Team Wiki: [Git Workflow]
@@ -587,6 +587,6 @@ Migrating from Perforce to Git is a significant undertaking, but with proper pla
 ---
 
 **See Also**:
-- [Git-P4 Scripts Documentation](../scripts/vcs-bridges/p4/)
-- [Git-P4 vs Git-SVN Comparison](./GIT-P4-VS-GIT-SVN.md)
-- [Perforce to Git Command Mapping](./P4-TO-GIT-COMMANDS.md) (to be created)
+- [Git-P4 Guide](../guides/git-p4.md)
+- [Git-P4 vs Git-SVN Comparison](../comparisons/git-p4-vs-git-svn.md)
+- Perforce to Git command mapping (historical)

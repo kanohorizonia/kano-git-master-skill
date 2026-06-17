@@ -45,8 +45,8 @@ Extract version information from git, git-p4, or git-svn repositories.
 ```
 
 ### Documentation
-- [VERSION-INFO-GUIDE.md](./VERSION-INFO-GUIDE.md)
-- [REVISION-OFFSET-COMPLETE.md](./REVISION-OFFSET-COMPLETE.md)
+- [Version Info Guide](./version-info.md)
+- Revision offset implementation notes (historical)
 
 ---
 
@@ -94,9 +94,9 @@ Manage multiple working trees for parallel development.
 - Experimental features
 
 ### Documentation
-- [PHASE2-WORKTREE-COMPLETE.md](./PHASE2-WORKTREE-COMPLETE.md)
-- [WORKTREE-SCALAR-DESIGN.md](./WORKTREE-SCALAR-DESIGN.md)
-- [ORPHAN-BRANCH-DESIGN.md](./ORPHAN-BRANCH-DESIGN.md)
+- Worktree implementation notes (historical)
+- [Worktree and Scalar Design](../design/worktree-scalar.md)
+- [Orphan Branch Design](../design/orphan-branch.md)
 
 ---
 
@@ -146,8 +146,8 @@ Include external repositories as subdirectories.
 - Extract subtree to separate repository
 
 ### Documentation
-- [PHASE3-SUBTREE-COMPLETE.md](./PHASE3-SUBTREE-COMPLETE.md)
-- [SUBMODULE-VS-SUBTREE.md](./SUBMODULE-VS-SUBTREE.md) - Comparison guide
+- Subtree implementation notes (historical)
+- [Submodule vs Subtree](../comparisons/submodule-vs-subtree.md) - Comparison guide
 
 ---
 
@@ -192,8 +192,8 @@ Enhanced submodule management with better UX.
 - Build tools
 
 ### Documentation
-- [PHASE4-7-COMPLETE.md](./PHASE4-7-COMPLETE.md)
-- [SUBMODULE-VS-SUBTREE.md](./SUBMODULE-VS-SUBTREE.md) - Comparison guide
+- Submodule implementation notes (historical)
+- [Submodule vs Subtree](../comparisons/submodule-vs-subtree.md) - Comparison guide
 
 ---
 
@@ -244,8 +244,8 @@ Optimize large repositories with Git Scalar.
 - CI/CD pipelines
 
 ### Documentation
-- [PHASE4-7-COMPLETE.md](./PHASE4-7-COMPLETE.md)
-- [WHEN-TO-USE-SCALAR.md](./WHEN-TO-USE-SCALAR.md) - Decision guide
+- Scalar implementation notes (historical)
+- [When to Use Scalar](../comparisons/when-to-use-scalar.md) - Decision guide
 
 ---
 
@@ -291,9 +291,9 @@ Bidirectional sync between Git and Perforce.
 - Cherry-picking between P4-synced branches
 
 ### Documentation
-- [PHASE4-7-COMPLETE.md](./PHASE4-7-COMPLETE.md)
-- [GIT-P4-VS-GIT-SVN.md](./GIT-P4-VS-GIT-SVN.md) - Comparison guide
-- [PERFORCE-MIGRATION.md](./PERFORCE-MIGRATION.md) - Migration guide
+- VCS bridge implementation notes (historical)
+- [Git-P4 vs Git-SVN](../comparisons/git-p4-vs-git-svn.md) - Comparison guide
+- [Perforce Migration](../migrations/perforce-to-git.md) - Migration guide
 
 ---
 
@@ -341,39 +341,39 @@ Bidirectional sync between Git and Subversion.
 - Team collaboration across VCS
 
 ### Documentation
-- [PHASE4-7-COMPLETE.md](./PHASE4-7-COMPLETE.md)
-- [GIT-P4-VS-GIT-SVN.md](./GIT-P4-VS-GIT-SVN.md) - Comparison guide
-- [SVN-MIGRATION.md](./SVN-MIGRATION.md) - Migration guide
+- VCS bridge implementation notes (historical)
+- [Git-P4 vs Git-SVN](../comparisons/git-p4-vs-git-svn.md) - Comparison guide
+- [SVN Migration](../migrations/svn-to-git.md) - Migration guide
 
 ---
 
 ## Documentation Guides
 
 ### Comparison Guides
-- [SUBMODULE-VS-SUBTREE.md](./SUBMODULE-VS-SUBTREE.md) - Detailed comparison with decision matrix
-- [WHEN-TO-USE-SCALAR.md](./WHEN-TO-USE-SCALAR.md) - Scalar decision guide with thresholds
-- [GIT-P4-VS-GIT-SVN.md](./GIT-P4-VS-GIT-SVN.md) - VCS bridge comparison
+- [Submodule vs Subtree](../comparisons/submodule-vs-subtree.md) - Detailed comparison with decision matrix
+- [When to Use Scalar](../comparisons/when-to-use-scalar.md) - Scalar decision guide with thresholds
+- [Git-P4 vs Git-SVN](../comparisons/git-p4-vs-git-svn.md) - VCS bridge comparison
 
 ### Migration Guides
-- [PERFORCE-MIGRATION.md](./PERFORCE-MIGRATION.md) - Complete Perforce to Git migration guide
-- [SVN-MIGRATION.md](./SVN-MIGRATION.md) - Complete SVN to Git migration guide
+- [Perforce Migration](../migrations/perforce-to-git.md) - Complete Perforce to Git migration guide
+- [SVN Migration](../migrations/svn-to-git.md) - Complete SVN to Git migration guide
 
 ### Phase Completion Guides
-- [PHASE1-COMPLETE.md](./PHASE1-COMPLETE.md) - Folder restructure
-- [PHASE2-WORKTREE-COMPLETE.md](./PHASE2-WORKTREE-COMPLETE.md) - Worktree management
-- [PHASE3-SUBTREE-COMPLETE.md](./PHASE3-SUBTREE-COMPLETE.md) - Subtree management
-- [PHASE4-7-COMPLETE.md](./PHASE4-7-COMPLETE.md) - Submodule, Scalar, VCS bridges
+- Phase 1 complete notes (historical) - Folder restructure
+- Phase 2 complete notes (historical) - Worktree management
+- Phase 3 complete notes (historical) - Subtree management
+- Phase 4-7 complete notes (historical) - Submodule, Scalar, VCS bridges
 
 ### Status Documents
-- [IMPLEMENTATION-STATUS.md](./IMPLEMENTATION-STATUS.md) - Ongoing status tracking
-- [IMPLEMENTATION-COMPLETE.md](./IMPLEMENTATION-COMPLETE.md) - Implementation summary
-- [FINAL-SUMMARY.md](./FINAL-SUMMARY.md) - Final summary
+- Implementation status notes (historical) - Ongoing status tracking
+- Implementation complete notes (historical) - Implementation summary
+- Final summary notes (historical) - Final summary
 
 ### Design Documents
-- [WORKTREE-SCALAR-DESIGN.md](./WORKTREE-SCALAR-DESIGN.md) - Worktree and Scalar design
-- [ORPHAN-BRANCH-DESIGN.md](./ORPHAN-BRANCH-DESIGN.md) - Orphan branch integration
-- [VERSION-INFO-GUIDE.md](./VERSION-INFO-GUIDE.md) - Version extraction guide
-- [REVISION-OFFSET-COMPLETE.md](./REVISION-OFFSET-COMPLETE.md) - Revision offset feature
+- [Worktree and Scalar Design](../design/worktree-scalar.md) - Worktree and Scalar design
+- [Orphan Branch Design](../design/orphan-branch.md) - Orphan branch integration
+- [Version Info Guide](./version-info.md) - Version extraction guide
+- Revision offset feature notes (historical)
 
 ---
 

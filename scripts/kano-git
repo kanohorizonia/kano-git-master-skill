@@ -811,7 +811,7 @@ check_build_prerequisites() {
     echo "Missing or broken build tools:$missing" >&2
     echo "" >&2
     echo "To install prerequisites, run:" >&2
-    echo "  ./kog self install-prereq" >&2
+    echo "  ./scripts/kog self install-prereq" >&2
     return 1
   fi
 
@@ -1409,7 +1409,7 @@ maybe_handle_completion_management_request() {
 
   if [[ "$shell_name" != "bash" ]]; then
     echo "Error: completion install currently supports bash only." >&2
-    echo "Hint: use './kog completion install bash' or './kog completion uninstall bash'" >&2
+    echo "Hint: use './scripts/kog completion install bash' or './scripts/kog completion uninstall bash'" >&2
     return 2
   fi
 
@@ -1421,7 +1421,7 @@ maybe_handle_completion_management_request() {
   binary="$(find_binary || true)"
   if [[ -z "$binary" || ! -f "$binary" ]]; then
     echo "Error: native binary unavailable; cannot install completion." >&2
-    echo "Hint: run './kog self build' first." >&2
+    echo "Hint: run './scripts/kog self build' first." >&2
     return 1
   fi
 
@@ -2008,7 +2008,7 @@ main() {
     fi
     echo "Error: no compatible native binary found for current shell." >&2
     echo "Hint: do not mix WSL shell with Windows .exe binary. Use Linux build in WSL, or run Git Bash/Cygwin for Windows build." >&2
-    echo "Hint: run './kog self build' in the current shell environment." >&2
+    echo "Hint: run './scripts/kog self build' in the current shell environment." >&2
     exit 1
   fi
 
@@ -2023,7 +2023,7 @@ main() {
 
   echo "Error: strict native-only mode is enabled and C++ binary is unavailable." >&2
   echo "Error: shell fallback is disabled by design; auto build/update are disabled in manual mode." >&2
-  echo "Hint: run './kog self build' (or './kog self rebuild') in this shell, then retry." >&2
+  echo "Hint: run './scripts/kog self build' (or './scripts/kog self rebuild') in this shell, then retry." >&2
   exit 1
 }
 

@@ -400,7 +400,7 @@ git commit -m "Add $SUBTREE_PATH as submodule"
 ---
 
 **See Also**:
-- [Submodule Scripts Documentation](../scripts/submodules/)
-- [Subtree Scripts Documentation](../scripts/subtree/)
+- [Submodule Guide](../guides/submodule.md)
+- [Subtree Guide](../guides/subtree.md)
 - [Git Submodules Official Docs](https://git-scm.com/book/en/v2/Git-Tools-Submodules)
 - [Git Subtrees Official Docs](https://git-scm.com/book/en/v2/Git-Tools-Advanced-Merging#_subtree_merge)

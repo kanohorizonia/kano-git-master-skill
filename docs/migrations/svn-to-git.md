@@ -512,7 +512,7 @@ jobs:
 
 ## Cheat Sheets
 - [Git Cheat Sheet](https://education.github.com/git-cheat-sheet-education.pdf)
-- [SVN to Git Command Mapping](./SVN-TO-GIT-COMMANDS.md)
+- SVN to Git command mapping (historical)
 
 ## Internal Resources
 - Team Wiki: [Git Workflow]
@@ -778,6 +778,6 @@ Migrating from SVN to Git is a significant undertaking, but with proper planning
 ---
 
 **See Also**:
-- [Git-SVN Scripts Documentation](../scripts/vcs-bridges/svn/)
-- [Git-P4 vs Git-SVN Comparison](./GIT-P4-VS-GIT-SVN.md)
-- [SVN to Git Command Mapping](./SVN-TO-GIT-COMMANDS.md) (to be created)
+- [Git-SVN Guide](../guides/git-svn.md)
+- [Git-P4 vs Git-SVN Comparison](../comparisons/git-p4-vs-git-svn.md)
+- SVN to Git command mapping (historical)

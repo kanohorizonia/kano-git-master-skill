@@ -1,6 +1,6 @@
 # kano-git CLI
 
-C++20 command-line interface for [Kano Git Master](../SKILL.md).
+C++20 command-line interface for [Kano Git Master](../../SKILL.md).
 
 ## Overview
 
@@ -149,7 +149,7 @@ source <(kano-git completion git-bash)
 ### Launcher mode (developer vs installed package)
 
 - Default behavior (no marker): launcher assumes **developer mode**.
-- In manual developer runs, strict native-only mode is enforced: if the C++ binary is missing, the launcher tells you to run `./kog self build` (or `./kog self rebuild`) instead of auto-building implicitly.
+- In manual developer runs, strict native-only mode is enforced: if the C++ binary is missing, the launcher tells you to run `./scripts/kog self build` (or `./scripts/kog self rebuild`) instead of auto-building implicitly.
 - Installed-package behavior: if marker file exists, launcher assumes **packaged install mode** and will **not** auto-build.
 - Marker path:
   - default: `.kano-installed-marker` at repo root
@@ -177,8 +177,8 @@ source <(kano-git completion git-bash)
   - `KANO_GIT_AUTO_UPDATE_CHECK=0` disables launcher update checks
 
 - Rebuild trigger (developer mode):
-  - use `./kog self build` for an incremental rebuild
-  - use `./kog self rebuild` for a clean rebuild
+  - use `./scripts/kog self build` for an incremental rebuild
+  - use `./scripts/kog self rebuild` for a clean rebuild
 
 ## Command Tree
 

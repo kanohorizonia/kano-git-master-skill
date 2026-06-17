@@ -204,8 +204,8 @@ Potential improvements:
 
 ## Related Documentation
 
-- [Smart Git Tools Guide](./smart-git-tools.md)
-- [Quick Reference](./smart-tools-quick-reference.md)
+- [Current Command Surface](./current-command-surface.md)
+- [Quick Start](./quick-start.md)
 - [Common Pitfalls](./common-pitfalls.md)
 
 ---

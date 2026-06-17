@@ -1827,17 +1827,17 @@ TEST_CASE("kog_discover_trusted_unregistered_child_is_registered_discovery_root"
     RemoveSandboxWorkspace(sandbox);
 }
 
-TEST_CASE("workspace_discover_honors_gitignore_reinclude_under_build_script", "[functional][workspace][discovery]") {
-    const auto ctx = CreateRemoteWithClone("discover-build-script-reinclude");
+TEST_CASE("workspace_discover_honors_gitignore_reinclude_under_cpp_scripts", "[functional][workspace][discovery]") {
+    const auto ctx = CreateRemoteWithClone("discover-cpp-scripts-reinclude");
     WriteTextFile(
         ctx.cloneRepo / ".gitignore",
         ".kano/\n"
-        "src/cpp/build/**\n"
-        "!src/cpp/build/\n"
-        "!src/cpp/build/script/\n"
-        "!src/cpp/build/script/**\n");
+        "src/cpp/**\n"
+        "!src/cpp/\n"
+        "!src/cpp/scripts/\n"
+        "!src/cpp/scripts/**\n");
 
-    const auto scriptRepo = (ctx.cloneRepo / "src" / "cpp" / "build" / "script" / "tooling-repo").lexically_normal();
+    const auto scriptRepo = (ctx.cloneRepo / "src" / "cpp" / "scripts" / "tooling-repo").lexically_normal();
     const auto intermediateRepo = (ctx.cloneRepo / "src" / "cpp" / "build" / "_intermediate" / "cache-repo").lexically_normal();
 
     std::filesystem::create_directories(scriptRepo.parent_path());
@@ -1858,16 +1858,16 @@ TEST_CASE("workspace_discover_honors_gitignore_reinclude_under_build_script", "[
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
-TEST_CASE("workspace_discover_honors_kogignore_reinclude_under_build_script", "[functional][workspace][discovery]") {
-    const auto ctx = CreateRemoteWithClone("discover-build-script-kogignore-reinclude");
+TEST_CASE("workspace_discover_honors_kogignore_reinclude_under_cpp_scripts", "[functional][workspace][discovery]") {
+    const auto ctx = CreateRemoteWithClone("discover-cpp-scripts-kogignore-reinclude");
     WriteTextFile(
         ctx.cloneRepo / ".kogignore",
-        "src/cpp/build/**\n"
-        "!src/cpp/build/\n"
-        "!src/cpp/build/script/\n"
-        "!src/cpp/build/script/**\n");
+        "src/cpp/**\n"
+        "!src/cpp/\n"
+        "!src/cpp/scripts/\n"
+        "!src/cpp/scripts/**\n");
 
-    const auto scriptRepo = (ctx.cloneRepo / "src" / "cpp" / "build" / "script" / "tooling-repo").lexically_normal();
+    const auto scriptRepo = (ctx.cloneRepo / "src" / "cpp" / "scripts" / "tooling-repo").lexically_normal();
     const auto intermediateRepo = (ctx.cloneRepo / "src" / "cpp" / "build" / "_intermediate" / "cache-repo").lexically_normal();
 
     std::filesystem::create_directories(scriptRepo.parent_path());
