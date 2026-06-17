@@ -67,6 +67,18 @@ inline auto LooksLikeDynamicSecretReferenceValue(const std::string& InValue) -> 
     return std::regex_match(InValue, kDynamicReferencePattern);
 }
 
+inline auto LooksLikeLogicalSecretReferenceValue(const std::string& InValue) -> bool {
+    if (InValue.empty() || (InValue.find('_') == std::string::npos && InValue.find('-') == std::string::npos)) {
+        return false;
+    }
+
+    static const std::regex kLogicalReferencePattern(
+        R"(^\s*[a-z][a-z0-9_-]*(?:\.[a-z][a-z0-9_-]*)+\s*$)",
+        std::regex::ECMAScript);
+
+    return std::regex_match(InValue, kLogicalReferencePattern);
+}
+
 inline auto ExtractQuotedSecretAssignmentValue(const std::string& InLine) -> std::optional<std::string> {
     static const std::regex kSecretAssignmentStartPattern(
         R"((password|passwd|pwd|secret|api[_ -]?key|token)\s*[:=]\s*(['"]))",
@@ -104,7 +116,8 @@ inline auto ShouldIgnoreSecretFinding(const std::string& InRuleId,
     }
 
     return LooksLikeIntentionalPlaceholderValue(*assignedValue)
-        || LooksLikeDynamicSecretReferenceValue(*assignedValue);
+        || LooksLikeDynamicSecretReferenceValue(*assignedValue)
+        || LooksLikeLogicalSecretReferenceValue(*assignedValue);
 }
 
 } // namespace kano::git::commands::secret_scan

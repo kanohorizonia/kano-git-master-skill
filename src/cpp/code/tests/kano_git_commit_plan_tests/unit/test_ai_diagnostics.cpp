@@ -135,8 +135,17 @@ TEST_CASE("ShouldIgnoreSecretFinding ignores dynamic Horde token assignments", "
     REQUIRE(ShouldIgnoreSecretFinding(
         "generic_password_assignment",
         "api_key: \"env:CONTROL_PLANE_API_KEY\""));
+    REQUIRE(ShouldIgnoreSecretFinding(
+        "generic_password_assignment",
+        "OPENAI_API_KEY = \"provider.openai.kano_tunnel.api_key\""));
+    REQUIRE(ShouldIgnoreSecretFinding(
+        "generic_password_assignment",
+        "GITHUB_TOKEN = \"github.codex.local_token\""));
 
     REQUIRE_FALSE(ShouldIgnoreSecretFinding(
         "generic_password_assignment",
         "api_token=\"abcd1234efgh5678\""));
+    REQUIRE_FALSE(ShouldIgnoreSecretFinding(
+        "generic_password_assignment",
+        "api_token=\"abcd.efgh.ijkl\""));
 }
