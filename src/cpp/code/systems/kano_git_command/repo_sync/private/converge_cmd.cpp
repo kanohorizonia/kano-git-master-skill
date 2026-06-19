@@ -17,6 +17,8 @@
 #include <functional>
 #include <iostream>
 #include <map>
+#include <optional>
+#include <regex>
 #include <set>
 #include <sstream>
 #include <string>
@@ -118,6 +120,20 @@ struct WorkflowState {
     std::vector<std::string> blockedRepoSet;
     std::vector<std::string> skippedRepos;
     std::vector<std::string> pendingRepos;
+};
+
+struct IntentCommitGroup {
+    std::string key;
+    std::string message;
+    std::string reviewReason;
+    std::vector<std::string> includePaths;
+};
+
+struct IntentCommitPlan {
+    std::filesystem::path planPath;
+    std::vector<IntentCommitGroup> groups;
+    std::vector<std::string> ambiguousPaths;
+    std::string error;
 };
 
 constexpr const char* kPointerSingleMessage = "[Submodule][Chore] Update Build/Base pointer (NO-TICKET)";
@@ -366,6 +382,16 @@ std::string SelfBinaryPath() {
     }
 #endif
     return "kano-git";
+}
+
+bool IsTruthyEnvValue(const char* value) {
+    if (value == nullptr) return false;
+    const auto normalized = ToLower(Trim(std::string(value)));
+    return normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on";
+}
+
+bool IsConvergeAgentModeEnabled() {
+    return IsTruthyEnvValue(std::getenv("KANO_AGENT_MODE")) || IsTruthyEnvValue(std::getenv("AGENT_MODE"));
 }
 
 std::vector<std::string> JsonStringArray(const nlohmann::json& item, const char* key) {
@@ -772,6 +798,459 @@ std::string SnapshotFingerprint(const Snapshot& snapshot) {
     return std::to_string(std::hash<std::string>{}(Csv(parts)));
 }
 
+std::filesystem::path ResolveRepoPath(const std::filesystem::path& workspaceRoot, const std::string& repo) {
+    return repo.empty() || repo == "."
+        ? workspaceRoot.lexically_normal()
+        : (workspaceRoot / std::filesystem::path(repo)).lexically_normal();
+}
+
+std::string NormalizeGitPath(std::string path) {
+    std::replace(path.begin(), path.end(), '\\', '/');
+    while (path.rfind("./", 0) == 0) {
+        path = path.substr(2);
+    }
+    return path;
+}
+
+std::vector<std::string> SplitPathParts(const std::string& path) {
+    std::vector<std::string> out;
+    std::istringstream iss(path);
+    std::string part;
+    while (std::getline(iss, part, '/')) {
+        if (!part.empty()) {
+            out.push_back(part);
+        }
+    }
+    return out;
+}
+
+std::string SanitizePlanComponent(std::string value) {
+    value = NormalizeGitPath(std::move(value));
+    if (value.empty() || value == ".") {
+        value = "root";
+    }
+    for (auto& ch : value) {
+        const auto uch = static_cast<unsigned char>(ch);
+        if (!std::isalnum(uch) && ch != '-' && ch != '_') {
+            ch = '-';
+        }
+    }
+    return value;
+}
+
+std::string UpperAscii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::toupper(ch));
+    });
+    return value;
+}
+
+std::optional<std::string> ExtractWorkItemId(const std::string& text) {
+    static const std::regex kWorkItemPattern(
+        R"(([A-Z][A-Z0-9]*-(BUG|TSK|FTR|USR|EPIC|ISS|ADR)-[0-9]+))",
+        std::regex_constants::icase);
+    std::smatch match;
+    if (!std::regex_search(text, match, kWorkItemPattern)) {
+        return std::nullopt;
+    }
+    return UpperAscii(match.str(1));
+}
+
+std::string WorkItemKind(const std::string& itemId) {
+    const auto first = itemId.find('-');
+    if (first == std::string::npos) return "item";
+    const auto second = itemId.find('-', first + 1);
+    if (second == std::string::npos) return "item";
+    const auto raw = ToLower(itemId.substr(first + 1, second - first - 1));
+    if (raw == "bug") return "bug";
+    if (raw == "tsk") return "task";
+    if (raw == "ftr") return "feature";
+    if (raw == "usr") return "story";
+    if (raw == "epic") return "epic";
+    if (raw == "iss") return "issue";
+    if (raw == "adr") return "adr";
+    return raw.empty() ? "item" : raw;
+}
+
+std::string BuildBacklogScope(const std::string& product) {
+    return product.empty() ? "backlog" : ("backlog-" + product);
+}
+
+IntentCommitGroup MakeGroup(const std::string& key,
+                            const std::string& message,
+                            const std::string& reviewReason,
+                            const std::string& path) {
+    IntentCommitGroup group;
+    group.key = key;
+    group.message = message;
+    group.reviewReason = reviewReason;
+    group.includePaths.push_back(path);
+    return group;
+}
+
+std::optional<IntentCommitGroup> ClassifyBacklogIntentPath(const std::string& path) {
+    const auto parts = SplitPathParts(path);
+    if (parts.empty()) {
+        return std::nullopt;
+    }
+
+    if (parts[0] == "products" && parts.size() >= 3) {
+        const auto& product = parts[1];
+        const auto& section = parts[2];
+        const auto scope = BuildBacklogScope(product);
+        if (section == "items") {
+            if (const auto itemId = ExtractWorkItemId(path); itemId.has_value()) {
+                const auto kind = WorkItemKind(*itemId);
+                return MakeGroup(
+                    "backlog-item:" + product + ":" + *itemId,
+                    "docs(" + scope + "): update " + *itemId + " " + kind + " item",
+                    "native classifier matched backlog work item path " + *itemId,
+                    path);
+            }
+        }
+        if (section == "artifacts") {
+            const auto itemId = parts.size() >= 4 ? ExtractWorkItemId(parts[3]) : ExtractWorkItemId(path);
+            if (itemId.has_value()) {
+                return MakeGroup(
+                    "backlog-evidence:" + product + ":" + *itemId,
+                    "docs(" + scope + "): add " + *itemId + " evidence",
+                    "native classifier matched backlog evidence path " + *itemId,
+                    path);
+            }
+        }
+        if (section == "views") {
+            return MakeGroup(
+                "backlog-views:" + product,
+                "docs(" + scope + "): refresh backlog views",
+                "native classifier matched generated backlog views for " + product,
+                path);
+        }
+        if (section == "config" || section == "_config" || section == "settings") {
+            return MakeGroup(
+                "backlog-config:" + product,
+                "chore(" + scope + "): update backlog configuration",
+                "native classifier matched backlog configuration for " + product,
+                path);
+        }
+    }
+
+    if (parts[0] == "_shared" && parts.size() >= 3 && parts[1] == "artifacts") {
+        if (const auto itemId = ExtractWorkItemId(parts[2]); itemId.has_value()) {
+            return MakeGroup(
+                "backlog-evidence:shared:" + *itemId,
+                "docs(backlog): add " + *itemId + " shared evidence",
+                "native classifier matched shared backlog evidence path " + *itemId,
+                path);
+        }
+    }
+
+    if (path == ".kano/backlog_config.toml" || path == "backlog_config.toml") {
+        return MakeGroup(
+            "backlog-config:root",
+            "chore(backlog): update backlog configuration",
+            "native classifier matched backlog root configuration",
+            path);
+    }
+
+    return std::nullopt;
+}
+
+std::optional<IntentCommitGroup> ClassifyKogSourceIntentPath(const std::string& path) {
+    const auto lowered = ToLower(path);
+    if (lowered.find("converge") != std::string::npos ||
+        lowered.find("repo_sync/private/converge_cmd.cpp") != std::string::npos) {
+        return MakeGroup(
+            "kog-converge",
+            "fix(kog-converge): update intent-scoped agent commits",
+            "native classifier matched converge implementation or regression tests",
+            path);
+    }
+
+    if (lowered.find("commit_plan") != std::string::npos) {
+        return MakeGroup(
+            "kog-commit-plan",
+            "fix(kog-commit-plan): update commit planning workflow",
+            "native classifier matched KOG commit-plan source path",
+            path);
+    }
+
+    if (lowered.rfind("src/cpp/code/systems/", 0) == 0) {
+        const auto parts = SplitPathParts(path);
+        const std::string system = parts.size() >= 5 ? parts[4] : "source";
+        return MakeGroup(
+            "kog-system:" + system,
+            "chore(" + system + "): update source intent",
+            "native classifier matched KOG source system " + system,
+            path);
+    }
+
+    if (lowered.rfind("src/", 0) == 0) {
+        return MakeGroup(
+            "kog-source",
+            "chore(kog): update source intent",
+            "native classifier matched KOG source path",
+            path);
+    }
+
+    if (lowered.rfind("scripts/", 0) == 0) {
+        return MakeGroup(
+            "kog-scripts",
+            "chore(kog-scripts): update automation scripts",
+            "native classifier matched script path",
+            path);
+    }
+
+    if (lowered.rfind("docs/", 0) == 0 || lowered.ends_with(".md")) {
+        return MakeGroup(
+            "kog-docs",
+            "docs(kog): update documentation",
+            "native classifier matched documentation path",
+            path);
+    }
+
+    if (lowered == "cmakelists.txt" || lowered.ends_with("/cmakelists.txt") ||
+        lowered.ends_with(".cmake") || lowered.rfind("cmake/", 0) == 0) {
+        return MakeGroup(
+            "kog-build",
+            "build(kog): update build configuration",
+            "native classifier matched build configuration path",
+            path);
+    }
+
+    if (lowered == ".gitignore" || lowered.ends_with("/.gitignore") || lowered.ends_with(".gitattributes")) {
+        return MakeGroup(
+            "kog-repo-policy",
+            "chore(kog): update repository policy",
+            "native classifier matched repository policy path",
+            path);
+    }
+
+    return std::nullopt;
+}
+
+std::optional<IntentCommitGroup> ClassifyIntentPath(std::string path) {
+    path = NormalizeGitPath(std::move(path));
+    if (path.empty()) {
+        return std::nullopt;
+    }
+    if (const auto backlog = ClassifyBacklogIntentPath(path); backlog.has_value()) {
+        return backlog;
+    }
+    return ClassifyKogSourceIntentPath(path);
+}
+
+std::vector<std::string> CollectDirtyPaths(const std::filesystem::path& repoPath, std::string* outError) {
+    const auto result = shell::ExecuteCommand(
+        "git",
+        {"status", "--porcelain=v1", "--untracked-files=all"},
+        shell::ExecMode::Capture,
+        repoPath);
+    if (result.exitCode != 0) {
+        if (outError != nullptr) {
+            *outError = "git status --porcelain failed: " + Trim(result.stderrStr);
+        }
+        return {};
+    }
+
+    std::vector<std::string> paths;
+    std::istringstream stream(result.stdoutStr);
+    std::string line;
+    while (std::getline(stream, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        if (line.size() < 4) {
+            continue;
+        }
+        auto path = NormalizeGitPath(Trim(line.substr(3)));
+        const auto arrow = path.find(" -> ");
+        if (arrow != std::string::npos) {
+            path = NormalizeGitPath(Trim(path.substr(arrow + 4)));
+        }
+        if (!path.empty()) {
+            paths.push_back(std::move(path));
+        }
+    }
+    std::sort(paths.begin(), paths.end());
+    paths.erase(std::unique(paths.begin(), paths.end()), paths.end());
+    return paths;
+}
+
+std::string WorkspaceHeadSha(const std::filesystem::path& workspaceRoot) {
+    const auto result = shell::ExecuteCommand("git", {"rev-parse", "HEAD"}, shell::ExecMode::Capture, workspaceRoot);
+    if (result.exitCode == 0) {
+        const auto sha = Trim(result.stdoutStr);
+        if (!sha.empty()) {
+            return sha;
+        }
+    }
+    return "unknown-head-" + std::to_string(std::hash<std::string>{}(workspaceRoot.generic_string()));
+}
+
+std::string DirtyFingerprintForIntentPlan(const Snapshot& snapshot,
+                                          const std::string& repo,
+                                          const std::vector<std::string>& dirtyPaths) {
+    std::vector<std::string> parts{SnapshotFingerprint(snapshot), repo};
+    parts.insert(parts.end(), dirtyPaths.begin(), dirtyPaths.end());
+    return "converge-intent-" + std::to_string(std::hash<std::string>{}(Csv(parts)));
+}
+
+IntentCommitPlan BuildIntentCommitPlan(const std::filesystem::path& workspaceRoot,
+                                       const Snapshot& snapshot,
+                                       const std::string& repo) {
+    IntentCommitPlan plan;
+    const auto repoPath = ResolveRepoPath(workspaceRoot, repo);
+    std::string statusError;
+    const auto dirtyPaths = CollectDirtyPaths(repoPath, &statusError);
+    if (!statusError.empty()) {
+        plan.error = statusError;
+        return plan;
+    }
+    if (dirtyPaths.empty()) {
+        plan.error = "no dirty paths found for intent commit planning";
+        return plan;
+    }
+
+    std::map<std::string, IntentCommitGroup> grouped;
+    for (const auto& path : dirtyPaths) {
+        auto classified = ClassifyIntentPath(path);
+        if (!classified.has_value()) {
+            plan.ambiguousPaths.push_back(path);
+            continue;
+        }
+        auto& group = grouped[classified->key];
+        if (group.key.empty()) {
+            group = std::move(*classified);
+        } else {
+            group.includePaths.push_back(path);
+        }
+    }
+
+    for (auto& [key, group] : grouped) {
+        std::sort(group.includePaths.begin(), group.includePaths.end());
+        group.includePaths.erase(std::unique(group.includePaths.begin(), group.includePaths.end()), group.includePaths.end());
+        plan.groups.push_back(std::move(group));
+    }
+    std::sort(plan.groups.begin(), plan.groups.end(), [](const auto& a, const auto& b) {
+        return a.key < b.key;
+    });
+    std::sort(plan.ambiguousPaths.begin(), plan.ambiguousPaths.end());
+    plan.ambiguousPaths.erase(std::unique(plan.ambiguousPaths.begin(), plan.ambiguousPaths.end()), plan.ambiguousPaths.end());
+
+    if (plan.groups.empty()) {
+        plan.error = "no intent-scoped groups could be inferred";
+        return plan;
+    }
+
+    const auto safeRepo = SanitizePlanComponent(repo);
+    const auto fingerprint = DirtyFingerprintForIntentPlan(snapshot, repo, dirtyPaths);
+    plan.planPath = (workspaceRoot / ".kano" / "tmp" / "workflows" / "converge" /
+                     "intent-commit-plans" / (safeRepo + "-" + fingerprint + ".json")).lexically_normal();
+
+    nlohmann::json json;
+    json["meta"] = {
+        {"schema_version", "1"},
+        {"plan_id", "converge-intent-" + safeRepo + "-" + fingerprint},
+        {"generated_at_utc", UtcNowIso8601()},
+        {"base_head_sha", WorkspaceHeadSha(workspaceRoot)},
+        {"dirty_fingerprint_pre_ignore", fingerprint},
+        {"dirty_fingerprint", fingerprint},
+        {"planner", {
+            {"provider", "native"},
+            {"ai-model", "converge-intent-classifier-v1"},
+            {"request_id", "native-" + fingerprint}
+        }},
+        {"review", {
+            {"verdict", "pass"},
+            {"reason", "native converge classifier produced deterministic intent-scoped commit groups"}
+        }}
+    };
+    nlohmann::json repoEntry;
+    repoEntry["repo"] = repo.empty() ? "." : repo;
+    repoEntry["commits"] = nlohmann::json::array();
+    for (const auto& group : plan.groups) {
+        repoEntry["commits"].push_back({
+            {"message", group.message},
+            {"include", group.includePaths},
+            {"exclude", nlohmann::json::array()},
+            {"review", {
+                {"verdict", "pass"},
+                {"reason", group.reviewReason}
+            }}
+        });
+    }
+    json["stages"] = {
+        {"commit", nlohmann::json::array({repoEntry})},
+        {"post_sync", nlohmann::json::array()}
+    };
+
+    std::error_code ec;
+    std::filesystem::create_directories(plan.planPath.parent_path(), ec);
+    if (ec) {
+        plan.error = "failed to create plan directory: " + ec.message();
+        return plan;
+    }
+    std::ofstream out(plan.planPath, std::ios::binary | std::ios::trunc);
+    if (!out.good()) {
+        plan.error = "failed to write intent commit plan: " + plan.planPath.generic_string();
+        return plan;
+    }
+    out << json.dump(2) << "\n";
+    out.close();
+    if (!out.good()) {
+        plan.error = "failed to flush intent commit plan: " + plan.planPath.generic_string();
+    }
+    return plan;
+}
+
+void PrintIntentCommitPlan(const std::string& repo, const IntentCommitPlan& plan) {
+    std::cout << "Converge agent intent commit plan\n";
+    std::cout << "  repo=" << (repo.empty() ? "." : repo) << "\n";
+    if (!plan.planPath.empty()) {
+        std::cout << "  plan_file=" << plan.planPath.generic_string() << "\n";
+    }
+    std::cout << "  review=pass\n";
+    for (const auto& group : plan.groups) {
+        std::cout << "  - " << group.message << "\n";
+        for (const auto& path : group.includePaths) {
+            std::cout << "      include " << path << "\n";
+        }
+    }
+    if (!plan.ambiguousPaths.empty()) {
+        std::cout << "  skipped_ambiguous=" << plan.ambiguousPaths.size() << "\n";
+        for (const auto& path : plan.ambiguousPaths) {
+            std::cout << "      ambiguous " << path << "\n";
+        }
+    }
+}
+
+int RunIntentCommitPlan(const std::filesystem::path& workspaceRoot,
+                        const Snapshot& snapshot,
+                        const std::string& repo,
+                        bool profile,
+                        std::string* outCommandLine,
+                        std::string* outFailureCategory,
+                        std::string* outFailureMessage) {
+    auto plan = BuildIntentCommitPlan(workspaceRoot, snapshot, repo);
+    PrintIntentCommitPlan(repo, plan);
+    if (!plan.error.empty()) {
+        if (outFailureCategory != nullptr) *outFailureCategory = "INTENT_PLAN_FAILED";
+        if (outFailureMessage != nullptr) *outFailureMessage = plan.error;
+        std::cerr << "Error: failed to build converge agent intent commit plan: " << plan.error << "\n";
+        return 4;
+    }
+    if (!plan.ambiguousPaths.empty()) {
+        if (outFailureCategory != nullptr) *outFailureCategory = "AMBIGUOUS_INTENT_SCOPE";
+        if (outFailureMessage != nullptr) *outFailureMessage = "agent intent commit plan has unclassified paths";
+        std::cerr << "Error: converge agent intent commit plan has ambiguous paths; leaving repo untouched.\n";
+        return 4;
+    }
+    if (outCommandLine != nullptr) {
+        *outCommandLine = "kog commit --plan-file " + plan.planPath.generic_string() + " --plan-stage commit";
+    }
+    return RunCommitNativePlanStage(workspaceRoot, plan.planPath.generic_string(), "commit", profile);
+}
+
 std::vector<std::string> RepoBaselines(const Snapshot& snapshot) {
     std::vector<std::string> out;
     out.reserve(snapshot.repos.size());
@@ -1112,7 +1591,7 @@ void RegisterConverge(CLI::App& InApp) {
     cmd->add_flag("--verbose", *verbose, "Verbose push output");
     cmd->add_flag("--force-with-lease", *forceWithLease, "Pass --force-with-lease to converge push stage");
     cmd->add_flag("--no-verify", *noVerify, "Pass --no-verify to converge push stage");
-    cmd->add_flag("--ai", *aiCompat, "Compatibility flag accepted for converge orchestration (currently no-op)");
+    cmd->add_flag("--ai", *aiCompat, "Enable converge agent commit compatibility path for intent-scoped commit planning");
     cmd->add_flag("--unregistered-scan", *unregisteredScan, "Opt in to bounded unregistered discovery during dry-run status preflight");
     cmd->add_option("--jobs", *jobs, "Parallel workers for converge status/push stages");
     cmd->add_option("--remote", *remote, "Optional remote filter for converge push stage");
@@ -1120,6 +1599,7 @@ void RegisterConverge(CLI::App& InApp) {
     cmd->callback([=]() {
         const auto workspaceRoot = std::filesystem::current_path().lexically_normal();
         const auto recursive = !*noRecursive;
+        const auto agentIntentCommitMode = *aiCompat || IsConvergeAgentModeEnabled();
         const auto statePath = ConvergeStatePath(workspaceRoot);
 
         const int controlFlags = (*statusOnly ? 1 : 0) + (*resume ? 1 : 0) + (*abort ? 1 : 0);
@@ -1276,15 +1756,23 @@ void RegisterConverge(CLI::App& InApp) {
                         continue;
                     }
                     const bool pointerCommit = line.text.find("deterministic pointer commit") != std::string::npos;
-                    const std::string message = pointerCommit ? (line.text.find(kPointerMultipleMessage) != std::string::npos ? kPointerMultipleMessage : kPointerSingleMessage) : std::string{};
-                    const auto code = RunCommitNativeSimple(workspaceRoot, line.repo, true, message, false, false, "", "", false, true, false);
-                    state.commandLinesUsed[phase].push_back("kog commit -ai --repos " + line.repo);
+                    std::string commandLine = "kog commit -ai --repos " + line.repo;
+                    std::string failureCategory;
+                    std::string failureMessage;
+                    int code = 0;
+                    if (agentIntentCommitMode && !pointerCommit) {
+                        code = RunIntentCommitPlan(workspaceRoot, snapshot, line.repo, *profile, &commandLine, &failureCategory, &failureMessage);
+                    } else {
+                        const std::string message = pointerCommit ? (line.text.find(kPointerMultipleMessage) != std::string::npos ? kPointerMultipleMessage : kPointerSingleMessage) : std::string{};
+                        code = RunCommitNativeSimple(workspaceRoot, line.repo, true, message, false, false, "", "", false, true, false);
+                    }
+                    state.commandLinesUsed[phase].push_back(commandLine);
                     if (code == 0) {
                         summary.succeeded.push_back(line.repo);
                     } else {
                         summary.failed.push_back(line.repo);
-                        summary.failureCategory[line.repo] = "FAILED_COMMIT";
-                        summary.failureMessage[line.repo] = "commit-local-changes-if-needed failed";
+                        summary.failureCategory[line.repo] = failureCategory.empty() ? "FAILED_COMMIT" : failureCategory;
+                        summary.failureMessage[line.repo] = failureMessage.empty() ? "commit-local-changes-if-needed failed" : failureMessage;
                         summary.retryEligible[line.repo] = true;
                     }
                 }
