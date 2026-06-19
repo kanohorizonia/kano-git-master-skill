@@ -676,6 +676,11 @@ Plan BuildPlan(const Snapshot& snapshot) {
             continue;
         }
 
+        if (repo.dirtyKind == "DETACHED_HEAD" || repo.dirtyKind == "MISSING_REMOTE") {
+            Add(plan.blocked, repo.id, repo.dirtyKind + ": repair branch/remote state before converge mutation");
+            continue;
+        }
+
         if (repo.dirtyKind == "BEHIND_ONLY") { Allows(repo, "sync") ? Add(plan.sync, repo.id, "kog sync origin-latest before commit/push decisions") : Add(plan.skipped, repo.id, "sync skipped by commandPolicy.sync=false"); Add(plan.skipped, repo.id, "commit skipped: BEHIND_ONLY"); continue; }
         if (repo.dirtyKind == "CLEAN") { Add(plan.skipped, repo.id, "commit skipped: CLEAN"); continue; }
         if (repo.dirtyKind == "AHEAD_ONLY") { Add(plan.skipped, repo.id, "commit skipped: AHEAD_ONLY"); Allows(repo, "push") ? Add(plan.push, repo.id, "kog push --repos " + repo.id) : Add(plan.skipped, repo.id, "push skipped by commandPolicy.push=false"); continue; }
@@ -794,6 +799,34 @@ std::map<std::string, std::string> BaselineByRepo(const std::vector<std::string>
         }
     }
     return out;
+}
+
+bool PlanReferencesRepo(const Plan& plan, const std::string& repo) {
+    const auto contains = [&](const std::vector<PlanLine>& lines) {
+        return std::any_of(lines.begin(), lines.end(), [&](const auto& line) {
+            return line.repo == repo;
+        });
+    };
+    const auto containsDeferredParentPointer = std::any_of(
+        plan.skipped.begin(),
+        plan.skipped.end(),
+        [&](const auto& line) {
+            return line.repo == repo && line.text.find("parent pointer commit waits") != std::string::npos;
+        });
+    return contains(plan.sync) || contains(plan.commit) || contains(plan.push) || containsDeferredParentPointer;
+}
+
+bool RefreshStateBaselinesForResume(WorkflowState& state,
+                                    const std::filesystem::path& workspaceRoot,
+                                    int jobs,
+                                    bool recursive) {
+    try {
+        const auto snapshot = LoadConvergeSnapshot(workspaceRoot, jobs, false, recursive);
+        state.repoBaselines = RepoBaselines(snapshot);
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
 }
 
 void ResetStateForPlan(WorkflowState& state, const Snapshot& snapshot, const Plan& plan) {
@@ -1150,18 +1183,21 @@ void RegisterConverge(CLI::App& InApp) {
                 std::cerr << "saved=" << state.repoGraphFingerprint << " current=" << resumeFingerprint << "\n";
                 std::exit(1);
             }
+            plan = BuildPlan(snapshot);
             const auto savedBaselines = BaselineByRepo(state.repoBaselines);
             const auto currentBaselines = BaselineByRepo(RepoBaselines(snapshot));
             for (const auto& repo : state.succeededRepos) {
                 const auto savedIt = savedBaselines.find(repo);
                 const auto currentIt = currentBaselines.find(repo);
-                if (savedIt == savedBaselines.end() || currentIt == currentBaselines.end() || savedIt->second != currentIt->second) {
+                const bool baselineChanged = savedIt == savedBaselines.end() ||
+                    currentIt == currentBaselines.end() ||
+                    savedIt->second != currentIt->second;
+                if (baselineChanged && !PlanReferencesRepo(plan, repo)) {
                     std::cerr << "Error: converge resume refused because successful repo baseline changed: " << repo << "\n";
                     std::exit(1);
                 }
             }
             state.repoGraphFingerprint = resumeFingerprint;
-            plan = BuildPlan(snapshot);
             const auto phaseIt = std::find(kConvergePhases.begin(), kConvergePhases.end(), state.currentPhase);
             startPhaseIndex = phaseIt == kConvergePhases.end() ? 0 : static_cast<std::size_t>(std::distance(kConvergePhases.begin(), phaseIt));
             std::cout << "Resuming converge from phase: " << state.currentPhase << "\n";
@@ -1354,6 +1390,11 @@ void RegisterConverge(CLI::App& InApp) {
                                       << " commit=" << nextPlan.commit.size()
                                       << " push=" << nextPlan.push.size()
                                       << "\n";
+                        } else {
+                            state.failedRepos.clear();
+                            state.blockedRepoSet.clear();
+                            state.blockedRepos.clear();
+                            state.blockedReason.clear();
                         }
                         if (summary.failed.empty() && summary.blocked.empty()) {
                             summary.succeeded.push_back(".");
@@ -1396,6 +1437,7 @@ void RegisterConverge(CLI::App& InApp) {
                     else state.blockedRepos = summary.blocked;
                     state.completedPhases.erase(std::remove(state.completedPhases.begin(), state.completedPhases.end(), phase), state.completedPhases.end());
                     state.currentPhase = phase;
+                    RefreshStateBaselinesForResume(state, workspaceRoot, *jobs, recursive);
                     persist();
                     std::exit(1);
                 }

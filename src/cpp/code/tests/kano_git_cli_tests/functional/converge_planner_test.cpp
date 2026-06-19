@@ -790,6 +790,66 @@ TEST_CASE("KOG-BDD-CONVERGE-002 resume allows baseline drift on failed repos", "
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge resume allows planned parent pointer baseline drift", "[tdd][functional][feature:converge-state][converge][state]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("converge-runtime-resume-parent-pointer-drift");
+    const auto statePath = ConvergeStatePath(ctx.cloneRootRepo);
+
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneChildRepo), "checkout child branch for resume pointer drift");
+    WriteTextFile(ctx.cloneChildRepo / "child.txt", "child seed\nresume pointer drift\n");
+    RequireSuccess(RunGit({"add", "child.txt"}, ctx.cloneChildRepo), "stage child drift");
+    RequireSuccess(RunGit({"commit", "-m", "child local drift"}, ctx.cloneChildRepo), "commit child drift");
+    REQUIRE_FALSE(GitStatusShort(ctx.cloneRootRepo).empty());
+
+    const auto workspaceRoot = ctx.cloneRootRepo.generic_string();
+    const std::string stateJson =
+        "{\n"
+        "  \"workflow\": \"converge\",\n"
+        "  \"schemaName\": \"kog.convergeWorkflowState\",\n"
+        "  \"schemaVersion\": 1,\n"
+        "  \"workspaceRoot\": \"" + workspaceRoot + "\",\n"
+        "  \"startedAt\": \"2026-01-01T00:00:00Z\",\n"
+        "  \"currentPhase\": \"commit-local-changes-if-needed\",\n"
+        "  \"recursive\": true,\n"
+        "  \"dryRunRequested\": false,\n"
+        "  \"completedPhases\": [\"status-preflight-plan\"],\n"
+        "  \"blockedReason\": \"commit-local-changes-if-needed encountered failures\",\n"
+        "  \"blockedRepos\": [\"" + ctx.submodulePath + "\"],\n"
+        "  \"resumeCommand\": \"kog converge --resume\",\n"
+        "  \"phaseResults\": {},\n"
+        "  \"commandLinesUsed\": {},\n"
+        "  \"convergePlan\": {\"sync\": [], \"commit\": [\".\"], \"push\": [\".\", \"" + ctx.submodulePath + "\"], \"blocked\": [], \"waves\": []},\n"
+        "  \"repoGraphFingerprint\": \"\",\n"
+        "  \"repoBaselines\": [\". branch=" + ctx.branch + " head=0000000000000000000000000000000000000000 remote=origin upstream=origin/" + ctx.branch + " dirtyKind=CLEAN ahead=0\"],\n"
+        "  \"repoTaxonomy\": {\"type\": {}, \"managementPolicy\": {}},\n"
+        "  \"commandPolicy\": {},\n"
+        "  \"detectedConflictInfo\": \"\",\n"
+        "  \"results\": {\"succeeded\": [\".\"], \"failed\": [\"" + ctx.submodulePath + "\"], \"blocked\": [], \"skipped\": [], \"pending\": []}\n"
+        "}\n";
+    WriteTextFile(statePath, stateJson);
+
+    const auto resumeRun = RunKog({"converge", "--resume", "--jobs", "1"}, ctx.cloneRootRepo);
+    INFO(resumeRun.stdoutText);
+    INFO(resumeRun.stderrText);
+    REQUIRE(resumeRun.exitCode == 0);
+    RequireNotContains(resumeRun.stderrText, "successful repo baseline changed");
+    REQUIRE_FALSE(std::filesystem::exists(statePath));
+    REQUIRE(GitStatusShort(ctx.cloneChildRepo).empty());
+    REQUIRE(GitStatusShort(ctx.cloneRootRepo).empty());
+
+    const auto childHead = RunGit({"rev-parse", "HEAD"}, ctx.cloneChildRepo);
+    const auto childOrigin = RunGit({"rev-parse", "origin/" + ctx.branch}, ctx.cloneChildRepo);
+    const auto rootHead = RunGit({"rev-parse", "HEAD"}, ctx.cloneRootRepo);
+    const auto rootOrigin = RunGit({"rev-parse", "origin/" + ctx.branch}, ctx.cloneRootRepo);
+    RequireSuccess(childHead, "resume pointer drift child rev-parse HEAD");
+    RequireSuccess(childOrigin, "resume pointer drift child rev-parse origin");
+    RequireSuccess(rootHead, "resume pointer drift root rev-parse HEAD");
+    RequireSuccess(rootOrigin, "resume pointer drift root rev-parse origin");
+    REQUIRE(childHead.stdoutText == childOrigin.stdoutText);
+    REQUIRE(rootHead.stdoutText == rootOrigin.stdoutText);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("converge runtime resume continues from saved phase", "[tdd][unit][feature:converge-state][functional][converge][state]") {
     const auto ctx = CreateRemoteWithClone("converge-runtime-resume");
     const auto statePath = ConvergeStatePath(ctx.cloneRepo);
@@ -802,6 +862,8 @@ TEST_CASE("converge runtime resume continues from saved phase", "[tdd][unit][fea
     REQUIRE(std::filesystem::exists(statePath));
 
     RequireSuccess(RunGit({"remote", "add", "origin", ctx.bareRemote.string()}, ctx.cloneRepo), "restore origin before resume");
+    RequireSuccess(RunGit({"fetch", "origin", ctx.branch}, ctx.cloneRepo), "fetch restored origin before resume");
+    RequireSuccess(RunGit({"branch", "--set-upstream-to", "origin/" + ctx.branch, ctx.branch}, ctx.cloneRepo), "restore upstream before resume");
     const auto resumeRun = RunKog({"converge", "--resume", "--jobs", "1"}, ctx.cloneRepo);
     INFO(resumeRun.stdoutText);
     INFO(resumeRun.stderrText);
