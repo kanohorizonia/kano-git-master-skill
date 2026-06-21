@@ -877,6 +877,14 @@ std::string BuildBacklogScope(const std::string& product) {
     return product.empty() ? "backlog" : ("backlog-" + product);
 }
 
+std::string KccSubject(const std::string& subsystem,
+                       const std::string& type,
+                       const std::string& summary,
+                       const std::string& ticket = "NO-TICKET") {
+    const auto normalizedTicket = Trim(ticket).empty() ? std::string("NO-TICKET") : ticket;
+    return "[" + subsystem + "][" + type + "] " + summary + " (" + normalizedTicket + ")";
+}
+
 IntentCommitGroup MakeGroup(const std::string& key,
                             const std::string& message,
                             const std::string& reviewReason,
@@ -904,7 +912,7 @@ std::optional<IntentCommitGroup> ClassifyBacklogIntentPath(const std::string& pa
                 const auto kind = WorkItemKind(*itemId);
                 return MakeGroup(
                     "backlog-item:" + product + ":" + *itemId,
-                    "docs(" + scope + "): update " + *itemId + " " + kind + " item",
+                    KccSubject("Backlog", "Docs", "Update " + *itemId + " " + kind + " item", *itemId),
                     "native classifier matched backlog work item path " + *itemId,
                     path);
             }
@@ -913,7 +921,7 @@ std::optional<IntentCommitGroup> ClassifyBacklogIntentPath(const std::string& pa
             if (parts.size() >= 4 && parts[3] == "_receipts") {
                 return MakeGroup(
                     "backlog-receipts:" + product,
-                    "docs(" + scope + "): add backlog mutation receipts",
+                    KccSubject("Backlog", "Docs", "Add " + product + " mutation receipts"),
                     "native classifier matched backlog mutation receipt evidence for " + product,
                     path);
             }
@@ -921,7 +929,7 @@ std::optional<IntentCommitGroup> ClassifyBacklogIntentPath(const std::string& pa
             if (itemId.has_value()) {
                 return MakeGroup(
                     "backlog-evidence:" + product + ":" + *itemId,
-                    "docs(" + scope + "): add " + *itemId + " evidence",
+                    KccSubject("Backlog", "Docs", "Add " + *itemId + " evidence", *itemId),
                     "native classifier matched backlog evidence path " + *itemId,
                     path);
             }
@@ -929,14 +937,14 @@ std::optional<IntentCommitGroup> ClassifyBacklogIntentPath(const std::string& pa
         if (section == "views") {
             return MakeGroup(
                 "backlog-views:" + product,
-                "docs(" + scope + "): refresh backlog views",
+                KccSubject("Backlog", "Docs", "Refresh " + product + " backlog views"),
                 "native classifier matched generated backlog views for " + product,
                 path);
         }
         if (section == "config" || section == "_config" || section == "settings") {
             return MakeGroup(
                 "backlog-config:" + product,
-                "chore(" + scope + "): update backlog configuration",
+                KccSubject("Backlog", "Chore", "Update " + product + " backlog configuration"),
                 "native classifier matched backlog configuration for " + product,
                 path);
         }
@@ -946,7 +954,7 @@ std::optional<IntentCommitGroup> ClassifyBacklogIntentPath(const std::string& pa
         if (const auto itemId = ExtractWorkItemId(parts[2]); itemId.has_value()) {
             return MakeGroup(
                 "backlog-evidence:shared:" + *itemId,
-                "docs(backlog): add " + *itemId + " shared evidence",
+                KccSubject("Backlog", "Docs", "Add " + *itemId + " shared evidence", *itemId),
                 "native classifier matched shared backlog evidence path " + *itemId,
                 path);
         }
@@ -955,7 +963,7 @@ std::optional<IntentCommitGroup> ClassifyBacklogIntentPath(const std::string& pa
     if (path == ".kano/backlog_config.toml" || path == "backlog_config.toml") {
         return MakeGroup(
             "backlog-config:root",
-            "chore(backlog): update backlog configuration",
+            KccSubject("Backlog", "Chore", "Update backlog configuration"),
             "native classifier matched backlog root configuration",
             path);
     }
@@ -969,7 +977,7 @@ std::optional<IntentCommitGroup> ClassifyKogSourceIntentPath(const std::string& 
         lowered.find("repo_sync/private/converge_cmd.cpp") != std::string::npos) {
         return MakeGroup(
             "kog-converge",
-            "fix(kog-converge): update intent-scoped agent commits",
+            KccSubject("KOG-Converge", "BugFix", "Update intent-scoped agent commits"),
             "native classifier matched converge implementation or regression tests",
             path);
     }
@@ -977,7 +985,7 @@ std::optional<IntentCommitGroup> ClassifyKogSourceIntentPath(const std::string& 
     if (lowered.find("commit_plan") != std::string::npos) {
         return MakeGroup(
             "kog-commit-plan",
-            "fix(kog-commit-plan): update commit planning workflow",
+            KccSubject("KOG-CommitPlan", "BugFix", "Update commit planning workflow"),
             "native classifier matched KOG commit-plan source path",
             path);
     }
@@ -987,7 +995,7 @@ std::optional<IntentCommitGroup> ClassifyKogSourceIntentPath(const std::string& 
         const std::string system = parts.size() >= 5 ? parts[4] : "source";
         return MakeGroup(
             "kog-system:" + system,
-            "chore(" + system + "): update source intent",
+            KccSubject(system, "Chore", "Update source intent"),
             "native classifier matched KOG source system " + system,
             path);
     }
@@ -995,7 +1003,7 @@ std::optional<IntentCommitGroup> ClassifyKogSourceIntentPath(const std::string& 
     if (lowered.rfind("src/", 0) == 0) {
         return MakeGroup(
             "kog-source",
-            "chore(kog): update source intent",
+            KccSubject("KOG", "Chore", "Update source intent"),
             "native classifier matched KOG source path",
             path);
     }
@@ -1003,7 +1011,7 @@ std::optional<IntentCommitGroup> ClassifyKogSourceIntentPath(const std::string& 
     if (lowered.rfind("scripts/", 0) == 0) {
         return MakeGroup(
             "kog-scripts",
-            "chore(kog-scripts): update automation scripts",
+            KccSubject("KOG-Scripts", "Chore", "Update automation scripts"),
             "native classifier matched script path",
             path);
     }
@@ -1011,7 +1019,7 @@ std::optional<IntentCommitGroup> ClassifyKogSourceIntentPath(const std::string& 
     if (lowered.rfind("config/", 0) == 0 || lowered.ends_with(".toml") || lowered.ends_with(".toml.example")) {
         return MakeGroup(
             "kog-config",
-            "chore(kog): update configuration",
+            KccSubject("KOG", "Chore", "Update configuration"),
             "native classifier matched repository configuration path",
             path);
     }
@@ -1019,7 +1027,7 @@ std::optional<IntentCommitGroup> ClassifyKogSourceIntentPath(const std::string& 
     if (lowered.rfind("templates/", 0) == 0) {
         return MakeGroup(
             "kog-templates",
-            "docs(kog): update workflow templates",
+            KccSubject("KOG", "Docs", "Update workflow templates"),
             "native classifier matched workflow template path",
             path);
     }
@@ -1027,7 +1035,7 @@ std::optional<IntentCommitGroup> ClassifyKogSourceIntentPath(const std::string& 
     if (lowered.rfind("docs/", 0) == 0 || lowered.ends_with(".md")) {
         return MakeGroup(
             "kog-docs",
-            "docs(kog): update documentation",
+            KccSubject("KOG", "Docs", "Update documentation"),
             "native classifier matched documentation path",
             path);
     }
@@ -1036,7 +1044,7 @@ std::optional<IntentCommitGroup> ClassifyKogSourceIntentPath(const std::string& 
         lowered.ends_with(".cmake") || lowered.rfind("cmake/", 0) == 0) {
         return MakeGroup(
             "kog-build",
-            "build(kog): update build configuration",
+            KccSubject("KOG", "Build", "Update build configuration"),
             "native classifier matched build configuration path",
             path);
     }
@@ -1044,7 +1052,7 @@ std::optional<IntentCommitGroup> ClassifyKogSourceIntentPath(const std::string& 
     if (lowered == ".gitignore" || lowered.ends_with("/.gitignore") || lowered.ends_with(".gitattributes")) {
         return MakeGroup(
             "kog-repo-policy",
-            "chore(kog): update repository policy",
+            KccSubject("KOG", "Chore", "Update repository policy"),
             "native classifier matched repository policy path",
             path);
     }

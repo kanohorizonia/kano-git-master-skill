@@ -445,21 +445,23 @@ TEST_CASE("converge agent mode commits backlog changes by inferred intent", "[td
     INFO(result.stderrText);
     REQUIRE(result.exitCode == 0);
     RequireContains(result.stdoutText, "Converge agent intent commit plan");
-    RequireContains(result.stdoutText, "docs(backlog-kano-git-master-skill): update KG-BUG-0001 bug item");
-    RequireContains(result.stdoutText, "docs(backlog-kano-git-master-skill): add KG-BUG-0001 evidence");
-    RequireContains(result.stdoutText, "docs(backlog-kano-git-master-skill): refresh backlog views");
-    RequireContains(result.stdoutText, "docs(backlog-kano-agent-ark-skill): update KOA-TSK-0130 task item");
-    RequireContains(result.stdoutText, "docs(backlog-kano-agent-ark-skill): add backlog mutation receipts");
+    RequireContains(result.stdoutText, "[Backlog][Docs] Update KG-BUG-0001 bug item (KG-BUG-0001)");
+    RequireContains(result.stdoutText, "[Backlog][Docs] Add KG-BUG-0001 evidence (KG-BUG-0001)");
+    RequireContains(result.stdoutText, "[Backlog][Docs] Refresh kano-git-master-skill backlog views (NO-TICKET)");
+    RequireContains(result.stdoutText, "[Backlog][Docs] Update KOA-TSK-0130 task item (KOA-TSK-0130)");
+    RequireContains(result.stdoutText, "[Backlog][Docs] Add kano-agent-ark-skill mutation receipts (NO-TICKET)");
+    RequireNotContains(result.stdoutText, "docs(backlog-");
     RequireContains(result.stdoutText, "[converge] completed");
     REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
 
     const auto log = RunGit({"log", "--format=%s", "-n", "8"}, ctx.cloneRepo);
     RequireSuccess(log, "read converge commit log");
-    RequireContains(log.stdoutText, "docs(backlog-kano-git-master-skill): update KG-BUG-0001 bug item");
-    RequireContains(log.stdoutText, "docs(backlog-kano-git-master-skill): add KG-BUG-0001 evidence");
-    RequireContains(log.stdoutText, "docs(backlog-kano-git-master-skill): refresh backlog views");
-    RequireContains(log.stdoutText, "docs(backlog-kano-agent-ark-skill): update KOA-TSK-0130 task item");
-    RequireContains(log.stdoutText, "docs(backlog-kano-agent-ark-skill): add backlog mutation receipts");
+    RequireContains(log.stdoutText, "[Backlog][Docs] Update KG-BUG-0001 bug item (KG-BUG-0001)");
+    RequireContains(log.stdoutText, "[Backlog][Docs] Add KG-BUG-0001 evidence (KG-BUG-0001)");
+    RequireContains(log.stdoutText, "[Backlog][Docs] Refresh kano-git-master-skill backlog views (NO-TICKET)");
+    RequireContains(log.stdoutText, "[Backlog][Docs] Update KOA-TSK-0130 task item (KOA-TSK-0130)");
+    RequireContains(log.stdoutText, "[Backlog][Docs] Add kano-agent-ark-skill mutation receipts (NO-TICKET)");
+    RequireNotContains(log.stdoutText, "docs(backlog-");
     RequireNotContains(log.stdoutText, "update 4 files");
 
     RemoveSandboxWorkspace(ctx.sandbox);
@@ -493,18 +495,24 @@ TEST_CASE("converge agent mode keeps implementation and test paths in one source
     INFO(result.stderrText);
     REQUIRE(result.exitCode == 0);
     RequireContains(result.stdoutText, "Converge agent intent commit plan");
-    RequireContains(result.stdoutText, "fix(kog-converge): update intent-scoped agent commits");
-    RequireContains(result.stdoutText, "chore(kog): update configuration");
-    RequireContains(result.stdoutText, "docs(kog): update workflow templates");
+    RequireContains(result.stdoutText, "[KOG-Converge][BugFix] Update intent-scoped agent commits (NO-TICKET)");
+    RequireContains(result.stdoutText, "[KOG][Chore] Update configuration (NO-TICKET)");
+    RequireContains(result.stdoutText, "[KOG][Docs] Update workflow templates (NO-TICKET)");
+    RequireNotContains(result.stdoutText, "fix(kog-");
+    RequireNotContains(result.stdoutText, "chore(kog");
+    RequireNotContains(result.stdoutText, "docs(kog");
     RequireContains(result.stdoutText, "include " + implementation.generic_string());
     RequireContains(result.stdoutText, "include " + regressionTest.generic_string());
     REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
 
     const auto log = RunGit({"log", "--format=%s", "-n", "4"}, ctx.cloneRepo);
     RequireSuccess(log, "read source intent commit log");
-    RequireContains(log.stdoutText, "fix(kog-converge): update intent-scoped agent commits");
-    RequireContains(log.stdoutText, "chore(kog): update configuration");
-    RequireContains(log.stdoutText, "docs(kog): update workflow templates");
+    RequireContains(log.stdoutText, "[KOG-Converge][BugFix] Update intent-scoped agent commits (NO-TICKET)");
+    RequireContains(log.stdoutText, "[KOG][Chore] Update configuration (NO-TICKET)");
+    RequireContains(log.stdoutText, "[KOG][Docs] Update workflow templates (NO-TICKET)");
+    RequireNotContains(log.stdoutText, "fix(kog-");
+    RequireNotContains(log.stdoutText, "chore(kog");
+    RequireNotContains(log.stdoutText, "docs(kog");
     RequireNotContains(log.stdoutText, "update 2 files");
 
     RemoveSandboxWorkspace(ctx.sandbox);
