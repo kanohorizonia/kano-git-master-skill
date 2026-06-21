@@ -1016,7 +1016,14 @@ std::optional<IntentCommitGroup> ClassifyKogSourceIntentPath(const std::string& 
             path);
     }
 
-    if (lowered.rfind("config/", 0) == 0 || lowered.ends_with(".toml") || lowered.ends_with(".toml.example")) {
+    if (lowered.rfind("config/", 0) == 0 ||
+        lowered.rfind(".github/", 0) == 0 ||
+        lowered.starts_with("docker-compose") ||
+        lowered.ends_with(".toml") ||
+        lowered.ends_with(".toml.example") ||
+        lowered.ends_with(".json") ||
+        lowered.ends_with(".yml") ||
+        lowered.ends_with(".yaml")) {
         return MakeGroup(
             "kog-config",
             KccSubject("KOG", "Chore", "Update configuration"),

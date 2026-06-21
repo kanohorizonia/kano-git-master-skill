@@ -473,6 +473,7 @@ TEST_CASE("converge agent mode keeps implementation and test paths in one source
     const auto implementation = std::filesystem::path("src/cpp/code/systems/kano_git_command/repo_sync/private/converge_cmd.cpp");
     const auto regressionTest = std::filesystem::path("src/cpp/code/tests/kano_git_cli_tests/functional/converge_planner_test.cpp");
     const auto repoConfig = std::filesystem::path("config/repo-catalog.toml");
+    const auto composeConfig = std::filesystem::path("docker-compose.webview.yml");
     const auto workflowTemplate = std::filesystem::path("templates/feature/notes.md.template");
 
     WriteTextFile(ctx.seedRepo / implementation, "// converge implementation\n");
@@ -485,6 +486,7 @@ TEST_CASE("converge agent mode keeps implementation and test paths in one source
     WriteTextFile(ctx.cloneRepo / implementation, "// converge implementation\n// intent scoped commit planner\n");
     WriteTextFile(ctx.cloneRepo / regressionTest, "// converge tests\n// source intent regression\n");
     WriteTextFile(ctx.cloneRepo / repoConfig, "# repo catalog\n");
+    WriteTextFile(ctx.cloneRepo / composeConfig, "services:\n  webview:\n    image: test\n");
     WriteTextFile(ctx.cloneRepo / workflowTemplate, "# feature notes\n");
 
     const auto result = RunKogWithEnv(
@@ -501,8 +503,10 @@ TEST_CASE("converge agent mode keeps implementation and test paths in one source
     RequireNotContains(result.stdoutText, "fix(kog-");
     RequireNotContains(result.stdoutText, "chore(kog");
     RequireNotContains(result.stdoutText, "docs(kog");
+    RequireNotContains(result.stdoutText, "ambiguous docker-compose.webview.yml");
     RequireContains(result.stdoutText, "include " + implementation.generic_string());
     RequireContains(result.stdoutText, "include " + regressionTest.generic_string());
+    RequireContains(result.stdoutText, "include " + composeConfig.generic_string());
     REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
 
     const auto log = RunGit({"log", "--format=%s", "-n", "4"}, ctx.cloneRepo);
