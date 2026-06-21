@@ -2821,6 +2821,206 @@ auto BuildStageMessageMap(const CommitPlanPayload& InPlan,
     return out;
 }
 
+struct PlanScopedSafetyFile {
+    std::filesystem::path repo;
+    std::string repoLabel;
+    std::string path;
+};
+
+auto NormalizeGitPathForPlanSafety(std::string InPath) -> std::string {
+    std::replace(InPath.begin(), InPath.end(), '\\', '/');
+    while (InPath.rfind("./", 0) == 0) {
+        InPath = InPath.substr(2);
+    }
+    return Trim(InPath);
+}
+
+auto PlanPathspecCoversPath(std::string InPathspec, std::string InPath) -> bool {
+    InPathspec = NormalizeGitPathForPlanSafety(std::move(InPathspec));
+    InPath = NormalizeGitPathForPlanSafety(std::move(InPath));
+    if (InPathspec.empty() || InPath.empty()) {
+        return false;
+    }
+    if (InPathspec == InPath) {
+        return true;
+    }
+    if (InPathspec.back() != '/') {
+        InPathspec.push_back('/');
+    }
+    return InPath.rfind(InPathspec, 0) == 0;
+}
+
+auto CollectPlanScopedPathspecFiles(const std::filesystem::path& InRepo,
+                                    const std::string& InIncludePathspec,
+                                    const std::vector<std::string>& InExcludePathspecs) -> std::vector<std::string> {
+    std::set<std::string> files;
+    const auto includePathspec = NormalizeGitPathForPlanSafety(InIncludePathspec);
+    if (includePathspec.empty()) {
+        return {};
+    }
+
+    const auto out = GitCapture(
+        InRepo,
+        {"ls-files", "--cached", "--modified", "--others", "--exclude-standard", "--", includePathspec});
+    if (out.exitCode == 0) {
+        std::istringstream iss(out.stdoutStr);
+        std::string line;
+        while (std::getline(iss, line)) {
+            auto path = NormalizeGitPathForPlanSafety(line);
+            if (path.empty()) {
+                continue;
+            }
+            bool excluded = false;
+            for (const auto& exclude : InExcludePathspecs) {
+                if (PlanPathspecCoversPath(exclude, path)) {
+                    excluded = true;
+                    break;
+                }
+            }
+            if (!excluded) {
+                files.insert(path);
+            }
+        }
+    }
+
+    const auto abs = (InRepo / std::filesystem::path(includePathspec)).lexically_normal();
+    std::error_code ec;
+    if (std::filesystem::exists(abs, ec) && !std::filesystem::is_directory(abs, ec)) {
+        bool excluded = false;
+        for (const auto& exclude : InExcludePathspecs) {
+            if (PlanPathspecCoversPath(exclude, includePathspec)) {
+                excluded = true;
+                break;
+            }
+        }
+        if (!excluded) {
+            files.insert(includePathspec);
+        }
+    }
+
+    return std::vector<std::string>(files.begin(), files.end());
+}
+
+auto BuildPlanScopedSafetyFiles(
+    const std::filesystem::path& InWorkspaceRoot,
+    const std::unordered_map<std::string, std::vector<RepoCommitPlanEntry::CommitItem>>& InStageMessages,
+    bool* OutScoped) -> std::vector<PlanScopedSafetyFile> {
+    if (OutScoped != nullptr) {
+        *OutScoped = false;
+    }
+
+    std::vector<PlanScopedSafetyFile> files;
+    std::set<std::pair<std::string, std::string>> seen;
+    bool sawCommit = false;
+    bool hasUnscopedCommit = false;
+
+    for (const auto& [repoKey, items] : InStageMessages) {
+        const auto repoRoot = ResolveRepoPath(InWorkspaceRoot, std::filesystem::path(repoKey));
+        const auto repoRel = repoRoot.lexically_relative(InWorkspaceRoot).generic_string();
+        const auto repoLabel = repoRel.empty() ? std::string(".") : repoRel;
+        for (const auto& item : items) {
+            sawCommit = true;
+            if (item.include.empty()) {
+                hasUnscopedCommit = true;
+                continue;
+            }
+            for (const auto& include : item.include) {
+                for (const auto& path : CollectPlanScopedPathspecFiles(repoRoot, include, item.exclude)) {
+                    const auto key = std::make_pair(repoRoot.generic_string(), path);
+                    if (seen.insert(key).second) {
+                        files.push_back(PlanScopedSafetyFile{.repo = repoRoot, .repoLabel = repoLabel, .path = path});
+                    }
+                }
+            }
+        }
+    }
+
+    if (OutScoped != nullptr) {
+        *OutScoped = sawCommit && !hasUnscopedCommit;
+    }
+    return files;
+}
+
+auto RunPlanScopedSafetyGatesForNativeCommit(
+    const std::filesystem::path& InWorkspaceRoot,
+    const std::unordered_map<std::string, std::vector<RepoCommitPlanEntry::CommitItem>>& InStageMessages) -> bool {
+    bool scoped = false;
+    const auto files = BuildPlanScopedSafetyFiles(InWorkspaceRoot, InStageMessages, &scoped);
+    if (!scoped) {
+        return false;
+    }
+
+    if (!IsTruthyEnv(std::getenv("KOG_ALLOW_IGNORE_GATE")) &&
+        ToLower(Trim(std::getenv("KOG_IGNORE_GATE") == nullptr ? "on" : std::getenv("KOG_IGNORE_GATE"))) != "off") {
+        const auto allowlistPath =
+            (ResolveSkillRoot(InWorkspaceRoot) / "assets" / "ignore-sources" / "local" / "ignore-gate-allowlist.txt").lexically_normal();
+        const auto allowlist = LoadNormalizedLineSet(allowlistPath);
+        std::vector<std::string> findings;
+        for (const auto& file : files) {
+            auto p = NormalizeGitPathForPlanSafety(file.path);
+            if (p.empty() || !IsProbableIgnoreArtifactPath(p)) {
+                continue;
+            }
+            if (IsInternalPipelineArtifactPath(p)) {
+                continue;
+            }
+            const auto key = file.repoLabel == "." ? p : (file.repoLabel + "/" + p);
+            if (allowlist.find(key) != allowlist.end()) {
+                continue;
+            }
+            findings.push_back(key);
+            if (findings.size() >= 20) {
+                break;
+            }
+        }
+        if (!findings.empty()) {
+            std::cerr << "Error: ignore gate failed (commit); unresolved artifact-like files in plan include set.\n";
+            for (const auto& f : findings) {
+                std::cerr << "  - " << f << "\n";
+            }
+            std::cerr << "Hint: update .gitignore first, then regenerate plan.\n";
+            std::cerr << "Hint: override once with --allow-ignore-gate (or KOG_ALLOW_IGNORE_GATE=1).\n";
+            std::exit(3);
+        }
+    }
+
+    if (!IsTruthyEnv(std::getenv("KOG_DISABLE_SECRET_GATE"))) {
+        const auto rulesPath = (ResolveSkillRoot(InWorkspaceRoot) / "assets" / "security" / "secret-blacklist.rules").lexically_normal();
+        const auto rules = LoadSecretRules(rulesPath);
+        std::vector<SecretFinding> findings;
+        findings.reserve(20);
+        if (!rules.empty()) {
+            for (const auto& file : files) {
+                if (static_cast<int>(findings.size()) >= 20) {
+                    break;
+                }
+                const auto before = findings.size();
+                ScanFileForSecretRules(file.repo, file.path, rules, 20, &findings);
+                for (std::size_t i = before; i < findings.size(); ++i) {
+                    findings[i].repo = file.repoLabel;
+                }
+            }
+        }
+        if (!findings.empty()) {
+            std::cerr << "Error: secret gate failed (commit); potential secrets detected in plan include set.\n";
+            for (const auto& f : findings) {
+                std::cerr << std::format("  - [{}/{}:{}] rule={} preview={}\n",
+                                         f.repo.empty() ? "." : f.repo,
+                                         f.file,
+                                         f.line,
+                                         f.ruleId,
+                                         f.preview);
+            }
+            std::cerr << "Hint: remove/redact secrets, rotate leaked credentials if needed, then rerun.\n";
+            std::cerr << "Hint: disable once with KOG_DISABLE_SECRET_GATE=1 (not recommended).\n";
+            std::exit(3);
+        }
+    }
+
+    std::cout << "[native-commit] scoped safety gates checked files=" << files.size() << "\n";
+    return true;
+}
+
 auto ResolveRepoMessages(const std::unordered_map<std::string, std::vector<RepoCommitPlanEntry::CommitItem>>& InStageMessages,
                          const std::filesystem::path& InWorkspaceRoot,
                          const std::filesystem::path& InRepo,
@@ -4061,72 +4261,6 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
     }
     preflightMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - preflightStart).count();
 
-    const auto disableSecretGate = [&]() {
-        const auto* value = std::getenv("KOG_DISABLE_SECRET_GATE");
-        if (value == nullptr) {
-            return false;
-        }
-        const auto normalized = ToLower(Trim(std::string(value)));
-        return normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on";
-    }();
-    if (disableSecretGate) {
-        std::cout << "[native-commit] safety-gates: ignore only (secret gate disabled)\n";
-        const auto allowIgnoreGate = [&]() {
-            const auto* value = std::getenv("KOG_ALLOW_IGNORE_GATE");
-            if (value == nullptr) {
-                return false;
-            }
-            const auto normalized = ToLower(Trim(std::string(value)));
-            return normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on";
-        }();
-        if (!allowIgnoreGate &&
-            ToLower(Trim(std::getenv("KOG_IGNORE_GATE") == nullptr ? "on" : std::getenv("KOG_IGNORE_GATE"))) != "off") {
-            auto repos = DiscoverWorkspaceRepos(workspaceRoot);
-            if (repos.empty()) {
-                repos.push_back(workspaceRoot);
-            }
-            const auto allowlistPath = (ResolveSkillRoot(workspaceRoot) / "assets" / "ignore-sources" / "local" / "ignore-gate-allowlist.txt").lexically_normal();
-            const auto allowlist = LoadNormalizedLineSet(allowlistPath);
-            std::vector<std::string> findings;
-            for (const auto& repo : repos) {
-                const auto rel = repo.lexically_relative(workspaceRoot).generic_string();
-                const auto repoLabel = rel.empty() ? "." : rel;
-                for (auto p : CollectIgnoreGateCandidatePaths(repo)) {
-                    if (p.empty() || !IsProbableIgnoreArtifactPath(p)) {
-                        continue;
-                    }
-                    if (IsInternalPipelineArtifactPath(p)) {
-                        continue;
-                    }
-                    std::replace(p.begin(), p.end(), '\\', '/');
-                    const auto key = repoLabel == "." ? p : (repoLabel + "/" + p);
-                    if (allowlist.find(key) != allowlist.end()) {
-                        continue;
-                    }
-                    findings.push_back(key);
-                    if (findings.size() >= 20) {
-                        break;
-                    }
-                }
-                if (findings.size() >= 20) {
-                    break;
-                }
-            }
-            if (!findings.empty()) {
-                std::cerr << "Error: ignore gate failed (commit); unresolved untracked artifact-like files detected.\n";
-                for (const auto& f : findings) {
-                    std::cerr << "  - " << f << "\n";
-                }
-                std::cerr << "Hint: update .gitignore first, then regenerate plan.\n";
-                std::cerr << "Hint: override once with --allow-ignore-gate (or KOG_ALLOW_IGNORE_GATE=1).\n";
-                std::exit(3);
-            }
-        }
-    } else {
-        std::cout << "[native-commit] safety-gates: ignore + secret\n";
-        RunPipelineSafetyGatesForNonAiCommit(workspaceRoot);
-    }
-
     std::string planError;
     const auto normalizedCommitPlanPath = NormalizeInputPathForCurrentPlatform(InPlanFile);
     const auto parsed = LoadNormalizedCommitPlan(workspaceRoot, std::filesystem::path(normalizedCommitPlanPath), &planError);
@@ -4181,6 +4315,23 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
             std::cout << "total_ms: " << totalMs << "\n";
         }
         return 0;
+    }
+
+    const auto planStageSecretGateDisabled = []() {
+        const auto* value = std::getenv("KOG_DISABLE_SECRET_GATE");
+        if (value == nullptr) {
+            return false;
+        }
+        const auto normalized = ToLower(Trim(std::string(value)));
+        return normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on";
+    }();
+    if (planStageSecretGateDisabled) {
+        std::cout << "[native-commit] safety-gates: ignore only (secret gate disabled)\n";
+    } else {
+        std::cout << "[native-commit] safety-gates: ignore + secret\n";
+    }
+    if (!RunPlanScopedSafetyGatesForNativeCommit(workspaceRoot, stageMessages)) {
+        RunPipelineSafetyGatesForNonAiCommit(workspaceRoot);
     }
 
     const auto planningStart = std::chrono::steady_clock::now();

@@ -2744,7 +2744,8 @@ auto RunNativeOriginLatestSync(
     bool InCleanupStaleLocks,
     int InJobs,
     workspace::RepoOperationAggregate* OutAggregate = nullptr,
-    bool InAuthPreflight = true) -> int {
+    bool InAuthPreflight = true,
+    bool InCheckGitlinkReachability = true) -> int {
     std::vector<SyncPlan> plans;
     std::string mode;
     try {
@@ -2938,7 +2939,7 @@ auto RunNativeOriginLatestSync(
         const auto health = workspace::ScanRepoHealth(plan.path, workspace::RepoHealthOptions{
             .checkFetchRemotes = true,
             .checkSubmoduleStatus = true,
-            .checkGitlinkReachability = true,
+            .checkGitlinkReachability = InCheckGitlinkReachability,
             .fetchDryRun = true,
             .fetchRemoteOnly = plan.remote,
             .blockOnDetachedHead = false,
@@ -4335,27 +4336,31 @@ auto RunSyncPreCommitNative(const std::filesystem::path& InRepoRoot,
         *branchMode);
 }
 
-    auto RunSyncOriginLatestNativeDetailed(const std::filesystem::path& InRepoRoot,
-                           bool InRecursive,
-                           bool InDryRun,
-                           bool InCleanupStaleLocks) -> std::pair<int, workspace::RepoOperationAggregate>;
+auto RunSyncOriginLatestNativeDetailed(const std::filesystem::path& InRepoRoot,
+                                       bool InRecursive,
+                                       bool InDryRun,
+                                       bool InCleanupStaleLocks,
+                                       bool InCheckGitlinkReachability) -> std::pair<int, workspace::RepoOperationAggregate>;
 
 auto RunSyncOriginLatestNative(const std::filesystem::path& InRepoRoot,
                                const bool InRecursive,
                                const bool InDryRun,
-                               const bool InCleanupStaleLocks) -> int {
+                               const bool InCleanupStaleLocks,
+                               const bool InCheckGitlinkReachability) -> int {
     const auto detailed = RunSyncOriginLatestNativeDetailed(
         InRepoRoot,
         InRecursive,
         InDryRun,
-        InCleanupStaleLocks);
+        InCleanupStaleLocks,
+        InCheckGitlinkReachability);
     return detailed.first;
 }
 
 auto RunSyncOriginLatestNativeDetailed(const std::filesystem::path& InRepoRoot,
                                        const bool InRecursive,
                                        const bool InDryRun,
-                                       const bool InCleanupStaleLocks) -> std::pair<int, workspace::RepoOperationAggregate> {
+                                       const bool InCleanupStaleLocks,
+                                       const bool InCheckGitlinkReachability) -> std::pair<int, workspace::RepoOperationAggregate> {
     workspace::RepoOperationAggregate aggregate;
     const auto code = RunNativeOriginLatestSync(
         InRepoRoot,
@@ -4368,7 +4373,9 @@ auto RunSyncOriginLatestNativeDetailed(const std::filesystem::path& InRepoRoot,
         true,
         InCleanupStaleLocks,
         1,
-        &aggregate);
+        &aggregate,
+        true,
+        InCheckGitlinkReachability);
     return {code, std::move(aggregate)};
 }
 

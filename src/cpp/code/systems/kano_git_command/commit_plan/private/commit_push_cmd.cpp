@@ -1250,6 +1250,37 @@ auto ExtractStringField(const std::string& InObjectText, const std::string& InFi
     return parsed->first;
 }
 
+auto ExtractStringArrayField(const std::string& InObjectText, const std::string& InField) -> std::vector<std::string> {
+    std::vector<std::string> out;
+    const auto valuePos = FindJsonKeyValueStart(InObjectText, InField);
+    if (!valuePos.has_value()) {
+        return out;
+    }
+    const auto arrayBody = ExtractBracketBody(InObjectText, *valuePos, '[', ']');
+    if (!arrayBody.has_value()) {
+        return out;
+    }
+
+    std::size_t pos = 1;
+    while (pos < arrayBody->size()) {
+        pos = SkipJsonWhitespace(*arrayBody, pos);
+        if (pos >= arrayBody->size() || (*arrayBody)[pos] == ']') {
+            break;
+        }
+        if ((*arrayBody)[pos] != '"') {
+            pos += 1;
+            continue;
+        }
+        const auto parsed = ParseJsonStringAt(*arrayBody, pos);
+        if (!parsed.has_value()) {
+            break;
+        }
+        out.push_back(parsed->first);
+        pos = parsed->second;
+    }
+    return out;
+}
+
 void PrintCommitPushStageTimings(const std::string& InMode,
                                  long long InSafetyGatesMillis,
                                  long long InPreCommitMillis,
@@ -1474,6 +1505,284 @@ auto ResolveSafetyGateRepos(const std::filesystem::path& InWorkspaceRoot,
         return repos;
     }
     return DiscoverWorkspaceRepos(InWorkspaceRoot);
+}
+
+struct PlanSafetyCandidateFile {
+    std::filesystem::path repo;
+    std::string repoLabel;
+    std::string path;
+};
+
+struct PlanSafetyScope {
+    bool scoped = false;
+    std::vector<PlanSafetyCandidateFile> files;
+};
+
+auto NormalizeGitPath(std::string InPath) -> std::string {
+    std::replace(InPath.begin(), InPath.end(), '\\', '/');
+    while (InPath.rfind("./", 0) == 0) {
+        InPath = InPath.substr(2);
+    }
+    return Trim(InPath);
+}
+
+auto PathspecCoversPath(std::string InPathspec, std::string InPath) -> bool {
+    InPathspec = NormalizeGitPath(std::move(InPathspec));
+    InPath = NormalizeGitPath(std::move(InPath));
+    if (InPathspec.empty() || InPath.empty()) {
+        return false;
+    }
+    if (InPathspec == InPath) {
+        return true;
+    }
+    if (InPathspec.back() != '/') {
+        InPathspec.push_back('/');
+    }
+    return InPath.rfind(InPathspec, 0) == 0;
+}
+
+auto CollectPlanPathspecFiles(const std::filesystem::path& InRepo,
+                              const std::string& InIncludePathspec,
+                              const std::vector<std::string>& InExcludePathspecs) -> std::vector<std::string> {
+    std::set<std::string> files;
+    const auto includePathspec = NormalizeGitPath(InIncludePathspec);
+    if (includePathspec.empty()) {
+        return {};
+    }
+
+    const auto out = shell::ExecuteCommand(
+        "git",
+        {"ls-files", "--cached", "--modified", "--others", "--exclude-standard", "--", includePathspec},
+        shell::ExecMode::Capture,
+        InRepo);
+    if (out.exitCode == 0) {
+        std::istringstream iss(out.stdoutStr);
+        std::string line;
+        while (std::getline(iss, line)) {
+            auto path = NormalizeGitPath(line);
+            if (path.empty()) {
+                continue;
+            }
+            bool excluded = false;
+            for (const auto& exclude : InExcludePathspecs) {
+                if (PathspecCoversPath(exclude, path)) {
+                    excluded = true;
+                    break;
+                }
+            }
+            if (!excluded) {
+                files.insert(path);
+            }
+        }
+    }
+
+    const auto abs = (InRepo / std::filesystem::path(includePathspec)).lexically_normal();
+    std::error_code ec;
+    if (std::filesystem::exists(abs, ec) && !std::filesystem::is_directory(abs, ec)) {
+        bool excluded = false;
+        for (const auto& exclude : InExcludePathspecs) {
+            if (PathspecCoversPath(exclude, includePathspec)) {
+                excluded = true;
+                break;
+            }
+        }
+        if (!excluded) {
+            files.insert(includePathspec);
+        }
+    }
+
+    return std::vector<std::string>(files.begin(), files.end());
+}
+
+auto BuildPlanFileSafetyScope(const std::filesystem::path& InWorkspaceRoot,
+                              const std::filesystem::path& InPlanPath,
+                              std::string* OutError) -> PlanSafetyScope {
+    PlanSafetyScope scope;
+    const auto payload = ReadTextFile(InPlanPath);
+    if (!payload.has_value()) {
+        if (OutError != nullptr) {
+            *OutError = "cannot read plan file";
+        }
+        return scope;
+    }
+
+    const auto stages = ExtractObjectBodyForKey(*payload, "stages");
+    if (!stages.has_value()) {
+        if (OutError != nullptr) {
+            *OutError = "plan file missing stages object";
+        }
+        return scope;
+    }
+
+    std::set<std::pair<std::string, std::string>> seen;
+    bool sawCommit = false;
+    bool hasUnscopedCommit = false;
+    const auto collectStage = [&](const std::string& stageKey) {
+        const auto stageArray = ExtractArrayBodyForKey(*stages, stageKey).value_or(std::string{});
+        for (const auto& repoObj : SplitTopLevelObjects(stageArray)) {
+            const auto repoSpec = ExtractStringField(repoObj, "repo").value_or(".");
+            const auto repoRoot = ResolveRepoFromSpec(InWorkspaceRoot, std::filesystem::path(repoSpec), 12, true);
+            const auto repoRel = repoRoot.lexically_relative(InWorkspaceRoot).generic_string();
+            const auto repoLabel = repoRel.empty() ? std::string(".") : repoRel;
+            const auto commits = ExtractArrayBodyForKey(repoObj, "commits").value_or(std::string{});
+            for (const auto& commitObj : SplitTopLevelObjects(commits)) {
+                sawCommit = true;
+                const auto includes = ExtractStringArrayField(commitObj, "include");
+                const auto excludes = ExtractStringArrayField(commitObj, "exclude");
+                if (includes.empty()) {
+                    hasUnscopedCommit = true;
+                    continue;
+                }
+                for (const auto& include : includes) {
+                    for (const auto& path : CollectPlanPathspecFiles(repoRoot, include, excludes)) {
+                        const auto key = std::make_pair(repoRoot.generic_string(), path);
+                        if (seen.insert(key).second) {
+                            scope.files.push_back(PlanSafetyCandidateFile{.repo = repoRoot, .repoLabel = repoLabel, .path = path});
+                        }
+                    }
+                }
+            }
+        }
+    };
+    collectStage("commit");
+    collectStage("post_sync");
+
+    scope.scoped = sawCommit && !hasUnscopedCommit;
+    return scope;
+}
+
+auto CollectPlanFileRepoRoots(const std::filesystem::path& InWorkspaceRoot,
+                              const std::filesystem::path& InPlanPath) -> std::vector<std::filesystem::path> {
+    std::vector<std::filesystem::path> repos;
+    std::set<std::string> seen;
+    const auto payload = ReadTextFile(InPlanPath);
+    if (!payload.has_value()) {
+        return {InWorkspaceRoot.lexically_normal()};
+    }
+    const auto stages = ExtractObjectBodyForKey(*payload, "stages");
+    if (!stages.has_value()) {
+        return {InWorkspaceRoot.lexically_normal()};
+    }
+
+    const auto collectStage = [&](const std::string& stageKey) {
+        const auto stageArray = ExtractArrayBodyForKey(*stages, stageKey).value_or(std::string{});
+        for (const auto& repoObj : SplitTopLevelObjects(stageArray)) {
+            const auto repoSpec = ExtractStringField(repoObj, "repo").value_or(".");
+            const auto repoRoot = ResolveRepoFromSpec(InWorkspaceRoot, std::filesystem::path(repoSpec), 12, true).lexically_normal();
+            const auto key = repoRoot.generic_string();
+            if (!key.empty() && seen.insert(key).second) {
+                repos.push_back(repoRoot);
+            }
+        }
+    };
+    collectStage("commit");
+    collectStage("post_sync");
+
+    if (repos.empty()) {
+        repos.push_back(InWorkspaceRoot.lexically_normal());
+    }
+    return repos;
+}
+
+auto AnyRepoHasWorkingTreeChanges(const std::vector<std::filesystem::path>& InRepos) -> bool {
+    for (const auto& repo : InRepos) {
+        const auto status = shell::ExecuteCommand("git", {"status", "--porcelain"}, shell::ExecMode::Capture, repo);
+        if (status.exitCode == 0 && !Trim(status.stdoutStr).empty()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+auto RunPlanFileExactSafetyGates(const std::filesystem::path& InWorkspaceRoot,
+                                 const std::filesystem::path& InPlanPath) -> bool {
+    std::string scopeError;
+    const auto scope = BuildPlanFileSafetyScope(InWorkspaceRoot, InPlanPath, &scopeError);
+    if (!scope.scoped) {
+        if (!scopeError.empty()) {
+            std::cerr << "[commit-push][plan-pipeline] scoped safety gate unavailable: " << scopeError << "\n";
+        }
+        return false;
+    }
+
+    const auto workspaceRoot = InWorkspaceRoot.lexically_normal();
+    const auto allowIgnoreGate = ToLower(Trim(std::getenv("KOG_ALLOW_IGNORE_GATE") == nullptr ? "" : std::getenv("KOG_ALLOW_IGNORE_GATE")));
+    const auto ignoreGateMode = ToLower(Trim(std::getenv("KOG_IGNORE_GATE") == nullptr ? "on" : std::getenv("KOG_IGNORE_GATE")));
+    if (!(allowIgnoreGate == "1" || allowIgnoreGate == "true") && ignoreGateMode != "off") {
+        const auto allowlistPath =
+            (ResolveSkillRoot(workspaceRoot) / "assets" / "ignore-sources" / "local" / "ignore-gate-allowlist.txt").lexically_normal();
+        const auto allowlist = LoadNormalizedLineSet(allowlistPath);
+
+        std::vector<std::string> findings;
+        findings.reserve(20);
+        for (const auto& file : scope.files) {
+            auto p = NormalizeGitPath(file.path);
+            if (p.empty() || !IsProbableIgnoreArtifactPath(p)) {
+                continue;
+            }
+            if (IsInternalPipelineArtifactPath(p)) {
+                continue;
+            }
+            const auto key = ToLower(file.repoLabel == "." ? p : (file.repoLabel + "/" + p));
+            if (allowlist.find(key) != allowlist.end()) {
+                continue;
+            }
+            findings.push_back(key);
+            if (findings.size() >= 20) {
+                break;
+            }
+        }
+        if (!findings.empty()) {
+            std::cerr << "Error: ignore gate failed (commit-push); unresolved artifact-like files in plan include set.\n";
+            for (const auto& f : findings) {
+                std::cerr << "  - " << f << "\n";
+            }
+            std::cerr << "Hint: update .gitignore first, then regenerate plan.\n";
+            std::cerr << "Hint: override once with --allow-ignore-gate (or KOG_ALLOW_IGNORE_GATE=1).\n";
+            std::exit(3);
+        }
+    }
+
+    const auto disableSecretGate = ToLower(Trim(std::getenv("KOG_DISABLE_SECRET_GATE") == nullptr ? "" : std::getenv("KOG_DISABLE_SECRET_GATE")));
+    if (disableSecretGate == "1" || disableSecretGate == "true") {
+        return true;
+    }
+
+    const auto rulesPath = (ResolveSkillRoot(workspaceRoot) / "assets" / "security" / "secret-blacklist.rules").lexically_normal();
+    const auto rules = LoadSecretRules(rulesPath);
+    if (rules.empty()) {
+        return true;
+    }
+
+    std::vector<SecretFinding> findings;
+    findings.reserve(20);
+    for (const auto& file : scope.files) {
+        if (static_cast<int>(findings.size()) >= 20) {
+            break;
+        }
+        const auto before = findings.size();
+        ScanFileForSecretRules(file.repo, file.path, rules, 20, &findings);
+        for (std::size_t i = before; i < findings.size(); ++i) {
+            findings[i].repo = file.repoLabel;
+        }
+    }
+    if (!findings.empty()) {
+        std::cerr << "Error: secret gate failed (commit-push); potential secrets detected in plan include set.\n";
+        for (const auto& f : findings) {
+            std::cerr << std::format("  - [{}/{}:{}] rule={} preview={}\n",
+                                     f.repo.empty() ? "." : f.repo,
+                                     f.file,
+                                     f.line,
+                                     f.ruleId,
+                                     f.preview);
+        }
+        std::cerr << "Hint: remove/redact secrets, rotate leaked credentials if needed, then rerun.\n";
+        std::cerr << "Hint: disable once with KOG_DISABLE_SECRET_GATE=1 (not recommended).\n";
+        std::exit(3);
+    }
+
+    std::cout << "[commit-push][plan-pipeline] scoped safety gates checked files=" << scope.files.size() << "\n";
+    return true;
 }
 
 auto RunPipelineSafetyGatesForNonAiCommitPush(const std::filesystem::path& InWorkspaceRoot,
@@ -2033,6 +2342,7 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
     }
 
     const auto planPath = std::filesystem::path(InNormalizedPlanFile).lexically_normal();
+    const auto planRepoRoots = CollectPlanFileRepoRoots(InWorkspaceRoot, planPath);
 
     if (agentMode) {
         std::cout << "[commit-push] agent mode + --plan-file detected; using plan-driven flow.\n";
@@ -2042,23 +2352,22 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
                      {{"workspace root", InWorkspaceRoot.lexically_normal().generic_string()},
                       {"plan file", planPath.generic_string()}});
     const auto safetyStart = std::chrono::steady_clock::now();
-    RunPipelineSafetyGatesForNonAiCommitPush(InWorkspaceRoot, {}, false);
+    if (!RunPlanFileExactSafetyGates(InWorkspaceRoot, planPath)) {
+        RunPipelineSafetyGatesForNonAiCommitPush(InWorkspaceRoot, {}, false);
+    }
     const auto safetyEnd = std::chrono::steady_clock::now();
     safetyGatesMillis = std::chrono::duration_cast<std::chrono::milliseconds>(safetyEnd - safetyStart).count();
 
     logPipelineStage("pre-commit",
                      {{"workspace root", InWorkspaceRoot.lexically_normal().generic_string()},
                       {"plan file", planPath.generic_string()},
-                      {"branch mode", "default"}});
+                      {"branch mode", "plan-file-exact"}});
     {
         const auto preCommitStart = std::chrono::steady_clock::now();
-        FixRepoHygieneRecursive(InWorkspaceRoot);
-        const auto preCommitCode = RunSyncPreCommitNative(InWorkspaceRoot, true, false, "default");
         const auto preCommitEnd = std::chrono::steady_clock::now();
         preCommitMillis = std::chrono::duration_cast<std::chrono::milliseconds>(preCommitEnd - preCommitStart).count();
-        if (preCommitCode != 0) {
-            return preCommitCode;
-        }
+        std::cout << "[commit-push][plan-pipeline] pre-commit skipped for explicit plan-file; "
+                     "plan commit entries own exact include/exclude staging.\n";
     }
 
     if (agentMode && IsSharedDefaultPlanPath(InWorkspaceRoot, planPath)) {
@@ -2105,7 +2414,14 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
                           {"plan file", planPath.generic_string()}});
         {
             const auto syncStart = std::chrono::steady_clock::now();
-            const auto syncCode = RunSyncOriginLatestNative(InWorkspaceRoot, true, false);
+            int syncCode = 0;
+            for (const auto& repoRoot : planRepoRoots) {
+                std::cout << "[commit-push][plan-pipeline] sync repo: " << repoRoot.generic_string() << "\n";
+                syncCode = RunSyncOriginLatestNative(repoRoot, false, false, false, false);
+                if (syncCode != 0) {
+                    break;
+                }
+            }
             const auto syncEnd = std::chrono::steady_clock::now();
             syncMillis = std::chrono::duration_cast<std::chrono::milliseconds>(syncEnd - syncStart).count();
             if (syncCode != 0) {
@@ -2118,29 +2434,41 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
                           {"plan file", planPath.generic_string()}});
         {
             const auto postSyncStart = std::chrono::steady_clock::now();
-            const auto summary = ClassifyPostSyncDelta(InWorkspaceRoot, {}, false);
-            if (summary.kind == PostSyncDeltaKind::SemanticDrift) {
-                std::cout << "[commit-push] post-sync semantic changes detected; proceeding to post-sync commit stage.\n";
-                for (const auto& repo : summary.semanticRepos) {
-                    std::cout << "  repo: " << repo.generic_string() << "\n";
-                }
-            }
-            if (summary.kind == PostSyncDeltaKind::GitlinkOnly) {
-                const auto amendResult = AutoAmendGitlinkOnlyPostSyncRepos(InWorkspaceRoot, {}, false);
-                if (amendResult.first != 0) {
-                    return 2;
-                }
-                std::cout << "[commit-push] post-sync gitlink-only auto-amend applied: repos=" << amendResult.second << "\n";
+            const bool hasPostSyncStage = PlanStageLikelyNonEmpty(std::filesystem::path(InNormalizedPlanFile), "post_sync");
+            if (!hasPostSyncStage) {
+                std::cout << "[commit-push] post-sync plan stage is empty; skipping.\n";
             } else {
-                const bool hasPostSyncStage = PlanStageLikelyNonEmpty(std::filesystem::path(InNormalizedPlanFile), "post_sync");
-                if (!hasPostSyncStage) {
-                    std::cout << "[commit-push] post-sync plan stage is empty; skipping.\n";
-                } else if (!NeedsPostSyncCommitNonPlan(InWorkspaceRoot, {}, false)) {
-                    std::cout << "[commit-push] post-sync plan commit skipped (no working tree changes).\n";
-                } else {
-                    const auto postCommitCode = RunCommitNativePlanStage(InWorkspaceRoot, InNormalizedPlanFile, "post_sync", false);
-                    if (postCommitCode != 0) {
-                        return postCommitCode;
+                bool gitlinkOnly = false;
+                bool semanticDrift = false;
+                for (const auto& repoRoot : planRepoRoots) {
+                    const auto summary = ClassifyPostSyncDelta(repoRoot, {}, true);
+                    if (summary.kind == PostSyncDeltaKind::SemanticDrift) {
+                        semanticDrift = true;
+                        std::cout << "[commit-push] post-sync semantic changes detected; proceeding to post-sync commit stage.\n";
+                        for (const auto& repo : summary.semanticRepos) {
+                            std::cout << "  repo: " << repo.generic_string() << "\n";
+                        }
+                    }
+                    if (summary.kind == PostSyncDeltaKind::GitlinkOnly) {
+                        gitlinkOnly = true;
+                        const auto amendResult = AutoAmendGitlinkOnlyPostSyncRepos(repoRoot, {}, true);
+                        if (amendResult.first != 0) {
+                            return 2;
+                        }
+                        std::cout << "[commit-push] post-sync gitlink-only auto-amend applied: repos=" << amendResult.second << "\n";
+                    }
+                }
+                if (!gitlinkOnly) {
+                    if (!AnyRepoHasWorkingTreeChanges(planRepoRoots)) {
+                        std::cout << "[commit-push] post-sync plan commit skipped (no working tree changes).\n";
+                    } else {
+                        if (semanticDrift) {
+                            std::cout << "[commit-push] post-sync plan stage will run against plan repo scope.\n";
+                        }
+                        const auto postCommitCode = RunCommitNativePlanStage(InWorkspaceRoot, InNormalizedPlanFile, "post_sync", false);
+                        if (postCommitCode != 0) {
+                            return postCommitCode;
+                        }
                     }
                 }
             }
@@ -2154,7 +2482,14 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
                       {"plan file", planPath.generic_string()}});
     {
         const auto pushStart = std::chrono::steady_clock::now();
-        const auto pushCode = RunPushNativeSimple(InWorkspaceRoot, true, false, false, false, false, 0, false, "");
+        int pushCode = 0;
+        for (const auto& repoRoot : planRepoRoots) {
+            std::cout << "[commit-push][plan-pipeline] push repo: " << repoRoot.generic_string() << "\n";
+            pushCode = RunPushNativeSimple(repoRoot, false, false, false, false, false, 0, false, "");
+            if (pushCode != 0) {
+                break;
+            }
+        }
         const auto pushEnd = std::chrono::steady_clock::now();
         pushMillis = std::chrono::duration_cast<std::chrono::milliseconds>(pushEnd - pushStart).count();
         const auto totalEnd = std::chrono::steady_clock::now();

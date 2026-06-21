@@ -21,12 +21,14 @@ auto RunSyncPreCommitNative(const std::filesystem::path& InRepoRoot,
 auto RunSyncOriginLatestNative(const std::filesystem::path& InRepoRoot,
                                bool InRecursive,
                                bool InDryRun,
-                               bool InCleanupStaleLocks = false) -> int;
+                               bool InCleanupStaleLocks = false,
+                               bool InCheckGitlinkReachability = true) -> int;
 
 auto RunSyncOriginLatestNativeDetailed(const std::filesystem::path& InRepoRoot,
                                        bool InRecursive,
                                        bool InDryRun,
-                                       bool InCleanupStaleLocks = false) -> std::pair<int, workspace::RepoOperationAggregate>;
+                                       bool InCleanupStaleLocks = false,
+                                       bool InCheckGitlinkReachability = true) -> std::pair<int, workspace::RepoOperationAggregate>;
 
 void FixRepoHygieneRecursive(const std::filesystem::path& InWorkspaceRoot);
 

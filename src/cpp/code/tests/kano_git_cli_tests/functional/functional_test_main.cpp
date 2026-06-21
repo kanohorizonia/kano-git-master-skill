@@ -812,6 +812,53 @@ TEST_CASE("clean_but_ahead_continues_to_push", "[functional][commit-push][contra
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("commit_push_plan_file_keeps_exact_include_scope", "[functional][commit-push][plan-file][pathspec]") {
+    const auto ctx = CreateRemoteWithClone("plan-file-exact-include");
+    WriteTextFile(ctx.cloneRepo / "included.txt", "include me\n");
+    WriteTextFile(ctx.cloneRepo / "unrelated.txt", "password: \"supersecretvalue\"\n");
+
+    const auto planPath = (ctx.cloneRepo / ".kano" / "cache" / "git" / "plans" / "exact-include.json").lexically_normal();
+    RequireSuccess(RunKog({"plan", "new", "--force", "--output", planPath.string()}, ctx.cloneRepo), "plan new");
+    RequireSuccess(
+        RunKog({
+            "plan", "prepare", "add-commit-entry",
+            "--plan-file", planPath.string(),
+            "--repo", ".",
+            "--commit-message", "test(functional): exact include",
+            "--commit-include", "included.txt",
+            "--commit-review-verdict", "pass",
+            "--commit-review-reason", "functional regression for plan-file exact include staging"
+        }, ctx.cloneRepo),
+        "plan add commit entry");
+    RequireSuccess(
+        RunKog({"plan", "verify", "pre-apply", "--stage", "commit", "--plan-file", planPath.string()}, ctx.cloneRepo),
+        "plan verify pre-apply");
+
+    const auto result = RunKog({"commit-push", "--plan-file", planPath.string()}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContainsText(result.stdoutText, "pre-commit skipped for explicit plan-file");
+    RequireContainsText(result.stdoutText, "scoped safety gates checked files=1");
+
+    const auto includedStatus = RunGit({"status", "--short", "--", "included.txt"}, ctx.cloneRepo);
+    RequireSuccess(includedStatus, "included status");
+    REQUIRE(TrimCopy(includedStatus.stdoutText).empty());
+
+    const auto unrelatedStatus = RunGit({"status", "--short", "--", "unrelated.txt"}, ctx.cloneRepo);
+    RequireSuccess(unrelatedStatus, "unrelated status");
+    REQUIRE(TrimCopy(unrelatedStatus.stdoutText) == "?? unrelated.txt");
+
+    const auto cached = RunGit({"diff", "--cached", "--name-only"}, ctx.cloneRepo);
+    RequireSuccess(cached, "cached diff after plan commit-push");
+    REQUIRE(TrimCopy(cached.stdoutText).empty());
+
+    const auto [behind, ahead] = AheadBehindCounts(ctx.cloneRepo);
+    REQUIRE(behind == 0);
+    REQUIRE(ahead == 0);
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("sync_none_continues", "[functional][commit-push][post-sync]") {
     const auto ctx = CreateRemoteWithClone("sync-none");
     WriteTextFile(ctx.cloneRepo / "README.md", "seed\nlocal update\n");
