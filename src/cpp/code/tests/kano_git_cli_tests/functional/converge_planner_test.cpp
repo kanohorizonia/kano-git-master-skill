@@ -420,6 +420,7 @@ TEST_CASE("converge agent mode commits backlog changes by inferred intent", "[td
     const auto kgEvidence = std::filesystem::path("products/kano-git-master-skill/artifacts/KG-BUG-0001/verification/evidence.txt");
     const auto kgView = std::filesystem::path("products/kano-git-master-skill/views/Dashboard_PlainMarkdown_Active.md");
     const auto koaItem = std::filesystem::path("products/kano-agent-ark-skill/items/task/0100/KOA-TSK-0130_update-runtime.md");
+    const auto koaReceipt = std::filesystem::path("products/kano-agent-ark-skill/artifacts/_receipts/backlog.item_create/implicit-demo.json");
 
     WriteTextFile(ctx.seedRepo / kgItem, "id: KG-BUG-0001\nstate: Proposed\n");
     WriteTextFile(ctx.seedRepo / kgEvidence, "initial evidence\n");
@@ -434,6 +435,7 @@ TEST_CASE("converge agent mode commits backlog changes by inferred intent", "[td
     WriteTextFile(ctx.cloneRepo / kgEvidence, "initial evidence\nverified agent intent plan\n");
     WriteTextFile(ctx.cloneRepo / kgView, "# Active\n\n- KG-BUG-0001\n");
     WriteTextFile(ctx.cloneRepo / koaItem, "id: KOA-TSK-0130\nstate: Ready\n");
+    WriteTextFile(ctx.cloneRepo / koaReceipt, "{\"ok\":true}\n");
 
     const auto result = RunKogWithEnv(
         {"converge", "--no-recursive", "--jobs", "1"},
@@ -447,6 +449,7 @@ TEST_CASE("converge agent mode commits backlog changes by inferred intent", "[td
     RequireContains(result.stdoutText, "docs(backlog-kano-git-master-skill): add KG-BUG-0001 evidence");
     RequireContains(result.stdoutText, "docs(backlog-kano-git-master-skill): refresh backlog views");
     RequireContains(result.stdoutText, "docs(backlog-kano-agent-ark-skill): update KOA-TSK-0130 task item");
+    RequireContains(result.stdoutText, "docs(backlog-kano-agent-ark-skill): add backlog mutation receipts");
     RequireContains(result.stdoutText, "[converge] completed");
     REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
 
@@ -456,6 +459,7 @@ TEST_CASE("converge agent mode commits backlog changes by inferred intent", "[td
     RequireContains(log.stdoutText, "docs(backlog-kano-git-master-skill): add KG-BUG-0001 evidence");
     RequireContains(log.stdoutText, "docs(backlog-kano-git-master-skill): refresh backlog views");
     RequireContains(log.stdoutText, "docs(backlog-kano-agent-ark-skill): update KOA-TSK-0130 task item");
+    RequireContains(log.stdoutText, "docs(backlog-kano-agent-ark-skill): add backlog mutation receipts");
     RequireNotContains(log.stdoutText, "update 4 files");
 
     RemoveSandboxWorkspace(ctx.sandbox);
@@ -466,6 +470,8 @@ TEST_CASE("converge agent mode keeps implementation and test paths in one source
 
     const auto implementation = std::filesystem::path("src/cpp/code/systems/kano_git_command/repo_sync/private/converge_cmd.cpp");
     const auto regressionTest = std::filesystem::path("src/cpp/code/tests/kano_git_cli_tests/functional/converge_planner_test.cpp");
+    const auto repoConfig = std::filesystem::path("config/repo-catalog.toml");
+    const auto workflowTemplate = std::filesystem::path("templates/feature/notes.md.template");
 
     WriteTextFile(ctx.seedRepo / implementation, "// converge implementation\n");
     WriteTextFile(ctx.seedRepo / regressionTest, "// converge tests\n");
@@ -476,6 +482,8 @@ TEST_CASE("converge agent mode keeps implementation and test paths in one source
 
     WriteTextFile(ctx.cloneRepo / implementation, "// converge implementation\n// intent scoped commit planner\n");
     WriteTextFile(ctx.cloneRepo / regressionTest, "// converge tests\n// source intent regression\n");
+    WriteTextFile(ctx.cloneRepo / repoConfig, "# repo catalog\n");
+    WriteTextFile(ctx.cloneRepo / workflowTemplate, "# feature notes\n");
 
     const auto result = RunKogWithEnv(
         {"converge", "--no-recursive", "--jobs", "1"},
@@ -486,6 +494,8 @@ TEST_CASE("converge agent mode keeps implementation and test paths in one source
     REQUIRE(result.exitCode == 0);
     RequireContains(result.stdoutText, "Converge agent intent commit plan");
     RequireContains(result.stdoutText, "fix(kog-converge): update intent-scoped agent commits");
+    RequireContains(result.stdoutText, "chore(kog): update configuration");
+    RequireContains(result.stdoutText, "docs(kog): update workflow templates");
     RequireContains(result.stdoutText, "include " + implementation.generic_string());
     RequireContains(result.stdoutText, "include " + regressionTest.generic_string());
     REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
@@ -493,6 +503,8 @@ TEST_CASE("converge agent mode keeps implementation and test paths in one source
     const auto log = RunGit({"log", "--format=%s", "-n", "4"}, ctx.cloneRepo);
     RequireSuccess(log, "read source intent commit log");
     RequireContains(log.stdoutText, "fix(kog-converge): update intent-scoped agent commits");
+    RequireContains(log.stdoutText, "chore(kog): update configuration");
+    RequireContains(log.stdoutText, "docs(kog): update workflow templates");
     RequireNotContains(log.stdoutText, "update 2 files");
 
     RemoveSandboxWorkspace(ctx.sandbox);

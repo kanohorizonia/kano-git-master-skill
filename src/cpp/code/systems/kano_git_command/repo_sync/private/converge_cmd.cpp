@@ -910,6 +910,13 @@ std::optional<IntentCommitGroup> ClassifyBacklogIntentPath(const std::string& pa
             }
         }
         if (section == "artifacts") {
+            if (parts.size() >= 4 && parts[3] == "_receipts") {
+                return MakeGroup(
+                    "backlog-receipts:" + product,
+                    "docs(" + scope + "): add backlog mutation receipts",
+                    "native classifier matched backlog mutation receipt evidence for " + product,
+                    path);
+            }
             const auto itemId = parts.size() >= 4 ? ExtractWorkItemId(parts[3]) : ExtractWorkItemId(path);
             if (itemId.has_value()) {
                 return MakeGroup(
@@ -998,6 +1005,22 @@ std::optional<IntentCommitGroup> ClassifyKogSourceIntentPath(const std::string& 
             "kog-scripts",
             "chore(kog-scripts): update automation scripts",
             "native classifier matched script path",
+            path);
+    }
+
+    if (lowered.rfind("config/", 0) == 0 || lowered.ends_with(".toml") || lowered.ends_with(".toml.example")) {
+        return MakeGroup(
+            "kog-config",
+            "chore(kog): update configuration",
+            "native classifier matched repository configuration path",
+            path);
+    }
+
+    if (lowered.rfind("templates/", 0) == 0) {
+        return MakeGroup(
+            "kog-templates",
+            "docs(kog): update workflow templates",
+            "native classifier matched workflow template path",
             path);
     }
 
