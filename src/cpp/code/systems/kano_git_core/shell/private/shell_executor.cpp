@@ -443,11 +443,13 @@ auto RunProcess(const std::string& cmdLine, ExecMode InMode,
     opts.argv_count = argv.size() - 1;  // exclude terminating nullptr
     opts.mode = (InMode == ExecMode::Capture) ? KANO_PROCESS_MODE_CAPTURE : KANO_PROCESS_MODE_PASS_THROUGH;
     opts.timeout_ms = InTimeoutMs ? static_cast<int>(*InTimeoutMs) : 0;
-    opts.output_callback = InProgressCallback ? [](KanoProcessStream stream, const char* chunk, size_t chunk_size, void* user_data) {
-        reinterpret_cast<ProgressCallback*>(user_data)->operator()(
-            std::string_view(chunk, chunk_size), stream == KANO_PROCESS_STREAM_STDERR);
-    } : nullptr;
-    opts.user_data = InProgressCallback ? reinterpret_cast<void*>(&InProgressCallback) : nullptr;
+    if (InProgressCallback) {
+        opts.output_callback = [](KanoProcessStream stream, const char* chunk, size_t chunk_size, void* user_data) {
+            reinterpret_cast<ProgressCallback*>(user_data)->operator()(
+                std::string_view(chunk, chunk_size), stream == KANO_PROCESS_STREAM_STDERR);
+        };
+        opts.user_data = reinterpret_cast<void*>(&InProgressCallback);
+    }
 
     KanoProcessResult kresult{};
     bool ok = kano_process_run_ex(&opts, &kresult);
@@ -506,11 +508,13 @@ auto RunProcessUnix(const std::string& InCommand,
     opts.argv_count = argv.size() - 1;  // exclude terminating nullptr
     opts.mode = (InMode == ExecMode::Capture) ? KANO_PROCESS_MODE_CAPTURE : KANO_PROCESS_MODE_PASS_THROUGH;
     opts.timeout_ms = InTimeoutMs ? static_cast<int>(*InTimeoutMs) : 0;
-    opts.output_callback = InProgressCallback ? [](KanoProcessStream stream, const char* chunk, size_t chunk_size, void* user_data) {
-        reinterpret_cast<ProgressCallback*>(user_data)->operator()(
-            std::string_view(chunk, chunk_size), stream == KANO_PROCESS_STREAM_STDERR);
-    } : nullptr;
-    opts.user_data = InProgressCallback ? reinterpret_cast<void*>(&InProgressCallback) : nullptr;
+    if (InProgressCallback) {
+        opts.output_callback = [](KanoProcessStream stream, const char* chunk, size_t chunk_size, void* user_data) {
+            reinterpret_cast<ProgressCallback*>(user_data)->operator()(
+                std::string_view(chunk, chunk_size), stream == KANO_PROCESS_STREAM_STDERR);
+        };
+        opts.user_data = reinterpret_cast<void*>(&InProgressCallback);
+    }
 
     KanoProcessResult kresult{};
     bool ok = kano_process_run_ex(&opts, &kresult);
