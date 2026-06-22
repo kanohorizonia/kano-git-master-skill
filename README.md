@@ -29,6 +29,7 @@ FetchContent. That is expected for online developer and CI builds.
 Start here when updating docs, writing agent prompts, or validating a release:
 
 - [Current Command Surface](./docs/guides/current-command-surface.md)
+- [KCC Commit Message Policy](./docs/guides/kcc-commit-message-policy.md)
 - [Documentation Index](./docs/README.md)
 - [CPA Commit Plan Workflow](./docs/guides/cpa-commit-plan-workflow.md)
 - [Repo Hygiene](./docs/repo-hygiene.md)

@@ -25,6 +25,13 @@ fi
 
 src/shell/test/audit-git-index-hygiene.sh
 src/shell/test/audit-public-doc-script-refs.sh
+if [[ "${KOG_ENABLE_KCC_AUDIT:-0}" == "1" ]]; then
+  kcc_args=(--max-count "${KOG_KCC_AUDIT_MAX_COUNT:-50}")
+  if [[ "${KOG_KCC_AUDIT_STRICT:-0}" == "1" ]]; then
+    kcc_args+=(--strict)
+  fi
+  src/shell/test/audit-kcc-commit-messages.sh "${kcc_args[@]}"
+fi
 src/shell/test/smoke-root-wrapper-generator.sh
 
 echo "PASS: pre-commit quality gate"

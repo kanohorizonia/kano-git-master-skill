@@ -11,6 +11,7 @@ not current unless they are explicitly reintroduced and covered by smoke tests.
 ## Current Entry Points
 
 - [Current Command Surface](./guides/current-command-surface.md)
+- [KCC Commit Message Policy](./guides/kcc-commit-message-policy.md)
 - [CPA Commit Plan Workflow](./guides/cpa-commit-plan-workflow.md)
 - [Repo Hygiene](./repo-hygiene.md)
 - [Testing Guide](./development/testing.md)
