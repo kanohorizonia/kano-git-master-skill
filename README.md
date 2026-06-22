@@ -11,10 +11,13 @@ recording the result.
 
 **Version**: 0.0.1 alpha
 
-**Public status**: source tag `v0.0.1` exists; public Release assets are governed
-by the [Public Artifact Contract](./docs/guides/public-artifact-contract.md).
-No binary or package-manager channel is claimed unless a matching release asset
-and checksum have been verified.
+**Public status**: source tag `v0.0.1` exists, but GitHub Release publication is
+blocked until a validated release archive is available; see the
+[v0.0.1 alpha no-go report](./docs/release/v0.0.1-alpha-no-go.md). Public
+release assets are governed by the
+[Public Artifact Contract](./docs/guides/public-artifact-contract.md). No binary
+or package-manager channel is claimed unless a matching release asset and
+checksum have been verified.
 
 ```mermaid
 flowchart LR
