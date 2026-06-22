@@ -1,6 +1,6 @@
-name: Kano Cloud Build
+name: KanoAgentSkills / Cloud Build
 
-run-name: Jenkins_${{ inputs.platform }}_${{ inputs.jenkins_build_name || inputs.request_id }}
+run-name: ${{ inputs.jenkins_build_name != '' && format('Jenkins_{0}_{1}', inputs.platform || 'linux-x64', inputs.jenkins_build_name) || format('Manual_{0}_{1}', inputs.platform || 'linux-x64', inputs.request_id || github.run_id) }}
 
 on:
   workflow_dispatch:
