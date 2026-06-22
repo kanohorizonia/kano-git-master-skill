@@ -31,7 +31,7 @@ The result was a docs-only push starting the full GitHub Actions CI matrix.
 | --- | --- | --- | --- | --- |
 | `kano-cloud-build.yml` | No | No | Yes; Jenkins/manual cloud build inputs | No direct publication |
 | `ci-build.yml` | Public-safe `quality-gate` only | Public-safe `quality-gate` only | Full native build, coverage, and MSI lanes | No |
-| `cd-docs.yml` | GitHub Pages build/deploy for docs/source-site paths | No | GitHub Pages build/deploy | No |
+| `cd-docs.yml` | GitHub Pages build and `gh-pages` branch publish for docs/source-site paths | No | GitHub Pages build and `gh-pages` branch publish | No |
 | `cd-release.yml` | No | No | Yes; requires `release_reviewed=true` and defaults to draft release | No tag-push auto publish |
 
 ## KOB Reference Alignment

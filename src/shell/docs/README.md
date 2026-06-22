@@ -49,4 +49,4 @@ _site/
 ./src/shell/docs/build-and-deploy.sh --ci "$(pwd)"
 ```
 
-In CI mode, the workflow pre-checks out Quartz and the current repository, then uploads `_site/build/public` as the Pages artifact.
+In CI mode, the workflow pre-checks out Quartz and the current repository, then publishes `_site/build/public` to the configured `gh-pages` branch.

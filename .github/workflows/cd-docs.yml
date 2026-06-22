@@ -12,10 +12,7 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  contents: read
-  actions: read
-  pages: write
-  id-token: write
+  contents: write
 
 concurrency:
   group: "pages"
@@ -59,9 +56,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y doxygen graphviz
 
-      - name: Configure GitHub Pages
-        uses: actions/configure-pages@v5
-
       # ─────────────────────────────────────────────────────────────────────────
       # Build docs site
       # ─────────────────────────────────────────────────────────────────────────
@@ -73,18 +67,13 @@ jobs:
           chmod +x src/shell/docs/build-and-deploy.sh
           src/shell/docs/build-and-deploy.sh --ci "$PWD"
 
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: _site/build/public
-
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Publish GitHub Pages branch
+        env:
+          KANO_GITHUB_PAGES_REPO_URL: https://github.com/${{ github.repository }}.git
+          KANO_GITHUB_PAGES_REPO_USER: x-access-token
+          KANO_GITHUB_PAGES_REPO_TOKEN: ${{ github.token }}
+          KANO_GITHUB_PAGES_BRANCH: gh-pages
+          KANO_PROJECT_NAME: kano-git-master-skill
+          KANO_RELEASE_TAG: ${{ github.ref_name }}
+          KANO_GITHUB_PAGES_COMMIT_MESSAGE: Publish kano-git-master-skill docs from ${{ github.sha }}
+        run: bash src/shell/docs/06-publish-github-pages.sh "$PWD/_site/build/public"
