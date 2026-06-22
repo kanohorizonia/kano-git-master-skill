@@ -23,7 +23,7 @@ This creates a local workspace under `_site/` and writes the built site to `_sit
 ```text
 _site/
 ├── src/
-│   ├── raw_skillrepo/        # primary documentation source checkout
+│   ├── raw/                  # primary documentation source checkout or CI symlink
 │   └── quartz/               # Quartz engine checkout
 ├── build/
 │   ├── content_quartz/

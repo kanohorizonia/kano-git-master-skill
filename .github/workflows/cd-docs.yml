@@ -25,10 +25,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout skill repo (raw_skillrepo)
+      - name: Checkout skill repo
         uses: actions/checkout@v4
-        with:
-          path: _site/src/raw_skillrepo
 
       - name: Read docs build configuration
         id: config
@@ -37,7 +35,7 @@ jobs:
           python - <<'PY' >> "$GITHUB_OUTPUT"
           import json
           from pathlib import Path
-          config = json.loads(Path('_site/src/raw_skillrepo/src/shell/docs/config/build.json').read_text(encoding='utf-8'))
+          config = json.loads(Path('src/shell/docs/config/build.json').read_text(encoding='utf-8'))
           print(f"quartz_version={config['quartz']['version']}")
           print(f"node_version={config['build']['node_version']}")
           PY
@@ -70,8 +68,10 @@ jobs:
       - name: Build docs site
         shell: bash
         run: |
-          chmod +x _site/src/raw_skillrepo/src/shell/docs/build-and-deploy.sh
-          _site/src/raw_skillrepo/src/shell/docs/build-and-deploy.sh --ci "$PWD"
+          mkdir -p _site/src
+          ln -sfn "$PWD" _site/src/raw
+          chmod +x src/shell/docs/build-and-deploy.sh
+          src/shell/docs/build-and-deploy.sh --ci "$PWD"
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
