@@ -89,6 +89,7 @@ Start here when updating docs, writing agent prompts, or validating a release:
 - [Current Command Surface](./docs/guides/current-command-surface.md)
 - [KCC Commit Message Policy](./docs/guides/kcc-commit-message-policy.md)
 - [Public Artifact Contract](./docs/guides/public-artifact-contract.md)
+- [CI/CD Trigger Policy](./docs/status/ci-cd-trigger-policy.md)
 - [Documentation Index](./docs/README.md)
 - [CPA Commit Plan Workflow](./docs/guides/cpa-commit-plan-workflow.md)
 - [Repo Hygiene](./docs/repo-hygiene.md)

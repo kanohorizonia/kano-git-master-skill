@@ -57,6 +57,7 @@ jobs:
   # Native Build Jobs (existing)
   # ─────────────────────────────────────────────────────────────────────────────
   build-native:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     needs: quality-gate
     strategy:
       fail-fast: false
@@ -147,6 +148,7 @@ jobs:
   # Coverage Build Jobs (new)
   # ─────────────────────────────────────────────────────────────────────────────
   build-coverage:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     needs: quality-gate
     strategy:
       fail-fast: false
@@ -364,6 +366,7 @@ jobs:
           compression-level: 0
 
   build-windows-msi:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: windows-latest
     needs: build-native
     steps:

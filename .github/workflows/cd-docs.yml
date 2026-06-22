@@ -9,9 +9,6 @@ on:
       - "src/shell/docs/**"
       - "scripts/docs/**"
       - ".github/workflows/cd-docs.yml"
-  workflow_run:
-    workflows: ["CI Build"]
-    types: [completed]
   workflow_dispatch: {}
 
 permissions:
@@ -68,34 +65,6 @@ jobs:
         uses: actions/configure-pages@v5
 
       # ─────────────────────────────────────────────────────────────────────────
-      # Download artifacts from CI Build workflow
-      # ─────────────────────────────────────────────────────────────────────────
-      - name: Download CI Build artifacts
-        if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          mkdir -p _site/src/artifacts _site/src/raw_coverage _site/src/raw_test
-          gh run download "${{ github.event.workflow_run.id }}" -R "${{ github.repository }}" -D _site/src/artifacts
-          find _site/src/artifacts -type f -name 'coverage-reports*.tar.gz' -print0 | while IFS= read -r -d '' file; do
-            tar -xzf "$file" -C _site/src/raw_coverage
-          done
-          find _site/src/artifacts -type f -name 'test-reports*.tar.gz' -print0 | while IFS= read -r -d '' file; do
-            tar -xzf "$file" -C _site/src/raw_test
-          done
-
-      - name: List downloaded artifacts
-        if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
-        shell: bash
-        run: |
-          echo "Coverage artifacts:"
-          ls -la _site/src/raw_coverage/ 2>/dev/null || echo "(none)"
-          echo ""
-          echo "Test artifacts:"
-          ls -la _site/src/raw_test/ 2>/dev/null || echo "(none)"
-
-      # ─────────────────────────────────────────────────────────────────────────
       # Build docs site
       # ─────────────────────────────────────────────────────────────────────────
       - name: Build docs site
@@ -103,44 +72,6 @@ jobs:
         run: |
           chmod +x _site/src/raw_skillrepo/src/shell/docs/build-and-deploy.sh
           _site/src/raw_skillrepo/src/shell/docs/build-and-deploy.sh --ci "$PWD"
-
-      # ─────────────────────────────────────────────────────────────────────────
-      # Copy coverage into public output
-      # ─────────────────────────────────────────────────────────────────────────
-      - name: Stage coverage report in output
-        if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
-        shell: bash
-        run: |
-          COVERAGE_SRC="_site/src/raw_coverage"
-          COVERAGE_DST="_site/build/public/coverage"
-          if [[ -d "$COVERAGE_SRC" ]] && [[ -n "$(ls -A "$COVERAGE_SRC" 2>/dev/null)" ]]; then
-            echo "Copying coverage reports to output..."
-            mkdir -p "$COVERAGE_DST"
-            cp -r "$COVERAGE_SRC"/* "$COVERAGE_DST/"
-            echo "Coverage staged at: $COVERAGE_DST"
-            ls -la "$COVERAGE_DST/"
-          else
-            echo "No coverage artifacts to stage (CI Build may not have produced any)"
-          fi
-
-      # ─────────────────────────────────────────────────────────────────────────
-      # Copy test reports into public output
-      # ─────────────────────────────────────────────────────────────────────────
-      - name: Stage test report in output
-        if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
-        shell: bash
-        run: |
-          TEST_SRC="_site/src/raw_test"
-          TEST_DST="_site/build/public/test"
-          if [[ -d "$TEST_SRC" ]] && [[ -n "$(ls -A "$TEST_SRC" 2>/dev/null)" ]]; then
-            echo "Copying test reports to output..."
-            mkdir -p "$TEST_DST"
-            cp -r "$TEST_SRC"/* "$TEST_DST/"
-            echo "Test reports staged at: $TEST_DST"
-            ls -la "$TEST_DST/"
-          else
-            echo "No test artifacts to stage (CI Build may not have produced any)"
-          fi
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

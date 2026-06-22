@@ -24,8 +24,6 @@ This creates a local workspace under `_site/` and writes the built site to `_sit
 _site/
 ├── src/
 │   ├── raw_skillrepo/        # primary documentation source checkout
-│   ├── raw_test/             # test reports from CI artifacts (CI mode)
-│   ├── raw_coverage/         # coverage reports from CI artifacts (CI mode)
 │   └── quartz/               # Quartz engine checkout
 ├── build/
 │   ├── content_quartz/

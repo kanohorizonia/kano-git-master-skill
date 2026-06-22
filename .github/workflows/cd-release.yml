@@ -1,21 +1,28 @@
 name: CD Release
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
       tag_name:
         description: "Tag name to release (for manual runs)"
         required: true
         type: string
+      release_reviewed:
+        description: "Confirm Jenkins release evidence, artifacts, docs, and tag were reviewed."
+        required: true
+        default: false
+        type: boolean
+      draft_release:
+        description: "Create the GitHub Release as a draft for final human review."
+        required: true
+        default: true
+        type: boolean
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name || github.ref_name }}
+  group: release-${{ inputs.tag_name }}
   cancel-in-progress: false
 
 jobs:
@@ -25,13 +32,21 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name || github.ref }}
+          ref: ${{ inputs.tag_name }}
 
       - name: Verify tag matches VERSION
         shell: bash
         run: |
-          TAG_NAME="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name || github.ref_name }}"
+          TAG_NAME="${{ inputs.tag_name }}"
           bash ./src/shell/release/00-verify-release-version.sh "$PWD" "$TAG_NAME"
+
+      - name: Verify reviewed release evidence
+        shell: bash
+        run: |
+          if [[ "${{ inputs.release_reviewed }}" != "true" ]]; then
+            echo "release_reviewed must be true after Jenkins release evidence and artifacts are reviewed." >&2
+            exit 2
+          fi
 
   build-release-assets:
     needs: verify-release-version
@@ -71,7 +86,7 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name || github.ref }}
+          ref: ${{ inputs.tag_name }}
           submodules: recursive
 
       - name: Setup .NET SDK
@@ -122,7 +137,7 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name || github.ref }}
+          ref: ${{ inputs.tag_name }}
           submodules: recursive
 
       - name: Setup Python
@@ -154,7 +169,7 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name || github.ref }}
+          ref: ${{ inputs.tag_name }}
 
       - name: Download all release artifacts
         uses: actions/download-artifact@v4
@@ -165,7 +180,7 @@ jobs:
         id: notes
         shell: bash
         run: |
-          TAG_NAME="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name || github.ref_name }}"
+          TAG_NAME="${{ inputs.tag_name }}"
           NOTES_FILE="release-notes.md"
           bash ./src/shell/release/01-generate-release-notes.sh "$PWD" "$TAG_NAME" "${{ github.repository }}" "$PWD/dist" "$NOTES_FILE"
           echo "notes_file=$NOTES_FILE" >> "$GITHUB_OUTPUT"
@@ -173,10 +188,10 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name || github.ref_name }}
+          tag_name: ${{ inputs.tag_name }}
           body_path: ${{ steps.notes.outputs.notes_file }}
           files: dist/**/*
-          draft: false
+          draft: ${{ inputs.draft_release }}
           prerelease: false
 
   publish-winget-skeleton:
@@ -186,7 +201,7 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name || github.ref }}
+          ref: ${{ inputs.tag_name }}
 
       - name: Download all release artifacts
         uses: actions/download-artifact@v4
@@ -195,7 +210,7 @@ jobs:
 
       - name: Placeholder winget publishing step
         run: |
-          TAG_NAME="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name || github.ref_name }}"
+          TAG_NAME="${{ inputs.tag_name }}"
           mkdir -p out/winget
           bash ./src/shell/release/02-generate-winget-skeleton.sh "$PWD" "$TAG_NAME" "${{ github.repository }}" "$PWD/dist" "$PWD/out/winget"
 
@@ -213,7 +228,7 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name || github.ref }}
+          ref: ${{ inputs.tag_name }}
 
       - name: Download all release artifacts
         uses: actions/download-artifact@v4
@@ -222,7 +237,7 @@ jobs:
 
       - name: Placeholder Homebrew publishing step
         run: |
-          TAG_NAME="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag_name || github.ref_name }}"
+          TAG_NAME="${{ inputs.tag_name }}"
           mkdir -p out/homebrew
           bash ./src/shell/release/03-generate-homebrew-skeleton.sh "$PWD" "$TAG_NAME" "${{ github.repository }}" "$PWD/dist" "$PWD/out/homebrew"
 
