@@ -62,19 +62,21 @@ happened.
 
 ## Quick Start
 
-Use the repo-local launcher first. It works before the native binary is built and
-prints the current launcher-level command surface.
+Use the `kog` entry point first. In a source checkout it is backed by the
+tracked launcher before the native binary is built, and it prints the current
+launcher-level command surface.
 
 ```bash
-./scripts/kog --help
-./scripts/kog status
-./scripts/kog overview
+kog --help
+kog status
+kog overview
 ```
 
 Build the native CLI when you need the full command surface:
 
 ```bash
-./scripts/kog self build
+kog self build
+kog self rebuild
 ```
 
 The normal developer build may fetch C++ dependencies from GitHub through CMake
@@ -95,31 +97,31 @@ Common commands:
 
 ```bash
 # Help / discovery
-./scripts/kog --help
-./scripts/kog status
-./scripts/kog overview
-./scripts/kog discover
-./scripts/kog fetch
-./scripts/kog log --remote-count 3
+kog --help
+kog status
+kog overview
+kog discover
+kog fetch
+kog log --remote-count 3
 
 # Commit / plan flows
-./scripts/kog plan new
-./scripts/kog plan runbook commit
-./scripts/kog commit -m "chore: update workspace"
-./scripts/kog commit-push -m "chore: update workspace"
-./scripts/kog cpa
+kog plan new
+kog plan runbook commit
+kog commit -m "chore: update workspace"
+kog commit-push -m "chore: update workspace"
+kog cpa
 
 # Hygiene / export
-./scripts/kog repo-hygiene check
-./scripts/kog repo-hygiene fix
-./scripts/kog export --help
-./scripts/kog export --single
-./scripts/kog export --single --include-subrepos
-./scripts/kog export --subtree "/path/to/repo/Engine/Source/Programs/UnrealGameSync" --name UnrealGameSync --source head
-./scripts/kog export --subtree Engine/Source/Programs/UnrealGameSync --source working-tree
-./scripts/kog export upload doctor
-./scripts/kog export upload --last
-./scripts/kog export upload --last --target drive_sync --layout Kano/kog --copy-manifest --copy-sha256
+kog repo-hygiene check
+kog repo-hygiene fix
+kog export --help
+kog export --single
+kog export --single --include-subrepos
+kog export --subtree "/path/to/repo/Engine/Source/Programs/UnrealGameSync" --name UnrealGameSync --source head
+kog export --subtree Engine/Source/Programs/UnrealGameSync --source working-tree
+kog export upload doctor
+kog export upload --last
+kog export upload --last --target drive_sync --layout Kano/kog --copy-manifest --copy-sha256
 ```
 
 Unknown top-level commands now print git-style guidance and suggest the most similar public command names.
@@ -172,15 +174,16 @@ return_url = true
 - Bash completion is installed through the native command surface:
 
 ```bash
-./scripts/kog completion install bash
+kog completion install bash
 ```
 
 ## Build and Test
 
-Preferred local quality gate before committing:
+Preferred local validation before committing:
 
 ```bash
-src/shell/test/pre-commit-quality-gate.sh
+pixi run quick-test
+pixi run test
 ```
 
 Enable the tracked Git hook when working on this repository:
@@ -192,37 +195,43 @@ git config core.hooksPath .githooks
 Preferred native build:
 
 ```bash
-./scripts/kog self build
+kog self build
+kog self rebuild
 ```
 
-Offline archive smoke test:
+Report and coverage lanes:
 
 ```bash
-src/shell/test/smoke-release-archive.sh <archive.tar>
+pixi run test-report
+pixi run coverage-all
+pixi run gather-reports
 ```
 
-Online build smoke test:
+Linux CI/export lanes:
 
 ```bash
-src/shell/test/smoke-release-online-build.sh <archive.tar>
+pixi run ci-linux-quick-test
+pixi run ci-linux-test-report
+pixi run ci-linux-coverage-all
+pixi run ci-linux-export
 ```
 
-Single-file release export automatically runs the offline archive smoke test
-when the smoke script is present:
+Single-file release export automatically runs release archive validation when
+validation support is present:
 
 ```bash
-./scripts/kog export --single
-./scripts/kog export --single --validate-release-archive
+kog export --single
+kog export --single --validate-release-archive
 
 # pointer-only (default) vs expanded subrepo export
 # pointer-only: root archive + subrepo pointers in manifest
-./scripts/kog export --single
+kog export --single
 
 # expanded: include subrepo working-tree files in root archive
-./scripts/kog export --single --include-subrepos
+kog export --single --include-subrepos
 
 # expanded + tolerate missing subrepos (records failure in manifest)
-./scripts/kog export --single --include-subrepos --allow-missing-subrepos
+kog export --single --include-subrepos --allow-missing-subrepos
 ```
 
 To debug shared-library failures in `kano-jenkins-skill` (for example
