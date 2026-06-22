@@ -1,9 +1,18 @@
-$testRoot = "D:\_work\_Kano\kano-benchmark-env\benchmark-root"
-$cppBin = "D:\_work\_Kano\kano-git-master-skill\src\cpp\build\bin\windows-ninja-msvc\release\kano-git.exe"
-$shellRoot = "D:\_work\_Kano\kano-git-master-skill\src\shell"
+param(
+    [Parameter(Mandatory = $true)]
+    [string]$TestRoot,
+
+    [string]$RepoRoot = $PSScriptRoot,
+
+    [string]$CppBin = (Join-Path $PSScriptRoot 'src\cpp\build\bin\windows-ninja-msvc\release\kano-git.exe'),
+
+    [string]$OutputPath = (Join-Path $PSScriptRoot 'bench_results.csv')
+)
+
+$shellRoot = Join-Path $RepoRoot 'src\shell'
 
 # Ensure we are in the test root
-cd $testRoot
+Set-Location $TestRoot
 
 function Run-Bench($label, $cmd) {
     Write-Host "Benchmarking $label..."
@@ -32,5 +41,5 @@ $summary += Run-Bench "C++ Foreach" { & $cppBin workspace foreach "git rev-parse
 $summary += Run-Bench "Shell Foreach" { bash "$shellRoot/workspace/foreach-repo.sh" "git rev-parse HEAD" }
 $summary += Run-Bench "Git Submodule Foreach" { git submodule foreach --recursive "git rev-parse HEAD" }
 
-$summary | Export-Csv -Path "D:\_work\_Kano\kano-git-master-skill\bench_results.csv" -NoTypeInformation
-Write-Host "Benchmark completed. Results saved to bench_results.csv"
+$summary | Export-Csv -Path $OutputPath -NoTypeInformation
+Write-Host "Benchmark completed. Results saved to $OutputPath"

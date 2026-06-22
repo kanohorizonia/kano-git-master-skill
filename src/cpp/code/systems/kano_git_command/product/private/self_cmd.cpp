@@ -39,7 +39,7 @@ namespace {
 // Path: ~/.kano/git/kog-install-state.json (or $KANO_GIT_INSTALL_MARKER)
 // Schema:
 // {
-//   "version": "0.1.0-beta",
+//   "version": "0.0.1",
 //   "bin_path": "/path/to/kano-git",
 //   "repo_path": "/path/to/kano-git-master-skill",
 //   "installed_at": "2026-03-17T10:30:00Z",

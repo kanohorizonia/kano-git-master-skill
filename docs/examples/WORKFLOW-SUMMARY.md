@@ -87,12 +87,12 @@ This document summarizes the implementation of the repository initialization wor
 
 ```bash
 ./scripts/core/init-kano-repo.sh \
-  --repo-ssh git@github.com:dorgonman/kano-agent-skill.git \
-  --repo-https https://github.com/dorgonman/kano-agent-skill.git \
+  --repo-ssh git@github.com:example-org/kano-agent-skill.git \
+  --repo-https https://github.com/example-org/kano-agent-skill.git \
   --repo-dir skills/kano \
   --tooling-branch dev/tooling \
-  --skill "git@github.com:dorgonman/kano-filesystem-safe-ops-skill.git:https://github.com/dorgonman/kano-filesystem-safe-ops-skill.git:skills/kano-filesystem-safe-ops-skill" \
-  --skill "git@github.com:dorgonman/kano-agent-backlog-skill.git:https://github.com/dorgonman/kano-agent-backlog-skill.git:skills/kano-agent-backlog-skill"
+  --skill "git@github.com:example-org/kano-filesystem-safe-ops-skill.git:https://github.com/example-org/kano-filesystem-safe-ops-skill.git:skills/kano-filesystem-safe-ops-skill" \
+  --skill "git@github.com:example-org/kano-agent-backlog-skill.git:https://github.com/example-org/kano-agent-backlog-skill.git:skills/kano-agent-backlog-skill"
 ```
 
 ### Configure Root Repo Multi-Remote

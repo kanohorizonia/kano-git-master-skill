@@ -1,6 +1,6 @@
 {
   "name": "kano-git",
-  "version-string": "0.1.0-beta",
+  "version-string": "0.0.1",
   "description": "Kano Git Master — AI-powered Git CLI tools",
   "dependencies": [
     "cli11",

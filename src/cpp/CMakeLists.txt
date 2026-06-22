@@ -331,7 +331,7 @@ endfunction()
 # ---------------------------------------------------------------------------
 # Helper: compute revision-aware version
 #
-# Input:  base_version (e.g. "0.1.0-beta"), revision (e.g. "423")
+# Input:  base_version (e.g. "0.0.1"), revision (e.g. "423")
 # Output: e.g. "0.1.0.423-beta"
 #
 # Rules:
@@ -510,7 +510,7 @@ if(KOG_BUILD_CONFIGURATION_STR STREQUAL "")
 endif()
 
 # ---------------------------------------------------------------------------
-# 10. Revision-aware build version: e.g. "0.1.0-beta" + rev "423" -> "0.1.0.423-beta"
+# 10. Revision-aware build version: e.g. "0.0.1" + rev "423" -> "0.0.1.423"
 # ---------------------------------------------------------------------------
 kog_compute_revision_version("${KOG_VERSION_STR}" "${KOG_BUILD_REVISION_STR}" KOG_BUILD_VERSION_STR)
 

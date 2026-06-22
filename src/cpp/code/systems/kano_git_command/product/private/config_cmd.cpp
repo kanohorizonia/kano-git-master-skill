@@ -217,7 +217,7 @@ void RegisterConfig(CLI::App& InApp) {
                               << "  [export.upload.targets.drive_sync]\n"
                               << "  type = \"local-sync-folder\"\n"
                               << "  # Existing Google Drive/Desktop sync root; kog creates only layout subdirs below it.\n"
-                              << "  path = \"E:/_gamedev/ChatGPT_Export\"\n"
+                              << "  path = \"/path/to/sync/root\"\n"
                               << "  layout = \"Kano/kog\"\n"
                               << "  copy_manifest = true\n"
                               << "  copy_sha256 = true\n"

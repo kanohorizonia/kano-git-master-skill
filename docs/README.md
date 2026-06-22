@@ -1,8 +1,8 @@
 # Git Master Skill Documentation
 
-**Version**: 0.1.0-beta  
-**Status**: Beta Release  
-**Current command contract updated**: 2026-05-16
+**Version**: 0.0.1
+**Status**: Alpha Release
+**Current command contract updated**: 2026-06-22
 
 This documentation set contains both current native-CLI docs and older historical
 notes. Use the current command contract first. Older shell workflow examples are

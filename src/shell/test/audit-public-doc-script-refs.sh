@@ -45,7 +45,7 @@ for file in "${strict_files[@]}"; do
   line_no=0
   while IFS= read -r line || [[ -n "$line" ]]; do
     line_no=$((line_no + 1))
-    lower_line="$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]')"
+    lower_line="${line,,}"
     if [[ "$lower_line" =~ $allowed_context_re ]]; then
       continue
     fi

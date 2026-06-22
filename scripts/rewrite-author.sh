@@ -12,8 +12,8 @@
 # If --recursive, also walks into submodules (post-order).
 #
 # OPTIONS:
-#   -n, --target-name=NAME       Target author/committer name (default: dorgon.chang)
-#   -e, --target-email=EMAIL     Target email (default: dorgonman@hotmail.com)
+#   -n, --target-name=NAME       Target author/committer name (required)
+#   -e, --target-email=EMAIL     Target email (required)
 #   -b, --branch=BRANCH          Branch to rewrite (default: main)
 #   -m, --mode=MODE              target-only (default) | all-to-target
 #                                 target-only  : only rewrite commits whose author/committer
@@ -31,7 +31,7 @@
 #
 # EXAMPLES:
 #   # Dry run on current repo (superproject) only
-#   rewrite-author.sh --dry-run
+#   rewrite-author.sh --target-name="Example Author" --target-email=author@example.com --dry-run
 #
 #   # Dry run on superproject + all submodules
 #   rewrite-author.sh --recursive --dry-run
@@ -66,8 +66,8 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Defaults
 # ---------------------------------------------------------------------------
-TARGET_NAME="dorgon.chang"
-TARGET_EMAIL="dorgonman@hotmail.com"
+TARGET_NAME=""
+TARGET_EMAIL=""
 BRANCH="main"
 MODE="target-only"
 RECURSIVE=false
@@ -130,7 +130,7 @@ parse_args() {
     fi
 
     if [ -z "$TARGET_NAME" ] || [ -z "$TARGET_EMAIL" ]; then
-        err "Target name and email must be non-empty"
+        err "--target-name and --target-email are required"
         exit 1
     fi
 

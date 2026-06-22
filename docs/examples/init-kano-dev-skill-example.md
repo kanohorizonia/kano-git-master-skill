@@ -21,11 +21,11 @@ The tooling branch will be automatically named `dev/kano-agent-skill-tooling`.
 
 ```bash
 ./scripts/internal/init-kano-dev-skill.sh \
-  --repo-ssh git@github.com:dorgonman/kano-agent-skill.git \
-  --repo-https https://github.com/dorgonman/kano-agent-skill.git \
+  --repo-ssh git@github.com:example-org/kano-agent-skill.git \
+  --repo-https https://github.com/example-org/kano-agent-skill.git \
   --repo-dir skills/kano \
-  --skill "git@github.com:dorgonman/kano-filesystem-safe-ops-skill.git:https://github.com/dorgonman/kano-filesystem-safe-ops-skill.git:skills/kano-filesystem-safe-ops-skill" \
-  --skill "git@github.com:dorgonman/kano-agent-backlog-skill.git:https://github.com/dorgonman/kano-agent-backlog-skill.git:skills/kano-agent-backlog-skill"
+  --skill "git@github.com:example-org/kano-filesystem-safe-ops-skill.git:https://github.com/example-org/kano-filesystem-safe-ops-skill.git:skills/kano-filesystem-safe-ops-skill" \
+  --skill "git@github.com:example-org/kano-agent-backlog-skill.git:https://github.com/example-org/kano-agent-backlog-skill.git:skills/kano-agent-backlog-skill"
 ```
 
 **What this does:**
@@ -43,11 +43,11 @@ If you want to use a different tooling branch name:
 
 ```bash
 ./scripts/internal/init-kano-dev-skill.sh \
-  --repo-ssh git@github.com:dorgonman/kano-agent-skill.git \
-  --repo-https https://github.com/dorgonman/kano-agent-skill.git \
+  --repo-ssh git@github.com:example-org/kano-agent-skill.git \
+  --repo-https https://github.com/example-org/kano-agent-skill.git \
   --repo-dir skills/kano \
   --tooling-branch dev/my-custom-tooling \
-  --skill "git@github.com:dorgonman/kano-filesystem-safe-ops-skill.git:https://github.com/dorgonman/kano-filesystem-safe-ops-skill.git:skills/kano-filesystem-safe-ops-skill"
+  --skill "git@github.com:example-org/kano-filesystem-safe-ops-skill.git:https://github.com/example-org/kano-filesystem-safe-ops-skill.git:skills/kano-filesystem-safe-ops-skill"
 ```
 
 Add an upstream remote for fork workflow:
@@ -56,10 +56,10 @@ Add an upstream remote for fork workflow:
 ./scripts/internal/init-kano-dev-skill.sh \
   --repo-ssh git@github.com:myuser/kano-agent-skill.git \
   --repo-https https://github.com/myuser/kano-agent-skill.git \
-  --upstream-ssh git@github.com:dorgonman/kano-agent-skill.git \
-  --upstream-https https://github.com/dorgonman/kano-agent-skill.git \
+  --upstream-ssh git@github.com:example-org/kano-agent-skill.git \
+  --upstream-https https://github.com/example-org/kano-agent-skill.git \
   --repo-dir skills/kano \
-  --skill "git@github.com:dorgonman/kano-filesystem-safe-ops-skill.git:https://github.com/dorgonman/kano-filesystem-safe-ops-skill.git:skills/kano-filesystem-safe-ops-skill"
+  --skill "git@github.com:example-org/kano-filesystem-safe-ops-skill.git:https://github.com/example-org/kano-filesystem-safe-ops-skill.git:skills/kano-filesystem-safe-ops-skill"
 ```
 
 ### Example 3: With Upstream Remote
@@ -70,10 +70,10 @@ Add an upstream remote for fork workflow:
 ./scripts/internal/init-kano-dev-skill.sh \
   --repo-ssh git@github.com:myuser/kano-agent-skill.git \
   --repo-https https://github.com/myuser/kano-agent-skill.git \
-  --upstream-ssh git@github.com:dorgonman/kano-agent-skill.git \
-  --upstream-https https://github.com/dorgonman/kano-agent-skill.git \
+  --upstream-ssh git@github.com:example-org/kano-agent-skill.git \
+  --upstream-https https://github.com/example-org/kano-agent-skill.git \
   --repo-dir skills/kano \
-  --skill "git@github.com:dorgonman/kano-filesystem-safe-ops-skill.git:https://github.com/dorgonman/kano-filesystem-safe-ops-skill.git:skills/kano-filesystem-safe-ops-skill"
+  --skill "git@github.com:example-org/kano-filesystem-safe-ops-skill.git:https://github.com/example-org/kano-filesystem-safe-ops-skill.git:skills/kano-filesystem-safe-ops-skill"
 ```
 
 Note: Tooling branch will be `dev/kano-agent-skill-tooling` (derived from repo name).
@@ -84,8 +84,8 @@ Preview what would be done without making changes:
 
 ```bash
 ./scripts/internal/init-kano-dev-skill.sh \
-  --repo-ssh git@github.com:dorgonman/kano-agent-skill.git \
-  --repo-https https://github.com/dorgonman/kano-agent-skill.git \
+  --repo-ssh git@github.com:example-org/kano-agent-skill.git \
+  --repo-https https://github.com/example-org/kano-agent-skill.git \
   --repo-dir skills/kano \
   --dry-run
 ```
@@ -96,8 +96,8 @@ Preview what would be done without making changes:
 
 ```bash
 ./scripts/internal/init-kano-dev-skill.sh \
-  --repo-ssh git@github.com:dorgonman/kano-agent-skill.git \
-  --repo-https https://github.com/dorgonman/kano-agent-skill.git \
+  --repo-ssh git@github.com:example-org/kano-agent-skill.git \
+  --repo-https https://github.com/example-org/kano-agent-skill.git \
   --repo-dir skills/kano \
   --dry-run
 ```
@@ -110,8 +110,8 @@ Skip main branch initialization (if you want to handle it manually):
 
 ```bash
 ./scripts/internal/init-kano-dev-skill.sh \
-  --repo-ssh git@github.com:dorgonman/kano-agent-skill.git \
-  --repo-https https://github.com/dorgonman/kano-agent-skill.git \
+  --repo-ssh git@github.com:example-org/kano-agent-skill.git \
+  --repo-https https://github.com/example-org/kano-agent-skill.git \
   --repo-dir skills/kano \
   --skip-main-init
 ```
@@ -120,8 +120,8 @@ Skip tooling branch creation:
 
 ```bash
 ./scripts/internal/init-kano-dev-skill.sh \
-  --repo-ssh git@github.com:dorgonman/kano-agent-skill.git \
-  --repo-https https://github.com/dorgonman/kano-agent-skill.git \
+  --repo-ssh git@github.com:example-org/kano-agent-skill.git \
+  --repo-https https://github.com/example-org/kano-agent-skill.git \
   --repo-dir skills/kano \
   --skip-tooling
 ```
@@ -130,8 +130,8 @@ Skip skill addition:
 
 ```bash
 ./scripts/internal/init-kano-dev-skill.sh \
-  --repo-ssh git@github.com:dorgonman/kano-agent-skill.git \
-  --repo-https https://github.com/dorgonman/kano-agent-skill.git \
+  --repo-ssh git@github.com:example-org/kano-agent-skill.git \
+  --repo-https https://github.com/example-org/kano-agent-skill.git \
   --repo-dir skills/kano \
   --skip-skills
 ```

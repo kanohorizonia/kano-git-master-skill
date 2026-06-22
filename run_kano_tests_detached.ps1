@@ -1,5 +1,5 @@
 $ErrorActionPreference = 'Stop'
-$repo = 'C:\Users\dorgon.chang\.agents\skills\kano\kano-git-master-skill'
+$repo = $PSScriptRoot
 $out = Join-Path $repo 'functional_test_summary.txt'
 $log = Join-Path $repo 'functional_test_log.txt'
 Set-Location $repo

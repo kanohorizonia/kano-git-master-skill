@@ -101,8 +101,8 @@ auto CreateSandboxWorkspace(const std::string& InName) -> SandboxContext {
     std::filesystem::create_directories(base);
     auto root = (base / (InName + "-" + UniqueSuffix())).lexically_normal();
     std::filesystem::create_directories(root);
-    // Canonicalize to resolve Windows short path names (e.g. DORGON~1.CHA ->
-    // dorgon.chang) so that path comparisons against git output (which always
+    // Canonicalize to resolve Windows short path names (for example USERNA~1 ->
+    // username.example) so that path comparisons against git output (which always
     // returns long paths) succeed inside the sandbox.
     std::error_code ec;
     const auto canonical = std::filesystem::canonical(root, ec);

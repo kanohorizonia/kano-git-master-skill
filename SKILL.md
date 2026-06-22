@@ -1,13 +1,13 @@
 ---
 name: kano-git-master-skill
 description: Native-first Git automation toolkit for multi-repository workspaces. Use the kog/kano-git CLI for repo discovery, plan-backed commit flows, repo hygiene, export, and release smoke validation.
-version: 0.1.0-beta
+version: 0.0.1
 ---
 
 # Kano Git Master Skill
 
-**Version**: 0.1.0-beta  
-**Status**: Beta Release
+**Version**: 0.0.1
+**Status**: Alpha Release
 
 This skill is centered on the native `kog` / `kano-git` command surface. Shell
 scripts exist as launchers, build helpers, wrapper generators, compatibility
@@ -84,7 +84,7 @@ for it.
 ./scripts/kog repo-hygiene fix
 ./scripts/kog export --help
 ./scripts/kog export --single
-./scripts/kog export --subtree "E:/_gamedev/KanoTamaoProject/UnrealEngine/Engine/Source/Programs/UnrealGameSync" --name UnrealGameSync --source head
+./scripts/kog export --subtree "/path/to/repo/Engine/Source/Programs/UnrealGameSync" --name UnrealGameSync --source head
 ./scripts/kog export --subtree Engine/Source/Programs/UnrealGameSync --source working-tree
 ./scripts/kog export upload doctor
 ./scripts/kog export upload --last
@@ -101,7 +101,7 @@ Export upload notes:
 - `kog export upload` uploads or copies an existing export archive after `kog export`.
 - Configure targets in `~/.kano/kog_config.toml` and repo `.kano/kog_config.toml`; precedence is user < repo < CLI.
 - Supported live backends are `local-sync-folder` and `rclone`; `gdrive-api` is guidance-only and does not start OAuth.
-- `local-sync-folder` points at an existing sync root such as `E:/_gamedev/ChatGPT_Export`; `layout` is a safe relative path that KOG may create under that root.
+- `local-sync-folder` points at an existing sync root such as `/path/to/sync/root`; `layout` is a safe relative path that KOG may create under that root.
 - The archive is copied always. The original export manifest and `.sha256` sidecar are copied only when `copy_manifest` / `copy_sha256` are enabled by config or CLI flags.
 - `rclone` uses an existing configured remote and never starts Google OAuth from KOG. Private Google Drive URLs are built only from a Drive file ID returned by `rclone lsjson --stat -M`; otherwise the upload manifest records `URL_UNAVAILABLE`.
 - Uploads preserve private/default backend visibility. Public links require explicit CLI confirmation with `--public-link --yes` because `rclone link` may create or retrieve public sharing permissions.
@@ -114,7 +114,7 @@ default_target = "drive_sync"
 
 [export.upload.targets.drive_sync]
 type = "local-sync-folder"
-path = "E:/_gamedev/ChatGPT_Export"
+path = "/path/to/sync/root"
 layout = "Kano/kog"
 copy_manifest = true
 copy_sha256 = true
@@ -272,6 +272,10 @@ Current docs:
 
 Historical docs may preserve old shell workflows. They are useful design context,
 but they are not the current product surface.
+
+## License
+
+MIT License. See `LICENSE` in the source repository.
 
 ## Coverage and PGO guardrails
 

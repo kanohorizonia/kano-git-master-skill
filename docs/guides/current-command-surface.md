@@ -130,7 +130,7 @@ installed version, install timestamp, packaged/developer checkout).
 ./scripts/kog export --help
 ./scripts/kog export --single
 ./scripts/kog export --single --validate-release-archive
-./scripts/kog export --subtree "E:/_gamedev/KanoTamaoProject/UnrealEngine/Engine/Source/Programs/UnrealGameSync" --name UnrealGameSync --source head
+./scripts/kog export --subtree "/path/to/repo/Engine/Source/Programs/UnrealGameSync" --name UnrealGameSync --source head
 ./scripts/kog export upload doctor
 ./scripts/kog export upload --last
 ./scripts/kog export upload --archive .kano/tmp/git/export/<archive>.tar --target drive_sync
@@ -211,7 +211,7 @@ Disable validation explicitly:
 Subtree-style standalone export (strip parent path by default):
 
 ```bash
-./scripts/kog export --subtree "E:/_gamedev/KanoTamaoProject/UnrealEngine/Engine/Source/Programs/UnrealGameSync" --name UnrealGameSync --source head
+./scripts/kog export --subtree "/path/to/repo/Engine/Source/Programs/UnrealGameSync" --name UnrealGameSync --source head
 ./scripts/kog export --subtree Engine/Source/Programs/UnrealGameSync --source working-tree
 ```
 
@@ -250,7 +250,7 @@ default_target = "drive_sync"
 
 [export.upload.targets.drive_sync]
 type = "local-sync-folder"
-path = "E:/_gamedev/ChatGPT_Export"
+path = "/path/to/sync/root"
 layout = "Kano/kog"
 copy_manifest = true
 copy_sha256 = true
@@ -268,7 +268,7 @@ return_url = true
 
 Target behavior:
 - `local-sync-folder` must be an existing sync root, for example a Google
-  Drive/Desktop folder such as `E:/_gamedev/ChatGPT_Export`. KOG creates only
+  Drive/Desktop folder such as `/path/to/sync/root`. KOG creates only
   the safe relative `layout` directories under that root, copies the archive,
   and leaves cloud propagation to the sync client. It never fabricates a cloud
   URL for ChatGPT's Google connector.

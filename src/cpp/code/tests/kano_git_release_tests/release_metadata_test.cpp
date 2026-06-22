@@ -22,7 +22,7 @@ auto LoadDogfoodMetadata() -> release::ReleaseMetadata {
 auto MakeTempInstaller() -> std::filesystem::path {
     const auto root = std::filesystem::temp_directory_path() / "kano_git_release_tests";
     std::filesystem::create_directories(root);
-    const auto path = root / "KanoGit-0.1.0-beta-windows-x64.msi";
+    const auto path = root / "KanoGit-0.0.1-windows-x64.msi";
     std::ofstream out(path, std::ios::out | std::ios::binary | std::ios::trunc);
     out << "fake msi for release metadata tests";
     return path;
@@ -42,8 +42,8 @@ TEST_CASE("dogfood release metadata uses public Kano Git package identity", "[re
 }
 
 TEST_CASE("winget path follows package identifier and version", "[release][winget]") {
-    REQUIRE(release::WingetManifestRelativeDirectory("KanoHorizonia.KanoGit", "0.1.0-beta") ==
-            "manifests/k/KanoHorizonia/KanoGit/0.1.0-beta");
+    REQUIRE(release::WingetManifestRelativeDirectory("KanoHorizonia.KanoGit", "0.0.1") ==
+            "manifests/k/KanoHorizonia/KanoGit/0.0.1");
 }
 
 TEST_CASE("winget generation fails closed when installer is missing", "[release][winget]") {
@@ -53,12 +53,12 @@ TEST_CASE("winget generation fails closed when installer is missing", "[release]
         metadata,
         {},
         "",
-        "https://github.com/kanohorizonia/kano-git-master-skill/releases/download/v0.1.0-beta",
+        "https://github.com/kanohorizonia/kano-git-master-skill/releases/download/v0.0.1",
         {});
 
     REQUIRE(plan.packageIdentifier == "KanoHorizonia.KanoGit");
     REQUIRE(plan.blockedReason == "BLOCKED_INSTALLER_MISSING");
-    REQUIRE(plan.manifestDirectory.generic_string().find("manifests/k/KanoHorizonia/KanoGit/0.1.0-beta") != std::string::npos);
+    REQUIRE(plan.manifestDirectory.generic_string().find("manifests/k/KanoHorizonia/KanoGit/0.0.1") != std::string::npos);
 }
 
 TEST_CASE("winget generation renders version installer and locale manifests", "[release][winget]") {
@@ -69,7 +69,7 @@ TEST_CASE("winget generation renders version installer and locale manifests", "[
         metadata,
         installer,
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "https://github.com/kanohorizonia/kano-git-master-skill/releases/download/v0.1.0-beta",
+        "https://github.com/kanohorizonia/kano-git-master-skill/releases/download/v0.0.1",
         {});
 
     REQUIRE(plan.blockedReason.empty());
@@ -77,7 +77,7 @@ TEST_CASE("winget generation renders version installer and locale manifests", "[
     REQUIRE(plan.manifestFiles.contains("KanoHorizonia.KanoGit.yaml"));
     REQUIRE(plan.manifestFiles.contains("KanoHorizonia.KanoGit.installer.yaml"));
     REQUIRE(plan.manifestFiles.contains("KanoHorizonia.KanoGit.locale.en-US.yaml"));
-    REQUIRE(plan.installerUrl.find("KanoGit-0.1.0-beta-windows-x64.msi") != std::string::npos);
+    REQUIRE(plan.installerUrl.find("KanoGit-0.0.1-windows-x64.msi") != std::string::npos);
 }
 
 TEST_CASE("winget PR plan uses Kano Git public branch title and commit naming", "[release][winget]") {
@@ -85,10 +85,10 @@ TEST_CASE("winget PR plan uses Kano Git public branch title and commit naming", 
 
     const auto plan = release::BuildWingetPrPlan(metadata, "");
 
-    REQUIRE(plan.branchName == "release/kanogit-winget-0.1.0-beta");
-    REQUIRE(plan.packagePath == "manifests/k/KanoHorizonia/KanoGit/0.1.0-beta");
-    REQUIRE(plan.commitMessage == "New version: KanoHorizonia.KanoGit version 0.1.0-beta");
-    REQUIRE(plan.prTitle == "New version: KanoHorizonia.KanoGit version 0.1.0-beta");
+    REQUIRE(plan.branchName == "release/kanogit-winget-0.0.1");
+    REQUIRE(plan.packagePath == "manifests/k/KanoHorizonia/KanoGit/0.0.1");
+    REQUIRE(plan.commitMessage == "New version: KanoHorizonia.KanoGit version 0.0.1");
+    REQUIRE(plan.prTitle == "New version: KanoHorizonia.KanoGit version 0.0.1");
 }
 
 TEST_CASE("skill install plan protects developer namespace by default", "[release][skill]") {
