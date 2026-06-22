@@ -48,6 +48,7 @@ GitHub through CMake FetchContent.
 - [C++ Stage Contract](./design/cpp-stage-contract.md)
 - [C++ Coverage and PGO Provider Model](./cpp-profile-coverage-pgo-model.md)
 - [PGO and Coverage Shared-Infra Tracking](./status/pgo-coverage-shared-infra-tracking.md)
+- [Last-Known-Good Baseline and Regression Bisect Design](./design/last-known-good-regression-bisect.md)
 - [Worktree & Scalar Design](./design/worktree-scalar.md)
 - [Orphan Branch Design](./design/orphan-branch.md)
 
