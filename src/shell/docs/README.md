@@ -8,7 +8,7 @@ The pipeline keeps the source of truth inside this repository:
 
 - `docs/` provides the markdown source content
 - `src/shell/docs/` prepares and builds the static site
-- `.github/workflows/cd-docs.yml` publishes the built site to GitHub Pages
+- `.github/workflows/pages.yml` publishes the built site to GitHub Pages
 
 ## Local usage
 

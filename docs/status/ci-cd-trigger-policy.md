@@ -1,7 +1,7 @@
 # CI/CD Trigger Policy
 
 Date: 2026-06-23
-Backlog item: KG-TSK-0093
+Backlog items: KG-TSK-0093, KG-TSK-0094
 
 ## Policy
 
@@ -13,8 +13,8 @@ publication lanes.
 
 ## Incident Root Cause
 
-GitHub Actions run `27968013586` ran workflow `CI Build` from
-`.github/workflows/ci-build.yml` on event `push` for branch `main`.
+GitHub Actions run `27968013586` ran the legacy CI workflow on event `push` for
+branch `main`.
 
 - Actor: `dorgonman`
 - Commit: `baf614c8f54cbd65f9da154be4ab920a136f82c1`
@@ -29,19 +29,25 @@ The result was a docs-only push starting the full GitHub Actions CI matrix.
 
 | Workflow | Push | Pull request | Workflow dispatch | Release/tag publication |
 | --- | --- | --- | --- | --- |
-| `kano-cloud-build.yml` | No | No | Yes; Jenkins/manual cloud build inputs | No direct publication |
-| `ci-build.yml` | Public-safe `quality-gate` only | Public-safe `quality-gate` only | Full native build, coverage, and MSI lanes | No |
-| `cd-docs.yml` | GitHub Pages build and `gh-pages` branch publish for docs/source-site paths | No | GitHub Pages build and `gh-pages` branch publish | No |
-| `cd-release.yml` | No | No | Yes; requires `release_reviewed=true` and defaults to draft release | No tag-push auto publish |
+| `agent-skill-cloud-build.yml` / `KanoAgentSkills / Cloud Build` | No | No | Yes; Jenkins/manual cloud build inputs | No direct publication |
+| `release-gates.yml` / `KanoAgentSkills / Release Gates` | Public-safe `quality-gate` only | Public-safe `quality-gate` only | Full native build, coverage, and MSI lanes | No |
+| `pages.yml` / `KanoAgentSkills / Publish Pages` | GitHub Pages build and `gh-pages` branch publish for docs/source-site paths | No | GitHub Pages build and `gh-pages` branch publish | No |
+| `publish-release.yml` / `KanoAgentSkills / Publish Release` | No | No | Yes; requires `release_reviewed=true` and defaults to draft release | Reviewed/manual GitHub Release only; no tag-push auto publish |
+| GitHub-native `CodeQL` | Repository security setting, not checked-in KOG workflow YAML | Repository security setting, not checked-in KOG workflow YAML | Security scanning only if enabled in GitHub | Not a release gate |
 
 ## KOB Reference Alignment
 
 `kano-agent-backlog-skill` keeps its full cloud build on
 `agent-skill-cloud-build.yml` as `workflow_dispatch`, with Jenkins-style inputs.
 It allows a limited public release gate on push and pull request, and publishes
-Pages from docs/README changes. Its release channel docs require public release
-assets to match Jenkins `Build_CI` source/version evidence; dry-run publish
-output is only review evidence.
+Pages from docs/README changes. Its checked-in workflow inventory uses
+`KanoAgentSkills / Cloud Build`, `KanoAgentSkills / Publish Pages`, and
+`KanoAgentSkills / Release Gates`.
+
+KOB's visible `CodeQL` entry is treated as GitHub-native code scanning and
+security-alert input. KOG does not add a fake CodeQL workflow to source control;
+if CodeQL is enabled in repository security settings, it remains advisory and is
+not a Jenkins replacement or release gate.
 
 KOG follows the same boundary:
 
