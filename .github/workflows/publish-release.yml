@@ -1,4 +1,6 @@
-name: CD Release
+name: KanoAgentSkills / Publish Release
+
+run-name: ${{ format('Manual_publish-release_{0}_{1}', inputs.tag_name, github.run_number) }}
 
 on:
   workflow_dispatch:
@@ -19,7 +21,7 @@ on:
         type: boolean
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ inputs.tag_name }}
@@ -165,6 +167,8 @@ jobs:
     needs:
       - build-release-assets
       - build-windows-msi
+    permissions:
+      contents: write
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
