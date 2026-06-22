@@ -1,18 +1,71 @@
-# Git Master Skill
+# Kano Git Master (KOG)
 
-**Version**: 0.0.1
-**Status**: Alpha Release
+**Intent-scoped Git automation for AI coding agents in real multi-repository workspaces.**
 
-Advanced Git automation for multi-repository workspaces with a native `kog` /
-`kano-git` command surface.
+KOG helps an agent move from "finish this task" to a reviewable Git outcome
+without guessing which repository owns the change, which files are safe to
+stage, whether subrepos need to move first, or what evidence belongs with the
+commit. It is a native `kog` / `kano-git` CLI for inspecting workspace state,
+building an explicit commit plan, running safety gates, committing, pushing, and
+recording the result.
+
+**Version**: 0.0.1 alpha
+
+**Public status**: source tag `v0.0.1` exists; public Release assets are governed
+by the [Public Artifact Contract](./docs/guides/public-artifact-contract.md).
+No binary or package-manager channel is claimed unless a matching release asset
+and checksum have been verified.
+
+```mermaid
+flowchart LR
+  intent["Agent intent<br/>ticket or scoped task"] --> inspect["Workspace inspection<br/>repos, remotes, dirty state"]
+  inspect --> plan["Commit plan<br/>owned paths and repo order"]
+  plan --> gates["Safety gates<br/>hygiene, locks, drift, archive checks"]
+  gates --> commit["Commit and push<br/>child repos before parent pointers"]
+  commit --> evidence["Evidence<br/>hashes, manifests, release notes"]
+  gates --> nogo["No-go report<br/>exact blockers when unsafe"]
+```
+
+## What KOG Solves
+
+- AI agents often work in workspaces that contain nested repositories,
+  submodules, generated artifacts, and unrelated dirty files.
+- Plain `git add . && git commit` is too broad for item-scoped agent work.
+- Release claims need verifiable tags, manifests, checksums, and smoke evidence,
+  not assumptions based on local files.
+
+KOG gives the agent a narrow Git control plane: discover the repo graph, plan the
+commit, validate safety gates, push in the correct order, and report exactly what
+happened.
+
+## What KOG Is Not
+
+- Not a replacement for Git; it wraps Git with agent-oriented policy and
+  evidence.
+- Not an arbitrary shell runner; command execution stays inside the public KOG
+  command surface.
+- Not a package publisher by itself; package channels and binary downloads are
+  only public when release artifacts prove they exist.
+
+## Safety Model
+
+- Inspect first: repo topology, remotes, branch state, dirty files, and locks.
+- Plan before mutation: owned paths, exact repositories, and commit order are
+  explicit.
+- Keep commits scoped: unrelated dirty files stay out of the staged set.
+- Push child repos before parent gitlinks or superproject pointers.
+- Emit evidence: commit hashes, export manifests, checksums, and no-go blockers
+  are first-class results.
 
 ## Quick Start
 
-Use the repo-local launcher first. It works even before the native binary is
-built and prints the current launcher-level command surface.
+Use the repo-local launcher first. It works before the native binary is built and
+prints the current launcher-level command surface.
 
 ```bash
 ./scripts/kog --help
+./scripts/kog status
+./scripts/kog overview
 ```
 
 Build the native CLI when you need the full command surface:
