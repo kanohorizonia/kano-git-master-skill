@@ -1,0 +1,11 @@
+<map id="kano::git::commands::auto_model_policy::AutoModelPolicy" name="kano::git::commands::auto_model_policy::AutoModelPolicy">
+<area shape="rect" id="Node000001" title=" " alt="" coords="79,271,238,325"/>
+<area shape="rect" id="Node000002" title=" " alt="" coords="5,183,144,208"/>
+<area shape="poly" id="edge1_Node000001_Node000002" title=" " alt="" coords="83,220,94,245,118,269,114,272,90,248,78,223"/>
+<area shape="rect" id="Node000003" title=" " alt="" coords="168,183,355,208"/>
+<area shape="poly" id="edge2_Node000001_Node000003" title=" " alt="" coords="244,220,217,249,191,272,188,268,213,245,240,217"/>
+<area shape="rect" id="Node000004" title=" " alt="" coords="218,95,305,120"/>
+<area shape="poly" id="edge3_Node000003_Node000004" title=" " alt="" coords="264,134,264,182,259,182,259,134"/>
+<area shape="rect" id="Node000005" title=" " alt="" coords="192,5,331,45"/>
+<area shape="poly" id="edge4_Node000004_Node000005" title=" " alt="" coords="264,59,264,94,259,94,259,59"/>
+</map>

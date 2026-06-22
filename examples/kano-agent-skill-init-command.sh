@@ -16,18 +16,18 @@
 set -euo pipefail
 
 # Configuration
-REPO_SSH="git@github.com:dorgonman/kano-agent-skill.git"
-REPO_HTTPS="https://github.com/dorgonman/kano-agent-skill.git"
+REPO_SSH="git@github.com:example-org/kano-agent-skill.git"
+REPO_HTTPS="https://github.com/example-org/kano-agent-skill.git"
 REPO_DIR="skills/kano"
 # TOOLING_BRANCH will be auto-derived as "dev/kano-agent-skill-tooling"
 
 # Skills to add
-SKILL_1_SSH="git@github.com:dorgonman/kano-filesystem-safe-ops-skill.git"
-SKILL_1_HTTPS="https://github.com/dorgonman/kano-filesystem-safe-ops-skill.git"
+SKILL_1_SSH="git@github.com:example-org/kano-filesystem-safe-ops-skill.git"
+SKILL_1_HTTPS="https://github.com/example-org/kano-filesystem-safe-ops-skill.git"
 SKILL_1_PATH="skills/kano-filesystem-safe-ops-skill"
 
-SKILL_2_SSH="git@github.com:dorgonman/kano-agent-backlog-skill.git"
-SKILL_2_HTTPS="https://github.com/dorgonman/kano-agent-backlog-skill.git"
+SKILL_2_SSH="git@github.com:example-org/kano-agent-backlog-skill.git"
+SKILL_2_HTTPS="https://github.com/example-org/kano-agent-backlog-skill.git"
 SKILL_2_PATH="skills/kano-agent-backlog-skill"
 
 # Optional: Upstream remote (uncomment if needed)

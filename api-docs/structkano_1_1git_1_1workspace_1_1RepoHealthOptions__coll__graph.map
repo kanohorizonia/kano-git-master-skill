@@ -1,0 +1,10 @@
+<map id="kano::git::workspace::RepoHealthOptions" name="kano::git::workspace::RepoHealthOptions">
+<area shape="rect" id="Node000001" title=" " alt="" coords="5,285,161,325"/>
+<area shape="rect" id="Node000002" title=" " alt="" coords="40,95,127,120"/>
+<area shape="poly" id="edge1_Node000001_Node000002" title=" " alt="" coords="83,134,78,183,79,238,83,285,78,285,73,239,73,183,77,133"/>
+<area shape="rect" id="Node000004" title=" " alt="" coords="205,183,348,223"/>
+<area shape="poly" id="edge4_Node000004_Node000002" title=" " alt="" coords="121,124,239,180,237,185,118,128"/>
+<area shape="rect" id="Node000003" title=" " alt="" coords="14,5,153,45"/>
+<area shape="poly" id="edge2_Node000002_Node000003" title=" " alt="" coords="86,59,86,94,81,94,81,59"/>
+<area shape="poly" id="edge3_Node000001_Node000004" title=" " alt="" coords="230,231,121,288,118,283,227,227"/>
+</map>

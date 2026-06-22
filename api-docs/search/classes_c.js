@@ -1,4 +1,5 @@
 var searchData=
 [
-  ['tuistate_0',['TuiState',['../structkano_1_1git_1_1commands_1_1_tui_state.html',1,'kano::git::commands']]]
+  ['scopedcommandlogcapture_0',['ScopedCommandLogCapture',['../classkano_1_1git_1_1shell_1_1ScopedCommandLogCapture.html',1,'kano::git::shell']]],
+  ['scopedconsolewritesuppression_1',['ScopedConsoleWriteSuppression',['../classkano_1_1git_1_1shell_1_1ScopedConsoleWriteSuppression.html',1,'kano::git::shell']]]
 ];

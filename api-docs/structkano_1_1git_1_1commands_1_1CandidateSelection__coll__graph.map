@@ -1,0 +1,11 @@
+<map id="kano::git::commands::CandidateSelection" name="kano::git::commands::CandidateSelection">
+<area shape="rect" id="Node000001" title="CandidateSelection manages circular navigation through candidate items." alt="" coords="45,417,204,457"/>
+<area shape="rect" id="Node000002" title=" " alt="" coords="5,315,244,355"/>
+<area shape="poly" id="edge1_Node000001_Node000002" title=" " alt="" coords="127,369,127,417,122,417,122,369"/>
+<area shape="rect" id="Node000003" href="$structkano_1_1git_1_1commands_1_1CandidateItem.html" title="A single autocomplete candidate." alt="" coords="45,212,204,252"/>
+<area shape="poly" id="edge2_Node000002_Node000003" title=" " alt="" coords="127,266,127,315,122,315,122,266"/>
+<area shape="rect" id="Node000004" title=" " alt="" coords="81,95,168,120"/>
+<area shape="poly" id="edge3_Node000003_Node000004" title=" " alt="" coords="127,134,127,212,122,212,122,134"/>
+<area shape="rect" id="Node000005" title=" " alt="" coords="55,5,194,45"/>
+<area shape="poly" id="edge4_Node000004_Node000005" title=" " alt="" coords="127,59,127,94,122,94,122,59"/>
+</map>

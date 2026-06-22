@@ -1,0 +1,25 @@
+<map id="kano::git::workspace::NativeWorkspaceOutput" name="kano::git::workspace::NativeWorkspaceOutput">
+<area shape="rect" id="Node000001" title=" " alt="" coords="1620,164,1808,204"/>
+<area shape="rect" id="Node000002" href="$structkano_1_1git_1_1workspace_1_1DiscoveryResult.html" title=" " alt="" coords="1339,164,1495,204"/>
+<area shape="poly" id="edge1_Node000001_Node000002" title=" " alt="" coords="1509,181,1620,181,1620,187,1509,187"/>
+<area shape="rect" id="Node000003" title=" " alt="" coords="831,232,1049,272"/>
+<area shape="poly" id="edge8_Node000001_Node000003" title=" " alt="" coords="1063,251,1270,247,1387,240,1504,228,1573,216,1638,201,1639,207,1574,221,1504,233,1388,245,1270,252,1063,256"/>
+<area shape="poly" id="edge2_Node000002_Node000003" title=" " alt="" coords="1062,235,1305,204,1338,198,1339,203,1306,209,1063,241"/>
+<area shape="rect" id="Node000004" href="$structkano_1_1git_1_1workspace_1_1RepoRecord.html" title=" " alt="" coords="561,276,717,316"/>
+<area shape="poly" id="edge3_Node000003_Node000004" title=" " alt="" coords="731,280,830,265,831,271,731,285"/>
+<area shape="rect" id="Node000005" title=" " alt="" coords="251,130,338,155"/>
+<area shape="poly" id="edge13_Node000001_Node000005" title=" " alt="" coords="351,132,482,117,638,109,1418,109,1486,114,1552,127,1613,144,1663,161,1662,166,1611,149,1551,133,1485,120,1418,115,638,115,482,123,352,137"/>
+<area shape="poly" id="edge7_Node000002_Node000005" title=" " alt="" coords="352,142,741,157,1339,179,1338,184,741,163,352,148"/>
+<area shape="poly" id="edge4_Node000004_Node000005" title=" " alt="" coords="310,167,327,198,352,233,383,267,421,292,455,304,491,310,561,308,561,314,490,315,454,309,419,297,380,271,348,237,323,201,305,169"/>
+<area shape="rect" id="Node000010" href="$structkano_1_1git_1_1workspace_1_1PlanOperation.html" title=" " alt="" coords="561,9,717,49"/>
+<area shape="poly" id="edge12_Node000010_Node000005" title=" " alt="" coords="337,122,419,91,563,47,564,52,421,96,339,127"/>
+<area shape="rect" id="Node000006" title=" " alt="" coords="5,123,144,163"/>
+<area shape="poly" id="edge5_Node000005_Node000006" title=" " alt="" coords="158,140,251,140,251,145,158,145"/>
+<area shape="rect" id="Node000007" title=" " alt="" coords="193,321,396,361"/>
+<area shape="poly" id="edge6_Node000004_Node000007" title=" " alt="" coords="410,347,473,346,537,337,570,327,601,314,603,318,572,332,538,343,474,351,410,353"/>
+<area shape="rect" id="Node000008" title=" " alt="" coords="1329,300,1504,340"/>
+<area shape="poly" id="edge9_Node000001_Node000008" title=" " alt="" coords="1517,307,1557,298,1595,283,1624,265,1651,244,1694,202,1697,206,1655,248,1627,270,1597,288,1558,303,1518,313"/>
+<area shape="rect" id="Node000009" title=" " alt="" coords="1073,5,1305,45"/>
+<area shape="poly" id="edge10_Node000001_Node000009" title=" " alt="" coords="1319,28,1385,36,1456,48,1528,66,1597,91,1626,106,1653,125,1695,162,1691,166,1649,129,1623,111,1595,96,1526,71,1455,53,1384,41,1319,33"/>
+<area shape="poly" id="edge11_Node000009_Node000010" title=" " alt="" coords="731,26,1073,24,1073,29,731,31"/>
+</map>

@@ -1,0 +1,11 @@
+<map id="kano::git::workspace::RepoOperationAggregate" name="kano::git::workspace::RepoOperationAggregate">
+<area shape="rect" id="Node000001" title=" " alt="" coords="19,549,214,589"/>
+<area shape="rect" id="Node000002" title=" " alt="" coords="5,432,228,487"/>
+<area shape="poly" id="edge1_Node000001_Node000002" title=" " alt="" coords="119,501,119,549,114,549,114,501"/>
+<area shape="rect" id="Node000003" href="$structkano_1_1git_1_1workspace_1_1RepoOperationResult.html" title=" " alt="" coords="33,329,201,369"/>
+<area shape="poly" id="edge2_Node000002_Node000003" title=" " alt="" coords="119,383,119,432,114,432,114,383"/>
+<area shape="rect" id="Node000004" title=" " alt="" coords="73,95,160,120"/>
+<area shape="poly" id="edge3_Node000003_Node000004" title=" " alt="" coords="119,134,119,329,114,329,114,134"/>
+<area shape="rect" id="Node000005" title=" " alt="" coords="47,5,186,45"/>
+<area shape="poly" id="edge4_Node000004_Node000005" title=" " alt="" coords="119,59,119,94,114,94,114,59"/>
+</map>

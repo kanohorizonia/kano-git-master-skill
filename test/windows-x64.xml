@@ -1,8 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<testsuites name="kano_git_tui_tests" tests="107" failures="0" time="0">
-    <testsuite name="windows-ninja-msvc-coverage" tests="107" failures="0">
-        <!-- Note: This is a summary placeholder. JUnit XML was not generated locally. -->
-        <!-- Test run on Windows via local simulation -->
-        <!-- Actual test results: 23044 assertions in 107 test cases - all passed -->
-    </testsuite>
-</testsuites>

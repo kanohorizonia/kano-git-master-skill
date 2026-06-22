@@ -1,0 +1,12 @@
+<map id="kano::git::commands::CommandPaletteState" name="kano::git::commands::CommandPaletteState">
+<area shape="rect" id="Node000001" title="State for command palette mode." alt="" coords="5,432,181,472"/>
+<area shape="rect" id="Node000002" title=" " alt="" coords="110,315,327,355"/>
+<area shape="poly" id="edge1_Node000001_Node000002" title=" " alt="" coords="190,366,116,434,112,430,186,362"/>
+<area shape="rect" id="Node000003" href="$structkano_1_1git_1_1commands_1_1PaletteItem.html" title=" " alt="" coords="118,212,277,252"/>
+<area shape="poly" id="edge2_Node000002_Node000003" title=" " alt="" coords="207,265,217,314,212,315,202,266"/>
+<area shape="rect" id="Node000004" title=" " alt="" coords="50,95,137,120"/>
+<area shape="poly" id="edge5_Node000001_Node000004" title=" " alt="" coords="96,133,96,432,91,432,91,133"/>
+<area shape="poly" id="edge3_Node000003_Node000004" title=" " alt="" coords="114,129,183,210,179,213,110,132"/>
+<area shape="rect" id="Node000005" title=" " alt="" coords="24,5,163,45"/>
+<area shape="poly" id="edge4_Node000004_Node000005" title=" " alt="" coords="96,59,96,94,91,94,91,59"/>
+</map>

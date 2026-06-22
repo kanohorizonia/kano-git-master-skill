@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en"><head><title>cpp-stage-refactor-backlog</title><meta charset="utf-8"/><link rel="preconnect" href="https://fonts.googleapis.com"/><link rel="preconnect" href="https://fonts.gstatic.com"/><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM Plex Mono&amp;family=Schibsted Grotesk:wght@400;700&amp;family=Source Sans Pro:ital,wght@0,400;0,600;1,400;1,600&amp;display=swap"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><meta property="og:title" content="cpp-stage-refactor-backlog"/><meta property="og:description" content="C++ Stage Refactor Backlog Status: draft local issue set — 6/6 complete ✅ Scope: src/cpp/shared/infra + src/cpp/scripts Why this exists GitHub issue creation is blocked in the current ..."/><meta property="og:image" content="https://kanohorizonia.github.io/kano-git-master-skill/static/og-image.png"/><meta property="og:width" content="1200"/><meta property="og:height" content="675"/><link rel="icon" href="../static/icon.png"/><meta name="description" content="C++ Stage Refactor Backlog Status: draft local issue set — 6/6 complete ✅ Scope: src/cpp/shared/infra + src/cpp/scripts Why this exists GitHub issue creation is blocked in the current ..."/><meta name="generator" content="Quartz"/><link href="../index.css" rel="stylesheet" type="text/css" spa-preserve/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css" rel="stylesheet" type="text/css" spa-preserve/><script src="../prescript.js" type="application/javascript" spa-preserve></script><script type="application/javascript" spa-preserve>const fetchData = fetch("../static/contentIndex.json").then(data => data.json())</script></head><body data-slug="status/cpp-stage-refactor-backlog"><div id="quartz-root" class="page"><div id="quartz-body"><div class="left sidebar"><h2 class="page-title"><a href="..">Kano Git Master Skill</a></h2><div class="spacer mobile-only"></div><div class="search"><button class="search-button" id="search-button"><p>Search</p><svg role="img" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 19.9 19.7"><title>Search</title><g class="search-path" fill="none"><path stroke-linecap="square" d="M18.5 18.3l-5.4-5.4"></path><circle cx="8" cy="8" r="7"></circle></g></svg></button><div id="search-container"><div id="search-space"><input autocomplete="off" id="search-bar" name="search" type="text" aria-label="Search for something" placeholder="Search for something"/><div id="search-layout" data-preview="true"></div></div></div></div><button class="darkmode" id="darkmode"><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" id="dayIcon" x="0px" y="0px" viewBox="0 0 35 35" style="enable-background:new 0 0 35 35" xml:space="preserve" aria-label="Dark mode"><title>Dark mode</title><path d="M6,17.5C6,16.672,5.328,16,4.5,16h-3C0.672,16,0,16.672,0,17.5    S0.672,19,1.5,19h3C5.328,19,6,18.328,6,17.5z M7.5,26c-0.414,0-0.789,0.168-1.061,0.439l-2,2C4.168,28.711,4,29.086,4,29.5    C4,30.328,4.671,31,5.5,31c0.414,0,0.789-0.168,1.06-0.44l2-2C8.832,28.289,9,27.914,9,27.5C9,26.672,8.329,26,7.5,26z M17.5,6    C18.329,6,19,5.328,19,4.5v-3C19,0.672,18.329,0,17.5,0S16,0.672,16,1.5v3C16,5.328,16.671,6,17.5,6z M27.5,9    c0.414,0,0.789-0.168,1.06-0.439l2-2C30.832,6.289,31,5.914,31,5.5C31,4.672,30.329,4,29.5,4c-0.414,0-0.789,0.168-1.061,0.44    l-2,2C26.168,6.711,26,7.086,26,7.5C26,8.328,26.671,9,27.5,9z M6.439,8.561C6.711,8.832,7.086,9,7.5,9C8.328,9,9,8.328,9,7.5    c0-0.414-0.168-0.789-0.439-1.061l-2-2C6.289,4.168,5.914,4,5.5,4C4.672,4,4,4.672,4,5.5c0,0.414,0.168,0.789,0.439,1.06    L6.439,8.561z M33.5,16h-3c-0.828,0-1.5,0.672-1.5,1.5s0.672,1.5,1.5,1.5h3c0.828,0,1.5-0.672,1.5-1.5S34.328,16,33.5,16z     M28.561,26.439C28.289,26.168,27.914,26,27.5,26c-0.828,0-1.5,0.672-1.5,1.5c0,0.414,0.168,0.789,0.439,1.06l2,2    C28.711,30.832,29.086,31,29.5,31c0.828,0,1.5-0.672,1.5-1.5c0-0.414-0.168-0.789-0.439-1.061L28.561,26.439z M17.5,29    c-0.829,0-1.5,0.672-1.5,1.5v3c0,0.828,0.671,1.5,1.5,1.5s1.5-0.672,1.5-1.5v-3C19,29.672,18.329,29,17.5,29z M17.5,7    C11.71,7,7,11.71,7,17.5S11.71,28,17.5,28S28,23.29,28,17.5S23.29,7,17.5,7z M17.5,25c-4.136,0-7.5-3.364-7.5-7.5    c0-4.136,3.364-7.5,7.5-7.5c4.136,0,7.5,3.364,7.5,7.5C25,21.636,21.636,25,17.5,25z"></path></svg><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" id="nightIcon" x="0px" y="0px" viewBox="0 0 100 100" style="enable-background:new 0 0 100 100" xml:space="preserve" aria-label="Light mode"><title>Light mode</title><path d="M96.76,66.458c-0.853-0.852-2.15-1.064-3.23-0.534c-6.063,2.991-12.858,4.571-19.655,4.571  C62.022,70.495,50.88,65.88,42.5,57.5C29.043,44.043,25.658,23.536,34.076,6.47c0.532-1.08,0.318-2.379-0.534-3.23  c-0.851-0.852-2.15-1.064-3.23-0.534c-4.918,2.427-9.375,5.619-13.246,9.491c-9.447,9.447-14.65,22.008-14.65,35.369  c0,13.36,5.203,25.921,14.65,35.368s22.008,14.65,35.368,14.65c13.361,0,25.921-5.203,35.369-14.65  c3.872-3.871,7.064-8.328,9.491-13.246C97.826,68.608,97.611,67.309,96.76,66.458z"></path></svg></button><div class="explorer desktop-only"><button type="button" id="explorer" data-behavior="collapse" data-collapsed="collapsed" data-savestate="true" data-tree="[{&quot;path&quot;:&quot;api&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;comparisons&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;design&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;development&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;examples&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;guides&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;migrations&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;planning&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;profiling&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;release&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;status&quot;,&quot;collapsed&quot;:true}]" aria-controls="explorer-content" aria-expanded="false"><h2>Explorer</h2><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="fold"><polyline points="6 9 12 15 18 9"></polyline></svg></button><div id="explorer-content"><ul class="overflow" id="explorer-ul"><li><div class="folder-outer open"><ul style="padding-left:0;" class="content" data-folderul><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="api"><button class="folder-button"><span class="folder-title">api</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="api"><li><a href="../api/overview" data-for="api/overview">API Overview</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="comparisons"><button class="folder-button"><span class="folder-title">comparisons</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="comparisons"><li><a href="../comparisons/git-p4-vs-git-svn" data-for="comparisons/git-p4-vs-git-svn">git-p4-vs-git-svn</a></li><li><a href="../comparisons/submodule-vs-subtree" data-for="comparisons/submodule-vs-subtree">submodule-vs-subtree</a></li><li><a href="../comparisons/when-to-use-scalar" data-for="comparisons/when-to-use-scalar">when-to-use-scalar</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="design"><button class="folder-button"><span class="folder-title">design</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="design"><li><a href="../design/cpp-stage-contract" data-for="design/cpp-stage-contract">cpp-stage-contract</a></li><li><a href="../design/last-known-good-regression-bisect" data-for="design/last-known-good-regression-bisect">last-known-good-regression-bisect</a></li><li><a href="../design/orphan-branch" data-for="design/orphan-branch">orphan-branch</a></li><li><a href="../design/workspace-native-planner-contract" data-for="design/workspace-native-planner-contract">workspace-native-planner-contract</a></li><li><a href="../design/worktree-scalar" data-for="design/worktree-scalar">worktree-scalar</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="development"><button class="folder-button"><span class="folder-title">development</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="development"><li><a href="../development/contributing" data-for="development/contributing">contributing</a></li><li><a href="../development/kano-cpp-dev-convention" data-for="development/kano-cpp-dev-convention">kano-cpp-dev-convention</a></li><li><a href="../development/pixi" data-for="development/pixi">pixi</a></li><li><a href="../development/testing" data-for="development/testing">testing</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="examples"><button class="folder-button"><span class="folder-title">examples</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="examples"><li><a href="../examples/commit-rules-example" data-for="examples/commit-rules-example">commit-rules-example</a></li><li><a href="../examples/init-kano-dev-skill-example" data-for="examples/init-kano-dev-skill-example">init-kano-dev-skill-example</a></li><li><a href="../examples/repo-initialization-workflow-examples" data-for="examples/repo-initialization-workflow-examples">repo-initialization-workflow-examples</a></li><li><a href="../examples/root-repo-multi-remote-examples" data-for="examples/root-repo-multi-remote-examples">root-repo-multi-remote-examples</a></li><li><a href="../examples/WORKFLOW-SUMMARY" data-for="examples/WORKFLOW-SUMMARY">WORKFLOW-SUMMARY</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="guides"><button class="folder-button"><span class="folder-title">guides</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="guides"><li><a href="../guides/ai-provider-bootstrap" data-for="guides/ai-provider-bootstrap">ai-provider-bootstrap</a></li><li><a href="../guides/auto-fallback-complete" data-for="guides/auto-fallback-complete">auto-fallback-complete</a></li><li><a href="../guides/common-pitfalls" data-for="guides/common-pitfalls">common-pitfalls</a></li><li><a href="../guides/cpa-commit-plan-workflow" data-for="guides/cpa-commit-plan-workflow">cpa-commit-plan-workflow</a></li><li><a href="../guides/current-command-surface" data-for="guides/current-command-surface">current-command-surface</a></li><li><a href="../guides/git-p4" data-for="guides/git-p4">git-p4</a></li><li><a href="../guides/git-svn" data-for="guides/git-svn">git-svn</a></li><li><a href="../guides/ignore-datasource-sync-policy" data-for="guides/ignore-datasource-sync-policy">ignore-datasource-sync-policy</a></li><li><a href="../guides/ignore-plan-operator-workflow" data-for="guides/ignore-plan-operator-workflow">ignore-plan-operator-workflow</a></li><li><a href="../guides/kcc-commit-message-policy" data-for="guides/kcc-commit-message-policy">kcc-commit-message-policy</a></li><li><a href="../guides/new-features" data-for="guides/new-features">new-features</a></li><li><a href="../guides/public-artifact-contract" data-for="guides/public-artifact-contract">public-artifact-contract</a></li><li><a href="../guides/quick-start" data-for="guides/quick-start">quick-start</a></li><li><a href="../guides/repo-initialization-workflow" data-for="guides/repo-initialization-workflow">repo-initialization-workflow</a></li><li><a href="../guides/scalar" data-for="guides/scalar">scalar</a></li><li><a href="../guides/submodule" data-for="guides/submodule">submodule</a></li><li><a href="../guides/subtree" data-for="guides/subtree">subtree</a></li><li><a href="../guides/version-info" data-for="guides/version-info">version-info</a></li><li><a href="../guides/worktree" data-for="guides/worktree">worktree</a></li></ul></div></li><li><div class="folder-outer "><ul style="padding-left:0;" class="content" data-folderul></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="migrations"><button class="folder-button"><span class="folder-title">migrations</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="migrations"><li><a href="../migrations/perforce-to-git" data-for="migrations/perforce-to-git">perforce-to-git</a></li><li><a href="../migrations/svn-to-git" data-for="migrations/svn-to-git">svn-to-git</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="planning"><button class="folder-button"><span class="folder-title">planning</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="planning"><li><a href="../planning/cli-architecture-proposal" data-for="planning/cli-architecture-proposal">cli-architecture-proposal</a></li><li><a href="../planning/tui-branch-transplant-workflows" data-for="planning/tui-branch-transplant-workflows">tui-branch-transplant-workflows</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="profiling"><button class="folder-button"><span class="folder-title">profiling</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="profiling"><li><a href="../profiling/README" data-for="profiling/README">README</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="release"><button class="folder-button"><span class="folder-title">release</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="release"><li><a href="../release/v0.0.1-alpha-no-go" data-for="release/v0.0.1-alpha-no-go">v0.0.1-alpha-no-go</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="status"><button class="folder-button"><span class="folder-title">status</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="status"><li><a href="../status/changelog" data-for="status/changelog">changelog</a></li><li><a href="../status/ci-cd-trigger-policy" data-for="status/ci-cd-trigger-policy">ci-cd-trigger-policy</a></li><li><a href="../status/cpp-stage-refactor-backlog" data-for="status/cpp-stage-refactor-backlog">cpp-stage-refactor-backlog</a></li><li><a href="../status/pgo-coverage-shared-infra-tracking" data-for="status/pgo-coverage-shared-infra-tracking">pgo-coverage-shared-infra-tracking</a></li></ul></div></li><li><a href="../cpp-profile-coverage-pgo-model" data-for="cpp-profile-coverage-pgo-model">cpp-profile-coverage-pgo-model</a></li><li><a href="../README" data-for="README">README</a></li><li><a href="../repo-hygiene" data-for="repo-hygiene">repo-hygiene</a></li></ul></div></li><li id="explorer-end"></li></ul></div></div></div><div class="center"><div class="page-header"><div class="popover-hint"><nav class="breadcrumb-container" aria-label="breadcrumbs"><div class="breadcrumb-element"><a href="../">Home</a><p> ❯ </p></div><div class="breadcrumb-element"><a href="../status/">status</a><p> ❯ </p></div><div class="breadcrumb-element"><a href>cpp-stage-refactor-backlog</a></div></nav><h1 class="article-title">cpp-stage-refactor-backlog</h1><p show-comma="true" class="content-meta"><span>Jun 22, 2026</span><span>5 min read</span></p></div></div><article class="popover-hint"><h1 id="c-stage-refactor-backlog">C++ Stage Refactor Backlog<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#c-stage-refactor-backlog" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>Status: draft local issue set — 6/6 complete ✅
+Scope: <code>src/cpp/shared/infra</code> + <code>src/cpp/scripts</code></p>
+<h2 id="why-this-exists">Why this exists<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#why-this-exists" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>GitHub issue creation is blocked in the current environment because <code>gh auth status</code> is not authenticated.
+This file records the planned tickets so they can be opened upstream later without losing scope.</p>
+<hr/>
+<h2 id="cpp-infra-001--define-the-canonical-stage-contract-and-matrix-axes">CPP-INFRA-001 — Define the canonical stage contract and matrix axes<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#cpp-infra-001--define-the-canonical-stage-contract-and-matrix-axes" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<h3 id="goal">Goal<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#goal" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>Make the native pipeline architecture explicit before more script moves happen.</p>
+<h3 id="problem">Problem<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#problem" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>The repo is moving toward <code>self/</code>, <code>stages/</code>, <code>workflows/</code>, and profiling matrices, but the contract is still partly implicit.
+Some orchestration remains embedded in shell scripts instead of being driven by a clean graph/config model.</p>
+<h3 id="scope">Scope<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#scope" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ul>
+<li>Define canonical atomic stages:
+<ul>
+<li><code>build</code></li>
+<li><code>build_pgi</code></li>
+<li><code>gather_pgo_profile</code></li>
+<li><code>build_pgo</code></li>
+<li><code>run_tests</code></li>
+<li><code>collect_coverage</code></li>
+<li><code>render_test_report</code></li>
+<li><code>render_coverage_report</code></li>
+<li><code>package_reports</code></li>
+</ul>
+</li>
+<li>Define orchestration-only flows:
+<ul>
+<li><code>self_build</code></li>
+<li><code>self_rebuild</code></li>
+<li><code>coverage_pipeline</code></li>
+<li><code>ci_build_matrix</code></li>
+<li><code>release_pipeline</code></li>
+</ul>
+</li>
+<li>Define matrix axes and allowed combinations:
+<ul>
+<li>platform</li>
+<li>toolchain</li>
+<li>config</li>
+<li>optimization mode</li>
+<li>test scope</li>
+<li>coverage mode</li>
+<li>report mode</li>
+<li>artifact intent</li>
+</ul>
+</li>
+</ul>
+<h3 id="acceptance-criteria">Acceptance criteria<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#acceptance-criteria" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ul>
+<li>A design doc exists under <code>docs/design/</code> for the stage contract. ✅ Done</li>
+<li>Matrix axes and allowed rows are defined in config, not only in shell code. ✅ Done (<code>config/matrix.yml</code>)</li>
+<li>Every workflow script references the documented stage contract. ✅ Done (coverage-all.sh, pgo-rebuild.sh, self/build.sh, self/rebuild.sh)</li>
+</ul>
+<hr/>
+<h2 id="cpp-infra-002--complete-the-atomic-stage-surface-in-mainline">CPP-INFRA-002 — Complete the atomic stage surface in mainline<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#cpp-infra-002--complete-the-atomic-stage-surface-in-mainline" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<h3 id="goal-1">Goal<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#goal-1" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>Make the stage layer complete enough that orchestration is only composition, not hidden execution logic.</p>
+<h3 id="problem-1">Problem<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#problem-1" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p><code>src/cpp/shared/infra/scripts/stages/</code> exists, but the implementation is still uneven.
+Coverage/profile stages are clearer than the rest, and some flow ownership still lives in common workflow scripts.</p>
+<h3 id="scope-1">Scope<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#scope-1" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ul>
+<li>Ensure mainline stage entrypoints exist and are stable for:
+<ul>
+<li>build</li>
+<li>test</li>
+<li>test-report</li>
+<li>coverage-build</li>
+<li>coverage-gather</li>
+<li>coverage-report</li>
+<li>pgi-build</li>
+<li>pgo-gather</li>
+<li>pgo-build</li>
+<li>package-reports</li>
+</ul>
+</li>
+<li>Audit each stage for:
+<ul>
+<li>independent execution</li>
+<li>explicit input artifact contract</li>
+<li>explicit output artifact contract</li>
+<li>orchestrator-safe exit behavior</li>
+</ul>
+</li>
+</ul>
+<h3 id="acceptance-criteria-1">Acceptance criteria<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#acceptance-criteria-1" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ul>
+<li>Each stage can run independently.</li>
+<li>Each stage documents expected input/output artifacts.</li>
+<li>Workflows call stages instead of re-implementing stage logic.</li>
+</ul>
+<hr/>
+<h2 id="cpp-infra-003--split-execution-rendering-and-packaging-responsibilities-cleanly">CPP-INFRA-003 — Split execution, rendering, and packaging responsibilities cleanly<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#cpp-infra-003--split-execution-rendering-and-packaging-responsibilities-cleanly" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<h3 id="goal-2">Goal<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#goal-2" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>Separate raw execution/collection from rendering/packaging.</p>
+<h3 id="problem-2">Problem<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#problem-2" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>Coverage and reporting responsibilities are still partially mixed.
+Scripts such as coverage workflow helpers still own too much flow and policy.</p>
+<h3 id="scope-2">Scope<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#scope-2" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ul>
+<li>Separate execution layer responsibilities:
+<ul>
+<li>build test binaries</li>
+<li>run tests</li>
+<li>collect raw coverage</li>
+<li>gather PGO profile inputs</li>
+</ul>
+</li>
+<li>Separate rendering/packaging responsibilities:
+<ul>
+<li>render test reports</li>
+<li>render coverage reports</li>
+<li>package artifacts</li>
+</ul>
+</li>
+<li>Reduce <code>coverage_workflow.sh</code> / <code>coverage_report.sh</code> to orchestration-only or replace them with narrower stage invocations.</li>
+</ul>
+<h3 id="acceptance-criteria-2">Acceptance criteria<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#acceptance-criteria-2" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ul>
+<li>No single script owns collect + render + package as a hidden monolith.</li>
+<li>Test execution and coverage collection are independently invocable.</li>
+<li>Report generation consumes explicit artifacts from prior stages.</li>
+</ul>
+<hr/>
+<h2 id="cpp-infra-004--introduce-an-explicit-report-adapter-layer">CPP-INFRA-004 — Introduce an explicit report adapter layer<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#cpp-infra-004--introduce-an-explicit-report-adapter-layer" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<h3 id="goal-3">Goal<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#goal-3" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>Stop leaking external skill/report-renderer details across multiple scripts.</p>
+<h3 id="problem-3">Problem<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#problem-3" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>External report integration exists today, but the dependency boundary is still distributed across workflow/common scripts.</p>
+<h3 id="scope-3">Scope<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#scope-3" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ul>
+<li>Add a single adapter surface for external reporting skill integration.</li>
+<li>Centralize:
+<ul>
+<li>skill root discovery</li>
+<li>renderer resolution</li>
+<li>invocation wrappers</li>
+<li>fallback / failure policy</li>
+</ul>
+</li>
+<li>Migrate existing report/package callers to use the adapter.</li>
+</ul>
+<h3 id="acceptance-criteria-3">Acceptance criteria<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#acceptance-criteria-3" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ul>
+<li>External skill paths are not hard-coded in multiple unrelated scripts.</li>
+<li>Report scripts call a shared adapter contract.</li>
+<li>Swapping renderer/provider requires changing one adapter layer, not several workflows.</li>
+</ul>
+<hr/>
+<h2 id="cpp-infra-005--consolidate-kano-cpp-infra-refactor-back-into-mainline-and-retire-the-side-repo">CPP-INFRA-005 — Consolidate <code>kano-cpp-infra-refactor</code> back into mainline and retire the side repo<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#cpp-infra-005--consolidate-kano-cpp-infra-refactor-back-into-mainline-and-retire-the-side-repo" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<h3 id="goal-4">Goal<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#goal-4" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>Return to a single source of truth under <code>kano-git-master-skill/src/cpp/shared/infra</code>.</p>
+<h3 id="problem-4">Problem<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#problem-4" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>The side repo no longer buys much isolation because mainline already carries the same structural direction.
+Keeping both increases migration cost and risks duplicated cleanup.</p>
+<h3 id="resolution-2026-04-10">Resolution (2026-04-10)<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#resolution-2026-04-10" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ul>
+<li>Committed structural fix to <code>kano-cpp-infra.git</code> (infra submodule): <code>matrix.sh</code> updated from flat to nested path formula (<code>../../../../..</code> + <code>src/cpp/scripts</code>) ✅</li>
+<li>Subdir names normalized: <code>win64</code>→<code>windows</code>, <code>mac</code>→<code>macos</code> ✅</li>
+<li><code>config/matrix.yml</code> added with all 8 axes defined in YAML ✅</li>
+<li>Pushed to <code>origin/main</code> (commit <code>950adba</code>) ✅</li>
+<li>Side repo <code>kano-cpp-infra-refactor</code> deleted ✅</li>
+<li>No external consumers found — migration was simply committing the fix and deleting the unused parallel checkout ✅</li>
+</ul>
+<h3 id="final-state">Final state<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#final-state" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ul>
+<li><code>src/cpp/shared/infra</code> (git submodule of <code>kano-cpp-infra.git</code>) is the single source of truth ✅</li>
+<li>Side repo removed ✅</li>
+<li>CI/self-build paths continue to work ✅</li>
+</ul>
+<hr/>
+<h2 id="cpp-infra-006--audit-and-clean-dead-or-legacy-script-references">CPP-INFRA-006 — Audit and clean dead or legacy script references<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#cpp-infra-006--audit-and-clean-dead-or-legacy-script-references" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<h3 id="goal-5">Goal<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#goal-5" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>Remove hidden coupling and incomplete matrix targets before further refactor expansion.</p>
+<h3 id="problem-5">Problem<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#problem-5" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<p>The architecture shape is ahead of the actual script inventory in some areas.
+This creates confusion about what is canonical versus compatibility-only.</p>
+<h3 id="scope-4">Scope<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#scope-4" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ul>
+<li>Audit <code>matrix.sh</code> and related dispatchers for targets that do not exist.</li>
+<li>Audit platform directories for stale <code>ninja-*</code> legacy wrappers.</li>
+<li>Mark each script as one of:
+<ul>
+<li>canonical atomic stage</li>
+<li>canonical workflow</li>
+<li>adapter</li>
+<li>compatibility shim</li>
+<li>dead code</li>
+</ul>
+</li>
+</ul>
+<h3 id="acceptance-criteria-4">Acceptance criteria<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#acceptance-criteria-4" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h3>
+<ul>
+<li>No dispatcher points to missing scripts.</li>
+<li>Legacy wrappers are documented and minimized.</li>
+<li>Canonical entrypoints are obvious from layout and names.</li>
+</ul>
+<hr/>
+<h2 id="recommended-execution-order">Recommended execution order<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#recommended-execution-order" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<ol>
+<li><code>CPP-INFRA-001</code> — define contract first ✅ <strong>DONE</strong></li>
+<li><code>CPP-INFRA-006</code> — remove dead references / classify existing scripts ✅ <strong>DONE</strong></li>
+<li><code>CPP-INFRA-002</code> — finish atomic stage surface ✅ <strong>DONE</strong></li>
+<li><code>CPP-INFRA-003</code> — split execution vs rendering vs packaging ✅ <strong>DONE</strong></li>
+<li><code>CPP-INFRA-004</code> — collapse external report integration behind adapter ✅ <strong>DONE</strong></li>
+<li><code>CPP-INFRA-005</code> — committed nested-path fix, pushed, side repo deleted ✅ <strong>DONE</strong></li>
+</ol>
+<h2 id="status-summary-2026-04-10">Status Summary (2026-04-10)<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#status-summary-2026-04-10" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="table-container"><table><thead><tr><th>Ticket</th><th>Status</th><th>Key Changes</th></tr></thead><tbody><tr><td>CPP-INFRA-001</td><td>✅ Done</td><td>Design doc + matrix config + workflow citations complete</td></tr><tr><td>CPP-INFRA-002</td><td>✅ Done</td><td>12/12 canonical stages exist; <code>package-reports.sh</code> created</td></tr><tr><td>CPP-INFRA-003</td><td>✅ Done</td><td><code>coverage-all.sh</code> rewritten to compose stages instead of calling monolith</td></tr><tr><td>CPP-INFRA-004</td><td>✅ Done</td><td><code>report_skill_adapter.sh</code> created; <code>package-reports-with-skill.sh</code> updated</td></tr><tr><td>CPP-INFRA-005</td><td>✅ Done</td><td>Committed nested-path <code>matrix.sh</code> + <code>config/matrix.yml</code> to <code>kano-cpp-infra.git</code> (<code>950adba</code>); pushed; side repo deleted</td></tr><tr><td>CPP-INFRA-006</td><td>✅ Done</td><td><code>matrix.sh</code> base path and subdir names fixed; all 23 paths verified</td></tr></tbody></table></div></article><hr/><div class="page-footer"></div></div><div class="right sidebar"><div class="graph"><h3>Graph View</h3><div class="graph-outer"><div id="graph-container" data-cfg="{&quot;drag&quot;:true,&quot;zoom&quot;:true,&quot;depth&quot;:1,&quot;scale&quot;:1.1,&quot;repelForce&quot;:0.5,&quot;centerForce&quot;:0.3,&quot;linkDistance&quot;:30,&quot;fontSize&quot;:0.6,&quot;opacityScale&quot;:1,&quot;showTags&quot;:true,&quot;removeTags&quot;:[],&quot;focusOnHover&quot;:false}"></div><button id="global-graph-icon" aria-label="Global Graph"><svg version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 55 55" fill="currentColor" xml:space="preserve"><path d="M49,0c-3.309,0-6,2.691-6,6c0,1.035,0.263,2.009,0.726,2.86l-9.829,9.829C32.542,17.634,30.846,17,29,17
+                s-3.542,0.634-4.898,1.688l-7.669-7.669C16.785,10.424,17,9.74,17,9c0-2.206-1.794-4-4-4S9,6.794,9,9s1.794,4,4,4
+                c0.74,0,1.424-0.215,2.019-0.567l7.669,7.669C21.634,21.458,21,23.154,21,25s0.634,3.542,1.688,4.897L10.024,42.562
+                C8.958,41.595,7.549,41,6,41c-3.309,0-6,2.691-6,6s2.691,6,6,6s6-2.691,6-6c0-1.035-0.263-2.009-0.726-2.86l12.829-12.829
+                c1.106,0.86,2.44,1.436,3.898,1.619v10.16c-2.833,0.478-5,2.942-5,5.91c0,3.309,2.691,6,6,6s6-2.691,6-6c0-2.967-2.167-5.431-5-5.91
+                v-10.16c1.458-0.183,2.792-0.759,3.898-1.619l7.669,7.669C41.215,39.576,41,40.26,41,41c0,2.206,1.794,4,4,4s4-1.794,4-4
+                s-1.794-4-4-4c-0.74,0-1.424,0.215-2.019,0.567l-7.669-7.669C36.366,28.542,37,26.846,37,25s-0.634-3.542-1.688-4.897l9.665-9.665
+                C46.042,11.405,47.451,12,49,12c3.309,0,6-2.691,6-6S52.309,0,49,0z M11,9c0-1.103,0.897-2,2-2s2,0.897,2,2s-0.897,2-2,2
+                S11,10.103,11,9z M6,51c-2.206,0-4-1.794-4-4s1.794-4,4-4s4,1.794,4,4S8.206,51,6,51z M33,49c0,2.206-1.794,4-4,4s-4-1.794-4-4
+                s1.794-4,4-4S33,46.794,33,49z M29,31c-3.309,0-6-2.691-6-6s2.691-6,6-6s6,2.691,6,6S32.309,31,29,31z M47,41c0,1.103-0.897,2-2,2
+                s-2-0.897-2-2s0.897-2,2-2S47,39.897,47,41z M49,10c-2.206,0-4-1.794-4-4s1.794-4,4-4s4,1.794,4,4S51.206,10,49,10z"></path></svg></button></div><div id="global-graph-outer"><div id="global-graph-container" data-cfg="{&quot;drag&quot;:true,&quot;zoom&quot;:true,&quot;depth&quot;:-1,&quot;scale&quot;:0.9,&quot;repelForce&quot;:0.5,&quot;centerForce&quot;:0.3,&quot;linkDistance&quot;:30,&quot;fontSize&quot;:0.6,&quot;opacityScale&quot;:1,&quot;showTags&quot;:true,&quot;removeTags&quot;:[],&quot;focusOnHover&quot;:true}"></div></div></div><div class="toc desktop-only"><button type="button" id="toc" class aria-controls="toc-content" aria-expanded="true"><h3>Table of Contents</h3><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="fold"><polyline points="6 9 12 15 18 9"></polyline></svg></button><div id="toc-content" class><ul class="overflow"><li class="depth-0"><a href="#c-stage-refactor-backlog" data-for="c-stage-refactor-backlog">C++ Stage Refactor Backlog</a></li><li class="depth-1"><a href="#why-this-exists" data-for="why-this-exists">Why this exists</a></li><li class="depth-1"><a href="#cpp-infra-001--define-the-canonical-stage-contract-and-matrix-axes" data-for="cpp-infra-001--define-the-canonical-stage-contract-and-matrix-axes">CPP-INFRA-001 — Define the canonical stage contract and matrix axes</a></li><li class="depth-2"><a href="#goal" data-for="goal">Goal</a></li><li class="depth-2"><a href="#problem" data-for="problem">Problem</a></li><li class="depth-2"><a href="#scope" data-for="scope">Scope</a></li><li class="depth-2"><a href="#acceptance-criteria" data-for="acceptance-criteria">Acceptance criteria</a></li><li class="depth-1"><a href="#cpp-infra-002--complete-the-atomic-stage-surface-in-mainline" data-for="cpp-infra-002--complete-the-atomic-stage-surface-in-mainline">CPP-INFRA-002 — Complete the atomic stage surface in mainline</a></li><li class="depth-2"><a href="#goal-1" data-for="goal-1">Goal</a></li><li class="depth-2"><a href="#problem-1" data-for="problem-1">Problem</a></li><li class="depth-2"><a href="#scope-1" data-for="scope-1">Scope</a></li><li class="depth-2"><a href="#acceptance-criteria-1" data-for="acceptance-criteria-1">Acceptance criteria</a></li><li class="depth-1"><a href="#cpp-infra-003--split-execution-rendering-and-packaging-responsibilities-cleanly" data-for="cpp-infra-003--split-execution-rendering-and-packaging-responsibilities-cleanly">CPP-INFRA-003 — Split execution, rendering, and packaging responsibilities cleanly</a></li><li class="depth-2"><a href="#goal-2" data-for="goal-2">Goal</a></li><li class="depth-2"><a href="#problem-2" data-for="problem-2">Problem</a></li><li class="depth-2"><a href="#scope-2" data-for="scope-2">Scope</a></li><li class="depth-2"><a href="#acceptance-criteria-2" data-for="acceptance-criteria-2">Acceptance criteria</a></li><li class="depth-1"><a href="#cpp-infra-004--introduce-an-explicit-report-adapter-layer" data-for="cpp-infra-004--introduce-an-explicit-report-adapter-layer">CPP-INFRA-004 — Introduce an explicit report adapter layer</a></li><li class="depth-2"><a href="#goal-3" data-for="goal-3">Goal</a></li><li class="depth-2"><a href="#problem-3" data-for="problem-3">Problem</a></li><li class="depth-2"><a href="#scope-3" data-for="scope-3">Scope</a></li><li class="depth-2"><a href="#acceptance-criteria-3" data-for="acceptance-criteria-3">Acceptance criteria</a></li><li class="depth-1"><a href="#cpp-infra-005--consolidate-kano-cpp-infra-refactor-back-into-mainline-and-retire-the-side-repo" data-for="cpp-infra-005--consolidate-kano-cpp-infra-refactor-back-into-mainline-and-retire-the-side-repo">CPP-INFRA-005 — Consolidate kano-cpp-infra-refactor back into mainline and retire the side repo</a></li><li class="depth-2"><a href="#goal-4" data-for="goal-4">Goal</a></li><li class="depth-2"><a href="#problem-4" data-for="problem-4">Problem</a></li><li class="depth-2"><a href="#resolution-2026-04-10" data-for="resolution-2026-04-10">Resolution (2026-04-10)</a></li><li class="depth-2"><a href="#final-state" data-for="final-state">Final state</a></li><li class="depth-1"><a href="#cpp-infra-006--audit-and-clean-dead-or-legacy-script-references" data-for="cpp-infra-006--audit-and-clean-dead-or-legacy-script-references">CPP-INFRA-006 — Audit and clean dead or legacy script references</a></li><li class="depth-2"><a href="#goal-5" data-for="goal-5">Goal</a></li><li class="depth-2"><a href="#problem-5" data-for="problem-5">Problem</a></li><li class="depth-2"><a href="#scope-4" data-for="scope-4">Scope</a></li><li class="depth-2"><a href="#acceptance-criteria-4" data-for="acceptance-criteria-4">Acceptance criteria</a></li><li class="depth-1"><a href="#recommended-execution-order" data-for="recommended-execution-order">Recommended execution order</a></li><li class="depth-1"><a href="#status-summary-2026-04-10" data-for="status-summary-2026-04-10">Status Summary (2026-04-10)</a></li></ul></div></div><div class="backlinks"><h3>Backlinks</h3><ul class="overflow"><li>No backlinks found</li></ul></div></div><footer class><p>Created with <a href="https://quartz.jzhao.xyz/">Quartz v4.4.0</a> © 2026</p><ul><li><a href="https://github.com/jackyzha0/quartz">GitHub</a></li><li><a href="https://discord.gg/cRFFHYye7t">Discord Community</a></li></ul></footer></div></div></body><script type="application/javascript">function c(){let t=this.parentElement;t.classList.toggle("is-collapsed");let l=t.classList.contains("is-collapsed")?this.scrollHeight:t.scrollHeight;t.style.maxHeight=l+"px";let o=t,e=t.parentElement;for(;e;){if(!e.classList.contains("callout"))return;let n=e.classList.contains("is-collapsed")?e.scrollHeight:e.scrollHeight+o.scrollHeight;e.style.maxHeight=n+"px",o=e,e=e.parentElement}}function i(){let t=document.getElementsByClassName("callout is-collapsible");for(let s of t){let l=s.firstElementChild;if(l){l.addEventListener("click",c),window.addCleanup(()=>l.removeEventListener("click",c));let e=s.classList.contains("is-collapsed")?l.scrollHeight:s.scrollHeight;s.style.maxHeight=e+"px"}}}document.addEventListener("nav",i);window.addEventListener("resize",i);
+</script><script type="module">
+          let mermaidImport = undefined
+          document.addEventListener('nav', async () => {
+            if (document.querySelector("code.mermaid")) {
+              mermaidImport ||= await import('https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.7.0/mermaid.esm.min.mjs')
+              const mermaid = mermaidImport.default
+              const darkMode = document.documentElement.getAttribute('saved-theme') === 'dark'
+              mermaid.initialize({
+                startOnLoad: false,
+                securityLevel: 'loose',
+                theme: darkMode ? 'dark' : 'default'
+              })
+
+              await mermaid.run({
+                querySelector: '.mermaid'
+              })
+            }
+          });
+          </script><script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/contrib/copy-tex.min.js" type="application/javascript"></script><script src="../postscript.js" type="module"></script></html>
