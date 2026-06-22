@@ -1,6 +1,8 @@
 # Release Automation
 
 This directory contains canonical shell scripts for release automation scaffolding.
+See `../../docs/guides/public-artifact-contract.md` for the public artifact
+contract and package-channel boundaries.
 
 - `00-verify-release-version.sh` ensures the pushed/manual tag matches `VERSION`.
 - `01-generate-release-notes.sh` builds a release-notes markdown file from downloaded artifacts.
