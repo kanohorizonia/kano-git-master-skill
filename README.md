@@ -11,13 +11,15 @@ recording the result.
 
 **Version**: 0.0.1 alpha
 
-**Public status**: source tag `v0.0.1` exists, but GitHub Release publication is
-blocked until a validated release archive is available; see the
-[v0.0.1 alpha no-go report](./docs/release/v0.0.1-alpha-no-go.md). Public
+**Public status**: GitHub Release
+[`v0.0.1`](https://github.com/kanohorizonia/kano-git-master-skill/releases/tag/v0.0.1)
+is published as a prerelease with a validated source archive, manifest, and
+checksum; see the
+[v0.0.1 alpha release report](./docs/release/v0.0.1-alpha-release.md). Public
 release assets are governed by the
-[Public Artifact Contract](./docs/guides/public-artifact-contract.md). No binary
-or package-manager channel is claimed unless a matching release asset and
-checksum have been verified.
+[Public Artifact Contract](./docs/guides/public-artifact-contract.md). Native
+binary, MSI, and package-manager channels are not claimed unless matching
+release assets and checksums have been verified.
 
 ```mermaid
 flowchart LR
