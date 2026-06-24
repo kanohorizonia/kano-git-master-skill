@@ -1,7 +1,7 @@
 # CI/CD Trigger Policy
 
 Date: 2026-06-23
-Backlog items: KG-TSK-0093, KG-TSK-0094
+Backlog items: KG-TSK-0093, KG-TSK-0094, KG-TSK-0097
 
 ## Policy
 
@@ -33,6 +33,7 @@ The result was a docs-only push starting the full GitHub Actions CI matrix.
 | `release-gates.yml` / `KanoAgentSkills / Release Gates` | Public-safe `quality-gate` only | Public-safe `quality-gate` only | Full native build, coverage, and MSI lanes | No |
 | `pages.yml` / `KanoAgentSkills / Publish Pages` | GitHub Pages build and `gh-pages` branch publish for docs/source-site paths | No | GitHub Pages build and `gh-pages` branch publish | No |
 | `publish-release.yml` / `KanoAgentSkills / Publish Release` | No | No | Yes; requires `release_reviewed=true` and defaults to draft release | Reviewed/manual GitHub Release only; no tag-push auto publish |
+| `code-quality-coverage-upload.yml` / `KanoAgentSkills / Code Quality Coverage Upload` | No | No | Yes; uploads an existing Cobertura XML artifact to GitHub Code Quality | No |
 | GitHub-native `CodeQL` | Repository security setting, not checked-in KOG workflow YAML | Repository security setting, not checked-in KOG workflow YAML | Security scanning only if enabled in GitHub | Not a release gate |
 
 ## KOB Reference Alignment
@@ -53,6 +54,9 @@ KOG follows the same boundary:
 
 - GitHub Actions full build/release work is explicit/manual, not implicit on
   README/docs push.
+- GitHub Code Quality coverage upload is an explicit/manual experiment that
+  consumes an existing Cobertura XML artifact; it does not generate coverage,
+  publish releases, or replace Jenkins coverage ownership.
 - Jenkins remains the source of release evidence and package-manager preparation.
 - GitHub Release publication requires an explicit manual run after evidence
   review, and drafts are the default.
