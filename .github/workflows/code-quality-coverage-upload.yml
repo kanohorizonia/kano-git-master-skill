@@ -1,0 +1,95 @@
+name: KanoAgentSkills / Code Quality Coverage Upload
+
+run-name: ${{ format('Manual_code-quality-coverage_{0}_{1}', inputs.coverage_artifact_name, github.run_number) }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: GitHub Actions run ID that produced the coverage artifact.
+        required: true
+        type: string
+      coverage_artifact_name:
+        description: Artifact name containing the Cobertura XML report.
+        required: true
+        type: string
+      coverage_file:
+        description: Relative path to the Cobertura XML file inside the artifact.
+        required: true
+        default: cobertura.xml
+        type: string
+      coverage_language:
+        description: GitHub Linguist language name for the uploaded report.
+        required: true
+        default: C++
+        type: string
+      coverage_label:
+        description: Code Quality coverage label.
+        required: true
+        default: code-coverage/kano-git-master-skill
+        type: string
+      fail_on_upload_error:
+        description: Fail the manual workflow if GitHub rejects the coverage upload.
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+  code-quality: write
+
+concurrency:
+  group: code-quality-coverage-upload-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  upload-coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate request
+        shell: bash
+        env:
+          COVERAGE_FILE: ${{ inputs.coverage_file }}
+        run: |
+          set -euo pipefail
+          coverage_file="$COVERAGE_FILE"
+          case "$coverage_file" in
+            /*|*..*)
+              echo "coverage_file must be a relative path inside the downloaded artifact." >&2
+              exit 2
+              ;;
+          esac
+
+      - name: Download coverage artifact
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ inputs.source_run_id }}
+          name: ${{ inputs.coverage_artifact_name }}
+          path: _code-quality-coverage
+          github-token: ${{ github.token }}
+
+      - name: Resolve coverage file
+        id: coverage
+        shell: bash
+        env:
+          COVERAGE_FILE: ${{ inputs.coverage_file }}
+        run: |
+          set -euo pipefail
+          coverage_path="_code-quality-coverage/$COVERAGE_FILE"
+          if [[ ! -f "$coverage_path" ]]; then
+            echo "Cobertura XML file not found: $coverage_path" >&2
+            echo "Downloaded artifact contents:" >&2
+            find _code-quality-coverage -type f | sort >&2
+            exit 2
+          fi
+          echo "file=$coverage_path" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Code Quality coverage
+        uses: actions/upload-code-coverage@v1
+        with:
+          file: ${{ steps.coverage.outputs.file }}
+          language: ${{ inputs.coverage_language }}
+          label: ${{ inputs.coverage_label }}
+          fail-on-error: ${{ inputs.fail_on_upload_error }}
