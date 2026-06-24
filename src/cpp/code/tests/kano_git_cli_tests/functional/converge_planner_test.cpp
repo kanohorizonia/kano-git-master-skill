@@ -421,6 +421,9 @@ TEST_CASE("converge agent mode commits backlog changes by inferred intent", "[td
     const auto kgView = std::filesystem::path("products/kano-git-master-skill/views/Dashboard_PlainMarkdown_Active.md");
     const auto koaItem = std::filesystem::path("products/kano-agent-ark-skill/items/task/0100/KOA-TSK-0130_update-runtime.md");
     const auto koaReceipt = std::filesystem::path("products/kano-agent-ark-skill/artifacts/_receipts/backlog.item_create/implicit-demo.json");
+    const auto koaTopic = std::filesystem::path("products/kano-agent-ark-skill/topics/topic-runtime/topic.json");
+    const auto koaTopicNode = std::filesystem::path("products/kano-agent-ark-skill/topics/topic-runtime/graph/nodes/WO-KOA-TSK-0130-demo.json");
+    const auto koaRunnerWake = std::filesystem::path("products/kano-agent-ark-skill/artifacts/_runner-wake/codex.jsonl");
 
     WriteTextFile(ctx.seedRepo / kgItem, "id: KG-BUG-0001\nstate: Proposed\n");
     WriteTextFile(ctx.seedRepo / kgEvidence, "initial evidence\n");
@@ -436,6 +439,9 @@ TEST_CASE("converge agent mode commits backlog changes by inferred intent", "[td
     WriteTextFile(ctx.cloneRepo / kgView, "# Active\n\n- KG-BUG-0001\n");
     WriteTextFile(ctx.cloneRepo / koaItem, "id: KOA-TSK-0130\nstate: Ready\n");
     WriteTextFile(ctx.cloneRepo / koaReceipt, "{\"ok\":true}\n");
+    WriteTextFile(ctx.cloneRepo / koaTopic, "{\"id\":\"topic-runtime\"}\n");
+    WriteTextFile(ctx.cloneRepo / koaTopicNode, "{\"id\":\"WO-KOA-TSK-0130-demo\"}\n");
+    WriteTextFile(ctx.cloneRepo / koaRunnerWake, "{\"event\":\"wake\"}\n");
 
     const auto result = RunKogWithEnv(
         {"converge", "--no-recursive", "--jobs", "1"},
@@ -450,7 +456,11 @@ TEST_CASE("converge agent mode commits backlog changes by inferred intent", "[td
     RequireContains(result.stdoutText, "[Backlog][Docs] Refresh kano-git-master-skill backlog views (NO-TICKET)");
     RequireContains(result.stdoutText, "[Backlog][Docs] Update KOA-TSK-0130 task item (KOA-TSK-0130)");
     RequireContains(result.stdoutText, "[Backlog][Docs] Add kano-agent-ark-skill mutation receipts (NO-TICKET)");
+    RequireContains(result.stdoutText, "[Backlog][Docs] Update kano-agent-ark-skill backlog topics (NO-TICKET)");
+    RequireContains(result.stdoutText, "[Backlog][Docs] Update kano-agent-ark-skill backlog artifacts (NO-TICKET)");
     RequireNotContains(result.stdoutText, "docs(backlog-");
+    RequireNotContains(result.stdoutText, "ambiguous " + koaTopic.generic_string());
+    RequireNotContains(result.stdoutText, "ambiguous " + koaRunnerWake.generic_string());
     RequireContains(result.stdoutText, "[converge] completed");
     REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
 
@@ -461,8 +471,35 @@ TEST_CASE("converge agent mode commits backlog changes by inferred intent", "[td
     RequireContains(log.stdoutText, "[Backlog][Docs] Refresh kano-git-master-skill backlog views (NO-TICKET)");
     RequireContains(log.stdoutText, "[Backlog][Docs] Update KOA-TSK-0130 task item (KOA-TSK-0130)");
     RequireContains(log.stdoutText, "[Backlog][Docs] Add kano-agent-ark-skill mutation receipts (NO-TICKET)");
+    RequireContains(log.stdoutText, "[Backlog][Docs] Update kano-agent-ark-skill backlog topics (NO-TICKET)");
+    RequireContains(log.stdoutText, "[Backlog][Docs] Update kano-agent-ark-skill backlog artifacts (NO-TICKET)");
     RequireNotContains(log.stdoutText, "docs(backlog-");
     RequireNotContains(log.stdoutText, "update 4 files");
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge agent mode defers registered child paths from root intent plan", "[tdd][functional][feature:converge-state][converge][agent-mode][intent-commits][gitlink]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("converge-agent-root-content-and-child");
+    const auto childDoc = std::filesystem::path("docs/child.md");
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneChildRepo), "checkout child branch for agent-mode root intent test");
+
+    WriteTextFile(ctx.cloneRootRepo / ".gitignore", ".kano/\nlocal-cache/\n");
+    WriteTextFile(ctx.cloneChildRepo / childDoc, "agent mode child change\n");
+
+    const auto result = RunKogWithEnv(
+        {"converge", "--jobs", "1"},
+        ctx.cloneRootRepo,
+        {{"KANO_AGENT_MODE", "1"}});
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContains(result.stdoutText, "Converge agent intent commit plan");
+    RequireContains(result.stdoutText, "[KOG][Chore] Update repository policy (NO-TICKET)");
+    RequireNotContains(result.stdoutText, "ambiguous " + ctx.submodulePath);
+    RequireContains(result.stdoutText, "[converge] completed");
+    REQUIRE(GitStatusShort(ctx.cloneChildRepo).empty());
+    REQUIRE(GitStatusShort(ctx.cloneRootRepo).empty());
 
     RemoveSandboxWorkspace(ctx.sandbox);
 }

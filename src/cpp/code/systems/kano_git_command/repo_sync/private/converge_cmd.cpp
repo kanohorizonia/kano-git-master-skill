@@ -933,6 +933,18 @@ std::optional<IntentCommitGroup> ClassifyBacklogIntentPath(const std::string& pa
                     "native classifier matched backlog evidence path " + *itemId,
                     path);
             }
+            return MakeGroup(
+                "backlog-artifacts:" + product,
+                KccSubject("Backlog", "Docs", "Update " + product + " backlog artifacts"),
+                "native classifier matched generic backlog artifact path for " + product,
+                path);
+        }
+        if (section == "topics") {
+            return MakeGroup(
+                "backlog-topics:" + product,
+                KccSubject("Backlog", "Docs", "Update " + product + " backlog topics"),
+                "native classifier matched backlog topic graph path for " + product,
+                path);
         }
         if (section == "views") {
             return MakeGroup(
@@ -1076,6 +1088,36 @@ std::optional<IntentCommitGroup> ClassifyIntentPath(std::string path) {
         return backlog;
     }
     return ClassifyKogSourceIntentPath(path);
+}
+
+std::string RepoRelativeChildPath(const std::string& parentRepo, const std::string& childRepo) {
+    const auto parent = NormalizeGitPath(parentRepo);
+    auto child = NormalizeGitPath(childRepo);
+    if (parent.empty() || parent == ".") {
+        return child;
+    }
+    const auto prefix = parent + "/";
+    if (child.rfind(prefix, 0) == 0) {
+        child = child.substr(prefix.size());
+    }
+    return child;
+}
+
+bool IsRegisteredChildRepoStatusPath(const Snapshot& snapshot, const std::string& repo, const std::string& path) {
+    const auto normalizedPath = NormalizeGitPath(path);
+    const auto normalizedRepo = NormalizeGitPath(repo.empty() ? "." : repo);
+    for (const auto& candidate : snapshot.repos) {
+        if (NormalizeGitPath(candidate.id) != normalizedRepo) {
+            continue;
+        }
+        for (const auto& child : candidate.childRepos) {
+            if (RepoRelativeChildPath(candidate.id, child) == normalizedPath) {
+                return true;
+            }
+        }
+        return false;
+    }
+    return false;
 }
 
 std::vector<std::string> CollectDirtyPaths(const std::filesystem::path& repoPath, std::string* outError) {
@@ -1311,7 +1353,7 @@ std::string ComputeWorkspaceDirtyFingerprintForPlan(const std::filesystem::path&
 }
 
 IntentCommitPlan BuildIntentCommitPlan(const std::filesystem::path& workspaceRoot,
-                                       const Snapshot&,
+                                       const Snapshot& snapshot,
                                        const std::string& repo) {
     IntentCommitPlan plan;
     const auto repoPath = ResolveRepoPath(workspaceRoot, repo);
@@ -1327,7 +1369,12 @@ IntentCommitPlan BuildIntentCommitPlan(const std::filesystem::path& workspaceRoo
     }
 
     std::map<std::string, IntentCommitGroup> grouped;
+    std::vector<std::string> registeredChildPaths;
     for (const auto& path : dirtyPaths) {
+        if (IsRegisteredChildRepoStatusPath(snapshot, repo, path)) {
+            registeredChildPaths.push_back(path);
+            continue;
+        }
         auto classified = ClassifyIntentPath(path);
         if (!classified.has_value()) {
             plan.ambiguousPaths.push_back(path);
@@ -1339,6 +1386,17 @@ IntentCommitPlan BuildIntentCommitPlan(const std::filesystem::path& workspaceRoo
         } else {
             group.includePaths.push_back(path);
         }
+    }
+
+    if (grouped.empty() && plan.ambiguousPaths.empty() && !registeredChildPaths.empty()) {
+        std::sort(registeredChildPaths.begin(), registeredChildPaths.end());
+        registeredChildPaths.erase(std::unique(registeredChildPaths.begin(), registeredChildPaths.end()), registeredChildPaths.end());
+        IntentCommitGroup group;
+        group.key = "submodule-pointers";
+        group.message = kPointerMultipleMessage;
+        group.reviewReason = "native classifier matched registered child repo pointer paths";
+        group.includePaths = registeredChildPaths;
+        grouped[group.key] = std::move(group);
     }
 
     for (auto& [key, group] : grouped) {
