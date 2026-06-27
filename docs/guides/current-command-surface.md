@@ -151,10 +151,38 @@ Unknown top-level commands now return a git-style error and suggest the most sim
 ## Sync and converge dry-run preflight
 
 `kog sync origin-latest --dry-run` and `kog converge --dry-run` are branch-preserving
-preflight flows. They now surface explicit blocker reason codes for unsafe states,
-including active rebase/merge/cherry-pick/revert/bisect operations, unmerged paths,
-detached HEAD, unresolved submodule/gitlink markers, fetch failures, branch divergence,
-and unreachable gitlink commits.
+preflight flows. `kog converge` remains backwards-compatible with the existing
+repo-state convergence workflow; `kog converge repos` is the explicit taxonomy
+alias for the same synced/committed/pushed repository-state behavior.
+
+```bash
+./scripts/kog converge --dry-run
+./scripts/kog converge repos --dry-run
+```
+
+These repo-state preflight flows surface explicit blocker reason codes for unsafe
+states, including active rebase/merge/cherry-pick/revert/bisect operations,
+unmerged paths, detached HEAD, unresolved submodule/gitlink markers, fetch
+failures, branch divergence, and unreachable gitlink commits.
+
+`kog converge branches plan` is a read-only branch convergence planner. It uses
+the registered recursive repo/submodule/worktree graph rather than arbitrary
+filesystem recursion, reports child repositories before parent gitlink state,
+defaults to a recorded `rebase` strategy, and records an explicit `merge`
+override when requested.
+
+```bash
+./scripts/kog converge branches plan --target main
+./scripts/kog converge branches plan --target main --strategy merge --json
+```
+
+The branch planner emits stable JSON with `--json` or in agent mode. It records
+candidate branches/worktrees, dirty/unpushed/stale/active-worktree blockers,
+merged status, proposed actions, traversal order, and `mutationPerformed=false`;
+it does not merge, rebase, delete branches, remove worktrees, or push. A stale
+target branch behind its upstream, a stale non-target local branch behind its
+upstream, unpushed local commits, dirty worktree state, or a missing target ref
+is reported as a blocker and makes the planner exit non-zero.
 
 Dry-run summaries are audit-first and must not be treated as clean when blockers exist.
 If blockers are reported, resolve them first or run explicit Kano repair flows
