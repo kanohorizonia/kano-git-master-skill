@@ -151,6 +151,8 @@ struct IntentCommitPlan {
     std::filesystem::path planPath;
     std::vector<IntentCommitGroup> groups;
     std::vector<std::string> ambiguousPaths;
+    std::vector<std::string> localArtifactPaths;
+    std::vector<std::string> addedIgnoreRules;
     std::string error;
 };
 
@@ -1110,6 +1112,122 @@ std::optional<IntentCommitGroup> ClassifyIntentPath(std::string path) {
     return ClassifyKogSourceIntentPath(path);
 }
 
+std::optional<std::string> LocalToolArtifactIgnoreRuleForPath(const std::string& path) {
+    auto normalized = NormalizeGitPath(path);
+    while (!normalized.empty() && normalized.back() == '/') {
+        normalized.pop_back();
+    }
+
+    const auto lowered = ToLower(normalized);
+    if (lowered == "microsoft/windows/powershell/moduleanalysiscache") {
+        return "/Microsoft/Windows/PowerShell/ModuleAnalysisCache";
+    }
+    if (normalized == "$log") {
+        return "/$log";
+    }
+    return std::nullopt;
+}
+
+bool IsIgnoredByGit(const std::filesystem::path& repoPath, const std::string& path) {
+    const auto result = shell::ExecuteCommand(
+        "git",
+        {"check-ignore", "--quiet", "--", path},
+        shell::ExecMode::Capture,
+        repoPath);
+    return result.exitCode == 0;
+}
+
+std::vector<std::string> EnsureLocalToolArtifactIgnoreRules(const std::filesystem::path& repoPath,
+                                                           const std::vector<std::string>& dirtyPaths,
+                                                           std::vector<std::string>* localArtifactPaths,
+                                                           std::string* outError) {
+    std::vector<std::string> rules;
+    for (const auto& path : dirtyPaths) {
+        const auto rule = LocalToolArtifactIgnoreRuleForPath(path);
+        if (!rule.has_value()) {
+            continue;
+        }
+        if (localArtifactPaths != nullptr) {
+            localArtifactPaths->push_back(path);
+        }
+        if (!IsIgnoredByGit(repoPath, path)) {
+            rules.push_back(*rule);
+        }
+    }
+
+    if (localArtifactPaths != nullptr) {
+        std::sort(localArtifactPaths->begin(), localArtifactPaths->end());
+        localArtifactPaths->erase(std::unique(localArtifactPaths->begin(), localArtifactPaths->end()), localArtifactPaths->end());
+    }
+
+    std::sort(rules.begin(), rules.end());
+    rules.erase(std::unique(rules.begin(), rules.end()), rules.end());
+    if (rules.empty()) {
+        return {};
+    }
+
+    const auto ignorePath = repoPath / ".gitignore";
+    std::string content;
+    if (std::filesystem::exists(ignorePath)) {
+        std::ifstream in(ignorePath, std::ios::binary);
+        if (!in.good()) {
+            if (outError != nullptr) {
+                *outError = "failed to read .gitignore for local artifact rules: " + ignorePath.generic_string();
+            }
+            return {};
+        }
+        std::ostringstream buffer;
+        buffer << in.rdbuf();
+        content = buffer.str();
+    }
+
+    std::set<std::string> existingLines;
+    std::istringstream lines(content);
+    std::string line;
+    while (std::getline(lines, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        existingLines.insert(Trim(line));
+    }
+
+    std::vector<std::string> missingRules;
+    for (const auto& rule : rules) {
+        if (!existingLines.contains(rule)) {
+            missingRules.push_back(rule);
+        }
+    }
+    if (missingRules.empty()) {
+        return {};
+    }
+
+    std::ofstream out(ignorePath, std::ios::binary | std::ios::app);
+    if (!out.good()) {
+        if (outError != nullptr) {
+            *outError = "failed to append local artifact ignore rules: " + ignorePath.generic_string();
+        }
+        return {};
+    }
+    if (!content.empty() && content.back() != '\n' && content.back() != '\r') {
+        out << "\n";
+    }
+    if (!content.empty()) {
+        out << "\n";
+    }
+    out << "# Local tool artifacts\n";
+    for (const auto& rule : missingRules) {
+        out << rule << "\n";
+    }
+    out.close();
+    if (!out.good()) {
+        if (outError != nullptr) {
+            *outError = "failed to flush local artifact ignore rules: " + ignorePath.generic_string();
+        }
+        return {};
+    }
+    return missingRules;
+}
+
 std::string RepoRelativeChildPath(const std::string& parentRepo, const std::string& childRepo) {
     const auto parent = NormalizeGitPath(parentRepo);
     auto child = NormalizeGitPath(childRepo);
@@ -1378,7 +1496,7 @@ IntentCommitPlan BuildIntentCommitPlan(const std::filesystem::path& workspaceRoo
     IntentCommitPlan plan;
     const auto repoPath = ResolveRepoPath(workspaceRoot, repo);
     std::string statusError;
-    const auto dirtyPaths = CollectDirtyPaths(repoPath, &statusError);
+    auto dirtyPaths = CollectDirtyPaths(repoPath, &statusError);
     if (!statusError.empty()) {
         plan.error = statusError;
         return plan;
@@ -1386,6 +1504,23 @@ IntentCommitPlan BuildIntentCommitPlan(const std::filesystem::path& workspaceRoo
     if (dirtyPaths.empty()) {
         plan.error = "no dirty paths found for intent commit planning";
         return plan;
+    }
+
+    plan.addedIgnoreRules = EnsureLocalToolArtifactIgnoreRules(repoPath, dirtyPaths, &plan.localArtifactPaths, &statusError);
+    if (!statusError.empty()) {
+        plan.error = statusError;
+        return plan;
+    }
+    if (!plan.addedIgnoreRules.empty()) {
+        dirtyPaths = CollectDirtyPaths(repoPath, &statusError);
+        if (!statusError.empty()) {
+            plan.error = statusError;
+            return plan;
+        }
+        if (dirtyPaths.empty()) {
+            plan.error = "no dirty paths found after local artifact ignore update";
+            return plan;
+        }
     }
 
     std::map<std::string, IntentCommitGroup> grouped;
@@ -1514,6 +1649,18 @@ void PrintIntentCommitPlan(const std::string& repo, const IntentCommitPlan& plan
         std::cout << "  skipped_ambiguous=" << plan.ambiguousPaths.size() << "\n";
         for (const auto& path : plan.ambiguousPaths) {
             std::cout << "      ambiguous " << path << "\n";
+        }
+    }
+    if (!plan.localArtifactPaths.empty()) {
+        std::cout << "  local_artifacts=" << plan.localArtifactPaths.size() << "\n";
+        for (const auto& path : plan.localArtifactPaths) {
+            std::cout << "      local " << path << "\n";
+        }
+    }
+    if (!plan.addedIgnoreRules.empty()) {
+        std::cout << "  added_ignore_rules=" << plan.addedIgnoreRules.size() << "\n";
+        for (const auto& rule : plan.addedIgnoreRules) {
+            std::cout << "      ignore " << rule << "\n";
         }
     }
 }

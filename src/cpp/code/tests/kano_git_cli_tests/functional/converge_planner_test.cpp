@@ -769,6 +769,8 @@ TEST_CASE("converge agent mode keeps implementation and test paths in one source
     const auto repoConfig = std::filesystem::path("config/repo-catalog.toml");
     const auto composeConfig = std::filesystem::path("docker-compose.webview.yml");
     const auto workflowTemplate = std::filesystem::path("templates/feature/notes.md.template");
+    const auto powerShellCache = std::filesystem::path("Microsoft/Windows/PowerShell/ModuleAnalysisCache");
+    const auto shellLog = std::filesystem::path("$log");
 
     WriteTextFile(ctx.seedRepo / implementation, "// converge implementation\n");
     WriteTextFile(ctx.seedRepo / regressionTest, "// converge tests\n");
@@ -782,6 +784,8 @@ TEST_CASE("converge agent mode keeps implementation and test paths in one source
     WriteTextFile(ctx.cloneRepo / repoConfig, "# repo catalog\n");
     WriteTextFile(ctx.cloneRepo / composeConfig, "services:\n  webview:\n    image: test\n");
     WriteTextFile(ctx.cloneRepo / workflowTemplate, "# feature notes\n");
+    WriteTextFile(ctx.cloneRepo / powerShellCache, "PowerShell module cache\n");
+    WriteTextFile(ctx.cloneRepo / shellLog, "local shell log\n");
 
     const auto result = RunKogWithEnv(
         {"converge", "--no-recursive", "--jobs", "1"},
@@ -793,20 +797,29 @@ TEST_CASE("converge agent mode keeps implementation and test paths in one source
     RequireContains(result.stdoutText, "Converge agent intent commit plan");
     RequireContains(result.stdoutText, "[KOG-Converge][BugFix] Update intent-scoped agent commits (NO-TICKET)");
     RequireContains(result.stdoutText, "[KOG][Chore] Update configuration (NO-TICKET)");
+    RequireContains(result.stdoutText, "[KOG][Chore] Update repository policy (NO-TICKET)");
     RequireContains(result.stdoutText, "[KOG][Docs] Update workflow templates (NO-TICKET)");
     RequireNotContains(result.stdoutText, "fix(kog-");
     RequireNotContains(result.stdoutText, "chore(kog");
     RequireNotContains(result.stdoutText, "docs(kog");
+    RequireNotContains(result.stdoutText, "ambiguous " + powerShellCache.generic_string());
+    RequireNotContains(result.stdoutText, "ambiguous " + shellLog.generic_string());
+    RequireContains(result.stdoutText, "local " + powerShellCache.generic_string());
+    RequireContains(result.stdoutText, "local " + shellLog.generic_string());
+    RequireContains(result.stdoutText, "ignore /Microsoft/Windows/PowerShell/ModuleAnalysisCache");
+    RequireContains(result.stdoutText, "ignore /$log");
     RequireNotContains(result.stdoutText, "ambiguous docker-compose.webview.yml");
+    RequireContains(result.stdoutText, "include .gitignore");
     RequireContains(result.stdoutText, "include " + implementation.generic_string());
     RequireContains(result.stdoutText, "include " + regressionTest.generic_string());
     RequireContains(result.stdoutText, "include " + composeConfig.generic_string());
     REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
 
-    const auto log = RunGit({"log", "--format=%s", "-n", "4"}, ctx.cloneRepo);
+    const auto log = RunGit({"log", "--format=%s", "-n", "5"}, ctx.cloneRepo);
     RequireSuccess(log, "read source intent commit log");
     RequireContains(log.stdoutText, "[KOG-Converge][BugFix] Update intent-scoped agent commits (NO-TICKET)");
     RequireContains(log.stdoutText, "[KOG][Chore] Update configuration (NO-TICKET)");
+    RequireContains(log.stdoutText, "[KOG][Chore] Update repository policy (NO-TICKET)");
     RequireContains(log.stdoutText, "[KOG][Docs] Update workflow templates (NO-TICKET)");
     RequireNotContains(log.stdoutText, "fix(kog-");
     RequireNotContains(log.stdoutText, "chore(kog");
