@@ -76,6 +76,14 @@ auto IsolatedGitConfigEnv(const SandboxContext& InSandbox) -> std::vector<std::p
     };
 }
 
+auto AddGitmodulesEntry(const std::filesystem::path& InRepo, const std::string& InName, const std::filesystem::path& InRelativePath) -> void {
+    WriteTextFile(
+        InRepo / ".gitmodules",
+        "[submodule \"" + InName + "\"]\n"
+        "\tpath = " + InRelativePath.generic_string() + "\n"
+        "\turl = ../" + InName + "\n");
+}
+
 struct RemoteClone {
     SandboxContext sandbox;
     std::filesystem::path bare;
@@ -308,6 +316,53 @@ TEST_CASE("sync dry-run summary reports blockers instead of clean success", "[fu
     REQUIRE(output.find("blocked=0") == std::string::npos);
 
     RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("doctor fix-safe-directory repairs Git dubious ownership blockers", "[functional][doctor][safe-directory][fix]") {
+    const auto sandbox = CreateSandboxWorkspace("doctor-safe-directory-fix");
+    const auto repo = (sandbox.root / "repo").lexically_normal();
+    const auto child = (repo / "child").lexically_normal();
+    const auto loose = (repo / "loose").lexically_normal();
+    InitRepo(repo);
+    InitRepo(child);
+    InitRepo(loose);
+    AddGitmodulesEntry(repo, "child", std::filesystem::path("child"));
+    RequireSuccess(RunGit({"add", ".gitmodules"}, repo), "add gitmodules");
+    RequireSuccess(RunGit({"commit", "-m", "register child"}, repo), "commit gitmodules");
+
+    auto env = IsolatedGitConfigEnv(sandbox);
+    for (auto& pair : env) {
+        if (pair.first == "GIT_CONFIG_GLOBAL") {
+            pair.second = (sandbox.root / "missing-global-parent" / "global.gitconfig").string();
+        }
+    }
+    env.push_back({"GIT_TEST_ASSUME_DIFFERENT_OWNER", "1"});
+
+    const auto before = RunKogWithEnv(
+        {"status", "--recursive", "--json", "--repo-root", repo.string(), "--no-unregistered-scan", "--no-fetch-health"},
+        repo,
+        env);
+    const auto beforeOutput = before.stdoutText + "\n" + before.stderrText;
+    RequireSuccess(before, "status should report unsafe ownership without crashing");
+    RequireContains(beforeOutput, "UNSAFE_OWNERSHIP");
+    RequireContains(beforeOutput, "kog doctor --fix-safe-directory");
+
+    const auto doctor = RunKogWithEnv({"doctor", "--repo", repo.string(), "--safe-directory", "--fix-safe-directory"}, repo, env);
+    const auto doctorOutput = doctor.stdoutText + "\n" + doctor.stderrText;
+    RequireSuccess(doctor, "doctor --fix-safe-directory should repair test-owned repos");
+    RequireContains(doctorOutput, "fixed safe.directory");
+    RequireContains(doctorOutput, "workspace safe.directory config");
+    RequireContains(doctorOutput, "loose");
+
+    const auto after = RunKogWithEnv(
+        {"status", "--recursive", "--json", "--repo-root", repo.string(), "--no-unregistered-scan", "--no-fetch-health"},
+        repo,
+        env);
+    const auto afterOutput = after.stdoutText + "\n" + after.stderrText;
+    RequireSuccess(after, "status should succeed after safe.directory repair");
+    RequireNotContains(afterOutput, "UNSAFE_OWNERSHIP");
+
+    RemoveSandboxWorkspace(sandbox);
 }
 
 TEST_CASE("auth doctor redacts credentials in explicit URLs", "[functional][auth][doctor][redaction]") {
