@@ -1081,6 +1081,27 @@ TEST_CASE("converge planner sync false policy skips behind-only repo", "[tdd][un
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge planner syncs dirty behind repo before pushing committed changes", "[tdd][unit][feature:converge-state][feature:dirty-kind][functional][converge][planner]") {
+    const auto ctx = CreateRemoteWithClone("converge-planner-dirty-behind-sync");
+
+    CommitAndPushFile(ctx.seedRepo, ctx.branch, "remote.txt", "remote moved\n", "remote moved");
+    RequireSuccess(RunGit({"fetch", "origin"}, ctx.cloneRepo), "fetch remote movement for dirty behind plan");
+    WriteTextFile(ctx.cloneRepo / "local.txt", "local dirty change\n");
+
+    const auto result = RunConvergeDryRun(ctx.cloneRepo, {"--jobs", "1"});
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContains(result.stdoutText, "Phase commit actions");
+    RequireContains(result.stdoutText, ".: kog commit -ai --repos .");
+    RequireContains(result.stdoutText, "Phase sync actions");
+    RequireContains(result.stdoutText, ".: kog sync origin-latest after commit before push");
+    RequireContains(result.stdoutText, "Phase push actions");
+    RequireContains(result.stdoutText, ".: kog push --repos . after commit");
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("converge planner default avoids full scan and opt-in blocks untrusted nested repo", "[tdd][unit][feature:converge-state][feature:dirty-kind][functional][converge][planner]") {
     const auto ctx = CreateRemoteWithClone("converge-planner-no-full-scan");
     const auto nested = (ctx.cloneRepo / "nested" / "untrusted").lexically_normal();

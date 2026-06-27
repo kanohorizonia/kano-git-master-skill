@@ -557,11 +557,18 @@ void Add(std::vector<PlanLine>& lines, const std::string& repo, const std::strin
 }
 
 void AddPushAfterCommit(Plan& plan, const RepoStatus& repo, const std::string& reason) {
-    if (Allows(repo, "push")) {
-        Add(plan.push, repo.id, "kog push --repos " + repo.id + " after " + reason);
-    } else {
+    if (!Allows(repo, "push")) {
         Add(plan.skipped, repo.id, "push skipped by commandPolicy.push=false");
+        return;
     }
+    if (repo.behind > 0) {
+        if (!Allows(repo, "sync")) {
+            Add(plan.blocked, repo.id, "BEHIND_UPSTREAM: sync required after " + reason + " before push but commandPolicy.sync=false");
+            return;
+        }
+        Add(plan.sync, repo.id, "kog sync origin-latest after " + reason + " before push");
+    }
+    Add(plan.push, repo.id, "kog push --repos " + repo.id + " after " + reason);
 }
 
 bool HasUnpushedSubmoduleCommit(const RepoStatus& repo) {
@@ -576,7 +583,7 @@ bool IsCleanNestedPreflightOnlyBlocker(const RepoStatus& repo) {
 }
 
 bool CanPublishLocalMutation(const RepoStatus& repo) {
-    return Allows(repo, "commit") && Allows(repo, "push") && !repo.remote.empty();
+    return Allows(repo, "commit") && Allows(repo, "push") && (repo.behind == 0 || Allows(repo, "sync")) && !repo.remote.empty();
 }
 
 bool CanRepoConvergeBeforeParent(const RepoStatus& repo,
