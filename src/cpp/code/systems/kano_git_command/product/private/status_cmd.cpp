@@ -247,6 +247,18 @@ auto GitCaptureNoOptionalLocks(const std::filesystem::path& InRepo, const std::v
     return GitCapture(InRepo, args);
 }
 
+auto IsUnsafeOwnershipGitError(const std::string& InText) -> bool {
+    const auto lower = [&]() {
+        std::string value = InText;
+        std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
+        return value;
+    }();
+    return lower.find("detected dubious ownership") != std::string::npos ||
+        lower.find("safe.directory") != std::string::npos;
+}
+
 auto ParsePositiveIntEnv(const char* InName) -> int {
     if (InName == nullptr) {
         return 0;
@@ -1118,6 +1130,7 @@ auto BuildRecursiveRepoStatus(const workspace::RepoRecord& InRepo,
     out.pushable = !out.selectedPushRemote.empty() && out.branch != "(detached)";
 
     const auto statusOut = GitCaptureNoOptionalLocks(InRepo.path, {"status", "--porcelain=v1", "--untracked-files=normal"});
+    const bool hasUnsafeOwnership = statusOut.exitCode != 0 && IsUnsafeOwnershipGitError(statusOut.stderrStr);
     std::vector<std::string> visibleStatus;
     if (statusOut.exitCode == 0) {
         visibleStatus = FilterVisibleStatusLines(statusOut.stdoutStr);
@@ -1234,7 +1247,9 @@ auto BuildRecursiveRepoStatus(const workspace::RepoRecord& InRepo,
     }
 
     out.conflicted = hasConflict;
-    if (hasConflict) {
+    if (hasUnsafeOwnership) {
+        out.dirtyKind = "UNSAFE_OWNERSHIP";
+    } else if (hasConflict) {
         out.dirtyKind = "CONFLICTED";
     } else if (hasIndexDirty) {
         out.dirtyKind = "INDEX_DIRTY";
@@ -1289,6 +1304,11 @@ auto BuildRecursiveRepoStatus(const workspace::RepoRecord& InRepo,
         out.isExplicitlyAllowed = true;
         out.managementPolicy = InRepo.type == "root" ? "workspace-root" : "managed";
         out.blocksConverge = false;
+    }
+
+    if (hasUnsafeOwnership) {
+        out.blocksConverge = true;
+        out.blockReason = "UNSAFE_OWNERSHIP: run kog doctor --fix-safe-directory before converge mutation";
     }
 
     if (out.isSubmodule && std::find(out.submoduleFacts.begin(), out.submoduleFacts.end(), "SubmoduleCommitUnpushed") != out.submoduleFacts.end()) {
