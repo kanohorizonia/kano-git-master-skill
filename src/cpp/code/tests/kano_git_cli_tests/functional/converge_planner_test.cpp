@@ -268,10 +268,36 @@ auto RunConvergeDryRun(const std::filesystem::path& InRoot, std::vector<std::str
     return RunKog(args, InRoot);
 }
 
+auto CommitAndPushFile(const std::filesystem::path& InRepo,
+                       const std::string& InBranch,
+                       const std::string& InRelativePath,
+                       const std::string& InContent,
+                       const std::string& InMessage) -> void {
+    RequireSuccess(RunGit({"checkout", InBranch}, InRepo), "checkout branch for remote advance");
+    WriteTextFile(InRepo / std::filesystem::path(InRelativePath), InContent);
+    RequireSuccess(RunGit({"add", InRelativePath}, InRepo), "add remote advance file");
+    RequireSuccess(RunGit({"commit", "-m", InMessage}, InRepo), "commit remote advance");
+    RequireSuccess(RunGit({"push", "origin", InBranch}, InRepo), "push remote advance");
+}
+
 auto PlanPayload(const std::string& InText) -> std::string {
     const auto start = InText.find("Converge Plan");
     REQUIRE(start != std::string::npos);
     return InText.substr(start);
+}
+
+auto RequireOrderedAfter(const std::string& InText,
+                         const std::string& InMarker,
+                         const std::string& InFirst,
+                         const std::string& InSecond) -> void {
+    const auto marker = InText.find(InMarker);
+    REQUIRE(marker != std::string::npos);
+    const auto first = InText.find(InFirst, marker);
+    const auto second = InText.find(InSecond, marker);
+    INFO(InText);
+    REQUIRE(first != std::string::npos);
+    REQUIRE(second != std::string::npos);
+    REQUIRE(first < second);
 }
 
 auto RunDiscoverFull(const std::filesystem::path& InRoot, int InDepth = 3) -> void {
@@ -280,6 +306,237 @@ auto RunDiscoverFull(const std::filesystem::path& InRoot, int InDepth = 3) -> vo
 }
 
 } // namespace
+
+TEST_CASE("converge help distinguishes repos and branches taxonomy", "[tdd][functional][feature:converge][converge][help]") {
+    const auto sandbox = CreateSandboxWorkspace("converge-help-taxonomy");
+
+    const auto help = RunKog({"converge", "--help"}, sandbox.root);
+    INFO(help.stdoutText);
+    INFO(help.stderrText);
+    REQUIRE(help.exitCode == 0);
+    const auto helpText = help.stdoutText + "\n" + help.stderrText;
+    RequireContains(helpText, "repos");
+    RequireContains(helpText, "branches");
+    RequireContains(helpText, "Converge repo state or branch state");
+
+    const auto reposHelp = RunKog({"converge", "repos", "--help"}, sandbox.root);
+    INFO(reposHelp.stdoutText);
+    INFO(reposHelp.stderrText);
+    REQUIRE(reposHelp.exitCode == 0);
+    RequireContains(reposHelp.stdoutText + "\n" + reposHelp.stderrText, "existing repo-state converge workflow");
+
+    const auto branchesHelp = RunKog({"converge", "branches", "plan", "--help"}, sandbox.root);
+    INFO(branchesHelp.stdoutText);
+    INFO(branchesHelp.stderrText);
+    REQUIRE(branchesHelp.exitCode == 0);
+    const auto branchesText = branchesHelp.stdoutText + "\n" + branchesHelp.stderrText;
+    RequireContains(branchesText, "Read-only branch convergence planner");
+    RequireContains(branchesText, "--strategy");
+    RequireNotContains(branchesText, "--status");
+    RequireNotContains(branchesText, "--resume");
+    RequireNotContains(branchesText, "--force-with-lease");
+
+    const auto ignoredRepoStateFlag = RunKog({"converge", "branches", "plan", "--status", "--target", "main", "--json"}, sandbox.root);
+    INFO(ignoredRepoStateFlag.stdoutText);
+    INFO(ignoredRepoStateFlag.stderrText);
+    REQUIRE(ignoredRepoStateFlag.exitCode != 0);
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
+TEST_CASE("converge repos alias matches legacy dry-run planner", "[tdd][functional][feature:converge-state][converge][planner][alias]") {
+    const auto ctx = CreateRemoteWithClone("converge-repos-alias");
+    const auto beforeStatus = GitStatusShort(ctx.cloneRepo);
+
+    const auto legacy = RunConvergeDryRun(ctx.cloneRepo, {"--jobs", "1"});
+    INFO(legacy.stdoutText);
+    INFO(legacy.stderrText);
+    REQUIRE(legacy.exitCode == 0);
+
+    const auto alias = RunKog({"converge", "repos", "--dry-run", "--jobs", "1"}, ctx.cloneRepo);
+    INFO(alias.stdoutText);
+    INFO(alias.stderrText);
+    REQUIRE(alias.exitCode == 0);
+
+    REQUIRE(PlanPayload(alias.stdoutText) == PlanPayload(legacy.stdoutText));
+    REQUIRE(GitStatusShort(ctx.cloneRepo) == beforeStatus);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge branches planner emits stable default rebase JSON child first", "[tdd][functional][feature:converge][converge][branches][planner]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("converge-branches-plan-default");
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneChildRepo), "checkout child branch for branch plan");
+
+    const auto result = RunKog({"converge", "branches", "plan", "--target", ctx.branch, "--json", "--jobs", "1"}, ctx.cloneRootRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    RequireContains(result.stdoutText, "\"schemaName\": \"kog.convergeBranchesPlan\"");
+    RequireContains(result.stdoutText, "\"schemaVersion\": 1");
+    RequireContains(result.stdoutText, "\"mutationPerformed\": false");
+    RequireContains(result.stdoutText, "\"targetBranch\": \"" + ctx.branch + "\"");
+    RequireContains(result.stdoutText, "\"strategy\": \"rebase\"");
+    RequireContains(result.stdoutText, "\"recursive\": true");
+    RequireContains(result.stdoutText, "\"id\": \"" + ctx.submodulePath + "\"");
+    RequireOrderedAfter(result.stdoutText, "\"traversalOrder\"", "\"" + ctx.submodulePath + "\"", "\".\"");
+    RequireContains(result.stdoutText, "\"isTarget\": true");
+    RequireContains(result.stdoutText, "\"name\": \"" + ctx.branch + "\"");
+    RequireContains(result.stdoutText, "\"blockers\": []");
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge branches planner records explicit merge override in agent JSON", "[tdd][functional][feature:converge][converge][branches][planner][agent-mode]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-plan-merge");
+    RequireSuccess(RunGit({"checkout", "-b", "feature/merge-plan"}, ctx.cloneRepo), "checkout feature branch");
+    WriteTextFile(ctx.cloneRepo / "feature.txt", "feature work\n");
+    RequireSuccess(RunGit({"add", "feature.txt"}, ctx.cloneRepo), "add feature file");
+    RequireSuccess(RunGit({"commit", "-m", "feature branch work"}, ctx.cloneRepo), "commit feature branch");
+    RequireSuccess(RunGit({"push", "-u", "origin", "feature/merge-plan"}, ctx.cloneRepo), "push feature branch for clean merge plan");
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target branch");
+
+    const auto result = RunKogWithEnv(
+        {"converge", "branches", "plan", "--target", ctx.branch, "--strategy", "merge", "--jobs", "1"},
+        ctx.cloneRepo,
+        {{"KANO_AGENT_MODE", "1"}});
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    RequireContains(result.stdoutText, "\"schemaName\": \"kog.convergeBranchesPlan\"");
+    RequireContains(result.stdoutText, "\"mutationPerformed\": false");
+    RequireContains(result.stdoutText, "\"strategy\": \"merge\"");
+    RequireContains(result.stdoutText, "\"mergedIntoTarget\": false");
+    RequireContains(result.stdoutText, "\"name\": \"feature/merge-plan\"");
+    RequireContains(result.stdoutText, "\"blockers\": []");
+    RequireContains(result.stdoutText, "would plan merge integration into " + ctx.branch);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge branches planner blocks stale target branch behind upstream", "[tdd][functional][feature:converge][converge][branches][planner][blockers]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-plan-stale-target");
+    CommitAndPushFile(ctx.seedRepo, ctx.branch, "remote-main.txt", "remote main\n", "advance remote main");
+    RequireSuccess(RunGit({"fetch", "origin", ctx.branch}, ctx.cloneRepo), "fetch advanced target remote");
+
+    const auto result = RunKog({"converge", "branches", "plan", "--target", ctx.branch, "--json", "--jobs", "1"}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 1);
+    RequireContains(result.stdoutText, "\"mutationPerformed\": false");
+    RequireContains(result.stdoutText, "\"name\": \"" + ctx.branch + "\"");
+    RequireContains(result.stdoutText, "\"behind\": 1");
+    RequireContains(result.stdoutText, "STALE_TARGET_BRANCH");
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge branches planner blocks stale non-target branch behind upstream", "[tdd][functional][feature:converge][converge][branches][planner][blockers]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-plan-stale-branch");
+    const std::string featureBranch = "feature/stale-local";
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.seedRepo), "create seed feature branch");
+    WriteTextFile(ctx.seedRepo / "feature.txt", "feature seed\n");
+    RequireSuccess(RunGit({"add", "feature.txt"}, ctx.seedRepo), "add seed feature file");
+    RequireSuccess(RunGit({"commit", "-m", "seed feature branch"}, ctx.seedRepo), "commit seed feature branch");
+    RequireSuccess(RunGit({"push", "-u", "origin", featureBranch}, ctx.seedRepo), "push seed feature branch");
+    RequireSuccess(RunGit({"fetch", "origin", featureBranch}, ctx.cloneRepo), "fetch seed feature branch");
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch, "origin/" + featureBranch}, ctx.cloneRepo), "checkout local feature branch");
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target branch");
+
+    CommitAndPushFile(ctx.seedRepo, featureBranch, "feature-remote.txt", "feature remote\n", "advance remote feature");
+    RequireSuccess(RunGit({"fetch", "origin", featureBranch}, ctx.cloneRepo), "fetch advanced feature remote");
+
+    const auto result = RunKog({"converge", "branches", "plan", "--target", ctx.branch, "--json", "--jobs", "1"}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 1);
+    RequireContains(result.stdoutText, "\"mutationPerformed\": false");
+    RequireContains(result.stdoutText, "\"name\": \"" + featureBranch + "\"");
+    RequireContains(result.stdoutText, "\"behind\": 1");
+    RequireContains(result.stdoutText, "STALE_LOCAL_BRANCH");
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge branches planner blocks dirty unpushed and missing target cases", "[tdd][functional][feature:converge][converge][branches][planner][blockers]") {
+    {
+        const auto ctx = CreateRemoteWithClone("converge-branches-plan-dirty-blocker");
+        WriteTextFile(ctx.cloneRepo / "dirty.txt", "dirty\n");
+
+        const auto result = RunKog({"converge", "branches", "plan", "--target", ctx.branch, "--json", "--jobs", "1"}, ctx.cloneRepo);
+        INFO(result.stdoutText);
+        INFO(result.stderrText);
+        REQUIRE(result.exitCode == 1);
+        RequireContains(result.stdoutText, "\"mutationPerformed\": false");
+        RequireContains(result.stdoutText, "DIRTY_WORKTREE:");
+        RemoveSandboxWorkspace(ctx.sandbox);
+    }
+    {
+        const auto ctx = CreateRemoteWithClone("converge-branches-plan-unpushed-blocker");
+        const std::string featureBranch = "feature/ahead-local";
+        RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout local ahead feature branch");
+        WriteTextFile(ctx.cloneRepo / "ahead.txt", "ahead seed\n");
+        RequireSuccess(RunGit({"add", "ahead.txt"}, ctx.cloneRepo), "add ahead file");
+        RequireSuccess(RunGit({"commit", "-m", "seed ahead feature"}, ctx.cloneRepo), "commit ahead feature");
+        RequireSuccess(RunGit({"push", "-u", "origin", featureBranch}, ctx.cloneRepo), "push initial ahead feature");
+        WriteTextFile(ctx.cloneRepo / "ahead.txt", "ahead local\n");
+        RequireSuccess(RunGit({"commit", "-am", "local ahead feature"}, ctx.cloneRepo), "commit local ahead feature");
+        RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target branch");
+
+        const auto result = RunKog({"converge", "branches", "plan", "--target", ctx.branch, "--json", "--jobs", "1"}, ctx.cloneRepo);
+        INFO(result.stdoutText);
+        INFO(result.stderrText);
+        REQUIRE(result.exitCode == 1);
+        RequireContains(result.stdoutText, "\"name\": \"" + featureBranch + "\"");
+        RequireContains(result.stdoutText, "UNPUSHED_COMMITS");
+        RemoveSandboxWorkspace(ctx.sandbox);
+    }
+    {
+        const auto ctx = CreateRemoteWithClone("converge-branches-plan-local-only-blocker");
+        const std::string featureBranch = "feature/local-only";
+        RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout local-only feature branch");
+        WriteTextFile(ctx.cloneRepo / "local-only.txt", "local only\n");
+        RequireSuccess(RunGit({"add", "local-only.txt"}, ctx.cloneRepo), "add local-only file");
+        RequireSuccess(RunGit({"commit", "-m", "local-only feature"}, ctx.cloneRepo), "commit local-only feature");
+        RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target branch");
+
+        const auto result = RunKog({"converge", "branches", "plan", "--target", ctx.branch, "--json", "--jobs", "1"}, ctx.cloneRepo);
+        INFO(result.stdoutText);
+        INFO(result.stderrText);
+        REQUIRE(result.exitCode == 1);
+        RequireContains(result.stdoutText, "\"name\": \"" + featureBranch + "\"");
+        RequireContains(result.stdoutText, "\"hasUpstream\": false");
+        RequireContains(result.stdoutText, "UNPUSHED_COMMITS");
+        RemoveSandboxWorkspace(ctx.sandbox);
+    }
+    {
+        const auto ctx = CreateRemoteWithClone("converge-branches-plan-missing-target-blocker");
+        const auto result = RunKog({"converge", "branches", "plan", "--target", "missing-target", "--json", "--jobs", "1"}, ctx.cloneRepo);
+        INFO(result.stdoutText);
+        INFO(result.stderrText);
+        REQUIRE(result.exitCode == 1);
+        RequireContains(result.stdoutText, "TARGET_REF_MISSING");
+        RemoveSandboxWorkspace(ctx.sandbox);
+    }
+}
+
+TEST_CASE("converge branches planner emits clean agent JSON without command log preamble", "[tdd][functional][feature:converge][converge][branches][planner][agent-mode]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-plan-agent-json-clean");
+
+    const auto result = RunKogWithEnv(
+        {"converge", "branches", "plan", "--target", ctx.branch, "--jobs", "1"},
+        ctx.cloneRepo,
+        {{"KANO_AGENT_MODE", "1"}});
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireNotContains(result.stdoutText, "[run]");
+    RequireContains(result.stdoutText, "\"mutationPerformed\": false");
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
 
 TEST_CASE("converge planner dry-run prints deterministic executable plan", "[tdd][unit][feature:converge-state][feature:dirty-kind][functional][converge][planner]") {
     const auto ctx = CreateRemoteWithClone("converge-planner-plan");
