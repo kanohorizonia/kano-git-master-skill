@@ -828,6 +828,156 @@ auto BaseNameLower(const std::string& InCommand) -> std::string {
     return ToLower(base);
 }
 
+auto TrimCopy(std::string Value) -> std::string {
+    auto isSpace = [](unsigned char ch) { return std::isspace(ch) != 0; };
+    Value.erase(Value.begin(), std::find_if(Value.begin(), Value.end(), [&](char ch) { return !isSpace(static_cast<unsigned char>(ch)); }));
+    Value.erase(std::find_if(Value.rbegin(), Value.rend(), [&](char ch) { return !isSpace(static_cast<unsigned char>(ch)); }).base(), Value.end());
+    return Value;
+}
+
+auto IsGitCommand(const std::string& InCommand) -> bool {
+    const auto base = BaseNameLower(InCommand);
+    return base == "git" || base == "git.exe";
+}
+
+auto IsFalseEnvValue(const char* InValue) -> bool {
+    if (InValue == nullptr) {
+        return false;
+    }
+    const auto value = ToLower(TrimCopy(std::string(InValue)));
+    return value == "0" || value == "false" || value == "no" || value == "off";
+}
+
+auto ResolveGitStartDirectory(const std::vector<std::string>& InArgs,
+                              const std::optional<std::filesystem::path>& InWorkingDir) -> std::filesystem::path {
+    std::error_code ec;
+    auto start = InWorkingDir.has_value() ? *InWorkingDir : std::filesystem::current_path(ec);
+    if (ec) {
+        start = std::filesystem::path{"."};
+    }
+
+    for (std::size_t i = 0; i + 1 < InArgs.size(); ++i) {
+        if (InArgs[i] != "-C") {
+            continue;
+        }
+        std::filesystem::path candidate(InArgs[i + 1]);
+        if (candidate.is_relative()) {
+            candidate = start / candidate;
+        }
+        start = candidate.lexically_normal();
+        ++i;
+    }
+
+    auto normalized = std::filesystem::weakly_canonical(start, ec);
+    if (ec) {
+        normalized = std::filesystem::absolute(start, ec);
+    }
+    if (ec) {
+        normalized = start.lexically_normal();
+    }
+    return normalized.lexically_normal();
+}
+
+auto FindWorkspaceSafeDirectoryConfig(const std::filesystem::path& InStart) -> std::optional<std::filesystem::path> {
+    if (IsFalseEnvValue(std::getenv("KOG_SAFE_DIRECTORY_AUTO"))) {
+        return std::nullopt;
+    }
+
+    if (const auto* explicitPath = std::getenv("KOG_SAFE_DIRECTORY_CONFIG"); explicitPath != nullptr && explicitPath[0] != '\0') {
+        std::error_code explicitEc;
+        const std::filesystem::path configured(explicitPath);
+        if (std::filesystem::is_regular_file(configured, explicitEc)) {
+            return configured;
+        }
+    }
+
+    std::error_code ec;
+    auto cursor = std::filesystem::weakly_canonical(InStart, ec);
+    if (ec) {
+        cursor = InStart.lexically_normal();
+    }
+    if (!std::filesystem::is_directory(cursor, ec)) {
+        cursor = cursor.parent_path();
+    }
+
+    while (!cursor.empty()) {
+        const auto candidate = cursor / ".kano" / "git" / "safe-directory.gitconfig";
+        if (std::filesystem::is_regular_file(candidate, ec)) {
+            return candidate;
+        }
+        if (!cursor.has_parent_path() || cursor == cursor.parent_path()) {
+            break;
+        }
+        cursor = cursor.parent_path();
+    }
+    return std::nullopt;
+}
+
+auto ReadWorkspaceSafeDirectories(const std::filesystem::path& InConfigPath) -> std::vector<std::string> {
+    std::ifstream input(InConfigPath);
+    if (!input) {
+        return {};
+    }
+
+    std::vector<std::string> values;
+    bool inSafeSection = false;
+    std::string line;
+    while (std::getline(input, line)) {
+        line = TrimCopy(line);
+        if (line.empty() || line[0] == '#' || line[0] == ';') {
+            continue;
+        }
+        if (line.front() == '[' && line.back() == ']') {
+            inSafeSection = ToLower(line) == "[safe]";
+            continue;
+        }
+        if (!inSafeSection) {
+            continue;
+        }
+        const auto equals = line.find('=');
+        if (equals == std::string::npos) {
+            continue;
+        }
+        const auto key = TrimCopy(line.substr(0, equals));
+        if (key != "directory") {
+            continue;
+        }
+        auto value = TrimCopy(line.substr(equals + 1));
+        if (!value.empty()) {
+            values.push_back(std::move(value));
+        }
+    }
+    return values;
+}
+
+auto WithGitSafeDirectoryDefaults(const std::string& InCommand,
+                                  const std::vector<std::string>& InArgs,
+                                  const std::optional<std::filesystem::path>& InWorkingDir) -> std::vector<std::string> {
+    if (!IsGitCommand(InCommand)) {
+        return InArgs;
+    }
+
+    const auto start = ResolveGitStartDirectory(InArgs, InWorkingDir);
+    const auto configPath = FindWorkspaceSafeDirectoryConfig(start);
+    if (!configPath.has_value()) {
+        return InArgs;
+    }
+
+    const auto safeDirectories = ReadWorkspaceSafeDirectories(*configPath);
+    if (safeDirectories.empty()) {
+        return InArgs;
+    }
+
+    std::vector<std::string> prefixed;
+    prefixed.reserve(InArgs.size() + safeDirectories.size() * 2);
+    for (const auto& directory : safeDirectories) {
+        prefixed.push_back("-c");
+        prefixed.push_back("safe.directory=" + directory);
+    }
+    prefixed.insert(prefixed.end(), InArgs.begin(), InArgs.end());
+    return prefixed;
+}
+
 auto NormalizeWindowsExecutable(const std::string& InCommand) -> std::string {
     const auto base = BaseNameLower(InCommand);
     if (base == "cmd") {
@@ -968,7 +1118,8 @@ auto ExecuteCommand(
     ProgressCallback InProgressCallback
 ) -> ExecResult
 {
-    const auto effectiveArgs = WithGitNonInteractiveDefaults(InCommand, InArgs);
+    const auto nonInteractiveArgs = WithGitNonInteractiveDefaults(InCommand, InArgs);
+    const auto effectiveArgs = WithGitSafeDirectoryDefaults(InCommand, nonInteractiveArgs, InWorkingDir);
     const bool processDiagEnabled = IsProcessDiagnosticsEnabled();
     const auto processDiagStartTs = processDiagEnabled ? CurrentUtcTimestamp() : std::string{};
     const auto processDiagCwd = InWorkingDir.has_value() ? InWorkingDir->lexically_normal() : std::filesystem::current_path();
