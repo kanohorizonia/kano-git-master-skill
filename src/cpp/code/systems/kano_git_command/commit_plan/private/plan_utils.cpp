@@ -3017,6 +3017,20 @@ auto IsValidPlanPathspec(const std::filesystem::path& InRepoRoot, const std::str
     if (InPathspec.empty()) {
         return false;
     }
+
+    const auto repoRoot = InRepoRoot.lexically_normal();
+    const auto candidate = (repoRoot / std::filesystem::path(InPathspec)).lexically_normal();
+    const auto relative = candidate.lexically_relative(repoRoot);
+    const auto relativeText = relative.generic_string();
+    if (relativeText.empty() || relative.is_absolute() || relativeText.rfind("..", 0) == 0) {
+        return false;
+    }
+
+    std::error_code ec;
+    if (std::filesystem::exists(candidate, ec)) {
+        return true;
+    }
+
     const auto probe = GitCapture(InRepoRoot, {"add", "-n", "-A", "--", InPathspec});
     return probe.exitCode == 0;
 }
