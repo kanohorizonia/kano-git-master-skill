@@ -6,65 +6,65 @@
       <description>Last 10 notes on Kano Git Master Skill</description>
       <generator>Quartz -- quartz.jzhao.xyz</generator>
       <item>
-    <title>index</title>
-    <link>https://kanohorizonia.github.io/kano-git-master-skill/</link>
-    <guid>https://kanohorizonia.github.io/kano-git-master-skill/</guid>
-    <description>Git Master Skill Documentation Version: 0.0.1 Status: Alpha Release Current command contract updated: 2026-06-22 This documentation set contains both current native-CLI docs ...</description>
-    <pubDate>Sat, 27 Jun 2026 17:59:35 GMT</pubDate>
-  </item><item>
     <title>API Overview</title>
     <link>https://kanohorizonia.github.io/kano-git-master-skill/api/overview</link>
     <guid>https://kanohorizonia.github.io/kano-git-master-skill/api/overview</guid>
     <description>API Overview This site publishes generated C++ API documentation under /api-docs/. Open generated API docs The generated API pages are produced from the public C++ facade headers with Doxygen.</description>
-    <pubDate>Sat, 27 Jun 2026 17:59:35 GMT</pubDate>
+    <pubDate>Sun, 28 Jun 2026 17:49:21 GMT</pubDate>
   </item><item>
-    <title>worktree</title>
-    <link>https://kanohorizonia.github.io/kano-git-master-skill/guides/worktree</link>
-    <guid>https://kanohorizonia.github.io/kano-git-master-skill/guides/worktree</guid>
-    <description>Phase 2: Worktree Implementation - Complete Overview Successfully implemented comprehensive worktree management functionality for kano-git-master-skill ...</description>
-    <pubDate>Sat, 27 Jun 2026 17:59:35 GMT</pubDate>
+    <title>index</title>
+    <link>https://kanohorizonia.github.io/kano-git-master-skill/</link>
+    <guid>https://kanohorizonia.github.io/kano-git-master-skill/</guid>
+    <description>Git Master Skill Documentation Version: 0.0.1 Status: Alpha Release Current command contract updated: 2026-06-22 This documentation set contains both current native-CLI docs ...</description>
+    <pubDate>Sun, 28 Jun 2026 17:49:21 GMT</pubDate>
   </item><item>
-    <title>perforce-to-git</title>
-    <link>https://kanohorizonia.github.io/kano-git-master-skill/migrations/perforce-to-git</link>
-    <guid>https://kanohorizonia.github.io/kano-git-master-skill/migrations/perforce-to-git</guid>
-    <description>Perforce to Git Migration Guide Last Updated: 2026-02-12 Overview This guide covers migrating from Perforce to Git, including gradual migration strategies, hybrid workflows, ...</description>
-    <pubDate>Sat, 27 Jun 2026 17:59:35 GMT</pubDate>
+    <title>ci-cd-trigger-policy</title>
+    <link>https://kanohorizonia.github.io/kano-git-master-skill/status/ci-cd-trigger-policy</link>
+    <guid>https://kanohorizonia.github.io/kano-git-master-skill/status/ci-cd-trigger-policy</guid>
+    <description>CI/CD Trigger Policy Date: 2026-06-23 Backlog items: KG-TSK-0093, KG-TSK-0094, KG-TSK-0097 Policy Jenkins is the canonical CI/CD runner for kano-git-master-skill ...</description>
+    <pubDate>Sun, 28 Jun 2026 17:49:21 GMT</pubDate>
   </item><item>
-    <title>svn-to-git</title>
-    <link>https://kanohorizonia.github.io/kano-git-master-skill/migrations/svn-to-git</link>
-    <guid>https://kanohorizonia.github.io/kano-git-master-skill/migrations/svn-to-git</guid>
-    <description>Subversion to Git Migration Guide Last Updated: 2026-02-12 Overview This guide covers migrating from Subversion (SVN) to Git, including gradual migration strategies, hybrid ...</description>
-    <pubDate>Sat, 27 Jun 2026 17:59:35 GMT</pubDate>
+    <title>cpp-stage-refactor-backlog</title>
+    <link>https://kanohorizonia.github.io/kano-git-master-skill/status/cpp-stage-refactor-backlog</link>
+    <guid>https://kanohorizonia.github.io/kano-git-master-skill/status/cpp-stage-refactor-backlog</guid>
+    <description>C++ Stage Refactor Backlog Status: draft local issue set — 6/6 complete ✅ Scope: src/cpp/shared/infra + src/cpp/scripts Why this exists GitHub issue creation is blocked in the current ...</description>
+    <pubDate>Sun, 28 Jun 2026 17:49:21 GMT</pubDate>
   </item><item>
-    <title>cli-architecture-proposal</title>
-    <link>https://kanohorizonia.github.io/kano-git-master-skill/planning/cli-architecture-proposal</link>
-    <guid>https://kanohorizonia.github.io/kano-git-master-skill/planning/cli-architecture-proposal</guid>
-    <description>Kano Git Master Skill - CLI Architecture Proposal Date: 2026-02-13 Status: Planning Phase Purpose: Convert shell script collection into unified CLI tool Current State Project ...</description>
-    <pubDate>Sat, 27 Jun 2026 17:59:35 GMT</pubDate>
+    <title>pgo-coverage-shared-infra-tracking</title>
+    <link>https://kanohorizonia.github.io/kano-git-master-skill/status/pgo-coverage-shared-infra-tracking</link>
+    <guid>https://kanohorizonia.github.io/kano-git-master-skill/status/pgo-coverage-shared-infra-tracking</guid>
+    <description>PGO and coverage shared-infra tracking Status: tracking note for KG-TSK-0088 Updated: 2026-06-23 Scope This note tracks how kano-git-master-skill currently consumes the shared ...</description>
+    <pubDate>Sun, 28 Jun 2026 17:49:21 GMT</pubDate>
   </item><item>
-    <title>tui-branch-transplant-workflows</title>
-    <link>https://kanohorizonia.github.io/kano-git-master-skill/planning/tui-branch-transplant-workflows</link>
-    <guid>https://kanohorizonia.github.io/kano-git-master-skill/planning/tui-branch-transplant-workflows</guid>
-    <description>TUI Branch Transplant Workflows Date: 2026-03-13 Status: Planning Scope: kog tui branch-to-branch transplant UX for cherry-pick and rebase assist Overview This document defines ...</description>
-    <pubDate>Sat, 27 Jun 2026 17:59:35 GMT</pubDate>
+    <title>ignore-plan-operator-workflow</title>
+    <link>https://kanohorizonia.github.io/kano-git-master-skill/guides/ignore-plan-operator-workflow</link>
+    <guid>https://kanohorizonia.github.io/kano-git-master-skill/guides/ignore-plan-operator-workflow</guid>
+    <description>Ignore Plan Operator Workflow This guide is for day-to-day operators who run the ignore stage in plan pipelines. It focuses on: deterministic command sequence (init -&gt; ignore-init -&gt; verify -&gt; apply) fast troubleshooting from error text to next action evidence checklist for bug reports and audit trails Scope This guide covers only stages.ignore operations: kog plan new kog plan ignore-init kog plan verify pre-apply --stage ignore kog plan apply --stage ignore kog plan verify ignore --context plan Standard Flow Use one plan file consistently in the whole run: # 1) Create or refresh plan template ./kog plan new --plan-file .kano/tmp/git/plans/default-plan.json --force # 2) Populate ignore candidates from current working tree ./kog plan ignore-init --plan-file .kano/tmp/git/plans/default-plan.json --max-per-repo 200 # 3) Validate ignore-stage schema and required shape ./kog plan verify pre-apply --stage ignore --plan-file .kano/tmp/git/plans/default-plan.json # 4) Apply merged/deduplicated rules to targets ./kog plan apply --stage ignore --plan-file .kano/tmp/git/plans/default-plan.json # 5) Confirm gate status ./kog plan verify ignore --context plan Troubleshooting Matrix Case: plan file not found/readable Typical error: Error: plan file not found/readable: &lt;path&gt; Action: Run kog plan new --plan-file &quot;&lt;path&gt;&quot; --force Re-run the original command with the same --plan-file.</description>
+    <pubDate>Sun, 28 Jun 2026 17:49:21 GMT</pubDate>
   </item><item>
-    <title>README</title>
-    <link>https://kanohorizonia.github.io/kano-git-master-skill/profiling/README</link>
-    <guid>https://kanohorizonia.github.io/kano-git-master-skill/profiling/README</guid>
-    <description>Profiling Area This directory contains curated build-feature profiling matrices that measure the effect of individual build options on compile and link times ...</description>
-    <pubDate>Sat, 27 Jun 2026 17:59:35 GMT</pubDate>
+    <title>kcc-commit-message-policy</title>
+    <link>https://kanohorizonia.github.io/kano-git-master-skill/guides/kcc-commit-message-policy</link>
+    <guid>https://kanohorizonia.github.io/kano-git-master-skill/guides/kcc-commit-message-policy</guid>
+    <description>KCC Commit Message Policy Kano Commit Convention (KCC) gives agent and human commits a stable subject shape for backlog traceability and reporting. Subject Shape Use: [Area][Intent] Concise subject (TICKET-ID) Examples: [Docs][Feature] Revamp README landing page (KOB-TSK-0042) [KOG][BugFix] Keep plan-file commits intent-scoped (KOA-TSK-0149) [Backlog][Task] Link public artifact contract (KG-FTR-0014) Area examples: KOG Backlog Docs Build Submodule Release Intent examples: Feature BugFix Task Docs Chore Maintenance Ticket IDs should use the backlog identifier that owns the work, such as KOB-TSK-0042, KOA-TSK-0149, or KG-FTR-0014.</description>
+    <pubDate>Sun, 28 Jun 2026 17:49:21 GMT</pubDate>
   </item><item>
-    <title>v0.0.1-alpha-no-go</title>
-    <link>https://kanohorizonia.github.io/kano-git-master-skill/release/v0.0.1-alpha-no-go</link>
-    <guid>https://kanohorizonia.github.io/kano-git-master-skill/release/v0.0.1-alpha-no-go</guid>
-    <description>v0.0.1 Alpha GitHub Release No-Go Report Date: 2026-06-23 Status: Superseded on 2026-06-24 by the reviewed source-archive release. See v0.0.1 alpha release report and the published GitHub Release.</description>
-    <pubDate>Sat, 27 Jun 2026 17:59:35 GMT</pubDate>
+    <title>new-features</title>
+    <link>https://kanohorizonia.github.io/kano-git-master-skill/guides/new-features</link>
+    <guid>https://kanohorizonia.github.io/kano-git-master-skill/guides/new-features</guid>
+    <description>Git Master Skill - New Features Guide Version: 2.0 Last Updated: 2026-02-12 Overview This document provides a quick reference to all new features added to kano-git-master-skill ...</description>
+    <pubDate>Sun, 28 Jun 2026 17:49:21 GMT</pubDate>
   </item><item>
-    <title>v0.0.1-alpha-release</title>
-    <link>https://kanohorizonia.github.io/kano-git-master-skill/release/v0.0.1-alpha-release</link>
-    <guid>https://kanohorizonia.github.io/kano-git-master-skill/release/v0.0.1-alpha-release</guid>
-    <description>v0.0.1 Alpha Release Report Date: 2026-06-24 GitHub Release: github.com/kanohorizonia/kano-git-master-skill/releases/tag/v0.0.1 Decision Publish GitHub Release v0.0.1 ...</description>
-    <pubDate>Sat, 27 Jun 2026 17:59:35 GMT</pubDate>
+    <title>public-artifact-contract</title>
+    <link>https://kanohorizonia.github.io/kano-git-master-skill/guides/public-artifact-contract</link>
+    <guid>https://kanohorizonia.github.io/kano-git-master-skill/guides/public-artifact-contract</guid>
+    <description>Public Artifact Contract This contract defines what kano-git-master-skill may claim for public release artifacts. It separates source tags, local archive exports, package-manager recipe scaffolding, and future downloadable binaries.</description>
+    <pubDate>Sun, 28 Jun 2026 17:49:21 GMT</pubDate>
+  </item><item>
+    <title>quick-start</title>
+    <link>https://kanohorizonia.github.io/kano-git-master-skill/guides/quick-start</link>
+    <guid>https://kanohorizonia.github.io/kano-git-master-skill/guides/quick-start</guid>
+    <description>Git Master Skill Quick Start This guide uses the current native kog command surface. Historical root shell scripts such as update-repo.sh, discover-repos.sh, and status-all-repos.sh are no longer the supported entrypoints.</description>
+    <pubDate>Sun, 28 Jun 2026 17:49:21 GMT</pubDate>
   </item>
     </channel>
   </rss>
