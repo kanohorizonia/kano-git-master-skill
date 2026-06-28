@@ -335,3 +335,7 @@ Do not document new primary workflows as old root shell paths such as `scripts/c
 Shared build helpers live under `src/cpp/shared/infra/scripts/`. They are backing
 infrastructure for native build/test flows, not the main user-facing Git command
 surface.
+
+Codex app-server diagnostic/thread utilities live under
+`src/shell/codex-appserver/`. They are support scripts for local observer and
+session debugging, not primary Git Master workflows.

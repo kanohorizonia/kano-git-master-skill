@@ -52,6 +52,10 @@ Use them only when debugging the build layer itself. Do not replace the launcher
 flow with ad-hoc direct CMake/Ninja command sequences unless a maintainer asks
 for it.
 
+Codex app-server diagnostic/thread utilities live under
+`src/shell/codex-appserver/`. They are support scripts for local observer and
+session debugging, not primary Git Master workflows.
+
 ## Bash Completion
 
 ```bash
