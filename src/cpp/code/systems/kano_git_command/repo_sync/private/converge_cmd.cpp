@@ -1065,6 +1065,19 @@ std::optional<IntentCommitGroup> ClassifyKogSourceIntentPath(const std::string& 
             path);
     }
 
+    if (lowered.rfind("bin/", 0) == 0 ||
+        lowered.rfind("vars/", 0) == 0 ||
+        lowered.ends_with(".groovy") ||
+        lowered.ends_with(".ps1") ||
+        lowered.ends_with(".py") ||
+        lowered.ends_with(".sh")) {
+        return MakeGroup(
+            "automation-scripts",
+            KccSubject("Automation", "Chore", "Update automation scripts"),
+            "native classifier matched generic automation or pipeline script path",
+            path);
+    }
+
     if (lowered.rfind("config/", 0) == 0 ||
         lowered.rfind(".github/", 0) == 0 ||
         lowered.starts_with("docker-compose") ||

@@ -883,6 +883,44 @@ TEST_CASE("converge agent mode scopes add delete and rename source paths to one 
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge agent mode groups generic automation pipeline scripts", "[tdd][functional][feature:converge-state][converge][agent-mode][intent-commits]") {
+    const auto ctx = CreateRemoteWithClone("converge-agent-automation-scripts");
+
+    const auto validator = std::filesystem::path("bin/validate/orchestrator_contracts.py");
+    const auto pipeline = std::filesystem::path("vars/unrealBuild.groovy");
+
+    WriteTextFile(ctx.seedRepo / validator, "# validator\n");
+    WriteTextFile(ctx.seedRepo / pipeline, "// pipeline\n");
+    RequireSuccess(RunGit({"add", "bin", "vars"}, ctx.seedRepo), "seed tracked automation scripts");
+    RequireSuccess(RunGit({"commit", "-m", "seed automation scripts"}, ctx.seedRepo), "commit automation script seed");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.seedRepo), "push automation script seed");
+    RequireSuccess(RunGit({"pull", "--rebase", "origin", ctx.branch}, ctx.cloneRepo), "pull automation script seed");
+
+    WriteTextFile(ctx.cloneRepo / validator, "# validator\n# scoped by automation classifier\n");
+    WriteTextFile(ctx.cloneRepo / pipeline, "// pipeline\n// scoped by automation classifier\n");
+
+    const auto result = RunKogWithEnv(
+        {"converge", "--no-recursive", "--jobs", "1"},
+        ctx.cloneRepo,
+        {{"KANO_AGENT_MODE", "1"}});
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContains(result.stdoutText, "Converge agent intent commit plan");
+    RequireContains(result.stdoutText, "[Automation][Chore] Update automation scripts (NO-TICKET)");
+    RequireContains(result.stdoutText, "include " + validator.generic_string());
+    RequireContains(result.stdoutText, "include " + pipeline.generic_string());
+    RequireNotContains(result.stdoutText, "ambiguous " + validator.generic_string());
+    RequireNotContains(result.stdoutText, "ambiguous " + pipeline.generic_string());
+    REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
+
+    const auto log = RunGit({"log", "--format=%s", "-n", "3"}, ctx.cloneRepo);
+    RequireSuccess(log, "read automation script intent commit log");
+    RequireContains(log.stdoutText, "[Automation][Chore] Update automation scripts (NO-TICKET)");
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("converge runtime repeats passes until nested parent pointers are clean", "[tdd][functional][feature:converge-state][feature:dirty-kind][converge][planner]") {
     const auto ctx = CreateRemoteWithNestedSubmoduleClone("converge-runtime-nested-fixpoint");
     RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneLeafRepo), "checkout leaf branch for nested fixpoint");
