@@ -3013,6 +3013,32 @@ auto NormalizeCommitPlanToken(std::string InValue) -> std::string {
     return Trim(compact);
 }
 
+auto IsTrackedPathspecInHead(const std::filesystem::path& InRepoRoot, const std::string& InPathspec) -> bool {
+    auto normalized = NormalizeCommitPlanToken(InPathspec);
+    while (!normalized.empty() && normalized.back() == '/') {
+        normalized.pop_back();
+    }
+    if (normalized.empty()) {
+        return false;
+    }
+
+    const auto tree = GitCapture(InRepoRoot, {"ls-tree", "-r", "--name-only", "HEAD", "--", normalized});
+    if (tree.exitCode != 0) {
+        return false;
+    }
+
+    std::istringstream lines(tree.stdoutStr);
+    std::string line;
+    const auto prefix = normalized + "/";
+    while (std::getline(lines, line)) {
+        line = NormalizeCommitPlanToken(line);
+        if (line == normalized || line.rfind(prefix, 0) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 auto IsValidPlanPathspec(const std::filesystem::path& InRepoRoot, const std::string& InPathspec) -> bool {
     if (InPathspec.empty()) {
         return false;
@@ -3028,6 +3054,10 @@ auto IsValidPlanPathspec(const std::filesystem::path& InRepoRoot, const std::str
 
     std::error_code ec;
     if (std::filesystem::exists(candidate, ec)) {
+        return true;
+    }
+
+    if (IsTrackedPathspecInHead(InRepoRoot, InPathspec)) {
         return true;
     }
 

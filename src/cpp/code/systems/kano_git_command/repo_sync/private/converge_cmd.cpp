@@ -24,6 +24,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -145,6 +146,13 @@ struct IntentCommitGroup {
     std::string message;
     std::string reviewReason;
     std::vector<std::string> includePaths;
+};
+
+struct DirtyPathEntry {
+    std::string path;
+    std::string originalPath;
+    std::string statusKind;
+    std::string rawStatus;
 };
 
 struct IntentCommitPlan {
@@ -1119,6 +1127,123 @@ std::optional<IntentCommitGroup> ClassifyIntentPath(std::string path) {
     return ClassifyKogSourceIntentPath(path);
 }
 
+std::string TicketCommitType(const std::string& itemId) {
+    const auto kind = WorkItemKind(itemId);
+    if (kind == "bug" || kind == "issue") return "BugFix";
+    if (kind == "feature" || kind == "story" || kind == "epic") return "Feature";
+    if (kind == "adr") return "Docs";
+    return "Chore";
+}
+
+std::string DirtyStatusKind(std::string_view rawStatus) {
+    if (rawStatus == "??") return "untracked";
+    if (rawStatus == "!!") return "ignored";
+    if (rawStatus.find('R') != std::string_view::npos) return "renamed";
+    if (rawStatus.find('C') != std::string_view::npos) return "copied";
+    if (rawStatus.find('D') != std::string_view::npos) return "deleted";
+    if (rawStatus.find('A') != std::string_view::npos) return "added";
+    if (rawStatus.find('M') != std::string_view::npos) return "modified";
+    if (rawStatus.find('U') != std::string_view::npos) return "unmerged";
+    return "changed";
+}
+
+std::optional<std::string> ExtractDirtyEntryWorkItemId(const DirtyPathEntry& entry) {
+    if (const auto itemId = ExtractWorkItemId(entry.path); itemId.has_value()) {
+        return itemId;
+    }
+    if (!entry.originalPath.empty()) {
+        return ExtractWorkItemId(entry.originalPath);
+    }
+    return std::nullopt;
+}
+
+std::optional<std::string> UniqueWorkItemIdForDirtyEntries(const std::vector<DirtyPathEntry>& entries) {
+    std::set<std::string> itemIds;
+    for (const auto& entry : entries) {
+        if (const auto itemId = ExtractDirtyEntryWorkItemId(entry); itemId.has_value()) {
+            itemIds.insert(*itemId);
+        }
+    }
+    if (itemIds.size() != 1) {
+        return std::nullopt;
+    }
+    return *itemIds.begin();
+}
+
+bool IsKogSourceIntentPath(const std::string& path) {
+    const auto normalized = NormalizeGitPath(path);
+    if (normalized.empty()) {
+        return false;
+    }
+    const auto lowered = ToLower(normalized);
+    if (lowered.rfind("products/", 0) == 0 || lowered.rfind("_shared/", 0) == 0) {
+        return false;
+    }
+    return ClassifyKogSourceIntentPath(normalized).has_value();
+}
+
+bool IsTicketContextPromotableEntry(const DirtyPathEntry& entry, const std::string& itemId) {
+    if (const auto pathItemId = ExtractWorkItemId(entry.path); pathItemId.has_value() && *pathItemId != itemId) {
+        return false;
+    }
+    if (!entry.originalPath.empty()) {
+        if (const auto originalItemId = ExtractWorkItemId(entry.originalPath); originalItemId.has_value() && *originalItemId != itemId) {
+            return false;
+        }
+    }
+    return IsKogSourceIntentPath(entry.path) || (!entry.originalPath.empty() && IsKogSourceIntentPath(entry.originalPath));
+}
+
+std::string TicketContextSubsystemForDirtyEntries(const std::vector<DirtyPathEntry>& entries, const std::string& itemId) {
+    for (const auto& entry : entries) {
+        if (!IsTicketContextPromotableEntry(entry, itemId)) {
+            continue;
+        }
+        const auto path = ToLower(entry.path + "\n" + entry.originalPath);
+        if (path.find("converge") != std::string::npos ||
+            path.find("repo_sync/private/converge_cmd.cpp") != std::string::npos) {
+            return "KOG-Converge";
+        }
+    }
+    for (const auto& entry : entries) {
+        if (!IsTicketContextPromotableEntry(entry, itemId)) {
+            continue;
+        }
+        const auto path = ToLower(entry.path + "\n" + entry.originalPath);
+        if (path.find("commit_plan") != std::string::npos) {
+            return "KOG-CommitPlan";
+        }
+    }
+    return "KOG";
+}
+
+IntentCommitGroup MakeTicketContextGroup(const std::string& itemId, const std::string& subsystem) {
+    IntentCommitGroup group;
+    group.key = "kog-ticket:" + itemId;
+    group.message = KccSubject(subsystem, TicketCommitType(itemId), "Update " + itemId + " implementation intent", itemId);
+    group.reviewReason = "native classifier matched status-aware dirty entries for unique work item " + itemId;
+    return group;
+}
+
+std::optional<IntentCommitGroup> ClassifyDirtyEntryIntent(const DirtyPathEntry& entry) {
+    if (auto classified = ClassifyIntentPath(entry.path); classified.has_value()) {
+        return classified;
+    }
+    if (!entry.originalPath.empty()) {
+        return ClassifyIntentPath(entry.originalPath);
+    }
+    return std::nullopt;
+}
+
+void AppendDirtyEntryIncludePaths(std::vector<std::string>& paths, const DirtyPathEntry& entry) {
+    if (!entry.originalPath.empty()) {
+        paths.push_back(entry.originalPath);
+    }
+    if (!entry.path.empty()) {
+        paths.push_back(entry.path);
+    }
+}
+
 std::optional<std::string> LocalToolArtifactIgnoreRuleForPath(const std::string& path) {
     auto normalized = NormalizeGitPath(path);
     while (!normalized.empty() && normalized.back() == '/') {
@@ -1265,7 +1390,7 @@ bool IsRegisteredChildRepoStatusPath(const Snapshot& snapshot, const std::string
     return false;
 }
 
-std::vector<std::string> CollectDirtyPaths(const std::filesystem::path& repoPath, std::string* outError) {
+std::vector<DirtyPathEntry> CollectDirtyEntries(const std::filesystem::path& repoPath, std::string* outError) {
     const auto result = shell::ExecuteCommand(
         "git",
         {"status", "--porcelain=v1", "--untracked-files=all"},
@@ -1278,7 +1403,7 @@ std::vector<std::string> CollectDirtyPaths(const std::filesystem::path& repoPath
         return {};
     }
 
-    std::vector<std::string> paths;
+    std::vector<DirtyPathEntry> entries;
     std::istringstream stream(result.stdoutStr);
     std::string line;
     while (std::getline(stream, line)) {
@@ -1288,13 +1413,34 @@ std::vector<std::string> CollectDirtyPaths(const std::filesystem::path& repoPath
         if (line.size() < 4) {
             continue;
         }
+        DirtyPathEntry entry;
+        entry.rawStatus = line.substr(0, 2);
         auto path = NormalizeGitPath(Trim(line.substr(3)));
         const auto arrow = path.find(" -> ");
         if (arrow != std::string::npos) {
+            entry.originalPath = NormalizeGitPath(Trim(path.substr(0, arrow)));
             path = NormalizeGitPath(Trim(path.substr(arrow + 4)));
         }
         if (!path.empty()) {
-            paths.push_back(std::move(path));
+            entry.path = std::move(path);
+            entry.statusKind = DirtyStatusKind(entry.rawStatus);
+            entries.push_back(std::move(entry));
+        }
+    }
+    std::sort(entries.begin(), entries.end(), [](const auto& a, const auto& b) {
+        return std::tie(a.path, a.originalPath, a.rawStatus) < std::tie(b.path, b.originalPath, b.rawStatus);
+    });
+    entries.erase(std::unique(entries.begin(), entries.end(), [](const auto& a, const auto& b) {
+        return a.path == b.path && a.originalPath == b.originalPath && a.rawStatus == b.rawStatus;
+    }), entries.end());
+    return entries;
+}
+
+std::vector<std::string> DirtyEntryPaths(const std::vector<DirtyPathEntry>& entries) {
+    std::vector<std::string> paths;
+    for (const auto& entry : entries) {
+        if (!entry.path.empty()) {
+            paths.push_back(entry.path);
         }
     }
     std::sort(paths.begin(), paths.end());
@@ -1503,11 +1649,12 @@ IntentCommitPlan BuildIntentCommitPlan(const std::filesystem::path& workspaceRoo
     IntentCommitPlan plan;
     const auto repoPath = ResolveRepoPath(workspaceRoot, repo);
     std::string statusError;
-    auto dirtyPaths = CollectDirtyPaths(repoPath, &statusError);
+    auto dirtyEntries = CollectDirtyEntries(repoPath, &statusError);
     if (!statusError.empty()) {
         plan.error = statusError;
         return plan;
     }
+    auto dirtyPaths = DirtyEntryPaths(dirtyEntries);
     if (dirtyPaths.empty()) {
         plan.error = "no dirty paths found for intent commit planning";
         return plan;
@@ -1519,11 +1666,12 @@ IntentCommitPlan BuildIntentCommitPlan(const std::filesystem::path& workspaceRoo
         return plan;
     }
     if (!plan.addedIgnoreRules.empty()) {
-        dirtyPaths = CollectDirtyPaths(repoPath, &statusError);
+        dirtyEntries = CollectDirtyEntries(repoPath, &statusError);
         if (!statusError.empty()) {
             plan.error = statusError;
             return plan;
         }
+        dirtyPaths = DirtyEntryPaths(dirtyEntries);
         if (dirtyPaths.empty()) {
             plan.error = "no dirty paths found after local artifact ignore update";
             return plan;
@@ -1532,21 +1680,35 @@ IntentCommitPlan BuildIntentCommitPlan(const std::filesystem::path& workspaceRoo
 
     std::map<std::string, IntentCommitGroup> grouped;
     std::vector<std::string> registeredChildPaths;
-    for (const auto& path : dirtyPaths) {
+    const auto uniqueWorkItemId = UniqueWorkItemIdForDirtyEntries(dirtyEntries);
+    const auto ticketContextSubsystem = uniqueWorkItemId.has_value()
+        ? std::optional<std::string>(TicketContextSubsystemForDirtyEntries(dirtyEntries, *uniqueWorkItemId))
+        : std::nullopt;
+    for (const auto& entry : dirtyEntries) {
+        const auto& path = entry.path;
         if (IsRegisteredChildRepoStatusPath(snapshot, repo, path)) {
-            registeredChildPaths.push_back(path);
+            AppendDirtyEntryIncludePaths(registeredChildPaths, entry);
             continue;
         }
-        auto classified = ClassifyIntentPath(path);
+        std::optional<IntentCommitGroup> classified;
+        if (uniqueWorkItemId.has_value() &&
+            ticketContextSubsystem.has_value() &&
+            IsTicketContextPromotableEntry(entry, *uniqueWorkItemId)) {
+            classified = MakeTicketContextGroup(*uniqueWorkItemId, *ticketContextSubsystem);
+        } else {
+            classified = ClassifyDirtyEntryIntent(entry);
+        }
         if (!classified.has_value()) {
-            plan.ambiguousPaths.push_back(path);
+            AppendDirtyEntryIncludePaths(plan.ambiguousPaths, entry);
             continue;
         }
         auto& group = grouped[classified->key];
         if (group.key.empty()) {
             group = std::move(*classified);
+            group.includePaths.clear();
+            AppendDirtyEntryIncludePaths(group.includePaths, entry);
         } else {
-            group.includePaths.push_back(path);
+            AppendDirtyEntryIncludePaths(group.includePaths, entry);
         }
     }
 

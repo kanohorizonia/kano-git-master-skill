@@ -145,6 +145,30 @@ TEST_CASE("NormalizeCommitPlanRepoPaths accepts deleted tracked files under the 
     REQUIRE(doc["stages"]["commit"][0]["commits"][0]["include"].get<std::vector<std::string>>() == std::vector<std::string>{"deleted.txt"});
 }
 
+TEST_CASE("NormalizeCommitPlanRepoPaths accepts staged rename old pathspecs tracked in HEAD",
+          "[Unit][CommitPlan][Normalize]") {
+    const auto workspace = UniqueTempWorkspace("staged-rename-old-pathspec");
+    const auto repoRoot = (workspace / "parent-skill").lexically_normal();
+
+    InitGitRepo(repoRoot);
+    WriteTextFile(repoRoot / "old-name.md", "tracked then renamed\n");
+    RequireGit(repoRoot, {"add", "old-name.md"});
+    RequireGit(repoRoot, {"commit", "-m", "docs: add rename fixture"});
+    RequireGit(repoRoot, {"mv", "old-name.md", "new-name.md"});
+
+    const auto planText = BuildSingleCommitPlan(repoRoot.generic_string(), {"old-name.md", "new-name.md"});
+
+    std::string error;
+    const auto normalized = NormalizePlan(workspace, planText, &error);
+
+    REQUIRE(normalized.has_value());
+    REQUIRE(error.empty());
+
+    const auto doc = ParsePlan(*normalized);
+    REQUIRE(doc["stages"]["commit"][0]["repo"].get<std::string>() == "parent-skill");
+    REQUIRE(doc["stages"]["commit"][0]["commits"][0]["include"].get<std::vector<std::string>>() == std::vector<std::string>{"old-name.md", "new-name.md"});
+}
+
 TEST_CASE("NormalizeCommitPlanRepoPaths normalizes AI-corrupted include pathspec variants",
           "[Unit][CommitPlan][Normalize][Pathspec]") {
     const auto workspace = UniqueTempWorkspace("normalize-ai-pathspec-fixtures");

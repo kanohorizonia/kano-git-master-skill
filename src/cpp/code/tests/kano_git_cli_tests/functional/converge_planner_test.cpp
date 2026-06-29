@@ -829,6 +829,60 @@ TEST_CASE("converge agent mode keeps implementation and test paths in one source
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge agent mode scopes add delete and rename source paths to one ticket intent", "[tdd][functional][feature:converge-state][converge][agent-mode][intent-commits][status-kind]") {
+    const auto ctx = CreateRemoteWithClone("converge-agent-ticket-status-intent");
+
+    const auto implementation = std::filesystem::path("src/cpp/code/systems/kano_git_command/repo_sync/private/converge_cmd.cpp");
+    const auto removedDoc = std::filesystem::path("docs/scoped-commit-obsolete.md");
+    const auto renameOld = std::filesystem::path("docs/scoped-commit-old-note.md");
+    const auto renameNew = std::filesystem::path("docs/KG-BUG-0005-scoped-commit-note.md");
+    const auto regressionTest = std::filesystem::path("src/cpp/code/tests/kano_git_cli_tests/functional/KG-BUG-0005_status_kind_test.cpp");
+    const auto evidence = std::filesystem::path("artifacts/KG-BUG-0005/status-kind-evidence.md");
+
+    WriteTextFile(ctx.seedRepo / implementation, "// converge implementation\n");
+    WriteTextFile(ctx.seedRepo / removedDoc, "# obsolete scoped commit note\n");
+    WriteTextFile(ctx.seedRepo / renameOld, "# old scoped commit note\n");
+    RequireSuccess(RunGit({"add", "src", "docs"}, ctx.seedRepo), "seed tracked source and docs for ticket context");
+    RequireSuccess(RunGit({"commit", "-m", "seed ticket scoped source files"}, ctx.seedRepo), "commit ticket context seed");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.seedRepo), "push ticket context seed");
+    RequireSuccess(RunGit({"pull", "--rebase", "origin", ctx.branch}, ctx.cloneRepo), "pull ticket context seed");
+
+    WriteTextFile(ctx.cloneRepo / implementation, "// converge implementation\n// status-aware ticket context\n");
+    std::filesystem::remove(ctx.cloneRepo / removedDoc);
+    RequireSuccess(
+        RunGit({"mv", renameOld.generic_string(), renameNew.generic_string()}, ctx.cloneRepo),
+        "stage rename that converge must keep scoped after reset");
+    WriteTextFile(ctx.cloneRepo / regressionTest, "// KG-BUG-0005 status-kind regression\n");
+    WriteTextFile(ctx.cloneRepo / evidence, "# KG-BUG-0005 status-kind evidence\n");
+
+    const auto result = RunKogWithEnv(
+        {"converge", "--no-recursive", "--jobs", "1"},
+        ctx.cloneRepo,
+        {{"KANO_AGENT_MODE", "1"}});
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContains(result.stdoutText, "Converge agent intent commit plan");
+    RequireContains(result.stdoutText, "[KOG-Converge][BugFix] Update KG-BUG-0005 implementation intent (KG-BUG-0005)");
+    RequireContains(result.stdoutText, "include " + implementation.generic_string());
+    RequireContains(result.stdoutText, "include " + removedDoc.generic_string());
+    RequireContains(result.stdoutText, "include " + renameOld.generic_string());
+    RequireContains(result.stdoutText, "include " + renameNew.generic_string());
+    RequireContains(result.stdoutText, "include " + regressionTest.generic_string());
+    RequireContains(result.stdoutText, "include " + evidence.generic_string());
+    RequireNotContains(result.stdoutText, "[KOG-Converge][BugFix] Update intent-scoped agent commits (NO-TICKET)");
+    RequireNotContains(result.stdoutText, "[KOG][Docs] Update documentation (NO-TICKET)");
+    REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
+
+    const auto log = RunGit({"log", "--format=%s", "-n", "3"}, ctx.cloneRepo);
+    RequireSuccess(log, "read ticket context commit log");
+    RequireContains(log.stdoutText, "[KOG-Converge][BugFix] Update KG-BUG-0005 implementation intent (KG-BUG-0005)");
+    RequireNotContains(log.stdoutText, "[KOG][Docs] Update documentation (NO-TICKET)");
+    RequireNotContains(log.stdoutText, "[KOG-Converge][BugFix] Update intent-scoped agent commits (NO-TICKET)");
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("converge runtime repeats passes until nested parent pointers are clean", "[tdd][functional][feature:converge-state][feature:dirty-kind][converge][planner]") {
     const auto ctx = CreateRemoteWithNestedSubmoduleClone("converge-runtime-nested-fixpoint");
     RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneLeafRepo), "checkout leaf branch for nested fixpoint");
