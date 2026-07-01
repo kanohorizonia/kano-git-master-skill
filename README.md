@@ -245,6 +245,11 @@ Shared native build/test/report/bootstrap helpers live in
 `src/cpp/shared/infra/scripts/`. Use them as infrastructure backing scripts, not
 as the primary Git workflow UX.
 
+Shared local Codex app-server diagnostics live in
+`src/shell/codex-appserver/`. They cover session/thread/name inspection helpers
+that are reusable outside Ark. Ark-owned runner/provider scripts remain in
+`kano-agent-ark-skill` until KOA-TSK-0223 productionizes that path.
+
 ## Canonical Test and Report Tasks
 
 Root Pixi task facade:

@@ -54,7 +54,9 @@ for it.
 
 Codex app-server diagnostic/thread utilities live under
 `src/shell/codex-appserver/`. They are support scripts for local observer and
-session debugging, not primary Git Master workflows.
+session debugging, not primary Git Master workflows. Ark-owned runner/provider
+helpers such as `codex-appserver-send.ps1` stay in Ark until KOA-TSK-0223
+productionizes that path.
 
 ## Bash Completion
 
