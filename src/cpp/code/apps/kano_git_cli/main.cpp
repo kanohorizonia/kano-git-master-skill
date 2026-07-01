@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -685,6 +686,24 @@ void RewriteCommitAiFlagsAndPlan(std::vector<std::string>& InOutArgs) {
     InOutArgs = std::move(rewritten);
 }
 
+bool ShouldSuppressMainTimingForMachineJson(const std::vector<std::string>& InArgs) {
+    if (InArgs.size() < 4 || InArgs[1] != "converge" || InArgs[2] != "branches") {
+        return false;
+    }
+    const std::string subcommand = InArgs[3];
+    if (subcommand != "plan" &&
+        subcommand != "inventory" &&
+        subcommand != "status" &&
+        subcommand != "apply" &&
+        subcommand != "retire") {
+        return false;
+    }
+    if (IsTruthyEnv("KANO_AGENT_MODE") || IsTruthyEnv("AGENT_MODE")) {
+        return true;
+    }
+    return std::find(InArgs.begin() + 4, InArgs.end(), "--json") != InArgs.end();
+}
+
 std::vector<std::string> NormalizeLegacyArgs(int InArgc, char* InArgv[]) {
     std::vector<std::string> out;
     out.reserve(static_cast<std::size_t>(InArgc));
@@ -728,7 +747,15 @@ int main(int InArgc, char* InArgv[]) {
         cmdLabel += " ";
         cmdLabel += RedactCommandArgForLog(InArgv[i] == nullptr ? "" : std::string{InArgv[i]}, redactNext, redactUrlNext);
     }
-    SCOPED_TIMING_LOG(cmdLabel);
+    std::vector<std::string> rawArgsForTiming;
+    rawArgsForTiming.reserve(static_cast<std::size_t>(std::max(InArgc, 0)));
+    for (int i = 0; i < InArgc; ++i) {
+        rawArgsForTiming.emplace_back(InArgv[i] == nullptr ? "" : std::string{InArgv[i]});
+    }
+    std::unique_ptr<kano::infra::timing::ScopedTimingLog> timingLog;
+    if (!ShouldSuppressMainTimingForMachineJson(rawArgsForTiming)) {
+        timingLog = std::make_unique<kano::infra::timing::ScopedTimingLog>(cmdLabel);
+    }
 
     try {
         SetSelfBinaryPathEnv(InArgc > 0 ? InArgv[0] : nullptr);

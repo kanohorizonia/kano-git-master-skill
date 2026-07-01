@@ -2389,6 +2389,10 @@ bool OnlyActiveLeaseBlocker(const std::vector<std::string>& blockers) {
     return blockers.size() == 1 && blockers.front() == "ACTIVE_WORKTREE_LEASE";
 }
 
+bool DirtyKindBlocksBranchPlan(const std::string& dirtyKind) {
+    return dirtyKind != "CLEAN" && dirtyKind != "AHEAD_ONLY" && dirtyKind != "BEHIND_ONLY";
+}
+
 void AppendBranchBlocked(nlohmann::json& result,
                          const std::string& repoId,
                          const std::string& branch,
@@ -2580,7 +2584,7 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
         if (!isTarget && !checkedOut.empty()) {
             blockers.push_back("ACTIVE_WORKTREE_LEASE");
         }
-        if (repo.dirtyKind != "CLEAN") {
+        if (DirtyKindBlocksBranchPlan(repo.dirtyKind)) {
             blockers.push_back("DIRTY_WORKTREE:" + repo.dirtyKind);
         }
         if (repo.blocksConverge) {

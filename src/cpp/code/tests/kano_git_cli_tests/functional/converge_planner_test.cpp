@@ -463,6 +463,9 @@ TEST_CASE("converge branches retire removes merged branch and clean git worktree
     RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target before retire");
     RequireSuccess(RunGit({"merge", "--ff-only", featureBranch}, ctx.cloneRepo), "merge retire feature into target");
     RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.cloneRepo), "push merged target");
+    WriteTextFile(ctx.cloneRepo / "target-ahead.txt", "target ahead after merge\n");
+    RequireSuccess(RunGit({"add", "target-ahead.txt"}, ctx.cloneRepo), "add target-ahead file");
+    RequireSuccess(RunGit({"commit", "-m", "target ahead after retire merge"}, ctx.cloneRepo), "commit target ahead without push");
     const auto worktreePath = (ctx.sandbox.root / "retire-worktree").lexically_normal();
     RequireSuccess(RunGit({"worktree", "add", worktreePath.string(), featureBranch}, ctx.cloneRepo), "add clean feature worktree");
 
@@ -473,6 +476,7 @@ TEST_CASE("converge branches retire removes merged branch and clean git worktree
     RequireContains(preview.stdoutText, "\"schemaName\": \"kog.convergeBranchesRetireResult\"");
     RequireContains(preview.stdoutText, "\"mutationPerformed\": false");
     RequireContains(preview.stdoutText, "\"planned\"");
+    RequireNotContains(preview.stdoutText, "DIRTY_WORKTREE:AHEAD_ONLY");
     REQUIRE(std::filesystem::exists(worktreePath));
 
     const auto result = RunKog({"converge", "branches", "retire", "--target", ctx.branch, "--remove-worktrees", "--confirm", "--json", "--jobs", "1"}, ctx.cloneRepo);
@@ -484,6 +488,7 @@ TEST_CASE("converge branches retire removes merged branch and clean git worktree
     RequireContains(result.stdoutText, "\"mutationPerformed\": true");
     RequireContains(result.stdoutText, "\"branch\": \"" + featureBranch + "\"");
     RequireContains(result.stdoutText, "\"action\": \"delete-local\"");
+    RequireNotContains(result.stdoutText, "DIRTY_WORKTREE:AHEAD_ONLY");
     REQUIRE(RunGit({"show-ref", "--verify", "--quiet", "refs/heads/" + featureBranch}, ctx.cloneRepo).exitCode != 0);
     REQUIRE(!std::filesystem::exists(worktreePath));
     REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
@@ -636,6 +641,7 @@ TEST_CASE("converge branches planner emits clean agent JSON without command log 
     INFO(result.stderrText);
     REQUIRE(result.exitCode == 0);
     RequireNotContains(result.stdoutText, "[run]");
+    RequireNotContains(result.stdoutText, "[TIMING]");
     RequireContains(result.stdoutText, "\"mutationPerformed\": false");
 
     RemoveSandboxWorkspace(ctx.sandbox);
