@@ -1,0 +1,11 @@
+cpp/out
+cpp/out/**
+cpp/build
+cpp/build/**
+cpp/.kano/tmp
+cpp/.kano/tmp/**
+cpp/default.profraw
+cpp/*.profraw
+cpp/LastCoverageResults.log
+cpp/Testing
+cpp/Testing/**
