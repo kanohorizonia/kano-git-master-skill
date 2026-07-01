@@ -2617,6 +2617,27 @@ std::vector<std::string> CherryPickCommitsForBranch(const std::filesystem::path&
     return commits;
 }
 
+bool IsEmptyCherryPickError(const shell::ExecResult& result) {
+    const auto message = ToLower(CombinedGitError(result));
+    return message.find("previous cherry-pick is now empty") != std::string::npos ||
+           message.find("nothing to commit") != std::string::npos;
+}
+
+bool SkipEmptyCherryPick(const std::filesystem::path& repoPath, std::string& errorMessage) {
+    const auto skip = GitCapture(repoPath, {"cherry-pick", "--skip"});
+    if (skip.exitCode == 0) {
+        return true;
+    }
+
+    const auto status = GitCapture(repoPath, {"status", "--porcelain"});
+    if (status.exitCode == 0 && Trim(status.stdoutStr).empty()) {
+        return true;
+    }
+
+    errorMessage = CombinedGitError(skip);
+    return false;
+}
+
 nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
                                      const RepoStatus& repo,
                                      const std::filesystem::path& repoPath,
@@ -3000,15 +3021,31 @@ int RunBranchApply(const std::filesystem::path& root,
                         continue;
                     }
                     bool cherryPickSucceeded = true;
+                    int appliedCherryPickCommits = 0;
                     for (const auto& commit : commits) {
                         const auto cherryPick = GitCapture(repoPath, {"cherry-pick", commit});
                         if (cherryPick.exitCode != 0) {
+                            if (IsEmptyCherryPickError(cherryPick)) {
+                                std::string skipError;
+                                if (!SkipEmptyCherryPick(repoPath, skipError)) {
+                                    AppendBranchBlocked(result, repoId, branch, {"CHERRY_PICK_SKIP_FAILED"}, skipError);
+                                    cherryPickSucceeded = false;
+                                    break;
+                                }
+                                continue;
+                            }
                             AppendBranchBlocked(result, repoId, branch, {"CHERRY_PICK_CONFLICT"}, CombinedGitError(cherryPick));
                             cherryPickSucceeded = false;
                             break;
                         }
+                        ++appliedCherryPickCommits;
+                        result["mutationPerformed"] = true;
                     }
                     if (!cherryPickSucceeded) {
+                        continue;
+                    }
+                    if (appliedCherryPickCommits == 0) {
+                        AppendBranchAction(result, "skipped", repoId, branch, "already-equivalent", "branch commits produced no target changes");
                         continue;
                     }
                 } else {

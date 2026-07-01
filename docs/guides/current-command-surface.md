@@ -196,7 +196,8 @@ fail-closed fast-forward target advancement: it advances the target with
 from one selected source branch onto the target branch. `--strategy merge`
 performs an explicit no-fast-forward merge. Successful apply paths push the target
 branch and report machine-readable blockers instead of resolving conflicts.
-Cherry-pick conflicts stop for operator recovery; KOG does not auto-resolve them.
+Empty/no-op cherry-pick commits are skipped as already equivalent. Cherry-pick
+conflicts stop for operator recovery; KOG does not auto-resolve them.
 
 `kog converge branches retire` previews by default. With `--confirm`, it deletes
 only local branches proven merged into the target. For merged branches,

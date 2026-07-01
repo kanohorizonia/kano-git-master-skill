@@ -497,6 +497,32 @@ TEST_CASE("converge branches apply cherry-picks selected non-ancestor branch", "
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge branches apply skips empty cherry-pick commits", "[tdd][functional][feature:converge][converge][branches][apply][cherry-pick]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-apply-cherry-pick-empty");
+    const std::string featureBranch = "feature/apply-cherry-pick-empty";
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout empty cherry-pick feature branch");
+    RequireSuccess(RunGit({"commit", "--allow-empty", "-m", "empty cherry-pick feature"}, ctx.cloneRepo), "commit empty cherry-pick feature");
+    RequireSuccess(RunGit({"push", "-u", "origin", featureBranch}, ctx.cloneRepo), "push empty cherry-pick feature");
+
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target before empty cherry-pick apply");
+    const auto targetHead = TrimCopy(RunGit({"rev-parse", ctx.branch}, ctx.cloneRepo).stdoutText);
+
+    const auto result = RunKog({"converge", "branches", "apply", "--target", ctx.branch, "--strategy", "cherry-pick", "--branch", featureBranch, "--confirm", "--json", "--jobs", "1"}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    RequireContains(result.stdoutText, "\"schemaName\": \"kog.convergeBranchesApplyResult\"");
+    RequireContains(result.stdoutText, "\"strategy\": \"cherry-pick\"");
+    RequireContains(result.stdoutText, "\"mutationPerformed\": false");
+    RequireContains(result.stdoutText, "\"branch\": \"" + featureBranch + "\"");
+    RequireContains(result.stdoutText, "\"action\": \"already-equivalent\"");
+    REQUIRE(TrimCopy(RunGit({"rev-parse", ctx.branch}, ctx.cloneRepo).stdoutText) == targetHead);
+    REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("converge branches apply reports cherry-pick conflicts without auto resolving", "[tdd][functional][feature:converge][converge][branches][apply][cherry-pick][conflict]") {
     const auto ctx = CreateRemoteWithClone("converge-branches-apply-cherry-pick-conflict");
     WriteTextFile(ctx.cloneRepo / "conflict.txt", "base\n");
