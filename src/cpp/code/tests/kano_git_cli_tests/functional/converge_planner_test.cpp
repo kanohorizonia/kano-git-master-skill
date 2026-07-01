@@ -711,6 +711,79 @@ TEST_CASE("converge branches retire removes patch-equivalent branch with clean a
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge branches retire removes merged detached worktree after confirmation", "[tdd][functional][feature:converge][converge][branches][retire][worktree]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-retire-detached-worktree");
+    const std::string featureBranch = "feature/retire-detached-worktree";
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout detached-worktree feature branch");
+    WriteTextFile(ctx.cloneRepo / "detached-worktree.txt", "detached worktree feature\n");
+    RequireSuccess(RunGit({"add", "detached-worktree.txt"}, ctx.cloneRepo), "add detached-worktree feature file");
+    RequireSuccess(RunGit({"commit", "-m", "detached worktree feature"}, ctx.cloneRepo), "commit detached-worktree feature");
+    RequireSuccess(RunGit({"push", "-u", "origin", featureBranch}, ctx.cloneRepo), "push detached-worktree feature");
+    const auto featureHead = TrimCopy(RunGit({"rev-parse", featureBranch}, ctx.cloneRepo).stdoutText);
+
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target before detached-worktree retire");
+    RequireSuccess(RunGit({"merge", "--ff-only", featureBranch}, ctx.cloneRepo), "merge detached-worktree feature into target");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.cloneRepo), "push target containing detached-worktree feature");
+    const auto worktreePath = (ctx.sandbox.root / "retire-detached-worktree").lexically_normal();
+    RequireSuccess(RunGit({"worktree", "add", "--detach", worktreePath.string(), featureHead}, ctx.cloneRepo), "add clean detached worktree");
+
+    const auto inventory = RunKog({"converge", "branches", "inventory", "--target", ctx.branch, "--strategy", "cherry-pick", "--json", "--jobs", "1"}, ctx.cloneRepo);
+    INFO(inventory.stdoutText);
+    INFO(inventory.stderrText);
+    REQUIRE(inventory.exitCode == 0);
+    RequireContains(inventory.stdoutText, "\"detached\": true");
+    RequireContains(inventory.stdoutText, "\"head\": \"" + featureHead + "\"");
+    RequireContains(inventory.stdoutText, "\"integrationProof\": \"merged\"");
+    RequireContains(inventory.stdoutText, "candidate for human-reviewed detached worktree retirement with --remove-worktrees");
+
+    const auto result = RunKog({"converge", "branches", "retire", "--target", ctx.branch, "--remove-worktrees", "--confirm", "--json", "--jobs", "1"}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    RequireContains(result.stdoutText, "\"schemaName\": \"kog.convergeBranchesRetireResult\"");
+    RequireContains(result.stdoutText, "\"mutationPerformed\": true");
+    RequireContains(result.stdoutText, "\"action\": \"remove-detached-worktree\"");
+    RequireContains(result.stdoutText, "\"head\": \"" + featureHead + "\"");
+    RequireContains(result.stdoutText, "\"integrationProof\": \"merged\"");
+    REQUIRE(!std::filesystem::exists(worktreePath));
+    REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge branches retire blocks dirty detached worktree cleanup", "[tdd][functional][feature:converge][converge][branches][retire][worktree]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-retire-dirty-detached-worktree");
+    const std::string featureBranch = "feature/retire-dirty-detached-worktree";
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout dirty detached-worktree feature branch");
+    WriteTextFile(ctx.cloneRepo / "dirty-detached-worktree.txt", "clean feature content\n");
+    RequireSuccess(RunGit({"add", "dirty-detached-worktree.txt"}, ctx.cloneRepo), "add dirty detached-worktree feature file");
+    RequireSuccess(RunGit({"commit", "-m", "dirty detached worktree feature"}, ctx.cloneRepo), "commit dirty detached-worktree feature");
+    RequireSuccess(RunGit({"push", "-u", "origin", featureBranch}, ctx.cloneRepo), "push dirty detached-worktree feature");
+    const auto featureHead = TrimCopy(RunGit({"rev-parse", featureBranch}, ctx.cloneRepo).stdoutText);
+
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target before dirty detached-worktree retire");
+    RequireSuccess(RunGit({"merge", "--ff-only", featureBranch}, ctx.cloneRepo), "merge dirty detached-worktree feature into target");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.cloneRepo), "push target containing dirty detached-worktree feature");
+    const auto worktreePath = (ctx.sandbox.root / "retire-dirty-detached-worktree").lexically_normal();
+    RequireSuccess(RunGit({"worktree", "add", "--detach", worktreePath.string(), featureHead}, ctx.cloneRepo), "add dirty detached worktree");
+    WriteTextFile(worktreePath / "dirty-detached-worktree.txt", "dirty detached worktree content\n");
+
+    const auto result = RunKog({"converge", "branches", "retire", "--target", ctx.branch, "--remove-worktrees", "--confirm", "--json", "--jobs", "1"}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 1);
+
+    RequireContains(result.stdoutText, "\"schemaName\": \"kog.convergeBranchesRetireResult\"");
+    RequireContains(result.stdoutText, "\"action\": \"remove-detached-worktree\"");
+    RequireContains(result.stdoutText, "\"head\": \"" + featureHead + "\"");
+    RequireContains(result.stdoutText, "DIRTY_DETACHED_WORKTREE");
+    REQUIRE(std::filesystem::exists(worktreePath));
+    RequireContains(ReadTextFile(worktreePath / "dirty-detached-worktree.txt"), "dirty detached worktree content");
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("converge branches retire removes empty cherry-pick no-op branch", "[tdd][functional][feature:converge][converge][branches][retire][equivalent]") {
     const auto ctx = CreateRemoteWithClone("converge-branches-retire-empty-noop");
     const std::string featureBranch = "feature/retire-empty-noop";

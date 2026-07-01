@@ -85,6 +85,7 @@ struct Plan {
 struct BranchWorktree {
     std::string branch;
     std::string location;
+    std::string head;
     std::filesystem::path absolutePath;
     bool detached = false;
     bool bare = false;
@@ -102,6 +103,16 @@ struct BranchCandidate {
     bool remoteOnly = false;
     std::string remote;
     std::string remoteBranch;
+};
+
+struct DetachedWorktreeEvaluation {
+    bool primary = false;
+    bool clean = false;
+    bool integrated = false;
+    std::string integrationProof;
+    std::string cleanMessage;
+    std::vector<std::string> blockers;
+    std::vector<std::string> proposedActions;
 };
 
 struct PhaseSummary {
@@ -2352,6 +2363,8 @@ std::vector<BranchWorktree> Worktrees(const std::filesystem::path& repoPath, con
             hasRecord = true;
             current.absolutePath = std::filesystem::path(line.substr(std::string("worktree ").size())).lexically_normal();
             current.location = DisplayPathForBranchPlan(workspaceRoot, current.absolutePath);
+        } else if (line.rfind("HEAD ", 0) == 0) {
+            current.head = line.substr(std::string("HEAD ").size());
         } else if (line.rfind("branch ", 0) == 0) {
             constexpr std::string_view prefix = "refs/heads/";
             auto branch = line.substr(std::string("branch ").size());
@@ -2505,6 +2518,51 @@ void AppendBranchAction(nlohmann::json& result,
     });
 }
 
+std::string DetachedWorktreeBranchLabel(const BranchWorktree& worktree) {
+    if (worktree.head.empty()) {
+        return "<detached>";
+    }
+    return "<detached:" + worktree.head.substr(0, std::min<std::size_t>(12, worktree.head.size())) + ">";
+}
+
+void AppendDetachedWorktreeBlocked(nlohmann::json& result,
+                                   const std::string& repoId,
+                                   const BranchWorktree& worktree,
+                                   std::vector<std::string> blockers,
+                                   const std::string& message,
+                                   const std::string& integrationProof = {}) {
+    std::sort(blockers.begin(), blockers.end());
+    blockers.erase(std::unique(blockers.begin(), blockers.end()), blockers.end());
+    result["blocked"].push_back({
+        {"repo", repoId},
+        {"branch", DetachedWorktreeBranchLabel(worktree)},
+        {"action", "remove-detached-worktree"},
+        {"worktree", worktree.location},
+        {"head", worktree.head},
+        {"integrationProof", integrationProof},
+        {"blockers", blockers},
+        {"message", message},
+    });
+}
+
+void AppendDetachedWorktreeAction(nlohmann::json& result,
+                                  const std::string& field,
+                                  const std::string& repoId,
+                                  const BranchWorktree& worktree,
+                                  const std::string& action,
+                                  const std::string& message,
+                                  const std::string& integrationProof = {}) {
+    result[field].push_back({
+        {"repo", repoId},
+        {"branch", DetachedWorktreeBranchLabel(worktree)},
+        {"action", action},
+        {"worktree", worktree.location},
+        {"head", worktree.head},
+        {"integrationProof", integrationProof},
+        {"message", message},
+    });
+}
+
 bool BranchMatchesFilter(const nlohmann::json& branchJson, const std::string& branchFilter) {
     if (branchFilter.empty()) {
         return true;
@@ -2634,6 +2692,13 @@ bool BranchMergedIntoTarget(const std::filesystem::path& repoPath, const std::st
     return GitCapture(repoPath, {"merge-base", "--is-ancestor", branch, targetRef}).exitCode == 0;
 }
 
+bool CommitMergedIntoTarget(const std::filesystem::path& repoPath, const std::string& commit, const std::string& targetRef) {
+    if (targetRef.empty() || commit.empty()) {
+        return false;
+    }
+    return GitCapture(repoPath, {"merge-base", "--is-ancestor", commit, targetRef}).exitCode == 0;
+}
+
 bool BranchPatchEquivalentToTarget(const std::filesystem::path& repoPath, const std::string& targetBranch, const std::string& branch) {
     const auto cherry = GitCapture(repoPath, {"cherry", targetBranch, branch});
     if (cherry.exitCode != 0) {
@@ -2646,6 +2711,72 @@ bool BranchPatchEquivalentToTarget(const std::filesystem::path& repoPath, const 
     return std::none_of(lines.begin(), lines.end(), [](const std::string& line) {
         return !line.empty() && line[0] == '+';
     });
+}
+
+bool CommitPatchEquivalentToTarget(const std::filesystem::path& repoPath, const std::string& targetBranch, const std::string& commit) {
+    if (targetBranch.empty() || commit.empty()) {
+        return false;
+    }
+    const auto cherry = GitCapture(repoPath, {"cherry", targetBranch, commit});
+    if (cherry.exitCode != 0) {
+        return false;
+    }
+    const auto lines = SplitNonEmptyLines(cherry.stdoutStr);
+    if (lines.empty()) {
+        return false;
+    }
+    return std::none_of(lines.begin(), lines.end(), [](const std::string& line) {
+        return !line.empty() && line[0] == '+';
+    });
+}
+
+std::string DetachedWorktreeIntegrationProof(const std::filesystem::path& repoPath,
+                                             const std::string& targetBranch,
+                                             const std::string& targetRef,
+                                             const BranchWorktree& worktree) {
+    if (CommitMergedIntoTarget(repoPath, worktree.head, targetRef)) {
+        return "merged";
+    }
+    if (CommitPatchEquivalentToTarget(repoPath, targetBranch, worktree.head)) {
+        return "patch-equivalent";
+    }
+    return {};
+}
+
+DetachedWorktreeEvaluation EvaluateDetachedWorktree(const std::filesystem::path& repoPath,
+                                                    const std::string& targetBranch,
+                                                    const std::string& targetRef,
+                                                    const BranchWorktree& worktree) {
+    DetachedWorktreeEvaluation out;
+    out.primary = SamePath(worktree.absolutePath, repoPath);
+    out.clean = WorktreeIsClean(worktree.absolutePath, out.cleanMessage);
+    if (targetRef.empty()) {
+        out.blockers.push_back("TARGET_REF_MISSING");
+    }
+    if (out.primary) {
+        out.blockers.push_back("PRIMARY_WORKTREE_REMOVE_REFUSED");
+    }
+    if (worktree.head.empty()) {
+        out.blockers.push_back("DETACHED_WORKTREE_HEAD_MISSING");
+    } else {
+        out.integrationProof = DetachedWorktreeIntegrationProof(repoPath, targetBranch, targetRef, worktree);
+        out.integrated = !out.integrationProof.empty();
+    }
+    if (!out.integrated) {
+        out.blockers.push_back("DETACHED_WORKTREE_NOT_INTEGRATED");
+    }
+    if (!out.clean) {
+        out.blockers.push_back("DIRTY_DETACHED_WORKTREE");
+    }
+    std::sort(out.blockers.begin(), out.blockers.end());
+    out.blockers.erase(std::unique(out.blockers.begin(), out.blockers.end()), out.blockers.end());
+
+    if (out.blockers.empty()) {
+        out.proposedActions.push_back("candidate for human-reviewed detached worktree retirement with --remove-worktrees");
+    } else {
+        out.proposedActions.push_back("resolve blockers before detached worktree retirement");
+    }
+    return out;
 }
 
 std::vector<std::string> RetireBlockersForIntegratedBranch(std::vector<std::string> blockers, bool removeWorktrees, bool deleteRemote) {
@@ -2873,12 +3004,24 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
 
     nlohmann::json worktreeJson = nlohmann::json::array();
     for (const auto& worktree : worktrees) {
-        worktreeJson.push_back({
+        nlohmann::json worktreeObject = {
             {"branch", worktree.branch},
             {"location", worktree.location},
+            {"head", worktree.head},
             {"detached", worktree.detached},
             {"bare", worktree.bare},
-        });
+        };
+        if (worktree.detached && !worktree.bare) {
+            const auto evaluation = EvaluateDetachedWorktree(repoPath, targetBranch, targetRef, worktree);
+            worktreeObject["primary"] = evaluation.primary;
+            worktreeObject["clean"] = evaluation.clean;
+            worktreeObject["cleanMessage"] = evaluation.clean ? std::string{} : evaluation.cleanMessage;
+            worktreeObject["integratedIntoTarget"] = evaluation.integrated;
+            worktreeObject["integrationProof"] = evaluation.integrationProof;
+            worktreeObject["blockers"] = evaluation.blockers;
+            worktreeObject["proposedActions"] = evaluation.proposedActions;
+        }
+        worktreeJson.push_back(std::move(worktreeObject));
     }
     repoJson["worktrees"] = std::move(worktreeJson);
 
@@ -3365,6 +3508,7 @@ int RunBranchRetire(const std::filesystem::path& root,
                 continue;
             }
             const auto repoPath = RepoPathForBranchPlan(root, *repo);
+            const auto targetRef = ResolveTargetRef(repoPath, targetBranch, repo->remote);
             const auto liveWorktrees = Worktrees(repoPath, root);
             for (const auto& branchJson : repoJson.value("branches", nlohmann::json::array())) {
                 const auto branch = branchJson.value("name", std::string{});
@@ -3489,6 +3633,75 @@ int RunBranchRetire(const std::filesystem::path& root,
                     {"remoteBranch", branchJson.value("remoteBranch", std::string{})},
                     {"integrationProof", branchJson.value("integrationProof", std::string{})},
                     {"worktrees", worktreeLocations},
+                });
+            }
+
+            for (const auto& worktree : liveWorktrees) {
+                if (!worktree.detached || worktree.bare) {
+                    continue;
+                }
+                const auto evaluation = EvaluateDetachedWorktree(repoPath, targetBranch, targetRef, worktree);
+                if (!evaluation.integrated) {
+                    AppendDetachedWorktreeAction(result,
+                                                 "skipped",
+                                                 repoId,
+                                                 worktree,
+                                                 "not-integrated",
+                                                 "detached worktree HEAD is not proven integrated into target",
+                                                 evaluation.integrationProof);
+                    continue;
+                }
+                if (!evaluation.clean || evaluation.primary) {
+                    AppendDetachedWorktreeBlocked(result,
+                                                  repoId,
+                                                  worktree,
+                                                  evaluation.blockers,
+                                                  evaluation.clean ? "detached worktree cannot be safely removed" : evaluation.cleanMessage,
+                                                  evaluation.integrationProof);
+                    continue;
+                }
+                if (!removeWorktrees) {
+                    AppendDetachedWorktreeBlocked(result,
+                                                  repoId,
+                                                  worktree,
+                                                  {"DETACHED_WORKTREE_REMOVE_REQUIRED"},
+                                                  "rerun with --remove-worktrees after reviewing clean Git-managed detached worktrees",
+                                                  evaluation.integrationProof);
+                    continue;
+                }
+                if (!confirm) {
+                    result["planned"].push_back({
+                        {"repo", repoId},
+                        {"branch", DetachedWorktreeBranchLabel(worktree)},
+                        {"action", "remove-detached-worktree"},
+                        {"message", "rerun with --confirm to remove the detached worktree"},
+                        {"worktree", worktree.location},
+                        {"head", worktree.head},
+                        {"integrationProof", evaluation.integrationProof},
+                    });
+                    continue;
+                }
+
+                const auto remove = GitCapture(repoPath, {"worktree", "remove", worktree.absolutePath.string()});
+                if (remove.exitCode != 0) {
+                    AppendDetachedWorktreeBlocked(result,
+                                                  repoId,
+                                                  worktree,
+                                                  {"WORKTREE_REMOVE_FAILED"},
+                                                  CombinedGitError(remove),
+                                                  evaluation.integrationProof);
+                    continue;
+                }
+
+                result["mutationPerformed"] = true;
+                result["retired"].push_back({
+                    {"repo", repoId},
+                    {"branch", DetachedWorktreeBranchLabel(worktree)},
+                    {"action", "remove-detached-worktree"},
+                    {"message", "integrated detached worktree removed"},
+                    {"worktree", worktree.location},
+                    {"head", worktree.head},
+                    {"integrationProof", evaluation.integrationProof},
                 });
             }
         }
