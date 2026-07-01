@@ -341,9 +341,18 @@ TEST_CASE("converge help distinguishes repos and branches taxonomy", "[tdd][func
     const auto branchesText = branchesHelp.stdoutText + "\n" + branchesHelp.stderrText;
     RequireContains(branchesText, "Read-only branch convergence planner");
     RequireContains(branchesText, "--strategy");
+    RequireContains(branchesText, "cherry-pick");
     RequireNotContains(branchesText, "--status");
     RequireNotContains(branchesText, "--resume");
     RequireNotContains(branchesText, "--force-with-lease");
+
+    const auto branchesApplyHelp = RunKog({"converge", "branches", "apply", "--help"}, sandbox.root);
+    INFO(branchesApplyHelp.stdoutText);
+    INFO(branchesApplyHelp.stderrText);
+    REQUIRE(branchesApplyHelp.exitCode == 0);
+    const auto branchesApplyText = branchesApplyHelp.stdoutText + "\n" + branchesApplyHelp.stderrText;
+    RequireContains(branchesApplyText, "cherry-pick");
+    RequireContains(branchesApplyText, "--branch");
 
     const auto branchesRootHelp = RunKog({"converge", "branches", "--help"}, sandbox.root);
     INFO(branchesRootHelp.stdoutText);
@@ -452,6 +461,71 @@ TEST_CASE("converge branches apply fast-forwards target and pushes", "[tdd][func
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge branches apply cherry-picks selected non-ancestor branch", "[tdd][functional][feature:converge][converge][branches][apply][cherry-pick]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-apply-cherry-pick");
+    const std::string featureBranch = "feature/apply-cherry-pick";
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout cherry-pick feature branch");
+    WriteTextFile(ctx.cloneRepo / "feature.txt", "feature cherry-pick\n");
+    RequireSuccess(RunGit({"add", "feature.txt"}, ctx.cloneRepo), "add cherry-pick feature file");
+    RequireSuccess(RunGit({"commit", "-m", "feature cherry-pick"}, ctx.cloneRepo), "commit cherry-pick feature");
+    RequireSuccess(RunGit({"push", "-u", "origin", featureBranch}, ctx.cloneRepo), "push cherry-pick feature");
+    const auto featureHead = TrimCopy(RunGit({"rev-parse", featureBranch}, ctx.cloneRepo).stdoutText);
+
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target before cherry-pick apply");
+    WriteTextFile(ctx.cloneRepo / "target.txt", "target branch advanced\n");
+    RequireSuccess(RunGit({"add", "target.txt"}, ctx.cloneRepo), "add target branch file");
+    RequireSuccess(RunGit({"commit", "-m", "advance target independently"}, ctx.cloneRepo), "commit target branch independently");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.cloneRepo), "push independent target branch");
+
+    const auto result = RunKog({"converge", "branches", "apply", "--target", ctx.branch, "--strategy", "cherry-pick", "--branch", featureBranch, "--confirm", "--json", "--jobs", "1"}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    RequireContains(result.stdoutText, "\"schemaName\": \"kog.convergeBranchesApplyResult\"");
+    RequireContains(result.stdoutText, "\"strategy\": \"cherry-pick\"");
+    RequireContains(result.stdoutText, "\"mutationPerformed\": true");
+    RequireContains(result.stdoutText, "\"branch\": \"" + featureBranch + "\"");
+    RequireContains(result.stdoutText, "\"action\": \"cherry-pick\"");
+    RequireContains(ReadTextFile(ctx.cloneRepo / "feature.txt"), "feature cherry-pick");
+    REQUIRE(TrimCopy(RunGit({"rev-parse", ctx.branch}, ctx.cloneRepo).stdoutText) == TrimCopy(RunGit({"rev-parse", "origin/" + ctx.branch}, ctx.cloneRepo).stdoutText));
+    const auto cherry = RunGit({"cherry", ctx.branch, featureBranch}, ctx.cloneRepo);
+    RequireSuccess(cherry, "git cherry after cherry-pick apply");
+    RequireContains(cherry.stdoutText, "- " + featureHead);
+    REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge branches apply reports cherry-pick conflicts without auto resolving", "[tdd][functional][feature:converge][converge][branches][apply][cherry-pick][conflict]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-apply-cherry-pick-conflict");
+    WriteTextFile(ctx.cloneRepo / "conflict.txt", "base\n");
+    RequireSuccess(RunGit({"add", "conflict.txt"}, ctx.cloneRepo), "add base conflict file");
+    RequireSuccess(RunGit({"commit", "-m", "add conflict base"}, ctx.cloneRepo), "commit conflict base");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.cloneRepo), "push conflict base");
+
+    const std::string featureBranch = "feature/cherry-pick-conflict";
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout conflict feature branch");
+    WriteTextFile(ctx.cloneRepo / "conflict.txt", "feature\n");
+    RequireSuccess(RunGit({"commit", "-am", "feature conflict change"}, ctx.cloneRepo), "commit feature conflict change");
+    RequireSuccess(RunGit({"push", "-u", "origin", featureBranch}, ctx.cloneRepo), "push conflict feature branch");
+
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target before conflict apply");
+    WriteTextFile(ctx.cloneRepo / "conflict.txt", "target\n");
+    RequireSuccess(RunGit({"commit", "-am", "target conflict change"}, ctx.cloneRepo), "commit target conflict change");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.cloneRepo), "push target conflict change");
+
+    const auto result = RunKog({"converge", "branches", "apply", "--target", ctx.branch, "--strategy", "cherry-pick", "--branch", featureBranch, "--confirm", "--json", "--jobs", "1"}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 1);
+    RequireContains(result.stdoutText, "\"strategy\": \"cherry-pick\"");
+    RequireContains(result.stdoutText, "CHERRY_PICK_CONFLICT");
+
+    RequireSuccess(RunGit({"cherry-pick", "--abort"}, ctx.cloneRepo), "abort expected cherry-pick conflict");
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("converge branches retire removes merged branch and clean git worktree after confirmation", "[tdd][functional][feature:converge][converge][branches][retire]") {
     const auto ctx = CreateRemoteWithClone("converge-branches-retire");
     const std::string featureBranch = "feature/retire-merged";
@@ -489,6 +563,41 @@ TEST_CASE("converge branches retire removes merged branch and clean git worktree
     RequireContains(result.stdoutText, "\"branch\": \"" + featureBranch + "\"");
     RequireContains(result.stdoutText, "\"action\": \"delete-local\"");
     RequireNotContains(result.stdoutText, "DIRTY_WORKTREE:AHEAD_ONLY");
+    REQUIRE(RunGit({"show-ref", "--verify", "--quiet", "refs/heads/" + featureBranch}, ctx.cloneRepo).exitCode != 0);
+    REQUIRE(!std::filesystem::exists(worktreePath));
+    REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge branches retire allows merged branch with active clean worktree and branch-ahead upstream", "[tdd][functional][feature:converge][converge][branches][retire]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-retire-merged-ahead");
+    const std::string featureBranch = "feature/retire-merged-ahead";
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout retire ahead feature branch");
+    WriteTextFile(ctx.cloneRepo / "retire-ahead.txt", "first feature commit\n");
+    RequireSuccess(RunGit({"add", "retire-ahead.txt"}, ctx.cloneRepo), "add first retire-ahead file");
+    RequireSuccess(RunGit({"commit", "-m", "first retire ahead feature"}, ctx.cloneRepo), "commit first retire-ahead feature");
+    RequireSuccess(RunGit({"push", "-u", "origin", featureBranch}, ctx.cloneRepo), "push first retire-ahead feature");
+    WriteTextFile(ctx.cloneRepo / "retire-ahead.txt", "local feature commit already integrated\n");
+    RequireSuccess(RunGit({"commit", "-am", "local retire ahead feature"}, ctx.cloneRepo), "commit local retire-ahead feature without pushing branch");
+
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target before retire ahead");
+    RequireSuccess(RunGit({"merge", "--ff-only", featureBranch}, ctx.cloneRepo), "merge local-ahead feature into target");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.cloneRepo), "push target containing local-ahead feature");
+    const auto worktreePath = (ctx.sandbox.root / "retire-ahead-worktree").lexically_normal();
+    RequireSuccess(RunGit({"worktree", "add", worktreePath.string(), featureBranch}, ctx.cloneRepo), "add clean local-ahead feature worktree");
+
+    const auto result = RunKog({"converge", "branches", "retire", "--target", ctx.branch, "--remove-worktrees", "--confirm", "--json", "--jobs", "1"}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    RequireContains(result.stdoutText, "\"schemaName\": \"kog.convergeBranchesRetireResult\"");
+    RequireContains(result.stdoutText, "\"mutationPerformed\": true");
+    RequireContains(result.stdoutText, "\"branch\": \"" + featureBranch + "\"");
+    RequireContains(result.stdoutText, "\"action\": \"delete-local\"");
+    RequireNotContains(result.stdoutText, "ACTIVE_WORKTREE_LEASE");
+    RequireNotContains(result.stdoutText, "UNPUSHED_COMMITS");
     REQUIRE(RunGit({"show-ref", "--verify", "--quiet", "refs/heads/" + featureBranch}, ctx.cloneRepo).exitCode != 0);
     REQUIRE(!std::filesystem::exists(worktreePath));
     REQUIRE(GitStatusShort(ctx.cloneRepo).empty());

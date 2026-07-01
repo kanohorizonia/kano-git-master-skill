@@ -168,14 +168,15 @@ failures, branch divergence, and unreachable gitlink commits.
 `kog converge branches plan` is a read-only branch convergence planner. It uses
 the registered recursive repo/submodule/worktree graph rather than arbitrary
 filesystem recursion, reports child repositories before parent gitlink state,
-defaults to a recorded `rebase` strategy, and records an explicit `merge`
-override when requested. `kog converge branches inventory` and its `status`
+defaults to a recorded `rebase` strategy, and records explicit `merge` or
+`cherry-pick` overrides when requested. `kog converge branches inventory` and its `status`
 alias emit the same branch/worktree divergence model as a read-only inventory
 surface and exit successfully when blockers are present.
 
 ```bash
 ./scripts/kog converge branches plan --target main
 ./scripts/kog converge branches plan --target main --strategy merge --json
+./scripts/kog converge branches plan --target main --strategy cherry-pick --json
 ./scripts/kog converge branches inventory --target main --json
 ```
 
@@ -188,20 +189,26 @@ ref is reported as a blocker and makes the planner exit non-zero.
 
 Branch mutations are explicit subcommands. `kog converge branches apply` requires
 `--confirm`, fetches and fast-forwards the target branch by default, and then only
-integrates non-blocked local branches. The default `rebase` strategy is
-fail-closed: it advances the target with `git merge --ff-only` only when the
-target is already an ancestor of the branch. `--strategy merge` performs an
-explicit no-fast-forward merge. Both paths push the target branch after successful
-integration and report machine-readable blockers instead of resolving conflicts.
+integrates non-blocked local branches. The default `rebase` strategy is currently
+fail-closed fast-forward target advancement: it advances the target with
+`git merge --ff-only` only when the target is already an ancestor of the branch.
+`--strategy cherry-pick --branch <name>` replays missing, non-equivalent commits
+from one selected source branch onto the target branch. `--strategy merge`
+performs an explicit no-fast-forward merge. Successful apply paths push the target
+branch and report machine-readable blockers instead of resolving conflicts.
+Cherry-pick conflicts stop for operator recovery; KOG does not auto-resolve them.
 
 `kog converge branches retire` previews by default. With `--confirm`, it deletes
-only local branches proven merged into the target. `--remove-worktrees` allows
-clean Git-managed worktrees for those merged branches to be removed first, and
-`--delete-remote` additionally deletes the tracked upstream branch when one is
-configured.
+only local branches proven merged into the target. For merged branches,
+retire-specific policy treats removable clean worktree leases and branch-upstream
+ahead markers as cleanup prerequisites rather than hard data-loss blockers.
+`--remove-worktrees` allows clean Git-managed worktrees for those merged branches
+to be removed first, and `--delete-remote` additionally deletes the tracked
+upstream branch when one is configured.
 
 ```bash
 ./scripts/kog converge branches apply --target main --confirm --json
+./scripts/kog converge branches apply --target main --strategy cherry-pick --branch feature/example --confirm --json
 ./scripts/kog converge branches retire --target main --remove-worktrees --confirm --json
 ./scripts/kog converge branches retire --target main --remove-worktrees --delete-remote --confirm --json
 ```
