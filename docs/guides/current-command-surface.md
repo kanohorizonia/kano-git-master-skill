@@ -169,20 +169,42 @@ failures, branch divergence, and unreachable gitlink commits.
 the registered recursive repo/submodule/worktree graph rather than arbitrary
 filesystem recursion, reports child repositories before parent gitlink state,
 defaults to a recorded `rebase` strategy, and records an explicit `merge`
-override when requested.
+override when requested. `kog converge branches inventory` and its `status`
+alias emit the same branch/worktree divergence model as a read-only inventory
+surface and exit successfully when blockers are present.
 
 ```bash
 ./scripts/kog converge branches plan --target main
 ./scripts/kog converge branches plan --target main --strategy merge --json
+./scripts/kog converge branches inventory --target main --json
 ```
 
 The branch planner emits stable JSON with `--json` or in agent mode. It records
 candidate branches/worktrees, dirty/unpushed/stale/active-worktree blockers,
-merged status, proposed actions, traversal order, and `mutationPerformed=false`;
-it does not merge, rebase, delete branches, remove worktrees, or push. A stale
-target branch behind its upstream, a stale non-target local branch behind its
-upstream, unpushed local commits, dirty worktree state, or a missing target ref
-is reported as a blocker and makes the planner exit non-zero.
+merged status, proposed actions, traversal order, and `mutationPerformed=false`.
+A stale target branch behind its upstream, a stale non-target local branch behind
+its upstream, unpushed local commits, dirty worktree state, or a missing target
+ref is reported as a blocker and makes the planner exit non-zero.
+
+Branch mutations are explicit subcommands. `kog converge branches apply` requires
+`--confirm`, fetches and fast-forwards the target branch by default, and then only
+integrates non-blocked local branches. The default `rebase` strategy is
+fail-closed: it advances the target with `git merge --ff-only` only when the
+target is already an ancestor of the branch. `--strategy merge` performs an
+explicit no-fast-forward merge. Both paths push the target branch after successful
+integration and report machine-readable blockers instead of resolving conflicts.
+
+`kog converge branches retire` previews by default. With `--confirm`, it deletes
+only local branches proven merged into the target. `--remove-worktrees` allows
+clean Git-managed worktrees for those merged branches to be removed first, and
+`--delete-remote` additionally deletes the tracked upstream branch when one is
+configured.
+
+```bash
+./scripts/kog converge branches apply --target main --confirm --json
+./scripts/kog converge branches retire --target main --remove-worktrees --confirm --json
+./scripts/kog converge branches retire --target main --remove-worktrees --delete-remote --confirm --json
+```
 
 Dry-run summaries are audit-first and must not be treated as clean when blockers exist.
 If blockers are reported, resolve them first or run explicit Kano repair flows

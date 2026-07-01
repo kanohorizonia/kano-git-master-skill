@@ -69,6 +69,15 @@ auto RequireNotContains(const std::string& InText, const std::string& InNeedle) 
     REQUIRE(InText.find(InNeedle) == std::string::npos);
 }
 
+auto TrimCopy(std::string InValue) -> std::string {
+    const auto first = InValue.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) {
+        return {};
+    }
+    const auto last = InValue.find_last_not_of(" \t\r\n");
+    return InValue.substr(first, last - first + 1);
+}
+
 auto ScenarioMetadataPath(const std::string& InScenarioId) -> std::filesystem::path {
     if (const char* metadataDir = std::getenv("KANO_BDD_METADATA_DIR"); metadataDir != nullptr && metadataDir[0] != '\0') {
         return (std::filesystem::path(metadataDir) / (InScenarioId + ".json")).lexically_normal();
@@ -336,6 +345,16 @@ TEST_CASE("converge help distinguishes repos and branches taxonomy", "[tdd][func
     RequireNotContains(branchesText, "--resume");
     RequireNotContains(branchesText, "--force-with-lease");
 
+    const auto branchesRootHelp = RunKog({"converge", "branches", "--help"}, sandbox.root);
+    INFO(branchesRootHelp.stdoutText);
+    INFO(branchesRootHelp.stderrText);
+    REQUIRE(branchesRootHelp.exitCode == 0);
+    const auto branchesRootText = branchesRootHelp.stdoutText + "\n" + branchesRootHelp.stderrText;
+    RequireContains(branchesRootText, "inventory");
+    RequireContains(branchesRootText, "status");
+    RequireContains(branchesRootText, "apply");
+    RequireContains(branchesRootText, "retire");
+
     const auto ignoredRepoStateFlag = RunKog({"converge", "branches", "plan", "--status", "--target", "main", "--json"}, sandbox.root);
     INFO(ignoredRepoStateFlag.stdoutText);
     INFO(ignoredRepoStateFlag.stderrText);
@@ -384,6 +403,90 @@ TEST_CASE("converge branches planner emits stable default rebase JSON child firs
     RequireContains(result.stdoutText, "\"isTarget\": true");
     RequireContains(result.stdoutText, "\"name\": \"" + ctx.branch + "\"");
     RequireContains(result.stdoutText, "\"blockers\": []");
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge branches inventory is read-only and reports blockers without blocked exit", "[tdd][functional][feature:converge][converge][branches][inventory]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-inventory");
+    WriteTextFile(ctx.cloneRepo / "dirty.txt", "dirty\n");
+
+    const auto result = RunKog({"converge", "branches", "inventory", "--target", ctx.branch, "--json", "--jobs", "1"}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    RequireContains(result.stdoutText, "\"schemaName\": \"kog.convergeBranchesInventory\"");
+    RequireContains(result.stdoutText, "\"inventoryOnly\": true");
+    RequireContains(result.stdoutText, "\"mutationPerformed\": false");
+    RequireContains(result.stdoutText, "DIRTY_WORKTREE");
+    REQUIRE(std::filesystem::exists(ctx.cloneRepo / "dirty.txt"));
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge branches apply fast-forwards target and pushes", "[tdd][functional][feature:converge][converge][branches][apply]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-apply");
+    const std::string featureBranch = "feature/apply-fast-forward";
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout apply feature branch");
+    WriteTextFile(ctx.cloneRepo / "feature.txt", "feature apply\n");
+    RequireSuccess(RunGit({"add", "feature.txt"}, ctx.cloneRepo), "add apply feature file");
+    RequireSuccess(RunGit({"commit", "-m", "apply feature"}, ctx.cloneRepo), "commit apply feature");
+    RequireSuccess(RunGit({"push", "-u", "origin", featureBranch}, ctx.cloneRepo), "push apply feature");
+    const auto featureHead = TrimCopy(RunGit({"rev-parse", featureBranch}, ctx.cloneRepo).stdoutText);
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target before apply");
+
+    const auto result = RunKog({"converge", "branches", "apply", "--target", ctx.branch, "--confirm", "--json", "--jobs", "1"}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    RequireContains(result.stdoutText, "\"schemaName\": \"kog.convergeBranchesApplyResult\"");
+    RequireContains(result.stdoutText, "\"mutationPerformed\": true");
+    RequireContains(result.stdoutText, "\"branch\": \"" + featureBranch + "\"");
+    RequireContains(result.stdoutText, "\"action\": \"fast-forward\"");
+    REQUIRE(TrimCopy(RunGit({"rev-parse", ctx.branch}, ctx.cloneRepo).stdoutText) == featureHead);
+    REQUIRE(TrimCopy(RunGit({"rev-parse", "origin/" + ctx.branch}, ctx.cloneRepo).stdoutText) == featureHead);
+    REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge branches retire removes merged branch and clean git worktree after confirmation", "[tdd][functional][feature:converge][converge][branches][retire]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-retire");
+    const std::string featureBranch = "feature/retire-merged";
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout retire feature branch");
+    WriteTextFile(ctx.cloneRepo / "retire.txt", "retire me\n");
+    RequireSuccess(RunGit({"add", "retire.txt"}, ctx.cloneRepo), "add retire feature file");
+    RequireSuccess(RunGit({"commit", "-m", "retire feature"}, ctx.cloneRepo), "commit retire feature");
+    RequireSuccess(RunGit({"push", "-u", "origin", featureBranch}, ctx.cloneRepo), "push retire feature");
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target before retire");
+    RequireSuccess(RunGit({"merge", "--ff-only", featureBranch}, ctx.cloneRepo), "merge retire feature into target");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.cloneRepo), "push merged target");
+    const auto worktreePath = (ctx.sandbox.root / "retire-worktree").lexically_normal();
+    RequireSuccess(RunGit({"worktree", "add", worktreePath.string(), featureBranch}, ctx.cloneRepo), "add clean feature worktree");
+
+    const auto preview = RunKog({"converge", "branches", "retire", "--target", ctx.branch, "--remove-worktrees", "--json", "--jobs", "1"}, ctx.cloneRepo);
+    INFO(preview.stdoutText);
+    INFO(preview.stderrText);
+    REQUIRE(preview.exitCode == 0);
+    RequireContains(preview.stdoutText, "\"schemaName\": \"kog.convergeBranchesRetireResult\"");
+    RequireContains(preview.stdoutText, "\"mutationPerformed\": false");
+    RequireContains(preview.stdoutText, "\"planned\"");
+    REQUIRE(std::filesystem::exists(worktreePath));
+
+    const auto result = RunKog({"converge", "branches", "retire", "--target", ctx.branch, "--remove-worktrees", "--confirm", "--json", "--jobs", "1"}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    RequireContains(result.stdoutText, "\"schemaName\": \"kog.convergeBranchesRetireResult\"");
+    RequireContains(result.stdoutText, "\"mutationPerformed\": true");
+    RequireContains(result.stdoutText, "\"branch\": \"" + featureBranch + "\"");
+    RequireContains(result.stdoutText, "\"action\": \"delete-local\"");
+    REQUIRE(RunGit({"show-ref", "--verify", "--quiet", "refs/heads/" + featureBranch}, ctx.cloneRepo).exitCode != 0);
+    REQUIRE(!std::filesystem::exists(worktreePath));
+    REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
 
     RemoveSandboxWorkspace(ctx.sandbox);
 }

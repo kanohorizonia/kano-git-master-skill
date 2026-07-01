@@ -85,6 +85,7 @@ struct Plan {
 struct BranchWorktree {
     std::string branch;
     std::string location;
+    std::filesystem::path absolutePath;
     bool detached = false;
     bool bare = false;
 };
@@ -2279,7 +2280,8 @@ std::vector<BranchWorktree> Worktrees(const std::filesystem::path& repoPath, con
         if (line.rfind("worktree ", 0) == 0) {
             flush();
             hasRecord = true;
-            current.location = DisplayPathForBranchPlan(workspaceRoot, std::filesystem::path(line.substr(std::string("worktree ").size())));
+            current.absolutePath = std::filesystem::path(line.substr(std::string("worktree ").size())).lexically_normal();
+            current.location = DisplayPathForBranchPlan(workspaceRoot, current.absolutePath);
         } else if (line.rfind("branch ", 0) == 0) {
             constexpr std::string_view prefix = "refs/heads/";
             auto branch = line.substr(std::string("branch ").size());
@@ -2311,6 +2313,181 @@ std::vector<std::string> WorktreeLocationsForBranch(const std::vector<BranchWork
     std::sort(out.begin(), out.end());
     out.erase(std::unique(out.begin(), out.end()), out.end());
     return out;
+}
+
+std::vector<BranchWorktree> WorktreesForBranch(const std::vector<BranchWorktree>& worktrees, const std::string& branch) {
+    std::vector<BranchWorktree> out;
+    for (const auto& worktree : worktrees) {
+        if (worktree.branch == branch) {
+            out.push_back(worktree);
+        }
+    }
+    std::sort(out.begin(), out.end(), [](const auto& a, const auto& b) {
+        return a.location < b.location;
+    });
+    return out;
+}
+
+std::string PathKey(const std::filesystem::path& path) {
+    std::error_code ec;
+    auto normalized = std::filesystem::weakly_canonical(path, ec);
+    if (ec) {
+        normalized = path.lexically_normal();
+    }
+    auto value = normalized.generic_string();
+#if defined(_WIN32)
+    value = ToLower(value);
+#endif
+    return value;
+}
+
+bool SamePath(const std::filesystem::path& left, const std::filesystem::path& right) {
+    return PathKey(left) == PathKey(right);
+}
+
+std::string CombinedGitError(const shell::ExecResult& result) {
+    auto message = Trim(result.stderrStr);
+    if (message.empty()) {
+        message = Trim(result.stdoutStr);
+    }
+    return message;
+}
+
+std::string UpstreamForBranch(const std::filesystem::path& repoPath, const std::string& branch) {
+    const auto upstream = GitCapture(repoPath, {"rev-parse", "--abbrev-ref", "--symbolic-full-name", branch + "@{upstream}"});
+    if (upstream.exitCode != 0) {
+        return {};
+    }
+    return Trim(upstream.stdoutStr);
+}
+
+bool SplitRemoteTrackingRef(const std::string& upstream, std::string& remote, std::string& remoteBranch) {
+    const auto split = upstream.find('/');
+    if (split == std::string::npos || split == 0 || split + 1 >= upstream.size()) {
+        return false;
+    }
+    remote = upstream.substr(0, split);
+    remoteBranch = upstream.substr(split + 1);
+    return true;
+}
+
+std::vector<std::string> BranchBlockers(const nlohmann::json& branch) {
+    std::vector<std::string> blockers;
+    if (const auto it = branch.find("blockers"); it != branch.end() && it->is_array()) {
+        for (const auto& blocker : *it) {
+            if (blocker.is_string()) {
+                blockers.push_back(blocker.get<std::string>());
+            }
+        }
+    }
+    std::sort(blockers.begin(), blockers.end());
+    blockers.erase(std::unique(blockers.begin(), blockers.end()), blockers.end());
+    return blockers;
+}
+
+bool OnlyActiveLeaseBlocker(const std::vector<std::string>& blockers) {
+    return blockers.size() == 1 && blockers.front() == "ACTIVE_WORKTREE_LEASE";
+}
+
+void AppendBranchBlocked(nlohmann::json& result,
+                         const std::string& repoId,
+                         const std::string& branch,
+                         std::vector<std::string> blockers,
+                         const std::string& message) {
+    std::sort(blockers.begin(), blockers.end());
+    blockers.erase(std::unique(blockers.begin(), blockers.end()), blockers.end());
+    result["blocked"].push_back({
+        {"repo", repoId},
+        {"branch", branch},
+        {"blockers", blockers},
+        {"message", message},
+    });
+}
+
+void AppendBranchAction(nlohmann::json& result,
+                        const std::string& field,
+                        const std::string& repoId,
+                        const std::string& branch,
+                        const std::string& action,
+                        const std::string& message) {
+    result[field].push_back({
+        {"repo", repoId},
+        {"branch", branch},
+        {"action", action},
+        {"message", message},
+    });
+}
+
+bool WorktreeIsClean(const std::filesystem::path& worktreePath, std::string& message) {
+    const auto status = GitCapture(worktreePath, {"status", "--porcelain"});
+    if (status.exitCode != 0) {
+        message = "git status failed: " + CombinedGitError(status);
+        return false;
+    }
+    if (!Trim(status.stdoutStr).empty()) {
+        message = "worktree has uncommitted or untracked changes";
+        return false;
+    }
+    return true;
+}
+
+bool CheckoutTargetBranch(const std::filesystem::path& repoPath,
+                          const std::string& repoId,
+                          const std::string& targetBranch,
+                          nlohmann::json& result) {
+    const auto checkout = GitCapture(repoPath, {"checkout", targetBranch});
+    if (checkout.exitCode != 0) {
+        AppendBranchBlocked(result, repoId, targetBranch, {"TARGET_CHECKOUT_FAILED"}, CombinedGitError(checkout));
+        return false;
+    }
+    return true;
+}
+
+bool SyncTargetBranch(const std::filesystem::path& repoPath,
+                      const std::string& repoId,
+                      const std::string& targetBranch,
+                      nlohmann::json& result) {
+    std::string cleanMessage;
+    if (!WorktreeIsClean(repoPath, cleanMessage)) {
+        AppendBranchBlocked(result, repoId, targetBranch, {"DIRTY_TARGET_WORKTREE"}, cleanMessage);
+        return false;
+    }
+
+    const auto fetch = GitCapture(repoPath, {"fetch", "--prune"});
+    if (fetch.exitCode != 0) {
+        AppendBranchBlocked(result, repoId, targetBranch, {"FETCH_FAILED"}, CombinedGitError(fetch));
+        return false;
+    }
+
+    if (!CheckoutTargetBranch(repoPath, repoId, targetBranch, result)) {
+        return false;
+    }
+
+    auto upstream = UpstreamForBranch(repoPath, targetBranch);
+    if (upstream.empty() && GitCapture(repoPath, {"rev-parse", "--verify", "--quiet", ("origin/" + targetBranch) + "^{commit}"}).exitCode == 0) {
+        upstream = "origin/" + targetBranch;
+    }
+    if (upstream.empty()) {
+        result["targetSync"].push_back({
+            {"repo", repoId},
+            {"branch", targetBranch},
+            {"status", "no-upstream"},
+        });
+        return true;
+    }
+
+    const auto merge = GitCapture(repoPath, {"merge", "--ff-only", upstream});
+    if (merge.exitCode != 0) {
+        AppendBranchBlocked(result, repoId, targetBranch, {"TARGET_FAST_FORWARD_FAILED"}, CombinedGitError(merge));
+        return false;
+    }
+    result["targetSync"].push_back({
+        {"repo", repoId},
+        {"branch", targetBranch},
+        {"status", "fast-forwarded"},
+        {"upstream", upstream},
+    });
+    return true;
 }
 
 std::string ResolveTargetRef(const std::filesystem::path& repoPath, const std::string& targetBranch, const std::string& preferredRemote) {
@@ -2537,6 +2714,382 @@ void PrintBranchPlanText(const nlohmann::json& plan) {
     }
 }
 
+bool BranchActionResultHasBlocked(const nlohmann::json& result) {
+    const auto it = result.find("blocked");
+    return it != result.end() && it->is_array() && !it->empty();
+}
+
+nlohmann::json MakeBranchActionResult(const std::string& schemaName,
+                                      const std::string& targetBranch,
+                                      const std::string& strategy,
+                                      bool recursive,
+                                      bool confirm) {
+    return {
+        {"schemaName", schemaName},
+        {"schemaVersion", 1},
+        {"mutationPerformed", false},
+        {"confirm", confirm},
+        {"targetBranch", targetBranch},
+        {"strategy", strategy},
+        {"recursive", recursive},
+        {"targetSync", nlohmann::json::array()},
+        {"applied", nlohmann::json::array()},
+        {"retired", nlohmann::json::array()},
+        {"planned", nlohmann::json::array()},
+        {"skipped", nlohmann::json::array()},
+        {"blocked", nlohmann::json::array()},
+    };
+}
+
+void PrintBranchActionResultText(const std::string& title, const nlohmann::json& result) {
+    std::cout << title << "\n";
+    std::cout << "  target=" << result.value("targetBranch", std::string{})
+              << " strategy=" << result.value("strategy", std::string{})
+              << " recursive=" << (result.value("recursive", true) ? "true" : "false")
+              << " confirm=" << (result.value("confirm", false) ? "true" : "false")
+              << " mutation_performed=" << (result.value("mutationPerformed", false) ? "true" : "false")
+              << "\n";
+    for (const auto& field : {"targetSync", "planned", "applied", "retired", "skipped", "blocked"}) {
+        std::cout << field << "\n";
+        const auto it = result.find(field);
+        if (it == result.end() || !it->is_array() || it->empty()) {
+            std::cout << "  - (none)\n";
+            continue;
+        }
+        for (const auto& item : *it) {
+            std::vector<std::string> blockers;
+            if (const auto blockersIt = item.find("blockers"); blockersIt != item.end() && blockersIt->is_array()) {
+                for (const auto& blocker : *blockersIt) {
+                    if (blocker.is_string()) {
+                        blockers.push_back(blocker.get<std::string>());
+                    }
+                }
+            }
+            std::cout << "  - repo=" << item.value("repo", std::string{})
+                      << " branch=" << item.value("branch", std::string{})
+                      << " action=" << item.value("action", item.value("status", std::string{}))
+                      << " blockers=" << (blockers.empty() ? std::string{"none"} : Csv(blockers))
+                      << " message=" << item.value("message", std::string{})
+                      << "\n";
+        }
+    }
+}
+
+int RunBranchInventory(const std::filesystem::path& root,
+                       int jobs,
+                       bool recursive,
+                       const std::string& targetBranch,
+                       const std::string& strategy,
+                       bool emitJson) {
+    try {
+        if (targetBranch.empty()) {
+            std::cerr << "Error: --target must not be empty\n";
+            return 2;
+        }
+        if (strategy != "rebase" && strategy != "merge") {
+            std::cerr << "Error: --strategy must be rebase or merge\n";
+            return 2;
+        }
+        const bool jsonOutput = emitJson || IsConvergeAgentModeEnabled();
+        std::optional<shell::ScopedConsoleWriteSuppression> suppressCommandLogs;
+        if (jsonOutput) {
+            suppressCommandLogs.emplace();
+        }
+        const auto snapshot = LoadConvergeSnapshot(root, jobs, false, recursive);
+        auto plan = BuildBranchPlanJson(snapshot, root, targetBranch, strategy, recursive);
+        plan["schemaName"] = "kog.convergeBranchesInventory";
+        plan["inventoryOnly"] = true;
+        suppressCommandLogs.reset();
+        if (jsonOutput) {
+            std::cout << plan.dump(2) << "\n";
+        } else {
+            PrintBranchPlanText(plan);
+        }
+        return 0;
+    } catch (const std::exception& ex) {
+        std::cerr << "Error: " << ex.what() << "\n";
+        return 1;
+    }
+}
+
+int RunBranchApply(const std::filesystem::path& root,
+                   int jobs,
+                   bool recursive,
+                   const std::string& targetBranch,
+                   const std::string& strategy,
+                   bool confirm,
+                   bool syncTarget,
+                   bool emitJson) {
+    try {
+        if (targetBranch.empty()) {
+            std::cerr << "Error: --target must not be empty\n";
+            return 2;
+        }
+        if (strategy != "rebase" && strategy != "merge") {
+            std::cerr << "Error: --strategy must be rebase or merge\n";
+            return 2;
+        }
+        const bool jsonOutput = emitJson || IsConvergeAgentModeEnabled();
+        auto result = MakeBranchActionResult("kog.convergeBranchesApplyResult", targetBranch, strategy, recursive, confirm);
+
+        std::optional<shell::ScopedConsoleWriteSuppression> suppressCommandLogs;
+        if (jsonOutput) {
+            suppressCommandLogs.emplace();
+        }
+
+        auto snapshot = LoadConvergeSnapshot(root, jobs, false, recursive);
+        if (confirm && syncTarget) {
+            for (const auto& repoId : BranchPlanTraversalOrder(snapshot)) {
+                const auto* repo = FindRepo(snapshot, repoId);
+                if (repo == nullptr) {
+                    continue;
+                }
+                (void)SyncTargetBranch(RepoPathForBranchPlan(root, *repo), repo->id, targetBranch, result);
+            }
+            if (!BranchActionResultHasBlocked(result)) {
+                snapshot = LoadConvergeSnapshot(root, jobs, false, recursive);
+            }
+        }
+
+        const auto plan = BuildBranchPlanJson(snapshot, root, targetBranch, strategy, recursive);
+        for (const auto& repoJson : plan.value("repos", nlohmann::json::array())) {
+            const auto repoId = repoJson.value("id", std::string{});
+            const auto* repo = FindRepo(snapshot, repoId);
+            if (repo == nullptr) {
+                continue;
+            }
+            const auto repoPath = RepoPathForBranchPlan(root, *repo);
+            for (const auto& branchJson : repoJson.value("branches", nlohmann::json::array())) {
+                const auto branch = branchJson.value("name", std::string{});
+                if (branch.empty() || branchJson.value("isTarget", false)) {
+                    continue;
+                }
+                const auto blockers = BranchBlockers(branchJson);
+                if (branchJson.value("mergedIntoTarget", false)) {
+                    AppendBranchAction(result, "skipped", repoId, branch, "already-merged", "branch is a retire candidate, not an apply candidate");
+                    continue;
+                }
+                if (!blockers.empty()) {
+                    AppendBranchBlocked(result, repoId, branch, blockers, "planner blockers must be resolved before apply");
+                    continue;
+                }
+                if (!confirm) {
+                    AppendBranchBlocked(result, repoId, branch, {"CONFIRM_REQUIRED"}, "rerun with --confirm to mutate target branch");
+                    continue;
+                }
+                if (!CheckoutTargetBranch(repoPath, repoId, targetBranch, result)) {
+                    continue;
+                }
+
+                shell::ExecResult integrate;
+                if (strategy == "merge") {
+                    integrate = GitCapture(repoPath, {"merge", "--no-ff", "--no-edit", branch});
+                } else {
+                    const auto targetIsAncestor = GitCapture(repoPath, {"merge-base", "--is-ancestor", targetBranch, branch});
+                    if (targetIsAncestor.exitCode != 0) {
+                        AppendBranchBlocked(result, repoId, branch, {"REBASE_APPLY_REQUIRES_FAST_FORWARD_TARGET"}, "default rebase apply only advances target when target is an ancestor of the branch");
+                        continue;
+                    }
+                    integrate = GitCapture(repoPath, {"merge", "--ff-only", branch});
+                }
+                if (integrate.exitCode != 0) {
+                    AppendBranchBlocked(result, repoId, branch, {"BRANCH_INTEGRATION_FAILED"}, CombinedGitError(integrate));
+                    continue;
+                }
+
+                auto remote = repo->remote.empty() ? std::string{"origin"} : repo->remote;
+                std::string upstreamRemote;
+                std::string upstreamBranch;
+                if (SplitRemoteTrackingRef(UpstreamForBranch(repoPath, targetBranch), upstreamRemote, upstreamBranch)) {
+                    remote = upstreamRemote;
+                }
+                const auto push = GitCapture(repoPath, {"push", remote, targetBranch});
+                if (push.exitCode != 0) {
+                    AppendBranchBlocked(result, repoId, branch, {"TARGET_PUSH_FAILED"}, CombinedGitError(push));
+                    continue;
+                }
+                result["mutationPerformed"] = true;
+                AppendBranchAction(result, "applied", repoId, branch, strategy == "merge" ? "merge" : "fast-forward", "target branch integrated and pushed");
+            }
+        }
+
+        suppressCommandLogs.reset();
+        if (jsonOutput) {
+            std::cout << result.dump(2) << "\n";
+        } else {
+            PrintBranchActionResultText("Converge Branches Apply", result);
+        }
+        return BranchActionResultHasBlocked(result) ? 1 : 0;
+    } catch (const std::exception& ex) {
+        std::cerr << "Error: " << ex.what() << "\n";
+        return 1;
+    }
+}
+
+int RunBranchRetire(const std::filesystem::path& root,
+                    int jobs,
+                    bool recursive,
+                    const std::string& targetBranch,
+                    bool confirm,
+                    bool removeWorktrees,
+                    bool deleteRemote,
+                    bool syncTarget,
+                    bool emitJson) {
+    try {
+        if (targetBranch.empty()) {
+            std::cerr << "Error: --target must not be empty\n";
+            return 2;
+        }
+        const bool jsonOutput = emitJson || IsConvergeAgentModeEnabled();
+        auto result = MakeBranchActionResult("kog.convergeBranchesRetireResult", targetBranch, "retire", recursive, confirm);
+        result["removeWorktrees"] = removeWorktrees;
+        result["deleteRemote"] = deleteRemote;
+
+        std::optional<shell::ScopedConsoleWriteSuppression> suppressCommandLogs;
+        if (jsonOutput) {
+            suppressCommandLogs.emplace();
+        }
+
+        auto snapshot = LoadConvergeSnapshot(root, jobs, false, recursive);
+        if (confirm && syncTarget) {
+            for (const auto& repoId : BranchPlanTraversalOrder(snapshot)) {
+                const auto* repo = FindRepo(snapshot, repoId);
+                if (repo == nullptr) {
+                    continue;
+                }
+                (void)SyncTargetBranch(RepoPathForBranchPlan(root, *repo), repo->id, targetBranch, result);
+            }
+            if (!BranchActionResultHasBlocked(result)) {
+                snapshot = LoadConvergeSnapshot(root, jobs, false, recursive);
+            }
+        }
+
+        const auto plan = BuildBranchPlanJson(snapshot, root, targetBranch, "rebase", recursive);
+        for (const auto& repoJson : plan.value("repos", nlohmann::json::array())) {
+            const auto repoId = repoJson.value("id", std::string{});
+            const auto* repo = FindRepo(snapshot, repoId);
+            if (repo == nullptr) {
+                continue;
+            }
+            const auto repoPath = RepoPathForBranchPlan(root, *repo);
+            const auto liveWorktrees = Worktrees(repoPath, root);
+            for (const auto& branchJson : repoJson.value("branches", nlohmann::json::array())) {
+                const auto branch = branchJson.value("name", std::string{});
+                if (branch.empty() || branchJson.value("isTarget", false)) {
+                    continue;
+                }
+                if (!branchJson.value("mergedIntoTarget", false)) {
+                    AppendBranchAction(result, "skipped", repoId, branch, "not-merged", "branch is not merged into target");
+                    continue;
+                }
+                auto blockers = BranchBlockers(branchJson);
+                if (OnlyActiveLeaseBlocker(blockers) && removeWorktrees) {
+                    blockers.clear();
+                }
+                if (!blockers.empty()) {
+                    AppendBranchBlocked(result, repoId, branch, blockers, "planner blockers must be resolved before retirement");
+                    continue;
+                }
+                if (branchJson.value("ahead", 0) > 0) {
+                    AppendBranchBlocked(result, repoId, branch, {"UNPUSHED_COMMITS"}, "branch has local commits not present upstream");
+                    continue;
+                }
+
+                const auto branchWorktrees = WorktreesForBranch(liveWorktrees, branch);
+                if (!branchWorktrees.empty() && !removeWorktrees) {
+                    AppendBranchBlocked(result, repoId, branch, {"ACTIVE_WORKTREE_LEASE"}, "rerun with --remove-worktrees after reviewing clean Git-managed worktrees");
+                    continue;
+                }
+
+                std::vector<std::string> worktreeLocations;
+                bool worktreesSafe = true;
+                for (const auto& worktree : branchWorktrees) {
+                    worktreeLocations.push_back(worktree.location);
+                    if (SamePath(worktree.absolutePath, repoPath)) {
+                        AppendBranchBlocked(result, repoId, branch, {"PRIMARY_WORKTREE_REMOVE_REFUSED"}, "refusing to remove the primary repository worktree");
+                        worktreesSafe = false;
+                        continue;
+                    }
+                    std::string cleanMessage;
+                    if (!WorktreeIsClean(worktree.absolutePath, cleanMessage)) {
+                        AppendBranchBlocked(result, repoId, branch, {"DIRTY_WORKTREE_LEASE"}, cleanMessage);
+                        worktreesSafe = false;
+                    }
+                }
+                if (!worktreesSafe) {
+                    continue;
+                }
+
+                if (!confirm) {
+                    result["planned"].push_back({
+                        {"repo", repoId},
+                        {"branch", branch},
+                        {"action", "retire"},
+                        {"message", "rerun with --confirm to delete the local branch"},
+                        {"worktrees", worktreeLocations},
+                    });
+                    continue;
+                }
+
+                if (!CheckoutTargetBranch(repoPath, repoId, targetBranch, result)) {
+                    continue;
+                }
+
+                for (const auto& worktree : branchWorktrees) {
+                    const auto remove = GitCapture(repoPath, {"worktree", "remove", worktree.absolutePath.string()});
+                    if (remove.exitCode != 0) {
+                        AppendBranchBlocked(result, repoId, branch, {"WORKTREE_REMOVE_FAILED"}, CombinedGitError(remove));
+                        worktreesSafe = false;
+                        break;
+                    }
+                }
+                if (!worktreesSafe) {
+                    continue;
+                }
+
+                const auto upstream = UpstreamForBranch(repoPath, branch);
+                const auto deleteLocal = GitCapture(repoPath, {"branch", "-d", branch});
+                if (deleteLocal.exitCode != 0) {
+                    AppendBranchBlocked(result, repoId, branch, {"LOCAL_BRANCH_DELETE_FAILED"}, CombinedGitError(deleteLocal));
+                    continue;
+                }
+
+                if (deleteRemote && !upstream.empty()) {
+                    std::string remote;
+                    std::string remoteBranch;
+                    if (SplitRemoteTrackingRef(upstream, remote, remoteBranch)) {
+                        const auto deleteUpstream = GitCapture(repoPath, {"push", remote, "--delete", remoteBranch});
+                        if (deleteUpstream.exitCode != 0) {
+                            AppendBranchBlocked(result, repoId, branch, {"REMOTE_BRANCH_DELETE_FAILED"}, CombinedGitError(deleteUpstream));
+                            continue;
+                        }
+                    }
+                }
+
+                result["mutationPerformed"] = true;
+                result["retired"].push_back({
+                    {"repo", repoId},
+                    {"branch", branch},
+                    {"action", deleteRemote ? "delete-local-and-remote" : "delete-local"},
+                    {"message", "merged branch retired"},
+                    {"worktrees", worktreeLocations},
+                });
+            }
+        }
+
+        suppressCommandLogs.reset();
+        if (jsonOutput) {
+            std::cout << result.dump(2) << "\n";
+        } else {
+            PrintBranchActionResultText("Converge Branches Retire", result);
+        }
+        return BranchActionResultHasBlocked(result) ? 1 : 0;
+    } catch (const std::exception& ex) {
+        std::cerr << "Error: " << ex.what() << "\n";
+        return 1;
+    }
+}
+
 int RunBranchPlanner(const std::filesystem::path& root,
                      int jobs,
                      bool recursive,
@@ -2597,11 +3150,23 @@ void RegisterConverge(CLI::App& InApp) {
     branches->require_subcommand(1);
     auto* branchesPlan = branches->add_subcommand("plan", "Read-only branch convergence planner");
     branchesPlan->fallthrough(false);
+    auto* branchesInventory = branches->add_subcommand("inventory", "Read-only branch/worktree divergence inventory");
+    branchesInventory->fallthrough(false);
+    auto* branchesStatus = branches->add_subcommand("status", "Alias for branch/worktree divergence inventory");
+    branchesStatus->fallthrough(false);
+    auto* branchesApply = branches->add_subcommand("apply", "Guarded branch integration into the target branch");
+    branchesApply->fallthrough(false);
+    auto* branchesRetire = branches->add_subcommand("retire", "Guarded retirement for merged branches and clean Git worktrees");
+    branchesRetire->fallthrough(false);
     auto* branchesNoRecursive = new bool{false};
     auto* branchesJson = new bool{false};
     auto* branchesJobs = new int{1};
     auto* branchesTarget = new std::string{"main"};
     auto* branchesStrategy = new std::string{"rebase"};
+    auto* branchesConfirm = new bool{false};
+    auto* branchesNoSyncTarget = new bool{false};
+    auto* branchesRemoveWorktrees = new bool{false};
+    auto* branchesDeleteRemote = new bool{false};
 
     cmd->add_flag("--no-recursive,-N", *noRecursive, "Only run on current repository");
     cmd->add_flag("--dry-run", *dryRun, "Preview converge actions without changing repositories");
@@ -2637,6 +3202,31 @@ void RegisterConverge(CLI::App& InApp) {
     branchesPlan->add_option("--target", *branchesTarget, "Target integration branch")->default_str("main");
     branchesPlan->add_option("--strategy", *branchesStrategy, "Integration strategy recorded in the plan: rebase|merge")->default_str("rebase");
 
+    for (auto* branchReadOnly : {branchesInventory, branchesStatus}) {
+        branchReadOnly->add_flag("--no-recursive,-N", *branchesNoRecursive, "Only inspect branches for the current repository");
+        branchReadOnly->add_flag("--json", *branchesJson, "Emit stable machine-readable branch inventory JSON");
+        branchReadOnly->add_option("--jobs", *branchesJobs, "Parallel workers for recursive status snapshot loading");
+        branchReadOnly->add_option("--target", *branchesTarget, "Target integration branch")->default_str("main");
+        branchReadOnly->add_option("--strategy", *branchesStrategy, "Integration strategy recorded in the inventory: rebase|merge")->default_str("rebase");
+    }
+
+    branchesApply->add_flag("--no-recursive,-N", *branchesNoRecursive, "Only apply branches for the current repository");
+    branchesApply->add_flag("--json", *branchesJson, "Emit stable machine-readable apply result JSON");
+    branchesApply->add_flag("--confirm", *branchesConfirm, "Confirm branch integration mutation");
+    branchesApply->add_flag("--no-sync-target", *branchesNoSyncTarget, "Do not fetch and fast-forward the target branch before apply");
+    branchesApply->add_option("--jobs", *branchesJobs, "Parallel workers for recursive status snapshot loading");
+    branchesApply->add_option("--target", *branchesTarget, "Target integration branch")->default_str("main");
+    branchesApply->add_option("--strategy", *branchesStrategy, "Integration strategy: rebase|merge")->default_str("rebase");
+
+    branchesRetire->add_flag("--no-recursive,-N", *branchesNoRecursive, "Only retire branches for the current repository");
+    branchesRetire->add_flag("--json", *branchesJson, "Emit stable machine-readable retire result JSON");
+    branchesRetire->add_flag("--confirm", *branchesConfirm, "Confirm branch/worktree retirement mutation");
+    branchesRetire->add_flag("--no-sync-target", *branchesNoSyncTarget, "Do not fetch and fast-forward the target branch before retire");
+    branchesRetire->add_flag("--remove-worktrees", *branchesRemoveWorktrees, "Remove clean Git-managed worktrees for retired branches");
+    branchesRetire->add_flag("--delete-remote", *branchesDeleteRemote, "Delete tracked remote branches after local retirement");
+    branchesRetire->add_option("--jobs", *branchesJobs, "Parallel workers for recursive status snapshot loading");
+    branchesRetire->add_option("--target", *branchesTarget, "Target integration branch")->default_str("main");
+
     repos->callback([=]() {
         std::vector<std::string> args{"converge"};
         if (*noRecursive) args.push_back("--no-recursive");
@@ -2671,6 +3261,58 @@ void RegisterConverge(CLI::App& InApp) {
             !*branchesNoRecursive,
             Trim(*branchesTarget),
             ToLower(Trim(*branchesStrategy)),
+            *branchesJson);
+        std::exit(code);
+    });
+
+    auto branchInventoryCallback = [=]() {
+        if (*branchesJobs < 1) {
+            std::cerr << "Error: --jobs must be a positive integer\n";
+            std::exit(2);
+        }
+        const auto code = RunBranchInventory(
+            std::filesystem::current_path().lexically_normal(),
+            *branchesJobs,
+            !*branchesNoRecursive,
+            Trim(*branchesTarget),
+            ToLower(Trim(*branchesStrategy)),
+            *branchesJson);
+        std::exit(code);
+    };
+    branchesInventory->callback(branchInventoryCallback);
+    branchesStatus->callback(branchInventoryCallback);
+
+    branchesApply->callback([=]() {
+        if (*branchesJobs < 1) {
+            std::cerr << "Error: --jobs must be a positive integer\n";
+            std::exit(2);
+        }
+        const auto code = RunBranchApply(
+            std::filesystem::current_path().lexically_normal(),
+            *branchesJobs,
+            !*branchesNoRecursive,
+            Trim(*branchesTarget),
+            ToLower(Trim(*branchesStrategy)),
+            *branchesConfirm,
+            !*branchesNoSyncTarget,
+            *branchesJson);
+        std::exit(code);
+    });
+
+    branchesRetire->callback([=]() {
+        if (*branchesJobs < 1) {
+            std::cerr << "Error: --jobs must be a positive integer\n";
+            std::exit(2);
+        }
+        const auto code = RunBranchRetire(
+            std::filesystem::current_path().lexically_normal(),
+            *branchesJobs,
+            !*branchesNoRecursive,
+            Trim(*branchesTarget),
+            *branchesConfirm,
+            *branchesRemoveWorktrees,
+            *branchesDeleteRemote,
+            !*branchesNoSyncTarget,
             *branchesJson);
         std::exit(code);
     });
