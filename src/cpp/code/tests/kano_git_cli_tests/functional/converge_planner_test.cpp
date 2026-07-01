@@ -631,6 +631,111 @@ TEST_CASE("converge branches retire allows merged branch with active clean workt
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge branches retire removes patch-equivalent branch with clean active worktree", "[tdd][functional][feature:converge][converge][branches][retire][equivalent]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-retire-patch-equivalent");
+    const std::string featureBranch = "feature/retire-patch-equivalent";
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout patch-equivalent feature branch");
+    WriteTextFile(ctx.cloneRepo / "equivalent.txt", "patch equivalent branch\n");
+    RequireSuccess(RunGit({"add", "equivalent.txt"}, ctx.cloneRepo), "add patch-equivalent file");
+    RequireSuccess(RunGit({"commit", "-m", "patch equivalent feature"}, ctx.cloneRepo), "commit patch-equivalent feature");
+    RequireSuccess(RunGit({"push", "-u", "origin", featureBranch}, ctx.cloneRepo), "push patch-equivalent feature");
+
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target before patch-equivalent retire");
+    WriteTextFile(ctx.cloneRepo / "target-independent.txt", "target independent commit\n");
+    RequireSuccess(RunGit({"add", "target-independent.txt"}, ctx.cloneRepo), "add target independent file");
+    RequireSuccess(RunGit({"commit", "-m", "target independent commit"}, ctx.cloneRepo), "commit target independently before patch-equivalent cherry-pick");
+    RequireSuccess(RunGit({"cherry-pick", featureBranch}, ctx.cloneRepo), "cherry-pick feature onto target with different commit id");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.cloneRepo), "push target containing equivalent patch");
+    const auto worktreePath = (ctx.sandbox.root / "retire-patch-equivalent-worktree").lexically_normal();
+    RequireSuccess(RunGit({"worktree", "add", worktreePath.string(), featureBranch}, ctx.cloneRepo), "add clean patch-equivalent feature worktree");
+
+    const auto inventory = RunKog({"converge", "branches", "inventory", "--target", ctx.branch, "--strategy", "cherry-pick", "--json", "--jobs", "1"}, ctx.cloneRepo);
+    INFO(inventory.stdoutText);
+    INFO(inventory.stderrText);
+    REQUIRE(inventory.exitCode == 0);
+    RequireContains(inventory.stdoutText, "\"name\": \"" + featureBranch + "\"");
+    RequireContains(inventory.stdoutText, "\"integrationProof\": \"patch-equivalent\"");
+    RequireNotContains(inventory.stdoutText, "ACTIVE_WORKTREE_LEASE");
+
+    const auto result = RunKog({"converge", "branches", "retire", "--target", ctx.branch, "--remove-worktrees", "--confirm", "--json", "--jobs", "1"}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    RequireContains(result.stdoutText, "\"schemaName\": \"kog.convergeBranchesRetireResult\"");
+    RequireContains(result.stdoutText, "\"mutationPerformed\": true");
+    RequireContains(result.stdoutText, "\"branch\": \"" + featureBranch + "\"");
+    RequireContains(result.stdoutText, "\"integrationProof\": \"patch-equivalent\"");
+    RequireContains(result.stdoutText, "\"action\": \"delete-local\"");
+    REQUIRE(RunGit({"show-ref", "--verify", "--quiet", "refs/heads/" + featureBranch}, ctx.cloneRepo).exitCode != 0);
+    REQUIRE(!std::filesystem::exists(worktreePath));
+    REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge branches retire removes empty cherry-pick no-op branch", "[tdd][functional][feature:converge][converge][branches][retire][equivalent]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-retire-empty-noop");
+    const std::string featureBranch = "feature/retire-empty-noop";
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout empty-noop feature branch");
+    RequireSuccess(RunGit({"commit", "--allow-empty", "-m", "empty no-op feature"}, ctx.cloneRepo), "commit empty-noop feature");
+    RequireSuccess(RunGit({"push", "-u", "origin", featureBranch}, ctx.cloneRepo), "push empty-noop feature");
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target before empty-noop retire");
+
+    const auto inventory = RunKog({"converge", "branches", "inventory", "--target", ctx.branch, "--strategy", "cherry-pick", "--json", "--jobs", "1"}, ctx.cloneRepo);
+    INFO(inventory.stdoutText);
+    INFO(inventory.stderrText);
+    REQUIRE(inventory.exitCode == 0);
+    RequireContains(inventory.stdoutText, "\"name\": \"" + featureBranch + "\"");
+    RequireContains(inventory.stdoutText, "\"integrationProof\": \"cherry-pick-noop\"");
+
+    const auto result = RunKog({"converge", "branches", "retire", "--target", ctx.branch, "--remove-worktrees", "--confirm", "--json", "--jobs", "1"}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    RequireContains(result.stdoutText, "\"schemaName\": \"kog.convergeBranchesRetireResult\"");
+    RequireContains(result.stdoutText, "\"mutationPerformed\": true");
+    RequireContains(result.stdoutText, "\"branch\": \"" + featureBranch + "\"");
+    RequireContains(result.stdoutText, "\"integrationProof\": \"cherry-pick-noop\"");
+    RequireContains(result.stdoutText, "\"action\": \"delete-local\"");
+    REQUIRE(RunGit({"show-ref", "--verify", "--quiet", "refs/heads/" + featureBranch}, ctx.cloneRepo).exitCode != 0);
+    REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge branches retire proves empty no-op branch with untracked target dirt", "[tdd][functional][feature:converge][converge][branches][retire][equivalent][dirty]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-retire-empty-noop-untracked");
+    const std::string featureBranch = "feature/retire-empty-noop-untracked";
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout untracked-noop feature branch");
+    RequireSuccess(RunGit({"commit", "--allow-empty", "-m", "empty no-op feature with untracked target"}, ctx.cloneRepo), "commit untracked-noop feature");
+    RequireSuccess(RunGit({"push", "-u", "origin", featureBranch}, ctx.cloneRepo), "push untracked-noop feature");
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target before untracked-noop retire");
+    WriteTextFile(ctx.cloneRepo / "local-scratch.tmp", "local scratch stays untracked\n");
+
+    const auto inventory = RunKog({"converge", "branches", "inventory", "--target", ctx.branch, "--strategy", "cherry-pick", "--json", "--jobs", "1"}, ctx.cloneRepo);
+    INFO(inventory.stdoutText);
+    INFO(inventory.stderrText);
+    REQUIRE(inventory.exitCode == 0);
+    RequireContains(inventory.stdoutText, "\"name\": \"" + featureBranch + "\"");
+    RequireContains(inventory.stdoutText, "\"integrationProof\": \"cherry-pick-noop\"");
+
+    const auto result = RunKog({"converge", "branches", "retire", "--target", ctx.branch, "--remove-worktrees", "--confirm", "--json", "--jobs", "1"}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    RequireContains(result.stdoutText, "\"schemaName\": \"kog.convergeBranchesRetireResult\"");
+    RequireContains(result.stdoutText, "\"mutationPerformed\": true");
+    RequireContains(result.stdoutText, "\"branch\": \"" + featureBranch + "\"");
+    RequireContains(result.stdoutText, "\"integrationProof\": \"cherry-pick-noop\"");
+    REQUIRE(RunGit({"show-ref", "--verify", "--quiet", "refs/heads/" + featureBranch}, ctx.cloneRepo).exitCode != 0);
+    RequireContains(GitStatusShort(ctx.cloneRepo), "?? local-scratch.tmp");
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("converge branches planner records explicit merge override in agent JSON", "[tdd][functional][feature:converge][converge][branches][planner][agent-mode]") {
     const auto ctx = CreateRemoteWithClone("converge-branches-plan-merge");
     RequireSuccess(RunGit({"checkout", "-b", "feature/merge-plan"}, ctx.cloneRepo), "checkout feature branch");

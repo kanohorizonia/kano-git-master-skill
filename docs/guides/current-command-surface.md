@@ -200,12 +200,14 @@ Empty/no-op cherry-pick commits are skipped as already equivalent. Cherry-pick
 conflicts stop for operator recovery; KOG does not auto-resolve them.
 
 `kog converge branches retire` previews by default. With `--confirm`, it deletes
-only local branches proven merged into the target. For merged branches,
-retire-specific policy treats removable clean worktree leases and branch-upstream
-ahead markers as cleanup prerequisites rather than hard data-loss blockers.
-`--remove-worktrees` allows clean Git-managed worktrees for those merged branches
-to be removed first, and `--delete-remote` additionally deletes the tracked
-upstream branch when one is configured.
+only local branches proven integrated into the target by merge-base ancestry,
+patch equivalence, or an isolated empty/no-op cherry-pick proof. For proven
+integrated branches, retire-specific policy treats removable clean worktree
+leases, local-ahead markers, local-stale markers, and unrelated untracked-only
+target dirt as cleanup metadata rather than hard data-loss blockers.
+`--remove-worktrees` allows clean Git-managed worktrees for those branches to be
+removed first, and `--delete-remote` additionally deletes the tracked upstream
+branch when one is configured.
 
 ```bash
 ./scripts/kog converge branches apply --target main --confirm --json

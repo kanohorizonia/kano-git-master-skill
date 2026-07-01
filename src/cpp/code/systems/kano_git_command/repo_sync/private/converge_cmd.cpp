@@ -2435,13 +2435,20 @@ void AppendBranchAction(nlohmann::json& result,
     });
 }
 
-bool WorktreeIsClean(const std::filesystem::path& worktreePath, std::string& message) {
+bool StatusIsUntrackedOnly(const std::string& porcelainStatus) {
+    const auto lines = SplitNonEmptyLines(porcelainStatus);
+    return !lines.empty() && std::all_of(lines.begin(), lines.end(), [](const std::string& line) {
+        return line.rfind("?? ", 0) == 0;
+    });
+}
+
+bool WorktreeIsClean(const std::filesystem::path& worktreePath, std::string& message, bool allowUntrackedOnly = false) {
     const auto status = GitCapture(worktreePath, {"status", "--porcelain"});
     if (status.exitCode != 0) {
         message = "git status failed: " + CombinedGitError(status);
         return false;
     }
-    if (!Trim(status.stdoutStr).empty()) {
+    if (!Trim(status.stdoutStr).empty() && !(allowUntrackedOnly && StatusIsUntrackedOnly(status.stdoutStr))) {
         message = "worktree has uncommitted or untracked changes";
         return false;
     }
@@ -2463,9 +2470,10 @@ bool CheckoutTargetBranch(const std::filesystem::path& repoPath,
 bool SyncTargetBranch(const std::filesystem::path& repoPath,
                       const std::string& repoId,
                       const std::string& targetBranch,
-                      nlohmann::json& result) {
+                      nlohmann::json& result,
+                      bool allowUntrackedOnly = false) {
     std::string cleanMessage;
-    if (!WorktreeIsClean(repoPath, cleanMessage)) {
+    if (!WorktreeIsClean(repoPath, cleanMessage, allowUntrackedOnly)) {
         AppendBranchBlocked(result, repoId, targetBranch, {"DIRTY_TARGET_WORKTREE"}, cleanMessage);
         return false;
     }
@@ -2547,11 +2555,48 @@ bool BranchMergedIntoTarget(const std::filesystem::path& repoPath, const std::st
     return GitCapture(repoPath, {"merge-base", "--is-ancestor", branch, targetRef}).exitCode == 0;
 }
 
-std::vector<std::string> RetireBlockersForMergedBranch(std::vector<std::string> blockers, bool removeWorktrees) {
+bool BranchPatchEquivalentToTarget(const std::filesystem::path& repoPath, const std::string& targetBranch, const std::string& branch) {
+    const auto cherry = GitCapture(repoPath, {"cherry", targetBranch, branch});
+    if (cherry.exitCode != 0) {
+        return false;
+    }
+    const auto lines = SplitNonEmptyLines(cherry.stdoutStr);
+    if (lines.empty()) {
+        return false;
+    }
+    return std::none_of(lines.begin(), lines.end(), [](const std::string& line) {
+        return !line.empty() && line[0] == '+';
+    });
+}
+
+std::vector<std::string> RetireBlockersForIntegratedBranch(std::vector<std::string> blockers, bool removeWorktrees, bool deleteRemote) {
     blockers.erase(std::remove(blockers.begin(), blockers.end(), "UNPUSHED_COMMITS"), blockers.end());
+    blockers.erase(std::remove_if(blockers.begin(),
+                                  blockers.end(),
+                                  [](const std::string& blocker) {
+                                      return blocker.rfind("DIRTY_WORKTREE:", 0) == 0;
+                                  }),
+                   blockers.end());
+    if (!deleteRemote) {
+        blockers.erase(std::remove(blockers.begin(), blockers.end(), "STALE_LOCAL_BRANCH"), blockers.end());
+    }
     if (removeWorktrees) {
         blockers.erase(std::remove(blockers.begin(), blockers.end(), "ACTIVE_WORKTREE_LEASE"), blockers.end());
     }
+    std::sort(blockers.begin(), blockers.end());
+    blockers.erase(std::unique(blockers.begin(), blockers.end()), blockers.end());
+    return blockers;
+}
+
+std::vector<std::string> BlockersForNoopProof(std::vector<std::string> blockers) {
+    blockers.erase(std::remove_if(blockers.begin(),
+                                  blockers.end(),
+                                  [](const std::string& blocker) {
+                                      return blocker == "ACTIVE_WORKTREE_LEASE" ||
+                                             blocker == "UNPUSHED_COMMITS" ||
+                                             blocker.rfind("DIRTY_WORKTREE:", 0) == 0;
+                                  }),
+                   blockers.end());
     std::sort(blockers.begin(), blockers.end());
     blockers.erase(std::unique(blockers.begin(), blockers.end()), blockers.end());
     return blockers;
@@ -2638,6 +2683,90 @@ bool SkipEmptyCherryPick(const std::filesystem::path& repoPath, std::string& err
     return false;
 }
 
+std::filesystem::path MakeCherryPickProbePath() {
+#if defined(_WIN32)
+    const auto pid = static_cast<unsigned long long>(GetCurrentProcessId());
+#else
+    const auto pid = static_cast<unsigned long long>(getpid());
+#endif
+    const auto ticks = static_cast<unsigned long long>(
+        std::chrono::steady_clock::now().time_since_epoch().count());
+    return std::filesystem::temp_directory_path() / ("kog-cherry-pick-probe-" + std::to_string(pid) + "-" + std::to_string(ticks));
+}
+
+bool BranchCherryPickNoopIntoTarget(const std::filesystem::path& repoPath,
+                                    const std::string& targetBranch,
+                                    const std::string& branch,
+                                    std::string* outError = nullptr) {
+    std::string commitPlanError;
+    const auto commits = CherryPickCommitsForBranch(repoPath, targetBranch, branch, commitPlanError);
+    if (!commitPlanError.empty()) {
+        if (outError != nullptr) {
+            *outError = commitPlanError;
+        }
+        return false;
+    }
+    if (commits.empty()) {
+        return true;
+    }
+
+    const auto targetHead = GitCapture(repoPath, {"rev-parse", "--verify", targetBranch + "^{commit}"});
+    if (targetHead.exitCode != 0) {
+        if (outError != nullptr) {
+            *outError = CombinedGitError(targetHead);
+        }
+        return false;
+    }
+
+    const auto probePath = MakeCherryPickProbePath();
+    bool worktreeAdded = false;
+    auto cleanupProbe = [&]() {
+        if (worktreeAdded) {
+            (void)GitCapture(repoPath, {"worktree", "remove", "--force", probePath.string()});
+        }
+        std::error_code ec;
+        std::filesystem::remove_all(probePath, ec);
+    };
+
+    const auto add = GitCapture(repoPath, {"worktree", "add", "--detach", probePath.string(), Trim(targetHead.stdoutStr)});
+    if (add.exitCode != 0) {
+        cleanupProbe();
+        if (outError != nullptr) {
+            *outError = CombinedGitError(add);
+        }
+        return false;
+    }
+    worktreeAdded = true;
+
+    bool sawNoop = false;
+    for (const auto& commit : commits) {
+        const auto cherryPick = GitCapture(probePath, {"cherry-pick", commit});
+        if (cherryPick.exitCode == 0) {
+            cleanupProbe();
+            return false;
+        }
+        if (!IsEmptyCherryPickError(cherryPick)) {
+            if (outError != nullptr) {
+                *outError = CombinedGitError(cherryPick);
+            }
+            cleanupProbe();
+            return false;
+        }
+        std::string skipError;
+        if (!SkipEmptyCherryPick(probePath, skipError)) {
+            if (outError != nullptr) {
+                *outError = skipError;
+            }
+            cleanupProbe();
+            return false;
+        }
+        sawNoop = true;
+    }
+
+    cleanupProbe();
+    return sawNoop;
+}
+
 nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
                                      const RepoStatus& repo,
                                      const std::filesystem::path& repoPath,
@@ -2680,6 +2809,7 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
         const auto counts = AheadBehindForBranch(repoPath, branch);
         const auto isTarget = branch == targetBranch;
         const auto merged = isTarget || BranchMergedIntoTarget(repoPath, branch, targetRef);
+        const auto patchEquivalent = !isTarget && !merged && !targetRef.empty() && BranchPatchEquivalentToTarget(repoPath, targetBranch, branch);
 
         std::vector<std::string> blockers;
         if (targetRef.empty()) {
@@ -2706,12 +2836,21 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
         std::sort(blockers.begin(), blockers.end());
         blockers.erase(std::unique(blockers.begin(), blockers.end()), blockers.end());
 
+        bool cherryPickNoop = false;
+        if (!isTarget && !merged && !patchEquivalent && strategy == "cherry-pick" && BlockersForNoopProof(blockers).empty()) {
+            cherryPickNoop = BranchCherryPickNoopIntoTarget(repoPath, targetBranch, branch);
+        }
+        const auto integrated = merged || patchEquivalent || cherryPickNoop;
+        if (integrated && !isTarget) {
+            blockers = RetireBlockersForIntegratedBranch(std::move(blockers), true, false);
+        }
+
         std::vector<std::string> actions;
         if (isTarget) {
             actions.push_back("keep target branch");
         } else if (!blockers.empty()) {
             actions.push_back("resolve blockers before branch integration or retirement");
-        } else if (merged) {
+        } else if (integrated) {
             actions.push_back("candidate for human-reviewed branch retirement; planner does not delete branches");
         } else if (strategy == "merge") {
             actions.push_back("would plan merge integration into " + targetBranch);
@@ -2732,6 +2871,10 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
             {"ahead", counts.ahead},
             {"behind", counts.behind},
             {"mergedIntoTarget", merged},
+            {"patchEquivalentToTarget", patchEquivalent},
+            {"cherryPickNoopIntoTarget", cherryPickNoop},
+            {"integratedIntoTarget", integrated},
+            {"integrationProof", merged ? "merged" : (patchEquivalent ? "patch-equivalent" : (cherryPickNoop ? "cherry-pick-noop" : ""))},
             {"blockers", blockers},
             {"proposedActions", actions},
         });
@@ -3121,14 +3264,14 @@ int RunBranchRetire(const std::filesystem::path& root,
                 if (repo == nullptr) {
                     continue;
                 }
-                (void)SyncTargetBranch(RepoPathForBranchPlan(root, *repo), repo->id, targetBranch, result);
+                (void)SyncTargetBranch(RepoPathForBranchPlan(root, *repo), repo->id, targetBranch, result, true);
             }
             if (!BranchActionResultHasBlocked(result)) {
                 snapshot = LoadConvergeSnapshot(root, jobs, false, recursive);
             }
         }
 
-        const auto plan = BuildBranchPlanJson(snapshot, root, targetBranch, "rebase", recursive);
+        const auto plan = BuildBranchPlanJson(snapshot, root, targetBranch, "cherry-pick", recursive);
         for (const auto& repoJson : plan.value("repos", nlohmann::json::array())) {
             const auto repoId = repoJson.value("id", std::string{});
             const auto* repo = FindRepo(snapshot, repoId);
@@ -3142,11 +3285,11 @@ int RunBranchRetire(const std::filesystem::path& root,
                 if (branch.empty() || branchJson.value("isTarget", false)) {
                     continue;
                 }
-                if (!branchJson.value("mergedIntoTarget", false)) {
-                    AppendBranchAction(result, "skipped", repoId, branch, "not-merged", "branch is not merged into target");
+                if (!branchJson.value("integratedIntoTarget", branchJson.value("mergedIntoTarget", false))) {
+                    AppendBranchAction(result, "skipped", repoId, branch, "not-integrated", "branch is not proven integrated into target");
                     continue;
                 }
-                auto blockers = RetireBlockersForMergedBranch(BranchBlockers(branchJson), removeWorktrees);
+                auto blockers = RetireBlockersForIntegratedBranch(BranchBlockers(branchJson), removeWorktrees, deleteRemote);
                 if (!blockers.empty()) {
                     AppendBranchBlocked(result, repoId, branch, blockers, "planner blockers must be resolved before retirement");
                     continue;
@@ -3231,7 +3374,8 @@ int RunBranchRetire(const std::filesystem::path& root,
                     {"repo", repoId},
                     {"branch", branch},
                     {"action", deleteRemote ? "delete-local-and-remote" : "delete-local"},
-                    {"message", "merged branch retired"},
+                    {"message", "integrated branch retired"},
+                    {"integrationProof", branchJson.value("integrationProof", std::string{})},
                     {"worktrees", worktreeLocations},
                 });
             }
