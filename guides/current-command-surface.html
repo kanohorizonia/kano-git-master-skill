@@ -133,12 +133,14 @@ branch and report machine-readable blockers instead of resolving conflicts.
 Empty/no-op cherry-pick commits are skipped as already equivalent. Cherry-pick
 conflicts stop for operator recovery; KOG does not auto-resolve them.</p>
 <p><code>kog converge branches retire</code> previews by default. With <code>--confirm</code>, it deletes
-only local branches proven merged into the target. For merged branches,
-retire-specific policy treats removable clean worktree leases and branch-upstream
-ahead markers as cleanup prerequisites rather than hard data-loss blockers.
-<code>--remove-worktrees</code> allows clean Git-managed worktrees for those merged branches
-to be removed first, and <code>--delete-remote</code> additionally deletes the tracked
-upstream branch when one is configured.</p>
+only local branches proven integrated into the target by merge-base ancestry,
+patch equivalence, or an isolated empty/no-op cherry-pick proof. For proven
+integrated branches, retire-specific policy treats removable clean worktree
+leases, local-ahead markers, local-stale markers, and unrelated untracked-only
+target dirt as cleanup metadata rather than hard data-loss blockers.
+<code>--remove-worktrees</code> allows clean Git-managed worktrees for those branches to be
+removed first, and <code>--delete-remote</code> additionally deletes the tracked upstream
+branch when one is configured.</p>
 <figure data-rehype-pretty-code-figure><pre tabindex="0" data-language="bash" data-theme="github-light tokyo-night"><code data-language="bash" data-theme="github-light tokyo-night" style="display:grid;"><span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./scripts/kog</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> converge</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> branches</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> apply</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --target</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> main</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --confirm</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --json</span></span>
 <span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./scripts/kog</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> converge</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> branches</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> apply</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --target</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> main</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --strategy</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> cherry-pick</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --branch</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> feature/example</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --confirm</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --json</span></span>
 <span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./scripts/kog</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> converge</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> branches</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> retire</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --target</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> main</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --remove-worktrees</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --confirm</span><span style="--shiki-light:#005CC5;--shiki-dark:#E0AF68;"> --json</span></span>
