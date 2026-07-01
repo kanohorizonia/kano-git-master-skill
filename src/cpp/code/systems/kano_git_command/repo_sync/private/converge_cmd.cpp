@@ -96,6 +96,14 @@ struct BranchAheadBehind {
     bool hasUpstream = false;
 };
 
+struct BranchCandidate {
+    std::string name;
+    std::string ref;
+    bool remoteOnly = false;
+    std::string remote;
+    std::string remoteBranch;
+};
+
 struct PhaseSummary {
     std::vector<std::string> succeeded;
     std::vector<std::string> failed;
@@ -2252,6 +2260,68 @@ std::vector<std::string> LocalBranches(const std::filesystem::path& repoPath) {
     return branches;
 }
 
+std::vector<BranchCandidate> BranchCandidates(const std::filesystem::path& repoPath, const std::string& preferredRemote) {
+    const auto locals = LocalBranches(repoPath);
+    std::unordered_set<std::string> localSet(locals.begin(), locals.end());
+    std::vector<BranchCandidate> candidates;
+    candidates.reserve(locals.size());
+    for (const auto& branch : locals) {
+        BranchCandidate candidate;
+        candidate.name = branch;
+        candidate.ref = branch;
+        candidates.push_back(candidate);
+    }
+
+    auto remote = preferredRemote.empty() ? std::string{"origin"} : preferredRemote;
+    const auto remotes = GitCapture(repoPath, {"remote"});
+    if (remotes.exitCode == 0) {
+        std::vector<std::string> remoteNames;
+        std::istringstream remoteLines(remotes.stdoutStr);
+        std::string remoteLine;
+        while (std::getline(remoteLines, remoteLine)) {
+            remoteLine = Trim(remoteLine);
+            if (!remoteLine.empty()) {
+                remoteNames.push_back(remoteLine);
+            }
+        }
+        if (!remoteNames.empty() && std::find(remoteNames.begin(), remoteNames.end(), remote) == remoteNames.end()) {
+            remote = remoteNames.front();
+        }
+    }
+
+    const auto result = GitCapture(repoPath, {"for-each-ref", "--format=%(refname:short)", "refs/remotes/" + remote});
+    if (result.exitCode == 0) {
+        const auto prefix = remote + "/";
+        std::istringstream refLines(result.stdoutStr);
+        std::string ref;
+        while (std::getline(refLines, ref)) {
+            ref = Trim(ref);
+            if (ref == remote + "/HEAD" || ref.rfind(prefix, 0) != 0) {
+                continue;
+            }
+            const auto remoteBranch = ref.substr(prefix.size());
+            if (remoteBranch.empty() || localSet.find(remoteBranch) != localSet.end()) {
+                continue;
+            }
+            BranchCandidate candidate;
+            candidate.name = ref;
+            candidate.ref = ref;
+            candidate.remoteOnly = true;
+            candidate.remote = remote;
+            candidate.remoteBranch = remoteBranch;
+            candidates.push_back(candidate);
+        }
+    }
+
+    std::sort(candidates.begin(), candidates.end(), [](const auto& a, const auto& b) {
+        return a.name < b.name;
+    });
+    candidates.erase(std::unique(candidates.begin(), candidates.end(), [](const auto& a, const auto& b) {
+        return a.name == b.name;
+    }), candidates.end());
+    return candidates;
+}
+
 std::vector<BranchWorktree> Worktrees(const std::filesystem::path& repoPath, const std::filesystem::path& workspaceRoot) {
     const auto result = GitCapture(repoPath, {"worktree", "list", "--porcelain"});
     std::vector<BranchWorktree> out;
@@ -2433,6 +2503,15 @@ void AppendBranchAction(nlohmann::json& result,
         {"action", action},
         {"message", message},
     });
+}
+
+bool BranchMatchesFilter(const nlohmann::json& branchJson, const std::string& branchFilter) {
+    if (branchFilter.empty()) {
+        return true;
+    }
+    return branchFilter == branchJson.value("name", std::string{}) ||
+           branchFilter == branchJson.value("ref", std::string{}) ||
+           branchFilter == branchJson.value("remoteBranch", std::string{});
 }
 
 bool StatusIsUntrackedOnly(const std::string& porcelainStatus) {
@@ -2775,7 +2854,7 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
     const auto targetRef = ResolveTargetRef(repoPath, targetBranch, repo.remote);
     const auto targetCounts = AheadBehindForBranch(repoPath, targetBranch);
     const bool targetBranchBehind = targetCounts.hasUpstream && targetCounts.behind > 0;
-    const auto branches = LocalBranches(repoPath);
+    const auto branches = BranchCandidates(repoPath, repo.remote);
     const auto worktrees = Worktrees(repoPath, snapshot.workspaceRoot);
 
     nlohmann::json repoJson;
@@ -2804,12 +2883,14 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
     repoJson["worktrees"] = std::move(worktreeJson);
 
     nlohmann::json branchesJson = nlohmann::json::array();
-    for (const auto& branch : branches) {
-        const auto checkedOut = WorktreeLocationsForBranch(worktrees, branch);
-        const auto counts = AheadBehindForBranch(repoPath, branch);
-        const auto isTarget = branch == targetBranch;
-        const auto merged = isTarget || BranchMergedIntoTarget(repoPath, branch, targetRef);
-        const auto patchEquivalent = !isTarget && !merged && !targetRef.empty() && BranchPatchEquivalentToTarget(repoPath, targetBranch, branch);
+    for (const auto& candidate : branches) {
+        const auto& branch = candidate.name;
+        const auto& branchRef = candidate.ref;
+        const auto checkedOut = candidate.remoteOnly ? std::vector<std::string>{} : WorktreeLocationsForBranch(worktrees, branch);
+        const auto counts = candidate.remoteOnly ? BranchAheadBehind{} : AheadBehindForBranch(repoPath, branch);
+        const auto isTarget = !candidate.remoteOnly && branch == targetBranch;
+        const auto merged = isTarget || BranchMergedIntoTarget(repoPath, branchRef, targetRef);
+        const auto patchEquivalent = !isTarget && !merged && !targetRef.empty() && BranchPatchEquivalentToTarget(repoPath, targetBranch, branchRef);
 
         std::vector<std::string> blockers;
         if (targetRef.empty()) {
@@ -2827,10 +2908,10 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
         if (targetBranchBehind) {
             blockers.push_back("STALE_TARGET_BRANCH");
         }
-        if (counts.ahead > 0 || (!isTarget && !counts.hasUpstream && !merged)) {
+        if (!candidate.remoteOnly && (counts.ahead > 0 || (!isTarget && !counts.hasUpstream && !merged))) {
             blockers.push_back("UNPUSHED_COMMITS");
         }
-        if (!isTarget && counts.behind > 0) {
+        if (!candidate.remoteOnly && !isTarget && counts.behind > 0) {
             blockers.push_back("STALE_LOCAL_BRANCH");
         }
         std::sort(blockers.begin(), blockers.end());
@@ -2838,7 +2919,7 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
 
         bool cherryPickNoop = false;
         if (!isTarget && !merged && !patchEquivalent && strategy == "cherry-pick" && BlockersForNoopProof(blockers).empty()) {
-            cherryPickNoop = BranchCherryPickNoopIntoTarget(repoPath, targetBranch, branch);
+            cherryPickNoop = BranchCherryPickNoopIntoTarget(repoPath, targetBranch, branchRef);
         }
         const auto integrated = merged || patchEquivalent || cherryPickNoop;
         if (integrated && !isTarget) {
@@ -2862,6 +2943,10 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
 
         branchesJson.push_back({
             {"name", branch},
+            {"ref", branchRef},
+            {"remoteOnly", candidate.remoteOnly},
+            {"remote", candidate.remote},
+            {"remoteBranch", candidate.remoteBranch},
             {"isTarget", isTarget},
             {"targetRef", targetRef},
             {"strategy", strategy},
@@ -3120,10 +3205,11 @@ int RunBranchApply(const std::filesystem::path& root,
             const auto liveWorktrees = Worktrees(repoPath, root);
             for (const auto& branchJson : repoJson.value("branches", nlohmann::json::array())) {
                 const auto branch = branchJson.value("name", std::string{});
+                const auto branchRef = branchJson.value("ref", branch);
                 if (branch.empty() || branchJson.value("isTarget", false)) {
                     continue;
                 }
-                if (!branchFilter.empty() && branch != branchFilter) {
+                if (!BranchMatchesFilter(branchJson, branchFilter)) {
                     continue;
                 }
                 auto blockers = BranchBlockers(branchJson);
@@ -3154,7 +3240,7 @@ int RunBranchApply(const std::filesystem::path& root,
                     integrate = GitCapture(repoPath, {"merge", "--no-ff", "--no-edit", branch});
                 } else if (strategy == "cherry-pick") {
                     std::string commitPlanError;
-                    const auto commits = CherryPickCommitsForBranch(repoPath, targetBranch, branch, commitPlanError);
+                    const auto commits = CherryPickCommitsForBranch(repoPath, targetBranch, branchRef, commitPlanError);
                     if (!commitPlanError.empty()) {
                         AppendBranchBlocked(result, repoId, branch, {"CHERRY_PICK_PLAN_FAILED"}, commitPlanError);
                         continue;
@@ -3282,6 +3368,7 @@ int RunBranchRetire(const std::filesystem::path& root,
             const auto liveWorktrees = Worktrees(repoPath, root);
             for (const auto& branchJson : repoJson.value("branches", nlohmann::json::array())) {
                 const auto branch = branchJson.value("name", std::string{});
+                const auto remoteOnly = branchJson.value("remoteOnly", false);
                 if (branch.empty() || branchJson.value("isTarget", false)) {
                     continue;
                 }
@@ -3294,8 +3381,12 @@ int RunBranchRetire(const std::filesystem::path& root,
                     AppendBranchBlocked(result, repoId, branch, blockers, "planner blockers must be resolved before retirement");
                     continue;
                 }
+                if (remoteOnly && !deleteRemote) {
+                    AppendBranchBlocked(result, repoId, branch, {"REMOTE_DELETE_REQUIRED"}, "remote-only branch retirement requires explicit --delete-remote");
+                    continue;
+                }
 
-                const auto branchWorktrees = WorktreesForBranch(liveWorktrees, branch);
+                const auto branchWorktrees = remoteOnly ? std::vector<BranchWorktree>{} : WorktreesForBranch(liveWorktrees, branch);
                 if (!branchWorktrees.empty() && !removeWorktrees) {
                     AppendBranchBlocked(result, repoId, branch, {"ACTIVE_WORKTREE_LEASE"}, "rerun with --remove-worktrees after reviewing clean Git-managed worktrees");
                     continue;
@@ -3324,14 +3415,17 @@ int RunBranchRetire(const std::filesystem::path& root,
                     result["planned"].push_back({
                         {"repo", repoId},
                         {"branch", branch},
-                        {"action", "retire"},
-                        {"message", "rerun with --confirm to delete the local branch"},
+                        {"action", remoteOnly ? "delete-remote" : "retire"},
+                        {"message", remoteOnly ? "rerun with --confirm to delete the remote branch" : "rerun with --confirm to delete the local branch"},
+                        {"remoteOnly", remoteOnly},
+                        {"remote", branchJson.value("remote", std::string{})},
+                        {"remoteBranch", branchJson.value("remoteBranch", std::string{})},
                         {"worktrees", worktreeLocations},
                     });
                     continue;
                 }
 
-                if (!CheckoutTargetBranch(repoPath, repoId, targetBranch, result)) {
+                if (!remoteOnly && !CheckoutTargetBranch(repoPath, repoId, targetBranch, result)) {
                     continue;
                 }
 
@@ -3347,17 +3441,32 @@ int RunBranchRetire(const std::filesystem::path& root,
                     continue;
                 }
 
-                const auto upstream = UpstreamForBranch(repoPath, branch);
-                auto deleteLocal = GitCapture(repoPath, {"branch", "-d", branch});
-                if (deleteLocal.exitCode != 0) {
-                    deleteLocal = GitCapture(repoPath, {"branch", "-D", branch});
-                }
-                if (deleteLocal.exitCode != 0) {
-                    AppendBranchBlocked(result, repoId, branch, {"LOCAL_BRANCH_DELETE_FAILED"}, CombinedGitError(deleteLocal));
-                    continue;
+                std::string upstream;
+                if (!remoteOnly) {
+                    upstream = UpstreamForBranch(repoPath, branch);
+                    auto deleteLocal = GitCapture(repoPath, {"branch", "-d", branch});
+                    if (deleteLocal.exitCode != 0) {
+                        deleteLocal = GitCapture(repoPath, {"branch", "-D", branch});
+                    }
+                    if (deleteLocal.exitCode != 0) {
+                        AppendBranchBlocked(result, repoId, branch, {"LOCAL_BRANCH_DELETE_FAILED"}, CombinedGitError(deleteLocal));
+                        continue;
+                    }
                 }
 
-                if (deleteRemote && !upstream.empty()) {
+                if (deleteRemote && remoteOnly) {
+                    const auto remote = branchJson.value("remote", std::string{});
+                    const auto remoteBranch = branchJson.value("remoteBranch", std::string{});
+                    if (remote.empty() || remoteBranch.empty()) {
+                        AppendBranchBlocked(result, repoId, branch, {"REMOTE_BRANCH_DELETE_FAILED"}, "remote-only branch is missing remote metadata");
+                        continue;
+                    }
+                    const auto deleteUpstream = GitCapture(repoPath, {"push", remote, "--delete", remoteBranch});
+                    if (deleteUpstream.exitCode != 0) {
+                        AppendBranchBlocked(result, repoId, branch, {"REMOTE_BRANCH_DELETE_FAILED"}, CombinedGitError(deleteUpstream));
+                        continue;
+                    }
+                } else if (deleteRemote && !upstream.empty()) {
                     std::string remote;
                     std::string remoteBranch;
                     if (SplitRemoteTrackingRef(upstream, remote, remoteBranch)) {
@@ -3373,8 +3482,11 @@ int RunBranchRetire(const std::filesystem::path& root,
                 result["retired"].push_back({
                     {"repo", repoId},
                     {"branch", branch},
-                    {"action", deleteRemote ? "delete-local-and-remote" : "delete-local"},
+                    {"action", remoteOnly ? "delete-remote" : (deleteRemote ? "delete-local-and-remote" : "delete-local")},
                     {"message", "integrated branch retired"},
+                    {"remoteOnly", remoteOnly},
+                    {"remote", branchJson.value("remote", std::string{})},
+                    {"remoteBranch", branchJson.value("remoteBranch", std::string{})},
                     {"integrationProof", branchJson.value("integrationProof", std::string{})},
                     {"worktrees", worktreeLocations},
                 });
