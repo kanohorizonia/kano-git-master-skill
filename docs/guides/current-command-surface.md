@@ -208,12 +208,23 @@ target dirt as cleanup metadata rather than hard data-loss blockers.
 `--remove-worktrees` allows clean Git-managed worktrees for those branches to be
 removed first, and `--delete-remote` additionally deletes the tracked upstream
 branch when one is configured.
+`--prune-worktrees` prunes stale Git worktree metadata. `--harvest-detached-worktrees`
+is narrower: with `--remove-worktrees` and `--confirm`, it only harvests dirty
+detached worktrees whose HEAD is proven integrated into the target, applies the
+exact binary patch to the target, commits and pushes it, then removes the
+detached worktree. Dirty detached non-ancestor worktrees, primary worktrees, and
+unsafe dirty targets remain blockers.
+Top-level `kog converge --settle-worktrees` inserts this guarded retire/prune
+step before the final status summary when explicitly requested; ordinary
+`kog converge` keeps the default phase list unchanged.
 
 ```bash
 ./scripts/kog converge branches apply --target main --confirm --json
 ./scripts/kog converge branches apply --target main --strategy cherry-pick --branch feature/example --confirm --json
 ./scripts/kog converge branches retire --target main --remove-worktrees --confirm --json
 ./scripts/kog converge branches retire --target main --remove-worktrees --delete-remote --confirm --json
+./scripts/kog converge branches retire --target main --remove-worktrees --harvest-detached-worktrees --prune-worktrees --confirm --json
+./scripts/kog converge --settle-worktrees --target main --remove-worktrees --harvest-detached-worktrees --prune-worktrees
 ```
 
 Dry-run summaries are audit-first and must not be treated as clean when blockers exist.

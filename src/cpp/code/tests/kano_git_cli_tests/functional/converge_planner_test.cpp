@@ -784,6 +784,126 @@ TEST_CASE("converge branches retire blocks dirty detached worktree cleanup", "[t
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge branches retire harvests dirty detached ancestor worktree after confirmation", "[tdd][functional][feature:converge][converge][branches][retire][worktree][harvest]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-retire-harvest-detached-worktree");
+    const std::string featureBranch = "feature/harvest-detached-worktree";
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout harvest detached-worktree feature branch");
+    WriteTextFile(ctx.cloneRepo / "harvest-detached-worktree.txt", "clean feature content\n");
+    RequireSuccess(RunGit({"add", "harvest-detached-worktree.txt"}, ctx.cloneRepo), "add harvest detached-worktree feature file");
+    RequireSuccess(RunGit({"commit", "-m", "harvest detached worktree feature"}, ctx.cloneRepo), "commit harvest detached-worktree feature");
+    RequireSuccess(RunGit({"push", "-u", "origin", featureBranch}, ctx.cloneRepo), "push harvest detached-worktree feature");
+    const auto featureHead = TrimCopy(RunGit({"rev-parse", featureBranch}, ctx.cloneRepo).stdoutText);
+
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target before harvest detached-worktree retire");
+    RequireSuccess(RunGit({"merge", "--ff-only", featureBranch}, ctx.cloneRepo), "merge harvest detached-worktree feature into target");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.cloneRepo), "push target containing harvest detached-worktree feature");
+    const auto worktreePath = (ctx.sandbox.root / "harvest-detached-worktree").lexically_normal();
+    RequireSuccess(RunGit({"worktree", "add", "--detach", worktreePath.string(), featureHead}, ctx.cloneRepo), "add harvest dirty detached worktree");
+    WriteTextFile(worktreePath / "harvest-detached-worktree.txt", "harvested detached worktree content\n");
+
+    const auto result = RunKog({"converge", "branches", "retire", "--target", ctx.branch, "--remove-worktrees", "--harvest-detached-worktrees", "--confirm", "--json", "--jobs", "1"}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    RequireContains(result.stdoutText, "\"schemaName\": \"kog.convergeBranchesRetireResult\"");
+    RequireContains(result.stdoutText, "\"action\": \"harvest-detached-worktree\"");
+    RequireContains(result.stdoutText, "\"integrationProof\": \"merged\"");
+    RequireContains(result.stdoutText, "\"harvested\"");
+    REQUIRE(!std::filesystem::exists(worktreePath));
+    RequireContains(ReadTextFile(ctx.cloneRepo / "harvest-detached-worktree.txt"), "harvested detached worktree content");
+    REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
+
+    const auto head = RunGit({"rev-parse", "HEAD"}, ctx.cloneRepo);
+    const auto origin = RunGit({"rev-parse", "origin/" + ctx.branch}, ctx.cloneRepo);
+    RequireSuccess(head, "harvest rev-parse HEAD");
+    RequireSuccess(origin, "harvest rev-parse origin");
+    REQUIRE(head.stdoutText == origin.stdoutText);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge branches retire blocks dirty detached non-ancestor harvest", "[tdd][functional][feature:converge][converge][branches][retire][worktree][harvest][blockers]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-retire-harvest-non-ancestor");
+    const std::string featureBranch = "feature/harvest-non-ancestor";
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout non-ancestor detached feature branch");
+    WriteTextFile(ctx.cloneRepo / "non-ancestor-detached-worktree.txt", "feature content\n");
+    RequireSuccess(RunGit({"add", "non-ancestor-detached-worktree.txt"}, ctx.cloneRepo), "add non-ancestor detached feature file");
+    RequireSuccess(RunGit({"commit", "-m", "non ancestor detached feature"}, ctx.cloneRepo), "commit non-ancestor detached feature");
+    RequireSuccess(RunGit({"push", "-u", "origin", featureBranch}, ctx.cloneRepo), "push non-ancestor detached feature");
+    const auto featureHead = TrimCopy(RunGit({"rev-parse", featureBranch}, ctx.cloneRepo).stdoutText);
+
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target before non-ancestor detached worktree");
+    const auto worktreePath = (ctx.sandbox.root / "harvest-non-ancestor-worktree").lexically_normal();
+    RequireSuccess(RunGit({"worktree", "add", "--detach", worktreePath.string(), featureHead}, ctx.cloneRepo), "add non-ancestor dirty detached worktree");
+    WriteTextFile(worktreePath / "non-ancestor-detached-worktree.txt", "dirty non-ancestor detached content\n");
+
+    const auto result = RunKog({"converge", "branches", "retire", "--target", ctx.branch, "--remove-worktrees", "--harvest-detached-worktrees", "--confirm", "--json", "--jobs", "1"}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 1);
+
+    RequireContains(result.stdoutText, "\"action\": \"harvest-detached-worktree\"");
+    RequireContains(result.stdoutText, "DIRTY_DETACHED_WORKTREE_NON_ANCESTOR");
+    REQUIRE(std::filesystem::exists(worktreePath));
+    RequireContains(ReadTextFile(worktreePath / "non-ancestor-detached-worktree.txt"), "dirty non-ancestor detached content");
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge branches retire prunes stale worktree metadata after confirmation", "[tdd][functional][feature:converge][converge][branches][retire][worktree][prune]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-retire-prune-stale-worktree");
+    const auto worktreePath = (ctx.sandbox.root / "stale-worktree").lexically_normal();
+    RequireSuccess(RunGit({"worktree", "add", "--detach", worktreePath.string(), "HEAD"}, ctx.cloneRepo), "add stale worktree fixture");
+    REQUIRE(std::filesystem::exists(worktreePath));
+    std::filesystem::remove_all(worktreePath);
+
+    const auto before = RunGit({"worktree", "list", "--porcelain"}, ctx.cloneRepo);
+    RequireSuccess(before, "worktree list before prune");
+    RequireContains(before.stdoutText, worktreePath.generic_string());
+
+    const auto result = RunKog({"converge", "branches", "retire", "--target", ctx.branch, "--prune-worktrees", "--confirm", "--json", "--jobs", "1"}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContains(result.stdoutText, "\"action\": \"worktree-prune\"");
+
+    const auto after = RunGit({"worktree", "list", "--porcelain"}, ctx.cloneRepo);
+    RequireSuccess(after, "worktree list after prune");
+    RequireNotContains(after.stdoutText, worktreePath.generic_string());
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge runtime settle removes clean detached worktree", "[tdd][functional][feature:converge][converge][branches][retire][worktree][settle]") {
+    const auto ctx = CreateRemoteWithClone("converge-runtime-settle-clean-detached-worktree");
+    const std::string featureBranch = "feature/runtime-settle-detached-worktree";
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout runtime settle feature branch");
+    WriteTextFile(ctx.cloneRepo / "runtime-settle-detached-worktree.txt", "runtime settle feature\n");
+    RequireSuccess(RunGit({"add", "runtime-settle-detached-worktree.txt"}, ctx.cloneRepo), "add runtime settle feature file");
+    RequireSuccess(RunGit({"commit", "-m", "runtime settle detached feature"}, ctx.cloneRepo), "commit runtime settle feature");
+    RequireSuccess(RunGit({"push", "-u", "origin", featureBranch}, ctx.cloneRepo), "push runtime settle feature");
+    const auto featureHead = TrimCopy(RunGit({"rev-parse", featureBranch}, ctx.cloneRepo).stdoutText);
+
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target before runtime settle");
+    RequireSuccess(RunGit({"merge", "--ff-only", featureBranch}, ctx.cloneRepo), "merge runtime settle feature into target");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.cloneRepo), "push runtime settle target");
+    const auto worktreePath = (ctx.sandbox.root / "runtime-settle-clean-detached-worktree").lexically_normal();
+    RequireSuccess(RunGit({"worktree", "add", "--detach", worktreePath.string(), featureHead}, ctx.cloneRepo), "add runtime settle clean detached worktree");
+
+    const auto result = RunKog({"converge", "--settle-worktrees", "--remove-worktrees", "--target", ctx.branch, "--jobs", "1"}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    RequireContains(result.stdoutText, "[converge] phase=settle-worktrees");
+    RequireContains(result.stdoutText, "[converge] completed");
+    REQUIRE(!std::filesystem::exists(worktreePath));
+    REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("converge branches retire removes empty cherry-pick no-op branch", "[tdd][functional][feature:converge][converge][branches][retire][equivalent]") {
     const auto ctx = CreateRemoteWithClone("converge-branches-retire-empty-noop");
     const std::string featureBranch = "feature/retire-empty-noop";
