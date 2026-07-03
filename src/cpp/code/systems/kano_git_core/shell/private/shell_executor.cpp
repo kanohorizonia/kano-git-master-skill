@@ -254,8 +254,8 @@ auto ResolveTimeoutMs(const std::string& InCommand,
         if (IsLongRunningGitOperation(InCommand, InArgs)) {
             return std::nullopt;
         }
-        // Capture path keeps a default safety timeout, but large enough for most operations.
-        return static_cast<unsigned int>(30 * 60 * 1000);
+        // Short probes must fail inside KOG instead of waiting for an outer agent timeout.
+        return static_cast<unsigned int>(20 * 1000);
     }
     // PassThrough: default no timeout.
     return std::nullopt;
@@ -610,7 +610,8 @@ auto ResolveTimeoutMs(const std::string& InCommand,
         if (IsLongRunningGitOperation(InCommand, InArgs)) {
             return std::nullopt;
         }
-        return static_cast<unsigned int>(30 * 60 * 1000);
+        // Short probes must fail inside KOG instead of waiting for an outer agent timeout.
+        return static_cast<unsigned int>(20 * 1000);
     }
     return std::nullopt;
 }
@@ -969,11 +970,9 @@ auto WithGitSafeDirectoryDefaults(const std::string& InCommand,
     }
 
     std::vector<std::string> prefixed;
-    prefixed.reserve(InArgs.size() + safeDirectories.size() * 2);
-    for (const auto& directory : safeDirectories) {
-        prefixed.push_back("-c");
-        prefixed.push_back("safe.directory=" + directory);
-    }
+    prefixed.reserve(InArgs.size() + 2);
+    prefixed.push_back("-c");
+    prefixed.push_back("safe.directory=" + start.lexically_normal().generic_string());
     prefixed.insert(prefixed.end(), InArgs.begin(), InArgs.end());
     return prefixed;
 }

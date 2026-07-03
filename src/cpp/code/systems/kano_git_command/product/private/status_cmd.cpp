@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -247,6 +248,16 @@ auto GitCaptureNoOptionalLocks(const std::filesystem::path& InRepo, const std::v
     return GitCapture(InRepo, args);
 }
 
+auto IsProcessTimeoutResult(const shell::ExecResult& InResult) -> bool {
+    if (InResult.exitCode == 124) {
+        return true;
+    }
+    const auto stderrLower = ToLower(InResult.stderrStr);
+    return stderrLower.find("process timed out") != std::string::npos ||
+        stderrLower.find("process timeout") != std::string::npos ||
+        stderrLower.find("timeout exceeded") != std::string::npos;
+}
+
 auto IsUnsafeOwnershipGitError(const std::string& InText) -> bool {
     const auto lower = [&]() {
         std::string value = InText;
@@ -272,6 +283,11 @@ auto ParsePositiveIntEnv(const char* InName) -> int {
     } catch (const std::exception&) {
         return 0;
     }
+}
+
+auto RecursiveStatusDeadlineMs() -> int {
+    const auto configured = ParsePositiveIntEnv("KOG_RECURSIVE_STATUS_DEADLINE_MS");
+    return configured > 0 ? configured : 90 * 1000;
 }
 
 auto DetectTerminalWidth() -> int {
@@ -1130,10 +1146,13 @@ auto BuildRecursiveRepoStatus(const workspace::RepoRecord& InRepo,
     out.pushable = !out.selectedPushRemote.empty() && out.branch != "(detached)";
 
     const auto statusOut = GitCaptureNoOptionalLocks(InRepo.path, {"status", "--porcelain=v1", "--untracked-files=normal"});
+    const bool hasStatusTimeout = IsProcessTimeoutResult(statusOut);
     const bool hasUnsafeOwnership = statusOut.exitCode != 0 && IsUnsafeOwnershipGitError(statusOut.stderrStr);
     std::vector<std::string> visibleStatus;
     if (statusOut.exitCode == 0) {
         visibleStatus = FilterVisibleStatusLines(statusOut.stdoutStr);
+    } else if (hasStatusTimeout) {
+        out.diagnostics.push_back("git status timed out during recursive status preflight");
     } else {
         out.diagnostics.push_back("git status failed: " + Trim(statusOut.stderrStr));
     }
@@ -1221,6 +1240,7 @@ auto BuildRecursiveRepoStatus(const workspace::RepoRecord& InRepo,
 
     bool childWorktreeDirty = false;
     bool childCommitUnpushed = false;
+    bool childStatusTimeout = false;
     for (const auto& childId : out.childRepos) {
         const auto childIt = std::find_if(InReposByPath.begin(), InReposByPath.end(), [&](const auto& entry) {
             return RelativeId(InWorkspaceRoot, entry.second.path) == childId;
@@ -1229,6 +1249,10 @@ auto BuildRecursiveRepoStatus(const workspace::RepoRecord& InRepo,
             continue;
         }
         const auto childStatusOut = GitCaptureNoOptionalLocks(childIt->second.path, {"status", "--porcelain=v1", "--untracked-files=normal"});
+        if (IsProcessTimeoutResult(childStatusOut)) {
+            childStatusTimeout = true;
+            PushUnique(&out.diagnostics, "child git status timed out during recursive status preflight: " + childId);
+        }
         if (childStatusOut.exitCode == 0 && !FilterVisibleStatusLines(childStatusOut.stdoutStr).empty()) {
             childWorktreeDirty = true;
         }
@@ -1247,8 +1271,12 @@ auto BuildRecursiveRepoStatus(const workspace::RepoRecord& InRepo,
     }
 
     out.conflicted = hasConflict;
-    if (hasUnsafeOwnership) {
+    if (hasStatusTimeout) {
+        out.dirtyKind = "STATUS_TIMEOUT";
+    } else if (hasUnsafeOwnership) {
         out.dirtyKind = "UNSAFE_OWNERSHIP";
+    } else if (childStatusTimeout) {
+        out.dirtyKind = "CHILD_STATUS_TIMEOUT";
     } else if (hasConflict) {
         out.dirtyKind = "CONFLICTED";
     } else if (hasIndexDirty) {
@@ -1310,6 +1338,18 @@ auto BuildRecursiveRepoStatus(const workspace::RepoRecord& InRepo,
         out.blocksConverge = true;
         out.blockReason = "UNSAFE_OWNERSHIP: run kog doctor --fix-safe-directory before converge mutation";
     }
+    if (hasStatusTimeout) {
+        out.blocksConverge = true;
+        out.blockReason = "STATUS_TIMEOUT: git status timed out during recursive status preflight; inspect this repo or rerun with KOG_PROCESS_DIAGNOSTICS=1 before converge mutation";
+        PushUnique(&out.statusFlags, "STATUS_TIMEOUT");
+    }
+    if (childStatusTimeout) {
+        out.blocksConverge = true;
+        if (out.blockReason.empty()) {
+            out.blockReason = "CHILD_STATUS_TIMEOUT: child git status timed out during recursive status preflight; inspect child repositories or rerun with KOG_PROCESS_DIAGNOSTICS=1 before converge mutation";
+        }
+        PushUnique(&out.statusFlags, "CHILD_STATUS_TIMEOUT");
+    }
 
     if (out.isSubmodule && std::find(out.submoduleFacts.begin(), out.submoduleFacts.end(), "SubmoduleCommitUnpushed") != out.submoduleFacts.end()) {
         PushUnique(&out.statusFlags, "UNPUSHED_SUBMODULE_COMMIT");
@@ -1320,7 +1360,7 @@ auto BuildRecursiveRepoStatus(const workspace::RepoRecord& InRepo,
         hasGitlinkDirty ||
         !unregisteredGitlinkPaths.empty());
 
-    if (!InSkipFetchHealth || needsSubmoduleHealth) {
+    if (!hasStatusTimeout && !childStatusTimeout && (!InSkipFetchHealth || needsSubmoduleHealth)) {
         const auto health = workspace::ScanRepoHealth(InRepo.path, workspace::RepoHealthOptions{
             .checkFetchRemotes = !InSkipFetchHealth,
             .checkSubmoduleStatus = needsSubmoduleHealth,
@@ -1373,6 +1413,46 @@ auto BuildRecursiveRepoStatus(const workspace::RepoRecord& InRepo,
     return out;
 }
 
+auto MakeRecursiveStatusFailure(const workspace::RepoRecord& InRepo,
+                                const std::filesystem::path& InWorkspaceRoot,
+                                const std::unordered_set<std::string>& InTrustedManifestPathKeys,
+                                const std::string& InReasonCode,
+                                const std::string& InMessage) -> RecursiveRepoStatus {
+    RecursiveRepoStatus out;
+    out.repo = InRepo;
+    out.id = RelativeId(InWorkspaceRoot, InRepo.path);
+    out.relativePath = out.id;
+    out.absolutePath = InRepo.path.lexically_normal().generic_string();
+    out.depth = PathDepth(out.relativePath);
+    out.isWorkspaceRoot = InRepo.type == "root" || PathKey(InRepo.path) == PathKey(InWorkspaceRoot);
+    out.registrationRelativeTo = InRepo.registrationRelativeTo.empty()
+        ? std::string{}
+        : RelativeId(InWorkspaceRoot, InRepo.registrationRelativeTo);
+    out.registrationSource = out.isWorkspaceRoot ? "workspace-root" : (InRepo.type == "registered" ? "gitmodules" : "discover");
+    out.isPersistedInWorkspaceManifest = InTrustedManifestPathKeys.contains(PathKey(InRepo.path));
+    out.commandPolicySource = ResolveCommandPolicySource(InRepo, out.isPersistedInWorkspaceManifest, out.depth, out.isWorkspaceRoot);
+    out.commandPolicy = {
+        {"sync", InRepo.kogSyncPolicy},
+        {"commit", InRepo.kogCommitPolicy},
+        {"push", InRepo.kogPushPolicy},
+        {"hygiene", InRepo.kogHygienePolicy},
+    };
+    for (const auto& dep : InRepo.dependencies) {
+        out.parentRepos.push_back(RelativeId(InWorkspaceRoot, dep));
+    }
+    std::sort(out.parentRepos.begin(), out.parentRepos.end());
+    out.parentRepos.erase(std::unique(out.parentRepos.begin(), out.parentRepos.end()), out.parentRepos.end());
+
+    out.dirtyKind = InReasonCode;
+    out.statusFlags.push_back(InReasonCode);
+    out.blocksConverge = true;
+    out.blockReason = InReasonCode + ": " + InMessage;
+    out.diagnostics.push_back(InMessage);
+    out.isExplicitlyAllowed = InRepo.type != "unregistered" || out.isPersistedInWorkspaceManifest || out.depth <= 1;
+    out.managementPolicy = out.isWorkspaceRoot ? "workspace-root" : (InRepo.type == "unregistered" ? "discovered-untrusted" : "managed");
+    return out;
+}
+
 auto BuildRecursiveStatusSnapshot(const std::filesystem::path& InWorkspaceRoot,
                                   bool InUseCache,
                                   bool InRefreshCache,
@@ -1405,7 +1485,17 @@ auto BuildRecursiveStatusSnapshot(const std::filesystem::path& InWorkspaceRoot,
     schedulerOptions.operationName = "recursive-status";
     schedulerOptions.mode = workspace::RepoOperationMode::ReadOnlyParallel;
     schedulerOptions.jobs = std::max(1, InJobs);
-    schedulerOptions.resolveGitCommonDirLocks = true;
+    schedulerOptions.resolveGitCommonDirLocks = false;
+    const auto snapshotStartedAt = std::chrono::steady_clock::now();
+    const auto snapshotDeadlineMs = RecursiveStatusDeadlineMs();
+    const auto snapshotDeadlineExceeded = [&]() {
+        if (snapshotDeadlineMs <= 0) {
+            return false;
+        }
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - snapshotStartedAt);
+        return elapsed.count() >= snapshotDeadlineMs;
+    };
 
     {
         std::lock_guard lock(gRecursiveStatusMutex);
@@ -1420,6 +1510,13 @@ auto BuildRecursiveStatusSnapshot(const std::filesystem::path& InWorkspaceRoot,
             result.exitCode = 1;
             result.failureCategory = "repo-missing";
             result.message = "repo missing from discovery inventory";
+            return result;
+        }
+        if (snapshotDeadlineExceeded()) {
+            result.status = workspace::RepoOperationStatus::Failed;
+            result.exitCode = 124;
+            result.failureCategory = "status-timeout";
+            result.message = "recursive status snapshot deadline exceeded before repo preflight";
             return result;
         }
         const auto status = BuildRecursiveRepoStatus(it->second, InWorkspaceRoot, reposByPath, trustedManifestPathKeys, InSkipFetchHealth);
@@ -1447,10 +1544,20 @@ auto BuildRecursiveStatusSnapshot(const std::filesystem::path& InWorkspaceRoot,
             std::lock_guard lock(gRecursiveStatusMutex);
             const auto statusIt = gRecursiveStatusResults.find(resultKey);
             if (statusIt == gRecursiveStatusResults.end()) {
-                continue;
+                const auto repoIt = reposByPath.find(resultKey);
+                if (repoIt == reposByPath.end()) {
+                    continue;
+                }
+                status = MakeRecursiveStatusFailure(
+                    repoIt->second,
+                    InWorkspaceRoot,
+                    trustedManifestPathKeys,
+                    result.exitCode == 124 ? "STATUS_TIMEOUT" : "STATUS_PRECHECK_FAILED",
+                    result.message.empty() ? "scheduler status check failed before repo preflight" : result.message);
+            } else {
+                status = statusIt->second;
+                gRecursiveStatusResults.erase(statusIt);
             }
-            status = statusIt->second;
-            gRecursiveStatusResults.erase(statusIt);
         }
         if (result.status != workspace::RepoOperationStatus::Succeeded) {
             status.diagnostics.push_back(result.message.empty() ? "scheduler status check failed" : result.message);
