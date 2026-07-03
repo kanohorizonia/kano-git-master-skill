@@ -1401,10 +1401,10 @@ auto BuildRecursiveRepoStatus(const workspace::RepoRecord& InRepo,
         !out.isWorkspaceRoot &&
         out.ahead <= 0 &&
         (out.dirtyKind == "DETACHED_HEAD" || out.dirtyKind == "MISSING_REMOTE")) {
-        out.blocksConverge = true;
         if (out.blockReason.empty()) {
             out.blockReason = out.dirtyKind + ": clean nested preflight-only branch blocker";
         }
+        PushUnique(&out.diagnostics, out.blockReason);
     }
 
     std::sort(out.statusFlags.begin(), out.statusFlags.end());
@@ -1451,6 +1451,19 @@ auto MakeRecursiveStatusFailure(const workspace::RepoRecord& InRepo,
     out.isExplicitlyAllowed = InRepo.type != "unregistered" || out.isPersistedInWorkspaceManifest || out.depth <= 1;
     out.managementPolicy = out.isWorkspaceRoot ? "workspace-root" : (InRepo.type == "unregistered" ? "discovered-untrusted" : "managed");
     return out;
+}
+
+auto IsCleanNestedPreflightOnlyBranchStatus(const RecursiveRepoStatus& InRepo) -> bool {
+    if (InRepo.isWorkspaceRoot) {
+        return false;
+    }
+    if (InRepo.managementPolicy == "discovered-untrusted") {
+        return false;
+    }
+    if (InRepo.ahead > 0 || InRepo.conflicted) {
+        return false;
+    }
+    return InRepo.dirtyKind == "DETACHED_HEAD" || InRepo.dirtyKind == "MISSING_REMOTE";
 }
 
 auto BuildRecursiveStatusSnapshot(const std::filesystem::path& InWorkspaceRoot,
@@ -1578,10 +1591,10 @@ auto FormatRecursiveStatusJson(const RecursiveStatusSnapshot& InSnapshot) -> std
     for (const auto& repo : InSnapshot.repos) {
         byType[repo.repo.type] += 1;
         byDirtyKind[repo.dirtyKind] += 1;
-        if (repo.dirtyKind != "CLEAN") {
+        if (repo.dirtyKind != "CLEAN" && !IsCleanNestedPreflightOnlyBranchStatus(repo)) {
             dirty += 1;
         }
-        if (repo.blocksConverge) {
+        if (repo.blocksConverge && !IsCleanNestedPreflightOnlyBranchStatus(repo)) {
             blocked += 1;
         }
     }
@@ -1683,8 +1696,9 @@ auto FormatRecursiveStatusSummary(const RecursiveStatusSnapshot& InSnapshot) -> 
     std::size_t blocked = 0;
     std::size_t conflicted = 0;
     for (const auto& repo : InSnapshot.repos) {
-        dirty += repo.dirtyKind == "CLEAN" ? 0 : 1;
-        blocked += repo.blocksConverge ? 1 : 0;
+        const bool cleanNestedPreflight = IsCleanNestedPreflightOnlyBranchStatus(repo);
+        dirty += (repo.dirtyKind == "CLEAN" || cleanNestedPreflight) ? 0 : 1;
+        blocked += (repo.blocksConverge && !cleanNestedPreflight) ? 1 : 0;
         conflicted += repo.conflicted ? 1 : 0;
     }
     out << "Recursive status summary\n";
@@ -1699,7 +1713,7 @@ auto FormatRecursiveStatusSummary(const RecursiveStatusSnapshot& InSnapshot) -> 
         if (repo.conflicted) {
             out << " conflicted=true";
         }
-        if (repo.blocksConverge) {
+        if (repo.blocksConverge && !IsCleanNestedPreflightOnlyBranchStatus(repo)) {
             out << " blocksConverge=true reason=\"" << repo.blockReason << "\"";
         }
         out << "\n";

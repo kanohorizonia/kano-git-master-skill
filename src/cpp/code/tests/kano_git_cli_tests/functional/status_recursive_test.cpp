@@ -94,6 +94,10 @@ auto RunRecursiveJsonNoFetchHealth(const std::filesystem::path& InRoot) -> std::
     return result.stdoutText;
 }
 
+auto RunRecursiveSummaryNoFetchHealth(const std::filesystem::path& InRoot) -> CommandResult {
+    return RunKog({"status", "--recursive", "--summary", "--repo-root", InRoot.string(), "--no-unregistered-scan", "--no-fetch-health"}, InRoot);
+}
+
 auto ExtractStatusJsonPayload(const std::string& InText) -> std::string {
     const auto start = InText.find("{\"schemaName\":\"kog.recursiveStatusSnapshot\"");
     REQUIRE(start != std::string::npos);
@@ -292,6 +296,39 @@ TEST_CASE("status recursive can skip remote fetch health checks", "[functional][
     RequireContains(json, "\"id\":\".\"");
     RequireNotContains(json, "FETCH_FAILED");
     RequireNotContains(json, "preflight FETCH_FAILED");
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
+TEST_CASE("status recursive summary does not count clean nested missing remote repos as blockers", "[functional][status][recursive][converge][KG-BUG-0013]") {
+    const auto sandbox = CreateSandboxWorkspace("status-recursive-clean-nested-missing-remote");
+    const auto root = (sandbox.root / "root").lexically_normal();
+    const auto bare = (sandbox.root / "origin.git").lexically_normal();
+    InitRepo(root);
+    InitRepo(root / "vendor");
+    AddGitmodulesEntry(root, "vendor", "vendor");
+    RequireSuccess(RunGit({"add", ".gitmodules", "vendor"}, root), "add vendor gitlink");
+    RequireSuccess(RunGit({"commit", "-m", "configure vendor gitlink"}, root), "commit vendor gitlink");
+
+    const auto branch = CurrentBranchName(root);
+    RequireSuccess(RunGit({"init", "--bare", bare.string()}, sandbox.root), "init bare origin");
+    RequireSuccess(RunGit({"remote", "add", "origin", bare.string()}, root), "add root origin");
+    RequireSuccess(RunGit({"push", "-u", "origin", branch}, root), "push root origin");
+
+    const auto summary = RunRecursiveSummaryNoFetchHealth(root);
+    RequireSuccess(summary, "kog status recursive summary no fetch health");
+    INFO(summary.stdoutText);
+    RequireContains(summary.stdoutText, "repos=2 dirty=0 conflicted=0 blocksConverge=0");
+    RequireContains(summary.stdoutText, "vendor type=registered dirtyKind=MISSING_REMOTE policy=managed");
+    RequireNotContains(summary.stdoutText, "vendor type=registered dirtyKind=MISSING_REMOTE policy=managed blocksConverge=true");
+
+    const auto json = ExtractStatusJsonPayload(RunRecursiveJsonNoFetchHealth(root));
+    INFO(json);
+    RequireContains(json, "\"dirtyCount\":0");
+    RequireContains(json, "\"blocksConvergeCount\":0");
+    RequireContains(json, "\"id\":\"vendor\"");
+    RequireContains(json, "\"dirtyKind\":\"MISSING_REMOTE\"");
+    RequireContains(json, "\"blocksConverge\":false");
 
     RemoveSandboxWorkspace(sandbox);
 }

@@ -729,7 +729,7 @@ Plan BuildPlan(const Snapshot& snapshot) {
         }
         if (repo.dirtyKind == "CONFLICTED") { Add(plan.blocked, repo.id, "CONFLICTED: resolve conflicts before converge mutation"); continue; }
         if (repo.dirtyKind == "DIVERGED") { Add(plan.blocked, repo.id, "DIVERGED: no conflict-safe converge sync policy is configured"); continue; }
-        if (repo.blocksConverge && IsCleanNestedPreflightOnlyBlocker(repo)) {
+        if (IsCleanNestedPreflightOnlyBlocker(repo)) {
             Add(plan.skipped, repo.id, "preflight-only clean nested repo skipped: " + repo.dirtyKind);
             continue;
         }
@@ -3042,10 +3042,10 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
         if (!isTarget && !checkedOut.empty()) {
             blockers.push_back("ACTIVE_WORKTREE_LEASE");
         }
-        if (DirtyKindBlocksBranchPlan(repo.dirtyKind)) {
+        if (DirtyKindBlocksBranchPlan(repo.dirtyKind) && !IsCleanNestedPreflightOnlyBlocker(repo)) {
             blockers.push_back("DIRTY_WORKTREE:" + repo.dirtyKind);
         }
-        if (repo.blocksConverge) {
+        if (repo.blocksConverge && !IsCleanNestedPreflightOnlyBlocker(repo)) {
             blockers.push_back(repo.blockReason.empty() ? std::string{"REPO_PREFLIGHT_BLOCKED"} : ("REPO_PREFLIGHT_BLOCKED:" + repo.blockReason));
         }
         if (targetBranchBehind) {
