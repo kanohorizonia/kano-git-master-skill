@@ -183,24 +183,30 @@ auto RunKogWithEnv(const std::vector<std::string>& InArgs,
             return entry.first == InKey;
         });
     };
+    const auto hasEffectiveEnvKey = [&](const std::string& InKey) {
+        return hasEnvKey(InKey) || std::getenv(InKey.c_str()) != nullptr;
+    };
 
     // Force non-interactive Git flows for functional tests.
-    if (!hasEnvKey("GIT_TERMINAL_PROMPT")) {
+    if (!hasEffectiveEnvKey("GIT_TERMINAL_PROMPT")) {
         env.emplace_back("GIT_TERMINAL_PROMPT", "0");
     }
-    if (!hasEnvKey("GCM_INTERACTIVE")) {
+    if (!hasEffectiveEnvKey("GCM_INTERACTIVE")) {
         env.emplace_back("GCM_INTERACTIVE", "never");
     }
-    if (!hasEnvKey("GIT_ASKPASS")) {
+    if (!hasEffectiveEnvKey("GIT_ASKPASS")) {
         env.emplace_back("GIT_ASKPASS", "true");
     }
-    if (!hasEnvKey("SSH_ASKPASS")) {
+    if (!hasEffectiveEnvKey("SSH_ASKPASS")) {
         env.emplace_back("SSH_ASKPASS", "true");
     }
-    if (!hasEnvKey("KOG_PROCESS_DIAGNOSTICS")) {
+    if (!hasEffectiveEnvKey("KOG_PROCESS_DIAGNOSTICS")) {
         env.emplace_back("KOG_PROCESS_DIAGNOSTICS", "1");
     }
-    if (!hasEnvKey("KOG_PROCESS_DIAGNOSTICS_LOG")) {
+    if (!hasEffectiveEnvKey("KOG_SHELL_TIMEOUT_MS")) {
+        env.emplace_back("KOG_SHELL_TIMEOUT_MS", "120000");
+    }
+    if (!hasEffectiveEnvKey("KOG_PROCESS_DIAGNOSTICS_LOG")) {
         const auto diagPath = (InWorkingDir / ".kano" / "tmp" / "functional-process-diag.log").lexically_normal();
         std::error_code ec;
         std::filesystem::create_directories(diagPath.parent_path(), ec);

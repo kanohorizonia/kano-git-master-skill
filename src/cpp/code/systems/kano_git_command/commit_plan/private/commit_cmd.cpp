@@ -22,6 +22,7 @@
 #include <filesystem>
 #include <iostream>
 #include <iomanip>
+#include <mutex>
 #include <optional>
 #include <print>
 #include <regex>
@@ -36,6 +37,13 @@
 #include <set>
 #include <functional>
 #include <utility>
+
+#if defined(_WIN32)
+#include <process.h>
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace kano::git::commands {
 
@@ -2672,7 +2680,7 @@ auto RunCommitAutoPlanPipeline(const std::filesystem::path& InWorkspaceRoot,
     }
 
     const auto commitApplyStart = std::chrono::steady_clock::now();
-    const auto commitApplyCode = RunCommitNativePlanStage(InWorkspaceRoot, autoPlanPath.generic_string(), "commit", false);
+    const auto commitApplyCode = RunCommitNativePlanStage(InWorkspaceRoot, autoPlanPath.generic_string(), "commit", false, true);
     commitApplyMillis = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - commitApplyStart).count();
     if (commitApplyCode != 0) {
         return commitApplyCode;
@@ -3630,6 +3638,426 @@ auto AppendExecResult(std::string* OutStdout, std::string* OutStderr, const shel
     }
 }
 
+struct CommitLockRecoveryState {
+    std::mutex mutex;
+    bool attempted = false;
+    bool succeeded = false;
+    std::string reason;
+};
+
+struct ActiveProcessProbe {
+    bool blocked = false;
+    std::string detail;
+};
+
+struct CommitGitLockDiagnosis {
+    std::string lockName;
+    std::filesystem::path lockPath;
+    bool exists = false;
+    long long ageSeconds = -1;
+};
+
+auto ParseOptionalBoolEnv(const char* InValue) -> std::optional<bool> {
+    if (InValue == nullptr) {
+        return std::nullopt;
+    }
+    const auto normalized = ToLower(Trim(std::string(InValue)));
+    if (normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on") {
+        return true;
+    }
+    if (normalized == "0" || normalized == "false" || normalized == "no" || normalized == "off") {
+        return false;
+    }
+    return std::nullopt;
+}
+
+auto CurrentProcessIdForCommitLockRecovery() -> long long {
+#if defined(_WIN32)
+    return static_cast<long long>(_getpid());
+#else
+    return static_cast<long long>(getpid());
+#endif
+}
+
+auto ResolveSelfBinaryForCommitLockRecovery() -> std::string {
+    if (const char* path = std::getenv("KANO_GIT_BINARY_PATH"); path != nullptr && *path != '\0') {
+        return std::filesystem::path(path).lexically_normal().string();
+    }
+#if defined(_WIN32)
+    std::string buffer(MAX_PATH, '\0');
+    const auto written = GetModuleFileNameA(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+    if (written > 0) {
+        buffer.resize(written);
+        return std::filesystem::path(buffer).lexically_normal().string();
+    }
+    return "kano-git.exe";
+#else
+    std::string buffer(4096, '\0');
+    const auto written = readlink("/proc/self/exe", buffer.data(), buffer.size() - 1);
+    if (written > 0) {
+        buffer.resize(static_cast<std::size_t>(written));
+        return std::filesystem::path(buffer).lexically_normal().string();
+    }
+    return "kano-git";
+#endif
+}
+
+auto SetProcessEnvForCommitLockRecovery(const std::string& InKey, const std::string& InValue) -> void {
+#if defined(_WIN32)
+    _putenv_s(InKey.c_str(), InValue.c_str());
+#else
+    setenv(InKey.c_str(), InValue.c_str(), 1);
+#endif
+}
+
+auto UnsetProcessEnvForCommitLockRecovery(const std::string& InKey) -> void {
+#if defined(_WIN32)
+    _putenv_s(InKey.c_str(), "");
+#else
+    unsetenv(InKey.c_str());
+#endif
+}
+
+class ScopedCommitLockRecoveryEnv {
+  public:
+    ScopedCommitLockRecoveryEnv(std::string InKey, std::string InValue)
+        : key_(std::move(InKey)) {
+        if (const char* previous = std::getenv(key_.c_str()); previous != nullptr) {
+            previous_ = std::string(previous);
+        }
+        SetProcessEnvForCommitLockRecovery(key_, InValue);
+    }
+
+    ~ScopedCommitLockRecoveryEnv() {
+        if (previous_.has_value()) {
+            SetProcessEnvForCommitLockRecovery(key_, *previous_);
+        } else {
+            UnsetProcessEnvForCommitLockRecovery(key_);
+        }
+    }
+
+    ScopedCommitLockRecoveryEnv(const ScopedCommitLockRecoveryEnv&) = delete;
+    auto operator=(const ScopedCommitLockRecoveryEnv&) -> ScopedCommitLockRecoveryEnv& = delete;
+
+  private:
+    std::string key_;
+    std::optional<std::string> previous_;
+};
+
+auto DetectActiveCommitLockRecoveryProcess() -> ActiveProcessProbe {
+    if (const auto forced = ParseOptionalBoolEnv(std::getenv("KOG_COMMIT_LOCK_RECOVERY_TEST_ACTIVE_PROCESS"));
+        forced.has_value()) {
+        return ActiveProcessProbe{
+            .blocked = *forced,
+            .detail = *forced ? "test override KOG_COMMIT_LOCK_RECOVERY_TEST_ACTIVE_PROCESS=1" : ""
+        };
+    }
+    if (const auto forcedGit = ParseOptionalBoolEnv(std::getenv("KOG_SYNC_TEST_ASSUME_ACTIVE_GIT_PROCESS"));
+        forcedGit.has_value() && *forcedGit) {
+        return ActiveProcessProbe{
+            .blocked = true,
+            .detail = "test override KOG_SYNC_TEST_ASSUME_ACTIVE_GIT_PROCESS=1"
+        };
+    }
+
+#if defined(_WIN32)
+    const auto result = shell::ExecuteCommand(
+        "powershell",
+        {"-NoLogo", "-NoProfile", "-Command",
+         std::format(
+             "$self={}; "
+             "$names=@('git','kano-git','kog','opencode','claude'); "
+             "$p=Get-Process -ErrorAction SilentlyContinue | "
+             "Where-Object {{ $_.Id -ne $self -and $names -contains $_.ProcessName.ToLowerInvariant() }} | "
+             "Select-Object -First 8; "
+             "if ($null -eq $p) {{ exit 1 }}; "
+             "$p | ForEach-Object {{ Write-Output (\"{{0}}:{{1}}\" -f $_.Id,$_.ProcessName) }}; "
+             "exit 0",
+             CurrentProcessIdForCommitLockRecovery())},
+        shell::ExecMode::Capture,
+        std::filesystem::current_path());
+    if (result.exitCode == 0) {
+        return ActiveProcessProbe{.blocked = true, .detail = Trim(result.stdoutStr)};
+    }
+    return {};
+#else
+    const auto result = shell::ExecuteCommand(
+        "ps",
+        {"-axo", "pid=,comm="},
+        shell::ExecMode::Capture,
+        std::filesystem::current_path());
+    if (result.exitCode != 0) {
+        return {};
+    }
+    std::istringstream iss(result.stdoutStr);
+    std::string line;
+    std::vector<std::string> active;
+    const auto selfPid = CurrentProcessIdForCommitLockRecovery();
+    while (std::getline(iss, line)) {
+        line = Trim(line);
+        if (line.empty()) {
+            continue;
+        }
+        std::istringstream ls(line);
+        long long pid = -1;
+        std::string command;
+        ls >> pid >> command;
+        if (pid <= 0 || pid == selfPid) {
+            continue;
+        }
+        const auto base = ToLower(std::filesystem::path(command).filename().string());
+        if (base == "git" || base == "kano-git" || base == "kog" || base == "opencode" || base == "claude") {
+            active.push_back(std::format("{}:{}", pid, base));
+            if (active.size() >= 8) {
+                break;
+            }
+        }
+    }
+    if (!active.empty()) {
+        std::ostringstream joined;
+        for (std::size_t i = 0; i < active.size(); ++i) {
+            if (i > 0) {
+                joined << ", ";
+            }
+            joined << active[i];
+        }
+        return ActiveProcessProbe{.blocked = true, .detail = joined.str()};
+    }
+    return {};
+#endif
+}
+
+auto IsCommitLockFailureText(const std::string& InText) -> bool {
+    const auto merged = ToLower(InText);
+    const bool mentionsLock =
+        merged.find("index.lock") != std::string::npos ||
+        merged.find("config.lock") != std::string::npos ||
+        merged.find(".lock") != std::string::npos;
+    if (!mentionsLock) {
+        return false;
+    }
+    return merged.find("unable to create") != std::string::npos ||
+           merged.find("file exists") != std::string::npos ||
+           merged.find("another git process seems to be running") != std::string::npos ||
+           merged.find("could not write index") != std::string::npos ||
+           merged.find("could not lock") != std::string::npos ||
+           merged.find("failed to lock") != std::string::npos;
+}
+
+auto IsCommitLockFailure(const RepoCommitResult& InResult) -> bool {
+    if (!InResult.failed) {
+        return false;
+    }
+    return IsCommitLockFailureText(InResult.note + "\n" + InResult.stdoutText + "\n" + InResult.stderrText);
+}
+
+auto ResolveCommitGitLockPath(const std::filesystem::path& InRepo,
+                              const std::string& InLockName) -> std::filesystem::path {
+    const auto result = GitCapture(InRepo, {"rev-parse", "--git-path", InLockName});
+    if (result.exitCode != 0) {
+        return {};
+    }
+    auto path = std::filesystem::path(Trim(result.stdoutStr));
+    if (path.empty()) {
+        return {};
+    }
+    if (path.is_relative()) {
+        path = std::filesystem::absolute((InRepo / path).lexically_normal());
+    }
+    return path.lexically_normal();
+}
+
+auto DiagnoseCommitGitLock(const std::filesystem::path& InRepo,
+                           const std::string& InLockName) -> CommitGitLockDiagnosis {
+    CommitGitLockDiagnosis out;
+    out.lockName = InLockName;
+    out.lockPath = ResolveCommitGitLockPath(InRepo, InLockName);
+    if (out.lockPath.empty()) {
+        return out;
+    }
+    std::error_code ec;
+    out.exists = std::filesystem::exists(out.lockPath, ec) && !ec;
+    if (!out.exists) {
+        return out;
+    }
+    const auto writeTime = std::filesystem::last_write_time(out.lockPath, ec);
+    if (!ec) {
+        const auto now = decltype(writeTime)::clock::now();
+        out.ageSeconds = std::chrono::duration_cast<std::chrono::seconds>(now - writeTime).count();
+        if (out.ageSeconds < 0) {
+            out.ageSeconds = 0;
+        }
+    }
+    return out;
+}
+
+auto CleanupStaleCommitLocksForRepo(const std::filesystem::path& InWorkspaceRoot,
+                                    const std::filesystem::path& InRepo,
+                                    std::string* OutReason) -> bool {
+    const auto label = DisplayRepoLabel(InWorkspaceRoot, InRepo);
+    bool sawExistingLock = false;
+    for (const auto& lockName : {std::string{"index.lock"}, std::string{"config.lock"}}) {
+        const auto diagnosis = DiagnoseCommitGitLock(InRepo, lockName);
+        if (!diagnosis.exists) {
+            continue;
+        }
+        sawExistingLock = true;
+        std::cout << "[native-commit][lock-recovery] detected " << lockName
+                  << " repo=" << label
+                  << " path=" << diagnosis.lockPath.generic_string();
+        if (diagnosis.ageSeconds >= 0) {
+            std::cout << " age_seconds=" << diagnosis.ageSeconds;
+        }
+        std::cout << "\n";
+
+        if (diagnosis.ageSeconds >= 0 && diagnosis.ageSeconds < 2) {
+            if (OutReason != nullptr) {
+                *OutReason = std::format("{} is too new to remove automatically for {}", lockName, label);
+            }
+            return false;
+        }
+
+        std::error_code ec;
+        const bool removed = std::filesystem::remove(diagnosis.lockPath, ec);
+        if (!removed || ec) {
+            if (OutReason != nullptr) {
+                *OutReason = std::format("failed to remove {} for {}: {}", lockName, label, ec.message());
+            }
+            return false;
+        }
+        std::cout << "[native-commit][lock-recovery] removed stale " << lockName
+                  << " repo=" << label << "\n";
+    }
+
+    if (!sawExistingLock) {
+        std::cout << "[native-commit][lock-recovery] no git lock file remains for repo="
+                  << label << "\n";
+    }
+    return true;
+}
+
+auto RunCommitLockRecoveryConvergeProbe(const std::filesystem::path& InWorkspaceRoot,
+                                        const std::filesystem::path& InRepo,
+                                        std::string* OutReason) -> bool {
+    std::vector<std::string> args{"converge", "--dry-run", "--no-recursive", "--jobs", "1"};
+    if (const auto branch = CurrentBranch(InRepo); !branch.empty()) {
+        args.push_back("--target");
+        args.push_back(branch);
+    }
+    std::ostringstream commandText;
+    commandText << ResolveSelfBinaryForCommitLockRecovery();
+    for (const auto& arg : args) {
+        commandText << ' ' << arg;
+    }
+    std::cout << "[native-commit][lock-recovery] running bounded converge probe: "
+              << commandText.str() << "\n";
+    ScopedCommitLockRecoveryEnv depth("KOG_COMMIT_LOCK_RECOVERY_DEPTH", "1");
+    const auto result = shell::ExecuteCommand(
+        ResolveSelfBinaryForCommitLockRecovery(),
+        args,
+        shell::ExecMode::Capture,
+        InRepo);
+    if (result.exitCode == 0) {
+        std::cout << "[native-commit][lock-recovery] converge probe passed for repo="
+                  << DisplayRepoLabel(InWorkspaceRoot, InRepo) << "\n";
+        return true;
+    }
+    if (!result.stdoutStr.empty()) {
+        std::cout << result.stdoutStr;
+        if (!result.stdoutStr.ends_with('\n')) {
+            std::cout << '\n';
+        }
+    }
+    if (!result.stderrStr.empty()) {
+        std::cerr << result.stderrStr;
+        if (!result.stderrStr.ends_with('\n')) {
+            std::cerr << '\n';
+        }
+    }
+    if (OutReason != nullptr) {
+        *OutReason = std::format("bounded converge probe failed with exit code {}", result.exitCode);
+    }
+    return false;
+}
+
+auto AttemptCommitLockRecoveryOnce(const std::filesystem::path& InWorkspaceRoot,
+                                   const std::filesystem::path& InRepo,
+                                   CommitLockRecoveryState& InState) -> bool {
+    std::lock_guard lock(InState.mutex);
+    if (InState.attempted) {
+        return InState.succeeded;
+    }
+
+    InState.attempted = true;
+    if (IsTruthyEnv(std::getenv("KOG_DISABLE_COMMIT_LOCK_RECOVERY"))) {
+        InState.reason = "disabled by KOG_DISABLE_COMMIT_LOCK_RECOVERY";
+        std::cerr << "[native-commit][lock-recovery] blocked: " << InState.reason << "\n";
+        return false;
+    }
+    if (IsTruthyEnv(std::getenv("KOG_COMMIT_LOCK_RECOVERY_DEPTH"))) {
+        InState.reason = "already inside commit lock recovery";
+        std::cerr << "[native-commit][lock-recovery] blocked: " << InState.reason << "\n";
+        return false;
+    }
+
+    const auto active = DetectActiveCommitLockRecoveryProcess();
+    if (active.blocked) {
+        InState.reason = active.detail.empty()
+            ? "active git/kog/coding-agent process detected"
+            : "active git/kog/coding-agent process detected: " + active.detail;
+        std::cerr << "[native-commit][lock-recovery] blocked: " << InState.reason << "\n";
+        return false;
+    }
+
+    std::string reason;
+    if (!CleanupStaleCommitLocksForRepo(InWorkspaceRoot, InRepo, &reason)) {
+        InState.reason = reason.empty() ? "stale lock cleanup failed" : reason;
+        std::cerr << "[native-commit][lock-recovery] blocked: " << InState.reason << "\n";
+        return false;
+    }
+    if (!RunCommitLockRecoveryConvergeProbe(InWorkspaceRoot, InRepo, &reason)) {
+        InState.reason = reason.empty() ? "bounded converge probe failed" : reason;
+        std::cerr << "[native-commit][lock-recovery] blocked: " << InState.reason << "\n";
+        return false;
+    }
+
+    InState.succeeded = true;
+    InState.reason = "stale lock cleanup and converge probe completed";
+    return true;
+}
+
+template <typename TRetryFn>
+auto MaybeRecoverCommitLockFailure(const std::filesystem::path& InWorkspaceRoot,
+                                   RepoCommitResult InResult,
+                                   CommitLockRecoveryState& InState,
+                                   TRetryFn InRetryFn) -> RepoCommitResult {
+    if (!IsCommitLockFailure(InResult)) {
+        return InResult;
+    }
+
+    std::cout << "[native-commit][lock-recovery] lock failure detected repo="
+              << DisplayRepoLabel(InWorkspaceRoot, InResult.repo)
+              << " note=" << InResult.note << "\n";
+    if (!AttemptCommitLockRecoveryOnce(InWorkspaceRoot, InResult.repo, InState)) {
+        if (!InState.reason.empty()) {
+            InResult.note += " (lock recovery blocked: " + InState.reason + ")";
+        }
+        return InResult;
+    }
+
+    std::cout << "[native-commit][lock-recovery] retrying original commit once repo="
+              << DisplayRepoLabel(InWorkspaceRoot, InResult.repo) << "\n";
+    auto retried = InRetryFn();
+    if (!retried.failed && retried.note.empty()) {
+        retried.note = "committed after lock recovery";
+    } else if (!retried.failed) {
+        retried.note += " after lock recovery";
+    } else if (!InState.reason.empty()) {
+        retried.note += " after lock recovery retry";
+    }
+    return retried;
+}
+
 template <typename TRepoResult>
 auto PrintBufferedRepoOutput(const std::filesystem::path& InWorkspaceRoot, const TRepoResult& InResult) -> void {
     if (InResult.stdoutText.empty() && InResult.stderrText.empty()) {
@@ -4243,7 +4671,8 @@ auto PrintCommitPreflight(const CommitPreflightReport& InReport, bool InStagedOn
 auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
                               const std::string& InPlanFile,
                               const std::string& InPlanStage,
-                              const bool InProfile) -> int {
+                              const bool InProfile,
+                              const bool InAllowLockRecovery) -> int {
     using clock = std::chrono::steady_clock;
     const auto totalStart = std::chrono::steady_clock::now();
     long long preflightMs = 0;
@@ -4375,6 +4804,7 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
     NativeAiConfig ai{};
     ai.enabled = false;
     ai.reviewEnabled = false;
+    CommitLockRecoveryState lockRecoveryState;
 
     const auto commitStart = std::chrono::steady_clock::now();
     std::cout << "[native-commit] plan: repos=" << repoRecords.size()
@@ -4392,16 +4822,20 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
             planRepoKeys.insert(kano::git::commands::RepoKey(rec.path));
         }
 
-        auto executeCommitTask = [&](const CommitTaskNode& InNode) -> RepoCommitResult {
+        auto executeCommitTaskOnce = [&](const CommitTaskNode& InNode) -> RepoCommitResult {
             const auto& repo = InNode.repo;
             const auto& repoMessage = InNode.commit;
             const bool needsPlanStaging =
                 InNode.repoCommitCount > 1 || !repoMessage.include.empty() || !repoMessage.exclude.empty();
             if (needsPlanStaging) {
                 std::string stageError;
-                if (!StageCommitItemForPlan(workspaceRoot, repo, repoMessage, planRepoKeys, nullptr, nullptr, &stageError)) {
+                std::string stageStdout;
+                std::string stageStderr;
+                if (!StageCommitItemForPlan(workspaceRoot, repo, repoMessage, planRepoKeys, &stageStdout, &stageStderr, &stageError)) {
                     RepoCommitResult result;
                     result.repo = repo;
+                    result.stdoutText = std::move(stageStdout);
+                    result.stderrText = std::move(stageStderr);
                     if (IsEmptyPlanStageError(stageError)) {
                         result.note = std::format("plan commit[{}] skipped: no files matched include/exclude pathspec",
                                                   InNode.commitIndexInRepo);
@@ -4413,6 +4847,16 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
                 }
             }
             return CommitSingleRepo(workspaceRoot, repo, repoMessage.message, needsPlanStaging, false, ai);
+        };
+
+        auto executeCommitTask = [&](const CommitTaskNode& InNode) -> RepoCommitResult {
+            auto first = executeCommitTaskOnce(InNode);
+            if (!InAllowLockRecovery) {
+                return first;
+            }
+            return MaybeRecoverCommitLockFailure(workspaceRoot, std::move(first), lockRecoveryState, [&]() {
+                return executeCommitTaskOnce(InNode);
+            });
         };
 
     for (const auto& wave : taskGraph.waves) {
@@ -5386,6 +5830,7 @@ void RegisterCommit(CLI::App& InApp) {
             failed.note = runbook.validationError;
             results.push_back(std::move(failed));
         }
+        CommitLockRecoveryState lockRecoveryState;
 
         const auto commitStart = std::chrono::steady_clock::now();
         std::cout << "[native-commit] plan: repos=" << repoRecords.size()
@@ -5403,16 +5848,20 @@ void RegisterCommit(CLI::App& InApp) {
             planRepoKeys.insert(kano::git::commands::RepoKey(rec.path));
         }
 
-        auto executeCommitTask = [&](const CommitTaskNode& InNode) -> RepoCommitResult {
+        auto executeCommitTaskOnce = [&](const CommitTaskNode& InNode) -> RepoCommitResult {
             const auto& repo = InNode.repo;
             const auto& repoMessage = InNode.commit;
             const bool needsPlanStaging =
                 isPlanMode && (InNode.repoCommitCount > 1 || !repoMessage.include.empty() || !repoMessage.exclude.empty());
             if (needsPlanStaging) {
                 std::string stageError;
-                if (!StageCommitItemForPlan(workspaceRoot, repo, repoMessage, planRepoKeys, nullptr, nullptr, &stageError)) {
+                std::string stageStdout;
+                std::string stageStderr;
+                if (!StageCommitItemForPlan(workspaceRoot, repo, repoMessage, planRepoKeys, &stageStdout, &stageStderr, &stageError)) {
                     RepoCommitResult result;
                     result.repo = repo;
+                    result.stdoutText = std::move(stageStdout);
+                    result.stderrText = std::move(stageStderr);
                     if (IsEmptyPlanStageError(stageError)) {
                         result.note = std::format("plan commit[{}] skipped: no files matched include/exclude pathspec",
                                                   InNode.commitIndexInRepo);
@@ -5429,6 +5878,13 @@ void RegisterCommit(CLI::App& InApp) {
                                     needsPlanStaging ? true : *bStagedOnly,
                                     *bPush,
                                     ai);
+        };
+
+        auto executeCommitTask = [&](const CommitTaskNode& InNode) -> RepoCommitResult {
+            auto first = executeCommitTaskOnce(InNode);
+            return MaybeRecoverCommitLockFailure(workspaceRoot, std::move(first), lockRecoveryState, [&]() {
+                return executeCommitTaskOnce(InNode);
+            });
         };
 
         for (const auto& wave : taskGraph.waves) {

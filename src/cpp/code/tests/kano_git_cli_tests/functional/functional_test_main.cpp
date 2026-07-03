@@ -2229,6 +2229,84 @@ TEST_CASE("commit_push_success_path_does_not_emit_checkout_chatter", "[functiona
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("commit_lock_recovery_cleans_stale_lock_and_retries_original_commit", "[functional][commit][locks]") {
+    const auto ctx = CreateRemoteWithClone("commit-lock-recovery");
+    const std::string message = "test(functional): recover stale commit lock";
+    WriteTextFile(ctx.cloneRepo / "README.md", "seed\ncommit lock recovery\n");
+    const auto lockPath = (ctx.cloneRepo / ".git" / "index.lock").lexically_normal();
+    TouchFile(lockPath);
+    SetFileAgeSeconds(lockPath, 10);
+
+    const auto result = RunKogWithEnv(
+        {"commit", "-m", message, "--no-recursive"},
+        ctx.cloneRepo,
+        {{"KOG_COMMIT_LOCK_RECOVERY_TEST_ACTIVE_PROCESS", "0"},
+         {"KOG_PROCESS_DIAGNOSTICS", "0"},
+         {"KOG_SHELL_TIMEOUT_MS", "120000"}});
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    const auto merged = result.stdoutText + "\n" + result.stderrText;
+    REQUIRE(merged.find("[native-commit][lock-recovery] lock failure detected") != std::string::npos);
+    REQUIRE(merged.find("removed stale index.lock") != std::string::npos);
+    REQUIRE(merged.find("converge probe passed") != std::string::npos);
+    REQUIRE(merged.find("retrying original commit once") != std::string::npos);
+    REQUIRE_FALSE(std::filesystem::exists(lockPath));
+    REQUIRE(StatusPorcelain(ctx.cloneRepo).empty());
+
+    const auto subject = RunGit({"log", "-1", "--pretty=%s"}, ctx.cloneRepo);
+    RequireSuccess(subject, "read recovered commit subject");
+    REQUIRE(TrimCopy(subject.stdoutText) == message);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("commit_lock_recovery_blocks_when_active_process_detected", "[functional][commit][locks]") {
+    const auto ctx = CreateRemoteWithClone("commit-lock-active-guard");
+    WriteTextFile(ctx.cloneRepo / "README.md", "seed\ncommit lock active guard\n");
+    const auto lockPath = (ctx.cloneRepo / ".git" / "index.lock").lexically_normal();
+    TouchFile(lockPath);
+    SetFileAgeSeconds(lockPath, 10);
+
+    const auto result = RunKogWithEnv(
+        {"commit", "-m", "test(functional): active lock guard", "--no-recursive"},
+        ctx.cloneRepo,
+        {{"KOG_COMMIT_LOCK_RECOVERY_TEST_ACTIVE_PROCESS", "1"},
+         {"KOG_PROCESS_DIAGNOSTICS", "0"},
+         {"KOG_SHELL_TIMEOUT_MS", "120000"}});
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode != 0);
+
+    const auto merged = result.stdoutText + "\n" + result.stderrText;
+    REQUIRE(merged.find("[native-commit][lock-recovery] lock failure detected") != std::string::npos);
+    REQUIRE(merged.find("lock recovery blocked: active git/kog/coding-agent process detected") != std::string::npos);
+    REQUIRE(merged.find("retrying original commit once") == std::string::npos);
+    REQUIRE(std::filesystem::exists(lockPath));
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("commit_lock_recovery_does_not_run_for_non_lock_commit_path", "[functional][commit][locks]") {
+    const auto ctx = CreateRemoteWithClone("commit-lock-non-lock-path");
+
+    const auto result = RunKogWithEnv(
+        {"commit", "-m", "test(functional): clean no recovery", "--no-recursive"},
+        ctx.cloneRepo,
+        {{"KOG_COMMIT_LOCK_RECOVERY_TEST_ACTIVE_PROCESS", "1"},
+         {"KOG_PROCESS_DIAGNOSTICS", "0"},
+         {"KOG_SHELL_TIMEOUT_MS", "120000"}});
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    const auto merged = result.stdoutText + "\n" + result.stderrText;
+    REQUIRE(merged.find("[native-commit][lock-recovery]") == std::string::npos);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("sync_reports_index_lock_path_and_hint_when_auto_stash_hits_lock", "[functional][sync][locks]") {
     const auto ctx = CreateRemoteWithClone("sync-lock-diagnose");
     WriteTextFile(ctx.cloneRepo / "README.md", "seed\nlock diagnose\n");

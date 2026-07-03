@@ -35,7 +35,8 @@ void FixRepoHygieneRecursive(const std::filesystem::path& InWorkspaceRoot);
 auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
                               const std::string& InPlanFile,
                               const std::string& InPlanStage,
-                              bool InProfile) -> int;
+                              bool InProfile,
+                              bool InAllowLockRecovery = false) -> int;
 
 auto RunCommitNativeSimple(const std::filesystem::path& InWorkspaceRoot,
                            const std::string& InReposCsv,
