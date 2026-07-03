@@ -599,6 +599,16 @@ auto IsLongRunningGitOperation(const std::string& InCommand,
            sub == "lfs";
 }
 
+auto IsBoundedKogStatusOperation(const std::string& InCommand,
+                                 const std::vector<std::string>& InArgs) -> bool {
+    const auto base = BaseNameLower(InCommand);
+    if (base != "kano-git" && base != "kano-git.exe" && base != "kog" && base != "kog.exe") {
+        return false;
+    }
+
+    return FirstGitSubcommand(InArgs) == "status";
+}
+
 auto NormalizeTimeoutOverride(const std::optional<unsigned int>& InValue) -> std::optional<unsigned int> {
     if (!InValue.has_value()) {
         return std::nullopt;
