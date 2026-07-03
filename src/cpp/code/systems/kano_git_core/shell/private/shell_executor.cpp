@@ -230,6 +230,16 @@ auto IsLongRunningGitOperation(const std::string& InCommand,
            sub == "lfs";
 }
 
+auto IsBoundedKogStatusOperation(const std::string& InCommand,
+                                 const std::vector<std::string>& InArgs) -> bool {
+    const auto base = BaseNameLower(InCommand);
+    if (base != "kano-git" && base != "kano-git.exe" && base != "kog" && base != "kog.exe") {
+        return false;
+    }
+
+    return FirstGitSubcommand(InArgs) == "status";
+}
+
 auto NormalizeTimeoutOverride(const std::optional<unsigned int>& InValue) -> std::optional<unsigned int> {
     if (!InValue.has_value()) {
         return std::nullopt;
@@ -253,6 +263,9 @@ auto ResolveTimeoutMs(const std::string& InCommand,
         }
         if (IsLongRunningGitOperation(InCommand, InArgs)) {
             return std::nullopt;
+        }
+        if (IsBoundedKogStatusOperation(InCommand, InArgs)) {
+            return static_cast<unsigned int>(240 * 1000);
         }
         // Short probes must fail inside KOG instead of waiting for an outer agent timeout.
         return static_cast<unsigned int>(20 * 1000);
@@ -609,6 +622,9 @@ auto ResolveTimeoutMs(const std::string& InCommand,
         }
         if (IsLongRunningGitOperation(InCommand, InArgs)) {
             return std::nullopt;
+        }
+        if (IsBoundedKogStatusOperation(InCommand, InArgs)) {
+            return static_cast<unsigned int>(240 * 1000);
         }
         // Short probes must fail inside KOG instead of waiting for an outer agent timeout.
         return static_cast<unsigned int>(20 * 1000);
