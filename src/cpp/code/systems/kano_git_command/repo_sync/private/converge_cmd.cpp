@@ -1892,7 +1892,7 @@ int RunIntentCommitPlan(const std::filesystem::path& workspaceRoot,
     if (outCommandLine != nullptr) {
         *outCommandLine = "kog commit --plan-file " + plan.planPath.generic_string() + " --plan-stage commit";
     }
-    return RunCommitNativePlanStage(workspaceRoot, plan.planPath.generic_string(), "commit", profile);
+    return RunCommitNativePlanStage(workspaceRoot, plan.planPath.generic_string(), "commit", profile, true);
 }
 
 std::vector<std::string> RepoBaselines(const Snapshot& snapshot) {

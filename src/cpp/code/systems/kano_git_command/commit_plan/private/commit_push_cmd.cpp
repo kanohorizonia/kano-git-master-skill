@@ -2401,7 +2401,7 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
                           {"plan file", planPath.generic_string()}});
         {
             const auto commitStart = std::chrono::steady_clock::now();
-            const auto commitCode = RunCommitNativePlanStage(InWorkspaceRoot, InNormalizedPlanFile, "commit", false);
+            const auto commitCode = RunCommitNativePlanStage(InWorkspaceRoot, InNormalizedPlanFile, "commit", false, true);
             const auto commitEnd = std::chrono::steady_clock::now();
             commitMillis = std::chrono::duration_cast<std::chrono::milliseconds>(commitEnd - commitStart).count();
             if (commitCode != 0) {
@@ -2465,7 +2465,7 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
                         if (semanticDrift) {
                             std::cout << "[commit-push] post-sync plan stage will run against plan repo scope.\n";
                         }
-                        const auto postCommitCode = RunCommitNativePlanStage(InWorkspaceRoot, InNormalizedPlanFile, "post_sync", false);
+                        const auto postCommitCode = RunCommitNativePlanStage(InWorkspaceRoot, InNormalizedPlanFile, "post_sync", false, true);
                         if (postCommitCode != 0) {
                             return postCommitCode;
                         }
@@ -2850,7 +2850,7 @@ void RegisterCommitPush(CLI::App& InApp) {
                 SCOPED_TIMING_LOG("commit-push.commit");
                 const auto commitResult = hasCommitPlan
                     ? shell::ExecResult{
-                        RunCommitNativePlanStage(workspaceRoot, normalizedCommitPlanFile, "commit", false), "", ""}
+                        RunCommitNativePlanStage(workspaceRoot, normalizedCommitPlanFile, "commit", false, true), "", ""}
                     : shell::ExecResult{
                         RunCommitNativeSimple(
                             workspaceRoot,
@@ -2919,7 +2919,7 @@ void RegisterCommitPush(CLI::App& InApp) {
                             std::cout << "[commit-push] post-sync plan stage is empty; skipping.\n";
                         } else if (NeedsPostSyncCommitNonPlan(workspaceRoot, repoList, effectiveNoRecursive)) {
                             postCommitResult =
-                                shell::ExecResult{RunCommitNativePlanStage(workspaceRoot, normalizedCommitPlanFile, "post_sync", false), "", ""};
+                                shell::ExecResult{RunCommitNativePlanStage(workspaceRoot, normalizedCommitPlanFile, "post_sync", false, true), "", ""};
                         } else {
                             std::cout << "[commit-push] post-sync plan commit skipped (no working tree changes).\n";
                         }

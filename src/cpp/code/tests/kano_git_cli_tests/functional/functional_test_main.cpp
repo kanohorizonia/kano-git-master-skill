@@ -2262,6 +2262,57 @@ TEST_CASE("commit_lock_recovery_cleans_stale_lock_and_retries_original_commit", 
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("commit_plan_stage_lock_recovery_cleans_stale_lock_and_retries_original_commit", "[functional][commit][locks][plan-file]") {
+    const auto ctx = CreateRemoteWithClone("commit-plan-stage-lock-recovery");
+    const std::string message = "test(functional): recover stale plan-stage commit lock";
+    WriteTextFile(ctx.cloneRepo / "README.md", "seed\ncommit plan-stage lock recovery\n");
+
+    const auto planPath = (ctx.cloneRepo / ".kano" / "cache" / "git" / "plans" / "lock-recovery.json").lexically_normal();
+    RequireSuccess(RunKog({"plan", "new", "--force", "--output", planPath.string()}, ctx.cloneRepo), "plan new");
+    RequireSuccess(
+        RunKog({
+            "plan", "prepare", "add-commit-entry",
+            "--plan-file", planPath.string(),
+            "--repo", ".",
+            "--commit-message", message,
+            "--commit-include", "README.md",
+            "--commit-review-verdict", "pass",
+            "--commit-review-reason", "functional regression for plan-stage lock recovery"
+        }, ctx.cloneRepo),
+        "plan add commit entry");
+    RequireSuccess(
+        RunKog({"plan", "verify", "pre-apply", "--stage", "commit", "--plan-file", planPath.string()}, ctx.cloneRepo),
+        "plan verify pre-apply");
+
+    const auto lockPath = (ctx.cloneRepo / ".git" / "index.lock").lexically_normal();
+    TouchFile(lockPath);
+    SetFileAgeSeconds(lockPath, 10);
+
+    const auto result = RunKogWithEnv(
+        {"commit", "--plan-file", planPath.string(), "--plan-stage", "commit"},
+        ctx.cloneRepo,
+        {{"KOG_COMMIT_LOCK_RECOVERY_TEST_ACTIVE_PROCESS", "0"},
+         {"KOG_PROCESS_DIAGNOSTICS", "0"},
+         {"KOG_SHELL_TIMEOUT_MS", "120000"}});
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    const auto merged = result.stdoutText + "\n" + result.stderrText;
+    REQUIRE(merged.find("[native-commit][lock-recovery] lock failure detected") != std::string::npos);
+    REQUIRE(merged.find("removed stale index.lock") != std::string::npos);
+    REQUIRE(merged.find("converge probe passed") != std::string::npos);
+    REQUIRE(merged.find("retrying original commit once") != std::string::npos);
+    REQUIRE_FALSE(std::filesystem::exists(lockPath));
+    REQUIRE(StatusPorcelain(ctx.cloneRepo).empty());
+
+    const auto subject = RunGit({"log", "-1", "--pretty=%s"}, ctx.cloneRepo);
+    RequireSuccess(subject, "read recovered plan-stage commit subject");
+    REQUIRE(TrimCopy(subject.stdoutText) == message);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("commit_lock_recovery_blocks_when_active_process_detected", "[functional][commit][locks]") {
     const auto ctx = CreateRemoteWithClone("commit-lock-active-guard");
     WriteTextFile(ctx.cloneRepo / "README.md", "seed\ncommit lock active guard\n");

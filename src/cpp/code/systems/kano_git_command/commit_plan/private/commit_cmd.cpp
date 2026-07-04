@@ -3766,12 +3766,14 @@ auto DetectActiveCommitLockRecoveryProcess() -> ActiveProcessProbe {
         {"-NoLogo", "-NoProfile", "-Command",
          std::format(
              "$self={}; "
-             "$names=@('git','kano-git','kog','opencode','claude'); "
-             "$p=Get-Process -ErrorAction SilentlyContinue | "
-             "Where-Object {{ $_.Id -ne $self -and $names -contains $_.ProcessName.ToLowerInvariant() }} | "
+             "$names=@('git.exe','kano-git.exe','kog.exe','opencode.exe','claude.exe'); "
+             "$p=Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | "
+             "Where-Object {{ $_.ProcessId -ne $self -and "
+             "$names -contains $_.Name.ToLowerInvariant() -and "
+             "(($_.CommandLine -as [string]) -notmatch 'fsmonitor--daemon') }} | "
              "Select-Object -First 8; "
              "if ($null -eq $p) {{ exit 1 }}; "
-             "$p | ForEach-Object {{ Write-Output (\"{{0}}:{{1}}\" -f $_.Id,$_.ProcessName) }}; "
+             "$p | ForEach-Object {{ Write-Output (\"{{0}}:{{1}}:{{2}}\" -f $_.ProcessId,$_.Name,(($_.CommandLine -as [string]) -replace '\\s+',' ')) }}; "
              "exit 0",
              CurrentProcessIdForCommitLockRecovery())},
         shell::ExecMode::Capture,
@@ -3783,7 +3785,7 @@ auto DetectActiveCommitLockRecoveryProcess() -> ActiveProcessProbe {
 #else
     const auto result = shell::ExecuteCommand(
         "ps",
-        {"-axo", "pid=,comm="},
+        {"-axo", "pid=,args="},
         shell::ExecMode::Capture,
         std::filesystem::current_path());
     if (result.exitCode != 0) {
@@ -3801,11 +3803,20 @@ auto DetectActiveCommitLockRecoveryProcess() -> ActiveProcessProbe {
         std::istringstream ls(line);
         long long pid = -1;
         std::string command;
-        ls >> pid >> command;
+        ls >> pid;
+        std::getline(ls, command);
+        command = Trim(command);
         if (pid <= 0 || pid == selfPid) {
             continue;
         }
-        const auto base = ToLower(std::filesystem::path(command).filename().string());
+        const auto lowerCommand = ToLower(command);
+        if (lowerCommand.find("fsmonitor--daemon") != std::string::npos) {
+            continue;
+        }
+        std::istringstream commandStream(command);
+        std::string executable;
+        commandStream >> executable;
+        const auto base = ToLower(std::filesystem::path(executable).filename().string());
         if (base == "git" || base == "kano-git" || base == "kog" || base == "opencode" || base == "claude") {
             active.push_back(std::format("{}:{}", pid, base));
             if (active.size() >= 8) {
