@@ -361,9 +361,9 @@ auto RunSafeDirectoryDoctor(const std::filesystem::path& Root, bool Fix) -> int
     const auto WorkspaceConfigPath = WorkspaceSafeDirectoryConfigPath(NormalRoot);
     bool GlobalConfigUnavailable = false;
     int Failures = 0;
-    int UnsafeCount = 0;
     int FixedCount = 0;
     int WorkspaceFixedCount = 0;
+    std::vector<std::filesystem::path> UnsafeCandidates;
 
     std::cout << kano::terminal::InfoTag() << " safe.directory candidates: " << Candidates.size() << "\n";
 
@@ -386,9 +386,12 @@ auto RunSafeDirectoryDoctor(const std::filesystem::path& Root, bool Fix) -> int
             continue;
         }
 
-        ++UnsafeCount;
         std::cerr << kano::terminal::WarnTag() << " unsafe ownership: " << Candidate.generic_string() << "\n";
+        UnsafeCandidates.push_back(Candidate);
+    }
 
+    for (const auto& Candidate : UnsafeCandidates)
+    {
         if (!Fix)
         {
             continue;
@@ -440,11 +443,11 @@ auto RunSafeDirectoryDoctor(const std::filesystem::path& Root, bool Fix) -> int
         std::cout << kano::terminal::PassTag() << " fixed safe.directory (" << FixSource << "): " << Candidate.generic_string() << "\n";
     }
 
-    if (UnsafeCount == 0 && Failures == 0)
+    if (UnsafeCandidates.empty() && Failures == 0)
     {
         std::cout << kano::terminal::PassTag() << " no safe.directory ownership blockers\n";
     }
-    else if (UnsafeCount > 0 && !Fix)
+    else if (!UnsafeCandidates.empty() && !Fix)
     {
         std::cerr << kano::terminal::WarnTag() << " repair with: kog doctor --repo " << NormalRoot.generic_string() << " --fix-safe-directory\n";
         ++Failures;
