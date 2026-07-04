@@ -1603,17 +1603,6 @@ std::vector<std::string> DirtyEntryPaths(const std::vector<DirtyPathEntry>& entr
     return paths;
 }
 
-std::string WorkspaceHeadSha(const std::filesystem::path& workspaceRoot) {
-    const auto result = shell::ExecuteCommand("git", {"rev-parse", "HEAD"}, shell::ExecMode::Capture, workspaceRoot);
-    if (result.exitCode == 0) {
-        const auto sha = Trim(result.stdoutStr);
-        if (!sha.empty()) {
-            return sha;
-        }
-    }
-    return "unknown-head-" + std::to_string(std::hash<std::string>{}(workspaceRoot.generic_string()));
-}
-
 std::string Fnv1a64HexLocal(const std::string& value) {
     std::uint64_t hash = 14695981039346656037ull;
     for (const unsigned char ch : value) {
@@ -1625,109 +1614,6 @@ std::string Fnv1a64HexLocal(const std::string& value) {
     return out.str();
 }
 
-std::string RepoKeyForWorkspaceFingerprint(const std::filesystem::path& workspaceRoot,
-                                           const std::filesystem::path& repo) {
-    const auto root = workspaceRoot.lexically_normal();
-    const auto normalizedRepo = repo.lexically_normal();
-    if (normalizedRepo == root) {
-        return ".";
-    }
-    const auto relative = normalizedRepo.lexically_relative(root);
-    if (!relative.empty() && relative != ".") {
-        return NormalizeGitPath(relative.generic_string());
-    }
-    return NormalizeGitPath(normalizedRepo.generic_string());
-}
-
-bool IsFalseString(const std::string& value) {
-    const auto normalized = ToLower(Trim(value));
-    return normalized == "false" || normalized == "0" || normalized == "no" || normalized == "off" || normalized == "disabled";
-}
-
-std::vector<std::filesystem::path> DiscoverFingerprintReposRecursive(const std::filesystem::path& root) {
-    std::vector<std::filesystem::path> repos{root.lexically_normal()};
-    std::vector<std::filesystem::path> queue{root.lexically_normal()};
-    std::set<std::string> seen{NormalizeGitPath(root.lexically_normal().generic_string())};
-
-    while (!queue.empty()) {
-        const auto current = queue.back();
-        queue.pop_back();
-        const auto modulesPath = current / ".gitmodules";
-        if (!std::filesystem::exists(modulesPath)) {
-            continue;
-        }
-
-        const auto modules = shell::ExecuteCommand(
-            "git",
-            {"config", "-f", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$"},
-            shell::ExecMode::Capture,
-            current);
-        if (modules.exitCode != 0) {
-            continue;
-        }
-
-        std::istringstream lines(modules.stdoutStr);
-        std::string line;
-        while (std::getline(lines, line)) {
-            line = Trim(std::move(line));
-            if (line.empty()) {
-                continue;
-            }
-            const auto split = line.find(' ');
-            if (split == std::string::npos || split + 1 >= line.size()) {
-                continue;
-            }
-            const auto key = line.substr(0, split);
-            const auto pathValue = Trim(line.substr(split + 1));
-            const auto namePrefix = std::string("submodule.");
-            const auto nameSuffix = std::string(".path");
-            if (key.rfind(namePrefix, 0) != 0 || key.size() <= namePrefix.size() + nameSuffix.size()) {
-                continue;
-            }
-            const auto name = key.substr(namePrefix.size(), key.size() - namePrefix.size() - nameSuffix.size());
-            const auto commitPolicy = shell::ExecuteCommand(
-                "git",
-                {"config", "-f", ".gitmodules", "--get", "submodule." + name + ".kog-commit"},
-                shell::ExecMode::Capture,
-                current);
-            if (commitPolicy.exitCode == 0 && IsFalseString(commitPolicy.stdoutStr)) {
-                continue;
-            }
-
-            const auto repo = (current / std::filesystem::path(pathValue)).lexically_normal();
-            const auto gitDir = shell::ExecuteCommand("git", {"rev-parse", "--git-dir"}, shell::ExecMode::Capture, repo);
-            if (gitDir.exitCode != 0) {
-                continue;
-            }
-            const auto repoKey = NormalizeGitPath(repo.generic_string());
-            if (seen.insert(repoKey).second) {
-                repos.push_back(repo);
-                queue.push_back(repo);
-            }
-        }
-    }
-
-    std::sort(repos.begin(), repos.end(), [&](const auto& a, const auto& b) {
-        return RepoKeyForWorkspaceFingerprint(root, a) < RepoKeyForWorkspaceFingerprint(root, b);
-    });
-    return repos;
-}
-
-std::optional<std::string> ParseStatusChangedPathForFingerprint(const std::string& line) {
-    if (line.size() < 4) {
-        return std::nullopt;
-    }
-    auto path = Trim(line.substr(3));
-    const auto arrow = path.find(" -> ");
-    if (arrow != std::string::npos) {
-        path = Trim(path.substr(arrow + 4));
-    }
-    if (path.empty()) {
-        return std::nullopt;
-    }
-    return NormalizeGitPath(path);
-}
-
 bool IsInternalConvergeArtifactPath(const std::string& path) {
     const auto normalized = NormalizeGitPath(path);
     return normalized.rfind(".kano/tmp/", 0) == 0 ||
@@ -1735,67 +1621,60 @@ bool IsInternalConvergeArtifactPath(const std::string& path) {
            normalized.find("/.kano/tmp/") != std::string::npos;
 }
 
-std::string ComputeWorkspaceBaseHeadShaForPlan(const std::filesystem::path& workspaceRoot) {
+std::string ComputeScopedBaseHeadShaForPlan(const Snapshot& snapshot, const std::string& repo) {
     std::vector<std::string> lines;
-    const auto repos = DiscoverFingerprintReposRecursive(workspaceRoot);
-    lines.reserve(repos.size());
-    for (const auto& repo : repos) {
-        const auto head = shell::ExecuteCommand("git", {"rev-parse", "HEAD"}, shell::ExecMode::Capture, repo);
-        const auto sha = head.exitCode == 0 ? Trim(head.stdoutStr) : std::string("0000000000000000000000000000000000000000");
-        lines.push_back(RepoKeyForWorkspaceFingerprint(workspaceRoot, repo) + "\t" + sha);
-    }
-    std::sort(lines.begin(), lines.end());
-    std::ostringstream canonical;
-    for (const auto& line : lines) {
-        canonical << line << "\n";
-    }
-    return "ws-head-v2-" + Fnv1a64HexLocal(canonical.str());
-}
-
-std::string ComputeWorkspaceDirtyFingerprintForPlan(const std::filesystem::path& workspaceRoot) {
-    std::vector<std::string> lines;
-    const auto repos = DiscoverFingerprintReposRecursive(workspaceRoot);
-    lines.reserve(repos.size());
-    for (const auto& repo : repos) {
-        const auto status = shell::ExecuteCommand(
-            "git",
-            {"status", "--porcelain", "--branch", "--untracked-files=normal", "--ignore-submodules=none"},
-            shell::ExecMode::Capture,
-            repo);
-        if (status.exitCode != 0) {
+    const auto normalizedRepo = NormalizeGitPath(repo.empty() ? "." : repo);
+    for (const auto& candidate : snapshot.repos) {
+        if (NormalizeGitPath(candidate.id) != normalizedRepo) {
             continue;
         }
-
-        std::istringstream stream(status.stdoutStr);
-        std::ostringstream filtered;
-        std::string line;
-        while (std::getline(stream, line)) {
-            const auto trimmed = Trim(line);
-            if (trimmed.empty() || trimmed.rfind("## ", 0) == 0 || trimmed.rfind("# ", 0) == 0) {
-                continue;
-            }
-            const auto path = ParseStatusChangedPathForFingerprint(trimmed);
-            if (path.has_value() && IsInternalConvergeArtifactPath(*path)) {
-                continue;
-            }
-            if (trimmed.find(" ../") != std::string::npos || trimmed.rfind("../", 0) == 0) {
-                continue;
-            }
-            filtered << trimmed << "\n";
-        }
-
-        const auto normalized = Trim(filtered.str());
-        const auto head = shell::ExecuteCommand("git", {"rev-parse", "HEAD"}, shell::ExecMode::Capture, repo);
-        const auto sha = head.exitCode == 0 ? Trim(head.stdoutStr) : std::string("0000000000000000000000000000000000000000");
-        const auto statusFingerprint = normalized.empty() ? std::string("clean") : Fnv1a64HexLocal(normalized);
-        lines.push_back(RepoKeyForWorkspaceFingerprint(workspaceRoot, repo) + "|" + sha + "|" + statusFingerprint);
+        const auto sha = candidate.head.empty()
+            ? std::string("0000000000000000000000000000000000000000")
+            : candidate.head;
+        lines.push_back(normalizedRepo + "\t" + sha);
+        break;
+    }
+    if (lines.empty()) {
+        lines.push_back(normalizedRepo + "\t0000000000000000000000000000000000000000");
     }
     std::sort(lines.begin(), lines.end());
     std::ostringstream canonical;
     for (const auto& line : lines) {
         canonical << line << "\n";
     }
-    return "ws-dirty-v2-" + Fnv1a64HexLocal(canonical.str());
+    return "scope-head-v1-" + Fnv1a64HexLocal(canonical.str());
+}
+
+std::string ComputeScopedDirtyFingerprintForPlan(const Snapshot& snapshot,
+                                                 const std::string& repo,
+                                                 const std::vector<DirtyPathEntry>& dirtyEntries) {
+    std::vector<std::string> lines;
+    const auto normalizedRepo = NormalizeGitPath(repo.empty() ? "." : repo);
+    const RepoStatus* repoStatus = nullptr;
+    for (const auto& candidate : snapshot.repos) {
+        if (NormalizeGitPath(candidate.id) == normalizedRepo) {
+            repoStatus = &candidate;
+            break;
+        }
+    }
+
+    lines.push_back("repo=" + normalizedRepo);
+    if (repoStatus != nullptr) {
+        lines.push_back("head=" + repoStatus->head);
+    }
+
+    for (const auto& entry : dirtyEntries) {
+        if (entry.path.empty() || IsInternalConvergeArtifactPath(entry.path)) {
+            continue;
+        }
+        lines.push_back(entry.rawStatus + "|" + entry.originalPath + "|" + entry.path + "|" + entry.statusKind);
+    }
+    std::sort(lines.begin(), lines.end());
+    std::ostringstream canonical;
+    for (const auto& line : lines) {
+        canonical << line << "\n";
+    }
+    return "scope-dirty-v1-" + Fnv1a64HexLocal(canonical.str());
 }
 
 IntentCommitPlan BuildIntentCommitPlan(const std::filesystem::path& workspaceRoot,
@@ -1895,8 +1774,8 @@ IntentCommitPlan BuildIntentCommitPlan(const std::filesystem::path& workspaceRoo
     }
 
     const auto safeRepo = SanitizePlanComponent(repo);
-    const auto baseHeadSha = ComputeWorkspaceBaseHeadShaForPlan(workspaceRoot);
-    const auto fingerprint = ComputeWorkspaceDirtyFingerprintForPlan(workspaceRoot);
+    const auto baseHeadSha = ComputeScopedBaseHeadShaForPlan(snapshot, repo);
+    const auto fingerprint = ComputeScopedDirtyFingerprintForPlan(snapshot, repo, dirtyEntries);
     plan.planPath = (workspaceRoot / ".kano" / "tmp" / "workflows" / "converge" /
                      "intent-commit-plans" / (safeRepo + "-" + fingerprint + ".json")).lexically_normal();
 
@@ -1908,6 +1787,8 @@ IntentCommitPlan BuildIntentCommitPlan(const std::filesystem::path& workspaceRoo
         {"base_head_sha", baseHeadSha},
         {"dirty_fingerprint_pre_ignore", fingerprint},
         {"dirty_fingerprint", fingerprint},
+        {"freshness_scope", "repo"},
+        {"scope_repo", repo.empty() ? "." : repo},
         {"planner", {
             {"provider", "native"},
             {"ai-model", "converge-intent-classifier-v1"},

@@ -1421,6 +1421,7 @@ TEST_CASE("converge agent mode defers registered child paths from root intent pl
     REQUIRE(result.exitCode == 0);
     RequireContains(result.stdoutText, "Converge agent intent commit plan");
     RequireContains(result.stdoutText, "[KOG][Chore] Update repository policy (NO-TICKET)");
+    RequireNotContains(result.stdoutText, "[plan][fingerprint] start");
     RequireNotContains(result.stdoutText, "ambiguous " + ctx.submodulePath);
     RequireContains(result.stdoutText, "[converge] completed");
     REQUIRE(GitStatusShort(ctx.cloneChildRepo).empty());

@@ -1806,6 +1806,8 @@ struct CommitPlanPayload {
         std::string baseHeadSha;
         std::string dirtyFingerprintPreIgnore;
         std::string dirtyFingerprint;
+        std::string freshnessScope;
+        std::string scopeRepo;
         PlannerMeta planner;
         ReviewMeta review;
     };
@@ -2195,6 +2197,12 @@ auto ParseCommitPlanText(const std::string& InText,
         if (const auto dirtyFingerprint = ExtractStringField(*metaObject, "dirty_fingerprint"); dirtyFingerprint.has_value()) {
             out.meta.dirtyFingerprint = Trim(*dirtyFingerprint);
         }
+        if (const auto freshnessScope = ExtractStringField(*metaObject, "freshness_scope"); freshnessScope.has_value()) {
+            out.meta.freshnessScope = Trim(*freshnessScope);
+        }
+        if (const auto scopeRepo = ExtractStringField(*metaObject, "scope_repo"); scopeRepo.has_value()) {
+            out.meta.scopeRepo = NormalizePlanKey(*scopeRepo);
+        }
         if (const auto plannerObject = ExtractObjectBodyForKey(*metaObject, "planner"); plannerObject.has_value()) {
             if (const auto value = ExtractStringField(*plannerObject, "provider"); value.has_value()) {
                 out.meta.planner.provider = Trim(*value);
@@ -2390,6 +2398,106 @@ auto ValidateCommitPlanForAiMode(const CommitPlanPayload& InPlan,
     }
 
     return true;
+}
+
+auto UsesRepoScopedFreshness(const CommitPlanPayload& InPlan) -> bool {
+    if (ToLower(Trim(InPlan.meta.freshnessScope)) != "repo") {
+        return false;
+    }
+    if (Trim(InPlan.meta.scopeRepo).empty()) {
+        return false;
+    }
+    return ToLower(Trim(InPlan.meta.planner.provider)) == "native" &&
+           ToLower(Trim(InPlan.meta.planner.model)) == "converge-intent-classifier-v1";
+}
+
+auto ScopedPlanRepoKey(const std::string& InRepoKey) -> std::string {
+    const auto key = NormalizePlanKey(InRepoKey);
+    return key.empty() ? std::string{"."} : key;
+}
+
+auto ScopedPlanRepoPath(const std::filesystem::path& InWorkspaceRoot,
+                        const std::string& InRepoKey) -> std::filesystem::path {
+    const auto key = ScopedPlanRepoKey(InRepoKey);
+    if (key == ".") {
+        return InWorkspaceRoot.lexically_normal();
+    }
+    return (InWorkspaceRoot / std::filesystem::path(key)).lexically_normal();
+}
+
+auto ComputeRepoScopedBaseHeadSha(const std::filesystem::path& InWorkspaceRoot,
+                                  const std::string& InRepoKey) -> std::string {
+    const auto key = ScopedPlanRepoKey(InRepoKey);
+    const auto repoPath = ScopedPlanRepoPath(InWorkspaceRoot, key);
+    const auto head = GitCapture(repoPath, {"rev-parse", "HEAD"});
+    const auto sha = head.exitCode == 0
+        ? Trim(head.stdoutStr)
+        : std::string("0000000000000000000000000000000000000000");
+    return "scope-head-v1-" + Fnv1a64Hex(key + "\t" + sha + "\n");
+}
+
+auto NormalizeScopedStatusPath(std::string InPath) -> std::string {
+    auto path = Trim(std::move(InPath));
+    std::replace(path.begin(), path.end(), '\\', '/');
+    return path;
+}
+
+auto ScopedDirtyStatusKind(std::string_view InRawStatus) -> std::string {
+    if (InRawStatus == "??") return "untracked";
+    if (InRawStatus == "!!") return "ignored";
+    if (InRawStatus.find('R') != std::string_view::npos) return "renamed";
+    if (InRawStatus.find('C') != std::string_view::npos) return "copied";
+    if (InRawStatus.find('D') != std::string_view::npos) return "deleted";
+    if (InRawStatus.find('A') != std::string_view::npos) return "added";
+    if (InRawStatus.find('M') != std::string_view::npos) return "modified";
+    if (InRawStatus.find('U') != std::string_view::npos) return "unmerged";
+    return "changed";
+}
+
+auto ComputeRepoScopedDirtyFingerprint(const std::filesystem::path& InWorkspaceRoot,
+                                       const std::string& InRepoKey) -> std::string {
+    const auto key = ScopedPlanRepoKey(InRepoKey);
+    const auto repoPath = ScopedPlanRepoPath(InWorkspaceRoot, key);
+    std::vector<std::string> lines;
+    lines.push_back("repo=" + key);
+
+    const auto head = GitCapture(repoPath, {"rev-parse", "HEAD"});
+    if (head.exitCode == 0) {
+        lines.push_back("head=" + Trim(head.stdoutStr));
+    }
+
+    const auto status = GitCapture(repoPath, {"status", "--porcelain=v1", "--untracked-files=all"});
+    if (status.exitCode == 0) {
+        std::istringstream stream(status.stdoutStr);
+        std::string line;
+        while (std::getline(stream, line)) {
+            if (!line.empty() && line.back() == '\r') {
+                line.pop_back();
+            }
+            if (line.size() < 4) {
+                continue;
+            }
+            const auto rawStatus = line.substr(0, 2);
+            auto path = NormalizeScopedStatusPath(line.substr(3));
+            std::string originalPath;
+            const auto arrow = path.find(" -> ");
+            if (arrow != std::string::npos) {
+                originalPath = NormalizeScopedStatusPath(path.substr(0, arrow));
+                path = NormalizeScopedStatusPath(path.substr(arrow + 4));
+            }
+            if (path.empty() || IsInternalPipelineArtifactPath(path)) {
+                continue;
+            }
+            lines.push_back(rawStatus + "|" + originalPath + "|" + path + "|" + ScopedDirtyStatusKind(rawStatus));
+        }
+    }
+
+    std::sort(lines.begin(), lines.end());
+    std::ostringstream canonical;
+    for (const auto& line : lines) {
+        canonical << line << "\n";
+    }
+    return "scope-dirty-v1-" + Fnv1a64Hex(canonical.str());
 }
 
 auto DefaultSharedPlanPath(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path {
@@ -4791,8 +4899,13 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
         std::cerr << "\n";
         return 2;
     }
-    const auto currentBaseHeadSha = ComputeWorkspaceBaseHeadSha(workspaceRoot);
-    const auto currentDirtyFingerprint = ComputeWorkspaceDirtyFingerprint(workspaceRoot);
+    const auto useRepoScopedFreshness = UsesRepoScopedFreshness(*parsed);
+    const auto currentBaseHeadSha = useRepoScopedFreshness
+        ? ComputeRepoScopedBaseHeadSha(workspaceRoot, parsed->meta.scopeRepo)
+        : ComputeWorkspaceBaseHeadSha(workspaceRoot);
+    const auto currentDirtyFingerprint = useRepoScopedFreshness
+        ? ComputeRepoScopedDirtyFingerprint(workspaceRoot, parsed->meta.scopeRepo)
+        : ComputeWorkspaceDirtyFingerprint(workspaceRoot);
     if (Trim(parsed->meta.baseHeadSha) != currentBaseHeadSha ||
         Trim(parsed->meta.dirtyFingerprint) != currentDirtyFingerprint) {
         WarnPlanWorkspaceStateDrift(normalizedCommitPlanPath,
