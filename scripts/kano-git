@@ -1939,7 +1939,9 @@ main() {
   args=("$@")
   apply_launcher_env_overrides "${args[@]}"
   apply_agent_mode_from_args "${args[@]}"
-  ensure_windows_copilot_cli_paths || true
+  if ! is_lightweight_query_command "${args[@]}"; then
+    ensure_windows_copilot_cli_paths || true
+  fi
 
   # Fail fast when user explicitly points to an incompatible binary for current shell.
   if [[ -n "${KANO_GIT_BIN:-}" ]]; then

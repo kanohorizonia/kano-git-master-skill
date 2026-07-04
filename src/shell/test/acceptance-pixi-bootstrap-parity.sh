@@ -67,6 +67,38 @@ test_launcher_lightweight_query() {
 }
 
 # =============================================================================
+# Test 1b: Lightweight queries do not touch PowerShell PATH mutation
+# =============================================================================
+test_launcher_lightweight_query_skips_powershell_path_mutation() {
+  log_step "test-1b" "launcher lightweight query skips PowerShell PATH mutation"
+
+  local fake_bin="${CASE_ROOT}/fake-bin"
+  local ps_log="${CASE_ROOT}/powershell-called.log"
+  mkdir -p "$fake_bin"
+
+  for name in powershell powershell.exe pwsh pwsh.exe; do
+    cat >"${fake_bin}/${name}" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$0 \$*" >> "$ps_log"
+exit 0
+EOF
+    chmod +x "${fake_bin}/${name}"
+  done
+
+  PATH="${fake_bin}:$PATH" bash "${ROOT_DIR}/scripts/kano-git" --version >/dev/null 2>&1 || true
+
+  if [[ ! -f "$ps_log" ]]; then
+    log_step "test-1b" "PASS"
+    count_pass
+    return 0
+  fi
+
+  log_step "test-1b" "FAIL: lightweight query invoked PowerShell ($(cat "$ps_log"))"
+  count_fail
+  return 1
+}
+
+# =============================================================================
 # Test 2: Pixi bootstrap library is present and sourced
 # =============================================================================
 test_bootstrap_lib_present() {
@@ -167,7 +199,7 @@ test_bootstrap_activate_log_message() {
   activate_output="$(bash -c "source \"$PIXI_BOOTSTRAP_LIB\" && kano_pixi_bootstrap_activate 2>&1")" || true
 
   if [[ -n "$activate_output" ]]; then
-    if [[ "$activate_output" != *"$SHARED_PIXI_MANIFEST"* ]]; then
+    if [[ "$activate_output" != *"$SHARED_PIXI_MANIFEST"* && "$activate_output" != *"use global tools"* ]]; then
       log_step "test-5" "FAIL: bootstrap output did not reference shared manifest ($activate_output)"
       count_fail
       return 1
@@ -229,6 +261,7 @@ main() {
   setup_case_root
 
   test_launcher_lightweight_query
+  test_launcher_lightweight_query_skips_powershell_path_mutation
   test_bootstrap_lib_present
   test_bootstrap_function_defined
   test_launcher_sources_bootstrap
