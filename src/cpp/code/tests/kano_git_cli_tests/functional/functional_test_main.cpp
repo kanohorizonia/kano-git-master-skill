@@ -2184,26 +2184,46 @@ TEST_CASE("plan_ignore_init_coalesces_unreal_artifacts_in_root_and_submodule", "
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
-TEST_CASE("commit_ignore_gate_reports_next_actions_for_unreal_artifacts", "[functional][commit][ignore-gate][KG-BUG-0016]") {
-    const auto ctx = CreateRemoteWithClone("commit-ignore-unreal-artifacts");
-    WriteTextFile(ctx.cloneRepo / "KTOGame.slnx", "solution\n");
+TEST_CASE("commit_auto_ignores_unreal_artifacts_in_root_and_submodule", "[functional][commit][ignore-gate][KG-BUG-0016]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("commit-ignore-unreal-artifacts");
+    WriteTextFile(ctx.cloneRootRepo / "KTOGame.slnx", "solution\n");
+    WriteTextFile(ctx.cloneRootRepo / "Build" / "Windows" / "FileOpenOrder" / "CookerOpenOrder.log", "cook order\n");
+    WriteTextFile(ctx.cloneChildRepo / "Binaries" / "Win64" / "UnrealEditor-KanoAgentAuthoringEditor.dll", "dll\n");
+    WriteTextFile(ctx.cloneChildRepo / "Intermediate" / "Build" / "Win64" / "x64" / "UnrealEditor" / "Development" /
+                      "KanoAgentAuthoringEditor" / "KanoAgentAuthoringEditor.cpp.obj",
+                  "obj\n");
 
-    const auto result = RunKog({"commit", "-m", "test(functional): should not stage generated solution", "--no-recursive"},
-                               ctx.cloneRepo);
+    const auto result = RunKog({"commit", "-m", "test(functional): ignore generated Unreal artifacts"}, ctx.cloneRootRepo);
     INFO(result.stdoutText);
     INFO(result.stderrText);
-    REQUIRE(result.exitCode == 3);
+    REQUIRE(result.exitCode == 0);
 
     const auto merged = result.stdoutText + "\n" + result.stderrText;
-    RequireContainsText(merged, "ignore gate failed (commit)");
-    RequireContainsText(merged, "KTOGame.slnx");
-    RequireContainsText(merged, "[native-commit] blocked: generated artifacts must be ignored before KOG stages files.");
-    RequireContainsText(merged, "[native-commit] no files were staged or committed by this run.");
-    RequireContainsText(merged, "kog plan runbook ignore");
-    RequireContainsText(merged, "kog commit --ai-auto");
+    RequireContainsText(merged, "[native-commit][ignore] generated artifacts detected; applying ignore rules before staging.");
+    RequireContainsText(merged, "[native-commit][ignore] applied: repo=. rule=*.slnx");
+    RequireContainsText(merged, "[native-commit][ignore] applied: repo=. rule=Build/Windows/FileOpenOrder/");
+    RequireContainsText(merged, std::string("[native-commit][ignore] applied: repo=") + ctx.submodulePath + " rule=Binaries/");
+    RequireContainsText(merged, std::string("[native-commit][ignore] applied: repo=") + ctx.submodulePath + " rule=Intermediate/");
 
-    const auto staged = RunGit({"diff", "--cached", "--name-only"}, ctx.cloneRepo);
-    RequireSuccess(staged, "cached diff after blocked commit");
+    const auto rootIgnore = ReadTextFile(ctx.cloneRootRepo / ".gitignore");
+    RequireContainsText(rootIgnore, "*.slnx");
+    RequireContainsText(rootIgnore, "Build/Windows/FileOpenOrder/");
+
+    const auto childIgnore = ReadTextFile(ctx.cloneChildRepo / ".gitignore");
+    RequireContainsText(childIgnore, "Binaries/");
+    RequireContainsText(childIgnore, "Intermediate/");
+
+    RequireSuccess(RunGit({"check-ignore", "--", "KTOGame.slnx", "Build/Windows/FileOpenOrder/CookerOpenOrder.log"},
+                          ctx.cloneRootRepo),
+                   "root generated artifacts ignored after commit");
+    RequireSuccess(RunGit({"check-ignore", "--", "Binaries/Win64/UnrealEditor-KanoAgentAuthoringEditor.dll",
+                           "Intermediate/Build/Win64/x64/UnrealEditor/Development/KanoAgentAuthoringEditor/"
+                           "KanoAgentAuthoringEditor.cpp.obj"},
+                          ctx.cloneChildRepo),
+                   "submodule generated artifacts ignored after commit");
+
+    const auto staged = RunGit({"diff", "--cached", "--name-only"}, ctx.cloneRootRepo);
+    RequireSuccess(staged, "cached diff after auto-ignore commit");
     REQUIRE(TrimCopy(staged.stdoutText).empty());
 
     RemoveSandboxWorkspace(ctx.sandbox);

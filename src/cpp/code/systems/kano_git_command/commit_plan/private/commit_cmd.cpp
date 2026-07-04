@@ -806,51 +806,104 @@ auto ResolveSafetyGateRepos(const std::filesystem::path& InWorkspaceRoot,
     return repos;
 }
 
+struct CommitIgnoreGateScan {
+    std::vector<std::string> findings;
+    std::vector<IgnoreStageEntry> entries;
+};
+
+auto BuildCommitIgnoreGateScan(const std::filesystem::path& InWorkspaceRoot,
+                               const std::vector<std::filesystem::path>& InRepos,
+                               const std::unordered_set<std::string>& InAllowlist) -> CommitIgnoreGateScan {
+    CommitIgnoreGateScan scan;
+    std::set<std::string> seenFindingRules;
+
+    for (const auto& repo : InRepos) {
+        const auto rel = repo.lexically_relative(InWorkspaceRoot).generic_string();
+        const auto repoLabel = rel.empty() ? std::string(".") : rel;
+        IgnoreStageEntry entry;
+        entry.repo = repoLabel;
+        entry.applyTarget = ".gitignore";
+        std::set<std::string> seenRepoRules;
+
+        for (auto p : CollectIgnoreGateCandidatePaths(repo)) {
+            if (p.empty() || !IsProbableIgnoreArtifactPath(p)) {
+                continue;
+            }
+            if (IsInternalPipelineArtifactPath(p)) {
+                continue;
+            }
+            std::replace(p.begin(), p.end(), '\\', '/');
+            const auto key = repoLabel == "." ? p : (repoLabel + "/" + p);
+            if (InAllowlist.find(key) != InAllowlist.end()) {
+                continue;
+            }
+
+            const auto rule = BuildIgnoreRuleForArtifactPath(p);
+            if (seenRepoRules.insert(rule).second) {
+                entry.rules.push_back(rule);
+            }
+
+            const auto ruleKey = repoLabel == "." ? rule : (repoLabel + "/" + rule);
+            if (seenFindingRules.insert(ruleKey).second && scan.findings.size() < 20) {
+                if (rule == p) {
+                    scan.findings.push_back(key);
+                } else {
+                    scan.findings.push_back(ruleKey + " (sample " + key + ")");
+                }
+            }
+        }
+
+        if (!entry.rules.empty()) {
+            scan.entries.push_back(std::move(entry));
+        }
+    }
+
+    return scan;
+}
+
+auto ApplyGeneratedArtifactIgnoresForNonAiCommit(const std::filesystem::path& InWorkspaceRoot,
+                                                 const std::vector<IgnoreStageEntry>& InEntries,
+                                                 std::string* OutError) -> bool {
+    for (const auto& entry : InEntries) {
+        const auto repoAbs = ResolveRepoPathFromDisplay(InWorkspaceRoot, entry.repo);
+        const auto targetAbs = (repoAbs / entry.applyTarget).lexically_normal();
+        const auto mergedText = MergeGitignore(targetAbs, entry.rules);
+        std::string error;
+        if (!WriteFileText(targetAbs, mergedText, &error)) {
+            if (OutError != nullptr) {
+                *OutError = std::format("{} ({})", targetAbs.generic_string(), error);
+            }
+            return false;
+        }
+        for (const auto& rule : entry.rules) {
+            std::cerr << "[native-commit][ignore] applied: repo=" << entry.repo << " rule=" << rule << "\n";
+        }
+    }
+    return true;
+}
+
 auto RunPipelineSafetyGatesForNonAiCommit(const std::filesystem::path& InWorkspaceRoot,
-                                          const std::vector<workspace::RepoRecord>& InScopedRepos = {}) -> void {
+                                          const std::vector<workspace::RepoRecord>& InScopedRepos = {},
+                                          bool InAutoApplyGeneratedIgnores = true) -> void {
     const auto repos = ResolveSafetyGateRepos(InWorkspaceRoot, InScopedRepos);
 
     if (!IsTruthyEnv(std::getenv("KOG_ALLOW_IGNORE_GATE")) && ToLower(Trim(std::getenv("KOG_IGNORE_GATE") == nullptr ? "on" : std::getenv("KOG_IGNORE_GATE"))) != "off") {
         const auto allowlistPath = (ResolveSkillRoot(InWorkspaceRoot) / "assets" / "ignore-sources" / "local" / "ignore-gate-allowlist.txt").lexically_normal();
         const auto allowlist = LoadNormalizedLineSet(allowlistPath);
-        std::vector<std::string> findings;
-        std::set<std::string> seenFindingRules;
-        for (const auto& repo : repos) {
-            const auto rel = repo.lexically_relative(InWorkspaceRoot).generic_string();
-            const auto repoLabel = rel.empty() ? "." : rel;
-            for (auto p : CollectIgnoreGateCandidatePaths(repo)) {
-                if (p.empty() || !IsProbableIgnoreArtifactPath(p)) {
-                    continue;
-                }
-                if (IsInternalPipelineArtifactPath(p)) {
-                    continue;
-                }
-                std::replace(p.begin(), p.end(), '\\', '/');
-                const auto key = repoLabel == "." ? p : (repoLabel + "/" + p);
-                if (allowlist.find(key) != allowlist.end()) {
-                    continue;
-                }
-                const auto rule = BuildIgnoreRuleForArtifactPath(p);
-                const auto ruleKey = repoLabel == "." ? rule : (repoLabel + "/" + rule);
-                if (!seenFindingRules.insert(ruleKey).second) {
-                    continue;
-                }
-                if (rule == p) {
-                    findings.push_back(key);
-                } else {
-                    findings.push_back(ruleKey + " (sample " + key + ")");
-                }
-                if (findings.size() >= 20) {
-                    break;
-                }
+        auto scan = BuildCommitIgnoreGateScan(InWorkspaceRoot, repos, allowlist);
+        if (!scan.entries.empty() && InAutoApplyGeneratedIgnores) {
+            std::cerr << "[native-commit][ignore] generated artifacts detected; applying ignore rules before staging.\n";
+            std::string error;
+            if (!ApplyGeneratedArtifactIgnoresForNonAiCommit(InWorkspaceRoot, scan.entries, &error)) {
+                std::cerr << "Error: failed to apply generated-artifact ignore rules: " << error << "\n";
+                std::exit(2);
             }
-            if (findings.size() >= 20) {
-                break;
-            }
+            scan = BuildCommitIgnoreGateScan(InWorkspaceRoot, repos, allowlist);
         }
-        if (!findings.empty()) {
+
+        if (!scan.findings.empty()) {
             std::cerr << "Error: ignore gate failed (commit); unresolved untracked artifact-like files detected.\n";
-            for (const auto& f : findings) {
+            for (const auto& f : scan.findings) {
                 std::cerr << "  - " << f << "\n";
             }
             std::cerr << "[native-commit] blocked: generated artifacts must be ignored before KOG stages files.\n";
@@ -5045,7 +5098,7 @@ auto RunAmendNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
     planningMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - planningStart).count();
 
     std::cout << "[native-amend] safety-gates: ignore + secret (repos=" << repoRecords.size() << ")\n";
-    RunPipelineSafetyGatesForNonAiCommit(workspaceRoot, repoRecords);
+    RunPipelineSafetyGatesForNonAiCommit(workspaceRoot, repoRecords, false);
 
     const auto repoWaves = kano::git::commands::BuildExecutionWaves(repoRecords);
     const auto runbooks = BuildRepoCommitRunbooks(repoRecords, stageMessages, workspaceRoot, "", true);
@@ -5315,7 +5368,7 @@ auto RunCommitNativeSimple(const std::filesystem::path& InWorkspaceRoot,
 
     if (!ai.enabled) {
         std::cout << "[native-commit] safety-gates: ignore + secret (repos=" << repoRecords.size() << ")\n";
-        RunPipelineSafetyGatesForNonAiCommit(workspaceRoot, repoRecords);
+        RunPipelineSafetyGatesForNonAiCommit(workspaceRoot, repoRecords, !InDryRun);
     }
 
     std::unordered_map<std::string, std::vector<RepoCommitPlanEntry::CommitItem>> emptyStages;
