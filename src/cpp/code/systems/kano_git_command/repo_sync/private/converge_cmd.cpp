@@ -517,22 +517,143 @@ Snapshot LoadSnapshot(const std::filesystem::path& root, int jobs, bool unregist
     return ParseSnapshot(result.stdoutStr.substr(start, end - start + 1));
 }
 
-Snapshot CurrentRepoOnlySnapshot(Snapshot snapshot) {
-    const auto it = std::find_if(snapshot.repos.begin(), snapshot.repos.end(), [](const auto& repo) {
-        return repo.id == ".";
-    });
-    if (it == snapshot.repos.end()) {
-        throw std::runtime_error("status snapshot did not include current repository");
+std::pair<int, int> ParseAheadBehindCounts(const std::string& text) {
+    std::istringstream stream(text);
+    int ahead = 0;
+    int behind = 0;
+    stream >> ahead >> behind;
+    if (!stream) {
+        return {0, 0};
     }
-    RepoStatus current = *it;
-    snapshot.repos.clear();
-    snapshot.repos.push_back(std::move(current));
+    return {ahead, behind};
+}
+
+std::string FirstNonEmptyLine(const std::string& text) {
+    std::istringstream stream(text);
+    std::string line;
+    while (std::getline(stream, line)) {
+        line = Trim(line);
+        if (!line.empty()) {
+            return line;
+        }
+    }
+    return {};
+}
+
+bool IsUnmergedPorcelainStatus(const std::string& status) {
+    if (status.size() < 2) {
+        return false;
+    }
+    return status[0] == 'U' || status[1] == 'U' || status == "AA" || status == "DD";
+}
+
+std::string DirtyKindFromPorcelain(const std::string& porcelain, int ahead, int behind) {
+    bool any = false;
+    bool allUntracked = true;
+    bool anyStaged = false;
+    bool anyUnstaged = false;
+    bool anyConflict = false;
+
+    std::istringstream stream(porcelain);
+    std::string line;
+    while (std::getline(stream, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        if (line.size() < 2) {
+            continue;
+        }
+        any = true;
+        const auto status = line.substr(0, 2);
+        anyConflict = anyConflict || IsUnmergedPorcelainStatus(status);
+        const bool untracked = status == "??";
+        allUntracked = allUntracked && untracked;
+        anyStaged = anyStaged || (!untracked && status[0] != ' ');
+        anyUnstaged = anyUnstaged || (!untracked && status[1] != ' ');
+    }
+
+    if (anyConflict) {
+        return "CONFLICTED";
+    }
+    if (any) {
+        if (allUntracked) {
+            return "UNTRACKED_ONLY";
+        }
+        if (anyStaged && !anyUnstaged) {
+            return "INDEX_DIRTY";
+        }
+        return "CONTENT_DIRTY";
+    }
+    if (ahead > 0 && behind > 0) {
+        return "DIVERGED";
+    }
+    if (ahead > 0) {
+        return "AHEAD_ONLY";
+    }
+    if (behind > 0) {
+        return "BEHIND_ONLY";
+    }
+    return "CLEAN";
+}
+
+Snapshot LoadCurrentRepoSnapshot(const std::filesystem::path& root) {
+    const auto repoRootResult = shell::ExecuteCommand("git", {"rev-parse", "--show-toplevel"}, shell::ExecMode::Capture, root);
+    if (repoRootResult.exitCode != 0) {
+        throw std::runtime_error("failed to resolve current repository root: " + Trim(repoRootResult.stderrStr));
+    }
+    const auto repoRoot = std::filesystem::path(FirstNonEmptyLine(repoRootResult.stdoutStr)).lexically_normal();
+
+    RepoStatus repo;
+    repo.id = ".";
+    repo.absolutePath = repoRoot.generic_string();
+    repo.type = "root";
+    repo.managementPolicy = "managed";
+    repo.head = FirstNonEmptyLine(shell::ExecuteCommand("git", {"rev-parse", "HEAD"}, shell::ExecMode::Capture, repoRoot).stdoutStr);
+    repo.branch = FirstNonEmptyLine(shell::ExecuteCommand("git", {"branch", "--show-current"}, shell::ExecMode::Capture, repoRoot).stdoutStr);
+
+    if (!repo.branch.empty()) {
+        repo.remote = FirstNonEmptyLine(shell::ExecuteCommand("git", {"config", "--get", "branch." + repo.branch + ".remote"}, shell::ExecMode::Capture, repoRoot).stdoutStr);
+        repo.upstream = FirstNonEmptyLine(shell::ExecuteCommand("git", {"rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"}, shell::ExecMode::Capture, repoRoot).stdoutStr);
+    }
+    if (repo.remote.empty()) {
+        repo.remote = FirstNonEmptyLine(shell::ExecuteCommand("git", {"remote"}, shell::ExecMode::Capture, repoRoot).stdoutStr);
+    }
+
+    int ahead = 0;
+    int behind = 0;
+    if (!repo.upstream.empty()) {
+        const auto counts = shell::ExecuteCommand("git", {"rev-list", "--left-right", "--count", "HEAD..." + repo.upstream}, shell::ExecMode::Capture, repoRoot);
+        if (counts.exitCode == 0) {
+            const auto parsed = ParseAheadBehindCounts(counts.stdoutStr);
+            ahead = parsed.first;
+            behind = parsed.second;
+        }
+    }
+    repo.ahead = ahead;
+    repo.behind = behind;
+
+    const auto status = shell::ExecuteCommand("git", {"status", "--porcelain=v1", "--untracked-files=all"}, shell::ExecMode::Capture, repoRoot);
+    if (status.exitCode != 0) {
+        repo.dirtyKind = "STATUS_FAILED";
+        repo.blocksConverge = true;
+        repo.blockReason = "STATUS_FAILED: git status failed during current repo branch inventory preflight";
+        repo.statusFlags.push_back("STATUS_FAILED");
+    } else {
+        repo.dirtyKind = DirtyKindFromPorcelain(status.stdoutStr, ahead, behind);
+    }
+
+    Snapshot snapshot;
+    snapshot.workspaceRoot = repoRoot;
+    snapshot.repos.push_back(std::move(repo));
     return snapshot;
 }
 
 Snapshot LoadConvergeSnapshot(const std::filesystem::path& root, int jobs, bool unregisteredScan, bool recursive) {
+    if (!recursive) {
+        return LoadCurrentRepoSnapshot(root);
+    }
     auto snapshot = LoadSnapshot(root, jobs, unregisteredScan);
-    return recursive ? std::move(snapshot) : CurrentRepoOnlySnapshot(std::move(snapshot));
+    return std::move(snapshot);
 }
 
 std::vector<std::vector<std::string>> Waves(const Snapshot& snapshot) {

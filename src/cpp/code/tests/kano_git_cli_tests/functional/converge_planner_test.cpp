@@ -451,6 +451,36 @@ TEST_CASE("converge branches inventory is read-only and reports blockers without
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge branches inventory no-recursive avoids recursive status snapshot", "[functional][converge][branches][inventory][no-recursive][KG-BUG-0012]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("converge-branches-inventory-no-recursive");
+    const auto diagPath = (ctx.sandbox.root / "branch-inventory-no-recursive-process.log").lexically_normal();
+    std::filesystem::remove(diagPath);
+
+    const auto result = RunKogWithEnv(
+        {"converge", "branches", "inventory", "--target", ctx.branch, "--json", "--jobs", "1", "--no-recursive"},
+        ctx.cloneRootRepo,
+        {
+            {"KOG_PROCESS_DIAGNOSTICS_LOG", diagPath.string()},
+            {"KOG_RECURSIVE_STATUS_DEADLINE_MS", "1"},
+        });
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    RequireContains(result.stdoutText, "\"schemaName\": \"kog.convergeBranchesInventory\"");
+    RequireContains(result.stdoutText, "\"recursive\": false");
+    RequireContains(result.stdoutText, "\"traversalOrder\"");
+    RequireContains(result.stdoutText, "\"id\": \".\"");
+    RequireNotContains(result.stdoutText, "\"" + ctx.submodulePath + "\"");
+    RequireNotContains(result.stdoutText, "STATUS_SNAPSHOT_DEADLINE");
+
+    REQUIRE(std::filesystem::exists(diagPath));
+    const auto processDiag = ReadTextFile(diagPath);
+    RequireNotContains(processDiag, "status --recursive");
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("converge branches apply fast-forwards target and pushes", "[tdd][functional][feature:converge][converge][branches][apply]") {
     const auto ctx = CreateRemoteWithClone("converge-branches-apply");
     const std::string featureBranch = "feature/apply-fast-forward";
