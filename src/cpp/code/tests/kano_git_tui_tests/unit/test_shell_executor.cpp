@@ -49,6 +49,7 @@ TEST_CASE("ShellExecutor capture timeout terminates process with code 124", "[Un
 #if defined(_WIN32)
     SetEnvVarForTest("KOG_SHELL_TIMEOUT_MS", "");
     SetEnvVarForTest("KOG_SHELL_CAPTURE_TIMEOUT_MS", "50");
+    SetEnvVarForTest("KOG_SHELL_PASSTHROUGH_TIMEOUT_MS", "");
 
     const std::vector<std::string> args{
         "/c",
@@ -62,6 +63,31 @@ TEST_CASE("ShellExecutor capture timeout terminates process with code 124", "[Un
 #else
     SUCCEED("Windows-specific timeout test skipped on non-Windows platform");
 #endif
+}
+
+TEST_CASE("ShellExecutor pass-through timeout terminates process with code 124", "[Unit][shell-executor]") {
+    SetEnvVarForTest("KOG_SHELL_TIMEOUT_MS", "");
+    SetEnvVarForTest("KOG_SHELL_CAPTURE_TIMEOUT_MS", "");
+    SetEnvVarForTest("KOG_SHELL_PASSTHROUGH_TIMEOUT_MS", "50");
+
+#if defined(_WIN32)
+    const std::vector<std::string> args{
+        "/c",
+        "powershell -NoProfile -Command \"Start-Sleep -Seconds 2; Write-Output DONE\""
+    };
+    const auto result = ExecuteCommand("cmd", args, ExecMode::PassThrough);
+#else
+    const std::vector<std::string> args{
+        "-c",
+        "sleep 2; echo DONE"
+    };
+    const auto result = ExecuteCommand("sh", args, ExecMode::PassThrough);
+#endif
+
+    REQUIRE(result.exitCode == 124);
+    REQUIRE(result.stderrStr.find("timeout") != std::string::npos);
+    REQUIRE(result.stderrStr.find("passthrough_timeout_override") != std::string::npos);
+    SetEnvVarForTest("KOG_SHELL_PASSTHROUGH_TIMEOUT_MS", "");
 }
 
 TEST_CASE("ShellExecutor capture preserves early-exit non-zero code", "[Unit][shell-executor][windows]") {

@@ -279,6 +279,31 @@ TEST_CASE("status recursive summary reports trusted unregistered repos without f
     RemoveSandboxWorkspace(sandbox);
 }
 
+TEST_CASE("status recursive classifies snapshot deadline separately from repo status timeout", "[tdd][functional][status][recursive][timeout]") {
+    const auto sandbox = CreateSandboxWorkspace("status-recursive-snapshot-deadline");
+    const auto root = (sandbox.root / "root").lexically_normal();
+    InitRepo(root);
+    for (int i = 0; i < 6; ++i) {
+        const auto childName = "child-" + std::to_string(i);
+        InitRepo(root / childName);
+        AddGitmodulesEntry(root, childName, childName);
+    }
+    CommitGitmodules(root);
+
+    const auto result = RunKogWithEnv(
+        {"status", "--recursive", "--json", "--repo-root", root.string(), "--jobs", "1", "--no-unregistered-scan", "--no-fetch-health"},
+        root,
+        {{"KOG_RECURSIVE_STATUS_DEADLINE_MS", "1"}});
+    RequireSuccess(result, "kog status recursive json with forced snapshot deadline");
+    const auto json = ExtractStatusJsonPayload(result.stdoutText);
+
+    RequireContains(json, "STATUS_SNAPSHOT_DEADLINE");
+    RequireContains(json, "recursive status snapshot deadline exceeded before this repo started preflight");
+    RequireNotContains(json, "recursive status snapshot deadline exceeded before repo preflight");
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
 TEST_CASE("status recursive can skip remote fetch health checks", "[functional][status][recursive][fetch]") {
     const auto sandbox = CreateSandboxWorkspace("status-recursive-no-fetch-health");
     const auto root = (sandbox.root / "root").lexically_normal();

@@ -287,7 +287,7 @@ auto ParsePositiveIntEnv(const char* InName) -> int {
 
 auto RecursiveStatusDeadlineMs() -> int {
     const auto configured = ParsePositiveIntEnv("KOG_RECURSIVE_STATUS_DEADLINE_MS");
-    return configured > 0 ? configured : 90 * 1000;
+    return configured > 0 ? configured : 210 * 1000;
 }
 
 auto DetectTerminalWidth() -> int {
@@ -1528,8 +1528,8 @@ auto BuildRecursiveStatusSnapshot(const std::filesystem::path& InWorkspaceRoot,
         if (snapshotDeadlineExceeded()) {
             result.status = workspace::RepoOperationStatus::Failed;
             result.exitCode = 124;
-            result.failureCategory = "status-timeout";
-            result.message = "recursive status snapshot deadline exceeded before repo preflight";
+            result.failureCategory = "status-snapshot-deadline";
+            result.message = "recursive status snapshot deadline exceeded before this repo started preflight";
             return result;
         }
         const auto status = BuildRecursiveRepoStatus(it->second, InWorkspaceRoot, reposByPath, trustedManifestPathKeys, InSkipFetchHealth);
@@ -1565,7 +1565,8 @@ auto BuildRecursiveStatusSnapshot(const std::filesystem::path& InWorkspaceRoot,
                     repoIt->second,
                     InWorkspaceRoot,
                     trustedManifestPathKeys,
-                    result.exitCode == 124 ? "STATUS_TIMEOUT" : "STATUS_PRECHECK_FAILED",
+                    result.failureCategory == "status-snapshot-deadline" ? "STATUS_SNAPSHOT_DEADLINE" :
+                        (result.exitCode == 124 ? "STATUS_TIMEOUT" : "STATUS_PRECHECK_FAILED"),
                     result.message.empty() ? "scheduler status check failed before repo preflight" : result.message);
             } else {
                 status = statusIt->second;

@@ -4496,6 +4496,7 @@ void RegisterConverge(CLI::App& InApp) {
                 state.currentPhase = phase;
                 persist();
                 std::cout << "[converge] phase=" << phase << "\n";
+                const auto phaseStartedAt = std::chrono::steady_clock::now();
 
                 PhaseSummary summary;
                 summary.pending = state.pendingRepos;
@@ -4729,6 +4730,16 @@ void RegisterConverge(CLI::App& InApp) {
             summary.pending = state.pendingRepos;
             RecordPhaseState(state, phase, summary);
             persist();
+            const auto phaseElapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - phaseStartedAt).count();
+            std::cout << "[converge] phase_result=" << phase
+                      << " elapsed_ms=" << phaseElapsedMs
+                      << " succeeded=" << summary.succeeded.size()
+                      << " failed=" << summary.failed.size()
+                      << " blocked=" << summary.blocked.size()
+                      << " skipped=" << summary.skipped.size()
+                      << " pending=" << summary.pending.size()
+                      << "\n";
 
                 if (!summary.failed.empty() || !summary.blocked.empty()) {
                     const auto phaseReason = !summary.failed.empty()

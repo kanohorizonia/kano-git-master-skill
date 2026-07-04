@@ -128,6 +128,9 @@ auto GetScriptsDir() -> std::filesystem::path {
 
 auto ToLower(std::string in) -> std::string;
 auto BaseNameLower(const std::string& InCommand) -> std::string;
+auto IsKogCommand(const std::string& InCommand) -> bool;
+auto ResolvePassThroughTimeoutMs(const std::string& InCommand,
+                                 const std::vector<std::string>& InArgs) -> std::optional<unsigned int>;
 
 #ifdef KOG_PLATFORM_WINDOWS
 
@@ -225,6 +228,7 @@ auto IsLongRunningGitOperation(const std::string& InCommand,
     const auto sub = FirstGitSubcommand(InArgs);
     return sub == "fetch" ||
            sub == "pull" ||
+           sub == "push" ||
            sub == "clone" ||
            sub == "submodule" ||
            sub == "lfs";
@@ -270,8 +274,7 @@ auto ResolveTimeoutMs(const std::string& InCommand,
         // Short probes must fail inside KOG instead of waiting for an outer agent timeout.
         return static_cast<unsigned int>(20 * 1000);
     }
-    // PassThrough: default no timeout.
-    return std::nullopt;
+    return ResolvePassThroughTimeoutMs(InCommand, InArgs);
 }
 
 auto IsProcessDiagnosticsEnabled() -> bool {
@@ -335,6 +338,10 @@ auto BuildProcessDiagBlock(const std::string& InStartTs,
                            const std::vector<std::string>& InArgv,
                            const int InExitCode,
                            const bool InTimedOut,
+                           const std::optional<unsigned int>& InTimeoutMs,
+                           const std::string& InTimeoutSource,
+                           const std::string& InCommandFamily,
+                           const std::string& InSafeNextAction,
                            const std::string& InStdout,
                            const std::string& InStderr) -> std::string {
     std::ostringstream oss;
@@ -350,12 +357,19 @@ auto BuildProcessDiagBlock(const std::string& InStartTs,
     oss << "[process-diag] exit_code=" << InExitCode << "\n";
     if (InTimedOut) {
         oss << "[process-diag] timeout_kill_marker=1\n";
+        oss << "[process-diag] timeout_source=" << InTimeoutSource << "\n";
+        oss << "[process-diag] configured_timeout_ms=" << (InTimeoutMs.has_value() ? std::to_string(*InTimeoutMs) : std::string{"none"}) << "\n";
+        oss << "[process-diag] command_family=" << InCommandFamily << "\n";
+        oss << "[process-diag] safe_next_action=" << InSafeNextAction << "\n";
         oss << "[process-diag] last_running_child_command=" << commandLine << "\n";
         oss << "[process-diag] stdout_tail=" << TailLines(InStdout, 20) << "\n";
         oss << "[process-diag] stderr_tail=" << TailLines(InStderr, 20) << "\n";
     }
 
-    static constexpr std::array<const char*, 10> kRelevantEnvKeys = {
+    static constexpr std::array<const char*, 13> kRelevantEnvKeys = {
+        "KOG_SHELL_TIMEOUT_MS",
+        "KOG_SHELL_CAPTURE_TIMEOUT_MS",
+        "KOG_SHELL_PASSTHROUGH_TIMEOUT_MS",
         "KOG_GIT_INTERACTIVE",
         "GIT_TERMINAL_PROMPT",
         "GCM_INTERACTIVE",
@@ -594,6 +608,7 @@ auto IsLongRunningGitOperation(const std::string& InCommand,
     const auto sub = FirstGitSubcommand(InArgs);
     return sub == "fetch" ||
            sub == "pull" ||
+           sub == "push" ||
            sub == "clone" ||
            sub == "submodule" ||
            sub == "lfs";
@@ -639,7 +654,7 @@ auto ResolveTimeoutMs(const std::string& InCommand,
         // Short probes must fail inside KOG instead of waiting for an outer agent timeout.
         return static_cast<unsigned int>(20 * 1000);
     }
-    return std::nullopt;
+    return ResolvePassThroughTimeoutMs(InCommand, InArgs);
 }
 
 auto IsProcessDiagnosticsEnabled() -> bool {
@@ -703,6 +718,10 @@ auto BuildProcessDiagBlock(const std::string& InStartTs,
                            const std::vector<std::string>& InArgv,
                            const int InExitCode,
                            const bool InTimedOut,
+                           const std::optional<unsigned int>& InTimeoutMs,
+                           const std::string& InTimeoutSource,
+                           const std::string& InCommandFamily,
+                           const std::string& InSafeNextAction,
                            const std::string& InStdout,
                            const std::string& InStderr) -> std::string {
     std::ostringstream oss;
@@ -718,12 +737,19 @@ auto BuildProcessDiagBlock(const std::string& InStartTs,
     oss << "[process-diag] exit_code=" << InExitCode << "\n";
     if (InTimedOut) {
         oss << "[process-diag] timeout_kill_marker=1\n";
+        oss << "[process-diag] timeout_source=" << InTimeoutSource << "\n";
+        oss << "[process-diag] configured_timeout_ms=" << (InTimeoutMs.has_value() ? std::to_string(*InTimeoutMs) : std::string{"none"}) << "\n";
+        oss << "[process-diag] command_family=" << InCommandFamily << "\n";
+        oss << "[process-diag] safe_next_action=" << InSafeNextAction << "\n";
         oss << "[process-diag] last_running_child_command=" << commandLine << "\n";
         oss << "[process-diag] stdout_tail=" << TailLines(InStdout, 20) << "\n";
         oss << "[process-diag] stderr_tail=" << TailLines(InStderr, 20) << "\n";
     }
 
-    static constexpr std::array<const char*, 10> kRelevantEnvKeys = {
+    static constexpr std::array<const char*, 13> kRelevantEnvKeys = {
+        "KOG_SHELL_TIMEOUT_MS",
+        "KOG_SHELL_CAPTURE_TIMEOUT_MS",
+        "KOG_SHELL_PASSTHROUGH_TIMEOUT_MS",
         "KOG_GIT_INTERACTIVE",
         "GIT_TERMINAL_PROMPT",
         "GCM_INTERACTIVE",
@@ -865,6 +891,111 @@ auto TrimCopy(std::string Value) -> std::string {
 auto IsGitCommand(const std::string& InCommand) -> bool {
     const auto base = BaseNameLower(InCommand);
     return base == "git" || base == "git.exe";
+}
+
+auto IsKogCommand(const std::string& InCommand) -> bool {
+    const auto base = BaseNameLower(InCommand);
+    return base == "kano-git" ||
+           base == "kano-git.exe" ||
+           base == "kano-git.cmd" ||
+           base == "kano-git.bat" ||
+           base == "kog" ||
+           base == "kog.exe" ||
+           base == "kog.cmd" ||
+           base == "kog.bat";
+}
+
+auto ResolvePassThroughTimeoutMs(const std::string& InCommand,
+                                 const std::vector<std::string>& InArgs) -> std::optional<unsigned int> {
+    if (const auto timeoutRaw = GetEnvTimeoutMs("KOG_SHELL_PASSTHROUGH_TIMEOUT_MS"); timeoutRaw.has_value()) {
+        return NormalizeTimeoutOverride(timeoutRaw);
+    }
+    if (IsKogCommand(InCommand)) {
+        return static_cast<unsigned int>(5 * 60 * 1000);
+    }
+    if (IsGitCommand(InCommand) && !IsLongRunningGitOperation(InCommand, InArgs)) {
+        return static_cast<unsigned int>(2 * 60 * 1000);
+    }
+    return std::nullopt;
+}
+
+auto TimeoutSourceLabel(const std::string& InCommand,
+                        const std::vector<std::string>& InArgs,
+                        const ExecMode InMode,
+                        const std::optional<unsigned int>& InTimeoutMs) -> std::string {
+    if (!InTimeoutMs.has_value()) {
+        return "none";
+    }
+    if (GetEnvTimeoutMs("KOG_SHELL_TIMEOUT_MS").has_value()) {
+        return "global_shell_timeout";
+    }
+    if (InMode == ExecMode::Capture) {
+        if (GetEnvTimeoutMs("KOG_SHELL_CAPTURE_TIMEOUT_MS").has_value()) {
+            return "capture_timeout_override";
+        }
+        if (IsBoundedKogStatusOperation(InCommand, InArgs)) {
+            return "kog_status_capture_default";
+        }
+        return "capture_probe_default";
+    }
+    if (GetEnvTimeoutMs("KOG_SHELL_PASSTHROUGH_TIMEOUT_MS").has_value()) {
+        return "passthrough_timeout_override";
+    }
+    if (IsKogCommand(InCommand)) {
+        return "kog_passthrough_default";
+    }
+    if (IsGitCommand(InCommand)) {
+        return "git_passthrough_default";
+    }
+    return "unknown_timeout";
+}
+
+auto CommandFamilyLabel(const std::string& InCommand,
+                        const std::vector<std::string>& InArgs) -> std::string {
+    if (IsKogCommand(InCommand)) {
+        const auto subcommand = FirstGitSubcommand(InArgs);
+        return subcommand.empty() ? "kog" : "kog:" + subcommand;
+    }
+    if (IsGitCommand(InCommand)) {
+        const auto subcommand = FirstGitSubcommand(InArgs);
+        return subcommand.empty() ? "git" : "git:" + subcommand;
+    }
+    return BaseNameLower(InCommand);
+}
+
+auto SafeNextActionForTimeout(const std::string& InCommand,
+                              const std::vector<std::string>& InArgs) -> std::string {
+    if (IsKogCommand(InCommand)) {
+        const auto subcommand = FirstGitSubcommand(InArgs);
+        if (subcommand == "converge") {
+            return "inspect `kog converge --status`; resume or abort after checking active agents";
+        }
+        if (subcommand == "status") {
+            return "rerun with fewer jobs or inspect the reported repo blocker";
+        }
+        return "retry after checking active git/kog/coding-agent processes";
+    }
+    if (IsGitCommand(InCommand)) {
+        return "check for git prompts, locks, or active sibling processes before retry";
+    }
+    return "retry after checking the child process owner";
+}
+
+auto IsTimeoutResult(const ExecResult& InResult) -> bool {
+    return InResult.stderrStr.find("Process timeout") != std::string::npos ||
+           InResult.stderrStr.find("Process timed out") != std::string::npos;
+}
+
+auto BuildTimeoutSummary(const std::string& InTimeoutSource,
+                         const std::optional<unsigned int>& InTimeoutMs,
+                         const std::string& InCommandFamily,
+                         const std::string& InSafeNextAction) -> std::string {
+    std::ostringstream oss;
+    oss << "[kog-timeout] source=" << InTimeoutSource
+        << " configured_timeout_ms=" << (InTimeoutMs.has_value() ? std::to_string(*InTimeoutMs) : std::string{"none"})
+        << " command_family=" << InCommandFamily
+        << " safe_next_action=" << InSafeNextAction;
+    return oss.str();
 }
 
 auto IsFalseEnvValue(const char* InValue) -> bool {
@@ -1245,6 +1376,9 @@ auto ExecuteCommand(
 #ifdef KOG_PLATFORM_WINDOWS
     const auto effectiveCommand = NormalizeWindowsExecutable(InCommand);
     const auto timeoutMs = ResolveTimeoutMs(effectiveCommand, effectiveArgs, InMode);
+    const auto timeoutSource = TimeoutSourceLabel(effectiveCommand, effectiveArgs, InMode, timeoutMs);
+    const auto commandFamily = CommandFamilyLabel(effectiveCommand, effectiveArgs);
+    const auto safeNextAction = SafeNextActionForTimeout(effectiveCommand, effectiveArgs);
     ExecResult result;
     if (IsWindowsCommandProcessor(effectiveCommand) && !effectiveArgs.empty()) {
         std::vector<std::string> wrappedArgs{"/d", "/s"};
@@ -1260,9 +1394,21 @@ auto ExecuteCommand(
         result = RunProcess(cmd, InMode, timeoutMs, InWorkingDir, InProgressCallback);
     }
 
+    const bool timedOut = IsTimeoutResult(result);
+    if (timedOut) {
+        const auto timeoutSummary = BuildTimeoutSummary(timeoutSource, timeoutMs, commandFamily, safeNextAction);
+        if (result.stderrStr.find("[kog-timeout]") == std::string::npos) {
+            if (!result.stderrStr.empty()) {
+                result.stderrStr += "\n";
+            }
+            result.stderrStr += timeoutSummary;
+        }
+        if (InMode == ExecMode::PassThrough) {
+            EmitStderrLine(timeoutSummary + "\n");
+        }
+    }
+
     if (processDiagEnabled) {
-        const bool timedOut = result.stderrStr.find("Process timeout") != std::string::npos ||
-                              result.stderrStr.find("Process timed out") != std::string::npos;
         EmitProcessDiag(BuildProcessDiagBlock(
             processDiagStartTs,
             CurrentUtcTimestamp(),
@@ -1271,16 +1417,35 @@ auto ExecuteCommand(
             effectiveArgs,
             result.exitCode,
             timedOut,
+            timeoutMs,
+            timeoutSource,
+            commandFamily,
+            safeNextAction,
             result.stdoutStr,
             result.stderrStr));
     }
     return result;
 #else
     const auto timeoutMs = ResolveTimeoutMs(InCommand, effectiveArgs, InMode);
+    const auto timeoutSource = TimeoutSourceLabel(InCommand, effectiveArgs, InMode, timeoutMs);
+    const auto commandFamily = CommandFamilyLabel(InCommand, effectiveArgs);
+    const auto safeNextAction = SafeNextActionForTimeout(InCommand, effectiveArgs);
     auto result = RunProcessUnix(InCommand, effectiveArgs, InMode, timeoutMs, InWorkingDir, InProgressCallback);
+    const bool timedOut = IsTimeoutResult(result);
+    if (timedOut) {
+        const auto timeoutSummary = BuildTimeoutSummary(timeoutSource, timeoutMs, commandFamily, safeNextAction);
+        if (result.stderrStr.find("[kog-timeout]") == std::string::npos) {
+            if (!result.stderrStr.empty()) {
+                result.stderrStr += "\n";
+            }
+            result.stderrStr += timeoutSummary;
+        }
+        if (InMode == ExecMode::PassThrough) {
+            EmitStderrLine(timeoutSummary + "\n");
+        }
+    }
+
     if (processDiagEnabled) {
-        const bool timedOut = result.stderrStr.find("Process timeout") != std::string::npos ||
-                              result.stderrStr.find("Process timed out") != std::string::npos;
         EmitProcessDiag(BuildProcessDiagBlock(
             processDiagStartTs,
             CurrentUtcTimestamp(),
@@ -1289,6 +1454,10 @@ auto ExecuteCommand(
             effectiveArgs,
             result.exitCode,
             timedOut,
+            timeoutMs,
+            timeoutSource,
+            commandFamily,
+            safeNextAction,
             result.stdoutStr,
             result.stderrStr));
     }
