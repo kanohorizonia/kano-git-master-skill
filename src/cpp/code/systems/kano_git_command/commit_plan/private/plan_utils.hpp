@@ -86,6 +86,7 @@ auto CurrentUtcCompact() -> std::string;
 auto HomeDirectory() -> std::filesystem::path;
 auto Fnv1a64Hex(const std::string& InText) -> std::string;
 auto IsProbableIgnoreArtifactPath(const std::string& InPath) -> bool;
+auto BuildIgnoreRuleForArtifactPath(const std::string& InPath) -> std::string;
 auto IsInternalPipelineArtifactPath(const std::string& InPath) -> bool;
 auto JsonEscape(std::string InValue) -> std::string;
 
@@ -256,6 +257,7 @@ auto RepoHasGitlinkOnlyChanges(const std::filesystem::path& InRepo) -> bool;
 auto CollectChangedSubmoduleNames(const std::filesystem::path& InRepo) -> std::vector<std::string>;
 auto BuildSubmoduleUpdateMessage(const std::vector<std::string>& InNames) -> std::string;
 auto IsProbableIgnoreArtifactPath(const std::string& InPath) -> bool;
+auto BuildIgnoreRuleForArtifactPath(const std::string& InPath) -> std::string;
 auto IsInternalPipelineArtifactPath(const std::string& InPath) -> bool;
 auto DefaultSecretRulesPath(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path;
 auto LoadSecretRules(const std::filesystem::path& InRulesPath, std::string* OutError) -> std::vector<SecretRule>;

@@ -2741,10 +2741,88 @@ auto BuildSubmoduleUpdateMessage(const std::vector<std::string>& InNames) -> std
     return std::format("[Submodule] Update {} submodules", InNames.size());
 }
 
-auto IsProbableIgnoreArtifactPath(const std::string& InPath) -> bool {
+auto NormalizeArtifactPath(std::string InPath) -> std::string {
+    std::replace(InPath.begin(), InPath.end(), '\\', '/');
+    return ToLower(InPath);
+}
+
+auto PathHasSegment(const std::string& InLowerPath, const std::string& InSegment) -> bool {
+    std::size_t start = 0;
+    while (start <= InLowerPath.size()) {
+        const auto end = InLowerPath.find('/', start);
+        const auto segment = end == std::string::npos ? InLowerPath.substr(start) : InLowerPath.substr(start, end - start);
+        if (segment == InSegment) {
+            return true;
+        }
+        if (end == std::string::npos) {
+            break;
+        }
+        start = end + 1;
+    }
+    return false;
+}
+
+auto PathStartsWithSegment(const std::string& InLowerPath, const std::string& InSegment) -> bool {
+    return InLowerPath == InSegment || InLowerPath.rfind(InSegment + "/", 0) == 0;
+}
+
+auto BuildIgnoreRuleForArtifactPath(const std::string& InPath) -> std::string {
     auto path = InPath;
     std::replace(path.begin(), path.end(), '\\', '/');
     const auto lower = ToLower(path);
+
+    if (lower.ends_with(".sln") || lower.ends_with(".slnx") || lower.ends_with(".suo")) {
+        const auto dot = lower.find_last_of('.');
+        return dot == std::string::npos ? path : ("*" + lower.substr(dot));
+    }
+
+    const std::vector<std::pair<std::string, std::string>> rootDirs = {
+        {"binaries", "Binaries/"},
+        {"deriveddatacache", "DerivedDataCache/"},
+        {"intermediate", "Intermediate/"},
+        {"saved", "Saved/"},
+        {"node_modules", "node_modules/"},
+        {"dist", "dist/"},
+        {"bin", "bin/"},
+        {"obj", "obj/"},
+        {"target", "target/"},
+    };
+    for (const auto& [segment, rule] : rootDirs) {
+        if (PathStartsWithSegment(lower, segment)) {
+            return rule;
+        }
+    }
+
+    const std::vector<std::pair<std::string, std::string>> anywhereDirs = {
+        {"/binaries/", "Binaries/"},
+        {"/deriveddatacache/", "DerivedDataCache/"},
+        {"/intermediate/", "Intermediate/"},
+        {"/saved/", "Saved/"},
+    };
+    for (const auto& [needle, rule] : anywhereDirs) {
+        if (lower.find(needle) != std::string::npos) {
+            const auto pos = lower.find(needle);
+            return path.substr(0, pos + needle.size());
+        }
+    }
+
+    auto buildSubdirRule = [&](const std::string& marker) -> std::string {
+        const auto pos = lower.find(marker);
+        if (pos == std::string::npos) {
+            return {};
+        }
+        return path.substr(0, pos + marker.size());
+    };
+    if (const auto rule = buildSubdirRule("build/windows/fileopenorder/"); !rule.empty()) return rule;
+    if (const auto rule = buildSubdirRule("build/windows/chunklayerinfo/"); !rule.empty()) return rule;
+    if (const auto rule = buildSubdirRule("build/windowsnoeditor/fileopenorder/"); !rule.empty()) return rule;
+    if (const auto rule = buildSubdirRule("build/android_multi/fileopenorder/"); !rule.empty()) return rule;
+
+    return path;
+}
+
+auto IsProbableIgnoreArtifactPath(const std::string& InPath) -> bool {
+    const auto lower = NormalizeArtifactPath(InPath);
     auto contains = [&](const std::string& token) { return lower.find(token) != std::string::npos; };
 
     if (lower == ".kano" || lower == ".sisyphus" ||
@@ -2755,8 +2833,16 @@ auto IsProbableIgnoreArtifactPath(const std::string& InPath) -> bool {
         return true;
     }
 
-    if (contains("/node_modules/") || contains("/dist/") || contains("/build/") ||
-        contains("/bin/") || contains("/obj/") || contains("/target/")) {
+    if (PathHasSegment(lower, "node_modules") ||
+        PathHasSegment(lower, "dist") ||
+        PathHasSegment(lower, "build") ||
+        PathHasSegment(lower, "bin") ||
+        PathHasSegment(lower, "obj") ||
+        PathHasSegment(lower, "target") ||
+        PathHasSegment(lower, "binaries") ||
+        PathHasSegment(lower, "deriveddatacache") ||
+        PathHasSegment(lower, "intermediate") ||
+        PathHasSegment(lower, "saved")) {
         return true;
     }
 
@@ -2765,7 +2851,11 @@ auto IsProbableIgnoreArtifactPath(const std::string& InPath) -> bool {
            lower.ends_with(".swo") || lower.ends_with(".class") || lower.ends_with(".obj") ||
            lower.ends_with(".o") || lower.ends_with(".pdb") || lower.ends_with(".ilk") ||
            lower.ends_with(".dmp") || lower.ends_with(".pyc") || lower.ends_with(".exe") ||
-           lower.ends_with(".dll") || lower.ends_with(".so") || lower.ends_with(".a");
+           lower.ends_with(".dll") || lower.ends_with(".so") || lower.ends_with(".a") ||
+           lower.ends_with(".lib") || lower.ends_with(".exp") || lower.ends_with(".rsp") ||
+           lower.ends_with(".sarif") || lower.ends_with(".modules") || lower.ends_with(".sln") ||
+           lower.ends_with(".slnx") || lower.ends_with(".suo") || lower.ends_with(".dep.json") ||
+           lower.ends_with(".old");
 }
 
 auto IsInternalPipelineArtifactPath(const std::string& InPath) -> bool {
@@ -3443,6 +3533,14 @@ auto BuildIgnoreEntriesFromWorkingTree(const std::filesystem::path& InWorkspaceR
         if (status.exitCode != 0 || Trim(status.stdoutStr).empty()) continue;
         
         std::vector<std::string> candidates;
+        std::set<std::string> candidateSet;
+        auto addCandidate = [&](const std::string& candidate) {
+            const auto normalized = Trim(candidate);
+            if (normalized.empty()) return;
+            if (candidateSet.insert(normalized).second) {
+                candidates.push_back(normalized);
+            }
+        };
         auto lines = SplitNonEmptyLines(status.stdoutStr);
         std::set<std::string> artifactDirs;
 
@@ -3462,12 +3560,12 @@ auto BuildIgnoreEntriesFromWorkingTree(const std::filesystem::path& InWorkspaceR
             }
             
             if (!identifiedAsArtifactDir && IsProbableIgnoreArtifactPath(path)) {
-                candidates.push_back(path);
+                addCandidate(BuildIgnoreRuleForArtifactPath(path));
             }
         }
         
         for (const auto& dir : artifactDirs) {
-            candidates.push_back(dir);
+            addCandidate(dir);
         }
         
         if (InMaxPerRepo > 0 && candidates.size() > static_cast<size_t>(InMaxPerRepo)) {

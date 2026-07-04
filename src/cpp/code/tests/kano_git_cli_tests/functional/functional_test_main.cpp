@@ -2128,6 +2128,87 @@ TEST_CASE("commit_push_secret_gate_can_be_disabled_explicitly", "[functional][se
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("plan_ignore_init_coalesces_unreal_artifacts_in_root_and_submodule", "[functional][ignore-gate][KG-BUG-0016]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("ignore-unreal-artifacts");
+    const auto planPath = (ctx.cloneRootRepo / ".kano" / "tmp" / "git" / "plans" / "kg-bug-0016-plan.json").lexically_normal();
+
+    WriteTextFile(ctx.cloneRootRepo / "KTOGame.slnx", "solution\n");
+    WriteTextFile(ctx.cloneRootRepo / "Automation_KTOGame.slnx", "automation solution\n");
+    WriteTextFile(ctx.cloneRootRepo / "Build" / "Windows" / "FileOpenOrder" / "CookerOpenOrder.log", "cook order\n");
+    WriteTextFile(ctx.cloneRootRepo / "Build" / "Windows" / "ChunkLayerInfo" / "pakchunklayers.txt", "layers\n");
+    WriteTextFile(ctx.cloneChildRepo / "Binaries" / "Win64" / "UnrealEditor-KanoAgentAuthoringEditor.dll", "dll\n");
+    WriteTextFile(ctx.cloneChildRepo / "Intermediate" / "Build" / "Win64" / "x64" / "UnrealEditor" / "Development" /
+                      "KanoAgentAuthoringEditor" / "KanoAgentAuthoringEditor.cpp.obj",
+                  "obj\n");
+    WriteTextFile(ctx.cloneChildRepo / "Intermediate" / "Build" / "Win64" / "x64" / "UnrealEditor" / "Development" /
+                      "KanoAgentAuthoringEditor" / "KanoAgentAuthoringEditor.cpp.sarif",
+                  "sarif\n");
+
+    RequireSuccess(RunKog({"plan", "new", "--force", "--output", planPath.string()}, ctx.cloneRootRepo), "plan new");
+
+    const auto ignoreInit = RunKog({"plan", "ignore-init", "--plan-file", planPath.string(), "--force"}, ctx.cloneRootRepo);
+    INFO(ignoreInit.stdoutText);
+    INFO(ignoreInit.stderrText);
+    REQUIRE(ignoreInit.exitCode == 0);
+    const auto initMerged = ignoreInit.stdoutText + "\n" + ignoreInit.stderrText;
+    RequireContainsText(initMerged, "auto-ignoring: *.slnx (in .)");
+    RequireContainsText(initMerged, "auto-ignoring: Build/Windows/FileOpenOrder/ (in .)");
+    RequireContainsText(initMerged, "auto-ignoring: Build/Windows/ChunkLayerInfo/ (in .)");
+    RequireContainsText(initMerged, std::string("auto-ignoring: Binaries/ (in ") + ctx.submodulePath + ")");
+    RequireContainsText(initMerged, std::string("auto-ignoring: Intermediate/ (in ") + ctx.submodulePath + ")");
+
+    const auto apply = RunKog({"plan", "apply", "--stage", "ignore", "--plan-file", planPath.string()}, ctx.cloneRootRepo);
+    INFO(apply.stdoutText);
+    INFO(apply.stderrText);
+    REQUIRE(apply.exitCode == 0);
+
+    const auto rootIgnore = ReadTextFile(ctx.cloneRootRepo / ".gitignore");
+    RequireContainsText(rootIgnore, "*.slnx");
+    RequireContainsText(rootIgnore, "Build/Windows/FileOpenOrder/");
+    RequireContainsText(rootIgnore, "Build/Windows/ChunkLayerInfo/");
+
+    const auto childIgnore = ReadTextFile(ctx.cloneChildRepo / ".gitignore");
+    RequireContainsText(childIgnore, "Binaries/");
+    RequireContainsText(childIgnore, "Intermediate/");
+
+    RequireSuccess(RunGit({"check-ignore", "--", "KTOGame.slnx", "Build/Windows/FileOpenOrder/CookerOpenOrder.log",
+                           "Build/Windows/ChunkLayerInfo/pakchunklayers.txt"},
+                          ctx.cloneRootRepo),
+                   "root unreal artifacts ignored");
+    RequireSuccess(RunGit({"check-ignore", "--", "Binaries/Win64/UnrealEditor-KanoAgentAuthoringEditor.dll",
+                           "Intermediate/Build/Win64/x64/UnrealEditor/Development/KanoAgentAuthoringEditor/"
+                           "KanoAgentAuthoringEditor.cpp.obj"},
+                          ctx.cloneChildRepo),
+                   "submodule unreal artifacts ignored");
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("commit_ignore_gate_reports_next_actions_for_unreal_artifacts", "[functional][commit][ignore-gate][KG-BUG-0016]") {
+    const auto ctx = CreateRemoteWithClone("commit-ignore-unreal-artifacts");
+    WriteTextFile(ctx.cloneRepo / "KTOGame.slnx", "solution\n");
+
+    const auto result = RunKog({"commit", "-m", "test(functional): should not stage generated solution", "--no-recursive"},
+                               ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 3);
+
+    const auto merged = result.stdoutText + "\n" + result.stderrText;
+    RequireContainsText(merged, "ignore gate failed (commit)");
+    RequireContainsText(merged, "KTOGame.slnx");
+    RequireContainsText(merged, "[native-commit] blocked: generated artifacts must be ignored before KOG stages files.");
+    RequireContainsText(merged, "[native-commit] no files were staged or committed by this run.");
+    RequireContainsText(merged, "kog plan runbook ignore");
+    RequireContainsText(merged, "kog commit --ai-auto");
+
+    const auto staged = RunGit({"diff", "--cached", "--name-only"}, ctx.cloneRepo);
+    RequireSuccess(staged, "cached diff after blocked commit");
+    REQUIRE(TrimCopy(staged.stdoutText).empty());
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("reset_stable_remote_fetches_and_attaches_detached_registered_submodule", "[functional][reset][stable-remote]") {
     const auto ctx = CreateRemoteWithSubmoduleClone("reset-stable-remote-detached", "branch_v1.0.0");
     REQUIRE(CurrentBranch(ctx.cloneChildRepo).empty());

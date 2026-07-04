@@ -814,6 +814,7 @@ auto RunPipelineSafetyGatesForNonAiCommit(const std::filesystem::path& InWorkspa
         const auto allowlistPath = (ResolveSkillRoot(InWorkspaceRoot) / "assets" / "ignore-sources" / "local" / "ignore-gate-allowlist.txt").lexically_normal();
         const auto allowlist = LoadNormalizedLineSet(allowlistPath);
         std::vector<std::string> findings;
+        std::set<std::string> seenFindingRules;
         for (const auto& repo : repos) {
             const auto rel = repo.lexically_relative(InWorkspaceRoot).generic_string();
             const auto repoLabel = rel.empty() ? "." : rel;
@@ -829,7 +830,16 @@ auto RunPipelineSafetyGatesForNonAiCommit(const std::filesystem::path& InWorkspa
                 if (allowlist.find(key) != allowlist.end()) {
                     continue;
                 }
-                findings.push_back(key);
+                const auto rule = BuildIgnoreRuleForArtifactPath(p);
+                const auto ruleKey = repoLabel == "." ? rule : (repoLabel + "/" + rule);
+                if (!seenFindingRules.insert(ruleKey).second) {
+                    continue;
+                }
+                if (rule == p) {
+                    findings.push_back(key);
+                } else {
+                    findings.push_back(ruleKey + " (sample " + key + ")");
+                }
                 if (findings.size() >= 20) {
                     break;
                 }
@@ -843,7 +853,13 @@ auto RunPipelineSafetyGatesForNonAiCommit(const std::filesystem::path& InWorkspa
             for (const auto& f : findings) {
                 std::cerr << "  - " << f << "\n";
             }
-            std::cerr << "Hint: update .gitignore first, then regenerate plan.\n";
+            std::cerr << "[native-commit] blocked: generated artifacts must be ignored before KOG stages files.\n";
+            std::cerr << "[native-commit] no files were staged or committed by this run.\n";
+            std::cerr << "Hint: run ignore planning first:\n";
+            std::cerr << "  kog plan new --force\n";
+            std::cerr << "  kog plan runbook ignore\n";
+            std::cerr << "  kog plan apply --stage ignore\n";
+            std::cerr << "Hint: then rerun kog commit, or use `kog commit --ai-auto` for the full auto-plan flow.\n";
             std::cerr << "Hint: override once with --allow-ignore-gate (or KOG_ALLOW_IGNORE_GATE=1).\n";
             std::exit(3);
         }
