@@ -69,6 +69,19 @@ auto RequireNotContains(const std::string& InText, const std::string& InNeedle) 
     REQUIRE(InText.find(InNeedle) == std::string::npos);
 }
 
+auto CountOccurrences(const std::string& InText, const std::string& InNeedle) -> std::size_t {
+    if (InNeedle.empty()) {
+        return 0;
+    }
+    std::size_t count = 0;
+    std::size_t pos = 0;
+    while ((pos = InText.find(InNeedle, pos)) != std::string::npos) {
+        ++count;
+        pos += InNeedle.size();
+    }
+    return count;
+}
+
 auto TrimCopy(std::string InValue) -> std::string {
     const auto first = InValue.find_first_not_of(" \t\r\n");
     if (first == std::string::npos) {
@@ -118,6 +131,10 @@ auto RequireScenarioMetadata(const std::string& InScenarioId,
 
 auto ConvergeStatePath(const std::filesystem::path& InRoot) -> std::filesystem::path {
     return (InRoot / ".kano" / "tmp" / "workflows" / "converge" / "state.json").lexically_normal();
+}
+
+auto FunctionalProcessDiagLogPath(const std::filesystem::path& InRoot) -> std::filesystem::path {
+    return (InRoot / ".kano" / "tmp" / "functional-process-diag.log").lexically_normal();
 }
 
 auto ConfigureIdentity(const std::filesystem::path& InRepo) -> void {
@@ -1841,6 +1858,7 @@ TEST_CASE("converge runtime writes JSON state and supports status/abort", "[tdd]
     const auto ctx = CreateRemoteWithClone("converge-runtime-state");
     const auto beforeStatus = GitStatusShort(ctx.cloneRepo);
     const auto statePath = ConvergeStatePath(ctx.cloneRepo);
+    const auto diagLogPath = FunctionalProcessDiagLogPath(ctx.cloneRepo);
 
     RequireSuccess(RunGit({"remote", "remove", "origin"}, ctx.cloneRepo), "remove origin to force converge failure");
 
@@ -1857,6 +1875,11 @@ TEST_CASE("converge runtime writes JSON state and supports status/abort", "[tdd]
     RequireContains(stateJsonText, "\"completedPhases\"");
     RequireContains(stateJsonText, "\"phaseResults\"");
     RequireContains(stateJsonText, "\"resumeCommand\"");
+    RequireContains(stateJsonText, "post-failure recursive status baseline refresh skipped");
+    RequireContains(stateJsonText, "kog status --recursive skipped after phase failure");
+
+    const auto diagLogText = ReadTextFile(diagLogPath);
+    REQUIRE(CountOccurrences(diagLogText, "[process-diag] argv=status --recursive --format json") == 1);
 
     const auto statusResult = RunKog({"converge", "--status"}, ctx.cloneRepo);
     INFO(statusResult.stdoutText);

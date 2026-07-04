@@ -1939,19 +1939,6 @@ bool PlanReferencesRepo(const Plan& plan, const std::string& repo) {
     return contains(plan.sync) || contains(plan.commit) || contains(plan.push) || containsDeferredParentPointer;
 }
 
-bool RefreshStateBaselinesForResume(WorkflowState& state,
-                                    const std::filesystem::path& workspaceRoot,
-                                    int jobs,
-                                    bool recursive) {
-    try {
-        const auto snapshot = LoadConvergeSnapshot(workspaceRoot, jobs, false, recursive);
-        state.repoBaselines = RepoBaselines(snapshot);
-        return true;
-    } catch (const std::exception&) {
-        return false;
-    }
-}
-
 void ResetStateForPlan(WorkflowState& state, const Snapshot& snapshot, const Plan& plan) {
     state.currentPhase = kConvergePhases.front();
     state.completedPhases.clear();
@@ -4744,13 +4731,17 @@ void RegisterConverge(CLI::App& InApp) {
             persist();
 
                 if (!summary.failed.empty() || !summary.blocked.empty()) {
-                    state.blockedReason = !summary.failed.empty() ? (phase + " encountered failures") : "blocked repositories present";
+                    const auto phaseReason = !summary.failed.empty()
+                        ? (phase + " encountered failures")
+                        : (state.blockedReason.empty() ? (phase + " encountered blocked repositories") : state.blockedReason);
+                    state.blockedReason = phaseReason + "; post-failure recursive status baseline refresh skipped; resume reloads status before mutation";
                     if (!summary.failed.empty()) state.blockedRepos = summary.failed;
                     else state.blockedRepos = summary.blocked;
                     state.completedPhases.erase(std::remove(state.completedPhases.begin(), state.completedPhases.end(), phase), state.completedPhases.end());
                     state.currentPhase = phase;
-                    RefreshStateBaselinesForResume(state, workspaceRoot, *jobs, recursive);
+                    state.commandLinesUsed[phase].push_back("kog status --recursive skipped after phase failure");
                     persist();
+                    std::cerr << "Error: " << state.blockedReason << "\n";
                     std::exit(1);
                 }
             }
