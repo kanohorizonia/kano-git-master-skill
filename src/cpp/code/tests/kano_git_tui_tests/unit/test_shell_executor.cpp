@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -22,6 +23,11 @@ void SetEnvVarForTest(const char* InName, const char* InValue) {
         setenv(InName, InValue, 1);
     }
 #endif
+}
+
+std::string ReadTextFile(const std::filesystem::path& InPath) {
+    std::ifstream input(InPath, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
 }
 
 } // namespace
@@ -59,9 +65,60 @@ TEST_CASE("ShellExecutor capture timeout terminates process with code 124", "[Un
 
     REQUIRE(result.exitCode == 124);
     REQUIRE(result.stderrStr.find("timeout") != std::string::npos);
+    REQUIRE(result.stderrStr.find("source=external_command_timeout") != std::string::npos);
+    REQUIRE(result.stderrStr.find("configured_timeout_ms=50") != std::string::npos);
     SetEnvVarForTest("KOG_SHELL_CAPTURE_TIMEOUT_MS", "0");
 #else
     SUCCEED("Windows-specific timeout test skipped on non-Windows platform");
+#endif
+}
+
+TEST_CASE("ShellExecutor KOG capture timeout reports provenance and safe action", "[Unit][shell-executor][timeout][KG-BUG-0014][windows]") {
+#if defined(_WIN32)
+    namespace fs = std::filesystem;
+    const auto tempRoot = fs::temp_directory_path() / "kog shell executor timeout provenance";
+    fs::create_directories(tempRoot);
+    const auto scriptPath = tempRoot / "kog.cmd";
+    const auto diagPath = tempRoot / "kog-timeout-process-diag.log";
+    fs::remove(diagPath);
+
+    {
+        std::ofstream script(scriptPath, std::ios::binary);
+        REQUIRE(script.good());
+        script << "@echo off\r\n";
+        script << "powershell -NoProfile -Command \"Start-Sleep -Seconds 2; Write-Output DONE\"\r\n";
+    }
+
+    SetEnvVarForTest("KOG_SHELL_TIMEOUT_MS", "");
+    SetEnvVarForTest("KOG_SHELL_CAPTURE_TIMEOUT_MS", "50");
+    SetEnvVarForTest("KOG_SHELL_PASSTHROUGH_TIMEOUT_MS", "");
+    SetEnvVarForTest("KOG_PROCESS_DIAGNOSTICS", "1");
+    SetEnvVarForTest("KOG_PROCESS_DIAGNOSTICS_LOG", diagPath.string().c_str());
+
+    const auto result = ExecuteCommand(scriptPath.string(), {"converge"}, ExecMode::Capture, tempRoot);
+
+    REQUIRE(result.exitCode == 124);
+    REQUIRE(result.stderrStr.find("source=kog_capture_timeout") != std::string::npos);
+    REQUIRE(result.stderrStr.find("configured_timeout_ms=50") != std::string::npos);
+    REQUIRE(result.stderrStr.find("command_family=kog:converge") != std::string::npos);
+    REQUIRE(result.stderrStr.find("safe_next_action=inspect `kog converge --status`; resume or abort after checking active agents") != std::string::npos);
+
+    REQUIRE(fs::exists(diagPath));
+    const auto diagText = ReadTextFile(diagPath);
+    REQUIRE(diagText.find("timeout_kill_marker=1") != std::string::npos);
+    REQUIRE(diagText.find("timeout_source=kog_capture_timeout") != std::string::npos);
+    REQUIRE(diagText.find("configured_timeout_ms=50") != std::string::npos);
+    REQUIRE(diagText.find("command_family=kog:converge") != std::string::npos);
+    REQUIRE(diagText.find("safe_next_action=inspect `kog converge --status`; resume or abort after checking active agents") != std::string::npos);
+
+    SetEnvVarForTest("KOG_SHELL_CAPTURE_TIMEOUT_MS", "0");
+    SetEnvVarForTest("KOG_PROCESS_DIAGNOSTICS", "");
+    SetEnvVarForTest("KOG_PROCESS_DIAGNOSTICS_LOG", "");
+    std::error_code ec;
+    fs::remove(scriptPath, ec);
+    fs::remove(diagPath, ec);
+#else
+    SUCCEED("Windows-specific timeout provenance test skipped on non-Windows platform");
 #endif
 }
 
@@ -86,7 +143,8 @@ TEST_CASE("ShellExecutor pass-through timeout terminates process with code 124",
 
     REQUIRE(result.exitCode == 124);
     REQUIRE(result.stderrStr.find("timeout") != std::string::npos);
-    REQUIRE(result.stderrStr.find("passthrough_timeout_override") != std::string::npos);
+    REQUIRE(result.stderrStr.find("source=external_command_timeout") != std::string::npos);
+    REQUIRE(result.stderrStr.find("configured_timeout_ms=50") != std::string::npos);
     SetEnvVarForTest("KOG_SHELL_PASSTHROUGH_TIMEOUT_MS", "");
 }
 

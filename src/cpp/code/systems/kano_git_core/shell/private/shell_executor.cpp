@@ -919,6 +919,48 @@ auto ResolvePassThroughTimeoutMs(const std::string& InCommand,
     return std::nullopt;
 }
 
+auto ArgsContainTokenLike(const std::vector<std::string>& InArgs,
+                          const std::string& InNeedle) -> bool {
+    return std::any_of(InArgs.begin(), InArgs.end(), [&](const auto& arg) {
+        return ToLower(arg).find(InNeedle) != std::string::npos;
+    });
+}
+
+auto IsDockerBuildCommand(const std::string& InCommand,
+                          const std::vector<std::string>& InArgs) -> bool {
+    const auto base = BaseNameLower(InCommand);
+    if (base == "docker-compose" || base == "docker-compose.exe") {
+        return ArgsContainTokenLike(InArgs, "build");
+    }
+    if (base == "docker" || base == "docker.exe") {
+        const auto first = FirstGitSubcommand(InArgs);
+        if (first == "build" || first == "buildx") {
+            return true;
+        }
+        return first == "compose" && ArgsContainTokenLike(InArgs, "build");
+    }
+    if (base == "pixi" || base == "pixi.exe") {
+        return ArgsContainTokenLike(InArgs, "runtime-up") ||
+               ArgsContainTokenLike(InArgs, "docker-build");
+    }
+    return false;
+}
+
+auto IsRuntimeHealthCommand(const std::string& InCommand,
+                            const std::vector<std::string>& InArgs) -> bool {
+    const auto base = BaseNameLower(InCommand);
+    if (base == "curl" || base == "curl.exe") {
+        return ArgsContainTokenLike(InArgs, "health") ||
+               ArgsContainTokenLike(InArgs, "readyz") ||
+               ArgsContainTokenLike(InArgs, "livez");
+    }
+    if (base == "powershell" || base == "powershell.exe" || base == "pwsh" || base == "pwsh.exe") {
+        return ArgsContainTokenLike(InArgs, "invoke-webrequest") &&
+               ArgsContainTokenLike(InArgs, "health");
+    }
+    return false;
+}
+
 auto TimeoutSourceLabel(const std::string& InCommand,
                         const std::vector<std::string>& InArgs,
                         const ExecMode InMode,
@@ -926,28 +968,16 @@ auto TimeoutSourceLabel(const std::string& InCommand,
     if (!InTimeoutMs.has_value()) {
         return "none";
     }
-    if (GetEnvTimeoutMs("KOG_SHELL_TIMEOUT_MS").has_value()) {
-        return "global_shell_timeout";
+    if (IsDockerBuildCommand(InCommand, InArgs)) {
+        return "docker_build_timeout";
     }
-    if (InMode == ExecMode::Capture) {
-        if (GetEnvTimeoutMs("KOG_SHELL_CAPTURE_TIMEOUT_MS").has_value()) {
-            return "capture_timeout_override";
-        }
-        if (IsBoundedKogStatusOperation(InCommand, InArgs)) {
-            return "kog_status_capture_default";
-        }
-        return "capture_probe_default";
+    if (IsRuntimeHealthCommand(InCommand, InArgs)) {
+        return "runtime_health_timeout";
     }
-    if (GetEnvTimeoutMs("KOG_SHELL_PASSTHROUGH_TIMEOUT_MS").has_value()) {
-        return "passthrough_timeout_override";
+    if (IsKogCommand(InCommand) && InMode == ExecMode::Capture) {
+        return "kog_capture_timeout";
     }
-    if (IsKogCommand(InCommand)) {
-        return "kog_passthrough_default";
-    }
-    if (IsGitCommand(InCommand)) {
-        return "git_passthrough_default";
-    }
-    return "unknown_timeout";
+    return "external_command_timeout";
 }
 
 auto CommandFamilyLabel(const std::string& InCommand,
