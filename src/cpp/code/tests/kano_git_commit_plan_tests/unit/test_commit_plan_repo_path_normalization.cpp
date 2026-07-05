@@ -9,7 +9,9 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -167,6 +169,43 @@ TEST_CASE("NormalizeCommitPlanRepoPaths accepts staged rename old pathspecs trac
     const auto doc = ParsePlan(*normalized);
     REQUIRE(doc["stages"]["commit"][0]["repo"].get<std::string>() == "parent-skill");
     REQUIRE(doc["stages"]["commit"][0]["commits"][0]["include"].get<std::vector<std::string>>() == std::vector<std::string>{"old-name.md", "new-name.md"});
+}
+
+TEST_CASE("NormalizeCommitPlanRepoPaths accepts many deleted tracked pathspecs from cached HEAD tree",
+          "[Unit][CommitPlan][Normalize][Performance]") {
+    const auto workspace = UniqueTempWorkspace("many-deleted-tracked-pathspecs");
+    const auto repoRoot = (workspace / "parent-skill").lexically_normal();
+
+    InitGitRepo(repoRoot);
+
+    std::vector<std::string> includes;
+    includes.reserve(65);
+    for (int i = 0; i < 64; ++i) {
+        std::ostringstream name;
+        name << "receipts/item-" << std::setw(3) << std::setfill('0') << i << ".json";
+        const auto rel = name.str();
+        includes.push_back(rel);
+        WriteTextFile(repoRoot / rel, "{}\n");
+    }
+    WriteTextFile(repoRoot / "archived" / "old.md", "tracked directory fixture\n");
+    includes.push_back("archived");
+
+    RequireGit(repoRoot, {"add", "receipts", "archived"});
+    RequireGit(repoRoot, {"commit", "-m", "test: add cached head fixtures"});
+
+    std::filesystem::remove_all(repoRoot / "receipts");
+    std::filesystem::remove_all(repoRoot / "archived");
+
+    std::string error;
+    const auto normalized = NormalizePlan(workspace, BuildSingleCommitPlan(repoRoot.generic_string(), includes), &error);
+
+    INFO(error);
+    REQUIRE(normalized.has_value());
+    REQUIRE(error.empty());
+
+    const auto doc = ParsePlan(*normalized);
+    REQUIRE(doc["stages"]["commit"][0]["repo"].get<std::string>() == "parent-skill");
+    REQUIRE(doc["stages"]["commit"][0]["commits"][0]["include"].get<std::vector<std::string>>() == includes);
 }
 
 TEST_CASE("NormalizeCommitPlanRepoPaths normalizes AI-corrupted include pathspec variants",

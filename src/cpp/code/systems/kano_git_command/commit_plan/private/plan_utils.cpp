@@ -23,6 +23,8 @@
 #include <ctime>
 #include <regex>
 #include <set>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace kano::git::commands {
 
@@ -2618,12 +2620,108 @@ auto ResolveRepoPathFromDisplay(const std::filesystem::path& InWorkspaceRoot, co
     return (InWorkspaceRoot / InRepoDisplay).lexically_normal();
 }
 
+struct HeadTreePathIndex {
+    bool loaded = false;
+    bool available = false;
+    std::unordered_set<std::string> trackedPaths;
+    std::unordered_set<std::string> trackedDirectories;
+    std::unordered_set<std::string> gitlinkPaths;
+};
+
+struct HeadTreePathCache {
+    std::unordered_map<std::string, HeadTreePathIndex> byRepo;
+};
+
+auto NormalizeHeadTreePathToken(std::string InPath) -> std::string {
+    auto path = Trim(std::move(InPath));
+    for (auto& ch : path) {
+        if (ch == '\\') {
+            ch = '/';
+        }
+    }
+    while (!path.empty() && path.back() == '/') {
+        path.pop_back();
+    }
+    return path;
+}
+
+void AddHeadTreeParentDirectories(HeadTreePathIndex& InIndex, const std::string& InPath) {
+    auto slash = InPath.find('/');
+    while (slash != std::string::npos) {
+        const auto dir = InPath.substr(0, slash);
+        if (!dir.empty()) {
+            InIndex.trackedDirectories.insert(dir);
+        }
+        slash = InPath.find('/', slash + 1);
+    }
+}
+
+auto LoadHeadTreePathIndex(const std::filesystem::path& InRepoRoot, HeadTreePathCache& InCache) -> const HeadTreePathIndex& {
+    const auto key = RepoKey(InRepoRoot);
+    auto& index = InCache.byRepo[key];
+    if (index.loaded) {
+        return index;
+    }
+
+    index.loaded = true;
+    const auto tree = GitCapture(InRepoRoot, {"ls-tree", "-r", "HEAD"});
+    if (tree.exitCode != 0) {
+        return index;
+    }
+
+    index.available = true;
+    std::istringstream lines(tree.stdoutStr);
+    std::string line;
+    while (std::getline(lines, line)) {
+        const auto tab = line.find('\t');
+        if (tab == std::string::npos) {
+            continue;
+        }
+
+        const auto metadata = line.substr(0, tab);
+        const auto path = NormalizeHeadTreePathToken(line.substr(tab + 1));
+        if (path.empty()) {
+            continue;
+        }
+
+        index.trackedPaths.insert(path);
+        AddHeadTreeParentDirectories(index, path);
+        if (metadata.rfind("160000 ", 0) == 0) {
+            index.gitlinkPaths.insert(path);
+        }
+    }
+    return index;
+}
+
+auto IsTrackedPathInHeadIndex(const HeadTreePathIndex& InIndex, const std::string& InPathspec) -> bool {
+    if (!InIndex.available) {
+        return false;
+    }
+    if (InPathspec == ".") {
+        return !InIndex.trackedPaths.empty();
+    }
+    return InIndex.trackedPaths.find(InPathspec) != InIndex.trackedPaths.end() ||
+           InIndex.trackedDirectories.find(InPathspec) != InIndex.trackedDirectories.end();
+}
+
+auto IsGitlinkPathInHead(const std::filesystem::path& InRepoRoot, const std::string& InPath, HeadTreePathCache* InCache) -> bool {
+    auto normalized = NormalizeHeadTreePathToken(InPath);
+    if (normalized.empty()) {
+        return false;
+    }
+
+    HeadTreePathCache localCache;
+    auto& cache = InCache != nullptr ? *InCache : localCache;
+    const auto& index = LoadHeadTreePathIndex(InRepoRoot, cache);
+    if (!index.available) {
+        return false;
+    }
+    return index.gitlinkPaths.find(normalized) != index.gitlinkPaths.end();
+}
+
 auto IsGitlinkPathInHead(const std::filesystem::path& InRepoRoot, const std::string& InPath) -> bool {
-    const auto tree = GitCapture(InRepoRoot, {"ls-tree", "HEAD", "--", InPath});
-    if (tree.exitCode != 0) return false;
-    const auto out = Trim(tree.stdoutStr);
-    if (out.empty()) return false;
-    return out.rfind("160000 ", 0) == 0;
+    HeadTreePathCache headTreeCache;
+    return IsGitlinkPathInHead(InRepoRoot, InPath, &headTreeCache);
 }
 
 auto IsRegisteredSubmodulePath(const std::filesystem::path& InRepoRoot, const std::string& InPath) -> bool {
@@ -2665,6 +2763,7 @@ auto RepoHasGitlinkOnlyChanges(const std::filesystem::path& InRepoRoot) -> bool 
     std::istringstream iss(porcelain);
     std::string line;
     bool hasAny = false;
+    HeadTreePathCache headTreeCache;
     while (std::getline(iss, line)) {
         if (line.size() < 4) continue;
         if (line.rfind("?? ", 0) == 0) return false; // Untracked file means not gitlink-only
@@ -2677,7 +2776,7 @@ auto RepoHasGitlinkOnlyChanges(const std::filesystem::path& InRepoRoot) -> bool 
 
         if (path.empty()) continue;
 
-        if (!IsGitlinkPathInHead(InRepoRoot, path)) return false;
+        if (!IsGitlinkPathInHead(InRepoRoot, path, &headTreeCache)) return false;
         if (!IsRegisteredSubmodulePath(InRepoRoot, path)) return false;
         hasAny = true;
     }
@@ -3103,7 +3202,9 @@ auto NormalizeCommitPlanToken(std::string InValue) -> std::string {
     return Trim(compact);
 }
 
-auto IsTrackedPathspecInHead(const std::filesystem::path& InRepoRoot, const std::string& InPathspec) -> bool {
+auto IsTrackedPathspecInHead(const std::filesystem::path& InRepoRoot,
+                             const std::string& InPathspec,
+                             HeadTreePathCache& InHeadTreeCache) -> bool {
     auto normalized = NormalizeCommitPlanToken(InPathspec);
     while (!normalized.empty() && normalized.back() == '/') {
         normalized.pop_back();
@@ -3112,24 +3213,13 @@ auto IsTrackedPathspecInHead(const std::filesystem::path& InRepoRoot, const std:
         return false;
     }
 
-    const auto tree = GitCapture(InRepoRoot, {"ls-tree", "-r", "--name-only", "HEAD", "--", normalized});
-    if (tree.exitCode != 0) {
-        return false;
-    }
-
-    std::istringstream lines(tree.stdoutStr);
-    std::string line;
-    const auto prefix = normalized + "/";
-    while (std::getline(lines, line)) {
-        line = NormalizeCommitPlanToken(line);
-        if (line == normalized || line.rfind(prefix, 0) == 0) {
-            return true;
-        }
-    }
-    return false;
+    const auto& index = LoadHeadTreePathIndex(InRepoRoot, InHeadTreeCache);
+    return IsTrackedPathInHeadIndex(index, normalized);
 }
 
-auto IsValidPlanPathspec(const std::filesystem::path& InRepoRoot, const std::string& InPathspec) -> bool {
+auto IsValidPlanPathspec(const std::filesystem::path& InRepoRoot,
+                         const std::string& InPathspec,
+                         HeadTreePathCache& InHeadTreeCache) -> bool {
     if (InPathspec.empty()) {
         return false;
     }
@@ -3147,7 +3237,7 @@ auto IsValidPlanPathspec(const std::filesystem::path& InRepoRoot, const std::str
         return true;
     }
 
-    if (IsTrackedPathspecInHead(InRepoRoot, InPathspec)) {
+    if (IsTrackedPathspecInHead(InRepoRoot, InPathspec, InHeadTreeCache)) {
         return true;
     }
 
@@ -3206,6 +3296,7 @@ auto ResolveNormalizedCommitPlanRepoContext(const std::filesystem::path& InWorks
 auto NormalizePlanPathspecForRepo(const std::filesystem::path& InRepoRoot,
                                   const std::filesystem::path& InRepoPrefix,
                                   const std::string& InPathspec,
+                                  HeadTreePathCache& InHeadTreeCache,
                                   std::string* OutError) -> std::optional<std::string> {
     const auto normalized = NormalizeCommitPlanToken(InPathspec);
     if (normalized.empty()) {
@@ -3236,7 +3327,7 @@ auto NormalizePlanPathspecForRepo(const std::filesystem::path& InRepoRoot,
 
     std::vector<std::string> valid;
     for (const auto& candidate : candidates) {
-        if (IsValidPlanPathspec(InRepoRoot, candidate)) {
+        if (IsValidPlanPathspec(InRepoRoot, candidate, InHeadTreeCache)) {
             valid.push_back(candidate);
         }
     }
@@ -3273,6 +3364,8 @@ auto NormalizeCommitPlanRepoPaths(const std::filesystem::path& InWorkspaceRoot,
             }
             return std::nullopt;
         }
+
+        HeadTreePathCache headTreeCache;
 
         auto normalizeStage = [&](const char* InStageName) -> bool {
             if (!doc["stages"].contains(InStageName)) {
@@ -3339,12 +3432,13 @@ auto NormalizeCommitPlanRepoPaths(const std::filesystem::path& InWorkspaceRoot,
                             const auto normalizedToken = NormalizePlanPathspecForRepo(repoContext->repoRoot,
                                                                                       repoContext->repoPrefix,
                                                                                       token.get<std::string>(),
+                                                                                      headTreeCache,
                                                                                       OutError);
                             if (!normalizedToken.has_value()) {
                                 return false;
                             }
 
-                            if (IsGitlinkPathInHead(repoContext->repoRoot, *normalizedToken) &&
+                            if (IsGitlinkPathInHead(repoContext->repoRoot, *normalizedToken, &headTreeCache) &&
                                 !IsRegisteredSubmodulePath(repoContext->repoRoot, *normalizedToken)) {
                                 continue;
                             }
