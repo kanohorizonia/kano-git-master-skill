@@ -17,6 +17,7 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <optional>
 #include <regex>
@@ -964,6 +965,25 @@ std::vector<std::string> UniqueRepos(const std::vector<PlanLine>& lines) {
 
 bool PlanHasRunnableActions(const Plan& plan) {
     return !plan.sync.empty() || !plan.commit.empty() || !plan.push.empty();
+}
+
+std::optional<unsigned int> ParsePositiveEnvMs(const char* raw) {
+    if (raw == nullptr || raw[0] == '\0') {
+        return std::nullopt;
+    }
+    char* end = nullptr;
+    const auto parsed = std::strtoul(raw, &end, 10);
+    if (end == raw || parsed == 0 || parsed > static_cast<unsigned long>(std::numeric_limits<unsigned int>::max())) {
+        return std::nullopt;
+    }
+    return static_cast<unsigned int>(parsed);
+}
+
+std::optional<unsigned int> ResolveConvergeSyncTimeoutMs() {
+    if (const auto explicitMs = ParsePositiveEnvMs(std::getenv("KOG_CONVERGE_SYNC_TIMEOUT_MS")); explicitMs.has_value()) {
+        return explicitMs;
+    }
+    return static_cast<unsigned int>(120 * 1000);
 }
 
 std::string SnapshotFingerprint(const Snapshot& snapshot) {
@@ -4482,6 +4502,8 @@ void RegisterConverge(CLI::App& InApp) {
             }
         };
 
+        const auto convergeSyncTimeoutMs = ResolveConvergeSyncTimeoutMs();
+
         int passIndex = 0;
         while (true) {
             bool runAnotherPass = false;
@@ -4557,8 +4579,10 @@ void RegisterConverge(CLI::App& InApp) {
                     const auto repoPath = line.repo == "."
                         ? workspaceRoot
                         : (workspaceRoot / std::filesystem::path(line.repo)).lexically_normal();
-                    state.commandLinesUsed[phase].push_back("kog sync origin-latest --repo " + repoPath.generic_string() + " --no-recursive");
-                    const auto detailed = RunSyncOriginLatestNativeDetailed(repoPath, false, false, false);
+                    const auto timeoutText = convergeSyncTimeoutMs.has_value() ? std::to_string(*convergeSyncTimeoutMs) : std::string{"none"};
+                    std::cout << "[converge] sync_repo=" << line.repo << " timeout_ms=" << timeoutText << "\n";
+                    state.commandLinesUsed[phase].push_back("KOG_CONVERGE_SYNC_TIMEOUT_MS=" + timeoutText + " kog sync origin-latest --repo " + repoPath.generic_string() + " --no-recursive");
+                    const auto detailed = RunSyncOriginLatestNativeDetailed(repoPath, false, false, false, true, convergeSyncTimeoutMs);
                     PopulatePhaseSummaryFromSingleRepoAggregate(line.repo, detailed.second, false, detailed.first, summary);
                     if (detailed.first != 0 && summary.failed.empty() && summary.blocked.empty()) {
                         summary.failed.push_back(line.repo);

@@ -1863,6 +1863,34 @@ TEST_CASE("converge planner syncs dirty behind repo before pushing committed cha
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge runtime applies bounded sync git timeout", "[functional][converge][timeout][KG-BUG-0014]") {
+    const auto ctx = CreateRemoteWithClone("converge-runtime-bounded-sync-timeout");
+    const auto statePath = ConvergeStatePath(ctx.cloneRepo);
+    const auto diagLogPath = FunctionalProcessDiagLogPath(ctx.cloneRepo);
+
+    CommitAndPushFile(ctx.seedRepo, ctx.branch, "remote.txt", "remote moved\n", "remote moved");
+    RequireSuccess(RunGit({"fetch", "origin"}, ctx.cloneRepo), "fetch remote movement for dirty behind runtime sync");
+    WriteTextFile(ctx.cloneRepo / "local.txt", "local dirty change\n");
+
+    const auto result = RunKogWithEnv(
+        {"converge", "--jobs", "1"},
+        ctx.cloneRepo,
+        {{"KOG_SHELL_TIMEOUT_MS", "0"},
+         {"KOG_CONVERGE_SYNC_TIMEOUT_MS", "12345"}});
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    REQUIRE_FALSE(std::filesystem::exists(statePath));
+    REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
+
+    const auto diagLogText = ReadTextFile(diagLogPath);
+    RequireContains(diagLogText, "fetch origin --prune --tags --quiet");
+    RequireContains(diagLogText, "env_KOG_SHELL_TIMEOUT_MS=12345");
+    RequireContains(diagLogText, "env_KOG_SHELL_CAPTURE_TIMEOUT_MS=12345");
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("converge planner default avoids full scan and opt-in blocks untrusted nested repo", "[tdd][unit][feature:converge-state][feature:dirty-kind][functional][converge][planner]") {
     const auto ctx = CreateRemoteWithClone("converge-planner-no-full-scan");
     const auto nested = (ctx.cloneRepo / "nested" / "untrusted").lexically_normal();

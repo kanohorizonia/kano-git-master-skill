@@ -16,6 +16,7 @@
 #include <format>
 #include <cstdlib>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <regex>
 #include <optional>
@@ -2642,6 +2643,12 @@ auto RestoreWorkingTreeFileSnapshots(const std::filesystem::path& InRepo,
 
 auto ClassifySyncFailure(const shell::ExecResult& InResult, const std::string& InFallback = "FAILED_SYNC") -> std::string {
     const auto merged = ToLower(InResult.stdoutStr + "\n" + InResult.stderrStr);
+    if (merged.find("[kog-timeout]") != std::string::npos ||
+        merged.find("process timeout") != std::string::npos ||
+        merged.find("process timed out") != std::string::npos ||
+        merged.find("timeout exceeded") != std::string::npos) {
+        return "SYNC_TIMEOUT";
+    }
     if (merged.find("authentication failed") != std::string::npos ||
         merged.find("permission denied") != std::string::npos ||
         merged.find("publickey") != std::string::npos ||
@@ -2745,7 +2752,8 @@ auto RunNativeOriginLatestSync(
     int InJobs,
     workspace::RepoOperationAggregate* OutAggregate = nullptr,
     bool InAuthPreflight = true,
-    bool InCheckGitlinkReachability = true) -> int {
+    bool InCheckGitlinkReachability = true,
+    std::optional<unsigned int> InGitCaptureTimeoutMs = std::nullopt) -> int {
     std::vector<SyncPlan> plans;
     std::string mode;
     try {
@@ -2831,6 +2839,15 @@ auto RunNativeOriginLatestSync(
         const auto name = (rel.empty() || rel == ".") ? "." : rel;
         std::ostringstream out;
         std::ostringstream err;
+        std::unique_ptr<ScopedEnvOverride> syncTimeoutOverride;
+        if (InGitCaptureTimeoutMs.has_value() && *InGitCaptureTimeoutMs > 0) {
+            const auto timeoutText = std::to_string(*InGitCaptureTimeoutMs);
+            syncTimeoutOverride = std::make_unique<ScopedEnvOverride>(
+                std::vector<std::pair<std::string, std::string>>{
+                    {"KOG_SHELL_TIMEOUT_MS", timeoutText},
+                    {"KOG_SHELL_CAPTURE_TIMEOUT_MS", timeoutText},
+                });
+        }
 
         auto finishSuccess = [&](const std::string& outcome, const std::string& reason) {
             result.status = workspace::RepoOperationStatus::Succeeded;
@@ -3297,7 +3314,7 @@ auto RunNativeOriginLatestSync(
     workspace::RepoOperationSchedulerOptions schedulerOptions;
     schedulerOptions.operationName = "sync";
     schedulerOptions.mode = workspace::RepoOperationMode::MutatingDependencyWaves;
-    schedulerOptions.jobs = InJobs < 1 ? 1 : InJobs;
+    schedulerOptions.jobs = InGitCaptureTimeoutMs.has_value() ? 1 : (InJobs < 1 ? 1 : InJobs);
     schedulerOptions.resolveGitCommonDirLocks = true;
 
     const auto aggregate = workspace::RunRepoOperationScheduler(
@@ -4340,19 +4357,22 @@ auto RunSyncOriginLatestNativeDetailed(const std::filesystem::path& InRepoRoot,
                                        bool InRecursive,
                                        bool InDryRun,
                                        bool InCleanupStaleLocks,
-                                       bool InCheckGitlinkReachability) -> std::pair<int, workspace::RepoOperationAggregate>;
+                                       bool InCheckGitlinkReachability,
+                                       std::optional<unsigned int> InGitCaptureTimeoutMs) -> std::pair<int, workspace::RepoOperationAggregate>;
 
 auto RunSyncOriginLatestNative(const std::filesystem::path& InRepoRoot,
                                const bool InRecursive,
                                const bool InDryRun,
                                const bool InCleanupStaleLocks,
-                               const bool InCheckGitlinkReachability) -> int {
+                               const bool InCheckGitlinkReachability,
+                               std::optional<unsigned int> InGitCaptureTimeoutMs) -> int {
     const auto detailed = RunSyncOriginLatestNativeDetailed(
         InRepoRoot,
         InRecursive,
         InDryRun,
         InCleanupStaleLocks,
-        InCheckGitlinkReachability);
+        InCheckGitlinkReachability,
+        InGitCaptureTimeoutMs);
     return detailed.first;
 }
 
@@ -4360,7 +4380,8 @@ auto RunSyncOriginLatestNativeDetailed(const std::filesystem::path& InRepoRoot,
                                        const bool InRecursive,
                                        const bool InDryRun,
                                        const bool InCleanupStaleLocks,
-                                       const bool InCheckGitlinkReachability) -> std::pair<int, workspace::RepoOperationAggregate> {
+                                       const bool InCheckGitlinkReachability,
+                                       std::optional<unsigned int> InGitCaptureTimeoutMs) -> std::pair<int, workspace::RepoOperationAggregate> {
     workspace::RepoOperationAggregate aggregate;
     const auto code = RunNativeOriginLatestSync(
         InRepoRoot,
@@ -4375,7 +4396,8 @@ auto RunSyncOriginLatestNativeDetailed(const std::filesystem::path& InRepoRoot,
         1,
         &aggregate,
         true,
-        InCheckGitlinkReachability);
+        InCheckGitlinkReachability,
+        InGitCaptureTimeoutMs);
     return {code, std::move(aggregate)};
 }
 

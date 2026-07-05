@@ -22,13 +22,15 @@ auto RunSyncOriginLatestNative(const std::filesystem::path& InRepoRoot,
                                bool InRecursive,
                                bool InDryRun,
                                bool InCleanupStaleLocks = false,
-                               bool InCheckGitlinkReachability = true) -> int;
+                               bool InCheckGitlinkReachability = true,
+                               std::optional<unsigned int> InGitCaptureTimeoutMs = std::nullopt) -> int;
 
 auto RunSyncOriginLatestNativeDetailed(const std::filesystem::path& InRepoRoot,
                                        bool InRecursive,
                                        bool InDryRun,
                                        bool InCleanupStaleLocks = false,
-                                       bool InCheckGitlinkReachability = true) -> std::pair<int, workspace::RepoOperationAggregate>;
+                                       bool InCheckGitlinkReachability = true,
+                                       std::optional<unsigned int> InGitCaptureTimeoutMs = std::nullopt) -> std::pair<int, workspace::RepoOperationAggregate>;
 
 void FixRepoHygieneRecursive(const std::filesystem::path& InWorkspaceRoot);
 
