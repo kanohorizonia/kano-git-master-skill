@@ -171,7 +171,7 @@ TEST_CASE("NormalizeCommitPlanRepoPaths accepts staged rename old pathspecs trac
     REQUIRE(doc["stages"]["commit"][0]["commits"][0]["include"].get<std::vector<std::string>>() == std::vector<std::string>{"old-name.md", "new-name.md"});
 }
 
-TEST_CASE("NormalizeCommitPlanRepoPaths accepts many deleted tracked pathspecs from cached HEAD tree",
+TEST_CASE("NormalizeCommitPlanRepoPaths accepts many deleted tracked pathspecs from cached HEAD probes",
           "[Unit][CommitPlan][Normalize][Performance]") {
     const auto workspace = UniqueTempWorkspace("many-deleted-tracked-pathspecs");
     const auto repoRoot = (workspace / "parent-skill").lexically_normal();
