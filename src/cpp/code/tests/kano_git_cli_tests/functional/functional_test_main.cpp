@@ -2229,6 +2229,58 @@ TEST_CASE("commit_auto_ignores_unreal_artifacts_in_root_and_submodule", "[functi
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("commit_plan_scoped_ignore_gate_allows_tracked_source_under_build_segment", "[functional][commit][ignore-gate][KG-BUG-0016]") {
+    const auto ctx = CreateRemoteWithClone("commit-plan-build-source-delete");
+    const auto sourcePath = std::filesystem::path("src") / "cpp" / "build" / "script" / "common" / "tool.sh";
+    WriteTextFile(ctx.cloneRepo / sourcePath, "#!/usr/bin/env bash\necho source\n");
+    RequireSuccess(RunGit({"add", sourcePath.generic_string()}, ctx.cloneRepo), "add tracked build source");
+    RequireSuccess(RunGit({"commit", "-m", "test(functional): seed tracked build source"}, ctx.cloneRepo), "commit tracked build source");
+    RequireSuccess(RunGit({"push"}, ctx.cloneRepo), "push tracked build source");
+
+    std::error_code ec;
+    REQUIRE(std::filesystem::remove(ctx.cloneRepo / sourcePath, ec));
+    REQUIRE(!ec);
+
+    const auto planPath = (ctx.cloneRepo / ".kano" / "cache" / "git" / "plans" / "build-source-delete.json").lexically_normal();
+    RequireSuccess(RunKog({"plan", "new", "--force", "--output", planPath.string()}, ctx.cloneRepo), "plan new");
+    RequireSuccess(
+        RunKog({
+            "plan", "prepare", "add-commit-entry",
+            "--plan-file", planPath.string(),
+            "--repo", ".",
+            "--commit-message", "test(functional): remove tracked build source",
+            "--commit-include", sourcePath.generic_string(),
+            "--commit-review-verdict", "pass",
+            "--commit-review-reason", "functional regression for tracked source under build segment"
+        }, ctx.cloneRepo),
+        "plan add commit entry");
+    RequireSuccess(
+        RunKog({"plan", "verify", "pre-apply", "--stage", "commit", "--plan-file", planPath.string()}, ctx.cloneRepo),
+        "plan verify pre-apply");
+
+    const auto result = RunKog({"commit-push", "--plan-file", planPath.string()}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    const auto merged = result.stdoutText + "\n" + result.stderrText;
+    REQUIRE(merged.find("ignore gate failed") == std::string::npos);
+    RequireContainsText(result.stdoutText, "scoped safety gates checked files=1");
+
+    const auto status = RunGit({"status", "--short"}, ctx.cloneRepo);
+    RequireSuccess(status, "status after tracked build source delete commit");
+    REQUIRE(TrimCopy(status.stdoutText).empty());
+
+    const auto subject = RunGit({"log", "-1", "--pretty=%s"}, ctx.cloneRepo);
+    RequireSuccess(subject, "read tracked build source delete commit subject");
+    REQUIRE(TrimCopy(subject.stdoutText) == "test(functional): remove tracked build source");
+
+    const auto [behind, ahead] = AheadBehindCounts(ctx.cloneRepo);
+    REQUIRE(behind == 0);
+    REQUIRE(ahead == 0);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("reset_stable_remote_fetches_and_attaches_detached_registered_submodule", "[functional][reset][stable-remote]") {
     const auto ctx = CreateRemoteWithSubmoduleClone("reset-stable-remote-detached", "branch_v1.0.0");
     REQUIRE(CurrentBranch(ctx.cloneChildRepo).empty());

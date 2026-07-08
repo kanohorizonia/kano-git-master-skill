@@ -3035,6 +3035,15 @@ auto PlanPathspecCoversPath(std::string InPathspec, std::string InPath) -> bool 
     return InPath.rfind(InPathspec, 0) == 0;
 }
 
+auto PlanScopedSafetyPathExistsInHead(const PlanScopedSafetyFile& InFile) -> bool {
+    const auto path = NormalizeGitPathForPlanSafety(InFile.path);
+    if (path.empty()) {
+        return false;
+    }
+    const auto result = GitCapture(InFile.repo, {"cat-file", "-e", "HEAD:" + path});
+    return result.exitCode == 0;
+}
+
 auto CollectPlanScopedPathspecFiles(const std::filesystem::path& InRepo,
                                     const std::string& InIncludePathspec,
                                     const std::vector<std::string>& InExcludePathspecs) -> std::vector<std::string> {
@@ -3144,6 +3153,9 @@ auto RunPlanScopedSafetyGatesForNativeCommit(
         for (const auto& file : files) {
             auto p = NormalizeGitPathForPlanSafety(file.path);
             if (p.empty() || !IsProbableIgnoreArtifactPath(p)) {
+                continue;
+            }
+            if (PlanScopedSafetyPathExistsInHead(file)) {
                 continue;
             }
             if (IsInternalPipelineArtifactPath(p)) {

@@ -1651,6 +1651,15 @@ auto BuildPlanFileSafetyScope(const std::filesystem::path& InWorkspaceRoot,
     return scope;
 }
 
+auto PlanSafetyCandidatePathExistsInHead(const PlanSafetyCandidateFile& InFile) -> bool {
+    auto path = NormalizeGitPath(InFile.path);
+    if (path.empty()) {
+        return false;
+    }
+    const auto result = shell::ExecuteCommand("git", {"cat-file", "-e", "HEAD:" + path}, shell::ExecMode::Capture, InFile.repo);
+    return result.exitCode == 0;
+}
+
 auto CollectPlanFileRepoRoots(const std::filesystem::path& InWorkspaceRoot,
                               const std::filesystem::path& InPlanPath) -> std::vector<std::filesystem::path> {
     std::vector<std::filesystem::path> repos;
@@ -1718,6 +1727,9 @@ auto RunPlanFileExactSafetyGates(const std::filesystem::path& InWorkspaceRoot,
         for (const auto& file : scope.files) {
             auto p = NormalizeGitPath(file.path);
             if (p.empty() || !IsProbableIgnoreArtifactPath(p)) {
+                continue;
+            }
+            if (PlanSafetyCandidatePathExistsInHead(file)) {
                 continue;
             }
             if (IsInternalPipelineArtifactPath(p)) {

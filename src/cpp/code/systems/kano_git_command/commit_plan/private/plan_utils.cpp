@@ -2917,9 +2917,16 @@ auto IsProbableIgnoreArtifactPath(const std::string& InPath) -> bool {
         return true;
     }
 
+    if (contains("build/windows/fileopenorder/") ||
+        contains("build/windows/chunklayerinfo/") ||
+        contains("build/windowsnoeditor/fileopenorder/") ||
+        contains("build/android_multi/fileopenorder/")) {
+        return true;
+    }
+
     if (PathHasSegment(lower, "node_modules") ||
         PathHasSegment(lower, "dist") ||
-        PathHasSegment(lower, "build") ||
+        PathStartsWithSegment(lower, "build") ||
         PathHasSegment(lower, "bin") ||
         PathHasSegment(lower, "obj") ||
         PathHasSegment(lower, "target") ||
