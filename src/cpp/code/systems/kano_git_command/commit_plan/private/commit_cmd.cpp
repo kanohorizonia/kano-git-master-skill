@@ -3473,6 +3473,45 @@ auto StageCommitItemForPlan(const std::filesystem::path& InWorkspaceRoot,
                             std::string* OutStdout,
                             std::string* OutStderr,
                             std::string* OutError) -> bool {
+    if (!InItem.include.empty()) {
+        const auto cachedBeforeReset = GitCapture(InRepo, {"diff", "--cached", "--name-only"});
+        AppendExecResult(OutStdout, OutStderr, cachedBeforeReset);
+        if (cachedBeforeReset.exitCode != 0) {
+            if (OutError != nullptr) {
+                *OutError = "git diff --cached failed before plan-staged commit";
+            }
+            return false;
+        }
+        std::istringstream stagedStream(cachedBeforeReset.stdoutStr);
+        std::string stagedLine;
+        while (std::getline(stagedStream, stagedLine)) {
+            const auto stagedPath = NormalizeGitPathForPlanSafety(stagedLine);
+            if (stagedPath.empty()) {
+                continue;
+            }
+            bool included = false;
+            for (const auto& includePathspec : InItem.include) {
+                if (PlanPathspecCoversPath(includePathspec, stagedPath)) {
+                    included = true;
+                    break;
+                }
+            }
+            bool excluded = false;
+            for (const auto& excludePathspec : InItem.exclude) {
+                if (PlanPathspecCoversPath(excludePathspec, stagedPath)) {
+                    excluded = true;
+                    break;
+                }
+            }
+            if (!included || excluded) {
+                if (OutError != nullptr) {
+                    *OutError = "plan commit blocked by pre-existing staged path outside plan include/exclude scope: " + stagedPath;
+                }
+                return false;
+            }
+        }
+    }
+
     const auto reset = GitCapture(InRepo, {"reset", "-q"});
     AppendExecResult(OutStdout, OutStderr, reset);
     if (reset.exitCode != 0) {

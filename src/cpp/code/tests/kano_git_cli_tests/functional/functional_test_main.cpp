@@ -859,6 +859,44 @@ TEST_CASE("commit_push_plan_file_keeps_exact_include_scope", "[functional][commi
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("commit_push_plan_file_preserves_unrelated_staged_paths", "[functional][commit-push][plan-file][pathspec][index]") {
+    const auto ctx = CreateRemoteWithClone("plan-file-preserve-staged");
+    WriteTextFile(ctx.cloneRepo / "included.txt", "include me\n");
+    WriteTextFile(ctx.cloneRepo / "unrelated.txt", "keep staged\n");
+    RequireSuccess(RunGit({"add", "unrelated.txt"}, ctx.cloneRepo), "stage unrelated path");
+
+    const auto planPath = (ctx.cloneRepo / ".kano" / "cache" / "git" / "plans" / "preserve-staged.json").lexically_normal();
+    RequireSuccess(RunKog({"plan", "new", "--force", "--output", planPath.string()}, ctx.cloneRepo), "plan new");
+    RequireSuccess(
+        RunKog({
+            "plan", "prepare", "add-commit-entry",
+            "--plan-file", planPath.string(),
+            "--repo", ".",
+            "--commit-message", "test(functional): exact include preserves index",
+            "--commit-include", "included.txt",
+            "--commit-review-verdict", "pass",
+            "--commit-review-reason", "functional regression for preserving unrelated staged paths"
+        }, ctx.cloneRepo),
+        "plan add commit entry");
+
+    const auto result = RunKog({"commit-push", "--plan-file", planPath.string()}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode != 0);
+    RequireContainsText(result.stdoutText + "\n" + result.stderrText,
+                        "plan commit blocked by pre-existing staged path outside plan include/exclude scope: unrelated.txt");
+
+    const auto cached = RunGit({"diff", "--cached", "--name-only"}, ctx.cloneRepo);
+    RequireSuccess(cached, "cached diff after blocked plan commit-push");
+    REQUIRE(TrimCopy(cached.stdoutText) == "unrelated.txt");
+
+    const auto includedStatus = RunGit({"status", "--short", "--", "included.txt"}, ctx.cloneRepo);
+    RequireSuccess(includedStatus, "included status after blocked plan commit-push");
+    REQUIRE(TrimCopy(includedStatus.stdoutText) == "?? included.txt");
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("sync_none_continues", "[functional][commit-push][post-sync]") {
     const auto ctx = CreateRemoteWithClone("sync-none");
     WriteTextFile(ctx.cloneRepo / "README.md", "seed\nlocal update\n");
