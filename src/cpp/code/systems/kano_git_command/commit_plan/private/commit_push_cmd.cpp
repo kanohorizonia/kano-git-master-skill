@@ -1518,6 +1518,21 @@ struct PlanSafetyScope {
     std::vector<PlanSafetyCandidateFile> files;
 };
 
+struct PostSyncRepoPathScope {
+    std::vector<std::string> include;
+    std::vector<std::string> exclude;
+};
+
+struct PostSyncPlanPathScope {
+    bool scoped = false;
+    std::unordered_map<std::string, PostSyncRepoPathScope> repos;
+};
+
+struct PostSyncChangedPathSet {
+    std::vector<std::string> paths;
+    bool hasUntracked = false;
+};
+
 auto NormalizeGitPath(std::string InPath) -> std::string {
     std::replace(InPath.begin(), InPath.end(), '\\', '/');
     while (InPath.rfind("./", 0) == 0) {
@@ -1539,6 +1554,98 @@ auto PathspecCoversPath(std::string InPathspec, std::string InPath) -> bool {
         InPathspec.push_back('/');
     }
     return InPath.rfind(InPathspec, 0) == 0;
+}
+
+auto RepoScopeKey(const std::filesystem::path& InRepoRoot) -> std::string {
+    return InRepoRoot.lexically_normal().generic_string();
+}
+
+auto PostSyncPathAllowedByScope(const PostSyncPlanPathScope* InScope,
+                                const std::filesystem::path& InRepoRoot,
+                                const std::string& InPath) -> bool {
+    if (InScope == nullptr || !InScope->scoped) {
+        return true;
+    }
+
+    const auto repoIt = InScope->repos.find(RepoScopeKey(InRepoRoot));
+    if (repoIt == InScope->repos.end()) {
+        return false;
+    }
+
+    const auto path = NormalizeGitPath(InPath);
+    bool included = false;
+    for (const auto& include : repoIt->second.include) {
+        if (PathspecCoversPath(include, path)) {
+            included = true;
+            break;
+        }
+    }
+    if (!included) {
+        return false;
+    }
+
+    for (const auto& exclude : repoIt->second.exclude) {
+        if (PathspecCoversPath(exclude, path)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+auto BuildPostSyncPlanPathScope(const std::filesystem::path& InWorkspaceRoot,
+                                const std::filesystem::path& InPlanPath) -> PostSyncPlanPathScope {
+    PostSyncPlanPathScope scope;
+    const auto payload = ReadTextFile(InPlanPath);
+    if (!payload.has_value()) {
+        return scope;
+    }
+
+    const auto stages = ExtractObjectBodyForKey(*payload, "stages");
+    if (!stages.has_value()) {
+        return scope;
+    }
+
+    bool sawCommit = false;
+    bool hasUnscopedCommit = false;
+    const auto collectStage = [&](const std::string& stageKey) {
+        const auto stageArray = ExtractArrayBodyForKey(*stages, stageKey).value_or(std::string{});
+        for (const auto& repoObj : SplitTopLevelObjects(stageArray)) {
+            const auto repoSpec = ExtractStringField(repoObj, "repo").value_or(".");
+            const auto repoRoot = ResolveRepoFromSpec(InWorkspaceRoot, std::filesystem::path(repoSpec), 12, true).lexically_normal();
+            const auto commits = ExtractArrayBodyForKey(repoObj, "commits").value_or(std::string{});
+            for (const auto& commitObj : SplitTopLevelObjects(commits)) {
+                sawCommit = true;
+                const auto includes = ExtractStringArrayField(commitObj, "include");
+                const auto excludes = ExtractStringArrayField(commitObj, "exclude");
+                if (includes.empty()) {
+                    hasUnscopedCommit = true;
+                    continue;
+                }
+
+                auto& repoScope = scope.repos[RepoScopeKey(repoRoot)];
+                for (const auto& include : includes) {
+                    const auto normalized = NormalizeGitPath(include);
+                    if (!normalized.empty()) {
+                        repoScope.include.push_back(normalized);
+                    }
+                }
+                for (const auto& exclude : excludes) {
+                    const auto normalized = NormalizeGitPath(exclude);
+                    if (!normalized.empty()) {
+                        repoScope.exclude.push_back(normalized);
+                    }
+                }
+            }
+        }
+    };
+    collectStage("commit");
+    collectStage("post_sync");
+
+    scope.scoped = sawCommit && !hasUnscopedCommit;
+    if (!scope.scoped) {
+        scope.repos.clear();
+    }
+    return scope;
 }
 
 auto CollectPlanPathspecFiles(const std::filesystem::path& InRepo,
@@ -1925,6 +2032,53 @@ auto RepoHasAnyWorkingTreeChanges(const std::filesystem::path& InRepoRoot) -> bo
     return status.exitCode == 0 && !FilterIgnoredReservedStatusLines(status.stdoutStr).empty();
 }
 
+auto ParsePostSyncChangedPaths(const std::string& InStatusPorcelain,
+                               const std::filesystem::path& InRepoRoot,
+                               const PostSyncPlanPathScope* InScope) -> PostSyncChangedPathSet {
+    PostSyncChangedPathSet out;
+    for (const auto& line : FilterIgnoredReservedStatusLines(InStatusPorcelain)) {
+        if (line.size() < 4) {
+            continue;
+        }
+        std::string path = Trim(line.substr(3));
+        if (path.empty()) {
+            continue;
+        }
+        const auto renamePos = path.find(" -> ");
+        if (renamePos != std::string::npos) {
+            path = Trim(path.substr(renamePos + 4));
+        }
+        if (path.empty() || !PostSyncPathAllowedByScope(InScope, InRepoRoot, path)) {
+            continue;
+        }
+        if (line.rfind("?? ", 0) == 0) {
+            out.hasUntracked = true;
+            continue;
+        }
+        out.paths.push_back(path);
+    }
+    return out;
+}
+
+auto AnyRepoHasPostSyncWorkingTreeChanges(const std::vector<std::filesystem::path>& InRepos,
+                                          const PostSyncPlanPathScope* InScope) -> bool {
+    if (InScope == nullptr || !InScope->scoped) {
+        return AnyRepoHasWorkingTreeChanges(InRepos);
+    }
+
+    for (const auto& repo : InRepos) {
+        const auto status = shell::ExecuteCommand("git", {"status", "--porcelain"}, shell::ExecMode::Capture, repo);
+        if (status.exitCode != 0) {
+            continue;
+        }
+        const auto changed = ParsePostSyncChangedPaths(status.stdoutStr, repo, InScope);
+        if (changed.hasUntracked || !changed.paths.empty()) {
+            return true;
+        }
+    }
+    return false;
+}
+
 auto PlanStageLikelyNonEmpty(const std::filesystem::path& InPlanFile, const std::string& InStageKey) -> bool {
     std::ifstream in(InPlanFile, std::ios::in | std::ios::binary);
     if (!in) {
@@ -2060,7 +2214,8 @@ auto IsRegisteredSubmodulePath(const std::filesystem::path& InRepoRoot, const st
     return false;
 }
 
-auto CollectGitlinkOnlyChangedPaths(const std::filesystem::path& InRepoRoot) -> std::vector<std::string> {
+auto CollectGitlinkOnlyChangedPaths(const std::filesystem::path& InRepoRoot,
+                                    const PostSyncPlanPathScope* InScope = nullptr) -> std::vector<std::string> {
     const auto status = shell::ExecuteCommand("git", {"status", "--porcelain"}, shell::ExecMode::Capture, InRepoRoot);
     if (status.exitCode != 0) {
         return {};
@@ -2069,11 +2224,11 @@ auto CollectGitlinkOnlyChangedPaths(const std::filesystem::path& InRepoRoot) -> 
     if (Trim(porcelain).empty()) {
         return {};
     }
-    const auto changedPaths = ParsePorcelainChangedPaths(porcelain);
-    if (changedPaths.empty()) {
+    const auto changed = ParsePostSyncChangedPaths(porcelain, InRepoRoot, InScope);
+    if (changed.hasUntracked || changed.paths.empty()) {
         return {};
     }
-    for (const auto& path : changedPaths) {
+    for (const auto& path : changed.paths) {
         if (!IsRegisteredSubmodulePath(InRepoRoot, path)) {
             return {};
         }
@@ -2081,7 +2236,7 @@ auto CollectGitlinkOnlyChangedPaths(const std::filesystem::path& InRepoRoot) -> 
             return {};
         }
     }
-    return changedPaths;
+    return changed.paths;
 }
 
 auto BuildNestedRepoWaves(const std::vector<std::filesystem::path>& InRepos) -> std::vector<std::vector<std::filesystem::path>> {
@@ -2227,8 +2382,9 @@ struct PostSyncDeltaSummary {
 };
 
 auto ClassifyPostSyncDelta(const std::filesystem::path& InWorkspaceRoot,
-                           const std::vector<std::string>& InRepoList,
-                           const bool InNoRecursive) -> PostSyncDeltaSummary {
+                            const std::vector<std::string>& InRepoList,
+                            const bool InNoRecursive,
+                            const PostSyncPlanPathScope* InScope = nullptr) -> PostSyncDeltaSummary {
     PostSyncDeltaSummary summary;
     const auto repos = CollectPostSyncCandidateRepos(InWorkspaceRoot, InRepoList, InNoRecursive);
     for (const auto& repo : repos) {
@@ -2243,7 +2399,11 @@ auto ClassifyPostSyncDelta(const std::filesystem::path& InWorkspaceRoot,
         if (FilterIgnoredReservedStatusLines(porcelain).empty()) {
             continue;
         }
-        const auto gitlinkPaths = CollectGitlinkOnlyChangedPaths(repo);
+        const auto changed = ParsePostSyncChangedPaths(porcelain, repo, InScope);
+        if (!changed.hasUntracked && changed.paths.empty()) {
+            continue;
+        }
+        const auto gitlinkPaths = CollectGitlinkOnlyChangedPaths(repo, InScope);
         if (!gitlinkPaths.empty()) {
             summary.gitlinkOnlyRepoCount += 1;
             continue;
@@ -2259,8 +2419,9 @@ auto ClassifyPostSyncDelta(const std::filesystem::path& InWorkspaceRoot,
 }
 
 auto AutoAmendGitlinkOnlyPostSyncRepos(const std::filesystem::path& InWorkspaceRoot,
-                                       const std::vector<std::string>& InRepoList,
-                                       const bool InNoRecursive) -> std::pair<int, int> {
+                                        const std::vector<std::string>& InRepoList,
+                                        const bool InNoRecursive,
+                                        const PostSyncPlanPathScope* InScope = nullptr) -> std::pair<int, int> {
     int updatedCount = 0;
     const auto candidateRepos = CollectPostSyncCandidateRepos(InWorkspaceRoot, InRepoList, InNoRecursive);
     const auto maxPasses = std::max<std::size_t>(candidateRepos.size(), 1);
@@ -2269,7 +2430,7 @@ auto AutoAmendGitlinkOnlyPostSyncRepos(const std::filesystem::path& InWorkspaceR
         const auto repoWaves = BuildNestedRepoWaves(candidateRepos);
         for (const auto& wave : repoWaves) {
             for (const auto& repo : wave) {
-                const auto gitlinkPaths = CollectGitlinkOnlyChangedPaths(repo);
+                const auto gitlinkPaths = CollectGitlinkOnlyChangedPaths(repo, InScope);
                 if (gitlinkPaths.empty()) {
                     continue;
                 }
@@ -2311,7 +2472,7 @@ auto AutoAmendGitlinkOnlyPostSyncRepos(const std::filesystem::path& InWorkspaceR
     }
 
     for (const auto& repo : candidateRepos) {
-        if (!CollectGitlinkOnlyChangedPaths(repo).empty()) {
+        if (!CollectGitlinkOnlyChangedPaths(repo, InScope).empty()) {
             std::cerr << "[commit-push] post-sync gitlink-only convergence failed; repo still dirty after iterative passes: "
                       << repo.generic_string() << "\n";
             return {-1, updatedCount};
@@ -2355,6 +2516,7 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
 
     const auto planPath = std::filesystem::path(InNormalizedPlanFile).lexically_normal();
     const auto planRepoRoots = CollectPlanFileRepoRoots(InWorkspaceRoot, planPath);
+    const auto postSyncScope = BuildPostSyncPlanPathScope(InWorkspaceRoot, planPath);
 
     if (agentMode) {
         std::cout << "[commit-push] agent mode + --plan-file detected; using plan-driven flow.\n";
@@ -2453,7 +2615,7 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
                 bool gitlinkOnly = false;
                 bool semanticDrift = false;
                 for (const auto& repoRoot : planRepoRoots) {
-                    const auto summary = ClassifyPostSyncDelta(repoRoot, {}, true);
+                    const auto summary = ClassifyPostSyncDelta(repoRoot, {}, true, &postSyncScope);
                     if (summary.kind == PostSyncDeltaKind::SemanticDrift) {
                         semanticDrift = true;
                         std::cout << "[commit-push] post-sync semantic changes detected; proceeding to post-sync commit stage.\n";
@@ -2463,7 +2625,7 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
                     }
                     if (summary.kind == PostSyncDeltaKind::GitlinkOnly) {
                         gitlinkOnly = true;
-                        const auto amendResult = AutoAmendGitlinkOnlyPostSyncRepos(repoRoot, {}, true);
+                        const auto amendResult = AutoAmendGitlinkOnlyPostSyncRepos(repoRoot, {}, true, &postSyncScope);
                         if (amendResult.first != 0) {
                             return 2;
                         }
@@ -2471,7 +2633,7 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
                     }
                 }
                 if (!gitlinkOnly) {
-                    if (!AnyRepoHasWorkingTreeChanges(planRepoRoots)) {
+                    if (!AnyRepoHasPostSyncWorkingTreeChanges(planRepoRoots, &postSyncScope)) {
                         std::cout << "[commit-push] post-sync plan commit skipped (no working tree changes).\n";
                     } else {
                         if (semanticDrift) {

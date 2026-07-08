@@ -897,6 +897,73 @@ TEST_CASE("commit_push_plan_file_preserves_unrelated_staged_paths", "[functional
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("commit_push_plan_file_ignores_out_of_scope_post_sync_gitlinks", "[functional][commit-push][plan-file][post-sync][pathspec]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("plan-file-post-sync-scope");
+    const auto originalGitlinkHead = GitlinkHeadSha(ctx.cloneRootRepo, ctx.submodulePath);
+
+    WriteTextFile(ctx.cloneChildRepo / "child.txt", "child local out-of-scope update\n");
+    RequireSuccess(RunGit({"add", "child.txt"}, ctx.cloneChildRepo), "child add out-of-scope update");
+    RequireSuccess(RunGit({"commit", "-m", "child out-of-scope update"}, ctx.cloneChildRepo), "child commit out-of-scope update");
+    REQUIRE(CurrentHeadSha(ctx.cloneChildRepo) != originalGitlinkHead);
+
+    WriteTextFile(ctx.cloneRootRepo / "README.md", "root seed\nroot scoped update\n");
+    const auto planPath = (ctx.cloneRootRepo / ".kano" / "cache" / "git" / "plans" / "post-sync-scope.json").lexically_normal();
+    WriteTextFile(planPath, R"json({
+  "meta": {
+    "schema_version": "2",
+    "plan_id": "functional-post-sync-scope",
+    "generated_at_utc": "2026-07-08T00:00:00Z",
+    "executed_at_utc": "",
+    "base_head_sha": "functional",
+    "dirty_fingerprint": "functional",
+    "planner": { "provider": "human", "ai-model": "deterministic" },
+    "review": { "verdict": "pass", "reason": "functional regression for scoped post-sync gitlinks" }
+  },
+  "stages": {
+    "commit": [
+      {
+        "repo": ".",
+        "commits": [
+          {
+            "message": "test(functional): root scoped update",
+            "include": ["README.md"],
+            "exclude": [],
+            "review": { "verdict": "pass", "reason": "commit only the scoped root update" }
+          }
+        ]
+      }
+    ],
+    "post_sync": [
+      {
+        "repo": ".",
+        "commits": [
+          {
+            "message": "test(functional): scoped post-sync update",
+            "include": ["README.md"],
+            "exclude": [],
+            "review": { "verdict": "pass", "reason": "post-sync scope excludes dirty submodule gitlinks" }
+          }
+        ]
+      }
+    ]
+  }
+}
+)json");
+
+    const auto result = RunKog({"commit-push", "--plan-file", planPath.string()}, ctx.cloneRootRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContainsText(result.stdoutText, "post-sync plan commit skipped (no working tree changes).");
+    RequireNotContainsText(result.stdoutText, "post-sync gitlink-only auto-amend applied");
+    REQUIRE(GitlinkHeadSha(ctx.cloneRootRepo, ctx.submodulePath) == originalGitlinkHead);
+    REQUIRE(StatusPorcelain(ctx.cloneRootRepo).find(ctx.submodulePath) != std::string::npos);
+    const auto [behind, ahead] = AheadBehindCounts(ctx.cloneRootRepo);
+    REQUIRE(behind == 0);
+    REQUIRE(ahead == 0);
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("sync_none_continues", "[functional][commit-push][post-sync]") {
     const auto ctx = CreateRemoteWithClone("sync-none");
     WriteTextFile(ctx.cloneRepo / "README.md", "seed\nlocal update\n");
