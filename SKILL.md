@@ -184,6 +184,16 @@ In agent mode, the external agent owns semantic authoring decisions. `kog` owns
 deterministic plan bootstrap, freshness refresh, verification, execution, sync,
 and push.
 
+Direct `git commit`, `git push`, merge, rebase, cherry-pick, or broad staging is
+not a normal agent-mode completion path. Use `kog` plan/commit-push/converge or
+an approved KOA `commit_plan` worker, and report the route as source integration
+evidence when source files changed.
+
+Use a shared checkout for low-conflict exact-path or chunk-scoped changes. Open
+or keep a dedicated worktree for broad refactors, generated rewrites, long
+validation runs, known overlapping ownership, or changes that need isolated
+branch review.
+
 ## Repo Hygiene
 
 Run before committing or exporting release archives:
