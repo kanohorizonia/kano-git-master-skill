@@ -2486,6 +2486,13 @@ bool DirtyKindBlocksBranchPlan(const std::string& dirtyKind) {
     return dirtyKind != "CLEAN" && dirtyKind != "AHEAD_ONLY" && dirtyKind != "BEHIND_ONLY";
 }
 
+bool IsPublishBranchCandidate(const BranchCandidate& candidate) {
+    const auto branchName = candidate.remoteOnly && !candidate.remoteBranch.empty()
+        ? candidate.remoteBranch
+        : candidate.name;
+    return branchName == "gh-pages";
+}
+
 std::vector<std::string> SplitNonEmptyLines(const std::string& text) {
     std::vector<std::string> lines;
     std::istringstream stream(text);
@@ -3311,9 +3318,36 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
     for (const auto& candidate : branches) {
         const auto& branch = candidate.name;
         const auto& branchRef = candidate.ref;
+        const auto isTarget = !candidate.remoteOnly && branch == targetBranch;
+        if (!isTarget && IsPublishBranchCandidate(candidate)) {
+            branchesJson.push_back({
+                {"name", branch},
+                {"ref", branchRef},
+                {"remoteOnly", candidate.remoteOnly},
+                {"remote", candidate.remote},
+                {"remoteBranch", candidate.remoteBranch},
+                {"isTarget", false},
+                {"targetRef", targetRef},
+                {"strategy", strategy},
+                {"checkedOutWorktrees", nlohmann::json::array()},
+                {"activeLeaseBlocker", false},
+                {"hasUpstream", false},
+                {"ahead", 0},
+                {"behind", 0},
+                {"mergedIntoTarget", false},
+                {"patchEquivalentToTarget", false},
+                {"cherryPickNoopIntoTarget", false},
+                {"integratedIntoTarget", false},
+                {"integrationProof", ""},
+                {"nonConvergeTarget", true},
+                {"skipReason", "PUBLISH_BRANCH"},
+                {"blockers", nlohmann::json::array()},
+                {"proposedActions", nlohmann::json::array({"skipped publish branch; not a coding convergence target"})},
+            });
+            continue;
+        }
         const auto checkedOut = candidate.remoteOnly ? std::vector<std::string>{} : WorktreeLocationsForBranch(worktrees, branch);
         const auto counts = candidate.remoteOnly ? BranchAheadBehind{} : AheadBehindForBranch(repoPath, branch);
-        const auto isTarget = !candidate.remoteOnly && branch == targetBranch;
         const auto merged = isTarget || BranchMergedIntoTarget(repoPath, branchRef, targetRef);
         const auto patchEquivalent = !isTarget && !merged && !targetRef.empty() && BranchPatchEquivalentToTarget(repoPath, targetBranch, branchRef);
 
@@ -3639,6 +3673,10 @@ int RunBranchApply(const std::filesystem::path& root,
                 if (!BranchMatchesFilter(branchJson, branchFilter)) {
                     continue;
                 }
+                if (branchJson.value("nonConvergeTarget", false)) {
+                    AppendBranchAction(result, "skipped", repoId, branch, "non-converge-target", branchJson.value("skipReason", std::string{"skipped branch"}));
+                    continue;
+                }
                 auto blockers = BranchBlockers(branchJson);
                 if (branchJson.value("mergedIntoTarget", false)) {
                     AppendBranchAction(result, "skipped", repoId, branch, "already-merged", "branch is a retire candidate, not an apply candidate");
@@ -3829,6 +3867,10 @@ int RunBranchRetire(const std::filesystem::path& root,
                 const auto branch = branchJson.value("name", std::string{});
                 const auto remoteOnly = branchJson.value("remoteOnly", false);
                 if (branch.empty() || branchJson.value("isTarget", false)) {
+                    continue;
+                }
+                if (branchJson.value("nonConvergeTarget", false)) {
+                    AppendBranchAction(result, "skipped", repoId, branch, "non-converge-target", branchJson.value("skipReason", std::string{"skipped branch"}));
                     continue;
                 }
                 if (!branchJson.value("integratedIntoTarget", branchJson.value("mergedIntoTarget", false))) {

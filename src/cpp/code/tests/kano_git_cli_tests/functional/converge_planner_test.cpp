@@ -481,6 +481,31 @@ TEST_CASE("converge branches inventory no-recursive avoids recursive status snap
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge branches inventory skips gh-pages publish branch", "[functional][converge][branches][inventory][KG-BUG-0020]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-inventory-skips-gh-pages");
+
+    RequireSuccess(RunGit({"checkout", "--orphan", "gh-pages"}, ctx.seedRepo), "checkout gh-pages publish branch");
+    RequireSuccess(RunGit({"rm", "-rf", "."}, ctx.seedRepo), "clear publish branch tree");
+    WriteTextFile(ctx.seedRepo / "index.html", "published docs\n");
+    RequireSuccess(RunGit({"add", "index.html"}, ctx.seedRepo), "add publish branch content");
+    RequireSuccess(RunGit({"commit", "-m", "publish docs"}, ctx.seedRepo), "commit publish branch");
+    RequireSuccess(RunGit({"push", "origin", "gh-pages"}, ctx.seedRepo), "push publish branch");
+    RequireSuccess(RunGit({"fetch", "origin", "refs/heads/gh-pages:refs/remotes/origin/gh-pages"}, ctx.cloneRepo), "fetch remote publish branch");
+
+    const auto result = RunKog({"converge", "branches", "inventory", "--target", ctx.branch, "--json", "--jobs", "1", "--no-recursive"}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    RequireContains(result.stdoutText, "\"schemaName\": \"kog.convergeBranchesInventory\"");
+    RequireContains(result.stdoutText, "\"name\": \"origin/gh-pages\"");
+    RequireContains(result.stdoutText, "\"nonConvergeTarget\": true");
+    RequireContains(result.stdoutText, "\"skipReason\": \"PUBLISH_BRANCH\"");
+    RequireContains(result.stdoutText, "skipped publish branch; not a coding convergence target");
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("converge branches apply fast-forwards target and pushes", "[tdd][functional][feature:converge][converge][branches][apply]") {
     const auto ctx = CreateRemoteWithClone("converge-branches-apply");
     const std::string featureBranch = "feature/apply-fast-forward";
