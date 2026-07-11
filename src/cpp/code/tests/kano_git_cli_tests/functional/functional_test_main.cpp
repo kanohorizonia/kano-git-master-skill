@@ -2709,6 +2709,41 @@ TEST_CASE("sync origin-latest no-recursive does not probe nested repositories", 
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("sync detects target repo rebase before restoring auto-stash", "[functional][sync][conflict][stash][KG-BUG-0030]") {
+    const auto ctx = CreateRemoteWithClone("sync-target-repo-rebase-state");
+
+    WriteTextFile(ctx.seedRepo / "README.md", "remote conflicting line\n");
+    RequireSuccess(RunGit({"commit", "-am", "remote conflicting change"}, ctx.seedRepo), "commit remote conflict");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.seedRepo), "push remote conflict");
+
+    WriteTextFile(ctx.cloneRepo / "README.md", "local conflicting line\n");
+    RequireSuccess(RunGit({"commit", "-am", "local conflicting change"}, ctx.cloneRepo), "commit local conflict");
+    const auto localHead = CurrentHeadSha(ctx.cloneRepo);
+    WriteTextFile(ctx.cloneRepo / "local-dirty.txt", "restore after failed sync\n");
+
+    const auto result = RunKog(
+        {"sync", "origin-latest", "--repo", ctx.cloneRepo.string(), "--no-recursive"},
+        ctx.sandbox.root);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode != 0);
+    const auto output = result.stdoutText + "\n" + result.stderrText;
+    RequireContainsText(output, "SYNC_CONFLICT: rebase conflict detected; aborting rebase for manual review");
+    RequireNotContainsText(output, "could not write index");
+    REQUIRE(CurrentHeadSha(ctx.cloneRepo) == localHead);
+    const auto status = RunGit({"status", "--short"}, ctx.cloneRepo);
+    RequireSuccess(status, "read status after conflict recovery");
+    RequireContainsText(status.stdoutText, "?? local-dirty.txt");
+
+    const auto stashList = RunGit({"stash", "list"}, ctx.cloneRepo);
+    RequireSuccess(stashList, "read stash list after conflict recovery");
+    REQUIRE(TrimCopy(stashList.stdoutText).empty());
+    REQUIRE_FALSE(std::filesystem::exists(ctx.cloneRepo / ".git" / "rebase-merge"));
+    REQUIRE_FALSE(std::filesystem::exists(ctx.cloneRepo / ".git" / "rebase-apply"));
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("sync_runs_self_cpp_build_when_self_repo_cpp_changes_arrive", "[.][functional][sync][self-build]") {
     const auto ctx = CreateRemoteWithClone("sync-self-cpp-build");
     SeedSelfBuildScaffolding(ctx);

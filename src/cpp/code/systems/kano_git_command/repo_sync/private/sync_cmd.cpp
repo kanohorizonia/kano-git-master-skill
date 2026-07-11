@@ -1209,10 +1209,21 @@ auto CurrentBranch(const std::filesystem::path& InRepo) -> std::string {
     return Trim(result.stdoutStr);
 }
 
+auto ResolveRepoGitPath(const std::filesystem::path& InRepo, const std::string& InGitPath) -> std::filesystem::path {
+    auto path = std::filesystem::path(Trim(InGitPath));
+    if (path.empty()) {
+        return {};
+    }
+    if (path.is_relative()) {
+        path = std::filesystem::weakly_canonical(InRepo) / path;
+    }
+    return path.lexically_normal();
+}
+
 auto HasRebaseInProgress(const std::filesystem::path& InRepo) -> bool {
     const auto rebaseMergePath = GitCapture(InRepo, {"rev-parse", "--git-path", "rebase-merge"});
     if (rebaseMergePath.exitCode == 0) {
-        const auto path = Trim(rebaseMergePath.stdoutStr);
+        const auto path = ResolveRepoGitPath(InRepo, rebaseMergePath.stdoutStr);
         if (!path.empty() && std::filesystem::exists(path)) {
             return true;
         }
@@ -1220,7 +1231,7 @@ auto HasRebaseInProgress(const std::filesystem::path& InRepo) -> bool {
 
     const auto rebaseApplyPath = GitCapture(InRepo, {"rev-parse", "--git-path", "rebase-apply"});
     if (rebaseApplyPath.exitCode == 0) {
-        const auto path = Trim(rebaseApplyPath.stdoutStr);
+        const auto path = ResolveRepoGitPath(InRepo, rebaseApplyPath.stdoutStr);
         if (!path.empty() && std::filesystem::exists(path)) {
             return true;
         }
