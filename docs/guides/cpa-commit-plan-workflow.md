@@ -49,6 +49,15 @@ Operationally this means:
 - agent-mode `cpa` must use the shared plan file path
 - deterministic metadata such as `plan_id` and planner identity should be produced by tooling, not hand-patched by the agent
 
+Provider-owned exact-file lanes may set `KOG_PLAN_FRESHNESS_SCOPE=repo` for
+the complete `plan new` through `commit-push` child-process sequence. This
+keeps base-head and dirty fingerprints scoped to the current repository, uses
+distinct `repo-head-v1` and `repo-dirty-v1` hashes, and avoids nested workspace
+discovery for a single-repo plan. The variable is an internal orchestration
+contract: do not expose it as caller input, and do not mix scopes between plan
+creation and apply. A scope mismatch produces different hashes and must fail
+closed as workspace drift.
+
 ## Copilot Chat Session Note
 
 - Observed behavior: human-mode `cpa` may create a new Copilot Chat session on each run.

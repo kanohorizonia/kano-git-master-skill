@@ -15,6 +15,8 @@
 
 #include "plan_utils.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <cstdlib>
 #include <string>
 
@@ -179,4 +181,29 @@ TEST_CASE("SerializePlanJson produces compact output for unrecognised KOG_DEBUG_
     REQUIRE_FALSE(output.empty());
     REQUIRE(IsCompact(output));
     REQUIRE_FALSE(IsPretty(output));
+}
+
+TEST_CASE("Repo freshness scope emits distinct root-only plan hashes",
+          "[Unit][PlanFreshness][KG-BUG-0036]") {
+    const ScopedEnv debugEnv("KOG_DEBUG_PLAN", nullptr);
+    const ScopedEnv scopeEnv("KOG_PLAN_FRESHNESS_SCOPE", "repo");
+
+    const auto output = BuildDefaultPlanTemplate(std::filesystem::temp_directory_path());
+    const auto doc = nlohmann::json::parse(output);
+
+    REQUIRE(doc["meta"]["base_head_sha"].get<std::string>().starts_with("repo-head-v1-"));
+    REQUIRE(doc["meta"]["dirty_fingerprint"].get<std::string>().starts_with("repo-dirty-v1-"));
+    REQUIRE(doc["meta"]["dirty_fingerprint_pre_ignore"].get<std::string>().starts_with("repo-dirty-v1-"));
+}
+
+TEST_CASE("Unknown freshness scope preserves workspace-wide plan hashes",
+          "[Unit][PlanFreshness][KG-BUG-0036]") {
+    const ScopedEnv debugEnv("KOG_DEBUG_PLAN", nullptr);
+    const ScopedEnv scopeEnv("KOG_PLAN_FRESHNESS_SCOPE", "caller-value");
+
+    const auto output = BuildDefaultPlanTemplate(std::filesystem::temp_directory_path());
+    const auto doc = nlohmann::json::parse(output);
+
+    REQUIRE(doc["meta"]["base_head_sha"].get<std::string>().starts_with("ws-head-v2-"));
+    REQUIRE(doc["meta"]["dirty_fingerprint"].get<std::string>().starts_with("ws-dirty-v2-"));
 }

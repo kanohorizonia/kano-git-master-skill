@@ -44,6 +44,11 @@ auto IsKogDebugEnabled() -> bool {
     return IsTruthyEnv(std::getenv("KOG_DEBUG"));
 }
 
+auto UseRepoOnlyPlanFreshness() -> bool {
+    const char* value = std::getenv("KOG_PLAN_FRESHNESS_SCOPE");
+    return value != nullptr && ToLower(Trim(std::string(value))) == "repo";
+}
+
 // Returns InDoc serialized as compact JSON, or pretty-printed with 2-space
 // indentation when KOG_DEBUG_PLAN is set to a truthy value.
 static auto SerializePlanJson(const nlohmann::json& InDoc) -> std::string {
@@ -333,7 +338,10 @@ auto ResolveAiModelForChangeCount(const std::string& InProvider,
 
 auto ComputeWorkspaceBaseHeadSha(const std::filesystem::path& InWorkspaceRoot) -> std::string {
     std::vector<std::string> lines;
-    const auto repos = DiscoverWorkspaceRepos(InWorkspaceRoot);
+    const bool repoOnly = UseRepoOnlyPlanFreshness();
+    const auto repos = repoOnly
+        ? std::vector<std::filesystem::path>{InWorkspaceRoot.lexically_normal()}
+        : DiscoverWorkspaceRepos(InWorkspaceRoot);
     if (IsKogDebugEnabled()) {
         std::cerr << "[DEBUG] ComputeWorkspaceBaseHeadSha: repos=" << repos.size() << "\n";
     }
@@ -352,7 +360,7 @@ auto ComputeWorkspaceBaseHeadSha(const std::filesystem::path& InWorkspaceRoot) -
     for (const auto& line : lines) {
         canonical << line << "\n";
     }
-    const auto result = "ws-head-v2-" + Fnv1a64Hex(canonical.str());
+    const auto result = std::string(repoOnly ? "repo-head-v1-" : "ws-head-v2-") + Fnv1a64Hex(canonical.str());
     if (IsKogDebugEnabled()) {
         std::cerr << "[DEBUG] ComputeWorkspaceBaseHeadSha: result=" << result << "\n";
     }
@@ -563,10 +571,13 @@ static void DebugPrintStatusOutput(const std::filesystem::path& repo, const std:
 auto ComputeWorkspaceDirtyFingerprint(const std::filesystem::path& InWorkspaceRoot) -> std::string {
     SCOPED_TIMING_LOG("plan-utils.ComputeWorkspaceDirtyFingerprint");
     const auto startedAt = std::chrono::steady_clock::now();
+    const bool repoOnly = UseRepoOnlyPlanFreshness();
     std::cout << "[plan][fingerprint] start root=" << InWorkspaceRoot.lexically_normal().generic_string()
-              << " mode=registered-only\n";
+              << " mode=" << (repoOnly ? "repo" : "registered-only") << "\n";
     std::vector<std::string> lines;
-    const auto repos = DiscoverWorkspaceRepos(InWorkspaceRoot);
+    const auto repos = repoOnly
+        ? std::vector<std::filesystem::path>{InWorkspaceRoot.lexically_normal()}
+        : DiscoverWorkspaceRepos(InWorkspaceRoot);
     lines.reserve(repos.size());
     std::size_t dirtyRepos = 0;
     for (const auto& repo : repos) {
@@ -623,7 +634,7 @@ auto ComputeWorkspaceDirtyFingerprint(const std::filesystem::path& InWorkspaceRo
     std::ostringstream canonical;
     for (const auto& line : lines) canonical << line << "\n";
     const auto canonicalStr = canonical.str();
-    const auto result = "ws-dirty-v2-" + Fnv1a64Hex(canonicalStr);
+    const auto result = std::string(repoOnly ? "repo-dirty-v1-" : "ws-dirty-v2-") + Fnv1a64Hex(canonicalStr);
     // Debug: print final fingerprint and canonical for first call only
     static int callCount = 0;
     callCount++;
