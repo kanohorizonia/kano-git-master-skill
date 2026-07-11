@@ -2586,6 +2586,40 @@ auto BuildSyncPlans(
     return {plans, discoverMode};
 }
 
+auto BuildRootOnlySyncPlan(
+    const std::filesystem::path& InRoot,
+    const std::string& InPreferredRemote) -> std::pair<std::vector<SyncPlan>, std::string> {
+    const auto root = std::filesystem::weakly_canonical(InRoot);
+    const auto current = CurrentBranch(root);
+    const auto remoteSelection = SelectSyncRemote(root, root, InPreferredRemote, false, true, current.empty());
+
+    std::string targetBranch;
+    std::string branchSource;
+    if (!current.empty()) {
+        targetBranch = current;
+        branchSource = "root current branch";
+    } else if (!remoteSelection.remote.empty()) {
+        targetBranch = DetectRemoteDefaultBranch(root, remoteSelection.remote);
+        branchSource = "root detached -> remote default";
+    }
+
+    std::vector<SyncPlan> plans;
+    plans.push_back(SyncPlan{
+        .path = root,
+        .type = "root",
+        .remote = remoteSelection.remote,
+        .remoteSelectionSource = remoteSelection.source,
+        .remoteSelectionError = remoteSelection.error,
+        .remoteSelectionDetail = remoteSelection.detail,
+        .targetBranch = targetBranch,
+        .branchSource = targetBranch.empty() ? "unresolved target branch" : branchSource,
+        .kogSyncPolicy = {},
+        .registrationRelativeTo = {},
+        .dependencies = {},
+    });
+    return {std::move(plans), "root-only"};
+}
+
 auto CaptureWorkingTreeFileSnapshots(const std::filesystem::path& InRepo,
                                      const std::string& InStatusText) -> std::vector<WorkingTreeFileSnapshot> {
     std::vector<WorkingTreeFileSnapshot> snapshots;
@@ -2762,14 +2796,18 @@ auto RunNativeOriginLatestSync(
         if (InRecursive && !InDryRun) {
             (void)GitCapture(InRepoRoot, {"fetch", InRemote, "--prune", "--quiet"});
         }
-        auto planResult = BuildSyncPlans(InRepoRoot, InRemote, InMaxDepth, InNoCache, InRefreshCache);
+        auto planResult = InRecursive
+            ? BuildSyncPlans(InRepoRoot, InRemote, InMaxDepth, InNoCache, InRefreshCache)
+            : BuildRootOnlySyncPlan(InRepoRoot, InRemote);
         plans = std::move(planResult.first);
         mode = std::move(planResult.second);
     } catch (const std::exception& ex) {
         if (!InNoCache) {
             std::cerr << "WARN: native discovery failed with cache enabled, retrying without cache: " << ex.what() << "\n";
             try {
-                auto planResult = BuildSyncPlans(InRepoRoot, InRemote, InMaxDepth, true, InRefreshCache);
+                auto planResult = InRecursive
+                    ? BuildSyncPlans(InRepoRoot, InRemote, InMaxDepth, true, InRefreshCache)
+                    : BuildRootOnlySyncPlan(InRepoRoot, InRemote);
                 plans = std::move(planResult.first);
                 mode = std::move(planResult.second);
             } catch (const std::exception& exNoCache) {

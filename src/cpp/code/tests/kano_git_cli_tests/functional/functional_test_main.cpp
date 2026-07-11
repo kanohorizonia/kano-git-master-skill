@@ -2688,6 +2688,27 @@ TEST_CASE("sync_ignores_windows_reserved_paths_during_auto_stash", "[functional]
 #endif
 }
 
+TEST_CASE("sync origin-latest no-recursive does not probe nested repositories", "[functional][sync][discovery][KG-BUG-0028]") {
+    const auto ctx = CreateRemoteWithClone("sync-no-recursive-root-only");
+    const auto nestedRepo = (ctx.cloneRepo / "products" / "deep" / "nested-repo").lexically_normal();
+    InitPlainGitRepo(nestedRepo);
+
+    const auto result = RunKog(
+        {"sync", "origin-latest", "--no-recursive"},
+        ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContainsText(result.stdoutText, "Syncing current repository only (non-recursive mode)");
+    RequireContainsText(result.stdoutText, "Repo: .");
+
+    const auto diagPath = (ctx.cloneRepo / ".kano" / "tmp" / "functional-process-diag.log").lexically_normal();
+    const auto diagnostics = ReadTextFile(diagPath);
+    RequireNotContainsText(diagnostics, "[process-diag] cwd=" + nestedRepo.generic_string());
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("sync_runs_self_cpp_build_when_self_repo_cpp_changes_arrive", "[.][functional][sync][self-build]") {
     const auto ctx = CreateRemoteWithClone("sync-self-cpp-build");
     SeedSelfBuildScaffolding(ctx);
