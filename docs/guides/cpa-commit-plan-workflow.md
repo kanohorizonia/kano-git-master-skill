@@ -74,6 +74,12 @@ through safety checks, staging, and commit. Literal exact-file plans stage blobs
 with `hash-object` plus `update-index --cacheinfo`; wildcard, directory,
 exclude, and nested-repository plans retain the general `git add` path.
 
+Provider-owned archive lanes may opt into `KOG_EXACT_PLAN_COMMIT_MODE=plumbing`.
+After the normal plan review, exact-path and secret gates pass, this mode writes
+the staged tree, creates one commit object, and atomically advances the current
+branch ref without running the worktree-refreshing porcelain commit path. The
+mode is intentionally internal and off by default for normal KOG callers.
+
 ## Copilot Chat Session Note
 
 - Observed behavior: human-mode `cpa` may create a new Copilot Chat session on each run.

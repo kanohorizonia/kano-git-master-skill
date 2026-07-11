@@ -837,13 +837,17 @@ TEST_CASE("commit_push_plan_file_keeps_exact_include_scope", "[functional][commi
         RunKog({"plan", "verify", "pre-apply", "--stage", "commit", "--plan-file", planPath.string()}, ctx.cloneRepo),
         "plan verify pre-apply");
 
-    const auto result = RunKog({"commit-push", "--plan-file", planPath.string()}, ctx.cloneRepo);
+    const auto result = RunKogWithEnv(
+        {"commit-push", "--plan-file", planPath.string()},
+        ctx.cloneRepo,
+        {{"KOG_EXACT_PLAN_COMMIT_MODE", "plumbing"}});
     INFO(result.stdoutText);
     INFO(result.stderrText);
     REQUIRE(result.exitCode == 0);
     RequireContainsText(result.stdoutText, "pre-commit skipped for explicit plan-file");
     RequireContainsText(result.stdoutText, "scoped safety gates checked files=1");
     RequireContainsText(result.stdoutText, "exact cacheinfo staging paths=1");
+    RequireContainsText(result.stdoutText, "exact plumbing commit=true");
     RequireContainsText(result.stdoutText, "exact plan working changes=true");
     RequireNotContainsText(result.stdoutText, "workspace clean; skipping commit/sync/post-sync");
 

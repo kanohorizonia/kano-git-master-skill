@@ -4520,9 +4520,45 @@ auto CommitSingleRepo(const std::filesystem::path& InWorkspaceRoot,
         return result;
     }
 
-    const auto commit = GitCapture(InRepo, {"commit", "-m", commitMessage});
-    appendResult(commit);
-    if (commit.exitCode != 0) {
+    const auto exactCommitMode = ToLower(Trim(
+        std::getenv("KOG_EXACT_PLAN_COMMIT_MODE") == nullptr
+            ? ""
+            : std::getenv("KOG_EXACT_PLAN_COMMIT_MODE")));
+    const bool useExactPlumbingCommit = InStagedOnly && exactCommitMode == "plumbing";
+    int commitExitCode = 0;
+    if (useExactPlumbingCommit) {
+        const auto tree = GitCapture(InRepo, {"write-tree"});
+        appendResult(tree);
+        const auto head = GitCapture(InRepo, {"rev-parse", "--verify", "HEAD"});
+        appendResult(head);
+        const auto branchRef = GitCapture(InRepo, {"symbolic-ref", "-q", "HEAD"});
+        appendResult(branchRef);
+        if (tree.exitCode != 0 || head.exitCode != 0 || branchRef.exitCode != 0 ||
+            Trim(tree.stdoutStr).empty() || Trim(head.stdoutStr).empty() || Trim(branchRef.stdoutStr).empty()) {
+            commitExitCode = 1;
+        } else {
+            const auto commitTree = GitCapture(
+                InRepo,
+                {"commit-tree", Trim(tree.stdoutStr), "-p", Trim(head.stdoutStr), "-m", commitMessage});
+            appendResult(commitTree);
+            if (commitTree.exitCode != 0 || Trim(commitTree.stdoutStr).empty()) {
+                commitExitCode = commitTree.exitCode == 0 ? 1 : commitTree.exitCode;
+            } else {
+                const auto updateRef = GitCapture(
+                    InRepo,
+                    {"update-ref", Trim(branchRef.stdoutStr), Trim(commitTree.stdoutStr), Trim(head.stdoutStr)});
+                appendResult(updateRef);
+                commitExitCode = updateRef.exitCode;
+            }
+        }
+        capturedStdout += "[native-commit] exact plumbing commit=" +
+                          std::string(commitExitCode == 0 ? "true" : "false") + "\n";
+    } else {
+        const auto commit = GitCapture(InRepo, {"commit", "-m", commitMessage});
+        appendResult(commit);
+        commitExitCode = commit.exitCode;
+    }
+    if (commitExitCode != 0) {
         const auto status = RunCommitPreflight(InRepo);
         if (status.stagedCount == 0) {
             result.note = "nothing to commit";
