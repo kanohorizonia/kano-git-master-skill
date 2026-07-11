@@ -1429,6 +1429,42 @@ TEST_CASE("converge agent mode commits backlog changes by inferred intent", "[td
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge agent mode coalesces classified pre-staged paths before remaining intent groups", "[functional][converge][agent-mode][intent-commits][index][KG-BUG-0024]") {
+    const auto ctx = CreateRemoteWithClone("converge-agent-pre-staged-intents");
+    const auto documentation = std::filesystem::path("docs/operator-staged.md");
+    const auto configuration = std::filesystem::path("config/operator-staged.toml");
+    const auto workflowTemplate = std::filesystem::path("templates/feature/remaining.md.template");
+
+    WriteTextFile(ctx.cloneRepo / documentation, "# staged documentation\n");
+    WriteTextFile(ctx.cloneRepo / configuration, "enabled = true\n");
+    RequireSuccess(
+        RunGit({"add", documentation.generic_string(), configuration.generic_string()}, ctx.cloneRepo),
+        "stage paths from separate intent groups");
+    WriteTextFile(ctx.cloneRepo / workflowTemplate, "# remaining unstaged intent\n");
+
+    const auto result = RunKogWithEnv(
+        {"converge", "--no-recursive", "--jobs", "1"},
+        ctx.cloneRepo,
+        {{"KANO_AGENT_MODE", "1"}});
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContains(result.stdoutText, "[Converge][Chore] Commit pre-staged intent changes (NO-TICKET)");
+    RequireContains(result.stdoutText, "include " + documentation.generic_string());
+    RequireContains(result.stdoutText, "include " + configuration.generic_string());
+    RequireContains(result.stdoutText, "[KOG][Docs] Update workflow templates (NO-TICKET)");
+    RequireContains(result.stdoutText, "include " + workflowTemplate.generic_string());
+    RequireNotContains(result.stdoutText, "pre-existing staged path outside plan include/exclude scope");
+    REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
+
+    const auto log = RunGit({"log", "--format=%s", "-n", "3"}, ctx.cloneRepo);
+    RequireSuccess(log, "read pre-staged converge commit log");
+    RequireContains(log.stdoutText, "[Converge][Chore] Commit pre-staged intent changes (NO-TICKET)");
+    RequireContains(log.stdoutText, "[KOG][Docs] Update workflow templates (NO-TICKET)");
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("converge agent mode defers registered child paths from root intent plan", "[tdd][functional][feature:converge-state][converge][agent-mode][intent-commits][gitlink]") {
     const auto ctx = CreateRemoteWithSubmoduleClone("converge-agent-root-content-and-child");
     const auto childDoc = std::filesystem::path("docs/child.md");

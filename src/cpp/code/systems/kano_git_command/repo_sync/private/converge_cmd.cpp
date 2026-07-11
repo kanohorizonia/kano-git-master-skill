@@ -1322,6 +1322,10 @@ std::string DirtyStatusKind(std::string_view rawStatus) {
     return "changed";
 }
 
+bool HasStagedIndexChange(std::string_view rawStatus) {
+    return !rawStatus.empty() && rawStatus.front() != ' ' && rawStatus.front() != '?' && rawStatus.front() != '!';
+}
+
 std::optional<std::string> ExtractDirtyEntryWorkItemId(const DirtyPathEntry& entry) {
     if (const auto itemId = ExtractWorkItemId(entry.path); itemId.has_value()) {
         return itemId;
@@ -1747,6 +1751,7 @@ IntentCommitPlan BuildIntentCommitPlan(const std::filesystem::path& workspaceRoo
     }
 
     std::map<std::string, IntentCommitGroup> grouped;
+    std::vector<DirtyPathEntry> stagedEntries;
     std::vector<std::string> registeredChildPaths;
     const auto uniqueWorkItemId = UniqueWorkItemIdForDirtyEntries(dirtyEntries);
     const auto ticketContextSubsystem = uniqueWorkItemId.has_value()
@@ -1770,6 +1775,10 @@ IntentCommitPlan BuildIntentCommitPlan(const std::filesystem::path& workspaceRoo
             AppendDirtyEntryIncludePaths(plan.ambiguousPaths, entry);
             continue;
         }
+        if (HasStagedIndexChange(entry.rawStatus)) {
+            stagedEntries.push_back(entry);
+            continue;
+        }
         auto& group = grouped[classified->key];
         if (group.key.empty()) {
             group = std::move(*classified);
@@ -1778,6 +1787,24 @@ IntentCommitPlan BuildIntentCommitPlan(const std::filesystem::path& workspaceRoo
         } else {
             AppendDirtyEntryIncludePaths(group.includePaths, entry);
         }
+    }
+
+    if (!stagedEntries.empty()) {
+        IntentCommitGroup stagedGroup;
+        if (const auto stagedWorkItemId = UniqueWorkItemIdForDirtyEntries(stagedEntries); stagedWorkItemId.has_value()) {
+            stagedGroup = MakeTicketContextGroup(
+                *stagedWorkItemId,
+                TicketContextSubsystemForDirtyEntries(stagedEntries, *stagedWorkItemId));
+        } else {
+            stagedGroup.message = KccSubject(
+                "Converge", "Chore", "Commit pre-staged intent changes", "NO-TICKET");
+            stagedGroup.reviewReason = "converge coalesced the complete classified pre-staged set before remaining intent groups";
+        }
+        stagedGroup.key = "0000-pre-staged";
+        for (const auto& entry : stagedEntries) {
+            AppendDirtyEntryIncludePaths(stagedGroup.includePaths, entry);
+        }
+        grouped[stagedGroup.key] = std::move(stagedGroup);
     }
 
     if (grouped.empty() && plan.ambiguousPaths.empty() && !registeredChildPaths.empty()) {
