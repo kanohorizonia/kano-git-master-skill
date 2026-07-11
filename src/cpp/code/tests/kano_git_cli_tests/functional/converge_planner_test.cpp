@@ -1362,13 +1362,16 @@ TEST_CASE("converge commits deferred parent content before refreshed sync and pu
     RequireContains(result.stdoutText, "Converge agent intent commit plan");
     RequireContains(result.stdoutText, "include docs/deferred-after-child.md");
     RequireContains(result.stdoutText, "[converge] sync_repo=.");
+    REQUIRE(CountOccurrences(result.stdoutText, "[converge] sync_repo=.") == 1);
 
     const auto deltaPhase = result.stdoutText.find("[converge] phase=status-delta-after-sync");
     const auto deferredCommitPhase = result.stdoutText.find("[converge] phase=commit-pointer-updates-if-needed");
     const auto refreshedSyncPhase = result.stdoutText.find("[converge] phase=sync-converge-dependent-repos");
+    const auto rootSync = result.stdoutText.find("[converge] sync_repo=.");
     const auto parentPushPhase = result.stdoutText.find("[converge] phase=push-parents-bottom-up");
     REQUIRE(deltaPhase < deferredCommitPhase);
     REQUIRE(deferredCommitPhase < refreshedSyncPhase);
+    REQUIRE(refreshedSyncPhase < rootSync);
     REQUIRE(refreshedSyncPhase < parentPushPhase);
 
     REQUIRE(GitStatusShort(ctx.cloneChildRepo).empty());

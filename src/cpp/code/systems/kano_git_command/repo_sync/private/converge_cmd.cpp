@@ -963,6 +963,43 @@ std::vector<std::string> UniqueRepos(const std::vector<PlanLine>& lines) {
     return repos;
 }
 
+bool RepoHasPlannedDescendantPush(const Snapshot& snapshot, const Plan& plan, const std::string& repoId) {
+    const auto plannedPushRepos = UniqueRepos(plan.push);
+    const std::unordered_set<std::string> plannedPushSet(plannedPushRepos.begin(), plannedPushRepos.end());
+    std::unordered_map<std::string, const RepoStatus*> byId;
+    for (const auto& repo : snapshot.repos) {
+        byId[repo.id] = &repo;
+    }
+    const auto root = byId.find(repoId);
+    if (root == byId.end()) {
+        return false;
+    }
+
+    std::vector<std::string> pending = root->second->childRepos;
+    std::unordered_set<std::string> visited;
+    while (!pending.empty()) {
+        auto child = std::move(pending.back());
+        pending.pop_back();
+        if (!visited.insert(child).second) {
+            continue;
+        }
+        if (plannedPushSet.contains(child)) {
+            return true;
+        }
+        if (const auto it = byId.find(child); it != byId.end()) {
+            pending.insert(pending.end(), it->second->childRepos.begin(), it->second->childRepos.end());
+        }
+    }
+    return false;
+}
+
+bool IsNestedRepo(const Snapshot& snapshot, const std::string& repoId) {
+    const auto it = std::find_if(snapshot.repos.begin(), snapshot.repos.end(), [&](const auto& repo) {
+        return repo.id == repoId;
+    });
+    return it != snapshot.repos.end() && !it->parentRepos.empty();
+}
+
 bool PlanHasRunnableActions(const Plan& plan) {
     return !plan.sync.empty() || !plan.commit.empty() || !plan.push.empty();
 }
@@ -4710,6 +4747,11 @@ void RegisterConverge(CLI::App& InApp) {
                 }
             } else if (phase == "sync-before-push" || phase == "sync-converge-dependent-repos") {
                 for (const auto& line : plan.sync) {
+                    if (phase == "sync-before-push" && RepoHasPlannedDescendantPush(snapshot, plan, line.repo)) {
+                        state.commandLinesUsed[phase].push_back("kog sync deferred until planned descendant push: " + line.repo);
+                        summary.skipped.push_back(line.repo);
+                        continue;
+                    }
                     const auto repoPath = line.repo == "."
                         ? workspaceRoot
                         : (workspaceRoot / std::filesystem::path(line.repo)).lexically_normal();
@@ -4726,7 +4768,10 @@ void RegisterConverge(CLI::App& InApp) {
                     }
                 }
                 } else if (phase == "push-nested-bottom-up" || phase == "push-parents-bottom-up") {
-                const auto pushRepos = UniqueRepos(plan.push);
+                auto pushRepos = UniqueRepos(plan.push);
+                if (phase == "push-nested-bottom-up") {
+                    std::erase_if(pushRepos, [&](const auto& repo) { return !IsNestedRepo(snapshot, repo); });
+                }
                 if (pushRepos.empty()) {
                     state.commandLinesUsed[phase].push_back("kog push skipped: no planned repositories");
                 } else {
