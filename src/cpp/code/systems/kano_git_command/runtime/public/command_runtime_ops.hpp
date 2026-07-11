@@ -30,7 +30,8 @@ auto RunSyncOriginLatestNativeDetailed(const std::filesystem::path& InRepoRoot,
                                        bool InDryRun,
                                        bool InCleanupStaleLocks = false,
                                        bool InCheckGitlinkReachability = true,
-                                       std::optional<unsigned int> InGitCaptureTimeoutMs = std::nullopt) -> std::pair<int, workspace::RepoOperationAggregate>;
+                                       std::optional<unsigned int> InGitCaptureTimeoutMs = std::nullopt,
+                                       bool InResolvePublishedGitlinkConflicts = false) -> std::pair<int, workspace::RepoOperationAggregate>;
 
 void FixRepoHygieneRecursive(const std::filesystem::path& InWorkspaceRoot);
 

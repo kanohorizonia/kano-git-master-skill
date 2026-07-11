@@ -1390,6 +1390,64 @@ TEST_CASE("converge commits deferred parent content before refreshed sync and pu
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge resolves parent rebase gitlinks to published child heads", "[tdd][functional][feature:converge-state][converge][sync][gitlink][agent-mode][KG-BUG-0035]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("converge-published-gitlink-rebase-conflict");
+    const auto initialChild = RunGit({"rev-parse", "HEAD"}, ctx.childSeedRepo);
+    RequireSuccess(initialChild, "resolve initial child commit");
+
+    WriteTextFile(ctx.childSeedRepo / "remote-a.txt", "remote child history A\n");
+    RequireSuccess(RunGit({"add", "remote-a.txt"}, ctx.childSeedRepo), "stage remote child A");
+    RequireSuccess(RunGit({"commit", "-m", "remote child A"}, ctx.childSeedRepo), "commit remote child A");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.childSeedRepo), "push remote child A");
+    RequireSuccess(RunGit({"pull", "--ff-only", "origin", ctx.branch}, ctx.rootSeedRepo / ctx.submodulePath), "advance root seed child to A");
+    WriteTextFile(ctx.rootSeedRepo / "remote-root.txt", "remote root points to A\n");
+    RequireSuccess(RunGit({"add", ctx.submodulePath, "remote-root.txt"}, ctx.rootSeedRepo), "stage remote root pointer A");
+    RequireSuccess(RunGit({"commit", "-m", "remote root pointer A"}, ctx.rootSeedRepo), "commit remote root pointer A");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.rootSeedRepo), "push remote root pointer A");
+
+    RequireSuccess(RunGit({"reset", "--hard", TrimCopy(initialChild.stdoutText)}, ctx.childSeedRepo), "rewind child seed for canonical history C");
+    WriteTextFile(ctx.childSeedRepo / "canonical-c.txt", "published canonical child history C\n");
+    RequireSuccess(RunGit({"add", "canonical-c.txt"}, ctx.childSeedRepo), "stage canonical child C");
+    RequireSuccess(RunGit({"commit", "-m", "canonical child C"}, ctx.childSeedRepo), "commit canonical child C");
+    RequireSuccess(RunGit({"push", "--force", "origin", ctx.branch}, ctx.childSeedRepo), "rewrite fixture child remote to canonical C");
+
+    RequireSuccess(RunGit({"fetch", "origin"}, ctx.cloneChildRepo), "fetch canonical child C");
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneChildRepo), "checkout child branch for canonical C");
+    RequireSuccess(RunGit({"reset", "--hard", "origin/" + ctx.branch}, ctx.cloneChildRepo), "align child worktree to published canonical C");
+    const auto canonicalChild = RunGit({"rev-parse", "HEAD"}, ctx.cloneChildRepo);
+    RequireSuccess(canonicalChild, "resolve canonical child C");
+
+    WriteTextFile(ctx.cloneRootRepo / "local-root.txt", "local root points to C\n");
+    RequireSuccess(RunGit({"add", ctx.submodulePath, "local-root.txt"}, ctx.cloneRootRepo), "stage local root pointer C");
+    RequireSuccess(RunGit({"commit", "-m", "local root pointer C"}, ctx.cloneRootRepo), "commit local root pointer C");
+    RequireSuccess(RunGit({"fetch", "origin", ctx.branch}, ctx.cloneRootRepo), "fetch remote root pointer A");
+    WriteTextFile(ctx.cloneRootRepo / "docs" / "root-policy.md", "root content requiring converge sync\n");
+
+    const auto result = RunKogWithEnv(
+        {"converge", "--jobs", "1"},
+        ctx.cloneRootRepo,
+        {{"KANO_AGENT_MODE", "1"}});
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContains(result.stdoutText, "Resolved published gitlink rebase conflict: " + ctx.submodulePath);
+    RequireContains(result.stdoutText, "Resolved all published gitlink-only rebase conflicts");
+    RequireContains(result.stdoutText, "[converge] completed");
+    REQUIRE(GitStatusShort(ctx.cloneChildRepo).empty());
+    REQUIRE(GitStatusShort(ctx.cloneRootRepo).empty());
+
+    const auto rootPointer = RunGit({"ls-tree", "HEAD", "--", ctx.submodulePath}, ctx.cloneRootRepo);
+    RequireSuccess(rootPointer, "read converged root child pointer");
+    RequireContains(rootPointer.stdoutText, "160000 commit " + TrimCopy(canonicalChild.stdoutText));
+    const auto rootHead = RunGit({"rev-parse", "HEAD"}, ctx.cloneRootRepo);
+    const auto rootOrigin = RunGit({"rev-parse", "origin/" + ctx.branch}, ctx.cloneRootRepo);
+    RequireSuccess(rootHead, "root rev-parse HEAD after gitlink conflict resolution");
+    RequireSuccess(rootOrigin, "root rev-parse origin after gitlink conflict resolution");
+    REQUIRE(rootHead.stdoutText == rootOrigin.stdoutText);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("converge no-recursive scopes planner and runtime to current repo", "[tdd][functional][feature:converge-state][converge][planner][no-recursive]") {
     const auto plannerCtx = CreateRemoteWithSubmoduleClone("converge-no-recursive-plan");
     WriteTextFile(plannerCtx.cloneRootRepo / "root-only.txt", "current repo change\n");

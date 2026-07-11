@@ -4758,7 +4758,7 @@ void RegisterConverge(CLI::App& InApp) {
                     const auto timeoutText = convergeSyncTimeoutMs.has_value() ? std::to_string(*convergeSyncTimeoutMs) : std::string{"none"};
                     std::cout << "[converge] sync_repo=" << line.repo << " timeout_ms=" << timeoutText << "\n";
                     state.commandLinesUsed[phase].push_back("KOG_CONVERGE_SYNC_TIMEOUT_MS=" + timeoutText + " kog sync origin-latest --repo " + repoPath.generic_string() + " --no-recursive");
-                    const auto detailed = RunSyncOriginLatestNativeDetailed(repoPath, false, false, false, true, convergeSyncTimeoutMs);
+                    const auto detailed = RunSyncOriginLatestNativeDetailed(repoPath, false, false, false, true, convergeSyncTimeoutMs, true);
                     PopulatePhaseSummaryFromSingleRepoAggregate(line.repo, detailed.second, false, detailed.first, summary);
                     if (detailed.first != 0 && summary.failed.empty() && summary.blocked.empty()) {
                         summary.failed.push_back(line.repo);

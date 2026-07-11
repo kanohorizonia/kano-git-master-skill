@@ -2345,6 +2345,104 @@ auto CollectUnmergedPaths(const std::filesystem::path& InRepo) -> std::vector<st
     return paths;
 }
 
+auto IsRegisteredSubmodulePath(const std::filesystem::path& InParentRepo, const std::string& InPath) -> bool {
+    const auto paths = GitCapture(InParentRepo, {"config", "-f", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$"});
+    if (paths.exitCode != 0) {
+        return false;
+    }
+    std::istringstream iss(paths.stdoutStr);
+    std::string line;
+    while (std::getline(iss, line)) {
+        line = Trim(line);
+        const auto separator = line.find_first_of(" \t");
+        if (separator != std::string::npos && Trim(line.substr(separator + 1)) == InPath) {
+            return true;
+        }
+    }
+    return false;
+}
+
+auto UnmergedPathIsGitlinkOnly(const std::filesystem::path& InRepo, const std::string& InPath) -> bool {
+    const auto entries = GitCapture(InRepo, {"ls-files", "-u", "--", InPath});
+    if (entries.exitCode != 0 || Trim(entries.stdoutStr).empty()) {
+        return false;
+    }
+    std::istringstream iss(entries.stdoutStr);
+    std::string line;
+    while (std::getline(iss, line)) {
+        line = Trim(line);
+        if (!line.empty() && line.rfind("160000 ", 0) != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+auto PublishedChildHead(const std::filesystem::path& InChildRepo) -> std::optional<std::string> {
+    if (!IsGitRepo(InChildRepo)) {
+        return std::nullopt;
+    }
+    const auto status = GitCapture(InChildRepo, {"status", "--porcelain=v1", "--untracked-files=normal"});
+    if (status.exitCode != 0 || !Trim(status.stdoutStr).empty()) {
+        return std::nullopt;
+    }
+    const auto upstream = GitCapture(InChildRepo, {"rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"});
+    const auto head = GitCapture(InChildRepo, {"rev-parse", "HEAD"});
+    const auto upstreamHead = GitCapture(InChildRepo, {"rev-parse", "@{upstream}"});
+    if (upstream.exitCode != 0 || Trim(upstream.stdoutStr).empty() ||
+        head.exitCode != 0 || upstreamHead.exitCode != 0 ||
+        Trim(head.stdoutStr) != Trim(upstreamHead.stdoutStr)) {
+        return std::nullopt;
+    }
+    const auto remoteContains = GitCapture(InChildRepo, {"branch", "-r", "--contains", Trim(head.stdoutStr)});
+    if (remoteContains.exitCode != 0 || Trim(remoteContains.stdoutStr).empty()) {
+        return std::nullopt;
+    }
+    return Trim(head.stdoutStr);
+}
+
+auto TryResolvePublishedGitlinkRebaseConflicts(const std::filesystem::path& InParentRepo,
+                                               std::ostream& InOut,
+                                               std::ostream& InErr) -> bool {
+    constexpr int kMaxGitlinkConflictSteps = 64;
+    for (int step = 0; step < kMaxGitlinkConflictSteps && HasRebaseInProgress(InParentRepo); ++step) {
+        const auto paths = CollectUnmergedPaths(InParentRepo);
+        if (paths.empty()) {
+            return false;
+        }
+        for (const auto& path : paths) {
+            if (!UnmergedPathIsGitlinkOnly(InParentRepo, path) || !IsRegisteredSubmodulePath(InParentRepo, path)) {
+                return false;
+            }
+            const auto canonicalHead = PublishedChildHead((InParentRepo / std::filesystem::path(path)).lexically_normal());
+            if (!canonicalHead.has_value()) {
+                return false;
+            }
+            const auto add = GitCapture(InParentRepo, {"add", "--", path});
+            InOut << add.stdoutStr;
+            InErr << add.stderrStr;
+            if (add.exitCode != 0) {
+                return false;
+            }
+            const auto staged = GitCapture(InParentRepo, {"ls-files", "-s", "--", path});
+            if (staged.exitCode != 0 || staged.stdoutStr.find("160000 " + *canonicalHead + " 0\t" + path) == std::string::npos) {
+                return false;
+            }
+            InOut << "Resolved published gitlink rebase conflict: " << path << " -> " << *canonicalHead << "\n";
+        }
+        if (!CollectUnmergedPaths(InParentRepo).empty()) {
+            return false;
+        }
+        const auto continuation = GitCapture(InParentRepo, {"-c", "core.editor=true", "-c", "sequence.editor=true", "rebase", "--continue"});
+        InOut << continuation.stdoutStr;
+        InErr << continuation.stderrStr;
+        if (continuation.exitCode != 0 && !HasRebaseInProgress(InParentRepo)) {
+            return false;
+        }
+    }
+    return !HasRebaseInProgress(InParentRepo);
+}
+
 auto ResolveUnmergedByTheirs(const std::filesystem::path& InRepo, bool InDryRun) -> bool {
     const auto paths = CollectUnmergedPaths(InRepo);
     if (paths.empty()) {
@@ -2798,7 +2896,8 @@ auto RunNativeOriginLatestSync(
     workspace::RepoOperationAggregate* OutAggregate = nullptr,
     bool InAuthPreflight = true,
     bool InCheckGitlinkReachability = true,
-    std::optional<unsigned int> InGitCaptureTimeoutMs = std::nullopt) -> int {
+    std::optional<unsigned int> InGitCaptureTimeoutMs = std::nullopt,
+    bool InResolvePublishedGitlinkConflicts = false) -> int {
     std::vector<SyncPlan> plans;
     std::string mode;
     try {
@@ -3306,28 +3405,36 @@ auto RunNativeOriginLatestSync(
                     out << rebase.stdoutStr;
                     err << rebase.stderrStr;
                     if (HasRebaseInProgress(plan.path)) {
-                        err << "[" << name << "] SYNC_CONFLICT: rebase conflict detected; aborting rebase for manual review\n";
-                        const auto abortRebase = GitCapture(plan.path, {"rebase", "--abort"});
-                        out << abortRebase.stdoutStr;
-                        err << abortRebase.stderrStr;
-                        if (abortRebase.exitCode != 0) {
-                            err << "WARN: failed to abort rebase after conflict for " << name << "\n";
+                        const bool resolved = InResolvePublishedGitlinkConflicts &&
+                            TryResolvePublishedGitlinkRebaseConflicts(plan.path, out, err);
+                        if (resolved) {
+                            out << "Resolved all published gitlink-only rebase conflicts for " << name << "\n";
+                            performedRebase = true;
+                        } else {
+                            err << "[" << name << "] SYNC_CONFLICT: rebase conflict detected; aborting rebase for manual review\n";
+                            const auto abortRebase = GitCapture(plan.path, {"rebase", "--abort"});
+                            out << abortRebase.stdoutStr;
+                            err << abortRebase.stderrStr;
+                            if (abortRebase.exitCode != 0) {
+                                err << "WARN: failed to abort rebase after conflict for " << name << "\n";
+                            }
+                            if (stashCreated) {
+                                const auto pop = GitCapture(plan.path, {"stash", "pop"});
+                                out << pop.stdoutStr;
+                                err << pop.stderrStr;
+                            }
+                            return finishFailed("SYNC_CONFLICT", "rebase conflict");
                         }
+                    } else {
+                        const auto category = ClassifySyncFailure(rebase, "FAILED_SYNC");
+                        err << "[" << name << "] " << category << ": rebase failed\n";
                         if (stashCreated) {
                             const auto pop = GitCapture(plan.path, {"stash", "pop"});
                             out << pop.stdoutStr;
                             err << pop.stderrStr;
                         }
-                        return finishFailed("SYNC_CONFLICT", "rebase conflict");
+                        return finishFailed(category, "rebase failed");
                     }
-                    const auto category = ClassifySyncFailure(rebase, "FAILED_SYNC");
-                    err << "[" << name << "] " << category << ": rebase failed\n";
-                    if (stashCreated) {
-                        const auto pop = GitCapture(plan.path, {"stash", "pop"});
-                        out << pop.stdoutStr;
-                        err << pop.stderrStr;
-                    }
-                    return finishFailed(category, "rebase failed");
                 }
                 performedRebase = true;
             }
@@ -4407,7 +4514,8 @@ auto RunSyncOriginLatestNativeDetailed(const std::filesystem::path& InRepoRoot,
                                        bool InDryRun,
                                        bool InCleanupStaleLocks,
                                        bool InCheckGitlinkReachability,
-                                       std::optional<unsigned int> InGitCaptureTimeoutMs) -> std::pair<int, workspace::RepoOperationAggregate>;
+                                       std::optional<unsigned int> InGitCaptureTimeoutMs,
+                                       bool InResolvePublishedGitlinkConflicts) -> std::pair<int, workspace::RepoOperationAggregate>;
 
 auto RunSyncOriginLatestNative(const std::filesystem::path& InRepoRoot,
                                const bool InRecursive,
@@ -4421,7 +4529,8 @@ auto RunSyncOriginLatestNative(const std::filesystem::path& InRepoRoot,
         InDryRun,
         InCleanupStaleLocks,
         InCheckGitlinkReachability,
-        InGitCaptureTimeoutMs);
+        InGitCaptureTimeoutMs,
+        false);
     return detailed.first;
 }
 
@@ -4430,7 +4539,8 @@ auto RunSyncOriginLatestNativeDetailed(const std::filesystem::path& InRepoRoot,
                                        const bool InDryRun,
                                        const bool InCleanupStaleLocks,
                                        const bool InCheckGitlinkReachability,
-                                       std::optional<unsigned int> InGitCaptureTimeoutMs) -> std::pair<int, workspace::RepoOperationAggregate> {
+                                       std::optional<unsigned int> InGitCaptureTimeoutMs,
+                                       const bool InResolvePublishedGitlinkConflicts) -> std::pair<int, workspace::RepoOperationAggregate> {
     workspace::RepoOperationAggregate aggregate;
     const auto code = RunNativeOriginLatestSync(
         InRepoRoot,
@@ -4446,7 +4556,8 @@ auto RunSyncOriginLatestNativeDetailed(const std::filesystem::path& InRepoRoot,
         &aggregate,
         true,
         InCheckGitlinkReachability,
-        InGitCaptureTimeoutMs);
+        InGitCaptureTimeoutMs,
+        InResolvePublishedGitlinkConflicts);
     return {code, std::move(aggregate)};
 }
 
