@@ -3605,13 +3605,96 @@ auto StageCommitItemForPlan(const std::filesystem::path& InWorkspaceRoot,
         args.push_back(std::string(":(exclude)") + ex);
     }
 
-    const auto add = GitCapture(InRepo, args);
-    AppendExecResult(OutStdout, OutStderr, add);
-    if (add.exitCode != 0) {
-        if (OutError != nullptr) {
-            *OutError = "git add failed for plan include/exclude pathspec";
+    auto isLiteralPath = [](const std::string& path) {
+        return !path.empty() &&
+               path.rfind(":(", 0) != 0 &&
+               path.find_first_of("*?[") == std::string::npos &&
+               path.find(',') == std::string::npos &&
+               !std::filesystem::path(path).is_absolute();
+    };
+    bool canUseExactCacheInfo = !include.empty() &&
+                                InItem.exclude.empty() &&
+                                forcedExcludes.empty() &&
+                                !hasNestedPlanRepo &&
+                                std::all_of(include.begin(), include.end(), isLiteralPath);
+    if (canUseExactCacheInfo) {
+        for (const auto& path : include) {
+            const auto absolutePath = (InRepo / std::filesystem::path(path)).lexically_normal();
+            std::error_code ec;
+            const bool exists = std::filesystem::exists(absolutePath, ec);
+            if (ec || (exists && !std::filesystem::is_regular_file(absolutePath, ec))) {
+                canUseExactCacheInfo = false;
+                break;
+            }
         }
-        return false;
+    }
+
+    if (canUseExactCacheInfo) {
+        for (const auto& path : include) {
+            const auto absolutePath = (InRepo / std::filesystem::path(path)).lexically_normal();
+            std::error_code ec;
+            if (!std::filesystem::exists(absolutePath, ec)) {
+                const auto remove = GitCapture(InRepo, {"update-index", "--remove", "--", path});
+                AppendExecResult(OutStdout, OutStderr, remove);
+                if (remove.exitCode != 0) {
+                    if (OutError != nullptr) {
+                        *OutError = "git update-index failed for deleted exact plan path";
+                    }
+                    return false;
+                }
+                continue;
+            }
+
+            const auto hash = GitCapture(InRepo, {"hash-object", "-w", "--", path});
+            AppendExecResult(OutStdout, OutStderr, hash);
+            const auto objectId = Trim(hash.stdoutStr);
+            if (hash.exitCode != 0 || objectId.empty()) {
+                if (OutError != nullptr) {
+                    *OutError = "git hash-object failed for exact plan path";
+                }
+                return false;
+            }
+
+            std::string mode = "100644";
+            const auto indexed = GitCapture(
+                InRepo, {"-c", "core.quotepath=false", "ls-files", "--stage", "--", path});
+            AppendExecResult(OutStdout, OutStderr, indexed);
+            if (indexed.exitCode != 0) {
+                if (OutError != nullptr) {
+                    *OutError = "git ls-files failed for exact plan path mode lookup";
+                }
+                return false;
+            }
+            std::istringstream indexedStream(indexed.stdoutStr);
+            std::string indexedMode;
+            if (indexedStream >> indexedMode &&
+                (indexedMode == "100644" || indexedMode == "100755")) {
+                mode = indexedMode;
+            }
+
+            const auto update = GitCapture(
+                InRepo, {"update-index", "--add", "--cacheinfo", mode + "," + objectId + "," + path});
+            AppendExecResult(OutStdout, OutStderr, update);
+            if (update.exitCode != 0) {
+                if (OutError != nullptr) {
+                    *OutError = "git update-index failed for exact plan path";
+                }
+                return false;
+            }
+        }
+        if (OutStdout != nullptr) {
+            *OutStdout += "[native-commit] exact cacheinfo staging paths=" +
+                          std::to_string(include.size()) + "\n";
+        }
+    } else {
+        const auto add = GitCapture(InRepo, args);
+        AppendExecResult(OutStdout, OutStderr, add);
+        if (add.exitCode != 0) {
+            if (OutError != nullptr) {
+                *OutError = "git add failed for plan include/exclude pathspec";
+            }
+            return false;
+        }
     }
 
     const auto staged = GitCapture(
@@ -5092,10 +5175,10 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
             const auto& repoMessage = InNode.commit;
             const bool needsPlanStaging =
                 InNode.repoCommitCount > 1 || !repoMessage.include.empty() || !repoMessage.exclude.empty();
+            std::string stageStdout;
+            std::string stageStderr;
             if (needsPlanStaging) {
                 std::string stageError;
-                std::string stageStdout;
-                std::string stageStderr;
                 if (!StageCommitItemForPlan(workspaceRoot, repo, repoMessage, planRepoKeys, &stageStdout, &stageStderr, &stageError)) {
                     RepoCommitResult result;
                     result.repo = repo;
@@ -5111,7 +5194,10 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
                     return result;
                 }
             }
-            return CommitSingleRepo(workspaceRoot, repo, repoMessage.message, needsPlanStaging, false, ai);
+            auto result = CommitSingleRepo(workspaceRoot, repo, repoMessage.message, needsPlanStaging, false, ai);
+            result.stdoutText = std::move(stageStdout) + result.stdoutText;
+            result.stderrText = std::move(stageStderr) + result.stderrText;
+            return result;
         };
 
         auto executeCommitTask = [&](const CommitTaskNode& InNode) -> RepoCommitResult {
@@ -6118,10 +6204,10 @@ void RegisterCommit(CLI::App& InApp) {
             const auto& repoMessage = InNode.commit;
             const bool needsPlanStaging =
                 isPlanMode && (InNode.repoCommitCount > 1 || !repoMessage.include.empty() || !repoMessage.exclude.empty());
+            std::string stageStdout;
+            std::string stageStderr;
             if (needsPlanStaging) {
                 std::string stageError;
-                std::string stageStdout;
-                std::string stageStderr;
                 if (!StageCommitItemForPlan(workspaceRoot, repo, repoMessage, planRepoKeys, &stageStdout, &stageStderr, &stageError)) {
                     RepoCommitResult result;
                     result.repo = repo;
@@ -6137,12 +6223,15 @@ void RegisterCommit(CLI::App& InApp) {
                     return result;
                 }
             }
-            return CommitSingleRepo(workspaceRoot,
-                                    repo,
-                                    repoMessage.message,
-                                    needsPlanStaging ? true : *bStagedOnly,
-                                    *bPush,
-                                    ai);
+            auto result = CommitSingleRepo(workspaceRoot,
+                                           repo,
+                                           repoMessage.message,
+                                           needsPlanStaging ? true : *bStagedOnly,
+                                           *bPush,
+                                           ai);
+            result.stdoutText = std::move(stageStdout) + result.stdoutText;
+            result.stderrText = std::move(stageStderr) + result.stderrText;
+            return result;
         };
 
         auto executeCommitTask = [&](const CommitTaskNode& InNode) -> RepoCommitResult {

@@ -814,7 +814,7 @@ TEST_CASE("clean_but_ahead_continues_to_push", "[functional][commit-push][contra
 
 TEST_CASE("commit_push_plan_file_keeps_exact_include_scope", "[functional][commit-push][plan-file][pathspec]") {
     const auto ctx = CreateRemoteWithClone("plan-file-exact-include");
-    const std::string includedPath = "PARA/2026-07-11 - 每日概念.md";
+    const std::string includedPath = "PARA/2026-07-11 - Daily Concept.md";
     WriteTextFile(ctx.cloneRepo / includedPath, "staged draft\n");
     RequireSuccess(RunGit({"add", includedPath}, ctx.cloneRepo), "stage included draft");
     WriteTextFile(ctx.cloneRepo / includedPath, "include me\n");
@@ -843,6 +843,7 @@ TEST_CASE("commit_push_plan_file_keeps_exact_include_scope", "[functional][commi
     REQUIRE(result.exitCode == 0);
     RequireContainsText(result.stdoutText, "pre-commit skipped for explicit plan-file");
     RequireContainsText(result.stdoutText, "scoped safety gates checked files=1");
+    RequireContainsText(result.stdoutText, "exact cacheinfo staging paths=1");
     RequireContainsText(result.stdoutText, "exact plan working changes=true");
     RequireNotContainsText(result.stdoutText, "workspace clean; skipping commit/sync/post-sync");
 

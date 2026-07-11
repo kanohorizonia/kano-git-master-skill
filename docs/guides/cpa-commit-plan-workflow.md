@@ -70,7 +70,9 @@ large worktrees. If a bounded whole-repo preflight cannot enumerate that
 worktree, the staged-only commit path uses the cached diff as its authoritative
 change signal instead of treating the staged plan as clean. Git path-list reads
 disable quoted path escaping so Unicode include paths retain the same identity
-through safety checks, staging, and commit.
+through safety checks, staging, and commit. Literal exact-file plans stage blobs
+with `hash-object` plus `update-index --cacheinfo`; wildcard, directory,
+exclude, and nested-repository plans retain the general `git add` path.
 
 ## Copilot Chat Session Note
 
