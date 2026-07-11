@@ -713,9 +713,9 @@ auto LoadSecretRules(const std::filesystem::path& InFile) -> std::vector<SecretR
 auto CollectChangedCandidateFiles(const std::filesystem::path& InRepo) -> std::vector<std::string> {
     std::unordered_set<std::string> files;
     const std::vector<std::vector<std::string>> commands = {
-        {"diff", "--cached", "--name-only"},
-        {"diff", "--name-only"},
-        {"ls-files", "--others", "--exclude-standard"},
+        {"-c", "core.quotepath=false", "diff", "--cached", "--name-only"},
+        {"-c", "core.quotepath=false", "diff", "--name-only"},
+        {"-c", "core.quotepath=false", "ls-files", "--others", "--exclude-standard"},
     };
     for (const auto& args : commands) {
         const auto out = GitCapture(InRepo, args);
@@ -3460,7 +3460,8 @@ auto StageCommitItemForPlan(const std::filesystem::path& InWorkspaceRoot,
                             std::string* OutStderr,
                             std::string* OutError) -> bool {
     if (!InItem.include.empty()) {
-        const auto cachedBeforeReset = GitCapture(InRepo, {"diff", "--cached", "--name-only"});
+        const auto cachedBeforeReset = GitCapture(
+            InRepo, {"-c", "core.quotepath=false", "diff", "--cached", "--name-only"});
         AppendExecResult(OutStdout, OutStderr, cachedBeforeReset);
         if (cachedBeforeReset.exitCode != 0) {
             if (OutError != nullptr) {
@@ -3613,7 +3614,8 @@ auto StageCommitItemForPlan(const std::filesystem::path& InWorkspaceRoot,
         return false;
     }
 
-    const auto staged = GitCapture(InRepo, {"diff", "--cached", "--name-only"});
+    const auto staged = GitCapture(
+        InRepo, {"-c", "core.quotepath=false", "diff", "--cached", "--name-only"});
     if (staged.exitCode != 0 || Trim(staged.stdoutStr).empty()) {
         if (OutError != nullptr) {
             *OutError = "plan commit staged no files (check include/exclude pathspec)";
@@ -4355,7 +4357,8 @@ auto CommitSingleRepo(const std::filesystem::path& InWorkspaceRoot,
     // return an empty preflight report. Plan staging already owns the index, so
     // use the cached diff as the authoritative staged-only signal.
     if (InStagedOnly && report.stagedCount == 0) {
-        const auto cached = GitCapture(InRepo, {"diff", "--cached", "--name-only"});
+        const auto cached = GitCapture(
+            InRepo, {"-c", "core.quotepath=false", "diff", "--cached", "--name-only"});
         appendResult(cached);
         if (cached.exitCode != 0) {
             result.failed = true;

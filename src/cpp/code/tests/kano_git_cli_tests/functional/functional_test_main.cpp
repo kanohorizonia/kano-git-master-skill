@@ -814,9 +814,10 @@ TEST_CASE("clean_but_ahead_continues_to_push", "[functional][commit-push][contra
 
 TEST_CASE("commit_push_plan_file_keeps_exact_include_scope", "[functional][commit-push][plan-file][pathspec]") {
     const auto ctx = CreateRemoteWithClone("plan-file-exact-include");
-    WriteTextFile(ctx.cloneRepo / "included.txt", "staged draft\n");
-    RequireSuccess(RunGit({"add", "included.txt"}, ctx.cloneRepo), "stage included draft");
-    WriteTextFile(ctx.cloneRepo / "included.txt", "include me\n");
+    const std::string includedPath = "PARA/2026-07-11 - 每日概念.md";
+    WriteTextFile(ctx.cloneRepo / includedPath, "staged draft\n");
+    RequireSuccess(RunGit({"add", includedPath}, ctx.cloneRepo), "stage included draft");
+    WriteTextFile(ctx.cloneRepo / includedPath, "include me\n");
     WriteTextFile(ctx.cloneRepo / "unrelated.txt", "password: \"supersecretvalue\"\n");
 
     const auto planPath = (ctx.cloneRepo / ".kano" / "cache" / "git" / "plans" / "exact-include.json").lexically_normal();
@@ -827,7 +828,7 @@ TEST_CASE("commit_push_plan_file_keeps_exact_include_scope", "[functional][commi
             "--plan-file", planPath.string(),
             "--repo", ".",
             "--commit-message", "test(functional): exact include",
-            "--commit-include", "included.txt",
+            "--commit-include", includedPath,
             "--commit-review-verdict", "pass",
             "--commit-review-reason", "functional regression for plan-file exact include staging"
         }, ctx.cloneRepo),
@@ -845,11 +846,11 @@ TEST_CASE("commit_push_plan_file_keeps_exact_include_scope", "[functional][commi
     RequireContainsText(result.stdoutText, "exact plan working changes=true");
     RequireNotContainsText(result.stdoutText, "workspace clean; skipping commit/sync/post-sync");
 
-    const auto includedStatus = RunGit({"status", "--short", "--", "included.txt"}, ctx.cloneRepo);
+    const auto includedStatus = RunGit({"status", "--short", "--", includedPath}, ctx.cloneRepo);
     RequireSuccess(includedStatus, "included status");
     REQUIRE(TrimCopy(includedStatus.stdoutText).empty());
 
-    const auto committedContent = RunGit({"show", "HEAD:included.txt"}, ctx.cloneRepo);
+    const auto committedContent = RunGit({"show", "HEAD:" + includedPath}, ctx.cloneRepo);
     RequireSuccess(committedContent, "read committed included content");
     REQUIRE(committedContent.stdoutText == "include me\n");
 

@@ -68,7 +68,9 @@ whole index and skips whole-tree gitlink discovery when the plan owns no nested
 repository. This keeps exact-file archive commits bounded in repositories with
 large worktrees. If a bounded whole-repo preflight cannot enumerate that
 worktree, the staged-only commit path uses the cached diff as its authoritative
-change signal instead of treating the staged plan as clean.
+change signal instead of treating the staged plan as clean. Git path-list reads
+disable quoted path escaping so Unicode include paths retain the same identity
+through safety checks, staging, and commit.
 
 ## Copilot Chat Session Note
 
