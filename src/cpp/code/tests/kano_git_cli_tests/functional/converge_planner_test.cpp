@@ -2202,4 +2202,64 @@ TEST_CASE("converge runtime resume continues from saved phase", "[tdd][unit][fea
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge resume rewinds push to saved post-commit sync", "[functional][converge][state][resume][KG-BUG-0026]") {
+    const auto ctx = CreateRemoteWithClone("converge-resume-saved-sync");
+    const auto statePath = ConvergeStatePath(ctx.cloneRepo);
+
+    WriteTextFile(ctx.seedRepo / "remote.txt", "remote change\n");
+    RequireSuccess(RunGit({"add", "remote.txt"}, ctx.seedRepo), "stage remote resume change");
+    RequireSuccess(RunGit({"commit", "-m", "remote resume change"}, ctx.seedRepo), "commit remote resume change");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.seedRepo), "push remote resume change");
+
+    WriteTextFile(ctx.cloneRepo / "local.txt", "local change\n");
+    RequireSuccess(RunGit({"add", "local.txt"}, ctx.cloneRepo), "stage local resume change");
+    RequireSuccess(RunGit({"commit", "-m", "local resume change"}, ctx.cloneRepo), "commit local resume change");
+    RequireSuccess(RunGit({"fetch", "origin", ctx.branch}, ctx.cloneRepo), "fetch divergent remote resume change");
+
+    const auto workspaceRoot = ctx.cloneRepo.generic_string();
+    const std::string stateJson =
+        "{\n"
+        "  \"workflow\": \"converge\",\n"
+        "  \"schemaName\": \"kog.convergeWorkflowState\",\n"
+        "  \"schemaVersion\": 1,\n"
+        "  \"workspaceRoot\": \"" + workspaceRoot + "\",\n"
+        "  \"startedAt\": \"2026-01-01T00:00:00Z\",\n"
+        "  \"currentPhase\": \"push-nested-bottom-up\",\n"
+        "  \"recursive\": false,\n"
+        "  \"dryRunRequested\": false,\n"
+        "  \"completedPhases\": [\"status-preflight-plan\", \"commit-local-changes-if-needed\", \"sync-before-push\"],\n"
+        "  \"blockedReason\": \"push-nested-bottom-up encountered failures\",\n"
+        "  \"blockedRepos\": [\".\"],\n"
+        "  \"resumeCommand\": \"kog converge --resume --no-recursive\",\n"
+        "  \"phaseResults\": {},\n"
+        "  \"commandLinesUsed\": {},\n"
+        "  \"convergePlan\": {\"sync\": [\".\"], \"commit\": [\".\"], \"push\": [\".\"], \"blocked\": [], \"waves\": []},\n"
+        "  \"repoGraphFingerprint\": \"\",\n"
+        "  \"repoBaselines\": [],\n"
+        "  \"repoTaxonomy\": {\"type\": {}, \"managementPolicy\": {}},\n"
+        "  \"commandPolicy\": {},\n"
+        "  \"detectedConflictInfo\": \"\",\n"
+        "  \"results\": {\"succeeded\": [\".\"], \"failed\": [\".\"], \"blocked\": [], \"skipped\": [], \"pending\": []}\n"
+        "}\n";
+    WriteTextFile(statePath, stateJson);
+
+    const auto resumeRun = RunKog({"converge", "--resume", "--no-recursive", "--jobs", "1"}, ctx.cloneRepo);
+    INFO(resumeRun.stdoutText);
+    INFO(resumeRun.stderrText);
+    REQUIRE(resumeRun.exitCode == 0);
+    RequireContains(resumeRun.stdoutText, "resume_rewind=sync-before-push reason=saved_sync_repo_still_behind");
+    RequireContains(resumeRun.stdoutText, "sync_repo=. ");
+    RequireNotContains(resumeRun.stdoutText + resumeRun.stderrText, "non-fast-forward");
+    REQUIRE_FALSE(std::filesystem::exists(statePath));
+    REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
+
+    const auto head = RunGit({"rev-parse", "HEAD"}, ctx.cloneRepo);
+    const auto origin = RunGit({"rev-parse", "origin/" + ctx.branch}, ctx.cloneRepo);
+    RequireSuccess(head, "read resumed local head");
+    RequireSuccess(origin, "read resumed origin head");
+    REQUIRE(head.stdoutText == origin.stdoutText);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 } // namespace kano::git::tests::functional

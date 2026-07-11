@@ -2077,6 +2077,38 @@ bool PhaseSummaryContainsRepo(const WorkflowState& state,
     return std::find(values.begin(), values.end(), repo) != values.end();
 }
 
+const RepoStatus* FindSnapshotRepo(const Snapshot& snapshot, const std::string& repoId) {
+    const auto it = std::find_if(snapshot.repos.begin(), snapshot.repos.end(), [&](const auto& repo) {
+        return repo.id == repoId;
+    });
+    return it == snapshot.repos.end() ? nullptr : &*it;
+}
+
+bool RestoreSavedResumeTransportPlan(const WorkflowState& state,
+                                     const Snapshot& snapshot,
+                                     Plan& plan) {
+    bool restoredSync = false;
+    for (const auto& repoId : state.plannedSyncRepos) {
+        const auto* repo = FindSnapshotRepo(snapshot, repoId);
+        if (repo == nullptr || repo->behind <= 0 || !Allows(*repo, "sync")) {
+            continue;
+        }
+        if (repo->dirtyKind != "BEHIND_ONLY" && repo->dirtyKind != "DIVERGED") {
+            continue;
+        }
+        Add(plan.sync, repoId, "resume saved post-commit sync intent before push");
+        restoredSync = true;
+    }
+    for (const auto& repoId : state.plannedPushRepos) {
+        const auto* repo = FindSnapshotRepo(snapshot, repoId);
+        if (repo == nullptr || repo->ahead <= 0 || !Allows(*repo, "push")) {
+            continue;
+        }
+        Add(plan.push, repoId, "resume saved push intent after post-commit sync");
+    }
+    return restoredSync;
+}
+
 std::set<std::string> ToSet(const std::vector<std::string>& values) {
     return std::set<std::string>(values.begin(), values.end());
 }
@@ -4529,6 +4561,7 @@ void RegisterConverge(CLI::App& InApp) {
                 std::exit(1);
             }
             plan = BuildPlan(snapshot);
+            const bool restoredResumeSync = RestoreSavedResumeTransportPlan(state, snapshot, plan);
             const auto savedBaselines = BaselineByRepo(state.repoBaselines);
             const auto currentBaselines = BaselineByRepo(RepoBaselines(snapshot));
             for (const auto& repo : state.succeededRepos) {
@@ -4553,6 +4586,19 @@ void RegisterConverge(CLI::App& InApp) {
             }
             const auto phaseIt = std::find(phases.begin(), phases.end(), state.currentPhase);
             startPhaseIndex = phaseIt == phases.end() ? 0 : static_cast<std::size_t>(std::distance(phases.begin(), phaseIt));
+            const auto syncPhaseIt = std::find(phases.begin(), phases.end(), "sync-before-push");
+            const auto pushPhaseIt = std::find(phases.begin(), phases.end(), "push-nested-bottom-up");
+            if (restoredResumeSync &&
+                syncPhaseIt != phases.end() &&
+                pushPhaseIt != phases.end() &&
+                startPhaseIndex >= static_cast<std::size_t>(std::distance(phases.begin(), pushPhaseIt))) {
+                state.completedPhases.erase(
+                    std::remove(state.completedPhases.begin(), state.completedPhases.end(), "sync-before-push"),
+                    state.completedPhases.end());
+                state.currentPhase = "sync-before-push";
+                startPhaseIndex = static_cast<std::size_t>(std::distance(phases.begin(), syncPhaseIt));
+                std::cout << "[converge] resume_rewind=sync-before-push reason=saved_sync_repo_still_behind\n";
+            }
             std::cout << "Resuming converge from phase: " << state.currentPhase << "\n";
         } else {
             try {
