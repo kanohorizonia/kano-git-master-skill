@@ -1465,6 +1465,8 @@ TEST_CASE("converge agent mode keeps implementation and test paths in one source
     const auto workflowTemplate = std::filesystem::path("templates/feature/notes.md.template");
     const auto powerShellCache = std::filesystem::path("Microsoft/Windows/PowerShell/ModuleAnalysisCache");
     const auto shellLog = std::filesystem::path("$log");
+    const auto nulDiff = std::filesystem::path("NUL_diff.txt");
+    const auto topicActive = std::filesystem::path("topics/2026-07-10-platform-budget-wave/.active");
 
     WriteTextFile(ctx.seedRepo / implementation, "// converge implementation\n");
     WriteTextFile(ctx.seedRepo / regressionTest, "// converge tests\n");
@@ -1480,6 +1482,8 @@ TEST_CASE("converge agent mode keeps implementation and test paths in one source
     WriteTextFile(ctx.cloneRepo / workflowTemplate, "# feature notes\n");
     WriteTextFile(ctx.cloneRepo / powerShellCache, "PowerShell module cache\n");
     WriteTextFile(ctx.cloneRepo / shellLog, "local shell log\n");
+    WriteTextFile(ctx.cloneRepo / nulDiff, "");
+    WriteTextFile(ctx.cloneRepo / topicActive, "2026-07-10-platform-budget-wave\n");
 
     const auto result = RunKogWithEnv(
         {"converge", "--no-recursive", "--jobs", "1"},
@@ -1498,10 +1502,16 @@ TEST_CASE("converge agent mode keeps implementation and test paths in one source
     RequireNotContains(result.stdoutText, "docs(kog");
     RequireNotContains(result.stdoutText, "ambiguous " + powerShellCache.generic_string());
     RequireNotContains(result.stdoutText, "ambiguous " + shellLog.generic_string());
+    RequireNotContains(result.stdoutText, "ambiguous " + nulDiff.generic_string());
+    RequireNotContains(result.stdoutText, "ambiguous " + topicActive.generic_string());
     RequireContains(result.stdoutText, "local " + powerShellCache.generic_string());
     RequireContains(result.stdoutText, "local " + shellLog.generic_string());
+    RequireContains(result.stdoutText, "local " + nulDiff.generic_string());
+    RequireContains(result.stdoutText, "local " + topicActive.generic_string());
     RequireContains(result.stdoutText, "ignore /Microsoft/Windows/PowerShell/ModuleAnalysisCache");
     RequireContains(result.stdoutText, "ignore /$log");
+    RequireContains(result.stdoutText, "ignore /NUL_diff.txt");
+    RequireContains(result.stdoutText, "ignore /topics/*/.active");
     RequireNotContains(result.stdoutText, "ambiguous docker-compose.webview.yml");
     RequireContains(result.stdoutText, "include .gitignore");
     RequireContains(result.stdoutText, "include " + implementation.generic_string());
@@ -1519,6 +1529,26 @@ TEST_CASE("converge agent mode keeps implementation and test paths in one source
     RequireNotContains(log.stdoutText, "chore(kog");
     RequireNotContains(log.stdoutText, "docs(kog");
     RequireNotContains(log.stdoutText, "update 2 files");
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge agent mode keeps unknown local paths ambiguous", "[functional][converge][agent-mode][intent-commits][KG-BUG-0022]") {
+    const auto ctx = CreateRemoteWithClone("converge-agent-unknown-local-path");
+    const auto unknownPath = std::filesystem::path("scratch/operator-owned.data");
+    WriteTextFile(ctx.cloneRepo / unknownPath, "must remain operator-owned\n");
+
+    const auto result = RunKogWithEnv(
+        {"converge", "--no-recursive", "--jobs", "1"},
+        ctx.cloneRepo,
+        {{"KANO_AGENT_MODE", "1"}});
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode != 0);
+    RequireContains(result.stdoutText, "ambiguous " + unknownPath.generic_string());
+    RequireContains(result.stderrText, "no intent-scoped groups could be inferred");
+    RequireContains(GitStatusShort(ctx.cloneRepo), "?? scratch/");
+    REQUIRE(std::filesystem::exists(ctx.cloneRepo / unknownPath));
 
     RemoveSandboxWorkspace(ctx.sandbox);
 }

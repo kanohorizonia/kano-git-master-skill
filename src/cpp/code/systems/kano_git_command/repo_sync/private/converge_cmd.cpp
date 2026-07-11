@@ -1432,6 +1432,20 @@ std::optional<std::string> LocalToolArtifactIgnoreRuleForPath(const std::string&
     if (normalized == "$log") {
         return "/$log";
     }
+    if (lowered == "nul_diff.txt") {
+        return "/NUL_diff.txt";
+    }
+
+    constexpr std::string_view topicPrefix = "topics/";
+    constexpr std::string_view activeMarkerSuffix = "/.active";
+    if (lowered.rfind(topicPrefix, 0) == 0 && lowered.ends_with(activeMarkerSuffix)) {
+        const auto topicName = lowered.substr(
+            topicPrefix.size(),
+            lowered.size() - topicPrefix.size() - activeMarkerSuffix.size());
+        if (!topicName.empty() && topicName.find('/') == std::string::npos) {
+            return "/topics/*/.active";
+        }
+    }
     return std::nullopt;
 }
 
