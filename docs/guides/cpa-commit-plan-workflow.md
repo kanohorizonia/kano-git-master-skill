@@ -63,6 +63,9 @@ the plan include paths instead of recursively scanning the workspace before
 dispatch. An exact-path status failure is not clean: the pipeline fails closed
 before commit. This keeps unrelated registered child repositories out of the
 critical path while preserving exact include/exclude staging and secret gates.
+The commit stage also resets only the declared include pathspecs and skips
+whole-tree gitlink discovery when the plan owns no nested repository. This
+keeps exact-file archive commits bounded in repositories with large worktrees.
 
 ## Copilot Chat Session Note
 

@@ -3498,7 +3498,12 @@ auto StageCommitItemForPlan(const std::filesystem::path& InWorkspaceRoot,
         }
     }
 
-    const auto reset = GitCapture(InRepo, {"reset", "-q"});
+    std::vector<std::string> resetArgs{"reset", "-q"};
+    if (!InItem.include.empty()) {
+        resetArgs.push_back("--");
+        resetArgs.insert(resetArgs.end(), InItem.include.begin(), InItem.include.end());
+    }
+    const auto reset = GitCapture(InRepo, resetArgs);
     AppendExecResult(OutStdout, OutStderr, reset);
     if (reset.exitCode != 0) {
         if (OutError != nullptr) {
@@ -3537,9 +3542,17 @@ auto StageCommitItemForPlan(const std::filesystem::path& InWorkspaceRoot,
         args.insert(args.end(), include.begin(), include.end());
     }
 
-    // Auto-include dirty gitlinks if they correspond to submodules being committed in this plan
-    const auto status = GitCapture(InRepo, {"status", "--porcelain"});
-    if (status.exitCode == 0) {
+    // Auto-include dirty gitlinks only when this plan also owns a nested repo.
+    // Exact-file plans for a single repo must not scan the entire working tree.
+    const auto repoKeyPrefix = RepoKey(InRepo) + "/";
+    const bool hasNestedPlanRepo = std::any_of(
+        InPlanRepoKeys.begin(), InPlanRepoKeys.end(), [&](const std::string& key) {
+            return key.rfind(repoKeyPrefix, 0) == 0;
+        });
+    const auto status = hasNestedPlanRepo
+        ? GitCapture(InRepo, {"status", "--porcelain"})
+        : shell::ExecResult{0, "", ""};
+    if (hasNestedPlanRepo && status.exitCode == 0) {
         std::istringstream iss(status.stdoutStr);
         std::string line;
         while (std::getline(iss, line)) {

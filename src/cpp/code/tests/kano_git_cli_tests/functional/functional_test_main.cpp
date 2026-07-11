@@ -814,6 +814,8 @@ TEST_CASE("clean_but_ahead_continues_to_push", "[functional][commit-push][contra
 
 TEST_CASE("commit_push_plan_file_keeps_exact_include_scope", "[functional][commit-push][plan-file][pathspec]") {
     const auto ctx = CreateRemoteWithClone("plan-file-exact-include");
+    WriteTextFile(ctx.cloneRepo / "included.txt", "staged draft\n");
+    RequireSuccess(RunGit({"add", "included.txt"}, ctx.cloneRepo), "stage included draft");
     WriteTextFile(ctx.cloneRepo / "included.txt", "include me\n");
     WriteTextFile(ctx.cloneRepo / "unrelated.txt", "password: \"supersecretvalue\"\n");
 
