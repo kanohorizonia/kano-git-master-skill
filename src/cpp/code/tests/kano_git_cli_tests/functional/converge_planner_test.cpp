@@ -1571,6 +1571,33 @@ TEST_CASE("converge agent mode classifies staged gitmodules as repository policy
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge agent mode coalesces staged registered gitlinks", "[tdd][functional][feature:converge-state][converge][agent-mode][intent-commits][gitlink][KG-BUG-0034]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("converge-agent-staged-registered-gitlink");
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneChildRepo), "checkout child branch for staged gitlink test");
+    WriteTextFile(ctx.cloneChildRepo / "docs" / "child.md", "staged child pointer\n");
+    RequireSuccess(RunGit({"add", "docs/child.md"}, ctx.cloneChildRepo), "stage child content for staged gitlink test");
+    RequireSuccess(RunGit({"commit", "-m", "advance staged child pointer"}, ctx.cloneChildRepo), "commit child content for staged gitlink test");
+    RequireSuccess(RunGit({"config", "-f", ".gitmodules", "submodule." + ctx.submodulePath + ".kog-sync", "true"}, ctx.cloneRootRepo), "update gitmodules policy for staged gitlink test");
+    RequireSuccess(RunGit({"add", ".gitmodules", ctx.submodulePath}, ctx.cloneRootRepo), "stage gitmodules and registered child pointer");
+
+    const auto result = RunKogWithEnv(
+        {"converge", "--jobs", "1"},
+        ctx.cloneRootRepo,
+        {{"KANO_AGENT_MODE", "1"}});
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContains(result.stdoutText, "[Converge][Chore] Commit pre-staged intent changes (NO-TICKET)");
+    RequireContains(result.stdoutText, "include .gitmodules");
+    RequireContains(result.stdoutText, "include " + ctx.submodulePath);
+    RequireNotContains(result.stdoutText, "pre-existing staged path outside plan include/exclude scope");
+    RequireContains(result.stdoutText, "[converge] completed");
+    REQUIRE(GitStatusShort(ctx.cloneChildRepo).empty());
+    REQUIRE(GitStatusShort(ctx.cloneRootRepo).empty());
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("converge agent mode keeps implementation and test paths in one source intent", "[tdd][functional][feature:converge-state][converge][agent-mode][intent-commits]") {
     const auto ctx = CreateRemoteWithClone("converge-agent-source-intent");
 

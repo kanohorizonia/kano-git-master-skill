@@ -1763,6 +1763,9 @@ IntentCommitPlan BuildIntentCommitPlan(const std::filesystem::path& workspaceRoo
         const auto& path = entry.path;
         if (IsRegisteredChildRepoStatusPath(snapshot, repo, path)) {
             AppendDirtyEntryIncludePaths(registeredChildPaths, entry);
+            if (HasStagedIndexChange(entry.rawStatus)) {
+                stagedEntries.push_back(entry);
+            }
             continue;
         }
         std::optional<IntentCommitGroup> classified;
