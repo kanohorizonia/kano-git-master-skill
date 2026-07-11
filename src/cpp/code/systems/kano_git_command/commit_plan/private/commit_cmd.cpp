@@ -4351,6 +4351,24 @@ auto CommitSingleRepo(const std::filesystem::path& InWorkspaceRoot,
         return result;
     }
 
+    // A bounded whole-repo status may time out in very large worktrees and
+    // return an empty preflight report. Plan staging already owns the index, so
+    // use the cached diff as the authoritative staged-only signal.
+    if (InStagedOnly && report.stagedCount == 0) {
+        const auto cached = GitCapture(InRepo, {"diff", "--cached", "--name-only"});
+        appendResult(cached);
+        if (cached.exitCode != 0) {
+            result.failed = true;
+            result.note = "git diff --cached failed during staged-only preflight";
+            result.stdoutText = std::move(capturedStdout);
+            result.stderrText = std::move(capturedStderr);
+            return result;
+        }
+        if (!Trim(cached.stdoutStr).empty()) {
+            report.stagedCount = 1;
+        }
+    }
+
     if (!HasAnyChanges(report)) {
         result.note = "no changes";
         result.stdoutText = std::move(capturedStdout);

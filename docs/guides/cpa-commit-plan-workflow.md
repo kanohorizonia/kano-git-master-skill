@@ -66,7 +66,9 @@ critical path while preserving exact include/exclude staging and secret gates.
 The commit stage refreshes declared include pathspecs without resetting the
 whole index and skips whole-tree gitlink discovery when the plan owns no nested
 repository. This keeps exact-file archive commits bounded in repositories with
-large worktrees.
+large worktrees. If a bounded whole-repo preflight cannot enumerate that
+worktree, the staged-only commit path uses the cached diff as its authoritative
+change signal instead of treating the staged plan as clean.
 
 ## Copilot Chat Session Note
 

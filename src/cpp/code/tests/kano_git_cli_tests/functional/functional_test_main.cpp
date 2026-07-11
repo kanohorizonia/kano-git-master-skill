@@ -849,6 +849,10 @@ TEST_CASE("commit_push_plan_file_keeps_exact_include_scope", "[functional][commi
     RequireSuccess(includedStatus, "included status");
     REQUIRE(TrimCopy(includedStatus.stdoutText).empty());
 
+    const auto committedContent = RunGit({"show", "HEAD:included.txt"}, ctx.cloneRepo);
+    RequireSuccess(committedContent, "read committed included content");
+    REQUIRE(committedContent.stdoutText == "include me\n");
+
     const auto unrelatedStatus = RunGit({"status", "--short", "--", "unrelated.txt"}, ctx.cloneRepo);
     RequireSuccess(unrelatedStatus, "unrelated status");
     REQUIRE(TrimCopy(unrelatedStatus.stdoutText) == "?? unrelated.txt");
