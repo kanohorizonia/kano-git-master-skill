@@ -1280,7 +1280,9 @@ std::optional<IntentCommitGroup> ClassifyKogSourceIntentPath(const std::string& 
             path);
     }
 
-    if (lowered == ".gitignore" || lowered.ends_with("/.gitignore") || lowered.ends_with(".gitattributes")) {
+    if (lowered == ".gitignore" || lowered.ends_with("/.gitignore") ||
+        lowered == ".gitmodules" || lowered.ends_with("/.gitmodules") ||
+        lowered.ends_with(".gitattributes")) {
         return MakeGroup(
             "kog-repo-policy",
             KccSubject("KOG", "Chore", "Update repository policy"),

@@ -1549,6 +1549,28 @@ TEST_CASE("converge agent mode defers registered child paths from root intent pl
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge agent mode classifies staged gitmodules as repository policy", "[tdd][functional][feature:converge-state][converge][agent-mode][intent-commits][KG-BUG-0033]") {
+    const auto ctx = CreateRemoteWithClone("converge-agent-gitmodules-policy");
+    WriteTextFile(ctx.cloneRepo / ".gitmodules", "[submodule \"deps/example\"]\n\tpath = deps/example\n\turl = https://example.invalid/example.git\n");
+    RequireSuccess(RunGit({"add", ".gitmodules"}, ctx.cloneRepo), "stage gitmodules policy");
+
+    const auto result = RunKogWithEnv(
+        {"converge", "--no-recursive", "--jobs", "1"},
+        ctx.cloneRepo,
+        {{"KANO_AGENT_MODE", "1"}});
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContains(result.stdoutText, "Converge agent intent commit plan");
+    RequireContains(result.stdoutText, "[Converge][Chore] Commit pre-staged intent changes (NO-TICKET)");
+    RequireContains(result.stdoutText, "include .gitmodules");
+    RequireNotContains(result.stdoutText, "ambiguous .gitmodules");
+    RequireContains(result.stdoutText, "[converge] completed");
+    REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("converge agent mode keeps implementation and test paths in one source intent", "[tdd][functional][feature:converge-state][converge][agent-mode][intent-commits]") {
     const auto ctx = CreateRemoteWithClone("converge-agent-source-intent");
 
