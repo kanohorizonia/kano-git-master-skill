@@ -58,6 +58,12 @@ contract: do not expose it as caller input, and do not mix scopes between plan
 creation and apply. A scope mismatch produces different hashes and must fail
 closed as workspace drift.
 
+For an explicit scoped `--plan-file`, `commit-push` detects pending work from
+the plan include paths instead of recursively scanning the workspace before
+dispatch. An exact-path status failure is not clean: the pipeline fails closed
+before commit. This keeps unrelated registered child repositories out of the
+critical path while preserving exact include/exclude staging and secret gates.
+
 ## Copilot Chat Session Note
 
 - Observed behavior: human-mode `cpa` may create a new Copilot Chat session on each run.

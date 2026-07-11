@@ -840,6 +840,8 @@ TEST_CASE("commit_push_plan_file_keeps_exact_include_scope", "[functional][commi
     REQUIRE(result.exitCode == 0);
     RequireContainsText(result.stdoutText, "pre-commit skipped for explicit plan-file");
     RequireContainsText(result.stdoutText, "scoped safety gates checked files=1");
+    RequireContainsText(result.stdoutText, "exact plan working changes=true");
+    RequireNotContainsText(result.stdoutText, "workspace clean; skipping commit/sync/post-sync");
 
     const auto includedStatus = RunGit({"status", "--short", "--", "included.txt"}, ctx.cloneRepo);
     RequireSuccess(includedStatus, "included status");

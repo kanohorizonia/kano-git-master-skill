@@ -1810,6 +1810,26 @@ auto AnyRepoHasWorkingTreeChanges(const std::vector<std::filesystem::path>& InRe
     return false;
 }
 
+auto PlanSafetyScopeHasWorkingTreeChanges(const PlanSafetyScope& InScope) -> std::optional<bool> {
+    if (!InScope.scoped) {
+        return std::nullopt;
+    }
+    for (const auto& file : InScope.files) {
+        const auto status = shell::ExecuteCommand(
+            "git",
+            {"status", "--porcelain", "--untracked-files=all", "--", file.path},
+            shell::ExecMode::Capture,
+            file.repo);
+        if (status.exitCode != 0) {
+            return std::nullopt;
+        }
+        if (!Trim(status.stdoutStr).empty()) {
+            return true;
+        }
+    }
+    return false;
+}
+
 auto RunPlanFileExactSafetyGates(const std::filesystem::path& InWorkspaceRoot,
                                  const std::filesystem::path& InPlanPath) -> bool {
     std::string scopeError;
@@ -2517,6 +2537,8 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
     const auto planPath = std::filesystem::path(InNormalizedPlanFile).lexically_normal();
     const auto planRepoRoots = CollectPlanFileRepoRoots(InWorkspaceRoot, planPath);
     const auto postSyncScope = BuildPostSyncPlanPathScope(InWorkspaceRoot, planPath);
+    std::string planSafetyScopeError;
+    const auto planSafetyScope = BuildPlanFileSafetyScope(InWorkspaceRoot, planPath, &planSafetyScopeError);
 
     if (agentMode) {
         std::cout << "[commit-push] agent mode + --plan-file detected; using plan-driven flow.\n";
@@ -2566,7 +2588,19 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
         }
     }
 
-    const bool hasWorkingChanges = NeedsPostSyncCommitNonPlan(InWorkspaceRoot, {}, false);
+    bool hasWorkingChanges = false;
+    if (planSafetyScope.scoped) {
+        const auto exactWorkingChanges = PlanSafetyScopeHasWorkingTreeChanges(planSafetyScope);
+        if (!exactWorkingChanges.has_value()) {
+            std::cerr << "Error: exact plan path status failed; refusing to treat an incomplete snapshot as clean.\n";
+            return 2;
+        }
+        hasWorkingChanges = *exactWorkingChanges;
+        std::cout << "[commit-push][plan-pipeline] exact plan working changes="
+                  << (hasWorkingChanges ? "true" : "false") << "\n";
+    } else {
+        hasWorkingChanges = NeedsPostSyncCommitNonPlan(InWorkspaceRoot, {}, false);
+    }
     if (!hasWorkingChanges) {
         std::cout << "[commit-push] workspace clean; skipping commit/sync/post-sync and proceeding to push check.\n";
     } else {
@@ -2820,7 +2854,10 @@ void RegisterCommitPush(CLI::App& InApp) {
         const bool agentMode = IsAgentModeEnabledLocal();
         const bool aiModeRequested = *aiAuto || !aiProvider->empty() || !aiModel->empty();
         const bool autoPlanAiMode = aiModeRequested && !hasCommitPlan && message->empty();
-        const bool hasWorkingChangesAtStart = NeedsPostSyncCommitNonPlan(workspaceRoot, repoList, effectiveNoRecursive);
+        const bool hasPlanFileInput = !commitPlanFile->empty();
+        const bool hasWorkingChangesAtStart = hasPlanFileInput
+            ? true
+            : NeedsPostSyncCommitNonPlan(workspaceRoot, repoList, effectiveNoRecursive);
         const bool effectiveAiModeRequested = aiModeRequested && !(autoPlanAiMode && !hasWorkingChangesAtStart);
         if (agentMode && autoPlanAiMode) {
             std::cerr << "Error: agent mode cpa/commit-push cannot invoke internal AI auto-plan.\n";
