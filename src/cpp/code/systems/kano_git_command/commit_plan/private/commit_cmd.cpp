@@ -3498,18 +3498,19 @@ auto StageCommitItemForPlan(const std::filesystem::path& InWorkspaceRoot,
         }
     }
 
-    std::vector<std::string> resetArgs{"reset", "-q"};
-    if (!InItem.include.empty()) {
-        resetArgs.push_back("--");
-        resetArgs.insert(resetArgs.end(), InItem.include.begin(), InItem.include.end());
-    }
-    const auto reset = GitCapture(InRepo, resetArgs);
-    AppendExecResult(OutStdout, OutStderr, reset);
-    if (reset.exitCode != 0) {
-        if (OutError != nullptr) {
-            *OutError = "git reset failed before plan-staged commit";
+    // With an explicit include scope, the preflight above guarantees that the
+    // index contains no out-of-scope paths. `git add -A -- <include>` refreshes
+    // those exact entries, so a reset is both redundant and expensive for
+    // large repositories. Stage-all plans retain the legacy full reset.
+    if (InItem.include.empty()) {
+        const auto reset = GitCapture(InRepo, {"reset", "-q"});
+        AppendExecResult(OutStdout, OutStderr, reset);
+        if (reset.exitCode != 0) {
+            if (OutError != nullptr) {
+                *OutError = "git reset failed before plan-staged commit";
+            }
+            return false;
         }
-        return false;
     }
 
     auto isManagedGitlinkPath = [&](const std::string& InPath) -> bool {
