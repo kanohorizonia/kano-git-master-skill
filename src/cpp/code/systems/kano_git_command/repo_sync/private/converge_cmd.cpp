@@ -193,9 +193,9 @@ const std::vector<std::string> kConvergePhases = {
     "commit-local-changes-if-needed",
     "sync-before-push",
     "push-nested-bottom-up",
-    "sync-converge-dependent-repos",
     "status-delta-after-sync",
     "commit-pointer-updates-if-needed",
+    "sync-converge-dependent-repos",
     "push-parents-bottom-up",
     "final-status-summary",
 };
@@ -4759,7 +4759,6 @@ void RegisterConverge(CLI::App& InApp) {
                 }
             } else if (phase == "commit-pointer-updates-if-needed") {
                 for (const auto& line : plan.commit) {
-                    if (line.text.find("deterministic pointer commit") == std::string::npos) continue;
                     if (PhaseSummaryContainsRepo(state, phase, line.repo, &PhaseSummary::succeeded)) {
                         summary.skipped.push_back(line.repo);
                         continue;
@@ -4768,18 +4767,32 @@ void RegisterConverge(CLI::App& InApp) {
                         summary.skipped.push_back(line.repo);
                         continue;
                     }
-                    const std::string message = line.text.find(kPointerMultipleMessage) != std::string::npos ? kPointerMultipleMessage : kPointerSingleMessage;
-                    const auto code = RunCommitNativeSimple(workspaceRoot, line.repo, true, message, false, false, "", "", false, true, false);
-                    state.commandLinesUsed[phase].push_back("kog commit -ai --repos " + line.repo + " --message \"" + message + "\"");
+                    const bool pointerCommit = line.text.find("deterministic pointer commit") != std::string::npos;
+                    std::string commandLine = "kog commit -ai --repos " + line.repo;
+                    std::string failureCategory;
+                    std::string failureMessage;
+                    int code = 0;
+                    if (agentIntentCommitMode && !pointerCommit) {
+                        code = RunIntentCommitPlan(workspaceRoot, snapshot, line.repo, *profile, &commandLine, &failureCategory, &failureMessage);
+                    } else {
+                        const std::string message = pointerCommit ? (line.text.find(kPointerMultipleMessage) != std::string::npos ? kPointerMultipleMessage : kPointerSingleMessage) : std::string{};
+                        code = RunCommitNativeSimple(workspaceRoot, line.repo, true, message, false, false, "", "", false, true, false);
+                        if (pointerCommit) commandLine += " --message \"" + message + "\"";
+                    }
+                    state.commandLinesUsed[phase].push_back(commandLine);
                     if (code == 0) summary.succeeded.push_back(line.repo);
                     else {
                         summary.failed.push_back(line.repo);
-                        summary.failureCategory[line.repo] = "FAILED_COMMIT";
-                        summary.failureMessage[line.repo] = "pointer commit failed";
+                        summary.failureCategory[line.repo] = failureCategory.empty() ? "FAILED_COMMIT" : failureCategory;
+                        summary.failureMessage[line.repo] = failureMessage.empty() ? "commit-pointer-updates-if-needed failed" : failureMessage;
                         summary.retryEligible[line.repo] = true;
                     }
                 }
-                for (const auto& line : plan.skipped) if (line.text.find("pointer commit skipped") != std::string::npos) summary.skipped.push_back(line.repo);
+                for (const auto& line : plan.skipped) {
+                    if (line.text.find("commit skipped") != std::string::npos || line.text.find("kog commit -ai skipped") != std::string::npos || line.text.find("pointer commit skipped") != std::string::npos) {
+                        summary.skipped.push_back(line.repo);
+                    }
+                }
                 } else if (phase == "settle-worktrees") {
                     if (!worktreeSettleRequested) {
                         state.commandLinesUsed[phase].push_back("kog converge worktree settle skipped: no worktree settle flags requested");

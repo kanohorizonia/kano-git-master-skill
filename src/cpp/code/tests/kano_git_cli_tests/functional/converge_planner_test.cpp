@@ -1329,6 +1329,64 @@ TEST_CASE("converge runtime commits dirty child before parent pointer", "[tdd][f
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge commits deferred parent content before refreshed sync and push", "[tdd][functional][feature:converge-state][feature:dirty-kind][converge][planner][agent-mode][KG-BUG-0032]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("converge-deferred-parent-content-diverged");
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneChildRepo), "checkout child branch for deferred parent content test");
+
+    WriteTextFile(ctx.rootSeedRepo / "remote-root.txt", "remote root change\n");
+    RequireSuccess(RunGit({"add", "remote-root.txt"}, ctx.rootSeedRepo), "stage remote root change");
+    RequireSuccess(RunGit({"commit", "-m", "remote root change"}, ctx.rootSeedRepo), "commit remote root change");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.rootSeedRepo), "push remote root change");
+
+    WriteTextFile(ctx.cloneRootRepo / "local-root.txt", "local root commit\n");
+    RequireSuccess(RunGit({"add", "local-root.txt"}, ctx.cloneRootRepo), "stage local root commit");
+    RequireSuccess(RunGit({"commit", "-m", "local root commit"}, ctx.cloneRootRepo), "commit local root commit");
+    RequireSuccess(RunGit({"fetch", "origin", ctx.branch}, ctx.cloneRootRepo), "fetch remote root change");
+
+    const auto deferredRootContent = ctx.cloneRootRepo / "docs" / "deferred-after-child.md";
+    std::filesystem::create_directories(deferredRootContent.parent_path());
+    const auto childGitDirResult = RunGit({"rev-parse", "--absolute-git-dir"}, ctx.cloneChildRepo);
+    RequireSuccess(childGitDirResult, "resolve child git directory for post-commit fixture");
+    WriteTextFile(
+        std::filesystem::path(TrimCopy(childGitDirResult.stdoutText)) / "hooks" / "post-commit",
+        "#!/bin/sh\nprintf 'deferred root content\\n' > '" + deferredRootContent.generic_string() + "'\n");
+    WriteTextFile(ctx.cloneChildRepo / "docs" / "child.md", "deferred child content\n");
+
+    const auto result = RunKogWithEnv(
+        {"converge", "--jobs", "1"},
+        ctx.cloneRootRepo,
+        {{"KANO_AGENT_MODE", "1"}});
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContains(result.stdoutText, "Converge agent intent commit plan");
+    RequireContains(result.stdoutText, "include docs/deferred-after-child.md");
+    RequireContains(result.stdoutText, "[converge] sync_repo=.");
+
+    const auto deltaPhase = result.stdoutText.find("[converge] phase=status-delta-after-sync");
+    const auto deferredCommitPhase = result.stdoutText.find("[converge] phase=commit-pointer-updates-if-needed");
+    const auto refreshedSyncPhase = result.stdoutText.find("[converge] phase=sync-converge-dependent-repos");
+    const auto parentPushPhase = result.stdoutText.find("[converge] phase=push-parents-bottom-up");
+    REQUIRE(deltaPhase < deferredCommitPhase);
+    REQUIRE(deferredCommitPhase < refreshedSyncPhase);
+    REQUIRE(refreshedSyncPhase < parentPushPhase);
+
+    REQUIRE(GitStatusShort(ctx.cloneChildRepo).empty());
+    REQUIRE(GitStatusShort(ctx.cloneRootRepo).empty());
+    const auto childHead = RunGit({"rev-parse", "HEAD"}, ctx.cloneChildRepo);
+    const auto childOrigin = RunGit({"rev-parse", "origin/" + ctx.branch}, ctx.cloneChildRepo);
+    const auto rootHead = RunGit({"rev-parse", "HEAD"}, ctx.cloneRootRepo);
+    const auto rootOrigin = RunGit({"rev-parse", "origin/" + ctx.branch}, ctx.cloneRootRepo);
+    RequireSuccess(childHead, "child rev-parse HEAD after deferred parent converge");
+    RequireSuccess(childOrigin, "child rev-parse origin after deferred parent converge");
+    RequireSuccess(rootHead, "root rev-parse HEAD after deferred parent converge");
+    RequireSuccess(rootOrigin, "root rev-parse origin after deferred parent converge");
+    REQUIRE(childHead.stdoutText == childOrigin.stdoutText);
+    REQUIRE(rootHead.stdoutText == rootOrigin.stdoutText);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("converge no-recursive scopes planner and runtime to current repo", "[tdd][functional][feature:converge-state][converge][planner][no-recursive]") {
     const auto plannerCtx = CreateRemoteWithSubmoduleClone("converge-no-recursive-plan");
     WriteTextFile(plannerCtx.cloneRootRepo / "root-only.txt", "current repo change\n");
