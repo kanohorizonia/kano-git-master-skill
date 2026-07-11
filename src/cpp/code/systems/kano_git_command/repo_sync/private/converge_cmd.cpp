@@ -3298,6 +3298,9 @@ bool SkipEmptyCherryPick(const std::filesystem::path& repoPath, std::string& err
 }
 
 std::filesystem::path MakeCherryPickProbePath() {
+    if (const char* testPath = std::getenv("KOG_TEST_CHERRY_PICK_PROBE_PATH"); testPath != nullptr && testPath[0] != '\0') {
+        return std::filesystem::path(testPath).lexically_normal();
+    }
 #if defined(_WIN32)
     const auto pid = static_cast<unsigned long long>(GetCurrentProcessId());
 #else
@@ -3333,13 +3336,12 @@ bool BranchCherryPickNoopIntoTarget(const std::filesystem::path& repoPath,
     }
 
     const auto probePath = MakeCherryPickProbePath();
-    bool worktreeAdded = false;
     auto cleanupProbe = [&]() {
-        if (worktreeAdded) {
-            (void)GitCapture(repoPath, {"worktree", "remove", "--force", probePath.string()});
-        }
+        (void)GitCapture(repoPath, {"worktree", "unlock", probePath.string()});
+        (void)GitCapture(repoPath, {"worktree", "remove", "--force", probePath.string()});
         std::error_code ec;
         std::filesystem::remove_all(probePath, ec);
+        (void)GitCapture(repoPath, {"worktree", "prune", "--expire", "now"});
     };
 
     const auto add = GitCapture(repoPath, {"worktree", "add", "--detach", probePath.string(), Trim(targetHead.stdoutStr)});
@@ -3350,8 +3352,6 @@ bool BranchCherryPickNoopIntoTarget(const std::filesystem::path& repoPath,
         }
         return false;
     }
-    worktreeAdded = true;
-
     bool sawNoop = false;
     for (const auto& commit : commits) {
         const auto cherryPick = GitCapture(probePath, {"cherry-pick", commit});

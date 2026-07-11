@@ -1007,6 +1007,35 @@ TEST_CASE("converge branches retire removes empty cherry-pick no-op branch", "[t
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge branch noop probe cleans partial worktree registration", "[tdd][functional][feature:converge][converge][branches][retire][equivalent][KG-BUG-0008]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-probe-partial-cleanup");
+    const std::string featureBranch = "feature/probe-partial-cleanup";
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout partial-probe feature branch");
+    RequireSuccess(RunGit({"commit", "--allow-empty", "-m", "empty partial-probe feature"}, ctx.cloneRepo), "commit partial-probe no-op feature");
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target before partial-probe inventory");
+
+    const auto probePath = (ctx.sandbox.root / "pre-registered-probe").lexically_normal();
+    RequireSuccess(RunGit({"worktree", "add", "--detach", probePath.string(), ctx.branch}, ctx.cloneRepo), "pre-register probe worktree");
+    RequireSuccess(RunGit({"worktree", "lock", "--reason", "initializing", probePath.string()}, ctx.cloneRepo), "lock partial probe registration");
+
+    const auto inventory = RunKogWithEnv(
+        {"converge", "branches", "inventory", "--target", ctx.branch, "--strategy", "cherry-pick", "--json", "--jobs", "1"},
+        ctx.cloneRepo,
+        {{"KOG_TEST_CHERRY_PICK_PROBE_PATH", probePath.string()}});
+    INFO(inventory.stdoutText);
+    INFO(inventory.stderrText);
+    REQUIRE(inventory.exitCode == 0);
+    RequireContains(inventory.stdoutText, "\"name\": \"" + featureBranch + "\"");
+
+    const auto worktreeList = RunGit({"worktree", "list", "--porcelain"}, ctx.cloneRepo);
+    RequireSuccess(worktreeList, "list worktrees after partial probe cleanup");
+    RequireNotContains(worktreeList.stdoutText, probePath.generic_string());
+    REQUIRE_FALSE(std::filesystem::exists(probePath));
+    REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("converge branches retire deletes remote-only no-op branches with explicit remote confirmation", "[tdd][functional][feature:converge][converge][branches][retire][remote-only]") {
     const auto ctx = CreateRemoteWithClone("converge-branches-retire-remote-only-noop");
     const std::string featureBranch = "feature/retire-remote-only-noop";
