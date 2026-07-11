@@ -218,6 +218,7 @@ TEST_CASE("NormalizeCommitPlanRepoPaths normalizes AI-corrupted include pathspec
 
     WriteTextFile(repoRoot / "public" / "src" / "cpp" / "include" / "widget.hpp", "#pragma once\n");
     WriteTextFile(repoRoot / "docs" / "plan.md", "# Plan\n");
+    WriteTextFile(repoRoot / "PARA" / "2026-07-11 - Daily Concept.md", "# Daily Concept\n");
 
     struct Fixture {
         std::string name;
@@ -239,6 +240,10 @@ TEST_CASE("NormalizeCommitPlanRepoPaths normalizes AI-corrupted include pathspec
          repoRoot.generic_string(),
          {(repoRoot / "docs" / "plan.md").string()},
          {"docs/plan.md"}},
+        {"legitimate spaces in a repo-relative path",
+         repoRoot.generic_string(),
+         {"PARA/2026-07-11 - Daily Concept.md"},
+         {"PARA/2026-07-11 - Daily Concept.md"}},
     };
 
     for (const auto& fixture : fixtures) {

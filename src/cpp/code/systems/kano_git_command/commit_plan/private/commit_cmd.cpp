@@ -2047,21 +2047,7 @@ auto NormalizePlanPathspecToken(std::string InValue) -> std::string {
         cleaned.push_back(ch);
     }
 
-    const bool looksLikePath = cleaned.find('/') != std::string::npos;
-    if (!looksLikePath) {
-        return Trim(cleaned);
-    }
-
-    // AI output may wrap long paths with indentation spaces; strip all spaces for pathspec stability.
-    std::string compact;
-    compact.reserve(cleaned.size());
-    for (const char ch : cleaned) {
-        if (ch == ' ') {
-            continue;
-        }
-        compact.push_back(ch);
-    }
-    return Trim(compact);
+    return Trim(cleaned);
 }
 
 auto ExtractStringArrayForKey(const std::string& InObjectText, const std::string& InField) -> std::vector<std::string> {

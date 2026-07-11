@@ -3189,20 +3189,7 @@ auto NormalizeCommitPlanToken(std::string InValue) -> std::string {
         cleaned.push_back(ch);
     }
 
-    const bool looksLikePath = cleaned.find('/') != std::string::npos;
-    if (!looksLikePath) {
-        return Trim(cleaned);
-    }
-
-    std::string compact;
-    compact.reserve(cleaned.size());
-    for (const char ch : cleaned) {
-        if (ch == ' ') {
-            continue;
-        }
-        compact.push_back(ch);
-    }
-    return Trim(compact);
+    return Trim(cleaned);
 }
 
 auto IsTrackedPathspecInHead(const std::filesystem::path& InRepoRoot,
@@ -3321,6 +3308,21 @@ auto NormalizePlanPathspecForRepo(const std::filesystem::path& InRepoRoot,
         candidates.push_back(normalized);
         if (!InRepoPrefix.empty() && InRepoPrefix != ".") {
             candidates.push_back((InRepoPrefix / specPath).lexically_normal().generic_string());
+        }
+        if (normalized.find('/') != std::string::npos && normalized.find(' ') != std::string::npos) {
+            std::string compact;
+            compact.reserve(normalized.size());
+            for (const char ch : normalized) {
+                if (ch != ' ') {
+                    compact.push_back(ch);
+                }
+            }
+            if (!compact.empty() && compact != normalized) {
+                candidates.push_back(compact);
+                if (!InRepoPrefix.empty() && InRepoPrefix != ".") {
+                    candidates.push_back((InRepoPrefix / std::filesystem::path(compact)).lexically_normal().generic_string());
+                }
+            }
         }
     }
 
