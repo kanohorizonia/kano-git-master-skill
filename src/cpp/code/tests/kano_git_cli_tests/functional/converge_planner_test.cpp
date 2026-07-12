@@ -1819,6 +1819,46 @@ TEST_CASE("converge agent mode keeps unknown local paths ambiguous", "[functiona
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge excludes registered linked worktree roots from ancestor repo intent", "[functional][converge][agent-mode][worktree][KG-BUG-0037]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("converge-registered-linked-worktree-root");
+    const auto linkedWorktree = (ctx.cloneRootRepo / ".worktrees" / "child-feature").lexically_normal();
+    RequireSuccess(
+        RunGit({"worktree", "add", "-b", "kg-bug-0037-child-feature", linkedWorktree.string(), "HEAD"}, ctx.cloneChildRepo),
+        "create registered child linked worktree under ancestor root");
+    RequireContains(GitStatusShort(ctx.cloneRootRepo), "?? .worktrees/");
+
+    const auto result = RunKogWithEnv(
+        {"converge", "--jobs", "1"},
+        ctx.cloneRootRepo,
+        {{"KANO_AGENT_MODE", "1"}});
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContains(result.stdoutText, "registered_worktree=/.worktrees/child-feature/");
+    REQUIRE(GitStatusShort(ctx.cloneRootRepo).empty());
+    REQUIRE(std::filesystem::exists(linkedWorktree / "child.txt"));
+    RequireSuccess(
+        RunGit({"check-ignore", "--quiet", "--", ".worktrees/child-feature"}, ctx.cloneRootRepo),
+        "registered linked worktree is ignored by ancestor-local metadata");
+    RequireContains(ReadTextFile(ctx.cloneRootRepo / ".git" / "info" / "exclude"), "/.worktrees/child-feature/");
+
+    const auto unknownPath = std::filesystem::path("scratch/operator-owned.data");
+    WriteTextFile(ctx.cloneRootRepo / unknownPath, "must remain operator-owned\n");
+    const auto unknownResult = RunKogWithEnv(
+        {"converge", "--jobs", "1"},
+        ctx.cloneRootRepo,
+        {{"KANO_AGENT_MODE", "1"}});
+    INFO(unknownResult.stdoutText);
+    INFO(unknownResult.stderrText);
+    REQUIRE(unknownResult.exitCode != 0);
+    RequireContains(unknownResult.stdoutText, "ambiguous " + unknownPath.generic_string());
+    RequireContains(GitStatusShort(ctx.cloneRootRepo), "?? scratch/");
+    REQUIRE(std::filesystem::exists(ctx.cloneRootRepo / unknownPath));
+    REQUIRE(std::filesystem::exists(linkedWorktree / "child.txt"));
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("converge agent mode scopes add delete and rename source paths to one ticket intent", "[tdd][functional][feature:converge-state][converge][agent-mode][intent-commits][status-kind]") {
     const auto ctx = CreateRemoteWithClone("converge-agent-ticket-status-intent");
 

@@ -649,11 +649,20 @@ Snapshot LoadCurrentRepoSnapshot(const std::filesystem::path& root) {
     return snapshot;
 }
 
-Snapshot LoadConvergeSnapshot(const std::filesystem::path& root, int jobs, bool unregisteredScan, bool recursive) {
+bool EnsureRegisteredLinkedWorktreeExcludes(const Snapshot& snapshot);
+
+Snapshot LoadConvergeSnapshot(const std::filesystem::path& root,
+                              int jobs,
+                              bool unregisteredScan,
+                              bool recursive,
+                              bool ensureRegisteredWorktreeExcludes = false) {
     if (!recursive) {
         return LoadCurrentRepoSnapshot(root);
     }
     auto snapshot = LoadSnapshot(root, jobs, unregisteredScan);
+    if (ensureRegisteredWorktreeExcludes && EnsureRegisteredLinkedWorktreeExcludes(snapshot)) {
+        snapshot = LoadSnapshot(root, jobs, unregisteredScan);
+    }
     return std::move(snapshot);
 }
 
@@ -1683,6 +1692,247 @@ std::vector<DirtyPathEntry> CollectDirtyEntries(const std::filesystem::path& rep
         return a.path == b.path && a.originalPath == b.originalPath && a.rawStatus == b.rawStatus;
     }), entries.end());
     return entries;
+}
+
+std::string ComparableAbsolutePath(const std::filesystem::path& path) {
+    std::error_code ec;
+    auto normalized = std::filesystem::weakly_canonical(path, ec);
+    if (ec) {
+        ec.clear();
+        normalized = std::filesystem::absolute(path, ec);
+        if (ec) {
+            normalized = path;
+        }
+    }
+    auto value = normalized.lexically_normal().generic_string();
+#if defined(_WIN32)
+    value = ToLower(std::move(value));
+#endif
+    return value;
+}
+
+std::string TrimTrailingDirectorySeparators(std::string path) {
+    while (!path.empty() && path.back() == '/') {
+        path.pop_back();
+    }
+    return path;
+}
+
+std::optional<std::filesystem::path> CommonGitDirFromRegisteredRepo(const std::filesystem::path& repoPath) {
+    const auto dotGit = repoPath / ".git";
+    std::error_code ec;
+    if (std::filesystem::is_directory(dotGit, ec) && !ec) {
+        return dotGit.lexically_normal();
+    }
+    ec.clear();
+    if (!std::filesystem::is_regular_file(dotGit, ec) || ec) {
+        return std::nullopt;
+    }
+
+    std::ifstream in(dotGit, std::ios::binary);
+    std::string line;
+    if (!in.good() || !std::getline(in, line)) {
+        return std::nullopt;
+    }
+    if (!line.empty() && line.back() == '\r') {
+        line.pop_back();
+    }
+    constexpr std::string_view prefix = "gitdir:";
+    if (line.rfind(prefix, 0) != 0) {
+        return std::nullopt;
+    }
+
+    auto gitDir = std::filesystem::path(Trim(line.substr(prefix.size())));
+    if (gitDir.is_relative()) {
+        gitDir = repoPath / gitDir;
+    }
+    gitDir = gitDir.lexically_normal();
+    if (ToLower(gitDir.parent_path().filename().generic_string()) == "worktrees") {
+        return gitDir.parent_path().parent_path().lexically_normal();
+    }
+    return gitDir;
+}
+
+bool IsRegisteredLinkedWorktree(const std::filesystem::path& candidate,
+                                const std::set<std::string>& registeredCommonGitDirs) {
+    std::error_code ec;
+    if (!std::filesystem::is_directory(candidate, ec) || ec ||
+        !std::filesystem::is_regular_file(candidate / ".git", ec) || ec) {
+        return false;
+    }
+
+    const auto commonDirResult = shell::ExecuteCommand(
+        "git",
+        {"rev-parse", "--path-format=absolute", "--git-common-dir"},
+        shell::ExecMode::Capture,
+        candidate);
+    if (commonDirResult.exitCode != 0 ||
+        !registeredCommonGitDirs.contains(ComparableAbsolutePath(FirstNonEmptyLine(commonDirResult.stdoutStr)))) {
+        return false;
+    }
+
+    const auto listed = shell::ExecuteCommand(
+        "git",
+        {"worktree", "list", "--porcelain"},
+        shell::ExecMode::Capture,
+        candidate);
+    if (listed.exitCode != 0) {
+        return false;
+    }
+
+    const auto candidateKey = ComparableAbsolutePath(candidate);
+    bool candidateListed = false;
+    std::istringstream lines(listed.stdoutStr);
+    std::string line;
+    while (std::getline(lines, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        constexpr std::string_view prefix = "worktree ";
+        if (line.rfind(prefix, 0) != 0) {
+            continue;
+        }
+        const auto listedKey = ComparableAbsolutePath(Trim(line.substr(prefix.size())));
+        candidateListed = candidateListed || listedKey == candidateKey;
+    }
+    return candidateListed;
+}
+
+bool AppendRegisteredWorktreeExcludeRules(const RepoStatus& repo,
+                                          const std::vector<std::string>& rules) {
+    if (rules.empty()) {
+        return false;
+    }
+
+    const auto repoPath = std::filesystem::path(repo.absolutePath).lexically_normal();
+    const auto gitPathResult = shell::ExecuteCommand(
+        "git",
+        {"rev-parse", "--git-path", "info/exclude"},
+        shell::ExecMode::Capture,
+        repoPath);
+    if (gitPathResult.exitCode != 0) {
+        throw std::runtime_error(
+            "failed to resolve local exclude path for " + repo.id + ": " + Trim(gitPathResult.stderrStr));
+    }
+
+    auto excludePath = std::filesystem::path(FirstNonEmptyLine(gitPathResult.stdoutStr));
+    if (excludePath.is_relative()) {
+        excludePath = repoPath / excludePath;
+    }
+    excludePath = excludePath.lexically_normal();
+
+    std::string content;
+    if (std::filesystem::exists(excludePath)) {
+        std::ifstream in(excludePath, std::ios::binary);
+        if (!in.good()) {
+            throw std::runtime_error("failed to read local exclude file: " + excludePath.generic_string());
+        }
+        std::ostringstream buffer;
+        buffer << in.rdbuf();
+        content = buffer.str();
+    }
+
+    std::set<std::string> existingLines;
+    std::istringstream lines(content);
+    std::string line;
+    while (std::getline(lines, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        existingLines.insert(Trim(line));
+    }
+
+    std::vector<std::string> missingRules;
+    for (const auto& rule : rules) {
+        if (!existingLines.contains(rule)) {
+            missingRules.push_back(rule);
+        }
+    }
+    if (missingRules.empty()) {
+        return false;
+    }
+
+    std::error_code ec;
+    std::filesystem::create_directories(excludePath.parent_path(), ec);
+    if (ec) {
+        throw std::runtime_error("failed to create local exclude directory: " + ec.message());
+    }
+    std::ofstream out(excludePath, std::ios::binary | std::ios::app);
+    if (!out.good()) {
+        throw std::runtime_error("failed to append local exclude file: " + excludePath.generic_string());
+    }
+    if (!content.empty() && content.back() != '\n' && content.back() != '\r') {
+        out << "\n";
+    }
+    constexpr std::string_view marker = "# KOG registered linked worktrees (KG-BUG-0037)";
+    if (!existingLines.contains(std::string(marker))) {
+        out << marker << "\n";
+    }
+    for (const auto& rule : missingRules) {
+        out << rule << "\n";
+        std::cout << "[converge] local_exclude_repo=" << repo.id
+                  << " registered_worktree=" << rule << "\n";
+    }
+    out.close();
+    if (!out.good()) {
+        throw std::runtime_error("failed to flush local exclude file: " + excludePath.generic_string());
+    }
+    return true;
+}
+
+bool EnsureRegisteredLinkedWorktreeExcludes(const Snapshot& snapshot) {
+    std::set<std::string> registeredRepoPaths;
+    std::set<std::string> registeredCommonGitDirs;
+    for (const auto& repo : snapshot.repos) {
+        if (repo.absolutePath.empty()) {
+            continue;
+        }
+        const auto repoPath = std::filesystem::path(repo.absolutePath).lexically_normal();
+        registeredRepoPaths.insert(ComparableAbsolutePath(repoPath));
+        if (const auto commonDir = CommonGitDirFromRegisteredRepo(repoPath); commonDir.has_value()) {
+            registeredCommonGitDirs.insert(ComparableAbsolutePath(*commonDir));
+        }
+    }
+
+    bool changed = false;
+    for (const auto& repo : snapshot.repos) {
+        if (repo.absolutePath.empty() ||
+            (repo.dirtyKind != "INDEX_DIRTY" &&
+             repo.dirtyKind != "CONTENT_DIRTY" &&
+             repo.dirtyKind != "UNTRACKED_ONLY")) {
+            continue;
+        }
+
+        const auto repoPath = std::filesystem::path(repo.absolutePath).lexically_normal();
+        std::string statusError;
+        const auto dirtyEntries = CollectDirtyEntries(repoPath, &statusError);
+        if (!statusError.empty()) {
+            throw std::runtime_error("failed to inspect linked worktree candidates for " + repo.id + ": " + statusError);
+        }
+
+        std::vector<std::string> rules;
+        for (const auto& entry : dirtyEntries) {
+            if (entry.rawStatus != "??") {
+                continue;
+            }
+            const auto relative = TrimTrailingDirectorySeparators(NormalizeGitPath(entry.path));
+            if (relative.empty()) {
+                continue;
+            }
+            const auto candidate = (repoPath / std::filesystem::path(relative)).lexically_normal();
+            if (registeredRepoPaths.contains(ComparableAbsolutePath(candidate))) {
+                continue;
+            }
+            if (IsRegisteredLinkedWorktree(candidate, registeredCommonGitDirs)) {
+                rules.push_back("/" + relative + "/");
+            }
+        }
+
+        std::sort(rules.begin(), rules.end());
+        rules.erase(std::unique(rules.begin(), rules.end()), rules.end());
+        changed = AppendRegisteredWorktreeExcludeRules(repo, rules) || changed;
+    }
+    return changed;
 }
 
 std::vector<std::string> DirtyEntryPaths(const std::vector<DirtyPathEntry>& entries) {
@@ -4608,7 +4858,7 @@ void RegisterConverge(CLI::App& InApp) {
                 std::exit(1);
             }
             try {
-                snapshot = LoadConvergeSnapshot(workspaceRoot, *jobs, false, recursive);
+                snapshot = LoadConvergeSnapshot(workspaceRoot, *jobs, false, recursive, true);
             } catch (const std::exception& ex) {
                 std::cerr << "Error: failed to load status snapshot during resume: " << ex.what() << "\n";
                 std::exit(1);
@@ -4661,7 +4911,7 @@ void RegisterConverge(CLI::App& InApp) {
             std::cout << "Resuming converge from phase: " << state.currentPhase << "\n";
         } else {
             try {
-                snapshot = LoadConvergeSnapshot(workspaceRoot, *jobs, false, recursive);
+                snapshot = LoadConvergeSnapshot(workspaceRoot, *jobs, false, recursive, true);
             } catch (const std::exception& ex) {
                 std::cerr << "Error: failed to load status snapshot: " << ex.what() << "\n";
                 std::exit(1);
@@ -4821,7 +5071,7 @@ void RegisterConverge(CLI::App& InApp) {
                 }
             } else if (phase == "status-delta-after-sync") {
                 try {
-                    snapshot = LoadConvergeSnapshot(workspaceRoot, *jobs, false, recursive);
+                    snapshot = LoadConvergeSnapshot(workspaceRoot, *jobs, false, recursive, true);
                     plan = BuildPlan(snapshot);
                     state.plannedSyncRepos = UniqueRepos(plan.sync);
                     state.plannedCommitRepos = UniqueRepos(plan.commit);
@@ -4920,7 +5170,7 @@ void RegisterConverge(CLI::App& InApp) {
                     std::cout << "Converge final summary\n";
                     std::cout << "  succeeded=" << state.succeededRepos.size() << " failed=" << state.failedRepos.size() << " blocked=" << state.blockedRepoSet.size() << " skipped=" << state.skippedRepos.size() << " pending=" << state.pendingRepos.size() << "\n";
                     try {
-                        nextSnapshot = LoadConvergeSnapshot(workspaceRoot, *jobs, false, recursive);
+                        nextSnapshot = LoadConvergeSnapshot(workspaceRoot, *jobs, false, recursive, true);
                         nextPlan = BuildPlan(nextSnapshot);
                         if (!nextPlan.blocked.empty()) {
                             summary.blocked = UniqueRepos(nextPlan.blocked);
