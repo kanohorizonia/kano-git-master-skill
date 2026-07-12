@@ -1896,10 +1896,7 @@ bool EnsureRegisteredLinkedWorktreeExcludes(const Snapshot& snapshot) {
 
     bool changed = false;
     for (const auto& repo : snapshot.repos) {
-        if (repo.absolutePath.empty() ||
-            (repo.dirtyKind != "INDEX_DIRTY" &&
-             repo.dirtyKind != "CONTENT_DIRTY" &&
-             repo.dirtyKind != "UNTRACKED_ONLY")) {
+        if (repo.absolutePath.empty() || !Contains(repo.statusFlags, "??")) {
             continue;
         }
 

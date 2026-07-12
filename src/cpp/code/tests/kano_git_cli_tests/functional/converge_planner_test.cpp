@@ -1825,7 +1825,15 @@ TEST_CASE("converge excludes registered linked worktree roots from ancestor repo
     RequireSuccess(
         RunGit({"worktree", "add", "-b", "kg-bug-0037-child-feature", linkedWorktree.string(), "HEAD"}, ctx.cloneChildRepo),
         "create registered child linked worktree under ancestor root");
+    RequireSuccess(RunGit({"checkout", "-b", "kg-bug-0037-published-pointer"}, ctx.cloneChildRepo), "create published child branch");
+    WriteTextFile(ctx.cloneChildRepo / "child.txt", "child pointer update\n");
+    RequireSuccess(RunGit({"add", "child.txt"}, ctx.cloneChildRepo), "stage child pointer update");
+    RequireSuccess(RunGit({"commit", "-m", "publish child pointer update"}, ctx.cloneChildRepo), "commit child pointer update");
+    RequireSuccess(
+        RunGit({"push", "-u", "origin", "kg-bug-0037-published-pointer"}, ctx.cloneChildRepo),
+        "publish child pointer update");
     RequireContains(GitStatusShort(ctx.cloneRootRepo), "?? .worktrees/");
+    RequireContains(GitStatusShort(ctx.cloneRootRepo), "deps/child");
 
     const auto result = RunKogWithEnv(
         {"converge", "--jobs", "1"},
