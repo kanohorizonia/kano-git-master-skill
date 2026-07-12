@@ -963,9 +963,9 @@ std::vector<std::string> UniqueRepos(const std::vector<PlanLine>& lines) {
     return repos;
 }
 
-bool RepoHasPlannedDescendantPush(const Snapshot& snapshot, const Plan& plan, const std::string& repoId) {
-    const auto plannedPushRepos = UniqueRepos(plan.push);
-    const std::unordered_set<std::string> plannedPushSet(plannedPushRepos.begin(), plannedPushRepos.end());
+bool RepoHasDescendantInSet(const Snapshot& snapshot,
+                            const std::string& repoId,
+                            const std::unordered_set<std::string>& candidates) {
     std::unordered_map<std::string, const RepoStatus*> byId;
     for (const auto& repo : snapshot.repos) {
         byId[repo.id] = &repo;
@@ -983,7 +983,7 @@ bool RepoHasPlannedDescendantPush(const Snapshot& snapshot, const Plan& plan, co
         if (!visited.insert(child).second) {
             continue;
         }
-        if (plannedPushSet.contains(child)) {
+        if (candidates.contains(child)) {
             return true;
         }
         if (const auto it = byId.find(child); it != byId.end()) {
@@ -991,6 +991,23 @@ bool RepoHasPlannedDescendantPush(const Snapshot& snapshot, const Plan& plan, co
         }
     }
     return false;
+}
+
+bool RepoHasPlannedDescendantPush(const Snapshot& snapshot, const Plan& plan, const std::string& repoId) {
+    const auto plannedPushRepos = UniqueRepos(plan.push);
+    return RepoHasDescendantInSet(
+        snapshot,
+        repoId,
+        std::unordered_set<std::string>(plannedPushRepos.begin(), plannedPushRepos.end()));
+}
+
+std::size_t RepoWaveIndex(const Plan& plan, const std::string& repoId) {
+    for (std::size_t index = 0; index < plan.waves.size(); ++index) {
+        if (std::find(plan.waves[index].begin(), plan.waves[index].end(), repoId) != plan.waves[index].end()) {
+            return index;
+        }
+    }
+    return plan.waves.size();
 }
 
 bool IsNestedRepo(const Snapshot& snapshot, const std::string& repoId) {
@@ -4772,21 +4789,35 @@ void RegisterConverge(CLI::App& InApp) {
                 if (phase == "push-nested-bottom-up") {
                     std::erase_if(pushRepos, [&](const auto& repo) { return !IsNestedRepo(snapshot, repo); });
                 }
+                std::sort(pushRepos.begin(), pushRepos.end(), [&](const auto& lhs, const auto& rhs) {
+                    const auto lhsWave = RepoWaveIndex(plan, lhs);
+                    const auto rhsWave = RepoWaveIndex(plan, rhs);
+                    return lhsWave == rhsWave ? lhs < rhs : lhsWave < rhsWave;
+                });
                 if (pushRepos.empty()) {
                     state.commandLinesUsed[phase].push_back("kog push skipped: no planned repositories");
                 } else {
-                    state.commandLinesUsed[phase].push_back(
-                        recursive
-                            ? ("kog push --recursive --repos " + Csv(pushRepos) + " --jobs " + std::to_string(*jobs))
-                            : ("kog push --no-recursive --jobs " + std::to_string(*jobs)));
-                    const auto pushFilters = recursive ? pushRepos : std::vector<std::string>{};
-                    const auto detailed = RunPushNativeSimpleDetailed(workspaceRoot, recursive, false, *profile, *forceWithLease, *noVerify, *jobs, *verbose, *remote, pushFilters);
-                    PopulatePhaseSummaryFromAggregate(detailed.second, true, summary);
-                    if (detailed.first != 0 && summary.failed.empty() && summary.blocked.empty()) {
-                        summary.failed.push_back(".");
-                        summary.failureCategory["."] = "PUSH_ERROR";
-                        summary.failureMessage["."] = "push phase failed";
-                        summary.retryEligible["."] = true;
+                    std::unordered_set<std::string> failedOrBlocked;
+                    for (const auto& repo : pushRepos) {
+                        if (RepoHasDescendantInSet(snapshot, repo, failedOrBlocked)) {
+                            summary.blocked.push_back(repo);
+                            summary.failureCategory[repo] = "BLOCKED_BY_CHILD_FAILURE";
+                            summary.failureMessage[repo] = "planned descendant push failed in the same phase";
+                            summary.retryEligible[repo] = true;
+                            failedOrBlocked.insert(repo);
+                            continue;
+                        }
+                        const auto repoPath = ResolveRepoPath(workspaceRoot, repo);
+                        std::cout << "[converge] push_repo=" << repo << " mode=no-recursive\n";
+                        state.commandLinesUsed[phase].push_back("kog push --no-recursive --repo-root " + repoPath.generic_string());
+                        const auto detailed = RunPushNativeSimpleDetailed(
+                            repoPath, false, false, *profile, *forceWithLease, *noVerify, 1, *verbose, *remote, {});
+                        PopulatePhaseSummaryFromSingleRepoAggregate(repo, detailed.second, true, detailed.first, summary);
+                        const auto failed = std::find(summary.failed.begin(), summary.failed.end(), repo) != summary.failed.end();
+                        const auto blocked = std::find(summary.blocked.begin(), summary.blocked.end(), repo) != summary.blocked.end();
+                        if (failed || blocked) {
+                            failedOrBlocked.insert(repo);
+                        }
                     }
                 }
             } else if (phase == "status-delta-after-sync") {

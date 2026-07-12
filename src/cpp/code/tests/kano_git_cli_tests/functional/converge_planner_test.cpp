@@ -1329,7 +1329,7 @@ TEST_CASE("converge planner defers unsafe parent pointer while child can converg
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
-TEST_CASE("converge runtime commits dirty child before parent pointer", "[tdd][functional][feature:converge-state][feature:dirty-kind][converge][planner]") {
+TEST_CASE("converge runtime commits dirty child before parent pointer", "[tdd][functional][feature:converge-state][feature:dirty-kind][converge][planner][KG-BUG-0012]") {
     const auto ctx = CreateRemoteWithSubmoduleClone("converge-runtime-child-before-parent");
     RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneChildRepo), "checkout child branch for runtime child converge");
     WriteTextFile(ctx.cloneChildRepo / "child.txt", "child seed\nruntime child change\n");
@@ -1340,6 +1340,10 @@ TEST_CASE("converge runtime commits dirty child before parent pointer", "[tdd][f
     REQUIRE(result.exitCode == 0);
     RequireContains(result.stdoutText, "[converge] phase=commit-local-changes-if-needed");
     RequireContains(result.stdoutText, "[converge] phase=commit-pointer-updates-if-needed");
+    RequireContains(result.stdoutText, "[converge] push_repo=" + ctx.submodulePath + " mode=no-recursive");
+    RequireContains(result.stdoutText, "[converge] push_repo=. mode=no-recursive");
+    REQUIRE(result.stdoutText.find("[converge] push_repo=" + ctx.submodulePath) <
+            result.stdoutText.find("[converge] push_repo=. mode=no-recursive"));
     RequireContains(result.stdoutText, "[converge] completed");
     REQUIRE(GitStatusShort(ctx.cloneChildRepo).empty());
     REQUIRE(GitStatusShort(ctx.cloneRootRepo).empty());
