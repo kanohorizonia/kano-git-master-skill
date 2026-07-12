@@ -4807,11 +4807,10 @@ void RegisterConverge(CLI::App& InApp) {
                             failedOrBlocked.insert(repo);
                             continue;
                         }
-                        const auto repoPath = ResolveRepoPath(workspaceRoot, repo);
                         std::cout << "[converge] push_repo=" << repo << " mode=no-recursive\n";
-                        state.commandLinesUsed[phase].push_back("kog push --no-recursive --repo-root " + repoPath.generic_string());
+                        state.commandLinesUsed[phase].push_back("kog push --no-recursive --repos " + repo);
                         const auto detailed = RunPushNativeSimpleDetailed(
-                            repoPath, false, false, *profile, *forceWithLease, *noVerify, 1, *verbose, *remote, {});
+                            workspaceRoot, false, false, *profile, *forceWithLease, *noVerify, 1, *verbose, *remote, {repo});
                         PopulatePhaseSummaryFromSingleRepoAggregate(repo, detailed.second, true, detailed.first, summary);
                         const auto failed = std::find(summary.failed.begin(), summary.failed.end(), repo) != summary.failed.end();
                         const auto blocked = std::find(summary.blocked.begin(), summary.blocked.end(), repo) != summary.blocked.end();
