@@ -328,6 +328,34 @@ auto BuildExplicitRepoRecords(const std::filesystem::path& InWorkspaceRoot,
     return DedupePushRepoRecords(std::move(out));
 }
 
+auto BuildExplicitRepoRecordsWithoutDiscovery(const std::filesystem::path& InWorkspaceRoot,
+                                              const std::vector<std::filesystem::path>& InRepos) -> std::vector<workspace::RepoRecord> {
+    std::unordered_map<std::string, workspace::RepoRecord> byPath;
+    std::string manifestReason;
+    if (const auto manifest = workspace::LoadTrustedWorkspaceManifest(InWorkspaceRoot, &manifestReason); manifest.has_value()) {
+        byPath.reserve(manifest->repos.size());
+        for (const auto& repo : manifest->repos) {
+            byPath.emplace(RepoKey(repo.path), repo);
+        }
+    }
+
+    std::vector<workspace::RepoRecord> out;
+    out.reserve(InRepos.size());
+    for (const auto& path : InRepos) {
+        const auto key = RepoKey(path);
+        if (const auto it = byPath.find(key); it != byPath.end()) {
+            out.push_back(it->second);
+            continue;
+        }
+        workspace::RepoRecord record;
+        record.path = path;
+        record.type = key == RepoKey(InWorkspaceRoot) ? "root" : "unregistered";
+        record.registrationRelativeTo = record.type == "root" ? std::filesystem::path{"."} : InWorkspaceRoot;
+        out.push_back(std::move(record));
+    }
+    return DedupePushRepoRecords(std::move(out));
+}
+
 auto RelativeDisplayPath(const std::filesystem::path& InRoot, const std::filesystem::path& InPath) -> std::filesystem::path {
     auto normalizedRoot = InRoot.lexically_normal();
     if (!normalizedRoot.is_absolute()) {
@@ -469,7 +497,8 @@ auto ResolveReposCsv(const std::filesystem::path& InRoot, const std::string& InC
 }
 
 auto BuildExplicitRepoRecordsFromFilters(const std::filesystem::path& InWorkspaceRoot,
-                                         const std::vector<std::string>& InRepoFilters) -> std::vector<workspace::RepoRecord> {
+                                         const std::vector<std::string>& InRepoFilters,
+                                         const bool InAllowDiscovery) -> std::vector<workspace::RepoRecord> {
     std::vector<std::filesystem::path> repos;
     repos.reserve(InRepoFilters.size());
     for (const auto& filter : InRepoFilters) {
@@ -479,7 +508,9 @@ auto BuildExplicitRepoRecordsFromFilters(const std::filesystem::path& InWorkspac
         }
         repos.push_back(ResolveRepoFromSpec(InWorkspaceRoot, std::filesystem::path(trimmed), 12, true));
     }
-    return BuildExplicitRepoRecords(InWorkspaceRoot, repos);
+    return InAllowDiscovery
+        ? BuildExplicitRepoRecords(InWorkspaceRoot, repos)
+        : BuildExplicitRepoRecordsWithoutDiscovery(InWorkspaceRoot, repos);
 }
 
 auto ResolveGitmodulesPushPolicy(const std::filesystem::path& InRepo) -> std::string {
@@ -1541,7 +1572,7 @@ auto RunPushNativeSimpleDetailed(const std::filesystem::path& InWorkspaceRoot,
                                  const std::vector<std::string>& InRepoFilters) -> std::pair<int, workspace::RepoOperationAggregate> {
     std::vector<workspace::RepoRecord> repos;
     if (!InRepoFilters.empty()) {
-        repos = BuildExplicitRepoRecordsFromFilters(InWorkspaceRoot, InRepoFilters);
+        repos = BuildExplicitRepoRecordsFromFilters(InWorkspaceRoot, InRepoFilters, InRecursive);
     } else if (InRecursive) {
         repos = DiscoverWorkspaceRepos(InWorkspaceRoot);
         if (repos.empty()) {

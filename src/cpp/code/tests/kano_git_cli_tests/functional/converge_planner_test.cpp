@@ -481,6 +481,35 @@ TEST_CASE("converge branches inventory no-recursive avoids recursive status snap
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("push no-recursive exact repo avoids recursive status snapshot", "[functional][push][no-recursive][KG-BUG-0012]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("push-exact-repo-no-recursive");
+    const auto diagPath = (ctx.sandbox.root / "push-exact-repo-no-recursive-process.log").lexically_normal();
+    std::filesystem::remove(diagPath);
+
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneChildRepo), "checkout child branch for exact push");
+    WriteTextFile(ctx.cloneChildRepo / "child.txt", "child seed\nexact push change\n");
+    RequireSuccess(RunGit({"commit", "-am", "exact child push"}, ctx.cloneChildRepo), "commit exact child push");
+
+    const auto result = RunKogWithEnv(
+        {"push", "--no-recursive", "--repos", ctx.submodulePath},
+        ctx.cloneRootRepo,
+        {{"KOG_PROCESS_DIAGNOSTICS_LOG", diagPath.string()}});
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    const auto childHead = RunGit({"rev-parse", "HEAD"}, ctx.cloneChildRepo);
+    const auto childOrigin = RunGit({"rev-parse", "origin/" + ctx.branch}, ctx.cloneChildRepo);
+    RequireSuccess(childHead, "child rev-parse HEAD after exact push");
+    RequireSuccess(childOrigin, "child rev-parse origin after exact push");
+    REQUIRE(childHead.stdoutText == childOrigin.stdoutText);
+
+    REQUIRE(std::filesystem::exists(diagPath));
+    RequireNotContains(ReadTextFile(diagPath), "status --recursive");
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("converge branches inventory skips gh-pages publish branch", "[functional][converge][branches][inventory][KG-BUG-0020]") {
     const auto ctx = CreateRemoteWithClone("converge-branches-inventory-skips-gh-pages");
 
