@@ -2174,6 +2174,44 @@ TEST_CASE("plan_verify_pre_apply_detects_dirty_fingerprint_drift", "[functional]
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("commit plan apply rejects dirty fingerprint drift before mutation", "[functional][commit][plan-file][freshness][KG-BUG-0038]") {
+    const auto ctx = CreateRemoteWithClone("commit-plan-rejects-dirty-drift");
+    WriteTextFile(ctx.cloneRepo / "included.txt", "planned content\n");
+    const auto planPath = (ctx.cloneRepo / ".kano" / "cache" / "git" / "plans" / "stale-commit.json").lexically_normal();
+    RequireSuccess(RunKog({"plan", "new", "--force", "--output", planPath.string()}, ctx.cloneRepo), "plan new");
+    RequireSuccess(
+        RunKog({
+            "plan", "prepare", "add-commit-entry",
+            "--plan-file", planPath.string(),
+            "--repo", ".",
+            "--commit-message", "[Commit][Test] Reject stale plan (KG-BUG-0038)",
+            "--commit-include", "included.txt",
+            "--commit-review-verdict", "pass",
+            "--commit-review-reason", "functional stale plan rejection"
+        }, ctx.cloneRepo),
+        "add stale commit entry");
+    const auto headBefore = TrimCopy(RunGit({"rev-parse", "HEAD"}, ctx.cloneRepo).stdoutText);
+
+    WriteTextFile(ctx.cloneRepo / "concurrent.txt", "concurrent agent drift\n");
+    const auto apply = RunKog({"commit", "--plan-file", planPath.string(), "--plan-stage", "commit"}, ctx.cloneRepo);
+    INFO(apply.stdoutText);
+    INFO(apply.stderrText);
+    REQUIRE(apply.exitCode != 0);
+    const auto merged = apply.stdoutText + "\n" + apply.stderrText;
+    RequireContainsText(merged, "workspace state drift detected; commit apply refused");
+    RequireContainsText(merged, "plan.dirty_fingerprint=");
+    RequireContainsText(merged, "current.dirty_fingerprint=");
+    RequireContainsText(merged, "regenerate/refill plan before commit apply");
+    REQUIRE(TrimCopy(RunGit({"rev-parse", "HEAD"}, ctx.cloneRepo).stdoutText) == headBefore);
+    REQUIRE(TrimCopy(RunGit({"diff", "--cached", "--name-only"}, ctx.cloneRepo).stdoutText).empty());
+    const auto status = RunGit({"status", "--short"}, ctx.cloneRepo);
+    RequireSuccess(status, "status after stale plan rejection");
+    RequireContainsText(status.stdoutText, "?? concurrent.txt");
+    RequireContainsText(status.stdoutText, "?? included.txt");
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("plan_verify_pre_apply_detects_base_head_sha_drift", "[functional][plan][freshness]") {
     const auto ctx = CreateRemoteWithClone("plan-head-drift");
     const auto planPath = (ctx.cloneRepo / ".kano" / "cache" / "git" / "plans" / "default-plan.json").lexically_normal();

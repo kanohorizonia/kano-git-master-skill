@@ -62,12 +62,12 @@ namespace {
 auto DisplayRepoLabel(const std::filesystem::path& InWorkspaceRoot, const std::filesystem::path& InRepo) -> std::string;
 auto RunCommitPreflight(const std::filesystem::path& InRepo) -> CommitPreflightReport;
 
-auto WarnPlanWorkspaceStateDrift(const std::string& InNormalizedCommitPlanPath,
-                                 const std::string& InPlanBaseHeadSha,
-                                 const std::string& InCurrentBaseHeadSha,
-                                 const std::string& InPlanDirtyFingerprint,
-                                 const std::string& InCurrentDirtyFingerprint) -> void {
-    std::cerr << "Warning: invalid --plan-file: workspace state drift detected. Continuing anyway.\n";
+auto ReportPlanWorkspaceStateDrift(const std::string& InNormalizedCommitPlanPath,
+                                   const std::string& InPlanBaseHeadSha,
+                                   const std::string& InCurrentBaseHeadSha,
+                                   const std::string& InPlanDirtyFingerprint,
+                                   const std::string& InCurrentDirtyFingerprint) -> void {
+    std::cerr << "Error: invalid --plan-file: workspace state drift detected; commit apply refused.\n";
     std::cerr << "  plan.path=" << InNormalizedCommitPlanPath << "\n";
     std::cerr << "  plan.base_head_sha=" << InPlanBaseHeadSha << "\n";
     std::cerr << "  current.base_head_sha=" << InCurrentBaseHeadSha << "\n";
@@ -5099,11 +5099,12 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
         : ComputeWorkspaceDirtyFingerprint(workspaceRoot);
     if (Trim(parsed->meta.baseHeadSha) != currentBaseHeadSha ||
         Trim(parsed->meta.dirtyFingerprint) != currentDirtyFingerprint) {
-        WarnPlanWorkspaceStateDrift(normalizedCommitPlanPath,
-                                    parsed->meta.baseHeadSha,
-                                    currentBaseHeadSha,
-                                    parsed->meta.dirtyFingerprint,
-                                    currentDirtyFingerprint);
+        ReportPlanWorkspaceStateDrift(normalizedCommitPlanPath,
+                                      parsed->meta.baseHeadSha,
+                                      currentBaseHeadSha,
+                                      parsed->meta.dirtyFingerprint,
+                                      currentDirtyFingerprint);
+        return 2;
     }
 
     const auto stage = ParseCommitPlanStage(InPlanStage);
@@ -6121,11 +6122,12 @@ void RegisterCommit(CLI::App& InApp) {
             const auto currentDirtyFingerprint = ComputeWorkspaceDirtyFingerprint(workspaceRoot);
             if (Trim(parsed->meta.baseHeadSha) != currentBaseHeadSha ||
                 Trim(parsed->meta.dirtyFingerprint) != currentDirtyFingerprint) {
-                WarnPlanWorkspaceStateDrift(normalizedCommitPlanPath,
-                                            parsed->meta.baseHeadSha,
-                                            currentBaseHeadSha,
-                                            parsed->meta.dirtyFingerprint,
-                                            currentDirtyFingerprint);
+                ReportPlanWorkspaceStateDrift(normalizedCommitPlanPath,
+                                              parsed->meta.baseHeadSha,
+                                              currentBaseHeadSha,
+                                              parsed->meta.dirtyFingerprint,
+                                              currentDirtyFingerprint);
+                std::exit(2);
             }
 
             if (!parsed->meta.planner.provider.empty() ||
