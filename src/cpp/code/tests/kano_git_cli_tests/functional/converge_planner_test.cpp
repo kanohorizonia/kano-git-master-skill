@@ -701,7 +701,7 @@ TEST_CASE("converge branches apply skips empty cherry-pick commits", "[tdd][func
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
-TEST_CASE("converge branches apply reports cherry-pick conflicts without auto resolving", "[tdd][functional][feature:converge][converge][branches][apply][cherry-pick][conflict]") {
+TEST_CASE("converge branches apply reports cherry-pick conflicts without auto resolving", "[tdd][functional][feature:converge][converge][branches][apply][cherry-pick][conflict][KG-BUG-0050]") {
     const auto ctx = CreateRemoteWithClone("converge-branches-apply-cherry-pick-conflict");
     WriteTextFile(ctx.cloneRepo / "conflict.txt", "base\n");
     RequireSuccess(RunGit({"add", "conflict.txt"}, ctx.cloneRepo), "add base conflict file");
@@ -718,6 +718,7 @@ TEST_CASE("converge branches apply reports cherry-pick conflicts without auto re
     WriteTextFile(ctx.cloneRepo / "conflict.txt", "target\n");
     RequireSuccess(RunGit({"commit", "-am", "target conflict change"}, ctx.cloneRepo), "commit target conflict change");
     RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.cloneRepo), "push target conflict change");
+    const auto targetHeadBefore = TrimCopy(RunGit({"rev-parse", ctx.branch}, ctx.cloneRepo).stdoutText);
 
     const auto result = RunKog({"converge", "branches", "apply", "--target", ctx.branch, "--strategy", "cherry-pick", "--branch", featureBranch, "--confirm", "--json", "--jobs", "1"}, ctx.cloneRepo);
     INFO(result.stdoutText);
@@ -725,12 +726,19 @@ TEST_CASE("converge branches apply reports cherry-pick conflicts without auto re
     REQUIRE(result.exitCode == 1);
     RequireContains(result.stdoutText, "\"strategy\": \"cherry-pick\"");
     RequireContains(result.stdoutText, "CHERRY_PICK_CONFLICT");
+    RequireContains(result.stdoutText, "\"mutationPerformed\": true");
+    RequireContains(result.stdoutText, "\"operationPending\": true");
+    RequireContains(result.stdoutText, "\"type\": \"cherry-pick\"");
+    RequireContains(result.stdoutText, "\"continueCommand\": \"kog cherry-pick --continue --repo .\"");
+    RequireContains(result.stdoutText, "\"abortCommand\": \"kog cherry-pick --abort --repo .\"");
 
-    RequireSuccess(RunGit({"cherry-pick", "--abort"}, ctx.cloneRepo), "abort expected cherry-pick conflict");
+    RequireSuccess(RunKog({"cherry-pick", "--abort", "--repo", "."}, ctx.cloneRepo), "abort expected cherry-pick conflict through KOG");
+    REQUIRE(TrimCopy(RunGit({"rev-parse", ctx.branch}, ctx.cloneRepo).stdoutText) == targetHeadBefore);
+    REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
-TEST_CASE("converge branches apply preserves remaining commits after an early cherry-pick conflict", "[tdd][functional][feature:converge][converge][branches][apply][cherry-pick][conflict][KG-BUG-0040]") {
+TEST_CASE("converge branches apply preserves remaining commits after an early cherry-pick conflict", "[tdd][functional][feature:converge][converge][branches][apply][cherry-pick][conflict][KG-BUG-0040][KG-BUG-0050]") {
     const auto ctx = CreateRemoteWithClone("converge-branches-apply-cherry-pick-conflict-sequence");
     WriteTextFile(ctx.cloneRepo / "conflict-sequence.txt", "base\n");
     RequireSuccess(RunGit({"add", "conflict-sequence.txt"}, ctx.cloneRepo), "add sequenced conflict base");
@@ -764,7 +772,7 @@ TEST_CASE("converge branches apply preserves remaining commits after an early ch
 
     WriteTextFile(ctx.cloneRepo / "conflict-sequence.txt", "resolved\n");
     RequireSuccess(RunGit({"add", "conflict-sequence.txt"}, ctx.cloneRepo), "stage sequenced conflict resolution");
-    RequireSuccess(RunGit({"cherry-pick", "--continue"}, ctx.cloneRepo), "continue complete native cherry-pick sequence");
+    RequireSuccess(RunKog({"cherry-pick", "--continue", "--repo", "."}, ctx.cloneRepo), "continue complete native cherry-pick sequence through KOG");
     REQUIRE(TrimCopy(ReadTextFile(ctx.cloneRepo / "sequence-second.txt")) == "second");
     REQUIRE(TrimCopy(ReadTextFile(ctx.cloneRepo / "sequence-third.txt")) == "third");
     REQUIRE(GitStatusShort(ctx.cloneRepo).empty());

@@ -4097,6 +4097,8 @@ nlohmann::json MakeBranchActionResult(const std::string& schemaName,
         {"schemaName", schemaName},
         {"schemaVersion", 1},
         {"mutationPerformed", false},
+        {"operationPending", false},
+        {"pendingOperation", nullptr},
         {"confirm", confirm},
         {"targetBranch", targetBranch},
         {"strategy", strategy},
@@ -4301,6 +4303,17 @@ int RunBranchApply(const std::filesystem::path& root,
                         }
                     } else if (!cherryPickSucceeded) {
                         AppendBranchBlocked(result, repoId, branch, {"CHERRY_PICK_CONFLICT"}, CombinedGitError(cherryPick));
+                        result["mutationPerformed"] = true;
+                        result["operationPending"] = true;
+                        result["pendingOperation"] = {
+                            {"type", "cherry-pick"},
+                            {"repo", repoId},
+                            {"branch", branch},
+                            {"targetBranch", targetBranch},
+                            {"workingDirectory", repoPath.generic_string()},
+                            {"continueCommand", "kog cherry-pick --continue --repo ."},
+                            {"abortCommand", "kog cherry-pick --abort --repo ."},
+                        };
                     }
                     const auto targetHeadAfter = GitCapture(repoPath, {"rev-parse", "--verify", targetBranch + "^{commit}"});
                     const bool targetAdvanced = targetHeadBefore.exitCode == 0 && targetHeadAfter.exitCode == 0 &&
