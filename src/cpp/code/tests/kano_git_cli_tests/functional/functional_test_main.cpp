@@ -2386,6 +2386,35 @@ TEST_CASE("commit_auto_ignores_unreal_artifacts_in_root_and_submodule", "[functi
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("commit no-recursive message plan uses repo-only freshness", "[functional][commit][no-recursive][staged-only][KG-BUG-0012]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("commit-no-recursive-repo-freshness");
+    WriteTextFile(ctx.cloneRootRepo / "README.md", "root seed\nroot staged change\n");
+    RequireSuccess(RunGit({"add", "README.md"}, ctx.cloneRootRepo), "stage root-only change");
+    WriteTextFile(ctx.cloneChildRepo / "child.txt", "child seed\nunrelated child change\n");
+
+    const auto result = RunKogWithEnv(
+        {"commit", "--no-recursive", "--staged-only", "--no-native-preflight", "-m",
+         "test(functional): repo-only plan freshness"},
+        ctx.cloneRootRepo,
+        {{"KOG_PLAN_FRESHNESS_SCOPE", "registered-only"}});
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    const auto merged = result.stdoutText + "\n" + result.stderrText;
+    RequireContainsText(merged, "mode=repo");
+    REQUIRE(merged.find("mode=registered-only") == std::string::npos);
+    RequireContainsText(merged, "Repo: . already on branch");
+    REQUIRE(merged.find("Repo: " + ctx.submodulePath) == std::string::npos);
+    REQUIRE(StatusPorcelain(ctx.cloneChildRepo).find("child.txt") != std::string::npos);
+
+    const auto committedPaths = RunGit({"show", "--pretty=format:", "--name-only", "HEAD"}, ctx.cloneRootRepo);
+    RequireSuccess(committedPaths, "read root-only commit paths");
+    REQUIRE(TrimCopy(committedPaths.stdoutText) == "README.md");
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("commit_plan_scoped_ignore_gate_allows_tracked_source_under_build_segment", "[functional][commit][ignore-gate][KG-BUG-0016]") {
     const auto ctx = CreateRemoteWithClone("commit-plan-build-source-delete");
     const auto sourcePath = std::filesystem::path("src") / "cpp" / "build" / "script" / "common" / "tool.sh";

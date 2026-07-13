@@ -4015,7 +4015,7 @@ auto ResolveSelfBinaryForCommitLockRecovery() -> std::string {
 #endif
 }
 
-auto SetProcessEnvForCommitLockRecovery(const std::string& InKey, const std::string& InValue) -> void {
+auto SetProcessEnvOverride(const std::string& InKey, const std::string& InValue) -> void {
 #if defined(_WIN32)
     _putenv_s(InKey.c_str(), InValue.c_str());
 #else
@@ -4023,7 +4023,7 @@ auto SetProcessEnvForCommitLockRecovery(const std::string& InKey, const std::str
 #endif
 }
 
-auto UnsetProcessEnvForCommitLockRecovery(const std::string& InKey) -> void {
+auto UnsetProcessEnvOverride(const std::string& InKey) -> void {
 #if defined(_WIN32)
     _putenv_s(InKey.c_str(), "");
 #else
@@ -4031,26 +4031,26 @@ auto UnsetProcessEnvForCommitLockRecovery(const std::string& InKey) -> void {
 #endif
 }
 
-class ScopedCommitLockRecoveryEnv {
+class ScopedProcessEnvOverride {
   public:
-    ScopedCommitLockRecoveryEnv(std::string InKey, std::string InValue)
+    ScopedProcessEnvOverride(std::string InKey, std::string InValue)
         : key_(std::move(InKey)) {
         if (const char* previous = std::getenv(key_.c_str()); previous != nullptr) {
             previous_ = std::string(previous);
         }
-        SetProcessEnvForCommitLockRecovery(key_, InValue);
+        SetProcessEnvOverride(key_, InValue);
     }
 
-    ~ScopedCommitLockRecoveryEnv() {
+    ~ScopedProcessEnvOverride() {
         if (previous_.has_value()) {
-            SetProcessEnvForCommitLockRecovery(key_, *previous_);
+            SetProcessEnvOverride(key_, *previous_);
         } else {
-            UnsetProcessEnvForCommitLockRecovery(key_);
+            UnsetProcessEnvOverride(key_);
         }
     }
 
-    ScopedCommitLockRecoveryEnv(const ScopedCommitLockRecoveryEnv&) = delete;
-    auto operator=(const ScopedCommitLockRecoveryEnv&) -> ScopedCommitLockRecoveryEnv& = delete;
+    ScopedProcessEnvOverride(const ScopedProcessEnvOverride&) = delete;
+    auto operator=(const ScopedProcessEnvOverride&) -> ScopedProcessEnvOverride& = delete;
 
   private:
     std::string key_;
@@ -4275,7 +4275,7 @@ auto RunCommitLockRecoveryConvergeProbe(const std::filesystem::path& InWorkspace
     }
     std::cout << "[native-commit][lock-recovery] running bounded converge probe: "
               << commandText.str() << "\n";
-    ScopedCommitLockRecoveryEnv depth("KOG_COMMIT_LOCK_RECOVERY_DEPTH", "1");
+    ScopedProcessEnvOverride depth("KOG_COMMIT_LOCK_RECOVERY_DEPTH", "1");
     const auto result = shell::ExecuteCommand(
         ResolveSelfBinaryForCommitLockRecovery(),
         args,
@@ -6048,6 +6048,11 @@ void RegisterCommit(CLI::App& InApp) {
             }
         }
 
+        std::unique_ptr<ScopedProcessEnvOverride> planFreshnessScope;
+        if (effectiveNoRecursive) {
+            planFreshnessScope = std::make_unique<ScopedProcessEnvOverride>("KOG_PLAN_FRESHNESS_SCOPE", "repo");
+        }
+
         bool synthesizedMessagePlan = false;
         if (commitPlanFile->empty() && !message->empty()) {
             const bool dirtyOnly = !*bNoDirtyOnly;
@@ -6164,7 +6169,7 @@ void RegisterCommit(CLI::App& InApp) {
             }
 
             if (PlanStageNeedsPreCommit(*selectedPlanStage)) {
-                const auto preCommitCode = RunSyncPreCommitNative(workspaceRoot, true, false, "default");
+                const auto preCommitCode = RunSyncPreCommitNative(workspaceRoot, !effectiveNoRecursive, false, "default");
                 if (preCommitCode != 0) {
                     std::exit(preCommitCode);
                 }
