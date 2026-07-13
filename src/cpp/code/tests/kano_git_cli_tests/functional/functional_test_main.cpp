@@ -2386,17 +2386,45 @@ TEST_CASE("commit_auto_ignores_unreal_artifacts_in_root_and_submodule", "[functi
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
-TEST_CASE("commit no-recursive message plan uses repo-only freshness", "[functional][commit][no-recursive][staged-only][KG-BUG-0012]") {
+TEST_CASE("commit no-recursive message plan avoids child repository probes", "[functional][commit][no-recursive][staged-only][KG-BUG-0043]") {
     const auto ctx = CreateRemoteWithSubmoduleClone("commit-no-recursive-repo-freshness");
+    const auto diagPath = (ctx.sandbox.root / "commit-no-recursive-process.log").lexically_normal();
+    std::filesystem::remove(diagPath);
+    const auto discover = RunKog(
+        {"discover", "--format", "json", "--repo-root", ctx.cloneRootRepo.string(), "--no-unregistered-scan"},
+        ctx.cloneRootRepo);
+    INFO(discover.stdoutText);
+    INFO(discover.stderrText);
+    REQUIRE(discover.exitCode == 0);
     WriteTextFile(ctx.cloneRootRepo / "README.md", "root seed\nroot staged change\n");
     RequireSuccess(RunGit({"add", "README.md"}, ctx.cloneRootRepo), "stage root-only change");
     WriteTextFile(ctx.cloneChildRepo / "child.txt", "child seed\nunrelated child change\n");
 
+    const auto preflightDiagPath = (ctx.sandbox.root / "commit-no-recursive-preflight-process.log").lexically_normal();
+    std::filesystem::remove(preflightDiagPath);
+    const auto preflight = RunKogWithEnv(
+        {"commit", "--no-recursive", "--staged-only", "--preflight-only", "--profile"},
+        ctx.cloneRootRepo,
+        {{"KOG_PROCESS_DIAGNOSTICS_LOG", preflightDiagPath.string()}});
+    INFO(preflight.stdoutText);
+    INFO(preflight.stderrText);
+    REQUIRE(preflight.exitCode == 0);
+    RequireNotContainsText(
+        preflight.stdoutText + "\n" + preflight.stderrText,
+        ctx.cloneChildRepo.lexically_normal().generic_string());
+    REQUIRE(std::filesystem::exists(preflightDiagPath));
+    RequireNotContainsText(
+        ReadTextFile(preflightDiagPath),
+        "[process-diag] cwd=" + ctx.cloneChildRepo.lexically_normal().generic_string());
+
     const auto result = RunKogWithEnv(
-        {"commit", "--no-recursive", "--staged-only", "--no-native-preflight", "-m",
+        {"commit", "--no-recursive", "--staged-only", "-m",
          "test(functional): repo-only plan freshness"},
         ctx.cloneRootRepo,
-        {{"KOG_PLAN_FRESHNESS_SCOPE", "registered-only"}});
+        {
+            {"KOG_PLAN_FRESHNESS_SCOPE", "registered-only"},
+            {"KOG_PROCESS_DIAGNOSTICS_LOG", diagPath.string()},
+        });
     INFO(result.stdoutText);
     INFO(result.stderrText);
     REQUIRE(result.exitCode == 0);
@@ -2406,7 +2434,13 @@ TEST_CASE("commit no-recursive message plan uses repo-only freshness", "[functio
     REQUIRE(merged.find("mode=registered-only") == std::string::npos);
     RequireContainsText(merged, "Repo: . already on branch");
     REQUIRE(merged.find("Repo: " + ctx.submodulePath) == std::string::npos);
+    RequireNotContainsText(merged, ctx.cloneChildRepo.lexically_normal().generic_string());
     REQUIRE(StatusPorcelain(ctx.cloneChildRepo).find("child.txt") != std::string::npos);
+    REQUIRE(std::filesystem::exists(diagPath));
+    const auto diagnostics = ReadTextFile(diagPath);
+    RequireNotContainsText(
+        diagnostics,
+        "[process-diag] cwd=" + ctx.cloneChildRepo.lexically_normal().generic_string());
 
     const auto committedPaths = RunGit({"show", "--pretty=format:", "--name-only", "HEAD"}, ctx.cloneRootRepo);
     RequireSuccess(committedPaths, "read root-only commit paths");

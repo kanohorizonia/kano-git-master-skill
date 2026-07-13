@@ -3583,9 +3583,18 @@ auto RunNativePreCommitRepair(
     options.refreshCache = InRefreshCache;
     options.metadataLevel = "full";
 
-    const auto discovery = workspace::DiscoverRepos(options);
     const auto root = std::filesystem::weakly_canonical(InRepoRoot);
-    const auto registeredPaths = DiscoverRegisteredPathsRecursive(root);
+    std::vector<workspace::RepoRecord> repos;
+    std::set<std::string> registeredPaths;
+    if (InRecursive) {
+        repos = workspace::DiscoverRepos(options).repos;
+        registeredPaths = DiscoverRegisteredPathsRecursive(root);
+    } else {
+        workspace::RepoRecord current;
+        current.path = root;
+        current.type = "root";
+        repos.push_back(std::move(current));
+    }
 
     int failures = 0;
 
@@ -3593,12 +3602,8 @@ auto RunNativePreCommitRepair(
         ? "Pre-commit detached-HEAD repair for workspace repos\n"
         : "Pre-commit detached-HEAD repair for current repository only\n");
 
-    for (const auto& repo : discovery.repos) {
+    for (const auto& repo : repos) {
         const auto repoPath = std::filesystem::weakly_canonical(repo.path);
-        if (!InRecursive && repoPath != root) {
-            continue;
-        }
-
         const auto rel = std::filesystem::relative(repoPath, InRepoRoot).generic_string();
         const auto name = (rel.empty() || rel == ".") ? "." : rel;
 

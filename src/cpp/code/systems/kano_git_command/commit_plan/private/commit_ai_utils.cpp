@@ -1722,7 +1722,15 @@ auto BuildCommitScopeRecords(const std::filesystem::path& InWorkspaceRoot,
         return BuildExplicitCommitScopeRecords(InWorkspaceRoot, reposCsv, InDirtyOnly);
     }
 
-    const bool forceFreshDirtyScope = InDirtyOnly && !InNoRecursive;
+    if (InNoRecursive) {
+        workspace::RepoRecord current;
+        current.path = InWorkspaceRoot.lexically_normal();
+        current.type = "root";
+        current.hasChanges = RepoHasPorcelainChanges(current.path);
+        return FinalizeCommitScopeRecords(InWorkspaceRoot, {std::move(current)});
+    }
+
+    const bool forceFreshDirtyScope = InDirtyOnly;
     auto all = DiscoverWorkspaceRepoRecords(
         InWorkspaceRoot,
         "full",
@@ -1732,7 +1740,7 @@ auto BuildCommitScopeRecords(const std::filesystem::path& InWorkspaceRoot,
     // Recovery path:
     // If recursive commit scope unexpectedly resolves to only root repo, refresh once without cache.
     // This avoids stale-discovery cache causing agent-mode cp/cpa to skip dirty subrepos.
-    if (Trim(InReposCsv).empty() && !InNoRecursive && all.size() <= 1) {
+    if (all.size() <= 1) {
         const auto refreshed = DiscoverWorkspaceRepoRecords(InWorkspaceRoot, "full", false, true);
         if (refreshed.size() > all.size()) {
             all = refreshed;
@@ -1745,24 +1753,11 @@ auto BuildCommitScopeRecords(const std::filesystem::path& InWorkspaceRoot,
     }
 
     std::vector<workspace::RepoRecord> selected;
-    if (InNoRecursive) {
-        const auto rootKey = ToGeneric(InWorkspaceRoot);
-        const auto found = byPath.find(rootKey);
-        if (found != byPath.end()) {
-            selected.push_back(found->second);
-        } else {
-            workspace::RepoRecord fallback;
-            fallback.path = InWorkspaceRoot;
-            fallback.type = "root";
-            selected.push_back(std::move(fallback));
-        }
-    } else {
-        for (const auto& repo : all) {
-            selected.push_back(repo);
-        }
+    for (const auto& repo : all) {
+        selected.push_back(repo);
     }
 
-    if (InDirtyOnly && !InNoRecursive) {
+    if (InDirtyOnly) {
         AddDirtyNestedReposFromRootStatus(InWorkspaceRoot, byPath, &selected);
     }
 
@@ -1772,7 +1767,7 @@ auto BuildCommitScopeRecords(const std::filesystem::path& InWorkspaceRoot,
         idxByPath.emplace(ToGeneric(selected[i].path), i);
     }
 
-    if (InDirtyOnly && !InNoRecursive) {
+    if (InDirtyOnly) {
         std::vector<std::vector<std::size_t>> children(selected.size());
         for (std::size_t i = 0; i < selected.size(); ++i) {
             for (const auto& dep : selected[i].dependencies) {
