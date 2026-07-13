@@ -2,6 +2,8 @@ add_library(kano_git_cmd_commit_plan STATIC)
 
 target_sources(kano_git_cmd_commit_plan
   PRIVATE
+    private/agent_queue_cmd.cpp
+    private/agent_queue_cmd.hpp
     private/commit_ai_utils.cpp
     private/commit_cmd.cpp
     private/commit_push_cmd.cpp

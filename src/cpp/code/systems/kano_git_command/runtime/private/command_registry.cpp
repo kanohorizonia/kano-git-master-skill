@@ -9,6 +9,7 @@ void RegisterAll(CLI::App& InApp) {
     // Top-level commands sorted A-Z for predictable help output
     RegisterAmend(InApp);
     RegisterAi(InApp);
+    RegisterAgentQueue(InApp);
     RegisterAuth(InApp);
     RegisterBranch(InApp);
     RegisterCache(InApp);
@@ -101,6 +102,7 @@ void RegisterAll(CLI::App& InApp) {
     setGroup("doctor", aiGroup);
     setGroup("ignore", aiGroup);
     setGroup("ai", aiGroup);
+    setGroup("agent-queue", aiGroup);
 
     // 4. Advanced Operations
     const std::string advancedGroup = "4. Advanced Operations";

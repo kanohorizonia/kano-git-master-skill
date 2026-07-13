@@ -82,7 +82,9 @@ productionizes that path.
 ./scripts/kog ai bootstrap copilot --dry-run
 ./scripts/kog ai bootstrap copilot
 ./scripts/kog commit -m "chore: update workspace"
+./scripts/kog commit --exact-path src/file.cpp -m "fix: update one file"
 ./scripts/kog commit-push -m "chore: update workspace"
+./scripts/kog agent-queue status
 ./scripts/kog cpa
 
 # Repo hygiene and export
@@ -193,6 +195,19 @@ Use a shared checkout for low-conflict exact-path or chunk-scoped changes. Open
 or keep a dedicated worktree for broad refactors, generated rewrites, long
 validation runs, known overlapping ownership, or changes that need isolated
 branch review.
+
+Before multiple coding sessions mutate one shared repository, admit their intent
+through `kog agent-queue admit`. Preview `agent-queue drain` before activating a
+compatible batch with `--confirm`. KOG merges disjoint files, identical declared
+postconditions, and explicitly non-overlapping line chunks. Ambiguous same-file
+ownership fails closed and should be replanned or moved to a worktree.
+
+Use `kog commit --exact-path <file> -m <message>` for the resulting narrow
+commit. Repeat `--exact-path` for every add, modification, deletion, or both old
+and new rename paths. This flow uses an isolated temporary index, preserves
+unrelated staged entries, rejects stale HEAD and existing `index.lock`, and never
+deletes another process's lock. An active queue batch requires the matching
+`--queue-batch` id. See `docs/guides/agent-mutation-queue.md`.
 
 ## Repo Hygiene
 

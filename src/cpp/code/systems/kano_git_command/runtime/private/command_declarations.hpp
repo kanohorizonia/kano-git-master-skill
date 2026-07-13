@@ -24,6 +24,7 @@ void RegisterCommit(CLI::App& InApp);
 void RegisterCommitPush(CLI::App& InApp);
 void RegisterAmend(CLI::App& InApp);
 void RegisterAi(CLI::App& InApp);
+void RegisterAgentQueue(CLI::App& InApp);
 void RegisterResolve(CLI::App& InApp);
 void RegisterSelf(CLI::App& InApp);
 void RegisterSync(CLI::App& InApp);

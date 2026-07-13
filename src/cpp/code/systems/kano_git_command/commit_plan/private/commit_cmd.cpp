@@ -8,6 +8,7 @@
 #include "command_runtime_ops.hpp"
 #include "secret_scan_utils.hpp"
 #include "commit_ai_utils.hpp"
+#include "agent_queue_cmd.hpp"
 #include "ai_utils.hpp"
 #include "plan_utils.hpp"
 #include "terminal_color.hpp"
@@ -5814,6 +5815,10 @@ void RegisterCommit(CLI::App& InApp) {
     auto* bProfile = new bool{false};
     auto* bAllowEmptyDirty = new bool{false};
     auto* bYolo = new bool{false};
+    auto* exactPaths = new std::vector<std::string>{};
+    auto* expectedHead = new std::string{};
+    auto* queueBatch = new std::string{};
+    auto* bExactDryRun = new bool{false};
 
     auto configure = [&](CLI::App* InCmd) {
         InCmd->add_option("--repos", *repos, "Commit target repos (comma-separated). Default: auto-discover workspace repos");
@@ -5839,6 +5844,10 @@ void RegisterCommit(CLI::App& InApp) {
         InCmd->add_flag("--profile", *bProfile, "Print native commit timing/profile summary");
         InCmd->add_flag("--allow-empty-dirty", *bAllowEmptyDirty, "Allow AI plan-fill to run even when workspace dirty context is empty");
         InCmd->add_flag("--yolo", *bYolo, "Enable all permissions for AI sub-agents (Option A: direct file editing)");
+        InCmd->add_option("--exact-path", *exactPaths, "Commit only this exact file path through an isolated index; repeatable");
+        InCmd->add_option("--expected-head", *expectedHead, "Fail if HEAD differs before exact-path commit");
+        InCmd->add_option("--queue-batch", *queueBatch, "Active agent-queue batch authorizing exact paths");
+        InCmd->add_flag("--dry-run", *bExactDryRun, "Preview exact-path included and excluded files without mutation");
     };
 
     configure(cmd);
@@ -5879,6 +5888,35 @@ void RegisterCommit(CLI::App& InApp) {
         if (!commitPlanFile->empty() && !message->empty()) {
             std::cerr << "Error: --plan-file cannot be combined with --message/-m\n";
             std::cerr << "Hint: use --plan-file for plan-driven commit, or use -m to synthesize a minimal plan.\n";
+            std::exit(2);
+        }
+
+        if (!exactPaths->empty()) {
+            const bool incompatible = !repos->empty() || *bNoRecursive || *bNoDirtyOnly || *jobs != "auto" ||
+                                      !commitPlanFile->empty() || *planStage != "commit" || *bAiAuto ||
+                                      !provider->empty() || !model->empty() || !aiFillMode->empty() ||
+                                      !agent->empty() || *bPush || *bNoAiReview ||
+                                      *bStagedOnly || *bShell || *bPreflightOnly || *bNoNativePreflight ||
+                                      *bProfile || *bAllowEmptyDirty || *bYolo;
+            if (message->empty()) {
+                std::cerr << "Error: --exact-path requires --message/-m\n";
+                std::exit(2);
+            }
+            if (incompatible) {
+                std::cerr << "Error: --exact-path cannot be combined with recursive, plan, AI, push, staged-only, or preflight options\n";
+                std::exit(2);
+            }
+            ExactPathCommitOptions options;
+            options.repo = workspaceRoot;
+            options.paths = *exactPaths;
+            options.message = *message;
+            options.expectedHead = *expectedHead;
+            options.queueBatch = *queueBatch;
+            options.dryRun = *bExactDryRun;
+            std::exit(RunExactPathCommit(options));
+        }
+        if (!expectedHead->empty() || !queueBatch->empty() || *bExactDryRun) {
+            std::cerr << "Error: --expected-head, --queue-batch, and --dry-run require --exact-path\n";
             std::exit(2);
         }
 
