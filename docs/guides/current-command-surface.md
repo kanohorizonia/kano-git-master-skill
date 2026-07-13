@@ -37,6 +37,20 @@ Use a full rebuild when the native output or CMake cache must be discarded:
 ./scripts/kog self rebuild
 ```
 
+Provider images can build the cacheable minimal runtime bundle without test or
+TUI artifacts:
+
+```bash
+cmake --build <build-dir> --target kog_runtime_artifact
+```
+
+The target writes `runtime-artifact/bin/kano-git`, required GNU runtime libraries
+on Linux, and `runtime-artifact/manifest.json` with revision, source fingerprint,
+toolchain, and build-context provenance. The root `.dockerignore` exposes only
+the VERSION file and native runtime source projection to provider-image build
+contexts; local outputs, reports, docs, tests, and workspace metadata do not
+invalidate that Docker context.
+
 If dependency fetching fails in an offline or DNS-restricted environment, treat it
 as an online build prerequisite failure, not as a launcher failure.
 
@@ -117,7 +131,9 @@ installed version, install timestamp, packaged/developer checkout).
 ./scripts/kog ai bootstrap copilot --dry-run
 ./scripts/kog ai bootstrap copilot
 ./scripts/kog commit -m "chore: update workspace"
+./scripts/kog commit --exact-path src/file.cpp -m "fix: update one file" --dry-run
 ./scripts/kog commit-push -m "chore: update workspace"
+./scripts/kog agent-queue status
 ./scripts/kog cpa
 
 # Repo hygiene
@@ -141,6 +157,36 @@ installed version, install timestamp, packaged/developer checkout).
 ```
 
 Unknown top-level commands now return a git-style error and suggest the most similar public commands.
+
+## Shared-checkout agent queue and exact commits
+
+`kog agent-queue` coordinates low-conflict coding-agent mutations in one shared
+checkout. State lives under the Git common directory, so all worktrees of one
+repository observe the same pending and active batch. Queue mutations use a
+KOG-owned lock and atomic state replacement; KOG reports an existing lock and
+does not delete it.
+
+```bash
+./scripts/kog agent-queue admit --work-item KG-123 --agent codex-1 --file src/a.cpp --chunk src/a.cpp:10-30 --validate "pixi run quick-test"
+./scripts/kog agent-queue drain
+./scripts/kog agent-queue drain --confirm
+./scripts/kog commit --exact-path src/a.cpp --queue-batch <batch-id> -m "[Git][BugFix] Update A (KG-123)"
+./scripts/kog agent-queue complete --batch <batch-id> --status succeeded
+```
+
+Drain merges disjoint files, identical declared `path=value` postconditions, or
+same-file chunks whose inclusive line ranges do not overlap. Unspecified or
+overlapping same-file ownership fails closed without consuming pending items.
+Stale base HEAD also blocks drain.
+
+`kog commit --exact-path` creates a temporary index from HEAD, stages only the
+listed paths, runs normal Git commit hooks against that isolated index, and then
+reconciles only those paths in the shared index. Unrelated staged entries remain
+unchanged. `--dry-run` reports `included` and `excluded` paths. Selectors outside
+the repository, directories, overlapping selectors, stale `--expected-head`,
+active-batch scope mismatches, and an existing `index.lock` are blockers. For a
+rename, list both old and new paths. See `agent-mutation-queue.md` for the full
+agent policy.
 
 `kog fetch` recursively discovers repositories and runs parallel `git fetch` with `--all --prune --tags` defaults. Use `--remote <name>` to target one remote, `--jobs/-j auto|N` for concurrency, and `--dry-run` to preview commands.
 

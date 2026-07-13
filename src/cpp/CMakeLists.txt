@@ -36,6 +36,7 @@ else()
 endif()
 
 set(KOG_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../..")
+set(KOG_RUNTIME_SOURCE_FINGERPRINT "unknown" CACHE STRING "Source fingerprint recorded in the minimal KOG runtime artifact")
 
 function(kog_normalize_repo_relative_path input_path output_var)
     if(input_path STREQUAL "")

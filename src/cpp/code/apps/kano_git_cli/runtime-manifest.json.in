@@ -1,0 +1,10 @@
+{
+  "schema": "kog.runtime.artifact.v1",
+  "version": "@KOG_BUILD_VERSION_STR@",
+  "revision": "@KOG_BUILD_REVISION_HASH_STR@",
+  "source_fingerprint": "@KOG_RUNTIME_SOURCE_FINGERPRINT@",
+  "build_context": "@KOG_BUILD_CONTEXT_STR@",
+  "toolchain": "@KOG_BUILD_TOOLCHAIN_STR@",
+  "configuration": "@KOG_BUILD_CONFIGURATION_STR@",
+  "binary": "bin/kano-git"
+}
