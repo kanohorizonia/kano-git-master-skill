@@ -505,7 +505,47 @@ TEST_CASE("push no-recursive exact repo avoids recursive status snapshot", "[fun
     REQUIRE(childHead.stdoutText == childOrigin.stdoutText);
 
     REQUIRE(std::filesystem::exists(diagPath));
-    RequireNotContains(ReadTextFile(diagPath), "status --recursive");
+    const auto processDiag = ReadTextFile(diagPath);
+    RequireNotContains(processDiag, "status --recursive");
+    RequireNotContains(processDiag, ctx.cloneRootRepo.generic_string());
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("push no-recursive current repo avoids child common-dir probes", "[functional][push][no-recursive][KG-BUG-0045]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("push-current-no-recursive-common-dir");
+    const auto diagPath = (ctx.sandbox.root / "push-current-no-recursive-common-dir-process.log").lexically_normal();
+    std::filesystem::remove(diagPath);
+
+    const auto result = RunKogWithEnv(
+        {"push", "--no-recursive", "--dry-run", "--profile"},
+        ctx.cloneRootRepo,
+        {{"KOG_PROCESS_DIAGNOSTICS_LOG", diagPath.string()}});
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContains(result.stdoutText, "repo_count: 1");
+
+    REQUIRE(std::filesystem::exists(diagPath));
+    const auto processDiag = ReadTextFile(diagPath);
+    RequireNotContains(processDiag, ctx.cloneChildRepo.generic_string());
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("push no-recursive selected common-dir aliases are deduplicated", "[functional][push][no-recursive][dedupe][KG-BUG-0045]") {
+    const auto ctx = CreateRemoteWithClone("push-selected-common-dir-aliases");
+    const auto aliasPath = (ctx.sandbox.root / "push-alias-worktree").lexically_normal();
+    RequireSuccess(RunGit({"worktree", "add", "-b", "push-alias", aliasPath.string()}, ctx.cloneRepo),
+                   "create selected alias worktree");
+
+    const auto result = RunKog(
+        {"push", "--no-recursive", "--repos", ctx.cloneRepo.string() + "," + aliasPath.string(), "--dry-run", "--profile"},
+        ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContains(result.stdoutText, "repo_count: 1");
 
     RemoveSandboxWorkspace(ctx.sandbox);
 }
@@ -802,6 +842,33 @@ TEST_CASE("converge branches retire deletes a same-name tracked remote branch", 
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge branches retire deletes same-name remote without local upstream in one pass", "[functional][converge][branches][retire][remote][KG-BUG-0042]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-retire-same-name-no-upstream");
+    const std::string featureBranch = "feature/retire-same-name-no-upstream";
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout no-upstream retire branch");
+    WriteTextFile(ctx.cloneRepo / "retire-no-upstream.txt", "same-name remote without upstream\n");
+    RequireSuccess(RunGit({"add", "retire-no-upstream.txt"}, ctx.cloneRepo), "add no-upstream retire file");
+    RequireSuccess(RunGit({"commit", "-m", "no upstream retire branch"}, ctx.cloneRepo), "commit no-upstream retire branch");
+    RequireSuccess(RunGit({"push", "origin", featureBranch}, ctx.cloneRepo), "push no-upstream retire branch without tracking");
+    REQUIRE(RunGit({"rev-parse", "--abbrev-ref", featureBranch + "@{upstream}"}, ctx.cloneRepo).exitCode != 0);
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target before no-upstream retire");
+    RequireSuccess(RunGit({"merge", "--ff-only", featureBranch}, ctx.cloneRepo), "merge no-upstream retire branch");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.cloneRepo), "push target containing no-upstream branch");
+
+    const auto result = RunKog({"converge", "branches", "retire", "--target", ctx.branch, "--delete-remote", "--confirm", "--json", "--jobs", "1"}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContains(result.stdoutText, "\"status\": \"success\"");
+    RequireContains(result.stdoutText, "\"action\": \"delete-local-and-remote\"");
+    REQUIRE(RunGit({"show-ref", "--verify", "--quiet", "refs/heads/" + featureBranch}, ctx.cloneRepo).exitCode != 0);
+    const auto remoteFeature = RunGit({"ls-remote", "--heads", "origin", featureBranch}, ctx.cloneRepo);
+    RequireSuccess(remoteFeature, "ls-remote after no-upstream one-pass retirement");
+    REQUIRE(TrimCopy(remoteFeature.stdoutText).empty());
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("converge branches retire never deletes a mismatched target upstream", "[tdd][functional][feature:converge][converge][branches][retire][remote][KG-BUG-0039]") {
     const auto ctx = CreateRemoteWithClone("converge-branches-retire-mismatched-target-upstream");
     const std::string featureBranch = "feature/retire-mismatched-target-upstream";
@@ -1041,6 +1108,42 @@ TEST_CASE("converge branches retire blocks dirty detached non-ancestor harvest",
     RequireContains(result.stdoutText, "DIRTY_DETACHED_WORKTREE_NON_ANCESTOR");
     REQUIRE(std::filesystem::exists(worktreePath));
     RequireContains(ReadTextFile(worktreePath / "non-ancestor-detached-worktree.txt"), "dirty non-ancestor detached content");
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge branches retire preserves unrelated dirty detached worktree after successful retirement", "[functional][converge][branches][retire][partial-success][KG-BUG-0042]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-retire-preserved-dirty-worktree");
+    const std::string retireBranch = "feature/retire-with-preserved-dirt";
+    RequireSuccess(RunGit({"checkout", "-b", retireBranch}, ctx.cloneRepo), "checkout branch to retire with preserved dirt");
+    WriteTextFile(ctx.cloneRepo / "retire-preserved.txt", "retire branch content\n");
+    RequireSuccess(RunGit({"add", "retire-preserved.txt"}, ctx.cloneRepo), "add retire branch content");
+    RequireSuccess(RunGit({"commit", "-m", "retire branch with preserved dirt"}, ctx.cloneRepo), "commit branch to retire");
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target before preserved-dirt fixture");
+    RequireSuccess(RunGit({"merge", "--ff-only", retireBranch}, ctx.cloneRepo), "merge branch to retire");
+
+    const std::string unrelatedBranch = "feature/unrelated-dirty-detached";
+    RequireSuccess(RunGit({"checkout", "-b", unrelatedBranch}, ctx.cloneRepo), "checkout unrelated branch");
+    WriteTextFile(ctx.cloneRepo / "unrelated.txt", "unrelated branch content\n");
+    RequireSuccess(RunGit({"add", "unrelated.txt"}, ctx.cloneRepo), "add unrelated branch content");
+    RequireSuccess(RunGit({"commit", "-m", "unrelated non ancestor"}, ctx.cloneRepo), "commit unrelated branch");
+    const auto unrelatedHead = TrimCopy(RunGit({"rev-parse", "HEAD"}, ctx.cloneRepo).stdoutText);
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target before detached worktree");
+    const auto worktreePath = (ctx.sandbox.root / "unrelated-dirty-detached-worktree").lexically_normal();
+    RequireSuccess(RunGit({"worktree", "add", "--detach", worktreePath.string(), unrelatedHead}, ctx.cloneRepo), "add unrelated detached worktree");
+    WriteTextFile(worktreePath / "unrelated.txt", "dirty unrelated detached content\n");
+
+    const auto result = RunKog({"converge", "branches", "retire", "--target", ctx.branch, "--remove-worktrees", "--confirm", "--json", "--jobs", "1"}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContains(result.stdoutText, "\"status\": \"success_with_preserved_blockers\"");
+    RequireContains(result.stdoutText, "\"requestedClosureComplete\": true");
+    RequireContains(result.stdoutText, "\"preserved\"");
+    RequireContains(result.stdoutText, "DIRTY_DETACHED_WORKTREE_NON_ANCESTOR");
+    REQUIRE(RunGit({"show-ref", "--verify", "--quiet", "refs/heads/" + retireBranch}, ctx.cloneRepo).exitCode != 0);
+    REQUIRE(std::filesystem::exists(worktreePath));
+    RequireContains(ReadTextFile(worktreePath / "unrelated.txt"), "dirty unrelated detached content");
 
     RemoveSandboxWorkspace(ctx.sandbox);
 }

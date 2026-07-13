@@ -2941,6 +2941,26 @@ void AppendDetachedWorktreeBlocked(nlohmann::json& result,
     });
 }
 
+void AppendDetachedWorktreePreserved(nlohmann::json& result,
+                                     const std::string& repoId,
+                                     const BranchWorktree& worktree,
+                                     std::vector<std::string> blockers,
+                                     const std::string& message,
+                                     const std::string& integrationProof = {}) {
+    std::sort(blockers.begin(), blockers.end());
+    blockers.erase(std::unique(blockers.begin(), blockers.end()), blockers.end());
+    result["preserved"].push_back({
+        {"repo", repoId},
+        {"branch", DetachedWorktreeBranchLabel(worktree)},
+        {"action", "preserve-detached-worktree"},
+        {"worktree", worktree.location},
+        {"head", worktree.head},
+        {"integrationProof", integrationProof},
+        {"blockers", blockers},
+        {"message", message},
+    });
+}
+
 void AppendDetachedWorktreeAction(nlohmann::json& result,
                                   const std::string& field,
                                   const std::string& repoId,
@@ -3915,6 +3935,7 @@ nlohmann::json MakeBranchActionResult(const std::string& schemaName,
         {"pruned", nlohmann::json::array()},
         {"planned", nlohmann::json::array()},
         {"skipped", nlohmann::json::array()},
+        {"preserved", nlohmann::json::array()},
         {"blocked", nlohmann::json::array()},
     };
 }
@@ -3927,7 +3948,7 @@ void PrintBranchActionResultText(const std::string& title, const nlohmann::json&
               << " confirm=" << (result.value("confirm", false) ? "true" : "false")
               << " mutation_performed=" << (result.value("mutationPerformed", false) ? "true" : "false")
               << "\n";
-    for (const auto& field : {"targetSync", "planned", "applied", "retired", "harvested", "pruned", "skipped", "blocked"}) {
+    for (const auto& field : {"targetSync", "planned", "applied", "retired", "harvested", "pruned", "skipped", "preserved", "blocked"}) {
         std::cout << field << "\n";
         const auto it = result.find(field);
         if (it == result.end() || !it->is_array() || it->empty()) {
@@ -4342,6 +4363,15 @@ int RunBranchRetire(const std::filesystem::path& root,
                         } else {
                             remoteDeleteStatus = "skipped-invalid-upstream";
                         }
+                    } else if (deleteRemote) {
+                        const auto sameNameRemote = repo->remote.empty() ? std::string{"origin"} : repo->remote;
+                        const auto sameNameRef = "refs/remotes/" + sameNameRemote + "/" + branch;
+                        if (GitCapture(repoPath, {"show-ref", "--verify", "--quiet", sameNameRef}).exitCode == 0) {
+                            trackedRemote = sameNameRemote;
+                            trackedRemoteBranch = branch;
+                            deleteTrackedRemote = true;
+                            remoteDeleteStatus = "pending-same-name";
+                        }
                     }
                     auto deleteLocal = GitCapture(repoPath, {"branch", "-d", branch});
                     if (deleteLocal.exitCode != 0) {
@@ -4410,12 +4440,21 @@ int RunBranchRetire(const std::filesystem::path& root,
                 }
                 const auto evaluation = EvaluateDetachedWorktree(repoPath, targetBranch, targetRef, worktree);
                 if (!evaluation.clean && !evaluation.integrated) {
-                    AppendDetachedWorktreeHarvestBlocked(result,
-                                                         repoId,
-                                                         worktree,
-                                                         {"DIRTY_DETACHED_WORKTREE_NON_ANCESTOR"},
-                                                         "dirty detached worktree HEAD is not proven integrated into target; harvest is refused",
-                                                         evaluation.integrationProof);
+                    if (harvestDetachedWorktrees) {
+                        AppendDetachedWorktreeHarvestBlocked(result,
+                                                             repoId,
+                                                             worktree,
+                                                             {"DIRTY_DETACHED_WORKTREE_NON_ANCESTOR"},
+                                                             "dirty detached worktree HEAD is not proven integrated into target; harvest is refused",
+                                                             evaluation.integrationProof);
+                    } else {
+                        AppendDetachedWorktreePreserved(result,
+                                                        repoId,
+                                                        worktree,
+                                                        {"DIRTY_DETACHED_WORKTREE_NON_ANCESTOR"},
+                                                        "unrelated dirty detached worktree is preserved; it does not prevent eligible branch retirement",
+                                                        evaluation.integrationProof);
+                    }
                     continue;
                 }
                 if (!evaluation.integrated) {
@@ -4517,13 +4556,22 @@ int RunBranchRetire(const std::filesystem::path& root,
             }
         }
 
+        const bool blocked = BranchActionResultHasBlocked(result);
+        const bool preserved = !result["preserved"].empty();
+        result["requestedClosureComplete"] = !blocked;
+        result["status"] = blocked
+            ? "blocked"
+            : preserved
+                ? (confirm ? "success_with_preserved_blockers" : "preview_with_preserved_blockers")
+                : (confirm ? "success" : "preview");
+
         suppressCommandLogs.reset();
         if (jsonOutput) {
             std::cout << result.dump(2) << "\n";
         } else {
             PrintBranchActionResultText("Converge Branches Retire", result);
         }
-        return BranchActionResultHasBlocked(result) ? 1 : 0;
+        return blocked ? 1 : 0;
     } catch (const std::exception& ex) {
         std::cerr << "Error: " << ex.what() << "\n";
         return 1;

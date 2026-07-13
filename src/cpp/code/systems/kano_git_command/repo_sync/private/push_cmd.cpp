@@ -1579,7 +1579,7 @@ auto RunPushNativeSimpleDetailed(const std::filesystem::path& InWorkspaceRoot,
             repos = BuildExplicitRepoRecords(InWorkspaceRoot, {InWorkspaceRoot});
         }
     } else {
-        repos = BuildExplicitRepoRecords(InWorkspaceRoot, {InWorkspaceRoot});
+        repos = BuildExplicitRepoRecordsWithoutDiscovery(InWorkspaceRoot, {InWorkspaceRoot});
     }
 
     workspace::RepoOperationAggregate aggregate;
@@ -1688,7 +1688,10 @@ void RegisterPush(CLI::App& InApp) {
 
         std::vector<workspace::RepoRecord> nativeRepos;
         if (!repos->empty()) {
-            nativeRepos = BuildExplicitRepoRecords(workspaceRoot, ResolveReposCsv(workspaceRoot, *repos));
+            const auto selectedRepos = ResolveReposCsv(workspaceRoot, *repos);
+            nativeRepos = *noRecursive
+                ? BuildExplicitRepoRecordsWithoutDiscovery(workspaceRoot, selectedRepos)
+                : BuildExplicitRepoRecords(workspaceRoot, selectedRepos);
         }
 
         if (nativeRepos.empty() && !*noRecursive) {
@@ -1696,7 +1699,9 @@ void RegisterPush(CLI::App& InApp) {
         }
 
         if (nativeRepos.empty()) {
-            nativeRepos = BuildExplicitRepoRecords(workspaceRoot, {workspaceRoot});
+            nativeRepos = *noRecursive
+                ? BuildExplicitRepoRecordsWithoutDiscovery(workspaceRoot, {workspaceRoot})
+                : BuildExplicitRepoRecords(workspaceRoot, {workspaceRoot});
         }
 
         if (*stashLocalChanges && *failOnDirtySync) {
