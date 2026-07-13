@@ -234,6 +234,15 @@ auto IsLongRunningGitOperation(const std::string& InCommand,
            sub == "lfs";
 }
 
+auto IsBoundedGitCommitOperation(const std::string& InCommand,
+                                 const std::vector<std::string>& InArgs) -> bool {
+    const auto base = BaseNameLower(InCommand);
+    if (base != "git" && base != "git.exe") {
+        return false;
+    }
+    return FirstGitSubcommand(InArgs) == "commit";
+}
+
 auto IsBoundedKogStatusOperation(const std::string& InCommand,
                                  const std::vector<std::string>& InArgs) -> bool {
     const auto base = BaseNameLower(InCommand);
@@ -264,6 +273,12 @@ auto ResolveTimeoutMs(const std::string& InCommand,
     if (InMode == ExecMode::Capture) {
         if (const auto timeoutRaw = GetEnvTimeoutMs("KOG_SHELL_CAPTURE_TIMEOUT_MS"); timeoutRaw.has_value()) {
             return NormalizeTimeoutOverride(timeoutRaw);
+        }
+        if (IsBoundedGitCommitOperation(InCommand, InArgs)) {
+            if (const auto timeoutRaw = GetEnvTimeoutMs("KOG_GIT_COMMIT_TIMEOUT_MS"); timeoutRaw.has_value()) {
+                return NormalizeTimeoutOverride(timeoutRaw);
+            }
+            return static_cast<unsigned int>(120 * 1000);
         }
         if (IsLongRunningGitOperation(InCommand, InArgs)) {
             return std::nullopt;
@@ -366,9 +381,10 @@ auto BuildProcessDiagBlock(const std::string& InStartTs,
         oss << "[process-diag] stderr_tail=" << TailLines(InStderr, 20) << "\n";
     }
 
-    static constexpr std::array<const char*, 13> kRelevantEnvKeys = {
+    static constexpr std::array<const char*, 14> kRelevantEnvKeys = {
         "KOG_SHELL_TIMEOUT_MS",
         "KOG_SHELL_CAPTURE_TIMEOUT_MS",
+        "KOG_GIT_COMMIT_TIMEOUT_MS",
         "KOG_SHELL_PASSTHROUGH_TIMEOUT_MS",
         "KOG_GIT_INTERACTIVE",
         "GIT_TERMINAL_PROMPT",
@@ -614,6 +630,15 @@ auto IsLongRunningGitOperation(const std::string& InCommand,
            sub == "lfs";
 }
 
+auto IsBoundedGitCommitOperation(const std::string& InCommand,
+                                 const std::vector<std::string>& InArgs) -> bool {
+    const auto base = BaseNameLower(InCommand);
+    if (base != "git" && base != "git.exe") {
+        return false;
+    }
+    return FirstGitSubcommand(InArgs) == "commit";
+}
+
 auto IsBoundedKogStatusOperation(const std::string& InCommand,
                                  const std::vector<std::string>& InArgs) -> bool {
     const auto base = BaseNameLower(InCommand);
@@ -644,6 +669,12 @@ auto ResolveTimeoutMs(const std::string& InCommand,
     if (InMode == ExecMode::Capture) {
         if (const auto timeoutRaw = GetEnvTimeoutMs("KOG_SHELL_CAPTURE_TIMEOUT_MS"); timeoutRaw.has_value()) {
             return NormalizeTimeoutOverride(timeoutRaw);
+        }
+        if (IsBoundedGitCommitOperation(InCommand, InArgs)) {
+            if (const auto timeoutRaw = GetEnvTimeoutMs("KOG_GIT_COMMIT_TIMEOUT_MS"); timeoutRaw.has_value()) {
+                return NormalizeTimeoutOverride(timeoutRaw);
+            }
+            return static_cast<unsigned int>(120 * 1000);
         }
         if (IsLongRunningGitOperation(InCommand, InArgs)) {
             return std::nullopt;
@@ -746,9 +777,10 @@ auto BuildProcessDiagBlock(const std::string& InStartTs,
         oss << "[process-diag] stderr_tail=" << TailLines(InStderr, 20) << "\n";
     }
 
-    static constexpr std::array<const char*, 13> kRelevantEnvKeys = {
+    static constexpr std::array<const char*, 14> kRelevantEnvKeys = {
         "KOG_SHELL_TIMEOUT_MS",
         "KOG_SHELL_CAPTURE_TIMEOUT_MS",
+        "KOG_GIT_COMMIT_TIMEOUT_MS",
         "KOG_SHELL_PASSTHROUGH_TIMEOUT_MS",
         "KOG_GIT_INTERACTIVE",
         "GIT_TERMINAL_PROMPT",

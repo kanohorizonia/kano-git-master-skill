@@ -67,6 +67,11 @@ The command:
 6. verifies that unrelated index entries retain their object, mode, stage, and
    index flag state.
 
+The porcelain commit step has a bounded 120-second default because large shared
+indexes can legitimately exceed the generic 20-second probe budget. Set
+`KOG_GIT_COMMIT_TIMEOUT_MS` for a narrower local bound; the global shell and
+capture timeout overrides retain precedence.
+
 KOG does not force commit or push, delete locks, or stage paths outside the
 declared scope.
 

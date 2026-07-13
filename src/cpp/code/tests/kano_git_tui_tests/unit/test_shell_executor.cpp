@@ -73,6 +73,43 @@ TEST_CASE("ShellExecutor capture timeout terminates process with code 124", "[Un
 #endif
 }
 
+TEST_CASE("ShellExecutor gives git commit a dedicated bounded timeout", "[Unit][shell-executor][timeout][KG-BUG-0048][windows]") {
+#if defined(_WIN32)
+    namespace fs = std::filesystem;
+    const auto tempRoot = fs::temp_directory_path() / "kog git commit timeout";
+    std::error_code ec;
+    fs::remove_all(tempRoot, ec);
+    fs::create_directories(tempRoot / ".git" / "hooks");
+
+    SetEnvVarForTest("KOG_SHELL_TIMEOUT_MS", "");
+    SetEnvVarForTest("KOG_SHELL_CAPTURE_TIMEOUT_MS", "0");
+    REQUIRE(ExecuteCommand("git", {"init", "-q"}, ExecMode::Capture, tempRoot).exitCode == 0);
+    REQUIRE(ExecuteCommand("git", {"config", "user.name", "KOG Test"}, ExecMode::Capture, tempRoot).exitCode == 0);
+    REQUIRE(ExecuteCommand("git", {"config", "user.email", "kog-test@example.invalid"}, ExecMode::Capture, tempRoot).exitCode == 0);
+    {
+        std::ofstream hook(tempRoot / ".git" / "hooks" / "pre-commit", std::ios::binary);
+        REQUIRE(hook.good());
+        hook << "#!/bin/sh\n";
+        hook << "sleep 2\n";
+    }
+
+    SetEnvVarForTest("KOG_SHELL_CAPTURE_TIMEOUT_MS", "");
+    SetEnvVarForTest("KOG_GIT_COMMIT_TIMEOUT_MS", "50");
+    const auto result = ExecuteCommand(
+        "git", {"commit", "--allow-empty", "-m", "timeout fixture"}, ExecMode::Capture, tempRoot);
+
+    REQUIRE(result.exitCode == 124);
+    REQUIRE(result.stderrStr.find("configured_timeout_ms=50") != std::string::npos);
+    REQUIRE(result.stderrStr.find("command_family=git:commit") != std::string::npos);
+    REQUIRE(result.stderrStr.find("safe_next_action=check for git prompts, locks, or active sibling processes before retry") != std::string::npos);
+
+    SetEnvVarForTest("KOG_GIT_COMMIT_TIMEOUT_MS", "");
+    fs::remove_all(tempRoot, ec);
+#else
+    SUCCEED("Windows-specific git commit timeout test skipped on non-Windows platform");
+#endif
+}
+
 TEST_CASE("ShellExecutor KOG capture timeout reports provenance and safe action", "[Unit][shell-executor][timeout][KG-BUG-0014][windows]") {
 #if defined(_WIN32)
     namespace fs = std::filesystem;
