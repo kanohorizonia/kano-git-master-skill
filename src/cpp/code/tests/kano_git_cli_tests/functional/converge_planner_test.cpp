@@ -734,6 +734,57 @@ TEST_CASE("converge branches retire removes merged branch and clean git worktree
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge branches retire deletes a same-name tracked remote branch", "[tdd][functional][feature:converge][converge][branches][retire][remote][KG-BUG-0039]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-retire-same-name-upstream");
+    const std::string featureBranch = "feature/retire-same-name-upstream";
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout same-name retire feature branch");
+    WriteTextFile(ctx.cloneRepo / "retire-same-name.txt", "same-name upstream\n");
+    RequireSuccess(RunGit({"add", "retire-same-name.txt"}, ctx.cloneRepo), "add same-name retire file");
+    RequireSuccess(RunGit({"commit", "-m", "same-name retire feature"}, ctx.cloneRepo), "commit same-name retire feature");
+    RequireSuccess(RunGit({"push", "-u", "origin", featureBranch}, ctx.cloneRepo), "push same-name retire feature");
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target before same-name retire");
+    RequireSuccess(RunGit({"merge", "--ff-only", featureBranch}, ctx.cloneRepo), "merge same-name retire feature");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.cloneRepo), "push target containing same-name retire feature");
+
+    const auto result = RunKog({"converge", "branches", "retire", "--target", ctx.branch, "--delete-remote", "--confirm", "--json", "--jobs", "1"}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContains(result.stdoutText, "\"action\": \"delete-local-and-remote\"");
+    RequireContains(result.stdoutText, "\"remoteDeleteStatus\": \"deleted\"");
+    REQUIRE(RunGit({"show-ref", "--verify", "--quiet", "refs/heads/" + featureBranch}, ctx.cloneRepo).exitCode != 0);
+    const auto remoteFeature = RunGit({"ls-remote", "--heads", "origin", featureBranch}, ctx.cloneRepo);
+    RequireSuccess(remoteFeature, "ls-remote after same-name branch retirement");
+    REQUIRE(TrimCopy(remoteFeature.stdoutText).empty());
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge branches retire never deletes a mismatched target upstream", "[tdd][functional][feature:converge][converge][branches][retire][remote][KG-BUG-0039]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-retire-mismatched-target-upstream");
+    const std::string featureBranch = "feature/retire-mismatched-target-upstream";
+    RequireSuccess(RunGit({"branch", featureBranch, ctx.branch}, ctx.cloneRepo), "create integrated local branch for mismatched upstream retirement");
+    RequireSuccess(RunGit({"branch", "--set-upstream-to=origin/" + ctx.branch, featureBranch}, ctx.cloneRepo), "point retiring branch at target upstream");
+
+    const auto targetBefore = RunGit({"ls-remote", "--heads", "origin", ctx.branch}, ctx.cloneRepo);
+    RequireSuccess(targetBefore, "read remote target before mismatched retirement");
+    REQUIRE_FALSE(TrimCopy(targetBefore.stdoutText).empty());
+
+    const auto result = RunKog({"converge", "branches", "retire", "--target", ctx.branch, "--delete-remote", "--confirm", "--json", "--jobs", "1"}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContains(result.stdoutText, "\"action\": \"delete-local-remote-skipped\"");
+    RequireContains(result.stdoutText, "\"remoteDeleteStatus\": \"skipped-target-branch\"");
+    REQUIRE(RunGit({"show-ref", "--verify", "--quiet", "refs/heads/" + featureBranch}, ctx.cloneRepo).exitCode != 0);
+
+    const auto targetAfter = RunGit({"ls-remote", "--heads", "origin", ctx.branch}, ctx.cloneRepo);
+    RequireSuccess(targetAfter, "read remote target after mismatched retirement");
+    REQUIRE(TrimCopy(targetAfter.stdoutText) == TrimCopy(targetBefore.stdoutText));
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("converge branches retire allows merged branch with active clean worktree and branch-ahead upstream", "[tdd][functional][feature:converge][converge][branches][retire]") {
     const auto ctx = CreateRemoteWithClone("converge-branches-retire-merged-ahead");
     const std::string featureBranch = "feature/retire-merged-ahead";

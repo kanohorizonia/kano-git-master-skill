@@ -4322,8 +4322,26 @@ int RunBranchRetire(const std::filesystem::path& root,
                 }
 
                 std::string upstream;
+                std::string trackedRemote;
+                std::string trackedRemoteBranch;
+                bool deleteTrackedRemote = false;
+                std::string remoteDeleteStatus = deleteRemote ? "not-configured" : "not-requested";
                 if (!remoteOnly) {
                     upstream = UpstreamForBranch(repoPath, branch);
+                    if (deleteRemote && !upstream.empty()) {
+                        if (SplitRemoteTrackingRef(upstream, trackedRemote, trackedRemoteBranch)) {
+                            if (trackedRemoteBranch == targetBranch) {
+                                remoteDeleteStatus = "skipped-target-branch";
+                            } else if (trackedRemoteBranch != branch) {
+                                remoteDeleteStatus = "skipped-mismatched-upstream";
+                            } else {
+                                deleteTrackedRemote = true;
+                                remoteDeleteStatus = "pending";
+                            }
+                        } else {
+                            remoteDeleteStatus = "skipped-invalid-upstream";
+                        }
+                    }
                     auto deleteLocal = GitCapture(repoPath, {"branch", "-d", branch});
                     if (deleteLocal.exitCode != 0) {
                         deleteLocal = GitCapture(repoPath, {"branch", "-D", branch});
@@ -4341,32 +4359,45 @@ int RunBranchRetire(const std::filesystem::path& root,
                         AppendBranchBlocked(result, repoId, branch, {"REMOTE_BRANCH_DELETE_FAILED"}, "remote-only branch is missing remote metadata");
                         continue;
                     }
+                    if (remoteBranch == targetBranch) {
+                        AppendBranchBlocked(result, repoId, branch, {"REMOTE_TARGET_DELETE_FORBIDDEN"}, "remote target branch retirement is forbidden");
+                        continue;
+                    }
                     const auto deleteUpstream = GitCapture(repoPath, {"push", remote, "--delete", remoteBranch});
                     if (deleteUpstream.exitCode != 0) {
                         AppendBranchBlocked(result, repoId, branch, {"REMOTE_BRANCH_DELETE_FAILED"}, CombinedGitError(deleteUpstream));
                         continue;
                     }
-                } else if (deleteRemote && !upstream.empty()) {
-                    std::string remote;
-                    std::string remoteBranch;
-                    if (SplitRemoteTrackingRef(upstream, remote, remoteBranch)) {
-                        const auto deleteUpstream = GitCapture(repoPath, {"push", remote, "--delete", remoteBranch});
-                        if (deleteUpstream.exitCode != 0) {
-                            AppendBranchBlocked(result, repoId, branch, {"REMOTE_BRANCH_DELETE_FAILED"}, CombinedGitError(deleteUpstream));
-                            continue;
-                        }
+                    remoteDeleteStatus = "deleted";
+                } else if (deleteTrackedRemote) {
+                    const auto deleteUpstream = GitCapture(repoPath, {"push", trackedRemote, "--delete", trackedRemoteBranch});
+                    if (deleteUpstream.exitCode != 0) {
+                        AppendBranchBlocked(result, repoId, branch, {"REMOTE_BRANCH_DELETE_FAILED"}, CombinedGitError(deleteUpstream));
+                        continue;
                     }
+                    remoteDeleteStatus = "deleted";
                 }
 
+                const auto retiredAction = remoteOnly
+                    ? "delete-remote"
+                    : remoteDeleteStatus == "deleted"
+                        ? "delete-local-and-remote"
+                        : deleteRemote && remoteDeleteStatus.starts_with("skipped-")
+                            ? "delete-local-remote-skipped"
+                            : "delete-local";
+                const auto retiredMessage = remoteDeleteStatus.starts_with("skipped-")
+                    ? "integrated branch retired locally; remote deletion skipped by identity guard"
+                    : "integrated branch retired";
                 result["mutationPerformed"] = true;
                 result["retired"].push_back({
                     {"repo", repoId},
                     {"branch", branch},
-                    {"action", remoteOnly ? "delete-remote" : (deleteRemote ? "delete-local-and-remote" : "delete-local")},
-                    {"message", "integrated branch retired"},
+                    {"action", retiredAction},
+                    {"message", retiredMessage},
                     {"remoteOnly", remoteOnly},
-                    {"remote", branchJson.value("remote", std::string{})},
-                    {"remoteBranch", branchJson.value("remoteBranch", std::string{})},
+                    {"remote", remoteOnly ? branchJson.value("remote", std::string{}) : trackedRemote},
+                    {"remoteBranch", remoteOnly ? branchJson.value("remoteBranch", std::string{}) : trackedRemoteBranch},
+                    {"remoteDeleteStatus", remoteDeleteStatus},
                     {"integrationProof", branchJson.value("integrationProof", std::string{})},
                     {"worktrees", worktreeLocations},
                 });
