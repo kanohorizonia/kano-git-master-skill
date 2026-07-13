@@ -53,6 +53,10 @@ queue scope mismatch, and existing <code>index.lock</code>;</li>
 <li>verifies that unrelated index entries retain their object, mode, stage, and
 index flag state.</li>
 </ol>
+<p>The porcelain commit step has a bounded 120-second default because large shared
+indexes can legitimately exceed the generic 20-second probe budget. Set
+<code>KOG_GIT_COMMIT_TIMEOUT_MS</code> for a narrower local bound; the global shell and
+capture timeout overrides retain precedence.</p>
 <p>KOG does not force commit or push, delete locks, or stage paths outside the
 declared scope.</p>
 <p>Close the batch after validation:</p>
