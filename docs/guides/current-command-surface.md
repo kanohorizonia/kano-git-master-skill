@@ -44,12 +44,14 @@ TUI artifacts:
 cmake --build <build-dir> --target kog_runtime_artifact
 ```
 
-The target writes `runtime-artifact/bin/kano-git`, required GNU runtime libraries
-on Linux, and `runtime-artifact/manifest.json` with revision, source fingerprint,
-toolchain, and build-context provenance. The root `.dockerignore` exposes only
-the VERSION file and native runtime source projection to provider-image build
-contexts; local outputs, reports, docs, tests, and workspace metadata do not
-invalidate that Docker context.
+The target writes `runtime-artifact/bin/kano-git`, the KOG-owned shared-library
+closure plus required GNU runtime libraries on Linux, and
+`runtime-artifact/manifest.json` with revision, source fingerprint, toolchain,
+and build-context provenance. Linux packaging fails when `ldd` reports an
+unresolved dependency. The root `.dockerignore` exposes only the VERSION file
+and native runtime source projection to provider-image build contexts; local
+outputs, reports, docs, tests, and workspace metadata do not invalidate that
+Docker context.
 
 If dependency fetching fails in an offline or DNS-restricted environment, treat it
 as an online build prerequisite failure, not as a launcher failure.

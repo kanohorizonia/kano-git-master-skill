@@ -9,6 +9,7 @@ target_link_libraries(kano_git_cli PRIVATE kano::git_core kano::git_command kano
 set(KOG_RUNTIME_ARTIFACT_DIR "${CMAKE_BINARY_DIR}/runtime-artifact" CACHE PATH "Minimal KOG runtime artifact output directory")
 set(KOG_RUNTIME_MANIFEST_INTERMEDIATE "${CMAKE_CURRENT_BINARY_DIR}/kog-runtime-manifest.configured.json")
 set(KOG_RUNTIME_MANIFEST_CONFIGURED "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/kog-runtime-manifest.json")
+set(KOG_RUNTIME_PACKAGER "${CMAKE_CURRENT_SOURCE_DIR}/package-runtime.cmake")
 configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/runtime-manifest.json.in"
     "${KOG_RUNTIME_MANIFEST_INTERMEDIATE}"
@@ -16,15 +17,18 @@ configure_file(
 )
 file(GENERATE OUTPUT "${KOG_RUNTIME_MANIFEST_CONFIGURED}" INPUT "${KOG_RUNTIME_MANIFEST_INTERMEDIATE}")
 
-set(_kog_runtime_artifact_commands
-    COMMAND ${CMAKE_COMMAND} -E rm -rf "${KOG_RUNTIME_ARTIFACT_DIR}"
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${KOG_RUNTIME_ARTIFACT_DIR}/bin"
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${KOG_RUNTIME_ARTIFACT_DIR}/lib"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:kano_git_cli>" "${KOG_RUNTIME_ARTIFACT_DIR}/bin/$<TARGET_FILE_NAME:kano_git_cli>"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${KOG_RUNTIME_MANIFEST_CONFIGURED}" "${KOG_RUNTIME_ARTIFACT_DIR}/manifest.json"
-)
-
+set(_kog_runtime_shared_library_files)
 if(UNIX AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    foreach(_kog_runtime_target
+            kano_infra_timing
+            kano_infra_config
+            kano_infra_build_info
+            kano_infra_platform
+            kano_infra_process
+            kano_infra_diagnostics
+            kano_infra_self)
+        list(APPEND _kog_runtime_shared_library_files "$<TARGET_FILE:${_kog_runtime_target}>")
+    endforeach()
     execute_process(
         COMMAND "${CMAKE_CXX_COMPILER}" -print-file-name=libstdc++.so.6
         OUTPUT_VARIABLE _kog_libstdcpp
@@ -40,14 +44,18 @@ if(UNIX AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     if(NOT EXISTS "${_kog_libstdcpp}" OR NOT EXISTS "${_kog_libgcc}")
         message(FATAL_ERROR "GNU runtime libraries required by kog_runtime_artifact were not found")
     endif()
-    list(APPEND _kog_runtime_artifact_commands
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_kog_libstdcpp}" "${KOG_RUNTIME_ARTIFACT_DIR}/lib/libstdc++.so.6"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_kog_libgcc}" "${KOG_RUNTIME_ARTIFACT_DIR}/lib/libgcc_s.so.1"
-    )
 endif()
+list(JOIN _kog_runtime_shared_library_files "|" _kog_runtime_shared_library_files_arg)
 
 add_custom_target(kog_runtime_artifact
-    ${_kog_runtime_artifact_commands}
+    COMMAND ${CMAKE_COMMAND}
+        "-DKOG_RUNTIME_ARTIFACT_DIR=${KOG_RUNTIME_ARTIFACT_DIR}"
+        "-DKOG_RUNTIME_BINARY=$<TARGET_FILE:kano_git_cli>"
+        "-DKOG_RUNTIME_MANIFEST=${KOG_RUNTIME_MANIFEST_CONFIGURED}"
+        "-DKOG_RUNTIME_SHARED_LIBRARIES=${_kog_runtime_shared_library_files_arg}"
+        "-DKOG_RUNTIME_LIBSTDCPP=${_kog_libstdcpp}"
+        "-DKOG_RUNTIME_LIBGCC=${_kog_libgcc}"
+        -P "${KOG_RUNTIME_PACKAGER}"
     DEPENDS kano_git_cli
     COMMENT "Packaging minimal KOG provider runtime artifact"
     VERBATIM
