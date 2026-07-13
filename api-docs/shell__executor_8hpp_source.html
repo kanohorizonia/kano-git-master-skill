@@ -176,10 +176,11 @@ $(document).ready(function(){initNavTree('shell__executor_8hpp_source.html','');
 <div class="line"><a id="l00068" name="l00068"></a><span class="lineno">   68</span>    <span class="keyword">const</span> std::vector&lt;std::string&gt;&amp; InArgs,</div>
 <div class="line"><a id="l00069" name="l00069"></a><span class="lineno">   69</span>    ExecMode InMode,</div>
 <div class="line"><a id="l00070" name="l00070"></a><span class="lineno">   70</span>    std::optional&lt;std::filesystem::path&gt; InWorkingDir,</div>
-<div class="line"><a id="l00071" name="l00071"></a><span class="lineno">   71</span>    ProgressCallback InProgressCallback</div>
-<div class="line"><a id="l00072" name="l00072"></a><span class="lineno">   72</span>) -&gt; ExecResult;</div>
-<div class="line"><a id="l00073" name="l00073"></a><span class="lineno">   73</span> </div>
-<div class="line"><a id="l00074" name="l00074"></a><span class="lineno">   74</span>}</div>
+<div class="line"><a id="l00071" name="l00071"></a><span class="lineno">   71</span>    ProgressCallback InProgressCallback,</div>
+<div class="line"><a id="l00072" name="l00072"></a><span class="lineno">   72</span>    std::optional&lt;unsigned int&gt; InTimeoutOverrideMs = std::nullopt</div>
+<div class="line"><a id="l00073" name="l00073"></a><span class="lineno">   73</span>) -&gt; ExecResult;</div>
+<div class="line"><a id="l00074" name="l00074"></a><span class="lineno">   74</span> </div>
+<div class="line"><a id="l00075" name="l00075"></a><span class="lineno">   75</span>}</div>
 <div class="ttc" id="aclasskano_1_1git_1_1shell_1_1ScopedCommandLogCapture_html"><div class="ttname"><a href="classkano_1_1git_1_1shell_1_1ScopedCommandLogCapture.html">kano::git::shell::ScopedCommandLogCapture</a></div><div class="ttdef"><b>Definition</b> shell_executor.hpp:26</div></div>
 <div class="ttc" id="aclasskano_1_1git_1_1shell_1_1ScopedConsoleWriteSuppression_html"><div class="ttname"><a href="classkano_1_1git_1_1shell_1_1ScopedConsoleWriteSuppression.html">kano::git::shell::ScopedConsoleWriteSuppression</a></div><div class="ttdef"><b>Definition</b> shell_executor.hpp:38</div></div>
 <div class="ttc" id="astructkano_1_1git_1_1shell_1_1CommandLogCallbacks_html"><div class="ttname"><a href="structkano_1_1git_1_1shell_1_1CommandLogCallbacks.html">kano::git::shell::CommandLogCallbacks</a></div><div class="ttdef"><b>Definition</b> shell_executor.hpp:21</div></div>
