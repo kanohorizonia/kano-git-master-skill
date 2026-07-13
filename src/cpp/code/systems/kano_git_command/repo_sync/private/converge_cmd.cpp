@@ -200,7 +200,7 @@ const std::vector<std::string> kConvergePhases = {
     "final-status-summary",
 };
 constexpr int kMaxConvergePasses = 8;
-constexpr const char* kDetachedHarvestDefaultMessage = "[Converge][Chore] Harvest detached worktree changes (NO-TICKET)";
+constexpr const char* kWorktreeHarvestDefaultMessage = "[Converge][Chore] Harvest dirty worktree changes (NO-TICKET)";
 
 std::string Trim(std::string v) {
     while (!v.empty() && (v.back() == '\n' || v.back() == '\r' || v.back() == ' ' || v.back() == '\t')) v.pop_back();
@@ -2770,14 +2770,16 @@ std::vector<BranchCandidate> BranchCandidates(const std::filesystem::path& repoP
     const auto remote = preferredRemote.empty() ? std::string{"origin"} : preferredRemote;
     const auto result = GitCapture(
         repoPath,
-        {"for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes/" + remote});
+        {"for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes/" + remote});
     if (result.exitCode != 0) {
         return {};
     }
 
     std::vector<std::string> locals;
     std::vector<std::string> remoteRefs;
-    const auto remotePrefix = remote + "/";
+    constexpr std::string_view localPrefix = "refs/heads/";
+    const auto remoteRefPrefix = "refs/remotes/" + remote + "/";
+    const auto remoteShortPrefix = remote + "/";
     std::istringstream lines(result.stdoutStr);
     std::string line;
     while (std::getline(lines, line)) {
@@ -2785,12 +2787,13 @@ std::vector<BranchCandidate> BranchCandidates(const std::filesystem::path& repoP
         if (ref.empty()) {
             continue;
         }
-        if (ref.rfind(remotePrefix, 0) == 0) {
-            if (ref != remote + "/HEAD") {
-                remoteRefs.push_back(std::move(ref));
+        if (ref.rfind(remoteRefPrefix, 0) == 0) {
+            const auto remoteBranch = ref.substr(remoteRefPrefix.size());
+            if (!remoteBranch.empty() && remoteBranch != "HEAD") {
+                remoteRefs.push_back(remoteShortPrefix + remoteBranch);
             }
-        } else {
-            locals.push_back(std::move(ref));
+        } else if (ref.rfind(localPrefix, 0) == 0) {
+            locals.push_back(ref.substr(localPrefix.size()));
         }
     }
 
@@ -2805,7 +2808,7 @@ std::vector<BranchCandidate> BranchCandidates(const std::filesystem::path& repoP
     }
 
     for (const auto& ref : remoteRefs) {
-        const auto remoteBranch = ref.substr(remotePrefix.size());
+        const auto remoteBranch = ref.substr(remoteShortPrefix.size());
         if (remoteBranch.empty() || localSet.find(remoteBranch) != localSet.end()) {
             continue;
         }
@@ -3026,6 +3029,16 @@ std::string DetachedWorktreeBranchLabel(const BranchWorktree& worktree) {
     return "<detached:" + worktree.head.substr(0, std::min<std::size_t>(12, worktree.head.size())) + ">";
 }
 
+std::string WorktreeBranchLabel(const BranchWorktree& worktree) {
+    return worktree.detached ? DetachedWorktreeBranchLabel(worktree) : worktree.branch;
+}
+
+std::string BranchWorktreeHarvestCommand(const std::string& targetBranch, const std::string& branch) {
+    return "kog converge branches retire --target " + targetBranch +
+           " --branch " + branch +
+           " --remove-worktrees --harvest-branch-worktrees --confirm";
+}
+
 void AppendDetachedWorktreeBlocked(nlohmann::json& result,
                                    const std::string& repoId,
                                    const BranchWorktree& worktree,
@@ -3157,14 +3170,39 @@ bool WriteBinaryFile(const std::filesystem::path& path, const std::string& conte
     return true;
 }
 
-std::filesystem::path MakeDetachedHarvestPatchPath(const std::filesystem::path& repoPath,
+std::filesystem::path MakeWorktreeHarvestPatchPath(const std::filesystem::path& repoPath,
                                                    const std::string& repoId,
                                                    const BranchWorktree& worktree) {
-    auto component = SanitizePlanComponent(repoId + "-" + DetachedWorktreeBranchLabel(worktree));
+    auto component = SanitizePlanComponent(repoId + "-" + WorktreeBranchLabel(worktree));
     if (!worktree.head.empty()) {
         component += "-" + worktree.head.substr(0, std::min<std::size_t>(12, worktree.head.size()));
     }
-    return (repoPath / ".kano" / "tmp" / "converge" / "detached-harvest" / (component + ".patch")).lexically_normal();
+    return (repoPath / ".kano" / "tmp" / "converge" / "worktree-harvest" / (component + ".patch")).lexically_normal();
+}
+
+void AppendWorktreeHarvestBlocked(nlohmann::json& result,
+                                  const std::string& repoId,
+                                  const BranchWorktree& worktree,
+                                  const std::string& action,
+                                  std::vector<std::string> blockers,
+                                  const std::string& message,
+                                  const std::string& integrationProof,
+                                  const std::vector<std::string>& changedPaths = {},
+                                  const std::string& recoveryCommand = {}) {
+    std::sort(blockers.begin(), blockers.end());
+    blockers.erase(std::unique(blockers.begin(), blockers.end()), blockers.end());
+    result["blocked"].push_back({
+        {"repo", repoId},
+        {"branch", WorktreeBranchLabel(worktree)},
+        {"action", action},
+        {"worktree", worktree.location},
+        {"head", worktree.head},
+        {"integrationProof", integrationProof},
+        {"changedPaths", changedPaths},
+        {"blockers", blockers},
+        {"message", message},
+        {"recoveryCommand", recoveryCommand},
+    });
 }
 
 void AppendDetachedWorktreeHarvestBlocked(nlohmann::json& result,
@@ -3174,19 +3212,14 @@ void AppendDetachedWorktreeHarvestBlocked(nlohmann::json& result,
                                           const std::string& message,
                                           const std::string& integrationProof,
                                           const std::vector<std::string>& changedPaths = {}) {
-    std::sort(blockers.begin(), blockers.end());
-    blockers.erase(std::unique(blockers.begin(), blockers.end()), blockers.end());
-    result["blocked"].push_back({
-        {"repo", repoId},
-        {"branch", DetachedWorktreeBranchLabel(worktree)},
-        {"action", "harvest-detached-worktree"},
-        {"worktree", worktree.location},
-        {"head", worktree.head},
-        {"integrationProof", integrationProof},
-        {"changedPaths", changedPaths},
-        {"blockers", blockers},
-        {"message", message},
-    });
+    AppendWorktreeHarvestBlocked(result,
+                                 repoId,
+                                 worktree,
+                                 "harvest-detached-worktree",
+                                 std::move(blockers),
+                                 message,
+                                 integrationProof,
+                                 changedPaths);
 }
 
 bool PushTargetBranch(const std::filesystem::path& repoPath,
@@ -3213,46 +3246,31 @@ bool CheckoutTargetBranch(const std::filesystem::path& repoPath,
                           const std::string& targetBranch,
                           nlohmann::json& result);
 
-bool HarvestDirtyDetachedWorktree(const std::filesystem::path& repoPath,
-                                  const RepoStatus& repo,
-                                  const std::string& targetBranch,
-                                  const BranchWorktree& worktree,
-                                  const DetachedWorktreeEvaluation& evaluation,
-                                  const std::string& commitMessage,
-                                  nlohmann::json& result) {
+bool HarvestDirtyWorktree(const std::filesystem::path& repoPath,
+                          const RepoStatus& repo,
+                          const std::string& targetBranch,
+                          const BranchWorktree& worktree,
+                          const std::string& integrationProof,
+                          const std::string& action,
+                          const std::string& successMessage,
+                          const std::string& commitMessage,
+                          const std::string& recoveryCommand,
+                          nlohmann::json& result) {
     std::string dirtyError;
     const auto dirtyEntries = CollectDirtyEntries(worktree.absolutePath, &dirtyError);
     const auto changedPaths = DirtyEntryPaths(dirtyEntries);
     if (!dirtyError.empty()) {
-        AppendDetachedWorktreeHarvestBlocked(result,
-                                             repo.id,
-                                             worktree,
-                                             {"DIRTY_STATUS_FAILED"},
-                                             dirtyError,
-                                             evaluation.integrationProof,
-                                             changedPaths);
+        AppendWorktreeHarvestBlocked(result, repo.id, worktree, action, {"DIRTY_STATUS_FAILED"}, dirtyError, integrationProof, changedPaths, recoveryCommand);
         return false;
     }
     if (changedPaths.empty()) {
-        AppendDetachedWorktreeHarvestBlocked(result,
-                                             repo.id,
-                                             worktree,
-                                             {"EMPTY_HARVEST_PATCH"},
-                                             "dirty detached worktree had no changed paths to harvest",
-                                             evaluation.integrationProof,
-                                             changedPaths);
+        AppendWorktreeHarvestBlocked(result, repo.id, worktree, action, {"EMPTY_HARVEST_PATCH"}, "dirty worktree had no changed paths to harvest", integrationProof, changedPaths, recoveryCommand);
         return false;
     }
 
     std::string targetCleanMessage;
     if (!WorktreeIsClean(repoPath, targetCleanMessage)) {
-        AppendDetachedWorktreeHarvestBlocked(result,
-                                             repo.id,
-                                             worktree,
-                                             {"DIRTY_TARGET_WORKTREE"},
-                                             targetCleanMessage,
-                                             evaluation.integrationProof,
-                                             changedPaths);
+        AppendWorktreeHarvestBlocked(result, repo.id, worktree, action, {"DIRTY_TARGET_WORKTREE"}, targetCleanMessage, integrationProof, changedPaths, recoveryCommand);
         return false;
     }
     if (!CheckoutTargetBranch(repoPath, repo.id, targetBranch, result)) {
@@ -3262,13 +3280,7 @@ bool HarvestDirtyDetachedWorktree(const std::filesystem::path& repoPath,
     const auto untrackedPaths = UntrackedDirtyPaths(dirtyEntries);
     std::string intentError;
     if (!MarkIntentToAddUntracked(worktree.absolutePath, untrackedPaths, intentError)) {
-        AppendDetachedWorktreeHarvestBlocked(result,
-                                             repo.id,
-                                             worktree,
-                                             {"UNTRACKED_INTENT_TO_ADD_FAILED"},
-                                             intentError,
-                                             evaluation.integrationProof,
-                                             changedPaths);
+        AppendWorktreeHarvestBlocked(result, repo.id, worktree, action, {"UNTRACKED_INTENT_TO_ADD_FAILED"}, intentError, integrationProof, changedPaths, recoveryCommand);
         return false;
     }
 
@@ -3279,36 +3291,18 @@ bool HarvestDirtyDetachedWorktree(const std::filesystem::path& repoPath,
         (void)GitCapture(worktree.absolutePath, resetArgs);
     }
     if (diff.exitCode != 0) {
-        AppendDetachedWorktreeHarvestBlocked(result,
-                                             repo.id,
-                                             worktree,
-                                             {"HARVEST_DIFF_FAILED"},
-                                             CombinedGitError(diff),
-                                             evaluation.integrationProof,
-                                             changedPaths);
+        AppendWorktreeHarvestBlocked(result, repo.id, worktree, action, {"HARVEST_DIFF_FAILED"}, CombinedGitError(diff), integrationProof, changedPaths, recoveryCommand);
         return false;
     }
     if (Trim(diff.stdoutStr).empty()) {
-        AppendDetachedWorktreeHarvestBlocked(result,
-                                             repo.id,
-                                             worktree,
-                                             {"EMPTY_HARVEST_PATCH"},
-                                             "dirty detached worktree produced an empty patch",
-                                             evaluation.integrationProof,
-                                             changedPaths);
+        AppendWorktreeHarvestBlocked(result, repo.id, worktree, action, {"EMPTY_HARVEST_PATCH"}, "dirty worktree produced an empty patch", integrationProof, changedPaths, recoveryCommand);
         return false;
     }
 
-    const auto patchPath = MakeDetachedHarvestPatchPath(repoPath, repo.id, worktree);
+    const auto patchPath = MakeWorktreeHarvestPatchPath(repoPath, repo.id, worktree);
     std::string writeError;
     if (!WriteBinaryFile(patchPath, diff.stdoutStr, writeError)) {
-        AppendDetachedWorktreeHarvestBlocked(result,
-                                             repo.id,
-                                             worktree,
-                                             {"HARVEST_PATCH_WRITE_FAILED"},
-                                             writeError,
-                                             evaluation.integrationProof,
-                                             changedPaths);
+        AppendWorktreeHarvestBlocked(result, repo.id, worktree, action, {"HARVEST_PATCH_WRITE_FAILED"}, writeError, integrationProof, changedPaths, recoveryCommand);
         return false;
     }
 
@@ -3319,66 +3313,44 @@ bool HarvestDirtyDetachedWorktree(const std::filesystem::path& repoPath,
 
     const auto apply = GitCapture(repoPath, {"apply", "--index", "--whitespace=nowarn", patchPath.string()});
     if (apply.exitCode != 0) {
-        AppendDetachedWorktreeHarvestBlocked(result,
-                                             repo.id,
-                                             worktree,
-                                             {"HARVEST_PATCH_APPLY_FAILED"},
-                                             CombinedGitError(apply),
-                                             evaluation.integrationProof,
-                                             changedPaths);
+        cleanupPatch();
+        AppendWorktreeHarvestBlocked(result, repo.id, worktree, action, {"HARVEST_PATCH_APPLY_FAILED"}, CombinedGitError(apply), integrationProof, changedPaths, recoveryCommand);
         return false;
     }
     cleanupPatch();
 
-    const auto commit = GitCapture(repoPath, {"commit", "-m", commitMessage.empty() ? std::string{kDetachedHarvestDefaultMessage} : commitMessage});
+    const auto commit = GitCapture(repoPath, {"commit", "-m", commitMessage.empty() ? std::string{kWorktreeHarvestDefaultMessage} : commitMessage});
     if (commit.exitCode != 0) {
-        AppendDetachedWorktreeHarvestBlocked(result,
-                                             repo.id,
-                                             worktree,
-                                             {"HARVEST_COMMIT_FAILED"},
-                                             CombinedGitError(commit),
-                                             evaluation.integrationProof,
-                                             changedPaths);
+        AppendWorktreeHarvestBlocked(result, repo.id, worktree, action, {"HARVEST_COMMIT_FAILED"}, CombinedGitError(commit), integrationProof, changedPaths, recoveryCommand);
         return false;
     }
 
     const auto commitHead = GitCapture(repoPath, {"rev-parse", "HEAD"});
     const auto harvestedCommit = commitHead.exitCode == 0 ? Trim(commitHead.stdoutStr) : std::string{};
+    result["mutationPerformed"] = true;
 
     std::string pushError;
     if (!PushTargetBranch(repoPath, repo, targetBranch, pushError)) {
-        AppendDetachedWorktreeHarvestBlocked(result,
-                                             repo.id,
-                                             worktree,
-                                             {"HARVEST_PUSH_FAILED"},
-                                             pushError,
-                                             evaluation.integrationProof,
-                                             changedPaths);
+        AppendWorktreeHarvestBlocked(result, repo.id, worktree, action, {"HARVEST_PUSH_FAILED"}, pushError, integrationProof, changedPaths, recoveryCommand);
         return false;
     }
 
     const auto remove = GitCapture(repoPath, {"worktree", "remove", "--force", worktree.absolutePath.string()});
     if (remove.exitCode != 0) {
-        AppendDetachedWorktreeHarvestBlocked(result,
-                                             repo.id,
-                                             worktree,
-                                             {"WORKTREE_REMOVE_FAILED"},
-                                             CombinedGitError(remove),
-                                             evaluation.integrationProof,
-                                             changedPaths);
+        AppendWorktreeHarvestBlocked(result, repo.id, worktree, action, {"WORKTREE_REMOVE_FAILED"}, CombinedGitError(remove), integrationProof, changedPaths, recoveryCommand);
         return false;
     }
 
     result["mutationPerformed"] = true;
     result["harvested"].push_back({
         {"repo", repo.id},
-        {"branch", DetachedWorktreeBranchLabel(worktree)},
-        {"action", "harvest-detached-worktree"},
-        {"message", "dirty detached worktree harvested into target and removed"},
+        {"branch", WorktreeBranchLabel(worktree)},
+        {"action", action},
+        {"message", successMessage},
         {"worktree", worktree.location},
         {"head", worktree.head},
         {"targetBranch", targetBranch},
-        {"integrationProof", evaluation.integrationProof},
+        {"integrationProof", integrationProof},
         {"changedPaths", changedPaths},
         {"commit", harvestedCommit},
     });
@@ -3578,7 +3550,10 @@ DetachedWorktreeEvaluation EvaluateDetachedWorktree(const std::filesystem::path&
     return out;
 }
 
-std::vector<std::string> RetireBlockersForIntegratedBranch(std::vector<std::string> blockers, bool removeWorktrees, bool deleteRemote) {
+std::vector<std::string> RetireBlockersForIntegratedBranch(std::vector<std::string> blockers,
+                                                           bool removeWorktrees,
+                                                           bool deleteRemote,
+                                                           bool harvestBranchWorktrees) {
     blockers.erase(std::remove(blockers.begin(), blockers.end(), "UNPUSHED_COMMITS"), blockers.end());
     blockers.erase(std::remove_if(blockers.begin(),
                                   blockers.end(),
@@ -3591,6 +3566,9 @@ std::vector<std::string> RetireBlockersForIntegratedBranch(std::vector<std::stri
     }
     if (removeWorktrees) {
         blockers.erase(std::remove(blockers.begin(), blockers.end(), "ACTIVE_WORKTREE_LEASE"), blockers.end());
+    }
+    if (harvestBranchWorktrees) {
+        blockers.erase(std::remove(blockers.begin(), blockers.end(), "DIRTY_WORKTREE_LEASE"), blockers.end());
     }
     std::sort(blockers.begin(), blockers.end());
     blockers.erase(std::unique(blockers.begin(), blockers.end()), blockers.end());
@@ -3825,6 +3803,21 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
             worktreeObject["integrationProof"] = evaluation.integrationProof;
             worktreeObject["blockers"] = evaluation.blockers;
             worktreeObject["proposedActions"] = evaluation.proposedActions;
+        } else if (!worktree.bare) {
+            std::string cleanMessage;
+            const auto clean = WorktreeIsClean(worktree.absolutePath, cleanMessage);
+            std::string dirtyError;
+            const auto changedPaths = clean
+                ? std::vector<std::string>{}
+                : DirtyEntryPaths(CollectDirtyEntries(worktree.absolutePath, &dirtyError));
+            worktreeObject["primary"] = SamePath(worktree.absolutePath, repoPath);
+            worktreeObject["clean"] = clean;
+            worktreeObject["cleanMessage"] = clean ? std::string{} : cleanMessage;
+            worktreeObject["changedPaths"] = changedPaths;
+            worktreeObject["dirtyStatusError"] = dirtyError;
+            worktreeObject["recoveryCommand"] = clean || worktree.branch.empty()
+                ? std::string{}
+                : BranchWorktreeHarvestCommand(targetBranch, worktree.branch);
         }
         worktreeJson.push_back(std::move(worktreeObject));
     }
@@ -3862,7 +3855,31 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
             });
             continue;
         }
+        const auto branchWorktrees = candidate.remoteOnly ? std::vector<BranchWorktree>{} : WorktreesForBranch(worktrees, branch);
         const auto checkedOut = candidate.remoteOnly ? std::vector<std::string>{} : WorktreeLocationsForBranch(worktrees, branch);
+        nlohmann::json branchWorktreeInventory = nlohmann::json::array();
+        std::size_t dirtyWorktreeCount = 0;
+        for (const auto& worktree : branchWorktrees) {
+            std::string cleanMessage;
+            const auto clean = WorktreeIsClean(worktree.absolutePath, cleanMessage);
+            std::string dirtyError;
+            const auto changedPaths = clean
+                ? std::vector<std::string>{}
+                : DirtyEntryPaths(CollectDirtyEntries(worktree.absolutePath, &dirtyError));
+            if (!clean) {
+                ++dirtyWorktreeCount;
+            }
+            branchWorktreeInventory.push_back({
+                {"location", worktree.location},
+                {"head", worktree.head},
+                {"primary", SamePath(worktree.absolutePath, repoPath)},
+                {"clean", clean},
+                {"cleanMessage", clean ? std::string{} : cleanMessage},
+                {"changedPaths", changedPaths},
+                {"dirtyStatusError", dirtyError},
+                {"recoveryCommand", clean ? std::string{} : BranchWorktreeHarvestCommand(targetBranch, branch)},
+            });
+        }
         const auto counts = candidate.remoteOnly
             ? BranchAheadBehind{}
             : (isTarget && snapshotIsTarget ? targetCounts : AheadBehindForBranch(repoPath, branch));
@@ -3875,6 +3892,9 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
         }
         if (!isTarget && !checkedOut.empty()) {
             blockers.push_back("ACTIVE_WORKTREE_LEASE");
+        }
+        if (!isTarget && dirtyWorktreeCount > 0) {
+            blockers.push_back("DIRTY_WORKTREE_LEASE");
         }
         if (DirtyKindBlocksBranchPlan(repo.dirtyKind) && !IsCleanNestedPreflightOnlyBlocker(repo)) {
             blockers.push_back("DIRTY_WORKTREE:" + repo.dirtyKind);
@@ -3902,12 +3922,14 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
         }
         const auto integrated = merged || patchEquivalent || cherryPickNoop;
         if (integrated && !isTarget) {
-            blockers = RetireBlockersForIntegratedBranch(std::move(blockers), true, false);
+            blockers = RetireBlockersForIntegratedBranch(std::move(blockers), true, false, false);
         }
 
         std::vector<std::string> actions;
         if (isTarget) {
             actions.push_back("keep target branch");
+        } else if (integrated && dirtyWorktreeCount > 0) {
+            actions.push_back("review dirty worktree paths, then run " + BranchWorktreeHarvestCommand(targetBranch, branch));
         } else if (!blockers.empty()) {
             actions.push_back("resolve blockers before branch integration or retirement");
         } else if (integrated) {
@@ -3931,6 +3953,9 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
             {"strategy", strategy},
             {"checkedOutWorktrees", checkedOut},
             {"activeLeaseBlocker", !isTarget && !checkedOut.empty()},
+            {"worktreeInventory", branchWorktreeInventory},
+            {"dirtyWorktreeCount", dirtyWorktreeCount},
+            {"dirtyWorktreeRecoveryCommand", dirtyWorktreeCount == 0 ? std::string{} : BranchWorktreeHarvestCommand(targetBranch, branch)},
             {"hasUpstream", counts.hasUpstream},
             {"ahead", counts.ahead},
             {"behind", counts.behind},
@@ -3942,6 +3967,44 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
             {"integrationProof", merged ? "merged" : (patchEquivalent ? "patch-equivalent" : (cherryPickNoop ? "cherry-pick-noop" : ""))},
             {"blockers", blockers},
             {"proposedActions", actions},
+        });
+    }
+
+    std::unordered_map<std::string, std::set<std::size_t>> dirtyPathOwners;
+    for (std::size_t branchIndex = 0; branchIndex < branchesJson.size(); ++branchIndex) {
+        for (const auto& worktree : branchesJson[branchIndex].value("worktreeInventory", nlohmann::json::array())) {
+            for (const auto& path : worktree.value("changedPaths", nlohmann::json::array())) {
+                if (path.is_string()) {
+                    dirtyPathOwners[path.get<std::string>()].insert(branchIndex);
+                }
+            }
+        }
+    }
+    std::vector<std::vector<std::string>> overlapPaths(branchesJson.size());
+    for (const auto& [path, owners] : dirtyPathOwners) {
+        if (owners.size() < 2) {
+            continue;
+        }
+        for (const auto owner : owners) {
+            overlapPaths[owner].push_back(path);
+        }
+    }
+    for (std::size_t branchIndex = 0; branchIndex < branchesJson.size(); ++branchIndex) {
+        if (overlapPaths[branchIndex].empty()) {
+            branchesJson[branchIndex]["dirtyWorktreeOverlapPaths"] = nlohmann::json::array();
+            continue;
+        }
+        auto& paths = overlapPaths[branchIndex];
+        std::sort(paths.begin(), paths.end());
+        paths.erase(std::unique(paths.begin(), paths.end()), paths.end());
+        auto blockers = BranchBlockers(branchesJson[branchIndex]);
+        blockers.push_back("DIRTY_WORKTREE_OVERLAP");
+        std::sort(blockers.begin(), blockers.end());
+        blockers.erase(std::unique(blockers.begin(), blockers.end()), blockers.end());
+        branchesJson[branchIndex]["blockers"] = blockers;
+        branchesJson[branchIndex]["dirtyWorktreeOverlapPaths"] = paths;
+        branchesJson[branchIndex]["proposedActions"] = nlohmann::json::array({
+            "resolve overlapping dirty worktree paths before branch harvest",
         });
     }
     repoJson["branches"] = std::move(branchesJson);
@@ -4380,7 +4443,9 @@ int RunBranchRetire(const std::filesystem::path& root,
                     bool deleteRemote,
                     bool pruneWorktrees,
                     bool harvestDetachedWorktrees,
+                    bool harvestBranchWorktrees,
                     const std::string& harvestCommitMessage,
+                    const std::string& branchFilter,
                     bool syncTarget,
                     bool emitJson) {
     try {
@@ -4394,6 +4459,8 @@ int RunBranchRetire(const std::filesystem::path& root,
         result["deleteRemote"] = deleteRemote;
         result["pruneWorktrees"] = pruneWorktrees;
         result["harvestDetachedWorktrees"] = harvestDetachedWorktrees;
+        result["harvestBranchWorktrees"] = harvestBranchWorktrees;
+        result["branchFilter"] = branchFilter;
 
         std::optional<shell::ScopedConsoleWriteSuppression> suppressCommandLogs;
         if (jsonOutput) {
@@ -4456,15 +4523,46 @@ int RunBranchRetire(const std::filesystem::path& root,
                 if (branch.empty() || branchJson.value("isTarget", false)) {
                     continue;
                 }
+                if (!BranchMatchesFilter(branchJson, branchFilter)) {
+                    continue;
+                }
                 if (branchJson.value("nonConvergeTarget", false)) {
                     AppendBranchAction(result, "skipped", repoId, branch, "non-converge-target", branchJson.value("skipReason", std::string{"skipped branch"}));
                     continue;
                 }
+                const auto branchWorktrees = remoteOnly ? std::vector<BranchWorktree>{} : WorktreesForBranch(liveWorktrees, branch);
                 if (!branchJson.value("integratedIntoTarget", branchJson.value("mergedIntoTarget", false))) {
-                    AppendBranchAction(result, "skipped", repoId, branch, "not-integrated", "branch is not proven integrated into target");
+                    bool dirtyUnprovenWorktree = false;
+                    for (const auto& worktree : branchWorktrees) {
+                        std::string cleanMessage;
+                        if (WorktreeIsClean(worktree.absolutePath, cleanMessage)) {
+                            continue;
+                        }
+                        dirtyUnprovenWorktree = true;
+                        std::string dirtyError;
+                        const auto changedPaths = DirtyEntryPaths(CollectDirtyEntries(worktree.absolutePath, &dirtyError));
+                        const auto integrationCommand =
+                            "kog converge branches apply --target " + targetBranch +
+                            " --strategy cherry-pick --branch " + branch + " --confirm";
+                        AppendWorktreeHarvestBlocked(result,
+                                                     repoId,
+                                                     worktree,
+                                                     "integrate-dirty-branch-worktree",
+                                                     {"DIRTY_BRANCH_WORKTREE_NOT_INTEGRATED"},
+                                                     dirtyError.empty()
+                                                         ? "commit the reported changed paths in the branch worktree before integrating it into the target"
+                                                         : dirtyError,
+                                                     std::string{},
+                                                     changedPaths,
+                                                     integrationCommand);
+                    }
+                    if (!dirtyUnprovenWorktree) {
+                        AppendBranchAction(result, "skipped", repoId, branch, "not-integrated", "branch is not proven integrated into target");
+                    }
                     continue;
                 }
-                auto blockers = RetireBlockersForIntegratedBranch(BranchBlockers(branchJson), removeWorktrees, deleteRemote);
+                auto blockers = RetireBlockersForIntegratedBranch(
+                    BranchBlockers(branchJson), removeWorktrees, deleteRemote, harvestBranchWorktrees);
                 if (!blockers.empty()) {
                     AppendBranchBlocked(result, repoId, branch, blockers, "planner blockers must be resolved before retirement");
                     continue;
@@ -4474,13 +4572,14 @@ int RunBranchRetire(const std::filesystem::path& root,
                     continue;
                 }
 
-                const auto branchWorktrees = remoteOnly ? std::vector<BranchWorktree>{} : WorktreesForBranch(liveWorktrees, branch);
                 if (!branchWorktrees.empty() && !removeWorktrees) {
                     AppendBranchBlocked(result, repoId, branch, {"ACTIVE_WORKTREE_LEASE"}, "rerun with --remove-worktrees after reviewing clean Git-managed worktrees");
                     continue;
                 }
 
                 std::vector<std::string> worktreeLocations;
+                std::unordered_set<std::string> harvestedWorktrees;
+                bool hasDirtyWorktrees = false;
                 bool worktreesSafe = true;
                 for (const auto& worktree : branchWorktrees) {
                     worktreeLocations.push_back(worktree.location);
@@ -4491,8 +4590,40 @@ int RunBranchRetire(const std::filesystem::path& root,
                     }
                     std::string cleanMessage;
                     if (!WorktreeIsClean(worktree.absolutePath, cleanMessage)) {
-                        AppendBranchBlocked(result, repoId, branch, {"DIRTY_WORKTREE_LEASE"}, cleanMessage);
-                        worktreesSafe = false;
+                        hasDirtyWorktrees = true;
+                        std::string dirtyError;
+                        const auto changedPaths = DirtyEntryPaths(CollectDirtyEntries(worktree.absolutePath, &dirtyError));
+                        const auto recoveryCommand = BranchWorktreeHarvestCommand(targetBranch, branch);
+                        if (!harvestBranchWorktrees) {
+                            AppendWorktreeHarvestBlocked(result,
+                                                         repoId,
+                                                         worktree,
+                                                         "harvest-branch-worktree",
+                                                         {"DIRTY_WORKTREE_LEASE"},
+                                                         dirtyError.empty() ? cleanMessage : dirtyError,
+                                                         branchJson.value("integrationProof", std::string{}),
+                                                         changedPaths,
+                                                         recoveryCommand);
+                            worktreesSafe = false;
+                            continue;
+                        }
+                        if (!confirm) {
+                            continue;
+                        }
+                        if (!HarvestDirtyWorktree(repoPath,
+                                                  *repo,
+                                                  targetBranch,
+                                                  worktree,
+                                                  branchJson.value("integrationProof", std::string{}),
+                                                  "harvest-branch-worktree",
+                                                  "dirty branch worktree harvested into target and removed",
+                                                  harvestCommitMessage,
+                                                  recoveryCommand,
+                                                  result)) {
+                            worktreesSafe = false;
+                            continue;
+                        }
+                        harvestedWorktrees.insert(PathKey(worktree.absolutePath));
                     }
                 }
                 if (!worktreesSafe) {
@@ -4503,12 +4634,17 @@ int RunBranchRetire(const std::filesystem::path& root,
                     result["planned"].push_back({
                         {"repo", repoId},
                         {"branch", branch},
-                        {"action", remoteOnly ? "delete-remote" : "retire"},
-                        {"message", remoteOnly ? "rerun with --confirm to delete the remote branch" : "rerun with --confirm to delete the local branch"},
+                        {"action", remoteOnly ? "delete-remote" : (hasDirtyWorktrees ? "harvest-and-retire" : "retire")},
+                        {"message", remoteOnly
+                            ? "rerun with --confirm to delete the remote branch"
+                            : (hasDirtyWorktrees
+                                ? "rerun with --confirm to patch/apply, commit, push, and retire the dirty branch worktree"
+                                : "rerun with --confirm to delete the local branch")},
                         {"remoteOnly", remoteOnly},
                         {"remote", branchJson.value("remote", std::string{})},
                         {"remoteBranch", branchJson.value("remoteBranch", std::string{})},
                         {"worktrees", worktreeLocations},
+                        {"recoveryCommand", hasDirtyWorktrees ? BranchWorktreeHarvestCommand(targetBranch, branch) : std::string{}},
                     });
                     continue;
                 }
@@ -4518,6 +4654,9 @@ int RunBranchRetire(const std::filesystem::path& root,
                 }
 
                 for (const auto& worktree : branchWorktrees) {
+                    if (harvestedWorktrees.contains(PathKey(worktree.absolutePath))) {
+                        continue;
+                    }
                     const auto remove = GitCapture(repoPath, {"worktree", "remove", worktree.absolutePath.string()});
                     if (remove.exitCode != 0) {
                         AppendBranchBlocked(result, repoId, branch, {"WORKTREE_REMOVE_FAILED"}, CombinedGitError(remove));
@@ -4621,6 +4760,9 @@ int RunBranchRetire(const std::filesystem::path& root,
             }
 
             for (const auto& worktree : liveWorktrees) {
+                if (!branchFilter.empty()) {
+                    continue;
+                }
                 if (!worktree.detached || worktree.bare) {
                     continue;
                 }
@@ -4678,13 +4820,16 @@ int RunBranchRetire(const std::filesystem::path& root,
                         });
                         continue;
                     }
-                    (void)HarvestDirtyDetachedWorktree(repoPath,
-                                                       *repo,
-                                                       targetBranch,
-                                                       worktree,
-                                                       evaluation,
-                                                       harvestCommitMessage,
-                                                       result);
+                    (void)HarvestDirtyWorktree(repoPath,
+                                               *repo,
+                                               targetBranch,
+                                               worktree,
+                                               evaluation.integrationProof,
+                                               "harvest-detached-worktree",
+                                               "dirty detached worktree harvested into target and removed",
+                                               harvestCommitMessage,
+                                               std::string{},
+                                               result);
                     continue;
                 }
                 if (!evaluation.clean || evaluation.primary) {
@@ -4849,10 +4994,11 @@ void RegisterConverge(CLI::App& InApp) {
     auto* settleRemoveWorktrees = new bool{false};
     auto* settlePruneWorktrees = new bool{false};
     auto* settleHarvestDetachedWorktrees = new bool{false};
+    auto* settleHarvestBranchWorktrees = new bool{false};
     auto* jobs = new int{1};
     auto* remote = new std::string{};
     auto* settleTarget = new std::string{"main"};
-    auto* settleHarvestMessage = new std::string{kDetachedHarvestDefaultMessage};
+    auto* settleHarvestMessage = new std::string{kWorktreeHarvestDefaultMessage};
 
     auto* repos = cmd->add_subcommand("repos", "Alias for the existing repo-state converge workflow");
     auto* branches = cmd->add_subcommand("branches", "Plan branch integration and retirement safely");
@@ -4866,7 +5012,7 @@ void RegisterConverge(CLI::App& InApp) {
     branchesStatus->fallthrough(false);
     auto* branchesApply = branches->add_subcommand("apply", "Guarded branch integration into the target branch");
     branchesApply->fallthrough(false);
-    auto* branchesRetire = branches->add_subcommand("retire", "Guarded retirement for merged branches and clean Git worktrees");
+    auto* branchesRetire = branches->add_subcommand("retire", "Guarded harvest and retirement for integrated branches and Git worktrees");
     branchesRetire->fallthrough(false);
     auto* branchesNoRecursive = new bool{false};
     auto* branchesJson = new bool{false};
@@ -4874,13 +5020,15 @@ void RegisterConverge(CLI::App& InApp) {
     auto* branchesTarget = new std::string{"main"};
     auto* branchesStrategy = new std::string{"rebase"};
     auto* branchesApplyBranch = new std::string{};
+    auto* branchesRetireBranch = new std::string{};
     auto* branchesConfirm = new bool{false};
     auto* branchesNoSyncTarget = new bool{false};
     auto* branchesRemoveWorktrees = new bool{false};
     auto* branchesDeleteRemote = new bool{false};
     auto* branchesPruneWorktrees = new bool{false};
     auto* branchesHarvestDetachedWorktrees = new bool{false};
-    auto* branchesHarvestMessage = new std::string{kDetachedHarvestDefaultMessage};
+    auto* branchesHarvestBranchWorktrees = new bool{false};
+    auto* branchesHarvestMessage = new std::string{kWorktreeHarvestDefaultMessage};
 
     cmd->add_flag("--no-recursive,-N", *noRecursive, "Only run on current repository");
     cmd->add_flag("--dry-run", *dryRun, "Preview converge actions without changing repositories");
@@ -4897,10 +5045,11 @@ void RegisterConverge(CLI::App& InApp) {
     cmd->add_flag("--remove-worktrees", *settleRemoveWorktrees, "Allow settle to remove clean integrated Git worktrees");
     cmd->add_flag("--prune-worktrees", *settlePruneWorktrees, "Allow settle to prune stale Git worktree metadata");
     cmd->add_flag("--harvest-detached-worktrees", *settleHarvestDetachedWorktrees, "Allow settle to patch/apply dirty detached ancestor worktrees into the target branch");
+    cmd->add_flag("--harvest-branch-worktrees", *settleHarvestBranchWorktrees, "Allow settle to patch/apply dirty integrated branch worktrees into the target branch");
     cmd->add_option("--jobs", *jobs, "Parallel workers for converge status/push stages");
     cmd->add_option("--remote", *remote, "Optional remote filter for converge push stage");
     cmd->add_option("--target", *settleTarget, "Target branch for worktree settle")->default_str("main");
-    cmd->add_option("--harvest-message", *settleHarvestMessage, "Commit message for dirty detached worktree harvest")->default_str(kDetachedHarvestDefaultMessage);
+    cmd->add_option("--harvest-message", *settleHarvestMessage, "Commit message for dirty worktree harvest")->default_str(kWorktreeHarvestDefaultMessage);
 
     repos->add_flag("--no-recursive,-N", *noRecursive, "Only run on current repository");
     repos->add_flag("--dry-run", *dryRun, "Preview converge actions without changing repositories");
@@ -4917,10 +5066,11 @@ void RegisterConverge(CLI::App& InApp) {
     repos->add_flag("--remove-worktrees", *settleRemoveWorktrees, "Allow settle to remove clean integrated Git worktrees");
     repos->add_flag("--prune-worktrees", *settlePruneWorktrees, "Allow settle to prune stale Git worktree metadata");
     repos->add_flag("--harvest-detached-worktrees", *settleHarvestDetachedWorktrees, "Allow settle to patch/apply dirty detached ancestor worktrees into the target branch");
+    repos->add_flag("--harvest-branch-worktrees", *settleHarvestBranchWorktrees, "Allow settle to patch/apply dirty integrated branch worktrees into the target branch");
     repos->add_option("--jobs", *jobs, "Parallel workers for converge status/push stages");
     repos->add_option("--remote", *remote, "Optional remote filter for converge push stage");
     repos->add_option("--target", *settleTarget, "Target branch for worktree settle")->default_str("main");
-    repos->add_option("--harvest-message", *settleHarvestMessage, "Commit message for dirty detached worktree harvest")->default_str(kDetachedHarvestDefaultMessage);
+    repos->add_option("--harvest-message", *settleHarvestMessage, "Commit message for dirty worktree harvest")->default_str(kWorktreeHarvestDefaultMessage);
 
     branchesPlan->add_flag("--no-recursive,-N", *branchesNoRecursive, "Only plan branches for the current repository");
     branchesPlan->add_flag("--json", *branchesJson, "Emit stable machine-readable branch plan JSON");
@@ -4953,9 +5103,11 @@ void RegisterConverge(CLI::App& InApp) {
     branchesRetire->add_flag("--delete-remote", *branchesDeleteRemote, "Delete tracked remote branches after local retirement");
     branchesRetire->add_flag("--prune-worktrees", *branchesPruneWorktrees, "Prune stale Git worktree metadata");
     branchesRetire->add_flag("--harvest-detached-worktrees", *branchesHarvestDetachedWorktrees, "Patch/apply dirty detached ancestor worktrees into the target branch before removal");
+    branchesRetire->add_flag("--harvest-branch-worktrees", *branchesHarvestBranchWorktrees, "Patch/apply dirty integrated branch worktrees into the target branch before removal");
     branchesRetire->add_option("--jobs", *branchesJobs, "Parallel workers for recursive status snapshot loading");
     branchesRetire->add_option("--target", *branchesTarget, "Target integration branch")->default_str("main");
-    branchesRetire->add_option("--harvest-message", *branchesHarvestMessage, "Commit message for dirty detached worktree harvest")->default_str(kDetachedHarvestDefaultMessage);
+    branchesRetire->add_option("--branch", *branchesRetireBranch, "Limit retirement or dirty worktree harvest to one branch");
+    branchesRetire->add_option("--harvest-message", *branchesHarvestMessage, "Commit message for dirty worktree harvest")->default_str(kWorktreeHarvestDefaultMessage);
 
     repos->callback([=]() {
         std::vector<std::string> args{"converge"};
@@ -4974,6 +5126,7 @@ void RegisterConverge(CLI::App& InApp) {
         if (*settleRemoveWorktrees) args.push_back("--remove-worktrees");
         if (*settlePruneWorktrees) args.push_back("--prune-worktrees");
         if (*settleHarvestDetachedWorktrees) args.push_back("--harvest-detached-worktrees");
+        if (*settleHarvestBranchWorktrees) args.push_back("--harvest-branch-worktrees");
         args.push_back("--jobs");
         args.push_back(std::to_string(*jobs));
         if (!remote->empty()) {
@@ -4984,7 +5137,7 @@ void RegisterConverge(CLI::App& InApp) {
             args.push_back("--target");
             args.push_back(Trim(*settleTarget));
         }
-        if (!Trim(*settleHarvestMessage).empty() && Trim(*settleHarvestMessage) != kDetachedHarvestDefaultMessage) {
+        if (!Trim(*settleHarvestMessage).empty() && Trim(*settleHarvestMessage) != kWorktreeHarvestDefaultMessage) {
             args.push_back("--harvest-message");
             args.push_back(Trim(*settleHarvestMessage));
         }
@@ -5057,7 +5210,9 @@ void RegisterConverge(CLI::App& InApp) {
             *branchesDeleteRemote,
             *branchesPruneWorktrees,
             *branchesHarvestDetachedWorktrees,
+            *branchesHarvestBranchWorktrees,
             Trim(*branchesHarvestMessage),
+            Trim(*branchesRetireBranch),
             !*branchesNoSyncTarget,
             *branchesJson);
         std::exit(code);
@@ -5074,7 +5229,8 @@ void RegisterConverge(CLI::App& InApp) {
             *settleWorktrees ||
             *settleRemoveWorktrees ||
             *settlePruneWorktrees ||
-            *settleHarvestDetachedWorktrees;
+            *settleHarvestDetachedWorktrees ||
+            *settleHarvestBranchWorktrees;
         auto phases = kConvergePhases;
         if (worktreeSettleRequested) {
             const auto finalIt = std::find(phases.begin(), phases.end(), "final-status-summary");
@@ -5121,7 +5277,9 @@ void RegisterConverge(CLI::App& InApp) {
                     false,
                     *settlePruneWorktrees,
                     *settleHarvestDetachedWorktrees,
+                    *settleHarvestBranchWorktrees,
                     Trim(*settleHarvestMessage),
+                    std::string{},
                     true,
                     false);
                 if (settleCode != 0) {
@@ -5258,8 +5416,42 @@ void RegisterConverge(CLI::App& InApp) {
 
                 if (phase == "status-preflight-plan") {
                 PrintPlan(snapshot, plan, false);
+                if (worktreeSettleRequested) {
+                    std::string previewCommand = "kog converge branches retire --target " + Trim(*settleTarget);
+                    if (*settleRemoveWorktrees) {
+                        previewCommand += " --remove-worktrees";
+                    }
+                    if (*settleHarvestBranchWorktrees) {
+                        previewCommand += " --harvest-branch-worktrees";
+                    }
+                    if (*settleHarvestDetachedWorktrees) {
+                        previewCommand += " --harvest-detached-worktrees";
+                    }
+                    state.commandLinesUsed[phase].push_back(std::move(previewCommand));
+                    const auto previewCode = RunBranchRetire(
+                        workspaceRoot,
+                        *jobs,
+                        recursive,
+                        Trim(*settleTarget),
+                        false,
+                        *settleRemoveWorktrees,
+                        false,
+                        *settlePruneWorktrees,
+                        *settleHarvestDetachedWorktrees,
+                        *settleHarvestBranchWorktrees,
+                        Trim(*settleHarvestMessage),
+                        std::string{},
+                        false,
+                        false);
+                    if (previewCode != 0) {
+                        summary.blocked.push_back(".");
+                        summary.failureCategory["."] = "WORKTREE_SETTLE_PREFLIGHT_BLOCKED";
+                        summary.failureMessage["."] = "worktree settle preflight found blocked branch/worktree state";
+                        summary.retryEligible["."] = true;
+                    }
+                }
                 summary.skipped = UniqueRepos(plan.skipped);
-                summary.blocked = UniqueRepos(plan.blocked);
+                MergeUnique(summary.blocked, UniqueRepos(plan.blocked));
                 if (!summary.blocked.empty()) {
                     state.blockedReason = "status preflight detected blocked repositories";
                     state.blockedRepos = summary.blocked;
@@ -5436,6 +5628,9 @@ void RegisterConverge(CLI::App& InApp) {
                         if (*settleHarvestDetachedWorktrees) {
                             cmdLine << " --harvest-detached-worktrees";
                         }
+                        if (*settleHarvestBranchWorktrees) {
+                            cmdLine << " --harvest-branch-worktrees";
+                        }
                         state.commandLinesUsed[phase].push_back(cmdLine.str());
                         const auto settleCode = RunBranchRetire(
                             workspaceRoot,
@@ -5447,7 +5642,9 @@ void RegisterConverge(CLI::App& InApp) {
                             false,
                             *settlePruneWorktrees,
                             *settleHarvestDetachedWorktrees,
+                            *settleHarvestBranchWorktrees,
                             Trim(*settleHarvestMessage),
+                            std::string{},
                             true,
                             false);
                         if (settleCode == 0) {

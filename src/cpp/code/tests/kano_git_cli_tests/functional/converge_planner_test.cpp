@@ -371,6 +371,14 @@ TEST_CASE("converge help distinguishes repos and branches taxonomy", "[tdd][func
     RequireContains(branchesApplyText, "cherry-pick");
     RequireContains(branchesApplyText, "--branch");
 
+    const auto branchesRetireHelp = RunKog({"converge", "branches", "retire", "--help"}, sandbox.root);
+    INFO(branchesRetireHelp.stdoutText);
+    INFO(branchesRetireHelp.stderrText);
+    REQUIRE(branchesRetireHelp.exitCode == 0);
+    const auto branchesRetireText = branchesRetireHelp.stdoutText + "\n" + branchesRetireHelp.stderrText;
+    RequireContains(branchesRetireText, "--branch");
+    RequireContains(branchesRetireText, "--harvest-branch-worktrees");
+
     const auto branchesRootHelp = RunKog({"converge", "branches", "--help"}, sandbox.root);
     INFO(branchesRootHelp.stdoutText);
     INFO(branchesRootHelp.stderrText);
@@ -980,6 +988,138 @@ TEST_CASE("converge branches retire removes patch-equivalent branch with clean a
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge branches retire inventories and harvests dirty integrated branch worktree", "[tdd][functional][feature:converge][converge][branches][retire][worktree][harvest][KG-BUG-0051]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-retire-harvest-branch-worktree");
+    const std::string featureBranch = "feature/harvest-branch-worktree";
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout branch-worktree feature branch");
+    WriteTextFile(ctx.cloneRepo / "branch-worktree.txt", "clean branch content\n");
+    RequireSuccess(RunGit({"add", "branch-worktree.txt"}, ctx.cloneRepo), "add branch-worktree feature file");
+    RequireSuccess(RunGit({"commit", "-m", "branch worktree feature"}, ctx.cloneRepo), "commit branch-worktree feature");
+    RequireSuccess(RunGit({"push", "-u", "origin", featureBranch}, ctx.cloneRepo), "push branch-worktree feature");
+
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target before branch-worktree harvest");
+    RequireSuccess(RunGit({"merge", "--ff-only", featureBranch}, ctx.cloneRepo), "merge branch-worktree feature into target");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.cloneRepo), "push target containing branch-worktree feature");
+    const auto worktreePath = (ctx.sandbox.root / "harvest-branch-worktree").lexically_normal();
+    RequireSuccess(RunGit({"worktree", "add", worktreePath.string(), featureBranch}, ctx.cloneRepo), "add integrated branch worktree");
+    WriteTextFile(worktreePath / "branch-worktree.txt", "harvested branch worktree content\n");
+    WriteTextFile(worktreePath / "branch-worktree-new.txt", "harvested untracked content\n");
+
+    const auto inventory = RunKog({"converge", "branches", "inventory", "--target", ctx.branch, "--strategy", "cherry-pick", "--json", "--jobs", "1"}, ctx.cloneRepo);
+    INFO(inventory.stdoutText);
+    INFO(inventory.stderrText);
+    REQUIRE(inventory.exitCode == 0);
+    RequireContains(inventory.stdoutText, "\"dirtyWorktreeCount\": 1");
+    RequireContains(inventory.stdoutText, "\"clean\": false");
+    RequireContains(inventory.stdoutText, "branch-worktree-new.txt");
+    RequireContains(inventory.stdoutText, "DIRTY_WORKTREE_LEASE");
+    RequireContains(inventory.stdoutText, "--branch " + featureBranch + " --remove-worktrees --harvest-branch-worktrees --confirm");
+    RequireNotContains(inventory.stdoutText, "\"name\": \"origin\"");
+
+    const auto result = RunKog({
+        "converge", "branches", "retire",
+        "--target", ctx.branch,
+        "--branch", featureBranch,
+        "--remove-worktrees",
+        "--harvest-branch-worktrees",
+        "--harvest-message", "[Converge][Test] Harvest dirty branch worktree (KG-BUG-0051)",
+        "--confirm",
+        "--json",
+        "--jobs", "1",
+    }, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContains(result.stdoutText, "\"action\": \"harvest-branch-worktree\"");
+    RequireContains(result.stdoutText, "\"integrationProof\": \"merged\"");
+    RequireContains(result.stdoutText, "branch-worktree-new.txt");
+    REQUIRE(!std::filesystem::exists(worktreePath));
+    REQUIRE(RunGit({"show-ref", "--verify", "--quiet", "refs/heads/" + featureBranch}, ctx.cloneRepo).exitCode != 0);
+    RequireContains(ReadTextFile(ctx.cloneRepo / "branch-worktree.txt"), "harvested branch worktree content");
+    RequireContains(ReadTextFile(ctx.cloneRepo / "branch-worktree-new.txt"), "harvested untracked content");
+    REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
+
+    const auto head = RunGit({"rev-parse", "HEAD"}, ctx.cloneRepo);
+    const auto origin = RunGit({"rev-parse", "origin/" + ctx.branch}, ctx.cloneRepo);
+    RequireSuccess(head, "branch harvest rev-parse HEAD");
+    RequireSuccess(origin, "branch harvest rev-parse origin");
+    REQUIRE(head.stdoutText == origin.stdoutText);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge branch inventory blocks overlapping dirty worktree paths", "[tdd][functional][feature:converge][converge][branches][worktree][harvest][blockers][KG-BUG-0051]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-dirty-worktree-overlap");
+    const std::string firstBranch = "feature/dirty-overlap-first";
+    RequireSuccess(RunGit({"checkout", "-b", firstBranch}, ctx.cloneRepo), "checkout first overlap branch");
+    WriteTextFile(ctx.cloneRepo / "first.txt", "first branch\n");
+    RequireSuccess(RunGit({"add", "first.txt"}, ctx.cloneRepo), "add first overlap branch file");
+    RequireSuccess(RunGit({"commit", "-m", "first overlap branch"}, ctx.cloneRepo), "commit first overlap branch");
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target after first overlap branch");
+    RequireSuccess(RunGit({"merge", "--ff-only", firstBranch}, ctx.cloneRepo), "merge first overlap branch");
+
+    const std::string secondBranch = "feature/dirty-overlap-second";
+    RequireSuccess(RunGit({"checkout", "-b", secondBranch}, ctx.cloneRepo), "checkout second overlap branch");
+    WriteTextFile(ctx.cloneRepo / "second.txt", "second branch\n");
+    RequireSuccess(RunGit({"add", "second.txt"}, ctx.cloneRepo), "add second overlap branch file");
+    RequireSuccess(RunGit({"commit", "-m", "second overlap branch"}, ctx.cloneRepo), "commit second overlap branch");
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target after second overlap branch");
+    RequireSuccess(RunGit({"merge", "--ff-only", secondBranch}, ctx.cloneRepo), "merge second overlap branch");
+
+    const auto firstWorktree = (ctx.sandbox.root / "dirty-overlap-first").lexically_normal();
+    const auto secondWorktree = (ctx.sandbox.root / "dirty-overlap-second").lexically_normal();
+    RequireSuccess(RunGit({"worktree", "add", firstWorktree.string(), firstBranch}, ctx.cloneRepo), "add first overlap worktree");
+    RequireSuccess(RunGit({"worktree", "add", secondWorktree.string(), secondBranch}, ctx.cloneRepo), "add second overlap worktree");
+    WriteTextFile(firstWorktree / "README.md", "first dirty overlap\n");
+    WriteTextFile(secondWorktree / "README.md", "second dirty overlap\n");
+
+    const auto inventory = RunKog({"converge", "branches", "inventory", "--target", ctx.branch, "--strategy", "cherry-pick", "--json", "--jobs", "1"}, ctx.cloneRepo);
+    INFO(inventory.stdoutText);
+    INFO(inventory.stderrText);
+    REQUIRE(inventory.exitCode == 0);
+    RequireContains(inventory.stdoutText, "DIRTY_WORKTREE_OVERLAP");
+    RequireContains(inventory.stdoutText, "\"dirtyWorktreeOverlapPaths\": [");
+    RequireContains(inventory.stdoutText, "\"README.md\"");
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge branches retire blocks dirty unproven branch worktree", "[tdd][functional][feature:converge][converge][branches][retire][worktree][harvest][blockers][KG-BUG-0051]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-dirty-unproven-worktree");
+    const std::string featureBranch = "feature/dirty-unproven-worktree";
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout dirty unproven branch");
+    WriteTextFile(ctx.cloneRepo / "dirty-unproven.txt", "committed feature content\n");
+    RequireSuccess(RunGit({"add", "dirty-unproven.txt"}, ctx.cloneRepo), "add dirty unproven feature file");
+    RequireSuccess(RunGit({"commit", "-m", "dirty unproven feature"}, ctx.cloneRepo), "commit dirty unproven feature");
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target before dirty unproven worktree");
+    const auto worktreePath = (ctx.sandbox.root / "dirty-unproven-worktree").lexically_normal();
+    RequireSuccess(RunGit({"worktree", "add", worktreePath.string(), featureBranch}, ctx.cloneRepo), "add dirty unproven branch worktree");
+    WriteTextFile(worktreePath / "dirty-unproven.txt", "uncommitted dirty content\n");
+
+    const auto result = RunKog({
+        "converge", "branches", "retire",
+        "--target", ctx.branch,
+        "--branch", featureBranch,
+        "--remove-worktrees",
+        "--harvest-branch-worktrees",
+        "--confirm",
+        "--json",
+        "--jobs", "1",
+    }, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 1);
+    RequireContains(result.stdoutText, "DIRTY_BRANCH_WORKTREE_NOT_INTEGRATED");
+    RequireContains(result.stdoutText, "dirty-unproven.txt");
+    RequireContains(result.stdoutText, "converge branches apply --target " + ctx.branch + " --strategy cherry-pick --branch " + featureBranch + " --confirm");
+    REQUIRE(std::filesystem::exists(worktreePath));
+    RequireContains(ReadTextFile(worktreePath / "dirty-unproven.txt"), "uncommitted dirty content");
+    REQUIRE(RunGit({"show-ref", "--verify", "--quiet", "refs/heads/" + featureBranch}, ctx.cloneRepo).exitCode == 0);
+    REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("converge branches retire removes merged detached worktree after confirmation", "[tdd][functional][feature:converge][converge][branches][retire][worktree]") {
     const auto ctx = CreateRemoteWithClone("converge-branches-retire-detached-worktree");
     const std::string featureBranch = "feature/retire-detached-worktree";
@@ -1204,6 +1344,43 @@ TEST_CASE("converge runtime settle removes clean detached worktree", "[tdd][func
     RequireContains(result.stdoutText, "[converge] phase=settle-worktrees");
     RequireContains(result.stdoutText, "[converge] completed");
     REQUIRE(!std::filesystem::exists(worktreePath));
+    REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge runtime preflights and harvests dirty integrated branch worktree", "[tdd][functional][feature:converge][converge][branches][retire][worktree][settle][KG-BUG-0051]") {
+    const auto ctx = CreateRemoteWithClone("converge-runtime-settle-dirty-branch-worktree");
+    const std::string featureBranch = "feature/runtime-settle-dirty-branch-worktree";
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout runtime dirty branch-worktree feature");
+    WriteTextFile(ctx.cloneRepo / "runtime-dirty-branch-worktree.txt", "clean runtime feature\n");
+    RequireSuccess(RunGit({"add", "runtime-dirty-branch-worktree.txt"}, ctx.cloneRepo), "add runtime dirty branch-worktree feature");
+    RequireSuccess(RunGit({"commit", "-m", "runtime dirty branch worktree feature"}, ctx.cloneRepo), "commit runtime dirty branch-worktree feature");
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target before runtime dirty settle");
+    RequireSuccess(RunGit({"merge", "--ff-only", featureBranch}, ctx.cloneRepo), "merge runtime dirty branch-worktree feature");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.cloneRepo), "push runtime dirty settle target");
+    const auto worktreePath = (ctx.sandbox.root / "runtime-settle-dirty-branch-worktree").lexically_normal();
+    RequireSuccess(RunGit({"worktree", "add", worktreePath.string(), featureBranch}, ctx.cloneRepo), "add runtime dirty branch worktree");
+    WriteTextFile(worktreePath / "runtime-dirty-branch-worktree.txt", "harvested runtime content\n");
+
+    const auto result = RunKog({
+        "converge",
+        "--settle-worktrees",
+        "--remove-worktrees",
+        "--harvest-branch-worktrees",
+        "--harvest-message", "[Converge][Test] Runtime harvest dirty branch worktree (KG-BUG-0051)",
+        "--target", ctx.branch,
+        "--jobs", "1",
+    }, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContains(result.stdoutText, "action=harvest-and-retire");
+    RequireContains(result.stdoutText, "[converge] phase=settle-worktrees");
+    RequireContains(result.stdoutText, "[converge] completed");
+    REQUIRE(!std::filesystem::exists(worktreePath));
+    REQUIRE(RunGit({"show-ref", "--verify", "--quiet", "refs/heads/" + featureBranch}, ctx.cloneRepo).exitCode != 0);
+    RequireContains(ReadTextFile(ctx.cloneRepo / "runtime-dirty-branch-worktree.txt"), "harvested runtime content");
     REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
 
     RemoveSandboxWorkspace(ctx.sandbox);

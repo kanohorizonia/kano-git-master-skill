@@ -262,6 +262,14 @@ detached worktrees whose HEAD is proven integrated into the target, applies the
 exact binary patch to the target, commits and pushes it, then removes the
 detached worktree. Dirty detached non-ancestor worktrees, primary worktrees, and
 unsafe dirty targets remain blockers.
+`--harvest-branch-worktrees` applies the same guarded binary-patch flow to dirty
+attached worktrees only when their branch HEAD is proven integrated. Inventory
+and settle preflight report each worktree's changed paths plus a branch-scoped
+recovery command. `--branch <name>` limits retire/harvest to one branch. Dirty
+paths shared by multiple worktrees are blocked as `DIRTY_WORKTREE_OVERLAP` and
+must be resolved before mutation. Dirty worktrees on branches that are not yet
+proven integrated remain blocked as `DIRTY_BRANCH_WORKTREE_NOT_INTEGRATED` with
+their changed paths and the branch integration command.
 Top-level `kog converge --settle-worktrees` inserts this guarded retire/prune
 step before the final status summary when explicitly requested; ordinary
 `kog converge` keeps the default phase list unchanged.
@@ -271,8 +279,9 @@ step before the final status summary when explicitly requested; ordinary
 ./scripts/kog converge branches apply --target main --strategy cherry-pick --branch feature/example --confirm --json
 ./scripts/kog converge branches retire --target main --remove-worktrees --confirm --json
 ./scripts/kog converge branches retire --target main --remove-worktrees --delete-remote --confirm --json
+./scripts/kog converge branches retire --target main --branch feature/example --remove-worktrees --harvest-branch-worktrees --confirm --json
 ./scripts/kog converge branches retire --target main --remove-worktrees --harvest-detached-worktrees --prune-worktrees --confirm --json
-./scripts/kog converge --settle-worktrees --target main --remove-worktrees --harvest-detached-worktrees --prune-worktrees
+./scripts/kog converge --settle-worktrees --target main --remove-worktrees --harvest-branch-worktrees --harvest-detached-worktrees --prune-worktrees
 ```
 
 Dry-run summaries are audit-first and must not be treated as clean when blockers exist.
