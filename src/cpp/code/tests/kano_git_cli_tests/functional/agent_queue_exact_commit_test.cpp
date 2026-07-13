@@ -124,6 +124,55 @@ TEST_CASE("exact-path dry-run reports included and excluded paths without mutati
     RemoveSandboxWorkspace(sandbox);
 }
 
+TEST_CASE("exact-path accepts tracked gitlinks without broadening directory selectors",
+          "[functional][KG-BUG-0049][exact-path][gitlink]") {
+    auto [sandbox, repo] = InitRepo("exact-path-gitlink", {"excluded.txt", "ordinary/file.txt"});
+    const auto childSource = sandbox.root / "child-source";
+    std::filesystem::create_directories(childSource);
+    RequireSuccess(RunGit({"init", "-q"}, childSource), "init child source");
+    RequireSuccess(RunGit({"config", "user.name", "KOG Test"}, childSource), "config child user.name");
+    RequireSuccess(RunGit({"config", "user.email", "kog-test@example.invalid"}, childSource), "config child user.email");
+    WriteText(childSource / "child.txt", "seed child\n");
+    RequireSuccess(RunGit({"add", "child.txt"}, childSource), "stage child seed");
+    RequireSuccess(RunGit({"commit", "-m", "seed child"}, childSource), "commit child seed");
+    RequireSuccess(RunGit({
+        "-c", "protocol.file.allow=always", "submodule", "add", childSource.generic_string(), "vendor",
+    }, repo), "add tracked gitlink");
+    RequireSuccess(RunGit({"commit", "-am", "add tracked gitlink"}, repo), "commit tracked gitlink baseline");
+
+    const auto ordinaryResult = RunKog({
+        "commit", "--exact-path", "ordinary", "-m", "ordinary directory",
+    }, repo);
+    REQUIRE(ordinaryResult.exitCode != 0);
+    RequireContains(ordinaryResult.stderrText, "invalid_exact_path");
+
+    const auto child = repo / "vendor";
+    RequireSuccess(RunGit({"config", "user.name", "KOG Test"}, child), "config cloned child user.name");
+    RequireSuccess(RunGit({"config", "user.email", "kog-test@example.invalid"}, child), "config cloned child user.email");
+    WriteText(child / "child.txt", "advanced child\n");
+    RequireSuccess(RunGit({"add", "child.txt"}, child), "stage child advance");
+    RequireSuccess(RunGit({"commit", "-m", "advance child"}, child), "commit child advance");
+    WriteText(repo / "excluded.txt", "unrelated change\n");
+
+    auto result = RunKog({
+        "commit", "--exact-path", "vendor", "-m", "[Test][Chore] exact gitlink", "--dry-run",
+    }, repo);
+    RequireSuccess(result, "exact-path gitlink dry-run");
+    RequireContains(result.stdoutText, "\"status\": \"preview\"");
+    RequireContains(result.stdoutText, "vendor");
+
+    result = RunKog({
+        "commit", "--exact-path", "vendor", "-m", "[Test][Chore] exact gitlink",
+    }, repo);
+    RequireSuccess(result, "exact-path gitlink commit");
+    RequireContains(result.stdoutText, "\"status\": \"committed\"");
+    const auto committed = GitOutput(repo, {"diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"});
+    RequireContains(committed, "vendor");
+    REQUIRE(committed.find("excluded.txt") == std::string::npos);
+    RequireContains(GitOutput(repo, {"status", "--short"}), " M excluded.txt");
+    RemoveSandboxWorkspace(sandbox);
+}
+
 TEST_CASE("exact-path rejects outside overlap stale head and index lock without deleting the lock",
           "[functional][KG-TSK-0112][guards]") {
     auto [sandbox, repo] = InitRepo("exact-path-guards", {"dir/file.txt", "selected.txt"});

@@ -325,9 +325,9 @@ auto NormalizeExactPath(const std::filesystem::path& InRepo,
 }
 
 auto NormalizePaths(const std::filesystem::path& InRepo,
-                    const std::vector<std::string>& InPaths,
-                    const bool InRequireFile,
-                    std::string* OutError) -> std::optional<std::vector<std::string>> {
+                     const std::vector<std::string>& InPaths,
+                     const bool InRequireFile,
+                     std::string* OutError) -> std::optional<std::vector<std::string>> {
     std::vector<std::string> normalized;
     normalized.reserve(InPaths.size());
     for (const auto& input : InPaths) {
@@ -355,10 +355,26 @@ auto NormalizePaths(const std::filesystem::path& InRepo,
     for (const auto& path : normalized) {
         std::error_code ec;
         if (std::filesystem::is_directory(InRepo / path, ec)) {
-            if (OutError != nullptr) {
-                *OutError = "exact-path selectors must identify files, not directories: " + path;
+            const auto tracked = GitCapture(InRepo, {"-c", "core.quotepath=false", "ls-files", "--stage", "--", path});
+            bool isTrackedGitlink = false;
+            if (tracked.exitCode == 0) {
+                std::istringstream records(tracked.stdoutStr);
+                std::string record;
+                while (std::getline(records, record)) {
+                    const auto separator = record.find('\t');
+                    if (separator != std::string::npos && record.starts_with("160000 ") &&
+                        record.substr(separator + 1) == path) {
+                        isTrackedGitlink = true;
+                        break;
+                    }
+                }
             }
-            return std::nullopt;
+            if (!isTrackedGitlink) {
+                if (OutError != nullptr) {
+                    *OutError = "exact-path selectors must identify files or tracked gitlinks, not directories: " + path;
+                }
+                return std::nullopt;
+            }
         }
         if (!std::filesystem::exists(InRepo / path, ec)) {
             const auto tracked = GitCapture(InRepo, {"ls-files", "--error-unmatch", "--", path});
