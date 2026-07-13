@@ -4093,25 +4093,26 @@ int RunBranchApply(const std::filesystem::path& root,
                         AppendBranchAction(result, "skipped", repoId, branch, "already-equivalent", "branch commits are already patch-equivalent to target");
                         continue;
                     }
-                    bool cherryPickSucceeded = true;
-                    int appliedCherryPickCommits = 0;
-                    for (const auto& commit : commits) {
-                        const auto cherryPick = GitCapture(repoPath, {"cherry-pick", commit});
-                        if (cherryPick.exitCode != 0) {
-                            if (IsEmptyCherryPickError(cherryPick)) {
-                                std::string skipError;
-                                if (!SkipEmptyCherryPick(repoPath, skipError)) {
-                                    AppendBranchBlocked(result, repoId, branch, {"CHERRY_PICK_SKIP_FAILED"}, skipError);
-                                    cherryPickSucceeded = false;
-                                    break;
-                                }
-                                continue;
-                            }
-                            AppendBranchBlocked(result, repoId, branch, {"CHERRY_PICK_CONFLICT"}, CombinedGitError(cherryPick));
-                            cherryPickSucceeded = false;
-                            break;
+                    const auto targetHeadBefore = GitCapture(repoPath, {"rev-parse", "--verify", targetBranch + "^{commit}"});
+                    std::vector<std::string> cherryPickArgs{"cherry-pick"};
+                    cherryPickArgs.insert(cherryPickArgs.end(), commits.begin(), commits.end());
+                    const auto cherryPick = GitCapture(repoPath, cherryPickArgs);
+                    bool cherryPickSucceeded = cherryPick.exitCode == 0;
+                    if (!cherryPickSucceeded && IsEmptyCherryPickError(cherryPick)) {
+                        std::string skipError;
+                        if (SkipEmptyCherryPick(repoPath, skipError)) {
+                            cherryPickSucceeded = true;
+                        } else {
+                            AppendBranchBlocked(result, repoId, branch, {"CHERRY_PICK_SKIP_FAILED"}, skipError);
                         }
-                        ++appliedCherryPickCommits;
+                    } else if (!cherryPickSucceeded) {
+                        AppendBranchBlocked(result, repoId, branch, {"CHERRY_PICK_CONFLICT"}, CombinedGitError(cherryPick));
+                    }
+                    const auto targetHeadAfter = GitCapture(repoPath, {"rev-parse", "--verify", targetBranch + "^{commit}"});
+                    const bool targetAdvanced = targetHeadBefore.exitCode == 0 && targetHeadAfter.exitCode == 0 &&
+                                                Trim(targetHeadBefore.stdoutStr) != Trim(targetHeadAfter.stdoutStr);
+                    const int appliedCherryPickCommits = targetAdvanced ? static_cast<int>(commits.size()) : 0;
+                    if (targetAdvanced) {
                         result["mutationPerformed"] = true;
                     }
                     if (!cherryPickSucceeded) {

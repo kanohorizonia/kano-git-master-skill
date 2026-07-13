@@ -690,6 +690,48 @@ TEST_CASE("converge branches apply reports cherry-pick conflicts without auto re
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge branches apply preserves remaining commits after an early cherry-pick conflict", "[tdd][functional][feature:converge][converge][branches][apply][cherry-pick][conflict][KG-BUG-0040]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-apply-cherry-pick-conflict-sequence");
+    WriteTextFile(ctx.cloneRepo / "conflict-sequence.txt", "base\n");
+    RequireSuccess(RunGit({"add", "conflict-sequence.txt"}, ctx.cloneRepo), "add sequenced conflict base");
+    RequireSuccess(RunGit({"commit", "-m", "add sequenced conflict base"}, ctx.cloneRepo), "commit sequenced conflict base");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.cloneRepo), "push sequenced conflict base");
+
+    const std::string featureBranch = "feature/cherry-pick-conflict-sequence";
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout sequenced conflict feature branch");
+    WriteTextFile(ctx.cloneRepo / "conflict-sequence.txt", "feature\n");
+    RequireSuccess(RunGit({"commit", "-am", "feature sequenced conflict change"}, ctx.cloneRepo), "commit first sequenced feature change");
+    WriteTextFile(ctx.cloneRepo / "sequence-second.txt", "second\n");
+    RequireSuccess(RunGit({"add", "sequence-second.txt"}, ctx.cloneRepo), "add second sequenced feature file");
+    RequireSuccess(RunGit({"commit", "-m", "second sequenced feature change"}, ctx.cloneRepo), "commit second sequenced feature change");
+    WriteTextFile(ctx.cloneRepo / "sequence-third.txt", "third\n");
+    RequireSuccess(RunGit({"add", "sequence-third.txt"}, ctx.cloneRepo), "add third sequenced feature file");
+    RequireSuccess(RunGit({"commit", "-m", "third sequenced feature change"}, ctx.cloneRepo), "commit third sequenced feature change");
+    RequireSuccess(RunGit({"push", "-u", "origin", featureBranch}, ctx.cloneRepo), "push sequenced conflict feature branch");
+
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target before sequenced conflict apply");
+    WriteTextFile(ctx.cloneRepo / "conflict-sequence.txt", "target\n");
+    RequireSuccess(RunGit({"commit", "-am", "target sequenced conflict change"}, ctx.cloneRepo), "commit target sequenced conflict change");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.cloneRepo), "push target sequenced conflict change");
+
+    const auto result = RunKog({"converge", "branches", "apply", "--target", ctx.branch, "--strategy", "cherry-pick", "--branch", featureBranch, "--confirm", "--json", "--jobs", "1"}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 1);
+    RequireContains(result.stdoutText, "CHERRY_PICK_CONFLICT");
+    REQUIRE_FALSE(std::filesystem::exists(ctx.cloneRepo / "sequence-second.txt"));
+    REQUIRE_FALSE(std::filesystem::exists(ctx.cloneRepo / "sequence-third.txt"));
+
+    WriteTextFile(ctx.cloneRepo / "conflict-sequence.txt", "resolved\n");
+    RequireSuccess(RunGit({"add", "conflict-sequence.txt"}, ctx.cloneRepo), "stage sequenced conflict resolution");
+    RequireSuccess(RunGit({"cherry-pick", "--continue"}, ctx.cloneRepo), "continue complete native cherry-pick sequence");
+    REQUIRE(TrimCopy(ReadTextFile(ctx.cloneRepo / "sequence-second.txt")) == "second");
+    REQUIRE(TrimCopy(ReadTextFile(ctx.cloneRepo / "sequence-third.txt")) == "third");
+    REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("converge branches retire removes merged branch and clean git worktree after confirmation", "[tdd][functional][feature:converge][converge][branches][retire]") {
     const auto ctx = CreateRemoteWithClone("converge-branches-retire");
     const std::string featureBranch = "feature/retire-merged";
