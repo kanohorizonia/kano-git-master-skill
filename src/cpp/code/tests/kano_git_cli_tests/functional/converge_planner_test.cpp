@@ -1485,6 +1485,57 @@ TEST_CASE("converge branches planner emits clean agent JSON without command log 
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge branches planner skips mutating cherry-pick no-op probes", "[functional][converge][branches][planner][cherry-pick][KG-BUG-0006]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-plan-skips-noop-probe");
+    const std::string featureBranch = "feature/plan-empty-noop";
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout planner no-op feature branch");
+    RequireSuccess(RunGit({"commit", "--allow-empty", "-m", "empty planner feature"}, ctx.cloneRepo), "commit planner no-op feature");
+    RequireSuccess(RunGit({"push", "-u", "origin", featureBranch}, ctx.cloneRepo), "push planner no-op feature");
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to planner target branch");
+
+    const auto result = RunKog(
+        {"converge", "branches", "plan", "--target", ctx.branch, "--strategy", "cherry-pick", "--json", "--jobs", "1", "--no-recursive"},
+        ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContains(result.stdoutText, "\"cherryPickNoopProofEnabled\": false");
+    RequireContains(result.stdoutText, "\"patchEquivalentProofEnabled\": false");
+    RequireContains(result.stdoutText, "\"cherryPickNoopProbePerformed\": false");
+    RequireContains(result.stdoutText, "would plan cherry-pick integration onto " + ctx.branch);
+    REQUIRE_FALSE(std::filesystem::exists(ConvergeStatePath(ctx.cloneRepo)));
+    REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge branches planner returns structured status snapshot timeout JSON", "[functional][converge][branches][planner][timeout][agent-mode][KG-BUG-0006]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("converge-branches-plan-status-timeout");
+
+    const auto result = RunKogWithEnv(
+        {"converge", "branches", "plan", "--target", ctx.branch, "--strategy", "cherry-pick", "--jobs", "1"},
+        ctx.cloneRootRepo,
+        {
+            {"KANO_AGENT_MODE", "1"},
+            {"KOG_BRANCH_STATUS_TIMEOUT_MS", "1"},
+        });
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 1);
+    RequireContains(result.stdoutText, "\"schemaName\": \"kog.convergeBranchesPlan\"");
+    RequireContains(result.stdoutText, "\"planningFailed\": true");
+    RequireContains(result.stdoutText, "BRANCH_STATUS_SNAPSHOT_TIMEOUT");
+    RequireContains(result.stdoutText, "command_timeout_override");
+    RequireNotContains(result.stdoutText, "[run]");
+    REQUIRE_FALSE(std::filesystem::exists(ConvergeStatePath(ctx.cloneRootRepo)));
+
+    const auto status = RunKog({"converge", "--status"}, ctx.cloneRootRepo);
+    RequireSuccess(status, "inspect converge state after branch planner timeout");
+    RequireContains(status.stdoutText, "converge state: none");
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("converge planner dry-run prints deterministic executable plan", "[tdd][unit][feature:converge-state][feature:dirty-kind][functional][converge][planner]") {
     const auto ctx = CreateRemoteWithClone("converge-planner-plan");
     const auto beforeStatus = GitStatusShort(ctx.cloneRepo);

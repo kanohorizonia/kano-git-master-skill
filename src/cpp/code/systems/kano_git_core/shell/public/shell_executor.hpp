@@ -68,7 +68,8 @@ auto ExecuteCommand(
     const std::vector<std::string>& InArgs,
     ExecMode InMode,
     std::optional<std::filesystem::path> InWorkingDir,
-    ProgressCallback InProgressCallback
+    ProgressCallback InProgressCallback,
+    std::optional<unsigned int> InTimeoutOverrideMs = std::nullopt
 ) -> ExecResult;
 
 }

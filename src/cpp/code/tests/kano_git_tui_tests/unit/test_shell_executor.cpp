@@ -73,6 +73,28 @@ TEST_CASE("ShellExecutor capture timeout terminates process with code 124", "[Un
 #endif
 }
 
+TEST_CASE("ShellExecutor explicit timeout overrides the ambient capture timeout", "[Unit][shell-executor][timeout][KG-BUG-0006][windows]") {
+#if defined(_WIN32)
+    SetEnvVarForTest("KOG_SHELL_TIMEOUT_MS", "");
+    SetEnvVarForTest("KOG_SHELL_CAPTURE_TIMEOUT_MS", "5000");
+
+    const auto result = ExecuteCommand(
+        "cmd",
+        {"/c", "powershell -NoProfile -Command \"Start-Sleep -Seconds 2; Write-Output DONE\""},
+        ExecMode::Capture,
+        std::nullopt,
+        ProgressCallback{},
+        50);
+
+    REQUIRE(result.exitCode == 124);
+    REQUIRE(result.stderrStr.find("source=command_timeout_override") != std::string::npos);
+    REQUIRE(result.stderrStr.find("configured_timeout_ms=50") != std::string::npos);
+    SetEnvVarForTest("KOG_SHELL_CAPTURE_TIMEOUT_MS", "0");
+#else
+    SUCCEED("Windows-specific explicit timeout test skipped on non-Windows platform");
+#endif
+}
+
 TEST_CASE("ShellExecutor gives git commit a dedicated bounded timeout", "[Unit][shell-executor][timeout][KG-BUG-0048][windows]") {
 #if defined(_WIN32)
     namespace fs = std::filesystem;

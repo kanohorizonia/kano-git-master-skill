@@ -1333,7 +1333,8 @@ auto ExecuteCommand(
     const std::vector<std::string>& InArgs,
     ExecMode InMode,
     std::optional<std::filesystem::path> InWorkingDir,
-    ProgressCallback InProgressCallback
+    ProgressCallback InProgressCallback,
+    std::optional<unsigned int> InTimeoutOverrideMs
 ) -> ExecResult
 {
     const auto nonInteractiveArgs = WithGitNonInteractiveDefaults(InCommand, InArgs);
@@ -1437,8 +1438,13 @@ auto ExecuteCommand(
 
 #ifdef KOG_PLATFORM_WINDOWS
     const auto effectiveCommand = NormalizeWindowsExecutable(InCommand);
-    const auto timeoutMs = ResolveTimeoutMs(effectiveCommand, effectiveArgs, InMode);
-    const auto timeoutSource = TimeoutSourceLabel(effectiveCommand, effectiveArgs, InMode, timeoutMs);
+    const auto explicitTimeoutMs = NormalizeTimeoutOverride(InTimeoutOverrideMs);
+    const auto timeoutMs = explicitTimeoutMs.has_value()
+        ? explicitTimeoutMs
+        : ResolveTimeoutMs(effectiveCommand, effectiveArgs, InMode);
+    const auto timeoutSource = explicitTimeoutMs.has_value()
+        ? std::string{"command_timeout_override"}
+        : TimeoutSourceLabel(effectiveCommand, effectiveArgs, InMode, timeoutMs);
     const auto commandFamily = CommandFamilyLabel(effectiveCommand, effectiveArgs);
     const auto safeNextAction = SafeNextActionForTimeout(effectiveCommand, effectiveArgs);
     ExecResult result;
@@ -1488,8 +1494,13 @@ auto ExecuteCommand(
     }
     return result;
 #else
-    const auto timeoutMs = ResolveTimeoutMs(InCommand, effectiveArgs, InMode);
-    const auto timeoutSource = TimeoutSourceLabel(InCommand, effectiveArgs, InMode, timeoutMs);
+    const auto explicitTimeoutMs = NormalizeTimeoutOverride(InTimeoutOverrideMs);
+    const auto timeoutMs = explicitTimeoutMs.has_value()
+        ? explicitTimeoutMs
+        : ResolveTimeoutMs(InCommand, effectiveArgs, InMode);
+    const auto timeoutSource = explicitTimeoutMs.has_value()
+        ? std::string{"command_timeout_override"}
+        : TimeoutSourceLabel(InCommand, effectiveArgs, InMode, timeoutMs);
     const auto commandFamily = CommandFamilyLabel(InCommand, effectiveArgs);
     const auto safeNextAction = SafeNextActionForTimeout(InCommand, effectiveArgs);
     auto result = RunProcessUnix(InCommand, effectiveArgs, InMode, timeoutMs, InWorkingDir, InProgressCallback);

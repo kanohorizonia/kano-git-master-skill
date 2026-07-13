@@ -498,7 +498,10 @@ Snapshot ParseSnapshot(const std::string& jsonText) {
     return snapshot;
 }
 
-Snapshot LoadSnapshot(const std::filesystem::path& root, int jobs, bool unregisteredScan) {
+Snapshot LoadSnapshot(const std::filesystem::path& root,
+                      int jobs,
+                      bool unregisteredScan,
+                      std::optional<unsigned int> timeoutOverrideMs = std::nullopt) {
     std::vector<std::string> args{"status", "--recursive", "--format", "json", "--repo-root", root.generic_string(), "--jobs", std::to_string(std::max(1, jobs))};
     args.push_back("--no-fetch-health");
     if (!unregisteredScan) {
@@ -508,7 +511,8 @@ Snapshot LoadSnapshot(const std::filesystem::path& root, int jobs, bool unregist
         args.push_back("--unregistered-depth");
         args.push_back("3");
     }
-    const auto result = shell::ExecuteCommand(SelfBinaryPath(), args, shell::ExecMode::Capture, root);
+    const auto result = shell::ExecuteCommand(
+        SelfBinaryPath(), args, shell::ExecMode::Capture, root, shell::ProgressCallback{}, timeoutOverrideMs);
     if (result.exitCode != 0) throw std::runtime_error("failed to read recursive status snapshot via kog status: " + Trim(result.stderrStr));
     const auto start = result.stdoutStr.find("{\"schemaName\":\"kog.recursiveStatusSnapshot\"");
     const auto end = result.stdoutStr.rfind('}');
@@ -655,13 +659,14 @@ Snapshot LoadConvergeSnapshot(const std::filesystem::path& root,
                               int jobs,
                               bool unregisteredScan,
                               bool recursive,
-                              bool ensureRegisteredWorktreeExcludes = false) {
+                              bool ensureRegisteredWorktreeExcludes = false,
+                              std::optional<unsigned int> timeoutOverrideMs = std::nullopt) {
     if (!recursive) {
         return LoadCurrentRepoSnapshot(root);
     }
-    auto snapshot = LoadSnapshot(root, jobs, unregisteredScan);
+    auto snapshot = LoadSnapshot(root, jobs, unregisteredScan, timeoutOverrideMs);
     if (ensureRegisteredWorktreeExcludes && EnsureRegisteredLinkedWorktreeExcludes(snapshot)) {
-        snapshot = LoadSnapshot(root, jobs, unregisteredScan);
+        snapshot = LoadSnapshot(root, jobs, unregisteredScan, timeoutOverrideMs);
     }
     return std::move(snapshot);
 }
@@ -1047,6 +1052,27 @@ std::optional<unsigned int> ResolveConvergeSyncTimeoutMs() {
         return explicitMs;
     }
     return static_cast<unsigned int>(120 * 1000);
+}
+
+unsigned int ResolveBranchStatusTimeoutMs() {
+    if (const auto explicitMs = ParsePositiveEnvMs(std::getenv("KOG_BRANCH_STATUS_TIMEOUT_MS")); explicitMs.has_value()) {
+        return *explicitMs;
+    }
+    return 90 * 1000;
+}
+
+unsigned int ResolveBranchPlanDeadlineMs() {
+    if (const auto explicitMs = ParsePositiveEnvMs(std::getenv("KOG_BRANCH_PLAN_DEADLINE_MS")); explicitMs.has_value()) {
+        return *explicitMs;
+    }
+    return 90 * 1000;
+}
+
+unsigned int ResolveBranchProbeTimeoutMs() {
+    if (const auto explicitMs = ParsePositiveEnvMs(std::getenv("KOG_BRANCH_PROBE_TIMEOUT_MS")); explicitMs.has_value()) {
+        return *explicitMs;
+    }
+    return 5 * 1000;
 }
 
 std::string SnapshotFingerprint(const Snapshot& snapshot) {
@@ -2595,8 +2621,107 @@ int RunDryRunPlanner(const std::filesystem::path& root, int jobs, bool unregiste
     }
 }
 
+struct BranchPlanTimeoutDiagnostic {
+    std::string code;
+    std::string operation;
+    std::string message;
+    unsigned int timeoutMs = 0;
+};
+
+struct BranchPlanExecutionContext {
+    std::chrono::steady_clock::time_point deadline;
+    unsigned int deadlineMs = 0;
+    unsigned int probeTimeoutMs = 0;
+    bool allowPatchEquivalentProof = true;
+    bool repoTimedOut = false;
+    std::vector<BranchPlanTimeoutDiagnostic> repoDiagnostics;
+};
+
+thread_local BranchPlanExecutionContext* g_branchPlanExecutionContext = nullptr;
+
+class ScopedBranchPlanExecutionContext {
+  public:
+    explicit ScopedBranchPlanExecutionContext(BranchPlanExecutionContext& context)
+        : previous_(g_branchPlanExecutionContext) {
+        g_branchPlanExecutionContext = &context;
+    }
+
+    ~ScopedBranchPlanExecutionContext() {
+        g_branchPlanExecutionContext = previous_;
+    }
+
+    ScopedBranchPlanExecutionContext(const ScopedBranchPlanExecutionContext&) = delete;
+    ScopedBranchPlanExecutionContext& operator=(const ScopedBranchPlanExecutionContext&) = delete;
+
+  private:
+    BranchPlanExecutionContext* previous_ = nullptr;
+};
+
+bool GitCaptureTimedOut(const shell::ExecResult& result) {
+    return result.exitCode == 124 || result.stderrStr.find("[kog-timeout]") != std::string::npos;
+}
+
+shell::ExecResult BranchPlanDeadlineResult() {
+    return {
+        .exitCode = 124,
+        .stderrStr = "[kog-timeout] source=branch_plan_deadline command_family=git safe_next_action=inspect planningDiagnostics",
+    };
+}
+
+unsigned int RemainingBranchPlanMs(const BranchPlanExecutionContext& context) {
+    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+        context.deadline - std::chrono::steady_clock::now()).count();
+    if (remaining <= 0) {
+        return 0;
+    }
+    return static_cast<unsigned int>(std::min<long long>(
+        remaining, static_cast<long long>(std::numeric_limits<unsigned int>::max())));
+}
+
 shell::ExecResult GitCapture(const std::filesystem::path& repo, const std::vector<std::string>& args) {
-    return shell::ExecuteCommand("git", args, shell::ExecMode::Capture, repo);
+    auto* context = g_branchPlanExecutionContext;
+    if (context == nullptr) {
+        return shell::ExecuteCommand("git", args, shell::ExecMode::Capture, repo);
+    }
+    if (context->repoTimedOut) {
+        return BranchPlanDeadlineResult();
+    }
+
+    const auto remainingMs = RemainingBranchPlanMs(*context);
+    if (remainingMs == 0) {
+        context->repoTimedOut = true;
+        context->repoDiagnostics.push_back({
+            .code = "BRANCH_PLAN_DEADLINE",
+            .operation = args.empty() ? std::string{"git"} : "git " + args.front(),
+            .message = "branch planning deadline exhausted before the probe started",
+            .timeoutMs = context->deadlineMs,
+        });
+        return BranchPlanDeadlineResult();
+    }
+
+    const auto timeoutMs = std::min(context->probeTimeoutMs, remainingMs);
+    auto result = shell::ExecuteCommand(
+        "git", args, shell::ExecMode::Capture, repo, shell::ProgressCallback{}, timeoutMs);
+    if (GitCaptureTimedOut(result)) {
+        context->repoTimedOut = true;
+        const bool deadlineReached = RemainingBranchPlanMs(*context) == 0;
+        auto message = Trim(result.stderrStr);
+        if (message.empty()) {
+            message = Trim(result.stdoutStr);
+        }
+        context->repoDiagnostics.push_back({
+            .code = deadlineReached ? "BRANCH_PLAN_DEADLINE" : "BRANCH_PROBE_TIMEOUT",
+            .operation = args.empty() ? std::string{"git"} : "git " + args.front(),
+            .message = std::move(message),
+            .timeoutMs = timeoutMs,
+        });
+    }
+    return result;
+}
+
+shell::ExecResult GitCaptureForCleanup(const std::filesystem::path& repo, const std::vector<std::string>& args) {
+    return shell::ExecuteCommand(
+        "git", args, shell::ExecMode::Capture, repo, shell::ProgressCallback{}, ResolveBranchProbeTimeoutMs());
 }
 
 std::filesystem::path RepoPathForBranchPlan(const std::filesystem::path& workspaceRoot, const RepoStatus& repo) {
@@ -2641,27 +2766,34 @@ const RepoStatus* FindRepo(const Snapshot& snapshot, const std::string& id) {
     return it == snapshot.repos.end() ? nullptr : &*it;
 }
 
-std::vector<std::string> LocalBranches(const std::filesystem::path& repoPath) {
-    const auto result = GitCapture(repoPath, {"for-each-ref", "--format=%(refname:short)", "refs/heads"});
-    std::vector<std::string> branches;
+std::vector<BranchCandidate> BranchCandidates(const std::filesystem::path& repoPath, const std::string& preferredRemote) {
+    const auto remote = preferredRemote.empty() ? std::string{"origin"} : preferredRemote;
+    const auto result = GitCapture(
+        repoPath,
+        {"for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes/" + remote});
     if (result.exitCode != 0) {
-        return branches;
+        return {};
     }
+
+    std::vector<std::string> locals;
+    std::vector<std::string> remoteRefs;
+    const auto remotePrefix = remote + "/";
     std::istringstream lines(result.stdoutStr);
     std::string line;
     while (std::getline(lines, line)) {
-        auto branch = Trim(line);
-        if (!branch.empty()) {
-            branches.push_back(branch);
+        auto ref = Trim(line);
+        if (ref.empty()) {
+            continue;
+        }
+        if (ref.rfind(remotePrefix, 0) == 0) {
+            if (ref != remote + "/HEAD") {
+                remoteRefs.push_back(std::move(ref));
+            }
+        } else {
+            locals.push_back(std::move(ref));
         }
     }
-    std::sort(branches.begin(), branches.end());
-    branches.erase(std::unique(branches.begin(), branches.end()), branches.end());
-    return branches;
-}
 
-std::vector<BranchCandidate> BranchCandidates(const std::filesystem::path& repoPath, const std::string& preferredRemote) {
-    const auto locals = LocalBranches(repoPath);
     std::unordered_set<std::string> localSet(locals.begin(), locals.end());
     std::vector<BranchCandidate> candidates;
     candidates.reserve(locals.size());
@@ -2672,45 +2804,18 @@ std::vector<BranchCandidate> BranchCandidates(const std::filesystem::path& repoP
         candidates.push_back(candidate);
     }
 
-    auto remote = preferredRemote.empty() ? std::string{"origin"} : preferredRemote;
-    const auto remotes = GitCapture(repoPath, {"remote"});
-    if (remotes.exitCode == 0) {
-        std::vector<std::string> remoteNames;
-        std::istringstream remoteLines(remotes.stdoutStr);
-        std::string remoteLine;
-        while (std::getline(remoteLines, remoteLine)) {
-            remoteLine = Trim(remoteLine);
-            if (!remoteLine.empty()) {
-                remoteNames.push_back(remoteLine);
-            }
+    for (const auto& ref : remoteRefs) {
+        const auto remoteBranch = ref.substr(remotePrefix.size());
+        if (remoteBranch.empty() || localSet.find(remoteBranch) != localSet.end()) {
+            continue;
         }
-        if (!remoteNames.empty() && std::find(remoteNames.begin(), remoteNames.end(), remote) == remoteNames.end()) {
-            remote = remoteNames.front();
-        }
-    }
-
-    const auto result = GitCapture(repoPath, {"for-each-ref", "--format=%(refname:short)", "refs/remotes/" + remote});
-    if (result.exitCode == 0) {
-        const auto prefix = remote + "/";
-        std::istringstream refLines(result.stdoutStr);
-        std::string ref;
-        while (std::getline(refLines, ref)) {
-            ref = Trim(ref);
-            if (ref == remote + "/HEAD" || ref.rfind(prefix, 0) != 0) {
-                continue;
-            }
-            const auto remoteBranch = ref.substr(prefix.size());
-            if (remoteBranch.empty() || localSet.find(remoteBranch) != localSet.end()) {
-                continue;
-            }
-            BranchCandidate candidate;
-            candidate.name = ref;
-            candidate.ref = ref;
-            candidate.remoteOnly = true;
-            candidate.remote = remote;
-            candidate.remoteBranch = remoteBranch;
-            candidates.push_back(candidate);
-        }
+        BranchCandidate candidate;
+        candidate.name = ref;
+        candidate.ref = ref;
+        candidate.remoteOnly = true;
+        candidate.remote = remote;
+        candidate.remoteBranch = remoteBranch;
+        candidates.push_back(candidate);
     }
 
     std::sort(candidates.begin(), candidates.end(), [](const auto& a, const auto& b) {
@@ -3388,6 +3493,9 @@ bool CommitMergedIntoTarget(const std::filesystem::path& repoPath, const std::st
 }
 
 bool BranchPatchEquivalentToTarget(const std::filesystem::path& repoPath, const std::string& targetBranch, const std::string& branch) {
+    if (g_branchPlanExecutionContext != nullptr && !g_branchPlanExecutionContext->allowPatchEquivalentProof) {
+        return false;
+    }
     const auto cherry = GitCapture(repoPath, {"cherry", targetBranch, branch});
     if (cherry.exitCode != 0) {
         return false;
@@ -3403,6 +3511,9 @@ bool BranchPatchEquivalentToTarget(const std::filesystem::path& repoPath, const 
 
 bool CommitPatchEquivalentToTarget(const std::filesystem::path& repoPath, const std::string& targetBranch, const std::string& commit) {
     if (targetBranch.empty() || commit.empty()) {
+        return false;
+    }
+    if (g_branchPlanExecutionContext != nullptr && !g_branchPlanExecutionContext->allowPatchEquivalentProof) {
         return false;
     }
     const auto cherry = GitCapture(repoPath, {"cherry", targetBranch, commit});
@@ -3621,11 +3732,11 @@ bool BranchCherryPickNoopIntoTarget(const std::filesystem::path& repoPath,
 
     const auto probePath = MakeCherryPickProbePath();
     auto cleanupProbe = [&]() {
-        (void)GitCapture(repoPath, {"worktree", "unlock", probePath.string()});
-        (void)GitCapture(repoPath, {"worktree", "remove", "--force", probePath.string()});
+        (void)GitCaptureForCleanup(repoPath, {"worktree", "unlock", probePath.string()});
+        (void)GitCaptureForCleanup(repoPath, {"worktree", "remove", "--force", probePath.string()});
         std::error_code ec;
         std::filesystem::remove_all(probePath, ec);
-        (void)GitCapture(repoPath, {"worktree", "prune", "--expire", "now"});
+        (void)GitCaptureForCleanup(repoPath, {"worktree", "prune", "--expire", "now"});
     };
 
     const auto add = GitCapture(repoPath, {"worktree", "add", "--detach", probePath.string(), Trim(targetHead.stdoutStr)});
@@ -3669,9 +3780,15 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
                                      const RepoStatus& repo,
                                      const std::filesystem::path& repoPath,
                                      const std::string& targetBranch,
-                                     const std::string& strategy) {
-    const auto targetRef = ResolveTargetRef(repoPath, targetBranch, repo.remote);
-    const auto targetCounts = AheadBehindForBranch(repoPath, targetBranch);
+                                     const std::string& strategy,
+                                     bool allowNoopProof) {
+    const bool snapshotIsTarget = repo.branch == targetBranch && !repo.head.empty();
+    const auto targetRef = snapshotIsTarget
+        ? targetBranch
+        : ResolveTargetRef(repoPath, targetBranch, repo.remote);
+    const auto targetCounts = snapshotIsTarget
+        ? BranchAheadBehind{.ahead = repo.ahead, .behind = repo.behind, .hasUpstream = !repo.upstream.empty()}
+        : AheadBehindForBranch(repoPath, targetBranch);
     const bool targetBranchBehind = targetCounts.hasUpstream && targetCounts.behind > 0;
     const auto branches = BranchCandidates(repoPath, repo.remote);
     const auto worktrees = Worktrees(repoPath, snapshot.workspaceRoot);
@@ -3746,7 +3863,9 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
             continue;
         }
         const auto checkedOut = candidate.remoteOnly ? std::vector<std::string>{} : WorktreeLocationsForBranch(worktrees, branch);
-        const auto counts = candidate.remoteOnly ? BranchAheadBehind{} : AheadBehindForBranch(repoPath, branch);
+        const auto counts = candidate.remoteOnly
+            ? BranchAheadBehind{}
+            : (isTarget && snapshotIsTarget ? targetCounts : AheadBehindForBranch(repoPath, branch));
         const auto merged = isTarget || BranchMergedIntoTarget(repoPath, branchRef, targetRef);
         const auto patchEquivalent = !isTarget && !merged && !targetRef.empty() && BranchPatchEquivalentToTarget(repoPath, targetBranch, branchRef);
 
@@ -3776,7 +3895,9 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
         blockers.erase(std::unique(blockers.begin(), blockers.end()), blockers.end());
 
         bool cherryPickNoop = false;
-        if (!isTarget && !merged && !patchEquivalent && strategy == "cherry-pick" && BlockersForNoopProof(blockers).empty()) {
+        bool cherryPickNoopProbePerformed = false;
+        if (allowNoopProof && !isTarget && !merged && !patchEquivalent && strategy == "cherry-pick" && BlockersForNoopProof(blockers).empty()) {
+            cherryPickNoopProbePerformed = true;
             cherryPickNoop = BranchCherryPickNoopIntoTarget(repoPath, targetBranch, branchRef);
         }
         const auto integrated = merged || patchEquivalent || cherryPickNoop;
@@ -3816,6 +3937,7 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
             {"mergedIntoTarget", merged},
             {"patchEquivalentToTarget", patchEquivalent},
             {"cherryPickNoopIntoTarget", cherryPickNoop},
+            {"cherryPickNoopProbePerformed", cherryPickNoopProbePerformed},
             {"integratedIntoTarget", integrated},
             {"integrationProof", merged ? "merged" : (patchEquivalent ? "patch-equivalent" : (cherryPickNoop ? "cherry-pick-noop" : ""))},
             {"blockers", blockers},
@@ -3830,15 +3952,53 @@ nlohmann::json BuildBranchPlanJson(const Snapshot& snapshot,
                                    const std::filesystem::path& workspaceRoot,
                                    const std::string& targetBranch,
                                    const std::string& strategy,
-                                   bool recursive) {
+                                   bool recursive,
+                                   bool allowNoopProof,
+                                   bool allowPatchEquivalentProof) {
+    BranchPlanExecutionContext executionContext;
+    executionContext.deadlineMs = ResolveBranchPlanDeadlineMs();
+    executionContext.probeTimeoutMs = ResolveBranchProbeTimeoutMs();
+    executionContext.allowPatchEquivalentProof = allowPatchEquivalentProof;
+    executionContext.deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(executionContext.deadlineMs);
+    ScopedBranchPlanExecutionContext scopedExecutionContext(executionContext);
+
     const auto traversal = BranchPlanTraversalOrder(snapshot);
     nlohmann::json repos = nlohmann::json::array();
+    nlohmann::json planDiagnostics = nlohmann::json::array();
     for (const auto& repoId : traversal) {
         const auto* repo = FindRepo(snapshot, repoId);
         if (repo == nullptr) {
             continue;
         }
-        repos.push_back(BranchPlanJsonForRepo(snapshot, *repo, RepoPathForBranchPlan(workspaceRoot, *repo), targetBranch, strategy));
+        executionContext.repoTimedOut = false;
+        executionContext.repoDiagnostics.clear();
+        auto repoJson = BranchPlanJsonForRepo(
+            snapshot, *repo, RepoPathForBranchPlan(workspaceRoot, *repo), targetBranch, strategy, allowNoopProof);
+        nlohmann::json repoDiagnostics = nlohmann::json::array();
+        std::vector<std::string> planningBlockers;
+        for (const auto& diagnostic : executionContext.repoDiagnostics) {
+            const auto item = nlohmann::json{
+                {"code", diagnostic.code},
+                {"operation", diagnostic.operation},
+                {"message", diagnostic.message},
+                {"timeoutMs", diagnostic.timeoutMs},
+            };
+            repoDiagnostics.push_back(item);
+            planDiagnostics.push_back({
+                {"repo", repoId},
+                {"code", diagnostic.code},
+                {"operation", diagnostic.operation},
+                {"message", diagnostic.message},
+                {"timeoutMs", diagnostic.timeoutMs},
+            });
+            planningBlockers.push_back(diagnostic.code);
+        }
+        std::sort(planningBlockers.begin(), planningBlockers.end());
+        planningBlockers.erase(std::unique(planningBlockers.begin(), planningBlockers.end()), planningBlockers.end());
+        repoJson["planningTimedOut"] = !planningBlockers.empty();
+        repoJson["planningBlockers"] = planningBlockers;
+        repoJson["planningDiagnostics"] = std::move(repoDiagnostics);
+        repos.push_back(std::move(repoJson));
     }
 
     return {
@@ -3849,13 +4009,26 @@ nlohmann::json BuildBranchPlanJson(const Snapshot& snapshot,
         {"targetBranch", targetBranch},
         {"strategy", strategy},
         {"recursive", recursive},
+        {"planningDeadlineMs", executionContext.deadlineMs},
+        {"probeTimeoutMs", executionContext.probeTimeoutMs},
+        {"cherryPickNoopProofEnabled", allowNoopProof},
+        {"patchEquivalentProofEnabled", allowPatchEquivalentProof},
+        {"planningTimedOut", !planDiagnostics.empty()},
+        {"planningBlockers", planDiagnostics.empty() ? nlohmann::json::array() : nlohmann::json::array({"BRANCH_PLANNING_TIMEOUT"})},
+        {"planningDiagnostics", planDiagnostics},
         {"traversalOrder", traversal},
         {"repos", repos},
     };
 }
 
 bool BranchPlanHasBlockers(const nlohmann::json& plan) {
+    if (const auto it = plan.find("planningBlockers"); it != plan.end() && it->is_array() && !it->empty()) {
+        return true;
+    }
     for (const auto& repo : plan.value("repos", nlohmann::json::array())) {
+        if (const auto it = repo.find("planningBlockers"); it != repo.end() && it->is_array() && !it->empty()) {
+            return true;
+        }
         for (const auto& branch : repo.value("branches", nlohmann::json::array())) {
             if (const auto it = branch.find("blockers"); it != branch.end() && it->is_array() && !it->empty()) {
                 return true;
@@ -3995,7 +4168,7 @@ int RunBranchInventory(const std::filesystem::path& root,
             suppressCommandLogs.emplace();
         }
         const auto snapshot = LoadConvergeSnapshot(root, jobs, false, recursive);
-        auto plan = BuildBranchPlanJson(snapshot, root, targetBranch, strategy, recursive);
+        auto plan = BuildBranchPlanJson(snapshot, root, targetBranch, strategy, recursive, true, true);
         plan["schemaName"] = "kog.convergeBranchesInventory";
         plan["inventoryOnly"] = true;
         suppressCommandLogs.reset();
@@ -4055,7 +4228,7 @@ int RunBranchApply(const std::filesystem::path& root,
             }
         }
 
-        const auto plan = BuildBranchPlanJson(snapshot, root, targetBranch, strategy, recursive);
+        const auto plan = BuildBranchPlanJson(snapshot, root, targetBranch, strategy, recursive, false, false);
         for (const auto& repoJson : plan.value("repos", nlohmann::json::array())) {
             const auto repoId = repoJson.value("id", std::string{});
             const auto* repo = FindRepo(snapshot, repoId);
@@ -4228,7 +4401,7 @@ int RunBranchRetire(const std::filesystem::path& root,
             }
         }
 
-        const auto plan = BuildBranchPlanJson(snapshot, root, targetBranch, "cherry-pick", recursive);
+        const auto plan = BuildBranchPlanJson(snapshot, root, targetBranch, "cherry-pick", recursive, true, true);
         for (const auto& repoJson : plan.value("repos", nlohmann::json::array())) {
             const auto repoId = repoJson.value("id", std::string{});
             const auto* repo = FindRepo(snapshot, repoId);
@@ -4584,6 +4757,7 @@ int RunBranchPlanner(const std::filesystem::path& root,
                      const std::string& targetBranch,
                      const std::string& strategy,
                      bool emitJson) {
+    const bool jsonOutput = emitJson || IsConvergeAgentModeEnabled();
     try {
         if (targetBranch.empty()) {
             std::cerr << "Error: --target must not be empty\n";
@@ -4593,13 +4767,13 @@ int RunBranchPlanner(const std::filesystem::path& root,
             std::cerr << "Error: --strategy must be rebase, merge, or cherry-pick\n";
             return 2;
         }
-        const bool jsonOutput = emitJson || IsConvergeAgentModeEnabled();
         std::optional<shell::ScopedConsoleWriteSuppression> suppressCommandLogs;
         if (jsonOutput) {
             suppressCommandLogs.emplace();
         }
-        const auto snapshot = LoadConvergeSnapshot(root, jobs, false, recursive);
-        const auto plan = BuildBranchPlanJson(snapshot, root, targetBranch, strategy, recursive);
+        const auto snapshot = LoadConvergeSnapshot(
+            root, jobs, false, recursive, false, ResolveBranchStatusTimeoutMs());
+        const auto plan = BuildBranchPlanJson(snapshot, root, targetBranch, strategy, recursive, false, false);
         suppressCommandLogs.reset();
         if (jsonOutput) {
             std::cout << plan.dump(2) << "\n";
@@ -4608,7 +4782,36 @@ int RunBranchPlanner(const std::filesystem::path& root,
         }
         return BranchPlanHasBlockers(plan) ? 1 : 0;
     } catch (const std::exception& ex) {
-        std::cerr << "Error: " << ex.what() << "\n";
+        const std::string message = ex.what();
+        if (jsonOutput) {
+            const bool timedOut = message.find("[kog-timeout]") != std::string::npos ||
+                                  message.find("timeout") != std::string::npos;
+            const auto blocker = timedOut ? "BRANCH_STATUS_SNAPSHOT_TIMEOUT" : "BRANCH_STATUS_SNAPSHOT_FAILED";
+            const auto failure = nlohmann::json{
+                {"schemaName", "kog.convergeBranchesPlan"},
+                {"schemaVersion", 1},
+                {"mutationPerformed", false},
+                {"workspaceRoot", root.generic_string()},
+                {"targetBranch", targetBranch},
+                {"strategy", strategy},
+                {"recursive", recursive},
+                {"planningTimedOut", timedOut},
+                {"planningFailed", true},
+                {"planningBlockers", nlohmann::json::array({blocker})},
+                {"planningDiagnostics", nlohmann::json::array({{
+                    {"repo", "."},
+                    {"code", blocker},
+                    {"operation", "recursive status snapshot"},
+                    {"message", message},
+                    {"timeoutMs", ResolveBranchStatusTimeoutMs()},
+                }})},
+                {"traversalOrder", nlohmann::json::array()},
+                {"repos", nlohmann::json::array()},
+            };
+            std::cout << failure.dump(2) << "\n";
+        } else {
+            std::cerr << "Error: " << message << "\n";
+        }
         return 1;
     }
 }
