@@ -127,18 +127,25 @@ void RegisterCherryPick(CLI::App& InApp) {
         const auto effectiveRepo = !planFile->empty() && *repo == "." ? plan.repo : *repo;
         const auto workspaceRoot = std::filesystem::path(effectiveRepo).lexically_normal();
 
+        const auto runControlOperation = [&](const std::vector<std::string>& args) {
+            const auto result = shell::ExecuteCommand("git", args, shell::ExecMode::PassThrough, workspaceRoot);
+            if (result.exitCode != 0) {
+                throw CLI::RuntimeError(result.exitCode);
+            }
+        };
+
         if (*abortFlag) {
-            shell::ExecuteCommand("git", {"cherry-pick", "--abort"}, shell::ExecMode::PassThrough, workspaceRoot);
+            runControlOperation({"cherry-pick", "--abort"});
             return;
         }
 
         if (*skipFlag) {
-            shell::ExecuteCommand("git", {"cherry-pick", "--skip"}, shell::ExecMode::PassThrough, workspaceRoot);
+            runControlOperation({"cherry-pick", "--skip"});
             return;
         }
 
         if (*continueFlag) {
-            shell::ExecuteCommand("git", {"cherry-pick", "--continue"}, shell::ExecMode::PassThrough, workspaceRoot);
+            runControlOperation({"cherry-pick", "--continue"});
             return;
         }
 

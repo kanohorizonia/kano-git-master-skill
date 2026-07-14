@@ -857,6 +857,46 @@ TEST_CASE("converge branches apply preserves remaining commits after an early ch
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("cherry-pick skip propagates a following conflict exit code", "[functional][cherry-pick][skip][conflict][KG-BUG-0050]") {
+    const auto ctx = CreateRemoteWithClone("cherry-pick-skip-following-conflict");
+    WriteTextFile(ctx.cloneRepo / "first-conflict.txt", "base first\n");
+    WriteTextFile(ctx.cloneRepo / "second-conflict.txt", "base second\n");
+    RequireSuccess(RunGit({"add", "first-conflict.txt", "second-conflict.txt"}, ctx.cloneRepo), "add sequential conflict bases");
+    RequireSuccess(RunGit({"commit", "-m", "add sequential conflict bases"}, ctx.cloneRepo), "commit sequential conflict bases");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.cloneRepo), "push sequential conflict bases");
+
+    const std::string featureBranch = "feature/skip-following-conflict";
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout sequential conflict feature");
+    WriteTextFile(ctx.cloneRepo / "first-conflict.txt", "feature first\n");
+    RequireSuccess(RunGit({"commit", "-am", "change first conflict"}, ctx.cloneRepo), "commit first feature conflict");
+    const auto firstCommit = TrimCopy(RunGit({"rev-parse", "HEAD"}, ctx.cloneRepo).stdoutText);
+    WriteTextFile(ctx.cloneRepo / "second-conflict.txt", "feature second\n");
+    RequireSuccess(RunGit({"commit", "-am", "change second conflict"}, ctx.cloneRepo), "commit second feature conflict");
+    const auto secondCommit = TrimCopy(RunGit({"rev-parse", "HEAD"}, ctx.cloneRepo).stdoutText);
+
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to sequential conflict target");
+    WriteTextFile(ctx.cloneRepo / "first-conflict.txt", "target first\n");
+    WriteTextFile(ctx.cloneRepo / "second-conflict.txt", "target second\n");
+    RequireSuccess(RunGit({"commit", "-am", "change both target conflicts"}, ctx.cloneRepo), "commit target conflicts");
+
+    const auto initial = RunGit({"cherry-pick", firstCommit, secondCommit}, ctx.cloneRepo);
+    REQUIRE(initial.exitCode != 0);
+    const auto skipped = RunKog({"cherry-pick", "--skip", "--repo", ".", "--no-ai-resolve"}, ctx.cloneRepo);
+    INFO(skipped.stdoutText);
+    INFO(skipped.stderrText);
+    REQUIRE(skipped.exitCode != 0);
+    RequireContains(skipped.stderrText, "could not apply");
+    RequireContains(RunGit({"status"}, ctx.cloneRepo).stdoutText, "You are currently cherry-picking commit");
+
+    const auto aborted = RunKog({"cherry-pick", "--abort", "--repo", ".", "--no-ai-resolve"}, ctx.cloneRepo);
+    INFO(aborted.stdoutText);
+    INFO(aborted.stderrText);
+    REQUIRE(aborted.exitCode == 0);
+    REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("converge branches retire removes merged branch and clean git worktree after confirmation", "[tdd][functional][feature:converge][converge][branches][retire]") {
     const auto ctx = CreateRemoteWithClone("converge-branches-retire");
     const std::string featureBranch = "feature/retire-merged";
