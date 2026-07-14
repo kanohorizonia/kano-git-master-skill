@@ -246,6 +246,19 @@ performs an explicit no-fast-forward merge. Successful apply paths push the targ
 branch and report machine-readable blockers instead of resolving conflicts.
 Empty/no-op cherry-pick commits are skipped as already equivalent. Cherry-pick
 conflicts stop for operator recovery; KOG does not auto-resolve them.
+When a source branch was already integrated through reviewed conflict resolution
+or a superseding implementation, `--record-reviewed-integration` provides an
+explicit ancestry closure instead of replaying stale commits. It is restricted
+to `--no-recursive`, requires one branch, its exact 40-character source HEAD, a
+review reason, a marker commit message, and `--confirm`. KOG requires clean target
+and source worktrees, creates an `ours` ancestry marker, verifies that the target
+tree hash is unchanged, and pushes the target. A source HEAD mismatch fails closed.
+
+Recursive branch planning keeps the bounded 5-second probe and 90-second plan
+defaults. Exact-repository `--no-recursive` planning uses 30-second probes and a
+240-second plan deadline because conflict/no-op probes can legitimately exceed
+the recursive discovery budget. `KOG_BRANCH_PROBE_TIMEOUT_MS` and
+`KOG_BRANCH_PLAN_DEADLINE_MS` still override these defaults.
 
 `kog converge branches retire` previews by default. With `--confirm`, it deletes
 only local branches proven integrated into the target by merge-base ancestry,
@@ -277,6 +290,7 @@ step before the final status summary when explicitly requested; ordinary
 ```bash
 ./scripts/kog converge branches apply --target main --confirm --json
 ./scripts/kog converge branches apply --target main --strategy cherry-pick --branch feature/example --confirm --json
+./scripts/kog converge branches apply --no-recursive --target main --branch feature/reviewed --record-reviewed-integration --expected-source-head <40-char-sha> --review-reason "integrated with reviewed conflict resolution" --marker-message "[Converge][Chore] Record reviewed integration (KG-BUG-0012)" --confirm --json
 ./scripts/kog converge branches retire --target main --remove-worktrees --confirm --json
 ./scripts/kog converge branches retire --target main --remove-worktrees --delete-remote --confirm --json
 ./scripts/kog converge branches retire --target main --branch feature/example --remove-worktrees --harvest-branch-worktrees --confirm --json

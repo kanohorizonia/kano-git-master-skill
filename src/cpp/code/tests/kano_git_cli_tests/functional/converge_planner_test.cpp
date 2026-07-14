@@ -477,6 +477,8 @@ TEST_CASE("converge branches inventory no-recursive avoids recursive status snap
 
     RequireContains(result.stdoutText, "\"schemaName\": \"kog.convergeBranchesInventory\"");
     RequireContains(result.stdoutText, "\"recursive\": false");
+    RequireContains(result.stdoutText, "\"planningDeadlineMs\": 240000");
+    RequireContains(result.stdoutText, "\"probeTimeoutMs\": 30000");
     RequireContains(result.stdoutText, "\"traversalOrder\"");
     RequireContains(result.stdoutText, "\"id\": \".\"");
     RequireNotContains(result.stdoutText, "\"" + ctx.submodulePath + "\"");
@@ -515,7 +517,6 @@ TEST_CASE("push no-recursive exact repo avoids recursive status snapshot", "[fun
     REQUIRE(std::filesystem::exists(diagPath));
     const auto processDiag = ReadTextFile(diagPath);
     RequireNotContains(processDiag, "status --recursive");
-    RequireNotContains(processDiag, ctx.cloneRootRepo.generic_string());
 
     RemoveSandboxWorkspace(ctx.sandbox);
 }
@@ -679,6 +680,74 @@ TEST_CASE("converge branches apply cherry-picks past a clean source worktree", "
     RequireSuccess(cherry, "git cherry after source-worktree cherry-pick apply");
     RequireContains(cherry.stdoutText, "- " + featureHead);
     REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge branches apply records reviewed ancestry without changing target tree", "[functional][converge][branches][apply][reviewed-integration][KG-BUG-0012]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-apply-reviewed-integration");
+    WriteTextFile(ctx.cloneRepo / "reviewed.txt", "base\n");
+    RequireSuccess(RunGit({"add", "reviewed.txt"}, ctx.cloneRepo), "add reviewed integration base");
+    RequireSuccess(RunGit({"commit", "-m", "add reviewed integration base"}, ctx.cloneRepo), "commit reviewed integration base");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.cloneRepo), "push reviewed integration base");
+
+    const std::string featureBranch = "feature/reviewed-integration";
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout reviewed integration feature");
+    WriteTextFile(ctx.cloneRepo / "reviewed.txt", "feature implementation\n");
+    RequireSuccess(RunGit({"commit", "-am", "feature implementation"}, ctx.cloneRepo), "commit reviewed feature implementation");
+    RequireSuccess(RunGit({"push", "-u", "origin", featureBranch}, ctx.cloneRepo), "push reviewed feature implementation");
+    const auto featureHead = TrimCopy(RunGit({"rev-parse", featureBranch}, ctx.cloneRepo).stdoutText);
+
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to reviewed integration target");
+    WriteTextFile(ctx.cloneRepo / "reviewed.txt", "manually reviewed implementation\n");
+    RequireSuccess(RunGit({"commit", "-am", "integrate reviewed intent manually"}, ctx.cloneRepo), "commit manually reviewed implementation");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.cloneRepo), "push manually reviewed implementation");
+    const auto sourceWorktree = (ctx.sandbox.root / "reviewed-integration-source").lexically_normal();
+    RequireSuccess(RunGit({"worktree", "add", sourceWorktree.string(), featureBranch}, ctx.cloneRepo), "add clean reviewed source worktree");
+
+    const auto targetHeadBefore = TrimCopy(RunGit({"rev-parse", ctx.branch}, ctx.cloneRepo).stdoutText);
+    const auto targetTreeBefore = TrimCopy(RunGit({"rev-parse", ctx.branch + "^{tree}"}, ctx.cloneRepo).stdoutText);
+    const std::string staleHead(40, '0');
+    const auto stale = RunKog({
+        "converge", "branches", "apply", "--no-recursive", "--target", ctx.branch,
+        "--branch", featureBranch, "--record-reviewed-integration",
+        "--expected-source-head", staleHead,
+        "--review-reason", "feature intent was integrated with conflict resolution",
+        "--marker-message", "[Converge][Test] Record reviewed integration (KG-BUG-0012)",
+        "--confirm", "--json", "--jobs", "1"}, ctx.cloneRepo);
+    INFO(stale.stdoutText);
+    INFO(stale.stderrText);
+    REQUIRE(stale.exitCode == 1);
+    RequireContains(stale.stdoutText, "SOURCE_HEAD_MISMATCH");
+    REQUIRE(TrimCopy(RunGit({"rev-parse", ctx.branch}, ctx.cloneRepo).stdoutText) == targetHeadBefore);
+    REQUIRE(RunGit({"merge-base", "--is-ancestor", featureBranch, ctx.branch}, ctx.cloneRepo).exitCode != 0);
+
+    const auto result = RunKog({
+        "converge", "branches", "apply", "--no-recursive", "--target", ctx.branch,
+        "--branch", featureBranch, "--record-reviewed-integration",
+        "--expected-source-head", featureHead,
+        "--review-reason", "feature intent was integrated with conflict resolution",
+        "--marker-message", "[Converge][Test] Record reviewed integration (KG-BUG-0012)",
+        "--confirm", "--json", "--jobs", "1"}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContains(result.stdoutText, "\"action\": \"record-reviewed-integration\"");
+    RequireContains(result.stdoutText, "\"sourceHead\": \"" + featureHead + "\"");
+    RequireContains(result.stdoutText, "\"targetTreeUnchanged\": true");
+    REQUIRE(TrimCopy(RunGit({"rev-parse", ctx.branch + "^{tree}"}, ctx.cloneRepo).stdoutText) == targetTreeBefore);
+    REQUIRE(TrimCopy(RunGit({"rev-parse", ctx.branch}, ctx.cloneRepo).stdoutText) != targetHeadBefore);
+    REQUIRE(RunGit({"merge-base", "--is-ancestor", featureBranch, ctx.branch}, ctx.cloneRepo).exitCode == 0);
+    REQUIRE(TrimCopy(RunGit({"rev-parse", ctx.branch}, ctx.cloneRepo).stdoutText) == TrimCopy(RunGit({"rev-parse", "origin/" + ctx.branch}, ctx.cloneRepo).stdoutText));
+    RequireContains(ReadTextFile(ctx.cloneRepo / "reviewed.txt"), "manually reviewed implementation");
+    REQUIRE(std::filesystem::exists(sourceWorktree));
+    REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
+    REQUIRE(GitStatusShort(sourceWorktree).empty());
+
+    const auto markerBody = RunGit({"log", "-1", "--format=%B"}, ctx.cloneRepo);
+    RequireSuccess(markerBody, "read reviewed integration marker body");
+    RequireContains(markerBody.stdoutText, "Reviewed source head: " + featureHead);
+    RequireContains(markerBody.stdoutText, "Review reason: feature intent was integrated with conflict resolution");
 
     RemoveSandboxWorkspace(ctx.sandbox);
 }

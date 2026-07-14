@@ -1061,18 +1061,18 @@ unsigned int ResolveBranchStatusTimeoutMs() {
     return 90 * 1000;
 }
 
-unsigned int ResolveBranchPlanDeadlineMs() {
+unsigned int ResolveBranchPlanDeadlineMs(bool recursive = true) {
     if (const auto explicitMs = ParsePositiveEnvMs(std::getenv("KOG_BRANCH_PLAN_DEADLINE_MS")); explicitMs.has_value()) {
         return *explicitMs;
     }
-    return 90 * 1000;
+    return recursive ? 90 * 1000 : 240 * 1000;
 }
 
-unsigned int ResolveBranchProbeTimeoutMs() {
+unsigned int ResolveBranchProbeTimeoutMs(bool recursive = true) {
     if (const auto explicitMs = ParsePositiveEnvMs(std::getenv("KOG_BRANCH_PROBE_TIMEOUT_MS")); explicitMs.has_value()) {
         return *explicitMs;
     }
-    return 5 * 1000;
+    return recursive ? 5 * 1000 : 30 * 1000;
 }
 
 std::string SnapshotFingerprint(const Snapshot& snapshot) {
@@ -4056,8 +4056,8 @@ nlohmann::json BuildBranchPlanJson(const Snapshot& snapshot,
                                    bool allowNoopProof,
                                    bool allowPatchEquivalentProof) {
     BranchPlanExecutionContext executionContext;
-    executionContext.deadlineMs = ResolveBranchPlanDeadlineMs();
-    executionContext.probeTimeoutMs = ResolveBranchProbeTimeoutMs();
+    executionContext.deadlineMs = ResolveBranchPlanDeadlineMs(recursive);
+    executionContext.probeTimeoutMs = ResolveBranchProbeTimeoutMs(recursive);
     executionContext.allowPatchEquivalentProof = allowPatchEquivalentProof;
     executionContext.deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(executionContext.deadlineMs);
     ScopedBranchPlanExecutionContext scopedExecutionContext(executionContext);
@@ -4286,6 +4286,136 @@ int RunBranchInventory(const std::filesystem::path& root,
     }
 }
 
+bool IsFullCommitId(const std::string& value) {
+    return value.size() == 40 && std::all_of(value.begin(), value.end(), [](unsigned char ch) {
+        return std::isxdigit(ch) != 0;
+    });
+}
+
+bool RecordReviewedBranchIntegration(const std::filesystem::path& repoPath,
+                                     const RepoStatus& repo,
+                                     const std::string& targetBranch,
+                                     const std::string& branch,
+                                     const std::string& expectedSourceHead,
+                                     const std::string& reviewReason,
+                                     const std::string& markerMessage,
+                                     const std::vector<BranchWorktree>& liveWorktrees,
+                                     nlohmann::json& result) {
+    if (!BranchWorktreesAreClean(WorktreesForBranch(liveWorktrees, branch), repo.id, branch, result)) {
+        return false;
+    }
+
+    std::string targetCleanMessage;
+    if (!WorktreeIsClean(repoPath, targetCleanMessage)) {
+        AppendBranchBlocked(result, repo.id, branch, {"DIRTY_TARGET_WORKTREE"}, targetCleanMessage);
+        return false;
+    }
+
+    const auto sourceHeadResult = GitCapture(repoPath, {"rev-parse", "--verify", "refs/heads/" + branch + "^{commit}"});
+    if (sourceHeadResult.exitCode != 0) {
+        AppendBranchBlocked(result, repo.id, branch, {"SOURCE_BRANCH_NOT_FOUND"}, CombinedGitError(sourceHeadResult));
+        return false;
+    }
+    const auto sourceHead = ToLower(Trim(sourceHeadResult.stdoutStr));
+    if (sourceHead != ToLower(expectedSourceHead)) {
+        AppendBranchBlocked(
+            result,
+            repo.id,
+            branch,
+            {"SOURCE_HEAD_MISMATCH"},
+            "source HEAD changed; inspect the branch and rerun with its exact 40-character commit id");
+        return false;
+    }
+
+    if (!CheckoutTargetBranch(repoPath, repo.id, targetBranch, result)) {
+        return false;
+    }
+    if (!WorktreeIsClean(repoPath, targetCleanMessage)) {
+        AppendBranchBlocked(result, repo.id, branch, {"DIRTY_TARGET_WORKTREE"}, targetCleanMessage);
+        return false;
+    }
+
+    const auto alreadyMerged = GitCapture(repoPath, {"merge-base", "--is-ancestor", sourceHead, targetBranch});
+    if (alreadyMerged.exitCode == 0) {
+        AppendBranchAction(result, "skipped", repo.id, branch, "already-merged", "source branch is already an ancestor of target");
+        return true;
+    }
+
+    const auto targetHeadBeforeResult = GitCapture(repoPath, {"rev-parse", "--verify", targetBranch + "^{commit}"});
+    const auto targetTreeBeforeResult = GitCapture(repoPath, {"rev-parse", "--verify", targetBranch + "^{tree}"});
+    if (targetHeadBeforeResult.exitCode != 0 || targetTreeBeforeResult.exitCode != 0) {
+        AppendBranchBlocked(result, repo.id, branch, {"TARGET_REF_MISSING"}, "target commit or tree could not be resolved");
+        return false;
+    }
+    const auto targetHeadBefore = Trim(targetHeadBeforeResult.stdoutStr);
+    const auto targetTreeBefore = Trim(targetTreeBeforeResult.stdoutStr);
+
+    const auto merge = GitCapture(repoPath, {"merge", "--no-ff", "--no-commit", "-s", "ours", branch});
+    if (merge.exitCode != 0) {
+        (void)GitCapture(repoPath, {"merge", "--abort"});
+        AppendBranchBlocked(result, repo.id, branch, {"REVIEWED_INTEGRATION_MERGE_FAILED"}, CombinedGitError(merge));
+        return false;
+    }
+
+    const auto stagedTreeResult = GitCapture(repoPath, {"write-tree"});
+    if (stagedTreeResult.exitCode != 0 || Trim(stagedTreeResult.stdoutStr) != targetTreeBefore) {
+        (void)GitCapture(repoPath, {"merge", "--abort"});
+        AppendBranchBlocked(
+            result,
+            repo.id,
+            branch,
+            {"REVIEWED_INTEGRATION_TREE_CHANGED"},
+            "reviewed integration marker changed the target tree and was aborted");
+        return false;
+    }
+
+    const auto auditBody = "Reviewed source branch: " + branch +
+                           "\nReviewed source head: " + sourceHead +
+                           "\nReview reason: " + reviewReason;
+    const auto commit = GitCapture(repoPath, {"commit", "-m", markerMessage, "-m", auditBody});
+    if (commit.exitCode != 0) {
+        (void)GitCapture(repoPath, {"merge", "--abort"});
+        AppendBranchBlocked(result, repo.id, branch, {"REVIEWED_INTEGRATION_COMMIT_FAILED"}, CombinedGitError(commit));
+        return false;
+    }
+    result["mutationPerformed"] = true;
+
+    const auto targetHeadAfterResult = GitCapture(repoPath, {"rev-parse", "--verify", targetBranch + "^{commit}"});
+    const auto targetTreeAfterResult = GitCapture(repoPath, {"rev-parse", "--verify", targetBranch + "^{tree}"});
+    const auto targetHeadAfter = targetHeadAfterResult.exitCode == 0 ? Trim(targetHeadAfterResult.stdoutStr) : std::string{};
+    const auto targetTreeAfter = targetTreeAfterResult.exitCode == 0 ? Trim(targetTreeAfterResult.stdoutStr) : std::string{};
+    if (targetHeadAfter.empty() || targetTreeAfter != targetTreeBefore) {
+        AppendBranchBlocked(
+            result,
+            repo.id,
+            branch,
+            {"REVIEWED_INTEGRATION_POSTCONDITION_FAILED"},
+            "reviewed integration commit did not preserve the target tree; target was not pushed");
+        return false;
+    }
+
+    std::string pushError;
+    if (!PushTargetBranch(repoPath, repo, targetBranch, pushError)) {
+        AppendBranchBlocked(result, repo.id, branch, {"TARGET_PUSH_FAILED"}, pushError);
+        return false;
+    }
+
+    result["applied"].push_back({
+        {"repo", repo.id},
+        {"branch", branch},
+        {"action", "record-reviewed-integration"},
+        {"message", "reviewed ancestry marker committed and target pushed without tree changes"},
+        {"sourceHead", sourceHead},
+        {"targetHeadBefore", targetHeadBefore},
+        {"targetHeadAfter", targetHeadAfter},
+        {"targetTreeBefore", targetTreeBefore},
+        {"targetTreeAfter", targetTreeAfter},
+        {"targetTreeUnchanged", true},
+        {"reviewReason", reviewReason},
+    });
+    return true;
+}
+
 int RunBranchApply(const std::filesystem::path& root,
                    int jobs,
                    bool recursive,
@@ -4294,6 +4424,10 @@ int RunBranchApply(const std::filesystem::path& root,
                    const std::string& branchFilter,
                    bool confirm,
                    bool syncTarget,
+                   bool recordReviewedIntegration,
+                   const std::string& expectedSourceHead,
+                   const std::string& reviewReason,
+                   const std::string& markerMessage,
                    bool emitJson) {
     try {
         if (targetBranch.empty()) {
@@ -4308,8 +4442,22 @@ int RunBranchApply(const std::filesystem::path& root,
             std::cerr << "Error: --branch is required when --strategy cherry-pick is used\n";
             return 2;
         }
+        if (recordReviewedIntegration && recursive) {
+            std::cerr << "Error: --record-reviewed-integration requires --no-recursive\n";
+            return 2;
+        }
+        if (recordReviewedIntegration && (branchFilter.empty() || !IsFullCommitId(expectedSourceHead) ||
+                                          reviewReason.empty() || markerMessage.empty())) {
+            std::cerr << "Error: --record-reviewed-integration requires --branch, a full --expected-source-head, --review-reason, and --marker-message\n";
+            return 2;
+        }
+        if (!recordReviewedIntegration && (!expectedSourceHead.empty() || !reviewReason.empty() || !markerMessage.empty())) {
+            std::cerr << "Error: reviewed integration options require --record-reviewed-integration\n";
+            return 2;
+        }
         const bool jsonOutput = emitJson || IsConvergeAgentModeEnabled();
         auto result = MakeBranchActionResult("kog.convergeBranchesApplyResult", targetBranch, strategy, recursive, confirm);
+        result["recordReviewedIntegration"] = recordReviewedIntegration;
 
         std::optional<shell::ScopedConsoleWriteSuppression> suppressCommandLogs;
         if (jsonOutput) {
@@ -4331,6 +4479,7 @@ int RunBranchApply(const std::filesystem::path& root,
         }
 
         const auto plan = BuildBranchPlanJson(snapshot, root, targetBranch, strategy, recursive, false, false);
+        bool reviewedBranchMatched = false;
         for (const auto& repoJson : plan.value("repos", nlohmann::json::array())) {
             const auto repoId = repoJson.value("id", std::string{});
             const auto* repo = FindRepo(snapshot, repoId);
@@ -4350,6 +4499,24 @@ int RunBranchApply(const std::filesystem::path& root,
                 }
                 if (branchJson.value("nonConvergeTarget", false)) {
                     AppendBranchAction(result, "skipped", repoId, branch, "non-converge-target", branchJson.value("skipReason", std::string{"skipped branch"}));
+                    continue;
+                }
+                if (recordReviewedIntegration) {
+                    reviewedBranchMatched = true;
+                    if (!confirm) {
+                        AppendBranchBlocked(result, repoId, branch, {"CONFIRM_REQUIRED"}, "rerun with --confirm to record reviewed integration");
+                        continue;
+                    }
+                    (void)RecordReviewedBranchIntegration(
+                        repoPath,
+                        *repo,
+                        targetBranch,
+                        branch,
+                        expectedSourceHead,
+                        reviewReason,
+                        markerMessage,
+                        liveWorktrees,
+                        result);
                     continue;
                 }
                 auto blockers = BranchBlockers(branchJson);
@@ -4456,6 +4623,9 @@ int RunBranchApply(const std::filesystem::path& root,
                 result["mutationPerformed"] = true;
                 AppendBranchAction(result, "applied", repoId, branch, strategy == "merge" ? "merge" : (strategy == "cherry-pick" ? "cherry-pick" : "fast-forward"), "target branch integrated and pushed");
             }
+        }
+        if (recordReviewedIntegration && !reviewedBranchMatched) {
+            AppendBranchBlocked(result, ".", branchFilter, {"SOURCE_BRANCH_NOT_FOUND"}, "source branch was not present in the current repository inventory");
         }
 
         suppressCommandLogs.reset();
@@ -5060,6 +5230,10 @@ void RegisterConverge(CLI::App& InApp) {
     auto* branchesRetireBranch = new std::string{};
     auto* branchesConfirm = new bool{false};
     auto* branchesNoSyncTarget = new bool{false};
+    auto* branchesRecordReviewedIntegration = new bool{false};
+    auto* branchesExpectedSourceHead = new std::string{};
+    auto* branchesReviewReason = new std::string{};
+    auto* branchesMarkerMessage = new std::string{};
     auto* branchesRemoveWorktrees = new bool{false};
     auto* branchesDeleteRemote = new bool{false};
     auto* branchesPruneWorktrees = new bool{false};
@@ -5127,10 +5301,14 @@ void RegisterConverge(CLI::App& InApp) {
     branchesApply->add_flag("--json", *branchesJson, "Emit stable machine-readable apply result JSON");
     branchesApply->add_flag("--confirm", *branchesConfirm, "Confirm branch integration mutation");
     branchesApply->add_flag("--no-sync-target", *branchesNoSyncTarget, "Do not fetch and fast-forward the target branch before apply");
+    branchesApply->add_flag("--record-reviewed-integration", *branchesRecordReviewedIntegration, "Record reviewed source ancestry without changing the target tree");
     branchesApply->add_option("--jobs", *branchesJobs, "Parallel workers for recursive status snapshot loading");
     branchesApply->add_option("--target", *branchesTarget, "Target integration branch")->default_str("main");
     branchesApply->add_option("--strategy", *branchesStrategy, "Integration strategy: rebase|merge|cherry-pick")->default_str("rebase");
     branchesApply->add_option("--branch", *branchesApplyBranch, "Limit apply to one source branch; required for cherry-pick strategy");
+    branchesApply->add_option("--expected-source-head", *branchesExpectedSourceHead, "Exact 40-character source HEAD required for reviewed integration");
+    branchesApply->add_option("--review-reason", *branchesReviewReason, "Audit reason for reviewed integration");
+    branchesApply->add_option("--marker-message", *branchesMarkerMessage, "Commit subject for the reviewed ancestry marker");
 
     branchesRetire->add_flag("--no-recursive,-N", *branchesNoRecursive, "Only retire branches for the current repository");
     branchesRetire->add_flag("--json", *branchesJson, "Emit stable machine-readable retire result JSON");
@@ -5228,6 +5406,10 @@ void RegisterConverge(CLI::App& InApp) {
             Trim(*branchesApplyBranch),
             *branchesConfirm,
             !*branchesNoSyncTarget,
+            *branchesRecordReviewedIntegration,
+            Trim(*branchesExpectedSourceHead),
+            Trim(*branchesReviewReason),
+            Trim(*branchesMarkerMessage),
             *branchesJson);
         std::exit(code);
     });
