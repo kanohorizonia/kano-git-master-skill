@@ -1417,6 +1417,49 @@ TEST_CASE("converge branches retire removes empty cherry-pick no-op branch", "[t
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge branches retire proves clean pushed no-op branch that tracks target", "[tdd][functional][feature:converge][converge][branches][retire][noop][KG-BUG-0053]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-retire-pushed-noop-target-upstream");
+    const std::string featureBranch = "feature/pushed-noop-target-upstream";
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout pushed no-op feature branch");
+    RequireSuccess(RunGit({"commit", "--allow-empty", "-m", "pushed no-op feature"}, ctx.cloneRepo), "commit empty pushed no-op feature");
+    RequireSuccess(RunGit({"push", "-u", "origin", featureBranch}, ctx.cloneRepo), "push no-op feature to same-name remote branch");
+
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target before pushed no-op proof");
+    WriteTextFile(ctx.cloneRepo / "target-after-noop.txt", "advance target after no-op branch\n");
+    RequireSuccess(RunGit({"add", "target-after-noop.txt"}, ctx.cloneRepo), "add target advancement after no-op branch");
+    RequireSuccess(RunGit({"commit", "-m", "advance target after no-op branch"}, ctx.cloneRepo), "commit target advancement after no-op branch");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.cloneRepo), "push advanced target branch");
+    RequireSuccess(RunGit({"branch", "--set-upstream-to=origin/" + ctx.branch, featureBranch}, ctx.cloneRepo), "configure no-op feature to track target upstream");
+    const auto worktreePath = (ctx.sandbox.root / "pushed-noop-target-upstream-worktree").lexically_normal();
+    RequireSuccess(RunGit({"worktree", "add", worktreePath.string(), featureBranch}, ctx.cloneRepo), "add clean pushed no-op feature worktree");
+
+    const auto inventory = RunKog({"converge", "branches", "inventory", "--target", ctx.branch, "--strategy", "cherry-pick", "--json", "--jobs", "1"}, ctx.cloneRepo);
+    INFO(inventory.stdoutText);
+    INFO(inventory.stderrText);
+    REQUIRE(inventory.exitCode == 0);
+    RequireContains(inventory.stdoutText, "\"name\": \"" + featureBranch + "\"");
+    RequireContains(inventory.stdoutText, "\"publishedToSameNameRemote\": true");
+    RequireContains(inventory.stdoutText, "\"publishedRemoteRef\": \"origin/" + featureBranch + "\"");
+    RequireContains(inventory.stdoutText, "\"cherryPickNoopProbePerformed\": true");
+    RequireContains(inventory.stdoutText, "\"cherryPickNoopIntoTarget\": true");
+    RequireContains(inventory.stdoutText, "\"integrationProof\": \"cherry-pick-noop\"");
+    RequireNotContains(inventory.stdoutText, "ACTIVE_WORKTREE_LEASE");
+    RequireNotContains(inventory.stdoutText, "STALE_LOCAL_BRANCH");
+    RequireNotContains(inventory.stdoutText, "UNPUSHED_COMMITS");
+
+    const auto result = RunKog({"converge", "branches", "retire", "--target", ctx.branch, "--remove-worktrees", "--confirm", "--json", "--jobs", "1"}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContains(result.stdoutText, "\"branch\": \"" + featureBranch + "\"");
+    RequireContains(result.stdoutText, "\"action\": \"delete-local\"");
+    REQUIRE(RunGit({"show-ref", "--verify", "--quiet", "refs/heads/" + featureBranch}, ctx.cloneRepo).exitCode != 0);
+    REQUIRE_FALSE(std::filesystem::exists(worktreePath));
+    REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("converge branch noop probe cleans partial worktree registration", "[tdd][functional][feature:converge][converge][branches][retire][equivalent][KG-BUG-0008]") {
     const auto ctx = CreateRemoteWithClone("converge-branches-probe-partial-cleanup");
     const std::string featureBranch = "feature/probe-partial-cleanup";

@@ -3450,6 +3450,35 @@ BranchAheadBehind AheadBehindForBranch(const std::filesystem::path& repoPath, co
     return out;
 }
 
+std::string SameNamePublishedRemoteRef(const std::filesystem::path& repoPath,
+                                       const std::string& preferredRemote,
+                                       const std::string& branch) {
+    if (branch.empty()) {
+        return {};
+    }
+
+    std::vector<std::string> remotes;
+    if (!preferredRemote.empty()) {
+        remotes.push_back(preferredRemote);
+    }
+    if (preferredRemote != "origin") {
+        remotes.push_back("origin");
+    }
+
+    const auto localHead = GitCapture(repoPath, {"rev-parse", "--verify", branch + "^{commit}"});
+    if (localHead.exitCode != 0 || Trim(localHead.stdoutStr).empty()) {
+        return {};
+    }
+    for (const auto& remote : remotes) {
+        const auto remoteRef = remote + "/" + branch;
+        const auto remoteHead = GitCapture(repoPath, {"rev-parse", "--verify", "--quiet", remoteRef + "^{commit}"});
+        if (remoteHead.exitCode == 0 && Trim(remoteHead.stdoutStr) == Trim(localHead.stdoutStr)) {
+            return remoteRef;
+        }
+    }
+    return {};
+}
+
 bool BranchMergedIntoTarget(const std::filesystem::path& repoPath, const std::string& branch, const std::string& targetRef) {
     if (targetRef.empty() || branch == targetRef) {
         return branch == targetRef;
@@ -3581,6 +3610,7 @@ std::vector<std::string> BlockersForNoopProof(std::vector<std::string> blockers)
                                   [](const std::string& blocker) {
                                       return blocker == "ACTIVE_WORKTREE_LEASE" ||
                                              blocker == "UNPUSHED_COMMITS" ||
+                                             blocker == "STALE_LOCAL_BRANCH" ||
                                              blocker.rfind("DIRTY_WORKTREE:", 0) == 0;
                                   }),
                    blockers.end());
@@ -3885,6 +3915,10 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
             : (isTarget && snapshotIsTarget ? targetCounts : AheadBehindForBranch(repoPath, branch));
         const auto merged = isTarget || BranchMergedIntoTarget(repoPath, branchRef, targetRef);
         const auto patchEquivalent = !isTarget && !merged && !targetRef.empty() && BranchPatchEquivalentToTarget(repoPath, targetBranch, branchRef);
+        const auto publishedRemoteRef = candidate.remoteOnly || isTarget
+            ? std::string{}
+            : SameNamePublishedRemoteRef(repoPath, repo.remote, branch);
+        const bool publishedToSameNameRemote = !publishedRemoteRef.empty();
 
         std::vector<std::string> blockers;
         if (targetRef.empty()) {
@@ -3905,7 +3939,8 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
         if (targetBranchBehind) {
             blockers.push_back("STALE_TARGET_BRANCH");
         }
-        if (!candidate.remoteOnly && (counts.ahead > 0 || (!isTarget && !counts.hasUpstream && !merged))) {
+        if (!candidate.remoteOnly && !publishedToSameNameRemote &&
+            (counts.ahead > 0 || (!isTarget && !counts.hasUpstream && !merged))) {
             blockers.push_back("UNPUSHED_COMMITS");
         }
         if (!candidate.remoteOnly && !isTarget && counts.behind > 0) {
@@ -3959,6 +3994,8 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
             {"hasUpstream", counts.hasUpstream},
             {"ahead", counts.ahead},
             {"behind", counts.behind},
+            {"publishedToSameNameRemote", publishedToSameNameRemote},
+            {"publishedRemoteRef", publishedRemoteRef},
             {"mergedIntoTarget", merged},
             {"patchEquivalentToTarget", patchEquivalent},
             {"cherryPickNoopIntoTarget", cherryPickNoop},
