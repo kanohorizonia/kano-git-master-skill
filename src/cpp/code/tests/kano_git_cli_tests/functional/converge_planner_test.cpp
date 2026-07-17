@@ -1157,6 +1157,42 @@ TEST_CASE("converge branches retire inventories and harvests dirty integrated br
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge branch inventory ignores filter-equivalent unstaged paths", "[tdd][functional][feature:converge][converge][branches][worktree][blockers][KG-BUG-0041]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-filter-equivalent-worktree");
+    RequireSuccess(RunGit({"config", "core.autocrlf", "true"}, ctx.cloneRepo), "enable autocrlf fixture");
+    WriteTextFile(ctx.cloneRepo / "normalized.txt", "same content\r\n");
+    RequireSuccess(RunGit({"add", "normalized.txt"}, ctx.cloneRepo), "add CRLF fixture");
+    RequireSuccess(RunGit({"commit", "-m", "add normalized fixture"}, ctx.cloneRepo), "commit CRLF fixture");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.cloneRepo), "push CRLF fixture");
+
+    const std::string equivalentBranch = "feature/filter-equivalent";
+    const std::string actualBranch = "feature/actual-dirty";
+    RequireSuccess(RunGit({"branch", equivalentBranch}, ctx.cloneRepo), "create filter-equivalent branch");
+    RequireSuccess(RunGit({"branch", actualBranch}, ctx.cloneRepo), "create actual-dirty branch");
+    const auto equivalentWorktree = (ctx.sandbox.root / "filter-equivalent").lexically_normal();
+    const auto actualWorktree = (ctx.sandbox.root / "actual-dirty").lexically_normal();
+    RequireSuccess(RunGit({"worktree", "add", equivalentWorktree.string(), equivalentBranch}, ctx.cloneRepo), "add filter-equivalent worktree");
+    RequireSuccess(RunGit({"worktree", "add", actualWorktree.string(), actualBranch}, ctx.cloneRepo), "add actual-dirty worktree");
+
+    WriteTextFile(equivalentWorktree / "normalized.txt", "same content\n");
+    WriteTextFile(actualWorktree / "normalized.txt", "actual content change\n");
+    const auto equivalentStatus = RunGit({"status", "--porcelain=v1"}, equivalentWorktree);
+    const auto equivalentDiff = RunGit({"diff", "--name-only", "--no-renames", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", "--"}, equivalentWorktree);
+    RequireSuccess(equivalentStatus, "read filter-equivalent porcelain status");
+    RequireSuccess(equivalentDiff, "read filter-equivalent actual diff");
+    RequireContains(equivalentStatus.stdoutText, " M normalized.txt");
+    REQUIRE(TrimCopy(equivalentDiff.stdoutText).empty());
+
+    const auto inventory = RunKog({"converge", "branches", "inventory", "--target", ctx.branch, "--strategy", "cherry-pick", "--json", "--jobs", "1"}, ctx.cloneRepo);
+    INFO(inventory.stdoutText);
+    INFO(inventory.stderrText);
+    REQUIRE(inventory.exitCode == 0);
+    REQUIRE(CountOccurrences(inventory.stdoutText, "\"clean\": false") == 2);
+    RequireNotContains(inventory.stdoutText, "DIRTY_WORKTREE_OVERLAP");
+    RequireContains(inventory.stdoutText, "normalized.txt");
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
 TEST_CASE("converge branch inventory blocks overlapping dirty worktree paths", "[tdd][functional][feature:converge][converge][branches][worktree][harvest][blockers][KG-BUG-0051]") {
     const auto ctx = CreateRemoteWithClone("converge-branches-dirty-worktree-overlap");
     const std::string firstBranch = "feature/dirty-overlap-first";

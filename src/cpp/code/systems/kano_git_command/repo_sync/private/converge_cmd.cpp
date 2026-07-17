@@ -1717,6 +1717,37 @@ std::vector<DirtyPathEntry> CollectDirtyEntries(const std::filesystem::path& rep
     entries.erase(std::unique(entries.begin(), entries.end(), [](const auto& a, const auto& b) {
         return a.path == b.path && a.originalPath == b.originalPath && a.rawStatus == b.rawStatus;
     }), entries.end());
+
+    const bool hasUnstagedOnlyEntries = std::any_of(entries.begin(), entries.end(), [](const auto& entry) {
+        return entry.rawStatus.size() == 2 && entry.rawStatus[0] == ' ' && entry.rawStatus[1] != ' ';
+    });
+    if (hasUnstagedOnlyEntries) {
+        const auto diff = shell::ExecuteCommand(
+            "git",
+            {"-c", "core.quotepath=false", "diff", "--name-only", "--no-renames", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", "--"},
+            shell::ExecMode::Capture,
+            repoPath);
+        if (diff.exitCode == 0) {
+            std::unordered_set<std::string> actualUnstagedPaths;
+            std::istringstream diffStream(diff.stdoutStr);
+            std::string diffLine;
+            while (std::getline(diffStream, diffLine)) {
+                if (!diffLine.empty() && diffLine.back() == '\r') {
+                    diffLine.pop_back();
+                }
+                const auto path = NormalizeGitPath(Trim(diffLine));
+                if (!path.empty()) {
+                    actualUnstagedPaths.insert(path);
+                }
+            }
+            entries.erase(std::remove_if(entries.begin(), entries.end(), [&](const auto& entry) {
+                const bool unstagedOnly = entry.rawStatus.size() == 2 &&
+                    entry.rawStatus[0] == ' ' && entry.rawStatus[1] != ' ';
+                return unstagedOnly && !actualUnstagedPaths.contains(entry.path);
+            }), entries.end());
+        }
+    }
+
     return entries;
 }
 
@@ -3106,20 +3137,17 @@ bool BranchMatchesFilter(const nlohmann::json& branchJson, const std::string& br
            branchFilter == branchJson.value("remoteBranch", std::string{});
 }
 
-bool StatusIsUntrackedOnly(const std::string& porcelainStatus) {
-    const auto lines = SplitNonEmptyLines(porcelainStatus);
-    return !lines.empty() && std::all_of(lines.begin(), lines.end(), [](const std::string& line) {
-        return line.rfind("?? ", 0) == 0;
-    });
-}
-
 bool WorktreeIsClean(const std::filesystem::path& worktreePath, std::string& message, bool allowUntrackedOnly = false) {
-    const auto status = GitCapture(worktreePath, {"status", "--porcelain"});
-    if (status.exitCode != 0) {
-        message = "git status failed: " + CombinedGitError(status);
+    std::string dirtyError;
+    const auto entries = CollectDirtyEntries(worktreePath, &dirtyError);
+    if (!dirtyError.empty()) {
+        message = dirtyError;
         return false;
     }
-    if (!Trim(status.stdoutStr).empty() && !(allowUntrackedOnly && StatusIsUntrackedOnly(status.stdoutStr))) {
+    const bool untrackedOnly = !entries.empty() && std::all_of(entries.begin(), entries.end(), [](const auto& entry) {
+        return entry.rawStatus == "??";
+    });
+    if (!entries.empty() && !(allowUntrackedOnly && untrackedOnly)) {
         message = "worktree has uncommitted or untracked changes";
         return false;
     }
