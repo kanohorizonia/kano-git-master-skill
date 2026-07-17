@@ -4214,6 +4214,30 @@ nlohmann::json BuildBranchPlanJson(const Snapshot& snapshot,
         }
         executionContext.repoTimedOut = false;
         executionContext.repoDiagnostics.clear();
+        if (IsCleanNestedPreflightOnlyBlocker(*repo)) {
+            repos.push_back({
+                {"id", repo->id},
+                {"type", repo->type},
+                {"managementPolicy", repo->managementPolicy},
+                {"branch", repo->branch},
+                {"head", repo->head},
+                {"remote", repo->remote},
+                {"upstream", repo->upstream},
+                {"ahead", repo->ahead},
+                {"behind", repo->behind},
+                {"dirtyKind", repo->dirtyKind},
+                {"parentRepos", repo->parentRepos},
+                {"childRepos", repo->childRepos},
+                {"worktrees", nlohmann::json::array()},
+                {"branches", nlohmann::json::array()},
+                {"planningSkipped", true},
+                {"planningSkipReason", "preflight-only clean nested repo skipped: " + repo->dirtyKind},
+                {"planningTimedOut", false},
+                {"planningBlockers", nlohmann::json::array()},
+                {"planningDiagnostics", nlohmann::json::array()},
+            });
+            continue;
+        }
         auto repoJson = BranchPlanJsonForRepo(
             snapshot, *repo, RepoPathForBranchPlan(workspaceRoot, *repo), targetBranch, strategy, allowNoopProof, proofBranchFilter);
         nlohmann::json repoDiagnostics = nlohmann::json::array();

@@ -441,6 +441,27 @@ TEST_CASE("converge branches planner emits stable default rebase JSON child firs
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge branches inventory skips clean nested preflight-only proof probes", "[functional][converge][branches][inventory][KG-BUG-0013]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("converge-branches-inventory-preflight-only-skip");
+    RequireSuccess(RunGit({"checkout", "--detach", "HEAD"}, ctx.cloneChildRepo), "detach clean nested child");
+
+    const auto result = RunKog(
+        {"converge", "branches", "inventory", "--target", ctx.branch, "--json", "--jobs", "1"},
+        ctx.cloneRootRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    RequireContains(result.stdoutText, "\"id\": \"" + ctx.submodulePath + "\"");
+    RequireContains(result.stdoutText, "\"dirtyKind\": \"DETACHED_HEAD\"");
+    RequireContains(result.stdoutText, "\"planningSkipped\": true");
+    RequireContains(result.stdoutText, "\"planningSkipReason\": \"preflight-only clean nested repo skipped: DETACHED_HEAD\"");
+    RequireContains(result.stdoutText, "\"branches\": []");
+    RequireNotContains(result.stdoutText, "\"name\": \"HEAD\"");
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("converge branches inventory is read-only and reports blockers without blocked exit", "[tdd][functional][feature:converge][converge][branches][inventory]") {
     const auto ctx = CreateRemoteWithClone("converge-branches-inventory");
     WriteTextFile(ctx.cloneRepo / "dirty.txt", "dirty\n");
