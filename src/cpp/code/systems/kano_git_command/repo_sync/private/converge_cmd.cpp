@@ -3750,8 +3750,14 @@ std::vector<std::string> BlockersForNoopProof(std::vector<std::string> blockers)
 }
 
 std::vector<std::string> ApplyBlockersForCherryPickBranch(std::vector<std::string> blockers) {
-    blockers.erase(std::remove(blockers.begin(), blockers.end(), "UNPUSHED_COMMITS"), blockers.end());
-    blockers.erase(std::remove(blockers.begin(), blockers.end(), "ACTIVE_WORKTREE_LEASE"), blockers.end());
+    blockers.erase(std::remove_if(blockers.begin(),
+                                  blockers.end(),
+                                  [](const std::string& blocker) {
+                                      return blocker == "UNPUSHED_COMMITS" ||
+                                             blocker == "ACTIVE_WORKTREE_LEASE" ||
+                                             blocker.rfind("DIRTY_WORKTREE:", 0) == 0;
+                                  }),
+                   blockers.end());
     std::sort(blockers.begin(), blockers.end());
     blockers.erase(std::unique(blockers.begin(), blockers.end()), blockers.end());
     return blockers;

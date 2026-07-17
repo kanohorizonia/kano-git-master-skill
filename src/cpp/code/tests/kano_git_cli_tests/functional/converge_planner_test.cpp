@@ -901,7 +901,10 @@ TEST_CASE("converge branches apply uses an existing linked target without changi
     const std::string unrelatedBranch = "wip/unrelated-apply-primary";
     const std::string featureBranch = "feature/apply-existing-linked-target";
     RequireSuccess(RunGit({"checkout", "-b", unrelatedBranch}, ctx.cloneRepo), "checkout unrelated apply primary");
-    WriteTextFile(ctx.cloneRepo / "unrelated-primary.txt", "unrelated dirty state\n");
+    WriteTextFile(ctx.cloneRepo / "unrelated-primary.txt", "tracked baseline\n");
+    RequireSuccess(RunGit({"add", "unrelated-primary.txt"}, ctx.cloneRepo), "add unrelated apply primary baseline");
+    RequireSuccess(RunGit({"commit", "-m", "unrelated apply primary baseline"}, ctx.cloneRepo), "commit unrelated apply primary baseline");
+    WriteTextFile(ctx.cloneRepo / "unrelated-primary.txt", "unrelated tracked dirty state\n");
 
     const auto targetWorktree = (ctx.sandbox.root / "apply-existing-linked-target").lexically_normal();
     RequireSuccess(RunGit({"worktree", "add", targetWorktree.string(), ctx.branch}, ctx.cloneRepo), "add existing apply target worktree");
@@ -927,7 +930,7 @@ TEST_CASE("converge branches apply uses an existing linked target without changi
     REQUIRE(TrimCopy(RunGit({"branch", "--show-current"}, targetWorktree).stdoutText) == ctx.branch);
     REQUIRE(TrimCopy(RunGit({"branch", "--show-current"}, sourceWorktree).stdoutText) == featureBranch);
     REQUIRE(TrimCopy(RunGit({"branch", "--show-current"}, ctx.cloneRepo).stdoutText) == unrelatedBranch);
-    RequireContains(GitStatusShort(ctx.cloneRepo), "?? unrelated-primary.txt");
+    RequireContains(GitStatusShort(ctx.cloneRepo), " M unrelated-primary.txt");
     REQUIRE(GitStatusShort(sourceWorktree).empty());
     REQUIRE(GitStatusShort(targetWorktree).empty());
     REQUIRE(TrimCopy(RunGit({"rev-parse", ctx.branch}, targetWorktree).stdoutText) ==
