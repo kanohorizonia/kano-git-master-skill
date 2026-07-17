@@ -1449,6 +1449,29 @@ TEST_CASE("converge branches retire blocks dirty detached non-ancestor harvest",
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge branches targeted retire reports incomplete non-integrated closure", "[functional][converge][branches][retire][targeted][KG-BUG-0057]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-retire-targeted-incomplete");
+    const std::string featureBranch = "feature/targeted-incomplete";
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout targeted incomplete branch");
+    WriteTextFile(ctx.cloneRepo / "targeted-incomplete.txt", "not integrated\n");
+    RequireSuccess(RunGit({"add", "targeted-incomplete.txt"}, ctx.cloneRepo), "add targeted incomplete content");
+    RequireSuccess(RunGit({"commit", "-m", "targeted incomplete branch"}, ctx.cloneRepo), "commit targeted incomplete branch");
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target before incomplete retirement");
+
+    const auto result = RunKog({
+        "converge", "branches", "retire", "--no-recursive", "--target", ctx.branch,
+        "--branch", featureBranch, "--remove-worktrees", "--confirm", "--json", "--jobs", "1"}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContains(result.stdoutText, "\"action\": \"not-integrated\"");
+    RequireContains(result.stdoutText, "\"status\": \"success_with_incomplete_closure\"");
+    RequireContains(result.stdoutText, "\"requestedClosureComplete\": false");
+    REQUIRE(RunGit({"show-ref", "--verify", "--quiet", "refs/heads/" + featureBranch}, ctx.cloneRepo).exitCode == 0);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("converge branches retire preserves unrelated dirty detached worktree after successful retirement", "[functional][converge][branches][retire][partial-success][KG-BUG-0042]") {
     const auto ctx = CreateRemoteWithClone("converge-branches-retire-preserved-dirty-worktree");
     const std::string retireBranch = "feature/retire-with-preserved-dirt";

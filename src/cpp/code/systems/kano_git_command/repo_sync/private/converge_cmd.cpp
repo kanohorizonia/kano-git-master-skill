@@ -4800,6 +4800,8 @@ int RunBranchRetire(const std::filesystem::path& root,
         }
 
         const auto plan = BuildBranchPlanJson(snapshot, root, targetBranch, "cherry-pick", recursive, true, true, branchFilter);
+        std::size_t targetedBranchMatches = 0;
+        std::size_t targetedBranchesRetired = 0;
         for (const auto& repoJson : plan.value("repos", nlohmann::json::array())) {
             const auto repoId = repoJson.value("id", std::string{});
             const auto* repo = FindRepo(snapshot, repoId);
@@ -4843,6 +4845,9 @@ int RunBranchRetire(const std::filesystem::path& root,
                 }
                 if (!BranchMatchesFilter(branchJson, branchFilter)) {
                     continue;
+                }
+                if (!branchFilter.empty()) {
+                    ++targetedBranchMatches;
                 }
                 if (branchJson.value("nonConvergeTarget", false)) {
                     AppendBranchAction(result, "skipped", repoId, branch, "non-converge-target", branchJson.value("skipReason", std::string{"skipped branch"}));
@@ -5085,6 +5090,9 @@ int RunBranchRetire(const std::filesystem::path& root,
                     {"integrationProof", branchJson.value("integrationProof", std::string{})},
                     {"worktrees", worktreeLocations},
                 });
+                if (!branchFilter.empty()) {
+                    ++targetedBranchesRetired;
+                }
             }
 
             for (const auto& worktree : liveWorktrees) {
@@ -5217,9 +5225,13 @@ int RunBranchRetire(const std::filesystem::path& root,
 
         const bool blocked = BranchActionResultHasBlocked(result);
         const bool preserved = !result["preserved"].empty();
-        result["requestedClosureComplete"] = !blocked;
+        const bool targetedClosureComplete =
+            branchFilter.empty() || targetedBranchMatches == targetedBranchesRetired;
+        result["requestedClosureComplete"] = !blocked && targetedClosureComplete;
         result["status"] = blocked
             ? "blocked"
+            : !targetedClosureComplete
+                ? (confirm ? "success_with_incomplete_closure" : "preview_incomplete")
             : preserved
                 ? (confirm ? "success_with_preserved_blockers" : "preview_with_preserved_blockers")
                 : (confirm ? "success" : "preview");
