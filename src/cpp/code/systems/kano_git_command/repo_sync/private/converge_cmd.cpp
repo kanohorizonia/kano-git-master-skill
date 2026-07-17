@@ -4064,7 +4064,9 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
                 {"recoveryCommand", clean ? std::string{} : BranchWorktreeHarvestCommand(targetBranch, branch)},
             });
         }
-        const bool selectedForProof = proofBranchFilter.empty() || isTarget || branch == proofBranchFilter;
+        const bool selectedForProof = proofBranchFilter.empty() || isTarget ||
+            branch == proofBranchFilter || branchRef == proofBranchFilter ||
+            candidate.remoteBranch == proofBranchFilter;
         if (!selectedForProof) {
             branchesJson.push_back({
                 {"name", branch},
@@ -5306,27 +5308,30 @@ int RunBranchRetire(const std::filesystem::path& root,
                 std::string remoteDeleteStatus = deleteRemote ? "not-configured" : "not-requested";
                 if (!remoteOnly) {
                     upstream = UpstreamForBranch(repoPath, branch);
-                    if (deleteRemote && !upstream.empty()) {
-                        if (SplitRemoteTrackingRef(upstream, trackedRemote, trackedRemoteBranch)) {
-                            if (trackedRemoteBranch == targetBranch) {
-                                remoteDeleteStatus = "skipped-target-branch";
-                            } else if (trackedRemoteBranch != branch) {
-                                remoteDeleteStatus = "skipped-mismatched-upstream";
-                            } else {
-                                deleteTrackedRemote = true;
-                                remoteDeleteStatus = "pending";
-                            }
-                        } else {
-                            remoteDeleteStatus = "skipped-invalid-upstream";
-                        }
-                    } else if (deleteRemote) {
-                        const auto sameNameRemote = repo->remote.empty() ? std::string{"origin"} : repo->remote;
-                        const auto sameNameRef = "refs/remotes/" + sameNameRemote + "/" + branch;
-                        if (GitCapture(repoPath, {"show-ref", "--verify", "--quiet", sameNameRef}).exitCode == 0) {
+                    if (deleteRemote) {
+                        const auto sameNamePublishedRef = SameNamePublishedRemoteRef(repoPath, repo->remote, branch);
+                        std::string sameNameRemote;
+                        std::string sameNameRemoteBranch;
+                        if (!sameNamePublishedRef.empty() &&
+                            SplitRemoteTrackingRef(sameNamePublishedRef, sameNameRemote, sameNameRemoteBranch) &&
+                            sameNameRemoteBranch == branch && sameNameRemoteBranch != targetBranch) {
                             trackedRemote = sameNameRemote;
-                            trackedRemoteBranch = branch;
+                            trackedRemoteBranch = sameNameRemoteBranch;
                             deleteTrackedRemote = true;
                             remoteDeleteStatus = "pending-same-name";
+                        } else if (!upstream.empty()) {
+                            if (SplitRemoteTrackingRef(upstream, trackedRemote, trackedRemoteBranch)) {
+                                if (trackedRemoteBranch == targetBranch) {
+                                    remoteDeleteStatus = "skipped-target-branch";
+                                } else if (trackedRemoteBranch != branch) {
+                                    remoteDeleteStatus = "skipped-mismatched-upstream";
+                                } else {
+                                    deleteTrackedRemote = true;
+                                    remoteDeleteStatus = "pending";
+                                }
+                            } else {
+                                remoteDeleteStatus = "skipped-invalid-upstream";
+                            }
                         }
                     }
                     auto deleteLocal = GitCapture(repoPath, {"branch", "-d", branch});

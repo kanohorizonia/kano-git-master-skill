@@ -1198,7 +1198,7 @@ TEST_CASE("converge branches retire uses an existing linked target without chang
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
-TEST_CASE("converge branches retire deletes a same-name tracked remote branch", "[tdd][functional][feature:converge][converge][branches][retire][remote][KG-BUG-0039]") {
+TEST_CASE("converge branches retire prefers an exact same-name remote over a target-tracking upstream", "[tdd][functional][feature:converge][converge][branches][retire][remote][KG-BUG-0039][KG-BUG-0042]") {
     const auto ctx = CreateRemoteWithClone("converge-branches-retire-same-name-upstream");
     const std::string featureBranch = "feature/retire-same-name-upstream";
     RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout same-name retire feature branch");
@@ -1206,6 +1206,7 @@ TEST_CASE("converge branches retire deletes a same-name tracked remote branch", 
     RequireSuccess(RunGit({"add", "retire-same-name.txt"}, ctx.cloneRepo), "add same-name retire file");
     RequireSuccess(RunGit({"commit", "-m", "same-name retire feature"}, ctx.cloneRepo), "commit same-name retire feature");
     RequireSuccess(RunGit({"push", "-u", "origin", featureBranch}, ctx.cloneRepo), "push same-name retire feature");
+    RequireSuccess(RunGit({"branch", "--set-upstream-to=origin/" + ctx.branch, featureBranch}, ctx.cloneRepo), "point same-name published branch at target upstream");
     RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target before same-name retire");
     RequireSuccess(RunGit({"merge", "--ff-only", featureBranch}, ctx.cloneRepo), "merge same-name retire feature");
     RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.cloneRepo), "push target containing same-name retire feature");
@@ -1220,6 +1221,9 @@ TEST_CASE("converge branches retire deletes a same-name tracked remote branch", 
     const auto remoteFeature = RunGit({"ls-remote", "--heads", "origin", featureBranch}, ctx.cloneRepo);
     RequireSuccess(remoteFeature, "ls-remote after same-name branch retirement");
     REQUIRE(TrimCopy(remoteFeature.stdoutText).empty());
+    const auto remoteTarget = RunGit({"ls-remote", "--heads", "origin", ctx.branch}, ctx.cloneRepo);
+    RequireSuccess(remoteTarget, "ls-remote target after same-name branch retirement");
+    REQUIRE_FALSE(TrimCopy(remoteTarget.stdoutText).empty());
 
     RemoveSandboxWorkspace(ctx.sandbox);
 }
@@ -1927,7 +1931,7 @@ TEST_CASE("converge branch noop probe cleans partial worktree registration", "[t
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
-TEST_CASE("converge branches retire deletes remote-only no-op branches with explicit remote confirmation", "[tdd][functional][feature:converge][converge][branches][retire][remote-only]") {
+TEST_CASE("converge branches retire targets remote-only no-op branches by unprefixed name", "[tdd][functional][feature:converge][converge][branches][retire][remote-only][KG-BUG-0042][KG-BUG-0055]") {
     const auto ctx = CreateRemoteWithClone("converge-branches-retire-remote-only-noop");
     const std::string featureBranch = "feature/retire-remote-only-noop";
     RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout remote-only noop feature branch");
@@ -1951,7 +1955,7 @@ TEST_CASE("converge branches retire deletes remote-only no-op branches with expl
     REQUIRE(blocked.exitCode == 1);
     RequireContains(blocked.stdoutText, "REMOTE_DELETE_REQUIRED");
 
-    const auto result = RunKog({"converge", "branches", "retire", "--target", ctx.branch, "--delete-remote", "--confirm", "--json", "--jobs", "1"}, ctx.cloneRepo);
+    const auto result = RunKog({"converge", "branches", "retire", "--target", ctx.branch, "--branch", featureBranch, "--delete-remote", "--confirm", "--json", "--jobs", "1"}, ctx.cloneRepo);
     INFO(result.stdoutText);
     INFO(result.stderrText);
     REQUIRE(result.exitCode == 0);
