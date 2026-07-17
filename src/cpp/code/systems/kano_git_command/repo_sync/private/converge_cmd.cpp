@@ -3819,7 +3819,8 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
                                      const std::filesystem::path& repoPath,
                                      const std::string& targetBranch,
                                      const std::string& strategy,
-                                     bool allowNoopProof) {
+                                     bool allowNoopProof,
+                                     const std::string& proofBranchFilter) {
     const bool snapshotIsTarget = repo.branch == targetBranch && !repo.head.empty();
     const auto targetRef = snapshotIsTarget
         ? targetBranch
@@ -3940,6 +3941,41 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
                 {"recoveryCommand", clean ? std::string{} : BranchWorktreeHarvestCommand(targetBranch, branch)},
             });
         }
+        const bool selectedForProof = proofBranchFilter.empty() || isTarget || branch == proofBranchFilter;
+        if (!selectedForProof) {
+            branchesJson.push_back({
+                {"name", branch},
+                {"ref", branchRef},
+                {"remoteOnly", candidate.remoteOnly},
+                {"remote", candidate.remote},
+                {"remoteBranch", candidate.remoteBranch},
+                {"isTarget", false},
+                {"targetRef", targetRef},
+                {"strategy", strategy},
+                {"checkedOutWorktrees", checkedOut},
+                {"activeLeaseBlocker", !checkedOut.empty()},
+                {"worktreeInventory", branchWorktreeInventory},
+                {"dirtyWorktreeCount", dirtyWorktreeCount},
+                {"dirtyWorktreeRecoveryCommand", dirtyWorktreeCount == 0 ? std::string{} : BranchWorktreeHarvestCommand(targetBranch, branch)},
+                {"hasUpstream", false},
+                {"upstream", ""},
+                {"tracksTargetUpstream", false},
+                {"ahead", 0},
+                {"behind", 0},
+                {"publishedToSameNameRemote", false},
+                {"publishedRemoteRef", ""},
+                {"mergedIntoTarget", false},
+                {"patchEquivalentToTarget", false},
+                {"cherryPickNoopIntoTarget", false},
+                {"cherryPickNoopProbePerformed", false},
+                {"integratedIntoTarget", false},
+                {"integrationProof", ""},
+                {"proofSkippedByBranchFilter", true},
+                {"blockers", nlohmann::json::array()},
+                {"proposedActions", nlohmann::json::array({"expensive integration proof skipped by explicit branch filter"})},
+            });
+            continue;
+        }
         const auto counts = candidate.remoteOnly
             ? BranchAheadBehind{}
             : (isTarget && snapshotIsTarget ? targetCounts : AheadBehindForBranch(repoPath, branch));
@@ -4019,6 +4055,7 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
             {"isTarget", isTarget},
             {"targetRef", targetRef},
             {"strategy", strategy},
+            {"proofSkippedByBranchFilter", false},
             {"checkedOutWorktrees", checkedOut},
             {"activeLeaseBlocker", !isTarget && !checkedOut.empty()},
             {"worktreeInventory", branchWorktreeInventory},
@@ -4089,7 +4126,8 @@ nlohmann::json BuildBranchPlanJson(const Snapshot& snapshot,
                                    const std::string& strategy,
                                    bool recursive,
                                    bool allowNoopProof,
-                                   bool allowPatchEquivalentProof) {
+                                   bool allowPatchEquivalentProof,
+                                   const std::string& proofBranchFilter = {}) {
     BranchPlanExecutionContext executionContext;
     executionContext.deadlineMs = ResolveBranchPlanDeadlineMs(recursive);
     executionContext.probeTimeoutMs = ResolveBranchProbeTimeoutMs(recursive);
@@ -4108,7 +4146,7 @@ nlohmann::json BuildBranchPlanJson(const Snapshot& snapshot,
         executionContext.repoTimedOut = false;
         executionContext.repoDiagnostics.clear();
         auto repoJson = BranchPlanJsonForRepo(
-            snapshot, *repo, RepoPathForBranchPlan(workspaceRoot, *repo), targetBranch, strategy, allowNoopProof);
+            snapshot, *repo, RepoPathForBranchPlan(workspaceRoot, *repo), targetBranch, strategy, allowNoopProof, proofBranchFilter);
         nlohmann::json repoDiagnostics = nlohmann::json::array();
         std::vector<std::string> planningBlockers;
         for (const auto& diagnostic : executionContext.repoDiagnostics) {
@@ -4143,6 +4181,7 @@ nlohmann::json BuildBranchPlanJson(const Snapshot& snapshot,
         {"workspaceRoot", workspaceRoot.generic_string()},
         {"targetBranch", targetBranch},
         {"strategy", strategy},
+        {"proofBranchFilter", proofBranchFilter},
         {"recursive", recursive},
         {"planningDeadlineMs", executionContext.deadlineMs},
         {"probeTimeoutMs", executionContext.probeTimeoutMs},
@@ -4513,7 +4552,7 @@ int RunBranchApply(const std::filesystem::path& root,
             }
         }
 
-        const auto plan = BuildBranchPlanJson(snapshot, root, targetBranch, strategy, recursive, false, false);
+        const auto plan = BuildBranchPlanJson(snapshot, root, targetBranch, strategy, recursive, false, false, branchFilter);
         bool reviewedBranchMatched = false;
         for (const auto& repoJson : plan.value("repos", nlohmann::json::array())) {
             const auto repoId = repoJson.value("id", std::string{});
@@ -4723,7 +4762,7 @@ int RunBranchRetire(const std::filesystem::path& root,
             }
         }
 
-        const auto plan = BuildBranchPlanJson(snapshot, root, targetBranch, "cherry-pick", recursive, true, true);
+        const auto plan = BuildBranchPlanJson(snapshot, root, targetBranch, "cherry-pick", recursive, true, true, branchFilter);
         for (const auto& repoJson : plan.value("repos", nlohmann::json::array())) {
             const auto repoId = repoJson.value("id", std::string{});
             const auto* repo = FindRepo(snapshot, repoId);

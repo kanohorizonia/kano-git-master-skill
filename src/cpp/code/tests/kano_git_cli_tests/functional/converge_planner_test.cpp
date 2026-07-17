@@ -684,7 +684,7 @@ TEST_CASE("converge branches apply cherry-picks past a clean source worktree", "
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
-TEST_CASE("converge branches apply records reviewed ancestry without changing target tree", "[functional][converge][branches][apply][reviewed-integration][KG-BUG-0012]") {
+TEST_CASE("converge branches apply records reviewed ancestry without changing target tree", "[functional][converge][branches][apply][reviewed-integration][KG-BUG-0012][KG-BUG-0055]") {
     const auto ctx = CreateRemoteWithClone("converge-branches-apply-reviewed-integration");
     WriteTextFile(ctx.cloneRepo / "reviewed.txt", "base\n");
     RequireSuccess(RunGit({"add", "reviewed.txt"}, ctx.cloneRepo), "add reviewed integration base");
@@ -748,6 +748,37 @@ TEST_CASE("converge branches apply records reviewed ancestry without changing ta
     RequireSuccess(markerBody, "read reviewed integration marker body");
     RequireContains(markerBody.stdoutText, "Reviewed source head: " + featureHead);
     RequireContains(markerBody.stdoutText, "Review reason: feature intent was integrated with conflict resolution");
+
+    const std::string noiseSeedBranch = "feature/a-noise-seed";
+    RequireSuccess(RunGit({"checkout", "-b", noiseSeedBranch, ctx.branch}, ctx.cloneRepo), "create unrelated divergent noise branch");
+    WriteTextFile(ctx.cloneRepo / "unrelated-noise.txt", "unrelated noise\n");
+    RequireSuccess(RunGit({"add", "unrelated-noise.txt"}, ctx.cloneRepo), "add unrelated noise file");
+    RequireSuccess(RunGit({"commit", "-m", "add unrelated convergence noise"}, ctx.cloneRepo), "commit unrelated convergence noise");
+    const auto noiseHead = TrimCopy(RunGit({"rev-parse", noiseSeedBranch}, ctx.cloneRepo).stdoutText);
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target after noise seed");
+    for (int index = 0; index < 40; ++index) {
+        RequireSuccess(
+            RunGit({"branch", "feature/a-noise-" + std::to_string(index), noiseHead}, ctx.cloneRepo),
+            "add unrelated divergent branch ref");
+    }
+
+    const auto retire = RunKogWithEnv({
+        "converge", "branches", "retire", "--no-recursive", "--target", ctx.branch,
+        "--branch", featureBranch, "--remove-worktrees", "--delete-remote", "--confirm", "--json", "--jobs", "1"},
+        ctx.cloneRepo,
+        {{"KOG_BRANCH_PLAN_DEADLINE_MS", "3000"}, {"KOG_BRANCH_PROBE_TIMEOUT_MS", "1000"}});
+    INFO(retire.stdoutText);
+    INFO(retire.stderrText);
+    REQUIRE(retire.exitCode == 0);
+    RequireContains(retire.stdoutText, "\"action\": \"delete-local-and-remote\"");
+    RequireContains(retire.stdoutText, "\"integrationProof\": \"merged\"");
+    RequireNotContains(retire.stdoutText, "BRANCH_PLAN_DEADLINE");
+    REQUIRE(RunGit({"show-ref", "--verify", "--quiet", "refs/heads/" + featureBranch}, ctx.cloneRepo).exitCode != 0);
+    const auto remoteFeature = RunGit({"ls-remote", "--heads", "origin", featureBranch}, ctx.cloneRepo);
+    RequireSuccess(remoteFeature, "check reviewed source remote after retirement");
+    REQUIRE(TrimCopy(remoteFeature.stdoutText).empty());
+    REQUIRE_FALSE(std::filesystem::exists(sourceWorktree));
+    REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
 
     RemoveSandboxWorkspace(ctx.sandbox);
 }
