@@ -491,6 +491,27 @@ TEST_CASE("converge branches inventory no-recursive avoids recursive status snap
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge branches inventory resolves absorbed submodule primary worktree", "[functional][converge][branches][inventory][no-recursive][KG-BUG-0060]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("converge-branches-inventory-absorbed-primary");
+    const auto diagPath = (ctx.sandbox.root / "branch-inventory-absorbed-primary-process.log").lexically_normal();
+    std::filesystem::remove(diagPath);
+
+    const auto result = RunKogWithEnv(
+        {"converge", "branches", "inventory", "--target", ctx.branch, "--json", "--jobs", "1", "--no-recursive"},
+        ctx.cloneChildRepo,
+        {{"KOG_PROCESS_DIAGNOSTICS_LOG", diagPath.string()}});
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    RequireContains(result.stdoutText, "\"location\": \".\"");
+    RequireContains(result.stdoutText, "\"primary\": true");
+    RequireNotContains(result.stdoutText + result.stderrText, "git status --porcelain failed");
+    RequireNotContains(result.stdoutText, "<external-worktree>");
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("push no-recursive exact repo avoids recursive status snapshot", "[functional][push][no-recursive][KG-BUG-0012]") {
     const auto ctx = CreateRemoteWithSubmoduleClone("push-exact-repo-no-recursive");
     const auto diagPath = (ctx.sandbox.root / "push-exact-repo-no-recursive-process.log").lexically_normal();
@@ -967,6 +988,39 @@ TEST_CASE("converge branches retire removes merged branch and clean git worktree
     RequireNotContains(result.stdoutText, "DIRTY_WORKTREE:AHEAD_ONLY");
     REQUIRE(RunGit({"show-ref", "--verify", "--quiet", "refs/heads/" + featureBranch}, ctx.cloneRepo).exitCode != 0);
     REQUIRE(!std::filesystem::exists(worktreePath));
+    REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge branches retire hands an integrated primary worktree back to target", "[functional][converge][branches][retire][worktree][KG-BUG-0059]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-retire-primary-handoff");
+    const std::string featureBranch = "feature/retire-primary-handoff";
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout primary handoff feature");
+    WriteTextFile(ctx.cloneRepo / "primary-handoff.txt", "integrated source\n");
+    RequireSuccess(RunGit({"add", "primary-handoff.txt"}, ctx.cloneRepo), "add primary handoff file");
+    RequireSuccess(RunGit({"commit", "-m", "primary handoff feature"}, ctx.cloneRepo), "commit primary handoff feature");
+    RequireSuccess(RunGit({"push", "-u", "origin", featureBranch}, ctx.cloneRepo), "push primary handoff feature");
+
+    const auto targetWorktree = (ctx.sandbox.root / "primary-handoff-target").lexically_normal();
+    RequireSuccess(RunGit({"worktree", "add", targetWorktree.string(), ctx.branch}, ctx.cloneRepo), "add linked target worktree");
+    ConfigureIdentity(targetWorktree);
+    RequireSuccess(RunGit({"merge", "--ff-only", featureBranch}, targetWorktree), "integrate feature in linked target worktree");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, targetWorktree), "push integrated target");
+    REQUIRE(TrimCopy(RunGit({"branch", "--show-current"}, ctx.cloneRepo).stdoutText) == featureBranch);
+
+    const auto result = RunKog(
+        {"converge", "branches", "retire", "--target", ctx.branch, "--branch", featureBranch, "--remove-worktrees", "--confirm", "--json", "--jobs", "1", "--no-recursive"},
+        ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    RequireContains(result.stdoutText, "\"status\": \"primary-handoff\"");
+    RequireContains(result.stdoutText, "\"requestedClosureComplete\": true");
+    REQUIRE(TrimCopy(RunGit({"branch", "--show-current"}, ctx.cloneRepo).stdoutText) == ctx.branch);
+    REQUIRE(RunGit({"show-ref", "--verify", "--quiet", "refs/heads/" + featureBranch}, ctx.cloneRepo).exitCode != 0);
+    REQUIRE_FALSE(std::filesystem::exists(targetWorktree));
     REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
 
     RemoveSandboxWorkspace(ctx.sandbox);

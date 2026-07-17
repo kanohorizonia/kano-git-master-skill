@@ -2909,6 +2909,27 @@ std::vector<BranchWorktree> Worktrees(const std::filesystem::path& repoPath, con
     }
     flush();
 
+    const auto repoKey = ComparableAbsolutePath(repoPath);
+    const bool currentRepoListed = std::any_of(out.begin(), out.end(), [&](const auto& worktree) {
+        return !worktree.bare && ComparableAbsolutePath(worktree.absolutePath) == repoKey;
+    });
+    if (!currentRepoListed) {
+        const auto commonDirResult = GitCapture(
+            repoPath,
+            {"rev-parse", "--path-format=absolute", "--git-common-dir"});
+        const auto commonDir = FirstNonEmptyLine(commonDirResult.stdoutStr);
+        if (commonDirResult.exitCode == 0 && !commonDir.empty()) {
+            const auto commonDirKey = ComparableAbsolutePath(commonDir);
+            for (auto& worktree : out) {
+                if (!worktree.bare && ComparableAbsolutePath(worktree.absolutePath) == commonDirKey) {
+                    worktree.absolutePath = repoPath.lexically_normal();
+                    worktree.location = DisplayPathForBranchPlan(workspaceRoot, worktree.absolutePath);
+                    break;
+                }
+            }
+        }
+    }
+
     std::sort(out.begin(), out.end(), [](const auto& a, const auto& b) {
         return a.branch == b.branch ? a.location < b.location : a.branch < b.branch;
     });
@@ -2955,6 +2976,17 @@ std::string PathKey(const std::filesystem::path& path) {
 
 bool SamePath(const std::filesystem::path& left, const std::filesystem::path& right) {
     return PathKey(left) == PathKey(right);
+}
+
+bool IsPrimaryGitWorktree(const std::filesystem::path& worktreePath) {
+    const auto gitDir = GitCapture(worktreePath, {"rev-parse", "--path-format=absolute", "--git-dir"});
+    const auto commonDir = GitCapture(worktreePath, {"rev-parse", "--path-format=absolute", "--git-common-dir"});
+    if (gitDir.exitCode != 0 || commonDir.exitCode != 0) {
+        return false;
+    }
+    const auto gitDirPath = FirstNonEmptyLine(gitDir.stdoutStr);
+    const auto commonDirPath = FirstNonEmptyLine(commonDir.stdoutStr);
+    return !gitDirPath.empty() && !commonDirPath.empty() && SamePath(gitDirPath, commonDirPath);
 }
 
 std::string CombinedGitError(const shell::ExecResult& result) {
@@ -4792,7 +4824,13 @@ int RunBranchRetire(const std::filesystem::path& root,
                 if (repo == nullptr) {
                     continue;
                 }
-                (void)SyncTargetBranch(RepoPathForBranchPlan(root, *repo), repo->id, targetBranch, result, true);
+                const auto repoPath = RepoPathForBranchPlan(root, *repo);
+                auto targetSyncPath = repoPath;
+                const auto targetWorktrees = WorktreesForBranch(Worktrees(repoPath, root), targetBranch);
+                if (targetWorktrees.size() == 1) {
+                    targetSyncPath = targetWorktrees.front().absolutePath;
+                }
+                (void)SyncTargetBranch(targetSyncPath, repo->id, targetBranch, result, true);
             }
             if (!BranchActionResultHasBlocked(result)) {
                 snapshot = LoadConvergeSnapshot(root, jobs, false, recursive);
@@ -4902,13 +4940,53 @@ int RunBranchRetire(const std::filesystem::path& root,
 
                 std::vector<std::string> worktreeLocations;
                 std::unordered_set<std::string> harvestedWorktrees;
+                std::optional<BranchWorktree> primarySourceWorktree;
+                std::optional<BranchWorktree> primaryHandoffTargetWorktree;
                 bool hasDirtyWorktrees = false;
                 bool worktreesSafe = true;
                 for (const auto& worktree : branchWorktrees) {
                     worktreeLocations.push_back(worktree.location);
                     if (SamePath(worktree.absolutePath, repoPath)) {
-                        AppendBranchBlocked(result, repoId, branch, {"PRIMARY_WORKTREE_REMOVE_REFUSED"}, "refusing to remove the primary repository worktree");
-                        worktreesSafe = false;
+                        if (!IsPrimaryGitWorktree(repoPath)) {
+                            AppendBranchBlocked(result, repoId, branch, {"PRIMARY_WORKTREE_REMOVE_REFUSED"}, "current checkout is a linked worktree; run retirement from the primary repository worktree");
+                            worktreesSafe = false;
+                            continue;
+                        }
+                        std::string primaryCleanMessage;
+                        if (!WorktreeIsClean(worktree.absolutePath, primaryCleanMessage)) {
+                            AppendBranchBlocked(result, repoId, branch, {"DIRTY_PRIMARY_WORKTREE"}, primaryCleanMessage);
+                            worktreesSafe = false;
+                            continue;
+                        }
+
+                        const auto targetWorktrees = WorktreesForBranch(liveWorktrees, targetBranch);
+                        if (targetWorktrees.size() > 1) {
+                            AppendBranchBlocked(result, repoId, branch, {"AMBIGUOUS_TARGET_WORKTREE"}, "multiple target worktrees prevent a deterministic primary handoff");
+                            worktreesSafe = false;
+                            continue;
+                        }
+                        if (!targetWorktrees.empty()) {
+                            const auto& targetWorktree = targetWorktrees.front();
+                            std::string targetCleanMessage;
+                            const auto targetHead = GitCapture(repoPath, {"rev-parse", "--verify", targetRef + "^{commit}"});
+                            if (SamePath(targetWorktree.absolutePath, repoPath) || IsPrimaryGitWorktree(targetWorktree.absolutePath)) {
+                                AppendBranchBlocked(result, repoId, branch, {"TARGET_WORKTREE_NOT_LINKED"}, "target branch must be held by a removable linked worktree before primary handoff");
+                                worktreesSafe = false;
+                                continue;
+                            }
+                            if (!WorktreeIsClean(targetWorktree.absolutePath, targetCleanMessage)) {
+                                AppendBranchBlocked(result, repoId, branch, {"DIRTY_TARGET_WORKTREE"}, targetCleanMessage);
+                                worktreesSafe = false;
+                                continue;
+                            }
+                            if (targetHead.exitCode != 0 || targetWorktree.head != Trim(targetHead.stdoutStr)) {
+                                AppendBranchBlocked(result, repoId, branch, {"TARGET_WORKTREE_HEAD_MISMATCH"}, "linked target worktree HEAD does not match the resolved target branch");
+                                worktreesSafe = false;
+                                continue;
+                            }
+                            primaryHandoffTargetWorktree = targetWorktree;
+                        }
+                        primarySourceWorktree = worktree;
                         continue;
                     }
                     std::string cleanMessage;
@@ -4972,12 +5050,59 @@ int RunBranchRetire(const std::filesystem::path& root,
                     continue;
                 }
 
-                if (!remoteOnly && !CheckoutTargetBranch(repoPath, repoId, targetBranch, result)) {
+                bool primaryHandoffComplete = false;
+                if (!remoteOnly && primarySourceWorktree.has_value()) {
+                    std::string primaryCleanMessage;
+                    const auto sourceBranch = GitCapture(repoPath, {"branch", "--show-current"});
+                    const auto sourceHead = GitCapture(repoPath, {"rev-parse", "HEAD"});
+                    if (!WorktreeIsClean(repoPath, primaryCleanMessage) ||
+                        sourceBranch.exitCode != 0 || Trim(sourceBranch.stdoutStr) != branch ||
+                        sourceHead.exitCode != 0 || Trim(sourceHead.stdoutStr) != primarySourceWorktree->head) {
+                        AppendBranchBlocked(result, repoId, branch, {"PRIMARY_HANDOFF_SOURCE_CHANGED"}, primaryCleanMessage.empty() ? "primary source branch or HEAD changed after planning" : primaryCleanMessage);
+                        continue;
+                    }
+
+                    if (primaryHandoffTargetWorktree.has_value()) {
+                        const auto& targetWorktree = *primaryHandoffTargetWorktree;
+                        std::string targetCleanMessage;
+                        const auto targetBranchNow = GitCapture(targetWorktree.absolutePath, {"branch", "--show-current"});
+                        const auto targetHeadNow = GitCapture(targetWorktree.absolutePath, {"rev-parse", "HEAD"});
+                        const auto targetRefNow = GitCapture(repoPath, {"rev-parse", "--verify", targetRef + "^{commit}"});
+                        if (!WorktreeIsClean(targetWorktree.absolutePath, targetCleanMessage) ||
+                            targetBranchNow.exitCode != 0 || Trim(targetBranchNow.stdoutStr) != targetBranch ||
+                            targetHeadNow.exitCode != 0 || targetRefNow.exitCode != 0 ||
+                            Trim(targetHeadNow.stdoutStr) != targetWorktree.head ||
+                            Trim(targetHeadNow.stdoutStr) != Trim(targetRefNow.stdoutStr)) {
+                            AppendBranchBlocked(result, repoId, branch, {"PRIMARY_HANDOFF_TARGET_CHANGED"}, targetCleanMessage.empty() ? "linked target worktree branch or HEAD changed after planning" : targetCleanMessage);
+                            continue;
+                        }
+
+                        const auto removeTargetWorktree = GitCapture(repoPath, {"worktree", "remove", targetWorktree.absolutePath.string()});
+                        if (removeTargetWorktree.exitCode != 0) {
+                            AppendBranchBlocked(result, repoId, branch, {"PRIMARY_HANDOFF_TARGET_REMOVE_FAILED"}, CombinedGitError(removeTargetWorktree));
+                            continue;
+                        }
+                        result["mutationPerformed"] = true;
+                    }
+
+                    if (!CheckoutTargetBranch(repoPath, repoId, targetBranch, result)) {
+                        continue;
+                    }
+                    primaryHandoffComplete = true;
+                    result["targetSync"].push_back({
+                        {"repo", repoId},
+                        {"branch", targetBranch},
+                        {"status", "primary-handoff"},
+                        {"releasedWorktree", primaryHandoffTargetWorktree.has_value() ? primaryHandoffTargetWorktree->location : std::string{}},
+                    });
+                }
+
+                if (!remoteOnly && !primaryHandoffComplete && !CheckoutTargetBranch(repoPath, repoId, targetBranch, result)) {
                     continue;
                 }
 
                 for (const auto& worktree : branchWorktrees) {
-                    if (harvestedWorktrees.contains(PathKey(worktree.absolutePath))) {
+                    if (SamePath(worktree.absolutePath, repoPath) || harvestedWorktrees.contains(PathKey(worktree.absolutePath))) {
                         continue;
                     }
                     bool usedFilterEquivalentForce = false;
