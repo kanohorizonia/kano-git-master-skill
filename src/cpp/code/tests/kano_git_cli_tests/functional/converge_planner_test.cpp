@@ -462,6 +462,54 @@ TEST_CASE("converge branches inventory skips clean nested preflight-only proof p
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge branches inventory keeps unintegrated nested topic branches visible", "[functional][converge][branches][inventory][KG-BUG-0013]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("converge-branches-inventory-unintegrated-nested-topic");
+    const std::string featureBranch = "feature/nested-topic";
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneChildRepo), "checkout nested topic branch");
+    WriteTextFile(ctx.cloneChildRepo / "nested-topic.txt", "unintegrated topic\n");
+    RequireSuccess(RunGit({"add", "nested-topic.txt"}, ctx.cloneChildRepo), "add nested topic file");
+    RequireSuccess(RunGit({"commit", "-m", "nested topic commit"}, ctx.cloneChildRepo), "commit nested topic");
+
+    const auto result = RunKog(
+        {"converge", "branches", "inventory", "--target", ctx.branch, "--json", "--jobs", "1"},
+        ctx.cloneRootRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    RequireContains(result.stdoutText, "\"id\": \"" + ctx.submodulePath + "\"");
+    RequireContains(result.stdoutText, "\"name\": \"" + featureBranch + "\"");
+    RequireContains(result.stdoutText, "\"integratedIntoTarget\": false");
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge branches inventory defers patch-equivalence probes for dirty repos", "[functional][converge][branches][inventory][KG-BUG-0006]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-inventory-dirty-proof-budget");
+    const std::string featureBranch = "feature/dirty-proof-budget";
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout dirty proof feature");
+    WriteTextFile(ctx.cloneRepo / "feature.txt", "feature\n");
+    RequireSuccess(RunGit({"add", "feature.txt"}, ctx.cloneRepo), "add dirty proof feature");
+    RequireSuccess(RunGit({"commit", "-m", "dirty proof feature"}, ctx.cloneRepo), "commit dirty proof feature");
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to dirty proof target");
+    WriteTextFile(ctx.cloneRepo / "untracked.txt", "dirty\n");
+
+    const auto result = RunKog(
+        {"converge", "branches", "inventory", "--target", ctx.branch, "--json", "--jobs", "1", "--no-recursive"},
+        ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    RequireContains(result.stdoutText, "\"name\": \"" + featureBranch + "\"");
+    RequireContains(result.stdoutText, "\"patchEquivalentProofSkippedByDirtyRepo\": true");
+    RequireContains(result.stdoutText, "\"patchEquivalentToTarget\": false");
+    RequireContains(result.stdoutText, "DIRTY_WORKTREE:UNTRACKED_ONLY");
+    REQUIRE(std::filesystem::exists(ctx.cloneRepo / "untracked.txt"));
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("converge branches inventory is read-only and reports blockers without blocked exit", "[tdd][functional][feature:converge][converge][branches][inventory]") {
     const auto ctx = CreateRemoteWithClone("converge-branches-inventory");
     WriteTextFile(ctx.cloneRepo / "dirty.txt", "dirty\n");

@@ -4052,7 +4052,11 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
         const bool tracksTargetUpstream = !isTarget && counts.hasUpstream &&
             (counts.upstream == targetBranch || (!targetUpstream.empty() && counts.upstream == targetUpstream));
         const auto merged = isTarget || BranchMergedIntoTarget(repoPath, branchRef, targetRef);
-        const auto patchEquivalent = !isTarget && !merged && !targetRef.empty() && BranchPatchEquivalentToTarget(repoPath, targetBranch, branchRef);
+        const bool patchEquivalentProofSkippedByDirtyRepo =
+            !isTarget && !merged && proofBranchFilter.empty() && DirtyKindBlocksBranchPlan(repo.dirtyKind);
+        const auto patchEquivalent =
+            !patchEquivalentProofSkippedByDirtyRepo && !isTarget && !merged && !targetRef.empty() &&
+            BranchPatchEquivalentToTarget(repoPath, targetBranch, branchRef);
         const auto publishedRemoteRef = candidate.remoteOnly || isTarget
             ? std::string{}
             : SameNamePublishedRemoteRef(repoPath, repo.remote, branch);
@@ -4125,6 +4129,7 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
             {"targetRef", targetRef},
             {"strategy", strategy},
             {"proofSkippedByBranchFilter", false},
+            {"patchEquivalentProofSkippedByDirtyRepo", patchEquivalentProofSkippedByDirtyRepo},
             {"checkedOutWorktrees", checkedOut},
             {"activeLeaseBlocker", !isTarget && !checkedOut.empty()},
             {"worktreeInventory", branchWorktreeInventory},
@@ -4189,6 +4194,26 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
     return repoJson;
 }
 
+bool ShouldSkipNestedBranchPlanning(const RepoStatus& repo,
+                                    const std::filesystem::path& repoPath,
+                                    const std::string& targetBranch) {
+    if (repo.type == "root" || repo.managementPolicy == "discovered-untrusted" || repo.ahead > 0) {
+        return false;
+    }
+
+    const auto targetRef = ResolveTargetRef(repoPath, targetBranch, repo.remote);
+    if (targetRef.empty()) {
+        return repo.dirtyKind == "CLEAN" || IsCleanNestedPreflightOnlyBlocker(repo);
+    }
+    if (!IsCleanNestedPreflightOnlyBlocker(repo)) {
+        return false;
+    }
+    if (repo.branch.empty() || repo.branch == targetBranch) {
+        return true;
+    }
+    return GitCapture(repoPath, {"merge-base", "--is-ancestor", "HEAD", targetRef}).exitCode == 0;
+}
+
 nlohmann::json BuildBranchPlanJson(const Snapshot& snapshot,
                                    const std::filesystem::path& workspaceRoot,
                                    const std::string& targetBranch,
@@ -4214,7 +4239,8 @@ nlohmann::json BuildBranchPlanJson(const Snapshot& snapshot,
         }
         executionContext.repoTimedOut = false;
         executionContext.repoDiagnostics.clear();
-        if (IsCleanNestedPreflightOnlyBlocker(*repo)) {
+        const auto repoPath = RepoPathForBranchPlan(workspaceRoot, *repo);
+        if (ShouldSkipNestedBranchPlanning(*repo, repoPath, targetBranch)) {
             repos.push_back({
                 {"id", repo->id},
                 {"type", repo->type},
@@ -4239,7 +4265,7 @@ nlohmann::json BuildBranchPlanJson(const Snapshot& snapshot,
             continue;
         }
         auto repoJson = BranchPlanJsonForRepo(
-            snapshot, *repo, RepoPathForBranchPlan(workspaceRoot, *repo), targetBranch, strategy, allowNoopProof, proofBranchFilter);
+            snapshot, *repo, repoPath, targetBranch, strategy, allowNoopProof, proofBranchFilter);
         nlohmann::json repoDiagnostics = nlohmann::json::array();
         std::vector<std::string> planningBlockers;
         for (const auto& diagnostic : executionContext.repoDiagnostics) {
