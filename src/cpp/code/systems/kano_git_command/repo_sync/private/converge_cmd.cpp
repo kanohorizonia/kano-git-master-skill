@@ -117,6 +117,13 @@ struct DetachedWorktreeEvaluation {
     std::vector<std::string> proposedActions;
 };
 
+struct WorktreeInspection {
+    bool clean = false;
+    std::string cleanMessage;
+    std::vector<std::string> changedPaths;
+    std::string dirtyStatusError;
+};
+
 struct PhaseSummary {
     std::vector<std::string> succeeded;
     std::vector<std::string> failed;
@@ -3187,6 +3194,21 @@ bool WorktreeIsClean(const std::filesystem::path& worktreePath, std::string& mes
     return true;
 }
 
+WorktreeInspection InspectWorktree(const std::filesystem::path& worktreePath) {
+    WorktreeInspection inspection;
+    const auto entries = CollectDirtyEntries(worktreePath, &inspection.dirtyStatusError);
+    inspection.changedPaths = DirtyEntryPaths(entries);
+    if (!inspection.dirtyStatusError.empty()) {
+        inspection.cleanMessage = inspection.dirtyStatusError;
+        return inspection;
+    }
+    inspection.clean = entries.empty();
+    if (!inspection.clean) {
+        inspection.cleanMessage = "worktree has uncommitted or untracked changes";
+    }
+    return inspection;
+}
+
 bool RemoveSemanticallyCleanWorktree(const std::filesystem::path& repoPath,
                                      const std::filesystem::path& worktreePath,
                                      bool& usedFilterEquivalentForce,
@@ -3632,23 +3654,31 @@ bool CommitPatchEquivalentToTarget(const std::filesystem::path& repoPath, const 
 std::string DetachedWorktreeIntegrationProof(const std::filesystem::path& repoPath,
                                              const std::string& targetBranch,
                                              const std::string& targetRef,
-                                             const BranchWorktree& worktree) {
+                                             const BranchWorktree& worktree,
+                                             bool allowPatchEquivalentProof = true) {
     if (CommitMergedIntoTarget(repoPath, worktree.head, targetRef)) {
         return "merged";
     }
-    if (CommitPatchEquivalentToTarget(repoPath, targetBranch, worktree.head)) {
+    if (allowPatchEquivalentProof && CommitPatchEquivalentToTarget(repoPath, targetBranch, worktree.head)) {
         return "patch-equivalent";
     }
     return {};
 }
 
 DetachedWorktreeEvaluation EvaluateDetachedWorktree(const std::filesystem::path& repoPath,
-                                                    const std::string& targetBranch,
-                                                    const std::string& targetRef,
-                                                    const BranchWorktree& worktree) {
+                                                     const std::string& targetBranch,
+                                                     const std::string& targetRef,
+                                                     const BranchWorktree& worktree,
+                                                     const WorktreeInspection* inspection = nullptr,
+                                                     bool allowPatchEquivalentProof = true) {
     DetachedWorktreeEvaluation out;
     out.primary = SamePath(worktree.absolutePath, repoPath);
-    out.clean = WorktreeIsClean(worktree.absolutePath, out.cleanMessage);
+    if (inspection != nullptr) {
+        out.clean = inspection->clean;
+        out.cleanMessage = inspection->cleanMessage;
+    } else {
+        out.clean = WorktreeIsClean(worktree.absolutePath, out.cleanMessage);
+    }
     if (targetRef.empty()) {
         out.blockers.push_back("TARGET_REF_MISSING");
     }
@@ -3658,7 +3688,8 @@ DetachedWorktreeEvaluation EvaluateDetachedWorktree(const std::filesystem::path&
     if (worktree.head.empty()) {
         out.blockers.push_back("DETACHED_WORKTREE_HEAD_MISSING");
     } else {
-        out.integrationProof = DetachedWorktreeIntegrationProof(repoPath, targetBranch, targetRef, worktree);
+        out.integrationProof = DetachedWorktreeIntegrationProof(
+            repoPath, targetBranch, targetRef, worktree, allowPatchEquivalentProof);
         out.integrated = !out.integrationProof.empty();
     }
     if (!out.integrated) {
@@ -3900,6 +3931,26 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
     const bool targetBranchBehind = targetCounts.hasUpstream && targetCounts.behind > 0;
     const auto branches = BranchCandidates(repoPath, repo.remote);
     const auto worktrees = Worktrees(repoPath, snapshot.workspaceRoot);
+    std::unordered_map<std::string, WorktreeInspection> worktreeInspections;
+    std::size_t worktreeStatusProbeCount = 0;
+    std::size_t primarySnapshotReuseCount = 0;
+    const bool snapshotProvesPrimaryClean =
+        !DirtyKindBlocksBranchPlan(repo.dirtyKind) || IsCleanNestedPreflightOnlyBlocker(repo);
+    for (const auto& worktree : worktrees) {
+        if (worktree.bare) {
+            continue;
+        }
+        WorktreeInspection inspection;
+        if (SamePath(worktree.absolutePath, repoPath) && snapshotProvesPrimaryClean) {
+            inspection.clean = true;
+            ++primarySnapshotReuseCount;
+        } else {
+            inspection = InspectWorktree(worktree.absolutePath);
+            ++worktreeStatusProbeCount;
+        }
+        worktreeInspections.emplace(worktree.absolutePath.generic_string(), std::move(inspection));
+    }
+    const bool deferDirtyRepoPatchProof = proofBranchFilter.empty() && DirtyKindBlocksBranchPlan(repo.dirtyKind);
 
     nlohmann::json repoJson;
     repoJson["id"] = repo.id;
@@ -3912,6 +3963,8 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
     repoJson["ahead"] = repo.ahead;
     repoJson["behind"] = repo.behind;
     repoJson["dirtyKind"] = repo.dirtyKind;
+    repoJson["worktreeStatusProbeCount"] = worktreeStatusProbeCount;
+    repoJson["primarySnapshotReuseCount"] = primarySnapshotReuseCount;
     repoJson["parentRepos"] = repo.parentRepos;
     repoJson["childRepos"] = repo.childRepos;
 
@@ -3925,26 +3978,25 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
             {"bare", worktree.bare},
         };
         if (worktree.detached && !worktree.bare) {
-            const auto evaluation = EvaluateDetachedWorktree(repoPath, targetBranch, targetRef, worktree);
+            const auto& inspection = worktreeInspections.at(worktree.absolutePath.generic_string());
+            const auto evaluation = EvaluateDetachedWorktree(
+                repoPath, targetBranch, targetRef, worktree, &inspection, !deferDirtyRepoPatchProof);
             worktreeObject["primary"] = evaluation.primary;
             worktreeObject["clean"] = evaluation.clean;
             worktreeObject["cleanMessage"] = evaluation.clean ? std::string{} : evaluation.cleanMessage;
             worktreeObject["integratedIntoTarget"] = evaluation.integrated;
             worktreeObject["integrationProof"] = evaluation.integrationProof;
+            worktreeObject["patchEquivalentProofSkippedByDirtyRepo"] = deferDirtyRepoPatchProof;
             worktreeObject["blockers"] = evaluation.blockers;
             worktreeObject["proposedActions"] = evaluation.proposedActions;
         } else if (!worktree.bare) {
-            std::string cleanMessage;
-            const auto clean = WorktreeIsClean(worktree.absolutePath, cleanMessage);
-            std::string dirtyError;
-            const auto changedPaths = clean
-                ? std::vector<std::string>{}
-                : DirtyEntryPaths(CollectDirtyEntries(worktree.absolutePath, &dirtyError));
+            const auto& inspection = worktreeInspections.at(worktree.absolutePath.generic_string());
+            const auto clean = inspection.clean;
             worktreeObject["primary"] = SamePath(worktree.absolutePath, repoPath);
             worktreeObject["clean"] = clean;
-            worktreeObject["cleanMessage"] = clean ? std::string{} : cleanMessage;
-            worktreeObject["changedPaths"] = changedPaths;
-            worktreeObject["dirtyStatusError"] = dirtyError;
+            worktreeObject["cleanMessage"] = clean ? std::string{} : inspection.cleanMessage;
+            worktreeObject["changedPaths"] = inspection.changedPaths;
+            worktreeObject["dirtyStatusError"] = inspection.dirtyStatusError;
             worktreeObject["recoveryCommand"] = clean || worktree.branch.empty()
                 ? std::string{}
                 : BranchWorktreeHarvestCommand(targetBranch, worktree.branch);
@@ -3990,12 +4042,8 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
         nlohmann::json branchWorktreeInventory = nlohmann::json::array();
         std::size_t dirtyWorktreeCount = 0;
         for (const auto& worktree : branchWorktrees) {
-            std::string cleanMessage;
-            const auto clean = WorktreeIsClean(worktree.absolutePath, cleanMessage);
-            std::string dirtyError;
-            const auto changedPaths = clean
-                ? std::vector<std::string>{}
-                : DirtyEntryPaths(CollectDirtyEntries(worktree.absolutePath, &dirtyError));
+            const auto& inspection = worktreeInspections.at(worktree.absolutePath.generic_string());
+            const auto clean = inspection.clean;
             if (!clean) {
                 ++dirtyWorktreeCount;
             }
@@ -4004,9 +4052,9 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
                 {"head", worktree.head},
                 {"primary", SamePath(worktree.absolutePath, repoPath)},
                 {"clean", clean},
-                {"cleanMessage", clean ? std::string{} : cleanMessage},
-                {"changedPaths", changedPaths},
-                {"dirtyStatusError", dirtyError},
+                {"cleanMessage", clean ? std::string{} : inspection.cleanMessage},
+                {"changedPaths", inspection.changedPaths},
+                {"dirtyStatusError", inspection.dirtyStatusError},
                 {"recoveryCommand", clean ? std::string{} : BranchWorktreeHarvestCommand(targetBranch, branch)},
             });
         }

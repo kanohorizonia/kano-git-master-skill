@@ -493,6 +493,11 @@ TEST_CASE("converge branches inventory defers patch-equivalence probes for dirty
     RequireSuccess(RunGit({"commit", "-m", "dirty proof feature"}, ctx.cloneRepo), "commit dirty proof feature");
     RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to dirty proof target");
     WriteTextFile(ctx.cloneRepo / "untracked.txt", "dirty\n");
+    const auto featureWorktree = ctx.sandbox.root / "dirty-proof-feature-worktree";
+    RequireSuccess(
+        RunGit({"worktree", "add", featureWorktree.generic_string(), featureBranch}, ctx.cloneRepo),
+        "add dirty proof feature worktree");
+    WriteTextFile(featureWorktree / "worktree-untracked.txt", "dirty worktree\n");
 
     const auto result = RunKog(
         {"converge", "branches", "inventory", "--target", ctx.branch, "--json", "--jobs", "1", "--no-recursive"},
@@ -504,8 +509,26 @@ TEST_CASE("converge branches inventory defers patch-equivalence probes for dirty
     RequireContains(result.stdoutText, "\"name\": \"" + featureBranch + "\"");
     RequireContains(result.stdoutText, "\"patchEquivalentProofSkippedByDirtyRepo\": true");
     RequireContains(result.stdoutText, "\"patchEquivalentToTarget\": false");
+    RequireContains(result.stdoutText, "\"worktreeStatusProbeCount\": 2");
     RequireContains(result.stdoutText, "DIRTY_WORKTREE:UNTRACKED_ONLY");
     REQUIRE(std::filesystem::exists(ctx.cloneRepo / "untracked.txt"));
+    REQUIRE(std::filesystem::exists(featureWorktree / "worktree-untracked.txt"));
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge branches inventory reuses a clean primary snapshot", "[functional][converge][branches][inventory][KG-BUG-0006]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-inventory-clean-primary-snapshot");
+
+    const auto result = RunKog(
+        {"converge", "branches", "inventory", "--target", ctx.branch, "--json", "--jobs", "1", "--no-recursive"},
+        ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    RequireContains(result.stdoutText, "\"worktreeStatusProbeCount\": 0");
+    RequireContains(result.stdoutText, "\"primarySnapshotReuseCount\": 1");
 
     RemoveSandboxWorkspace(ctx.sandbox);
 }
