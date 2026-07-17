@@ -1118,6 +1118,44 @@ TEST_CASE("converge branches retire hands an integrated primary worktree back to
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge branches retire uses an existing linked target without changing an unrelated primary", "[functional][converge][branches][retire][worktree][KG-BUG-0062]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-retire-existing-linked-target");
+    const std::string unrelatedBranch = "wip/unrelated-primary";
+    const std::string featureBranch = "feature/retire-existing-linked-target";
+    RequireSuccess(RunGit({"checkout", "-b", unrelatedBranch}, ctx.cloneRepo), "checkout unrelated primary branch");
+
+    const auto targetWorktree = (ctx.sandbox.root / "existing-linked-target").lexically_normal();
+    RequireSuccess(RunGit({"worktree", "add", targetWorktree.string(), ctx.branch}, ctx.cloneRepo), "add existing linked target worktree");
+    ConfigureIdentity(targetWorktree);
+    const auto sourceWorktree = (ctx.sandbox.root / "existing-linked-source").lexically_normal();
+    RequireSuccess(RunGit({"worktree", "add", "-b", featureBranch, sourceWorktree.string(), ctx.branch}, ctx.cloneRepo), "add linked source worktree");
+    ConfigureIdentity(sourceWorktree);
+    WriteTextFile(sourceWorktree / "linked-target-retire.txt", "integrated source\n");
+    RequireSuccess(RunGit({"add", "linked-target-retire.txt"}, sourceWorktree), "add linked target retire file");
+    RequireSuccess(RunGit({"commit", "-m", "linked target retire feature"}, sourceWorktree), "commit linked target retire feature");
+    RequireSuccess(RunGit({"merge", "--ff-only", featureBranch}, targetWorktree), "integrate source in linked target");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, targetWorktree), "push linked target integration");
+    WriteTextFile(ctx.cloneRepo / "unrelated-dirty.txt", "preserve primary dirt\n");
+
+    const auto result = RunKog(
+        {"converge", "branches", "retire", "--target", ctx.branch, "--branch", featureBranch, "--remove-worktrees", "--confirm", "--json", "--jobs", "1", "--no-recursive"},
+        ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    RequireContains(result.stdoutText, "\"status\": \"existing-linked-target\"");
+    RequireContains(result.stdoutText, "\"requestedClosureComplete\": true");
+    REQUIRE(TrimCopy(RunGit({"branch", "--show-current"}, ctx.cloneRepo).stdoutText) == unrelatedBranch);
+    REQUIRE(std::filesystem::exists(ctx.cloneRepo / "unrelated-dirty.txt"));
+    REQUIRE(std::filesystem::exists(targetWorktree));
+    REQUIRE(TrimCopy(RunGit({"branch", "--show-current"}, targetWorktree).stdoutText) == ctx.branch);
+    REQUIRE_FALSE(std::filesystem::exists(sourceWorktree));
+    REQUIRE(RunGit({"show-ref", "--verify", "--quiet", "refs/heads/" + featureBranch}, ctx.cloneRepo).exitCode != 0);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("converge branches retire deletes a same-name tracked remote branch", "[tdd][functional][feature:converge][converge][branches][retire][remote][KG-BUG-0039]") {
     const auto ctx = CreateRemoteWithClone("converge-branches-retire-same-name-upstream");
     const std::string featureBranch = "feature/retire-same-name-upstream";

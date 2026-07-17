@@ -5195,8 +5195,40 @@ int RunBranchRetire(const std::filesystem::path& root,
                     });
                 }
 
-                if (!remoteOnly && !primaryHandoffComplete && !CheckoutTargetBranch(repoPath, repoId, targetBranch, result)) {
-                    continue;
+                if (!remoteOnly && !primaryHandoffComplete) {
+                    auto targetCheckoutPath = repoPath;
+                    const auto targetWorktreesNow = WorktreesForBranch(Worktrees(repoPath, root), targetBranch);
+                    if (targetWorktreesNow.size() > 1) {
+                        AppendBranchBlocked(result, repoId, branch, {"AMBIGUOUS_TARGET_WORKTREE"}, "multiple target worktrees prevent deterministic retirement");
+                        continue;
+                    }
+                    if (!targetWorktreesNow.empty()) {
+                        const auto& targetWorktree = targetWorktreesNow.front();
+                        std::string targetCleanMessage;
+                        const auto targetBranchNow = GitCapture(targetWorktree.absolutePath, {"branch", "--show-current"});
+                        const auto targetHeadNow = GitCapture(targetWorktree.absolutePath, {"rev-parse", "HEAD"});
+                        const auto targetRefNow = GitCapture(repoPath, {"rev-parse", "--verify", targetRef + "^{commit}"});
+                        if (!WorktreeIsClean(targetWorktree.absolutePath, targetCleanMessage) ||
+                            targetBranchNow.exitCode != 0 || Trim(targetBranchNow.stdoutStr) != targetBranch ||
+                            targetHeadNow.exitCode != 0 || targetRefNow.exitCode != 0 ||
+                            Trim(targetHeadNow.stdoutStr) != targetWorktree.head ||
+                            Trim(targetHeadNow.stdoutStr) != Trim(targetRefNow.stdoutStr)) {
+                            AppendBranchBlocked(result, repoId, branch, {"TARGET_WORKTREE_CHANGED"}, targetCleanMessage.empty() ? "target worktree branch or HEAD changed after planning" : targetCleanMessage);
+                            continue;
+                        }
+                        targetCheckoutPath = targetWorktree.absolutePath;
+                    }
+                    if (!CheckoutTargetBranch(targetCheckoutPath, repoId, targetBranch, result)) {
+                        continue;
+                    }
+                    if (!SamePath(targetCheckoutPath, repoPath)) {
+                        result["targetSync"].push_back({
+                            {"repo", repoId},
+                            {"branch", targetBranch},
+                            {"status", "existing-linked-target"},
+                            {"worktree", targetCheckoutPath.generic_string()},
+                        });
+                    }
                 }
 
                 for (const auto& worktree : branchWorktrees) {
