@@ -106,7 +106,7 @@ TEST_CASE("exact-path commit isolates add modify delete and rename from unrelate
 }
 
 TEST_CASE("exact-path dry-run accepts explicit no-recursive without mutation",
-          "[functional][KG-TSK-0112][KG-BUG-0058][dry-run]") {
+          "[functional][KG-TSK-0112][KG-BUG-0058][KG-BUG-0061][dry-run]") {
     auto [sandbox, repo] = InitRepo("exact-path-preview", {"selected.txt", "excluded.txt"});
     WriteText(repo / "selected.txt", "selected\n");
     WriteText(repo / "excluded.txt", "excluded\n");
@@ -114,7 +114,7 @@ TEST_CASE("exact-path dry-run accepts explicit no-recursive without mutation",
     const auto statusBefore = GitOutput(repo, {"status", "--short"});
     const auto diagnosticsLog = (sandbox.root / "exact-path-preview-process.log").string();
     const auto result = RunKogWithEnv({
-        "commit", "--no-recursive", "--exact-path", "selected.txt", "-m", "[Test][Chore] preview", "--dry-run",
+        "commit", "--no-recursive", "--no-ai-review", "--exact-path", "selected.txt", "-m", "[Test][Chore] preview", "--dry-run",
     }, repo, {{"KOG_PROCESS_DIAGNOSTICS_LOG", diagnosticsLog}});
     RequireSuccess(result, "exact-path dry-run");
     RequireContains(result.stdoutText, "\"status\": \"preview\"");

@@ -5895,7 +5895,7 @@ void RegisterCommit(CLI::App& InApp) {
             const bool incompatible = !repos->empty() || *bNoDirtyOnly || *jobs != "auto" ||
                                       !commitPlanFile->empty() || *planStage != "commit" || *bAiAuto ||
                                       !provider->empty() || !model->empty() || !aiFillMode->empty() ||
-                                      !agent->empty() || *bPush || *bNoAiReview ||
+                                      !agent->empty() || *bPush ||
                                       *bStagedOnly || *bShell || *bPreflightOnly || *bNoNativePreflight ||
                                       *bProfile || *bAllowEmptyDirty || *bYolo;
             if (message->empty()) {
