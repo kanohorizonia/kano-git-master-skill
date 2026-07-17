@@ -896,6 +896,45 @@ TEST_CASE("converge branches apply records reviewed ancestry without changing ta
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge branches apply uses an existing linked target without changing other worktrees", "[functional][converge][branches][apply][worktree][KG-BUG-0064]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-apply-existing-linked-target");
+    const std::string unrelatedBranch = "wip/unrelated-apply-primary";
+    const std::string featureBranch = "feature/apply-existing-linked-target";
+    RequireSuccess(RunGit({"checkout", "-b", unrelatedBranch}, ctx.cloneRepo), "checkout unrelated apply primary");
+    WriteTextFile(ctx.cloneRepo / "unrelated-primary.txt", "unrelated dirty state\n");
+
+    const auto targetWorktree = (ctx.sandbox.root / "apply-existing-linked-target").lexically_normal();
+    RequireSuccess(RunGit({"worktree", "add", targetWorktree.string(), ctx.branch}, ctx.cloneRepo), "add existing apply target worktree");
+    ConfigureIdentity(targetWorktree);
+
+    const auto sourceWorktree = (ctx.sandbox.root / "apply-linked-source").lexically_normal();
+    RequireSuccess(RunGit({"worktree", "add", "-b", featureBranch, sourceWorktree.string(), ctx.branch}, ctx.cloneRepo), "add apply source worktree");
+    ConfigureIdentity(sourceWorktree);
+    WriteTextFile(sourceWorktree / "linked-target-apply.txt", "apply through linked target\n");
+    RequireSuccess(RunGit({"add", "linked-target-apply.txt"}, sourceWorktree), "add linked-target apply file");
+    RequireSuccess(RunGit({"commit", "-m", "linked target apply feature"}, sourceWorktree), "commit linked-target apply feature");
+    RequireSuccess(RunGit({"push", "-u", "origin", featureBranch}, sourceWorktree), "push linked-target apply feature");
+
+    const auto result = RunKog(
+        {"converge", "branches", "apply", "--target", ctx.branch, "--strategy", "cherry-pick",
+         "--branch", featureBranch, "--confirm", "--json", "--jobs", "1", "--no-recursive"},
+        sourceWorktree);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContains(result.stdoutText, "\"action\": \"cherry-pick\"");
+    REQUIRE(std::filesystem::exists(targetWorktree / "linked-target-apply.txt"));
+    REQUIRE(TrimCopy(RunGit({"branch", "--show-current"}, targetWorktree).stdoutText) == ctx.branch);
+    REQUIRE(TrimCopy(RunGit({"branch", "--show-current"}, sourceWorktree).stdoutText) == featureBranch);
+    REQUIRE(TrimCopy(RunGit({"branch", "--show-current"}, ctx.cloneRepo).stdoutText) == unrelatedBranch);
+    RequireContains(GitStatusShort(ctx.cloneRepo), "?? unrelated-primary.txt");
+    REQUIRE(GitStatusShort(sourceWorktree).empty());
+    REQUIRE(GitStatusShort(targetWorktree).empty());
+    REQUIRE(TrimCopy(RunGit({"rev-parse", ctx.branch}, targetWorktree).stdoutText) ==
+            TrimCopy(RunGit({"rev-parse", "origin/" + ctx.branch}, targetWorktree).stdoutText));
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
 TEST_CASE("converge branches apply skips empty cherry-pick commits", "[tdd][functional][feature:converge][converge][branches][apply][cherry-pick]") {
     const auto ctx = CreateRemoteWithClone("converge-branches-apply-cherry-pick-empty");
     const std::string featureBranch = "feature/apply-cherry-pick-empty";

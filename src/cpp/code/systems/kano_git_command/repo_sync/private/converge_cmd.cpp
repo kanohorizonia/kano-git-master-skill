@@ -4712,7 +4712,17 @@ int RunBranchApply(const std::filesystem::path& root,
                 if (repo == nullptr) {
                     continue;
                 }
-                (void)SyncTargetBranch(RepoPathForBranchPlan(root, *repo), repo->id, targetBranch, result);
+                const auto repoPath = RepoPathForBranchPlan(root, *repo);
+                auto targetSyncPath = repoPath;
+                const auto targetWorktrees = WorktreesForBranch(Worktrees(repoPath, root), targetBranch);
+                if (targetWorktrees.size() > 1) {
+                    AppendBranchBlocked(result, repo->id, targetBranch, {"AMBIGUOUS_TARGET_WORKTREE"}, "multiple target worktrees prevent deterministic apply synchronization");
+                    continue;
+                }
+                if (!targetWorktrees.empty()) {
+                    targetSyncPath = targetWorktrees.front().absolutePath;
+                }
+                (void)SyncTargetBranch(targetSyncPath, repo->id, targetBranch, result);
             }
             if (!BranchActionResultHasBlocked(result)) {
                 snapshot = LoadConvergeSnapshot(root, jobs, false, recursive);
@@ -4779,16 +4789,43 @@ int RunBranchApply(const std::filesystem::path& root,
                     AppendBranchBlocked(result, repoId, branch, {"CONFIRM_REQUIRED"}, "rerun with --confirm to mutate target branch");
                     continue;
                 }
-                if (!CheckoutTargetBranch(repoPath, repoId, targetBranch, result)) {
+                auto targetCheckoutPath = repoPath;
+                const auto targetWorktrees = WorktreesForBranch(liveWorktrees, targetBranch);
+                if (targetWorktrees.size() > 1) {
+                    AppendBranchBlocked(result, repoId, branch, {"AMBIGUOUS_TARGET_WORKTREE"}, "multiple target worktrees prevent deterministic branch apply");
+                    continue;
+                }
+                if (!targetWorktrees.empty()) {
+                    const auto& targetWorktree = targetWorktrees.front();
+                    std::string targetCleanMessage;
+                    const auto targetBranchNow = GitCapture(targetWorktree.absolutePath, {"branch", "--show-current"});
+                    const auto targetHeadNow = GitCapture(targetWorktree.absolutePath, {"rev-parse", "HEAD"});
+                    const auto targetRef = ResolveTargetRef(repoPath, targetBranch, repo->remote);
+                    if (targetRef.empty()) {
+                        AppendBranchBlocked(result, repoId, branch, {"TARGET_REF_UNAVAILABLE"}, "target branch ref is unavailable after synchronization");
+                        continue;
+                    }
+                    const auto targetRefNow = GitCapture(repoPath, {"rev-parse", "--verify", targetRef + "^{commit}"});
+                    if (!WorktreeIsClean(targetWorktree.absolutePath, targetCleanMessage) ||
+                        targetBranchNow.exitCode != 0 || Trim(targetBranchNow.stdoutStr) != targetBranch ||
+                        targetHeadNow.exitCode != 0 || targetRefNow.exitCode != 0 ||
+                        Trim(targetHeadNow.stdoutStr) != targetWorktree.head ||
+                        Trim(targetHeadNow.stdoutStr) != Trim(targetRefNow.stdoutStr)) {
+                        AppendBranchBlocked(result, repoId, branch, {"TARGET_WORKTREE_CHANGED"}, targetCleanMessage.empty() ? "target worktree branch or HEAD changed after synchronization" : targetCleanMessage);
+                        continue;
+                    }
+                    targetCheckoutPath = targetWorktree.absolutePath;
+                }
+                if (!CheckoutTargetBranch(targetCheckoutPath, repoId, targetBranch, result)) {
                     continue;
                 }
 
                 shell::ExecResult integrate;
                 if (strategy == "merge") {
-                    integrate = GitCapture(repoPath, {"merge", "--no-ff", "--no-edit", branch});
+                    integrate = GitCapture(targetCheckoutPath, {"merge", "--no-ff", "--no-edit", branch});
                 } else if (strategy == "cherry-pick") {
                     std::string commitPlanError;
-                    const auto commits = CherryPickCommitsForBranch(repoPath, targetBranch, branchRef, commitPlanError);
+                    const auto commits = CherryPickCommitsForBranch(targetCheckoutPath, targetBranch, branchRef, commitPlanError);
                     if (!commitPlanError.empty()) {
                         AppendBranchBlocked(result, repoId, branch, {"CHERRY_PICK_PLAN_FAILED"}, commitPlanError);
                         continue;
@@ -4797,14 +4834,14 @@ int RunBranchApply(const std::filesystem::path& root,
                         AppendBranchAction(result, "skipped", repoId, branch, "already-equivalent", "branch commits are already patch-equivalent to target");
                         continue;
                     }
-                    const auto targetHeadBefore = GitCapture(repoPath, {"rev-parse", "--verify", targetBranch + "^{commit}"});
+                    const auto targetHeadBefore = GitCapture(targetCheckoutPath, {"rev-parse", "--verify", targetBranch + "^{commit}"});
                     std::vector<std::string> cherryPickArgs{"cherry-pick"};
                     cherryPickArgs.insert(cherryPickArgs.end(), commits.begin(), commits.end());
-                    const auto cherryPick = GitCapture(repoPath, cherryPickArgs);
+                    const auto cherryPick = GitCapture(targetCheckoutPath, cherryPickArgs);
                     bool cherryPickSucceeded = cherryPick.exitCode == 0;
                     if (!cherryPickSucceeded && IsEmptyCherryPickError(cherryPick)) {
                         std::string skipError;
-                        if (SkipEmptyCherryPick(repoPath, skipError)) {
+                        if (SkipEmptyCherryPick(targetCheckoutPath, skipError)) {
                             cherryPickSucceeded = true;
                         } else {
                             AppendBranchBlocked(result, repoId, branch, {"CHERRY_PICK_SKIP_FAILED"}, skipError);
@@ -4818,12 +4855,12 @@ int RunBranchApply(const std::filesystem::path& root,
                             {"repo", repoId},
                             {"branch", branch},
                             {"targetBranch", targetBranch},
-                            {"workingDirectory", repoPath.generic_string()},
+                            {"workingDirectory", targetCheckoutPath.generic_string()},
                             {"continueCommand", "kog cherry-pick --continue --repo ."},
                             {"abortCommand", "kog cherry-pick --abort --repo ."},
                         };
                     }
-                    const auto targetHeadAfter = GitCapture(repoPath, {"rev-parse", "--verify", targetBranch + "^{commit}"});
+                    const auto targetHeadAfter = GitCapture(targetCheckoutPath, {"rev-parse", "--verify", targetBranch + "^{commit}"});
                     const bool targetAdvanced = targetHeadBefore.exitCode == 0 && targetHeadAfter.exitCode == 0 &&
                                                 Trim(targetHeadBefore.stdoutStr) != Trim(targetHeadAfter.stdoutStr);
                     const int appliedCherryPickCommits = targetAdvanced ? static_cast<int>(commits.size()) : 0;
@@ -4838,12 +4875,12 @@ int RunBranchApply(const std::filesystem::path& root,
                         continue;
                     }
                 } else {
-                    const auto targetIsAncestor = GitCapture(repoPath, {"merge-base", "--is-ancestor", targetBranch, branch});
+                    const auto targetIsAncestor = GitCapture(targetCheckoutPath, {"merge-base", "--is-ancestor", targetBranch, branch});
                     if (targetIsAncestor.exitCode != 0) {
                         AppendBranchBlocked(result, repoId, branch, {"REBASE_APPLY_REQUIRES_FAST_FORWARD_TARGET"}, "default rebase apply only advances target when target is an ancestor of the branch");
                         continue;
                     }
-                    integrate = GitCapture(repoPath, {"merge", "--ff-only", branch});
+                    integrate = GitCapture(targetCheckoutPath, {"merge", "--ff-only", branch});
                 }
                 if (strategy != "cherry-pick" && integrate.exitCode != 0) {
                     AppendBranchBlocked(result, repoId, branch, {"BRANCH_INTEGRATION_FAILED"}, CombinedGitError(integrate));
@@ -4853,10 +4890,10 @@ int RunBranchApply(const std::filesystem::path& root,
                 auto remote = repo->remote.empty() ? std::string{"origin"} : repo->remote;
                 std::string upstreamRemote;
                 std::string upstreamBranch;
-                if (SplitRemoteTrackingRef(UpstreamForBranch(repoPath, targetBranch), upstreamRemote, upstreamBranch)) {
+                if (SplitRemoteTrackingRef(UpstreamForBranch(targetCheckoutPath, targetBranch), upstreamRemote, upstreamBranch)) {
                     remote = upstreamRemote;
                 }
-                const auto push = GitCapture(repoPath, {"push", remote, targetBranch});
+                const auto push = GitCapture(targetCheckoutPath, {"push", remote, targetBranch});
                 if (push.exitCode != 0) {
                     AppendBranchBlocked(result, repoId, branch, {"TARGET_PUSH_FAILED"}, CombinedGitError(push));
                     continue;

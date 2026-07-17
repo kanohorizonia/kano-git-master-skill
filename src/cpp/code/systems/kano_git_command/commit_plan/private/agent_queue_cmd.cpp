@@ -913,7 +913,7 @@ auto RunExactPathCommit(const ExactPathCommitOptions& InOptions) -> int {
         if (result.exitCode != 0) {
             return PrintError("exact_stage_failed", Trim(result.stderrStr));
         }
-        result = GitCapture(context->repo, {"-c", "core.quotepath=false", "diff", "--cached", "--name-only"});
+        result = GitCapture(context->repo, {"-c", "core.quotepath=false", "diff", "--cached", "--name-only", "--no-renames"});
         if (result.exitCode != 0) {
             return PrintError("exact_stage_failed", Trim(result.stderrStr));
         }

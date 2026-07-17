@@ -25,6 +25,15 @@ auto RequireContains(const std::string& InText, const std::string& InNeedle) -> 
     REQUIRE(InText.find(InNeedle) != std::string::npos);
 }
 
+auto JsonArrayForKey(const std::string& InText, const std::string& InKey) -> std::string {
+    const auto marker = "\"" + InKey + "\": [";
+    const auto begin = InText.find(marker);
+    REQUIRE(begin != std::string::npos);
+    const auto end = InText.find(']', begin + marker.size());
+    REQUIRE(end != std::string::npos);
+    return InText.substr(begin, end - begin + 1);
+}
+
 auto WriteText(const std::filesystem::path& InPath, const std::string& InText) -> void {
     std::filesystem::create_directories(InPath.parent_path());
     std::ofstream stream(InPath, std::ios::binary | std::ios::trunc);
@@ -68,7 +77,7 @@ auto ExtractBatchId(const std::string& InOutput) -> std::string {
 } // namespace
 
 TEST_CASE("exact-path commit isolates add modify delete and rename from unrelated staged state",
-          "[functional][KG-TSK-0112][exact-path]") {
+          "[functional][KG-TSK-0112][KG-BUG-0063][exact-path]") {
     auto [sandbox, repo] = InitRepo("exact-path-mixed", {
         "modify.txt", "delete.txt", "rename-old.txt", "staged.txt", "excluded.txt",
     });
@@ -89,6 +98,13 @@ TEST_CASE("exact-path commit isolates add modify delete and rename from unrelate
     RequireSuccess(result, "exact-path mixed commit");
     RequireContains(result.stdoutText, "\"status\": \"committed\"");
     RequireContains(result.stdoutText, "\"unrelatedStagedPreserved\": true");
+    const auto includedReceipt = JsonArrayForKey(result.stdoutText, "included");
+    const auto excludedReceipt = JsonArrayForKey(result.stdoutText, "excluded");
+    RequireContains(includedReceipt, "rename-old.txt");
+    RequireContains(includedReceipt, "rename-new.txt");
+    REQUIRE(excludedReceipt.find("rename-old.txt") == std::string::npos);
+    REQUIRE(excludedReceipt.find("rename-new.txt") == std::string::npos);
+    RequireContains(excludedReceipt, "excluded.txt");
 
     const auto committed = GitOutput(repo, {"diff-tree", "--no-commit-id", "--name-only", "-r", "--no-renames", "HEAD"});
     RequireContains(committed, "add.txt");
