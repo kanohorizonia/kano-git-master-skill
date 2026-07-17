@@ -5892,7 +5892,7 @@ void RegisterCommit(CLI::App& InApp) {
         }
 
         if (!exactPaths->empty()) {
-            const bool incompatible = !repos->empty() || *bNoRecursive || *bNoDirtyOnly || *jobs != "auto" ||
+            const bool incompatible = !repos->empty() || *bNoDirtyOnly || *jobs != "auto" ||
                                       !commitPlanFile->empty() || *planStage != "commit" || *bAiAuto ||
                                       !provider->empty() || !model->empty() || !aiFillMode->empty() ||
                                       !agent->empty() || *bPush || *bNoAiReview ||
@@ -5903,7 +5903,7 @@ void RegisterCommit(CLI::App& InApp) {
                 std::exit(2);
             }
             if (incompatible) {
-                std::cerr << "Error: --exact-path cannot be combined with recursive, plan, AI, push, staged-only, or preflight options\n";
+                std::cerr << "Error: --exact-path cannot be combined with repo selection, plan, AI, push, staged-only, or preflight options\n";
                 std::exit(2);
             }
             ExactPathCommitOptions options;
