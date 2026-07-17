@@ -96,6 +96,7 @@ struct BranchAheadBehind {
     int ahead = 0;
     int behind = 0;
     bool hasUpstream = false;
+    std::string upstream;
 };
 
 struct BranchCandidate {
@@ -3470,6 +3471,7 @@ BranchAheadBehind AheadBehindForBranch(const std::filesystem::path& repoPath, co
         return out;
     }
     out.hasUpstream = true;
+    out.upstream = upstreamName;
     const auto counts = GitCapture(repoPath, {"rev-list", "--left-right", "--count", branch + "..." + upstreamName});
     if (counts.exitCode == 0) {
         std::istringstream iss(Trim(counts.stdoutStr));
@@ -3941,6 +3943,9 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
         const auto counts = candidate.remoteOnly
             ? BranchAheadBehind{}
             : (isTarget && snapshotIsTarget ? targetCounts : AheadBehindForBranch(repoPath, branch));
+        const auto targetUpstream = isTarget ? std::string{} : UpstreamForBranch(repoPath, targetBranch);
+        const bool tracksTargetUpstream = !isTarget && counts.hasUpstream &&
+            (counts.upstream == targetBranch || (!targetUpstream.empty() && counts.upstream == targetUpstream));
         const auto merged = isTarget || BranchMergedIntoTarget(repoPath, branchRef, targetRef);
         const auto patchEquivalent = !isTarget && !merged && !targetRef.empty() && BranchPatchEquivalentToTarget(repoPath, targetBranch, branchRef);
         const auto publishedRemoteRef = candidate.remoteOnly || isTarget
@@ -3971,7 +3976,7 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
             (counts.ahead > 0 || (!isTarget && !counts.hasUpstream && !merged))) {
             blockers.push_back("UNPUSHED_COMMITS");
         }
-        if (!candidate.remoteOnly && !isTarget && counts.behind > 0) {
+        if (!candidate.remoteOnly && !isTarget && counts.behind > 0 && !tracksTargetUpstream) {
             blockers.push_back("STALE_LOCAL_BRANCH");
         }
         std::sort(blockers.begin(), blockers.end());
@@ -4020,6 +4025,8 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
             {"dirtyWorktreeCount", dirtyWorktreeCount},
             {"dirtyWorktreeRecoveryCommand", dirtyWorktreeCount == 0 ? std::string{} : BranchWorktreeHarvestCommand(targetBranch, branch)},
             {"hasUpstream", counts.hasUpstream},
+            {"upstream", counts.upstream},
+            {"tracksTargetUpstream", tracksTargetUpstream},
             {"ahead", counts.ahead},
             {"behind", counts.behind},
             {"publishedToSameNameRemote", publishedToSameNameRemote},

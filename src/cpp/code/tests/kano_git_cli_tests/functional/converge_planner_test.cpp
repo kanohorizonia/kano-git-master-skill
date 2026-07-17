@@ -1779,6 +1779,32 @@ TEST_CASE("converge branches planner blocks stale non-target branch behind upstr
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge branches cherry-pick applies topic branch tracking target upstream", "[tdd][functional][feature:converge][converge][branches][apply][cherry-pick][KG-BUG-0054]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-apply-target-tracking-topic");
+    const std::string featureBranch = "feature/target-tracking-topic";
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "create target-tracking topic branch");
+    WriteTextFile(ctx.cloneRepo / "topic.txt", "topic change\n");
+    RequireSuccess(RunGit({"add", "topic.txt"}, ctx.cloneRepo), "add topic change");
+    RequireSuccess(RunGit({"commit", "-m", "add topic change"}, ctx.cloneRepo), "commit topic change");
+    RequireSuccess(RunGit({"branch", "--set-upstream-to=origin/" + ctx.branch, featureBranch}, ctx.cloneRepo), "track target upstream");
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target branch");
+
+    CommitAndPushFile(ctx.seedRepo, ctx.branch, "remote-main.txt", "remote main\n", "advance remote main");
+    RequireSuccess(RunGit({"fetch", "origin", ctx.branch}, ctx.cloneRepo), "fetch advanced target remote");
+
+    const auto result = RunKog({"converge", "branches", "apply", "--target", ctx.branch, "--strategy", "cherry-pick", "--branch", featureBranch, "--confirm", "--json", "--jobs", "1"}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContains(result.stdoutText, "\"mutationPerformed\": true");
+    RequireContains(result.stdoutText, "\"branch\": \"" + featureBranch + "\"");
+    RequireContains(result.stdoutText, "\"action\": \"cherry-pick\"");
+    RequireNotContains(result.stdoutText, "STALE_LOCAL_BRANCH");
+    REQUIRE(std::filesystem::exists(ctx.cloneRepo / "topic.txt"));
+    REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
 TEST_CASE("converge branches planner blocks dirty unpushed and missing target cases", "[tdd][functional][feature:converge][converge][branches][planner][blockers]") {
     {
         const auto ctx = CreateRemoteWithClone("converge-branches-plan-dirty-blocker");
