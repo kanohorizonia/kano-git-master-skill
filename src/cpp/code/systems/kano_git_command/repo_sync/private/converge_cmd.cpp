@@ -3155,6 +3155,43 @@ bool WorktreeIsClean(const std::filesystem::path& worktreePath, std::string& mes
     return true;
 }
 
+bool RemoveSemanticallyCleanWorktree(const std::filesystem::path& repoPath,
+                                     const std::filesystem::path& worktreePath,
+                                     bool& usedFilterEquivalentForce,
+                                     std::string& message) {
+    usedFilterEquivalentForce = false;
+    std::string cleanMessage;
+    if (!WorktreeIsClean(worktreePath, cleanMessage)) {
+        message = "semantic clean recheck failed: " + cleanMessage;
+        return false;
+    }
+
+    const auto remove = GitCapture(repoPath, {"worktree", "remove", worktreePath.string()});
+    if (remove.exitCode == 0) {
+        return true;
+    }
+
+    const auto rawStatus = GitCapture(worktreePath, {"status", "--porcelain=v1", "--untracked-files=all"});
+    if (rawStatus.exitCode != 0 || Trim(rawStatus.stdoutStr).empty()) {
+        message = CombinedGitError(remove);
+        return false;
+    }
+
+    cleanMessage.clear();
+    if (!WorktreeIsClean(worktreePath, cleanMessage)) {
+        message = "semantic clean recheck failed after worktree remove refusal: " + cleanMessage;
+        return false;
+    }
+
+    const auto forced = GitCapture(repoPath, {"worktree", "remove", "--force", worktreePath.string()});
+    if (forced.exitCode != 0) {
+        message = CombinedGitError(forced);
+        return false;
+    }
+    usedFilterEquivalentForce = true;
+    return true;
+}
+
 std::vector<std::string> UntrackedDirtyPaths(const std::vector<DirtyPathEntry>& entries) {
     std::vector<std::string> paths;
     for (const auto& entry : entries) {
@@ -4938,11 +4975,21 @@ int RunBranchRetire(const std::filesystem::path& root,
                     if (harvestedWorktrees.contains(PathKey(worktree.absolutePath))) {
                         continue;
                     }
-                    const auto remove = GitCapture(repoPath, {"worktree", "remove", worktree.absolutePath.string()});
-                    if (remove.exitCode != 0) {
-                        AppendBranchBlocked(result, repoId, branch, {"WORKTREE_REMOVE_FAILED"}, CombinedGitError(remove));
+                    bool usedFilterEquivalentForce = false;
+                    std::string removeError;
+                    if (!RemoveSemanticallyCleanWorktree(
+                            repoPath, worktree.absolutePath, usedFilterEquivalentForce, removeError)) {
+                        AppendBranchBlocked(result, repoId, branch, {"WORKTREE_REMOVE_FAILED"}, removeError);
                         worktreesSafe = false;
                         break;
+                    }
+                    if (usedFilterEquivalentForce) {
+                        result["normalizedWorktreeRemovals"].push_back({
+                            {"repo", repoId},
+                            {"branch", branch},
+                            {"worktree", worktree.location},
+                            {"mode", "filter-equivalent-force"},
+                        });
                     }
                 }
                 if (!worktreesSafe) {

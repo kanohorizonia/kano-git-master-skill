@@ -1188,7 +1188,7 @@ TEST_CASE("converge branches retire inventories and harvests dirty integrated br
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
-TEST_CASE("converge branch inventory ignores filter-equivalent unstaged paths", "[tdd][functional][feature:converge][converge][branches][worktree][blockers][KG-BUG-0041]") {
+TEST_CASE("converge branch inventory ignores filter-equivalent unstaged paths", "[tdd][functional][feature:converge][converge][branches][worktree][blockers][KG-BUG-0041][KG-BUG-0056]") {
     const auto ctx = CreateRemoteWithClone("converge-branches-filter-equivalent-worktree");
     RequireSuccess(RunGit({"config", "core.autocrlf", "true"}, ctx.cloneRepo), "enable autocrlf fixture");
     WriteTextFile(ctx.cloneRepo / "normalized.txt", "same content\r\n");
@@ -1221,6 +1221,19 @@ TEST_CASE("converge branch inventory ignores filter-equivalent unstaged paths", 
     REQUIRE(CountOccurrences(inventory.stdoutText, "\"clean\": false") == 2);
     RequireNotContains(inventory.stdoutText, "DIRTY_WORKTREE_OVERLAP");
     RequireContains(inventory.stdoutText, "normalized.txt");
+
+    const auto retire = RunKog({
+        "converge", "branches", "retire", "--target", ctx.branch,
+        "--branch", equivalentBranch, "--remove-worktrees", "--confirm", "--json", "--jobs", "1"},
+        ctx.cloneRepo);
+    INFO(retire.stdoutText);
+    INFO(retire.stderrText);
+    REQUIRE(retire.exitCode == 0);
+    RequireContains(retire.stdoutText, "\"mode\": \"filter-equivalent-force\"");
+    RequireContains(retire.stdoutText, "\"action\": \"delete-local\"");
+    REQUIRE_FALSE(std::filesystem::exists(equivalentWorktree));
+    REQUIRE(std::filesystem::exists(actualWorktree));
+    RequireContains(ReadTextFile(actualWorktree / "normalized.txt"), "actual content change");
 
     RemoveSandboxWorkspace(ctx.sandbox);
 }
