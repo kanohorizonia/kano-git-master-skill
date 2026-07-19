@@ -10,6 +10,7 @@ add_executable(kano_git_cli_tests
   functional/plan_module_boundary_test.cpp
   functional/preset_artifact_identity_test.cpp
   functional/converge_planner_test.cpp
+  functional/clone_command_test.cpp
   functional/unknown_command_suggestions_test.cpp
   functional/version_command_surface_test.cpp
   functional/discover_inventory_test.cpp

@@ -236,6 +236,8 @@ agent policy.
 
 `kog fetch` recursively discovers repositories and runs parallel `git fetch` with `--all --prune --tags` defaults. Use `--remote <name>` to target one remote, `--jobs/-j auto|N` for concurrency, and `--dry-run` to preview commands.
 
+`kog clone <url>` clones the main repository, synchronizes recursive submodule URLs, and initializes all nested submodules by default. Human terminal runs allow the configured credential helper to prompt when cached credentials are unavailable; non-TTY automation remains non-interactive. Use `--no-submodules` only when intentionally deferring submodule checkout.
+
 `kog auth doctor` inspects Git Credential Manager-facing configuration without storing tokens. It redacts credentials in any explicit `--url` input and reports the selected remote auth surface for the current repo or discovered workspace repos.
 
 `kog auth test` runs a non-interactive `git ls-remote ... HEAD` probe against the selected remote set, a single configured remote, all local remotes, or an explicit URL. It does not write tokens into remotes, does not persist credentials, and treats file/local remotes as skipped rather than failed.
