@@ -112,6 +112,26 @@ auto TrimCopy(const std::string& InValue) -> std::string {
     return InValue.substr(start, end - start + 1);
 }
 
+auto ResolveFixtureGitPath(const std::filesystem::path& InRepo,
+                           const std::string& InGitPath) -> std::filesystem::path {
+    std::error_code ec;
+    const auto repoRoot = std::filesystem::weakly_canonical(InRepo, ec);
+    REQUIRE_FALSE(ec);
+    const std::filesystem::path rawPath(InGitPath);
+    const auto candidate = std::filesystem::weakly_canonical(
+        rawPath.is_absolute() ? rawPath : repoRoot / rawPath,
+        ec);
+    REQUIRE_FALSE(ec);
+    const auto relative = std::filesystem::relative(candidate, repoRoot, ec);
+    REQUIRE_FALSE(ec);
+    REQUIRE_FALSE(relative.empty());
+    REQUIRE_FALSE(relative.is_absolute());
+    for (const auto& component : relative) {
+        REQUIRE(component != "..");
+    }
+    return candidate;
+}
+
 auto WriteTextFile(const std::filesystem::path& InPath, const std::string& InText) -> void {
     std::filesystem::create_directories(InPath.parent_path());
     std::ofstream out(InPath, std::ios::binary | std::ios::trunc);
@@ -1482,10 +1502,12 @@ TEST_CASE("submodule_update_repairs_invalid_gitdir_state_when_safe", "[functiona
     const auto submodulePath = (ctx.cloneRootRepo / std::filesystem::path(ctx.submodulePath)).lexically_normal();
     const auto modulePathResult = RunGit({"-C", ctx.cloneRootRepo.string(), "rev-parse", "--git-path", "modules/" + ctx.submodulePath}, ctx.cloneRootRepo);
     RequireSuccess(modulePathResult, "resolve module path");
-    const auto modulePath = std::filesystem::path(TrimCopy(modulePathResult.stdoutText)).lexically_normal();
+    const auto modulePath = ResolveFixtureGitPath(ctx.cloneRootRepo, TrimCopy(modulePathResult.stdoutText));
 
     std::error_code ec;
     std::filesystem::remove_all(modulePath, ec);
+    REQUIRE(!ec);
+    std::filesystem::remove_all(submodulePath, ec);
     REQUIRE(!ec);
     WriteTextFile(submodulePath / ".git", "gitdir: ../../.git/modules/" + ctx.submodulePath + "\n");
 
@@ -1511,7 +1533,7 @@ TEST_CASE("submodule_update_blocks_unsafe_repair_for_local_user_files", "[functi
     const auto submodulePath = (ctx.cloneRootRepo / std::filesystem::path(ctx.submodulePath)).lexically_normal();
     const auto modulePathResult = RunGit({"-C", ctx.cloneRootRepo.string(), "rev-parse", "--git-path", "modules/" + ctx.submodulePath}, ctx.cloneRootRepo);
     RequireSuccess(modulePathResult, "resolve module path");
-    const auto modulePath = std::filesystem::path(TrimCopy(modulePathResult.stdoutText)).lexically_normal();
+    const auto modulePath = ResolveFixtureGitPath(ctx.cloneRootRepo, TrimCopy(modulePathResult.stdoutText));
 
     std::error_code ec;
     std::filesystem::remove_all(modulePath, ec);
