@@ -8,6 +8,8 @@
 #include <nlohmann/json.hpp>
 
 #include <iostream>
+#include <optional>
+#include <sstream>
 #include <string>
 #include <vector>
 #include <filesystem>
@@ -127,10 +129,44 @@ void RegisterCherryPick(CLI::App& InApp) {
         const auto effectiveRepo = !planFile->empty() && *repo == "." ? plan.repo : *repo;
         const auto workspaceRoot = std::filesystem::path(effectiveRepo).lexically_normal();
 
+        const auto pendingOperationDiagnostic = [&]() -> std::optional<nlohmann::json> {
+            const auto cherryPickHead = shell::ExecuteCommand(
+                "git", {"rev-parse", "--verify", "CHERRY_PICK_HEAD"}, shell::ExecMode::Capture, workspaceRoot);
+            const auto unmerged = shell::ExecuteCommand(
+                "git", {"diff", "--name-only", "--diff-filter=U"}, shell::ExecMode::Capture, workspaceRoot);
+            const auto conflictPaths = Trim(unmerged.stdoutStr);
+            if (cherryPickHead.exitCode != 0 && conflictPaths.empty()) {
+                return std::nullopt;
+            }
+
+            nlohmann::json diagnostic = {
+                {"operationPending", true},
+                {"pendingOperation", {
+                    {"type", "cherry-pick"},
+                    {"continueCommand", "kog cherry-pick --continue --repo ."},
+                    {"skipCommand", "kog cherry-pick --skip --repo ."},
+                    {"abortCommand", "kog cherry-pick --abort --repo ."}
+                }}
+            };
+            diagnostic["conflictPaths"] = nlohmann::json::array();
+            std::istringstream paths(conflictPaths);
+            for (std::string path; std::getline(paths, path);) {
+                path = Trim(path);
+                if (!path.empty()) {
+                    diagnostic["conflictPaths"].push_back(path);
+                }
+            }
+            return diagnostic;
+        };
+
         const auto runControlOperation = [&](const std::vector<std::string>& args) {
             const auto result = shell::ExecuteCommand("git", args, shell::ExecMode::PassThrough, workspaceRoot);
-            if (result.exitCode != 0) {
-                throw CLI::RuntimeError(result.exitCode);
+            const auto pending = pendingOperationDiagnostic();
+            if (pending.has_value()) {
+                std::cerr << pending->dump(2) << "\n";
+            }
+            if (result.exitCode != 0 || pending.has_value()) {
+                throw CLI::RuntimeError(result.exitCode != 0 ? result.exitCode : 1);
             }
         };
 

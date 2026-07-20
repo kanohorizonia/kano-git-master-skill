@@ -1072,6 +1072,10 @@ TEST_CASE("cherry-pick skip propagates a following conflict exit code", "[functi
     INFO(skipped.stderrText);
     REQUIRE(skipped.exitCode != 0);
     RequireContains(skipped.stderrText, "could not apply");
+    RequireContains(skipped.stderrText, "\"operationPending\": true");
+    RequireContains(skipped.stderrText, "kog cherry-pick --continue --repo .");
+    RequireContains(skipped.stderrText, "kog cherry-pick --skip --repo .");
+    RequireContains(skipped.stderrText, "kog cherry-pick --abort --repo .");
     RequireContains(RunGit({"status"}, ctx.cloneRepo).stdoutText, "You are currently cherry-picking commit");
 
     const auto aborted = RunKog({"cherry-pick", "--abort", "--repo", ".", "--no-ai-resolve"}, ctx.cloneRepo);
@@ -1080,6 +1084,52 @@ TEST_CASE("cherry-pick skip propagates a following conflict exit code", "[functi
     REQUIRE(aborted.exitCode == 0);
     REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
 
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("cherry-pick continue reports a following sequenced conflict as pending", "[functional][cherry-pick][continue][conflict][KG-BUG-0052]") {
+    const auto ctx = CreateRemoteWithClone("cherry-pick-continue-following-conflict");
+    WriteTextFile(ctx.cloneRepo / "first-conflict.txt", "base first\n");
+    WriteTextFile(ctx.cloneRepo / "middle-clean.txt", "base middle\n");
+    WriteTextFile(ctx.cloneRepo / "last-conflict.txt", "base last\n");
+    RequireSuccess(RunGit({"add", "first-conflict.txt", "middle-clean.txt", "last-conflict.txt"}, ctx.cloneRepo), "add continue conflict bases");
+    RequireSuccess(RunGit({"commit", "-m", "add continue conflict bases"}, ctx.cloneRepo), "commit continue conflict bases");
+
+    RequireSuccess(RunGit({"checkout", "-b", "feature/continue-following-conflict"}, ctx.cloneRepo), "checkout continue conflict feature");
+    WriteTextFile(ctx.cloneRepo / "first-conflict.txt", "feature first\n");
+    RequireSuccess(RunGit({"commit", "-am", "change first continue conflict"}, ctx.cloneRepo), "commit first continue conflict");
+    const auto firstCommit = TrimCopy(RunGit({"rev-parse", "HEAD"}, ctx.cloneRepo).stdoutText);
+    WriteTextFile(ctx.cloneRepo / "middle-clean.txt", "feature middle\n");
+    RequireSuccess(RunGit({"commit", "-am", "change clean middle"}, ctx.cloneRepo), "commit clean middle");
+    const auto middleCommit = TrimCopy(RunGit({"rev-parse", "HEAD"}, ctx.cloneRepo).stdoutText);
+    WriteTextFile(ctx.cloneRepo / "last-conflict.txt", "feature last\n");
+    RequireSuccess(RunGit({"commit", "-am", "change last continue conflict"}, ctx.cloneRepo), "commit last continue conflict");
+    const auto lastCommit = TrimCopy(RunGit({"rev-parse", "HEAD"}, ctx.cloneRepo).stdoutText);
+
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to continue conflict target");
+    WriteTextFile(ctx.cloneRepo / "first-conflict.txt", "target first\n");
+    WriteTextFile(ctx.cloneRepo / "last-conflict.txt", "target last\n");
+    RequireSuccess(RunGit({"commit", "-am", "change continue target conflicts"}, ctx.cloneRepo), "commit continue target conflicts");
+
+    const auto initial = RunGit({"cherry-pick", firstCommit, middleCommit, lastCommit}, ctx.cloneRepo);
+    REQUIRE(initial.exitCode != 0);
+    WriteTextFile(ctx.cloneRepo / "first-conflict.txt", "resolved first\n");
+    RequireSuccess(RunGit({"add", "first-conflict.txt"}, ctx.cloneRepo), "stage first continue resolution");
+
+    const auto continued = RunKog({"cherry-pick", "--continue", "--repo", ".", "--no-ai-resolve"}, ctx.cloneRepo);
+    INFO(continued.stdoutText);
+    INFO(continued.stderrText);
+    REQUIRE(continued.exitCode != 0);
+    RequireContains(continued.stderrText, "\"operationPending\": true");
+    RequireContains(continued.stderrText, "\"type\": \"cherry-pick\"");
+    RequireContains(continued.stderrText, "kog cherry-pick --continue --repo .");
+    RequireContains(continued.stderrText, "kog cherry-pick --skip --repo .");
+    RequireContains(continued.stderrText, "kog cherry-pick --abort --repo .");
+    RequireContains(continued.stderrText, "last-conflict.txt");
+    REQUIRE(TrimCopy(ReadTextFile(ctx.cloneRepo / "middle-clean.txt")) == "feature middle");
+
+    RequireSuccess(RunKog({"cherry-pick", "--abort", "--repo", ".", "--no-ai-resolve"}, ctx.cloneRepo), "abort continue conflict sequence");
+    REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
