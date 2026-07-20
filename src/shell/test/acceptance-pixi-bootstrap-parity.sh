@@ -139,9 +139,9 @@ test_bootstrap_function_defined() {
 }
 
 # =============================================================================
-# Test 4: Launcher sources bootstrap via stderr observation
-# We verify the bootstrap is wired by tracing the actual launcher script and
-# accepting either a direct source trace or the shared-manifest activation log.
+# Test 4: Launcher keeps bootstrap fallback wiring
+# A fresh native binary may satisfy --version through the read-only fast path.
+# Otherwise verify bootstrap wiring through the execution trace.
 # =============================================================================
 test_launcher_sources_bootstrap() {
   log_step "test-4" "launcher sources pixi bootstrap lib"
@@ -155,6 +155,13 @@ test_launcher_sources_bootstrap() {
   local trace_output=""
   trace_output="$(bash -x "${ROOT_DIR}/scripts/kano-git" --version 2>&1)" || true
 
+  if echo "$trace_output" | grep -q "maybe_run_early_read_only_query" &&
+     echo "$trace_output" | grep -q "exec .*kano-git.*--version"; then
+    log_step "test-4" "PASS (fresh native fast path)"
+    count_pass
+    return 0
+  fi
+
   if echo "$trace_output" | grep -q "pixi_bootstrap.sh"; then
     log_step "test-4" "PASS"
     count_pass
@@ -167,8 +174,8 @@ test_launcher_sources_bootstrap() {
     return 0
   fi
 
-  # As a fallback, verify the launcher script contains the source directive
-  if grep -q "pixi_bootstrap.sh" "$KOG_WRAPPER" 2>/dev/null; then
+  # As a fallback, verify the real launcher contains the source directive.
+  if grep -q "pixi_bootstrap.sh" "${ROOT_DIR}/scripts/kano-git" 2>/dev/null; then
     log_step "test-4" "PASS (static match)"
     count_pass
     return 0

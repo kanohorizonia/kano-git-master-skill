@@ -6,6 +6,118 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
+launcher_now_ms() {
+  local seconds="${EPOCHREALTIME:-}"
+  if [[ -n "$seconds" ]]; then
+    printf '%s\n' "${seconds/./}000" | cut -c1-13
+    return 0
+  fi
+  printf '%s000\n' "$(date +%s)"
+}
+
+KOG_LAUNCHER_STARTED_MS="$(launcher_now_ms)"
+
+is_early_read_only_query() {
+  local arg
+  case "${1:-}" in
+    --version|-v|version|status|overview)
+      return 0
+      ;;
+    converge)
+      [[ "${2:-}" == "--status" ]]
+      return $?
+      ;;
+  esac
+
+  # Preserve top-level launcher help extras, but nested command help is a
+  # native read-only query and can safely avoid Pixi activation.
+  if [[ $# -gt 1 ]]; then
+    for arg in "$@"; do
+      case "$arg" in
+        -h|--help|help)
+          return 0
+          ;;
+      esac
+    done
+  fi
+  return 1
+}
+
+early_native_candidates() {
+  local os_name arch exe_name preset
+  os_name="$(uname -s 2>/dev/null || true)"
+  arch="$(uname -m 2>/dev/null || true)"
+  exe_name="kano-git"
+
+  case "$os_name" in
+    Darwin)
+      if [[ "$arch" == "arm64" || "$arch" == "aarch64" ]]; then
+        for preset in macos-ninja-clang-arm64 macos-ninja-clang macos-ninja-llvm-arm64; do
+          printf '%s\n' "$PROJECT_ROOT/src/cpp/out/bin/$preset/release/$exe_name"
+          printf '%s\n' "$PROJECT_ROOT/src/cpp/out/bin/$preset/debug/$exe_name"
+        done
+      else
+        for preset in macos-ninja-clang-x64 macos-ninja-clang macos-ninja-llvm-x64; do
+          printf '%s\n' "$PROJECT_ROOT/src/cpp/out/bin/$preset/release/$exe_name"
+          printf '%s\n' "$PROJECT_ROOT/src/cpp/out/bin/$preset/debug/$exe_name"
+        done
+      fi
+      ;;
+    Linux)
+      for preset in linux-ninja-gcc linux-ninja-clang; do
+        printf '%s\n' "$PROJECT_ROOT/src/cpp/out/bin/$preset/release/$exe_name"
+        printf '%s\n' "$PROJECT_ROOT/src/cpp/out/bin/$preset/debug/$exe_name"
+      done
+      ;;
+    MINGW*|MSYS*|CYGWIN*|Windows_NT)
+      exe_name="kano-git.exe"
+      for preset in windows-ninja-msvc windows-ninja-msvc-arm64; do
+        printf '%s\n' "$PROJECT_ROOT/src/cpp/out/bin/$preset/release/$exe_name"
+        printf '%s\n' "$PROJECT_ROOT/src/cpp/out/bin/$preset/debug/$exe_name"
+      done
+      ;;
+  esac
+}
+
+early_native_is_fresh() {
+  local binary="$1"
+  local changed=""
+  [[ -x "$binary" ]] || return 1
+
+  changed="$(find \
+    "$PROJECT_ROOT/src/cpp/code/apps" \
+    "$PROJECT_ROOT/src/cpp/code/systems" \
+    "$PROJECT_ROOT/VERSION" \
+    -type f -newer "$binary" -print -quit 2>/dev/null || true)"
+  [[ -z "$changed" ]]
+}
+
+maybe_run_early_read_only_query() {
+  local binary="" end_ms elapsed_ms
+  is_early_read_only_query "$@" || return 1
+
+  while IFS= read -r binary; do
+    [[ -n "$binary" ]] || continue
+    early_native_is_fresh "$binary" || continue
+
+    if [[ " $* " == *" --profile "* ]]; then
+      end_ms="$(launcher_now_ms)"
+      elapsed_ms=$((end_ms - KOG_LAUNCHER_STARTED_MS))
+      echo "[launcher][profile] fast-path setup=${elapsed_ms}ms binary=$binary" >&2
+    fi
+
+    KANO_GIT_MASTER_ROOT="${KANO_GIT_MASTER_ROOT:-$PROJECT_ROOT}" \
+      KANO_GIT_BINARY_PATH="$binary" \
+      exec "$binary" "$@"
+  done < <(early_native_candidates)
+
+  return 1
+}
+
+# Read-only queries may bypass Pixi activation only when a compatible preset
+# binary exists and no launcher/runtime source is newer than that binary.
+maybe_run_early_read_only_query "$@" || true
+
 lowercase_text() {
   printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
 }
