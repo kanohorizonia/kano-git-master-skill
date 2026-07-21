@@ -113,7 +113,6 @@ auto CollectTopLevelCommandNames(const CLI::App& InApp) -> std::vector<std::stri
     out.reserve(subcommands.size());
     static const std::vector<std::string> kHiddenInternal = {
         "complete",
-        "repo",
     };
 
     for (const auto* subcommand : subcommands) {
@@ -498,57 +497,6 @@ void RewriteDiscoverAlias(std::vector<std::string>& InOutArgs) {
     InOutArgs = std::move(normalized);
 }
 
-void RewriteRepoScopedCommands(std::vector<std::string>& InOutArgs) {
-    if (InOutArgs.size() <= 3 || InOutArgs[1] != "repo") {
-        return;
-    }
-
-    const std::string command = InOutArgs[2];
-    if (command == "status") {
-        return;
-    }
-
-    const std::string target = InOutArgs[3];
-    std::vector<std::string> rewritten;
-    rewritten.reserve(InOutArgs.size() + 4);
-    rewritten.push_back(InOutArgs[0]);
-
-    if (command == "push" || command == "commit" || command == "commit-push") {
-        rewritten.push_back(command);
-        rewritten.push_back("--repos");
-        rewritten.push_back(target);
-        rewritten.push_back("--no-recursive");
-        for (std::size_t i = 4; i < InOutArgs.size(); ++i) {
-            rewritten.push_back(InOutArgs[i]);
-        }
-        InOutArgs = std::move(rewritten);
-        return;
-    }
-
-    if (command == "update") {
-        rewritten.push_back("update");
-        rewritten.push_back("--repo");
-        rewritten.push_back(target);
-        for (std::size_t i = 4; i < InOutArgs.size(); ++i) {
-            rewritten.push_back(InOutArgs[i]);
-        }
-        InOutArgs = std::move(rewritten);
-        return;
-    }
-
-    if (command == "log" || command == "slog") {
-        rewritten.push_back(command);
-        rewritten.push_back("--repo");
-        rewritten.push_back(target);
-        rewritten.push_back("--no-recursive");
-        for (std::size_t i = 4; i < InOutArgs.size(); ++i) {
-            rewritten.push_back(InOutArgs[i]);
-        }
-        InOutArgs = std::move(rewritten);
-        return;
-    }
-}
-
 void RewriteCommandAliases(std::vector<std::string>& InOutArgs) {
     if (InOutArgs.size() <= 1) {
         return;
@@ -728,7 +676,6 @@ std::vector<std::string> NormalizeLegacyArgs(int InArgc, char* InArgv[]) {
     RewriteCommandAliases(out);
     RewritePlanLifecycleAliases(out);
     RewriteDiscoverAlias(out);
-    RewriteRepoScopedCommands(out);
     RewriteCommitAiFlagsAndPlan(out);
     return out;
 }

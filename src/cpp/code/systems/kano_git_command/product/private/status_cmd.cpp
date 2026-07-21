@@ -2062,7 +2062,8 @@ void RegisterRepo(CLI::App& InApp) {
     auto registerRepoPassThrough = [&](const std::string& InName) {
         auto* sub = cmd->add_subcommand(InName, std::format("Run {} against a single repo", InName));
         sub->allow_extras();
-        sub->prefix_command();
+        // The root app enables fallthrough; keep scoped flags here so allow_extras can forward them.
+        sub->fallthrough(false);
         auto* targetArg = new std::string{"."};
         sub->add_option("target", *targetArg, "Target repo (repo name or relative path)")->required();
         sub->callback([sub, targetArg, InName]() {

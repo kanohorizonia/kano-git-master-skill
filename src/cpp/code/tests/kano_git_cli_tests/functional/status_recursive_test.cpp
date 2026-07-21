@@ -388,4 +388,61 @@ TEST_CASE("status recursive summary highlights conflicted repos", "[functional][
     RemoveSandboxWorkspace(sandbox);
 }
 
+TEST_CASE("status positional repo target scopes discovery and reports ambiguous names deterministically", "[functional][status][repo-target][KG-TSK-0060]") {
+    const auto sandbox = CreateSandboxWorkspace("status-positional-repo-target");
+    const auto root = (sandbox.root / "root").lexically_normal();
+    const auto serviceApi = (root / "services" / "api").lexically_normal();
+    const auto servicePlugin = (serviceApi / "plugin").lexically_normal();
+    const auto toolsApi = (root / "tools" / "api").lexically_normal();
+    InitRepo(root);
+    InitRepo(serviceApi);
+    InitRepo(servicePlugin);
+    InitRepo(toolsApi);
+    AddGitmodulesEntry(serviceApi, "plugin", "plugin");
+    CommitGitmodules(serviceApi);
+    AddGitmodulesEntry(root, "service-api", "services/api");
+    AddGitmodulesEntry(root, "tools-api", "tools/api");
+    CommitGitmodules(root);
+
+    const auto rootResult = RunKog(
+        {"status", ".", "--all", "--no-cache", "--max-depth", "4", "--format", "json"},
+        root);
+    RequireSuccess(rootResult, "kog status dot target");
+    RequireContains(rootResult.stdoutText, "\"repo_count\":4");
+    RequireContains(rootResult.stdoutText, "\"path\":\"" + serviceApi.generic_string() + "\"");
+    RequireContains(rootResult.stdoutText, "\"path\":\"" + servicePlugin.generic_string() + "\"");
+    RequireContains(rootResult.stdoutText, "\"path\":\"" + toolsApi.generic_string() + "\"");
+
+    const auto nestedResult = RunKog(
+        {"status", "services/api", "--all", "--no-cache", "--max-depth", "4", "--format", "json"},
+        root);
+    RequireSuccess(nestedResult, "kog status nested repo target");
+    RequireContains(nestedResult.stdoutText, "\"repo_count\":2");
+    RequireContains(nestedResult.stdoutText, "\"repo_name\":\"api\"");
+    RequireContains(nestedResult.stdoutText, "\"path\":\"" + servicePlugin.generic_string() + "\"");
+    RequireNotContains(nestedResult.stdoutText, "tools/api");
+
+    const auto singleRepoResult = RunKog(
+        {"repo", "status", "services/api", "--repo-root", root.string(), "--format", "json"},
+        root);
+    RequireSuccess(singleRepoResult, "kog repo status nested repo target");
+    RequireContains(singleRepoResult.stdoutText, "\"repo_count\":1");
+    RequireContains(singleRepoResult.stdoutText, "\"repo_name\":\"api\"");
+    RequireNotContains(singleRepoResult.stdoutText, "tools/api");
+
+    const auto ambiguousResult = RunKog(
+        {"status", "api", "--all", "--no-cache", "--max-depth", "4", "--format", "json"},
+        root);
+    const auto merged = ambiguousResult.stdoutText + "\n" + ambiguousResult.stderrText;
+    INFO(merged);
+    REQUIRE(ambiguousResult.exitCode != 0);
+    RequireContains(merged, "repo spec is ambiguous: api");
+    RequireContains(merged, "Matches:");
+    RequireContains(merged, serviceApi.generic_string());
+    RequireContains(merged, toolsApi.generic_string());
+    REQUIRE(merged.find(serviceApi.generic_string()) < merged.find(toolsApi.generic_string()));
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
 } // namespace kano::git::tests::functional

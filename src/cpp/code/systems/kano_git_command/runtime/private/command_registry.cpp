@@ -87,6 +87,7 @@ void RegisterAll(CLI::App& InApp) {
     setGroup("auth", repoGroup);
     setGroup("clone", repoGroup);
     setGroup("branch", repoGroup);
+    setGroup("repo", repoGroup);
     setGroup("remote", repoGroup);
     setGroup("worktree", repoGroup);
     setGroup("submodule", repoGroup);
@@ -127,7 +128,6 @@ void RegisterAll(CLI::App& InApp) {
     setGroup("complete", "");
     setGroup("completion", "");
     setGroup("discover", "");
-    setGroup("repo", "");
     setGroup("version", "");
     setGroup("guide", "");
 }

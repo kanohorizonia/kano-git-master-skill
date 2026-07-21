@@ -84,4 +84,42 @@ TEST_CASE("known command bad option keeps parse error path", "[functional][cli][
     RemoveSandboxWorkspace(sandbox);
 }
 
+TEST_CASE("repo namespace is public and provides native single-repo status", "[functional][cli][repo-target][KG-TSK-0061]") {
+    const auto sandbox = CreateSandboxWorkspace("public-repo-namespace");
+    const auto initResult = RunGit({"init"}, sandbox.root);
+    INFO(initResult.stdoutText);
+    INFO(initResult.stderrText);
+    REQUIRE(initResult.exitCode == 0);
+
+    const auto topLevelHelp = RunKog({"--help"}, sandbox.root);
+    const auto topLevelMerged = StripAnsi(topLevelHelp.stdoutText + "\n" + topLevelHelp.stderrText);
+    INFO(topLevelMerged);
+    REQUIRE(topLevelHelp.exitCode == 0);
+    REQUIRE(topLevelMerged.find("repo") != std::string::npos);
+    REQUIRE(topLevelMerged.find("Single-repo scoped command variants") != std::string::npos);
+
+    const auto repoHelp = RunKog({"repo", "--help"}, sandbox.root);
+    const auto repoHelpMerged = StripAnsi(repoHelp.stdoutText + "\n" + repoHelp.stderrText);
+    INFO(repoHelpMerged);
+    REQUIRE(repoHelp.exitCode == 0);
+    REQUIRE(repoHelpMerged.find("Single-repo scoped command variants") != std::string::npos);
+    REQUIRE(repoHelpMerged.find("status") != std::string::npos);
+    REQUIRE(repoHelpMerged.find("commit-push") != std::string::npos);
+    REQUIRE(repoHelpMerged.find("is not a kog command") == std::string::npos);
+
+    const auto repoStatus = RunKog({"repo", "status", ".", "--format", "json"}, sandbox.root);
+    const auto repoStatusMerged = StripAnsi(repoStatus.stdoutText + "\n" + repoStatus.stderrText);
+    INFO(repoStatusMerged);
+    REQUIRE(repoStatus.exitCode == 0);
+    REQUIRE(repoStatusMerged.find("\"repo_count\":1") != std::string::npos);
+
+    const auto repoPush = RunKog({"repo", "push", ".", "--dry-run"}, sandbox.root);
+    const auto repoPushMerged = StripAnsi(repoPush.stdoutText + "\n" + repoPush.stderrText);
+    INFO(repoPushMerged);
+    REQUIRE(repoPush.exitCode != 109);
+    REQUIRE(repoPushMerged.find("argument was not expected") == std::string::npos);
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
 } // namespace kano::git::tests::functional

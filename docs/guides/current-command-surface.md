@@ -145,6 +145,9 @@ active contract as `order=child-first` and report the wave count.
 ```bash
 # Workspace overview
 ./scripts/kog status
+./scripts/kog status .
+./scripts/kog status path/to/repo --all --format json
+./scripts/kog repo status path/to/repo --format json
 ./scripts/kog overview
 ./scripts/kog discover
 ./scripts/kog fetch
@@ -180,6 +183,17 @@ active contract as `order=child-first` and report the wave count.
 ./scripts/kog completion install bash
 ./scripts/kog completion uninstall bash
 ```
+
+`kog status <target>` resolves a repository name or path and uses that repository
+as the discovery root, so registered repositories below it remain part of the
+result. Use `.` for the current repository. If a name matches more than one
+repository, KOG rejects the request and prints the candidates in deterministic
+path order.
+
+`kog repo` is the native single-repository namespace. `kog repo status <target>`
+reports exactly the resolved repository without recursively expanding registered
+children. The same namespace exposes scoped `log`, `slog`, `push`, `commit`,
+`commit-push`, and `update` variants; run `kog repo --help` for their arguments.
 
 Unknown top-level commands now return a git-style error and suggest the most similar public commands.
 
