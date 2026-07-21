@@ -208,7 +208,7 @@ Each user story maps to CLI commands and their test coverage.
 
 | Command | Description | Test Coverage |
 |---------|-------------|--------------|
-| `discover` | Discover repositories in workspace | CLI: 5 tests (discovery, gitignore, kogignore, external) |
+| `discover` | Discover repositories in workspace | CLI: 13 tagged discovery tests (inventory, gitignore, kogignore, cache, external) |
 | `init` | Initialize a new workspace | Not yet tested |
 | `plan` | Plan repository updates | CLI: 2 tests (freshness verification) |
 | `commit` | AI-powered commit message generation | CLI: 10+ tests (commit-push workflow, secret gate, detached HEAD) |
@@ -234,7 +234,7 @@ Each user story maps to CLI commands and their test coverage.
 
 | US-ID | User Story | CLI Command(s) | Test Location | Status |
 |-------|------------|----------------|---------------|--------|
-| US-001 | As a developer, I want to discover all repositories in my workspace | `discover` | `functional_test_main.cpp: workspace_discover_*` | ✅ Covered |
+| US-001 | As a developer, I want to discover all repositories in my workspace | `discover` | `functional_test_main.cpp: workspace_discover_*`; `discover_inventory_test.cpp` | ✅ Covered |
 | US-002 | As a developer, I want to initialize a new workspace | `init` | — | ❌ Missing |
 | US-003 | As a developer, I want to plan repository updates before applying | `plan` | `functional_test_main.cpp: plan_*` | ✅ Covered |
 | US-004 | As a developer, I want to commit with AI-generated messages | `commit` | `functional_test_main.cpp: commit_push_*` | ✅ Covered |

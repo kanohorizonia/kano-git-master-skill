@@ -393,10 +393,18 @@ auto HashFNV1a(const std::string& InValue) -> std::string {
     return std::format("{:016x}", hash);
 }
 
+enum class IgnoreRuleSource {
+    ExplicitExclude,
+    GitIgnore,
+    KogIgnore,
+};
+
 struct IgnoreRule {
     std::string pattern;
     bool include = false;
-    bool directoryOnly = false;
+    bool rootRelative = false;
+    IgnoreRuleSource source = IgnoreRuleSource::ExplicitExclude;
+    std::regex matcher;
 };
 
 auto RunGitCapture(const std::filesystem::path& InRepoPath, const std::vector<std::string>& InArgs) -> shell::ExecResult;
@@ -422,17 +430,98 @@ auto EscapeRegexChar(const char InChar) -> std::string {
     }
 }
 
-auto GlobToRegex(const std::string& InPattern) -> std::string {
-    std::string regex = "^";
-    for (std::size_t i = 0; i < InPattern.size(); ++i) {
-        const char ch = InPattern[i];
+auto IsEscapedAt(const std::string& InValue, const std::size_t InIndex) -> bool {
+    if (InIndex == 0 || InIndex > InValue.size()) {
+        return false;
+    }
+    std::size_t slashCount = 0;
+    auto cursor = InIndex;
+    while (cursor > 0 && InValue[cursor - 1] == '\\') {
+        slashCount += 1;
+        cursor -= 1;
+    }
+    return (slashCount % 2) != 0;
+}
+
+auto AppendCharacterClassRegex(const std::string& InPattern,
+                               const std::size_t InOpenIndex,
+                               std::string* OutRegex,
+                               std::size_t* OutCloseIndex) -> bool {
+    auto cursor = InOpenIndex + 1;
+    if (cursor >= InPattern.size()) {
+        return false;
+    }
+
+    if (InPattern[cursor] == '!' || InPattern[cursor] == '^') {
+        cursor += 1;
+    }
+    if (cursor < InPattern.size() && InPattern[cursor] == ']') {
+        cursor += 1;
+    }
+
+    auto close = cursor;
+    while (close < InPattern.size()) {
+        if (InPattern[close] == ']' && !IsEscapedAt(InPattern, close)) {
+            break;
+        }
+        close += 1;
+    }
+    if (close >= InPattern.size()) {
+        return false;
+    }
+
+    *OutRegex += '[';
+    cursor = InOpenIndex + 1;
+    if (cursor < close && (InPattern[cursor] == '!' || InPattern[cursor] == '^')) {
+        *OutRegex += '^';
+        cursor += 1;
+    }
+    for (; cursor < close; ++cursor) {
+        auto ch = InPattern[cursor];
+        if (ch == '\\' && cursor + 1 < close) {
+            ch = InPattern[++cursor];
+        }
+        if (ch == '\\' || ch == ']' || ch == '^') {
+            *OutRegex += '\\';
+        }
+        *OutRegex += ch;
+    }
+    *OutRegex += ']';
+    *OutCloseIndex = close;
+    return true;
+}
+
+auto GlobToRegex(const IgnoreRule& InRule) -> std::string {
+    const auto& pattern = InRule.pattern;
+    std::string regex = InRule.rootRelative ? "^" : "^(?:.*/)?";
+    for (std::size_t i = 0; i < pattern.size(); ++i) {
+        const char ch = pattern[i];
+        if (ch == '\\') {
+            if (i + 1 < pattern.size()) {
+                regex += EscapeRegexChar(pattern[++i]);
+            } else {
+                regex += "\\\\";
+            }
+            continue;
+        }
         if (ch == '*') {
-            const bool isGlobStar = (i + 1 < InPattern.size() && InPattern[i + 1] == '*');
-            if (isGlobStar) {
+            auto end = i + 1;
+            while (end < pattern.size() && pattern[end] == '*') {
+                end += 1;
+            }
+            const auto starCount = end - i;
+            const bool bLeadingGlobstar = starCount == 2 && i == 0 && end < pattern.size() && pattern[end] == '/';
+            const bool bMiddleGlobstar = starCount == 2 && i > 0 && pattern[i - 1] == '/' && end < pattern.size() && pattern[end] == '/';
+            const bool bTrailingGlobstar = starCount == 2 && i > 0 && pattern[i - 1] == '/' && end == pattern.size();
+            if (bLeadingGlobstar || bMiddleGlobstar) {
+                regex += "(?:.*/)?";
+                i = end;
+            } else if (bTrailingGlobstar) {
                 regex += ".*";
-                i += 1;
+                i = end - 1;
             } else {
                 regex += "[^/]*";
+                i = end - 1;
             }
             continue;
         }
@@ -440,32 +529,84 @@ auto GlobToRegex(const std::string& InPattern) -> std::string {
             regex += "[^/]";
             continue;
         }
+        if (ch == '[') {
+            std::size_t close = i;
+            if (AppendCharacterClassRegex(pattern, i, &regex, &close)) {
+                i = close;
+                continue;
+            }
+        }
         regex += EscapeRegexChar(ch);
     }
-    regex += "$";
+    // An exclusion inherited from a directory applies to its descendants.
+    // Negation is deliberately not inherited: Git requires descendants to
+    // match their own re-include rule (often an explicit trailing /** rule).
+    if (!InRule.include) {
+        regex += "(?:/.*)?";
+    }
+    regex += '$';
     return regex;
 }
 
-auto GlobMatchesPath(const std::string& InRelPath, const std::string& InPattern) -> bool {
-    try {
-        return std::regex_match(InRelPath, std::regex(GlobToRegex(InPattern), std::regex::ECMAScript));
-    } catch (const std::regex_error&) {
-        return false;
-    }
+auto GlobMatchesPath(const std::string& InRelPath, const IgnoreRule& InRule) -> bool {
+    return std::regex_match(InRelPath, InRule.matcher);
 }
 
-auto NormalizeRulePattern(std::string InPattern) -> std::string {
-    auto pattern = Trim(std::move(InPattern));
-    while (!pattern.empty() && pattern.front() == '/') {
+auto StripUnescapedTrailingSpaces(std::string InLine) -> std::string {
+    while (!InLine.empty() && InLine.back() == '\r') {
+        InLine.pop_back();
+    }
+    while (!InLine.empty() && InLine.back() == ' ' && !IsEscapedAt(InLine, InLine.size() - 1)) {
+        InLine.pop_back();
+    }
+    return InLine;
+}
+
+auto ParseIgnoreRule(std::string InLine,
+                     const IgnoreRuleSource InSource,
+                     const bool bAllowNegation) -> std::optional<IgnoreRule> {
+    auto pattern = StripUnescapedTrailingSpaces(std::move(InLine));
+    if (pattern.empty() || pattern.front() == '#') {
+        return std::nullopt;
+    }
+
+    bool include = false;
+    if (bAllowNegation && pattern.front() == '!') {
+        include = true;
         pattern.erase(pattern.begin());
     }
-    while (!pattern.empty() && pattern.back() == '/') {
+    if (pattern.empty()) {
+        return std::nullopt;
+    }
+
+    const bool bRootAnchored = pattern.front() == '/';
+    if (bRootAnchored) {
+        pattern.erase(pattern.begin());
+    }
+    const bool bDirectoryOnly = !pattern.empty() && pattern.back() == '/' && !IsEscapedAt(pattern, pattern.size() - 1);
+    if (bDirectoryOnly) {
         pattern.pop_back();
     }
-    return pattern;
+    if (pattern.empty()) {
+        return std::nullopt;
+    }
+    const bool bRootRelative = bRootAnchored || pattern.find('/') != std::string::npos;
+
+    IgnoreRule rule;
+    rule.pattern = std::move(pattern);
+    rule.include = include;
+    rule.rootRelative = bRootRelative;
+    rule.source = InSource;
+    try {
+        rule.matcher = std::regex(GlobToRegex(rule), std::regex::ECMAScript);
+    } catch (const std::regex_error&) {
+        return std::nullopt;
+    }
+    return rule;
 }
 
-auto LoadIgnoreRulesFromFile(const std::filesystem::path& InFile) -> std::vector<IgnoreRule> {
+auto LoadIgnoreRulesFromFile(const std::filesystem::path& InFile,
+                             const IgnoreRuleSource InSource) -> std::vector<IgnoreRule> {
     std::vector<IgnoreRule> rules;
     if (!std::filesystem::exists(InFile)) {
         return rules;
@@ -478,25 +619,9 @@ auto LoadIgnoreRulesFromFile(const std::filesystem::path& InFile) -> std::vector
 
     std::string line;
     while (std::getline(in, line)) {
-        auto trimmed = Trim(line);
-        if (trimmed.empty() || trimmed.starts_with("#")) {
-            continue;
+        if (auto rule = ParseIgnoreRule(std::move(line), InSource, true); rule.has_value()) {
+            rules.push_back(std::move(*rule));
         }
-
-        bool include = false;
-        if (!trimmed.empty() && trimmed.front() == '!') {
-            include = true;
-            trimmed.erase(trimmed.begin());
-            trimmed = Trim(trimmed);
-        }
-
-        const bool directoryOnly = !trimmed.empty() && trimmed.back() == '/';
-        const auto normalized = NormalizeRulePattern(trimmed);
-        if (normalized.empty()) {
-            continue;
-        }
-
-        rules.push_back(IgnoreRule{.pattern = normalized, .include = include, .directoryOnly = directoryOnly});
     }
 
     return rules;
@@ -507,96 +632,68 @@ auto BuildIgnoreRules(const std::filesystem::path& InRoot, const std::vector<std
     rules.reserve(InExcludePatterns.size() + 32);
 
     for (const auto& pattern : InExcludePatterns) {
-        const auto normalized = NormalizeRulePattern(pattern);
-        if (normalized.empty()) {
-            continue;
+        if (auto rule = ParseIgnoreRule(pattern, IgnoreRuleSource::ExplicitExclude, false); rule.has_value()) {
+            rules.push_back(std::move(*rule));
         }
-        rules.push_back(IgnoreRule{.pattern = normalized, .include = false, .directoryOnly = false});
     }
 
-    for (const auto& fileRule : LoadIgnoreRulesFromFile(InRoot / ".gitignore")) {
+    for (const auto& fileRule : LoadIgnoreRulesFromFile(InRoot / ".gitignore", IgnoreRuleSource::GitIgnore)) {
         rules.push_back(fileRule);
     }
-    for (const auto& fileRule : LoadIgnoreRulesFromFile(InRoot / ".kogignore")) {
+    for (const auto& fileRule : LoadIgnoreRulesFromFile(InRoot / ".kogignore", IgnoreRuleSource::KogIgnore)) {
         rules.push_back(fileRule);
     }
 
     return rules;
 }
 
-auto PathContainsSegment(const std::string& InPath, const std::string& InSegment) -> bool {
-    if (InSegment.empty()) {
-        return false;
-    }
-    std::size_t start = 0;
-    while (start <= InPath.size()) {
-        const auto slash = InPath.find('/', start);
-        const auto end = (slash == std::string::npos) ? InPath.size() : slash;
-        if (end > start && InPath.substr(start, end - start) == InSegment) {
-            return true;
-        }
-        if (slash == std::string::npos) {
-            break;
-        }
-        start = slash + 1;
-    }
-    return false;
+auto RuleMatchesPath(const std::string& InRelPath, const IgnoreRule& InRule) -> bool {
+    return !InRule.pattern.empty() && GlobMatchesPath(InRelPath, InRule);
 }
 
-auto RuleMatchesPath(const std::string& InRelPath, const IgnoreRule& InRule) -> bool {
-    const auto& pattern = InRule.pattern;
-    if (pattern.empty()) {
+auto LastRuleDecision(const std::string& InRelPath,
+                      const std::vector<IgnoreRule>& InRules,
+                      const IgnoreRuleSource InSource) -> std::optional<bool> {
+    std::optional<bool> excluded;
+    for (const auto& rule : InRules) {
+        if (rule.source == InSource && RuleMatchesPath(InRelPath, rule)) {
+            excluded = !rule.include;
+        }
+    }
+    return excluded;
+}
+
+auto GitExcludesPath(const std::filesystem::path& InRoot,
+                     const std::filesystem::path& InPath) -> std::optional<bool> {
+    const auto parent = InPath.parent_path();
+    if (parent.empty()) {
+        return std::nullopt;
+    }
+
+    const auto topLevel = RunGitCapture(parent, {"rev-parse", "--show-toplevel"});
+    if (topLevel.exitCode != 0) {
+        return std::nullopt;
+    }
+    const auto owner = Normalize(std::filesystem::path(Trim(topLevel.stdoutStr)));
+    const auto ownerKey = PathKey(owner);
+    const auto rootKey = PathKey(InRoot);
+    if (ownerKey != rootKey && !ownerKey.starts_with(rootKey + "/")) {
+        return std::nullopt;
+    }
+
+    std::error_code ec;
+    const auto ownerRel = std::filesystem::relative(InPath, owner, ec);
+    if (ec || ownerRel.empty() || ownerRel == ".") {
+        return std::nullopt;
+    }
+    const auto gitIgnored = RunGitCapture(owner, {"check-ignore", "-q", "--no-index", "--", PathKey(ownerRel)});
+    if (gitIgnored.exitCode == 0) {
+        return true;
+    }
+    if (gitIgnored.exitCode == 1) {
         return false;
     }
-
-    if (InRule.directoryOnly) {
-        if (InRule.include) {
-            return InRelPath == pattern;
-        }
-        return InRelPath == pattern || InRelPath.starts_with(pattern + "/");
-    }
-
-    if (pattern.size() > 3 && pattern.ends_with("/**")) {
-        const auto base = pattern.substr(0, pattern.size() - 3);
-        if (InRelPath == base || InRelPath.starts_with(base + "/")) {
-            return true;
-        }
-    }
-
-    if (pattern.find('/') == std::string::npos) {
-        if (pattern.find('*') != std::string::npos || pattern.find('?') != std::string::npos) {
-            std::size_t start = 0;
-            while (start <= InRelPath.size()) {
-                const auto slash = InRelPath.find('/', start);
-                const auto end = (slash == std::string::npos) ? InRelPath.size() : slash;
-                const auto segment = InRelPath.substr(start, end - start);
-                if (!segment.empty() && GlobMatchesPath(segment, pattern)) {
-                    return true;
-                }
-                if (slash == std::string::npos) {
-                    break;
-                }
-                start = slash + 1;
-            }
-            return false;
-        }
-        return PathContainsSegment(InRelPath, pattern);
-    }
-
-    if (GlobMatchesPath(InRelPath, pattern)) {
-        return true;
-    }
-
-    if (InRelPath == pattern) {
-        return true;
-    }
-    if (InRelPath.starts_with(pattern + "/")) {
-        return true;
-    }
-    if (InRelPath.ends_with("/" + pattern)) {
-        return true;
-    }
-    return InRelPath.find("/" + pattern + "/") != std::string::npos;
+    return std::nullopt;
 }
 
 auto ShouldExcludePath(const std::filesystem::path& InRoot, const std::filesystem::path& InPath, const std::vector<IgnoreRule>& InRules) -> bool {
@@ -604,46 +701,27 @@ auto ShouldExcludePath(const std::filesystem::path& InRoot, const std::filesyste
     const auto rel = std::filesystem::relative(InPath, InRoot, ec);
     const auto relKey = (!ec && !rel.empty() && rel != ".") ? PathKey(rel) : PathKey(InPath);
 
-    // Check cheap rule matching FIRST (before expensive git subprocess calls).
-    bool excluded = false;
-    bool includedByRule = false;
-    for (const auto& rule : InRules) {
-        if (RuleMatchesPath(relKey, rule)) {
-            excluded = !rule.include;
-            if (rule.include) {
-                includedByRule = true;
-            }
-        }
-    }
-    if (excluded) {
+    // --exclude is an explicit operator override and therefore wins over both
+    // file-based policies.
+    if (LastRuleDecision(relKey, InRules, IgnoreRuleSource::ExplicitExclude).value_or(false)) {
         return true;
     }
-    if (includedByRule) {
-        return false;
+
+    // .kogignore is the workspace-specific overlay and intentionally has
+    // higher precedence than Git's own ignore stack.
+    if (const auto kogDecision = LastRuleDecision(relKey, InRules, IgnoreRuleSource::KogIgnore); kogDecision.has_value()) {
+        return *kogDecision;
     }
 
-    auto owner = InPath.parent_path();
-    while (!owner.empty()) {
-        if (owner == InRoot.parent_path()) {
-            break;
-        }
-        if (owner != InPath && IsGitRepo(owner)) {
-            const auto ownerRel = std::filesystem::relative(InPath, owner, ec);
-            if (!ec && !ownerRel.empty() && ownerRel != ".") {
-                const auto gitIgnored = RunGitCapture(owner, {"check-ignore", "-q", "--no-index", PathKey(ownerRel)});
-                if (gitIgnored.exitCode == 0) {
-                    return true;
-                }
-            }
-            break;
-        }
-        if (owner == InRoot) {
-            break;
-        }
-        owner = owner.parent_path();
+    // Let Git evaluate root and nested .gitignore files whenever the path is
+    // inside the workspace repository. This preserves Git's parent and nested
+    // precedence rules instead of approximating them in KOG.
+    if (const auto gitDecision = GitExcludesPath(InRoot, InPath); gitDecision.has_value()) {
+        return *gitDecision;
     }
 
-    return false;
+    // A non-Git workspace can still use a root .gitignore as discovery policy.
+    return LastRuleDecision(relKey, InRules, IgnoreRuleSource::GitIgnore).value_or(false);
 }
 
 auto HasDescendantIncludeRule(const std::filesystem::path& InRoot,
@@ -666,21 +744,32 @@ auto HasDescendantIncludeRule(const std::filesystem::path& InRoot,
             continue;
         }
 
-        if (rule.directoryOnly) {
-            if (pattern.starts_with(relKey + "/")) {
-                return true;
-            }
-            continue;
+        // A slashless re-include can match at any level below the ignore file,
+        // so a name-based fast-prune cannot safely rule out a descendant match.
+        if (!rule.rootRelative) {
+            return true;
         }
 
-        if (pattern.size() > 3 && pattern.ends_with("/**")) {
-            const auto base = pattern.substr(0, pattern.size() - 3);
-            if (base == relKey || base.starts_with(relKey + "/")) {
-                return true;
-            }
+        if (RuleMatchesPath(relKey, rule) || pattern.starts_with(relKey + "/")) {
+            return true;
         }
 
-        if (pattern.starts_with(relKey + "/")) {
+        std::string literalPrefix;
+        for (std::size_t i = 0; i < pattern.size(); ++i) {
+            const auto ch = pattern[i];
+            if (ch == '\\' && i + 1 < pattern.size()) {
+                literalPrefix.push_back(pattern[++i]);
+                continue;
+            }
+            if (ch == '*' || ch == '?' || ch == '[') {
+                break;
+            }
+            literalPrefix.push_back(ch);
+        }
+        while (!literalPrefix.empty() && literalPrefix.back() == '/') {
+            literalPrefix.pop_back();
+        }
+        if (literalPrefix.empty() || literalPrefix.starts_with(relKey + "/") || relKey.starts_with(literalPrefix + "/")) {
             return true;
         }
     }
@@ -689,17 +778,16 @@ auto HasDescendantIncludeRule(const std::filesystem::path& InRoot,
 }
 
 auto ShouldPrePrune(const std::filesystem::path& InRoot, const std::filesystem::path& InPath, const std::vector<std::string>& InPrePrune, const std::vector<IgnoreRule>& InRules) -> bool {
+    if (ShouldExcludePath(InRoot, InPath, InRules)) {
+        return true;
+    }
     const auto base = InPath.filename().generic_string();
     for (const auto& name : InPrePrune) {
         if (base == name) {
             return !HasDescendantIncludeRule(InRoot, InPath, InRules);
         }
     }
-    if (!ShouldExcludePath(InRoot, InPath, InRules)) {
-        return false;
-    }
-    // Keep traversing ignored parents when a deeper include rule may re-include descendants.
-    return !HasDescendantIncludeRule(InRoot, InPath, InRules);
+    return false;
 }
 
 auto RunGitCapture(const std::filesystem::path& InRepoPath, const std::vector<std::string>& InArgs) -> shell::ExecResult {
@@ -865,15 +953,18 @@ auto DiscoverGitRepos(const std::filesystem::path& InRoot, const int InMaxDepth,
             continue;
         }
 
-        // Detect repository roots at the directory node itself so full scans
-        // still find nested repos even when .git directories are pre-pruned.
-        if (depth <= InMaxDepth && IsGitRepo(currentPath)) {
-            unique.insert(PathKey(Normalize(currentPath)));
+        // Ignore policy must run before repository admission. Otherwise a rule
+        // that directly names a repository directory is observed one node too
+        // late and the ignored repository leaks into the inventory.
+        if (ShouldPrePrune(InRoot, currentPath, prePrune, InIgnoreRules)) {
             it.disable_recursion_pending();
             continue;
         }
 
-        if (ShouldPrePrune(InRoot, currentPath, prePrune, InIgnoreRules)) {
+        // Detect repository roots at the directory node itself so full scans
+        // still find nested repos even when .git directories are pre-pruned.
+        if (depth <= InMaxDepth && IsGitRepo(currentPath)) {
+            unique.insert(PathKey(Normalize(currentPath)));
             it.disable_recursion_pending();
             continue;
         }
@@ -927,6 +1018,8 @@ auto ComputeMarker(const std::filesystem::path& InRoot, const int InMaxDepth, co
     markerInput += std::to_string(InMaxDepth);
     markerInput += std::format("|root:{}", FileMtimeEpochSeconds(InRoot));
     markerInput += std::format("|gitmodules:{}", FileMtimeEpochSeconds(InRoot / ".gitmodules"));
+    markerInput += std::format("|gitignore:{}", HashFNV1a(ReadFileText(InRoot / ".gitignore").value_or("")));
+    markerInput += std::format("|kogignore:{}", HashFNV1a(ReadFileText(InRoot / ".kogignore").value_or("")));
 
     std::vector<std::filesystem::path> dirs;
     std::error_code ec;
@@ -2101,6 +2194,7 @@ auto LoadWorkspaceManifestAny(const std::filesystem::path& InWorkspaceRoot) -> s
 }
 
 auto MergePersistedUnregisteredRepos(const std::filesystem::path& InWorkspaceRoot,
+                                     const std::vector<IgnoreRule>& InIgnoreRules,
                                      std::vector<RepoRecord>* IoRepos) -> void {
     if (IoRepos == nullptr) {
         return;
@@ -2113,6 +2207,9 @@ auto MergePersistedUnregisteredRepos(const std::filesystem::path& InWorkspaceRoo
 
     for (const auto& repo : existing->repos) {
         if (repo.type != "unregistered") {
+            continue;
+        }
+        if (ShouldExcludePath(InWorkspaceRoot, repo.path, InIgnoreRules)) {
             continue;
         }
         std::error_code ec;
@@ -2373,7 +2470,11 @@ auto DiscoverRepos(const DiscoverOptions& InOptions) -> DiscoveryResult {
             bool valid = false;
             bool incrementalHit = false;
             if (age <= options.cacheTtlSeconds) {
-                valid = true;
+                // The marker is already computed before cache lookup. Honor it
+                // for fresh entries too so ignore-policy changes take effect
+                // immediately instead of leaking stale repositories for the
+                // rest of the TTL window.
+                valid = !options.incremental || state.discoveryCache->marker == marker;
             } else if (options.incremental && options.maxStaleSeconds > options.cacheTtlSeconds && age <= options.maxStaleSeconds) {
                 if (state.discoveryCache->marker == marker) {
                     valid = true;
@@ -2414,7 +2515,9 @@ auto DiscoverRepos(const DiscoverOptions& InOptions) -> DiscoveryResult {
     if (options.includeTrustedUnregistered) {
         if (const auto trusted = LoadTrustedWorkspaceManifest(rootAbs); trusted.has_value()) {
             for (const auto& repo : trusted->repos) {
-                if (repo.type != "unregistered" || !IsGitRepo(repo.path)) {
+                if (repo.type != "unregistered" ||
+                    ShouldExcludePath(rootAbs, repo.path, ignoreRules) ||
+                    !IsGitRepo(repo.path)) {
                     continue;
                 }
                 CollectRegisteredSubmodulesRecursiveWithMetadata(repo.path, registered, &registeredMetadata);
@@ -2434,7 +2537,7 @@ auto DiscoverRepos(const DiscoverOptions& InOptions) -> DiscoveryResult {
         reportProgress(std::format("discover: building repo metadata for {} registered repos", discovered.size()));
         result.repos = BuildRepoRecords(rootAbs, discovered, registered, registeredMetadata, options.metadataLevel);
         if (options.includeTrustedUnregistered) {
-            MergePersistedUnregisteredRepos(rootAbs, &result.repos);
+            MergePersistedUnregisteredRepos(rootAbs, ignoreRules, &result.repos);
         }
 
         if (!externalRoots.empty()) {
@@ -2474,10 +2577,14 @@ auto DiscoverWorkspaceInventory(const WorkspaceInventoryOptions& InOptions) -> s
     if (rootAbs.empty()) {
         rootAbs = std::filesystem::current_path();
     }
+    const auto ignoreRules = BuildIgnoreRules(rootAbs, {});
 
     if (InOptions.useCache && !InOptions.refreshCache) {
         if (const auto manifest = LoadTrustedWorkspaceManifest(rootAbs); manifest.has_value()) {
             auto repos = manifest->repos;
+            repos.erase(std::remove_if(repos.begin(), repos.end(), [&](const RepoRecord& InRepo) {
+                return InRepo.type == "unregistered" && ShouldExcludePath(rootAbs, InRepo.path, ignoreRules);
+            }), repos.end());
             if (InOptions.scope == DiscoverScope::RegisteredOnly && !InOptions.includeTrustedUnregistered) {
                 repos.erase(std::remove_if(repos.begin(), repos.end(), [](const RepoRecord& InRepo) {
                     return InRepo.type == "unregistered";

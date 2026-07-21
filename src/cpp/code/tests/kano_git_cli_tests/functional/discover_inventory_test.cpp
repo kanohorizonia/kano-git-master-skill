@@ -272,6 +272,168 @@ TEST_CASE("discover full scan prunes ignored build cache and temp directories", 
     RemoveSandboxWorkspace(sandbox);
 }
 
+TEST_CASE("discover applies Git-style kogignore rules before admitting direct repositories", "[tdd][functional][discover][discovery][gitignore][kogignore][cross-platform]") {
+    const auto sandbox = CreateSandboxWorkspace("discover-kogignore-git-semantics");
+    const auto root = (sandbox.root / "root").lexically_normal();
+    const auto anchoredIgnored = (root / "anchored-tool").lexically_normal();
+    const auto nestedAnchorVisible = (root / "scope" / "anchored-tool").lexically_normal();
+    const auto zeroDepthGlobstarIgnored = (root / "layers" / "repo").lexically_normal();
+    const auto deepGlobstarIgnored = (root / "layers" / "one" / "two" / "repo").lexically_normal();
+    const auto characterClassIgnored = (root / "plugins" / "a-tool").lexically_normal();
+    const auto characterClassVisible = (root / "plugins" / "c-tool").lexically_normal();
+    const auto questionMarkIgnored = (root / "slots" / "x-tool").lexically_normal();
+    const auto leadingGlobstarIgnored = (root / "scope" / "deep" / "generated-repo").lexically_normal();
+    const auto trailingSpaceRuleIgnored = (root / "trimmed-rule").lexically_normal();
+    const auto escapedHashIgnored = (root / "#scratch").lexically_normal();
+    const auto escapedBangIgnored = (root / "!scratch").lexically_normal();
+
+    InitRepo(root);
+    InitRepo(anchoredIgnored);
+    InitRepo(nestedAnchorVisible);
+    InitRepo(zeroDepthGlobstarIgnored);
+    InitRepo(deepGlobstarIgnored);
+    InitRepo(characterClassIgnored);
+    InitRepo(characterClassVisible);
+    InitRepo(questionMarkIgnored);
+    InitRepo(leadingGlobstarIgnored);
+    InitRepo(trailingSpaceRuleIgnored);
+    InitRepo(escapedHashIgnored);
+    InitRepo(escapedBangIgnored);
+    WriteTextFile(root / ".kogignore",
+                  "/anchored-tool/\n"
+                  "layers/**/repo/\n"
+                  "plugins/[ab]-tool/\n"
+                  "slots/?-tool/\n"
+                  "**/generated-repo/\n"
+                  "trimmed-rule/   \n"
+                  "\\#scratch/\n"
+                  "\\!scratch/\n");
+
+    const auto json = RunDiscoverJson(root, {"--full", "--unregistered-depth", "8"});
+    INFO(json);
+    RequireNotContains(json, anchoredIgnored.generic_string());
+    RequireContains(json, nestedAnchorVisible.generic_string());
+    RequireNotContains(json, zeroDepthGlobstarIgnored.generic_string());
+    RequireNotContains(json, deepGlobstarIgnored.generic_string());
+    RequireNotContains(json, characterClassIgnored.generic_string());
+    RequireContains(json, characterClassVisible.generic_string());
+    RequireNotContains(json, questionMarkIgnored.generic_string());
+    RequireNotContains(json, leadingGlobstarIgnored.generic_string());
+    RequireNotContains(json, trailingSpaceRuleIgnored.generic_string());
+    RequireNotContains(json, escapedHashIgnored.generic_string());
+    RequireNotContains(json, escapedBangIgnored.generic_string());
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
+TEST_CASE("discover delegates nested gitignore precedence to Git", "[tdd][functional][discover][discovery][gitignore][nested][cross-platform]") {
+    const auto sandbox = CreateSandboxWorkspace("discover-nested-gitignore-precedence");
+    const auto root = (sandbox.root / "root").lexically_normal();
+    const auto rootIgnored = (root / "root-ignored").lexically_normal();
+    const auto wildcardIgnored = (root / "drop.tool").lexically_normal();
+    const auto nestedReincluded = (root / "scope" / "keep.tool").lexically_normal();
+
+    InitRepo(root);
+    InitRepo(rootIgnored);
+    InitRepo(wildcardIgnored);
+    InitRepo(nestedReincluded);
+    WriteTextFile(root / ".gitignore", "/root-ignored/\n*.tool/\n");
+    WriteTextFile(root / "scope" / ".gitignore", "!keep.tool/\n");
+
+    const auto json = RunDiscoverJson(root, {"--full", "--unregistered-depth", "4"});
+    INFO(json);
+    RequireNotContains(json, rootIgnored.generic_string());
+    RequireNotContains(json, wildcardIgnored.generic_string());
+    RequireContains(json, nestedReincluded.generic_string());
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
+TEST_CASE("discover preserves the explicitly re-included cpp build script subtree", "[tdd][functional][discover][discovery][gitignore][negation][cross-platform]") {
+    const auto sandbox = CreateSandboxWorkspace("discover-cpp-build-script-reinclude");
+    const auto root = (sandbox.root / "root").lexically_normal();
+    const auto scriptRepo = (root / "src" / "cpp" / "build" / "script" / "tooling-repo").lexically_normal();
+    const auto intermediateRepo = (root / "src" / "cpp" / "build" / "_intermediate" / "cache-repo").lexically_normal();
+
+    InitRepo(root);
+    InitRepo(scriptRepo);
+    InitRepo(intermediateRepo);
+    WriteTextFile(root / ".gitignore",
+                  ".kano/cache/\n"
+                  "src/cpp/build/**\n"
+                  "!src/cpp/build/script/\n"
+                  "!src/cpp/build/script/**\n");
+
+    const auto json = RunDiscoverJson(root, {"--full", "--unregistered-depth", "8"});
+    INFO(json);
+    RequireContains(json, scriptRepo.generic_string());
+    RequireNotContains(json, intermediateRepo.generic_string());
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
+TEST_CASE("discover invalidates incremental cache when root ignore content changes", "[tdd][functional][discover][discovery][gitignore][cache]") {
+    const auto sandbox = CreateSandboxWorkspace("discover-ignore-cache-marker");
+    const auto root = (sandbox.root / "root").lexically_normal();
+    const auto childRepo = (root / "child-repo").lexically_normal();
+    const auto cacheDir = (root / ".kano" / "cache" / "git").lexically_normal();
+    const auto cacheFile = (cacheDir / "workspace-manifest.json").lexically_normal();
+
+    InitRepo(root);
+    InitRepo(childRepo);
+    std::filesystem::create_directories(cacheDir);
+    WriteTextFile(root / ".kogignore", "");
+
+    const auto initial = RunKog(
+        {"discover", "--full", "--unregistered-depth", "2", "--format", "json", "--repo-root", root.string(), "--cache-ttl", "1", "--max-stale", "60"},
+        root);
+    RequireSuccess(initial, "seed discovery cache");
+    RequireContains(initial.stdoutText, childRepo.generic_string());
+    REQUIRE(std::filesystem::exists(cacheFile));
+
+    WriteTextFile(root / ".kogignore", "child-repo/\n");
+
+    const auto refreshed = RunKog(
+        {"discover", "--full", "--unregistered-depth", "2", "--format", "json", "--repo-root", root.string(), "--no-refresh-cache", "--cache-ttl", "60", "--max-stale", "900"},
+        root);
+    RequireSuccess(refreshed, "refresh discovery after ignore content change");
+    RequireNotContains(refreshed.stdoutText, childRepo.generic_string());
+    RequireContains(refreshed.stderrText, "mode=scan-miss");
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
+TEST_CASE("discover removes newly ignored repositories from trusted inventory", "[tdd][functional][discover][discovery][gitignore][cache][inventory]") {
+    const auto sandbox = CreateSandboxWorkspace("discover-filter-trusted-inventory");
+    const auto root = (sandbox.root / "root").lexically_normal();
+    const auto childRepo = (root / "child-repo").lexically_normal();
+
+    InitRepo(root);
+    InitRepo(childRepo);
+
+    const auto seed = RunKog(
+        {"discover", "--full", "--unregistered-depth", "2", "--format", "json", "--repo-root", root.string(), "--no-cache"},
+        root);
+    RequireSuccess(seed, "seed trusted unregistered inventory");
+    RequireContains(seed.stdoutText, childRepo.generic_string());
+
+    WriteTextFile(root / ".kogignore", "child-repo/\n");
+
+    const auto trustedStatus = RunKog(
+        {"status", "--recursive", "--format", "json", "--repo-root", root.string(), "--no-fetch-health"},
+        root);
+    RequireSuccess(trustedStatus, "filter trusted inventory for recursive status");
+    RequireNotContains(trustedStatus.stdoutText, childRepo.generic_string());
+
+    const auto registeredOnly = RunKog(
+        {"discover", "--no-unregistered-scan", "--format", "json", "--repo-root", root.string(), "--no-cache"},
+        root);
+    RequireSuccess(registeredOnly, "filter trusted inventory for registered-only discovery");
+    RequireNotContains(registeredOnly.stdoutText, childRepo.generic_string());
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
 TEST_CASE("discover table keeps fixed-width readable columns", "[functional][discover][table][format]") {
     const auto sandbox = CreateSandboxWorkspace("discover-table-format");
     const auto root = (sandbox.root / "root").lexically_normal();
