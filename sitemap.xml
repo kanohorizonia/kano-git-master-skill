@@ -1,163 +1,163 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml"><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/README</loc>
-    <lastmod>2026-07-21T13:29:46.371Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.952Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/</loc>
-    <lastmod>2026-07-21T13:29:46.375Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.956Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/api/overview</loc>
-    <lastmod>2026-07-21T13:29:46.377Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.958Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/comparisons/git-p4-vs-git-svn</loc>
-    <lastmod>2026-07-21T13:29:46.371Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.952Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/comparisons/submodule-vs-subtree</loc>
-    <lastmod>2026-07-21T13:29:46.371Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.952Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/comparisons/when-to-use-scalar</loc>
-    <lastmod>2026-07-21T13:29:46.371Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.952Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/cpp-profile-coverage-pgo-model</loc>
-    <lastmod>2026-07-21T13:29:46.371Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.952Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/design/cpp-stage-contract</loc>
-    <lastmod>2026-07-21T13:29:46.372Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.952Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/design/last-known-good-regression-bisect</loc>
-    <lastmod>2026-07-21T13:29:46.372Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.952Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/design/orphan-branch</loc>
-    <lastmod>2026-07-21T13:29:46.372Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.952Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/design/workspace-native-planner-contract</loc>
-    <lastmod>2026-07-21T13:29:46.372Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.952Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/design/worktree-scalar</loc>
-    <lastmod>2026-07-21T13:29:46.372Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.952Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/development/contributing</loc>
-    <lastmod>2026-07-21T13:29:46.372Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.952Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/development/kano-cpp-dev-convention</loc>
-    <lastmod>2026-07-21T13:29:46.372Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.952Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/development/pixi</loc>
-    <lastmod>2026-07-21T13:29:46.372Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.952Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/development/testing</loc>
-    <lastmod>2026-07-21T13:29:46.372Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.952Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/examples/WORKFLOW-SUMMARY</loc>
-    <lastmod>2026-07-21T13:29:46.372Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.952Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/examples/commit-rules-example</loc>
-    <lastmod>2026-07-21T13:29:46.372Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.952Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/examples/init-kano-dev-skill-example</loc>
-    <lastmod>2026-07-21T13:29:46.372Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.952Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/examples/repo-initialization-workflow-examples</loc>
-    <lastmod>2026-07-21T13:29:46.372Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.953Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/examples/root-repo-multi-remote-examples</loc>
-    <lastmod>2026-07-21T13:29:46.372Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.953Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/guides/agent-mutation-queue</loc>
-    <lastmod>2026-07-21T13:29:46.372Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.953Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/guides/ai-provider-bootstrap</loc>
-    <lastmod>2026-07-21T13:29:46.372Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.953Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/guides/auto-fallback-complete</loc>
-    <lastmod>2026-07-21T13:29:46.372Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.953Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/guides/common-pitfalls</loc>
-    <lastmod>2026-07-21T13:29:46.372Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.953Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/guides/cpa-commit-plan-workflow</loc>
-    <lastmod>2026-07-21T13:29:46.372Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.953Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/guides/current-command-surface</loc>
-    <lastmod>2026-07-21T13:29:46.373Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.953Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/guides/git-p4</loc>
-    <lastmod>2026-07-21T13:29:46.373Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.953Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/guides/git-svn</loc>
-    <lastmod>2026-07-21T13:29:46.373Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.953Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/guides/ignore-datasource-sync-policy</loc>
-    <lastmod>2026-07-21T13:29:46.373Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.953Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/guides/ignore-plan-operator-workflow</loc>
-    <lastmod>2026-07-21T13:29:46.373Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.953Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/guides/kcc-commit-message-policy</loc>
-    <lastmod>2026-07-21T13:29:46.373Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.953Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/guides/new-features</loc>
-    <lastmod>2026-07-21T13:29:46.373Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.953Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/guides/public-artifact-contract</loc>
-    <lastmod>2026-07-21T13:29:46.373Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.953Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/guides/quick-start</loc>
-    <lastmod>2026-07-21T13:29:46.373Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.953Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/guides/repo-initialization-workflow</loc>
-    <lastmod>2026-07-21T13:29:46.373Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.953Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/guides/scalar</loc>
-    <lastmod>2026-07-21T13:29:46.373Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.953Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/guides/submodule</loc>
-    <lastmod>2026-07-21T13:29:46.373Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.953Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/guides/subtree</loc>
-    <lastmod>2026-07-21T13:29:46.373Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.953Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/guides/version-info</loc>
-    <lastmod>2026-07-21T13:29:46.373Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.953Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/guides/worktree</loc>
-    <lastmod>2026-07-21T13:29:46.373Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.954Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/migrations/perforce-to-git</loc>
-    <lastmod>2026-07-21T13:29:46.373Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.954Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/migrations/svn-to-git</loc>
-    <lastmod>2026-07-21T13:29:46.373Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.954Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/planning/cli-architecture-proposal</loc>
-    <lastmod>2026-07-21T13:29:46.373Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.954Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/planning/tui-branch-transplant-workflows</loc>
-    <lastmod>2026-07-21T13:29:46.373Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.954Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/profiling/README</loc>
-    <lastmod>2026-07-21T13:29:46.373Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.954Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/release/v0.0.1-alpha-no-go</loc>
-    <lastmod>2026-07-21T13:29:46.374Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.954Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/release/v0.0.1-alpha-release</loc>
-    <lastmod>2026-07-21T13:29:46.374Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.954Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/repo-hygiene</loc>
-    <lastmod>2026-07-21T13:29:46.374Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.954Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/status/KG-BUG-0005-scoped-commit-status-kinds</loc>
-    <lastmod>2026-07-21T13:29:46.374Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.954Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/status/changelog</loc>
-    <lastmod>2026-07-21T13:29:46.374Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.954Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/status/ci-cd-trigger-policy</loc>
-    <lastmod>2026-07-21T13:29:46.374Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.954Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/status/cpp-stage-refactor-backlog</loc>
-    <lastmod>2026-07-21T13:29:46.374Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.954Z</lastmod>
   </url><url>
     <loc>https://kanohorizonia.github.io/kano-git-master-skill/status/pgo-coverage-shared-infra-tracking</loc>
-    <lastmod>2026-07-21T13:29:46.374Z</lastmod>
+    <lastmod>2026-07-21T13:49:35.954Z</lastmod>
   </url></urlset>
