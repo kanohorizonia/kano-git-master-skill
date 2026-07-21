@@ -2332,6 +2332,15 @@ TEST_CASE("converge planner gitlink only uses deterministic pointer commit", "[t
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge scoped freshness hashes retain leading zeroes", "[architecture][converge][freshness][KG-BUG-0072]") {
+    const auto cppRoot =
+        std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path().parent_path();
+    const auto convergeSource =
+        cppRoot / "code" / "systems" / "kano_git_command" / "repo_sync" / "private" / "converge_cmd.cpp";
+    const auto sourceText = ReadTextFile(convergeSource);
+    RequireContains(sourceText, "std::format(\"{:016x}\", hash)");
+}
+
 TEST_CASE("converge planner defers unsafe parent pointer while child can converge", "[tdd][unit][feature:converge-state][feature:dirty-kind][functional][converge][planner]") {
     const auto ctx = CreateRemoteWithSubmoduleClone("converge-planner-defer-parent-unsafe");
     RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneChildRepo), "checkout child branch for deferred parent test");
@@ -2402,9 +2411,20 @@ TEST_CASE("converge commits deferred parent content before refreshed sync and pu
     std::filesystem::create_directories(deferredRootContent.parent_path());
     const auto childGitDirResult = RunGit({"rev-parse", "--absolute-git-dir"}, ctx.cloneChildRepo);
     RequireSuccess(childGitDirResult, "resolve child git directory for post-commit fixture");
+    const auto postCommitHook =
+        std::filesystem::path(TrimCopy(childGitDirResult.stdoutText)) / "hooks" / "post-commit";
     WriteTextFile(
-        std::filesystem::path(TrimCopy(childGitDirResult.stdoutText)) / "hooks" / "post-commit",
+        postCommitHook,
         "#!/bin/sh\nprintf 'deferred root content\\n' > '" + deferredRootContent.generic_string() + "'\n");
+#if !defined(_WIN32)
+    std::error_code permissionError;
+    std::filesystem::permissions(
+        postCommitHook,
+        std::filesystem::perms::owner_exec | std::filesystem::perms::group_exec | std::filesystem::perms::others_exec,
+        std::filesystem::perm_options::add,
+        permissionError);
+    REQUIRE_FALSE(permissionError);
+#endif
     WriteTextFile(ctx.cloneChildRepo / "docs" / "child.md", "deferred child content\n");
 
     const auto result = RunKogWithEnv(

@@ -2015,9 +2015,7 @@ std::string Fnv1a64HexLocal(const std::string& value) {
         hash ^= static_cast<std::uint64_t>(ch);
         hash *= 1099511628211ull;
     }
-    std::ostringstream out;
-    out << std::hex << std::nouppercase << hash;
-    return out.str();
+    return std::format("{:016x}", hash);
 }
 
 bool IsInternalConvergeArtifactPath(const std::string& path) {
@@ -5253,7 +5251,7 @@ int RunBranchRetire(const std::filesystem::path& root,
                         const auto targetBranchNow = GitCapture(targetWorktree.absolutePath, {"branch", "--show-current"});
                         const auto targetHeadNow = GitCapture(targetWorktree.absolutePath, {"rev-parse", "HEAD"});
                         const auto targetRefNow = GitCapture(repoPath, {"rev-parse", "--verify", targetRef + "^{commit}"});
-                        if (!WorktreeIsClean(targetWorktree.absolutePath, targetCleanMessage) ||
+                        if (!WorktreeIsClean(targetWorktree.absolutePath, targetCleanMessage, true) ||
                             targetBranchNow.exitCode != 0 || Trim(targetBranchNow.stdoutStr) != targetBranch ||
                             targetHeadNow.exitCode != 0 || targetRefNow.exitCode != 0 ||
                             Trim(targetHeadNow.stdoutStr) != targetWorktree.head ||
