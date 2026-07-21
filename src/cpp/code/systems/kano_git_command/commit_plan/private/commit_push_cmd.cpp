@@ -1,6 +1,7 @@
 // commit-push command — Orchestrate commit -> sync -> push workflow
 
 #include <CLI/CLI.hpp>
+#include "commit_push_cmd.hpp"
 #include "command_runtime_ops.hpp"
 #include "ai_utils.hpp"
 #include "discovery.hpp"
@@ -2740,59 +2741,36 @@ auto RunCommitPushPlanFilePipeline(const std::filesystem::path& InWorkspaceRoot,
     return RunCommitPushPlanFilePipelineImpl(InWorkspaceRoot, InNormalizedPlanFile, InExtraArgs);
 }
 
-void RegisterCommitPush(CLI::App& InApp) {
-    auto* cmd = InApp.add_subcommand("commit-push", "Run pre-commit, commit, sync, post-sync, then push in one command");
-    cmd->allow_extras();
+auto MakeCommitPushCommandCallback(CLI::App& InCommand,
+                                   const std::shared_ptr<CommitPushCommandOptions>& InOptions)
+    -> std::function<void()> {
+    auto* cmd = &InCommand;
+    auto* repos = &InOptions->repos;
+    auto* noRecursive = &InOptions->noRecursive;
+    auto* message = &InOptions->message;
+    auto* commitPlanFile = &InOptions->commitPlanFile;
+    auto* writeCommitPlanTemplate = &InOptions->writeCommitPlanTemplate;
+    auto* commitPlanOut = &InOptions->commitPlanOut;
+    auto* aiProvider = &InOptions->aiProvider;
+    auto* aiModel = &InOptions->aiModel;
+    auto* aiFillMode = &InOptions->aiFillMode;
+    auto* aiAuto = &InOptions->aiAuto;
+    auto* noAiReview = &InOptions->noAiReview;
+    auto* stagedOnly = &InOptions->stagedOnly;
+    auto* dryRun = &InOptions->dryRun;
+    auto* profile = &InOptions->profile;
+    auto* branchMode = &InOptions->branchMode;
+    auto* forceWithLease = &InOptions->forceWithLease;
+    auto* noVerify = &InOptions->noVerify;
+    auto* jobs = &InOptions->jobs;
+    auto* verbose = &InOptions->verbose;
+    auto* remote = &InOptions->remote;
+    auto* repoRoot = &InOptions->repoRoot;
+    auto* target = &InOptions->target;
+    auto* yolo = &InOptions->yolo;
 
-    auto* repos = new std::string{};
-    auto* noRecursive = new bool{false};
-    auto* message = new std::string{};
-    auto* commitPlanFile = new std::string{};
-    auto* writeCommitPlanTemplate = new bool{false};
-    auto* commitPlanOut = new std::string{};
-    auto* aiProvider = new std::string{};
-    auto* aiModel = new std::string{};
-    auto* aiFillMode = new std::string{};
-    auto* aiAuto = new bool{false};
-    auto* noAiReview = new bool{false};
-    auto* stagedOnly = new bool{false};
-    auto* dryRun = new bool{false};
-    auto* profile = new bool{false};
-    auto* branchMode = new std::string{"default"};
-    auto* forceWithLease = new bool{false};
-    auto* noVerify = new bool{false};
-    auto* jobs = new int{0};
-    auto* verbose = new bool{false};
-    auto* remote = new std::string{};
-    auto* repoRoot = new std::string{};
-    auto* target = new std::string{};
-    auto* yolo = new bool{false};
-
-    cmd->add_option("--repos", *repos, "Target repos (comma-separated)");
-    cmd->add_option("--repo-root", *repoRoot, "Workspace root/start path used for repo-name lookup");
-    cmd->add_option("target", *target, "Optional repo target root (repo name or relative path)")->required(false);
-    cmd->add_flag("--no-recursive,-N", *noRecursive, "Only operate on current repository (or provided --repos)");
-    cmd->add_option("--message,-m", *message, "Commit message (skip AI generation)");
-    cmd->add_option("--plan-file", *commitPlanFile, "Plan JSON file (stage-aware)");
-    cmd->add_flag("--write-plan-template", *writeCommitPlanTemplate, "Write plan template JSON and exit");
-    cmd->add_option("--plan-out", *commitPlanOut, "Template output path (default: .kano/tmp/git/plans/plan-<utc>-<head>.json)");
-    cmd->add_option("--ai-provider", *aiProvider, "AI provider for commit (copilot, codex, opencode)");
-    cmd->add_option("--ai-model", *aiModel, "AI model for commit");
-    cmd->add_option("--ai-commit-generation-mode,--ai-fill-mode", *aiFillMode, "AI commit generation mode override (single|per-commit|adaptive)");
-    cmd->add_flag("--ai-auto", *aiAuto, "Enable commit AI auto mode");
-    cmd->add_flag("--no-ai-review", *noAiReview, "Skip AI review gate for commit");
-    cmd->add_flag("--staged-only", *stagedOnly, "Commit only staged changes");
-    cmd->add_flag("--dry-run", *dryRun, "Preview commit/sync/push actions without modifying repositories");
-    cmd->add_flag("--profile", *profile, "Print commit-push stage timing summary");
-    cmd->add_option("--branch-mode", *branchMode, "Detached branch inference mode for pre-commit: default|stable-dev");
-    cmd->add_flag("--force-with-lease", *forceWithLease, "Use force-with-lease for push");
-    cmd->add_flag("--no-verify", *noVerify, "Pass --no-verify to push");
-    cmd->add_option("--jobs", *jobs, "Push parallel workers");
-    cmd->add_flag("--verbose", *verbose, "Verbose push output");
-    cmd->add_option("--remote", *remote, "Remote filter for push");
-    cmd->add_flag("--yolo", *yolo, "Enable all permissions for AI sub-agents");
-
-    cmd->callback([=]() {
+    return [=, optionsOwner = InOptions]() {
+        (void)optionsOwner;
         const auto totalStart = std::chrono::steady_clock::now();
         long long safetyGatesMillis = 0;
         long long preCommitMillis = 0;
@@ -3246,7 +3224,7 @@ void RegisterCommitPush(CLI::App& InApp) {
         }
 
         std::exit(pushExitCode);
-    });
+    };
 }
 
 } // namespace kano::git::commands

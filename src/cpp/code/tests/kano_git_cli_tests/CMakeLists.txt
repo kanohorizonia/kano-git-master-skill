@@ -4,6 +4,7 @@ add_executable(kano_git_cli_tests
   functional/bdd_scenario_recorder_test.cpp
   functional/agent_queue_exact_commit_test.cpp
   functional/commit_module_boundary_test.cpp
+  functional/commit_push_module_boundary_test.cpp
   functional/command_dependency_boundary_test.cpp
   functional/plan_module_boundary_test.cpp
   functional/preset_artifact_identity_test.cpp
