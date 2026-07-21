@@ -496,6 +496,17 @@ if(KOG_BUILD_GENERATOR_STR STREQUAL "")
     set(KOG_BUILD_GENERATOR_STR "unknown")
 endif()
 
+# CMake can discard its cache and reconfigure when the selected compiler
+# changes. Preset cache variables are not retained by that automatic second
+# configure, but the shared build launcher keeps the configure preset in the
+# process environment. Recover only a missing value so an explicit
+# KOG_PRESET_NAME remains authoritative.
+if((NOT DEFINED KOG_PRESET_NAME OR KOG_PRESET_NAME STREQUAL "")
+   AND NOT "$ENV{KANO_CPP_INFRA_BUILD_CONFIGURE_PRESET}" STREQUAL "")
+    set(KOG_PRESET_NAME "$ENV{KANO_CPP_INFRA_BUILD_CONFIGURE_PRESET}"
+        CACHE STRING "CMake preset name for artifact layout")
+endif()
+
 set(KOG_BUILD_PRESET_STR "${KOG_PRESET_NAME}")
 if(KOG_BUILD_PRESET_STR STREQUAL "")
     set(KOG_BUILD_PRESET_STR "unknown-preset")
