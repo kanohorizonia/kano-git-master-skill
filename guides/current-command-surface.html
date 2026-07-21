@@ -81,6 +81,12 @@ nested repositories in child-first dependency waves. A sync may prefetch parent
 remote refs before those waves to discover current <code>.gitmodules</code> policy; that
 prefetch does not mutate the parent working tree. Native plan lines expose the
 active contract as <code>order=child-first</code> and report the wave count.</p>
+<p>Recursive <code>kog sync</code>, <code>kog sync origin-latest</code>, and <code>kog sync dev</code> accept
+<code>--execution-policy serial|parallel</code>. <code>parallel</code> is the default and runs
+independent repositories concurrently up to <code>--jobs</code>; <code>serial</code> keeps the same
+deterministic dependency waves but executes one repository at a time as a
+fallback and debugging mode. Plan output records the selected policy and the
+effective worker count.</p>
 <figure data-rehype-pretty-code-figure><pre tabindex="0" data-language="bash" data-theme="github-light tokyo-night"><code data-language="bash" data-theme="github-light tokyo-night" style="display:grid;"><span data-line><span style="--shiki-light:#6A737D;--shiki-dark:#51597D;--shiki-light-font-style:inherit;--shiki-dark-font-style:italic;"># Workspace overview</span></span>
 <span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./scripts/kog</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> status</span></span>
 <span data-line><span style="--shiki-light:#6F42C1;--shiki-dark:#C0CAF5;">./scripts/kog</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> status</span><span style="--shiki-light:#032F62;--shiki-dark:#9ECE6A;"> .</span></span>
