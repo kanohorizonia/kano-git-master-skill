@@ -7,7 +7,7 @@
 #include "secret_scan_utils.hpp"
 #include "shell_executor.hpp"
 
-#include <kano_timing.h>
+#include "kog_timing.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -2504,7 +2504,7 @@ auto AutoAmendGitlinkOnlyPostSyncRepos(const std::filesystem::path& InWorkspaceR
 auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceRoot,
                                        const std::string& InNormalizedPlanFile,
                                        const std::vector<std::string>& InExtraArgs) -> int {
-    SCOPED_TIMING_LOG("commit-push.RunCommitPushPlanFilePipelineImpl");
+    KOG_SCOPED_TIMING_LOG("commit-push.RunCommitPushPlanFilePipelineImpl");
     const bool agentMode = IsAgentModeEnabledLocal();
     const auto totalStart = std::chrono::steady_clock::now();
     long long safetyGatesMillis = 0;
@@ -3028,14 +3028,14 @@ void RegisterCommitPush(CLI::App& InApp) {
         if (!effectiveAiModeRequested) {
             std::cout << "=== commit-push stage: safety-gates ===\n";
             {
-                SCOPED_TIMING_LOG("commit-push.safety-gates");
+                KOG_SCOPED_TIMING_LOG("commit-push.safety-gates");
                 RunPipelineSafetyGatesForNonAiCommitPush(workspaceRoot, repoList, effectiveNoRecursive);
             }
         }
 
         std::cout << "=== commit-push stage: pre-commit ===\n";
         {
-            SCOPED_TIMING_LOG("commit-push.pre-commit");
+            KOG_SCOPED_TIMING_LOG("commit-push.pre-commit");
             if (!repoList.empty()) {
                 for (const auto& repo : repoList) {
                     const auto repoRoot = (workspaceRoot / std::filesystem::path(repo)).lexically_normal();
@@ -3058,7 +3058,7 @@ void RegisterCommitPush(CLI::App& InApp) {
         } else {
             std::cout << "=== commit-push stage: commit ===\n";
             {
-                SCOPED_TIMING_LOG("commit-push.commit");
+                KOG_SCOPED_TIMING_LOG("commit-push.commit");
                 const auto commitResult = hasCommitPlan
                     ? shell::ExecResult{
                         RunCommitNativePlanStage(workspaceRoot, normalizedCommitPlanFile, "commit", false, true), "", ""}
@@ -3083,7 +3083,7 @@ void RegisterCommitPush(CLI::App& InApp) {
 
             std::cout << "=== commit-push stage: sync ===\n";
             {
-                SCOPED_TIMING_LOG("commit-push.sync");
+                KOG_SCOPED_TIMING_LOG("commit-push.sync");
                 if (!repoList.empty()) {
                     for (const auto& repo : repoList) {
                         const auto repoRoot = (workspaceRoot / std::filesystem::path(repo)).lexically_normal();
@@ -3102,7 +3102,7 @@ void RegisterCommitPush(CLI::App& InApp) {
 
             std::cout << "=== commit-push stage: post-sync ===\n";
             {
-                SCOPED_TIMING_LOG("commit-push.post-sync");
+                KOG_SCOPED_TIMING_LOG("commit-push.post-sync");
                 shell::ExecResult postCommitResult{0, "", ""};
                 if (*dryRun) {
                     if (hasCommitPlan) {
@@ -3163,7 +3163,7 @@ void RegisterCommitPush(CLI::App& InApp) {
         std::cout << "=== commit-push stage: push ===\n";
         int pushExitCode = 0;
         {
-            SCOPED_TIMING_LOG("commit-push.push");
+            KOG_SCOPED_TIMING_LOG("commit-push.push");
             if (!repoList.empty()) {
                 std::vector<std::string> pushArgs = {"push", "--repos", JoinReposCsv(repoList), "--no-recursive"};
                 if (*dryRun) {

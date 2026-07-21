@@ -753,7 +753,7 @@ int main(int InArgc, char* InArgv[]) {
         rawArgsForTiming.emplace_back(InArgv[i] == nullptr ? "" : std::string{InArgv[i]});
     }
     std::unique_ptr<kano::infra::timing::ScopedTimingLog> timingLog;
-    if (!ShouldSuppressMainTimingForMachineJson(rawArgsForTiming)) {
+    if (IsTruthyEnv("KOG_DEBUG") && !ShouldSuppressMainTimingForMachineJson(rawArgsForTiming)) {
         timingLog = std::make_unique<kano::infra::timing::ScopedTimingLog>(cmdLabel);
     }
 

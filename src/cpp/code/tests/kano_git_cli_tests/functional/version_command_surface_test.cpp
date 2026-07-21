@@ -97,4 +97,24 @@ TEST_CASE("kog_self_status_json_is_valid_object", "[functional][cli][self][statu
     RemoveSandboxWorkspace(sandbox);
 }
 
+TEST_CASE("kog_timing_diagnostics_are_opt_in", "[functional][cli][diagnostics][timing]") {
+    const auto sandbox = CreateSandboxWorkspace("timing-diagnostics-opt-in");
+
+    const auto quiet = RunKogWithEnv({"--help"}, sandbox.root, {{"KOG_DEBUG", "0"}});
+    INFO(quiet.stdoutText);
+    INFO(quiet.stderrText);
+    REQUIRE(quiet.exitCode == 0);
+    REQUIRE(quiet.stdoutText.find("Kano Git Master") != std::string::npos);
+    REQUIRE(quiet.stdoutText.find("[TIMING]") == std::string::npos);
+    REQUIRE(quiet.stderrText.find("[TIMING]") == std::string::npos);
+
+    const auto debug = RunKogWithEnv({"--help"}, sandbox.root, {{"KOG_DEBUG", "1"}});
+    INFO(debug.stdoutText);
+    INFO(debug.stderrText);
+    REQUIRE(debug.exitCode == 0);
+    REQUIRE(debug.stdoutText.find("[TIMING]") != std::string::npos);
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
 } // namespace kano::git::tests::functional

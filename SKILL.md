@@ -33,6 +33,21 @@ scripts\kano-git.bat --help
 The shorter `kog` name is preferred for interactive and agent workflows. The
 `kano-git` name is kept as the longer canonical product name.
 
+### Launcher Diagnostics
+
+Normal KOG launches keep successful Pixi bootstrap messages, binary candidate
+probes, and native scoped timing logs quiet. Errors, warnings, build progress,
+and command results remain visible. Enable launcher and native diagnostics for
+one command with the existing debug contract:
+
+```bash
+KOG_DEBUG=1 ./scripts/kog --help
+```
+
+Truthful values are `1`, `true`, `yes`, and `on` (case-insensitive). This also
+enables existing command-layer KOG debug output; do not set it in normal agent
+or machine-readable workflows unless diagnostic output is intended.
+
 ## Native Build Rule
 
 Use launcher-owned self build as the user-facing build entrypoint:

@@ -22,6 +22,21 @@ scripts\kano-git.bat --help
 The `kog` and `kano-git` launchers target the same native CLI surface. The shorter
 `kog` name is preferred for interactive work and agent workflows.
 
+### Launcher diagnostics
+
+Successful Pixi bootstrap messages, binary candidate probes, and native scoped
+timing logs are quiet by default. Errors, warnings, build progress, and command
+results remain visible. Use the existing `KOG_DEBUG` contract when those
+diagnostics are needed:
+
+```bash
+KOG_DEBUG=1 ./scripts/kog --help
+```
+
+Accepted truthful values are `1`, `true`, `yes`, and `on`, case-insensitive.
+Because `KOG_DEBUG` also enables existing command-layer debug output, leave it
+unset for ordinary and machine-readable workflows.
+
 ## Native build
 
 The normal developer build may fetch C++ dependencies from GitHub through CMake

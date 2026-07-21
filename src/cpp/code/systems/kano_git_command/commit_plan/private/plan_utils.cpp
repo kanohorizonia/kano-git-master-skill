@@ -8,7 +8,7 @@
 #include "auto_model_policy.hpp"
 #include "shell_executor.hpp"
 #include "secret_scan_utils.hpp"
-#include <kano_timing.h>
+#include "kog_timing.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -569,7 +569,7 @@ static void DebugPrintStatusOutput(const std::filesystem::path& repo, const std:
 }
 
 auto ComputeWorkspaceDirtyFingerprint(const std::filesystem::path& InWorkspaceRoot) -> std::string {
-    SCOPED_TIMING_LOG("plan-utils.ComputeWorkspaceDirtyFingerprint");
+    KOG_SCOPED_TIMING_LOG("plan-utils.ComputeWorkspaceDirtyFingerprint");
     const auto startedAt = std::chrono::steady_clock::now();
     const bool repoOnly = UseRepoOnlyPlanFreshness();
     std::cout << "[plan][fingerprint] start root=" << InWorkspaceRoot.lexically_normal().generic_string()
@@ -1547,14 +1547,14 @@ auto RunAiGenerate(const std::string& InProvider,
         AppendModelArgsForProvider(args, InProvider, InModelMode, InModel);
         args.push_back(BuildFileBackedPromptArgument(InWorkspaceRoot, InPrompt, "plan-fill"));
         LogInvocation("opencode", args);
-        SCOPED_TIMING_LOG("kog-ai.waiting-for-opencode-response");
+        KOG_SCOPED_TIMING_LOG("kog-ai.waiting-for-opencode-response");
         return shell::ExecuteCommand("opencode", args, shell::ExecMode::Capture, InWorkspaceRoot);
     }
 
     if (InProvider == "codex") {
         const auto effectivePrompt = BuildFileBackedPromptArgument(InWorkspaceRoot, InPrompt, "plan-fill");
         LogInvocation("codex", {"-q", effectivePrompt});
-        SCOPED_TIMING_LOG("kog-ai.waiting-for-codex-response");
+        KOG_SCOPED_TIMING_LOG("kog-ai.waiting-for-codex-response");
         return ExecuteCodexExec(InWorkspaceRoot, InPrompt, "plan-fill", InModel);
     }
 
@@ -1610,7 +1610,7 @@ auto RunAiGenerate(const std::string& InProvider,
     args.push_back("-p");
     args.push_back(BuildFileBackedPromptArgument(InWorkspaceRoot, InPrompt, "plan-fill"));
     LogInvocation("copilot", args);
-    SCOPED_TIMING_LOG("kog-ai.waiting-for-copilot-response");
+    KOG_SCOPED_TIMING_LOG("kog-ai.waiting-for-copilot-response");
     return ExecuteStandaloneCopilot(args, InWorkspaceRoot);
 }
 
@@ -2252,7 +2252,7 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
                   std::string* OutError,
                   bool InAllowEmptyDirty,
                   bool InYolo) -> bool {
-    SCOPED_TIMING_LOG("plan-utils.FillPlanByAi");
+    KOG_SCOPED_TIMING_LOG("plan-utils.FillPlanByAi");
     const auto requestedProvider = NormalizeAiModelKeyword(InRequestedProvider.empty() ? ResolveAiProvider("") : InRequestedProvider);
     const auto provider = ResolveProvider(requestedProvider);
     if (provider.empty() || provider == "auto") {
@@ -3623,7 +3623,7 @@ auto RefreshPlanWorkspaceHashes(const std::filesystem::path& InPlanPath,
 }
 
 auto BuildIgnoreEntriesFromWorkingTree(const std::filesystem::path& InWorkspaceRoot, int InMaxPerRepo) -> std::vector<IgnoreStageEntry> {
-    SCOPED_TIMING_LOG("plan-utils.BuildIgnoreEntriesFromWorkingTree");
+    KOG_SCOPED_TIMING_LOG("plan-utils.BuildIgnoreEntriesFromWorkingTree");
     std::vector<IgnoreStageEntry> out;
     const auto repos = DiscoverWorkspaceRepos(InWorkspaceRoot);
     for (const auto& repo : repos) {
@@ -4240,7 +4240,7 @@ auto RunPlanApply(const std::filesystem::path& InWorkspaceRoot,
                   const std::filesystem::path& InPlanPath,
                   const std::string& InStage,
                   const std::vector<std::string>& InExtraArgs) -> int {
-    SCOPED_TIMING_LOG("plan-utils.RunPlanApply");
+    KOG_SCOPED_TIMING_LOG("plan-utils.RunPlanApply");
     auto payload = ReadFileText(InPlanPath);
     if (!payload.has_value()) {
         std::cerr << "Error: plan file not found/readable: " << InPlanPath.generic_string() << "\n";
@@ -4254,7 +4254,7 @@ auto RunPlanApply(const std::filesystem::path& InWorkspaceRoot,
     }
 
     if (stage == "ignore" || stage == "all") {
-        SCOPED_TIMING_LOG("plan-utils.RunPlanApply.ignore");
+        KOG_SCOPED_TIMING_LOG("plan-utils.RunPlanApply.ignore");
         const auto entries = ParseIgnoreEntries(*payload);
         if (entries.empty()) {
             if (stage == "ignore") {

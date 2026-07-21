@@ -122,6 +122,15 @@ lowercase_text() {
   printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
 }
 
+launcher_diagnostics_enabled() {
+  case "$(lowercase_text "${KOG_DEBUG:-}")" in
+    1|true|yes|on)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
 launcher_resolve_pixi_path() {
   if command -v pixi >/dev/null 2>&1; then
     command -v pixi
@@ -228,7 +237,8 @@ case "$(uname -s 2>/dev/null || true)" in
       fi
       exit 1
     fi
-    if IFS= read -r __kano_pixi_bootstrap_first_line <<< "$__kano_pixi_bootstrap_log"; then
+    if launcher_diagnostics_enabled &&
+       IFS= read -r __kano_pixi_bootstrap_first_line <<< "$__kano_pixi_bootstrap_log"; then
       echo "$__kano_pixi_bootstrap_first_line" >&2
     fi
     unset __kano_pixi_bootstrap_log __kano_pixi_bootstrap_first_line
@@ -1722,7 +1732,9 @@ find_binary() {
       [[ -z "$preset" ]] && continue
       candidate="$bdir/bin/$preset/release/$exe_name"
       now="$(current_epoch)"; elapsed=$((now - find_start))
-      echo "[$elapsed ms] Checking: $candidate" >&2
+      if launcher_diagnostics_enabled; then
+        echo "[$elapsed ms] Checking: $candidate" >&2
+      fi
       if [[ -f "$candidate" ]]; then
         if is_binary_compatible_with_shell "$candidate" ]; then
           printf '%s\n' "$candidate"
@@ -1731,7 +1743,9 @@ find_binary() {
       fi
       candidate="$bdir/bin/$preset/debug/$exe_name"
       now="$(current_epoch)"; elapsed=$((now - find_start))
-      echo "[$elapsed ms] Checking: $candidate" >&2
+      if launcher_diagnostics_enabled; then
+        echo "[$elapsed ms] Checking: $candidate" >&2
+      fi
       if [[ -f "$candidate" ]]; then
         if is_binary_compatible_with_shell "$candidate" ]; then
           printf '%s\n' "$candidate"
@@ -1742,11 +1756,15 @@ find_binary() {
 
     candidate="$bdir/release/$exe_name"
     now="$(current_epoch)"; elapsed=$((now - find_start))
-    echo "[$elapsed ms] Checking: $candidate" >&2
+    if launcher_diagnostics_enabled; then
+      echo "[$elapsed ms] Checking: $candidate" >&2
+    fi
     [[ -f "$candidate" ]] && is_binary_compatible_with_shell "$candidate" && { printf '%s\n' "$candidate"; return 0; }
     candidate="$bdir/debug/$exe_name"
     now="$(current_epoch)"; elapsed=$((now - find_start))
-    echo "[$elapsed ms] Checking: $candidate" >&2
+    if launcher_diagnostics_enabled; then
+      echo "[$elapsed ms] Checking: $candidate" >&2
+    fi
     [[ -f "$candidate" ]] && is_binary_compatible_with_shell "$candidate" && { printf '%s\n' "$candidate"; return 0; }
   done
 

@@ -12,7 +12,7 @@
 #include "ai_utils.hpp"
 #include "plan_utils.hpp"
 #include "terminal_color.hpp"
-#include <kano_timing.h>
+#include "kog_timing.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -2810,7 +2810,7 @@ auto RunCommitAutoPlanPipeline(const std::filesystem::path& InWorkspaceRoot,
     CommitRunbookResult runbookResult;
     {
         double elapsed = 0.0;
-        SCOPED_TIMING_LOG_WITH_ELAPSED("plan-utils.preparing-commit-plan-via-ai", elapsed);
+        KOG_SCOPED_TIMING_LOG_WITH_ELAPSED("plan-utils.preparing-commit-plan-via-ai", elapsed);
         runbookResult = RunCommitPlanRunbookViaSelf(InWorkspaceRoot, autoPlanPath, InAi.provider, InAi.model, InAiFillMode, InAllowEmptyDirty, InAi.yolo);
         commitRunbookMillis = static_cast<long long>(elapsed);
         aiFillMillis = runbookResult.aiFillMillis;
@@ -2927,7 +2927,7 @@ auto RunAmendAutoPlanPipeline(const std::filesystem::path& InWorkspaceRoot,
     CommitRunbookResult runbookResult;
     {
         double elapsed = 0.0;
-        SCOPED_TIMING_LOG_WITH_ELAPSED("plan-utils.preparing-commit-plan-via-ai", elapsed);
+        KOG_SCOPED_TIMING_LOG_WITH_ELAPSED("plan-utils.preparing-commit-plan-via-ai", elapsed);
         runbookResult = RunCommitPlanRunbookViaSelf(InWorkspaceRoot, autoPlanPath, InAi.provider, InAi.model, InAiFillMode, InAllowEmptyDirty, InAi.yolo);
         commitRunbookMillis = static_cast<long long>(elapsed);
         aiFillMillis = runbookResult.aiFillMillis;
