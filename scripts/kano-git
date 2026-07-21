@@ -723,6 +723,18 @@ has_help_request_arg() {
   return 1
 }
 
+has_cpa_explicit_input_arg() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      -m|--message|--message=*|--plan-file|--plan-file=*)
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
 is_lightweight_query_command() {
   local -a args=("$@")
   local cmd="${args[0]:-}"
@@ -2142,7 +2154,11 @@ main() {
     exec_args=("commit-push" "${exec_args[@]:1}")
   elif [[ "${exec_args[0]:-}" == "cpa" ]]; then
     if [[ "${KANO_AGENT_MODE:-0}" == "1" || "${KANO_AGENT_MODE:-}" == "true" ]]; then
-      exec_args=("commit-push" "--plan-file" "$PWD/.kano/tmp/git/plans/default-plan.json" "${exec_args[@]:1}")
+      if has_cpa_explicit_input_arg "${exec_args[@]:1}"; then
+        exec_args=("commit-push" "${exec_args[@]:1}")
+      else
+        exec_args=("commit-push" "--plan-file" "$PWD/.kano/tmp/git/plans/default-plan.json" "${exec_args[@]:1}")
+      fi
     else
       exec_args=("commit-push" "--ai-auto" "${exec_args[@]:1}")
     fi

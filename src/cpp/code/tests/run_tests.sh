@@ -333,7 +333,7 @@ echo "All tests completed successfully!"
 if [[ "$WITH_E2E" == "1" || "$WITH_E2E" == "--with-e2e" ]]; then
     echo ""
     echo "Running E2E regression tests..."
-    "$SCRIPT_DIR/e2e/plan_commit_regression/run.sh" "$WORKSPACE_ROOT"
+    bash "$SCRIPT_DIR/e2e/plan_commit_regression/run.sh" "$WORKSPACE_ROOT"
 fi
 
 if [[ -n "$TEST_XML_OUTPUT" ]]; then

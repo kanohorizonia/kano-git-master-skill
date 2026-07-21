@@ -388,6 +388,15 @@ auto StripAnsi(const std::string& InText) -> std::string {
     return out;
 }
 
+auto PrependPathEntry(const std::filesystem::path& InEntry) -> std::string {
+#if defined(_WIN32)
+    constexpr auto separator = ";";
+#else
+    constexpr auto separator = ":";
+#endif
+    return InEntry.string() + separator + (std::getenv("PATH") != nullptr ? std::getenv("PATH") : "");
+}
+
 auto InstallCopilotStub(const std::filesystem::path& InDir) -> std::filesystem::path {
     const auto stubDir = (InDir / "fake-copilot-bin").lexically_normal();
     std::filesystem::create_directories(stubDir);
@@ -472,6 +481,21 @@ auto InstallCopilotStub(const std::filesystem::path& InDir) -> std::filesystem::
     ghSh << "fi\n";
     ghSh << "exit 1\n";
     WriteTextFile(ghShPath, ghSh.str());
+#if !defined(_WIN32)
+    std::error_code permissionError;
+    std::filesystem::permissions(
+        shPath,
+        std::filesystem::perms::owner_exec | std::filesystem::perms::group_exec | std::filesystem::perms::others_exec,
+        std::filesystem::perm_options::add,
+        permissionError);
+    REQUIRE_FALSE(permissionError);
+    std::filesystem::permissions(
+        ghShPath,
+        std::filesystem::perms::owner_exec | std::filesystem::perms::group_exec | std::filesystem::perms::others_exec,
+        std::filesystem::perm_options::add,
+        permissionError);
+    REQUIRE_FALSE(permissionError);
+#endif
     return stubDir;
 }
 
@@ -1049,7 +1073,7 @@ TEST_CASE("amend_ai_auto_rewords_head_when_worktree_is_clean", "[functional][ame
         {"KOG_TEST_AI_STDOUT", "docs(readme): refine amend ai subject\n"},
         {"KOG_TEST_AI_EXIT_CODE", "0"},
     };
-    env.emplace_back("PATH", stubDir.string() + ";" + (std::getenv("PATH") != nullptr ? std::getenv("PATH") : ""));
+    env.emplace_back("PATH", PrependPathEntry(stubDir));
 
     const auto result = RunKogWithEnv(
         {"amend", "--ai-auto", "--ai-provider", "copilot", "--no-ai-review"},
@@ -1081,7 +1105,7 @@ TEST_CASE("amend_ai_auto_rejects_status_only_ai_output", "[functional][amend][ai
         {"KOG_TEST_AI_STDOUT", "Reading\n"},
         {"KOG_TEST_AI_EXIT_CODE", "0"},
     };
-    env.emplace_back("PATH", stubDir.string() + ";" + (std::getenv("PATH") != nullptr ? std::getenv("PATH") : ""));
+    env.emplace_back("PATH", PrependPathEntry(stubDir));
 
     const auto result = RunKogWithEnv(
         {"amend", "--ai-auto", "--ai-provider", "copilot", "--no-ai-review"},
@@ -1158,6 +1182,129 @@ TEST_CASE("agent_mode_commit_push_ai_auto_requires_prepared_plan_boundary",
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("agent_mode_cpa_bootstraps_missing_shared_plan_without_invoking_provider",
+          "[functional][commit-push][agent-mode][cpa][bootstrap]") {
+    const auto ctx = CreateRemoteWithClone("agent-mode-cpa-missing-plan");
+    WriteTextFile(ctx.cloneRepo / "README.md", "seed\nagent mode missing shared plan\n");
+    const auto headBefore = CurrentHeadSha(ctx.cloneRepo);
+    const auto planPath = (ctx.cloneRepo / ".kano" / "tmp" / "git" / "plans" / "default-plan.json").lexically_normal();
+    const auto providerLogPath = (ctx.sandbox.root / "provider-invocations.log").lexically_normal();
+    const auto stubDir = InstallCopilotStub(ctx.sandbox.root);
+
+    const auto result = RunKogWithEnv(
+        {"cpa"},
+        ctx.cloneRepo,
+        {
+            {"KANO_AGENT_MODE", "1"},
+            {"KOG_TEST_MODE", "1"},
+            {"KOG_TEST_AVAILABLE_COMMANDS", "copilot"},
+            {"KOG_TEST_COPILOT_COMMAND", (stubDir / "copilot").string()},
+            {"KOG_TEST_AI_STUB_LOG", providerLogPath.string()},
+            {"PATH", PrependPathEntry(stubDir)},
+        });
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 3);
+
+    const auto merged = result.stdoutText + "\n" + result.stderrText;
+    RequireContainsText(merged, "agent mode + --plan-file detected; using plan-driven flow");
+    RequireContainsText(merged, "refresh-needed: missing-or-unreadable");
+    RequireContainsText(merged, "[AGENT_PLAN_REQUIRED]");
+    RequireNotContainsText(merged, "[commit-push][auto-plan] stage=commit-runbook");
+    REQUIRE_FALSE(std::filesystem::exists(providerLogPath));
+    REQUIRE(std::filesystem::exists(planPath));
+
+    const auto planText = ReadTextFile(planPath);
+    const auto baseHeadSha = ExtractJsonStringField(planText, "base_head_sha");
+    const auto dirtyFingerprint = ExtractJsonStringField(planText, "dirty_fingerprint");
+    const auto generatedAt = ExtractJsonStringField(planText, "generated_at_utc");
+    REQUIRE(baseHeadSha.starts_with("ws-head-v2-"));
+    REQUIRE(dirtyFingerprint.starts_with("ws-dirty-v2-"));
+    REQUIRE_FALSE(generatedAt.empty());
+    REQUIRE(ExtractJsonStringField(planText, "provider") == "agent");
+    REQUIRE(ExtractJsonStringField(planText, "message") == "replace-with-commit-message");
+    REQUIRE(CurrentHeadSha(ctx.cloneRepo) == headBefore);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("agent_mode_cpa_refreshes_stale_shared_plan_on_first_run",
+          "[functional][commit-push][agent-mode][cpa][bootstrap][stale]") {
+    const auto ctx = CreateRemoteWithClone("agent-mode-cpa-stale-plan");
+    WriteTextFile(ctx.cloneRepo / "README.md", "seed\nagent mode initial plan\n");
+    const auto headBefore = CurrentHeadSha(ctx.cloneRepo);
+    const auto planPath = (ctx.cloneRepo / ".kano" / "tmp" / "git" / "plans" / "default-plan.json").lexically_normal();
+    RequireSuccess(RunKog({"plan", "new", "--force", "--output", planPath.string()}, ctx.cloneRepo), "create shared plan");
+    RequireSuccess(
+        RunKog({
+            "plan", "prepare", "add-commit-entry",
+            "--plan-file", planPath.string(),
+            "--repo", ".",
+            "--commit-message", "test(functional): ready plan before drift",
+            "--commit-include", "README.md",
+            "--commit-review-verdict", "pass",
+            "--commit-review-reason", "ready shared plan before intentional workspace drift",
+        }, ctx.cloneRepo),
+        "fill shared plan before drift");
+    const auto readyCheck = RunKog({"plan", "refresh-check", "--plan-file", planPath.string()}, ctx.cloneRepo);
+    INFO(readyCheck.stdoutText);
+    INFO(readyCheck.stderrText);
+    REQUIRE(readyCheck.exitCode == 1);
+    const auto staleFingerprint = ExtractJsonStringField(ReadTextFile(planPath), "dirty_fingerprint");
+
+    WriteTextFile(ctx.cloneRepo / "extra.txt", "intentional workspace drift\n");
+    const auto providerLogPath = (ctx.sandbox.root / "provider-invocations.log").lexically_normal();
+    const auto stubDir = InstallCopilotStub(ctx.sandbox.root);
+    const auto result = RunKogWithEnv(
+        {"cpa"},
+        ctx.cloneRepo,
+        {
+            {"KANO_AGENT_MODE", "1"},
+            {"KOG_TEST_MODE", "1"},
+            {"KOG_TEST_AVAILABLE_COMMANDS", "copilot"},
+            {"KOG_TEST_COPILOT_COMMAND", (stubDir / "copilot").string()},
+            {"KOG_TEST_AI_STUB_LOG", providerLogPath.string()},
+            {"PATH", PrependPathEntry(stubDir)},
+        });
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 3);
+
+    const auto merged = result.stdoutText + "\n" + result.stderrText;
+    RequireContainsText(merged, "refreshing shared agent plan");
+    RequireContainsText(merged, "workspace-state-changed");
+    RequireContainsText(merged, "[AGENT_PLAN_REQUIRED]");
+    RequireNotContainsText(merged, "[commit-push][auto-plan] stage=commit-runbook");
+    REQUIRE_FALSE(std::filesystem::exists(providerLogPath));
+    const auto refreshedPlanText = ReadTextFile(planPath);
+    REQUIRE(ExtractJsonStringField(refreshedPlanText, "dirty_fingerprint") != staleFingerprint);
+    RequireContainsText(refreshedPlanText, "extra.txt");
+    REQUIRE(CurrentHeadSha(ctx.cloneRepo) == headBefore);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("agent_mode_cpa_with_message_does_not_inject_shared_plan",
+          "[functional][commit-push][agent-mode][cpa][alias]") {
+    const auto ctx = CreateRemoteWithClone("agent-mode-cpa-message");
+    WriteTextFile(ctx.cloneRepo / "README.md", "seed\nagent cpa message dry-run\n");
+    const auto headBefore = CurrentHeadSha(ctx.cloneRepo);
+
+    const auto result = RunKogWithEnv(
+        {"cpa", "-m", "test(functional): agent cpa dry-run", "--dry-run"},
+        ctx.cloneRepo,
+        {{"KANO_AGENT_MODE", "1"}});
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    const auto merged = result.stdoutText + "\n" + result.stderrText;
+    RequireNotContainsText(merged, "--plan-file cannot be combined");
+    RequireNotContainsText(merged, "default-plan.json");
+    REQUIRE(CurrentHeadSha(ctx.cloneRepo) == headBefore);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("repo_hygiene_archive_safe_prereq_failure_skips_fix_mutations",
           "[functional][repo-hygiene][archive-safe]") {
     const auto ctx = CreateRemoteWithClone("repo-hygiene-prereq-ordering");
@@ -1225,7 +1372,7 @@ TEST_CASE("commit_push_ai_auto_single_human_mode_fails_without_deterministic_fal
         {"KOG_TEST_AI_STUB_LOG", providerLogPath.string()},
     };
     const auto stubDir = InstallCopilotStub(ctx.sandbox.root);
-    env.emplace_back("PATH", stubDir.string() + ";" + (std::getenv("PATH") != nullptr ? std::getenv("PATH") : ""));
+    env.emplace_back("PATH", PrependPathEntry(stubDir));
     const auto providerProbe = ResolveProviderCommands(ctx.cloneRepo);
     INFO(providerProbe.stdoutText);
     INFO(providerProbe.stderrText);
@@ -1272,7 +1419,7 @@ TEST_CASE("commit_push_ai_auto_codex_uses_explicit_workspace_relative_prompt_ref
     std::vector<std::pair<std::string, std::string>> env{
         {"KANO_AGENT_MODE", ""},
         {"KOG_TEST_AI_STUB_LOG", providerLogPath.string()},
-        {"PATH", stubDir.string() + ";" + (std::getenv("PATH") != nullptr ? std::getenv("PATH") : "")},
+        {"PATH", PrependPathEntry(stubDir)},
     };
     const auto providerProbe = ResolveProviderCommands(ctx.cloneRepo);
     INFO(providerProbe.stdoutText);
@@ -1302,26 +1449,29 @@ TEST_CASE("commit_push_ai_auto_codex_uses_explicit_workspace_relative_prompt_ref
 #endif
 }
 
-TEST_CASE("plan_runbook_commit_per_commit_accepts_flat_review_fill_ops_aliases",
+TEST_CASE("plan_runbook_commit_per_commit_accepts_direct_plan_writeback",
           "[.][functional][plan][ai][per-commit]") {
-    const auto ctx = CreateRemoteWithClone("plan-runbook-per-commit-flat-review-aliases");
-    WriteTextFile(ctx.cloneRepo / "README.md", "seed\nper-commit alias fill\n");
+    const auto ctx = CreateRemoteWithClone("plan-runbook-per-commit-direct-writeback");
+    WriteTextFile(ctx.cloneRepo / "README.md", "seed\nper-commit direct writeback\n");
     const auto planPath = (ctx.cloneRepo / ".kano" / "tmp" / "git" / "plans" / "per-commit-plan.json").lexically_normal();
     const auto providerLogPath = (ctx.sandbox.root / "provider-invocations.log").lexically_normal();
 
-    const std::string aiPayload =
-        "BEGIN_KOG_PLAN_FILL_OPS\n"
-        "{\n"
-        "  \"commits\": [\n"
-        "    {\n"
-        "      \"index\": 0,\n"
-        "      \"message\": \"docs(readme): clarify per-commit alias handling\",\n"
-        "      \"review_verdict\": \"pass\",\n"
-        "      \"review_reason\": \"The README change is self-contained and the alias-based fill payload is semantically complete.\"\n"
-        "    }\n"
-        "  ]\n"
-        "}\n"
-        "END_KOG_PLAN_FILL_OPS\n";
+    RequireSuccess(RunKog({"plan", "new", "--force", "--output", planPath.string()}, ctx.cloneRepo), "plan new");
+    RequireSuccess(
+        RunKog({"plan", "commit-seed", "--force", "--plan-file", planPath.string()}, ctx.cloneRepo),
+        "plan commit-seed");
+    const auto seededPlanText = ReadTextFile(planPath);
+    RequireSuccess(
+        RunKog({
+            "plan", "fill-commit", "0",
+            "--plan-file", planPath.string(),
+            "--commit-message", "docs(readme): clarify per-commit direct writeback",
+            "--review-verdict", "pass",
+            "--review-reason", "The README change is self-contained and the direct working-plan writeback is semantically complete.",
+        }, ctx.cloneRepo),
+        "prepare simulated AI plan writeback");
+    const auto aiPayload = ReadTextFile(planPath);
+    WriteTextFile(planPath, seededPlanText);
 
     std::vector<std::pair<std::string, std::string>> env{
         {"KOG_TEST_AI_STDOUT", aiPayload},
@@ -1329,7 +1479,7 @@ TEST_CASE("plan_runbook_commit_per_commit_accepts_flat_review_fill_ops_aliases",
         {"KOG_TEST_AI_STUB_LOG", providerLogPath.string()},
     };
     const auto stubDir = InstallCopilotStub(ctx.sandbox.root);
-    env.emplace_back("PATH", stubDir.string() + ";" + (std::getenv("PATH") != nullptr ? std::getenv("PATH") : ""));
+    env.emplace_back("PATH", PrependPathEntry(stubDir));
     const auto providerProbe = ResolveProviderCommands(ctx.cloneRepo);
     INFO(providerProbe.stdoutText);
     INFO(providerProbe.stderrText);
@@ -1344,11 +1494,11 @@ TEST_CASE("plan_runbook_commit_per_commit_accepts_flat_review_fill_ops_aliases",
     REQUIRE(std::filesystem::exists(planPath));
 
     const auto planText = ReadTextFile(planPath);
-    REQUIRE(planText.find("The README change is self-contained and the alias-based fill payload is semantically complete.") != std::string::npos);
+    REQUIRE(planText.find("The README change is self-contained and the direct working-plan writeback is semantically complete.") != std::string::npos);
     REQUIRE(planText.find("\"verdict\":\"pass\"") != std::string::npos);
     const auto mergedOutput = result.stdoutText + "\n" + result.stderrText;
     const bool hasPerCommitFillSignal =
-        mergedOutput.find("Filled plan commit entries with AI-safe ops") != std::string::npos ||
+        mergedOutput.find("filled entry 0 message: docs(readme): clarify per-commit direct writeback") != std::string::npos ||
         mergedOutput.find("entry 0 (.) is deterministic; skipping AI fill") != std::string::npos;
     REQUIRE(hasPerCommitFillSignal);
     REQUIRE(std::filesystem::exists(providerLogPath));

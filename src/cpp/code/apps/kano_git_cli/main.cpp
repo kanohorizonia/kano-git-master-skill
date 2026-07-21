@@ -608,10 +608,17 @@ void RewriteCommandAliases(std::vector<std::string>& InOutArgs) {
         rewritten.reserve(InOutArgs.size() + 3);
         rewritten.push_back(InOutArgs[0]);
         rewritten.push_back("commit-push");
-        if (IsTruthyEnv("KANO_AGENT_MODE")) {
+        const auto hasExplicitAgentInput = std::any_of(InOutArgs.begin() + 2, InOutArgs.end(), [](const std::string& InArg) {
+            return InArg == "-m" ||
+                   InArg == "--message" ||
+                   InArg.starts_with("--message=") ||
+                   InArg == "--plan-file" ||
+                   InArg.starts_with("--plan-file=");
+        });
+        if (IsTruthyEnv("KANO_AGENT_MODE") && !hasExplicitAgentInput) {
             rewritten.push_back("--plan-file");
             rewritten.push_back(DefaultPlanPath());
-        } else {
+        } else if (!IsTruthyEnv("KANO_AGENT_MODE")) {
             rewritten.push_back("--ai-auto");
         }
         for (std::size_t i = 2; i < InOutArgs.size(); ++i) {
