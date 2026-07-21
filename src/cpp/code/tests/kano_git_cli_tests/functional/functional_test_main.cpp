@@ -1638,6 +1638,16 @@ TEST_CASE("multi_repo_commit_push_pushes_root_and_registered_submodule", "[funct
     INFO(result.stderrText);
     REQUIRE(result.exitCode == 0);
 
+    const auto mergedOutput = result.stdoutText + "\n" + result.stderrText;
+    RequireContainsText(mergedOutput, "[native-commit] plan: repos=2");
+    RequireContainsText(mergedOutput, "commit_waves=2 order=child-first");
+    const auto childCommitPosition = mergedOutput.find("[commit] deps/child");
+    const auto rootCommitMarker = "[commit] " + ctx.cloneRootRepo.filename().generic_string() + " (.)";
+    const auto rootCommitPosition = mergedOutput.find(rootCommitMarker);
+    REQUIRE(childCommitPosition != std::string::npos);
+    REQUIRE(rootCommitPosition != std::string::npos);
+    REQUIRE(childCommitPosition < rootCommitPosition);
+
     const auto childHead = CurrentHeadSha(ctx.cloneChildRepo);
     const auto rootHead = CurrentHeadSha(ctx.cloneRootRepo);
     REQUIRE_FALSE(childHead.empty());

@@ -31,8 +31,8 @@ std::string BuildFlowGuide(const std::string& flow) {
         return R"TXT(Guide: sync (fork workflows)
 
 Execution contract:
-  - sync is parent-first
-  - registered child repos observe refreshed parent branch/module state after parent sync
+  - sync mutation waves are child-first for registered nested repos
+  - parent repos run after child repos settle; parent refs may be prefetched first for discovery
 
 1) Consumer sync to origin latest
    kano-git sync origin-latest

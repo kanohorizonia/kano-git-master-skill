@@ -145,11 +145,11 @@ No commit/push execution happens here.
 ## Flow Overview
 
 Execution ordering semantics:
-- `sync` is `parent-first convergence`
+- `sync` mutation waves use `child-first convergence`
 - `commit-push` is `child-first convergence`
 
 Rationale:
-- `sync` updates parent repos first so refreshed `.gitmodules` branch policy can be applied to registered children in the same run.
+- `sync` may prefetch parent refs before mutation waves so current `.gitmodules` policy can be discovered, but registered children mutate first and parents run only after their child dependencies settle.
 - `commit-push` commits and pushes child repos first, then lets parent repos absorb the final gitlink pointer and push parent repos last.
 - first-run correctness is the target; "run it a second time" is not an acceptable steady-state convergence model.
 

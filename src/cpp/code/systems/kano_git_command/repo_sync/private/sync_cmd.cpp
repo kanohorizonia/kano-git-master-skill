@@ -3482,6 +3482,28 @@ auto RunNativeOriginLatestSync(
         *OutAggregate = aggregate;
     }
 
+    const auto waveCount = aggregate.results.empty() ? std::size_t{0} : aggregate.results.back().phase + 1;
+    const auto displayRepoPath = [&](const std::filesystem::path& InPath) {
+        std::error_code relativeError;
+        const auto relative = std::filesystem::relative(InPath, InRepoRoot, relativeError);
+        if (relativeError || relative.empty() || relative == ".") {
+            return std::string{"."};
+        }
+        return relative.generic_string();
+    };
+    std::cout << "[native-sync] plan: repos=" << aggregate.results.size()
+              << " waves=" << waveCount
+              << " order=child-first\n";
+    for (std::size_t phase = 0; phase < waveCount; ++phase) {
+        std::cout << "[native-sync] wave " << (phase + 1) << "/" << waveCount << ":";
+        for (const auto& result : aggregate.results) {
+            if (result.phase == phase) {
+                std::cout << " " << displayRepoPath(result.repoPath);
+            }
+        }
+        std::cout << "\n";
+    }
+
     for (const auto& result : aggregate.results) {
         if (!result.stdoutText.empty()) {
             std::cout << result.stdoutText;
@@ -4016,7 +4038,9 @@ void RegisterAuth(CLI::App& InApp) {
 }
 
 void RegisterSync(CLI::App& InApp) {
-    auto* cmd = InApp.add_subcommand("sync", "Pipeline sync stage (origin-latest by default) plus specialized sync workflows");
+    auto* cmd = InApp.add_subcommand(
+        "sync",
+        "Pipeline sync stage (origin-latest by default); registered nested-repo mutations run child-first");
 
     // --- sync pre-commit ---
     auto* pre_commit = cmd->add_subcommand("pre-commit", "Repair detached HEAD before commit workflow");

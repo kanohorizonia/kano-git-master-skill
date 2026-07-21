@@ -318,6 +318,9 @@ TEST_CASE("recursive_sync_dependency_waves_update_child_before_parent", "[functi
     const auto result = RunSyncRecursive(root, {"--jobs", "2"});
     const auto output = StripAnsi(result.stdoutText + "\n" + result.stderrText);
     RequireSuccess(result, "recursive sync waves");
+    RequireContains(output, "[native-sync] plan: repos=2 waves=2 order=child-first");
+    RequireContains(output, "[native-sync] wave 1/2: deps/child");
+    RequireContains(output, "[native-sync] wave 2/2: .");
     REQUIRE(PositionOf(output, "Repo: deps/child") < PositionOf(output, "Repo: ."));
     REQUIRE(CurrentHeadSha(childPath) == childRemoteHead);
     RequireContains(output, "SUMMARY: repos=2");

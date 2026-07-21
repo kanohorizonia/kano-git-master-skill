@@ -134,6 +134,14 @@ installed version, install timestamp, packaged/developer checkout).
 > build version, or `kog self status` for install/checkout state.
 ## Common workflows
 
+### Nested repository ordering
+
+Mutating `sync`, `commit`, and `commit-push` workflows execute registered
+nested repositories in child-first dependency waves. A sync may prefetch parent
+remote refs before those waves to discover current `.gitmodules` policy; that
+prefetch does not mutate the parent working tree. Native plan lines expose the
+active contract as `order=child-first` and report the wave count.
+
 ```bash
 # Workspace overview
 ./scripts/kog status

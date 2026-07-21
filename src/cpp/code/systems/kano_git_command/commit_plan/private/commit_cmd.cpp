@@ -5197,6 +5197,7 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
               << " repo_waves=" << repoWaves.size()
               << " commits=" << taskGraph.tasks.size()
               << " commit_waves=" << taskGraph.waves.size()
+              << " order=child-first"
               << " jobs=" << workers
               << " dirty_only=on\n";
     if (taskGraph.dependencyCycleDetected) {
@@ -5436,6 +5437,7 @@ auto RunAmendNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
               << " repo_waves=" << repoWaves.size()
               << " amends=" << taskGraph.tasks.size()
               << " amend_waves=" << taskGraph.waves.size()
+              << " order=child-first"
               << " jobs=" << workers
               << " dirty_only=on\n";
     if (taskGraph.dependencyCycleDetected) {
@@ -5687,7 +5689,8 @@ auto RunCommitNativeSimple(const std::filesystem::path& InWorkspaceRoot,
 
     if (InDryRun) {
         std::cout << "[native-commit] dry-run: planned commits=" << taskGraph.tasks.size()
-                  << " repos=" << repoRecords.size() << "\n";
+                  << " repos=" << repoRecords.size()
+                  << " order=child-first\n";
         for (const auto& task : taskGraph.tasks) {
             const auto label = DisplayRepoLabel(workspaceRoot, task.repo);
             std::cout << "  - " << label << ": " << task.commit.message << "\n";
@@ -5712,6 +5715,7 @@ auto RunCommitNativeSimple(const std::filesystem::path& InWorkspaceRoot,
     std::cout << "[native-commit] plan: repos=" << repoRecords.size()
               << " commits=" << taskGraph.tasks.size()
               << " commit_waves=" << taskGraph.waves.size()
+              << " order=child-first"
               << " jobs=" << workers
               << " dirty_only=on\n";
 
@@ -6269,6 +6273,7 @@ void RegisterCommit(CLI::App& InApp) {
                   << " repo_waves=" << repoWaves.size()
                   << " commits=" << taskGraph.tasks.size()
                   << " commit_waves=" << taskGraph.waves.size()
+                  << " order=child-first"
                   << " jobs=" << workers
                   << " dirty_only=" << (dirtyOnly ? "on" : "off") << "\n";
         if (taskGraph.dependencyCycleDetected) {
