@@ -28,6 +28,7 @@ struct SyncUrlEntry {
     std::string name;
     std::string path;
     std::string url;
+    std::map<std::string, std::string> remotes;
 };
 
 struct SubmoduleUpdateTask {
@@ -481,11 +482,28 @@ auto CollectSyncUrlEntries(const std::string& InRoot, const std::string& InGitmo
             "submodule." + submoduleName + ".url"
         );
 
-        entries.push_back(SyncUrlEntry{
+        SyncUrlEntry entry{
             .name = submoduleName,
             .path = path,
             .url = url,
+        };
+        const auto remoteResult = RunGitCapture({
+            "-C", InRoot, "config", "-f", InGitmodulesPath, "--get-regexp",
+            "^submodule\\." + submoduleName + "\\.kog-remote-[A-Za-z0-9._-]+$",
         });
+        if (remoteResult.exitCode == 0) {
+            for (const auto& line : SplitLines(remoteResult.stdoutStr)) {
+                const auto separator = line.find_first_of(" \t");
+                if (separator == std::string::npos) continue;
+                const std::string keyName = Trim(line.substr(0, separator));
+                const std::string remoteUrl = Trim(line.substr(separator + 1));
+                const std::string marker = ".kog-remote-";
+                const auto markerPos = keyName.find(marker);
+                if (markerPos == std::string::npos || remoteUrl.empty()) continue;
+                entry.remotes[keyName.substr(markerPos + marker.size())] = remoteUrl;
+            }
+        }
+        entries.push_back(std::move(entry));
     }
 
     return entries;
@@ -1021,12 +1039,9 @@ auto RunNativeSyncUrls(
         }
     }
 
-    if (InNoOrigin) {
-        std::cout << "Done (skipped updating submodule origin remotes).\n";
-        return 0;
-    }
-
-    std::cout << "Updating submodule repo origin URLs to match .gitmodules...\n";
+    std::cout << (InNoOrigin
+        ? "Updating version-controlled named submodule remotes (origin skipped)...\n"
+        : "Updating submodule repo origin and named URLs to match .gitmodules...\n");
     const auto entries = CollectSyncUrlEntries(root, gitmodulesPath);
     for (const auto& entry : entries) {
         if (entry.path.empty() || entry.url.empty()) {
@@ -1041,41 +1056,114 @@ auto RunNativeSyncUrls(
             continue;
         }
 
-        const auto currentUrlResult = RunGitCapture({"-C", repoPath, "remote", "get-url", "origin"});
-        const auto currentUrl = currentUrlResult.exitCode == 0 ? Trim(currentUrlResult.stdoutStr) : std::string{};
+        if (!InNoOrigin) {
+            const auto currentUrlResult = RunGitCapture({"-C", repoPath, "remote", "get-url", "origin"});
+            const auto currentUrl = currentUrlResult.exitCode == 0 ? Trim(currentUrlResult.stdoutStr) : std::string{};
 
-        if (currentUrl.empty()) {
-            std::cout << "[" << entry.path << "] add origin -> " << entry.url << "\n";
-            const std::vector<std::string> addArgs = {"-C", repoPath, "remote", "add", "origin", entry.url};
-            if (InDryRun) {
-                PrintDryRunGit(addArgs);
+            if (currentUrl.empty()) {
+                std::cout << "[" << entry.path << "] add origin -> " << entry.url << "\n";
+                const std::vector<std::string> addArgs = {"-C", repoPath, "remote", "add", "origin", entry.url};
+                if (InDryRun) {
+                    PrintDryRunGit(addArgs);
+                } else {
+                    const auto addResult = kano::git::shell::ExecuteCommand("git", addArgs, kano::git::shell::ExecMode::PassThrough);
+                    if (addResult.exitCode != 0) return addResult.exitCode;
+                }
+            } else if (currentUrl == entry.url) {
+                std::cout << "[" << entry.path << "] origin already up-to-date\n";
             } else {
-                const auto addResult = kano::git::shell::ExecuteCommand("git", addArgs, kano::git::shell::ExecMode::PassThrough);
-                if (addResult.exitCode != 0) {
-                    return addResult.exitCode;
+                std::cout << "[" << entry.path << "] set origin: " << currentUrl << " -> " << entry.url << "\n";
+                const std::vector<std::string> setArgs = {"-C", repoPath, "remote", "set-url", "origin", entry.url};
+                if (InDryRun) {
+                    PrintDryRunGit(setArgs);
+                } else {
+                    const auto setResult = kano::git::shell::ExecuteCommand("git", setArgs, kano::git::shell::ExecMode::PassThrough);
+                    if (setResult.exitCode != 0) return setResult.exitCode;
                 }
             }
-            continue;
         }
 
-        if (currentUrl == entry.url) {
-            std::cout << "[" << entry.path << "] origin already up-to-date\n";
-            continue;
-        }
-
-        std::cout << "[" << entry.path << "] set origin: " << currentUrl << " -> " << entry.url << "\n";
-        const std::vector<std::string> setArgs = {"-C", repoPath, "remote", "set-url", "origin", entry.url};
-        if (InDryRun) {
-            PrintDryRunGit(setArgs);
-        } else {
-            const auto setResult = kano::git::shell::ExecuteCommand("git", setArgs, kano::git::shell::ExecMode::PassThrough);
-            if (setResult.exitCode != 0) {
-                return setResult.exitCode;
+        for (const auto& [remoteName, remoteUrl] : entry.remotes) {
+            const auto configuredResult = RunGitCapture({"-C", repoPath, "remote", "get-url", remoteName});
+            const std::string configuredUrl = configuredResult.exitCode == 0 ? Trim(configuredResult.stdoutStr) : std::string{};
+            if (configuredUrl == remoteUrl) {
+                std::cout << "[" << entry.path << "] " << remoteName << " already up-to-date\n";
+                continue;
+            }
+            const std::vector<std::string> remoteArgs = configuredUrl.empty()
+                ? std::vector<std::string>{"-C", repoPath, "remote", "add", remoteName, remoteUrl}
+                : std::vector<std::string>{"-C", repoPath, "remote", "set-url", remoteName, remoteUrl};
+            std::cout << "[" << entry.path << "] " << (configuredUrl.empty() ? "add " : "set ")
+                      << remoteName << " -> " << remoteUrl << "\n";
+            if (InDryRun) {
+                PrintDryRunGit(remoteArgs);
+            } else {
+                const auto remoteUpdate = RunGitPassThrough(remoteArgs);
+                if (remoteUpdate.exitCode != 0) return remoteUpdate.exitCode;
             }
         }
     }
 
     std::cout << "Done.\n";
+    return 0;
+}
+
+auto IsSafeRemoteName(const std::string& InName) -> bool {
+    if (InName.empty() || InName.front() == '-' || InName.size() > 64) return false;
+    return std::all_of(InName.begin(), InName.end(), [](unsigned char ch) {
+        return std::isalnum(ch) != 0 || ch == '.' || ch == '_' || ch == '-';
+    });
+}
+
+auto RunNativeSubmoduleRemoteSet(
+    const std::string& InPath,
+    const std::string& InRemote,
+    const std::string& InUrl,
+    bool InDryRun) -> int {
+    if (InPath.empty() || !IsSafeRemoteName(InRemote) || Trim(InUrl).empty() || InUrl.find_first_of("\r\n") != std::string::npos) {
+        std::cerr << "Error: path, safe remote name, and one-line URL are required\n";
+        return 2;
+    }
+    const auto rootResult = RunGitCapture({"rev-parse", "--show-toplevel"});
+    if (rootResult.exitCode != 0) {
+        std::cerr << "Error: not inside a git repository\n";
+        return 1;
+    }
+    const std::string root = Trim(rootResult.stdoutStr);
+    const std::string gitmodules = (std::filesystem::path(root) / ".gitmodules").string();
+    const auto pathKeys = RunGitCapture({"-C", root, "config", "-f", gitmodules, "--get-regexp", "^submodule\\..*\\.path$"});
+    std::string section;
+    for (const auto& line : SplitLines(pathKeys.stdoutStr)) {
+        const auto separator = line.find_first_of(" \t");
+        if (separator == std::string::npos || Trim(line.substr(separator + 1)) != InPath) continue;
+        const std::string key = line.substr(0, separator);
+        constexpr std::string_view prefix = "submodule.";
+        constexpr std::string_view suffix = ".path";
+        if (key.starts_with(prefix) && key.ends_with(suffix)) {
+            section = key.substr(prefix.size(), key.size() - prefix.size() - suffix.size());
+            break;
+        }
+    }
+    if (section.empty()) {
+        std::cerr << "Error: submodule path is not registered in .gitmodules\n";
+        return 1;
+    }
+    const std::string key = "submodule." + section + ".kog-remote-" + InRemote;
+    const std::vector<std::string> configArgs = {"-C", root, "config", "-f", gitmodules, "--replace-all", key, InUrl};
+    if (InDryRun) {
+        PrintDryRunGit(configArgs);
+        return 0;
+    }
+    const auto configured = RunGitPassThrough(configArgs);
+    if (configured.exitCode != 0) return configured.exitCode;
+    const auto repoPath = (std::filesystem::path(root) / InPath).string();
+    if (RunGitCapture({"-C", repoPath, "rev-parse", "--is-inside-work-tree"}).exitCode == 0) {
+        const auto existing = RunGitCapture({"-C", repoPath, "remote", "get-url", InRemote});
+        const std::vector<std::string> remoteArgs = existing.exitCode == 0
+            ? std::vector<std::string>{"-C", repoPath, "remote", "set-url", InRemote, InUrl}
+            : std::vector<std::string>{"-C", repoPath, "remote", "add", InRemote, InUrl};
+        return RunGitPassThrough(remoteArgs).exitCode;
+    }
     return 0;
 }
 
@@ -1664,6 +1752,19 @@ void RegisterSubmodule(CLI::App& InApp) {
             *syncUrlsNoRecursive,
             *syncUrlsNoOrigin
         ));
+    });
+
+    auto* remoteSet = cmd->add_subcommand("remote-set", "Persist one named submodule remote in .gitmodules and sync it locally");
+    auto* remoteSetPath = new std::string{};
+    auto* remoteSetName = new std::string{};
+    auto* remoteSetUrl = new std::string{};
+    auto* remoteSetDryRun = new bool{false};
+    remoteSet->add_option("path", *remoteSetPath, "Registered submodule path")->required();
+    remoteSet->add_option("name", *remoteSetName, "User-defined remote name")->required();
+    remoteSet->add_option("url", *remoteSetUrl, "Remote URL")->required();
+    remoteSet->add_flag("--dry-run", *remoteSetDryRun, "Preview .gitmodules and local remote changes");
+    remoteSet->callback([=]() {
+        std::exit(RunNativeSubmoduleRemoteSet(*remoteSetPath, *remoteSetName, *remoteSetUrl, *remoteSetDryRun));
     });
 }
 

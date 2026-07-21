@@ -1453,6 +1453,37 @@ TEST_CASE("submodule_add_bootstraps_empty_remote_on_requested_branch", "[functio
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("submodule_named_remotes_are_versioned_and_rehydrated", "[functional][submodule][remote-set][KG-FTR-0006]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("submodule-versioned-named-remotes");
+    const auto upstream = CreateStandaloneBareRemote(ctx.sandbox, "upstream-child", ctx.branch, true);
+    const auto upstreamUrl = upstream.bareRemote.string();
+
+    const auto setResult = RunKog(
+        {"submodule", "remote-set", ctx.submodulePath, "upstream", upstreamUrl},
+        ctx.cloneRootRepo);
+    RequireSuccess(setResult, "persist named submodule remote");
+
+    const auto declared = RunGit(
+        {"config", "-f", ".gitmodules", "--get", "submodule." + ctx.submodulePath + ".kog-remote-upstream"},
+        ctx.cloneRootRepo);
+    RequireSuccess(declared, "read version-controlled named remote");
+    REQUIRE(TrimCopy(declared.stdoutText) == upstreamUrl);
+    REQUIRE(TrimCopy(RunGit({"remote", "get-url", "upstream"}, ctx.cloneChildRepo).stdoutText) == upstreamUrl);
+
+    RequireSuccess(RunGit({"remote", "remove", "upstream"}, ctx.cloneChildRepo), "remove local named remote before rehydration");
+    const auto syncResult = RunKog({"submodule", "sync-urls", "--no-origin"}, ctx.cloneRootRepo);
+    RequireSuccess(syncResult, "rehydrate named remote from gitmodules");
+    REQUIRE(syncResult.stdoutText.find("add upstream") != std::string::npos);
+    REQUIRE(TrimCopy(RunGit({"remote", "get-url", "upstream"}, ctx.cloneChildRepo).stdoutText) == upstreamUrl);
+
+    const auto invalidName = RunKog(
+        {"submodule", "remote-set", ctx.submodulePath, "../unsafe", upstreamUrl},
+        ctx.cloneRootRepo);
+    REQUIRE(invalidName.exitCode != 0);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("submodule_update_recursive_continues_past_failed_direct_submodule", "[functional][submodule][update][recursive]") {
     const auto ctx = CreateRecursiveSubmoduleUpdateClone("submodule-update-recursive-continue");
 
