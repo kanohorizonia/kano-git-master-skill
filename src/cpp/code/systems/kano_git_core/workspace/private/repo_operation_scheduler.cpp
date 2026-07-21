@@ -152,6 +152,31 @@ auto ApplyWorkerResult(RepoOperationResult InBase, const RepoOperationWorkerResu
     return InBase;
 }
 
+auto ExecuteWorker(const RepoOperationInput& InRepo,
+                   const RepoOperationSchedulerOptions& InOptions,
+                   const RepoOperationWorker& InWorker,
+                   const std::size_t InPhase,
+                   const std::string& InLockKey) -> RepoOperationResult {
+    auto base = MakePendingResult(InRepo, InOptions, InPhase, InLockKey);
+    try {
+        return ApplyWorkerResult(std::move(base), InWorker(InRepo));
+    } catch (const std::exception& ex) {
+        RepoOperationWorkerResult workerResult;
+        workerResult.status = RepoOperationStatus::Failed;
+        workerResult.exitCode = 1;
+        workerResult.failureCategory = "exception";
+        workerResult.message = ex.what();
+        return ApplyWorkerResult(std::move(base), workerResult);
+    } catch (...) {
+        RepoOperationWorkerResult workerResult;
+        workerResult.status = RepoOperationStatus::Failed;
+        workerResult.exitCode = 1;
+        workerResult.failureCategory = "exception";
+        workerResult.message = "unknown exception";
+        return ApplyWorkerResult(std::move(base), workerResult);
+    }
+}
+
 auto BuildAggregate(std::vector<RepoOperationResult> InResults) -> RepoOperationAggregate {
     std::sort(InResults.begin(), InResults.end(), [](const auto& A, const auto& B) {
         return ResultSortKey(A) < ResultSortKey(B);
@@ -252,6 +277,37 @@ auto RunWave(const std::vector<RepoOperationInput>& InRepos,
              const std::unordered_map<std::string, std::string>& InBlockedBy,
              const std::unordered_map<std::string, std::string>& InLockKeys) -> std::vector<RepoOperationResult> {
     std::vector<RepoOperationResult> results;
+
+    if (InOptions.jobs <= 1) {
+        results.reserve(InWave.size());
+        for (const auto repoIndex : InWave) {
+            if (repoIndex >= InRepos.size()) {
+                continue;
+            }
+            const auto& repo = InRepos[repoIndex];
+            const auto repoId = repo.id.empty() ? RepoPathKey(repo) : repo.id;
+            const auto lockIt = InLockKeys.find(repoId);
+            const auto lockKey = lockIt == InLockKeys.end() ? ResolveLockKey(repo, InOptions) : lockIt->second;
+            if (InBlockedRepoIds.find(repoId) != InBlockedRepoIds.end()) {
+                const auto blockedIt = InBlockedBy.find(repoId);
+                const auto blockedBy = blockedIt == InBlockedBy.end() ? std::string{} : blockedIt->second;
+                results.push_back(MakeBlockedResult(
+                    repo,
+                    InOptions,
+                    InPhase,
+                    lockKey,
+                    blockedBy,
+                    "dependency failed in an earlier phase"));
+                continue;
+            }
+            results.push_back(ExecuteWorker(repo, InOptions, InWorker, InPhase, lockKey));
+        }
+        std::sort(results.begin(), results.end(), [](const auto& A, const auto& B) {
+            return ResultSortKey(A) < ResultSortKey(B);
+        });
+        return results;
+    }
+
     std::mutex resultsMutex;
     LockCoordinator coordinator(InOptions.jobs);
     std::vector<std::thread> workers;
@@ -277,26 +333,7 @@ auto RunWave(const std::vector<RepoOperationInput>& InRepos,
 
         workers.emplace_back([&, repo, repoId, lockKey]() {
             coordinator.Acquire(lockKey);
-            auto base = MakePendingResult(repo, InOptions, InPhase, lockKey);
-            RepoOperationResult result;
-            try {
-                const auto workerResult = InWorker(repo);
-                result = ApplyWorkerResult(std::move(base), workerResult);
-            } catch (const std::exception& ex) {
-                RepoOperationWorkerResult workerResult;
-                workerResult.status = RepoOperationStatus::Failed;
-                workerResult.exitCode = 1;
-                workerResult.failureCategory = "exception";
-                workerResult.message = ex.what();
-                result = ApplyWorkerResult(std::move(base), workerResult);
-            } catch (...) {
-                RepoOperationWorkerResult workerResult;
-                workerResult.status = RepoOperationStatus::Failed;
-                workerResult.exitCode = 1;
-                workerResult.failureCategory = "exception";
-                workerResult.message = "unknown exception";
-                result = ApplyWorkerResult(std::move(base), workerResult);
-            }
+            auto result = ExecuteWorker(repo, InOptions, InWorker, InPhase, lockKey);
             coordinator.Release(lockKey);
 
             std::lock_guard lock(resultsMutex);

@@ -142,6 +142,13 @@ remote refs before those waves to discover current `.gitmodules` policy; that
 prefetch does not mutate the parent working tree. Native plan lines expose the
 active contract as `order=child-first` and report the wave count.
 
+Recursive `kog sync`, `kog sync origin-latest`, and `kog sync dev` accept
+`--execution-policy serial|parallel`. `parallel` is the default and runs
+independent repositories concurrently up to `--jobs`; `serial` keeps the same
+deterministic dependency waves but executes one repository at a time as a
+fallback and debugging mode. Plan output records the selected policy and the
+effective worker count.
+
 ```bash
 # Workspace overview
 ./scripts/kog status

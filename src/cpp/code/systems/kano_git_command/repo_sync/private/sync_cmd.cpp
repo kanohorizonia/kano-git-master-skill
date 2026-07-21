@@ -23,6 +23,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -59,6 +60,11 @@ struct SyncPlan {
 enum class BranchMode {
     Default,
     StableDev,
+};
+
+enum class SyncExecutionPolicy {
+    Serial,
+    Parallel,
 };
 
 struct GitmodulesBinding {
@@ -98,6 +104,28 @@ auto Trim(std::string InValue) -> std::string {
         start += 1;
     }
     return InValue.substr(start);
+}
+
+auto ParseSyncExecutionPolicy(std::string InValue) -> std::optional<SyncExecutionPolicy> {
+    InValue = Trim(std::move(InValue));
+    std::transform(InValue.begin(), InValue.end(), InValue.begin(), [](const unsigned char InChar) {
+        return static_cast<char>(std::tolower(InChar));
+    });
+    if (InValue == "serial") {
+        return SyncExecutionPolicy::Serial;
+    }
+    if (InValue == "parallel") {
+        return SyncExecutionPolicy::Parallel;
+    }
+    return std::nullopt;
+}
+
+auto SyncExecutionPolicyName(const SyncExecutionPolicy InPolicy) -> std::string_view {
+    switch (InPolicy) {
+    case SyncExecutionPolicy::Serial: return "serial";
+    case SyncExecutionPolicy::Parallel: return "parallel";
+    }
+    return "unknown";
 }
 
 auto GitCapture(const std::filesystem::path& InRepo, const std::vector<std::string>& InArgs) -> shell::ExecResult {
@@ -2893,6 +2921,7 @@ auto RunNativeOriginLatestSync(
     bool InAutoStashLocalChanges,
     bool InCleanupStaleLocks,
     int InJobs,
+    SyncExecutionPolicy InExecutionPolicy,
     workspace::RepoOperationAggregate* OutAggregate = nullptr,
     bool InAuthPreflight = true,
     bool InCheckGitlinkReachability = true,
@@ -3470,7 +3499,10 @@ auto RunNativeOriginLatestSync(
     workspace::RepoOperationSchedulerOptions schedulerOptions;
     schedulerOptions.operationName = "sync";
     schedulerOptions.mode = workspace::RepoOperationMode::MutatingDependencyWaves;
-    schedulerOptions.jobs = InGitCaptureTimeoutMs.has_value() ? 1 : (InJobs < 1 ? 1 : InJobs);
+    const auto requestedJobs = InJobs < 1 ? 1 : InJobs;
+    schedulerOptions.jobs = InGitCaptureTimeoutMs.has_value() || InExecutionPolicy == SyncExecutionPolicy::Serial
+        ? 1
+        : requestedJobs;
     schedulerOptions.resolveGitCommonDirLocks = true;
 
     const auto aggregate = workspace::RunRepoOperationScheduler(
@@ -3493,7 +3525,9 @@ auto RunNativeOriginLatestSync(
     };
     std::cout << "[native-sync] plan: repos=" << aggregate.results.size()
               << " waves=" << waveCount
-              << " order=child-first\n";
+              << " order=child-first"
+              << " policy=" << SyncExecutionPolicyName(InExecutionPolicy)
+              << " jobs=" << schedulerOptions.jobs << "\n";
     for (std::size_t phase = 0; phase < waveCount; ++phase) {
         std::cout << "[native-sync] wave " << (phase + 1) << "/" << waveCount << ":";
         for (const auto& result : aggregate.results) {
@@ -4121,6 +4155,7 @@ void RegisterSync(CLI::App& InApp) {
     auto* originLatestNoAuthPreflight = new bool{false};
     auto* originLatestCleanupStaleLocks = new bool{false};
     auto* originLatestJobs = new int{DetectDefaultSyncJobs()};
+    auto* originLatestExecutionPolicy = new std::string{"parallel"};
     auto* originLatestProfile = new bool{false};
 
     origin_latest->add_flag("--shell", *originLatestShell, "Deprecated compatibility flag (shell path removed)");
@@ -4135,6 +4170,7 @@ void RegisterSync(CLI::App& InApp) {
     origin_latest->add_flag("--no-auth-preflight", *originLatestNoAuthPreflight, "Skip Git Credential Manager-focused non-interactive auth preflight before sync");
     origin_latest->add_flag("--cleanup-stale-locks", *originLatestCleanupStaleLocks, "When auto-stash fails on index.lock and no git/kano-git process is active, remove the stale lock and retry once");
     origin_latest->add_option("--jobs", *originLatestJobs, "Number of parallel repo workers for recursive sync (default: CPU cores)");
+    origin_latest->add_option("--execution-policy", *originLatestExecutionPolicy, "Recursive sync execution policy: serial|parallel (default: parallel)");
     origin_latest->add_flag("--profile", *originLatestProfile, "Print native sync timing/profile summary");
 
     origin_latest->callback([=]() {
@@ -4145,6 +4181,12 @@ void RegisterSync(CLI::App& InApp) {
         }
         if (*originLatestJobs < 1) {
             std::cerr << "Error: --jobs must be a positive integer\n";
+            std::exit(1);
+        }
+        const auto executionPolicy = ParseSyncExecutionPolicy(*originLatestExecutionPolicy);
+        if (!executionPolicy.has_value()) {
+            std::cerr << "ERROR: Unsupported --execution-policy: " << *originLatestExecutionPolicy
+                      << " (supported: serial, parallel)\n";
             std::exit(1);
         }
         if (!extras.empty()) {
@@ -4169,6 +4211,7 @@ void RegisterSync(CLI::App& InApp) {
             !*originLatestNoAutoStash,
             *originLatestCleanupStaleLocks,
             *originLatestJobs,
+            *executionPolicy,
             nullptr,
             !*originLatestNoAuthPreflight);
         if (*originLatestProfile) {
@@ -4178,6 +4221,7 @@ void RegisterSync(CLI::App& InApp) {
             std::cout << "workflow: origin-latest\n";
             std::cout << "recursive: " << (!*originLatestNoRecursive ? "true" : "false") << "\n";
             std::cout << "dry_run: " << (*originLatestDryRun ? "true" : "false") << "\n";
+            std::cout << "execution_policy: " << SyncExecutionPolicyName(*executionPolicy) << "\n";
             std::cout << "total_ms: " << totalMs << "\n";
         }
         std::exit(code);
@@ -4331,6 +4375,7 @@ void RegisterSync(CLI::App& InApp) {
     auto* devNoAuthPreflight = new bool{false};
     auto* devCleanupStaleLocks = new bool{false};
     auto* devJobs = new int{DetectDefaultSyncJobs()};
+    auto* devExecutionPolicy = new std::string{"parallel"};
     auto* devProfile = new bool{false};
     dev->add_option("--repo", *devRepo, "Target repository root path");
     dev->add_flag("--dry-run", *devDryRun, "Preview sync actions without modifying repositories");
@@ -4341,6 +4386,7 @@ void RegisterSync(CLI::App& InApp) {
     dev->add_flag("--no-auth-preflight", *devNoAuthPreflight, "Skip Git Credential Manager-focused non-interactive auth preflight before sync");
     dev->add_flag("--cleanup-stale-locks", *devCleanupStaleLocks, "When auto-stash fails on index.lock and no git/kano-git process is active, remove the stale lock and retry once");
     dev->add_option("--jobs", *devJobs, "Number of parallel repo workers for recursive sync (default: CPU cores)");
+    dev->add_option("--execution-policy", *devExecutionPolicy, "Recursive sync execution policy: serial|parallel (default: parallel)");
     dev->add_flag("--profile", *devProfile, "Print native sync timing/profile summary");
     dev->callback([=]() {
         auto extras = dev->remaining();
@@ -4354,6 +4400,12 @@ void RegisterSync(CLI::App& InApp) {
         }
         if (*devJobs < 1) {
             std::cerr << "Error: --jobs must be a positive integer\n";
+            std::exit(1);
+        }
+        const auto executionPolicy = ParseSyncExecutionPolicy(*devExecutionPolicy);
+        if (!executionPolicy.has_value()) {
+            std::cerr << "ERROR: Unsupported --execution-policy: " << *devExecutionPolicy
+                      << " (supported: serial, parallel)\n";
             std::exit(1);
         }
 
@@ -4370,6 +4422,7 @@ void RegisterSync(CLI::App& InApp) {
             true,
             *devCleanupStaleLocks,
             *devJobs,
+            *executionPolicy,
             nullptr,
             !*devNoAuthPreflight);
         if (*devProfile) {
@@ -4379,6 +4432,7 @@ void RegisterSync(CLI::App& InApp) {
             std::cout << "workflow: dev\n";
             std::cout << "recursive: " << (!*devNoRecursive ? "true" : "false") << "\n";
             std::cout << "dry_run: " << (*devDryRun ? "true" : "false") << "\n";
+            std::cout << "execution_policy: " << SyncExecutionPolicyName(*executionPolicy) << "\n";
             std::cout << "total_ms: " << totalMs << "\n";
         }
         std::exit(code);
@@ -4461,7 +4515,8 @@ void RegisterSync(CLI::App& InApp) {
             false,
             true,
             false,
-            1);
+            1,
+            SyncExecutionPolicy::Serial);
         std::exit(code);
     });
 
@@ -4470,11 +4525,13 @@ void RegisterSync(CLI::App& InApp) {
     auto* defaultNoAuthPreflight = new bool{false};
     auto* defaultCleanupStaleLocks = new bool{false};
     auto* defaultJobs = new int{DetectDefaultSyncJobs()};
+    auto* defaultExecutionPolicy = new std::string{"parallel"};
     auto* defaultProfile = new bool{false};
     cmd->add_flag("--no-recursive,-N", *defaultNoRecursive, "Default sync: only current repository");
     cmd->add_flag("--no-auth-preflight", *defaultNoAuthPreflight, "Default sync: skip Git Credential Manager-focused non-interactive auth preflight");
     cmd->add_flag("--cleanup-stale-locks", *defaultCleanupStaleLocks, "Default sync: remove stale index.lock automatically when no git/kano-git process is active");
     cmd->add_option("--jobs", *defaultJobs, "Default sync: number of parallel repo workers for recursive sync (default: CPU cores)");
+    cmd->add_option("--execution-policy", *defaultExecutionPolicy, "Default sync execution policy: serial|parallel (default: parallel)");
     cmd->add_flag("--profile", *defaultProfile, "Default sync: print native timing/profile summary");
     cmd->allow_extras();
     cmd->callback([=]() {
@@ -4487,6 +4544,12 @@ void RegisterSync(CLI::App& InApp) {
             }
             if (*defaultJobs < 1) {
                 std::cerr << "Error: --jobs must be a positive integer\n";
+                std::exit(1);
+            }
+            const auto executionPolicy = ParseSyncExecutionPolicy(*defaultExecutionPolicy);
+            if (!executionPolicy.has_value()) {
+                std::cerr << "ERROR: Unsupported --execution-policy: " << *defaultExecutionPolicy
+                          << " (supported: serial, parallel)\n";
                 std::exit(1);
             }
 
@@ -4502,6 +4565,7 @@ void RegisterSync(CLI::App& InApp) {
                 true,
                 *defaultCleanupStaleLocks,
                 *defaultJobs,
+                *executionPolicy,
                 nullptr,
                 !*defaultNoAuthPreflight);
             if (*defaultProfile) {
@@ -4511,6 +4575,7 @@ void RegisterSync(CLI::App& InApp) {
                 std::cout << "workflow: default(origin-latest)\n";
                 std::cout << "recursive: " << (!*defaultNoRecursive ? "true" : "false") << "\n";
                 std::cout << "dry_run: false\n";
+                std::cout << "execution_policy: " << SyncExecutionPolicyName(*executionPolicy) << "\n";
                 std::cout << "total_ms: " << totalMs << "\n";
             }
             std::exit(code);
@@ -4582,6 +4647,7 @@ auto RunSyncOriginLatestNativeDetailed(const std::filesystem::path& InRepoRoot,
         true,
         InCleanupStaleLocks,
         1,
+        SyncExecutionPolicy::Serial,
         &aggregate,
         true,
         InCheckGitlinkReachability,

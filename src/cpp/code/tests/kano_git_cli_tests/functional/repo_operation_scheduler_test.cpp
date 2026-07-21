@@ -103,6 +103,34 @@ TEST_CASE("repo operation scheduler runs independent repos concurrently with det
     REQUIRE(aggregate.results[1].stdoutText == "stdout:repo-b\n");
 }
 
+TEST_CASE("repo operation scheduler jobs one executes inline in deterministic path order", "[tdd][unit][feature:repo-operation-scheduler][functional][scheduler][serial]") {
+    std::vector<RepoOperationInput> repos{
+        MakeRepo("repo-b", "workspace/b", "lock-b"),
+        MakeRepo("repo-a", "workspace/a", "lock-a"),
+    };
+
+    RepoOperationSchedulerOptions options;
+    options.operationName = "serial-sync";
+    options.mode = RepoOperationMode::ReadOnlyParallel;
+    options.jobs = 1;
+    options.resolveGitCommonDirLocks = false;
+
+    const auto callerThread = std::this_thread::get_id();
+    std::vector<std::string> invocationOrder;
+    std::vector<std::thread::id> invocationThreads;
+    const auto aggregate = kano::git::workspace::RunRepoOperationScheduler(repos, options, [&](const RepoOperationInput& repo) {
+        invocationOrder.push_back(repo.id);
+        invocationThreads.push_back(std::this_thread::get_id());
+        return Success(repo.id + "\n");
+    });
+
+    REQUIRE(aggregate.succeeded == 2);
+    REQUIRE(invocationOrder == std::vector<std::string>{"repo-a", "repo-b"});
+    REQUIRE(std::all_of(invocationThreads.begin(), invocationThreads.end(), [&](const auto threadId) {
+        return threadId == callerThread;
+    }));
+}
+
 TEST_CASE("repo operation scheduler mutating waves order children before parents", "[tdd][unit][feature:repo-operation-scheduler][functional][scheduler]") {
     auto child = MakeRepo("child", "workspace/child", "lock-child");
     auto parent = MakeRepo("parent", "workspace/parent", "lock-parent");

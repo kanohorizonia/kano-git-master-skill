@@ -230,7 +230,7 @@ auto CountOccurrences(const std::string& InText, const std::string& InNeedle) ->
 
 } // namespace
 
-TEST_CASE("recursive_sync_dry_run_is_deterministic_across_jobs", "[functional][sync][recursive][determinism]") {
+TEST_CASE("recursive_sync_explicit_serial_and_parallel_policies_are_deterministic", "[functional][sync][recursive][determinism][policy]") {
     const auto sandbox = CreateSandboxWorkspace("recursive-sync-determinism");
     auto rootRemote = CreateRemote(sandbox, "root");
     auto childA = CreateRemote(sandbox, "child-a");
@@ -244,11 +244,30 @@ TEST_CASE("recursive_sync_dry_run_is_deterministic_across_jobs", "[functional][s
     CommitFile(childB.seed, "remote-b.txt", "remote b\n", "remote update b");
     RequireSuccess(RunGit({"push", "origin", childB.branch}, childB.seed), "push child b remote update");
 
-    const auto jobs1 = RunSyncRecursive(root, {"--dry-run", "--jobs", "1"});
-    const auto jobs4 = RunSyncRecursive(root, {"--dry-run", "--jobs", "4"});
-    RequireSuccess(jobs1, "sync dry-run jobs 1");
-    RequireSuccess(jobs4, "sync dry-run jobs 4");
-    REQUIRE(NormalizedDryRun(jobs1.stdoutText + "\n" + jobs1.stderrText) == NormalizedDryRun(jobs4.stdoutText + "\n" + jobs4.stderrText));
+    const auto serial = RunSyncRecursive(root, {"--dry-run", "--native-no-cache", "--execution-policy", "serial", "--jobs", "4"});
+    const auto parallel = RunSyncRecursive(root, {"--dry-run", "--native-no-cache", "--execution-policy", "parallel", "--jobs", "4"});
+    const auto serialOutput = StripAnsi(serial.stdoutText + "\n" + serial.stderrText);
+    const auto parallelOutput = StripAnsi(parallel.stdoutText + "\n" + parallel.stderrText);
+    RequireSuccess(serial, "sync dry-run explicit serial policy");
+    RequireSuccess(parallel, "sync dry-run explicit parallel policy");
+    RequireContains(serialOutput, "[native-sync] plan: repos=3 waves=2 order=child-first policy=serial jobs=1");
+    RequireContains(serialOutput, "[native-sync] wave 1/2: deps/a deps/b");
+    RequireContains(parallelOutput, "[native-sync] plan: repos=3 waves=2 order=child-first policy=parallel jobs=4");
+    RequireContains(parallelOutput, "[native-sync] wave 1/2: deps/a deps/b");
+    REQUIRE(NormalizedDryRun(serialOutput) == NormalizedDryRun(parallelOutput));
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
+TEST_CASE("recursive_sync_rejects_unknown_execution_policy", "[functional][sync][recursive][policy][validation]") {
+    const auto sandbox = CreateSandboxWorkspace("recursive-sync-invalid-policy");
+    auto rootRemote = CreateRemote(sandbox, "root");
+
+    const auto result = RunSyncRecursive(rootRemote.clone, {"--dry-run", "--execution-policy", "speculative"});
+    const auto output = StripAnsi(result.stdoutText + "\n" + result.stderrText);
+    RequireFailure(result, "sync rejects unsupported execution policy");
+    RequireContains(output, "Unsupported --execution-policy: speculative");
+    RequireContains(output, "supported: serial, parallel");
 
     RemoveSandboxWorkspace(sandbox);
 }
