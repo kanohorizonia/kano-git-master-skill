@@ -79,12 +79,17 @@ auto BuildSingleEntryPlan(const std::filesystem::path& workspaceRoot,
 
 auto InstallFakeCopilot(const std::filesystem::path& workspaceRoot) -> std::filesystem::path {
     const auto binDir = (workspaceRoot / "fake-bin").lexically_normal();
+#if defined(_WIN32)
     const auto cmdPath = (binDir / "copilot.cmd").lexically_normal();
     const auto psPath = (binDir / "fake_copilot.ps1").lexically_normal();
+#else
+    const auto commandPath = (binDir / "copilot").lexically_normal();
+#endif
     std::error_code ec;
     std::filesystem::create_directories(binDir, ec);
     REQUIRE(!ec);
 
+#if defined(_WIN32)
     const auto cmd =
         "@echo off\r\n"
         "powershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0fake_copilot.ps1\" %*\r\n"
@@ -141,6 +146,70 @@ Write-Output "Done."
 )PS";
     REQUIRE(WriteFileText(psPath, script, &error));
     return cmdPath;
+#else
+    const auto script = R"SH(#!/bin/sh
+invocation="$*"
+plan_path=
+gitignore_path=
+
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--allow-tool" ] && [ "$#" -gt 1 ]; then
+    shift
+    case "$1" in
+      write\(*\))
+        write_path=${1#write(}
+        write_path=${write_path%)}
+        if [ -z "$plan_path" ]; then
+          plan_path=$write_path
+        elif [ -z "$gitignore_path" ]; then
+          gitignore_path=$write_path
+        fi
+        ;;
+    esac
+  fi
+  shift
+done
+
+if [ -n "${KOG_TEST_AI_STUB_LOG:-}" ]; then
+  printf '%s\n' "$invocation" >> "$KOG_TEST_AI_STUB_LOG"
+fi
+
+if [ -n "${KOG_TEST_PLAN_SOURCE:-}" ] && [ -n "$plan_path" ]; then
+  cp "$KOG_TEST_PLAN_SOURCE" "$plan_path"
+fi
+
+if [ -n "${KOG_TEST_PLAN_LITERAL:-}" ] && [ -n "$plan_path" ]; then
+  printf '%s' "$KOG_TEST_PLAN_LITERAL" > "$plan_path"
+fi
+
+if [ -n "${KOG_TEST_GITIGNORE_APPEND:-}" ] && [ -n "$gitignore_path" ]; then
+  if [ ! -f "$gitignore_path" ] || ! grep -Fqx "$KOG_TEST_GITIGNORE_APPEND" "$gitignore_path"; then
+    if [ -s "$gitignore_path" ]; then
+      if [ -n "$(tail -c 1 "$gitignore_path")" ]; then
+        printf '\n' >> "$gitignore_path"
+      fi
+      printf '%s\n' "$KOG_TEST_GITIGNORE_APPEND" >> "$gitignore_path"
+    else
+      printf '%s\n' "$KOG_TEST_GITIGNORE_APPEND" > "$gitignore_path"
+    fi
+  fi
+fi
+
+printf '%s\n' "Done."
+)SH";
+    std::string error;
+    REQUIRE(WriteFileText(commandPath, script, &error));
+    std::filesystem::permissions(commandPath,
+                                 std::filesystem::perms::owner_all |
+                                     std::filesystem::perms::group_read |
+                                     std::filesystem::perms::group_exec |
+                                     std::filesystem::perms::others_read |
+                                     std::filesystem::perms::others_exec,
+                                 std::filesystem::perm_options::replace,
+                                 ec);
+    REQUIRE(!ec);
+    return commandPath;
+#endif
 }
 
 auto LoadJson(const std::filesystem::path& path) -> nlohmann::json {

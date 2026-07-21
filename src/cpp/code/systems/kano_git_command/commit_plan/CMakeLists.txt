@@ -6,6 +6,8 @@ target_sources(kano_git_cmd_commit_plan
     private/agent_queue_cmd.hpp
     private/commit_ai_utils.cpp
     private/commit_cmd.cpp
+    private/commit_utils.cpp
+    private/commit_utils.hpp
     private/commit_push_cmd.cpp
     private/cherry_pick_cmd.cpp
     private/doctor_cmd.cpp
