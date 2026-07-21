@@ -67,7 +67,7 @@ auto RunDiscoverJson(const std::filesystem::path& InRoot, const std::vector<std:
     args.insert(args.end(), InExtraArgs.begin(), InExtraArgs.end());
     const auto result = RunKog(args, InRoot);
     RequireSuccess(result, "kog discover json");
-    return StripAnsi(result.stdoutText + "\n" + result.stderrText);
+    return StripAnsi(result.stdoutText);
 }
 
 auto RunDiscoverTable(const std::filesystem::path& InRoot, const std::vector<std::string>& InExtraArgs = {}) -> std::string {
@@ -75,7 +75,7 @@ auto RunDiscoverTable(const std::filesystem::path& InRoot, const std::vector<std
     args.insert(args.end(), InExtraArgs.begin(), InExtraArgs.end());
     const auto result = RunKog(args, InRoot);
     RequireSuccess(result, "kog discover table");
-    return StripAnsi(result.stdoutText + "\n" + result.stderrText);
+    return StripAnsi(result.stdoutText);
 }
 
 auto JsonPathCount(const std::string& InJson, const std::string& InPathFragment) -> int {

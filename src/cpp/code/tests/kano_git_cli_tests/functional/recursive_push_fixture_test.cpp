@@ -203,7 +203,7 @@ auto AddSubmodule(const std::filesystem::path& InParent,
 auto RunDiscoverFull(const std::filesystem::path& InRoot, const int InDepth = 5) -> std::string {
     const auto result = RunKog({"discover", "--full", "--unregistered-depth", std::to_string(InDepth), "--format", "json", "--repo-root", InRoot.string(), "--no-cache"}, InRoot);
     RequireSuccess(result, "kog discover full");
-    return StripAnsi(result.stdoutText + "\n" + result.stderrText);
+    return StripAnsi(result.stdoutText);
 }
 
 auto RunPushRecursive(const std::filesystem::path& InRoot, std::vector<std::string> InExtraArgs = {}) -> CommandResult {
@@ -396,7 +396,7 @@ TEST_CASE("recursive_push_trusted_unregistered_top_level_child_and_ignored_neste
     const auto expectedTopChildHead = CommitFile(topChildPath, "trusted.txt", "trusted push\n", "trusted unregistered push");
 
     const auto result = RunPushRecursive(root);
-    const auto output = StripAnsi(result.stdoutText + "\n" + result.stderrText);
+    const auto output = StripProcessDiagnostics(StripAnsi(result.stdoutText + "\n" + result.stderrText));
     RequireSuccess(result, "trusted unregistered recursive push");
     RequireContains(output, "top-child");
     RequireNotContains(output, "ignored-child");

@@ -243,9 +243,10 @@ TEST_CASE("fetch dry-run does not mutate worktree", "[functional][fetch][dry-run
     const auto headBefore = CurrentHeadSha(ctx.cloneRepo);
     const auto statusBefore = StatusPorcelain(ctx.cloneRepo);
 
-    const auto result = RunKog(
+    const auto result = RunKogWithEnv(
         {"fetch", "--repo-root", ctx.cloneRepo.string(), "--no-recursive", "--dry-run"},
-        ctx.cloneRepo);
+        ctx.cloneRepo,
+        {{"KOG_PROCESS_DIAGNOSTICS_LOG", (ctx.sandbox.root / "fetch-dry-run-process-diag.log").string()}});
     INFO(result.stdoutText);
     INFO(result.stderrText);
     REQUIRE(result.exitCode == 0);

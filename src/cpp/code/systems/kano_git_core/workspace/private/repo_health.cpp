@@ -107,6 +107,31 @@ auto ParseStatusFlag(const std::string& InLine) -> std::string {
     return InLine.substr(0, 2);
 }
 
+auto IsInternalArtifactStatusLine(const std::string& InLine) -> bool {
+    if (InLine.size() <= 3) {
+        return false;
+    }
+
+    auto path = Trim(InLine.substr(3));
+    if (const auto arrow = path.rfind(" -> "); arrow != std::string::npos) {
+        path = Trim(path.substr(arrow + 4));
+    }
+    if (path.size() >= 2 && path.front() == '"' && path.back() == '"') {
+        path = path.substr(1, path.size() - 2);
+    }
+    std::replace(path.begin(), path.end(), '\\', '/');
+
+    const auto matchesReservedRoot = [&path](const std::string_view InRoot) {
+        return path == InRoot || path.starts_with(std::string(InRoot) + "/");
+    };
+    return matchesReservedRoot(".kano/cache") ||
+           matchesReservedRoot(".kano/tmp") ||
+           matchesReservedRoot(".kano/launcher") ||
+           matchesReservedRoot(".kano/reports") ||
+           matchesReservedRoot(".kano/git") ||
+           matchesReservedRoot(".sisyphus");
+}
+
 auto StatusHasUnmergedFlag(const std::string& InFlag) -> bool {
     if (InFlag.size() < 2) {
         return false;
@@ -280,14 +305,24 @@ auto ScanRepoHealth(const std::filesystem::path& InRepo,
         AddBlocker(&out, RepoBlockerKind::ActiveBisect, "bisect operation is in progress");
     }
 
-    const auto statusOut = GitCapture(InRepo, {"status", "--porcelain=v1", "--untracked-files=normal"});
+    // Enumerate untracked files individually so internal .kano artifacts can be
+    // filtered without hiding adjacent user-authored .kano configuration.
+    const auto statusOut = GitCapture(InRepo, {"status", "--porcelain=v1", "--untracked-files=all"});
     bool hasStaged = false;
     bool hasModified = false;
     bool hasUntracked = false;
     if (statusOut.exitCode != 0) {
         AddBlocker(&out, RepoBlockerKind::KogPlanUnauditable, "git status failed: " + FirstLine(statusOut.stderrStr));
     } else {
-        for (const auto& line : SplitLines(statusOut.stdoutStr)) {
+        std::istringstream statusLines(statusOut.stdoutStr);
+        std::string line;
+        while (std::getline(statusLines, line)) {
+            while (!line.empty() && line.back() == '\r') {
+                line.pop_back();
+            }
+            if (line.empty() || IsInternalArtifactStatusLine(line)) {
+                continue;
+            }
             const auto flag = ParseStatusFlag(line);
             if (StatusHasUnmergedFlag(flag)) {
                 out.hasUnmergedPaths = true;

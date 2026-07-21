@@ -3142,7 +3142,21 @@ auto RunNativeOriginLatestSync(
             .blockOnDirtyWorktree = !InAutoStashLocalChanges,
             .blockOnDirtySubmodule = false,
         });
-        if (health.detachedHead) {
+        bool hasInterruptedGitOperation = false;
+        for (const auto& blocker : health.blockers) {
+            if (blocker.kind == workspace::RepoBlockerKind::ActiveRebase ||
+                blocker.kind == workspace::RepoBlockerKind::ActiveMerge ||
+                blocker.kind == workspace::RepoBlockerKind::ActiveCherryPick ||
+                blocker.kind == workspace::RepoBlockerKind::ActiveRevert ||
+                blocker.kind == workspace::RepoBlockerKind::ActiveBisect ||
+                blocker.kind == workspace::RepoBlockerKind::UnmergedPaths) {
+                hasInterruptedGitOperation = true;
+                break;
+            }
+        }
+        if (health.detachedHead && hasInterruptedGitOperation) {
+            out << "[" << name << "] DETACHED_HEAD: branch repair deferred until the active Git operation is resolved\n";
+        } else if (health.detachedHead) {
             out << "[" << name << "] DETACHED_HEAD: switching to stable branch " << targetBranch << "\n";
             if (health.hasDirtyWorktree) {
                 err << "[" << name << "] DETACHED_HEAD_DIRTY_WORKTREE: detached HEAD has local working tree changes\n";

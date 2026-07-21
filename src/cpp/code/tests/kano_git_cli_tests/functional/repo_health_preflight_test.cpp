@@ -137,6 +137,34 @@ TEST_CASE("repo health scanner reports clean repository without blockers", "[fun
     RemoveSandboxWorkspace(sandbox);
 }
 
+TEST_CASE("repo health ignores KOG internal artifacts but retains user dirtiness", "[functional][health][dirty][internal-artifacts]") {
+    const auto sandbox = CreateSandboxWorkspace("repo-health-internal-artifacts");
+    const auto repo = (sandbox.root / "repo").lexically_normal();
+    InitRepo(repo);
+    WriteTextFile(repo / ".kano" / "kog_config.toml", "[sync]\nauto_stash = false\n");
+    RequireSuccess(RunGit({"add", ".kano/kog_config.toml"}, repo), "add tracked KOG config");
+    RequireSuccess(RunGit({"commit", "-m", "add tracked KOG config"}, repo), "commit tracked KOG config");
+    WriteTextFile(repo / ".kano" / "cache" / "git" / "workspace-manifest.json", "{}\n");
+    WriteTextFile(repo / ".sisyphus" / "tmp" / "state.json", "{}\n");
+
+    RepoHealthOptions options;
+    options.checkSubmoduleStatus = false;
+    options.checkGitlinkReachability = false;
+    options.blockOnDetachedHead = false;
+    const auto internalOnly = kano::git::workspace::ScanRepoHealth(repo, options);
+    REQUIRE_FALSE(internalOnly.hasDirtyWorktree);
+
+    WriteTextFile(repo / ".kano" / "kog_config.toml", "[sync]\nauto_stash = true\n");
+    const auto withTrackedConfigChange = kano::git::workspace::ScanRepoHealth(repo, options);
+    REQUIRE(withTrackedConfigChange.hasDirtyWorktree);
+
+    WriteTextFile(repo / "user-change.txt", "user work\n");
+    const auto withUserChange = kano::git::workspace::ScanRepoHealth(repo, options);
+    REQUIRE(withUserChange.hasDirtyWorktree);
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
 TEST_CASE("repo health scanner detects detached head blocker", "[functional][health][detached]") {
     const auto sandbox = CreateSandboxWorkspace("repo-health-detached");
     const auto repo = (sandbox.root / "repo").lexically_normal();
@@ -305,9 +333,12 @@ TEST_CASE("repo health blocks managed submodule when mapping is missing", "[func
 TEST_CASE("sync dry-run summary reports blockers instead of clean success", "[functional][sync][dry-run][blockers]") {
     auto ctx = CreateRemoteWithClone("sync-dry-run-blocked");
     RequireSuccess(RunGit({"checkout", "HEAD~0"}, ctx.clone), "detach clone head");
-    RequireSuccess(RunGit({"remote", "add", "dev-worktree", "file:///missing/path/for/fetch"}, ctx.clone), "add invalid remote");
+    RequireSuccess(RunGit({"remote", "set-url", "origin", "file:///missing/path/for/fetch"}, ctx.clone), "invalidate selected remote");
 
-    const auto result = RunKog({"sync", "origin-latest", "--dry-run", "--jobs", "1"}, ctx.clone);
+    const auto result = RunKogWithEnv(
+        {"sync", "origin-latest", "--dry-run", "--jobs", "1"},
+        ctx.clone,
+        {{"KOG_PROCESS_DIAGNOSTICS_LOG", (ctx.sandbox.root / "sync-dry-run-blocked-process-diag.log").string()}});
     const auto output = result.stdoutText + "\n" + result.stderrText;
     RequireFailure(result, "sync dry-run must fail on blockers");
     RequireContains(output, "DETACHED_HEAD");
@@ -480,13 +511,14 @@ TEST_CASE("sync dry-run regression detects composite blockers for gate safety", 
     const auto rebase = RunGit({"rebase", "main"}, ctx.clone);
     RequireFailure(rebase, "rebase conflict should be active");
 
-    RequireSuccess(RunGit({"remote", "add", "dev-worktree", "file:///missing/path/for/fetch"}, ctx.clone), "add invalid remote");
+    RequireSuccess(RunGit({"remote", "set-url", "origin", "file:///missing/path/for/fetch"}, ctx.clone), "invalidate selected remote");
 
     const auto result = RunKogWithEnv(
         {"sync", "origin-latest", "--dry-run", "--jobs", "1"},
         ctx.clone,
         {
             {"KOG_TEST_HEALTH_SUBMODULE_STATUS", "U0000000000000000000000000000000000000000 src/cpp/shared/infra"},
+            {"KOG_PROCESS_DIAGNOSTICS_LOG", (ctx.sandbox.root / "sync-dry-run-regression-process-diag.log").string()},
         });
     const auto output = result.stdoutText + "\n" + result.stderrText;
     RequireFailure(result, "sync dry-run composite blockers");

@@ -168,6 +168,9 @@ auto RequireScenarioMetadata(const AiBootstrapSandbox& InSandbox, const std::str
 
 TEST_CASE("KOG-BDD-AI-001 missing Copilot with WinGet points to bootstrap without installing",
           "[bdd][functional][feature:ai-provider-bootstrap][scenario:KOG-BDD-AI-001][featured]") {
+#if !defined(_WIN32)
+    SKIP("WinGet bootstrap behavior is Windows-only");
+#endif
     const auto scenarioId = std::string{"KOG-BDD-AI-001"};
     auto sandbox = CreateAiBootstrapSandbox("bdd-ai-001", "winget");
     const ScopedEnvVar metadataEnv("KANO_BDD_METADATA_DIR", sandbox.metadataDir.string());
@@ -213,6 +216,9 @@ TEST_CASE("KOG-BDD-AI-001 missing Copilot with WinGet points to bootstrap withou
 
 TEST_CASE("KOG-BDD-AI-002 missing Copilot without WinGet explains App Installer and avoids npm-first guidance",
           "[bdd][functional][feature:ai-provider-bootstrap][scenario:KOG-BDD-AI-002][featured]") {
+#if !defined(_WIN32)
+    SKIP("WinGet bootstrap behavior is Windows-only");
+#endif
     const auto scenarioId = std::string{"KOG-BDD-AI-002"};
     auto sandbox = CreateAiBootstrapSandbox("bdd-ai-002", "");
     const ScopedEnvVar metadataEnv("KANO_BDD_METADATA_DIR", sandbox.metadataDir.string());
@@ -258,6 +264,9 @@ TEST_CASE("KOG-BDD-AI-002 missing Copilot without WinGet explains App Installer 
 
 TEST_CASE("KOG-BDD-AI-003 bootstrap copilot dry-run previews WinGet without requiring Copilot",
           "[bdd][functional][feature:ai-provider-bootstrap][scenario:KOG-BDD-AI-003][featured]") {
+#if !defined(_WIN32)
+    SKIP("WinGet bootstrap behavior is Windows-only");
+#endif
     const auto scenarioId = std::string{"KOG-BDD-AI-003"};
     auto sandbox = CreateAiBootstrapSandbox("bdd-ai-003", "winget");
     const ScopedEnvVar metadataEnv("KANO_BDD_METADATA_DIR", sandbox.metadataDir.string());
