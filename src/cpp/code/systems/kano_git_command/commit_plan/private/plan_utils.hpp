@@ -300,6 +300,18 @@ auto RunCommitRunbook(const std::filesystem::path& InWorkspaceRoot,
                       bool InAllowEmptyDirty = false,
                       bool InYolo = false) -> int;
 
+auto RunFullRunbook(const std::filesystem::path& InWorkspaceRoot,
+                    const std::filesystem::path& InPlanPath,
+                    bool InForce,
+                    int InMaxPerRepo,
+                    const std::string& InProvider,
+                    const std::string& InModel,
+                    const std::string& InFillMode,
+                    bool InDebugAi,
+                    int InMaxCommits,
+                    bool InAllowEmptyDirty = false,
+                    bool InYolo = false) -> int;
+
 auto RunPreApplyVerify(const std::filesystem::path& InWorkspaceRoot,
                         const std::filesystem::path& InPlanPath,
                         const std::string& InStage) -> int;

@@ -3865,6 +3865,38 @@ auto RunCommitRunbook(const std::filesystem::path& InWorkspaceRoot,
     return 0;
 }
 
+auto RunFullRunbook(const std::filesystem::path& InWorkspaceRoot,
+                    const std::filesystem::path& InPlanPath,
+                    bool InForce,
+                    int InMaxPerRepo,
+                    const std::string& InProvider,
+                    const std::string& InModel,
+                    const std::string& InFillMode,
+                    bool InDebugAi,
+                    int InMaxCommits,
+                    bool InAllowEmptyDirty,
+                    bool InYolo) -> int {
+    const auto ignoreCode = RunIgnoreRunbook(InWorkspaceRoot, InPlanPath, InForce, InMaxPerRepo, "", "");
+    if (ignoreCode != 0) {
+        return ignoreCode;
+    }
+
+    const auto commitCode = RunCommitRunbook(InWorkspaceRoot,
+                                             InPlanPath,
+                                             InProvider,
+                                             InModel,
+                                             InFillMode,
+                                             InDebugAi,
+                                             InMaxCommits,
+                                             InAllowEmptyDirty,
+                                             InYolo);
+    if (commitCode != 0) {
+        return commitCode;
+    }
+
+    return RunPreApplyVerify(InWorkspaceRoot, InPlanPath, "all");
+}
+
 auto RunPreApplyVerify(const std::filesystem::path& InWorkspaceRoot,
                         const std::filesystem::path& InPlanPath,
                         const std::string& InStage) -> int {

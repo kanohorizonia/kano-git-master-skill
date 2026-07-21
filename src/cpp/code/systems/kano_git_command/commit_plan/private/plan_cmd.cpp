@@ -733,24 +733,9 @@ void RegisterPlan(CLI::App& InApp) {
         const auto workspaceRoot = std::filesystem::current_path().lexically_normal();
         const auto planPath =
             runbookFullFile->empty() ? DefaultPlanPath(workspaceRoot) : std::filesystem::path(*runbookFullFile).lexically_normal();
-        const auto ignoreCode = RunIgnoreRunbook(workspaceRoot, planPath, *runbookFullForce, *runbookFullMaxPerRepo, "", "");
-        if (ignoreCode != 0) {
-            std::exit(ignoreCode);
-        }
-        const auto commitCode = RunCommitRunbook(workspaceRoot,
-                                                 planPath,
-                                                 *runbookFullProvider,
-                                                 *runbookFullModel,
-                                                 *runbookFullFillMode,
-                                                 *runbookFullDebugAi,
-                                                 *runbookFullMaxCommits,
-                                                 *runbookFullAllowEmptyDirty);
-        if (commitCode != 0) {
-            std::exit(commitCode);
-        }
-
-        const auto verifyCode = RunPreApplyVerify(workspaceRoot, planPath, "all");
-        std::exit(verifyCode);
+        std::exit(RunFullRunbook(workspaceRoot, planPath, *runbookFullForce, *runbookFullMaxPerRepo, *runbookFullProvider,
+                                 *runbookFullModel, *runbookFullFillMode, *runbookFullDebugAi, *runbookFullMaxCommits,
+                                 *runbookFullAllowEmptyDirty));
     });
 
     auto* runbook = cmd->add_subcommand("runbook", "Plan runbooks");
@@ -832,17 +817,8 @@ void RegisterPlan(CLI::App& InApp) {
     runbookFullPublic->callback([=]() {
         const auto workspaceRoot = std::filesystem::current_path().lexically_normal();
         const auto planPath = rbFullFile->empty() ? DefaultPlanPath(workspaceRoot) : std::filesystem::path(*rbFullFile).lexically_normal();
-        const auto ignoreCode = RunIgnoreRunbook(workspaceRoot, planPath, *rbFullForce, *rbFullMaxPerRepo, "", "");
-        if (ignoreCode != 0) {
-            std::exit(ignoreCode);
-        }
-        const auto commitCode =
-            RunCommitRunbook(workspaceRoot, planPath, *rbFullProvider, *rbFullModel, *rbFullFillMode, *rbFullDebugAi, *rbFullMaxCommits, *rbFullAllowEmptyDirty, *rbFullYolo);
-        if (commitCode != 0) {
-            std::exit(commitCode);
-        }
-        const auto verifyCode = RunPreApplyVerify(workspaceRoot, planPath, "all");
-        std::exit(verifyCode);
+        std::exit(RunFullRunbook(workspaceRoot, planPath, *rbFullForce, *rbFullMaxPerRepo, *rbFullProvider, *rbFullModel,
+                                 *rbFullFillMode, *rbFullDebugAi, *rbFullMaxCommits, *rbFullAllowEmptyDirty, *rbFullYolo));
     });
 
     auto* ignoreInit = cmd->add_subcommand("ignore-init", "Populate stages.ignore from current working tree");
@@ -1006,27 +982,6 @@ void RegisterPlan(CLI::App& InApp) {
         const auto workspaceRoot = std::filesystem::current_path().lexically_normal();
         const auto planPath = applyFile->empty() ? DefaultPlanPath(workspaceRoot) : std::filesystem::path(*applyFile).lexically_normal();
         std::exit(RunPlanApply(workspaceRoot, planPath, *applyStage, apply->remaining()));
-    });
-}
-
-void RegisterIgnore(CLI::App& InApp) {
-    auto* cmd = InApp.add_subcommand("ignore", "Ignore management commands");
-    auto* doctor = cmd->add_subcommand("doctor", "Scan tracked files for likely ignore candidates");
-    auto* repo = new std::string{};
-    auto* limit = new int{200};
-    auto* asJson = new bool{false};
-    auto* apply = new bool{false};
-    auto* dryRun = new bool{false};
-    auto* yes = new bool{false};
-    doctor->add_option("--repo", *repo, "Workspace/repo root path");
-    doctor->add_option("--limit", *limit, "Max findings")->default_val(200);
-    doctor->add_flag("--json", *asJson, "Output JSON");
-    doctor->add_flag("--apply", *apply, "Apply untrack (git rm --cached) to findings");
-    doctor->add_flag("--dry-run", *dryRun, "Print apply actions only");
-    doctor->add_flag("--yes,-y", *yes, "Skip interactive confirmation gate");
-    doctor->callback([=]() {
-        const auto root = repo->empty() ? std::filesystem::current_path().lexically_normal() : std::filesystem::path(*repo).lexically_normal();
-        std::exit(RunIgnoreDoctor(root, *limit, *asJson, *apply, *dryRun, *yes));
     });
 }
 
