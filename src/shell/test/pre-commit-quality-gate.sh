@@ -26,6 +26,7 @@ fi
 src/shell/test/audit-git-index-hygiene.sh
 src/shell/test/audit-public-doc-script-refs.sh
 src/shell/test/acceptance-launcher-diagnostics.sh
+src/shell/test/acceptance-self-build-task-routing.sh
 if [[ "${KOG_ENABLE_KCC_AUDIT:-0}" == "1" ]]; then
   kcc_args=(--max-count "${KOG_KCC_AUDIT_MAX_COUNT:-50}")
   if [[ "${KOG_KCC_AUDIT_STRICT:-0}" == "1" ]]; then

@@ -819,6 +819,37 @@ clean_native_build_artifacts() {
   remove_tree_best_effort "$base_build/debug"
 }
 
+find_built_binary_for_configuration() {
+  local configuration="$1"
+  local exe_name="kano-git"
+  local bdir preset candidate
+  local -a build_dirs=("$PROJECT_ROOT/src/cpp/out" "$PROJECT_ROOT/src/cpp/build" "$PROJECT_ROOT/build")
+
+  if [[ "$(platform_name)" == "windows" ]]; then
+    exe_name="kano-git.exe"
+  fi
+
+  for bdir in "${build_dirs[@]}"; do
+    [[ -d "$bdir" ]] || continue
+    while IFS= read -r preset; do
+      [[ -n "$preset" ]] || continue
+      candidate="$bdir/bin/$preset/$configuration/$exe_name"
+      if [[ -f "$candidate" ]]; then
+        printf '%s\n' "$candidate"
+        return 0
+      fi
+    done < <(candidate_presets)
+
+    candidate="$bdir/$configuration/$exe_name"
+    if [[ -f "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
 prepare_cpp_build_submodules() {
   local context_label="${1:-build-native}"
   local -a discovered_paths update_paths
@@ -1070,7 +1101,7 @@ ensure_windows_user_path_contains() {
 run_native_build_mode() {
   local mode="$1"
   local build_task
-  local prereq_script build_script prereq_stamp prereq_interval now_epoch last_epoch cooldown_left os_name
+  local prereq_script prereq_stamp prereq_interval now_epoch last_epoch cooldown_left os_name
 
   ensure_windows_build_runtime_paths
   prepare_cpp_build_submodules "build-native" || return 1
@@ -1082,33 +1113,38 @@ run_native_build_mode() {
   fi
 
   prereq_script="${_scripts[0]:-}"
-  build_script="${_scripts[1]:-}"
-  if [[ -z "$prereq_script" || -z "$build_script" ]]; then
-    echo "Error: missing native build script mapping for this platform." >&2
+  if [[ -z "$prereq_script" ]]; then
+    echo "Error: missing native prerequisite script mapping for this platform." >&2
     return 1
   fi
 
   case "$mode" in
     incremental)
+      build_task="build-release"
       log_launcher_status "build-native" "start" "mode=incremental"
       ;;
     incremental-debug)
+      build_task="build-debug"
       log_launcher_status "build-native" "start" "mode=incremental-debug"
       ;;
     incremental-pgo)
+      build_task="pgo-rebuild"
       log_launcher_status "build-native" "start" "mode=incremental-pgo"
       ;;
     full)
+      build_task="rebuild"
       log_launcher_status "build-native" "start" "mode=full"
       log_launcher_status "build-native" "step" "clean-artifacts"
       clean_native_build_artifacts
       ;;
     full-debug)
+      build_task="build-debug"
       log_launcher_status "build-native" "start" "mode=full-debug"
       log_launcher_status "build-native" "step" "clean-artifacts"
       clean_native_build_artifacts
       ;;
     full-pgo)
+      build_task="pgo-rebuild"
       log_launcher_status "build-native" "start" "mode=full-pgo"
       log_launcher_status "build-native" "step" "clean-artifacts"
       clean_native_build_artifacts
@@ -1133,11 +1169,6 @@ run_native_build_mode() {
     maybe_export_windows_vcvarsall || true
     clear_stale_windows_cmake_cache
 
-    case "$mode" in
-      *-debug) build_task="build-debug" ;;
-      *-pgo)   build_task="pgo-rebuild" ;;
-      *)        build_task="build-release" ;;
-    esac
     if run_pixi_build_task "$build_task" 2>&1 | tee "$build_log"; then
       log_launcher_status "build-native" "ok" "build completed via pixi task=$build_task"
     elif grep -Fq "vcvarsall.bat not found" "$build_log"; then
@@ -1175,8 +1206,8 @@ run_native_build_mode() {
       fi
       return 1
     fi
-  elif run_shell_script "$build_script" 2>&1 | tee "$build_log"; then
-    log_launcher_status "build-native" "ok" "build completed"
+  elif run_pixi_build_task "$build_task" 2>&1 | tee "$build_log"; then
+    log_launcher_status "build-native" "ok" "build completed via pixi task=$build_task"
   else
     log_launcher_status "build-native" "fail" "build failed"
     if looks_like_dependency_fetch_failure "$build_log"; then
@@ -1187,25 +1218,19 @@ run_native_build_mode() {
     return 1
   fi
 
-  local binary
+  local binary configuration="release" binary_label="Native"
   case "$mode" in
     *-debug)
-      # For debug builds, report the debug binary directly
-      local os_name_bin
-      os_name_bin="$(platform_name)"
-      local exe_name_bin
-      [[ "$os_name_bin" == "windows" ]] && exe_name_bin="kano-git.exe" || exe_name_bin="kano-git"
-      local debug_bin="$PROJECT_ROOT/src/cpp/out/bin/windows-ninja-msvc/debug/$exe_name_bin"
-      if [[ -f "$debug_bin" ]]; then
-        echo "Debug binary ready: $debug_bin"
-        echo "  Use: KANO_GIT_BINARY_PATH=$debug_bin kog <command>"
-        return 0
-      fi
+      configuration="debug"
+      binary_label="Debug"
       ;;
   esac
-  binary="$(find_binary || true)"
+  binary="$(find_built_binary_for_configuration "$configuration" || true)"
   if [[ -n "$binary" && -f "$binary" ]]; then
-    echo "Native binary ready: $binary"
+    echo "$binary_label binary ready: $binary"
+    if [[ "$configuration" == "debug" ]]; then
+      echo "  Use: KANO_GIT_BINARY_PATH=$binary kog <command>"
+    fi
     return 0
   fi
 
