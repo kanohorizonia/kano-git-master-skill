@@ -53,7 +53,6 @@ void RegisterAll(CLI::App& InApp) {
     RegisterUpdate(InApp);
     RegisterUplog(InApp);
     RegisterVersion(InApp);
-    RegisterWorkspace(InApp);
     RegisterWorktree(InApp);
 
     auto setGroup = [&](const std::string& name, const std::string& groupName) {
@@ -92,7 +91,6 @@ void RegisterAll(CLI::App& InApp) {
     setGroup("worktree", repoGroup);
     setGroup("submodule", repoGroup);
     setGroup("subtree", repoGroup);
-    setGroup("workspace", repoGroup);
     setGroup("stash", repoGroup);
     setGroup("repo-hygiene", repoGroup);
 

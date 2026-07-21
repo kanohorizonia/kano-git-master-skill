@@ -12,7 +12,6 @@ void RegisterMeta(CLI::App& InApp);
 void RegisterComplete(CLI::App& InApp);
 void RegisterCompletion(CLI::App& InApp);
 void RegisterDiscover(CLI::App& InApp);
-void RegisterWorkspace(CLI::App& InApp);
 void RegisterForeach(CLI::App& InApp);
 void RegisterGuide(CLI::App& InApp);
 void RegisterLog(CLI::App& InApp);

@@ -1959,28 +1959,30 @@ TEST_CASE("push_recursive_blocks_parent_when_child_push_fails", "[functional][pu
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
-TEST_CASE("workspace_discover_respects_gitignore_for_nested_repo", "[functional][workspace][discovery]") {
+TEST_CASE("discover_respects_gitignore_for_nested_repo", "[functional][discover][discovery]") {
     const auto ctx = CreateRemoteWithNestedRepoClone("discover-gitignore");
     WriteTextFile(ctx.cloneRootRepo / ".gitignore", ".kano/\nnested/\n");
 
     const auto result = RunKog(
-        {"workspace", "discover", "--format", "json", "--repo-root", ctx.cloneRootRepo.string(), "--no-cache"},
+        {"discover", "--format", "json", "--repo-root", ctx.cloneRootRepo.string(), "--no-cache"},
         ctx.cloneRootRepo);
     INFO(result.stdoutText);
     INFO(result.stderrText);
     REQUIRE(result.exitCode == 0);
+    REQUIRE(result.stdoutText.starts_with("{"));
+    REQUIRE(result.stdoutText.find("Discovery mode:") == std::string::npos);
     REQUIRE(ContainsPathEntry(result.stdoutText, ctx.cloneRootRepo));
     REQUIRE_FALSE(ContainsPathEntry(result.stdoutText, ctx.cloneNestedRepo));
 
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
-TEST_CASE("workspace_discover_respects_kogignore_for_nested_repo", "[functional][workspace][discovery]") {
+TEST_CASE("discover_respects_kogignore_for_nested_repo", "[functional][discover][discovery]") {
     const auto ctx = CreateRemoteWithNestedRepoClone("discover-kogignore");
     WriteTextFile(ctx.cloneRootRepo / ".kogignore", "nested/\n");
 
     const auto result = RunKog(
-        {"workspace", "discover", "--format", "json", "--repo-root", ctx.cloneRootRepo.string(), "--no-cache"},
+        {"discover", "--format", "json", "--repo-root", ctx.cloneRootRepo.string(), "--no-cache"},
         ctx.cloneRootRepo);
     INFO(result.stdoutText);
     INFO(result.stderrText);
@@ -1991,11 +1993,11 @@ TEST_CASE("workspace_discover_respects_kogignore_for_nested_repo", "[functional]
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
-TEST_CASE("workspace_discover_exclude_is_temporary_override", "[functional][workspace][discovery]") {
+TEST_CASE("discover_exclude_is_temporary_override", "[functional][discover][discovery]") {
     const auto ctx = CreateRemoteWithNestedRepoClone("discover-exclude");
 
     const auto baseline = RunKog(
-        {"workspace", "discover", "--full", "--format", "json", "--repo-root", ctx.cloneRootRepo.string(), "--no-cache"},
+        {"discover", "--full", "--format", "json", "--repo-root", ctx.cloneRootRepo.string(), "--no-cache"},
         ctx.cloneRootRepo);
     INFO(baseline.stdoutText);
     INFO(baseline.stderrText);
@@ -2003,7 +2005,7 @@ TEST_CASE("workspace_discover_exclude_is_temporary_override", "[functional][work
     REQUIRE(ContainsPathEntry(baseline.stdoutText, ctx.cloneNestedRepo));
 
     const auto excluded = RunKog(
-        {"workspace", "discover", "--full", "--format", "json", "--repo-root", ctx.cloneRootRepo.string(), "--no-cache",
+        {"discover", "--full", "--format", "json", "--repo-root", ctx.cloneRootRepo.string(), "--no-cache",
          "--exclude", "nested/"},
         ctx.cloneRootRepo);
     INFO(excluded.stdoutText);
@@ -2012,7 +2014,7 @@ TEST_CASE("workspace_discover_exclude_is_temporary_override", "[functional][work
     REQUIRE_FALSE(ContainsPathEntry(excluded.stdoutText, ctx.cloneNestedRepo));
 
     const auto after = RunKog(
-        {"workspace", "discover", "--full", "--format", "json", "--repo-root", ctx.cloneRootRepo.string(), "--no-cache"},
+        {"discover", "--full", "--format", "json", "--repo-root", ctx.cloneRootRepo.string(), "--no-cache"},
         ctx.cloneRootRepo);
     INFO(after.stdoutText);
     INFO(after.stderrText);

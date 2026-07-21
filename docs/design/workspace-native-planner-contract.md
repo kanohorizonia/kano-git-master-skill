@@ -6,13 +6,13 @@ This document defines the shared JSON contract emitted by native C++ workspace p
 
 Applies to:
 
-- `kano-git workspace update --native-plan-only`
-- `kano-git workspace foreach --native-plan-only --command "..."`
+- `kano-git update --native-plan-only`
+- `kano-git foreach --native-plan-only --command "..."`
 
 And to adapter execution modes:
 
-- `kano-git workspace update --native-plan ...`
-- `kano-git workspace foreach --native-plan --command "..." ...`
+- `kano-git update --native-plan ...`
+- `kano-git foreach --native-plan --command "..." ...`
 
 ## Top-level Schema
 

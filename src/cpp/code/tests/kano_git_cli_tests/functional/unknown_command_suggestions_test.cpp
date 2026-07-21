@@ -122,4 +122,31 @@ TEST_CASE("repo namespace is public and provides native single-repo status", "[f
     RemoveSandboxWorkspace(sandbox);
 }
 
+TEST_CASE("legacy workspace namespace is absent and split commands remain public", "[functional][cli][command-surface][KG-TSK-0062]") {
+    const auto sandbox = CreateSandboxWorkspace("workspace-command-removed");
+
+    const auto topLevelHelp = RunKog({"--help"}, sandbox.root);
+    const auto topLevelMerged = StripAnsi(topLevelHelp.stdoutText + "\n" + topLevelHelp.stderrText);
+    INFO(topLevelMerged);
+    REQUIRE(topLevelHelp.exitCode == 0);
+    REQUIRE(topLevelMerged.find("Workspace operations") == std::string::npos);
+
+    for (const std::string command : {"discover", "foreach", "update"}) {
+        const auto commandHelp = RunKog({command, "--help"}, sandbox.root);
+        const auto commandHelpMerged = StripAnsi(commandHelp.stdoutText + "\n" + commandHelp.stderrText);
+        INFO(command);
+        INFO(commandHelpMerged);
+        REQUIRE(commandHelp.exitCode == 0);
+        REQUIRE(commandHelpMerged.find("is not a kog command") == std::string::npos);
+    }
+
+    const auto legacyHelp = RunKog({"workspace", "--help"}, sandbox.root);
+    const auto legacyMerged = StripAnsi(legacyHelp.stdoutText + "\n" + legacyHelp.stderrText);
+    INFO(legacyMerged);
+    REQUIRE(legacyHelp.exitCode != 0);
+    REQUIRE(legacyMerged.find("kog: 'workspace' is not a kog command") != std::string::npos);
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
 } // namespace kano::git::tests::functional
