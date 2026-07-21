@@ -966,14 +966,18 @@ TEST_CASE("commit_push_plan_file_ignores_out_of_scope_post_sync_gitlinks", "[fun
 
     WriteTextFile(ctx.cloneRootRepo / "README.md", "root seed\nroot scoped update\n");
     const auto planPath = (ctx.cloneRootRepo / ".kano" / "cache" / "git" / "plans" / "post-sync-scope.json").lexically_normal();
-    WriteTextFile(planPath, R"json({
+    RequireSuccess(RunKog({"plan", "new", "--force", "--output", planPath.string()}, ctx.cloneRootRepo), "plan new");
+    const auto freshPlanText = ReadTextFile(planPath);
+    const auto baseHeadSha = ExtractJsonStringField(freshPlanText, "base_head_sha");
+    const auto dirtyFingerprint = ExtractJsonStringField(freshPlanText, "dirty_fingerprint");
+    auto scopedPlanText = std::string(R"json({
   "meta": {
     "schema_version": "2",
     "plan_id": "functional-post-sync-scope",
     "generated_at_utc": "2026-07-08T00:00:00Z",
     "executed_at_utc": "",
-    "base_head_sha": "functional",
-    "dirty_fingerprint": "functional",
+    "base_head_sha": "KOG_BASE_HEAD_SHA",
+    "dirty_fingerprint": "KOG_DIRTY_FINGERPRINT",
     "planner": { "provider": "human", "ai-model": "deterministic" },
     "review": { "verdict": "pass", "reason": "functional regression for scoped post-sync gitlinks" }
   },
@@ -1007,6 +1011,15 @@ TEST_CASE("commit_push_plan_file_ignores_out_of_scope_post_sync_gitlinks", "[fun
   }
 }
 )json");
+    const auto baseMarker = std::string("KOG_BASE_HEAD_SHA");
+    const auto dirtyMarker = std::string("KOG_DIRTY_FINGERPRINT");
+    const auto baseMarkerPos = scopedPlanText.find(baseMarker);
+    REQUIRE(baseMarkerPos != std::string::npos);
+    scopedPlanText.replace(baseMarkerPos, baseMarker.size(), baseHeadSha);
+    const auto dirtyMarkerPos = scopedPlanText.find(dirtyMarker);
+    REQUIRE(dirtyMarkerPos != std::string::npos);
+    scopedPlanText.replace(dirtyMarkerPos, dirtyMarker.size(), dirtyFingerprint);
+    WriteTextFile(planPath, scopedPlanText);
 
     const auto result = RunKog({"commit-push", "--plan-file", planPath.string()}, ctx.cloneRootRepo);
     INFO(result.stdoutText);
@@ -1514,6 +1527,9 @@ TEST_CASE("plan_runbook_commit_per_commit_accepts_direct_plan_writeback",
 TEST_CASE("sync_registered_submodule_refreshes_gitmodules_branch_after_parent_sync", "[functional][sync][gitmodules-branch]") {
     const auto ctx = CreateRemoteWithSubmoduleBranchUpgradeClone("sync-gitmodules-branch-refresh");
 
+    RequireSuccess(
+        RunGit({"checkout", "-B", ctx.initialChildBranch, ("origin/" + ctx.initialChildBranch)}, ctx.cloneChildRepo),
+        "attach child initial branch before dirty auto-stash regression");
     WriteTextFile(ctx.cloneChildRepo / "local-only.txt", "dirty local change\n");
 
     const auto rootSubmoduleRepo = (ctx.rootSeedRepo / std::filesystem::path(ctx.submodulePath)).lexically_normal();
@@ -1546,6 +1562,9 @@ TEST_CASE("sync_registered_submodule_refreshes_gitmodules_branch_after_parent_sy
 TEST_CASE("sync_registered_submodule_fails_when_refreshed_gitmodules_branch_is_missing", "[functional][sync][gitmodules-branch]") {
     const auto ctx = CreateRemoteWithSubmoduleBranchUpgradeClone("sync-gitmodules-branch-missing");
 
+    RequireSuccess(
+        RunGit({"checkout", "-B", ctx.initialChildBranch, ("origin/" + ctx.initialChildBranch)}, ctx.cloneChildRepo),
+        "attach child initial branch before missing target regression");
     WriteTextFile(ctx.cloneChildRepo / "child.txt", "child seed\nlocal dirty change\n");
     const auto childHeadBefore = CurrentHeadSha(ctx.cloneChildRepo);
     const auto childBranchBefore = CurrentBranch(ctx.cloneChildRepo);
@@ -1844,6 +1863,36 @@ TEST_CASE("multi_repo_commit_push_pushes_root_and_unregistered_nested_repo", "[f
 
     REQUIRE(RefSha(ctx.rootBareRemote, "refs/heads/" + ctx.branch) == rootHead);
     REQUIRE(RefSha(ctx.nestedBareRemote, "refs/heads/" + ctx.branch) == nestedHead);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("multi_repo_commit_push_preserves_push_only_registered_repo_policy", "[functional][commit-push][multi-repo][policy]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("multi-repo-push-only-policy");
+
+    RequireSuccess(
+        RunGit({"config", "-f", ".gitmodules", ("submodule." + ctx.submodulePath + ".kog-commit-policy"), "false"},
+               ctx.cloneRootRepo),
+        "disable child commit policy");
+    RequireSuccess(RunGit({"add", ".gitmodules"}, ctx.cloneRootRepo), "stage child commit policy");
+    RequireSuccess(RunGit({"commit", "-m", "disable child commit policy"}, ctx.cloneRootRepo), "commit child commit policy");
+    RequireSuccess(RunGit({"push"}, ctx.cloneRootRepo), "push child commit policy");
+
+    WriteTextFile(ctx.cloneChildRepo / "child.txt", "child push-only update\n");
+    RequireSuccess(RunGit({"add", "child.txt"}, ctx.cloneChildRepo), "stage push-only child update");
+    RequireSuccess(RunGit({"commit", "-m", "child push-only update"}, ctx.cloneChildRepo), "commit push-only child update");
+    const auto childHead = CurrentHeadSha(ctx.cloneChildRepo);
+    REQUIRE(RefSha(ctx.childBareRemote, "refs/heads/" + ctx.branch) != childHead);
+
+    const auto result = RunKog({"commit-push", "-m", "test(functional): preserve push-only child"}, ctx.cloneRootRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    const auto [childBehind, childAhead] = AheadBehindCounts(ctx.cloneChildRepo);
+    REQUIRE(childBehind == 0);
+    REQUIRE(childAhead == 0);
+    REQUIRE(RefSha(ctx.childBareRemote, "refs/heads/" + ctx.branch) == childHead);
 
     RemoveSandboxWorkspace(ctx.sandbox);
 }
@@ -2766,15 +2815,26 @@ TEST_CASE("repo_status_table_adapts_repo_column_to_terminal_width", "[functional
     RequireSuccess(RunGit({"init", longRepo.string()}, sandbox.root), "init long-name repo");
 
     const auto narrow = RunKogWithEnv(
-        {"status", longRepo.string(), "--repo-root", sandbox.root.string()},
+        {"status", longRepo.string(), "--repo-root", sandbox.root.string(), "--all"},
         sandbox.root,
         {{"COLUMNS", "80"}});
     INFO(narrow.stdoutText);
     INFO(narrow.stderrText);
     REQUIRE(narrow.exitCode == 0);
 
+    // The first cache write creates the repository-local .kano directory after
+    // computing its marker. Warm it once more so the wide run deterministically
+    // exercises a cache hit and the persisted root path stored as ".".
+    const auto warmCache = RunKogWithEnv(
+        {"status", longRepo.string(), "--repo-root", sandbox.root.string(), "--all"},
+        sandbox.root,
+        {{"COLUMNS", "80"}});
+    INFO(warmCache.stdoutText);
+    INFO(warmCache.stderrText);
+    REQUIRE(warmCache.exitCode == 0);
+
     const auto wide = RunKogWithEnv(
-        {"status", longRepo.string(), "--repo-root", sandbox.root.string()},
+        {"status", longRepo.string(), "--repo-root", sandbox.root.string(), "--all"},
         sandbox.root,
         {{"COLUMNS", "140"}});
     INFO(wide.stdoutText);

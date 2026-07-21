@@ -34,7 +34,11 @@ namespace kano::git::workspace {
 namespace {
 
 auto Normalize(const std::filesystem::path& InPath) -> std::filesystem::path {
-    return InPath.lexically_normal();
+    auto normalized = InPath.lexically_normal();
+    while (!normalized.empty() && normalized != normalized.root_path() && normalized.filename().empty()) {
+        normalized = normalized.parent_path();
+    }
+    return normalized;
 }
 
 auto PathKey(const std::filesystem::path& InPath) -> std::string {
@@ -1431,22 +1435,22 @@ auto AbsolutizeRepoRecords(const std::filesystem::path& InWorkspaceRoot, std::ve
     }
     for (auto& repo : *OutRepos) {
         if (repo.path.is_relative()) {
-            repo.path = (InWorkspaceRoot / repo.path).lexically_normal();
+            repo.path = Normalize(InWorkspaceRoot / repo.path);
         } else {
-            repo.path = repo.path.lexically_normal();
+            repo.path = Normalize(repo.path);
         }
         for (auto& dep : repo.dependencies) {
             if (dep.is_relative()) {
-                dep = (InWorkspaceRoot / dep).lexically_normal();
+                dep = Normalize(InWorkspaceRoot / dep);
             } else {
-                dep = dep.lexically_normal();
+                dep = Normalize(dep);
             }
         }
         if (!repo.registrationRelativeTo.empty() && repo.registrationRelativeTo != ".") {
             if (repo.registrationRelativeTo.is_relative()) {
-                repo.registrationRelativeTo = (InWorkspaceRoot / repo.registrationRelativeTo).lexically_normal();
+                repo.registrationRelativeTo = Normalize(InWorkspaceRoot / repo.registrationRelativeTo);
             } else {
-                repo.registrationRelativeTo = repo.registrationRelativeTo.lexically_normal();
+                repo.registrationRelativeTo = Normalize(repo.registrationRelativeTo);
             }
         }
     }

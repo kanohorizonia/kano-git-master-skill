@@ -417,7 +417,10 @@ auto SelfBinaryPath() -> std::string {
     return "kano-git";
 }
 
-auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<std::filesystem::path> {
+auto DiscoverWorkspaceRepos(
+    const std::filesystem::path& InRoot,
+    const workspace::WorkspacePolicyFilter InPolicyFilter = workspace::WorkspacePolicyFilter::Commit)
+    -> std::vector<std::filesystem::path> {
     workspace::WorkspaceInventoryOptions options;
     options.rootDir = InRoot;
     options.unregisteredDepth = 3;
@@ -426,7 +429,7 @@ auto DiscoverWorkspaceRepos(const std::filesystem::path& InRoot) -> std::vector<
     options.refreshCache = true;
     options.metadataLevel = "minimal";
     options.includeTrustedUnregistered = true;
-    auto repos = workspace::DiscoverWorkspaceRepoPaths(options, workspace::WorkspacePolicyFilter::Commit);
+    auto repos = workspace::DiscoverWorkspaceRepoPaths(options, InPolicyFilter);
     if (repos.empty()) {
         repos.push_back(InRoot.lexically_normal());
     }
@@ -3191,16 +3194,36 @@ void RegisterCommitPush(CLI::App& InApp) {
                 // Keep commit-push convergence deterministic and avoid the known
                 // parallel push worker hang path. Standalone `kog push` still exposes
                 // configurable parallelism for operator-driven use.
-                pushExitCode = RunPushNativeSimple(
-                    workspaceRoot,
-                    !effectiveNoRecursive,
-                    *dryRun,
-                    *profile,
-                    *forceWithLease,
-                    *noVerify,
-                    1,
-                    *verbose,
-                    *remote);
+                if (!effectiveNoRecursive) {
+                    std::vector<std::string> pushRepoFilters;
+                    for (const auto& repoPath : DiscoverWorkspaceRepos(
+                             workspaceRoot, workspace::WorkspacePolicyFilter::Push)) {
+                        pushRepoFilters.push_back(repoPath.generic_string());
+                    }
+                    pushExitCode = RunPushNativeSimpleDetailed(
+                                       workspaceRoot,
+                                       true,
+                                       *dryRun,
+                                       *profile,
+                                       *forceWithLease,
+                                       *noVerify,
+                                       1,
+                                       *verbose,
+                                       *remote,
+                                       pushRepoFilters)
+                                       .first;
+                } else {
+                    pushExitCode = RunPushNativeSimple(
+                        workspaceRoot,
+                        false,
+                        *dryRun,
+                        *profile,
+                        *forceWithLease,
+                        *noVerify,
+                        1,
+                        *verbose,
+                        *remote);
+                }
             }
         }
 
