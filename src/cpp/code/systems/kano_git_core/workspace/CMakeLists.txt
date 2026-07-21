@@ -29,6 +29,11 @@ target_include_directories(kano_git_workspace
     private
 )
 
-target_link_libraries(kano_git_workspace PUBLIC kano::git_shell kano::git_command_runtime)
+target_link_libraries(kano_git_workspace
+  PUBLIC
+    kano::git_shell
+  PRIVATE
+    kano::git_config
+)
 
 add_library(kano::git_workspace ALIAS kano_git_workspace)

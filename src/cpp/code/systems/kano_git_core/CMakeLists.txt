@@ -1,5 +1,6 @@
 add_subdirectory(shell)
 add_subdirectory(build_info)
+add_subdirectory(config)
 add_subdirectory(workspace)
 
 add_library(kano_git_core INTERFACE)

@@ -45,6 +45,7 @@ GitHub through CMake FetchContent.
 
 ## Current Architecture Docs
 
+- [Command Library Dependency Graph](./design/command-library-dependency-graph.md)
 - [Workspace Native Planner Contract](./design/workspace-native-planner-contract.md)
 - [C++ Stage Contract](./design/cpp-stage-contract.md)
 - [C++ Coverage and PGO Provider Model](./cpp-profile-coverage-pgo-model.md)

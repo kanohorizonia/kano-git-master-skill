@@ -6,24 +6,12 @@ add_subdirectory(commit_plan)
 add_subdirectory(ui)
 add_subdirectory(bridge)
 add_subdirectory(product)
+add_subdirectory(registration)
 
 add_library(kano_git_command INTERFACE)
 add_library(kano::git_command ALIAS kano_git_command)
 
-# GNU ld/lld on Linux use a single-pass static linker that processes libraries left-to-right.
-# The command sub-libraries have circular dependencies (runtime calls Register*()
-# from product/repo_sync/etc., which depend back on runtime). MSVC rescans
-# automatically; Linux GCC/Clang need explicit --start-group/--end-group to resolve cycles.
 target_link_libraries(kano_git_command
   INTERFACE
-    "$<$<CXX_COMPILER_ID:GNU>:-Wl,--start-group>"
-    "$<$<AND:$<PLATFORM_ID:Linux>,$<CXX_COMPILER_ID:Clang>>:-Wl,--start-group>"
-    kano::git_command_runtime
-    kano::git_cmd_repo_sync
-    kano::git_cmd_commit_plan
-    kano::git_cmd_ui
-    kano::git_cmd_bridge
-    kano::git_cmd_product
-    "$<$<CXX_COMPILER_ID:GNU>:-Wl,--end-group>"
-    "$<$<AND:$<PLATFORM_ID:Linux>,$<CXX_COMPILER_ID:Clang>>:-Wl,--end-group>"
+    kano::git_command_registration
 )
