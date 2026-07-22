@@ -3207,11 +3207,78 @@ WorktreeInspection InspectWorktree(const std::filesystem::path& worktreePath) {
     return inspection;
 }
 
+bool VerifyInitializedSubmodulesAreClean(const std::filesystem::path& repoPath,
+                                         bool& foundInitializedSubmodule,
+                                         std::string& message) {
+    const auto gitlinks = GitCapture(repoPath, {"-c", "core.quotepath=false", "ls-files", "--stage"});
+    if (gitlinks.exitCode != 0) {
+        message = "failed to inspect submodule gitlinks: " + CombinedGitError(gitlinks);
+        return false;
+    }
+
+    std::istringstream records(gitlinks.stdoutStr);
+    std::string record;
+    while (std::getline(records, record)) {
+        if (!record.empty() && record.back() == '\r') {
+            record.pop_back();
+        }
+        const auto separator = record.find('\t');
+        if (separator == std::string::npos) {
+            continue;
+        }
+        std::string mode;
+        std::string expectedHead;
+        std::string stage;
+        std::istringstream metadata(record.substr(0, separator));
+        metadata >> mode >> expectedHead >> stage;
+        if (mode != "160000" || expectedHead.empty() || stage != "0") {
+            continue;
+        }
+
+        const auto relativePath = std::filesystem::path(record.substr(separator + 1));
+        const auto submodulePath = (repoPath / relativePath).lexically_normal();
+        if (relativePath.empty() || relativePath.is_absolute() || !PathIsWithin(submodulePath, repoPath) || SamePath(submodulePath, repoPath)) {
+            message = "unsafe submodule path in git index: " + relativePath.generic_string();
+            return false;
+        }
+
+        std::error_code markerError;
+        if (!std::filesystem::exists(submodulePath / ".git", markerError)) {
+            if (markerError) {
+                message = "failed to inspect submodule marker: " + relativePath.generic_string();
+                return false;
+            }
+            continue;
+        }
+        foundInitializedSubmodule = true;
+
+        const auto actualHead = GitCapture(submodulePath, {"rev-parse", "HEAD"});
+        if (actualHead.exitCode != 0 || Trim(actualHead.stdoutStr) != expectedHead) {
+            message = "initialized submodule HEAD does not match gitlink: " + relativePath.generic_string();
+            return false;
+        }
+        const auto status = GitCapture(submodulePath, {
+            "status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching", "--ignore-submodules=none"});
+        if (status.exitCode != 0) {
+            message = "failed to inspect initialized submodule status: " + relativePath.generic_string() + ": " + CombinedGitError(status);
+            return false;
+        }
+        if (!Trim(status.stdoutStr).empty()) {
+            message = "initialized submodule has tracked, untracked, ignored, or nested changes: " + relativePath.generic_string();
+            return false;
+        }
+        if (!VerifyInitializedSubmodulesAreClean(submodulePath, foundInitializedSubmodule, message)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool RemoveSemanticallyCleanWorktree(const std::filesystem::path& repoPath,
                                      const std::filesystem::path& worktreePath,
-                                     bool& usedFilterEquivalentForce,
+                                     std::string& normalizedRemovalMode,
                                      std::string& message) {
-    usedFilterEquivalentForce = false;
+    normalizedRemovalMode.clear();
     std::string cleanMessage;
     if (!WorktreeIsClean(worktreePath, cleanMessage)) {
         message = "semantic clean recheck failed: " + cleanMessage;
@@ -3223,9 +3290,38 @@ bool RemoveSemanticallyCleanWorktree(const std::filesystem::path& repoPath,
         return true;
     }
 
+    const auto removeError = CombinedGitError(remove);
+    if (ToLower(removeError).find("working trees containing submodules cannot be moved or removed") != std::string::npos) {
+        bool foundInitializedSubmodule = false;
+        if (!VerifyInitializedSubmodulesAreClean(worktreePath, foundInitializedSubmodule, message)) {
+            return false;
+        }
+        if (!foundInitializedSubmodule) {
+            message = removeError;
+            return false;
+        }
+        const auto deinit = GitCapture(worktreePath, {"submodule", "deinit", "--all"});
+        if (deinit.exitCode != 0) {
+            message = "failed to safely deinitialize clean submodules: " + CombinedGitError(deinit);
+            return false;
+        }
+        cleanMessage.clear();
+        if (!WorktreeIsClean(worktreePath, cleanMessage)) {
+            message = "semantic clean recheck failed after submodule deinit: " + cleanMessage;
+            return false;
+        }
+        const auto retry = GitCapture(repoPath, {"worktree", "remove", "--force", worktreePath.string()});
+        if (retry.exitCode != 0) {
+            message = "verified-clean submodule worktree removal failed after deinit: " + CombinedGitError(retry);
+            return false;
+        }
+        normalizedRemovalMode = "verified-clean-submodule-force";
+        return true;
+    }
+
     const auto rawStatus = GitCapture(worktreePath, {"status", "--porcelain=v1", "--untracked-files=all"});
     if (rawStatus.exitCode != 0 || Trim(rawStatus.stdoutStr).empty()) {
-        message = CombinedGitError(remove);
+        message = removeError;
         return false;
     }
 
@@ -3240,7 +3336,7 @@ bool RemoveSemanticallyCleanWorktree(const std::filesystem::path& repoPath,
         message = CombinedGitError(forced);
         return false;
     }
-    usedFilterEquivalentForce = true;
+    normalizedRemovalMode = "filter-equivalent-force";
     return true;
 }
 
@@ -5278,20 +5374,20 @@ int RunBranchRetire(const std::filesystem::path& root,
                     if (SamePath(worktree.absolutePath, repoPath) || harvestedWorktrees.contains(PathKey(worktree.absolutePath))) {
                         continue;
                     }
-                    bool usedFilterEquivalentForce = false;
+                    std::string normalizedRemovalMode;
                     std::string removeError;
                     if (!RemoveSemanticallyCleanWorktree(
-                            repoPath, worktree.absolutePath, usedFilterEquivalentForce, removeError)) {
+                            repoPath, worktree.absolutePath, normalizedRemovalMode, removeError)) {
                         AppendBranchBlocked(result, repoId, branch, {"WORKTREE_REMOVE_FAILED"}, removeError);
                         worktreesSafe = false;
                         break;
                     }
-                    if (usedFilterEquivalentForce) {
+                    if (!normalizedRemovalMode.empty()) {
                         result["normalizedWorktreeRemovals"].push_back({
                             {"repo", repoId},
                             {"branch", branch},
                             {"worktree", worktree.location},
-                            {"mode", "filter-equivalent-force"},
+                            {"mode", normalizedRemovalMode},
                         });
                     }
                 }

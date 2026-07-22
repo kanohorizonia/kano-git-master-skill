@@ -1177,6 +1177,42 @@ TEST_CASE("converge branches retire removes merged branch and clean git worktree
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge branches retire safely deinitializes clean submodules before removing a worktree", "[tdd][functional][feature:converge][converge][branches][retire][worktree][submodule][KG-BUG-0076]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("converge-branches-retire-clean-submodule-worktree");
+    const std::string featureBranch = "feature/retire-clean-submodule-worktree";
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRootRepo), "checkout submodule worktree feature");
+    WriteTextFile(ctx.cloneRootRepo / "retire-submodule-worktree.txt", "integrated feature\n");
+    RequireSuccess(RunGit({"add", "retire-submodule-worktree.txt"}, ctx.cloneRootRepo), "add submodule worktree feature");
+    RequireSuccess(RunGit({"commit", "-m", "add submodule worktree feature"}, ctx.cloneRootRepo), "commit submodule worktree feature");
+    RequireSuccess(RunGit({"push", "-u", "origin", featureBranch}, ctx.cloneRootRepo), "push submodule worktree feature");
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRootRepo), "return to target before submodule worktree retire");
+    RequireSuccess(RunGit({"merge", "--ff-only", featureBranch}, ctx.cloneRootRepo), "merge submodule worktree feature");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.cloneRootRepo), "push target with submodule worktree feature");
+
+    const auto worktreePath = (ctx.sandbox.root / "retire-clean-submodule-worktree").lexically_normal();
+    RequireSuccess(RunGit({"worktree", "add", worktreePath.string(), featureBranch}, ctx.cloneRootRepo), "add submodule feature worktree");
+    RequireSuccess(RunGit({"-c", "protocol.file.allow=always", "submodule", "update", "--init", "--recursive"}, worktreePath), "initialize linked worktree submodule");
+    REQUIRE(std::filesystem::exists(worktreePath / ctx.submodulePath / ".git"));
+    REQUIRE(GitStatusShort(worktreePath).empty());
+
+    const auto result = RunKog({
+        "converge", "branches", "retire", "--target", ctx.branch,
+        "--branch", featureBranch, "--remove-worktrees", "--confirm", "--json", "--jobs", "1", "--no-recursive"},
+        ctx.cloneRootRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContains(result.stdoutText, "\"mode\": \"verified-clean-submodule-force\"");
+    RequireContains(result.stdoutText, "\"action\": \"delete-local\"");
+    REQUIRE_FALSE(std::filesystem::exists(worktreePath));
+    REQUIRE(RunGit({"show-ref", "--verify", "--quiet", "refs/heads/" + featureBranch}, ctx.cloneRootRepo).exitCode != 0);
+    REQUIRE(std::filesystem::exists(ctx.cloneChildRepo / ".git"));
+    REQUIRE(GitStatusShort(ctx.cloneRootRepo).empty());
+    REQUIRE(GitStatusShort(ctx.cloneChildRepo).empty());
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("converge branches retire hands an integrated primary worktree back to target", "[functional][converge][branches][retire][worktree][KG-BUG-0059]") {
     const auto ctx = CreateRemoteWithClone("converge-branches-retire-primary-handoff");
     const std::string featureBranch = "feature/retire-primary-handoff";
