@@ -2,6 +2,7 @@ add_library(kano_git_cmd_repo_sync STATIC)
 
 target_sources(kano_git_cmd_repo_sync
   PRIVATE
+    private/auth_cli.cpp
     private/converge_cmd.cpp
     private/foreach_cmd.cpp
     private/push_cmd.cpp

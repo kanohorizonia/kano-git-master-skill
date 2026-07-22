@@ -2,6 +2,7 @@
 // Uses native Git synchronization and kog-managed workflows
 
 #include <CLI/CLI.hpp>
+#include "auth_cmd.hpp"
 #include "discovery.hpp"
 #include "repo_health.hpp"
 #include "shell_executor.hpp"
@@ -3831,29 +3832,18 @@ auto RunNativeUpstreamForcePush(
 
 } // namespace
 
-void RegisterAuth(CLI::App& InApp) {
-    auto* cmd = InApp.add_subcommand("auth", "Credential manager diagnostics and non-interactive auth probes");
-
-    auto* doctor = cmd->add_subcommand("doctor", "Inspect Git Credential Manager and selected remote auth configuration");
-    auto* doctorRepo = new std::string{"."};
-    auto* doctorRemote = new std::string{};
-    auto* doctorUrl = new std::string{};
-    auto* doctorSelectedRemotes = new bool{false};
-    auto* doctorAllLocalRemotes = new bool{false};
-    auto* doctorNoRecursive = new bool{false};
-    auto* doctorNoCache = new bool{false};
-    auto* doctorRefreshCache = new bool{false};
-    auto* doctorFix = new bool{false};
-    doctor->add_option("--repo", *doctorRepo, "Repository root used for config inspection and target discovery");
-    doctor->add_option("--remote", *doctorRemote, "Inspect a single configured remote in the current repository");
-    doctor->add_option("--url", *doctorUrl, "Inspect an explicit remote URL without storing credentials");
-    doctor->add_flag("--selected-remotes", *doctorSelectedRemotes, "Inspect the sync-selected remote for each discovered repo");
-    doctor->add_flag("--all-local-remotes", *doctorAllLocalRemotes, "Inspect every configured remote in the current repository");
-    doctor->add_flag("--no-recursive,-N", *doctorNoRecursive, "When used with --selected-remotes, inspect only the current repository");
-    doctor->add_flag("--native-no-cache", *doctorNoCache, "Disable native discovery cache for --selected-remotes");
-    doctor->add_flag("--native-refresh-cache", *doctorRefreshCache, "Force native discovery cache refresh for --selected-remotes");
-    doctor->add_flag("--fix", *doctorFix, "Remove stale credential.helper=manager-core entries and configure modern Git Credential Manager if needed");
-    doctor->callback([=]() {
+auto MakeAuthDoctorCommandCallback(const std::shared_ptr<AuthCommandOptions>& InOptions)
+    -> std::function<void()> {
+    return [optionsOwner = InOptions]() {
+        auto* doctorRepo = &optionsOwner->doctor.repo;
+        auto* doctorRemote = &optionsOwner->doctor.remote;
+        auto* doctorUrl = &optionsOwner->doctor.url;
+        auto* doctorSelectedRemotes = &optionsOwner->doctor.selectedRemotes;
+        auto* doctorAllLocalRemotes = &optionsOwner->doctor.allLocalRemotes;
+        auto* doctorNoRecursive = &optionsOwner->doctor.noRecursive;
+        auto* doctorNoCache = &optionsOwner->doctor.noCache;
+        auto* doctorRefreshCache = &optionsOwner->doctor.refreshCache;
+        auto* doctorFix = &optionsOwner->doctor.fix;
         const int selectorCount = (!doctorRemote->empty() ? 1 : 0) + (!doctorUrl->empty() ? 1 : 0) + (*doctorSelectedRemotes ? 1 : 0) + (*doctorAllLocalRemotes ? 1 : 0);
         if (selectorCount > 1) {
             std::cerr << "Error: choose at most one of --remote, --url, --selected-remotes, or --all-local-remotes\n";
@@ -4021,26 +4011,20 @@ void RegisterAuth(CLI::App& InApp) {
         std::cout << kano::terminal::PreflightHeader("Auth Doctor Complete") << "\n";
         std::cout << "failures=" << failures << " warnings=" << warnings << " targets=" << targets.size() << "\n";
         std::exit(failures == 0 ? 0 : 1);
-    });
+    };
+}
 
-    auto* test = cmd->add_subcommand("test", "Run a non-interactive git ls-remote auth probe");
-    auto* testRepo = new std::string{"."};
-    auto* testRemote = new std::string{};
-    auto* testUrl = new std::string{};
-    auto* testSelectedRemotes = new bool{false};
-    auto* testAllLocalRemotes = new bool{false};
-    auto* testNoRecursive = new bool{false};
-    auto* testNoCache = new bool{false};
-    auto* testRefreshCache = new bool{false};
-    test->add_option("--repo", *testRepo, "Repository root used for target discovery and ls-remote working directory");
-    test->add_option("--remote", *testRemote, "Probe one configured remote in the current repository");
-    test->add_option("--url", *testUrl, "Probe an explicit remote URL without storing credentials");
-    test->add_flag("--selected-remotes", *testSelectedRemotes, "Probe the sync-selected remote for each discovered repo");
-    test->add_flag("--all-local-remotes", *testAllLocalRemotes, "Probe every configured remote in the current repository");
-    test->add_flag("--no-recursive,-N", *testNoRecursive, "When used with --selected-remotes, probe only the current repository");
-    test->add_flag("--native-no-cache", *testNoCache, "Disable native discovery cache for --selected-remotes");
-    test->add_flag("--native-refresh-cache", *testRefreshCache, "Force native discovery cache refresh for --selected-remotes");
-    test->callback([=]() {
+auto MakeAuthTestCommandCallback(const std::shared_ptr<AuthCommandOptions>& InOptions)
+    -> std::function<void()> {
+    return [optionsOwner = InOptions]() {
+        auto* testRepo = &optionsOwner->test.repo;
+        auto* testRemote = &optionsOwner->test.remote;
+        auto* testUrl = &optionsOwner->test.url;
+        auto* testSelectedRemotes = &optionsOwner->test.selectedRemotes;
+        auto* testAllLocalRemotes = &optionsOwner->test.allLocalRemotes;
+        auto* testNoRecursive = &optionsOwner->test.noRecursive;
+        auto* testNoCache = &optionsOwner->test.noCache;
+        auto* testRefreshCache = &optionsOwner->test.refreshCache;
         const int selectorCount = (!testRemote->empty() ? 1 : 0) + (!testUrl->empty() ? 1 : 0) + (*testSelectedRemotes ? 1 : 0) + (*testAllLocalRemotes ? 1 : 0);
         if (selectorCount > 1) {
             std::cerr << "Error: choose at most one of --remote, --url, --selected-remotes, or --all-local-remotes\n";
@@ -4083,7 +4067,7 @@ void RegisterAuth(CLI::App& InApp) {
         std::cout << kano::terminal::PreflightHeader("Auth Test Complete") << "\n";
         std::cout << "passed=" << passed << " skipped=" << skipped << " failed=" << failed << "\n";
         std::exit(failed == 0 ? 0 : 1);
-    });
+    };
 }
 
 auto MakeSyncCommandOptions() -> std::shared_ptr<SyncCommandOptions> {

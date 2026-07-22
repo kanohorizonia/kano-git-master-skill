@@ -1,4 +1,5 @@
 add_executable(kano_git_cli_tests
+  functional/auth_module_boundary_test.cpp
   functional/functional_test_main.cpp
   functional/bdd_ai_provider_bootstrap_test.cpp
   functional/bdd_scenario_recorder_test.cpp
