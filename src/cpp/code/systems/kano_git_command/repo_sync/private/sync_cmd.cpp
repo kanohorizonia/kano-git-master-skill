@@ -5,6 +5,7 @@
 #include "discovery.hpp"
 #include "repo_health.hpp"
 #include "shell_executor.hpp"
+#include "sync_cmd.hpp"
 #include "../public/sync_output_sanitizer.hpp"
 #include "terminal_color.hpp"
 
@@ -4085,35 +4086,30 @@ void RegisterAuth(CLI::App& InApp) {
     });
 }
 
-void RegisterSync(CLI::App& InApp) {
-    auto* cmd = InApp.add_subcommand(
-        "sync",
-        "Pipeline sync stage (origin-latest by default); registered nested-repo mutations run child-first");
+auto MakeSyncCommandOptions() -> std::shared_ptr<SyncCommandOptions> {
+    auto options = std::make_shared<SyncCommandOptions>();
+    const auto defaultJobs = DetectDefaultSyncJobs();
+    options->originLatest.jobs = defaultJobs;
+    options->dev.jobs = defaultJobs;
+    options->defaultSync.jobs = defaultJobs;
+    return options;
+}
 
-    // --- sync pre-commit ---
-    auto* pre_commit = cmd->add_subcommand("pre-commit", "Repair detached HEAD before commit workflow");
-    pre_commit->allow_extras();
-    auto* preCommitRepo = new std::string{"."};
-    auto* preCommitRemote = new std::string{"origin"};
-    auto* preCommitDryRun = new bool{false};
-    auto* preCommitMaxDepth = new int{0};
-    auto* preCommitNoCache = new bool{false};
-    auto* preCommitRefreshCache = new bool{false};
-    auto* preCommitNoRecursive = new bool{false};
-    auto* preCommitBranchMode = new std::string{"default"};
-    auto* preCommitProfile = new bool{false};
-
-    pre_commit->add_option("--repo", *preCommitRepo, "Target repository root path");
-    pre_commit->add_option("--remote", *preCommitRemote, "Preferred remote name");
-    pre_commit->add_flag("--dry-run", *preCommitDryRun, "Preview detached-head repair actions");
-    pre_commit->add_option("--native-max-depth", *preCommitMaxDepth, "Native discovery max depth (0 = unlimited)");
-    pre_commit->add_flag("--native-no-cache", *preCommitNoCache, "Disable native discovery cache");
-    pre_commit->add_flag("--native-refresh-cache", *preCommitRefreshCache, "Force native cache refresh");
-    pre_commit->add_flag("--no-recursive,-N", *preCommitNoRecursive, "Repair only current repository");
-    pre_commit->add_option("--branch-mode", *preCommitBranchMode, "Detached-branch inference mode: default|stable-dev");
-    pre_commit->add_flag("--profile", *preCommitProfile, "Print native pre-commit timing/profile summary");
-
-    pre_commit->callback([=]() {
+auto MakeSyncPreCommitCommandCallback(CLI::App& InCommand,
+                                      const std::shared_ptr<SyncCommandOptions>& InOptions)
+    -> std::function<void()> {
+    auto* command = &InCommand;
+    return [=, optionsOwner = InOptions]() {
+        auto* pre_commit = command;
+        auto* preCommitRepo = &optionsOwner->preCommit.repo;
+        auto* preCommitRemote = &optionsOwner->preCommit.remote;
+        auto* preCommitDryRun = &optionsOwner->preCommit.dryRun;
+        auto* preCommitMaxDepth = &optionsOwner->preCommit.maxDepth;
+        auto* preCommitNoCache = &optionsOwner->preCommit.noCache;
+        auto* preCommitRefreshCache = &optionsOwner->preCommit.refreshCache;
+        auto* preCommitNoRecursive = &optionsOwner->preCommit.noRecursive;
+        auto* preCommitBranchMode = &optionsOwner->preCommit.branchMode;
+        auto* preCommitProfile = &optionsOwner->preCommit.profile;
         auto extras = pre_commit->remaining();
         if (!extras.empty()) {
             std::cerr << "Error: unsupported extra arguments in native sync pre-commit mode:";
@@ -4152,42 +4148,29 @@ void RegisterSync(CLI::App& InApp) {
             std::cout << "total_ms: " << totalMs << "\n";
         }
         std::exit(code);
-    });
+    };
+}
 
-    // --- sync origin-latest ---
-    auto* origin_latest = cmd->add_subcommand("origin-latest", "Sync to origin default branch latest");
-    origin_latest->allow_extras();
-    auto* originLatestShell = new bool{false};
-    auto* originLatestRepo = new std::string{"."};
-    auto* originLatestRemote = new std::string{"origin"};
-    auto* originLatestDryRun = new bool{false};
-    auto* originLatestMaxDepth = new int{0};
-    auto* originLatestNoCache = new bool{false};
-    auto* originLatestRefreshCache = new bool{false};
-    auto* originLatestNoRecursive = new bool{false};
-    auto* originLatestNoAutoStash = new bool{false};
-    auto* originLatestNoAuthPreflight = new bool{false};
-    auto* originLatestCleanupStaleLocks = new bool{false};
-    auto* originLatestJobs = new int{DetectDefaultSyncJobs()};
-    auto* originLatestExecutionPolicy = new std::string{"parallel"};
-    auto* originLatestProfile = new bool{false};
-
-    origin_latest->add_flag("--shell", *originLatestShell, "Deprecated compatibility flag (shell path removed)");
-    origin_latest->add_option("--repo", *originLatestRepo, "Target repository root path");
-    origin_latest->add_option("--remote", *originLatestRemote, "Preferred remote name");
-    origin_latest->add_flag("--dry-run", *originLatestDryRun, "Preview sync actions without modifying repositories");
-    origin_latest->add_option("--native-max-depth", *originLatestMaxDepth, "Native discovery max depth (0 = unlimited)");
-    origin_latest->add_flag("--native-no-cache", *originLatestNoCache, "Disable native discovery cache");
-    origin_latest->add_flag("--native-refresh-cache", *originLatestRefreshCache, "Force native cache refresh");
-    origin_latest->add_flag("--no-recursive,-N", *originLatestNoRecursive, "Sync only current repository");
-    origin_latest->add_flag("--no-auto-stash", *originLatestNoAutoStash, "Do not auto-stash local changes before sync");
-    origin_latest->add_flag("--no-auth-preflight", *originLatestNoAuthPreflight, "Skip Git Credential Manager-focused non-interactive auth preflight before sync");
-    origin_latest->add_flag("--cleanup-stale-locks", *originLatestCleanupStaleLocks, "When auto-stash fails on index.lock and no git/kano-git process is active, remove the stale lock and retry once");
-    origin_latest->add_option("--jobs", *originLatestJobs, "Number of parallel repo workers for recursive sync (default: CPU cores)");
-    origin_latest->add_option("--execution-policy", *originLatestExecutionPolicy, "Recursive sync execution policy: serial|parallel (default: parallel)");
-    origin_latest->add_flag("--profile", *originLatestProfile, "Print native sync timing/profile summary");
-
-    origin_latest->callback([=]() {
+auto MakeSyncOriginLatestCommandCallback(CLI::App& InCommand,
+                                         const std::shared_ptr<SyncCommandOptions>& InOptions)
+    -> std::function<void()> {
+    auto* command = &InCommand;
+    return [=, optionsOwner = InOptions]() {
+        auto* origin_latest = command;
+        auto* originLatestShell = &optionsOwner->originLatest.shell;
+        auto* originLatestRepo = &optionsOwner->originLatest.repo;
+        auto* originLatestRemote = &optionsOwner->originLatest.remote;
+        auto* originLatestDryRun = &optionsOwner->originLatest.dryRun;
+        auto* originLatestMaxDepth = &optionsOwner->originLatest.maxDepth;
+        auto* originLatestNoCache = &optionsOwner->originLatest.noCache;
+        auto* originLatestRefreshCache = &optionsOwner->originLatest.refreshCache;
+        auto* originLatestNoRecursive = &optionsOwner->originLatest.noRecursive;
+        auto* originLatestNoAutoStash = &optionsOwner->originLatest.noAutoStash;
+        auto* originLatestNoAuthPreflight = &optionsOwner->originLatest.noAuthPreflight;
+        auto* originLatestCleanupStaleLocks = &optionsOwner->originLatest.cleanupStaleLocks;
+        auto* originLatestJobs = &optionsOwner->originLatest.jobs;
+        auto* originLatestExecutionPolicy = &optionsOwner->originLatest.executionPolicy;
+        auto* originLatestProfile = &optionsOwner->originLatest.profile;
         auto extras = origin_latest->remaining();
         if (*originLatestShell) {
             std::cerr << "Error: --shell is no longer supported; sync origin-latest is fully native now\n";
@@ -4239,18 +4222,18 @@ void RegisterSync(CLI::App& InApp) {
             std::cout << "total_ms: " << totalMs << "\n";
         }
         std::exit(code);
-    });
+    };
+}
 
-    // --- sync upstream-force-push ---
-    auto* upstream_fp = cmd->add_subcommand("upstream-force-push", "Sync from upstream, force-push to origin");
-    upstream_fp->allow_extras();
-    auto* upstreamRepo = new std::string{"."};
-    auto* upstreamDryRun = new bool{false};
-    auto* upstreamProfile = new bool{false};
-    upstream_fp->add_option("--repo", *upstreamRepo, "Target repository path");
-    upstream_fp->add_flag("--dry-run", *upstreamDryRun, "Preview force-push sync actions");
-    upstream_fp->add_flag("--profile", *upstreamProfile, "Print native sync timing/profile summary");
-    upstream_fp->callback([=]() {
+auto MakeSyncUpstreamForcePushCommandCallback(CLI::App& InCommand,
+                                              const std::shared_ptr<SyncCommandOptions>& InOptions)
+    -> std::function<void()> {
+    auto* command = &InCommand;
+    return [=, optionsOwner = InOptions]() {
+        auto* upstream_fp = command;
+        auto* upstreamRepo = &optionsOwner->upstreamForcePush.repo;
+        auto* upstreamDryRun = &optionsOwner->upstreamForcePush.dryRun;
+        auto* upstreamProfile = &optionsOwner->upstreamForcePush.profile;
         auto extras = upstream_fp->remaining();
         if (!extras.empty()) {
             std::cerr << "Error: unsupported extra arguments in native sync upstream-force-push mode:";
@@ -4273,30 +4256,20 @@ void RegisterSync(CLI::App& InApp) {
             std::cout << "total_ms: " << totalMs << "\n";
         }
         std::exit(code);
-    });
+    };
+}
 
-    // --- sync stable-dev ---
-    auto* stable_dev = cmd->add_subcommand(
-        "stable-dev",
-        "Stable-dev sync: fetch upstream tags, rebase current stable branch onto latest stable tag, and retarget to branch_<latestTag> when needed");
-    stable_dev->allow_extras();
-    auto* stableDevWorkspace = new bool{false};
-    auto* stableDevReportFormat = new std::string{"compact"};
-    auto* stableDevRepo = new std::string{"."};
-    auto* stableDevDryRun = new bool{false};
-    auto* stableDevProfile = new bool{false};
-    stable_dev->add_flag(
-        "--workspace",
-        *stableDevWorkspace,
-        "Run stable-dev across src/* submodules with upstream remotes; may leave repos in rebase conflict state until resolved");
-    stable_dev->add_option("--format", *stableDevReportFormat, "Workspace report format: compact|table|tsv|json|markdown");
-    stable_dev->add_option("--repo", *stableDevRepo, "Single-repo mode target path");
-    stable_dev->add_flag(
-        "--dry-run",
-        *stableDevDryRun,
-        "Preview fetch/tag/rebase/branch-retarget actions without modifying repos");
-    stable_dev->add_flag("--profile", *stableDevProfile, "Print native sync timing/profile summary");
-    stable_dev->callback([=]() {
+auto MakeSyncStableDevCommandCallback(CLI::App& InCommand,
+                                      const std::shared_ptr<SyncCommandOptions>& InOptions)
+    -> std::function<void()> {
+    auto* command = &InCommand;
+    return [=, optionsOwner = InOptions]() {
+        auto* stable_dev = command;
+        auto* stableDevWorkspace = &optionsOwner->stableDev.workspace;
+        auto* stableDevReportFormat = &optionsOwner->stableDev.reportFormat;
+        auto* stableDevRepo = &optionsOwner->stableDev.repo;
+        auto* stableDevDryRun = &optionsOwner->stableDev.dryRun;
+        auto* stableDevProfile = &optionsOwner->stableDev.profile;
         const auto start = std::chrono::steady_clock::now();
         auto extras = stable_dev->remaining();
         std::vector<std::string> args(extras.begin(), extras.end());
@@ -4375,34 +4348,26 @@ void RegisterSync(CLI::App& InApp) {
             std::cout << "total_ms: " << totalMs << "\n";
         }
         std::exit(code == 0 ? 0 : 1);
-    });
+    };
+}
 
-    // --- sync dev ---
-    auto* dev = cmd->add_subcommand("dev", "Dev sync (upstream default branch tip)");
-    dev->allow_extras();
-    auto* devRepo = new std::string{"."};
-    auto* devDryRun = new bool{false};
-    auto* devMaxDepth = new int{0};
-    auto* devNoCache = new bool{false};
-    auto* devRefreshCache = new bool{false};
-    auto* devNoRecursive = new bool{false};
-    auto* devNoAuthPreflight = new bool{false};
-    auto* devCleanupStaleLocks = new bool{false};
-    auto* devJobs = new int{DetectDefaultSyncJobs()};
-    auto* devExecutionPolicy = new std::string{"parallel"};
-    auto* devProfile = new bool{false};
-    dev->add_option("--repo", *devRepo, "Target repository root path");
-    dev->add_flag("--dry-run", *devDryRun, "Preview sync actions without modifying repositories");
-    dev->add_option("--native-max-depth", *devMaxDepth, "Native discovery max depth (0 = unlimited)");
-    dev->add_flag("--native-no-cache", *devNoCache, "Disable native discovery cache");
-    dev->add_flag("--native-refresh-cache", *devRefreshCache, "Force native cache refresh");
-    dev->add_flag("--no-recursive,-N", *devNoRecursive, "Sync only current repository");
-    dev->add_flag("--no-auth-preflight", *devNoAuthPreflight, "Skip Git Credential Manager-focused non-interactive auth preflight before sync");
-    dev->add_flag("--cleanup-stale-locks", *devCleanupStaleLocks, "When auto-stash fails on index.lock and no git/kano-git process is active, remove the stale lock and retry once");
-    dev->add_option("--jobs", *devJobs, "Number of parallel repo workers for recursive sync (default: CPU cores)");
-    dev->add_option("--execution-policy", *devExecutionPolicy, "Recursive sync execution policy: serial|parallel (default: parallel)");
-    dev->add_flag("--profile", *devProfile, "Print native sync timing/profile summary");
-    dev->callback([=]() {
+auto MakeSyncDevCommandCallback(CLI::App& InCommand,
+                                const std::shared_ptr<SyncCommandOptions>& InOptions)
+    -> std::function<void()> {
+    auto* command = &InCommand;
+    return [=, optionsOwner = InOptions]() {
+        auto* dev = command;
+        auto* devRepo = &optionsOwner->dev.repo;
+        auto* devDryRun = &optionsOwner->dev.dryRun;
+        auto* devMaxDepth = &optionsOwner->dev.maxDepth;
+        auto* devNoCache = &optionsOwner->dev.noCache;
+        auto* devRefreshCache = &optionsOwner->dev.refreshCache;
+        auto* devNoRecursive = &optionsOwner->dev.noRecursive;
+        auto* devNoAuthPreflight = &optionsOwner->dev.noAuthPreflight;
+        auto* devCleanupStaleLocks = &optionsOwner->dev.cleanupStaleLocks;
+        auto* devJobs = &optionsOwner->dev.jobs;
+        auto* devExecutionPolicy = &optionsOwner->dev.executionPolicy;
+        auto* devProfile = &optionsOwner->dev.profile;
         auto extras = dev->remaining();
         if (!extras.empty()) {
             std::cerr << "Error: unsupported extra arguments in native sync dev mode:";
@@ -4450,19 +4415,18 @@ void RegisterSync(CLI::App& InApp) {
             std::cout << "total_ms: " << totalMs << "\n";
         }
         std::exit(code);
-    });
+    };
+}
 
-    // --- sync launcher-update-check ---
-    auto* launcher_update = cmd->add_subcommand("launcher-update-check", "Launcher dev-mode remote update check");
-    auto* launcherRepo = new std::string{"."};
-    auto* launcherRemote = new std::string{"upstream"};
-    auto* launcherAutoSync = new bool{false};
-    auto* launcherNonInteractive = new bool{false};
-    launcher_update->add_option("--repo", *launcherRepo, "Launcher repository root path");
-    launcher_update->add_option("--remote", *launcherRemote, "Preferred remote name (fallback: origin/upstream)");
-    launcher_update->add_flag("--auto-sync", *launcherAutoSync, "Auto-run sync without prompt when updates exist");
-    launcher_update->add_flag("--non-interactive", *launcherNonInteractive, "Disable prompt and skip auto-sync unless --auto-sync");
-    launcher_update->callback([=]() {
+auto MakeSyncLauncherUpdateCheckCommandCallback(CLI::App& InCommand,
+                                                const std::shared_ptr<SyncCommandOptions>& InOptions)
+    -> std::function<void()> {
+    (void)InCommand;
+    return [=, optionsOwner = InOptions]() {
+        auto* launcherRepo = &optionsOwner->launcherUpdateCheck.repo;
+        auto* launcherRemote = &optionsOwner->launcherUpdateCheck.remote;
+        auto* launcherAutoSync = &optionsOwner->launcherUpdateCheck.autoSync;
+        auto* launcherNonInteractive = &optionsOwner->launcherUpdateCheck.nonInteractive;
         const auto repoRoot = std::filesystem::weakly_canonical(std::filesystem::path(*launcherRepo));
         if (GitCapture(repoRoot, {"rev-parse", "--is-inside-work-tree"}).exitCode != 0) {
             std::exit(0);
@@ -4532,23 +4496,21 @@ void RegisterSync(CLI::App& InApp) {
             1,
             SyncExecutionPolicy::Serial);
         std::exit(code);
-    });
+    };
+}
 
-    // --- sync (default: auto-detect) ---
-    auto* defaultNoRecursive = new bool{false};
-    auto* defaultNoAuthPreflight = new bool{false};
-    auto* defaultCleanupStaleLocks = new bool{false};
-    auto* defaultJobs = new int{DetectDefaultSyncJobs()};
-    auto* defaultExecutionPolicy = new std::string{"parallel"};
-    auto* defaultProfile = new bool{false};
-    cmd->add_flag("--no-recursive,-N", *defaultNoRecursive, "Default sync: only current repository");
-    cmd->add_flag("--no-auth-preflight", *defaultNoAuthPreflight, "Default sync: skip Git Credential Manager-focused non-interactive auth preflight");
-    cmd->add_flag("--cleanup-stale-locks", *defaultCleanupStaleLocks, "Default sync: remove stale index.lock automatically when no git/kano-git process is active");
-    cmd->add_option("--jobs", *defaultJobs, "Default sync: number of parallel repo workers for recursive sync (default: CPU cores)");
-    cmd->add_option("--execution-policy", *defaultExecutionPolicy, "Default sync execution policy: serial|parallel (default: parallel)");
-    cmd->add_flag("--profile", *defaultProfile, "Default sync: print native timing/profile summary");
-    cmd->allow_extras();
-    cmd->callback([=]() {
+auto MakeDefaultSyncCommandCallback(CLI::App& InCommand,
+                                    const std::shared_ptr<SyncCommandOptions>& InOptions)
+    -> std::function<void()> {
+    auto* command = &InCommand;
+    return [=, optionsOwner = InOptions]() {
+        auto* cmd = command;
+        auto* defaultNoRecursive = &optionsOwner->defaultSync.noRecursive;
+        auto* defaultNoAuthPreflight = &optionsOwner->defaultSync.noAuthPreflight;
+        auto* defaultCleanupStaleLocks = &optionsOwner->defaultSync.cleanupStaleLocks;
+        auto* defaultJobs = &optionsOwner->defaultSync.jobs;
+        auto* defaultExecutionPolicy = &optionsOwner->defaultSync.executionPolicy;
+        auto* defaultProfile = &optionsOwner->defaultSync.profile;
         if (cmd->get_subcommands().empty()) {
             auto extras = cmd->remaining();
             if (!extras.empty()) {
@@ -4594,7 +4556,7 @@ void RegisterSync(CLI::App& InApp) {
             }
             std::exit(code);
         }
-    });
+    };
 }
 
 auto RunSyncPreCommitNative(const std::filesystem::path& InRepoRoot,

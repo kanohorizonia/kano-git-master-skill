@@ -10,6 +10,7 @@ target_sources(kano_git_cmd_repo_sync
     private/stash_cmd.cpp
     private/submodule_cmd.cpp
     private/subtree_cmd.cpp
+    private/sync_cli.cpp
     private/sync_cmd.cpp
     private/update_cmd.cpp
     private/worktree_cmd.cpp
