@@ -3300,19 +3300,9 @@ bool RemoveSemanticallyCleanWorktree(const std::filesystem::path& repoPath,
             message = removeError;
             return false;
         }
-        const auto deinit = GitCapture(worktreePath, {"submodule", "deinit", "--all"});
-        if (deinit.exitCode != 0) {
-            message = "failed to safely deinitialize clean submodules: " + CombinedGitError(deinit);
-            return false;
-        }
-        cleanMessage.clear();
-        if (!WorktreeIsClean(worktreePath, cleanMessage)) {
-            message = "semantic clean recheck failed after submodule deinit: " + cleanMessage;
-            return false;
-        }
         const auto retry = GitCapture(repoPath, {"worktree", "remove", "--force", worktreePath.string()});
         if (retry.exitCode != 0) {
-            message = "verified-clean submodule worktree removal failed after deinit: " + CombinedGitError(retry);
+            message = "verified-clean submodule worktree removal failed: " + CombinedGitError(retry);
             return false;
         }
         normalizedRemovalMode = "verified-clean-submodule-force";

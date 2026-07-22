@@ -1177,8 +1177,10 @@ TEST_CASE("converge branches retire removes merged branch and clean git worktree
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
-TEST_CASE("converge branches retire safely deinitializes clean submodules before removing a worktree", "[tdd][functional][feature:converge][converge][branches][retire][worktree][submodule][KG-BUG-0076]") {
+TEST_CASE("converge branches retire preserves primary submodule configuration", "[tdd][functional][feature:converge][converge][branches][retire][worktree][submodule][KG-BUG-0076][KG-BUG-0077]") {
     const auto ctx = CreateRemoteWithSubmoduleClone("converge-branches-retire-clean-submodule-worktree");
+    const auto primarySubmoduleUrlBefore = RunGit({"config", "--get", "submodule." + ctx.submodulePath + ".url"}, ctx.cloneRootRepo);
+    RequireSuccess(primarySubmoduleUrlBefore, "read primary submodule URL before linked worktree retirement");
     const std::string featureBranch = "feature/retire-clean-submodule-worktree";
     RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRootRepo), "checkout submodule worktree feature");
     WriteTextFile(ctx.cloneRootRepo / "retire-submodule-worktree.txt", "integrated feature\n");
@@ -1206,6 +1208,9 @@ TEST_CASE("converge branches retire safely deinitializes clean submodules before
     RequireContains(result.stdoutText, "\"action\": \"delete-local\"");
     REQUIRE_FALSE(std::filesystem::exists(worktreePath));
     REQUIRE(RunGit({"show-ref", "--verify", "--quiet", "refs/heads/" + featureBranch}, ctx.cloneRootRepo).exitCode != 0);
+    const auto primarySubmoduleUrlAfter = RunGit({"config", "--get", "submodule." + ctx.submodulePath + ".url"}, ctx.cloneRootRepo);
+    RequireSuccess(primarySubmoduleUrlAfter, "read primary submodule URL after linked worktree retirement");
+    REQUIRE(primarySubmoduleUrlAfter.stdoutText == primarySubmoduleUrlBefore.stdoutText);
     REQUIRE(std::filesystem::exists(ctx.cloneChildRepo / ".git"));
     REQUIRE(GitStatusShort(ctx.cloneRootRepo).empty());
     REQUIRE(GitStatusShort(ctx.cloneChildRepo).empty());
