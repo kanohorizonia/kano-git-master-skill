@@ -2,6 +2,7 @@
 
 #include <CLI/CLI.hpp>
 #include "commit_push_cmd.hpp"
+#include "commit_push_post_sync.hpp"
 #include "command_runtime_ops.hpp"
 #include "ai_utils.hpp"
 #include "discovery.hpp"
@@ -52,84 +53,6 @@ auto ToLower(std::string InValue) -> std::string {
         return static_cast<char>(std::tolower(c));
     });
     return InValue;
-}
-
-auto TrimTrailingWindowsPathChars(std::string InValue) -> std::string {
-    while (!InValue.empty() && (InValue.back() == ' ' || InValue.back() == '.')) {
-        InValue.pop_back();
-    }
-    return InValue;
-}
-
-auto IsWindowsReservedDeviceComponent(std::string InComponent) -> bool {
-#if defined(_WIN32)
-    InComponent = TrimTrailingWindowsPathChars(ToLower(Trim(std::move(InComponent))));
-    if (InComponent.empty() || InComponent == "." || InComponent == "..") {
-        return false;
-    }
-
-    const auto colon = InComponent.find(':');
-    if (colon != std::string::npos) {
-        InComponent = InComponent.substr(0, colon);
-    }
-
-    const auto dot = InComponent.find('.');
-    const auto stem = dot == std::string::npos ? InComponent : InComponent.substr(0, dot);
-    static const std::unordered_set<std::string> reserved = {
-        "con", "prn", "aux", "nul",
-        "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
-        "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9"
-    };
-    return reserved.contains(stem);
-#else
-    (void)InComponent;
-    return false;
-#endif
-}
-
-auto PathHasWindowsReservedDeviceComponent(const std::string& InPath) -> bool {
-#if defined(_WIN32)
-    if (InPath.empty()) {
-        return false;
-    }
-
-    std::string normalized = InPath;
-    for (auto& ch : normalized) {
-        if (ch == '\\') {
-            ch = '/';
-        }
-    }
-
-    std::size_t start = 0;
-    while (start <= normalized.size()) {
-        const auto end = normalized.find('/', start);
-        auto component = end == std::string::npos ? normalized.substr(start) : normalized.substr(start, end - start);
-        if (IsWindowsReservedDeviceComponent(component)) {
-            return true;
-        }
-        if (end == std::string::npos) {
-            break;
-        }
-        start = end + 1;
-    }
-
-    return false;
-#else
-    (void)InPath;
-    return false;
-#endif
-}
-
-auto ParseNonNegativeInt(const std::string& InValue) -> int {
-    const auto trimmed = Trim(InValue);
-    if (trimmed.empty()) {
-        return 0;
-    }
-    try {
-        return std::max(0, std::stoi(trimmed));
-    } catch (const std::exception&) {
-        return 0;
-    }
 }
 
 auto NormalizeInputPathForCurrentPlatform(std::string InPath) -> std::string {
@@ -1522,80 +1445,6 @@ struct PlanSafetyScope {
     std::vector<PlanSafetyCandidateFile> files;
 };
 
-struct PostSyncRepoPathScope {
-    std::vector<std::string> include;
-    std::vector<std::string> exclude;
-};
-
-struct PostSyncPlanPathScope {
-    bool scoped = false;
-    std::unordered_map<std::string, PostSyncRepoPathScope> repos;
-};
-
-struct PostSyncChangedPathSet {
-    std::vector<std::string> paths;
-    bool hasUntracked = false;
-};
-
-auto NormalizeGitPath(std::string InPath) -> std::string {
-    std::replace(InPath.begin(), InPath.end(), '\\', '/');
-    while (InPath.rfind("./", 0) == 0) {
-        InPath = InPath.substr(2);
-    }
-    return Trim(InPath);
-}
-
-auto PathspecCoversPath(std::string InPathspec, std::string InPath) -> bool {
-    InPathspec = NormalizeGitPath(std::move(InPathspec));
-    InPath = NormalizeGitPath(std::move(InPath));
-    if (InPathspec.empty() || InPath.empty()) {
-        return false;
-    }
-    if (InPathspec == InPath) {
-        return true;
-    }
-    if (InPathspec.back() != '/') {
-        InPathspec.push_back('/');
-    }
-    return InPath.rfind(InPathspec, 0) == 0;
-}
-
-auto RepoScopeKey(const std::filesystem::path& InRepoRoot) -> std::string {
-    return InRepoRoot.lexically_normal().generic_string();
-}
-
-auto PostSyncPathAllowedByScope(const PostSyncPlanPathScope* InScope,
-                                const std::filesystem::path& InRepoRoot,
-                                const std::string& InPath) -> bool {
-    if (InScope == nullptr || !InScope->scoped) {
-        return true;
-    }
-
-    const auto repoIt = InScope->repos.find(RepoScopeKey(InRepoRoot));
-    if (repoIt == InScope->repos.end()) {
-        return false;
-    }
-
-    const auto path = NormalizeGitPath(InPath);
-    bool included = false;
-    for (const auto& include : repoIt->second.include) {
-        if (PathspecCoversPath(include, path)) {
-            included = true;
-            break;
-        }
-    }
-    if (!included) {
-        return false;
-    }
-
-    for (const auto& exclude : repoIt->second.exclude) {
-        if (PathspecCoversPath(exclude, path)) {
-            return false;
-        }
-    }
-    return true;
-}
-
 auto BuildPostSyncPlanPathScope(const std::filesystem::path& InWorkspaceRoot,
                                 const std::filesystem::path& InPlanPath) -> PostSyncPlanPathScope {
     PostSyncPlanPathScope scope;
@@ -1626,15 +1475,15 @@ auto BuildPostSyncPlanPathScope(const std::filesystem::path& InWorkspaceRoot,
                     continue;
                 }
 
-                auto& repoScope = scope.repos[RepoScopeKey(repoRoot)];
+                auto& repoScope = scope.repos[CommitPushRepoScopeKey(repoRoot)];
                 for (const auto& include : includes) {
-                    const auto normalized = NormalizeGitPath(include);
+                    const auto normalized = NormalizeCommitPushGitPath(include);
                     if (!normalized.empty()) {
                         repoScope.include.push_back(normalized);
                     }
                 }
                 for (const auto& exclude : excludes) {
-                    const auto normalized = NormalizeGitPath(exclude);
+                    const auto normalized = NormalizeCommitPushGitPath(exclude);
                     if (!normalized.empty()) {
                         repoScope.exclude.push_back(normalized);
                     }
@@ -1656,7 +1505,7 @@ auto CollectPlanPathspecFiles(const std::filesystem::path& InRepo,
                               const std::string& InIncludePathspec,
                               const std::vector<std::string>& InExcludePathspecs) -> std::vector<std::string> {
     std::set<std::string> files;
-    const auto includePathspec = NormalizeGitPath(InIncludePathspec);
+    const auto includePathspec = NormalizeCommitPushGitPath(InIncludePathspec);
     if (includePathspec.empty()) {
         return {};
     }
@@ -1670,13 +1519,13 @@ auto CollectPlanPathspecFiles(const std::filesystem::path& InRepo,
         std::istringstream iss(out.stdoutStr);
         std::string line;
         while (std::getline(iss, line)) {
-            auto path = NormalizeGitPath(line);
+            auto path = NormalizeCommitPushGitPath(line);
             if (path.empty()) {
                 continue;
             }
             bool excluded = false;
             for (const auto& exclude : InExcludePathspecs) {
-                if (PathspecCoversPath(exclude, path)) {
+                if (CommitPushPathspecCoversPath(exclude, path)) {
                     excluded = true;
                     break;
                 }
@@ -1692,7 +1541,7 @@ auto CollectPlanPathspecFiles(const std::filesystem::path& InRepo,
     if (std::filesystem::exists(abs, ec) && !std::filesystem::is_directory(abs, ec)) {
         bool excluded = false;
         for (const auto& exclude : InExcludePathspecs) {
-            if (PathspecCoversPath(exclude, includePathspec)) {
+            if (CommitPushPathspecCoversPath(exclude, includePathspec)) {
                 excluded = true;
                 break;
             }
@@ -1763,7 +1612,7 @@ auto BuildPlanFileSafetyScope(const std::filesystem::path& InWorkspaceRoot,
 }
 
 auto PlanSafetyCandidatePathExistsInHead(const PlanSafetyCandidateFile& InFile) -> bool {
-    auto path = NormalizeGitPath(InFile.path);
+    auto path = NormalizeCommitPushGitPath(InFile.path);
     if (path.empty()) {
         return false;
     }
@@ -1856,7 +1705,7 @@ auto RunPlanFileExactSafetyGates(const std::filesystem::path& InWorkspaceRoot,
         std::vector<std::string> findings;
         findings.reserve(20);
         for (const auto& file : scope.files) {
-            auto p = NormalizeGitPath(file.path);
+            auto p = NormalizeCommitPushGitPath(file.path);
             if (p.empty() || !IsProbableIgnoreArtifactPath(p)) {
                 continue;
             }
@@ -2027,82 +1876,6 @@ auto RunPipelineSafetyGatesForNonAiCommitPush(const std::filesystem::path& InWor
     }
 }
 
-auto FilterIgnoredReservedStatusLines(const std::string& InStatusPorcelain) -> std::vector<std::string> {
-    std::vector<std::string> kept;
-    std::istringstream iss(InStatusPorcelain);
-    std::string line;
-    while (std::getline(iss, line)) {
-        if (line.size() < 4) {
-            continue;
-        }
-        auto path = Trim(line.substr(3));
-        const auto renamePos = path.find(" -> ");
-        if (renamePos != std::string::npos) {
-            path = Trim(path.substr(renamePos + 4));
-        }
-        if (path.empty()) {
-            continue;
-        }
-        if (PathHasWindowsReservedDeviceComponent(path)) {
-            continue;
-        }
-        kept.push_back(line);
-    }
-    return kept;
-}
-
-auto RepoHasAnyWorkingTreeChanges(const std::filesystem::path& InRepoRoot) -> bool {
-    const auto status = shell::ExecuteCommand("git", {"status", "--porcelain"}, shell::ExecMode::Capture, InRepoRoot);
-    return status.exitCode == 0 && !FilterIgnoredReservedStatusLines(status.stdoutStr).empty();
-}
-
-auto ParsePostSyncChangedPaths(const std::string& InStatusPorcelain,
-                               const std::filesystem::path& InRepoRoot,
-                               const PostSyncPlanPathScope* InScope) -> PostSyncChangedPathSet {
-    PostSyncChangedPathSet out;
-    for (const auto& line : FilterIgnoredReservedStatusLines(InStatusPorcelain)) {
-        if (line.size() < 4) {
-            continue;
-        }
-        std::string path = Trim(line.substr(3));
-        if (path.empty()) {
-            continue;
-        }
-        const auto renamePos = path.find(" -> ");
-        if (renamePos != std::string::npos) {
-            path = Trim(path.substr(renamePos + 4));
-        }
-        if (path.empty() || !PostSyncPathAllowedByScope(InScope, InRepoRoot, path)) {
-            continue;
-        }
-        if (line.rfind("?? ", 0) == 0) {
-            out.hasUntracked = true;
-            continue;
-        }
-        out.paths.push_back(path);
-    }
-    return out;
-}
-
-auto AnyRepoHasPostSyncWorkingTreeChanges(const std::vector<std::filesystem::path>& InRepos,
-                                          const PostSyncPlanPathScope* InScope) -> bool {
-    if (InScope == nullptr || !InScope->scoped) {
-        return AnyRepoHasWorkingTreeChanges(InRepos);
-    }
-
-    for (const auto& repo : InRepos) {
-        const auto status = shell::ExecuteCommand("git", {"status", "--porcelain"}, shell::ExecMode::Capture, repo);
-        if (status.exitCode != 0) {
-            continue;
-        }
-        const auto changed = ParsePostSyncChangedPaths(status.stdoutStr, repo, InScope);
-        if (changed.hasUntracked || !changed.paths.empty()) {
-            return true;
-        }
-    }
-    return false;
-}
-
 auto PlanStageLikelyNonEmpty(const std::filesystem::path& InPlanFile, const std::string& InStageKey) -> bool {
     std::ifstream in(InPlanFile, std::ios::in | std::ios::binary);
     if (!in) {
@@ -2128,7 +1901,7 @@ auto NeedsPostSyncCommitNonPlan(const std::filesystem::path& InWorkspaceRoot,
     if (!InRepoList.empty()) {
         for (const auto& repo : InRepoList) {
             const auto repoRoot = ResolveRepoFromSpec(InWorkspaceRoot, std::filesystem::path(repo), 12, true);
-            if (RepoHasAnyWorkingTreeChanges(repoRoot)) {
+            if (RepoHasPostSyncWorkingTreeChanges(repoRoot)) {
                 return true;
             }
         }
@@ -2136,12 +1909,12 @@ auto NeedsPostSyncCommitNonPlan(const std::filesystem::path& InWorkspaceRoot,
     }
 
     if (InNoRecursive) {
-        return RepoHasAnyWorkingTreeChanges(InWorkspaceRoot);
+        return RepoHasPostSyncWorkingTreeChanges(InWorkspaceRoot);
     }
 
     const auto repos = DiscoverWorkspaceRepos(InWorkspaceRoot);
     for (const auto& repo : repos) {
-        if (RepoHasAnyWorkingTreeChanges(repo)) {
+        if (RepoHasPostSyncWorkingTreeChanges(repo)) {
             return true;
         }
     }
@@ -2164,345 +1937,6 @@ auto CollectPostSyncCandidateRepos(const std::filesystem::path& InWorkspaceRoot,
         return repos;
     }
     return DiscoverWorkspaceRepos(InWorkspaceRoot);
-}
-
-auto ParsePorcelainChangedPaths(const std::string& InStatusPorcelain) -> std::vector<std::string> {
-    std::vector<std::string> out;
-    for (const auto& line : FilterIgnoredReservedStatusLines(InStatusPorcelain)) {
-        if (line.size() < 4) {
-            continue;
-        }
-        if (line.rfind("?? ", 0) == 0) {
-            // Untracked file means it is not a pure gitlink-pointer-only update.
-            return {};
-        }
-        std::string path = Trim(line.substr(3));
-        if (path.empty()) {
-            continue;
-        }
-        const auto renamePos = path.find(" -> ");
-        if (renamePos != std::string::npos) {
-            path = Trim(path.substr(renamePos + 4));
-        }
-        if (!path.empty()) {
-            out.push_back(path);
-        }
-    }
-    return out;
-}
-
-auto IsGitlinkPathInHead(const std::filesystem::path& InRepoRoot, const std::string& InPath) -> bool {
-    const auto tree = shell::ExecuteCommand("git", {"ls-tree", "HEAD", "--", InPath}, shell::ExecMode::Capture, InRepoRoot);
-    if (tree.exitCode != 0) {
-        return false;
-    }
-    const auto out = Trim(tree.stdoutStr);
-    if (out.empty()) {
-        return false;
-    }
-    // Expected line starts with mode; gitlink mode is 160000.
-    return out.rfind("160000 ", 0) == 0;
-}
-
-auto IsRegisteredSubmodulePath(const std::filesystem::path& InRepoRoot, const std::string& InPath) -> bool {
-    const auto normalizedPath = Trim(InPath);
-    if (normalizedPath.empty()) {
-        return false;
-    }
-
-    const auto config = shell::ExecuteCommand(
-        "git",
-        {"config", "-f", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$"},
-        shell::ExecMode::Capture,
-        InRepoRoot);
-    if (config.exitCode != 0) {
-        return false;
-    }
-
-    std::istringstream iss(config.stdoutStr);
-    std::string line;
-    while (std::getline(iss, line)) {
-        line = Trim(line);
-        if (line.empty()) {
-            continue;
-        }
-        const auto sp = line.find(' ');
-        if (sp == std::string::npos || sp + 1 >= line.size()) {
-            continue;
-        }
-        const auto submodulePath = Trim(line.substr(sp + 1));
-        if (!submodulePath.empty() && submodulePath == normalizedPath) {
-            return true;
-        }
-    }
-    return false;
-}
-
-auto CollectGitlinkOnlyChangedPaths(const std::filesystem::path& InRepoRoot,
-                                    const PostSyncPlanPathScope* InScope = nullptr) -> std::vector<std::string> {
-    const auto status = shell::ExecuteCommand("git", {"status", "--porcelain"}, shell::ExecMode::Capture, InRepoRoot);
-    if (status.exitCode != 0) {
-        return {};
-    }
-    const auto& porcelain = status.stdoutStr;
-    if (Trim(porcelain).empty()) {
-        return {};
-    }
-    const auto changed = ParsePostSyncChangedPaths(porcelain, InRepoRoot, InScope);
-    if (changed.hasUntracked || changed.paths.empty()) {
-        return {};
-    }
-    for (const auto& path : changed.paths) {
-        if (!IsRegisteredSubmodulePath(InRepoRoot, path)) {
-            return {};
-        }
-        if (!IsGitlinkPathInHead(InRepoRoot, path)) {
-            return {};
-        }
-    }
-    return changed.paths;
-}
-
-auto BuildNestedRepoWaves(const std::vector<std::filesystem::path>& InRepos) -> std::vector<std::vector<std::filesystem::path>> {
-    const std::size_t count = InRepos.size();
-    if (count <= 1) {
-        return {InRepos};
-    }
-
-    std::vector<int> indegree(count, 0);
-    std::vector<std::vector<std::size_t>> reverseEdges(count);
-    for (std::size_t parent = 0; parent < count; ++parent) {
-        for (std::size_t child = 0; child < count; ++child) {
-            if (parent == child) {
-                continue;
-            }
-            if (IsParentPath(InRepos[parent], InRepos[child])) {
-                indegree[parent] += 1;
-                reverseEdges[child].push_back(parent);
-            }
-        }
-    }
-
-    std::vector<std::size_t> frontier;
-    frontier.reserve(count);
-    for (std::size_t i = 0; i < count; ++i) {
-        if (indegree[i] == 0) {
-            frontier.push_back(i);
-        }
-    }
-
-    std::vector<std::vector<std::filesystem::path>> waves;
-    std::size_t processed = 0;
-    while (!frontier.empty()) {
-        std::sort(frontier.begin(), frontier.end(), [&](const std::size_t A, const std::size_t B) {
-            return InRepos[A].lexically_normal().generic_string() < InRepos[B].lexically_normal().generic_string();
-        });
-
-        std::vector<std::filesystem::path> wave;
-        std::vector<std::size_t> next;
-        for (const auto idx : frontier) {
-            wave.push_back(InRepos[idx]);
-            processed += 1;
-            for (const auto dependent : reverseEdges[idx]) {
-                indegree[dependent] -= 1;
-                if (indegree[dependent] == 0) {
-                    next.push_back(dependent);
-                }
-            }
-        }
-        waves.push_back(std::move(wave));
-        frontier = std::move(next);
-    }
-
-    if (processed != count) {
-        return {InRepos};
-    }
-    return waves;
-}
-
-auto RepoCurrentBranch(const std::filesystem::path& InRepoRoot) -> std::string {
-    const auto branch = shell::ExecuteCommand("git", {"symbolic-ref", "--quiet", "--short", "HEAD"}, shell::ExecMode::Capture, InRepoRoot);
-    if (branch.exitCode != 0) {
-        return {};
-    }
-    return Trim(branch.stdoutStr);
-}
-
-auto RepoHasRemote(const std::filesystem::path& InRepoRoot, const std::string& InRemote) -> bool {
-    return shell::ExecuteCommand("git", {"remote", "get-url", InRemote}, shell::ExecMode::Capture, InRepoRoot).exitCode == 0;
-}
-
-auto RepoPushRemotes(const std::filesystem::path& InRepoRoot) -> std::vector<std::string> {
-    std::vector<std::string> remotes;
-    if (RepoHasRemote(InRepoRoot, "origin-ssh")) {
-        remotes.push_back("origin-ssh");
-    }
-    if (RepoHasRemote(InRepoRoot, "origin-http")) {
-        remotes.push_back("origin-http");
-    }
-    if (RepoHasRemote(InRepoRoot, "origin")) {
-        remotes.push_back("origin");
-    }
-    return remotes;
-}
-
-auto RepoHasCommitsToPushToRemote(const std::filesystem::path& InRepoRoot,
-                                  const std::string& InRemote,
-                                  const std::string& InBranch) -> bool {
-    if (InRemote.empty() || InBranch.empty()) {
-        return false;
-    }
-    const auto remoteRef = std::format("refs/remotes/{}/{}", InRemote, InBranch);
-    const auto localRef = std::format("refs/heads/{}", InBranch);
-    const auto hasRemoteRef =
-        shell::ExecuteCommand("git", {"show-ref", "--verify", "--quiet", remoteRef}, shell::ExecMode::Capture, InRepoRoot).exitCode == 0;
-    if (!hasRemoteRef) {
-        return true;
-    }
-    const auto ahead =
-        shell::ExecuteCommand("git", {"rev-list", "--count", std::format("{}..{}", remoteRef, localRef)}, shell::ExecMode::Capture, InRepoRoot);
-    if (ahead.exitCode != 0) {
-        return true;
-    }
-    return ParseNonNegativeInt(ahead.stdoutStr) > 0;
-}
-
-auto RepoHeadIsUnpublishedAcrossPushRemotes(const std::filesystem::path& InRepoRoot) -> bool {
-    const auto branch = RepoCurrentBranch(InRepoRoot);
-    if (branch.empty()) {
-        return false;
-    }
-    const auto remotes = RepoPushRemotes(InRepoRoot);
-    if (remotes.empty()) {
-        return false;
-    }
-    for (const auto& remote : remotes) {
-        if (!RepoHasCommitsToPushToRemote(InRepoRoot, remote, branch)) {
-            return false;
-        }
-    }
-    return true;
-}
-
-auto BuildGitlinkOnlyFollowupCommitMessage(const std::filesystem::path& InWorkspaceRoot,
-                                           const std::filesystem::path& InRepoRoot) -> std::string {
-    const auto relative = RelativeDisplayPath(InWorkspaceRoot, InRepoRoot).generic_string();
-    if (relative.empty() || relative == ".") {
-        return "chore(workspace): update submodule pointers";
-    }
-    return std::format("chore({}): update submodule pointers", RepoNameFromPath(InRepoRoot));
-}
-
-enum class PostSyncDeltaKind {
-    None,
-    GitlinkOnly,
-    SemanticDrift,
-};
-
-struct PostSyncDeltaSummary {
-    PostSyncDeltaKind kind = PostSyncDeltaKind::None;
-    int gitlinkOnlyRepoCount = 0;
-    std::vector<std::filesystem::path> semanticRepos;
-};
-
-auto ClassifyPostSyncDelta(const std::filesystem::path& InWorkspaceRoot,
-                            const std::vector<std::string>& InRepoList,
-                            const bool InNoRecursive,
-                            const PostSyncPlanPathScope* InScope = nullptr) -> PostSyncDeltaSummary {
-    PostSyncDeltaSummary summary;
-    const auto repos = CollectPostSyncCandidateRepos(InWorkspaceRoot, InRepoList, InNoRecursive);
-    for (const auto& repo : repos) {
-        const auto status = shell::ExecuteCommand("git", {"status", "--porcelain"}, shell::ExecMode::Capture, repo);
-        if (status.exitCode != 0) {
-            continue;
-        }
-        const auto& porcelain = status.stdoutStr;
-        if (Trim(porcelain).empty()) {
-            continue;
-        }
-        if (FilterIgnoredReservedStatusLines(porcelain).empty()) {
-            continue;
-        }
-        const auto changed = ParsePostSyncChangedPaths(porcelain, repo, InScope);
-        if (!changed.hasUntracked && changed.paths.empty()) {
-            continue;
-        }
-        const auto gitlinkPaths = CollectGitlinkOnlyChangedPaths(repo, InScope);
-        if (!gitlinkPaths.empty()) {
-            summary.gitlinkOnlyRepoCount += 1;
-            continue;
-        }
-        summary.semanticRepos.push_back(repo);
-    }
-    if (!summary.semanticRepos.empty()) {
-        summary.kind = PostSyncDeltaKind::SemanticDrift;
-    } else if (summary.gitlinkOnlyRepoCount > 0) {
-        summary.kind = PostSyncDeltaKind::GitlinkOnly;
-    }
-    return summary;
-}
-
-auto AutoAmendGitlinkOnlyPostSyncRepos(const std::filesystem::path& InWorkspaceRoot,
-                                        const std::vector<std::string>& InRepoList,
-                                        const bool InNoRecursive,
-                                        const PostSyncPlanPathScope* InScope = nullptr) -> std::pair<int, int> {
-    int updatedCount = 0;
-    const auto candidateRepos = CollectPostSyncCandidateRepos(InWorkspaceRoot, InRepoList, InNoRecursive);
-    const auto maxPasses = std::max<std::size_t>(candidateRepos.size(), 1);
-    for (std::size_t pass = 0; pass < maxPasses; ++pass) {
-        bool changedThisPass = false;
-        const auto repoWaves = BuildNestedRepoWaves(candidateRepos);
-        for (const auto& wave : repoWaves) {
-            for (const auto& repo : wave) {
-                const auto gitlinkPaths = CollectGitlinkOnlyChangedPaths(repo, InScope);
-                if (gitlinkPaths.empty()) {
-                    continue;
-                }
-                std::vector<std::string> addArgs = {"add", "--"};
-                addArgs.insert(addArgs.end(), gitlinkPaths.begin(), gitlinkPaths.end());
-                const auto addResult = shell::ExecuteCommand("git", addArgs, shell::ExecMode::PassThrough, repo);
-                if (addResult.exitCode != 0) {
-                    std::cerr << "[commit-push] post-sync gitlink-only auto-amend failed: git add -- <gitlink paths> failed in "
-                              << repo.generic_string() << "\n";
-                    return {-1, updatedCount};
-                }
-
-                if (RepoHeadIsUnpublishedAcrossPushRemotes(repo)) {
-                    const auto amendResult = shell::ExecuteCommand("git", {"commit", "--amend", "--no-edit"}, shell::ExecMode::PassThrough, repo);
-                    if (amendResult.exitCode != 0) {
-                        std::cerr << "[commit-push] post-sync gitlink-only auto-amend failed: git commit --amend --no-edit failed in "
-                                  << repo.generic_string() << "\n";
-                        return {-1, updatedCount};
-                    }
-                } else {
-                    const auto commitResult = shell::ExecuteCommand(
-                        "git",
-                        {"commit", "-m", BuildGitlinkOnlyFollowupCommitMessage(InWorkspaceRoot, repo)},
-                        shell::ExecMode::PassThrough,
-                        repo);
-                    if (commitResult.exitCode != 0) {
-                        std::cerr << "[commit-push] post-sync gitlink-only follow-up commit failed in "
-                                  << repo.generic_string() << "\n";
-                        return {-1, updatedCount};
-                    }
-                }
-                updatedCount += 1;
-                changedThisPass = true;
-            }
-        }
-        if (!changedThisPass) {
-            return {0, updatedCount};
-        }
-    }
-
-    for (const auto& repo : candidateRepos) {
-        if (!CollectGitlinkOnlyChangedPaths(repo, InScope).empty()) {
-            std::cerr << "[commit-push] post-sync gitlink-only convergence failed; repo still dirty after iterative passes: "
-                      << repo.generic_string() << "\n";
-            return {-1, updatedCount};
-        }
-    }
-    return {0, updatedCount};
 }
 
 auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceRoot,
@@ -2653,7 +2087,8 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
                 bool gitlinkOnly = false;
                 bool semanticDrift = false;
                 for (const auto& repoRoot : planRepoRoots) {
-                    const auto summary = ClassifyPostSyncDelta(repoRoot, {}, true, &postSyncScope);
+                    const auto candidateRepos = CollectPostSyncCandidateRepos(repoRoot, {}, true);
+                    const auto summary = ClassifyPostSyncDelta(candidateRepos, &postSyncScope);
                     if (summary.kind == PostSyncDeltaKind::SemanticDrift) {
                         semanticDrift = true;
                         std::cout << "[commit-push] post-sync semantic changes detected; proceeding to post-sync commit stage.\n";
@@ -2663,7 +2098,7 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
                     }
                     if (summary.kind == PostSyncDeltaKind::GitlinkOnly) {
                         gitlinkOnly = true;
-                        const auto amendResult = AutoAmendGitlinkOnlyPostSyncRepos(repoRoot, {}, true, &postSyncScope);
+                        const auto amendResult = AutoAmendGitlinkOnlyPostSyncRepos(repoRoot, candidateRepos, &postSyncScope);
                         if (amendResult.first != 0) {
                             return 2;
                         }
@@ -3092,7 +2527,9 @@ auto MakeCommitPushCommandCallback(CLI::App& InCommand,
                         std::cout << "[commit-push] post-sync commit skipped in dry-run mode.\n";
                     }
                 } else {
-                    const auto summary = ClassifyPostSyncDelta(workspaceRoot, repoList, effectiveNoRecursive);
+                    const auto postSyncCandidateRepos =
+                        CollectPostSyncCandidateRepos(workspaceRoot, repoList, effectiveNoRecursive);
+                    const auto summary = ClassifyPostSyncDelta(postSyncCandidateRepos);
                     if (summary.kind == PostSyncDeltaKind::SemanticDrift) {
                         std::cout << "[commit-push] post-sync semantic changes detected; proceeding to post-sync commit stage.\n";
                         for (const auto& repo : summary.semanticRepos) {
@@ -3100,7 +2537,8 @@ auto MakeCommitPushCommandCallback(CLI::App& InCommand,
                         }
                     }
                     if (summary.kind == PostSyncDeltaKind::GitlinkOnly) {
-                        const auto amendResult = AutoAmendGitlinkOnlyPostSyncRepos(workspaceRoot, repoList, effectiveNoRecursive);
+                        const auto amendResult =
+                            AutoAmendGitlinkOnlyPostSyncRepos(workspaceRoot, postSyncCandidateRepos);
                         if (amendResult.first != 0) {
                             std::exit(2);
                         }

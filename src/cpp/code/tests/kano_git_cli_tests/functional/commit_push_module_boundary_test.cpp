@@ -40,4 +40,27 @@ TEST_CASE("commit-push registration stays behind a typed CLI boundary",
     REQUIRE(moduleCMake.find("private/commit_push_cli.cpp") != std::string::npos);
 }
 
+TEST_CASE("commit-push post-sync policy stays behind a focused private module",
+          "[architecture][commit-push][post-sync][module-boundary][KG-TSK-0116]") {
+    const auto cppRoot =
+        std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path().parent_path();
+    const auto moduleRoot =
+        cppRoot / "code" / "systems" / "kano_git_command" / "commit_plan";
+    const auto commandSource = ReadFile(moduleRoot / "private" / "commit_push_cmd.cpp");
+    const auto postSyncSource = ReadFile(moduleRoot / "private" / "commit_push_post_sync.cpp");
+    const auto postSyncHeader = ReadFile(moduleRoot / "private" / "commit_push_post_sync.hpp");
+    const auto moduleCMake = ReadFile(moduleRoot / "CMakeLists.txt");
+
+    REQUIRE(commandSource.find("#include \"commit_push_post_sync.hpp\"") != std::string::npos);
+    REQUIRE(commandSource.find("auto ClassifyPostSyncDelta(") == std::string::npos);
+    REQUIRE(commandSource.find("auto AutoAmendGitlinkOnlyPostSyncRepos(") == std::string::npos);
+    REQUIRE(commandSource.find("auto CollectGitlinkOnlyChangedPaths(") == std::string::npos);
+    REQUIRE(postSyncSource.find("auto ClassifyPostSyncDelta(") != std::string::npos);
+    REQUIRE(postSyncSource.find("auto AutoAmendGitlinkOnlyPostSyncRepos(") != std::string::npos);
+    REQUIRE(postSyncSource.find("PostSyncPathAllowedByScope") != std::string::npos);
+    REQUIRE(postSyncHeader.find("struct PostSyncPlanPathScope") != std::string::npos);
+    REQUIRE(postSyncHeader.find("enum class PostSyncDeltaKind") != std::string::npos);
+    REQUIRE(moduleCMake.find("private/commit_push_post_sync.cpp") != std::string::npos);
+}
+
 } // namespace kano::git::tests::functional

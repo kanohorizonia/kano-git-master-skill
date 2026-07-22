@@ -11,6 +11,8 @@ target_sources(kano_git_cmd_commit_plan
     private/commit_push_cli.cpp
     private/commit_push_cmd.cpp
     private/commit_push_cmd.hpp
+    private/commit_push_post_sync.cpp
+    private/commit_push_post_sync.hpp
     private/cherry_pick_cmd.cpp
     private/doctor_cmd.cpp
     private/ignore_cmd.cpp
