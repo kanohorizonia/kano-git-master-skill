@@ -181,6 +181,24 @@ auto CreateRemoteWithClone(const std::string& InName, const std::string& InBranc
     return ctx;
 }
 
+auto ConfigureBarePushRejection(const std::filesystem::path& InBareRemote, bool InReject) -> void {
+    const auto hook = (InBareRemote / "hooks" / "pre-receive").lexically_normal();
+    WriteTextFile(
+        hook,
+        InReject
+            ? "#!/bin/sh\nprintf 'fixture rejects target publication\\n' >&2\nexit 1\n"
+            : "#!/bin/sh\nexit 0\n");
+#if !defined(_WIN32)
+    std::error_code permissionError;
+    std::filesystem::permissions(
+        hook,
+        std::filesystem::perms::owner_exec | std::filesystem::perms::group_exec | std::filesystem::perms::others_exec,
+        std::filesystem::perm_options::add,
+        permissionError);
+    REQUIRE_FALSE(permissionError);
+#endif
+}
+
 auto CreateRemoteWithSubmoduleClone(const std::string& InName, const std::string& InBranch = "main") -> SubmoduleWorkspaceContext {
     SubmoduleWorkspaceContext ctx;
     ctx.sandbox = CreateSandboxWorkspace(InName);
@@ -719,6 +737,119 @@ TEST_CASE("converge branches apply fast-forwards target and pushes", "[tdd][func
     RequireContains(result.stdoutText, "\"action\": \"fast-forward\"");
     REQUIRE(TrimCopy(RunGit({"rev-parse", ctx.branch}, ctx.cloneRepo).stdoutText) == featureHead);
     REQUIRE(TrimCopy(RunGit({"rev-parse", "origin/" + ctx.branch}, ctx.cloneRepo).stdoutText) == featureHead);
+    REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge branches apply reports guarded recovery when target push fails", "[tdd][functional][converge][branches][apply][recovery][KG-BUG-0078]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-target-push-recovery");
+    const auto targetHeadBefore = TrimCopy(RunGit({"rev-parse", ctx.branch}, ctx.cloneRepo).stdoutText);
+    const std::string firstBranch = "feature/a-push-rejected";
+    const std::string secondBranch = "feature/z-must-not-run";
+
+    RequireSuccess(RunGit({"checkout", "-b", firstBranch}, ctx.cloneRepo), "checkout first rejected-push feature");
+    WriteTextFile(ctx.cloneRepo / "first.txt", "first feature\n");
+    RequireSuccess(RunGit({"add", "first.txt"}, ctx.cloneRepo), "add first feature");
+    RequireSuccess(RunGit({"commit", "-m", "first feature"}, ctx.cloneRepo), "commit first feature");
+    RequireSuccess(RunGit({"push", "-u", "origin", firstBranch}, ctx.cloneRepo), "push first feature");
+    const auto integratedHead = TrimCopy(RunGit({"rev-parse", firstBranch}, ctx.cloneRepo).stdoutText);
+
+    RequireSuccess(RunGit({"checkout", "-b", secondBranch, ctx.branch}, ctx.cloneRepo), "checkout second rejected-push feature");
+    WriteTextFile(ctx.cloneRepo / "second.txt", "second feature\n");
+    RequireSuccess(RunGit({"add", "second.txt"}, ctx.cloneRepo), "add second feature");
+    RequireSuccess(RunGit({"commit", "-m", "second feature"}, ctx.cloneRepo), "commit second feature");
+    RequireSuccess(RunGit({"push", "-u", "origin", secondBranch}, ctx.cloneRepo), "push second feature");
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target before rejected push");
+    ConfigureBarePushRejection(ctx.bareRemote, true);
+
+    const auto apply = RunKog({
+        "converge", "branches", "apply", "--target", ctx.branch,
+        "--confirm", "--json", "--jobs", "1", "--no-recursive"}, ctx.cloneRepo);
+    INFO(apply.stdoutText);
+    INFO(apply.stderrText);
+    REQUIRE(apply.exitCode == 1);
+    RequireContains(apply.stdoutText, "\"mutationPerformed\": true");
+    RequireContains(apply.stdoutText, "\"operationPending\": true");
+    RequireContains(apply.stdoutText, "\"type\": \"target-push\"");
+    RequireContains(apply.stdoutText, "\"targetHeadBefore\": \"" + targetHeadBefore + "\"");
+    RequireContains(apply.stdoutText, "\"integratedHead\": \"" + integratedHead + "\"");
+    RequireContains(apply.stdoutText, "fixture rejects target publication");
+    RequireContains(apply.stdoutText, "kog converge branches recover --continue");
+    RequireContains(apply.stdoutText, "kog converge branches recover --abort");
+    RequireNotContains(apply.stdoutText, "TARGET_WORKTREE_CHANGED");
+    RequireNotContains(apply.stdoutText, secondBranch);
+    REQUIRE(TrimCopy(RunGit({"rev-parse", ctx.branch}, ctx.cloneRepo).stdoutText) == integratedHead);
+    REQUIRE(TrimCopy(RunGit({"rev-parse", "origin/" + ctx.branch}, ctx.cloneRepo).stdoutText) == targetHeadBefore);
+    REQUIRE_FALSE(std::filesystem::exists(ctx.cloneRepo / "second.txt"));
+
+    const auto rejectedRecovery = RunKog({
+        "converge", "branches", "recover", "--continue", "--target", ctx.branch,
+        "--expected-head", integratedHead, "--restore-head", targetHeadBefore,
+        "--remote", "origin", "--json"}, ctx.cloneRepo);
+    INFO(rejectedRecovery.stdoutText);
+    REQUIRE(rejectedRecovery.exitCode == 1);
+    RequireContains(rejectedRecovery.stdoutText, "\"operationPending\": true");
+    RequireContains(rejectedRecovery.stdoutText, "\"targetHeadBefore\": \"" + targetHeadBefore + "\"");
+    RequireContains(rejectedRecovery.stdoutText, "kog converge branches recover --abort");
+
+    ConfigureBarePushRejection(ctx.bareRemote, false);
+    const auto recovery = RunKog({
+        "converge", "branches", "recover", "--continue", "--target", ctx.branch,
+        "--expected-head", integratedHead, "--restore-head", targetHeadBefore,
+        "--remote", "origin", "--json"}, ctx.cloneRepo);
+    INFO(recovery.stdoutText);
+    INFO(recovery.stderrText);
+    REQUIRE(recovery.exitCode == 0);
+    RequireContains(recovery.stdoutText, "\"action\": \"recover-target-push\"");
+    REQUIRE(TrimCopy(RunGit({"rev-parse", ctx.branch}, ctx.cloneRepo).stdoutText) == integratedHead);
+    REQUIRE(TrimCopy(RunGit({"rev-parse", "origin/" + ctx.branch}, ctx.cloneRepo).stdoutText) == integratedHead);
+    REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge branches recovery abort requires exact pending head", "[tdd][functional][converge][branches][apply][recovery][KG-BUG-0078]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-target-push-abort");
+    const auto targetHeadBefore = TrimCopy(RunGit({"rev-parse", ctx.branch}, ctx.cloneRepo).stdoutText);
+    const std::string featureBranch = "feature/push-rejected-abort";
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout rejected-push abort feature");
+    WriteTextFile(ctx.cloneRepo / "abort.txt", "pending integration\n");
+    RequireSuccess(RunGit({"add", "abort.txt"}, ctx.cloneRepo), "add abort feature");
+    RequireSuccess(RunGit({"commit", "-m", "abort feature"}, ctx.cloneRepo), "commit abort feature");
+    RequireSuccess(RunGit({"push", "-u", "origin", featureBranch}, ctx.cloneRepo), "push abort feature");
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to abort target");
+    ConfigureBarePushRejection(ctx.bareRemote, true);
+
+    const auto apply = RunKog({
+        "converge", "branches", "apply", "--target", ctx.branch,
+        "--confirm", "--json", "--jobs", "1", "--no-recursive"}, ctx.cloneRepo);
+    INFO(apply.stdoutText);
+    REQUIRE(apply.exitCode == 1);
+    const auto integratedHead = TrimCopy(RunGit({"rev-parse", ctx.branch}, ctx.cloneRepo).stdoutText);
+    REQUIRE(integratedHead != targetHeadBefore);
+
+    const std::string wrongHead(40, '0');
+    const auto guarded = RunKog({
+        "converge", "branches", "recover", "--abort", "--target", ctx.branch,
+        "--expected-head", wrongHead, "--restore-head", targetHeadBefore,
+        "--remote", "origin", "--json"}, ctx.cloneRepo);
+    INFO(guarded.stdoutText);
+    REQUIRE(guarded.exitCode == 1);
+    RequireContains(guarded.stdoutText, "RECOVERY_HEAD_MISMATCH");
+    REQUIRE(TrimCopy(RunGit({"rev-parse", ctx.branch}, ctx.cloneRepo).stdoutText) == integratedHead);
+
+    const auto recovery = RunKog({
+        "converge", "branches", "recover", "--abort", "--target", ctx.branch,
+        "--expected-head", integratedHead, "--restore-head", targetHeadBefore,
+        "--remote", "origin", "--json"}, ctx.cloneRepo);
+    INFO(recovery.stdoutText);
+    INFO(recovery.stderrText);
+    REQUIRE(recovery.exitCode == 0);
+    RequireContains(recovery.stdoutText, "\"action\": \"abort-target-integration\"");
+    REQUIRE(TrimCopy(RunGit({"rev-parse", ctx.branch}, ctx.cloneRepo).stdoutText) == targetHeadBefore);
+    REQUIRE(TrimCopy(RunGit({"rev-parse", "origin/" + ctx.branch}, ctx.cloneRepo).stdoutText) == targetHeadBefore);
+    REQUIRE_FALSE(std::filesystem::exists(ctx.cloneRepo / "abort.txt"));
     REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
 
     RemoveSandboxWorkspace(ctx.sandbox);

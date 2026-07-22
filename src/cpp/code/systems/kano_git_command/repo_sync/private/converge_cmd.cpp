@@ -3429,13 +3429,17 @@ void AppendDetachedWorktreeHarvestBlocked(nlohmann::json& result,
 bool PushTargetBranch(const std::filesystem::path& repoPath,
                       const RepoStatus& repo,
                       const std::string& targetBranch,
-                      std::string& errorMessage) {
+                      std::string& errorMessage,
+                      std::string* attemptedRemote = nullptr) {
     auto push = GitCapture(repoPath, {"push"});
     if (push.exitCode == 0) {
         return true;
     }
 
     const auto remote = repo.remote.empty() ? std::string{"origin"} : repo.remote;
+    if (attemptedRemote != nullptr) {
+        *attemptedRemote = remote;
+    }
     push = GitCapture(repoPath, {"push", remote, targetBranch});
     if (push.exitCode == 0) {
         return true;
@@ -4625,6 +4629,128 @@ bool IsFullCommitId(const std::string& value) {
     });
 }
 
+std::string BranchPushRecoveryCommand(bool continueRecovery,
+                                      const std::string& targetBranch,
+                                      const std::string& targetHeadBefore,
+                                      const std::string& targetHeadAfter,
+                                      const std::string& remote) {
+    auto command = std::string{"kog converge branches recover "};
+    command += continueRecovery ? "--continue" : "--abort";
+    command += " --target " + targetBranch;
+    command += " --expected-head " + targetHeadAfter;
+    command += " --restore-head " + targetHeadBefore;
+    command += " --remote " + remote;
+    command += " --json";
+    return command;
+}
+
+void SetTargetPushPendingOperation(nlohmann::json& result,
+                                   const std::string& repoId,
+                                   const std::string& branch,
+                                   const std::string& targetBranch,
+                                   const std::filesystem::path& workingDirectory,
+                                   const std::string& targetHeadBefore,
+                                   const std::string& targetHeadAfter,
+                                   const std::string& remote,
+                                   const std::string& pushDiagnostic) {
+    result["mutationPerformed"] = true;
+    result["operationPending"] = true;
+    result["pendingOperation"] = {
+        {"type", "target-push"},
+        {"repo", repoId},
+        {"branch", branch},
+        {"targetBranch", targetBranch},
+        {"workingDirectory", workingDirectory.generic_string()},
+        {"targetHeadBefore", targetHeadBefore},
+        {"integratedHead", targetHeadAfter},
+        {"remote", remote},
+        {"pushDiagnostic", pushDiagnostic},
+        {"retryCommand", BranchPushRecoveryCommand(true, targetBranch, targetHeadBefore, targetHeadAfter, remote)},
+        {"abortCommand", BranchPushRecoveryCommand(false, targetBranch, targetHeadBefore, targetHeadAfter, remote)},
+    };
+}
+
+int RunBranchRecovery(const std::filesystem::path& repoPath,
+                      bool continueRecovery,
+                      bool abortRecovery,
+                      const std::string& targetBranch,
+                      const std::string& expectedHead,
+                      const std::string& restoreHead,
+                      const std::string& remote,
+                      bool emitJson) {
+    if (continueRecovery == abortRecovery) {
+        std::cerr << "Error: exactly one of --continue or --abort is required\n";
+        return 2;
+    }
+    if (targetBranch.empty() || !IsFullCommitId(expectedHead) || !IsFullCommitId(restoreHead) || remote.empty()) {
+        std::cerr << "Error: recovery requires --target, --expected-head, --restore-head, and --remote\n";
+        return 2;
+    }
+
+    const bool jsonOutput = emitJson || IsConvergeAgentModeEnabled();
+    auto result = MakeBranchActionResult(
+        "kog.convergeBranchesRecoveryResult", targetBranch, "recovery", false, true);
+    result["recoveryAction"] = continueRecovery ? "continue" : "abort";
+    result["expectedHead"] = expectedHead;
+    result["restoreHead"] = restoreHead.empty() ? nlohmann::json{nullptr} : nlohmann::json{restoreHead};
+    result["remote"] = remote;
+
+    std::optional<shell::ScopedConsoleWriteSuppression> suppressCommandLogs;
+    if (jsonOutput) {
+        suppressCommandLogs.emplace();
+    }
+
+    const auto branch = GitCapture(repoPath, {"branch", "--show-current"});
+    const auto head = GitCapture(repoPath, {"rev-parse", "--verify", "HEAD^{commit}"});
+    std::string cleanMessage;
+    if (branch.exitCode != 0 || Trim(branch.stdoutStr) != targetBranch) {
+        AppendBranchBlocked(result, ".", targetBranch, {"RECOVERY_TARGET_BRANCH_MISMATCH"},
+                            "recovery must run in the pending target branch worktree");
+    } else if (head.exitCode != 0 || ToLower(Trim(head.stdoutStr)) != ToLower(expectedHead)) {
+        AppendBranchBlocked(result, ".", targetBranch, {"RECOVERY_HEAD_MISMATCH"},
+                            "target HEAD changed after the pending integration; inspect before recovery");
+    } else if (!WorktreeIsClean(repoPath, cleanMessage)) {
+        AppendBranchBlocked(result, ".", targetBranch, {"RECOVERY_WORKTREE_DIRTY"}, cleanMessage);
+    } else if (continueRecovery) {
+        const auto push = GitCapture(repoPath, {"push", remote, targetBranch});
+        if (push.exitCode != 0) {
+            const auto pushDiagnostic = CombinedGitError(push);
+            AppendBranchBlocked(result, ".", targetBranch, {"TARGET_PUSH_FAILED"}, pushDiagnostic);
+            SetTargetPushPendingOperation(
+                result, ".", "<pending>", targetBranch, repoPath,
+                restoreHead, expectedHead, remote, pushDiagnostic);
+        } else {
+            result["mutationPerformed"] = true;
+            AppendBranchAction(result, "applied", ".", targetBranch, "recover-target-push",
+                               "existing integrated target HEAD pushed without reintegration");
+        }
+    } else {
+        const auto restoreExists = GitCapture(repoPath, {"rev-parse", "--verify", restoreHead + "^{commit}"});
+        const auto restoreIsAncestor = GitCapture(repoPath, {"merge-base", "--is-ancestor", restoreHead, expectedHead});
+        if (restoreExists.exitCode != 0 || restoreIsAncestor.exitCode != 0) {
+            AppendBranchBlocked(result, ".", targetBranch, {"RECOVERY_RESTORE_HEAD_INVALID"},
+                                "restore HEAD must exist and be an ancestor of the pending integrated HEAD");
+        } else {
+            const auto reset = GitCapture(repoPath, {"reset", "--keep", restoreHead});
+            if (reset.exitCode != 0) {
+                AppendBranchBlocked(result, ".", targetBranch, {"RECOVERY_ABORT_FAILED"}, CombinedGitError(reset));
+            } else {
+                result["mutationPerformed"] = true;
+                AppendBranchAction(result, "applied", ".", targetBranch, "abort-target-integration",
+                                   "pending local target integration restored to the exact pre-apply HEAD");
+            }
+        }
+    }
+
+    suppressCommandLogs.reset();
+    if (jsonOutput) {
+        std::cout << result.dump(2) << "\n";
+    } else {
+        PrintBranchActionResultText("Converge Branches Recovery", result);
+    }
+    return BranchActionResultHasBlocked(result) ? 1 : 0;
+}
+
 bool RecordReviewedBranchIntegration(const std::filesystem::path& repoPath,
                                      const RepoStatus& repo,
                                      const std::string& targetBranch,
@@ -4728,8 +4854,12 @@ bool RecordReviewedBranchIntegration(const std::filesystem::path& repoPath,
     }
 
     std::string pushError;
-    if (!PushTargetBranch(repoPath, repo, targetBranch, pushError)) {
+    std::string pushRemote;
+    if (!PushTargetBranch(repoPath, repo, targetBranch, pushError, &pushRemote)) {
         AppendBranchBlocked(result, repo.id, branch, {"TARGET_PUSH_FAILED"}, pushError);
+        SetTargetPushPendingOperation(
+            result, repo.id, branch, targetBranch, repoPath, targetHeadBefore, targetHeadAfter,
+            pushRemote, pushError);
         return false;
     }
 
@@ -4823,7 +4953,11 @@ int RunBranchApply(const std::filesystem::path& root,
 
         const auto plan = BuildBranchPlanJson(snapshot, root, targetBranch, strategy, recursive, false, false, branchFilter);
         bool reviewedBranchMatched = false;
+        bool stopAfterPendingOperation = false;
         for (const auto& repoJson : plan.value("repos", nlohmann::json::array())) {
+            if (stopAfterPendingOperation) {
+                break;
+            }
             const auto repoId = repoJson.value("id", std::string{});
             const auto* repo = FindRepo(snapshot, repoId);
             if (repo == nullptr) {
@@ -4860,6 +4994,10 @@ int RunBranchApply(const std::filesystem::path& root,
                         markerMessage,
                         liveWorktrees,
                         result);
+                    if (result.value("operationPending", false)) {
+                        stopAfterPendingOperation = true;
+                        break;
+                    }
                     continue;
                 }
                 auto blockers = BranchBlockers(branchJson);
@@ -4911,6 +5049,13 @@ int RunBranchApply(const std::filesystem::path& root,
                 if (!CheckoutTargetBranch(targetCheckoutPath, repoId, targetBranch, result)) {
                     continue;
                 }
+                const auto targetHeadBeforeResult = GitCapture(
+                    targetCheckoutPath, {"rev-parse", "--verify", targetBranch + "^{commit}"});
+                if (targetHeadBeforeResult.exitCode != 0) {
+                    AppendBranchBlocked(result, repoId, branch, {"TARGET_REF_MISSING"}, CombinedGitError(targetHeadBeforeResult));
+                    continue;
+                }
+                const auto targetHeadBefore = Trim(targetHeadBeforeResult.stdoutStr);
 
                 shell::ExecResult integrate;
                 if (strategy == "merge") {
@@ -4926,7 +5071,6 @@ int RunBranchApply(const std::filesystem::path& root,
                         AppendBranchAction(result, "skipped", repoId, branch, "already-equivalent", "branch commits are already patch-equivalent to target");
                         continue;
                     }
-                    const auto targetHeadBefore = GitCapture(targetCheckoutPath, {"rev-parse", "--verify", targetBranch + "^{commit}"});
                     std::vector<std::string> cherryPickArgs{"cherry-pick"};
                     cherryPickArgs.insert(cherryPickArgs.end(), commits.begin(), commits.end());
                     const auto cherryPick = GitCapture(targetCheckoutPath, cherryPickArgs);
@@ -4953,8 +5097,8 @@ int RunBranchApply(const std::filesystem::path& root,
                         };
                     }
                     const auto targetHeadAfter = GitCapture(targetCheckoutPath, {"rev-parse", "--verify", targetBranch + "^{commit}"});
-                    const bool targetAdvanced = targetHeadBefore.exitCode == 0 && targetHeadAfter.exitCode == 0 &&
-                                                Trim(targetHeadBefore.stdoutStr) != Trim(targetHeadAfter.stdoutStr);
+                    const bool targetAdvanced = targetHeadAfter.exitCode == 0 &&
+                                                targetHeadBefore != Trim(targetHeadAfter.stdoutStr);
                     const int appliedCherryPickCommits = targetAdvanced ? static_cast<int>(commits.size()) : 0;
                     if (targetAdvanced) {
                         result["mutationPerformed"] = true;
@@ -4979,6 +5123,14 @@ int RunBranchApply(const std::filesystem::path& root,
                     continue;
                 }
 
+                const auto targetHeadAfterResult = GitCapture(
+                    targetCheckoutPath, {"rev-parse", "--verify", targetBranch + "^{commit}"});
+                if (targetHeadAfterResult.exitCode != 0) {
+                    AppendBranchBlocked(result, repoId, branch, {"TARGET_REF_MISSING"}, CombinedGitError(targetHeadAfterResult));
+                    continue;
+                }
+                const auto targetHeadAfter = Trim(targetHeadAfterResult.stdoutStr);
+
                 auto remote = repo->remote.empty() ? std::string{"origin"} : repo->remote;
                 std::string upstreamRemote;
                 std::string upstreamBranch;
@@ -4987,7 +5139,15 @@ int RunBranchApply(const std::filesystem::path& root,
                 }
                 const auto push = GitCapture(targetCheckoutPath, {"push", remote, targetBranch});
                 if (push.exitCode != 0) {
-                    AppendBranchBlocked(result, repoId, branch, {"TARGET_PUSH_FAILED"}, CombinedGitError(push));
+                    const auto pushDiagnostic = CombinedGitError(push);
+                    AppendBranchBlocked(result, repoId, branch, {"TARGET_PUSH_FAILED"}, pushDiagnostic);
+                    if (targetHeadAfter != targetHeadBefore) {
+                        SetTargetPushPendingOperation(
+                            result, repoId, branch, targetBranch, targetCheckoutPath,
+                            targetHeadBefore, targetHeadAfter, remote, pushDiagnostic);
+                        stopAfterPendingOperation = true;
+                        break;
+                    }
                     continue;
                 }
                 result["mutationPerformed"] = true;
@@ -5739,6 +5899,8 @@ void RegisterConverge(CLI::App& InApp) {
     branchesStatus->fallthrough(false);
     auto* branchesApply = branches->add_subcommand("apply", "Guarded branch integration into the target branch");
     branchesApply->fallthrough(false);
+    auto* branchesRecover = branches->add_subcommand("recover", "Retry publication or abort a pending local target integration");
+    branchesRecover->fallthrough(false);
     auto* branchesRetire = branches->add_subcommand("retire", "Guarded harvest and retirement for integrated branches and Git worktrees");
     branchesRetire->fallthrough(false);
     auto* branchesNoRecursive = new bool{false};
@@ -5754,6 +5916,13 @@ void RegisterConverge(CLI::App& InApp) {
     auto* branchesExpectedSourceHead = new std::string{};
     auto* branchesReviewReason = new std::string{};
     auto* branchesMarkerMessage = new std::string{};
+    auto* branchesRecoverContinue = new bool{false};
+    auto* branchesRecoverAbort = new bool{false};
+    auto* branchesRecoverJson = new bool{false};
+    auto* branchesRecoverTarget = new std::string{};
+    auto* branchesRecoverExpectedHead = new std::string{};
+    auto* branchesRecoverRestoreHead = new std::string{};
+    auto* branchesRecoverRemote = new std::string{"origin"};
     auto* branchesRemoveWorktrees = new bool{false};
     auto* branchesDeleteRemote = new bool{false};
     auto* branchesPruneWorktrees = new bool{false};
@@ -5829,6 +5998,14 @@ void RegisterConverge(CLI::App& InApp) {
     branchesApply->add_option("--expected-source-head", *branchesExpectedSourceHead, "Exact 40-character source HEAD required for reviewed integration");
     branchesApply->add_option("--review-reason", *branchesReviewReason, "Audit reason for reviewed integration");
     branchesApply->add_option("--marker-message", *branchesMarkerMessage, "Commit subject for the reviewed ancestry marker");
+
+    branchesRecover->add_flag("--continue", *branchesRecoverContinue, "Retry publishing the exact pending integrated target HEAD");
+    branchesRecover->add_flag("--abort", *branchesRecoverAbort, "Restore the exact pre-apply target HEAD after guarded validation");
+    branchesRecover->add_flag("--json", *branchesRecoverJson, "Emit stable machine-readable recovery result JSON");
+    branchesRecover->add_option("--target", *branchesRecoverTarget, "Pending target branch");
+    branchesRecover->add_option("--expected-head", *branchesRecoverExpectedHead, "Exact pending integrated target HEAD");
+    branchesRecover->add_option("--restore-head", *branchesRecoverRestoreHead, "Exact pre-apply target HEAD required by --abort");
+    branchesRecover->add_option("--remote", *branchesRecoverRemote, "Remote used to retry target publication")->default_str("origin");
 
     branchesRetire->add_flag("--no-recursive,-N", *branchesNoRecursive, "Only retire branches for the current repository");
     branchesRetire->add_flag("--json", *branchesJson, "Emit stable machine-readable retire result JSON");
@@ -5931,6 +6108,19 @@ void RegisterConverge(CLI::App& InApp) {
             Trim(*branchesReviewReason),
             Trim(*branchesMarkerMessage),
             *branchesJson);
+        std::exit(code);
+    });
+
+    branchesRecover->callback([=]() {
+        const auto code = RunBranchRecovery(
+            std::filesystem::current_path().lexically_normal(),
+            *branchesRecoverContinue,
+            *branchesRecoverAbort,
+            Trim(*branchesRecoverTarget),
+            ToLower(Trim(*branchesRecoverExpectedHead)),
+            ToLower(Trim(*branchesRecoverRestoreHead)),
+            Trim(*branchesRecoverRemote),
+            *branchesRecoverJson);
         std::exit(code);
     });
 
