@@ -223,6 +223,39 @@ TEST_CASE("exact-path rejects outside overlap stale head and index lock without 
     RemoveSandboxWorkspace(sandbox);
 }
 
+TEST_CASE("exact-path distinguishes queue contention from lock acquisition errors",
+          "[functional][KG-BUG-0079][exact-path][queue-lock]") {
+    auto [sandbox, repo] = InitRepo("exact-path-queue-lock-errors", {"selected.txt"});
+    WriteText(repo / "selected.txt", "changed\n");
+    const auto headBefore = GitOutput(repo, {"rev-parse", "HEAD"});
+    const auto selectedStatusBefore = GitOutput(repo, {"status", "--short", "--", "selected.txt"});
+    const auto queueRoot = repo / ".git" / "kano-agent-queue";
+    const auto lockPath = queueRoot / "mutation.lock";
+
+    std::filesystem::create_directories(lockPath);
+    auto result = RunKog({
+        "commit", "--exact-path", "selected.txt", "-m", "[Test][Chore] active queue lock",
+    }, repo);
+    REQUIRE(result.exitCode != 0);
+    RequireContains(result.stderrText, "\"blocker\": \"queue_locked\"");
+    REQUIRE(std::filesystem::is_directory(lockPath));
+    REQUIRE(GitOutput(repo, {"rev-parse", "HEAD"}) == headBefore);
+    REQUIRE(GitOutput(repo, {"status", "--short", "--", "selected.txt"}) == selectedStatusBefore);
+    std::filesystem::remove_all(lockPath);
+
+    WriteText(lockPath, "invalid lock path\n");
+    result = RunKog({
+        "commit", "--exact-path", "selected.txt", "-m", "[Test][Chore] invalid queue lock path",
+    }, repo);
+    REQUIRE(result.exitCode != 0);
+    RequireContains(result.stderrText, "\"blocker\": \"queue_lock_failed\"");
+    RequireContains(result.stderrText, "cannot create mutation lock directory");
+    REQUIRE(std::filesystem::is_regular_file(lockPath));
+    REQUIRE(GitOutput(repo, {"rev-parse", "HEAD"}) == headBefore);
+    REQUIRE(GitOutput(repo, {"status", "--short", "--", "selected.txt"}) == selectedStatusBefore);
+    RemoveSandboxWorkspace(sandbox);
+}
+
 TEST_CASE("agent queue merges disjoint chunks and constrains exact-path commit",
           "[functional][KG-TSK-0110][queue]") {
     auto [sandbox, repo] = InitRepo("agent-queue-compatible", {"shared.txt", "other.txt"});

@@ -43,11 +43,11 @@ struct QueueContext {
 struct ScopedDirectoryLock {
     std::filesystem::path path;
     bool owned = false;
+    std::error_code error;
 
     explicit ScopedDirectoryLock(std::filesystem::path InPath)
         : path(std::move(InPath)) {
-        std::error_code ec;
-        owned = std::filesystem::create_directory(path, ec);
+        owned = std::filesystem::create_directory(path, error);
     }
 
     ~ScopedDirectoryLock() {
@@ -62,7 +62,7 @@ struct ScopedDirectoryLock {
     auto operator=(const ScopedDirectoryLock&) -> ScopedDirectoryLock& = delete;
 
     ScopedDirectoryLock(ScopedDirectoryLock&& InOther) noexcept
-        : path(std::move(InOther.path)), owned(InOther.owned) {
+        : path(std::move(InOther.path)), owned(InOther.owned), error(InOther.error) {
         InOther.owned = false;
     }
 
@@ -563,9 +563,15 @@ auto PrintError(const std::string& InBlocker, const std::string& InMessage, cons
     return InCode;
 }
 
-auto AcquireQueueLock(const QueueContext& InContext) -> std::optional<ScopedDirectoryLock> {
+auto AcquireQueueLock(const QueueContext& InContext, std::string* OutError) -> std::optional<ScopedDirectoryLock> {
+    if (OutError != nullptr) {
+        OutError->clear();
+    }
     ScopedDirectoryLock lock(InContext.root / "mutation.lock");
     if (!lock.owned) {
+        if (OutError != nullptr && lock.error) {
+            *OutError = "cannot create mutation lock directory: " + lock.error.message();
+        }
         return std::nullopt;
     }
     return std::optional<ScopedDirectoryLock>(std::move(lock));
@@ -623,8 +629,11 @@ auto RunAdmit(const std::filesystem::path& InRepo,
         }
         postconditions[*path] = value;
     }
-    auto lock = AcquireQueueLock(*context);
+    auto lock = AcquireQueueLock(*context, &error);
     if (!lock.has_value()) {
+        if (!error.empty()) {
+            return PrintError("queue_lock_failed", error, 1);
+        }
         return PrintError("queue_locked", "another KOG queue mutation is active", 1);
     }
     auto state = LoadState(*context, &error);
@@ -728,8 +737,11 @@ auto RunDrain(const std::filesystem::path& InRepo, const bool InConfirm) -> int 
     if (!context.has_value()) {
         return PrintError("not_a_repository", error);
     }
-    auto lock = AcquireQueueLock(*context);
+    auto lock = AcquireQueueLock(*context, &error);
     if (!lock.has_value()) {
+        if (!error.empty()) {
+            return PrintError("queue_lock_failed", error, 1);
+        }
         return PrintError("queue_locked", "another KOG queue mutation is active", 1);
     }
     auto state = LoadState(*context, &error);
@@ -780,8 +792,11 @@ auto RunComplete(const std::filesystem::path& InRepo,
     if (!IsSafeId(InBatch) || (InStatus != "succeeded" && InStatus != "failed" && InStatus != "cancelled")) {
         return PrintError("invalid_completion", "--batch and --status succeeded|failed|cancelled are required");
     }
-    auto lock = AcquireQueueLock(*context);
+    auto lock = AcquireQueueLock(*context, &error);
     if (!lock.has_value()) {
+        if (!error.empty()) {
+            return PrintError("queue_lock_failed", error, 1);
+        }
         return PrintError("queue_locked", "another KOG queue mutation is active", 1);
     }
     auto state = LoadState(*context, &error);
@@ -818,8 +833,11 @@ auto RunExactPathCommit(const ExactPathCommitOptions& InOptions) -> int {
     if (!paths.has_value() || paths->empty()) {
         return PrintError("invalid_exact_path", error.empty() ? "at least one --exact-path is required" : error);
     }
-    auto lock = AcquireQueueLock(*context);
+    auto lock = AcquireQueueLock(*context, &error);
     if (!lock.has_value()) {
+        if (!error.empty()) {
+            return PrintError("queue_lock_failed", error, 1);
+        }
         return PrintError("queue_locked", "another KOG queue or exact-path mutation is active", 1);
     }
     auto state = LoadState(*context, &error);
