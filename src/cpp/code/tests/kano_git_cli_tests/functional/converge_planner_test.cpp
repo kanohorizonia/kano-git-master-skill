@@ -2729,6 +2729,76 @@ TEST_CASE("converge no-recursive scopes planner and runtime to current repo", "[
     RemoveSandboxWorkspace(runtimeCtx.sandbox);
 }
 
+TEST_CASE("converge no-recursive ignores its own workflow artifacts", "[functional][converge][no-recursive][intent-commits][KG-BUG-0082]") {
+    SECTION("untracked workflow state does not turn an ahead-only dry-run into a content commit") {
+        const auto ctx = CreateRemoteWithClone("converge-internal-state-ahead-dry-run");
+        WriteTextFile(ctx.cloneRepo / ".gitignore", "fixture.ignored\n");
+        RequireSuccess(RunGit({"add", ".gitignore"}, ctx.cloneRepo), "stage local ignore policy change");
+        RequireSuccess(RunGit({"commit", "-m", "local ahead change"}, ctx.cloneRepo), "commit local ahead change");
+        WriteTextFile(ConvergeStatePath(ctx.cloneRepo), "{\"workflow\":\"converge\"}\n");
+
+        const auto result = RunConvergeDryRun(ctx.cloneRepo, {"--no-recursive", "--jobs", "1"});
+        INFO(result.stdoutText);
+        INFO(result.stderrText);
+        REQUIRE(result.exitCode == 0);
+        const auto plan = PlanPayload(result.stdoutText);
+        RequireContains(plan, "dirtyKindCounts AHEAD_ONLY=1");
+        RequireContains(plan, ".: kog push --repos .");
+        RequireContains(plan, ".: commit skipped: AHEAD_ONLY");
+        RequireNotContains(plan, ".: kog commit -ai --repos .");
+
+        RemoveSandboxWorkspace(ctx.sandbox);
+    }
+
+    SECTION("tracked workflow artifacts stay outside runtime intent commits") {
+        const auto ctx = CreateRemoteWithClone("converge-internal-state-tracked-runtime");
+        const auto trackedPlan = std::filesystem::path(
+            ".kano/tmp/workflows/converge/intent-commit-plans/fixture.json");
+
+        WriteTextFile(ctx.seedRepo / ".gitignore", "fixture.ignored\n");
+        WriteTextFile(ctx.seedRepo / trackedPlan, "{\"fixture\":\"baseline\"}\n");
+        RequireSuccess(
+            RunGit({"add", ".gitignore", trackedPlan.generic_string()}, ctx.seedRepo),
+            "stage tracked workflow fixture");
+        RequireSuccess(
+            RunGit({"commit", "-m", "seed tracked workflow fixture"}, ctx.seedRepo),
+            "commit tracked workflow fixture");
+        RequireSuccess(
+            RunGit({"push", "origin", ctx.branch}, ctx.seedRepo),
+            "push tracked workflow fixture");
+        RequireSuccess(
+            RunGit({"pull", "--rebase", "origin", ctx.branch}, ctx.cloneRepo),
+            "pull tracked workflow fixture");
+
+        WriteTextFile(ctx.cloneRepo / trackedPlan, "{\"fixture\":\"locally-updated\"}\n");
+        WriteTextFile(ctx.cloneRepo / "ahead.txt", "publish exactly this commit\n");
+        RequireSuccess(RunGit({"add", "ahead.txt"}, ctx.cloneRepo), "stage intended ahead file");
+        RequireSuccess(RunGit({"commit", "-m", "intended ahead commit"}, ctx.cloneRepo), "commit intended ahead file");
+        const auto expectedHead = RunGit({"rev-parse", "HEAD"}, ctx.cloneRepo);
+        RequireSuccess(expectedHead, "resolve intended ahead head");
+
+        const auto result = RunKogWithEnv(
+            {"converge", "--no-recursive", "--jobs", "1"},
+            ctx.cloneRepo,
+            {{"KANO_AGENT_MODE", "1"}});
+        INFO(result.stdoutText);
+        INFO(result.stderrText);
+        REQUIRE(result.exitCode == 0);
+        RequireContains(result.stdoutText, "[converge] completed");
+        RequireNotContains(result.stdoutText, "Converge agent intent commit plan");
+
+        const auto actualHead = RunGit({"rev-parse", "HEAD"}, ctx.cloneRepo);
+        const auto originHead = RunGit({"rev-parse", "origin/" + ctx.branch}, ctx.cloneRepo);
+        RequireSuccess(actualHead, "resolve final local head");
+        RequireSuccess(originHead, "resolve final origin head");
+        REQUIRE(actualHead.stdoutText == expectedHead.stdoutText);
+        REQUIRE(originHead.stdoutText == expectedHead.stdoutText);
+        RequireContains(GitStatusShort(ctx.cloneRepo), trackedPlan.generic_string());
+
+        RemoveSandboxWorkspace(ctx.sandbox);
+    }
+}
+
 TEST_CASE("converge agent mode commits backlog changes by inferred intent", "[tdd][functional][feature:converge-state][converge][agent-mode][intent-commits]") {
     const auto ctx = CreateRemoteWithClone("converge-agent-intent-commits");
 

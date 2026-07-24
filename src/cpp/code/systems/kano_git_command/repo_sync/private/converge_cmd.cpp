@@ -560,6 +560,25 @@ bool IsUnmergedPorcelainStatus(const std::string& status) {
     return status[0] == 'U' || status[1] == 'U' || status == "AA" || status == "DD";
 }
 
+bool IsInternalConvergeArtifactPath(const std::string& path);
+
+bool IsInternalConvergePorcelainEntry(const std::string& line) {
+    if (line.size() < 4) {
+        return false;
+    }
+
+    const auto statusPayload = Trim(line.substr(3));
+    const auto arrow = statusPayload.find(" -> ");
+    if (arrow == std::string::npos) {
+        return IsInternalConvergeArtifactPath(statusPayload);
+    }
+
+    const auto originalPath = Trim(statusPayload.substr(0, arrow));
+    const auto currentPath = Trim(statusPayload.substr(arrow + 4));
+    return IsInternalConvergeArtifactPath(originalPath) &&
+           IsInternalConvergeArtifactPath(currentPath);
+}
+
 std::string DirtyKindFromPorcelain(const std::string& porcelain, int ahead, int behind) {
     bool any = false;
     bool allUntracked = true;
@@ -573,7 +592,7 @@ std::string DirtyKindFromPorcelain(const std::string& porcelain, int ahead, int 
         if (!line.empty() && line.back() == '\r') {
             line.pop_back();
         }
-        if (line.size() < 2) {
+        if (line.size() < 2 || IsInternalConvergePorcelainEntry(line)) {
             continue;
         }
         any = true;
@@ -1716,7 +1735,13 @@ std::vector<DirtyPathEntry> CollectDirtyEntries(const std::filesystem::path& rep
         if (!path.empty()) {
             entry.path = std::move(path);
             entry.statusKind = DirtyStatusKind(entry.rawStatus);
-            entries.push_back(std::move(entry));
+            const bool onlyInternalArtifacts =
+                IsInternalConvergeArtifactPath(entry.path) &&
+                (entry.originalPath.empty() ||
+                 IsInternalConvergeArtifactPath(entry.originalPath));
+            if (!onlyInternalArtifacts) {
+                entries.push_back(std::move(entry));
+            }
         }
     }
     std::sort(entries.begin(), entries.end(), [](const auto& a, const auto& b) {
