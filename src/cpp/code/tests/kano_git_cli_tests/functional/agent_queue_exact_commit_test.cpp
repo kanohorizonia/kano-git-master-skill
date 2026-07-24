@@ -121,6 +121,54 @@ TEST_CASE("exact-path commit isolates add modify delete and rename from unrelate
     RemoveSandboxWorkspace(sandbox);
 }
 
+TEST_CASE("exact-path stages tracked deletions beneath a newly selected ignore rule",
+          "[functional][exact-path][KG-BUG-0083]") {
+    auto [sandbox, repo] = InitRepo("exact-path-ignored-tracked-deletion", {
+        ".gitignore", ".kano/tmp/tracked.json", "staged.txt",
+    });
+    WriteText(repo / ".gitignore", ".kano/tmp/\n");
+    std::filesystem::remove(repo / ".kano/tmp/tracked.json");
+    WriteText(repo / "staged.txt", "unrelated staged\n");
+    RequireSuccess(RunGit({"add", "staged.txt"}, repo), "stage unrelated file");
+    const auto stagedBefore = GitOutput(repo, {"ls-files", "--stage", "staged.txt"});
+
+    const auto result = RunKog({
+        "commit", "--exact-path", ".gitignore",
+        "--exact-path", ".kano/tmp/tracked.json",
+        "-m", "[Test][BugFix] remove newly ignored tracked file",
+    }, repo);
+    RequireSuccess(result, "exact-path ignored tracked deletion commit");
+    RequireContains(result.stdoutText, "\"status\": \"committed\"");
+    const auto includedReceipt = JsonArrayForKey(result.stdoutText, "included");
+    RequireContains(includedReceipt, ".gitignore");
+    RequireContains(includedReceipt, ".kano/tmp/tracked.json");
+
+    const auto committed = GitOutput(
+        repo,
+        {"diff-tree", "--no-commit-id", "--name-only", "-r", "--no-renames", "HEAD"});
+    RequireContains(committed, ".gitignore");
+    RequireContains(committed, ".kano/tmp/tracked.json");
+    REQUIRE(committed.find("staged.txt") == std::string::npos);
+    REQUIRE(GitOutput(repo, {"ls-files", "--stage", "staged.txt"}) == stagedBefore);
+
+    WriteText(repo / ".kano/tmp/untracked.json", "{\"ignored\":true}\n");
+    const auto headBeforeRejectedAdd = GitOutput(repo, {"rev-parse", "HEAD"});
+    const auto rejected = RunKog({
+        "commit", "--exact-path", ".kano/tmp/untracked.json",
+        "-m", "[Test][BugFix] must not force add ignored untracked file",
+    }, repo);
+    INFO(rejected.stdoutText);
+    INFO(rejected.stderrText);
+    REQUIRE(rejected.exitCode != 0);
+    RequireContains(
+        rejected.stdoutText + "\n" + rejected.stderrText,
+        "\"blocker\": \"exact_stage_failed\"");
+    REQUIRE(GitOutput(repo, {"rev-parse", "HEAD"}) == headBeforeRejectedAdd);
+    REQUIRE(GitOutput(repo, {"ls-files", "--stage", "staged.txt"}) == stagedBefore);
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
 TEST_CASE("exact-path dry-run accepts explicit no-recursive without mutation",
           "[functional][KG-TSK-0112][KG-BUG-0058][KG-BUG-0061][dry-run]") {
     auto [sandbox, repo] = InitRepo("exact-path-preview", {"selected.txt", "excluded.txt"});

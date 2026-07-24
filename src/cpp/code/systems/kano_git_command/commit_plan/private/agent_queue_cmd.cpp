@@ -925,11 +925,38 @@ auto RunExactPathCommit(const ExactPathCommitOptions& InOptions) -> int {
         if (result.exitCode != 0) {
             return PrintError("temporary_index_failed", Trim(result.stderrStr));
         }
-        std::vector<std::string> addArgs{"add", "-A", "--"};
-        addArgs.insert(addArgs.end(), paths->begin(), paths->end());
-        result = GitCapture(context->repo, addArgs);
-        if (result.exitCode != 0) {
-            return PrintError("exact_stage_failed", Trim(result.stderrStr));
+
+        std::vector<std::string> trackedPaths;
+        std::vector<std::string> addedPaths;
+        for (const auto& path : *paths) {
+            const auto tracked = GitCapture(
+                context->repo,
+                {"-c", "core.quotepath=false", "ls-tree", "--name-only", "HEAD", "--", path});
+            if (tracked.exitCode != 0) {
+                return PrintError("exact_stage_failed", Trim(tracked.stderrStr));
+            }
+            if (Trim(tracked.stdoutStr).empty()) {
+                addedPaths.push_back(path);
+            } else {
+                trackedPaths.push_back(path);
+            }
+        }
+
+        if (!trackedPaths.empty()) {
+            std::vector<std::string> updateArgs{"add", "-u", "--"};
+            updateArgs.insert(updateArgs.end(), trackedPaths.begin(), trackedPaths.end());
+            result = GitCapture(context->repo, updateArgs);
+            if (result.exitCode != 0) {
+                return PrintError("exact_stage_failed", Trim(result.stderrStr));
+            }
+        }
+        if (!addedPaths.empty()) {
+            std::vector<std::string> addArgs{"add", "--"};
+            addArgs.insert(addArgs.end(), addedPaths.begin(), addedPaths.end());
+            result = GitCapture(context->repo, addArgs);
+            if (result.exitCode != 0) {
+                return PrintError("exact_stage_failed", Trim(result.stderrStr));
+            }
         }
         result = GitCapture(context->repo, {"-c", "core.quotepath=false", "diff", "--cached", "--name-only", "--no-renames"});
         if (result.exitCode != 0) {
