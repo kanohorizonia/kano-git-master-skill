@@ -6108,12 +6108,19 @@ void ConfigureCommitCommand(CLI::App& InApp) {
             }
 
             const auto syntheticPlanPath = DefaultMessagePlanOutputPath(workspaceRoot, *message);
+            std::filesystem::path writtenSyntheticPlanPath;
             std::string syntheticPlanError;
-            if (!WriteSyntheticMessageCommitPlan(workspaceRoot, planRepos, *message, syntheticPlanPath, &syntheticPlanError)) {
+            if (!WriteSyntheticMessageCommitPlan(
+                    workspaceRoot,
+                    planRepos,
+                    *message,
+                    syntheticPlanPath,
+                    &writtenSyntheticPlanPath,
+                    &syntheticPlanError)) {
                 std::cerr << "Error: failed to synthesize message-driven commit plan: " << syntheticPlanError << "\n";
                 std::exit(2);
             }
-            *commitPlanFile = syntheticPlanPath.generic_string();
+            *commitPlanFile = writtenSyntheticPlanPath.generic_string();
             synthesizedMessagePlan = true;
             std::cout << "[native-commit] synthesized plan file: " << *commitPlanFile << "\n";
         }

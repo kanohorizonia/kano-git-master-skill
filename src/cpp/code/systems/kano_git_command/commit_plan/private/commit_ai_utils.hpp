@@ -83,6 +83,7 @@ auto WriteSyntheticMessageCommitPlan(const std::filesystem::path& InWorkspaceRoo
                                      const std::vector<workspace::RepoRecord>& InRepoRecords,
                                      const std::string& InMessage,
                                      const std::filesystem::path& InOutPath,
+                                     std::filesystem::path* OutWrittenPath,
                                      std::string* OutError) -> bool;
 
 // Config/Cache helpers

@@ -1632,6 +1632,7 @@ auto WriteSyntheticMessageCommitPlan(const std::filesystem::path& InWorkspaceRoo
                                      const std::vector<workspace::RepoRecord>& InRepoRecords,
                                      const std::string& InMessage,
                                      const std::filesystem::path& InOutPath,
+                                     std::filesystem::path* OutWrittenPath,
                                      std::string* OutError) -> bool {
     const auto generatedAtUtc = CurrentUtcTimestampIso8601ForSyntheticPlan();
     const auto baseHeadSha = ComputeWorkspaceBaseHeadSha(InWorkspaceRoot);
@@ -1686,31 +1687,74 @@ auto WriteSyntheticMessageCommitPlan(const std::filesystem::path& InWorkspaceRoo
     json << "  }\n";
     json << "}\n";
 
-    std::error_code ec;
-    std::filesystem::create_directories(InOutPath.parent_path(), ec);
-    if (ec) {
+    const auto writePlan = [&json](const std::filesystem::path& InPath,
+                                   std::string* OutWriteError) -> bool {
+        std::error_code ec;
+        std::filesystem::create_directories(InPath.parent_path(), ec);
+        if (ec) {
+            if (OutWriteError != nullptr) {
+                *OutWriteError = std::string{"create directory failed: "} + ec.message();
+            }
+            return false;
+        }
+
+        std::ofstream out(InPath, std::ios::out | std::ios::binary | std::ios::trunc);
+        if (!out) {
+            if (OutWriteError != nullptr) {
+                *OutWriteError = "open file for write failed";
+            }
+            return false;
+        }
+        out << json.str();
+        out.close();
+        if (!out) {
+            if (OutWriteError != nullptr) {
+                *OutWriteError = "write file failed";
+            }
+            return false;
+        }
+        return true;
+    };
+
+    const auto preferredPath = InOutPath.lexically_normal();
+    std::string preferredError;
+    if (writePlan(preferredPath, &preferredError)) {
+        if (OutWrittenPath != nullptr) {
+            *OutWrittenPath = preferredPath;
+        }
         if (OutError != nullptr) {
-            *OutError = std::string{"failed to create synthetic plan directory: "} + ec.message();
+            OutError->clear();
+        }
+        return true;
+    }
+
+    const auto workspacePath =
+        (InWorkspaceRoot / ".kano" / "cache" / "git" / "plans" / preferredPath.filename())
+            .lexically_normal();
+    if (workspacePath != preferredPath) {
+        std::string workspaceError;
+        if (writePlan(workspacePath, &workspaceError)) {
+            if (OutWrittenPath != nullptr) {
+                *OutWrittenPath = workspacePath;
+            }
+            if (OutError != nullptr) {
+                OutError->clear();
+            }
+            return true;
+        }
+        if (OutError != nullptr) {
+            *OutError = "preferred path '" + preferredPath.generic_string() + "': " +
+                        preferredError + "; workspace fallback '" +
+                        workspacePath.generic_string() + "': " + workspaceError;
         }
         return false;
     }
 
-    std::ofstream out(InOutPath, std::ios::out | std::ios::binary | std::ios::trunc);
-    if (!out) {
-        if (OutError != nullptr) {
-            *OutError = "failed to open synthetic plan file for write";
-        }
-        return false;
+    if (OutError != nullptr) {
+        *OutError = "workspace path '" + workspacePath.generic_string() + "': " +
+                    preferredError;
     }
-    out << json.str();
-    out.close();
-    if (!out) {
-        if (OutError != nullptr) {
-            *OutError = "failed to write synthetic plan file";
-        }
-        return false;
-    }
-    return true;
+    return false;
 }
 
 auto BuildCommitScopeRecords(const std::filesystem::path& InWorkspaceRoot,

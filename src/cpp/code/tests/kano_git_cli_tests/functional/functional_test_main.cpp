@@ -2650,7 +2650,8 @@ TEST_CASE("commit_auto_ignores_unreal_artifacts_in_root_and_submodule", "[functi
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
-TEST_CASE("commit no-recursive message plan avoids child repository probes", "[functional][commit][no-recursive][staged-only][KG-BUG-0043]") {
+TEST_CASE("commit no-recursive message plan avoids child probes and falls back from an unusable global cache",
+          "[functional][commit][no-recursive][staged-only][KG-BUG-0043][KG-BUG-0081]") {
     const auto ctx = CreateRemoteWithSubmoduleClone("commit-no-recursive-repo-freshness");
     const auto diagPath = (ctx.sandbox.root / "commit-no-recursive-process.log").lexically_normal();
     std::filesystem::remove(diagPath);
@@ -2681,6 +2682,12 @@ TEST_CASE("commit no-recursive message plan avoids child repository probes", "[f
         ReadTextFile(preflightDiagPath),
         "[process-diag] cwd=" + ctx.cloneChildRepo.lexically_normal().generic_string());
 
+    const auto blockedGlobalCache = (ctx.sandbox.root / "blocked-global-cache").lexically_normal();
+    WriteTextFile(blockedGlobalCache, "not a directory\n");
+    RequireSuccess(
+        RunGit({"config", "kano.cache.global-dir", blockedGlobalCache.string()}, ctx.cloneRootRepo),
+        "configure unusable global cache root");
+
     const auto result = RunKogWithEnv(
         {"commit", "--no-recursive", "--staged-only", "-m",
          "test(functional): repo-only plan freshness"},
@@ -2697,9 +2704,14 @@ TEST_CASE("commit no-recursive message plan avoids child repository probes", "[f
     RequireContainsText(merged, "mode=repo");
     REQUIRE(merged.find("mode=registered-only") == std::string::npos);
     RequireContainsText(merged, "Repo: . already on branch");
+    const auto workspacePlanDir =
+        (ctx.cloneRootRepo / ".kano" / "cache" / "git" / "plans").lexically_normal();
+    RequireContainsText(merged, workspacePlanDir.generic_string());
+    REQUIRE(std::filesystem::is_directory(workspacePlanDir));
     REQUIRE(merged.find("Repo: " + ctx.submodulePath) == std::string::npos);
     RequireNotContainsText(merged, ctx.cloneChildRepo.lexically_normal().generic_string());
     REQUIRE(StatusPorcelain(ctx.cloneChildRepo).find("child.txt") != std::string::npos);
+    REQUIRE(StatusPorcelain(ctx.cloneRootRepo).find(".kano") == std::string::npos);
     REQUIRE(std::filesystem::exists(diagPath));
     const auto diagnostics = ReadTextFile(diagPath);
     RequireNotContainsText(
