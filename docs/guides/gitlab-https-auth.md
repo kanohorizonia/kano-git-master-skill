@@ -54,7 +54,9 @@ Access applications.
 ```
 
 Use `--gcm-path /absolute/path/to/git-credential-manager` when GCM is managed
-separately. `pat` is the default auth mode for a private GitLab instance.
+separately. KOG accepts only an executable with a GCM executable name that
+successfully answers a non-secret `--version` probe. `pat` is the default auth
+mode for a private GitLab instance.
 `browser` requires the instance administrator or user to configure a suitable
 public OAuth application for GCM. `basic` is available only when the GitLab
 instance permits it.
@@ -68,7 +70,8 @@ embed it in `https://user:token@host/...`.
 
 ```bash
 ./scripts/kog auth https doctor \
-  --hostname gitlab.example.com
+  --hostname gitlab.example.com \
+  --auth-mode pat
 
 ./scripts/kog auth doctor \
   --url https://gitlab.example.com/group/repository.git
@@ -80,6 +83,10 @@ git clone \
   https://gitlab.example.com/group/repository.git \
   /path/to/temporary/checkout
 ```
+
+The HTTPS doctor requires the configured auth mode to match `--auth-mode`. When
+`--username` is provided, it also requires that exact configured username; an
+omitted username is not part of readiness.
 
 For a Cloudflare-protected instance, also verify:
 

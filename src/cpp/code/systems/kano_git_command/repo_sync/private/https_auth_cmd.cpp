@@ -15,6 +15,10 @@
 #include <string>
 #include <vector>
 
+#if !defined(_WIN32)
+#include <unistd.h>
+#endif
+
 namespace kano::git::commands {
 namespace {
 
@@ -66,9 +70,62 @@ auto IsValidVersion(const std::string& InVersion) -> bool {
            });
 }
 
-auto IsExecutableFile(const std::filesystem::path& InPath) -> bool {
+auto IsRegularFile(const std::filesystem::path& InPath) -> bool {
     std::error_code ec;
     return std::filesystem::is_regular_file(InPath, ec) && !ec;
+}
+
+auto IsExecutableFile(const std::filesystem::path& InPath) -> bool {
+    if (!IsRegularFile(InPath)) {
+        return false;
+    }
+#if defined(_WIN32)
+    return true;
+#else
+    return ::access(InPath.c_str(), X_OK) == 0;
+#endif
+}
+
+auto ToLower(std::string InValue) -> std::string {
+    std::transform(
+        InValue.begin(),
+        InValue.end(),
+        InValue.begin(),
+        [](const unsigned char InCharacter) {
+            return static_cast<char>(std::tolower(InCharacter));
+        });
+    return InValue;
+}
+
+auto IsGcmExecutableName(const std::filesystem::path& InPath) -> bool {
+    const auto filename = ToLower(InPath.filename().string());
+    return filename.find("git-credential-manager") != std::string::npos;
+}
+
+auto IsRunnableGcm(const std::filesystem::path& InPath) -> bool {
+    if (!InPath.is_absolute() ||
+        !IsGcmExecutableName(InPath) ||
+        !IsExecutableFile(InPath)) {
+        return false;
+    }
+
+    const auto result = shell::ExecuteCommand(
+        InPath.string(),
+        {"--version"},
+        shell::ExecMode::Capture,
+        std::filesystem::current_path());
+    if (result.exitCode != 0) {
+        return false;
+    }
+
+    const auto versionText = result.stdoutStr + "\n" + result.stderrStr;
+    const bool hasDigit = std::any_of(
+        versionText.begin(),
+        versionText.end(),
+        [](const unsigned char InCharacter) {
+            return std::isdigit(InCharacter) != 0;
+        });
+    return hasDigit && versionText.find('.') != std::string::npos;
 }
 
 auto GitCapture(const std::vector<std::string>& InArgs) -> shell::ExecResult {
@@ -112,9 +169,7 @@ auto GlobalGitConfigValue(const std::string& InKey) -> std::optional<std::string
 auto ResolveConfiguredGcmPath() -> std::optional<std::filesystem::path> {
     for (const auto& helper : GlobalGitConfigValues("credential.helper")) {
         const std::filesystem::path candidate{helper};
-        if (candidate.is_absolute() &&
-            candidate.filename().string().find("git-credential-manager") != std::string::npos &&
-            IsExecutableFile(candidate)) {
+        if (IsRunnableGcm(candidate)) {
             return candidate;
         }
     }
@@ -151,9 +206,11 @@ auto ResolveExecutableOnPath(const std::string& InExecutable)
 
 auto ResolveGcmPath(const std::string& InExplicitPath) -> std::optional<std::filesystem::path> {
     if (!InExplicitPath.empty()) {
-        const auto explicitPath = std::filesystem::path{InExplicitPath};
-        if (IsExecutableFile(explicitPath)) {
-            return std::filesystem::absolute(explicitPath);
+        std::error_code ec;
+        const auto explicitPath =
+            std::filesystem::absolute(std::filesystem::path{InExplicitPath}, ec);
+        if (!ec && IsRunnableGcm(explicitPath)) {
+            return explicitPath;
         }
         return std::nullopt;
     }
@@ -162,13 +219,9 @@ auto ResolveGcmPath(const std::string& InExplicitPath) -> std::optional<std::fil
         return configured;
     }
 
-    const auto direct = shell::ExecuteCommand(
-        "git-credential-manager",
-        {"--version"},
-        shell::ExecMode::Capture,
-        std::filesystem::current_path());
-    if (direct.exitCode == 0) {
-        return ResolveExecutableOnPath("git-credential-manager");
+    if (const auto directPath = ResolveExecutableOnPath("git-credential-manager");
+        directPath.has_value() && IsRunnableGcm(*directPath)) {
+        return directPath;
     }
     return std::nullopt;
 }
@@ -239,7 +292,7 @@ auto InstallGcm(const HttpsAuthOptions& InOptions,
     }
 
     const auto installPath = UserInstallPath(InHome, InOptions.gcmVersion);
-    if (IsExecutableFile(installPath)) {
+    if (IsRunnableGcm(installPath)) {
         return installPath;
     }
 
@@ -304,7 +357,7 @@ auto InstallGcm(const HttpsAuthOptions& InOptions,
         shell::ExecMode::PassThrough,
         std::filesystem::current_path());
     std::filesystem::remove(archivePath, ec);
-    if (extract.exitCode != 0 || !IsExecutableFile(installPath)) {
+    if (extract.exitCode != 0 || !IsRegularFile(installPath)) {
         std::cerr << "Failed to extract a usable Git Credential Manager executable.\n";
         return std::nullopt;
     }
@@ -314,7 +367,7 @@ auto InstallGcm(const HttpsAuthOptions& InOptions,
         std::filesystem::perms::owner_exec,
         std::filesystem::perm_options::add,
         ec);
-    if (ec) {
+    if (ec || !IsRunnableGcm(installPath)) {
         std::cerr << "Failed to make Git Credential Manager executable: " << ec.message() << "\n";
         return std::nullopt;
     }
@@ -457,10 +510,16 @@ auto RunDoctor(const std::shared_ptr<HttpsAuthOptions>& InOptions) -> void {
     const auto authMode = GlobalGitConfigValue(authModeKey);
     const auto username = GlobalGitConfigValue(usernameKey);
     const bool helperConfigured = gcmPath.has_value() && IsConfiguredHelper(*gcmPath);
+    const bool authModeMatches =
+        authMode.has_value() && authMode.value() == InOptions->authMode;
+    const bool usernameMatches =
+        InOptions->username.empty() ||
+        (username.has_value() && username.value() == InOptions->username);
     const bool ready = gcmPath.has_value() &&
                        helperConfigured &&
                        provider.value_or("") == "gitlab" &&
-                       authMode.has_value();
+                       authModeMatches &&
+                       usernameMatches;
 
     std::cout << "hostname=" << InOptions->hostname << "\n";
     std::cout << "gcm="
@@ -470,7 +529,13 @@ auto RunDoctor(const std::shared_ptr<HttpsAuthOptions>& InOptions) -> void {
               << (helperConfigured ? "configured" : "missing") << "\n";
     std::cout << "provider=" << provider.value_or("missing") << "\n";
     std::cout << "auth_mode=" << authMode.value_or("missing") << "\n";
+    std::cout << "auth_mode_expected=" << InOptions->authMode << "\n";
+    std::cout << "auth_mode_match=" << (authModeMatches ? "true" : "false") << "\n";
     std::cout << "username=" << username.value_or("unset") << "\n";
+    if (!InOptions->username.empty()) {
+        std::cout << "username_expected=" << InOptions->username << "\n";
+        std::cout << "username_match=" << (usernameMatches ? "true" : "false") << "\n";
+    }
     std::cout << "status=" << (ready ? "ready" : "not-ready") << "\n";
     if (!ready) {
         std::exit(1);

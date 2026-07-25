@@ -21,24 +21,34 @@ auto ReadTextFile(const std::filesystem::path& InPath) -> std::string {
 }
 
 auto CreateFakeGcm(const std::filesystem::path& InPath) -> void {
-    std::ofstream output(InPath, std::ios::binary | std::ios::trunc);
 #if defined(_WIN32)
-    output << "@echo off\r\n"
-              "echo 2.9.1-test\r\n"
-              "exit /b 0\r\n";
+    std::error_code ec;
+    std::filesystem::copy_file(
+        ResolveKogBinaryPath(),
+        InPath,
+        std::filesystem::copy_options::overwrite_existing,
+        ec);
+    REQUIRE_FALSE(ec);
 #else
+    std::ofstream output(InPath, std::ios::binary | std::ios::trunc);
     output << "#!/usr/bin/env sh\n"
               "printf '%s\\n' '2.9.1-test'\n";
-#endif
     output.close();
     REQUIRE(output.good());
-#if !defined(_WIN32)
     std::filesystem::permissions(
         InPath,
         std::filesystem::perms::owner_read |
             std::filesystem::perms::owner_write |
-            std::filesystem::perms::owner_exec,
+        std::filesystem::perms::owner_exec,
         std::filesystem::perm_options::replace);
+#endif
+}
+
+auto FakeGcmPath(const std::filesystem::path& InRoot) -> std::filesystem::path {
+#if defined(_WIN32)
+    return InRoot / "git-credential-manager.exe";
+#else
+    return InRoot / "git-credential-manager";
 #endif
 }
 
@@ -59,7 +69,7 @@ TEST_CASE("https auth setup dry-run previews scoped configuration without writin
           "[functional][auth][https]") {
     const auto sandbox = CreateSandboxWorkspace("https-auth-dry-run");
     const auto home = sandbox.root / "home";
-    const auto fakeGcm = sandbox.root / "git-credential-manager";
+    const auto fakeGcm = FakeGcmPath(sandbox.root);
     std::filesystem::create_directories(home);
     CreateFakeGcm(fakeGcm);
 
@@ -129,7 +139,7 @@ TEST_CASE("https auth setup is confirm-gated idempotent and doctor-verifiable",
           "[functional][auth][https]") {
     const auto sandbox = CreateSandboxWorkspace("https-auth-setup");
     const auto home = sandbox.root / "home";
-    const auto fakeGcm = sandbox.root / "git-credential-manager";
+    const auto fakeGcm = FakeGcmPath(sandbox.root);
     std::filesystem::create_directories(home);
     CreateFakeGcm(fakeGcm);
     const auto env = HttpsAuthEnvironment(home);
@@ -180,9 +190,129 @@ TEST_CASE("https auth setup is confirm-gated idempotent and doctor-verifiable",
     REQUIRE(doctor.stdoutText.find("credential_helper=configured") != std::string::npos);
     REQUIRE(doctor.stdoutText.find("provider=gitlab") != std::string::npos);
     REQUIRE(doctor.stdoutText.find("auth_mode=pat") != std::string::npos);
+    REQUIRE(doctor.stdoutText.find("auth_mode_match=true") != std::string::npos);
     REQUIRE(doctor.stdoutText.find("status=ready") != std::string::npos);
+
+    const auto authModeMismatch = RunKogWithEnv(
+        {
+            "auth",
+            "https",
+            "doctor",
+            "--hostname",
+            "gitlab.example.com",
+            "--auth-mode",
+            "browser",
+            "--gcm-path",
+            fakeGcm.string(),
+        },
+        sandbox.root,
+        env);
+    INFO(authModeMismatch.stdoutText);
+    INFO(authModeMismatch.stderrText);
+    REQUIRE(authModeMismatch.exitCode != 0);
+    REQUIRE(authModeMismatch.stdoutText.find("auth_mode_match=false") != std::string::npos);
+    REQUIRE(authModeMismatch.stdoutText.find("status=not-ready") != std::string::npos);
+
+    const auto usernameMismatch = RunKogWithEnv(
+        {
+            "auth",
+            "https",
+            "doctor",
+            "--hostname",
+            "gitlab.example.com",
+            "--username",
+            "other-user",
+            "--gcm-path",
+            fakeGcm.string(),
+        },
+        sandbox.root,
+        env);
+    INFO(usernameMismatch.stdoutText);
+    INFO(usernameMismatch.stderrText);
+    REQUIRE(usernameMismatch.exitCode != 0);
+    REQUIRE(usernameMismatch.stdoutText.find("username_match=false") != std::string::npos);
+    REQUIRE(usernameMismatch.stdoutText.find("status=not-ready") != std::string::npos);
+
+    const auto usernameMatch = RunKogWithEnv(
+        {
+            "auth",
+            "https",
+            "doctor",
+            "--hostname",
+            "gitlab.example.com",
+            "--username",
+            "kano-user",
+            "--gcm-path",
+            fakeGcm.string(),
+        },
+        sandbox.root,
+        env);
+    INFO(usernameMatch.stdoutText);
+    INFO(usernameMatch.stderrText);
+    REQUIRE(usernameMatch.exitCode == 0);
+    REQUIRE(usernameMatch.stdoutText.find("username_match=true") != std::string::npos);
 
     RemoveSandboxWorkspace(sandbox);
 }
+
+TEST_CASE("https auth setup rejects an arbitrary executable",
+          "[functional][auth][https]") {
+    const auto sandbox = CreateSandboxWorkspace("https-auth-arbitrary-executable");
+    const auto home = sandbox.root / "home";
+    std::filesystem::create_directories(home);
+
+    const auto result = RunKogWithEnv(
+        {
+            "auth",
+            "https",
+            "setup",
+            "--hostname",
+            "gitlab.example.com",
+            "--gcm-path",
+            ResolveKogBinaryPath().string(),
+            "--dry-run",
+        },
+        sandbox.root,
+        HttpsAuthEnvironment(home));
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode != 0);
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
+#if !defined(_WIN32)
+TEST_CASE("https auth setup rejects a non-executable GCM file",
+          "[functional][auth][https]") {
+    const auto sandbox = CreateSandboxWorkspace("https-auth-non-executable");
+    const auto home = sandbox.root / "home";
+    const auto fakeGcm = FakeGcmPath(sandbox.root);
+    std::filesystem::create_directories(home);
+    CreateFakeGcm(fakeGcm);
+    std::filesystem::permissions(
+        fakeGcm,
+        std::filesystem::perms::owner_exec,
+        std::filesystem::perm_options::remove);
+
+    const auto result = RunKogWithEnv(
+        {
+            "auth",
+            "https",
+            "setup",
+            "--hostname",
+            "gitlab.example.com",
+            "--gcm-path",
+            fakeGcm.string(),
+            "--dry-run",
+        },
+        sandbox.root,
+        HttpsAuthEnvironment(home));
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode != 0);
+
+    RemoveSandboxWorkspace(sandbox);
+}
+#endif
 
 } // namespace kano::git::tests::functional
