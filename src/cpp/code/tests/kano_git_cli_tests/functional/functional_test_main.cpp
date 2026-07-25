@@ -1085,6 +1085,90 @@ TEST_CASE("commit_push_plan_file_ignores_out_of_scope_post_sync_gitlinks", "[fun
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("commit_push_plan_file_auto_amends_in_scope_post_sync_gitlinks",
+          "[functional][commit-push][plan-file][post-sync][pathspec]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("plan-file-post-sync-auto-amend");
+
+    WriteTextFile(ctx.cloneChildRepo / "child.txt", "child published in-scope update\n");
+    RequireSuccess(RunGit({"add", "child.txt"}, ctx.cloneChildRepo), "child add in-scope update");
+    RequireSuccess(RunGit({"commit", "-m", "child in-scope update"}, ctx.cloneChildRepo), "child commit in-scope update");
+    RequireSuccess(
+        RunGit({"push", "origin", "HEAD:" + ctx.branch}, ctx.cloneChildRepo),
+        "publish child in-scope update");
+    const auto expectedChildHead = CurrentHeadSha(ctx.cloneChildRepo);
+
+    WriteTextFile(ctx.cloneRootRepo / "README.md", "root seed\nroot scoped update\n");
+    const auto planPath =
+        (ctx.cloneRootRepo / ".kano" / "cache" / "git" / "plans" / "post-sync-auto-amend.json").lexically_normal();
+    RequireSuccess(RunKog({"plan", "new", "--force", "--output", planPath.string()}, ctx.cloneRootRepo), "plan new");
+    const auto freshPlanText = ReadTextFile(planPath);
+    const auto baseHeadSha = ExtractJsonStringField(freshPlanText, "base_head_sha");
+    const auto dirtyFingerprint = ExtractJsonStringField(freshPlanText, "dirty_fingerprint");
+    auto scopedPlanText = std::string(R"json({
+  "meta": {
+    "schema_version": "2",
+    "plan_id": "functional-post-sync-auto-amend",
+    "generated_at_utc": "2026-07-26T00:00:00Z",
+    "executed_at_utc": "",
+    "base_head_sha": "KOG_BASE_HEAD_SHA",
+    "dirty_fingerprint": "KOG_DIRTY_FINGERPRINT",
+    "planner": { "provider": "human", "ai-model": "deterministic" },
+    "review": { "verdict": "pass", "reason": "functional regression for in-scope post-sync gitlinks" }
+  },
+  "stages": {
+    "commit": [
+      {
+        "repo": ".",
+        "commits": [
+          {
+            "message": "test(functional): root scoped auto-amend update",
+            "include": ["README.md"],
+            "exclude": [],
+            "review": { "verdict": "pass", "reason": "commit only the scoped root update" }
+          }
+        ]
+      }
+    ],
+    "post_sync": [
+      {
+        "repo": ".",
+        "commits": [
+          {
+            "message": "test(functional): in-scope post-sync gitlink",
+            "include": ["deps/child"],
+            "exclude": [],
+            "review": { "verdict": "pass", "reason": "auto-amend the published submodule pointer" }
+          }
+        ]
+      }
+    ]
+  }
+}
+)json");
+    const auto baseMarker = std::string("KOG_BASE_HEAD_SHA");
+    const auto dirtyMarker = std::string("KOG_DIRTY_FINGERPRINT");
+    const auto baseMarkerPos = scopedPlanText.find(baseMarker);
+    REQUIRE(baseMarkerPos != std::string::npos);
+    scopedPlanText.replace(baseMarkerPos, baseMarker.size(), baseHeadSha);
+    const auto dirtyMarkerPos = scopedPlanText.find(dirtyMarker);
+    REQUIRE(dirtyMarkerPos != std::string::npos);
+    scopedPlanText.replace(dirtyMarkerPos, dirtyMarker.size(), dirtyFingerprint);
+    WriteTextFile(planPath, scopedPlanText);
+
+    const auto result = RunKog({"commit-push", "--plan-file", planPath.string()}, ctx.cloneRootRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContainsText(result.stdoutText, "post-sync gitlink-only auto-amend applied: repos=1");
+    RequireNotContainsText(result.stdoutText, "post-sync semantic changes detected");
+    REQUIRE(GitlinkHeadSha(ctx.cloneRootRepo, ctx.submodulePath) == expectedChildHead);
+    REQUIRE(TrimCopy(StatusPorcelain(ctx.cloneRootRepo)).empty());
+    const auto [behind, ahead] = AheadBehindCounts(ctx.cloneRootRepo);
+    REQUIRE(behind == 0);
+    REQUIRE(ahead == 0);
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("sync_none_continues", "[functional][commit-push][post-sync]") {
     const auto ctx = CreateRemoteWithClone("sync-none");
     WriteTextFile(ctx.cloneRepo / "README.md", "seed\nlocal update\n");
@@ -1203,6 +1287,38 @@ TEST_CASE("sync_semantic_drift_reaches_post_sync_commit_stage", "[functional][co
     REQUIRE(merged.find("post-sync semantic changes detected; proceeding to post-sync commit stage") != std::string::npos);
     REQUIRE(merged.find("Preflight blocked: --staged-only but nothing staged") != std::string::npos);
     REQUIRE(std::filesystem::exists(ctx.cloneRepo / "leftover.txt"));
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("sync_mixed_semantic_and_gitlink_drift_never_auto_amends", "[functional][commit-push][post-sync]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("sync-mixed-semantic-gitlink");
+    const auto originalGitlinkHead = GitlinkHeadSha(ctx.cloneRootRepo, ctx.submodulePath);
+
+    WriteTextFile(ctx.cloneChildRepo / "child.txt", "child published mixed-drift update\n");
+    RequireSuccess(RunGit({"add", "child.txt"}, ctx.cloneChildRepo), "child add mixed-drift update");
+    RequireSuccess(RunGit({"commit", "-m", "child mixed-drift update"}, ctx.cloneChildRepo), "child commit mixed-drift update");
+    RequireSuccess(
+        RunGit({"push", "origin", "HEAD:" + ctx.branch}, ctx.cloneChildRepo),
+        "publish child mixed-drift update");
+    REQUIRE(CurrentHeadSha(ctx.cloneChildRepo) != originalGitlinkHead);
+
+    WriteTextFile(ctx.cloneRootRepo / "staged.txt", "staged\n");
+    WriteTextFile(ctx.cloneRootRepo / "leftover.txt", "leftover\n");
+    RequireSuccess(RunGit({"add", "staged.txt"}, ctx.cloneRootRepo), "stage mixed-drift staged-only file");
+
+    const auto result =
+        RunKog({"commit-push", "-m", "test(functional): mixed staged only", "--staged-only"}, ctx.cloneRootRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode != 0);
+    const auto merged = result.stdoutText + "\n" + result.stderrText;
+    RequireContainsText(merged, "post-sync semantic changes detected; proceeding to post-sync commit stage");
+    RequireContainsText(merged, "Preflight blocked: --staged-only but nothing staged");
+    RequireNotContainsText(merged, "post-sync gitlink-only auto-amend applied");
+    REQUIRE(GitlinkHeadSha(ctx.cloneRootRepo, ctx.submodulePath) == originalGitlinkHead);
+    const auto status = StatusPorcelain(ctx.cloneRootRepo);
+    RequireContainsText(status, ctx.submodulePath);
+    RequireContainsText(status, "leftover.txt");
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
