@@ -11,6 +11,7 @@ not current unless they are explicitly reintroduced and covered by smoke tests.
 ## Current Entry Points
 
 - [Current Command Surface](./guides/current-command-surface.md)
+- [Cloudflare Access SSH](./guides/cloudflare-access-ssh.md)
 - [KCC Commit Message Policy](./guides/kcc-commit-message-policy.md)
 - [Public Artifact Contract](./guides/public-artifact-contract.md)
 - [CI/CD Trigger Policy](./status/ci-cd-trigger-policy.md)

@@ -114,6 +114,11 @@ kog commit -m "chore: update workspace"
 kog commit-push -m "chore: update workspace"
 kog cpa
 
+# Cloudflare Access SSH for Git hosts
+kog auth cloudflare-ssh setup --hostname gitlab-ssh.example.com --install --dry-run
+kog auth cloudflare-ssh setup --hostname gitlab-ssh.example.com --install --confirm-host-write
+kog auth cloudflare-ssh doctor --hostname gitlab-ssh.example.com
+
 # Hygiene / export
 kog repo-hygiene check
 kog repo-hygiene fix

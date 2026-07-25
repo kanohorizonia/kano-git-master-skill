@@ -176,6 +176,9 @@ effective worker count.
 ./scripts/kog repo-hygiene fix
 ./scripts/kog auth doctor
 ./scripts/kog auth test --selected-remotes
+./scripts/kog auth cloudflare-ssh setup --hostname gitlab-ssh.example.com --install --dry-run
+./scripts/kog auth cloudflare-ssh setup --hostname gitlab-ssh.example.com --install --confirm-host-write
+./scripts/kog auth cloudflare-ssh doctor --hostname gitlab-ssh.example.com
 
 # Product export
 ./scripts/kog export --help
@@ -241,6 +244,16 @@ agent policy.
 `kog auth doctor` inspects Git Credential Manager-facing configuration without storing tokens. It redacts credentials in any explicit `--url` input and reports the selected remote auth surface for the current repo or discovered workspace repos.
 
 `kog auth test` runs a non-interactive `git ls-remote ... HEAD` probe against the selected remote set, a single configured remote, all local remotes, or an explicit URL. It does not write tokens into remotes, does not persist credentials, and treats file/local remotes as skipped rather than failed.
+
+`kog auth cloudflare-ssh setup` bootstraps client-side Cloudflare Access SSH for
+a single explicit Git hostname. It can install `cloudflared` through Homebrew on
+macOS or WinGet on Windows, then writes a bounded include in `~/.ssh/config` and
+a managed per-host fragment under `~/.ssh/config.d/`. Host writes are
+confirmation-gated, existing main SSH configuration is preserved, and the first
+change creates `~/.ssh/config.kog.bak`. Linux returns installation guidance
+instead of changing package repositories. `kog auth cloudflare-ssh doctor`
+checks the executable, include, and selected host block without mutating state.
+See [Cloudflare Access SSH](cloudflare-access-ssh.md).
 
 ## Sync and converge dry-run preflight
 

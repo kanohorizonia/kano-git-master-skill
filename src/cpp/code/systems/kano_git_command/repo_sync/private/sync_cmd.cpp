@@ -808,7 +808,10 @@ auto RunAuthProbe(const AuthTarget& InTarget, AuthProbeScope InScope) -> AuthPro
         return result;
     }
 
-    std::vector<std::string> args{"ls-remote", "--exit-code"};
+    // Authentication succeeds even when an empty repository has no HEAD ref.
+    // Omitting --exit-code preserves transport/auth failures while allowing a
+    // successful zero-match probe to return 0.
+    std::vector<std::string> args{"ls-remote"};
     if (InTarget.explicitUrl) {
         args.push_back(InTarget.remoteUrl);
     } else {

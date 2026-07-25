@@ -12,6 +12,8 @@ void RegisterAuth(CLI::App& InApp) {
     auto* cmd = InApp.add_subcommand("auth", "Credential manager diagnostics and non-interactive auth probes");
     const auto options = std::make_shared<AuthCommandOptions>();
 
+    RegisterCloudflareSsh(*cmd);
+
     auto* doctor = cmd->add_subcommand("doctor", "Inspect Git Credential Manager and selected remote auth configuration");
     doctor->add_option("--repo", options->doctor.repo, "Repository root used for config inspection and target discovery");
     doctor->add_option("--remote", options->doctor.remote, "Inspect a single configured remote in the current repository");

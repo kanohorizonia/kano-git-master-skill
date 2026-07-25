@@ -4,7 +4,13 @@
 #include <memory>
 #include <string>
 
+namespace CLI {
+class App;
+}
+
 namespace kano::git::commands {
+
+void RegisterCloudflareSsh(CLI::App& InAuth);
 
 struct AuthCommandOptions {
     struct Doctor {

@@ -102,6 +102,11 @@ productionizes that path.
 ./scripts/kog agent-queue status
 ./scripts/kog cpa
 
+# Cloudflare Access SSH for Git hosts
+./scripts/kog auth cloudflare-ssh setup --hostname gitlab-ssh.example.com --install --dry-run
+./scripts/kog auth cloudflare-ssh setup --hostname gitlab-ssh.example.com --install --confirm-host-write
+./scripts/kog auth cloudflare-ssh doctor --hostname gitlab-ssh.example.com
+
 # Repo hygiene and export
 ./scripts/kog repo-hygiene check
 ./scripts/kog repo-hygiene fix
@@ -113,6 +118,16 @@ productionizes that path.
 ./scripts/kog export upload --last
 ./scripts/kog export upload --last --target drive_sync --layout Kano/kog --copy-manifest --copy-sha256
 ```
+
+Cloudflare Access SSH setup keeps deployment-specific hostnames in command-line
+arguments instead of the skill source. On macOS and Windows, `--install` may
+install `cloudflared` through Homebrew or WinGet. The command manages a bounded
+include in the user's SSH config plus a per-host fragment, preserves a backup
+before the first main-config change, and requires `--confirm-host-write` before
+writing. Linux reports distribution-neutral installation guidance rather than
+changing package sources. Validate the result with `doctor`, `ssh -T git@HOST`,
+and `kog auth test --url git@HOST:GROUP/REPO.git`. See
+[`docs/guides/cloudflare-access-ssh.md`](docs/guides/cloudflare-access-ssh.md).
 
 Subtree standalone export notes:
 - `--subtree` accepts absolute or relative paths and exports exactly one archive.
