@@ -1962,6 +1962,78 @@ TEST_CASE("submodule_add_preserves_passthrough_for_initialized_remote", "[functi
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("plan_file_commit_push_converges_registered_submodule_child_before_parent",
+          "[functional][commit-push][plan-file][multi-repo][waves]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("plan-file-multi-repo-waves");
+    RequireSuccess(
+        RunGit({"checkout", "-B", ctx.branch, "origin/" + ctx.branch}, ctx.cloneChildRepo),
+        "attach child branch for plan commit");
+
+    WriteTextFile(ctx.cloneChildRepo / "child.txt", "child plan update\n");
+    WriteTextFile(ctx.cloneRootRepo / "README.md", "root seed\nroot plan update\n");
+
+    const auto planPath =
+        (ctx.cloneRootRepo / ".kano" / "cache" / "git" / "plans" / "multi-repo-waves.json").lexically_normal();
+    RequireSuccess(
+        RunKog({"plan", "new", "--force", "--output", planPath.string()}, ctx.cloneRootRepo),
+        "plan new for multi-repo waves");
+    RequireSuccess(
+        RunKog({
+            "plan", "prepare", "add-commit-entry",
+            "--plan-file", planPath.string(),
+            "--repo", ctx.submodulePath,
+            "--commit-message", "test(functional): child plan update",
+            "--commit-include", "child.txt",
+            "--commit-review-verdict", "pass",
+            "--commit-review-reason", "commit child before parent pointer"
+        }, ctx.cloneRootRepo),
+        "plan add child commit entry");
+    RequireSuccess(
+        RunKog({
+            "plan", "prepare", "add-commit-entry",
+            "--plan-file", planPath.string(),
+            "--repo", ".",
+            "--commit-message", "test(functional): parent plan update",
+            "--commit-include", "README.md",
+            "--commit-include", ctx.submodulePath,
+            "--commit-review-verdict", "pass",
+            "--commit-review-reason", "commit parent semantic change and materialized gitlink"
+        }, ctx.cloneRootRepo),
+        "plan add parent commit entry");
+    RequireSuccess(
+        RunKog({"plan", "verify", "pre-apply", "--stage", "commit", "--plan-file", planPath.string()}, ctx.cloneRootRepo),
+        "verify multi-repo wave plan");
+
+    const auto result = RunKog({"commit-push", "--plan-file", planPath.string()}, ctx.cloneRootRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    const auto mergedOutput = result.stdoutText + "\n" + result.stderrText;
+    RequireContainsText(mergedOutput, "[native-commit] plan: repos=2");
+    RequireContainsText(mergedOutput, "commit_waves=2 order=child-first");
+    const auto childCommitPosition = mergedOutput.find("[commit] deps/child");
+    const auto rootCommitMarker = "[commit] " + ctx.cloneRootRepo.filename().generic_string() + " (.)";
+    const auto rootCommitPosition = mergedOutput.find(rootCommitMarker);
+    REQUIRE(childCommitPosition != std::string::npos);
+    REQUIRE(rootCommitPosition != std::string::npos);
+    REQUIRE(childCommitPosition < rootCommitPosition);
+
+    const auto childHead = CurrentHeadSha(ctx.cloneChildRepo);
+    const auto rootHead = CurrentHeadSha(ctx.cloneRootRepo);
+    REQUIRE(GitlinkHeadSha(ctx.cloneRootRepo, ctx.submodulePath) == childHead);
+    REQUIRE(RefSha(ctx.childBareRemote, "refs/heads/" + ctx.branch) == childHead);
+    REQUIRE(RefSha(ctx.rootBareRemote, "refs/heads/" + ctx.branch) == rootHead);
+    const auto [childBehind, childAhead] = AheadBehindCounts(ctx.cloneChildRepo);
+    REQUIRE(childBehind == 0);
+    REQUIRE(childAhead == 0);
+    const auto [rootBehind, rootAhead] = AheadBehindCounts(ctx.cloneRootRepo);
+    REQUIRE(rootBehind == 0);
+    REQUIRE(rootAhead == 0);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("multi_repo_commit_push_pushes_root_and_registered_submodule", "[functional][commit-push][multi-repo]") {
     const auto ctx = CreateRemoteWithSubmoduleClone("multi-repo-registered");
 
@@ -2005,6 +2077,7 @@ TEST_CASE("multi_repo_commit_push_pushes_root_and_registered_submodule", "[funct
 
 TEST_CASE("multi_repo_commit_push_pushes_root_and_unregistered_nested_repo", "[functional][commit-push][multi-repo]") {
     const auto ctx = CreateRemoteWithNestedRepoClone("multi-repo-unregistered");
+    const auto nestedBeforeHead = CurrentHeadSha(ctx.cloneNestedRepo);
 
     WriteTextFile(ctx.cloneNestedRepo / "nested.txt", "nested local update\n");
     WriteTextFile(ctx.cloneRootRepo / "README.md", "root seed\nroot local update\n");
@@ -2014,10 +2087,25 @@ TEST_CASE("multi_repo_commit_push_pushes_root_and_unregistered_nested_repo", "[f
     INFO(result.stderrText);
     REQUIRE(result.exitCode == 0);
 
+    const auto mergedOutput = result.stdoutText + "\n" + result.stderrText;
+    RequireContainsText(mergedOutput, "[native-commit] plan: repos=2");
+    RequireContainsText(mergedOutput, "commit_waves=2 order=child-first");
+    const auto nestedCommitPosition = mergedOutput.find("[commit] nested/tool");
+    const auto rootCommitMarker = "[commit] " + ctx.cloneRootRepo.filename().generic_string() + " (.)";
+    const auto rootCommitPosition = mergedOutput.find(rootCommitMarker);
+    REQUIRE(nestedCommitPosition != std::string::npos);
+    REQUIRE(rootCommitPosition != std::string::npos);
+    REQUIRE(nestedCommitPosition < rootCommitPosition);
+
     const auto nestedHead = CurrentHeadSha(ctx.cloneNestedRepo);
     const auto rootHead = CurrentHeadSha(ctx.cloneRootRepo);
     REQUIRE_FALSE(nestedHead.empty());
     REQUIRE_FALSE(rootHead.empty());
+    REQUIRE(nestedHead != nestedBeforeHead);
+    const auto nestedContent = RunGit({"show", "HEAD:nested.txt"}, ctx.cloneNestedRepo);
+    RequireSuccess(nestedContent, "show committed nested content");
+    REQUIRE(nestedContent.stdoutText == "nested local update\n");
+    REQUIRE(GitlinkHeadSha(ctx.cloneRootRepo, ctx.nestedRepoPath) == nestedHead);
 
     const auto [rootBehind, rootAhead] = AheadBehindCounts(ctx.cloneRootRepo);
     REQUIRE(rootBehind == 0);

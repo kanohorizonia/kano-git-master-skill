@@ -78,7 +78,8 @@ EOF
   git -C "$work_dir" config user.email "kano-acceptance@example.com"
 
   printf 'seed\n' > "${work_dir}/README.md"
-  git -C "$work_dir" add README.md
+  printf '.kano/\n' > "${work_dir}/.gitignore"
+  git -C "$work_dir" add .gitignore README.md
   git -C "$work_dir" commit -q -m "chore(test): seed"
   git -C "$work_dir" branch -M main >/dev/null 2>&1 || true
 
@@ -107,91 +108,21 @@ latest_subject() {
 }
 
 write_explicit_plan() {
-  local case_dir="$1"
-  local message="$2"
-  local plan_file="$3"
-  python - <<'PY' "$case_dir" "$message" "$plan_file"
-import json, pathlib, subprocess, sys
+  local kog_cmd="$1"
+  local case_dir="$2"
+  local message="$3"
+  local plan_file="$4"
 
-case_dir = pathlib.Path(sys.argv[1])
-message = sys.argv[2]
-plan_file = pathlib.Path(sys.argv[3])
-work = case_dir / "work"
-env = {**dict(), **__import__('os').environ}
-env["HOME"] = str(case_dir / "home")
-env["USERPROFILE"] = str(case_dir / "home")
-env["GIT_CONFIG_GLOBAL"] = str(case_dir / "gitconfig")
-
-def run(*args):
-    return subprocess.run(args, cwd=str(work), env=env, capture_output=True, text=True, check=True).stdout.strip()
-
-def fnv1a64_hex(text: str) -> str:
-    h = 1469598103934665603
-    for b in text.encode("utf-8"):
-        h ^= b
-        h = (h * 1099511628211) & 0xFFFFFFFFFFFFFFFF
-    return f"{h:016x}"
-
-head = run("git", "rev-parse", "HEAD")
-base_head_sha = "ws-head-v2-" + fnv1a64_hex(f".\t{head}\n")
-status = run("git", "status", "--porcelain=v2", "--branch", "--untracked-files=normal", "--ignore-submodules=none")
-filtered = []
-for raw in status.splitlines():
-    t = raw.strip()
-    if not t:
-        continue
-    filtered.append(t)
-normalized = "\n".join(filtered).strip()
-branch_oid = "no-head"
-for line in normalized.splitlines():
-    if line.startswith("# branch.oid "):
-        value = line[len("# branch.oid "):].strip()
-        if value and value != "(initial)":
-            branch_oid = value
-        break
-status_fp = "clean" if not normalized else fnv1a64_hex(normalized)
-dirty = "ws-dirty-v2-" + fnv1a64_hex(f".|{branch_oid}|{status_fp}\n")
-
-payload = {
-    "meta": {
-        "schema_version": "1",
-        "plan_id": "explicit-" + fnv1a64_hex(base_head_sha + "\n" + dirty + "\n" + message),
-        "generated_at_utc": "2026-03-20T00:00:00Z",
-        "base_head_sha": base_head_sha,
-        "dirty_fingerprint_pre_ignore": dirty,
-        "dirty_fingerprint": dirty,
-        "planner": {
-            "provider": "native",
-            "ai-model": "manual-plan",
-            "request_id": "manual"
-        },
-        "review": {
-            "verdict": "pass",
-            "reason": "manual explicit plan for acceptance"
-        }
-    },
-    "stages": {
-        "commit": [
-            {
-                "repo": ".",
-                "commits": [
-                    {
-                        "message": message,
-                        "review": {
-                            "verdict": "pass",
-                            "reason": "manual explicit plan for acceptance"
-                        }
-                    }
-                ]
-            }
-        ],
-        "post_sync": []
-    }
-}
-
-plan_file.parent.mkdir(parents=True, exist_ok=True)
-plan_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-PY
+  run_kog_in_case "$kog_cmd" "$case_dir" \
+    plan new --force --output "$plan_file" >/dev/null
+  run_kog_in_case "$kog_cmd" "$case_dir" \
+    plan prepare add-commit-entry \
+    --plan-file "$plan_file" \
+    --repo "." \
+    --commit-message "$message" \
+    --commit-include "README.md" \
+    --commit-review-verdict "pass" \
+    --commit-review-reason "manual explicit plan for acceptance" >/dev/null
 }
 
 scenario_commit_message_plan_first() {
@@ -212,11 +143,11 @@ scenario_commit_plan_file() {
   printf 'commit-plan-file\n' >> "${case_dir}/work/README.md"
   run_kog_in_case "$kog_cmd" "$case_dir" status --format json >/dev/null 2>&1
   plan_file="${case_dir}/explicit-plan.json"
-  write_explicit_plan "$case_dir" "chore(test): explicit plan path" "$plan_file"
+  write_explicit_plan "$kog_cmd" "$case_dir" "chore(test): explicit plan path" "$plan_file"
   out="$(run_kog_in_case "$kog_cmd" "$case_dir" commit --plan-file "$plan_file" 2>&1)"
   actual="$(latest_subject "$case_dir")"
   [[ "$actual" == "chore(test): explicit plan path" ]] || return 1
-  [[ "$out" == *"plan meta: provider=native ai-model=manual-plan"* ]]
+  [[ "$out" == *"plan meta: provider=native ai-model=deterministic"* ]]
 }
 
 scenario_agent_commit_message_plan_first() {
@@ -237,7 +168,7 @@ scenario_invalid_plan_file_plus_message() {
   case_dir="$(setup_repo_case "scenario-invalid-combo")"
   printf 'invalid-combo\n' >> "${case_dir}/work/README.md"
   plan_file="${case_dir}/explicit-plan.json"
-  write_explicit_plan "$case_dir" "chore(test): invalid combo plan" "$plan_file"
+  write_explicit_plan "$kog_cmd" "$case_dir" "chore(test): invalid combo plan" "$plan_file"
   set +e
   out="$(run_kog_in_case "$kog_cmd" "$case_dir" commit --plan-file "$plan_file" -m "should fail" 2>&1)"
   status=$?

@@ -120,6 +120,34 @@ TEST_CASE("BuildCommitScopeRecords includes recursively dirty nested git repos s
     REQUIRE(ContainsRepoPath(records, parent));
 }
 
+TEST_CASE("BuildCommitScopeRecords resolves an untracked ancestor to the actual nested repo root",
+          "[Unit][CommitScope][UnregisteredSubrepo]") {
+    const auto root = UniqueTempWorkspace("dirty-unregistered-nested-repo");
+    const auto nestedParent = (root / "nested").lexically_normal();
+    const auto child = (nestedParent / "tool").lexically_normal();
+
+    RequireGit(root, {"init"});
+    RequireGit(root, {"config", "user.email", "tests@example.invalid"});
+    RequireGit(root, {"config", "user.name", "Kog Tests"});
+    WriteTextFile(root / "README.md", "root\n");
+    RequireGit(root, {"add", "README.md"});
+    RequireGit(root, {"commit", "-m", "docs: seed root"});
+
+    std::filesystem::create_directories(child);
+    RequireGit(child, {"init"});
+    RequireGit(child, {"config", "user.email", "tests@example.invalid"});
+    RequireGit(child, {"config", "user.name", "Kog Tests"});
+    WriteTextFile(child / "README.md", "initial child\n");
+    RequireGit(child, {"add", "README.md"});
+    RequireGit(child, {"commit", "-m", "docs: seed child"});
+    WriteTextFile(child / "README.md", "initial child\nupdated child\n");
+
+    const auto records = BuildCommitScopeRecords(root, "", false, true);
+
+    REQUIRE(ContainsRepoPath(records, child));
+    REQUIRE_FALSE(ContainsRepoPath(records, nestedParent));
+}
+
 TEST_CASE("BuildCommitScopeRecords keeps explicit dirty-only scope constrained to requested repo",
           "[Unit][CommitScope][Explicit]") {
     const auto root = UniqueTempWorkspace("explicit-dirty-scope");
