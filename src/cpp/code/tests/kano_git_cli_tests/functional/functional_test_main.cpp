@@ -856,6 +856,56 @@ TEST_CASE("clean_but_ahead_continues_to_push", "[functional][commit-push][contra
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("plan_file_clean_but_ahead_continues_to_push",
+          "[functional][commit-push][plan-file][contract]") {
+    const auto ctx = CreateRemoteWithClone("plan-file-clean-but-ahead");
+    WriteTextFile(ctx.cloneRepo / "local.txt", "ahead through plan pipeline\n");
+    RequireSuccess(RunGit({"add", "local.txt"}, ctx.cloneRepo), "local add");
+    RequireSuccess(RunGit({"commit", "-m", "local plan pipeline ahead commit"}, ctx.cloneRepo), "local commit");
+    const auto before = AheadBehindCounts(ctx.cloneRepo);
+    REQUIRE(before.second == 1);
+
+    const auto planPath =
+        (ctx.cloneRepo / ".kano" / "cache" / "git" / "plans" / "clean-but-ahead.json").lexically_normal();
+    RequireSuccess(
+        RunKog({"plan", "new", "--force", "--output", planPath.string()}, ctx.cloneRepo),
+        "plan new for clean ahead workspace");
+    const auto result = RunKog({"commit-push", "--plan-file", planPath.string()}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContainsText(result.stdoutText, "[commit-push][plan-pipeline] stage=push start");
+    RequireContainsText(
+        result.stdoutText,
+        "workspace clean; skipping commit/sync/post-sync and proceeding to push check.");
+    const auto after = AheadBehindCounts(ctx.cloneRepo);
+    REQUIRE(after.second == 0);
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("clean_unpublished_commit_without_push_remote_fails_explicitly",
+          "[functional][commit-push][contract][failure]") {
+    const auto ctx = CreateRemoteWithClone("clean-unpublished-missing-remote");
+    WriteTextFile(ctx.cloneRepo / "local.txt", "cannot publish\n");
+    RequireSuccess(RunGit({"add", "local.txt"}, ctx.cloneRepo), "local add");
+    RequireSuccess(RunGit({"commit", "-m", "local unpublished commit"}, ctx.cloneRepo), "local commit");
+    const auto unpublishedHead = CurrentHeadSha(ctx.cloneRepo);
+    REQUIRE(RefSha(ctx.bareRemote, "refs/heads/main") != unpublishedHead);
+    RequireSuccess(RunGit({"remote", "remove", "origin"}, ctx.cloneRepo), "remove push remote");
+
+    const auto result = RunKog({"commit-push"}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode != 0);
+    const auto merged = result.stdoutText + "\n" + result.stderrText;
+    RequireContainsText(merged, "FAILED_MISSING_REMOTE");
+    RequireContainsText(merged, "no usable push remote found");
+    REQUIRE(CurrentHeadSha(ctx.cloneRepo) == unpublishedHead);
+    REQUIRE(RefSha(ctx.bareRemote, "refs/heads/main") != unpublishedHead);
+    REQUIRE(TrimCopy(RunGit({"status", "--porcelain"}, ctx.cloneRepo).stdoutText).empty());
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("commit_push_plan_file_keeps_exact_include_scope", "[functional][commit-push][plan-file][pathspec]") {
     const auto ctx = CreateRemoteWithClone("plan-file-exact-include");
     const std::string includedPath = "PARA/2026-07-11 - Daily Concept.md";
