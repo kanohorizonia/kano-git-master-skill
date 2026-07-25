@@ -1034,6 +1034,35 @@ auto HasStaleCredentialManagerCoreHelper(const std::vector<CredentialHelperEntry
     });
 }
 
+auto ProbeConfiguredGitCredentialManagerVersion(
+    const std::filesystem::path& InRepo,
+    const std::vector<CredentialHelperEntry>& InHelpers) -> shell::ExecResult {
+    shell::ExecResult lastResult{.exitCode = 1};
+    for (const auto& entry : InHelpers) {
+        if (!IsGitCredentialManagerHelper(entry)) {
+            continue;
+        }
+
+        const std::filesystem::path candidate{entry.value};
+        std::error_code ec;
+        if (!candidate.is_absolute() ||
+            !std::filesystem::is_regular_file(candidate, ec) ||
+            ec) {
+            continue;
+        }
+
+        lastResult = shell::ExecuteCommand(
+            candidate.string(),
+            {"--version"},
+            shell::ExecMode::Capture,
+            InRepo);
+        if (lastResult.exitCode == 0) {
+            return lastResult;
+        }
+    }
+    return lastResult;
+}
+
 auto HasAzureDevOpsTarget(const std::vector<AuthTarget>& InTargets) -> bool {
     return std::any_of(InTargets.begin(), InTargets.end(), [](const AuthTarget& target) {
         const auto lowered = ToLower(target.remoteUrl);
@@ -3881,7 +3910,12 @@ auto MakeAuthDoctorCommandCallback(const std::shared_ptr<AuthCommandOptions>& In
         auto helperEntries = ParseCredentialHelperEntries(helperLines);
         const auto credentialInteractive = GitConfigGetValue(repoRoot, "credential.interactive");
         const auto useHttpPath = GitConfigGetValue(repoRoot, "credential.useHttpPath");
-        const auto gcmVersion = ProbeGitCredentialManagerVersion(repoRoot);
+        auto gcmVersion = ProbeGitCredentialManagerVersion(repoRoot);
+        if (gcmVersion.exitCode != 0) {
+            gcmVersion = ProbeConfiguredGitCredentialManagerVersion(
+                repoRoot,
+                helperEntries);
+        }
         bool hasGcmHelper = HasGitCredentialManagerHelper(helperEntries);
         bool hasStaleManagerCoreHelper = HasStaleCredentialManagerCoreHelper(helperEntries);
         const bool hasHttpsTarget = std::any_of(targets.begin(), targets.end(), [](const AuthTarget& target) {

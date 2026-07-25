@@ -107,6 +107,11 @@ productionizes that path.
 ./scripts/kog auth cloudflare-ssh setup --hostname gitlab-ssh.example.com --install --confirm-host-write
 ./scripts/kog auth cloudflare-ssh doctor --hostname gitlab-ssh.example.com
 
+# GitLab HTTPS with Git Credential Manager
+./scripts/kog auth https setup --hostname gitlab.example.com --username git-user --install --dry-run
+./scripts/kog auth https setup --hostname gitlab.example.com --username git-user --install --confirm-global-write
+./scripts/kog auth https doctor --hostname gitlab.example.com
+
 # Repo hygiene and export
 ./scripts/kog repo-hygiene check
 ./scripts/kog repo-hygiene fix
@@ -128,6 +133,16 @@ writing. Linux reports distribution-neutral installation guidance rather than
 changing package sources. Validate the result with `doctor`, `ssh -T git@HOST`,
 and `kog auth test --url git@HOST:GROUP/REPO.git`. See
 [`docs/guides/cloudflare-access-ssh.md`](docs/guides/cloudflare-access-ssh.md).
+
+GitLab HTTPS setup also keeps deployment-specific hostnames and usernames in
+arguments. On macOS and Linux, `--install` downloads a pinned official Git
+Credential Manager tarball into a versioned user-local directory, then adds its
+absolute path as a global Git credential helper. It scopes the `gitlab`
+provider and selected `pat`, `browser`, or `basic` auth mode to one hostname.
+The command never creates, reads, or prints a PAT. Host/global writes require
+`--confirm-global-write`; use an explicit `--gcm-path` for a separately managed
+installation. See
+[`docs/guides/gitlab-https-auth.md`](docs/guides/gitlab-https-auth.md).
 
 Subtree standalone export notes:
 - `--subtree` accepts absolute or relative paths and exports exactly one archive.

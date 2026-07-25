@@ -13,6 +13,7 @@ void RegisterAuth(CLI::App& InApp) {
     const auto options = std::make_shared<AuthCommandOptions>();
 
     RegisterCloudflareSsh(*cmd);
+    RegisterHttpsAuth(*cmd);
 
     auto* doctor = cmd->add_subcommand("doctor", "Inspect Git Credential Manager and selected remote auth configuration");
     doctor->add_option("--repo", options->doctor.repo, "Repository root used for config inspection and target discovery");

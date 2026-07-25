@@ -11,6 +11,7 @@ class App;
 namespace kano::git::commands {
 
 void RegisterCloudflareSsh(CLI::App& InAuth);
+void RegisterHttpsAuth(CLI::App& InAuth);
 
 struct AuthCommandOptions {
     struct Doctor {

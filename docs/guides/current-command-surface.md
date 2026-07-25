@@ -179,6 +179,9 @@ effective worker count.
 ./scripts/kog auth cloudflare-ssh setup --hostname gitlab-ssh.example.com --install --dry-run
 ./scripts/kog auth cloudflare-ssh setup --hostname gitlab-ssh.example.com --install --confirm-host-write
 ./scripts/kog auth cloudflare-ssh doctor --hostname gitlab-ssh.example.com
+./scripts/kog auth https setup --hostname gitlab.example.com --username git-user --install --dry-run
+./scripts/kog auth https setup --hostname gitlab.example.com --username git-user --install --confirm-global-write
+./scripts/kog auth https doctor --hostname gitlab.example.com
 
 # Product export
 ./scripts/kog export --help
@@ -254,6 +257,17 @@ change creates `~/.ssh/config.kog.bak`. Linux returns installation guidance
 instead of changing package repositories. `kog auth cloudflare-ssh doctor`
 checks the executable, include, and selected host block without mutating state.
 See [Cloudflare Access SSH](cloudflare-access-ssh.md).
+
+`kog auth https setup` bootstraps Git Credential Manager for one explicit
+GitLab HTTPS hostname. On macOS and Linux, `--install` downloads a pinned
+official GCM release tarball into a versioned directory under
+`~/.local/share/kog/`; Windows users should use the GCM bundled with current
+Git for Windows or pass `--gcm-path`. The command adds an absolute-path
+credential helper without deleting other helpers and writes only scoped,
+non-secret GitLab provider/auth-mode/username configuration. It never creates,
+reads, or prints a PAT. Installation and global Git config changes require
+`--confirm-global-write`; `doctor` is read-only. See
+[GitLab HTTPS authentication](gitlab-https-auth.md).
 
 ## Sync and converge dry-run preflight
 
