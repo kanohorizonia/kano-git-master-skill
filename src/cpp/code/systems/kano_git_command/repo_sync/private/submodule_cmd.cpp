@@ -827,6 +827,7 @@ auto BuildLfsPointerMismatchWarning(int InCount) -> SubmoduleWarning {
 
 auto ValidateUpdatedSubmodule(
     const SubmoduleUpdateTask& InTask,
+    bool InRemote,
     const std::string& InCombinedOutput,
     std::vector<SubmoduleWarning>* IoWarnings,
     std::vector<SubmoduleIssue>* IoIssues) -> bool {
@@ -854,7 +855,10 @@ auto ValidateUpdatedSubmodule(
         IoIssues->push_back(SubmoduleIssue{.code = "SUBMODULE_GITDIR_BROKEN", .message = "failed to resolve submodule HEAD"});
         return false;
     }
-    if (Trim(childHead.stdoutStr) != *expectedHead) {
+    // `git submodule update --remote` intentionally advances the child beyond
+    // the parent gitlink. The resulting `+` status is the pointer update the
+    // caller asked for, not a failed checkout.
+    if (!InRemote && Trim(childHead.stdoutStr) != *expectedHead) {
         IoIssues->push_back(SubmoduleIssue{.code = "SUBMODULE_HEAD_MISMATCH", .message = "submodule HEAD does not match parent gitlink commit"});
         return false;
     }
@@ -926,7 +930,7 @@ auto ExecuteSubmoduleUpdateTask(
         }
     }
 
-    if (!ValidateUpdatedSubmodule(InTask, combinedOutput, &outcome.warnings, &outcome.issues)) {
+    if (!ValidateUpdatedSubmodule(InTask, InRemote, combinedOutput, &outcome.warnings, &outcome.issues)) {
         outcome.kind = SubmoduleUpdateOutcomeKind::Failed;
         return outcome;
     }
