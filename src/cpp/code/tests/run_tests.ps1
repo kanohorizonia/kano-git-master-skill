@@ -2,7 +2,8 @@
 
 param(
     [string]$Preset = "windows-ninja-msvc-release",
-    [switch]$WithE2E
+    [switch]$WithE2E,
+    [switch]$WithIntegration
 )
 
 $ErrorActionPreference = "Stop"
@@ -125,14 +126,24 @@ if (-not [string]::IsNullOrWhiteSpace($TestXmlDir)) {
     Invoke-TestBinary -BinaryName "kano_git_commit_plan_tests" -ExecutablePath (Join-Path $ExeDir "kano_git_commit_plan_tests.exe")
 }
 
-Write-Host ""
-Write-Host "All tests completed successfully!"
+if ($WithIntegration) {
+    Write-Host ""
+    Write-Host "Running native integration tests..."
+    if (-not [string]::IsNullOrWhiteSpace($TestXmlDir)) {
+        Invoke-TestBinary -BinaryName "kano_git_integration_tests" -ExecutablePath (Join-Path $ExeDir "kano_git_integration_tests.exe") -Arguments @("--reporter", "junit", "--out", (Join-Path $TestXmlDir "kano_git_integration_tests.xml"))
+    } else {
+        Invoke-TestBinary -BinaryName "kano_git_integration_tests" -ExecutablePath (Join-Path $ExeDir "kano_git_integration_tests.exe")
+    }
+}
 
 if ($WithE2E) {
     Write-Host ""
     Write-Host "Running E2E regression tests..."
     & ".\code\tests\e2e\plan_commit_regression\run.ps1" -WorkspaceRoot $WorkspaceRoot
 }
+
+Write-Host ""
+Write-Host "All tests completed successfully!"
 
 if (-not [string]::IsNullOrWhiteSpace($TestXmlOutput)) {
     $outDoc = New-Object System.Xml.XmlDocument

@@ -25,6 +25,7 @@ add_subdirectory(kano_git_export_tests)
 add_subdirectory(kano_git_release_tests)
 add_subdirectory(kano_git_tui_tests)
 add_subdirectory(kano_git_commit_plan_tests)
+add_subdirectory(kano_git_integration_tests)
 add_subdirectory(e2e)
 
 if(WIN32)
@@ -35,9 +36,9 @@ if(WIN32)
   )
 
   add_custom_target(run_kano_git_all_tests
-    COMMAND pwsh -ExecutionPolicy Bypass -File "${CMAKE_CURRENT_SOURCE_DIR}/run_tests.ps1" -Preset ${KOG_PRESET_NAME} -WithE2E
+    COMMAND pwsh -ExecutionPolicy Bypass -File "${CMAKE_CURRENT_SOURCE_DIR}/run_tests.ps1" -Preset ${KOG_PRESET_NAME} -WithIntegration -WithE2E
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-    COMMENT "Running full kano-git test lane (CLI/TUI/E2E)"
+    COMMENT "Running full kano-git test lane (CLI/TUI/integration/E2E)"
   )
 else()
   add_custom_target(run_kano_git_tests
@@ -47,8 +48,15 @@ else()
   )
 
   add_custom_target(run_kano_git_all_tests
-    COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/run_tests.sh" ${KOG_PRESET_NAME} --with-e2e
+    COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/run_tests.sh" ${KOG_PRESET_NAME} full --with-integration --with-e2e
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-    COMMENT "Running full kano-git test lane (CLI/TUI/E2E)"
+    COMMENT "Running full kano-git test lane (CLI/TUI/integration/E2E)"
   )
 endif()
+
+add_custom_target(run_kano_git_integration_tests
+  COMMAND $<TARGET_FILE:kano_git_integration_tests>
+  DEPENDS kano_git_integration_tests
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  COMMENT "Running native kano-git integration test lane"
+)

@@ -19,6 +19,11 @@ tests/
 |  |- CMakeLists.txt
 |  |- unit/
 |  \- property/
+|- kano_git_integration_tests/
+|  |- CMakeLists.txt
+|  |- process_executor_cases.cpp
+|  |- git_transport_cases.cpp
+|  \- commit_push_cases.cpp
 |- kano_git_gui_tests/
 |  \- README.md
 \- e2e/
@@ -39,6 +44,12 @@ tests/
 - `kano_git_commit_plan_tests.exe`
   - source root: `code/tests/kano_git_commit_plan_tests/`
   - current focus: commit-plan schema, AI fill, pathspec, and freshness regressions
+
+- `kano_git_integration_tests.exe`
+  - source root: `code/tests/kano_git_integration_tests/`
+  - independently exercises real process capture, local bare-remote Git
+    transport, and commit-push recovery behavior
+  - uses only disposable local repositories; no public network is required
 
 - `kano_git_gui_tests`
   - reserved only
@@ -64,7 +75,7 @@ That subsystem provides:
 ```bash
 cd src/cpp
 cmake --preset <your-preset>
-cmake --build --preset <your-preset> --target kano_git_cli_tests kano_git_tui_tests kano_git_commit_plan_tests
+cmake --build --preset <your-preset> --target kano_git_cli_tests kano_git_tui_tests kano_git_commit_plan_tests kano_git_integration_tests
 ```
 
 ## Run
@@ -73,6 +84,7 @@ cmake --build --preset <your-preset> --target kano_git_cli_tests kano_git_tui_te
 ./out/bin/<preset>/release/kano_git_cli_tests
 ./out/bin/<preset>/release/kano_git_tui_tests
 ./out/bin/<preset>/release/kano_git_commit_plan_tests
+./out/bin/<preset>/release/kano_git_integration_tests
 ```
 
 For the default Windows MSVC preset, use `out/bin/windows-ninja-msvc/release/*.exe`.
@@ -112,11 +124,47 @@ artifacts under `.kano/tmp/`; regenerate them instead of editing them manually.
 
 - `run_kano_git_tests`
   - fast lane
-  - runs CLI + TUI + commit-plan tests
+  - runs the existing CLI + TUI selection
+  - does not run native integration tests
 
 - `run_kano_git_all_tests`
   - full lane
-  - runs CLI + TUI + commit-plan + E2E
+  - runs CLI + TUI + native integration + E2E
+
+- `run_kano_git_integration_tests`
+  - independent native integration lane
+  - currently covers eight bounded process, transport, and commit-push scenarios
+
+Preferred Pixi entry points:
+
+```bash
+pixi run quick-test
+pixi run integration-test
+pixi run full-test
+pixi run ci-linux-integration-test
+```
+
+The Bash runner supports both an integration-only lane and opt-in composition:
+
+```bash
+bash src/cpp/code/tests/run_tests.sh <preset> integration
+bash src/cpp/code/tests/run_tests.sh <preset> default --with-integration
+```
+
+The PowerShell runner composes the same executable with the standard Windows
+suite:
+
+```powershell
+pwsh -File src/cpp/code/tests/run_tests.ps1 -Preset <preset> -WithIntegration
+```
+
+The integration executable normally completes in about 15 seconds on a local
+developer machine. Its fixtures force non-interactive Git/editor behavior,
+disable repository hooks, use an external KOG binary cache, and create only
+disposable local repositories. The lane writes its merged JUnit result to
+`src/cpp/.kano/tmp/pgo/integration-test-reports/test-reports/integration/tests.xml`;
+per-binary XML and report-packaging diagnostics stay under the same report
+root when a failure occurs.
 
 ## E2E Scripts
 

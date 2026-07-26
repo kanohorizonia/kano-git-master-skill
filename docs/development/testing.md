@@ -1,8 +1,10 @@
 # Testing Guide
 
-This repo currently has two distinct test layers:
+This repo currently has three distinct test layers:
 
 - native test targets and native E2E harnesses under `src/cpp/code/tests/`
+- a separately runnable native integration executable for real local Git
+  transport and subprocess behavior
 - shell acceptance/workflow regressions under `src/shell/test/`
 
 The important rule is to group tests by what they support, not by file extension.
@@ -25,7 +27,11 @@ These drive the native test targets defined in `src/cpp/code/tests/CMakeLists.tx
   - CLI + TUI tests
 - `run_kano_git_all_tests`
   - full lane
-  - CLI + TUI + E2E
+  - CLI + TUI + native integration + E2E
+- `run_kano_git_integration_tests`
+  - independent integration lane
+  - real process capture/timeouts, local bare remotes, and commit-push recovery
+  - no external network
 
 ### Shell acceptance coverage
 
@@ -50,6 +56,7 @@ If `pixi` is available, use the shared infra manifest as the default entrypoint 
 pixi install --manifest-path src/cpp/shared/infra/pixi.toml
 pixi run --manifest-path src/cpp/shared/infra/pixi.toml build
 pixi run --manifest-path src/cpp/shared/infra/pixi.toml quick-test
+pixi run --manifest-path src/cpp/shared/infra/pixi.toml integration-test
 pixi run --manifest-path src/cpp/shared/infra/pixi.toml full-test
 
 # Repo-specific acceptance tasks stay at repo root
@@ -125,14 +132,26 @@ For suite tuning, use coverage output as input:
 ```bash
 # Bash runner
 bash src/cpp/code/tests/run_tests.sh <preset>
+bash src/cpp/code/tests/run_tests.sh <preset> integration
+bash src/cpp/code/tests/run_tests.sh <preset> default --with-integration
 
 # PowerShell runner
 pwsh -File src/cpp/code/tests/run_tests.ps1 -Preset <preset>
+pwsh -File src/cpp/code/tests/run_tests.ps1 -Preset <preset> -WithIntegration
 
 # CMake targets
 cmake --build --preset <preset> --target run_kano_git_tests
+cmake --build --preset <preset> --target run_kano_git_integration_tests
 cmake --build --preset <preset> --target run_kano_git_all_tests
 ```
+
+The integration lane is expected to finish in roughly 15 seconds on a local
+developer host. Fixtures set non-interactive Git/editor variables, disable
+repository hooks, and use disposable local bare remotes. JUnit and packaged
+failure evidence are written below
+`src/cpp/.kano/tmp/pgo/integration-test-reports/`; CI runs the lane independently on
+Windows and through `ci-linux-integration-test` on the native-or-Docker Linux
+router.
 
 ### Shell acceptance
 

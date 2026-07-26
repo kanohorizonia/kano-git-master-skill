@@ -82,6 +82,7 @@ PRESET="${1:-linux-ninja-gcc-release}"
 CONFIG_OR_LANE="${2:-default}"
 LANE_OR_WITH_E2E="${3:-0}"
 WITH_E2E_ARG="${4:-0}"
+WITH_INTEGRATION="0"
 case "$CONFIG_OR_LANE" in
   Debug|debug|Release|release|RelWithDebInfo|relwithdebinfo|MinSizeRel|minsizerel)
     TEST_CONFIG="$CONFIG_OR_LANE"
@@ -94,6 +95,19 @@ case "$CONFIG_OR_LANE" in
     WITH_E2E="$LANE_OR_WITH_E2E"
     ;;
 esac
+for option in "$@"; do
+  case "$option" in
+    --with-e2e)
+      WITH_E2E="1"
+      ;;
+    --with-integration)
+      WITH_INTEGRATION="1"
+      ;;
+  esac
+done
+if [[ "$LANE_MODE" == "integration" ]]; then
+  WITH_INTEGRATION="1"
+fi
 TEST_XML_OUTPUT="${KANO_TEST_XML:-}"
 TEST_XML_DIR=""
 
@@ -207,6 +221,9 @@ fi
 if [[ "$LANE_MODE" == "--with-e2e" ]]; then
   LANE_MODE="full"
   WITH_E2E="--with-e2e"
+elif [[ "$LANE_MODE" == "--with-integration" ]]; then
+  LANE_MODE="default"
+  WITH_INTEGRATION="1"
 fi
 
 echo "Building kano-git tests with preset: $PRESET"
@@ -255,6 +272,9 @@ echo "Using test binaries from: $EXE_DIR"
 # Run tests
 run_cli_tests() {
   local -a args=()
+  if [[ "$LANE_MODE" == "integration" ]]; then
+    return 0
+  fi
   case "$LANE_MODE" in
     quick)
       args=("[help],[unknown-command],[log],[output],[infrastructure]")
@@ -278,6 +298,9 @@ run_cli_tests() {
 
 run_tui_tests() {
   local -a args=()
+  if [[ "$LANE_MODE" == "integration" ]]; then
+    return 0
+  fi
   case "$LANE_MODE" in
     quick)
       args=("[unit],[metadata_cache],[infrastructure]")
@@ -299,13 +322,31 @@ run_tui_tests() {
   fi
 }
 
-echo ""
-echo "Running CLI tests..."
-run_cli_tests
+run_integration_tests() {
+  local executable="$EXE_DIR/kano_git_integration_tests"
+  if [[ -x "$EXE_DIR/kano_git_integration_tests.exe" ]]; then
+    executable="$EXE_DIR/kano_git_integration_tests.exe"
+  fi
+  if [[ ! -x "$executable" ]]; then
+    echo "Could not locate kano_git_integration_tests under '$EXE_DIR'." >&2
+    return 1
+  fi
+  if [[ -n "$TEST_XML_DIR" ]]; then
+    run_test_binary "kano_git_integration_tests" "$executable" --reporter junit --out "$TEST_XML_DIR/kano_git_integration_tests.xml"
+  else
+    run_test_binary "kano_git_integration_tests" "$executable"
+  fi
+}
 
-echo ""
-echo "Running TUI tests..."
-run_tui_tests
+if [[ "$LANE_MODE" != "integration" ]]; then
+  echo ""
+  echo "Running CLI tests..."
+  run_cli_tests
+
+  echo ""
+  echo "Running TUI tests..."
+  run_tui_tests
+fi
 
 if [[ "$LANE_MODE" == "full" && "${KANO_FULL_LANE_EXTRA:-0}" == "1" ]]; then
   echo ""
@@ -327,14 +368,20 @@ if [[ "$LANE_MODE" == "full" && "${KANO_FULL_LANE_EXTRA:-0}" == "1" ]]; then
   fi
 fi
 
-echo ""
-echo "All tests completed successfully!"
+if [[ "$WITH_INTEGRATION" == "1" ]]; then
+  echo ""
+  echo "Running native integration tests..."
+  run_integration_tests
+fi
 
 if [[ "$WITH_E2E" == "1" || "$WITH_E2E" == "--with-e2e" ]]; then
-    echo ""
-    echo "Running E2E regression tests..."
-    bash "$SCRIPT_DIR/e2e/plan_commit_regression/run.sh" "$WORKSPACE_ROOT"
+  echo ""
+  echo "Running E2E regression tests..."
+  bash "$SCRIPT_DIR/e2e/plan_commit_regression/run.sh" "$WORKSPACE_ROOT"
 fi
+
+echo ""
+echo "All tests completed successfully!"
 
 if [[ -n "$TEST_XML_OUTPUT" ]]; then
   PYTHON_BIN="$(resolve_python)"
