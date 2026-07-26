@@ -1862,6 +1862,33 @@ TEST_CASE("submodule_update_clean_summary_reports_clean_counts", "[functional][s
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("submodule_update_remote_accepts_child_head_ahead_of_parent_gitlink", "[functional][submodule][update][remote][KG-BUG-0086]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("submodule-update-remote-ahead");
+
+    WriteTextFile(ctx.childSeedRepo / "remote-update.txt", "remote update\n");
+    RequireSuccess(RunGit({"add", "remote-update.txt"}, ctx.childSeedRepo), "stage child remote update");
+    RequireSuccess(RunGit({"commit", "-m", "advance child remote"}, ctx.childSeedRepo), "commit child remote update");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.childSeedRepo), "push child remote update");
+    const auto remoteHead = CurrentHeadSha(ctx.childSeedRepo);
+    const auto parentGitlink = GitlinkHeadSha(ctx.cloneRootRepo, ctx.submodulePath);
+    REQUIRE(remoteHead != parentGitlink);
+
+    const auto result = RunKogAllowingFileProtocol(
+        {"submodule", "update", "--remote", ctx.submodulePath},
+        ctx.cloneRootRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    REQUIRE(CurrentHeadSha(ctx.cloneChildRepo) == remoteHead);
+    REQUIRE(GitlinkHeadSha(ctx.cloneRootRepo, ctx.submodulePath) == parentGitlink);
+
+    const auto merged = result.stdoutText + "\n" + result.stderrText;
+    REQUIRE(merged.find("Updated cleanly: 1") != std::string::npos);
+    REQUIRE(merged.find("SUBMODULE_HEAD_MISMATCH") == std::string::npos);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("submodule_update_repairs_invalid_gitdir_state_when_safe", "[functional][submodule][update][repair]") {
     const auto ctx = CreateRemoteWithSubmoduleClone("submodule-update-repair-safe");
 
