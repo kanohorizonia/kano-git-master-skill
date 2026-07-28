@@ -32,23 +32,39 @@ TEST_CASE("commit command keeps implementation behind commit utils module", "[ar
     const auto codeRoot = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path();
     const auto moduleRoot = codeRoot / "systems/kano_git_command/commit_plan";
     const auto commitCommandPath = moduleRoot / "private/commit_cmd.cpp";
+    const auto commitPlanPayloadHeaderPath = moduleRoot / "private/commit_plan_payload.hpp";
+    const auto commitPlanPayloadSourcePath = moduleRoot / "private/commit_plan_payload.cpp";
     const auto commitUtilsHeaderPath = moduleRoot / "private/commit_utils.hpp";
     const auto commitUtilsSourcePath = moduleRoot / "private/commit_utils.cpp";
     const auto cmakePath = moduleRoot / "CMakeLists.txt";
 
     const auto commitCommand = ReadText(commitCommandPath);
+    const auto commitPlanPayloadHeader = ReadText(commitPlanPayloadHeaderPath);
+    const auto commitPlanPayloadSource = ReadText(commitPlanPayloadSourcePath);
     const auto commitUtilsHeader = ReadText(commitUtilsHeaderPath);
     const auto commitUtilsSource = ReadText(commitUtilsSourcePath);
     const auto cmake = ReadText(cmakePath);
 
     REQUIRE(CountLines(commitCommand) < 2000);
+    REQUIRE(CountLines(commitUtilsSource) < 6100);
     REQUIRE(commitCommand.find("#include \"commit_utils.hpp\"") != std::string::npos);
     REQUIRE(commitCommand.find("void RegisterCommit(CLI::App& InApp)") != std::string::npos);
     REQUIRE(commitCommand.find("void RegisterAmend(CLI::App& InApp)") != std::string::npos);
+    REQUIRE(commitUtilsSource.find("#include \"commit_plan_payload.hpp\"") != std::string::npos);
+    REQUIRE(commitUtilsSource.find("struct CommitPlanPayload") == std::string::npos);
+    REQUIRE(commitUtilsSource.find("auto ParseCommitPlanText(") == std::string::npos);
     REQUIRE(commitUtilsHeader.find("ConfigureCommitCommand") != std::string::npos);
     REQUIRE(commitUtilsHeader.find("ConfigureAmendCommand") != std::string::npos);
     REQUIRE(commitUtilsSource.find("void ConfigureCommitCommand(CLI::App& InApp)") != std::string::npos);
     REQUIRE(commitUtilsSource.find("void ConfigureAmendCommand(CLI::App& InApp)") != std::string::npos);
+    REQUIRE(commitPlanPayloadHeader.find("struct CommitPlanPayload") != std::string::npos);
+    REQUIRE(commitPlanPayloadHeader.find("ValidateCommitPlanForAiMode") != std::string::npos);
+    REQUIRE(commitPlanPayloadHeader.find("ParseCommitPlanText") == std::string::npos);
+    REQUIRE(commitPlanPayloadHeader.find("ExtractStringField") == std::string::npos);
+    REQUIRE(commitPlanPayloadSource.find("auto ParseCommitPlanText(") != std::string::npos);
+    REQUIRE(commitPlanPayloadSource.find("auto ExtractStringField(") != std::string::npos);
+    REQUIRE(cmake.find("private/commit_plan_payload.cpp") != std::string::npos);
+    REQUIRE(cmake.find("private/commit_plan_payload.hpp") != std::string::npos);
     REQUIRE(cmake.find("private/commit_utils.cpp") != std::string::npos);
 }
 
