@@ -8,6 +8,8 @@ target_sources(kano_git_cmd_commit_plan
     private/commit_cmd.cpp
     private/commit_plan_payload.cpp
     private/commit_plan_payload.hpp
+    private/commit_plan_task_graph.cpp
+    private/commit_plan_task_graph.hpp
     private/commit_utils.cpp
     private/commit_utils.hpp
     private/commit_push_cli.cpp
