@@ -3764,7 +3764,14 @@ auto RunCommitPreflight(const std::filesystem::path& InRepo) -> CommitPreflightR
         return report;
     }
 
-    const auto status = GitCapture(InRepo, {"-c", "color.status=false", "status", "--porcelain"});
+    // Expand untracked directories so staging exclusions can distinguish
+    // internal pipeline files (for example `.kano/cache/...`) from legitimate
+    // sibling content. Collapsed `?? .kano/` entries otherwise make the
+    // path-specific exclusion blind and allow generated manifests into a
+    // message-shorthand commit.
+    const auto status = GitCapture(
+        InRepo,
+        {"-c", "color.status=false", "status", "--porcelain", "--untracked-files=all"});
     if (status.exitCode != 0) {
         return report;
     }

@@ -550,8 +550,11 @@ auto AddDirtyNestedReposFromRootStatus(const std::filesystem::path& InWorkspaceR
                 continue;
             }
 
-            const auto inGitRepo = GitCapture(candidate, {"rev-parse", "--is-inside-work-tree"});
-            if (inGitRepo.exitCode != 0 || Trim(inGitRepo.stdoutStr) != "true") {
+            // `git -C <ordinary-subdirectory> rev-parse --is-inside-work-tree`
+            // also reports true. Only admit an exact repository root here;
+            // otherwise an untracked directory such as `src/` becomes a
+            // duplicate alias for its owning registered repository.
+            if (!IsGitRepo(candidate)) {
                 continue;
             }
             if (!RepoHasPorcelainChanges(candidate)) {
@@ -604,6 +607,41 @@ auto AddDirtyNestedReposFromRootStatus(const std::filesystem::path& InWorkspaceR
 
 auto FinalizeCommitScopeRecords(const std::filesystem::path& InWorkspaceRoot,
                                 std::vector<workspace::RepoRecord> InSelected) -> std::vector<workspace::RepoRecord> {
+    std::vector<workspace::RepoRecord> coalesced;
+    coalesced.reserve(InSelected.size());
+    std::unordered_map<std::string, std::size_t> indexByPath;
+    indexByPath.reserve(InSelected.size());
+    for (auto& repo : InSelected) {
+        const auto key = ToGeneric(repo.path);
+        if (key.empty()) {
+            continue;
+        }
+        const auto found = indexByPath.find(key);
+        if (found == indexByPath.end()) {
+            indexByPath.emplace(key, coalesced.size());
+            coalesced.push_back(std::move(repo));
+            continue;
+        }
+
+        auto& existing = coalesced[found->second];
+        existing.hasChanges = existing.hasChanges || repo.hasChanges;
+        if (existing.type.empty() && !repo.type.empty()) {
+            existing.type = std::move(repo.type);
+        }
+        std::unordered_set<std::string> dependencyKeys;
+        dependencyKeys.reserve(existing.dependencies.size() + repo.dependencies.size());
+        for (const auto& dependency : existing.dependencies) {
+            dependencyKeys.insert(ToGeneric(dependency));
+        }
+        for (auto& dependency : repo.dependencies) {
+            const auto dependencyKey = ToGeneric(dependency);
+            if (!dependencyKey.empty() && dependencyKeys.insert(dependencyKey).second) {
+                existing.dependencies.push_back(std::move(dependency));
+            }
+        }
+    }
+    InSelected = std::move(coalesced);
+
     std::unordered_set<std::string> keep;
     keep.reserve(InSelected.size());
     for (const auto& repo : InSelected) {

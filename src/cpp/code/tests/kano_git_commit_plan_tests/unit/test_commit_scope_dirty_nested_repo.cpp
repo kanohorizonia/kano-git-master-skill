@@ -113,11 +113,15 @@ TEST_CASE("BuildCommitScopeRecords includes recursively dirty nested git repos s
     // Child-only edits propagate as parent/root dirty submodule paths, but the
     // actual file changes live only in the deepest nested repo.
     WriteTextFile(child / "README.md", "initial child\nupdated child\n");
+    WriteTextFile(
+        child / "src" / "cpp" / "scripts" / "build" / "tool.exe",
+        "legitimate nested source fixture\n");
 
     const auto records = BuildCommitScopeRecords(root, "", false, true);
 
     REQUIRE(ContainsRepoPath(records, child));
     REQUIRE(ContainsRepoPath(records, parent));
+    REQUIRE_FALSE(ContainsRepoPath(records, child / "src"));
 }
 
 TEST_CASE("BuildCommitScopeRecords resolves an untracked ancestor to the actual nested repo root",
@@ -177,7 +181,10 @@ TEST_CASE("BuildCommitScopeRecords keeps explicit dirty-only scope constrained t
     WriteTextFile(target / "README.md", "target\nchanged\n");
     WriteTextFile(unrelated / "README.md", "unrelated\nchanged\n");
 
-    const auto records = BuildCommitScopeRecords(root, "target-skill", false, true);
+    // Repeated aliases for the same requested repo must coalesce before a
+    // message-shorthand plan is rendered; they are not separate commit intents.
+    const auto records =
+        BuildCommitScopeRecords(root, "target-skill,target-skill", false, true);
 
     REQUIRE(records.size() == 1);
     REQUIRE(ContainsRepoPath(records, target));

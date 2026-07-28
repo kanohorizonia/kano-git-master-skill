@@ -3037,6 +3037,184 @@ TEST_CASE("workspace-relative ignore policy is consistent across plan commit and
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("message shorthand commit coalesces registered child and parent gitlink work",
+          "[functional][commit][message-plan][nested-repo][KG-BUG-0087]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("message-plan-registered-commit");
+    const auto skillRoot = ctx.sandbox.root / "packaged-skill";
+    const auto policyPath =
+        skillRoot / "assets" / "ignore" / "policy" / "ignore-gate-allowlist.txt";
+    const auto policyPattern = ctx.submodulePath + "/src/cpp/scripts/**";
+    const std::vector<std::pair<std::string, std::string>> env = {
+        {"KANO_GIT_SKILL_ROOT", skillRoot.string()},
+        {"KOG_DISABLE_SECRET_GATE", "1"},
+        {"KOG_PROCESS_DIAGNOSTICS", "0"},
+    };
+    const std::string childPath = "src/cpp/scripts/build/message-commit-tool.exe";
+    const std::string message = "test(functional): commit registered child shorthand";
+    WriteTextFile(policyPath, policyPattern + "\n");
+
+    const auto unrelatedRepo = (ctx.sandbox.root / "unrelated-commit-repo").lexically_normal();
+    RequireSuccess(RunGit({"init", unrelatedRepo.string()}, ctx.sandbox.root), "init unrelated commit repo");
+    ConfigureIdentity(unrelatedRepo);
+    WriteTextFile(unrelatedRepo / "unrelated.txt", "unrelated seed\n");
+    RequireSuccess(RunGit({"add", "unrelated.txt"}, unrelatedRepo), "add unrelated commit seed");
+    RequireSuccess(RunGit({"commit", "-m", "seed unrelated commit repo"}, unrelatedRepo),
+                   "commit unrelated seed");
+    const auto unrelatedHeadBefore = CurrentHeadSha(unrelatedRepo);
+    WriteTextFile(unrelatedRepo / "unrelated.txt", "unrelated seed\nremain dirty\n");
+
+    const auto childHeadBefore = CurrentHeadSha(ctx.cloneChildRepo);
+    const auto rootHeadBefore = CurrentHeadSha(ctx.cloneRootRepo);
+    WriteTextFile(ctx.cloneChildRepo / childPath, "message shorthand child content\n");
+
+    const auto result = RunKogWithEnv(
+        {"commit", "-m", message},
+        ctx.cloneRootRepo,
+        env);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    const auto mergedOutput = result.stdoutText + "\n" + result.stderrText;
+    RequireContainsText(mergedOutput, "[native-commit] synthesized plan file:");
+    RequireContainsText(mergedOutput, "commit_waves=2 order=child-first");
+    const auto childCommitPosition = mergedOutput.find("[commit] " + ctx.submodulePath);
+    const auto rootCommitPosition =
+        mergedOutput.find("[commit] " + ctx.cloneRootRepo.filename().generic_string() + " (.)");
+    REQUIRE(childCommitPosition != std::string::npos);
+    REQUIRE(rootCommitPosition != std::string::npos);
+    REQUIRE(childCommitPosition < rootCommitPosition);
+
+    const auto childHead = CurrentHeadSha(ctx.cloneChildRepo);
+    const auto rootHead = CurrentHeadSha(ctx.cloneRootRepo);
+    REQUIRE(childHead != childHeadBefore);
+    REQUIRE(rootHead != rootHeadBefore);
+    const auto childContent = RunGit({"show", "HEAD:" + childPath}, ctx.cloneChildRepo);
+    RequireSuccess(childContent, "show message shorthand child content");
+    REQUIRE(childContent.stdoutText == "message shorthand child content\n");
+    REQUIRE(GitlinkHeadSha(ctx.cloneRootRepo, ctx.submodulePath) == childHead);
+
+    const auto childPaths =
+        RunGit({"diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"}, ctx.cloneChildRepo);
+    RequireSuccess(childPaths, "list child shorthand commit paths");
+    REQUIRE(TrimCopy(childPaths.stdoutText) == childPath);
+    const auto rootPaths =
+        RunGit({"diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"}, ctx.cloneRootRepo);
+    RequireSuccess(rootPaths, "list parent shorthand commit paths");
+    REQUIRE(TrimCopy(rootPaths.stdoutText) == ctx.submodulePath);
+    REQUIRE(CurrentHeadSha(unrelatedRepo) == unrelatedHeadBefore);
+    const auto unrelatedStatus =
+        RunGit({"status", "--porcelain", "--", "unrelated.txt"}, unrelatedRepo);
+    RequireSuccess(unrelatedStatus, "verify unrelated commit repo remains dirty");
+    REQUIRE(TrimCopy(unrelatedStatus.stdoutText) == "M unrelated.txt");
+    const auto trackedInternal =
+        RunGit({"ls-files", "--", ".kano"}, ctx.cloneChildRepo);
+    RequireSuccess(trackedInternal, "verify child pipeline cache is not tracked");
+    REQUIRE(TrimCopy(trackedInternal.stdoutText).empty());
+    const auto intendedStatus =
+        RunGit({"status", "--porcelain", "--", childPath}, ctx.cloneChildRepo);
+    RequireSuccess(intendedStatus, "verify intended child path is clean");
+    REQUIRE(TrimCopy(intendedStatus.stdoutText).empty());
+
+    const auto [childBehind, childAhead] = AheadBehindCounts(ctx.cloneChildRepo);
+    REQUIRE(childBehind == 0);
+    REQUIRE(childAhead == 1);
+    const auto [rootBehind, rootAhead] = AheadBehindCounts(ctx.cloneRootRepo);
+    REQUIRE(rootBehind == 0);
+    REQUIRE(rootAhead == 1);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("message shorthand commit-push converges registered child before parent",
+          "[functional][commit-push][message-plan][nested-repo][KG-BUG-0087]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("message-plan-registered-commit-push");
+    const auto skillRoot = ctx.sandbox.root / "packaged-skill";
+    const auto policyPath =
+        skillRoot / "assets" / "ignore" / "policy" / "ignore-gate-allowlist.txt";
+    const auto policyPattern = ctx.submodulePath + "/src/cpp/scripts/**";
+    const std::vector<std::pair<std::string, std::string>> env = {
+        {"KANO_GIT_SKILL_ROOT", skillRoot.string()},
+        {"KOG_DISABLE_SECRET_GATE", "1"},
+        {"KOG_PROCESS_DIAGNOSTICS", "0"},
+    };
+    const std::string childPath = "src/cpp/scripts/build/message-push-tool.exe";
+    const std::string message = "test(functional): push registered child shorthand";
+    WriteTextFile(policyPath, policyPattern + "\n");
+    RequireSuccess(
+        RunGit(
+            {"config", "kano.cache.local-dir", (ctx.sandbox.root / "_cache").string()},
+            ctx.cloneChildRepo),
+        "configure child external kano cache");
+
+    const auto unrelatedRepo = (ctx.sandbox.root / "unrelated-push-repo").lexically_normal();
+    RequireSuccess(RunGit({"init", unrelatedRepo.string()}, ctx.sandbox.root), "init unrelated push repo");
+    ConfigureIdentity(unrelatedRepo);
+    WriteTextFile(unrelatedRepo / "unrelated.txt", "unrelated seed\n");
+    RequireSuccess(RunGit({"add", "unrelated.txt"}, unrelatedRepo), "add unrelated push seed");
+    RequireSuccess(RunGit({"commit", "-m", "seed unrelated push repo"}, unrelatedRepo),
+                   "commit unrelated push seed");
+    const auto unrelatedHeadBefore = CurrentHeadSha(unrelatedRepo);
+    WriteTextFile(unrelatedRepo / "unrelated.txt", "unrelated seed\nremain dirty\n");
+
+    const auto childHeadBefore = CurrentHeadSha(ctx.cloneChildRepo);
+    const auto rootHeadBefore = CurrentHeadSha(ctx.cloneRootRepo);
+    WriteTextFile(ctx.cloneChildRepo / childPath, "message shorthand pushed child content\n");
+
+    const auto result = RunKogWithEnv(
+        {"commit-push", "-m", message},
+        ctx.cloneRootRepo,
+        env);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    const auto mergedOutput = result.stdoutText + "\n" + result.stderrText;
+    RequireContainsText(mergedOutput, "commit_waves=2 order=child-first");
+    const auto childCommitPosition = mergedOutput.find("[commit] " + ctx.submodulePath);
+    const auto rootCommitPosition =
+        mergedOutput.find("[commit] " + ctx.cloneRootRepo.filename().generic_string() + " (.)");
+    REQUIRE(childCommitPosition != std::string::npos);
+    REQUIRE(rootCommitPosition != std::string::npos);
+    REQUIRE(childCommitPosition < rootCommitPosition);
+
+    const auto childHead = CurrentHeadSha(ctx.cloneChildRepo);
+    const auto rootHead = CurrentHeadSha(ctx.cloneRootRepo);
+    REQUIRE(childHead != childHeadBefore);
+    REQUIRE(rootHead != rootHeadBefore);
+    const auto childContent = RunGit({"show", "HEAD:" + childPath}, ctx.cloneChildRepo);
+    RequireSuccess(childContent, "show pushed shorthand child content");
+    REQUIRE(childContent.stdoutText == "message shorthand pushed child content\n");
+    REQUIRE(GitlinkHeadSha(ctx.cloneRootRepo, ctx.submodulePath) == childHead);
+
+    const auto childPaths =
+        RunGit({"diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"}, ctx.cloneChildRepo);
+    RequireSuccess(childPaths, "list pushed child shorthand commit paths");
+    REQUIRE(TrimCopy(childPaths.stdoutText) == childPath);
+    const auto rootPaths =
+        RunGit({"diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"}, ctx.cloneRootRepo);
+    RequireSuccess(rootPaths, "list pushed parent shorthand commit paths");
+    REQUIRE(TrimCopy(rootPaths.stdoutText) == ctx.submodulePath);
+    REQUIRE(CurrentHeadSha(unrelatedRepo) == unrelatedHeadBefore);
+    const auto unrelatedStatus =
+        RunGit({"status", "--porcelain", "--", "unrelated.txt"}, unrelatedRepo);
+    RequireSuccess(unrelatedStatus, "verify unrelated push repo remains dirty");
+    REQUIRE(TrimCopy(unrelatedStatus.stdoutText) == "M unrelated.txt");
+    REQUIRE(StatusPorcelain(ctx.cloneChildRepo).empty());
+    REQUIRE(StatusPorcelain(ctx.cloneRootRepo).empty());
+
+    const auto [childBehind, childAhead] = AheadBehindCounts(ctx.cloneChildRepo);
+    REQUIRE(childBehind == 0);
+    REQUIRE(childAhead == 0);
+    const auto [rootBehind, rootAhead] = AheadBehindCounts(ctx.cloneRootRepo);
+    REQUIRE(rootBehind == 0);
+    REQUIRE(rootAhead == 0);
+    REQUIRE(RefSha(ctx.childBareRemote, "refs/heads/" + ctx.branch) == childHead);
+    REQUIRE(RefSha(ctx.rootBareRemote, "refs/heads/" + ctx.branch) == rootHead);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("commit no-recursive message plan avoids child probes and falls back from an unusable global cache",
           "[functional][commit][no-recursive][staged-only][KG-BUG-0043][KG-BUG-0081]") {
     const auto ctx = CreateRemoteWithSubmoduleClone("commit-no-recursive-repo-freshness");
