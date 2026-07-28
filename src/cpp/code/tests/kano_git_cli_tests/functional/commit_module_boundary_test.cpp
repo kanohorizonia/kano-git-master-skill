@@ -48,6 +48,8 @@ TEST_CASE("commit command keeps implementation behind commit utils module", "[ar
     const auto commitPlanTaskGraphSourcePath = moduleRoot / "private/commit_plan_task_graph.cpp";
     const auto commitAutoPlanPipelineHeaderPath = moduleRoot / "private/commit_auto_plan_pipeline.hpp";
     const auto commitAutoPlanPipelineSourcePath = moduleRoot / "private/commit_auto_plan_pipeline.cpp";
+    const auto commitLockRecoveryHeaderPath = moduleRoot / "private/commit_lock_recovery.hpp";
+    const auto commitLockRecoverySourcePath = moduleRoot / "private/commit_lock_recovery.cpp";
     const auto commitUtilsHeaderPath = moduleRoot / "private/commit_utils.hpp";
     const auto commitUtilsSourcePath = moduleRoot / "private/commit_utils.cpp";
     const auto cmakePath = moduleRoot / "CMakeLists.txt";
@@ -59,18 +61,21 @@ TEST_CASE("commit command keeps implementation behind commit utils module", "[ar
     const auto commitPlanTaskGraphSource = ReadText(commitPlanTaskGraphSourcePath);
     const auto commitAutoPlanPipelineHeader = ReadText(commitAutoPlanPipelineHeaderPath);
     const auto commitAutoPlanPipelineSource = ReadText(commitAutoPlanPipelineSourcePath);
+    const auto commitLockRecoveryHeader = ReadText(commitLockRecoveryHeaderPath);
+    const auto commitLockRecoverySource = ReadText(commitLockRecoverySourcePath);
     const auto commitUtilsHeader = ReadText(commitUtilsHeaderPath);
     const auto commitUtilsSource = ReadText(commitUtilsSourcePath);
     const auto cmake = ReadText(cmakePath);
 
     REQUIRE(CountLines(commitCommand) < 2000);
-    REQUIRE(CountLines(commitUtilsSource) < 5350);
+    REQUIRE(CountLines(commitUtilsSource) < 5000);
     REQUIRE(commitCommand.find("#include \"commit_utils.hpp\"") != std::string::npos);
     REQUIRE(commitCommand.find("void RegisterCommit(CLI::App& InApp)") != std::string::npos);
     REQUIRE(commitCommand.find("void RegisterAmend(CLI::App& InApp)") != std::string::npos);
     REQUIRE(commitUtilsSource.find("#include \"commit_plan_payload.hpp\"") != std::string::npos);
     REQUIRE(commitUtilsSource.find("#include \"commit_plan_task_graph.hpp\"") != std::string::npos);
     REQUIRE(commitUtilsSource.find("#include \"commit_auto_plan_pipeline.hpp\"") != std::string::npos);
+    REQUIRE(commitUtilsSource.find("#include \"commit_lock_recovery.hpp\"") != std::string::npos);
     REQUIRE(commitUtilsSource.find("struct CommitPlanPayload") == std::string::npos);
     REQUIRE(commitUtilsSource.find("auto ParseCommitPlanText(") == std::string::npos);
     REQUIRE(commitUtilsSource.find("struct RepoCommitRunbook") == std::string::npos);
@@ -80,6 +85,10 @@ TEST_CASE("commit command keeps implementation behind commit utils module", "[ar
     REQUIRE(commitUtilsSource.find("auto RunCommitSeedViaSelf(") == std::string::npos);
     REQUIRE(commitUtilsSource.find("auto RunCommitAutoPlanPipeline(") == std::string::npos);
     REQUIRE(commitUtilsSource.find("auto RunAmendAutoPlanPipeline(") == std::string::npos);
+    REQUIRE(commitUtilsSource.find("auto DetectActiveCommitLockRecoveryProcess(") == std::string::npos);
+    REQUIRE(commitUtilsSource.find("auto CleanupStaleCommitLocksForRepo(") == std::string::npos);
+    REQUIRE(commitUtilsSource.find("auto RunCommitLockRecoveryConvergeProbe(") == std::string::npos);
+    REQUIRE(commitUtilsSource.find("auto AttemptCommitLockRecoveryOnce(") == std::string::npos);
     REQUIRE(commitUtilsHeader.find("ConfigureCommitCommand") != std::string::npos);
     REQUIRE(commitUtilsHeader.find("ConfigureAmendCommand") != std::string::npos);
     REQUIRE(commitUtilsSource.find("void ConfigureCommitCommand(CLI::App& InApp)") != std::string::npos);
@@ -112,12 +121,22 @@ TEST_CASE("commit command keeps implementation behind commit utils module", "[ar
     REQUIRE(commitAutoPlanPipelineSource.find("auto RunIgnorePlanApplyViaSelf(") != std::string::npos);
     REQUIRE(commitAutoPlanPipelineSource.find("auto RunCommitPlanRunbookViaSelf(") != std::string::npos);
     REQUIRE(commitAutoPlanPipelineSource.find("KOG_SCOPED_TIMING_LOG_WITH_ELAPSED") != std::string::npos);
+    REQUIRE(CountLines(commitLockRecoverySource) < 650);
+    REQUIRE(CountOccurrences(commitLockRecoveryHeader, "\nauto ") == 1);
+    REQUIRE(commitLockRecoveryHeader.find("struct CommitLockRecoveryState") != std::string::npos);
+    REQUIRE(commitLockRecoveryHeader.find("MaybeRecoverCommitLockFailure") != std::string::npos);
+    REQUIRE(commitLockRecoverySource.find("auto DetectActiveCommitLockRecoveryProcess(") != std::string::npos);
+    REQUIRE(commitLockRecoverySource.find("auto CleanupStaleCommitLocksForRepo(") != std::string::npos);
+    REQUIRE(commitLockRecoverySource.find("auto RunCommitLockRecoveryConvergeProbe(") != std::string::npos);
+    REQUIRE(commitLockRecoverySource.find("auto AttemptCommitLockRecoveryOnce(") != std::string::npos);
     REQUIRE(cmake.find("private/commit_plan_payload.cpp") != std::string::npos);
     REQUIRE(cmake.find("private/commit_plan_payload.hpp") != std::string::npos);
     REQUIRE(cmake.find("private/commit_plan_task_graph.cpp") != std::string::npos);
     REQUIRE(cmake.find("private/commit_plan_task_graph.hpp") != std::string::npos);
     REQUIRE(cmake.find("private/commit_auto_plan_pipeline.cpp") != std::string::npos);
     REQUIRE(cmake.find("private/commit_auto_plan_pipeline.hpp") != std::string::npos);
+    REQUIRE(cmake.find("private/commit_lock_recovery.cpp") != std::string::npos);
+    REQUIRE(cmake.find("private/commit_lock_recovery.hpp") != std::string::npos);
     REQUIRE(cmake.find("private/commit_utils.cpp") != std::string::npos);
 }
 

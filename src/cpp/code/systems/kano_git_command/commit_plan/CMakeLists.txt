@@ -5,6 +5,8 @@ target_sources(kano_git_cmd_commit_plan
     private/agent_queue_cmd.cpp
     private/agent_queue_cmd.hpp
     private/commit_ai_utils.cpp
+    private/commit_lock_recovery.cpp
+    private/commit_lock_recovery.hpp
     private/commit_auto_plan_pipeline.cpp
     private/commit_auto_plan_pipeline.hpp
     private/commit_cmd.cpp
