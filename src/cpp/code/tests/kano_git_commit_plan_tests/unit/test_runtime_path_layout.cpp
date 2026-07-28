@@ -102,6 +102,12 @@ TEST_CASE("runtime layout owns stable workspace plan and cache paths", "[runtime
             std::filesystem::path("/workspace/project/.kano/tmp/git/export"));
     REQUIRE(layout.DebugLogRoot() ==
             std::filesystem::path("/workspace/project/.kano/tmp/git/log"));
+    REQUIRE(layout.RegressionAssetRoot() ==
+            std::filesystem::path("/package/kog/assets/regression"));
+    REQUIRE(layout.RegressionIncidentManifest() ==
+            std::filesystem::path("/package/kog/assets/regression/incidents.json"));
+    REQUIRE(layout.RegressionCaseTemplate() ==
+            std::filesystem::path("/package/kog/assets/regression/case-template.json"));
     REQUIRE(runtime_path::GlobalCacheRoot("/users/operator") ==
             std::filesystem::path("/users/operator/.kano/cache/git"));
 }
@@ -156,14 +162,61 @@ TEST_CASE("skill root resolver supports dev workspace and launcher package roots
     const auto devRoot = workspace / ".agents" / "skills" / "kano" / "kano-git-master-skill";
     WriteMarker(devRoot / "SKILL.md");
     WriteMarker(devRoot / "scripts" / "kog");
+    WriteMarker(workspace / "SKILL.md");
+    WriteMarker(workspace / "assets" / "regression" / "incidents.json");
+    WriteMarker(workspace / "assets" / "regression" / "case-template.json");
 
     ScopedEnvironment noExplicitRoot("KANO_GIT_SKILL_ROOT", std::nullopt);
     ScopedEnvironment noLauncherRoot("KANO_GIT_MASTER_ROOT", std::nullopt);
+    ScopedEnvironment noBinaryPath("KANO_GIT_BINARY_PATH", std::nullopt);
+    // An unrelated workspace that happens to contain portable asset markers
+    // must not shadow the named developer skill root.
     REQUIRE(runtime_path::ResolveSkillRoot(workspace) == devRoot.lexically_normal());
 
     const auto packageRoot = temp.Path() / "package" / "kano-git-master-skill";
     ScopedEnvironment launcherRoot("KANO_GIT_MASTER_ROOT", packageRoot.generic_string());
     REQUIRE(runtime_path::ResolveSkillRoot(workspace) == packageRoot.lexically_normal());
+}
+
+TEST_CASE("binary skill root resolver supports sibling package and runtime artifact layouts",
+          "[runtime-layout][package]") {
+    TemporaryDirectory temp("binary-skill-roots");
+    const auto packageRoot = temp.Path() / "installed-package";
+    const auto packageBinary = packageRoot / "bin" / "kano-git.exe";
+    const auto packageSkill =
+        packageRoot / "skills" / "kano-git-master-skill";
+    WriteMarker(packageBinary);
+    WriteMarker(packageSkill / "SKILL.md");
+    WriteMarker(packageSkill / "assets" / "regression" / "incidents.json");
+    WriteMarker(packageSkill / "assets" / "regression" / "case-template.json");
+
+    REQUIRE(runtime_path::ResolveSkillRootFromBinaryPath(packageBinary) ==
+            packageSkill.lexically_normal());
+
+    const auto artifactRoot = temp.Path() / "portable-runtime";
+    const auto artifactBinary = artifactRoot / "bin" / "kano-git";
+    WriteMarker(artifactBinary);
+    WriteMarker(artifactRoot / "SKILL.md");
+    WriteMarker(artifactRoot / "assets" / "regression" / "incidents.json");
+    WriteMarker(artifactRoot / "assets" / "regression" / "case-template.json");
+    REQUIRE(runtime_path::ResolveSkillRootFromBinaryPath(artifactBinary) ==
+            artifactRoot.lexically_normal());
+
+    const auto incompleteSkill =
+        temp.Path() / "incomplete" / "skills" / "kano-git-master-skill";
+    const auto incompleteBinary = temp.Path() / "incomplete" / "bin" / "kano-git.exe";
+    WriteMarker(incompleteSkill / "SKILL.md");
+    WriteMarker(incompleteSkill / "scripts" / "kog");
+    WriteMarker(incompleteBinary);
+    REQUIRE(runtime_path::ResolveSkillRootFromBinaryPath(incompleteBinary).empty());
+
+    ScopedEnvironment noExplicitRoot("KANO_GIT_SKILL_ROOT", std::nullopt);
+    ScopedEnvironment noLauncherRoot("KANO_GIT_MASTER_ROOT", std::nullopt);
+    ScopedEnvironment packagedBinary(
+        "KANO_GIT_BINARY_PATH",
+        packageBinary.generic_string());
+    REQUIRE(runtime_path::ResolveSkillRoot(temp.Path() / "external-workspace") ==
+            packageSkill.lexically_normal());
 }
 
 TEST_CASE("ignore gate policy supports exact and shell glob entries", "[ignore-policy]") {

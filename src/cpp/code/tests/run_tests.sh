@@ -44,7 +44,8 @@ resolve_test_exe_dir() {
   local config_dir=""
   for config_dir in release relwithdebinfo minsizerel debug; do
     if [[ ( -x "$bin_dir/$config_dir/kano_git_cli_tests" || -x "$bin_dir/$config_dir/kano_git_cli_tests.exe" ) &&
-          ( -x "$bin_dir/$config_dir/kano_git_tui_tests" || -x "$bin_dir/$config_dir/kano_git_tui_tests.exe" ) ]]; then
+          ( -x "$bin_dir/$config_dir/kano_git_tui_tests" || -x "$bin_dir/$config_dir/kano_git_tui_tests.exe" ) &&
+          ( -x "$bin_dir/$config_dir/kano_git_regression_tests" || -x "$bin_dir/$config_dir/kano_git_regression_tests.exe" ) ]]; then
       printf '%s\n' "$bin_dir/$config_dir"
       return 0
     fi
@@ -322,6 +323,18 @@ run_tui_tests() {
   fi
 }
 
+run_regression_tests() {
+  local executable="$EXE_DIR/kano_git_regression_tests"
+  if [[ -x "$EXE_DIR/kano_git_regression_tests.exe" ]]; then
+    executable="$EXE_DIR/kano_git_regression_tests.exe"
+  fi
+  if [[ -n "$TEST_XML_DIR" ]]; then
+    run_test_binary "kano_git_regression_tests" "$executable" --reporter junit --out "$TEST_XML_DIR/kano_git_regression_tests.xml"
+  else
+    run_test_binary "kano_git_regression_tests" "$executable"
+  fi
+}
+
 run_integration_tests() {
   local executable="$EXE_DIR/kano_git_integration_tests"
   if [[ -x "$EXE_DIR/kano_git_integration_tests.exe" ]]; then
@@ -346,6 +359,10 @@ if [[ "$LANE_MODE" != "integration" ]]; then
   echo ""
   echo "Running TUI tests..."
   run_tui_tests
+
+  echo ""
+  echo "Running dogfood regression registry tests..."
+  run_regression_tests
 fi
 
 if [[ "$LANE_MODE" == "full" && "${KANO_FULL_LANE_EXTRA:-0}" == "1" ]]; then

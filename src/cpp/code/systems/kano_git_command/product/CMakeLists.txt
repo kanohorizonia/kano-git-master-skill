@@ -19,6 +19,8 @@ target_sources(kano_git_cmd_product
     private/version_cmd.cpp
     private/discover_cmd.cpp
     private/repo_hygiene_cmd.cpp
+    private/regression_cmd.cpp
+    private/regression_coverage.cpp
     private/release_cmd.cpp
     private/release_helpers.cpp
     private/skill_cmd.cpp

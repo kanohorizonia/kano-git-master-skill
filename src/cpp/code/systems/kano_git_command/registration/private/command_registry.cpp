@@ -36,6 +36,7 @@ void RegisterAll(CLI::App& InApp) {
     RegisterRepo(InApp);
     RegisterRemote(InApp);
     RegisterRepoHygiene(InApp);
+    RegisterRegression(InApp);
     RegisterRelease(InApp);
     RegisterReset(InApp);
     RegisterResolve(InApp);

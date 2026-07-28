@@ -28,6 +28,20 @@ auto IsSkillRoot(const std::filesystem::path& InCandidate) -> bool {
     }
 
     ec.clear();
+    const auto regressionManifest =
+        (InCandidate / "assets" / "regression" / "incidents.json").lexically_normal();
+    const bool hasRegressionManifest =
+        std::filesystem::is_regular_file(regressionManifest, ec) && !ec;
+    ec.clear();
+    const auto regressionTemplate =
+        (InCandidate / "assets" / "regression" / "case-template.json").lexically_normal();
+    const bool hasRegressionTemplate =
+        std::filesystem::is_regular_file(regressionTemplate, ec) && !ec;
+    if (hasRegressionManifest && hasRegressionTemplate) {
+        return true;
+    }
+
+    ec.clear();
     const auto launcher = (InCandidate / "scripts" / "kog").lexically_normal();
     if (std::filesystem::is_regular_file(launcher, ec) && !ec) {
         return true;
@@ -43,6 +57,28 @@ auto IsSkillRoot(const std::filesystem::path& InCandidate) -> bool {
     return hasPlanAsset && hasSecurityAsset;
 }
 
+auto IsPortableRuntimeRoot(const std::filesystem::path& InCandidate) -> bool {
+    if (InCandidate.empty()) {
+        return false;
+    }
+
+    std::error_code ec;
+    const auto skillMarker = (InCandidate / "SKILL.md").lexically_normal();
+    const bool hasSkillMarker =
+        std::filesystem::is_regular_file(skillMarker, ec) && !ec;
+    ec.clear();
+    const auto regressionManifest =
+        (InCandidate / "assets" / "regression" / "incidents.json").lexically_normal();
+    const bool hasRegressionManifest =
+        std::filesystem::is_regular_file(regressionManifest, ec) && !ec;
+    ec.clear();
+    const auto regressionTemplate =
+        (InCandidate / "assets" / "regression" / "case-template.json").lexically_normal();
+    const bool hasRegressionTemplate =
+        std::filesystem::is_regular_file(regressionTemplate, ec) && !ec;
+    return hasSkillMarker && hasRegressionManifest && hasRegressionTemplate;
+}
+
 auto EnvPath(const char* InName) -> std::filesystem::path {
     const char* raw = std::getenv(InName);
     if (raw == nullptr || *raw == '\0') {
@@ -54,6 +90,12 @@ auto EnvPath(const char* InName) -> std::filesystem::path {
 auto ExistingSkillCandidate(const std::filesystem::path& InCandidate) -> std::filesystem::path {
     const auto normalized = Normalize(InCandidate);
     return IsSkillRoot(normalized) ? normalized : std::filesystem::path{};
+}
+
+auto ExistingPortableRuntimeCandidate(const std::filesystem::path& InCandidate)
+    -> std::filesystem::path {
+    const auto normalized = Normalize(InCandidate);
+    return IsPortableRuntimeRoot(normalized) ? normalized : std::filesystem::path{};
 }
 
 auto HomeDirectory() -> std::filesystem::path {
@@ -209,6 +251,18 @@ auto Layout::IgnoreUpstreamCorpusRelativeToSkill() const -> std::filesystem::pat
     return IgnoreUpstreamCorpus().lexically_relative(skillRoot_).lexically_normal();
 }
 
+auto Layout::RegressionAssetRoot() const -> std::filesystem::path {
+    return (skillRoot_ / "assets" / "regression").lexically_normal();
+}
+
+auto Layout::RegressionIncidentManifest() const -> std::filesystem::path {
+    return (RegressionAssetRoot() / "incidents.json").lexically_normal();
+}
+
+auto Layout::RegressionCaseTemplate() const -> std::filesystem::path {
+    return (RegressionAssetRoot() / "case-template.json").lexically_normal();
+}
+
 auto ResolveSkillRoot(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path {
     // Explicit launcher/package contracts take precedence and intentionally do
     // not require probing: callers may resolve assets before materialization.
@@ -217,6 +271,12 @@ auto ResolveSkillRoot(const std::filesystem::path& InWorkspaceRoot) -> std::file
     }
     if (const auto launcherRoot = EnvPath("KANO_GIT_MASTER_ROOT"); !launcherRoot.empty()) {
         return launcherRoot;
+    }
+    if (const auto binaryPath = EnvPath("KANO_GIT_BINARY_PATH"); !binaryPath.empty()) {
+        if (const auto binarySkillRoot = ResolveSkillRootFromBinaryPath(binaryPath);
+            !binarySkillRoot.empty()) {
+            return binarySkillRoot;
+        }
     }
 
     const auto workspace = Normalize(InWorkspaceRoot);
@@ -259,6 +319,54 @@ auto ResolveSkillRoot(const std::filesystem::path& InWorkspaceRoot) -> std::file
     // been initialized yet. The resulting deterministic path gives callers a
     // useful missing-asset diagnostic.
     return (workspace / ".agents" / "skills" / "kano" / "kano-git-master-skill").lexically_normal();
+}
+
+auto ResolveSkillRootFromBinaryPath(const std::filesystem::path& InBinaryPath)
+    -> std::filesystem::path {
+    if (InBinaryPath.empty()) {
+        return {};
+    }
+
+    std::error_code ec;
+    auto binaryPath = InBinaryPath;
+    if (binaryPath.is_relative()) {
+        binaryPath = std::filesystem::absolute(binaryPath, ec);
+        if (ec) {
+            binaryPath = InBinaryPath;
+        }
+    }
+    binaryPath = Normalize(binaryPath);
+    auto current = binaryPath.parent_path();
+    if (current.empty()) {
+        return {};
+    }
+
+    // Installed Windows packages place binaries and skills under sibling
+    // roots: <package>/bin and <package>/skills/kano-git-master-skill.
+    if (const auto found = ExistingPortableRuntimeCandidate(
+            current.parent_path() / "skills" / "kano-git-master-skill");
+        !found.empty()) {
+        return found;
+    }
+
+    // Runtime artifacts keep bin/ below the skill payload root. Continue
+    // probing ancestors so the same contract also serves portable archives.
+    for (int depth = 0; depth < 8 && !current.empty(); ++depth) {
+        if (const auto found = ExistingPortableRuntimeCandidate(current); !found.empty()) {
+            return found;
+        }
+        if (const auto found = ExistingPortableRuntimeCandidate(
+                current / "skills" / "kano-git-master-skill");
+            !found.empty()) {
+            return found;
+        }
+        const auto parent = current.parent_path();
+        if (parent == current) {
+            break;
+        }
+        current = parent;
+    }
+    return {};
 }
 
 auto GlobalCacheRoot(const std::filesystem::path& InHomeDirectory) -> std::filesystem::path {

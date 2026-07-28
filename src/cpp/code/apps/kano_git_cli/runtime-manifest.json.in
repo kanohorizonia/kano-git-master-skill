@@ -6,5 +6,10 @@
   "build_context": "@KOG_BUILD_CONTEXT_STR@",
   "toolchain": "@KOG_BUILD_TOOLCHAIN_STR@",
   "configuration": "@KOG_BUILD_CONFIGURATION_STR@",
-  "binary": "bin/kano-git"
+  "binary": "bin/kano-git",
+  "runtime_assets": [
+    "SKILL.md",
+    "assets/regression/incidents.json",
+    "assets/regression/case-template.json"
+  ]
 }

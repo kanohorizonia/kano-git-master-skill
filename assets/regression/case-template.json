@@ -1,0 +1,24 @@
+{
+  "schema": "kog.regression.incident-map.v1",
+  "incidents": [
+    {
+      "incident_id": "KG-BUG-0000",
+      "incident_date": "YYYY-MM-DD",
+      "root_cause": "State the verified technical cause, not only the observed symptom.",
+      "backlog_ref": "KG-BUG-0000",
+      "change_ref": "commit-or-pending-item-reference",
+      "workflow_contracts": [
+        "converges-or-fails"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KG-BUG-0000/stable-scenario-slug",
+          "test_name": "exact stable test case name",
+          "test_file": "src/cpp/code/tests/<suite>/<test-file>.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        }
+      ]
+    }
+  ]
+}

@@ -3,22 +3,36 @@ cmake_minimum_required(VERSION 3.24)
 foreach(required_var
         KOG_RUNTIME_ARTIFACT_DIR
         KOG_RUNTIME_BINARY
-        KOG_RUNTIME_MANIFEST)
+        KOG_RUNTIME_MANIFEST
+        KOG_RUNTIME_SKILL_MARKER
+        KOG_RUNTIME_REGRESSION_ASSET_ROOT)
     if(NOT DEFINED ${required_var} OR "${${required_var}}" STREQUAL "")
         message(FATAL_ERROR "${required_var} is required")
     endif()
 endforeach()
 
-foreach(required_file KOG_RUNTIME_BINARY KOG_RUNTIME_MANIFEST)
+foreach(required_file
+        KOG_RUNTIME_BINARY
+        KOG_RUNTIME_MANIFEST
+        KOG_RUNTIME_SKILL_MARKER)
     if(NOT EXISTS "${${required_file}}")
         message(FATAL_ERROR "${required_file} does not exist: ${${required_file}}")
+    endif()
+endforeach()
+
+foreach(regression_asset incidents.json case-template.json)
+    if(NOT EXISTS "${KOG_RUNTIME_REGRESSION_ASSET_ROOT}/${regression_asset}")
+        message(FATAL_ERROR
+            "required regression asset does not exist: "
+            "${KOG_RUNTIME_REGRESSION_ASSET_ROOT}/${regression_asset}")
     endif()
 endforeach()
 
 file(REMOVE_RECURSE "${KOG_RUNTIME_ARTIFACT_DIR}")
 file(MAKE_DIRECTORY
     "${KOG_RUNTIME_ARTIFACT_DIR}/bin"
-    "${KOG_RUNTIME_ARTIFACT_DIR}/lib")
+    "${KOG_RUNTIME_ARTIFACT_DIR}/lib"
+    "${KOG_RUNTIME_ARTIFACT_DIR}/assets/regression")
 file(COPY_FILE
     "${KOG_RUNTIME_BINARY}"
     "${KOG_RUNTIME_ARTIFACT_DIR}/bin/kano-git"
@@ -27,6 +41,16 @@ file(COPY_FILE
     "${KOG_RUNTIME_MANIFEST}"
     "${KOG_RUNTIME_ARTIFACT_DIR}/manifest.json"
     ONLY_IF_DIFFERENT)
+file(COPY_FILE
+    "${KOG_RUNTIME_SKILL_MARKER}"
+    "${KOG_RUNTIME_ARTIFACT_DIR}/SKILL.md"
+    ONLY_IF_DIFFERENT)
+foreach(regression_asset incidents.json case-template.json)
+    file(COPY_FILE
+        "${KOG_RUNTIME_REGRESSION_ASSET_ROOT}/${regression_asset}"
+        "${KOG_RUNTIME_ARTIFACT_DIR}/assets/regression/${regression_asset}"
+        ONLY_IF_DIFFERENT)
+endforeach()
 
 string(REPLACE "|" ";" runtime_shared_libraries "${KOG_RUNTIME_SHARED_LIBRARIES}")
 foreach(runtime_library IN LISTS runtime_shared_libraries)
@@ -53,7 +77,7 @@ foreach(compiler_runtime KOG_RUNTIME_LIBSTDCPP KOG_RUNTIME_LIBGCC)
     endif()
 endforeach()
 
-if(CMAKE_HOST_UNIX)
+if(CMAKE_HOST_UNIX AND NOT CMAKE_HOST_APPLE)
     execute_process(
         COMMAND "${CMAKE_COMMAND}" -E env
             "LD_LIBRARY_PATH=${KOG_RUNTIME_ARTIFACT_DIR}/lib"

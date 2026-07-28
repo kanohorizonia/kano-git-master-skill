@@ -60,13 +60,24 @@ cmake --build <build-dir> --target kog_runtime_artifact
 ```
 
 The target writes `runtime-artifact/bin/kano-git`, the KOG-owned shared-library
-closure plus required GNU runtime libraries on Linux, and
-`runtime-artifact/manifest.json` with revision, source fingerprint, toolchain,
-and build-context provenance. Linux packaging fails when `ldd` reports an
-unresolved dependency. The root `.dockerignore` exposes only the VERSION file
-and native runtime source projection to provider-image build contexts; local
-outputs, reports, docs, tests, and workspace metadata do not invalidate that
-Docker context.
+closure plus required GNU runtime libraries on Linux, `SKILL.md`, the regression
+incident map/template, and `runtime-artifact/manifest.json` with revision,
+source fingerprint, toolchain, build-context, and runtime-asset provenance.
+Linux packaging fails when `ldd` reports an unresolved dependency. The root
+`.dockerignore` exposes only VERSION, the skill marker, regression runtime
+assets, and the native runtime source projection to provider-image build
+contexts; local outputs, reports, docs, tests, and workspace metadata do not
+invalidate that Docker context.
+
+Portable runtime archives keep `bin/`, `SKILL.md`, and `assets/regression/`
+under one root. Staged Windows packages use the sibling layout
+`<package>/bin` and `<package>/skills/kano-git-master-skill`. The native
+binary resolves either layout from its own path after validating the skill and
+regression asset markers, so `kog regression coverage` does not depend on the
+launch directory or a pre-set skill-root environment variable. The packaged
+`scripts/kog` shim likewise enters a pre-bootstrap sibling `bin/` fast path,
+but only when the expected `skills/kano-git-master-skill` layout, install-state
+marker, skill marker, regression assets, and executable are all present.
 
 If dependency fetching fails in an offline or DNS-restricted environment, treat it
 as an online build prerequisite failure, not as a launcher failure.
@@ -174,6 +185,9 @@ effective worker count.
 # Repo hygiene
 ./scripts/kog repo-hygiene check
 ./scripts/kog repo-hygiene fix
+./scripts/kog regression coverage
+./scripts/kog regression coverage --format json
+./scripts/kog regression coverage --fail-on-gap
 ./scripts/kog auth doctor
 ./scripts/kog auth test --selected-remotes
 ./scripts/kog auth cloudflare-ssh setup --hostname gitlab-ssh.example.com --install --dry-run
@@ -196,6 +210,21 @@ effective worker count.
 ./scripts/kog completion install bash
 ./scripts/kog completion uninstall bash
 ```
+
+### Dogfood regression coverage
+
+`kog regression coverage` reads the shipped
+`assets/regression/incidents.json` through the centralized runtime asset
+resolver and lists recent incidents, exact linked source cases, and gaps.
+`--format text|json` selects deterministic output; `--json` is the JSON alias.
+Use `--manifest <path>` to validate a proposed registry and `--fail-on-gap` to
+turn valid uncovered incidents into exit 3. Invalid format, JSON, schema, or
+placeholder metadata exits 2.
+
+The report explicitly uses `execution_evidence=not-evaluated`: a source mapping
+does not claim the linked test ran or passed. Follow
+`docs/guides/dogfood-regression-policy.md` when a real dogfood failure is fixed.
+Long-running E2E execution remains non-blocking unless a separate gate opts in.
 
 `kog status <target>` resolves a repository name or path and uses that repository
 as the discovery root, so registered repositories below it remain part of the

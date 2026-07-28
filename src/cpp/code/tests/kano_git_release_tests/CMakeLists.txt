@@ -13,6 +13,9 @@ target_include_directories(kano_git_release_tests
 
 target_compile_definitions(kano_git_release_tests
   PRIVATE KANO_GIT_TEST_REPO_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/../../../../.."
+  PRIVATE KANO_GIT_TEST_CLI_BINARY="$<TARGET_FILE:kano_git_cli>"
 )
+
+add_dependencies(kano_git_release_tests kano_git_cli)
 
 catch_discover_tests(kano_git_release_tests)

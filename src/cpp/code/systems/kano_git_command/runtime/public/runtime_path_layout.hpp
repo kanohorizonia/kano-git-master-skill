@@ -42,6 +42,9 @@ public:
     [[nodiscard]] auto IgnoreGateAllowlist() const -> std::filesystem::path;
     [[nodiscard]] auto IgnoreUpstreamCorpus() const -> std::filesystem::path;
     [[nodiscard]] auto IgnoreUpstreamCorpusRelativeToSkill() const -> std::filesystem::path;
+    [[nodiscard]] auto RegressionAssetRoot() const -> std::filesystem::path;
+    [[nodiscard]] auto RegressionIncidentManifest() const -> std::filesystem::path;
+    [[nodiscard]] auto RegressionCaseTemplate() const -> std::filesystem::path;
 
 private:
     Layout(std::filesystem::path InWorkspaceRoot, std::filesystem::path InSkillRoot);
@@ -51,6 +54,8 @@ private:
 };
 
 auto ResolveSkillRoot(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path;
+auto ResolveSkillRootFromBinaryPath(const std::filesystem::path& InBinaryPath)
+    -> std::filesystem::path;
 auto GlobalCacheRoot(const std::filesystem::path& InHomeDirectory) -> std::filesystem::path;
 
 } // namespace kano::git::commands::runtime_path

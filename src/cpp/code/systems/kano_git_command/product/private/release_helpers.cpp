@@ -267,8 +267,19 @@ auto RequiredIgnoreAssetPaths() -> const std::vector<std::filesystem::path>& {
     return required;
 }
 
-void ValidatePackagedIgnoreAssets(const std::filesystem::path& skillRoot) {
+auto RequiredRegressionAssetPaths() -> const std::vector<std::filesystem::path>& {
+    static const std::vector<std::filesystem::path> required = {
+        "assets/regression/incidents.json",
+        "assets/regression/case-template.json",
+    };
+    return required;
+}
+
+void ValidatePackagedAssets(const std::filesystem::path& skillRoot) {
     for (const auto& relative : RequiredIgnoreAssetPaths()) {
+        RequirePackagedFile(skillRoot, relative);
+    }
+    for (const auto& relative : RequiredRegressionAssetPaths()) {
         RequirePackagedFile(skillRoot, relative);
     }
 
@@ -549,6 +560,9 @@ void StageWindowsPackage(const ReleaseMetadata& metadata,
     for (const auto& relative : RequiredIgnoreAssetPaths()) {
         RequirePackagedFile(metadata.repoRoot, relative);
     }
+    for (const auto& relative : RequiredRegressionAssetPaths()) {
+        RequirePackagedFile(metadata.repoRoot, relative);
+    }
     bool hasKogBinary = false;
     bool hasKanoGitBinary = false;
     for (const auto& binary : plan.foundBinaries) {
@@ -583,7 +597,7 @@ void StageWindowsPackage(const ReleaseMetadata& metadata,
     CopyDirectoryWithoutGitMetadata(metadata.repoRoot / "docs", skillRoot / "docs");
     CopyDirectoryWithoutGitMetadata(metadata.repoRoot / ".kano", skillRoot / ".kano");
     CopyDirectoryWithoutGitMetadata(metadata.repoRoot / "assets", skillRoot / "assets");
-    ValidatePackagedIgnoreAssets(skillRoot);
+    ValidatePackagedAssets(skillRoot);
     WriteTextFileStrict(
         plan.packageRoot / "release-manifest.json",
         RenderReleaseManifestJson(metadata));

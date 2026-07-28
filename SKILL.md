@@ -115,6 +115,8 @@ productionizes that path.
 # Repo hygiene and export
 ./scripts/kog repo-hygiene check
 ./scripts/kog repo-hygiene fix
+./scripts/kog regression coverage
+./scripts/kog regression coverage --fail-on-gap
 ./scripts/kog export --help
 ./scripts/kog export --single
 ./scripts/kog export --subtree "/path/to/repo/Engine/Source/Programs/UnrealGameSync" --name UnrealGameSync --source head
@@ -254,6 +256,29 @@ unrelated staged entries, rejects stale HEAD and existing `index.lock`, and neve
 deletes another process's lock. An active queue batch requires the matching
 `--queue-batch` id. See `docs/guides/agent-mutation-queue.md`.
 
+## Dogfood Regression Backfill
+
+When real dogfood or production behavior breaks, fix the verified root cause and
+add a same-scenario regression before closing the work. Register the incident,
+exact source case, backlog/change linkage, and workflow-contract markers in
+`assets/regression/incidents.json`, then run:
+
+```bash
+./scripts/kog regression coverage
+./scripts/kog regression coverage --format json
+./scripts/kog regression coverage --fail-on-gap
+```
+
+The default text and JSON reports are deterministic. Invalid manifests and
+unresolved placeholders exit 2. A valid coverage gap exits 3 only when
+`--fail-on-gap` is present. Registry mappings are source linkage, not evidence
+that tests executed or passed. Prefer bounded native regressions; long-running
+E2E remains non-blocking unless another workflow explicitly promotes it.
+
+Use `assets/regression/case-template.json` as a drafting aid and follow
+`docs/guides/dogfood-regression-policy.md` for required metadata, fixture
+locations, stable names, and PR expectations.
+
 ## Repo Hygiene
 
 Run before committing or exporting release archives:
@@ -343,6 +368,7 @@ Current docs:
 - `docs/guides/current-command-surface.md`
 - `docs/guides/kcc-commit-message-policy.md`
 - `docs/guides/cpa-commit-plan-workflow.md`
+- `docs/guides/dogfood-regression-policy.md`
 - `docs/guides/runtime-path-layout.md`
 - `docs/guides/ignore-datasource-sync-policy.md`
 - `docs/repo-hygiene.md`

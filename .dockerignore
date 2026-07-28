@@ -1,5 +1,12 @@
 **
 !VERSION
+!/SKILL.md
+!/assets/
+/assets/**
+!/assets/regression/
+/assets/regression/**
+!/assets/regression/incidents.json
+!/assets/regression/case-template.json
 !src/
 src/**
 !src/cpp/

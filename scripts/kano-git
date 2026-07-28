@@ -6,6 +6,33 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
+# A staged package is self-contained and must not enter developer Pixi/bootstrap
+# setup. Admit this fast path only for the release layout and install marker
+# written by StageWindowsPackage.
+KOG_INSTALLED_SKILL_PARENT="$(dirname "$PROJECT_ROOT")"
+KOG_INSTALLED_PACKAGE_ROOT="$(dirname "$KOG_INSTALLED_SKILL_PARENT")"
+KOG_INSTALLED_BINARY_NAME="kano-git"
+case "$(uname -s 2>/dev/null || true)" in
+  MINGW*|MSYS*|CYGWIN*|Windows_NT)
+    KOG_INSTALLED_BINARY_NAME="kano-git.exe"
+    ;;
+esac
+KOG_INSTALLED_BINARY="$KOG_INSTALLED_PACKAGE_ROOT/bin/$KOG_INSTALLED_BINARY_NAME"
+if [[ "$(basename "$PROJECT_ROOT")" == "kano-git-master-skill" ]] &&
+   [[ "$(basename "$KOG_INSTALLED_SKILL_PARENT")" == "skills" ]] &&
+   [[ -f "$PROJECT_ROOT/.kog-install.json" ]] &&
+   [[ -f "$PROJECT_ROOT/SKILL.md" ]] &&
+   [[ -f "$PROJECT_ROOT/assets/regression/incidents.json" ]] &&
+   [[ -f "$PROJECT_ROOT/assets/regression/case-template.json" ]] &&
+   [[ -f "$KOG_INSTALLED_BINARY" && -x "$KOG_INSTALLED_BINARY" ]]; then
+  KANO_GIT_SKILL_ROOT="$PROJECT_ROOT" \
+    KANO_GIT_MASTER_ROOT="$PROJECT_ROOT" \
+    KANO_GIT_BINARY_PATH="$KOG_INSTALLED_BINARY" \
+    exec "$KOG_INSTALLED_BINARY" "$@"
+fi
+unset KOG_INSTALLED_SKILL_PARENT KOG_INSTALLED_PACKAGE_ROOT
+unset KOG_INSTALLED_BINARY_NAME KOG_INSTALLED_BINARY
+
 launcher_now_ms() {
   local seconds="${EPOCHREALTIME:-}"
   if [[ -n "$seconds" ]]; then

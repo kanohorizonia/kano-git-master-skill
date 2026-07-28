@@ -126,6 +126,14 @@ if (-not [string]::IsNullOrWhiteSpace($TestXmlDir)) {
     Invoke-TestBinary -BinaryName "kano_git_commit_plan_tests" -ExecutablePath (Join-Path $ExeDir "kano_git_commit_plan_tests.exe")
 }
 
+Write-Host ""
+Write-Host "Running dogfood regression registry tests..."
+if (-not [string]::IsNullOrWhiteSpace($TestXmlDir)) {
+    Invoke-TestBinary -BinaryName "kano_git_regression_tests" -ExecutablePath (Join-Path $ExeDir "kano_git_regression_tests.exe") -Arguments @("--reporter", "junit", "--out", (Join-Path $TestXmlDir "kano_git_regression_tests.xml"))
+} else {
+    Invoke-TestBinary -BinaryName "kano_git_regression_tests" -ExecutablePath (Join-Path $ExeDir "kano_git_regression_tests.exe")
+}
+
 if ($WithIntegration) {
     Write-Host ""
     Write-Host "Running native integration tests..."

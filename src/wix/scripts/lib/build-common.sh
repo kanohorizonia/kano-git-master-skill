@@ -210,7 +210,7 @@ kano_wix_require_payload_file() {
   fi
 }
 
-kano_wix_validate_ignore_payload() {
+kano_wix_validate_runtime_assets() {
   local payload_root="$1"
   local relative_path
   local required_paths=(
@@ -219,6 +219,8 @@ kano_wix_validate_ignore_payload() {
     "assets/ignore/local-rules/kano.gitignore"
     "assets/ignore/policy/ignore-gate-allowlist.txt"
     "assets/ignore/datasource/upstream/github-gitignore/Global/macOS.gitignore"
+    "assets/regression/incidents.json"
+    "assets/regression/case-template.json"
   )
   for relative_path in "${required_paths[@]}"; do
     kano_wix_require_payload_file "$payload_root" "$relative_path"
@@ -286,7 +288,7 @@ kano_wix_stage_payload() {
 
   kano_wix_copy_dir_if_present "${KANO_WIX_REPO_ROOT}/assets" "${payload_root}/assets"
   kano_wix_strip_git_metadata "${payload_root}/assets"
-  kano_wix_validate_ignore_payload "$payload_root"
+  kano_wix_validate_runtime_assets "$payload_root"
   if [[ "$architecture" != "x64" ]]; then
     echo "Unsupported MSI architecture for payload staging: $architecture" >&2
     exit 1

@@ -1,0 +1,210 @@
+{
+  "schema": "kog.regression.incident-map.v1",
+  "incidents": [
+    {
+      "incident_id": "KG-TSK-0049",
+      "incident_date": "2026-03-06",
+      "root_cause": "The native suite lacked disposable black-box Git workspaces, so detached-head and cpa final-state failures were found only through manual dogfood.",
+      "backlog_ref": "KG-TSK-0049",
+      "change_ref": "9ca8c596e80e06f2bbedcb487350387eedf5eb1c",
+      "workflow_contracts": [
+        "converges-or-fails",
+        "detached-head"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KG-TSK-0049/detached-head-recoverable",
+          "test_name": "detached_head_recoverable_converges",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/functional_test_main.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-TSK-0049/detached-head-unresolvable",
+          "test_name": "detached_head_unrecoverable_fails_explicitly",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/functional_test_main.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        }
+      ]
+    },
+    {
+      "incident_id": "KG-TSK-0051",
+      "incident_date": "2026-03-06",
+      "root_cause": "Nested-repository resolution accepted an untracked ancestor because git rev-parse walked up to the parent worktree, which could attribute child work to the wrong repo and skip the child commit wave.",
+      "backlog_ref": "KG-TSK-0051",
+      "change_ref": "142c9a5827e0d4c57076356031106f897d9c1c7f",
+      "workflow_contracts": [
+        "converges-or-fails",
+        "nested-repo-child-first",
+        "post-sync-gitlink"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KG-TSK-0051/plan-file-child-before-parent",
+          "test_name": "plan_file_commit_push_converges_registered_submodule_child_before_parent",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/functional_test_main.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-TSK-0051/unregistered-nested-child-before-parent",
+          "test_name": "multi_repo_commit_push_pushes_root_and_unregistered_nested_repo",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/functional_test_main.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        }
+      ]
+    },
+    {
+      "incident_id": "KG-TSK-0055",
+      "incident_date": "2026-03-06",
+      "root_cause": "The clean-workspace commit-push path could report success before publishing commits that were already ahead of the push remote.",
+      "backlog_ref": "KG-TSK-0055",
+      "change_ref": "328dd189441ba3c36db629768f4aaffcf11fa835",
+      "workflow_contracts": [
+        "ahead-clean-push",
+        "converges-or-fails"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KG-TSK-0055/clean-not-ahead-noop",
+          "test_name": "clean_not_ahead_is_noop_success",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/functional_test_main.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-TSK-0055/clean-ahead-direct-push",
+          "test_name": "clean_but_ahead_continues_to_push",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/functional_test_main.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-TSK-0055/clean-ahead-plan-push",
+          "test_name": "plan_file_clean_but_ahead_continues_to_push",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/functional_test_main.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-TSK-0055/clean-ahead-missing-remote",
+          "test_name": "clean_unpublished_commit_without_push_remote_fails_explicitly",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/functional_test_main.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        }
+      ]
+    },
+    {
+      "incident_id": "KG-TSK-0064",
+      "incident_date": "2026-03-07",
+      "root_cause": "Agent-mode cpa could fall back to the human AI planning route or depend on manual repair of missing or stale shared plan metadata.",
+      "backlog_ref": "KG-TSK-0064",
+      "change_ref": "e84577736094765c6e088444dfb02f946d4fe580",
+      "workflow_contracts": [
+        "agent-mode-plan",
+        "converges-or-fails"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KG-TSK-0064/missing-shared-plan-bootstrap",
+          "test_name": "agent_mode_cpa_bootstraps_missing_shared_plan_without_invoking_provider",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/functional_test_main.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-TSK-0064/stale-shared-plan-refresh",
+          "test_name": "agent_mode_cpa_refreshes_stale_shared_plan_on_first_run",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/functional_test_main.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-TSK-0064/message-bypasses-shared-plan",
+          "test_name": "agent_mode_cpa_with_message_does_not_inject_shared_plan",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/functional_test_main.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        }
+      ]
+    },
+    {
+      "incident_id": "KG-BUG-0018",
+      "incident_date": "2026-07-08",
+      "root_cause": "Plan-backed exact staging ran git reset before applying includes, converting unrelated pre-existing index entries into unstaged working-tree state.",
+      "backlog_ref": "KG-BUG-0018",
+      "change_ref": "d106692317bcac0967f104bc7307eca81f022d4c",
+      "workflow_contracts": [
+        "converges-or-fails",
+        "unrelated-stage-preservation"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KG-BUG-0018/plan-preserves-unrelated-index",
+          "test_name": "commit_push_plan_file_preserves_unrelated_staged_paths",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/functional_test_main.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        }
+      ]
+    },
+    {
+      "incident_id": "KG-BUG-0019",
+      "incident_date": "2026-07-08",
+      "root_cause": "Plan-file post-sync gitlink classification inspected every dirty parent gitlink instead of applying the plan include/exclude scope.",
+      "backlog_ref": "KG-BUG-0019",
+      "change_ref": "4451462b2eb729b3f59e9df81ccbe4b6ed6cebc6",
+      "workflow_contracts": [
+        "plan-scope",
+        "post-sync-gitlink"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KG-BUG-0019/out-of-scope-gitlink-ignored",
+          "test_name": "commit_push_plan_file_ignores_out_of_scope_post_sync_gitlinks",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/functional_test_main.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-BUG-0019/in-scope-gitlink-auto-amend",
+          "test_name": "commit_push_plan_file_auto_amends_in_scope_post_sync_gitlinks",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/functional_test_main.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        }
+      ]
+    },
+    {
+      "incident_id": "KG-BUG-0087",
+      "incident_date": "2026-07-28",
+      "root_cause": "Synthetic message-plan generation emitted multiple entries for a registered nested repository while leaving some include/exclude scopes unset, so strict plan validation rejected an otherwise unambiguous commit.",
+      "backlog_ref": "KG-BUG-0087",
+      "change_ref": "f9a69f130785cd16b8a71be5ee76bcc3fcf5cc1c",
+      "workflow_contracts": [
+        "converges-or-fails",
+        "nested-repo-child-first",
+        "post-sync-gitlink"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KG-BUG-0087/message-shorthand-commit-nested-repo",
+          "test_name": "message shorthand commit coalesces registered child and parent gitlink work",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/functional_test_main.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-BUG-0087/message-shorthand-commit-push-nested-repo",
+          "test_name": "message shorthand commit-push converges registered child before parent",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/functional_test_main.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        }
+      ]
+    }
+  ]
+}

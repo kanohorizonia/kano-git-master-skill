@@ -52,6 +52,8 @@ add_custom_target(kog_runtime_artifact
         "-DKOG_RUNTIME_ARTIFACT_DIR=${KOG_RUNTIME_ARTIFACT_DIR}"
         "-DKOG_RUNTIME_BINARY=$<TARGET_FILE:kano_git_cli>"
         "-DKOG_RUNTIME_MANIFEST=${KOG_RUNTIME_MANIFEST_CONFIGURED}"
+        "-DKOG_RUNTIME_SKILL_MARKER=${KOG_REPO_ROOT}/SKILL.md"
+        "-DKOG_RUNTIME_REGRESSION_ASSET_ROOT=${KOG_REPO_ROOT}/assets/regression"
         "-DKOG_RUNTIME_SHARED_LIBRARIES=${_kog_runtime_shared_library_files_arg}"
         "-DKOG_RUNTIME_LIBSTDCPP=${_kog_libstdcpp}"
         "-DKOG_RUNTIME_LIBGCC=${_kog_libgcc}"

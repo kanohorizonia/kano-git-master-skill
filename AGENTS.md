@@ -16,6 +16,15 @@
 - Temporary verification artifacts must not be staged for commit.
 - If a local test needs files that should survive briefly between runs, keep them in `.kano/tmp/` so ignore rules and safety checks can treat them as workspace-local temporary state.
 
+## Dogfood regression backfill
+
+- Every reproducible dogfood or production defect requires a same-scenario regression case and an entry in `assets/regression/incidents.json`.
+- Record the incident id/date, verified root cause, concrete backlog/change references, stable case id, exact test name/file, and workflow-contract markers. Do not use pending, TODO/TBD, template, or placeholder values.
+- Run `./scripts/kog regression coverage --fail-on-gap` after changing the registry. Exit 2 means invalid metadata; exit 3 means an uncovered incident under the explicit gap gate.
+- `mapping_state: source-linked` proves only that source is linked. Record executed test evidence separately; never convert a mapping into a pass claim.
+- Prefer bounded native fixtures. Long-running E2E execution is non-blocking unless a separate workflow explicitly promotes it to a gate.
+- Follow `docs/guides/dogfood-regression-policy.md` for fixture, naming, and lifecycle details.
+
 ## Build toolchain ownership (Windows self-build)
 
 - Treat `pixi.toml` as the source of truth for repo-local build tools such as `cmake`, `ninja`, `git`, `bash`, and `python`.

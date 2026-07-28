@@ -104,6 +104,8 @@ require_file assets/ignore/datasource/manifest.json
 require_file assets/ignore/local-rules/kano.gitignore
 require_file assets/ignore/policy/ignore-gate-allowlist.txt
 require_file assets/ignore/datasource/upstream/github-gitignore/Global/macOS.gitignore
+require_file assets/regression/incidents.json
+require_file assets/regression/case-template.json
 
 if find assets/ignore/datasource/upstream/github-gitignore src/cpp/shared/infra -name .git -print | grep -q .; then
   echo "Error: archive contains broken submodule .git pointer files." >&2

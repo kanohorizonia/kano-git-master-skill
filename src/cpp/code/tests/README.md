@@ -19,6 +19,9 @@ tests/
 |  |- CMakeLists.txt
 |  |- unit/
 |  \- property/
+|- kano_git_regression_tests/
+|  |- CMakeLists.txt
+|  \- regression_coverage_test.cpp
 |- kano_git_integration_tests/
 |  |- CMakeLists.txt
 |  |- process_executor_cases.cpp
@@ -51,6 +54,11 @@ tests/
     transport, and commit-push recovery behavior
   - uses only disposable local repositories; no public network is required
 
+- `kano_git_regression_tests.exe`
+  - source root: `code/tests/kano_git_regression_tests/`
+  - validates the dogfood incident schema, exact source mapping drift, stable
+    report ordering, command formats, and exit-code gates
+
 - `kano_git_gui_tests`
   - reserved only
   - no executable is produced yet
@@ -75,7 +83,7 @@ That subsystem provides:
 ```bash
 cd src/cpp
 cmake --preset <your-preset>
-cmake --build --preset <your-preset> --target kano_git_cli_tests kano_git_tui_tests kano_git_commit_plan_tests kano_git_integration_tests
+cmake --build --preset <your-preset> --target kano_git_cli_tests kano_git_tui_tests kano_git_commit_plan_tests kano_git_regression_tests kano_git_integration_tests
 ```
 
 ## Run
@@ -84,6 +92,7 @@ cmake --build --preset <your-preset> --target kano_git_cli_tests kano_git_tui_te
 ./out/bin/<preset>/release/kano_git_cli_tests
 ./out/bin/<preset>/release/kano_git_tui_tests
 ./out/bin/<preset>/release/kano_git_commit_plan_tests
+./out/bin/<preset>/release/kano_git_regression_tests
 ./out/bin/<preset>/release/kano_git_integration_tests
 ```
 
@@ -94,7 +103,26 @@ Focused examples:
 ```powershell
 .\out\bin\windows-ninja-msvc\release\kano_git_commit_plan_tests.exe "[Unit][CommitPlan][Normalize]"
 .\out\bin\windows-ninja-msvc\release\kano_git_cli_tests.exe "[functional][plan][freshness]"
+.\out\bin\windows-ninja-msvc\release\kano_git_regression_tests.exe
 ```
+
+## Dogfood Regression Registry
+
+The source registry is `assets/regression/incidents.json`; its drafting template
+is `assets/regression/case-template.json`. Every mapping names an exact test and
+repo-relative source file. The regression target verifies that each file exists
+and contains that exact name, preventing stale source-only mappings.
+
+Run the product report with:
+
+```bash
+./scripts/kog regression coverage
+./scripts/kog regression coverage --format json
+./scripts/kog regression coverage --fail-on-gap
+```
+
+See `docs/guides/dogfood-regression-policy.md` for required incident metadata,
+fixture locations, naming, and the non-blocking long-E2E policy.
 
 ## Commit-Plan Regression Fixtures
 
@@ -124,7 +152,7 @@ artifacts under `.kano/tmp/`; regenerate them instead of editing them manually.
 
 - `run_kano_git_tests`
   - fast lane
-  - runs the existing CLI + TUI selection
+  - runs the existing CLI + TUI selection and dogfood regression registry tests
   - does not run native integration tests
 
 - `run_kano_git_all_tests`

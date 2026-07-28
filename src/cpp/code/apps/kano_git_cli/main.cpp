@@ -345,7 +345,47 @@ void SetSelfBinaryPathEnv(char* InArgv0) {
             if (ec) {
                 binaryPath = raw;
             }
+        } else if (!raw.has_parent_path()) {
+            const char* pathRaw = std::getenv("PATH");
+            const std::string searchPath = pathRaw == nullptr ? "" : pathRaw;
+            std::size_t start = 0;
+            while (start <= searchPath.size()) {
+                const auto separator = searchPath.find(':', start);
+                const auto entry = searchPath.substr(
+                    start,
+                    separator == std::string::npos
+                        ? std::string::npos
+                        : separator - start);
+                const auto directory = entry.empty()
+                    ? std::filesystem::current_path(ec)
+                    : std::filesystem::path(entry);
+                if (!ec) {
+                    const auto candidate = directory / raw;
+                    if (std::filesystem::is_regular_file(candidate, ec) && !ec) {
+                        binaryPath = std::filesystem::weakly_canonical(candidate, ec);
+                        if (ec) {
+                            binaryPath = candidate;
+                        }
+                        break;
+                    }
+                }
+                ec.clear();
+                if (separator == std::string::npos) {
+                    break;
+                }
+                start = separator + 1;
+            }
         } else {
+            const auto candidate = std::filesystem::current_path(ec) / raw;
+            if (!ec) {
+                binaryPath = std::filesystem::weakly_canonical(candidate, ec);
+                if (ec) {
+                    binaryPath = candidate;
+                }
+            }
+        }
+        if (binaryPath.empty()) {
+            ec.clear();
             const auto candidate = std::filesystem::current_path(ec) / raw;
             if (!ec) {
                 binaryPath = std::filesystem::weakly_canonical(candidate, ec);
@@ -382,29 +422,17 @@ void SetSkillRootEnvFromBinaryPath() {
         return;
     }
 
-    std::error_code ec;
-    auto binaryPath = std::filesystem::weakly_canonical(std::filesystem::path(binaryRaw), ec);
-    if (ec) {
-        binaryPath = std::filesystem::path(binaryRaw).lexically_normal();
-    }
-    if (binaryPath.empty()) {
+    const auto skillRoot =
+        commands::runtime_path::ResolveSkillRootFromBinaryPath(std::filesystem::path(binaryRaw));
+    if (skillRoot.empty()) {
         return;
     }
 
-    auto current = binaryPath.parent_path();
-    for (int i = 0; i < 8 && !current.empty(); ++i) {
-        const auto skillMarker = (current / "SKILL.md").lexically_normal();
-        if (std::filesystem::exists(skillMarker, ec) && !ec && std::filesystem::is_regular_file(skillMarker, ec)) {
 #if defined(_WIN32)
-            _putenv_s("KANO_GIT_SKILL_ROOT", current.lexically_normal().string().c_str());
+    _putenv_s("KANO_GIT_SKILL_ROOT", skillRoot.string().c_str());
 #else
-            setenv("KANO_GIT_SKILL_ROOT", current.lexically_normal().string().c_str(), 1);
+    setenv("KANO_GIT_SKILL_ROOT", skillRoot.string().c_str(), 1);
 #endif
-            return;
-        }
-        ec.clear();
-        current = current.parent_path();
-    }
 }
 
 std::string DefaultPlanPath() {
