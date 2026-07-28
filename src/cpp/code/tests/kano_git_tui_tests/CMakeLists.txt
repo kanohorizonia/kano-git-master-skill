@@ -6,6 +6,7 @@ add_executable(kano_git_tui_tests
   unit/test_command_executor.cpp
   unit/test_tui_state.cpp
   unit/test_shell_executor.cpp
+  unit/test_tui_history_patch.cpp
   property/test_main.cpp
   property/test_autocomplete_properties.cpp
   property/test_command_mode_state_properties.cpp
@@ -18,6 +19,11 @@ target_link_libraries(kano_git_tui_tests
   PRIVATE Catch2::Catch2WithMain
   PRIVATE kano_git_test_core
   PRIVATE kano_git_command
+)
+
+target_include_directories(kano_git_tui_tests
+  PRIVATE
+    ${KANO_GIT_COMMAND_ROOT}/ui/private
 )
 
 catch_discover_tests(kano_git_tui_tests)

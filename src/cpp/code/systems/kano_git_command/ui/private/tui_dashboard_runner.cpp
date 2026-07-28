@@ -1,6 +1,7 @@
 // tui command — FTXUI dashboard with incremental history pager
 
 #include "tui_dashboard_runner.hpp"
+#include "tui_history_patch.hpp"
 #include "discovery.hpp"
 #include "shell_executor.hpp"
 #include "tui_state.hpp"
@@ -297,8 +298,6 @@ auto BuildHistoryDisplayLine(const RepoHistoryCache::HistoryEntry& InEntry,
                              const std::string& InAuthorText = std::string()) -> std::string;
 auto FetchTotalCommitCount(const std::filesystem::path& InRepo) -> std::optional<int>;
 auto FetchAllHistory(const RepoView& InRepo) -> std::vector<RepoHistoryCache::HistoryEntry>;
-auto FetchWorkingTreeDetail(const std::filesystem::path& repo, int mode) -> std::string;
-auto FetchCommitDetail(const std::filesystem::path& repo, const std::string& sha, int mode) -> std::string;
 auto BuildHistoryDetailOverlay(const std::filesystem::path& repo,
                                const RepoView& repoView,
                                const RepoHistoryCache::HistoryEntry& entry,
@@ -1280,32 +1279,6 @@ auto CommitShaFromOneline(const std::string& line) -> std::string {
     return trimmed.substr(0, sp);
 }
 
-auto FetchCommitDetail(const std::filesystem::path& repo, const std::string& sha, int mode) -> std::string {
-    if (sha.empty()) {
-        return "(invalid commit sha)";
-    }
-
-    std::vector<std::string> args;
-    if (mode == 1) {
-        args = {"show", "--no-color", "--date=iso", "-M", "-C", "--name-status", "--pretty=fuller", "-n", "1", sha};
-    } else if (mode == 2) {
-        args = {"show", "--no-color", "--date=iso", "-M", "-C", "--pretty=fuller", "-n", "1", sha};
-    } else {
-        args = {"show", "--no-color", "--date=iso", "-M", "-C", "--stat", "--name-status", "--pretty=fuller", "-n", "1", sha};
-    }
-
-    const auto out = GitCapture(repo, args);
-    if (out.exitCode != 0) {
-        return "(failed to load commit detail)\n" + out.stderrStr;
-    }
-    auto body = out.stdoutStr;
-    constexpr std::size_t kMaxChars = 20000;
-    if (body.size() > kMaxChars) {
-        body = body.substr(0, kMaxChars) + "\n... (truncated)";
-    }
-    return body;
-}
-
 auto FetchCommitQuickStats(const std::filesystem::path& repo, const std::string& sha) -> std::string {
     if (sha.empty()) {
         return "(invalid commit sha)";
@@ -1434,108 +1407,6 @@ auto ParseHistoryFileLine(const std::string& InLine) -> ParsedFileLine {
         patchPath = payload;
     }
     return {displayTitle, patchPath, patchPathAlt};
-}
-
-auto FetchCommitFilePatch(const std::filesystem::path& repo,
-                          const std::string& sha,
-                          const std::string& patchPath,
-                          const std::string& patchPathAlt = {}) -> std::string {
-    if (sha.empty()) {
-        return "(invalid commit sha)";
-    }
-    if (patchPath.empty()) {
-        return FetchCommitDetail(repo, sha, 2);
-    }
-
-    std::vector<std::string> args = {
-        "show", "--no-color", "--date=iso", "-M", "-C", "--pretty=fuller", "-n", "1", sha, "--", patchPath,
-    };
-    if (!patchPathAlt.empty() && patchPathAlt != patchPath) {
-        args.push_back(patchPathAlt);
-    }
-    const auto out = GitCapture(repo, args);
-    if (out.exitCode != 0) {
-        return "(failed to load file patch)\n" + out.stderrStr;
-    }
-    auto body = out.stdoutStr;
-
-    // Merge commits: git show <sha> -- <path> may produce empty combined diff.
-    // Fallback: compare against first parent (sha~1) to show the actual change.
-    if (Trim(body).empty() || body.find("diff ") == std::string::npos) {
-        std::vector<std::string> fallbackArgs = {
-            "diff", "--no-color", sha + "~1", sha, "--", patchPath,
-        };
-        if (!patchPathAlt.empty() && patchPathAlt != patchPath) {
-            fallbackArgs.push_back(patchPathAlt);
-        }
-        const auto fb = GitCapture(repo, fallbackArgs);
-        if (fb.exitCode == 0 && !Trim(fb.stdoutStr).empty()) {
-            body = fb.stdoutStr;
-        }
-    }
-
-    constexpr std::size_t kMaxChars = 20000;
-    if (body.size() > kMaxChars) {
-        body = body.substr(0, kMaxChars) + "\n... (truncated)";
-    }
-    return body.empty() ? "(no patch for selected file)" : body;
-}
-
-auto FetchWorkingTreeFilePatch(const std::filesystem::path& repo,
-                               const std::string& patchPath,
-                               const std::string& patchPathAlt = {}) -> std::string {
-    if (patchPath.empty()) {
-        return FetchWorkingTreeDetail(repo, 2);
-    }
-
-    auto buildArgs = [&](std::vector<std::string> base) -> std::vector<std::string> {
-        base.push_back("--");
-        base.push_back(patchPath);
-        if (!patchPathAlt.empty() && patchPathAlt != patchPath) {
-            base.push_back(patchPathAlt);
-        }
-        return base;
-    };
-
-    const auto unstaged = GitCapture(repo, buildArgs({"diff", "--no-color"}));
-    const auto staged = GitCapture(repo, buildArgs({"diff", "--no-color", "--cached"}));
-    const auto fallback = GitCapture(repo, buildArgs({"diff", "--no-color", "HEAD"}));
-
-    if (unstaged.exitCode != 0 && staged.exitCode != 0 && fallback.exitCode != 0) {
-        return "(failed to load file patch)\n" + fallback.stderrStr;
-    }
-
-    std::string body;
-    const auto unstagedBody = Trim(unstaged.stdoutStr);
-    const auto stagedBody = Trim(staged.stdoutStr);
-    if (!unstagedBody.empty()) {
-        body += "# unstaged\n" + unstaged.stdoutStr;
-    }
-    if (!stagedBody.empty()) {
-        if (!body.empty()) {
-            body += "\n\n";
-        }
-        body += "# staged\n" + staged.stdoutStr;
-    }
-    if (body.empty() && fallback.exitCode == 0) {
-        body = fallback.stdoutStr;
-    }
-
-    // Fallback for untracked files: git diff returns nothing for files not in the index.
-    // git diff --no-index -- /dev/null <path> shows new file content as a diff.
-    // Exit code 1 is expected (means differences found).
-    if (Trim(body).empty()) {
-        const auto noIndex = GitCapture(repo, {"diff", "--no-color", "--no-index", "--", "/dev/null", patchPath});
-        if ((noIndex.exitCode == 0 || noIndex.exitCode == 1) && !Trim(noIndex.stdoutStr).empty()) {
-            body = "# untracked (new file)\n" + noIndex.stdoutStr;
-        }
-    }
-
-    constexpr std::size_t kMaxChars = 20000;
-    if (body.size() > kMaxChars) {
-        body = body.substr(0, kMaxChars) + "\n... (truncated)";
-    }
-    return Trim(body).empty() ? "(no patch for selected file)" : body;
 }
 
 auto BuildHistoryDetailOverlay(const std::filesystem::path& repo,
@@ -4861,37 +4732,6 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
     finish_async_operation();
     std::cout << "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l" << std::flush;
     return 0;
-}
-
-auto FetchWorkingTreeDetail(const std::filesystem::path& repo, int mode) -> std::string {
-    std::vector<std::string> args;
-    if (mode == 1) {
-        args = {"status", "--short", "--branch"};
-    } else if (mode == 2) {
-        args = {"diff", "--no-color", "HEAD"};
-    } else {
-        args = {"diff", "--no-color", "--stat", "HEAD"};
-    }
-
-    auto out = GitCapture(repo, args);
-    if (out.exitCode != 0 && (mode == 0 || mode == 2)) {
-        args = mode == 2
-            ? std::vector<std::string>{"diff", "--no-color"}
-            : std::vector<std::string>{"diff", "--no-color", "--stat"};
-        out = GitCapture(repo, args);
-    }
-    if (out.exitCode != 0) {
-        return "(failed to load working tree detail)\n" + out.stderrStr;
-    }
-    auto body = out.stdoutStr;
-    if (Trim(body).empty()) {
-        body = "working tree is clean";
-    }
-    constexpr std::size_t kMaxChars = 20000;
-    if (body.size() > kMaxChars) {
-        body = body.substr(0, kMaxChars) + "\n... (truncated)";
-    }
-    return body;
 }
 
 auto PrintDemo() -> void {
