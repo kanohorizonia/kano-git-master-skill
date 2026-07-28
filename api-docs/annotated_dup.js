@@ -6,6 +6,9 @@ var annotated_dup =
           [ "auto_model_policy", null, [
             [ "AutoModelPolicy", "structkano_1_1git_1_1commands_1_1auto__model__policy_1_1AutoModelPolicy.html", null ]
           ] ],
+          [ "runtime_path", null, [
+            [ "Layout", "classkano_1_1git_1_1commands_1_1runtime__path_1_1Layout.html", null ]
+          ] ],
           [ "AiInvocationDiagnostics", "structkano_1_1git_1_1commands_1_1AiInvocationDiagnostics.html", null ],
           [ "AutocompleteEngine", "classkano_1_1git_1_1commands_1_1AutocompleteEngine.html", "classkano_1_1git_1_1commands_1_1AutocompleteEngine" ],
           [ "CandidateItem", "structkano_1_1git_1_1commands_1_1CandidateItem.html", "structkano_1_1git_1_1commands_1_1CandidateItem" ],
