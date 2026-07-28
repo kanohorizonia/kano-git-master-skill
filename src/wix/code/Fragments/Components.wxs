@@ -24,7 +24,8 @@
     <?if $(var.HasAssets) = 1 ?>
     <ComponentGroup Id="CoreAssetsComponents" Directory="KanoAssetsDir" Source="$(var.PayloadRoot)\assets">
       <Files Include="**">
-        <Exclude Files="ignore-sources\upstream\**" />
+        <Exclude Files="**\.git" />
+        <Exclude Files="**\.git\**" />
       </Files>
     </ComponentGroup>
     <?endif?>

@@ -2931,6 +2931,112 @@ TEST_CASE("commit_auto_ignores_unreal_artifacts_in_root_and_submodule", "[functi
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("workspace-relative ignore policy is consistent across plan commit and commit-push",
+          "[functional][ignore-gate][nested-repo][KG-TSK-0057]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("workspace-relative-ignore-policy");
+    const auto skillRoot = ctx.sandbox.root / "packaged-skill";
+    const auto policyPath =
+        skillRoot / "assets" / "ignore" / "policy" / "ignore-gate-allowlist.txt";
+    const auto policyPattern = ctx.submodulePath + "/src/cpp/scripts/**";
+    WriteTextFile(policyPath, policyPattern + "\n");
+    const std::vector<std::pair<std::string, std::string>> env = {
+        {"KANO_GIT_SKILL_ROOT", skillRoot.string()},
+        {"KOG_DISABLE_SECRET_GATE", "1"},
+    };
+
+    WriteTextFile(
+        ctx.cloneChildRepo / "src" / "cpp" / "scripts" / "build" / "plan-tool.exe",
+        "legitimate source fixture\n");
+    const auto planVerify = RunKogWithEnv(
+        {
+            "plan", "verify", "ignore",
+            "--workspace-root", ctx.cloneRootRepo.string(),
+            "--context", "plan",
+        },
+        ctx.cloneRootRepo,
+        env);
+    INFO(planVerify.stdoutText);
+    INFO(planVerify.stderrText);
+    REQUIRE(planVerify.exitCode == 0);
+
+    const auto preparePlan = [&](const std::filesystem::path& planPath,
+                                 const std::string& childInclude,
+                                 const std::string& message) {
+        RequireSuccess(
+            RunKogWithEnv(
+                {"plan", "new", "--force", "--output", planPath.string()},
+                ctx.cloneRootRepo,
+                env),
+            "create workspace-relative policy plan");
+        RequireSuccess(
+            RunKogWithEnv(
+                {
+                    "plan", "prepare", "add-commit-entry",
+                    "--plan-file", planPath.string(),
+                    "--repo", ctx.submodulePath,
+                    "--commit-message", message + " child",
+                    "--commit-include", childInclude,
+                    "--commit-review-verdict", "pass",
+                    "--commit-review-reason", "workspace-relative allowlist regression",
+                },
+                ctx.cloneRootRepo,
+                env),
+            "add nested-repository plan entry");
+        RequireSuccess(
+            RunKogWithEnv(
+                {
+                    "plan", "prepare", "add-commit-entry",
+                    "--plan-file", planPath.string(),
+                    "--repo", ".",
+                    "--commit-message", message + " gitlink",
+                    "--commit-include", ctx.submodulePath,
+                    "--commit-review-verdict", "pass",
+                    "--commit-review-reason", "record nested-repository gitlink",
+                },
+                ctx.cloneRootRepo,
+                env),
+            "add root gitlink plan entry");
+    };
+
+    const auto commitPlan = ctx.sandbox.root / "workspace-relative-commit-plan.json";
+    preparePlan(
+        commitPlan,
+        "src/cpp/scripts/build/plan-tool.exe",
+        "test(functional): workspace-relative commit allowlist");
+    const auto commit = RunKogWithEnv(
+        {"commit", "--plan-file", commitPlan.string()},
+        ctx.cloneRootRepo,
+        env);
+    INFO(commit.stdoutText);
+    INFO(commit.stderrText);
+    REQUIRE(commit.exitCode == 0);
+    RequireNotContainsText(commit.stdoutText + "\n" + commit.stderrText, "ignore gate failed");
+
+    WriteTextFile(
+        ctx.cloneChildRepo / "src" / "cpp" / "scripts" / "build" / "push-tool.exe",
+        "second legitimate source fixture\n");
+    const auto pushPlan = ctx.sandbox.root / "workspace-relative-push-plan.json";
+    preparePlan(
+        pushPlan,
+        "src/cpp/scripts/build/push-tool.exe",
+        "test(functional): workspace-relative commit-push allowlist");
+    const auto commitPush = RunKogWithEnv(
+        {"commit-push", "--plan-file", pushPlan.string()},
+        ctx.cloneRootRepo,
+        env);
+    INFO(commitPush.stdoutText);
+    INFO(commitPush.stderrText);
+    REQUIRE(commitPush.exitCode == 0);
+    RequireNotContainsText(
+        commitPush.stdoutText + "\n" + commitPush.stderrText,
+        "ignore gate failed");
+
+    const auto [behind, ahead] = AheadBehindCounts(ctx.cloneRootRepo);
+    REQUIRE(behind == 0);
+    REQUIRE(ahead == 0);
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("commit no-recursive message plan avoids child probes and falls back from an unusable global cache",
           "[functional][commit][no-recursive][staged-only][KG-BUG-0043][KG-BUG-0081]") {
     const auto ctx = CreateRemoteWithSubmoduleClone("commit-no-recursive-repo-freshness");

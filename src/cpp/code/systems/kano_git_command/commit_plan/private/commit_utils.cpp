@@ -7,6 +7,7 @@
 #include "auto_model_policy.hpp"
 #include "kog_config.hpp"
 #include "command_runtime_ops.hpp"
+#include "runtime_path_layout.hpp"
 #include "secret_scan_utils.hpp"
 #include "commit_ai_utils.hpp"
 #include "agent_queue_cmd.hpp"
@@ -420,7 +421,7 @@ auto WriteCodexResponseFilePath(const std::filesystem::path& InWorkdir,
         return false;
     }
 
-    const auto responseDir = (InWorkdir / ".kano" / "tmp" / "git" / "codex-responses").lexically_normal();
+    const auto responseDir = runtime_path::Layout::Resolve(InWorkdir).CodexResponseRoot();
     std::error_code ec;
     std::filesystem::create_directories(responseDir, ec);
     if (ec) {
@@ -835,8 +836,8 @@ auto BuildCommitIgnoreGateScan(const std::filesystem::path& InWorkspaceRoot,
                 continue;
             }
             std::replace(p.begin(), p.end(), '\\', '/');
-            const auto key = repoLabel == "." ? p : (repoLabel + "/" + p);
-            if (InAllowlist.find(key) != InAllowlist.end()) {
+            const auto key = WorkspaceRelativeIgnoreGatePath(InWorkspaceRoot, repo, p);
+            if (IsIgnoreGateAllowlisted(InAllowlist, key)) {
                 continue;
             }
 
@@ -890,7 +891,7 @@ auto RunPipelineSafetyGatesForNonAiCommit(const std::filesystem::path& InWorkspa
     const auto repos = ResolveSafetyGateRepos(InWorkspaceRoot, InScopedRepos);
 
     if (!IsTruthyEnv(std::getenv("KOG_ALLOW_IGNORE_GATE")) && ToLower(Trim(std::getenv("KOG_IGNORE_GATE") == nullptr ? "on" : std::getenv("KOG_IGNORE_GATE"))) != "off") {
-        const auto allowlistPath = (ResolveSkillRoot(InWorkspaceRoot) / "assets" / "ignore-sources" / "local" / "ignore-gate-allowlist.txt").lexically_normal();
+        const auto allowlistPath = runtime_path::Layout::Resolve(InWorkspaceRoot).IgnoreGateAllowlist();
         const auto allowlist = LoadNormalizedLineSet(allowlistPath);
         auto scan = BuildCommitIgnoreGateScan(InWorkspaceRoot, repos, allowlist);
         if (!scan.entries.empty() && InAutoApplyGeneratedIgnores) {
@@ -989,7 +990,7 @@ auto ResolveGlobalCacheRoot() -> std::filesystem::path {
     if (home.empty()) {
         return {};
     }
-    return (home / ".kano" / "cache" / "git").lexically_normal();
+    return runtime_path::GlobalCacheRoot(home);
 }
 
 auto AiCacheDir() -> std::filesystem::path {
@@ -2489,10 +2490,7 @@ auto ComputeRepoScopedDirtyFingerprint(const std::filesystem::path& InWorkspaceR
 }
 
 auto DefaultSharedPlanPath(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path {
-    if (const char* explicitPlan = std::getenv("KOG_PLAN_FILE"); explicitPlan != nullptr && *explicitPlan != '\0') {
-        return std::filesystem::path(explicitPlan).lexically_normal();
-    }
-    return (InWorkspaceRoot / ".kano" / "tmp" / "git" / "plans" / "default-plan.json").lexically_normal();
+    return runtime_path::Layout::Resolve(InWorkspaceRoot).SharedPlanPath();
 }
 
 auto ResolveSelfBinaryCommand() -> std::string {
@@ -3135,7 +3133,7 @@ auto RunPlanScopedSafetyGatesForNativeCommit(
     if (!IsTruthyEnv(std::getenv("KOG_ALLOW_IGNORE_GATE")) &&
         ToLower(Trim(std::getenv("KOG_IGNORE_GATE") == nullptr ? "on" : std::getenv("KOG_IGNORE_GATE"))) != "off") {
         const auto allowlistPath =
-            (ResolveSkillRoot(InWorkspaceRoot) / "assets" / "ignore-sources" / "local" / "ignore-gate-allowlist.txt").lexically_normal();
+            runtime_path::Layout::Resolve(InWorkspaceRoot).IgnoreGateAllowlist();
         const auto allowlist = LoadNormalizedLineSet(allowlistPath);
         std::vector<std::string> findings;
         for (const auto& file : files) {
@@ -3149,8 +3147,9 @@ auto RunPlanScopedSafetyGatesForNativeCommit(
             if (IsInternalPipelineArtifactPath(p)) {
                 continue;
             }
-            const auto key = file.repoLabel == "." ? p : (file.repoLabel + "/" + p);
-            if (allowlist.find(key) != allowlist.end()) {
+            const auto key =
+                WorkspaceRelativeIgnoreGatePath(InWorkspaceRoot, file.repo, p);
+            if (IsIgnoreGateAllowlisted(allowlist, key)) {
                 continue;
             }
             findings.push_back(key);

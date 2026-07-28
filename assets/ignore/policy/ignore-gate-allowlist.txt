@@ -1,5 +1,14 @@
-# Ignore-gate allowlist (one shell-glob per line, relative path style)
-# Use this for source paths that would otherwise match broad artifact patterns.
+# Ignore-gate operator policy (one shell glob per line).
+#
+# Paths are matched case-insensitively after conversion to workspace-root-
+# relative forward-slash form. Root-repository paths therefore look unchanged;
+# nested repositories must include their workspace-relative repository prefix.
+# `*` matches inside one path segment, `?` matches one non-separator character,
+# and `**` may span path segments.
+#
+# Keep entries limited to legitimate source paths that otherwise resemble
+# generated artifacts. Internal `.kano/` and `.sisyphus/` runtime state is
+# excluded in code and must not be added here.
 
 src/cpp/scripts/**
 kano-secret-manager-skill/scripts/bash/bin/bitwarden/get_bitwarden_credential.sh

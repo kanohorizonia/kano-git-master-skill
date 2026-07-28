@@ -17,21 +17,26 @@ Custom datasource path in plan metadata:
 
 ```bash
 ./kog plan new \
-  --ignore-datasource-root /path/to/my-ignore-sources \
-  --ignore-datasource-manifest /path/to/my-ignore-sources/local/datasource.manifest.json
+  --ignore-datasource-root /path/to/my-ignore-datasource \
+  --ignore-datasource-manifest /path/to/my-ignore-datasource/manifest.json
 ```
 
 ## Manifest `sources[].path` Resolution
 
-`assets/ignore-sources/local/datasource.manifest.json` supports both:
+`assets/ignore/datasource/manifest.json` supports both:
 - relative path: resolved from the manifest file directory
 - absolute path: used as-is
 
 Examples:
-- `./custom.gitignore`
-- `../upstream/github-gitignore`
+- `../local-rules/kano.gitignore`
+- `./upstream/github-gitignore`
 - `/opt/company/gitignore-corpus`
 - `D:/shared/gitignore-corpus`
+
+KOG resolves the canonical datasource, local rules, and safety policy beneath
+`assets/ignore/`. Older packaged installs with `assets/ignore-sources/` remain
+readable through the runtime layout compatibility resolver, but new overrides
+should use the canonical manifest-at-root shape shown above.
 
 ## Output Metadata
 

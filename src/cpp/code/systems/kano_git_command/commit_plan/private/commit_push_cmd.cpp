@@ -5,6 +5,7 @@
 #include "commit_push_post_sync.hpp"
 #include "command_runtime_ops.hpp"
 #include "ai_utils.hpp"
+#include "runtime_path_layout.hpp"
 #include "discovery.hpp"
 #include "secret_scan_utils.hpp"
 #include "shell_executor.hpp"
@@ -34,6 +35,11 @@ namespace kano::git::commands {
 auto IsProbableIgnoreArtifactPath(const std::string& InPath) -> bool;
 auto IsInternalPipelineArtifactPath(const std::string& InPath) -> bool;
 auto ParseStatusChangedPath(const std::string& InLine) -> std::optional<std::string>;
+auto WorkspaceRelativeIgnoreGatePath(const std::filesystem::path& InWorkspaceRoot,
+                                     const std::filesystem::path& InRepoRoot,
+                                     const std::string& InRepoRelativePath) -> std::string;
+auto IsIgnoreGateAllowlisted(const std::unordered_set<std::string>& InPatterns,
+                             const std::string& InRepoRelativePath) -> bool;
 
 namespace {
 
@@ -366,13 +372,6 @@ auto DiscoverWorkspaceRepos(
     return repos;
 }
 
-auto ResolveSkillRoot(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path {
-    if (const char* envRoot = std::getenv("KANO_GIT_SKILL_ROOT"); envRoot != nullptr && std::string(envRoot).size() > 0) {
-        return std::filesystem::path(envRoot).lexically_normal();
-    }
-    return (InWorkspaceRoot / ".agents" / "skills" / "kano" / "kano-git-master-skill").lexically_normal();
-}
-
 auto LoadNormalizedLineSet(const std::filesystem::path& InFile) -> std::unordered_set<std::string> {
     std::unordered_set<std::string> out;
     std::ifstream in(InFile);
@@ -610,16 +609,12 @@ auto CurrentUtcTimestampIso8601() -> std::string {
 auto DefaultCommitPlanOutputPath(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path {
     const auto headShort = CaptureHeadShortSha(InWorkspaceRoot);
     const auto stamp = CurrentUtcTimestampCompact();
-    return (InWorkspaceRoot / ".kano" / "tmp" / "git" / "plans" /
-            ("plan-" + stamp + "-" + headShort + ".json"))
-        .lexically_normal();
+    return runtime_path::Layout::Resolve(InWorkspaceRoot)
+        .PlanPath("plan-" + stamp + "-" + headShort + ".json");
 }
 
 auto DefaultSharedPlanPath(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path {
-    if (const char* explicitPlan = std::getenv("KOG_PLAN_FILE"); explicitPlan != nullptr && *explicitPlan != '\0') {
-        return std::filesystem::path(explicitPlan).lexically_normal();
-    }
-    return (InWorkspaceRoot / ".kano" / "tmp" / "git" / "plans" / "default-plan.json").lexically_normal();
+    return runtime_path::Layout::Resolve(InWorkspaceRoot).SharedPlanPath();
 }
 
 auto ResolveSelfBinaryCommand() -> std::string {
@@ -727,8 +722,9 @@ auto RunCommitPlanRunbookViaSelf(const std::filesystem::path& InWorkspaceRoot,
     }
     const auto selfBinary = ResolveSelfBinaryCommand();
     const auto workingPlan = (InPlanPath.parent_path() / std::format("{}.ai-working{}", InPlanPath.stem().generic_string(), InPlanPath.extension().generic_string())).lexically_normal();
-    const auto promptDir = (InWorkspaceRoot / ".kano" / "tmp" / "git" / "provider-prompts").lexically_normal();
-    const auto responseDir = (InWorkspaceRoot / ".kano" / "tmp" / "git" / "ai-responses").lexically_normal();
+    const auto layout = runtime_path::Layout::Resolve(InWorkspaceRoot);
+    const auto promptDir = layout.ProviderPromptRoot();
+    const auto responseDir = layout.AiResponseRoot();
     LogAutoPlanStageDetails("commit-runbook",
                             FormatCommandLineForLog(selfBinary, args),
                             {{"plan file", InPlanPath.generic_string()},
@@ -1699,7 +1695,7 @@ auto RunPlanFileExactSafetyGates(const std::filesystem::path& InWorkspaceRoot,
     const auto ignoreGateMode = ToLower(Trim(std::getenv("KOG_IGNORE_GATE") == nullptr ? "on" : std::getenv("KOG_IGNORE_GATE")));
     if (!(allowIgnoreGate == "1" || allowIgnoreGate == "true") && ignoreGateMode != "off") {
         const auto allowlistPath =
-            (ResolveSkillRoot(workspaceRoot) / "assets" / "ignore-sources" / "local" / "ignore-gate-allowlist.txt").lexically_normal();
+            runtime_path::Layout::Resolve(workspaceRoot).IgnoreGateAllowlist();
         const auto allowlist = LoadNormalizedLineSet(allowlistPath);
 
         std::vector<std::string> findings;
@@ -1715,8 +1711,9 @@ auto RunPlanFileExactSafetyGates(const std::filesystem::path& InWorkspaceRoot,
             if (IsInternalPipelineArtifactPath(p)) {
                 continue;
             }
-            const auto key = ToLower(file.repoLabel == "." ? p : (file.repoLabel + "/" + p));
-            if (allowlist.find(key) != allowlist.end()) {
+            const auto key =
+                WorkspaceRelativeIgnoreGatePath(workspaceRoot, file.repo, p);
+            if (IsIgnoreGateAllowlisted(allowlist, key)) {
                 continue;
             }
             findings.push_back(key);
@@ -1787,7 +1784,7 @@ auto RunPipelineSafetyGatesForNonAiCommitPush(const std::filesystem::path& InWor
     const auto ignoreGateMode = ToLower(Trim(std::getenv("KOG_IGNORE_GATE") == nullptr ? "on" : std::getenv("KOG_IGNORE_GATE")));
     if (!(allowIgnoreGate == "1" || allowIgnoreGate == "true") && ignoreGateMode != "off") {
         const auto allowlistPath =
-            (ResolveSkillRoot(workspaceRoot) / "assets" / "ignore-sources" / "local" / "ignore-gate-allowlist.txt").lexically_normal();
+            runtime_path::Layout::Resolve(workspaceRoot).IgnoreGateAllowlist();
         const auto allowlist = LoadNormalizedLineSet(allowlistPath);
 
         std::vector<std::string> findings;
@@ -1803,8 +1800,9 @@ auto RunPipelineSafetyGatesForNonAiCommitPush(const std::filesystem::path& InWor
                     continue;
                 }
                 std::replace(p.begin(), p.end(), '\\', '/');
-                const auto key = ToLower(repoLabel == "." ? p : (repoLabel + "/" + p));
-                if (allowlist.find(key) != allowlist.end()) {
+                const auto key =
+                    WorkspaceRelativeIgnoreGatePath(workspaceRoot, repo, p);
+                if (IsIgnoreGateAllowlisted(allowlist, key)) {
                     continue;
                 }
                 findings.push_back(key);

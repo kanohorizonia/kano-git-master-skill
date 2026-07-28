@@ -3,6 +3,7 @@
 #include "terminal_color.hpp"
 #include "ai_utils.hpp"
 #include "command_runtime_ops.hpp"
+#include "runtime_path_layout.hpp"
 #include "kog_config.hpp"
 #include "discovery.hpp"
 #include "auto_model_policy.hpp"
@@ -23,6 +24,7 @@
 #include <ctime>
 #include <regex>
 #include <set>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -400,10 +402,22 @@ auto DeterministicReviewReason() -> std::string {
 auto BuildDefaultPlanTemplate(const std::filesystem::path& InWorkspaceRoot,
                               const std::optional<std::filesystem::path>& InDatasourceRoot,
                               const std::optional<std::filesystem::path>& InDatasourceManifest) -> std::string {
-    const auto dsRootPath = InDatasourceRoot.value_or(
-        (ResolveSkillRoot(InWorkspaceRoot) / "assets" / "ignore-sources").lexically_normal());
-    const auto dsManifestPath = InDatasourceManifest.value_or(
-        (dsRootPath / "local" / "datasource.manifest.json").lexically_normal());
+    const auto layout = runtime_path::Layout::Resolve(InWorkspaceRoot);
+    const auto dsRootPath = InDatasourceRoot.value_or(layout.IgnoreDatasourceRoot());
+    auto dsManifestPath = layout.IgnoreDatasourceManifest();
+    if (InDatasourceRoot.has_value()) {
+        const auto canonicalManifest = (dsRootPath / "manifest.json").lexically_normal();
+        const auto legacyManifest =
+            (dsRootPath / "local" / "datasource.manifest.json").lexically_normal();
+        std::error_code ec;
+        const bool canonicalExists = std::filesystem::is_regular_file(canonicalManifest, ec) && !ec;
+        ec.clear();
+        const bool legacyExists = std::filesystem::is_regular_file(legacyManifest, ec) && !ec;
+        dsManifestPath = !canonicalExists && legacyExists ? legacyManifest : canonicalManifest;
+    }
+    if (InDatasourceManifest.has_value()) {
+        dsManifestPath = InDatasourceManifest->lexically_normal();
+    }
     const auto dsRoot = dsRootPath.lexically_normal().generic_string();
     const auto dsManifest = dsManifestPath.lexically_normal().generic_string();
     const auto baseHeadSha = ComputeWorkspaceBaseHeadSha(InWorkspaceRoot);
@@ -1733,7 +1747,7 @@ auto BuildPlanAiWorkingCopyPath(const std::filesystem::path& InPlanPath) -> std:
 }
 
 auto BuildGitignoreAiWorkingCopyPath(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path {
-    return (InWorkspaceRoot / ".kano" / "tmp" / "git" / "plans" / ".gitignore.ai-working").lexically_normal();
+    return runtime_path::Layout::Resolve(InWorkspaceRoot).PlanPath(".gitignore.ai-working");
 }
 
 auto SeedWorkingCopyFile(const std::filesystem::path& InSourcePath,
@@ -2004,7 +2018,7 @@ auto WritePlanFillDiagnosticSummary(const std::filesystem::path& InWorkspaceRoot
                                     const std::string& InCode,
                                     const std::string& InDetail,
                                     std::filesystem::path* OutPath = nullptr) -> bool {
-    const auto diagnosticsDir = (InWorkspaceRoot / ".kano" / "tmp" / "git" / "ai-responses").lexically_normal();
+    const auto diagnosticsDir = runtime_path::Layout::Resolve(InWorkspaceRoot).AiResponseRoot();
     std::error_code ec;
     std::filesystem::create_directories(diagnosticsDir, ec);
     if (ec) {
@@ -2219,7 +2233,7 @@ auto WriteAiResponseFile(const std::filesystem::path& InWorkspaceRoot,
                          const shell::ExecResult& InResult,
                          std::filesystem::path* OutResponsePath = nullptr,
                          std::string* OutError = nullptr) -> bool {
-    const auto responseDir = (InWorkspaceRoot / ".kano" / "tmp" / "git" / "ai-responses").lexically_normal();
+    const auto responseDir = runtime_path::Layout::Resolve(InWorkspaceRoot).AiResponseRoot();
     std::error_code ec;
     std::filesystem::create_directories(responseDir, ec);
     if (ec) {
@@ -2551,7 +2565,7 @@ auto FillPlanByAi(const std::filesystem::path& InWorkspaceRoot,
 
 
 auto DefaultPlanPath(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path {
-  return (InWorkspaceRoot / ".kano" / "tmp" / "git" / "plans" / "default-plan.json").lexically_normal();
+    return runtime_path::Layout::Resolve(InWorkspaceRoot).SharedPlanPath();
 }
 
 auto CountTopLevelObjects(const std::string& InArrayBody) -> std::size_t {
@@ -2623,7 +2637,7 @@ auto BuildSetAiModelHelpFooter() -> std::string {
 }
 
 auto ResolveIgnoreDatasourceRoot(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path {
-    return (ResolveSkillRoot(InWorkspaceRoot) / "assets" / "ignore-sources").lexically_normal();
+    return runtime_path::Layout::Resolve(InWorkspaceRoot).IgnoreDatasourceRoot();
 }
 
 auto ResolveRepoPathFromDisplay(const std::filesystem::path& InWorkspaceRoot, const std::string& InRepoDisplay) -> std::filesystem::path {
@@ -3676,8 +3690,10 @@ auto BuildIgnoreEntriesFromWorkingTree(const std::filesystem::path& InWorkspaceR
         e.repo = RelativeDisplayPath(InWorkspaceRoot, repo);
         if (e.repo.empty()) e.repo = ".";
         e.applyTarget = ".gitignore";
-        e.mergedOutputPath = (InWorkspaceRoot / ".kano" / "tmp" / "git" / "plans" / 
-                              std::format("ignore-merged-{}.gitignore", e.repo == "." ? "root" : ReplaceAll(e.repo, "/", "_"))).generic_string();
+        e.mergedOutputPath = runtime_path::Layout::Resolve(InWorkspaceRoot)
+            .PlanPath(std::format("ignore-merged-{}.gitignore",
+                                  e.repo == "." ? "root" : ReplaceAll(e.repo, "/", "_")))
+            .generic_string();
         for (const auto& r : candidates) {
             std::cout << "[plan][ignore] auto-ignoring: " << r << " (in " << e.repo << ")\n";
         }
@@ -3699,6 +3715,90 @@ auto ReadIgnoreGateAllowlist(const std::filesystem::path& InAllowlistPath) -> st
         }
     }
     return out;
+}
+
+auto WorkspaceRelativeIgnoreGatePath(const std::filesystem::path& InWorkspaceRoot,
+                                     const std::filesystem::path& InRepoRoot,
+                                     const std::string& InRepoRelativePath) -> std::string {
+    auto path = ReplaceAll(Trim(InRepoRelativePath), "\\", "/");
+    while (path.rfind("./", 0) == 0) {
+        path.erase(0, 2);
+    }
+
+    const auto workspace = NormalizePath(InWorkspaceRoot);
+    const auto repo = NormalizePath(InRepoRoot);
+    if (ToGeneric(workspace) == ToGeneric(repo)) {
+        return path;
+    }
+
+    auto repoPath = repo.lexically_relative(workspace).generic_string();
+    if (repoPath.empty()) {
+        repoPath = repo.generic_string();
+    }
+    repoPath = ReplaceAll(Trim(std::move(repoPath)), "\\", "/");
+    while (repoPath.rfind("./", 0) == 0) {
+        repoPath.erase(0, 2);
+    }
+    if (repoPath.empty() || repoPath == ".") {
+        return path;
+    }
+    return path.empty() ? repoPath : repoPath + "/" + path;
+}
+
+auto IsIgnoreGateAllowlisted(const std::unordered_set<std::string>& InPatterns,
+                             const std::string& InRepoRelativePath) -> bool {
+    auto path = ToLower(ReplaceAll(Trim(InRepoRelativePath), "\\", "/"));
+    while (path.rfind("./", 0) == 0) {
+        path.erase(0, 2);
+    }
+
+    for (auto pattern : InPatterns) {
+        pattern = ToLower(ReplaceAll(Trim(std::move(pattern)), "\\", "/"));
+        while (pattern.rfind("./", 0) == 0) {
+            pattern.erase(0, 2);
+        }
+        if (pattern.empty()) {
+            continue;
+        }
+        if (pattern == path) {
+            return true;
+        }
+
+        std::string expression;
+        expression.reserve(pattern.size() * 2 + 2);
+        expression.push_back('^');
+        for (std::size_t index = 0; index < pattern.size(); ++index) {
+            const char ch = pattern[index];
+            if (ch == '*') {
+                if (index + 1 < pattern.size() && pattern[index + 1] == '*') {
+                    expression += ".*";
+                    ++index;
+                } else {
+                    expression += "[^/]*";
+                }
+                continue;
+            }
+            if (ch == '?') {
+                expression += "[^/]";
+                continue;
+            }
+            if (std::string_view{R"(\.^$|()[]{}+)"}.find(ch) != std::string_view::npos) {
+                expression.push_back('\\');
+            }
+            expression.push_back(ch);
+        }
+        expression.push_back('$');
+
+        try {
+            if (std::regex_match(path, std::regex(expression, std::regex::ECMAScript))) {
+                return true;
+            }
+        } catch (const std::regex_error&) {
+            // Invalid policy entries fail closed. Exact matching above remains
+            // available for paths that intentionally contain regex-like text.
+        }
+    }
+    return false;
 }
 
 auto MergeGitignore(const std::filesystem::path& InTarget, const std::vector<std::string>& InRules) -> std::string {
@@ -4078,13 +4178,14 @@ auto RunDatasourceSync(const std::filesystem::path& InWorkspaceRoot,
         std::cerr << "Error: unsupported --source: " << InSource << "\n";
         return 2;
     }
-    const auto skillRoot = ResolveSkillRoot(InWorkspaceRoot);
+    const auto layout = runtime_path::Layout::Resolve(InWorkspaceRoot);
+    const auto skillRoot = layout.SkillRoot();
     if (!std::filesystem::exists(skillRoot / ".git")) {
         std::cerr << "Error: skill repo not found\n";
         return 2;
     }
-    const auto submoduleRel = std::string("assets/ignore-sources/upstream/github-gitignore");
-    const auto submodulePath = (skillRoot / submoduleRel).lexically_normal();
+    const auto submoduleRel = layout.IgnoreUpstreamCorpusRelativeToSkill().generic_string();
+    const auto submodulePath = layout.IgnoreUpstreamCorpus();
 
     if (!InDryRun) {
         GitPassThrough(skillRoot, {"submodule", "sync", "--", submoduleRel});
@@ -4103,7 +4204,10 @@ auto RunIgnoreGate(const std::filesystem::path& InWorkspaceRoot,
     const auto allow = std::string(std::getenv("KOG_ALLOW_IGNORE_GATE") ? std::getenv("KOG_ALLOW_IGNORE_GATE") : "");
     if (ToLower(Trim(allow)) == "1" || ToLower(Trim(allow)) == "true") return 0;
 
-    const auto allowlist = ReadIgnoreGateAllowlist(InAllowlistPath.empty() ? (ResolveSkillRoot(InWorkspaceRoot) / "assets" / "ignore-sources" / "local" / "ignore-gate-allowlist.txt") : std::filesystem::path(InAllowlistPath));
+    const auto allowlist = ReadIgnoreGateAllowlist(
+        InAllowlistPath.empty()
+            ? runtime_path::Layout::Resolve(InWorkspaceRoot).IgnoreGateAllowlist()
+            : std::filesystem::path(InAllowlistPath));
     std::vector<std::string> candidates;
     for (const auto& repo : DiscoverWorkspaceRepos(InWorkspaceRoot)) {
         const auto status = GitCapture(repo, {"ls-files", "--others", "--exclude-standard"});
@@ -4114,8 +4218,9 @@ auto RunIgnoreGate(const std::filesystem::path& InWorkspaceRoot,
             const auto p = Trim(line);
             if (p.empty() || !IsProbableIgnoreArtifactPath(p)) continue;
             if (IsInternalPipelineArtifactPath(p)) continue;
-            if (allowlist.contains(ToLower(p))) continue;
-            candidates.push_back((RelativeDisplayPath(InWorkspaceRoot, repo) == "." ? std::string{} : RelativeDisplayPath(InWorkspaceRoot, repo) + "/") + p);
+            const auto key = WorkspaceRelativeIgnoreGatePath(InWorkspaceRoot, repo, p);
+            if (IsIgnoreGateAllowlisted(allowlist, key)) continue;
+            candidates.push_back(key);
             if (InLimit > 0 && static_cast<int>(candidates.size()) >= InLimit) break;
         }
         if (InLimit > 0 && static_cast<int>(candidates.size()) >= InLimit) break;
@@ -4300,7 +4405,8 @@ auto RunPlanApply(const std::filesystem::path& InWorkspaceRoot,
             const auto repoAbs = ResolvePath(InWorkspaceRoot, e.repo);
             const auto targetAbs = ResolvePath(repoAbs, e.applyTarget);
             auto mergedAbs = e.mergedOutputPath.empty()
-                ? (InWorkspaceRoot / ".kano" / "cache" / "git" / "plans" / std::format("ignore-merged-{}.gitignore", idx)).lexically_normal()
+                ? runtime_path::Layout::Resolve(InWorkspaceRoot)
+                    .CachedPlanPath(std::format("ignore-merged-{}.gitignore", idx))
                 : ResolvePath(InWorkspaceRoot, e.mergedOutputPath);
             const auto mergedText = MergeGitignore(targetAbs, e.rules);
             std::string error;

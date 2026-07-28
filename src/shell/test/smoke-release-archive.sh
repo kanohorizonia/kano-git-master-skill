@@ -99,8 +99,13 @@ require_bash_syntax scripts/kano-git
 require_bash_syntax src/cpp/shared/infra/scripts/platform/linux/native-build.sh
 require_bash_syntax src/cpp/shared/infra/scripts/platform/mac/native-build.sh
 require_bash_syntax src/cpp/shared/infra/scripts/lib/unix_preset_build.sh
+require_file assets/ignore/README.md
+require_file assets/ignore/datasource/manifest.json
+require_file assets/ignore/local-rules/kano.gitignore
+require_file assets/ignore/policy/ignore-gate-allowlist.txt
+require_file assets/ignore/datasource/upstream/github-gitignore/Global/macOS.gitignore
 
-if find assets/ignore-sources/upstream/github-gitignore src/cpp/shared/infra -name .git -print | grep -q .; then
+if find assets/ignore/datasource/upstream/github-gitignore src/cpp/shared/infra -name .git -print | grep -q .; then
   echo "Error: archive contains broken submodule .git pointer files." >&2
   exit 1
 fi

@@ -723,18 +723,6 @@ has_help_request_arg() {
   return 1
 }
 
-has_cpa_explicit_input_arg() {
-  local arg
-  for arg in "$@"; do
-    case "$arg" in
-      -m|--message|--message=*|--plan-file|--plan-file=*)
-        return 0
-        ;;
-    esac
-  done
-  return 1
-}
-
 is_lightweight_query_command() {
   local -a args=("$@")
   local cmd="${args[0]:-}"
@@ -2020,7 +2008,7 @@ Launcher env:
                                       auto: agent mode -> non-interactive, human mode -> interactive
   KOG_DISABLE_SECRET_GATE=1           Disable secret gate (not recommended)
   KOG_IGNORE_GATE=off                 Disable ignore gate globally (not recommended)
-                                      Static allowlist: assets/ignore-sources/local/ignore-gate-allowlist.txt
+                                      Static policy: assets/ignore/policy/ignore-gate-allowlist.txt
 EOF
 }
 
@@ -2144,24 +2132,11 @@ main() {
   fi
 
   exec_args=("${args[@]}")
-  # Temporary launcher-side rewrite for cp/cpa.
-  # Native alias routing is expected to handle this, but current native parser path
-  # does not accept cp/cpa consistently. Keep shell behavior aligned with help text
-  # until the native alias path is corrected.
+  # Keep the shell-only `ca` compatibility alias. Native code owns `cp`/`cpa`
+  # routing and the shared-plan layout so launcher code does not reconstruct
+  # runtime paths.
   if [[ "${exec_args[0]:-}" == "ca" ]]; then
     exec_args=("commit" "--ai-auto" "${exec_args[@]:1}")
-  elif [[ "${exec_args[0]:-}" == "cp" ]]; then
-    exec_args=("commit-push" "${exec_args[@]:1}")
-  elif [[ "${exec_args[0]:-}" == "cpa" ]]; then
-    if [[ "${KANO_AGENT_MODE:-0}" == "1" || "${KANO_AGENT_MODE:-}" == "true" ]]; then
-      if has_cpa_explicit_input_arg "${exec_args[@]:1}"; then
-        exec_args=("commit-push" "${exec_args[@]:1}")
-      else
-        exec_args=("commit-push" "--plan-file" "$PWD/.kano/tmp/git/plans/default-plan.json" "${exec_args[@]:1}")
-      fi
-    else
-      exec_args=("commit-push" "--ai-auto" "${exec_args[@]:1}")
-    fi
   fi
 
   # Manual mode: no auto-rebuild/auto-prepare in execution path.

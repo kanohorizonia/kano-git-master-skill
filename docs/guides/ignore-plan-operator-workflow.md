@@ -91,8 +91,14 @@ Action:
 1. Inspect listed files and classify:
    - must-ignore
    - must-track
-2. Update plan/target `.gitignore` decisions and re-apply.
-3. Recheck:
+2. For a legitimate source path that only resembles an artifact, add the
+   narrowest workspace-root-relative shell glob to
+   `assets/ignore/policy/ignore-gate-allowlist.txt`. `*` stays within a segment;
+   `**` may span segments. A nested-repository entry includes its workspace
+   prefix (for example `deps/tool/src/cpp/scripts/**`), so plan, commit, and
+   commit-push evaluate the same policy key.
+3. Update plan/target `.gitignore` decisions and re-apply.
+4. Recheck:
    - `kog plan verify ignore --context plan`
 
 ## Evidence Checklist
@@ -125,11 +131,10 @@ When opening a bug or attaching acceptance evidence, include:
 A repeatable script exists:
 
 ```bash
-bash .agents/skills/kano/kano-git-master-skill/scripts/core/acceptance-ignore-plan.sh
+pixi run acceptance-ignore-plan
 ```
 
 Expected summary:
 - `before_exit=3` with positive candidate count
 - `after_exit=0` with zero candidate count
 - final `PASS` line
-

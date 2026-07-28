@@ -5,6 +5,7 @@
 
 #include <CLI/CLI.hpp>
 #include "command_registry.hpp"
+#include "runtime_path_layout.hpp"
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
@@ -407,11 +408,9 @@ void SetSkillRootEnvFromBinaryPath() {
 }
 
 std::string DefaultPlanPath() {
-    if (const char* explicitPlan = std::getenv("KOG_PLAN_FILE"); explicitPlan != nullptr && *explicitPlan != '\0') {
-        return std::string{explicitPlan};
-    }
-    const std::filesystem::path root = std::filesystem::current_path();
-    return (root / ".kano" / "tmp" / "git" / "plans" / "default-plan.json").lexically_normal().generic_string();
+    return commands::runtime_path::Layout::Resolve(std::filesystem::current_path())
+        .SharedPlanPath()
+        .generic_string();
 }
 
 bool RewriteSlogShorthand(std::vector<std::string>& InOutArgs, std::string& OutError) {

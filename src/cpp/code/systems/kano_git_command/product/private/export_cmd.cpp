@@ -7,6 +7,7 @@
 
 #include <CLI/CLI.hpp>
 #include "discovery.hpp"
+#include "runtime_path_layout.hpp"
 #include "shell_executor.hpp"
 
 #include <algorithm>
@@ -194,7 +195,7 @@ auto ResolveOutputDir(const std::filesystem::path& InCwd,
     if (!InExplicit.empty()) {
         return std::filesystem::path(InExplicit);
     }
-    return InCwd / ".kano" / "tmp" / "git" / "export";
+    return runtime_path::Layout::ForRoots(InCwd, {}).ExportRoot();
 }
 
 auto FormatRevision(int InRevision, int InPad) -> std::string {
@@ -1344,7 +1345,7 @@ auto ExtractRcloneRemoteType(const std::string& InText) -> std::string {
 }
 
 auto FindNewestExportManifest(const std::filesystem::path& InRoot) -> std::filesystem::path {
-    const auto tmpRoot = InRoot / ".kano" / "tmp";
+    const auto tmpRoot = runtime_path::Layout::ForRoots(InRoot, {}).WorkspaceTemporaryRoot();
     std::error_code ec;
     if (!std::filesystem::exists(tmpRoot, ec)) {
         return {};
@@ -1419,7 +1420,8 @@ auto GuessManifestForArchive(const std::filesystem::path& InArchivePath,
     const std::vector<std::filesystem::path> candidates{
         InArchivePath.parent_path() / (archiveBase + ".export-manifest.json"),
         InArchivePath.parent_path() / "metadata" / ComputeManifestName(archiveBase),
-        InCwd / ".kano" / "tmp" / (archiveBase + ".export-manifest.json")
+        runtime_path::Layout::ForRoots(InCwd, {})
+            .WorkspaceTemporaryPath(archiveBase + ".export-manifest.json")
     };
     std::error_code ec;
     for (const auto& candidate : candidates) {
@@ -2954,7 +2956,8 @@ auto ExportOneRepo(const ExportRecord& InRecord,
         archiveResult = InExec("git", args, shell::ExecMode::Capture, InRecord.repoPath);
     } else {
         if (InRecord.isSubtree) {
-            const auto localTmpDir = InRecord.repoPath / ".kano" / "tmp";
+            const auto localTmpDir =
+                runtime_path::Layout::ForRoots(InRecord.repoPath, {}).WorkspaceTemporaryRoot();
             std::error_code mkEc;
             std::filesystem::create_directories(localTmpDir, mkEc);
             const auto manifestPath = localTmpDir / (InRecord.repoName + "_subtree_working_tree_manifest.tsv");
@@ -3059,7 +3062,8 @@ auto ExportOneRepo(const ExportRecord& InRecord,
             std::error_code ec;
             std::filesystem::remove(manifestPath, ec);
         } else {
-        const auto localTmpDir = InRecord.repoPath / ".kano" / "tmp";
+        const auto localTmpDir =
+            runtime_path::Layout::ForRoots(InRecord.repoPath, {}).WorkspaceTemporaryRoot();
         std::error_code mkEc;
         std::filesystem::create_directories(localTmpDir, mkEc);
         const auto manifestPath = localTmpDir / (InRecord.repoName + "_working_tree_manifest.tsv");
@@ -3435,7 +3439,8 @@ auto RunExportWithExecutor(const ExportOptions& InOpts,
             const std::string manifestFilename = archiveBase + ".export-manifest.json";
 
             // Canonical copy: <cwd>/.kano/tmp/<name>_revNNN.export-manifest.json
-            const auto canonicalDir = InExportList.front().repoPath / ".kano" / "tmp";
+            const auto canonicalDir = runtime_path::Layout::ForRoots(
+                InExportList.front().repoPath, {}).WorkspaceTemporaryRoot();
             std::error_code ec;
             std::filesystem::create_directories(canonicalDir, ec);
             if (!ec) {
@@ -3832,7 +3837,10 @@ void RegisterExport(CLI::App& InApp) {
                 throw CLI::RuntimeError(1);
             }
             archivePath = ResolveArchiveFromExportManifest(manifestPath, cwd);
-            if (!archivePath.empty() && !IsPathWithinDirectory(archivePath, cwd / ".kano" / "tmp")) {
+            if (!archivePath.empty() &&
+                !IsPathWithinDirectory(
+                    archivePath,
+                    runtime_path::Layout::ForRoots(cwd, {}).WorkspaceTemporaryRoot())) {
                 std::cerr << "kog export upload: --last archive path must stay under .kano/tmp\n";
                 throw CLI::RuntimeError(1);
             }
@@ -3915,4 +3923,3 @@ void RegisterExport(CLI::App& InApp) {
 }
 
 } // namespace kano::git::commands
-

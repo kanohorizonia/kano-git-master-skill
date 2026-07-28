@@ -189,6 +189,48 @@ kano_wix_directory_has_files() {
   find "$dir" -type f -print -quit | grep -q .
 }
 
+kano_wix_strip_git_metadata() {
+  local root="$1"
+  local metadata_path
+  while IFS= read -r -d '' metadata_path; do
+    if [[ -d "$metadata_path" ]]; then
+      kano_wix_remove_directory_if_exists "$metadata_path"
+    else
+      rm -f -- "$metadata_path"
+    fi
+  done < <(find "$root" -depth -name .git -print0)
+}
+
+kano_wix_require_payload_file() {
+  local payload_root="$1"
+  local relative_path="$2"
+  if [[ ! -f "${payload_root}/${relative_path}" ]]; then
+    echo "Required payload file missing after staging: ${relative_path}" >&2
+    exit 1
+  fi
+}
+
+kano_wix_validate_ignore_payload() {
+  local payload_root="$1"
+  local relative_path
+  local required_paths=(
+    "assets/ignore/README.md"
+    "assets/ignore/datasource/manifest.json"
+    "assets/ignore/local-rules/kano.gitignore"
+    "assets/ignore/policy/ignore-gate-allowlist.txt"
+    "assets/ignore/datasource/upstream/github-gitignore/Global/macOS.gitignore"
+  )
+  for relative_path in "${required_paths[@]}"; do
+    kano_wix_require_payload_file "$payload_root" "$relative_path"
+  done
+
+  if find "${payload_root}/assets" -name .git -print -quit | grep -q .; then
+    echo "Payload contains forbidden Git metadata after staging:" >&2
+    find "${payload_root}/assets" -name .git -print >&2
+    exit 1
+  fi
+}
+
 kano_wix_resolve_binary_source() {
   local repo_root="$1"
   local preset="${KANO_WIX_CPP_PRESET:-windows-ninja-msvc}"
@@ -243,6 +285,8 @@ kano_wix_stage_payload() {
   done
 
   kano_wix_copy_dir_if_present "${KANO_WIX_REPO_ROOT}/assets" "${payload_root}/assets"
+  kano_wix_strip_git_metadata "${payload_root}/assets"
+  kano_wix_validate_ignore_payload "$payload_root"
   if [[ "$architecture" != "x64" ]]; then
     echo "Unsupported MSI architecture for payload staging: $architecture" >&2
     exit 1

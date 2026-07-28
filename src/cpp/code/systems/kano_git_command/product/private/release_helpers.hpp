@@ -108,6 +108,9 @@ SkillInstallPlan BuildSkillInstallPlan(const ReleaseMetadata& metadata,
 WindowsPackagePlan BuildWindowsPackagePlan(const ReleaseMetadata& metadata,
                                            const std::filesystem::path& outputRoot);
 
+void StageWindowsPackage(const ReleaseMetadata& metadata,
+                         const WindowsPackagePlan& plan);
+
 WingetPlan BuildWingetPlan(const ReleaseMetadata& metadata,
                            const std::filesystem::path& installerPath,
                            const std::string& installerSha256,

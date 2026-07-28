@@ -1112,7 +1112,7 @@ TEST_CASE("kog export working-tree tar preserves symlink headers and stream alig
     CreateFileSymlinkOrSkip(repo / "link-a.txt", std::filesystem::path("file-a.txt"));
     WriteTextFile(repo / "zz_after.txt", "regular file after symlink\n");
 
-    const auto observedDir = repo / "assets" / "ignore-sources" / "upstream" / "github-gitignore";
+    const auto observedDir = repo / "assets" / "ignore" / "datasource" / "upstream" / "github-gitignore";
     WriteTextFile(observedDir / "Leiningen.gitignore", "pom.xml\npom.xml.asc\n*.jar\n");
     WriteTextFile(observedDir / "C++.gitignore", "# Prerequisites\n*.d\n\n# Compiled Object files\n*.slo\n*.lo\n*.o\n*.obj\n");
     WriteTextFile(observedDir / "Global" / "MATLAB.gitignore", "# Autosave files\n*.asv\n*.m~\n");
@@ -1153,12 +1153,12 @@ TEST_CASE("kog export working-tree tar preserves symlink headers and stream alig
             "prefix=sys.argv[2]\n"
             "expected={\n"
             "  'link-a.txt':'file-a.txt',\n"
-            "  'assets/ignore-sources/upstream/github-gitignore/Clojure.gitignore':'Leiningen.gitignore',\n"
-            "  'assets/ignore-sources/upstream/github-gitignore/Fortran.gitignore':'C++.gitignore',\n"
-            "  'assets/ignore-sources/upstream/github-gitignore/Global/Octave.gitignore':'MATLAB.gitignore',\n"
+            "  'assets/ignore/datasource/upstream/github-gitignore/Clojure.gitignore':'Leiningen.gitignore',\n"
+            "  'assets/ignore/datasource/upstream/github-gitignore/Fortran.gitignore':'C++.gitignore',\n"
+            "  'assets/ignore/datasource/upstream/github-gitignore/Global/Octave.gitignore':'MATLAB.gitignore',\n"
             "}\n"
             "after=prefix + '/zz_after.txt'\n"
-            "observed_after=prefix + '/assets/ignore-sources/upstream/github-gitignore/ZzzAfter.gitignore'\n"
+            "observed_after=prefix + '/assets/ignore/datasource/upstream/github-gitignore/ZzzAfter.gitignore'\n"
             "with tarfile.open(archive,'r') as t:\n"
             "  ordered=t.getmembers()\n"
             "  names=[m.name for m in ordered]\n"

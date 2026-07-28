@@ -16,6 +16,8 @@ not current unless they are explicitly reintroduced and covered by smoke tests.
 - [Public Artifact Contract](./guides/public-artifact-contract.md)
 - [CI/CD Trigger Policy](./status/ci-cd-trigger-policy.md)
 - [CPA Commit Plan Workflow](./guides/cpa-commit-plan-workflow.md)
+- [Runtime Path Layout](./guides/runtime-path-layout.md)
+- [Ignore Datasource Sync Policy](./guides/ignore-datasource-sync-policy.md)
 - [Repo Hygiene](./repo-hygiene.md)
 - [Testing Guide](./development/testing.md)
 - [Pixi Development Environment](./development/pixi.md)

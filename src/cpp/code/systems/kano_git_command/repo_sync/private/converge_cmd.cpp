@@ -4,6 +4,7 @@
 #include <nlohmann/json.hpp>
 
 #include "command_runtime_ops.hpp"
+#include "runtime_path_layout.hpp"
 #include "shell_executor.hpp"
 
 #include <algorithm>
@@ -250,7 +251,8 @@ std::string Csv(const std::vector<std::string>& values) {
 }
 
 std::filesystem::path ConvergeStatePath(const std::filesystem::path& root) {
-    return (root / ".kano" / "tmp" / "workflows" / "converge" / "state.json").lexically_normal();
+    return (runtime_path::Layout::ForRoots(root, {}).WorkspaceTemporaryRoot() /
+            "workflows" / "converge" / "state.json").lexically_normal();
 }
 
 std::string UtcNowIso8601() {
@@ -2231,8 +2233,10 @@ IntentCommitPlan BuildIntentCommitPlan(const std::filesystem::path& workspaceRoo
     const auto safeRepo = SanitizePlanComponent(repo);
     const auto baseHeadSha = ComputeScopedBaseHeadShaForPlan(snapshot, repo);
     const auto fingerprint = ComputeScopedDirtyFingerprintForPlan(snapshot, repo, dirtyEntries);
-    plan.planPath = (workspaceRoot / ".kano" / "tmp" / "workflows" / "converge" /
-                     "intent-commit-plans" / (safeRepo + "-" + fingerprint + ".json")).lexically_normal();
+    plan.planPath =
+        (runtime_path::Layout::ForRoots(workspaceRoot, {}).WorkspaceTemporaryRoot() /
+         "workflows" / "converge" / "intent-commit-plans" /
+         (safeRepo + "-" + fingerprint + ".json")).lexically_normal();
 
     nlohmann::json json;
     json["meta"] = {
@@ -3406,7 +3410,8 @@ std::filesystem::path MakeWorktreeHarvestPatchPath(const std::filesystem::path& 
     if (!worktree.head.empty()) {
         component += "-" + worktree.head.substr(0, std::min<std::size_t>(12, worktree.head.size()));
     }
-    return (repoPath / ".kano" / "tmp" / "converge" / "worktree-harvest" / (component + ".patch")).lexically_normal();
+    return (runtime_path::Layout::ForRoots(repoPath, {}).WorkspaceTemporaryRoot() /
+            "converge" / "worktree-harvest" / (component + ".patch")).lexically_normal();
 }
 
 void AppendWorktreeHarvestBlocked(nlohmann::json& result,

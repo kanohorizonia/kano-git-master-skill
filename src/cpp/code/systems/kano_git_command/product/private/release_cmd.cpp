@@ -36,43 +36,6 @@ void WriteTextFile(const std::filesystem::path& path, const std::string& content
     out << content;
 }
 
-void CopyFileIfExists(const std::filesystem::path& source, const std::filesystem::path& target) {
-    std::error_code ec;
-    if (!std::filesystem::exists(source, ec) || ec) {
-        return;
-    }
-    std::filesystem::create_directories(target.parent_path(), ec);
-    std::filesystem::copy_file(source, target, std::filesystem::copy_options::overwrite_existing, ec);
-    if (ec) {
-        throw std::runtime_error("failed to copy " + source.generic_string() + " to " + target.generic_string());
-    }
-}
-
-void CopyDirectoryIfExists(const std::filesystem::path& source, const std::filesystem::path& target) {
-    std::error_code ec;
-    if (!std::filesystem::exists(source, ec) || ec) {
-        return;
-    }
-    std::filesystem::create_directories(target, ec);
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(source, ec)) {
-        if (ec) {
-            throw std::runtime_error("failed to enumerate " + source.generic_string());
-        }
-        const auto relative = std::filesystem::relative(entry.path(), source, ec);
-        if (ec) {
-            continue;
-        }
-        const auto destination = target / relative;
-        if (entry.is_directory()) {
-            std::filesystem::create_directories(destination, ec);
-            continue;
-        }
-        if (entry.is_regular_file()) {
-            CopyFileIfExists(entry.path(), destination);
-        }
-    }
-}
-
 void PrintWindowsPackagePlan(const release::WindowsPackagePlan& plan) {
     std::cout << "packageRoot=" << plan.packageRoot.generic_string() << "\n";
     std::cout << "packageDirectoryName=" << plan.packageDirectoryName << "\n";
@@ -81,29 +44,6 @@ void PrintWindowsPackagePlan(const release::WindowsPackagePlan& plan) {
     for (const auto& path : plan.foundBinaries) {
         std::cout << "foundBinary=" << path.generic_string() << "\n";
     }
-}
-
-void StageWindowsPackage(const release::ReleaseMetadata& metadata,
-                         const release::WindowsPackagePlan& plan) {
-    if (plan.missingKogBinary || plan.missingKanoGitBinary) {
-        throw std::runtime_error("WINDOWS_PACKAGE_BINARY_MISSING");
-    }
-    const auto binRoot = plan.packageRoot / "bin";
-    const auto skillRoot = plan.packageRoot / "skills" / metadata.skill.skillName;
-    std::error_code ec;
-    std::filesystem::create_directories(binRoot, ec);
-    std::filesystem::create_directories(skillRoot, ec);
-    for (const auto& binary : plan.foundBinaries) {
-        CopyFileIfExists(binary, binRoot / binary.filename());
-    }
-    CopyFileIfExists(metadata.repoRoot / "SKILL.md", skillRoot / "SKILL.md");
-    CopyFileIfExists(metadata.repoRoot / "README.md", skillRoot / "README.md");
-    CopyFileIfExists(metadata.repoRoot / "VERSION", skillRoot / "VERSION");
-    CopyDirectoryIfExists(metadata.repoRoot / "scripts", skillRoot / "scripts");
-    CopyDirectoryIfExists(metadata.repoRoot / "docs", skillRoot / "docs");
-    CopyDirectoryIfExists(metadata.repoRoot / ".kano", skillRoot / ".kano");
-    WriteTextFile(plan.packageRoot / "release-manifest.json", release::RenderReleaseManifestJson(metadata));
-    WriteTextFile(skillRoot / ".kog-install.json", release::RenderSkillInstallJson(metadata, binRoot));
 }
 
 void PrintWingetPlan(const release::WingetPlan& plan) {
@@ -176,7 +116,7 @@ void RegisterRelease(CLI::App& InApp) {
             return;
         }
         try {
-            StageWindowsPackage(metadata, plan);
+            release::StageWindowsPackage(metadata, plan);
         } catch (const std::exception& ex) {
             std::cerr << "Error: " << ex.what() << "\n";
             std::exit(1);

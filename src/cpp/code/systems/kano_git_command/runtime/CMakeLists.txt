@@ -6,11 +6,13 @@ target_sources(kano_git_command_runtime
     private/command_executor.cpp
     private/ai_utils.cpp
     private/repo_hygiene_cmd.cpp
+    private/runtime_path_layout.cpp
   PUBLIC
     public/auto_model_policy.hpp
     public/command_runtime_ops.hpp
     public/command_executor.hpp
     public/ai_utils.hpp
+    public/runtime_path_layout.hpp
     public/terminal_color.hpp
 )
 

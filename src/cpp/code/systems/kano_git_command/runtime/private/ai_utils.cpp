@@ -1,4 +1,5 @@
 #include "ai_utils.hpp"
+#include "runtime_path_layout.hpp"
 #include <algorithm>
 #include <atomic>
 #include <cctype>
@@ -201,10 +202,7 @@ auto WriteFileText(const std::filesystem::path& InPath, const std::string& InTex
 }
 
 auto ResolveSkillRoot(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path {
-    if (const char* envRoot = std::getenv("KANO_GIT_SKILL_ROOT"); envRoot && std::string(envRoot).size() > 0) {
-        return std::filesystem::path(envRoot).lexically_normal();
-    }
-    return (InWorkspaceRoot / ".agents" / "skills" / "kano" / "kano-git-master-skill").lexically_normal();
+    return runtime_path::ResolveSkillRoot(InWorkspaceRoot);
 }
 
 auto LoadPromptAssetText(const std::filesystem::path& InWorkspaceRoot,
@@ -451,7 +449,7 @@ auto WriteCodexResponseFilePath(const std::filesystem::path& InWorkdir,
                                 const std::string& InPrompt,
                                 std::filesystem::path* OutPath,
                                 std::string* OutError) -> bool {
-    const auto responseDir = (InWorkdir / ".kano" / "tmp" / "git" / "codex-responses").lexically_normal();
+    const auto responseDir = runtime_path::Layout::Resolve(InWorkdir).CodexResponseRoot();
     std::error_code ec;
     std::filesystem::create_directories(responseDir, ec);
     if (ec) {
@@ -561,7 +559,7 @@ auto WritePromptFile(const std::filesystem::path& InWorkdir,
                       const std::string& InPurpose,
                       std::filesystem::path* OutPath,
                       std::string* OutError) -> bool {
-    const auto promptDir = (InWorkdir / ".kano" / "tmp" / "git" / "provider-prompts").lexically_normal();
+    const auto promptDir = runtime_path::Layout::Resolve(InWorkdir).ProviderPromptRoot();
     std::error_code ec;
     std::filesystem::create_directories(promptDir, ec);
     if (ec) {

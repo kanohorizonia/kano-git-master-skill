@@ -7,6 +7,7 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <system_error>
 #include <toml++/toml.h>
 
@@ -153,6 +154,189 @@ auto BranchTokenFromPackageIdentifier(const std::string& packageIdentifier) -> s
         }
     }
     return out.empty() ? "package" : out;
+}
+
+void WriteTextFileStrict(const std::filesystem::path& path, const std::string& content) {
+    std::error_code ec;
+    std::filesystem::create_directories(path.parent_path(), ec);
+    if (ec) {
+        throw std::runtime_error("failed to create directory for " + path.generic_string());
+    }
+    std::ofstream out(path, std::ios::out | std::ios::binary | std::ios::trunc);
+    if (!out) {
+        throw std::runtime_error("failed to write " + path.generic_string());
+    }
+    out << content;
+}
+
+void CopyFileIfExistsStrict(const std::filesystem::path& source,
+                            const std::filesystem::path& target) {
+    std::error_code ec;
+    if (!std::filesystem::exists(source, ec) || ec) {
+        return;
+    }
+    std::filesystem::create_directories(target.parent_path(), ec);
+    if (ec) {
+        throw std::runtime_error("failed to create directory for " + target.generic_string());
+    }
+    std::filesystem::copy_file(
+        source,
+        target,
+        std::filesystem::copy_options::overwrite_existing,
+        ec);
+    if (ec) {
+        throw std::runtime_error(
+            "failed to copy " + source.generic_string() + " to " + target.generic_string());
+    }
+}
+
+void CopyDirectoryWithoutGitMetadata(const std::filesystem::path& source,
+                                     const std::filesystem::path& target) {
+    std::error_code ec;
+    if (!std::filesystem::exists(source, ec) || ec) {
+        return;
+    }
+    std::filesystem::create_directories(target, ec);
+    if (ec) {
+        throw std::runtime_error("failed to create directory " + target.generic_string());
+    }
+
+    std::filesystem::recursive_directory_iterator iterator(
+        source,
+        std::filesystem::directory_options::skip_permission_denied,
+        ec);
+    if (ec) {
+        throw std::runtime_error("failed to enumerate " + source.generic_string());
+    }
+    const std::filesystem::recursive_directory_iterator end;
+    for (; iterator != end; iterator.increment(ec)) {
+        if (ec) {
+            throw std::runtime_error("failed to enumerate " + source.generic_string());
+        }
+        const auto& entry = *iterator;
+        if (entry.path().filename() == ".git") {
+            if (entry.is_directory(ec) && !ec) {
+                iterator.disable_recursion_pending();
+            }
+            ec.clear();
+            continue;
+        }
+
+        const auto relative = std::filesystem::relative(entry.path(), source, ec);
+        if (ec) {
+            throw std::runtime_error(
+                "failed to resolve package-relative path for " + entry.path().generic_string());
+        }
+        const auto destination = target / relative;
+        if (entry.is_directory(ec) && !ec) {
+            std::filesystem::create_directories(destination, ec);
+            if (ec) {
+                throw std::runtime_error("failed to create directory " + destination.generic_string());
+            }
+            continue;
+        }
+        ec.clear();
+        if (entry.is_regular_file(ec) && !ec) {
+            CopyFileIfExistsStrict(entry.path(), destination);
+        }
+        ec.clear();
+    }
+    if (ec) {
+        throw std::runtime_error("failed to enumerate " + source.generic_string());
+    }
+}
+
+void RequirePackagedFile(const std::filesystem::path& skillRoot,
+                         const std::filesystem::path& relative) {
+    std::error_code ec;
+    const auto path = (skillRoot / relative).lexically_normal();
+    if (!std::filesystem::is_regular_file(path, ec) || ec) {
+        throw std::runtime_error(
+            "WINDOWS_PACKAGE_REQUIRED_ASSET_MISSING: " + relative.generic_string());
+    }
+}
+
+auto RequiredIgnoreAssetPaths() -> const std::vector<std::filesystem::path>& {
+    static const std::vector<std::filesystem::path> required = {
+        "assets/ignore/README.md",
+        "assets/ignore/datasource/manifest.json",
+        "assets/ignore/local-rules/kano.gitignore",
+        "assets/ignore/policy/ignore-gate-allowlist.txt",
+        "assets/ignore/datasource/upstream/github-gitignore/Global/macOS.gitignore",
+    };
+    return required;
+}
+
+void ValidatePackagedIgnoreAssets(const std::filesystem::path& skillRoot) {
+    for (const auto& relative : RequiredIgnoreAssetPaths()) {
+        RequirePackagedFile(skillRoot, relative);
+    }
+
+    std::error_code ec;
+    std::filesystem::recursive_directory_iterator iterator(
+        skillRoot,
+        std::filesystem::directory_options::skip_permission_denied,
+        ec);
+    const std::filesystem::recursive_directory_iterator end;
+    for (; !ec && iterator != end; iterator.increment(ec)) {
+        if (iterator->path().filename() == ".git") {
+            throw std::runtime_error(
+                "WINDOWS_PACKAGE_GIT_METADATA_PRESENT: " +
+                iterator->path().lexically_relative(skillRoot).generic_string());
+        }
+    }
+    if (ec) {
+        throw std::runtime_error("failed to validate packaged assets: " + ec.message());
+    }
+}
+
+void ResetWindowsPackageRoot(const ReleaseMetadata& metadata,
+                             const WindowsPackagePlan& plan) {
+    const auto expectedName =
+        metadata.packageName + "-" + metadata.version + "-windows-x64";
+    if (expectedName.empty() ||
+        plan.packageDirectoryName != expectedName ||
+        plan.packageRoot.filename() != expectedName) {
+        throw std::runtime_error("WINDOWS_PACKAGE_UNSAFE_OUTPUT_ROOT");
+    }
+
+    std::error_code ec;
+    const auto absoluteRoot =
+        std::filesystem::absolute(plan.packageRoot, ec).lexically_normal();
+    if (ec ||
+        absoluteRoot.empty() ||
+        absoluteRoot == absoluteRoot.root_path() ||
+        absoluteRoot.parent_path().empty() ||
+        absoluteRoot.parent_path() == absoluteRoot.root_path()) {
+        throw std::runtime_error("WINDOWS_PACKAGE_UNSAFE_OUTPUT_ROOT");
+    }
+
+    const auto resolvedRoot =
+        std::filesystem::weakly_canonical(absoluteRoot, ec).lexically_normal();
+    if (ec ||
+        resolvedRoot.empty() ||
+        resolvedRoot.filename() != expectedName ||
+        resolvedRoot == resolvedRoot.root_path() ||
+        resolvedRoot.parent_path().empty() ||
+        resolvedRoot.parent_path() == resolvedRoot.root_path()) {
+        throw std::runtime_error("WINDOWS_PACKAGE_UNSAFE_OUTPUT_ROOT");
+    }
+
+    const auto repoRoot =
+        std::filesystem::weakly_canonical(metadata.repoRoot, ec).lexically_normal();
+    if (ec ||
+        repoRoot.empty() ||
+        resolvedRoot == repoRoot ||
+        IsPathInsideOrSame(repoRoot, resolvedRoot)) {
+        throw std::runtime_error("WINDOWS_PACKAGE_UNSAFE_OUTPUT_ROOT");
+    }
+
+    std::filesystem::remove_all(resolvedRoot, ec);
+    if (ec) {
+        throw std::runtime_error(
+            "failed to reset Windows package root " + resolvedRoot.generic_string() +
+            ": " + ec.message());
+    }
 }
 
 auto YamlQuote(const std::string& value) -> std::string {
@@ -355,6 +539,57 @@ WindowsPackagePlan BuildWindowsPackagePlan(const ReleaseMetadata& metadata,
     plan.missingKogBinary = !hasNamedBinary("kog.exe");
     plan.missingKanoGitBinary = !hasNamedBinary("kano-git.exe");
     return plan;
+}
+
+void StageWindowsPackage(const ReleaseMetadata& metadata,
+                         const WindowsPackagePlan& plan) {
+    if (plan.missingKogBinary || plan.missingKanoGitBinary) {
+        throw std::runtime_error("WINDOWS_PACKAGE_BINARY_MISSING");
+    }
+    for (const auto& relative : RequiredIgnoreAssetPaths()) {
+        RequirePackagedFile(metadata.repoRoot, relative);
+    }
+    bool hasKogBinary = false;
+    bool hasKanoGitBinary = false;
+    for (const auto& binary : plan.foundBinaries) {
+        std::error_code binaryEc;
+        if (!std::filesystem::is_regular_file(binary, binaryEc) || binaryEc) {
+            throw std::runtime_error(
+                "WINDOWS_PACKAGE_BINARY_MISSING: " + binary.generic_string());
+        }
+        const auto name = ToLower(binary.filename().string());
+        hasKogBinary = hasKogBinary || name == "kog.exe";
+        hasKanoGitBinary = hasKanoGitBinary || name == "kano-git.exe";
+    }
+    if (!hasKogBinary || !hasKanoGitBinary) {
+        throw std::runtime_error("WINDOWS_PACKAGE_BINARY_MISSING");
+    }
+    ResetWindowsPackageRoot(metadata, plan);
+    const auto binRoot = plan.packageRoot / "bin";
+    const auto skillRoot = plan.packageRoot / "skills" / metadata.skill.skillName;
+    std::error_code ec;
+    std::filesystem::create_directories(binRoot, ec);
+    std::filesystem::create_directories(skillRoot, ec);
+    if (ec) {
+        throw std::runtime_error("failed to create Windows package root: " + ec.message());
+    }
+    for (const auto& binary : plan.foundBinaries) {
+        CopyFileIfExistsStrict(binary, binRoot / binary.filename());
+    }
+    CopyFileIfExistsStrict(metadata.repoRoot / "SKILL.md", skillRoot / "SKILL.md");
+    CopyFileIfExistsStrict(metadata.repoRoot / "README.md", skillRoot / "README.md");
+    CopyFileIfExistsStrict(metadata.repoRoot / "VERSION", skillRoot / "VERSION");
+    CopyDirectoryWithoutGitMetadata(metadata.repoRoot / "scripts", skillRoot / "scripts");
+    CopyDirectoryWithoutGitMetadata(metadata.repoRoot / "docs", skillRoot / "docs");
+    CopyDirectoryWithoutGitMetadata(metadata.repoRoot / ".kano", skillRoot / ".kano");
+    CopyDirectoryWithoutGitMetadata(metadata.repoRoot / "assets", skillRoot / "assets");
+    ValidatePackagedIgnoreAssets(skillRoot);
+    WriteTextFileStrict(
+        plan.packageRoot / "release-manifest.json",
+        RenderReleaseManifestJson(metadata));
+    WriteTextFileStrict(
+        skillRoot / ".kog-install.json",
+        RenderSkillInstallJson(metadata, binRoot));
 }
 
 std::string WingetManifestRelativeDirectory(const std::string& packageIdentifier,

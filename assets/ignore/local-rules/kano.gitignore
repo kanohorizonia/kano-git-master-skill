@@ -1,4 +1,4 @@
-# Kano local ignore datasource rules
+# Kano-maintained deterministic ignore datasource rules
 # Format:
 #   <pattern>
 #   <pattern> # optional comment

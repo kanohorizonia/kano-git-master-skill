@@ -4,6 +4,7 @@
 #include "kog_config.hpp"
 #include "auto_model_policy.hpp"
 #include "discovery.hpp"
+#include "runtime_path_layout.hpp"
 
 #include <CLI/CLI.hpp>
 #include <algorithm>
@@ -150,7 +151,7 @@ auto ResolveGlobalCacheRoot() -> std::filesystem::path {
     if (home.empty()) {
         return {};
     }
-    return (home / ".kano" / "cache" / "git").lexically_normal();
+    return runtime_path::GlobalCacheRoot(home);
 }
 
 auto AiCacheDir() -> std::filesystem::path {
@@ -1639,7 +1640,7 @@ auto DefaultMessagePlanOutputPath(const std::filesystem::path& InWorkspaceRoot,
     const auto digest = Fnv1a64Hex(InMessage).substr(0, 8);
     auto root = ResolveGlobalCacheRoot();
     if (root.empty()) {
-        root = (InWorkspaceRoot / ".kano" / "cache" / "git").lexically_normal();
+        root = runtime_path::Layout::Resolve(InWorkspaceRoot).WorkspaceCacheRoot();
     }
     return (root / "plans" / ("message-plan-" + stamp + "-" + digest + ".json")).lexically_normal();
 }
@@ -1744,9 +1745,8 @@ auto WriteSyntheticMessageCommitPlan(const std::filesystem::path& InWorkspaceRoo
         return true;
     }
 
-    const auto workspacePath =
-        (InWorkspaceRoot / ".kano" / "cache" / "git" / "plans" / preferredPath.filename())
-            .lexically_normal();
+    const auto workspacePath = runtime_path::Layout::Resolve(InWorkspaceRoot)
+        .CachedPlanPath(preferredPath.filename().generic_string());
     if (workspacePath != preferredPath) {
         std::string workspaceError;
         if (writePlan(workspacePath, &workspaceError)) {

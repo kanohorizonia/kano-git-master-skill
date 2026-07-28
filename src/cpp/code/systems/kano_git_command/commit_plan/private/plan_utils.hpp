@@ -259,6 +259,12 @@ auto BuildSubmoduleUpdateMessage(const std::vector<std::string>& InNames) -> std
 auto IsProbableIgnoreArtifactPath(const std::string& InPath) -> bool;
 auto BuildIgnoreRuleForArtifactPath(const std::string& InPath) -> std::string;
 auto IsInternalPipelineArtifactPath(const std::string& InPath) -> bool;
+auto ReadIgnoreGateAllowlist(const std::filesystem::path& InAllowlistPath) -> std::unordered_set<std::string>;
+auto WorkspaceRelativeIgnoreGatePath(const std::filesystem::path& InWorkspaceRoot,
+                                     const std::filesystem::path& InRepoRoot,
+                                     const std::string& InRepoRelativePath) -> std::string;
+auto IsIgnoreGateAllowlisted(const std::unordered_set<std::string>& InPatterns,
+                             const std::string& InRepoRelativePath) -> bool;
 auto DefaultSecretRulesPath(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path;
 auto LoadSecretRules(const std::filesystem::path& InRulesPath, std::string* OutError) -> std::vector<SecretRule>;
 auto ParseStatusChangedPath(const std::string& InLine) -> std::optional<std::string>;

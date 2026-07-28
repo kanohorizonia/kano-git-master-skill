@@ -22,28 +22,53 @@ resolve_native_kog_cmd() {
     printf '%s\n' "$KOG_BIN"
     return 0
   fi
-  local os_name=""
+  local os_name="" arch_name="" candidate="" preset=""
   os_name="$(uname -s 2>/dev/null || true)"
+  arch_name="$(uname -m 2>/dev/null || true)"
   if [[ "$os_name" =~ ^(MINGW|MSYS|CYGWIN) || "${OS:-}" == "Windows_NT" ]]; then
-    local candidate="${ROOT_DIR}/src/cpp/build/bin/windows-ninja-msvc/release/kano-git.exe"
-    if [[ -f "$candidate" ]]; then
-      printf '%s\n' "$candidate"
-      return 0
+    local windows_presets=(windows-ninja-msvc windows-ninja-msvc-arm64 windows-ninja-clang)
+    if [[ "$arch_name" =~ ^(arm64|aarch64)$ ]]; then
+      windows_presets=(windows-ninja-msvc-arm64 windows-ninja-msvc windows-ninja-clang)
     fi
-  fi
-  if [[ "$os_name" == "Linux" ]]; then
-    local candidate="${ROOT_DIR}/src/cpp/build/bin/linux-ninja-gcc/release/kano-git"
-    if [[ -x "$candidate" ]]; then
-      printf '%s\n' "$candidate"
-      return 0
+    for preset in "${windows_presets[@]}"; do
+      for candidate in \
+        "${ROOT_DIR}/src/cpp/out/bin/${preset}/release/kano-git.exe" \
+        "${ROOT_DIR}/src/cpp/build/bin/${preset}/release/kano-git.exe"; do
+        if [[ -f "$candidate" ]]; then
+          printf '%s\n' "$candidate"
+          return 0
+        fi
+      done
+    done
+    return 1
+  elif [[ "$os_name" == "Linux" ]]; then
+    for candidate in \
+      "${ROOT_DIR}/src/cpp/out/bin/linux-ninja-gcc/release/kano-git" \
+      "${ROOT_DIR}/src/cpp/out/bin/linux-ninja-clang/release/kano-git" \
+      "${ROOT_DIR}/src/cpp/build/bin/linux-ninja-gcc/release/kano-git" \
+      "${ROOT_DIR}/src/cpp/build/bin/linux-ninja-clang/release/kano-git"; do
+      if [[ -x "$candidate" ]]; then
+        printf '%s\n' "$candidate"
+        return 0
+      fi
+    done
+    return 1
+  elif [[ "$os_name" == "Darwin" ]]; then
+    local macos_presets=(macos-ninja-clang-x64 macos-ninja-clang macos-ninja-clang-arm64)
+    if [[ "$arch_name" =~ ^(arm64|aarch64)$ ]]; then
+      macos_presets=(macos-ninja-clang-arm64 macos-ninja-clang macos-ninja-clang-x64)
     fi
-  fi
-  if [[ "$os_name" == "Darwin" ]]; then
-    local candidate="${ROOT_DIR}/src/cpp/build/bin/macos-ninja-clang/release/kano-git"
-    if [[ -x "$candidate" ]]; then
-      printf '%s\n' "$candidate"
-      return 0
-    fi
+    for preset in "${macos_presets[@]}"; do
+      for candidate in \
+        "${ROOT_DIR}/src/cpp/out/bin/${preset}/release/kano-git" \
+        "${ROOT_DIR}/src/cpp/build/bin/${preset}/release/kano-git"; do
+        if [[ -x "$candidate" ]]; then
+          printf '%s\n' "$candidate"
+          return 0
+        fi
+      done
+    done
+    return 1
   fi
   return 1
 }
@@ -133,7 +158,8 @@ scenario_commit_message_plan_first() {
   out="$(run_kog_in_case "$kog_cmd" "$case_dir" commit -m "chore(test): commit message plan-first" 2>&1)"
   actual="$(latest_subject "$case_dir")"
   [[ "$actual" == "chore(test): commit message plan-first" ]] || return 1
-  [[ "$out" == *"synthesized plan file:"* ]]
+  [[ "$out" == *"synthesized plan file:"* ]] || return 1
+  [[ "$out" == *"/.kano/cache/git/plans/message-plan-"* ]]
 }
 
 scenario_commit_plan_file() {
@@ -159,7 +185,8 @@ scenario_agent_commit_message_plan_first() {
   actual="$(latest_subject "$case_dir")"
   [[ "$actual" == "chore(test): agent message path" ]] || return 1
   [[ "$out" == *"agent proxy mode: agent=codex review=off"* ]] || return 1
-  [[ "$out" == *"synthesized plan file:"* ]]
+  [[ "$out" == *"synthesized plan file:"* ]] || return 1
+  [[ "$out" == *"/.kano/cache/git/plans/message-plan-"* ]]
 }
 
 scenario_invalid_plan_file_plus_message() {

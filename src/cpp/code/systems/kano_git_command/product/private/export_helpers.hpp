@@ -175,7 +175,7 @@ auto ValidateOptions(const ExportOptions& InOpts) -> bool;
 
 // Computes the output directory: if InExplicit is non-empty, returns
 // std::filesystem::path(InExplicit); otherwise returns
-// InCwd / ".kano" / "tmp" / "git" / "export".
+// runtime_path::Layout::ExportRoot().
 auto ResolveOutputDir(const std::filesystem::path& InCwd,
                       const std::string& InExplicit) -> std::filesystem::path;
 

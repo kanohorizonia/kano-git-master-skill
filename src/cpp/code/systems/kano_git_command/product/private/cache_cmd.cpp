@@ -2,6 +2,7 @@
 
 #include <CLI/CLI.hpp>
 #include "discovery.hpp"
+#include "runtime_path_layout.hpp"
 #include "shell_executor.hpp"
 
 #include <cstdlib>
@@ -116,11 +117,11 @@ auto DefaultGlobalCacheRoot() -> std::filesystem::path {
     if (home.empty()) {
         return {};
     }
-    return (home / ".kano" / "cache" / "git").lexically_normal();
+    return runtime_path::GlobalCacheRoot(home);
 }
 
 auto DefaultLocalCacheRoot(const std::filesystem::path& InDir) -> std::filesystem::path {
-    return (InDir / ".kano" / "cache" / "git").lexically_normal();
+    return runtime_path::Layout::Resolve(InDir).WorkspaceCacheRoot();
 }
 
 struct CacheSetting {

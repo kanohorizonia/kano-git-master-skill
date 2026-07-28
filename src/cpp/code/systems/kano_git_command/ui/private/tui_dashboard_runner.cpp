@@ -9,6 +9,7 @@
 #include "metadata_cache.hpp"
 #include "autocomplete_engine.hpp"
 #include "command_executor.hpp"
+#include "runtime_path_layout.hpp"
 
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/component_options.hpp>
@@ -2167,7 +2168,9 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
         return false;
     }();
 
-    const auto debugEventLogPath = workspaceRoot / ".kano" / "tmp" / "git" / "tui-event-debug.log";
+    const auto debugEventLogPath =
+        runtime_path::Layout::Resolve(workspaceRoot).WorkspaceGitTemporaryRoot() /
+        "tui-event-debug.log";
 
     auto compact_status_icon = [&](const StatusTone tone) -> std::string {
         if (useAsciiStatusIcons) {

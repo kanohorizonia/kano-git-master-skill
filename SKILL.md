@@ -343,6 +343,8 @@ Current docs:
 - `docs/guides/current-command-surface.md`
 - `docs/guides/kcc-commit-message-policy.md`
 - `docs/guides/cpa-commit-plan-workflow.md`
+- `docs/guides/runtime-path-layout.md`
+- `docs/guides/ignore-datasource-sync-policy.md`
 - `docs/repo-hygiene.md`
 - `docs/development/testing.md`
 - `docs/cpp-profile-coverage-pgo-model.md`
