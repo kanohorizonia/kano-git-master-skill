@@ -26,6 +26,16 @@ auto CountLines(const std::string& InText) -> std::size_t {
     return lines;
 }
 
+auto CountOccurrences(const std::string& InText, const std::string& InNeedle) -> std::size_t {
+    std::size_t count = 0;
+    std::size_t offset = 0;
+    while ((offset = InText.find(InNeedle, offset)) != std::string::npos) {
+        ++count;
+        offset += InNeedle.size();
+    }
+    return count;
+}
+
 } // namespace
 
 TEST_CASE("commit command keeps implementation behind commit utils module", "[architecture][commit][module-boundary]") {
@@ -36,6 +46,8 @@ TEST_CASE("commit command keeps implementation behind commit utils module", "[ar
     const auto commitPlanPayloadSourcePath = moduleRoot / "private/commit_plan_payload.cpp";
     const auto commitPlanTaskGraphHeaderPath = moduleRoot / "private/commit_plan_task_graph.hpp";
     const auto commitPlanTaskGraphSourcePath = moduleRoot / "private/commit_plan_task_graph.cpp";
+    const auto commitAutoPlanPipelineHeaderPath = moduleRoot / "private/commit_auto_plan_pipeline.hpp";
+    const auto commitAutoPlanPipelineSourcePath = moduleRoot / "private/commit_auto_plan_pipeline.cpp";
     const auto commitUtilsHeaderPath = moduleRoot / "private/commit_utils.hpp";
     const auto commitUtilsSourcePath = moduleRoot / "private/commit_utils.cpp";
     const auto cmakePath = moduleRoot / "CMakeLists.txt";
@@ -45,21 +57,29 @@ TEST_CASE("commit command keeps implementation behind commit utils module", "[ar
     const auto commitPlanPayloadSource = ReadText(commitPlanPayloadSourcePath);
     const auto commitPlanTaskGraphHeader = ReadText(commitPlanTaskGraphHeaderPath);
     const auto commitPlanTaskGraphSource = ReadText(commitPlanTaskGraphSourcePath);
+    const auto commitAutoPlanPipelineHeader = ReadText(commitAutoPlanPipelineHeaderPath);
+    const auto commitAutoPlanPipelineSource = ReadText(commitAutoPlanPipelineSourcePath);
     const auto commitUtilsHeader = ReadText(commitUtilsHeaderPath);
     const auto commitUtilsSource = ReadText(commitUtilsSourcePath);
     const auto cmake = ReadText(cmakePath);
 
     REQUIRE(CountLines(commitCommand) < 2000);
-    REQUIRE(CountLines(commitUtilsSource) < 5800);
+    REQUIRE(CountLines(commitUtilsSource) < 5350);
     REQUIRE(commitCommand.find("#include \"commit_utils.hpp\"") != std::string::npos);
     REQUIRE(commitCommand.find("void RegisterCommit(CLI::App& InApp)") != std::string::npos);
     REQUIRE(commitCommand.find("void RegisterAmend(CLI::App& InApp)") != std::string::npos);
     REQUIRE(commitUtilsSource.find("#include \"commit_plan_payload.hpp\"") != std::string::npos);
     REQUIRE(commitUtilsSource.find("#include \"commit_plan_task_graph.hpp\"") != std::string::npos);
+    REQUIRE(commitUtilsSource.find("#include \"commit_auto_plan_pipeline.hpp\"") != std::string::npos);
     REQUIRE(commitUtilsSource.find("struct CommitPlanPayload") == std::string::npos);
     REQUIRE(commitUtilsSource.find("auto ParseCommitPlanText(") == std::string::npos);
     REQUIRE(commitUtilsSource.find("struct RepoCommitRunbook") == std::string::npos);
     REQUIRE(commitUtilsSource.find("auto BuildCommitTaskGraph(") == std::string::npos);
+    REQUIRE(commitUtilsSource.find("auto DefaultSharedPlanPath(") == std::string::npos);
+    REQUIRE(commitUtilsSource.find("auto RunPlanNewViaSelf(") == std::string::npos);
+    REQUIRE(commitUtilsSource.find("auto RunCommitSeedViaSelf(") == std::string::npos);
+    REQUIRE(commitUtilsSource.find("auto RunCommitAutoPlanPipeline(") == std::string::npos);
+    REQUIRE(commitUtilsSource.find("auto RunAmendAutoPlanPipeline(") == std::string::npos);
     REQUIRE(commitUtilsHeader.find("ConfigureCommitCommand") != std::string::npos);
     REQUIRE(commitUtilsHeader.find("ConfigureAmendCommand") != std::string::npos);
     REQUIRE(commitUtilsSource.find("void ConfigureCommitCommand(CLI::App& InApp)") != std::string::npos);
@@ -77,10 +97,27 @@ TEST_CASE("commit command keeps implementation behind commit utils module", "[ar
     REQUIRE(commitPlanTaskGraphHeader.find("IsParentRepoPath") == std::string::npos);
     REQUIRE(commitPlanTaskGraphSource.find("auto ResolveRepoMessages(") != std::string::npos);
     REQUIRE(commitPlanTaskGraphSource.find("auto IsParentRepoPath(") != std::string::npos);
+    REQUIRE(CountOccurrences(commitAutoPlanPipelineHeader, "\nauto ") == 5);
+    REQUIRE(commitAutoPlanPipelineHeader.find("DefaultSharedPlanPath") != std::string::npos);
+    REQUIRE(commitAutoPlanPipelineHeader.find("RunPlanNewViaSelf") != std::string::npos);
+    REQUIRE(commitAutoPlanPipelineHeader.find("RunCommitSeedViaSelf") != std::string::npos);
+    REQUIRE(commitAutoPlanPipelineHeader.find("RunCommitAutoPlanPipeline") != std::string::npos);
+    REQUIRE(commitAutoPlanPipelineHeader.find("RunAmendAutoPlanPipeline") != std::string::npos);
+    REQUIRE(commitAutoPlanPipelineHeader.find("ResolveSelfBinaryCommand") == std::string::npos);
+    REQUIRE(commitAutoPlanPipelineHeader.find("RunIgnorePlanRunbookViaSelf") == std::string::npos);
+    REQUIRE(commitAutoPlanPipelineHeader.find("RunIgnorePlanApplyViaSelf") == std::string::npos);
+    REQUIRE(commitAutoPlanPipelineHeader.find("RunCommitPlanRunbookViaSelf") == std::string::npos);
+    REQUIRE(commitAutoPlanPipelineSource.find("auto ResolveSelfBinaryCommand(") != std::string::npos);
+    REQUIRE(commitAutoPlanPipelineSource.find("auto RunIgnorePlanRunbookViaSelf(") != std::string::npos);
+    REQUIRE(commitAutoPlanPipelineSource.find("auto RunIgnorePlanApplyViaSelf(") != std::string::npos);
+    REQUIRE(commitAutoPlanPipelineSource.find("auto RunCommitPlanRunbookViaSelf(") != std::string::npos);
+    REQUIRE(commitAutoPlanPipelineSource.find("KOG_SCOPED_TIMING_LOG_WITH_ELAPSED") != std::string::npos);
     REQUIRE(cmake.find("private/commit_plan_payload.cpp") != std::string::npos);
     REQUIRE(cmake.find("private/commit_plan_payload.hpp") != std::string::npos);
     REQUIRE(cmake.find("private/commit_plan_task_graph.cpp") != std::string::npos);
     REQUIRE(cmake.find("private/commit_plan_task_graph.hpp") != std::string::npos);
+    REQUIRE(cmake.find("private/commit_auto_plan_pipeline.cpp") != std::string::npos);
+    REQUIRE(cmake.find("private/commit_auto_plan_pipeline.hpp") != std::string::npos);
     REQUIRE(cmake.find("private/commit_utils.cpp") != std::string::npos);
 }
 
