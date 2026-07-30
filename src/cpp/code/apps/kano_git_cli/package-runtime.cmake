@@ -5,7 +5,8 @@ foreach(required_var
         KOG_RUNTIME_BINARY
         KOG_RUNTIME_MANIFEST
         KOG_RUNTIME_SKILL_MARKER
-        KOG_RUNTIME_REGRESSION_ASSET_ROOT)
+        KOG_RUNTIME_REGRESSION_ASSET_ROOT
+        KOG_RUNTIME_AUDIT_SCHEMA_ROOT)
     if(NOT DEFINED ${required_var} OR "${${required_var}}" STREQUAL "")
         message(FATAL_ERROR "${required_var} is required")
     endif()
@@ -28,11 +29,22 @@ foreach(regression_asset incidents.json case-template.json)
     endif()
 endforeach()
 
+foreach(audit_schema
+        kog.auditEvent.v1.schema.json
+        kog.runReceipt.v1.schema.json)
+    if(NOT EXISTS "${KOG_RUNTIME_AUDIT_SCHEMA_ROOT}/${audit_schema}")
+        message(FATAL_ERROR
+            "required audit schema does not exist: "
+            "${KOG_RUNTIME_AUDIT_SCHEMA_ROOT}/${audit_schema}")
+    endif()
+endforeach()
+
 file(REMOVE_RECURSE "${KOG_RUNTIME_ARTIFACT_DIR}")
 file(MAKE_DIRECTORY
     "${KOG_RUNTIME_ARTIFACT_DIR}/bin"
     "${KOG_RUNTIME_ARTIFACT_DIR}/lib"
-    "${KOG_RUNTIME_ARTIFACT_DIR}/assets/regression")
+    "${KOG_RUNTIME_ARTIFACT_DIR}/assets/regression"
+    "${KOG_RUNTIME_ARTIFACT_DIR}/assets/audit/schemas")
 file(COPY_FILE
     "${KOG_RUNTIME_BINARY}"
     "${KOG_RUNTIME_ARTIFACT_DIR}/bin/kano-git"
@@ -49,6 +61,14 @@ foreach(regression_asset incidents.json case-template.json)
     file(COPY_FILE
         "${KOG_RUNTIME_REGRESSION_ASSET_ROOT}/${regression_asset}"
         "${KOG_RUNTIME_ARTIFACT_DIR}/assets/regression/${regression_asset}"
+        ONLY_IF_DIFFERENT)
+endforeach()
+foreach(audit_schema
+        kog.auditEvent.v1.schema.json
+        kog.runReceipt.v1.schema.json)
+    file(COPY_FILE
+        "${KOG_RUNTIME_AUDIT_SCHEMA_ROOT}/${audit_schema}"
+        "${KOG_RUNTIME_ARTIFACT_DIR}/assets/audit/schemas/${audit_schema}"
         ONLY_IF_DIFFERENT)
 endforeach()
 

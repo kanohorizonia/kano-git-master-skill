@@ -263,6 +263,18 @@ auto Layout::RegressionCaseTemplate() const -> std::filesystem::path {
     return (RegressionAssetRoot() / "case-template.json").lexically_normal();
 }
 
+auto Layout::AuditSchemaRoot() const -> std::filesystem::path {
+    return (skillRoot_ / "assets" / "audit" / "schemas").lexically_normal();
+}
+
+auto Layout::AuditEventSchemaV1() const -> std::filesystem::path {
+    return (AuditSchemaRoot() / "kog.auditEvent.v1.schema.json").lexically_normal();
+}
+
+auto Layout::RunReceiptSchemaV1() const -> std::filesystem::path {
+    return (AuditSchemaRoot() / "kog.runReceipt.v1.schema.json").lexically_normal();
+}
+
 auto ResolveSkillRoot(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path {
     // Explicit launcher/package contracts take precedence and intentionally do
     // not require probing: callers may resolve assets before materialization.
