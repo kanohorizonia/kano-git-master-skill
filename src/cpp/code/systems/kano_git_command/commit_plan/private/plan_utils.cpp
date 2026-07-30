@@ -1798,27 +1798,57 @@ auto PromoteTextFileAtomically(const std::filesystem::path& InTargetPath,
                                const std::string& InText,
                                std::string* OutError) -> bool {
     std::error_code ec;
-    std::filesystem::create_directories(InTargetPath.parent_path(), ec);
-    if (ec) {
-        if (OutError) *OutError = ec.message();
-        return false;
+    const auto parentPath = InTargetPath.parent_path();
+    if (!parentPath.empty()) {
+        std::filesystem::create_directories(parentPath, ec);
+        if (ec) {
+            if (OutError) *OutError = ec.message();
+            return false;
+        }
     }
 
-    const auto tempPath = (InTargetPath.parent_path() /
+    const auto promotionSuffix = std::to_string(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    const auto tempPath = (parentPath /
                            std::format("{}.tmp-{}{}",
                                        InTargetPath.stem().generic_string(),
-                                       CurrentUtcCompact(),
+                                       promotionSuffix,
                                        InTargetPath.extension().generic_string())).lexically_normal();
-    const auto backupPath = (InTargetPath.parent_path() /
-                             std::format("{}.bak{}",
+    const auto backupPath = (parentPath /
+                             std::format("{}.bak-{}",
                                          InTargetPath.filename().generic_string(),
-                                         CurrentUtcCompact())).lexically_normal();
+                                         promotionSuffix)).lexically_normal();
 
     if (!WriteFileText(tempPath, InText, OutError)) {
         return false;
     }
 
+    const auto targetStatus = std::filesystem::status(InTargetPath, ec);
+    if (!ec && std::filesystem::exists(targetStatus)) {
+        ec.clear();
+        std::filesystem::permissions(
+            tempPath,
+            targetStatus.permissions(),
+            std::filesystem::perm_options::replace,
+            ec);
+        if (ec) {
+            std::filesystem::remove(tempPath, ec);
+            if (OutError) *OutError = "cannot preserve target file permissions";
+            return false;
+        }
+    }
+
     const bool targetExists = std::filesystem::exists(InTargetPath);
+#if !defined(_WIN32)
+    std::filesystem::rename(tempPath, InTargetPath, ec);
+    if (ec) {
+        std::filesystem::remove(tempPath, ec);
+        if (OutError) *OutError = "failed to atomically replace target file";
+        return false;
+    }
+    return true;
+#else
     if (targetExists) {
         std::filesystem::rename(InTargetPath, backupPath, ec);
         if (ec) {
@@ -1844,6 +1874,7 @@ auto PromoteTextFileAtomically(const std::filesystem::path& InTargetPath,
         std::filesystem::remove(backupPath, ec);
     }
     return true;
+#endif
 }
 
 struct PlanFillPermissionProfile {
@@ -4045,6 +4076,51 @@ auto RunPreApplyVerify(const std::filesystem::path& InWorkspaceRoot,
     return 0;
 }
 
+auto IsValidUtcTimestampIso8601(const std::string& InValue) -> bool {
+    if (InValue.size() != 20 ||
+        InValue[4] != '-' ||
+        InValue[7] != '-' ||
+        InValue[10] != 'T' ||
+        InValue[13] != ':' ||
+        InValue[16] != ':' ||
+        InValue[19] != 'Z') {
+        return false;
+    }
+
+    constexpr std::array<std::size_t, 14> digitPositions = {
+        0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18,
+    };
+    for (const auto position : digitPositions) {
+        if (!std::isdigit(static_cast<unsigned char>(InValue[position]))) {
+            return false;
+        }
+    }
+
+    const auto parseNumber = [&](const std::size_t position, const std::size_t length) {
+        return std::stoi(InValue.substr(position, length));
+    };
+    const int year = parseNumber(0, 4);
+    const int month = parseNumber(5, 2);
+    const int day = parseNumber(8, 2);
+    const int hour = parseNumber(11, 2);
+    const int minute = parseNumber(14, 2);
+    const int second = parseNumber(17, 2);
+    if (year < 1 || month < 1 || month > 12 ||
+        hour > 23 || minute > 59 || second > 59) {
+        return false;
+    }
+
+    constexpr std::array<int, 12> daysPerMonth = {
+        31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+    };
+    int maxDay = daysPerMonth[static_cast<std::size_t>(month - 1)];
+    const bool leapYear = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    if (month == 2 && leapYear) {
+        maxDay = 29;
+    }
+    return day >= 1 && day <= maxDay;
+}
+
 auto RunPostApplyVerify(const std::filesystem::path& InPlanPath,
                         const std::string& InStage) -> int {
     const auto payload = ReadFileText(InPlanPath);
@@ -4076,8 +4152,19 @@ auto RunPostApplyVerify(const std::filesystem::path& InPlanPath,
             }
         }
         if (stage == "commit" || stage == "all") {
-            if (!doc.contains("meta") || !doc["meta"].contains("executed_at_utc") || doc["meta"]["executed_at_utc"].get<std::string>().empty()) {
+            if (!doc.contains("meta") ||
+                !doc["meta"].is_object() ||
+                !doc["meta"].contains("executed_at_utc") ||
+                !doc["meta"]["executed_at_utc"].is_string()) {
+                throw std::runtime_error("post-apply verify failed: meta.executed_at_utc must be a string.");
+            }
+            const auto executedAtUtc = doc["meta"]["executed_at_utc"].get<std::string>();
+            if (executedAtUtc.empty()) {
                 throw std::runtime_error("post-apply verify failed: meta.executed_at_utc is empty.");
+            }
+            if (!IsValidUtcTimestampIso8601(executedAtUtc)) {
+                throw std::runtime_error(
+                    "post-apply verify failed: meta.executed_at_utc is not a valid UTC timestamp.");
             }
         }
     } catch (const std::exception& e) {

@@ -12,13 +12,17 @@
 
 #include "kog_timing.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <format>
 #include <iostream>
 #include <map>
 #include <optional>
@@ -26,9 +30,22 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <cerrno>
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
+#endif
 
 namespace kano::git::commands {
 
@@ -40,8 +57,190 @@ auto WorkspaceRelativeIgnoreGatePath(const std::filesystem::path& InWorkspaceRoo
                                      const std::string& InRepoRelativePath) -> std::string;
 auto IsIgnoreGateAllowlisted(const std::unordered_set<std::string>& InPatterns,
                              const std::string& InRepoRelativePath) -> bool;
+auto PromoteTextFileAtomically(const std::filesystem::path& InTargetPath,
+                               const std::string& InText,
+                               std::string* OutError) -> bool;
 
 namespace {
+
+auto PlanExecutionLockKey(const std::filesystem::path& InPlanPath) -> std::string {
+    std::error_code ec;
+    auto normalized = std::filesystem::absolute(InPlanPath, ec);
+    if (ec) {
+        normalized = InPlanPath;
+        ec.clear();
+    }
+    const auto canonical = std::filesystem::weakly_canonical(normalized, ec);
+    const auto keySource = (ec ? normalized : canonical).lexically_normal().generic_string();
+
+    std::uint64_t hash = 1469598103934665603ull;
+    for (const unsigned char ch : keySource) {
+        hash ^= ch;
+        hash *= 1099511628211ull;
+    }
+    return std::format("{:016x}", hash);
+}
+
+class ScopedPlanExecutionLock {
+  public:
+    ScopedPlanExecutionLock() = default;
+    ScopedPlanExecutionLock(const ScopedPlanExecutionLock&) = delete;
+    auto operator=(const ScopedPlanExecutionLock&) -> ScopedPlanExecutionLock& = delete;
+
+    ScopedPlanExecutionLock(ScopedPlanExecutionLock&& InOther) noexcept {
+        MoveFrom(InOther);
+    }
+
+    auto operator=(ScopedPlanExecutionLock&& InOther) noexcept -> ScopedPlanExecutionLock& {
+        if (this != &InOther) {
+            Release();
+            MoveFrom(InOther);
+        }
+        return *this;
+    }
+
+    ~ScopedPlanExecutionLock() {
+        Release();
+    }
+
+    static auto Acquire(const std::filesystem::path& InWorkspaceRoot,
+                        const std::filesystem::path& InPlanPath,
+                        std::string* OutError,
+                        const int InTimeoutMs = 5000) -> std::optional<ScopedPlanExecutionLock> {
+        if (OutError != nullptr) {
+            OutError->clear();
+        }
+
+        const auto lockRoot =
+            (runtime_path::Layout::Resolve(InWorkspaceRoot).WorkspaceGitTemporaryRoot() /
+             "plan-execution-locks").lexically_normal();
+        std::error_code ec;
+        std::filesystem::create_directories(lockRoot, ec);
+        if (ec) {
+            if (OutError != nullptr) {
+                *OutError = "cannot create plan execution lock directory: " + ec.message();
+            }
+            return std::nullopt;
+        }
+
+        ScopedPlanExecutionLock lock;
+        lock.path_ = (lockRoot / (PlanExecutionLockKey(InPlanPath) + ".lock")).lexically_normal();
+#if defined(_WIN32)
+        lock.handle_ = CreateFileW(
+            lock.path_.wstring().c_str(),
+            GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            nullptr,
+            OPEN_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL,
+            nullptr);
+        if (lock.handle_ == INVALID_HANDLE_VALUE) {
+            if (OutError != nullptr) {
+                *OutError = "cannot open plan execution lock file";
+            }
+            return std::nullopt;
+        }
+#else
+        lock.fd_ = ::open(lock.path_.c_str(), O_CREAT | O_RDWR, 0600);
+        if (lock.fd_ < 0) {
+            if (OutError != nullptr) {
+                *OutError = "cannot open plan execution lock file";
+            }
+            return std::nullopt;
+        }
+#endif
+
+        const auto deadline =
+            std::chrono::steady_clock::now() +
+            std::chrono::milliseconds((std::max)(0, InTimeoutMs));
+        while (true) {
+#if defined(_WIN32)
+            OVERLAPPED overlapped{};
+            if (LockFileEx(
+                    lock.handle_,
+                    LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+                    0,
+                    MAXDWORD,
+                    MAXDWORD,
+                    &overlapped) != 0) {
+                lock.owned_ = true;
+                return std::optional<ScopedPlanExecutionLock>(std::move(lock));
+            }
+            const auto lockError = GetLastError();
+            if (lockError != ERROR_LOCK_VIOLATION && lockError != ERROR_IO_PENDING) {
+                if (OutError != nullptr) {
+                    *OutError = "cannot acquire plan execution lock";
+                }
+                return std::nullopt;
+            }
+#else
+            if (::flock(lock.fd_, LOCK_EX | LOCK_NB) == 0) {
+                lock.owned_ = true;
+                return std::optional<ScopedPlanExecutionLock>(std::move(lock));
+            }
+            if (errno != EWOULDBLOCK && errno != EAGAIN) {
+                if (OutError != nullptr) {
+                    *OutError = "cannot acquire plan execution lock";
+                }
+                return std::nullopt;
+            }
+#endif
+            if (std::chrono::steady_clock::now() >= deadline) {
+                if (OutError != nullptr) {
+                    *OutError = "plan execution lock busy: " + lock.path_.generic_string();
+                }
+                return std::nullopt;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+    }
+
+  private:
+    void MoveFrom(ScopedPlanExecutionLock& InOther) noexcept {
+        path_ = std::move(InOther.path_);
+        owned_ = InOther.owned_;
+        InOther.owned_ = false;
+#if defined(_WIN32)
+        handle_ = InOther.handle_;
+        InOther.handle_ = INVALID_HANDLE_VALUE;
+#else
+        fd_ = InOther.fd_;
+        InOther.fd_ = -1;
+#endif
+    }
+
+    void Release() noexcept {
+#if defined(_WIN32)
+        if (handle_ == INVALID_HANDLE_VALUE) {
+            return;
+        }
+        if (owned_) {
+            OVERLAPPED overlapped{};
+            (void)UnlockFileEx(handle_, 0, MAXDWORD, MAXDWORD, &overlapped);
+        }
+        CloseHandle(handle_);
+        handle_ = INVALID_HANDLE_VALUE;
+#else
+        if (fd_ < 0) {
+            return;
+        }
+        if (owned_) {
+            (void)::flock(fd_, LOCK_UN);
+        }
+        (void)::close(fd_);
+        fd_ = -1;
+#endif
+        owned_ = false;
+    }
+
+    std::filesystem::path path_;
+    bool owned_ = false;
+#if defined(_WIN32)
+    HANDLE handle_ = INVALID_HANDLE_VALUE;
+#else
+    int fd_ = -1;
+#endif
+};
 
 auto Trim(std::string InValue) -> std::string {
     while (!InValue.empty() && (InValue.back() == '\n' || InValue.back() == '\r' || InValue.back() == ' ' || InValue.back() == '\t')) {
@@ -1365,51 +1564,54 @@ void PrintExecutedPlanSummary(const std::filesystem::path& InPlanPath, const int
     }
 }
 
-auto StampCommitPlanExecutedAt(const std::filesystem::path& InPath,
-                               std::string* OutError) -> bool {
-    std::ifstream in(InPath, std::ios::in | std::ios::binary);
-    if (!in) {
+auto SetCommitPlanExecutedAt(const std::filesystem::path& InPath,
+                             const std::string& InExecutedAtUtc,
+                             std::string* OutError) -> bool {
+    const auto payload = ReadTextFile(InPath);
+    if (!payload.has_value()) {
         if (OutError != nullptr) {
             *OutError = "cannot open plan file";
         }
         return false;
     }
 
-    std::ostringstream buffer;
-    buffer << in.rdbuf();
-    auto text = buffer.str();
-    if (text.empty()) {
+    if (payload->empty()) {
         if (OutError != nullptr) {
             *OutError = "plan file is empty";
         }
         return false;
     }
 
-    const auto executedAt = CurrentUtcTimestampIso8601();
-    const std::regex executedPattern(R"("executed_at_utc"\s*:\s*"[^"]*")");
-    if (std::regex_search(text, executedPattern)) {
-        text = std::regex_replace(
-            text,
-            executedPattern,
-            std::string("\"executed_at_utc\": \"") + executedAt + "\"",
-            std::regex_constants::format_first_only);
-    } else {
-        const std::regex metaPattern(R"("meta"\s*:\s*\{)");
-        if (std::regex_search(text, metaPattern)) {
-            text = std::regex_replace(
-                text,
-                metaPattern,
-                std::string("\"meta\": {\n    \"executed_at_utc\": \"") + executedAt + "\",",
-                std::regex_constants::format_first_only);
-        } else {
+    try {
+        auto doc = nlohmann::json::parse(*payload);
+        if (!doc.is_object() || !doc.contains("meta") || !doc["meta"].is_object()) {
             if (OutError != nullptr) {
                 *OutError = "cannot locate meta object in plan";
             }
             return false;
         }
-    }
 
-    return WriteTextFile(InPath, text, OutError);
+        const auto& meta = doc["meta"];
+        if (meta.contains("executed_at_utc")) {
+            if (!meta["executed_at_utc"].is_string()) {
+                if (OutError != nullptr) {
+                    *OutError = "meta.executed_at_utc must be a string";
+                }
+                return false;
+            }
+            if (meta["executed_at_utc"].get<std::string>() == InExecutedAtUtc) {
+                return true;
+            }
+        }
+
+        doc["meta"]["executed_at_utc"] = InExecutedAtUtc;
+        return PromoteTextFileAtomically(InPath, doc.dump(2) + "\n", OutError);
+    } catch (const nlohmann::json::exception& e) {
+        if (OutError != nullptr) {
+            *OutError = std::string("invalid plan JSON: ") + e.what();
+        }
+        return false;
+    }
 }
 
 auto ResolveSafetyGateRepos(const std::filesystem::path& InWorkspaceRoot,
@@ -1971,6 +2173,18 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
     }
 
     const auto planPath = std::filesystem::path(InNormalizedPlanFile).lexically_normal();
+    std::string planLockError;
+    auto planExecutionLock =
+        ScopedPlanExecutionLock::Acquire(InWorkspaceRoot, planPath, &planLockError);
+    if (!planExecutionLock.has_value()) {
+        std::cerr << "Error: failed to acquire plan execution lock: "
+                  << planPath.generic_string();
+        if (!planLockError.empty()) {
+            std::cerr << " (" << planLockError << ")";
+        }
+        std::cerr << "\n";
+        return 2;
+    }
     const auto planRepoRoots = CollectPlanFileRepoRoots(InWorkspaceRoot, planPath);
     const auto postSyncScope = BuildPostSyncPlanPathScope(InWorkspaceRoot, planPath);
     std::string planSafetyScopeError;
@@ -2037,6 +2251,18 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
     } else {
         hasWorkingChanges = NeedsPostSyncCommitNonPlan(InWorkspaceRoot, {}, false);
     }
+
+    std::string clearStampError;
+    if (!SetCommitPlanExecutedAt(planPath, "", &clearStampError)) {
+        std::cerr << "Error: failed to clear plan executed_at_utc before execution: "
+                  << planPath.generic_string();
+        if (!clearStampError.empty()) {
+            std::cerr << " (" << clearStampError << ")";
+        }
+        std::cerr << "\n";
+        return 2;
+    }
+
     if (!hasWorkingChanges) {
         std::cout << "[commit-push] workspace clean; skipping commit/sync/post-sync and proceeding to push check.\n";
     } else {
@@ -2139,16 +2365,20 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
         pushMillis = std::chrono::duration_cast<std::chrono::milliseconds>(pushEnd - pushStart).count();
         const auto totalEnd = std::chrono::steady_clock::now();
         const auto totalMillis = std::chrono::duration_cast<std::chrono::milliseconds>(totalEnd - totalStart).count();
-        std::error_code planEc;
-        const bool planFileExists = std::filesystem::exists(planPath, planEc) && !planEc;
-        if (hasWorkingChanges && planFileExists) {
+        bool executionStamped = false;
+        int resultCode = pushCode;
+        if (pushCode == 0) {
             std::string stampError;
-            if (!StampCommitPlanExecutedAt(planPath, &stampError)) {
-                std::cerr << "Warning: failed to stamp plan executed_at_utc: " << planPath.generic_string();
+            if (!SetCommitPlanExecutedAt(planPath, CurrentUtcTimestampIso8601(), &stampError)) {
+                std::cerr << "Error: failed to stamp plan executed_at_utc after successful push: "
+                          << planPath.generic_string();
                 if (!stampError.empty()) {
                     std::cerr << " (" << stampError << ")";
                 }
                 std::cerr << "\n";
+                resultCode = 2;
+            } else {
+                executionStamped = true;
             }
         }
         PrintCommitPushStageTimings("plan-file",
@@ -2159,10 +2389,10 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
                                     postSyncMillis,
                                     pushMillis,
                                     totalMillis);
-        if (hasWorkingChanges && planFileExists) {
+        if (executionStamped) {
             PrintExecutedPlanSummary(std::filesystem::path(InNormalizedPlanFile).lexically_normal(), 10);
         }
-        return pushCode;
+        return resultCode;
     }
 }
 
@@ -2435,6 +2665,24 @@ auto MakeCommitPushCommandCallback(CLI::App& InCommand,
             std::exit(code);
         }
 
+        std::optional<ScopedPlanExecutionLock> planExecutionLock;
+        if (hasCommitPlan) {
+            const auto planPath = std::filesystem::path(normalizedCommitPlanFile).lexically_normal();
+            std::string planLockError;
+            auto acquiredPlanLock =
+                ScopedPlanExecutionLock::Acquire(workspaceRoot, planPath, &planLockError);
+            if (!acquiredPlanLock.has_value()) {
+                std::cerr << "Error: failed to acquire plan execution lock: "
+                          << planPath.generic_string();
+                if (!planLockError.empty()) {
+                    std::cerr << " (" << planLockError << ")";
+                }
+                std::cerr << "\n";
+                std::exit(2);
+            }
+            planExecutionLock = std::move(*acquiredPlanLock);
+        }
+
         if (agentMode && hasCommitPlan) {
             std::cout << "[commit-push] agent mode + --plan-file detected; using plan-driven flow.\n";
         }
@@ -2444,6 +2692,20 @@ auto MakeCommitPushCommandCallback(CLI::App& InCommand,
             {
                 KOG_SCOPED_TIMING_LOG("commit-push.safety-gates");
                 RunPipelineSafetyGatesForNonAiCommitPush(workspaceRoot, repoList, effectiveNoRecursive);
+            }
+        }
+
+        if (hasCommitPlan) {
+            const auto planPath = std::filesystem::path(normalizedCommitPlanFile).lexically_normal();
+            std::string clearStampError;
+            if (!SetCommitPlanExecutedAt(planPath, "", &clearStampError)) {
+                std::cerr << "Error: failed to clear plan executed_at_utc before execution: "
+                          << planPath.generic_string();
+                if (!clearStampError.empty()) {
+                    std::cerr << " (" << clearStampError << ")";
+                }
+                std::cerr << "\n";
+                std::exit(2);
             }
         }
 
@@ -2642,19 +2904,23 @@ auto MakeCommitPushCommandCallback(CLI::App& InCommand,
         }
 
         if (hasCommitPlan) {
-            std::string stampError;
             const auto planPath = std::filesystem::path(normalizedCommitPlanFile).lexically_normal();
-            std::error_code planEc;
-            const bool planFileExists = std::filesystem::exists(planPath, planEc) && !planEc;
-            if (hasWorkingChanges && planFileExists && !StampCommitPlanExecutedAt(planPath, &stampError)) {
-                std::cerr << "Warning: failed to stamp plan executed_at_utc: "
-                          << planPath.generic_string();
-                if (!stampError.empty()) {
-                    std::cerr << " (" << stampError << ")";
+            bool executionStamped = false;
+            if (pushExitCode == 0) {
+                std::string stampError;
+                if (!SetCommitPlanExecutedAt(planPath, CurrentUtcTimestampIso8601(), &stampError)) {
+                    std::cerr << "Error: failed to stamp plan executed_at_utc after successful push: "
+                              << planPath.generic_string();
+                    if (!stampError.empty()) {
+                        std::cerr << " (" << stampError << ")";
+                    }
+                    std::cerr << "\n";
+                    pushExitCode = 2;
+                } else {
+                    executionStamped = true;
                 }
-                std::cerr << "\n";
             }
-            if (hasWorkingChanges && planFileExists) {
+            if (executionStamped) {
                 PrintExecutedPlanSummary(planPath, 10);
             }
         }

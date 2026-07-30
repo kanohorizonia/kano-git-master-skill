@@ -2,10 +2,12 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cstdlib>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <regex>
 #include <sstream>
 #include <string>
 
@@ -512,6 +514,22 @@ auto ExtractJsonStringField(const std::string& InJson, const std::string& InKey)
     return InJson.substr(firstQuote + 1, secondQuote - firstQuote - 1);
 }
 
+auto ReplaceJsonStringField(std::string InJson,
+                            const std::string& InKey,
+                            const std::string& InValue) -> std::string {
+    const auto keyToken = "\"" + InKey + "\"";
+    const auto keyPos = InJson.find(keyToken);
+    REQUIRE(keyPos != std::string::npos);
+    const auto colonPos = InJson.find(':', keyPos + keyToken.size());
+    REQUIRE(colonPos != std::string::npos);
+    const auto firstQuote = InJson.find('"', colonPos + 1);
+    REQUIRE(firstQuote != std::string::npos);
+    const auto secondQuote = InJson.find('"', firstQuote + 1);
+    REQUIRE(secondQuote != std::string::npos);
+    InJson.replace(firstQuote + 1, secondQuote - firstQuote - 1, InValue);
+    return InJson;
+}
+
 auto CreateRemoteWithClone(const std::string& InName, const std::string& InBranch = "main") -> RemoteCloneContext {
     RemoteCloneContext ctx;
     ctx.sandbox = CreateSandboxWorkspace(InName);
@@ -544,6 +562,214 @@ auto CreateRemoteWithClone(const std::string& InName, const std::string& InBranc
         RunGit({"config", "kano.cache.local-dir", (ctx.sandbox.root / "_cache").string()}, ctx.cloneRepo),
         "configure external kano cache");
     return ctx;
+}
+
+auto RequirePlanPushFailureThenCleanRetry(const std::string& InFixtureName,
+                                          const std::vector<std::string>& InCommitPushExtraArgs,
+                                          const bool InUseBasenamePlanPath = false) -> void {
+    const auto ctx = CreateRemoteWithClone(InFixtureName);
+    WriteTextFile(ctx.cloneRepo / "README.md", "seed\ntruthful plan push result\n");
+
+    const auto planPath = InUseBasenamePlanPath
+        ? (ctx.cloneRepo / "truthful-push-result.json").lexically_normal()
+        : (ctx.cloneRepo / ".kano" / "cache" / "git" / "plans" / "truthful-push-result.json").lexically_normal();
+    if (InUseBasenamePlanPath) {
+        WriteTextFile(ctx.cloneRepo / ".git" / "info" / "exclude", "/truthful-push-result.json\n");
+    }
+    const auto planArgument = InUseBasenamePlanPath
+        ? planPath.filename().string()
+        : planPath.string();
+    RequireSuccess(
+        RunKog({"plan", "new", "--force", "--output", planArgument}, ctx.cloneRepo),
+        "plan new for truthful push result");
+    RequireSuccess(
+        RunKog({
+            "plan", "prepare", "add-commit-entry",
+            "--plan-file", planArgument,
+            "--repo", ".",
+            "--commit-message", "test(functional): preserve truthful push result",
+            "--commit-include", "README.md",
+            "--commit-review-verdict", "pass",
+            "--commit-review-reason", "same-scenario regression for plan push failure and clean retry"
+        }, ctx.cloneRepo),
+        "plan add commit entry for truthful push result");
+    RequireSuccess(
+        RunKog({"plan", "verify", "pre-apply", "--stage", "commit", "--plan-file", planArgument}, ctx.cloneRepo),
+        "plan verify pre-apply for truthful push result");
+    REQUIRE(ExtractJsonStringField(ReadTextFile(planPath), "schema_version") == "3");
+    WriteTextFile(
+        planPath,
+        ReplaceJsonStringField(
+            ReadTextFile(planPath),
+            "executed_at_utc",
+            "2026-07-30T00:00:00Z"));
+    REQUIRE(ExtractJsonStringField(ReadTextFile(planPath), "executed_at_utc") == "2026-07-30T00:00:00Z");
+
+    const auto remoteHeadBefore = RefSha(ctx.bareRemote, "refs/heads/" + ctx.branch);
+    std::vector<std::string> commitPushArgs = {"commit-push", "--plan-file", planArgument};
+    commitPushArgs.insert(
+        commitPushArgs.end(),
+        InCommitPushExtraArgs.begin(),
+        InCommitPushExtraArgs.end());
+
+#if !defined(_WIN32)
+    if (InUseBasenamePlanPath) {
+        std::error_code statusError;
+        const auto originalPermissions = std::filesystem::status(planPath.parent_path(), statusError).permissions();
+        REQUIRE_FALSE(statusError);
+        const auto readOnlyPermissions =
+            originalPermissions &
+            ~std::filesystem::perms::owner_write &
+            ~std::filesystem::perms::group_write &
+            ~std::filesystem::perms::others_write;
+        std::error_code permissionsError;
+        std::filesystem::permissions(
+            planPath.parent_path(),
+            readOnlyPermissions,
+            std::filesystem::perm_options::replace,
+            permissionsError);
+        REQUIRE_FALSE(permissionsError);
+        const auto failedClear = RunKogWithEnv(
+            commitPushArgs,
+            ctx.cloneRepo,
+            {{"KOG_EXACT_PLAN_COMMIT_MODE", "plumbing"}});
+        std::error_code restoreError;
+        std::filesystem::permissions(
+            planPath.parent_path(),
+            originalPermissions,
+            std::filesystem::perm_options::replace,
+            restoreError);
+        REQUIRE_FALSE(restoreError);
+
+        INFO(failedClear.stdoutText);
+        INFO(failedClear.stderrText);
+        REQUIRE(failedClear.exitCode != 0);
+        RequireContainsText(
+            failedClear.stdoutText + "\n" + failedClear.stderrText,
+            "failed to clear plan executed_at_utc before execution");
+        REQUIRE(CurrentHeadSha(ctx.cloneRepo) == remoteHeadBefore);
+        REQUIRE(RefSha(ctx.bareRemote, "refs/heads/" + ctx.branch) == remoteHeadBefore);
+        REQUIRE_FALSE(StatusPorcelain(ctx.cloneRepo).empty());
+        REQUIRE(
+            ExtractJsonStringField(ReadTextFile(planPath), "executed_at_utc") ==
+            "2026-07-30T00:00:00Z");
+    }
+#endif
+
+    const auto missingPushRemote = (ctx.sandbox.root / "missing-push-remote.git").lexically_normal();
+    RequireSuccess(
+        RunGit({"remote", "set-url", "--push", "origin", missingPushRemote.string()}, ctx.cloneRepo),
+        "configure missing push-only remote");
+
+    const auto failedPush = RunKogWithEnv(
+        commitPushArgs,
+        ctx.cloneRepo,
+        {{"KOG_EXACT_PLAN_COMMIT_MODE", "plumbing"}});
+    INFO(failedPush.stdoutText);
+    INFO(failedPush.stderrText);
+    REQUIRE(failedPush.exitCode != 0);
+    RequireNotContainsText(failedPush.stdoutText, "=== plan summary ===");
+    RequireContainsText(
+        failedPush.stdoutText + "\n" + failedPush.stderrText,
+        missingPushRemote.filename().string());
+    const bool profiledPath =
+        std::find(InCommitPushExtraArgs.begin(), InCommitPushExtraArgs.end(), "--profile") !=
+        InCommitPushExtraArgs.end();
+    if (profiledPath) {
+        RequireContainsText(failedPush.stdoutText, "=== commit-push stage: push ===");
+        RequireNotContainsText(failedPush.stdoutText, "[commit-push][plan-pipeline] stage=push start");
+    } else {
+        RequireContainsText(failedPush.stdoutText, "[commit-push][plan-pipeline] stage=push start");
+    }
+
+    const auto localHeadAfterFailure = CurrentHeadSha(ctx.cloneRepo);
+    REQUIRE(localHeadAfterFailure != remoteHeadBefore);
+    REQUIRE(RefSha(ctx.bareRemote, "refs/heads/" + ctx.branch) == remoteHeadBefore);
+    REQUIRE(StatusPorcelain(ctx.cloneRepo).empty());
+    REQUIRE(ExtractJsonStringField(ReadTextFile(planPath), "executed_at_utc").empty());
+
+    const auto failedPostApply = RunKog(
+        {"plan", "verify", "post-apply", "--stage", "commit", "--plan-file", planArgument},
+        ctx.cloneRepo);
+    INFO(failedPostApply.stdoutText);
+    INFO(failedPostApply.stderrText);
+    REQUIRE(failedPostApply.exitCode != 0);
+    RequireContainsText(
+        failedPostApply.stdoutText + "\n" + failedPostApply.stderrText,
+        "meta.executed_at_utc is empty");
+
+    const auto [behindAfterFailure, aheadAfterFailure] = AheadBehindCounts(ctx.cloneRepo);
+    REQUIRE(behindAfterFailure == 0);
+    REQUIRE(aheadAfterFailure == 1);
+    RequireSuccess(
+        RunGit({"remote", "set-url", "--push", "origin", ctx.bareRemote.string()}, ctx.cloneRepo),
+        "restore push-only remote");
+
+#if !defined(_WIN32)
+    if (InUseBasenamePlanPath) {
+        std::error_code statusError;
+        const auto originalPermissions = std::filesystem::status(planPath.parent_path(), statusError).permissions();
+        REQUIRE_FALSE(statusError);
+        const auto readOnlyPermissions =
+            originalPermissions &
+            ~std::filesystem::perms::owner_write &
+            ~std::filesystem::perms::group_write &
+            ~std::filesystem::perms::others_write;
+        std::error_code permissionsError;
+        std::filesystem::permissions(
+            planPath.parent_path(),
+            readOnlyPermissions,
+            std::filesystem::perm_options::replace,
+            permissionsError);
+        REQUIRE_FALSE(permissionsError);
+        const auto failedStamp = RunKogWithEnv(
+            commitPushArgs,
+            ctx.cloneRepo,
+            {{"KOG_EXACT_PLAN_COMMIT_MODE", "plumbing"}});
+        std::error_code restoreError;
+        std::filesystem::permissions(
+            planPath.parent_path(),
+            originalPermissions,
+            std::filesystem::perm_options::replace,
+            restoreError);
+        REQUIRE_FALSE(restoreError);
+
+        INFO(failedStamp.stdoutText);
+        INFO(failedStamp.stderrText);
+        REQUIRE(failedStamp.exitCode != 0);
+        RequireContainsText(
+            failedStamp.stdoutText + "\n" + failedStamp.stderrText,
+            "failed to stamp plan executed_at_utc after successful push");
+        RequireNotContainsText(failedStamp.stdoutText, "=== plan summary ===");
+        REQUIRE(CurrentHeadSha(ctx.cloneRepo) == localHeadAfterFailure);
+        REQUIRE(RefSha(ctx.bareRemote, "refs/heads/" + ctx.branch) == localHeadAfterFailure);
+        REQUIRE(ExtractJsonStringField(ReadTextFile(planPath), "executed_at_utc").empty());
+    }
+#endif
+
+    const auto successfulRetry = RunKogWithEnv(
+        commitPushArgs,
+        ctx.cloneRepo,
+        {{"KOG_EXACT_PLAN_COMMIT_MODE", "plumbing"}});
+    INFO(successfulRetry.stdoutText);
+    INFO(successfulRetry.stderrText);
+    REQUIRE(successfulRetry.exitCode == 0);
+    RequireContainsText(successfulRetry.stdoutText, "workspace clean; skipping commit/sync/post-sync");
+    RequireContainsText(successfulRetry.stdoutText, "=== plan summary ===");
+    REQUIRE(CurrentHeadSha(ctx.cloneRepo) == localHeadAfterFailure);
+    REQUIRE(RefSha(ctx.bareRemote, "refs/heads/" + ctx.branch) == localHeadAfterFailure);
+    REQUIRE(StatusPorcelain(ctx.cloneRepo).empty());
+
+    const auto executedAt = ExtractJsonStringField(ReadTextFile(planPath), "executed_at_utc");
+    const std::regex utcTimestampPattern(R"(^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$)");
+    REQUIRE(std::regex_match(executedAt, utcTimestampPattern));
+    REQUIRE(ExtractJsonStringField(ReadTextFile(planPath), "schema_version") == "3");
+
+    const auto successfulPostApply = RunKog(
+        {"plan", "verify", "post-apply", "--stage", "commit", "--plan-file", planArgument},
+        ctx.cloneRepo);
+    RequireSuccess(successfulPostApply, "post-apply verify after successful clean retry");
+    RemoveSandboxWorkspace(ctx.sandbox);
 }
 
 auto CreateRemoteWithSubmoduleClone(const std::string& InName, const std::string& InBranch = "main") -> SubmoduleWorkspaceContext {
@@ -880,6 +1106,40 @@ TEST_CASE("plan_file_clean_but_ahead_continues_to_push",
         "workspace clean; skipping commit/sync/post-sync and proceeding to push check.");
     const auto after = AheadBehindCounts(ctx.cloneRepo);
     REQUIRE(after.second == 0);
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("plan_file_push_failure_leaves_execution_unstamped_and_retry_stamps_after_convergence",
+          "[functional][commit-push][plan-file][contract][failure][output][KG-BUG-0089]") {
+    RequirePlanPushFailureThenCleanRetry("plan-file-push-failure-retry", {}, true);
+}
+
+TEST_CASE("plan_file_profile_path_push_failure_leaves_execution_unstamped_and_retry_stamps_after_convergence",
+          "[functional][commit-push][plan-file][contract][failure][output][profile][KG-BUG-0089]") {
+    RequirePlanPushFailureThenCleanRetry("plan-file-profile-push-failure-retry", {"--profile"});
+}
+
+TEST_CASE("plan_file_post_apply_rejects_non_utc_execution_stamp",
+          "[functional][plan][post-apply][contract][failure][output][KG-BUG-0089]") {
+    const auto ctx = CreateRemoteWithClone("plan-file-invalid-execution-stamp");
+    const auto planPath =
+        (ctx.cloneRepo / ".kano" / "cache" / "git" / "plans" / "invalid-execution-stamp.json").lexically_normal();
+    RequireSuccess(
+        RunKog({"plan", "new", "--force", "--output", planPath.string()}, ctx.cloneRepo),
+        "plan new for invalid execution stamp");
+    WriteTextFile(
+        planPath,
+        ReplaceJsonStringField(ReadTextFile(planPath), "executed_at_utc", "failed"));
+
+    const auto result = RunKog(
+        {"plan", "verify", "post-apply", "--stage", "commit", "--plan-file", planPath.string()},
+        ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode != 0);
+    RequireContainsText(
+        result.stdoutText + "\n" + result.stderrText,
+        "meta.executed_at_utc is not a valid UTC timestamp");
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
