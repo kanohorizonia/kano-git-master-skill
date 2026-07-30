@@ -226,6 +226,11 @@ jobs:
               ;;
           esac
 
+      - name: Validate packaged audit contracts
+        run: |
+          pixi run audit-schema-test
+          pixi run audit-runtime-test
+
       - name: Package cloud artifact
         run: |
           python - <<'PY'

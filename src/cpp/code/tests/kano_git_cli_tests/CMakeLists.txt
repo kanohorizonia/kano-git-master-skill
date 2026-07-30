@@ -1,5 +1,6 @@
 add_executable(kano_git_cli_tests
   functional/auth_module_boundary_test.cpp
+  functional/audit_contract_test.cpp
   functional/cloudflare_ssh_bootstrap_test.cpp
   functional/https_auth_bootstrap_test.cpp
   functional/functional_test_main.cpp
@@ -32,10 +33,16 @@ target_link_libraries(kano_git_cli_tests
   PRIVATE Catch2::Catch2WithMain
   PRIVATE kano_git_test_core
   PRIVATE kano_git_core
+  PRIVATE kano::git_audit
+  PRIVATE nlohmann_json::nlohmann_json
 )
 
 target_include_directories(kano_git_cli_tests
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_compile_definitions(kano_git_cli_tests
+  PRIVATE KANO_GIT_TEST_REPO_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/../../../../.."
 )
 
 catch_discover_tests(kano_git_cli_tests)
