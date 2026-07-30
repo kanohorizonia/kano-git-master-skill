@@ -353,24 +353,24 @@ TEST_CASE("dogfood incident manifest maps stable source cases without "
 
   INFO(loaded.error);
   REQUIRE(loaded.ok);
-  REQUIRE(loaded.report.incidents.size() == 7);
+  REQUIRE(loaded.report.incidents.size() == 8);
   REQUIRE(loaded.report.gaps.empty());
-  REQUIRE(loaded.report.incidents.front().incidentId == "KG-BUG-0087");
-  REQUIRE(loaded.report.incidents.front().regressionCases.size() == 2);
+  REQUIRE(loaded.report.incidents.front().incidentId == "KG-BUG-0089");
+  REQUIRE(loaded.report.incidents.front().regressionCases.size() == 3);
   REQUIRE(loaded.report.incidents.front().regressionCases.front().testName ==
-          "message shorthand commit coalesces registered child and parent "
-          "gitlink work");
+          "plan_file_push_failure_leaves_execution_unstamped_and_retry_stamps_"
+          "after_convergence");
 
   const auto text = RenderCoverageText(loaded.report);
   REQUIRE(text.find("execution_evidence=not-evaluated") != std::string::npos);
-  REQUIRE(text.find("linked_cases=16") != std::string::npos);
+  REQUIRE(text.find("linked_cases=19") != std::string::npos);
   REQUIRE(text.find("passed") == std::string::npos);
-  REQUIRE(text.find("executed") == std::string::npos);
+  REQUIRE(text.find("execution_evidence=executed") == std::string::npos);
 
   const auto json = RenderCoverageJson(loaded.report);
   REQUIRE(json.find("\"execution_evidence\": \"not-evaluated\"") !=
           std::string::npos);
-  REQUIRE(json.find("\"linked_cases\": 16") != std::string::npos);
+  REQUIRE(json.find("\"linked_cases\": 19") != std::string::npos);
 }
 
 TEST_CASE("default registry paths and exact test names resolve to source",

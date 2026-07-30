@@ -205,6 +205,42 @@
           "mapping_state": "source-linked"
         }
       ]
+    },
+    {
+      "incident_id": "KG-BUG-0089",
+      "incident_date": "2026-07-30",
+      "root_cause": "Plan-backed commit-push wrote meta.executed_at_utc and printed an executed summary without checking the terminal push result, while post-apply verification accepted any non-empty stamp as successful completion.",
+      "backlog_ref": "KG-BUG-0089",
+      "change_ref": "37c903f2c22142929dbad09ad006023b06cc459a",
+      "workflow_contracts": [
+        "ahead-clean-push",
+        "converges-or-fails",
+        "plan-result-truth",
+        "retry-idempotency"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KG-BUG-0089/failed-push-clean-retry",
+          "test_name": "plan_file_push_failure_leaves_execution_unstamped_and_retry_stamps_after_convergence",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/functional_test_main.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-BUG-0089/profiled-failed-push-clean-retry",
+          "test_name": "plan_file_profile_path_push_failure_leaves_execution_unstamped_and_retry_stamps_after_convergence",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/functional_test_main.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-BUG-0089/reject-non-utc-stamp",
+          "test_name": "plan_file_post_apply_rejects_non_utc_execution_stamp",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/functional_test_main.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        }
+      ]
     }
   ]
 }
