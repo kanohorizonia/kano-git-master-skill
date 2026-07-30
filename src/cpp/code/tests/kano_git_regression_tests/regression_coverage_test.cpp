@@ -353,7 +353,7 @@ TEST_CASE("dogfood incident manifest maps stable source cases without "
 
   INFO(loaded.error);
   REQUIRE(loaded.ok);
-  REQUIRE(loaded.report.incidents.size() == 11);
+  REQUIRE(loaded.report.incidents.size() == 12);
   REQUIRE(loaded.report.gaps.empty());
 
   const auto auditIncident = std::find_if(
@@ -388,22 +388,30 @@ TEST_CASE("dogfood incident manifest maps stable source cases without "
                    "ScreenInteractive activation and handles q while pending";
       }));
 
+  const auto truthfulPushIncident = std::find_if(
+      loaded.report.incidents.begin(), loaded.report.incidents.end(),
+      [](const Incident &InIncident) {
+        return InIncident.incidentId == "KG-BUG-0089";
+      });
+  REQUIRE(truthfulPushIncident != loaded.report.incidents.end());
+  REQUIRE(truthfulPushIncident->regressionCases.size() == 3);
+
   std::size_t linkedCaseCount = 0;
   for (const auto &incident : loaded.report.incidents) {
     linkedCaseCount += incident.regressionCases.size();
   }
-  REQUIRE(linkedCaseCount == 38);
+  REQUIRE(linkedCaseCount == 41);
 
   const auto text = RenderCoverageText(loaded.report);
   REQUIRE(text.find("execution_evidence=not-evaluated") != std::string::npos);
-  REQUIRE(text.find("linked_cases=38") != std::string::npos);
+  REQUIRE(text.find("linked_cases=41") != std::string::npos);
   REQUIRE(text.find("passed") == std::string::npos);
   REQUIRE(text.find("executed") == std::string::npos);
 
   const auto json = RenderCoverageJson(loaded.report);
   REQUIRE(json.find("\"execution_evidence\": \"not-evaluated\"") !=
           std::string::npos);
-  REQUIRE(json.find("\"linked_cases\": 38") != std::string::npos);
+  REQUIRE(json.find("\"linked_cases\": 41") != std::string::npos);
 }
 
 TEST_CASE("default registry paths and exact test names resolve to source",
