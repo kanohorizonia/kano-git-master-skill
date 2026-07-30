@@ -1,0 +1,138 @@
+{
+  "$id": "https://schemas.kanohorizonia.dev/kog/kog.runReceipt.v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "KOG RunReceipt v1",
+  "description": "Canonical terminal receipt for one bounded KOG agent run.",
+  "type": "object",
+  "required": [
+    "schemaName",
+    "schemaVersion",
+    "runId",
+    "parentRunId",
+    "attempt",
+    "planId",
+    "planSha256",
+    "startedAtUtc",
+    "finishedAtUtc",
+    "firstSequence",
+    "lastSequence",
+    "eventCount",
+    "eventStreamSha256",
+    "terminalOutcome",
+    "correlation",
+    "repositories",
+    "policyRefs",
+    "approvalRefs",
+    "artifacts"
+  ],
+  "properties": {
+    "schemaName": {
+      "const": "kog.runReceipt"
+    },
+    "schemaVersion": {
+      "const": 1
+    },
+    "runId": {
+      "$ref": "kog.auditEvent.v1.schema.json#/$defs/opaqueId"
+    },
+    "parentRunId": {
+      "$ref": "kog.auditEvent.v1.schema.json#/$defs/nullableOpaqueId"
+    },
+    "attempt": {
+      "$ref": "kog.auditEvent.v1.schema.json#/$defs/positiveUint32"
+    },
+    "planId": {
+      "$ref": "kog.auditEvent.v1.schema.json#/$defs/opaqueId"
+    },
+    "planSha256": {
+      "$ref": "kog.auditEvent.v1.schema.json#/$defs/sha256"
+    },
+    "startedAtUtc": {
+      "$ref": "kog.auditEvent.v1.schema.json#/$defs/utcTimestamp"
+    },
+    "finishedAtUtc": {
+      "$ref": "kog.auditEvent.v1.schema.json#/$defs/utcTimestamp"
+    },
+    "firstSequence": {
+      "$ref": "kog.auditEvent.v1.schema.json#/$defs/safeInteger"
+    },
+    "lastSequence": {
+      "$ref": "kog.auditEvent.v1.schema.json#/$defs/safeInteger"
+    },
+    "eventCount": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000000
+    },
+    "eventStreamSha256": {
+      "$ref": "kog.auditEvent.v1.schema.json#/$defs/sha256"
+    },
+    "terminalOutcome": {
+      "$ref": "kog.auditEvent.v1.schema.json#/$defs/outcome"
+    },
+    "correlation": {
+      "$ref": "kog.auditEvent.v1.schema.json#/$defs/correlation"
+    },
+    "repositories": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "$ref": "kog.auditEvent.v1.schema.json#/$defs/repositoryTransition"
+      }
+    },
+    "policyRefs": {
+      "$ref": "kog.auditEvent.v1.schema.json#/$defs/auditReferences"
+    },
+    "approvalRefs": {
+      "$ref": "kog.auditEvent.v1.schema.json#/$defs/auditReferences"
+    },
+    "artifacts": {
+      "$ref": "kog.auditEvent.v1.schema.json#/$defs/artifactReferences"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "eventCount": {
+            "const": 0
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "firstSequence": {
+            "const": 0
+          },
+          "lastSequence": {
+            "const": 0
+          },
+          "eventStreamSha256": {
+            "const": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "terminalOutcome": {
+            "properties": {
+              "status": {
+                "const": "unknown"
+              }
+            }
+          },
+          "repositories": {
+            "maxItems": 0
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "firstSequence": {
+            "const": 1
+          },
+          "lastSequence": {
+            "minimum": 1
+          }
+        }
+      }
+    }
+  ],
+  "additionalProperties": false
+}

@@ -61,16 +61,17 @@ cmake --build <build-dir> --target kog_runtime_artifact
 
 The target writes `runtime-artifact/bin/kano-git`, the KOG-owned shared-library
 closure plus required GNU runtime libraries on Linux, `SKILL.md`, the regression
-incident map/template, and `runtime-artifact/manifest.json` with revision,
+incident map/template, the versioned AuditEvent and RunReceipt schemas under
+`assets/audit/schemas/`, and `runtime-artifact/manifest.json` with revision,
 source fingerprint, toolchain, build-context, and runtime-asset provenance.
 Linux packaging fails when `ldd` reports an unresolved dependency. The root
-`.dockerignore` exposes only VERSION, the skill marker, regression runtime
-assets, and the native runtime source projection to provider-image build
-contexts; local outputs, reports, docs, tests, and workspace metadata do not
-invalidate that Docker context.
+`.dockerignore` exposes only VERSION, the skill marker, required regression and
+audit-schema runtime assets, and the native runtime source projection to
+provider-image build contexts; local outputs, reports, docs, tests, and
+workspace metadata do not invalidate that Docker context.
 
-Portable runtime archives keep `bin/`, `SKILL.md`, and `assets/regression/`
-under one root. Staged Windows packages use the sibling layout
+Portable runtime archives keep `bin/`, `SKILL.md`, `assets/regression/`, and
+`assets/audit/schemas/` under one root. Staged Windows packages use the sibling layout
 `<package>/bin` and `<package>/skills/kano-git-master-skill`. The native
 binary resolves either layout from its own path after validating the skill and
 regression asset markers, so `kog regression coverage` does not depend on the

@@ -45,6 +45,9 @@ public:
     [[nodiscard]] auto RegressionAssetRoot() const -> std::filesystem::path;
     [[nodiscard]] auto RegressionIncidentManifest() const -> std::filesystem::path;
     [[nodiscard]] auto RegressionCaseTemplate() const -> std::filesystem::path;
+    [[nodiscard]] auto AuditSchemaRoot() const -> std::filesystem::path;
+    [[nodiscard]] auto AuditEventSchemaV1() const -> std::filesystem::path;
+    [[nodiscard]] auto RunReceiptSchemaV1() const -> std::filesystem::path;
 
 private:
     Layout(std::filesystem::path InWorkspaceRoot, std::filesystem::path InSkillRoot);

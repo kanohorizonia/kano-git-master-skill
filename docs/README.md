@@ -11,6 +11,7 @@ not current unless they are explicitly reintroduced and covered by smoke tests.
 ## Current Entry Points
 
 - [Current Command Surface](./guides/current-command-surface.md)
+- [KOG Audit Contract v1](./design/kog-audit-contract-v1.md)
 - [Cloudflare Access SSH](./guides/cloudflare-access-ssh.md)
 - [KCC Commit Message Policy](./guides/kcc-commit-message-policy.md)
 - [Public Artifact Contract](./guides/public-artifact-contract.md)
@@ -49,6 +50,7 @@ GitHub through CMake FetchContent.
 ## Current Architecture Docs
 
 - [Command Library Dependency Graph](./design/command-library-dependency-graph.md)
+- [KOG Audit Contract v1](./design/kog-audit-contract-v1.md)
 - [Workspace Native Planner Contract](./design/workspace-native-planner-contract.md)
 - [C++ Stage Contract](./design/cpp-stage-contract.md)
 - [C++ Coverage and PGO Provider Model](./cpp-profile-coverage-pgo-model.md)

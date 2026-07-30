@@ -7,6 +7,10 @@
 /assets/regression/**
 !/assets/regression/incidents.json
 !/assets/regression/case-template.json
+!/assets/audit/
+/assets/audit/**
+!/assets/audit/schemas/
+!/assets/audit/schemas/**
 !src/
 src/**
 !src/cpp/

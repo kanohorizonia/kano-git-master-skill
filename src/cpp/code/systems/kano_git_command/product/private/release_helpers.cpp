@@ -275,11 +275,22 @@ auto RequiredRegressionAssetPaths() -> const std::vector<std::filesystem::path>&
     return required;
 }
 
+auto RequiredAuditSchemaPaths() -> const std::vector<std::filesystem::path>& {
+    static const std::vector<std::filesystem::path> required = {
+        "assets/audit/schemas/kog.auditEvent.v1.schema.json",
+        "assets/audit/schemas/kog.runReceipt.v1.schema.json",
+    };
+    return required;
+}
+
 void ValidatePackagedAssets(const std::filesystem::path& skillRoot) {
     for (const auto& relative : RequiredIgnoreAssetPaths()) {
         RequirePackagedFile(skillRoot, relative);
     }
     for (const auto& relative : RequiredRegressionAssetPaths()) {
+        RequirePackagedFile(skillRoot, relative);
+    }
+    for (const auto& relative : RequiredAuditSchemaPaths()) {
         RequirePackagedFile(skillRoot, relative);
     }
 

@@ -2,6 +2,7 @@ add_subdirectory(shell)
 add_subdirectory(build_info)
 add_subdirectory(config)
 add_subdirectory(workspace)
+add_subdirectory(audit)
 
 add_library(kano_git_core INTERFACE)
 add_library(kano::git_core ALIAS kano_git_core)
@@ -11,6 +12,7 @@ target_link_libraries(kano_git_core
     kano::git_shell
     kano::git_workspace
     kano::git_build_info
+    kano::git_audit
 )
 
 # Workaround for MSBuild failing to find standard headers due to -external:W0 on SYSTEM includes
