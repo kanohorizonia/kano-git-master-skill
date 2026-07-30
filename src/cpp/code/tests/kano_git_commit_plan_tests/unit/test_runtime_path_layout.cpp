@@ -108,6 +108,14 @@ TEST_CASE("runtime layout owns stable workspace plan and cache paths", "[runtime
             std::filesystem::path("/package/kog/assets/regression/incidents.json"));
     REQUIRE(layout.RegressionCaseTemplate() ==
             std::filesystem::path("/package/kog/assets/regression/case-template.json"));
+    REQUIRE(layout.AuditSchemaRoot() ==
+            std::filesystem::path("/package/kog/assets/audit/schemas"));
+    REQUIRE(layout.AuditEventSchemaV1() ==
+            std::filesystem::path(
+                "/package/kog/assets/audit/schemas/kog.auditEvent.v1.schema.json"));
+    REQUIRE(layout.RunReceiptSchemaV1() ==
+            std::filesystem::path(
+                "/package/kog/assets/audit/schemas/kog.runReceipt.v1.schema.json"));
     REQUIRE(runtime_path::GlobalCacheRoot("/users/operator") ==
             std::filesystem::path("/users/operator/.kano/cache/git"));
 }
@@ -199,6 +207,12 @@ TEST_CASE("binary skill root resolver supports sibling package and runtime artif
     WriteMarker(artifactRoot / "SKILL.md");
     WriteMarker(artifactRoot / "assets" / "regression" / "incidents.json");
     WriteMarker(artifactRoot / "assets" / "regression" / "case-template.json");
+    WriteMarker(
+        artifactRoot / "assets" / "audit" / "schemas" /
+        "kog.auditEvent.v1.schema.json");
+    WriteMarker(
+        artifactRoot / "assets" / "audit" / "schemas" /
+        "kog.runReceipt.v1.schema.json");
     REQUIRE(runtime_path::ResolveSkillRootFromBinaryPath(artifactBinary) ==
             artifactRoot.lexically_normal());
 

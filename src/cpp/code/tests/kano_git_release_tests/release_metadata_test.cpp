@@ -181,6 +181,14 @@ void WriteRequiredWindowsPackageSource(const std::filesystem::path& repoRoot) {
     WriteFixtureFile(
         repoRoot / "assets" / "regression" / "case-template.json",
         "{}\n");
+    WriteFixtureFile(
+        repoRoot / "assets" / "audit" / "schemas" /
+            "kog.auditEvent.v1.schema.json",
+        "{}\n");
+    WriteFixtureFile(
+        repoRoot / "assets" / "audit" / "schemas" /
+            "kog.runReceipt.v1.schema.json",
+        "{}\n");
 }
 
 } // namespace
@@ -313,6 +321,12 @@ TEST_CASE("Windows package stages canonical ignore assets without submodule git 
         skillRoot / "assets" / "regression" / "incidents.json"));
     REQUIRE(std::filesystem::is_regular_file(
         skillRoot / "assets" / "regression" / "case-template.json"));
+    REQUIRE(std::filesystem::is_regular_file(
+        skillRoot / "assets" / "audit" / "schemas" /
+        "kog.auditEvent.v1.schema.json"));
+    REQUIRE(std::filesystem::is_regular_file(
+        skillRoot / "assets" / "audit" / "schemas" /
+        "kog.runReceipt.v1.schema.json"));
     REQUIRE_FALSE(std::filesystem::exists(
         skillRoot / "assets" / "ignore-sources" / "private-machine-path.txt"));
     REQUIRE_FALSE(std::filesystem::exists(
