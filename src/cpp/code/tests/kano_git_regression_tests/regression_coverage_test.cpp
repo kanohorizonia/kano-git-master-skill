@@ -353,24 +353,57 @@ TEST_CASE("dogfood incident manifest maps stable source cases without "
 
   INFO(loaded.error);
   REQUIRE(loaded.ok);
-  REQUIRE(loaded.report.incidents.size() == 8);
+  REQUIRE(loaded.report.incidents.size() == 9);
   REQUIRE(loaded.report.gaps.empty());
-  REQUIRE(loaded.report.incidents.front().incidentId == "KG-BUG-0088");
-  REQUIRE(loaded.report.incidents.front().regressionCases.size() == 9);
-  REQUIRE(loaded.report.incidents.front().regressionCases.front().testName ==
-          "TUI auto theme uses COLORFGBG when available and stays adaptive "
-          "when unknown");
+
+  const auto auditIncident = std::find_if(
+      loaded.report.incidents.begin(), loaded.report.incidents.end(),
+      [](const Incident &InIncident) {
+        return InIncident.incidentId == "KG-BUG-0088";
+      });
+  REQUIRE(auditIncident != loaded.report.incidents.end());
+  REQUIRE(auditIncident->regressionCases.size() == 9);
+  REQUIRE(std::any_of(
+      auditIncident->regressionCases.begin(),
+      auditIncident->regressionCases.end(), [](const RegressionCase &InCase) {
+        return InCase.caseId == "KG-BUG-0088/adaptive-terminal-theme" &&
+               InCase.testName ==
+                   "TUI auto theme uses COLORFGBG when available and stays "
+                   "adaptive when unknown";
+      }));
+
+  const auto asyncIncident = std::find_if(
+      loaded.report.incidents.begin(), loaded.report.incidents.end(),
+      [](const Incident &InIncident) {
+        return InIncident.incidentId == "KG-BUG-0091";
+      });
+  REQUIRE(asyncIncident != loaded.report.incidents.end());
+  REQUIRE(asyncIncident->regressionCases.size() == 9);
+  REQUIRE(std::any_of(
+      asyncIncident->regressionCases.begin(),
+      asyncIncident->regressionCases.end(), [](const RegressionCase &InCase) {
+        return InCase.caseId == "KG-BUG-0091/first-frame-before-startup-io" &&
+               InCase.testName ==
+                   "TUI first frame schedules startup I/O after "
+                   "ScreenInteractive activation and handles q while pending";
+      }));
+
+  std::size_t linkedCaseCount = 0;
+  for (const auto &incident : loaded.report.incidents) {
+    linkedCaseCount += incident.regressionCases.size();
+  }
+  REQUIRE(linkedCaseCount == 34);
 
   const auto text = RenderCoverageText(loaded.report);
   REQUIRE(text.find("execution_evidence=not-evaluated") != std::string::npos);
-  REQUIRE(text.find("linked_cases=25") != std::string::npos);
+  REQUIRE(text.find("linked_cases=34") != std::string::npos);
   REQUIRE(text.find("passed") == std::string::npos);
   REQUIRE(text.find("executed") == std::string::npos);
 
   const auto json = RenderCoverageJson(loaded.report);
   REQUIRE(json.find("\"execution_evidence\": \"not-evaluated\"") !=
           std::string::npos);
-  REQUIRE(json.find("\"linked_cases\": 25") != std::string::npos);
+  REQUIRE(json.find("\"linked_cases\": 34") != std::string::npos);
 }
 
 TEST_CASE("default registry paths and exact test names resolve to source",

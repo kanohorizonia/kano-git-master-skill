@@ -115,6 +115,9 @@ auto DiscoverRegisteredPathsRecursive(
     DiscoverGitExecutionControl InGitExecution = {})
     -> std::vector<std::filesystem::path>;
 auto WorkspaceManifestFilePath(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path;
+auto ResolveConfiguredWorkspaceExternalRoots(
+    const std::filesystem::path& InWorkspaceRoot)
+    -> std::vector<std::filesystem::path>;
 auto BuildWorkspaceManifest(const std::filesystem::path& InWorkspaceRoot, const std::vector<RepoRecord>& InRepos) -> WorkspaceManifest;
 auto SaveWorkspaceManifest(const WorkspaceManifest& InManifest) -> bool;
 auto LoadTrustedWorkspaceManifest(const std::filesystem::path& InWorkspaceRoot,

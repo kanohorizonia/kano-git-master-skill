@@ -52,10 +52,26 @@ Use `--theme dark`, `--theme light`, or `--theme mono` for a deterministic
 override. `KOG_TUI_THEME` provides the same default without a command-line
 flag; `NO_COLOR` or `KOG_NO_COLOR` selects mono when the mode remains `auto`.
 
-The dashboard starts from the cached repository snapshot so the initial screen
-is immediately usable. Live repository work is explicit: press `r` to refresh
-the selected repository, run `:refresh` for a workspace live-status refresh, or
-run `:discover` to rescan repository membership.
+The dashboard enters fullscreen and renders its key guide before it requests a
+repository inventory. A read-only `overview --inventory-only` subprocess then
+loads the trusted cached inventory on an owned background worker. Repositories
+outside the workspace are admitted only when they fall under a configured
+`workspace.external.roots` entry carried by that same trusted overview. This
+startup path performs no per-repository Git probes: its purpose is to make
+repository selection and bounded history available quickly while marking known
+startup-snapshot branch/status fields with `*`. On a valid root repository with
+no manifest yet, the same no-probe path exposes exactly that root as a clearly
+incomplete fallback so `Enter` works immediately and `:discover` can build the
+full inventory. Its unsampled status booleans render as `unknown`, never as a
+fabricated clean result. Invalid or unreadable existing manifests fail closed
+with a distinct diagnostic rather than being reported as missing or replaced by
+the fallback. The subprocess has a five-second/4-MiB-per-
+stream bound, so a slow or unhealthy manifest cannot delay the first interactive
+frame or leave teardown waiting on an unbounded filesystem read. `q`/`Escape`
+requests a clean exit while that probe is pending. Live repository work is
+explicit: press `r` to refresh the selected repository, run `:refresh` for a
+workspace live-status refresh, or run `:discover` to rescan repository
+membership.
 
 The TUI is an audit console and does not provide a manual repository-mutation
 surface. Command mode accepts only the read-only KOG commands `status`, `log`,
@@ -74,7 +90,8 @@ so observation alone does not dirty the workspace.
 
 Pressing `Enter` opens the selected repository's history immediately. History
 pages and commit details load in the background in bounded batches, and the
-panel shows loading or actionable error text instead of freezing the interface.
+panel reports `loading`, `ready`, `empty`, `cancelled`, or `failed` with a
+bounded diagnostic and a retry/return hint instead of freezing the interface.
 History paging is anchored to the initial repository `HEAD`, so a new commit
 does not shift an already-open page sequence.
 
@@ -107,8 +124,11 @@ Canonical controls:
 `q` exits from the normal repository view. Inside history or detail, `Esc` and
 `q` move back one level. Press `?` from the normal view whenever the key guide
 is needed. Read-only history/detail/refresh/discover loads check cancellation
-immediately before each TUI-owned Git launch. Startup, refresh, discovery,
-history, detail, and audit-command Git subprocesses are each limited to five
+immediately before each TUI-owned Git launch. Closing a pending surface or
+switching the active history repository cancels or supersedes its generation;
+stale completion events cannot reopen a dismissed panel or replace the current
+snapshot. Startup, refresh, discovery, history, detail, and audit-command Git
+subprocesses are each limited to five
 seconds and at most 4 MiB per stream (smaller detail budgets still apply where
 documented); truncated discovery data is rejected rather than shown as a
 partial inventory. Quitting waits only for bounded subprocess cleanup before
@@ -244,6 +264,7 @@ effective worker count.
 ./scripts/kog status path/to/repo --all --format json
 ./scripts/kog repo status path/to/repo --format json
 ./scripts/kog overview
+./scripts/kog overview --inventory-only --root-fallback --format json
 ./scripts/kog discover
 ./scripts/kog fetch
 ./scripts/kog log --remote-count 3

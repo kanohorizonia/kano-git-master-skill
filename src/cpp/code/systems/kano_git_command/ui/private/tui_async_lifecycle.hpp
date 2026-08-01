@@ -48,6 +48,10 @@ struct TuiAsyncCompletionDecision {
     TuiAsyncLifecycleState& InOutState,
     TuiAsyncSurface InSurface) -> bool;
 
+[[nodiscard]] auto CancelTuiAsyncSurface(
+    TuiAsyncLifecycleState& InOutState,
+    TuiAsyncSurface InSurface) -> bool;
+
 [[nodiscard]] auto RequestTuiAsyncExit(
     TuiAsyncLifecycleState& InOutState) -> TuiAsyncExitDecision;
 

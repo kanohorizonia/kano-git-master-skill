@@ -13,8 +13,10 @@ target_sources(kano_git_cmd_ui
     private/tui_history_lifecycle.cpp
     private/tui_history_patch.cpp
     private/tui_keymap.cpp
+    private/tui_load_state.cpp
     private/tui_rebase_model.cpp
     private/tui_repo_identity.cpp
+    private/tui_startup_snapshot.cpp
     private/tui_terminal_guard.cpp
     private/tui_theme.cpp
   PUBLIC
@@ -34,6 +36,9 @@ target_include_directories(kano_git_cmd_ui
     ${KANO_GIT_COMMAND_ROOT}/ui/private
 )
 
-target_link_libraries(kano_git_cmd_ui PUBLIC CLI11::CLI11 ftxui::screen ftxui::dom ftxui::component kano::git_shell kano::git_workspace kano::git_command_runtime)
+target_link_libraries(kano_git_cmd_ui
+  PUBLIC CLI11::CLI11 ftxui::screen ftxui::dom ftxui::component kano::git_shell kano::git_workspace kano::git_command_runtime
+  PRIVATE nlohmann_json::nlohmann_json
+)
 
 add_library(kano::git_cmd_ui ALIAS kano_git_cmd_ui)

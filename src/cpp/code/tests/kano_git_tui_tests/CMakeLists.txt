@@ -11,8 +11,10 @@ add_executable(kano_git_tui_tests
   unit/test_tui_history_lifecycle.cpp
   unit/test_tui_history_patch.cpp
   unit/test_tui_keymap.cpp
+  unit/test_tui_load_state.cpp
   unit/test_tui_rebase_model.cpp
   unit/test_tui_repo_identity.cpp
+  unit/test_tui_startup_snapshot.cpp
   unit/test_tui_terminal_guard.cpp
   unit/test_tui_theme.cpp
   property/test_main.cpp

@@ -2240,6 +2240,16 @@ auto WorkspaceManifestFilePath(const std::filesystem::path& InWorkspaceRoot) -> 
     return (WorkspaceCacheDirFor(rootAbs) / "workspace-manifest.json").lexically_normal();
 }
 
+auto ResolveConfiguredWorkspaceExternalRoots(
+    const std::filesystem::path& InWorkspaceRoot)
+    -> std::vector<std::filesystem::path> {
+    const auto rootAbs = Normalize(
+        std::filesystem::absolute(InWorkspaceRoot));
+    return kano::git::commands::kog_config::ResolveWorkspaceExternalRoots(
+        rootAbs,
+        ResolveSkillRoot(rootAbs));
+}
+
 auto BuildWorkspaceManifest(const std::filesystem::path& InWorkspaceRoot, const std::vector<RepoRecord>& InRepos) -> WorkspaceManifest {
     WorkspaceManifest out;
     out.workspaceRoot = Normalize(std::filesystem::absolute(InWorkspaceRoot));
@@ -2327,10 +2337,16 @@ auto LoadTrustedWorkspaceManifest(
     const ScopedDiscoveryGitExecutionControl scopedGitExecution{
         InGitExecution};
     const auto rootAbs = Normalize(std::filesystem::absolute(InWorkspaceRoot));
+    const auto manifestPath = WorkspaceManifestFilePath(rootAbs);
+    std::error_code manifestPathError;
+    const bool manifestPathExists =
+        std::filesystem::exists(manifestPath, manifestPathError);
     const auto state = LoadWorkspaceStateDocumentAny(rootAbs);
     if (!state.manifest.has_value()) {
         if (OutReason != nullptr) {
-            *OutReason = "workspace manifest missing";
+            *OutReason = !manifestPathError && !manifestPathExists
+                ? "workspace manifest missing"
+                : "workspace manifest invalid or unreadable";
         }
         return std::nullopt;
     }
@@ -2385,7 +2401,8 @@ auto RefreshWorkspaceManifestAfterRegisteredChange(const std::filesystem::path& 
     const auto rootAbs = Normalize(std::filesystem::absolute(InWorkspaceRoot));
     const auto existing = LoadWorkspaceManifestAny(rootAbs);
     const auto registered = DiscoverRegisteredPathsRecursive(rootAbs);
-    const auto externalRoots = kano::git::commands::kog_config::ResolveWorkspaceExternalRoots(rootAbs, ResolveSkillRoot(rootAbs));
+    const auto externalRoots =
+        ResolveConfiguredWorkspaceExternalRoots(rootAbs);
 
     std::vector<RepoRecord> repos;
     RepoRecord rootRecord;
@@ -2531,7 +2548,8 @@ auto DiscoverRepos(const DiscoverOptions& InOptions) -> DiscoveryResult {
         options.maxStaleSeconds = 0;
     }
 
-    const auto externalRoots = kano::git::commands::kog_config::ResolveWorkspaceExternalRoots(rootAbs, ResolveSkillRoot(rootAbs));
+    const auto externalRoots =
+        ResolveConfiguredWorkspaceExternalRoots(rootAbs);
 
     reportProgress(std::format("discover: preparing scan root={} depth={}", rootAbs.generic_string(), options.maxDepth));
 
