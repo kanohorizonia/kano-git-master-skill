@@ -7,8 +7,16 @@ target_sources(kano_git_cmd_ui
     private/command_mode_state.cpp
     private/tui_state.cpp
     private/tui_cmd.cpp
+    private/tui_async_lifecycle.cpp
+    private/tui_command_scope.cpp
     private/tui_dashboard_runner.cpp
+    private/tui_history_lifecycle.cpp
     private/tui_history_patch.cpp
+    private/tui_keymap.cpp
+    private/tui_rebase_model.cpp
+    private/tui_repo_identity.cpp
+    private/tui_terminal_guard.cpp
+    private/tui_theme.cpp
   PUBLIC
     public/metadata_cache.hpp
     public/autocomplete_engine.hpp

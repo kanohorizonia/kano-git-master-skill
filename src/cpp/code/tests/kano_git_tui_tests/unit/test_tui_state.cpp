@@ -73,21 +73,33 @@ TEST_CASE("TuiState mode transitions", "[tui_state][unit]") {
         REQUIRE(state.help_state.visible);
     }
 
-    SECTION("Enter with non-empty non-help buffer requires executor and stays in Command_Mode when missing") {
+    SECTION("Enter with safe audit command requires executor and stays in Command_Mode when missing") {
         state.HandleEvent("character", ':');
-        state.HandleEvent("character", 'f');
-        state.HandleEvent("character", 'e');
-        state.HandleEvent("character", 't');
-        state.HandleEvent("character", 'c');
-        state.HandleEvent("character", 'h');
-        REQUIRE(state.command_state.GetBuffer() == "fetch");
+        for (const char ch : std::string("status")) {
+            state.HandleEvent("character", ch);
+        }
+        REQUIRE(state.command_state.GetBuffer() == "status");
 
         bool handled = state.HandleEvent("enter");
 
         REQUIRE(handled);
         REQUIRE(state.GetMode() == TuiMode::Command);
         REQUIRE(state.footer_is_error);
-        REQUIRE(state.footer_message == "Command executor unavailable");
+        REQUIRE(state.footer_message == "Audit command runner unavailable");
+    }
+
+    SECTION("Mutating command is rejected before an executor can run") {
+        state.HandleEvent("character", ':');
+        for (const char ch : std::string("fetch")) {
+            state.HandleEvent("character", ch);
+        }
+
+        REQUIRE(state.HandleEvent("enter"));
+        REQUIRE(state.GetMode() == TuiMode::Command);
+        REQUIRE(state.footer_is_error);
+        REQUIRE(
+            state.footer_message ==
+            "Audit-only TUI accepts a read-only command with no options");
     }
     
     SECTION("Round-trip Normal → Command → Normal clears buffer") {

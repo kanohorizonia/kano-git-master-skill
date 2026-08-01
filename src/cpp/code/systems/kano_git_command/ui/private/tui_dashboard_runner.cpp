@@ -1,14 +1,21 @@
 // tui command — FTXUI dashboard with incremental history pager
 
 #include "tui_dashboard_runner.hpp"
+#include "tui_async_lifecycle.hpp"
+#include "tui_command_scope.hpp"
+#include "tui_history_lifecycle.hpp"
 #include "tui_history_patch.hpp"
+#include "tui_keymap.hpp"
+#include "tui_rebase_model.hpp"
+#include "tui_repo_identity.hpp"
+#include "tui_terminal_guard.hpp"
+#include "tui_theme.hpp"
 #include "discovery.hpp"
 #include "shell_executor.hpp"
 #include "tui_state.hpp"
 #include "lru_cache.hpp"
 #include "metadata_cache.hpp"
 #include "autocomplete_engine.hpp"
-#include "command_executor.hpp"
 #include "runtime_path_layout.hpp"
 
 #include <ftxui/component/component.hpp>
@@ -19,6 +26,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -28,7 +36,9 @@
 #include <mutex>
 #include <memory>
 #include <sstream>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <utility>
@@ -39,72 +49,57 @@
 #ifdef RGB
 #undef RGB
 #endif
-#else
-#include <termios.h>
-#include <unistd.h>
 #endif
 
 namespace kano::git::commands {
 namespace {
 
-struct TerminalModeGuard {
-    TerminalModeGuard() {
-#ifdef KOG_PLATFORM_WINDOWS
-        inputHandle_ = GetStdHandle(STD_INPUT_HANDLE);
-        outputHandle_ = GetStdHandle(STD_OUTPUT_HANDLE);
-        if (inputHandle_ != nullptr && inputHandle_ != INVALID_HANDLE_VALUE) {
-            inputValid_ = GetConsoleMode(inputHandle_, &inputMode_) != 0;
-        }
-        if (outputHandle_ != nullptr && outputHandle_ != INVALID_HANDLE_VALUE) {
-            outputValid_ = GetConsoleMode(outputHandle_, &outputMode_) != 0;
-        }
-#else
-        if (isatty(STDIN_FILENO) == 1) {
-            inputValid_ = tcgetattr(STDIN_FILENO, &inputMode_) == 0;
-        }
-        if (isatty(STDOUT_FILENO) == 1) {
-            outputValid_ = tcgetattr(STDOUT_FILENO, &outputMode_) == 0;
-        }
-#endif
+thread_local const TuiGitProbeControl* GActiveTuiProbeControl = nullptr;
+
+class ScopedTuiGitProbeControl final {
+public:
+    explicit ScopedTuiGitProbeControl(
+        const TuiGitProbeControl& InControl)
+        : previous_(GActiveTuiProbeControl) {
+        GActiveTuiProbeControl = &InControl;
     }
 
-    ~TerminalModeGuard() {
-#ifdef KOG_PLATFORM_WINDOWS
-        if (inputValid_ && inputHandle_ != nullptr && inputHandle_ != INVALID_HANDLE_VALUE) {
-            SetConsoleMode(inputHandle_, inputMode_);
-        }
-        if (outputValid_ && outputHandle_ != nullptr && outputHandle_ != INVALID_HANDLE_VALUE) {
-            SetConsoleMode(outputHandle_, outputMode_);
-        }
-#else
-        if (inputValid_) {
-            tcsetattr(STDIN_FILENO, TCSANOW, &inputMode_);
-        }
-        if (outputValid_) {
-            tcsetattr(STDOUT_FILENO, TCSANOW, &outputMode_);
-        }
-#endif
+    ~ScopedTuiGitProbeControl() {
+        GActiveTuiProbeControl = previous_;
     }
 
-    TerminalModeGuard(const TerminalModeGuard&) = delete;
-    auto operator=(const TerminalModeGuard&) -> TerminalModeGuard& = delete;
+    ScopedTuiGitProbeControl(const ScopedTuiGitProbeControl&) = delete;
+    auto operator=(const ScopedTuiGitProbeControl&)
+        -> ScopedTuiGitProbeControl& = delete;
 
 private:
-#ifdef KOG_PLATFORM_WINDOWS
-    HANDLE inputHandle_ = nullptr;
-    HANDLE outputHandle_ = nullptr;
-    DWORD inputMode_ = 0;
-    DWORD outputMode_ = 0;
-#else
-    termios inputMode_{};
-    termios outputMode_{};
-#endif
-    bool inputValid_ = false;
-    bool outputValid_ = false;
+    const TuiGitProbeControl* previous_ = nullptr;
 };
+
+constexpr unsigned int kTuiInteractiveReadTimeoutMs = 5000;
+
+auto BuildTuiDiscoveryGitExecutionControl()
+    -> workspace::DiscoverGitExecutionControl {
+    workspace::DiscoverGitExecutionControl control{
+        .timeoutMs = kTuiInteractiveReadTimeoutMs,
+        .maxCaptureBytes = kTuiStatusMaxBytes,
+    };
+    if (GActiveTuiProbeControl != nullptr) {
+        const auto* probeControl = GActiveTuiProbeControl;
+        control.launchGuard =
+            [probeControl](const std::filesystem::path&,
+                           const std::vector<std::string>& InArguments) {
+                return TryBeginTuiGitProbe(
+                    *probeControl,
+                    InArguments);
+            };
+    }
+    return control;
+}
 
 struct RepoView {
     std::filesystem::path path;
+    std::string identityKey;
     std::string type;
     std::string branch;
     std::string upstream;
@@ -116,25 +111,27 @@ struct RepoView {
     struct DirtyFileEntry {
         std::string displayPath;
         std::string patchPath;
+        std::string patchPathAlt;
         int changedLines = -1;
     };
     std::vector<DirtyFileEntry> dirtyFiles;
+    bool dirtyFilesIncomplete = false;
+    std::string dirtyFilesError;
     std::string parentRepo;
+    std::string parentIdentityKey;
+    std::string parentRelativePath;
     int childRepoCount = 0;
     int treeDepth = 0;
 };
 
+struct DirtyFilesResult {
+    std::vector<RepoView::DirtyFileEntry> files;
+    bool incomplete = false;
+    std::string errorMessage;
+};
+
 struct RepoHistoryCache {
-    struct HistoryEntry {
-        bool isDirtyWorkingTree = false;
-        std::string sha;
-        std::string subject;
-        std::string authorName;
-        std::string authorEmail;
-        int globalIndex = 0;
-        int totalCount = 0;
-        std::string displayLine;
-    };
+    using HistoryEntry = TuiHistoryEntry;
     struct DetailSection {
         std::string title;
         std::string body;
@@ -147,12 +144,15 @@ struct RepoHistoryCache {
     };
     std::vector<HistoryEntry> allEntries;
     bool fullyLoaded = false;
-    std::optional<int> totalCommits;
-    LruCache<std::string, std::string> commitDetails{48};
-    LruCache<std::string, std::string> commitQuickStats{96};
+    bool loading = false;
+    std::uint64_t loadingGeneration = 0;
+    int loadingPageIndex = -1;
+    std::string loadError;
+    std::string anchorSha;
     LruCache<std::string, DetailOverlayData> detailOverlays{48};
-    std::string dirtyToken;  // hash of `git status --porcelain` for dirty overlay cache invalidation
 };
+
+using HistoryBatchResult = TuiHistoryBatchResult;
 
 struct PreviewData {
     std::vector<std::string> staged;
@@ -160,19 +160,24 @@ struct PreviewData {
     std::string branch;
     std::string upstream;
     std::string tracking;
+    bool statusIncomplete = false;
 };
 
 struct HistoryState {
     bool active = false;
     int repoIndex = 0;
+    int pageSize = 20;
     int pageIndex = 0;
     int selectedLine = 0;
     bool searchMode = false;
     std::string searchQuery;
     int highlightedLine = -1;
     bool detailActive = false;
+    bool detailLoading = false;
+    std::uint64_t detailPendingGeneration = 0;
     std::string detailSha;
-    std::string detailBody;
+    std::string detailPendingKey;
+    std::string detailError;
     int detailSelectedSection = 0;
     int detailPageIndex = 0;
     int detailMode = 0; // 0=summary, 1=files, 2=patch
@@ -194,11 +199,6 @@ struct ConfirmState {
     std::string description;
     std::filesystem::path repo;
     std::vector<std::string> command;
-};
-
-enum class CommandScopeMode {
-    Workspace,
-    SelectedRepo,
 };
 
 struct CherryPickCandidate {
@@ -225,42 +225,6 @@ struct CherryPickRunnerState {
     std::string lastOutput;
 };
 
-struct RebasePreflightState {
-    bool active = false;
-    std::filesystem::path repo;
-    std::string branch;
-    std::string upstream;
-    std::string tracking;
-    std::string mergeBase;
-    std::vector<std::string> candidates;
-    std::string risk;
-    std::string note;
-};
-
-struct RebasePlanItem {
-    std::string sha;
-    std::string title;
-    std::string action = "pick"; // pick|squash|fixup|drop
-};
-
-struct RebasePlannerState {
-    bool active = false;
-    std::filesystem::path repo;
-    std::string baseRef;
-    std::vector<RebasePlanItem> items;
-    int selectedIndex = 0;
-    std::string preview;
-};
-
-struct RebaseRunnerState {
-    bool active = false;
-    std::filesystem::path repo;
-    std::vector<RebasePlanItem> queue;
-    int index = 0;
-    bool waitingConflictResolution = false;
-    std::string lastOutput;
-};
-
 struct DiscoverPagerState {
     bool active = false;
     std::vector<std::string> lines;
@@ -273,17 +237,27 @@ struct DiscoverPagerState {
 };
 
 struct AsyncWorkState {
+    std::uint64_t generation = 0;
     bool busy = false;
     bool hasResult = false;
     bool hasError = false;
     bool refreshRepos = false;
     bool refreshSelectedRepo = false;
     bool refreshDiscover = false;
+    bool refreshHistory = false;
+    bool refreshHistoryDetail = false;
     std::vector<RepoView> repos;
     RepoView refreshedRepo;
     std::string refreshedRepoKey;
     std::vector<std::string> discoverLines;
     std::string discoverTitle;
+    std::string historyRepoKey;
+    int historyPageIndex = 0;
+    HistoryBatchResult historyBatch;
+    std::string historyDetailRepoKey;
+    std::string historyDetailKey;
+    RepoHistoryCache::DetailOverlayData historyDetailOverlay;
+    std::string historyDetailError;
     std::string label;
     std::string progress;
     std::string completionFooter;
@@ -297,12 +271,74 @@ struct AsyncWorkState {
 auto HasDirtyHistoryEntry(const RepoView& InRepo) -> bool;
 auto BuildHistoryDisplayLine(const RepoHistoryCache::HistoryEntry& InEntry,
                              const std::string& InAuthorText = std::string()) -> std::string;
-auto FetchTotalCommitCount(const std::filesystem::path& InRepo) -> std::optional<int>;
-auto FetchAllHistory(const RepoView& InRepo) -> std::vector<RepoHistoryCache::HistoryEntry>;
 auto BuildHistoryDetailOverlay(const std::filesystem::path& repo,
                                const RepoView& repoView,
                                const RepoHistoryCache::HistoryEntry& entry,
-                               int mode) -> RepoHistoryCache::DetailOverlayData;
+                               int mode,
+                               const std::function<bool()>& InCancelled)
+    -> RepoHistoryCache::DetailOverlayData;
+
+auto ToFtxuiColor(const TuiColor InColor) -> ftxui::Color {
+    switch (InColor) {
+        case TuiColor::TerminalDefault:
+            return ftxui::Color::Default;
+        case TuiColor::Black:
+            return ftxui::Color::Black;
+        case TuiColor::Red:
+            return ftxui::Color::Red;
+        case TuiColor::Green:
+            return ftxui::Color::Green;
+        case TuiColor::Yellow:
+            return ftxui::Color::Yellow;
+        case TuiColor::Blue:
+            return ftxui::Color::Blue;
+        case TuiColor::Magenta:
+            return ftxui::Color::Magenta;
+        case TuiColor::Cyan:
+            return ftxui::Color::Cyan;
+        case TuiColor::White:
+            return ftxui::Color::GrayLight;
+        case TuiColor::BrightBlack:
+            return ftxui::Color::GrayDark;
+        case TuiColor::BrightRed:
+            return ftxui::Color::RedLight;
+        case TuiColor::BrightGreen:
+            return ftxui::Color::GreenLight;
+        case TuiColor::BrightYellow:
+            return ftxui::Color::YellowLight;
+        case TuiColor::BrightBlue:
+            return ftxui::Color::BlueLight;
+        case TuiColor::BrightMagenta:
+            return ftxui::Color::MagentaLight;
+        case TuiColor::BrightCyan:
+            return ftxui::Color::CyanLight;
+        case TuiColor::BrightWhite:
+            return ftxui::Color::White;
+    }
+    return ftxui::Color::Default;
+}
+
+auto MakeTuiDecorator(const TuiTextStyle& InStyle) -> ftxui::Decorator {
+    return [InStyle](ftxui::Element InElement) {
+        auto element = std::move(InElement);
+        if (InStyle.foreground != TuiColor::TerminalDefault) {
+            element = element | ftxui::color(ToFtxuiColor(InStyle.foreground));
+        }
+        if (InStyle.background != TuiColor::TerminalDefault) {
+            element = element | ftxui::bgcolor(ToFtxuiColor(InStyle.background));
+        }
+        if (InStyle.bold) {
+            element = element | ftxui::bold;
+        }
+        if (InStyle.dim) {
+            element = element | ftxui::dim;
+        }
+        if (InStyle.inverted) {
+            element = element | ftxui::inverted;
+        }
+        return element;
+    };
+}
 
 auto ResolveKanoGitBinaryCommand() -> std::string {
     if (const char* binaryPath = std::getenv("KANO_GIT_BINARY_PATH"); binaryPath != nullptr) {
@@ -361,16 +397,10 @@ auto DisplayParentRepo(const std::filesystem::path& InRoot, const std::string& I
     return DisplayRepoPath(InRoot, std::filesystem::path(InParentRepo));
 }
 
-// Canonical path string for comparison: lexically_normal + generic_string + strip trailing separator.
-// On Windows, (root / ".").lexically_normal() can produce "D:/_work/foo/" (trailing separator for the
-// root-looking path), but sub-paths normalize to "D:/_work/foo/bar" (no trailing separator). This breaks
-// parent-child path comparisons. Strip trailing '/' to ensure consistent comparison.
-auto CanonicalPathString(const std::filesystem::path& InPath) -> std::string {
-    auto s = InPath.lexically_normal().generic_string();
-    while (s.size() > 1 && s.back() == '/') {
-        s.pop_back();
-    }
-    return s;
+auto CachedRepoIdentityKey(const RepoView& InRepo) -> std::string {
+    return InRepo.identityKey.empty()
+        ? NormalizeRepoIdentityKey(InRepo.path)
+        : InRepo.identityKey;
 }
 
 auto NormalizeRepoPath(const std::filesystem::path& InRoot, const std::filesystem::path& InPath) -> std::filesystem::path {
@@ -444,6 +474,26 @@ auto RepoTypeTag(const std::string& InType) -> std::string {
     return "";
 }
 
+auto RepoIdentityRepresentativePriority(
+    const std::string& InType) -> int {
+    if (InType == "root") {
+        return 0;
+    }
+    if (InType == "registered") {
+        return 1;
+    }
+    if (InType == "registered-uninit") {
+        return 2;
+    }
+    if (InType == "unregistered") {
+        return 3;
+    }
+    if (InType == "external") {
+        return 4;
+    }
+    return 5;
+}
+
 enum class DetailLabelMode {
     Full,
     Short,
@@ -481,8 +531,38 @@ auto ChooseDetailLabelMode(const int InAvailableWidth,
     return DetailLabelMode::Bare;
 }
 
-auto GitCapture(const std::filesystem::path& InRepo, const std::vector<std::string>& InArgs) -> shell::ExecResult {
-    return shell::ExecuteCommand("git", InArgs, shell::ExecMode::Capture, InRepo);
+auto GitCapture(const std::filesystem::path& InRepo, const std::vector<std::string>& InArgs,
+                const std::size_t InMaxBytes = kTuiStatusMaxBytes) -> shell::ExecResult {
+    if (GActiveTuiProbeControl != nullptr &&
+        !TryBeginTuiGitProbe(*GActiveTuiProbeControl, InArgs)) {
+        return {
+            .exitCode = 130,
+            .stderrStr = "TUI operation cancelled before Git launch",
+        };
+    }
+    return shell::ExecuteCommand("git", InArgs, shell::ExecMode::Capture, InRepo,
+                                 shell::ProgressCallback{},
+                                 kTuiInteractiveReadTimeoutMs,
+                                 shell::CaptureLimits{InMaxBytes, InMaxBytes});
+}
+
+auto GitCaptureInteractiveRead(const std::filesystem::path& InRepo,
+                               const std::vector<std::string>& InArgs) -> shell::ExecResult {
+    if (GActiveTuiProbeControl != nullptr &&
+        !TryBeginTuiGitProbe(*GActiveTuiProbeControl, InArgs)) {
+        return {
+            .exitCode = 130,
+            .stderrStr = "TUI operation cancelled before Git launch",
+        };
+    }
+    return shell::ExecuteCommand(
+        "git",
+        InArgs,
+        shell::ExecMode::Capture,
+        InRepo,
+        shell::ProgressCallback{},
+        kTuiInteractiveReadTimeoutMs,
+        shell::CaptureLimits{kTuiStatusMaxBytes, kTuiStatusMaxBytes});
 }
 
 auto CurrentBranch(const std::filesystem::path& InRepo) -> std::string {
@@ -609,51 +689,51 @@ auto CollectChangedLineCounts(const std::filesystem::path& InRepo,
     }
 }
 
-auto DirtyFiles(const std::filesystem::path& InRepo) -> std::vector<RepoView::DirtyFileEntry> {
-    const auto out = GitCapture(InRepo, {"status", "--porcelain"});
+auto DirtyFiles(const std::filesystem::path& InRepo) -> DirtyFilesResult {
+    DirtyFilesResult result;
+    const auto out = GitCapture(InRepo, {"status", "--porcelain=v1", "-z"});
     if (out.exitCode != 0) {
-        return {};
+        result.incomplete = true;
+        result.errorMessage = Trim(out.stderrStr);
+        if (result.errorMessage.empty()) {
+            result.errorMessage =
+                "git status exited with code " +
+                std::to_string(out.exitCode);
+        }
+        return result;
     }
     std::unordered_map<std::string, int> changedLineCounts;
     CollectChangedLineCounts(InRepo, {"diff", "--numstat"}, changedLineCounts);
     CollectChangedLineCounts(InRepo, {"diff", "--numstat", "--cached"}, changedLineCounts);
 
-    std::istringstream iss(out.stdoutStr);
-    std::string line;
-    std::vector<RepoView::DirtyFileEntry> files;
+    auto& files = result.files;
     std::unordered_map<std::string, std::size_t> seen;
-    while (std::getline(iss, line)) {
-        while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) {
-            line.pop_back();
-        }
-        if (line.size() < 4) {
-            continue;
-        }
-        const std::string rawPath = Trim(line.substr(3));
-        if (rawPath.empty()) {
-            continue;
-        }
-        std::string path = rawPath;
-        std::string displayPath = rawPath;
-        const char statusX = line.size() > 0 ? line[0] : ' ';
-        const char statusY = line.size() > 1 ? line[1] : ' ';
-        const bool isRenameOrCopy = statusX == 'R' || statusY == 'R' || statusX == 'C' || statusY == 'C';
-        if (isRenameOrCopy) {
-            const auto arrowPos = rawPath.find(" -> ");
-            if (arrowPos != std::string::npos) {
-                const auto oldPath = Trim(rawPath.substr(0, arrowPos));
-                const auto newPath = Trim(rawPath.substr(arrowPos + 4));
-                if (!newPath.empty()) {
-                    path = newPath;
-                    displayPath = oldPath.empty() ? newPath : (oldPath + " -> " + newPath);
-                }
-            }
+    const auto parsedStatus = ParseTuiPorcelainV1Z(out.stdoutStr);
+    result.incomplete = out.stdoutTruncated || out.stderrTruncated ||
+        parsedStatus.truncated || parsedStatus.malformed;
+    if (result.incomplete) {
+        result.errorMessage =
+            "dirty-file enumeration reached its byte/entry budget or "
+            "returned a malformed record";
+    }
+    for (const auto& statusEntry : parsedStatus.entries) {
+        const auto& path = statusEntry.path;
+        auto displayPath = EscapeTuiPathForDisplay(path);
+        if (!statusEntry.previousPath.empty()) {
+            displayPath =
+                EscapeTuiPathForDisplay(statusEntry.previousPath) +
+                " -> " + displayPath;
         }
         auto itSeen = seen.find(path);
         const int changedLines = changedLineCounts.contains(path) ? changedLineCounts[path] : -1;
         if (itSeen == seen.end()) {
             seen[path] = files.size();
-            files.push_back({displayPath, path, changedLines});
+            files.push_back({
+                .displayPath = std::move(displayPath),
+                .patchPath = path,
+                .patchPathAlt = statusEntry.previousPath,
+                .changedLines = changedLines,
+            });
             continue;
         }
         auto& existing = files[itSeen->second];
@@ -673,75 +753,91 @@ auto DirtyFiles(const std::filesystem::path& InRepo) -> std::vector<RepoView::Di
         }
         return A.patchPath < B.patchPath;
     });
-    return files;
+    return result;
 }
 
-// Compute a lightweight token from `git status --porcelain` output.
-// When the working tree state changes, this token changes, causing dirty overlay cache misses.
-auto ComputeDirtyToken(const std::filesystem::path& InRepo) -> std::string {
-    const auto out = GitCapture(InRepo, {"status", "--porcelain"});
-    if (out.exitCode != 0) {
-        return "err";
-    }
-    const auto hash = std::hash<std::string>{}(out.stdoutStr);
-    // Encode as hex string for compact, readable cache keys
-    std::ostringstream oss;
-    oss << std::hex << hash;
-    return oss.str();
+// Dirty overlays are tied to the cached repository snapshot. Explicit repo or
+// workspace refresh invalidates the whole per-repo cache.
+auto DirtyCachePrefix() -> std::string {
+    return "(dirty)";
 }
 
-// Build cache key prefix from the stored dirty token (no git call — safe for render path).
-auto DirtyCachePrefix(const RepoHistoryCache& cache) -> std::string {
-    return "(dirty@" + cache.dirtyToken + ")";
-}
-
-// Refresh dirty token for a cache entry. If token changed, purge stale dirty overlay/detail entries.
-// Returns the current "(dirty@<token>)" prefix string for cache key construction.
-auto RefreshDirtyToken(RepoHistoryCache& cache, const std::filesystem::path& repo) -> std::string {
-    const auto newToken = ComputeDirtyToken(repo);
-    if (!cache.dirtyToken.empty() && cache.dirtyToken != newToken) {
-        // Token changed — purge all stale dirty entries from commitDetails and detailOverlays
-        cache.commitDetails.erase_if([](const std::string& k, const std::string&) { return k.starts_with("(dirty@"); });
-        cache.detailOverlays.erase_if([](const std::string& k, const RepoHistoryCache::DetailOverlayData&) { return k.starts_with("(dirty@"); });
-        cache.fullyLoaded = false;
-        cache.allEntries.clear();
-    }
-    cache.dirtyToken = newToken;
-    return "(dirty@" + newToken + ")";
-}
-
-auto IsAncestorPath(const std::filesystem::path& Ancestor, const std::filesystem::path& Child) -> bool {
-    const auto a = CanonicalPathString(Ancestor);
-    const auto c = CanonicalPathString(Child);
-    if (a == c || a.empty()) {
+auto IsAncestorIdentityKey(const std::string& InAncestor,
+                           const std::string& InChild) -> bool {
+    if (InAncestor == InChild || InAncestor.empty()) {
         return false;
     }
     // Ancestor is a prefix of Child if Child starts with Ancestor followed by '/'
-    if (c.size() <= a.size()) {
+    if (InChild.size() <= InAncestor.size()) {
         return false;
     }
-    return c.compare(0, a.size(), a) == 0 && c[a.size()] == '/';
+    return InChild.compare(0, InAncestor.size(), InAncestor) == 0 &&
+        InChild[InAncestor.size()] == '/';
 }
 
+auto IsAncestorRepoPath(const std::filesystem::path& InAncestor,
+                        const std::filesystem::path& InChild,
+                        const std::string& InAncestorKey,
+                        const std::string& InChildKey) -> bool {
+    auto cursor = InChild.parent_path();
+    while (!cursor.empty()) {
+        std::error_code equivalentError;
+        if (std::filesystem::equivalent(
+                InAncestor,
+                cursor,
+                equivalentError) &&
+            !equivalentError) {
+            return true;
+        }
+        const auto parent = cursor.parent_path();
+        if (parent == cursor) {
+            break;
+        }
+        cursor = parent;
+    }
+    return IsAncestorIdentityKey(InAncestorKey, InChildKey);
+}
+
+struct RepoParentResolution {
+    std::string path = "(none)";
+    std::string identityKey = "(none)";
+    std::string relativePath;
+};
+
 auto ResolveRepoParent(const std::filesystem::path& InWorkspaceRoot,
-                       const workspace::RepoRecord& InRepo) -> std::string {
+                       const workspace::RepoRecord& InRepo)
+    -> RepoParentResolution {
     const auto normalizedRepoPath = NormalizeRepoPath(InWorkspaceRoot, InRepo.path);
-    const auto canonicalRepoStr = CanonicalPathString(normalizedRepoPath);
-    std::filesystem::path bestParent;
+    const auto canonicalRepoStr =
+        ResolveStableRepoIdentityKey(normalizedRepoPath);
+    RepoParentResolution bestParent;
     for (const auto& dep : InRepo.dependencies) {
         const auto normalizedDep = NormalizeRepoPath(InWorkspaceRoot, dep);
-        const auto canonicalDepStr = CanonicalPathString(normalizedDep);
+        const auto canonicalDepStr =
+            ResolveStableRepoIdentityKey(normalizedDep);
         const bool isSelf = (canonicalDepStr == canonicalRepoStr);
-        const bool isAnc = IsAncestorPath(normalizedDep, normalizedRepoPath);
+        const bool isAnc = IsAncestorRepoPath(
+            normalizedDep,
+            normalizedRepoPath,
+            canonicalDepStr,
+            canonicalRepoStr);
         if (isSelf || !isAnc) {
             continue;
         }
-        if (bestParent.empty() || canonicalDepStr.size() > CanonicalPathString(bestParent).size()) {
-            bestParent = normalizedDep;
+        const auto normalizedDepString =
+            NormalizeRepoIdentityKey(normalizedDep);
+        if (bestParent.identityKey == "(none)" ||
+            normalizedDepString.size() > bestParent.path.size()) {
+            bestParent.path = normalizedDepString;
+            bestParent.identityKey = canonicalDepStr;
+            bestParent.relativePath =
+                ResolveRepoRelativePath(
+                    normalizedDep,
+                    normalizedRepoPath)
+                    .generic_string();
         }
     }
-    const auto result = bestParent.empty() ? "(none)" : CanonicalPathString(bestParent);
-    return result;
+    return bestParent;
 }
 
 auto UninitializedRepoListLabel(const std::filesystem::path& /* InWorkspaceRoot */,
@@ -750,32 +846,65 @@ auto UninitializedRepoListLabel(const std::filesystem::path& /* InWorkspaceRoot 
 }
 
 auto FinalizeRepoTree(std::vector<RepoView> InRows) -> std::vector<RepoView> {
+    for (auto& row : InRows) {
+        if (row.identityKey.empty()) {
+            row.identityKey = ResolveStableRepoIdentityKey(row.path);
+        }
+    }
+
+    std::vector<std::string> identityKeys;
+    std::vector<int> identityPriorities;
+    identityKeys.reserve(InRows.size());
+    identityPriorities.reserve(InRows.size());
+    for (const auto& row : InRows) {
+        identityKeys.push_back(CachedRepoIdentityKey(row));
+        identityPriorities.push_back(
+            RepoIdentityRepresentativePriority(row.type));
+    }
+    const auto uniqueIndices =
+        SelectPreferredRepoIdentityIndices(
+            identityKeys,
+            identityPriorities);
+    std::vector<RepoView> uniqueRows;
+    uniqueRows.reserve(uniqueIndices.size());
+    for (const auto index : uniqueIndices) {
+        uniqueRows.push_back(std::move(InRows[index]));
+    }
+    InRows = std::move(uniqueRows);
+
     std::sort(InRows.begin(), InRows.end(), [](const RepoView& A, const RepoView& B) {
-        return CanonicalPathString(A.path) < CanonicalPathString(B.path);
+        return NormalizeRepoIdentityKey(A.path) <
+            NormalizeRepoIdentityKey(B.path);
     });
 
     for (std::size_t i = 0; i < InRows.size(); ++i) {
-        if (InRows[i].parentRepo.empty()) {
+        if (InRows[i].parentRepo.empty() ||
+            InRows[i].parentIdentityKey.empty()) {
             InRows[i].parentRepo = "(none)";
+            InRows[i].parentIdentityKey = "(none)";
+            InRows[i].parentRelativePath.clear();
             continue;
         }
         const auto it = std::find_if(InRows.begin(), InRows.end(), [&](const RepoView& row) {
-            return CanonicalPathString(row.path) == InRows[i].parentRepo;
+            return CachedRepoIdentityKey(row) ==
+                InRows[i].parentIdentityKey;
         });
         if (it == InRows.end()) {
             InRows[i].parentRepo = "(none)";
+            InRows[i].parentIdentityKey = "(none)";
+            InRows[i].parentRelativePath.clear();
         }
     }
 
     for (auto& row : InRows) {
         int depth = 0;
-        std::string cursor = row.parentRepo;
+        std::string cursor = row.parentIdentityKey;
         while (cursor != "(none)") {
             depth += 1;
             std::string next = "(none)";
             for (const auto& maybeParent : InRows) {
-                if (CanonicalPathString(maybeParent.path) == cursor) {
-                    next = maybeParent.parentRepo;
+                if (CachedRepoIdentityKey(maybeParent) == cursor) {
+                    next = maybeParent.parentIdentityKey;
                     break;
                 }
             }
@@ -788,11 +917,12 @@ auto FinalizeRepoTree(std::vector<RepoView> InRows) -> std::vector<RepoView> {
         row.childRepoCount = 0;
     }
     for (const auto& row : InRows) {
-        if (row.parentRepo == "(none)") {
+        if (row.parentIdentityKey == "(none)") {
             continue;
         }
         for (auto& maybeParent : InRows) {
-            if (CanonicalPathString(maybeParent.path) == row.parentRepo) {
+            if (CachedRepoIdentityKey(maybeParent) ==
+                row.parentIdentityKey) {
                 maybeParent.childRepoCount += 1;
                 break;
             }
@@ -802,16 +932,17 @@ auto FinalizeRepoTree(std::vector<RepoView> InRows) -> std::vector<RepoView> {
     std::unordered_map<std::string, std::vector<std::size_t>> childIndices;
     std::vector<std::size_t> rootIndices;
     for (std::size_t i = 0; i < InRows.size(); ++i) {
-        if (InRows[i].parentRepo == "(none)") {
+        if (InRows[i].parentIdentityKey == "(none)") {
             rootIndices.push_back(i);
         } else {
-            childIndices[InRows[i].parentRepo].push_back(i);
+            childIndices[InRows[i].parentIdentityKey].push_back(i);
         }
     }
 
     auto sortIndices = [&](std::vector<std::size_t>& Indices) {
         std::sort(Indices.begin(), Indices.end(), [&](const std::size_t A, const std::size_t B) {
-            return CanonicalPathString(InRows[A].path) < CanonicalPathString(InRows[B].path);
+            return NormalizeRepoIdentityKey(InRows[A].path) <
+                NormalizeRepoIdentityKey(InRows[B].path);
         });
     };
     sortIndices(rootIndices);
@@ -822,7 +953,7 @@ auto FinalizeRepoTree(std::vector<RepoView> InRows) -> std::vector<RepoView> {
     std::vector<RepoView> ordered;
     ordered.reserve(InRows.size());
     std::function<void(std::size_t)> appendSubtree = [&](const std::size_t Index) {
-        const auto key = CanonicalPathString(InRows[Index].path);
+        const auto key = CachedRepoIdentityKey(InRows[Index]);
         ordered.push_back(InRows[Index]);
         auto it = childIndices.find(key);
         if (it == childIndices.end()) {
@@ -839,6 +970,94 @@ auto FinalizeRepoTree(std::vector<RepoView> InRows) -> std::vector<RepoView> {
     return ordered;
 }
 
+auto LoadStartupRepoViews(const std::filesystem::path& InWorkspaceRoot) -> std::vector<RepoView> {
+    std::vector<workspace::RepoRecord> repoRecords;
+    std::string manifestReason;
+    if (const auto manifest =
+            workspace::LoadTrustedWorkspaceManifest(
+                InWorkspaceRoot,
+                &manifestReason,
+                BuildTuiDiscoveryGitExecutionControl());
+        manifest.has_value()) {
+        repoRecords = manifest->repos;
+    }
+    if (repoRecords.empty()) {
+        workspace::RepoRecord rootRecord;
+        rootRecord.path = InWorkspaceRoot;
+        rootRecord.type = "root";
+        repoRecords.push_back(std::move(rootRecord));
+    }
+
+    std::vector<RepoView> rows;
+    rows.reserve(repoRecords.size());
+    for (const auto& repo : repoRecords) {
+        RepoView row;
+        row.path = NormalizeRepoPath(InWorkspaceRoot, repo.path);
+        row.type = repo.type;
+        const auto parent = ResolveRepoParent(InWorkspaceRoot, repo);
+        row.parentRepo = parent.path;
+        row.parentIdentityKey = parent.identityKey;
+        row.parentRelativePath = parent.relativePath;
+        row.statusFromSnapshot = true;
+        row.repoDirty = repo.hasChanges;
+        row.worktreeDirty = false;
+        if (repo.type == "registered-uninit") {
+            row.branch = "(uninit)";
+            row.upstream.clear();
+            row.tracking.clear();
+        } else {
+            row.branch = repo.currentBranch.empty() ? "(cached)" : repo.currentBranch;
+            row.upstream = "(cached)";
+            row.tracking = "cached";
+        }
+        rows.push_back(std::move(row));
+    }
+    return FinalizeRepoTree(std::move(rows));
+}
+
+auto SortAndDedupeRepoRecords(
+    const std::filesystem::path& InWorkspaceRoot,
+    std::vector<workspace::RepoRecord>& InOutRepos) -> void {
+    std::vector<std::string> identityKeys;
+    std::vector<int> identityPriorities;
+    identityKeys.reserve(InOutRepos.size());
+    identityPriorities.reserve(InOutRepos.size());
+    for (const auto& repo : InOutRepos) {
+        identityKeys.push_back(
+            ResolveStableRepoIdentityKey(
+                NormalizeRepoPath(
+                    InWorkspaceRoot,
+                    repo.path)));
+        identityPriorities.push_back(
+            RepoIdentityRepresentativePriority(repo.type));
+    }
+    const auto selectedIndices =
+        SelectPreferredRepoIdentityIndices(
+            identityKeys,
+            identityPriorities);
+    std::vector<workspace::RepoRecord> uniqueRepos;
+    uniqueRepos.reserve(selectedIndices.size());
+    for (const auto index : selectedIndices) {
+        uniqueRepos.push_back(
+            std::move(InOutRepos[index]));
+    }
+    InOutRepos = std::move(uniqueRepos);
+    std::sort(
+        InOutRepos.begin(),
+        InOutRepos.end(),
+        [&](const workspace::RepoRecord& A,
+            const workspace::RepoRecord& B) {
+            return NormalizeRepoIdentityKey(
+                       NormalizeRepoPath(
+                           InWorkspaceRoot,
+                           A.path)) <
+                NormalizeRepoIdentityKey(
+                       NormalizeRepoPath(
+                           InWorkspaceRoot,
+                           B.path));
+        });
+}
+
 auto DiscoverWorkspaceRepoRecordsForTui(const std::filesystem::path& InRoot,
                                         const bool InUseCache = true,
                                         const bool InRefreshCache = false,
@@ -850,17 +1069,26 @@ auto DiscoverWorkspaceRepoRecordsForTui(const std::filesystem::path& InRoot,
             InProgressCallback(InMessage);
         }
     };
+    const auto discoveryGitExecution =
+        BuildTuiDiscoveryGitExecutionControl();
 
     if (InUseCache && !InRefreshCache) {
         reportProgress("loading trusted workspace manifest");
         std::string manifestReason;
-        if (const auto manifest = workspace::LoadTrustedWorkspaceManifest(root, &manifestReason); manifest.has_value()) {
-            const auto registeredPaths = workspace::DiscoverRegisteredPathsRecursive(root);
+        if (const auto manifest = workspace::LoadTrustedWorkspaceManifest(
+                root,
+                &manifestReason,
+                discoveryGitExecution);
+            manifest.has_value()) {
+            const auto registeredPaths =
+                workspace::DiscoverRegisteredPathsRecursive(
+                    root,
+                    discoveryGitExecution);
             std::vector<std::string> expectedRegisteredKeys;
             expectedRegisteredKeys.reserve(registeredPaths.size() + 1);
-            expectedRegisteredKeys.push_back(CanonicalPathString(root));
+            expectedRegisteredKeys.push_back(ResolveStableRepoIdentityKey(root));
             for (const auto& registeredPath : registeredPaths) {
-                expectedRegisteredKeys.push_back(CanonicalPathString(registeredPath));
+                expectedRegisteredKeys.push_back(ResolveStableRepoIdentityKey(registeredPath));
             }
             std::sort(expectedRegisteredKeys.begin(), expectedRegisteredKeys.end());
             expectedRegisteredKeys.erase(std::unique(expectedRegisteredKeys.begin(), expectedRegisteredKeys.end()), expectedRegisteredKeys.end());
@@ -869,7 +1097,9 @@ auto DiscoverWorkspaceRepoRecordsForTui(const std::filesystem::path& InRoot,
             manifestRegisteredKeys.reserve(manifest->repos.size());
             for (const auto& repo : manifest->repos) {
                 if (repo.type == "root" || repo.type == "registered" || repo.type == "registered-uninit") {
-                    manifestRegisteredKeys.push_back(CanonicalPathString(NormalizeRepoPath(root, repo.path)));
+                    manifestRegisteredKeys.push_back(
+                        ResolveStableRepoIdentityKey(
+                            NormalizeRepoPath(root, repo.path)));
                 }
             }
             std::sort(manifestRegisteredKeys.begin(), manifestRegisteredKeys.end());
@@ -893,14 +1123,19 @@ auto DiscoverWorkspaceRepoRecordsForTui(const std::filesystem::path& InRoot,
                         if (repo.type == "registered-uninit") {
                             continue;
                         }
+                        const auto repoPath =
+                            NormalizeRepoPath(root, repo.path);
                         // Re-validate registered repos: the cached type may be stale if the
                         // repo was not yet initialized when the manifest was last written.
                         // Check that git's --show-toplevel actually points at this path;
                         // if it doesn't (e.g. git walks up to a parent), reclassify.
                         if (repo.type == "registered") {
-                            const auto topLevel = GitCapture(repo.path, {"rev-parse", "--show-toplevel"});
+                            const auto topLevel = GitCapture(repoPath, {"rev-parse", "--show-toplevel"});
                             if (topLevel.exitCode != 0 ||
-                                CanonicalPathString(repo.path) != CanonicalPathString(std::filesystem::path(Trim(topLevel.stdoutStr)))) {
+                                ResolveStableRepoIdentityKey(repoPath) !=
+                                    ResolveStableRepoIdentityKey(
+                                        std::filesystem::path(
+                                            Trim(topLevel.stdoutStr)))) {
                                 repo.type = "registered-uninit";
                                 repo.currentBranch.clear();
                                 repo.hasChanges = false;
@@ -909,54 +1144,41 @@ auto DiscoverWorkspaceRepoRecordsForTui(const std::filesystem::path& InRoot,
                             }
                         }
                         if (repoIndex == 1 || repoIndex == repos.size() || (repoIndex % 4) == 0) {
-                            reportProgress(std::format("git status {}/{}: {}", repoIndex, repos.size(), DisplayRepoPath(root, repo.path)));
+                            reportProgress(std::format("git status {}/{}: {}", repoIndex, repos.size(), DisplayRepoPath(root, repoPath)));
                         }
-                        const auto status = GitCapture(repo.path, {"status", "--porcelain"});
-                        repo.hasChanges = status.exitCode == 0 && !Trim(status.stdoutStr).empty();
+                        const auto status = GitCapture(
+                            repoPath,
+                            {"status", "--porcelain=v1", "-z"});
+                        repo.hasChanges =
+                            status.exitCode == 0 && !status.stdoutStr.empty();
                     }
                 } else {
                     reportProgress(std::format("using cached workspace manifest for {} repos", repos.size()));
                 }
-                std::sort(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
-                    return CanonicalPathString(A.path) < CanonicalPathString(B.path);
-                });
-                repos.erase(std::unique(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
-                    return CanonicalPathString(A.path) == CanonicalPathString(B.path);
-                }), repos.end());
+                SortAndDedupeRepoRecords(root, repos);
                 return repos;
             }
         }
     }
 
+    // A TUI audit must not dirty the workspace merely by observing it. A
+    // trusted existing manifest may be read above, but any missing, stale, or
+    // explicitly refreshed inventory is rebuilt without persistent caches.
     workspace::DiscoverOptions options;
     options.rootDir = root;
     options.maxDepth = 8;
-    options.useCache = InUseCache;
-    options.refreshCache = InRefreshCache;
-    if (!InUseCache) {
-        options.incremental = false;
-    }
+    options.useCache = false;
+    options.refreshCache = false;
+    options.incremental = false;
     options.metadataLevel = "full";
+    options.gitExecution = discoveryGitExecution;
     options.progressCallback = [&](const std::string& InMessage) {
         reportProgress(InMessage);
     };
 
     const auto discovery = workspace::DiscoverRepos(options);
     std::vector<workspace::RepoRecord> repos = discovery.repos;
-    std::sort(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
-        return CanonicalPathString(A.path) < CanonicalPathString(B.path);
-    });
-    repos.erase(std::unique(repos.begin(), repos.end(), [](const auto& A, const auto& B) {
-        return CanonicalPathString(A.path) == CanonicalPathString(B.path);
-    }), repos.end());
-
-    if (!repos.empty()) {
-        const auto manifest = workspace::BuildWorkspaceManifest(root, repos);
-        if (!workspace::SaveWorkspaceManifest(manifest)) {
-            std::cerr << "[tui] WARN: failed to refresh workspace manifest at "
-                      << manifest.manifestFile.lexically_normal().generic_string() << "\n";
-        }
-    }
+    SortAndDedupeRepoRecords(root, repos);
 
     return repos;
 }
@@ -982,7 +1204,11 @@ auto DiscoverRepoViews(const bool InDirtyOnly,
             RepoView row;
             row.path = normalizedRepoPath;
             row.type = repo.type;
-            row.parentRepo = ResolveRepoParent(workspaceRoot, repo);
+            const auto parent =
+                ResolveRepoParent(workspaceRoot, repo);
+            row.parentRepo = parent.path;
+            row.parentIdentityKey = parent.identityKey;
+            row.parentRelativePath = parent.relativePath;
             row.statusFromSnapshot = true;
             row.repoDirty = false;
             row.type = "registered-uninit";
@@ -996,7 +1222,11 @@ auto DiscoverRepoViews(const bool InDirtyOnly,
         RepoView row;
         row.path = normalizedRepoPath;
         row.type = repo.type;
-        row.parentRepo = ResolveRepoParent(workspaceRoot, repo);
+        const auto parent =
+            ResolveRepoParent(workspaceRoot, repo);
+        row.parentRepo = parent.path;
+        row.parentIdentityKey = parent.identityKey;
+        row.parentRelativePath = parent.relativePath;
         row.statusFromSnapshot = !InRefreshRepoStatus;
         row.repoDirty = repo.hasChanges;
         if (InRefreshRepoStatus) {
@@ -1005,7 +1235,9 @@ auto DiscoverRepoViews(const bool InDirtyOnly,
             if (repo.type == "registered") {
                 const auto topLevel = GitCapture(normalizedRepoPath, {"rev-parse", "--show-toplevel"});
                 if (topLevel.exitCode != 0 ||
-                    CanonicalPathString(normalizedRepoPath) != CanonicalPathString(std::filesystem::path(Trim(topLevel.stdoutStr)))) {
+                    ResolveStableRepoIdentityKey(normalizedRepoPath) !=
+                        ResolveStableRepoIdentityKey(
+                            std::filesystem::path(Trim(topLevel.stdoutStr)))) {
                     row.type = "registered-uninit";
                     row.branch = "(uninit)";
                     row.upstream.clear();
@@ -1020,7 +1252,10 @@ auto DiscoverRepoViews(const bool InDirtyOnly,
             row.upstream = CurrentUpstream(normalizedRepoPath);
             row.tracking = TrackingSummary(normalizedRepoPath);
             row.worktreeDirty = HasDirtyWorktrees(normalizedRepoPath, row.dirtyWorktrees);
-            row.dirtyFiles = DirtyFiles(normalizedRepoPath);
+            auto dirtyFiles = DirtyFiles(normalizedRepoPath);
+            row.dirtyFiles = std::move(dirtyFiles.files);
+            row.dirtyFilesIncomplete = dirtyFiles.incomplete;
+            row.dirtyFilesError = std::move(dirtyFiles.errorMessage);
         } else {
             row.branch = repo.currentBranch.empty() ? "(cached)" : repo.currentBranch;
             row.upstream = "(cached)";
@@ -1058,7 +1293,11 @@ auto DiscoverRepoViews(const bool InDirtyOnly,
             RepoView row;
             row.path = normalizedRepoPath;
             row.type = repo.type;
-            row.parentRepo = ResolveRepoParent(workspaceRoot, repo);
+            const auto parent =
+                ResolveRepoParent(workspaceRoot, repo);
+            row.parentRepo = parent.path;
+            row.parentIdentityKey = parent.identityKey;
+            row.parentRelativePath = parent.relativePath;
             row.statusFromSnapshot = true;
             row.repoDirty = false;
             row.type = "registered-uninit";
@@ -1072,7 +1311,11 @@ auto DiscoverRepoViews(const bool InDirtyOnly,
         RepoView row;
         row.path = normalizedRepoPath;
         row.type = repo.type;
-        row.parentRepo = ResolveRepoParent(workspaceRoot, repo);
+        const auto parent =
+            ResolveRepoParent(workspaceRoot, repo);
+        row.parentRepo = parent.path;
+        row.parentIdentityKey = parent.identityKey;
+        row.parentRelativePath = parent.relativePath;
         row.statusFromSnapshot = !InRefreshRepoStatus;
         row.repoDirty = repo.hasChanges;
         if (InRefreshRepoStatus) {
@@ -1081,7 +1324,9 @@ auto DiscoverRepoViews(const bool InDirtyOnly,
             if (repo.type == "registered") {
                 const auto topLevel = GitCapture(normalizedRepoPath, {"rev-parse", "--show-toplevel"});
                 if (topLevel.exitCode != 0 ||
-                    CanonicalPathString(normalizedRepoPath) != CanonicalPathString(std::filesystem::path(Trim(topLevel.stdoutStr)))) {
+                    ResolveStableRepoIdentityKey(normalizedRepoPath) !=
+                        ResolveStableRepoIdentityKey(
+                            std::filesystem::path(Trim(topLevel.stdoutStr)))) {
                     row.type = "registered-uninit";
                     row.branch = "(uninit)";
                     row.upstream.clear();
@@ -1096,7 +1341,10 @@ auto DiscoverRepoViews(const bool InDirtyOnly,
             row.upstream = CurrentUpstream(normalizedRepoPath);
             row.tracking = TrackingSummary(normalizedRepoPath);
             row.worktreeDirty = HasDirtyWorktrees(normalizedRepoPath, row.dirtyWorktrees);
-            row.dirtyFiles = DirtyFiles(normalizedRepoPath);
+            auto dirtyFiles = DirtyFiles(normalizedRepoPath);
+            row.dirtyFiles = std::move(dirtyFiles.files);
+            row.dirtyFilesIncomplete = dirtyFiles.incomplete;
+            row.dirtyFilesError = std::move(dirtyFiles.errorMessage);
         } else {
             row.branch = repo.currentBranch.empty() ? "(cached)" : repo.currentBranch;
             row.upstream = "(cached)";
@@ -1115,7 +1363,11 @@ auto BuildLiveRepoView(const std::filesystem::path& InWorkspaceRoot,
                        const RepoView& InCurrentRow) -> RepoView {
     RepoView row = InCurrentRow;
     row.path = InCurrentRow.path.lexically_normal();
+    row.identityKey =
+        ResolveStableRepoIdentityKey(row.path);
     row.parentRepo = InCurrentRow.parentRepo;
+    row.parentIdentityKey = InCurrentRow.parentIdentityKey;
+    row.parentRelativePath = InCurrentRow.parentRelativePath;
     row.statusFromSnapshot = false;
     row.repoDirty = false;
     row.worktreeDirty = false;
@@ -1125,7 +1377,9 @@ auto BuildLiveRepoView(const std::filesystem::path& InWorkspaceRoot,
     if (InCurrentRow.type == "registered-uninit" || InCurrentRow.type == "registered") {
         const auto topLevel = GitCapture(row.path, {"rev-parse", "--show-toplevel"});
         if (topLevel.exitCode != 0 ||
-            CanonicalPathString(row.path) != CanonicalPathString(std::filesystem::path(Trim(topLevel.stdoutStr)))) {
+            row.identityKey !=
+                ResolveStableRepoIdentityKey(
+                    std::filesystem::path(Trim(topLevel.stdoutStr)))) {
             row.type = "registered-uninit";
             row.branch = "(uninit)";
             row.upstream.clear();
@@ -1135,13 +1389,18 @@ auto BuildLiveRepoView(const std::filesystem::path& InWorkspaceRoot,
         row.type = "registered";
     }
 
-    const auto status = GitCapture(row.path, {"status", "--porcelain"});
-    row.repoDirty = status.exitCode == 0 && !Trim(status.stdoutStr).empty();
+    const auto status = GitCapture(
+        row.path,
+        {"status", "--porcelain=v1", "-z"});
+    row.repoDirty = status.exitCode == 0 && !status.stdoutStr.empty();
     row.branch = CurrentBranch(row.path);
     row.upstream = CurrentUpstream(row.path);
     row.tracking = TrackingSummary(row.path);
     row.worktreeDirty = HasDirtyWorktrees(row.path, row.dirtyWorktrees);
-    row.dirtyFiles = DirtyFiles(row.path);
+    auto dirtyFiles = DirtyFiles(row.path);
+    row.dirtyFiles = std::move(dirtyFiles.files);
+    row.dirtyFilesIncomplete = dirtyFiles.incomplete;
+    row.dirtyFilesError = std::move(dirtyFiles.errorMessage);
     return row;
 }
 
@@ -1172,85 +1431,6 @@ auto ComputeHistoryRowWidthEstimate() -> int {
     return std::max(24, ftxui::Terminal::Size().dimx - kHistoryLeftPanelWidth - kApproxChromeWidth);
 }
 
-auto FetchAllHistory(const RepoView& InRepo) -> std::vector<RepoHistoryCache::HistoryEntry> {
-    const auto totalCommits = FetchTotalCommitCount(InRepo.path);
-    const bool includeDirtyEntry = HasDirtyHistoryEntry(InRepo);
-    const int totalEntries = totalCommits.has_value() ? (totalCommits.value() + (includeDirtyEntry ? 1 : 0)) : 0;
-
-    std::vector<RepoHistoryCache::HistoryEntry> entries;
-    if (includeDirtyEntry) {
-        RepoHistoryCache::HistoryEntry dirtyEntry;
-        dirtyEntry.isDirtyWorkingTree = true;
-        dirtyEntry.sha = "(dirty)";
-        dirtyEntry.subject = "dirty working tree";
-        dirtyEntry.globalIndex = 1;
-        dirtyEntry.totalCount = totalEntries;
-        dirtyEntry.displayLine = BuildHistoryDisplayLine(dirtyEntry);
-        entries.push_back(std::move(dirtyEntry));
-    }
-
-    const auto out = GitCapture(InRepo.path, {
-        "log", "--no-decorate", "--format=%h%x1f%s%x1f%ae%x1f%an",
-    });
-    if (out.exitCode != 0) {
-        RepoHistoryCache::HistoryEntry failedEntry;
-        failedEntry.subject = "(failed to load history)";
-        failedEntry.globalIndex = includeDirtyEntry ? 2 : 1;
-        failedEntry.totalCount = totalEntries;
-        failedEntry.displayLine = failedEntry.subject;
-        entries.push_back(std::move(failedEntry));
-        return entries;
-    }
-
-    std::istringstream iss(out.stdoutStr);
-    std::string line;
-    int entryOffset = includeDirtyEntry ? 2 : 1;
-    while (std::getline(iss, line)) {
-        line = Trim(line);
-        if (line.empty()) {
-            continue;
-        }
-        std::vector<std::string> parts;
-        std::size_t start = 0;
-        while (true) {
-            const auto sep = line.find('\x1f', start);
-            if (sep == std::string::npos) {
-                parts.push_back(line.substr(start));
-                break;
-            }
-            parts.push_back(line.substr(start, sep - start));
-            start = sep + 1;
-        }
-        RepoHistoryCache::HistoryEntry entry;
-        entry.sha = parts.size() > 0 ? Trim(parts[0]) : std::string();
-        entry.subject = parts.size() > 1 ? Trim(parts[1]) : std::string();
-        entry.authorEmail = parts.size() > 2 ? Trim(parts[2]) : std::string();
-        entry.authorName = parts.size() > 3 ? Trim(parts[3]) : std::string();
-        entry.globalIndex = entryOffset;
-        entry.totalCount = totalEntries;
-        entry.displayLine = BuildHistoryDisplayLine(entry);
-        entries.push_back(std::move(entry));
-        entryOffset += 1;
-    }
-    return entries;
-}
-
-auto FetchTotalCommitCount(const std::filesystem::path& InRepo) -> std::optional<int> {
-    const auto out = GitCapture(InRepo, {"rev-list", "--count", "HEAD"});
-    if (out.exitCode != 0) {
-        return std::nullopt;
-    }
-    const auto text = Trim(out.stdoutStr);
-    if (text.empty()) {
-        return std::nullopt;
-    }
-    try {
-        return std::stoi(text);
-    } catch (...) {
-        return std::nullopt;
-    }
-}
-
 auto HasDirtyHistoryEntry(const RepoView& InRepo) -> bool {
     return InRepo.repoDirty || InRepo.worktreeDirty || !InRepo.dirtyFiles.empty();
 }
@@ -1278,40 +1458,6 @@ auto CommitShaFromOneline(const std::string& line) -> std::string {
         return trimmed;
     }
     return trimmed.substr(0, sp);
-}
-
-auto FetchCommitQuickStats(const std::filesystem::path& repo, const std::string& sha) -> std::string {
-    if (sha.empty()) {
-        return "(invalid commit sha)";
-    }
-    const auto out = GitCapture(repo, {
-        "show", "--no-color", "--shortstat", "--pretty=format:%h %s", "-n", "1", sha,
-    });
-    if (out.exitCode != 0) {
-        return "(failed to load quick stats)";
-    }
-
-    std::istringstream iss(out.stdoutStr);
-    std::string title;
-    std::getline(iss, title);
-    title = Trim(title);
-
-    std::string stat;
-    while (std::getline(iss, stat)) {
-        stat = Trim(stat);
-        if (!stat.empty()) {
-            break;
-        }
-    }
-
-    if (stat.empty()) {
-        stat = "0 files changed";
-    }
-
-    if (title.empty()) {
-        return stat;
-    }
-    return title + " | " + stat;
 }
 
 auto ToLowerAscii(std::string value) -> std::string {
@@ -1390,7 +1536,7 @@ struct ParsedFileLine {
 auto ParseHistoryFileLine(const std::string& InLine) -> ParsedFileLine {
     const auto trimmed = Trim(InLine);
     if (trimmed.size() <= 2 || std::isspace(static_cast<unsigned char>(trimmed[1])) == 0) {
-        return {trimmed, std::string(), std::string()};
+        return {EscapeTuiPathForDisplay(trimmed), std::string(), std::string()};
     }
 
     std::string displayTitle = trimmed;
@@ -1401,11 +1547,17 @@ auto ParseHistoryFileLine(const std::string& InLine) -> ParsedFileLine {
     if ((trimmed[0] == 'R' || trimmed[0] == 'C') && tabPos != std::string::npos) {
         const auto oldPath = Trim(payload.substr(0, tabPos));
         const auto newPath = Trim(payload.substr(tabPos + 1));
-        displayTitle = std::string(1, trimmed[0]) + " " + oldPath + " -> " + newPath;
+        displayTitle =
+            std::string(1, trimmed[0]) + " " +
+            EscapeTuiPathForDisplay(oldPath) + " -> " +
+            EscapeTuiPathForDisplay(newPath);
         patchPath = newPath;
         patchPathAlt = oldPath;
     } else {
         patchPath = payload;
+        displayTitle =
+            std::string(1, trimmed[0]) + " " +
+            EscapeTuiPathForDisplay(payload);
     }
     return {displayTitle, patchPath, patchPathAlt};
 }
@@ -1413,28 +1565,51 @@ auto ParseHistoryFileLine(const std::string& InLine) -> ParsedFileLine {
 auto BuildHistoryDetailOverlay(const std::filesystem::path& repo,
                                const RepoView& repoView,
                                const RepoHistoryCache::HistoryEntry& entry,
-                               const int mode) -> RepoHistoryCache::DetailOverlayData {
+                               const int mode,
+                               const std::function<bool()>& InCancelled)
+    -> RepoHistoryCache::DetailOverlayData {
     RepoHistoryCache::DetailOverlayData overlay;
     overlay.title = entry.isDirtyWorkingTree ? "dirty working tree" : entry.sha;
+    const TuiGitProbeControl probeControl{
+        .isCancelled = InCancelled,
+    };
+    if (InCancelled()) {
+        return overlay;
+    }
 
     if (mode == 0) {
         RepoHistoryCache::DetailSection section;
         section.title = "summary";
         section.body = entry.isDirtyWorkingTree
-            ? FetchWorkingTreeDetail(repo, mode)
-            : FetchCommitDetail(repo, entry.sha, mode);
+            ? FetchWorkingTreeDetail(repo, mode, probeControl)
+            : FetchCommitDetail(repo, entry.sha, mode, probeControl);
         overlay.sections.push_back(std::move(section));
         return overlay;
     }
 
     std::vector<RepoHistoryCache::DetailSection> sections;
+    TuiDetailPatchBudget patchBudget;
+    bool bPatchFetchTruncated = false;
     if (entry.isDirtyWorkingTree) {
         for (const auto& dirtyFile : repoView.dirtyFiles) {
+            if (InCancelled()) {
+                break;
+            }
+            if (mode == 2 &&
+                !TryStartTuiDetailPatchFetch(patchBudget)) {
+                bPatchFetchTruncated = true;
+                break;
+            }
             RepoHistoryCache::DetailSection section;
             section.title = dirtyFile.displayPath;
             section.patchPath = dirtyFile.patchPath;
+            section.patchPathAlt = dirtyFile.patchPathAlt;
             section.body = mode == 2
-                ? FetchWorkingTreeFilePatch(repo, dirtyFile.patchPath)
+                ? FetchWorkingTreeFilePatch(
+                      repo,
+                      dirtyFile.patchPath,
+                      dirtyFile.patchPathAlt,
+                      probeControl)
                 : (dirtyFile.changedLines >= 0 ? ("changed lines: " + std::to_string(dirtyFile.changedLines)) : "changed file");
             sections.push_back(std::move(section));
         }
@@ -1444,81 +1619,86 @@ auto BuildHistoryDetailOverlay(const std::filesystem::path& repo,
             section.body = "run :refresh to enumerate dirty files";
             sections.push_back(std::move(section));
         }
+        if (repoView.dirtyFilesIncomplete) {
+            RepoHistoryCache::DetailSection section;
+            section.title = "(dirty-file list incomplete)";
+            section.body = repoView.dirtyFilesError.empty()
+                ? "dirty-file enumeration was incomplete; displayed paths are partial"
+                : repoView.dirtyFilesError + "; displayed paths are partial";
+            sections.push_back(std::move(section));
+        }
     } else {
         // Use -z -M -C --name-status for unambiguous NUL-separated parsing of file entries.
-        const auto nsOut = GitCapture(repo, {
+        if (InCancelled()) {
+            return overlay;
+        }
+        const auto nsOut = GitCaptureInteractiveRead(repo, {
             "show", "--no-color", "-z", "-M", "-C", "--name-status", "--pretty=format:", "-n", "1", entry.sha,
         });
 
+        HistoryNameStatusParseResult parsedNameStatus;
         if (nsOut.exitCode == 0 && !nsOut.stdoutStr.empty()) {
-            // Parse NUL-separated name-status output.
-            // Format: <status>\t<path>\0  for A/M/D/T/U
-            //         <status>\t<oldPath>\0<newPath>\0  for R/C (rename/copy)
-            const auto& raw = nsOut.stdoutStr;
-            std::size_t pos = 0;
-            while (pos < raw.size()) {
-                // Skip leading NUL bytes (the pretty=format: empty output leaves a leading NUL)
-                if (raw[pos] == '\0' || raw[pos] == '\n') {
-                    ++pos;
-                    continue;
-                }
-                // Read status + tab + path up to NUL
-                const auto nulPos = raw.find('\0', pos);
-                if (nulPos == std::string::npos) {
+            parsedNameStatus = ParseHistoryNameStatusZ(nsOut.stdoutStr);
+            parsedNameStatus.truncated =
+                parsedNameStatus.truncated || nsOut.stdoutTruncated;
+            for (const auto& changedPath : parsedNameStatus.entries) {
+                if (InCancelled()) {
                     break;
                 }
-                const auto entry_str = raw.substr(pos, nulPos - pos);
-                pos = nulPos + 1;
-
-                if (entry_str.empty()) {
-                    continue;
+                if (mode == 2 &&
+                    !TryStartTuiDetailPatchFetch(patchBudget)) {
+                    bPatchFetchTruncated = true;
+                    break;
                 }
-
-                const char status = entry_str[0];
-                // Find the tab separator between status and path
-                const auto tabPos = entry_str.find('\t');
-                if (tabPos == std::string::npos) {
-                    continue;
-                }
-                const auto path1 = entry_str.substr(tabPos + 1);
+                const char status = changedPath.status.front();
 
                 RepoHistoryCache::DetailSection section;
                 if (status == 'R' || status == 'C') {
-                    // For rename/copy, path1 is oldPath, next NUL-terminated field is newPath
-                    const auto nulPos2 = raw.find('\0', pos);
-                    std::string newPath;
-                    if (nulPos2 != std::string::npos) {
-                        newPath = raw.substr(pos, nulPos2 - pos);
-                        pos = nulPos2 + 1;
-                    } else {
-                        newPath = raw.substr(pos);
-                        pos = raw.size();
-                    }
-                    section.title = std::string(1, status) + " " + path1 + " -> " + newPath;
-                    section.patchPath = newPath;
-                    section.patchPathAlt = path1;
+                    section.title =
+                        changedPath.status + " " +
+                        EscapeTuiPathForDisplay(changedPath.previousPath) +
+                        " -> " + EscapeTuiPathForDisplay(changedPath.path);
+                    section.patchPath = changedPath.path;
+                    section.patchPathAlt = changedPath.previousPath;
                 } else {
-                    section.title = std::string(1, status) + " " + path1;
-                    section.patchPath = path1;
+                    section.title =
+                        changedPath.status + " " +
+                        EscapeTuiPathForDisplay(changedPath.path);
+                    section.patchPath = changedPath.path;
                 }
 
                 section.body = mode == 2
-                    ? FetchCommitFilePatch(repo, entry.sha, section.patchPath, section.patchPathAlt)
+                    ? FetchCommitFilePatch(
+                          repo,
+                          entry.sha,
+                          section.patchPath,
+                          section.patchPathAlt,
+                          probeControl)
                     : section.title;
                 sections.push_back(std::move(section));
             }
         }
 
         // Fallback: if -z parsing produced nothing, try the text-based approach
-        if (sections.empty()) {
-            const auto filesBody = FetchCommitDetail(repo, entry.sha, 1);
+        if (sections.empty() && !parsedNameStatus.truncated &&
+            !parsedNameStatus.malformed) {
+            const auto filesBody = FetchCommitDetail(
+                repo, entry.sha, 1, probeControl);
             std::istringstream iss(filesBody);
             std::string line;
             std::vector<std::string> block;
             std::string blockPatchPath;
             std::string blockPatchPathAlt;
             auto flushBlock = [&]() {
-                if (block.empty()) {
+                if (block.empty() || InCancelled()) {
+                    return;
+                }
+                if (mode == 2 &&
+                    !TryStartTuiDetailPatchFetch(patchBudget)) {
+                    bPatchFetchTruncated = true;
+                    block.clear();
+                    blockPatchPath.clear();
+                    blockPatchPathAlt.clear();
                     return;
                 }
                 RepoHistoryCache::DetailSection section;
@@ -1526,7 +1706,12 @@ auto BuildHistoryDetailOverlay(const std::filesystem::path& repo,
                 section.patchPath = blockPatchPath;
                 section.patchPathAlt = blockPatchPathAlt;
                 section.body = mode == 2
-                    ? FetchCommitFilePatch(repo, entry.sha, blockPatchPath, blockPatchPathAlt)
+                    ? FetchCommitFilePatch(
+                          repo,
+                          entry.sha,
+                          blockPatchPath,
+                          blockPatchPathAlt,
+                          probeControl)
                     : JoinLines(block);
                 sections.push_back(std::move(section));
                 block.clear();
@@ -1534,6 +1719,9 @@ auto BuildHistoryDetailOverlay(const std::filesystem::path& repo,
                 blockPatchPathAlt.clear();
             };
             while (std::getline(iss, line)) {
+                if (InCancelled()) {
+                    break;
+                }
                 const auto trimmed = Trim(line);
                 const bool isFileLine = trimmed.size() > 2
                     && (trimmed[0] == 'A' || trimmed[0] == 'M' || trimmed[0] == 'D' || trimmed[0] == 'R' || trimmed[0] == 'C' || trimmed[0] == 'T' || trimmed[0] == 'U')
@@ -1552,14 +1740,35 @@ auto BuildHistoryDetailOverlay(const std::filesystem::path& repo,
             }
             flushBlock();
         }
+        if (parsedNameStatus.truncated || parsedNameStatus.malformed ||
+            nsOut.stderrTruncated) {
+            RepoHistoryCache::DetailSection section;
+            section.title = "(file list incomplete)";
+            section.body =
+                "commit path enumeration reached its byte/entry budget or "
+                "returned a malformed record; displayed paths are partial";
+            sections.push_back(std::move(section));
+        }
+    }
+
+    if (mode == 2 && bPatchFetchTruncated) {
+        RepoHistoryCache::DetailSection section;
+        section.title = "(patch detail truncated)";
+        section.body =
+            "showing at most " +
+            std::to_string(kTuiDetailPatchFetchLimit) +
+            " file patches (" +
+            std::to_string(kTuiDetailPatchMaxBytes) +
+            " bytes total) for one detail selection";
+        sections.push_back(std::move(section));
     }
 
     if (sections.empty()) {
         RepoHistoryCache::DetailSection section;
         section.title = "(no changes)";
         section.body = mode == 2
-            ? (entry.isDirtyWorkingTree ? FetchWorkingTreeDetail(repo, 2) : FetchCommitDetail(repo, entry.sha, 2))
-            : (entry.isDirtyWorkingTree ? FetchWorkingTreeDetail(repo, 1) : FetchCommitDetail(repo, entry.sha, 1));
+            ? (entry.isDirtyWorkingTree ? FetchWorkingTreeDetail(repo, 2, probeControl) : FetchCommitDetail(repo, entry.sha, 2, probeControl))
+            : (entry.isDirtyWorkingTree ? FetchWorkingTreeDetail(repo, 1, probeControl) : FetchCommitDetail(repo, entry.sha, 1, probeControl));
         sections.push_back(std::move(section));
     }
 
@@ -1574,23 +1783,14 @@ auto ParseStatusFiles(const shell::ExecResult& out) -> std::pair<std::vector<std
         return {staged, unstaged};
     }
 
-    std::istringstream iss(out.stdoutStr);
-    std::string line;
-    while (std::getline(iss, line)) {
-        if (line.size() < 4) {
-            continue;
+    const auto parsedStatus = ParseTuiPorcelainV1Z(out.stdoutStr);
+    for (const auto& entry : parsedStatus.entries) {
+        const auto displayPath = EscapeTuiPathForDisplay(entry.path);
+        if (entry.indexStatus != ' ' && entry.indexStatus != '?') {
+            staged.push_back(displayPath);
         }
-        const char x = line[0];
-        const char y = line[1];
-        const std::string file = Trim(line.substr(3));
-        if (file.empty()) {
-            continue;
-        }
-        if (x != ' ' && x != '?') {
-            staged.push_back(file);
-        }
-        if (y != ' ' || x == '?') {
-            unstaged.push_back(file);
+        if (entry.worktreeStatus != ' ' || entry.indexStatus == '?') {
+            unstaged.push_back(displayPath);
         }
     }
 
@@ -1609,7 +1809,13 @@ auto CollectPreviewData(const std::filesystem::path& repo) -> PreviewData {
     data.upstream = CurrentUpstream(repo);
     data.tracking = TrackingSummary(repo);
 
-    const auto status = GitCapture(repo, {"status", "--porcelain"});
+    const auto status = GitCapture(
+        repo,
+        {"status", "--porcelain=v1", "-z"});
+    const auto parsedStatus = ParseTuiPorcelainV1Z(status.stdoutStr);
+    data.statusIncomplete = status.exitCode != 0 ||
+                            status.stdoutTruncated || status.stderrTruncated ||
+                            parsedStatus.truncated || parsedStatus.malformed;
     auto parsed = ParseStatusFiles(status);
     data.staged = std::move(parsed.first);
     data.unstaged = std::move(parsed.second);
@@ -1622,6 +1828,9 @@ auto BuildCommitPreview(const std::filesystem::path& repo) -> std::string {
     out << "Commit Preview\n";
     out << "repo: " << repo.lexically_normal().generic_string() << "\n";
     out << "branch: " << data.branch << "\n\n";
+    if (data.statusIncomplete) {
+        out << "WARNING: status output was incomplete; this preview is not safe for mutation confirmation.\n\n";
+    }
 
     out << "staged files: " << data.staged.size() << "\n";
     for (std::size_t i = 0; i < std::min<std::size_t>(data.staged.size(), 20); ++i) {
@@ -1660,6 +1869,11 @@ auto BuildPushPreview(const std::filesystem::path& repo) -> std::string {
     out << "branch: " << data.branch << "\n";
     out << "upstream: " << data.upstream << "\n";
     out << "tracking: " << data.tracking << "\n\n";
+
+    if (data.statusIncomplete) {
+        out << "WARNING: status output was incomplete; this preview is not "
+               "safe for mutation confirmation.\n\n";
+    }
 
     out << "risk summary:\n";
     if (data.upstream == "(none)" || data.tracking == "no-upstream") {
@@ -1867,44 +2081,6 @@ auto CollectRebasePreflight(const std::filesystem::path& repo) -> RebasePrefligh
     return state;
 }
 
-auto BuildRebasePlanPreview(const RebasePlannerState& planner) -> std::string {
-    std::ostringstream out;
-    out << "Rebase Plan Preview\n";
-    out << "repo: " << planner.repo.lexically_normal().generic_string() << "\n";
-    out << "base: " << planner.baseRef << "\n\n";
-    out << "# interactive todo style\n";
-    for (const auto& item : planner.items) {
-        out << item.action << " " << item.sha << " " << item.title << "\n";
-    }
-    if (planner.items.empty()) {
-        out << "(no plan items)\n";
-    }
-    return out.str();
-}
-
-auto BuildRebasePlanner(const std::filesystem::path& repo, const RebasePreflightState& pre) -> RebasePlannerState {
-    RebasePlannerState planner;
-    planner.active = true;
-    planner.repo = repo;
-    planner.baseRef = pre.upstream != "(none)" ? pre.upstream : (pre.branch == "main" ? "main" : "master");
-    planner.selectedIndex = 0;
-
-    for (const auto& line : pre.candidates) {
-        const auto sp = line.find(' ');
-        if (sp == std::string::npos) {
-            continue;
-        }
-        RebasePlanItem item;
-        item.sha = line.substr(0, sp);
-        item.title = line.substr(sp + 1);
-        item.action = "pick";
-        planner.items.push_back(std::move(item));
-    }
-
-    planner.preview = BuildRebasePlanPreview(planner);
-    return planner;
-}
-
 auto RunRebaseContinue(const std::filesystem::path& repo) -> shell::ExecResult {
     return GitCapture(repo, {"rebase", "--continue"});
 }
@@ -1952,7 +2128,7 @@ auto BuildDisplayedRepoIndices(const std::vector<RepoView>& repos,
     for (std::size_t i = 0; i < repos.size(); ++i) {
         const auto& row = repos[i];
         bool hidden = false;
-        std::string cursor = row.parentRepo;
+        std::string cursor = row.parentIdentityKey;
         while (cursor != "(none)") {
             if (auto it = collapsedRoots.find(cursor); it != collapsedRoots.end() && it->second) {
                 hidden = true;
@@ -1960,8 +2136,8 @@ auto BuildDisplayedRepoIndices(const std::vector<RepoView>& repos,
             }
             std::string next = "(none)";
             for (const auto& parent : repos) {
-                if (CanonicalPathString(parent.path) == cursor) {
-                    next = parent.parentRepo;
+                if (CachedRepoIdentityKey(parent) == cursor) {
+                    next = parent.parentIdentityKey;
                     break;
                 }
             }
@@ -2029,8 +2205,13 @@ auto BuildDiscoverLines(const std::vector<RepoView>& repos, const std::filesyste
     return lines;
 }
 
-auto RunFtxuiDashboard(CLI::App& app) -> int {
+auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int {
     using namespace ftxui;
+
+    // Capture modes and code pages before any terminal mutation. The guard
+    // remains alive for the entire FTXUI event loop and restores every normal
+    // or exceptional exit path.
+    TuiTerminalModeGuard terminalModeGuard;
 
 #ifdef KOG_PLATFORM_WINDOWS
     // Ensure the Windows console interprets subprocess output as UTF-8.
@@ -2039,6 +2220,14 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
 #endif
+
+    const auto requestedTheme = ParseTuiThemeMode(InThemeName);
+    if (!requestedTheme.has_value()) {
+        throw std::invalid_argument(
+            "invalid TUI theme '" + std::string(InThemeName) +
+            "' (expected auto, dark, light, or mono)");
+    }
+    const auto resolvedTheme = ResolveTuiThemeFromEnvironment(*requestedTheme);
 
     bool dirtyOnly = false;
     bool filterMode = false;
@@ -2049,12 +2238,15 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
     std::vector<int> displayedRepoIndices;
     std::vector<std::string> menu;
     int selectedDisplayed = 0;
-    std::string footer = "startup: cached repo snapshot loaded | r refresh repo | :refresh | :discover | :init | Enter history | q quit";
+    std::string footer = "startup: cached repo snapshot ready | theme " +
+        std::string(TuiThemeModeName(resolvedTheme.effectiveMode)) + " | " +
+        std::string(GetTuiKeyGuidance(TuiKeyContext::Normal).controls);
     bool footerIsError = false;
     HistoryState history{};
     PreviewPanelState preview{};
     ConfirmState confirm{};
-    CommandScopeMode commandScope = CommandScopeMode::Workspace;
+    TuiCommandScopeMode commandScope =
+        TuiCommandScopeMode::Workspace;
     CherryPickPreflightState cherry{};
     CherryPickRunnerState cherryRun{};
     RebasePreflightState rebase{};
@@ -2063,26 +2255,27 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
     DiscoverPagerState discover{};
     std::unordered_map<std::string, RepoHistoryCache> historyCache;
     AsyncWorkState asyncState{};
+    TuiAsyncLifecycleState asyncLifecycle{};
     std::mutex asyncMu;
     std::thread asyncWorker;
+    std::atomic<bool> asyncCancelRequested{false};
 
     auto reportStartupProgress = [](const std::string& InMessage) {
         std::cerr << "[tui] " << InMessage << std::endl;
     };
 
-    const Decorator kTitleStyle = [](Element element) { return element | bold | color(Color::RGB(235, 235, 235)); };
-    const Decorator kSectionTitleStyle = [](Element element) { return element | bold | color(Color::RGB(255, 215, 120)); };
-    const Decorator kInfoStyle = [](Element element) { return element | color(Color::RGB(140, 210, 255)); };
-    const Decorator kSecondaryStyle = [](Element element) { return element | color(Color::RGB(210, 210, 210)); };
-    const Decorator kMutedStyle = [](Element element) { return element | color(Color::RGB(180, 180, 180)); };
-    const Decorator kSuccessStyle = [](Element element) { return element | color(Color::RGB(120, 230, 140)); };
-    const Decorator kWarningStyle = [](Element element) { return element | color(Color::RGB(255, 210, 80)); };
-    const Decorator kErrorStyle = [](Element element) { return element | color(Color::RGB(255, 110, 110)); };
-    const Decorator kRunningStyle = [](Element element) { return element | color(Color::RGB(120, 220, 255)); };
-    const Decorator kSelectedStyle = [](Element element) {
-        return element | bold | color(Color::White) | bgcolor(Color::RGB(50, 90, 160));
-    };
-    const Decorator kHighlightStyle = [](Element element) { return element | bold | color(Color::RGB(120, 220, 255)); };
+    const Decorator kPrimaryStyle = MakeTuiDecorator(resolvedTheme.palette.primary);
+    const Decorator kTitleStyle = MakeTuiDecorator(resolvedTheme.palette.title);
+    const Decorator kSectionTitleStyle = MakeTuiDecorator(resolvedTheme.palette.sectionTitle);
+    const Decorator kInfoStyle = MakeTuiDecorator(resolvedTheme.palette.info);
+    const Decorator kSecondaryStyle = MakeTuiDecorator(resolvedTheme.palette.secondary);
+    const Decorator kMutedStyle = MakeTuiDecorator(resolvedTheme.palette.muted);
+    const Decorator kSuccessStyle = MakeTuiDecorator(resolvedTheme.palette.success);
+    const Decorator kWarningStyle = MakeTuiDecorator(resolvedTheme.palette.warning);
+    const Decorator kErrorStyle = MakeTuiDecorator(resolvedTheme.palette.error);
+    const Decorator kRunningStyle = MakeTuiDecorator(resolvedTheme.palette.running);
+    const Decorator kSelectedStyle = MakeTuiDecorator(resolvedTheme.palette.selected);
+    const Decorator kHighlightStyle = MakeTuiDecorator(resolvedTheme.palette.highlight);
     const Decorator kPlainStyle = [](Element element) { return element; };
 
     enum class StatusTone {
@@ -2243,10 +2436,8 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
     };
 
     reportStartupProgress("starting dashboard initialization");
-    reportStartupProgress("loading workspace repositories");
-    repos = DiscoverRepoViews(dirtyOnly, false, false, [&](const std::string& InMessage) {
-        reportStartupProgress(InMessage);
-    });
+    reportStartupProgress("loading cached workspace snapshot");
+    repos = LoadStartupRepoViews(workspaceRoot);
     reportStartupProgress("loaded " + std::to_string(repos.size()) + " repositories");
     
     // Initialize TUI command input system
@@ -2255,9 +2446,7 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
         reportStartupProgress("initializing command input system");
         auto metadata_cache = std::make_shared<kano::git::commands::MetadataCache>(app);
         auto autocomplete_engine = std::make_shared<kano::git::commands::AutocompleteEngine>(metadata_cache);
-        auto command_executor = std::make_shared<kano::git::commands::CommandExecutor>(app, std::filesystem::current_path());
         tui_state.autocomplete_engine = autocomplete_engine;
-        tui_state.command_executor = command_executor;
         reportStartupProgress("command input system ready");
     } catch (const std::exception& e) {
         std::cerr << "Failed to initialize TUI command input system: " << e.what() << std::endl;
@@ -2273,7 +2462,7 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
         displayedRepoIndices.reserve(candidateIndices.size());
         for (const auto idx : candidateIndices) {
             const auto& repo = repos[idx];
-            const auto normalized = CanonicalPathString(repo.path);
+            const auto normalized = CachedRepoIdentityKey(repo);
             const auto displayPath = DisplayRepoPath(workspaceRoot, repo.path);
             const auto filterNeedle = ToLowerAscii(repoFilter);
             if (!repoFilter.empty() && ToLowerAscii(normalized).find(filterNeedle) == std::string::npos && ToLowerAscii(displayPath).find(filterNeedle) == std::string::npos) {
@@ -2282,7 +2471,7 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
             displayedRepoIndices.push_back(idx);
             const auto& path = displayPath;
             std::string indent(static_cast<std::size_t>(repo.treeDepth * 2), ' ');
-            const bool collapsed = collapsedRoots[CanonicalPathString(repo.path)];
+            const bool collapsed = collapsedRoots[CachedRepoIdentityKey(repo)];
             const std::string marker = repo.childRepoCount > 0 ? (collapsed ? "[+] " : "[-] ") : "    ";
             const std::string typeTag = RepoTypeTag(repo.type);
             if (repo.type == "registered-uninit") {
@@ -2301,17 +2490,11 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
         }
     };
 
-    auto refresh_all = [&] {
-        repos = DiscoverRepoViews(dirtyOnly, false, true);
-        refresh_menu();
-        historyCache.clear();
-    };
-
     auto history_page_slice = [&](const RepoHistoryCache& cache, const int PageIndex) -> std::vector<RepoHistoryCache::HistoryEntry> {
         if (cache.allEntries.empty() || PageIndex < 0) {
             return {};
         }
-        const int pageSize = ComputeHistoryPageSize();
+        const int pageSize = std::max(5, history.pageSize);
         const int start = PageIndex * pageSize;
         const int end = std::min(start + pageSize, static_cast<int>(cache.allEntries.size()));
         if (start >= end || start < 0) {
@@ -2322,25 +2505,15 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
 
     refresh_menu();
 
-    auto ensure_history_loaded = [&](const int RepoIndex, const int PageIndex) {
-        if (RepoIndex < 0 || RepoIndex >= static_cast<int>(repos.size()) || PageIndex < 0) {
-            return;
-        }
-        const auto key = CanonicalPathString(repos[RepoIndex].path);
-        auto& cache = historyCache[key];
-        if (!cache.fullyLoaded) {
-            cache.allEntries = FetchAllHistory(repos[RepoIndex]);
-            cache.totalCommits = FetchTotalCommitCount(repos[RepoIndex].path);
-            cache.fullyLoaded = true;
-        }
-    };
+    std::function<void(int, int)> ensure_history_loaded;
+    std::function<bool(int, const RepoHistoryCache::HistoryEntry&, int)> begin_async_history_detail;
 
     auto current_history_entries = [&]() -> std::vector<RepoHistoryCache::HistoryEntry> {
         if (!history.active || repos.empty() || history.repoIndex < 0 || history.repoIndex >= static_cast<int>(repos.size())) {
             return {};
         }
         ensure_history_loaded(history.repoIndex, history.pageIndex);
-        const auto key = CanonicalPathString(repos[history.repoIndex].path);
+        const auto key = CachedRepoIdentityKey(repos[history.repoIndex]);
         auto itCache = historyCache.find(key);
         if (itCache == historyCache.end()) {
             return {};
@@ -2379,91 +2552,32 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
     auto selected_repo_key = [&]() -> std::string {
         const int idx = selected_repo_index();
         if (idx >= 0 && idx < static_cast<int>(repos.size())) {
-            return CanonicalPathString(repos[idx].path);
+            return CachedRepoIdentityKey(repos[idx]);
         }
         return {};
     };
 
+    auto current_command_scope_snapshot =
+        [&]() -> TuiCommandScopeSnapshot {
+        return {
+            .mode = commandScope,
+            .workspaceRoot = workspaceRoot,
+            .selectedRepoPath = selected_repo_path(),
+            .selectedRepoDisplay = selected_repo_display(),
+        };
+    };
+
     auto command_scope_label = [&]() -> std::string {
-        if (commandScope == CommandScopeMode::SelectedRepo) {
-            return "selected: " + selected_repo_display();
-        }
-        return "workspace: " + workspaceRoot.generic_string();
+        return BuildTuiCommandScopeLabel(
+            current_command_scope_snapshot());
     };
 
-    auto command_scope_repo = [&]() -> std::filesystem::path {
-        return commandScope == CommandScopeMode::SelectedRepo ? selected_repo_path() : workspaceRoot;
-    };
-
-    auto parse_command_line = [](const std::string& input) -> std::vector<std::string> {
-        std::vector<std::string> tokens;
-        std::string currentToken;
-        bool inQuotes = false;
-        bool escapeNext = false;
-        for (char ch : input) {
-            if (escapeNext) {
-                currentToken += ch;
-                escapeNext = false;
-                continue;
-            }
-            if (ch == '\\') {
-                escapeNext = true;
-                continue;
-            }
-            if (ch == '"' || ch == '\'') {
-                inQuotes = !inQuotes;
-                continue;
-            }
-            if (std::isspace(static_cast<unsigned char>(ch)) && !inQuotes) {
-                if (!currentToken.empty()) {
-                    tokens.push_back(currentToken);
-                    currentToken.clear();
-                }
-                continue;
-            }
-            currentToken += ch;
-        }
-        if (!currentToken.empty()) {
-            tokens.push_back(currentToken);
-        }
-        return tokens;
-    };
-
-    auto command_supports_target_scope = [](const std::string& command) {
-        return command == "commit" || command == "ca" || command == "commit-push" || command == "cp" || command == "cpa" || command == "push" || command == "log" || command == "slog" || command == "amend";
-    };
-
-    auto has_option = [](const std::vector<std::string>& args, const std::string& longOpt, const std::string& shortOpt = std::string()) {
-        for (const auto& arg : args) {
-            if (arg == longOpt || (!shortOpt.empty() && arg == shortOpt)) {
-                return true;
-            }
-            if (arg.rfind(longOpt + "=", 0) == 0) {
-                return true;
-            }
-        }
-        return false;
-    };
-
-    std::function<bool(const std::filesystem::path&, const std::vector<std::string>&, const std::string&, const std::string&)> begin_async_cli_command;
-
-    auto build_scoped_command_args = [&](const std::string& commandLine) -> std::optional<std::pair<std::filesystem::path, std::vector<std::string>>> {
-        auto tokens = parse_command_line(commandLine);
-        if (tokens.empty()) {
-            return std::nullopt;
-        }
-
-        std::vector<std::string> commandArgs = tokens;
-        const auto& command = tokens.front();
-        if (commandScope == CommandScopeMode::SelectedRepo && command_supports_target_scope(command)) {
-            if (!has_option(tokens, "--repos") && !has_option(tokens, "--repo") && !has_option(tokens, "--repo-root") && !has_option(tokens, "--root") && !has_option(tokens, "--source") && !has_option(tokens, "--target")) {
-                commandArgs.push_back("--repo-root");
-                commandArgs.push_back(workspaceRoot.generic_string());
-                commandArgs.push_back(selected_repo_display());
-            }
-        }
-        return std::make_pair(command_scope_repo(), commandArgs);
-    };
+    std::function<bool(
+        const std::filesystem::path&,
+        const std::vector<std::string>&,
+        const std::string&,
+        const std::string&,
+        const std::string&)> begin_async_cli_command;
 
     auto screen = ScreenInteractive::Fullscreen();
     screen.TrackMouse(false);
@@ -2482,15 +2596,27 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
         }
     };
 
-    auto begin_async_operation = [&](const std::string& InLabel,
-                                     const std::function<void()>& InWorkerBody) -> bool {
+    auto begin_async_operation = [&](
+                                     const std::string& InLabel,
+                                     const TuiAsyncSurface InSurface,
+                                     const std::function<void(std::uint64_t)>&
+                                         InWorkerBody,
+                                     const bool bInCancellable = false)
+        -> bool {
+        std::uint64_t generation = 0;
         {
             std::lock_guard<std::mutex> lock(asyncMu);
-            if (asyncState.busy) {
+            const auto started = TryBeginTuiAsyncOperation(
+                asyncLifecycle,
+                InSurface,
+                bInCancellable);
+            if (!started.has_value()) {
                 footer = asyncState.label.empty() ? "background operation already running" : (asyncState.label + " already running");
                 return false;
             }
+            generation = *started;
             asyncState = AsyncWorkState{};
+            asyncState.generation = generation;
             asyncState.busy = true;
             asyncState.label = InLabel;
             asyncState.progress = InLabel + "...";
@@ -2498,42 +2624,286 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
         if (asyncWorker.joinable()) {
             asyncWorker.join();
         }
-        asyncWorker = std::thread([&, InWorkerBody]() {
-            InWorkerBody();
+        asyncCancelRequested.store(false);
+        asyncWorker = std::thread(
+            [&, InWorkerBody, generation, InLabel, bInCancellable]() {
+            const TuiGitProbeControl workerProbeControl{
+                .isCancelled = [&, bInCancellable]() {
+                    return bInCancellable &&
+                        asyncCancelRequested.load();
+                },
+            };
+            const ScopedTuiGitProbeControl scopedProbeControl{
+                workerProbeControl};
+            try {
+                InWorkerBody(generation);
+            } catch (const std::exception& exception) {
+                std::lock_guard<std::mutex> lock(asyncMu);
+                if (IsCurrentTuiAsyncOperation(
+                        asyncLifecycle,
+                        generation)) {
+                    asyncState.hasError = true;
+                    asyncState.errorMessage =
+                        InLabel + " failed: " + exception.what();
+                }
+            } catch (...) {
+                std::lock_guard<std::mutex> lock(asyncMu);
+                if (IsCurrentTuiAsyncOperation(
+                        asyncLifecycle,
+                        generation)) {
+                    asyncState.hasError = true;
+                    asyncState.errorMessage =
+                        InLabel + " failed: unknown error";
+                }
+            }
             request_async_ui_tick();
         });
+        return true;
+    };
+
+    ensure_history_loaded = [&](const int RepoIndex, const int PageIndex) {
+        if (RepoIndex < 0 || RepoIndex >= static_cast<int>(repos.size()) || PageIndex < 0) {
+            return;
+        }
+        const auto key = CachedRepoIdentityKey(repos[RepoIndex]);
+        auto& cache = historyCache[key];
+        if (cache.allEntries.empty() && cache.loadError.empty() &&
+            HasDirtyHistoryEntry(repos[RepoIndex])) {
+            RepoHistoryCache::HistoryEntry dirtyEntry;
+            dirtyEntry.isDirtyWorkingTree = true;
+            dirtyEntry.sha = "(dirty)";
+            dirtyEntry.subject = "dirty working tree";
+            dirtyEntry.globalIndex = 1;
+            dirtyEntry.displayLine = BuildHistoryDisplayLine(dirtyEntry);
+            cache.allEntries.push_back(std::move(dirtyEntry));
+        }
+
+        const auto fetchPlan = PlanBoundedHistoryFetch(
+            PageIndex,
+            std::max(5, history.pageSize),
+            static_cast<int>(cache.allEntries.size()));
+        if (cache.fullyLoaded || cache.loading || !cache.loadError.empty() ||
+            static_cast<int>(cache.allEntries.size()) >= fetchPlan.requiredEntries) {
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(asyncMu);
+            if (asyncState.busy) {
+                return;
+            }
+        }
+
+        const int loadedCommits = static_cast<int>(std::count_if(
+            cache.allEntries.begin(),
+            cache.allEntries.end(),
+            [](const RepoHistoryCache::HistoryEntry& InEntry) {
+                return !InEntry.isDirtyWorkingTree;
+            }));
+        const auto repo = repos[RepoIndex];
+        const auto anchorSha = cache.anchorSha;
+        if (!begin_async_operation(
+                "history page",
+                TuiAsyncSurface::HistoryPage,
+                [&, repo, key, PageIndex, loadedCommits, fetchPlan, anchorSha](
+                    const std::uint64_t InGeneration) {
+                    auto batch = asyncCancelRequested.load()
+                        ? HistoryBatchResult{
+                              .errorMessage = "history load cancelled",
+                          }
+                        : FetchTuiHistoryBatch(
+                              repo.path,
+                              loadedCommits,
+                              fetchPlan.fetchCount,
+                              anchorSha,
+                              TuiGitProbeControl{
+                                  .isCancelled = [&]() {
+                                      return asyncCancelRequested.load();
+                                  },
+                              });
+                    if (asyncCancelRequested.load()) {
+                        batch.entries.clear();
+                        batch.errorMessage = "history load cancelled";
+                    }
+                    std::lock_guard<std::mutex> lock(asyncMu);
+                    if (!IsCurrentTuiAsyncOperation(
+                            asyncLifecycle,
+                            InGeneration)) {
+                        return;
+                    }
+                    asyncState.refreshHistory = true;
+                    asyncState.historyRepoKey = key;
+                    asyncState.historyPageIndex = PageIndex;
+                    asyncState.historyBatch = std::move(batch);
+                    asyncState.hasResult = true;
+                    asyncState.completionFooter =
+                        asyncState.historyBatch.errorMessage.empty()
+                        ? "history page loaded"
+                        : asyncState.historyBatch.errorMessage;
+                },
+                true)) {
+            return;
+        }
+        cache.loading = true;
+        {
+            std::lock_guard<std::mutex> lock(asyncMu);
+            cache.loadingGeneration = asyncState.generation;
+        }
+        cache.loadingPageIndex = PageIndex;
+        footer = "loading bounded history page in background; Esc/q returns immediately";
+        footerIsError = false;
+    };
+
+    begin_async_history_detail = [&](
+                                     const int RepoIndex,
+                                     const RepoHistoryCache::HistoryEntry& InEntry,
+                                     const int InMode) -> bool {
+        if (RepoIndex < 0 || RepoIndex >= static_cast<int>(repos.size())) {
+            return false;
+        }
+        const auto repoKey = CachedRepoIdentityKey(repos[RepoIndex]);
+        const auto detailKey =
+            (InEntry.isDirtyWorkingTree ? DirtyCachePrefix() : InEntry.sha) +
+            "|" + std::to_string(InMode);
+        if (historyCache[repoKey].detailOverlays.contains(detailKey)) {
+            return true;
+        }
+        {
+            std::lock_guard<std::mutex> lock(asyncMu);
+            if (asyncState.busy) {
+                footer = "detail waits for the current background operation";
+                footerIsError = false;
+                return false;
+            }
+        }
+
+        const auto repo = repos[RepoIndex];
+        const auto entry = InEntry;
+        if (!begin_async_operation(
+                "history detail",
+                TuiAsyncSurface::HistoryDetail,
+                [&, repo, entry, repoKey, detailKey, InMode](
+                    const std::uint64_t InGeneration) {
+                    RepoHistoryCache::DetailOverlayData overlay;
+                    std::string error;
+                    if (asyncCancelRequested.load()) {
+                        error = "history detail load cancelled";
+                    } else {
+                        try {
+                            overlay = BuildHistoryDetailOverlay(
+                                repo.path,
+                                repo,
+                                entry,
+                                InMode,
+                                [&]() {
+                                    return asyncCancelRequested.load();
+                                });
+                            if (asyncCancelRequested.load()) {
+                                error = "history detail load cancelled";
+                            }
+                        } catch (const std::exception& exception) {
+                            error =
+                                std::string("history detail load failed: ") +
+                                exception.what();
+                        }
+                    }
+                    std::lock_guard<std::mutex> lock(asyncMu);
+                    if (!IsCurrentTuiAsyncOperation(
+                            asyncLifecycle,
+                            InGeneration)) {
+                        return;
+                    }
+                    asyncState.refreshHistoryDetail = true;
+                    asyncState.historyDetailRepoKey = repoKey;
+                    asyncState.historyDetailKey = detailKey;
+                    asyncState.historyDetailOverlay = std::move(overlay);
+                    asyncState.historyDetailError = std::move(error);
+                    asyncState.hasResult = true;
+                    asyncState.completionFooter =
+                        asyncState.historyDetailError.empty()
+                        ? "history detail loaded"
+                        : asyncState.historyDetailError;
+                },
+                true)) {
+            return false;
+        }
+        history.detailLoading = true;
+        {
+            std::lock_guard<std::mutex> lock(asyncMu);
+            history.detailPendingGeneration = asyncState.generation;
+        }
+        history.detailPendingKey = detailKey;
+        history.detailError.clear();
+        footer = "loading commit detail in background; Esc/q returns immediately";
+        footerIsError = false;
         return true;
     };
 
     begin_async_cli_command = [&](const std::filesystem::path& InRepo,
                                   const std::vector<std::string>& InArgs,
                                   const std::string& InCommandText,
-                                  const std::string& InLabel) {
-        const auto repoKey = CanonicalPathString(InRepo);
+                                  const std::string& InLabel,
+                                  const std::string& InScopeLabel) {
+        const auto requestedRepoKey = ResolveStableRepoIdentityKey(InRepo);
         const auto repoDisplay = DisplayRepoPath(workspaceRoot, InRepo);
+        std::optional<RepoView> repoSnapshot;
+        if (const auto repoIt = std::find_if(
+                repos.begin(),
+                repos.end(),
+                [&](const RepoView& InRow) {
+                    return CachedRepoIdentityKey(InRow) ==
+                        requestedRepoKey;
+                });
+            repoIt != repos.end()) {
+            repoSnapshot = *repoIt;
+        }
+        const auto repoKey = repoSnapshot.has_value()
+            ? CachedRepoIdentityKey(*repoSnapshot)
+            : requestedRepoKey;
         preview.active = true;
         preview.running = true;
         preview.isError = false;
         preview.autoCloseAfterRefresh = false;
         preview.title = InLabel;
-        preview.body = "state: running\nrepo: " + InRepo.lexically_normal().generic_string() + "\nscope: " + command_scope_label() + "\ncommand: " + InCommandText + "\n\n(waiting for command output...)";
-        if (!begin_async_operation(InLabel, [&, InRepo, InArgs, InCommandText, InLabel, repoKey, repoDisplay]() {
-                const auto result = shell::ExecuteCommand(ResolveKanoGitBinaryCommand(), InArgs, shell::ExecMode::Capture, InRepo);
+        preview.body = "state: running\nrepo: " + InRepo.lexically_normal().generic_string() + "\nscope: " + InScopeLabel + "\ncommand: " + InCommandText + "\n\n(waiting for command output...)";
+        if (!begin_async_operation(
+                InLabel,
+                TuiAsyncSurface::Preview,
+                [&, InRepo, InArgs, InCommandText, InLabel, repoKey,
+                 repoDisplay, InScopeLabel, repoSnapshot](
+                    const std::uint64_t InGeneration) {
+                if (asyncCancelRequested.load()) {
+                    throw std::runtime_error(
+                        "audit command cancelled before launch");
+                }
+                const auto result = shell::ExecuteCommand(
+                    ResolveKanoGitBinaryCommand(),
+                    InArgs,
+                    shell::ExecMode::Capture,
+                    InRepo,
+                    shell::ProgressCallback{},
+                    kTuiInteractiveReadTimeoutMs,
+                    shell::CaptureLimits{
+                        kTuiStatusMaxBytes,
+                        kTuiStatusMaxBytes});
                 std::string body = "repo: " + InRepo.lexically_normal().generic_string() + "\n"
-                    + "scope: " + command_scope_label() + "\n"
+                    + "scope: " + InScopeLabel + "\n"
                     + "command: " + InCommandText + "\n"
                     + "exit: " + std::to_string(result.exitCode) + "\n\n";
                 body += !result.stdoutStr.empty() ? result.stdoutStr : result.stderrStr;
+                if (result.stdoutTruncated || result.stderrTruncated) {
+                    body +=
+                        "\n\n... output truncated at the TUI audit budget";
+                }
                 std::optional<RepoView> refreshedRow;
-                if (result.exitCode == 0) {
-                    auto it = std::find_if(repos.begin(), repos.end(), [&](const RepoView& row) {
-                        return CanonicalPathString(row.path) == repoKey;
-                    });
-                    if (it != repos.end()) {
-                        refreshedRow = BuildLiveRepoView(workspaceRoot, *it);
-                    }
+                if (result.exitCode == 0 && repoSnapshot.has_value()) {
+                    refreshedRow = BuildLiveRepoView(workspaceRoot, *repoSnapshot);
                 }
                 std::lock_guard<std::mutex> lock(asyncMu);
+                if (!IsCurrentTuiAsyncOperation(
+                        asyncLifecycle,
+                        InGeneration)) {
+                    return;
+                }
                 asyncState.showPreview = true;
                 asyncState.previewTitle = InLabel + " result";
                 asyncState.previewBody = std::move(body);
@@ -2549,7 +2919,7 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                     asyncState.hasError = true;
                     asyncState.errorMessage = "command failed";
                 }
-            })) {
+            }, true)) {
             preview.active = false;
             preview.running = false;
             return false;
@@ -2562,19 +2932,35 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
     auto begin_async_refresh = [&](const bool InRefreshDiscoverPanel) {
         const bool discoverWasActive = discover.active;
         const bool discoverDirtyOnly = discover.dirtyOnly;
+        const bool refreshDirtyOnly = dirtyOnly;
         const std::string discoverTitle = discover.title.empty()
             ? (discoverDirtyOnly ? "discover (dirty-only)" : "discover")
             : discover.title;
-        if (!begin_async_operation("refresh", [&, discoverWasActive, discoverDirtyOnly, discoverTitle, InRefreshDiscoverPanel]() {
+        if (!begin_async_operation(
+                "refresh",
+                InRefreshDiscoverPanel && discoverWasActive
+                    ? TuiAsyncSurface::Discover
+                    : TuiAsyncSurface::None,
+                [&, discoverWasActive, discoverDirtyOnly, discoverTitle,
+                 refreshDirtyOnly, InRefreshDiscoverPanel](
+                    const std::uint64_t InGeneration) {
                 auto progressCallback = [&](const std::string& InMessage) {
+                    if (asyncCancelRequested.load()) {
+                        throw std::runtime_error("refresh cancelled");
+                    }
                     {
                         std::lock_guard<std::mutex> lock(asyncMu);
+                        if (!IsCurrentTuiAsyncOperation(
+                                asyncLifecycle,
+                                InGeneration)) {
+                            return;
+                        }
                         asyncState.progress = InMessage;
                     }
                     request_async_ui_tick();
                 };
                 try {
-                    const auto refreshedRepos = DiscoverRepoViews(dirtyOnly, false, true, progressCallback);
+                    const auto refreshedRepos = DiscoverRepoViews(refreshDirtyOnly, false, true, progressCallback);
                     std::vector<std::string> discoverLines;
                     if (InRefreshDiscoverPanel && discoverWasActive) {
                         progressCallback("discover: rebuilding paged output");
@@ -2582,6 +2968,11 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                         discoverLines = BuildDiscoverLines(discoveredRepos, workspaceRoot);
                     }
                     std::lock_guard<std::mutex> lock(asyncMu);
+                    if (!IsCurrentTuiAsyncOperation(
+                            asyncLifecycle,
+                            InGeneration)) {
+                        return;
+                    }
                     asyncState.repos = std::move(refreshedRepos);
                     asyncState.discoverLines = std::move(discoverLines);
                     asyncState.discoverTitle = discoverTitle;
@@ -2591,10 +2982,15 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                     asyncState.completionFooter = "live status refreshed";
                 } catch (const std::exception& e) {
                     std::lock_guard<std::mutex> lock(asyncMu);
+                    if (!IsCurrentTuiAsyncOperation(
+                            asyncLifecycle,
+                            InGeneration)) {
+                        return;
+                    }
                     asyncState.hasError = true;
                     asyncState.errorMessage = std::string("refresh failed: ") + e.what();
                 }
-            })) {
+            }, true)) {
             return;
         }
         footer = "refresh started in background";
@@ -2609,14 +3005,26 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
             return;
         }
 
-        const auto repoKey = CanonicalPathString(repos[selected].path);
+        const auto repoKey = CachedRepoIdentityKey(repos[selected]);
         const auto repoDisplay = DisplayRepoPath(workspaceRoot, repos[selected].path);
         const auto currentRow = repos[selected];
 
-        if (!begin_async_operation("repo refresh", [&, repoKey, repoDisplay, currentRow]() {
+        if (!begin_async_operation(
+                "repo refresh",
+                TuiAsyncSurface::None,
+                [&, repoKey, repoDisplay, currentRow](
+                    const std::uint64_t InGeneration) {
                 auto progressCallback = [&](const std::string& InMessage) {
+                    if (asyncCancelRequested.load()) {
+                        throw std::runtime_error("repo refresh cancelled");
+                    }
                     {
                         std::lock_guard<std::mutex> lock(asyncMu);
+                        if (!IsCurrentTuiAsyncOperation(
+                                asyncLifecycle,
+                                InGeneration)) {
+                            return;
+                        }
                         asyncState.progress = InMessage;
                     }
                     request_async_ui_tick();
@@ -2625,7 +3033,15 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                 try {
                     progressCallback("refreshing repo: " + repoDisplay);
                     auto refreshedRow = BuildLiveRepoView(workspaceRoot, currentRow);
+                    if (asyncCancelRequested.load()) {
+                        throw std::runtime_error("repo refresh cancelled");
+                    }
                     std::lock_guard<std::mutex> lock(asyncMu);
+                    if (!IsCurrentTuiAsyncOperation(
+                            asyncLifecycle,
+                            InGeneration)) {
+                        return;
+                    }
                     asyncState.refreshSelectedRepo = true;
                     asyncState.refreshedRepo = std::move(refreshedRow);
                     asyncState.refreshedRepoKey = repoKey;
@@ -2633,10 +3049,15 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                     asyncState.completionFooter = "repo refreshed: " + repoDisplay;
                 } catch (const std::exception& e) {
                     std::lock_guard<std::mutex> lock(asyncMu);
+                    if (!IsCurrentTuiAsyncOperation(
+                            asyncLifecycle,
+                            InGeneration)) {
+                        return;
+                    }
                     asyncState.hasError = true;
                     asyncState.errorMessage = std::string("repo refresh failed: ") + e.what();
                 }
-            })) {
+            }, true)) {
             footer = "repo refresh already running";
             footerIsError = false;
             return;
@@ -2659,15 +3080,20 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
             footerIsError = true;
             return false;
         }
-        if (row.parentRepo.empty()) {
+        if (row.parentRepo.empty() ||
+            row.parentRepo == "(none)") {
             footer = "submodule init: cannot determine parent repo";
             footerIsError = true;
             return false;
         }
         const auto parentPath = std::filesystem::path(row.parentRepo);
-        const auto relPath = row.path.lexically_relative(parentPath).generic_string();
+        const auto relPath = row.parentRelativePath.empty()
+            ? row.path.filename().generic_string()
+            : row.parentRelativePath;
         const std::string commandText = "git -C \"" + parentPath.generic_string() + "\" submodule update --init --progress -- \"" + relPath + "\"";
         const std::string label = "submodule init";
+        const bool discoverWasActive = discover.active;
+        const bool refreshDirtyOnly = dirtyOnly;
 
         preview.active = true;
         preview.running = true;
@@ -2679,9 +3105,12 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
             + "\ncommand: " + commandText
             + "\n\n(waiting for command output...)";
 
-        if (!begin_async_operation(label, [&, parentPath, relPath, commandText, label]() {
-                TerminalModeGuard terminalModeGuard;
-
+        if (!begin_async_operation(
+                label,
+                TuiAsyncSurface::Preview,
+                [&, parentPath, relPath, commandText, label,
+                 discoverWasActive, refreshDirtyOnly](
+                    const std::uint64_t InGeneration) {
                 // --- Phase 1: Submodule init with streaming progress ---
                 std::string streamOutput;
                 std::mutex streamMu;
@@ -2702,7 +3131,12 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                     bool shouldPost = true;
                     {
                         std::lock_guard<std::mutex> lock(asyncMu);
-                        if (asyncState.hasResult || asyncState.hasError) {
+                        if (!IsCurrentTuiAsyncOperation(
+                                asyncLifecycle,
+                                InGeneration) ||
+                            asyncLifecycle.bSurfaceDismissed ||
+                            asyncState.hasResult ||
+                            asyncState.hasError) {
                             shouldPost = false;
                         } else {
                             asyncState.previewBody = std::move(liveBody);
@@ -2736,7 +3170,12 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                     bool shouldPost = true;
                     {
                         std::lock_guard<std::mutex> lock(asyncMu);
-                        if (asyncState.hasResult || asyncState.hasError) {
+                        if (!IsCurrentTuiAsyncOperation(
+                                asyncLifecycle,
+                                InGeneration) ||
+                            asyncLifecycle.bSurfaceDismissed ||
+                            asyncState.hasResult ||
+                            asyncState.hasError) {
                             shouldPost = false;
                         } else {
                             asyncState.previewBody = InBody;
@@ -2827,8 +3266,11 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                         // Step 2d-i: Stash any residual files before checkout to avoid conflicts
                         bool stashCreated = false;
                         {
-                            const auto statusCheck = GitCapture(repoPath, {"status", "--porcelain"});
-                            if (statusCheck.exitCode == 0 && !Trim(statusCheck.stdoutStr).empty()) {
+                            const auto statusCheck = GitCapture(
+                                repoPath,
+                                {"status", "--porcelain=v1", "-z"});
+                            if (statusCheck.exitCode == 0 &&
+                                !statusCheck.stdoutStr.empty()) {
                                 const auto stash = GitCapture(repoPath, {"stash", "push", "--include-untracked", "-m", "kano-init-stash"});
                                 stashCreated = stash.exitCode == 0;
                                 branchLog += "stash: " + std::string(stashCreated ? "ok" : "failed") + "\n";
@@ -2900,11 +3342,19 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                     workspace::RefreshWorkspaceManifestAfterRegisteredChange(workspaceRoot);
 
                     postProgress(body + "\nreloading repo status...");
-                    refreshedRepos = DiscoverRepoViews(dirtyOnly, discover.active, true);
+                    refreshedRepos = DiscoverRepoViews(
+                        refreshDirtyOnly,
+                        discoverWasActive,
+                        true);
                 } catch (const std::exception& e) {
                     body += std::string("\n--- refresh ---\nfailed: ") + e.what() + "\n";
                     {
                         std::lock_guard<std::mutex> lock(asyncMu);
+                        if (!IsCurrentTuiAsyncOperation(
+                                asyncLifecycle,
+                                InGeneration)) {
+                            return;
+                        }
                         asyncState.showPreview = true;
                         asyncState.previewTitle = label + " failed";
                         asyncState.previewBody = std::move(body);
@@ -2919,6 +3369,11 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
 
                 {
                     std::lock_guard<std::mutex> lock(asyncMu);
+                    if (!IsCurrentTuiAsyncOperation(
+                            asyncLifecycle,
+                            InGeneration)) {
+                        return;
+                    }
                     asyncState.showPreview = true;
                     asyncState.previewTitle = label + (result.exitCode == 0 ? " complete" : " failed");
                     asyncState.previewBody = std::move(body);
@@ -2946,10 +3401,22 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
     };
 
     auto begin_async_discover = [&](const bool InDirtyOnly) {
-        if (!begin_async_operation("discover", [&, InDirtyOnly]() {
+        if (!begin_async_operation(
+                "discover",
+                TuiAsyncSurface::Discover,
+                [&, InDirtyOnly](
+                    const std::uint64_t InGeneration) {
                 auto progressCallback = [&](const std::string& InMessage) {
+                    if (asyncCancelRequested.load()) {
+                        throw std::runtime_error("discover cancelled");
+                    }
                     {
                         std::lock_guard<std::mutex> lock(asyncMu);
+                        if (!IsCurrentTuiAsyncOperation(
+                                asyncLifecycle,
+                                InGeneration)) {
+                            return;
+                        }
                         asyncState.progress = InMessage;
                     }
                     request_async_ui_tick();
@@ -2957,6 +3424,11 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                 try {
                     const auto discoveredRepos = DiscoverRepoViews(InDirtyOnly, true, true, progressCallback);
                     std::lock_guard<std::mutex> lock(asyncMu);
+                    if (!IsCurrentTuiAsyncOperation(
+                            asyncLifecycle,
+                            InGeneration)) {
+                        return;
+                    }
                     asyncState.discoverLines = BuildDiscoverLines(discoveredRepos, workspaceRoot);
                     asyncState.discoverTitle = InDirtyOnly ? "discover (dirty-only)" : "discover";
                     asyncState.refreshDiscover = true;
@@ -2964,10 +3436,15 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                     asyncState.completionFooter = "discover loaded: PgUp/PgDn page, [ prev, ] next, Esc/q close";
                 } catch (const std::exception& e) {
                     std::lock_guard<std::mutex> lock(asyncMu);
+                    if (!IsCurrentTuiAsyncOperation(
+                            asyncLifecycle,
+                            InGeneration)) {
+                        return;
+                    }
                     asyncState.hasError = true;
                     asyncState.errorMessage = std::string("discover failed: ") + e.what();
                 }
-            })) {
+            }, true)) {
             return;
         }
         discover.active = true;
@@ -2984,59 +3461,268 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
     process_async_state = [&]() {
         bool shouldRefreshMenu = false;
         bool shouldFinishWorker = false;
+        bool shouldExitAfterWorker = false;
+        bool historyCacheInvalidated = false;
         std::string nextFooter;
         std::string selectedRepoKeyBeforeApply;
+        std::string historyRepoKeyBeforeApply;
+        bool historyDetailWasActive = false;
         {
             std::lock_guard<std::mutex> lock(asyncMu);
             if (asyncState.busy) {
-                if (!asyncState.hasResult && !asyncState.hasError && asyncState.showPreview) {
+                if (!asyncState.hasResult &&
+                    !asyncState.hasError &&
+                    asyncState.showPreview &&
+                    asyncLifecycle.activeSurface ==
+                        TuiAsyncSurface::Preview &&
+                    !asyncLifecycle.bSurfaceDismissed) {
                     preview.body = asyncState.previewBody;
                     asyncState.showPreview = false;
                 }
-                if (asyncState.hasResult) {
-                    selectedRepoKeyBeforeApply = selected_repo_key();
-                    if (asyncState.refreshRepos) {
-                        repos = std::move(asyncState.repos);
-                        historyCache.clear();
-                        shouldRefreshMenu = true;
-                    }
-                    if (asyncState.refreshSelectedRepo) {
-                        const auto repoKey = asyncState.refreshedRepoKey;
-                        auto it = std::find_if(repos.begin(), repos.end(), [&](const RepoView& row) {
-                            return CanonicalPathString(row.path) == repoKey;
-                        });
-                        if (it != repos.end()) {
-                            *it = asyncState.refreshedRepo;
-                            repos = FinalizeRepoTree(std::move(repos));
-                            historyCache.erase(repoKey);
-                            shouldRefreshMenu = true;
+                if (asyncState.hasResult || asyncState.hasError) {
+                    const auto completedSurface =
+                        asyncLifecycle.activeSurface;
+                    const auto completedGeneration =
+                        asyncState.generation;
+                    const auto completion =
+                        CompleteTuiAsyncOperation(
+                            asyncLifecycle,
+                            completedGeneration);
+                    if (completion.bMatchesActive) {
+                        if (asyncState.hasResult &&
+                            completion.bApplyPayload) {
+                            selectedRepoKeyBeforeApply =
+                                selected_repo_key();
+                            if (history.active &&
+                                history.repoIndex >= 0 &&
+                                history.repoIndex <
+                                    static_cast<int>(
+                                        repos.size())) {
+                                historyRepoKeyBeforeApply =
+                                    CachedRepoIdentityKey(
+                                        repos[history.repoIndex]);
+                                historyDetailWasActive =
+                                    history.detailActive;
+                            }
+                            if (asyncState.refreshRepos) {
+                                repos = std::move(asyncState.repos);
+                                historyCache.clear();
+                                historyCacheInvalidated = true;
+                                shouldRefreshMenu = true;
+                            }
+                            if (asyncState.refreshSelectedRepo) {
+                                const auto repoKey =
+                                    asyncState.refreshedRepoKey;
+                                auto it = std::find_if(
+                                    repos.begin(),
+                                    repos.end(),
+                                    [&](const RepoView& row) {
+                                        return CachedRepoIdentityKey(
+                                                   row) ==
+                                            repoKey;
+                                    });
+                                if (it != repos.end()) {
+                                    *it = asyncState.refreshedRepo;
+                                    repos = FinalizeRepoTree(
+                                        std::move(repos));
+                                    historyCache.erase(repoKey);
+                                    historyCacheInvalidated =
+                                        historyCacheInvalidated ||
+                                        (!historyRepoKeyBeforeApply
+                                             .empty() &&
+                                         repoKey ==
+                                             historyRepoKeyBeforeApply);
+                                    shouldRefreshMenu = true;
+                                }
+                            }
+                            if (asyncState.refreshHistory) {
+                                auto cacheIt = historyCache.find(
+                                    asyncState.historyRepoKey);
+                                if (cacheIt != historyCache.end()) {
+                                    auto& cache = cacheIt->second;
+                                    if (cache.loadingGeneration ==
+                                        completedGeneration) {
+                                        cache.loading = false;
+                                        cache.loadingGeneration = 0;
+                                        cache.loadingPageIndex = -1;
+                                    }
+                                    auto& batch =
+                                        asyncState.historyBatch;
+                                    if (!batch.errorMessage.empty()) {
+                                        if (batch.errorMessage.find(
+                                                "cancelled") ==
+                                            std::string::npos) {
+                                            cache.loadError =
+                                                batch.errorMessage;
+                                            cache.fullyLoaded = true;
+                                        }
+                                    } else {
+                                        if (!batch.anchorSha.empty()) {
+                                            cache.anchorSha =
+                                                batch.anchorSha;
+                                        }
+                                        for (auto& entry :
+                                             batch.entries) {
+                                            entry.globalIndex =
+                                                static_cast<int>(
+                                                    cache.allEntries
+                                                        .size()) +
+                                                1;
+                                            entry.displayLine =
+                                                BuildHistoryDisplayLine(
+                                                    entry);
+                                            cache.allEntries.push_back(
+                                                std::move(entry));
+                                        }
+                                        cache.fullyLoaded =
+                                            batch.reachedEnd;
+                                        if (cache.fullyLoaded) {
+                                            const int totalEntries =
+                                                static_cast<int>(
+                                                    cache.allEntries
+                                                        .size());
+                                            for (auto& entry :
+                                                 cache.allEntries) {
+                                                entry.totalCount =
+                                                    totalEntries;
+                                                entry.displayLine =
+                                                    BuildHistoryDisplayLine(
+                                                        entry);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if (asyncState.refreshHistoryDetail) {
+                                if (asyncState.historyDetailError
+                                        .empty()) {
+                                    historyCache
+                                        [asyncState
+                                             .historyDetailRepoKey]
+                                            .detailOverlays.put(
+                                                asyncState
+                                                    .historyDetailKey,
+                                                std::move(
+                                                    asyncState
+                                                        .historyDetailOverlay));
+                                }
+                                if (history
+                                            .detailPendingGeneration ==
+                                        completedGeneration &&
+                                    history.detailPendingKey ==
+                                        asyncState
+                                            .historyDetailKey) {
+                                    history.detailLoading = false;
+                                    history.detailPendingGeneration =
+                                        0;
+                                    if (completion
+                                            .bPresentSurface) {
+                                        history.detailError =
+                                            asyncState
+                                                .historyDetailError;
+                                    }
+                                }
+                            }
+                            if (asyncState.refreshDiscover &&
+                                completion.bPresentSurface &&
+                                completedSurface ==
+                                    TuiAsyncSurface::Discover) {
+                                discover.active = true;
+                                discover.loading = false;
+                                discover.title =
+                                    asyncState.discoverTitle;
+                                discover.lines = std::move(
+                                    asyncState.discoverLines);
+                                discover.progress.clear();
+                                const int totalPages = std::max(
+                                    1,
+                                    static_cast<int>(
+                                        (discover.lines.size() +
+                                         static_cast<std::size_t>(
+                                             discover.pageSize) -
+                                         1) /
+                                        static_cast<std::size_t>(
+                                            discover.pageSize)));
+                                discover.pageIndex = std::clamp(
+                                    discover.pageIndex,
+                                    0,
+                                    totalPages - 1);
+                            }
+                            if (asyncState.showPreview &&
+                                completion.bPresentSurface &&
+                                completedSurface ==
+                                    TuiAsyncSurface::Preview) {
+                                preview.active = true;
+                                preview.running = false;
+                                preview.isError =
+                                    asyncState.hasError;
+                                preview.autoCloseAfterRefresh =
+                                    asyncState
+                                        .previewAutoCloseAfterRefresh;
+                                preview.title =
+                                    asyncState.previewTitle;
+                                preview.body =
+                                    asyncState.previewBody;
+                            }
                         }
+
+                        if (asyncState.hasError &&
+                            !asyncState.hasResult) {
+                            if (completedSurface ==
+                                TuiAsyncSurface::HistoryPage) {
+                                for (auto& [_, cache] :
+                                     historyCache) {
+                                    if (cache.loadingGeneration !=
+                                        completedGeneration) {
+                                        continue;
+                                    }
+                                    cache.loading = false;
+                                    cache.loadingGeneration = 0;
+                                    cache.loadingPageIndex = -1;
+                                    cache.loadError =
+                                        asyncState.errorMessage;
+                                }
+                            } else if (
+                                completedSurface ==
+                                    TuiAsyncSurface::
+                                        HistoryDetail &&
+                                history
+                                        .detailPendingGeneration ==
+                                    completedGeneration) {
+                                history.detailLoading = false;
+                                history.detailPendingGeneration = 0;
+                                if (completion
+                                        .bPresentSurface) {
+                                    history.detailError =
+                                        asyncState.errorMessage;
+                                }
+                            } else if (
+                                completedSurface ==
+                                    TuiAsyncSurface::Discover &&
+                                completion.bPresentSurface) {
+                                discover.loading = false;
+                                discover.progress.clear();
+                            } else if (
+                                completedSurface ==
+                                    TuiAsyncSurface::Preview &&
+                                completion.bPresentSurface) {
+                                preview.running = false;
+                                preview.isError = true;
+                                preview.body =
+                                    asyncState.errorMessage;
+                            }
+                        }
+
+                        nextFooter = asyncState.hasResult
+                            ? (asyncState.completionFooter.empty()
+                                   ? "background operation complete"
+                                   : asyncState.completionFooter)
+                            : asyncState.errorMessage;
+                        shouldExitAfterWorker =
+                            completion.bExitNow;
+                        asyncState = AsyncWorkState{};
+                        shouldFinishWorker = true;
                     }
-                    if (asyncState.refreshDiscover) {
-                        discover.active = true;
-                        discover.loading = false;
-                        discover.title = asyncState.discoverTitle;
-                        discover.lines = std::move(asyncState.discoverLines);
-                        discover.progress.clear();
-                        const int totalPages = std::max(1, static_cast<int>((discover.lines.size() + static_cast<std::size_t>(discover.pageSize) - 1) / static_cast<std::size_t>(discover.pageSize)));
-                        discover.pageIndex = std::clamp(discover.pageIndex, 0, totalPages - 1);
-                    }
-                    if (asyncState.showPreview) {
-                        preview.active = true;
-                        preview.running = false;
-                        preview.isError = asyncState.hasError;
-                        preview.autoCloseAfterRefresh = asyncState.previewAutoCloseAfterRefresh;
-                        preview.title = asyncState.previewTitle;
-                        preview.body = asyncState.previewBody;
-                    }
-                    nextFooter = asyncState.completionFooter.empty() ? "background operation complete" : asyncState.completionFooter;
-                    asyncState = AsyncWorkState{};
-                    shouldFinishWorker = true;
-                } else if (asyncState.hasError) {
-                    discover.loading = false;
-                    nextFooter = asyncState.errorMessage;
-                    asyncState = AsyncWorkState{};
-                    shouldFinishWorker = true;
                 } else {
                     if (discover.loading) {
                         discover.progress = asyncState.progress;
@@ -3051,13 +3737,55 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
         }
         if (shouldRefreshMenu) {
             refresh_menu();
+            if (!historyRepoKeyBeforeApply.empty()) {
+                std::vector<std::string> refreshedRepoKeys;
+                refreshedRepoKeys.reserve(repos.size());
+                for (const auto& repo : repos) {
+                    refreshedRepoKeys.push_back(
+                        CachedRepoIdentityKey(repo));
+                }
+                const auto reconciliation = ReconcileHistoryAfterRepoRefresh(
+                    historyRepoKeyBeforeApply,
+                    refreshedRepoKeys);
+                if (reconciliation.bCloseHistory || !reconciliation.newRepoIndex.has_value()) {
+                    history.active = false;
+                    history.detailActive = false;
+                    history.detailLoading = false;
+                    history.detailPendingGeneration = 0;
+                    history.detailSha.clear();
+                    history.detailPendingKey.clear();
+                    history.detailError.clear();
+                    history.detailSelectedSection = 0;
+                    history.detailPageIndex = 0;
+                    nextFooter = "refresh complete: active history repository is no longer available";
+                } else {
+                    history.repoIndex = static_cast<int>(*reconciliation.newRepoIndex);
+                    if (historyCacheInvalidated && reconciliation.bCloseDetail) {
+                        history.pageIndex = 0;
+                        history.selectedLine = 0;
+                        history.highlightedLine = -1;
+                        history.detailActive = false;
+                        history.detailLoading = false;
+                        history.detailPendingGeneration = 0;
+                        history.detailSha.clear();
+                        history.detailPendingKey.clear();
+                        history.detailError.clear();
+                        history.detailSelectedSection = 0;
+                        history.detailPageIndex = 0;
+                        if (historyDetailWasActive) {
+                            nextFooter = "refresh complete: repository history remapped; reopen commit detail with Enter";
+                        }
+                    }
+                }
+            }
             const auto keyToRestore = selectedRepoKeyBeforeApply;
             bool restored = false;
             if (!keyToRestore.empty()) {
                 for (std::size_t displayedIndex = 0; displayedIndex < displayedRepoIndices.size(); ++displayedIndex) {
                     const int repoIndex = displayedRepoIndices[displayedIndex];
                     if (repoIndex >= 0 && repoIndex < static_cast<int>(repos.size()) &&
-                        CanonicalPathString(repos[repoIndex].path) == keyToRestore) {
+                        CachedRepoIdentityKey(repos[repoIndex]) ==
+                            keyToRestore) {
                         selectedDisplayed = static_cast<int>(displayedIndex);
                         restored = true;
                         break;
@@ -3085,6 +3813,10 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
         }
         if (shouldFinishWorker) {
             finish_async_operation();
+            if (shouldExitAfterWorker) {
+                screen.ExitLoopClosure()();
+                return;
+            }
             if (preview.active && !preview.running && preview.autoCloseAfterRefresh) {
                 if (preview.autoCloseAfterRefresh) {
                     preview.active = false;
@@ -3213,7 +3945,10 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                 } else if (lower == "refresh") {
                     begin_async_refresh(discover.active);
                 } else if (lower == "init") {
-                    handledCommand = begin_async_selected_submodule_init();
+                    footer =
+                        "audit-only TUI: repository mutation is disabled; "
+                        "use an agent plan through KOG/KOA";
+                    footerIsError = true;
                 } else {
                     handledCommand = false;
                 }
@@ -3226,29 +3961,50 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                     return true;
                 }
 
-                if (const auto scoped = build_scoped_command_args(commandLine); scoped.has_value()) {
-                    std::string fullCommand = ResolveKanoGitBinaryCommand();
-                    for (const auto& part : scoped->second) {
-                        fullCommand += " " + part;
-                    }
-                    if (!begin_async_cli_command(scoped->first, scoped->second, fullCommand, "command runner")) {
-                        footer = "command runner busy";
-                        footerIsError = true;
-                        return true;
-                    }
+                const auto scoped = BuildTuiAuditCommand(
+                    commandLine,
+                    current_command_scope_snapshot());
+                if (!scoped.has_value()) {
                     tui_state.mode = kano::git::commands::TuiMode::Normal;
-                    tui_state.command_state = kano::git::commands::CommandModeState{};
-                    tui_state.footer_message.clear();
-                    tui_state.footer_is_error = false;
+                    tui_state.command_state =
+                        kano::git::commands::CommandModeState{};
+                    footer =
+                        "audit-only TUI: command options, mutating commands, "
+                        "and unknown commands are disabled; use an agent plan "
+                        "through KOG/KOA";
+                    footerIsError = true;
                     return true;
                 }
+
+                std::string fullCommand = ResolveKanoGitBinaryCommand();
+                for (const auto& part : scoped->arguments) {
+                    fullCommand += " " + part;
+                }
+                if (!begin_async_cli_command(
+                        scoped->workingDirectory,
+                        scoped->arguments,
+                        fullCommand,
+                        "command runner",
+                        scoped->scopeLabel)) {
+                    footer = "command runner busy";
+                    footerIsError = true;
+                    return true;
+                }
+                tui_state.mode = kano::git::commands::TuiMode::Normal;
+                tui_state.command_state = kano::git::commands::CommandModeState{};
+                tui_state.footer_message.clear();
+                tui_state.footer_is_error = false;
+                return true;
             }
         }
 
         if (tui_state.GetMode() == kano::git::commands::TuiMode::Command &&
             tui_state.command_state.GetBuffer().empty() &&
             (event == Event::Character('g') || event == Event::Character('G'))) {
-            commandScope = commandScope == CommandScopeMode::Workspace ? CommandScopeMode::SelectedRepo : CommandScopeMode::Workspace;
+            commandScope =
+                commandScope == TuiCommandScopeMode::Workspace
+                ? TuiCommandScopeMode::SelectedRepo
+                : TuiCommandScopeMode::Workspace;
             footer = "command scope: " + command_scope_label();
             footerIsError = false;
             return true;
@@ -3266,7 +4022,7 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                     footer = tui_state.footer_message;
                 } else if (prevMode != tui_state.GetMode()) {
                     if (tui_state.GetMode() == kano::git::commands::TuiMode::Command) {
-                        footer = "command mode: g toggle scope (empty input), Tab complete, Enter execute, Esc cancel";
+                        footer = "audit mode: g toggle scope (empty input), Tab complete, Enter inspect, Esc cancel";
                     } else if (tui_state.GetMode() == kano::git::commands::TuiMode::CommandPalette) {
                         footer = "command palette: type to filter, Enter select, Esc close";
                     } else if (tui_state.GetMode() == kano::git::commands::TuiMode::Help) {
@@ -3282,15 +4038,13 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
         }
 
         auto close_overlay_or_exit = [&]() -> bool {
-            {
-                std::lock_guard<std::mutex> lock(asyncMu);
-                if (asyncState.busy) {
-                    footer = asyncState.label + " still running; wait for completion";
-                    footerIsError = false;
-                    return true;
-                }
-            }
             if (discover.active) {
+                {
+                    std::lock_guard<std::mutex> lock(asyncMu);
+                    (void)DismissTuiAsyncSurface(
+                        asyncLifecycle,
+                        TuiAsyncSurface::Discover);
+                }
                 discover.active = false;
                 discover.loading = false;
                 footer = "discover panel closed";
@@ -3329,6 +4083,12 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                 return true;
             }
             if (preview.active) {
+                {
+                    std::lock_guard<std::mutex> lock(asyncMu);
+                    (void)DismissTuiAsyncSurface(
+                        asyncLifecycle,
+                        TuiAsyncSurface::Preview);
+                }
                 preview.active = false;
                 footer = "preview closed";
                 return true;
@@ -3340,24 +4100,64 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
             }
             if (history.active) {
                 if (history.detailActive) {
+                    {
+                        std::lock_guard<std::mutex> lock(asyncMu);
+                        (void)DismissTuiAsyncSurface(
+                            asyncLifecycle,
+                            TuiAsyncSurface::HistoryDetail);
+                    }
                     history.detailActive = false;
+                    history.detailLoading = false;
+                    history.detailPendingGeneration = 0;
+                    history.detailPendingKey.clear();
+                    history.detailError.clear();
                     footer = "history detail closed";
                     return true;
+                }
+                {
+                    std::lock_guard<std::mutex> lock(asyncMu);
+                    (void)DismissTuiAsyncSurface(
+                        asyncLifecycle,
+                        TuiAsyncSurface::HistoryPage);
                 }
                 history.active = false;
                 history.searchMode = false;
                 footer = "history closed";
                 return true;
             }
+            TuiAsyncExitDecision exitDecision;
+            std::string activeLabel;
+            {
+                std::lock_guard<std::mutex> lock(asyncMu);
+                activeLabel = asyncState.label.empty()
+                    ? "background operation"
+                    : asyncState.label;
+                exitDecision =
+                    RequestTuiAsyncExit(asyncLifecycle);
+            }
+            if (!exitDecision.bExitNow) {
+                if (exitDecision.bRequestCancellation) {
+                    asyncCancelRequested.store(true);
+                    footer = activeLabel +
+                        " cancellation requested; exiting when the current Git probe returns";
+                } else {
+                    footer = activeLabel +
+                        " is a mutating operation; exiting after it completes safely";
+                }
+                footerIsError = false;
+                return true;
+            }
             screen.ExitLoopClosure()();
             return true;
         };
 
-        if (event == Event::Character('q')) {
+        if (event == Event::Character('q') &&
+            !(history.active && history.searchMode)) {
             return close_overlay_or_exit();
         }
 
-        if (event == Event::Escape) {
+        if (event == Event::Escape &&
+            !(history.active && history.searchMode)) {
             return close_overlay_or_exit();
         }
 
@@ -3549,12 +4349,26 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
         }
 
         if (confirm.active && (event == Event::Character('y') || event == Event::Character('Y'))) {
+            const auto confirmationStatus = CollectPreviewData(confirm.repo);
+            if (confirmationStatus.statusIncomplete) {
+                confirm.active = false;
+                footer =
+                    "confirmation blocked: repository status is incomplete; "
+                    "refresh and inspect the audit record";
+                footerIsError = true;
+                return true;
+            }
             std::string fullCommand = ResolveKanoGitBinaryCommand();
             for (const auto& part : confirm.command) {
                 fullCommand += " " + part;
             }
             confirm.active = false;
-            if (!begin_async_cli_command(confirm.repo, confirm.command, fullCommand, confirm.title)) {
+            if (!begin_async_cli_command(
+                    confirm.repo,
+                    confirm.command,
+                    fullCommand,
+                    confirm.title,
+                    command_scope_label())) {
                 footer = "command runner busy";
                 footerIsError = true;
             }
@@ -3593,7 +4407,8 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
             if (is_arrow_left(event) || event == Event::Character('a')) {
                 const int selected = RepoIndexFromDisplayed(displayedRepoIndices, selectedDisplayed);
                 if (selected >= 0 && selected < static_cast<int>(repos.size())) {
-                    const auto key = CanonicalPathString(repos[selected].path);
+                    const auto key =
+                        CachedRepoIdentityKey(repos[selected]);
                     if (repos[selected].childRepoCount > 0 && !collapsedRoots[key]) {
                         collapsedRoots[key] = true;
                         refresh_menu();
@@ -3605,7 +4420,8 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
             if (is_arrow_right(event) || event == Event::Character('d')) {
                 const int selected = RepoIndexFromDisplayed(displayedRepoIndices, selectedDisplayed);
                 if (selected >= 0 && selected < static_cast<int>(repos.size())) {
-                    const auto key = CanonicalPathString(repos[selected].path);
+                    const auto key =
+                        CachedRepoIdentityKey(repos[selected]);
                     if (repos[selected].childRepoCount > 0 && collapsedRoots[key]) {
                         collapsedRoots[key] = false;
                         refresh_menu();
@@ -3628,17 +4444,27 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
             }
             history.active = true;
             history.repoIndex = selected;
-            history.pageIndex = 0;
-            history.selectedLine = 0;
+            const auto paging =
+                BeginHistoryPaging(ComputeHistoryPageSize());
+            history.pageSize = paging.pageSize;
+            history.pageIndex = paging.pageIndex;
+            history.selectedLine = paging.selectedLine;
             history.searchMode = false;
             history.searchQuery.clear();
             history.highlightedLine = -1;
             history.detailActive = false;
+            history.detailLoading = false;
+            history.detailPendingGeneration = 0;
             history.detailSha.clear();
-            history.detailBody.clear();
+            history.detailPendingKey.clear();
+            history.detailError.clear();
             history.detailMode = 0;
             ensure_history_loaded(history.repoIndex, history.pageIndex);
-            footer = "history opened";
+            const auto historyKey =
+                CachedRepoIdentityKey(repos[history.repoIndex]);
+            footer = historyCache[historyKey].loading
+                ? "history opened; loading the first bounded page in background"
+                : "history opened";
             return true;
         }
 
@@ -3648,7 +4474,7 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                 footer = "tree toggle skipped: no selected repo";
                 return true;
             }
-            const auto key = CanonicalPathString(repos[selected].path);
+            const auto key = CachedRepoIdentityKey(repos[selected]);
             if (repos[selected].childRepoCount > 0) {
                 collapsedRoots[key] = !collapsedRoots[key];
                 refresh_menu();
@@ -3664,17 +4490,31 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
             return true;
         }
 
-        // --- 'I' key: initialize uninitialized submodule ---
+        // The TUI is audit-only. Repository initialization must be requested
+        // through an agent-owned KOG/KOA plan so it leaves a durable audit
+        // trail rather than mutating directly from a key press.
         if (event == Event::Character('I') && !history.active && !discover.active && !preview.active) {
-            begin_async_selected_submodule_init();
+            footer =
+                "audit-only TUI: submodule initialization is disabled; "
+                "use an agent plan through KOG/KOA";
+            footerIsError = true;
             return true;
         }
 
         if (history.active) {
             auto close_history_detail = [&]() {
+                {
+                    std::lock_guard<std::mutex> lock(asyncMu);
+                    (void)DismissTuiAsyncSurface(
+                        asyncLifecycle,
+                        TuiAsyncSurface::HistoryDetail);
+                }
                 history.detailActive = false;
+                history.detailLoading = false;
+                history.detailPendingGeneration = 0;
                 history.detailSha.clear();
-                history.detailBody.clear();
+                history.detailPendingKey.clear();
+                history.detailError.clear();
                 history.detailSelectedSection = 0;
                 history.detailPageIndex = 0;
             };
@@ -3702,25 +4542,26 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
             };
 
             auto move_history_page = [&](const int InDelta, const bool InSelectEdge) -> bool {
-                const auto repoKey = CanonicalPathString(repos[history.repoIndex].path);
-                const auto& currentCache = historyCache[repoKey];
+                const auto repoKey =
+                    CachedRepoIdentityKey(repos[history.repoIndex]);
                 int targetPage = std::max(0, history.pageIndex + InDelta);
-                const int pageSize = ComputeHistoryPageSize();
-                const int totalEntries = static_cast<int>(currentCache.allEntries.size());
-                const int maxPageIndex = std::max(0, (totalEntries + pageSize - 1) / pageSize - 1);
-                if (InDelta > 0) {
-                    targetPage = std::min(targetPage, maxPageIndex);
-                }
                 if (targetPage == history.pageIndex && InDelta < 0) {
-                    return false;
-                }
-                if (targetPage == history.pageIndex && InDelta > 0) {
                     return false;
                 }
 
                 ensure_history_loaded(history.repoIndex, targetPage);
-                const auto targetLines = history_page_slice(historyCache[repoKey], targetPage);
+                auto& targetCache = historyCache[repoKey];
+                const auto targetLines =
+                    history_page_slice(targetCache, targetPage);
                 if (targetLines.empty() && targetPage != 0) {
+                    if (targetCache.loading &&
+                        targetCache.loadingPageIndex == targetPage) {
+                        history.pageIndex = targetPage;
+                        history.selectedLine = 0;
+                        history.highlightedLine = -1;
+                        close_history_detail();
+                        return true;
+                    }
                     return false;
                 }
 
@@ -3740,9 +4581,12 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
             };
 
             if (history.detailActive) {
-                const auto key = CanonicalPathString(repos[history.repoIndex].path);
+                const auto key =
+                    CachedRepoIdentityKey(repos[history.repoIndex]);
                 const bool isDirtyWorkingTree = history.detailSha == "dirty working tree";
-                const auto detailKey = (isDirtyWorkingTree ? DirtyCachePrefix(historyCache[key]) : history.detailSha) + "|" + std::to_string(history.detailMode);
+                const auto detailKey =
+                    (isDirtyWorkingTree ? DirtyCachePrefix() : history.detailSha) +
+                    "|" + std::to_string(history.detailMode);
                 auto* overlay = historyCache[key].detailOverlays.get(detailKey);
                 if (overlay != nullptr) {
                     const int sectionCount = static_cast<int>(overlay->sections.size());
@@ -3755,24 +4599,29 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
 
                         if (event == Event::Character('m')) {
                             // Cycle: summary(0) <-> patch(2), skip files mode as it's not very informative
+                            const int previousMode = history.detailMode;
                             history.detailMode = (history.detailMode == 0) ? 2 : 0;
                             auto& cache = historyCache[key];
-                            const auto dirtyPrefix = isDirtyWorkingTree ? RefreshDirtyToken(cache, repos[history.repoIndex].path) : std::string();
-                            const auto nextDetailKey = (isDirtyWorkingTree ? dirtyPrefix : history.detailSha) + "|" + std::to_string(history.detailMode);
-                            auto* detail = cache.commitDetails.get(nextDetailKey);
-                            if (detail == nullptr) {
-                                cache.commitDetails.put(nextDetailKey, isDirtyWorkingTree
-                                    ? FetchWorkingTreeDetail(repos[history.repoIndex].path, history.detailMode)
-                                    : FetchCommitDetail(repos[history.repoIndex].path, history.detailSha, history.detailMode));
-                            }
-                            if (!cache.detailOverlays.contains(nextDetailKey)) {
+                            const auto nextDetailKey =
+                                (isDirtyWorkingTree ? DirtyCachePrefix() : history.detailSha) +
+                                "|" + std::to_string(history.detailMode);
+                            if (cache.detailOverlays.contains(nextDetailKey)) {
+                                history.detailLoading = false;
+                                history.detailPendingGeneration = 0;
+                                history.detailPendingKey.clear();
+                                history.detailError.clear();
+                            } else {
                                 RepoHistoryCache::HistoryEntry entry;
                                 entry.isDirtyWorkingTree = isDirtyWorkingTree;
                                 entry.sha = history.detailSha;
-                                cache.detailOverlays.put(nextDetailKey, BuildHistoryDetailOverlay(repos[history.repoIndex].path, repos[history.repoIndex], entry, history.detailMode));
+                                if (!begin_async_history_detail(
+                                        history.repoIndex,
+                                        entry,
+                                        history.detailMode)) {
+                                    history.detailMode = previousMode;
+                                    return true;
+                                }
                             }
-                            detail = cache.commitDetails.get(nextDetailKey);
-                            history.detailBody = detail == nullptr ? std::string() : *detail;
                             history.detailSelectedSection = 0;
                             history.detailPageIndex = 0;
                             footer = history.detailMode == 0 ? "detail mode: summary" : "detail mode: patch";
@@ -3861,7 +4710,8 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
 
             if (event == Event::Return || event == Event::Character('\n')) {
                 ensure_history_loaded(history.repoIndex, history.pageIndex);
-                const auto key = CanonicalPathString(repos[history.repoIndex].path);
+                const auto key =
+                    CachedRepoIdentityKey(repos[history.repoIndex]);
                 auto displayedPage = BuildDisplayedHistoryEntries(history_page_slice(historyCache[key], history.pageIndex), history);
                 if (displayedPage.empty()) {
                     footer = "history detail skipped: page empty";
@@ -3872,26 +4722,35 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                 const auto& selectedEntry = displayedPage[line];
 
                 auto& cache = historyCache[key];
-                const auto dirtyPrefix = selectedEntry.isDirtyWorkingTree ? RefreshDirtyToken(cache, repos[history.repoIndex].path) : std::string();
-                const auto detailKey = (selectedEntry.isDirtyWorkingTree ? dirtyPrefix : selectedEntry.sha) + "|" + std::to_string(history.detailMode);
-                auto* detail = cache.commitDetails.get(detailKey);
-                if (detail == nullptr) {
-                    cache.commitDetails.put(detailKey, selectedEntry.isDirtyWorkingTree
-                        ? FetchWorkingTreeDetail(repos[history.repoIndex].path, history.detailMode)
-                        : FetchCommitDetail(repos[history.repoIndex].path, selectedEntry.sha, history.detailMode));
-                }
-                auto* overlay = cache.detailOverlays.get(detailKey);
-                if (overlay == nullptr) {
-                    cache.detailOverlays.put(detailKey, BuildHistoryDetailOverlay(repos[history.repoIndex].path, repos[history.repoIndex], selectedEntry, history.detailMode));
-                    overlay = cache.detailOverlays.get(detailKey);
+                const auto detailKey =
+                    (selectedEntry.isDirtyWorkingTree
+                         ? DirtyCachePrefix()
+                         : selectedEntry.sha) +
+                    "|" + std::to_string(history.detailMode);
+                const bool detailCached =
+                    cache.detailOverlays.contains(detailKey);
+                if (!detailCached &&
+                    !begin_async_history_detail(
+                        history.repoIndex,
+                        selectedEntry,
+                        history.detailMode)) {
+                    return true;
                 }
                 history.detailActive = true;
-                history.detailSha = selectedEntry.isDirtyWorkingTree ? std::string("dirty working tree") : selectedEntry.sha;
-                detail = cache.commitDetails.get(detailKey);
-                history.detailBody = detail == nullptr ? std::string() : *detail;
+                history.detailSha = selectedEntry.isDirtyWorkingTree
+                    ? std::string("dirty working tree")
+                    : selectedEntry.sha;
+                if (detailCached) {
+                    history.detailLoading = false;
+                    history.detailPendingGeneration = 0;
+                    history.detailPendingKey.clear();
+                    history.detailError.clear();
+                }
                 history.detailSelectedSection = 0;
                 history.detailPageIndex = 0;
-                footer = "history detail opened: " + history.detailSha;
+                if (detailCached) {
+                    footer = "history detail opened: " + history.detailSha;
+                }
                 return true;
             }
 
@@ -3926,7 +4785,8 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
 
             if (event == Event::ArrowUp || event == Event::Character('k') || event == Event::Character('w')) {
                 ensure_history_loaded(history.repoIndex, history.pageIndex);
-                const auto key = CanonicalPathString(repos[history.repoIndex].path);
+                const auto key =
+                    CachedRepoIdentityKey(repos[history.repoIndex]);
                 const auto page = history_page_slice(historyCache[key], history.pageIndex);
                 if (!page.empty()) {
                     if (history.selectedLine > 0) {
@@ -3939,10 +4799,15 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                     }
                     return true;
                 }
+                footer = historyCache[key].loading
+                    ? "history page is still loading"
+                    : "history has no entries";
+                return true;
             }
             if (event == Event::ArrowDown || event == Event::Character('j') || event == Event::Character('s')) {
                 ensure_history_loaded(history.repoIndex, history.pageIndex);
-                const auto key = CanonicalPathString(repos[history.repoIndex].path);
+                const auto key =
+                    CachedRepoIdentityKey(repos[history.repoIndex]);
                 const auto page = history_page_slice(historyCache[key], history.pageIndex);
                 if (!page.empty()) {
                     if (history.selectedLine < static_cast<int>(page.size()) - 1) {
@@ -3955,6 +4820,10 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                     }
                     return true;
                 }
+                footer = historyCache[key].loading
+                    ? "history page is still loading"
+                    : "history has no entries";
+                return true;
             }
 
             if (event == Event::Character('[')) {
@@ -4025,14 +4894,16 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
             rightPanel = vbox({
                 status_title("Help"),
                 separator(),
-                text("Command Mode") | kInfoStyle,
-                text(": enter command mode, Esc cancel, Enter execute") | kSecondaryStyle,
-                text("Try :refresh, :discover, :init, or :discover dirty") | kSecondaryStyle,
-                text("Tab/Up/Down navigate candidates, Enter accepts selected candidate") | kSecondaryStyle,
+                text("Start here") | kInfoStyle,
+                paragraph(std::string(GetTuiKeyGuidance(TuiKeyContext::Normal).controls)) | kSecondaryStyle,
+                paragraph(std::string(GetTuiKeyGuidance(TuiKeyContext::History).controls)) | kSecondaryStyle,
+                paragraph(std::string(GetTuiKeyGuidance(TuiKeyContext::Detail).controls)) | kSecondaryStyle,
                 separator(),
-                text("Shortcuts") | kInfoStyle,
-                text("r refresh | d dirty-only | f fetch | c/C commit preview/execute") | kSecondaryStyle,
-                text("p/P push preview/execute | Enter history | q quit") | kSecondaryStyle,
+                text("Command mode") | kInfoStyle,
+                text(": enter audit command mode | Esc cancel | Enter inspect") | kSecondaryStyle,
+                text("Audit commands: status | log | slog | doctor | version | help") | kSecondaryStyle,
+                text("Dashboard controls: :refresh | :discover | :discover dirty") | kSecondaryStyle,
+                text("Tab/Up/Down navigate candidates, Enter accepts selected candidate") | kSecondaryStyle,
                 separator(),
                 text("Press Esc or q to close") | kSecondaryStyle,
             }) | border;
@@ -4058,7 +4929,7 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
             }
 
             rightPanel = vbox({
-                status_title("Command Palette"),
+                status_title("Audit Command Palette"),
                 separator(),
                 status_text("search: " + tui_state.palette_state.search_query),
                 separator(),
@@ -4226,24 +5097,38 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                     return vbox(std::move(elems));
                 }(),
             }) | border;
-        } else if (history.active && !repos.empty()) {
+        } else if (history.active && !repos.empty() &&
+                   history.repoIndex >= 0 &&
+                   history.repoIndex < static_cast<int>(repos.size())) {
             const auto& repo = repos[history.repoIndex];
-            const auto key = CanonicalPathString(repo.path);
+            const auto key = CachedRepoIdentityKey(repo);
             ensure_history_loaded(history.repoIndex, history.pageIndex);
             const auto& cache = historyCache[key];
 
             if (history.detailActive) {
                 const bool isDirtyWorkingTree = history.detailSha == "dirty working tree";
-                const auto detailKey = (isDirtyWorkingTree ? DirtyCachePrefix(historyCache[key]) : history.detailSha) + "|" + std::to_string(history.detailMode);
+                const auto detailKey =
+                    (isDirtyWorkingTree ? DirtyCachePrefix() : history.detailSha) +
+                    "|" + std::to_string(history.detailMode);
                 auto* overlay = historyCache[key].detailOverlays.get(detailKey);
 
                 if (overlay == nullptr) {
                     rightPanel = vbox({
-                        status_title("History Detail"),
+                        status_title(
+                            "History Detail",
+                            history.detailLoading
+                                ? StatusTone::Running
+                                : (history.detailError.empty()
+                                       ? StatusTone::Warning
+                                       : StatusTone::Error)),
                         separator(),
-                        text("(detail data unavailable)") | kMutedStyle,
+                        history.detailLoading
+                            ? paragraph("Loading commit detail in the background. The interface remains usable.") | kRunningStyle
+                            : (history.detailError.empty()
+                                   ? paragraph("This detail was invalidated by a repository refresh. Return to history and reopen the selected commit.") | kWarningStyle
+                                   : paragraph(history.detailError + " | Return to history and press Enter to retry.") | kErrorStyle),
                         separator(),
-                        text("Press Esc or q to close") | kMutedStyle,
+                        text("Press Esc or q to return to history") | kSecondaryStyle,
                     }) | border;
                 } else {
                     const int sectionCount = static_cast<int>(overlay->sections.size());
@@ -4320,7 +5205,7 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                             }) | flex,
                         }) | flex,
                         separator(),
-                        text("detail controls: up/down change, left/right page, m mode, Esc/q close") | kSecondaryStyle,
+                        paragraph(std::string(GetTuiKeyGuidance(TuiKeyContext::Detail).controls)) | kSecondaryStyle,
                     }) | border;
                 }
             } else {
@@ -4330,9 +5215,27 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
 
             std::string totalPages = "?";
             const int totalEntries = static_cast<int>(cache.allEntries.size());
-            const int pageSize = ComputeHistoryPageSize();
+            const auto paging =
+                ReconcileHistoryPagingAfterResize(
+                    {
+                        .pageSize = history.pageSize,
+                        .pageIndex = history.pageIndex,
+                        .selectedLine = history.selectedLine,
+                    },
+                    ComputeHistoryPageSize());
+            const int pageSize = paging.pageSize;
+            const int historyTerminalHeight =
+                ftxui::Terminal::Size().dimy;
+            const bool bCompactHistoryLayout =
+                historyTerminalHeight <= 26;
+            const int historyListHeight = std::max(
+                3,
+                historyTerminalHeight -
+                    (bCompactHistoryLayout ? 20 : 21));
             const int pages = std::max(1, (totalEntries + pageSize - 1) / pageSize);
-            totalPages = std::to_string(pages);
+            if (cache.fullyLoaded && cache.loadError.empty()) {
+                totalPages = std::to_string(pages);
+            }
 
             const int clampedSelectedLine = entries.empty() ? 0 : std::clamp(history.selectedLine, 0, static_cast<int>(entries.size()) - 1);
             const auto* selectedEntry = entries.empty() ? nullptr : &entries[clampedSelectedLine];
@@ -4466,27 +5369,34 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                        rows.push_back(row);
                   }
                   if (entries.empty()) {
-                      rows.push_back(text("  │ (no history entries)") | kMutedStyle);
+                      rows.push_back(text(cache.loading
+                          ? "  │ (loading bounded history page...)"
+                          : (cache.loadError.empty()
+                              ? "  │ (no commits yet)"
+                              : "  │ (history load failed; see guidance below)")) | kMutedStyle);
                   }
                   return rows;
               }()) | yframe;
 
             auto quickStats = [&]() {
                 if (selectedEntry == nullptr) {
-                    return text("quick stats: (no history entries)") | kSecondaryStyle;
+                    return text(cache.loading
+                        ? "selected: history page loading"
+                        : "selected: (no history entries)") | kSecondaryStyle;
                 }
                 if (selectedEntry->isDirtyWorkingTree) {
                     return text("quick stats: dirty working tree | " + std::to_string(repo.dirtyFiles.size()) + " files") | kWarningStyle;
                 }
-
-                auto& mutableCache = historyCache[key];
-                auto* stat = mutableCache.commitQuickStats.get(selectedEntry->sha);
-                if (stat == nullptr) {
-                    mutableCache.commitQuickStats.put(selectedEntry->sha, FetchCommitQuickStats(repo.path, selectedEntry->sha));
-                    stat = mutableCache.commitQuickStats.get(selectedEntry->sha);
-                }
-                return text("quick stats: " + (stat == nullptr ? std::string("(unavailable)") : *stat)) | kSecondaryStyle;
+                return text("selected: " + selectedEntry->sha + " | Enter opens commit details") | kSecondaryStyle;
             }();
+
+            auto historyLoadStatus = cache.loading
+                ? paragraph("Loading one bounded Git history batch in the background. Esc/q returns to repositories.") | kRunningStyle
+                : (cache.loadError.empty()
+                    ? (cache.fullyLoaded
+                        ? text("history source: bounded local Git log") | kMutedStyle
+                        : text("history source: bounded local Git log | more pages load on demand") | kMutedStyle)
+                    : paragraph("history load failed: " + cache.loadError + " | Press Esc to return, then r to refresh this repo and retry.") | kErrorStyle);
 
                 rightPanel = vbox({
                     status_title("History Pager"),
@@ -4517,12 +5427,14 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                         filler(),
                         status_text("sort: " + std::string(history.sortMode == 0 ? "time-desc" : (history.sortMode == 1 ? "time-asc" : "match-first"))),
                     }),
+                    historyList | border |
+                        size(HEIGHT, EQUAL, historyListHeight),
+                    bCompactHistoryLayout
+                        ? emptyElement()
+                        : quickStats,
+                    historyLoadStatus,
                     separator(),
-                    historyList | border | flex,
-                    quickStats,
-                    text(""),
-                    separator(),
-                    text("controls: [ prev-repo, ] next-repo, left/right page, up/down line->page, Enter detail, m(mode), o(sort), /(search), n(next), q close") | kSecondaryStyle,
+                    paragraph(std::string(GetTuiKeyGuidance(TuiKeyContext::History).controls)) | kSecondaryStyle,
                 }) | border;
             }
         } else if (!repos.empty() && RepoIndexFromDisplayed(displayedRepoIndices, selectedDisplayed) >= 0) {
@@ -4541,9 +5453,9 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                     text("not initialized") | kWarningStyle,
                     paragraph("This registered source path exists in the workspace, but it is not an initialized git repository yet.") | kMutedStyle,
                     separator(),
-                    text("suggested actions") | kInfoStyle,
-                    status_paragraph("actions: press I or run :init to initialize submodule"),
-                    status_paragraph("manual: git -C \"" + row.parentRepo + "\" submodule update --init -- \"" + (row.parentRepo.empty() ? row.path.lexically_normal().generic_string() : std::filesystem::path(row.path).lexically_relative(std::filesystem::path(row.parentRepo)).generic_string()) + "\""),
+                    text("agent remediation") | kInfoStyle,
+                    status_paragraph("request: ask a KOG/KOA agent plan to initialize this registered submodule"),
+                    status_paragraph("audit target: parent " + parentText + " | path " + pathText),
                     separator(),
                     paragraph("history, branch, upstream, tracking, and dirty-file details are unavailable until this source is initialized.") | kMutedStyle,
                 }) | border;
@@ -4586,7 +5498,10 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                 const auto dirtyFileCount = row.dirtyFiles.size();
                 const auto dirtyPreviewLimit = std::min<std::size_t>(dirtyFileCount, 8);
                 const auto dirtyFilesTitle = std::string("dirty files: ") + std::to_string(dirtyFileCount)
-                    + (row.statusFromSnapshot ? " (snapshot cache; run :refresh for live list)" : " (top " + std::to_string(dirtyPreviewLimit) + ")");
+                    + (row.statusFromSnapshot
+                        ? " (snapshot cache; run :refresh for live list)"
+                        : " (top " + std::to_string(dirtyPreviewLimit) + ")")
+                    + (row.dirtyFilesIncomplete ? " [INCOMPLETE]" : "");
                 rightPanel = vbox({
                     status_title("Repository Details"),
                     separator(),
@@ -4603,6 +5518,13 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                     status_paragraph(DetailLine(detailLabelMode, "worktrees", "wts", dirtyWorktreesText)),
                     separator(),
                     text(dirtyFilesTitle) | kInfoStyle,
+                    row.dirtyFilesIncomplete
+                        ? paragraph(
+                              row.dirtyFilesError.empty()
+                                  ? "dirty-file enumeration was incomplete; displayed paths are partial"
+                                  : row.dirtyFilesError + "; displayed paths are partial") |
+                              kWarningStyle
+                        : text(""),
                     row.statusFromSnapshot
                         ? paragraph("(unavailable in snapshot cache)") | kMutedStyle
                         : row.dirtyFiles.empty()
@@ -4640,7 +5562,7 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
                     const bool selected = static_cast<int>(i) == tui_state.command_state.candidates.selected_index;
                     auto row = hbox({
                         text(selected ? "> " : "  "),
-                        text(c.text) | bold | color(Color::White),
+                        text(c.text) | bold | kPrimaryStyle,
                         text(" - " + c.description) | kSecondaryStyle,
                     });
                     if (selected) {
@@ -4656,9 +5578,9 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
             const auto cursorPos = std::min(tui_state.command_state.GetCursorPos(), inputLine.size());
             inputLine.insert(cursorPos, "█");
             commandRows.push_back(status_text("scope: " + command_scope_label()));
-            commandRows.push_back(text("command controls: g toggle scope (empty input), Tab complete, Enter execute, Esc cancel") | kSecondaryStyle);
+            commandRows.push_back(text("audit controls: g toggle scope (empty input), Tab complete, Enter inspect, Esc cancel") | kSecondaryStyle);
             commandRows.push_back(separator());
-            commandRows.push_back((text(":" + inputLine) | color(Color::White)) | border);
+            commandRows.push_back((text(":" + inputLine) | kPrimaryStyle) | border);
             commandRows.push_back(separator());
         }
 
@@ -4700,8 +5622,8 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
         rootRows.push_back(text("KOG FTXUI Dashboard v2") | kTitleStyle);
         rootRows.push_back(separator());
         if (!history.active) {
-            rootRows.push_back(paragraph("Command-input-first workflow + global repo view + incremental history pager.") | kInfoStyle);
-            rootRows.push_back(paragraph("command examples: :refresh | :discover | :discover dirty") | kSecondaryStyle);
+            rootRows.push_back(paragraph("Audit-first repository view + incremental history pager; repository mutation is disabled.") | kInfoStyle);
+            rootRows.push_back(paragraph("dashboard controls: :refresh | :discover | :discover dirty") | kSecondaryStyle);
             rootRows.push_back(status_paragraph("repo filter: " + (repoFilter.empty() ? "(none)" : repoFilter)));
         }
         rootRows.push_back([&]() {
@@ -4722,14 +5644,17 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
         rootRows.push_back(mainPanel | flex);
         rootRows.push_back(separator());
         rootRows.push_back(vbox(std::move(commandRows)));
+        const auto guidanceContext = history.detailActive
+            ? TuiKeyContext::Detail
+            : (history.active ? TuiKeyContext::History : TuiKeyContext::Normal);
+        rootRows.push_back(paragraph(
+            "keys: " + std::string(GetTuiKeyGuidance(guidanceContext).controls)) | kSecondaryStyle);
         rootRows.push_back(footerElement);
 
         auto rootElement = vbox(std::move(rootRows)) | border;
 
         return rootElement;
     });
-
-    begin_async_refresh(false);
 
     screen.Loop(ui);
     finish_async_operation();
@@ -4740,22 +5665,24 @@ auto RunFtxuiDashboard(CLI::App& app) -> int {
 auto PrintDemo() -> void {
     std::cout << "KOG TUI demo mode\n";
     std::cout << "- FTXUI dashboard enabled\n";
-    std::cout << "- repo list + details + incremental history pager\n";
-    std::cout << "- controls: :(command mode), t(tree toggle), Enter(history), q(quit)\n";
-    std::cout << "- cherry runner controls: n(next), c(continue), s(skip), a(abort), q(close panel)\n";
-    std::cout << "- rebase runner controls: N(next), C(continue), S(skip), A(abort), q(close panel)\n";
-    std::cout << "- command-first flow: : to enter command mode, then run :refresh, :discover, or :discover dirty\n";
+    std::cout << "- cached repo list + details + bounded, on-demand history pager\n";
+    for (const auto& guidance : GetAllTuiKeyGuidance()) {
+        std::cout << "- " << guidance.label << ": " << guidance.controls << "\n";
+    }
+    std::cout << "- audit-only: repository mutation is disabled and must run through an agent-owned KOG/KOA plan\n";
+    std::cout << "- audit commands: status, log, slog, doctor, version, help (no user-supplied options)\n";
+    std::cout << "- dashboard controls: :refresh, :discover, or :discover dirty\n";
     std::cout << "- discover panel controls: ]/PgUp next page, [/PgDown prev page, Esc/q close\n";
     std::cout << "- tree: t collapse/expand selected repo subtree\n";
-    std::cout << "- history mode: left/right repo, PgUp/PgDn page, up/down line, /search, n-next, m-detail-mode, o-sort-mode\n";
-    std::cout << "- quick stats shown for selected commit line (cached by sha)\n";
+    std::cout << "- advanced history controls: / search, n next match, o sort mode\n";
+    std::cout << "- startup uses cached status; r refreshes one repo and :refresh refreshes the workspace\n";
     std::cout << "Run `kano-git tui` to start the FTXUI UI.\n";
 }
 
 } // namespace
 
-auto RunTuiDashboard(CLI::App& InApp) -> int {
-    return RunFtxuiDashboard(InApp);
+auto RunTuiDashboard(CLI::App& InApp, const std::string_view InTheme) -> int {
+    return RunFtxuiDashboard(InApp, InTheme);
 }
 
 auto PrintTuiDemoSummary() -> void {

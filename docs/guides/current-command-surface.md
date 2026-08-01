@@ -37,6 +37,83 @@ Accepted truthful values are `1`, `true`, `yes`, and `on`, case-insensitive.
 Because `KOG_DEBUG` also enables existing command-layer debug output, leave it
 unset for ordinary and machine-readable workflows.
 
+## Interactive TUI
+
+Launch the terminal dashboard from the workspace root:
+
+```bash
+./scripts/kog tui
+./scripts/kog tui --theme light
+```
+
+`--theme auto` is the default. It uses `COLORFGBG` as an optional dark/light
+hint and otherwise keeps the terminal's own foreground and background colors.
+Use `--theme dark`, `--theme light`, or `--theme mono` for a deterministic
+override. `KOG_TUI_THEME` provides the same default without a command-line
+flag; `NO_COLOR` or `KOG_NO_COLOR` selects mono when the mode remains `auto`.
+
+The dashboard starts from the cached repository snapshot so the initial screen
+is immediately usable. Live repository work is explicit: press `r` to refresh
+the selected repository, run `:refresh` for a workspace live-status refresh, or
+run `:discover` to rescan repository membership.
+
+The TUI is an audit console and does not provide a manual repository-mutation
+surface. Command mode accepts only the read-only KOG commands `status`, `log`,
+`slog`, `doctor`, `version`, and `help` (including the standard help/version
+flags). User-supplied options and positionals are rejected too: read-oriented
+commands can otherwise expose write options such as output files, cache
+refreshes, or configuration repair. The TUI injects only its own validated repo
+scope after this gate. Commit, push, amend, fetch, converge/apply, submodule
+initialization, and unknown commands fail closed with guidance to use an
+agent-owned KOG/KOA plan, where the mutation can produce a durable audit trail.
+
+`:refresh` and `:discover` are live read controls, not cache-maintenance
+commands. They may read a trusted existing workspace manifest, but a missing,
+stale, or refreshed inventory is scanned without persisting a cache or manifest,
+so observation alone does not dirty the workspace.
+
+Pressing `Enter` opens the selected repository's history immediately. History
+pages and commit details load in the background in bounded batches, and the
+panel shows loading or actionable error text instead of freezing the interface.
+History paging is anchored to the initial repository `HEAD`, so a new commit
+does not shift an already-open page sequence.
+
+Working-tree file identity comes from `git status --porcelain=v1 -z`; path
+bytes are never trimmed or split on display text such as ` -> `. Status parsing
+is bounded to 4 MiB and 4,096 entries per refresh. Control bytes are escaped
+only in labels, while Git pathspec arguments retain the exact parsed bytes.
+
+Patch detail is also bounded per selection. KOG fetches at most eight file
+patches and retains at most 20,000 bytes for each patch (160,000 bytes total),
+then adds an explicit `(patch detail truncated)` section when more files exist.
+That limits a dirty-working-tree selection to at most 32 path-specific Git
+probes (four per file), or a commit selection to at most 16 path-specific Git
+probes (two per file), plus one name-status lookup.
+
+The terminal emulator owns the base theme, background, font family, and font
+size. KOG owns only the dashboard's semantic colors and derives a readable
+palette from the active terminal theme; it does not change terminal font
+settings. On macOS, choose the preferred monospace font and size in Terminal,
+iTerm2, WezTerm, Ghostty, or the terminal application being used. Set
+`KOG_TUI_ASCII_STATUS_ICONS=1` when the selected font does not contain the
+dashboard status glyphs.
+
+Canonical controls:
+
+- Normal: `Up/Down or j/k select | Enter history | r refresh selected repo | : audit commands | ? help | q quit`
+- History: `Up/Down or j/k select | Left/Right page | Enter detail | [ previous repo | ] next repo | ? help | Esc/q back`
+- Detail: `Up/Down or j/k change | Left/Right page | m summary/patch | ? help | Esc/q back`
+
+`q` exits from the normal repository view. Inside history or detail, `Esc` and
+`q` move back one level. Press `?` from the normal view whenever the key guide
+is needed. Read-only history/detail/refresh/discover loads check cancellation
+immediately before each TUI-owned Git launch. Startup, refresh, discovery,
+history, detail, and audit-command Git subprocesses are each limited to five
+seconds and at most 4 MiB per stream (smaller detail budgets still apply where
+documented); truncated discovery data is rejected rather than shown as a
+partial inventory. Quitting waits only for bounded subprocess cleanup before
+the terminal is restored.
+
 ## Native build
 
 The normal developer build may fetch C++ dependencies from GitHub through CMake

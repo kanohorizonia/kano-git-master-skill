@@ -261,6 +261,82 @@
           "mapping_state": "source-linked"
         }
       ]
+    },
+    {
+      "incident_id": "KG-BUG-0088",
+      "incident_date": "2026-07-30",
+      "root_cause": "The TUI assumed a dark terminal through bright hard-coded RGB colors, started an unconditional full-workspace refresh, loaded complete Git history synchronously, cleared history caches without reconciling active detail state, parsed dirty path identity as trimmed display lines while process capture discarded bytes after the first NUL, prefetched an unbounded number of file patches, and did not guard terminal restoration for the complete screen lifetime.",
+      "backlog_ref": "KG-BUG-0088",
+      "change_ref": "KG-BUG-0088",
+      "workflow_contracts": [
+        "bounded-history-navigation",
+        "interactive-tui"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KG-BUG-0088/adaptive-terminal-theme",
+          "test_name": "TUI auto theme uses COLORFGBG when available and stays adaptive when unknown",
+          "test_file": "src/cpp/code/tests/kano_git_tui_tests/unit/test_tui_theme.cpp",
+          "test_kind": "unit",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-BUG-0088/canonical-key-guidance",
+          "test_name": "TUI keymap omits retired fetch commit and push shortcut claims",
+          "test_file": "src/cpp/code/tests/kano_git_tui_tests/unit/test_tui_keymap.cpp",
+          "test_kind": "unit",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-BUG-0088/refresh-history-reconciliation",
+          "test_name": "TUI refresh reconciliation keeps history on the same repository and closes stale detail",
+          "test_file": "src/cpp/code/tests/kano_git_tui_tests/unit/test_tui_history_lifecycle.cpp",
+          "test_kind": "unit",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-BUG-0088/bounded-history-fetch",
+          "test_name": "TUI history fetch plan stays page bounded with one look-ahead row",
+          "test_file": "src/cpp/code/tests/kano_git_tui_tests/unit/test_tui_history_lifecycle.cpp",
+          "test_kind": "unit",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-BUG-0088/nul-safe-history-detail-paths",
+          "test_name": "TUI history parses NUL name-status paths including rename and newline bytes",
+          "test_file": "src/cpp/code/tests/kano_git_tui_tests/unit/test_tui_history_patch.cpp",
+          "test_kind": "unit",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-BUG-0088/nul-safe-working-tree-paths",
+          "test_name": "TUI working-tree status preserves exact NUL-delimited path identities",
+          "test_file": "src/cpp/code/tests/kano_git_tui_tests/unit/test_tui_history_patch.cpp",
+          "test_kind": "unit",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-BUG-0088/bounded-detail-patches",
+          "test_name": "TUI patch detail budget caps Git fetch launches and bytes",
+          "test_file": "src/cpp/code/tests/kano_git_tui_tests/unit/test_tui_history_patch.cpp",
+          "test_kind": "unit",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-BUG-0088/binary-safe-process-capture",
+          "test_name": "ShellExecutor capture preserves embedded NUL bytes",
+          "test_file": "src/cpp/code/tests/kano_git_tui_tests/unit/test_shell_executor.cpp",
+          "test_kind": "unit",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-BUG-0088/macos-terminal-restoration",
+          "test_name": "TUI terminal guard restores captured state after the screen lifetime",
+          "test_file": "src/cpp/code/tests/kano_git_tui_tests/unit/test_tui_terminal_guard.cpp",
+          "test_kind": "unit",
+          "mapping_state": "source-linked"
+        }
+      ]
     }
   ]
 }
