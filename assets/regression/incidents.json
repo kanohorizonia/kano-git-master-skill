@@ -337,6 +337,83 @@
           "mapping_state": "source-linked"
         }
       ]
+    },
+    {
+      "incident_id": "KG-BUG-0091",
+      "incident_date": "2026-08-01",
+      "root_cause": "The FTXUI dashboard performed trusted-manifest repository I/O before entering the interactive loop; an initial async rewrite could post completion before ScreenInteractive installed its task sender, then kept serial per-repository Git probes under one five-second aggregate deadline. The versioned overview serializer also left some JSON control bytes raw, rejected configured external repositories, and a missing first-run manifest produced no selectable root repository. The first fallback draft further represented unsampled audit booleans as clean. These ordering and contract gaps could delay, reject, remove, or misrepresent the first usable audit state.",
+      "backlog_ref": "KG-BUG-0091",
+      "change_ref": "KG-BUG-0091",
+      "workflow_contracts": [
+        "bounded-history-navigation",
+        "cancellable-read-lifecycle",
+        "interactive-tui"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KG-BUG-0091/first-frame-before-startup-io",
+          "test_name": "TUI first frame schedules startup I/O after ScreenInteractive activation and handles q while pending",
+          "test_file": "src/cpp/code/tests/kano_git_tui_tests/integration/test_main.cpp",
+          "test_kind": "integration",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-BUG-0091/explicit-load-states",
+          "test_name": "TUI load lifecycle exposes every audit state",
+          "test_file": "src/cpp/code/tests/kano_git_tui_tests/unit/test_tui_load_state.cpp",
+          "test_kind": "unit",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-BUG-0091/bounded-startup-snapshot",
+          "test_name": "TUI startup snapshot parser preserves bounded repository audit fields",
+          "test_file": "src/cpp/code/tests/kano_git_tui_tests/unit/test_tui_startup_snapshot.cpp",
+          "test_kind": "unit",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-BUG-0091/production-startup-inventory",
+          "test_name": "TUI production startup loads a disposable three-repository inventory through the built KOG binary",
+          "test_file": "src/cpp/code/tests/kano_git_tui_tests/integration/test_main.cpp",
+          "test_kind": "integration",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-BUG-0091/first-run-root-fallback",
+          "test_name": "TUI production startup exposes a bounded root fallback before first discovery",
+          "test_file": "src/cpp/code/tests/kano_git_tui_tests/integration/test_main.cpp",
+          "test_kind": "integration",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-BUG-0091/corrupt-manifest-fail-closed",
+          "test_name": "TUI production startup rejects an invalid existing workspace manifest",
+          "test_file": "src/cpp/code/tests/kano_git_tui_tests/integration/test_main.cpp",
+          "test_kind": "integration",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-BUG-0091/configured-external-root",
+          "test_name": "TUI production startup admits only configured external repository roots",
+          "test_file": "src/cpp/code/tests/kano_git_tui_tests/integration/test_main.cpp",
+          "test_kind": "integration",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-BUG-0091/unconfigured-external-root-rejected",
+          "test_name": "TUI startup snapshot parser rejects unconfigured external repository paths",
+          "test_file": "src/cpp/code/tests/kano_git_tui_tests/unit/test_tui_startup_snapshot.cpp",
+          "test_kind": "unit",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-BUG-0091/json-control-byte-escape",
+          "test_name": "TUI production overview JSON escapes POSIX control bytes in repository paths",
+          "test_file": "src/cpp/code/tests/kano_git_tui_tests/integration/test_main.cpp",
+          "test_kind": "integration",
+          "mapping_state": "source-linked"
+        }
+      ]
     }
   ]
 }

@@ -144,16 +144,27 @@ auto SplitNonEmptyLines(const std::string& InText) -> std::vector<std::string> {
 }
 
 auto EscapeJson(std::string InValue) -> std::string {
+    constexpr char hex[] = "0123456789abcdef";
     std::string out;
     out.reserve(InValue.size() + 8);
-    for (const char ch : InValue) {
+    for (const unsigned char ch : InValue) {
         switch (ch) {
         case '\\': out += "\\\\"; break;
         case '"': out += "\\\""; break;
+        case '\b': out += "\\b"; break;
+        case '\f': out += "\\f"; break;
         case '\n': out += "\\n"; break;
         case '\r': out += "\\r"; break;
         case '\t': out += "\\t"; break;
-        default: out.push_back(ch); break;
+        default:
+            if (ch < 0x20U) {
+                out += "\\u00";
+                out.push_back(hex[(ch >> 4U) & 0x0FU]);
+                out.push_back(hex[ch & 0x0FU]);
+            } else {
+                out.push_back(static_cast<char>(ch));
+            }
+            break;
         }
     }
     return out;
@@ -760,19 +771,55 @@ auto FilterDirtyRows(const std::vector<RepoView>& InRows) -> std::vector<RepoVie
     return filtered;
 }
 
-auto LoadCachedWorkspaceReposOrThrow(const std::filesystem::path& InRoot) -> std::vector<workspace::RepoRecord> {
+struct CachedWorkspaceRepos {
+    std::vector<workspace::RepoRecord> repos;
+    std::string source = "trusted-workspace-manifest";
+    std::string completeness = "workspace-inventory";
+    bool statusKnown = true;
+};
+
+auto HasRootGitMarker(const std::filesystem::path& InRoot) -> bool {
+    std::error_code ec;
+    return std::filesystem::exists(InRoot / ".git", ec) && !ec;
+}
+
+auto LoadCachedWorkspaceReposOrThrow(
+    const std::filesystem::path& InRoot,
+    const bool bInAllowRootFallback) -> CachedWorkspaceRepos {
     std::string reason;
     const auto manifest = workspace::LoadTrustedWorkspaceManifest(InRoot, &reason);
-    if (!manifest.has_value()) {
-        std::ostringstream oss;
-        oss << "cached workspace overview unavailable";
-        if (!reason.empty()) {
-            oss << ": " << reason;
-        }
-        oss << ". Run 'kog discover' first to refresh the workspace manifest.";
-        throw std::runtime_error(oss.str());
+    if (manifest.has_value()) {
+        return {.repos = manifest->repos};
     }
-    return manifest->repos;
+    std::error_code manifestPathError;
+    const bool manifestFileExists = std::filesystem::exists(
+        workspace::WorkspaceManifestFilePath(InRoot),
+        manifestPathError);
+    if (bInAllowRootFallback &&
+        reason == "workspace manifest missing" &&
+        !manifestFileExists &&
+        !manifestPathError &&
+        HasRootGitMarker(InRoot)) {
+        workspace::RepoRecord root;
+        root.path = InRoot;
+        root.type = "root";
+        root.currentBranch = "(unknown)";
+        root.hasChanges = false;
+        return {
+            .repos = {std::move(root)},
+            .source = "root-fallback",
+            .completeness = "root-only",
+            .statusKnown = false,
+        };
+    }
+
+    std::ostringstream oss;
+    oss << "cached workspace overview unavailable";
+    if (!reason.empty()) {
+        oss << ": " << reason;
+    }
+    oss << ". Run 'kog discover' first to refresh the workspace manifest.";
+    throw std::runtime_error(oss.str());
 }
 
 auto RefreshCachedRepoRecords(const std::vector<workspace::RepoRecord>& InRepos) -> std::vector<workspace::RepoRecord> {
@@ -950,7 +997,18 @@ auto FormatTable(const std::vector<RepoView>& InRows, bool InColorize = true) ->
     return oss.str();
 }
 
-auto FormatJson(const std::vector<RepoView>& InRows) -> std::string {
+struct RepoJsonMetadata {
+    bool includeOverviewSchema = false;
+    bool inventoryOnly = false;
+    bool statusKnown = true;
+    std::string source;
+    std::string completeness;
+    std::vector<std::filesystem::path> allowedExternalRoots;
+};
+
+auto FormatJson(
+    const std::vector<RepoView>& InRows,
+    const RepoJsonMetadata& InMetadata = {}) -> std::string {
     std::ostringstream out;
     std::size_t dirtyCount = 0;
     for (const auto& row : InRows) {
@@ -959,7 +1017,37 @@ auto FormatJson(const std::vector<RepoView>& InRows) -> std::string {
         }
     }
 
-    out << "{\"summary\":{";
+    out << "{";
+    if (InMetadata.includeOverviewSchema) {
+        out << "\"schemaName\":\"kog.repoOverview\",";
+        out << "\"schemaVersion\":1,";
+        out << "\"source\":\"" << EscapeJson(InMetadata.source)
+            << "\",";
+        out << "\"completeness\":\""
+            << EscapeJson(InMetadata.completeness) << "\",";
+        out << "\"probeMode\":\""
+            << (InMetadata.inventoryOnly ? "none" : "revision-count")
+            << "\",";
+        out << "\"statusKnown\":"
+            << (InMetadata.statusKnown ? "true" : "false")
+            << ",";
+        out << "\"allowedExternalRoots\":[";
+        for (std::size_t index = 0;
+             index < InMetadata.allowedExternalRoots.size();
+             ++index) {
+            if (index > 0) {
+                out << ",";
+            }
+            out << "\""
+                << EscapeJson(
+                       InMetadata.allowedExternalRoots[index]
+                           .lexically_normal()
+                           .generic_string())
+                << "\"";
+        }
+        out << "],";
+    }
+    out << "\"summary\":{";
     out << std::format("\"repo_count\":{},\"dirty_count\":{}", InRows.size(), dirtyCount);
     out << "},\"repos\":[";
     for (std::size_t i = 0; i < InRows.size(); ++i) {
@@ -969,32 +1057,25 @@ auto FormatJson(const std::vector<RepoView>& InRows) -> std::string {
         const auto& row = InRows[i];
         out << "{";
         out << std::format("\"index\":{},", i + 1);
-        out << std::format("\"path\":\"{}\",", row.path.lexically_normal().generic_string());
-        out << std::format("\"group\":\"{}\",", row.group);
-        out << std::format("\"repo_name\":\"{}\",", row.repoName);
-        out << std::format("\"type\":\"{}\",", row.type);
-        out << std::format("\"branch\":\"{}\",", row.branch);
-        out << std::format("\"remote\":\"{}\",", row.remote);
-        out << std::format("\"tracking\":\"{}\",", row.tracking);
-        out << std::format("\"revision\":\"{}\",", row.revision);
+        out << std::format("\"path\":\"{}\",", EscapeJson(row.path.lexically_normal().generic_string()));
+        out << std::format("\"group\":\"{}\",", EscapeJson(row.group));
+        out << std::format("\"repo_name\":\"{}\",", EscapeJson(row.repoName));
+        out << std::format("\"type\":\"{}\",", EscapeJson(row.type));
+        out << std::format("\"branch\":\"{}\",", EscapeJson(row.branch));
+        out << std::format("\"remote\":\"{}\",", EscapeJson(row.remote));
+        out << std::format("\"tracking\":\"{}\",", EscapeJson(row.tracking));
+        out << std::format("\"revision\":\"{}\",", EscapeJson(row.revision));
         out << std::format("\"dirty\":{},", row.repoDirty ? "true" : "false");
         out << std::format("\"worktree_dirty\":{}", row.hasDirtyWorktree ? "true" : "false");
         if (row.hasDirtyWorktree) {
-            out << std::format(",\"dirty_worktrees\":\"{}\"", row.dirtyWorktrees);
+            out << std::format(",\"dirty_worktrees\":\"{}\"", EscapeJson(row.dirtyWorktrees));
         }
         out << ",\"status_lines\":[";
         for (std::size_t j = 0; j < row.statusLines.size(); ++j) {
             if (j > 0) {
                 out << ",";
             }
-            std::string escaped = row.statusLines[j];
-            std::string escapedOut;
-            for (char c : escaped) {
-                if (c == '"') escapedOut += "\\\"";
-                else if (c == '\\') escapedOut += "\\\\";
-                else escapedOut += c;
-            }
-            out << "\"" << escapedOut << "\"";
+            out << "\"" << EscapeJson(row.statusLines[j]) << "\"";
         }
         out << "]}";
     }
@@ -1722,7 +1803,10 @@ auto FormatRecursiveStatusSummary(const RecursiveStatusSnapshot& InSnapshot) -> 
     return out.str();
 }
 
-auto MakeCachedRepoView(const workspace::RepoRecord& InRepo, const std::filesystem::path& InRoot) -> RepoView {
+auto MakeCachedRepoView(
+    const workspace::RepoRecord& InRepo,
+    const std::filesystem::path& InRoot,
+    const bool bInIncludeRevision) -> RepoView {
     RepoView row;
     row.path = InRepo.path;
     const auto relativePath = RelativeDisplayPath(InRoot, InRepo.path);
@@ -1734,9 +1818,11 @@ auto MakeCachedRepoView(const workspace::RepoRecord& InRepo, const std::filesyst
     row.remote = "-";
     row.tracking = "-";
     row.hasDirtyWorktree = false;
-    {
+    if (bInIncludeRevision) {
         const auto revOut = GitCapture(InRepo.path, {"rev-list", "--count", "--first-parent", "HEAD"});
         row.revision = revOut.exitCode == 0 ? Trim(revOut.stdoutStr) : "-";
+    } else {
+        row.revision = "-";
     }
     return row;
 }
@@ -1761,11 +1847,17 @@ auto BuildRepoViews(const std::vector<workspace::RepoRecord>& InRepos, const std
     return rows;
 }
 
-auto BuildCachedRepoViews(const std::vector<workspace::RepoRecord>& InRepos, const std::filesystem::path& InRoot) -> std::vector<RepoView> {
+auto BuildCachedRepoViews(
+    const std::vector<workspace::RepoRecord>& InRepos,
+    const std::filesystem::path& InRoot,
+    const bool bInIncludeRevision) -> std::vector<RepoView> {
     std::vector<RepoView> rows;
     rows.reserve(InRepos.size());
     for (const auto& repo : InRepos) {
-        rows.push_back(MakeCachedRepoView(repo, InRoot));
+        rows.push_back(MakeCachedRepoView(
+            repo,
+            InRoot,
+            bInIncludeRevision));
     }
     std::sort(rows.begin(), rows.end(), [](const RepoView& A, const RepoView& B) {
         if (A.group != B.group) {
@@ -1827,6 +1919,8 @@ void RegisterStatus(CLI::App& InApp) {
     auto* repoRoot = new std::string{"."};
     auto* output = new std::string{};
     auto* target = new std::string{};
+    auto* inventoryOnly = new bool{false};
+    auto* rootFallback = new bool{false};
 
     auto configureOutput = [&](CLI::App* InCmd) {
         InCmd->add_option("--format", *format, "Output format: table|json|markdown")->default_str("table");
@@ -1850,8 +1944,18 @@ void RegisterStatus(CLI::App& InApp) {
     cmd->add_flag("--no-fetch-health", *noFetchHealth, "Skip remote fetch dry-run health checks in recursive status snapshots");
 
     configureOutput(overview);
+    overview->add_flag(
+        "--inventory-only",
+        *inventoryOnly,
+        "Use trusted cached metadata only; skip every per-repository Git probe");
+    overview->add_flag(
+        "--root-fallback",
+        *rootFallback,
+        "When the manifest is missing, expose only a root repo with a .git marker");
 
-    auto renderRows = [=](const std::vector<RepoView>& InRows) {
+    auto renderRows = [=](
+                          const std::vector<RepoView>& InRows,
+                          const RepoJsonMetadata& InMetadata) {
         if (*format != "table" && *format != "json" && *format != "markdown") {
             std::cerr << "Error: invalid --format value: " << *format << " (expected table|json|markdown)\n";
             std::exit(1);
@@ -1859,7 +1963,7 @@ void RegisterStatus(CLI::App& InApp) {
 
         std::string rendered;
         if (*format == "json") {
-            rendered = FormatJson(InRows);
+            rendered = FormatJson(InRows, InMetadata);
         } else if (*format == "markdown") {
             rendered = FormatMarkdown(InRows);
         } else {
@@ -1935,7 +2039,7 @@ void RegisterStatus(CLI::App& InApp) {
         if (!*all) {
             rows = FilterDirtyRows(rows);
         }
-        renderRows(rows);
+        renderRows(rows, {});
         auto t_render = std::chrono::steady_clock::now();
 
         auto ms = [](auto t1, auto t2) { return std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count(); };
@@ -1953,6 +2057,14 @@ void RegisterStatus(CLI::App& InApp) {
 
         auto root = repoRoot->empty() ? std::filesystem::current_path() : std::filesystem::path(*repoRoot);
         root = std::filesystem::absolute(root).lexically_normal();
+        if (*rootFallback && !*inventoryOnly) {
+            std::cerr << "Error: --root-fallback requires --inventory-only\n";
+            std::exit(1);
+        }
+        if (*inventoryOnly && !target->empty()) {
+            std::cerr << "Error: --inventory-only does not accept a repo target\n";
+            std::exit(1);
+        }
         if (!target->empty()) {
             try {
                 root = ResolveRepoFromSpec(root, *target, *maxDepth, true);
@@ -1963,10 +2075,42 @@ void RegisterStatus(CLI::App& InApp) {
         }
 
         try {
-            auto repos = LoadCachedWorkspaceReposOrThrow(root);
-            NormalizeCachedRootRepoNames(&repos);
-            const auto rows = BuildCachedRepoViews(repos, root);
-            renderRows(rows);
+            auto loaded = LoadCachedWorkspaceReposOrThrow(
+                root,
+                *rootFallback);
+            NormalizeCachedRootRepoNames(&loaded.repos);
+            auto allowedExternalRoots =
+                workspace::ResolveConfiguredWorkspaceExternalRoots(root);
+            for (auto& allowedRoot : allowedExternalRoots) {
+                allowedRoot = std::filesystem::absolute(allowedRoot)
+                    .lexically_normal();
+            }
+            std::sort(
+                allowedExternalRoots.begin(),
+                allowedExternalRoots.end());
+            allowedExternalRoots.erase(
+                std::unique(
+                    allowedExternalRoots.begin(),
+                    allowedExternalRoots.end()),
+                allowedExternalRoots.end());
+            if (loaded.source == "root-fallback") {
+                allowedExternalRoots.clear();
+            }
+            const auto rows = BuildCachedRepoViews(
+                loaded.repos,
+                root,
+                !*inventoryOnly);
+            renderRows(
+                rows,
+                RepoJsonMetadata{
+                    .includeOverviewSchema = true,
+                    .inventoryOnly = *inventoryOnly,
+                    .statusKnown = loaded.statusKnown,
+                    .source = std::move(loaded.source),
+                    .completeness = std::move(loaded.completeness),
+                    .allowedExternalRoots =
+                        std::move(allowedExternalRoots),
+                });
         } catch (const std::exception& ex) {
             std::cerr << "Error: " << ex.what() << "\n";
             std::exit(1);

@@ -3,6 +3,7 @@
 #include "tui_async_lifecycle.hpp"
 
 using kano::git::commands::CompleteTuiAsyncOperation;
+using kano::git::commands::CancelTuiAsyncSurface;
 using kano::git::commands::DismissTuiAsyncSurface;
 using kano::git::commands::IsCurrentTuiAsyncOperation;
 using kano::git::commands::RequestTuiAsyncExit;
@@ -29,6 +30,37 @@ TEST_CASE(
     REQUIRE(completion.bApplyPayload);
     REQUIRE_FALSE(completion.bPresentSurface);
     REQUIRE_FALSE(completion.bExitNow);
+}
+
+TEST_CASE(
+    "TUI async surface cancellation dismisses only matching cancellable reads",
+    "[unit][tui_async_lifecycle][KG-BUG-0091]") {
+    TuiAsyncLifecycleState state;
+    const auto generation = TryBeginTuiAsyncOperation(
+        state,
+        TuiAsyncSurface::HistoryPage,
+        true);
+    REQUIRE(generation.has_value());
+    REQUIRE_FALSE(CancelTuiAsyncSurface(
+        state,
+        TuiAsyncSurface::HistoryDetail));
+    REQUIRE(CancelTuiAsyncSurface(
+        state,
+        TuiAsyncSurface::HistoryPage));
+
+    const auto completion = CompleteTuiAsyncOperation(state, *generation);
+    REQUIRE(completion.bMatchesActive);
+    REQUIRE(completion.bApplyPayload);
+    REQUIRE_FALSE(completion.bPresentSurface);
+
+    const auto nonCancellable = TryBeginTuiAsyncOperation(
+        state,
+        TuiAsyncSurface::Preview,
+        false);
+    REQUIRE(nonCancellable.has_value());
+    REQUIRE_FALSE(CancelTuiAsyncSurface(
+        state,
+        TuiAsyncSurface::Preview));
 }
 
 TEST_CASE(

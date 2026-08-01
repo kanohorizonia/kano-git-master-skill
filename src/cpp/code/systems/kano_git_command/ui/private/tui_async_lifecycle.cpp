@@ -45,6 +45,19 @@ auto DismissTuiAsyncSurface(
     return true;
 }
 
+auto CancelTuiAsyncSurface(
+    TuiAsyncLifecycleState& InOutState,
+    const TuiAsyncSurface InSurface) -> bool {
+    if (!InOutState.bBusy ||
+        !InOutState.bCancellable ||
+        InSurface == TuiAsyncSurface::None ||
+        InOutState.activeSurface != InSurface) {
+        return false;
+    }
+    InOutState.bSurfaceDismissed = true;
+    return true;
+}
+
 auto RequestTuiAsyncExit(TuiAsyncLifecycleState& InOutState)
     -> TuiAsyncExitDecision {
     if (!InOutState.bBusy) {

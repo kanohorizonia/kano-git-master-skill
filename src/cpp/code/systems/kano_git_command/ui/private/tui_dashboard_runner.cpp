@@ -6,8 +6,10 @@
 #include "tui_history_lifecycle.hpp"
 #include "tui_history_patch.hpp"
 #include "tui_keymap.hpp"
+#include "tui_load_state.hpp"
 #include "tui_rebase_model.hpp"
 #include "tui_repo_identity.hpp"
+#include "tui_startup_snapshot.hpp"
 #include "tui_terminal_guard.hpp"
 #include "tui_theme.hpp"
 #include "discovery.hpp"
@@ -105,6 +107,7 @@ struct RepoView {
     std::string upstream;
     std::string tracking;
     bool statusFromSnapshot = false;
+    bool statusKnown = true;
     bool repoDirty = false;
     bool worktreeDirty = false;
     std::string dirtyWorktrees;
@@ -145,6 +148,7 @@ struct RepoHistoryCache {
     std::vector<HistoryEntry> allEntries;
     bool fullyLoaded = false;
     bool loading = false;
+    TuiLoadState loadState{};
     std::uint64_t loadingGeneration = 0;
     int loadingPageIndex = -1;
     std::string loadError;
@@ -174,6 +178,7 @@ struct HistoryState {
     int highlightedLine = -1;
     bool detailActive = false;
     bool detailLoading = false;
+    TuiLoadState detailLoadState{};
     std::uint64_t detailPendingGeneration = 0;
     std::string detailSha;
     std::string detailPendingKey;
@@ -233,6 +238,7 @@ struct DiscoverPagerState {
     bool dirtyOnly = false;
     std::string title;
     bool loading = false;
+    TuiLoadState loadState{};
     std::string progress;
 };
 
@@ -250,6 +256,7 @@ struct AsyncWorkState {
     RepoView refreshedRepo;
     std::string refreshedRepoKey;
     std::vector<std::string> discoverLines;
+    std::size_t discoverRepoCount = 0;
     std::string discoverTitle;
     std::string historyRepoKey;
     int historyPageIndex = 0;
@@ -970,49 +977,58 @@ auto FinalizeRepoTree(std::vector<RepoView> InRows) -> std::vector<RepoView> {
     return ordered;
 }
 
-auto LoadStartupRepoViews(const std::filesystem::path& InWorkspaceRoot) -> std::vector<RepoView> {
-    std::vector<workspace::RepoRecord> repoRecords;
-    std::string manifestReason;
-    if (const auto manifest =
-            workspace::LoadTrustedWorkspaceManifest(
-                InWorkspaceRoot,
-                &manifestReason,
-                BuildTuiDiscoveryGitExecutionControl());
-        manifest.has_value()) {
-        repoRecords = manifest->repos;
-    }
-    if (repoRecords.empty()) {
-        workspace::RepoRecord rootRecord;
-        rootRecord.path = InWorkspaceRoot;
-        rootRecord.type = "root";
-        repoRecords.push_back(std::move(rootRecord));
-    }
+struct StartupRepoViews {
+    std::vector<RepoView> repos;
+    TuiStartupSnapshotMetadata metadata;
+};
+
+auto LoadStartupRepoViews(
+    const std::filesystem::path& InWorkspaceRoot) -> StartupRepoViews {
+    TuiStartupSnapshotMetadata metadata;
+    const auto repoRecords = LoadTuiStartupSnapshot({
+        .binaryCommand = ResolveKanoGitBinaryCommand(),
+        .workspaceRoot = InWorkspaceRoot,
+        .timeoutMs = kTuiInteractiveReadTimeoutMs,
+        .maxCaptureBytes = kTuiStatusMaxBytes,
+    }, &metadata);
 
     std::vector<RepoView> rows;
     rows.reserve(repoRecords.size());
     for (const auto& repo : repoRecords) {
         RepoView row;
-        row.path = NormalizeRepoPath(InWorkspaceRoot, repo.path);
+        row.path = repo.path.lexically_normal();
+        row.identityKey = NormalizeRepoIdentityKey(row.path);
         row.type = repo.type;
-        const auto parent = ResolveRepoParent(InWorkspaceRoot, repo);
-        row.parentRepo = parent.path;
-        row.parentIdentityKey = parent.identityKey;
-        row.parentRelativePath = parent.relativePath;
+        if (repo.parentPath.empty()) {
+            row.parentRepo = "(none)";
+            row.parentIdentityKey = "(none)";
+        } else {
+            row.parentRepo =
+                NormalizeRepoIdentityKey(repo.parentPath);
+            row.parentIdentityKey = row.parentRepo;
+            row.parentRelativePath = row.path
+                .lexically_relative(repo.parentPath)
+                .generic_string();
+        }
         row.statusFromSnapshot = true;
-        row.repoDirty = repo.hasChanges;
-        row.worktreeDirty = false;
+        row.statusKnown = repo.statusKnown;
+        row.repoDirty = repo.repoDirty;
+        row.worktreeDirty = repo.worktreeDirty;
         if (repo.type == "registered-uninit") {
             row.branch = "(uninit)";
             row.upstream.clear();
             row.tracking.clear();
         } else {
-            row.branch = repo.currentBranch.empty() ? "(cached)" : repo.currentBranch;
-            row.upstream = "(cached)";
-            row.tracking = "cached";
+            row.branch = repo.branch;
+            row.upstream = repo.upstream;
+            row.tracking = repo.tracking;
         }
         rows.push_back(std::move(row));
     }
-    return FinalizeRepoTree(std::move(rows));
+    return {
+        .repos = FinalizeRepoTree(std::move(rows)),
+        .metadata = std::move(metadata),
+    };
 }
 
 auto SortAndDedupeRepoRecords(
@@ -1615,7 +1631,7 @@ auto BuildHistoryDetailOverlay(const std::filesystem::path& repo,
         }
         if (sections.empty() && repoView.statusFromSnapshot) {
             RepoHistoryCache::DetailSection section;
-            section.title = "(snapshot cache)";
+            section.title = "(startup snapshot)";
             section.body = "run :refresh to enumerate dirty files";
             sections.push_back(std::move(section));
         }
@@ -2238,8 +2254,9 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
     std::vector<int> displayedRepoIndices;
     std::vector<std::string> menu;
     int selectedDisplayed = 0;
-    std::string footer = "startup: cached repo snapshot ready | theme " +
+    std::string footer = "startup inventory: loading in background | theme " +
         std::string(TuiThemeModeName(resolvedTheme.effectiveMode)) + " | " +
+        "q/Escape exits; " +
         std::string(GetTuiKeyGuidance(TuiKeyContext::Normal).controls);
     bool footerIsError = false;
     HistoryState history{};
@@ -2256,6 +2273,8 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
     std::unordered_map<std::string, RepoHistoryCache> historyCache;
     AsyncWorkState asyncState{};
     TuiAsyncLifecycleState asyncLifecycle{};
+    TuiLoadState startupLoadState{};
+    bool startupSnapshotScheduled = false;
     std::mutex asyncMu;
     std::thread asyncWorker;
     std::atomic<bool> asyncCancelRequested{false};
@@ -2435,11 +2454,8 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
         });
     };
 
-    reportStartupProgress("starting dashboard initialization");
-    reportStartupProgress("loading cached workspace snapshot");
-    repos = LoadStartupRepoViews(workspaceRoot);
-    reportStartupProgress("loaded " + std::to_string(repos.size()) + " repositories");
-    
+    reportStartupProgress("starting interactive shell before repository I/O");
+
     // Initialize TUI command input system
     kano::git::commands::TuiState tui_state;
     try {
@@ -2477,7 +2493,10 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
             if (repo.type == "registered-uninit") {
                 menu.push_back(indent + marker + typeTag + UninitializedRepoListLabel(workspaceRoot, repo) + " | " + path);
             } else {
-                menu.push_back(indent + marker + typeTag + (repo.repoDirty ? "* " : "  ") + repo.branch + " | " + path);
+                const auto auditMarker = !repo.statusKnown
+                    ? "? "
+                    : (repo.repoDirty ? "* " : "  ");
+                menu.push_back(indent + marker + typeTag + auditMarker + repo.branch + " | " + path);
             }
         }
         if (menu.empty()) {
@@ -2744,10 +2763,17 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
             return;
         }
         cache.loading = true;
+        std::uint64_t historyGeneration = 0;
         {
             std::lock_guard<std::mutex> lock(asyncMu);
             cache.loadingGeneration = asyncState.generation;
+            historyGeneration = asyncState.generation;
         }
+        BeginTuiLoad(
+            cache.loadState,
+            historyGeneration,
+            "history page",
+            "Esc returns; press r in the repository view, then reopen to retry");
         cache.loadingPageIndex = PageIndex;
         footer = "loading bounded history page in background; Esc/q returns immediately";
         footerIsError = false;
@@ -2827,10 +2853,17 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
             return false;
         }
         history.detailLoading = true;
+        std::uint64_t detailGeneration = 0;
         {
             std::lock_guard<std::mutex> lock(asyncMu);
             history.detailPendingGeneration = asyncState.generation;
+            detailGeneration = asyncState.generation;
         }
+        BeginTuiLoad(
+            history.detailLoadState,
+            detailGeneration,
+            "history detail",
+            "Esc returns; Enter retries the selected commit detail");
         history.detailPendingKey = detailKey;
         history.detailError.clear();
         footer = "loading commit detail in background; Esc/q returns immediately";
@@ -2962,9 +2995,11 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                 try {
                     const auto refreshedRepos = DiscoverRepoViews(refreshDirtyOnly, false, true, progressCallback);
                     std::vector<std::string> discoverLines;
+                    std::size_t discoverRepoCount = 0;
                     if (InRefreshDiscoverPanel && discoverWasActive) {
                         progressCallback("discover: rebuilding paged output");
                         const auto discoveredRepos = DiscoverRepoViews(discoverDirtyOnly, false, true, progressCallback);
+                        discoverRepoCount = discoveredRepos.size();
                         discoverLines = BuildDiscoverLines(discoveredRepos, workspaceRoot);
                     }
                     std::lock_guard<std::mutex> lock(asyncMu);
@@ -2975,6 +3010,7 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                     }
                     asyncState.repos = std::move(refreshedRepos);
                     asyncState.discoverLines = std::move(discoverLines);
+                    asyncState.discoverRepoCount = discoverRepoCount;
                     asyncState.discoverTitle = discoverTitle;
                     asyncState.refreshRepos = true;
                     asyncState.refreshDiscover = InRefreshDiscoverPanel && discoverWasActive;
@@ -2992,6 +3028,19 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                 }
             }, true)) {
             return;
+        }
+        if (InRefreshDiscoverPanel && discoverWasActive) {
+            std::uint64_t refreshGeneration = 0;
+            {
+                std::lock_guard<std::mutex> lock(asyncMu);
+                refreshGeneration = asyncState.generation;
+            }
+            discover.loading = true;
+            BeginTuiLoad(
+                discover.loadState,
+                refreshGeneration,
+                "repository discovery refresh",
+                ":refresh retries; Esc/q closes the panel");
         }
         footer = "refresh started in background";
         footerIsError = false;
@@ -3430,6 +3479,7 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                         return;
                     }
                     asyncState.discoverLines = BuildDiscoverLines(discoveredRepos, workspaceRoot);
+                    asyncState.discoverRepoCount = discoveredRepos.size();
                     asyncState.discoverTitle = InDirtyOnly ? "discover (dirty-only)" : "discover";
                     asyncState.refreshDiscover = true;
                     asyncState.hasResult = true;
@@ -3454,8 +3504,68 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
         discover.title = InDirtyOnly ? "discover (dirty-only)" : "discover";
         discover.lines = {"(discover running in background...)"};
         discover.progress = "starting discover...";
+        std::uint64_t discoverGeneration = 0;
+        {
+            std::lock_guard<std::mutex> lock(asyncMu);
+            discoverGeneration = asyncState.generation;
+        }
+        BeginTuiLoad(
+            discover.loadState,
+            discoverGeneration,
+            "repository discovery",
+            ":discover retries; Esc/q closes the panel");
         footer = "discover started in background";
         footerIsError = false;
+    };
+
+    auto begin_async_startup_snapshot = [&]() {
+        if (!begin_async_operation(
+                "startup inventory",
+                TuiAsyncSurface::None,
+                [&](const std::uint64_t InGeneration) {
+                    if (asyncCancelRequested.load()) {
+                        throw std::runtime_error(
+                            "startup inventory cancelled before bounded cache read");
+                    }
+                    auto startupInventory =
+                        LoadStartupRepoViews(workspaceRoot);
+                    if (asyncCancelRequested.load()) {
+                        throw std::runtime_error(
+                            "startup inventory cancelled after bounded cache read");
+                    }
+                    std::lock_guard<std::mutex> lock(asyncMu);
+                    if (!IsCurrentTuiAsyncOperation(
+                            asyncLifecycle,
+                            InGeneration)) {
+                        return;
+                    }
+                    const bool rootFallback =
+                        startupInventory.metadata.source ==
+                        "root-fallback";
+                    asyncState.repos =
+                        std::move(startupInventory.repos);
+                    asyncState.refreshRepos = true;
+                    asyncState.hasResult = true;
+                    asyncState.completionFooter = rootFallback
+                        ? "root repo ready; Enter opens history; :discover builds the full inventory"
+                        : "cached inventory ready; Enter opens bounded history; :refresh loads live status";
+                },
+                true)) {
+            footer =
+                "startup inventory could not start; :refresh retries live discovery; q exits";
+            footerIsError = true;
+            return;
+        }
+        std::uint64_t startupGeneration = 0;
+        {
+            std::lock_guard<std::mutex> lock(asyncMu);
+            startupGeneration = asyncState.generation;
+        }
+        BeginTuiLoad(
+            startupLoadState,
+            startupGeneration,
+            "startup inventory",
+            ":refresh retries live discovery; q/Escape exits");
     };
 
     process_async_state = [&]() {
@@ -3549,9 +3659,16 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                                     auto& batch =
                                         asyncState.historyBatch;
                                     if (!batch.errorMessage.empty()) {
-                                        if (batch.errorMessage.find(
-                                                "cancelled") ==
-                                            std::string::npos) {
+                                        const bool cancelled =
+                                            batch.errorMessage.find(
+                                                "cancelled") !=
+                                            std::string::npos;
+                                        (void)FailTuiLoad(
+                                            cache.loadState,
+                                            completedGeneration,
+                                            batch.errorMessage,
+                                            cancelled);
+                                        if (!cancelled) {
                                             cache.loadError =
                                                 batch.errorMessage;
                                             cache.fullyLoaded = true;
@@ -3590,10 +3707,17 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                                                         entry);
                                             }
                                         }
+                                        (void)CompleteTuiLoad(
+                                            cache.loadState,
+                                            completedGeneration,
+                                            cache.allEntries.size());
                                     }
                                 }
                             }
                             if (asyncState.refreshHistoryDetail) {
+                                const auto detailSectionCount =
+                                    asyncState.historyDetailOverlay
+                                        .sections.size();
                                 if (asyncState.historyDetailError
                                         .empty()) {
                                     historyCache
@@ -3605,6 +3729,18 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                                                 std::move(
                                                     asyncState
                                                         .historyDetailOverlay));
+                                    (void)CompleteTuiLoad(
+                                        history.detailLoadState,
+                                        completedGeneration,
+                                        detailSectionCount);
+                                } else {
+                                    (void)FailTuiLoad(
+                                        history.detailLoadState,
+                                        completedGeneration,
+                                        asyncState.historyDetailError,
+                                        asyncState.historyDetailError.find(
+                                            "cancelled") !=
+                                            std::string::npos);
                                 }
                                 if (history
                                             .detailPendingGeneration ==
@@ -3633,6 +3769,10 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                                     asyncState.discoverTitle;
                                 discover.lines = std::move(
                                     asyncState.discoverLines);
+                                (void)CompleteTuiLoad(
+                                    discover.loadState,
+                                    completedGeneration,
+                                    asyncState.discoverRepoCount);
                                 discover.progress.clear();
                                 const int totalPages = std::max(
                                     1,
@@ -3681,6 +3821,13 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                                     cache.loadingPageIndex = -1;
                                     cache.loadError =
                                         asyncState.errorMessage;
+                                    (void)FailTuiLoad(
+                                        cache.loadState,
+                                        completedGeneration,
+                                        asyncState.errorMessage,
+                                        asyncState.errorMessage.find(
+                                            "cancelled") !=
+                                            std::string::npos);
                                 }
                             } else if (
                                 completedSurface ==
@@ -3691,6 +3838,13 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                                     completedGeneration) {
                                 history.detailLoading = false;
                                 history.detailPendingGeneration = 0;
+                                (void)FailTuiLoad(
+                                    history.detailLoadState,
+                                    completedGeneration,
+                                    asyncState.errorMessage,
+                                    asyncState.errorMessage.find(
+                                        "cancelled") !=
+                                        std::string::npos);
                                 if (completion
                                         .bPresentSurface) {
                                     history.detailError =
@@ -3702,6 +3856,13 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                                 completion.bPresentSurface) {
                                 discover.loading = false;
                                 discover.progress.clear();
+                                (void)FailTuiLoad(
+                                    discover.loadState,
+                                    completedGeneration,
+                                    asyncState.errorMessage,
+                                    asyncState.errorMessage.find(
+                                        "cancelled") !=
+                                        std::string::npos);
                             } else if (
                                 completedSurface ==
                                     TuiAsyncSurface::Preview &&
@@ -3718,6 +3879,24 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                                    ? "background operation complete"
                                    : asyncState.completionFooter)
                             : asyncState.errorMessage;
+                        if (asyncState.label == "startup inventory") {
+                            if (asyncState.hasResult) {
+                                (void)CompleteTuiLoad(
+                                    startupLoadState,
+                                    completedGeneration,
+                                    repos.size());
+                            } else {
+                                (void)FailTuiLoad(
+                                    startupLoadState,
+                                    completedGeneration,
+                                    asyncState.errorMessage,
+                                    asyncState.errorMessage.find(
+                                        "cancelled") !=
+                                        std::string::npos);
+                                nextFooter = asyncState.errorMessage +
+                                    " | :refresh retries live discovery; q exits";
+                            }
+                        }
                         shouldExitAfterWorker =
                             completion.bExitNow;
                         asyncState = AsyncWorkState{};
@@ -4039,15 +4218,21 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
 
         auto close_overlay_or_exit = [&]() -> bool {
             if (discover.active) {
+                bool cancellationRequested = false;
                 {
                     std::lock_guard<std::mutex> lock(asyncMu);
-                    (void)DismissTuiAsyncSurface(
+                    cancellationRequested = CancelTuiAsyncSurface(
                         asyncLifecycle,
                         TuiAsyncSurface::Discover);
                 }
+                if (cancellationRequested) {
+                    asyncCancelRequested.store(true);
+                }
                 discover.active = false;
                 discover.loading = false;
-                footer = "discover panel closed";
+                footer = cancellationRequested
+                    ? "discover cancellation requested; panel closed"
+                    : "discover panel closed";
                 return true;
             }
             if (rebaseRun.active) {
@@ -4100,29 +4285,41 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
             }
             if (history.active) {
                 if (history.detailActive) {
+                    bool cancellationRequested = false;
                     {
                         std::lock_guard<std::mutex> lock(asyncMu);
-                        (void)DismissTuiAsyncSurface(
+                        cancellationRequested = CancelTuiAsyncSurface(
                             asyncLifecycle,
                             TuiAsyncSurface::HistoryDetail);
+                    }
+                    if (cancellationRequested) {
+                        asyncCancelRequested.store(true);
                     }
                     history.detailActive = false;
                     history.detailLoading = false;
                     history.detailPendingGeneration = 0;
                     history.detailPendingKey.clear();
                     history.detailError.clear();
-                    footer = "history detail closed";
+                    footer = cancellationRequested
+                        ? "history detail cancellation requested; panel closed"
+                        : "history detail closed";
                     return true;
                 }
+                bool cancellationRequested = false;
                 {
                     std::lock_guard<std::mutex> lock(asyncMu);
-                    (void)DismissTuiAsyncSurface(
+                    cancellationRequested = CancelTuiAsyncSurface(
                         asyncLifecycle,
                         TuiAsyncSurface::HistoryPage);
                 }
+                if (cancellationRequested) {
+                    asyncCancelRequested.store(true);
+                }
                 history.active = false;
                 history.searchMode = false;
-                footer = "history closed";
+                footer = cancellationRequested
+                    ? "history cancellation requested; panel closed"
+                    : "history closed";
                 return true;
             }
             TuiAsyncExitDecision exitDecision;
@@ -4503,11 +4700,15 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
 
         if (history.active) {
             auto close_history_detail = [&]() {
+                bool cancellationRequested = false;
                 {
                     std::lock_guard<std::mutex> lock(asyncMu);
-                    (void)DismissTuiAsyncSurface(
+                    cancellationRequested = CancelTuiAsyncSurface(
                         asyncLifecycle,
                         TuiAsyncSurface::HistoryDetail);
+                }
+                if (cancellationRequested) {
+                    asyncCancelRequested.store(true);
                 }
                 history.detailActive = false;
                 history.detailLoading = false;
@@ -4532,6 +4733,16 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                 // Cycle within displayed repos only
                 const int n = static_cast<int>(displayedRepoIndices.size());
                 posInDisplayed = (posInDisplayed + InDelta + n) % n;
+                bool cancellationRequested = false;
+                {
+                    std::lock_guard<std::mutex> lock(asyncMu);
+                    cancellationRequested = CancelTuiAsyncSurface(
+                        asyncLifecycle,
+                        TuiAsyncSurface::HistoryPage);
+                }
+                if (cancellationRequested) {
+                    asyncCancelRequested.store(true);
+                }
                 history.repoIndex = displayedRepoIndices[posInDisplayed];
                 selectedDisplayed = posInDisplayed;
                 history.pageIndex = 0;
@@ -4539,6 +4750,10 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                 history.highlightedLine = -1;
                 close_history_detail();
                 ensure_history_loaded(history.repoIndex, history.pageIndex);
+                if (cancellationRequested) {
+                    footer =
+                        "superseding stale history load; the selected repo starts after cancellation";
+                }
             };
 
             auto move_history_page = [&](const int InDelta, const bool InSelectEdge) -> bool {
@@ -4859,6 +5074,17 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
     });
 
     auto ui = Renderer(with_keys, [&] {
+        if (!startupSnapshotScheduled) {
+            // ScreenInteractive installs its task sender only after Loop()
+            // enters PreMain. Schedule the loader from the first render so
+            // the initial frame is complete and every worker completion Post
+            // has a live receiver.
+            startupSnapshotScheduled = true;
+            screen.Post(ftxui::Closure([&]() {
+                begin_async_startup_snapshot();
+                screen.RequestAnimationFrame();
+            }));
+        }
         Element rightPanel;
 
         if (discover.active) {
@@ -4876,13 +5102,36 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                 pageRows.push_back(text("(no lines in this page)") | kMutedStyle);
             }
 
+            const auto discoverTone =
+                discover.loadState.phase == TuiLoadPhase::Loading
+                ? StatusTone::Running
+                : (discover.loadState.phase == TuiLoadPhase::Failed
+                       ? StatusTone::Error
+                       : (discover.loadState.phase == TuiLoadPhase::Cancelled
+                              ? StatusTone::Warning
+                              : StatusTone::Info));
+            const auto discoverStateLine = [&]() {
+                std::string line = "state: " +
+                    std::string(TuiLoadPhaseName(discover.loadState.phase));
+                if (discover.loadState.phase == TuiLoadPhase::Loading) {
+                    line += " | " + (discover.progress.empty()
+                        ? std::string("starting...")
+                        : discover.progress);
+                } else if (!discover.loadState.diagnostic.empty()) {
+                    line += " | " + discover.loadState.diagnostic;
+                }
+                return line;
+            }();
             rightPanel = vbox({
-                status_title("Discover Output (paged)", discover.loading ? StatusTone::Running : StatusTone::Info),
+                status_title("Discover Output (paged)", discoverTone),
                 separator(),
                 status_text("command: :" + discover.title),
-                status_text(discover.loading
-                         ? ("state: running | " + (discover.progress.empty() ? std::string("starting...") : discover.progress))
-                         : "state: ready"),
+                status_text(discoverStateLine),
+                (discover.loadState.phase == TuiLoadPhase::Failed ||
+                 discover.loadState.phase == TuiLoadPhase::Cancelled ||
+                 discover.loadState.phase == TuiLoadPhase::Empty)
+                    ? paragraph(discover.loadState.hint) | kSecondaryStyle
+                    : text(""),
                 status_text("page: " + std::to_string(clampedPage + 1) + "/" + std::to_string(totalPages) +
                      "  lines: " + std::to_string(start + 1) + "-" + std::to_string(std::max(start + 1, end)) +
                      "/" + std::to_string(discover.lines.size())),
@@ -5113,20 +5362,32 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                 auto* overlay = historyCache[key].detailOverlays.get(detailKey);
 
                 if (overlay == nullptr) {
+                    const auto detailPhase =
+                        history.detailLoadState.phase;
+                    const auto detailDiagnostic =
+                        !history.detailLoadState.diagnostic.empty()
+                        ? history.detailLoadState.diagnostic
+                        : history.detailError;
+                    const auto detailTone =
+                        detailPhase == TuiLoadPhase::Loading
+                        ? StatusTone::Running
+                        : (detailPhase == TuiLoadPhase::Failed
+                               ? StatusTone::Error
+                               : (detailPhase == TuiLoadPhase::Cancelled
+                                      ? StatusTone::Warning
+                                      : (detailDiagnostic.empty()
+                                             ? StatusTone::Warning
+                                             : StatusTone::Error)));
                     rightPanel = vbox({
-                        status_title(
-                            "History Detail",
-                            history.detailLoading
-                                ? StatusTone::Running
-                                : (history.detailError.empty()
-                                       ? StatusTone::Warning
-                                       : StatusTone::Error)),
+                        status_title("History Detail", detailTone),
                         separator(),
-                        history.detailLoading
-                            ? paragraph("Loading commit detail in the background. The interface remains usable.") | kRunningStyle
-                            : (history.detailError.empty()
+                        detailPhase == TuiLoadPhase::Loading
+                            ? paragraph("state: loading | one bounded detail query is running; Esc/q cancels and returns.") | kRunningStyle
+                            : (detailPhase == TuiLoadPhase::Cancelled
+                                   ? paragraph("state: cancelled | " + history.detailLoadState.hint) | kWarningStyle
+                                   : (detailDiagnostic.empty()
                                    ? paragraph("This detail was invalidated by a repository refresh. Return to history and reopen the selected commit.") | kWarningStyle
-                                   : paragraph(history.detailError + " | Return to history and press Enter to retry.") | kErrorStyle),
+                                   : paragraph("state: failed | " + detailDiagnostic + " | " + history.detailLoadState.hint) | kErrorStyle)),
                         separator(),
                         text("Press Esc or q to return to history") | kSecondaryStyle,
                     }) | border;
@@ -5369,11 +5630,21 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                        rows.push_back(row);
                   }
                   if (entries.empty()) {
-                      rows.push_back(text(cache.loading
-                          ? "  │ (loading bounded history page...)"
-                          : (cache.loadError.empty()
-                              ? "  │ (no commits yet)"
-                              : "  │ (history load failed; see guidance below)")) | kMutedStyle);
+                      const auto emptyLabel = [&]() -> std::string {
+                          switch (cache.loadState.phase) {
+                              case TuiLoadPhase::Loading:
+                                  return "  │ (loading one bounded history page...)";
+                              case TuiLoadPhase::Cancelled:
+                                  return "  │ (history load cancelled; see guidance below)";
+                              case TuiLoadPhase::Failed:
+                                  return "  │ (history load failed; see guidance below)";
+                              case TuiLoadPhase::Empty:
+                                  return "  │ (empty repository: no commits yet)";
+                              default:
+                                  return "  │ (no history entries)";
+                          }
+                      }();
+                      rows.push_back(text(emptyLabel) | kMutedStyle);
                   }
                   return rows;
               }()) | yframe;
@@ -5390,13 +5661,25 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                 return text("selected: " + selectedEntry->sha + " | Enter opens commit details") | kSecondaryStyle;
             }();
 
-            auto historyLoadStatus = cache.loading
-                ? paragraph("Loading one bounded Git history batch in the background. Esc/q returns to repositories.") | kRunningStyle
-                : (cache.loadError.empty()
-                    ? (cache.fullyLoaded
-                        ? text("history source: bounded local Git log") | kMutedStyle
-                        : text("history source: bounded local Git log | more pages load on demand") | kMutedStyle)
-                    : paragraph("history load failed: " + cache.loadError + " | Press Esc to return, then r to refresh this repo and retry.") | kErrorStyle);
+            auto historyLoadStatus = [&]() -> Element {
+                switch (cache.loadState.phase) {
+                    case TuiLoadPhase::Loading:
+                        return paragraph("state: loading | one bounded Git history query is running; Esc/q cancels and returns.") | kRunningStyle;
+                    case TuiLoadPhase::Cancelled:
+                        return paragraph("state: cancelled | " + cache.loadState.hint) | kWarningStyle;
+                    case TuiLoadPhase::Failed:
+                        return paragraph("state: failed | " + cache.loadState.diagnostic + " | " + cache.loadState.hint) | kErrorStyle;
+                    case TuiLoadPhase::Empty:
+                        return paragraph("state: empty | this repository has no commits; Esc returns to repositories.") | kMutedStyle;
+                    case TuiLoadPhase::Ready:
+                        return text(cache.fullyLoaded
+                            ? "state: ready | source: bounded local Git log"
+                            : "state: ready | source: bounded local Git log | more pages load on demand") | kMutedStyle;
+                    case TuiLoadPhase::Idle:
+                    default:
+                        return text("state: idle | history starts on demand") | kMutedStyle;
+                }
+            }();
 
                 rightPanel = vbox({
                     status_title("History Pager"),
@@ -5466,8 +5749,12 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                 const auto branchText = CompactDetailValue(row.branch) + cacheMark;
                 const auto upstreamText = CompactDetailValue(row.upstream) + cacheMark;
                 const auto trackingText = CompactDetailValue(row.tracking) + cacheMark;
-                const auto dirtyText = std::string(row.repoDirty ? "y" : "n") + cacheMark;
-                const auto worktreeDirtyText = std::string(row.worktreeDirty ? "y" : "n") + cacheMark;
+                const auto dirtyText = std::string(TuiAuditBooleanLabel(
+                    row.statusKnown,
+                    row.repoDirty)) + (row.statusKnown ? cacheMark : "");
+                const auto worktreeDirtyText = std::string(TuiAuditBooleanLabel(
+                    row.statusKnown,
+                    row.worktreeDirty)) + (row.statusKnown ? cacheMark : "");
                 const auto dirtyWorktreesText = CompactDetailValue(row.dirtyWorktrees.empty() ? "-" : row.dirtyWorktrees);
                 int detailRepoListWidth = 0;
                 for (const auto& entry : menu) {
@@ -5499,13 +5786,13 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                 const auto dirtyPreviewLimit = std::min<std::size_t>(dirtyFileCount, 8);
                 const auto dirtyFilesTitle = std::string("dirty files: ") + std::to_string(dirtyFileCount)
                     + (row.statusFromSnapshot
-                        ? " (snapshot cache; run :refresh for live list)"
+                        ? " (startup snapshot; run :refresh for live list)"
                         : " (top " + std::to_string(dirtyPreviewLimit) + ")")
                     + (row.dirtyFilesIncomplete ? " [INCOMPLETE]" : "");
                 rightPanel = vbox({
                     status_title("Repository Details"),
                     separator(),
-                    paragraph("*: snapshot cache") | kMutedStyle,
+                    paragraph("*: startup snapshot") | kMutedStyle,
                     status_paragraph(DetailLine(detailLabelMode, "path", "p", pathText)),
                     status_paragraph(DetailLine(detailLabelMode, "parent", "par", parentText)),
                     status_paragraph(DetailLine(detailLabelMode, "type", "t", row.type)
@@ -5516,6 +5803,11 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                     status_paragraph(DetailLine(detailLabelMode, "tracking", "tr", trackingText)
                         + (detailLabelMode == DetailLabelMode::Bare ? " | wt " + worktreeDirtyText : " | " + DetailLine(detailLabelMode, "worktree dirty", "wt", worktreeDirtyText))),
                     status_paragraph(DetailLine(detailLabelMode, "worktrees", "wts", dirtyWorktreesText)),
+                    row.statusKnown
+                        ? text("")
+                        : paragraph(
+                              "status was not sampled for the first-run root fallback; press r or run :refresh for live audit data") |
+                              kWarningStyle,
                     separator(),
                     text(dirtyFilesTitle) | kInfoStyle,
                     row.dirtyFilesIncomplete
@@ -5526,7 +5818,7 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                               kWarningStyle
                         : text(""),
                     row.statusFromSnapshot
-                        ? paragraph("(unavailable in snapshot cache)") | kMutedStyle
+                        ? paragraph("(unavailable in startup snapshot)") | kMutedStyle
                         : row.dirtyFiles.empty()
                         ? paragraph("(none)") | kMutedStyle
                         : vbox([&] {
@@ -5546,10 +5838,27 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                 }) | border;
             }
         } else {
+            const auto startupTone =
+                startupLoadState.phase == TuiLoadPhase::Loading
+                ? StatusTone::Running
+                : (startupLoadState.phase == TuiLoadPhase::Failed
+                       ? StatusTone::Error
+                       : StatusTone::Info);
+            std::string startupText = "state: " +
+                std::string(TuiLoadPhaseName(startupLoadState.phase));
+            if (!startupLoadState.diagnostic.empty()) {
+                startupText += " | " + startupLoadState.diagnostic;
+            }
             rightPanel = vbox({
-                status_title("Repository Details"),
+                status_title("Repository Audit", startupTone),
                 separator(),
-                text("No repositories to display.") | kMutedStyle,
+                status_text(startupText),
+                startupLoadState.phase == TuiLoadPhase::Loading
+                    ? paragraph("The first frame is ready. Loading the trusted cached repository inventory in a bounded background subprocess; q/Escape requests cancellation and exits.") | kRunningStyle
+                    : (startupLoadState.phase == TuiLoadPhase::Failed ||
+                       startupLoadState.phase == TuiLoadPhase::Cancelled)
+                        ? paragraph(startupLoadState.hint) | kWarningStyle
+                        : paragraph("No repositories to display. Run :refresh for bounded live discovery or q to exit.") | kMutedStyle,
             }) | border;
         }
 
@@ -5675,7 +5984,9 @@ auto PrintDemo() -> void {
     std::cout << "- discover panel controls: ]/PgUp next page, [/PgDown prev page, Esc/q close\n";
     std::cout << "- tree: t collapse/expand selected repo subtree\n";
     std::cout << "- advanced history controls: / search, n next match, o sort mode\n";
-    std::cout << "- startup uses cached status; r refreshes one repo and :refresh refreshes the workspace\n";
+    std::cout << "- the first frame renders before a bounded read-only cached-inventory subprocess begins\n";
+    std::cout << "- startup, discovery, history, and detail report loading/ready/empty/cancelled/failed states\n";
+    std::cout << "- r refreshes one repo and :refresh refreshes the workspace\n";
     std::cout << "Run `kano-git tui` to start the FTXUI UI.\n";
 }
 
