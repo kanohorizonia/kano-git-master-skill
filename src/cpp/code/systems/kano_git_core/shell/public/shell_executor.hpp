@@ -12,8 +12,15 @@ enum class ExecMode { Capture, PassThrough };
 
 struct ExecResult {
     int exitCode = 0;
-    std::string stdoutStr;
-    std::string stderrStr;
+    std::string stdoutStr;  // Binary-safe; may contain embedded NUL bytes.
+    std::string stderrStr;  // Binary-safe; may contain embedded NUL bytes.
+    bool stdoutTruncated = false;
+    bool stderrTruncated = false;
+};
+
+struct CaptureLimits {
+    std::size_t stdoutMaxBytes = 0; // 0 retains all bytes.
+    std::size_t stderrMaxBytes = 0;
 };
 
 using ProgressCallback = std::function<void(std::string_view chunk, bool isStderr)>;
@@ -69,7 +76,8 @@ auto ExecuteCommand(
     ExecMode InMode,
     std::optional<std::filesystem::path> InWorkingDir,
     ProgressCallback InProgressCallback,
-    std::optional<unsigned int> InTimeoutOverrideMs = std::nullopt
+    std::optional<unsigned int> InTimeoutOverrideMs = std::nullopt,
+    CaptureLimits InCaptureLimits = {}
 ) -> ExecResult;
 
 }

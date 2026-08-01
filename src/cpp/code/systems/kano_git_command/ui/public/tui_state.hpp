@@ -10,7 +10,6 @@ namespace kano::git::commands {
 
 // Forward declarations
 class AutocompleteEngine;
-class CommandExecutor;
 
 struct PaletteItem {
     std::string name;
@@ -65,7 +64,6 @@ struct TuiState {
     
     // Dependencies (injected)
     std::shared_ptr<AutocompleteEngine> autocomplete_engine;
-    std::shared_ptr<CommandExecutor> command_executor;
     
     /// Handle keyboard event based on current mode
     /// Returns true if event was handled, false otherwise
@@ -97,6 +95,7 @@ private:
     auto ExitHelpMode() -> void;
 
     auto BuildPaletteItems() -> std::vector<PaletteItem>;
+    auto UpdateCommandCandidates() -> void;
     auto UpdatePaletteFilter() -> void;
     auto CategorizeCommand(const std::string& name) -> std::string;
 };

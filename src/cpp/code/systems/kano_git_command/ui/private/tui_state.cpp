@@ -1,6 +1,6 @@
 #include "tui_state.hpp"
 #include "autocomplete_engine.hpp"
-#include "command_executor.hpp"
+#include "tui_command_scope.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -104,9 +104,7 @@ auto TuiState::HandleCommandMode(const std::string& event_type, char ch) -> bool
     // Accept selected candidate on Enter before command execution
     if (event_type == "enter" && command_state.HasCandidates()) {
         command_state.OnAcceptCandidate();
-        if (autocomplete_engine) {
-            command_state.UpdateCandidates(*autocomplete_engine);
-        }
+        UpdateCommandCandidates();
         return true;
     }
 
@@ -118,31 +116,16 @@ auto TuiState::HandleCommandMode(const std::string& event_type, char ch) -> bool
             return true;
         }
 
-        if (!command_executor) {
-            SetFooterMessage("Command executor unavailable", true);
+        if (!IsTuiAuditOnlyCommand(ParseTuiCommandLine(commandLine))) {
+            SetFooterMessage(
+                "Audit-only TUI accepts a read-only command with no options",
+                true);
             return true;
         }
 
-        const auto result = command_executor->Execute(commandLine);
-        if (result.needs_confirmation) {
-            mode = TuiMode::Confirm;
-            confirm_state.active = true;
-            confirm_state.message = result.message;
-            confirm_state.on_confirm = result.confirmed_action;
-            confirm_state.on_cancel = [this]() {
-                mode = TuiMode::Command;
-                confirm_state.active = false;
-                SetFooterMessage("Command cancelled", false);
-            };
-            return true;
-        }
-
-        if (result.success) {
-            SetFooterMessage(result.message.empty() ? "Command executed" : result.message, false);
-            ExitCommandMode();
-        } else {
-            SetFooterMessage(result.message.empty() ? "Command failed" : result.message, true);
-        }
+        // TuiState owns input only. The dashboard validates scope, injects
+        // no-cache guards, and owns the single bounded subprocess runner.
+        SetFooterMessage("Audit command runner unavailable", true);
         return true;
     }
     
@@ -150,9 +133,7 @@ auto TuiState::HandleCommandMode(const std::string& event_type, char ch) -> bool
     if (event_type == "character") {
         command_state.OnCharacter(ch);
         // Trigger autocomplete if engine is available
-        if (autocomplete_engine) {
-            command_state.UpdateCandidates(*autocomplete_engine);
-        }
+        UpdateCommandCandidates();
         // Clear error message when user starts typing
         if (footer_is_error) {
             ClearFooterMessage();
@@ -163,27 +144,21 @@ auto TuiState::HandleCommandMode(const std::string& event_type, char ch) -> bool
     // Handle backspace
     if (event_type == "backspace") {
         command_state.OnBackspace();
-        if (autocomplete_engine) {
-            command_state.UpdateCandidates(*autocomplete_engine);
-        }
+        UpdateCommandCandidates();
         return true;
     }
     
     // Handle delete
     if (event_type == "delete") {
         command_state.OnDelete();
-        if (autocomplete_engine) {
-            command_state.UpdateCandidates(*autocomplete_engine);
-        }
+        UpdateCommandCandidates();
         return true;
     }
     
     // Handle Ctrl+U (clear buffer)
     if (event_type == "ctrl_u") {
         command_state.OnClearBuffer();
-        if (autocomplete_engine) {
-            command_state.UpdateCandidates(*autocomplete_engine);
-        }
+        UpdateCommandCandidates();
         return true;
     }
     
@@ -209,9 +184,7 @@ auto TuiState::HandleCommandMode(const std::string& event_type, char ch) -> bool
     if (event_type == "tab") {
         if (command_state.HasCandidates() && command_state.candidates.Size() == 1) {
             command_state.OnAcceptCandidate();
-            if (autocomplete_engine) {
-                command_state.UpdateCandidates(*autocomplete_engine);
-            }
+            UpdateCommandCandidates();
             return true;
         }
         command_state.OnNextCandidate();
@@ -285,9 +258,7 @@ auto TuiState::HandlePaletteMode(const std::string& event_type, char ch) -> bool
             command_state.OnCharacter(c);
         }
         command_state.OnCharacter(' ');
-        if (autocomplete_engine) {
-            command_state.UpdateCandidates(*autocomplete_engine);
-        }
+        UpdateCommandCandidates();
         return true;
     }
 
@@ -393,7 +364,8 @@ auto TuiState::BuildPaletteItems() -> std::vector<PaletteItem> {
 
     const auto candidates = autocomplete_engine->GenerateCandidates("");
     for (const auto& candidate : candidates) {
-        if (candidate.type != CandidateType::Command) {
+        if (candidate.type != CandidateType::Command ||
+            !IsTuiAuditOnlyCommand({candidate.completion})) {
             continue;
         }
         items.push_back(PaletteItem{
@@ -411,6 +383,33 @@ auto TuiState::BuildPaletteItems() -> std::vector<PaletteItem> {
     });
 
     return items;
+}
+
+auto TuiState::UpdateCommandCandidates() -> void {
+    if (!autocomplete_engine) {
+        command_state.candidates.items.clear();
+        command_state.candidates.Reset();
+        command_state.show_candidates = false;
+        return;
+    }
+
+    command_state.UpdateCandidates(*autocomplete_engine);
+    const bool completingCommand =
+        command_state.GetBuffer().find_first_of(" \t\r\n") ==
+        std::string::npos;
+    auto& candidates = command_state.candidates.items;
+    candidates.erase(
+        std::remove_if(
+            candidates.begin(),
+            candidates.end(),
+            [&](const CandidateItem& InCandidate) {
+                return !completingCommand ||
+                    InCandidate.type != CandidateType::Command ||
+                    !IsTuiAuditOnlyCommand({InCandidate.completion});
+            }),
+        candidates.end());
+    command_state.candidates.Reset();
+    command_state.show_candidates = !candidates.empty();
 }
 
 auto TuiState::UpdatePaletteFilter() -> void {
@@ -444,9 +443,6 @@ auto TuiState::CategorizeCommand(const std::string& name) -> std::string {
     const auto normalized = TuiStateToLower(name);
     if (normalized == "status" || normalized == "workspace" || normalized == "sync" || normalized == "fetch") {
         return "Repository";
-    }
-    if (normalized == "commit" || normalized == "amend" || normalized == "push" || normalized == "commit-push") {
-        return "Workflow";
     }
     if (normalized == "tui" || normalized == "guide" || normalized == "doctor" || normalized == "meta") {
         return "System";

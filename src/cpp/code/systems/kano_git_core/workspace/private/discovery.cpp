@@ -15,6 +15,7 @@
 #include <regex>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <cstdint>
@@ -32,6 +33,37 @@
 
 namespace kano::git::workspace {
 namespace {
+
+thread_local const DiscoverGitExecutionControl*
+    GDiscoveryGitExecutionControl = nullptr;
+
+class ScopedDiscoveryGitExecutionControl final {
+public:
+    explicit ScopedDiscoveryGitExecutionControl(
+        const DiscoverGitExecutionControl& InControl)
+        : previous_(GDiscoveryGitExecutionControl) {
+        if (InControl.launchGuard || InControl.timeoutMs.has_value() ||
+            InControl.maxCaptureBytes > 0) {
+            GDiscoveryGitExecutionControl = &InControl;
+            installed_ = true;
+        }
+    }
+
+    ~ScopedDiscoveryGitExecutionControl() {
+        if (installed_) {
+            GDiscoveryGitExecutionControl = previous_;
+        }
+    }
+
+    ScopedDiscoveryGitExecutionControl(
+        const ScopedDiscoveryGitExecutionControl&) = delete;
+    auto operator=(const ScopedDiscoveryGitExecutionControl&)
+        -> ScopedDiscoveryGitExecutionControl& = delete;
+
+private:
+    const DiscoverGitExecutionControl* previous_ = nullptr;
+    bool installed_ = false;
+};
 
 auto Normalize(const std::filesystem::path& InPath) -> std::filesystem::path {
     auto normalized = InPath.lexically_normal();
@@ -800,7 +832,43 @@ auto RunGitCapture(const std::filesystem::path& InRepoPath, const std::vector<st
     args.push_back("-C");
     args.push_back(PathKey(InRepoPath));
     args.insert(args.end(), InArgs.begin(), InArgs.end());
-    return shell::ExecuteCommand("git", args, shell::ExecMode::Capture);
+    if (GDiscoveryGitExecutionControl != nullptr &&
+        GDiscoveryGitExecutionControl->launchGuard &&
+        !GDiscoveryGitExecutionControl->launchGuard(
+            InRepoPath,
+            InArgs)) {
+        throw std::runtime_error(
+            "workspace discovery cancelled before Git launch");
+    }
+    const auto timeout = GDiscoveryGitExecutionControl != nullptr
+        ? GDiscoveryGitExecutionControl->timeoutMs
+        : std::optional<unsigned int>{};
+    const auto maxCaptureBytes =
+        GDiscoveryGitExecutionControl != nullptr
+        ? GDiscoveryGitExecutionControl->maxCaptureBytes
+        : 0;
+    const auto captureLimits = maxCaptureBytes > 0
+        ? shell::CaptureLimits{maxCaptureBytes, maxCaptureBytes}
+        : shell::CaptureLimits{};
+    auto result = shell::ExecuteCommand(
+        "git",
+        args,
+        shell::ExecMode::Capture,
+        std::nullopt,
+        shell::ProgressCallback{},
+        timeout,
+        captureLimits);
+    if (timeout.has_value() &&
+        result.stderrStr.find("[kog-timeout]") != std::string::npos) {
+        throw std::runtime_error(
+            "workspace discovery Git probe exceeded the audit timeout");
+    }
+    if (maxCaptureBytes > 0 &&
+        (result.stdoutTruncated || result.stderrTruncated)) {
+        throw std::runtime_error(
+            "workspace discovery Git output exceeded the audit capture budget");
+    }
+    return result;
 }
 
 auto IsGitRepo(const std::filesystem::path& InRepoPath) -> bool {
@@ -2118,7 +2186,12 @@ auto ManifestToJson(const std::filesystem::path& InWorkspaceRoot, const std::vec
     return json;
 }
 
-auto DiscoverRegisteredPathsRecursive(const std::filesystem::path& InWorkspaceRoot) -> std::vector<std::filesystem::path> {
+auto DiscoverRegisteredPathsRecursive(
+    const std::filesystem::path& InWorkspaceRoot,
+    DiscoverGitExecutionControl InGitExecution)
+    -> std::vector<std::filesystem::path> {
+    const ScopedDiscoveryGitExecutionControl scopedGitExecution{
+        InGitExecution};
     std::vector<std::filesystem::path> out;
     std::vector<std::filesystem::path> queue{Normalize(std::filesystem::absolute(InWorkspaceRoot))};
 
@@ -2246,7 +2319,13 @@ auto MergePersistedUnregisteredRepos(const std::filesystem::path& InWorkspaceRoo
     }
 }
 
-auto LoadTrustedWorkspaceManifest(const std::filesystem::path& InWorkspaceRoot, std::string* OutReason) -> std::optional<WorkspaceManifest> {
+auto LoadTrustedWorkspaceManifest(
+    const std::filesystem::path& InWorkspaceRoot,
+    std::string* OutReason,
+    DiscoverGitExecutionControl InGitExecution)
+    -> std::optional<WorkspaceManifest> {
+    const ScopedDiscoveryGitExecutionControl scopedGitExecution{
+        InGitExecution};
     const auto rootAbs = Normalize(std::filesystem::absolute(InWorkspaceRoot));
     const auto state = LoadWorkspaceStateDocumentAny(rootAbs);
     if (!state.manifest.has_value()) {
@@ -2422,6 +2501,9 @@ auto CleanupStaleCacheLocks(const std::filesystem::path& InCacheRoot,
 }
 
 auto DiscoverRepos(const DiscoverOptions& InOptions) -> DiscoveryResult {
+    DiscoverOptions options = InOptions;
+    const ScopedDiscoveryGitExecutionControl scopedGitExecution{
+        options.gitExecution};
     DiscoveryResult result;
     auto reportProgress = [&](const std::string& InMessage) {
         if (InOptions.progressCallback) {
@@ -2434,7 +2516,6 @@ auto DiscoverRepos(const DiscoverOptions& InOptions) -> DiscoveryResult {
         rootAbs = std::filesystem::current_path();
     }
 
-    DiscoverOptions options = InOptions;
     const auto ignoreRules = BuildIgnoreRules(rootAbs, options.excludePatterns);
 
     if (options.maxDepth <= 0) {
@@ -2456,7 +2537,9 @@ auto DiscoverRepos(const DiscoverOptions& InOptions) -> DiscoveryResult {
 
     const auto marker = options.incremental ? ComputeMarker(rootAbs, options.maxDepth, ignoreRules) : std::string{};
     const auto cacheFile = CacheFilePath(options, rootAbs);
-    PruneLegacyCacheFiles(LegacyDiscoverCacheFilePath(rootAbs));
+    if (options.useCache && options.refreshCache) {
+        PruneLegacyCacheFiles(LegacyDiscoverCacheFilePath(rootAbs));
+    }
 
     result.cacheFile = cacheFile;
     result.marker = marker;

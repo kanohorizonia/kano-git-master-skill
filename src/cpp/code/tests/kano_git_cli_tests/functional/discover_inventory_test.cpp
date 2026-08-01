@@ -1,4 +1,5 @@
 #include "bdd_scenario_recorder.hpp"
+#include "discovery.hpp"
 #include "functional_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -8,6 +9,7 @@
 #include <fstream>
 #include <iterator>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 
 namespace kano::git::tests::functional {
@@ -400,6 +402,136 @@ TEST_CASE("discover invalidates incremental cache when root ignore content chang
     RequireNotContains(refreshed.stdoutText, childRepo.generic_string());
     RequireContains(refreshed.stderrText, "mode=scan-miss");
 
+    RemoveSandboxWorkspace(sandbox);
+}
+
+TEST_CASE(
+    "discover no-cache leaves legacy cache files untouched",
+    "[functional][discover][cache][KG-BUG-0088]") {
+    const auto sandbox = CreateSandboxWorkspace(
+        "discover-no-cache-read-only");
+    const auto root = (sandbox.root / "root").lexically_normal();
+    const auto sentinel = root / ".kano" / "cache" / "git" /
+        "discover-repos" / "audit-sentinel.json";
+    InitRepo(root);
+    WriteTextFile(sentinel, "{\"sentinel\":true}\n");
+
+    const auto result = RunKog(
+        {"discover", "--format", "json", "--repo-root", root.string(),
+         "--no-cache"},
+        root);
+
+    RequireSuccess(result, "no-cache discovery");
+    REQUIRE(std::filesystem::exists(sentinel));
+    REQUIRE(ReadTextFile(sentinel) == "{\"sentinel\":true}\n");
+    RemoveSandboxWorkspace(sandbox);
+}
+
+TEST_CASE(
+    "discovery entrypoints cancel before their next Git launch",
+    "[functional][discover][lifecycle][KG-BUG-0088]") {
+    const auto sandbox = CreateSandboxWorkspace(
+        "discover-cancel-before-child-git");
+    const auto root = (sandbox.root / "root").lexically_normal();
+    const auto child = (root / "registered-child").lexically_normal();
+    InitRepo(root);
+    InitRepo(child);
+    AddGitmodulesEntry(root, "registered-child", "registered-child");
+    CommitGitmodules(root);
+
+    int rootLaunches = 0;
+    int rejectedChildLaunches = 0;
+    kano::git::workspace::DiscoverOptions options;
+    options.rootDir = root;
+    options.useCache = false;
+    options.refreshCache = false;
+    options.incremental = false;
+    options.metadataLevel = "full";
+    options.gitExecution.launchGuard =
+        [&](const std::filesystem::path& InRepo,
+            const std::vector<std::string>&) {
+            if (InRepo.lexically_normal() == child) {
+                ++rejectedChildLaunches;
+                return false;
+            }
+            ++rootLaunches;
+            return true;
+        };
+
+    bool cancelled = false;
+    try {
+        (void)kano::git::workspace::DiscoverRepos(options);
+    } catch (const std::runtime_error& exception) {
+        cancelled = std::string(exception.what()).find(
+            "cancelled before Git launch") != std::string::npos;
+    }
+
+    REQUIRE(cancelled);
+    REQUIRE(rootLaunches > 0);
+    REQUIRE(rejectedChildLaunches == 1);
+
+    int registeredPathLaunchAttempts = 0;
+    bool registeredPathScanCancelled = false;
+    kano::git::workspace::DiscoverGitExecutionControl
+        registeredPathExecution;
+    registeredPathExecution.launchGuard =
+        [&](const std::filesystem::path&,
+            const std::vector<std::string>&) {
+            ++registeredPathLaunchAttempts;
+            return false;
+        };
+    try {
+        (void)kano::git::workspace::DiscoverRegisteredPathsRecursive(
+            root,
+            registeredPathExecution);
+    } catch (const std::runtime_error& exception) {
+        registeredPathScanCancelled = std::string(exception.what()).find(
+            "cancelled before Git launch") != std::string::npos;
+    }
+
+    REQUIRE(registeredPathScanCancelled);
+    REQUIRE(registeredPathLaunchAttempts == 1);
+
+    int manifestLaunchAttempts = 0;
+    bool manifestLoadCancelled = false;
+    std::string manifestReason;
+    kano::git::workspace::DiscoverGitExecutionControl
+        manifestExecution;
+    manifestExecution.launchGuard =
+        [&](const std::filesystem::path&,
+            const std::vector<std::string>&) {
+            ++manifestLaunchAttempts;
+            return false;
+        };
+    try {
+        (void)kano::git::workspace::LoadTrustedWorkspaceManifest(
+            root,
+            &manifestReason,
+            manifestExecution);
+    } catch (const std::runtime_error& exception) {
+        manifestLoadCancelled = std::string(exception.what()).find(
+            "cancelled before Git launch") != std::string::npos;
+    }
+
+    REQUIRE(manifestLoadCancelled);
+    REQUIRE(manifestLaunchAttempts == 1);
+
+    kano::git::workspace::DiscoverOptions boundedOptions;
+    boundedOptions.rootDir = root;
+    boundedOptions.useCache = false;
+    boundedOptions.refreshCache = false;
+    boundedOptions.incremental = false;
+    boundedOptions.gitExecution.timeoutMs = 5000;
+    boundedOptions.gitExecution.maxCaptureBytes = 1;
+    bool boundedOutputRejected = false;
+    try {
+        (void)kano::git::workspace::DiscoverRepos(boundedOptions);
+    } catch (const std::runtime_error& exception) {
+        boundedOutputRejected = std::string(exception.what()).find(
+            "exceeded the audit capture budget") != std::string::npos;
+    }
+
+    REQUIRE(boundedOutputRejected);
     RemoveSandboxWorkspace(sandbox);
 }
 

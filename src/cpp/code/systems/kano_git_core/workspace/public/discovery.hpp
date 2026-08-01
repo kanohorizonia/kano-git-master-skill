@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <filesystem>
 #include <functional>
 #include <optional>
@@ -12,6 +13,20 @@ namespace kano::git::workspace {
 enum class DiscoverScope {
     RegisteredOnly,
     Full,
+};
+
+using DiscoverGitLaunchGuard = std::function<bool(
+    const std::filesystem::path&,
+    const std::vector<std::string>&)>;
+
+struct DiscoverGitExecutionControl {
+    // Called immediately before each Git subprocess owned by discovery.
+    // Returning false aborts before that subprocess starts.
+    DiscoverGitLaunchGuard launchGuard;
+    std::optional<unsigned int> timeoutMs;
+    // Zero preserves core's default capture policy. Audit surfaces set an
+    // explicit budget and reject truncated discovery output fail-closed.
+    std::size_t maxCaptureBytes = 0;
 };
 
 struct RepoRecord {
@@ -43,6 +58,7 @@ struct DiscoverOptions {
     DiscoverScope scope = DiscoverScope::RegisteredOnly;
     bool includeTrustedUnregistered = true;
     std::function<void(const std::string&)> progressCallback;
+    DiscoverGitExecutionControl gitExecution;
 };
 
 struct DiscoveryResult {
@@ -94,12 +110,17 @@ auto DiscoverWorkspaceRepoPaths(const WorkspaceInventoryOptions& InOptions,
                                WorkspacePolicyFilter InPolicyFilter = WorkspacePolicyFilter::None) -> std::vector<std::filesystem::path>;
 auto ReposToJson(const std::vector<RepoRecord>& InRepos) -> std::string;
 auto ManifestToJson(const std::filesystem::path& InWorkspaceRoot, const std::vector<RepoRecord>& InRepos) -> std::string;
-auto DiscoverRegisteredPathsRecursive(const std::filesystem::path& InWorkspaceRoot) -> std::vector<std::filesystem::path>;
+auto DiscoverRegisteredPathsRecursive(
+    const std::filesystem::path& InWorkspaceRoot,
+    DiscoverGitExecutionControl InGitExecution = {})
+    -> std::vector<std::filesystem::path>;
 auto WorkspaceManifestFilePath(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path;
 auto BuildWorkspaceManifest(const std::filesystem::path& InWorkspaceRoot, const std::vector<RepoRecord>& InRepos) -> WorkspaceManifest;
 auto SaveWorkspaceManifest(const WorkspaceManifest& InManifest) -> bool;
 auto LoadTrustedWorkspaceManifest(const std::filesystem::path& InWorkspaceRoot,
-                                  std::string* OutReason = nullptr) -> std::optional<WorkspaceManifest>;
+                                  std::string* OutReason = nullptr,
+                                  DiscoverGitExecutionControl InGitExecution = {})
+    -> std::optional<WorkspaceManifest>;
 auto UpsertUnregisteredRepoIntoWorkspaceManifest(const std::filesystem::path& InWorkspaceRoot,
                                                  const std::filesystem::path& InRepoPath) -> bool;
 auto RefreshWorkspaceManifestAfterRegisteredChange(const std::filesystem::path& InWorkspaceRoot) -> bool;

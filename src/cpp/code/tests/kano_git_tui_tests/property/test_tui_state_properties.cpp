@@ -364,7 +364,10 @@ TEST_CASE("Property 22d: Enter key behavior in Command_Mode",
 
         REQUIRE(state.GetMode() == TuiMode::Command);
         REQUIRE(state.footer_is_error);
-        REQUIRE(state.footer_message == "Command executor unavailable");
+        REQUIRE((
+            state.footer_message == "Audit command runner unavailable" ||
+            state.footer_message ==
+                "Audit-only TUI accepts a read-only command with no options"));
     }
 }
 

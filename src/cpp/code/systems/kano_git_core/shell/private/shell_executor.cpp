@@ -422,7 +422,7 @@ auto EmitProcessDiag(const std::string& InText) -> void {
 auto RunProcess(const std::string& cmdLine, ExecMode InMode,
                 const std::optional<unsigned int>& InTimeoutMs,
                 const std::optional<std::filesystem::path>& InWorkingDir,
-                ProgressCallback InProgressCallback) -> ExecResult
+                ProgressCallback InProgressCallback, CaptureLimits InCaptureLimits = {}) -> ExecResult
 {
     // Convert cmdLine narrow string to wide for CommandLineToArgvW
     int wideLen = ::MultiByteToWideChar(CP_UTF8, 0, cmdLine.c_str(), -1, nullptr, 0);
@@ -494,8 +494,9 @@ auto RunProcess(const std::string& cmdLine, ExecMode InMode,
         opts.user_data = reinterpret_cast<void*>(&InProgressCallback);
     }
 
-    KanoProcessResult kresult{};
-    bool ok = kano_process_run_ex(&opts, &kresult);
+    KanoProcessResultV2 kresult{};
+    KanoProcessCaptureLimitsV2 captureLimits{InCaptureLimits.stdoutMaxBytes, InCaptureLimits.stderrMaxBytes};
+    bool ok = kano_process_run_ex_v2(&opts, &captureLimits, &kresult);
 
     if (!ok) {
         return ExecResult{-1, {}, "kano_process_run_ex failed"};
@@ -504,16 +505,22 @@ auto RunProcess(const std::string& cmdLine, ExecMode InMode,
     ExecResult result;
     result.exitCode = kresult.exit_code;
     if (kresult.stdout_data) {
-        result.stdoutStr = kresult.stdout_data;
+        result.stdoutStr.assign(
+            kresult.stdout_data,
+            kresult.stdout_size);
     }
     if (kresult.stderr_data) {
-        result.stderrStr = kresult.stderr_data;
+        result.stderrStr.assign(
+            kresult.stderr_data,
+            kresult.stderr_size);
     }
     if (kresult.timed_out) {
         if (!result.stderrStr.empty()) result.stderrStr += "\n";
         result.stderrStr += "Process timeout exceeded";
     }
-    kano_process_free_result(&kresult);
+    result.stdoutTruncated = kresult.stdout_truncated;
+    result.stderrTruncated = kresult.stderr_truncated;
+    kano_process_free_result_v2(&kresult);
     return result;
 }
 
@@ -531,7 +538,7 @@ auto RunProcessUnix(const std::string& InCommand,
                     ExecMode InMode,
                     const std::optional<unsigned int>& InTimeoutMs,
                     const std::optional<std::filesystem::path>& InWorkingDir,
-                    ProgressCallback InProgressCallback) -> ExecResult {
+                    ProgressCallback InProgressCallback, CaptureLimits InCaptureLimits = {}) -> ExecResult {
     // kano_process prepends executable as argv[0], so pass only user args here.
     std::vector<const char*> argv;
     argv.reserve(InArgs.size() + 1);
@@ -559,8 +566,9 @@ auto RunProcessUnix(const std::string& InCommand,
         opts.user_data = reinterpret_cast<void*>(&InProgressCallback);
     }
 
-    KanoProcessResult kresult{};
-    bool ok = kano_process_run_ex(&opts, &kresult);
+    KanoProcessResultV2 kresult{};
+    KanoProcessCaptureLimitsV2 captureLimits{InCaptureLimits.stdoutMaxBytes, InCaptureLimits.stderrMaxBytes};
+    bool ok = kano_process_run_ex_v2(&opts, &captureLimits, &kresult);
 
     if (!ok) {
         return ExecResult{-1, {}, "kano_process_run_ex failed"};
@@ -569,16 +577,22 @@ auto RunProcessUnix(const std::string& InCommand,
     ExecResult result;
     result.exitCode = kresult.exit_code;
     if (kresult.stdout_data) {
-        result.stdoutStr = kresult.stdout_data;
+        result.stdoutStr.assign(
+            kresult.stdout_data,
+            kresult.stdout_size);
     }
     if (kresult.stderr_data) {
-        result.stderrStr = kresult.stderr_data;
+        result.stderrStr.assign(
+            kresult.stderr_data,
+            kresult.stderr_size);
     }
     if (kresult.timed_out) {
         if (!result.stderrStr.empty()) result.stderrStr += "\n";
         result.stderrStr += "Process timed out";
     }
-    kano_process_free_result(&kresult);
+    result.stdoutTruncated = kresult.stdout_truncated;
+    result.stderrTruncated = kresult.stderr_truncated;
+    kano_process_free_result_v2(&kresult);
     return result;
 }
 
@@ -1334,7 +1348,8 @@ auto ExecuteCommand(
     ExecMode InMode,
     std::optional<std::filesystem::path> InWorkingDir,
     ProgressCallback InProgressCallback,
-    std::optional<unsigned int> InTimeoutOverrideMs
+    std::optional<unsigned int> InTimeoutOverrideMs,
+    CaptureLimits InCaptureLimits
 ) -> ExecResult
 {
     const auto nonInteractiveArgs = WithGitNonInteractiveDefaults(InCommand, InArgs);
@@ -1452,14 +1467,14 @@ auto ExecuteCommand(
         std::vector<std::string> wrappedArgs{"/d", "/s"};
         wrappedArgs.insert(wrappedArgs.end(), effectiveArgs.begin(), effectiveArgs.end());
         const auto wrapped = BuildWindowsCommandProcessorLine(wrappedArgs);
-        result = RunProcess(wrapped, InMode, timeoutMs, InWorkingDir, InProgressCallback);
+        result = RunProcess(wrapped, InMode, timeoutMs, InWorkingDir, InProgressCallback, InCaptureLimits);
     } else if (IsCmdScriptCommand(effectiveCommand)) {
         const auto wrapped = BuildWindowsBatchCommandLine(effectiveCommand, effectiveArgs);
-        result = RunProcess(wrapped, InMode, timeoutMs, InWorkingDir, InProgressCallback);
+        result = RunProcess(wrapped, InMode, timeoutMs, InWorkingDir, InProgressCallback, InCaptureLimits);
     } else {
         // Build command line with executable at start (for CreateProcessA parsing)
         auto cmd = BuildCommandLine(effectiveCommand, effectiveArgs);
-        result = RunProcess(cmd, InMode, timeoutMs, InWorkingDir, InProgressCallback);
+        result = RunProcess(cmd, InMode, timeoutMs, InWorkingDir, InProgressCallback, InCaptureLimits);
     }
 
     const bool timedOut = IsTimeoutResult(result);
@@ -1503,7 +1518,7 @@ auto ExecuteCommand(
         : TimeoutSourceLabel(InCommand, effectiveArgs, InMode, timeoutMs);
     const auto commandFamily = CommandFamilyLabel(InCommand, effectiveArgs);
     const auto safeNextAction = SafeNextActionForTimeout(InCommand, effectiveArgs);
-    auto result = RunProcessUnix(InCommand, effectiveArgs, InMode, timeoutMs, InWorkingDir, InProgressCallback);
+    auto result = RunProcessUnix(InCommand, effectiveArgs, InMode, timeoutMs, InWorkingDir, InProgressCallback, InCaptureLimits);
     const bool timedOut = IsTimeoutResult(result);
     if (timedOut) {
         const auto timeoutSummary = BuildTimeoutSummary(timeoutSource, timeoutMs, commandFamily, safeNextAction);
