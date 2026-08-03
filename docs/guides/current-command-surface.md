@@ -257,6 +257,15 @@ deterministic dependency waves but executes one repository at a time as a
 fallback and debugging mode. Plan output records the selected policy and the
 effective worker count.
 
+Human-terminal sync prints and flushes the dependency plan before auth or
+network work, then emits bounded `auth-start`, `repo-start`, `repo-step`, and
+`repo-done` milestones while deterministic repository detail blocks remain
+grouped for audit. Agent, CI, and non-TTY runs keep live milestones off by
+default. Set `KOG_SYNC_PROGRESS=1` to force milestones in captured logs or
+`KOG_SYNC_PROGRESS=0` to suppress them in a terminal. Registered submodules
+that are not initialized are reported as `SKIPPED_UNINITIALIZED_SUBMODULE`;
+KOG never treats their ancestor worktree as the child repository.
+
 ```bash
 # Workspace overview
 ./scripts/kog status
