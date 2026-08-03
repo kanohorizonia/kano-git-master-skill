@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -51,6 +52,11 @@ auto WriteTextFile(const std::filesystem::path& InPath, const std::string& InTex
     std::ofstream out(InPath, std::ios::binary | std::ios::trunc);
     REQUIRE(out.good());
     out << InText;
+}
+
+auto ReadTextFile(const std::filesystem::path& InPath) -> std::string {
+    std::ifstream input(InPath, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
 }
 
 auto ConfigureIdentity(const std::filesystem::path& InRepo) -> void {
@@ -452,6 +458,40 @@ TEST_CASE("auth doctor fix removes stale manager-core helper", "[functional][aut
     RequireSuccess(helpers, "read local credential helpers");
     RequireContains(helpers.stdoutText, "manager");
     RequireNotContains(helpers.stdoutText, "manager-core");
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
+TEST_CASE("auth doctor diagnoses and fixes credential interaction disabled across local and global config",
+          "[functional][auth][doctor][gcm][interactive][fix][KG-BUG-0094]") {
+    const auto sandbox = CreateSandboxWorkspace("auth-doctor-disabled-interaction");
+    const auto repo = (sandbox.root / "repo").lexically_normal();
+    InitRepo(repo);
+    RequireSuccess(RunGit({"remote", "add", "origin", "https://example.invalid/org/repo.git"}, repo), "add https remote");
+    RequireSuccess(RunGit({"config", "--local", "--add", "credential.helper", "manager"}, repo), "config local GCM helper");
+    RequireSuccess(RunGit({"config", "--local", "--add", "credential.interactive", "false"}, repo), "disable local credential interaction");
+    WriteTextFile(
+        sandbox.root / "global.gitconfig",
+        "[credential]\n\tinteractive = never\n");
+
+    const auto env = IsolatedGitConfigEnv(sandbox);
+    const auto diagnosed = RunKogWithEnv({"auth", "doctor", "--repo", repo.string()}, repo, env);
+    const auto diagnosedOutput = diagnosed.stdoutText + "\n" + diagnosed.stderrText;
+    RequireFailure(diagnosed, "auth doctor should fail when credential interaction is disabled");
+    RequireContains(diagnosedOutput, "credential.interactive disables credential-manager prompts");
+    RequireContains(diagnosedOutput, "\tfalse");
+    RequireContains(diagnosedOutput, "\tnever");
+    RequireContains(diagnosedOutput, "kog auth doctor --repo");
+
+    const auto fixed = RunKogWithEnv({"auth", "doctor", "--repo", repo.string(), "--fix"}, repo, env);
+    const auto fixedOutput = fixed.stdoutText + "\n" + fixed.stderrText;
+    RequireSuccess(fixed, "auth doctor --fix should remove disabled interaction values");
+    RequireContains(fixedOutput, "removing disabled credential.interactive entries from local/global config");
+    RequireNotContains(fixedOutput, "credential.interactive disables credential-manager prompts");
+
+    const auto localInteractive = RunGit({"config", "--local", "--get-all", "credential.interactive"}, repo);
+    REQUIRE(localInteractive.exitCode != 0);
+    RequireNotContains(ReadTextFile(sandbox.root / "global.gitconfig"), "interactive");
 
     RemoveSandboxWorkspace(sandbox);
 }

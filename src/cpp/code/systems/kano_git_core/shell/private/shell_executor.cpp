@@ -1223,6 +1223,14 @@ auto WithGitNonInteractiveDefaults(const std::string& InCommand,
     if (BaseNameLower(InCommand) != "git" && BaseNameLower(InCommand) != "git.exe") {
         return args;
     }
+    // Config inspection and bounded config mutations must observe persisted
+    // values, not the command-scoped credential policy that protects network
+    // Git operations in automation. Keep explicit editor launches guarded.
+    const bool configEditorRequested = std::find(InArgs.begin(), InArgs.end(), "--edit") != InArgs.end() ||
+                                       std::find(InArgs.begin(), InArgs.end(), "-e") != InArgs.end();
+    if (FirstGitSubcommand(InArgs) == "config" && !configEditorRequested) {
+        return args;
+    }
 
     // Interactive switch:
     // - KOG_GIT_INTERACTIVE=1|true   => interactive

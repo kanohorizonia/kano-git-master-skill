@@ -179,6 +179,7 @@ effective worker count.
 ./scripts/kog commit -m "chore: update workspace"
 ./scripts/kog commit --exact-path src/file.cpp -m "fix: update one file" --dry-run
 ./scripts/kog commit-push -m "chore: update workspace"
+./scripts/kog push
 ./scripts/kog agent-queue status
 ./scripts/kog cpa
 
@@ -273,7 +274,14 @@ agent policy.
 
 `kog clone <url>` clones the main repository, synchronizes recursive submodule URLs, and initializes all nested submodules by default. Human terminal runs allow the configured credential helper to prompt when cached credentials are unavailable; non-TTY automation remains non-interactive. Use `--no-submodules` only when intentionally deferring submodule checkout.
 
-`kog auth doctor` inspects Git Credential Manager-facing configuration without storing tokens. It redacts credentials in any explicit `--url` input and reports the selected remote auth surface for the current repo or discovered workspace repos.
+`kog push` streams network Git directly through a human terminal so Git
+Credential Manager, Keychain-backed helpers, or Git's terminal prompt remain
+visible when cached credentials are unavailable. Interactive recursive pushes
+use one worker to avoid overlapping credential prompts. Agent, CI, non-TTY, and
+`KOG_GIT_INTERACTIVE=0` runs remain non-interactive and retain captured
+diagnostics. `KOG_GIT_INTERACTIVE=1` is the explicit human-interaction override.
+
+`kog auth doctor` inspects Git Credential Manager-facing configuration without storing tokens. It redacts credentials in any explicit `--url` input and reports the selected remote auth surface for the current repo or discovered workspace repos. A persisted `credential.interactive=never`, `false`, or equivalent value is reported as a blocker for HTTPS remotes because it disables the platform login flow. `kog auth doctor --fix` removes only those disabling local/global values and existing stale GCM helper entries; it does not read or delete credentials.
 
 `kog auth test` runs a non-interactive `git ls-remote ... HEAD` probe against the selected remote set, a single configured remote, all local remotes, or an explicit URL. It does not write tokens into remotes, does not persist credentials, and treats file/local remotes as skipped rather than failed.
 

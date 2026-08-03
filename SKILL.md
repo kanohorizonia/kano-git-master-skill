@@ -99,6 +99,7 @@ productionizes that path.
 ./scripts/kog commit -m "chore: update workspace"
 ./scripts/kog commit --exact-path src/file.cpp -m "fix: update one file"
 ./scripts/kog commit-push -m "chore: update workspace"
+./scripts/kog push
 ./scripts/kog agent-queue status
 ./scripts/kog cpa
 
@@ -108,6 +109,8 @@ productionizes that path.
 ./scripts/kog auth cloudflare-ssh doctor --hostname gitlab-ssh.example.com
 
 # GitLab HTTPS with Git Credential Manager
+./scripts/kog auth doctor
+./scripts/kog auth doctor --fix
 ./scripts/kog auth https setup --hostname gitlab.example.com --username git-user --install --dry-run
 ./scripts/kog auth https setup --hostname gitlab.example.com --username git-user --install --confirm-global-write
 ./scripts/kog auth https doctor --hostname gitlab.example.com
@@ -145,6 +148,14 @@ The command never creates, reads, or prints a PAT. Host/global writes require
 `--confirm-global-write`; use an explicit `--gcm-path` for a separately managed
 installation. See
 [`docs/guides/gitlab-https-auth.md`](docs/guides/gitlab-https-auth.md).
+
+Human-terminal `kog push` passes network Git output through to the terminal so
+the configured platform credential manager can prompt. Interactive recursive
+push is serialized to prevent overlapping login prompts. Agent, CI, non-TTY,
+and `KOG_GIT_INTERACTIVE=0` execution stays fail-fast and non-interactive. If
+Git reports that user interactivity is disabled, run `kog auth doctor`; its
+explicit `--fix` removes persisted false/never `credential.interactive` values
+from local/global Git config without reading or deleting stored credentials.
 
 Subtree standalone export notes:
 - `--subtree` accepts absolute or relative paths and exports exactly one archive.
