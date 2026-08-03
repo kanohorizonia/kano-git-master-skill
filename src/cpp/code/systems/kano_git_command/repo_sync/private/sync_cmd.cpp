@@ -1034,6 +1034,36 @@ auto HasStaleCredentialManagerCoreHelper(const std::vector<CredentialHelperEntry
     });
 }
 
+auto IsCredentialInteractionDisabled(const CredentialHelperEntry& InEntry) -> bool {
+    const auto lowered = ToLower(Trim(InEntry.value));
+    return lowered == "never" || IsFalsePolicy(lowered);
+}
+
+auto DisabledCredentialInteractionEntries(const std::filesystem::path& InRepo)
+    -> std::vector<CredentialHelperEntry> {
+    auto entries = ParseCredentialHelperEntries(
+        GitConfigGetAllWithOrigin(InRepo, "credential.interactive"));
+    entries.erase(
+        std::remove_if(entries.begin(), entries.end(), [](const CredentialHelperEntry& entry) {
+            return !IsCredentialInteractionDisabled(entry);
+        }),
+        entries.end());
+    return entries;
+}
+
+auto RemoveDisabledCredentialInteractionEntries(
+    const std::filesystem::path& InRepo,
+    const std::vector<CredentialHelperEntry>& InEntries) -> void {
+    std::unordered_set<std::string> values;
+    for (const auto& entry : InEntries) {
+        values.insert(entry.value);
+    }
+    for (const auto& value : values) {
+        GitCapture(InRepo, {"config", "--local", "--fixed-value", "--unset-all", "credential.interactive", value});
+        GitCapture(InRepo, {"config", "--global", "--fixed-value", "--unset-all", "credential.interactive", value});
+    }
+}
+
 auto ProbeConfiguredGitCredentialManagerVersion(
     const std::filesystem::path& InRepo,
     const std::vector<CredentialHelperEntry>& InHelpers) -> shell::ExecResult {
@@ -3908,7 +3938,8 @@ auto MakeAuthDoctorCommandCallback(const std::shared_ptr<AuthCommandOptions>& In
 
         auto helperLines = GitConfigGetAllWithOrigin(repoRoot, "credential.helper");
         auto helperEntries = ParseCredentialHelperEntries(helperLines);
-        const auto credentialInteractive = GitConfigGetValue(repoRoot, "credential.interactive");
+        auto credentialInteractive = GitConfigGetValue(repoRoot, "credential.interactive");
+        auto disabledCredentialInteraction = DisabledCredentialInteractionEntries(repoRoot);
         const auto useHttpPath = GitConfigGetValue(repoRoot, "credential.useHttpPath");
         auto gcmVersion = ProbeGitCredentialManagerVersion(repoRoot);
         if (gcmVersion.exitCode != 0) {
@@ -3930,6 +3961,14 @@ auto MakeAuthDoctorCommandCallback(const std::shared_ptr<AuthCommandOptions>& In
         std::cout << kano::terminal::PassTag() << " " << Trim(gitVersion.stdoutStr) << "\n";
 
         if (*doctorFix) {
+            if (!disabledCredentialInteraction.empty()) {
+                std::cout << kano::terminal::InfoTag()
+                          << " removing disabled credential.interactive entries from local/global config\n";
+                RemoveDisabledCredentialInteractionEntries(repoRoot, disabledCredentialInteraction);
+                disabledCredentialInteraction = DisabledCredentialInteractionEntries(repoRoot);
+                credentialInteractive = GitConfigGetValue(repoRoot, "credential.interactive");
+            }
+
             if (hasStaleManagerCoreHelper) {
                 std::cout << kano::terminal::InfoTag() << " removing stale credential.helper=manager-core entries from local/global config\n";
                 const auto unsetLocal = GitCapture(repoRoot, {"config", "--local", "--unset-all", "credential.helper", "manager-core"});
@@ -4000,6 +4039,21 @@ auto MakeAuthDoctorCommandCallback(const std::shared_ptr<AuthCommandOptions>& In
             warnings += 1;
         } else {
             std::cout << kano::terminal::InfoTag() << " Git Credential Manager executable not detected\n";
+        }
+
+        if (!disabledCredentialInteraction.empty()) {
+            const auto tag = hasHttpsTarget ? kano::terminal::FailTag() : kano::terminal::WarnTag();
+            std::cerr << tag << " credential.interactive disables credential-manager prompts:\n";
+            for (const auto& entry : disabledCredentialInteraction) {
+                std::cerr << "  - " << entry.raw << "\n";
+            }
+            std::cerr << kano::terminal::InfoTag() << " repair with: kog auth doctor --repo \""
+                      << repoRoot.generic_string() << "\" --fix\n";
+            if (hasHttpsTarget) {
+                failures += 1;
+            } else {
+                warnings += 1;
+            }
         }
 
         if (credentialInteractive.has_value()) {

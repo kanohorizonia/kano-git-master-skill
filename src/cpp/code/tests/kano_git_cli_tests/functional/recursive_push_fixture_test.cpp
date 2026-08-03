@@ -279,6 +279,30 @@ TEST_CASE("recursive_push_root_no_remote_skips_container_and_pushes_child", "[fu
     RemoveSandboxWorkspace(sandbox);
 }
 
+TEST_CASE("human interactive push streams git output and serializes credential-capable workers",
+          "[functional][push][interactive][credential-manager][KG-BUG-0094]") {
+    const auto sandbox = CreateSandboxWorkspace("push-human-interactive");
+    auto remote = CreateRemote(sandbox, "interactive");
+    const auto expectedHead = CommitFile(remote.clone, "human.txt", "human push\n", "human interactive push");
+
+    const auto result = RunKogWithEnv(
+        {"push", "--no-recursive", "--jobs", "4", "--profile"},
+        remote.clone,
+        {
+            {"KOG_GIT_INTERACTIVE", "1"},
+            {"GIT_TERMINAL_PROMPT", "1"},
+            {"GCM_INTERACTIVE", "auto"},
+            {"KOG_PROCESS_DIAGNOSTICS", "0"},
+        });
+    const auto output = StripProcessDiagnostics(StripAnsi(result.stdoutText + "\n" + result.stderrText));
+    RequireSuccess(result, "human interactive push");
+    RequireContains(output, "To ");
+    RequireContains(output, "jobs_requested: 1");
+    REQUIRE(RefSha(remote.bare, "refs/heads/main") == expectedHead);
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
 TEST_CASE("recursive_push_nested_build_base_before_parent_and_distinct_products", "[functional][push][recursive][order][Build/Base]") {
     const auto sandbox = CreateSandboxWorkspace("recursive-push-build-base-order");
     auto rootRemote = CreateRemote(sandbox, "root");

@@ -187,7 +187,11 @@ auto RunKogWithEnv(const std::vector<std::string>& InArgs,
         return hasEnvKey(InKey) || std::getenv(InKey.c_str()) != nullptr;
     };
 
-    // Force non-interactive Git flows for functional tests.
+    // Force non-interactive Git flows for functional tests unless a scenario
+    // explicitly exercises the human-interactive contract.
+    if (!hasEffectiveEnvKey("KOG_GIT_INTERACTIVE")) {
+        env.emplace_back("KOG_GIT_INTERACTIVE", "0");
+    }
     if (!hasEffectiveEnvKey("GIT_TERMINAL_PROMPT")) {
         env.emplace_back("GIT_TERMINAL_PROMPT", "0");
     }
@@ -222,13 +226,7 @@ auto RunKogWithEnv(const std::vector<std::string>& InArgs,
     }
 #if defined(_WIN32)
     std::vector<std::pair<std::string, std::optional<std::string>>> previousValues;
-    previousValues.reserve(env.size() + 1);
-    if (const char* previousRaw = std::getenv("KOG_GIT_INTERACTIVE"); previousRaw != nullptr) {
-        previousValues.emplace_back("KOG_GIT_INTERACTIVE", std::string(previousRaw));
-    } else {
-        previousValues.emplace_back("KOG_GIT_INTERACTIVE", std::nullopt);
-    }
-    _putenv_s("KOG_GIT_INTERACTIVE", "0");
+    previousValues.reserve(env.size());
     for (const auto& [key, value] : env) {
         if (const char* envRaw = std::getenv(key.c_str()); envRaw != nullptr) {
             previousValues.emplace_back(key, std::string(envRaw));
@@ -248,10 +246,7 @@ auto RunKogWithEnv(const std::vector<std::string>& InArgs,
     return result;
 #else
     std::vector<std::tuple<std::string, std::string, bool>> previousValues;
-    previousValues.reserve(env.size() + 1);
-    const char* previousRaw = std::getenv("KOG_GIT_INTERACTIVE");
-    previousValues.emplace_back("KOG_GIT_INTERACTIVE", previousRaw != nullptr ? previousRaw : "", previousRaw != nullptr);
-    setenv("KOG_GIT_INTERACTIVE", "0", 1);
+    previousValues.reserve(env.size());
     for (const auto& [key, value] : env) {
         const char* envRaw = std::getenv(key.c_str());
         previousValues.emplace_back(key, envRaw != nullptr ? envRaw : "", envRaw != nullptr);
