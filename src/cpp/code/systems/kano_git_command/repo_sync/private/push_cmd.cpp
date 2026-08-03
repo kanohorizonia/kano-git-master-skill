@@ -17,11 +17,18 @@
 #include <sstream>
 #include <string>
 #include <chrono>
+#include <cstdlib>
 #include <unordered_map>
 #include <unordered_set>
 #include <mutex>
 #include <thread>
 #include <vector>
+
+#if defined(_WIN32)
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace kano::git::commands {
 namespace {
@@ -89,6 +96,42 @@ auto IsGitRepo(const std::filesystem::path& InRepo) -> bool {
 
 auto GitPassThrough(const std::filesystem::path& InRepo, const std::vector<std::string>& InArgs) -> shell::ExecResult {
     return shell::ExecuteCommand("git", InArgs, shell::ExecMode::PassThrough, InRepo);
+}
+
+auto IsInteractiveTerminal() -> bool {
+#if defined(_WIN32)
+    return _isatty(_fileno(stdin)) != 0 && _isatty(_fileno(stdout)) != 0;
+#else
+    return isatty(fileno(stdin)) != 0 && isatty(fileno(stdout)) != 0;
+#endif
+}
+
+auto IsEnabledEnvironmentValue(std::string InValue) -> bool {
+    InValue = ToLower(Trim(std::move(InValue)));
+    return InValue == "1" || InValue == "true" || InValue == "yes" || InValue == "on";
+}
+
+auto IsDisabledEnvironmentValue(std::string InValue) -> bool {
+    InValue = ToLower(Trim(std::move(InValue)));
+    return InValue == "0" || InValue == "false" || InValue == "no" ||
+           InValue == "off" || InValue == "never" || InValue == "disabled";
+}
+
+auto ShouldUseInteractiveGitTerminal() -> bool {
+    if (const auto* interactive = std::getenv("KOG_GIT_INTERACTIVE"); interactive != nullptr) {
+        if (IsEnabledEnvironmentValue(interactive)) {
+            return true;
+        }
+        if (IsDisabledEnvironmentValue(interactive)) {
+            return false;
+        }
+    }
+
+    if (const auto* agent = std::getenv("KANO_AGENT_MODE");
+        agent != nullptr && IsEnabledEnvironmentValue(agent)) {
+        return false;
+    }
+    return IsInteractiveTerminal();
 }
 
 auto HasRemote(const std::filesystem::path& InRepo, const std::string& InRemote) -> bool {
@@ -898,7 +941,9 @@ auto ClassifyPushFailure(const shell::ExecResult& InResult) -> std::string {
         merged.find("publickey") != std::string::npos ||
         merged.find("access denied") != std::string::npos ||
         merged.find("unauthorized") != std::string::npos ||
-        merged.find("could not read username") != std::string::npos) {
+        merged.find("could not read username") != std::string::npos ||
+        merged.find("cannot prompt because user interactivity has been disabled") != std::string::npos ||
+        merged.find("unable to get password from user") != std::string::npos) {
         return "FAILED_AUTH";
     }
     if (merged.find("could not resolve host") != std::string::npos ||
@@ -943,6 +988,7 @@ auto RunNativePush(
     int successes = 0;
     std::mutex profileMutex;
     int activeRepoRuns = 0;
+    const bool useInteractiveGitTerminal = ShouldUseInteractiveGitTerminal();
 
     struct RepoRunResult {
         workspace::RepoOperationStatus status{workspace::RepoOperationStatus::Succeeded};
@@ -1045,6 +1091,28 @@ auto RunNativePush(
             return run;
         };
 
+        auto runNetworkGit = [&](const std::vector<std::string>& args) {
+            if (!useInteractiveGitTerminal) {
+                return GitCapture(repoPath, args);
+            }
+
+            const auto bufferedStdout = out.str();
+            const auto bufferedStderr = err.str();
+            if (!bufferedStdout.empty()) {
+                std::cout << bufferedStdout;
+                out.str(std::string{});
+                out.clear();
+            }
+            if (!bufferedStderr.empty()) {
+                std::cerr << bufferedStderr;
+                err.str(std::string{});
+                err.clear();
+            }
+            std::cout << std::flush;
+            std::cerr << std::flush;
+            return GitPassThrough(repoPath, args);
+        };
+
         if (repoIndex > 0) {
             out << "[" << kano::terminal::Wrap(std::to_string(repoIndex) + "/" + std::to_string(InRepos.size()), kano::terminal::Color::Dim)
                 << "] Processing " << kano::terminal::Wrap(repoLabel, kano::terminal::Color::BoldCyan) << "\n";
@@ -1063,7 +1131,7 @@ auto RunNativePush(
             if (InDryRun) {
                 out << "[DRY RUN] [" << repoLabel << "] Would run: git fetch --all --prune --tags\n";
             } else {
-                const auto fetch = GitCapture(repoPath, {"fetch", "--all", "--prune", "--tags"});
+                const auto fetch = runNetworkGit({"fetch", "--all", "--prune", "--tags"});
                 if (fetch.exitCode != 0) {
                     PrintCapturedOutputToStreams(fetch, out, err);
                     err << "[" << repoLabel << "] FAILED_CONNECTION: fetch failed\n";
@@ -1165,7 +1233,7 @@ auto RunNativePush(
                         out << "\n";
                     }
                 } else if (shouldPullRebase) {
-                    const auto pull = GitCapture(repoPath, {"pull", "--rebase"});
+                    const auto pull = runNetworkGit({"pull", "--rebase"});
                     if (pull.exitCode != 0) {
                         PrintCapturedOutputToStreams(pull, out, err);
                         err << "[" << repoLabel << "] FAILED_PUSH: sync failed before push\n";
@@ -1271,8 +1339,18 @@ auto RunNativePush(
             return finishSuccess("PUSHED_DRY_RUN", remote, branch, "dry-run planned push");
         }
 
-        auto result = GitCapture(repoPath, args);
-        if (InVerbose) {
+        if (useInteractiveGitTerminal) {
+            if (const auto credentialInteractive = GitConfigValue(repoPath, "credential.interactive");
+                credentialInteractive.has_value() && IsDisabledEnvironmentValue(*credentialInteractive)) {
+                err << "[" << repoLabel << "] FAILED_AUTH: credential.interactive=" << *credentialInteractive
+                    << " disables credential prompts; run 'kog auth doctor --repo \"" << repoLabel
+                    << "\" --fix' and retry\n";
+                return finishFailed("FAILED_AUTH", remote, branch, "credential prompting is disabled by Git configuration");
+            }
+        }
+
+        auto result = runNetworkGit(args);
+        if (InVerbose && !useInteractiveGitTerminal) {
             PrintCapturedOutputToStreams(result, out, err);
         }
         if (result.exitCode == 0) {
@@ -1292,14 +1370,14 @@ auto RunNativePush(
                         << kano::terminal::Wrap("Push failed", kano::terminal::Color::BoldRed) << " (" << remote
                         << ") due to LFS transport/auth issue; attempting git lfs push retry\n";
 
-                    const auto lfsPush = GitCapture(repoPath, {"lfs", "push", remote, branch});
-                    if (InVerbose || lfsPush.exitCode != 0) {
+                    const auto lfsPush = runNetworkGit({"lfs", "push", remote, branch});
+                    if (!useInteractiveGitTerminal && (InVerbose || lfsPush.exitCode != 0)) {
                         PrintCapturedOutputToStreams(lfsPush, out, err);
                     }
 
                     if (lfsPush.exitCode == 0) {
-                        auto retryResult = GitCapture(repoPath, args);
-                        if (InVerbose || retryResult.exitCode != 0) {
+                        auto retryResult = runNetworkGit(args);
+                        if (!useInteractiveGitTerminal && (InVerbose || retryResult.exitCode != 0)) {
                             PrintCapturedOutputToStreams(retryResult, out, err);
                         }
                         if (retryResult.exitCode == 0) {
@@ -1320,7 +1398,7 @@ auto RunNativePush(
                     return finishSuccess("PUSHED", remote, branch, "pushed successfully after LFS retry");
                 }
 
-                if (!InVerbose) {
+                if (!InVerbose && !useInteractiveGitTerminal) {
                     PrintCapturedOutputToStreams(result, out, err);
                 }
                 const auto category = ClassifyPushFailure(result);
@@ -1335,7 +1413,7 @@ auto RunNativePush(
     workspace::RepoOperationSchedulerOptions schedulerOptions;
     schedulerOptions.operationName = "push";
     schedulerOptions.mode = workspace::RepoOperationMode::MutatingDependencyWaves;
-    schedulerOptions.jobs = InDryRun ? 1 : (InJobs < 1 ? 1 : InJobs);
+    schedulerOptions.jobs = (InDryRun || useInteractiveGitTerminal) ? 1 : (InJobs < 1 ? 1 : InJobs);
 
     const auto aggregate = workspace::RunRepoOperationScheduler(
         schedulerInputs,

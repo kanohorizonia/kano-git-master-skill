@@ -358,6 +358,34 @@
           "mapping_state": "source-linked"
         }
       ]
+    },
+    {
+      "incident_id": "KG-BUG-0094",
+      "incident_date": "2026-08-03",
+      "root_cause": "Native push captured network Git output instead of passing the human terminal through, while persisted credential.interactive=never configuration was only displayed by auth doctor and not treated as a repairable blocker.",
+      "backlog_ref": "KG-BUG-0094",
+      "change_ref": "commit:KG-BUG-0094",
+      "workflow_contracts": [
+        "agent-non-interactive",
+        "credential-interaction",
+        "human-terminal-passthrough"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KG-BUG-0094/auth-doctor-repairs-disabled-interaction",
+          "test_name": "auth doctor diagnoses and fixes credential interaction disabled across local and global config",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/repo_health_preflight_test.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-BUG-0094/human-push-terminal-passthrough",
+          "test_name": "human interactive push streams git output and serializes credential-capable workers",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/recursive_push_fixture_test.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        }
+      ]
     }
   ]
 }

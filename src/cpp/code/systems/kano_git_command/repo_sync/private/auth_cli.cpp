@@ -24,7 +24,7 @@ void RegisterAuth(CLI::App& InApp) {
     doctor->add_flag("--no-recursive,-N", options->doctor.noRecursive, "When used with --selected-remotes, inspect only the current repository");
     doctor->add_flag("--native-no-cache", options->doctor.noCache, "Disable native discovery cache for --selected-remotes");
     doctor->add_flag("--native-refresh-cache", options->doctor.refreshCache, "Force native discovery cache refresh for --selected-remotes");
-    doctor->add_flag("--fix", options->doctor.fix, "Remove stale credential.helper=manager-core entries and configure modern Git Credential Manager if needed");
+    doctor->add_flag("--fix", options->doctor.fix, "Repair disabled credential prompting and stale Git Credential Manager configuration");
     doctor->callback(MakeAuthDoctorCommandCallback(options));
 
     auto* test = cmd->add_subcommand("test", "Run a non-interactive git ls-remote auth probe");
