@@ -48,6 +48,7 @@ namespace {
 struct SyncPlan {
     std::filesystem::path path;
     std::string type;
+    std::string skipReason;
     std::string remote;
     std::string remoteSelectionSource;
     std::string remoteSelectionError;
@@ -147,7 +148,19 @@ auto GitPassThrough(const std::filesystem::path& InRepo, const std::vector<std::
 }
 
 auto IsGitRepo(const std::filesystem::path& InRepo) -> bool {
-    return GitCapture(InRepo, {"rev-parse", "--is-inside-work-tree"}).exitCode == 0;
+    const auto inside = GitCapture(InRepo, {"rev-parse", "--is-inside-work-tree"});
+    if (inside.exitCode != 0 || Trim(inside.stdoutStr) != "true") {
+        return false;
+    }
+    const auto topLevel = GitCapture(InRepo, {"rev-parse", "--show-toplevel"});
+    if (topLevel.exitCode != 0) {
+        return false;
+    }
+    std::error_code repoError;
+    std::error_code topError;
+    const auto repo = std::filesystem::weakly_canonical(InRepo, repoError);
+    const auto top = std::filesystem::weakly_canonical(std::filesystem::path(Trim(topLevel.stdoutStr)), topError);
+    return !repoError && !topError && repo == top;
 }
 
 auto LooksLikeSelfRepoRoot(const std::filesystem::path& InRepo) -> bool {
@@ -258,6 +271,11 @@ auto ToLower(std::string InValue) -> std::string {
 auto IsFalsePolicy(std::string InValue) -> bool {
     InValue = ToLower(Trim(std::move(InValue)));
     return InValue == "false" || InValue == "0" || InValue == "no" || InValue == "off" || InValue == "disabled";
+}
+
+auto IsTruePolicy(std::string InValue) -> bool {
+    InValue = ToLower(Trim(std::move(InValue)));
+    return InValue == "true" || InValue == "1" || InValue == "yes" || InValue == "on" || InValue == "enabled";
 }
 
 auto RepoPathKey(const std::filesystem::path& InPath) -> std::string {
@@ -1591,6 +1609,18 @@ auto IsInteractiveTerminal() -> bool {
 #endif
 }
 
+auto ShouldEmitLiveSyncProgress() -> bool {
+    if (const auto* configured = std::getenv("KOG_SYNC_PROGRESS"); configured != nullptr) {
+        if (IsTruePolicy(configured)) {
+            return true;
+        }
+        if (IsFalsePolicy(configured)) {
+            return false;
+        }
+    }
+    return !IsAgentModeEnabled() && IsInteractiveTerminal();
+}
+
 auto PromptYesNo(const std::string& InPrompt) -> bool {
     std::cout << InPrompt << " [y/N]: " << std::flush;
     std::string answer;
@@ -2646,6 +2676,8 @@ auto BuildSyncPlans(
 
     for (const auto& discoveredRepo : discoveredRepos) {
         const auto repoPath = std::filesystem::weakly_canonical(discoveredRepo.path);
+        const bool isRoot = (repoPath == root);
+        const bool isRegistered = discoveredRepo.type == "registered";
         if (IsFalsePolicy(discoveredRepo.kogSyncPolicy)) {
             plans.push_back(SyncPlan{
                 .path = repoPath,
@@ -2662,9 +2694,24 @@ auto BuildSyncPlans(
             });
             continue;
         }
+        if (isRegistered && !IsGitRepo(repoPath)) {
+            plans.push_back(SyncPlan{
+                .path = repoPath,
+                .type = discoveredRepo.type,
+                .skipReason = "registered submodule is not initialized",
+                .remote = {},
+                .remoteSelectionSource = "uninitialized-registered-submodule",
+                .remoteSelectionError = {},
+                .remoteSelectionDetail = {},
+                .targetBranch = {},
+                .branchSource = "uninitialized registered submodule",
+                .kogSyncPolicy = discoveredRepo.kogSyncPolicy,
+                .registrationRelativeTo = discoveredRepo.registrationRelativeTo,
+                .dependencies = discoveredRepo.dependencies,
+            });
+            continue;
+        }
         const auto current = CurrentBranch(repoPath);
-        const bool isRoot = (repoPath == root);
-        const bool isRegistered = discoveredRepo.type == "registered";
         const auto remoteSelection = SelectSyncRemote(root, repoPath, InPreferredRemote, isRegistered, isRoot, current.empty());
         const auto remote = remoteSelection.remote;
         if (remote.empty()) {
@@ -2991,14 +3038,38 @@ auto RunNativeOriginLatestSync(
     bool InCheckGitlinkReachability = true,
     std::optional<unsigned int> InGitCaptureTimeoutMs = std::nullopt,
     bool InResolvePublishedGitlinkConflicts = false) -> int {
+    const bool emitLiveProgress = ShouldEmitLiveSyncProgress();
+    std::mutex liveProgressMutex;
+    const auto emitProgress = [&](const std::string& InMessage) {
+        if (!emitLiveProgress) {
+            return;
+        }
+        std::lock_guard lock(liveProgressMutex);
+        std::cout << "[native-sync][progress] " << InMessage << std::endl;
+    };
+    const auto displayRepoPath = [&](const std::filesystem::path& InPath) {
+        std::error_code relativeError;
+        const auto relative = std::filesystem::relative(InPath, InRepoRoot, relativeError);
+        if (relativeError || relative.empty() || relative == ".") {
+            return std::string{"."};
+        }
+        return relative.generic_string();
+    };
+
+    std::cout << (InRecursive
+        ? "Syncing workspace repos with recursive branch rules\n"
+        : "Syncing current repository only (non-recursive mode)\n") << std::flush;
+
     std::vector<SyncPlan> plans;
     std::string mode;
     try {
         // Pre-fetch root to update remote tracking refs so BuildSyncPlans can read refreshed
         // .gitmodules branch config from the remote even when children run before parent.
         if (InRecursive && !InDryRun) {
+            emitProgress("discovery step=prefetch-root remote=" + InRemote);
             (void)GitCapture(InRepoRoot, {"fetch", InRemote, "--prune", "--quiet"});
         }
+        emitProgress("discovery step=scan-workspace");
         auto planResult = InRecursive
             ? BuildSyncPlans(InRepoRoot, InRemote, InMaxDepth, InNoCache, InRefreshCache)
             : BuildRootOnlySyncPlan(InRepoRoot, InRemote);
@@ -3032,9 +3103,6 @@ auto RunNativeOriginLatestSync(
             plans.end());
     }
 
-    std::cout << (InRecursive
-        ? "Syncing workspace repos with recursive branch rules\n"
-        : "Syncing current repository only (non-recursive mode)\n");
     std::cout << "Discover mode: " << (mode.empty() ? "unknown" : mode) << "\n";
 
     const auto root = std::filesystem::weakly_canonical(InRepoRoot);
@@ -3045,16 +3113,71 @@ auto RunNativeOriginLatestSync(
         plansByPath.emplace(RepoPathKey(plan.path), plan);
     }
 
+    auto schedulerInputs = MakeSyncSchedulerInputs(plans);
+    workspace::RepoOperationSchedulerOptions schedulerOptions;
+    schedulerOptions.operationName = "sync";
+    schedulerOptions.mode = workspace::RepoOperationMode::MutatingDependencyWaves;
+    const auto requestedJobs = InJobs < 1 ? 1 : InJobs;
+    schedulerOptions.jobs = InGitCaptureTimeoutMs.has_value() || InExecutionPolicy == SyncExecutionPolicy::Serial
+        ? 1
+        : requestedJobs;
+    schedulerOptions.resolveGitCommonDirLocks = true;
+
+    const auto executionPlan = workspace::BuildRepoOperationWaves(schedulerInputs);
+    const auto waveCount = executionPlan.waves.size() + (executionPlan.hasCycle ? std::size_t{1} : std::size_t{0});
+    std::unordered_map<std::string, std::size_t> phaseByPath;
+    phaseByPath.reserve(schedulerInputs.size());
+    std::cout << "[native-sync] plan: repos=" << schedulerInputs.size()
+              << " waves=" << waveCount
+              << " order=child-first"
+              << " policy=" << SyncExecutionPolicyName(InExecutionPolicy)
+              << " jobs=" << schedulerOptions.jobs << "\n";
+    for (std::size_t phase = 0; phase < executionPlan.waves.size(); ++phase) {
+        std::cout << "[native-sync] wave " << (phase + 1) << "/" << waveCount << ":";
+        for (const auto repoIndex : executionPlan.waves[phase]) {
+            if (repoIndex >= schedulerInputs.size()) {
+                continue;
+            }
+            phaseByPath.emplace(RepoPathKey(schedulerInputs[repoIndex].path), phase);
+            std::cout << " " << displayRepoPath(schedulerInputs[repoIndex].path);
+        }
+        std::cout << "\n";
+    }
+    if (executionPlan.hasCycle) {
+        const auto cyclePhase = executionPlan.waves.size();
+        std::cout << "[native-sync] wave " << (cyclePhase + 1) << "/" << waveCount << ":";
+        for (const auto repoIndex : executionPlan.cycleNodes) {
+            if (repoIndex >= schedulerInputs.size()) {
+                continue;
+            }
+            phaseByPath.emplace(RepoPathKey(schedulerInputs[repoIndex].path), cyclePhase);
+            std::cout << " " << displayRepoPath(schedulerInputs[repoIndex].path);
+        }
+        std::cout << "\n";
+    }
+    std::cout << std::flush;
+
     std::unordered_map<std::string, AuthProbeResult> authPreflightByPath;
     if (InAuthPreflight) {
         authPreflightByPath.reserve(plans.size());
+        const auto authPlanCount = static_cast<std::size_t>(std::count_if(
+            plans.begin(), plans.end(), [](const SyncPlan& InPlan) {
+                return !IsFalsePolicy(InPlan.kogSyncPolicy) && InPlan.skipReason.empty() && !InPlan.remote.empty();
+            }));
+        std::size_t authPlanIndex = 0;
         for (const auto& plan : plans) {
-            if (IsFalsePolicy(plan.kogSyncPolicy) || plan.remote.empty()) {
+            if (IsFalsePolicy(plan.kogSyncPolicy) || !plan.skipReason.empty() || plan.remote.empty()) {
                 continue;
             }
+            ++authPlanIndex;
+            const auto repoName = displayRepoPath(plan.path);
+            emitProgress("auth-start " + std::to_string(authPlanIndex) + "/" + std::to_string(authPlanCount) +
+                         " repo=" + repoName + " remote=" + plan.remote);
             const auto preflight = RunAuthProbe(
                 MakeAuthTarget(root, plan.path, plan.remote, plan.remoteSelectionSource, plan.remoteSelectionDetail, false),
                 AuthProbeScope::SyncPreflight);
+            emitProgress("auth-done repo=" + repoName + " status=" +
+                         (preflight.success ? (preflight.skipped ? "skipped" : "success") : "failed"));
             if (!preflight.skipped || !preflight.success) {
                 authPreflightByPath.emplace(RepoPathKey(plan.path), preflight);
             }
@@ -3078,6 +3201,9 @@ auto RunNativeOriginLatestSync(
         const auto& plan = planIt->second;
         const auto rel = std::filesystem::relative(plan.path, InRepoRoot).generic_string();
         const auto name = (rel.empty() || rel == ".") ? "." : rel;
+        const auto phaseIt = phaseByPath.find(RepoPathKey(plan.path));
+        const auto phase = phaseIt == phaseByPath.end() ? std::size_t{0} : phaseIt->second;
+        emitProgress("repo-start repo=" + name + " wave=" + std::to_string(phase + 1) + "/" + std::to_string(waveCount));
         std::ostringstream out;
         std::ostringstream err;
         std::unique_ptr<ScopedEnvOverride> syncTimeoutOverride;
@@ -3097,6 +3223,7 @@ auto RunNativeOriginLatestSync(
             result.message = reason;
             result.stdoutText = NormalizeSyncCapturedText(out.str(), SyncOutputSanitizeMode::Human);
             result.stderrText = NormalizeSyncCapturedText(err.str(), SyncOutputSanitizeMode::Human);
+            emitProgress("repo-done repo=" + name + " status=success outcome=" + outcome);
             return result;
         };
 
@@ -3107,6 +3234,7 @@ auto RunNativeOriginLatestSync(
             result.message = reason;
             result.stdoutText = NormalizeSyncCapturedText(out.str(), SyncOutputSanitizeMode::Human);
             result.stderrText = NormalizeSyncCapturedText(err.str(), SyncOutputSanitizeMode::Human);
+            emitProgress("repo-done repo=" + name + " status=skipped reason=" + reason);
             return result;
         };
 
@@ -3117,6 +3245,7 @@ auto RunNativeOriginLatestSync(
             result.message = reason;
             result.stdoutText = NormalizeSyncCapturedText(out.str(), SyncOutputSanitizeMode::Human);
             result.stderrText = NormalizeSyncCapturedText(err.str(), SyncOutputSanitizeMode::Human);
+            emitProgress("repo-done repo=" + name + " status=failed category=" + category);
             return result;
         };
 
@@ -3127,6 +3256,7 @@ auto RunNativeOriginLatestSync(
             result.message = reason;
             result.stdoutText = NormalizeSyncCapturedText(out.str(), SyncOutputSanitizeMode::Human);
             result.stderrText = NormalizeSyncCapturedText(err.str(), SyncOutputSanitizeMode::Human);
+            emitProgress("repo-done repo=" + name + " status=blocked category=" + category);
             return result;
         };
 
@@ -3146,6 +3276,11 @@ auto RunNativeOriginLatestSync(
             const std::string reason = "commandPolicy.sync=false / kog-sync=false";
             out << "[" << name << "] SKIPPED_BY_POLICY: " << reason << "\n";
             return finishSkipped(reason);
+        }
+
+        if (!plan.skipReason.empty()) {
+            out << "[" << name << "] SKIPPED_UNINITIALIZED_SUBMODULE: " << plan.skipReason << "\n";
+            return finishSkipped(plan.skipReason);
         }
 
         if (plan.remote.empty()) {
@@ -3194,6 +3329,7 @@ auto RunNativeOriginLatestSync(
                                                         : std::vector<std::string>{};
         const auto stashArgs = BuildSyncStashArgs(reservedPaths);
 
+        emitProgress("repo-step repo=" + name + " step=preflight");
         const auto health = workspace::ScanRepoHealth(plan.path, workspace::RepoHealthOptions{
             .checkFetchRemotes = true,
             .checkSubmoduleStatus = true,
@@ -3347,6 +3483,7 @@ auto RunNativeOriginLatestSync(
                     if (!reservedPaths.empty()) {
                         err << "[kog sync] warning: skipped Windows reserved path(s) in " << plan.path.generic_string() << "\n";
                     }
+                    emitProgress("repo-step repo=" + name + " step=stash");
                     auto stash = GitCapture(plan.path, stashArgs);
                     std::optional<IndexLockDiagnosis> indexLockDiagnosis;
                     if (stash.exitCode != 0 && IsIndexLockFailure(stash)) {
@@ -3393,6 +3530,7 @@ auto RunNativeOriginLatestSync(
         if (InDryRun) {
             out << "[DRY RUN] Would run: git fetch " << plan.remote << " --prune --tags\n";
         } else {
+            emitProgress("repo-step repo=" + name + " step=fetch remote=" + plan.remote);
             const auto fetch = GitCapture(plan.path, {"fetch", plan.remote, "--prune", "--tags", "--quiet"});
             if (fetch.exitCode != 0) {
                 out << fetch.stdoutStr;
@@ -3466,6 +3604,7 @@ auto RunNativeOriginLatestSync(
             return finishSuccess("SYNCED_DRY_RUN", "dry-run planned sync");
         }
 
+        emitProgress("repo-step repo=" + name + " step=checkout branch=" + targetBranch);
         const auto checkout = GitCapture(plan.path, checkoutArgs);
         if (checkout.exitCode != 0) {
             out << checkout.stdoutStr;
@@ -3507,6 +3646,7 @@ auto RunNativeOriginLatestSync(
             }
 
             if (shouldRebase) {
+                emitProgress("repo-step repo=" + name + " step=rebase target=" + rebaseTarget);
                 const auto rebase = GitCapture(plan.path, {"rebase", "--quiet", rebaseTarget});
                 if (rebase.exitCode != 0) {
                     out << rebase.stdoutStr;
@@ -3548,6 +3688,7 @@ auto RunNativeOriginLatestSync(
         }
 
         if (stashCreated) {
+            emitProgress("repo-step repo=" + name + " step=restore-stash");
             const auto pop = GitCapture(plan.path, {"stash", "pop"});
             out << pop.stdoutStr;
             err << pop.stderrStr;
@@ -3573,16 +3714,6 @@ auto RunNativeOriginLatestSync(
         return finishSuccess("SYNCED", "synced successfully");
     };
 
-    auto schedulerInputs = MakeSyncSchedulerInputs(plans);
-    workspace::RepoOperationSchedulerOptions schedulerOptions;
-    schedulerOptions.operationName = "sync";
-    schedulerOptions.mode = workspace::RepoOperationMode::MutatingDependencyWaves;
-    const auto requestedJobs = InJobs < 1 ? 1 : InJobs;
-    schedulerOptions.jobs = InGitCaptureTimeoutMs.has_value() || InExecutionPolicy == SyncExecutionPolicy::Serial
-        ? 1
-        : requestedJobs;
-    schedulerOptions.resolveGitCommonDirLocks = true;
-
     const auto aggregate = workspace::RunRepoOperationScheduler(
         schedulerInputs,
         schedulerOptions,
@@ -3590,30 +3721,6 @@ auto RunNativeOriginLatestSync(
 
     if (OutAggregate != nullptr) {
         *OutAggregate = aggregate;
-    }
-
-    const auto waveCount = aggregate.results.empty() ? std::size_t{0} : aggregate.results.back().phase + 1;
-    const auto displayRepoPath = [&](const std::filesystem::path& InPath) {
-        std::error_code relativeError;
-        const auto relative = std::filesystem::relative(InPath, InRepoRoot, relativeError);
-        if (relativeError || relative.empty() || relative == ".") {
-            return std::string{"."};
-        }
-        return relative.generic_string();
-    };
-    std::cout << "[native-sync] plan: repos=" << aggregate.results.size()
-              << " waves=" << waveCount
-              << " order=child-first"
-              << " policy=" << SyncExecutionPolicyName(InExecutionPolicy)
-              << " jobs=" << schedulerOptions.jobs << "\n";
-    for (std::size_t phase = 0; phase < waveCount; ++phase) {
-        std::cout << "[native-sync] wave " << (phase + 1) << "/" << waveCount << ":";
-        for (const auto& result : aggregate.results) {
-            if (result.phase == phase) {
-                std::cout << " " << displayRepoPath(result.repoPath);
-            }
-        }
-        std::cout << "\n";
     }
 
     for (const auto& result : aggregate.results) {

@@ -233,6 +233,34 @@
           "mapping_state": "source-linked"
         }
       ]
+    },
+    {
+      "incident_id": "KG-BUG-0095",
+      "incident_date": "2026-08-04",
+      "root_cause": "Recursive sync rendered its plan and per-repository detail only after the dependency scheduler returned, while registered submodule candidates were not required to equal their Git top-level; uninitialized paths therefore stayed silent during long work and could execute twice against their ancestor repository.",
+      "backlog_ref": "KG-BUG-0095",
+      "change_ref": "commit:KG-BUG-0095",
+      "workflow_contracts": [
+        "human-progress-observability",
+        "nested-repo-child-first",
+        "exact-repo-identity"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KG-BUG-0095/live-sync-progress",
+          "test_name": "recursive sync reports live progress before and during network work",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/recursive_sync_fixture_test.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-BUG-0095/uninitialized-submodule-exact-root",
+          "test_name": "recursive sync skips uninitialized registered submodules without ancestor fallback",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/recursive_sync_fixture_test.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        }
+      ]
     }
   ]
 }
