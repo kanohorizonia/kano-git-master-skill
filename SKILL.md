@@ -157,6 +157,13 @@ Git reports that user interactivity is disabled, run `kog auth doctor`; its
 explicit `--fix` removes persisted false/never `credential.interactive` values
 from local/global Git config without reading or deleting stored credentials.
 
+Human-terminal `kog sync` flushes its repository/wave plan before auth and
+network work, then reports bounded live milestones for auth, stash, fetch,
+rebase, restore, and completion. Agent, CI, and non-TTY execution keeps these
+milestones off by default; use `KOG_SYNC_PROGRESS=1` or `0` for an explicit
+override. An uninitialized registered submodule is a visible
+`SKIPPED_UNINITIALIZED_SUBMODULE`, never an alias for its ancestor repository.
+
 Subtree standalone export notes:
 - `--subtree` accepts absolute or relative paths and exports exactly one archive.
 - Default behavior strips parent directories so archive root starts at subtree basename.

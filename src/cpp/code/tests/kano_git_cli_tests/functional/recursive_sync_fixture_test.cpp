@@ -259,6 +259,65 @@ TEST_CASE("recursive_sync_explicit_serial_and_parallel_policies_are_deterministi
     RemoveSandboxWorkspace(sandbox);
 }
 
+TEST_CASE("recursive sync reports live progress before and during network work",
+          "[functional][sync][progress][interactive][KG-BUG-0095]") {
+    const auto sandbox = CreateSandboxWorkspace("recursive-sync-live-progress");
+    auto rootRemote = CreateRemote(sandbox, "root");
+    const auto root = rootRemote.clone;
+
+    const auto progress = RunKogWithEnv(
+        {"sync", "origin-latest", "--jobs", "1", "--native-no-cache"},
+        root,
+        {{"KOG_SYNC_PROGRESS", "1"}});
+    const auto progressOutput = NormalizeLineEndings(StripAnsi(progress.stdoutText + "\n" + progress.stderrText));
+    RequireSuccess(progress, "recursive sync explicit live progress");
+    RequireContains(progressOutput, "[native-sync][progress] discovery step=prefetch-root remote=origin");
+    RequireContains(progressOutput, "[native-sync][progress] auth-start 1/1 repo=. remote=origin");
+    RequireContains(progressOutput, "[native-sync][progress] repo-start repo=. wave=1/1");
+    RequireContains(progressOutput, "[native-sync][progress] repo-step repo=. step=fetch remote=origin");
+    RequireContains(progressOutput, "[native-sync][progress] repo-done repo=. status=success outcome=SYNCED");
+    REQUIRE(PositionOf(progressOutput, "Syncing workspace repos") <
+            PositionOf(progressOutput, "discovery step=prefetch-root"));
+    REQUIRE(PositionOf(progressOutput, "[native-sync] plan:") <
+            PositionOf(progressOutput, "auth-start 1/1"));
+
+    const auto quiet = RunSyncRecursive(root, {"--jobs", "1", "--native-no-cache"});
+    const auto quietOutput = NormalizeLineEndings(StripAnsi(quiet.stdoutText + "\n" + quiet.stderrText));
+    RequireSuccess(quiet, "non-tty recursive sync stays quiet by default");
+    RequireNotContains(quietOutput, "[native-sync][progress]");
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
+TEST_CASE("recursive sync skips uninitialized registered submodules without ancestor fallback",
+          "[functional][sync][recursive][submodule][uninitialized][KG-BUG-0095]") {
+    const auto sandbox = CreateSandboxWorkspace("recursive-sync-uninitialized-submodule");
+    auto rootRemote = CreateRemote(sandbox, "root");
+    auto childRemote = CreateRemote(sandbox, "child");
+    const auto root = rootRemote.clone;
+    const auto childPath = AddSubmodule(
+        root, childRemote, "deps/uninitialized",
+        "\tkog-sync = true\n\tkog-commit = true\n\tkog-push = true\n");
+    RequireSuccess(RunGit({"push", "origin", rootRemote.branch}, root), "push uninitialized registration");
+    RequireSuccess(
+        RunGit({"submodule", "deinit", "-f", "--", "deps/uninitialized"}, root),
+        "deinitialize registered child");
+    REQUIRE_FALSE(std::filesystem::exists(childPath / ".git"));
+    const auto rootHead = CurrentHeadSha(root);
+
+    const auto result = RunSyncRecursive(
+        root, {"--jobs", "1", "--native-no-cache", "--no-auth-preflight"});
+    const auto output = NormalizeLineEndings(StripAnsi(result.stdoutText + "\n" + result.stderrText));
+    RequireSuccess(result, "recursive sync skips uninitialized child");
+    RequireContains(output, "[deps/uninitialized] SKIPPED_UNINITIALIZED_SUBMODULE: registered submodule is not initialized");
+    RequireContains(output, "SUMMARY: repos=2, synced=1, skipped=1, blocked=0, failed=0");
+    REQUIRE(CountOccurrences(output, "Repo: .") == 1);
+    REQUIRE(CountOccurrences(output, "Repo: deps/uninitialized") == 1);
+    REQUIRE(CurrentHeadSha(root) == rootHead);
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
 TEST_CASE("recursive_sync_rejects_unknown_execution_policy", "[functional][sync][recursive][policy][validation]") {
     const auto sandbox = CreateSandboxWorkspace("recursive-sync-invalid-policy");
     auto rootRemote = CreateRemote(sandbox, "root");

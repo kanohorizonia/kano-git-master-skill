@@ -353,24 +353,24 @@ TEST_CASE("dogfood incident manifest maps stable source cases without "
 
   INFO(loaded.error);
   REQUIRE(loaded.ok);
-  REQUIRE(loaded.report.incidents.size() == 8);
+  REQUIRE(loaded.report.incidents.size() == 9);
   REQUIRE(loaded.report.gaps.empty());
-  REQUIRE(loaded.report.incidents.front().incidentId == "KG-BUG-0094");
+  REQUIRE(loaded.report.incidents.front().incidentId == "KG-BUG-0095");
   REQUIRE(loaded.report.incidents.front().regressionCases.size() == 2);
   REQUIRE(loaded.report.incidents.front().regressionCases.front().testName ==
-          "auth doctor diagnoses and fixes credential interaction disabled "
-          "across local and global config");
+          "recursive sync reports live progress before and during network "
+          "work");
 
   const auto text = RenderCoverageText(loaded.report);
   REQUIRE(text.find("execution_evidence=not-evaluated") != std::string::npos);
-  REQUIRE(text.find("linked_cases=18") != std::string::npos);
+  REQUIRE(text.find("linked_cases=20") != std::string::npos);
   REQUIRE(text.find("passed") == std::string::npos);
   REQUIRE(text.find("executed") == std::string::npos);
 
   const auto json = RenderCoverageJson(loaded.report);
   REQUIRE(json.find("\"execution_evidence\": \"not-evaluated\"") !=
           std::string::npos);
-  REQUIRE(json.find("\"linked_cases\": 18") != std::string::npos);
+  REQUIRE(json.find("\"linked_cases\": 20") != std::string::npos);
 }
 
 TEST_CASE("default registry paths and exact test names resolve to source",
