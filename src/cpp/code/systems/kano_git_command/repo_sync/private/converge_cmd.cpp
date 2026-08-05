@@ -6359,6 +6359,7 @@ void RegisterConverge(CLI::App& InApp) {
 
         const auto convergeSyncTimeoutMs = ResolveConvergeSyncTimeoutMs();
 
+        bool settlePreviewHasPlannedActions = false;
         int passIndex = 0;
         while (true) {
             bool runAnotherPass = false;
@@ -6381,8 +6382,9 @@ void RegisterConverge(CLI::App& InApp) {
                 summary.pending = state.pendingRepos;
 
                 if (phase == "status-preflight-plan") {
-                PrintPlan(snapshot, plan, false);
-                if (worktreeSettleRequested) {
+                    settlePreviewHasPlannedActions = false;
+                    PrintPlan(snapshot, plan, false);
+                    if (worktreeSettleRequested) {
                     std::string previewCommand = "kog converge branches retire --target " + Trim(*settleTarget);
                     if (*settleRemoveWorktrees) {
                         previewCommand += " --remove-worktrees";
@@ -6412,6 +6414,7 @@ void RegisterConverge(CLI::App& InApp) {
                         false,
                         &previewResult);
                     const auto planned = previewResult.value("planned", nlohmann::json::array());
+                    settlePreviewHasPlannedActions = planned.is_array() && !planned.empty();
                     if (previewCode != 0 && (!planned.is_array() || planned.empty())) {
                         summary.blocked.push_back(".");
                         summary.failureCategory["."] = "WORKTREE_SETTLE_PREFLIGHT_BLOCKED";
@@ -6710,10 +6713,14 @@ void RegisterConverge(CLI::App& InApp) {
                       << "\n";
 
                 if (!summary.failed.empty() || !summary.blocked.empty()) {
-                    if (phase == "commit-local-changes-if-needed" && worktreeSettleRequested) {
-                        // Commit blockers remain fail-closed, but an explicitly requested settle
+                    const bool canRunIndependentSettle =
+                        worktreeSettleRequested &&
+                        (phase == "commit-local-changes-if-needed" ||
+                         (phase == "status-preflight-plan" && settlePreviewHasPlannedActions));
+                    if (canRunIndependentSettle) {
+                        // Isolated converge blockers remain fail-closed, but an explicitly requested settle
                         // can safely re-plan its own branch/worktree mutations independently.
-                        std::cout << "[converge] phase=settle-worktrees (after isolated commit failures)\n";
+                        std::cout << "[converge] phase=settle-worktrees (after isolated converge blockers)\n";
                         state.currentPhase = "settle-worktrees";
                         persist();
                         std::ostringstream settleCommand;

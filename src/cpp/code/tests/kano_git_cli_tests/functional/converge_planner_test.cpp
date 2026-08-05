@@ -3913,7 +3913,7 @@ TEST_CASE("converge settles eligible branch after isolated commit failure", "[fu
     INFO(result.stdoutText);
     INFO(result.stderrText);
     REQUIRE(result.exitCode != 0);
-    RequireContains(result.stdoutText, "phase=settle-worktrees (after isolated commit failures)");
+    RequireContains(result.stdoutText, "phase=settle-worktrees (after isolated converge blockers)");
     RequireContains(result.stdoutText, "\"mutationPerformed\": true");
     RequireContains(result.stdoutText, "\"branch\": \"" + featureBranch + "\"");
     RequireContains(result.stdoutText, "\"action\": \"delete-local\"");
@@ -3924,5 +3924,71 @@ TEST_CASE("converge settles eligible branch after isolated commit failure", "[fu
     REQUIRE(RunGit({"show-ref", "--verify", "--quiet", "refs/heads/" + featureBranch}, ctx.cloneRepo).exitCode != 0);
 
     RemoveSandboxWorkspace(ctx.sandbox);
+}
+TEST_CASE("converge settles eligible branch after isolated status blocker", "[functional][converge][branches][settle][agent-mode][KG-BUG-0093]") {
+    const auto ctx = CreateRemoteWithClone("converge-settle-after-status-blocker");
+    const auto blocker = CreateRemoteWithClone("converge-settle-status-blocker-repo");
+    const std::string featureBranch = "feature/settle-after-status-blocker";
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout status-blocker feature branch");
+    WriteTextFile(ctx.cloneRepo / "settle-after-status.txt", "integrated status blocker branch\n");
+    RequireSuccess(RunGit({"add", "settle-after-status.txt"}, ctx.cloneRepo), "stage status-blocker feature content");
+    RequireSuccess(RunGit({"commit", "-m", "settle status blocker feature"}, ctx.cloneRepo), "commit status-blocker feature content");
+    RequireSuccess(RunGit({"push", "-u", "origin", featureBranch}, ctx.cloneRepo), "push status-blocker feature branch");
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to status-blocker target branch");
+    RequireSuccess(RunGit({"merge", "--ff-only", featureBranch}, ctx.cloneRepo), "integrate status-blocker feature branch");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.cloneRepo), "push status-blocker target branch");
+
+    const auto featureWorktree = (ctx.sandbox.root / "settle-after-status-blocker-worktree").lexically_normal();
+    RequireSuccess(
+        RunGit({"worktree", "add", featureWorktree.string(), featureBranch}, ctx.cloneRepo),
+        "add clean integrated status-blocker worktree");
+
+    const auto nestedBlocker = (ctx.cloneRepo / "nested" / "status-blocker").lexically_normal();
+    std::filesystem::create_directories(nestedBlocker.parent_path());
+    std::filesystem::copy(
+        blocker.cloneRepo,
+        nestedBlocker,
+        std::filesystem::copy_options::recursive);
+    const auto manifestPath = ctx.cloneRepo / ".kano" / "cache" / "git" / "workspace-manifest.json";
+    RunDiscoverFull(ctx.cloneRepo);
+    auto manifest = ReadTextFile(manifestPath);
+    const auto nestedRelative = nestedBlocker.lexically_relative(ctx.cloneRepo).generic_string();
+    RequireContains(manifest, nestedRelative);
+    const auto unregisteredType = std::string{"\"path\":\""} + nestedRelative + "\",\"type\":\"unregistered\"";
+    const auto registeredType = std::string{"\"path\":\""} + nestedRelative + "\",\"type\":\"registered\"";
+    RequireContains(manifest, unregisteredType);
+    manifest.replace(manifest.find(unregisteredType), unregisteredType.size(), registeredType);
+    WriteTextFile(manifestPath, manifest);
+    WriteTextFile(ctx.cloneRepo / ".git" / "info" / "exclude", "/nested/\n");
+
+    CommitAndPushFile(
+        blocker.seedRepo,
+        blocker.branch,
+        "remote-divergence.txt",
+        "remote nested change\n",
+        "remote nested divergence");
+    RequireSuccess(RunGit({"checkout", blocker.branch}, nestedBlocker), "checkout nested status branch");
+    RequireSuccess(RunGit({"fetch", "origin", blocker.branch}, nestedBlocker), "fetch nested status divergence");
+    WriteTextFile(nestedBlocker / "local-divergence.txt", "local nested change\n");
+    RequireSuccess(RunGit({"add", "local-divergence.txt"}, nestedBlocker), "stage nested status divergence");
+    RequireSuccess(RunGit({"commit", "-m", "local nested divergence"}, nestedBlocker), "commit nested status divergence");
+
+    const auto result = RunKogWithEnv(
+        {"converge", "--jobs", "1", "--settle-worktrees", "--remove-worktrees",
+         "--harvest-branch-worktrees", "--target", ctx.branch},
+        ctx.cloneRepo,
+        {{"KANO_AGENT_MODE", "1"}});
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode != 0);
+    RequireContains(result.stdoutText, "phase=settle-worktrees (after isolated converge blockers)");
+    RequireContains(result.stdoutText, "\"mutationPerformed\": true");
+    RequireContains(result.stdoutText, "\"branch\": \"" + featureBranch + "\"");
+    RequireContains(result.stdoutText, "\"action\": \"delete-local\"");
+    REQUIRE_FALSE(std::filesystem::exists(featureWorktree));
+    REQUIRE(RunGit({"show-ref", "--verify", "--quiet", "refs/heads/" + featureBranch}, ctx.cloneRepo).exitCode != 0);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+    RemoveSandboxWorkspace(blocker.sandbox);
 }
 } // namespace kano::git::tests::functional
