@@ -3885,4 +3885,44 @@ TEST_CASE("converge resume rewinds push to saved post-commit sync", "[functional
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge settles eligible branch after isolated commit failure", "[functional][converge][branches][settle][agent-mode][KG-BUG-0093]") {
+    const auto ctx = CreateRemoteWithClone("converge-settle-after-commit-failure");
+    const std::string featureBranch = "feature/settle-after-commit-failure";
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout settle feature branch");
+    WriteTextFile(ctx.cloneRepo / "settle-after-failure.txt", "integrated branch content\n");
+    RequireSuccess(RunGit({"add", "settle-after-failure.txt"}, ctx.cloneRepo), "stage settle feature content");
+    RequireSuccess(RunGit({"commit", "-m", "settle feature content"}, ctx.cloneRepo), "commit settle feature content");
+    RequireSuccess(RunGit({"push", "-u", "origin", featureBranch}, ctx.cloneRepo), "push settle feature branch");
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to settle target branch");
+    RequireSuccess(RunGit({"merge", "--ff-only", featureBranch}, ctx.cloneRepo), "integrate settle feature branch");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.cloneRepo), "push settle target branch");
+
+    const auto featureWorktree = (ctx.sandbox.root / "settle-after-failure-worktree").lexically_normal();
+    RequireSuccess(
+        RunGit({"worktree", "add", featureWorktree.string(), featureBranch}, ctx.cloneRepo),
+        "add clean integrated feature worktree");
+
+    const auto unknownPath = std::filesystem::path("scratch/operator-owned.data");
+    WriteTextFile(ctx.cloneRepo / unknownPath, "preserve this ambiguous path\n");
+
+    const auto result = RunKogWithEnv(
+        {"converge", "--no-recursive", "--jobs", "1", "--settle-worktrees", "--remove-worktrees",
+         "--harvest-branch-worktrees", "--target", ctx.branch},
+        ctx.cloneRepo,
+        {{"KANO_AGENT_MODE", "1"}});
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode != 0);
+    RequireContains(result.stdoutText, "phase=settle-worktrees (after isolated commit failures)");
+    RequireContains(result.stdoutText, "\"mutationPerformed\": true");
+    RequireContains(result.stdoutText, "\"branch\": \"" + featureBranch + "\"");
+    RequireContains(result.stdoutText, "\"action\": \"delete-local\"");
+    RequireContains(result.stdoutText, "ambiguous " + unknownPath.generic_string());
+    RequireContains(GitStatusShort(ctx.cloneRepo), "?? scratch/");
+    REQUIRE(std::filesystem::exists(ctx.cloneRepo / unknownPath));
+    REQUIRE_FALSE(std::filesystem::exists(featureWorktree));
+    REQUIRE(RunGit({"show-ref", "--verify", "--quiet", "refs/heads/" + featureBranch}, ctx.cloneRepo).exitCode != 0);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
 } // namespace kano::git::tests::functional

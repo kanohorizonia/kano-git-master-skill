@@ -6710,6 +6710,82 @@ void RegisterConverge(CLI::App& InApp) {
                       << "\n";
 
                 if (!summary.failed.empty() || !summary.blocked.empty()) {
+                    if (phase == "commit-local-changes-if-needed" && worktreeSettleRequested) {
+                        // Commit blockers remain fail-closed, but an explicitly requested settle
+                        // can safely re-plan its own branch/worktree mutations independently.
+                        std::cout << "[converge] phase=settle-worktrees (after isolated commit failures)\n";
+                        state.currentPhase = "settle-worktrees";
+                        persist();
+                        std::ostringstream settleCommand;
+                        settleCommand << "kog converge branches retire --target " << Trim(*settleTarget)
+                                      << " --confirm --jobs " << *jobs;
+                        if (!recursive) {
+                            settleCommand << " --no-recursive";
+                        }
+                        if (*settleRemoveWorktrees) {
+                            settleCommand << " --remove-worktrees";
+                        }
+                        if (*settlePruneWorktrees) {
+                            settleCommand << " --prune-worktrees";
+                        }
+                        if (*settleHarvestDetachedWorktrees) {
+                            settleCommand << " --harvest-detached-worktrees";
+                        }
+                        if (*settleHarvestBranchWorktrees) {
+                            settleCommand << " --harvest-branch-worktrees";
+                        }
+                        state.commandLinesUsed["settle-worktrees"].push_back(settleCommand.str());
+                        nlohmann::json settleResult;
+                        const auto settleCode = RunBranchRetire(
+                            workspaceRoot,
+                            *jobs,
+                            recursive,
+                            Trim(*settleTarget),
+                            true,
+                            *settleRemoveWorktrees,
+                            false,
+                            *settlePruneWorktrees,
+                            *settleHarvestDetachedWorktrees,
+                            *settleHarvestBranchWorktrees,
+                            Trim(*settleHarvestMessage),
+                            std::string{},
+                            true,
+                            false,
+                            &settleResult);
+                        PhaseSummary settleSummary;
+                        settleSummary.pending = state.pendingRepos;
+                        const auto mutationPerformed = settleResult.value("mutationPerformed", false);
+                        if (settleCode == 0 || mutationPerformed) {
+                            settleSummary.succeeded.push_back(".");
+                            if (mutationPerformed && settleCode != 0) {
+                                state.commandLinesUsed["settle-worktrees"].push_back(
+                                    "branch settle applied eligible mutations while preserving per-branch blockers");
+                                std::cerr << "Warning: branch settle applied eligible mutations; unresolved branch/worktree blockers were preserved for diagnostics\n";
+                            }
+                        } else {
+                            settleSummary.failed.push_back(".");
+                            settleSummary.failureCategory["."] = "WORKTREE_SETTLE_BLOCKED";
+                            settleSummary.failureMessage["."] = "worktree settle phase found blocked branch/worktree state";
+                            settleSummary.retryEligible["."] = true;
+                        }
+                        for (const auto& repo : settleSummary.succeeded) {
+                            state.pendingRepos.erase(std::remove(state.pendingRepos.begin(), state.pendingRepos.end(), repo), state.pendingRepos.end());
+                        }
+                        for (const auto& repo : settleSummary.failed) {
+                            state.pendingRepos.erase(std::remove(state.pendingRepos.begin(), state.pendingRepos.end(), repo), state.pendingRepos.end());
+                        }
+                        settleSummary.pending = state.pendingRepos;
+                        RecordPhaseState(state, "settle-worktrees", settleSummary);
+                        // Keep resume anchored at the failed commit phase so a later run retries
+                        // only after the operator or agent resolves the deferred repository.
+                        state.completedPhases.erase(
+                            std::remove(state.completedPhases.begin(), state.completedPhases.end(), phase),
+                            state.completedPhases.end());
+                        state.completedPhases.erase(
+                            std::remove(state.completedPhases.begin(), state.completedPhases.end(), "settle-worktrees"),
+                            state.completedPhases.end());
+                        state.currentPhase = phase;
+                    }
                     const auto phaseReason = !summary.failed.empty()
                         ? (phase + " encountered failures")
                         : (state.blockedReason.empty() ? (phase + " encountered blocked repositories") : state.blockedReason);
