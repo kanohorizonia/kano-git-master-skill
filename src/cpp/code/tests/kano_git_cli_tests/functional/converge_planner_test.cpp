@@ -4059,4 +4059,57 @@ TEST_CASE("converge continues independent repository actions past a diverged blo
     RemoveSandboxWorkspace(blocker.sandbox);
     RemoveSandboxWorkspace(independent.sandbox);
 }
+
+TEST_CASE("converge continues later phases after an isolated commit failure", "[functional][converge][partial-success][dependency-aware][KG-BUG-0095]") {
+    const auto ctx = CreateRemoteWithClone("converge-independent-commit-failure-root");
+    const auto failed = CreateRemoteWithClone("converge-independent-commit-failure-blocker");
+    const auto independent = CreateRemoteWithClone("converge-independent-commit-failure-action");
+
+    const auto nestedFailed = (ctx.cloneRepo / "nested" / "ambiguous-commit-failure").lexically_normal();
+    const auto nestedIndependent = (ctx.cloneRepo / "nested" / "independent-commit-action").lexically_normal();
+    std::filesystem::create_directories(nestedFailed.parent_path());
+    std::filesystem::copy(failed.cloneRepo, nestedFailed, std::filesystem::copy_options::recursive);
+    std::filesystem::copy(independent.cloneRepo, nestedIndependent, std::filesystem::copy_options::recursive);
+
+    const auto manifestPath = ctx.cloneRepo / ".kano" / "cache" / "git" / "workspace-manifest.json";
+    RunDiscoverFull(ctx.cloneRepo);
+    auto manifest = ReadTextFile(manifestPath);
+    for (const auto& nestedRepo : {nestedFailed, nestedIndependent}) {
+        const auto nestedRelative = nestedRepo.lexically_relative(ctx.cloneRepo).generic_string();
+        RequireContains(manifest, nestedRelative);
+        const auto unregisteredType = std::string{"\"path\":\""} + nestedRelative + "\",\"type\":\"unregistered\"";
+        const auto registeredType = std::string{"\"path\":\""} + nestedRelative + "\",\"type\":\"registered\"";
+        RequireContains(manifest, unregisteredType);
+        manifest.replace(manifest.find(unregisteredType), unregisteredType.size(), registeredType);
+    }
+    WriteTextFile(manifestPath, manifest);
+    WriteTextFile(ctx.cloneRepo / ".git" / "info" / "exclude", "/nested/\n");
+
+    const auto ambiguousPath = std::filesystem::path("scratch/operator-owned.data");
+    WriteTextFile(nestedFailed / ambiguousPath, "preserve this ambiguous path\n");
+    WriteTextFile(nestedIndependent / "src/KG-BUG-0095-independent-local.txt", "independent local change\n");
+
+    const auto result = RunKogWithEnv(
+        {"converge", "--jobs", "1"},
+        ctx.cloneRepo,
+        {{"KANO_AGENT_MODE", "1"}});
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode != 0);
+    RequireContains(result.stdoutText, "ambiguous " + ambiguousPath.generic_string());
+    RequireContains(result.stdoutText, "commit-local-changes-if-needed preserved isolated repository failures; continuing independent repository phases");
+    RequireContains(result.stderrText, "no intent-scoped groups could be inferred");
+
+    RequireContains(GitStatusShort(nestedFailed), "?? scratch/");
+    const auto remoteIndependent = RunGit(
+        {"show", "origin/" + independent.branch + ":src/KG-BUG-0095-independent-local.txt"},
+        nestedIndependent);
+    RequireSuccess(remoteIndependent, "verify independent repository push after isolated commit failure");
+    REQUIRE(TrimCopy(remoteIndependent.stdoutText) == "independent local change");
+    REQUIRE(GitStatusShort(nestedIndependent).empty());
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+    RemoveSandboxWorkspace(failed.sandbox);
+    RemoveSandboxWorkspace(independent.sandbox);
+}
 } // namespace kano::git::tests::functional

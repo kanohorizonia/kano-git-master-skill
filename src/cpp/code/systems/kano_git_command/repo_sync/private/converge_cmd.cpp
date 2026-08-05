@@ -1064,7 +1064,9 @@ bool PlanHasRunnableActions(const Plan& plan) {
     return !plan.sync.empty() || !plan.commit.empty() || !plan.push.empty();
 }
 
-std::unordered_map<std::string, std::string> PreflightBlockerByRepo(const Snapshot& snapshot, const Plan& plan) {
+std::unordered_map<std::string, std::string> DependencyBlockerByRepo(
+    const Snapshot& snapshot,
+    const std::vector<std::string>& roots) {
     std::unordered_map<std::string, const RepoStatus*> byId;
     for (const auto& repo : snapshot.repos) {
         byId.emplace(repo.id, &repo);
@@ -1072,7 +1074,7 @@ std::unordered_map<std::string, std::string> PreflightBlockerByRepo(const Snapsh
 
     std::unordered_map<std::string, std::string> blockers;
     std::vector<std::pair<std::string, std::string>> pending;
-    for (const auto& repoId : UniqueRepos(plan.blocked)) {
+    for (const auto& repoId : roots) {
         blockers.emplace(repoId, repoId);
         pending.emplace_back(repoId, repoId);
     }
@@ -1091,9 +1093,30 @@ std::unordered_map<std::string, std::string> PreflightBlockerByRepo(const Snapsh
     }
     return blockers;
 }
+void MergeDependencyBlockers(
+    std::unordered_map<std::string, std::string>& target,
+    const std::unordered_map<std::string, std::string>& additions) {
+    for (const auto& [repoId, blocker] : additions) {
+        target.emplace(repoId, blocker);
+    }
+}
+std::unordered_map<std::string, std::string> PreflightBlockerByRepo(const Snapshot& snapshot, const Plan& plan) {
+    return DependencyBlockerByRepo(snapshot, UniqueRepos(plan.blocked));
+}
 
 std::unordered_set<std::string> PreflightMutationBlockers(const Snapshot& snapshot, const Plan& plan) {
     const auto blockerByRepo = PreflightBlockerByRepo(snapshot, plan);
+    std::unordered_set<std::string> blockers;
+    blockers.reserve(blockerByRepo.size());
+    for (const auto& [repoId, blocker] : blockerByRepo) {
+        blockers.insert(repoId);
+    }
+    return blockers;
+}
+std::unordered_set<std::string> DependencyMutationBlockers(
+    const Snapshot& snapshot,
+    const std::vector<std::string>& roots) {
+    const auto blockerByRepo = DependencyBlockerByRepo(snapshot, roots);
     std::unordered_set<std::string> blockers;
     blockers.reserve(blockerByRepo.size());
     for (const auto& [repoId, blocker] : blockerByRepo) {
@@ -1114,9 +1137,21 @@ void AddPreflightBlockedSkip(PhaseSummary& summary,
     summary.failureMessage[repoId] = "mutation skipped because preflight blocker " + blockerIt->second + " remains unresolved";
     summary.retryEligible[repoId] = true;
 }
+void AddFailedRepositoryBlockedSkip(PhaseSummary& summary,
+                                    const std::string& repoId,
+                                    const std::unordered_map<std::string, std::string>& blockerByRepo) {
+    const auto blockerIt = blockerByRepo.find(repoId);
+    if (blockerIt == blockerByRepo.end()) {
+        return;
+    }
+    summary.skipped.push_back(repoId);
+    summary.failureCategory[repoId] = "BLOCKED_BY_FAILED_REPOSITORY";
+    summary.failureMessage[repoId] = "mutation skipped because dependency blocker " + blockerIt->second + " remains unresolved";
+    summary.retryEligible[repoId] = true;
+}
 
-bool HasRunnableActionsOutsidePreflightBlockers(const Plan& plan,
-                                                const std::unordered_set<std::string>& blockers) {
+bool HasRunnableActionsOutsideBlockers(const Plan& plan,
+                                       const std::unordered_set<std::string>& blockers) {
     const auto hasUnblocked = [&](const std::vector<PlanLine>& lines) {
         return std::any_of(lines.begin(), lines.end(), [&](const auto& line) {
             return !blockers.contains(line.repo);
@@ -6441,6 +6476,20 @@ void RegisterConverge(CLI::App& InApp) {
 
                 auto preflightBlockerByRepo = PreflightBlockerByRepo(snapshot, plan);
                 auto preflightMutationBlocked = PreflightMutationBlockers(snapshot, plan);
+                auto mutationBlockerByRepo = preflightBlockerByRepo;
+                auto mutationBlocked = preflightMutationBlocked;
+                MergeDependencyBlockers(mutationBlockerByRepo, DependencyBlockerByRepo(snapshot, state.failedRepos));
+                MergeDependencyBlockers(mutationBlockerByRepo, DependencyBlockerByRepo(snapshot, state.blockedRepoSet));
+                for (const auto& [repoId, blocker] : mutationBlockerByRepo) {
+                    mutationBlocked.insert(repoId);
+                }
+                auto registerMutationBlocker = [&](const std::string& repoId) {
+                    const auto blockers = DependencyBlockerByRepo(snapshot, std::vector<std::string>{repoId});
+                    MergeDependencyBlockers(mutationBlockerByRepo, blockers);
+                    for (const auto& [blockedRepoId, blocker] : blockers) {
+                        mutationBlocked.insert(blockedRepoId);
+                    }
+                };
 
                 PhaseSummary summary;
                 summary.pending = state.pendingRepos;
@@ -6506,6 +6555,10 @@ void RegisterConverge(CLI::App& InApp) {
                         AddPreflightBlockedSkip(summary, line.repo, preflightBlockerByRepo);
                         continue;
                     }
+                    if (mutationBlocked.contains(line.repo)) {
+                        AddFailedRepositoryBlockedSkip(summary, line.repo, mutationBlockerByRepo);
+                        continue;
+                    }
                     if (PhaseSummaryContainsRepo(state, phase, line.repo, &PhaseSummary::succeeded)) {
                         summary.skipped.push_back(line.repo);
                         continue;
@@ -6533,6 +6586,7 @@ void RegisterConverge(CLI::App& InApp) {
                         summary.failureCategory[line.repo] = failureCategory.empty() ? "FAILED_COMMIT" : failureCategory;
                         summary.failureMessage[line.repo] = failureMessage.empty() ? "commit-local-changes-if-needed failed" : failureMessage;
                         summary.retryEligible[line.repo] = true;
+                        registerMutationBlocker(line.repo);
                     }
                 }
                 for (const auto& line : plan.skipped) {
@@ -6544,6 +6598,10 @@ void RegisterConverge(CLI::App& InApp) {
                 for (const auto& line : plan.sync) {
                     if (preflightMutationBlocked.contains(line.repo)) {
                         AddPreflightBlockedSkip(summary, line.repo, preflightBlockerByRepo);
+                        continue;
+                    }
+                    if (mutationBlocked.contains(line.repo)) {
+                        AddFailedRepositoryBlockedSkip(summary, line.repo, mutationBlockerByRepo);
                         continue;
                     }
                     if (phase == "sync-before-push" && RepoHasPlannedDescendantPush(snapshot, plan, line.repo)) {
@@ -6559,16 +6617,32 @@ void RegisterConverge(CLI::App& InApp) {
                     state.commandLinesUsed[phase].push_back("KOG_CONVERGE_SYNC_TIMEOUT_MS=" + timeoutText + " kog sync origin-latest --repo " + repoPath.generic_string() + " --no-recursive");
                     const auto detailed = RunSyncOriginLatestNativeDetailed(repoPath, false, false, false, true, convergeSyncTimeoutMs, true);
                     PopulatePhaseSummaryFromSingleRepoAggregate(line.repo, detailed.second, false, detailed.first, summary);
-                    if (detailed.first != 0 && summary.failed.empty() && summary.blocked.empty()) {
+                    const bool lineFailed = std::find(summary.failed.begin(), summary.failed.end(), line.repo) != summary.failed.end();
+                    const bool lineBlocked = std::find(summary.blocked.begin(), summary.blocked.end(), line.repo) != summary.blocked.end();
+                    if (detailed.first != 0 && !lineFailed && !lineBlocked) {
                         summary.failed.push_back(line.repo);
                         summary.failureCategory[line.repo] = "SYNC_ERROR";
                         summary.failureMessage[line.repo] = "sync phase failed";
                         summary.retryEligible[line.repo] = true;
                     }
+                    if (std::find(summary.failed.begin(), summary.failed.end(), line.repo) != summary.failed.end() ||
+                        std::find(summary.blocked.begin(), summary.blocked.end(), line.repo) != summary.blocked.end()) {
+                        registerMutationBlocker(line.repo);
+                    }
                 }
                 } else if (phase == "push-nested-bottom-up" || phase == "push-parents-bottom-up") {
                 auto pushRepos = UniqueRepos(plan.push);
-                std::erase_if(pushRepos, [&](const auto& repo) { return preflightMutationBlocked.contains(repo); });
+                std::erase_if(pushRepos, [&](const auto& repo) {
+                    if (preflightMutationBlocked.contains(repo)) {
+                        AddPreflightBlockedSkip(summary, repo, preflightBlockerByRepo);
+                        return true;
+                    }
+                    if (mutationBlocked.contains(repo)) {
+                        AddFailedRepositoryBlockedSkip(summary, repo, mutationBlockerByRepo);
+                        return true;
+                    }
+                    return false;
+                });
                 if (phase == "push-nested-bottom-up") {
                     std::erase_if(pushRepos, [&](const auto& repo) { return !IsNestedRepo(snapshot, repo); });
                 }
@@ -6599,6 +6673,7 @@ void RegisterConverge(CLI::App& InApp) {
                         const auto blocked = std::find(summary.blocked.begin(), summary.blocked.end(), repo) != summary.blocked.end();
                         if (failed || blocked) {
                             failedOrBlocked.insert(repo);
+                            registerMutationBlocker(repo);
                         }
                     }
                 }
@@ -6615,6 +6690,13 @@ void RegisterConverge(CLI::App& InApp) {
                     state.repoBaselines = RepoBaselines(snapshot);
                     preflightBlockerByRepo = PreflightBlockerByRepo(snapshot, plan);
                     preflightMutationBlocked = PreflightMutationBlockers(snapshot, plan);
+                    mutationBlockerByRepo = preflightBlockerByRepo;
+                    mutationBlocked = preflightMutationBlocked;
+                    MergeDependencyBlockers(mutationBlockerByRepo, DependencyBlockerByRepo(snapshot, state.failedRepos));
+                    MergeDependencyBlockers(mutationBlockerByRepo, DependencyBlockerByRepo(snapshot, state.blockedRepoSet));
+                    for (const auto& [repoId, blocker] : mutationBlockerByRepo) {
+                        mutationBlocked.insert(repoId);
+                    }
                     if (!plan.blocked.empty()) {
                         summary.blocked = UniqueRepos(plan.blocked);
                         state.blockedReason = "status delta detected blocked repositories";
@@ -6636,6 +6718,10 @@ void RegisterConverge(CLI::App& InApp) {
                 for (const auto& line : plan.commit) {
                     if (preflightMutationBlocked.contains(line.repo)) {
                         AddPreflightBlockedSkip(summary, line.repo, preflightBlockerByRepo);
+                        continue;
+                    }
+                    if (mutationBlocked.contains(line.repo)) {
+                        AddFailedRepositoryBlockedSkip(summary, line.repo, mutationBlockerByRepo);
                         continue;
                     }
                     if (PhaseSummaryContainsRepo(state, phase, line.repo, &PhaseSummary::succeeded)) {
@@ -6665,6 +6751,7 @@ void RegisterConverge(CLI::App& InApp) {
                         summary.failureCategory[line.repo] = failureCategory.empty() ? "FAILED_COMMIT" : failureCategory;
                         summary.failureMessage[line.repo] = failureMessage.empty() ? "commit-pointer-updates-if-needed failed" : failureMessage;
                         summary.retryEligible[line.repo] = true;
+                        registerMutationBlocker(line.repo);
                     }
                 }
                 for (const auto& line : plan.skipped) {
@@ -6806,11 +6893,21 @@ void RegisterConverge(CLI::App& InApp) {
                         worktreeSettleRequested &&
                         (phase == "commit-local-changes-if-needed" ||
                          (phase == "status-preflight-plan" && settlePreviewHasPlannedActions));
+                    std::vector<std::string> dependencyRoots = state.failedRepos;
+                    MergeUnique(dependencyRoots, state.blockedRepoSet);
+                    const auto continuationBlocked = DependencyMutationBlockers(snapshot, dependencyRoots);
+                    const bool rootFailure = std::find(summary.failed.begin(), summary.failed.end(), ".") != summary.failed.end();
+                    const auto rootBlockIt = summary.failureCategory.find(".");
+                    const bool rootSettlePreflightBlock =
+                        rootBlockIt != summary.failureCategory.end() &&
+                        rootBlockIt->second == "WORKTREE_SETTLE_PREFLIGHT_BLOCKED";
+                    const bool rootBlocked = std::find(summary.blocked.begin(), summary.blocked.end(), ".") != summary.blocked.end();
                     const bool canContinueIndependentRepoPhases =
-                        summary.failed.empty() &&
-                        (phase == "status-preflight-plan" || phase == "status-delta-after-sync") &&
-                        !preflightMutationBlocked.empty() &&
-                        HasRunnableActionsOutsidePreflightBlockers(plan, preflightMutationBlocked);
+                        phase != "settle-worktrees" &&
+                        phase != "final-status-summary" &&
+                        !rootFailure &&
+                        (!rootBlocked || rootSettlePreflightBlock) &&
+                        HasRunnableActionsOutsideBlockers(plan, continuationBlocked);
                     if (canRunIndependentSettle) {
                         // Isolated converge blockers remain fail-closed, but an explicitly requested settle
                         // can safely re-plan its own branch/worktree mutations independently.
@@ -6888,10 +6985,13 @@ void RegisterConverge(CLI::App& InApp) {
                         state.currentPhase = phase;
                     }
                     if (canContinueIndependentRepoPhases) {
-                        const auto continuationReason = phase + " preserved preflight blockers; continuing independent repository phases";
+                        const auto continuationReason = summary.failed.empty()
+                            ? phase + " preserved preflight blockers; continuing independent repository phases"
+                            : phase + " preserved isolated repository failures; continuing independent repository phases";
                         std::cout << "[converge] " << continuationReason << "\n";
                         state.blockedReason = continuationReason;
-                        state.blockedRepos = summary.blocked;
+                        state.blockedRepos = summary.failed;
+                        MergeUnique(state.blockedRepos, summary.blocked);
                         state.commandLinesUsed[phase].push_back(continuationReason);
                         persist();
                         continue;
