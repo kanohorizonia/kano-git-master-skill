@@ -3991,4 +3991,72 @@ TEST_CASE("converge settles eligible branch after isolated status blocker", "[fu
     RemoveSandboxWorkspace(ctx.sandbox);
     RemoveSandboxWorkspace(blocker.sandbox);
 }
+
+TEST_CASE("converge continues independent repository actions past a diverged blocker", "[functional][converge][partial-success][dependency-aware][KG-BUG-0094]") {
+    const auto ctx = CreateRemoteWithClone("converge-independent-repo-past-diverged-blocker");
+    const auto blocker = CreateRemoteWithClone("converge-independent-repo-diverged-blocker");
+    const auto independent = CreateRemoteWithClone("converge-independent-repo-action");
+
+    const auto nestedBlocker = (ctx.cloneRepo / "nested" / "status-blocker").lexically_normal();
+    const auto nestedIndependent = (ctx.cloneRepo / "nested" / "independent-action").lexically_normal();
+    std::filesystem::create_directories(nestedBlocker.parent_path());
+    std::filesystem::copy(blocker.cloneRepo, nestedBlocker, std::filesystem::copy_options::recursive);
+    std::filesystem::copy(independent.cloneRepo, nestedIndependent, std::filesystem::copy_options::recursive);
+
+    const auto manifestPath = ctx.cloneRepo / ".kano" / "cache" / "git" / "workspace-manifest.json";
+    RunDiscoverFull(ctx.cloneRepo);
+    auto manifest = ReadTextFile(manifestPath);
+    for (const auto& nestedRepo : {nestedBlocker, nestedIndependent}) {
+        const auto nestedRelative = nestedRepo.lexically_relative(ctx.cloneRepo).generic_string();
+        RequireContains(manifest, nestedRelative);
+        const auto unregisteredType = std::string{"\"path\":\""} + nestedRelative + "\",\"type\":\"unregistered\"";
+        const auto registeredType = std::string{"\"path\":\""} + nestedRelative + "\",\"type\":\"registered\"";
+        RequireContains(manifest, unregisteredType);
+        manifest.replace(manifest.find(unregisteredType), unregisteredType.size(), registeredType);
+    }
+    WriteTextFile(manifestPath, manifest);
+    WriteTextFile(ctx.cloneRepo / ".git" / "info" / "exclude", "/nested/\n");
+
+    CommitAndPushFile(
+        blocker.seedRepo,
+        blocker.branch,
+        "remote-divergence.txt",
+        "remote nested change\n",
+        "remote nested divergence");
+    RequireSuccess(RunGit({"checkout", blocker.branch}, nestedBlocker), "checkout nested divergence branch");
+    RequireSuccess(RunGit({"fetch", "origin", blocker.branch}, nestedBlocker), "fetch nested divergence branch");
+    WriteTextFile(nestedBlocker / "local-divergence.txt", "local nested change\n");
+    RequireSuccess(RunGit({"add", "local-divergence.txt"}, nestedBlocker), "stage nested divergence");
+    RequireSuccess(RunGit({"commit", "-m", "local nested divergence"}, nestedBlocker), "commit nested divergence");
+
+    WriteTextFile(nestedIndependent / "src/KG-BUG-0094-independent-local.txt", "independent local change\n");
+
+    const auto result = RunKogWithEnv(
+        {"converge", "--jobs", "1"},
+        ctx.cloneRepo,
+        {{"KANO_AGENT_MODE", "1"}});
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode != 0);
+    RequireContains(result.stdoutText, "DIVERGED");
+    RequireContains(result.stdoutText, "preserved preflight blockers; continuing independent repository phases");
+
+    REQUIRE(GitStatusShort(nestedIndependent).empty());
+    const auto remoteIndependent = RunGit(
+        {"show", "origin/" + independent.branch + ":src/KG-BUG-0094-independent-local.txt"},
+        nestedIndependent);
+    RequireSuccess(remoteIndependent, "verify independent repository push");
+    REQUIRE(TrimCopy(remoteIndependent.stdoutText) == "independent local change");
+
+    REQUIRE(GitStatusShort(nestedBlocker).empty());
+    const auto divergence = RunGit(
+        {"rev-list", "--left-right", "--count", "HEAD...origin/" + blocker.branch},
+        nestedBlocker);
+    RequireSuccess(divergence, "verify diverged blocker was preserved");
+    REQUIRE(TrimCopy(divergence.stdoutText) == "1\t1");
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+    RemoveSandboxWorkspace(blocker.sandbox);
+    RemoveSandboxWorkspace(independent.sandbox);
+}
 } // namespace kano::git::tests::functional
