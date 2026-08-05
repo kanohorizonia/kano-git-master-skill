@@ -35,6 +35,8 @@ add_executable(kano_git_commit_auto_plan_fake_self
   support/commit_auto_plan_fake_self.cpp
 )
 
+target_compile_features(kano_git_commit_auto_plan_fake_self PRIVATE cxx_std_23)
+
 add_executable(kano_git_commit_plan_tests
   unit/test_ai_model_resolution.cpp
   unit/test_ai_diagnostics.cpp
