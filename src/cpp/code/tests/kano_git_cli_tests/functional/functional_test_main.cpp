@@ -1920,6 +1920,36 @@ TEST_CASE("submodule_update_repairs_invalid_gitdir_state_when_safe", "[functiona
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("submodule_update_repairs_empty_malformed_gitdir_state_when_safe", "[functional][submodule][update][repair][KG-BUG-0067]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("submodule-update-repair-malformed-gitdir");
+
+    const auto submodulePath = (ctx.cloneRootRepo / std::filesystem::path(ctx.submodulePath)).lexically_normal();
+    const auto modulePathResult = RunGit({"-C", ctx.cloneRootRepo.string(), "rev-parse", "--git-path", "modules/" + ctx.submodulePath}, ctx.cloneRootRepo);
+    RequireSuccess(modulePathResult, "resolve malformed module path");
+    const auto modulePath = ResolveFixtureGitPath(ctx.cloneRootRepo, TrimCopy(modulePathResult.stdoutText));
+
+    std::error_code ec;
+    std::filesystem::remove_all(modulePath, ec);
+    REQUIRE(!ec);
+    std::filesystem::create_directories(modulePath / "objects");
+    WriteTextFile(modulePath / "objects" / "stale", "stale\n");
+    std::filesystem::remove_all(submodulePath, ec);
+    REQUIRE(!ec);
+    WriteTextFile(submodulePath / ".git", "gitdir: ../../.git/modules/" + ctx.submodulePath + "\n");
+
+    const auto result = RunKogAllowingFileProtocol({"submodule", "update", ctx.submodulePath}, ctx.cloneRootRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    const auto merged = result.stdoutText + "\n" + result.stderrText;
+    REQUIRE(merged.find("Repaired and updated: 1") != std::string::npos);
+    REQUIRE(merged.find("Failed: 0") != std::string::npos);
+    REQUIRE(merged.find("Blocked: 0") != std::string::npos);
+    REQUIRE(CurrentHeadSha(submodulePath) == GitlinkHeadSha(ctx.cloneRootRepo, ctx.submodulePath));
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
 TEST_CASE("submodule_update_blocks_unsafe_repair_for_local_user_files", "[functional][submodule][update][repair][unsafe]") {
     const auto ctx = CreateRemoteWithSubmoduleClone("submodule-update-repair-unsafe");
 

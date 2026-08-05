@@ -663,6 +663,14 @@ auto ModulePathBelongsToSubmodule(
     return PathKey(resolved) == PathKey(InSubmodulePath);
 }
 
+auto HasIncompleteSubmoduleModuleMetadata(const std::filesystem::path& InModulePath) -> bool {
+    if (!std::filesystem::exists(InModulePath) || !std::filesystem::is_directory(InModulePath)) {
+        return false;
+    }
+    return !std::filesystem::exists(InModulePath / "config") &&
+           !std::filesystem::exists(InModulePath / "HEAD");
+}
+
 auto HasRetryableCloneFailureSignal(const std::string& InText) -> bool {
     static const std::vector<std::string> needles = {
         "initial ref transaction called with existing refs",
@@ -742,7 +750,12 @@ auto EvaluateSubmoduleRepairSafety(
         return out;
     }
     if (!ModulePathBelongsToSubmodule(out.modulePath, submodulePath)) {
-        out.reason = ".git/modules state does not belong to this submodule";
+        const bool hasOnlyDotGit = !DirectoryHasUserContentBeyondDotGit(submodulePath);
+        if (!HasIncompleteSubmoduleModuleMetadata(out.modulePath) || !hasOnlyDotGit) {
+            out.reason = ".git/modules state does not belong to this submodule";
+            return out;
+        }
+        out.safe = true;
         return out;
     }
 
