@@ -2091,6 +2091,55 @@ TEST_CASE("converge runtime preflights and harvests dirty integrated branch work
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge runtime settles eligible branch despite blocked candidate", "[tdd][functional][feature:converge][converge][branches][retire][worktree][settle][partial-success][KG-BUG-0091]") {
+    const auto ctx = CreateRemoteWithClone("converge-runtime-settle-partial-branch-blocker");
+    const std::string eligibleBranch = "feature/runtime-settle-eligible";
+    RequireSuccess(RunGit({"checkout", "-b", eligibleBranch}, ctx.cloneRepo), "checkout eligible settle feature branch");
+    WriteTextFile(ctx.cloneRepo / "runtime-settle-eligible.txt", "eligible branch\n");
+    RequireSuccess(RunGit({"add", "runtime-settle-eligible.txt"}, ctx.cloneRepo), "add eligible settle feature file");
+    RequireSuccess(RunGit({"commit", "-m", "eligible settle feature"}, ctx.cloneRepo), "commit eligible settle feature");
+    RequireSuccess(RunGit({"push", "-u", "origin", eligibleBranch}, ctx.cloneRepo), "push eligible settle feature");
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target before eligible settle merge");
+    RequireSuccess(RunGit({"merge", "--ff-only", eligibleBranch}, ctx.cloneRepo), "merge eligible settle feature");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.cloneRepo), "push target containing eligible settle feature");
+    const auto eligibleWorktree = (ctx.sandbox.root / "runtime-settle-eligible-worktree").lexically_normal();
+    RequireSuccess(RunGit({"worktree", "add", eligibleWorktree.string(), eligibleBranch}, ctx.cloneRepo), "add clean eligible settle worktree");
+
+    const std::string blockedBranch = "feature/runtime-settle-blocked";
+    RequireSuccess(RunGit({"checkout", "-b", blockedBranch, ctx.branch}, ctx.cloneRepo), "checkout blocked settle feature branch");
+    WriteTextFile(ctx.cloneRepo / "runtime-settle-blocked.txt", "blocked branch\n");
+    RequireSuccess(RunGit({"add", "runtime-settle-blocked.txt"}, ctx.cloneRepo), "add blocked settle feature file");
+    RequireSuccess(RunGit({"commit", "-m", "blocked settle feature"}, ctx.cloneRepo), "commit blocked settle feature");
+    RequireSuccess(RunGit({"push", "-u", "origin", blockedBranch}, ctx.cloneRepo), "push blocked settle feature");
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target before adding blocked settle worktree");
+    const auto blockedWorktree = (ctx.sandbox.root / "runtime-settle-blocked-worktree").lexically_normal();
+    RequireSuccess(RunGit({"worktree", "add", blockedWorktree.string(), blockedBranch}, ctx.cloneRepo), "add dirty blocked settle worktree");
+    WriteTextFile(blockedWorktree / "runtime-settle-blocked.txt", "uncommitted blocked content\n");
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target before partial settle");
+
+    const auto result = RunKog({
+        "converge",
+        "--settle-worktrees",
+        "--remove-worktrees",
+        "--harvest-branch-worktrees",
+        "--target", ctx.branch,
+        "--jobs", "1",
+    }, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContains(result.stdoutText, "[converge] phase=settle-worktrees");
+    RequireContains(result.stdoutText, "[converge] completed");
+    RequireContains(result.stdoutText, "DIRTY_BRANCH_WORKTREE_NOT_INTEGRATED");
+    REQUIRE_FALSE(std::filesystem::exists(eligibleWorktree));
+    REQUIRE(std::filesystem::exists(blockedWorktree));
+    RequireContains(ReadTextFile(blockedWorktree / "runtime-settle-blocked.txt"), "uncommitted blocked content");
+    REQUIRE(RunGit({"show-ref", "--verify", "--quiet", "refs/heads/" + eligibleBranch}, ctx.cloneRepo).exitCode != 0);
+    REQUIRE(RunGit({"show-ref", "--verify", "--quiet", "refs/heads/" + blockedBranch}, ctx.cloneRepo).exitCode == 0);
+    REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
 TEST_CASE("converge branches retire removes empty cherry-pick no-op branch", "[tdd][functional][feature:converge][converge][branches][retire][equivalent]") {
     const auto ctx = CreateRemoteWithClone("converge-branches-retire-empty-noop");
     const std::string featureBranch = "feature/retire-empty-noop";

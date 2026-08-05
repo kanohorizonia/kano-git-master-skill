@@ -5214,7 +5214,8 @@ int RunBranchRetire(const std::filesystem::path& root,
                     const std::string& harvestCommitMessage,
                     const std::string& branchFilter,
                     bool syncTarget,
-                    bool emitJson) {
+                    bool emitJson,
+                    nlohmann::json* resultOut = nullptr) {
     try {
         if (targetBranch.empty()) {
             std::cerr << "Error: --target must not be empty\n";
@@ -5813,6 +5814,9 @@ int RunBranchRetire(const std::filesystem::path& root,
                 ? (confirm ? "success_with_preserved_blockers" : "preview_with_preserved_blockers")
                 : (confirm ? "success" : "preview");
 
+        if (resultOut != nullptr) {
+            *resultOut = result;
+        }
         suppressCommandLogs.reset();
         if (jsonOutput) {
             std::cout << result.dump(2) << "\n";
@@ -6226,6 +6230,7 @@ void RegisterConverge(CLI::App& InApp) {
         }
         if (*dryRun) {
             if (worktreeSettleRequested) {
+                nlohmann::json settleResult;
                 const auto settleCode = RunBranchRetire(
                     workspaceRoot,
                     *jobs,
@@ -6240,8 +6245,10 @@ void RegisterConverge(CLI::App& InApp) {
                     Trim(*settleHarvestMessage),
                     std::string{},
                     true,
-                    false);
-                if (settleCode != 0) {
+                    false,
+                    &settleResult);
+                const auto planned = settleResult.value("planned", nlohmann::json::array());
+                if (settleCode != 0 && (!planned.is_array() || planned.empty())) {
                     std::exit(settleCode);
                 }
             }
@@ -6387,6 +6394,7 @@ void RegisterConverge(CLI::App& InApp) {
                         previewCommand += " --harvest-detached-worktrees";
                     }
                     state.commandLinesUsed[phase].push_back(std::move(previewCommand));
+                    nlohmann::json previewResult;
                     const auto previewCode = RunBranchRetire(
                         workspaceRoot,
                         *jobs,
@@ -6401,12 +6409,17 @@ void RegisterConverge(CLI::App& InApp) {
                         Trim(*settleHarvestMessage),
                         std::string{},
                         false,
-                        false);
-                    if (previewCode != 0) {
+                        false,
+                        &previewResult);
+                    const auto planned = previewResult.value("planned", nlohmann::json::array());
+                    if (previewCode != 0 && (!planned.is_array() || planned.empty())) {
                         summary.blocked.push_back(".");
                         summary.failureCategory["."] = "WORKTREE_SETTLE_PREFLIGHT_BLOCKED";
                         summary.failureMessage["."] = "worktree settle preflight found blocked branch/worktree state";
                         summary.retryEligible["."] = true;
+                    } else if (previewCode != 0) {
+                        state.commandLinesUsed[phase].push_back(
+                            "branch settle preflight preserved per-branch blockers while retaining eligible actions");
                     }
                 }
                 summary.skipped = UniqueRepos(plan.skipped);
@@ -6591,6 +6604,7 @@ void RegisterConverge(CLI::App& InApp) {
                             cmdLine << " --harvest-branch-worktrees";
                         }
                         state.commandLinesUsed[phase].push_back(cmdLine.str());
+                        nlohmann::json settleResult;
                         const auto settleCode = RunBranchRetire(
                             workspaceRoot,
                             *jobs,
@@ -6605,9 +6619,16 @@ void RegisterConverge(CLI::App& InApp) {
                             Trim(*settleHarvestMessage),
                             std::string{},
                             true,
-                            false);
+                            false,
+                            &settleResult);
+                        const auto mutationPerformed = settleResult.value("mutationPerformed", false);
                         if (settleCode == 0) {
                             summary.succeeded.push_back(".");
+                        } else if (mutationPerformed) {
+                            summary.succeeded.push_back(".");
+                            state.commandLinesUsed[phase].push_back(
+                                "branch settle applied eligible mutations while preserving per-branch blockers");
+                            std::cerr << "Warning: branch settle applied eligible mutations; unresolved branch/worktree blockers were preserved for diagnostics\n";
                         } else {
                             summary.failed.push_back(".");
                             summary.failureCategory["."] = "WORKTREE_SETTLE_BLOCKED";
