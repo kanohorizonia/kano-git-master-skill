@@ -314,6 +314,9 @@ auto HasExactLine(const std::string &InText, const std::string &InExpectedLine)
     -> bool {
   std::istringstream lines(InText);
   for (std::string line; std::getline(lines, line);) {
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
     if (line == InExpectedLine) {
       return true;
     }
