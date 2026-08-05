@@ -1349,6 +1349,47 @@ TEST_CASE("converge branches retire preserves primary submodule configuration", 
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge branches retire permits ignored-only submodule cache worktrees", "[functional][converge][branches][retire][worktree][submodule][KG-BUG-0050]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("converge-branches-retire-ignored-submodule-cache");
+    const std::string featureBranch = "feature/retire-ignored-submodule-cache";
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRootRepo), "checkout ignored-cache feature");
+    WriteTextFile(ctx.cloneRootRepo / "ignored-cache-feature.txt", "integrated feature\n");
+    RequireSuccess(RunGit({"add", "ignored-cache-feature.txt"}, ctx.cloneRootRepo), "add ignored-cache feature");
+    RequireSuccess(RunGit({"commit", "-m", "add ignored-cache feature"}, ctx.cloneRootRepo), "commit ignored-cache feature");
+    RequireSuccess(RunGit({"push", "-u", "origin", featureBranch}, ctx.cloneRootRepo), "push ignored-cache feature");
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRootRepo), "return to ignored-cache target");
+    RequireSuccess(RunGit({"merge", "--ff-only", featureBranch}, ctx.cloneRootRepo), "integrate ignored-cache feature");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.cloneRootRepo), "push ignored-cache target");
+
+    const auto worktreePath = (ctx.sandbox.root / "retire-ignored-submodule-cache").lexically_normal();
+    RequireSuccess(RunGit({"worktree", "add", worktreePath.string(), featureBranch}, ctx.cloneRootRepo), "add ignored-cache feature worktree");
+    RequireSuccess(RunGit({"-c", "protocol.file.allow=always", "submodule", "update", "--init", "--recursive"}, worktreePath), "initialize ignored-cache worktree submodule");
+    const auto ignoreFile = (ctx.sandbox.root / "submodule-excludes").lexically_normal();
+    WriteTextFile(ignoreFile, ".pixi/\n");
+    RequireSuccess(
+        RunGit({"config", "core.excludesFile", ignoreFile.string()}, worktreePath / ctx.submodulePath),
+        "configure ignored-cache submodule excludes");
+    WriteTextFile(worktreePath / ctx.submodulePath / ".pixi" / "cache.bin", "generated cache\n");
+    const auto ignoredStatus = RunGit({"status", "--porcelain=v1", "--ignored=matching"}, worktreePath / ctx.submodulePath);
+    RequireSuccess(ignoredStatus, "inspect ignored-cache submodule status");
+    RequireContains(ignoredStatus.stdoutText, "!! .pixi/");
+
+    const auto result = RunKog({
+        "converge", "branches", "retire", "--target", ctx.branch,
+        "--branch", featureBranch, "--remove-worktrees", "--confirm", "--json", "--jobs", "1", "--no-recursive"},
+        ctx.cloneRootRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContains(result.stdoutText, "\"mode\": \"verified-clean-submodule-force\"");
+    RequireContains(result.stdoutText, "\"action\": \"delete-local\"");
+    REQUIRE_FALSE(std::filesystem::exists(worktreePath));
+    REQUIRE(RunGit({"show-ref", "--verify", "--quiet", "refs/heads/" + featureBranch}, ctx.cloneRootRepo).exitCode != 0);
+    REQUIRE(GitStatusShort(ctx.cloneRootRepo).empty());
+    REQUIRE(GitStatusShort(ctx.cloneChildRepo).empty());
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
 TEST_CASE("converge branches retire hands an integrated primary worktree back to target", "[functional][converge][branches][retire][worktree][KG-BUG-0059]") {
     const auto ctx = CreateRemoteWithClone("converge-branches-retire-primary-handoff");
     const std::string featureBranch = "feature/retire-primary-handoff";

@@ -3287,13 +3287,13 @@ bool VerifyInitializedSubmodulesAreClean(const std::filesystem::path& repoPath,
             return false;
         }
         const auto status = GitCapture(submodulePath, {
-            "status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching", "--ignore-submodules=none"});
+            "status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"});
         if (status.exitCode != 0) {
             message = "failed to inspect initialized submodule status: " + relativePath.generic_string() + ": " + CombinedGitError(status);
             return false;
         }
         if (!Trim(status.stdoutStr).empty()) {
-            message = "initialized submodule has tracked, untracked, ignored, or nested changes: " + relativePath.generic_string();
+            message = "initialized submodule has tracked, untracked, or nested changes: " + relativePath.generic_string();
             return false;
         }
         if (!VerifyInitializedSubmodulesAreClean(submodulePath, foundInitializedSubmodule, message)) {
