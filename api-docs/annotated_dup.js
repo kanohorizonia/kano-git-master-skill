@@ -29,6 +29,7 @@ var annotated_dup =
           [ "TuiState", "structkano_1_1git_1_1commands_1_1TuiState.html", "structkano_1_1git_1_1commands_1_1TuiState" ]
         ] ],
         [ "shell", null, [
+          [ "CaptureLimits", "structkano_1_1git_1_1shell_1_1CaptureLimits.html", null ],
           [ "CommandLogCallbacks", "structkano_1_1git_1_1shell_1_1CommandLogCallbacks.html", null ],
           [ "ExecResult", "structkano_1_1git_1_1shell_1_1ExecResult.html", null ],
           [ "ScopedCommandLogCapture", "classkano_1_1git_1_1shell_1_1ScopedCommandLogCapture.html", null ],
@@ -36,6 +37,7 @@ var annotated_dup =
         ] ],
         [ "workspace", null, [
           [ "CacheLockInfo", "structkano_1_1git_1_1workspace_1_1CacheLockInfo.html", null ],
+          [ "DiscoverGitExecutionControl", "structkano_1_1git_1_1workspace_1_1DiscoverGitExecutionControl.html", null ],
           [ "DiscoverOptions", "structkano_1_1git_1_1workspace_1_1DiscoverOptions.html", null ],
           [ "DiscoveryResult", "structkano_1_1git_1_1workspace_1_1DiscoveryResult.html", null ],
           [ "NativeWorkspaceOutput", "structkano_1_1git_1_1workspace_1_1NativeWorkspaceOutput.html", null ],
