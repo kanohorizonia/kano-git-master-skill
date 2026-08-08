@@ -275,6 +275,47 @@ auto ConfigureFileProtocolAlways(const std::filesystem::path& InRepo) -> void {
     RequireSuccess(RunGit({"config", "protocol.file.allow", "always"}, InRepo), "config protocol.file.allow always");
 }
 
+auto ConfigureReceivePackWrapper(const RemoteCloneContext& InContext, const bool InRejectAfterReceive) -> void {
+#if defined(_WIN32)
+    const auto wrapperPath = (InContext.sandbox.root / "receive-pack-wrapper.cmd").lexically_normal();
+    std::ostringstream script;
+    script << "@echo off\r\n";
+    if (InRejectAfterReceive) {
+        script << "git-receive-pack %*\r\n";
+        script << "echo remote: forced ambiguous push result 1>&2\r\n";
+    } else {
+        script << "echo fatal: Authentication failed 1>&2\r\n";
+    }
+    script << "exit /b 1\r\n";
+#else
+    const auto wrapperPath = (InContext.sandbox.root / "receive-pack-wrapper.sh").lexically_normal();
+    std::ostringstream script;
+    script << "#!/usr/bin/env bash\n";
+    if (InRejectAfterReceive) {
+        script << "git-receive-pack \"$@\"\n";
+        script << "printf '%s\\n' 'remote: forced ambiguous push result' >&2\n";
+    } else {
+        script << "printf '%s\\n' 'fatal: Authentication failed' >&2\n";
+    }
+    script << "exit 1\n";
+#endif
+    WriteTextFile(wrapperPath, script.str());
+#if !defined(_WIN32)
+    std::error_code permissionError;
+    std::filesystem::permissions(
+        wrapperPath,
+        std::filesystem::perms::owner_exec |
+            std::filesystem::perms::group_exec |
+            std::filesystem::perms::others_exec,
+        std::filesystem::perm_options::add,
+        permissionError);
+    REQUIRE_FALSE(permissionError);
+#endif
+    RequireSuccess(
+        RunGit({"config", "remote.origin.receivepack", wrapperPath.generic_string()}, InContext.cloneRepo),
+        "configure receive-pack wrapper");
+}
+
 auto RunKogAllowingFileProtocol(const std::vector<std::string>& InArgs,
                                 const std::filesystem::path& InWorkingDir) -> CommandResult {
     return RunKogWithEnv(
@@ -1405,6 +1446,62 @@ TEST_CASE("clean_but_ahead_continues_to_push", "[functional][commit-push][contra
     REQUIRE(result.exitCode == 0);
     const auto after = AheadBehindCounts(ctx.cloneRepo);
     REQUIRE(after.second == 0);
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("push_reconciles_nonzero_transport_result_with_remote_head",
+          "[functional][push][transport][KG-BUG-0096]") {
+    const auto ctx = CreateRemoteWithClone("push-remote-head-reconciliation");
+    ConfigureReceivePackWrapper(ctx, true);
+
+    WriteTextFile(ctx.cloneRepo / "ambiguous.txt", "remote accepted before transport error\n");
+    RequireSuccess(RunGit({"add", "ambiguous.txt"}, ctx.cloneRepo), "stage ambiguous push commit");
+    RequireSuccess(RunGit({"commit", "-m", "ambiguous push commit"}, ctx.cloneRepo), "commit ambiguous push");
+    const auto ambiguousHead = CurrentHeadSha(ctx.cloneRepo);
+
+    const auto ambiguousResult = RunKog({"push"}, ctx.cloneRepo);
+    INFO(ambiguousResult.stdoutText);
+    INFO(ambiguousResult.stderrText);
+    REQUIRE(ambiguousResult.exitCode == 0);
+    const auto ambiguousOutput = ambiguousResult.stdoutText + "\n" + ambiguousResult.stderrText;
+    RequireContainsText(ambiguousOutput, "PUSHED_REMOTE_CONFIRMED");
+    RequireContainsText(ambiguousOutput, "remote_probe=exact_match");
+    REQUIRE(RefSha(ctx.bareRemote, "refs/heads/" + ctx.branch) == ambiguousHead);
+
+    ConfigureReceivePackWrapper(ctx, false);
+    WriteTextFile(ctx.cloneRepo / "auth-failure.txt", "remote rejected before receive\n");
+    RequireSuccess(RunGit({"add", "auth-failure.txt"}, ctx.cloneRepo), "stage auth failure commit");
+    RequireSuccess(RunGit({"commit", "-m", "auth failure push commit"}, ctx.cloneRepo), "commit auth failure push");
+    const auto authFailureHead = CurrentHeadSha(ctx.cloneRepo);
+
+    const auto authFailureResult = RunKog({"push"}, ctx.cloneRepo);
+    INFO(authFailureResult.stdoutText);
+    INFO(authFailureResult.stderrText);
+    REQUIRE(authFailureResult.exitCode != 0);
+    const auto authFailureOutput = authFailureResult.stdoutText + "\n" + authFailureResult.stderrText;
+    RequireContainsText(authFailureOutput, "FAILED_AUTH");
+    RequireContainsText(authFailureOutput, "remote_probe=remote_head_differs");
+    REQUIRE(RefSha(ctx.bareRemote, "refs/heads/" + ctx.branch) != authFailureHead);
+
+    RequireSuccess(
+        RunGit({"config", "--unset", "remote.origin.receivepack"}, ctx.cloneRepo),
+        "restore default receive-pack");
+    const auto missingRemote = (ctx.sandbox.root / "missing-remote.git").lexically_normal();
+    RequireSuccess(
+        RunGit({"remote", "set-url", "origin", missingRemote.string()}, ctx.cloneRepo),
+        "set missing push remote");
+    WriteTextFile(ctx.cloneRepo / "missing-remote.txt", "remote probe unavailable\n");
+    RequireSuccess(RunGit({"add", "missing-remote.txt"}, ctx.cloneRepo), "stage missing remote commit");
+    RequireSuccess(RunGit({"commit", "-m", "missing remote push commit"}, ctx.cloneRepo), "commit missing remote push");
+
+    const auto missingRemoteResult = RunKog({"push"}, ctx.cloneRepo);
+    INFO(missingRemoteResult.stdoutText);
+    INFO(missingRemoteResult.stderrText);
+    REQUIRE(missingRemoteResult.exitCode != 0);
+    const auto missingRemoteOutput = missingRemoteResult.stdoutText + "\n" + missingRemoteResult.stderrText;
+    RequireContainsText(missingRemoteOutput, "FAILED_MISSING_REMOTE");
+    RequireContainsText(missingRemoteOutput, "remote_probe=probe_failed");
+
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 

@@ -75,8 +75,100 @@ auto PrintCapturedOutputIfAny(const shell::ExecResult& InResult) -> void {
     }
 }
 
-auto GitCapture(const std::filesystem::path& InRepo, const std::vector<std::string>& InArgs) -> shell::ExecResult {
-    return shell::ExecuteCommand("git", InArgs, shell::ExecMode::Capture, InRepo);
+auto GitCapture(const std::filesystem::path& InRepo,
+                const std::vector<std::string>& InArgs,
+                const std::optional<unsigned int> InTimeoutMs = std::nullopt) -> shell::ExecResult {
+    return shell::ExecuteCommand(
+        "git",
+        InArgs,
+        shell::ExecMode::Capture,
+        InRepo,
+        shell::ProgressCallback{},
+        InTimeoutMs);
+}
+
+constexpr unsigned int kAmbiguousPushRemoteProbeTimeoutMs = 5000;
+
+struct RemoteHeadProbeResult {
+    bool exactMatch = false;
+    int exitCode = 0;
+    long long elapsedMillis = 0;
+    std::string status;
+    std::string localHead;
+    std::string remoteHead;
+};
+
+auto IsTimeoutDiagnostic(const shell::ExecResult& InResult) -> bool {
+    const auto merged = ToLower(InResult.stdoutStr + "\n" + InResult.stderrStr);
+    return merged.find("[kog-timeout]") != std::string::npos ||
+           merged.find("process timeout") != std::string::npos ||
+           merged.find("process timed out") != std::string::npos;
+}
+
+auto ProbeRemoteBranchHead(const std::filesystem::path& InRepo,
+                           const std::string& InRemote,
+                           const std::string& InBranch) -> RemoteHeadProbeResult {
+    const auto probeStart = std::chrono::steady_clock::now();
+    RemoteHeadProbeResult result;
+    const auto local = GitCapture(
+        InRepo,
+        {"rev-parse", "--verify", "HEAD^{commit}"},
+        kAmbiguousPushRemoteProbeTimeoutMs);
+    result.localHead = Trim(local.stdoutStr);
+    if (local.exitCode != 0 || result.localHead.empty()) {
+        result.exitCode = local.exitCode;
+        result.status = IsTimeoutDiagnostic(local) ? "probe_timeout" : "local_head_unavailable";
+        const auto probeEnd = std::chrono::steady_clock::now();
+        result.elapsedMillis = std::chrono::duration_cast<std::chrono::milliseconds>(probeEnd - probeStart).count();
+        return result;
+    }
+
+    const auto remote = GitCapture(
+        InRepo,
+        {"ls-remote", "--exit-code", "--refs", InRemote, "refs/heads/" + InBranch},
+        kAmbiguousPushRemoteProbeTimeoutMs);
+    result.exitCode = remote.exitCode;
+    if (remote.exitCode != 0) {
+        result.status = IsTimeoutDiagnostic(remote) ? "probe_timeout" : "probe_failed";
+        const auto probeEnd = std::chrono::steady_clock::now();
+        result.elapsedMillis = std::chrono::duration_cast<std::chrono::milliseconds>(probeEnd - probeStart).count();
+        return result;
+    }
+
+    std::istringstream response(remote.stdoutStr);
+    std::string remoteRef;
+    response >> result.remoteHead >> remoteRef;
+    const auto expectedRef = "refs/heads/" + InBranch;
+    if (result.remoteHead.empty() || remoteRef.empty()) {
+        result.status = "malformed_response";
+    } else if (remoteRef != expectedRef) {
+        result.status = "unexpected_ref";
+    } else if (result.remoteHead == result.localHead) {
+        result.exactMatch = true;
+        result.status = "exact_match";
+    } else {
+        result.status = "remote_head_differs";
+    }
+
+    const auto probeEnd = std::chrono::steady_clock::now();
+    result.elapsedMillis = std::chrono::duration_cast<std::chrono::milliseconds>(probeEnd - probeStart).count();
+    return result;
+}
+
+auto DescribeRemoteHeadProbe(const RemoteHeadProbeResult& InProbe) -> std::string {
+    std::ostringstream description;
+    description << "remote_probe=" << InProbe.status
+                << " remote_probe_ms=" << InProbe.elapsedMillis;
+    if (InProbe.exitCode != 0) {
+        description << " remote_probe_exit=" << InProbe.exitCode;
+    }
+    if (!InProbe.localHead.empty()) {
+        description << " local_head=" << InProbe.localHead;
+    }
+    if (!InProbe.remoteHead.empty()) {
+        description << " remote_head=" << InProbe.remoteHead;
+    }
+    return description.str();
 }
 
 auto IsGitRepo(const std::filesystem::path& InRepo) -> bool {
@@ -1402,10 +1494,29 @@ auto RunNativePush(
                     PrintCapturedOutputToStreams(result, out, err);
                 }
                 const auto category = ClassifyPushFailure(result);
+                const auto remoteProbe = ProbeRemoteBranchHead(repoPath, remote, branch);
+                const auto remoteProbeDescription = DescribeRemoteHeadProbe(remoteProbe);
+                const auto pushEnd = std::chrono::steady_clock::now();
+                {
+                    std::lock_guard<std::mutex> lock(profileMutex);
+                    pushMillis += std::chrono::duration_cast<std::chrono::milliseconds>(pushEnd - pushStart).count();
+                }
+
+                if (remoteProbe.exactMatch) {
+                    out << "[" << kano::terminal::Wrap(repoLabel, kano::terminal::Color::BoldCyan) << "] "
+                        << kano::terminal::Wrap("Pushed (remote confirmed)", kano::terminal::Color::BoldGreen)
+                        << " (" << remote << ", " << branch << ") " << remoteProbeDescription << "\n";
+                    return finishSuccess(
+                        "PUSHED_REMOTE_CONFIRMED",
+                        remote,
+                        branch,
+                        "remote branch already contains local HEAD after a non-zero git push; " + remoteProbeDescription);
+                }
+
                 err << "[" << kano::terminal::Wrap(repoLabel, kano::terminal::Color::BoldCyan) << "] "
                     << category << ": " << kano::terminal::Wrap("Push failed", kano::terminal::Color::BoldRed)
-                    << " (" << remote << ", " << branch << ")\n";
-                return finishFailed(category, remote, branch, "git push failed");
+                    << " (" << remote << ", " << branch << ") " << remoteProbeDescription << "\n";
+                return finishFailed(category, remote, branch, "git push failed; " + remoteProbeDescription);
     };
 
     auto schedulerInputs = BuildPushSchedulerInputs(InRepos);
@@ -1517,7 +1628,7 @@ auto RunNativePush(
             std::format(
                 "SUMMARY: repos={}, pushed={}, skipped_no_remote={}, skipped_by_policy={}, skipped_up_to_date={}, blocked={}, failed={}",
                 pushStats.size(),
-                outcomeCounts["PUSHED"] + outcomeCounts["PUSHED_DRY_RUN"],
+                outcomeCounts["PUSHED"] + outcomeCounts["PUSHED_REMOTE_CONFIRMED"] + outcomeCounts["PUSHED_DRY_RUN"],
                 outcomeCounts["SKIPPED_NO_REMOTE"],
                 outcomeCounts["SKIPPED_BY_POLICY"],
                 outcomeCounts["SKIPPED_UP_TO_DATE"],
