@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en"><head><title>kog-audit-contract-v1</title><meta charset="utf-8"/><link rel="preconnect" href="https://fonts.googleapis.com"/><link rel="preconnect" href="https://fonts.gstatic.com"/><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM Plex Mono&amp;family=Schibsted Grotesk:wght@400;700&amp;family=Source Sans Pro:ital,wght@0,400;0,600;1,400;1,600&amp;display=swap"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><meta property="og:title" content="kog-audit-contract-v1"/><meta property="og:description" content="KOG Audit Contract v1 KOG is an agent-first Git execution layer normally driven by KOA. Its audit contract records what KOG can prove about one run without duplicating KOA’s dispatch, queue, approval, or policy authority."/><meta property="og:image" content="https://kanohorizonia.github.io/kano-git-master-skill/static/og-image.png"/><meta property="og:width" content="1200"/><meta property="og:height" content="675"/><link rel="icon" href="../static/icon.png"/><meta name="description" content="KOG Audit Contract v1 KOG is an agent-first Git execution layer normally driven by KOA. Its audit contract records what KOG can prove about one run without duplicating KOA’s dispatch, queue, approval, or policy authority."/><meta name="generator" content="Quartz"/><link href="../index.css" rel="stylesheet" type="text/css" spa-preserve/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css" rel="stylesheet" type="text/css" spa-preserve/><script src="../prescript.js" type="application/javascript" spa-preserve></script><script type="application/javascript" spa-preserve>const fetchData = fetch("../static/contentIndex.json").then(data => data.json())</script></head><body data-slug="design/kog-audit-contract-v1"><div id="quartz-root" class="page"><div id="quartz-body"><div class="left sidebar"><h2 class="page-title"><a href="..">Kano Git Master Skill</a></h2><div class="spacer mobile-only"></div><div class="search"><button class="search-button" id="search-button"><p>Search</p><svg role="img" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 19.9 19.7"><title>Search</title><g class="search-path" fill="none"><path stroke-linecap="square" d="M18.5 18.3l-5.4-5.4"></path><circle cx="8" cy="8" r="7"></circle></g></svg></button><div id="search-container"><div id="search-space"><input autocomplete="off" id="search-bar" name="search" type="text" aria-label="Search for something" placeholder="Search for something"/><div id="search-layout" data-preview="true"></div></div></div></div><button class="darkmode" id="darkmode"><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" id="dayIcon" x="0px" y="0px" viewBox="0 0 35 35" style="enable-background:new 0 0 35 35" xml:space="preserve" aria-label="Dark mode"><title>Dark mode</title><path d="M6,17.5C6,16.672,5.328,16,4.5,16h-3C0.672,16,0,16.672,0,17.5    S0.672,19,1.5,19h3C5.328,19,6,18.328,6,17.5z M7.5,26c-0.414,0-0.789,0.168-1.061,0.439l-2,2C4.168,28.711,4,29.086,4,29.5    C4,30.328,4.671,31,5.5,31c0.414,0,0.789-0.168,1.06-0.44l2-2C8.832,28.289,9,27.914,9,27.5C9,26.672,8.329,26,7.5,26z M17.5,6    C18.329,6,19,5.328,19,4.5v-3C19,0.672,18.329,0,17.5,0S16,0.672,16,1.5v3C16,5.328,16.671,6,17.5,6z M27.5,9    c0.414,0,0.789-0.168,1.06-0.439l2-2C30.832,6.289,31,5.914,31,5.5C31,4.672,30.329,4,29.5,4c-0.414,0-0.789,0.168-1.061,0.44    l-2,2C26.168,6.711,26,7.086,26,7.5C26,8.328,26.671,9,27.5,9z M6.439,8.561C6.711,8.832,7.086,9,7.5,9C8.328,9,9,8.328,9,7.5    c0-0.414-0.168-0.789-0.439-1.061l-2-2C6.289,4.168,5.914,4,5.5,4C4.672,4,4,4.672,4,5.5c0,0.414,0.168,0.789,0.439,1.06    L6.439,8.561z M33.5,16h-3c-0.828,0-1.5,0.672-1.5,1.5s0.672,1.5,1.5,1.5h3c0.828,0,1.5-0.672,1.5-1.5S34.328,16,33.5,16z     M28.561,26.439C28.289,26.168,27.914,26,27.5,26c-0.828,0-1.5,0.672-1.5,1.5c0,0.414,0.168,0.789,0.439,1.06l2,2    C28.711,30.832,29.086,31,29.5,31c0.828,0,1.5-0.672,1.5-1.5c0-0.414-0.168-0.789-0.439-1.061L28.561,26.439z M17.5,29    c-0.829,0-1.5,0.672-1.5,1.5v3c0,0.828,0.671,1.5,1.5,1.5s1.5-0.672,1.5-1.5v-3C19,29.672,18.329,29,17.5,29z M17.5,7    C11.71,7,7,11.71,7,17.5S11.71,28,17.5,28S28,23.29,28,17.5S23.29,7,17.5,7z M17.5,25c-4.136,0-7.5-3.364-7.5-7.5    c0-4.136,3.364-7.5,7.5-7.5c4.136,0,7.5,3.364,7.5,7.5C25,21.636,21.636,25,17.5,25z"></path></svg><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" id="nightIcon" x="0px" y="0px" viewBox="0 0 100 100" style="enable-background:new 0 0 100 100" xml:space="preserve" aria-label="Light mode"><title>Light mode</title><path d="M96.76,66.458c-0.853-0.852-2.15-1.064-3.23-0.534c-6.063,2.991-12.858,4.571-19.655,4.571  C62.022,70.495,50.88,65.88,42.5,57.5C29.043,44.043,25.658,23.536,34.076,6.47c0.532-1.08,0.318-2.379-0.534-3.23  c-0.851-0.852-2.15-1.064-3.23-0.534c-4.918,2.427-9.375,5.619-13.246,9.491c-9.447,9.447-14.65,22.008-14.65,35.369  c0,13.36,5.203,25.921,14.65,35.368s22.008,14.65,35.368,14.65c13.361,0,25.921-5.203,35.369-14.65  c3.872-3.871,7.064-8.328,9.491-13.246C97.826,68.608,97.611,67.309,96.76,66.458z"></path></svg></button><div class="explorer desktop-only"><button type="button" id="explorer" data-behavior="collapse" data-collapsed="collapsed" data-savestate="true" data-tree="[{&quot;path&quot;:&quot;api&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;comparisons&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;design&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;development&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;examples&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;guides&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;migrations&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;planning&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;profiling&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;release&quot;,&quot;collapsed&quot;:true},{&quot;path&quot;:&quot;status&quot;,&quot;collapsed&quot;:true}]" aria-controls="explorer-content" aria-expanded="false"><h2>Explorer</h2><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="fold"><polyline points="6 9 12 15 18 9"></polyline></svg></button><div id="explorer-content"><ul class="overflow" id="explorer-ul"><li><div class="folder-outer open"><ul style="padding-left:0;" class="content" data-folderul><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="api"><button class="folder-button"><span class="folder-title">api</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="api"><li><a href="../api/overview" data-for="api/overview">API Overview</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="comparisons"><button class="folder-button"><span class="folder-title">comparisons</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="comparisons"><li><a href="../comparisons/git-p4-vs-git-svn" data-for="comparisons/git-p4-vs-git-svn">git-p4-vs-git-svn</a></li><li><a href="../comparisons/submodule-vs-subtree" data-for="comparisons/submodule-vs-subtree">submodule-vs-subtree</a></li><li><a href="../comparisons/when-to-use-scalar" data-for="comparisons/when-to-use-scalar">when-to-use-scalar</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="design"><button class="folder-button"><span class="folder-title">design</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="design"><li><a href="../design/command-library-dependency-graph" data-for="design/command-library-dependency-graph">command-library-dependency-graph</a></li><li><a href="../design/cpp-stage-contract" data-for="design/cpp-stage-contract">cpp-stage-contract</a></li><li><a href="../design/kog-audit-contract-v1" data-for="design/kog-audit-contract-v1">kog-audit-contract-v1</a></li><li><a href="../design/last-known-good-regression-bisect" data-for="design/last-known-good-regression-bisect">last-known-good-regression-bisect</a></li><li><a href="../design/orphan-branch" data-for="design/orphan-branch">orphan-branch</a></li><li><a href="../design/workspace-native-planner-contract" data-for="design/workspace-native-planner-contract">workspace-native-planner-contract</a></li><li><a href="../design/worktree-scalar" data-for="design/worktree-scalar">worktree-scalar</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="development"><button class="folder-button"><span class="folder-title">development</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="development"><li><a href="../development/contributing" data-for="development/contributing">contributing</a></li><li><a href="../development/kano-cpp-dev-convention" data-for="development/kano-cpp-dev-convention">kano-cpp-dev-convention</a></li><li><a href="../development/pixi" data-for="development/pixi">pixi</a></li><li><a href="../development/testing" data-for="development/testing">testing</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="examples"><button class="folder-button"><span class="folder-title">examples</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="examples"><li><a href="../examples/commit-rules-example" data-for="examples/commit-rules-example">commit-rules-example</a></li><li><a href="../examples/init-kano-dev-skill-example" data-for="examples/init-kano-dev-skill-example">init-kano-dev-skill-example</a></li><li><a href="../examples/repo-initialization-workflow-examples" data-for="examples/repo-initialization-workflow-examples">repo-initialization-workflow-examples</a></li><li><a href="../examples/root-repo-multi-remote-examples" data-for="examples/root-repo-multi-remote-examples">root-repo-multi-remote-examples</a></li><li><a href="../examples/WORKFLOW-SUMMARY" data-for="examples/WORKFLOW-SUMMARY">WORKFLOW-SUMMARY</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="guides"><button class="folder-button"><span class="folder-title">guides</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="guides"><li><a href="../guides/agent-mutation-queue" data-for="guides/agent-mutation-queue">agent-mutation-queue</a></li><li><a href="../guides/ai-provider-bootstrap" data-for="guides/ai-provider-bootstrap">ai-provider-bootstrap</a></li><li><a href="../guides/auto-fallback-complete" data-for="guides/auto-fallback-complete">auto-fallback-complete</a></li><li><a href="../guides/cloudflare-access-ssh" data-for="guides/cloudflare-access-ssh">cloudflare-access-ssh</a></li><li><a href="../guides/common-pitfalls" data-for="guides/common-pitfalls">common-pitfalls</a></li><li><a href="../guides/cpa-commit-plan-workflow" data-for="guides/cpa-commit-plan-workflow">cpa-commit-plan-workflow</a></li><li><a href="../guides/current-command-surface" data-for="guides/current-command-surface">current-command-surface</a></li><li><a href="../guides/dogfood-regression-policy" data-for="guides/dogfood-regression-policy">dogfood-regression-policy</a></li><li><a href="../guides/git-p4" data-for="guides/git-p4">git-p4</a></li><li><a href="../guides/git-svn" data-for="guides/git-svn">git-svn</a></li><li><a href="../guides/gitlab-https-auth" data-for="guides/gitlab-https-auth">gitlab-https-auth</a></li><li><a href="../guides/ignore-datasource-sync-policy" data-for="guides/ignore-datasource-sync-policy">ignore-datasource-sync-policy</a></li><li><a href="../guides/ignore-plan-operator-workflow" data-for="guides/ignore-plan-operator-workflow">ignore-plan-operator-workflow</a></li><li><a href="../guides/kcc-commit-message-policy" data-for="guides/kcc-commit-message-policy">kcc-commit-message-policy</a></li><li><a href="../guides/new-features" data-for="guides/new-features">new-features</a></li><li><a href="../guides/public-artifact-contract" data-for="guides/public-artifact-contract">public-artifact-contract</a></li><li><a href="../guides/quick-start" data-for="guides/quick-start">quick-start</a></li><li><a href="../guides/repo-initialization-workflow" data-for="guides/repo-initialization-workflow">repo-initialization-workflow</a></li><li><a href="../guides/runtime-path-layout" data-for="guides/runtime-path-layout">runtime-path-layout</a></li><li><a href="../guides/scalar" data-for="guides/scalar">scalar</a></li><li><a href="../guides/submodule" data-for="guides/submodule">submodule</a></li><li><a href="../guides/subtree" data-for="guides/subtree">subtree</a></li><li><a href="../guides/version-info" data-for="guides/version-info">version-info</a></li><li><a href="../guides/worktree" data-for="guides/worktree">worktree</a></li></ul></div></li><li><div class="folder-outer "><ul style="padding-left:0;" class="content" data-folderul></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="migrations"><button class="folder-button"><span class="folder-title">migrations</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="migrations"><li><a href="../migrations/perforce-to-git" data-for="migrations/perforce-to-git">perforce-to-git</a></li><li><a href="../migrations/svn-to-git" data-for="migrations/svn-to-git">svn-to-git</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="planning"><button class="folder-button"><span class="folder-title">planning</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="planning"><li><a href="../planning/cli-architecture-proposal" data-for="planning/cli-architecture-proposal">cli-architecture-proposal</a></li><li><a href="../planning/tui-branch-transplant-workflows" data-for="planning/tui-branch-transplant-workflows">tui-branch-transplant-workflows</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="profiling"><button class="folder-button"><span class="folder-title">profiling</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="profiling"><li><a href="../profiling/README" data-for="profiling/README">README</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="release"><button class="folder-button"><span class="folder-title">release</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="release"><li><a href="../release/v0.0.1-alpha-no-go" data-for="release/v0.0.1-alpha-no-go">v0.0.1-alpha-no-go</a></li><li><a href="../release/v0.0.1-alpha-release" data-for="release/v0.0.1-alpha-release">v0.0.1-alpha-release</a></li></ul></div></li><li><div class="folder-container"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="5 8 14 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="folder-icon"><polyline points="6 9 12 15 18 9"></polyline></svg><div data-folderpath="status"><button class="folder-button"><span class="folder-title">status</span></button></div></div><div class="folder-outer "><ul style="padding-left:1.4rem;" class="content" data-folderul="status"><li><a href="../status/changelog" data-for="status/changelog">changelog</a></li><li><a href="../status/ci-cd-trigger-policy" data-for="status/ci-cd-trigger-policy">ci-cd-trigger-policy</a></li><li><a href="../status/cpp-stage-refactor-backlog" data-for="status/cpp-stage-refactor-backlog">cpp-stage-refactor-backlog</a></li><li><a href="../status/KG-BUG-0005-scoped-commit-status-kinds" data-for="status/KG-BUG-0005-scoped-commit-status-kinds">KG-BUG-0005-scoped-commit-status-kinds</a></li><li><a href="../status/pgo-coverage-shared-infra-tracking" data-for="status/pgo-coverage-shared-infra-tracking">pgo-coverage-shared-infra-tracking</a></li></ul></div></li><li><a href="../cpp-profile-coverage-pgo-model" data-for="cpp-profile-coverage-pgo-model">cpp-profile-coverage-pgo-model</a></li><li><a href="../README" data-for="README">README</a></li><li><a href="../repo-hygiene" data-for="repo-hygiene">repo-hygiene</a></li></ul></div></li><li id="explorer-end"></li></ul></div></div></div><div class="center"><div class="page-header"><div class="popover-hint"><nav class="breadcrumb-container" aria-label="breadcrumbs"><div class="breadcrumb-element"><a href="../">Home</a><p> ❯ </p></div><div class="breadcrumb-element"><a href="../design/">design</a><p> ❯ </p></div><div class="breadcrumb-element"><a href>kog-audit-contract-v1</a></div></nav><h1 class="article-title">kog-audit-contract-v1</h1><p show-comma="true" class="content-meta"><span>Aug 08, 2026</span><span>12 min read</span></p></div></div><article class="popover-hint"><h1 id="kog-audit-contract-v1">KOG Audit Contract v1<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#kog-audit-contract-v1" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h1>
+<p>KOG is an agent-first Git execution layer normally driven by KOA. Its audit
+contract records what KOG can prove about one run without duplicating KOA’s
+dispatch, queue, approval, or policy authority.</p>
+<p>The native <code>kano::git_audit</code> facade is the authoritative parser, validator, and
+canonical serializer. It is a leaf of <code>kano_git_core</code>, so commit-plan,
+converge, journal, provider, and read-only TUI consumers can share the same
+types without private cross-module includes.</p>
+<h2 id="published-contracts">Published contracts<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#published-contracts" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="table-container"><table><thead><tr><th>Contract</th><th>Discriminator</th><th>Published schema</th></tr></thead><tbody><tr><td>Closed producer capability</td><td><code>schemaName=kog.auditCapability</code>, <code>schemaVersion=1</code></td><td><code>assets/audit/schemas/kog.auditCapability.v1.schema.json</code></td></tr><tr><td>One semantic action event</td><td><code>schemaName=kog.auditEvent</code>, <code>schemaVersion=1</code></td><td><code>assets/audit/schemas/kog.auditEvent.v1.schema.json</code></td></tr><tr><td>One terminal run receipt</td><td><code>schemaName=kog.runReceipt</code>, <code>schemaVersion=1</code></td><td><code>assets/audit/schemas/kog.runReceipt.v1.schema.json</code></td></tr><tr><td>Path-free verification result</td><td><code>schemaName=kog.auditVerification</code>, <code>schemaVersion=1</code></td><td><code>assets/audit/schemas/kog.auditVerification.v1.schema.json</code></td></tr></tbody></table></div>
+<p>The combined names <code>kog.auditEvent.v1</code> and <code>kog.runReceipt.v1</code> identify the
+frozen v1 contracts. Name and numeric version are separate JSON fields so
+version negotiation remains explicit.</p>
+<h2 id="identity-and-correlation">Identity and correlation<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#identity-and-correlation" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>Every event and receipt carries the same:</p>
+<ul>
+<li><code>runId</code>, required nullable <code>parentRunId</code>, and positive <code>attempt</code>;</li>
+<li>immutable <code>planId</code> and lowercase SHA-256 <code>planSha256</code>;</li>
+<li>strict UTC timing;</li>
+<li>explicit <code>correlation</code>.</li>
+</ul>
+<p><code>runId</code> and <code>attempt</code> are the canonical identities shared with KOA. They are
+not duplicated inside the correlation envelope.</p>
+<p>Correlation has two modes:</p>
+<ul>
+<li><code>standalone</code>: every KOA-specific identifier is explicitly <code>null</code>;</li>
+<li><code>koa</code>: product, item, work order, request, producer, and route IDs are
+required. Topic and agent IDs remain explicit nullable fields.</li>
+</ul>
+<p>Correlation is provenance, never authorization. Policy and approval decisions
+remain opaque hash-bound references.</p>
+<p>Stable correlation, run, event, plan, artifact, policy, and approval IDs are
+1..128 ASCII bytes. The first byte is alphanumeric; every remaining byte is
+<code>[A-Za-z0-9._:@-]</code>. <code>..</code> is forbidden, as are secret-like prefixes.
+The case-insensitive rejected prefixes are <code>sk-</code>, <code>ghp_</code>, <code>github_pat_</code>,
+<code>glpat-</code>, <code>bearer</code>, and <code>akia</code>. MIME content types use separately bounded
+printable ASCII. Human-facing branch names remain valid bounded Unicode.</p>
+<h2 id="events">Events<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#events" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>An AuditEvent is one completed semantic KOG action. It contains:</p>
+<ul>
+<li>positive contiguous <code>sequence</code>, starting at one;</li>
+<li>bounded <code>phase</code> and <code>action</code> tokens such as <code>mutation</code> and <code>commit.apply</code>;</li>
+<li>one logical repository ID and typed before/after state;</li>
+<li>one typed outcome;</li>
+<li>bounded policy, approval, and artifact reference arrays.</li>
+</ul>
+<p><code>action</code> is semantic data. It must never contain argv, a shell command, or raw
+console text.</p>
+<p>Repository state distinguishes <code>clean</code>, <code>dirty</code>, and <code>unknown</code>; absent facts
+are never interpreted as clean. Known worktree state requires a SHA-256 dirty
+fingerprint. Head and branch are nullable for unborn or detached repositories.
+Upstream head, ahead, and behind are either all present or all null.</p>
+<h2 id="terminal-receipt">Terminal receipt<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#terminal-receipt" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>A RunReceipt is the single terminal truth source for a run. It binds:</p>
+<ul>
+<li>terminal outcome and enclosing start/finish timestamps;</li>
+<li>first/last sequence and exact event count;</li>
+<li>SHA-256 of the canonical JSONL event bytes;</li>
+<li>per-repository aggregate before/after state;</li>
+<li>bounded policy, approval, and artifact references.</li>
+</ul>
+<p>A zero-event receipt is valid only for explicit crash-before-first-event
+recovery with terminal outcome <code>unknown</code>. Missing terminal state is invalid.</p>
+<p>When validating a receipt with its event stream, KOG rejects identity drift,
+duplicate event IDs, gaps, duplicate or non-monotonic sequence, broken
+repository transition chains, invented or omitted repositories, count/range
+mismatch, events outside run time, evidence equivocation, and a successful
+receipt containing any non-success event. Receipt policy, approval, and
+artifact arrays are the exact canonical union of a non-empty event stream.</p>
+<p>A zero-event crash receipt binds the SHA-256 of empty bytes and cannot claim a
+repository transition.</p>
+<h2 id="outcome-truth-table">Outcome truth table<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#outcome-truth-table" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>The only outcome authority is <code>status</code>:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="table-container"><table><thead><tr><th>Status</th><th style="text-align:right;">Successful</th><th style="text-align:right;">Required <code>reasonCode</code></th><th>Exit-code rule</th></tr></thead><tbody><tr><td><code>succeeded</code></td><td style="text-align:right;">yes</td><td style="text-align:right;">no; must be <code>null</code></td><td><code>null</code> or <code>0</code></td></tr><tr><td><code>failed</code></td><td style="text-align:right;">no</td><td style="text-align:right;">yes</td><td><code>null</code> or non-zero</td></tr><tr><td><code>partial</code></td><td style="text-align:right;">no</td><td style="text-align:right;">yes</td><td><code>null</code> or non-zero</td></tr><tr><td><code>blocked</code></td><td style="text-align:right;">no</td><td style="text-align:right;">yes</td><td>normally <code>null</code>; never <code>0</code></td></tr><tr><td><code>cancelled</code></td><td style="text-align:right;">no</td><td style="text-align:right;">yes</td><td>normally <code>null</code>; never <code>0</code></td></tr><tr><td><code>timed-out</code></td><td style="text-align:right;">no</td><td style="text-align:right;">yes</td><td><code>null</code> or non-zero</td></tr><tr><td><code>unknown</code></td><td style="text-align:right;">no</td><td style="text-align:right;">yes</td><td><code>null</code> or non-zero</td></tr></tbody></table></div>
+<p><code>succeeded</code> also requires <code>retryable=false</code>. There is no separate <code>ok</code>,
+<code>success</code>, or <code>failed</code> boolean that can contradict the status.</p>
+<h2 id="evidence-and-redaction-boundary">Evidence and redaction boundary<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#evidence-and-redaction-boundary" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>Artifacts contain only:</p>
+<ul>
+<li>opaque ID and semantic kind;</li>
+<li>SHA-256 and byte size;</li>
+<li>content type;</li>
+<li>redaction status: <code>not-required</code>, <code>redacted</code>, or <code>withheld</code>.</li>
+</ul>
+<p>There are no artifact bodies, paths, commands, argv, environment, stdout,
+stderr, secrets, or free-form error messages in v1. Hash and size identify the
+persisted post-redaction bytes. A withheld artifact refers to the persisted
+withholding tombstone, not to unretained sensitive bytes.</p>
+<p>The schema bounds references, strings, repositories, events, and all JSON
+integer fields. The native parser additionally caps one JSON document at
+4 MiB and one JSONL stream at 64 MiB. Integers do not exceed JavaScript’s
+exact <code>2^53-1</code> range; <code>attempt</code> is further bounded to an unsigned 32-bit value.</p>
+<h2 id="canonical-json-and-jsonl">Canonical JSON and JSONL<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#canonical-json-and-jsonl" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>Canonical serialization is:</p>
+<ul>
+<li>UTF-8 without BOM;</li>
+<li>compact JSON with lexicographically ordered object keys;</li>
+<li>no floats;</li>
+<li>every nullable contract field emitted explicitly as <code>null</code>;</li>
+<li>policy/approval references and artifacts sorted by ID;</li>
+<li>receipt repositories sorted by logical repository ID.</li>
+</ul>
+<p>JSON serialization adds no newline. JSONL is exactly one canonical AuditEvent
+per line with one LF after every record, including the last. CRLF, blank
+records, multiline records, and a missing final LF are invalid.</p>
+<h2 id="compatibility-boundary">Compatibility boundary<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#compatibility-boundary" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>Parsers reject an unknown schema name, version, enum, field, or
+safety-driving value. Every v1 object, including the document root, is closed.
+Producers that need additional data must publish a new schema version instead
+of relying on a reader to silently discard unauthenticated metadata.</p>
+<p>Raw or conflicting fields such as <code>command</code>, <code>argv</code>, <code>environment</code>, <code>stdout</code>,
+<code>stderr</code>, <code>secret</code>, <code>body</code>, <code>payload</code>, <code>path</code>, <code>ok</code>, and <code>success</code> are outside
+the closed contract. Incompatible changes require a new schema version; v1
+includes no migration layer.</p>
+<p>The schemas describe one JSON object. Stream framing, real-calendar timestamp
+validation, cross-event ordering, and receipt/event reconciliation remain
+native-validator responsibilities.</p>
+<h2 id="scope-boundary">Scope boundary<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#scope-boundary" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p>The core <code>kano::git_audit</code> facade defines and validates evidence objects; it
+does not populate KOA context, execute Git, authorize approvals, or render the
+TUI. KG-TSK-0125’s command runtime does persist the current attempt’s frozen
+input, events, terminal receipt, and incomplete marker. Broader journal
+retention, indexing, recovery, and lifecycle policy remain the KG-TSK-0126
+slice. A timestamp, event, or receipt is evidence only when the validator
+accepts the complete trace and the referenced hashes match persisted bytes.</p>
+<h2 id="closed-producer-capability">Closed producer capability<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#closed-producer-capability" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p><code>kog audit capability --json</code> returns the closed, path-free capability object.
+The v1 route/input matrix is exact:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div class="table-container"><table><thead><tr><th>Route</th><th>Frozen input kind</th></tr></thead><tbody><tr><td><code>commit.plan</code></td><td><code>commit-plan</code></td></tr><tr><td><code>commit-push.plan</code></td><td><code>commit-plan</code></td></tr><tr><td><code>plan.apply</code></td><td><code>commit-plan</code></td></tr><tr><td><code>converge.repos</code></td><td><code>operation-descriptor</code></td></tr><tr><td><code>converge.branches.apply</code></td><td><code>operation-descriptor</code></td></tr><tr><td><code>converge.branches.recover</code></td><td><code>operation-descriptor</code></td></tr><tr><td><code>converge.branches.retire</code></td><td><code>operation-descriptor</code></td></tr></tbody></table></div>
+<p>Every listed route reserves before its first mutation, retains one active
+owner, appends ordered internal per-repository mutation events, and publishes
+one terminal receipt. Nested plan execution borrows the active owner and may
+add a hash-bound supplemental frozen-plan artifact; it never publishes a
+nested receipt. A route/input mismatch is rejected before reservation.</p>
+<p>Each converge route freezes a closed, typed operation descriptor. Descriptor
+options contain only bounded booleans, integer job counts, closed strategy
+enums, required commit SHA-1 evidence, nullable SHA-256 selector digests, and
+the correlation envelope. Raw remotes, URLs, filesystem paths, branches,
+targets, commit messages, and review text are never persisted in the frozen
+descriptor. Selector digests are evidence bindings, not reversible locators or
+authority.</p>
+<p>Mutation selectors are admitted before correlation-file loading, audit
+reservation, workflow-state writes, or Git mutation. Branch selectors are
+bounded, reject control, option-like, absolute, traversal, and Windows-path
+shapes, and must round-trip through <code>git check-ref-format --branch</code>. Remote
+selectors use a closed logical-name grammar of ASCII alphanumerics plus <code>.</code>,
+<code>_</code>, and <code>-</code>; leading <code>-</code>, <code>.</code>/<code>..</code>, paths, URLs, controls, and overlong names
+are rejected.</p>
+<p>Legacy synthetic <code>kog commit -m</code> is not advertised as <code>commit.plan</code>.
+<code>amend.plan</code> is also outside the closed set: an amend request carrying
+<code>mode=koa</code> is rejected before provider bootstrap, staging, or Git mutation.
+Provenance does not grant authority (<code>provenanceGrantsAuthority=false</code>).</p>
+<p><code>kog audit verify --plan-file P --run-id R --attempt N --json</code> resolves the
+private evidence location from the plan identity and returns no locator path.
+A successful closed result binds the exact frozen bytes and their SHA-256,
+plan/event-stream hashes, <code>receiptSha256</code>, run/parent/attempt correlation,
+terminal outcome, typed repository transitions, and hash-bound artifacts.
+The currently admitted plan bytes must exactly match either the initial source
+artifact or an explicitly frozen post-stamp source-state artifact; verification
+does not normalize, reconstruct, or heuristically ignore changed fields. The
+admitted plan ID must also equal the receipt plan ID.
+Missing, malformed, contradictory, tampered, overflowed, or incomplete
+evidence produces a closed failure result and non-zero exit.</p>
+<h2 id="commit-plan-correlation-handoff">Commit-plan correlation handoff<a role="anchor" aria-hidden="true" tabindex="-1" data-no-popover="true" href="#commit-plan-correlation-handoff" class="internal"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg></a></h2>
+<p><code>kog plan new --correlation-file &lt;closed-envelope.json></code> snapshots explicit
+standalone or KOA provenance in <code>meta.correlation</code>. KOA mode requires product,
+item, work-order, request, run, producer, route, and a positive attempt; topic
+and parent run are nullable. Standalone mode requires every identity field,
+including topic and parent run, to be <code>null</code>. The envelope is a closed object:
+unknown, missing, duplicate, wrongly typed, non-printable, overlong, or
+contradictory fields are rejected before execution. A parent run cannot equal
+its child run.</p>
+<p>The correlation file reader is bounded to 64 KiB and accepts only a stable
+regular file opened without following links; identity, size, and timestamps
+must remain stable across the read. <code>plan prepare</code> and <code>plan verify</code> preserve
+an existing envelope byte-for-semantic-value. A legacy plan with no
+<code>meta.correlation</code> remains compatible: execution treats it as unbound
+standalone and materializes the closed standalone envelope plus newly generated
+run ID only in <code>frozen-plan.json</code>. It never injects that generated run into the
+caller’s source plan.</p>
+<p>Correlation identifiers use the new 128-byte stable-ID grammar. This does not
+narrow the existing v1 audit ABI: non-correlation opaque IDs in v1 events and
+receipts retain their original 256-byte printable-ASCII contract.</p>
+<p>Plan-backed execution snapshots and validates the exact source bytes, then
+reserves this immutable attempt directory before creating the persistent plan
+execution lock or performing any Git mutation. Once the lock is held, KOG
+immediately performs a second bounded no-follow read and compares both the
+SHA-256 and exact admitted bytes before any later action. Lock acquisition and
+failure are recorded as audit events. Malformed correlation therefore creates
+neither the execution-lock path nor plan/Git state. A stale shared agent plan
+fails closed with a separate preparation instruction; audited execution never
+refreshes or rewrites it. For a plan
+inside a Git worktree, evidence is stored below the absolute Git directory so
+the writer cannot perturb the worktree it is measuring:</p>
+<p><code>&lt;git-dir>/kog/audit/plan-&lt;sha256(canonicalPlanPath)>/run-&lt;sha256(runId)>/attempt-&lt;attempt>/</code></p>
+<p>For a non-Git workspace (including contract tests), the fallback is
+<code>&lt;plan>.audit/run-&lt;sha256(runId)>/attempt-&lt;attempt>/</code>.</p>
+<p>The directory contains <code>frozen-plan.json</code>, and every plan-driven safety or
+mutation phase reads that snapshot. Source and frozen SHA-256 values are bound
+separately because standalone run materialization can intentionally make their
+bytes differ. The original plan path is used only for ownership-checked stage
+stamps; compare-and-swap uses the captured source bytes (or the explicitly
+owned updated source), never the derived frozen bytes. Failure cleanup changes
+only a stamp still owned by the same run.</p>
+<p>Schema-v3 source-plan stamping remains a mutable compatibility path. After the
+exclusive audit attempt is reserved, the persistent execution lock serializes
+cooperating KOG writers from admission recheck through Git mutation, source
+stamp, and terminal verification. Windows additionally holds an exclusive
+no-follow source handle while conditionally rewriting the plan. On POSIX,
+source mutation and exact owned-stamp restoration require every plan writer to
+cooperate with the advisory <code>flock</code>; bounded byte, identity, metadata, and path
+checks fail closed when they observe drift, but do not claim a linearizable
+compare-and-swap against a hostile writer that ignores that lock.</p>
+<p>For a Git worktree, persistent plan locks live under the absolute common Git
+metadata directory at <code>&lt;git-common-dir>/kog/plan-execution-locks/</code>. They never
+appear below the consumer worktree or affect raw dirty-state admission. Lock
+files remain in place after unlock so concurrent processes cannot split
+exclusion across old and newly created inodes. Non-Git execution retains the
+workspace-local <code>.kano/tmp/git/plan-execution-locks/</code> fallback. Both locations
+use the same anchored traversal: each directory component is opened without
+following links before the next component or lock file is created.
+The lock name is derived from the opened plan file identity (device/inode on
+POSIX; volume/file index on Windows), not from caller-controlled path spelling,
+so hard-link and case aliases converge on the same lock. POSIX creation and file
+open remain anchored to directory handles, while Windows pins verified
+non-reparse directory handles until the regular lock handle is open.</p>
+<p>After admission and safety checks, each <code>commit-push.plan</code> attempt
+conditionally clears any prior <code>meta.executed_at_utc</code> value and records
+<code>plan.stamp.clear</code> before its first Git mutation. The exact cleared bytes become
+the attempt-owned source state for later compare-and-swap and rollback. A
+completion timestamp is published only after push succeeds. A clear that cannot
+be audited is conditionally rolled back to the admitted bytes; after a
+successful audited clear, any later failed attempt remains uncompleted instead
+of reviving the prior timestamp.</p>
+<p>The raw run ID is retained in every event and receipt but is never used as a
+filesystem segment. KOA reservation is exclusive, so a repeated explicit
+run/attempt cannot overwrite earlier evidence; a retry of the same KOA run must
+carry the next explicit attempt. Each independent standalone execution creates
+a fresh internal run ID, so two ordinary standalone invocations do not collide.
+<code>events.jsonl</code> is append-only and contains observed reservation, safety, commit,
+sync, post-sync, push, and plan-stamp actions as those actions actually run.
+Each append is flushed to stable storage. <code>receipt.json</code> is written through an
+exclusively reserved temporary handle, atomically published without replacement,
+reopened and file-flushed, and directory-synced only after the event stream is
+durable. Reservation first creates and flushes <code>publication-pending.json</code> and
+syncs its attempt directory. Verification rejects the attempt while that
+sentinel exists, including the interval where <code>receipt.json</code> is already visible.
+Only after the receipt file and its directory entry are durable does KOG remove
+the sentinel and sync the attempt directory again. Every newly created audit
+hierarchy directory entry also syncs its parent. On POSIX each directory sync
+is required. On Windows, KOG first verifies a non-reparse directory handle,
+then attempts a separate directory flush; only documented unsupported-directory-
+flush errors are best effort, while file flushes remain required.</p>
+<p><code>receipt.json</code> alone is not sufficient terminal proof. A failure before
+publication writes <code>incomplete.json</code>; a failure after the receipt became
+visible but before its directory durability was proven writes an incomplete
+marker with <code>receiptPublished=true</code> and
+<code>reasonCode=receipt-durability-uncertain</code>. Verification checks the marker both
+before and after reading evidence and fails closed whenever it is present.
+Verification likewise checks the publication-pending sentinel before and after
+the evidence reads. A
+post-reservation execution exit therefore yields either a truthful terminal
+receipt or explicit incomplete evidence.</p>
+<p>Every phase record and the terminal receipt retain the frozen plan hash, KOA
+identity chain, run/parent linkage, and attempt. Writer preflight or publication
+failure is fail-closed. A failed execution never publishes a new completion
+stamp; once its audited pre-mutation clear succeeds, the source plan remains
+uncompleted. Correlation remains provenance only and never grants authority.</p>
+<p>Git-reported path collections use NUL framing throughout scoped commit and
+secret-gate discovery. Tabs and newlines in filenames remain data and cannot
+become record separators.</p></article><hr/><div class="page-footer"></div></div><div class="right sidebar"><div class="graph"><h3>Graph View</h3><div class="graph-outer"><div id="graph-container" data-cfg="{&quot;drag&quot;:true,&quot;zoom&quot;:true,&quot;depth&quot;:1,&quot;scale&quot;:1.1,&quot;repelForce&quot;:0.5,&quot;centerForce&quot;:0.3,&quot;linkDistance&quot;:30,&quot;fontSize&quot;:0.6,&quot;opacityScale&quot;:1,&quot;showTags&quot;:true,&quot;removeTags&quot;:[],&quot;focusOnHover&quot;:false}"></div><button id="global-graph-icon" aria-label="Global Graph"><svg version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 55 55" fill="currentColor" xml:space="preserve"><path d="M49,0c-3.309,0-6,2.691-6,6c0,1.035,0.263,2.009,0.726,2.86l-9.829,9.829C32.542,17.634,30.846,17,29,17
+                s-3.542,0.634-4.898,1.688l-7.669-7.669C16.785,10.424,17,9.74,17,9c0-2.206-1.794-4-4-4S9,6.794,9,9s1.794,4,4,4
+                c0.74,0,1.424-0.215,2.019-0.567l7.669,7.669C21.634,21.458,21,23.154,21,25s0.634,3.542,1.688,4.897L10.024,42.562
+                C8.958,41.595,7.549,41,6,41c-3.309,0-6,2.691-6,6s2.691,6,6,6s6-2.691,6-6c0-1.035-0.263-2.009-0.726-2.86l12.829-12.829
+                c1.106,0.86,2.44,1.436,3.898,1.619v10.16c-2.833,0.478-5,2.942-5,5.91c0,3.309,2.691,6,6,6s6-2.691,6-6c0-2.967-2.167-5.431-5-5.91
+                v-10.16c1.458-0.183,2.792-0.759,3.898-1.619l7.669,7.669C41.215,39.576,41,40.26,41,41c0,2.206,1.794,4,4,4s4-1.794,4-4
+                s-1.794-4-4-4c-0.74,0-1.424,0.215-2.019,0.567l-7.669-7.669C36.366,28.542,37,26.846,37,25s-0.634-3.542-1.688-4.897l9.665-9.665
+                C46.042,11.405,47.451,12,49,12c3.309,0,6-2.691,6-6S52.309,0,49,0z M11,9c0-1.103,0.897-2,2-2s2,0.897,2,2s-0.897,2-2,2
+                S11,10.103,11,9z M6,51c-2.206,0-4-1.794-4-4s1.794-4,4-4s4,1.794,4,4S8.206,51,6,51z M33,49c0,2.206-1.794,4-4,4s-4-1.794-4-4
+                s1.794-4,4-4S33,46.794,33,49z M29,31c-3.309,0-6-2.691-6-6s2.691-6,6-6s6,2.691,6,6S32.309,31,29,31z M47,41c0,1.103-0.897,2-2,2
+                s-2-0.897-2-2s0.897-2,2-2S47,39.897,47,41z M49,10c-2.206,0-4-1.794-4-4s1.794-4,4-4s4,1.794,4,4S51.206,10,49,10z"></path></svg></button></div><div id="global-graph-outer"><div id="global-graph-container" data-cfg="{&quot;drag&quot;:true,&quot;zoom&quot;:true,&quot;depth&quot;:-1,&quot;scale&quot;:0.9,&quot;repelForce&quot;:0.5,&quot;centerForce&quot;:0.3,&quot;linkDistance&quot;:30,&quot;fontSize&quot;:0.6,&quot;opacityScale&quot;:1,&quot;showTags&quot;:true,&quot;removeTags&quot;:[],&quot;focusOnHover&quot;:true}"></div></div></div><div class="toc desktop-only"><button type="button" id="toc" class aria-controls="toc-content" aria-expanded="true"><h3>Table of Contents</h3><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="fold"><polyline points="6 9 12 15 18 9"></polyline></svg></button><div id="toc-content" class><ul class="overflow"><li class="depth-0"><a href="#kog-audit-contract-v1" data-for="kog-audit-contract-v1">KOG Audit Contract v1</a></li><li class="depth-1"><a href="#published-contracts" data-for="published-contracts">Published contracts</a></li><li class="depth-1"><a href="#identity-and-correlation" data-for="identity-and-correlation">Identity and correlation</a></li><li class="depth-1"><a href="#events" data-for="events">Events</a></li><li class="depth-1"><a href="#terminal-receipt" data-for="terminal-receipt">Terminal receipt</a></li><li class="depth-1"><a href="#outcome-truth-table" data-for="outcome-truth-table">Outcome truth table</a></li><li class="depth-1"><a href="#evidence-and-redaction-boundary" data-for="evidence-and-redaction-boundary">Evidence and redaction boundary</a></li><li class="depth-1"><a href="#canonical-json-and-jsonl" data-for="canonical-json-and-jsonl">Canonical JSON and JSONL</a></li><li class="depth-1"><a href="#compatibility-boundary" data-for="compatibility-boundary">Compatibility boundary</a></li><li class="depth-1"><a href="#scope-boundary" data-for="scope-boundary">Scope boundary</a></li><li class="depth-1"><a href="#closed-producer-capability" data-for="closed-producer-capability">Closed producer capability</a></li><li class="depth-1"><a href="#commit-plan-correlation-handoff" data-for="commit-plan-correlation-handoff">Commit-plan correlation handoff</a></li></ul></div></div><div class="backlinks"><h3>Backlinks</h3><ul class="overflow"><li><a href="../README" class="internal">README</a></li><li><a href="../" class="internal">index</a></li></ul></div></div><footer class><p>Created with <a href="https://quartz.jzhao.xyz/">Quartz v4.4.0</a> © 2026</p><ul><li><a href="https://github.com/jackyzha0/quartz">GitHub</a></li><li><a href="https://discord.gg/cRFFHYye7t">Discord Community</a></li></ul></footer></div></div></body><script type="application/javascript">function c(){let t=this.parentElement;t.classList.toggle("is-collapsed");let l=t.classList.contains("is-collapsed")?this.scrollHeight:t.scrollHeight;t.style.maxHeight=l+"px";let o=t,e=t.parentElement;for(;e;){if(!e.classList.contains("callout"))return;let n=e.classList.contains("is-collapsed")?e.scrollHeight:e.scrollHeight+o.scrollHeight;e.style.maxHeight=n+"px",o=e,e=e.parentElement}}function i(){let t=document.getElementsByClassName("callout is-collapsible");for(let s of t){let l=s.firstElementChild;if(l){l.addEventListener("click",c),window.addCleanup(()=>l.removeEventListener("click",c));let e=s.classList.contains("is-collapsed")?l.scrollHeight:s.scrollHeight;s.style.maxHeight=e+"px"}}}document.addEventListener("nav",i);window.addEventListener("resize",i);
+</script><script type="module">
+          let mermaidImport = undefined
+          document.addEventListener('nav', async () => {
+            if (document.querySelector("code.mermaid")) {
+              mermaidImport ||= await import('https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.7.0/mermaid.esm.min.mjs')
+              const mermaid = mermaidImport.default
+              const darkMode = document.documentElement.getAttribute('saved-theme') === 'dark'
+              mermaid.initialize({
+                startOnLoad: false,
+                securityLevel: 'loose',
+                theme: darkMode ? 'dark' : 'default'
+              })
+
+              await mermaid.run({
+                querySelector: '.mermaid'
+              })
+            }
+          });
+          </script><script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/contrib/copy-tex.min.js" type="application/javascript"></script><script src="../postscript.js" type="module"></script></html>

@@ -4,6 +4,7 @@ var dir_44bcc8d357912c543026dbf7acbd4f18 =
     [ "auto_model_policy.hpp", "auto__model__policy_8hpp_source.html", null ],
     [ "command_executor.hpp", "command__executor_8hpp_source.html", null ],
     [ "command_runtime_ops.hpp", "command__runtime__ops_8hpp_source.html", null ],
+    [ "operation_audit.hpp", "operation__audit_8hpp_source.html", null ],
     [ "runtime_path_layout.hpp", "runtime__path__layout_8hpp_source.html", null ],
     [ "terminal_color.hpp", "terminal__color_8hpp_source.html", null ]
 ];

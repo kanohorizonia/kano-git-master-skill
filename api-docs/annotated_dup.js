@@ -24,6 +24,10 @@ var annotated_dup =
           [ "InputContext", "structkano_1_1git_1_1commands_1_1InputContext.html", "structkano_1_1git_1_1commands_1_1InputContext" ],
           [ "LruCache", "classkano_1_1git_1_1commands_1_1LruCache.html", null ],
           [ "MetadataCache", "classkano_1_1git_1_1commands_1_1MetadataCache.html", "classkano_1_1git_1_1commands_1_1MetadataCache" ],
+          [ "OperationAuditContext", "classkano_1_1git_1_1commands_1_1OperationAuditContext.html", null ],
+          [ "OperationAuditPaths", "structkano_1_1git_1_1commands_1_1OperationAuditPaths.html", null ],
+          [ "OperationAuditSpec", "structkano_1_1git_1_1commands_1_1OperationAuditSpec.html", null ],
+          [ "OperationCorrelationEnvelope", "structkano_1_1git_1_1commands_1_1OperationCorrelationEnvelope.html", null ],
           [ "OptionMetadata", "structkano_1_1git_1_1commands_1_1OptionMetadata.html", "structkano_1_1git_1_1commands_1_1OptionMetadata" ],
           [ "PaletteItem", "structkano_1_1git_1_1commands_1_1PaletteItem.html", null ],
           [ "TuiState", "structkano_1_1git_1_1commands_1_1TuiState.html", "structkano_1_1git_1_1commands_1_1TuiState" ]
