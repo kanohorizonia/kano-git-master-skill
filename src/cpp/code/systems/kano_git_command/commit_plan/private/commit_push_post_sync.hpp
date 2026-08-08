@@ -31,6 +31,7 @@ struct PostSyncDeltaSummary {
 };
 
 auto NormalizeCommitPushGitPath(std::string InPath) -> std::string;
+auto NormalizeCommitPushGitReportedPath(std::string InPath) -> std::string;
 auto CommitPushPathspecCoversPath(std::string InPathspec, std::string InPath) -> bool;
 auto CommitPushRepoScopeKey(const std::filesystem::path& InRepoRoot) -> std::string;
 

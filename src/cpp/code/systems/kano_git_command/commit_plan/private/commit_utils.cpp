@@ -5,6 +5,9 @@
 #include "commit_lock_recovery.hpp"
 #include "commit_auto_plan_pipeline.hpp"
 #include "commit_plan_payload.hpp"
+#include "commit_plan_execution_audit.hpp"
+#include "commit_plan_execution_admission.hpp"
+#include "commit_plan_path_scope.hpp"
 #include "commit_plan_task_graph.hpp"
 #include "discovery.hpp"
 #include "shell_executor.hpp"
@@ -19,7 +22,6 @@
 #include "plan_utils.hpp"
 #include "terminal_color.hpp"
 #include "kog_timing.hpp"
-
 #include <algorithm>
 #include <chrono>
 #include <cctype>
@@ -44,14 +46,12 @@
 #include <set>
 #include <functional>
 #include <utility>
-
 #if defined(_WIN32)
 #include <process.h>
 #include <windows.h>
 #else
 #include <unistd.h>
 #endif
-
 namespace kano::git::commands {
 
 auto IsProbableIgnoreArtifactPath(const std::string& InPath) -> bool;
@@ -63,9 +63,7 @@ auto RunAmendNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
                               const bool InProfile) -> int;
 
 auto IsKogDebugEnabled() -> bool;
-
 namespace {
-
 auto DisplayRepoLabel(const std::filesystem::path& InWorkspaceRoot, const std::filesystem::path& InRepo) -> std::string;
 auto RunCommitPreflight(const std::filesystem::path& InRepo) -> CommitPreflightReport;
 
@@ -891,7 +889,7 @@ auto ApplyGeneratedArtifactIgnoresForNonAiCommit(const std::filesystem::path& In
 
 auto RunPipelineSafetyGatesForNonAiCommit(const std::filesystem::path& InWorkspaceRoot,
                                           const std::vector<workspace::RepoRecord>& InScopedRepos = {},
-                                          bool InAutoApplyGeneratedIgnores = true) -> void {
+                                          bool InAutoApplyGeneratedIgnores = true) -> int {
     const auto repos = ResolveSafetyGateRepos(InWorkspaceRoot, InScopedRepos);
 
     if (!IsTruthyEnv(std::getenv("KOG_ALLOW_IGNORE_GATE")) && ToLower(Trim(std::getenv("KOG_IGNORE_GATE") == nullptr ? "on" : std::getenv("KOG_IGNORE_GATE"))) != "off") {
@@ -903,7 +901,7 @@ auto RunPipelineSafetyGatesForNonAiCommit(const std::filesystem::path& InWorkspa
             std::string error;
             if (!ApplyGeneratedArtifactIgnoresForNonAiCommit(InWorkspaceRoot, scan.entries, &error)) {
                 std::cerr << "Error: failed to apply generated-artifact ignore rules: " << error << "\n";
-                std::exit(2);
+                return 2;
             }
             scan = BuildCommitIgnoreGateScan(InWorkspaceRoot, repos, allowlist);
         }
@@ -921,17 +919,17 @@ auto RunPipelineSafetyGatesForNonAiCommit(const std::filesystem::path& InWorkspa
             std::cerr << "  kog plan apply --stage ignore\n";
             std::cerr << "Hint: then rerun kog commit, or use `kog commit --ai-auto` for the full auto-plan flow.\n";
             std::cerr << "Hint: override once with --allow-ignore-gate (or KOG_ALLOW_IGNORE_GATE=1).\n";
-            std::exit(3);
+            return 3;
         }
     }
 
     if (IsTruthyEnv(std::getenv("KOG_DISABLE_SECRET_GATE"))) {
-        return;
+        return 0;
     }
     const auto rulesPath = (ResolveSkillRoot(InWorkspaceRoot) / "assets" / "security" / "secret-blacklist.rules").lexically_normal();
     const auto rules = LoadSecretRules(rulesPath);
     if (rules.empty()) {
-        return;
+        return 0;
     }
     std::vector<SecretFinding> findings;
     findings.reserve(20);
@@ -968,8 +966,9 @@ auto RunPipelineSafetyGatesForNonAiCommit(const std::filesystem::path& InWorkspa
         }
         std::cerr << "Hint: remove/redact secrets, rotate leaked credentials if needed, then rerun.\n";
         std::cerr << "Hint: disable once with KOG_DISABLE_SECRET_GATE=1 (not recommended).\n";
-        std::exit(3);
+        return 3;
     }
+    return 0;
 }
 
 auto GitConfigPath(const std::string& InKey) -> std::string {
@@ -1856,31 +1855,8 @@ struct PlanScopedSafetyFile {
     std::string path;
 };
 
-auto NormalizeGitPathForPlanSafety(std::string InPath) -> std::string {
-    std::replace(InPath.begin(), InPath.end(), '\\', '/');
-    while (InPath.rfind("./", 0) == 0) {
-        InPath = InPath.substr(2);
-    }
-    return Trim(InPath);
-}
-
-auto PlanPathspecCoversPath(std::string InPathspec, std::string InPath) -> bool {
-    InPathspec = NormalizeGitPathForPlanSafety(std::move(InPathspec));
-    InPath = NormalizeGitPathForPlanSafety(std::move(InPath));
-    if (InPathspec.empty() || InPath.empty()) {
-        return false;
-    }
-    if (InPathspec == InPath) {
-        return true;
-    }
-    if (InPathspec.back() != '/') {
-        InPathspec.push_back('/');
-    }
-    return InPath.rfind(InPathspec, 0) == 0;
-}
-
 auto PlanScopedSafetyPathExistsInHead(const PlanScopedSafetyFile& InFile) -> bool {
-    const auto path = NormalizeGitPathForPlanSafety(InFile.path);
+    const auto path = NormalizeGitReportedPathForPlanSafety(InFile.path);
     if (path.empty()) {
         return false;
     }
@@ -1892,19 +1868,24 @@ auto CollectPlanScopedPathspecFiles(const std::filesystem::path& InRepo,
                                     const std::string& InIncludePathspec,
                                     const std::vector<std::string>& InExcludePathspecs) -> std::vector<std::string> {
     std::set<std::string> files;
-    const auto includePathspec = NormalizeGitPathForPlanSafety(InIncludePathspec);
+    const auto includePathspec = NormalizePlanPathspecForSafety(InIncludePathspec);
     if (includePathspec.empty()) {
         return {};
     }
 
     const auto out = GitCapture(
         InRepo,
-        {"ls-files", "--cached", "--modified", "--others", "--exclude-standard", "--", includePathspec});
+        {"ls-files", "-z", "--cached", "--modified", "--others", "--exclude-standard", "--", includePathspec});
     if (out.exitCode == 0) {
-        std::istringstream iss(out.stdoutStr);
-        std::string line;
-        while (std::getline(iss, line)) {
-            auto path = NormalizeGitPathForPlanSafety(line);
+        std::size_t cursor = 0;
+        while (cursor < out.stdoutStr.size()) {
+            const auto end = out.stdoutStr.find('\0', cursor);
+            if (end == std::string::npos) {
+                break;
+            }
+            auto path = NormalizeGitReportedPathForPlanSafety(
+                out.stdoutStr.substr(cursor, end - cursor));
+            cursor = end + 1;
             if (path.empty()) {
                 continue;
             }
@@ -1979,13 +1960,19 @@ auto BuildPlanScopedSafetyFiles(
     return files;
 }
 
+struct PlanScopedSafetyGateResult {
+    bool handled = false;
+    int exitCode = 0;
+};
+
 auto RunPlanScopedSafetyGatesForNativeCommit(
     const std::filesystem::path& InWorkspaceRoot,
-    const std::unordered_map<std::string, std::vector<RepoCommitPlanEntry::CommitItem>>& InStageMessages) -> bool {
+    const std::unordered_map<std::string, std::vector<RepoCommitPlanEntry::CommitItem>>& InStageMessages)
+    -> PlanScopedSafetyGateResult {
     bool scoped = false;
     const auto files = BuildPlanScopedSafetyFiles(InWorkspaceRoot, InStageMessages, &scoped);
     if (!scoped) {
-        return false;
+        return {};
     }
 
     if (!IsTruthyEnv(std::getenv("KOG_ALLOW_IGNORE_GATE")) &&
@@ -1995,7 +1982,7 @@ auto RunPlanScopedSafetyGatesForNativeCommit(
         const auto allowlist = LoadNormalizedLineSet(allowlistPath);
         std::vector<std::string> findings;
         for (const auto& file : files) {
-            auto p = NormalizeGitPathForPlanSafety(file.path);
+            auto p = NormalizeGitReportedPathForPlanSafety(file.path);
             if (p.empty() || !IsProbableIgnoreArtifactPath(p)) {
                 continue;
             }
@@ -2022,7 +2009,7 @@ auto RunPlanScopedSafetyGatesForNativeCommit(
             }
             std::cerr << "Hint: update .gitignore first, then regenerate plan.\n";
             std::cerr << "Hint: override once with --allow-ignore-gate (or KOG_ALLOW_IGNORE_GATE=1).\n";
-            std::exit(3);
+            return {.handled = true, .exitCode = 3};
         }
     }
 
@@ -2055,12 +2042,12 @@ auto RunPlanScopedSafetyGatesForNativeCommit(
             }
             std::cerr << "Hint: remove/redact secrets, rotate leaked credentials if needed, then rerun.\n";
             std::cerr << "Hint: disable once with KOG_DISABLE_SECRET_GATE=1 (not recommended).\n";
-            std::exit(3);
+            return {.handled = true, .exitCode = 3};
         }
     }
 
     std::cout << "[native-commit] scoped safety gates checked files=" << files.size() << "\n";
-    return true;
+    return {.handled = true, .exitCode = 0};
 }
 
 auto AppendExecResult(std::string* OutStdout, std::string* OutStderr, const shell::ExecResult& InResult) -> void;
@@ -2072,9 +2059,10 @@ auto StageCommitItemForPlan(const std::filesystem::path& InWorkspaceRoot,
                             std::string* OutStdout,
                             std::string* OutStderr,
                             std::string* OutError) -> bool {
+    std::set<std::string> scopedRenamePaths;
     if (!InItem.include.empty()) {
         const auto cachedBeforeReset = GitCapture(
-            InRepo, {"-c", "core.quotepath=false", "diff", "--cached", "--name-only"});
+            InRepo, {"-c", "core.quotepath=false", "diff", "--cached", "--name-status", "-z"});
         AppendExecResult(OutStdout, OutStderr, cachedBeforeReset);
         if (cachedBeforeReset.exitCode != 0) {
             if (OutError != nullptr) {
@@ -2082,47 +2070,59 @@ auto StageCommitItemForPlan(const std::filesystem::path& InWorkspaceRoot,
             }
             return false;
         }
-        std::istringstream stagedStream(cachedBeforeReset.stdoutStr);
-        std::string stagedLine;
-        while (std::getline(stagedStream, stagedLine)) {
-            const auto stagedPath = NormalizeGitPathForPlanSafety(stagedLine);
-            if (stagedPath.empty()) {
-                continue;
-            }
+        const auto inScope = [&](const std::string& path) {
             bool included = false;
             for (const auto& includePathspec : InItem.include) {
-                if (PlanPathspecCoversPath(includePathspec, stagedPath)) {
-                    included = true;
-                    break;
-                }
+                if (PlanPathspecCoversPath(includePathspec, path)) { included = true; break; }
             }
-            bool excluded = false;
             for (const auto& excludePathspec : InItem.exclude) {
-                if (PlanPathspecCoversPath(excludePathspec, stagedPath)) {
-                    excluded = true;
-                    break;
+                if (PlanPathspecCoversPath(excludePathspec, path)) return false;
+            }
+            return included;
+        };
+        std::vector<std::string> stagedPaths;
+        std::istringstream stagedStream(cachedBeforeReset.stdoutStr);
+        std::string status;
+        while (std::getline(stagedStream, status, '\0')) {
+            std::string first;
+            if (!std::getline(stagedStream, first, '\0')) break;
+            first = NormalizeGitReportedPathForPlanSafety(std::move(first));
+            stagedPaths.push_back(first);
+            if (!status.empty() && (status.front() == 'R' || status.front() == 'C')) {
+                std::string second;
+                if (!std::getline(stagedStream, second, '\0')) break;
+                second = NormalizeGitReportedPathForPlanSafety(std::move(second));
+                stagedPaths.push_back(second);
+                if (inScope(first) || inScope(second)) {
+                    scopedRenamePaths.insert(first);
+                    scopedRenamePaths.insert(second);
                 }
             }
-            if (!included || excluded) {
+        }
+        for (const auto& stagedPath : stagedPaths) {
+            if (!inScope(stagedPath) && !scopedRenamePaths.contains(stagedPath)) {
                 if (OutError != nullptr) {
                     *OutError = "plan commit blocked by pre-existing staged path outside plan include/exclude scope: " + stagedPath;
                 }
                 return false;
             }
         }
-    }
-
-    // With an explicit include scope, the preflight above guarantees that the
-    // index contains no out-of-scope paths. `git add -A -- <include>` refreshes
-    // those exact entries, so a reset is both redundant and expensive for
-    // large repositories. Stage-all plans retain the legacy full reset.
-    if (InItem.include.empty()) {
-        const auto reset = GitCapture(InRepo, {"reset", "-q"});
+        std::vector<std::string> resetArgs{"reset", "-q", "--"};
+        resetArgs.insert(resetArgs.end(), InItem.include.begin(), InItem.include.end());
+        resetArgs.insert(resetArgs.end(), scopedRenamePaths.begin(), scopedRenamePaths.end());
+        const auto reset = GitCapture(InRepo, resetArgs);
         AppendExecResult(OutStdout, OutStderr, reset);
         if (reset.exitCode != 0) {
             if (OutError != nullptr) {
-                *OutError = "git reset failed before plan-staged commit";
+                *OutError = "git scoped reset failed before plan-staged commit";
             }
+            return false;
+        }
+    } else {
+        const auto reset = GitCapture(InRepo, {"reset", "-q"});
+        AppendExecResult(OutStdout, OutStderr, reset);
+        if (reset.exitCode != 0) {
+            if (OutError != nullptr) *OutError = "git reset failed before plan-staged commit";
             return false;
         }
     }
@@ -2156,6 +2156,7 @@ auto StageCommitItemForPlan(const std::filesystem::path& InWorkspaceRoot,
     if (!include.empty()) {
         args.insert(args.end(), include.begin(), include.end());
     }
+    args.insert(args.end(), scopedRenamePaths.begin(), scopedRenamePaths.end());
 
     // Auto-include dirty gitlinks only when this plan also owns a nested repo.
     // Exact-file plans for a single repo must not scan the entire working tree.
@@ -2228,6 +2229,7 @@ auto StageCommitItemForPlan(const std::filesystem::path& InWorkspaceRoot,
     bool canUseExactCacheInfo = !include.empty() &&
                                 InItem.exclude.empty() &&
                                 forcedExcludes.empty() &&
+                                scopedRenamePaths.empty() &&
                                 !hasNestedPlanRepo &&
                                 std::all_of(include.begin(), include.end(), isLiteralPath);
     if (canUseExactCacheInfo) {
@@ -2236,6 +2238,12 @@ auto StageCommitItemForPlan(const std::filesystem::path& InWorkspaceRoot,
             std::error_code ec;
             const bool exists = std::filesystem::exists(absolutePath, ec);
             if (ec || (exists && !std::filesystem::is_regular_file(absolutePath, ec))) {
+                canUseExactCacheInfo = false;
+                break;
+            }
+            const auto tracked = GitCapture(InRepo, {"ls-files", "--error-unmatch", "--", path});
+            const auto ignored = GitCapture(InRepo, {"check-ignore", "--no-index", "--quiet", "--", path});
+            if (tracked.exitCode == 0 && ignored.exitCode == 0) {
                 canUseExactCacheInfo = false;
                 break;
             }
@@ -3282,7 +3290,9 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
                               const std::string& InPlanFile,
                               const std::string& InPlanStage,
                               const bool InProfile,
-                              const bool InAllowLockRecovery) -> int {
+                              const bool InAllowLockRecovery,
+                              const bool InRunPreCommit,
+                              const bool InPreCommitRecursive) -> int {
     using clock = std::chrono::steady_clock;
     const auto totalStart = std::chrono::steady_clock::now();
     long long preflightMs = 0;
@@ -3300,26 +3310,45 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
     }
     preflightMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - preflightStart).count();
 
-    std::string planError;
     const auto normalizedCommitPlanPath = NormalizeInputPathForCurrentPlatform(InPlanFile);
-    const auto parsed = LoadNormalizedCommitPlan(workspaceRoot, std::filesystem::path(normalizedCommitPlanPath), &planError);
+    const auto stage = ParseCommitPlanStage(InPlanStage);
+    if (!stage.has_value()) {
+        std::cerr << "Error: invalid --plan-stage value: " << InPlanStage
+                  << " (expected commit|post_sync|both)\n";
+        return 2;
+    }
+
+    std::string auditError;
+    auto auditSink = ReserveCommitPlanAuditOrReport(
+        workspaceRoot, std::filesystem::path(normalizedCommitPlanPath),
+        &auditError);
+    if (!auditSink) return 2;
+    auto planAdmission = AcquireAuditedPlanExecutionAdmission(*auditSink, workspaceRoot, normalizedCommitPlanPath, &auditError);
+    if (!planAdmission) {
+        std::cerr << "Error: failed audited plan execution lock/source admission (" << auditError << ")\n";
+        return FinalizeCommitPlanAuditOrReport(*auditSink, 2);
+    }
+    std::string planError;
+    const auto frozenPlanPath = auditSink->FrozenPlanPath().generic_string();
+    const auto parsed = LoadNormalizedCommitPlan(
+        workspaceRoot, auditSink->FrozenPlanPath(), &planError);
     if (!parsed.has_value()) {
-        std::cerr << "Error: invalid --plan-file: " << normalizedCommitPlanPath;
+        std::cerr << "Error: invalid frozen --plan-file input";
         if (!planError.empty()) {
             std::cerr << " (" << planError << ")";
         }
         std::cerr << "\n";
-        return 2;
+        return FinalizeCommitPlanAuditOrReport(*auditSink, 2);
     }
 
     std::string validationError;
     if (!ValidateCommitPlanForAiMode(*parsed, &validationError)) {
-        std::cerr << "Error: invalid --plan-file: " << normalizedCommitPlanPath;
+        std::cerr << "Error: invalid frozen --plan-file input";
         if (!validationError.empty()) {
             std::cerr << " (" << validationError << ")";
         }
         std::cerr << "\n";
-        return 2;
+        return FinalizeCommitPlanAuditOrReport(*auditSink, 2);
     }
     const auto useRepoScopedFreshness = UsesRepoScopedFreshness(*parsed);
     const auto currentBaseHeadSha = useRepoScopedFreshness
@@ -3330,19 +3359,12 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
         : ComputeWorkspaceDirtyFingerprint(workspaceRoot);
     if (Trim(parsed->meta.baseHeadSha) != currentBaseHeadSha ||
         Trim(parsed->meta.dirtyFingerprint) != currentDirtyFingerprint) {
-        ReportPlanWorkspaceStateDrift(normalizedCommitPlanPath,
+        ReportPlanWorkspaceStateDrift(frozenPlanPath,
                                       parsed->meta.baseHeadSha,
                                       currentBaseHeadSha,
                                       parsed->meta.dirtyFingerprint,
                                       currentDirtyFingerprint);
-        return 2;
-    }
-
-    const auto stage = ParseCommitPlanStage(InPlanStage);
-    if (!stage.has_value()) {
-        std::cerr << "Error: invalid --plan-stage value: " << InPlanStage
-                  << " (expected commit|post_sync|both)\n";
-        return 2;
+        return FinalizeCommitPlanAuditOrReport(*auditSink, 2);
     }
 
     auto stageMessages = BuildStageMessageMap(*parsed, *stage);
@@ -3359,7 +3381,7 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
             std::cout << "summary_ms: 0\n";
             std::cout << "total_ms: " << totalMs << "\n";
         }
-        return 0;
+        return FinalizeCommitPlanAuditOrReport(*auditSink, 0);
     }
 
     const auto planStageSecretGateDisabled = []() {
@@ -3375,8 +3397,28 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
     } else {
         std::cout << "[native-commit] safety-gates: ignore + secret\n";
     }
-    if (!RunPlanScopedSafetyGatesForNativeCommit(workspaceRoot, stageMessages)) {
-        RunPipelineSafetyGatesForNonAiCommit(workspaceRoot);
+    const auto safetyBefore = auditSink->Capture(workspaceRoot);
+    const auto safetyStartedAtUtc = CurrentUtcIso8601();
+    auto safetyResult = RunPlanScopedSafetyGatesForNativeCommit(
+        workspaceRoot, stageMessages);
+    if (!safetyResult.handled) {
+        // The audited plan route keeps the fallback gate read-only.  Generated
+        // ignore writes belong to `plan apply --stage ignore`, never to an
+        // implicit pre-commit mutation.
+        safetyResult.exitCode =
+            RunPipelineSafetyGatesForNonAiCommit(workspaceRoot, {}, false);
+    }
+    if (!auditSink->Append("plan.safety", workspaceRoot, safetyBefore,
+                           safetyStartedAtUtc, safetyResult.exitCode,
+                           &auditError)) {
+        std::cerr << "Error: failed to persist commit safety audit event";
+        if (!auditError.empty()) std::cerr << " (" << auditError << ")";
+        std::cerr << "\n";
+        return FinalizeCommitPlanAuditOrReport(*auditSink, 2);
+    }
+    if (safetyResult.exitCode != 0) {
+        return FinalizeCommitPlanAuditOrReport(
+            *auditSink, safetyResult.exitCode);
     }
 
     const auto planningStart = std::chrono::steady_clock::now();
@@ -3398,6 +3440,13 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
         repoRecords.push_back(std::move(fallback));
     }
     planningMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - planningStart).count();
+
+    if (const auto preCommitCode = RunAuditedPlanPreCommit(
+            *auditSink, workspaceRoot, *stage, InRunPreCommit,
+            InPreCommitRecursive, &auditError);
+        preCommitCode != 0) {
+        return FinalizeCommitPlanAuditOrReport(*auditSink, preCommitCode);
+    }
 
     const auto repoWaves = kano::git::commands::BuildExecutionWaves(repoRecords);
     const auto runbooks = BuildRepoCommitRunbooks(repoRecords, stageMessages, workspaceRoot, "", true);
@@ -3421,6 +3470,10 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
     ai.enabled = false;
     ai.reviewEnabled = false;
     CommitLockRecoveryState lockRecoveryState;
+    bool auditAppendFailed = false;
+    std::vector<std::optional<audit::RepositoryState>> auditBefore(
+        taskGraph.tasks.size());
+    std::vector<std::string> auditStartedAtUtc(taskGraph.tasks.size());
 
     const auto commitStart = std::chrono::steady_clock::now();
     std::cout << "[native-commit] plan: repos=" << repoRecords.size()
@@ -3490,8 +3543,19 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
                 const auto label = DisplayRepoLabel(workspaceRoot, task.repo);
                 std::cout << "\n[commit] " << label
                           << " [" << (task.commitIndexInRepo + 1) << "/" << task.repoCommitCount << "]\n";
-                results.push_back(executeCommitTask(task));
+                auditBefore[nodeIndex] = auditSink->Capture(task.repo);
+                auditStartedAtUtc[nodeIndex] = CurrentUtcIso8601();
+                auto result = executeCommitTask(task);
+                if (!AppendCommitMutationAuditOrReport(
+                        *auditSink, task.repo, *auditBefore[nodeIndex],
+                        auditStartedAtUtc[nodeIndex], result.failed,
+                        &auditError)) {
+                    auditAppendFailed = true;
+                }
+                results.push_back(std::move(result));
+                if (auditAppendFailed) break;
             }
+            if (auditAppendFailed) break;
             continue;
         }
 
@@ -3508,6 +3572,8 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
                 const auto label = DisplayRepoLabel(workspaceRoot, task.repo);
                 std::cout << "\n[commit] " << label
                           << " [" << (task.commitIndexInRepo + 1) << "/" << task.repoCommitCount << "]\n";
+                auditBefore[nodeIndex] = auditSink->Capture(task.repo);
+                auditStartedAtUtc[nodeIndex] = CurrentUtcIso8601();
                 active.push_back(std::async(std::launch::async, [&, nodeIndex]() {
                     const auto one = executeCommitTask(taskGraph.tasks[nodeIndex]);
                     return std::make_pair(nodeIndex, one);
@@ -3524,10 +3590,19 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
             return A.first < B.first;
         });
         for (auto& [idx, one] : waveResults) {
-            static_cast<void>(idx);
+            const auto& task = taskGraph.tasks[idx];
+            if (!AppendCommitMutationAuditOrReport(
+                    *auditSink, task.repo, *auditBefore[idx],
+                    auditStartedAtUtc[idx], one.failed, &auditError)) {
+                auditAppendFailed = true;
+            }
             results.push_back(std::move(one));
+            if (auditAppendFailed) break;
         }
+        if (auditAppendFailed) break;
     }
+    if (auditAppendFailed)
+        return FinalizeCommitPlanAuditOrReport(*auditSink, 2);
     commitMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - commitStart).count();
 
     const auto totalElapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - totalStart).count();
@@ -3547,7 +3622,7 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
         std::cout << "total_ms: " << totalMs << "\n";
     }
 
-    return exitCode;
+    return FinalizeCommitPlanAuditOrReport(*auditSink, exitCode);
 }
 
 auto RunAmendNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
@@ -3580,6 +3655,12 @@ auto RunAmendNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
             std::cerr << " (" << planError << ")";
         }
         std::cerr << "\n";
+        return 2;
+    }
+    if (parsed->meta.correlation.present &&
+        parsed->meta.correlation.mode == "koa") {
+        std::cerr << "Error: KOA-correlated plans are unsupported by the unaudited amend.plan route\n";
+        std::cerr << "Hint: use an advertised audited mutation route; amend.plan does not preserve audit provenance.\n";
         return 2;
     }
 
@@ -3638,7 +3719,11 @@ auto RunAmendNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
     planningMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - planningStart).count();
 
     std::cout << "[native-amend] safety-gates: ignore + secret (repos=" << repoRecords.size() << ")\n";
-    RunPipelineSafetyGatesForNonAiCommit(workspaceRoot, repoRecords, false);
+    if (const auto safetyCode =
+            RunPipelineSafetyGatesForNonAiCommit(workspaceRoot, repoRecords, false);
+        safetyCode != 0) {
+        return safetyCode;
+    }
 
     const auto repoWaves = kano::git::commands::BuildExecutionWaves(repoRecords);
     const auto runbooks = BuildRepoCommitRunbooks(repoRecords, stageMessages, workspaceRoot, "", true);
@@ -3909,7 +3994,11 @@ auto RunCommitNativeSimple(const std::filesystem::path& InWorkspaceRoot,
 
     if (!ai.enabled) {
         std::cout << "[native-commit] safety-gates: ignore + secret (repos=" << repoRecords.size() << ")\n";
-        RunPipelineSafetyGatesForNonAiCommit(workspaceRoot, repoRecords, !InDryRun);
+        if (const auto safetyCode =
+                RunPipelineSafetyGatesForNonAiCommit(workspaceRoot, repoRecords, !InDryRun);
+            safetyCode != 0) {
+            return safetyCode;
+        }
     }
 
     std::unordered_map<std::string, std::vector<RepoCommitPlanEntry::CommitItem>> emptyStages;
@@ -4270,10 +4359,8 @@ void ConfigureCommitCommand(CLI::App& InApp) {
             }
             commitPlanFile->clear();
         } else if (explicitPlanFileRequested && !std::filesystem::exists(currentPlanPath)) {
-            if (IsKogDebugEnabled()) {
-                std::cerr << "[DEBUG] explicit plan file doesn't exist, clearing commitPlanFile" << std::endl;
-            }
-            commitPlanFile->clear();
+            std::cerr << "Error: explicit --plan-file does not exist\n";
+            std::exit(2);
         }
         if (IsKogDebugEnabled()) {
             std::cerr << "[DEBUG] autoPlanAiMode check: ai.enabled=" << ai.enabled 
@@ -4352,6 +4439,24 @@ void ConfigureCommitCommand(CLI::App& InApp) {
             *commitPlanFile = writtenSyntheticPlanPath.generic_string();
             synthesizedMessagePlan = true;
             std::cout << "[native-commit] synthesized plan file: " << *commitPlanFile << "\n";
+        }
+
+        if (!commitPlanFile->empty() && !synthesizedMessagePlan) {
+            if (!repos->empty()) {
+                std::cerr << "Error: --plan-file cannot be combined with --repos\n";
+                std::exit(2);
+            }
+            if (*bPush) {
+                std::cerr << "Error: --plan-file cannot be combined with --push; use `kog commit-push --plan-file`\n";
+                std::exit(2);
+            }
+            // All CLI/help/argument compatibility checks above are complete.
+            // The shared plan executor owns the audit context and publishes its
+            // terminal receipt before this callback terminates the process.
+            const auto code = RunCommitNativePlanStage(
+                workspaceRoot, *commitPlanFile, *planStage, *bProfile, true,
+                true, !effectiveNoRecursive);
+            std::exit(code);
         }
 
         if (!commitPlanFile->empty()) {
@@ -4482,7 +4587,11 @@ void ConfigureCommitCommand(CLI::App& InApp) {
 
         if (!aiRequested) {
             std::cout << "[native-commit] safety-gates: ignore + secret (repos=" << repoRecords.size() << ")\n";
-            RunPipelineSafetyGatesForNonAiCommit(workspaceRoot, repoRecords);
+            if (const auto safetyCode =
+                    RunPipelineSafetyGatesForNonAiCommit(workspaceRoot, repoRecords);
+                safetyCode != 0) {
+                std::exit(safetyCode);
+            }
         }
 
         const bool isPlanMode = !stageMessages.empty();
@@ -4694,6 +4803,16 @@ void ConfigureAmendCommand(CLI::App& InApp) {
         // that require a superproject context; using it unconditionally causes amend
         // to treat the parent repo as workspace root when run inside a submodule.
         const auto workspaceRoot = invocationRoot.lexically_normal();
+
+        // amend.plan is intentionally outside the v1 audited capability set.
+        // Reject a KOA-bound plan before provider bootstrap, safety gates, Git
+        // staging, or any other mutation can occur.
+        if (!amendPlanFile->empty()) {
+            const auto normalizedPlanPath =
+                NormalizeInputPathForCurrentPlatform(*amendPlanFile);
+            if (!ValidateUnauditedAmendPlanOrReport(normalizedPlanPath))
+                std::exit(2);
+        }
 
         NativeAiConfig ai;
         const bool aiRequested = *bAiAuto || !provider->empty() || !model->empty();

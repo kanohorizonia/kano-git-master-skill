@@ -3,6 +3,10 @@
 #include <CLI/CLI.hpp>
 #include "commit_push_cmd.hpp"
 #include "commit_push_post_sync.hpp"
+#include "commit_plan_audit.hpp"
+#include "commit_plan_execution_admission.hpp"
+#include "commit_plan_payload.hpp"
+#include "commit_plan_source_rewrite.hpp"
 #include "command_runtime_ops.hpp"
 #include "ai_utils.hpp"
 #include "runtime_path_layout.hpp"
@@ -30,22 +34,9 @@
 #include <set>
 #include <sstream>
 #include <string>
-#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-
-#if defined(_WIN32)
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#else
-#include <cerrno>
-#include <fcntl.h>
-#include <sys/file.h>
-#include <unistd.h>
-#endif
 
 namespace kano::git::commands {
 
@@ -57,190 +48,7 @@ auto WorkspaceRelativeIgnoreGatePath(const std::filesystem::path& InWorkspaceRoo
                                      const std::string& InRepoRelativePath) -> std::string;
 auto IsIgnoreGateAllowlisted(const std::unordered_set<std::string>& InPatterns,
                              const std::string& InRepoRelativePath) -> bool;
-auto PromoteTextFileAtomically(const std::filesystem::path& InTargetPath,
-                               const std::string& InText,
-                               std::string* OutError) -> bool;
-
 namespace {
-
-auto PlanExecutionLockKey(const std::filesystem::path& InPlanPath) -> std::string {
-    std::error_code ec;
-    auto normalized = std::filesystem::absolute(InPlanPath, ec);
-    if (ec) {
-        normalized = InPlanPath;
-        ec.clear();
-    }
-    const auto canonical = std::filesystem::weakly_canonical(normalized, ec);
-    const auto keySource = (ec ? normalized : canonical).lexically_normal().generic_string();
-
-    std::uint64_t hash = 1469598103934665603ull;
-    for (const unsigned char ch : keySource) {
-        hash ^= ch;
-        hash *= 1099511628211ull;
-    }
-    return std::format("{:016x}", hash);
-}
-
-class ScopedPlanExecutionLock {
-  public:
-    ScopedPlanExecutionLock() = default;
-    ScopedPlanExecutionLock(const ScopedPlanExecutionLock&) = delete;
-    auto operator=(const ScopedPlanExecutionLock&) -> ScopedPlanExecutionLock& = delete;
-
-    ScopedPlanExecutionLock(ScopedPlanExecutionLock&& InOther) noexcept {
-        MoveFrom(InOther);
-    }
-
-    auto operator=(ScopedPlanExecutionLock&& InOther) noexcept -> ScopedPlanExecutionLock& {
-        if (this != &InOther) {
-            Release();
-            MoveFrom(InOther);
-        }
-        return *this;
-    }
-
-    ~ScopedPlanExecutionLock() {
-        Release();
-    }
-
-    static auto Acquire(const std::filesystem::path& InWorkspaceRoot,
-                        const std::filesystem::path& InPlanPath,
-                        std::string* OutError,
-                        const int InTimeoutMs = 5000) -> std::optional<ScopedPlanExecutionLock> {
-        if (OutError != nullptr) {
-            OutError->clear();
-        }
-
-        const auto lockRoot =
-            (runtime_path::Layout::Resolve(InWorkspaceRoot).WorkspaceGitTemporaryRoot() /
-             "plan-execution-locks").lexically_normal();
-        std::error_code ec;
-        std::filesystem::create_directories(lockRoot, ec);
-        if (ec) {
-            if (OutError != nullptr) {
-                *OutError = "cannot create plan execution lock directory: " + ec.message();
-            }
-            return std::nullopt;
-        }
-
-        ScopedPlanExecutionLock lock;
-        lock.path_ = (lockRoot / (PlanExecutionLockKey(InPlanPath) + ".lock")).lexically_normal();
-#if defined(_WIN32)
-        lock.handle_ = CreateFileW(
-            lock.path_.wstring().c_str(),
-            GENERIC_READ | GENERIC_WRITE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE,
-            nullptr,
-            OPEN_ALWAYS,
-            FILE_ATTRIBUTE_NORMAL,
-            nullptr);
-        if (lock.handle_ == INVALID_HANDLE_VALUE) {
-            if (OutError != nullptr) {
-                *OutError = "cannot open plan execution lock file";
-            }
-            return std::nullopt;
-        }
-#else
-        lock.fd_ = ::open(lock.path_.c_str(), O_CREAT | O_RDWR, 0600);
-        if (lock.fd_ < 0) {
-            if (OutError != nullptr) {
-                *OutError = "cannot open plan execution lock file";
-            }
-            return std::nullopt;
-        }
-#endif
-
-        const auto deadline =
-            std::chrono::steady_clock::now() +
-            std::chrono::milliseconds((std::max)(0, InTimeoutMs));
-        while (true) {
-#if defined(_WIN32)
-            OVERLAPPED overlapped{};
-            if (LockFileEx(
-                    lock.handle_,
-                    LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
-                    0,
-                    MAXDWORD,
-                    MAXDWORD,
-                    &overlapped) != 0) {
-                lock.owned_ = true;
-                return std::optional<ScopedPlanExecutionLock>(std::move(lock));
-            }
-            const auto lockError = GetLastError();
-            if (lockError != ERROR_LOCK_VIOLATION && lockError != ERROR_IO_PENDING) {
-                if (OutError != nullptr) {
-                    *OutError = "cannot acquire plan execution lock";
-                }
-                return std::nullopt;
-            }
-#else
-            if (::flock(lock.fd_, LOCK_EX | LOCK_NB) == 0) {
-                lock.owned_ = true;
-                return std::optional<ScopedPlanExecutionLock>(std::move(lock));
-            }
-            if (errno != EWOULDBLOCK && errno != EAGAIN) {
-                if (OutError != nullptr) {
-                    *OutError = "cannot acquire plan execution lock";
-                }
-                return std::nullopt;
-            }
-#endif
-            if (std::chrono::steady_clock::now() >= deadline) {
-                if (OutError != nullptr) {
-                    *OutError = "plan execution lock busy: " + lock.path_.generic_string();
-                }
-                return std::nullopt;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
-    }
-
-  private:
-    void MoveFrom(ScopedPlanExecutionLock& InOther) noexcept {
-        path_ = std::move(InOther.path_);
-        owned_ = InOther.owned_;
-        InOther.owned_ = false;
-#if defined(_WIN32)
-        handle_ = InOther.handle_;
-        InOther.handle_ = INVALID_HANDLE_VALUE;
-#else
-        fd_ = InOther.fd_;
-        InOther.fd_ = -1;
-#endif
-    }
-
-    void Release() noexcept {
-#if defined(_WIN32)
-        if (handle_ == INVALID_HANDLE_VALUE) {
-            return;
-        }
-        if (owned_) {
-            OVERLAPPED overlapped{};
-            (void)UnlockFileEx(handle_, 0, MAXDWORD, MAXDWORD, &overlapped);
-        }
-        CloseHandle(handle_);
-        handle_ = INVALID_HANDLE_VALUE;
-#else
-        if (fd_ < 0) {
-            return;
-        }
-        if (owned_) {
-            (void)::flock(fd_, LOCK_UN);
-        }
-        (void)::close(fd_);
-        fd_ = -1;
-#endif
-        owned_ = false;
-    }
-
-    std::filesystem::path path_;
-    bool owned_ = false;
-#if defined(_WIN32)
-    HANDLE handle_ = INVALID_HANDLE_VALUE;
-#else
-    int fd_ = -1;
-#endif
-};
 
 auto Trim(std::string InValue) -> std::string {
     while (!InValue.empty() && (InValue.back() == '\n' || InValue.back() == '\r' || InValue.back() == ' ' || InValue.back() == '\t')) {
@@ -959,29 +767,6 @@ auto RunPlanNewViaSelf(const std::filesystem::path& InWorkspaceRoot,
     return exitCode;
 }
 
-auto RunPlanCommitSeedViaSelf(const std::filesystem::path& InWorkspaceRoot,
-                              const std::filesystem::path& InPlanPath,
-                              const bool InDeterministic) -> int {
-    std::vector<std::string> args = {
-        "plan", "commit-seed",
-        "--force",
-        "--plan-file", InPlanPath.generic_string(),
-    };
-    if (InDeterministic) {
-        args.push_back("--deterministic");
-    }
-    const auto selfBinary = ResolveSelfBinaryCommand();
-    LogAutoPlanStageDetails("plan-new",
-                            FormatCommandLineForLog(selfBinary, args),
-                            {{"plan file", InPlanPath.generic_string()}});
-    const auto result = shell::ExecuteCommand(selfBinary, args, shell::ExecMode::Capture, InWorkspaceRoot);
-    const auto exitCode = FinalizeNestedSelfResult("plan commit-seed", result);
-    if (exitCode != 0) {
-        std::cerr << "Error: plan commit-seed failed via native binary (exit=" << exitCode << ").\n";
-    }
-    return exitCode;
-}
-
 auto CheckPlanRefreshNeededViaSelf(const std::filesystem::path& InWorkspaceRoot,
                                    const std::filesystem::path& InPlanPath,
                                    std::string* OutReason) -> int {
@@ -1003,8 +788,8 @@ auto IsSharedDefaultPlanPath(const std::filesystem::path& InWorkspaceRoot,
     return InPlanPath.lexically_normal() == DefaultSharedPlanPath(InWorkspaceRoot).lexically_normal();
 }
 
-auto EnsureAgentSharedPlanFresh(const std::filesystem::path& InWorkspaceRoot,
-                                const std::filesystem::path& InPlanPath) -> int {
+auto RequireAgentSharedPlanFresh(const std::filesystem::path& InWorkspaceRoot,
+                                 const std::filesystem::path& InPlanPath) -> int {
     std::string refreshReason;
     const auto refreshCheckExit = CheckPlanRefreshNeededViaSelf(InWorkspaceRoot, InPlanPath, &refreshReason);
     if (refreshCheckExit == 1) {
@@ -1015,39 +800,16 @@ auto EnsureAgentSharedPlanFresh(const std::filesystem::path& InWorkspaceRoot,
         return refreshCheckExit;
     }
 
-    std::cout << "[commit-push] refreshing shared agent plan: " << InPlanPath.generic_string();
-    if (!refreshReason.empty()) {
-        std::cout << " (" << refreshReason << ")";
-    }
-    std::cout << "\n";
-
-    const auto planNewCode = RunPlanNewViaSelf(InWorkspaceRoot, InPlanPath);
-    if (planNewCode != 0) {
-        return planNewCode;
-    }
-    const auto commitSeedCode = RunPlanCommitSeedViaSelf(InWorkspaceRoot, InPlanPath, true);
-    if (commitSeedCode != 0) {
-        return commitSeedCode;
-    }
-
-    refreshReason.clear();
-    const auto verifyExit = CheckPlanRefreshNeededViaSelf(InWorkspaceRoot, InPlanPath, &refreshReason);
-    if (verifyExit != 1) {
-        // In agent mode, if the plan needs to be filled, exit with 3 to signal the agent
-        if (refreshReason.find("placeholder-or-empty") != std::string::npos) {
-            std::cerr << "\n[AGENT_PLAN_REQUIRED] Commit messages need to be filled in:\n";
-            std::cerr << "  " << InPlanPath.generic_string() << "\n";
-            std::cerr << "After editing the plan, run the command again.\n\n";
-            return 3;
-        }
-        std::cerr << "Error: refreshed shared agent plan is still not ready: " << InPlanPath.generic_string();
-        if (!refreshReason.empty()) {
-            std::cerr << " (" << refreshReason << ")";
-        }
-        std::cerr << "\n";
-        return verifyExit == 0 ? 2 : verifyExit;
-    }
-    return 0;
+    std::cerr << "\n[AGENT_PLAN_PREPARATION_REQUIRED] Shared plan is stale and "
+                 "cannot be rewritten inside audited execution:\n  "
+              << InPlanPath.generic_string();
+    if (!refreshReason.empty()) std::cerr << "\nReason: " << refreshReason;
+    std::cerr << "\nPrepare it in a separate completed step, for example:\n  kog plan new --force --output \""
+              << InPlanPath.generic_string()
+              << "\"\n  kog plan commit-seed --force --deterministic --plan-file \""
+              << InPlanPath.generic_string()
+              << "\"\nThen fill/review the plan and rerun commit-push.\n\n";
+    return 3;
 }
 
 auto RunIgnorePlanRunbookViaSelf(const std::filesystem::path& InWorkspaceRoot,
@@ -1422,8 +1184,8 @@ void PrintCommitPushStageTimings(const std::string& InMode,
     std::cout << "total_ms: " << InTotalMillis << "\n";
 }
 
-auto HumanAutoPlanLooksDeterministic(const std::filesystem::path& InPlanPath,
-                                     std::string* OutReason) -> bool {
+auto HumanAutoPlanLooksDeterministicForCommitPush(const std::filesystem::path& InPlanPath,
+                                                  std::string* OutReason) -> bool {
     const auto payload = ReadTextFile(InPlanPath);
     if (!payload.has_value()) {
         if (OutReason != nullptr) {
@@ -1564,31 +1326,24 @@ void PrintExecutedPlanSummary(const std::filesystem::path& InPlanPath, const int
     }
 }
 
-auto SetCommitPlanExecutedAt(const std::filesystem::path& InPath,
-                             const std::string& InExecutedAtUtc,
-                             std::string* OutError) -> bool {
-    const auto payload = ReadTextFile(InPath);
-    if (!payload.has_value()) {
-        if (OutError != nullptr) {
-            *OutError = "cannot open plan file";
-        }
-        return false;
-    }
-
-    if (payload->empty()) {
+auto BuildCommitPlanExecutedAtPayload(
+    const std::string& InAdmittedPayload,
+    const std::string& InExecutedAtUtc,
+    std::string* OutError) -> std::optional<std::string> {
+    if (InAdmittedPayload.empty()) {
         if (OutError != nullptr) {
             *OutError = "plan file is empty";
         }
-        return false;
+        return std::nullopt;
     }
 
     try {
-        auto doc = nlohmann::json::parse(*payload);
+        auto doc = nlohmann::json::parse(InAdmittedPayload);
         if (!doc.is_object() || !doc.contains("meta") || !doc["meta"].is_object()) {
             if (OutError != nullptr) {
                 *OutError = "cannot locate meta object in plan";
             }
-            return false;
+            return std::nullopt;
         }
 
         const auto& meta = doc["meta"];
@@ -1597,21 +1352,91 @@ auto SetCommitPlanExecutedAt(const std::filesystem::path& InPath,
                 if (OutError != nullptr) {
                     *OutError = "meta.executed_at_utc must be a string";
                 }
-                return false;
+                return std::nullopt;
             }
             if (meta["executed_at_utc"].get<std::string>() == InExecutedAtUtc) {
-                return true;
+                return InAdmittedPayload;
             }
         }
 
         doc["meta"]["executed_at_utc"] = InExecutedAtUtc;
-        return PromoteTextFileAtomically(InPath, doc.dump(2) + "\n", OutError);
+        return doc.dump(2) + "\n";
     } catch (const nlohmann::json::exception& e) {
         if (OutError != nullptr) {
             *OutError = std::string("invalid plan JSON: ") + e.what();
         }
+        return std::nullopt;
+    }
+}
+
+auto ClearCommitPlanExecutionStampForRun(
+    PlanAuditSink& InAudit,
+    const std::filesystem::path& InWorkspaceRoot,
+    const std::filesystem::path& InPlanPath,
+    const std::string& InAdmittedSourceBytes,
+    std::string* OutExecutionSourceBytes,
+    std::string* OutError) -> bool {
+    if (OutExecutionSourceBytes == nullptr) {
+        if (OutError) *OutError = "missing execution source output";
         return false;
     }
+    OutExecutionSourceBytes->clear();
+    if (OutError) OutError->clear();
+
+    const auto startedAtUtc = CurrentUtcTimestampIso8601();
+    const auto before = InAudit.Capture(InWorkspaceRoot);
+    std::string clearError;
+    const auto clearedPayload = BuildCommitPlanExecutedAtPayload(
+        InAdmittedSourceBytes, "", &clearError);
+    int clearCode = 0;
+    bool sourceRewritten = false;
+    if (!clearedPayload) {
+        clearCode = 2;
+    } else if (*clearedPayload != InAdmittedSourceBytes) {
+        if (!RewriteAuditedPlanSourceConditionally(
+                InAudit, InWorkspaceRoot, InPlanPath,
+                InAdmittedSourceBytes, *clearedPayload,
+                PlanSourceRewritePhase::ClearExecutionStamp,
+                &clearError)) {
+            clearCode = 2;
+        } else {
+            sourceRewritten = true;
+            *OutExecutionSourceBytes = *clearedPayload;
+        }
+    } else {
+        *OutExecutionSourceBytes = *clearedPayload;
+    }
+
+    std::string appendError;
+    if (!InAudit.Append("plan.stamp.clear", InWorkspaceRoot, before,
+                        startedAtUtc, clearCode, &appendError)) {
+        std::string restoreError;
+        const bool restored = !sourceRewritten ||
+            RestorePlanSourceBytesConditionally(
+                InPlanPath, *clearedPayload, InAdmittedSourceBytes,
+                &restoreError);
+        if (restored && sourceRewritten)
+            *OutExecutionSourceBytes = InAdmittedSourceBytes;
+        if (OutError) {
+            *OutError = "cannot audit plan execution stamp clear: " +
+                        appendError;
+            if (!restored) {
+                *OutError +=
+                    "; failed to restore cleared plan source after audit failure: " +
+                    restoreError;
+            }
+        }
+        return false;
+    }
+    if (clearCode != 0) {
+        if (OutError) {
+            *OutError = clearError.empty()
+                ? "cannot clear plan execution stamp"
+                : clearError;
+        }
+        return false;
+    }
+    return true;
 }
 
 auto ResolveSafetyGateRepos(const std::filesystem::path& InWorkspaceRoot,
@@ -1710,14 +1535,17 @@ auto CollectPlanPathspecFiles(const std::filesystem::path& InRepo,
 
     const auto out = shell::ExecuteCommand(
         "git",
-        {"ls-files", "--cached", "--modified", "--others", "--exclude-standard", "--", includePathspec},
+        {"ls-files", "-z", "--cached", "--modified", "--others", "--exclude-standard", "--", includePathspec},
         shell::ExecMode::Capture,
         InRepo);
     if (out.exitCode == 0) {
-        std::istringstream iss(out.stdoutStr);
-        std::string line;
-        while (std::getline(iss, line)) {
-            auto path = NormalizeCommitPushGitPath(line);
+        std::size_t cursor = 0;
+        while (cursor < out.stdoutStr.size()) {
+            const auto end = out.stdoutStr.find('\0', cursor);
+            if (end == std::string::npos) break;
+            auto path = NormalizeCommitPushGitReportedPath(
+                out.stdoutStr.substr(cursor, end - cursor));
+            cursor = end + 1;
             if (path.empty()) {
                 continue;
             }
@@ -1730,6 +1558,48 @@ auto CollectPlanPathspecFiles(const std::filesystem::path& InRepo,
             }
             if (!excluded) {
                 files.insert(path);
+            }
+        }
+    }
+
+    const auto stagedNames = shell::ExecuteCommand(
+        "git", {"-c", "core.quotePath=false", "diff", "--cached", "--name-status",
+                "-z", "--find-renames"},
+        shell::ExecMode::Capture, InRepo);
+    if (stagedNames.exitCode == 0) {
+        std::size_t cursor = 0;
+        const auto nextField = [&]() -> std::optional<std::string> {
+            if (cursor >= stagedNames.stdoutStr.size()) return std::nullopt;
+            const auto end = stagedNames.stdoutStr.find('\0', cursor);
+            if (end == std::string::npos) return std::nullopt;
+            auto field = stagedNames.stdoutStr.substr(cursor, end - cursor);
+            cursor = end + 1;
+            return field;
+        };
+        while (const auto statusField = nextField()) {
+            const auto firstField = nextField();
+            if (statusField->empty() || !firstField) break;
+            const auto status = *statusField;
+            std::vector<std::string> candidates = {
+                NormalizeCommitPushGitReportedPath(*firstField),
+            };
+            if (status.front() == 'R' || status.front() == 'C') {
+                const auto secondField = nextField();
+                if (!secondField) break;
+                candidates.push_back(
+                    NormalizeCommitPushGitReportedPath(*secondField));
+            }
+            const bool pairInScope = std::any_of(candidates.begin(), candidates.end(), [&](const auto& candidate) {
+                return CommitPushPathspecCoversPath(includePathspec, candidate);
+            });
+            if (!pairInScope) continue;
+            for (const auto& candidate : candidates) {
+                const auto normalized = NormalizeCommitPushGitReportedPath(candidate);
+                const bool excluded = std::any_of(
+                    InExcludePathspecs.begin(), InExcludePathspecs.end(), [&](const auto& exclude) {
+                        return CommitPushPathspecCoversPath(exclude, normalized);
+                    });
+                if (!normalized.empty() && !excluded) files.insert(normalized);
             }
         }
     }
@@ -1810,7 +1680,7 @@ auto BuildPlanFileSafetyScope(const std::filesystem::path& InWorkspaceRoot,
 }
 
 auto PlanSafetyCandidatePathExistsInHead(const PlanSafetyCandidateFile& InFile) -> bool {
-    auto path = NormalizeCommitPushGitPath(InFile.path);
+    auto path = NormalizeCommitPushGitReportedPath(InFile.path);
     if (path.empty()) {
         return false;
     }
@@ -1881,15 +1751,17 @@ auto PlanSafetyScopeHasWorkingTreeChanges(const PlanSafetyScope& InScope) -> std
     return false;
 }
 
+// Returns -1 when exact scoping is unavailable and the caller must run the
+// workspace gate, 0 on success, or a process exit code on a rejected gate.
 auto RunPlanFileExactSafetyGates(const std::filesystem::path& InWorkspaceRoot,
-                                 const std::filesystem::path& InPlanPath) -> bool {
+                                 const std::filesystem::path& InPlanPath) -> int {
     std::string scopeError;
     const auto scope = BuildPlanFileSafetyScope(InWorkspaceRoot, InPlanPath, &scopeError);
     if (!scope.scoped) {
         if (!scopeError.empty()) {
             std::cerr << "[commit-push][plan-pipeline] scoped safety gate unavailable: " << scopeError << "\n";
         }
-        return false;
+        return -1;
     }
 
     const auto workspaceRoot = InWorkspaceRoot.lexically_normal();
@@ -1903,7 +1775,7 @@ auto RunPlanFileExactSafetyGates(const std::filesystem::path& InWorkspaceRoot,
         std::vector<std::string> findings;
         findings.reserve(20);
         for (const auto& file : scope.files) {
-            auto p = NormalizeCommitPushGitPath(file.path);
+            auto p = NormalizeCommitPushGitReportedPath(file.path);
             if (p.empty() || !IsProbableIgnoreArtifactPath(p)) {
                 continue;
             }
@@ -1930,19 +1802,19 @@ auto RunPlanFileExactSafetyGates(const std::filesystem::path& InWorkspaceRoot,
             }
             std::cerr << "Hint: update .gitignore first, then regenerate plan.\n";
             std::cerr << "Hint: override once with --allow-ignore-gate (or KOG_ALLOW_IGNORE_GATE=1).\n";
-            std::exit(3);
+            return 3;
         }
     }
 
     const auto disableSecretGate = ToLower(Trim(std::getenv("KOG_DISABLE_SECRET_GATE") == nullptr ? "" : std::getenv("KOG_DISABLE_SECRET_GATE")));
     if (disableSecretGate == "1" || disableSecretGate == "true") {
-        return true;
+        return 0;
     }
 
     const auto rulesPath = (ResolveSkillRoot(workspaceRoot) / "assets" / "security" / "secret-blacklist.rules").lexically_normal();
     const auto rules = LoadSecretRules(rulesPath);
     if (rules.empty()) {
-        return true;
+        return 0;
     }
 
     std::vector<SecretFinding> findings;
@@ -1969,16 +1841,16 @@ auto RunPlanFileExactSafetyGates(const std::filesystem::path& InWorkspaceRoot,
         }
         std::cerr << "Hint: remove/redact secrets, rotate leaked credentials if needed, then rerun.\n";
         std::cerr << "Hint: disable once with KOG_DISABLE_SECRET_GATE=1 (not recommended).\n";
-        std::exit(3);
+        return 3;
     }
 
     std::cout << "[commit-push][plan-pipeline] scoped safety gates checked files=" << scope.files.size() << "\n";
-    return true;
+    return 0;
 }
 
 auto RunPipelineSafetyGatesForNonAiCommitPush(const std::filesystem::path& InWorkspaceRoot,
                                               const std::vector<std::string>& InRepoList,
-                                              bool InNoRecursive) -> void {
+                                              bool InNoRecursive) -> int {
     const auto workspaceRoot = InWorkspaceRoot.lexically_normal();
     const auto repos = ResolveSafetyGateRepos(workspaceRoot, InRepoList, InNoRecursive);
 
@@ -2023,19 +1895,19 @@ auto RunPipelineSafetyGatesForNonAiCommitPush(const std::filesystem::path& InWor
             }
             std::cerr << "Hint: update .gitignore first, then regenerate plan.\n";
             std::cerr << "Hint: override once with --allow-ignore-gate (or KOG_ALLOW_IGNORE_GATE=1).\n";
-            std::exit(3);
+            return 3;
         }
     }
 
     const auto disableSecretGate = ToLower(Trim(std::getenv("KOG_DISABLE_SECRET_GATE") == nullptr ? "" : std::getenv("KOG_DISABLE_SECRET_GATE")));
     if (disableSecretGate == "1" || disableSecretGate == "true") {
-        return;
+        return 0;
     }
 
     const auto rulesPath = (ResolveSkillRoot(workspaceRoot) / "assets" / "security" / "secret-blacklist.rules").lexically_normal();
     const auto rules = LoadSecretRules(rulesPath);
     if (rules.empty()) {
-        return;
+        return 0;
     }
     std::vector<SecretFinding> findings;
     findings.reserve(20);
@@ -2072,8 +1944,9 @@ auto RunPipelineSafetyGatesForNonAiCommitPush(const std::filesystem::path& InWor
         }
         std::cerr << "Hint: remove/redact secrets, rotate leaked credentials if needed, then rerun.\n";
         std::cerr << "Hint: disable once with KOG_DISABLE_SECRET_GATE=1 (not recommended).\n";
-        std::exit(3);
+        return 3;
     }
+    return 0;
 }
 
 auto PlanStageLikelyNonEmpty(const std::filesystem::path& InPlanFile, const std::string& InStageKey) -> bool {
@@ -2173,36 +2046,77 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
     }
 
     const auto planPath = std::filesystem::path(InNormalizedPlanFile).lexically_normal();
-    std::string planLockError;
-    auto planExecutionLock =
-        ScopedPlanExecutionLock::Acquire(InWorkspaceRoot, planPath, &planLockError);
-    if (!planExecutionLock.has_value()) {
-        std::cerr << "Error: failed to acquire plan execution lock: "
-                  << planPath.generic_string();
-        if (!planLockError.empty()) {
-            std::cerr << " (" << planLockError << ")";
-        }
-        std::cerr << "\n";
-        return 2;
-    }
-    const auto planRepoRoots = CollectPlanFileRepoRoots(InWorkspaceRoot, planPath);
-    const auto postSyncScope = BuildPostSyncPlanPathScope(InWorkspaceRoot, planPath);
-    std::string planSafetyScopeError;
-    const auto planSafetyScope = BuildPlanFileSafetyScope(InWorkspaceRoot, planPath, &planSafetyScopeError);
-
     if (agentMode) {
         std::cout << "[commit-push] agent mode + --plan-file detected; using plan-driven flow.\n";
     }
+
+    if (agentMode && IsSharedDefaultPlanPath(InWorkspaceRoot, planPath)) {
+        const auto refreshCode = RequireAgentSharedPlanFresh(InWorkspaceRoot, planPath);
+        if (refreshCode != 0) return refreshCode;
+    }
+
+    std::string auditError;
+    auto auditSink = PlanAuditSink::Reserve(InWorkspaceRoot, planPath, &auditError);
+    if (!auditSink) {
+        std::cerr << "Error: audit sink preflight failed (" << auditError << ")\n";
+        return 2;
+    }
+    auto planExecutionAdmission = AcquireAuditedPlanExecutionAdmission(
+        *auditSink, InWorkspaceRoot, planPath, &auditError);
+    if (!planExecutionAdmission.has_value()) {
+        std::cerr << "Error: failed audited plan execution lock/source admission: "
+                  << planPath.generic_string();
+        if (!auditError.empty()) std::cerr << " (" << auditError << ")";
+        std::cerr << "\n";
+        std::string finalizeError;
+        if (!auditSink->Finalize(2, &finalizeError))
+            std::cerr << "Error: audit terminalization failed (" << finalizeError << ")\n";
+        return 2;
+    }
+    const auto& frozenPlanPath = auditSink->FrozenPlanPath();
+    const auto frozenPlanFile = frozenPlanPath.generic_string();
+    const auto frozenPlan = ParseCommitPlan(frozenPlanPath, &auditError);
+    if (!frozenPlan.has_value()) {
+        std::cerr << "Error: reserved frozen plan became unreadable (" << auditError << ")\n";
+        return 2;
+    }
+    if (agentMode) {
+        const auto frozenPlanText = ReadFileText(frozenPlanPath);
+        if (frozenPlanText && frozenPlanText->find("\"replace-with-commit-message\"") != std::string::npos) {
+            const auto before = auditSink->Capture(InWorkspaceRoot);
+            const auto startedAtUtc = CurrentUtcTimestampIso8601();
+            (void)auditSink->Append("plan.preflight", InWorkspaceRoot, before,
+                                    startedAtUtc, 3, &auditError);
+            (void)auditSink->Finalize(3, &auditError);
+            std::cerr << "\n[AGENT_PLAN_REQUIRED] Commit messages need to be filled in:\n  "
+                      << planPath.generic_string() << "\nAfter editing the plan, run the command again.\n\n";
+            return 3;
+        }
+    }
+    const auto planRepoRoots = CollectPlanFileRepoRoots(InWorkspaceRoot, frozenPlanPath);
+    const auto postSyncScope = BuildPostSyncPlanPathScope(InWorkspaceRoot, frozenPlanPath);
+    std::string planSafetyScopeError;
+    const auto planSafetyScope = BuildPlanFileSafetyScope(InWorkspaceRoot, frozenPlanPath, &planSafetyScopeError);
+    const auto stageStartedAtUtc = CurrentUtcTimestampIso8601();
+    const auto stageBefore = auditSink->Capture(InWorkspaceRoot);
 
     logPipelineStage("safety-gates",
                      {{"workspace root", InWorkspaceRoot.lexically_normal().generic_string()},
                       {"plan file", planPath.generic_string()}});
     const auto safetyStart = std::chrono::steady_clock::now();
-    if (!RunPlanFileExactSafetyGates(InWorkspaceRoot, planPath)) {
-        RunPipelineSafetyGatesForNonAiCommitPush(InWorkspaceRoot, {}, false);
-    }
+    int safetyCode = RunPlanFileExactSafetyGates(InWorkspaceRoot, frozenPlanPath);
+    if (safetyCode < 0) safetyCode = RunPipelineSafetyGatesForNonAiCommitPush(InWorkspaceRoot, {}, false);
     const auto safetyEnd = std::chrono::steady_clock::now();
     safetyGatesMillis = std::chrono::duration_cast<std::chrono::milliseconds>(safetyEnd - safetyStart).count();
+    if (!auditSink->Append("plan.stage", InWorkspaceRoot, stageBefore, stageStartedAtUtc, safetyCode, &auditError)) {
+        std::cerr << "Error: audit stage append failed (" << auditError << ")\n";
+        return 2;
+    }
+    if (safetyCode != 0) {
+        if (!auditSink->Finalize(safetyCode, &auditError))
+            std::cerr << "Error: audit terminalization failed (" << auditError << ")\n";
+        return safetyCode;
+    }
 
     logPipelineStage("pre-commit",
                      {{"workspace root", InWorkspaceRoot.lexically_normal().generic_string()},
@@ -2214,28 +2128,6 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
         preCommitMillis = std::chrono::duration_cast<std::chrono::milliseconds>(preCommitEnd - preCommitStart).count();
         std::cout << "[commit-push][plan-pipeline] pre-commit skipped for explicit plan-file; "
                      "plan commit entries own exact include/exclude staging.\n";
-    }
-
-    if (agentMode && IsSharedDefaultPlanPath(InWorkspaceRoot, planPath)) {
-        const auto refreshCode = EnsureAgentSharedPlanFresh(InWorkspaceRoot, planPath);
-        if (refreshCode != 0) {
-            return refreshCode;
-        }
-    }
-
-    if (agentMode) {
-        // Check the plan file directly for unfilled placeholder messages
-        std::ifstream planFile(planPath);
-        if (planFile.is_open()) {
-            std::string planContent((std::istreambuf_iterator<char>(planFile)),
-                                     std::istreambuf_iterator<char>());
-            if (planContent.find("\"replace-with-commit-message\"") != std::string::npos) {
-                std::cerr << "\n[AGENT_PLAN_REQUIRED] Commit messages need to be filled in:\n";
-                std::cerr << "  " << planPath.generic_string() << "\n";
-                std::cerr << "After editing the plan, run the command again.\n\n";
-                return 3;
-            }
-        }
     }
 
     bool hasWorkingChanges = false;
@@ -2252,14 +2144,20 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
         hasWorkingChanges = NeedsPostSyncCommitNonPlan(InWorkspaceRoot, {}, false);
     }
 
-    std::string clearStampError;
-    if (!SetCommitPlanExecutedAt(planPath, "", &clearStampError)) {
+    std::string executionSourceBytes;
+    std::string clearError;
+    if (!ClearCommitPlanExecutionStampForRun(
+            *auditSink, InWorkspaceRoot, planPath,
+            planExecutionAdmission->AdmittedSourceBytes(),
+            &executionSourceBytes, &clearError)) {
         std::cerr << "Error: failed to clear plan executed_at_utc before execution: "
                   << planPath.generic_string();
-        if (!clearStampError.empty()) {
-            std::cerr << " (" << clearStampError << ")";
-        }
+        if (!clearError.empty()) std::cerr << " (" << clearError << ")";
         std::cerr << "\n";
+        std::string finalizeError;
+        if (!auditSink->Finalize(2, &finalizeError))
+            std::cerr << "Error: audit terminalization failed ("
+                      << finalizeError << ")\n";
         return 2;
     }
 
@@ -2271,10 +2169,18 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
                           {"plan file", planPath.generic_string()}});
         {
             const auto commitStart = std::chrono::steady_clock::now();
-            const auto commitCode = RunCommitNativePlanStage(InWorkspaceRoot, InNormalizedPlanFile, "commit", false, true);
+            const auto commitStartedAtUtc = CurrentUtcTimestampIso8601();
+            const auto commitBefore = auditSink->Capture(InWorkspaceRoot);
+            const auto commitCode = RunCommitNativePlanStage(InWorkspaceRoot, frozenPlanFile, "commit", false, true);
             const auto commitEnd = std::chrono::steady_clock::now();
             commitMillis = std::chrono::duration_cast<std::chrono::milliseconds>(commitEnd - commitStart).count();
+            if (!auditSink->Append("commit.apply", InWorkspaceRoot, commitBefore, commitStartedAtUtc, commitCode, &auditError)) {
+                std::cerr << "Error: audit commit append failed (" << auditError << ")\n";
+                return 2;
+            }
             if (commitCode != 0) {
+                if (!auditSink->Finalize(commitCode, &auditError))
+                    std::cerr << "Error: audit terminalization failed (" << auditError << ")\n";
                 return commitCode;
             }
         }
@@ -2287,7 +2193,13 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
             int syncCode = 0;
             for (const auto& repoRoot : planRepoRoots) {
                 std::cout << "[commit-push][plan-pipeline] sync repo: " << repoRoot.generic_string() << "\n";
+                const auto syncStartedAtUtc = CurrentUtcTimestampIso8601();
+                const auto syncBefore = auditSink->Capture(repoRoot);
                 syncCode = RunSyncOriginLatestNative(repoRoot, false, false, false, false);
+                if (!auditSink->Append("sync.apply", repoRoot, syncBefore, syncStartedAtUtc, syncCode, &auditError)) {
+                    std::cerr << "Error: audit sync append failed (" << auditError << ")\n";
+                    return 2;
+                }
                 if (syncCode != 0) {
                     break;
                 }
@@ -2295,6 +2207,8 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
             const auto syncEnd = std::chrono::steady_clock::now();
             syncMillis = std::chrono::duration_cast<std::chrono::milliseconds>(syncEnd - syncStart).count();
             if (syncCode != 0) {
+                if (!auditSink->Finalize(syncCode, &auditError))
+                    std::cerr << "Error: audit terminalization failed (" << auditError << ")\n";
                 return syncCode;
             }
         }
@@ -2304,7 +2218,10 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
                           {"plan file", planPath.generic_string()}});
         {
             const auto postSyncStart = std::chrono::steady_clock::now();
-            const bool hasPostSyncStage = PlanStageLikelyNonEmpty(std::filesystem::path(InNormalizedPlanFile), "post_sync");
+            const bool hasPostSyncStage = PlanStageLikelyNonEmpty(frozenPlanPath, "post_sync");
+            const auto postSyncStartedAtUtc = CurrentUtcTimestampIso8601();
+            const auto postSyncBefore = auditSink->Capture(InWorkspaceRoot);
+            int postSyncCode = 0;
             if (!hasPostSyncStage) {
                 std::cout << "[commit-push] post-sync plan stage is empty; skipping.\n";
             } else {
@@ -2324,7 +2241,8 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
                         gitlinkOnly = true;
                         const auto amendResult = AutoAmendGitlinkOnlyPostSyncRepos(repoRoot, candidateRepos, &postSyncScope);
                         if (amendResult.first != 0) {
-                            return 2;
+                            postSyncCode = 2;
+                            break;
                         }
                         std::cout << "[commit-push] post-sync gitlink-only auto-amend applied: repos=" << amendResult.second << "\n";
                     }
@@ -2336,12 +2254,21 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
                         if (semanticDrift) {
                             std::cout << "[commit-push] post-sync plan stage will run against plan repo scope.\n";
                         }
-                        const auto postCommitCode = RunCommitNativePlanStage(InWorkspaceRoot, InNormalizedPlanFile, "post_sync", false, true);
+                        const auto postCommitCode = RunCommitNativePlanStage(InWorkspaceRoot, frozenPlanFile, "post_sync", false, true);
                         if (postCommitCode != 0) {
-                            return postCommitCode;
+                            postSyncCode = postCommitCode;
                         }
                     }
                 }
+            }
+            if (hasPostSyncStage && !auditSink->Append("post-sync.commit", InWorkspaceRoot, postSyncBefore, postSyncStartedAtUtc, postSyncCode, &auditError)) {
+                std::cerr << "Error: audit post-sync append failed (" << auditError << ")\n";
+                return 2;
+            }
+            if (postSyncCode != 0) {
+                if (!auditSink->Finalize(postSyncCode, &auditError))
+                    std::cerr << "Error: audit terminalization failed (" << auditError << ")\n";
+                return postSyncCode;
             }
             const auto postSyncEnd = std::chrono::steady_clock::now();
             postSyncMillis = std::chrono::duration_cast<std::chrono::milliseconds>(postSyncEnd - postSyncStart).count();
@@ -2356,7 +2283,13 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
         int pushCode = 0;
         for (const auto& repoRoot : planRepoRoots) {
             std::cout << "[commit-push][plan-pipeline] push repo: " << repoRoot.generic_string() << "\n";
+            const auto pushStartedAtUtc = CurrentUtcTimestampIso8601();
+            const auto pushBefore = auditSink->Capture(repoRoot);
             pushCode = RunPushNativeSimple(repoRoot, false, false, false, false, false, 0, false, "");
+            if (!auditSink->Append("push", repoRoot, pushBefore, pushStartedAtUtc, pushCode, &auditError)) {
+                std::cerr << "Error: audit push append failed (" << auditError << ")\n";
+                return 2;
+            }
             if (pushCode != 0) {
                 break;
             }
@@ -2365,11 +2298,24 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
         pushMillis = std::chrono::duration_cast<std::chrono::milliseconds>(pushEnd - pushStart).count();
         const auto totalEnd = std::chrono::steady_clock::now();
         const auto totalMillis = std::chrono::duration_cast<std::chrono::milliseconds>(totalEnd - totalStart).count();
-        bool executionStamped = false;
+        std::optional<std::string> ownedExecutionStamp;
+        std::optional<std::string> ownedStampedPlanBytes;
         int resultCode = pushCode;
         if (pushCode == 0) {
             std::string stampError;
-            if (!SetCommitPlanExecutedAt(planPath, CurrentUtcTimestampIso8601(), &stampError)) {
+            const auto stampStartedAtUtc = CurrentUtcTimestampIso8601();
+            const auto stampBefore = auditSink->Capture(InWorkspaceRoot);
+            const auto executionStamp = CurrentUtcTimestampIso8601();
+            const auto stampedPayload = BuildCommitPlanExecutedAtPayload(
+                executionSourceBytes,
+                executionStamp, &stampError);
+            if (!stampedPayload ||
+                !RewriteAuditedPlanSourceConditionally(
+                    *auditSink, InWorkspaceRoot, planPath,
+                    executionSourceBytes,
+                    *stampedPayload,
+                    PlanSourceRewritePhase::WriteCompletionStamp,
+                    &stampError)) {
                 std::cerr << "Error: failed to stamp plan executed_at_utc after successful push: "
                           << planPath.generic_string();
                 if (!stampError.empty()) {
@@ -2378,7 +2324,25 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
                 std::cerr << "\n";
                 resultCode = 2;
             } else {
-                executionStamped = true;
+                ownedExecutionStamp = executionStamp;
+                ownedStampedPlanBytes = *stampedPayload;
+            }
+            if (!auditSink->Append("plan.stamp", InWorkspaceRoot, stampBefore, stampStartedAtUtc, resultCode, &auditError)) {
+                std::cerr << "Error: audit stamp append failed (" << auditError << ")\n";
+                if (ownedExecutionStamp.has_value() &&
+                    ownedStampedPlanBytes.has_value()) {
+                    std::string restoreError;
+                    if (!RestorePlanSourceBytesConditionally(
+                            planPath, *ownedStampedPlanBytes,
+                            executionSourceBytes,
+                            &restoreError)) {
+                        std::cerr << "Error: failed to restore owned execution stamp after audit failure ("
+                                  << restoreError << ")\n";
+                    }
+                    ownedExecutionStamp.reset();
+                    ownedStampedPlanBytes.reset();
+                }
+                return 2;
             }
         }
         PrintCommitPushStageTimings("plan-file",
@@ -2389,7 +2353,24 @@ auto RunCommitPushPlanFilePipelineImpl(const std::filesystem::path& InWorkspaceR
                                     postSyncMillis,
                                     pushMillis,
                                     totalMillis);
-        if (executionStamped) {
+        if (!auditSink->Finalize(resultCode, &auditError)) {
+            std::cerr << "Error: audit terminalization failed (" << auditError << ")\n";
+            if (ownedExecutionStamp.has_value() &&
+                ownedStampedPlanBytes.has_value()) {
+                std::string restoreError;
+                if (!RestorePlanSourceBytesConditionally(
+                        planPath, *ownedStampedPlanBytes,
+                        executionSourceBytes,
+                        &restoreError)) {
+                    std::cerr << "Error: failed to restore owned execution stamp after audit failure ("
+                              << restoreError << ")\n";
+                }
+                ownedExecutionStamp.reset();
+                ownedStampedPlanBytes.reset();
+            }
+            return 2;
+        }
+        if (ownedExecutionStamp.has_value()) {
             PrintExecutedPlanSummary(std::filesystem::path(InNormalizedPlanFile).lexically_normal(), 10);
         }
         return resultCode;
@@ -2603,7 +2584,7 @@ auto MakeCommitPushCommandCallback(CLI::App& InCommand,
                 }
                 std::cout << "[commit-push][auto-plan] stage=commit-runbook done ms=" << commitRunbookMillis << "\n";
                 std::string deterministicReason;
-                if (HumanAutoPlanLooksDeterministic(autoPlanPath, &deterministicReason)) {
+                if (HumanAutoPlanLooksDeterministicForCommitPush(autoPlanPath, &deterministicReason)) {
                     std::cerr << "Error: AI commit runbook produced non-AI deterministic plan metadata; refusing to continue.\n";
                     std::cerr << "Hint: verify AI provider/auth and rerun plain `kog cpa`.\n";
                     std::cerr << "Hint: deterministic metadata: " << deterministicReason << "\n";
@@ -2665,67 +2646,138 @@ auto MakeCommitPushCommandCallback(CLI::App& InCommand,
             std::exit(code);
         }
 
-        std::optional<ScopedPlanExecutionLock> planExecutionLock;
+        std::optional<PlanExecutionAdmission> planExecutionAdmission;
+        std::unique_ptr<PlanAuditSink> generalAuditSink;
+        std::string generalAuditError;
+        std::filesystem::path generalFrozenPlanPath;
+        std::string generalExecutionSourceBytes;
+        std::optional<std::string> generalOwnedExecutionStamp;
+        std::optional<std::string> generalOwnedStampedPlanBytes;
         if (hasCommitPlan) {
             const auto planPath = std::filesystem::path(normalizedCommitPlanFile).lexically_normal();
-            std::string planLockError;
-            auto acquiredPlanLock =
-                ScopedPlanExecutionLock::Acquire(workspaceRoot, planPath, &planLockError);
-            if (!acquiredPlanLock.has_value()) {
-                std::cerr << "Error: failed to acquire plan execution lock: "
-                          << planPath.generic_string();
-                if (!planLockError.empty()) {
-                    std::cerr << " (" << planLockError << ")";
-                }
-                std::cerr << "\n";
+            if (agentMode && IsSharedDefaultPlanPath(workspaceRoot, planPath)) {
+                const auto freshnessCode =
+                    RequireAgentSharedPlanFresh(workspaceRoot, planPath);
+                if (freshnessCode != 0) std::exit(freshnessCode);
+            }
+            generalAuditSink = PlanAuditSink::Reserve(workspaceRoot, planPath, &generalAuditError);
+            if (!generalAuditSink) {
+                std::cerr << "Error: audit sink preflight failed (" << generalAuditError << ")\n";
                 std::exit(2);
             }
-            planExecutionLock = std::move(*acquiredPlanLock);
+            auto acquiredPlanAdmission = AcquireAuditedPlanExecutionAdmission(
+                *generalAuditSink, workspaceRoot, planPath, &generalAuditError);
+            if (!acquiredPlanAdmission.has_value()) {
+                std::cerr << "Error: failed audited plan execution lock/source admission: "
+                          << planPath.generic_string();
+                if (!generalAuditError.empty())
+                    std::cerr << " (" << generalAuditError << ")";
+                std::cerr << "\n";
+                std::string finalizeError;
+                if (!generalAuditSink->Finalize(2, &finalizeError))
+                    std::cerr << "Error: audit terminalization failed ("
+                              << finalizeError << ")\n";
+                std::exit(2);
+            }
+            planExecutionAdmission = std::move(*acquiredPlanAdmission);
+            generalFrozenPlanPath = generalAuditSink->FrozenPlanPath();
+            const auto reservedPlan = ParseCommitPlan(generalFrozenPlanPath, &generalAuditError);
+            if (!reservedPlan) {
+                std::cerr << "Error: reserved frozen plan became unreadable (" << generalAuditError << ")\n";
+                std::string finalizeError;
+                if (!generalAuditSink->Finalize(2, &finalizeError))
+                    std::cerr << "Error: audit terminalization failed ("
+                              << finalizeError << ")\n";
+                std::exit(2);
+            }
         }
+
+        const auto exitWithAudit = [&](const int code) {
+            if (generalAuditSink && !generalAuditSink->Finalize(code, &generalAuditError)) {
+                std::cerr << "Error: audit terminalization failed (" << generalAuditError << ")\n";
+                if (generalOwnedExecutionStamp.has_value() &&
+                    generalOwnedStampedPlanBytes.has_value()) {
+                    std::string restoreError;
+                    const auto planPath = std::filesystem::path(normalizedCommitPlanFile).lexically_normal();
+                    if (!RestorePlanSourceBytesConditionally(
+                            planPath, *generalOwnedStampedPlanBytes,
+                            generalExecutionSourceBytes,
+                            &restoreError)) {
+                        std::cerr << "Error: failed to restore owned execution stamp after audit failure ("
+                                  << restoreError << ")\n";
+                    }
+                    generalOwnedExecutionStamp.reset();
+                    generalOwnedStampedPlanBytes.reset();
+                }
+                std::exit(2);
+            }
+            if (generalOwnedExecutionStamp.has_value()) {
+                PrintExecutedPlanSummary(std::filesystem::path(normalizedCommitPlanFile).lexically_normal(), 10);
+            }
+            std::exit(code);
+        };
 
         if (agentMode && hasCommitPlan) {
             std::cout << "[commit-push] agent mode + --plan-file detected; using plan-driven flow.\n";
         }
 
-        if (!effectiveAiModeRequested) {
+        if (hasCommitPlan || !effectiveAiModeRequested) {
             std::cout << "=== commit-push stage: safety-gates ===\n";
             {
                 KOG_SCOPED_TIMING_LOG("commit-push.safety-gates");
-                RunPipelineSafetyGatesForNonAiCommitPush(workspaceRoot, repoList, effectiveNoRecursive);
+                const auto startedAtUtc = CurrentUtcTimestampIso8601();
+                const auto before = generalAuditSink ? generalAuditSink->Capture(workspaceRoot) : audit::RepositoryState{};
+                auto safetyCode = hasCommitPlan
+                    ? RunPlanFileExactSafetyGates(workspaceRoot, generalFrozenPlanPath)
+                    : RunPipelineSafetyGatesForNonAiCommitPush(workspaceRoot, repoList, effectiveNoRecursive);
+                if (safetyCode < 0) {
+                    safetyCode = RunPipelineSafetyGatesForNonAiCommitPush(
+                        workspaceRoot, repoList, effectiveNoRecursive);
+                }
+                if (generalAuditSink && !generalAuditSink->Append("plan.stage", workspaceRoot, before, startedAtUtc, safetyCode, &generalAuditError)) {
+                    std::cerr << "Error: audit stage append failed (" << generalAuditError << ")\n";
+                    exitWithAudit(2);
+                }
+                if (safetyCode != 0) exitWithAudit(safetyCode);
             }
         }
 
         if (hasCommitPlan) {
-            const auto planPath = std::filesystem::path(normalizedCommitPlanFile).lexically_normal();
-            std::string clearStampError;
-            if (!SetCommitPlanExecutedAt(planPath, "", &clearStampError)) {
-                std::cerr << "Error: failed to clear plan executed_at_utc before execution: "
-                          << planPath.generic_string();
-                if (!clearStampError.empty()) {
-                    std::cerr << " (" << clearStampError << ")";
-                }
+            const auto planPath =
+                std::filesystem::path(normalizedCommitPlanFile)
+                    .lexically_normal();
+            std::string clearError;
+            if (!ClearCommitPlanExecutionStampForRun(
+                    *generalAuditSink, workspaceRoot, planPath,
+                    planExecutionAdmission->AdmittedSourceBytes(),
+                    &generalExecutionSourceBytes, &clearError)) {
+                std::cerr
+                    << "Error: failed to clear plan executed_at_utc before execution: "
+                    << planPath.generic_string();
+                if (!clearError.empty())
+                    std::cerr << " (" << clearError << ")";
                 std::cerr << "\n";
-                std::exit(2);
+                exitWithAudit(2);
             }
         }
 
         std::cout << "=== commit-push stage: pre-commit ===\n";
         {
             KOG_SCOPED_TIMING_LOG("commit-push.pre-commit");
+            const auto startedAtUtc = CurrentUtcTimestampIso8601();
+            const auto before = generalAuditSink ? generalAuditSink->Capture(workspaceRoot) : audit::RepositoryState{};
+            int preCommitCode = 0;
             if (!repoList.empty()) {
                 for (const auto& repo : repoList) {
                     const auto repoRoot = (workspaceRoot / std::filesystem::path(repo)).lexically_normal();
-                    const auto preCommitCode = RunSyncPreCommitNative(repoRoot, false, *dryRun, *branchMode);
-                    if (preCommitCode != 0) {
-                        std::exit(preCommitCode);
-                    }
+                    preCommitCode = RunSyncPreCommitNative(repoRoot, false, *dryRun, *branchMode);
+                    if (preCommitCode != 0) break;
                 }
             } else {
-                const auto preCommitCode = RunSyncPreCommitNative(workspaceRoot, !*noRecursive, *dryRun, *branchMode);
-                if (preCommitCode != 0) {
-                    std::exit(preCommitCode);
-                }
+                preCommitCode = RunSyncPreCommitNative(workspaceRoot, !*noRecursive, *dryRun, *branchMode);
             }
+            if (generalAuditSink && !generalAuditSink->Append("pre-commit.sync", workspaceRoot, before, startedAtUtc, preCommitCode, &generalAuditError)) exitWithAudit(2);
+            if (preCommitCode != 0) exitWithAudit(preCommitCode);
         }
 
         const bool hasWorkingChanges = NeedsPostSyncCommitNonPlan(workspaceRoot, repoList, effectiveNoRecursive);
@@ -2735,9 +2787,12 @@ auto MakeCommitPushCommandCallback(CLI::App& InCommand,
             std::cout << "=== commit-push stage: commit ===\n";
             {
                 KOG_SCOPED_TIMING_LOG("commit-push.commit");
+                const auto startedAtUtc = CurrentUtcTimestampIso8601();
+                const auto before = generalAuditSink ? generalAuditSink->Capture(workspaceRoot) : audit::RepositoryState{};
                 const auto commitResult = hasCommitPlan
                     ? shell::ExecResult{
-                        RunCommitNativePlanStage(workspaceRoot, normalizedCommitPlanFile, "commit", false, true), "", ""}
+                        RunCommitNativePlanStage(
+                            workspaceRoot, generalFrozenPlanPath.generic_string(), "commit", false, true), "", ""}
                     : shell::ExecResult{
                         RunCommitNativeSimple(
                             workspaceRoot,
@@ -2752,33 +2807,36 @@ auto MakeCommitPushCommandCallback(CLI::App& InCommand,
                             *noAiReview,
                             false),
                         "", ""};
+                if (generalAuditSink && !generalAuditSink->Append("commit.apply", workspaceRoot, before, startedAtUtc, commitResult.exitCode, &generalAuditError)) exitWithAudit(2);
                 if (commitResult.exitCode != 0) {
-                    std::exit(commitResult.exitCode);
+                    exitWithAudit(commitResult.exitCode);
                 }
             }
 
             std::cout << "=== commit-push stage: sync ===\n";
             {
                 KOG_SCOPED_TIMING_LOG("commit-push.sync");
+                const auto startedAtUtc = CurrentUtcTimestampIso8601();
+                const auto before = generalAuditSink ? generalAuditSink->Capture(workspaceRoot) : audit::RepositoryState{};
+                int syncCode = 0;
                 if (!repoList.empty()) {
                     for (const auto& repo : repoList) {
                         const auto repoRoot = (workspaceRoot / std::filesystem::path(repo)).lexically_normal();
-                        const auto syncCode = RunSyncOriginLatestNative(repoRoot, false, *dryRun);
-                        if (syncCode != 0) {
-                            std::exit(syncCode);
-                        }
+                        syncCode = RunSyncOriginLatestNative(repoRoot, false, *dryRun);
+                        if (syncCode != 0) break;
                     }
                 } else {
-                    const auto syncCode = RunSyncOriginLatestNative(workspaceRoot, !effectiveNoRecursive, *dryRun);
-                    if (syncCode != 0) {
-                        std::exit(syncCode);
-                    }
+                    syncCode = RunSyncOriginLatestNative(workspaceRoot, !effectiveNoRecursive, *dryRun);
                 }
+                if (generalAuditSink && !generalAuditSink->Append("sync.apply", workspaceRoot, before, startedAtUtc, syncCode, &generalAuditError)) exitWithAudit(2);
+                if (syncCode != 0) exitWithAudit(syncCode);
             }
 
             std::cout << "=== commit-push stage: post-sync ===\n";
             {
                 KOG_SCOPED_TIMING_LOG("commit-push.post-sync");
+                const auto startedAtUtc = CurrentUtcTimestampIso8601();
+                const auto before = generalAuditSink ? generalAuditSink->Capture(workspaceRoot) : audit::RepositoryState{};
                 shell::ExecResult postCommitResult{0, "", ""};
                 if (*dryRun) {
                     if (hasCommitPlan) {
@@ -2800,16 +2858,17 @@ auto MakeCommitPushCommandCallback(CLI::App& InCommand,
                         const auto amendResult =
                             AutoAmendGitlinkOnlyPostSyncRepos(workspaceRoot, postSyncCandidateRepos);
                         if (amendResult.first != 0) {
-                            std::exit(2);
+                            postCommitResult.exitCode = 2;
                         }
                         std::cout << "[commit-push] post-sync gitlink-only auto-amend applied: repos=" << amendResult.second << "\n";
                     } else if (hasCommitPlan) {
-                        const bool hasPostSyncStage = PlanStageLikelyNonEmpty(std::filesystem::path(normalizedCommitPlanFile), "post_sync");
+                        const bool hasPostSyncStage = PlanStageLikelyNonEmpty(generalFrozenPlanPath, "post_sync");
                         if (!hasPostSyncStage) {
                             std::cout << "[commit-push] post-sync plan stage is empty; skipping.\n";
                         } else if (NeedsPostSyncCommitNonPlan(workspaceRoot, repoList, effectiveNoRecursive)) {
                             postCommitResult =
-                                shell::ExecResult{RunCommitNativePlanStage(workspaceRoot, normalizedCommitPlanFile, "post_sync", false, true), "", ""};
+                                shell::ExecResult{RunCommitNativePlanStage(
+                                    workspaceRoot, generalFrozenPlanPath.generic_string(), "post_sync", false, true), "", ""};
                         } else {
                             std::cout << "[commit-push] post-sync plan commit skipped (no working tree changes).\n";
                         }
@@ -2833,8 +2892,9 @@ auto MakeCommitPushCommandCallback(CLI::App& InCommand,
                         std::cout << "[commit-push] post-sync commit skipped (no working tree changes).\n";
                     }
                 }
+                if (generalAuditSink && !generalAuditSink->Append("post-sync.commit", workspaceRoot, before, startedAtUtc, postCommitResult.exitCode, &generalAuditError)) exitWithAudit(2);
                 if (postCommitResult.exitCode != 0) {
-                    std::exit(postCommitResult.exitCode);
+                    exitWithAudit(postCommitResult.exitCode);
                 }
             }
         }
@@ -2843,6 +2903,8 @@ auto MakeCommitPushCommandCallback(CLI::App& InCommand,
         int pushExitCode = 0;
         {
             KOG_SCOPED_TIMING_LOG("commit-push.push");
+            const auto startedAtUtc = CurrentUtcTimestampIso8601();
+            const auto before = generalAuditSink ? generalAuditSink->Capture(workspaceRoot) : audit::RepositoryState{};
             if (!repoList.empty()) {
                 std::vector<std::string> pushArgs = {"push", "--repos", JoinReposCsv(repoList), "--no-recursive"};
                 if (*dryRun) {
@@ -2901,14 +2963,26 @@ auto MakeCommitPushCommandCallback(CLI::App& InCommand,
                         *remote);
                 }
             }
+            if (generalAuditSink && !generalAuditSink->Append("push", workspaceRoot, before, startedAtUtc, pushExitCode, &generalAuditError)) exitWithAudit(2);
         }
 
         if (hasCommitPlan) {
             const auto planPath = std::filesystem::path(normalizedCommitPlanFile).lexically_normal();
-            bool executionStamped = false;
             if (pushExitCode == 0) {
                 std::string stampError;
-                if (!SetCommitPlanExecutedAt(planPath, CurrentUtcTimestampIso8601(), &stampError)) {
+                const auto stampStartedAtUtc = CurrentUtcTimestampIso8601();
+                const auto stampBefore = generalAuditSink ? generalAuditSink->Capture(workspaceRoot) : audit::RepositoryState{};
+                const auto executionStamp = CurrentUtcTimestampIso8601();
+                const auto stampedPayload = BuildCommitPlanExecutedAtPayload(
+                    generalExecutionSourceBytes,
+                    executionStamp, &stampError);
+                if (!stampedPayload ||
+                    !RewriteAuditedPlanSourceConditionally(
+                        *generalAuditSink, workspaceRoot, planPath,
+                        generalExecutionSourceBytes,
+                        *stampedPayload,
+                        PlanSourceRewritePhase::WriteCompletionStamp,
+                        &stampError)) {
                     std::cerr << "Error: failed to stamp plan executed_at_utc after successful push: "
                               << planPath.generic_string();
                     if (!stampError.empty()) {
@@ -2917,15 +2991,30 @@ auto MakeCommitPushCommandCallback(CLI::App& InCommand,
                     std::cerr << "\n";
                     pushExitCode = 2;
                 } else {
-                    executionStamped = true;
+                    generalOwnedExecutionStamp = executionStamp;
+                    generalOwnedStampedPlanBytes = *stampedPayload;
                 }
-            }
-            if (executionStamped) {
-                PrintExecutedPlanSummary(planPath, 10);
+                if (generalAuditSink && !generalAuditSink->Append(
+                        "plan.stamp", workspaceRoot, stampBefore, stampStartedAtUtc, pushExitCode, &generalAuditError)) {
+                    if (generalOwnedExecutionStamp.has_value() &&
+                        generalOwnedStampedPlanBytes.has_value()) {
+                        std::string restoreError;
+                        if (!RestorePlanSourceBytesConditionally(
+                                planPath, *generalOwnedStampedPlanBytes,
+                                generalExecutionSourceBytes,
+                                &restoreError)) {
+                            std::cerr << "Error: failed to restore owned execution stamp after audit failure ("
+                                      << restoreError << ")\n";
+                        }
+                        generalOwnedExecutionStamp.reset();
+                        generalOwnedStampedPlanBytes.reset();
+                    }
+                    exitWithAudit(2);
+                }
             }
         }
 
-        std::exit(pushExitCode);
+        exitWithAudit(pushExitCode);
     };
 }
 

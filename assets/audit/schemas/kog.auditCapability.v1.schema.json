@@ -1,0 +1,41 @@
+{
+  "$id": "https://schemas.kanohorizonia.dev/kog/kog.auditCapability.v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "KOG Audit Capability v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaName", "schemaVersion", "protocolVersion", "correlationEnvelopeVersions", "auditEventVersions", "runReceiptVersions", "auditVerificationVersions", "supportedInputs", "provenanceGrantsAuthority", "durability"],
+  "properties": {
+    "schemaName": {"const": "kog.auditCapability"},
+    "schemaVersion": {"const": 1},
+    "protocolVersion": {"const": 1},
+    "correlationEnvelopeVersions": {"const": [1]},
+    "auditEventVersions": {"const": [1]},
+    "runReceiptVersions": {"const": [1]},
+    "auditVerificationVersions": {"const": [1]},
+    "supportedInputs": {
+      "type": "array", "minItems": 7, "maxItems": 7, "uniqueItems": true,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["route", "inputKind"],
+        "properties": {
+          "route": {"enum": ["commit.plan", "commit-push.plan", "plan.apply", "converge.repos", "converge.branches.apply", "converge.branches.recover", "converge.branches.retire"]},
+          "inputKind": {"enum": ["commit-plan", "operation-descriptor"]}
+        }
+      },
+      "allOf": [
+        {"contains": {"const": {"route": "commit.plan", "inputKind": "commit-plan"}}},
+        {"contains": {"const": {"route": "commit-push.plan", "inputKind": "commit-plan"}}},
+        {"contains": {"const": {"route": "plan.apply", "inputKind": "commit-plan"}}},
+        {"contains": {"const": {"route": "converge.repos", "inputKind": "operation-descriptor"}}},
+        {"contains": {"const": {"route": "converge.branches.apply", "inputKind": "operation-descriptor"}}},
+        {"contains": {"const": {"route": "converge.branches.recover", "inputKind": "operation-descriptor"}}},
+        {"contains": {"const": {"route": "converge.branches.retire", "inputKind": "operation-descriptor"}}}
+      ]
+    },
+    "provenanceGrantsAuthority": {"const": false},
+    "durability": {
+      "type": "object", "additionalProperties": false, "required": ["fileFlush", "directorySync"],
+      "properties": {"fileFlush": {"const": "required"}, "directorySync": {"const": "required-posix-best-effort-windows"}}
+    }
+  }
+}

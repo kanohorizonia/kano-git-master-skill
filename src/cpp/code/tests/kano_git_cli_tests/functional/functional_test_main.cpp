@@ -1,15 +1,30 @@
 #include "functional_test_support.hpp"
+#include "audit_contract.hpp"
+#include "shell_executor.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <future>
+#include <optional>
 #include <regex>
+#include <set>
 #include <sstream>
 #include <string>
+#include <thread>
+
+#if !defined(_WIN32)
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
+#endif
 
 namespace kano::git::tests::functional {
 namespace {
@@ -530,6 +545,210 @@ auto ReplaceJsonStringField(std::string InJson,
     return InJson;
 }
 
+auto ReplaceJsonUnsignedField(std::string InJson,
+                              const std::string& InKey,
+                              const std::uint32_t InValue) -> std::string {
+    const auto keyToken = "\"" + InKey + "\"";
+    const auto keyPos = InJson.find(keyToken);
+    REQUIRE(keyPos != std::string::npos);
+    const auto colonPos = InJson.find(':', keyPos + keyToken.size());
+    REQUIRE(colonPos != std::string::npos);
+    const auto valueStart = InJson.find_first_of("0123456789", colonPos + 1);
+    REQUIRE(valueStart != std::string::npos);
+    const auto valueEnd = InJson.find_first_not_of("0123456789", valueStart);
+    InJson.replace(valueStart, valueEnd - valueStart, std::to_string(InValue));
+    return InJson;
+}
+
+auto ResolvePlanAuditRoot(const std::filesystem::path& InPlanPath)
+    -> std::filesystem::path {
+    auto auditRoot = InPlanPath.parent_path() / (InPlanPath.filename().string() + ".audit");
+    const auto gitDirectory = RunGit({"rev-parse", "--absolute-git-dir"}, InPlanPath.parent_path());
+    if (gitDirectory.exitCode == 0 && !TrimCopy(gitDirectory.stdoutText).empty()) {
+        std::error_code ec;
+        const auto canonicalPlan = std::filesystem::weakly_canonical(InPlanPath, ec);
+        REQUIRE_FALSE(ec);
+        auditRoot = std::filesystem::path(TrimCopy(gitDirectory.stdoutText)) / "kog" / "audit" /
+            ("plan-" + kano::git::audit::Sha256Hex(canonicalPlan.generic_string()));
+    }
+    return auditRoot;
+}
+
+auto FindAuditAttemptRoots(const std::filesystem::path& InPlanPath,
+                           const std::uint32_t InAttempt)
+    -> std::vector<std::filesystem::path> {
+    const auto auditRoot = ResolvePlanAuditRoot(InPlanPath);
+    const auto attemptName = "attempt-" + std::to_string(InAttempt);
+    std::vector<std::filesystem::path> matches;
+    std::error_code ec;
+    for (std::filesystem::recursive_directory_iterator it(auditRoot, ec), end; !ec && it != end; it.increment(ec)) {
+        if (it->is_directory(ec) && it->path().filename() == attemptName) matches.push_back(it->path());
+    }
+    REQUIRE_FALSE(ec);
+    return matches;
+}
+
+auto FindAuditAttemptRoot(const std::filesystem::path& InPlanPath,
+                          const std::uint32_t InAttempt) -> std::filesystem::path {
+    const auto matches = FindAuditAttemptRoots(InPlanPath, InAttempt);
+    REQUIRE(matches.size() == 1);
+    return matches.front();
+}
+
+auto RequireAuditAttemptRoot(
+    const std::filesystem::path& InRoot,
+    const kano::git::audit::OutcomeState InOutcome,
+    const std::vector<std::string>& InActions) -> void {
+    const auto events = kano::git::audit::ParseAuditEventsJsonl(
+        ReadTextFile(InRoot / "events.jsonl"));
+    INFO("audit event parse issues=" << events.validation.issues.size());
+    REQUIRE(events.ok());
+    const auto receipt = kano::git::audit::ParseRunReceiptJson(
+        ReadTextFile(InRoot / "receipt.json"));
+    INFO("audit receipt parse issues=" << receipt.validation.issues.size());
+    REQUIRE(receipt.ok());
+    REQUIRE(receipt.value->terminalOutcome.status == InOutcome);
+    REQUIRE(kano::git::audit::ValidateRunTrace(*receipt.value, events.values).ok());
+    for (const auto& action : InActions) {
+        REQUIRE(std::any_of(events.values.begin(), events.values.end(),
+                            [&](const auto& event) {
+                                return event.action == action;
+                            }));
+    }
+}
+
+auto RunKogWithPostReserveSameInodeRewrite(
+    const std::vector<std::string>& InArgs,
+    const std::filesystem::path& InRepo,
+    const std::filesystem::path& InPlanPath,
+    const std::string& InChangedBytes) -> CommandResult {
+    const auto auditRoot = ResolvePlanAuditRoot(InPlanPath);
+    std::atomic<bool> stop{false};
+    std::atomic<bool> changed{false};
+    std::thread mutator([&]() {
+        while (!stop.load(std::memory_order_relaxed) &&
+               !changed.load(std::memory_order_relaxed)) {
+            std::error_code ec;
+            if (std::filesystem::exists(auditRoot, ec) && !ec) {
+                for (std::filesystem::recursive_directory_iterator it(
+                         auditRoot, ec), end;
+                     !ec && it != end; it.increment(ec)) {
+                    if (it->path().filename() != "publication-pending.json")
+                        continue;
+                    std::ofstream output(
+                        InPlanPath, std::ios::binary | std::ios::trunc);
+                    if (output.good()) {
+                        output << InChangedBytes;
+                        output.flush();
+                        changed.store(output.good(), std::memory_order_relaxed);
+                    }
+                    break;
+                }
+            }
+            if (!changed.load(std::memory_order_relaxed))
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    });
+    const auto result = RunKogWithEnv(
+        InArgs, InRepo,
+        {{"KOG_TEST_MODE", "1"},
+         {"KOG_TEST_ONLY_AUDIT_INPUT_POST_STAT_DELAY_MS", "750"},
+         {"KOG_PROCESS_DIAGNOSTICS", "0"}});
+    stop.store(true, std::memory_order_relaxed);
+    mutator.join();
+    REQUIRE(changed.load(std::memory_order_relaxed));
+    return result;
+}
+
+auto WaitForPath(const std::filesystem::path& InPath,
+                 const std::chrono::milliseconds InTimeout) -> bool {
+    const auto deadline = std::chrono::steady_clock::now() + InTimeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+        std::error_code ec;
+        if (std::filesystem::exists(InPath, ec) && !ec) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return false;
+}
+
+#if !defined(_WIN32)
+auto RunKogInIsolatedChild(
+    const std::vector<std::string>& InArgs,
+    const std::filesystem::path& InRepo,
+    const std::vector<std::pair<std::string, std::string>>& InEnv)
+    -> CommandResult {
+    auto skillRoot = ResolveKogBinaryPath().parent_path();
+    for (int index = 0; index < 6 && !skillRoot.empty(); ++index)
+        skillRoot = skillRoot.parent_path();
+    std::vector<std::string> childArgs = {
+        "-c", "cd \"$1\" && shift && exec \"$@\"", "kog-lock-test",
+        InRepo.string(), "/usr/bin/env", "KOG_GIT_INTERACTIVE=0",
+        "GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=never",
+        "GIT_ASKPASS=true", "SSH_ASKPASS=true",
+        "KOG_PROCESS_DIAGNOSTICS=0", "KOG_SHELL_TIMEOUT_MS=120000",
+        "KANO_GIT_SKILL_ROOT=" + skillRoot.string()};
+    for (const auto& [key, value] : InEnv)
+        childArgs.push_back(key + "=" + value);
+    childArgs.push_back(ResolveKogBinaryPath().string());
+    childArgs.insert(childArgs.end(), InArgs.begin(), InArgs.end());
+
+    const auto started = std::chrono::steady_clock::now();
+    const auto executed = kano::git::shell::ExecuteCommand(
+        "/bin/sh", childArgs, kano::git::shell::ExecMode::Capture,
+        std::nullopt);
+    CommandResult result;
+    result.exitCode = executed.exitCode;
+    result.stdoutText = executed.stdoutStr;
+    result.stderrText = executed.stderrStr;
+    result.elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                           std::chrono::steady_clock::now() - started)
+                           .count();
+    return result;
+}
+#endif
+
+auto RequireAuditAttempt(const std::filesystem::path& InPlanPath,
+                         const std::uint32_t InAttempt,
+                         const kano::git::audit::OutcomeState InOutcome,
+                         const std::vector<std::string>& InActions) -> void {
+    const auto root = FindAuditAttemptRoot(InPlanPath, InAttempt);
+    RequireAuditAttemptRoot(root, InOutcome, InActions);
+}
+
+auto ResolveGitMetadataPath(const std::filesystem::path& InRepo,
+                            const std::string& InSelector)
+    -> std::filesystem::path {
+    const auto result = RunGit({"rev-parse", InSelector}, InRepo);
+    RequireSuccess(result, "resolve Git metadata path " + InSelector);
+    auto candidate = std::filesystem::path(TrimCopy(result.stdoutText));
+    if (candidate.is_relative()) candidate = InRepo / candidate;
+    std::error_code ec;
+    const auto resolved = std::filesystem::weakly_canonical(candidate, ec);
+    REQUIRE_FALSE(ec);
+    REQUIRE(resolved.is_absolute());
+    return resolved;
+}
+
+auto FindOnlyOperationAuditAttempt(const std::filesystem::path& InRepo)
+    -> std::filesystem::path {
+    const auto auditRoot = ResolveGitMetadataPath(InRepo, "--git-common-dir") /
+        "kog" / "audit";
+    std::vector<std::filesystem::path> matches;
+    std::error_code ec;
+    for (std::filesystem::recursive_directory_iterator it(auditRoot, ec), end;
+         !ec && it != end; it.increment(ec)) {
+        if (it->is_regular_file(ec) && it->path().filename() == "receipt.json" &&
+            it->path().parent_path().filename().string().rfind("attempt-", 0) == 0 &&
+            it->path().parent_path().parent_path().parent_path().filename().string().rfind(
+                "operation-", 0) == 0) {
+            matches.push_back(it->path().parent_path());
+        }
+    }
+    REQUIRE_FALSE(ec);
+    REQUIRE(matches.size() == 1);
+    return matches.front();
+}
+
 auto CreateRemoteWithClone(const std::string& InName, const std::string& InBranch = "main") -> RemoteCloneContext {
     RemoteCloneContext ctx;
     ctx.sandbox = CreateSandboxWorkspace(InName);
@@ -612,50 +831,6 @@ auto RequirePlanPushFailureThenCleanRetry(const std::string& InFixtureName,
         InCommitPushExtraArgs.begin(),
         InCommitPushExtraArgs.end());
 
-#if !defined(_WIN32)
-    if (InUseBasenamePlanPath) {
-        std::error_code statusError;
-        const auto originalPermissions = std::filesystem::status(planPath.parent_path(), statusError).permissions();
-        REQUIRE_FALSE(statusError);
-        const auto readOnlyPermissions =
-            originalPermissions &
-            ~std::filesystem::perms::owner_write &
-            ~std::filesystem::perms::group_write &
-            ~std::filesystem::perms::others_write;
-        std::error_code permissionsError;
-        std::filesystem::permissions(
-            planPath.parent_path(),
-            readOnlyPermissions,
-            std::filesystem::perm_options::replace,
-            permissionsError);
-        REQUIRE_FALSE(permissionsError);
-        const auto failedClear = RunKogWithEnv(
-            commitPushArgs,
-            ctx.cloneRepo,
-            {{"KOG_EXACT_PLAN_COMMIT_MODE", "plumbing"}});
-        std::error_code restoreError;
-        std::filesystem::permissions(
-            planPath.parent_path(),
-            originalPermissions,
-            std::filesystem::perm_options::replace,
-            restoreError);
-        REQUIRE_FALSE(restoreError);
-
-        INFO(failedClear.stdoutText);
-        INFO(failedClear.stderrText);
-        REQUIRE(failedClear.exitCode != 0);
-        RequireContainsText(
-            failedClear.stdoutText + "\n" + failedClear.stderrText,
-            "failed to clear plan executed_at_utc before execution");
-        REQUIRE(CurrentHeadSha(ctx.cloneRepo) == remoteHeadBefore);
-        REQUIRE(RefSha(ctx.bareRemote, "refs/heads/" + ctx.branch) == remoteHeadBefore);
-        REQUIRE_FALSE(StatusPorcelain(ctx.cloneRepo).empty());
-        REQUIRE(
-            ExtractJsonStringField(ReadTextFile(planPath), "executed_at_utc") ==
-            "2026-07-30T00:00:00Z");
-    }
-#endif
-
     const auto missingPushRemote = (ctx.sandbox.root / "missing-push-remote.git").lexically_normal();
     RequireSuccess(
         RunGit({"remote", "set-url", "--push", "origin", missingPushRemote.string()}, ctx.cloneRepo),
@@ -686,7 +861,15 @@ auto RequirePlanPushFailureThenCleanRetry(const std::string& InFixtureName,
     REQUIRE(localHeadAfterFailure != remoteHeadBefore);
     REQUIRE(RefSha(ctx.bareRemote, "refs/heads/" + ctx.branch) == remoteHeadBefore);
     REQUIRE(StatusPorcelain(ctx.cloneRepo).empty());
-    REQUIRE(ExtractJsonStringField(ReadTextFile(planPath), "executed_at_utc").empty());
+    REQUIRE(ExtractJsonStringField(ReadTextFile(planPath),
+                                   "executed_at_utc")
+                .empty());
+    RequireAuditAttempt(
+        planPath,
+        1,
+        kano::git::audit::OutcomeState::Failed,
+        {"audit.reserve", "plan.execution-lock", "plan.stage",
+         "plan.stamp.clear", "commit.apply", "push"});
 
     const auto failedPostApply = RunKog(
         {"plan", "verify", "post-apply", "--stage", "commit", "--plan-file", planArgument},
@@ -704,35 +887,20 @@ auto RequirePlanPushFailureThenCleanRetry(const std::string& InFixtureName,
     RequireSuccess(
         RunGit({"remote", "set-url", "--push", "origin", ctx.bareRemote.string()}, ctx.cloneRepo),
         "restore push-only remote");
+    std::uint32_t nextAttempt = 2;
+    WriteTextFile(
+        planPath,
+        ReplaceJsonUnsignedField(ReadTextFile(planPath), "attempt", nextAttempt++));
 
-#if !defined(_WIN32)
     if (InUseBasenamePlanPath) {
-        std::error_code statusError;
-        const auto originalPermissions = std::filesystem::status(planPath.parent_path(), statusError).permissions();
-        REQUIRE_FALSE(statusError);
-        const auto readOnlyPermissions =
-            originalPermissions &
-            ~std::filesystem::perms::owner_write &
-            ~std::filesystem::perms::group_write &
-            ~std::filesystem::perms::others_write;
-        std::error_code permissionsError;
-        std::filesystem::permissions(
-            planPath.parent_path(),
-            readOnlyPermissions,
-            std::filesystem::perm_options::replace,
-            permissionsError);
-        REQUIRE_FALSE(permissionsError);
         const auto failedStamp = RunKogWithEnv(
             commitPushArgs,
             ctx.cloneRepo,
-            {{"KOG_EXACT_PLAN_COMMIT_MODE", "plumbing"}});
-        std::error_code restoreError;
-        std::filesystem::permissions(
-            planPath.parent_path(),
-            originalPermissions,
-            std::filesystem::perm_options::replace,
-            restoreError);
-        REQUIRE_FALSE(restoreError);
+            {{"KOG_EXACT_PLAN_COMMIT_MODE", "plumbing"},
+             {"KOG_TEST_MODE", "1"},
+             {"KOG_TEST_ONLY_PLAN_SOURCE_REWRITE_PHASE", "stamp"},
+             {"KOG_TEST_ONLY_PLAN_SOURCE_REWRITE_FAIL_AFTER_FIRST_WRITE", "1"},
+             {"KOG_PROCESS_DIAGNOSTICS", "0"}});
 
         INFO(failedStamp.stdoutText);
         INFO(failedStamp.stderrText);
@@ -740,12 +908,25 @@ auto RequirePlanPushFailureThenCleanRetry(const std::string& InFixtureName,
         RequireContainsText(
             failedStamp.stdoutText + "\n" + failedStamp.stderrText,
             "failed to stamp plan executed_at_utc after successful push");
+        RequireContainsText(
+            failedStamp.stdoutText + "\n" + failedStamp.stderrText,
+            "injected failure after first plan source write");
         RequireNotContainsText(failedStamp.stdoutText, "=== plan summary ===");
         REQUIRE(CurrentHeadSha(ctx.cloneRepo) == localHeadAfterFailure);
         REQUIRE(RefSha(ctx.bareRemote, "refs/heads/" + ctx.branch) == localHeadAfterFailure);
-        REQUIRE(ExtractJsonStringField(ReadTextFile(planPath), "executed_at_utc").empty());
+        REQUIRE(ExtractJsonStringField(ReadTextFile(planPath),
+                                       "executed_at_utc")
+                    .empty());
+        RequireAuditAttempt(
+            planPath,
+            2,
+            kano::git::audit::OutcomeState::Failed,
+            {"audit.reserve", "plan.execution-lock", "plan.stamp.clear",
+             "push", "plan.stamp"});
+        WriteTextFile(
+            planPath,
+            ReplaceJsonUnsignedField(ReadTextFile(planPath), "attempt", nextAttempt++));
     }
-#endif
 
     const auto successfulRetry = RunKogWithEnv(
         commitPushArgs,
@@ -764,6 +945,12 @@ auto RequirePlanPushFailureThenCleanRetry(const std::string& InFixtureName,
     const std::regex utcTimestampPattern(R"(^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$)");
     REQUIRE(std::regex_match(executedAt, utcTimestampPattern));
     REQUIRE(ExtractJsonStringField(ReadTextFile(planPath), "schema_version") == "3");
+    RequireAuditAttempt(
+        planPath,
+        nextAttempt - 1,
+        kano::git::audit::OutcomeState::Succeeded,
+        {"audit.reserve", "plan.execution-lock", "plan.stamp.clear", "push",
+         "plan.stamp"});
 
     const auto successfulPostApply = RunKog(
         {"plan", "verify", "post-apply", "--stage", "commit", "--plan-file", planArgument},
@@ -1052,6 +1239,145 @@ TEST_CASE("Functional test harness creates isolated sandbox workspace", "[functi
     REQUIRE_FALSE(std::filesystem::exists(sandbox.root));
 }
 
+TEST_CASE("audit capability CLI publishes the exact closed route and input pairs",
+          "[functional][audit][capability][KG-TSK-0125]") {
+    const auto ctx = CreateRemoteWithClone("audit-capability-closed-pairs");
+    const auto result =
+        RunKog({"audit", "capability", "--json"}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    const auto capability = nlohmann::json::parse(result.stdoutText);
+    const std::set<std::string> exactKeys = {
+        "schemaName", "schemaVersion", "protocolVersion",
+        "correlationEnvelopeVersions", "auditEventVersions",
+        "runReceiptVersions", "auditVerificationVersions",
+        "supportedInputs", "provenanceGrantsAuthority", "durability",
+    };
+    std::set<std::string> actualKeys;
+    for (const auto& [key, value] : capability.items()) {
+        static_cast<void>(value);
+        actualKeys.insert(key);
+    }
+    REQUIRE(actualKeys == exactKeys);
+    REQUIRE(capability.at("provenanceGrantsAuthority") == false);
+    const nlohmann::json expectedPairs = nlohmann::json::array({
+        {{"route", "commit.plan"}, {"inputKind", "commit-plan"}},
+        {{"route", "commit-push.plan"}, {"inputKind", "commit-plan"}},
+        {{"route", "plan.apply"}, {"inputKind", "commit-plan"}},
+        {{"route", "converge.repos"}, {"inputKind", "operation-descriptor"}},
+        {{"route", "converge.branches.apply"}, {"inputKind", "operation-descriptor"}},
+        {{"route", "converge.branches.recover"}, {"inputKind", "operation-descriptor"}},
+        {{"route", "converge.branches.retire"}, {"inputKind", "operation-descriptor"}},
+    });
+    REQUIRE(capability.at("supportedInputs") == expectedPairs);
+    RequireNotContainsText(result.stdoutText, ctx.cloneRepo.generic_string());
+    RequireNotContainsText(result.stdoutText, "plan-file");
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge abort reserves before state deletion and receipts deletion failure",
+          "[functional][converge][audit][abort][failure][KG-TSK-0125]") {
+    const auto ctx = CreateRemoteWithClone("converge-audited-abort-delete-failure");
+    const auto statePath = (ctx.cloneRepo / ".kano" / "tmp" / "workflows" /
+                            "converge" / "state.json").lexically_normal();
+    // A non-empty directory at the fixed state-file path gives a portable,
+    // deterministic deletion failure without permission-dependent fixtures.
+    WriteTextFile(statePath / "sentinel", "preserve me\n");
+
+    const auto malformedCorrelation =
+        (ctx.cloneRepo / ".kano" / "tmp" / "malformed-correlation.json").lexically_normal();
+    WriteTextFile(malformedCorrelation, R"({"mode":"koa"})");
+    const auto rejected = RunKog(
+        {"converge", "--no-recursive", "--abort", "--correlation-file",
+         malformedCorrelation.string()},
+        ctx.cloneRepo);
+    INFO(rejected.stdoutText);
+    INFO(rejected.stderrText);
+    REQUIRE(rejected.exitCode != 0);
+    REQUIRE(std::filesystem::exists(statePath / "sentinel"));
+    RequireContainsText(rejected.stdoutText + "\n" + rejected.stderrText,
+                        "audit preflight failed");
+
+    const auto failedDelete =
+        RunKog({"converge", "--no-recursive", "--abort"}, ctx.cloneRepo);
+    INFO(failedDelete.stdoutText);
+    INFO(failedDelete.stderrText);
+    REQUIRE(failedDelete.exitCode != 0);
+    REQUIRE(std::filesystem::exists(statePath / "sentinel"));
+    RequireContainsText(failedDelete.stdoutText + "\n" + failedDelete.stderrText,
+                        "failed to remove converge state file");
+
+    const auto attemptRoot = FindOnlyOperationAuditAttempt(ctx.cloneRepo);
+    const auto events = kano::git::audit::ParseAuditEventsJsonl(
+        ReadTextFile(attemptRoot / "events.jsonl"));
+    REQUIRE(events.ok());
+    const auto receipt = kano::git::audit::ParseRunReceiptJson(
+        ReadTextFile(attemptRoot / "receipt.json"));
+    REQUIRE(receipt.ok());
+    REQUIRE(receipt.value->terminalOutcome.status ==
+            kano::git::audit::OutcomeState::Failed);
+    REQUIRE(kano::git::audit::ValidateRunTrace(*receipt.value, events.values).ok());
+    const auto deletion = std::find_if(
+        events.values.begin(), events.values.end(), [](const auto& event) {
+            return event.action == "converge.repos.state.delete";
+        });
+    REQUIRE(deletion != events.values.end());
+    REQUIRE(deletion->outcome.status == kano::git::audit::OutcomeState::Failed);
+    REQUIRE(deletion->outcome.exitCode == 1);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge operation descriptor persists only opaque remote selectors",
+          "[functional][converge][audit][redaction][KG-TSK-0125]") {
+    const auto ctx = CreateRemoteWithClone("converge-audit-selector-redaction");
+    const std::vector<std::string> sensitiveSelectors = {
+        "token-host.example",
+        "private-secret-workspace",
+        "windows-secret-repo",
+    };
+    for (const auto& selector : sensitiveSelectors) {
+        const auto result = RunKog(
+            {"converge", "--no-recursive", "--abort", "--remote", selector},
+            ctx.cloneRepo);
+        INFO(result.stdoutText);
+        INFO(result.stderrText);
+        REQUIRE(result.exitCode == 0);
+    }
+
+    const auto auditRoot =
+        ResolveGitMetadataPath(ctx.cloneRepo, "--git-common-dir") /
+        "kog" / "audit";
+    std::size_t descriptors = 0;
+    std::error_code ec;
+    for (std::filesystem::recursive_directory_iterator it(auditRoot, ec), end;
+         !ec && it != end; it.increment(ec)) {
+        if (!it->is_regular_file(ec) ||
+            it->path().filename() != "frozen-operation.json") {
+            continue;
+        }
+        ++descriptors;
+        const auto bytes = ReadTextFile(it->path());
+        for (const auto& selector : sensitiveSelectors) {
+            REQUIRE(bytes.find(selector) == std::string::npos);
+        }
+        const auto descriptor = nlohmann::json::parse(bytes);
+        REQUIRE(descriptor.at("route") == "converge.repos");
+        const auto& options = descriptor.at("options");
+        REQUIRE(options.size() == 9);
+        REQUIRE(options.contains("remoteSelectorSha256"));
+        REQUIRE_FALSE(options.contains("remote"));
+        REQUIRE(options.at("remoteSelectorSha256").is_string());
+        REQUIRE(options.at("remoteSelectorSha256").get<std::string>().size() == 64);
+    }
+    REQUIRE_FALSE(ec);
+    REQUIRE(descriptors == sensitiveSelectors.size());
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("clean_not_ahead_is_noop_success", "[functional][commit-push][contract]") {
     const auto ctx = CreateRemoteWithClone("clean-not-ahead");
     const auto result = RunKog({"commit-push"}, ctx.cloneRepo);
@@ -1117,6 +1443,93 @@ TEST_CASE("plan_file_push_failure_leaves_execution_unstamped_and_retry_stamps_af
 TEST_CASE("plan_file_profile_path_push_failure_leaves_execution_unstamped_and_retry_stamps_after_convergence",
           "[functional][commit-push][plan-file][contract][failure][output][profile][KG-BUG-0089]") {
     RequirePlanPushFailureThenCleanRetry("plan-file-profile-push-failure-retry", {"--profile"});
+}
+
+TEST_CASE("both commit-push plan routes reject a failed stale-stamp clear before mutation",
+          "[functional][commit-push][plan-file][contract][failure][stamp][rollback][KG-BUG-0089][KG-TSK-0125]") {
+    for (const bool profiled : {false, true}) {
+        const auto ctx = CreateRemoteWithClone(
+            profiled ? "plan-file-general-clear-failure"
+                     : "plan-file-fast-clear-failure");
+        WriteTextFile(ctx.cloneRepo / "README.md",
+                      "seed\nstale completion clear failure\n");
+        const auto planPath = ctx.cloneRepo /
+            ".kano/cache/git/plans/stale-clear-failure.json";
+        RequireSuccess(
+            RunKog({"plan", "new", "--force", "--output",
+                    planPath.string()},
+                   ctx.cloneRepo),
+            "create stale clear failure plan");
+        RequireSuccess(
+            RunKog({
+                "plan", "prepare", "add-commit-entry", "--plan-file",
+                planPath.string(), "--repo", ".", "--commit-message",
+                "test(functional): reject failed stale completion clear",
+                "--commit-include", "README.md", "--commit-review-verdict",
+                "pass", "--commit-review-reason",
+                "the stale completion stamp must clear before mutation"},
+                ctx.cloneRepo),
+            "prepare stale clear failure plan");
+        WriteTextFile(
+            planPath,
+            ReplaceJsonStringField(
+                ReadTextFile(planPath), "executed_at_utc",
+                "2026-07-30T00:00:00Z"));
+
+        const auto admittedBytes = ReadTextFile(planPath);
+        const auto headBefore = CurrentHeadSha(ctx.cloneRepo);
+        const auto remoteHeadBefore =
+            RefSha(ctx.bareRemote, "refs/heads/" + ctx.branch);
+        const auto statusBefore = StatusPorcelain(ctx.cloneRepo);
+        std::vector<std::string> args = {
+            "commit-push", "--plan-file", planPath.string()};
+        if (profiled) args.push_back("--profile");
+        const auto result = RunKogWithEnv(
+            args, ctx.cloneRepo,
+            {{"KOG_EXACT_PLAN_COMMIT_MODE", "plumbing"},
+             {"KOG_TEST_MODE", "1"},
+             {"KOG_TEST_ONLY_PLAN_SOURCE_REWRITE_PHASE", "clear"},
+             {"KOG_TEST_ONLY_PLAN_SOURCE_REWRITE_FAIL_AFTER_FIRST_WRITE", "1"},
+             {"KOG_PROCESS_DIAGNOSTICS", "0"}});
+
+        INFO("profiled=" << profiled);
+        INFO(result.stdoutText);
+        INFO(result.stderrText);
+        REQUIRE(result.exitCode == 2);
+        RequireContainsText(
+            result.stdoutText + "\n" + result.stderrText,
+            "failed to clear plan executed_at_utc before execution");
+        RequireContainsText(
+            result.stdoutText + "\n" + result.stderrText,
+            "injected failure after first plan source write");
+        REQUIRE(ReadTextFile(planPath) == admittedBytes);
+        REQUIRE(CurrentHeadSha(ctx.cloneRepo) == headBefore);
+        REQUIRE(RefSha(ctx.bareRemote, "refs/heads/" + ctx.branch) ==
+                remoteHeadBefore);
+        REQUIRE(StatusPorcelain(ctx.cloneRepo) == statusBefore);
+        RequireAuditAttempt(
+            planPath, 1, kano::git::audit::OutcomeState::Failed,
+            {"audit.reserve", "plan.execution-lock", "plan.stage",
+             "plan.source.revalidate", "plan.stamp.clear"});
+        const auto events = kano::git::audit::ParseAuditEventsJsonl(
+            ReadTextFile(FindAuditAttemptRoot(planPath, 1) / "events.jsonl"));
+        REQUIRE(events.ok());
+        REQUIRE(std::any_of(
+            events.values.begin(), events.values.end(), [](const auto& event) {
+                return event.action == "plan.stamp.clear" &&
+                    event.outcome.status ==
+                    kano::git::audit::OutcomeState::Failed;
+            }));
+        REQUIRE(std::none_of(
+            events.values.begin(), events.values.end(), [](const auto& event) {
+                return event.action == "pre-commit.sync" ||
+                    event.action == "commit.apply" ||
+                    event.action == "sync.apply" ||
+                    event.action == "post-sync.commit" ||
+                    event.action == "push" || event.action == "plan.stamp";
+            }));
+        RemoveSandboxWorkspace(ctx.sandbox);
+    }
 }
 
 TEST_CASE("plan_file_post_apply_rejects_non_utc_execution_stamp",
@@ -1227,6 +1640,1391 @@ TEST_CASE("commit_push_plan_file_keeps_exact_include_scope", "[functional][commi
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("commit_push_plan_file_uses_git_add_for_tracked_ignored_exact_path",
+          "[functional][commit-push][plan-file][pathspec][ignored][KG-TSK-0125]") {
+    const auto ctx = CreateRemoteWithClone("plan-file-tracked-ignored");
+    WriteTextFile(ctx.cloneRepo / "generated.cache", "tracked seed\n");
+    WriteTextFile(ctx.cloneRepo / ".gitignore", ".kano/\n*.cache\n");
+    RequireSuccess(RunGit({"add", ".gitignore"}, ctx.cloneRepo), "stage ignore rule");
+    RequireSuccess(RunGit({"add", "-f", "generated.cache"}, ctx.cloneRepo), "force stage tracked ignored seed");
+    RequireSuccess(RunGit({"commit", "-m", "seed tracked ignored path"}, ctx.cloneRepo), "commit tracked ignored seed");
+    RequireSuccess(RunGit({"push", "origin", "HEAD:" + ctx.branch}, ctx.cloneRepo), "push tracked ignored seed");
+    WriteTextFile(ctx.cloneRepo / "generated.cache", "tracked updated through git add\n");
+
+    const auto planPath = ctx.cloneRepo / ".kano/cache/git/plans/tracked-ignored.json";
+    RequireSuccess(RunKog({"plan", "new", "--force", "--output", planPath.string()}, ctx.cloneRepo), "plan new");
+    RequireSuccess(RunKog({
+        "plan", "prepare", "add-commit-entry", "--plan-file", planPath.string(),
+        "--repo", ".", "--commit-message", "test(functional): stage tracked ignored path",
+        "--commit-include", "generated.cache", "--commit-review-verdict", "pass",
+        "--commit-review-reason", "tracked ignored exact paths require real git add"
+    }, ctx.cloneRepo), "plan tracked ignored commit");
+
+    const auto result = RunKogWithEnv(
+        {"commit-push", "--plan-file", planPath.string()}, ctx.cloneRepo,
+        {{"KOG_EXACT_PLAN_COMMIT_MODE", "plumbing"}});
+    INFO(result.stdoutText); INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireNotContainsText(result.stdoutText, "exact cacheinfo staging paths=1");
+    const auto committed = RunGit({"show", "HEAD:generated.cache"}, ctx.cloneRepo);
+    RequireSuccess(committed, "read tracked ignored commit");
+    REQUIRE(committed.stdoutText == "tracked updated through git add\n");
+    REQUIRE(StatusPorcelain(ctx.cloneRepo).empty());
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("commit_push_plan_file_scoped_reset_preserves_staged_rename_pair",
+          "[functional][commit-push][plan-file][pathspec][rename][KG-TSK-0125]") {
+    const auto ctx = CreateRemoteWithClone("plan-file-staged-rename");
+    WriteTextFile(ctx.cloneRepo / "old-name.md", "rename payload\n");
+    RequireSuccess(RunGit({"add", "old-name.md"}, ctx.cloneRepo), "stage rename seed");
+    RequireSuccess(RunGit({"commit", "-m", "seed rename path"}, ctx.cloneRepo), "commit rename seed");
+    RequireSuccess(RunGit({"push", "origin", "HEAD:" + ctx.branch}, ctx.cloneRepo), "push rename seed");
+    RequireSuccess(RunGit({"mv", "old-name.md", "new-name.md"}, ctx.cloneRepo), "stage rename");
+
+    const auto planPath = ctx.cloneRepo / ".kano/cache/git/plans/staged-rename.json";
+    RequireSuccess(RunKog({"plan", "new", "--force", "--output", planPath.string()}, ctx.cloneRepo), "plan new");
+    RequireSuccess(RunKog({
+        "plan", "prepare", "add-commit-entry", "--plan-file", planPath.string(),
+        "--repo", ".", "--commit-message", "test(functional): preserve staged rename",
+        "--commit-include", "old-name.md", "--commit-review-verdict", "pass",
+        "--commit-review-reason", "old and new rename paths share the scoped reset"
+    }, ctx.cloneRepo), "plan staged rename commit");
+
+    const auto result = RunKogWithEnv(
+        {"commit-push", "--plan-file", planPath.string()}, ctx.cloneRepo,
+        {{"KOG_EXACT_PLAN_COMMIT_MODE", "plumbing"}});
+    INFO(result.stdoutText); INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    REQUIRE_FALSE(std::filesystem::exists(ctx.cloneRepo / "old-name.md"));
+    REQUIRE(std::filesystem::exists(ctx.cloneRepo / "new-name.md"));
+    const auto changed = RunGit({"diff-tree", "--no-commit-id", "--name-status", "-r", "HEAD"}, ctx.cloneRepo);
+    RequireSuccess(changed, "inspect rename commit");
+    RequireContainsText(changed.stdoutText, "old-name.md");
+    RequireContainsText(changed.stdoutText, "new-name.md");
+    REQUIRE(StatusPorcelain(ctx.cloneRepo).empty());
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+#if !defined(_WIN32)
+TEST_CASE("commit_push_plan_file_secret_gate_preserves_tab_newline_filename bytes",
+          "[functional][commit-push][plan-file][pathspec][nul][KG-TSK-0125]") {
+    const auto ctx = CreateRemoteWithClone("plan-file-nul-safe-secret");
+    const auto unusualRelative = std::string{"odd\tname\nsecret.txt"};
+    WriteTextFile(ctx.cloneRepo / unusualRelative,
+                  "AKIAABCDEFGHIJKLMNOP\n");
+    const auto headBefore = CurrentHeadSha(ctx.cloneRepo);
+
+    const auto planPath =
+        ctx.cloneRepo / ".kano/cache/git/plans/nul-safe-secret.json";
+    RequireSuccess(
+        RunKog({"plan", "new", "--force", "--output", planPath.string()},
+               ctx.cloneRepo),
+        "plan new");
+    RequireSuccess(RunKog({
+        "plan", "prepare", "add-commit-entry", "--plan-file", planPath.string(),
+        "--repo", ".", "--commit-message",
+        "test(functional): exercise NUL-safe path discovery",
+        "--commit-include", ".", "--commit-review-verdict", "pass",
+        "--commit-review-reason", "path discovery must not split control bytes"
+    }, ctx.cloneRepo), "plan unusual filename commit");
+
+    const auto result = RunKog(
+        {"commit-push", "--plan-file", planPath.string()}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 3);
+    RequireContainsText(result.stdoutText + "\n" + result.stderrText,
+                        "secret gate failed");
+    REQUIRE(CurrentHeadSha(ctx.cloneRepo) == headBefore);
+    REQUIRE(std::filesystem::exists(ctx.cloneRepo / unusualRelative));
+    RequireAuditAttempt(
+        planPath, 1, kano::git::audit::OutcomeState::Failed,
+        {"audit.reserve", "plan.execution-lock", "plan.stage"});
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+#endif
+
+TEST_CASE("commit-push malformed correlation creates no execution lock or mutation",
+          "[functional][commit-push][plan-file][admission][lock][KG-TSK-0125]") {
+    const auto ctx = CreateRemoteWithClone("commit-push-malformed-correlation-no-lock");
+    WriteTextFile(ctx.cloneRepo / "README.md", "seed\nmalformed correlation must not mutate\n");
+    const auto planPath =
+        ctx.cloneRepo / ".kano/cache/git/plans/malformed-correlation.json";
+    RequireSuccess(
+        RunKog({"plan", "new", "--force", "--output", planPath.string()},
+               ctx.cloneRepo),
+        "create malformed-correlation plan fixture");
+    RequireSuccess(RunKog({
+        "plan", "prepare", "add-commit-entry", "--plan-file", planPath.string(),
+        "--repo", ".", "--commit-message",
+        "test(functional): malformed correlation must not execute",
+        "--commit-include", "README.md", "--commit-review-verdict", "pass",
+        "--commit-review-reason", "admission must precede execution lock creation"
+    }, ctx.cloneRepo), "prepare malformed-correlation plan fixture");
+
+    auto malformed = nlohmann::json::parse(ReadTextFile(planPath));
+    malformed["meta"]["correlation"]["mode"] = "koa";
+    malformed["meta"]["correlation"]["product_id"] =
+        "legacy/" + std::string(140, 'a') + "#id";
+    malformed["meta"]["correlation"]["item_id"] = "item";
+    malformed["meta"]["correlation"]["work_order_id"] = "work";
+    malformed["meta"]["correlation"]["request_id"] = "request";
+    malformed["meta"]["correlation"]["run_id"] = "run";
+    malformed["meta"]["correlation"]["producer_id"] = "producer";
+    malformed["meta"]["correlation"]["route_id"] = "commit-push.plan";
+    WriteTextFile(planPath, malformed.dump(2) + "\n");
+
+    const auto admittedBytes = ReadTextFile(planPath);
+    const auto headBefore = CurrentHeadSha(ctx.cloneRepo);
+    const auto statusBefore = StatusPorcelain(ctx.cloneRepo);
+    const auto lockRoot =
+        ctx.cloneRepo / ".kano/tmp/git/plan-execution-locks";
+    REQUIRE_FALSE(std::filesystem::exists(lockRoot));
+
+    for (const bool profiled : {false, true}) {
+        std::vector<std::string> args = {
+            "commit-push", "--plan-file", planPath.string()};
+        if (profiled) args.push_back("--profile");
+        const auto result = RunKog(args, ctx.cloneRepo);
+        INFO("profiled=" << profiled);
+        INFO(result.stdoutText);
+        INFO(result.stderrText);
+        REQUIRE(result.exitCode == 2);
+        RequireContainsText(result.stdoutText + "\n" + result.stderrText,
+                            "stable");
+        REQUIRE(ReadTextFile(planPath) == admittedBytes);
+        REQUIRE(CurrentHeadSha(ctx.cloneRepo) == headBefore);
+        REQUIRE(StatusPorcelain(ctx.cloneRepo) == statusBefore);
+        REQUIRE_FALSE(std::filesystem::exists(lockRoot));
+        REQUIRE_FALSE(std::filesystem::exists(ctx.cloneRepo / ".git/kog/audit"));
+    }
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("both commit-push plan routes reject source changes after reservation",
+          "[functional][commit-push][plan-file][admission][lock][toctou][KG-TSK-0125]") {
+    for (const bool profiled : {false, true}) {
+        const auto ctx = CreateRemoteWithClone(
+            profiled ? "commit-push-general-post-reserve-race"
+                     : "commit-push-fast-post-reserve-race");
+        WriteTextFile(ctx.cloneRepo / "README.md",
+                      "seed\npost-reservation source race\n");
+        const auto planPath = ctx.cloneRepo / ".kano/cache/git/plans/racing-plan.json";
+        RequireSuccess(
+            RunKog({"plan", "new", "--force", "--output", planPath.string()},
+                   ctx.cloneRepo),
+            "create post-reservation race plan");
+        RequireSuccess(RunKog({
+            "plan", "prepare", "add-commit-entry", "--plan-file", planPath.string(),
+            "--repo", ".", "--commit-message",
+            "test(functional): reject post-reservation source race",
+            "--commit-include", "README.md", "--commit-review-verdict", "pass",
+            "--commit-review-reason", "exact admitted bytes must survive lock acquisition"
+        }, ctx.cloneRepo), "prepare post-reservation race plan");
+
+        auto changedPlan = nlohmann::json::parse(ReadTextFile(planPath));
+        changedPlan["post_reservation_test_mutation"] = true;
+        const auto changedBytes = changedPlan.dump(2) + "\n";
+        std::error_code canonicalError;
+        const auto canonicalPlan = std::filesystem::weakly_canonical(
+            planPath, canonicalError);
+        REQUIRE_FALSE(canonicalError);
+        const auto auditRoot =
+            ResolveGitMetadataPath(ctx.cloneRepo, "--git-common-dir") /
+            "kog" / "audit" /
+            ("plan-" + kano::git::audit::Sha256Hex(
+                canonicalPlan.generic_string()));
+
+        std::atomic<bool> stop{false};
+        std::atomic<bool> changed{false};
+        std::thread mutator([&]() {
+            while (!stop.load(std::memory_order_relaxed) &&
+                   !changed.load(std::memory_order_relaxed)) {
+                std::error_code ec;
+                if (std::filesystem::exists(auditRoot, ec) && !ec) {
+                    for (std::filesystem::recursive_directory_iterator it(
+                             auditRoot, ec), end;
+                         !ec && it != end; it.increment(ec)) {
+                        if (it->path().filename() != "publication-pending.json")
+                            continue;
+                        std::ofstream output(
+                            planPath, std::ios::binary | std::ios::trunc);
+                        if (output.good()) {
+                            output << changedBytes;
+                            output.flush();
+                            changed.store(output.good(),
+                                          std::memory_order_relaxed);
+                        }
+                        break;
+                    }
+                }
+                if (!changed.load(std::memory_order_relaxed))
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+        });
+
+        std::vector<std::string> args = {
+            "commit-push", "--plan-file", planPath.string()};
+        if (profiled) args.push_back("--profile");
+        const auto headBefore = CurrentHeadSha(ctx.cloneRepo);
+        const auto statusBefore = StatusPorcelain(ctx.cloneRepo);
+        const auto result = RunKogWithEnv(
+            args, ctx.cloneRepo,
+            {{"KOG_TEST_MODE", "1"},
+             {"KOG_TEST_ONLY_AUDIT_INPUT_POST_STAT_DELAY_MS", "750"},
+             {"KOG_PROCESS_DIAGNOSTICS", "0"}});
+        stop.store(true, std::memory_order_relaxed);
+        mutator.join();
+
+        INFO("profiled=" << profiled);
+        INFO(result.stdoutText);
+        INFO(result.stderrText);
+        REQUIRE(changed.load(std::memory_order_relaxed));
+        REQUIRE(result.exitCode == 2);
+        RequireContainsText(result.stdoutText + "\n" + result.stderrText,
+                            "lock/source admission");
+        REQUIRE(CurrentHeadSha(ctx.cloneRepo) == headBefore);
+        REQUIRE(StatusPorcelain(ctx.cloneRepo) == statusBefore);
+        REQUIRE(ReadTextFile(planPath) == changedBytes);
+        RequireAuditAttempt(
+            planPath, 1, kano::git::audit::OutcomeState::Failed,
+            {"audit.reserve", "plan.execution-lock", "plan.source.revalidate"});
+        const auto attemptRoot = FindAuditAttemptRoot(planPath, 1);
+        const auto events = kano::git::audit::ParseAuditEventsJsonl(
+            ReadTextFile(attemptRoot / "events.jsonl"));
+        REQUIRE(events.ok());
+        REQUIRE(std::none_of(
+            events.values.begin(), events.values.end(), [](const auto& event) {
+                return event.action == "plan.stage";
+            }));
+        RemoveSandboxWorkspace(ctx.sandbox);
+    }
+}
+
+TEST_CASE("both commit-push plan routes preserve a final pre-stamp source rewrite",
+          "[functional][commit-push][plan-file][audit][stamp][toctou][KG-TSK-0125]") {
+    for (const bool profiled : {false, true}) {
+        const auto ctx = CreateRemoteWithClone(
+            profiled ? "commit-push-general-final-stamp-race"
+                     : "commit-push-fast-final-stamp-race");
+        WriteTextFile(ctx.cloneRepo / "README.md",
+                      "seed\nfinal execution stamp race\n");
+        const auto planPath = ctx.cloneRepo /
+            ".kano/cache/git/plans/final-execution-stamp-race.json";
+        RequireSuccess(
+            RunKog({"plan", "new", "--force", "--output",
+                    planPath.string()},
+                   ctx.cloneRepo),
+            "create final execution stamp race plan");
+        RequireSuccess(
+            RunKog({
+                "plan", "prepare", "add-commit-entry", "--plan-file",
+                planPath.string(), "--repo", ".", "--commit-message",
+                "test(functional): preserve final stamp source race",
+                "--commit-include", "README.md", "--commit-review-verdict",
+                "pass", "--commit-review-reason",
+                "execution stamp must conditionally rewrite admitted bytes"},
+                ctx.cloneRepo),
+            "prepare final execution stamp race plan");
+
+        auto changedPlan = nlohmann::json::parse(ReadTextFile(planPath));
+        changedPlan["final_execution_stamp_test_mutation"] = true;
+        const auto changedBytes = changedPlan.dump(2) + "\n";
+        const auto hookRoot = ctx.cloneRepo /
+            (".kano/tmp/git/plan-source-rewrite-test-hooks/commit-push-" +
+             std::string(profiled ? "general" : "fast"));
+        const auto readyPath = hookRoot / "ready";
+        const auto releasePath = hookRoot / "release";
+        std::vector<std::string> args = {
+            "commit-push", "--plan-file", planPath.string()};
+        if (profiled) args.push_back("--profile");
+        const auto headBefore = CurrentHeadSha(ctx.cloneRepo);
+        auto commitPushFuture = std::async(std::launch::async, [&]() {
+            return RunKogWithEnv(
+                args, ctx.cloneRepo,
+                {{"KOG_TEST_MODE", "1"},
+                 {"KOG_TEST_ONLY_PLAN_SOURCE_REWRITE_PHASE", "stamp"},
+                 {"KOG_TEST_ONLY_PLAN_SOURCE_REWRITE_READY_FILE",
+                  readyPath.string()},
+                 {"KOG_TEST_ONLY_PLAN_SOURCE_REWRITE_RELEASE_FILE",
+                  releasePath.string()},
+                 {"KOG_PROCESS_DIAGNOSTICS", "0"}});
+        });
+
+        const bool rewriteGapReached =
+            WaitForPath(readyPath, std::chrono::seconds(30));
+        if (rewriteGapReached) WriteTextFile(planPath, changedBytes);
+        WriteTextFile(releasePath, "release\n");
+        const auto result = commitPushFuture.get();
+
+        INFO("profiled=" << profiled);
+        INFO(result.stdoutText);
+        INFO(result.stderrText);
+        REQUIRE(rewriteGapReached);
+        REQUIRE(result.exitCode == 2);
+        RequireContainsText(result.stdoutText + "\n" + result.stderrText,
+                            "failed to stamp plan executed_at_utc");
+        REQUIRE(ReadTextFile(planPath) == changedBytes);
+        const auto headAfter = CurrentHeadSha(ctx.cloneRepo);
+        REQUIRE(headAfter != headBefore);
+        REQUIRE(RefSha(ctx.bareRemote, "refs/heads/" + ctx.branch) ==
+                headAfter);
+        REQUIRE(StatusPorcelain(ctx.cloneRepo).empty());
+        RequireAuditAttempt(
+            planPath, 1, kano::git::audit::OutcomeState::Failed,
+            {"audit.reserve", "plan.execution-lock", "plan.stage",
+             "commit.apply", "push", "plan.source.revalidate",
+             "plan.stamp"});
+        const auto events = kano::git::audit::ParseAuditEventsJsonl(
+            ReadTextFile(FindAuditAttemptRoot(planPath, 1) / "events.jsonl"));
+        REQUIRE(events.ok());
+        const auto stamp = std::find_if(
+            events.values.begin(), events.values.end(),
+            [](const auto& event) { return event.action == "plan.stamp"; });
+        REQUIRE(stamp != events.values.end());
+        REQUIRE(stamp->outcome.status ==
+                kano::git::audit::OutcomeState::Failed);
+        RemoveSandboxWorkspace(ctx.sandbox);
+    }
+}
+
+TEST_CASE("both commit-push plan routes restore exact source after audit finalization failure",
+          "[functional][commit-push][plan-file][audit][stamp][restore][KG-TSK-0125]") {
+    for (const bool profiled : {false, true}) {
+        const auto ctx = CreateRemoteWithClone(
+            profiled ? "commit-push-general-audit-restore"
+                     : "commit-push-fast-audit-restore");
+        WriteTextFile(ctx.cloneRepo / "README.md",
+                      "seed\naudit finalization restore\n");
+        const auto planPath = ctx.cloneRepo /
+            ".kano/cache/git/plans/audit-finalization-restore.json";
+        RequireSuccess(
+            RunKog({"plan", "new", "--force", "--output",
+                    planPath.string()},
+                   ctx.cloneRepo),
+            "create audit finalization restore plan");
+        RequireSuccess(
+            RunKog({
+                "plan", "prepare", "add-commit-entry", "--plan-file",
+                planPath.string(), "--repo", ".", "--commit-message",
+                "test(functional): exact audit failure restore",
+                "--commit-include", "README.md", "--commit-review-verdict",
+                "pass", "--commit-review-reason",
+                "audit failure must restore exact admitted source bytes"},
+                ctx.cloneRepo),
+            "prepare audit finalization restore plan");
+
+        const auto admittedBytes = ReadTextFile(planPath);
+        const auto headBefore = CurrentHeadSha(ctx.cloneRepo);
+        std::vector<std::string> args = {
+            "commit-push", "--plan-file", planPath.string()};
+        if (profiled) args.push_back("--profile");
+        const auto result = RunKogWithEnv(
+            args, ctx.cloneRepo,
+            {{"KOG_TEST_MODE", "1"},
+             {"KOG_TEST_ONLY_AUDIT_FAIL_POST_PUBLISH_DIR_SYNC", "1"},
+             {"KOG_PROCESS_DIAGNOSTICS", "0"}});
+
+        INFO("profiled=" << profiled);
+        INFO(result.stdoutText);
+        INFO(result.stderrText);
+        REQUIRE(result.exitCode == 2);
+        RequireContainsText(result.stdoutText + "\n" + result.stderrText,
+                            "audit terminalization failed");
+        REQUIRE(ReadTextFile(planPath) == admittedBytes);
+        const auto headAfter = CurrentHeadSha(ctx.cloneRepo);
+        REQUIRE(headAfter != headBefore);
+        REQUIRE(RefSha(ctx.bareRemote, "refs/heads/" + ctx.branch) ==
+                headAfter);
+        REQUIRE(StatusPorcelain(ctx.cloneRepo).empty());
+        const auto attemptRoot = FindAuditAttemptRoot(planPath, 1);
+        REQUIRE(std::filesystem::exists(attemptRoot / "receipt.json"));
+        REQUIRE(std::filesystem::exists(
+            attemptRoot / "publication-pending.json"));
+        REQUIRE(std::filesystem::exists(attemptRoot / "incomplete.json"));
+        const auto marker = nlohmann::json::parse(
+            ReadTextFile(attemptRoot / "incomplete.json"));
+        REQUIRE(marker.at("reasonCode") == "receipt-durability-uncertain");
+        const auto events = kano::git::audit::ParseAuditEventsJsonl(
+            ReadTextFile(attemptRoot / "events.jsonl"));
+        REQUIRE(events.ok());
+        REQUIRE(std::any_of(events.values.begin(), events.values.end(),
+                            [](const auto& event) {
+                                return event.action == "plan.stamp" &&
+                                    event.outcome.status ==
+                                    kano::git::audit::OutcomeState::Succeeded;
+                            }));
+        RemoveSandboxWorkspace(ctx.sandbox);
+    }
+}
+
+TEST_CASE("direct commit rejects same-inode source rewrite after reservation",
+          "[functional][commit][plan-file][admission][lock][toctou][KG-TSK-0125]") {
+    const auto ctx = CreateRemoteWithClone("direct-commit-post-reserve-race");
+    WriteTextFile(ctx.cloneRepo / "README.md",
+                  "seed\ndirect post-reservation source race\n");
+    const auto planPath =
+        ctx.cloneRepo / ".kano/cache/git/plans/direct-racing-plan.json";
+    RequireSuccess(
+        RunKog({"plan", "new", "--force", "--output", planPath.string()},
+               ctx.cloneRepo),
+        "create direct post-reservation race plan");
+    RequireSuccess(RunKog({
+        "plan", "prepare", "add-commit-entry", "--plan-file", planPath.string(),
+        "--repo", ".", "--commit-message",
+        "test(functional): reject direct source race",
+        "--commit-include", "README.md", "--commit-review-verdict", "pass",
+        "--commit-review-reason", "direct commit must preserve admitted bytes"
+    }, ctx.cloneRepo), "prepare direct post-reservation race plan");
+
+    auto changedPlan = nlohmann::json::parse(ReadTextFile(planPath));
+    changedPlan["direct_post_reservation_test_mutation"] = true;
+    const auto changedBytes = changedPlan.dump(2) + "\n";
+    const auto headBefore = CurrentHeadSha(ctx.cloneRepo);
+    const auto statusBefore = StatusPorcelain(ctx.cloneRepo);
+    const auto result = RunKogWithPostReserveSameInodeRewrite(
+        {"commit", "--plan-file", planPath.string(), "--plan-stage", "commit"},
+        ctx.cloneRepo, planPath, changedBytes);
+
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 2);
+    RequireContainsText(result.stdoutText + "\n" + result.stderrText,
+                        "lock/source admission");
+    REQUIRE(CurrentHeadSha(ctx.cloneRepo) == headBefore);
+    REQUIRE(StatusPorcelain(ctx.cloneRepo) == statusBefore);
+    REQUIRE(ReadTextFile(planPath) == changedBytes);
+    RequireAuditAttempt(
+        planPath, 1, kano::git::audit::OutcomeState::Failed,
+        {"audit.reserve", "plan.execution-lock", "plan.source.revalidate"});
+    const auto events = kano::git::audit::ParseAuditEventsJsonl(
+        ReadTextFile(FindAuditAttemptRoot(planPath, 1) / "events.jsonl"));
+    REQUIRE(events.ok());
+    REQUIRE(std::none_of(events.values.begin(), events.values.end(),
+                         [](const auto& event) {
+                             return event.action == "plan.safety" ||
+                                    event.action == "commit.apply";
+                         }));
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("plan apply rejects same-inode source rewrite after reservation",
+          "[functional][plan][apply][admission][lock][toctou][KG-TSK-0125]") {
+    const auto ctx = CreateRemoteWithClone("plan-apply-post-reserve-race");
+    WriteTextFile(ctx.cloneRepo / "GeneratedProject.slnx", "generated\n");
+    const auto planPath =
+        ctx.cloneRepo / ".kano/cache/git/plans/apply-racing-plan.json";
+    RequireSuccess(
+        RunKog({"plan", "new", "--force", "--output", planPath.string()},
+               ctx.cloneRepo),
+        "create plan-apply post-reservation race plan");
+    RequireSuccess(
+        RunKog({"plan", "ignore-init", "--plan-file", planPath.string(),
+                "--force"},
+               ctx.cloneRepo),
+        "prepare plan-apply ignore race plan");
+
+    auto changedPlan = nlohmann::json::parse(ReadTextFile(planPath));
+    changedPlan["apply_post_reservation_test_mutation"] = true;
+    const auto changedBytes = changedPlan.dump(2) + "\n";
+    const auto ignoreBefore = ReadTextFile(ctx.cloneRepo / ".gitignore");
+    const auto statusBefore = StatusPorcelain(ctx.cloneRepo);
+    const auto result = RunKogWithPostReserveSameInodeRewrite(
+        {"plan", "apply", "--stage", "ignore", "--plan-file",
+         planPath.string()},
+        ctx.cloneRepo, planPath, changedBytes);
+
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 2);
+    RequireContainsText(result.stdoutText + "\n" + result.stderrText,
+                        "lock/source admission");
+    REQUIRE(ReadTextFile(ctx.cloneRepo / ".gitignore") == ignoreBefore);
+    REQUIRE(StatusPorcelain(ctx.cloneRepo) == statusBefore);
+    REQUIRE(ReadTextFile(planPath) == changedBytes);
+    RequireAuditAttempt(
+        planPath, 1, kano::git::audit::OutcomeState::Failed,
+        {"audit.reserve", "plan.execution-lock", "plan.source.revalidate"});
+    const auto events = kano::git::audit::ParseAuditEventsJsonl(
+        ReadTextFile(FindAuditAttemptRoot(planPath, 1) / "events.jsonl"));
+    REQUIRE(events.ok());
+    REQUIRE(std::none_of(events.values.begin(), events.values.end(),
+                         [](const auto& event) {
+                             return event.action == "plan.ignore.apply" ||
+                                    event.action == "plan.ignore.stamp";
+                         }));
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("plan apply preserves a final pre-stamp source rewrite",
+          "[functional][plan][apply][audit][stamp][toctou][KG-TSK-0125]") {
+    const auto ctx = CreateRemoteWithClone("plan-apply-final-pre-stamp-race");
+    WriteTextFile(ctx.cloneRepo / "GeneratedProject.slnx", "generated\n");
+    const auto planPath =
+        ctx.cloneRepo / ".kano/cache/git/plans/final-stamp-racing-plan.json";
+    RequireSuccess(
+        RunKog({"plan", "new", "--force", "--output", planPath.string()},
+               ctx.cloneRepo),
+        "create final pre-stamp race plan");
+    RequireSuccess(
+        RunKog({"plan", "ignore-init", "--plan-file", planPath.string(),
+                "--force"},
+               ctx.cloneRepo),
+        "prepare final pre-stamp ignore plan");
+
+    auto changedPlan = nlohmann::json::parse(ReadTextFile(planPath));
+    changedPlan["final_pre_stamp_test_mutation"] = true;
+    const auto changedBytes = changedPlan.dump(2) + "\n";
+    const auto ignoreBefore = ReadTextFile(ctx.cloneRepo / ".gitignore");
+    const auto hookRoot = ctx.cloneRepo /
+        ".kano/tmp/git/plan-source-rewrite-test-hooks/final-pre-stamp";
+    const auto readyPath = hookRoot / "ready";
+    const auto releasePath = hookRoot / "release";
+    auto applyFuture = std::async(std::launch::async, [&]() {
+        return RunKogWithEnv(
+            {"plan", "apply", "--stage", "ignore", "--plan-file",
+             planPath.string()},
+            ctx.cloneRepo,
+            {{"KOG_TEST_MODE", "1"},
+             {"KOG_TEST_ONLY_PLAN_SOURCE_REWRITE_PHASE", "stamp"},
+             {"KOG_TEST_ONLY_PLAN_SOURCE_REWRITE_READY_FILE",
+              readyPath.string()},
+             {"KOG_TEST_ONLY_PLAN_SOURCE_REWRITE_RELEASE_FILE",
+              releasePath.string()},
+             {"KOG_PROCESS_DIAGNOSTICS", "0"}});
+    });
+
+    const bool rewriteGapReached =
+        WaitForPath(readyPath, std::chrono::seconds(5));
+    if (rewriteGapReached) WriteTextFile(planPath, changedBytes);
+    WriteTextFile(releasePath, "release\n");
+    const auto result = applyFuture.get();
+
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(rewriteGapReached);
+    REQUIRE(result.exitCode == 2);
+    RequireContainsText(result.stdoutText + "\n" + result.stderrText,
+                        "plan source changed before applied_at_utc stamp");
+    REQUIRE(ReadTextFile(planPath) == changedBytes);
+    const auto ignoreAfter = ReadTextFile(ctx.cloneRepo / ".gitignore");
+    REQUIRE(ignoreAfter != ignoreBefore);
+    RequireContainsText(ignoreAfter, "*.slnx");
+    RequireAuditAttempt(
+        planPath, 1, kano::git::audit::OutcomeState::Failed,
+        {"audit.reserve", "plan.execution-lock", "plan.ignore.apply",
+         "plan.source.revalidate"});
+    const auto events = kano::git::audit::ParseAuditEventsJsonl(
+        ReadTextFile(FindAuditAttemptRoot(planPath, 1) / "events.jsonl"));
+    REQUIRE(events.ok());
+    REQUIRE(std::none_of(events.values.begin(), events.values.end(),
+                         [](const auto& event) {
+                             return event.action == "plan.ignore.stamp";
+                         }));
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("plan apply restores admitted source bytes after a partial stamp write",
+          "[functional][plan][apply][audit][stamp][rollback][KG-TSK-0125]") {
+    const auto ctx = CreateRemoteWithClone("plan-apply-partial-stamp-rollback");
+    WriteTextFile(ctx.cloneRepo / "GeneratedProject.slnx", "generated\n");
+    const auto planPath = ctx.cloneRepo /
+        ".kano/cache/git/plans/partial-stamp-rollback-plan.json";
+    RequireSuccess(
+        RunKog({"plan", "new", "--force", "--output", planPath.string()},
+               ctx.cloneRepo),
+        "create partial stamp rollback plan");
+    RequireSuccess(
+        RunKog({"plan", "ignore-init", "--plan-file", planPath.string(),
+                "--force"},
+               ctx.cloneRepo),
+        "prepare partial stamp rollback ignore plan");
+
+    const auto admittedBytes = ReadTextFile(planPath);
+    const auto ignoreBefore = ReadTextFile(ctx.cloneRepo / ".gitignore");
+    const auto result = RunKogWithEnv(
+        {"plan", "apply", "--stage", "ignore", "--plan-file",
+         planPath.string()},
+        ctx.cloneRepo,
+        {{"KOG_TEST_MODE", "1"},
+         {"KOG_TEST_ONLY_PLAN_SOURCE_REWRITE_PHASE", "stamp"},
+         {"KOG_TEST_ONLY_PLAN_SOURCE_REWRITE_FAIL_AFTER_FIRST_WRITE", "1"},
+         {"KOG_PROCESS_DIAGNOSTICS", "0"}});
+
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 2);
+    RequireContainsText(result.stdoutText + "\n" + result.stderrText,
+                        "injected failure after first plan source write");
+    REQUIRE(ReadTextFile(planPath) == admittedBytes);
+    const auto ignoreAfter = ReadTextFile(ctx.cloneRepo / ".gitignore");
+    REQUIRE(ignoreAfter != ignoreBefore);
+    RequireContainsText(ignoreAfter, "*.slnx");
+    RequireAuditAttempt(
+        planPath, 1, kano::git::audit::OutcomeState::Failed,
+        {"audit.reserve", "plan.execution-lock", "plan.ignore.apply",
+         "plan.source.revalidate"});
+    const auto events = kano::git::audit::ParseAuditEventsJsonl(
+        ReadTextFile(FindAuditAttemptRoot(planPath, 1) / "events.jsonl"));
+    REQUIRE(events.ok());
+    REQUIRE(std::none_of(events.values.begin(), events.values.end(),
+                         [](const auto& event) {
+                             return event.action == "plan.ignore.stamp";
+                         }));
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+#if !defined(_WIN32)
+TEST_CASE("plan apply fails promptly when the plan source lock is contended",
+          "[functional][plan][apply][audit][stamp][lock][KG-TSK-0125]") {
+    const auto ctx = CreateRemoteWithClone("plan-apply-source-lock-contention");
+    WriteTextFile(ctx.cloneRepo / "GeneratedProject.slnx", "generated\n");
+    const auto planPath = ctx.cloneRepo /
+        ".kano/cache/git/plans/source-lock-contention-plan.json";
+    RequireSuccess(
+        RunKog({"plan", "new", "--force", "--output", planPath.string()},
+               ctx.cloneRepo),
+        "create source lock contention plan");
+    RequireSuccess(
+        RunKog({"plan", "ignore-init", "--plan-file", planPath.string(),
+                "--force"},
+               ctx.cloneRepo),
+        "prepare source lock contention ignore plan");
+
+    const auto admittedBytes = ReadTextFile(planPath);
+    const auto ignoreBefore = ReadTextFile(ctx.cloneRepo / ".gitignore");
+    const int sourceHandle = ::open(planPath.c_str(), O_RDWR);
+    REQUIRE(sourceHandle >= 0);
+    REQUIRE(::flock(sourceHandle, LOCK_EX | LOCK_NB) == 0);
+    const auto result = RunKogWithEnv(
+        {"plan", "apply", "--stage", "ignore", "--plan-file",
+         planPath.string()},
+        ctx.cloneRepo, {{"KOG_PROCESS_DIAGNOSTICS", "0"}});
+    REQUIRE(::flock(sourceHandle, LOCK_UN) == 0);
+    REQUIRE(::close(sourceHandle) == 0);
+
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 2);
+    REQUIRE(result.elapsedMs < 5000);
+    RequireContainsText(result.stdoutText + "\n" + result.stderrText,
+                        "cannot lock plan source handle");
+    REQUIRE(ReadTextFile(planPath) == admittedBytes);
+    const auto ignoreAfter = ReadTextFile(ctx.cloneRepo / ".gitignore");
+    REQUIRE(ignoreAfter != ignoreBefore);
+    RequireContainsText(ignoreAfter, "*.slnx");
+    RequireAuditAttempt(
+        planPath, 1, kano::git::audit::OutcomeState::Failed,
+        {"audit.reserve", "plan.execution-lock", "plan.ignore.apply",
+         "plan.source.revalidate"});
+    const auto events = kano::git::audit::ParseAuditEventsJsonl(
+        ReadTextFile(FindAuditAttemptRoot(planPath, 1) / "events.jsonl"));
+    REQUIRE(events.ok());
+    REQUIRE(std::none_of(events.values.begin(), events.values.end(),
+                         [](const auto& event) {
+                             return event.action == "plan.ignore.stamp";
+                         }));
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+#endif
+
+TEST_CASE("plan apply commit and all reuse execution admission",
+          "[functional][plan][apply][admission][lock][reentrant][KG-TSK-0125]") {
+    for (const std::string stage : {"commit", "all"}) {
+        INFO("stage=" << stage);
+        const auto ctx =
+            CreateRemoteWithClone("plan-apply-reentrant-" + stage);
+        WriteTextFile(ctx.cloneRepo / "README.md",
+                      "seed\nreentrant plan apply " + stage + "\n");
+        if (stage == "all")
+            WriteTextFile(ctx.cloneRepo / "GeneratedProject.slnx",
+                          "generated\n");
+        const auto planPath = ctx.cloneRepo /
+            (".kano/cache/git/plans/reentrant-" + stage + "-plan.json");
+        RequireSuccess(
+            RunKog({"plan", "new", "--force", "--output",
+                    planPath.string()},
+                   ctx.cloneRepo),
+            "create reentrant plan");
+        if (stage == "all") {
+            RequireSuccess(
+                RunKog({"plan", "ignore-init", "--plan-file",
+                        planPath.string(), "--force"},
+                       ctx.cloneRepo),
+                "prepare reentrant all-stage ignore plan");
+        }
+        std::vector<std::string> prepareArgs = {
+            "plan", "prepare", "add-commit-entry", "--plan-file",
+            planPath.string(), "--repo", ".", "--commit-message",
+            "test(functional): reentrant plan apply " + stage,
+            "--commit-include", "README.md"};
+        if (stage == "all") {
+            prepareArgs.push_back("--commit-include");
+            prepareArgs.push_back(".gitignore");
+        }
+        prepareArgs.insert(
+            prepareArgs.end(),
+            {"--commit-review-verdict", "pass", "--commit-review-reason",
+             "nested commit pipeline must reuse plan execution admission"});
+        RequireSuccess(RunKog(prepareArgs, ctx.cloneRepo),
+                       "prepare reentrant commit entry");
+
+        const auto headBefore = CurrentHeadSha(ctx.cloneRepo);
+        const auto result = RunKog(
+            {"plan", "apply", "--stage", stage, "--plan-file",
+             planPath.string()},
+            ctx.cloneRepo);
+        INFO(result.stdoutText);
+        INFO(result.stderrText);
+        REQUIRE(result.exitCode == 0);
+        const auto headAfter = CurrentHeadSha(ctx.cloneRepo);
+        REQUIRE(headAfter != headBefore);
+        REQUIRE(RefSha(ctx.bareRemote, "refs/heads/" + ctx.branch) ==
+                headAfter);
+        REQUIRE(StatusPorcelain(ctx.cloneRepo).empty());
+        const auto lockRoot =
+            ResolveGitMetadataPath(ctx.cloneRepo, "--git-common-dir") /
+            "kog" / "plan-execution-locks";
+        std::error_code lockError;
+        REQUIRE(std::filesystem::is_directory(lockRoot, lockError));
+        REQUIRE_FALSE(lockError);
+        REQUIRE(std::any_of(
+            std::filesystem::directory_iterator(lockRoot),
+            std::filesystem::directory_iterator{},
+            [](const auto& entry) {
+                std::error_code ec;
+                return entry.is_regular_file(ec) && !ec &&
+                    entry.path().extension() == ".lock";
+            }));
+        REQUIRE_FALSE(std::filesystem::exists(
+            ctx.cloneRepo / ".kano/tmp/git/plan-execution-locks"));
+        const auto executedAt =
+            ExtractJsonStringField(ReadTextFile(planPath), "executed_at_utc");
+        REQUIRE_FALSE(executedAt.empty());
+
+        const auto attemptRoots = FindAuditAttemptRoots(planPath, 1);
+        REQUIRE(attemptRoots.size() == 1);
+        const auto events = kano::git::audit::ParseAuditEventsJsonl(
+            ReadTextFile(attemptRoots.front() / "events.jsonl"));
+        REQUIRE(events.ok());
+        const auto receipt = kano::git::audit::ParseRunReceiptJson(
+            ReadTextFile(attemptRoots.front() / "receipt.json"));
+        REQUIRE(receipt.ok());
+        REQUIRE(receipt.value->terminalOutcome.status ==
+                kano::git::audit::OutcomeState::Succeeded);
+        REQUIRE(kano::git::audit::ValidateRunTrace(
+                    *receipt.value, events.values)
+                    .ok());
+        const auto actionCount = [&](const std::string_view action) {
+            return static_cast<std::size_t>(std::count_if(
+                events.values.begin(), events.values.end(),
+                [&](const auto& event) { return event.action == action; }));
+        };
+        REQUIRE(actionCount("audit.reserve") == 1);
+        REQUIRE(actionCount("plan.execution-lock") >= 2);
+        REQUIRE(actionCount("commit.apply") >= 1);
+        REQUIRE(actionCount("push") == 1);
+        REQUIRE(actionCount("plan.stamp") == 1);
+        REQUIRE(actionCount("plan.verify") == 1);
+        RemoveSandboxWorkspace(ctx.sandbox);
+    }
+}
+
+TEST_CASE("Git plan execution lock resolution fails closed before mutation",
+          "[functional][commit-push][plan-file][admission][lock][failure][KG-TSK-0125]") {
+    const auto ctx =
+        CreateRemoteWithClone("plan-execution-common-dir-probe-failure");
+    WriteTextFile(ctx.cloneRepo / "README.md",
+                  "seed\ncommon Git metadata probe must fail closed\n");
+    const auto planPath =
+        ctx.cloneRepo / ".kano/cache/git/plans/common-dir-failure.json";
+    RequireSuccess(
+        RunKog({"plan", "new", "--force", "--output", planPath.string()},
+               ctx.cloneRepo),
+        "create common-dir failure plan");
+    RequireSuccess(
+        RunKog({
+            "plan", "prepare", "add-commit-entry", "--plan-file",
+            planPath.string(), "--repo", ".", "--commit-message",
+            "test(functional): fail closed on Git metadata probe failure",
+            "--commit-include", "README.md", "--commit-review-verdict",
+            "pass", "--commit-review-reason",
+            "execution locks must never fall back into a Git worktree"},
+            ctx.cloneRepo),
+        "prepare common-dir failure plan");
+
+    const auto admittedBytes = ReadTextFile(planPath);
+    const auto headBefore = CurrentHeadSha(ctx.cloneRepo);
+    const auto statusBefore = StatusPorcelain(ctx.cloneRepo);
+    const auto result = RunKogWithEnv(
+        {"commit-push", "--plan-file", planPath.string()}, ctx.cloneRepo,
+        {{"KOG_TEST_MODE", "1"},
+         {"KOG_TEST_ONLY_PLAN_EXECUTION_COMMON_DIR_FAILURE", "1"}});
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 2);
+    RequireContainsText(result.stdoutText + "\n" + result.stderrText,
+                        "cannot resolve common Git metadata directory");
+    REQUIRE(ReadTextFile(planPath) == admittedBytes);
+    REQUIRE(CurrentHeadSha(ctx.cloneRepo) == headBefore);
+    REQUIRE(StatusPorcelain(ctx.cloneRepo) == statusBefore);
+    REQUIRE_FALSE(std::filesystem::exists(
+        ctx.cloneRepo / ".kano/tmp/git/plan-execution-locks"));
+    REQUIRE_FALSE(std::filesystem::exists(
+        ctx.cloneRepo / ".git/kog/plan-execution-locks"));
+    RequireAuditAttempt(
+        planPath, 1, kano::git::audit::OutcomeState::Failed,
+        {"audit.reserve", "plan.execution-lock"});
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("linked worktree plan locks persist only in common Git metadata",
+          "[functional][plan][apply][admission][lock][worktree][KG-TSK-0125]") {
+    const auto ctx = CreateRemoteWithClone("plan-execution-linked-worktree");
+    const auto linkedWorktree = ctx.sandbox.root / "linked";
+    RequireSuccess(
+        RunGit({"worktree", "add", "-b", "linked-lock-test",
+                linkedWorktree.string()},
+               ctx.cloneRepo),
+        "create linked worktree for execution lock test");
+    WriteTextFile(linkedWorktree / "GeneratedProject.slnx", "generated\n");
+    const auto planPath = ctx.sandbox.root / "linked-plan.json";
+    RequireSuccess(
+        RunKog({"plan", "new", "--force", "--output", planPath.string()},
+               linkedWorktree),
+        "create linked-worktree plan");
+    RequireSuccess(
+        RunKog({"plan", "ignore-init", "--plan-file", planPath.string(),
+                "--force"},
+               linkedWorktree),
+        "prepare linked-worktree ignore plan");
+
+    const auto gitDirectory =
+        ResolveGitMetadataPath(linkedWorktree, "--git-dir");
+    const auto commonDirectory =
+        ResolveGitMetadataPath(linkedWorktree, "--git-common-dir");
+    REQUIRE(gitDirectory != commonDirectory);
+
+    const auto applyIgnore = [&]() {
+        const auto result = RunKog(
+            {"plan", "apply", "--stage", "ignore", "--plan-file",
+             planPath.string()},
+            linkedWorktree);
+        INFO(result.stdoutText);
+        INFO(result.stderrText);
+        REQUIRE(result.exitCode == 0);
+    };
+    applyIgnore();
+
+    const auto lockRoot =
+        commonDirectory / "kog" / "plan-execution-locks";
+    const auto countLocks = [&]() {
+        std::size_t count = 0;
+        std::error_code ec;
+        for (std::filesystem::directory_iterator it(lockRoot, ec), end;
+             !ec && it != end; it.increment(ec)) {
+            if (it->is_regular_file(ec) && !ec &&
+                it->path().extension() == ".lock") {
+                ++count;
+            }
+        }
+        REQUIRE_FALSE(ec);
+        return count;
+    };
+    REQUIRE(countLocks() == 1);
+    REQUIRE_FALSE(std::filesystem::exists(
+        gitDirectory / "kog/plan-execution-locks"));
+    REQUIRE_FALSE(std::filesystem::exists(
+        linkedWorktree / ".kano/tmp/git/plan-execution-locks"));
+    RequireNotContainsText(StatusPorcelain(linkedWorktree),
+                           "plan-execution-locks");
+
+    applyIgnore();
+    REQUIRE(countLocks() == 1);
+    REQUIRE_FALSE(std::filesystem::exists(
+        gitDirectory / "kog/plan-execution-locks"));
+    REQUIRE_FALSE(std::filesystem::exists(
+        linkedWorktree / ".kano/tmp/git/plan-execution-locks"));
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+#if !defined(_WIN32)
+TEST_CASE("plan execution lock rejects a Git metadata ancestor symlink",
+          "[functional][commit-push][plan-file][admission][lock][symlink][KG-TSK-0125]") {
+    const auto ctx =
+        CreateRemoteWithClone("plan-execution-lock-ancestor-symlink");
+    WriteTextFile(ctx.cloneRepo / "README.md",
+                  "seed\nlock ancestors must not follow symlinks\n");
+    const auto planPath =
+        ctx.cloneRepo / ".kano/cache/git/plans/lock-symlink.json";
+    RequireSuccess(
+        RunKog({"plan", "new", "--force", "--output", planPath.string()},
+               ctx.cloneRepo),
+        "create lock ancestor symlink plan");
+    RequireSuccess(
+        RunKog({
+            "plan", "prepare", "add-commit-entry", "--plan-file",
+            planPath.string(), "--repo", ".", "--commit-message",
+            "test(functional): reject lock ancestor symlink",
+            "--commit-include", "README.md", "--commit-review-verdict",
+            "pass", "--commit-review-reason",
+            "Git metadata lock traversal must remain directory anchored"},
+            ctx.cloneRepo),
+        "prepare lock ancestor symlink plan");
+
+    const auto outsideRoot = ctx.sandbox.root / "outside-lock-root";
+    std::filesystem::create_directories(outsideRoot);
+    const auto commonDirectory =
+        ResolveGitMetadataPath(ctx.cloneRepo, "--git-common-dir");
+    std::filesystem::create_directories(commonDirectory / "kog");
+    std::error_code linkError;
+    std::filesystem::create_directory_symlink(
+        outsideRoot, commonDirectory / "kog/plan-execution-locks",
+        linkError);
+    REQUIRE_FALSE(linkError);
+
+    const auto admittedBytes = ReadTextFile(planPath);
+    const auto headBefore = CurrentHeadSha(ctx.cloneRepo);
+    const auto statusBefore = StatusPorcelain(ctx.cloneRepo);
+    const auto result = RunKog(
+        {"commit-push", "--plan-file", planPath.string()}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 2);
+    RequireContainsText(result.stdoutText + "\n" + result.stderrText,
+                        "cannot open plan execution lock directory");
+    REQUIRE(ReadTextFile(planPath) == admittedBytes);
+    REQUIRE(CurrentHeadSha(ctx.cloneRepo) == headBefore);
+    REQUIRE(StatusPorcelain(ctx.cloneRepo) == statusBefore);
+    REQUIRE(std::filesystem::directory_iterator(outsideRoot) ==
+            std::filesystem::directory_iterator{});
+    RequireAuditAttempt(
+        planPath, 1, kano::git::audit::OutcomeState::Failed,
+        {"audit.reserve", "plan.execution-lock"});
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("plan execution lock rejects a non-Git fallback directory symlink",
+          "[functional][commit-push][plan-file][admission][lock][non-git][symlink][KG-TSK-0125]") {
+    const auto ctx =
+        CreateRemoteWithClone("plan-execution-lock-non-git-symlink");
+    const auto sourcePlan =
+        ctx.cloneRepo / ".kano/cache/git/plans/non-git-lock.json";
+    RequireSuccess(
+        RunKog({"plan", "new", "--force", "--output",
+                sourcePlan.string()},
+               ctx.cloneRepo),
+        "create valid source plan for non-Git lock fallback");
+
+    const auto nonGitWorkspace = ctx.sandbox.root / "non-git-workspace";
+    std::filesystem::create_directories(nonGitWorkspace);
+    const auto planPath = nonGitWorkspace / "non-git-lock.json";
+    WriteTextFile(planPath, ReadTextFile(sourcePlan));
+
+    const auto outsideRoot = ctx.sandbox.root / "outside-non-git-lock-root";
+    std::filesystem::create_directories(outsideRoot);
+    std::filesystem::create_directories(nonGitWorkspace / ".kano/tmp/git");
+    std::error_code linkError;
+    std::filesystem::create_directory_symlink(
+        outsideRoot,
+        nonGitWorkspace / ".kano/tmp/git/plan-execution-locks",
+        linkError);
+    REQUIRE_FALSE(linkError);
+
+    const auto admittedBytes = ReadTextFile(planPath);
+    const auto result = RunKog(
+        {"commit-push", "--plan-file", planPath.string()},
+        nonGitWorkspace);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 2);
+    RequireContainsText(result.stdoutText + "\n" + result.stderrText,
+                        "cannot open plan execution lock directory");
+    REQUIRE(ReadTextFile(planPath) == admittedBytes);
+    REQUIRE(std::filesystem::directory_iterator(outsideRoot) ==
+            std::filesystem::directory_iterator{});
+    RequireAuditAttempt(
+        planPath, 1, kano::git::audit::OutcomeState::Failed,
+        {"audit.reserve", "plan.execution-lock"});
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("plan apply holds execution lock against a competing KOG writer",
+          "[functional][plan][apply][admission][lock][concurrency][KG-TSK-0125]") {
+    const auto ctx = CreateRemoteWithClone("plan-apply-competing-writer-lock");
+    WriteTextFile(ctx.cloneRepo / "GeneratedProject.slnx", "generated\n");
+    const auto planPath =
+        ctx.cloneRepo / ".kano/cache/git/plans/locked-apply-plan.json";
+    RequireSuccess(
+        RunKog({"plan", "new", "--force", "--output", planPath.string()},
+               ctx.cloneRepo),
+        "create competing-writer plan");
+    RequireSuccess(
+        RunKog({"plan", "ignore-init", "--plan-file", planPath.string(),
+                "--force"},
+               ctx.cloneRepo),
+        "prepare competing-writer ignore plan");
+    const auto aliasPath =
+        planPath.parent_path() / "locked-apply-plan-alias.json";
+    std::error_code aliasError;
+    std::filesystem::create_hard_link(planPath, aliasPath, aliasError);
+    REQUIRE_FALSE(aliasError);
+
+    const auto hookRoot = ctx.cloneRepo /
+        ".kano/tmp/git/plan-execution-test-hooks/competing-writer";
+    const auto readyPath = hookRoot / "ready";
+    const auto releasePath = hookRoot / "release";
+    const std::vector<std::string> applyArgs = {
+        "plan", "apply", "--stage", "ignore", "--plan-file",
+        planPath.string()};
+    const std::vector<std::string> aliasApplyArgs = {
+        "plan", "apply", "--stage", "ignore", "--plan-file",
+        aliasPath.string()};
+    auto firstFuture = std::async(std::launch::async, [&]() {
+        return RunKogInIsolatedChild(
+            applyArgs, ctx.cloneRepo,
+            {{"KOG_TEST_MODE", "1"},
+             {"KOG_TEST_ONLY_PLAN_EXECUTION_LOCK_READY_FILE",
+              readyPath.string()},
+             {"KOG_TEST_ONLY_PLAN_EXECUTION_LOCK_RELEASE_FILE",
+              releasePath.string()}});
+    });
+
+    const bool firstHoldsLock =
+        WaitForPath(readyPath, std::chrono::seconds(5));
+    std::optional<CommandResult> competing;
+    if (firstHoldsLock) {
+        competing = RunKogInIsolatedChild(
+            aliasApplyArgs, ctx.cloneRepo,
+            {{"KOG_TEST_MODE", "1"},
+             {"KOG_TEST_ONLY_PLAN_EXECUTION_LOCK_TIMEOUT_MS", "250"}});
+    }
+    WriteTextFile(releasePath, "release\n");
+    const auto first = firstFuture.get();
+
+    INFO(first.stdoutText);
+    INFO(first.stderrText);
+    REQUIRE(firstHoldsLock);
+    REQUIRE(competing.has_value());
+    REQUIRE(first.exitCode == 0);
+    INFO(competing->stdoutText);
+    INFO(competing->stderrText);
+    REQUIRE(competing->exitCode == 2);
+    RequireContainsText(competing->stdoutText + "\n" + competing->stderrText,
+                        "plan execution lock busy");
+    RequireContainsText(ReadTextFile(ctx.cloneRepo / ".gitignore"), "*.slnx");
+    auto attemptRoots = FindAuditAttemptRoots(planPath, 1);
+    const auto aliasAttemptRoots = FindAuditAttemptRoots(aliasPath, 1);
+    attemptRoots.insert(attemptRoots.end(), aliasAttemptRoots.begin(),
+                        aliasAttemptRoots.end());
+    REQUIRE(attemptRoots.size() == 2);
+    std::size_t succeeded = 0;
+    std::size_t failed = 0;
+    for (const auto& attemptRoot : attemptRoots) {
+        const auto receipt = kano::git::audit::ParseRunReceiptJson(
+            ReadTextFile(attemptRoot / "receipt.json"));
+        REQUIRE(receipt.ok());
+        if (receipt.value->terminalOutcome.status ==
+            kano::git::audit::OutcomeState::Succeeded) {
+            ++succeeded;
+            RequireAuditAttemptRoot(
+                attemptRoot, kano::git::audit::OutcomeState::Succeeded,
+                {"audit.reserve", "plan.execution-lock", "plan.ignore.apply",
+                 "plan.ignore.stamp"});
+        } else {
+            ++failed;
+            RequireAuditAttemptRoot(
+                attemptRoot, kano::git::audit::OutcomeState::Failed,
+                {"audit.reserve", "plan.execution-lock"});
+            const auto events = kano::git::audit::ParseAuditEventsJsonl(
+                ReadTextFile(attemptRoot / "events.jsonl"));
+            REQUIRE(events.ok());
+            REQUIRE(std::none_of(
+                events.values.begin(), events.values.end(),
+                [](const auto& event) {
+                    return event.action == "plan.ignore.apply" ||
+                           event.action == "plan.ignore.stamp";
+                }));
+        }
+    }
+    REQUIRE(succeeded == 1);
+    REQUIRE(failed == 1);
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+#endif
+
+TEST_CASE("amend rejects KOA-correlated plans before repository mutation",
+          "[functional][amend][plan-file][audit][failure][KG-TSK-0125]") {
+    const auto ctx = CreateRemoteWithClone("amend-rejects-koa-plan");
+    WriteTextFile(ctx.cloneRepo / "README.md", "seed\nshould remain unamended\n");
+    const auto planPath =
+        ctx.cloneRepo / ".kano/cache/git/plans/koa-amend-unsupported.json";
+    RequireSuccess(
+        RunKog({"plan", "new", "--force", "--output", planPath.string()},
+               ctx.cloneRepo),
+        "plan new for rejected KOA amend");
+    RequireSuccess(RunKog({
+        "plan", "prepare", "add-commit-entry", "--plan-file", planPath.string(),
+        "--repo", ".", "--commit-message",
+        "test(functional): must not amend through unsupported route",
+        "--commit-include", "README.md", "--commit-review-verdict", "pass",
+        "--commit-review-reason", "amend.plan is not an audited capability"
+    }, ctx.cloneRepo), "prepare rejected KOA amend plan");
+
+    auto plan = nlohmann::json::parse(ReadTextFile(planPath));
+    plan["meta"]["correlation"] = {
+        {"mode", "koa"}, {"product_id", "product-demo"},
+        {"topic_id", "topic-demo"}, {"item_id", "item-demo"},
+        {"work_order_id", "work-order-demo"},
+        {"request_id", "request-demo"}, {"run_id", "run-demo"},
+        {"parent_run_id", nullptr}, {"producer_id", "koa"},
+        {"route_id", "amend.plan"}, {"attempt", 1},
+    };
+    WriteTextFile(planPath, plan.dump(2) + "\n");
+
+    const auto headBefore = CurrentHeadSha(ctx.cloneRepo);
+    const auto statusBefore = StatusPorcelain(ctx.cloneRepo);
+    const auto result =
+        RunKog({"amend", "--plan-file", planPath.string()}, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 2);
+    RequireContainsText(result.stdoutText + "\n" + result.stderrText,
+                        "KOA-correlated plans are unsupported");
+    REQUIRE(CurrentHeadSha(ctx.cloneRepo) == headBefore);
+    REQUIRE(StatusPorcelain(ctx.cloneRepo) == statusBefore);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("plan prepare and verify preserve exact KOA correlation envelope",
+          "[functional][plan][correlation][prepare][verify][KG-TSK-0125]") {
+    const auto ctx = CreateRemoteWithClone("plan-preserves-koa-correlation");
+    WriteTextFile(ctx.cloneRepo / "README.md", "seed\ncorrelated change\n");
+    const auto planPath =
+        ctx.cloneRepo / ".kano/cache/git/plans/preserve-correlation.json";
+    RequireSuccess(
+        RunKog({"plan", "new", "--force", "--output", planPath.string()},
+               ctx.cloneRepo),
+        "plan new for correlation preservation");
+
+    auto plan = nlohmann::json::parse(ReadTextFile(planPath));
+    const nlohmann::json correlation = {
+        {"mode", "koa"}, {"product_id", "product-demo"},
+        {"topic_id", "topic-demo"}, {"item_id", "item-demo"},
+        {"work_order_id", "work-order-demo"},
+        {"request_id", "request-demo"}, {"run_id", "run-demo"},
+        {"parent_run_id", "run-parent"}, {"producer_id", "koa"},
+        {"route_id", "commit.plan"}, {"attempt", 3},
+    };
+    plan["meta"]["correlation"] = correlation;
+    WriteTextFile(planPath, plan.dump(2) + "\n");
+
+    RequireSuccess(RunKog({
+        "plan", "prepare", "add-commit-entry", "--plan-file", planPath.string(),
+        "--repo", ".", "--commit-message",
+        "test(functional): preserve KOA correlation",
+        "--commit-include", "README.md", "--commit-review-verdict", "pass",
+        "--commit-review-reason", "preparation must retain the caller envelope"
+    }, ctx.cloneRepo), "plan prepare with KOA correlation");
+    REQUIRE(nlohmann::json::parse(ReadTextFile(planPath))
+                .at("meta").at("correlation") == correlation);
+
+    RequireSuccess(
+        RunKog({"plan", "verify", "pre-apply", "--stage", "commit",
+                "--plan-file", planPath.string()},
+               ctx.cloneRepo),
+        "plan verify with KOA correlation");
+    REQUIRE(nlohmann::json::parse(ReadTextFile(planPath))
+                .at("meta").at("correlation") == correlation);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("plan new rejects symlinked correlation envelope input",
+          "[functional][plan][correlation][input-boundary][symlink][KG-TSK-0125]") {
+    const auto ctx = CreateRemoteWithClone("plan-correlation-symlink");
+    const auto realEnvelope = ctx.cloneRepo / ".kano/tmp/correlation-real.json";
+    const auto linkedEnvelope = ctx.cloneRepo / ".kano/tmp/correlation-link.json";
+    const auto planPath = ctx.cloneRepo / ".kano/cache/git/plans/symlink-correlation.json";
+    WriteTextFile(realEnvelope,
+        R"({"mode":"koa","product_id":"product","topic_id":"topic","item_id":"item","work_order_id":"work","request_id":"request","run_id":"run","parent_run_id":"parent","producer_id":"producer","route_id":"commit.plan","attempt":1})");
+    std::error_code symlinkError;
+    std::filesystem::create_symlink(realEnvelope, linkedEnvelope, symlinkError);
+    if (symlinkError) {
+        RemoveSandboxWorkspace(ctx.sandbox);
+        SKIP("filesystem symlink creation is unavailable: " << symlinkError.message());
+    }
+
+    const auto result = RunKog({
+        "plan", "new", "--force", "--output", planPath.string(),
+        "--correlation-file", linkedEnvelope.string()
+    }, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 2);
+    RequireContainsText(result.stdoutText + "\n" + result.stderrText,
+                        "bounded input");
+    REQUIRE_FALSE(std::filesystem::exists(planPath));
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("plan new rejects oversized correlation envelope input",
+          "[functional][plan][correlation][input-boundary][oversized][KG-TSK-0125]") {
+    const auto ctx = CreateRemoteWithClone("plan-correlation-oversized");
+    const auto envelopePath = ctx.cloneRepo / ".kano/tmp/correlation-oversized.json";
+    const auto planPath = ctx.cloneRepo / ".kano/cache/git/plans/oversized-correlation.json";
+    WriteTextFile(envelopePath, std::string((64U << 10U) + 1U, 'x'));
+
+    const auto result = RunKog({
+        "plan", "new", "--force", "--output", planPath.string(),
+        "--correlation-file", envelopePath.string()
+    }, ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 2);
+    RequireContainsText(result.stdoutText + "\n" + result.stderrText,
+                        "bounded input");
+    REQUIRE_FALSE(std::filesystem::exists(planPath));
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+#if !defined(_WIN32)
+TEST_CASE("plan new rejects correlation input changed during bounded read",
+          "[functional][plan][correlation][input-boundary][toctou][KG-TSK-0125]") {
+    const auto ctx = CreateRemoteWithClone("plan-correlation-toctou");
+    const auto envelopePath = ctx.cloneRepo / ".kano/tmp/correlation-racing.json";
+    const auto planPath = ctx.cloneRepo / ".kano/cache/git/plans/racing-correlation.json";
+    const std::string envelope =
+        R"({"mode":"koa","product_id":"product","topic_id":"topic","item_id":"item","work_order_id":"work","request_id":"request","run_id":"run","parent_run_id":"parent","producer_id":"producer","route_id":"commit.plan","attempt":1})";
+    WriteTextFile(envelopePath, envelope);
+
+    std::atomic<bool> stopMutating{false};
+    std::thread mutator([&]() {
+        std::size_t generation = 0;
+        while (!stopMutating.load(std::memory_order_relaxed)) {
+            std::ofstream output(envelopePath, std::ios::binary | std::ios::trunc);
+            if (output.good()) {
+                output << envelope << std::string((generation % 2U) + 1U, ' ');
+                output.flush();
+            }
+            ++generation;
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    });
+    const auto result = RunKogWithEnv({
+        "plan", "new", "--force", "--output", planPath.string(),
+        "--correlation-file", envelopePath.string()
+    }, ctx.cloneRepo,
+       {{"KOG_TEST_MODE", "1"},
+        {"KOG_TEST_ONLY_AUDIT_INPUT_POST_STAT_DELAY_MS", "500"}});
+    stopMutating.store(true, std::memory_order_relaxed);
+    mutator.join();
+
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 2);
+    RequireContainsText(result.stdoutText + "\n" + result.stderrText,
+                        "bounded input");
+    REQUIRE_FALSE(std::filesystem::exists(planPath));
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+#endif
+
+TEST_CASE("direct plan commit is auditable and native verify rejects same-path replacement",
+          "[functional][commit][plan-file][audit][verify][KG-TSK-0125]") {
+    const auto ctx = CreateRemoteWithClone("direct-commit-native-audit-verify");
+    WriteTextFile(ctx.cloneRepo / "README.md", "seed\ndirect audited commit\n");
+    const auto planPath =
+        ctx.cloneRepo / ".kano/cache/git/plans/direct-audit-verify.json";
+    RequireSuccess(
+        RunKog({"plan", "new", "--force", "--output", planPath.string()},
+               ctx.cloneRepo),
+        "plan new for direct audited commit");
+    RequireSuccess(RunKog({
+        "plan", "prepare", "add-commit-entry", "--plan-file", planPath.string(),
+        "--repo", ".", "--commit-message",
+        "test(functional): direct audited commit",
+        "--commit-include", "README.md", "--commit-review-verdict", "pass",
+        "--commit-review-reason", "native verification binding regression"
+    }, ctx.cloneRepo), "prepare direct audited commit");
+    auto plan = nlohmann::json::parse(ReadTextFile(planPath));
+    plan["meta"]["correlation"] = {
+        {"mode", "koa"}, {"product_id", "product-demo"},
+        {"topic_id", "topic-demo"}, {"item_id", "item-demo"},
+        {"work_order_id", "work-order-demo"},
+        {"request_id", "request-demo"},
+        {"run_id", "run-native-verify"},
+        {"parent_run_id", "run-parent"}, {"producer_id", "koa"},
+        {"route_id", "commit.plan"}, {"attempt", 1},
+    };
+    WriteTextFile(planPath, plan.dump(2) + "\n");
+    const auto admittedBytes = ReadTextFile(planPath);
+
+    const auto commit = RunKog(
+        {"commit", "--plan-file", planPath.string(), "--plan-stage", "commit"},
+        ctx.cloneRepo);
+    INFO(commit.stdoutText);
+    INFO(commit.stderrText);
+    REQUIRE(commit.exitCode == 0);
+    REQUIRE(ReadTextFile(planPath) == admittedBytes);
+    RequireAuditAttempt(
+        planPath, 1, kano::git::audit::OutcomeState::Succeeded,
+        {"audit.reserve", "plan.safety", "commit.apply"});
+
+    const auto capability = RunKogWithEnv(
+        {"audit", "capability", "--json"}, ctx.cloneRepo,
+        {{"KANO_AGENT_MODE", "1"}});
+    INFO(capability.stdoutText);
+    INFO(capability.stderrText);
+    REQUIRE(capability.exitCode == 0);
+    REQUIRE(nlohmann::json::parse(capability.stdoutText)
+                .at("schemaName") == "kog.auditCapability");
+    RequireNotContainsText(capability.stdoutText, "[run]");
+    RequireNotContainsText(capability.stdoutText,
+                           ctx.cloneRepo.generic_string());
+
+    const auto verify = RunKogWithEnv({
+        "audit", "verify", "--plan-file", planPath.string(),
+        "--run-id", "run-native-verify", "--attempt", "1", "--json"
+    }, ctx.cloneRepo, {{"KANO_AGENT_MODE", "1"}});
+    INFO(verify.stdoutText);
+    INFO(verify.stderrText);
+    REQUIRE(verify.exitCode == 0);
+    RequireNotContainsText(verify.stdoutText, "[run]");
+    RequireNotContainsText(verify.stdoutText,
+                           ctx.cloneRepo.generic_string());
+    const auto verified = nlohmann::json::parse(verify.stdoutText);
+    REQUIRE(verified.size() == 21);
+    REQUIRE(verified.at("ok") == true);
+    REQUIRE(verified.at("traceValid") == true);
+    REQUIRE(verified.at("receiptSha256").get<std::string>().size() == 64);
+
+    auto replaced = nlohmann::json::parse(admittedBytes);
+    replaced["unbound"] = true;
+    WriteTextFile(planPath, replaced.dump(2) + "\n");
+    const auto contentRejected = RunKog({
+        "audit", "verify", "--plan-file", planPath.string(),
+        "--run-id", "run-native-verify", "--attempt", "1", "--json"
+    }, ctx.cloneRepo);
+    REQUIRE(contentRejected.exitCode != 0);
+    REQUIRE(nlohmann::json::parse(contentRejected.stdoutText).at("ok") == false);
+
+    replaced = nlohmann::json::parse(admittedBytes);
+    replaced["meta"]["plan_id"] = "different-plan";
+    WriteTextFile(planPath, replaced.dump(2) + "\n");
+    const auto identityRejected = RunKog({
+        "audit", "verify", "--plan-file", planPath.string(),
+        "--run-id", "run-native-verify", "--attempt", "1", "--json"
+    }, ctx.cloneRepo);
+    REQUIRE(identityRejected.exitCode != 0);
+    REQUIRE(nlohmann::json::parse(identityRejected.stdoutText).at("ok") == false);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("commit_push_plan_file_preserves_unrelated_staged_paths", "[functional][commit-push][plan-file][pathspec][index]") {
     const auto ctx = CreateRemoteWithClone("plan-file-preserve-staged");
     WriteTextFile(ctx.cloneRepo / "included.txt", "include me\n");
@@ -1289,7 +3087,8 @@ TEST_CASE("commit_push_plan_file_ignores_out_of_scope_post_sync_gitlinks", "[fun
     "base_head_sha": "KOG_BASE_HEAD_SHA",
     "dirty_fingerprint": "KOG_DIRTY_FINGERPRINT",
     "planner": { "provider": "human", "ai-model": "deterministic" },
-    "review": { "verdict": "pass", "reason": "functional regression for scoped post-sync gitlinks" }
+    "review": { "verdict": "pass", "reason": "functional regression for scoped post-sync gitlinks" },
+    "correlation": {"mode":"standalone","product_id":null,"topic_id":null,"item_id":null,"work_order_id":null,"request_id":null,"run_id":null,"parent_run_id":null,"producer_id":null,"route_id":null,"attempt":1}
   },
   "stages": {
     "commit": [
@@ -1373,7 +3172,8 @@ TEST_CASE("commit_push_plan_file_auto_amends_in_scope_post_sync_gitlinks",
     "base_head_sha": "KOG_BASE_HEAD_SHA",
     "dirty_fingerprint": "KOG_DIRTY_FINGERPRINT",
     "planner": { "provider": "human", "ai-model": "deterministic" },
-    "review": { "verdict": "pass", "reason": "functional regression for in-scope post-sync gitlinks" }
+    "review": { "verdict": "pass", "reason": "functional regression for in-scope post-sync gitlinks" },
+    "correlation": {"mode":"standalone","product_id":null,"topic_id":null,"item_id":null,"work_order_id":null,"request_id":null,"run_id":null,"parent_run_id":null,"producer_id":null,"route_id":null,"attempt":1}
   },
   "stages": {
     "commit": [
@@ -1621,8 +3421,8 @@ TEST_CASE("agent_mode_commit_push_ai_auto_requires_prepared_plan_boundary",
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
-TEST_CASE("agent_mode_cpa_bootstraps_missing_shared_plan_without_invoking_provider",
-          "[functional][commit-push][agent-mode][cpa][bootstrap]") {
+TEST_CASE("agent mode CPA fails closed on a missing shared plan without mutation",
+          "[functional][commit-push][agent-mode][cpa][preparation][KG-TSK-0125]") {
     const auto ctx = CreateRemoteWithClone("agent-mode-cpa-missing-plan");
     WriteTextFile(ctx.cloneRepo / "README.md", "seed\nagent mode missing shared plan\n");
     const auto headBefore = CurrentHeadSha(ctx.cloneRepo);
@@ -1648,27 +3448,19 @@ TEST_CASE("agent_mode_cpa_bootstraps_missing_shared_plan_without_invoking_provid
     const auto merged = result.stdoutText + "\n" + result.stderrText;
     RequireContainsText(merged, "agent mode + --plan-file detected; using plan-driven flow");
     RequireContainsText(merged, "refresh-needed: missing-or-unreadable");
-    RequireContainsText(merged, "[AGENT_PLAN_REQUIRED]");
+    RequireContainsText(merged, "[AGENT_PLAN_PREPARATION_REQUIRED]");
     RequireNotContainsText(merged, "[commit-push][auto-plan] stage=commit-runbook");
     REQUIRE_FALSE(std::filesystem::exists(providerLogPath));
-    REQUIRE(std::filesystem::exists(planPath));
-
-    const auto planText = ReadTextFile(planPath);
-    const auto baseHeadSha = ExtractJsonStringField(planText, "base_head_sha");
-    const auto dirtyFingerprint = ExtractJsonStringField(planText, "dirty_fingerprint");
-    const auto generatedAt = ExtractJsonStringField(planText, "generated_at_utc");
-    REQUIRE(baseHeadSha.starts_with("ws-head-v2-"));
-    REQUIRE(dirtyFingerprint.starts_with("ws-dirty-v2-"));
-    REQUIRE_FALSE(generatedAt.empty());
-    REQUIRE(ExtractJsonStringField(planText, "provider") == "agent");
-    REQUIRE(ExtractJsonStringField(planText, "message") == "replace-with-commit-message");
+    REQUIRE_FALSE(std::filesystem::exists(planPath));
+    REQUIRE_FALSE(std::filesystem::exists(
+        ctx.cloneRepo / ".kano/tmp/git/plan-execution-locks"));
     REQUIRE(CurrentHeadSha(ctx.cloneRepo) == headBefore);
 
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
-TEST_CASE("agent_mode_cpa_refreshes_stale_shared_plan_on_first_run",
-          "[functional][commit-push][agent-mode][cpa][bootstrap][stale]") {
+TEST_CASE("agent mode CPA rejects a stale shared plan without rewriting it",
+          "[functional][commit-push][agent-mode][cpa][preparation][stale][KG-TSK-0125]") {
     const auto ctx = CreateRemoteWithClone("agent-mode-cpa-stale-plan");
     WriteTextFile(ctx.cloneRepo / "README.md", "seed\nagent mode initial plan\n");
     const auto headBefore = CurrentHeadSha(ctx.cloneRepo);
@@ -1692,6 +3484,7 @@ TEST_CASE("agent_mode_cpa_refreshes_stale_shared_plan_on_first_run",
     const auto staleFingerprint = ExtractJsonStringField(ReadTextFile(planPath), "dirty_fingerprint");
 
     WriteTextFile(ctx.cloneRepo / "extra.txt", "intentional workspace drift\n");
+    const auto stalePlanText = ReadTextFile(planPath);
     const auto providerLogPath = (ctx.sandbox.root / "provider-invocations.log").lexically_normal();
     const auto stubDir = InstallCopilotStub(ctx.sandbox.root);
     const auto result = RunKogWithEnv(
@@ -1710,14 +3503,15 @@ TEST_CASE("agent_mode_cpa_refreshes_stale_shared_plan_on_first_run",
     REQUIRE(result.exitCode == 3);
 
     const auto merged = result.stdoutText + "\n" + result.stderrText;
-    RequireContainsText(merged, "refreshing shared agent plan");
     RequireContainsText(merged, "workspace-state-changed");
-    RequireContainsText(merged, "[AGENT_PLAN_REQUIRED]");
+    RequireContainsText(merged, "[AGENT_PLAN_PREPARATION_REQUIRED]");
     RequireNotContainsText(merged, "[commit-push][auto-plan] stage=commit-runbook");
     REQUIRE_FALSE(std::filesystem::exists(providerLogPath));
-    const auto refreshedPlanText = ReadTextFile(planPath);
-    REQUIRE(ExtractJsonStringField(refreshedPlanText, "dirty_fingerprint") != staleFingerprint);
-    RequireContainsText(refreshedPlanText, "extra.txt");
+    REQUIRE(ReadTextFile(planPath) == stalePlanText);
+    REQUIRE(ExtractJsonStringField(ReadTextFile(planPath), "dirty_fingerprint") ==
+            staleFingerprint);
+    REQUIRE_FALSE(std::filesystem::exists(
+        ctx.cloneRepo / ".kano/tmp/git/plan-execution-locks"));
     REQUIRE(CurrentHeadSha(ctx.cloneRepo) == headBefore);
 
     RemoveSandboxWorkspace(ctx.sandbox);
@@ -3172,6 +4966,9 @@ TEST_CASE("plan_ignore_init_coalesces_unreal_artifacts_in_root_and_submodule", "
                            "KanoAgentAuthoringEditor.cpp.obj"},
                           ctx.cloneChildRepo),
                    "submodule unreal artifacts ignored");
+    RequireAuditAttempt(
+        planPath, 1, kano::git::audit::OutcomeState::Succeeded,
+        {"audit.reserve", "plan.ignore.apply", "plan.ignore.stamp"});
 
     RemoveSandboxWorkspace(ctx.sandbox);
 }
@@ -3824,6 +5621,9 @@ TEST_CASE("commit_plan_stage_lock_recovery_cleans_stale_lock_and_retries_origina
     const auto subject = RunGit({"log", "-1", "--pretty=%s"}, ctx.cloneRepo);
     RequireSuccess(subject, "read recovered plan-stage commit subject");
     REQUIRE(TrimCopy(subject.stdoutText) == message);
+    RequireAuditAttempt(
+        planPath, 1, kano::git::audit::OutcomeState::Succeeded,
+        {"audit.reserve", "plan.safety", "commit.apply"});
 
     RemoveSandboxWorkspace(ctx.sandbox);
 }

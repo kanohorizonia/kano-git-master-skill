@@ -108,6 +108,8 @@ require_file assets/regression/incidents.json
 require_file assets/regression/case-template.json
 require_file assets/audit/schemas/kog.auditEvent.v1.schema.json
 require_file assets/audit/schemas/kog.runReceipt.v1.schema.json
+require_file assets/audit/schemas/kog.auditCapability.v1.schema.json
+require_file assets/audit/schemas/kog.auditVerification.v1.schema.json
 
 if find assets/ignore/datasource/upstream/github-gitignore src/cpp/shared/infra -name .git -print | grep -q .; then
   echo "Error: archive contains broken submodule .git pointer files." >&2

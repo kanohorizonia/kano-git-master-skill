@@ -105,7 +105,15 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 256,
+      "description": "Legacy v1 printable opaque ID.",
       "pattern": "^[!-~]+$(?![\\s\\S])"
+    },
+    "stableCorrelationId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "Stable, path-free correlation ID. Secret-shaped prefixes and dot-dot segments are forbidden.",
+      "pattern": "^(?!.*\\.\\.)(?![sS][kK]-)(?![gG][hH][pP]_)(?![gG][iI][tT][hH][uU][bB]_[pP][aA][tT]_)(?![gG][lL][pP][aA][tT]-)(?![bB][eE][aA][rR][eE][rR])(?!(?:[aA][kK][iI][aA]))[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$(?![\\s\\S])"
     },
     "repositoryId": {
       "type": "string",
@@ -117,6 +125,16 @@
       "oneOf": [
         {
           "$ref": "#/$defs/opaqueId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "nullableStableCorrelationId": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/stableCorrelationId"
         },
         {
           "type": "null"
@@ -400,28 +418,28 @@
           ]
         },
         "productId": {
-          "$ref": "#/$defs/nullableOpaqueId"
+          "$ref": "#/$defs/nullableStableCorrelationId"
         },
         "topicId": {
-          "$ref": "#/$defs/nullableOpaqueId"
+          "$ref": "#/$defs/nullableStableCorrelationId"
         },
         "itemId": {
-          "$ref": "#/$defs/nullableOpaqueId"
+          "$ref": "#/$defs/nullableStableCorrelationId"
         },
         "workOrderId": {
-          "$ref": "#/$defs/nullableOpaqueId"
+          "$ref": "#/$defs/nullableStableCorrelationId"
         },
         "requestId": {
-          "$ref": "#/$defs/nullableOpaqueId"
+          "$ref": "#/$defs/nullableStableCorrelationId"
         },
         "producerId": {
-          "$ref": "#/$defs/nullableOpaqueId"
+          "$ref": "#/$defs/nullableStableCorrelationId"
         },
         "routeId": {
-          "$ref": "#/$defs/nullableOpaqueId"
+          "$ref": "#/$defs/nullableStableCorrelationId"
         },
         "agentId": {
-          "$ref": "#/$defs/nullableOpaqueId"
+          "$ref": "#/$defs/nullableStableCorrelationId"
         }
       },
       "allOf": [
@@ -464,22 +482,22 @@
           "else": {
             "properties": {
               "productId": {
-                "$ref": "#/$defs/opaqueId"
+                "$ref": "#/$defs/stableCorrelationId"
               },
               "itemId": {
-                "$ref": "#/$defs/opaqueId"
+                "$ref": "#/$defs/stableCorrelationId"
               },
               "workOrderId": {
-                "$ref": "#/$defs/opaqueId"
+                "$ref": "#/$defs/stableCorrelationId"
               },
               "requestId": {
-                "$ref": "#/$defs/opaqueId"
+                "$ref": "#/$defs/stableCorrelationId"
               },
               "producerId": {
-                "$ref": "#/$defs/opaqueId"
+                "$ref": "#/$defs/stableCorrelationId"
               },
               "routeId": {
-                "$ref": "#/$defs/opaqueId"
+                "$ref": "#/$defs/stableCorrelationId"
               }
             }
           }

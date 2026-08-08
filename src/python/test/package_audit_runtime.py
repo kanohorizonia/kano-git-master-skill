@@ -18,6 +18,8 @@ SCHEMA_ROOT = REPO_ROOT / "assets" / "audit" / "schemas"
 EXPECTED_SCHEMAS = (
     "kog.auditEvent.v1.schema.json",
     "kog.runReceipt.v1.schema.json",
+    "kog.auditCapability.v1.schema.json",
+    "kog.auditVerification.v1.schema.json",
 )
 
 

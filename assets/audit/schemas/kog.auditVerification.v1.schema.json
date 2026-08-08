@@ -1,0 +1,25 @@
+{
+  "$id": "https://schemas.kanohorizonia.dev/kog/kog.auditVerification.v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "KOG Audit Verification v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaName", "schemaVersion", "ok", "error", "traceValid", "eventsValid", "receiptValid", "frozenInputValid", "planId", "planSha256", "frozenInputSha256", "runId", "parentRunId", "attempt", "correlation", "eventCount", "eventStreamSha256", "receiptSha256", "terminalOutcome", "repositories", "artifacts"],
+  "properties": {
+    "schemaName": {"const": "kog.auditVerification"}, "schemaVersion": {"const": 1}, "ok": {"type": "boolean"},
+    "error": {"oneOf": [{"type": "null"}, {"type": "object", "additionalProperties": false, "required": ["code", "message"], "properties": {"code": {"const": "verification-failed"}, "message": {"const": "verification failed"}}}]},
+    "traceValid": {"type": "boolean"}, "eventsValid": {"type": "boolean"}, "receiptValid": {"type": "boolean"}, "frozenInputValid": {"type": "boolean"},
+    "planId": {"$ref": "#/$defs/nullableOpaqueId"}, "planSha256": {"$ref": "#/$defs/nullableSha256"}, "frozenInputSha256": {"$ref": "#/$defs/nullableSha256"}, "runId": {"$ref": "#/$defs/nullableOpaqueId"}, "parentRunId": {"$ref": "#/$defs/nullableOpaqueId"}, "attempt": {"oneOf": [{"type": "null"}, {"type": "integer", "minimum": 1, "maximum": 4294967295}]},
+    "correlation": {"oneOf": [{"type": "null"}, {"$ref": "https://schemas.kanohorizonia.dev/kog/kog.auditEvent.v1.schema.json#/$defs/correlation"}]}, "eventCount": {"oneOf": [{"type": "null"}, {"type": "integer", "minimum": 1, "maximum": 1000000}]}, "eventStreamSha256": {"$ref": "#/$defs/nullableSha256"}, "receiptSha256": {"$ref": "#/$defs/nullableSha256"},
+    "terminalOutcome": {"oneOf": [{"type": "null"}, {"$ref": "https://schemas.kanohorizonia.dev/kog/kog.auditEvent.v1.schema.json#/$defs/outcome"}]}, "repositories": {"type": "array", "maxItems": 256, "items": {"$ref": "https://schemas.kanohorizonia.dev/kog/kog.auditEvent.v1.schema.json#/$defs/repositoryTransition"}}, "artifacts": {"type": "array", "maxItems": 64, "items": {"$ref": "https://schemas.kanohorizonia.dev/kog/kog.auditEvent.v1.schema.json#/$defs/artifactReference"}}
+  },
+  "allOf": [
+    {"if": {"properties": {"ok": {"const": true}}, "required": ["ok"]}, "then": {"properties": {"error": {"type": "null"}, "traceValid": {"const": true}, "eventsValid": {"const": true}, "receiptValid": {"const": true}, "frozenInputValid": {"const": true}, "planId": {"$ref": "#/$defs/opaqueId"}, "planSha256": {"$ref": "#/$defs/sha256"}, "frozenInputSha256": {"$ref": "#/$defs/sha256"}, "runId": {"$ref": "#/$defs/opaqueId"}, "parentRunId": {"$ref": "#/$defs/nullableOpaqueId"}, "attempt": {"type": "integer", "minimum": 1, "maximum": 4294967295}, "correlation": {"$ref": "https://schemas.kanohorizonia.dev/kog/kog.auditEvent.v1.schema.json#/$defs/correlation"}, "eventCount": {"type": "integer", "minimum": 1, "maximum": 1000000}, "eventStreamSha256": {"$ref": "#/$defs/sha256"}, "receiptSha256": {"$ref": "#/$defs/sha256"}, "terminalOutcome": {"$ref": "https://schemas.kanohorizonia.dev/kog/kog.auditEvent.v1.schema.json#/$defs/outcome"}, "repositories": {"type": "array", "minItems": 1, "maxItems": 256, "items": {"$ref": "https://schemas.kanohorizonia.dev/kog/kog.auditEvent.v1.schema.json#/$defs/repositoryTransition"}}, "artifacts": {"type": "array", "maxItems": 64, "items": {"$ref": "https://schemas.kanohorizonia.dev/kog/kog.auditEvent.v1.schema.json#/$defs/artifactReference"}}}}, "else": {"properties": {"error": {"type": "object"}, "traceValid": {"const": false}, "eventsValid": {"const": false}, "receiptValid": {"const": false}, "frozenInputValid": {"const": false}, "planId": {"type": "null"}, "planSha256": {"type": "null"}, "frozenInputSha256": {"type": "null"}, "runId": {"type": "null"}, "parentRunId": {"type": "null"}, "attempt": {"type": "null"}, "correlation": {"type": "null"}, "eventCount": {"type": "null"}, "eventStreamSha256": {"type": "null"}, "receiptSha256": {"type": "null"}, "terminalOutcome": {"type": "null"}, "repositories": {"maxItems": 0}, "artifacts": {"maxItems": 0}}}}
+  ],
+  "$defs": {
+    "opaqueId": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[!-~]+$(?![\\s\\S])"},
+    "nullableOpaqueId": {"oneOf": [{"$ref": "#/$defs/opaqueId"}, {"type": "null"}]},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$(?![\\s\\S])"},
+    "nullableSha256": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]}
+  }
+}

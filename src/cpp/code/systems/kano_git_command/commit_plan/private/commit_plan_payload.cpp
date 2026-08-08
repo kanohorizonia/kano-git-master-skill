@@ -1,9 +1,14 @@
 #include "commit_plan_payload.hpp"
+#include "commit_plan_payload_parser.hpp"
 
 #include "plan_utils.hpp"
+#include "audit_contract.hpp"
 
+#include <array>
 #include <format>
+#include <set>
 #include <utility>
+#include <nlohmann/json.hpp>
 
 namespace kano::git::commands {
 
@@ -325,8 +330,8 @@ auto ParseStageEntries(const std::string& InStageArrayBody) -> std::vector<RepoC
     return entries;
 }
 
-auto ParseCommitPlanText(const std::string& InText,
-                         std::string* OutError) -> std::optional<CommitPlanPayload> {
+auto ParseCommitPlanTextImpl(const std::string& InText,
+                             std::string* OutError) -> std::optional<CommitPlanPayload> {
     const auto text = Trim(InText);
     if (text.empty()) {
         if (OutError != nullptr) {
@@ -335,16 +340,52 @@ auto ParseCommitPlanText(const std::string& InText,
         return std::nullopt;
     }
 
-    const auto stagesObject = ExtractObjectBodyForKey(text, "stages");
-    if (!stagesObject.has_value()) {
+    bool duplicateKey = false;
+    std::vector<std::set<std::string>> objectKeys;
+    const auto rejectDuplicate = [&](int, nlohmann::json::parse_event_t event, nlohmann::json& parsed) {
+        if (event == nlohmann::json::parse_event_t::object_start) objectKeys.emplace_back();
+        else if (event == nlohmann::json::parse_event_t::key) {
+            if (objectKeys.empty() || !objectKeys.back().insert(parsed.get<std::string>()).second)
+                duplicateKey = true;
+        } else if (event == nlohmann::json::parse_event_t::object_end && !objectKeys.empty()) objectKeys.pop_back();
+        return true;
+    };
+    nlohmann::json strictDocument;
+    try {
+        strictDocument = nlohmann::json::parse(text, rejectDuplicate);
+    } catch (const nlohmann::json::parse_error&) {
+        if (OutError != nullptr) *OutError = "invalid or trailing JSON document";
+        return std::nullopt;
+    }
+    if (duplicateKey) {
+        if (OutError != nullptr) *OutError = "duplicate JSON object field";
+        return std::nullopt;
+    }
+    if (!strictDocument.is_object()) {
+        if (OutError != nullptr) *OutError = "plan document must be an object";
+        return std::nullopt;
+    }
+
+    const auto stagesIterator = strictDocument.find("stages");
+    if (stagesIterator == strictDocument.end() || !stagesIterator->is_object()) {
         if (OutError != nullptr) {
             *OutError = "missing \"stages\" object";
         }
         return std::nullopt;
     }
-
     CommitPlanPayload out;
-    if (const auto metaObject = ExtractObjectBodyForKey(text, "meta"); metaObject.has_value()) {
+    const auto metaIterator = strictDocument.find("meta");
+    if (metaIterator != strictDocument.end() && !metaIterator->is_object()) {
+        if (OutError != nullptr) *OutError = "meta must be an object";
+        return std::nullopt;
+    }
+    if (metaIterator != strictDocument.end()) {
+        const auto metaText = metaIterator->dump();
+        const auto metaObject = ExtractBracketBody(metaText, 0, '{', '}');
+        if (!metaObject.has_value()) {
+            if (OutError != nullptr) *OutError = "meta must be an object";
+            return std::nullopt;
+        }
         if (const auto schemaVersion = ExtractStringField(*metaObject, "schema_version"); schemaVersion.has_value()) {
             out.meta.schemaVersion = Trim(*schemaVersion);
         }
@@ -395,16 +436,82 @@ auto ParseCommitPlanText(const std::string& InText,
                 out.meta.review.reason = Trim(*value);
             }
         }
+        const auto correlationIterator = metaIterator->find("correlation");
+        if (correlationIterator != metaIterator->end()) {
+            if (!correlationIterator->is_object()) {
+                if (OutError != nullptr) *OutError = "meta.correlation must be an object";
+                return std::nullopt;
+            }
+            auto& outCorrelation = out.meta.correlation;
+            outCorrelation.present = true;
+            const auto& typed = *correlationIterator;
+            static const std::array<std::string_view, 11> keys = {"mode", "product_id", "topic_id", "item_id", "work_order_id", "request_id", "run_id", "parent_run_id", "producer_id", "route_id", "attempt"};
+            if (!typed.is_object() || typed.size() != keys.size()) {
+                if (OutError != nullptr) *OutError = "meta.correlation must be a closed 11-field object";
+                return std::nullopt;
+            }
+            for (const auto key : keys) if (!typed.contains(key)) {
+                if (OutError != nullptr) *OutError = "meta.correlation is missing required fields";
+                return std::nullopt;
+            }
+            if (!typed.at("attempt").is_number_unsigned() || typed.at("attempt").get<std::uint64_t>() == 0 || typed.at("attempt").get<std::uint64_t>() > UINT32_MAX) {
+                if (OutError != nullptr) *OutError = "meta.correlation.attempt must be a positive uint32";
+                return std::nullopt;
+            }
+            outCorrelation.attempt = static_cast<std::uint32_t>(typed.at("attempt").get<std::uint64_t>());
+            if (!typed.at("mode").is_string()) {
+                if (OutError != nullptr) *OutError = "meta.correlation.mode must be a string";
+                return std::nullopt;
+            }
+            outCorrelation.mode = typed.at("mode").get<std::string>();
+            const auto loadId = [&](const char* key, std::string& target) -> bool {
+                const auto& value = typed.at(key);
+                if (value.is_null()) { target.clear(); return true; }
+                if (!value.is_string()) return false;
+                const auto id = value.get<std::string>();
+                if (!audit::IsStableAuditId(id)) return false;
+                target = id;
+                return true;
+            };
+            if (!loadId("product_id", outCorrelation.productId) || !loadId("topic_id", outCorrelation.topicId) ||
+                !loadId("item_id", outCorrelation.itemId) || !loadId("work_order_id", outCorrelation.workOrderId) ||
+                !loadId("request_id", outCorrelation.requestId) || !loadId("run_id", outCorrelation.runId) ||
+                !loadId("parent_run_id", outCorrelation.parentRunId) || !loadId("producer_id", outCorrelation.producerId) ||
+                !loadId("route_id", outCorrelation.routeId)) {
+                if (OutError != nullptr) *OutError = "meta.correlation identifiers must be null or stable IDs";
+                return std::nullopt;
+            }
+        }
     }
 
-    if (const auto commitArray = ExtractArrayBodyForKey(*stagesObject, "commit"); commitArray.has_value()) {
+    const auto commitIterator = stagesIterator->find("commit");
+    const auto postSyncIterator = stagesIterator->find("post_sync");
+    if ((commitIterator != stagesIterator->end() && !commitIterator->is_array()) ||
+        (postSyncIterator != stagesIterator->end() && !postSyncIterator->is_array())) {
+        if (OutError != nullptr) *OutError = "commit and post_sync stages must be arrays";
+        return std::nullopt;
+    }
+    const auto commitText = commitIterator == stagesIterator->end() ? std::string{} : commitIterator->dump();
+    const auto postSyncText = postSyncIterator == stagesIterator->end() ? std::string{} : postSyncIterator->dump();
+    const auto commitArray = commitText.empty() ? std::nullopt : ExtractBracketBody(commitText, 0, '[', ']');
+    const auto postSyncArray = postSyncText.empty() ? std::nullopt : ExtractBracketBody(postSyncText, 0, '[', ']');
+    if (commitArray.has_value()) {
         out.commitEntries = ParseStageEntries(*commitArray);
     }
-    if (const auto postSyncArray = ExtractArrayBodyForKey(*stagesObject, "post_sync"); postSyncArray.has_value()) {
+    if (postSyncArray.has_value()) {
         out.postSyncEntries = ParseStageEntries(*postSyncArray);
     }
 
     if (out.commitEntries.empty() && out.postSyncEntries.empty()) {
+        // A push-only plan intentionally has no commit entries.  Preserve that
+        // shape for the execution pipeline; AI-mode validation remains the
+        // stricter gate when a commit message is actually required.
+        const bool explicitEmptyStage =
+            commitArray.has_value() && Trim(*commitArray).empty() &&
+            postSyncArray.has_value() && Trim(*postSyncArray).empty();
+        if (explicitEmptyStage) {
+            return out;
+        }
         if (OutError != nullptr) {
             *OutError = "no valid stage entries found";
         }
@@ -424,6 +531,11 @@ auto IsValidRequiredValue(const std::string& InValue) -> bool {
 }
 
 } // namespace
+
+auto ParseCommitPlanText(const std::string& InText,
+                         std::string* OutError) -> std::optional<CommitPlanPayload> {
+    return ParseCommitPlanTextImpl(InText, OutError);
+}
 
 auto ParseCommitPlanStage(const std::string& InValue) -> std::optional<CommitPlanStage> {
     const auto value = ToLower(Trim(InValue));
@@ -479,8 +591,60 @@ auto LoadNormalizedCommitPlan(const std::filesystem::path& InWorkspaceRoot,
     return ParseCommitPlanText(*normalized, OutError);
 }
 
+auto ValidateCommitPlanCorrelation(const CommitPlanPayload& InPlan,
+                                   std::string* OutError) -> bool {
+    const auto& correlation = InPlan.meta.correlation;
+    // Legacy plans predate the optional KOA envelope.  Absence is not KOA
+    // identity and therefore remains a safe standalone request.  Audited
+    // mutation routes materialize the explicit standalone envelope (including
+    // the generated run id) only in their immutable frozen copy; they never
+    // rewrite that synthesized provenance into the caller's source plan.
+    if (!correlation.present) return true;
+    if (correlation.attempt == 0) {
+        if (OutError != nullptr) *OutError = "meta.correlation.attempt must be positive";
+        return false;
+    }
+    const bool koa = correlation.mode == "koa";
+    if (correlation.mode != "standalone" && !koa) {
+        if (OutError != nullptr) *OutError = "meta.correlation.mode must be standalone or koa";
+        return false;
+    }
+    const std::array<const std::string*, 9> identifiers = {
+        &correlation.productId, &correlation.topicId, &correlation.itemId,
+        &correlation.workOrderId, &correlation.requestId, &correlation.runId,
+        &correlation.parentRunId, &correlation.producerId, &correlation.routeId};
+    for (const auto* value : identifiers) {
+        if (value->empty()) continue;
+        if (!audit::IsStableAuditId(*value)) {
+            if (OutError != nullptr) *OutError = "meta.correlation identifier violates the stable-ID grammar";
+            return false;
+        }
+    }
+    const std::array<const std::string*, 7> required = {&correlation.productId, &correlation.itemId, &correlation.workOrderId, &correlation.requestId, &correlation.runId, &correlation.producerId, &correlation.routeId};
+    if (koa) {
+        for (const auto* value : required) {
+            if (!Trim(*value).empty()) continue;
+            if (OutError != nullptr) *OutError = "meta.correlation has contradictory KOA identity fields";
+            return false;
+        }
+    } else if (!correlation.productId.empty() || !correlation.topicId.empty() ||
+               !correlation.itemId.empty() || !correlation.workOrderId.empty() ||
+               !correlation.requestId.empty() || !correlation.parentRunId.empty() ||
+               !correlation.producerId.empty() || !correlation.routeId.empty()) {
+        if (OutError != nullptr) *OutError =
+            "standalone provenance identities other than resolved run_id must be null";
+        return false;
+    }
+    if (koa && !correlation.parentRunId.empty() && correlation.parentRunId == correlation.runId) {
+        if (OutError != nullptr) *OutError = "meta.correlation parent_run_id cannot equal run_id";
+        return false;
+    }
+    return true;
+}
+
 auto ValidateCommitPlanForAiMode(const CommitPlanPayload& InPlan,
                                  std::string* OutError) -> bool {
+    if (!ValidateCommitPlanCorrelation(InPlan, OutError)) return false;
     if (!IsValidRequiredValue(InPlan.meta.planId)) {
         if (OutError != nullptr) {
             *OutError = "meta.plan_id is missing or placeholder";

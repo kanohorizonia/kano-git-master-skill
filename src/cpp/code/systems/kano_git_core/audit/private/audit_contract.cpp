@@ -24,7 +24,7 @@ using Json = nlohmann::json;
 constexpr std::uint64_t kMaxSafeJsonInteger = 9'007'199'254'740'991ULL;
 constexpr std::size_t kMaxDocumentBytes = 4U << 20U;
 constexpr std::size_t kMaxJsonlBytes = 64U << 20U;
-constexpr std::size_t kMaxIdBytes = 256;
+constexpr std::size_t kMaxStableIdBytes = 128;
 constexpr std::size_t kMaxTokenBytes = 96;
 constexpr std::size_t kMaxReferences = 32;
 constexpr std::size_t kMaxArtifacts = 64;
@@ -259,12 +259,16 @@ auto IsBoundedText(std::string_view InValue, std::size_t InMaximum,
         });
 }
 
-auto IsOpaqueId(std::string_view InValue) -> bool {
-    return !InValue.empty() && InValue.size() <= kMaxIdBytes &&
+auto IsPrintableOpaqueId(std::string_view InValue) -> bool {
+    return !InValue.empty() && InValue.size() <= 256 &&
         std::all_of(InValue.begin(), InValue.end(), [](const char value) {
             const auto byte = static_cast<unsigned char>(value);
-            return byte >= 0x21U && byte <= 0x7EU;
+            return byte >= 0x21U && byte <= 0x7eU;
         });
+}
+
+auto IsOpaqueId(std::string_view InValue) -> bool {
+    return IsPrintableOpaqueId(InValue);
 }
 
 auto IsSemanticToken(std::string_view InValue) -> bool {
@@ -281,7 +285,7 @@ auto IsSemanticToken(std::string_view InValue) -> bool {
 }
 
 auto IsLogicalRepositoryId(std::string_view InValue) -> bool {
-    if (!IsOpaqueId(InValue) || InValue.front() == '/' ||
+    if (!IsPrintableOpaqueId(InValue) || InValue.front() == '/' ||
         InValue.front() == '\\' || InValue.find('\\') != std::string_view::npos) {
         return false;
     }
@@ -823,10 +827,10 @@ void ValidateCorrelation(const CorrelationRefs& InCorrelation,
         "productId", "itemId", "workOrderId",
         "requestId", "producerId", "routeId"};
     for (const auto& [name, value] : fields) {
-        if (value->has_value() && !IsOpaqueId(**value)) {
+        if (value->has_value() && !IsStableAuditId(**value)) {
             AddIssue(Out, std::string(InPath) + "." + std::string(name),
                      "invalid_correlation_id",
-                     "Correlation identifiers must be bounded opaque tokens.");
+                     "Correlation identifiers must use the stable-ID grammar.");
         }
         if (std::find(required.begin(), required.end(), name) != required.end() &&
             !value->has_value()) {
@@ -1440,6 +1444,38 @@ auto CorrelationModeName(CorrelationMode InMode) -> std::string_view {
         return "koa";
     }
     return "standalone";
+}
+
+auto Sha256Hex(std::string_view InBytes) -> std::string {
+    return Sha256(InBytes);
+}
+
+auto IsStableAuditId(const std::string_view InValue) -> bool {
+    if (InValue.empty() || InValue.size() > kMaxStableIdBytes ||
+        InValue.find("..") != std::string_view::npos) {
+        return false;
+    }
+    const auto alphanumeric = [](const char value) {
+        return (value >= 'A' && value <= 'Z') ||
+            (value >= 'a' && value <= 'z') ||
+            (value >= '0' && value <= '9');
+    };
+    if (!alphanumeric(InValue.front())) return false;
+    if (!std::all_of(InValue.begin(), InValue.end(), [&](const char value) {
+            return alphanumeric(value) || value == '.' || value == '_' ||
+                value == ':' || value == '@' || value == '-';
+        })) {
+        return false;
+    }
+    std::string lowered(InValue);
+    std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](const char value) {
+        return static_cast<char>(std::tolower(static_cast<unsigned char>(value)));
+    });
+    static constexpr std::array<std::string_view, 6> secretPrefixes = {
+        "sk-", "ghp_", "github_pat_", "glpat-", "bearer", "akia"};
+    return std::none_of(secretPrefixes.begin(), secretPrefixes.end(), [&](const auto prefix) {
+        return lowered.starts_with(prefix);
+    });
 }
 
 auto ValidateAuditEvent(const AuditEvent& InEvent) -> ValidationResult {

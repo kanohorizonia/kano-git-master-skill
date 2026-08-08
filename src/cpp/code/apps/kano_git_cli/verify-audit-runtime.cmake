@@ -32,7 +32,9 @@ math(EXPR runtime_asset_last "${runtime_asset_count} - 1")
 
 foreach(schema_name
         kog.auditEvent.v1.schema.json
-        kog.runReceipt.v1.schema.json)
+        kog.runReceipt.v1.schema.json
+        kog.auditCapability.v1.schema.json
+        kog.auditVerification.v1.schema.json)
     set(relative_path "assets/audit/schemas/${schema_name}")
     set(source_path "${KOG_AUDIT_SCHEMA_ROOT}/${schema_name}")
     set(packaged_path

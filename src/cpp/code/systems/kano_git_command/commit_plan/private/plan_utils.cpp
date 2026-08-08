@@ -1,8 +1,14 @@
 #include "plan_utils.hpp"
+#include "audit_contract.hpp"
 #include "commit_ai_utils.hpp"
+#include "commit_plan_payload.hpp"
+#include "commit_plan_audit.hpp"
+#include "commit_plan_execution_admission.hpp"
+#include "commit_plan_source_rewrite.hpp"
 #include "terminal_color.hpp"
 #include "ai_utils.hpp"
 #include "command_runtime_ops.hpp"
+#include "operation_audit.hpp"
 #include "runtime_path_layout.hpp"
 #include "kog_config.hpp"
 #include "discovery.hpp"
@@ -16,6 +22,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cstdint>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -29,6 +36,11 @@
 #include <unordered_set>
 
 namespace kano::git::commands {
+namespace {
+
+constexpr std::size_t kCorrelationEnvelopeLimitBytes = 64U << 10U;
+
+} // namespace
 
 auto NormalizeAiModelKeyword(const std::string& InValue) -> std::string {
     return kog_config::NormalizeAiModelSelection(InValue);
@@ -436,6 +448,14 @@ auto BuildDefaultPlanTemplate(const std::filesystem::path& InWorkspaceRoot,
     doc["meta"]["planner"]["ai-model"]         = DeterministicPlannerModel();
     doc["meta"]["review"]["verdict"]           = "pass";
     doc["meta"]["review"]["reason"]            = DeterministicReviewReason();
+    // Correlation is deliberately explicit even for local plans.  KOA fields
+    // are provenance-only and may be promoted only through `plan new`.
+    doc["meta"]["correlation"] = {
+        {"mode", "standalone"}, {"product_id", nullptr}, {"topic_id", nullptr},
+        {"item_id", nullptr}, {"work_order_id", nullptr}, {"request_id", nullptr},
+        {"run_id", nullptr}, {"parent_run_id", nullptr}, {"producer_id", nullptr},
+        {"route_id", nullptr}, {"attempt", 1},
+    };
     doc["meta"]["ignore_datasource"]["root"]   = dsRoot;
     doc["meta"]["ignore_datasource"]["manifest"] = dsManifest;
     doc["meta"]["ignore_datasource"]["prefer_sources"] = {"kano-local-rules", "github-gitignore"};
@@ -448,6 +468,88 @@ auto BuildDefaultPlanTemplate(const std::filesystem::path& InWorkspaceRoot,
 
 auto BuildDefaultPlanTemplate(const std::filesystem::path& InWorkspaceRoot) -> std::string {
     return BuildDefaultPlanTemplate(InWorkspaceRoot, std::nullopt, std::nullopt);
+}
+
+auto ApplyCorrelationEnvelopeToPlan(const std::string& InPlanText,
+                                    const std::string& InEnvelopeText,
+                                    std::string* OutError) -> std::optional<std::string> {
+    try {
+        if (InEnvelopeText.size() > kCorrelationEnvelopeLimitBytes) {
+            throw std::runtime_error("correlation envelope exceeds 64 KiB");
+        }
+        std::set<std::string> observedKeys;
+        bool duplicateKey = false;
+        const auto rejectDuplicate = [&](int, nlohmann::json::parse_event_t event, nlohmann::json& parsed) {
+            if (event == nlohmann::json::parse_event_t::key &&
+                !observedKeys.insert(parsed.get<std::string>()).second) duplicateKey = true;
+            return true;
+        };
+        const auto envelope = nlohmann::json::parse(InEnvelopeText, rejectDuplicate);
+        if (duplicateKey) throw std::runtime_error("duplicate correlation field");
+        static const std::set<std::string> kAllowed = {
+            "mode", "product_id", "topic_id", "item_id", "work_order_id", "request_id",
+            "run_id", "parent_run_id", "producer_id", "route_id", "attempt"};
+        if (!envelope.is_object() || envelope.size() != kAllowed.size()) throw std::runtime_error("closed correlation envelope required");
+        for (const auto& [key, value] : envelope.items()) {
+            if (!kAllowed.contains(key)) throw std::runtime_error("unknown correlation field");
+            if (key == "attempt") {
+                if (!value.is_number_unsigned() || value.get<std::uint64_t>() == 0 || value.get<std::uint64_t>() > UINT32_MAX) throw std::runtime_error("invalid correlation attempt");
+            } else if (key == "mode") {
+                if (!value.is_string() || (value != "standalone" && value != "koa")) throw std::runtime_error("invalid correlation mode");
+            } else if (!value.is_null()) {
+                if (!value.is_string()) throw std::runtime_error("invalid correlation identifier type");
+                const auto id = value.get<std::string>();
+                if (!audit::IsStableAuditId(id))
+                    throw std::runtime_error("invalid correlation stable ID");
+            }
+        }
+        CommitPlanPayload correlationPlan;
+        auto& correlation = correlationPlan.meta.correlation;
+        correlation.present = true;
+        correlation.mode = envelope.at("mode").get<std::string>();
+        correlation.attempt = static_cast<std::uint32_t>(envelope.at("attempt").get<std::uint64_t>());
+        const auto loadId = [&](const char* key, std::string& target) {
+            if (!envelope.at(key).is_null()) target = envelope.at(key).get<std::string>();
+        };
+        loadId("product_id", correlation.productId); loadId("topic_id", correlation.topicId);
+        loadId("item_id", correlation.itemId); loadId("work_order_id", correlation.workOrderId);
+        loadId("request_id", correlation.requestId); loadId("run_id", correlation.runId);
+        loadId("parent_run_id", correlation.parentRunId); loadId("producer_id", correlation.producerId);
+        loadId("route_id", correlation.routeId);
+        std::string correlationError;
+        if (!ValidateCommitPlanCorrelation(correlationPlan, &correlationError))
+            throw std::runtime_error(correlationError);
+        auto plan = nlohmann::json::parse(InPlanText);
+        if (!plan.is_object()) throw std::runtime_error("plan must be a JSON object");
+        if (plan.contains("meta") && !plan.at("meta").is_object())
+            throw std::runtime_error("plan meta must be a JSON object");
+        plan["meta"]["correlation"] = envelope;
+        return SerializePlanJson(plan);
+    } catch (const std::exception& ex) {
+        if (OutError != nullptr) *OutError = ex.what();
+        return std::nullopt;
+    }
+}
+
+auto ApplyCorrelationEnvelopeFileToPlan(const std::string& InPlanText,
+                                        const std::filesystem::path& InEnvelopePath,
+                                        std::string* OutError) -> std::optional<std::string> {
+    std::string detail;
+    const auto envelopeText = ReadBoundedAuditInput(InEnvelopePath,
+                                                    kCorrelationEnvelopeLimitBytes,
+                                                    &detail);
+    if (!envelopeText.has_value()) {
+        if (OutError != nullptr) {
+            *OutError = "correlation envelope is not an admissible bounded input";
+            if (!detail.empty()) *OutError += " (" + detail + ")";
+        }
+        return std::nullopt;
+    }
+    auto applied = ApplyCorrelationEnvelopeToPlan(InPlanText, *envelopeText, &detail);
+    if (!applied.has_value() && OutError != nullptr) {
+        *OutError = "invalid correlation envelope (" + detail + ")";
+    }
+    return applied;
 }
 
 auto JsonEscape(std::string InValue) -> std::string {
@@ -4136,21 +4238,9 @@ auto RunPostApplyVerify(const std::filesystem::path& InPlanPath,
     const auto text = *payload;
     try {
         const auto doc = nlohmann::json::parse(text);
-        if (stage == "ignore" || stage == "all") {
-            bool foundApplied = false;
-            if (doc.contains("stages") && doc["stages"].contains("ignore") && doc["stages"]["ignore"].is_array()) {
-                for (const auto& entry : doc["stages"]["ignore"]) {
-                    const auto applied = entry.value("applied_at_utc", "");
-                    if (!applied.empty()) {
-                        foundApplied = true;
-                        break;
-                    }
-                }
-            }
-            if (!foundApplied) {
-                throw std::runtime_error("post-apply verify failed: no applied_at_utc found for ignore stage in any entry.");
-            }
-        }
+        // Validate the terminal execution stamp before optional ignore-stage
+        // evidence.  A malformed stamp is a plan-contract violation and must
+        // not be hidden by a missing/unfinished ignore entry in --stage all.
         if (stage == "commit" || stage == "all") {
             if (!doc.contains("meta") ||
                 !doc["meta"].is_object() ||
@@ -4165,6 +4255,21 @@ auto RunPostApplyVerify(const std::filesystem::path& InPlanPath,
             if (!IsValidUtcTimestampIso8601(executedAtUtc)) {
                 throw std::runtime_error(
                     "post-apply verify failed: meta.executed_at_utc is not a valid UTC timestamp.");
+            }
+        }
+        if (stage == "ignore" || stage == "all") {
+            bool foundApplied = false;
+            if (doc.contains("stages") && doc["stages"].contains("ignore") && doc["stages"]["ignore"].is_array()) {
+                for (const auto& entry : doc["stages"]["ignore"]) {
+                    const auto applied = entry.value("applied_at_utc", "");
+                    if (!applied.empty()) {
+                        foundApplied = true;
+                        break;
+                    }
+                }
+            }
+            if (!foundApplied) {
+                throw std::runtime_error("post-apply verify failed: no applied_at_utc found for ignore stage in any entry.");
             }
         }
     } catch (const std::exception& e) {
@@ -4465,16 +4570,47 @@ auto RunPlanApply(const std::filesystem::path& InWorkspaceRoot,
                   const std::string& InStage,
                   const std::vector<std::string>& InExtraArgs) -> int {
     KOG_SCOPED_TIMING_LOG("plan-utils.RunPlanApply");
-    auto payload = ReadFileText(InPlanPath);
-    if (!payload.has_value()) {
-        std::cerr << "Error: plan file not found/readable: " << InPlanPath.generic_string() << "\n";
-        std::cerr << "Hint: create one with `kog plan new --plan-file \"" << InPlanPath.generic_string() << "\"`.\n";
-        return 2;
-    }
     const auto stage = ToLower(Trim(InStage));
     if (stage != "ignore" && stage != "commit" && stage != "all") {
         std::cerr << "Error: invalid --stage value: " << InStage << " (expected ignore|commit|all)\n";
         return 2;
+    }
+
+    std::string auditError;
+    auto auditSink = PlanAuditSink::Reserve(
+        InWorkspaceRoot, InPlanPath, &auditError, "plan.apply");
+    if (!auditSink) {
+        std::cerr << "Error: cannot reserve plan-apply audit evidence";
+        if (!auditError.empty()) std::cerr << " (" << auditError << ")";
+        std::cerr << "\n";
+        return 2;
+    }
+    const auto finishAudit = [&](const int InExitCode) -> int {
+        std::string terminalError;
+        if (!auditSink->Finalize(InExitCode, &terminalError)) {
+            std::cerr << "Error: failed to publish terminal plan-apply audit evidence";
+            if (!terminalError.empty()) std::cerr << " (" << terminalError << ")";
+            std::cerr << "\n";
+            return InExitCode == 0 ? 2 : InExitCode;
+        }
+        return InExitCode;
+    };
+    auto planAdmission = AcquireAuditedPlanExecutionAdmission(
+        *auditSink, InWorkspaceRoot, InPlanPath, &auditError);
+    if (!planAdmission) {
+        std::cerr << "Error: failed audited plan execution lock/source admission";
+        if (!auditError.empty()) std::cerr << " (" << auditError << ")";
+        std::cerr << "\n";
+        return finishAudit(2);
+    }
+    auto sourcePayload = planAdmission->AdmittedSourceBytes();
+    auto payload = ReadBoundedAuditInput(
+        auditSink->FrozenPlanPath(), 4U << 20U, &auditError);
+    if (!payload) {
+        std::cerr << "Error: reserved frozen plan became unreadable";
+        if (!auditError.empty()) std::cerr << " (" << auditError << ")";
+        std::cerr << "\n";
+        return finishAudit(2);
     }
 
     if (stage == "ignore" || stage == "all") {
@@ -4483,7 +4619,7 @@ auto RunPlanApply(const std::filesystem::path& InWorkspaceRoot,
         if (entries.empty()) {
             if (stage == "ignore") {
                 std::cerr << "[plan][ignore] no ignore plan entries; skip ignore stage.\n";
-                return 0;
+                return finishAudit(0);
             }
             std::cerr << "[plan][ignore] no ignore plan entries; skip ignore stage for --stage all.\n";
         }
@@ -4497,44 +4633,103 @@ auto RunPlanApply(const std::filesystem::path& InWorkspaceRoot,
                 : ResolvePath(InWorkspaceRoot, e.mergedOutputPath);
             const auto mergedText = MergeGitignore(targetAbs, e.rules);
             std::string error;
+            const auto mutationBefore = auditSink->Capture(repoAbs);
+            const auto mutationStartedAtUtc = CurrentUtcIso8601();
             if (!WriteFileText(mergedAbs, mergedText, &error)) {
                 std::cerr << "Error: failed to write merged ignore: " << mergedAbs.generic_string() << " (" << error << ")\n";
-                return 2;
+                if (!auditSink->Append("plan.ignore.apply", repoAbs,
+                                       mutationBefore, mutationStartedAtUtc, 2,
+                                       &auditError)) {
+                    std::cerr << "Error: failed to persist ignore failure audit event ("
+                              << auditError << ")\n";
+                }
+                return finishAudit(2);
             }
             if (!WriteFileText(targetAbs, mergedText, &error)) {
                 std::cerr << "Error: failed to apply ignore target: " << targetAbs.generic_string() << " (" << error << ")\n";
-                return 2;
+                if (!auditSink->Append("plan.ignore.apply", repoAbs,
+                                       mutationBefore, mutationStartedAtUtc, 2,
+                                       &auditError)) {
+                    std::cerr << "Error: failed to persist ignore failure audit event ("
+                              << auditError << ")\n";
+                }
+                return finishAudit(2);
+            }
+            if (!auditSink->Append("plan.ignore.apply", repoAbs,
+                                   mutationBefore, mutationStartedAtUtc, 0,
+                                   &auditError)) {
+                std::cerr << "Error: failed to persist ignore mutation audit event ("
+                          << auditError << ")\n";
+                return finishAudit(2);
             }
             std::cout << kano::terminal::PlanPrefix() << "[ignore] applied: repo=" << e.repo << " target=" << e.applyTarget
                       << " merged=" << mergedAbs.generic_string() << "\n";
         }
-        *payload = StampIgnoreAppliedAtAll(*payload, CurrentUtcIso8601());
+        sourcePayload = StampIgnoreAppliedAtAll(
+            sourcePayload, CurrentUtcIso8601());
         const auto postIgnoreDirtyFingerprint = ComputeWorkspaceDirtyFingerprint(InWorkspaceRoot);
-        if (const auto updated = ReplacePlanDirtyFingerprint(*payload, postIgnoreDirtyFingerprint); updated.has_value()) {
-            *payload = *updated;
+        if (const auto updated = ReplacePlanDirtyFingerprint(
+                sourcePayload, postIgnoreDirtyFingerprint);
+            updated.has_value()) {
+            sourcePayload = *updated;
         } else {
             std::cerr << "Error: failed to update meta.dirty_fingerprint after ignore apply.\n";
-            return 2;
+            return finishAudit(2);
         }
-        std::string error;
-        if (!WriteFileText(InPlanPath, *payload, &error)) {
-            std::cerr << "Error: failed to stamp plan applied_at_utc: " << InPlanPath.generic_string() << " (" << error << ")\n";
-            return 2;
+        const auto stampBefore = auditSink->Capture(InWorkspaceRoot);
+        const auto stampStartedAtUtc = CurrentUtcIso8601();
+        if (!RewriteAuditedPlanSourceConditionally(
+                *auditSink, InWorkspaceRoot, InPlanPath,
+                planAdmission->AdmittedSourceBytes(), sourcePayload,
+                PlanSourceRewritePhase::WriteCompletionStamp,
+                &auditError)) {
+            std::cerr << "Error: plan source changed before applied_at_utc stamp";
+            if (!auditError.empty()) std::cerr << " (" << auditError << ")";
+            std::cerr << "\n";
+            return finishAudit(2);
+        }
+        if (!auditSink->Append("plan.ignore.stamp", InWorkspaceRoot,
+                               stampBefore, stampStartedAtUtc, 0,
+                               &auditError)) {
+            std::cerr << "Error: failed to persist plan stamp audit event ("
+                      << auditError << ")\n";
+            return finishAudit(2);
         }
         std::cout << kano::terminal::PlanPrefix() << "[ignore] apply complete\n";
         std::cout << "Next:\n";
         std::cout << "  kog plan verify pre-apply --stage ignore --plan-file \"" << InPlanPath.generic_string() << "\"\n";
         std::cout << "  kog plan verify ignore --context plan\n";
         if (stage == "ignore") {
-            return RunPostApplyVerify(InPlanPath, "ignore");
+            const auto verifyBefore = auditSink->Capture(InWorkspaceRoot);
+            const auto verifyStartedAtUtc = CurrentUtcIso8601();
+            const auto verifyCode = RunPostApplyVerify(InPlanPath, "ignore");
+            if (!auditSink->Append("plan.verify", InWorkspaceRoot,
+                                   verifyBefore, verifyStartedAtUtc, verifyCode,
+                                   &auditError)) {
+                std::cerr << "Error: failed to persist post-apply verification event ("
+                          << auditError << ")\n";
+                return finishAudit(2);
+            }
+            return finishAudit(verifyCode);
         }
     }
 
     const auto commitPushCode = RunCommitPushPlanFilePipeline(InWorkspaceRoot, InPlanPath.generic_string(), InExtraArgs);
     if (commitPushCode != 0) {
-        return commitPushCode;
+        return finishAudit(commitPushCode);
     }
-    return RunPostApplyVerify(InPlanPath, stage == "all" ? "all" : "commit");
+    const auto verifyBefore = auditSink->Capture(InWorkspaceRoot);
+    const auto verifyStartedAtUtc = CurrentUtcIso8601();
+    const auto verifyCode = RunPostApplyVerify(
+        InPlanPath, stage == "all" ? "all" : "commit");
+    if (!auditSink->Append("plan.verify", InWorkspaceRoot,
+                           verifyBefore, verifyStartedAtUtc, verifyCode,
+                           &auditError)) {
+        std::cerr << "Error: failed to persist post-apply verification event ("
+                  << auditError << ")\n";
+        return finishAudit(2);
+    }
+    return finishAudit(verifyCode);
 }
 
 } // namespace kano::git::commands

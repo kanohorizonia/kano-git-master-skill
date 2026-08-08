@@ -144,6 +144,12 @@ auto BuildDefaultPlanTemplate(const std::filesystem::path& InWorkspaceRoot) -> s
 auto BuildDefaultPlanTemplate(const std::filesystem::path& InWorkspaceRoot,
                               const std::optional<std::filesystem::path>& InDatasourceRoot,
                               const std::optional<std::filesystem::path>& InDatasourceManifest) -> std::string;
+auto ApplyCorrelationEnvelopeToPlan(const std::string& InPlanText,
+                                    const std::string& InEnvelopeText,
+                                    std::string* OutError) -> std::optional<std::string>;
+auto ApplyCorrelationEnvelopeFileToPlan(const std::string& InPlanText,
+                                        const std::filesystem::path& InEnvelopePath,
+                                        std::string* OutError) -> std::optional<std::string>;
 auto BuildSetAiModelHelpFooter() -> std::string;
 auto CountTopLevelObjects(const std::string& InArrayBody) -> std::size_t;
 auto ParseIgnoreEntries(const std::string& InText) -> std::vector<IgnoreStageEntry>;

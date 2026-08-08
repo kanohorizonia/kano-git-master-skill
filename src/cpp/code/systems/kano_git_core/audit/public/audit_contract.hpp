@@ -198,6 +198,11 @@ struct SerializationResult {
 [[nodiscard]] auto WorktreeStateName(WorktreeState InState) -> std::string_view;
 [[nodiscard]] auto CorrelationModeName(CorrelationMode InMode)
     -> std::string_view;
+[[nodiscard]] auto Sha256Hex(std::string_view InBytes) -> std::string;
+// Stable provenance IDs are 1..128 ASCII bytes, begin with an alphanumeric,
+// continue with [A-Za-z0-9._:@-], contain no "..", and reject common secret
+// token prefixes. They are identifiers only, never paths, URLs, or authority.
+[[nodiscard]] auto IsStableAuditId(std::string_view InValue) -> bool;
 
 [[nodiscard]] auto ValidateAuditEvent(const AuditEvent& InEvent)
     -> ValidationResult;
