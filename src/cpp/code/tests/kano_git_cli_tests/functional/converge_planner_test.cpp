@@ -1,8 +1,11 @@
 #include "bdd_scenario_recorder.hpp"
 #include "functional_test_support.hpp"
+#include "audit_contract.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -109,6 +112,138 @@ auto ReadTextFile(const std::filesystem::path& InPath) -> std::string {
     std::ifstream in(InPath, std::ios::binary);
     REQUIRE(in.good());
     return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+auto WriteKoaCorrelationFile(const std::filesystem::path& InRepo,
+                             const std::string& InRoute,
+                             const std::string& InRunId)
+    -> std::filesystem::path {
+    const auto path = (InRepo / ".kano" / "tmp" /
+                       ("correlation-" + InRunId + ".json")).lexically_normal();
+    const nlohmann::json correlation = {
+        {"mode", "koa"}, {"product_id", "product-demo"},
+        {"topic_id", "topic-demo"}, {"item_id", "item-demo"},
+        {"work_order_id", "work-order-demo"},
+        {"request_id", "request-demo"}, {"run_id", InRunId},
+        {"parent_run_id", "run-parent"}, {"producer_id", "koa"},
+        {"route_id", InRoute}, {"attempt", 1},
+    };
+    WriteTextFile(path, correlation.dump() + "\n");
+    return path;
+}
+
+auto RequireCorrelatedOperationAudit(
+    const std::filesystem::path& InRepo,
+    const std::string& InRunId,
+    const std::string& InRoute,
+    const std::vector<std::string>& InRequiredActions,
+    const bool InRequireObservedMutation = true,
+    const std::vector<std::string>& InForbiddenFrozenSelectors = {}) -> void {
+    const auto gitDirectory = RunGit(
+        {"rev-parse", "--path-format=absolute", "--git-common-dir"}, InRepo);
+    RequireSuccess(gitDirectory, "resolve branch operation audit directory");
+    const auto auditRoot = std::filesystem::path(TrimCopy(gitDirectory.stdoutText)) /
+        "kog" / "audit";
+    std::vector<std::filesystem::path> matches;
+    std::error_code ec;
+    for (std::filesystem::recursive_directory_iterator it(auditRoot, ec), end;
+         !ec && it != end; it.increment(ec)) {
+        if (!it->is_regular_file(ec) || it->path().filename() != "receipt.json") {
+            continue;
+        }
+        const auto receipt = kano::git::audit::ParseRunReceiptJson(
+            ReadTextFile(it->path()));
+        if (receipt.ok() && receipt.value->runId == InRunId) {
+            matches.push_back(it->path().parent_path());
+        }
+    }
+    REQUIRE_FALSE(ec);
+    REQUIRE(matches.size() == 1);
+    const auto attemptRoot = matches.front();
+    const auto events = kano::git::audit::ParseAuditEventsJsonl(
+        ReadTextFile(attemptRoot / "events.jsonl"));
+    const auto receipt = kano::git::audit::ParseRunReceiptJson(
+        ReadTextFile(attemptRoot / "receipt.json"));
+    REQUIRE(events.ok());
+    REQUIRE(receipt.ok());
+    REQUIRE(receipt.value->terminalOutcome.status ==
+            kano::git::audit::OutcomeState::Succeeded);
+    REQUIRE(kano::git::audit::ValidateRunTrace(*receipt.value, events.values).ok());
+    const auto frozenDescriptor =
+        ReadTextFile(attemptRoot / "frozen-operation.json");
+    for (const auto& forbidden : InForbiddenFrozenSelectors) {
+        REQUIRE_FALSE(forbidden.empty());
+        REQUIRE(frozenDescriptor.find(forbidden) == std::string::npos);
+    }
+    REQUIRE(receipt.value->parentRunId == "run-parent");
+    for (const auto& event : events.values) {
+        REQUIRE(event.runId == InRunId);
+        REQUIRE(event.parentRunId == "run-parent");
+        REQUIRE(event.attempt == 1);
+        REQUIRE(event.correlation.mode == kano::git::audit::CorrelationMode::Koa);
+        REQUIRE(event.correlation.routeId == InRoute);
+    }
+    bool observedMutation = false;
+    for (const auto& action : InRequiredActions) {
+        bool observedAction = false;
+        for (const auto& event : events.values) {
+            if (event.action != action) continue;
+            observedAction = true;
+            if (event.repository.before != event.repository.after) {
+                observedMutation = true;
+            }
+        }
+        REQUIRE(observedAction);
+    }
+    if (InRequireObservedMutation) REQUIRE(observedMutation);
+}
+
+auto RequireNoOperationAuditRun(const std::filesystem::path& InRepo,
+                                const std::string& InRunId) -> void {
+    const auto gitDirectory = RunGit(
+        {"rev-parse", "--path-format=absolute", "--git-common-dir"}, InRepo);
+    RequireSuccess(gitDirectory, "resolve rejected operation audit directory");
+    const auto auditRoot = std::filesystem::path(TrimCopy(gitDirectory.stdoutText)) /
+        "kog" / "audit";
+    std::error_code ec;
+    if (!std::filesystem::exists(auditRoot, ec)) {
+        REQUIRE_FALSE(ec);
+        return;
+    }
+    const auto runDirectory =
+        "run-" + kano::git::audit::Sha256Hex(InRunId);
+    bool found = false;
+    for (std::filesystem::recursive_directory_iterator it(auditRoot, ec), end;
+         !ec && it != end; it.increment(ec)) {
+        if (it->is_directory(ec) && it->path().filename() == runDirectory) {
+            found = true;
+            break;
+        }
+    }
+    REQUIRE_FALSE(ec);
+    REQUIRE_FALSE(found);
+}
+
+struct GitMutationSnapshot {
+    std::string head;
+    std::string refs;
+    std::string worktrees;
+
+    auto operator==(const GitMutationSnapshot&) const -> bool = default;
+};
+
+auto CaptureGitMutationSnapshot(const std::filesystem::path& InRepo)
+    -> GitMutationSnapshot {
+    const auto head = RunGit({"rev-parse", "HEAD"}, InRepo);
+    const auto refs = RunGit(
+        {"for-each-ref", "--format=%(refname) %(objectname)",
+         "refs/heads", "refs/remotes"},
+        InRepo);
+    const auto worktrees = RunGit({"worktree", "list", "--porcelain"}, InRepo);
+    RequireSuccess(head, "capture rejected-selector HEAD");
+    RequireSuccess(refs, "capture rejected-selector refs");
+    RequireSuccess(worktrees, "capture rejected-selector worktrees");
+    return {head.stdoutText, refs.stdoutText, worktrees.stdoutText};
 }
 
 auto RequireScenarioMetadata(const std::string& InScenarioId,
@@ -715,6 +850,99 @@ TEST_CASE("converge branches inventory skips gh-pages publish branch", "[functio
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge mutation selectors reject option and path shapes before audit reservation",
+          "[functional][converge][branches][audit][security][KG-TSK-0125]") {
+    const auto ctx = CreateRemoteWithClone("converge-mutation-selector-admission");
+    const auto head = TrimCopy(RunGit({"rev-parse", "HEAD"}, ctx.cloneRepo).stdoutText);
+    REQUIRE(head.size() == 40);
+
+    struct RejectedSelectorCase {
+        std::string selector;
+        std::string route;
+        std::string runId;
+        std::vector<std::string> args;
+    };
+    const std::vector<RejectedSelectorCase> cases = {
+        {"--evil", "converge.branches.apply", "run-reject-apply-option",
+         {"converge", "branches", "apply", "--target=--evil", "--confirm", "--json"}},
+        {"/private/secret/target", "converge.branches.apply", "run-reject-apply-absolute",
+         {"converge", "branches", "apply", "--target=/private/secret/target", "--confirm", "--json"}},
+        {"../target", "converge.branches.apply", "run-reject-apply-traversal",
+         {"converge", "branches", "apply", "--target=../target", "--confirm", "--json"}},
+        {R"(C:\Users\secret\target)", "converge.branches.apply", "run-reject-apply-windows",
+         {"converge", "branches", "apply", R"(--target=C:\Users\secret\target)", "--confirm", "--json"}},
+        {"main\ninjected", "converge.branches.apply", "run-reject-apply-control",
+         {"converge", "branches", "apply", "--target=main\ninjected", "--confirm", "--json"}},
+        {"--evil", "converge.branches.apply", "run-reject-apply-branch-option",
+         {"converge", "branches", "apply", "--target=main", "--branch=--evil", "--confirm", "--json"}},
+        {"../feature", "converge.branches.retire", "run-reject-retire-traversal",
+         {"converge", "branches", "retire", "--target=main", "--branch=../feature", "--confirm", "--json"}},
+        {"/private/secret/target", "converge.branches.recover", "run-reject-recover-target",
+         {"converge", "branches", "recover", "--abort", "--target=/private/secret/target",
+          "--expected-head=" + head, "--restore-head=" + head, "--remote=origin", "--json"}},
+        {"--evil", "converge.branches.recover", "run-reject-recover-option",
+         {"converge", "branches", "recover", "--abort", "--target=main",
+          "--expected-head=" + head, "--restore-head=" + head, "--remote=--evil", "--json"}},
+        {"/private/secret/remote", "converge.branches.recover", "run-reject-recover-absolute",
+         {"converge", "branches", "recover", "--abort", "--target=main",
+          "--expected-head=" + head, "--restore-head=" + head, "--remote=/private/secret/remote", "--json"}},
+        {"../remote", "converge.branches.recover", "run-reject-recover-traversal",
+         {"converge", "branches", "recover", "--abort", "--target=main",
+          "--expected-head=" + head, "--restore-head=" + head, "--remote=../remote", "--json"}},
+        {R"(C:\Users\secret\remote)", "converge.branches.recover", "run-reject-recover-windows",
+         {"converge", "branches", "recover", "--abort", "--target=main",
+          "--expected-head=" + head, "--restore-head=" + head, R"(--remote=C:\Users\secret\remote)", "--json"}},
+        {"origin\ninjected", "converge.branches.recover", "run-reject-recover-control",
+         {"converge", "branches", "recover", "--abort", "--target=main",
+          "--expected-head=" + head, "--restore-head=" + head, "--remote=origin\ninjected", "--json"}},
+        {"https://token@host.example/repo.git", "converge.branches.recover", "run-reject-recover-url",
+         {"converge", "branches", "recover", "--abort", "--target=main",
+          "--expected-head=" + head, "--restore-head=" + head,
+          "--remote=https://token@host.example/repo.git", "--json"}},
+        {".", "converge.branches.recover", "run-reject-recover-dot",
+         {"converge", "branches", "recover", "--abort", "--target=main",
+          "--expected-head=" + head, "--restore-head=" + head, "--remote=.", "--json"}},
+        {"..", "converge.branches.recover", "run-reject-recover-dotdot",
+         {"converge", "branches", "recover", "--abort", "--target=main",
+          "--expected-head=" + head, "--restore-head=" + head, "--remote=..", "--json"}},
+        {"https://token@host.example/private/repo.git", "converge.repos", "run-reject-repos-url",
+         {"converge", "--no-recursive", "--abort",
+          "--remote=https://token@host.example/private/repo.git"}},
+        {"/private/secret/workspace/repo.git", "converge.repos", "run-reject-repos-absolute",
+         {"converge", "--no-recursive", "--abort",
+          "--remote=/private/secret/workspace/repo.git"}},
+        {R"(C:\Users\secret\workspace\repo.git)", "converge.repos", "run-reject-repos-windows",
+         {"converge", "--no-recursive", "--abort",
+          R"(--remote=C:\Users\secret\workspace\repo.git)"}},
+    };
+
+    for (const auto& rejected : cases) {
+        auto args = rejected.args;
+        const auto correlation = WriteKoaCorrelationFile(
+            ctx.cloneRepo, rejected.route, rejected.runId);
+        args.push_back("--correlation-file");
+        args.push_back(correlation.string());
+        const auto before = CaptureGitMutationSnapshot(ctx.cloneRepo);
+        const auto result = RunKog(args, ctx.cloneRepo);
+        INFO("route=" << rejected.route << " run=" << rejected.runId);
+        INFO(result.stdoutText);
+        INFO(result.stderrText);
+        REQUIRE(result.exitCode == 2);
+        // A literal dot cannot be meaningfully redaction-tested against
+        // normal process diagnostics because every filesystem path contains
+        // one. All substantive option/path-shaped selectors remain subject
+        // to exact literal absence.
+        if (rejected.selector != ".") {
+            REQUIRE((result.stdoutText + result.stderrText).find(rejected.selector) ==
+                    std::string::npos);
+        }
+        REQUIRE(CaptureGitMutationSnapshot(ctx.cloneRepo) == before);
+        RequireNoOperationAuditRun(ctx.cloneRepo, rejected.runId);
+    }
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("converge branches apply fast-forwards target and pushes", "[tdd][functional][feature:converge][converge][branches][apply]") {
     const auto ctx = CreateRemoteWithClone("converge-branches-apply");
     const std::string featureBranch = "feature/apply-fast-forward";
@@ -726,7 +954,11 @@ TEST_CASE("converge branches apply fast-forwards target and pushes", "[tdd][func
     const auto featureHead = TrimCopy(RunGit({"rev-parse", featureBranch}, ctx.cloneRepo).stdoutText);
     RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target before apply");
 
-    const auto result = RunKog({"converge", "branches", "apply", "--target", ctx.branch, "--confirm", "--json", "--jobs", "1"}, ctx.cloneRepo);
+    const auto correlation = WriteKoaCorrelationFile(
+        ctx.cloneRepo, "converge.branches.apply", "run-branches-apply");
+
+    const auto result = RunKog({"converge", "branches", "apply", "--target", ctx.branch, "--confirm", "--json", "--jobs", "1",
+                                "--correlation-file", correlation.string()}, ctx.cloneRepo);
     INFO(result.stdoutText);
     INFO(result.stderrText);
     REQUIRE(result.exitCode == 0);
@@ -738,6 +970,11 @@ TEST_CASE("converge branches apply fast-forwards target and pushes", "[tdd][func
     REQUIRE(TrimCopy(RunGit({"rev-parse", ctx.branch}, ctx.cloneRepo).stdoutText) == featureHead);
     REQUIRE(TrimCopy(RunGit({"rev-parse", "origin/" + ctx.branch}, ctx.cloneRepo).stdoutText) == featureHead);
     REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
+    RequireCorrelatedOperationAudit(
+        ctx.cloneRepo, "run-branches-apply", "converge.branches.apply",
+        {"converge.branches.apply.sync-target",
+         "converge.branches.apply.repository",
+         "converge.branches.apply"}, true, {featureBranch, ctx.branch});
 
     RemoveSandboxWorkspace(ctx.sandbox);
 }
@@ -842,7 +1079,9 @@ TEST_CASE("converge branches recovery abort requires exact pending head", "[tdd]
     const auto recovery = RunKog({
         "converge", "branches", "recover", "--abort", "--target", ctx.branch,
         "--expected-head", integratedHead, "--restore-head", targetHeadBefore,
-        "--remote", "origin", "--json"}, ctx.cloneRepo);
+        "--remote", "origin", "--json", "--correlation-file",
+        WriteKoaCorrelationFile(ctx.cloneRepo, "converge.branches.recover",
+                                "run-branches-recover").string()}, ctx.cloneRepo);
     INFO(recovery.stdoutText);
     INFO(recovery.stderrText);
     REQUIRE(recovery.exitCode == 0);
@@ -851,6 +1090,10 @@ TEST_CASE("converge branches recovery abort requires exact pending head", "[tdd]
     REQUIRE(TrimCopy(RunGit({"rev-parse", "origin/" + ctx.branch}, ctx.cloneRepo).stdoutText) == targetHeadBefore);
     REQUIRE_FALSE(std::filesystem::exists(ctx.cloneRepo / "abort.txt"));
     REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
+    RequireCorrelatedOperationAudit(
+        ctx.cloneRepo, "run-branches-recover", "converge.branches.recover",
+        {"converge.branches.recover.reset",
+         "converge.branches.recover"}, true, {ctx.branch, "origin"});
 
     RemoveSandboxWorkspace(ctx.sandbox);
 }
@@ -1291,7 +1534,10 @@ TEST_CASE("converge branches retire removes merged branch and clean git worktree
     RequireNotContains(preview.stdoutText, "DIRTY_WORKTREE:AHEAD_ONLY");
     REQUIRE(std::filesystem::exists(worktreePath));
 
-    const auto result = RunKog({"converge", "branches", "retire", "--target", ctx.branch, "--remove-worktrees", "--confirm", "--json", "--jobs", "1"}, ctx.cloneRepo);
+    const auto retireCorrelation = WriteKoaCorrelationFile(
+        ctx.cloneRepo, "converge.branches.retire", "run-branches-retire");
+    const auto result = RunKog({"converge", "branches", "retire", "--target", ctx.branch, "--remove-worktrees", "--confirm", "--json", "--jobs", "1",
+                                "--correlation-file", retireCorrelation.string()}, ctx.cloneRepo);
     INFO(result.stdoutText);
     INFO(result.stderrText);
     REQUIRE(result.exitCode == 0);
@@ -1304,6 +1550,11 @@ TEST_CASE("converge branches retire removes merged branch and clean git worktree
     REQUIRE(RunGit({"show-ref", "--verify", "--quiet", "refs/heads/" + featureBranch}, ctx.cloneRepo).exitCode != 0);
     REQUIRE(!std::filesystem::exists(worktreePath));
     REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
+    RequireCorrelatedOperationAudit(
+        ctx.cloneRepo, "run-branches-retire", "converge.branches.retire",
+        {"converge.branches.retire.sync-target",
+         "converge.branches.retire.repository",
+         "converge.branches.retire"}, true, {ctx.branch});
 
     RemoveSandboxWorkspace(ctx.sandbox);
 }
@@ -1971,7 +2222,11 @@ TEST_CASE("converge branches retire prunes stale worktree metadata after confirm
     RequireSuccess(before, "worktree list before prune");
     RequireContains(before.stdoutText, worktreePath.generic_string());
 
-    const auto result = RunKog({"converge", "branches", "retire", "--target", ctx.branch, "--prune-worktrees", "--confirm", "--json", "--jobs", "1"}, ctx.cloneRepo);
+    const auto correlation = WriteKoaCorrelationFile(
+        ctx.cloneRepo, "converge.branches.retire",
+        "run-branches-retire-prune-stale-worktree");
+    const auto result = RunKog({"converge", "branches", "retire", "--target", ctx.branch, "--prune-worktrees", "--confirm", "--json", "--jobs", "1",
+                                "--correlation-file", correlation.string()}, ctx.cloneRepo);
     INFO(result.stdoutText);
     INFO(result.stderrText);
     REQUIRE(result.exitCode == 0);
@@ -1980,6 +2235,12 @@ TEST_CASE("converge branches retire prunes stale worktree metadata after confirm
     const auto after = RunGit({"worktree", "list", "--porcelain"}, ctx.cloneRepo);
     RequireSuccess(after, "worktree list after prune");
     RequireNotContains(after.stdoutText, worktreePath.generic_string());
+    RequireCorrelatedOperationAudit(
+        ctx.cloneRepo, "run-branches-retire-prune-stale-worktree",
+        "converge.branches.retire",
+        {"converge.branches.retire.repository",
+         "converge.branches.retire"},
+        false, {ctx.branch});
 
     RemoveSandboxWorkspace(ctx.sandbox);
 }

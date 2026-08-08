@@ -1,5 +1,4 @@
 // plan/ignore commands - native plan pipeline and ignore doctor
-
 #include <CLI/CLI.hpp>
 #include "plan_utils.hpp"
 #include "command_runtime_ops.hpp"
@@ -9,9 +8,7 @@
 #include "kog_config.hpp"
 #include "secret_scan_utils.hpp"
 #include "terminal_color.hpp"
-
 #include <nlohmann/json.hpp>
-
 #include <algorithm>
 #include <chrono>
 #include <cctype>
@@ -32,7 +29,6 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-
 namespace kano::git::commands {
 void RegisterPlan(CLI::App& InApp) {
     auto* cmd = InApp.add_subcommand("plan", "Plan pipeline commands");
@@ -40,7 +36,6 @@ void RegisterPlan(CLI::App& InApp) {
     const auto defaultCommitGenerationMode = kog_config::ResolvePlanCommitGenerationMode(configRoot,
                                                                                          ResolveSkillRoot(configRoot),
                                                                                          "adaptive");
-
     auto* init = cmd->add_subcommand("new", "Write plan template");
     auto* initOut = new std::string{};
     auto* initForce = new bool{false};
@@ -54,6 +49,7 @@ void RegisterPlan(CLI::App& InApp) {
     auto* initDatasourceRoot = new std::string{};
     auto* initDatasourceManifest = new std::string{};
     auto* initYolo = new bool{false};
+    auto* correlationFile = new std::string{};
     init->add_option("--output,-o", *initOut, "Plan output path (default: .kano/tmp/git/plans/default-plan.json)");
     init->add_flag("--force,-f", *initForce, "Overwrite existing output");
     init->add_flag("--ai-auto,--ai", *initAiAuto, "Generate and fill plan by AI");
@@ -73,6 +69,8 @@ void RegisterPlan(CLI::App& InApp) {
     init->add_option("--ignore-datasource-manifest",
                      *initDatasourceManifest,
                      "Override ignore datasource manifest in plan meta.ignore_datasource.manifest");
+    init->add_option("--correlation-file", *correlationFile,
+                     "Closed KOA correlation envelope JSON (provenance only)");
     init->callback([=]() {
         const auto workspaceRoot = std::filesystem::current_path().lexically_normal();
         const auto outPath = initOut->empty() ? DefaultPlanPath(workspaceRoot) : std::filesystem::path(*initOut).lexically_normal();
@@ -88,7 +86,18 @@ void RegisterPlan(CLI::App& InApp) {
             std::exit(2);
         }
         std::string error;
-        if (!WriteFileText(outPath, BuildDefaultPlanTemplate(workspaceRoot, datasourceRoot, datasourceManifest), &error)) {
+        auto planText = BuildDefaultPlanTemplate(workspaceRoot, datasourceRoot, datasourceManifest);
+        if (!correlationFile->empty()) {
+            if (const auto applied = ApplyCorrelationEnvelopeFileToPlan(
+                    planText, std::filesystem::path(*correlationFile), &error);
+                applied.has_value()) {
+                planText = *applied;
+            } else {
+                std::cerr << "Error: " << error << "\n";
+                std::exit(2);
+            }
+        }
+        if (!WriteFileText(outPath, planText, &error)) {
             std::cerr << "Error: failed to write plan template: " << outPath.generic_string();
             if (!error.empty()) {
                 std::cerr << " (" << error << ")";
@@ -107,7 +116,6 @@ void RegisterPlan(CLI::App& InApp) {
 
         std::cout << "Wrote plan template: " << outPath.generic_string() << "\n";
     });
-
     auto* setAiModel = cmd->add_subcommand("set-ai-model", "Set local default AI model in .kano/kog_config.toml for auto plan/commit flows");
     setAiModel->footer([]() {
         return BuildSetAiModelHelpFooter();

@@ -5,6 +5,7 @@
 namespace kano::git::commands {
 
 void RegisterAuth(CLI::App& InApp);
+void RegisterAudit(CLI::App& InApp);
 void RegisterVersion(CLI::App& InApp);
 void RegisterCache(CLI::App& InApp);
 void RegisterConfig(CLI::App& InApp);

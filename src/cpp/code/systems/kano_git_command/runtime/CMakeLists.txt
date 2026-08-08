@@ -4,6 +4,8 @@ target_sources(kano_git_command_runtime
   PRIVATE
     private/auto_model_policy.cpp
     private/command_executor.cpp
+    private/audit_cmd.cpp
+    private/operation_audit.cpp
     private/ai_utils.cpp
     private/repo_hygiene_cmd.cpp
     private/runtime_path_layout.cpp
@@ -11,6 +13,7 @@ target_sources(kano_git_command_runtime
     public/auto_model_policy.hpp
     public/command_runtime_ops.hpp
     public/command_executor.hpp
+    public/operation_audit.hpp
     public/ai_utils.hpp
     public/runtime_path_layout.hpp
     public/terminal_color.hpp
@@ -31,6 +34,8 @@ target_link_libraries(kano_git_command_runtime
     kano::git_shell
     kano::git_config
     kano::git_workspace
+    kano::git_audit
+    nlohmann_json::nlohmann_json
 )
 target_link_libraries(kano_git_command_runtime PRIVATE tomlplusplus::tomlplusplus)
 

@@ -49,8 +49,12 @@ def assert_invalid(validator: Draft202012Validator, value: Any, label: str) -> N
 def main() -> int:
     event_schema = load_json(SCHEMA_ROOT / "kog.auditEvent.v1.schema.json")
     receipt_schema = load_json(SCHEMA_ROOT / "kog.runReceipt.v1.schema.json")
+    capability_schema = load_json(SCHEMA_ROOT / "kog.auditCapability.v1.schema.json")
+    verification_schema = load_json(SCHEMA_ROOT / "kog.auditVerification.v1.schema.json")
     Draft202012Validator.check_schema(event_schema)
     Draft202012Validator.check_schema(receipt_schema)
+    Draft202012Validator.check_schema(capability_schema)
+    Draft202012Validator.check_schema(verification_schema)
 
     registry = (
         Registry()
@@ -59,6 +63,41 @@ def main() -> int:
     )
     event_validator = Draft202012Validator(event_schema, registry=registry)
     receipt_validator = Draft202012Validator(receipt_schema, registry=registry)
+    capability_validator = Draft202012Validator(capability_schema)
+    verification_validator = Draft202012Validator(
+        verification_schema, registry=registry
+    )
+
+    capability = {
+        "schemaName": "kog.auditCapability", "schemaVersion": 1,
+        "protocolVersion": 1, "correlationEnvelopeVersions": [1],
+        "auditEventVersions": [1], "runReceiptVersions": [1],
+        "auditVerificationVersions": [1], "provenanceGrantsAuthority": False,
+        "durability": {"fileFlush": "required", "directorySync": "required-posix-best-effort-windows"},
+        "supportedInputs": [
+            {"route": "commit.plan", "inputKind": "commit-plan"},
+            {"route": "commit-push.plan", "inputKind": "commit-plan"},
+            {"route": "plan.apply", "inputKind": "commit-plan"},
+            {"route": "converge.repos", "inputKind": "operation-descriptor"},
+            {"route": "converge.branches.apply", "inputKind": "operation-descriptor"},
+            {"route": "converge.branches.recover", "inputKind": "operation-descriptor"},
+            {"route": "converge.branches.retire", "inputKind": "operation-descriptor"},
+        ],
+    }
+    assert_valid(capability_validator, capability, "audit capability")
+    assert_invalid(capability_validator, {**capability, "path": "/private"}, "capability path leak")
+
+    verification_failure = {
+        "schemaName": "kog.auditVerification", "schemaVersion": 1, "ok": False,
+        "error": {"code": "verification-failed", "message": "verification failed"},
+        "traceValid": False, "eventsValid": False, "receiptValid": False,
+        "frozenInputValid": False, "planId": None, "planSha256": None,
+        "frozenInputSha256": None, "runId": None, "parentRunId": None,
+        "attempt": None, "correlation": None, "eventCount": None,
+        "eventStreamSha256": None, "receiptSha256": None,
+        "terminalOutcome": None, "repositories": [], "artifacts": [],
+    }
+    assert_valid(verification_validator, verification_failure, "verification failure envelope")
 
     golden_events = load_jsonl(
         FIXTURE_ROOT / "golden" / "audit-events.v1.jsonl"
@@ -66,9 +105,83 @@ def main() -> int:
     golden_receipt = load_json(
         FIXTURE_ROOT / "golden" / "run-receipt.v1.json"
     )
+    legacy_opaque_event = load_json(
+        FIXTURE_ROOT / "golden" / "legacy-opaque-event.v1.json"
+    )
     for index, event in enumerate(golden_events):
         assert_valid(event_validator, event, f"golden event {index}")
+    assert len(legacy_opaque_event["eventId"]) > 128
+    assert "/" in legacy_opaque_event["eventId"]
+    assert_valid(
+        event_validator,
+        legacy_opaque_event,
+        "legacy printable opaque ID event",
+    )
     assert_valid(receipt_validator, golden_receipt, "golden receipt")
+
+    verification_success = {
+        "schemaName": "kog.auditVerification", "schemaVersion": 1,
+        "ok": True, "error": None, "traceValid": True,
+        "eventsValid": True, "receiptValid": True,
+        "frozenInputValid": True, "planId": golden_receipt["planId"],
+        "planSha256": golden_receipt["planSha256"],
+        "frozenInputSha256": golden_receipt["planSha256"],
+        "runId": golden_receipt["runId"],
+        "parentRunId": golden_receipt["parentRunId"],
+        "attempt": golden_receipt["attempt"],
+        "correlation": golden_receipt["correlation"],
+        "eventCount": golden_receipt["eventCount"],
+        "eventStreamSha256": golden_receipt["eventStreamSha256"],
+        "receiptSha256": "5" * 64,
+        "terminalOutcome": golden_receipt["terminalOutcome"],
+        "repositories": golden_receipt["repositories"],
+        "artifacts": golden_receipt["artifacts"],
+    }
+    assert_valid(
+        verification_validator, verification_success,
+        "verification success proof",
+    )
+    for proof_field in (
+        "planId", "planSha256", "frozenInputSha256", "runId", "attempt",
+        "correlation", "eventCount", "eventStreamSha256", "receiptSha256",
+        "terminalOutcome",
+    ):
+        invalid_success = copy.deepcopy(verification_success)
+        invalid_success[proof_field] = None
+        assert_invalid(
+            verification_validator, invalid_success,
+            f"verification success null {proof_field}",
+        )
+    fabricated_correlation = copy.deepcopy(verification_success)
+    fabricated_correlation["correlation"] = {"mode": "koa"}
+    assert_invalid(
+        verification_validator, fabricated_correlation,
+        "verification success fabricated correlation",
+    )
+    fabricated_outcome = copy.deepcopy(verification_success)
+    fabricated_outcome["terminalOutcome"] = {"status": "succeeded"}
+    assert_invalid(
+        verification_validator, fabricated_outcome,
+        "verification success fabricated terminal outcome",
+    )
+    fabricated_repository = copy.deepcopy(verification_success)
+    fabricated_repository["repositories"] = [{"id": "workspace"}]
+    assert_invalid(
+        verification_validator, fabricated_repository,
+        "verification success fabricated repository transition",
+    )
+    fabricated_artifact = copy.deepcopy(verification_success)
+    fabricated_artifact["artifacts"] = [{"id": "artifact"}]
+    assert_invalid(
+        verification_validator, fabricated_artifact,
+        "verification success fabricated artifact",
+    )
+    oversized_event_count = copy.deepcopy(verification_success)
+    oversized_event_count["eventCount"] = 1_000_001
+    assert_invalid(
+        verification_validator, oversized_event_count,
+        "verification success event count overflow",
+    )
 
     malformed_hash = copy.deepcopy(golden_events[0])
     malformed_hash["planSha256"] = "ABC123"
@@ -102,6 +215,41 @@ def main() -> int:
     too_large_attempt = copy.deepcopy(golden_events[0])
     too_large_attempt["attempt"] = 4_294_967_296
     assert_invalid(event_validator, too_large_attempt, "uint32 attempt overflow")
+
+    for opaque_id in (
+        "",
+        "has space",
+        "line\nbreak",
+        "x" * 257,
+    ):
+        invalid_opaque_id = copy.deepcopy(golden_events[0])
+        invalid_opaque_id["runId"] = opaque_id
+        assert_invalid(
+            event_validator,
+            invalid_opaque_id,
+            f"legacy printable opaque id {opaque_id!r}",
+        )
+
+    for correlation_id in (
+        "/absolute-path",
+        "dot..dot",
+        "sk-secret",
+        "GHP_token",
+        "github_pat_token",
+        "GLPAT-token",
+        "Bearer-token",
+        "AKIA-token",
+        "has space",
+        "x" * 129,
+        legacy_opaque_event["eventId"],
+    ):
+        invalid_correlation_id = copy.deepcopy(golden_events[0])
+        invalid_correlation_id["correlation"]["productId"] = correlation_id
+        assert_invalid(
+            event_validator,
+            invalid_correlation_id,
+            f"stable correlation id {correlation_id!r}",
+        )
 
     for repository_id in (
         "/absolute",

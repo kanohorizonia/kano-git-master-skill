@@ -149,6 +149,24 @@ TEST_CASE(
     REQUIRE(reserialized.json == WithoutFinalLf(receiptBytes));
 }
 
+TEST_CASE("KG-TSK-0125 legacy v1 opaque IDs retain printable 256-byte compatibility",
+          "[infrastructure][audit][compatibility][KG-TSK-0125]") {
+    const auto fixtureBytes =
+        ReadBinary(FixturePath("golden/legacy-opaque-event.v1.json"));
+    const auto parsed = kano::git::audit::ParseAuditEventJson(fixtureBytes);
+    REQUIRE(parsed.ok());
+    REQUIRE(parsed.value.has_value());
+    REQUIRE(parsed.value->eventId.size() > 128);
+    REQUIRE(parsed.value->eventId.find('/') != std::string::npos);
+    REQUIRE(parsed.value->eventId.find('#') != std::string::npos);
+
+    const auto serialized =
+        kano::git::audit::SerializeAuditEventJson(*parsed.value);
+    REQUIRE(serialized.ok());
+    REQUIRE(serialized.json == WithoutFinalLf(fixtureBytes));
+    REQUIRE_FALSE(kano::git::audit::IsStableAuditId(parsed.value->eventId));
+}
+
 TEST_CASE("KG-TSK-0124 maximum repository receipt remains parser round-trippable",
           "[infrastructure][audit][output][KG-TSK-0124]") {
     auto receipt = kano::git::audit::ParseRunReceiptJson(

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
@@ -43,6 +44,12 @@ struct CommitPlanPayload {
     };
 
     struct Meta {
+        struct Correlation {
+            bool present = false;
+            std::string mode = "standalone";
+            std::string productId, topicId, itemId, workOrderId, requestId, runId, parentRunId, producerId, routeId;
+            std::uint32_t attempt = 1;
+        };
         std::string schemaVersion;
         std::string planId;
         std::string generatedAtUtc;
@@ -54,6 +61,7 @@ struct CommitPlanPayload {
         std::string scopeRepo;
         PlannerMeta planner;
         ReviewMeta review;
+        Correlation correlation;
     };
 
     Meta meta;
@@ -71,6 +79,8 @@ auto LoadNormalizedCommitPlan(const std::filesystem::path& InWorkspaceRoot,
                               std::string* OutError) -> std::optional<CommitPlanPayload>;
 auto ValidateCommitPlanForAiMode(const CommitPlanPayload& InPlan,
                                  std::string* OutError) -> bool;
+auto ValidateCommitPlanCorrelation(const CommitPlanPayload& InPlan,
+                                   std::string* OutError) -> bool;
 auto UsesRepoScopedFreshness(const CommitPlanPayload& InPlan) -> bool;
 auto HumanAutoPlanLooksDeterministic(const std::filesystem::path& InPlanPath,
                                      std::string* OutReason) -> bool;

@@ -31,7 +31,9 @@ endforeach()
 
 foreach(audit_schema
         kog.auditEvent.v1.schema.json
-        kog.runReceipt.v1.schema.json)
+        kog.runReceipt.v1.schema.json
+        kog.auditCapability.v1.schema.json
+        kog.auditVerification.v1.schema.json)
     if(NOT EXISTS "${KOG_RUNTIME_AUDIT_SCHEMA_ROOT}/${audit_schema}")
         message(FATAL_ERROR
             "required audit schema does not exist: "
@@ -65,7 +67,9 @@ foreach(regression_asset incidents.json case-template.json)
 endforeach()
 foreach(audit_schema
         kog.auditEvent.v1.schema.json
-        kog.runReceipt.v1.schema.json)
+        kog.runReceipt.v1.schema.json
+        kog.auditCapability.v1.schema.json
+        kog.auditVerification.v1.schema.json)
     file(COPY_FILE
         "${KOG_RUNTIME_AUDIT_SCHEMA_ROOT}/${audit_schema}"
         "${KOG_RUNTIME_ARTIFACT_DIR}/assets/audit/schemas/${audit_schema}"

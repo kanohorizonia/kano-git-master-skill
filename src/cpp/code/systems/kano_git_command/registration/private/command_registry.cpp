@@ -10,6 +10,7 @@ void RegisterAll(CLI::App& InApp) {
     RegisterAmend(InApp);
     RegisterAi(InApp);
     RegisterAgentQueue(InApp);
+    RegisterAudit(InApp);
     RegisterAuth(InApp);
     RegisterBranch(InApp);
     RegisterCache(InApp);
@@ -85,6 +86,7 @@ void RegisterAll(CLI::App& InApp) {
     // 2. Repository Management
     const std::string repoGroup = "2. Repository Management";
     setGroup("auth", repoGroup);
+    setGroup("audit", repoGroup);
     setGroup("clone", repoGroup);
     setGroup("branch", repoGroup);
     setGroup("repo", repoGroup);

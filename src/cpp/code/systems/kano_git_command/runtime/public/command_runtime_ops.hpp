@@ -39,7 +39,9 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
                               const std::string& InPlanFile,
                               const std::string& InPlanStage,
                               bool InProfile,
-                              bool InAllowLockRecovery = false) -> int;
+                              bool InAllowLockRecovery = false,
+                              bool InRunPreCommit = false,
+                              bool InPreCommitRecursive = true) -> int;
 
 auto RunCommitNativeSimple(const std::filesystem::path& InWorkspaceRoot,
                            const std::string& InReposCsv,

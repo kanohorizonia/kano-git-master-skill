@@ -447,9 +447,16 @@ auto NormalizeCommitPushGitPath(std::string InPath) -> std::string {
     return Trim(InPath);
 }
 
+auto NormalizeCommitPushGitReportedPath(std::string InPath) -> std::string {
+    while (InPath.rfind("./", 0) == 0) {
+        InPath.erase(0, 2);
+    }
+    return InPath;
+}
+
 auto CommitPushPathspecCoversPath(std::string InPathspec, std::string InPath) -> bool {
     InPathspec = NormalizeCommitPushGitPath(std::move(InPathspec));
-    InPath = NormalizeCommitPushGitPath(std::move(InPath));
+    InPath = NormalizeCommitPushGitReportedPath(std::move(InPath));
     if (InPathspec.empty() || InPath.empty()) {
         return false;
     }

@@ -12,6 +12,8 @@
     "assets/regression/incidents.json",
     "assets/regression/case-template.json",
     "assets/audit/schemas/kog.auditEvent.v1.schema.json",
-    "assets/audit/schemas/kog.runReceipt.v1.schema.json"
+    "assets/audit/schemas/kog.runReceipt.v1.schema.json",
+    "assets/audit/schemas/kog.auditCapability.v1.schema.json",
+    "assets/audit/schemas/kog.auditVerification.v1.schema.json"
   ]
 }

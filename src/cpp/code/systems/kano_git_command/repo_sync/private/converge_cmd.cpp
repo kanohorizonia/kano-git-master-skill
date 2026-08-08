@@ -4,6 +4,7 @@
 #include <nlohmann/json.hpp>
 
 #include "command_runtime_ops.hpp"
+#include "operation_audit.hpp"
 #include "runtime_path_layout.hpp"
 #include "shell_executor.hpp"
 
@@ -40,6 +41,79 @@
 
 namespace kano::git::commands {
 namespace {
+
+auto AuditSelectorSha256(const std::string_view InValue) -> nlohmann::json {
+    return InValue.empty()
+        ? nlohmann::json(nullptr)
+        : nlohmann::json(audit::Sha256Hex(InValue));
+}
+
+// The converge command has several independently invokable mutation paths.
+// Keep their audit setup here, rather than teaching the planner about storage
+// paths: the descriptor is a closed, path-free description of the requested
+// operation and the runtime privately chooses where immutable evidence lives.
+auto ReserveConvergeAudit(const std::filesystem::path& InRoot,
+                         const std::string_view InRoute,
+                         const std::string& InCorrelationFile,
+                         nlohmann::json InOptions,
+                         std::string* OutError)
+    -> std::unique_ptr<OperationAuditContext> {
+    OperationCorrelationEnvelope correlation;
+    correlation.mode = "standalone";
+    if (!InCorrelationFile.empty()) {
+        const auto bytes = ReadBoundedAuditInput(InCorrelationFile, 64U * 1024U, OutError);
+        if (!bytes) return nullptr;
+        const auto parsed = ParseOperationCorrelationEnvelope(*bytes, OutError);
+        if (!parsed || !ValidateOperationCorrelationEnvelope(*parsed, false, OutError)) return nullptr;
+        correlation = *parsed;
+    }
+
+    // Callers provide only the closed, redacted per-route option object.
+    // nlohmann's object ordering makes dump() canonical; the route is bound
+    // separately so no raw selector, path, URL, message, or argv is admitted.
+    const auto options = InOptions.dump();
+    const auto descriptorIdentity = std::string(InRoute) + "\n" + options;
+    const auto planId = "operation-" +
+        audit::Sha256Hex(descriptorIdentity).substr(0, 40);
+    correlation = ResolveStandaloneCorrelation(correlation, planId, audit::Sha256Hex(options));
+    if (!ValidateOperationCorrelationEnvelope(correlation, true, OutError)) return nullptr;
+    const auto descriptor = BuildOperationDescriptor(InRoute, options, correlation, OutError);
+    if (!descriptor) return nullptr;
+
+    OperationAuditSpec spec;
+    spec.workspaceRoot = InRoot;
+    spec.inputIdentity = "operation-" + audit::Sha256Hex(*descriptor);
+    spec.inputKind = "operation-descriptor";
+    spec.route = std::string(InRoute);
+    spec.planId = planId;
+    spec.sourceBytes = *descriptor;
+    spec.frozenBytes = *descriptor;
+    spec.frozenFileName = "frozen-operation.json";
+    spec.correlation = std::move(correlation);
+    return OperationAuditContext::Reserve(std::move(spec), OutError);
+}
+
+auto AppendConvergeAudit(OperationAuditContext& InAudit,
+                         const std::string_view InAction,
+                         const std::filesystem::path& InRepo,
+                         const audit::RepositoryState& InBefore,
+                         const std::string& InStartedAt,
+                         const int InExitCode) -> bool {
+    std::string error;
+    if (InAudit.Append(std::string(InAction), InRepo, InBefore, InStartedAt,
+                       InExitCode, &error)) {
+        return true;
+    }
+    std::cerr << "Error: failed to append converge audit evidence: " << error << "\n";
+    return false;
+}
+
+auto FinalizeConvergeAudit(OperationAuditContext& InAudit, const int InExitCode) -> int {
+    std::string error;
+    if (InAudit.Finalize(InExitCode, &error)) return InExitCode;
+    std::cerr << "Error: failed to publish converge audit receipt: " << error << "\n";
+    return 2;
+}
 
 struct RepoStatus {
     std::string id;
@@ -419,9 +493,25 @@ bool ReadState(const std::filesystem::path& statePath, WorkflowState& state) {
     return true;
 }
 
-void DeleteState(const std::filesystem::path& statePath) {
+bool DeleteState(const std::filesystem::path& statePath, std::string* outError = nullptr) {
     std::error_code ec;
-    std::filesystem::remove(statePath, ec);
+    (void)std::filesystem::remove(statePath, ec);
+    if (ec) {
+        if (outError) *outError = ec.message();
+        return false;
+    }
+
+    // Missing state is an idempotent success, but a target that remains after
+    // remove() is not.  Re-check so unusual filesystem implementations cannot
+    // turn a false/no-error remove result into an unaudited successful abort.
+    const auto stillExists = std::filesystem::exists(statePath, ec);
+    if (ec || stillExists) {
+        if (outError) {
+            *outError = ec ? ec.message() : "state path still exists after deletion";
+        }
+        return false;
+    }
+    return true;
 }
 
 std::string SelfBinaryPath() {
@@ -3067,6 +3157,112 @@ bool IsBranchIntegrationStrategy(const std::string& strategy) {
     return strategy == "rebase" || strategy == "merge" || strategy == "cherry-pick";
 }
 
+auto HasUnsafeSelectorByte(const std::string_view InValue) -> bool {
+    return std::any_of(InValue.begin(), InValue.end(), [](const char value) {
+        const auto byte = static_cast<unsigned char>(value);
+        return byte < 0x20U || byte == 0x7fU;
+    });
+}
+
+auto IsPathShapedBranchSelector(const std::string_view InValue) -> bool {
+    if (InValue.empty() || InValue.front() == '/' || InValue.front() == '\\' ||
+        InValue.find('\\') != std::string_view::npos) {
+        return true;
+    }
+    if (InValue.size() >= 2U &&
+        ((InValue.front() >= 'A' && InValue.front() <= 'Z') ||
+         (InValue.front() >= 'a' && InValue.front() <= 'z')) &&
+        InValue[1] == ':') {
+        return true;
+    }
+    return InValue == "." || InValue == ".." || InValue.starts_with("../") ||
+        InValue.ends_with("/..") || InValue.find("/../") != std::string_view::npos;
+}
+
+auto IsLexicallyValidBranchSelector(const std::string_view InValue) -> bool {
+    if (InValue == "@" || InValue.ends_with('/') || InValue.ends_with('.') ||
+        InValue.find("//") != std::string_view::npos ||
+        InValue.find("..") != std::string_view::npos ||
+        InValue.find("@{") != std::string_view::npos) {
+        return false;
+    }
+    if (std::any_of(InValue.begin(), InValue.end(), [](const char value) {
+            const auto byte = static_cast<unsigned char>(value);
+            return byte <= 0x20U || byte == 0x7fU || value == '~' ||
+                value == '^' || value == ':' || value == '?' || value == '*' ||
+                value == '[' || value == '\\';
+        })) {
+        return false;
+    }
+    std::size_t cursor = 0;
+    while (cursor <= InValue.size()) {
+        const auto separator = InValue.find('/', cursor);
+        const auto end = separator == std::string_view::npos
+            ? InValue.size() : separator;
+        const auto component = InValue.substr(cursor, end - cursor);
+        if (component.empty() || component.front() == '.') return false;
+        std::string lowered(component);
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+                       [](const char value) {
+                           return static_cast<char>(std::tolower(
+                               static_cast<unsigned char>(value)));
+                       });
+        if (lowered.ends_with(".lock")) return false;
+        if (separator == std::string_view::npos) break;
+        cursor = separator + 1;
+    }
+    return true;
+}
+
+auto ValidateMutationBranchSelector(const std::filesystem::path& InRoot,
+                                    const std::string& InValue,
+                                    const bool InAllowEmpty,
+                                    std::string* OutError) -> bool {
+    const auto fail = [&]() {
+        if (OutError) {
+            *OutError = "branch selector must be a bounded canonical Git branch name";
+        }
+        return false;
+    };
+    if (InValue.empty()) return InAllowEmpty || fail();
+    if (InValue.size() > 255U || InValue != Trim(InValue) ||
+        InValue.front() == '-' || HasUnsafeSelectorByte(InValue) ||
+        IsPathShapedBranchSelector(InValue) ||
+        !IsLexicallyValidBranchSelector(InValue)) {
+        return fail();
+    }
+    const auto checked = GitCapture(
+        InRoot, {"check-ref-format", "--branch", InValue});
+    if (checked.exitCode != 0 || Trim(checked.stdoutStr) != InValue) return fail();
+    return true;
+}
+
+auto ValidateLogicalRemoteSelector(const std::string& InValue,
+                                   const bool InAllowEmpty,
+                                   std::string* OutError) -> bool {
+    const auto fail = [&]() {
+        if (OutError) {
+            *OutError = "remote selector must be a bounded logical remote name";
+        }
+        return false;
+    };
+    if (InValue.empty()) return InAllowEmpty || fail();
+    if (InValue.size() > 64U || InValue != Trim(InValue) ||
+        InValue.front() == '-' || InValue == "." || InValue == ".." ||
+        HasUnsafeSelectorByte(InValue)) {
+        return fail();
+    }
+    if (!std::all_of(InValue.begin(), InValue.end(), [](const char value) {
+            return (value >= 'A' && value <= 'Z') ||
+                (value >= 'a' && value <= 'z') ||
+                (value >= '0' && value <= '9') || value == '.' ||
+                value == '_' || value == '-';
+        })) {
+        return fail();
+    }
+    return true;
+}
+
 bool DirtyKindBlocksBranchPlan(const std::string& dirtyKind) {
     return dirtyKind != "CLEAN" && dirtyKind != "AHEAD_ONLY" && dirtyKind != "BEHIND_ONLY";
 }
@@ -4742,7 +4938,17 @@ int RunBranchRecovery(const std::filesystem::path& repoPath,
     } else if (!WorktreeIsClean(repoPath, cleanMessage)) {
         AppendBranchBlocked(result, ".", targetBranch, {"RECOVERY_WORKTREE_DIRTY"}, cleanMessage);
     } else if (continueRecovery) {
+        auto* activeAudit = OperationAuditContext::Current();
+        const auto auditBefore = activeAudit
+            ? std::optional<audit::RepositoryState>(activeAudit->Capture(repoPath))
+            : std::nullopt;
+        const auto auditStartedAt = UtcNowIso8601();
         const auto push = GitCapture(repoPath, {"push", remote, targetBranch});
+        if (activeAudit && !AppendConvergeAudit(
+                *activeAudit, "converge.branches.recover.push", repoPath,
+                *auditBefore, auditStartedAt, push.exitCode)) {
+            return 2;
+        }
         if (push.exitCode != 0) {
             const auto pushDiagnostic = CombinedGitError(push);
             AppendBranchBlocked(result, ".", targetBranch, {"TARGET_PUSH_FAILED"}, pushDiagnostic);
@@ -4761,7 +4967,17 @@ int RunBranchRecovery(const std::filesystem::path& repoPath,
             AppendBranchBlocked(result, ".", targetBranch, {"RECOVERY_RESTORE_HEAD_INVALID"},
                                 "restore HEAD must exist and be an ancestor of the pending integrated HEAD");
         } else {
+            auto* activeAudit = OperationAuditContext::Current();
+            const auto auditBefore = activeAudit
+                ? std::optional<audit::RepositoryState>(activeAudit->Capture(repoPath))
+                : std::nullopt;
+            const auto auditStartedAt = UtcNowIso8601();
             const auto reset = GitCapture(repoPath, {"reset", "--keep", restoreHead});
+            if (activeAudit && !AppendConvergeAudit(
+                    *activeAudit, "converge.branches.recover.reset", repoPath,
+                    *auditBefore, auditStartedAt, reset.exitCode)) {
+                return 2;
+            }
             if (reset.exitCode != 0) {
                 AppendBranchBlocked(result, ".", targetBranch, {"RECOVERY_ABORT_FAILED"}, CombinedGitError(reset));
             } else {
@@ -4974,7 +5190,20 @@ int RunBranchApply(const std::filesystem::path& root,
                 if (!targetWorktrees.empty()) {
                     targetSyncPath = targetWorktrees.front().absolutePath;
                 }
-                (void)SyncTargetBranch(targetSyncPath, repo->id, targetBranch, result);
+                auto* activeAudit = OperationAuditContext::Current();
+                const auto auditBefore = activeAudit
+                    ? std::optional<audit::RepositoryState>(activeAudit->Capture(targetSyncPath))
+                    : std::nullopt;
+                const auto auditStartedAt = UtcNowIso8601();
+                const auto blockedBefore = result["blocked"].size();
+                const auto synced = SyncTargetBranch(
+                    targetSyncPath, repo->id, targetBranch, result);
+                const auto auditCode = synced && result["blocked"].size() == blockedBefore ? 0 : 1;
+                if (activeAudit && !AppendConvergeAudit(
+                        *activeAudit, "converge.branches.apply.sync-target",
+                        targetSyncPath, *auditBefore, auditStartedAt, auditCode)) {
+                    return 2;
+                }
             }
             if (!BranchActionResultHasBlocked(result)) {
                 snapshot = LoadConvergeSnapshot(root, jobs, false, recursive);
@@ -4995,6 +5224,24 @@ int RunBranchApply(const std::filesystem::path& root,
             }
             const auto repoPath = RepoPathForBranchPlan(root, *repo);
             const auto liveWorktrees = Worktrees(repoPath, root);
+            std::vector<std::filesystem::path> auditRepoPaths{repoPath};
+            for (const auto& worktree : liveWorktrees) {
+                if (std::none_of(auditRepoPaths.begin(), auditRepoPaths.end(),
+                                 [&](const auto& path) {
+                                     return SamePath(path, worktree.absolutePath);
+                                 })) {
+                    auditRepoPaths.push_back(worktree.absolutePath);
+                }
+            }
+            auto* activeAudit = OperationAuditContext::Current();
+            std::vector<audit::RepositoryState> auditBeforeStates;
+            if (activeAudit) {
+                auditBeforeStates.reserve(auditRepoPaths.size());
+                for (const auto& path : auditRepoPaths)
+                    auditBeforeStates.push_back(activeAudit->Capture(path));
+            }
+            const auto auditStartedAt = UtcNowIso8601();
+            const auto auditBlockedBefore = result["blocked"].size();
             for (const auto& branchJson : repoJson.value("branches", nlohmann::json::array())) {
                 const auto branch = branchJson.value("name", std::string{});
                 const auto branchRef = branchJson.value("ref", branch);
@@ -5183,6 +5430,17 @@ int RunBranchApply(const std::filesystem::path& root,
                 result["mutationPerformed"] = true;
                 AppendBranchAction(result, "applied", repoId, branch, strategy == "merge" ? "merge" : (strategy == "cherry-pick" ? "cherry-pick" : "fast-forward"), "target branch integrated and pushed");
             }
+            if (activeAudit) {
+                const auto auditCode = result["blocked"].size() == auditBlockedBefore ? 0 : 1;
+                for (std::size_t index = 0; index < auditRepoPaths.size(); ++index) {
+                    if (!AppendConvergeAudit(
+                            *activeAudit, "converge.branches.apply.repository",
+                            auditRepoPaths[index], auditBeforeStates[index],
+                            auditStartedAt, auditCode)) {
+                        return 2;
+                    }
+                }
+            }
         }
         if (recordReviewedIntegration && !reviewedBranchMatched) {
             AppendBranchBlocked(result, ".", branchFilter, {"SOURCE_BRANCH_NOT_FOUND"}, "source branch was not present in the current repository inventory");
@@ -5247,7 +5505,20 @@ int RunBranchRetire(const std::filesystem::path& root,
                 if (targetWorktrees.size() == 1) {
                     targetSyncPath = targetWorktrees.front().absolutePath;
                 }
-                (void)SyncTargetBranch(targetSyncPath, repo->id, targetBranch, result, true);
+                auto* activeAudit = OperationAuditContext::Current();
+                const auto auditBefore = activeAudit
+                    ? std::optional<audit::RepositoryState>(activeAudit->Capture(targetSyncPath))
+                    : std::nullopt;
+                const auto auditStartedAt = UtcNowIso8601();
+                const auto blockedBefore = result["blocked"].size();
+                const auto synced = SyncTargetBranch(
+                    targetSyncPath, repo->id, targetBranch, result, true);
+                const auto auditCode = synced && result["blocked"].size() == blockedBefore ? 0 : 1;
+                if (activeAudit && !AppendConvergeAudit(
+                        *activeAudit, "converge.branches.retire.sync-target",
+                        targetSyncPath, *auditBefore, auditStartedAt, auditCode)) {
+                    return 2;
+                }
             }
             if (!BranchActionResultHasBlocked(result)) {
                 snapshot = LoadConvergeSnapshot(root, jobs, false, recursive);
@@ -5264,6 +5535,25 @@ int RunBranchRetire(const std::filesystem::path& root,
                 continue;
             }
             const auto repoPath = RepoPathForBranchPlan(root, *repo);
+            const auto auditWorktrees = Worktrees(repoPath, root);
+            std::vector<std::filesystem::path> auditRepoPaths{repoPath};
+            for (const auto& worktree : auditWorktrees) {
+                if (std::none_of(auditRepoPaths.begin(), auditRepoPaths.end(),
+                                 [&](const auto& path) {
+                                     return SamePath(path, worktree.absolutePath);
+                                 })) {
+                    auditRepoPaths.push_back(worktree.absolutePath);
+                }
+            }
+            auto* activeAudit = OperationAuditContext::Current();
+            std::vector<audit::RepositoryState> auditBeforeStates;
+            if (activeAudit) {
+                auditBeforeStates.reserve(auditRepoPaths.size());
+                for (const auto& path : auditRepoPaths)
+                    auditBeforeStates.push_back(activeAudit->Capture(path));
+            }
+            const auto auditStartedAt = UtcNowIso8601();
+            const auto auditBlockedBefore = result["blocked"].size();
             const auto targetRef = ResolveTargetRef(repoPath, targetBranch, repo->remote);
             if (pruneWorktrees) {
                 if (!confirm) {
@@ -5291,6 +5581,9 @@ int RunBranchRetire(const std::filesystem::path& root,
                     }
                 }
             }
+            // Pruning invalidates the inventory captured for audit-before
+            // evidence. Reload the operational view so stale worktree paths
+            // are never probed after their metadata has been removed.
             const auto liveWorktrees = Worktrees(repoPath, root);
             for (const auto& branchJson : repoJson.value("branches", nlohmann::json::array())) {
                 const auto branch = branchJson.value("name", std::string{});
@@ -5798,6 +6091,17 @@ int RunBranchRetire(const std::filesystem::path& root,
                     {"integrationProof", evaluation.integrationProof},
                 });
             }
+            if (activeAudit) {
+                const auto auditCode = result["blocked"].size() == auditBlockedBefore ? 0 : 1;
+                for (std::size_t index = 0; index < auditRepoPaths.size(); ++index) {
+                    if (!AppendConvergeAudit(
+                            *activeAudit, "converge.branches.retire.repository",
+                            auditRepoPaths[index], auditBeforeStates[index],
+                            auditStartedAt, auditCode)) {
+                        return 2;
+                    }
+                }
+            }
         }
 
         const bool blocked = BranchActionResultHasBlocked(result);
@@ -5959,6 +6263,10 @@ void RegisterConverge(CLI::App& InApp) {
     auto* branchesHarvestDetachedWorktrees = new bool{false};
     auto* branchesHarvestBranchWorktrees = new bool{false};
     auto* branchesHarvestMessage = new std::string{kWorktreeHarvestDefaultMessage};
+    auto* branchesApplyCorrelationFile = new std::string{};
+    auto* branchesRecoverCorrelationFile = new std::string{};
+    auto* branchesRetireCorrelationFile = new std::string{};
+    auto* convergeCorrelationFile = new std::string{};
 
     cmd->add_flag("--no-recursive,-N", *noRecursive, "Only run on current repository");
     cmd->add_flag("--dry-run", *dryRun, "Preview converge actions without changing repositories");
@@ -6001,6 +6309,8 @@ void RegisterConverge(CLI::App& InApp) {
     repos->add_option("--remote", *remote, "Optional remote filter for converge push stage");
     repos->add_option("--target", *settleTarget, "Target branch for worktree settle")->default_str("main");
     repos->add_option("--harvest-message", *settleHarvestMessage, "Commit message for dirty worktree harvest")->default_str(kWorktreeHarvestDefaultMessage);
+    repos->add_option("--correlation-file", *convergeCorrelationFile,
+                      "Strict KOA correlation envelope JSON (maximum 64 KiB)");
 
     branchesPlan->add_flag("--no-recursive,-N", *branchesNoRecursive, "Only plan branches for the current repository");
     branchesPlan->add_flag("--json", *branchesJson, "Emit stable machine-readable branch plan JSON");
@@ -6028,6 +6338,8 @@ void RegisterConverge(CLI::App& InApp) {
     branchesApply->add_option("--expected-source-head", *branchesExpectedSourceHead, "Exact 40-character source HEAD required for reviewed integration");
     branchesApply->add_option("--review-reason", *branchesReviewReason, "Audit reason for reviewed integration");
     branchesApply->add_option("--marker-message", *branchesMarkerMessage, "Commit subject for the reviewed ancestry marker");
+    branchesApply->add_option("--correlation-file", *branchesApplyCorrelationFile,
+                              "Strict KOA correlation envelope JSON (maximum 64 KiB)");
 
     branchesRecover->add_flag("--continue", *branchesRecoverContinue, "Retry publishing the exact pending integrated target HEAD");
     branchesRecover->add_flag("--abort", *branchesRecoverAbort, "Restore the exact pre-apply target HEAD after guarded validation");
@@ -6036,6 +6348,8 @@ void RegisterConverge(CLI::App& InApp) {
     branchesRecover->add_option("--expected-head", *branchesRecoverExpectedHead, "Exact pending integrated target HEAD");
     branchesRecover->add_option("--restore-head", *branchesRecoverRestoreHead, "Exact pre-apply target HEAD required by --abort");
     branchesRecover->add_option("--remote", *branchesRecoverRemote, "Remote used to retry target publication")->default_str("origin");
+    branchesRecover->add_option("--correlation-file", *branchesRecoverCorrelationFile,
+                                "Strict KOA correlation envelope JSON (maximum 64 KiB)");
 
     branchesRetire->add_flag("--no-recursive,-N", *branchesNoRecursive, "Only retire branches for the current repository");
     branchesRetire->add_flag("--json", *branchesJson, "Emit stable machine-readable retire result JSON");
@@ -6050,6 +6364,11 @@ void RegisterConverge(CLI::App& InApp) {
     branchesRetire->add_option("--target", *branchesTarget, "Target integration branch")->default_str("main");
     branchesRetire->add_option("--branch", *branchesRetireBranch, "Limit retirement or dirty worktree harvest to one branch");
     branchesRetire->add_option("--harvest-message", *branchesHarvestMessage, "Commit message for dirty worktree harvest")->default_str(kWorktreeHarvestDefaultMessage);
+    branchesRetire->add_option("--correlation-file", *branchesRetireCorrelationFile,
+                               "Strict KOA correlation envelope JSON (maximum 64 KiB)");
+
+    cmd->add_option("--correlation-file", *convergeCorrelationFile,
+                    "Strict KOA correlation envelope JSON (maximum 64 KiB)");
 
     repos->callback([=]() {
         std::vector<std::string> args{"converge"};
@@ -6082,6 +6401,10 @@ void RegisterConverge(CLI::App& InApp) {
         if (!Trim(*settleHarvestMessage).empty() && Trim(*settleHarvestMessage) != kWorktreeHarvestDefaultMessage) {
             args.push_back("--harvest-message");
             args.push_back(Trim(*settleHarvestMessage));
+        }
+        if (!convergeCorrelationFile->empty()) {
+            args.push_back("--correlation-file");
+            args.push_back(*convergeCorrelationFile);
         }
         const auto result = shell::ExecuteCommand(SelfBinaryPath(), args, shell::ExecMode::PassThrough, std::filesystem::current_path());
         std::exit(result.exitCode);
@@ -6124,13 +6447,51 @@ void RegisterConverge(CLI::App& InApp) {
             std::cerr << "Error: --jobs must be a positive integer\n";
             std::exit(2);
         }
+        const auto target = Trim(*branchesTarget);
+        const auto strategy = ToLower(Trim(*branchesStrategy));
+        const auto branch = Trim(*branchesApplyBranch);
+        if (target.empty() || !IsBranchIntegrationStrategy(strategy) ||
+            (strategy == "cherry-pick" && branch.empty()) ||
+            (*branchesRecordReviewedIntegration && (!*branchesNoRecursive || branch.empty() ||
+                !IsFullCommitId(Trim(*branchesExpectedSourceHead)) || Trim(*branchesReviewReason).empty() ||
+                Trim(*branchesMarkerMessage).empty())) ||
+            (!*branchesRecordReviewedIntegration && (!Trim(*branchesExpectedSourceHead).empty() ||
+                !Trim(*branchesReviewReason).empty() || !Trim(*branchesMarkerMessage).empty()))) {
+            std::cerr << "Error: invalid branch apply options\n";
+            std::exit(2);
+        }
+        const auto root = std::filesystem::current_path().lexically_normal();
+        std::string selectorError;
+        if (!ValidateMutationBranchSelector(
+                root, *branchesTarget, false, &selectorError) ||
+            !ValidateMutationBranchSelector(
+                root, *branchesApplyBranch, true, &selectorError)) {
+            std::cerr << "Error: invalid branch apply selectors\n";
+            std::exit(2);
+        }
+        std::string auditError;
+        auto audit = ReserveConvergeAudit(root, "converge.branches.apply",
+            *branchesApplyCorrelationFile,
+            {{"jobs", *branchesJobs}, {"recursive", !*branchesNoRecursive},
+             {"targetSelectorSha256", AuditSelectorSha256(target)},
+             {"strategy", strategy},
+             {"branchSelectorSha256", AuditSelectorSha256(branch)},
+             {"confirm", *branchesConfirm},
+             {"syncTarget", !*branchesNoSyncTarget},
+             {"recordReviewedIntegration", *branchesRecordReviewedIntegration}}, &auditError);
+        if (!audit) {
+            std::cerr << "Error: converge audit preflight failed: " << auditError << "\n";
+            std::exit(2);
+        }
+        const auto before = audit->Capture(root);
+        const auto startedAt = UtcNowIso8601();
         const auto code = RunBranchApply(
-            std::filesystem::current_path().lexically_normal(),
+            root,
             *branchesJobs,
             !*branchesNoRecursive,
-            Trim(*branchesTarget),
-            ToLower(Trim(*branchesStrategy)),
-            Trim(*branchesApplyBranch),
+            target,
+            strategy,
+            branch,
             *branchesConfirm,
             !*branchesNoSyncTarget,
             *branchesRecordReviewedIntegration,
@@ -6138,20 +6499,57 @@ void RegisterConverge(CLI::App& InApp) {
             Trim(*branchesReviewReason),
             Trim(*branchesMarkerMessage),
             *branchesJson);
-        std::exit(code);
+        const auto auditedCode = AppendConvergeAudit(*audit, "converge.branches.apply", root,
+                                                     before, startedAt, code)
+            ? code : 2;
+        std::exit(FinalizeConvergeAudit(*audit, auditedCode));
     });
 
     branchesRecover->callback([=]() {
+        const auto target = Trim(*branchesRecoverTarget);
+        const auto remoteName = Trim(*branchesRecoverRemote);
+        if (*branchesRecoverContinue == *branchesRecoverAbort || target.empty() ||
+            !IsFullCommitId(ToLower(Trim(*branchesRecoverExpectedHead))) ||
+            !IsFullCommitId(ToLower(Trim(*branchesRecoverRestoreHead))) || remoteName.empty()) {
+            std::cerr << "Error: invalid branch recovery options\n";
+            std::exit(2);
+        }
+        const auto root = std::filesystem::current_path().lexically_normal();
+        std::string selectorError;
+        if (!ValidateMutationBranchSelector(
+                root, *branchesRecoverTarget, false, &selectorError) ||
+            !ValidateLogicalRemoteSelector(
+                *branchesRecoverRemote, false, &selectorError)) {
+            std::cerr << "Error: invalid branch recovery selectors\n";
+            std::exit(2);
+        }
+        std::string auditError;
+        auto audit = ReserveConvergeAudit(root, "converge.branches.recover",
+            *branchesRecoverCorrelationFile,
+            {{"continue", *branchesRecoverContinue}, {"abort", *branchesRecoverAbort},
+             {"targetSelectorSha256", AuditSelectorSha256(target)},
+             {"expectedHeadSha1", ToLower(Trim(*branchesRecoverExpectedHead))},
+             {"restoreHeadSha1", ToLower(Trim(*branchesRecoverRestoreHead))},
+             {"remoteSelectorSha256", AuditSelectorSha256(remoteName)}}, &auditError);
+        if (!audit) {
+            std::cerr << "Error: converge audit preflight failed: " << auditError << "\n";
+            std::exit(2);
+        }
+        const auto before = audit->Capture(root);
+        const auto startedAt = UtcNowIso8601();
         const auto code = RunBranchRecovery(
-            std::filesystem::current_path().lexically_normal(),
+            root,
             *branchesRecoverContinue,
             *branchesRecoverAbort,
-            Trim(*branchesRecoverTarget),
+            target,
             ToLower(Trim(*branchesRecoverExpectedHead)),
             ToLower(Trim(*branchesRecoverRestoreHead)),
-            Trim(*branchesRecoverRemote),
+            remoteName,
             *branchesRecoverJson);
-        std::exit(code);
+        const auto auditedCode = AppendConvergeAudit(*audit, "converge.branches.recover", root,
+                                                     before, startedAt, code)
+            ? code : 2;
+        std::exit(FinalizeConvergeAudit(*audit, auditedCode));
     });
 
     branchesRetire->callback([=]() {
@@ -6159,11 +6557,43 @@ void RegisterConverge(CLI::App& InApp) {
             std::cerr << "Error: --jobs must be a positive integer\n";
             std::exit(2);
         }
+        const auto target = Trim(*branchesTarget);
+        const auto branch = Trim(*branchesRetireBranch);
+        if (target.empty()) {
+            std::cerr << "Error: --target must not be empty\n";
+            std::exit(2);
+        }
+        const auto root = std::filesystem::current_path().lexically_normal();
+        std::string selectorError;
+        if (!ValidateMutationBranchSelector(
+                root, *branchesTarget, false, &selectorError) ||
+            !ValidateMutationBranchSelector(
+                root, *branchesRetireBranch, true, &selectorError)) {
+            std::cerr << "Error: invalid branch retire selectors\n";
+            std::exit(2);
+        }
+        std::string auditError;
+        auto audit = ReserveConvergeAudit(root, "converge.branches.retire",
+            *branchesRetireCorrelationFile,
+            {{"jobs", *branchesJobs}, {"recursive", !*branchesNoRecursive},
+             {"targetSelectorSha256", AuditSelectorSha256(target)},
+             {"confirm", *branchesConfirm},
+             {"removeWorktrees", *branchesRemoveWorktrees}, {"deleteRemote", *branchesDeleteRemote},
+             {"pruneWorktrees", *branchesPruneWorktrees},
+             {"harvestDetachedWorktrees", *branchesHarvestDetachedWorktrees},
+             {"harvestBranchWorktrees", *branchesHarvestBranchWorktrees},
+             {"branchSelectorSha256", AuditSelectorSha256(branch)}}, &auditError);
+        if (!audit) {
+            std::cerr << "Error: converge audit preflight failed: " << auditError << "\n";
+            std::exit(2);
+        }
+        const auto before = audit->Capture(root);
+        const auto startedAt = UtcNowIso8601();
         const auto code = RunBranchRetire(
-            std::filesystem::current_path().lexically_normal(),
+            root,
             *branchesJobs,
             !*branchesNoRecursive,
-            Trim(*branchesTarget),
+            target,
             *branchesConfirm,
             *branchesRemoveWorktrees,
             *branchesDeleteRemote,
@@ -6171,10 +6601,13 @@ void RegisterConverge(CLI::App& InApp) {
             *branchesHarvestDetachedWorktrees,
             *branchesHarvestBranchWorktrees,
             Trim(*branchesHarvestMessage),
-            Trim(*branchesRetireBranch),
+            branch,
             !*branchesNoSyncTarget,
             *branchesJson);
-        std::exit(code);
+        const auto auditedCode = AppendConvergeAudit(*audit, "converge.branches.retire", root,
+                                                     before, startedAt, code)
+            ? code : 2;
+        std::exit(FinalizeConvergeAudit(*audit, auditedCode));
     });
 
     cmd->callback([=]() {
@@ -6219,10 +6652,12 @@ void RegisterConverge(CLI::App& InApp) {
             PrintStatusPhaseSummary(state);
             std::exit(0);
         }
-        if (*abort) {
-            DeleteState(statePath);
-            std::cout << "converge state removed: " << statePath.generic_string() << "\n";
-            std::exit(0);
+        std::string selectorError;
+        if (!ValidateLogicalRemoteSelector(*remote, true, &selectorError) ||
+            (worktreeSettleRequested && !ValidateMutationBranchSelector(
+                workspaceRoot, *settleTarget, false, &selectorError))) {
+            std::cerr << "Error: invalid converge mutation selectors\n";
+            std::exit(2);
         }
         if (*dryRun) {
             if (worktreeSettleRequested) {
@@ -6248,36 +6683,73 @@ void RegisterConverge(CLI::App& InApp) {
             std::exit(RunDryRunPlanner(workspaceRoot, *jobs, *unregisteredScan, recursive));
         }
 
+        // All remaining paths can write workflow state and/or repository state.
+        // Reserve before that first write; malformed correlation is therefore a
+        // hard pre-mutation failure.
+        std::string auditError;
+        auto operationAudit = ReserveConvergeAudit(workspaceRoot, "converge.repos",
+            *convergeCorrelationFile,
+            {{"recursive", recursive}, {"jobs", *jobs}, {"resume", *resume}, {"abort", *abort},
+             {"forceWithLease", *forceWithLease}, {"noVerify", *noVerify},
+             {"agentIntentCommitMode", agentIntentCommitMode},
+             {"settleWorktrees", worktreeSettleRequested},
+             {"remoteSelectorSha256", AuditSelectorSha256(*remote)}}, &auditError);
+        if (!operationAudit) {
+            std::cerr << "Error: converge audit preflight failed: " << auditError << "\n";
+            std::exit(2);
+        }
+        auto finishConverge = [&](const int exitCode) {
+            std::exit(FinalizeConvergeAudit(*operationAudit, exitCode));
+        };
+
+        if (*abort) {
+            const auto before = operationAudit->Capture(workspaceRoot);
+            const auto startedAt = UtcNowIso8601();
+            std::string deleteError;
+            const auto deleted = DeleteState(statePath, &deleteError);
+            if (!AppendConvergeAudit(*operationAudit, "converge.repos.state.delete", workspaceRoot,
+                                     before, startedAt, deleted ? 0 : 1)) {
+                finishConverge(2);
+            }
+            if (!deleted) {
+                std::cerr << "Error: failed to remove converge state file: "
+                          << statePath.generic_string() << ": " << deleteError << "\n";
+                finishConverge(1);
+            }
+            std::cout << "converge state removed: " << statePath.generic_string() << "\n";
+            finishConverge(0);
+        }
+
         WorkflowState state;
         Snapshot snapshot;
         Plan plan;
         std::size_t startPhaseIndex = 0;
 
         if (*resume) {
-            if (!ReadState(statePath, state)) { std::cerr << "Error: no converge state to resume\n"; std::exit(1); }
+            if (!ReadState(statePath, state)) { std::cerr << "Error: no converge state to resume\n"; finishConverge(1); }
             if (state.workspaceRoot.lexically_normal() != workspaceRoot) {
                 std::cerr << "Error: converge state workspace mismatch; expected " << state.workspaceRoot.generic_string() << " got " << workspaceRoot.generic_string() << "\n";
-                std::exit(1);
+                finishConverge(1);
             }
             if (state.recursive != recursive) {
                 std::cerr << "Error: converge resume refused due to recursive-mode mismatch\n";
-                std::exit(1);
+                finishConverge(1);
             }
             if (state.dryRunRequested) {
                 std::cerr << "Error: converge resume refused because saved state was created from dry-run mode\n";
-                std::exit(1);
+                finishConverge(1);
             }
             try {
                 snapshot = LoadConvergeSnapshot(workspaceRoot, *jobs, false, recursive, true);
             } catch (const std::exception& ex) {
                 std::cerr << "Error: failed to load status snapshot during resume: " << ex.what() << "\n";
-                std::exit(1);
+                finishConverge(1);
             }
             const auto resumeFingerprint = SnapshotFingerprint(snapshot);
             if (!state.repoGraphFingerprint.empty() && state.repoGraphFingerprint != resumeFingerprint) {
                 std::cerr << "Error: converge resume refused due to changed repo graph fingerprint\n";
                 std::cerr << "saved=" << state.repoGraphFingerprint << " current=" << resumeFingerprint << "\n";
-                std::exit(1);
+                finishConverge(1);
             }
             plan = BuildPlan(snapshot);
             const bool restoredResumeSync = RestoreSavedResumeTransportPlan(state, snapshot, plan);
@@ -6291,13 +6763,13 @@ void RegisterConverge(CLI::App& InApp) {
                     savedIt->second != currentIt->second;
                 if (baselineChanged && !PlanReferencesRepo(plan, repo)) {
                     std::cerr << "Error: converge resume refused because successful repo baseline changed: " << repo << "\n";
-                    std::exit(1);
+                    finishConverge(1);
                 }
             }
             state.repoGraphFingerprint = resumeFingerprint;
             if (state.currentPhase == "settle-worktrees" && !worktreeSettleRequested) {
                 std::cerr << "Error: converge resume for settle-worktrees requires the original worktree settle flags\n";
-                std::exit(2);
+                finishConverge(2);
             }
             if (state.currentPhase == "settle-worktrees" && std::find(phases.begin(), phases.end(), "settle-worktrees") == phases.end()) {
                 const auto finalIt = std::find(phases.begin(), phases.end(), "final-status-summary");
@@ -6324,7 +6796,7 @@ void RegisterConverge(CLI::App& InApp) {
                 snapshot = LoadConvergeSnapshot(workspaceRoot, *jobs, false, recursive, true);
             } catch (const std::exception& ex) {
                 std::cerr << "Error: failed to load status snapshot: " << ex.what() << "\n";
-                std::exit(1);
+                finishConverge(1);
             }
             plan = BuildPlan(snapshot);
             state.workflow = "converge";
@@ -6338,16 +6810,28 @@ void RegisterConverge(CLI::App& InApp) {
             ResetStateForPlan(state, snapshot, plan);
         }
 
+        const auto stateBefore = operationAudit->Capture(workspaceRoot);
+        const auto stateWriteStartedAt = UtcNowIso8601();
         if (!WriteState(statePath, state)) {
             std::cerr << "Error: failed to write converge state file: " << statePath.generic_string() << "\n";
-            std::exit(1);
+            if (!AppendConvergeAudit(*operationAudit, "converge.repos.state.initialize", workspaceRoot,
+                                     stateBefore, stateWriteStartedAt, 1)) finishConverge(2);
+            finishConverge(1);
         }
+        if (!AppendConvergeAudit(*operationAudit, "converge.repos.state.initialize", workspaceRoot,
+                                 stateBefore, stateWriteStartedAt, 0)) finishConverge(2);
 
         auto persist = [&]() {
+            const auto before = operationAudit->Capture(workspaceRoot);
+            const auto startedAt = UtcNowIso8601();
             if (!WriteState(statePath, state)) {
                 std::cerr << "Error: failed to persist converge state file: " << statePath.generic_string() << "\n";
-                std::exit(1);
+                if (!AppendConvergeAudit(*operationAudit, "converge.repos.state.persist", workspaceRoot,
+                                         before, startedAt, 1)) finishConverge(2);
+                finishConverge(1);
             }
+            if (!AppendConvergeAudit(*operationAudit, "converge.repos.state.persist", workspaceRoot,
+                                     before, startedAt, 0)) finishConverge(2);
         };
 
         const auto convergeSyncTimeoutMs = ResolveConvergeSyncTimeoutMs();
@@ -6435,12 +6919,18 @@ void RegisterConverge(CLI::App& InApp) {
                     std::string failureCategory;
                     std::string failureMessage;
                     int code = 0;
+                    const auto repoPath = line.repo == "." ? workspaceRoot :
+                        (workspaceRoot / std::filesystem::path(line.repo)).lexically_normal();
+                    const auto auditBefore = operationAudit->Capture(repoPath);
+                    const auto auditStartedAt = UtcNowIso8601();
                     if (agentIntentCommitMode && !pointerCommit) {
                         code = RunIntentCommitPlan(workspaceRoot, snapshot, line.repo, *profile, &commandLine, &failureCategory, &failureMessage);
                     } else {
                         const std::string message = pointerCommit ? (line.text.find(kPointerMultipleMessage) != std::string::npos ? kPointerMultipleMessage : kPointerSingleMessage) : std::string{};
                         code = RunCommitNativeSimple(workspaceRoot, line.repo, true, message, false, false, "", "", false, true, false);
                     }
+                    if (!AppendConvergeAudit(*operationAudit, "converge.repos.commit", repoPath,
+                                             auditBefore, auditStartedAt, code)) finishConverge(2);
                     state.commandLinesUsed[phase].push_back(commandLine);
                     if (code == 0) {
                         summary.succeeded.push_back(line.repo);
@@ -6469,7 +6959,11 @@ void RegisterConverge(CLI::App& InApp) {
                     const auto timeoutText = convergeSyncTimeoutMs.has_value() ? std::to_string(*convergeSyncTimeoutMs) : std::string{"none"};
                     std::cout << "[converge] sync_repo=" << line.repo << " timeout_ms=" << timeoutText << "\n";
                     state.commandLinesUsed[phase].push_back("KOG_CONVERGE_SYNC_TIMEOUT_MS=" + timeoutText + " kog sync origin-latest --repo " + repoPath.generic_string() + " --no-recursive");
+                    const auto auditBefore = operationAudit->Capture(repoPath);
+                    const auto auditStartedAt = UtcNowIso8601();
                     const auto detailed = RunSyncOriginLatestNativeDetailed(repoPath, false, false, false, true, convergeSyncTimeoutMs, true);
+                    if (!AppendConvergeAudit(*operationAudit, "converge.repos.sync", repoPath,
+                                             auditBefore, auditStartedAt, detailed.first)) finishConverge(2);
                     PopulatePhaseSummaryFromSingleRepoAggregate(line.repo, detailed.second, false, detailed.first, summary);
                     if (detailed.first != 0 && summary.failed.empty() && summary.blocked.empty()) {
                         summary.failed.push_back(line.repo);
@@ -6503,8 +6997,14 @@ void RegisterConverge(CLI::App& InApp) {
                         }
                         std::cout << "[converge] push_repo=" << repo << " mode=no-recursive\n";
                         state.commandLinesUsed[phase].push_back("kog push --no-recursive --repos " + repo);
+                        const auto repoPath = repo == "." ? workspaceRoot :
+                            (workspaceRoot / std::filesystem::path(repo)).lexically_normal();
+                        const auto auditBefore = operationAudit->Capture(repoPath);
+                        const auto auditStartedAt = UtcNowIso8601();
                         const auto detailed = RunPushNativeSimpleDetailed(
                             workspaceRoot, false, false, *profile, *forceWithLease, *noVerify, 1, *verbose, *remote, {repo});
+                        if (!AppendConvergeAudit(*operationAudit, "converge.repos.push", repoPath,
+                                                 auditBefore, auditStartedAt, detailed.first)) finishConverge(2);
                         PopulatePhaseSummaryFromSingleRepoAggregate(repo, detailed.second, true, detailed.first, summary);
                         const auto failed = std::find(summary.failed.begin(), summary.failed.end(), repo) != summary.failed.end();
                         const auto blocked = std::find(summary.blocked.begin(), summary.blocked.end(), repo) != summary.blocked.end();
@@ -6546,6 +7046,10 @@ void RegisterConverge(CLI::App& InApp) {
                     std::string failureCategory;
                     std::string failureMessage;
                     int code = 0;
+                    const auto repoPath = line.repo == "." ? workspaceRoot :
+                        (workspaceRoot / std::filesystem::path(line.repo)).lexically_normal();
+                    const auto auditBefore = operationAudit->Capture(repoPath);
+                    const auto auditStartedAt = UtcNowIso8601();
                     if (agentIntentCommitMode && !pointerCommit) {
                         code = RunIntentCommitPlan(workspaceRoot, snapshot, line.repo, *profile, &commandLine, &failureCategory, &failureMessage);
                     } else {
@@ -6553,6 +7057,8 @@ void RegisterConverge(CLI::App& InApp) {
                         code = RunCommitNativeSimple(workspaceRoot, line.repo, true, message, false, false, "", "", false, true, false);
                         if (pointerCommit) commandLine += " --message \"" + message + "\"";
                     }
+                    if (!AppendConvergeAudit(*operationAudit, "converge.repos.pointer-commit", repoPath,
+                                             auditBefore, auditStartedAt, code)) finishConverge(2);
                     state.commandLinesUsed[phase].push_back(commandLine);
                     if (code == 0) summary.succeeded.push_back(line.repo);
                     else {
@@ -6700,7 +7206,7 @@ void RegisterConverge(CLI::App& InApp) {
                     state.commandLinesUsed[phase].push_back("kog status --recursive skipped after phase failure");
                     persist();
                     std::cerr << "Error: " << state.blockedReason << "\n";
-                    std::exit(1);
+                    finishConverge(1);
                 }
             }
 
@@ -6719,7 +7225,7 @@ void RegisterConverge(CLI::App& InApp) {
                     if (!remaining.empty()) {
                         std::cerr << "remainingRepos=" << Csv(remaining) << "\n";
                     }
-                    std::exit(1);
+                    finishConverge(1);
                 }
                 snapshot = std::move(nextSnapshot);
                 plan = std::move(nextPlan);
@@ -6731,10 +7237,22 @@ void RegisterConverge(CLI::App& InApp) {
             break;
         }
 
-        DeleteState(statePath);
+        const auto stateDeleteBefore = operationAudit->Capture(workspaceRoot);
+        const auto stateDeleteStartedAt = UtcNowIso8601();
+        std::string stateDeleteError;
+        const auto stateDeleted = DeleteState(statePath, &stateDeleteError);
+        if (!AppendConvergeAudit(*operationAudit, "converge.repos.state.delete", workspaceRoot,
+                                 stateDeleteBefore, stateDeleteStartedAt, stateDeleted ? 0 : 1)) {
+            finishConverge(2);
+        }
+        if (!stateDeleted) {
+            std::cerr << "Error: failed to remove converge state file: "
+                      << statePath.generic_string() << ": " << stateDeleteError << "\n";
+            finishConverge(1);
+        }
         const bool hasFailures = !state.failedRepos.empty() || !state.blockedRepoSet.empty();
         std::cout << "[converge] completed\n";
-        std::exit(hasFailures ? 1 : 0);
+        finishConverge(hasFailures ? 1 : 0);
     });
 }
 

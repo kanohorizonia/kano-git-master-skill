@@ -43,6 +43,33 @@ thread_local std::vector<kano::git::shell::CommandLogCallbacks> g_commandLogCall
 std::atomic<int> g_consoleWriteSuppressionDepth{0};
 std::mutex g_consoleWriteMutex;
 
+struct ProcessOutputCapture {
+    std::mutex mutex;
+    ProgressCallback* progress = nullptr;
+    bool capture = false;
+    std::string stdoutBytes;
+    std::string stderrBytes;
+};
+
+auto CaptureProcessOutput(KanoProcessStream InStream,
+                          const char* InChunk,
+                          const std::size_t InChunkSize,
+                          void* InUserData) -> void {
+    if (InChunk == nullptr || InChunkSize == 0 || InUserData == nullptr) {
+        return;
+    }
+    auto& capture = *static_cast<ProcessOutputCapture*>(InUserData);
+    std::lock_guard<std::mutex> lock(capture.mutex);
+    const bool isStderr = InStream == KANO_PROCESS_STREAM_STDERR;
+    if (capture.capture) {
+        auto& destination = isStderr ? capture.stderrBytes : capture.stdoutBytes;
+        destination.append(InChunk, InChunkSize);
+    }
+    if (capture.progress != nullptr && *capture.progress) {
+        (*capture.progress)(std::string_view(InChunk, InChunkSize), isStderr);
+    }
+}
+
 auto EmitStdoutLine(const std::string& InText) -> void {
     if (!g_commandLogCallbacksStack.empty() && g_commandLogCallbacksStack.back().onStdout) {
         g_commandLogCallbacksStack.back().onStdout(InText);
@@ -486,12 +513,12 @@ auto RunProcess(const std::string& cmdLine, ExecMode InMode,
     opts.argv_count = argv.size() - 1;  // exclude terminating nullptr
     opts.mode = (InMode == ExecMode::Capture) ? KANO_PROCESS_MODE_CAPTURE : KANO_PROCESS_MODE_PASS_THROUGH;
     opts.timeout_ms = InTimeoutMs ? static_cast<int>(*InTimeoutMs) : 0;
-    if (InProgressCallback) {
-        opts.output_callback = [](KanoProcessStream stream, const char* chunk, size_t chunk_size, void* user_data) {
-            reinterpret_cast<ProgressCallback*>(user_data)->operator()(
-                std::string_view(chunk, chunk_size), stream == KANO_PROCESS_STREAM_STDERR);
-        };
-        opts.user_data = reinterpret_cast<void*>(&InProgressCallback);
+    ProcessOutputCapture capture;
+    capture.progress = InProgressCallback ? &InProgressCallback : nullptr;
+    capture.capture = InMode == ExecMode::Capture;
+    if (capture.capture || capture.progress != nullptr) {
+        opts.output_callback = CaptureProcessOutput;
+        opts.user_data = &capture;
     }
 
     KanoProcessResult kresult{};
@@ -503,11 +530,9 @@ auto RunProcess(const std::string& cmdLine, ExecMode InMode,
 
     ExecResult result;
     result.exitCode = kresult.exit_code;
-    if (kresult.stdout_data) {
-        result.stdoutStr = kresult.stdout_data;
-    }
-    if (kresult.stderr_data) {
-        result.stderrStr = kresult.stderr_data;
+    if (capture.capture) {
+        result.stdoutStr = std::move(capture.stdoutBytes);
+        result.stderrStr = std::move(capture.stderrBytes);
     }
     if (kresult.timed_out) {
         if (!result.stderrStr.empty()) result.stderrStr += "\n";
@@ -551,12 +576,12 @@ auto RunProcessUnix(const std::string& InCommand,
     opts.argv_count = argv.size() - 1;  // exclude terminating nullptr
     opts.mode = (InMode == ExecMode::Capture) ? KANO_PROCESS_MODE_CAPTURE : KANO_PROCESS_MODE_PASS_THROUGH;
     opts.timeout_ms = InTimeoutMs ? static_cast<int>(*InTimeoutMs) : 0;
-    if (InProgressCallback) {
-        opts.output_callback = [](KanoProcessStream stream, const char* chunk, size_t chunk_size, void* user_data) {
-            reinterpret_cast<ProgressCallback*>(user_data)->operator()(
-                std::string_view(chunk, chunk_size), stream == KANO_PROCESS_STREAM_STDERR);
-        };
-        opts.user_data = reinterpret_cast<void*>(&InProgressCallback);
+    ProcessOutputCapture capture;
+    capture.progress = InProgressCallback ? &InProgressCallback : nullptr;
+    capture.capture = InMode == ExecMode::Capture;
+    if (capture.capture || capture.progress != nullptr) {
+        opts.output_callback = CaptureProcessOutput;
+        opts.user_data = &capture;
     }
 
     KanoProcessResult kresult{};
@@ -568,11 +593,9 @@ auto RunProcessUnix(const std::string& InCommand,
 
     ExecResult result;
     result.exitCode = kresult.exit_code;
-    if (kresult.stdout_data) {
-        result.stdoutStr = kresult.stdout_data;
-    }
-    if (kresult.stderr_data) {
-        result.stderrStr = kresult.stderr_data;
+    if (capture.capture) {
+        result.stdoutStr = std::move(capture.stdoutBytes);
+        result.stderrStr = std::move(capture.stderrBytes);
     }
     if (kresult.timed_out) {
         if (!result.stderrStr.empty()) result.stderrStr += "\n";

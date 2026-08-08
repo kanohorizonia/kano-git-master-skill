@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "commit_plan_payload.hpp"
+#include "plan_utils.hpp"
 
 #include <filesystem>
 #include <fstream>
@@ -60,6 +61,7 @@ auto BuildValidPayload() -> CommitPlanPayload {
     payload.meta.planner.model = "model-1";
     payload.meta.review.verdict = "pass";
     payload.meta.review.reason = "reviewed";
+    payload.meta.correlation.present = true;
 
     RepoCommitPlanEntry commitEntry;
     commitEntry.repoKey = "repo-a";
@@ -128,7 +130,7 @@ TEST_CASE("commit plan payload parser preserves dual-stage metadata and normaliz
               "verdict": " PASS ",
               "reason": " entry reviewed "
             },
-            "include": [" src\\main.cpp ", "broken\spath", "\n"],
+            "include": [" src\\main.cpp ", "broken\\spath", "\n"],
             "exclude": [" docs\\old.md "]
           },
           {
@@ -255,6 +257,148 @@ TEST_CASE("commit plan payload parser preserves exact read and structure diagnos
                       &error)
                       .has_value());
     REQUIRE(error == "no valid stage entries found");
+}
+
+TEST_CASE("commit plan payload parser accepts an explicit empty push-only stage",
+          "[Unit][CommitPlan][Payload][KG-TSK-0125]") {
+    TempPlan temp("push-only");
+    const auto planPath = temp.Write(R"JSON(
+{
+  "meta": {"plan_id": "push-only"},
+  "stages": {"commit": [], "post_sync": []}
+}
+)JSON");
+
+    std::string error = "unchanged";
+    const auto parsed = ParseCommitPlan(planPath, &error);
+    REQUIRE(parsed.has_value());
+    REQUIRE(error == "unchanged");
+    REQUIRE(parsed->commitEntries.empty());
+    REQUIRE(parsed->postSyncEntries.empty());
+
+    error.clear();
+    REQUIRE_FALSE(ParseCommitPlan(
+        temp.Write(R"JSON({"meta":{},"stages":{"commit":[]}})JSON", "missing-sibling.json"),
+        &error));
+    REQUIRE(error == "no valid stage entries found");
+    error.clear();
+    REQUIRE_FALSE(ParseCommitPlan(
+        temp.Write(R"JSON({"meta":{},"stages":{"commit":[],"post_sync":{}}})JSON", "malformed-sibling.json"),
+        &error));
+    REQUIRE(error == "commit and post_sync stages must be arrays");
+    error.clear();
+    REQUIRE_FALSE(ParseCommitPlan(
+        temp.Write(R"JSON({"meta":{},"stages":{"commit":[],"commit":[],"post_sync":[]}})JSON", "duplicate-stage.json"),
+        &error));
+    REQUIRE(error == "duplicate JSON object field");
+}
+
+TEST_CASE("KG-TSK-0125 correlation envelope is closed and fail-closed",
+          "[Unit][CommitPlan][Correlation]") {
+    const std::string plan = R"({"meta":{},"stages":{"commit":[],"post_sync":[]}})";
+    const std::string standalone = R"({"mode":"standalone","product_id":null,"topic_id":null,"item_id":null,"work_order_id":null,"request_id":null,"run_id":null,"parent_run_id":null,"producer_id":null,"route_id":null,"attempt":1})";
+    std::string error;
+    const auto standalonePlan = ApplyCorrelationEnvelopeToPlan(plan, standalone, &error);
+    REQUIRE(standalonePlan.has_value());
+    REQUIRE(standalonePlan->find("\"mode\":\"standalone\"") != std::string::npos);
+    const std::string koa = R"({"mode":"koa","product_id":"koa","topic_id":null,"item_id":"item","work_order_id":"work","request_id":"request","run_id":"run","parent_run_id":"parent","producer_id":"producer","route_id":"route","attempt":2})";
+    REQUIRE(ApplyCorrelationEnvelopeToPlan(plan, koa, &error).has_value());
+    const std::string unknown = R"({"mode":"standalone","product_id":null,"topic_id":null,"item_id":null,"work_order_id":null,"request_id":null,"run_id":null,"parent_run_id":null,"producer_id":null,"route_id":null,"attempt":1,"secret":"no"})";
+    REQUIRE_FALSE(ApplyCorrelationEnvelopeToPlan(plan, unknown, &error).has_value());
+    REQUIRE_FALSE(ApplyCorrelationEnvelopeToPlan(plan, R"({"mode":"koa","product_id":null})", &error).has_value());
+    REQUIRE_FALSE(ApplyCorrelationEnvelopeToPlan(
+        plan,
+        R"({"mode":"standalone","product_id":null,"topic_id":null,"item_id":null,"work_order_id":null,"request_id":null,"run_id":null,"parent_run_id":null,"producer_id":null,"route_id":null,"attempt":1,"attempt":2})",
+        &error));
+    REQUIRE_FALSE(ApplyCorrelationEnvelopeToPlan(
+        plan,
+        R"({"mode":"koa","product_id":"koa","topic_id":null,"item_id":"item","work_order_id":"work","request_id":"request","run_id":"run","parent_run_id":"run","producer_id":"producer","route_id":"route","attempt":2})",
+        &error));
+    REQUIRE_FALSE(ApplyCorrelationEnvelopeToPlan(
+        plan,
+        R"({"mode":"koa","product_id":"koa","topic_id":null,"item_id":"item","work_order_id":"work","request_id":"request","run_id":"run id","parent_run_id":null,"producer_id":"producer","route_id":"route","attempt":2})",
+        &error));
+
+    auto exactlyBounded = standalone;
+    exactlyBounded.resize(64U << 10U, ' ');
+    REQUIRE(ApplyCorrelationEnvelopeToPlan(plan, exactlyBounded, &error).has_value());
+    error.clear();
+    REQUIRE_FALSE(ApplyCorrelationEnvelopeToPlan(
+        plan, std::string((64U << 10U) + 1U, ' '), &error));
+    REQUIRE(error == "correlation envelope exceeds 64 KiB");
+}
+
+TEST_CASE("KG-TSK-0125 parser loads attempt and rejects malformed correlation bytes",
+          "[Unit][CommitPlan][Correlation][Parser]") {
+    TempPlan temp("correlation-parser");
+    const std::string valid = R"JSON({
+      "meta":{"plan_id":"plan","correlation":{"mode":"koa","product_id":"product","topic_id":"topic","item_id":"item","work_order_id":"work","request_id":"request","run_id":"run","parent_run_id":"parent","producer_id":"producer","route_id":"route","attempt":3}},
+      "stages":{"commit":[],"post_sync":[]}
+    })JSON";
+    std::string error;
+    const auto parsed = ParseCommitPlan(temp.Write(valid), &error);
+    REQUIRE(parsed);
+    REQUIRE(parsed->meta.correlation.present);
+    REQUIRE(parsed->meta.correlation.attempt == 3);
+    REQUIRE(parsed->meta.correlation.parentRunId == "parent");
+    REQUIRE(ValidateCommitPlanCorrelation(*parsed, &error));
+
+    error.clear();
+    REQUIRE_FALSE(ParseCommitPlan(temp.Write(valid + " trailing", "trailing.json"), &error));
+    REQUIRE(error == "invalid or trailing JSON document");
+    error.clear();
+    REQUIRE_FALSE(ParseCommitPlan(
+        temp.Write(R"JSON({"meta":{"correlation":[]},"stages":{"commit":[],"post_sync":[]}})JSON", "typed.json"),
+        &error));
+    REQUIRE(error == "meta.correlation must be an object");
+    error.clear();
+    auto duplicate = valid;
+    const auto attempt = duplicate.find("\"attempt\":3");
+    REQUIRE(attempt != std::string::npos);
+    duplicate.replace(attempt, std::string("\"attempt\":3").size(), "\"attempt\":3,\"attempt\":4");
+    REQUIRE_FALSE(ParseCommitPlan(temp.Write(duplicate, "duplicate.json"), &error));
+    REQUIRE(error == "duplicate JSON object field");
+    error.clear();
+    auto escapedDuplicate = valid;
+    const auto requestId = escapedDuplicate.find("\"request_id\":\"request\"");
+    REQUIRE(requestId != std::string::npos);
+    escapedDuplicate.replace(
+        requestId,
+        std::string("\"request_id\":\"request\"").size(),
+        "\"request_id\":\"request\",\"request\\u005fid\":\"other\"");
+    REQUIRE_FALSE(ParseCommitPlan(temp.Write(escapedDuplicate, "escaped-duplicate.json"), &error));
+    REQUIRE(error == "duplicate JSON object field");
+    error.clear();
+    auto wrongType = valid;
+    const auto wrongAttempt = wrongType.find("\"attempt\":3");
+    wrongType.replace(wrongAttempt, std::string("\"attempt\":3").size(), "\"attempt\":\"3\"");
+    REQUIRE_FALSE(ParseCommitPlan(temp.Write(wrongType, "wrong-attempt.json"), &error));
+    REQUIRE(error == "meta.correlation.attempt must be a positive uint32");
+    error.clear();
+    auto nonAscii = valid;
+    const auto run = nonAscii.find("\"run_id\":\"run\"");
+    nonAscii.replace(run, std::string("\"run_id\":\"run\"").size(), "\"run_id\":\"rún\"");
+    REQUIRE_FALSE(ParseCommitPlan(temp.Write(nonAscii, "non-ascii.json"), &error));
+    REQUIRE(error == "meta.correlation identifiers must be null or stable IDs");
+
+    error.clear();
+    const auto nestedOnly = ParseCommitPlan(
+        temp.Write(
+            R"JSON({"meta":{"review":{"correlation":{"mode":"koa"}}},"stages":{"commit":[],"post_sync":[]}})JSON",
+            "nested-only.json"),
+        &error);
+    REQUIRE(nestedOnly.has_value());
+    REQUIRE_FALSE(nestedOnly->meta.correlation.present);
+    REQUIRE(ValidateCommitPlanCorrelation(*nestedOnly, &error));
+    REQUIRE(error.empty());
+
+    error.clear();
+    REQUIRE_FALSE(ParseCommitPlan(
+        temp.Write(
+            R"JSON({"wrapper":{"stages":{"commit":[],"post_sync":[]}},"meta":{}})JSON",
+            "nested-stages.json"),
+        &error));
+    REQUIRE(error == "missing \"stages\" object");
 }
 
 TEST_CASE("commit plan stage aliases and plan keys retain existing defaults",
