@@ -45,6 +45,7 @@ add_executable(kano_git_commit_plan_tests
   unit/test_commit_scope_dirty_nested_repo.cpp
   unit/test_commit_plan_payload.cpp
   unit/test_commit_plan_audit.cpp
+  unit/test_audit_run_reader.cpp
   unit/test_commit_plan_task_graph.cpp
   unit/test_commit_plan_repo_path_normalization.cpp
   unit/test_runtime_path_layout.cpp
