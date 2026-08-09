@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "audit_run_reader.hpp"
+#include "audit_evidence_directory.hpp"
 #include "shell_executor.hpp"
 
 #include <nlohmann/json.hpp>
@@ -8,11 +9,32 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstddef>
+#include <condition_variable>
+#include <cstring>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iterator>
+#include <limits>
+#include <mutex>
+#include <stop_token>
+#include <thread>
+#include <utility>
 #include <vector>
+#if !defined(_WIN32)
+#include <csignal>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#else
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <winioctl.h>
+#endif
 
 using namespace kano::git::commands;
 
@@ -52,6 +74,129 @@ auto WriteText(const std::filesystem::path& path, const std::string& bytes) -> v
     output << bytes;
     REQUIRE(output.good());
 }
+
+#if defined(_WIN32)
+
+struct MountPointReparseData {
+    DWORD reparseTag;
+    WORD reparseDataLength;
+    WORD reserved;
+    WORD substituteNameOffset;
+    WORD substituteNameLength;
+    WORD printNameOffset;
+    WORD printNameLength;
+    wchar_t pathBuffer[1];
+};
+static_assert(offsetof(MountPointReparseData, pathBuffer) == 16);
+
+struct ReparseHeader {
+    DWORD reparseTag;
+    WORD reparseDataLength;
+    WORD reserved;
+};
+static_assert(sizeof(ReparseHeader) == 8);
+
+auto DeleteMountPointReparse(const std::filesystem::path& InPath) -> void {
+    const HANDLE handle = CreateFileW(
+        InPath.c_str(), GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+        OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+        nullptr);
+    if (handle != INVALID_HANDLE_VALUE) {
+        ReparseHeader header{.reparseTag = IO_REPARSE_TAG_MOUNT_POINT};
+        DWORD returned = 0;
+        (void)DeviceIoControl(handle, FSCTL_DELETE_REPARSE_POINT,
+                              &header, sizeof(header), nullptr, 0,
+                              &returned, nullptr);
+        CloseHandle(handle);
+    }
+    (void)RemoveDirectoryW(InPath.c_str());
+}
+
+class ScopedMountPointReparse {
+public:
+    explicit ScopedMountPointReparse(std::filesystem::path InPath)
+        : mPath(std::move(InPath)) {}
+    ~ScopedMountPointReparse() {
+        if (!mPath.empty()) DeleteMountPointReparse(mPath);
+    }
+    ScopedMountPointReparse(const ScopedMountPointReparse&) = delete;
+    auto operator=(const ScopedMountPointReparse&)
+        -> ScopedMountPointReparse& = delete;
+    ScopedMountPointReparse(ScopedMountPointReparse&& InOther) noexcept
+        : mPath(std::move(InOther.mPath)) {
+        InOther.mPath.clear();
+    }
+
+private:
+    std::filesystem::path mPath;
+};
+
+auto CreateMountPointReparse(const std::filesystem::path& InLink,
+                             const std::filesystem::path& InTarget,
+                             std::string* OutError)
+    -> std::optional<ScopedMountPointReparse> {
+    std::error_code ec;
+    if (!std::filesystem::create_directory(InLink, ec)) {
+        if (OutError) *OutError = "cannot create junction directory: " + ec.message();
+        return std::nullopt;
+    }
+
+    const auto printName = std::filesystem::absolute(InTarget).wstring();
+    const auto substituteName = std::wstring(L"\\??\\") + printName;
+    const std::size_t pathBytes =
+        (substituteName.size() + 1U + printName.size() + 1U) * sizeof(wchar_t);
+    const std::size_t dataLength = 4U * sizeof(WORD) + pathBytes;
+    const std::size_t totalLength = sizeof(ReparseHeader) + dataLength;
+    if (totalLength > MAXIMUM_REPARSE_DATA_BUFFER_SIZE ||
+        dataLength > std::numeric_limits<WORD>::max()) {
+        if (OutError) *OutError = "junction reparse payload exceeds Windows limits";
+        (void)std::filesystem::remove(InLink, ec);
+        return std::nullopt;
+    }
+
+    std::vector<std::byte> storage(totalLength);
+    auto* data = reinterpret_cast<MountPointReparseData*>(storage.data());
+    data->reparseTag = IO_REPARSE_TAG_MOUNT_POINT;
+    data->reparseDataLength = static_cast<WORD>(dataLength);
+    data->substituteNameOffset = 0;
+    data->substituteNameLength = static_cast<WORD>(
+        substituteName.size() * sizeof(wchar_t));
+    data->printNameOffset = static_cast<WORD>(
+        (substituteName.size() + 1U) * sizeof(wchar_t));
+    data->printNameLength = static_cast<WORD>(printName.size() * sizeof(wchar_t));
+    std::memcpy(data->pathBuffer, substituteName.c_str(),
+                (substituteName.size() + 1U) * sizeof(wchar_t));
+    std::memcpy(reinterpret_cast<std::byte*>(data->pathBuffer) +
+                    data->printNameOffset,
+                printName.c_str(), (printName.size() + 1U) * sizeof(wchar_t));
+
+    const HANDLE handle = CreateFileW(
+        InLink.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+        FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) {
+        const auto error = GetLastError();
+        if (OutError) *OutError = "cannot open junction directory: win32 error " +
+            std::to_string(error);
+        (void)std::filesystem::remove(InLink, ec);
+        return std::nullopt;
+    }
+    DWORD returned = 0;
+    const BOOL applied = DeviceIoControl(
+        handle, FSCTL_SET_REPARSE_POINT, data, static_cast<DWORD>(totalLength),
+        nullptr, 0, &returned, nullptr);
+    const auto error = applied ? ERROR_SUCCESS : GetLastError();
+    CloseHandle(handle);
+    if (!applied) {
+        if (OutError) *OutError = "cannot create mount-point reparse: win32 error " +
+            std::to_string(error);
+        (void)std::filesystem::remove(InLink, ec);
+        return std::nullopt;
+    }
+    return ScopedMountPointReparse(InLink);
+}
+
+#endif
 
 auto RequireGit(const std::filesystem::path& root,
                 const std::vector<std::string>& args) -> void {
@@ -156,6 +301,353 @@ struct Fixture {
         context.reset();
     }
 };
+
+struct PinnedAttemptControl {
+    std::mutex mutex;
+    std::condition_variable_any condition;
+    std::stop_source stopSource;
+    bool ready = false;
+    bool released = false;
+    bool waitTimedOut = false;
+    std::size_t pinCount = 0;
+
+    static auto OnAttemptPinned(void* InContext) -> void {
+        auto& state = *static_cast<PinnedAttemptControl*>(InContext);
+        std::unique_lock lock(state.mutex);
+        ++state.pinCount;
+        state.ready = true;
+        state.condition.notify_all();
+        if (!state.condition.wait_for(lock, state.stopSource.get_token(),
+                                      std::chrono::seconds(10),
+                                      [&] { return state.released; })) {
+            state.waitTimedOut = !state.released;
+        }
+    }
+
+    auto Release() -> void {
+        {
+            std::lock_guard lock(mutex);
+            released = true;
+        }
+        stopSource.request_stop();
+        condition.notify_all();
+    }
+};
+
+// A failed REQUIRE before the explicit release must not leave the reader
+// blocked while std::jthread joins during stack unwinding.
+struct ScopedPinnedAttemptRelease {
+    PinnedAttemptControl& control;
+    ~ScopedPinnedAttemptRelease() { control.Release(); }
+};
+
+TEST_CASE("[KG-TSK-0133] pinned audit evidence directory survives visible namespace replacement",
+          "[audit][runtime][KG-TSK-0133]") {
+    Fixture fixture;
+    fixture.Finalize();
+    const auto expected = ReadOperationAuditRun(fixture.spec, "reader-run", 3);
+    REQUIRE(expected.verified()); REQUIRE(expected.run);
+    Fixture decoy;
+    auto decoyDoc = nlohmann::json::parse(decoy.spec.frozenBytes);
+    decoyDoc["decoy"] = true;
+    decoy.spec.sourceBytes = decoyDoc.dump() + '\n';
+    decoy.spec.frozenBytes = decoy.spec.sourceBytes;
+    WriteText(*decoy.spec.sourcePath, decoy.spec.sourceBytes);
+    decoy.Finalize(17);
+    const auto decoyExpected = ReadOperationAuditRun(decoy.spec, "reader-run", 3);
+    REQUIRE(decoyExpected.verified()); REQUIRE(decoyExpected.run);
+    REQUIRE(decoyExpected.run->receiptId != expected.run->receiptId);
+    REQUIRE(decoyExpected.run->eventStreamSha256 != expected.run->eventStreamSha256);
+    REQUIRE(decoyExpected.run->frozenInputSha256 != expected.run->frozenInputSha256);
+    REQUIRE(decoyExpected.run->terminalOutcome.status != expected.run->terminalOutcome.status);
+
+    PinnedAttemptControl control;
+    OperationAuditRunReadResult result;
+    std::jthread reader([&] {
+        const ScopedAuditEvidencePinnedTestHook hook({
+            .onAttemptPinned = PinnedAttemptControl::OnAttemptPinned,
+            .context = &control,
+        });
+        result = ReadOperationAuditRun(fixture.spec, "reader-run", 3);
+    });
+    ScopedPinnedAttemptRelease releaseOnFailure{control};
+    {
+        std::unique_lock lock(control.mutex);
+        REQUIRE(control.condition.wait_for(lock, std::chrono::seconds(5),
+                                           [&] { return control.ready; }));
+    }
+    const auto displaced = fixture.paths.attemptRoot.parent_path() / "attempt-original";
+    std::filesystem::rename(fixture.paths.attemptRoot, displaced);
+    std::filesystem::copy(decoy.paths.attemptRoot, fixture.paths.attemptRoot,
+                          std::filesystem::copy_options::recursive);
+    const nlohmann::json pending = {
+        {"schemaName", "kog.auditPublicationPending"}, {"schemaVersion", 1},
+        {"runId", "reader-run"}, {"parentRunId", "parent"}, {"attempt", 3},
+        {"planId", "plan-reader"},
+        {"planSha256", kano::git::audit::Sha256Hex(decoy.spec.frozenBytes)},
+        {"reservedAtUtc", CurrentUtc()},
+    };
+    WriteText(fixture.paths.publicationPending, pending.dump());
+    control.Release();
+    reader.join();
+    REQUIRE(control.pinCount == 1);
+    REQUIRE_FALSE(control.waitTimedOut);
+    REQUIRE(result.verified()); REQUIRE(result.run);
+    REQUIRE(result.run->receiptId == expected.run->receiptId);
+    REQUIRE(result.run->eventStreamSha256 == expected.run->eventStreamSha256);
+    REQUIRE(result.run->frozenInputSha256 == expected.run->frozenInputSha256);
+    REQUIRE(result.run->terminalOutcome.status == expected.run->terminalOutcome.status);
+}
+
+TEST_CASE("[KG-TSK-0133] legacy verify retains one pinned attempt across namespace replacement",
+          "[audit][runtime][legacy][KG-TSK-0133]") {
+    Fixture fixture; fixture.Finalize();
+    Fixture decoy; decoy.Finalize(17);
+    PinnedAttemptControl control;
+    bool traceValid = false;
+    std::string error;
+    std::optional<std::string> receipt;
+    std::jthread reader([&] {
+        const ScopedAuditEvidencePinnedTestHook hook({
+            .onAttemptPinned = PinnedAttemptControl::OnAttemptPinned,
+            .context = &control,
+        });
+        receipt = VerifyOperationAuditJson(fixture.spec, "reader-run", 3,
+                                           &traceValid, &error);
+    });
+    ScopedPinnedAttemptRelease releaseOnFailure{control};
+    {
+        std::unique_lock lock(control.mutex);
+        REQUIRE(control.condition.wait_for(lock, std::chrono::seconds(5),
+                                           [&] { return control.ready; }));
+    }
+    const auto displaced = fixture.paths.attemptRoot.parent_path() / "attempt-legacy-original";
+    std::filesystem::rename(fixture.paths.attemptRoot, displaced);
+    std::filesystem::copy(decoy.paths.attemptRoot, fixture.paths.attemptRoot,
+                          std::filesystem::copy_options::recursive);
+    WriteText(fixture.paths.incomplete, "{\"schemaName\":\"decoy\"}");
+    control.Release();
+    reader.join();
+    REQUIRE(control.pinCount == 1);
+    REQUIRE_FALSE(control.waitTimedOut);
+    INFO(error);
+    REQUIRE(receipt); REQUIRE(traceValid);
+}
+
+TEST_CASE("[KG-TSK-0133] legacy verify retains its exact failure diagnostics matrix",
+          "[audit][runtime][legacy][KG-TSK-0130][KG-TSK-0133]") {
+    const auto verifyError = [](const OperationAuditSpec& spec) {
+        bool traceValid = true;
+        std::string error;
+        REQUIRE_FALSE(VerifyOperationAuditJson(spec, "reader-run", 3,
+                                               &traceValid, &error));
+        REQUIRE_FALSE(traceValid);
+        return error;
+    };
+    const auto boundedError = [](const std::filesystem::path& path,
+                                 const std::uintmax_t limit) {
+        std::string error;
+        REQUIRE_FALSE(ReadBoundedAuditInput(path, limit, &error));
+        return error;
+    };
+
+    SECTION("missing audit root retains the bounded child-open diagnostic") {
+        Fixture fixture;
+        const auto baseline = boundedError(fixture.paths.events, 64U << 20U);
+        REQUIRE(verifyError(fixture.spec) == baseline);
+    }
+    SECTION("missing attempt below an existing run retains the bounded child-open diagnostic") {
+        Fixture fixture;
+        REQUIRE(std::filesystem::create_directories(fixture.paths.runRoot));
+        const auto baseline = boundedError(fixture.paths.events, 64U << 20U);
+        REQUIRE(verifyError(fixture.spec) == baseline);
+    }
+    SECTION("nonregular evidence retains the closed verification diagnostic") {
+        Fixture fixture; fixture.Finalize();
+        REQUIRE(std::filesystem::remove(fixture.paths.events));
+        REQUIRE(std::filesystem::create_directory(fixture.paths.events));
+        REQUIRE(verifyError(fixture.spec) ==
+                "audit evidence failed closed verification");
+    }
+    SECTION("oversized evidence retains the bounded limit diagnostic") {
+        Fixture fixture; fixture.Finalize();
+        WriteText(fixture.paths.receipt, std::string((4U << 20U) + 1U, 'x'));
+        REQUIRE(verifyError(fixture.spec) ==
+                "audit evidence exceeds a bounded verification limit");
+    }
+    SECTION("oversized marker retains the legacy bounded-read diagnostic") {
+        Fixture fixture;
+        REQUIRE(std::filesystem::create_directories(fixture.paths.attemptRoot));
+        WriteText(fixture.paths.publicationPending,
+                  std::string((64U << 10U) + 1U, 'x'));
+        const auto baseline = boundedError(fixture.paths.publicationPending,
+                                           64U << 10U);
+        REQUIRE(verifyError(fixture.spec) == baseline);
+    }
+#if !defined(_WIN32)
+    SECTION("permission-denied evidence retains the closed verification diagnostic") {
+        Fixture fixture; fixture.Finalize();
+        REQUIRE(::chmod(fixture.paths.receipt.c_str(), 0000) == 0);
+        if (::access(fixture.paths.receipt.c_str(), R_OK) == 0) {
+            REQUIRE(::chmod(fixture.paths.receipt.c_str(), 0600) == 0);
+            SKIP("host privileges bypass mode-bit read denial");
+        }
+        const auto actual = verifyError(fixture.spec);
+        REQUIRE(::chmod(fixture.paths.receipt.c_str(), 0600) == 0);
+        REQUIRE(actual == "audit evidence failed closed verification");
+    }
+    SECTION("permission-denied marker retains the legacy bounded-read diagnostic") {
+        Fixture fixture;
+        REQUIRE(std::filesystem::create_directories(fixture.paths.attemptRoot));
+        WriteText(fixture.paths.incomplete, "{}");
+        REQUIRE(::chmod(fixture.paths.incomplete.c_str(), 0000) == 0);
+        if (::access(fixture.paths.incomplete.c_str(), R_OK) == 0) {
+            REQUIRE(::chmod(fixture.paths.incomplete.c_str(), 0600) == 0);
+            SKIP("host privileges bypass mode-bit read denial");
+        }
+        const auto baseline = boundedError(fixture.paths.incomplete, 64U << 10U);
+        const auto actual = verifyError(fixture.spec);
+        REQUIRE(::chmod(fixture.paths.incomplete.c_str(), 0600) == 0);
+        REQUIRE(actual == baseline);
+    }
+#endif
+}
+
+#if !defined(_WIN32)
+TEST_CASE("[KG-TSK-0133] FIFO evidence fails closed without blocking",
+          "[audit][runtime][posix][KG-TSK-0133]") {
+    Fixture fixture; fixture.Finalize();
+    REQUIRE(std::filesystem::remove(fixture.paths.events));
+    REQUIRE(::mkfifo(fixture.paths.events.c_str(), 0600) == 0);
+
+    int resultPipe[2] = {-1, -1};
+    REQUIRE(::pipe(resultPipe) == 0);
+    const pid_t child = ::fork();
+    if (child < 0) {
+        (void)::close(resultPipe[0]);
+        (void)::close(resultPipe[1]);
+        FAIL("cannot fork bounded FIFO reader worker");
+    }
+    if (child == 0) {
+        (void)::close(resultPipe[0]);
+        try {
+            const auto result = ReadOperationAuditRun(
+                fixture.spec, "reader-run", 3);
+            const int wire[2] = {static_cast<int>(result.state),
+                                 static_cast<int>(result.code)};
+            const auto written = ::write(resultPipe[1], wire, sizeof(wire));
+            (void)::close(resultPipe[1]);
+            _exit(written == static_cast<ssize_t>(sizeof(wire)) ? 0 : 2);
+        } catch (...) {
+            _exit(3);
+        }
+    }
+    struct ChildGuard {
+        pid_t pid;
+        bool reaped = false;
+        ~ChildGuard() {
+            if (reaped) return;
+            (void)::kill(pid, SIGKILL);
+            int ignored = 0;
+            while (::waitpid(pid, &ignored, 0) < 0 && errno == EINTR) {}
+        }
+    } childGuard{child};
+    (void)::close(resultPipe[1]);
+    auto waitFuture = std::async(std::launch::async, [child] {
+        int status = 0;
+        pid_t waited = -1;
+        do {
+            waited = ::waitpid(child, &status, 0);
+        } while (waited < 0 && errno == EINTR);
+        return std::pair{waited, status};
+    });
+    const bool completedInTime = waitFuture.wait_for(std::chrono::seconds(1)) ==
+        std::future_status::ready;
+    if (!completedInTime) (void)::kill(child, SIGKILL);
+    const auto [waited, status] = waitFuture.get();
+    childGuard.reaped = waited == child;
+    int wire[2] = {};
+    const auto read = ::read(resultPipe[0], wire, sizeof(wire));
+    (void)::close(resultPipe[0]);
+
+    REQUIRE(completedInTime);
+    REQUIRE(waited == child);
+    REQUIRE(WIFEXITED(status));
+    REQUIRE(WEXITSTATUS(status) == 0);
+    REQUIRE(read == static_cast<ssize_t>(sizeof(wire)));
+    REQUIRE(static_cast<OperationAuditRunReadState>(wire[0]) ==
+            OperationAuditRunReadState::Corrupt);
+    REQUIRE(static_cast<OperationAuditRunReadCode>(wire[1]) ==
+            OperationAuditRunReadCode::NonRegularEvidence);
+}
+
+TEST_CASE("[KG-TSK-0133] readable metadata with denied marker content is unreadable",
+          "[audit][runtime][posix][KG-TSK-0133]") {
+    Fixture fixture;
+    REQUIRE(std::filesystem::create_directories(fixture.paths.attemptRoot));
+    const auto exercise = [&](const std::filesystem::path& marker,
+                              const OperationAuditRunReadCode expected) {
+        WriteText(marker, "{}");
+        REQUIRE(::chmod(marker.c_str(), 0000) == 0);
+        if (::access(marker.c_str(), R_OK) == 0) {
+            REQUIRE(::chmod(marker.c_str(), 0600) == 0);
+            SKIP("host privileges bypass mode-bit read denial");
+        }
+        const auto result = ReadOperationAuditRun(fixture.spec, "reader-run", 3);
+        REQUIRE(::chmod(marker.c_str(), 0600) == 0);
+        REQUIRE(result.state == OperationAuditRunReadState::Corrupt);
+        REQUIRE(result.code == expected);
+        REQUIRE(std::filesystem::remove(marker));
+    };
+    exercise(fixture.paths.publicationPending,
+             OperationAuditRunReadCode::PendingMarkerUnreadable);
+    exercise(fixture.paths.incomplete,
+             OperationAuditRunReadCode::IncompleteMarkerUnreadable);
+}
+#endif
+
+#if defined(_WIN32)
+TEST_CASE("[KG-TSK-0133] Windows RootDirectory relative capability is live",
+          "[audit][runtime][windows][KG-TSK-0133]") {
+    Fixture fixture; fixture.Finalize();
+    AuditEvidenceOpenCode code = AuditEvidenceOpenCode::IoError;
+    auto directory = AuditEvidenceDirectory::Open(fixture.paths, &code);
+    REQUIRE(code == AuditEvidenceOpenCode::None); REQUIRE(directory);
+    const auto receipt = directory->Read(fixture.paths.receipt.filename().string(), 4U << 20U);
+    REQUIRE(receipt.ready()); REQUIRE_FALSE(receipt.bytes.empty());
+}
+
+TEST_CASE("[KG-TSK-0133] Windows attempt reparse points fail closed",
+          "[audit][runtime][windows][KG-TSK-0133]") {
+    Fixture fixture;
+    Fixture decoy; decoy.Finalize();
+    REQUIRE(std::filesystem::create_directories(fixture.paths.runRoot));
+    // Exercise the mount-point reparse API directly instead of a Developer
+    // Mode-dependent symbolic link. Any unavailable capability is a hard test
+    // failure, never a silent skip.
+    std::string error;
+    auto junction = CreateMountPointReparse(
+        fixture.paths.attemptRoot, decoy.paths.attemptRoot, &error);
+    INFO(error); REQUIRE(junction);
+    const auto result = ReadOperationAuditRun(fixture.spec, "reader-run", 3);
+    REQUIRE(result.state == OperationAuditRunReadState::Corrupt);
+    REQUIRE(result.code == OperationAuditRunReadCode::NonRegularEvidence);
+}
+
+TEST_CASE("[KG-TSK-0133] Windows child evidence reparse points fail closed",
+          "[audit][runtime][windows][KG-TSK-0133]") {
+    Fixture fixture; fixture.Finalize();
+    const auto target = fixture.root / "child-reparse-target";
+    REQUIRE(std::filesystem::create_directory(target));
+    REQUIRE(std::filesystem::remove(fixture.paths.events));
+    std::string error;
+    auto junction = CreateMountPointReparse(fixture.paths.events, target, &error);
+    INFO(error); REQUIRE(junction);
+    const auto result = ReadOperationAuditRun(fixture.spec, "reader-run", 3);
+    REQUIRE(result.state == OperationAuditRunReadState::Corrupt);
+    REQUIRE(result.code == OperationAuditRunReadCode::NonRegularEvidence);
+}
+#endif
 
 auto PendingMarker(const Fixture& fixture) -> nlohmann::json {
     return {

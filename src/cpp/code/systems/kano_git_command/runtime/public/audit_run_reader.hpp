@@ -116,10 +116,12 @@ struct OperationAuditRunReadResult {
                 state == OperationAuditRunReadState::Truncated) && run.has_value();
     }
 };
-// The audit root and its ancestor directories are writer-owned and stable for
-// the duration of one read. Child evidence files are opened no-follow and
-// checked as bounded regular files; cross-platform namespace pinning is a
-// separate hardening boundary.
+// Security boundary: auditRoot and its ancestors are the explicit trusted,
+// writer-owned anchor. runRoot and attemptRoot are pinned by native directory
+// handle (POSIX openat; Windows NtOpenFile RootDirectory), and every child is
+// opened relative to the same attempt identity. Child handles reject links,
+// reparse points and non-regular files, enforce byte ceilings, and retain
+// stable device/volume, file id, size, mtime and ctime/creation-time identity.
 [[nodiscard]] auto ReadOperationAuditRun(const OperationAuditSpec& InSpec,
                                          std::string_view InRunId,
                                          std::uint32_t InAttempt,

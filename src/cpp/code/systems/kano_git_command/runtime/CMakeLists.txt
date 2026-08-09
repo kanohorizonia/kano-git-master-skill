@@ -5,6 +5,7 @@ target_sources(kano_git_command_runtime
     private/auto_model_policy.cpp
     private/command_executor.cpp
     private/audit_cmd.cpp
+    private/audit_evidence_directory.cpp
     private/audit_run_reader.cpp
     private/operation_audit.cpp
     private/ai_utils.cpp
@@ -40,5 +41,8 @@ target_link_libraries(kano_git_command_runtime
     nlohmann_json::nlohmann_json
 )
 target_link_libraries(kano_git_command_runtime PRIVATE tomlplusplus::tomlplusplus)
+if(WIN32)
+  target_link_libraries(kano_git_command_runtime PRIVATE ntdll)
+endif()
 
 add_library(kano::git_command_runtime ALIAS kano_git_command_runtime)

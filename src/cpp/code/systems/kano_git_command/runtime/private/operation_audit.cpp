@@ -1,6 +1,8 @@
 #include "operation_audit.hpp"
 
 #include "audit_run_reader.hpp"
+#include "audit_evidence_directory.hpp"
+#include "audit_run_reader_private.hpp"
 
 #include "shell_executor.hpp"
 
@@ -1531,7 +1533,8 @@ enum class LegacyMarkerProbe { Absent, Present, Rejected };
 // `audit verify` predates the closed marker schema used by the public reader.
 // Preserve its intentionally narrow marker contract here instead of exposing
 // that permissive shape through ReadOperationAuditRun's default policy.
-auto ProbeLegacyMarker(const std::filesystem::path& InPath,
+auto ProbeLegacyMarker(const AuditEvidenceDirectory& InDirectory,
+                       const std::string_view InName,
                        const std::string_view InSchemaName,
                        const std::string_view InRunId,
                        const std::uint32_t InAttempt,
@@ -1540,23 +1543,22 @@ auto ProbeLegacyMarker(const std::filesystem::path& InPath,
                        const std::string_view InAbsenceDiagnostic,
                        const std::string_view InUnreadableDiagnostic,
                        std::string* OutError) -> LegacyMarkerProbe {
-    std::error_code ec;
-    const auto status = std::filesystem::symlink_status(InPath, ec);
-    if (status.type() == std::filesystem::file_type::not_found ||
-        ec == std::errc::no_such_file_or_directory) {
+    const auto probe = InDirectory.Probe(InName);
+    if (probe.code == AuditEvidenceReadCode::Missing)
         return LegacyMarkerProbe::Absent;
-    }
-    if (ec) {
+    if (!probe.ready() && probe.code != AuditEvidenceReadCode::LoopOrReparse &&
+        probe.code != AuditEvidenceReadCode::NonRegular) {
         if (OutError) *OutError = std::string(InAbsenceDiagnostic);
         return LegacyMarkerProbe::Rejected;
     }
-    const auto bytes = ReadBoundedAuditInput(InPath, 64U << 10U, OutError);
-    if (!bytes) {
-        if (OutError && OutError->empty()) *OutError = std::string(InUnreadableDiagnostic);
+    const auto input = InDirectory.Read(InName, 64U << 10U);
+    if (!input.ready()) {
+        if (OutError) *OutError = input.diagnostic.empty()
+            ? std::string(InUnreadableDiagnostic) : input.diagnostic;
         return LegacyMarkerProbe::Rejected;
     }
     try {
-        const auto doc = nlohmann::json::parse(*bytes);
+        const auto doc = nlohmann::json::parse(input.bytes);
         if (!doc.is_object() ||
             doc.value("schemaName", "") != InSchemaName ||
             doc.value("schemaVersion", 0) != 1 ||
@@ -1573,7 +1575,8 @@ auto ProbeLegacyMarker(const std::filesystem::path& InPath,
     return LegacyMarkerProbe::Present;
 }
 
-auto LegacyMarkersBlockVerification(const OperationAuditPaths& InPaths,
+auto LegacyMarkersBlockVerification(const AuditEvidenceDirectory& InDirectory,
+                                    const OperationAuditPaths& InPaths,
                                     const std::string_view InRunId,
                                     const std::uint32_t InAttempt,
                                     std::string* OutError) -> bool {
@@ -1581,13 +1584,15 @@ auto LegacyMarkersBlockVerification(const OperationAuditPaths& InPaths,
     // before their OR result is considered, so an incomplete diagnostic
     // overwrites a pending diagnostic when both markers are present.
     const auto pending = ProbeLegacyMarker(
-        InPaths.publicationPending, "kog.auditPublicationPending", InRunId, InAttempt,
+        InDirectory, InPaths.publicationPending.filename().string(),
+        "kog.auditPublicationPending", InRunId, InAttempt,
         "audit receipt publication is still pending",
         "audit publication-pending sentinel is invalid",
         "cannot prove absence of audit publication-pending sentinel",
         "audit publication-pending sentinel is unreadable", OutError);
     const auto incomplete = ProbeLegacyMarker(
-        InPaths.incomplete, "kog.auditIncomplete", InRunId, InAttempt,
+        InDirectory, InPaths.incomplete.filename().string(),
+        "kog.auditIncomplete", InRunId, InAttempt,
         "audit evidence is explicitly incomplete", "audit incomplete marker is invalid",
         "cannot prove absence of audit incomplete marker", "audit incomplete marker is unreadable",
         OutError);
@@ -1595,15 +1600,53 @@ auto LegacyMarkersBlockVerification(const OperationAuditPaths& InPaths,
         incomplete != LegacyMarkerProbe::Absent;
 }
 
-auto LegacyMissingEvidence(const OperationAuditPaths& InPaths, std::string* OutError) -> bool {
+auto LegacyMissingEvidence(const AuditEvidenceDirectory& InDirectory,
+                           const OperationAuditPaths& InPaths,
+                           std::string* OutError) -> bool {
     // Preserve the old sequential ReadBoundedAuditInput diagnostics, including
     // the underlying OS error text for a missing child evidence file.
-    const auto events = ReadBoundedAuditInput(InPaths.events, 64U << 20U, OutError);
-    const auto receipt = events
-        ? ReadBoundedAuditInput(InPaths.receipt, 4U << 20U, OutError) : std::nullopt;
-    const auto frozen = receipt
-        ? ReadBoundedAuditInput(InPaths.frozenInput, 4U << 20U, OutError) : std::nullopt;
-    return !events || !receipt || !frozen;
+    const auto events = InDirectory.Read(InPaths.events.filename().string(), 64U << 20U);
+    if (!events.ready()) {
+        if (OutError) *OutError = events.diagnostic.empty()
+            ? std::string(AuditEvidenceSystemDiagnostic(events.code)) : events.diagnostic;
+        return true;
+    }
+    const auto receipt = InDirectory.Read(InPaths.receipt.filename().string(), 4U << 20U);
+    if (!receipt.ready()) {
+        if (OutError) *OutError = receipt.diagnostic.empty()
+            ? std::string(AuditEvidenceSystemDiagnostic(receipt.code)) : receipt.diagnostic;
+        return true;
+    }
+    const auto frozen = InDirectory.Read(InPaths.frozenInput.filename().string(), 4U << 20U);
+    if (!frozen.ready()) {
+        if (OutError) *OutError = frozen.diagnostic.empty()
+            ? std::string(AuditEvidenceSystemDiagnostic(frozen.code)) : frozen.diagnostic;
+        return true;
+    }
+    return false;
+}
+
+auto LegacyDirectoryOpenDiagnostic(const AuditEvidenceOpenCode InCode)
+    -> std::string {
+    if (InCode == AuditEvidenceOpenCode::Missing) {
+#if defined(_WIN32)
+        // ReadBoundedAuditInput on a child whose parent attempt/root is absent
+        // reports ERROR_PATH_NOT_FOUND, not ERROR_FILE_NOT_FOUND.
+        return "cannot open bounded audit input: win32 error 3";
+#else
+        return std::string("cannot open bounded audit input: ") +
+            std::strerror(ENOENT);
+#endif
+    }
+    if (InCode == AuditEvidenceOpenCode::PermissionDenied ||
+        InCode == AuditEvidenceOpenCode::IoError ||
+        InCode == AuditEvidenceOpenCode::StatFailed ||
+        InCode == AuditEvidenceOpenCode::NotDirectory) {
+        // Both legacy marker probes ran before evidence reads; the incomplete
+        // probe was last and therefore owned the final diagnostic.
+        return "cannot prove absence of audit incomplete marker";
+    }
+    return std::string(AuditEvidenceSystemDiagnostic(InCode));
 }
 
 } // namespace
@@ -1620,7 +1663,14 @@ auto VerifyOperationAuditJson(const OperationAuditSpec& InSpec,
         if (OutError) *OutError = pathError;
         return std::nullopt;
     }
-    if (LegacyMarkersBlockVerification(*legacyPaths, InRunId, InAttempt, OutError))
+    AuditEvidenceOpenCode legacyOpenCode = AuditEvidenceOpenCode::IoError;
+    auto legacyDirectory = AuditEvidenceDirectory::Open(*legacyPaths, &legacyOpenCode);
+    if (!legacyDirectory) {
+        if (OutError) *OutError = LegacyDirectoryOpenDiagnostic(legacyOpenCode);
+        return std::nullopt;
+    }
+    if (LegacyMarkersBlockVerification(*legacyDirectory, *legacyPaths,
+                                       InRunId, InAttempt, OutError))
         return std::nullopt;
     OperationAuditRunReadLimits limits;
     limits.maxPreviewBytes = 4U << 20U;
@@ -1641,8 +1691,9 @@ auto VerifyOperationAuditJson(const OperationAuditSpec& InSpec,
         : OperationAuditCallerCorrelationPolicy::LegacyVerify;
     readPolicy.routeBinding =
         OperationAuditRouteBindingPolicy::CompatibleInputKind;
-    const auto read = ReadOperationAuditRun(
-        InSpec, InRunId, InAttempt, limits, std::nullopt, readPolicy);
+    const auto read = ReadOperationAuditRunFromPinnedDirectory(
+        *legacyDirectory, *legacyPaths, InSpec, InRunId, InAttempt,
+        limits, std::nullopt, readPolicy);
     if (!read.verified()) {
         const auto markerResult = [](const OperationAuditRunReadCode code) {
             switch (code) {
@@ -1662,12 +1713,13 @@ auto VerifyOperationAuditJson(const OperationAuditSpec& InSpec,
         // The marker may have appeared or changed after the pre-read legacy
         // probe. Reclassify through the legacy wrapper before mapping it.
         if (markerResult(read.code) &&
-            LegacyMarkersBlockVerification(*legacyPaths, InRunId, InAttempt, OutError)) {
+            LegacyMarkersBlockVerification(*legacyDirectory, *legacyPaths,
+                                           InRunId, InAttempt, OutError)) {
             return std::nullopt;
         }
         if ((read.code == OperationAuditRunReadCode::AttemptMissing ||
              read.code == OperationAuditRunReadCode::EvidenceMissing) &&
-            LegacyMissingEvidence(*legacyPaths, OutError)) {
+            LegacyMissingEvidence(*legacyDirectory, *legacyPaths, OutError)) {
             return std::nullopt;
         }
         if (OutError) {
@@ -1752,7 +1804,8 @@ auto VerifyOperationAuditJson(const OperationAuditSpec& InSpec,
         return std::nullopt;
     }
 
-    if (LegacyMarkersBlockVerification(*legacyPaths, InRunId, InAttempt, OutError))
+    if (LegacyMarkersBlockVerification(*legacyDirectory, *legacyPaths,
+                                       InRunId, InAttempt, OutError))
         return std::nullopt;
 
     const auto& run = *read.run;
