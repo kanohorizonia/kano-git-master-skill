@@ -152,7 +152,7 @@ TEST_CASE(
 }
 
 TEST_CASE("TUI history page ordering stays explicitly scoped across bounded pages",
-          "[unit][tui_history_lifecycle][KG-BUG-0097][KG-BUG-0100]") {
+          "[unit][tui_history_lifecycle][KG-BUG-0097][KG-BUG-0102]") {
     CHECK(std::string(TuiHistoryPageOrderName(TuiHistoryPageOrder::NewestFirst)) ==
           "page-newest-first");
     CHECK(std::string(TuiHistoryPageOrderName(TuiHistoryPageOrder::OldestFirst)) ==
