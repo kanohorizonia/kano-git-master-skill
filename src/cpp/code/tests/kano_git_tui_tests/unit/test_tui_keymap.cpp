@@ -20,7 +20,7 @@ TEST_CASE("TUI keymap exposes canonical normal history and detail guidance",
     CHECK(guidance[1].context == TuiKeyContext::History);
     CHECK(std::string(guidance[1].label) == "history");
     CHECK(std::string(guidance[1].controls) ==
-          "Up/Down or j/k select | Left/Right page | Enter detail | [ previous repo | ] next repo | ? help | Esc/q back");
+          "Up/Down or j/k select | Left/Right page | / search | n next | o page order | Enter detail | [ previous repo | ] next repo | ? help | Esc/q back");
 
     CHECK(guidance[2].context == TuiKeyContext::Detail);
     CHECK(std::string(guidance[2].label) == "detail");
@@ -30,6 +30,19 @@ TEST_CASE("TUI keymap exposes canonical normal history and detail guidance",
     CHECK(&GetTuiKeyGuidance(TuiKeyContext::Normal) == &guidance[0]);
     CHECK(&GetTuiKeyGuidance(TuiKeyContext::History) == &guidance[1]);
     CHECK(&GetTuiKeyGuidance(TuiKeyContext::Detail) == &guidance[2]);
+}
+
+TEST_CASE("TUI keymap exposes page-scoped history search and ordering controls",
+          "[tdd][unit][feature:tui-key-guidance][KG-BUG-0097]") {
+    using kano::git::commands::GetTuiKeyGuidance;
+    using kano::git::commands::TuiKeyContext;
+
+    const auto controls =
+        GetTuiKeyGuidance(TuiKeyContext::History).controls;
+    CHECK(controls.find("/ search") != std::string_view::npos);
+    CHECK(controls.find("n next") != std::string_view::npos);
+    CHECK(controls.find("o page order") != std::string_view::npos);
+    CHECK(controls.find("sort") == std::string_view::npos);
 }
 
 TEST_CASE("TUI keymap omits retired fetch commit and push shortcut claims",

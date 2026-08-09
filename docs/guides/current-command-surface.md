@@ -118,8 +118,16 @@ dashboard status glyphs.
 Canonical controls:
 
 - Normal: `Up/Down or j/k select | Enter history | r refresh selected repo | : audit commands | ? help | q quit`
-- History: `Up/Down or j/k select | Left/Right page | Enter detail | [ previous repo | ] next repo | ? help | Esc/q back`
+- History: `Up/Down or j/k select | Left/Right page | / search | n next | o page order | Enter detail | [ previous repo | ] next repo | ? help | Esc/q back`
 - Detail: `Up/Down or j/k change | Left/Right page | m summary/patch | ? help | Esc/q back`
+
+History remains bounded and loads newer pages first. Pressing `o` changes only
+the order of entries already present on the visible page; the status labels are
+`page-newest-first`, `page-oldest-first`, and `page-match-first`. It does not
+claim to globally reorder repository history. Use `/` to set the current-page
+search query and `n` to move to its next match. Up/Down follows the visible
+page order; crossing a boundary enters the adjacent newer or older bounded
+page without claiming a repository-global commit order.
 
 `q` exits from the normal repository view. Inside history or detail, `Esc` and
 `q` move back one level. Press `?` from the normal view whenever the key guide

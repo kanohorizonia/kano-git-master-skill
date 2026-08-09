@@ -7,6 +7,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace kano::git::commands {
@@ -28,6 +29,39 @@ struct TuiHistoryBatchResult {
     std::string errorMessage;
     std::string anchorSha;
 };
+
+enum class TuiHistoryPageOrder {
+    NewestFirst,
+    OldestFirst,
+    MatchesFirst,
+};
+
+enum class TuiHistoryPageDirection {
+    Newer,
+    Older,
+};
+
+/// Return the canonical audit label for ordering one already-bounded page.
+/// Labels are deliberately page-scoped and never imply repository-global
+/// chronological ordering.
+[[nodiscard]] auto TuiHistoryPageOrderName(
+    TuiHistoryPageOrder InOrder) noexcept -> std::string_view;
+
+[[nodiscard]] auto NextTuiHistoryPageOrder(
+    TuiHistoryPageOrder InOrder) noexcept -> TuiHistoryPageOrder;
+
+/// Describe a bounded page boundary without making claims about which commit
+/// occupies the first or last visible row after page-local reordering.
+[[nodiscard]] auto TuiHistoryPageBoundaryMessage(
+    TuiHistoryPageDirection InDirection) noexcept -> std::string_view;
+
+/// Reorder only the supplied bounded page. NewestFirst preserves the Git-log
+/// order, OldestFirst reverses this page, and MatchesFirst stably promotes
+/// entries matching the current query without changing page membership.
+[[nodiscard]] auto OrderTuiHistoryPage(
+    std::vector<TuiHistoryEntry> InEntries,
+    TuiHistoryPageOrder InOrder,
+    std::string_view InSearchQuery) -> std::vector<TuiHistoryEntry>;
 
 struct TuiHistoryProbeResult {
     int exitCode = 0;

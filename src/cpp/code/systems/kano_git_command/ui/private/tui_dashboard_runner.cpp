@@ -186,7 +186,7 @@ struct HistoryState {
     int detailSelectedSection = 0;
     int detailPageIndex = 0;
     int detailMode = 0; // 0=summary, 1=files, 2=patch
-    int sortMode = 0;   // 0=time-desc, 1=time-asc, 2=match-first
+    TuiHistoryPageOrder pageOrder = TuiHistoryPageOrder::NewestFirst;
 };
 
 struct PreviewPanelState {
@@ -1503,22 +1503,6 @@ auto FindNextMatch(const std::vector<std::string>& lines,
     return -1;
 }
 
-auto BuildDisplayedHistoryEntries(std::vector<RepoHistoryCache::HistoryEntry> InEntries,
-                                  const HistoryState& InHistory) -> std::vector<RepoHistoryCache::HistoryEntry> {
-    if (InHistory.sortMode == 1) {
-        std::reverse(InEntries.begin(), InEntries.end());
-    } else if (InHistory.sortMode == 2 && !InHistory.searchQuery.empty()) {
-        std::stable_sort(InEntries.begin(), InEntries.end(), [&](const auto& a, const auto& b) {
-            const auto aAuthor = !a.authorEmail.empty() ? a.authorEmail : a.authorName;
-            const auto bAuthor = !b.authorEmail.empty() ? b.authorEmail : b.authorName;
-            const bool am = ToLowerAscii(BuildHistoryDisplayLine(a, aAuthor)).find(ToLowerAscii(InHistory.searchQuery)) != std::string::npos;
-            const bool bm = ToLowerAscii(BuildHistoryDisplayLine(b, bAuthor)).find(ToLowerAscii(InHistory.searchQuery)) != std::string::npos;
-            return am > bm;
-        });
-    }
-    return InEntries;
-}
-
 auto SplitLines(const std::string& InText) -> std::vector<std::string> {
     std::vector<std::string> lines;
     std::istringstream iss(InText);
@@ -2332,7 +2316,7 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
         if (has_any_token(lower, {"ready", "loaded", "opened", "startup", "success", "in-sync", "finished", "complete", " ok"})) {
             return StatusTone::Success;
         }
-        if (has_any_token(lower, {"repo:", "branch:", "page ", "entry ", "search:", "detail:", "sort:", "command:", "state:", "progress:", "current:", "source:", "target:", "path:", "parent:", "children:", "type:", "upstream:", "tracking:", "worktrees:", "background:", "merge-base:", "base:", "note:", "mode:", "section ", "candidate commits"})) {
+        if (has_any_token(lower, {"repo:", "branch:", "page ", "entry ", "search:", "detail:", "order:", "command:", "state:", "progress:", "current:", "source:", "target:", "path:", "parent:", "children:", "type:", "upstream:", "tracking:", "worktrees:", "background:", "merge-base:", "base:", "note:", "mode:", "section ", "candidate commits"})) {
             return StatusTone::Info;
         }
         return StatusTone::None;
@@ -2542,7 +2526,10 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
 
     auto current_history_lines = [&]() -> std::vector<std::string> {
         std::vector<std::string> lines;
-        for (const auto& entry : BuildDisplayedHistoryEntries(current_history_entries(), history)) {
+        for (const auto& entry : OrderTuiHistoryPage(
+                 current_history_entries(),
+                 history.pageOrder,
+                 history.searchQuery)) {
             lines.push_back(BuildHistoryDisplayLine(entry, !entry.authorEmail.empty() ? entry.authorEmail : entry.authorName));
         }
         return lines;
@@ -4927,7 +4914,10 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                 ensure_history_loaded(history.repoIndex, history.pageIndex);
                 const auto key =
                     CachedRepoIdentityKey(repos[history.repoIndex]);
-                auto displayedPage = BuildDisplayedHistoryEntries(history_page_slice(historyCache[key], history.pageIndex), history);
+                auto displayedPage = OrderTuiHistoryPage(
+                    history_page_slice(historyCache[key], history.pageIndex),
+                    history.pageOrder,
+                    history.searchQuery);
                 if (displayedPage.empty()) {
                     footer = "history detail skipped: page empty";
                     return true;
@@ -4984,10 +4974,15 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
             }
 
             if (event == Event::Character('o')) {
-                history.sortMode = (history.sortMode + 1) % 3;
+                history.pageOrder = NextTuiHistoryPageOrder(history.pageOrder);
                 history.selectedLine = 0;
                 history.highlightedLine = -1;
-                footer = history.sortMode == 0 ? "history sort: time-desc" : (history.sortMode == 1 ? "history sort: time-asc" : "history sort: match-first");
+                footer = "history page order: " +
+                    std::string(TuiHistoryPageOrderName(history.pageOrder));
+                if (history.pageOrder == TuiHistoryPageOrder::MatchesFirst &&
+                    history.searchQuery.empty()) {
+                    footer += " | use / to set a search query";
+                }
                 return true;
             }
 
@@ -5010,7 +5005,8 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                     } else if (move_history_page(-1, true)) {
                         footer = "history page newer";
                     } else {
-                        footer = "history at newest commit";
+                        footer = std::string(TuiHistoryPageBoundaryMessage(
+                            TuiHistoryPageDirection::Newer));
                     }
                     return true;
                 }
@@ -5031,7 +5027,8 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                     } else if (move_history_page(1, true)) {
                         footer = "history page older";
                     } else {
-                        footer = "history at oldest commit";
+                        footer = std::string(TuiHistoryPageBoundaryMessage(
+                            TuiHistoryPageDirection::Older));
                     }
                     return true;
                 }
@@ -5056,7 +5053,8 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                 if (move_history_page(-1, false)) {
                     footer = "history page newer";
                 } else {
-                    footer = "history at newest page";
+                    footer = std::string(TuiHistoryPageBoundaryMessage(
+                        TuiHistoryPageDirection::Newer));
                 }
                 return true;
             }
@@ -5064,7 +5062,8 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                 if (move_history_page(1, false)) {
                     footer = "history page older";
                 } else {
-                    footer = "history at oldest page";
+                    footer = std::string(TuiHistoryPageBoundaryMessage(
+                        TuiHistoryPageDirection::Older));
                 }
                 return true;
             }
@@ -5470,9 +5469,10 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                     }) | border;
                 }
             } else {
-                auto entries = BuildDisplayedHistoryEntries(
+                auto entries = OrderTuiHistoryPage(
                     history_page_slice(cache, history.pageIndex),
-                    history);
+                    history.pageOrder,
+                    history.searchQuery);
 
             std::string totalPages = "?";
             const int totalEntries = static_cast<int>(cache.allEntries.size());
@@ -5708,7 +5708,8 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                         filler(),
                         status_text("detail: " + std::string(history.detailMode == 0 ? "summary" : "patch")),
                         filler(),
-                        status_text("sort: " + std::string(history.sortMode == 0 ? "time-desc" : (history.sortMode == 1 ? "time-asc" : "match-first"))),
+                        status_text("order: " + std::string(
+                            TuiHistoryPageOrderName(history.pageOrder))),
                     }),
                     historyList | border |
                         size(HEIGHT, EQUAL, historyListHeight),
@@ -5983,7 +5984,7 @@ auto PrintDemo() -> void {
     std::cout << "- dashboard controls: :refresh, :discover, or :discover dirty\n";
     std::cout << "- discover panel controls: ]/PgUp next page, [/PgDown prev page, Esc/q close\n";
     std::cout << "- tree: t collapse/expand selected repo subtree\n";
-    std::cout << "- advanced history controls: / search, n next match, o sort mode\n";
+    std::cout << "- advanced history controls: / search current page, n next match, o cycle current-page order\n";
     std::cout << "- the first frame renders before a bounded read-only cached-inventory subprocess begins\n";
     std::cout << "- startup, discovery, history, and detail report loading/ready/empty/cancelled/failed states\n";
     std::cout << "- r refreshes one repo and :refresh refreshes the workspace\n";

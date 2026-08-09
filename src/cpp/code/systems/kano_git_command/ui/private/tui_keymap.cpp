@@ -14,7 +14,7 @@ constexpr std::array<TuiKeyGuidance, 3> kGuidance{{
     {
         TuiKeyContext::History,
         "history",
-        "Up/Down or j/k select | Left/Right page | Enter detail | [ previous repo | ] next repo | ? help | Esc/q back",
+        "Up/Down or j/k select | Left/Right page | / search | n next | o page order | Enter detail | [ previous repo | ] next repo | ? help | Esc/q back",
     },
     {
         TuiKeyContext::Detail,
