@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "audit_run_reader.hpp"
+#include "audit_verification.hpp"
 #include "shell_executor.hpp"
 
 #include <nlohmann/json.hpp>
@@ -230,6 +231,36 @@ auto RewriteZeroEventCrash(const Fixture& fixture) -> void {
 }
 
 } // namespace
+
+TEST_CASE("KG-TSK-0132 structured verification request returns the typed audit run",
+          "[Unit][Audit][Reader][KG-TSK-0132]") {
+    Fixture fixture;
+    fixture.Finalize();
+
+    const auto read = ReadOperationAuditVerification({
+        .workspaceRoot = fixture.root,
+        .planFile = fixture.spec.sourcePath->filename(),
+        .runId = "reader-run",
+        .attempt = 3,
+    });
+    REQUIRE(read.verified());
+    REQUIRE(read.run.has_value());
+    CHECK(read.run->runId == "reader-run");
+    CHECK(read.run->receiptId.size() == 64);
+    CHECK(read.run->correlation.mode ==
+          kano::git::audit::CorrelationMode::Koa);
+    CHECK(read.run->correlation.productId == "product");
+
+    const auto invalid = ReadOperationAuditVerification({
+        .workspaceRoot = fixture.root,
+        .planFile = *fixture.spec.sourcePath,
+        .runId = "../invalid",
+        .attempt = 3,
+    });
+    CHECK(invalid.state == OperationAuditRunReadState::Invalid);
+    CHECK(invalid.code == OperationAuditRunReadCode::InvalidConfiguration);
+    CHECK_FALSE(invalid.diagnostic.empty());
+}
 
 TEST_CASE("KG-TSK-0130 audit run reader exposes durable lifecycle states",
           "[Unit][Audit][Reader][KG-TSK-0130]") {

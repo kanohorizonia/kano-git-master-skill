@@ -8,6 +8,8 @@ target_sources(kano_git_cmd_ui
     private/tui_state.cpp
     private/tui_cmd.cpp
     private/tui_async_lifecycle.cpp
+    private/tui_audit_frame.cpp
+    private/tui_audit_surface.cpp
     private/tui_command_scope.cpp
     private/tui_dashboard_runner.cpp
     private/tui_history_lifecycle.cpp

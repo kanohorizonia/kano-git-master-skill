@@ -5,6 +5,7 @@ target_sources(kano_git_command_runtime
     private/auto_model_policy.cpp
     private/command_executor.cpp
     private/audit_cmd.cpp
+    private/audit_verification.cpp
     private/audit_run_reader.cpp
     private/operation_audit.cpp
     private/ai_utils.cpp
@@ -16,6 +17,7 @@ target_sources(kano_git_command_runtime
     public/command_executor.hpp
     public/operation_audit.hpp
     public/audit_run_reader.hpp
+    public/audit_verification.hpp
     public/ai_utils.hpp
     public/runtime_path_layout.hpp
     public/terminal_color.hpp
