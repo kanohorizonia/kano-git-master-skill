@@ -152,12 +152,12 @@ TEST_CASE(
 }
 
 TEST_CASE("TUI history page ordering stays explicitly scoped across bounded pages",
-          "[unit][tui_history_lifecycle][KG-BUG-0097]") {
-    CHECK(TuiHistoryPageOrderName(TuiHistoryPageOrder::NewestFirst) ==
+          "[unit][tui_history_lifecycle][KG-BUG-0097][KG-BUG-0100]") {
+    CHECK(std::string(TuiHistoryPageOrderName(TuiHistoryPageOrder::NewestFirst)) ==
           "page-newest-first");
-    CHECK(TuiHistoryPageOrderName(TuiHistoryPageOrder::OldestFirst) ==
+    CHECK(std::string(TuiHistoryPageOrderName(TuiHistoryPageOrder::OldestFirst)) ==
           "page-oldest-first");
-    CHECK(TuiHistoryPageOrderName(TuiHistoryPageOrder::MatchesFirst) ==
+    CHECK(std::string(TuiHistoryPageOrderName(TuiHistoryPageOrder::MatchesFirst)) ==
           "page-match-first");
     CHECK(NextTuiHistoryPageOrder(TuiHistoryPageOrder::NewestFirst) ==
           TuiHistoryPageOrder::OldestFirst);
@@ -165,9 +165,9 @@ TEST_CASE("TUI history page ordering stays explicitly scoped across bounded page
           TuiHistoryPageOrder::MatchesFirst);
     CHECK(NextTuiHistoryPageOrder(TuiHistoryPageOrder::MatchesFirst) ==
           TuiHistoryPageOrder::NewestFirst);
-    CHECK(TuiHistoryPageBoundaryMessage(TuiHistoryPageDirection::Newer) ==
+    CHECK(std::string(TuiHistoryPageBoundaryMessage(TuiHistoryPageDirection::Newer)) ==
           "history has no newer page");
-    CHECK(TuiHistoryPageBoundaryMessage(TuiHistoryPageDirection::Older) ==
+    CHECK(std::string(TuiHistoryPageBoundaryMessage(TuiHistoryPageDirection::Older)) ==
           "history has no older page");
     CHECK(TuiHistoryPageBoundaryMessage(TuiHistoryPageDirection::Newer)
               .find("commit") == std::string_view::npos);

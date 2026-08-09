@@ -314,9 +314,9 @@ TEST_CASE(
     REQUIRE(error.empty());
     REQUIRE(rows.size() == 1);
     CHECK_FALSE(rows.front().statusKnown);
-    CHECK(TuiAuditBooleanLabel(
+    CHECK(std::string(TuiAuditBooleanLabel(
               rows.front().statusKnown,
-              rows.front().repoDirty) == "unknown");
+              rows.front().repoDirty)) == "unknown");
 
     auto wrongRoot = payload;
     const auto quotedRoot = QuoteJson(root.generic_string());

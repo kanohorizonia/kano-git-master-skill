@@ -400,9 +400,9 @@ TEST_CASE(
     CHECK(rows.front().type == "root");
     CHECK(rows.front().branch == "(unknown)");
     CHECK_FALSE(rows.front().statusKnown);
-    CHECK(TuiAuditBooleanLabel(
+    CHECK(std::string(TuiAuditBooleanLabel(
               rows.front().statusKnown,
-              rows.front().repoDirty) == "unknown");
+              rows.front().repoDirty)) == "unknown");
     CHECK(metadata.source == "root-fallback");
     CHECK(metadata.completeness == "root-only");
     CHECK(metadata.probeMode == "none");
