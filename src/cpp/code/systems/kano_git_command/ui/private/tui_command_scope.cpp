@@ -1,7 +1,10 @@
 #include "tui_command_scope.hpp"
 
+#include "audit_contract.hpp"
+
 #include <array>
 #include <cctype>
+#include <charconv>
 #include <utility>
 
 namespace kano::git::commands {
@@ -82,7 +85,11 @@ auto IsTuiAuditOnlyCommand(
     const std::vector<std::string>& InArguments) -> bool {
     // Options on otherwise read-oriented commands can still write files,
     // repair configuration, or refresh caches. Accept only the user-provided
-    // command token; trusted scope arguments are added after this gate.
+    // command token, except for the one closed audit-verification shape parsed
+    // above; trusted scope arguments are added after this gate.
+    if (ParseTuiAuditVerificationCommand(InArguments).has_value()) {
+        return true;
+    }
     if (InArguments.size() != 1) {
         return false;
     }
@@ -92,6 +99,36 @@ auto IsTuiAuditOnlyCommand(
         }
     }
     return false;
+}
+
+auto ParseTuiAuditVerificationCommand(
+    const std::vector<std::string>& InArguments)
+    -> std::optional<TuiScopedCommand::AuditVerification> {
+    if (InArguments.size() != 9 ||
+        InArguments[0] != "audit" ||
+        InArguments[1] != "verify" ||
+        InArguments[2] != "--plan-file" ||
+        InArguments[4] != "--run-id" ||
+        InArguments[6] != "--attempt" ||
+        InArguments[8] != "--json" ||
+        InArguments[3].empty() ||
+        InArguments[3].size() > 4096U ||
+        !audit::IsStableAuditId(InArguments[5])) {
+        return std::nullopt;
+    }
+
+    std::uint32_t attempt = 0;
+    const auto* first = InArguments[7].data();
+    const auto* last = first + InArguments[7].size();
+    const auto parsed = std::from_chars(first, last, attempt);
+    if (parsed.ec != std::errc{} || parsed.ptr != last || attempt == 0) {
+        return std::nullopt;
+    }
+    return TuiScopedCommand::AuditVerification{
+        .planFile = std::filesystem::path(InArguments[3]),
+        .runId = InArguments[5],
+        .attempt = attempt,
+    };
 }
 
 auto ParseTuiCommandLine(
@@ -172,6 +209,8 @@ auto BuildTuiAuditCommand(
     const TuiCommandScopeSnapshot& InScope)
     -> std::optional<TuiScopedCommand> {
     const auto userArguments = ParseTuiCommandLine(InLine);
+    const auto auditVerification =
+        ParseTuiAuditVerificationCommand(userArguments);
     if (!IsTuiAuditOnlyCommand(userArguments)) {
         return std::nullopt;
     }
@@ -179,6 +218,17 @@ auto BuildTuiAuditCommand(
     auto command = BuildTuiScopedCommand(InLine, InScope);
     if (!command.has_value() || command->arguments.empty()) {
         return std::nullopt;
+    }
+    command->auditVerification = auditVerification;
+    if (auditVerification.has_value()) {
+        // Durable audit evidence is workspace-owned even when the human has a
+        // repository selected.  Keep the structured reader anchored to the
+        // workspace so selection cannot turn a valid receipt into a false
+        // Missing result.
+        command->workingDirectory = InScope.workspaceRoot;
+        command->scopeLabel = "workspace: " +
+            InScope.workspaceRoot.generic_string();
+        return command;
     }
     const auto& name = command->arguments.front();
     if (name == "status" || name == "log" || name == "slog") {

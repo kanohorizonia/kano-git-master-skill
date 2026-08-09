@@ -4,8 +4,12 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "functional_test_support.hpp"
+#include "audit_verification.hpp"
 #include "discovery.hpp"
+#include "operation_audit.hpp"
+#include "tui_audit_frame.hpp"
 #include "tui_async_lifecycle.hpp"
+#include "tui_command_scope.hpp"
 #include "tui_startup_snapshot.hpp"
 
 #include <ftxui/component/component.hpp>
@@ -16,11 +20,13 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <ctime>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <future>
 #include <iostream>
+#include <nlohmann/json.hpp>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -158,6 +164,20 @@ auto InitRepo(const std::filesystem::path& InRepo) -> void {
         "commit repository fixture");
 }
 
+auto CurrentUtcForAuditFixture() -> std::string {
+    const auto now = std::chrono::system_clock::now();
+    const auto value = std::chrono::system_clock::to_time_t(now);
+    std::tm utc{};
+#if defined(_WIN32)
+    gmtime_s(&utc, &value);
+#else
+    gmtime_r(&value, &utc);
+#endif
+    char buffer[32]{};
+    std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", &utc);
+    return buffer;
+}
+
 }  // namespace
 
 // Placeholder test to verify integration test infrastructure is working
@@ -267,8 +287,141 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "TUI structured receipt command projects a verified persisted audit run",
+    "[integration][tui_audit][KG-TSK-0132]") {
+    const ScopedSandbox sandbox("tui-audit-receipt-projection");
+    const auto workspace = (sandbox.Root() / "workspace").lexically_normal();
+    InitRepo(workspace);
+
+    const auto planFile = workspace / "audit-plan.json";
+    const auto planBytes = nlohmann::json({
+        {"meta", {
+            {"plan_id", "tui-audit-plan"},
+            {"correlation", {
+                {"mode", "koa"},
+                {"product_id", "product"},
+                {"topic_id", "topic"},
+                {"item_id", "item"},
+                {"work_order_id", "work"},
+                {"request_id", "request"},
+                {"run_id", "tui-audit-run"},
+                {"parent_run_id", "parent-run"},
+                {"producer_id", "producer"},
+                {"route_id", "route"},
+                {"attempt", 1},
+            }},
+        }},
+    }).dump() + "\n";
+    WriteTextFile(planFile, planBytes);
+
+    OperationAuditSpec spec;
+    spec.workspaceRoot = workspace;
+    spec.sourcePath = planFile;
+    spec.inputIdentity =
+        std::filesystem::weakly_canonical(planFile).generic_string();
+    spec.inputKind = "commit-plan";
+    spec.route = "commit-push.plan";
+    spec.planId = "tui-audit-plan";
+    spec.sourceBytes = planBytes;
+    spec.frozenBytes = planBytes;
+    spec.frozenFileName = "frozen-plan.json";
+    spec.correlation.mode = "koa";
+    spec.correlation.productId = "product";
+    spec.correlation.topicId = "topic";
+    spec.correlation.itemId = "item";
+    spec.correlation.workOrderId = "work";
+    spec.correlation.requestId = "request";
+    spec.correlation.runId = "tui-audit-run";
+    spec.correlation.parentRunId = "parent-run";
+    spec.correlation.producerId = "producer";
+    spec.correlation.routeId = "route";
+    spec.correlation.attempt = 1;
+
+    std::string error;
+    auto audit = OperationAuditContext::Reserve(spec, &error);
+    INFO(error);
+    REQUIRE(audit);
+    const auto before = audit->Capture(workspace);
+    REQUIRE(audit->Append(
+        "tui.audit.inspect",
+        workspace,
+        before,
+        CurrentUtcForAuditFixture(),
+        0,
+        &error));
+    REQUIRE(audit->Finalize(0, &error));
+    audit.reset();
+
+    const TuiCommandScopeSnapshot scope{
+        .mode = TuiCommandScopeMode::Workspace,
+        .workspaceRoot = workspace,
+        .selectedRepoPath = workspace,
+        .selectedRepoDisplay = ".",
+    };
+    const auto command = BuildTuiAuditCommand(
+        "audit verify --plan-file audit-plan.json "
+        "--run-id tui-audit-run --attempt 1 --json",
+        scope);
+    REQUIRE(command.has_value());
+    REQUIRE(command->auditVerification.has_value());
+
+    const auto read = ReadOperationAuditVerification({
+        .workspaceRoot = command->workingDirectory,
+        .planFile = command->auditVerification->planFile,
+        .runId = command->auditVerification->runId,
+        .attempt = command->auditVerification->attempt,
+    });
+    REQUIRE(read.verified());
+
+    auto model = ApplyTuiAuditRunReadResult(
+        TuiAuditFrameModel{
+            .view = TuiAuditView::Receipt,
+            .load = TuiAuditLoad::Loading,
+            .scope = "workspace",
+            .repository = ".",
+            .provenanceSource = "live",
+            .provenanceFreshness = "fresh",
+            .nextAction = "inspect only",
+        },
+        read);
+    CHECK(model.receiptState == TuiAuditReceiptState::Linked);
+    CHECK(model.runId == "tui-audit-run");
+    CHECK(model.receiptId.size() == 64);
+    CHECK(model.load == TuiAuditLoad::Ready);
+    CHECK(model.scope == "workspace");
+    CHECK(model.repository.find("workspace") != std::string::npos);
+    CHECK(model.repository.find("->") != std::string::npos);
+    const auto rendered = RenderTuiAuditFrameText(
+        model,
+        TuiAuditFrameGeometry{120, 36},
+        TuiAuditSemanticTheme{true});
+    CHECK(rendered.find("tui-audit-run") != std::string::npos);
+    CHECK(rendered.find(model.receiptId) != std::string::npos);
+    CHECK(rendered.find("koa") != std::string::npos);
+    CHECK(rendered.find("Esc/q close") != std::string::npos);
+}
+
+TEST_CASE(
+    "built KOG demo exposes the production audit frame contract",
+    "[integration][tui_audit][production-path][KG-TSK-0132]") {
+    using namespace kano::git::tests::functional;
+
+    const ScopedSandbox sandbox("tui-audit-built-demo");
+    const auto result = RunKog({"tui", "--demo"}, sandbox.Root());
+    RequireCommandSuccess(result, "run built KOG TUI audit demo");
+    CHECK(result.stdoutText.find("deterministic production audit frame") !=
+          std::string::npos);
+    CHECK(result.stdoutText.find("Repository Audit") != std::string::npos);
+    CHECK(result.stdoutText.find("scope: workspace") != std::string::npos);
+    CHECK(result.stdoutText.find("demo-repository") != std::string::npos);
+    CHECK(result.stdoutText.find("receipt=missing") != std::string::npos);
+    CHECK(result.stdoutText.find("q quit") != std::string::npos);
+    CHECK(result.stdoutText.find('\x1b') == std::string::npos);
+}
+
+TEST_CASE(
     "TUI production startup loads a disposable three-repository inventory through the built KOG binary",
-    "[integration][tui_startup][production-path][KG-BUG-0091]") {
+    "[integration][tui_startup][production-path][KG-BUG-0091][KG-TSK-0131]") {
     using namespace kano::git::tests::functional;
 
     const ScopedSandbox sandbox("tui-startup-production-path");
@@ -362,6 +515,10 @@ TEST_CASE(
     CHECK(metadata.completeness == "workspace-inventory");
     CHECK(metadata.probeMode == "none");
     CHECK(metadata.statusKnown);
+    REQUIRE(metadata.observedAtUtc.has_value());
+    REQUIRE(metadata.observedAtUtcText.has_value());
+    CHECK(ParseTuiObservedAtUtc(*metadata.observedAtUtcText) ==
+          metadata.observedAtUtc);
     const auto rootRow = std::find_if(
         rows.begin(),
         rows.end(),
@@ -379,7 +536,7 @@ TEST_CASE(
 
 TEST_CASE(
     "TUI production startup exposes a bounded root fallback before first discovery",
-    "[integration][tui_startup][production-path][KG-BUG-0091]") {
+    "[integration][tui_startup][production-path][KG-BUG-0091][KG-TSK-0131]") {
     using namespace kano::git::tests::functional;
 
     const ScopedSandbox sandbox("tui-startup-root-fallback");
@@ -400,13 +557,15 @@ TEST_CASE(
     CHECK(rows.front().type == "root");
     CHECK(rows.front().branch == "(unknown)");
     CHECK_FALSE(rows.front().statusKnown);
-    CHECK(TuiAuditBooleanLabel(
+    CHECK(std::string(TuiAuditBooleanLabel(
               rows.front().statusKnown,
-              rows.front().repoDirty) == "unknown");
+              rows.front().repoDirty)) == "unknown");
     CHECK(metadata.source == "root-fallback");
     CHECK(metadata.completeness == "root-only");
     CHECK(metadata.probeMode == "none");
     CHECK_FALSE(metadata.statusKnown);
+    CHECK_FALSE(metadata.observedAtUtc.has_value());
+    CHECK_FALSE(metadata.observedAtUtcText.has_value());
     CHECK(metadata.allowedExternalRoots.empty());
 
 }

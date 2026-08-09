@@ -74,14 +74,21 @@ workspace live-status refresh, or run `:discover` to rescan repository
 membership.
 
 The TUI is an audit console and does not provide a manual repository-mutation
-surface. Command mode accepts only the read-only KOG commands `status`, `log`,
+surface. Command mode accepts the read-only KOG commands `status`, `log`,
 `slog`, `doctor`, `version`, and `help` (including the standard help/version
-flags). User-supplied options and positionals are rejected too: read-oriented
-commands can otherwise expose write options such as output files, cache
-refreshes, or configuration repair. The TUI injects only its own validated repo
-scope after this gate. Commit, push, amend, fetch, converge/apply, submodule
-initialization, and unknown commands fail closed with guidance to use an
-agent-owned KOG/KOA plan, where the mutation can produce a durable audit trail.
+flags). It also accepts one closed receipt lookup shape:
+`audit verify --plan-file <plan> --run-id <run> --attempt <n> --json`. That
+request is parsed structurally and the background worker passes the resulting
+typed audit-reader state to the renderer; the renderer never scrapes command
+text or opens evidence itself. Receipt lookup is always anchored to the
+workspace audit store, regardless of the currently selected repository. No
+other user-supplied options or positionals are accepted: read-oriented
+commands can otherwise expose write options such
+as output files, cache refreshes, or configuration repair. The TUI injects only
+its own validated repo scope after this gate. Commit, push, amend, fetch,
+converge/apply, submodule initialization, and unknown commands fail closed with
+guidance to use an agent-owned KOG/KOA plan, where the mutation can produce a
+durable audit trail.
 
 `:refresh` and `:discover` are live read controls, not cache-maintenance
 commands. They may read a trusted existing workspace manifest, but a missing,
@@ -117,9 +124,21 @@ dashboard status glyphs.
 
 Canonical controls:
 
-- Normal: `Up/Down or j/k select | Enter history | r refresh selected repo | : audit commands | ? help | q quit`
-- History: `Up/Down or j/k select | Left/Right page | Enter detail | [ previous repo | ] next repo | ? help | Esc/q back`
+- Normal: `Up/Down or j/k select | Enter history | r refresh selected repo | : audit | ? help | q quit`
+- History: `Up/Down or j/k select | Left/Right page | / search | n next | o page order | Enter detail | [ previous repo | ] next repo | ? help | Esc/q back`
 - Detail: `Up/Down or j/k change | Left/Right page | m summary/patch | ? help | Esc/q back`
+- Discover: `[ or PgDown prev page | ] or PgUp next page | Esc/q close`
+- Command entry: `g scope | Tab complete | Up/Down candidates | Enter inspect | Esc cancel`
+- Audit palette: `Up/Down select | Enter inspect | Esc close`
+- Command/receipt preview: `Esc/q close`
+
+History remains bounded and loads newer pages first. Pressing `o` changes only
+the order of entries already present on the visible page; the status labels are
+`page-newest-first`, `page-oldest-first`, and `page-match-first`. It does not
+claim to globally reorder repository history. Use `/` to set the current-page
+search query and `n` to move to its next match. Up/Down follows the visible
+page order; crossing a boundary enters the adjacent newer or older bounded
+page without claiming a repository-global commit order.
 
 `q` exits from the normal repository view. Inside history or detail, `Esc` and
 `q` move back one level. Press `?` from the normal view whenever the key guide

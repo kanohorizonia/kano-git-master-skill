@@ -6,14 +6,54 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <format>
+#include <iomanip>
+#include <sstream>
+#include <ctime>
 #include <stdexcept>
 #include <unordered_set>
 #include <utility>
 
 namespace kano::git::commands {
 namespace {
+
+auto IsLeapYear(const int InYear) -> bool {
+    return InYear % 4 == 0 && (InYear % 100 != 0 || InYear % 400 == 0);
+}
+
+auto DaysInMonth(const int InYear, const int InMonth) -> int {
+    static constexpr int kDays[] = {31, 28, 31, 30, 31, 30,
+                                    31, 31, 30, 31, 30, 31};
+    if (InMonth == 2 && IsLeapYear(InYear)) {
+        return 29;
+    }
+    return kDays[InMonth - 1];
+}
+
+auto ParseFixedDigits(const std::string_view InValue, const std::size_t InStart,
+                      const std::size_t InCount, int* OutValue) -> bool {
+    int value = 0;
+    for (std::size_t index = 0; index < InCount; ++index) {
+        const char ch = InValue[InStart + index];
+        if (ch < '0' || ch > '9') return false;
+        value = value * 10 + (ch - '0');
+    }
+    *OutValue = value;
+    return true;
+}
+
+// Howard Hinnant's civil-date conversion, kept local to make parsing timezone
+// independent and deterministic in tests.
+auto DaysSinceUnixEpoch(int InYear, const unsigned InMonth, const unsigned InDay) -> long long {
+    InYear -= InMonth <= 2;
+    const int era = (InYear >= 0 ? InYear : InYear - 399) / 400;
+    const unsigned yoe = static_cast<unsigned>(InYear - era * 400);
+    const unsigned doy = (153 * (InMonth + (InMonth > 2 ? -3 : 9)) + 2) / 5 + InDay - 1;
+    const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return static_cast<long long>(era) * 146097 + static_cast<long long>(doe) - 719468;
+}
 
 auto SetError(std::string* OutError, std::string InMessage) -> void {
     if (OutError != nullptr) {
@@ -126,6 +166,129 @@ auto TuiAuditBooleanLabel(
         return "unknown";
     }
     return bInValue ? "yes" : "no";
+}
+
+auto ParseTuiObservedAtUtc(const std::string_view InValue)
+    -> std::optional<std::chrono::system_clock::time_point> {
+    if (InValue.size() != 20 || InValue[4] != '-' || InValue[7] != '-' ||
+        InValue[10] != 'T' || InValue[13] != ':' || InValue[16] != ':' ||
+        InValue[19] != 'Z') return std::nullopt;
+    int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
+    if (!ParseFixedDigits(InValue, 0, 4, &year) || !ParseFixedDigits(InValue, 5, 2, &month) ||
+        !ParseFixedDigits(InValue, 8, 2, &day) || !ParseFixedDigits(InValue, 11, 2, &hour) ||
+        !ParseFixedDigits(InValue, 14, 2, &minute) || !ParseFixedDigits(InValue, 17, 2, &second) ||
+        // system_clock nanosecond implementations commonly end in 2262;
+        // reject values outside the portable, representable contract.
+        year < 1970 || year > 2261 || month < 1 || month > 12 || day < 1 ||
+        day > DaysInMonth(year, month) || hour > 23 || minute > 59 || second > 59) return std::nullopt;
+    const auto seconds = DaysSinceUnixEpoch(year, static_cast<unsigned>(month), static_cast<unsigned>(day)) * 86400LL +
+        hour * 3600LL + minute * 60LL + second;
+    return std::chrono::system_clock::time_point{std::chrono::seconds{seconds}};
+}
+
+auto ClassifyTuiStartupSnapshotFreshness(const TuiStartupSnapshotMetadata& InMetadata,
+                                         const std::chrono::system_clock::time_point InNow,
+                                         const std::chrono::seconds InMaximumAge) -> TuiStartupSnapshotFreshness {
+    if (!InMetadata.observedAtUtc.has_value() || InMaximumAge.count() < 0) return TuiStartupSnapshotFreshness::Unknown;
+    if (*InMetadata.observedAtUtc > InNow) return TuiStartupSnapshotFreshness::Future;
+    return InNow - *InMetadata.observedAtUtc <= InMaximumAge
+        ? TuiStartupSnapshotFreshness::Fresh : TuiStartupSnapshotFreshness::Stale;
+}
+
+auto TuiStartupSnapshotFreshnessLabel(const TuiStartupSnapshotFreshness InFreshness) -> std::string_view {
+    switch (InFreshness) {
+    case TuiStartupSnapshotFreshness::Unknown: return "unknown";
+    case TuiStartupSnapshotFreshness::Fresh: return "fresh";
+    case TuiStartupSnapshotFreshness::Stale: return "stale";
+    case TuiStartupSnapshotFreshness::Future: return "clock-skew";
+    }
+    return "unknown";
+}
+
+auto MakeTuiLiveInventoryProvenance(
+    const bool bInDirtyFiltered,
+    const bool bInStatusKnown,
+    const std::chrono::system_clock::time_point InObservedAtUtc)
+    -> TuiStartupInventoryProvenance {
+    const auto raw = std::chrono::system_clock::to_time_t(InObservedAtUtc);
+    std::tm utc{};
+#if defined(_WIN32)
+    gmtime_s(&utc, &raw);
+#else
+    gmtime_r(&raw, &utc);
+#endif
+    std::ostringstream text;
+    text << std::put_time(&utc, "%Y-%m-%dT%H:%M:%SZ");
+    TuiStartupInventoryProvenance out;
+    out.live = true;
+    out.freshness = TuiStartupSnapshotFreshness::Fresh;
+    out.metadata.source = "live";
+    out.metadata.completeness = bInDirtyFiltered
+        ? "dirty-filtered-workspace" : "workspace-inventory";
+    out.metadata.probeMode = "git-status";
+    out.metadata.statusKnown = bInStatusKnown;
+    out.metadata.observedAtUtc = InObservedAtUtc;
+    out.metadata.observedAtUtcText = text.str();
+    return out;
+}
+
+auto ObserveTuiLiveInventoryStatus(
+    TuiLiveInventoryStatusSummary& InOutSummary,
+    const bool bInCandidateStatusKnown) -> void {
+    ++InOutSummary.candidateCount;
+    InOutSummary.statusKnown = InOutSummary.statusKnown && bInCandidateStatusKnown;
+}
+
+auto MakeTuiDirtyFilterProbeResult(
+    const int InExitCode,
+    const std::string_view InOutput) -> TuiDirtyFilterProbeResult {
+    return {
+        .dirty = InExitCode == 0 && !InOutput.empty(),
+        .statusKnown = InExitCode == 0,
+    };
+}
+
+auto ResolveTuiLiveCandidateStatusKnown(
+    const TuiDirtyFilterProbeResult& InFilterProbe,
+    const bool bInLaterProbeStatusKnown) -> bool {
+    return InFilterProbe.statusKnown && bInLaterProbeStatusKnown;
+}
+
+auto MakeTuiUnknownInventoryProvenance() -> TuiStartupInventoryProvenance {
+    TuiStartupInventoryProvenance out;
+    out.metadata.source = "unknown";
+    out.metadata.completeness = "unknown";
+    out.metadata.probeMode = "unknown";
+    out.metadata.statusKnown = false;
+    return out;
+}
+
+auto RetainTuiInventoryProvenanceAfterFailure(
+    TuiStartupInventoryProvenance InPrevious) -> TuiStartupInventoryProvenance {
+    InPrevious.live = false;
+    if (InPrevious.metadata.source == "live") {
+        InPrevious.metadata.source = "retained-prior-live";
+        InPrevious.metadata.probeMode = "none";
+    }
+    InPrevious.freshness = InPrevious.metadata.observedAtUtc.has_value()
+        ? TuiStartupSnapshotFreshness::Stale : TuiStartupSnapshotFreshness::Unknown;
+    return InPrevious;
+}
+
+auto FormatTuiInventoryProvenanceFull(
+    const TuiStartupInventoryProvenance& InProvenance) -> std::string {
+    return "source=" + InProvenance.metadata.source +
+        " | completeness=" + InProvenance.metadata.completeness +
+        " | probe=" + InProvenance.metadata.probeMode +
+        " | status=" + std::string(InProvenance.metadata.statusKnown ? "known" : "unknown") +
+        " | observed=" + InProvenance.metadata.observedAtUtcText.value_or("unknown") +
+        " | freshness=" + std::string(TuiStartupSnapshotFreshnessLabel(InProvenance.freshness));
+}
+
+auto FormatTuiInventoryProvenanceCompact(
+    const TuiStartupInventoryProvenance& InProvenance) -> std::string {
+    return InProvenance.metadata.source + " | " +
+        std::string(TuiStartupSnapshotFreshnessLabel(InProvenance.freshness));
 }
 
 auto ParseTuiStartupSnapshotJson(
@@ -250,6 +413,19 @@ auto ParseTuiStartupSnapshotJson(
             OutError,
             "startup inventory requires a no-probe trusted manifest or root fallback");
         return {};
+    }
+    const auto observedAtIt = payload.find("observedAtUtc");
+    if (observedAtIt != payload.end()) {
+        if (!observedAtIt->is_string() || observedAtIt->get_ref<const std::string&>().size() > kTuiStartupMaxFieldBytes) {
+            SetError(OutError, "startup inventory observedAtUtc must be a bounded UTC string");
+            return {};
+        }
+        metadata.observedAtUtc = ParseTuiObservedAtUtc(observedAtIt->get_ref<const std::string&>());
+        if (!metadata.observedAtUtc.has_value()) {
+            SetError(OutError, "startup inventory observedAtUtc must be strict UTC");
+            return {};
+        }
+        metadata.observedAtUtcText = observedAtIt->get_ref<const std::string&>();
     }
     const auto reposIt = payload.find("repos");
     if (reposIt == payload.end() || !reposIt->is_array()) {

@@ -4,6 +4,8 @@
 #include <CLI/CLI.hpp>
 
 #include "operation_audit.hpp"
+#include "audit_verification.hpp"
+#include "audit_verification_internal.hpp"
 #include "shell_executor.hpp"
 
 #include <filesystem>
@@ -31,55 +33,6 @@ auto VerificationFailureJson() -> std::string {
     return doc.dump() + '\n';
 }
 
-auto MakeVerificationSpec(const std::filesystem::path& InPlanFile,
-                          const std::string& InRunId,
-                          const std::uint32_t InAttempt,
-                          std::string* OutError) -> std::optional<OperationAuditSpec> {
-    std::error_code ec;
-    const auto canonical = std::filesystem::weakly_canonical(InPlanFile, ec);
-    if (ec || canonical.empty()) {
-        if (OutError) *OutError = "cannot resolve plan identity";
-        return std::nullopt;
-    }
-    const auto sourceBytes = ReadBoundedAuditInput(InPlanFile, 4U << 20U, OutError);
-    if (!sourceBytes) return std::nullopt;
-    std::string planId;
-    try {
-        const auto doc = nlohmann::json::parse(*sourceBytes);
-        if (!doc.is_object() || !doc.contains("meta") ||
-            !doc.at("meta").is_object() ||
-            !doc.at("meta").contains("plan_id") ||
-            !doc.at("meta").at("plan_id").is_string()) {
-            throw std::runtime_error("current admitted plan identity is missing");
-        }
-        planId = doc.at("meta").at("plan_id").get<std::string>();
-        if (!audit::IsStableAuditId(planId))
-            throw std::runtime_error("current admitted plan id is invalid");
-    } catch (const std::exception& ex) {
-        if (OutError) *OutError = ex.what();
-        return std::nullopt;
-    }
-    OperationAuditSpec spec;
-    spec.workspaceRoot = std::filesystem::current_path().lexically_normal();
-    spec.sourcePath = InPlanFile;
-    spec.inputIdentity = canonical.generic_string();
-    spec.inputKind = "commit-plan";
-    // The evidence path is independent of route.  Use one exact supported
-    // commit-plan route so verification never claims an unadvertised capability.
-    spec.route = "commit-push.plan";
-    spec.planId = planId;
-    spec.sourceBytes = *sourceBytes;
-    // Path resolution does not use these bytes. Verification admits the
-    // current source hash only when it is bound by the immutable trace and
-    // separately validates the privately frozen exact bytes.
-    spec.frozenBytes = *sourceBytes;
-    spec.frozenFileName = "frozen-plan.json";
-    spec.correlation.mode = "standalone";
-    spec.correlation.runId = InRunId;
-    spec.correlation.attempt = InAttempt;
-    return spec;
-}
-
 struct AuditVerificationResult {
     int exitCode = 0;
     std::string json;
@@ -95,8 +48,14 @@ auto EvaluateAuditVerification(const std::filesystem::path& InPlanFile,
     shell::ScopedCommandLogCapture suppressCommandLogs({
         [](const std::string&) {}, [](const std::string&) {}});
     std::string error;
-    const auto spec = MakeVerificationSpec(
-        InPlanFile, InRunId, InAttempt, &error);
+    const auto spec = MakeOperationAuditVerificationSpec(
+        {
+            .workspaceRoot = std::filesystem::current_path(),
+            .planFile = InPlanFile,
+            .runId = InRunId,
+            .attempt = InAttempt,
+        },
+        &error);
     if (!spec || !audit::IsStableAuditId(InRunId) || InAttempt == 0)
         return {2, VerificationFailureJson()};
 

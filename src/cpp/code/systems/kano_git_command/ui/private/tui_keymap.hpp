@@ -9,12 +9,17 @@ enum class TuiKeyContext {
     Normal,
     History,
     Detail,
+    Discover,
+    Preview,
+    Command,
+    Palette,
 };
 
 struct TuiKeyGuidance {
     TuiKeyContext context;
     std::string_view label;
     std::string_view controls;
+    std::string_view compactControls;
 };
 
 [[nodiscard]] auto GetTuiKeyGuidance(TuiKeyContext InContext) noexcept

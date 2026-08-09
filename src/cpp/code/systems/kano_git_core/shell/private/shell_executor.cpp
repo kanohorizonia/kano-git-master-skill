@@ -549,11 +549,18 @@ auto RunProcess(const std::string& cmdLine, ExecMode InMode,
         opts.user_data = &capture;
     }
 
-    KanoProcessResult kresult{};
-    bool ok = kano_process_run_ex(&opts, &kresult);
+    const KanoProcessCaptureLimitsV2 nativeLimits{
+        InCaptureLimits.stdoutMaxBytes,
+        InCaptureLimits.stderrMaxBytes,
+    };
+    KanoProcessResultV2 kresult{};
+    bool ok = kano_process_run_ex_v2(
+        &opts,
+        InMode == ExecMode::Capture ? &nativeLimits : nullptr,
+        &kresult);
 
     if (!ok) {
-        return ExecResult{-1, {}, "kano_process_run_ex failed"};
+        return ExecResult{-1, {}, "kano_process_run_ex_v2 failed"};
     }
 
     ExecResult result;
@@ -573,7 +580,7 @@ auto RunProcess(const std::string& cmdLine, ExecMode InMode,
             InMode == ExecMode::Capture ? InCaptureLimits.stderrMaxBytes : 0,
             timeoutDiagnostic);
     }
-    kano_process_free_result(&kresult);
+    kano_process_free_result_v2(&kresult);
     return result;
 }
 
@@ -621,11 +628,18 @@ auto RunProcessUnix(const std::string& InCommand,
         opts.user_data = &capture;
     }
 
-    KanoProcessResult kresult{};
-    bool ok = kano_process_run_ex(&opts, &kresult);
+    const KanoProcessCaptureLimitsV2 nativeLimits{
+        InCaptureLimits.stdoutMaxBytes,
+        InCaptureLimits.stderrMaxBytes,
+    };
+    KanoProcessResultV2 kresult{};
+    bool ok = kano_process_run_ex_v2(
+        &opts,
+        InMode == ExecMode::Capture ? &nativeLimits : nullptr,
+        &kresult);
 
     if (!ok) {
-        return ExecResult{-1, {}, "kano_process_run_ex failed"};
+        return ExecResult{-1, {}, "kano_process_run_ex_v2 failed"};
     }
 
     ExecResult result;
@@ -645,7 +659,7 @@ auto RunProcessUnix(const std::string& InCommand,
             InMode == ExecMode::Capture ? InCaptureLimits.stderrMaxBytes : 0,
             timeoutDiagnostic);
     }
-    kano_process_free_result(&kresult);
+    kano_process_free_result_v2(&kresult);
     return result;
 }
 

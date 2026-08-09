@@ -89,6 +89,45 @@ TEST_CASE(
             std::vector<std::string>{"doctor"});
 }
 
+TEST_CASE(
+    "TUI audit command builder admits only closed structured verification",
+    "[unit][tui_command_scope][KG-TSK-0132]") {
+    const auto scope = WorkspaceScope();
+    const auto command = BuildTuiAuditCommand(
+        "audit verify --plan-file \"plans/audit plan.json\" "
+        "--run-id run-0132 --attempt 7 --json",
+        scope);
+    REQUIRE(command.has_value());
+    REQUIRE(command->auditVerification.has_value());
+    CHECK(command->auditVerification->planFile ==
+          std::filesystem::path("plans/audit plan.json"));
+    CHECK(command->auditVerification->runId == "run-0132");
+    CHECK(command->auditVerification->attempt == 7);
+
+    auto selectedScope = scope;
+    selectedScope.mode = TuiCommandScopeMode::SelectedRepo;
+    const auto selectedCommand = BuildTuiAuditCommand(
+        "audit verify --plan-file plan.json --run-id run-0132 "
+        "--attempt 7 --json",
+        selectedScope);
+    REQUIRE(selectedCommand.has_value());
+    CHECK(selectedCommand->workingDirectory == scope.workspaceRoot);
+    CHECK(selectedCommand->scopeLabel == "workspace: /workspace/root");
+
+    CHECK_FALSE(BuildTuiAuditCommand(
+        "audit verify --run-id run-0132 --plan-file plan.json "
+        "--attempt 7 --json", scope).has_value());
+    CHECK_FALSE(BuildTuiAuditCommand(
+        "audit verify --plan-file plan.json --run-id ../escape "
+        "--attempt 7 --json", scope).has_value());
+    CHECK_FALSE(BuildTuiAuditCommand(
+        "audit verify --plan-file plan.json --run-id run-0132 "
+        "--attempt 0 --json", scope).has_value());
+    CHECK_FALSE(BuildTuiAuditCommand(
+        "audit verify --plan-file plan.json --run-id run-0132 "
+        "--attempt 7 --json --extra", scope).has_value());
+}
+
 auto SelectedScope() -> TuiCommandScopeSnapshot {
     auto scope = WorkspaceScope();
     scope.mode = TuiCommandScopeMode::SelectedRepo;

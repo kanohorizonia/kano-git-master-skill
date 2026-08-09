@@ -1,8 +1,10 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "tui_startup_snapshot.hpp"
+#include "tui_load_state.hpp"
 
 #include <filesystem>
+#include <chrono>
 #include <string>
 #include <string_view>
 
@@ -122,6 +124,19 @@ auto ValidSnapshotWithRepos(
     return out;
 }
 
+auto ValidSnapshotWithObservedAt(
+    const std::string_view InObservedAtUtc) -> std::string {
+    auto payload = ValidSnapshotWithRepos(
+        "[" + RepoJson(FixtureWorkspaceRoot(), "root") + "]");
+    const auto summaryPosition = payload.find("\"summary\"");
+    if (summaryPosition == std::string::npos) {
+        return {};
+    }
+    payload.insert(summaryPosition,
+        "\"observedAtUtc\":" + QuoteJson(InObservedAtUtc) + ",");
+    return payload;
+}
+
 auto RootFallbackPayload(const std::filesystem::path& InRoot) -> std::string {
     std::string out =
         "{\"schemaName\":\"kog.repoOverview\","
@@ -183,6 +198,146 @@ TEST_CASE(
     CHECK(rows[1].branch == "release");
     CHECK_FALSE(rows[1].repoDirty);
     CHECK(rows[1].worktreeDirty);
+}
+
+TEST_CASE(
+    "TUI startup inventory provenance is strict, bounded, and clock-injected",
+    "[unit][tui_startup_snapshot][KG-TSK-0131]") {
+    const auto root = FixtureWorkspaceRoot();
+    std::string error;
+    TuiStartupSnapshotMetadata metadata;
+    const auto rows = ParseTuiStartupSnapshotJson(
+        ValidSnapshotWithObservedAt("2026-08-09T12:00:00Z"), root, &error, &metadata);
+    REQUIRE(error.empty());
+    REQUIRE(rows.size() == 1);
+    REQUIRE(metadata.observedAtUtc.has_value());
+    const auto now = *metadata.observedAtUtc + std::chrono::seconds{60};
+    CHECK(ClassifyTuiStartupSnapshotFreshness(metadata, now, std::chrono::seconds{60}) ==
+        TuiStartupSnapshotFreshness::Fresh);
+    CHECK(ClassifyTuiStartupSnapshotFreshness(metadata, now, std::chrono::seconds{59}) ==
+        TuiStartupSnapshotFreshness::Stale);
+
+    const auto invalid = ParseTuiStartupSnapshotJson(
+        ValidSnapshotWithObservedAt("2026-02-30T12:00:00Z"), root, &error);
+    CHECK(invalid.empty());
+    CHECK(error.find("strict UTC") != std::string::npos);
+
+    const auto outOfRange = ParseTuiStartupSnapshotJson(
+        ValidSnapshotWithObservedAt("2262-01-01T00:00:00Z"), root, &error);
+    CHECK(outOfRange.empty());
+    CHECK(error.find("strict UTC") != std::string::npos);
+
+    const auto legacy = ParseTuiStartupSnapshotJson(
+        ValidSnapshotWithRepos("[" + RepoJson(root, "root") + "]"), root, &error, &metadata);
+    REQUIRE(error.empty());
+    REQUIRE(legacy.size() == 1);
+    CHECK_FALSE(metadata.observedAtUtc.has_value());
+    CHECK(ClassifyTuiStartupSnapshotFreshness(metadata, now, std::chrono::seconds{60}) ==
+        TuiStartupSnapshotFreshness::Unknown);
+}
+
+TEST_CASE(
+    "TUI live provenance captures the completed observation instant",
+    "[unit][tui_startup_snapshot][KG-TSK-0131]") {
+    const auto observed = std::chrono::system_clock::time_point{
+        std::chrono::seconds{1786276800}}; // 2026-08-09T12:00:00Z
+    const auto live = MakeTuiLiveInventoryProvenance(false, true, observed);
+    CHECK(live.live);
+    CHECK(live.metadata.source == "live");
+    CHECK(live.metadata.completeness == "workspace-inventory");
+    REQUIRE(live.metadata.observedAtUtcText.has_value());
+    CHECK(*live.metadata.observedAtUtcText == "2026-08-09T12:00:00Z");
+}
+
+TEST_CASE(
+    "TUI provenance transitions preserve cached truth and make failures non-live",
+    "[unit][tui_startup_snapshot][KG-TSK-0131]") {
+    auto unknown = MakeTuiUnknownInventoryProvenance();
+    CHECK(FormatTuiInventoryProvenanceFull(unknown).find("source=unknown") != std::string::npos);
+    const auto observed = std::chrono::system_clock::time_point{std::chrono::seconds{1786276800}};
+    auto live = MakeTuiLiveInventoryProvenance(false, true, observed);
+    const auto retainedLive = RetainTuiInventoryProvenanceAfterFailure(live);
+    CHECK_FALSE(retainedLive.live);
+    CHECK(retainedLive.metadata.source == "retained-prior-live");
+    CHECK(retainedLive.freshness == TuiStartupSnapshotFreshness::Stale);
+    TuiStartupInventoryProvenance cached;
+    cached.metadata.source = "trusted-workspace-manifest";
+    const auto retainedCached = RetainTuiInventoryProvenanceAfterFailure(cached);
+    CHECK(retainedCached.metadata.source == "trusted-workspace-manifest");
+    CHECK(FormatTuiInventoryProvenanceCompact(retainedCached).find("unknown") != std::string::npos);
+}
+
+TEST_CASE(
+    "TUI lifecycle projects cached startup through live retry and retained failures",
+    "[unit][tui_startup_snapshot][KG-TSK-0131]") {
+    TuiLoadState load;
+    BeginTuiLoad(load, 41, "startup inventory", "retry");
+    SetTuiInventoryProvenance(load, TuiInventoryProvenance::Cache);
+    REQUIRE(CompleteTuiLoad(load, 41, 2));
+    CHECK(load.phase == TuiLoadPhase::Ready);
+    CHECK(std::string(TuiInventoryProvenanceLabel(load.inventoryProvenance)) == "cached");
+
+    const auto observed = std::chrono::system_clock::time_point{std::chrono::seconds{1786276800}};
+    auto provenance = MakeTuiLiveInventoryProvenance(false, true, observed);
+    BeginTuiLoad(load, 42, "workspace refresh", "retry");
+    SetTuiInventoryProvenance(load, TuiInventoryProvenance::Live);
+    REQUIRE(CompleteTuiLoad(load, 42, 2));
+    CHECK(provenance.live);
+    CHECK(load.inventoryProvenance == TuiInventoryProvenance::Live);
+
+    provenance = RetainTuiInventoryProvenanceAfterFailure(provenance);
+    RetainTuiLoadRowsOnFailure(load, "transport failure", "retry", false);
+    CHECK_FALSE(provenance.live);
+    CHECK(provenance.metadata.source == "retained-prior-live");
+    CHECK(load.phase == TuiLoadPhase::Failed);
+    CHECK(load.retainedPriorRows);
+    CHECK(load.inventoryProvenance == TuiInventoryProvenance::Unknown);
+
+    BeginTuiLoad(load, 43, "workspace refresh", "retry");
+    RetainTuiLoadRowsOnFailure(load, "cancel diagnostic does not decide state", "retry", true);
+    CHECK(load.phase == TuiLoadPhase::Cancelled);
+    CHECK(load.retainedPriorRows);
+
+    BeginTuiLoad(load, 44, "workspace refresh", "retry");
+    provenance = MakeTuiLiveInventoryProvenance(false, true, observed);
+    SetTuiInventoryProvenance(load, TuiInventoryProvenance::Live);
+    REQUIRE(CompleteTuiLoad(load, 44, 2));
+    CHECK(provenance.live);
+    CHECK(load.phase == TuiLoadPhase::Ready);
+}
+
+TEST_CASE(
+    "TUI live status summary includes filtered probe failures",
+    "[unit][tui_startup_snapshot][KG-TSK-0131]") {
+    TuiLiveInventoryStatusSummary summary;
+    ObserveTuiLiveInventoryStatus(summary, true);   // displayed dirty row
+    ObserveTuiLiveInventoryStatus(summary, false);  // clean row filtered by dirty-only
+    CHECK(summary.candidateCount == 2);
+    CHECK_FALSE(summary.statusKnown);
+}
+
+TEST_CASE(
+    "TUI dirty filter production seam retains first probe failure after later success",
+    "[unit][tui_startup_snapshot][KG-TSK-0131]") {
+    const auto failedFilterProbe = MakeTuiDirtyFilterProbeResult(128, {});
+    CHECK_FALSE(failedFilterProbe.dirty);
+    CHECK_FALSE(failedFilterProbe.statusKnown);
+
+    // A later detail probe can succeed, but it cannot repair the certainty of
+    // the earlier probe that decided dirty-only visibility.
+    const bool candidateStatusKnown = ResolveTuiLiveCandidateStatusKnown(
+        failedFilterProbe,
+        true);
+    CHECK_FALSE(candidateStatusKnown);
+
+    TuiLiveInventoryStatusSummary summary;
+    ObserveTuiLiveInventoryStatus(summary, candidateStatusKnown);
+    const auto provenance = MakeTuiLiveInventoryProvenance(
+        true,
+        summary.candidateCount != 0 && summary.statusKnown,
+        std::chrono::system_clock::time_point{std::chrono::seconds{1786276800}});
+    CHECK_FALSE(provenance.metadata.statusKnown);
+    CHECK(provenance.metadata.completeness == "dirty-filtered-workspace");
 }
 
 TEST_CASE(
@@ -314,9 +469,9 @@ TEST_CASE(
     REQUIRE(error.empty());
     REQUIRE(rows.size() == 1);
     CHECK_FALSE(rows.front().statusKnown);
-    CHECK(TuiAuditBooleanLabel(
+    CHECK(std::string(TuiAuditBooleanLabel(
               rows.front().statusKnown,
-              rows.front().repoDirty) == "unknown");
+              rows.front().repoDirty)) == "unknown");
 
     auto wrongRoot = payload;
     const auto quotedRoot = QuoteJson(root.generic_string());

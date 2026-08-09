@@ -383,15 +383,14 @@ TEST_CASE("audit runtime script is tracked executable in the Git index",
   REQUIRE(stage == "0");
 }
 
-TEST_CASE("dogfood incident manifest maps stable source cases without "
-          "execution claims",
+TEST_CASE("dogfood incident manifest maps stable source cases without execution claims",
           "[unit][regression][coverage][KG-TSK-0052]") {
   const auto manifest = RepoRoot() / "assets" / "regression" / "incidents.json";
   const auto loaded = LoadCoverageManifest(manifest);
 
   INFO(loaded.error);
   REQUIRE(loaded.ok);
-  REQUIRE(loaded.report.incidents.size() == 13);
+  REQUIRE(loaded.report.incidents.size() == 17);
   REQUIRE(loaded.report.gaps.empty());
 
   const auto auditIncident = std::find_if(
@@ -434,22 +433,56 @@ TEST_CASE("dogfood incident manifest maps stable source cases without "
   REQUIRE(truthfulPushIncident != loaded.report.incidents.end());
   REQUIRE(truthfulPushIncident->regressionCases.size() == 3);
 
+  const auto boundedCaptureIncident = std::find_if(
+      loaded.report.incidents.begin(), loaded.report.incidents.end(),
+      [](const Incident &InIncident) {
+        return InIncident.incidentId == "KG-BUG-0098";
+      });
+  REQUIRE(boundedCaptureIncident != loaded.report.incidents.end());
+  REQUIRE(boundedCaptureIncident->regressionCases.size() == 2);
+  REQUIRE(std::any_of(
+      boundedCaptureIncident->regressionCases.begin(),
+      boundedCaptureIncident->regressionCases.end(),
+      [](const RegressionCase &InCase) {
+        return InCase.caseId ==
+                   "KG-BUG-0098/native-v2-retention-with-audit-callback" &&
+               InCase.testName ==
+                   "Kano process V2 bounds native retention while delivering "
+                   "complete audit callbacks";
+      }));
+
+  const auto registryDriftIncident = std::find_if(
+      loaded.report.incidents.begin(), loaded.report.incidents.end(),
+      [](const Incident &InIncident) {
+        return InIncident.incidentId == "KG-BUG-0099";
+      });
+  REQUIRE(registryDriftIncident != loaded.report.incidents.end());
+  REQUIRE(registryDriftIncident->regressionCases.size() == 2);
+
+  const auto historyOrderIncident = std::find_if(
+      loaded.report.incidents.begin(), loaded.report.incidents.end(),
+      [](const Incident &InIncident) {
+        return InIncident.incidentId == "KG-BUG-0097";
+      });
+  REQUIRE(historyOrderIncident != loaded.report.incidents.end());
+  REQUIRE(historyOrderIncident->regressionCases.size() == 2);
+
   std::size_t linkedCaseCount = 0;
   for (const auto &incident : loaded.report.incidents) {
     linkedCaseCount += incident.regressionCases.size();
   }
-  REQUIRE(linkedCaseCount == 42);
+  REQUIRE(linkedCaseCount == 49);
 
   const auto text = RenderCoverageText(loaded.report);
   REQUIRE(text.find("execution_evidence=not-evaluated") != std::string::npos);
-  REQUIRE(text.find("linked_cases=42") != std::string::npos);
-  REQUIRE(text.find("passed") == std::string::npos);
-  REQUIRE(text.find("executed") == std::string::npos);
+  REQUIRE(text.find("linked_cases=49") != std::string::npos);
+  REQUIRE_FALSE(HasExactLine(text, "execution_evidence=passed"));
+  REQUIRE_FALSE(HasExactLine(text, "execution_evidence=executed"));
 
   const auto json = RenderCoverageJson(loaded.report);
   REQUIRE(json.find("\"execution_evidence\": \"not-evaluated\"") !=
           std::string::npos);
-  REQUIRE(json.find("\"linked_cases\": 42") != std::string::npos);
+  REQUIRE(json.find("\"linked_cases\": 49") != std::string::npos);
 }
 
 TEST_CASE("default registry paths and exact test names resolve to source",

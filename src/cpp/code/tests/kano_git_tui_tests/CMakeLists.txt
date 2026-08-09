@@ -7,6 +7,8 @@ add_executable(kano_git_tui_tests
   unit/test_tui_state.cpp
   unit/test_shell_executor.cpp
   unit/test_tui_async_lifecycle.cpp
+  unit/test_tui_audit_frame.cpp
+  unit/test_tui_audit_surface.cpp
   unit/test_tui_command_scope.cpp
   unit/test_tui_history_lifecycle.cpp
   unit/test_tui_history_patch.cpp
@@ -30,6 +32,11 @@ target_link_libraries(kano_git_tui_tests
   PRIVATE kano_git_test_core
   PRIVATE kano_git_command
 )
+
+# The production-path TUI integration test executes the built KOG binary.
+# Keep this dependency explicit so a clean focused test build never relies on
+# an executable left behind by another target or preset.
+add_dependencies(kano_git_tui_tests kano_git_cli)
 
 target_include_directories(kano_git_tui_tests
   PRIVATE

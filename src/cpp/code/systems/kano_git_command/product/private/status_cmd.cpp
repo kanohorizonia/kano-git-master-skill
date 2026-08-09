@@ -776,6 +776,7 @@ struct CachedWorkspaceRepos {
     std::string source = "trusted-workspace-manifest";
     std::string completeness = "workspace-inventory";
     bool statusKnown = true;
+    std::optional<std::string> observedAtUtc;
 };
 
 auto HasRootGitMarker(const std::filesystem::path& InRoot) -> bool {
@@ -789,7 +790,7 @@ auto LoadCachedWorkspaceReposOrThrow(
     std::string reason;
     const auto manifest = workspace::LoadTrustedWorkspaceManifest(InRoot, &reason);
     if (manifest.has_value()) {
-        return {.repos = manifest->repos};
+        return {.repos = manifest->repos, .observedAtUtc = manifest->observedAtUtc};
     }
     std::error_code manifestPathError;
     const bool manifestFileExists = std::filesystem::exists(
@@ -1004,6 +1005,7 @@ struct RepoJsonMetadata {
     std::string source;
     std::string completeness;
     std::vector<std::filesystem::path> allowedExternalRoots;
+    std::optional<std::string> observedAtUtc;
 };
 
 auto FormatJson(
@@ -1031,6 +1033,10 @@ auto FormatJson(
         out << "\"statusKnown\":"
             << (InMetadata.statusKnown ? "true" : "false")
             << ",";
+        if (InMetadata.observedAtUtc.has_value()) {
+            out << "\"observedAtUtc\":\""
+                << EscapeJson(*InMetadata.observedAtUtc) << "\",";
+        }
         out << "\"allowedExternalRoots\":[";
         for (std::size_t index = 0;
              index < InMetadata.allowedExternalRoots.size();
@@ -2110,6 +2116,7 @@ void RegisterStatus(CLI::App& InApp) {
                     .completeness = std::move(loaded.completeness),
                     .allowedExternalRoots =
                         std::move(allowedExternalRoots),
+                    .observedAtUtc = std::move(loaded.observedAtUtc),
                 });
         } catch (const std::exception& ex) {
             std::cerr << "Error: " << ex.what() << "\n";
