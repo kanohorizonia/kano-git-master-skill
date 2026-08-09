@@ -4,6 +4,7 @@
 #include <nlohmann/json.hpp>
 
 #include "regression_coverage.hpp"
+#include "shell_executor.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -345,6 +346,43 @@ auto StrictFixture() -> nlohmann::json {
 
 } // namespace
 
+TEST_CASE("audit runtime script is tracked executable in the Git index",
+          "[integration][regression][git-index-hygiene][KG-BUG-0101]") {
+  constexpr std::string_view kScriptPath =
+      "src/shell/test/ci-linux-audit-runtime.sh";
+  const auto result = kano::git::shell::ExecuteCommand(
+      "git", {"ls-files", "-s", "--", std::string(kScriptPath)},
+      kano::git::shell::ExecMode::Capture, RepoRoot());
+
+  INFO(result.stderrStr);
+  REQUIRE(result.exitCode == 0);
+
+  std::istringstream records(result.stdoutStr);
+  std::string record;
+  REQUIRE(std::getline(records, record));
+  if (!record.empty() && record.back() == '\r') {
+    record.pop_back();
+  }
+  std::string unexpectedRecord;
+  REQUIRE_FALSE(std::getline(records, unexpectedRecord));
+
+  const auto tab = record.find('\t');
+  REQUIRE(tab != std::string::npos);
+  REQUIRE(record.substr(tab + 1) == std::string(kScriptPath));
+
+  std::istringstream metadata(record.substr(0, tab));
+  std::string mode;
+  std::string blob;
+  std::string stage;
+  std::string unexpectedField;
+  REQUIRE(metadata >> mode >> blob >> stage);
+  REQUIRE_FALSE(metadata >> unexpectedField);
+  REQUIRE(mode == "100755");
+  REQUIRE_FALSE(blob.empty());
+  REQUIRE(blob.find_first_not_of("0123456789abcdef") == std::string::npos);
+  REQUIRE(stage == "0");
+}
+
 TEST_CASE("dogfood incident manifest maps stable source cases without "
           "execution claims",
           "[unit][regression][coverage][KG-TSK-0052]") {
@@ -353,7 +391,7 @@ TEST_CASE("dogfood incident manifest maps stable source cases without "
 
   INFO(loaded.error);
   REQUIRE(loaded.ok);
-  REQUIRE(loaded.report.incidents.size() == 12);
+  REQUIRE(loaded.report.incidents.size() == 13);
   REQUIRE(loaded.report.gaps.empty());
 
   const auto auditIncident = std::find_if(
@@ -400,18 +438,18 @@ TEST_CASE("dogfood incident manifest maps stable source cases without "
   for (const auto &incident : loaded.report.incidents) {
     linkedCaseCount += incident.regressionCases.size();
   }
-  REQUIRE(linkedCaseCount == 41);
+  REQUIRE(linkedCaseCount == 42);
 
   const auto text = RenderCoverageText(loaded.report);
   REQUIRE(text.find("execution_evidence=not-evaluated") != std::string::npos);
-  REQUIRE(text.find("linked_cases=41") != std::string::npos);
+  REQUIRE(text.find("linked_cases=42") != std::string::npos);
   REQUIRE(text.find("passed") == std::string::npos);
   REQUIRE(text.find("executed") == std::string::npos);
 
   const auto json = RenderCoverageJson(loaded.report);
   REQUIRE(json.find("\"execution_evidence\": \"not-evaluated\"") !=
           std::string::npos);
-  REQUIRE(json.find("\"linked_cases\": 41") != std::string::npos);
+  REQUIRE(json.find("\"linked_cases\": 42") != std::string::npos);
 }
 
 TEST_CASE("default registry paths and exact test names resolve to source",

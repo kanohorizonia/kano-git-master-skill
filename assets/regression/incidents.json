@@ -450,6 +450,25 @@
           "mapping_state": "source-linked"
         }
       ]
+    },
+    {
+      "incident_id": "KG-BUG-0101",
+      "incident_date": "2026-08-09",
+      "root_cause": "The audit runtime script was introduced with Git index mode 100644 even though shell hygiene requires 100755, and host filesystem permissions cannot reliably prove the tracked mode across platforms.",
+      "backlog_ref": "KG-BUG-0101",
+      "change_ref": "commit:KG-BUG-0101",
+      "workflow_contracts": [
+        "git-index-hygiene"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KG-BUG-0101/audit-runtime-index-mode",
+          "test_name": "audit runtime script is tracked executable in the Git index",
+          "test_file": "src/cpp/code/tests/kano_git_regression_tests/regression_coverage_test.cpp",
+          "test_kind": "integration",
+          "mapping_state": "source-linked"
+        }
+      ]
     }
   ]
 }
