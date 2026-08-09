@@ -4,6 +4,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -625,6 +626,81 @@ TEST_CASE("discover table aligns two digit index and missing branch placeholder"
     RequireContains(table, "repo-9");
     RequireContains(table, "-");
     RequireNotContains(table, "10repo-9");
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
+TEST_CASE("workspace state keeps manifest provenance coupled to its own inventory", "[functional][discover][cache][inventory][KG-TSK-0131]") {
+    const auto sandbox = CreateSandboxWorkspace("workspace-state-provenance-coupling");
+    const auto root = (sandbox.root / "root").lexically_normal();
+    const auto child = (root / "child-repo").lexically_normal();
+    InitRepo(root);
+    InitRepo(child);
+
+    kano::git::workspace::RepoRecord rootRecord;
+    rootRecord.path = root;
+    rootRecord.type = "root";
+    rootRecord.registrationRelativeTo = ".";
+    auto oldManifest = kano::git::workspace::BuildWorkspaceManifest(root, {rootRecord});
+    oldManifest.observedAtUtc = "2001-02-03T04:05:06Z";
+    REQUIRE(kano::git::workspace::SaveWorkspaceManifest(oldManifest));
+
+    // Persist a newer cache whose rows differ from the retained manifest.
+    kano::git::workspace::DiscoverOptions cacheOptions;
+    cacheOptions.rootDir = root;
+    cacheOptions.scope = kano::git::workspace::DiscoverScope::Full;
+    cacheOptions.maxDepth = 2;
+    cacheOptions.metadataLevel = "minimal";
+    cacheOptions.useCache = true;
+    cacheOptions.refreshCache = true;
+    cacheOptions.incremental = false;
+    cacheOptions.cacheTtlSeconds = 300;
+    const auto refreshedCache = kano::git::workspace::DiscoverRepos(cacheOptions);
+    REQUIRE(std::any_of(refreshedCache.repos.begin(), refreshedCache.repos.end(), [&](const auto& repo) {
+        return repo.path == child;
+    }));
+
+    const auto retainedOld = kano::git::workspace::LoadTrustedWorkspaceManifest(root);
+    REQUIRE(retainedOld.has_value());
+    CHECK(retainedOld->observedAtUtc == oldManifest.observedAtUtc);
+    CHECK(retainedOld->repos.size() == 1);
+    CHECK(retainedOld->repos.front().path == root);
+
+    // Saving a new manifest must retain the old cache as a separate payload,
+    // while moving manifest provenance together with the new manifest rows.
+    kano::git::workspace::RepoRecord childRecord;
+    childRecord.path = child;
+    childRecord.type = "unregistered";
+    childRecord.registrationRelativeTo = root;
+    auto newManifest = kano::git::workspace::BuildWorkspaceManifest(root, {rootRecord, childRecord});
+    newManifest.observedAtUtc = "2002-03-04T05:06:07Z";
+    REQUIRE(kano::git::workspace::SaveWorkspaceManifest(newManifest));
+
+    const auto stateText = ReadTextFile(kano::git::workspace::WorkspaceManifestFilePath(root));
+    CHECK(stateText.find("\"manifest\":{") != std::string::npos);
+    CHECK(stateText.find("\"discovery_cache\":{") != std::string::npos);
+    CHECK(stateText.find("\"observed_at_utc\":\"2002-03-04T05:06:07Z\"") != std::string::npos);
+
+    const auto loadedNew = kano::git::workspace::LoadTrustedWorkspaceManifest(root);
+    REQUIRE(loadedNew.has_value());
+    CHECK(loadedNew->observedAtUtc == newManifest.observedAtUtc);
+    CHECK(loadedNew->repos.size() == 2);
+    CHECK(std::any_of(loadedNew->repos.begin(), loadedNew->repos.end(), [&](const auto& repo) {
+        return repo.path == child;
+    }));
+
+    // Old flat state documents retain their manifest inventory when the legacy
+    // fingerprint shape is present, but the shared top-level timestamp is
+    // ambiguous and must remain unknown.
+    WriteTextFile(
+        kano::git::workspace::WorkspaceManifestFilePath(root),
+        std::string{"{\"version\":3,\"workspace_root\":\""} + root.generic_string() +
+            "\",\"observed_at_utc\":\"1999-01-01T00:00:00Z\",\"repos\":[{\"path\":\".\",\"type\":\"root\"}],\"gitmodules_fingerprints\":[],\"discovery_state\":{\"generated_epoch\":1,\"gitmodules_mtime\":0,\"marker\":\"none\"}}\n");
+    const auto legacyManifest = kano::git::workspace::LoadTrustedWorkspaceManifest(root);
+    REQUIRE(legacyManifest.has_value());
+    CHECK(legacyManifest->repos.size() == 1);
+    CHECK(legacyManifest->repos.front().path == root);
+    CHECK_FALSE(legacyManifest->observedAtUtc.has_value());
 
     RemoveSandboxWorkspace(sandbox);
 }

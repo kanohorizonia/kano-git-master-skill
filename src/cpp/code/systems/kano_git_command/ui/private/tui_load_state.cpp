@@ -126,4 +126,37 @@ auto BoundTuiLoadDiagnostic(const std::string_view InDiagnostic)
     return sanitized;
 }
 
+auto SetTuiInventoryProvenance(TuiLoadState& InOutState,
+                               const TuiInventoryProvenance InProvenance) -> void {
+    InOutState.inventoryProvenance = InProvenance;
+    InOutState.retainedPriorRows = false;
+}
+
+auto RetainTuiLoadRowsOnFailure(TuiLoadState& InOutState,
+                                const std::string_view InDiagnostic,
+                                std::string InRetryHint,
+                                const bool bInCancelled) -> void {
+    InOutState.phase = bInCancelled
+        ? TuiLoadPhase::Cancelled
+        : TuiLoadPhase::Failed;
+    InOutState.diagnostic = BoundTuiLoadDiagnostic(InDiagnostic);
+    InOutState.hint = BoundTuiLoadDiagnostic(InRetryHint);
+    InOutState.retainedPriorRows = true;
+    // A failed refresh must never leave cached/root-fallback rows labelled live.
+    if (InOutState.inventoryProvenance == TuiInventoryProvenance::Live) {
+        InOutState.inventoryProvenance = TuiInventoryProvenance::Unknown;
+    }
+}
+
+auto TuiInventoryProvenanceLabel(const TuiInventoryProvenance InProvenance)
+    -> std::string_view {
+    switch (InProvenance) {
+    case TuiInventoryProvenance::Unknown: return "non-live";
+    case TuiInventoryProvenance::Cache: return "cached";
+    case TuiInventoryProvenance::RootFallback: return "root-fallback";
+    case TuiInventoryProvenance::Live: return "live";
+    }
+    return "non-live";
+}
+
 }  // namespace kano::git::commands

@@ -72,6 +72,9 @@ struct WorkspaceManifest {
     std::filesystem::path workspaceRoot;
     std::vector<RepoRecord> repos;
     std::unordered_map<std::string, std::string> gitmodulesFingerprints;
+    // The instant at which this repository inventory was actually built. This
+    // is intentionally distinct from document serialization timestamps.
+    std::optional<std::string> observedAtUtc;
     std::filesystem::path manifestFile;
 };
 

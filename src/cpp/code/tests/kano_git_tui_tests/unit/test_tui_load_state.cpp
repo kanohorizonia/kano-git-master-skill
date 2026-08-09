@@ -10,27 +10,57 @@ TEST_CASE(
     "TUI load lifecycle exposes every audit state",
     "[unit][tui_load_state][KG-BUG-0091]") {
     TuiLoadState state;
-    REQUIRE(TuiLoadPhaseName(state.phase) == "idle");
+    REQUIRE(std::string(TuiLoadPhaseName(state.phase)) == "idle");
 
     BeginTuiLoad(state, 7, "startup discovery", ":refresh retry | q exit");
-    REQUIRE(TuiLoadPhaseName(state.phase) == "loading");
+    REQUIRE(std::string(TuiLoadPhaseName(state.phase)) == "loading");
     REQUIRE(state.operation == "startup discovery");
 
     REQUIRE(CompleteTuiLoad(state, 7, 3));
-    REQUIRE(TuiLoadPhaseName(state.phase) == "ready");
+    REQUIRE(std::string(TuiLoadPhaseName(state.phase)) == "ready");
 
     BeginTuiLoad(state, 8, "history page", "r retry | Esc return");
     REQUIRE(CompleteTuiLoad(state, 8, 0));
-    REQUIRE(TuiLoadPhaseName(state.phase) == "empty");
+    REQUIRE(std::string(TuiLoadPhaseName(state.phase)) == "empty");
 
     BeginTuiLoad(state, 9, "history detail", "Enter retry | Esc return");
     REQUIRE(FailTuiLoad(state, 9, "cancelled by selection", true));
-    REQUIRE(TuiLoadPhaseName(state.phase) == "cancelled");
+    REQUIRE(std::string(TuiLoadPhaseName(state.phase)) == "cancelled");
 
     BeginTuiLoad(state, 10, "discover", ":discover retry | q close");
     REQUIRE(FailTuiLoad(state, 10, "git failed", false));
-    REQUIRE(TuiLoadPhaseName(state.phase) == "failed");
+    REQUIRE(std::string(TuiLoadPhaseName(state.phase)) == "failed");
     REQUIRE(state.diagnostic == "git failed");
+}
+
+TEST_CASE(
+    "TUI startup lifecycle retains rows as non-live after refresh failure",
+    "[unit][tui_load_state][KG-TSK-0131]") {
+    TuiLoadState state;
+    BeginTuiLoad(state, 1, "startup inventory", ":refresh retries");
+    REQUIRE(CompleteTuiLoad(state, 1, 2));
+    SetTuiInventoryProvenance(state, TuiInventoryProvenance::Live);
+    RetainTuiLoadRowsOnFailure(
+        state,
+        "live refresh failed\nwith a verbose diagnostic",
+        ":refresh retries bounded live discovery; q exits",
+        false);
+    CHECK(state.phase == TuiLoadPhase::Failed);
+    CHECK(state.retainedPriorRows);
+    CHECK(std::string(TuiInventoryProvenanceLabel(state.inventoryProvenance)) == "non-live");
+    CHECK(state.diagnostic.find('\n') == std::string::npos);
+    CHECK(state.hint.size() <= kTuiLoadDiagnosticMaxBytes);
+
+    BeginTuiLoad(state, 2, "workspace refresh", ":refresh retries");
+    REQUIRE(CompleteTuiLoad(state, 2, 2));
+    CHECK(state.phase == TuiLoadPhase::Ready);
+    CHECK_FALSE(state.retainedPriorRows);
+
+    RetainTuiLoadRowsOnFailure(
+        state, "cancelled appears only in diagnostic", ":refresh retries", false);
+    CHECK(state.phase == TuiLoadPhase::Failed);
+    RetainTuiLoadRowsOnFailure(state, "ordinary failure", ":refresh retries", true);
+    CHECK(state.phase == TuiLoadPhase::Cancelled);
 }
 
 TEST_CASE(

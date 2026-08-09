@@ -268,7 +268,7 @@ TEST_CASE(
 
 TEST_CASE(
     "TUI production startup loads a disposable three-repository inventory through the built KOG binary",
-    "[integration][tui_startup][production-path][KG-BUG-0091]") {
+    "[integration][tui_startup][production-path][KG-BUG-0091][KG-TSK-0131]") {
     using namespace kano::git::tests::functional;
 
     const ScopedSandbox sandbox("tui-startup-production-path");
@@ -362,6 +362,10 @@ TEST_CASE(
     CHECK(metadata.completeness == "workspace-inventory");
     CHECK(metadata.probeMode == "none");
     CHECK(metadata.statusKnown);
+    REQUIRE(metadata.observedAtUtc.has_value());
+    REQUIRE(metadata.observedAtUtcText.has_value());
+    CHECK(ParseTuiObservedAtUtc(*metadata.observedAtUtcText) ==
+          metadata.observedAtUtc);
     const auto rootRow = std::find_if(
         rows.begin(),
         rows.end(),
@@ -379,7 +383,7 @@ TEST_CASE(
 
 TEST_CASE(
     "TUI production startup exposes a bounded root fallback before first discovery",
-    "[integration][tui_startup][production-path][KG-BUG-0091]") {
+    "[integration][tui_startup][production-path][KG-BUG-0091][KG-TSK-0131]") {
     using namespace kano::git::tests::functional;
 
     const ScopedSandbox sandbox("tui-startup-root-fallback");
@@ -400,13 +404,15 @@ TEST_CASE(
     CHECK(rows.front().type == "root");
     CHECK(rows.front().branch == "(unknown)");
     CHECK_FALSE(rows.front().statusKnown);
-    CHECK(TuiAuditBooleanLabel(
+    CHECK(std::string(TuiAuditBooleanLabel(
               rows.front().statusKnown,
-              rows.front().repoDirty) == "unknown");
+              rows.front().repoDirty)) == "unknown");
     CHECK(metadata.source == "root-fallback");
     CHECK(metadata.completeness == "root-only");
     CHECK(metadata.probeMode == "none");
     CHECK_FALSE(metadata.statusKnown);
+    CHECK_FALSE(metadata.observedAtUtc.has_value());
+    CHECK_FALSE(metadata.observedAtUtcText.has_value());
     CHECK(metadata.allowedExternalRoots.empty());
 
 }

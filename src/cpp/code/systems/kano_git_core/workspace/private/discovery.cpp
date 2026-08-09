@@ -1459,6 +1459,25 @@ auto WorkspaceManifestToJson(const WorkspaceManifest& InManifest) -> std::string
     json += "\"version\":3,";
     json += std::format("\"workspace_root\":\"{}\",", EscapeJson(PathKey(InManifest.workspaceRoot)));
     json += std::format("\"generated_at\":\"{}\",", EscapeJson(ToUtcIsoString(std::chrono::system_clock::now())));
+    if (InManifest.observedAtUtc.has_value()) {
+        json += std::format("\"observed_at_utc\":\"{}\",", EscapeJson(*InManifest.observedAtUtc));
+    }
+    json += std::format("\"repos\":{},", RepoRecordsToRelativeJson(InManifest.workspaceRoot, InManifest.repos));
+    json += std::format("\"gitmodules_fingerprints\":{}", ManifestFingerprintsToJson(InManifest));
+    json += "}";
+    return json;
+}
+
+// Keep manifest evidence as one atomic payload.  A workspace-state document
+// may additionally contain a discovery cache produced at a different time,
+// with a different repo list.  Flattening the two payloads makes it possible
+// to accidentally attach this manifest's observation/fingerprints to the
+// cache list (or the reverse), which is an audit provenance violation.
+auto WorkspaceManifestPayloadToJson(const WorkspaceManifest& InManifest) -> std::string {
+    std::string json = "{";
+    if (InManifest.observedAtUtc.has_value()) {
+        json += std::format("\"observed_at_utc\":\"{}\",", EscapeJson(*InManifest.observedAtUtc));
+    }
     json += std::format("\"repos\":{},", RepoRecordsToRelativeJson(InManifest.workspaceRoot, InManifest.repos));
     json += std::format("\"gitmodules_fingerprints\":{}", ManifestFingerprintsToJson(InManifest));
     json += "}";
@@ -1473,25 +1492,29 @@ auto DiscoveryStateToJson(const DiscoveryCacheSnapshot& InCache) -> std::string 
         EscapeJson(InCache.marker.empty() ? "none" : InCache.marker));
 }
 
+auto DiscoveryCachePayloadToJson(const std::filesystem::path& InWorkspaceRoot,
+                                 const DiscoveryCacheSnapshot& InCache) -> std::string {
+    std::string json = DiscoveryStateToJson(InCache);
+    // Replace the closing brace so cache metadata and the exact cache rows
+    // remain one payload.  The formatter above is intentionally retained for
+    // compatibility with callers that only need the state fields.
+    json.pop_back();
+    json += std::format(",\"repos\":{}", RepoRecordsToRelativeJson(InWorkspaceRoot, InCache.repos));
+    json += "}";
+    return json;
+}
+
 auto WorkspaceStateDocumentToJson(const WorkspaceStateDocument& InState) -> std::string {
     std::string json = "{";
     json += "\"version\":3,";
     json += std::format("\"workspace_root\":\"{}\",", EscapeJson(PathKey(InState.workspaceRoot)));
     json += std::format("\"generated_at\":\"{}\"", EscapeJson(ToUtcIsoString(std::chrono::system_clock::now())));
-    const std::vector<RepoRecord>* repos = nullptr;
-    if (InState.discoveryCache.has_value()) {
-        repos = &InState.discoveryCache->repos;
-    } else if (InState.manifest.has_value()) {
-        repos = &InState.manifest->repos;
-    }
-    if (repos != nullptr) {
-        json += std::format(",\"repos\":{}", RepoRecordsToRelativeJson(InState.workspaceRoot, *repos));
-    }
     if (InState.manifest.has_value()) {
-        json += std::format(",\"gitmodules_fingerprints\":{}", ManifestFingerprintsToJson(*InState.manifest));
+        json += std::format(",\"manifest\":{}", WorkspaceManifestPayloadToJson(*InState.manifest));
     }
     if (InState.discoveryCache.has_value()) {
-        json += std::format(",\"discovery_state\":{}", DiscoveryStateToJson(*InState.discoveryCache));
+        json += std::format(",\"discovery_cache\":{}",
+                            DiscoveryCachePayloadToJson(InState.workspaceRoot, *InState.discoveryCache));
     }
     json += "}";
     return json;
@@ -1527,17 +1550,28 @@ auto AbsolutizeRepoRecords(const std::filesystem::path& InWorkspaceRoot, std::ve
 auto ParseWorkspaceManifest(const std::string& InPayload, const std::filesystem::path& InManifestFile) -> std::optional<WorkspaceManifest> {
     const auto workspaceRoot = ExtractStringField(InPayload, "workspace_root");
     const auto manifestRaw = ExtractObjectRaw(InPayload, "manifest");
-    const auto topLevelReposRaw = ExtractArrayRaw(InPayload, "repos");
     const auto& manifestPayload = manifestRaw.value_or(InPayload);
-    const auto reposRaw = topLevelReposRaw.has_value() ? topLevelReposRaw : ExtractArrayRaw(manifestPayload, "repos");
+    // A combined legacy document used one top-level repo array for both the
+    // manifest and discovery cache.  Preserve its manifest rows only when it
+    // carries the legacy manifest fingerprints, but never infer a trustworthy
+    // observation from its ambiguous top-level timestamp.
+    const bool isLegacyCombinedState = !manifestRaw.has_value() &&
+        (ExtractObjectRaw(InPayload, "discovery_state").has_value() ||
+         ExtractObjectRaw(InPayload, "discovery_cache").has_value());
+    const auto reposRaw = ExtractArrayRaw(manifestPayload, "repos");
     const auto fingerprintsRaw = ExtractArrayRaw(manifestPayload, "gitmodules_fingerprints");
-    if (!workspaceRoot || !reposRaw) {
+    if (!workspaceRoot || !reposRaw || (isLegacyCombinedState && !fingerprintsRaw.has_value())) {
         return std::nullopt;
     }
 
     WorkspaceManifest out;
     out.workspaceRoot = Normalize(std::filesystem::path(*workspaceRoot));
     out.manifestFile = InManifestFile;
+    // Older flat combined documents did not couple provenance to one repo
+    // list.  Do not infer it from generated_at or a top-level observation.
+    out.observedAtUtc = manifestRaw.has_value()
+        ? ExtractStringField(manifestPayload, "observed_at_utc")
+        : std::nullopt;
     out.repos = ParseReposArray(*reposRaw);
     AbsolutizeRepoRecords(out.workspaceRoot, &out.repos);
     if (fingerprintsRaw) {
@@ -1548,11 +1582,14 @@ auto ParseWorkspaceManifest(const std::string& InPayload, const std::filesystem:
 
 auto ParseDiscoveryCacheSnapshot(const std::string& InPayload) -> std::optional<DiscoveryCacheSnapshot> {
     const auto workspaceRoot = ExtractStringField(InPayload, "workspace_root");
-    const auto topLevelReposRaw = ExtractArrayRaw(InPayload, "repos");
     const auto cacheRaw = ExtractObjectRaw(InPayload, "discovery_cache");
     const auto stateRaw = ExtractObjectRaw(InPayload, "discovery_state");
     const auto& cachePayload = stateRaw ? *stateRaw : (cacheRaw ? *cacheRaw : InPayload);
-    const auto reposRaw = topLevelReposRaw.has_value() ? topLevelReposRaw : ExtractArrayRaw(cachePayload, "repos");
+    // New documents keep cache rows inside discovery_cache.  Only the old
+    // discovery_state shape relies on the former top-level repo array.
+    const auto reposRaw = ExtractArrayRaw(cachePayload, "repos").has_value()
+        ? ExtractArrayRaw(cachePayload, "repos")
+        : ((stateRaw || cacheRaw) ? ExtractArrayRaw(InPayload, "repos") : std::nullopt);
     if (!reposRaw || !workspaceRoot) {
         return std::nullopt;
     }
@@ -2254,6 +2291,7 @@ auto BuildWorkspaceManifest(const std::filesystem::path& InWorkspaceRoot, const 
     WorkspaceManifest out;
     out.workspaceRoot = Normalize(std::filesystem::absolute(InWorkspaceRoot));
     out.manifestFile = WorkspaceManifestFilePath(out.workspaceRoot);
+    out.observedAtUtc = ToUtcIsoString(std::chrono::system_clock::now());
 
     out.repos = InRepos;
     std::sort(out.repos.begin(), out.repos.end(), [](const auto& A, const auto& B) {
@@ -2387,6 +2425,9 @@ auto UpsertUnregisteredRepoIntoWorkspaceManifest(const std::filesystem::path& In
     }
 
     manifest.gitmodulesFingerprints.clear();
+    // This mutation rebuilds the persisted inventory membership; record its
+    // observation time rather than retaining provenance for a prior inventory.
+    manifest.observedAtUtc = ToUtcIsoString(std::chrono::system_clock::now());
     manifest.gitmodulesFingerprints.emplace(".", GitmodulesFingerprint(rootAbs));
     for (const auto& registeredPath : registered) {
         manifest.gitmodulesFingerprints.emplace(RelativePathKeyOrDot(rootAbs, registeredPath), GitmodulesFingerprint(registeredPath));
