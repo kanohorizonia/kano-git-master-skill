@@ -1,4 +1,6 @@
 #include "audit_run_reader.hpp"
+#include "audit_evidence_directory.hpp"
+#include "audit_run_reader_private.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -286,7 +288,8 @@ auto Project(const audit::RunReceipt& InReceipt, const std::vector<audit::AuditE
     return out;
 }
 
-auto ReadMarker(const std::filesystem::path& InPath,
+auto ReadMarker(const AuditEvidenceDirectory& InDirectory,
+                const std::string_view InName,
                 std::string_view InSchemaName,
                 std::string_view InRunId,
                 const std::uint32_t InAttempt,
@@ -295,45 +298,35 @@ auto ReadMarker(const std::filesystem::path& InPath,
                 const OperationAuditRunReadLimits& InLimits,
                 const OperationAuditMarkerMatchPolicy InMarkerMatch)
     -> std::optional<OperationAuditRunReadResult> {
-    std::error_code ec;
-    const auto status = std::filesystem::symlink_status(InPath, ec);
-    if (status.type() == std::filesystem::file_type::not_found ||
-        ec == std::errc::no_such_file_or_directory) {
-        return std::nullopt;
-    }
-    if (ec) {
+    const auto markerFailure = [&](const bool InProbeFailed) {
         return Result(InPresentState == OperationAuditRunReadState::Pending
-                          ? OperationAuditRunReadCode::PendingMarkerProbeFailed
-                          : OperationAuditRunReadCode::IncompleteMarkerProbeFailed, InLimits);
-    }
-    if (std::filesystem::is_symlink(status) ||
-        !std::filesystem::is_regular_file(status)) {
-        return Result(InPresentState == OperationAuditRunReadState::Pending
-                          ? OperationAuditRunReadCode::PendingMarkerUnreadable
-                          : OperationAuditRunReadCode::IncompleteMarkerUnreadable, InLimits);
-    }
-    std::string error;
-    const auto bytes = ReadBoundedAuditInput(InPath, kMarkerByteLimit, &error);
-    if (!bytes) {
-        ec.clear();
-        const auto after = std::filesystem::symlink_status(InPath, ec);
-        if (after.type() == std::filesystem::file_type::not_found ||
-            ec == std::errc::no_such_file_or_directory) {
-            return std::nullopt;
-        }
-        if (ec) {
-            return Result(InPresentState == OperationAuditRunReadState::Pending
-                              ? OperationAuditRunReadCode::PendingMarkerProbeFailed
-                              : OperationAuditRunReadCode::IncompleteMarkerProbeFailed, InLimits);
-        }
-        return Result(InPresentState == OperationAuditRunReadState::Pending
-                          ? OperationAuditRunReadCode::PendingMarkerUnreadable
-                          : OperationAuditRunReadCode::IncompleteMarkerUnreadable, InLimits);
+                          ? (InProbeFailed
+                                 ? OperationAuditRunReadCode::PendingMarkerProbeFailed
+                                 : OperationAuditRunReadCode::PendingMarkerUnreadable)
+                          : (InProbeFailed
+                                 ? OperationAuditRunReadCode::IncompleteMarkerProbeFailed
+                                 : OperationAuditRunReadCode::IncompleteMarkerUnreadable),
+                      InLimits);
+    };
+    const auto probeFailed = [](const AuditEvidenceReadCode InCode) {
+        return InCode != AuditEvidenceReadCode::LoopOrReparse &&
+            InCode != AuditEvidenceReadCode::NonRegular;
+    };
+    const auto before = InDirectory.Probe(InName);
+    if (before.code == AuditEvidenceReadCode::Missing) return std::nullopt;
+    if (!before.ready()) return markerFailure(probeFailed(before.code));
+
+    auto input = InDirectory.Read(InName, kMarkerByteLimit);
+    if (!input.ready()) {
+        const auto after = InDirectory.Probe(InName);
+        if (after.code == AuditEvidenceReadCode::Missing) return std::nullopt;
+        if (!after.ready() && probeFailed(after.code)) return markerFailure(true);
+        return markerFailure(false);
     }
     try {
         bool duplicate = false;
         std::vector<std::set<std::string>> objectKeys;
-        const auto doc = nlohmann::json::parse(bytes->begin(), bytes->end(),
+        const auto doc = nlohmann::json::parse(input.bytes.begin(), input.bytes.end(),
             [&duplicate, &objectKeys](int, nlohmann::json::parse_event_t event,
                                       nlohmann::json& parsed) {
                 if (event == nlohmann::json::parse_event_t::object_start)
@@ -405,7 +398,8 @@ auto ReadMarker(const std::filesystem::path& InPath,
                   InLimits);
 }
 
-auto ProbeMarkers(const OperationAuditPaths& InPaths,
+auto ProbeMarkers(const AuditEvidenceDirectory& InDirectory,
+                  const OperationAuditPaths& InPaths,
                   const OperationAuditSpec& InSpec,
                   const std::string_view InRunId,
                   const std::uint32_t InAttempt,
@@ -413,12 +407,12 @@ auto ProbeMarkers(const OperationAuditPaths& InPaths,
                   const OperationAuditMarkerMatchPolicy InMarkerMatch)
     -> std::optional<OperationAuditRunReadResult> {
     if (const auto incomplete = ReadMarker(
-            InPaths.incomplete, "kog.auditIncomplete", InRunId, InAttempt,
+            InDirectory, InPaths.incomplete.filename().string(), "kog.auditIncomplete", InRunId, InAttempt,
             InSpec, OperationAuditRunReadState::Incomplete, InLimits, InMarkerMatch)) {
         return incomplete;
     }
     const auto pending = ReadMarker(
-        InPaths.publicationPending, "kog.auditPublicationPending", InRunId,
+        InDirectory, InPaths.publicationPending.filename().string(), "kog.auditPublicationPending", InRunId,
         InAttempt, InSpec, OperationAuditRunReadState::Pending, InLimits, InMarkerMatch);
     if (!pending) return std::nullopt;
     if (pending->state != OperationAuditRunReadState::Pending) return pending;
@@ -426,67 +420,37 @@ auto ProbeMarkers(const OperationAuditPaths& InPaths,
     // Incomplete is terminal and wins if it appears while a pending marker is
     // being observed. This closes the two-marker priority race.
     if (const auto incomplete = ReadMarker(
-            InPaths.incomplete, "kog.auditIncomplete", InRunId, InAttempt,
+            InDirectory, InPaths.incomplete.filename().string(), "kog.auditIncomplete", InRunId, InAttempt,
             InSpec, OperationAuditRunReadState::Incomplete, InLimits, InMarkerMatch)) {
         return incomplete;
     }
     return pending;
 }
 
-enum class EvidenceInputState { Ready, Missing, Limit, NonRegular, Unstable };
+using EvidenceInput = AuditEvidenceInput;
 
-struct EvidenceInput {
-    EvidenceInputState state = EvidenceInputState::Unstable;
-    std::string bytes;
-};
-
-auto InspectEvidencePath(const std::filesystem::path& InPath,
-                         const std::uintmax_t InLimit)
-    -> EvidenceInputState {
-    std::error_code ec;
-    const auto status = std::filesystem::symlink_status(InPath, ec);
-    if (status.type() == std::filesystem::file_type::not_found ||
-        ec == std::errc::no_such_file_or_directory) {
-        return EvidenceInputState::Missing;
-    }
-    if (ec) return EvidenceInputState::Unstable;
-    if (std::filesystem::is_symlink(status) ||
-        !std::filesystem::is_regular_file(status)) {
-        return EvidenceInputState::NonRegular;
-    }
-    const auto size = std::filesystem::file_size(InPath, ec);
-    if (ec) return EvidenceInputState::Unstable;
-    return size > InLimit ? EvidenceInputState::Limit
-                          : EvidenceInputState::Ready;
-}
-
-auto ReadEvidence(const std::filesystem::path& InPath,
+auto ReadEvidence(const AuditEvidenceDirectory& InDirectory,
+                  const std::string_view InName,
                   const std::uintmax_t InLimit) -> EvidenceInput {
-    const auto before = InspectEvidencePath(InPath, InLimit);
-    if (before != EvidenceInputState::Ready) return {.state = before};
-
-    std::string ignored;
-    if (auto bytes = ReadBoundedAuditInput(InPath, InLimit, &ignored)) {
-        return {.state = EvidenceInputState::Ready,
-                .bytes = std::move(*bytes)};
-    }
-    const auto after = InspectEvidencePath(InPath, InLimit);
-    return {.state = after == EvidenceInputState::Ready
-                         ? EvidenceInputState::Unstable
-                         : after};
+    return InDirectory.Read(InName, InLimit);
 }
 
-auto CodeFor(const EvidenceInputState InState) -> OperationAuditRunReadCode {
-    switch (InState) {
-    case EvidenceInputState::Missing:
+auto CodeFor(const AuditEvidenceReadCode InCode) -> OperationAuditRunReadCode {
+    switch (InCode) {
+    case AuditEvidenceReadCode::Missing:
         return OperationAuditRunReadCode::EvidenceMissing;
-    case EvidenceInputState::Limit:
+    case AuditEvidenceReadCode::Limit:
         return OperationAuditRunReadCode::InputLimit;
-    case EvidenceInputState::NonRegular:
+    case AuditEvidenceReadCode::LoopOrReparse:
+    case AuditEvidenceReadCode::NonRegular:
         return OperationAuditRunReadCode::NonRegularEvidence;
-    case EvidenceInputState::Unstable:
+    case AuditEvidenceReadCode::InvalidComponent:
+    case AuditEvidenceReadCode::PermissionDenied:
+    case AuditEvidenceReadCode::IoError:
+    case AuditEvidenceReadCode::StatFailed:
+    case AuditEvidenceReadCode::Unstable:
         return OperationAuditRunReadCode::UnstableEvidence;
-    case EvidenceInputState::Ready:
+    case AuditEvidenceReadCode::None:
         break;
     }
     return OperationAuditRunReadCode::UnstableEvidence;
@@ -631,21 +595,19 @@ auto ValidateFrozenInput(const OperationAuditSpec& InSpec,
     return std::nullopt;
 }
 
-} // namespace
-
-auto ReadOperationAuditRun(const OperationAuditSpec& InSpec,
-                           const std::string_view InRunId,
-                           const std::uint32_t InAttempt,
-                           OperationAuditRunReadLimits InLimits,
-                           const std::optional<std::string_view> InExpectedReceiptId,
-                           const OperationAuditRunReadPolicy InPolicy)
-    -> OperationAuditRunReadResult {
-    InLimits.maxEventStreamBytes = std::min(InLimits.maxEventStreamBytes, kEventsByteLimit);
-    InLimits.maxInputBytes = std::min(InLimits.maxInputBytes, kInputByteLimit);
+auto ValidateReadRequest(const OperationAuditSpec& InSpec,
+                         const std::string_view InRunId,
+                         const std::uint32_t InAttempt,
+                         OperationAuditRunReadLimits* InOutLimits,
+                         const std::optional<std::string_view> InExpectedReceiptId,
+                         const OperationAuditRunReadPolicy InPolicy)
+    -> std::optional<OperationAuditRunReadResult> {
+    auto& limits = *InOutLimits;
+    limits.maxEventStreamBytes = std::min(limits.maxEventStreamBytes, kEventsByteLimit);
+    limits.maxInputBytes = std::min(limits.maxInputBytes, kInputByteLimit);
     std::string correlationError;
-    if (!audit::IsStableAuditId(InRunId) || InAttempt == 0) {
-        return Result(OperationAuditRunReadCode::InvalidIdentity, InLimits);
-    }
+    if (!audit::IsStableAuditId(InRunId) || InAttempt == 0)
+        return Result(OperationAuditRunReadCode::InvalidIdentity, limits);
     const auto expectedFrozenName = InSpec.inputKind == "commit-plan"
         ? std::string_view{"frozen-plan.json"}
         : std::string_view{"frozen-operation.json"};
@@ -655,58 +617,65 @@ auto ReadOperationAuditRun(const OperationAuditSpec& InSpec,
         !audit::IsStableAuditId(InSpec.planId) ||
         InSpec.inputIdentity.empty() || InSpec.inputIdentity.size() > 4096 ||
         InSpec.inputIdentity.find('\0') != std::string::npos ||
-        InSpec.sourceBytes.empty() ||
-        InSpec.frozenBytes.empty() || InSpec.sourceBytes.size() > kInputByteLimit ||
+        InSpec.sourceBytes.empty() || InSpec.frozenBytes.empty() ||
+        InSpec.sourceBytes.size() > kInputByteLimit ||
         InSpec.frozenBytes.size() > kInputByteLimit ||
         !ValidateOperationCorrelationEnvelope(InSpec.correlation, true, &correlationError) ||
         InSpec.correlation.runId != InRunId || InSpec.correlation.attempt != InAttempt) {
-        return Result(OperationAuditRunReadCode::InvalidConfiguration, InLimits);
+        return Result(OperationAuditRunReadCode::InvalidConfiguration, limits);
     }
     if (InExpectedReceiptId &&
         (InExpectedReceiptId->size() != 64 ||
-         !std::all_of(InExpectedReceiptId->begin(), InExpectedReceiptId->end(), [](const char ch) {
-             return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
-         }))) {
-        return Result(OperationAuditRunReadCode::InvalidIdentity, InLimits);
+         !std::all_of(InExpectedReceiptId->begin(), InExpectedReceiptId->end(),
+                      [](const char ch) {
+                          return (ch >= '0' && ch <= '9') ||
+                              (ch >= 'a' && ch <= 'f');
+                      }))) {
+        return Result(OperationAuditRunReadCode::InvalidIdentity, limits);
     }
-    std::string error;
-    const auto paths = ResolveOperationAuditPaths(InSpec, InRunId, InAttempt, &error);
-    if (!paths)
-        return Result(OperationAuditRunReadCode::InvalidIdentity, InLimits);
+    return std::nullopt;
+}
 
-    std::error_code attemptStatusError;
-    const auto attemptStatus = std::filesystem::symlink_status(paths->attemptRoot,
-                                                                attemptStatusError);
-    if (attemptStatus.type() == std::filesystem::file_type::not_found ||
-        attemptStatusError == std::errc::no_such_file_or_directory) {
-        return Result(OperationAuditRunReadCode::AttemptMissing, InLimits);
-    }
-    if (attemptStatusError || std::filesystem::is_symlink(attemptStatus) ||
-        !std::filesystem::is_directory(attemptStatus)) {
-        return Result(OperationAuditRunReadCode::NonRegularEvidence, InLimits);
-    }
+} // namespace
 
-    if (const auto marker = ProbeMarkers(*paths, InSpec, InRunId, InAttempt,
+auto ReadOperationAuditRunFromPinnedDirectory(
+    const AuditEvidenceDirectory& InDirectory,
+    const OperationAuditPaths& InPaths,
+    const OperationAuditSpec& InSpec,
+    const std::string_view InRunId,
+    const std::uint32_t InAttempt,
+    OperationAuditRunReadLimits InLimits,
+    const std::optional<std::string_view> InExpectedReceiptId,
+    const OperationAuditRunReadPolicy InPolicy)
+    -> OperationAuditRunReadResult {
+    if (const auto invalid = ValidateReadRequest(
+            InSpec, InRunId, InAttempt, &InLimits, InExpectedReceiptId, InPolicy))
+        return *invalid;
+
+    if (const auto marker = ProbeMarkers(InDirectory, InPaths, InSpec, InRunId, InAttempt,
                                          InLimits, InPolicy.markerMatch)) {
         return *marker;
     }
     const auto failAfterMarkerProbe = [&](const OperationAuditRunReadCode InCode) {
-        if (const auto marker = ProbeMarkers(*paths, InSpec, InRunId, InAttempt,
+        if (const auto marker = ProbeMarkers(InDirectory, InPaths, InSpec, InRunId, InAttempt,
                                              InLimits, InPolicy.markerMatch)) {
             return *marker;
         }
         return Result(InCode, InLimits);
     };
 
-    auto eventsInput = ReadEvidence(paths->events, InLimits.maxEventStreamBytes);
-    if (eventsInput.state != EvidenceInputState::Ready)
-        return failAfterMarkerProbe(CodeFor(eventsInput.state));
-    auto receiptInput = ReadEvidence(paths->receipt, InLimits.maxInputBytes);
-    if (receiptInput.state != EvidenceInputState::Ready)
-        return failAfterMarkerProbe(CodeFor(receiptInput.state));
-    auto frozenInput = ReadEvidence(paths->frozenInput, InLimits.maxInputBytes);
-    if (frozenInput.state != EvidenceInputState::Ready)
-        return failAfterMarkerProbe(CodeFor(frozenInput.state));
+    auto eventsInput = ReadEvidence(InDirectory, InPaths.events.filename().string(),
+                                    InLimits.maxEventStreamBytes);
+    if (!eventsInput.ready())
+        return failAfterMarkerProbe(CodeFor(eventsInput.code));
+    auto receiptInput = ReadEvidence(InDirectory, InPaths.receipt.filename().string(),
+                                     InLimits.maxInputBytes);
+    if (!receiptInput.ready())
+        return failAfterMarkerProbe(CodeFor(receiptInput.code));
+    auto frozenInput = ReadEvidence(InDirectory, InPaths.frozenInput.filename().string(),
+                                    InLimits.maxInputBytes);
+    if (!frozenInput.ready())
+        return failAfterMarkerProbe(CodeFor(frozenInput.code));
 
     // The audit contract permits a crash receipt before the first event.  Its
     // event stream is the empty byte sequence, which the general JSONL parser
@@ -781,7 +750,7 @@ auto ReadOperationAuditRun(const OperationAuditSpec& InSpec,
         return failAfterMarkerProbe(*frozenError);
     }
 
-    if (const auto marker = ProbeMarkers(*paths, InSpec, InRunId, InAttempt,
+    if (const auto marker = ProbeMarkers(InDirectory, InPaths, InSpec, InRunId, InAttempt,
                                          InLimits, InPolicy.markerMatch)) {
         return *marker;
     }
@@ -794,6 +763,38 @@ auto ReadOperationAuditRun(const OperationAuditSpec& InSpec,
                                                  : OperationAuditRunReadState::Ready,
             .code = OperationAuditRunReadCode::None,
             .run = std::move(projection)};
+}
+
+auto ReadOperationAuditRun(const OperationAuditSpec& InSpec,
+                           const std::string_view InRunId,
+                           const std::uint32_t InAttempt,
+                           OperationAuditRunReadLimits InLimits,
+                           const std::optional<std::string_view> InExpectedReceiptId,
+                           const OperationAuditRunReadPolicy InPolicy)
+    -> OperationAuditRunReadResult {
+    if (const auto invalid = ValidateReadRequest(
+            InSpec, InRunId, InAttempt, &InLimits, InExpectedReceiptId, InPolicy))
+        return *invalid;
+
+    std::string error;
+    const auto paths = ResolveOperationAuditPaths(InSpec, InRunId, InAttempt, &error);
+    if (!paths)
+        return Result(OperationAuditRunReadCode::InvalidIdentity, InLimits);
+
+    AuditEvidenceOpenCode directoryCode = AuditEvidenceOpenCode::IoError;
+    auto directory = AuditEvidenceDirectory::Open(*paths, &directoryCode);
+    if (!directory && directoryCode == AuditEvidenceOpenCode::Missing)
+        return Result(OperationAuditRunReadCode::AttemptMissing, InLimits);
+    if (!directory) {
+        const bool nonRegular = directoryCode == AuditEvidenceOpenCode::LoopOrReparse ||
+            directoryCode == AuditEvidenceOpenCode::NotDirectory;
+        return Result(nonRegular ? OperationAuditRunReadCode::NonRegularEvidence
+                                 : OperationAuditRunReadCode::UnstableEvidence,
+                      InLimits);
+    }
+    return ReadOperationAuditRunFromPinnedDirectory(
+        *directory, *paths, InSpec, InRunId, InAttempt, InLimits,
+        InExpectedReceiptId, InPolicy);
 }
 
 } // namespace kano::git::commands

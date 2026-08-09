@@ -78,6 +78,7 @@ target_link_libraries(kano_git_commit_plan_tests
 target_include_directories(kano_git_commit_plan_tests
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
   PRIVATE "${KANO_GIT_COMMAND_ROOT}/commit_plan/private"
+  PRIVATE "${KANO_GIT_COMMAND_ROOT}/runtime/private"
 )
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
