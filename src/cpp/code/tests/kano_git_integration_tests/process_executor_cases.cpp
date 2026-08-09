@@ -60,6 +60,81 @@ TEST_CASE("capture drains high-volume stdout and stderr without deadlock",
     REQUIRE(elapsed < std::chrono::seconds(15));
 }
 
+TEST_CASE("bounded capture preserves complete progress callbacks",
+          "[integration][process][capture][limits][KG-BUG-0100]") {
+    std::string progress_stdout;
+    std::string progress_stderr;
+    const shell::ProgressCallback progress = [&](const std::string_view chunk, const bool is_stderr) {
+        auto& destination = is_stderr ? progress_stderr : progress_stdout;
+        destination.append(chunk.data(), chunk.size());
+    };
+
+#if defined(_WIN32)
+    const std::string program = "powershell";
+    const std::vector<std::string> args{
+        "-NoProfile",
+        "-Command",
+        "$out=[Console]::OpenStandardOutput();"
+        "$err=[Console]::OpenStandardError();"
+        "$stdoutBytes=New-Object byte[] 512;"
+        "$stderrBytes=New-Object byte[] 384;"
+        "$out.Write($stdoutBytes,0,$stdoutBytes.Length);"
+        "$err.Write($stderrBytes,0,$stderrBytes.Length)"
+    };
+#else
+    const std::string program = "sh";
+    const std::vector<std::string> args{
+        "-c",
+        "head -c 512 /dev/zero; head -c 384 /dev/zero >&2"
+    };
+#endif
+
+    const auto result = shell::ExecuteCommand(
+        program,
+        args,
+        shell::ExecMode::Capture,
+        std::nullopt,
+        progress,
+        15000,
+        shell::CaptureLimits{7, 5});
+
+    REQUIRE(result.exitCode == 0);
+    REQUIRE(result.stdoutStr.size() == 7);
+    REQUIRE(result.stderrStr.size() == 5);
+    REQUIRE(result.stdoutTruncated);
+    REQUIRE(result.stderrTruncated);
+    REQUIRE(progress_stdout.size() == 512);
+    REQUIRE(progress_stderr.size() == 384);
+}
+
+TEST_CASE("bounded capture includes timeout diagnostics in the stderr limit",
+          "[integration][process][capture][limits][timeout][KG-BUG-0100]") {
+#if defined(_WIN32)
+    const std::string program = "cmd";
+    const std::vector<std::string> args{
+        "/c",
+        "echo ERR 1>&2 & powershell -NoProfile -Command \"Start-Sleep -Seconds 2\""
+    };
+#else
+    const std::string program = "sh";
+    const std::vector<std::string> args{"-c", "printf ERR >&2; sleep 2"};
+#endif
+
+    const auto result = shell::ExecuteCommand(
+        program,
+        args,
+        shell::ExecMode::Capture,
+        std::nullopt,
+        shell::ProgressCallback{},
+        75,
+        shell::CaptureLimits{0, 8});
+
+    REQUIRE(result.exitCode == 124);
+    REQUIRE(result.stderrStr.size() == 8);
+    REQUIRE(result.stderrStr.starts_with("ERR"));
+    REQUIRE(result.stderrTruncated);
+}
+
 TEST_CASE("capture timeout terminates a long-running child deterministically",
           "[integration][process][timeout]") {
 #if defined(_WIN32)
