@@ -3899,6 +3899,53 @@ bool CheckoutTargetBranch(const std::filesystem::path& repoPath,
     return true;
 }
 
+shell::ExecResult FastForwardTargetWithoutMerge(
+    const std::filesystem::path& repoPath,
+    const std::string& targetRef,
+    const std::string& sourceRef) {
+    const auto targetHead = GitCapture(
+        repoPath, {"rev-parse", "--verify", targetRef + "^{commit}"});
+    if (targetHead.exitCode != 0) return targetHead;
+
+    const auto sourceHead = GitCapture(
+        repoPath, {"rev-parse", "--verify", sourceRef + "^{commit}"});
+    if (sourceHead.exitCode != 0) return sourceHead;
+
+    const auto targetSha = Trim(targetHead.stdoutStr);
+    const auto sourceSha = Trim(sourceHead.stdoutStr);
+    const auto targetIsAncestor = GitCapture(
+        repoPath, {"merge-base", "--is-ancestor", targetSha, sourceSha});
+    if (targetIsAncestor.exitCode > 1) return targetIsAncestor;
+    if (targetIsAncestor.exitCode == 1) {
+        const auto sourceIsAncestor = GitCapture(
+            repoPath, {"merge-base", "--is-ancestor", sourceSha, targetSha});
+        if (sourceIsAncestor.exitCode == 0) return sourceIsAncestor;
+        if (sourceIsAncestor.exitCode > 1) return sourceIsAncestor;
+
+        auto failed = targetIsAncestor;
+        if (failed.stderrStr.empty()) {
+            failed.stderrStr = "resolved target and source commits have diverged";
+        }
+        return failed;
+    }
+    if (targetSha == sourceSha) return targetIsAncestor;
+
+    const auto reset = GitCapture(repoPath, {"reset", "--keep", sourceSha});
+    if (reset.exitCode != 0) return reset;
+
+    const auto advancedHead = GitCapture(
+        repoPath, {"rev-parse", "--verify", targetRef + "^{commit}"});
+    if (advancedHead.exitCode != 0 || Trim(advancedHead.stdoutStr) != sourceSha) {
+        auto failed = advancedHead;
+        failed.exitCode = failed.exitCode == 0 ? 1 : failed.exitCode;
+        if (failed.stderrStr.empty()) {
+            failed.stderrStr = "target ref did not advance to the resolved source commit";
+        }
+        return failed;
+    }
+    return reset;
+}
+
 bool SyncTargetBranch(const std::filesystem::path& repoPath,
                       const std::string& repoId,
                       const std::string& targetBranch,
@@ -3933,9 +3980,10 @@ bool SyncTargetBranch(const std::filesystem::path& repoPath,
         return true;
     }
 
-    const auto merge = GitCapture(repoPath, {"merge", "--ff-only", upstream});
-    if (merge.exitCode != 0) {
-        AppendBranchBlocked(result, repoId, targetBranch, {"TARGET_FAST_FORWARD_FAILED"}, CombinedGitError(merge));
+    const auto fastForward = FastForwardTargetWithoutMerge(
+        repoPath, targetBranch, upstream);
+    if (fastForward.exitCode != 0) {
+        AppendBranchBlocked(result, repoId, targetBranch, {"TARGET_FAST_FORWARD_FAILED"}, CombinedGitError(fastForward));
         return false;
     }
     result["targetSync"].push_back({
@@ -5489,7 +5537,8 @@ int RunBranchApply(const std::filesystem::path& root,
                         AppendBranchBlocked(result, repoId, branch, {"REBASE_APPLY_REQUIRES_FAST_FORWARD_TARGET"}, "default rebase apply only advances target when target is an ancestor of the branch");
                         continue;
                     }
-                    integrate = GitCapture(targetCheckoutPath, {"merge", "--ff-only", branch});
+                    integrate = FastForwardTargetWithoutMerge(
+                        targetCheckoutPath, targetBranch, branch);
                 }
                 if (strategy != "cherry-pick" && integrate.exitCode != 0) {
                     AppendBranchBlocked(result, repoId, branch, {"BRANCH_INTEGRATION_FAILED"}, CombinedGitError(integrate));

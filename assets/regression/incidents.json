@@ -450,6 +450,55 @@
           "mapping_state": "source-linked"
         }
       ]
+    },
+    {
+      "incident_id": "KG-BUG-0101",
+      "incident_date": "2026-08-13",
+      "root_cause": "Operation-audit reservation and publication used ordinary Win32 filesystem and CreateFileW paths. An absorbed submodule common Git directory produced a 265-character publication path, so agent-mode converge failed before Git mutation with Win32 error 3.",
+      "backlog_ref": "KG-BUG-0101",
+      "change_ref": "KG-BUG-0101",
+      "workflow_contracts": [
+        "absorbed-submodule-audit",
+        "exclusive-audit-reservation",
+        "long-path-native-io"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KG-BUG-0101/absorbed-submodule-long-audit-path",
+          "test_name": "KG-BUG-0101 operation audit reserves long paths in an absorbed submodule common git directory",
+          "test_file": "src/cpp/code/tests/kano_git_commit_plan_tests/unit/test_commit_plan_audit.cpp",
+          "test_kind": "unit",
+          "mapping_state": "source-linked"
+        }
+      ]
+    },
+    {
+      "incident_id": "KG-BUG-0102",
+      "incident_date": "2026-08-13",
+      "root_cause": "The default converge rebase strategy delegated target synchronization and source integration to git merge --ff-only, so an operation requested as merge-free still invoked Git's merge porcelain.",
+      "backlog_ref": "KG-BUG-0102",
+      "change_ref": "KG-BUG-0102",
+      "workflow_contracts": [
+        "agent-mode-branch-convergence",
+        "exact-history-fast-forward",
+        "merge-free-rebase-strategy"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KG-BUG-0102/stale-target-and-source-fast-forward",
+          "test_name": "converge branches apply fast-forwards target without git merge and pushes",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/converge_planner_test.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-BUG-0102/target-already-ahead",
+          "test_name": "converge branches retire keeps a target already ahead of upstream",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/converge_planner_test.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        }
+      ]
     }
   ]
 }
