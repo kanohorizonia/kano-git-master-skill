@@ -11,13 +11,16 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstring>
 #include <filesystem>
 #include <iterator>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #if defined(_WIN32)
@@ -347,30 +350,67 @@ class ScopedWindowsEnvironment final {
     std::string previous_;
 };
 
+class WindowsConPtyConstruction final {
+  public:
+    ~WindowsConPtyConstruction() {
+        if (process != nullptr) {
+            (void)TerminateProcess(process, 255);
+            (void)WaitForSingleObject(process, 1000);
+            (void)CloseHandle(process);
+        }
+        if (inputRead != nullptr) (void)CloseHandle(inputRead);
+        if (inputWrite != nullptr) (void)CloseHandle(inputWrite);
+        if (outputWrite != nullptr) (void)CloseHandle(outputWrite);
+        // No reader is running until construction is fully successful, so
+        // close this endpoint before ConPTY to avoid the legacy deadlock.
+        if (outputRead != nullptr) (void)CloseHandle(outputRead);
+        if (pseudoConsole != nullptr) ClosePseudoConsole(pseudoConsole);
+        if (attributesInitialized) {
+            DeleteProcThreadAttributeList(
+                reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attributes.data()));
+        }
+    }
+
+    HANDLE inputRead = nullptr;
+    HANDLE inputWrite = nullptr;
+    HANDLE outputRead = nullptr;
+    HANDLE outputWrite = nullptr;
+    HPCON pseudoConsole = nullptr;
+    HANDLE process = nullptr;
+    std::vector<std::byte> attributes;
+    bool attributesInitialized = false;
+};
+
 class WindowsConPtyProcess final {
   public:
     WindowsConPtyProcess(const std::filesystem::path& InProgram,
                          const std::filesystem::path& InProductionBinary) {
-        REQUIRE(CreatePipe(&inputRead_, &inputWrite_, nullptr, 0));
-        REQUIRE(CreatePipe(&outputRead_, &outputWrite_, nullptr, 0));
-        REQUIRE(SetHandleInformation(inputWrite_, HANDLE_FLAG_INHERIT, 0));
-        REQUIRE(SetHandleInformation(outputRead_, HANDLE_FLAG_INHERIT, 0));
+        WindowsConPtyConstruction construction;
+        REQUIRE(CreatePipe(&construction.inputRead, &construction.inputWrite, nullptr, 0));
+        REQUIRE(CreatePipe(&construction.outputRead, &construction.outputWrite, nullptr, 0));
+        REQUIRE(SetHandleInformation(construction.inputWrite, HANDLE_FLAG_INHERIT, 0));
+        REQUIRE(SetHandleInformation(construction.outputRead, HANDLE_FLAG_INHERIT, 0));
         const auto conptyResult =
-            CreatePseudoConsole(COORD{100, 30}, inputRead_, outputWrite_, 0, &pseudoConsole_);
+            CreatePseudoConsole(COORD{100, 30}, construction.inputRead,
+                construction.outputWrite, 0, &construction.pseudoConsole);
         INFO("ConPTY creation HRESULT=" << static_cast<long>(conptyResult)
              << "; KG-TSK-0138 requires a Windows 10 1809+ runner");
         REQUIRE(SUCCEEDED(conptyResult));
-        CloseHandle(inputRead_); inputRead_ = nullptr;
-        CloseHandle(outputWrite_); outputWrite_ = nullptr;
+        CloseHandle(construction.inputRead); construction.inputRead = nullptr;
+        CloseHandle(construction.outputWrite); construction.outputWrite = nullptr;
 
         SIZE_T bytes = 0;
         InitializeProcThreadAttributeList(nullptr, 1, 0, &bytes);
-        attributes_.resize(bytes);
-        auto* list = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attributes_.data());
-        REQUIRE(InitializeProcThreadAttributeList(list, 1, 0, &bytes));
+        construction.attributes.resize(bytes);
+        auto* list = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(
+            construction.attributes.data());
+        const BOOL attributesInitialized =
+            InitializeProcThreadAttributeList(list, 1, 0, &bytes);
+        construction.attributesInitialized = attributesInitialized != FALSE;
+        REQUIRE(attributesInitialized);
         REQUIRE(UpdateProcThreadAttribute(
-            list, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, pseudoConsole_,
-            sizeof(pseudoConsole_), nullptr, nullptr));
+            list, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, construction.pseudoConsole,
+            sizeof(construction.pseudoConsole), nullptr, nullptr));
 
         STARTUPINFOEXW startup{};
         startup.StartupInfo.cb = sizeof(startup);
@@ -382,8 +422,22 @@ class WindowsConPtyProcess final {
             nullptr, command.data(), nullptr, nullptr, FALSE,
             EXTENDED_STARTUPINFO_PRESENT, nullptr, nullptr,
             &startup.StartupInfo, &process));
-        process_ = process.hProcess;
+        construction.process = process.hProcess;
         CloseHandle(process.hThread);
+        outputReader_ = std::thread([this, output = construction.outputRead] {
+            ReadOutputUntilClosed(output);
+        });
+
+        inputWrite_ = construction.inputWrite;
+        construction.inputWrite = nullptr;
+        outputRead_ = construction.outputRead;
+        construction.outputRead = nullptr;
+        pseudoConsole_ = construction.pseudoConsole;
+        construction.pseudoConsole = nullptr;
+        process_ = construction.process;
+        construction.process = nullptr;
+        attributes_ = std::move(construction.attributes);
+        construction.attributesInitialized = false;
     }
 
     ~WindowsConPtyProcess() {
@@ -391,15 +445,21 @@ class WindowsConPtyProcess final {
             TerminateProcess(process_, 255);
             WaitForSingleObject(process_, 1000);
             CloseHandle(process_);
+            process_ = nullptr;
         }
         if (inputRead_ != nullptr) CloseHandle(inputRead_);
         if (inputWrite_ != nullptr) CloseHandle(inputWrite_);
         if (outputWrite_ != nullptr) CloseHandle(outputWrite_);
         // Windows versions before 11 24H2 can block ClosePseudoConsole while
-        // an unread output pipe remains attached.  This harness has already
-        // retained/drained its bounded evidence, so close that endpoint first.
+        // an unread output pipe remains attached. Keep the dedicated reader
+        // draining until ConPTY closes its writer, then join it before closing
+        // our read endpoint.
+        if (pseudoConsole_ != nullptr) {
+            ClosePseudoConsole(pseudoConsole_);
+            pseudoConsole_ = nullptr;
+        }
+        if (outputReader_.joinable()) outputReader_.join();
         if (outputRead_ != nullptr) CloseHandle(outputRead_);
-        if (pseudoConsole_ != nullptr) ClosePseudoConsole(pseudoConsole_);
         if (!attributes_.empty()) {
             DeleteProcThreadAttributeList(
                 reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attributes_.data()));
@@ -412,8 +472,10 @@ class WindowsConPtyProcess final {
     auto AwaitFirstFrame() -> bool { return AwaitText("q/Escape exits"); }
 
     auto Resize(const short InColumns, const short InRows) -> bool {
-        DrainAvailableOutput();
-        resizeTranscriptOffset_ = transcript_.size();
+        {
+            std::scoped_lock lock(transcriptMutex_);
+            resizeTranscriptOffset_ = transcript_.size();
+        }
         return SUCCEEDED(ResizePseudoConsole(pseudoConsole_, COORD{InColumns, InRows}));
     }
 
@@ -432,7 +494,6 @@ class WindowsConPtyProcess final {
     auto WaitForExit(int& OutExitCode) -> bool {
         const auto deadline = std::chrono::steady_clock::now() + kTerminalDeadline;
         while (std::chrono::steady_clock::now() < deadline) {
-            DrainAvailableOutput();
             const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
                 deadline - std::chrono::steady_clock::now());
             const auto waitMilliseconds = std::clamp<std::chrono::milliseconds::rep>(
@@ -445,16 +506,39 @@ class WindowsConPtyProcess final {
                 OutExitCode = static_cast<int>(code);
                 CloseHandle(process_);
                 process_ = nullptr;
-                DrainAvailableOutput();
-                return true;
+                if (inputWrite_ != nullptr) {
+                    CloseHandle(inputWrite_);
+                    inputWrite_ = nullptr;
+                }
+                if (pseudoConsole_ != nullptr) {
+                    ClosePseudoConsole(pseudoConsole_);
+                    pseudoConsole_ = nullptr;
+                }
+                std::unique_lock lock(transcriptMutex_);
+                const bool outputClosed = transcriptChanged_.wait_until(
+                    lock, deadline, [this] { return outputClosed_; });
+                lock.unlock();
+                if (!outputClosed && outputReader_.joinable()) {
+                    (void)CancelSynchronousIo(outputReader_.native_handle());
+                }
+                if (outputReader_.joinable()) outputReader_.join();
+                if (outputRead_ != nullptr) {
+                    CloseHandle(outputRead_);
+                    outputRead_ = nullptr;
+                }
+                return outputClosed;
             }
             if (result != WAIT_TIMEOUT) return false;
         }
         return false;
     }
 
-    [[nodiscard]] auto Transcript() const -> const std::string& { return transcript_; }
+    [[nodiscard]] auto Transcript() const -> std::string {
+        std::scoped_lock lock(transcriptMutex_);
+        return transcript_;
+    }
     [[nodiscard]] auto TranscriptWasTruncated() const -> bool {
+        std::scoped_lock lock(transcriptMutex_);
         return transcriptTruncated_;
     }
 
@@ -466,47 +550,39 @@ class WindowsConPtyProcess final {
     auto AwaitTextFrom(const std::string_view InNeedle,
                        const std::size_t InOffset) -> bool {
         const auto deadline = std::chrono::steady_clock::now() + kTerminalDeadline;
-        while (std::chrono::steady_clock::now() < deadline) {
-            if (transcript_.find(InNeedle, InOffset) != std::string::npos) {
-                return true;
-            }
-            (void)AwaitOutput(std::chrono::milliseconds(100));
+        std::unique_lock lock(transcriptMutex_);
+        const auto found = [&] {
+            return transcript_.find(InNeedle, InOffset) != std::string::npos;
+        };
+        while (!found() && !outputClosed_) {
+            if (transcriptChanged_.wait_until(lock, deadline) ==
+                std::cv_status::timeout) break;
         }
-        return transcript_.find(InNeedle, InOffset) != std::string::npos;
+        return found();
     }
 
-    auto AwaitOutput(const std::chrono::milliseconds InTimeout) -> bool {
-        const auto deadline = std::chrono::steady_clock::now() + InTimeout;
-        while (std::chrono::steady_clock::now() < deadline) {
-            if (DrainAvailableOutput()) return true;
-            if (WaitForSingleObject(process_, 25) == WAIT_OBJECT_0) return false;
-        }
-        return false;
-    }
-
-    auto DrainAvailableOutput() -> bool {
-        bool received = false;
+    auto ReadOutputUntilClosed(const HANDLE InOutput) -> void {
         std::array<char, 4096> buffer{};
-        DWORD available = 0;
-        while (PeekNamedPipe(outputRead_, nullptr, 0, nullptr, &available, nullptr) &&
-               available > 0) {
-            const DWORD wanted = static_cast<DWORD>(std::min<std::size_t>(
-                buffer.size(), static_cast<std::size_t>(available)));
+        while (true) {
             DWORD count = 0;
-            if (!ReadFile(outputRead_, buffer.data(), wanted, &count, nullptr) || count == 0) break;
-            const auto bytesRead = static_cast<std::size_t>(count);
-            const auto retainedCapacity =
-                kMaximumTranscriptBytes - transcript_.size();
-            const auto bytesRetained = std::min(
-                bytesRead,
-                retainedCapacity);
-            transcript_.append(buffer.data(), bytesRetained);
-            if (bytesRetained < bytesRead) {
-                transcriptTruncated_ = true;
+            if (!ReadFile(InOutput, buffer.data(), static_cast<DWORD>(buffer.size()),
+                    &count, nullptr) || count == 0) {
+                std::scoped_lock lock(transcriptMutex_);
+                outputClosed_ = true;
+                transcriptChanged_.notify_all();
+                return;
             }
-            received = true;
+            const auto bytesRead = static_cast<std::size_t>(count);
+            {
+                std::scoped_lock lock(transcriptMutex_);
+                const auto retainedCapacity =
+                    kMaximumTranscriptBytes - transcript_.size();
+                const auto bytesRetained = std::min(bytesRead, retainedCapacity);
+                transcript_.append(buffer.data(), bytesRetained);
+                if (bytesRetained < bytesRead) transcriptTruncated_ = true;
+            }
+            transcriptChanged_.notify_all();
         }
-        return received;
     }
 
     HANDLE inputRead_ = nullptr;
@@ -516,9 +592,13 @@ class WindowsConPtyProcess final {
     HPCON pseudoConsole_ = nullptr;
     HANDLE process_ = nullptr;
     std::vector<std::byte> attributes_;
+    std::thread outputReader_;
+    mutable std::mutex transcriptMutex_;
+    std::condition_variable transcriptChanged_;
     std::string transcript_;
     std::size_t resizeTranscriptOffset_ = 0U;
     bool transcriptTruncated_ = false;
+    bool outputClosed_ = false;
 };
 
 auto RunWindowsTerminalExitSmoke(const std::string_view InInput,
@@ -546,8 +626,8 @@ auto RunWindowsTerminalExitSmoke(const std::string_view InInput,
     REQUIRE(process.AwaitResizedFrame(121));
     REQUIRE(process.Write(InInput));
     int exitCode = -1;
-    INFO("bounded ConPTY transcript: " << process.Transcript());
     REQUIRE(process.WaitForExit(exitCode));
+    INFO("bounded ConPTY transcript: " << process.Transcript());
     CHECK(exitCode == 0);
     CHECK(process.Transcript().size() <= kMaximumTranscriptBytes);
     CHECK_FALSE(process.TranscriptWasTruncated());
