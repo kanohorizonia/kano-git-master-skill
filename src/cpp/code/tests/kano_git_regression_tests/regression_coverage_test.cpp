@@ -390,7 +390,7 @@ TEST_CASE("dogfood incident manifest maps stable source cases without execution 
 
   INFO(loaded.error);
   REQUIRE(loaded.ok);
-  REQUIRE(loaded.report.incidents.size() == 20);
+  REQUIRE(loaded.report.incidents.size() == 22);
   REQUIRE(loaded.report.gaps.empty());
 
   const auto auditIncident = std::find_if(
@@ -467,22 +467,38 @@ TEST_CASE("dogfood incident manifest maps stable source cases without execution 
   REQUIRE(historyOrderIncident != loaded.report.incidents.end());
   REQUIRE(historyOrderIncident->regressionCases.size() == 2);
 
+  const auto evidenceTruthIncident = std::find_if(
+      loaded.report.incidents.begin(), loaded.report.incidents.end(),
+      [](const Incident &InIncident) {
+        return InIncident.incidentId == "KG-BUG-0105";
+      });
+  REQUIRE(evidenceTruthIncident != loaded.report.incidents.end());
+  REQUIRE(evidenceTruthIncident->regressionCases.size() == 1);
+
+  const auto terminalAdmissionIncident = std::find_if(
+      loaded.report.incidents.begin(), loaded.report.incidents.end(),
+      [](const Incident &InIncident) {
+        return InIncident.incidentId == "KG-BUG-0108";
+      });
+  REQUIRE(terminalAdmissionIncident != loaded.report.incidents.end());
+  REQUIRE(terminalAdmissionIncident->regressionCases.size() == 1);
+
   std::size_t linkedCaseCount = 0;
   for (const auto &incident : loaded.report.incidents) {
     linkedCaseCount += incident.regressionCases.size();
   }
-  REQUIRE(linkedCaseCount == 54);
+  REQUIRE(linkedCaseCount == 56);
 
   const auto text = RenderCoverageText(loaded.report);
   REQUIRE(text.find("execution_evidence=not-evaluated") != std::string::npos);
-  REQUIRE(text.find("linked_cases=54") != std::string::npos);
+  REQUIRE(text.find("linked_cases=56") != std::string::npos);
   REQUIRE_FALSE(HasExactLine(text, "execution_evidence=passed"));
   REQUIRE_FALSE(HasExactLine(text, "execution_evidence=executed"));
 
   const auto json = RenderCoverageJson(loaded.report);
   REQUIRE(json.find("\"execution_evidence\": \"not-evaluated\"") !=
           std::string::npos);
-  REQUIRE(json.find("\"linked_cases\": 54") != std::string::npos);
+  REQUIRE(json.find("\"linked_cases\": 56") != std::string::npos);
 }
 
 TEST_CASE("default registry paths and exact test names resolve to source",

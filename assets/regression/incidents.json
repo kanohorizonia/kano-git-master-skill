@@ -647,6 +647,48 @@
           "mapping_state": "source-linked"
         }
       ]
+    },
+    {
+      "incident_id": "KG-BUG-0105",
+      "incident_date": "2026-08-13",
+      "root_cause": "The audit frame projected evidenceAvailable=true for every verified receipt, so a verified run with zero total and zero retained evidence was falsely presented as having retained evidence, while redacted, withheld, truncated, and contradictory count states could not be represented truthfully.",
+      "backlog_ref": "KG-BUG-0105",
+      "change_ref": "e1646ffe2b32e8b642313c470a5a93c06e24b228",
+      "workflow_contracts": [
+        "audit-evidence-projection",
+        "bounded-audit-frame",
+        "retained-evidence-truth"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KG-BUG-0105/count-derived-evidence-availability",
+          "test_name": "audit receipt evidence availability is count-derived and bounded",
+          "test_file": "src/cpp/code/tests/kano_git_tui_tests/unit/test_tui_audit_frame.cpp",
+          "test_kind": "unit",
+          "mapping_state": "source-linked"
+        }
+      ]
+    },
+    {
+      "incident_id": "KG-BUG-0108",
+      "incident_date": "2026-08-13",
+      "root_cause": "Both interactive TUI entrypoints reached terminal capture and FTXUI fullscreen setup without a shared capability preflight, so redirected or non-interactive invocations could emit terminal control sequences and Windows capability probing could mutate console state before restoration ownership existed.",
+      "backlog_ref": "KG-BUG-0108",
+      "change_ref": "7b7c69b586a98a51cc337ee58bdd3cdad8f58d55",
+      "workflow_contracts": [
+        "interactive-terminal-admission",
+        "no-ansi-on-redirected-streams",
+        "terminal-state-restoration"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KG-BUG-0108/redirected-entrypoints-fail-closed",
+          "test_name": "redirected standard streams reject both interactive TUI entrypoints cleanly",
+          "test_file": "src/cpp/code/tests/kano_git_tui_tests/integration/test_main.cpp",
+          "test_kind": "integration",
+          "mapping_state": "source-linked"
+        }
+      ]
     }
   ]
 }

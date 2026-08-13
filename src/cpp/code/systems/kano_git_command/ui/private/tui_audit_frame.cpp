@@ -307,6 +307,49 @@ auto LoadDecorator(const TuiAuditLoad InLoad,
 
 auto ReceiptStateLabel(TuiAuditReceiptState InState) -> std::string_view;
 
+auto EvidenceAvailabilityLabel(
+    const TuiAuditEvidenceAvailability InAvailability) -> std::string_view {
+    switch (InAvailability) {
+        case TuiAuditEvidenceAvailability::None: return "none";
+        case TuiAuditEvidenceAvailability::Retained: return "retained";
+        case TuiAuditEvidenceAvailability::Unavailable: return "unavailable";
+        case TuiAuditEvidenceAvailability::Inconsistent: return "inconsistent";
+    }
+    return "unavailable";
+}
+
+auto CompactEvidenceAvailabilityLabel(
+    const TuiAuditEvidenceAvailability InAvailability) -> std::string_view {
+    switch (InAvailability) {
+        case TuiAuditEvidenceAvailability::None: return "none";
+        case TuiAuditEvidenceAvailability::Retained: return "kept";
+        case TuiAuditEvidenceAvailability::Unavailable: return "unavail";
+        case TuiAuditEvidenceAvailability::Inconsistent: return "incons";
+    }
+    return "unavail";
+}
+
+auto ProjectEvidenceAvailability(const OperationAuditRunProjection& InRun)
+    -> TuiAuditEvidenceAvailability {
+    if (InRun.retainedEvidenceReferences > InRun.totalEvidenceReferences) {
+        return TuiAuditEvidenceAvailability::Inconsistent;
+    }
+    const bool bExpectedEvidenceTruncated =
+        InRun.retainedEvidenceReferences < InRun.totalEvidenceReferences;
+    if (InRun.evidenceTruncated != bExpectedEvidenceTruncated) {
+        return TuiAuditEvidenceAvailability::Inconsistent;
+    }
+    if (InRun.totalEvidenceReferences == 0U) {
+        return InRun.hasRedactedEvidence || InRun.hasWithheldEvidence
+            ? TuiAuditEvidenceAvailability::Inconsistent
+            : TuiAuditEvidenceAvailability::None;
+    }
+    if (InRun.retainedEvidenceReferences > 0U) {
+        return TuiAuditEvidenceAvailability::Retained;
+    }
+    return TuiAuditEvidenceAvailability::Unavailable;
+}
+
 auto AuditEvidenceLine(const TuiAuditFrameModel& InModel) -> std::string {
     if (InModel.receiptState == TuiAuditReceiptState::Linked) {
         return "audit: run=" +
@@ -372,7 +415,9 @@ auto CompactGuidanceForView(const TuiAuditView InView) -> std::string_view {
 }
 
 auto CompactEvidenceLine(const TuiAuditFrameModel& InModel) -> std::string {
-    std::string line = InModel.evidenceAvailable ? "ev=retained" : "ev=none";
+    std::string line = "ev=" +
+        std::string(CompactEvidenceAvailabilityLabel(
+            InModel.evidenceAvailability));
     if (InModel.evidenceRedacted) {
         line += " redacted";
     }
@@ -408,7 +453,9 @@ auto ProjectTuiAuditReceiptTruth(
     if (!InReadResult.has_value()) {
         return {.state = TuiAuditReceiptState::Missing,
                 .load = TuiAuditLoad::Empty,
-                .receiptAbsenceReason = "no audit receipt read"};
+                .receiptAbsenceReason = "no audit receipt read",
+                .evidenceAvailability =
+                    TuiAuditEvidenceAvailability::Unavailable};
     }
 
     const auto& result = *InReadResult;
@@ -421,14 +468,10 @@ auto ProjectTuiAuditReceiptTruth(
             .receiptId = run.receiptId,
             .correlation = CorrelationText(run.correlation),
             .repository = RepositoryText(run),
-            .evidenceAvailable = true,
+            .evidenceAvailability = ProjectEvidenceAvailability(run),
             .evidenceRedacted = run.hasRedactedEvidence,
             .evidenceWithheld = run.hasWithheldEvidence,
-            .evidenceTruncated =
-                result.state == OperationAuditRunReadState::Truncated ||
-                result.diagnosticTruncated || run.previewTruncated ||
-                run.eventsTruncated || run.repositoriesTruncated ||
-                run.evidenceTruncated,
+            .evidenceTruncated = run.evidenceTruncated,
         };
     }
 
@@ -462,7 +505,7 @@ auto ProjectTuiAuditReceiptTruth(
                    ? TuiAuditLoad::Loading
                    : TuiAuditLoad::Failed),
         .receiptAbsenceReason = reason,
-        .evidenceTruncated = result.diagnosticTruncated,
+        .evidenceAvailability = TuiAuditEvidenceAvailability::Unavailable,
     };
 }
 
@@ -471,6 +514,11 @@ auto ApplyTuiAuditRunReadResult(
     const std::optional<OperationAuditRunReadResult>& InReadResult)
     -> TuiAuditFrameModel {
     if (!InReadResult.has_value()) {
+        InModel.evidenceAvailability =
+            TuiAuditEvidenceAvailability::Unavailable;
+        InModel.evidenceRedacted = false;
+        InModel.evidenceWithheld = false;
+        InModel.evidenceTruncated = false;
         return InModel;
     }
     const auto truth = ProjectTuiAuditReceiptTruth(InReadResult);
@@ -482,7 +530,7 @@ auto ApplyTuiAuditRunReadResult(
     InModel.scope = "workspace";
     InModel.repository = truth.repository;
     InModel.receiptAbsenceReason = truth.receiptAbsenceReason;
-    InModel.evidenceAvailable = truth.evidenceAvailable;
+    InModel.evidenceAvailability = truth.evidenceAvailability;
     InModel.evidenceRedacted = truth.evidenceRedacted;
     InModel.evidenceWithheld = truth.evidenceWithheld;
     InModel.evidenceTruncated = truth.evidenceTruncated;
@@ -593,9 +641,8 @@ auto RenderTuiAuditFrame(const TuiAuditFrameModel& InModel,
         " | observed=" + InModel.observedAtUtc));
     rows.push_back(paragraph(AuditEvidenceLine(InModel)));
 
-    std::string evidence = InModel.evidenceAvailable
-        ? "evidence: retained preview"
-        : "evidence: not projected in this view";
+    std::string evidence = "evidence: " +
+        std::string(EvidenceAvailabilityLabel(InModel.evidenceAvailability));
     if (InModel.evidenceRedacted) {
         evidence += " | redacted";
     }
