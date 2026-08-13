@@ -105,7 +105,7 @@ jobs:
         with:
           pixi-version: v0.67.2
           manifest-path: src/cpp/shared/infra/pixi.toml
-          run-install: false
+          run-install: true
           cache: true
           locked: true
           cache-key: tui-pr-deps-${{ runner.os }}-${{ runner.arch }}-
@@ -115,9 +115,6 @@ jobs:
         with:
           path: ${{ matrix.fetchcontent_sources }}
           key: tui-pr-fetchcontent-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('src/cpp/CMakeLists.txt', 'src/cpp/CMakePresets.json') }}
-
-      - name: Install locked shared-infra environment
-        run: pixi install --locked --manifest-path src/cpp/shared/infra/pixi.toml
 
       - name: Build release TUI binaries
         run: |
