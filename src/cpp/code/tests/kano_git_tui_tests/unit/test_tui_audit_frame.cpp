@@ -7,6 +7,7 @@
 
 #include <array>
 #include <cctype>
+#include <cstdint>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -102,11 +103,31 @@ auto VerifiedReadResult(const OperationAuditRunReadState InState)
     projection.hasRedactedEvidence = true;
     projection.hasWithheldEvidence = true;
     projection.eventsTruncated = true;
+    projection.evidenceTruncated = true;
+    projection.totalEvidenceReferences = 3;
+    projection.retainedEvidenceReferences = 1;
     return {
         .state = InState,
         .code = OperationAuditRunReadCode::None,
         .run = std::move(projection),
     };
+}
+
+auto VerifiedReadResultWithEvidence(const std::uint64_t InTotal,
+                                    const std::uint64_t InRetained,
+                                    const bool bInRedacted,
+                                    const bool bInWithheld,
+                                    const bool bInTruncated)
+    -> OperationAuditRunReadResult {
+    auto result = VerifiedReadResult(OperationAuditRunReadState::Ready);
+    auto& projection = *result.run;
+    projection.totalEvidenceReferences = InTotal;
+    projection.retainedEvidenceReferences = InRetained;
+    projection.hasRedactedEvidence = bInRedacted;
+    projection.hasWithheldEvidence = bInWithheld;
+    projection.eventsTruncated = false;
+    projection.evidenceTruncated = bInTruncated;
+    return result;
 }
 
 } // namespace
@@ -199,7 +220,7 @@ TEST_CASE("audit frame renders provenance and receipt truth",
         model.runId = "run-token";
         model.receiptId = "receipt-token";
         model.correlation = "correlation-token";
-        model.evidenceAvailable = true;
+        model.evidenceAvailability = TuiAuditEvidenceAvailability::Retained;
         model.evidenceRedacted = true;
         model.evidenceWithheld = true;
         model.evidenceTruncated = true;
@@ -291,6 +312,8 @@ TEST_CASE("narrow audit frame retains linked receipt and correlation identity",
     REQUIRE(rendered.find("redacted") != std::string::npos);
     REQUIRE(rendered.find("withheld") != std::string::npos);
     REQUIRE(rendered.find("trunc") != std::string::npos);
+    REQUIRE(rendered.find("ev=unavail redacted withheld trunc") !=
+            std::string::npos);
     REQUIRE(rendered.find(GetTuiKeyGuidance(TuiKeyContext::Preview).compactControls) !=
             std::string::npos);
     RequireBoundedFrame(rendered, geometry);
@@ -406,15 +429,30 @@ TEST_CASE("audit receipt truth projects verified and typed reader outcomes",
     SECTION("unread receipt is explicitly missing") {
         const auto truth = ProjectTuiAuditReceiptTruth(std::nullopt);
         REQUIRE(truth.state == TuiAuditReceiptState::Missing);
-        REQUIRE_FALSE(truth.evidenceAvailable);
+        REQUIRE(truth.evidenceAvailability ==
+                TuiAuditEvidenceAvailability::Unavailable);
         REQUIRE_FALSE(truth.receiptAbsenceReason.empty());
 
         auto model = BaseModel();
         model.receiptAbsenceReason = "view-specific-absence";
         model.load = TuiAuditLoad::Cancelled;
+        model.evidenceAvailability = TuiAuditEvidenceAvailability::Retained;
+        model.evidenceRedacted = true;
+        model.evidenceWithheld = true;
+        model.evidenceTruncated = true;
         const auto applied = ApplyTuiAuditRunReadResult(model, std::nullopt);
         REQUIRE(applied.receiptAbsenceReason == model.receiptAbsenceReason);
         REQUIRE(applied.load == model.load);
+        REQUIRE(applied.evidenceAvailability ==
+                TuiAuditEvidenceAvailability::Unavailable);
+        REQUIRE_FALSE(applied.evidenceRedacted);
+        REQUIRE_FALSE(applied.evidenceWithheld);
+        REQUIRE_FALSE(applied.evidenceTruncated);
+        const auto rendered = RenderTuiAuditFrameText(
+            applied,
+            TuiAuditFrameGeometry{120, 36},
+            {});
+        REQUIRE(rendered.find("evidence: unavailable") != std::string::npos);
     }
 
     for (const auto state : {OperationAuditRunReadState::Ready,
@@ -429,7 +467,8 @@ TEST_CASE("audit receipt truth projects verified and typed reader outcomes",
         REQUIRE(truth.repository.find("repo-token") != std::string::npos);
         REQUIRE(truth.repository.find("111111111111") != std::string::npos);
         REQUIRE(truth.repository.find("222222222222") != std::string::npos);
-        REQUIRE(truth.evidenceAvailable);
+        REQUIRE(truth.evidenceAvailability ==
+                TuiAuditEvidenceAvailability::Retained);
         REQUIRE(truth.evidenceRedacted);
         REQUIRE(truth.evidenceWithheld);
         REQUIRE(truth.evidenceTruncated);
@@ -449,6 +488,9 @@ TEST_CASE("audit receipt truth projects verified and typed reader outcomes",
         REQUIRE(truth.state == TuiAuditReceiptState::Missing);
         REQUIRE(truth.load == TuiAuditLoad::Empty);
         REQUIRE(truth.receiptAbsenceReason == result.diagnostic);
+        REQUIRE(truth.evidenceAvailability ==
+                TuiAuditEvidenceAvailability::Unavailable);
+        REQUIRE_FALSE(truth.evidenceTruncated);
 
         auto model = ApplyTuiAuditRunReadResult(BaseModel(), result);
         REQUIRE(model.receiptState == TuiAuditReceiptState::Missing);
@@ -456,9 +498,18 @@ TEST_CASE("audit receipt truth projects verified and typed reader outcomes",
         REQUIRE(model.scope == "workspace");
         REQUIRE(model.repository == "not available");
         REQUIRE(model.receiptAbsenceReason == result.diagnostic);
+        REQUIRE(model.evidenceAvailability ==
+                TuiAuditEvidenceAvailability::Unavailable);
+        const auto rendered = RenderTuiAuditFrameText(
+            model,
+            TuiAuditFrameGeometry{120, 36},
+            {});
+        REQUIRE(rendered.find("evidence: unavailable") != std::string::npos);
     }
 
-    for (const auto state : {OperationAuditRunReadState::Pending,
+    for (const auto state : {OperationAuditRunReadState::Ready,
+                             OperationAuditRunReadState::Truncated,
+                             OperationAuditRunReadState::Pending,
                              OperationAuditRunReadState::Incomplete,
                              OperationAuditRunReadState::Corrupt,
                              OperationAuditRunReadState::Incompatible,
@@ -490,7 +541,9 @@ TEST_CASE("audit receipt truth projects verified and typed reader outcomes",
                                    ? TuiAuditLoad::Loading
                                    : TuiAuditLoad::Failed));
         REQUIRE(truth.receiptAbsenceReason.size() <= 192U);
-        REQUIRE(truth.evidenceTruncated);
+        REQUIRE(truth.evidenceAvailability ==
+                TuiAuditEvidenceAvailability::Unavailable);
+        REQUIRE_FALSE(truth.evidenceTruncated);
 
         auto model = ApplyTuiAuditRunReadResult(BaseModel(), result);
         model.view = TuiAuditView::Receipt;
@@ -510,6 +563,7 @@ TEST_CASE("audit receipt truth projects verified and typed reader outcomes",
         }();
         REQUIRE(rendered.find("receipt=" + std::string(expectedLabel)) !=
                 std::string::npos);
+        REQUIRE(rendered.find("evidence: unavailable") != std::string::npos);
     }
 
     SECTION("in-flight receipt read is explicit") {
@@ -524,5 +578,156 @@ TEST_CASE("audit receipt truth projects verified and typed reader outcomes",
             {});
         REQUIRE(rendered.find("receipt=reading") != std::string::npos);
         REQUIRE(rendered.find(model.receiptAbsenceReason) != std::string::npos);
+        REQUIRE(rendered.find("evidence: unavailable") != std::string::npos);
+    }
+}
+
+TEST_CASE("audit receipt evidence availability is count-derived and bounded",
+          "[unit][tui_audit_frame][KG-BUG-0105]") {
+    struct Scenario {
+        std::uint64_t total;
+        std::uint64_t retained;
+        bool redacted;
+        bool withheld;
+        bool truncated;
+        TuiAuditEvidenceAvailability expected;
+        std::string_view compact;
+        std::string_view full;
+    };
+    const std::array scenarios{
+        Scenario{0, 0, false, false, false,
+                 TuiAuditEvidenceAvailability::None,
+                 "ev=none",
+                 "evidence: none"},
+        Scenario{3, 1, false, false, false,
+                 TuiAuditEvidenceAvailability::Inconsistent,
+                 "ev=incons",
+                 "evidence: inconsistent"},
+        Scenario{3, 3, false, false, false,
+                 TuiAuditEvidenceAvailability::Retained,
+                 "ev=kept",
+                 "evidence: retained"},
+        Scenario{3, 1, true, true, true,
+                 TuiAuditEvidenceAvailability::Retained,
+                 "ev=kept redacted withheld trunc",
+                 "redacted | withheld | truncated"},
+        Scenario{3, 1, false, false, true,
+                 TuiAuditEvidenceAvailability::Retained,
+                 "ev=kept",
+                 "evidence: retained"},
+        Scenario{3, 0, false, false, false,
+                 TuiAuditEvidenceAvailability::Inconsistent,
+                 "ev=incons",
+                 "evidence: inconsistent"},
+        Scenario{3, 0, true, false, true,
+                 TuiAuditEvidenceAvailability::Unavailable,
+                 "redacted trunc",
+                 "redacted | truncated"},
+        Scenario{3, 0, false, true, true,
+                 TuiAuditEvidenceAvailability::Unavailable,
+                 "withheld trunc",
+                 "withheld | truncated"},
+        Scenario{3, 0, false, false, true,
+                 TuiAuditEvidenceAvailability::Unavailable, "trunc", "truncated"},
+        Scenario{3, 0, true, true, true,
+                 TuiAuditEvidenceAvailability::Unavailable,
+                 "ev=unavail redacted withheld trunc",
+                 "redacted | withheld | truncated"},
+        Scenario{0, 0, true, false, false,
+                 TuiAuditEvidenceAvailability::Inconsistent,
+                 "ev=incons",
+                 "evidence: inconsistent"},
+        Scenario{0, 0, false, true, false,
+                 TuiAuditEvidenceAvailability::Inconsistent,
+                 "ev=incons",
+                 "evidence: inconsistent"},
+        Scenario{0, 0, false, false, true,
+                 TuiAuditEvidenceAvailability::Inconsistent,
+                 "ev=incons",
+                 "evidence: inconsistent"},
+        Scenario{2, 2, false, false, true,
+                 TuiAuditEvidenceAvailability::Inconsistent,
+                 "ev=incons",
+                 "evidence: inconsistent"},
+        Scenario{1, 2, false, false, false,
+                 TuiAuditEvidenceAvailability::Inconsistent,
+                 "ev=incons",
+                 "evidence: inconsistent"},
+        Scenario{1, 2, true, true, true,
+                 TuiAuditEvidenceAvailability::Inconsistent,
+                 "ev=incons redacted withheld trunc",
+                 "evidence: inconsistent"},
+    };
+
+    for (const auto& scenario : scenarios) {
+        const auto result = VerifiedReadResultWithEvidence(
+            scenario.total,
+            scenario.retained,
+            scenario.redacted,
+            scenario.withheld,
+            scenario.truncated);
+        const auto truth = ProjectTuiAuditReceiptTruth(result);
+        CAPTURE(scenario.total, scenario.retained, scenario.redacted,
+                scenario.withheld, scenario.truncated);
+        REQUIRE(truth.evidenceAvailability == scenario.expected);
+        REQUIRE(truth.evidenceRedacted == scenario.redacted);
+        REQUIRE(truth.evidenceWithheld == scenario.withheld);
+        REQUIRE(truth.evidenceTruncated == scenario.truncated);
+
+        auto model = ApplyTuiAuditRunReadResult(BaseModel(), result);
+        model.view = TuiAuditView::Receipt;
+        const auto full = RenderTuiAuditFrameText(
+            model,
+            TuiAuditFrameGeometry{120, 36},
+            {});
+        const auto compactGeometry = ComputeTuiAuditFrameGeometry(72, 22);
+        const auto compact = RenderTuiAuditFrameText(model, compactGeometry, {});
+        REQUIRE(full.find(scenario.full) != std::string::npos);
+        REQUIRE(compact.find(scenario.compact) != std::string::npos);
+        RequireBoundedFrame(full, {120, 36});
+        RequireBoundedFrame(compact, compactGeometry);
+    }
+
+    struct UnrelatedTruncationScenario {
+        OperationAuditRunReadState state;
+        bool diagnostic;
+        bool preview;
+        bool events;
+        bool repositories;
+    };
+    const std::array unrelatedTruncationScenarios{
+        UnrelatedTruncationScenario{
+            OperationAuditRunReadState::Truncated, false, false, false, false},
+        UnrelatedTruncationScenario{
+            OperationAuditRunReadState::Ready, true, false, false, false},
+        UnrelatedTruncationScenario{
+            OperationAuditRunReadState::Ready, false, true, false, false},
+        UnrelatedTruncationScenario{
+            OperationAuditRunReadState::Ready, false, false, true, false},
+        UnrelatedTruncationScenario{
+            OperationAuditRunReadState::Ready, false, false, false, true},
+    };
+    for (const auto& scenario : unrelatedTruncationScenarios) {
+        auto result = VerifiedReadResultWithEvidence(0, 0, false, false, false);
+        result.state = scenario.state;
+        result.diagnosticTruncated = scenario.diagnostic;
+        result.run->previewTruncated = scenario.preview;
+        result.run->eventsTruncated = scenario.events;
+        result.run->repositoriesTruncated = scenario.repositories;
+        const auto truth = ProjectTuiAuditReceiptTruth(result);
+        CAPTURE(static_cast<int>(scenario.state), scenario.diagnostic,
+                scenario.preview, scenario.events, scenario.repositories);
+        REQUIRE(truth.evidenceAvailability ==
+                TuiAuditEvidenceAvailability::None);
+        REQUIRE_FALSE(truth.evidenceTruncated);
+
+        const auto model = ApplyTuiAuditRunReadResult(BaseModel(), result);
+        const auto rendered = RenderTuiAuditFrameText(
+            model,
+            TuiAuditFrameGeometry{120, 36},
+            {});
+        REQUIRE(rendered.find("evidence: none") != std::string::npos);
+        REQUIRE(rendered.find("evidence: none | truncated") ==
+                std::string::npos);
     }
 }
