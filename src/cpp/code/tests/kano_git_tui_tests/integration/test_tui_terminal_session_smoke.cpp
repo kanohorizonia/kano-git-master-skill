@@ -357,9 +357,9 @@ class WindowsConPtyProcess final {
         REQUIRE(SetHandleInformation(outputRead_, HANDLE_FLAG_INHERIT, 0));
         const auto conptyResult =
             CreatePseudoConsole(COORD{100, 30}, inputRead_, outputWrite_, 0, &pseudoConsole_);
-        REQUIRE_MESSAGE(SUCCEEDED(conptyResult),
-            "ConPTY is not supported or could not be created on this Windows host; "
-            "KG-TSK-0138 requires a Windows 10 1809+ runner");
+        INFO("ConPTY creation HRESULT=" << static_cast<long>(conptyResult)
+             << "; KG-TSK-0138 requires a Windows 10 1809+ runner");
+        REQUIRE(SUCCEEDED(conptyResult));
         CloseHandle(inputRead_); inputRead_ = nullptr;
         CloseHandle(outputWrite_); outputWrite_ = nullptr;
 
@@ -528,8 +528,8 @@ auto RunWindowsTerminalExitSmoke(const std::string_view InInput,
     REQUIRE(std::filesystem::exists(binary));
     const auto wrapper = kano::git::tests::functional::ResolveKogBinaryPath().parent_path() /
         "kano_git_tui_terminal_state_wrapper.exe";
-    REQUIRE_MESSAGE(std::filesystem::exists(wrapper),
-        "Windows terminal lifecycle wrapper is missing from the release test output");
+    INFO("Windows terminal lifecycle wrapper: " << wrapper.string());
+    REQUIRE(std::filesystem::exists(wrapper));
     const std::optional<ScopedWindowsEnvironment> testMode =
         bInAcknowledgeStartupCancellation
         ? std::optional<ScopedWindowsEnvironment>(
