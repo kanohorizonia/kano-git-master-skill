@@ -65,7 +65,7 @@ TEST_CASE(
 
 TEST_CASE(
     "TUI async exit requests cancellation only for cancellable work",
-    "[unit][tui_async_lifecycle][KG-TSK-0070]") {
+    "[unit][tui_async_lifecycle][tui_pr_focus][KG-TSK-0070]") {
     TuiAsyncLifecycleState state;
     const auto readGeneration = TryBeginTuiAsyncOperation(
         state,

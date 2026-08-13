@@ -343,7 +343,7 @@ struct ScopedPinnedAttemptRelease {
 };
 
 TEST_CASE("[KG-TSK-0133] pinned audit evidence directory survives visible namespace replacement",
-          "[audit][runtime][KG-TSK-0133]") {
+          "[audit][runtime][audit_pr_focus][KG-TSK-0133]") {
     Fixture fixture;
     fixture.Finalize();
     const auto expected = ReadOperationAuditRun(fixture.spec, "reader-run", 3);
@@ -401,7 +401,7 @@ TEST_CASE("[KG-TSK-0133] pinned audit evidence directory survives visible namesp
 }
 
 TEST_CASE("[KG-TSK-0133] legacy verify retains one pinned attempt across namespace replacement",
-          "[audit][runtime][legacy][KG-TSK-0133]") {
+          "[audit][runtime][legacy][audit_pr_focus][KG-TSK-0133]") {
     Fixture fixture; fixture.Finalize();
     Fixture decoy; decoy.Finalize(17);
     PinnedAttemptControl control;
@@ -1430,7 +1430,7 @@ TEST_CASE("KG-TSK-0130 audit reader keeps redaction explicit",
 }
 
 TEST_CASE("KG-TSK-0130 audit reader fails closed on evidence mutations",
-          "[Unit][Audit][Reader][KG-TSK-0130]") {
+          "[Unit][Audit][Reader][audit_pr_focus][KG-TSK-0130]") {
     Fixture fixture; fixture.Finalize();
 
     const auto corrupt = [&](const std::filesystem::path& path, const std::string& bytes,

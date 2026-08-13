@@ -1,0 +1,186 @@
+name: KanoAgentSkills / TUI PR Gates
+
+run-name: ${{ format('TUI_PR_gate_{0}_{1}_{2}', github.event_name, github.ref_name, github.run_number) }}
+
+on:
+  pull_request:
+    paths:
+      - "src/cpp/code/apps/kano_git_cli/**"
+      - "src/cpp/code/apps/kano_git_tui/**"
+      - "src/cpp/code/systems/kano_git_command/ui/**"
+      - "src/cpp/code/systems/kano_git_command/runtime/**"
+      - "src/cpp/code/systems/kano_git_command/commit_plan/**"
+      - "src/cpp/code/systems/kano_git_core/audit/**"
+      - "src/cpp/code/systems/kano_git_core/shell/**"
+      - "src/cpp/code/systems/kano_git_core/workspace/**"
+      - "src/cpp/code/tests/kano_git_tui_tests/**"
+      - "src/cpp/code/tests/kano_git_commit_plan_tests/**"
+      - "src/cpp/code/tests/run_tui_pr_focus.py"
+      - "src/cpp/code/tests/CMakeLists.txt"
+      - "src/cpp/CMakeLists.txt"
+      - "src/cpp/CMakePresets.json"
+      - "src/cpp/shared/infra/**"
+      - "scripts/kog"
+      - "scripts/kog.bat"
+      - "pixi.toml"
+      - ".gitmodules"
+      - "src/cpp/shared/infra"
+      - ".github/workflows/tui-pr-gates.yml"
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Commit, branch, or tag to reproduce (blank uses the selected workflow ref).
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tui-pr-gates-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tui-pr-focus:
+    name: TUI PR focus (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            runner: ubuntu-24.04
+            configure_preset: linux-ninja-clang
+            build_preset: linux-ninja-clang-release
+            fetchcontent_sources: src/cpp/out/obj/linux-ninja-clang/_deps/*-src
+            application_dir: src/cpp/out/bin/linux-ninja-clang/release
+            test_binary: src/cpp/out/bin/linux-ninja-clang/release/kano_git_tui_tests
+            audit_test_binary: src/cpp/out/bin/linux-ninja-clang/release/kano_git_commit_plan_tests
+          - platform: macos-arm64
+            runner: macos-15
+            configure_preset: macos-ninja-clang-arm64
+            build_preset: macos-ninja-clang-arm64-release
+            fetchcontent_sources: src/cpp/out/obj/macos-ninja-clang-arm64/_deps/*-src
+            application_dir: src/cpp/out/bin/macos-ninja-clang-arm64/release
+            test_binary: src/cpp/out/bin/macos-ninja-clang-arm64/release/kano_git_tui_tests
+            audit_test_binary: src/cpp/out/bin/macos-ninja-clang-arm64/release/kano_git_commit_plan_tests
+          - platform: windows-x64
+            runner: windows-2025
+            configure_preset: windows-ninja-msvc
+            build_preset: windows-ninja-msvc-release
+            fetchcontent_sources: src/cpp/out/obj/win-ninja-msvc/_deps/*-src
+            application_dir: src/cpp/out/bin/windows-ninja-msvc/release
+            test_binary: src/cpp/out/bin/windows-ninja-msvc/release/kano_git_tui_tests.exe
+            audit_test_binary: src/cpp/out/bin/windows-ninja-msvc/release/kano_git_commit_plan_tests.exe
+    defaults:
+      run:
+        shell: bash
+    env:
+      GIT_TERMINAL_PROMPT: "0"
+      KOG_PR_GATE_PLATFORM: ${{ matrix.platform }}
+      KOG_PR_GATE_OUTPUT: ci/tui-pr-gate/${{ matrix.platform }}
+    steps:
+      - name: Checkout requested source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+          fetch-depth: 1
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Record checked-out source revision
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD > .tui-pr-gate-source-revision
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+
+      - name: Set up Pixi with lock-keyed dependency cache
+        uses: prefix-dev/setup-pixi@a09b6247153796b190642a2b53fac4241043cf6f # v0.10.0
+        with:
+          pixi-version: v0.67.2
+          manifest-path: src/cpp/shared/infra/pixi.toml
+          run-install: false
+          cache: true
+          locked: true
+          cache-key: tui-pr-deps-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Restore immutable FetchContent source cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ matrix.fetchcontent_sources }}
+          key: tui-pr-fetchcontent-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('src/cpp/CMakeLists.txt', 'src/cpp/CMakePresets.json') }}
+
+      - name: Install locked shared-infra environment
+        run: pixi install --locked --manifest-path src/cpp/shared/infra/pixi.toml
+
+      - name: Build release TUI binaries
+        run: |
+          set -euo pipefail
+          cd src/cpp/shared/infra
+          case "$RUNNER_OS" in
+            Windows)
+              bash scripts/platform/win64/windows_preset_build.sh "${{ matrix.configure_preset }}" "${{ matrix.build_preset }}"
+              ;;
+            macOS)
+              export INF_CPP_ROOT="$GITHUB_WORKSPACE/src/cpp"
+              export KANO_CPP_ROOT="$INF_CPP_ROOT"
+              export INF_BUILD_USE_LLVM=0
+              source scripts/lib/unix_preset_build.sh
+              kano_cpp_run_unix_preset "${{ matrix.configure_preset }}" "${{ matrix.build_preset }}" INF
+              ;;
+            Linux)
+              bash scripts/self/build.sh "${{ matrix.configure_preset }}" "${{ matrix.build_preset }}"
+              ;;
+            *)
+              echo "unsupported TUI PR gate runner: $RUNNER_OS" >&2
+              exit 2
+              ;;
+          esac
+
+      - name: Run exact TUI PR focus selector and release smoke
+        run: |
+          python src/cpp/code/tests/run_tui_pr_focus.py \
+            --application-dir "${{ matrix.application_dir }}" \
+            --test-binary "${{ matrix.test_binary }}" \
+            --audit-test-binary "${{ matrix.audit_test_binary }}" \
+            --output-dir "$KOG_PR_GATE_OUTPUT" \
+            --required-tui-test "TUI first frame schedules startup I/O after ScreenInteractive activation and handles q while pending" \
+            --required-tui-test "redirected standard streams reject both interactive TUI entrypoints cleanly" \
+            --required-tui-test "audit receipt truth projects verified and typed reader outcomes" \
+            --required-tui-test "production standalone TUI owns a ${{ matrix.platform == 'windows-x64' && 'Windows ConPTY' || 'POSIX' }} terminal lifecycle/q exits after live resize and production UTF-8 rendering" \
+            --required-tui-test "production standalone TUI owns a ${{ matrix.platform == 'windows-x64' && 'Windows ConPTY' || 'POSIX' }} terminal lifecycle/Escape exits after live resize and production UTF-8 rendering" \
+            --required-audit-test "[KG-TSK-0133] pinned audit evidence directory survives visible namespace replacement" \
+            --required-audit-test "[KG-TSK-0133] legacy verify retains one pinned attempt across namespace replacement" \
+            --required-audit-test "KG-TSK-0130 audit reader fails closed on evidence mutations" \
+            --timeout-seconds 1200
+
+      - name: Write bounded artifact manifest
+        if: always()
+        run: |
+          mkdir -p "$KOG_PR_GATE_OUTPUT"
+          {
+            echo "platform=$KOG_PR_GATE_PLATFORM"
+            echo "source_revision=$(tr -d '\\r\\n' < .tui-pr-gate-source-revision)"
+            echo "run_id=$GITHUB_RUN_ID"
+            echo "artifact_policy=junit-only-no-command-output-no-environment-export"
+          } > "$KOG_PR_GATE_OUTPUT/manifest.txt"
+
+      - name: Upload bounded TUI PR evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tui-pr-gate-${{ matrix.platform }}
+          path: |
+            ci/tui-pr-gate/${{ matrix.platform }}/tui-pr-focus.junit.xml
+            ci/tui-pr-gate/${{ matrix.platform }}/audit-pr-focus.junit.xml
+            ci/tui-pr-gate/${{ matrix.platform }}/status.txt
+            ci/tui-pr-gate/${{ matrix.platform }}/manifest.txt
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 6

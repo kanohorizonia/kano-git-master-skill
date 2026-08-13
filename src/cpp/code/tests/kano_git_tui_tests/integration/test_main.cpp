@@ -187,7 +187,7 @@ TEST_CASE("Integration test infrastructure is set up correctly", "[infrastructur
 
 TEST_CASE(
     "TUI first frame schedules startup I/O after ScreenInteractive activation and handles q while pending",
-    "[integration][tui_startup][KG-BUG-0091]") {
+    "[integration][tui_startup][tui_pr_focus][KG-BUG-0091]") {
     using namespace ftxui;
 
     auto screen = ScreenInteractive::FixedSize(48, 4);
@@ -421,7 +421,7 @@ TEST_CASE(
 
 TEST_CASE(
     "redirected standard streams reject both interactive TUI entrypoints cleanly",
-    "[integration][tui_terminal_guard][production-path][KG-BUG-0108]") {
+    "[integration][tui_terminal_guard][production-path][tui_pr_focus][KG-BUG-0108]") {
     using namespace kano::git::tests::functional;
 
     const ScopedSandbox sandbox("tui-terminal-preflight-redirected");
@@ -454,7 +454,7 @@ TEST_CASE(
 
 TEST_CASE(
     "TUI production startup loads a disposable three-repository inventory through the built KOG binary",
-    "[integration][tui_startup][production-path][KG-BUG-0091][KG-TSK-0131]") {
+    "[integration][tui_startup][production-path][tui_pr_focus][KG-BUG-0091][KG-TSK-0131]") {
     using namespace kano::git::tests::functional;
 
     const ScopedSandbox sandbox("tui-startup-production-path");

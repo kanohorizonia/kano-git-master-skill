@@ -31,6 +31,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -2430,6 +2432,16 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
     std::mutex asyncMu;
     std::thread asyncWorker;
     std::atomic<bool> asyncCancelRequested{false};
+    std::mutex asyncCancelSignalMu;
+    std::condition_variable asyncCancelSignal;
+
+    auto request_async_cancellation = [&]() {
+        {
+            std::lock_guard<std::mutex> lock(asyncCancelSignalMu);
+            asyncCancelRequested.store(true);
+        }
+        asyncCancelSignal.notify_all();
+    };
 
     auto reportStartupProgress = [](const std::string& InMessage) {
         std::cerr << "[tui] " << InMessage << std::endl;
@@ -3738,6 +3750,36 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                 "startup inventory",
                 TuiAsyncSurface::None,
                 [&](const std::uint64_t InGeneration) {
+                    // Process-level terminal tests need a deterministic owned
+                    // startup operation that can acknowledge cancellation.  It
+                    // is opt-in, has no production effect, and never performs
+                    // I/O while armed: the worker only proceeds after the UI
+                    // has requested its normal cancellation path.
+                    const auto* testMode = std::getenv("KOG_TEST_MODE");
+                    const auto* terminalHarness = std::getenv(
+                        "KOG_TUI_TEST_STARTUP_CANCEL_ACK");
+                    if (testMode != nullptr &&
+                        std::string_view(testMode) == "1" &&
+                        terminalHarness != nullptr &&
+                        std::string_view(terminalHarness) == "1") {
+                        const auto deadline =
+                            std::chrono::steady_clock::now() +
+                            std::chrono::seconds(10);
+                        std::unique_lock<std::mutex> lock(asyncCancelSignalMu);
+                        const bool cancellationObserved =
+                            asyncCancelSignal.wait_until(
+                                lock,
+                                deadline,
+                                [&]() {
+                                    return asyncCancelRequested.load();
+                                });
+                        if (!cancellationObserved) {
+                            throw std::runtime_error(
+                                "TUI test startup cancellation acknowledgement timed out");
+                        }
+                        std::cerr << "[tui-test] startup cancellation acknowledged\n"
+                                  << std::flush;
+                    }
                     if (asyncCancelRequested.load()) {
                         throw std::runtime_error(
                             "startup inventory cancelled before bounded cache read");
@@ -4509,7 +4551,7 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                         TuiAsyncSurface::Discover);
                 }
                 if (cancellationRequested) {
-                    asyncCancelRequested.store(true);
+                    request_async_cancellation();
                 }
                 discover.active = false;
                 discover.loading = false;
@@ -4564,7 +4606,7 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                     }
                 }
                 if (cancellationRequested) {
-                    asyncCancelRequested.store(true);
+                    request_async_cancellation();
                 }
                 preview.active = false;
                 footer = cancellationRequested
@@ -4587,7 +4629,7 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                             TuiAsyncSurface::HistoryDetail);
                     }
                     if (cancellationRequested) {
-                        asyncCancelRequested.store(true);
+                        request_async_cancellation();
                     }
                     history.detailActive = false;
                     history.detailLoading = false;
@@ -4607,7 +4649,7 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                         TuiAsyncSurface::HistoryPage);
                 }
                 if (cancellationRequested) {
-                    asyncCancelRequested.store(true);
+                    request_async_cancellation();
                 }
                 history.active = false;
                 history.searchMode = false;
@@ -4630,7 +4672,7 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
             }
             if (!exitDecision.bExitNow) {
                 if (exitDecision.bRequestCancellation) {
-                    asyncCancelRequested.store(true);
+                    request_async_cancellation();
                     footer = activeLabel +
                         " cancellation requested; exiting when the bounded read returns";
                 } else if (activeOperationMutating) {
@@ -5009,7 +5051,7 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                         TuiAsyncSurface::HistoryDetail);
                 }
                 if (cancellationRequested) {
-                    asyncCancelRequested.store(true);
+                    request_async_cancellation();
                 }
                 history.detailActive = false;
                 history.detailLoading = false;
@@ -5042,7 +5084,7 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                         TuiAsyncSurface::HistoryPage);
                 }
                 if (cancellationRequested) {
-                    asyncCancelRequested.store(true);
+                    request_async_cancellation();
                 }
                 history.repoIndex = displayedRepoIndices[posInDisplayed];
                 selectedDisplayed = posInDisplayed;

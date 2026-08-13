@@ -135,7 +135,7 @@ TEST_CASE(
 
 TEST_CASE(
     "TUI terminal preflight rejects unsupported capabilities before capture",
-    "[unit][tui_terminal_guard][KG-BUG-0108]") {
+    "[unit][tui_terminal_guard][tui_pr_focus][KG-BUG-0108]") {
     using kano::git::commands::StartTuiTerminalSession;
     using kano::git::commands::TuiTerminalCapabilities;
     using kano::git::commands::TuiTerminalPreflightFailure;
@@ -172,7 +172,7 @@ TEST_CASE(
 
 TEST_CASE(
     "TUI terminal session captures before activation and restores after success",
-    "[unit][tui_terminal_guard][KG-BUG-0108]") {
+    "[unit][tui_terminal_guard][tui_pr_focus][KG-BUG-0108]") {
     using kano::git::commands::StartTuiTerminalSession;
     using kano::git::commands::TuiTerminalRestoreAction;
 

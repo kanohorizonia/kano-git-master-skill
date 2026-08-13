@@ -25,6 +25,7 @@ add_executable(kano_git_tui_tests
   property/test_command_executor_properties.cpp
   property/test_tui_state_properties.cpp
   integration/test_main.cpp
+  integration/test_tui_terminal_session_smoke.cpp
 )
 
 target_link_libraries(kano_git_tui_tests
@@ -37,6 +38,20 @@ target_link_libraries(kano_git_tui_tests
 # Keep this dependency explicit so a clean focused test build never relies on
 # an executable left behind by another target or preset.
 add_dependencies(kano_git_tui_tests kano_git_cli kano_git_tui)
+
+# forkpty(3) lives in libutil on Linux, while it is part of libSystem on macOS.
+if(UNIX AND NOT APPLE)
+  target_link_libraries(kano_git_tui_tests PRIVATE util)
+endif()
+
+# The ConPTY smoke test needs an observer inside the pseudoconsole.  A parent
+# console snapshot cannot prove that the child process restored its own modes.
+if(WIN32)
+  add_executable(kano_git_tui_terminal_state_wrapper
+    integration/windows_tui_terminal_state_wrapper.cpp
+  )
+  add_dependencies(kano_git_tui_tests kano_git_tui_terminal_state_wrapper)
+endif()
 
 target_include_directories(kano_git_tui_tests
   PRIVATE

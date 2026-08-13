@@ -30,7 +30,7 @@ auto WorkspaceScope() -> TuiCommandScopeSnapshot {
 
 TEST_CASE(
     "TUI command mode allows audit commands and rejects mutations",
-    "[unit][tui_command_scope][KG-BUG-0088]") {
+    "[unit][tui_command_scope][tui_pr_focus][KG-BUG-0088]") {
     for (const auto command : {
              "status", "log", "slog", "doctor", "version", "help",
              "--help", "-h", "--version"}) {
