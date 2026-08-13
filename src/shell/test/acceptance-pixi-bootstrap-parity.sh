@@ -99,6 +99,61 @@ EOF
 }
 
 # =============================================================================
+# Test 1c: Ordinary native dispatch does not mutate the user's shell profile
+# =============================================================================
+test_launcher_native_dispatch_skips_profile_mutation() {
+  log_step "test-1c" "ordinary native dispatch skips shell-profile mutation"
+
+  case "$(uname -s 2>/dev/null || true)" in
+    MINGW*|MSYS*|CYGWIN*) ;;
+    *)
+      log_step "test-1c" "SKIP: Windows compatibility shell required"
+      return 0
+      ;;
+  esac
+
+  local fake_home="${CASE_ROOT}/profile-home"
+  local fake_bin="${CASE_ROOT}/profile-bin"
+  local fake_native="${CASE_ROOT}/fake-kano-git.exe"
+  local fake_profile="${fake_home}/.bashrc"
+  local fake_userprofile=""
+  mkdir -p "$fake_home/AppData/Local/Microsoft/WinGet/Links" \
+           "$fake_home/AppData/Local/Microsoft/WindowsApps" \
+           "$fake_bin"
+  printf '%s\n' '# preserve-user-profile' > "$fake_profile"
+
+  cat > "$fake_native" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+  chmod +x "$fake_native"
+
+  for name in powershell powershell.exe pwsh pwsh.exe; do
+    cat > "${fake_bin}/${name}" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+    chmod +x "${fake_bin}/${name}"
+  done
+
+  fake_userprofile="$(cygpath -w "$fake_home")"
+  HOME="$fake_home" USERPROFILE="$fake_userprofile" \
+    PATH="${fake_bin}:$PATH" KANO_GIT_BINARY_PATH="$fake_native" \
+    bash "${ROOT_DIR}/scripts/kano-git" converge branches inventory \
+      --no-recursive --json >/dev/null 2>&1
+
+  if [[ "$(cat "$fake_profile")" == '# preserve-user-profile' ]]; then
+    log_step "test-1c" "PASS"
+    count_pass
+    return 0
+  fi
+
+  log_step "test-1c" "FAIL: ordinary native dispatch modified the synthetic .bashrc"
+  count_fail
+  return 1
+}
+
+# =============================================================================
 # Test 2: Pixi bootstrap library is present and sourced
 # =============================================================================
 test_bootstrap_lib_present() {
@@ -269,6 +324,7 @@ main() {
 
   test_launcher_lightweight_query
   test_launcher_lightweight_query_skips_powershell_path_mutation
+  test_launcher_native_dispatch_skips_profile_mutation
   test_bootstrap_lib_present
   test_bootstrap_function_defined
   test_launcher_sources_bootstrap

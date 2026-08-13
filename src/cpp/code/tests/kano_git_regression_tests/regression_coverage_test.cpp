@@ -347,7 +347,7 @@ auto StrictFixture() -> nlohmann::json {
 } // namespace
 
 TEST_CASE("audit runtime script is tracked executable in the Git index",
-          "[integration][regression][git-index-hygiene][KG-BUG-0101]") {
+          "[integration][regression][git-index-hygiene][KG-BUG-0110]") {
   constexpr std::string_view kScriptPath =
       "src/shell/test/ci-linux-audit-runtime.sh";
   const auto result = kano::git::shell::ExecuteCommand(
@@ -390,7 +390,7 @@ TEST_CASE("dogfood incident manifest maps stable source cases without execution 
 
   INFO(loaded.error);
   REQUIRE(loaded.ok);
-  REQUIRE(loaded.report.incidents.size() == 17);
+  REQUIRE(loaded.report.incidents.size() == 19);
   REQUIRE(loaded.report.gaps.empty());
 
   const auto auditIncident = std::find_if(
@@ -471,18 +471,18 @@ TEST_CASE("dogfood incident manifest maps stable source cases without execution 
   for (const auto &incident : loaded.report.incidents) {
     linkedCaseCount += incident.regressionCases.size();
   }
-  REQUIRE(linkedCaseCount == 49);
+  REQUIRE(linkedCaseCount == 52);
 
   const auto text = RenderCoverageText(loaded.report);
   REQUIRE(text.find("execution_evidence=not-evaluated") != std::string::npos);
-  REQUIRE(text.find("linked_cases=49") != std::string::npos);
+  REQUIRE(text.find("linked_cases=52") != std::string::npos);
   REQUIRE_FALSE(HasExactLine(text, "execution_evidence=passed"));
   REQUIRE_FALSE(HasExactLine(text, "execution_evidence=executed"));
 
   const auto json = RenderCoverageJson(loaded.report);
   REQUIRE(json.find("\"execution_evidence\": \"not-evaluated\"") !=
           std::string::npos);
-  REQUIRE(json.find("\"linked_cases\": 49") != std::string::npos);
+  REQUIRE(json.find("\"linked_cases\": 52") != std::string::npos);
 }
 
 TEST_CASE("default registry paths and exact test names resolve to source",

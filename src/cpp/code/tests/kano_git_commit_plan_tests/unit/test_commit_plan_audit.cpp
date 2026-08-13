@@ -2,6 +2,7 @@
 
 #include "commit_plan_audit.hpp"
 #include "plan_utils.hpp"
+#include "shell_executor.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -783,6 +784,106 @@ TEST_CASE("KG-TSK-0125 post-publish sync ambiguity is marked and verification fa
     std::error_code ec;
     std::filesystem::remove_all(root, ec);
 }
+
+#if defined(_WIN32)
+TEST_CASE("KG-BUG-0101 operation audit reserves long paths in an absorbed submodule common git directory",
+          "[Unit][CommitPlan][Audit][Windows][Regression][KG-BUG-0101]") {
+    const auto nonce = std::to_string(
+        std::chrono::high_resolution_clock::now().time_since_epoch().count());
+    const auto root = std::filesystem::temp_directory_path() /
+        ("kga-" + kano::git::audit::Sha256Hex(nonce).substr(0, 10));
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    REQUIRE(std::filesystem::create_directories(root));
+
+    const auto workspace = root / "w";
+    const auto commonParent = root / "m";
+    constexpr std::size_t targetCommonDirectoryLength = 76;
+    const auto prefixLength = commonParent.native().size() + 1;
+    const auto componentLength = prefixLength < targetCommonDirectoryLength
+        ? targetCommonDirectoryLength - prefixLength
+        : 1;
+    const auto commonGitDirectory = commonParent /
+        std::string(componentLength, 'g');
+    REQUIRE(std::filesystem::create_directories(commonParent));
+
+    const auto init = kano::git::shell::ExecuteCommand(
+        "git",
+        {"init", "--quiet", "--separate-git-dir", commonGitDirectory.string(),
+         workspace.string()},
+        kano::git::shell::ExecMode::Capture, root);
+    INFO(init.stderrStr);
+    REQUIRE(init.exitCode == 0);
+
+    OperationAuditSpec spec;
+    spec.workspaceRoot = workspace;
+    spec.inputKind = "operation-descriptor";
+    spec.route = "converge.branches.apply";
+    spec.frozenFileName = "frozen-operation.json";
+    spec.correlation.mode = "koa";
+    spec.correlation.productId = "kano-git-master-skill";
+    spec.correlation.topicId = "kg-bug-0101";
+    spec.correlation.itemId = "KG-BUG-0101";
+    spec.correlation.workOrderId = "dogfood-long-path";
+    spec.correlation.requestId = "kg-bug-0101-request";
+    spec.correlation.runId = "kg-bug-0101-run";
+    spec.correlation.parentRunId = "kg-bug-0101-parent";
+    spec.correlation.producerId = "kog";
+    spec.correlation.routeId = spec.route;
+    spec.correlation.attempt = 1;
+
+    std::string error;
+    const auto options = nlohmann::json({
+        {"branchSelectorSha256", nullptr}, {"confirm", true},
+        {"jobs", 1}, {"recordReviewedIntegration", false},
+        {"recursive", false}, {"strategy", "rebase"},
+        {"syncTarget", true}, {"targetSelectorSha256", nullptr},
+    }).dump();
+    spec.planId = "operation-" + kano::git::audit::Sha256Hex(
+        spec.route + "\n" + options).substr(0, 40);
+    const auto descriptor = BuildOperationDescriptor(
+        spec.route, options, spec.correlation, &error);
+    INFO(error);
+    REQUIRE(descriptor);
+    spec.inputIdentity = "operation-" +
+        kano::git::audit::Sha256Hex(*descriptor);
+    spec.sourceBytes = *descriptor;
+    spec.frozenBytes = *descriptor;
+
+    const auto paths = ResolveOperationAuditPaths(
+        spec, spec.correlation.runId, spec.correlation.attempt, &error);
+    INFO(error);
+    REQUIRE(paths);
+    constexpr std::size_t legacyWin32PathLimit = 260;
+    REQUIRE(paths->attemptRoot.native().size() < legacyWin32PathLimit);
+    REQUIRE(paths->publicationPending.native().size() >= legacyWin32PathLimit);
+
+    auto audit = OperationAuditContext::Reserve(spec, &error);
+    INFO(error);
+    REQUIRE(audit);
+    const auto before = audit->Capture(workspace);
+    REQUIRE(audit->Append("converge.branches.apply.fast-forward", workspace,
+                          before, CurrentUtcIso8601(), 0, &error));
+    REQUIRE(audit->Finalize(0, &error));
+    audit.reset();
+
+    REQUIRE(std::filesystem::exists(paths->receipt));
+    REQUIRE_FALSE(std::filesystem::exists(paths->publicationPending));
+    bool traceValid = false;
+    error.clear();
+    const auto verified = VerifyOperationAuditJson(
+        spec, spec.correlation.runId, spec.correlation.attempt,
+        &traceValid, &error);
+    INFO(error);
+    REQUIRE(verified);
+    REQUIRE(traceValid);
+    REQUIRE(nlohmann::json::parse(*verified).at("ok") == true);
+    std::filesystem::remove_all(
+        std::filesystem::path(std::wstring(LR"(\\?\)") + root.native()), ec);
+    INFO(ec.message());
+    REQUIRE_FALSE(ec);
+}
+#endif
 
 #if !defined(_WIN32)
 TEST_CASE("KG-TSK-0125 audit reservation rejects a symlink sink",

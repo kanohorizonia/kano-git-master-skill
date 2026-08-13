@@ -452,17 +452,17 @@
       ]
     },
     {
-      "incident_id": "KG-BUG-0101",
+      "incident_id": "KG-BUG-0110",
       "incident_date": "2026-08-09",
       "root_cause": "The audit runtime script was introduced with Git index mode 100644 even though shell hygiene requires 100755, and host filesystem permissions cannot reliably prove the tracked mode across platforms.",
-      "backlog_ref": "KG-BUG-0101",
-      "change_ref": "commit:KG-BUG-0101",
+      "backlog_ref": "KG-BUG-0110",
+      "change_ref": "commit:KG-BUG-0110",
       "workflow_contracts": [
         "git-index-hygiene"
       ],
       "regression_cases": [
         {
-          "case_id": "KG-BUG-0101/audit-runtime-index-mode",
+          "case_id": "KG-BUG-0110/audit-runtime-index-mode",
           "test_name": "audit runtime script is tracked executable in the Git index",
           "test_file": "src/cpp/code/tests/kano_git_regression_tests/regression_coverage_test.cpp",
           "test_kind": "integration",
@@ -552,21 +552,70 @@
       ]
     },
     {
-      "incident_id": "KG-BUG-0102",
+      "incident_id": "KG-BUG-0111",
       "incident_date": "2026-08-09",
       "root_cause": "The macOS kano_git_tui_tests target let Catch2 decompose direct std::string_view assertions, but the linked Catch2 binary did not provide the matching StringMaker specialization. This left the complete TUI test target with an undefined StringMaker<std::string_view> symbol at link time despite the history-order assertions being semantically valid.",
-      "backlog_ref": "KG-BUG-0102",
-      "change_ref": "commit:KG-BUG-0102",
+      "backlog_ref": "KG-BUG-0111",
+      "change_ref": "commit:KG-BUG-0111",
       "workflow_contracts": [
         "interactive-tui",
         "cross-platform-test-linking"
       ],
       "regression_cases": [
         {
-          "case_id": "KG-BUG-0102/catch2-string-view-history-order-linking",
+          "case_id": "KG-BUG-0111/catch2-string-view-history-order-linking",
           "test_name": "TUI history page ordering stays explicitly scoped across bounded pages",
           "test_file": "src/cpp/code/tests/kano_git_tui_tests/unit/test_tui_history_lifecycle.cpp",
           "test_kind": "unit",
+          "mapping_state": "source-linked"
+        }
+      ]
+    },
+    {
+      "incident_id": "KG-BUG-0101",
+      "incident_date": "2026-08-13",
+      "root_cause": "Operation-audit reservation and publication used ordinary Win32 filesystem and CreateFileW paths. An absorbed submodule common Git directory produced a 265-character publication path, so agent-mode converge failed before Git mutation with Win32 error 3.",
+      "backlog_ref": "KG-BUG-0101",
+      "change_ref": "KG-BUG-0101",
+      "workflow_contracts": [
+        "absorbed-submodule-audit",
+        "exclusive-audit-reservation",
+        "long-path-native-io"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KG-BUG-0101/absorbed-submodule-long-audit-path",
+          "test_name": "KG-BUG-0101 operation audit reserves long paths in an absorbed submodule common git directory",
+          "test_file": "src/cpp/code/tests/kano_git_commit_plan_tests/unit/test_commit_plan_audit.cpp",
+          "test_kind": "unit",
+          "mapping_state": "source-linked"
+        }
+      ]
+    },
+    {
+      "incident_id": "KG-BUG-0102",
+      "incident_date": "2026-08-13",
+      "root_cause": "The default converge rebase strategy delegated target synchronization and source integration to git merge --ff-only, so an operation requested as merge-free still invoked Git's merge porcelain.",
+      "backlog_ref": "KG-BUG-0102",
+      "change_ref": "KG-BUG-0102",
+      "workflow_contracts": [
+        "agent-mode-branch-convergence",
+        "exact-history-fast-forward",
+        "merge-free-rebase-strategy"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KG-BUG-0102/stale-target-and-source-fast-forward",
+          "test_name": "converge branches apply fast-forwards target without git merge and pushes",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/converge_planner_test.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-BUG-0102/target-already-ahead",
+          "test_name": "converge branches retire keeps a target already ahead of upstream",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/converge_planner_test.cpp",
+          "test_kind": "functional",
           "mapping_state": "source-linked"
         }
       ]

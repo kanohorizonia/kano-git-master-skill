@@ -100,6 +100,30 @@ auto SetSystemError(std::string* OutError, const std::string& InPrefix) -> void 
 #endif
 }
 
+auto PathForNativeIo(const std::filesystem::path& InPath)
+    -> std::filesystem::path {
+#if defined(_WIN32)
+    auto normalized = InPath.lexically_normal();
+    normalized.make_preferred();
+    const auto& native = normalized.native();
+    // Win32 directory creation needs room for an appended 8.3 name, so its
+    // ordinary-path limit is MAX_PATH minus 12 rather than the file limit.
+    constexpr std::size_t legacyWin32DirectoryPathLimit = 248;
+    if (native.starts_with(LR"(\\?\)") ||
+        native.starts_with(LR"(\\.\)") || !normalized.is_absolute() ||
+        native.size() < legacyWin32DirectoryPathLimit) {
+        return normalized;
+    }
+    if (native.starts_with(LR"(\\)")) {
+        return std::filesystem::path(
+            std::wstring(LR"(\\?\UNC\)") + native.substr(2));
+    }
+    return std::filesystem::path(std::wstring(LR"(\\?\)") + native);
+#else
+    return InPath;
+#endif
+}
+
 auto TestModeEnabled() -> bool {
     const auto* value = std::getenv("KOG_TEST_MODE");
     return value != nullptr && std::string_view(value) == "1";
@@ -122,7 +146,7 @@ auto SyncDirectory(const std::filesystem::path& InDirectory,
 
 auto IsSafeDirectory(const std::filesystem::path& InPath, std::string* OutError) -> bool {
     std::error_code ec;
-    const auto status = std::filesystem::symlink_status(InPath, ec);
+    const auto status = std::filesystem::symlink_status(PathForNativeIo(InPath), ec);
     if (ec || status.type() == std::filesystem::file_type::not_found) {
         if (OutError) *OutError = "audit directory is missing or unreadable";
         return false;
@@ -136,12 +160,13 @@ auto IsSafeDirectory(const std::filesystem::path& InPath, std::string* OutError)
 
 auto EnsureSafeDirectory(const std::filesystem::path& InPath, std::string* OutError) -> bool {
     std::error_code ec;
-    const auto status = std::filesystem::symlink_status(InPath, ec);
+    const auto ioPath = PathForNativeIo(InPath);
+    const auto status = std::filesystem::symlink_status(ioPath, ec);
     if (!ec && status.type() != std::filesystem::file_type::not_found)
         return IsSafeDirectory(InPath, OutError);
     ec.clear();
-    const bool created = std::filesystem::create_directory(InPath, ec);
-    if (ec || (!created && !std::filesystem::exists(InPath))) {
+    const bool created = std::filesystem::create_directory(ioPath, ec);
+    if (ec || (!created && !std::filesystem::exists(ioPath))) {
         if (OutError) *OutError = "cannot create audit directory: " + ec.message();
         return false;
     }
@@ -165,11 +190,12 @@ auto EnsureSafeHierarchy(const std::vector<std::filesystem::path>& InPaths,
 
 auto ReserveRunDirectory(const std::filesystem::path& InPath, std::string* OutError) -> bool {
     std::error_code ec;
-    if (!std::filesystem::create_directory(InPath, ec) || ec) {
+    const auto ioPath = PathForNativeIo(InPath);
+    if (!std::filesystem::create_directory(ioPath, ec) || ec) {
         if (OutError) *OutError = "audit run/attempt already exists or cannot be reserved";
         return false;
     }
-    std::filesystem::permissions(InPath, std::filesystem::perms::owner_all,
+    std::filesystem::permissions(ioPath, std::filesystem::perms::owner_all,
                                  std::filesystem::perm_options::replace, ec);
     if (ec || !IsSafeDirectory(InPath, OutError)) {
         if (OutError && OutError->empty()) *OutError = "cannot secure audit run/attempt directory";
@@ -181,8 +207,9 @@ auto ReserveRunDirectory(const std::filesystem::path& InPath, std::string* OutEr
 auto OpenExclusiveFile(const std::filesystem::path& InPath, std::string* OutError)
     -> std::intptr_t {
 #if defined(_WIN32)
+    const auto ioPath = PathForNativeIo(InPath);
     const auto handle = CreateFileW(
-        InPath.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+        ioPath.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, CREATE_NEW,
         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_WRITE_THROUGH,
         nullptr);
     if (handle == INVALID_HANDLE_VALUE) {
@@ -338,8 +365,9 @@ auto ReadHandleAll(const std::intptr_t InHandle, std::string* OutError)
 
 auto SyncDirectory(const std::filesystem::path& InDirectory, std::string* OutError) -> bool {
 #if defined(_WIN32)
+    const auto ioDirectory = PathForNativeIo(InDirectory);
     const auto verifyHandle = CreateFileW(
-        InDirectory.c_str(), FILE_READ_ATTRIBUTES,
+        ioDirectory.c_str(), FILE_READ_ATTRIBUTES,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
         FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
         nullptr);
@@ -362,7 +390,7 @@ auto SyncDirectory(const std::filesystem::path& InDirectory, std::string* OutErr
     // separate best-effort flush attempt.  Inability to acquire or flush that
     // optional handle is accepted only for documented unsupported cases.
     const auto flushHandle = CreateFileW(
-        InDirectory.c_str(), GENERIC_WRITE,
+        ioDirectory.c_str(), GENERIC_WRITE,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
         FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT |
             FILE_FLAG_WRITE_THROUGH,
@@ -419,8 +447,9 @@ auto SyncDirectory(const std::filesystem::path& InDirectory, std::string* OutErr
 auto SyncRegularFilePath(const std::filesystem::path& InPath,
                          std::string* OutError) -> bool {
 #if defined(_WIN32)
+    const auto ioPath = PathForNativeIo(InPath);
     const auto handle = CreateFileW(
-        InPath.c_str(), GENERIC_READ | GENERIC_WRITE,
+        ioPath.c_str(), GENERIC_READ | GENERIC_WRITE,
         FILE_SHARE_READ, nullptr, OPEN_EXISTING,
         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT |
             FILE_FLAG_WRITE_THROUGH,
@@ -471,13 +500,14 @@ auto SyncRegularFilePath(const std::filesystem::path& InPath,
 auto RemoveRegularFileAndSyncDirectory(const std::filesystem::path& InPath,
                                        std::string* OutError) -> bool {
     std::error_code ec;
-    const auto status = std::filesystem::symlink_status(InPath, ec);
+    const auto ioPath = PathForNativeIo(InPath);
+    const auto status = std::filesystem::symlink_status(ioPath, ec);
     if (ec || !std::filesystem::is_regular_file(status) ||
         std::filesystem::is_symlink(status)) {
         if (OutError) *OutError = "publication-pending sentinel is missing or unsafe";
         return false;
     }
-    if (!std::filesystem::remove(InPath, ec) || ec) {
+    if (!std::filesystem::remove(ioPath, ec) || ec) {
         if (OutError) *OutError = "cannot clear publication-pending sentinel: " + ec.message();
         return false;
     }
@@ -490,7 +520,9 @@ auto PublishNoReplace(const std::filesystem::path& InTemp,
                       std::string* OutError) -> bool {
     if (OutPublished) *OutPublished = false;
 #if defined(_WIN32)
-    if (!MoveFileExW(InTemp.c_str(), InFinal.c_str(), MOVEFILE_WRITE_THROUGH)) {
+    const auto ioTemp = PathForNativeIo(InTemp);
+    const auto ioFinal = PathForNativeIo(InFinal);
+    if (!MoveFileExW(ioTemp.c_str(), ioFinal.c_str(), MOVEFILE_WRITE_THROUGH)) {
         SetSystemError(OutError, "cannot atomically publish audit receipt");
         return false;
     }
@@ -734,8 +766,9 @@ auto ReadBoundedAuditInput(const std::filesystem::path& InPath,
                            const std::uintmax_t InLimit,
                            std::string* OutError) -> std::optional<std::string> {
 #if defined(_WIN32)
+    const auto ioPath = PathForNativeIo(InPath);
     const auto handle = CreateFileW(
-        InPath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+        ioPath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
     if (handle == INVALID_HANDLE_VALUE) {
         SetSystemError(OutError, "cannot open bounded audit input");
@@ -1289,7 +1322,8 @@ auto OperationAuditContext::PublishIncompleteMarker(
     auto handle = OpenExclusiveFile(mPaths.incomplete, OutError);
     if (handle < 0) {
         std::error_code ec;
-        if (std::filesystem::is_regular_file(mPaths.incomplete, ec) && !ec) {
+        if (std::filesystem::is_regular_file(
+                PathForNativeIo(mPaths.incomplete), ec) && !ec) {
             mIncompletePublished = true;
             return true;
         }
@@ -1457,7 +1491,7 @@ auto OperationAuditContext::FreezeSupplementalBytes(
     const auto path = mPaths.attemptRoot /
         ("frozen-" + label + "-" + sha256.substr(0, 20) + ".json");
     std::error_code ec;
-    if (std::filesystem::exists(path, ec) && !ec) {
+    if (std::filesystem::exists(PathForNativeIo(path), ec) && !ec) {
         const auto existing = ReadBoundedAuditInput(path, 4U << 20U, OutError);
         if (existing && *existing == InBytes) {
             const auto found = std::find_if(

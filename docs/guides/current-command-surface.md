@@ -476,7 +476,9 @@ Branch mutations are explicit subcommands. `kog converge branches apply` require
 `--confirm`, fetches and fast-forwards the target branch by default, and then only
 integrates non-blocked local branches. The default `rebase` strategy is currently
 fail-closed fast-forward target advancement: it advances the target with
-`git merge --ff-only` only when the target is already an ancestor of the branch.
+an exact-SHA guarded `git reset --keep` only when the target is already an
+ancestor of the branch. An already-ahead target remains unchanged; diverged refs
+remain blocked.
 `--strategy cherry-pick --branch <name>` replays missing, non-equivalent commits
 from one selected source branch onto the target branch. `--strategy merge`
 performs an explicit no-fast-forward merge. Successful apply paths push the target
