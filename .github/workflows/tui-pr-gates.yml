@@ -123,14 +123,19 @@ jobs:
           cd src/cpp/shared/infra
           case "$RUNNER_OS" in
             Windows)
-              bash scripts/platform/win64/windows_preset_build.sh "${{ matrix.configure_preset }}" "${{ matrix.build_preset }}"
+              export KANO_CPP_ROOT="$GITHUB_WORKSPACE/src/cpp"
+              source scripts/lib/windows_preset_build.sh
+              kano_windows_run_preset "${{ matrix.configure_preset }}" "${{ matrix.build_preset }}" x64
               ;;
             macOS)
-              export INF_CPP_ROOT="$GITHUB_WORKSPACE/src/cpp"
-              export KANO_CPP_ROOT="$INF_CPP_ROOT"
-              export INF_BUILD_USE_LLVM=0
-              source scripts/lib/unix_preset_build.sh
-              kano_cpp_run_unix_preset "${{ matrix.configure_preset }}" "${{ matrix.build_preset }}" INF
+              (
+                export INF_CPP_ROOT="$GITHUB_WORKSPACE/src/cpp"
+                export KANO_CPP_ROOT="$INF_CPP_ROOT"
+                export INF_BUILD_USE_LLVM=0
+                source scripts/lib/unix_preset_build.sh
+                set +u
+                kano_cpp_run_unix_preset "${{ matrix.configure_preset }}" "${{ matrix.build_preset }}" INF
+              )
               ;;
             Linux)
               bash scripts/self/build.sh "${{ matrix.configure_preset }}" "${{ matrix.build_preset }}"
