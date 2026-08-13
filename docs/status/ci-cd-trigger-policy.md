@@ -88,13 +88,14 @@ remain outside this native matrix. Its
 bounded check for a commit, branch, or tag; leaving it blank uses the ref
 selected in the GitHub Actions UI.
 
-Dependency installation uses the recursively checked-out shared-infra lockfile
-through `setup-pixi`'s supported `manifest-path` and `run-install` contract.
-The action derives its environment cache from that lock. A separate
+Dependency installation uses the recursively checked-out shared-infra lockfile.
+`setup-pixi` installs the pinned Pixi executable, then the workflow runs
+`pixi install --locked` explicitly. The current shared-infra environment has no
+package dependencies, so its empty environment is deliberately not cached. An
 OS/architecture/CMake-input keyed cache retains only immutable FetchContent
 `*-src` directories; it never restores object files, generated build state, or
-test results. Every job still runs `pixi install --locked`, configures CMake,
-and performs a fresh release build, so a cache hit is not test evidence.
+test results. Every job configures CMake and performs a fresh release build, so
+a cache hit is not test evidence.
 
 Artifacts are deliberately limited to the available focus-suite JUnit XML files
 (each capped at 2 MiB by the runner even if a test fails or times out), a
