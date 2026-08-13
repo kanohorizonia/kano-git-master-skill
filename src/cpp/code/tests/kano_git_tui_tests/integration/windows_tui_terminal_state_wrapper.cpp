@@ -139,6 +139,22 @@ auto PrintWin32Failure(const char* InReason, const DWORD InError) -> int {
     return 2;
 }
 
+auto WriteConsoleEvidence(const ScopedHandle& InOutput, const char* InBytes,
+                          const DWORD InSize, DWORD& OutError) -> bool {
+    DWORD offset = 0;
+    while (offset < InSize) {
+        DWORD written = 0;
+        const BOOL wrote = WriteFile(InOutput.Get(), InBytes + offset,
+            InSize - offset, &written, nullptr);
+        if (wrote == 0 || written == 0U) {
+            OutError = wrote == 0 ? GetLastError() : ERROR_WRITE_FAULT;
+            return false;
+        }
+        offset += written;
+    }
+    return true;
+}
+
 } // namespace
 
 auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
@@ -229,6 +245,12 @@ auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
         after.outputCodePage != before.outputCodePage) {
         return PrintFailure("console-state-not-restored");
     }
-    std::cout << "KOG_TUI_TERMINAL_STATE_RESTORED\n" << std::flush;
+    constexpr char kRestoredEvidence[] =
+        "KOG_TUI_TERMINAL_STATE_RESTORED\n";
+    DWORD writeError = ERROR_SUCCESS;
+    if (!WriteConsoleEvidence(consoleOutput, kRestoredEvidence,
+            static_cast<DWORD>(sizeof(kRestoredEvidence) - 1U), writeError)) {
+        return PrintWin32Failure("restored-evidence-write-failed", writeError);
+    }
     return 0;
 }

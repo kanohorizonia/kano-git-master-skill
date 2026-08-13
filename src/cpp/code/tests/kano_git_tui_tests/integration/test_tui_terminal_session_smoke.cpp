@@ -814,6 +814,14 @@ class ScopedWindowsEnvironment final {
         }
         REQUIRE(SetEnvironmentVariableA(name_.c_str(), InValue));
     }
+
+    ScopedWindowsEnvironment(const ScopedWindowsEnvironment&) = delete;
+    auto operator=(const ScopedWindowsEnvironment&)
+        -> ScopedWindowsEnvironment& = delete;
+    ScopedWindowsEnvironment(ScopedWindowsEnvironment&&) = delete;
+    auto operator=(ScopedWindowsEnvironment&&)
+        -> ScopedWindowsEnvironment& = delete;
+
     ~ScopedWindowsEnvironment() {
         (void)SetEnvironmentVariableA(name_.c_str(),
             hadPrevious_ ? previous_.c_str() : nullptr);
@@ -1267,16 +1275,13 @@ auto RunWindowsTerminalExitSmoke(const bool bInEscape,
     REQUIRE(std::filesystem::exists(wrapper));
     const auto host = binaries / "kano_git_tui_conpty_host.exe";
     REQUIRE(std::filesystem::exists(host));
-    const std::optional<ScopedWindowsEnvironment> testMode =
-        bInAcknowledgeStartupCancellation
-        ? std::optional<ScopedWindowsEnvironment>(
-              std::in_place, "KOG_TEST_MODE", "1")
-        : std::nullopt;
-    const std::optional<ScopedWindowsEnvironment> cancellationHarness =
-        bInAcknowledgeStartupCancellation
-        ? std::optional<ScopedWindowsEnvironment>(
-              std::in_place, "KOG_TUI_TEST_STARTUP_CANCEL_ACK", "1")
-        : std::nullopt;
+    std::optional<ScopedWindowsEnvironment> testMode;
+    std::optional<ScopedWindowsEnvironment> cancellationHarness;
+    if (bInAcknowledgeStartupCancellation) {
+        testMode.emplace("KOG_TEST_MODE", "1");
+        cancellationHarness.emplace(
+            "KOG_TUI_TEST_STARTUP_CANCEL_ACK", "1");
+    }
     WindowsConPtyHostController controller(
         host, wrapper, binary, bInEscape, false);
     const auto outcome = controller.Run(false);
@@ -1318,7 +1323,10 @@ TEST_CASE(
         binaries / "kano_git_tui_terminal_state_wrapper.exe",
         StandaloneTuiBinary(), false, true);
     const auto outcome = controller.Run(true);
-    INFO("host status:\n" << controller.Status());
+    INFO("bounded ConPTY transcript: total=" << controller.TranscriptTotalBytes()
+         << "; omitted=" << controller.TranscriptOmittedBytes()
+         << "\n" << controller.Transcript()
+         << "\nhost status:\n" << controller.Status());
     CHECK(outcome == WindowsHostOutcome::KilledAtBeforeClose);
     CHECK_FALSE(controller.Status().find(kWindowsHostSuccess) != std::string::npos);
     CHECK(controller.JobIsEmpty());
