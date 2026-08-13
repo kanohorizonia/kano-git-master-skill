@@ -390,7 +390,7 @@ TEST_CASE("dogfood incident manifest maps stable source cases without execution 
 
   INFO(loaded.error);
   REQUIRE(loaded.ok);
-  REQUIRE(loaded.report.incidents.size() == 19);
+  REQUIRE(loaded.report.incidents.size() == 20);
   REQUIRE(loaded.report.gaps.empty());
 
   const auto auditIncident = std::find_if(
@@ -471,18 +471,18 @@ TEST_CASE("dogfood incident manifest maps stable source cases without execution 
   for (const auto &incident : loaded.report.incidents) {
     linkedCaseCount += incident.regressionCases.size();
   }
-  REQUIRE(linkedCaseCount == 52);
+  REQUIRE(linkedCaseCount == 54);
 
   const auto text = RenderCoverageText(loaded.report);
   REQUIRE(text.find("execution_evidence=not-evaluated") != std::string::npos);
-  REQUIRE(text.find("linked_cases=52") != std::string::npos);
+  REQUIRE(text.find("linked_cases=54") != std::string::npos);
   REQUIRE_FALSE(HasExactLine(text, "execution_evidence=passed"));
   REQUIRE_FALSE(HasExactLine(text, "execution_evidence=executed"));
 
   const auto json = RenderCoverageJson(loaded.report);
   REQUIRE(json.find("\"execution_evidence\": \"not-evaluated\"") !=
           std::string::npos);
-  REQUIRE(json.find("\"linked_cases\": 52") != std::string::npos);
+  REQUIRE(json.find("\"linked_cases\": 54") != std::string::npos);
 }
 
 TEST_CASE("default registry paths and exact test names resolve to source",
