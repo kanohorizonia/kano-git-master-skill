@@ -51,7 +51,14 @@ if(WIN32)
     integration/windows_tui_terminal_state_wrapper.cpp
   )
   target_compile_features(kano_git_tui_terminal_state_wrapper PRIVATE cxx_std_23)
-  add_dependencies(kano_git_tui_tests kano_git_tui_terminal_state_wrapper)
+  add_executable(kano_git_tui_conpty_host
+    integration/windows_tui_conpty_host.cpp
+  )
+  target_compile_features(kano_git_tui_conpty_host PRIVATE cxx_std_23)
+  add_dependencies(kano_git_tui_tests
+    kano_git_tui_terminal_state_wrapper
+    kano_git_tui_conpty_host
+  )
 endif()
 
 target_include_directories(kano_git_tui_tests
