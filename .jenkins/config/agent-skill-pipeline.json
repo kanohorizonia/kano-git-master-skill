@@ -44,7 +44,7 @@
   "platformSharedWorkspaceRoots": {
     "windows": "C:/Mount/s/jenkins_ws/KanoAgentSkills",
     "linux": "/Volumes/KanoJenkins/jenkins-agent/jenkins_ws/KanoAgentSkills",
-    "mac": "/Volumes/KanoJenkins/jenkins-agent/jenkins_ws/KanoAgentSkills"
+    "mac": "/Volumes/Sandisk2TB/jenkins-agent/jenkins_ws/KanoAgentSkills"
   },
   "bRunReleasePhase": false,
   "bDefaultPublishGitHubPages": true,
