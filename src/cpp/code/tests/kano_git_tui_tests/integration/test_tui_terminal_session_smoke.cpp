@@ -1016,8 +1016,8 @@ class WindowsConPtyHostController final {
         resources.stdinNull.Reset(CreateFileW(L"NUL", GENERIC_READ,
             FILE_SHARE_READ | FILE_SHARE_WRITE, &inheritable, OPEN_EXISTING,
             FILE_ATTRIBUTE_NORMAL, nullptr));
-        REQUIRE(resources.stdinNull.Get() != INVALID_HANDLE_VALUE &&
-            resources.stdinNull.Get() != nullptr);
+        REQUIRE(resources.stdinNull.Get() != INVALID_HANDLE_VALUE);
+        REQUIRE(resources.stdinNull.Get() != nullptr);
 
         resources.job.Reset(CreateJobObjectW(nullptr, nullptr));
         REQUIRE(resources.job.Get() != nullptr);
