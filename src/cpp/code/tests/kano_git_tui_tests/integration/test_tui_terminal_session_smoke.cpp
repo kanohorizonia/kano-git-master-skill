@@ -231,7 +231,8 @@ class PosixPtyProcess final {
             struct pollfd descriptor {master_, POLLIN | POLLHUP, 0};
             const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                 deadline - std::chrono::steady_clock::now());
-            const int timeout = static_cast<int>(std::max(1LL, elapsed.count()));
+            const int timeout = static_cast<int>(
+                std::max<std::chrono::milliseconds::rep>(1, elapsed.count()));
             const auto polled = poll(&descriptor, 1, timeout);
             if (polled > 0) {
                 const auto received = DrainAvailableOutput();
@@ -434,9 +435,10 @@ class WindowsConPtyProcess final {
             DrainAvailableOutput();
             const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
                 deadline - std::chrono::steady_clock::now());
+            const auto waitMilliseconds = std::clamp<std::chrono::milliseconds::rep>(
+                remaining.count(), 1, 100);
             const auto result = WaitForSingleObject(
-                process_, static_cast<DWORD>(std::min(100LL,
-                    std::max(1LL, remaining.count()))));
+                process_, static_cast<DWORD>(waitMilliseconds));
             if (result == WAIT_OBJECT_0) {
                 DWORD code = 0;
                 if (!GetExitCodeProcess(process_, &code)) return false;
