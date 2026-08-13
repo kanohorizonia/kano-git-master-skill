@@ -60,7 +60,7 @@ auto RequireCanonicalControls(const std::string& InRendered,
             end == std::string_view::npos
                 ? InControls.size() - start
                 : end - start);
-        CAPTURE(token);
+        CAPTURE(std::string(token));
         REQUIRE(compactRendered.find(compactAscii(token)) != std::string::npos);
         if (end == std::string_view::npos) {
             break;

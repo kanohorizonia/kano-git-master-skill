@@ -20,7 +20,6 @@ file(GENERATE OUTPUT "${KOG_RUNTIME_MANIFEST_CONFIGURED}" INPUT "${KOG_RUNTIME_M
 set(_kog_runtime_shared_library_files)
 if(UNIX AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     foreach(_kog_runtime_target
-            kano_infra_timing
             kano_infra_config
             kano_infra_build_info
             kano_infra_platform
