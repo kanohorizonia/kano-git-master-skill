@@ -1684,6 +1684,98 @@ TEST_CASE("converge branches retire preserves primary submodule configuration", 
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("worktree remove guards initialized submodule worktrees", "[tdd][functional][worktree][remove][submodule][KG-BUG-0104]") {
+    SECTION("removes a recursively verified-clean worktree and retains its branch") {
+        const auto ctx = CreateRemoteWithSubmoduleClone("worktree-remove-clean-submodule");
+        const auto primarySubmoduleUrlBefore = RunGit(
+            {"config", "--get", "submodule." + ctx.submodulePath + ".url"}, ctx.cloneRootRepo);
+        RequireSuccess(primarySubmoduleUrlBefore, "read primary submodule URL before direct worktree removal");
+
+        const std::string featureBranch = "feature/direct-remove-clean-submodule";
+        const auto worktreePath = (ctx.sandbox.root / "direct-remove-clean-submodule").lexically_normal();
+        RequireSuccess(
+            RunGit({"worktree", "add", "-b", featureBranch, worktreePath.string()}, ctx.cloneRootRepo),
+            "add direct-remove feature worktree");
+
+        const auto uninitializedPreview = RunKog(
+            {"worktree", "remove", featureBranch, "--dry-run"}, ctx.cloneRootRepo);
+        INFO(uninitializedPreview.stdoutText);
+        INFO(uninitializedPreview.stderrText);
+        REQUIRE(uninitializedPreview.exitCode != 0);
+        RequireContains(uninitializedPreview.stderrText, "uninitialized submodule gitlinks");
+        REQUIRE(std::filesystem::exists(worktreePath));
+
+        RequireSuccess(
+            RunGit({"-c", "protocol.file.allow=always", "submodule", "update", "--init", "--recursive"}, worktreePath),
+            "initialize direct-remove linked worktree submodule");
+        REQUIRE(std::filesystem::exists(worktreePath / ctx.submodulePath / ".git"));
+        REQUIRE(GitStatusShort(worktreePath).empty());
+
+        const auto preview = RunKog({"worktree", "remove", featureBranch, "--dry-run"}, ctx.cloneRootRepo);
+        INFO(preview.stdoutText);
+        INFO(preview.stderrText);
+        REQUIRE(preview.exitCode == 0);
+        RequireContains(preview.stdoutText, "Planned removal mode: verified-clean-submodule-force");
+        RequireContains(preview.stdoutText, "git worktree remove --force");
+        REQUIRE(std::filesystem::exists(worktreePath));
+
+        const auto result = RunKog({"worktree", "remove", featureBranch}, ctx.cloneRootRepo);
+        INFO(result.stdoutText);
+        INFO(result.stderrText);
+        REQUIRE(result.exitCode == 0);
+        RequireContains(result.stdoutText, "verified-clean-submodule-force");
+        REQUIRE_FALSE(std::filesystem::exists(worktreePath));
+        REQUIRE(RunGit({"show-ref", "--verify", "--quiet", "refs/heads/" + featureBranch}, ctx.cloneRootRepo).exitCode == 0);
+
+        const auto primarySubmoduleUrlAfter = RunGit(
+            {"config", "--get", "submodule." + ctx.submodulePath + ".url"}, ctx.cloneRootRepo);
+        RequireSuccess(primarySubmoduleUrlAfter, "read primary submodule URL after direct worktree removal");
+        REQUIRE(primarySubmoduleUrlAfter.stdoutText == primarySubmoduleUrlBefore.stdoutText);
+        REQUIRE(std::filesystem::exists(ctx.cloneChildRepo / ".git"));
+        REQUIRE(GitStatusShort(ctx.cloneRootRepo).empty());
+        REQUIRE(GitStatusShort(ctx.cloneChildRepo).empty());
+
+        RemoveSandboxWorkspace(ctx.sandbox);
+    }
+
+    SECTION("rejects nested dirt hidden from the parent worktree status") {
+        const auto ctx = CreateRemoteWithSubmoduleClone("worktree-remove-dirty-submodule");
+        const std::string featureBranch = "feature/direct-remove-dirty-submodule";
+        const auto worktreePath = (ctx.sandbox.root / "direct-remove-dirty-submodule").lexically_normal();
+        RequireSuccess(
+            RunGit({"worktree", "add", "-b", featureBranch, worktreePath.string()}, ctx.cloneRootRepo),
+            "add dirty direct-remove feature worktree");
+        RequireSuccess(
+            RunGit({"-c", "protocol.file.allow=always", "submodule", "update", "--init", "--recursive"}, worktreePath),
+            "initialize dirty direct-remove linked worktree submodule");
+        RequireSuccess(
+            RunGit({"config", "submodule." + ctx.submodulePath + ".ignore", "all"}, worktreePath),
+            "hide submodule dirt from parent status");
+        const auto nestedDirt = (worktreePath / ctx.submodulePath / "preserve-untracked.txt").lexically_normal();
+        WriteTextFile(nestedDirt, "must survive failed removal\n");
+        REQUIRE(GitStatusShort(worktreePath).empty());
+
+        const auto preview = RunKog({"worktree", "remove", featureBranch, "--dry-run"}, ctx.cloneRootRepo);
+        INFO(preview.stdoutText);
+        INFO(preview.stderrText);
+        REQUIRE(preview.exitCode != 0);
+        RequireContains(preview.stderrText, "initialized submodule has tracked, untracked, or nested changes");
+        REQUIRE(std::filesystem::exists(worktreePath));
+        REQUIRE(std::filesystem::exists(nestedDirt));
+
+        const auto result = RunKog({"worktree", "remove", featureBranch}, ctx.cloneRootRepo);
+        INFO(result.stdoutText);
+        INFO(result.stderrText);
+        REQUIRE(result.exitCode != 0);
+        RequireContains(result.stderrText, "initialized submodule has tracked, untracked, or nested changes");
+        REQUIRE(std::filesystem::exists(worktreePath));
+        REQUIRE(std::filesystem::exists(nestedDirt));
+        REQUIRE(RunGit({"show-ref", "--verify", "--quiet", "refs/heads/" + featureBranch}, ctx.cloneRootRepo).exitCode == 0);
+
+        RemoveSandboxWorkspace(ctx.sandbox);
+    }
+}
+
 TEST_CASE("converge branches retire permits ignored-only submodule cache worktrees", "[functional][converge][branches][retire][worktree][submodule][KG-BUG-0050]") {
     const auto ctx = CreateRemoteWithSubmoduleClone("converge-branches-retire-ignored-submodule-cache");
     const std::string featureBranch = "feature/retire-ignored-submodule-cache";

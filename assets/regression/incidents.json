@@ -499,6 +499,34 @@
           "mapping_state": "source-linked"
         }
       ]
+    },
+    {
+      "incident_id": "KG-BUG-0104",
+      "incident_date": "2026-08-13",
+      "root_cause": "The direct kog worktree remove command invoked plain git worktree remove after checking only the parent porcelain status, so it bypassed the recursive verified-clean submodule guard already used by convergence retirement and failed on a clean initialized-submodule worktree.",
+      "backlog_ref": "KG-BUG-0104",
+      "change_ref": "KG-BUG-0104",
+      "workflow_contracts": [
+        "direct-worktree-removal",
+        "recursive-submodule-clean-verification",
+        "primary-submodule-config-preservation"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KG-BUG-0104/direct-verified-clean-submodule-remove",
+          "test_name": "worktree remove guards initialized submodule worktrees",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/converge_planner_test.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-BUG-0104/direct-hidden-submodule-dirt-rejected",
+          "test_name": "worktree remove guards initialized submodule worktrees",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/converge_planner_test.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        }
+      ]
     }
   ]
 }

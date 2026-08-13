@@ -3,6 +3,7 @@
 
 #include <CLI/CLI.hpp>
 #include "shell_executor.hpp"
+#include "worktree_removal.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -202,8 +203,18 @@ auto RunNativeWorktreeRemove(
     }
 
     if (InDryRun) {
+        std::string plannedRemovalMode = InForce ? "explicit-force" : std::string{};
+        if (!InForce) {
+            std::string planMessage;
+            if (!kano::git::commands::detail::PlanSemanticallyCleanWorktreeRemoval(
+                    std::filesystem::path(worktreePath), plannedRemovalMode, planMessage)) {
+                std::cerr << "[ERROR] Worktree removal preflight failed: " << planMessage << "\n";
+                return 1;
+            }
+        }
+        std::cout << "[INFO] Planned removal mode: " << plannedRemovalMode << "\n";
         std::cout << "+ git worktree remove";
-        if (InForce) {
+        if (InForce || plannedRemovalMode != "plain") {
             std::cout << " --force";
         }
         std::cout << " \"" << worktreePath << "\"\n";
@@ -215,15 +226,36 @@ auto RunNativeWorktreeRemove(
     }
 
     std::cout << "[INFO] Removing worktree...\n";
-    std::vector<std::string> removeArgs = {"worktree", "remove"};
     if (InForce) {
-        removeArgs.push_back("--force");
-    }
-    removeArgs.push_back(worktreePath);
+        auto removeResult = kano::git::shell::ExecuteCommand(
+            "git",
+            {"worktree", "remove", "--force", worktreePath},
+            kano::git::shell::ExecMode::PassThrough);
+        if (removeResult.exitCode != 0) {
+            return removeResult.exitCode;
+        }
+    } else {
+        std::error_code currentPathError;
+        const auto repoPath = std::filesystem::current_path(currentPathError);
+        if (currentPathError) {
+            std::cerr << "[ERROR] Failed to resolve repository path: "
+                      << currentPathError.message() << "\n";
+            return 1;
+        }
 
-    auto removeResult = kano::git::shell::ExecuteCommand("git", removeArgs, kano::git::shell::ExecMode::PassThrough);
-    if (removeResult.exitCode != 0) {
-        return removeResult.exitCode;
+        std::string normalizedRemovalMode;
+        std::string removalMessage;
+        if (!kano::git::commands::detail::RemoveSemanticallyCleanWorktree(
+                repoPath,
+                std::filesystem::path(worktreePath),
+                normalizedRemovalMode,
+                removalMessage)) {
+            std::cerr << "[ERROR] Worktree removal failed: " << removalMessage << "\n";
+            return 1;
+        }
+        if (!normalizedRemovalMode.empty()) {
+            std::cout << "[INFO] Removal mode: " << normalizedRemovalMode << "\n";
+        }
     }
 
     std::cout << "[INFO] Worktree removed successfully!\n";
