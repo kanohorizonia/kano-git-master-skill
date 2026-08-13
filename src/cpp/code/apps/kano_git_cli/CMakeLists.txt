@@ -26,7 +26,10 @@ if(UNIX AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
             kano_infra_process
             kano_infra_diagnostics
             kano_infra_self)
-        list(APPEND _kog_runtime_shared_library_files "$<TARGET_FILE:${_kog_runtime_target}>")
+        get_target_property(_kog_runtime_target_type "${_kog_runtime_target}" TYPE)
+        if(_kog_runtime_target_type STREQUAL "SHARED_LIBRARY")
+            list(APPEND _kog_runtime_shared_library_files "$<TARGET_FILE:${_kog_runtime_target}>")
+        endif()
     endforeach()
     execute_process(
         COMMAND "${CMAKE_CXX_COMPILER}" -print-file-name=libstdc++.so.6
