@@ -50,6 +50,7 @@ if(WIN32)
   add_executable(kano_git_tui_terminal_state_wrapper
     integration/windows_tui_terminal_state_wrapper.cpp
   )
+  target_compile_features(kano_git_tui_terminal_state_wrapper PRIVATE cxx_std_23)
   add_dependencies(kano_git_tui_tests kano_git_tui_terminal_state_wrapper)
 endif()
 
