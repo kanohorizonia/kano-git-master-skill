@@ -1,0 +1,19 @@
+<map id="kano::git::commands::OperationAuditRunProjection" name="kano::git::commands::OperationAuditRunProjection">
+<area shape="rect" id="Node000001" title=" " alt="" coords="1187,172,1405,212"/>
+<area shape="rect" id="Node000002" title=" " alt="" coords="193,147,280,173"/>
+<area shape="poly" id="edge1_Node000001_Node000002" title=" " alt="" coords="254,134,276,114,303,98,325,92,343,92,384,97,574,96,722,91,870,94,956,103,1058,117,1158,141,1244,169,1242,174,1156,146,1057,123,956,108,869,100,722,96,574,101,384,103,343,98,326,97,305,102,279,118,258,138"/>
+<area shape="rect" id="Node000005" href="$structkano_1_1git_1_1commands_1_1OperationAuditEventPreview.html" title=" " alt="" coords="419,140,636,180"/>
+<area shape="poly" id="edge5_Node000005_Node000002" title=" " alt="" coords="294,157,419,157,419,163,294,163"/>
+<area shape="rect" id="Node000008" href="$structkano_1_1git_1_1commands_1_1OperationAuditEvidencePreview.html" title=" " alt="" coords="408,237,647,277"/>
+<area shape="poly" id="edge9_Node000008_Node000002" title=" " alt="" coords="253,183,275,212,305,236,355,254,408,262,407,267,354,259,303,241,271,216,249,186"/>
+<area shape="rect" id="Node000003" title=" " alt="" coords="5,140,144,180"/>
+<area shape="poly" id="edge2_Node000002_Node000003" title=" " alt="" coords="157,157,193,157,193,163,157,163"/>
+<area shape="rect" id="Node000004" title=" " alt="" coords="832,133,1057,187"/>
+<area shape="poly" id="edge3_Node000001_Node000004" title=" " alt="" coords="1072,169,1187,179,1186,185,1071,174"/>
+<area shape="poly" id="edge4_Node000004_Node000005" title=" " alt="" coords="650,157,832,157,832,163,650,163"/>
+<area shape="rect" id="Node000006" title=" " alt="" coords="855,291,1034,331"/>
+<area shape="poly" id="edge6_Node000001_Node000006" title=" " alt="" coords="1031,284,1056,276,1242,210,1244,215,1058,281,1032,289"/>
+<area shape="rect" id="Node000007" title=" " alt="" coords="832,211,1057,266"/>
+<area shape="poly" id="edge7_Node000001_Node000007" title=" " alt="" coords="1071,219,1186,204,1187,209,1072,225"/>
+<area shape="poly" id="edge8_Node000007_Node000008" title=" " alt="" coords="660,249,832,241,832,246,661,254"/>
+</map>
