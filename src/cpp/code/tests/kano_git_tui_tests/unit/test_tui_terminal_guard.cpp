@@ -2,15 +2,101 @@
 
 #include "tui_terminal_guard.hpp"
 
+#include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #if !defined(_WIN32)
 #include <cstdlib>
 #include <fcntl.h>
+#include <sys/ioctl.h>
 #include <termios.h>
 #include <unistd.h>
 #endif
+
+namespace {
+
+auto AcceptedTerminalCapabilities()
+    -> kano::git::commands::TuiTerminalCapabilities {
+    return {
+        .bStdinInteractive = true,
+        .bStdoutInteractive = true,
+        .bInputStateHealthy = true,
+        .bOutputStateHealthy = true,
+        .columns = 120,
+        .rows = 40,
+    };
+}
+
+#if !defined(_WIN32)
+class ScopedPosixPtyStandardStreams final {
+public:
+    ScopedPosixPtyStandardStreams()
+        : mSavedInput(dup(STDIN_FILENO)),
+          mSavedOutput(dup(STDOUT_FILENO)) {
+        if (mSavedInput < 0 || mSavedOutput < 0) {
+            return;
+        }
+        mMaster = posix_openpt(O_RDWR | O_NOCTTY);
+        if (mMaster < 0 || grantpt(mMaster) != 0 || unlockpt(mMaster) != 0) {
+            return;
+        }
+        const char* slaveName = ptsname(mMaster);
+        if (slaveName == nullptr) {
+            return;
+        }
+        mSlave = open(slaveName, O_RDWR | O_NOCTTY);
+        if (mSlave < 0 || dup2(mSlave, STDIN_FILENO) < 0) {
+            return;
+        }
+        mInputRedirected = true;
+        if (dup2(mSlave, STDOUT_FILENO) < 0) {
+            return;
+        }
+        mOutputRedirected = true;
+    }
+
+    ~ScopedPosixPtyStandardStreams() {
+        if (mInputRedirected && mSavedInput >= 0) {
+            dup2(mSavedInput, STDIN_FILENO);
+        }
+        if (mOutputRedirected && mSavedOutput >= 0) {
+            dup2(mSavedOutput, STDOUT_FILENO);
+        }
+        if (mSavedInput >= 0) {
+            close(mSavedInput);
+        }
+        if (mSavedOutput >= 0) {
+            close(mSavedOutput);
+        }
+        if (mSlave >= 0) {
+            close(mSlave);
+        }
+        if (mMaster >= 0) {
+            close(mMaster);
+        }
+    }
+
+    ScopedPosixPtyStandardStreams(const ScopedPosixPtyStandardStreams&) = delete;
+    auto operator=(const ScopedPosixPtyStandardStreams&)
+        -> ScopedPosixPtyStandardStreams& = delete;
+
+    [[nodiscard]] auto IsReady() const -> bool {
+        return mInputRedirected && mOutputRedirected;
+    }
+
+private:
+    int mSavedInput = -1;
+    int mSavedOutput = -1;
+    int mMaster = -1;
+    int mSlave = -1;
+    bool mInputRedirected = false;
+    bool mOutputRedirected = false;
+};
+#endif
+
+}  // namespace
 
 TEST_CASE(
     "TUI terminal guard restores captured state after the screen lifetime",
@@ -47,69 +133,184 @@ TEST_CASE(
                       });
 }
 
+TEST_CASE(
+    "TUI terminal preflight rejects unsupported capabilities before capture",
+    "[unit][tui_terminal_guard][KG-BUG-0108]") {
+    using kano::git::commands::StartTuiTerminalSession;
+    using kano::git::commands::TuiTerminalCapabilities;
+    using kano::git::commands::TuiTerminalPreflightFailure;
+    using kano::git::commands::TuiTerminalRestoreAction;
+
+    const std::vector<std::pair<TuiTerminalCapabilities, TuiTerminalPreflightFailure>> cases{
+        {{}, TuiTerminalPreflightFailure::StandardStreamsNotInteractive},
+        {{.bStdinInteractive = true, .bStdoutInteractive = true},
+         TuiTerminalPreflightFailure::TerminalStateUnavailable},
+        {{.bStdinInteractive = true, .bStdoutInteractive = true,
+          .bInputStateHealthy = true, .bOutputStateHealthy = true},
+         TuiTerminalPreflightFailure::TerminalDimensionsUnavailable},
+    };
+
+    for (const auto& [capabilities, expectedFailure] : cases) {
+        int captureCount = 0;
+        int activationCount = 0;
+        const auto session = StartTuiTerminalSession(
+            [capabilities] { return capabilities; },
+            [&]() -> TuiTerminalRestoreAction {
+                ++captureCount;
+                return {};
+            },
+            [&]() {
+                ++activationCount;
+                return true;
+            });
+        REQUIRE(session.preflight.failure == expectedFailure);
+        REQUIRE_FALSE(session.modeGuard);
+        REQUIRE(captureCount == 0);
+        REQUIRE(activationCount == 0);
+    }
+}
+
+TEST_CASE(
+    "TUI terminal session captures before activation and restores after success",
+    "[unit][tui_terminal_guard][KG-BUG-0108]") {
+    using kano::git::commands::StartTuiTerminalSession;
+    using kano::git::commands::TuiTerminalRestoreAction;
+
+    std::vector<std::string> events;
+    {
+        auto session = StartTuiTerminalSession(
+            [&] {
+                events.push_back("probe");
+                return AcceptedTerminalCapabilities();
+            },
+            [&]() -> TuiTerminalRestoreAction {
+                events.push_back("capture");
+                return [&] { events.push_back("restore"); };
+            },
+            [&] {
+                events.push_back("activate");
+                return true;
+            });
+        REQUIRE(session.preflight.Accepted());
+        REQUIRE(session.modeGuard);
+        events.push_back("screen-entry");
+        REQUIRE(events == std::vector<std::string>{
+                              "probe",
+                              "capture",
+                              "activate",
+                              "screen-entry",
+                          });
+    }
+    REQUIRE(events == std::vector<std::string>{
+                          "probe",
+                          "capture",
+                          "activate",
+                          "screen-entry",
+                          "restore",
+                      });
+}
+
+TEST_CASE(
+    "TUI terminal session restores before reporting guarded activation failure",
+    "[unit][tui_terminal_guard][KG-BUG-0108]") {
+    using kano::git::commands::StartTuiTerminalSession;
+    using kano::git::commands::TuiTerminalPreflightFailure;
+    using kano::git::commands::TuiTerminalRestoreAction;
+
+    std::vector<std::string> events;
+    auto session = StartTuiTerminalSession(
+        [&] {
+            events.push_back("probe");
+            return AcceptedTerminalCapabilities();
+        },
+        [&]() -> TuiTerminalRestoreAction {
+            events.push_back("capture");
+            return [&] { events.push_back("restore"); };
+        },
+        [&] {
+            events.push_back("activate");
+            return false;
+        });
+    events.push_back("diagnostic");
+
+    REQUIRE(session.preflight.failure ==
+            TuiTerminalPreflightFailure::VirtualTerminalUnavailable);
+    REQUIRE_FALSE(session.modeGuard);
+    REQUIRE(events == std::vector<std::string>{
+                          "probe",
+                          "capture",
+                          "activate",
+                          "restore",
+                          "diagnostic",
+                      });
+}
+
+TEST_CASE(
+    "TUI terminal session restores before reporting guarded activation exception",
+    "[unit][tui_terminal_guard][KG-BUG-0108]") {
+    using kano::git::commands::StartTuiTerminalSession;
+    using kano::git::commands::TuiTerminalPreflightFailure;
+    using kano::git::commands::TuiTerminalRestoreAction;
+
+    std::vector<std::string> events;
+    auto session = StartTuiTerminalSession(
+        [&] {
+            events.push_back("probe");
+            return AcceptedTerminalCapabilities();
+        },
+        [&]() -> TuiTerminalRestoreAction {
+            events.push_back("capture");
+            return [&] { events.push_back("restore"); };
+        },
+        [&]() -> bool {
+            events.push_back("activate-mutate");
+            throw std::runtime_error("injected activation failure");
+        });
+    events.push_back("caller-visible-failure");
+
+    REQUIRE(session.preflight.failure ==
+            TuiTerminalPreflightFailure::VirtualTerminalUnavailable);
+    REQUIRE_FALSE(session.modeGuard);
+    REQUIRE(events == std::vector<std::string>{
+                          "probe",
+                          "capture",
+                          "activate-mutate",
+                          "restore",
+                          "caller-visible-failure",
+                      });
+}
+
 #if !defined(_WIN32)
 TEST_CASE(
     "TUI terminal guard restores a real POSIX pseudo-terminal",
     "[unit][tui_terminal_guard][pty][KG-BUG-0088]") {
-    using kano::git::commands::TuiTerminalModeGuard;
-
-    bool bPtyAvailable = false;
-    bool bRestored = false;
-    const int savedInput = dup(STDIN_FILENO);
-    const int savedOutput = dup(STDOUT_FILENO);
-    const int master = posix_openpt(O_RDWR | O_NOCTTY);
-    int slave = -1;
-    if (savedInput >= 0 && savedOutput >= 0 && master >= 0 &&
-        grantpt(master) == 0 && unlockpt(master) == 0) {
-        const char* slaveName = ptsname(master);
-        if (slaveName != nullptr) {
-            slave = open(slaveName, O_RDWR | O_NOCTTY);
-        }
+    ScopedPosixPtyStandardStreams pty;
+    if (!pty.IsReady()) {
+        SKIP("POSIX pseudo-terminal fixture unavailable");
     }
 
-    if (slave >= 0 && dup2(slave, STDIN_FILENO) >= 0 &&
-        dup2(slave, STDOUT_FILENO) >= 0) {
-        termios before{};
-        if (tcgetattr(STDIN_FILENO, &before) == 0) {
-            bPtyAvailable = true;
-            {
-                TuiTerminalModeGuard guard;
-                auto mutated = before;
-                mutated.c_lflag ^= ECHO;
-                if (tcsetattr(STDIN_FILENO, TCSANOW, &mutated) != 0) {
-                    bPtyAvailable = false;
-                }
-            }
-            termios after{};
-            if (bPtyAvailable && tcgetattr(STDIN_FILENO, &after) == 0) {
-                bRestored = after.c_iflag == before.c_iflag &&
-                    after.c_oflag == before.c_oflag &&
-                    after.c_cflag == before.c_cflag &&
-                    after.c_lflag == before.c_lflag;
-            }
-        }
-    }
+    winsize dimensions{};
+    dimensions.ws_col = 120;
+    dimensions.ws_row = 40;
+    REQUIRE(ioctl(STDOUT_FILENO, TIOCSWINSZ, &dimensions) == 0);
 
-    if (savedInput >= 0) {
-        dup2(savedInput, STDIN_FILENO);
-        close(savedInput);
-    }
-    if (savedOutput >= 0) {
-        dup2(savedOutput, STDOUT_FILENO);
-        close(savedOutput);
-    }
-    if (slave >= 0) {
-        close(slave);
-    }
-    if (master >= 0) {
-        close(master);
-    }
+    termios before{};
+    REQUIRE(tcgetattr(STDIN_FILENO, &before) == 0);
+    {
+        auto session = kano::git::commands::StartTuiTerminalSession();
+        REQUIRE(session.preflight.Accepted());
+        REQUIRE(session.modeGuard);
 
-    if (!bPtyAvailable) {
-        SUCCEED("POSIX pseudo-terminal unavailable in this test environment");
-        return;
+        auto mutated = before;
+        mutated.c_lflag ^= ECHO;
+        REQUIRE(tcsetattr(STDIN_FILENO, TCSANOW, &mutated) == 0);
     }
-    REQUIRE(bRestored);
+    termios after{};
+    REQUIRE(tcgetattr(STDIN_FILENO, &after) == 0);
+    REQUIRE(after.c_iflag == before.c_iflag);
+    REQUIRE(after.c_oflag == before.c_oflag);
+    REQUIRE(after.c_cflag == before.c_cflag);
+    REQUIRE(after.c_lflag == before.c_lflag);
 }
 #endif
 

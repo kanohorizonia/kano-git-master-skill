@@ -420,6 +420,39 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "redirected standard streams reject both interactive TUI entrypoints cleanly",
+    "[integration][tui_terminal_guard][production-path][KG-BUG-0108]") {
+    using namespace kano::git::tests::functional;
+
+    const ScopedSandbox sandbox("tui-terminal-preflight-redirected");
+    const auto standaloneTui =
+        ResolveKogBinaryPath().parent_path() /
+#if defined(_WIN32)
+        "kano-git-tui.exe";
+#else
+        "kano-git-tui";
+#endif
+    const std::vector<std::pair<std::string, CommandResult>> results{
+        {"kog tui", RunKog({"tui"}, sandbox.Root())},
+        {"standalone tui", RunCommand(standaloneTui.string(), {}, sandbox.Root())},
+    };
+
+    for (const auto& [name, result] : results) {
+        INFO(name);
+        INFO("exit=" << result.exitCode);
+        INFO("stdout=" << result.stdoutText);
+        INFO("stderr=" << result.stderrText);
+        CHECK(result.exitCode == 3);
+        CHECK(result.stdoutText.empty());
+        CHECK(result.stderrText.find("interactive stdin and stdout are required") !=
+              std::string::npos);
+        CHECK(result.stderrText.size() <= 256U);
+        CHECK(result.stdoutText.find('\x1b') == std::string::npos);
+        CHECK(result.stderrText.find('\x1b') == std::string::npos);
+    }
+}
+
+TEST_CASE(
     "TUI production startup loads a disposable three-repository inventory through the built KOG binary",
     "[integration][tui_startup][production-path][KG-BUG-0091][KG-TSK-0131]") {
     using namespace kano::git::tests::functional;

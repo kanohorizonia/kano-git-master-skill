@@ -33,10 +33,10 @@ target_link_libraries(kano_git_tui_tests
   PRIVATE kano_git_command
 )
 
-# The production-path TUI integration test executes the built KOG binary.
+# The production-path TUI integration tests execute both built TUI entrypoints.
 # Keep this dependency explicit so a clean focused test build never relies on
 # an executable left behind by another target or preset.
-add_dependencies(kano_git_tui_tests kano_git_cli)
+add_dependencies(kano_git_tui_tests kano_git_cli kano_git_tui)
 
 target_include_directories(kano_git_tui_tests
   PRIVATE

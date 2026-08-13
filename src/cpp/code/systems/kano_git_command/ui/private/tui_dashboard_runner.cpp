@@ -2367,10 +2367,17 @@ auto BuildDiscoverLines(const std::vector<RepoView>& repos, const std::filesyste
 auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int {
     using namespace ftxui;
 
-    // Capture modes and code pages before any terminal mutation. The guard
-    // remains alive for the entire FTXUI event loop and restores every normal
-    // or exceptional exit path.
-    TuiTerminalModeGuard terminalModeGuard;
+    // This is the earliest shared interactive runner seam.  Keep rejected
+    // invocations out of all terminal mutation, including guard capture,
+    // code-page setup, FTXUI construction, and fullscreen/ANSI entry.
+    auto terminalSession = StartTuiTerminalSession();
+    if (!terminalSession.preflight.Accepted()) {
+        std::cerr << "kog tui: "
+                  << DescribeTuiTerminalPreflightFailure(
+                         terminalSession.preflight.failure)
+                  << "\n";
+        return 3;
+    }
 
 #ifdef KOG_PLATFORM_WINDOWS
     // Ensure the Windows console interprets subprocess output as UTF-8.
