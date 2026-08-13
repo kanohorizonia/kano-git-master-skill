@@ -1,5 +1,9 @@
 #include "operation_audit.hpp"
 
+#include "audit_run_reader.hpp"
+#include "audit_evidence_directory.hpp"
+#include "audit_run_reader_private.hpp"
+
 #include "shell_executor.hpp"
 
 #include <nlohmann/json.hpp>
@@ -1556,232 +1560,329 @@ auto OperationAuditCapabilityJson() -> std::string {
     return doc.dump() + '\n';
 }
 
+namespace {
+
+enum class LegacyMarkerProbe { Absent, Present, Rejected };
+
+// `audit verify` predates the closed marker schema used by the public reader.
+// Preserve its intentionally narrow marker contract here instead of exposing
+// that permissive shape through ReadOperationAuditRun's default policy.
+auto ProbeLegacyMarker(const AuditEvidenceDirectory& InDirectory,
+                       const std::string_view InName,
+                       const std::string_view InSchemaName,
+                       const std::string_view InRunId,
+                       const std::uint32_t InAttempt,
+                       const std::string_view InPresentDiagnostic,
+                       const std::string_view InInvalidDiagnostic,
+                       const std::string_view InAbsenceDiagnostic,
+                       const std::string_view InUnreadableDiagnostic,
+                       std::string* OutError) -> LegacyMarkerProbe {
+    const auto probe = InDirectory.Probe(InName);
+    if (probe.code == AuditEvidenceReadCode::Missing)
+        return LegacyMarkerProbe::Absent;
+    if (!probe.ready() && probe.code != AuditEvidenceReadCode::LoopOrReparse &&
+        probe.code != AuditEvidenceReadCode::NonRegular) {
+        if (OutError) *OutError = std::string(InAbsenceDiagnostic);
+        return LegacyMarkerProbe::Rejected;
+    }
+    const auto input = InDirectory.Read(InName, 64U << 10U);
+    if (!input.ready()) {
+        if (OutError) *OutError = input.diagnostic.empty()
+            ? std::string(InUnreadableDiagnostic) : input.diagnostic;
+        return LegacyMarkerProbe::Rejected;
+    }
+    try {
+        const auto doc = nlohmann::json::parse(input.bytes);
+        if (!doc.is_object() ||
+            doc.value("schemaName", "") != InSchemaName ||
+            doc.value("schemaVersion", 0) != 1 ||
+            doc.value("runId", "") != InRunId ||
+            doc.value("attempt", 0U) != InAttempt) {
+            if (OutError) *OutError = std::string(InInvalidDiagnostic);
+            return LegacyMarkerProbe::Rejected;
+        }
+    } catch (...) {
+        if (OutError) *OutError = std::string(InInvalidDiagnostic);
+        return LegacyMarkerProbe::Rejected;
+    }
+    if (OutError) *OutError = std::string(InPresentDiagnostic);
+    return LegacyMarkerProbe::Present;
+}
+
+auto LegacyMarkersBlockVerification(const AuditEvidenceDirectory& InDirectory,
+                                    const OperationAuditPaths& InPaths,
+                                    const std::string_view InRunId,
+                                    const std::uint32_t InAttempt,
+                                    std::string* OutError) -> bool {
+    // Preserve the original eager evaluation order. Both marker probes run
+    // before their OR result is considered, so an incomplete diagnostic
+    // overwrites a pending diagnostic when both markers are present.
+    const auto pending = ProbeLegacyMarker(
+        InDirectory, InPaths.publicationPending.filename().string(),
+        "kog.auditPublicationPending", InRunId, InAttempt,
+        "audit receipt publication is still pending",
+        "audit publication-pending sentinel is invalid",
+        "cannot prove absence of audit publication-pending sentinel",
+        "audit publication-pending sentinel is unreadable", OutError);
+    const auto incomplete = ProbeLegacyMarker(
+        InDirectory, InPaths.incomplete.filename().string(),
+        "kog.auditIncomplete", InRunId, InAttempt,
+        "audit evidence is explicitly incomplete", "audit incomplete marker is invalid",
+        "cannot prove absence of audit incomplete marker", "audit incomplete marker is unreadable",
+        OutError);
+    return pending != LegacyMarkerProbe::Absent ||
+        incomplete != LegacyMarkerProbe::Absent;
+}
+
+auto LegacyMissingEvidence(const AuditEvidenceDirectory& InDirectory,
+                           const OperationAuditPaths& InPaths,
+                           std::string* OutError) -> bool {
+    // Preserve the old sequential ReadBoundedAuditInput diagnostics, including
+    // the underlying OS error text for a missing child evidence file.
+    const auto events = InDirectory.Read(InPaths.events.filename().string(), 64U << 20U);
+    if (!events.ready()) {
+        if (OutError) *OutError = events.diagnostic.empty()
+            ? std::string(AuditEvidenceSystemDiagnostic(events.code)) : events.diagnostic;
+        return true;
+    }
+    const auto receipt = InDirectory.Read(InPaths.receipt.filename().string(), 4U << 20U);
+    if (!receipt.ready()) {
+        if (OutError) *OutError = receipt.diagnostic.empty()
+            ? std::string(AuditEvidenceSystemDiagnostic(receipt.code)) : receipt.diagnostic;
+        return true;
+    }
+    const auto frozen = InDirectory.Read(InPaths.frozenInput.filename().string(), 4U << 20U);
+    if (!frozen.ready()) {
+        if (OutError) *OutError = frozen.diagnostic.empty()
+            ? std::string(AuditEvidenceSystemDiagnostic(frozen.code)) : frozen.diagnostic;
+        return true;
+    }
+    return false;
+}
+
+auto LegacyDirectoryOpenDiagnostic(const AuditEvidenceOpenCode InCode)
+    -> std::string {
+    if (InCode == AuditEvidenceOpenCode::Missing) {
+#if defined(_WIN32)
+        // ReadBoundedAuditInput on a child whose parent attempt/root is absent
+        // reports ERROR_PATH_NOT_FOUND, not ERROR_FILE_NOT_FOUND.
+        return "cannot open bounded audit input: win32 error 3";
+#else
+        return std::string("cannot open bounded audit input: ") +
+            std::strerror(ENOENT);
+#endif
+    }
+    if (InCode == AuditEvidenceOpenCode::PermissionDenied ||
+        InCode == AuditEvidenceOpenCode::IoError ||
+        InCode == AuditEvidenceOpenCode::StatFailed ||
+        InCode == AuditEvidenceOpenCode::NotDirectory) {
+        // Both legacy marker probes ran before evidence reads; the incomplete
+        // probe was last and therefore owned the final diagnostic.
+        return "cannot prove absence of audit incomplete marker";
+    }
+    return std::string(AuditEvidenceSystemDiagnostic(InCode));
+}
+
+} // namespace
+
 auto VerifyOperationAuditJson(const OperationAuditSpec& InSpec,
                               const std::string_view InRunId,
                               const std::uint32_t InAttempt,
                               bool* OutTraceValid,
                               std::string* OutError) -> std::optional<std::string> {
     if (OutTraceValid) *OutTraceValid = false;
-    const auto paths = ResolveOperationAuditPaths(InSpec, InRunId, InAttempt, OutError);
-    if (!paths) return std::nullopt;
-    const auto publicationPendingPresent = [&]() -> bool {
-        std::error_code ec;
-        const auto status =
-            std::filesystem::symlink_status(
-                PathForNativeIo(paths->publicationPending), ec);
-        if (status.type() == std::filesystem::file_type::not_found ||
-            ec == std::errc::no_such_file_or_directory) return false;
-        if (ec) {
-            if (OutError)
+    std::string pathError;
+    const auto legacyPaths = ResolveOperationAuditPaths(InSpec, InRunId, InAttempt, &pathError);
+    if (!legacyPaths) {
+        if (OutError) *OutError = pathError;
+        return std::nullopt;
+    }
+    AuditEvidenceOpenCode legacyOpenCode = AuditEvidenceOpenCode::IoError;
+    auto legacyDirectory = AuditEvidenceDirectory::Open(*legacyPaths, &legacyOpenCode);
+    if (!legacyDirectory) {
+        if (OutError) *OutError = LegacyDirectoryOpenDiagnostic(legacyOpenCode);
+        return std::nullopt;
+    }
+    if (LegacyMarkersBlockVerification(*legacyDirectory, *legacyPaths,
+                                       InRunId, InAttempt, OutError))
+        return std::nullopt;
+    OperationAuditRunReadLimits limits;
+    limits.maxPreviewBytes = 4U << 20U;
+    limits.maxEventRecords = 0;
+    limits.maxRepositories = 256;
+    limits.maxEvidenceReferences = 128;
+    // `audit verify` has always located a receipt by run/attempt.  Its
+    // synthetic standalone correlation is deliberately a lookup wildcard,
+    // not a demand that a KOA receipt be standalone.  Keep that compatibility
+    // boundary explicit rather than weakening normal reader calls.
+    OperationAuditRunReadPolicy readPolicy;
+    // Legacy verification locates markers by run/attempt and accepts any
+    // compatible route for the closed input kind. A standalone CLI lookup is
+    // also a caller-correlation wildcard; a real KOA spec remains exact.
+    readPolicy.markerMatch = OperationAuditMarkerMatchPolicy::IdentityOnly;
+    readPolicy.callerCorrelation = InSpec.correlation.mode == "standalone"
+        ? OperationAuditCallerCorrelationPolicy::StandaloneWildcard
+        : OperationAuditCallerCorrelationPolicy::LegacyVerify;
+    readPolicy.routeBinding =
+        OperationAuditRouteBindingPolicy::CompatibleInputKind;
+    const auto read = ReadOperationAuditRunFromPinnedDirectory(
+        *legacyDirectory, *legacyPaths, InSpec, InRunId, InAttempt,
+        limits, std::nullopt, readPolicy);
+    if (!read.verified()) {
+        const auto markerResult = [](const OperationAuditRunReadCode code) {
+            switch (code) {
+            case OperationAuditRunReadCode::PublicationPending:
+            case OperationAuditRunReadCode::EvidenceIncomplete:
+            case OperationAuditRunReadCode::PendingMarkerUnreadable:
+            case OperationAuditRunReadCode::PendingMarkerInvalid:
+            case OperationAuditRunReadCode::IncompleteMarkerUnreadable:
+            case OperationAuditRunReadCode::IncompleteMarkerInvalid:
+            case OperationAuditRunReadCode::PendingMarkerProbeFailed:
+            case OperationAuditRunReadCode::IncompleteMarkerProbeFailed:
+                return true;
+            default:
+                return false;
+            }
+        };
+        // The marker may have appeared or changed after the pre-read legacy
+        // probe. Reclassify through the legacy wrapper before mapping it.
+        if (markerResult(read.code) &&
+            LegacyMarkersBlockVerification(*legacyDirectory, *legacyPaths,
+                                           InRunId, InAttempt, OutError)) {
+            return std::nullopt;
+        }
+        if ((read.code == OperationAuditRunReadCode::AttemptMissing ||
+             read.code == OperationAuditRunReadCode::EvidenceMissing) &&
+            LegacyMissingEvidence(*legacyDirectory, *legacyPaths, OutError)) {
+            return std::nullopt;
+        }
+        if (OutError) {
+            switch (read.code) {
+            case OperationAuditRunReadCode::PublicationPending:
+                *OutError = "audit receipt publication is still pending";
+                break;
+            case OperationAuditRunReadCode::PendingMarkerProbeFailed:
                 *OutError = "cannot prove absence of audit publication-pending sentinel";
-            return true;
-        }
-        const auto marker = ReadBoundedAuditInput(
-            paths->publicationPending, 64U << 10U, OutError);
-        if (!marker) {
-            if (OutError && OutError->empty())
+                break;
+            case OperationAuditRunReadCode::PendingMarkerUnreadable:
                 *OutError = "audit publication-pending sentinel is unreadable";
-            return true;
-        }
-        try {
-            const auto doc = nlohmann::json::parse(*marker);
-            if (!doc.is_object() ||
-                doc.value("schemaName", "") != "kog.auditPublicationPending" ||
-                doc.value("schemaVersion", 0) != 1 ||
-                doc.value("runId", "") != InRunId ||
-                doc.value("attempt", 0U) != InAttempt) {
-                if (OutError)
-                    *OutError = "audit publication-pending sentinel is invalid";
-                return true;
-            }
-        } catch (...) {
-            if (OutError)
+                break;
+            case OperationAuditRunReadCode::PendingMarkerInvalid:
                 *OutError = "audit publication-pending sentinel is invalid";
-            return true;
-        }
-        if (OutError) *OutError = "audit receipt publication is still pending";
-        return true;
-    };
-    const auto incompleteMarkerPresent = [&]() -> bool {
-        std::error_code ec;
-        const auto status = std::filesystem::symlink_status(
-            PathForNativeIo(paths->incomplete), ec);
-        if (status.type() == std::filesystem::file_type::not_found ||
-            ec == std::errc::no_such_file_or_directory) return false;
-        if (ec) {
-            if (OutError) *OutError = "cannot prove absence of audit incomplete marker";
-            return true;
-        }
-        const auto marker = ReadBoundedAuditInput(paths->incomplete, 64U << 10U, OutError);
-        if (!marker) {
-            if (OutError && OutError->empty())
+                break;
+            case OperationAuditRunReadCode::EvidenceIncomplete:
+                *OutError = "audit evidence is explicitly incomplete";
+                break;
+            case OperationAuditRunReadCode::IncompleteMarkerProbeFailed:
+                *OutError = "cannot prove absence of audit incomplete marker";
+                break;
+            case OperationAuditRunReadCode::IncompleteMarkerUnreadable:
                 *OutError = "audit incomplete marker is unreadable";
-            return true;
-        }
-        try {
-            const auto doc = nlohmann::json::parse(*marker);
-            if (!doc.is_object() || doc.value("schemaName", "") != "kog.auditIncomplete" ||
-                doc.value("schemaVersion", 0) != 1 ||
-                doc.value("runId", "") != InRunId ||
-                doc.value("attempt", 0U) != InAttempt) {
-                if (OutError) *OutError = "audit incomplete marker is invalid";
-                return true;
+                break;
+            case OperationAuditRunReadCode::IncompleteMarkerInvalid:
+                *OutError = "audit incomplete marker is invalid";
+                break;
+            case OperationAuditRunReadCode::AttemptMissing:
+            case OperationAuditRunReadCode::EvidenceMissing:
+                *OutError = "audit evidence is missing";
+                break;
+            case OperationAuditRunReadCode::PlanMismatch:
+                *OutError = "current admitted plan id does not match the receipt";
+                break;
+            case OperationAuditRunReadCode::MultipleFrozenBindings:
+                *OutError = "multiple main frozen input bindings are present";
+                break;
+            case OperationAuditRunReadCode::FrozenBindingMissing:
+                *OutError = "main frozen route/input binding is missing or contradictory";
+                break;
+            case OperationAuditRunReadCode::SourceNotAdmitted:
+            case OperationAuditRunReadCode::BindingMismatch:
+                *OutError = "current plan bytes are not an admitted source state";
+                break;
+            case OperationAuditRunReadCode::FrozenCommitPlanIdentityMismatch:
+                *OutError = "frozen commit-plan identity is contradictory";
+                break;
+            case OperationAuditRunReadCode::FrozenOperationIdentityMismatch:
+                *OutError = "frozen operation descriptor identity is contradictory";
+                break;
+            case OperationAuditRunReadCode::FrozenCorrelationMismatch:
+                *OutError = "frozen input correlation is contradictory";
+                break;
+            case OperationAuditRunReadCode::HashMismatch:
+                *OutError = "frozen input hash does not match the receipt";
+                break;
+            case OperationAuditRunReadCode::ReceiptMismatch:
+                *OutError = "audit receipt identity does not match requested run";
+                break;
+            case OperationAuditRunReadCode::CorrelationMismatch:
+                *OutError = "requested correlation does not match verified evidence";
+                break;
+            case OperationAuditRunReadCode::UnsupportedSchema:
+                *OutError = "audit evidence failed closed trace validation";
+                break;
+            case OperationAuditRunReadCode::FrozenOperationUnsupportedSchema:
+                *OutError = "frozen operation descriptor identity is contradictory";
+                break;
+            case OperationAuditRunReadCode::InputLimit:
+                *OutError = "audit evidence exceeds a bounded verification limit";
+                break;
+            case OperationAuditRunReadCode::MalformedEvidence:
+            case OperationAuditRunReadCode::TraceInvalid:
+                *OutError = "audit evidence failed closed trace validation";
+                break;
+            default:
+                *OutError = "audit evidence failed closed verification";
+                break;
             }
-        } catch (...) {
-            if (OutError) *OutError = "audit incomplete marker is invalid";
-            return true;
         }
-        if (OutError) *OutError = "audit evidence is explicitly incomplete";
-        return true;
+        return std::nullopt;
+    }
+
+    if (LegacyMarkersBlockVerification(*legacyDirectory, *legacyPaths,
+                                       InRunId, InAttempt, OutError))
+        return std::nullopt;
+
+    const auto& run = *read.run;
+    const auto nullable = [](const auto& value) {
+        return value ? nlohmann::json(*value) : nlohmann::json(nullptr);
     };
-    const bool pendingBeforeRead = publicationPendingPresent();
-    const bool incompleteBeforeRead = incompleteMarkerPresent();
-    if (pendingBeforeRead || incompleteBeforeRead) return std::nullopt;
-    const auto eventsBytes = ReadBoundedAuditInput(paths->events, 64U << 20U, OutError);
-    const auto receiptBytes = ReadBoundedAuditInput(paths->receipt, 4U << 20U, OutError);
-    const auto frozenBytes = ReadBoundedAuditInput(paths->frozenInput, 4U << 20U, OutError);
-    if (!eventsBytes || !receiptBytes || !frozenBytes) return std::nullopt;
-    const auto events = audit::ParseAuditEventsJsonl(*eventsBytes);
-    const auto receipt = audit::ParseRunReceiptJson(*receiptBytes);
-    if (!events.ok() || !receipt.ok() || !receipt.value ||
-        !audit::ValidateRunTrace(*receipt.value, events.values).ok()) {
-        if (OutError) *OutError = "audit evidence failed closed trace validation";
-        return std::nullopt;
-    }
-    if (receipt.value->runId != InRunId || receipt.value->attempt != InAttempt) {
-        if (OutError) *OutError = "audit receipt identity does not match requested run";
-        return std::nullopt;
-    }
-    const auto& value = *receipt.value;
-    if (value.planId != InSpec.planId) {
-        if (OutError) *OutError = "current admitted plan id does not match the receipt";
-        return std::nullopt;
-    }
-    const auto frozenSha256 = audit::Sha256Hex(*frozenBytes);
-    if (frozenSha256 != value.planSha256) {
-        if (OutError) *OutError = "frozen input hash does not match the receipt";
-        return std::nullopt;
-    }
-
-    static constexpr std::array<std::pair<std::string_view, std::string_view>, 7>
-        supportedPairs = {{
-            {"commit.plan", "commit-plan"},
-            {"commit-push.plan", "commit-plan"},
-            {"plan.apply", "commit-plan"},
-            {"converge.repos", "operation-descriptor"},
-            {"converge.branches.apply", "operation-descriptor"},
-            {"converge.branches.recover", "operation-descriptor"},
-            {"converge.branches.retire", "operation-descriptor"},
-        }};
-    const audit::ArtifactReference* frozenInputArtifact = nullptr;
-    std::string verifiedRoute;
-    for (const auto& [route, inputKind] : supportedPairs) {
-        if (inputKind != InSpec.inputKind) continue;
-        const auto kind = std::string("audit-frozen-") + std::string(route) +
-            "-" + std::string(inputKind);
-        for (const auto& artifact : value.artifacts) {
-            if (artifact.kind != kind) continue;
-            if (frozenInputArtifact != nullptr) {
-                if (OutError) *OutError = "multiple main frozen input bindings are present";
-                return std::nullopt;
-            }
-            frozenInputArtifact = &artifact;
-            verifiedRoute = route;
-        }
-    }
-    if (frozenInputArtifact == nullptr ||
-        frozenInputArtifact->sha256 != frozenSha256 ||
-        frozenInputArtifact->sizeBytes != frozenBytes->size()) {
-        if (OutError) *OutError = "main frozen route/input binding is missing or contradictory";
-        return std::nullopt;
-    }
-    const auto sourceKind = "audit-source-" + verifiedRoute + "-" + InSpec.inputKind;
-    const auto currentSourceSha256 = audit::Sha256Hex(InSpec.sourceBytes);
-    const auto sourceAdmitted = std::any_of(
-        value.artifacts.begin(), value.artifacts.end(), [&](const auto& artifact) {
-            const bool permittedKind = artifact.kind == sourceKind ||
-                (InSpec.inputKind == "commit-plan" &&
-                 artifact.kind == "frozen-commit-plan-source-state");
-            return permittedKind && artifact.sha256 == currentSourceSha256 &&
-                artifact.sizeBytes == InSpec.sourceBytes.size();
-        });
-    if (!sourceAdmitted) {
-        if (OutError) *OutError = "current plan bytes are not an admitted source state";
-        return std::nullopt;
-    }
-
-    try {
-        const auto frozenDoc = nlohmann::json::parse(*frozenBytes);
-        const nlohmann::json* correlationDoc = nullptr;
-        if (InSpec.inputKind == "commit-plan") {
-            if (!frozenDoc.is_object() || !frozenDoc.contains("meta") ||
-                !frozenDoc.at("meta").is_object() ||
-                frozenDoc.at("meta").value("plan_id", std::string{}) != value.planId ||
-                !frozenDoc.at("meta").contains("correlation")) {
-                throw std::runtime_error("frozen commit-plan identity is contradictory");
-            }
-            correlationDoc = &frozenDoc.at("meta").at("correlation");
-        } else {
-            if (!frozenDoc.is_object() ||
-                frozenDoc.value("schema_name", std::string{}) !=
-                    "kog.operationAuditInput" ||
-                frozenDoc.value("schema_version", 0) != 1 ||
-                frozenDoc.value("route", std::string{}) != verifiedRoute ||
-                !frozenDoc.contains("correlation")) {
-                throw std::runtime_error("frozen operation descriptor identity is contradictory");
-            }
-            correlationDoc = &frozenDoc.at("correlation");
-        }
-        std::string correlationError;
-        const auto frozenCorrelation = ParseOperationCorrelationEnvelope(
-            correlationDoc->dump(), &correlationError);
-        if (!frozenCorrelation ||
-            !ValidateOperationCorrelationEnvelope(*frozenCorrelation, true,
-                                                  &correlationError) ||
-            frozenCorrelation->runId != value.runId ||
-            frozenCorrelation->attempt != value.attempt ||
-            Nullable(frozenCorrelation->parentRunId) !=
-                (value.parentRunId ? nlohmann::json(*value.parentRunId)
-                                   : nlohmann::json(nullptr)) ||
-            CorrelationRefsFor(*frozenCorrelation) != value.correlation) {
-            throw std::runtime_error("frozen input correlation is contradictory");
-        }
-    } catch (const std::exception& ex) {
-        if (OutError) *OutError = ex.what();
-        return std::nullopt;
-    }
-    if ((!InSpec.correlation.runId.empty() && InSpec.correlation.runId != value.runId) ||
-        (InSpec.correlation.mode == "koa" && !InSpec.correlation.parentRunId.empty() &&
-         (!value.parentRunId || InSpec.correlation.parentRunId != *value.parentRunId)) ||
-        InSpec.correlation.attempt != value.attempt ||
-        (InSpec.correlation.mode == "koa" &&
-         CorrelationRefsFor(InSpec.correlation) != value.correlation)) {
-        if (OutError) *OutError = "requested correlation does not match verified evidence";
-        return std::nullopt;
-    }
-    const bool pendingAfterRead = publicationPendingPresent();
-    const bool incompleteAfterRead = incompleteMarkerPresent();
-    if (pendingAfterRead || incompleteAfterRead) return std::nullopt;
+    const nlohmann::json correlation = {
+        {"mode", audit::CorrelationModeName(run.correlation.mode)},
+        {"productId", nullable(run.correlation.productId)}, {"topicId", nullable(run.correlation.topicId)},
+        {"itemId", nullable(run.correlation.itemId)}, {"workOrderId", nullable(run.correlation.workOrderId)},
+        {"requestId", nullable(run.correlation.requestId)}, {"producerId", nullable(run.correlation.producerId)},
+        {"routeId", nullable(run.correlation.routeId)}, {"agentId", nullable(run.correlation.agentId)},
+    };
+    const nlohmann::json outcome = {
+        {"status", audit::OutcomeStateName(run.terminalOutcome.status)},
+        {"exitCode", nullable(run.terminalOutcome.exitCode)},
+        {"reasonCode", nullable(run.terminalOutcome.reasonCode)},
+        {"retryable", run.terminalOutcome.retryable},
+    };
     nlohmann::json repositories = nlohmann::json::array();
-    for (const auto& repository : value.repositories)
+    for (const auto& repository : run.repositories)
         repositories.push_back(TransitionJson(repository));
-    nlohmann::json doc = {
+    nlohmann::json artifacts = nlohmann::json::array();
+    for (const auto& artifact : run.evidence) {
+        if (artifact.category != "artifact") continue;
+        artifacts.push_back({{"id", artifact.id}, {"kind", artifact.kind},
+                             {"sha256", artifact.sha256},
+                             {"sizeBytes", artifact.sizeBytes},
+                             {"contentType", artifact.contentType},
+                             {"redactionStatus",
+                              audit::RedactionStatusName(artifact.redactionStatus)}});
+    }
+    const nlohmann::json doc = {
         {"schemaName", kOperationAuditVerificationSchema}, {"schemaVersion", 1},
         {"ok", true}, {"error", nullptr}, {"traceValid", true},
         {"eventsValid", true}, {"receiptValid", true}, {"frozenInputValid", true},
-        {"planId", value.planId}, {"planSha256", value.planSha256},
-        {"frozenInputSha256", frozenSha256},
-        {"runId", value.runId},
-        {"parentRunId", value.parentRunId ? nlohmann::json(*value.parentRunId) : nlohmann::json(nullptr)},
-        {"attempt", value.attempt}, {"correlation", nlohmann::json::parse(
-            audit::SerializeRunReceiptJson(value).json).at("correlation")},
-        {"eventCount", value.eventCount}, {"eventStreamSha256", value.eventStreamSha256},
-        {"receiptSha256", audit::Sha256Hex(*receiptBytes)},
-        {"terminalOutcome", nlohmann::json::parse(
-            audit::SerializeRunReceiptJson(value).json).at("terminalOutcome")},
-        {"repositories", repositories},
-        {"artifacts", nlohmann::json::parse(
-            audit::SerializeRunReceiptJson(value).json).at("artifacts")},
+        {"planId", run.planId}, {"planSha256", run.planSha256},
+        {"frozenInputSha256", run.frozenInputSha256},
+        {"runId", run.runId}, {"parentRunId", nullable(run.parentRunId)},
+        {"attempt", run.attempt}, {"correlation", correlation},
+        {"eventCount", run.totalEventRecords}, {"eventStreamSha256", run.eventStreamSha256},
+        {"receiptSha256", run.receiptId}, {"terminalOutcome", outcome},
+        {"repositories", repositories}, {"artifacts", artifacts},
     };
     if (OutTraceValid) *OutTraceValid = true;
     return doc.dump() + '\n';

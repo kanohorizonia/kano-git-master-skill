@@ -4,6 +4,7 @@
 #include <nlohmann/json.hpp>
 
 #include "regression_coverage.hpp"
+#include "shell_executor.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -345,15 +346,51 @@ auto StrictFixture() -> nlohmann::json {
 
 } // namespace
 
-TEST_CASE("dogfood incident manifest maps stable source cases without "
-          "execution claims",
+TEST_CASE("audit runtime script is tracked executable in the Git index",
+          "[integration][regression][git-index-hygiene][KG-BUG-0110]") {
+  constexpr std::string_view kScriptPath =
+      "src/shell/test/ci-linux-audit-runtime.sh";
+  const auto result = kano::git::shell::ExecuteCommand(
+      "git", {"ls-files", "-s", "--", std::string(kScriptPath)},
+      kano::git::shell::ExecMode::Capture, RepoRoot());
+
+  INFO(result.stderrStr);
+  REQUIRE(result.exitCode == 0);
+
+  std::istringstream records(result.stdoutStr);
+  std::string record;
+  REQUIRE(std::getline(records, record));
+  if (!record.empty() && record.back() == '\r') {
+    record.pop_back();
+  }
+  std::string unexpectedRecord;
+  REQUIRE_FALSE(std::getline(records, unexpectedRecord));
+
+  const auto tab = record.find('\t');
+  REQUIRE(tab != std::string::npos);
+  REQUIRE(record.substr(tab + 1) == std::string(kScriptPath));
+
+  std::istringstream metadata(record.substr(0, tab));
+  std::string mode;
+  std::string blob;
+  std::string stage;
+  std::string unexpectedField;
+  REQUIRE(metadata >> mode >> blob >> stage);
+  REQUIRE_FALSE(metadata >> unexpectedField);
+  REQUIRE(mode == "100755");
+  REQUIRE_FALSE(blob.empty());
+  REQUIRE(blob.find_first_not_of("0123456789abcdef") == std::string::npos);
+  REQUIRE(stage == "0");
+}
+
+TEST_CASE("dogfood incident manifest maps stable source cases without execution claims",
           "[unit][regression][coverage][KG-TSK-0052]") {
   const auto manifest = RepoRoot() / "assets" / "regression" / "incidents.json";
   const auto loaded = LoadCoverageManifest(manifest);
 
   INFO(loaded.error);
   REQUIRE(loaded.ok);
-  REQUIRE(loaded.report.incidents.size() == 14);
+  REQUIRE(loaded.report.incidents.size() == 20);
   REQUIRE(loaded.report.gaps.empty());
 
   const auto auditIncident = std::find_if(
@@ -396,22 +433,56 @@ TEST_CASE("dogfood incident manifest maps stable source cases without "
   REQUIRE(truthfulPushIncident != loaded.report.incidents.end());
   REQUIRE(truthfulPushIncident->regressionCases.size() == 3);
 
+  const auto boundedCaptureIncident = std::find_if(
+      loaded.report.incidents.begin(), loaded.report.incidents.end(),
+      [](const Incident &InIncident) {
+        return InIncident.incidentId == "KG-BUG-0098";
+      });
+  REQUIRE(boundedCaptureIncident != loaded.report.incidents.end());
+  REQUIRE(boundedCaptureIncident->regressionCases.size() == 2);
+  REQUIRE(std::any_of(
+      boundedCaptureIncident->regressionCases.begin(),
+      boundedCaptureIncident->regressionCases.end(),
+      [](const RegressionCase &InCase) {
+        return InCase.caseId ==
+                   "KG-BUG-0098/native-v2-retention-with-audit-callback" &&
+               InCase.testName ==
+                   "Kano process V2 bounds native retention while delivering "
+                   "complete audit callbacks";
+      }));
+
+  const auto registryDriftIncident = std::find_if(
+      loaded.report.incidents.begin(), loaded.report.incidents.end(),
+      [](const Incident &InIncident) {
+        return InIncident.incidentId == "KG-BUG-0099";
+      });
+  REQUIRE(registryDriftIncident != loaded.report.incidents.end());
+  REQUIRE(registryDriftIncident->regressionCases.size() == 2);
+
+  const auto historyOrderIncident = std::find_if(
+      loaded.report.incidents.begin(), loaded.report.incidents.end(),
+      [](const Incident &InIncident) {
+        return InIncident.incidentId == "KG-BUG-0097";
+      });
+  REQUIRE(historyOrderIncident != loaded.report.incidents.end());
+  REQUIRE(historyOrderIncident->regressionCases.size() == 2);
+
   std::size_t linkedCaseCount = 0;
   for (const auto &incident : loaded.report.incidents) {
     linkedCaseCount += incident.regressionCases.size();
   }
-  REQUIRE(linkedCaseCount == 44);
+  REQUIRE(linkedCaseCount == 54);
 
   const auto text = RenderCoverageText(loaded.report);
   REQUIRE(text.find("execution_evidence=not-evaluated") != std::string::npos);
-  REQUIRE(text.find("linked_cases=44") != std::string::npos);
-  REQUIRE(text.find("passed") == std::string::npos);
-  REQUIRE(text.find("executed") == std::string::npos);
+  REQUIRE(text.find("linked_cases=54") != std::string::npos);
+  REQUIRE_FALSE(HasExactLine(text, "execution_evidence=passed"));
+  REQUIRE_FALSE(HasExactLine(text, "execution_evidence=executed"));
 
   const auto json = RenderCoverageJson(loaded.report);
   REQUIRE(json.find("\"execution_evidence\": \"not-evaluated\"") !=
           std::string::npos);
-  REQUIRE(json.find("\"linked_cases\": 44") != std::string::npos);
+  REQUIRE(json.find("\"linked_cases\": 54") != std::string::npos);
 }
 
 TEST_CASE("default registry paths and exact test names resolve to source",

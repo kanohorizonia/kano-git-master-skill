@@ -16,12 +16,21 @@ enum class TuiLoadPhase {
     Failed,
 };
 
+enum class TuiInventoryProvenance {
+    Unknown,
+    Cache,
+    RootFallback,
+    Live,
+};
+
 struct TuiLoadState {
     std::uint64_t generation = 0;
     TuiLoadPhase phase = TuiLoadPhase::Idle;
     std::string operation;
     std::string diagnostic;
     std::string hint;
+    TuiInventoryProvenance inventoryProvenance = TuiInventoryProvenance::Unknown;
+    bool retainedPriorRows = false;
 };
 
 constexpr std::size_t kTuiLoadDiagnosticMaxBytes = 320;
@@ -52,5 +61,14 @@ auto BeginTuiLoad(
 
 [[nodiscard]] auto BoundTuiLoadDiagnostic(std::string_view InDiagnostic)
     -> std::string;
+
+auto SetTuiInventoryProvenance(TuiLoadState& InOutState,
+                               TuiInventoryProvenance InProvenance) -> void;
+auto RetainTuiLoadRowsOnFailure(TuiLoadState& InOutState,
+                                std::string_view InDiagnostic,
+                                std::string InRetryHint,
+                                bool bInCancelled) -> void;
+[[nodiscard]] auto TuiInventoryProvenanceLabel(
+    TuiInventoryProvenance InProvenance) -> std::string_view;
 
 }  // namespace kano::git::commands

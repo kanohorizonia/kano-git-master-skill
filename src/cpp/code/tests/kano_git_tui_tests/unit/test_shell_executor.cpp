@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -69,6 +70,25 @@ void SetEnvVarForTest(const char* InName, const char* InValue) {
 std::string ReadTextFile(const std::filesystem::path& InPath) {
     std::ifstream input(InPath, std::ios::binary);
     return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+}
+
+struct NativeProcessObservation {
+    std::mutex mutex;
+    std::string stdoutBytes;
+    std::string stderrBytes;
+};
+
+void ObserveNativeProcessOutput(KanoProcessStream InStream,
+                                const char* InChunk,
+                                const std::size_t InChunkSize,
+                                void* InUserData) {
+    auto& observation =
+        *static_cast<NativeProcessObservation*>(InUserData);
+    std::lock_guard<std::mutex> lock(observation.mutex);
+    auto& destination = InStream == KANO_PROCESS_STREAM_STDERR
+        ? observation.stderrBytes
+        : observation.stdoutBytes;
+    destination.append(InChunk, InChunkSize);
 }
 
 } // namespace
@@ -215,6 +235,103 @@ TEST_CASE(
     REQUIRE(result.stderrStr.size() == 64);
     REQUIRE(result.stdoutTruncated);
     REQUIRE(result.stderrTruncated);
+}
+
+TEST_CASE(
+    "Kano process V2 bounds native retention while delivering complete audit callbacks",
+    "[Unit][shell-executor][binary-capture][KG-BUG-0098]") {
+    NativeProcessObservation observation;
+    KanoProcessOptions options{};
+#if defined(_WIN32)
+    const char* args[] = {
+        "-NoProfile",
+        "-Command",
+        "$out=[Console]::OpenStandardOutput();"
+        "$stdoutBytes=[byte[]](65,66,67,68,69,70,71,72);"
+        "$out.Write($stdoutBytes,0,$stdoutBytes.Length);"
+        "$err=[Console]::OpenStandardError();"
+        "$stderrBytes=[byte[]](49,50,51,52,53,54);"
+        "$err.Write($stderrBytes,0,$stderrBytes.Length)",
+        nullptr,
+    };
+    options.executable = "powershell";
+    options.argv_count = 3;
+#else
+    const char* args[] = {
+        "-c",
+        "printf ABCDEFGH; printf 123456 >&2",
+        nullptr,
+    };
+    options.executable = "sh";
+    options.argv_count = 2;
+#endif
+    options.argv = args;
+    options.mode = KANO_PROCESS_MODE_CAPTURE;
+    options.output_callback = ObserveNativeProcessOutput;
+    options.user_data = &observation;
+
+    const KanoProcessCaptureLimitsV2 limits{4, 3};
+    KanoProcessResultV2 result{};
+    REQUIRE(kano_process_run_ex_v2(&options, &limits, &result));
+    REQUIRE(result.exit_code == 0);
+    REQUIRE(std::string(result.stdout_data, result.stdout_size) == "ABCD");
+    REQUIRE(std::string(result.stderr_data, result.stderr_size) == "123");
+    REQUIRE(result.stdout_truncated);
+    REQUIRE(result.stderr_truncated);
+    REQUIRE(observation.stdoutBytes == "ABCDEFGH");
+    REQUIRE(observation.stderrBytes == "123456");
+    kano_process_free_result_v2(&result);
+}
+
+TEST_CASE(
+    "ShellExecutor bounded capture preserves complete audit progress callbacks",
+    "[Unit][shell-executor][binary-capture][KG-BUG-0098]") {
+    std::string observedStdout;
+    std::string observedStderr;
+    const ProgressCallback observe =
+        [&](const std::string_view InChunk, const bool bIsStderr) {
+            auto& destination = bIsStderr
+                ? observedStderr
+                : observedStdout;
+            destination.append(InChunk);
+        };
+
+#if defined(_WIN32)
+    const auto result = ExecuteCommand(
+        "powershell",
+        {
+            "-NoProfile",
+            "-Command",
+            "$out=[Console]::OpenStandardOutput();"
+            "$stdoutBytes=[byte[]](65,66,67,68,69,70,71,72);"
+            "$out.Write($stdoutBytes,0,$stdoutBytes.Length);"
+            "$err=[Console]::OpenStandardError();"
+            "$stderrBytes=[byte[]](49,50,51,52,53,54);"
+            "$err.Write($stderrBytes,0,$stderrBytes.Length)",
+        },
+        ExecMode::Capture,
+        std::nullopt,
+        observe,
+        std::nullopt,
+        CaptureLimits{4, 3});
+#else
+    const auto result = ExecuteCommand(
+        "sh",
+        {"-c", "printf ABCDEFGH; printf 123456 >&2"},
+        ExecMode::Capture,
+        std::nullopt,
+        observe,
+        std::nullopt,
+        CaptureLimits{4, 3});
+#endif
+
+    REQUIRE(result.exitCode == 0);
+    REQUIRE(result.stdoutStr == "ABCD");
+    REQUIRE(result.stderrStr == "123");
+    REQUIRE(result.stdoutTruncated);
+    REQUIRE(result.stderrTruncated);
+    REQUIRE(observedStdout == "ABCDEFGH");
+    REQUIRE(observedStderr == "123456");
 }
 
 TEST_CASE(

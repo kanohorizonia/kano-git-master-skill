@@ -151,6 +151,78 @@ TEST_CASE(
             std::string::npos);
 }
 
+TEST_CASE("TUI history page ordering stays explicitly scoped across bounded pages",
+          "[unit][tui_history_lifecycle][KG-BUG-0097][KG-BUG-0111]") {
+    CHECK(std::string(TuiHistoryPageOrderName(TuiHistoryPageOrder::NewestFirst)) ==
+          "page-newest-first");
+    CHECK(std::string(TuiHistoryPageOrderName(TuiHistoryPageOrder::OldestFirst)) ==
+          "page-oldest-first");
+    CHECK(std::string(TuiHistoryPageOrderName(TuiHistoryPageOrder::MatchesFirst)) ==
+          "page-match-first");
+    CHECK(NextTuiHistoryPageOrder(TuiHistoryPageOrder::NewestFirst) ==
+          TuiHistoryPageOrder::OldestFirst);
+    CHECK(NextTuiHistoryPageOrder(TuiHistoryPageOrder::OldestFirst) ==
+          TuiHistoryPageOrder::MatchesFirst);
+    CHECK(NextTuiHistoryPageOrder(TuiHistoryPageOrder::MatchesFirst) ==
+          TuiHistoryPageOrder::NewestFirst);
+    CHECK(std::string(TuiHistoryPageBoundaryMessage(TuiHistoryPageDirection::Newer)) ==
+          "history has no newer page");
+    CHECK(std::string(TuiHistoryPageBoundaryMessage(TuiHistoryPageDirection::Older)) ==
+          "history has no older page");
+    CHECK(TuiHistoryPageBoundaryMessage(TuiHistoryPageDirection::Newer)
+              .find("commit") == std::string_view::npos);
+    CHECK(TuiHistoryPageBoundaryMessage(TuiHistoryPageDirection::Older)
+              .find("commit") == std::string_view::npos);
+
+    const std::vector<TuiHistoryEntry> newestPage{
+        {.sha = "newest-a",
+         .subject = "ordinary",
+         .globalIndex = 1,
+         .displayLine = "[1/?] newest-a ordinary"},
+        {.sha = "newest-b",
+         .subject = "match beta",
+         .globalIndex = 2,
+         .displayLine = "[2/?] newest-b match beta"},
+        {.sha = "newest-c",
+         .subject = "MATCH gamma",
+         .globalIndex = 3,
+         .displayLine = "[3/?] newest-c MATCH gamma"},
+    };
+    const std::vector<TuiHistoryEntry> olderPage{
+        {.sha = "older-a", .globalIndex = 4},
+        {.sha = "older-b", .globalIndex = 5},
+    };
+
+    const auto newestFirst = OrderTuiHistoryPage(
+        newestPage,
+        TuiHistoryPageOrder::NewestFirst,
+        {});
+    REQUIRE(newestFirst[0].globalIndex == 1);
+    REQUIRE(newestFirst[1].globalIndex == 2);
+    REQUIRE(newestFirst[2].globalIndex == 3);
+
+    const auto newestPageOldestFirst = OrderTuiHistoryPage(
+        newestPage,
+        TuiHistoryPageOrder::OldestFirst,
+        {});
+    const auto olderPageOldestFirst = OrderTuiHistoryPage(
+        olderPage,
+        TuiHistoryPageOrder::OldestFirst,
+        {});
+    REQUIRE(newestPageOldestFirst[0].globalIndex == 3);
+    REQUIRE(newestPageOldestFirst[2].globalIndex == 1);
+    REQUIRE(olderPageOldestFirst[0].globalIndex == 5);
+    REQUIRE(olderPageOldestFirst[1].globalIndex == 4);
+
+    const auto matchesFirst = OrderTuiHistoryPage(
+        newestPage,
+        TuiHistoryPageOrder::MatchesFirst,
+        "match");
+    REQUIRE(matchesFirst[0].globalIndex == 2);
+    REQUIRE(matchesFirst[1].globalIndex == 3);
+    REQUIRE(matchesFirst[2].globalIndex == 1);
+}
+
 TEST_CASE(
     "TUI refresh reconciliation keeps history on the same repository and closes stale detail",
     "[unit][tui_history_lifecycle][KG-BUG-0088]") {

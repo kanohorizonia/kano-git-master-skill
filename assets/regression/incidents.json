@@ -109,15 +109,15 @@
       ],
       "regression_cases": [
         {
-          "case_id": "KG-TSK-0064/missing-shared-plan-bootstrap",
-          "test_name": "agent_mode_cpa_bootstraps_missing_shared_plan_without_invoking_provider",
+          "case_id": "KG-TSK-0064/missing-shared-plan-fail-closed",
+          "test_name": "agent mode CPA fails closed on a missing shared plan without mutation",
           "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/functional_test_main.cpp",
           "test_kind": "functional",
           "mapping_state": "source-linked"
         },
         {
-          "case_id": "KG-TSK-0064/stale-shared-plan-refresh",
-          "test_name": "agent_mode_cpa_refreshes_stale_shared_plan_on_first_run",
+          "case_id": "KG-TSK-0064/stale-shared-plan-fail-closed",
+          "test_name": "agent mode CPA rejects a stale shared plan without rewriting it",
           "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/functional_test_main.cpp",
           "test_kind": "functional",
           "mapping_state": "source-linked"
@@ -447,6 +447,126 @@
           "test_name": "plan_file_post_apply_rejects_non_utc_execution_stamp",
           "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/functional_test_main.cpp",
           "test_kind": "functional",
+          "mapping_state": "source-linked"
+        }
+      ]
+    },
+    {
+      "incident_id": "KG-BUG-0110",
+      "incident_date": "2026-08-09",
+      "root_cause": "The audit runtime script was introduced with Git index mode 100644 even though shell hygiene requires 100755, and host filesystem permissions cannot reliably prove the tracked mode across platforms.",
+      "backlog_ref": "KG-BUG-0110",
+      "change_ref": "commit:KG-BUG-0110",
+      "workflow_contracts": [
+        "git-index-hygiene"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KG-BUG-0110/audit-runtime-index-mode",
+          "test_name": "audit runtime script is tracked executable in the Git index",
+          "test_file": "src/cpp/code/tests/kano_git_regression_tests/regression_coverage_test.cpp",
+          "test_kind": "integration",
+          "mapping_state": "source-linked"
+        }
+      ]
+    },
+    {
+      "incident_id": "KG-BUG-0098",
+      "incident_date": "2026-08-09",
+      "root_cause": "The durable audit callback refactor in 5924f21 removed CaptureLimits from the ExecuteCommand implementation and both platform runners while leaving the public signature, bounded TUI callers, and regression tests unchanged. The initial repair bounded only a wrapper callback while the legacy native process API still retained complete streams internally. This made synced main fail to link and, after linking was restored, still left large audit output able to grow native capture memory without a bound.",
+      "backlog_ref": "KG-BUG-0098",
+      "change_ref": "commit:KG-BUG-0098",
+      "workflow_contracts": [
+        "human-progress-observability",
+        "interactive-tui"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KG-BUG-0098/native-v2-retention-with-audit-callback",
+          "test_name": "Kano process V2 bounds native retention while delivering complete audit callbacks",
+          "test_file": "src/cpp/code/tests/kano_git_tui_tests/unit/test_shell_executor.cpp",
+          "test_kind": "unit",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-BUG-0098/bounded-capture-with-audit-callback",
+          "test_name": "ShellExecutor bounded capture preserves complete audit progress callbacks",
+          "test_file": "src/cpp/code/tests/kano_git_tui_tests/unit/test_shell_executor.cpp",
+          "test_kind": "unit",
+          "mapping_state": "source-linked"
+        }
+      ]
+    },
+    {
+      "incident_id": "KG-BUG-0099",
+      "incident_date": "2026-08-09",
+      "root_cause": "The regression report test searched the entire human-readable report for ordinary words such as executed, so valid historical root-cause prose caused a false execution-evidence failure. Separately, 5924f21 changed two agent CPA tests from automatic shared-plan repair to explicit fail-closed preparation without updating their exact source-linked manifest names.",
+      "backlog_ref": "KG-BUG-0099",
+      "change_ref": "commit:KG-BUG-0099",
+      "workflow_contracts": [
+        "agent-mode-plan",
+        "plan-result-truth"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KG-BUG-0099/exact-execution-evidence-lines",
+          "test_name": "dogfood incident manifest maps stable source cases without execution claims",
+          "test_file": "src/cpp/code/tests/kano_git_regression_tests/regression_coverage_test.cpp",
+          "test_kind": "unit",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-BUG-0099/current-exact-source-links",
+          "test_name": "default registry paths and exact test names resolve to source",
+          "test_file": "src/cpp/code/tests/kano_git_regression_tests/regression_coverage_test.cpp",
+          "test_kind": "unit",
+          "mapping_state": "source-linked"
+        }
+      ]
+    },
+    {
+      "incident_id": "KG-BUG-0097",
+      "incident_date": "2026-08-09",
+      "root_cause": "The bounded history dashboard advertised repository-wide time-ascending and match-first sorting, but its implementation only reversed or stably partitioned the currently loaded page slice. The canonical history key guide also omitted the active search, next-match, and order controls, leaving the misleading behavior difficult to audit or discover.",
+      "backlog_ref": "KG-BUG-0097",
+      "change_ref": "commit:KG-BUG-0097",
+      "workflow_contracts": [
+        "bounded-history-navigation",
+        "interactive-tui"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KG-BUG-0097/page-scoped-history-order",
+          "test_name": "TUI history page ordering stays explicitly scoped across bounded pages",
+          "test_file": "src/cpp/code/tests/kano_git_tui_tests/unit/test_tui_history_lifecycle.cpp",
+          "test_kind": "unit",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-BUG-0097/discoverable-history-controls",
+          "test_name": "TUI keymap exposes page-scoped history search and ordering controls",
+          "test_file": "src/cpp/code/tests/kano_git_tui_tests/unit/test_tui_keymap.cpp",
+          "test_kind": "unit",
+          "mapping_state": "source-linked"
+        }
+      ]
+    },
+    {
+      "incident_id": "KG-BUG-0111",
+      "incident_date": "2026-08-09",
+      "root_cause": "The macOS kano_git_tui_tests target let Catch2 decompose direct std::string_view assertions, but the linked Catch2 binary did not provide the matching StringMaker specialization. This left the complete TUI test target with an undefined StringMaker<std::string_view> symbol at link time despite the history-order assertions being semantically valid.",
+      "backlog_ref": "KG-BUG-0111",
+      "change_ref": "commit:KG-BUG-0111",
+      "workflow_contracts": [
+        "interactive-tui",
+        "cross-platform-test-linking"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KG-BUG-0111/catch2-string-view-history-order-linking",
+          "test_name": "TUI history page ordering stays explicitly scoped across bounded pages",
+          "test_file": "src/cpp/code/tests/kano_git_tui_tests/unit/test_tui_history_lifecycle.cpp",
+          "test_kind": "unit",
           "mapping_state": "source-linked"
         }
       ]

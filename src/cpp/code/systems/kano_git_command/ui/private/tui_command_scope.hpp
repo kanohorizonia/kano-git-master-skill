@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -24,7 +25,17 @@ struct TuiScopedCommand {
     std::filesystem::path workingDirectory;
     std::vector<std::string> arguments;
     std::string scopeLabel;
+    struct AuditVerification {
+        std::filesystem::path planFile;
+        std::string runId;
+        std::uint32_t attempt = 0;
+    };
+    std::optional<AuditVerification> auditVerification;
 };
+
+[[nodiscard]] auto ParseTuiAuditVerificationCommand(
+    const std::vector<std::string>& InArguments)
+    -> std::optional<TuiScopedCommand::AuditVerification>;
 
 [[nodiscard]] auto ParseTuiCommandLine(
     std::string_view InLine) -> std::vector<std::string>;
@@ -38,7 +49,8 @@ struct TuiScopedCommand {
     -> std::optional<TuiScopedCommand>;
 
 /// The TUI is an audit console, not a manual mutation client. Only explicitly
-/// allowlisted read-only KOG commands may be launched from command mode.
+/// allowlisted read-only KOG commands and the closed structured receipt lookup
+/// may be launched from command mode.
 [[nodiscard]] auto IsTuiAuditOnlyCommand(
     const std::vector<std::string>& InArguments) -> bool;
 

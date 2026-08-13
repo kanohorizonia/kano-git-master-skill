@@ -61,7 +61,93 @@ auto BoundedHistoryError(
     return InMessage;
 }
 
+auto ToLowerHistoryAscii(const std::string_view InValue) -> std::string {
+    std::string value(InValue);
+    std::transform(
+        value.begin(),
+        value.end(),
+        value.begin(),
+        [](const unsigned char InCharacter) {
+            if (InCharacter >= 'A' && InCharacter <= 'Z') {
+                return static_cast<char>(InCharacter - 'A' + 'a');
+            }
+            return static_cast<char>(InCharacter);
+        });
+    return value;
+}
+
+auto BuildHistorySearchLine(const TuiHistoryEntry& InEntry) -> std::string {
+    std::string line = InEntry.displayLine;
+    if (line.empty()) {
+        line = InEntry.sha + " " + InEntry.subject;
+    }
+    const auto& author = InEntry.authorEmail.empty()
+        ? InEntry.authorName
+        : InEntry.authorEmail;
+    if (!author.empty()) {
+        line += " | " + author;
+    }
+    return line;
+}
+
 }  // namespace
+
+auto TuiHistoryPageOrderName(const TuiHistoryPageOrder InOrder) noexcept
+    -> std::string_view {
+    switch (InOrder) {
+        case TuiHistoryPageOrder::NewestFirst:
+            return "page-newest-first";
+        case TuiHistoryPageOrder::OldestFirst:
+            return "page-oldest-first";
+        case TuiHistoryPageOrder::MatchesFirst:
+            return "page-match-first";
+    }
+    return "page-newest-first";
+}
+
+auto NextTuiHistoryPageOrder(const TuiHistoryPageOrder InOrder) noexcept
+    -> TuiHistoryPageOrder {
+    switch (InOrder) {
+        case TuiHistoryPageOrder::NewestFirst:
+            return TuiHistoryPageOrder::OldestFirst;
+        case TuiHistoryPageOrder::OldestFirst:
+            return TuiHistoryPageOrder::MatchesFirst;
+        case TuiHistoryPageOrder::MatchesFirst:
+            return TuiHistoryPageOrder::NewestFirst;
+    }
+    return TuiHistoryPageOrder::NewestFirst;
+}
+
+auto TuiHistoryPageBoundaryMessage(
+    const TuiHistoryPageDirection InDirection) noexcept -> std::string_view {
+    switch (InDirection) {
+        case TuiHistoryPageDirection::Newer:
+            return "history has no newer page";
+        case TuiHistoryPageDirection::Older:
+            return "history has no older page";
+    }
+    return "history page boundary";
+}
+
+auto OrderTuiHistoryPage(
+    std::vector<TuiHistoryEntry> InEntries,
+    const TuiHistoryPageOrder InOrder,
+    const std::string_view InSearchQuery) -> std::vector<TuiHistoryEntry> {
+    if (InOrder == TuiHistoryPageOrder::OldestFirst) {
+        std::reverse(InEntries.begin(), InEntries.end());
+    } else if (InOrder == TuiHistoryPageOrder::MatchesFirst &&
+               !InSearchQuery.empty()) {
+        const auto query = ToLowerHistoryAscii(InSearchQuery);
+        std::stable_partition(
+            InEntries.begin(),
+            InEntries.end(),
+            [&](const TuiHistoryEntry& InEntry) {
+                return ToLowerHistoryAscii(BuildHistorySearchLine(InEntry))
+                           .find(query) != std::string::npos;
+            });
+    }
+    return InEntries;
+}
 
 auto FetchTuiHistoryBatch(
     const std::filesystem::path& InRepo,

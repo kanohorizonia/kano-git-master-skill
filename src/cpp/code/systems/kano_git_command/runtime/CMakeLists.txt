@@ -5,6 +5,9 @@ target_sources(kano_git_command_runtime
     private/auto_model_policy.cpp
     private/command_executor.cpp
     private/audit_cmd.cpp
+    private/audit_verification.cpp
+    private/audit_evidence_directory.cpp
+    private/audit_run_reader.cpp
     private/operation_audit.cpp
     private/ai_utils.cpp
     private/repo_hygiene_cmd.cpp
@@ -14,6 +17,8 @@ target_sources(kano_git_command_runtime
     public/command_runtime_ops.hpp
     public/command_executor.hpp
     public/operation_audit.hpp
+    public/audit_run_reader.hpp
+    public/audit_verification.hpp
     public/ai_utils.hpp
     public/runtime_path_layout.hpp
     public/terminal_color.hpp
@@ -38,5 +43,8 @@ target_link_libraries(kano_git_command_runtime
     nlohmann_json::nlohmann_json
 )
 target_link_libraries(kano_git_command_runtime PRIVATE tomlplusplus::tomlplusplus)
+if(WIN32)
+  target_link_libraries(kano_git_command_runtime PRIVATE ntdll)
+endif()
 
 add_library(kano::git_command_runtime ALIAS kano_git_command_runtime)
