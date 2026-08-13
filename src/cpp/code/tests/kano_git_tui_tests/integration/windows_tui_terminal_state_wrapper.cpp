@@ -4,10 +4,37 @@
 
 #include <windows.h>
 
+#include <cstddef>
 #include <iostream>
 #include <string>
+#include <vector>
 
 namespace {
+
+class ScopedHandle final {
+  public:
+    ScopedHandle() = default;
+    ~ScopedHandle() {
+        if (value_ != nullptr && value_ != INVALID_HANDLE_VALUE) {
+            (void)CloseHandle(value_);
+        }
+    }
+
+    ScopedHandle(const ScopedHandle&) = delete;
+    auto operator=(const ScopedHandle&) -> ScopedHandle& = delete;
+
+    auto Reset(const HANDLE InValue) -> void {
+        if (value_ != nullptr && value_ != INVALID_HANDLE_VALUE) {
+            (void)CloseHandle(value_);
+        }
+        value_ = InValue;
+    }
+
+    [[nodiscard]] auto Get() const -> HANDLE { return value_; }
+
+  private:
+    HANDLE value_ = INVALID_HANDLE_VALUE;
+};
 
 struct ConsoleState final {
     DWORD inputMode = 0;
@@ -16,18 +43,66 @@ struct ConsoleState final {
     UINT outputCodePage = 0;
 };
 
-auto CaptureConsoleState(ConsoleState& OutState) -> bool {
-    const HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
-    const HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
-    if (input == nullptr || input == INVALID_HANDLE_VALUE ||
-        output == nullptr || output == INVALID_HANDLE_VALUE ||
-        GetConsoleMode(input, &OutState.inputMode) == 0 ||
-        GetConsoleMode(output, &OutState.outputMode) == 0) {
+auto OpenConsoleDevices(ScopedHandle& OutInput, ScopedHandle& OutOutput,
+                        DWORD& OutError) -> bool {
+    SECURITY_ATTRIBUTES security{};
+    security.nLength = sizeof(security);
+    security.bInheritHandle = TRUE;
+
+    const HANDLE input = CreateFileW(
+        L"CONIN$", GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, &security, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (input == INVALID_HANDLE_VALUE) {
+        OutError = GetLastError();
+        return false;
+    }
+    OutInput.Reset(input);
+
+    const HANDLE output = CreateFileW(
+        L"CONOUT$", GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, &security, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (output == INVALID_HANDLE_VALUE) {
+        OutError = GetLastError();
+        return false;
+    }
+    OutOutput.Reset(output);
+
+    if (SetHandleInformation(input, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) == 0 ||
+        SetHandleInformation(output, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) == 0) {
+        OutError = GetLastError();
+        return false;
+    }
+    return true;
+}
+
+auto CaptureConsoleState(ConsoleState& OutState, const ScopedHandle& InInput,
+                         const ScopedHandle& InOutput, const char*& OutReason,
+                         DWORD& OutError) -> bool {
+    if (GetConsoleMode(InInput.Get(), &OutState.inputMode) == 0) {
+        OutReason = "console-input-mode-unavailable";
+        OutError = GetLastError();
+        return false;
+    }
+    if (GetConsoleMode(InOutput.Get(), &OutState.outputMode) == 0) {
+        OutReason = "console-output-mode-unavailable";
+        OutError = GetLastError();
         return false;
     }
     OutState.inputCodePage = GetConsoleCP();
+    if (OutState.inputCodePage == 0) {
+        OutReason = "console-input-codepage-unavailable";
+        OutError = GetLastError();
+        return false;
+    }
     OutState.outputCodePage = GetConsoleOutputCP();
-    return OutState.inputCodePage != 0 && OutState.outputCodePage != 0;
+    if (OutState.outputCodePage == 0) {
+        OutReason = "console-output-codepage-unavailable";
+        OutError = GetLastError();
+        return false;
+    }
+    return true;
 }
 
 auto QuoteArgument(const std::wstring& InValue) -> std::wstring {
@@ -58,6 +133,12 @@ auto PrintFailure(const char* InReason) -> int {
     return 2;
 }
 
+auto PrintWin32Failure(const char* InReason, const DWORD InError) -> int {
+    std::cout << "KOG_TUI_TERMINAL_STATE_FAILED:" << InReason
+              << ":win32=" << InError << '\n' << std::flush;
+    return 2;
+}
+
 } // namespace
 
 auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
@@ -66,19 +147,55 @@ auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
         return PrintFailure("missing-production-binary");
     }
 
+    ScopedHandle consoleInput;
+    ScopedHandle consoleOutput;
+    DWORD failureError = ERROR_SUCCESS;
+    if (!OpenConsoleDevices(consoleInput, consoleOutput, failureError)) {
+        return PrintWin32Failure("console-device-open-before-launch", failureError);
+    }
+
     ConsoleState before{};
-    if (!CaptureConsoleState(before)) {
-        return PrintFailure("console-state-unavailable-before-launch");
+    const char* captureFailure = nullptr;
+    if (!CaptureConsoleState(
+            before, consoleInput, consoleOutput, captureFailure, failureError)) {
+        return PrintWin32Failure(captureFailure, failureError);
     }
 
     std::wstring commandLine = QuoteArgument(InArguments[1]);
-    STARTUPINFOW startup{};
-    startup.cb = sizeof(startup);
+    HANDLE inheritedHandles[] = {consoleInput.Get(), consoleOutput.Get()};
+    SIZE_T attributeBytes = 0;
+    InitializeProcThreadAttributeList(nullptr, 1, 0, &attributeBytes);
+    std::vector<std::byte> attributes(attributeBytes);
+    auto* attributeList = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attributes.data());
+    if (attributeBytes == 0 ||
+        InitializeProcThreadAttributeList(attributeList, 1, 0, &attributeBytes) == 0) {
+        return PrintWin32Failure("production-attribute-list-init-failed", GetLastError());
+    }
+    struct AttributeListCleanup final {
+        LPPROC_THREAD_ATTRIBUTE_LIST value = nullptr;
+        ~AttributeListCleanup() {
+            if (value != nullptr) DeleteProcThreadAttributeList(value);
+        }
+    } cleanup{attributeList};
+    if (UpdateProcThreadAttribute(
+            attributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+            inheritedHandles, sizeof(inheritedHandles), nullptr, nullptr) == 0) {
+        return PrintWin32Failure("production-handle-list-init-failed", GetLastError());
+    }
+
+    STARTUPINFOEXW startup{};
+    startup.StartupInfo.cb = sizeof(startup);
+    startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    startup.StartupInfo.hStdInput = consoleInput.Get();
+    startup.StartupInfo.hStdOutput = consoleOutput.Get();
+    startup.StartupInfo.hStdError = consoleOutput.Get();
+    startup.lpAttributeList = attributeList;
     PROCESS_INFORMATION process{};
     if (!CreateProcessW(
-            nullptr, commandLine.data(), nullptr, nullptr, FALSE, 0,
-            nullptr, nullptr, &startup, &process)) {
-        return PrintFailure("production-launch-failed");
+            nullptr, commandLine.data(), nullptr, nullptr, TRUE,
+            EXTENDED_STARTUPINFO_PRESENT, nullptr, nullptr,
+            &startup.StartupInfo, &process)) {
+        return PrintWin32Failure("production-launch-failed", GetLastError());
     }
     CloseHandle(process.hThread);
 
@@ -101,8 +218,10 @@ auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
     }
 
     ConsoleState after{};
-    if (!CaptureConsoleState(after)) {
-        return PrintFailure("console-state-unavailable-after-exit");
+    captureFailure = nullptr;
+    if (!CaptureConsoleState(
+            after, consoleInput, consoleOutput, captureFailure, failureError)) {
+        return PrintWin32Failure(captureFailure, failureError);
     }
     if (after.inputMode != before.inputMode ||
         after.outputMode != before.outputMode ||
