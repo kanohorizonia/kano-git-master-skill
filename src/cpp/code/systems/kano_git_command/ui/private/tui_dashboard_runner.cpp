@@ -6405,7 +6405,8 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
             .hint = frameHint,
             .nextAction = frameNextAction,
             .footer = footer,
-            .evidenceAvailable = false,
+            .evidenceAvailability =
+                TuiAuditEvidenceAvailability::Unavailable,
         };
         const auto auditRunForFrame = preview.active
             ? preview.auditRun

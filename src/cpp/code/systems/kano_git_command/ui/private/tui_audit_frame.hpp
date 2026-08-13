@@ -43,6 +43,16 @@ enum class TuiAuditReceiptState {
     Invalid,
 };
 
+// Evidence presentation is a projection of the verified reader result. It
+// deliberately distinguishes unavailable evidence from a receipt that has no
+// evidence references, and fails closed when evidence invariants disagree.
+enum class TuiAuditEvidenceAvailability {
+    None,
+    Retained,
+    Unavailable,
+    Inconsistent,
+};
+
 struct TuiAuditFrameGeometry {
     int width = 120;
     int height = 36;
@@ -65,7 +75,8 @@ struct TuiAuditReceiptTruth {
     std::string correlation;
     std::string repository = "not available";
     std::string receiptAbsenceReason;
-    bool evidenceAvailable = false;
+    TuiAuditEvidenceAvailability evidenceAvailability =
+        TuiAuditEvidenceAvailability::Unavailable;
     bool evidenceRedacted = false;
     bool evidenceWithheld = false;
     bool evidenceTruncated = false;
@@ -113,7 +124,8 @@ struct TuiAuditFrameModel {
     std::string nextAction = "inspect only; use :refresh to retry bounded reads";
     std::string footer;
 
-    bool evidenceAvailable = false;
+    TuiAuditEvidenceAvailability evidenceAvailability =
+        TuiAuditEvidenceAvailability::Unavailable;
     bool evidenceRedacted = false;
     bool evidenceWithheld = false;
     bool evidenceTruncated = false;
