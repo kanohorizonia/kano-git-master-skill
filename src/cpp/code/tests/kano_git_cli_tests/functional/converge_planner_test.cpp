@@ -114,6 +114,26 @@ auto ReadTextFile(const std::filesystem::path& InPath) -> std::string {
     return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
 }
 
+auto PathForTestNativeIo(const std::filesystem::path& InPath)
+    -> std::filesystem::path {
+#if defined(_WIN32)
+    auto normalized = InPath.lexically_normal();
+    normalized.make_preferred();
+    const auto& native = normalized.native();
+    if (native.starts_with(LR"(\\?\)") ||
+        native.starts_with(LR"(\\.\)") || !normalized.is_absolute()) {
+        return normalized;
+    }
+    if (native.starts_with(LR"(\\)")) {
+        return std::filesystem::path(
+            std::wstring(LR"(\\?\UNC\)") + native.substr(2));
+    }
+    return std::filesystem::path(std::wstring(LR"(\\?\)") + native);
+#else
+    return InPath;
+#endif
+}
+
 auto WriteKoaCorrelationFile(const std::filesystem::path& InRepo,
                              const std::string& InRoute,
                              const std::string& InRunId)
@@ -146,31 +166,66 @@ auto RequireCorrelatedOperationAudit(
         "kog" / "audit";
     std::vector<std::filesystem::path> matches;
     std::error_code ec;
-    for (std::filesystem::recursive_directory_iterator it(auditRoot, ec), end;
-         !ec && it != end; it.increment(ec)) {
-        if (!it->is_regular_file(ec) || it->path().filename() != "receipt.json") {
+    const auto runDirectory =
+        "run-" + kano::git::audit::Sha256Hex(InRunId);
+    for (std::filesystem::directory_iterator operationIt(
+             PathForTestNativeIo(auditRoot), ec), operationEnd;
+         !ec && operationIt != operationEnd; operationIt.increment(ec)) {
+        if (!operationIt->is_directory(ec) ||
+            !operationIt->path().filename().string().starts_with("operation-")) {
             continue;
         }
-        const auto receipt = kano::git::audit::ParseRunReceiptJson(
-            ReadTextFile(it->path()));
-        if (receipt.ok() && receipt.value->runId == InRunId) {
-            matches.push_back(it->path().parent_path());
+        const auto runRoot = operationIt->path() / runDirectory;
+        std::error_code runEc;
+        if (!std::filesystem::is_directory(
+                PathForTestNativeIo(runRoot), runEc)) {
+            if (runEc == std::errc::no_such_file_or_directory) {
+                runEc.clear();
+                continue;
+            }
+            REQUIRE_FALSE(runEc);
+            continue;
+        }
+        for (std::filesystem::directory_iterator attemptIt(
+                 PathForTestNativeIo(runRoot), ec), attemptEnd;
+             !ec && attemptIt != attemptEnd; attemptIt.increment(ec)) {
+            if (!attemptIt->is_directory(ec) ||
+                !attemptIt->path().filename().string().starts_with("attempt-")) {
+                continue;
+            }
+            const auto receiptPath = attemptIt->path() / "receipt.json";
+            std::error_code receiptEc;
+            if (!std::filesystem::is_regular_file(
+                    PathForTestNativeIo(receiptPath), receiptEc)) {
+                if (receiptEc == std::errc::no_such_file_or_directory) {
+                    receiptEc.clear();
+                    continue;
+                }
+                REQUIRE_FALSE(receiptEc);
+                continue;
+            }
+            const auto receipt = kano::git::audit::ParseRunReceiptJson(
+                ReadTextFile(PathForTestNativeIo(receiptPath)));
+            if (receipt.ok() && receipt.value->runId == InRunId) {
+                matches.push_back(attemptIt->path());
+            }
         }
     }
     REQUIRE_FALSE(ec);
     REQUIRE(matches.size() == 1);
     const auto attemptRoot = matches.front();
     const auto events = kano::git::audit::ParseAuditEventsJsonl(
-        ReadTextFile(attemptRoot / "events.jsonl"));
+        ReadTextFile(PathForTestNativeIo(attemptRoot / "events.jsonl")));
     const auto receipt = kano::git::audit::ParseRunReceiptJson(
-        ReadTextFile(attemptRoot / "receipt.json"));
+        ReadTextFile(PathForTestNativeIo(attemptRoot / "receipt.json")));
     REQUIRE(events.ok());
     REQUIRE(receipt.ok());
     REQUIRE(receipt.value->terminalOutcome.status ==
             kano::git::audit::OutcomeState::Succeeded);
     REQUIRE(kano::git::audit::ValidateRunTrace(*receipt.value, events.values).ok());
     const auto frozenDescriptor =
-        ReadTextFile(attemptRoot / "frozen-operation.json");
+        ReadTextFile(PathForTestNativeIo(
+            attemptRoot / "frozen-operation.json"));
     for (const auto& forbidden : InForbiddenFrozenSelectors) {
         REQUIRE_FALSE(forbidden.empty());
         REQUIRE(frozenDescriptor.find(forbidden) == std::string::npos);
@@ -206,19 +261,31 @@ auto RequireNoOperationAuditRun(const std::filesystem::path& InRepo,
     const auto auditRoot = std::filesystem::path(TrimCopy(gitDirectory.stdoutText)) /
         "kog" / "audit";
     std::error_code ec;
-    if (!std::filesystem::exists(auditRoot, ec)) {
+    if (!std::filesystem::exists(PathForTestNativeIo(auditRoot), ec)) {
         REQUIRE_FALSE(ec);
         return;
     }
     const auto runDirectory =
         "run-" + kano::git::audit::Sha256Hex(InRunId);
     bool found = false;
-    for (std::filesystem::recursive_directory_iterator it(auditRoot, ec), end;
-         !ec && it != end; it.increment(ec)) {
-        if (it->is_directory(ec) && it->path().filename() == runDirectory) {
+    for (std::filesystem::directory_iterator operationIt(
+             PathForTestNativeIo(auditRoot), ec), operationEnd;
+         !ec && operationIt != operationEnd; operationIt.increment(ec)) {
+        if (!operationIt->is_directory(ec) ||
+            !operationIt->path().filename().string().starts_with("operation-")) {
+            continue;
+        }
+        std::error_code runEc;
+        if (std::filesystem::is_directory(PathForTestNativeIo(
+                operationIt->path() / runDirectory), runEc)) {
             found = true;
             break;
         }
+        if (runEc == std::errc::no_such_file_or_directory) {
+            runEc.clear();
+            continue;
+        }
+        REQUIRE_FALSE(runEc);
     }
     REQUIRE_FALSE(ec);
     REQUIRE_FALSE(found);
@@ -943,10 +1010,19 @@ TEST_CASE("converge mutation selectors reject option and path shapes before audi
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
-TEST_CASE("converge branches apply fast-forwards target and pushes", "[tdd][functional][feature:converge][converge][branches][apply]") {
+TEST_CASE("converge branches apply fast-forwards target without git merge and pushes", "[tdd][functional][feature:converge][converge][branches][apply][KG-BUG-0102]") {
     const auto ctx = CreateRemoteWithClone("converge-branches-apply");
     const std::string featureBranch = "feature/apply-fast-forward";
-    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout apply feature branch");
+    WriteTextFile(ctx.seedRepo / "target-sync.txt", "remote target advance\n");
+    RequireSuccess(RunGit({"add", "target-sync.txt"}, ctx.seedRepo), "add remote target advance");
+    RequireSuccess(RunGit({"commit", "-m", "advance remote target"}, ctx.seedRepo), "commit remote target advance");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.seedRepo), "push remote target advance");
+    RequireSuccess(RunGit({"fetch", "origin"}, ctx.cloneRepo), "fetch remote target advance without moving local target");
+    const auto staleTargetHead = TrimCopy(RunGit({"rev-parse", ctx.branch}, ctx.cloneRepo).stdoutText);
+    const auto remoteTargetHead = TrimCopy(RunGit({"rev-parse", "origin/" + ctx.branch}, ctx.cloneRepo).stdoutText);
+    REQUIRE(staleTargetHead != remoteTargetHead);
+
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch, "origin/" + ctx.branch}, ctx.cloneRepo), "checkout apply feature branch from advanced remote target");
     WriteTextFile(ctx.cloneRepo / "feature.txt", "feature apply\n");
     RequireSuccess(RunGit({"add", "feature.txt"}, ctx.cloneRepo), "add apply feature file");
     RequireSuccess(RunGit({"commit", "-m", "apply feature"}, ctx.cloneRepo), "commit apply feature");
@@ -957,8 +1033,13 @@ TEST_CASE("converge branches apply fast-forwards target and pushes", "[tdd][func
     const auto correlation = WriteKoaCorrelationFile(
         ctx.cloneRepo, "converge.branches.apply", "run-branches-apply");
 
-    const auto result = RunKog({"converge", "branches", "apply", "--target", ctx.branch, "--confirm", "--json", "--jobs", "1",
-                                "--correlation-file", correlation.string()}, ctx.cloneRepo);
+    const auto tracePath = (ctx.sandbox.root / "kg-bug-0102-git-trace.log").lexically_normal();
+    const auto result = RunKogWithEnv(
+        {"converge", "branches", "apply", "--target", ctx.branch,
+         "--strategy", "rebase", "--branch", featureBranch, "--confirm",
+         "--json", "--jobs", "1", "--correlation-file", correlation.string()},
+        ctx.cloneRepo,
+        {{"KANO_AGENT_MODE", "1"}, {"GIT_TRACE", tracePath.string()}});
     INFO(result.stdoutText);
     INFO(result.stderrText);
     REQUIRE(result.exitCode == 0);
@@ -970,6 +1051,9 @@ TEST_CASE("converge branches apply fast-forwards target and pushes", "[tdd][func
     REQUIRE(TrimCopy(RunGit({"rev-parse", ctx.branch}, ctx.cloneRepo).stdoutText) == featureHead);
     REQUIRE(TrimCopy(RunGit({"rev-parse", "origin/" + ctx.branch}, ctx.cloneRepo).stdoutText) == featureHead);
     REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
+    const auto gitTrace = ReadTextFile(tracePath);
+    RequireNotContains(gitTrace, " built-in: git merge ");
+    REQUIRE(CountOccurrences(gitTrace, " built-in: git reset --keep ") == 2);
     RequireCorrelatedOperationAudit(
         ctx.cloneRepo, "run-branches-apply", "converge.branches.apply",
         {"converge.branches.apply.sync-target",
@@ -1507,7 +1591,7 @@ TEST_CASE("cherry-pick continue reports a following sequenced conflict as pendin
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
-TEST_CASE("converge branches retire removes merged branch and clean git worktree after confirmation", "[tdd][functional][feature:converge][converge][branches][retire]") {
+TEST_CASE("converge branches retire keeps a target already ahead of upstream", "[tdd][functional][feature:converge][converge][branches][retire][KG-BUG-0102]") {
     const auto ctx = CreateRemoteWithClone("converge-branches-retire");
     const std::string featureBranch = "feature/retire-merged";
     RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout retire feature branch");

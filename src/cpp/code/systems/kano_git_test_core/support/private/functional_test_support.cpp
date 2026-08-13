@@ -66,6 +66,26 @@ auto CurrentExecutablePath() -> std::filesystem::path {
 #endif
 }
 
+auto PathForTestNativeIo(const std::filesystem::path& InPath)
+    -> std::filesystem::path {
+#if defined(_WIN32)
+    auto normalized = InPath.lexically_normal();
+    normalized.make_preferred();
+    const auto& native = normalized.native();
+    if (native.starts_with(LR"(\\?\)") ||
+        native.starts_with(LR"(\\.\)") || !normalized.is_absolute()) {
+        return normalized;
+    }
+    if (native.starts_with(LR"(\\)")) {
+        return std::filesystem::path(
+            std::wstring(LR"(\\?\UNC\)") + native.substr(2));
+    }
+    return std::filesystem::path(std::wstring(LR"(\\?\)") + native);
+#else
+    return InPath;
+#endif
+}
+
 #if defined(_WIN32)
 auto CmdQuote(const std::string& InValue) -> std::string {
     std::string quoted = "\"";
@@ -114,7 +134,7 @@ auto CreateSandboxWorkspace(const std::string& InName) -> SandboxContext {
 
 auto RemoveSandboxWorkspace(const SandboxContext& InSandbox) -> void {
     std::error_code ec;
-    std::filesystem::remove_all(InSandbox.root, ec);
+    std::filesystem::remove_all(PathForTestNativeIo(InSandbox.root), ec);
 }
 
 auto ResolveKogBinaryPath() -> std::filesystem::path {
