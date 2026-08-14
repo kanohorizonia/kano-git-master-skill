@@ -31,11 +31,12 @@ namespace kano::git::commands {
 namespace {
 constexpr std::string_view kCatalogSchema = "kog.auditRunCatalog";
 constexpr std::string_view kPointerSchema = "kog.auditRunCatalogPointer";
+constexpr std::uint64_t kCatalogCursorSchemaVersion = 2;
+constexpr auto kCatalogCursorLifetimeMaximum = std::chrono::seconds(600);
 constexpr std::size_t kCatalogStorageByteCeiling = 256U << 10U;
 constexpr std::size_t kCatalogEntryCeiling = 4096;
 std::atomic_uint64_t gCatalogTemporarySequence = 0;
 std::mutex gCatalogHooksMutex;
-std::mutex gCatalogWriterProcessMutex;
 AuditRunCatalogTestHooks gCatalogHooks;
 auto Hooks() -> AuditRunCatalogTestHooks { std::lock_guard lock(gCatalogHooksMutex); return gCatalogHooks; }
 auto SystemNow() -> std::chrono::system_clock::time_point { const auto hooks = Hooks(); return hooks.systemNow ? hooks.systemNow() : std::chrono::system_clock::now(); }
@@ -77,6 +78,11 @@ auto IsLowerHex(const std::string_view value, const std::size_t length) -> bool 
 auto IsSchemaVersionOne(const nlohmann::json& value) -> bool {
     if (value.is_number_unsigned()) return value.get<std::uint64_t>() == 1;
     if (value.is_number_integer()) return value.get<std::int64_t>() == 1;
+    return false;
+}
+auto IsCatalogCursorSchemaVersion(const nlohmann::json& value) -> bool {
+    if (value.is_number_unsigned()) return value.get<std::uint64_t>() == kCatalogCursorSchemaVersion;
+    if (value.is_number_integer()) return value.get<std::int64_t>() == static_cast<std::int64_t>(kCatalogCursorSchemaVersion);
     return false;
 }
 auto NonnegativeInt64(const nlohmann::json& value) -> std::optional<std::int64_t> {
@@ -215,14 +221,16 @@ class ScopedCatalogWriterLock {
 public:
     explicit ScopedCatalogWriterLock(const PinnedCatalogRoot& pinned,
                                      const std::filesystem::path& root)
-        : mProcessLock(gCatalogWriterProcessMutex) {
+    {
         (void)root;
 #if !defined(_WIN32)
-        mHandle = ::openat(pinned.get(), "writer.lock", O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+        mHandle = ::openat(pinned.get(), "writer.lock", O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0600);
         if (mHandle >= 0) {
+            struct stat info{};
+            if (::fstat(mHandle, &info) != 0 || !S_ISREG(info.st_mode)) { ::close(mHandle); mHandle = -1; return; }
             int result = -1;
             do {
-                result = ::flock(mHandle, LOCK_EX);
+                result = ::flock(mHandle, LOCK_EX | LOCK_NB);
             } while (result != 0 && errno == EINTR);
             mOwned = result == 0;
         }
@@ -235,7 +243,7 @@ public:
             if (mHandle != INVALID_HANDLE_VALUE) CloseHandle(mHandle);
             mHandle=INVALID_HANDLE_VALUE; return;
         }
-        OVERLAPPED overlap{}; mOwned=LockFileEx(mHandle,LOCKFILE_EXCLUSIVE_LOCK,0,MAXDWORD,MAXDWORD,&overlap)!=FALSE;
+        OVERLAPPED overlap{}; mOwned=LockFileEx(mHandle,LOCKFILE_EXCLUSIVE_LOCK|LOCKFILE_FAIL_IMMEDIATELY,0,MAXDWORD,MAXDWORD,&overlap)!=FALSE;
 #endif
     }
     ~ScopedCatalogWriterLock() {
@@ -247,7 +255,6 @@ public:
     }
     [[nodiscard]] auto owned() const noexcept -> bool { return mOwned; }
 private:
-    std::unique_lock<std::mutex> mProcessLock;
     bool mOwned=false;
 #if !defined(_WIN32)
     int mHandle=-1;
@@ -279,6 +286,13 @@ auto ParseOutcome(const std::string_view value) -> std::optional<audit::OutcomeS
     if (value == "timed-out") return OutcomeState::TimedOut;
     if (value == "unknown") return OutcomeState::Unknown;
     return std::nullopt;
+}
+auto CursorIntegrity(const std::string_view generation, const std::string_view generationSha256,
+                     const std::string_view filter, const std::int64_t issued,
+                     const std::int64_t expires, const std::size_t offset) -> std::string {
+    return audit::Sha256Hex(std::string(generation) + "\n" + std::string(generationSha256) + "\n" +
+                            std::string(filter) + "\n" + std::to_string(issued) + "\n" +
+                            std::to_string(expires) + "\n" + std::to_string(offset));
 }
 auto ReadBoundedAt(const PinnedCatalogRoot& rootHandle, const std::filesystem::path& root,
                    const std::string& name, const std::size_t limit) -> std::optional<std::string> {
@@ -667,7 +681,7 @@ auto QueryOperationAuditCatalog(const OperationAuditSpec& InSpec, const Operatio
                                 const std::optional<std::string_view> InCursor, const OperationAuditCatalogQueryLimits InLimits) -> OperationAuditCatalogQueryResult {
     const auto started = MonotonicNow();
     const auto timedOut = [&] { return MonotonicNow() - started > InLimits.maxQueryTime; };
-    OperationAuditCatalogQueryResult out; if (InLimits.maxRows == 0 || InLimits.maxBytes == 0 || InLimits.maxQueryTime.count() <= 0 || InLimits.maxDiagnosticBytes == 0 || InLimits.maxRows > kCatalogEntryCeiling || InLimits.maxBytes > (4U << 20U)) { out.code = OperationAuditCatalogQueryCode::InvalidConfiguration; return out; }
+    OperationAuditCatalogQueryResult out; if (InLimits.maxRows == 0 || InLimits.maxBytes == 0 || InLimits.maxQueryTime.count() <= 0 || InLimits.maxDiagnosticBytes == 0 || InLimits.maxRows > kCatalogEntryCeiling || InLimits.maxBytes > (4U << 20U) || (!InCursor && (InLimits.cursorLifetime.count() <= 0 || InLimits.cursorLifetime > kCatalogCursorLifetimeMaximum))) { out.code = OperationAuditCatalogQueryCode::InvalidConfiguration; return out; }
     const auto validIdFilter = [](const std::optional<std::string>& value) { return !value || audit::IsStableAuditId(*value); };
     if (!validIdFilter(InFilter.runId) || !validIdFilter(InFilter.planId) || !validIdFilter(InFilter.repositoryId) ||
         (InFilter.correlationSha256 && !IsLowerHex(*InFilter.correlationSha256, 64)) ||
@@ -684,36 +698,65 @@ auto QueryOperationAuditCatalog(const OperationAuditSpec& InSpec, const Operatio
             ? OperationAuditCatalogQueryCode::Corrupt : OperationAuditCatalogQueryCode::Missing;
         return out;
     }
-    std::vector<OperationAuditCatalogEntry> entries; std::size_t start = 0; const auto fingerprint = FilterFingerprint(InFilter); std::int64_t cursorIssued = -1;
+    std::vector<OperationAuditCatalogEntry> entries; std::size_t start = 0; const auto fingerprint = FilterFingerprint(InFilter); std::int64_t cursorIssued = -1; std::int64_t cursorExpires = -1;
     if (InCursor) try {
         if (InCursor->size() > 2048) { out.code=OperationAuditCatalogQueryCode::InvalidCursor; return out; }
         const auto cursor=nlohmann::json::parse(*InCursor);
-        static const std::set<std::string> fields={"schemaName","schemaVersion","generation","generationSha256","filter","issuedAtEpoch","offset","integrity"};
+        static const std::set<std::string> fields={"schemaName","schemaVersion","generation","generationSha256","filter","issuedAtEpoch","expiresAtEpoch","offset","integrity"};
         std::set<std::string> actual; if(cursor.is_object())for(auto it=cursor.begin();it!=cursor.end();++it)actual.insert(it.key());
-        if(actual!=fields || !cursor.contains("schemaVersion") || !IsSchemaVersionOne(cursor["schemaVersion"]) ||
+        if(actual!=fields || !cursor.contains("schemaVersion") || !IsCatalogCursorSchemaVersion(cursor["schemaVersion"]) ||
            !cursor["schemaName"].is_string() || cursor["schemaName"].get<std::string>()!="kog.auditRunCatalogCursor" ||
            !cursor["generation"].is_string() || !audit::IsStableAuditId(cursor["generation"].get<std::string>()) ||
            !cursor["generationSha256"].is_string() || !IsLowerHex(cursor["generationSha256"].get<std::string>(),64) ||
            !cursor["filter"].is_string() || cursor["filter"].get<std::string>()!=fingerprint || !cursor["integrity"].is_string()) {
             out.code=OperationAuditCatalogQueryCode::InvalidCursor; return out;
         }
-        const auto issuedValue=NonnegativeInt64(cursor["issuedAtEpoch"]); const auto offsetValue=BoundedSize(cursor["offset"]);
-        if(!issuedValue||!offsetValue){out.code=OperationAuditCatalogQueryCode::InvalidCursor;return out;}
-        const auto issued=*issuedValue; const auto offset=*offsetValue;
-        const auto integrity=audit::Sha256Hex(cursor["generation"].get<std::string>()+"\n"+cursor["generationSha256"].get<std::string>()+"\n"+cursor["filter"].get<std::string>()+"\n"+std::to_string(issued)+"\n"+std::to_string(offset));
+        const auto issuedValue=NonnegativeInt64(cursor["issuedAtEpoch"]); const auto expiresValue=NonnegativeInt64(cursor["expiresAtEpoch"]); const auto offsetValue=BoundedSize(cursor["offset"]);
+        if(!issuedValue||!expiresValue||!offsetValue){out.code=OperationAuditCatalogQueryCode::InvalidCursor;return out;}
+        const auto issued=*issuedValue; const auto expires=*expiresValue; const auto offset=*offsetValue;
+        if (expires <= issued || expires - issued > kCatalogCursorLifetimeMaximum.count()) { out.code=OperationAuditCatalogQueryCode::InvalidCursor; return out; }
+        const auto integrity=CursorIntegrity(cursor["generation"].get<std::string>(), cursor["generationSha256"].get<std::string>(), cursor["filter"].get<std::string>(), issued, expires, offset);
         if(cursor["integrity"].get<std::string>()!=integrity){out.code=OperationAuditCatalogQueryCode::InvalidCursor;return out;}
         const auto now=std::chrono::duration_cast<std::chrono::seconds>(SystemNow().time_since_epoch()).count();
-        if(issued>now||now-issued>InLimits.cursorLifetime.count()){out.code=OperationAuditCatalogQueryCode::ExpiredCursor;return out;}
-        out.generation=cursor["generation"].get<std::string>(); start=offset; cursorIssued=issued;
+        if(issued>now||now>expires){out.code=OperationAuditCatalogQueryCode::ExpiredCursor;return out;}
+        out.generation=cursor["generation"].get<std::string>(); start=offset; cursorIssued=issued; cursorExpires=expires;
         const auto bytes=ReadBoundedAt(*pinnedRoot,root,out.generation+".json",kCatalogStorageByteCeiling);
         if(!bytes||audit::Sha256Hex(*bytes)!=cursor["generationSha256"].get<std::string>()||!LoadNamedGeneration(*pinnedRoot,root,out.generation,kCatalogStorageByteCeiling,&entries)){out.code=OperationAuditCatalogQueryCode::Corrupt;return out;}
     } catch (...) { out.code=OperationAuditCatalogQueryCode::InvalidCursor; return out; }
     else if (!LoadGeneration(*pinnedRoot, root, kCatalogStorageByteCeiling, &out.generation, &entries)) { out.code = ChildExistsAt(*pinnedRoot, "current.json") ? OperationAuditCatalogQueryCode::Corrupt : OperationAuditCatalogQueryCode::Missing; return out; }
     if (timedOut()) { out.code = OperationAuditCatalogQueryCode::Limit; return out; }
-    std::vector<OperationAuditCatalogEntry> filtered; for (const auto& entry : entries) { if (timedOut()) { out.code = OperationAuditCatalogQueryCode::Limit; return out; } const auto repositoryMatches = !InFilter.repositoryId || std::any_of(entry.repositories.begin(), entry.repositories.end(), [&](const auto& repository) { return repository.repositoryId == *InFilter.repositoryId; }); if ((!InFilter.runId || entry.runId == *InFilter.runId) && (!InFilter.planId || entry.planId == *InFilter.planId) && (!InFilter.state || entry.state == *InFilter.state) && (!InFilter.outcome || entry.outcome == InFilter.outcome) && repositoryMatches && (!InFilter.correlationSha256 || entry.correlationSha256 == *InFilter.correlationSha256) && (!InFilter.observedNotBeforeUtc || entry.observedAtUtc >= *InFilter.observedNotBeforeUtc) && (!InFilter.observedBeforeUtc || entry.observedAtUtc < *InFilter.observedBeforeUtc)) filtered.push_back(entry); }
+    std::vector<OperationAuditCatalogEntry> filtered;
+    for (const auto& entry : entries) {
+        if (timedOut()) { out.code = OperationAuditCatalogQueryCode::Limit; return out; }
+        const bool matchesOtherPredicates =
+            (!InFilter.runId || entry.runId == *InFilter.runId) &&
+            (!InFilter.planId || entry.planId == *InFilter.planId) &&
+            (!InFilter.state || entry.state == *InFilter.state) &&
+            (!InFilter.outcome || entry.outcome == InFilter.outcome) &&
+            (!InFilter.correlationSha256 || entry.correlationSha256 == *InFilter.correlationSha256) &&
+            (!InFilter.observedNotBeforeUtc || entry.observedAtUtc >= *InFilter.observedNotBeforeUtc) &&
+            (!InFilter.observedBeforeUtc || entry.observedAtUtc < *InFilter.observedBeforeUtc);
+        if (!matchesOtherPredicates) continue;
+        const bool repositoryMatches = !InFilter.repositoryId || std::any_of(
+            entry.repositories.begin(), entry.repositories.end(), [&](const auto& repository) {
+                return repository.repositoryId == *InFilter.repositoryId;
+            });
+        if (InFilter.repositoryId && !repositoryMatches && entry.truncation.omittedRepositories != 0) {
+            out.code = OperationAuditCatalogQueryCode::Unsupported;
+            return out;
+        }
+        if (repositoryMatches) filtered.push_back(entry);
+    }
     if (start > filtered.size()) { out.code = OperationAuditCatalogQueryCode::InvalidCursor; return out; }
-    const auto end = std::min(filtered.size(), start + InLimits.maxRows); std::size_t bytes = 0; for (auto index = start; index < end; ++index) { bytes += EntryJson(filtered[index]).dump().size(); if (bytes > InLimits.maxBytes || timedOut()) { out.code = OperationAuditCatalogQueryCode::Limit; return out; } } out.rows.assign(filtered.begin() + static_cast<std::ptrdiff_t>(start), filtered.begin() + static_cast<std::ptrdiff_t>(end));
-    if (end < filtered.size()) { const auto generationBytes = ReadBoundedAt(*pinnedRoot, root, out.generation + ".json", kCatalogStorageByteCeiling); if (!generationBytes) { out.rows.clear(); out.code = OperationAuditCatalogQueryCode::Corrupt; return out; } const auto generationHash=audit::Sha256Hex(*generationBytes); const auto issued=cursorIssued >= 0 ? cursorIssued : std::chrono::duration_cast<std::chrono::seconds>(SystemNow().time_since_epoch()).count(); const auto integrity=audit::Sha256Hex(out.generation+"\n"+generationHash+"\n"+fingerprint+"\n"+std::to_string(issued)+"\n"+std::to_string(end)); out.cursor = nlohmann::json({{"schemaName", "kog.auditRunCatalogCursor"}, {"schemaVersion", 1}, {"generation", out.generation}, {"generationSha256", generationHash}, {"filter", fingerprint}, {"issuedAtEpoch", issued}, {"offset", end}, {"integrity", integrity}}).dump(); }
+    const auto end = std::min(filtered.size(), start + InLimits.maxRows); std::size_t bytes = 0; for (auto index = start; index < end; ++index) { bytes += EntryJson(filtered[index]).dump().size(); if (bytes > InLimits.maxBytes || timedOut()) { out.code = OperationAuditCatalogQueryCode::Limit; return out; } }
+    std::int64_t issued = -1; std::int64_t expires = -1;
+    if (end < filtered.size()) {
+        issued = cursorIssued >= 0 ? cursorIssued : std::chrono::duration_cast<std::chrono::seconds>(SystemNow().time_since_epoch()).count();
+        if (cursorIssued < 0 && issued > std::numeric_limits<std::int64_t>::max() - InLimits.cursorLifetime.count()) { out.code = OperationAuditCatalogQueryCode::Limit; return out; }
+        expires = cursorExpires >= 0 ? cursorExpires : issued + InLimits.cursorLifetime.count();
+    }
+    out.rows.assign(filtered.begin() + static_cast<std::ptrdiff_t>(start), filtered.begin() + static_cast<std::ptrdiff_t>(end));
+    if (end < filtered.size()) { const auto generationBytes = ReadBoundedAt(*pinnedRoot, root, out.generation + ".json", kCatalogStorageByteCeiling); if (!generationBytes) { out.rows.clear(); out.code = OperationAuditCatalogQueryCode::Corrupt; return out; } const auto generationHash=audit::Sha256Hex(*generationBytes); const auto integrity=CursorIntegrity(out.generation, generationHash, fingerprint, issued, expires, end); out.cursor = nlohmann::json({{"schemaName", "kog.auditRunCatalogCursor"}, {"schemaVersion", kCatalogCursorSchemaVersion}, {"generation", out.generation}, {"generationSha256", generationHash}, {"filter", fingerprint}, {"issuedAtEpoch", issued}, {"expiresAtEpoch", expires}, {"offset", end}, {"integrity", integrity}}).dump(); }
     // maxBytes bounds the serialized public result envelope, not just row
     // projections.  Storage always has its own fixed ceiling above.
     nlohmann::json envelope = {{"generation", out.generation}, {"cursor", out.cursor ? nlohmann::json(*out.cursor) : nlohmann::json(nullptr)}, {"diagnostic", out.diagnostic}, {"rows", nlohmann::json::array()}};

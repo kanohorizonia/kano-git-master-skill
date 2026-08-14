@@ -25,7 +25,13 @@
 #include <vector>
 
 #if !defined(_WIN32)
+#include <fcntl.h>
+#include <sys/file.h>
 #include <sys/stat.h>
+#include <unistd.h>
+#else
+#define NOMINMAX
+#include <windows.h>
 #endif
 
 using namespace kano::git::commands;
@@ -114,6 +120,38 @@ auto QueryLimits(const std::size_t InRows = 64) -> OperationAuditCatalogQueryLim
     limits.maxQueryTime = std::chrono::milliseconds(250);
     return limits;
 }
+
+class ScopedHeldCatalogOsWriterLock {
+public:
+    explicit ScopedHeldCatalogOsWriterLock(const std::filesystem::path& path) {
+#if !defined(_WIN32)
+        mHandle = ::open(path.c_str(), O_RDWR | O_CLOEXEC | O_NOFOLLOW);
+        REQUIRE(mHandle >= 0);
+        REQUIRE(::flock(mHandle, LOCK_EX | LOCK_NB) == 0);
+#else
+        mHandle = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                              nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        REQUIRE(mHandle != INVALID_HANDLE_VALUE);
+        REQUIRE(LockFileEx(mHandle, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, MAXDWORD, MAXDWORD, &mOverlap) != FALSE);
+#endif
+    }
+    ~ScopedHeldCatalogOsWriterLock() {
+#if !defined(_WIN32)
+        if (mHandle >= 0) { (void)::flock(mHandle, LOCK_UN); (void)::close(mHandle); }
+#else
+        if (mHandle != INVALID_HANDLE_VALUE) { (void)UnlockFileEx(mHandle, 0, MAXDWORD, MAXDWORD, &mOverlap); CloseHandle(mHandle); }
+#endif
+    }
+    ScopedHeldCatalogOsWriterLock(const ScopedHeldCatalogOsWriterLock&) = delete;
+    auto operator=(const ScopedHeldCatalogOsWriterLock&) -> ScopedHeldCatalogOsWriterLock& = delete;
+private:
+#if !defined(_WIN32)
+    int mHandle = -1;
+#else
+    HANDLE mHandle = INVALID_HANDLE_VALUE;
+    OVERLAPPED mOverlap{};
+#endif
+};
 }
 
 TEST_CASE("[KG-TSK-0135] audit catalog is discoverable but requires pinned revalidation", "[audit][catalog][KG-TSK-0135]") {
@@ -231,13 +269,13 @@ TEST_CASE("[KG-TSK-0135] catalog records pending incomplete and final lifecycle 
     std::error_code ec; std::filesystem::remove_all(root, ec);
 }
 
-TEST_CASE("[KG-TSK-0135] catalog deterministically truncates repository projections at 64", "[audit][catalog][KG-TSK-0135]") {
+TEST_CASE("[KG-TSK-0135] catalog truncated repository filter is data-less", "[audit][catalog][KG-TSK-0135]") {
     const auto root = Root(); const auto spec = Spec(root, "catalog-repository-cap", 1);
     std::string error; auto context = OperationAuditContext::Reserve(spec, &error);
     INFO(error); REQUIRE(context);
-    // Reserve already records the workspace repository. Sixty-four explicit
-    // repositories therefore produce a truthful total of 65 and one omission.
-    for (std::uint32_t index = 0; index < 64; ++index) {
+    // Reserve already records the workspace repository. Sixty-five explicit
+    // repositories exercise a requested member beyond the 64-item preview.
+    for (std::uint32_t index = 0; index < 65; ++index) {
         const auto indexText = std::to_string(index);
         const auto repository = root / ("repository-" + std::string(3 - indexText.size(), '0') + indexText);
         std::error_code ec; REQUIRE(std::filesystem::create_directories(repository, ec)); REQUIRE_FALSE(ec);
@@ -251,10 +289,23 @@ TEST_CASE("[KG-TSK-0135] catalog deterministically truncates repository projecti
         return value.runId == "catalog-repository-cap";
     });
     REQUIRE(row != query.rows.end()); REQUIRE(row->repositories.size() == 64);
-    REQUIRE(row->truncation.omittedRepositories == 1);
+    REQUIRE(row->truncation.omittedRepositories == 2);
     REQUIRE(row->repositoryIdentityHeadSha256.size() == 64);
     REQUIRE(row->repositories.front().repositoryId == "repository-000");
     REQUIRE(row->repositories.back().repositoryId == "repository-063");
+    auto knownRepositoryFilter = OperationAuditCatalogFilter{};
+    knownRepositoryFilter.repositoryId = "repository-000";
+    const auto knownRepository = QueryOperationAuditCatalog(spec, knownRepositoryFilter);
+    REQUIRE(knownRepository.ready()); REQUIRE(knownRepository.rows.size() == 1);
+    auto omittedRepositoryFilter = OperationAuditCatalogFilter{};
+    omittedRepositoryFilter.repositoryId = "repository-064";
+    const auto omittedRepository = QueryOperationAuditCatalog(spec, omittedRepositoryFilter);
+    REQUIRE(omittedRepository.code == OperationAuditCatalogQueryCode::Unsupported);
+    REQUIRE(omittedRepository.rows.empty()); REQUIRE_FALSE(omittedRepository.cursor);
+    auto unrelatedFilter = omittedRepositoryFilter;
+    unrelatedFilter.runId = "catalog-other-run";
+    const auto unrelated = QueryOperationAuditCatalog(spec, unrelatedFilter);
+    REQUIRE(unrelated.ready()); REQUIRE(unrelated.rows.empty()); REQUIRE_FALSE(unrelated.cursor);
     const auto verified = RevalidateOperationAuditCatalogEntry(spec, spec, *row);
     INFO(verified.diagnostic); REQUIRE(verified.verified()); REQUIRE(verified.run);
     const auto bindingMismatch = [&](const auto& mutate) {
@@ -339,17 +390,28 @@ TEST_CASE("[KG-TSK-0135] numeric schema and cursor fields reject overflow wrappi
     const auto page = QueryOperationAuditCatalog(first, {}, std::nullopt, QueryLimits(1));
     REQUIRE(page.ready()); REQUIRE(page.cursor);
     const auto originalCursor = nlohmann::json::parse(*page.cursor);
-    const auto bindCursor = [](nlohmann::json* cursor, const std::string& issued, const std::string& offset) {
+    const auto bindCursor = [](nlohmann::json* cursor, const std::string& issued, const std::string& expires, const std::string& offset) {
         (*cursor)["integrity"] = kano::git::audit::Sha256Hex(
             cursor->at("generation").get<std::string>() + "\n" +
             cursor->at("generationSha256").get<std::string>() + "\n" +
-            cursor->at("filter").get<std::string>() + "\n" + issued + "\n" + offset);
+            cursor->at("filter").get<std::string>() + "\n" + issued + "\n" + expires + "\n" + offset);
     };
     const auto requireInvalidCursor = [&](const nlohmann::json& cursor) {
         const auto rejected = QueryOperationAuditCatalog(first, {}, cursor.dump(), QueryLimits(1));
         REQUIRE(rejected.code == OperationAuditCatalogQueryCode::InvalidCursor);
         REQUIRE(rejected.rows.empty()); REQUIRE_FALSE(rejected.cursor);
     };
+    {
+        auto legacy = originalCursor;
+        legacy.erase("expiresAtEpoch"); legacy["schemaVersion"] = 1;
+        legacy["integrity"] = kano::git::audit::Sha256Hex(
+            legacy.at("generation").get<std::string>() + "\n" +
+            legacy.at("generationSha256").get<std::string>() + "\n" +
+            legacy.at("filter").get<std::string>() + "\n" +
+            std::to_string(legacy.at("issuedAtEpoch").get<std::int64_t>()) + "\n" +
+            std::to_string(legacy.at("offset").get<std::uint64_t>()));
+        requireInvalidCursor(legacy);
+    }
     for (const auto& invalidVersion : invalidVersions) {
         auto cursor = originalCursor; cursor["schemaVersion"] = invalidVersion;
         // schemaVersion is outside the cursor digest, so this retains an
@@ -358,25 +420,25 @@ TEST_CASE("[KG-TSK-0135] numeric schema and cursor fields reject overflow wrappi
     }
     {
         auto cursor = originalCursor; cursor["issuedAtEpoch"] = 1.5;
-        bindCursor(&cursor, "1", std::to_string(cursor.at("offset").get<std::uint64_t>()));
+        bindCursor(&cursor, "1", std::to_string(cursor.at("expiresAtEpoch").get<std::int64_t>()), std::to_string(cursor.at("offset").get<std::uint64_t>()));
         requireInvalidCursor(cursor);
     }
     {
         auto cursor = originalCursor;
         cursor["issuedAtEpoch"] = std::uint64_t{9223372036854775808ULL};
-        bindCursor(&cursor, "-9223372036854775808", std::to_string(cursor.at("offset").get<std::uint64_t>()));
+        bindCursor(&cursor, "-9223372036854775808", std::to_string(cursor.at("expiresAtEpoch").get<std::int64_t>()), std::to_string(cursor.at("offset").get<std::uint64_t>()));
         requireInvalidCursor(cursor);
     }
     {
         auto cursor = originalCursor; cursor["issuedAtEpoch"] = std::int64_t{-1};
-        bindCursor(&cursor, "-1", std::to_string(cursor.at("offset").get<std::uint64_t>()));
+        bindCursor(&cursor, "-1", std::to_string(cursor.at("expiresAtEpoch").get<std::int64_t>()), std::to_string(cursor.at("offset").get<std::uint64_t>()));
         requireInvalidCursor(cursor);
     }
     if constexpr (sizeof(std::size_t) < sizeof(std::uint64_t)) {
         const auto oversizedOffset =
             static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()) + std::uint64_t{1};
         auto cursor = originalCursor; cursor["offset"] = oversizedOffset;
-        bindCursor(&cursor, std::to_string(cursor.at("issuedAtEpoch").get<std::int64_t>()),
+        bindCursor(&cursor, std::to_string(cursor.at("issuedAtEpoch").get<std::int64_t>()), std::to_string(cursor.at("expiresAtEpoch").get<std::int64_t>()),
                    std::to_string(oversizedOffset));
         requireInvalidCursor(cursor);
     }
@@ -399,12 +461,18 @@ TEST_CASE("[KG-TSK-0135] cursor expiry and unknown catalog fields fail closed wi
     // binding; it is expired solely because its original issue time is old.
     cursor = nlohmann::json::parse(*page.cursor);
     cursor["issuedAtEpoch"] = std::int64_t{998};
+    cursor["expiresAtEpoch"] = std::int64_t{999};
     cursor["integrity"] = kano::git::audit::Sha256Hex(
         cursor.at("generation").get<std::string>() + "\n" +
         cursor.at("generationSha256").get<std::string>() + "\n" +
-        cursor.at("filter").get<std::string>() + "\n998\n" +
+        cursor.at("filter").get<std::string>() + "\n998\n999\n" +
         std::to_string(cursor.at("offset").get<std::uint64_t>()));
     result = QueryOperationAuditCatalog(first, {}, cursor.dump(), limits);
+    REQUIRE(result.code == OperationAuditCatalogQueryCode::ExpiredCursor); REQUIRE(result.rows.empty()); REQUIRE_FALSE(result.cursor);
+    // Cursor expiry is issued once and bound into its integrity. A later
+    // caller with a larger requested lifetime cannot resurrect it.
+    auto longerLimits = QueryLimits(1); longerLimits.cursorLifetime = std::chrono::minutes(10);
+    result = QueryOperationAuditCatalog(first, {}, std::string_view(*page.cursor), longerLimits);
     REQUIRE(result.code == OperationAuditCatalogQueryCode::ExpiredCursor); REQUIRE(result.rows.empty()); REQUIRE_FALSE(result.cursor);
     auto catalog = CurrentCatalog(root); catalog["entries"].front()["unexpected"] = true;
     ReplaceCurrentCatalog(root, catalog);
@@ -482,6 +550,20 @@ TEST_CASE("[KG-TSK-0135] typed filters and caps have closed data-less outcomes",
     limits = QueryLimits(); limits.maxBytes = 1;
     result = QueryOperationAuditCatalog(spec, {}, std::nullopt, limits);
     REQUIRE(result.code == OperationAuditCatalogQueryCode::Limit); REQUIRE(result.rows.empty()); REQUIRE_FALSE(result.cursor);
+    limits = QueryLimits(); limits.cursorLifetime = std::chrono::seconds::zero();
+    result = QueryOperationAuditCatalog(spec, {}, std::nullopt, limits);
+    REQUIRE(result.code == OperationAuditCatalogQueryCode::InvalidConfiguration); REQUIRE(result.rows.empty()); REQUIRE_FALSE(result.cursor);
+    limits = QueryLimits(); limits.cursorLifetime = std::chrono::minutes(10) + std::chrono::seconds(1);
+    result = QueryOperationAuditCatalog(spec, {}, std::nullopt, limits);
+    REQUIRE(result.code == OperationAuditCatalogQueryCode::InvalidConfiguration); REQUIRE(result.rows.empty()); REQUIRE_FALSE(result.cursor);
+    std::error_code ec; std::filesystem::remove_all(root, ec);
+}
+
+TEST_CASE("[KG-TSK-0135] catalog complete repository absence remains empty", "[audit][catalog][KG-TSK-0135]") {
+    const auto root = Root(); const auto spec = Spec(root, "catalog-complete-repository-filter", 1); Finalize(spec);
+    OperationAuditCatalogFilter filter; filter.repositoryId = "repository-not-present";
+    const auto result = QueryOperationAuditCatalog(spec, filter);
+    REQUIRE(result.ready()); REQUIRE(result.rows.empty()); REQUIRE_FALSE(result.cursor);
     std::error_code ec; std::filesystem::remove_all(root, ec);
 }
 
@@ -640,7 +722,7 @@ TEST_CASE("[KG-TSK-0135] publisher makes exact replay idempotent and rejects rec
     std::error_code ec; std::filesystem::remove_all(root, ec);
 }
 
-TEST_CASE("[KG-TSK-0135] concurrent distinct writers create the first catalog and retain both rows without sleeps", "[audit][catalog][KG-TSK-0135]") {
+TEST_CASE("[KG-TSK-0135] competing writers reject busy publication and caller retry retains both rows", "[audit][catalog][KG-TSK-0135]") {
     const auto root = Root(); const auto first = Spec(root, "catalog-concurrent-first", 1); Finalize(first);
     const auto second = Spec(root, "catalog-concurrent-second", 1); Finalize(second);
     const auto seeded = QueryOperationAuditCatalog(first); REQUIRE(seeded.ready()); REQUIRE(seeded.rows.size() == 2);
@@ -656,8 +738,7 @@ TEST_CASE("[KG-TSK-0135] concurrent distinct writers create the first catalog an
     REQUIRE_FALSE(std::filesystem::exists(CatalogRoot(root), ec)); REQUIRE_FALSE(ec);
 
     std::mutex mutex; std::condition_variable condition;
-    bool startPublishers = false; bool firstWriterLocked = false; bool releaseFirstWriter = false;
-    std::size_t readyPublishers = 0; std::size_t attemptedPublishers = 0;
+    bool firstWriterLocked = false; bool releaseFirstWriter = false;
     std::atomic_uint32_t barrierCalls = 0;
     bool firstPublished = false; bool secondPublished = false;
     std::string firstPublishError; std::string secondPublishError;
@@ -667,35 +748,77 @@ TEST_CASE("[KG-TSK-0135] concurrent distinct writers create the first catalog an
             std::unique_lock lock(mutex); firstWriterLocked = true; condition.notify_all();
             condition.wait(lock, [&] { return releaseFirstWriter; });
         }});
-        const auto publish = [&](const OperationAuditSpec& spec, const OperationAuditCatalogEntry& row,
-                                 bool* result, std::string* resultError) {
-            {
-                std::unique_lock lock(mutex); ++readyPublishers; condition.notify_all();
-                condition.wait(lock, [&] { return startPublishers; });
-                ++attemptedPublishers; condition.notify_all();
-            }
-            *result = PublishOperationAuditCatalogEntry(spec, *firstPaths, row, resultError);
-        };
-        std::thread firstWriter(publish, std::cref(first), std::cref(firstRow),
-                                &firstPublished, &firstPublishError);
-        std::thread secondWriter(publish, std::cref(second), std::cref(secondRow),
-                                 &secondPublished, &secondPublishError);
+        std::thread firstWriter([&] {
+            firstPublished = PublishOperationAuditCatalogEntry(
+                first, *firstPaths, firstRow, &firstPublishError);
+        });
         {
             std::unique_lock lock(mutex);
-            condition.wait(lock, [&] { return readyPublishers == 2; });
-            startPublishers = true; condition.notify_all();
-            condition.wait(lock, [&] { return firstWriterLocked && attemptedPublishers == 2; });
-            releaseFirstWriter = true; condition.notify_all();
+            condition.wait(lock, [&] { return firstWriterLocked; });
         }
-        firstWriter.join(); secondWriter.join();
+
+        // Do not release the first writer until the competing publication has
+        // actually returned busy. Synchronizing on call completion (rather than
+        // pre-call intent) makes the contention proof independent of scheduling.
+        std::thread secondWriter([&] {
+            secondPublished = PublishOperationAuditCatalogEntry(
+                second, *firstPaths, secondRow, &secondPublishError);
+        });
+        secondWriter.join();
+        {
+            std::lock_guard lock(mutex);
+            releaseFirstWriter = true;
+        }
+        condition.notify_all();
+        firstWriter.join();
     }
+    // A held writer lock must reject the competing best-effort publisher
+    // immediately; this deterministic barrier needs no timing assertion.
     INFO(firstPublishError); REQUIRE(firstPublished);
-    INFO(secondPublishError); REQUIRE(secondPublished);
+    REQUIRE_FALSE(secondPublished);
+    INFO(secondPublishError); REQUIRE(secondPublishError == "audit catalog writer is busy");
+    REQUIRE(PublishOperationAuditCatalogEntry(second, *firstPaths, secondRow, &secondPublishError));
     const auto listed = QueryOperationAuditCatalog(first);
     REQUIRE(listed.ready()); REQUIRE(listed.rows.size() == 2);
     REQUIRE(std::any_of(listed.rows.begin(), listed.rows.end(), [](const auto& row) { return row.runId == "catalog-concurrent-first"; }));
     REQUIRE(std::any_of(listed.rows.begin(), listed.rows.end(), [](const auto& row) { return row.runId == "catalog-concurrent-second"; }));
     std::filesystem::remove_all(root, ec);
+}
+
+TEST_CASE("[KG-TSK-0135] catalog held OS writer lock rejects publication without blocking", "[audit][catalog][KG-TSK-0135]") {
+    const auto root = Root(); const auto spec = Spec(root, "catalog-held-os-lock", 1); Finalize(spec);
+    const auto listed = QueryOperationAuditCatalog(spec); REQUIRE(listed.ready()); REQUIRE(listed.rows.size() == 1);
+    std::string error; const auto paths = ResolveOperationAuditPaths(spec, spec.correlation.runId, spec.correlation.attempt, &error);
+    INFO(error); REQUIRE(paths);
+    {
+        ScopedHeldCatalogOsWriterLock lock(CatalogRoot(root) / "writer.lock");
+        REQUIRE_FALSE(PublishOperationAuditCatalogEntry(spec, *paths, listed.rows.front(), &error));
+        REQUIRE(error == "audit catalog writer is busy");
+    }
+    REQUIRE(PublishOperationAuditCatalogEntry(spec, *paths, listed.rows.front(), &error));
+    std::error_code ec; std::filesystem::remove_all(root, ec);
+}
+
+TEST_CASE("[KG-TSK-0135] held OS writer lock leaves Reserve nonblocking and Finalize reconciles", "[audit][catalog][KG-TSK-0135]") {
+    const auto root = Root(); const auto seed = Spec(root, "catalog-held-os-lock-seed", 1); Finalize(seed);
+    const auto contended = Spec(root, "catalog-held-os-lock-reserve", 1);
+    std::unique_ptr<OperationAuditContext> context;
+    {
+        ScopedHeldCatalogOsWriterLock lock(CatalogRoot(root) / "writer.lock");
+        std::string error; context = OperationAuditContext::Reserve(contended, &error);
+        INFO(error); REQUIRE(context);
+    }
+    std::string error; const auto before = context->Capture(contended.workspaceRoot);
+    REQUIRE(context->Append("catalog.held-lock", contended.workspaceRoot, before, NowUtc(), 0, &error));
+    REQUIRE(context->Finalize(0, &error)); context.reset();
+    const auto listed = QueryOperationAuditCatalog(contended);
+    INFO(listed.diagnostic); REQUIRE(listed.ready());
+    const auto row = std::find_if(listed.rows.begin(), listed.rows.end(), [](const auto& value) {
+        return value.runId == "catalog-held-os-lock-reserve";
+    });
+    REQUIRE(row != listed.rows.end()); REQUIRE(row->state == OperationAuditCatalogState::Final);
+    REQUIRE(row->receiptSha256); REQUIRE(row->outcome);
+    std::error_code ec; std::filesystem::remove_all(root, ec);
 }
 
 TEST_CASE("[KG-TSK-0135] only writer repair may visit exactly the retained previous pointer", "[audit][catalog][KG-TSK-0135]") {

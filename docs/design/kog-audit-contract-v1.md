@@ -108,10 +108,21 @@ cursor. Results are newest-first by `observedAtUtc`, then `runId`, then
 positive `attempt`, all descending. The only admitted filters are typed
 `state`, terminal `outcome`, logical `repositoryId`, correlation SHA-256,
 run/plan identity, and half-open observation-time bounds. Filters neither
-accept raw KOA values nor trigger audit-root discovery.
+accept raw KOA values nor trigger audit-root discovery. Repository filtering
+never treats a truncated repository preview as a complete membership set: if
+the requested ID is absent from a row with omitted repositories, the query is
+data-less with the typed `Unsupported` code rather than returning a false
+negative.
 
 An opaque cursor contains the catalog schema/version, immutable generation
-name and digest, filter fingerprint, issued time, and next offset. It is bound
+name and digest, filter fingerprint, issued time, immutable expiry, and next
+offset. The cursor's expiry is selected at issuance from a positive lifetime
+no greater than the fixed ten-minute maximum, and is integrity-bound with its
+generation/filter/offset; later-page requests ignore their supplied lifetime
+and therefore cannot extend an unchanged cursor. The cursor is an opaque
+pass-through token, not an authentication boundary: its SHA-256 `integrity`
+field detects malformed or accidental mutation but does not stop a caller
+that can deliberately recompute it. It is bound
 to its original filter and generation: appended generations do not alter later
 pages. Cursor parsing, field type/schema, filter binding, generation digest,
 offset, and expiry are all fail-closed; an expired cursor is distinct from a
@@ -128,6 +139,14 @@ known-generation retention list. It must never scan the audit root or infer
 legacy rows. Missing/corrupt/torn catalog state therefore remains unknown
 until an explicitly bounded repair path can prove a replacement; it never
 causes root enumeration.
+
+Writer-lock contention is one-shot best effort: Reserve or Finalize never
+waits for a catalog publisher. A contended lifecycle row may remain unindexed
+until a later lifecycle publication reconciles it; the durable attempt receipt
+remains the source of truth.
+
+Cursor schema v2 adds the integrity-bound `expiresAtEpoch`; exact legacy v1
+cursor shapes are rejected as `InvalidCursor` and callers restart pagination.
 
 Publication has deterministic test seams at `before-generation`,
 `before-pointer`, and `after-pointer`. A restart observes either the old

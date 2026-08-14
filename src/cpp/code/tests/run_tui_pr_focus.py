@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the bounded, release-built TUI PR focus suite.
+"""Run the bounded, release-built TUI and audit PR focus suites.
 
 This runner deliberately has no broad fallback selector.  A missing or empty
 ``[tui_pr_focus]`` suite is a CI configuration error, not a successful run.
@@ -87,6 +87,21 @@ def run_focus_suite(
     print(f"{label} PR focus suite passed: {tests} test case(s); required inventory present")
 
 
+def exact_case_selector(required_cases: set[str]) -> str:
+    """Build a Catch2 selector that can only select the explicit inventory.
+
+    The catalog tests intentionally retain their ordinary ``[audit][catalog]``
+    tags so local developers can run the complete suite.  Hosted PR gates use
+    an exact, bounded cross-platform inventory instead of broadening that tag
+    expression to every catalog test.
+    """
+    if not required_cases:
+        raise SystemExit("catalog PR focus inventory is empty; refusing a false-green gate")
+    if any('"' in case or "," in case or not case for case in required_cases):
+        raise SystemExit("catalog PR focus inventory contains an invalid Catch2 case name")
+    return ",".join(f'"{case}"' for case in sorted(required_cases))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--application-dir", type=Path, required=True)
@@ -96,6 +111,7 @@ def main() -> int:
     parser.add_argument("--timeout-seconds", type=int, default=1_200)
     parser.add_argument("--required-tui-test", action="append", default=[])
     parser.add_argument("--required-audit-test", action="append", default=[])
+    parser.add_argument("--required-catalog-test", action="append", default=[])
     args = parser.parse_args()
 
     output_dir = args.output_dir.resolve()
@@ -108,6 +124,7 @@ def main() -> int:
     audit_test_binary = args.audit_test_binary.resolve()
     tui_junit_path = output_dir / "tui-pr-focus.junit.xml"
     audit_junit_path = output_dir / "audit-pr-focus.junit.xml"
+    catalog_junit_path = output_dir / "audit-catalog-pr-focus.junit.xml"
 
     try:
         for required in (app_dir / f"kano-git{suffix}", app_dir / f"kano-git-tui{suffix}"):
@@ -132,6 +149,15 @@ def main() -> int:
             junit_path=audit_junit_path,
             timeout_seconds=args.timeout_seconds,
             required_cases=set(args.required_audit_test),
+        )
+        catalog_cases = set(args.required_catalog_test)
+        run_focus_suite(
+            label="audit-catalog",
+            binary=audit_test_binary,
+            selector=exact_case_selector(catalog_cases),
+            junit_path=catalog_junit_path,
+            timeout_seconds=args.timeout_seconds,
+            required_cases=catalog_cases,
         )
     except BaseException:
         write_status(status_path, "failed")

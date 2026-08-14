@@ -80,6 +80,9 @@ struct OperationAuditCatalogFilter {
 struct OperationAuditCatalogQueryLimits {
     std::size_t maxRows = 64;
     std::size_t maxBytes = 256U << 10U;
+    // Cursor expiry is fixed at issuance and integrity-bound. Values must be
+    // positive and no greater than ten minutes; a later page request cannot
+    // extend a cursor by supplying a larger value here.
     std::chrono::seconds cursorLifetime = std::chrono::minutes(10);
     std::chrono::milliseconds maxQueryTime = std::chrono::milliseconds(250);
     std::size_t maxDiagnosticBytes = 192;
