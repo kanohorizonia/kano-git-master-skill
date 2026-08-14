@@ -31,6 +31,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -46,6 +47,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <unordered_map>
 #include <utility>
@@ -62,6 +64,52 @@ namespace kano::git::commands {
 namespace {
 
 thread_local const TuiGitProbeControl* GActiveTuiProbeControl = nullptr;
+
+#ifdef KOG_PLATFORM_WINDOWS
+struct StartupCancellationHandshake final {
+    HANDLE armed = nullptr;
+    HANDLE acknowledgement = nullptr;
+};
+
+[[nodiscard]] auto ParseInheritedEventHandle(const char* InName) -> HANDLE {
+    const char* value = std::getenv(InName);
+    if (value == nullptr || value[0] == '\0') return nullptr;
+    const std::string_view text(value);
+    std::uintptr_t parsed = 0U;
+    const auto [end, error] = std::from_chars(
+        text.data(), text.data() + text.size(), parsed, 10);
+    if (error != std::errc{} || end != text.data() + text.size() ||
+        parsed == 0U || parsed ==
+            reinterpret_cast<std::uintptr_t>(INVALID_HANDLE_VALUE)) {
+        return nullptr;
+    }
+    const HANDLE handle = reinterpret_cast<HANDLE>(parsed);
+    DWORD flags = 0U;
+    if (GetHandleInformation(handle, &flags) == 0 ||
+        WaitForSingleObject(handle, 0U) != WAIT_TIMEOUT) {
+        return nullptr;
+    }
+    return handle;
+}
+
+[[nodiscard]] auto LoadStartupCancellationHandshake()
+    -> std::optional<StartupCancellationHandshake> {
+    const auto* testMode = std::getenv("KOG_TEST_MODE");
+    const auto* harness = std::getenv("KOG_TUI_TEST_STARTUP_CANCEL_ACK");
+    if (testMode == nullptr || std::string_view(testMode) != "1" ||
+        harness == nullptr || std::string_view(harness) != "1") {
+        return std::nullopt;
+    }
+    const HANDLE armed = ParseInheritedEventHandle(
+        "KOG_TUI_TEST_STARTUP_CANCEL_ARMED_HANDLE");
+    const HANDLE acknowledgement = ParseInheritedEventHandle(
+        "KOG_TUI_TEST_STARTUP_CANCEL_ACK_HANDLE");
+    if (armed == nullptr || acknowledgement == nullptr || armed == acknowledgement) {
+        throw std::runtime_error("TUI test startup cancellation handshake handles invalid");
+    }
+    return StartupCancellationHandshake{armed, acknowledgement};
+}
+#endif
 
 class ScopedTuiGitProbeControl final {
 public:
@@ -2779,16 +2827,15 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
         }));
     };
 
+#ifndef KOG_PLATFORM_WINDOWS
     auto post_startup_cancellation_harness_marker = [&screen](
                                                        std::string InMarker) {
-        // The terminal harness watches the ConPTY transcript. Route its
-        // synchronization markers through the UI loop so it serializes them
-        // with FTXUI output and preserves FIFO ordering with input handling.
         screen.Post(ftxui::Closure(
             [marker = std::move(InMarker)]() {
                 std::cout << marker << '\n' << std::flush;
             }));
     };
+#endif
 
     auto finish_async_operation = [&]() {
         if (asyncWorker.joinable()) {
@@ -3766,19 +3813,17 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                     // is opt-in, has no production effect, and never performs
                     // I/O while armed: the worker only proceeds after the UI
                     // has requested its normal cancellation path.
-                    const auto* testMode = std::getenv("KOG_TEST_MODE");
-                    const auto* terminalHarness = std::getenv(
-                        "KOG_TUI_TEST_STARTUP_CANCEL_ACK");
-                    if (testMode != nullptr &&
-                        std::string_view(testMode) == "1" &&
-                        terminalHarness != nullptr &&
-                        std::string_view(terminalHarness) == "1") {
-                        post_startup_cancellation_harness_marker(
-                            "[tui-test] startup cancellation harness armed");
+#ifdef KOG_PLATFORM_WINDOWS
+                    if (const auto handshake = LoadStartupCancellationHandshake();
+                        handshake.has_value()) {
                         const auto deadline =
                             std::chrono::steady_clock::now() +
                             std::chrono::seconds(4);
                         std::unique_lock<std::mutex> lock(asyncCancelSignalMu);
+                        if (SetEvent(handshake->armed) == 0) {
+                            throw std::runtime_error(
+                                "TUI test startup cancellation arm failed");
+                        }
                         const bool cancellationObserved =
                             asyncCancelSignal.wait_until(
                                 lock,
@@ -3790,9 +3835,34 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                             throw std::runtime_error(
                                 "TUI test startup cancellation acknowledgement timed out");
                         }
+                        if (SetEvent(handshake->acknowledgement) == 0) {
+                            throw std::runtime_error(
+                                "TUI test startup cancellation acknowledgement failed");
+                        }
+                    }
+#else
+                    const auto* testMode = std::getenv("KOG_TEST_MODE");
+                    const auto* terminalHarness = std::getenv(
+                        "KOG_TUI_TEST_STARTUP_CANCEL_ACK");
+                    if (testMode != nullptr && std::string_view(testMode) == "1" &&
+                        terminalHarness != nullptr &&
+                        std::string_view(terminalHarness) == "1") {
+                        post_startup_cancellation_harness_marker(
+                            "[tui-test] startup cancellation harness armed");
+                        const auto deadline = std::chrono::steady_clock::now() +
+                            std::chrono::seconds(4);
+                        std::unique_lock<std::mutex> lock(asyncCancelSignalMu);
+                        const bool cancellationObserved = asyncCancelSignal.wait_until(
+                            lock, deadline,
+                            [&]() { return asyncCancelRequested.load(); });
+                        if (!cancellationObserved) {
+                            throw std::runtime_error(
+                                "TUI test startup cancellation acknowledgement timed out");
+                        }
                         post_startup_cancellation_harness_marker(
                             "[tui-test] startup cancellation acknowledged");
                     }
+#endif
                     if (asyncCancelRequested.load()) {
                         throw std::runtime_error(
                             "startup inventory cancelled before bounded cache read");

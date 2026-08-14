@@ -11,6 +11,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <cwchar>
@@ -251,8 +252,18 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
     }
     Handle outputRead(rawOutputRead);
     Handle outputWrite(rawOutputWrite);
-    // The wrapper inherits no ambient handles.  Its only terminal attachment is
-    // the explicitly supplied pseudoconsole attribute.
+    SECURITY_ATTRIBUTES inheritable{};
+    inheritable.nLength = sizeof(inheritable);
+    inheritable.bInheritHandle = TRUE;
+    Handle cancellationArmed(CreateEventW(&inheritable, TRUE, FALSE, nullptr));
+    Handle cancellationAcknowledged(CreateEventW(&inheritable, TRUE, FALSE, nullptr));
+    if (cancellationArmed.Get() == nullptr ||
+        cancellationAcknowledged.Get() == nullptr) {
+        return PrintResult(false, kExitCancellationHarness, GetLastError(),
+            childExit, outputEof);
+    }
+    // The wrapper inherits no ambient handles except the explicitly listed
+    // test-only handshake events; its terminal attachment is the pseudoconsole.
     if (!SetHandleInformation(inputWrite.Get(), HANDLE_FLAG_INHERIT, 0) ||
         !SetHandleInformation(outputRead.Get(), HANDLE_FLAG_INHERIT, 0)) {
         return PrintResult(false, kExitCreatePipe, GetLastError(), childExit, outputEof);
@@ -267,13 +278,13 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
     outputWrite.Reset();
 
     SIZE_T bytes = 0U;
-    (void)InitializeProcThreadAttributeList(nullptr, 1, 0, &bytes);
+    (void)InitializeProcThreadAttributeList(nullptr, 2, 0, &bytes);
     std::vector<std::byte> attributes(bytes);
     auto* list = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attributes.data());
     bool attributeInitialized = false;
     if (bytes != 0U) {
         attributeInitialized = InitializeProcThreadAttributeList(
-            list, 1, 0, &bytes) != FALSE;
+        list, 2, 0, &bytes) != FALSE;
     }
     if (!attributeInitialized) {
         win32 = GetLastError();
@@ -285,6 +296,15 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
     }
     if (!UpdateProcThreadAttribute(list, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
             pseudoConsole, sizeof(pseudoConsole), nullptr, nullptr)) {
+        win32 = GetLastError();
+        DeleteProcThreadAttributeList(list);
+        ClosePseudoConsole(pseudoConsole);
+        return PrintResult(false, kExitAttributes, win32, childExit, outputEof);
+    }
+    HANDLE inheritedHandles[] = {cancellationArmed.Get(),
+        cancellationAcknowledged.Get()};
+    if (!UpdateProcThreadAttribute(list, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+            inheritedHandles, sizeof(inheritedHandles), nullptr, nullptr)) {
         win32 = GetLastError();
         DeleteProcThreadAttributeList(list);
         ClosePseudoConsole(pseudoConsole);
@@ -302,11 +322,17 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
     command += L" ";
     command += Quote(InArguments[3]);
     command += L" --test-cancel-ack";
+    command += L" ";
+    command += std::to_wstring(
+        reinterpret_cast<std::uintptr_t>(cancellationArmed.Get()));
+    command += L" ";
+    command += std::to_wstring(
+        reinterpret_cast<std::uintptr_t>(cancellationAcknowledged.Get()));
     STARTUPINFOEXW startup{};
     startup.StartupInfo.cb = sizeof(startup);
     startup.lpAttributeList = list;
     PROCESS_INFORMATION process{};
-    if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE,
+    if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE,
             EXTENDED_STARTUPINFO_PRESENT, nullptr, nullptr, &startup.StartupInfo, &process)) {
         win32 = GetLastError();
         ClosePseudoConsole(pseudoConsole);
@@ -321,8 +347,6 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
     Needle resizedFrame(resizedNeedle);
     Needle altScreenExit("\x1b[?1049l");
     Needle terminalStateRestored("KOG_TUI_TERMINAL_STATE_RESTORED");
-    Needle cancellationAcknowledgement("startup cancellation acknowledged");
-    Needle cancellationHarnessArmed("startup cancellation harness armed");
     bool resizePending = false;
     bool resizeCommitted = false;
     bool inputPending = false;
@@ -370,18 +394,11 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
             {
                 std::scoped_lock lock(mutex);
                 firstFrame.Consume(chunk);
-                cancellationHarnessArmed.Consume(chunk);
                 if (resizePending) resizedFrame.Consume(chunk);
                 if (inputPending) {
                     for (const char byte : chunk) {
                         const std::string_view oneByte(&byte, 1U);
-                        // Production emits the acknowledgement only after
-                        // RequestTuiAsyncExit observes q/Escape.  Requiring it
-                        // before terminal cleanup makes this stream causally
-                        // post-input even if the reader held an older chunk.
-                        if (!cancellationAcknowledgement.Found()) {
-                            cancellationAcknowledgement.Consume(oneByte);
-                        } else if (!altScreenExit.Found()) {
+                        if (!altScreenExit.Found()) {
                             altScreenExit.Consume(oneByte);
                         } else {
                             terminalStateRestored.Consume(oneByte);
@@ -437,15 +454,11 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
         }
     }
     if (code == kNoFailure) {
-        std::unique_lock lock(mutex);
-        const bool observed = changed.wait_until(lock, deadline, [&] {
-            return cancellationHarnessArmed.Found() || outputComplete;
-        });
-        if (!cancellationHarnessArmed.Found()) {
+        const DWORD armed = WaitForSingleObject(cancellationArmed.Get(),
+            RemainingDeadlineMilliseconds(deadline));
+        if (armed != WAIT_OBJECT_0) {
             code = kExitCancellationHarness;
-            win32 = !observed
-                ? ERROR_TIMEOUT
-                : (outputError == ERROR_SUCCESS ? ERROR_HANDLE_EOF : outputError);
+            win32 = armed == WAIT_TIMEOUT ? ERROR_TIMEOUT : GetLastError();
         }
     }
     if (code == kNoFailure) {
@@ -461,8 +474,6 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
             altScreenExit = Needle("\x1b[?1049l");
             terminalStateRestored = Needle(
                 "KOG_TUI_TERMINAL_STATE_RESTORED");
-            cancellationAcknowledgement = Needle(
-                "startup cancellation acknowledged");
             inputPending = false;
             inputCommitted = false;
             wrote = WriteFile(
@@ -478,6 +489,14 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
         if (!wrote || written != 1U) {
             code = kExitInput;
             win32 = inputError;
+        }
+    }
+    if (code == kNoFailure) {
+        const DWORD acknowledged = WaitForSingleObject(cancellationAcknowledged.Get(),
+            RemainingDeadlineMilliseconds(deadline));
+        if (acknowledged != WAIT_OBJECT_0) {
+            code = kExitCancellationHarness;
+            win32 = acknowledged == WAIT_TIMEOUT ? ERROR_TIMEOUT : GetLastError();
         }
     }
     if (code == kNoFailure) {
@@ -522,13 +541,12 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
     if (code == kNoFailure) {
         std::unique_lock lock(mutex);
         (void)changed.wait_until(lock, deadline, [&] {
-            return (inputCommitted && cancellationAcknowledgement.Found() &&
-                    altScreenExit.Found() && terminalStateRestored.Found()) ||
+            return (inputCommitted && altScreenExit.Found() &&
+                    terminalStateRestored.Found()) ||
                 outputComplete;
         });
         cleanupEvidenceObserved = inputCommitted &&
-            cancellationAcknowledgement.Found() && altScreenExit.Found() &&
-            terminalStateRestored.Found();
+            altScreenExit.Found() && terminalStateRestored.Found();
         if (!cleanupEvidenceObserved) {
             code = kExitCleanupEvidence;
             const bool deadlineExpired =
