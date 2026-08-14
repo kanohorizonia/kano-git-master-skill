@@ -1469,6 +1469,10 @@ auto OperationAuditContext::PublishReceipt(const int InExitCode, std::string* Ou
             *OutError = "persisted audit stream changed before receipt publication";
         return fail("event-stream-changed", {});
     }
+    // Finalize is the publication/readability boundary.  Release the exclusive
+    // Windows writer before making the terminal receipt visible so a pinned
+    // reader can reopen events.jsonl even while this context remains alive.
+    CloseHandleValue(mEventsHandle);
     CloseHandleValue(mReceiptHandle);
     bool receiptPublished = false;
     if (!PublishNoReplace(mPaths.receipt.string() + ".tmp", mPaths.receipt,

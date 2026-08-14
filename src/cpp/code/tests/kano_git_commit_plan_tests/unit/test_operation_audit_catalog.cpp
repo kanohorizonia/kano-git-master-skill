@@ -313,6 +313,8 @@ TEST_CASE("[KG-TSK-0135] catalog truncated repository filter is data-less", "[au
     unrelatedFilter.runId = "catalog-other-run";
     const auto unrelated = QueryOperationAuditCatalog(spec, unrelatedFilter);
     REQUIRE(unrelated.ready()); REQUIRE(unrelated.rows.empty()); REQUIRE_FALSE(unrelated.cursor);
+    // Deliberately retain the finalized producer context: Finalize itself must
+    // release exclusive writer handles before a pinned reader can revalidate.
     const auto verified = RevalidateOperationAuditCatalogEntry(spec, spec, *row);
     INFO(verified.diagnostic); REQUIRE(verified.verified()); REQUIRE(verified.run);
     const auto bindingMismatch = [&](const auto& mutate) {
