@@ -2779,6 +2779,17 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
         }));
     };
 
+    auto post_startup_cancellation_harness_marker = [&screen](
+                                                       std::string InMarker) {
+        // The terminal harness watches the ConPTY transcript. Route its
+        // synchronization markers through the UI loop so it serializes them
+        // with FTXUI output and preserves FIFO ordering with input handling.
+        screen.Post(ftxui::Closure(
+            [marker = std::move(InMarker)]() {
+                std::cout << marker << '\n' << std::flush;
+            }));
+    };
+
     auto finish_async_operation = [&]() {
         if (asyncWorker.joinable()) {
             asyncWorker.join();
@@ -3762,12 +3773,11 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                         std::string_view(testMode) == "1" &&
                         terminalHarness != nullptr &&
                         std::string_view(terminalHarness) == "1") {
-                        std::cerr
-                            << "[tui-test] startup cancellation harness armed\n"
-                            << std::flush;
+                        post_startup_cancellation_harness_marker(
+                            "[tui-test] startup cancellation harness armed");
                         const auto deadline =
                             std::chrono::steady_clock::now() +
-                            std::chrono::seconds(10);
+                            std::chrono::seconds(4);
                         std::unique_lock<std::mutex> lock(asyncCancelSignalMu);
                         const bool cancellationObserved =
                             asyncCancelSignal.wait_until(
@@ -3780,8 +3790,8 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                             throw std::runtime_error(
                                 "TUI test startup cancellation acknowledgement timed out");
                         }
-                        std::cerr << "[tui-test] startup cancellation acknowledged\n"
-                                  << std::flush;
+                        post_startup_cancellation_harness_marker(
+                            "[tui-test] startup cancellation acknowledged");
                     }
                     if (asyncCancelRequested.load()) {
                         throw std::runtime_error(

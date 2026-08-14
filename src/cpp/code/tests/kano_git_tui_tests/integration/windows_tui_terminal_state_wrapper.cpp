@@ -156,6 +156,13 @@ auto WriteConsoleEvidence(const ScopedHandle& InOutput, const char* InBytes,
     return true;
 }
 
+// The outer controller owns the only hard deadline for this process tree.  If
+// a process handle cannot be waited after termination was requested, keep that
+// handle alive and let the controller's kill-on-close job reclaim the tree.
+[[noreturn]] auto StallForOuterController() -> void {
+    for (;;) Sleep(INFINITE);
+}
+
 } // namespace
 
 auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
@@ -226,13 +233,31 @@ auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
     }
     CloseHandle(process.hThread);
 
-    // The outer ConPTY harness owns an eight-second deadline.  Keep this
-    // child deadline shorter so the wrapper always terminates and joins the
-    // production process before the parent starts closing the pseudoconsole.
-    const auto waitResult = WaitForSingleObject(process.hProcess, 6'000);
+    // This is an independent diagnostic deadline.  The outer controller is
+    // the sole hard safety bound for this process tree.
+    constexpr DWORD kProductionExitTimeoutMs = 5'000;
+    constexpr DWORD kProductionTerminateJoinTimeoutMs = 500;
+    const auto waitResult =
+        WaitForSingleObject(process.hProcess, kProductionExitTimeoutMs);
     if (waitResult != WAIT_OBJECT_0) {
-        TerminateProcess(process.hProcess, 253);
-        (void)WaitForSingleObject(process.hProcess, 1'000);
+        (void)TerminateProcess(process.hProcess, 253);
+        const DWORD terminated = WaitForSingleObject(
+            process.hProcess, kProductionTerminateJoinTimeoutMs);
+        if (terminated != WAIT_OBJECT_0) {
+            // Do not release an unconfirmed production handle.  An infinite
+            // wait is safe only after termination has been requested; should
+            // it fail, retain ownership and deliberately await the outer job.
+            if (terminated == WAIT_TIMEOUT) {
+                const DWORD joined =
+                    WaitForSingleObject(process.hProcess, INFINITE);
+                if (joined == WAIT_OBJECT_0) {
+                    CloseHandle(process.hProcess);
+                    return PrintFailure(waitResult == WAIT_TIMEOUT
+                        ? "production-exit-timeout" : "production-wait-failed");
+                }
+            }
+            StallForOuterController();
+        }
         CloseHandle(process.hProcess);
         return PrintFailure(waitResult == WAIT_TIMEOUT
             ? "production-exit-timeout" : "production-wait-failed");

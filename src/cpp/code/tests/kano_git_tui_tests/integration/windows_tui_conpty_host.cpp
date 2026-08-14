@@ -186,6 +186,13 @@ auto RemainingDeadlineMilliseconds(
     return static_cast<DWORD>(remaining > 0 ? remaining : 1);
 }
 
+// The host's diagnostic deadline is not a safety bound.  Preserve the ConPTY
+// and the output pump until the outer controller's kill-on-close job reclaims
+// the complete process tree.
+[[noreturn]] auto StallForOuterController() -> void {
+    for (;;) Sleep(INFINITE);
+}
+
 } // namespace
 
 auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
@@ -492,8 +499,9 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
 
     inputWrite.Reset();
     bool childStopped = childExit != STILL_ACTIVE;
+    bool hostIssuedKill = false;
     if (code != kNoFailure && !childStopped) {
-        (void)TerminateProcess(child.Get(), kExitChildStatus);
+        hostIssuedKill = TerminateProcess(child.Get(), kExitChildStatus) != FALSE;
         const DWORD waited = WaitForSingleObject(
             child.Get(), RemainingDeadlineMilliseconds(deadline));
         childStopped = waited == WAIT_OBJECT_0;
@@ -539,13 +547,13 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
         (void)WaitForSingleObject(GetCurrentProcess(), INFINITE);
     }
 
-    if (!childStopped) {
-        // Never close a pseudoconsole around a process still known to be active.
-        // The outer job controller remains the final hard bound if cancellation
-        // of this synchronous reader cannot complete.
-        (void)CancelSynchronousIo(pump.native_handle());
-        if (pump.joinable()) pump.join();
-        return PrintResult(false, code, win32, childExit, outputEof);
+    if (hostIssuedKill || !childStopped) {
+        // Never close a pseudoconsole or stop its reader after this host has
+        // killed the wrapper, or while wrapper termination remains unproven.
+        // Emit the sole terminal record, then retain all ownership for the
+        // outer controller's hard timeout.
+        (void)PrintResult(false, code, win32, childExit, outputEof);
+        StallForOuterController();
     }
 
     // Even safe cleanup can hang inside ClosePseudoConsole on affected Windows
