@@ -31,6 +31,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <charconv>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -44,6 +47,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <unordered_map>
 #include <utility>
@@ -60,6 +64,52 @@ namespace kano::git::commands {
 namespace {
 
 thread_local const TuiGitProbeControl* GActiveTuiProbeControl = nullptr;
+
+#ifdef KOG_PLATFORM_WINDOWS
+struct StartupCancellationHandshake final {
+    HANDLE armed = nullptr;
+    HANDLE acknowledgement = nullptr;
+};
+
+[[nodiscard]] auto ParseInheritedEventHandle(const char* InName) -> HANDLE {
+    const char* value = std::getenv(InName);
+    if (value == nullptr || value[0] == '\0') return nullptr;
+    const std::string_view text(value);
+    std::uintptr_t parsed = 0U;
+    const auto [end, error] = std::from_chars(
+        text.data(), text.data() + text.size(), parsed, 10);
+    if (error != std::errc{} || end != text.data() + text.size() ||
+        parsed == 0U || parsed ==
+            reinterpret_cast<std::uintptr_t>(INVALID_HANDLE_VALUE)) {
+        return nullptr;
+    }
+    const HANDLE handle = reinterpret_cast<HANDLE>(parsed);
+    DWORD flags = 0U;
+    if (GetHandleInformation(handle, &flags) == 0 ||
+        WaitForSingleObject(handle, 0U) != WAIT_TIMEOUT) {
+        return nullptr;
+    }
+    return handle;
+}
+
+[[nodiscard]] auto LoadStartupCancellationHandshake()
+    -> std::optional<StartupCancellationHandshake> {
+    const auto* testMode = std::getenv("KOG_TEST_MODE");
+    const auto* harness = std::getenv("KOG_TUI_TEST_STARTUP_CANCEL_ACK");
+    if (testMode == nullptr || std::string_view(testMode) != "1" ||
+        harness == nullptr || std::string_view(harness) != "1") {
+        return std::nullopt;
+    }
+    const HANDLE armed = ParseInheritedEventHandle(
+        "KOG_TUI_TEST_STARTUP_CANCEL_ARMED_HANDLE");
+    const HANDLE acknowledgement = ParseInheritedEventHandle(
+        "KOG_TUI_TEST_STARTUP_CANCEL_ACK_HANDLE");
+    if (armed == nullptr || acknowledgement == nullptr || armed == acknowledgement) {
+        throw std::runtime_error("TUI test startup cancellation handshake handles invalid");
+    }
+    return StartupCancellationHandshake{armed, acknowledgement};
+}
+#endif
 
 class ScopedTuiGitProbeControl final {
 public:
@@ -2430,6 +2480,16 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
     std::mutex asyncMu;
     std::thread asyncWorker;
     std::atomic<bool> asyncCancelRequested{false};
+    std::mutex asyncCancelSignalMu;
+    std::condition_variable asyncCancelSignal;
+
+    auto request_async_cancellation = [&]() {
+        {
+            std::lock_guard<std::mutex> lock(asyncCancelSignalMu);
+            asyncCancelRequested.store(true);
+        }
+        asyncCancelSignal.notify_all();
+    };
 
     auto reportStartupProgress = [](const std::string& InMessage) {
         std::cerr << "[tui] " << InMessage << std::endl;
@@ -2766,6 +2826,16 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
             screen.RequestAnimationFrame();
         }));
     };
+
+#ifndef KOG_PLATFORM_WINDOWS
+    auto post_startup_cancellation_harness_marker = [&screen](
+                                                       std::string InMarker) {
+        screen.Post(ftxui::Closure(
+            [marker = std::move(InMarker)]() {
+                std::cout << marker << '\n' << std::flush;
+            }));
+    };
+#endif
 
     auto finish_async_operation = [&]() {
         if (asyncWorker.joinable()) {
@@ -3738,6 +3808,61 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                 "startup inventory",
                 TuiAsyncSurface::None,
                 [&](const std::uint64_t InGeneration) {
+                    // Process-level terminal tests need a deterministic owned
+                    // startup operation that can acknowledge cancellation.  It
+                    // is opt-in, has no production effect, and never performs
+                    // I/O while armed: the worker only proceeds after the UI
+                    // has requested its normal cancellation path.
+#ifdef KOG_PLATFORM_WINDOWS
+                    if (const auto handshake = LoadStartupCancellationHandshake();
+                        handshake.has_value()) {
+                        const auto deadline =
+                            std::chrono::steady_clock::now() +
+                            std::chrono::seconds(4);
+                        std::unique_lock<std::mutex> lock(asyncCancelSignalMu);
+                        if (SetEvent(handshake->armed) == 0) {
+                            throw std::runtime_error(
+                                "TUI test startup cancellation arm failed");
+                        }
+                        const bool cancellationObserved =
+                            asyncCancelSignal.wait_until(
+                                lock,
+                                deadline,
+                                [&]() {
+                                    return asyncCancelRequested.load();
+                                });
+                        if (!cancellationObserved) {
+                            throw std::runtime_error(
+                                "TUI test startup cancellation acknowledgement timed out");
+                        }
+                        if (SetEvent(handshake->acknowledgement) == 0) {
+                            throw std::runtime_error(
+                                "TUI test startup cancellation acknowledgement failed");
+                        }
+                    }
+#else
+                    const auto* testMode = std::getenv("KOG_TEST_MODE");
+                    const auto* terminalHarness = std::getenv(
+                        "KOG_TUI_TEST_STARTUP_CANCEL_ACK");
+                    if (testMode != nullptr && std::string_view(testMode) == "1" &&
+                        terminalHarness != nullptr &&
+                        std::string_view(terminalHarness) == "1") {
+                        post_startup_cancellation_harness_marker(
+                            "[tui-test] startup cancellation harness armed");
+                        const auto deadline = std::chrono::steady_clock::now() +
+                            std::chrono::seconds(4);
+                        std::unique_lock<std::mutex> lock(asyncCancelSignalMu);
+                        const bool cancellationObserved = asyncCancelSignal.wait_until(
+                            lock, deadline,
+                            [&]() { return asyncCancelRequested.load(); });
+                        if (!cancellationObserved) {
+                            throw std::runtime_error(
+                                "TUI test startup cancellation acknowledgement timed out");
+                        }
+                        post_startup_cancellation_harness_marker(
+                            "[tui-test] startup cancellation acknowledged");
+                    }
+#endif
                     if (asyncCancelRequested.load()) {
                         throw std::runtime_error(
                             "startup inventory cancelled before bounded cache read");
@@ -4509,7 +4634,7 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                         TuiAsyncSurface::Discover);
                 }
                 if (cancellationRequested) {
-                    asyncCancelRequested.store(true);
+                    request_async_cancellation();
                 }
                 discover.active = false;
                 discover.loading = false;
@@ -4564,7 +4689,7 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                     }
                 }
                 if (cancellationRequested) {
-                    asyncCancelRequested.store(true);
+                    request_async_cancellation();
                 }
                 preview.active = false;
                 footer = cancellationRequested
@@ -4587,7 +4712,7 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                             TuiAsyncSurface::HistoryDetail);
                     }
                     if (cancellationRequested) {
-                        asyncCancelRequested.store(true);
+                        request_async_cancellation();
                     }
                     history.detailActive = false;
                     history.detailLoading = false;
@@ -4607,7 +4732,7 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                         TuiAsyncSurface::HistoryPage);
                 }
                 if (cancellationRequested) {
-                    asyncCancelRequested.store(true);
+                    request_async_cancellation();
                 }
                 history.active = false;
                 history.searchMode = false;
@@ -4630,7 +4755,7 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
             }
             if (!exitDecision.bExitNow) {
                 if (exitDecision.bRequestCancellation) {
-                    asyncCancelRequested.store(true);
+                    request_async_cancellation();
                     footer = activeLabel +
                         " cancellation requested; exiting when the bounded read returns";
                 } else if (activeOperationMutating) {
@@ -5009,7 +5134,7 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                         TuiAsyncSurface::HistoryDetail);
                 }
                 if (cancellationRequested) {
-                    asyncCancelRequested.store(true);
+                    request_async_cancellation();
                 }
                 history.detailActive = false;
                 history.detailLoading = false;
@@ -5042,7 +5167,7 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                         TuiAsyncSurface::HistoryPage);
                 }
                 if (cancellationRequested) {
-                    asyncCancelRequested.store(true);
+                    request_async_cancellation();
                 }
                 history.repoIndex = displayedRepoIndices[posInDisplayed];
                 selectedDisplayed = posInDisplayed;

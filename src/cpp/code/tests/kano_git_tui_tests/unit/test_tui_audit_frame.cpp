@@ -60,7 +60,7 @@ auto RequireCanonicalControls(const std::string& InRendered,
             end == std::string_view::npos
                 ? InControls.size() - start
                 : end - start);
-        CAPTURE(token);
+        CAPTURE(std::string(token));
         REQUIRE(compactRendered.find(compactAscii(token)) != std::string::npos);
         if (end == std::string_view::npos) {
             break;
@@ -425,7 +425,7 @@ TEST_CASE("compact production composition keeps frame controls and content visib
 }
 
 TEST_CASE("audit receipt truth projects verified and typed reader outcomes",
-          "[unit][tui_audit_frame][KG-TSK-0132]") {
+          "[unit][tui_audit_frame][tui_pr_focus][KG-TSK-0132]") {
     SECTION("unread receipt is explicitly missing") {
         const auto truth = ProjectTuiAuditReceiptTruth(std::nullopt);
         REQUIRE(truth.state == TuiAuditReceiptState::Missing);
@@ -583,7 +583,7 @@ TEST_CASE("audit receipt truth projects verified and typed reader outcomes",
 }
 
 TEST_CASE("audit receipt evidence availability is count-derived and bounded",
-          "[unit][tui_audit_frame][KG-BUG-0105]") {
+          "[unit][tui_audit_frame][tui_pr_focus][KG-BUG-0105]") {
     struct Scenario {
         std::uint64_t total;
         std::uint64_t retained;

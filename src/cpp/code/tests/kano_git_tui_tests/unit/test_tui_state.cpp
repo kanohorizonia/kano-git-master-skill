@@ -3,7 +3,7 @@
 
 using namespace kano::git::commands;
 
-TEST_CASE("TuiState mode transitions", "[tui_state][unit]") {
+TEST_CASE("TuiState mode transitions", "[tui_state][unit][tui_pr_focus]") {
     TuiState state;
     
     SECTION("Initial state is Normal mode") {

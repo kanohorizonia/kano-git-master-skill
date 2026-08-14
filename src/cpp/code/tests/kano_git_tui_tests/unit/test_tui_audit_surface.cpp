@@ -5,7 +5,7 @@
 using namespace kano::git::commands;
 
 TEST_CASE("audit surface projection matches production panel precedence",
-          "[unit][tui_audit_surface][KG-TSK-0132]") {
+          "[unit][tui_audit_surface][tui_pr_focus][KG-TSK-0132]") {
     TuiAuditSurfaceInput input;
     input.repositoriesEmpty = true;
     input.startupLoad = TuiAuditLoad::Loading;

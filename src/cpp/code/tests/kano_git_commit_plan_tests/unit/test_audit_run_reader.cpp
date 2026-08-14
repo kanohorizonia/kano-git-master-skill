@@ -20,8 +20,6 @@
 #include <iterator>
 #include <limits>
 #include <mutex>
-#include <stop_token>
-#include <thread>
 #include <utility>
 #include <vector>
 #if !defined(_WIN32)
@@ -305,8 +303,7 @@ struct Fixture {
 
 struct PinnedAttemptControl {
     std::mutex mutex;
-    std::condition_variable_any condition;
-    std::stop_source stopSource;
+    std::condition_variable condition;
     bool ready = false;
     bool released = false;
     bool waitTimedOut = false;
@@ -318,8 +315,7 @@ struct PinnedAttemptControl {
         ++state.pinCount;
         state.ready = true;
         state.condition.notify_all();
-        if (!state.condition.wait_for(lock, state.stopSource.get_token(),
-                                      std::chrono::seconds(10),
+        if (!state.condition.wait_for(lock, std::chrono::seconds(10),
                                       [&] { return state.released; })) {
             state.waitTimedOut = !state.released;
         }
@@ -330,20 +326,19 @@ struct PinnedAttemptControl {
             std::lock_guard lock(mutex);
             released = true;
         }
-        stopSource.request_stop();
         condition.notify_all();
     }
 };
 
 // A failed REQUIRE before the explicit release must not leave the reader
-// blocked while std::jthread joins during stack unwinding.
+// blocked while the asynchronous future joins during stack unwinding.
 struct ScopedPinnedAttemptRelease {
     PinnedAttemptControl& control;
     ~ScopedPinnedAttemptRelease() { control.Release(); }
 };
 
 TEST_CASE("[KG-TSK-0133] pinned audit evidence directory survives visible namespace replacement",
-          "[audit][runtime][KG-TSK-0133]") {
+          "[audit][runtime][audit_pr_focus][KG-TSK-0133]") {
     Fixture fixture;
     fixture.Finalize();
     const auto expected = ReadOperationAuditRun(fixture.spec, "reader-run", 3);
@@ -364,7 +359,7 @@ TEST_CASE("[KG-TSK-0133] pinned audit evidence directory survives visible namesp
 
     PinnedAttemptControl control;
     OperationAuditRunReadResult result;
-    std::jthread reader([&] {
+    auto reader = std::async(std::launch::async, [&] {
         const ScopedAuditEvidencePinnedTestHook hook({
             .onAttemptPinned = PinnedAttemptControl::OnAttemptPinned,
             .context = &control,
@@ -390,7 +385,7 @@ TEST_CASE("[KG-TSK-0133] pinned audit evidence directory survives visible namesp
     };
     WriteText(fixture.paths.publicationPending, pending.dump());
     control.Release();
-    reader.join();
+    reader.get();
     REQUIRE(control.pinCount == 1);
     REQUIRE_FALSE(control.waitTimedOut);
     REQUIRE(result.verified()); REQUIRE(result.run);
@@ -401,14 +396,14 @@ TEST_CASE("[KG-TSK-0133] pinned audit evidence directory survives visible namesp
 }
 
 TEST_CASE("[KG-TSK-0133] legacy verify retains one pinned attempt across namespace replacement",
-          "[audit][runtime][legacy][KG-TSK-0133]") {
+          "[audit][runtime][legacy][audit_pr_focus][KG-TSK-0133]") {
     Fixture fixture; fixture.Finalize();
     Fixture decoy; decoy.Finalize(17);
     PinnedAttemptControl control;
     bool traceValid = false;
     std::string error;
     std::optional<std::string> receipt;
-    std::jthread reader([&] {
+    auto reader = std::async(std::launch::async, [&] {
         const ScopedAuditEvidencePinnedTestHook hook({
             .onAttemptPinned = PinnedAttemptControl::OnAttemptPinned,
             .context = &control,
@@ -428,7 +423,7 @@ TEST_CASE("[KG-TSK-0133] legacy verify retains one pinned attempt across namespa
                           std::filesystem::copy_options::recursive);
     WriteText(fixture.paths.incomplete, "{\"schemaName\":\"decoy\"}");
     control.Release();
-    reader.join();
+    reader.get();
     REQUIRE(control.pinCount == 1);
     REQUIRE_FALSE(control.waitTimedOut);
     INFO(error);
@@ -1430,7 +1425,7 @@ TEST_CASE("KG-TSK-0130 audit reader keeps redaction explicit",
 }
 
 TEST_CASE("KG-TSK-0130 audit reader fails closed on evidence mutations",
-          "[Unit][Audit][Reader][KG-TSK-0130]") {
+          "[Unit][Audit][Reader][audit_pr_focus][KG-TSK-0130]") {
     Fixture fixture; fixture.Finalize();
 
     const auto corrupt = [&](const std::filesystem::path& path, const std::string& bytes,

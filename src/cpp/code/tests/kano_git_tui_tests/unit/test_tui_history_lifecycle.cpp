@@ -278,7 +278,7 @@ TEST_CASE(
 
 TEST_CASE(
     "TUI history keeps captured page boundaries across terminal resize",
-    "[unit][tui_history_lifecycle][KG-TSK-0070]") {
+    "[unit][tui_history_lifecycle][tui_pr_focus][KG-TSK-0070]") {
     auto paging = BeginHistoryPaging(20);
     paging.pageIndex = 3;
     paging.selectedLine = 7;

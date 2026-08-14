@@ -12,7 +12,24 @@ kog_fetchcontent_declare_git(
 set(RC_ENABLE_TESTS    OFF CACHE BOOL "" FORCE)
 set(RC_ENABLE_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(RC_ENABLE_CATCH    OFF CACHE BOOL "" FORCE)
+# RapidCheck intentionally follows BUILD_SHARED_LIBS, but it does not expose a
+# Windows DLL ABI. Keep this test-only dependency static even when another
+# fetched dependency publishes a global BUILD_SHARED_LIBS cache value.
+if(DEFINED BUILD_SHARED_LIBS)
+  set(_kog_rapidcheck_build_shared_libs_was_defined TRUE)
+  set(_kog_rapidcheck_saved_build_shared_libs "${BUILD_SHARED_LIBS}")
+else()
+  set(_kog_rapidcheck_build_shared_libs_was_defined FALSE)
+endif()
+set(BUILD_SHARED_LIBS OFF)
 FetchContent_MakeAvailable(rapidcheck)
+if(_kog_rapidcheck_build_shared_libs_was_defined)
+  set(BUILD_SHARED_LIBS "${_kog_rapidcheck_saved_build_shared_libs}")
+else()
+  unset(BUILD_SHARED_LIBS)
+endif()
+unset(_kog_rapidcheck_build_shared_libs_was_defined)
+unset(_kog_rapidcheck_saved_build_shared_libs)
 
 # Suppress MSVC /WX (warnings-as-errors) for rapidcheck, which triggers
 # C4392 warnings in system headers when built with the project's global flags.

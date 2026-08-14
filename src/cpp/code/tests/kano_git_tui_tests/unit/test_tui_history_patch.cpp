@@ -220,7 +220,7 @@ TEST_CASE(
 
 TEST_CASE(
     "TUI display paths preserve valid UTF-8 and expose C1 or invalid bytes",
-    "[unit][tui_history_patch][KG-BUG-0088]") {
+    "[unit][tui_history_patch][tui_pr_focus][KG-BUG-0088]") {
     using namespace kano::git::commands;
 
     const std::string valid = "資料夾/檔案.txt";
