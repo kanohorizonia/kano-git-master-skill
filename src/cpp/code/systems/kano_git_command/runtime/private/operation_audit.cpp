@@ -94,9 +94,11 @@ void PublishCatalogBestEffort(const OperationAuditContext& InContext,
     // A catalog is discovery metadata. Its failure must not turn an already
     // durable receipt into a failed audit operation.
     std::string ignored;
-    (void)PublishOperationAuditCatalogEntry(
+    if (!PublishOperationAuditCatalogEntry(
         InContext.Spec(), InContext.Paths(),
-        CatalogEntryFor(InContext, InState, std::move(InReceiptSha256), InReceipt), &ignored);
+        CatalogEntryFor(InContext, InState, std::move(InReceiptSha256), InReceipt), &ignored)) {
+        ReportAuditRunCatalogPublicationFailureForTest(ignored);
+    }
 }
 
 void CanonicalizeArtifacts(std::vector<audit::ArtifactReference>& InOutArtifacts) {

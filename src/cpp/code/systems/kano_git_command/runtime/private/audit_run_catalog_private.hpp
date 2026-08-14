@@ -20,11 +20,13 @@ struct AuditRunCatalogTestHooks {
     std::function<std::chrono::system_clock::time_point()> systemNow;
     std::function<std::chrono::steady_clock::time_point()> monotonicNow;
     std::function<void(std::string_view)> publicationStage;
+    std::function<void(std::string_view)> publicationFailure;
     std::function<bool(std::string_view)> failStage;
     std::function<void()> writerBarrier;
     std::size_t* repairVisitCounter = nullptr;
 };
 void SetAuditRunCatalogTestHooks(AuditRunCatalogTestHooks InHooks);
 void ResetAuditRunCatalogTestHooks();
+void ReportAuditRunCatalogPublicationFailureForTest(std::string_view InDiagnostic);
 
 } // namespace kano::git::commands
