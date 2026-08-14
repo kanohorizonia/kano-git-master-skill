@@ -185,7 +185,8 @@ public:
         }
         return PinnedCatalogRoot(current);
 #else
-        const auto anchorAccess = FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE |
+        const auto anchorAccess = FILE_LIST_DIRECTORY | FILE_TRAVERSE |
+            FILE_READ_ATTRIBUTES | SYNCHRONIZE |
             (create ? FILE_ADD_SUBDIRECTORY : 0);
         HANDLE current = CreateFileW(anchor.c_str(), anchorAccess,
                                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
@@ -196,7 +197,10 @@ public:
         for(;it!=normalizedRoot.end();++it){
             auto nextIt = it; ++nextIt;
             const auto finalComponent = nextIt == normalizedRoot.end();
-            const auto access = FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE |
+            // FILE_TRAVERSE is required both for child opens relative to this
+            // handle and when the final root is used by FileRenameInfo.
+            const auto access = FILE_LIST_DIRECTORY | FILE_TRAVERSE |
+                FILE_READ_ATTRIBUTES | SYNCHRONIZE |
                 (create ? (finalComponent ? FILE_ADD_FILE | FILE_DELETE_CHILD : FILE_ADD_SUBDIRECTORY) : 0);
             // FILE_DIRECTORY_FILE cannot be combined with FILE_OPEN_REPARSE_POINT.
             // First admit an existing component as the reparse point itself so a
