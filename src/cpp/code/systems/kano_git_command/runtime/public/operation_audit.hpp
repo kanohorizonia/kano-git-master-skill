@@ -101,6 +101,7 @@ public:
     [[nodiscard]] auto PlanId() const -> const std::string&;
     [[nodiscard]] auto Correlation() const
         -> const OperationCorrelationEnvelope&;
+    [[nodiscard]] auto Spec() const -> const OperationAuditSpec&;
     [[nodiscard]] auto Paths() const -> const OperationAuditPaths&;
 
 private:

@@ -3,6 +3,7 @@
 #include "audit_run_reader.hpp"
 #include "audit_evidence_directory.hpp"
 #include "audit_run_reader_private.hpp"
+#include "audit_run_catalog_private.hpp"
 
 #include "shell_executor.hpp"
 
@@ -35,6 +36,68 @@ namespace kano::git::commands {
 namespace {
 
 thread_local OperationAuditContext* gActiveAudit = nullptr;
+auto CurrentUtc() -> std::string;
+
+auto CatalogEntryFor(const OperationAuditContext& InContext,
+                     const OperationAuditCatalogState InState,
+                     std::optional<std::string> InReceiptSha256 = std::nullopt,
+                     const audit::RunReceipt* InReceipt = nullptr)
+    -> OperationAuditCatalogEntry {
+    const auto& paths = InContext.Paths();
+    OperationAuditCatalogEntry entry;
+    entry.runId = InContext.RunId(); entry.parentRunId = InContext.ParentRunId();
+    entry.attempt = InContext.Attempt(); entry.planId = InContext.PlanId();
+    entry.inputKind = InContext.InputKind(); entry.route = InContext.Route();
+    entry.planSha256 = InContext.PlanSha256();
+    entry.sourceSha256 = InContext.SourceSha256();
+    entry.sourceSizeBytes = InContext.Spec().sourceBytes.size();
+    entry.auditRootSelector = (InContext.InputKind() == "commit-plan" ? "plan-" : "operation-") +
+        audit::Sha256Hex(InContext.Spec().inputIdentity);
+    entry.auditRootSha256 = audit::Sha256Hex(paths.auditRoot.generic_string());
+    entry.state = InState; entry.receiptSha256 = std::move(InReceiptSha256);
+    entry.correlationSha256 = audit::Sha256Hex(SerializeOperationCorrelationEnvelope(InContext.Correlation()));
+    entry.observedAtUtc = CurrentUtc();
+    if (InReceipt) {
+        entry.outcome = InReceipt->terminalOutcome.status;
+        entry.finishedAtUtc = InReceipt->finishedAtUtc;
+        auto repositories = InReceipt->repositories;
+        std::sort(repositories.begin(), repositories.end(), [](const auto& left, const auto& right) {
+            return left.repositoryId < right.repositoryId;
+        });
+        constexpr std::size_t kCatalogRepositoryLimit = 64;
+        const auto retained = std::min(repositories.size(), kCatalogRepositoryLimit);
+        entry.truncation.omittedRepositories = static_cast<std::uint32_t>(repositories.size() - retained);
+        std::string repositorySummary;
+        for (const auto& repository : repositories)
+            repositorySummary += repository.repositoryId + "\n" + repository.after.headSha.value_or("") + "\n";
+        entry.repositoryIdentityHeadSha256 = audit::Sha256Hex(repositorySummary);
+        for (std::size_t index = 0; index < retained; ++index) {
+            const auto& repository = repositories[index];
+            entry.repositories.push_back({repository.repositoryId, repository.after.headSha});
+        }
+        for (const auto& artifact : InReceipt->artifacts) {
+            if (artifact.redactionStatus == audit::RedactionStatus::Redacted) ++entry.redaction.redacted;
+            if (artifact.redactionStatus == audit::RedactionStatus::Withheld) ++entry.redaction.withheld;
+        }
+        entry.truncation.omittedEvents = static_cast<std::uint32_t>(InReceipt->eventCount);
+        entry.truncation.omittedEvidence = static_cast<std::uint32_t>(
+            InReceipt->policyRefs.size() + InReceipt->approvalRefs.size() + InReceipt->artifacts.size());
+    }
+    if (InState != OperationAuditCatalogState::Pending && !InReceipt) entry.finishedAtUtc = CurrentUtc();
+    return entry;
+}
+
+void PublishCatalogBestEffort(const OperationAuditContext& InContext,
+                              const OperationAuditCatalogState InState,
+                              std::optional<std::string> InReceiptSha256 = std::nullopt,
+                              const audit::RunReceipt* InReceipt = nullptr) {
+    // A catalog is discovery metadata. Its failure must not turn an already
+    // durable receipt into a failed audit operation.
+    std::string ignored;
+    (void)PublishOperationAuditCatalogEntry(
+        InContext.Spec(), InContext.Paths(),
+        CatalogEntryFor(InContext, InState, std::move(InReceiptSha256), InReceipt), &ignored);
+}
 
 void CanonicalizeArtifacts(std::vector<audit::ArtifactReference>& InOutArtifacts) {
     std::sort(InOutArtifacts.begin(), InOutArtifacts.end(),
@@ -1044,7 +1107,8 @@ auto ResolveOperationAuditPaths(const OperationAuditSpec& InSpec,
             (InSpec.sourcePath->filename().string() + ".audit");
     } else {
         paths.auditRoot = InSpec.workspaceRoot / ".kano" / "tmp" / "git" /
-            "audit" / ("operation-" + audit::Sha256Hex(InSpec.inputIdentity));
+            "audit" / ((InSpec.inputKind == "commit-plan" ? "plan-" : "operation-") +
+                         audit::Sha256Hex(InSpec.inputIdentity));
     }
     paths.runRoot = paths.auditRoot / ("run-" + audit::Sha256Hex(InRunId));
     paths.attemptRoot = paths.runRoot / ("attempt-" + std::to_string(InAttempt));
@@ -1132,6 +1196,7 @@ auto OperationAuditContext::Reserve(OperationAuditSpec InSpec, std::string* OutE
     }
     CloseHandleValue(pendingHandle);
     if (!SyncDirectory(sink->mPaths.attemptRoot, OutError)) return nullptr;
+    PublishCatalogBestEffort(*sink, OperationAuditCatalogState::Pending);
 
     auto frozenHandle = OpenExclusiveFile(sink->mPaths.frozenInput, OutError);
     if (frozenHandle < 0 || !WriteAndSync(frozenHandle, sink->mSpec.frozenBytes, OutError)) {
@@ -1334,6 +1399,7 @@ auto OperationAuditContext::PublishIncompleteMarker(
     CloseHandleValue(handle);
     if (!written || !SyncDirectory(mPaths.attemptRoot, OutError)) return false;
     mIncompletePublished = true;
+    PublishCatalogBestEffort(*this, OperationAuditCatalogState::Incomplete);
     return true;
 }
 
@@ -1450,6 +1516,8 @@ auto OperationAuditContext::PublishReceipt(const int InExitCode, std::string* Ou
         PublishIncompleteMarker("receipt-publication-pending", true, &ignored);
         return false;
     }
+    PublishCatalogBestEffort(*this, OperationAuditCatalogState::Final,
+                             audit::Sha256Hex(serialized.json), &receipt);
     mFinalized = true;
     return true;
 }
@@ -1536,6 +1604,7 @@ auto OperationAuditContext::InputKind() const -> const std::string& { return mSp
 auto OperationAuditContext::Route() const -> const std::string& { return mSpec.route; }
 auto OperationAuditContext::PlanId() const -> const std::string& { return mSpec.planId; }
 auto OperationAuditContext::Correlation() const -> const OperationCorrelationEnvelope& { return mSpec.correlation; }
+auto OperationAuditContext::Spec() const -> const OperationAuditSpec& { return mSpec; }
 auto OperationAuditContext::Paths() const -> const OperationAuditPaths& { return mPaths; }
 
 auto OperationAuditCapabilityJson() -> std::string {
