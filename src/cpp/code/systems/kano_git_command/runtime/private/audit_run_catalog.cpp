@@ -20,6 +20,10 @@
 #define NOMINMAX
 #include <windows.h>
 #include <winternl.h>
+
+extern "C" NTSYSAPI NTSTATUS NTAPI NtSetInformationFile(
+    HANDLE FileHandle, PIO_STATUS_BLOCK IoStatusBlock, PVOID FileInformation,
+    ULONG Length, FILE_INFORMATION_CLASS FileInformationClass);
 #else
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -45,6 +49,7 @@ auto MonotonicNow() -> std::chrono::steady_clock::time_point { const auto hooks 
 auto Stage(const std::string_view name) -> bool { const auto hooks = Hooks(); if (hooks.publicationStage) hooks.publicationStage(name); return hooks.failStage && hooks.failStage(name); }
 
 #if defined(_WIN32)
+constexpr auto kFileRenameInformation = static_cast<FILE_INFORMATION_CLASS>(10);
 struct CatalogNativeFailure {
     const char* operation = nullptr;
     DWORD error = ERROR_SUCCESS;
@@ -222,7 +227,7 @@ public:
             auto nextIt = it; ++nextIt;
             const auto finalComponent = nextIt == normalizedRoot.end();
             // FILE_TRAVERSE is required both for child opens relative to this
-            // handle and when the final root is used by FileRenameInfo.
+            // handle and when the final root is used by FileRenameInformation.
             const auto access = FILE_LIST_DIRECTORY | FILE_TRAVERSE |
                 FILE_READ_ATTRIBUTES | SYNCHRONIZE |
                 (create ? (finalComponent ? FILE_ADD_FILE | FILE_DELETE_CHILD : FILE_ADD_SUBDIRECTORY) : 0);
@@ -442,9 +447,12 @@ auto RenameWindowsAt(const PinnedCatalogRoot& rootHandle, const std::string& fro
     info->ReplaceIfExists=replace?TRUE:FALSE; info->RootDirectory=rootHandle.get();
     info->FileNameLength=static_cast<DWORD>(targetBytes);
     std::memcpy(info->FileName,target.data(),targetBytes);
-    const bool renamed=SetFileInformationByHandle(source,FileRenameInfo,info,static_cast<DWORD>(storage.size()))!=FALSE;
-    const auto renameError=renamed?ERROR_SUCCESS:GetLastError();
-    if (!renamed) SetCatalogNativeFailure("SetFileInformationByHandle(FileRenameInfo)", renameError);
+    IO_STATUS_BLOCK statusBlock{};
+    const auto status=NtSetInformationFile(source,&statusBlock,info,
+        static_cast<ULONG>(storage.size()),kFileRenameInformation);
+    const bool renamed=status>=0;
+    const auto renameError=renamed?ERROR_SUCCESS:RtlNtStatusToDosError(status);
+    if (!renamed) SetCatalogNativeFailure("NtSetInformationFile(FileRenameInformation)", renameError);
     if(outAlreadyExists)*outAlreadyExists=renameError==ERROR_ALREADY_EXISTS||renameError==ERROR_FILE_EXISTS;
     if(!renamed){FILE_DISPOSITION_INFO dispose{TRUE};(void)SetFileInformationByHandle(source,FileDispositionInfo,&dispose,sizeof(dispose));}
     CloseHandle(source); if(!renamed)return false;
@@ -800,8 +808,8 @@ auto PublishOperationAuditCatalogEntry(const OperationAuditSpec& InSpec, const O
         }
     }
     if (!WriteDurableNewAt(*pinnedRoot, root, temporary.filename().string(), pointerBytes)) { if (OutError) *OutError = "cannot durably write audit catalog pointer"; return false; }
-    // POSIX rename replaces current atomically.  On Windows MoveFileEx's
-    // replace flag provides the corresponding single pointer swap; never
+    // POSIX rename replaces current atomically.  On Windows the native
+    // root-relative rename provides the corresponding single pointer swap; never
     // remove current first because readers must retain one valid generation.
     if (!RenameReplaceAt(*pinnedRoot, root, temporary.filename().string(), "current.json")) { if (OutError) *OutError = "cannot atomically and durably publish audit catalog pointer"; return false; }
     if (Stage("after-pointer")) { if (OutError) *OutError = "injected post-pointer publication failure"; return false; }
