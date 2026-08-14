@@ -417,7 +417,7 @@ auto AuditEvidenceDirectory::Read(const std::string_view InChildName,
     DWORD error = ERROR_SUCCESS;
     auto file = NtOpenRelative(reinterpret_cast<HANDLE>(mHandle), InChildName,
         FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-        FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT,
+        FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT,
         &error);
     if (!file.valid())
         return {.code = WinErrorToReadCode(error),
