@@ -17,6 +17,7 @@ on:
       - "src/cpp/code/tests/kano_git_commit_plan_tests/**"
       - "src/cpp/code/tests/run_tui_pr_focus.py"
       - "src/cpp/code/tests/CMakeLists.txt"
+      - "assets/audit/schemas/**"
       - "src/cpp/CMakeLists.txt"
       - "src/cpp/CMakePresets.json"
       - "src/cpp/shared/infra/**"
@@ -148,6 +149,24 @@ jobs:
 
       - name: Run exact TUI PR focus selector and release smoke
         run: |
+          catalog_args=()
+          if python src/cpp/code/tests/run_tui_pr_focus.py --help | grep -Fq -- "--required-catalog-test"; then
+            catalog_args+=(
+              --required-catalog-test "[KG-TSK-0135] catalog records pending incomplete and final lifecycle truth"
+              --required-catalog-test "[KG-TSK-0135] catalog cursor binds its immutable generation and filter"
+              --required-catalog-test "[KG-TSK-0135] cursor expiry and unknown catalog fields fail closed without clock sleeps"
+              --required-catalog-test "[KG-TSK-0135] catalog truncated repository filter is data-less"
+              --required-catalog-test "[KG-TSK-0135] no-Git null-source fallback publishes at the workspace catalog root"
+              --required-catalog-test "[KG-TSK-0135] catalog held OS writer lock rejects publication without blocking"
+              --required-catalog-test "[KG-TSK-0135] held OS writer lock leaves Reserve nonblocking and Finalize reconciles"
+              --required-catalog-test "[KG-TSK-0135] only final catalog rows can enter pinned revalidation"
+            )
+          elif [[ "${{ github.event_name }}" != "workflow_dispatch" || -z "${{ inputs.source_ref }}" ]]; then
+            echo "current TUI PR focus runner lacks required audit-catalog support" >&2
+            exit 2
+          else
+            echo "::notice::Requested historical source predates the audit-catalog focus capability; running its original bounded inventory."
+          fi
           python src/cpp/code/tests/run_tui_pr_focus.py \
             --application-dir "${{ matrix.application_dir }}" \
             --test-binary "${{ matrix.test_binary }}" \
@@ -161,6 +180,7 @@ jobs:
             --required-audit-test "[KG-TSK-0133] pinned audit evidence directory survives visible namespace replacement" \
             --required-audit-test "[KG-TSK-0133] legacy verify retains one pinned attempt across namespace replacement" \
             --required-audit-test "KG-TSK-0130 audit reader fails closed on evidence mutations" \
+            "${catalog_args[@]}" \
             --timeout-seconds 1200
 
       - name: Write bounded artifact manifest
@@ -182,6 +202,7 @@ jobs:
           path: |
             ci/tui-pr-gate/${{ matrix.platform }}/tui-pr-focus.junit.xml
             ci/tui-pr-gate/${{ matrix.platform }}/audit-pr-focus.junit.xml
+            ci/tui-pr-gate/${{ matrix.platform }}/audit-catalog-pr-focus.junit.xml
             ci/tui-pr-gate/${{ matrix.platform }}/status.txt
             ci/tui-pr-gate/${{ matrix.platform }}/manifest.txt
           if-no-files-found: error

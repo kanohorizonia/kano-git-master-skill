@@ -68,25 +68,31 @@ KOG follows the same boundary:
 does not replace Jenkins, create release assets, publish packages, upload
 coverage, or change the manual release workflows. It builds release-configured
 native binaries on Linux x64 (Clang preset), macOS arm64, and Windows x64,
-smoke-checks `kano-git` and `kano-git-tui`, then invokes exactly the Catch2
-selectors `[tui_pr_focus]` in `kano_git_tui_tests` and `[audit_pr_focus]` in
-`kano_git_commit_plan_tests`. The second selector is reserved for the audit
-reader and pinned-attempt lifecycle cases that influence the audit surface. The
-runner rejects a missing JUnit report, a selector that matches zero tests, or a
-missing member of the checked-in critical-case inventory, so a renamed/removed
-focus tag or critical scenario cannot silently produce a green result. The
-inventory includes interactive-first-frame, redirected-stream rejection, typed
-audit receipt truth, native terminal ownership, and the pinned-audit-reader
-lifecycle cases.
+smoke-checks `kano-git` and `kano-git-tui`, then invokes the Catch2 selector
+`[tui_pr_focus]` in `kano_git_tui_tests`, `[audit_pr_focus]` in
+`kano_git_commit_plan_tests`, and a third exact-name union containing only the
+bounded audit-catalog inventory. The second selector is reserved for the audit
+reader and pinned-attempt lifecycle cases that influence the audit surface;
+the exact catalog inventory covers lifecycle truth, immutable cursor paging
+and expiry, truncated repository-filter behavior, workspace-root admission,
+nonblocking OS writer-lock contention and reconciliation, and pinned
+revalidation.
+The runner rejects a missing JUnit report, a selector that matches zero tests,
+or a missing member of any checked-in critical-case inventory, so a
+renamed/removed focus tag or critical scenario cannot silently produce a green
+result. The three bounded JUnit reports contain no command output or exported
+environment.
 
 The workflow is path-filtered to the real TUI/CLI app entrypoints, command UI,
-runtime and commit-plan code, core audit/shell/workspace code, their two test
-suites, its focused runner, native build inputs, launchers, Pixi manifests, the
-submodule pin, and itself. General docs-only or README-only changes therefore
-remain outside this native matrix. Its
+runtime and commit-plan code, core audit/shell/workspace code, the audit schema
+assets, their two test suites, its focused runner, native build inputs,
+launchers, Pixi manifests, the submodule pin, and itself. General docs-only or
+README-only changes therefore remain outside this native matrix. Its
 `workflow_dispatch` `source_ref` input permits an operator to rerun the same
 bounded check for a commit, branch, or tag; leaving it blank uses the ref
-selected in the GitHub Actions UI.
+selected in the GitHub Actions UI. Historical refs that predate the catalog
+runner option capability-negotiate back to their original two-selector bounded
+inventory instead of failing on an unknown command-line option.
 
 Dependency installation uses the recursively checked-out shared-infra lockfile.
 `setup-pixi` installs the pinned Pixi executable, then the workflow runs
@@ -100,11 +106,15 @@ a cache hit is not test evidence.
 Artifacts are deliberately limited to the available focus-suite JUnit XML files
 (each capped at 2 MiB by the runner even if a test fails or times out), a
 one-line pass/fail status, and a four-line run manifest containing the actual
-checkout revision. An oversized JUnit file is deleted before upload. The upload
-step fails if no bounded evidence exists. The workflow does not capture shell
-output, environment exports, checkout credentials, or arbitrary workspace files
-into artifacts. Contributors should still treat test names and failure messages
-as public-safe because JUnit is retained for seven days.
+checkout revision. A successful current-ref run requires all three JUnit
+reports. Because suites execute sequentially, an earlier failure may
+legitimately leave a later report absent; status and manifest are still always
+uploaded, and every report reached before the failure remains bounded and
+eligible for upload. An oversized JUnit file is deleted before upload. The
+upload step fails if no bounded evidence exists. The workflow does not capture
+shell output, environment exports, checkout credentials, or arbitrary workspace
+files into artifacts. Contributors should still treat test names and failure
+messages as public-safe because JUnit is retained for seven days.
 
 ### Required-check and operator boundary
 
