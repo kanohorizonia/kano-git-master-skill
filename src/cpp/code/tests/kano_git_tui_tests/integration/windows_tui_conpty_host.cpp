@@ -39,6 +39,7 @@ constexpr DWORD kExitChildStatus = 20;
 constexpr DWORD kExitOutputEof = 21;
 constexpr DWORD kExitInternal = 22;
 constexpr DWORD kExitCleanupEvidence = 23;
+constexpr DWORD kExitCancellationHarness = 24;
 constexpr DWORD kNoFailure = MAXDWORD;
 constexpr short kResizeColumns = 121;
 constexpr short kResizeRows = 37;
@@ -293,6 +294,7 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
     std::wstring command = Quote(InArguments[2]);
     command += L" ";
     command += Quote(InArguments[3]);
+    command += L" --test-cancel-ack";
     STARTUPINFOEXW startup{};
     startup.StartupInfo.cb = sizeof(startup);
     startup.lpAttributeList = list;
@@ -313,6 +315,7 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
     Needle altScreenExit("\x1b[?1049l");
     Needle terminalStateRestored("KOG_TUI_TERMINAL_STATE_RESTORED");
     Needle cancellationAcknowledgement("startup cancellation acknowledged");
+    Needle cancellationHarnessArmed("startup cancellation harness armed");
     bool resizePending = false;
     bool resizeCommitted = false;
     bool inputPending = false;
@@ -360,6 +363,7 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
             {
                 std::scoped_lock lock(mutex);
                 firstFrame.Consume(chunk);
+                cancellationHarnessArmed.Consume(chunk);
                 if (resizePending) resizedFrame.Consume(chunk);
                 if (inputPending) {
                     for (const char byte : chunk) {
@@ -420,6 +424,18 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
         });
         if (!(resizeCommitted && resizedFrame.Found())) {
             code = kExitResizedFrame;
+            win32 = !observed
+                ? ERROR_TIMEOUT
+                : (outputError == ERROR_SUCCESS ? ERROR_HANDLE_EOF : outputError);
+        }
+    }
+    if (code == kNoFailure) {
+        std::unique_lock lock(mutex);
+        const bool observed = changed.wait_until(lock, deadline, [&] {
+            return cancellationHarnessArmed.Found() || outputComplete;
+        });
+        if (!cancellationHarnessArmed.Found()) {
+            code = kExitCancellationHarness;
             win32 = !observed
                 ? ERROR_TIMEOUT
                 : (outputError == ERROR_SUCCESS ? ERROR_HANDLE_EOF : outputError);

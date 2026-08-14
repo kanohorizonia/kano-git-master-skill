@@ -5,6 +5,7 @@
 #include <windows.h>
 
 #include <cstddef>
+#include <cwchar>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -158,9 +159,13 @@ auto WriteConsoleEvidence(const ScopedHandle& InOutput, const char* InBytes,
 } // namespace
 
 auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
-    if (InArgumentCount != 2 || InArguments[1] == nullptr ||
+    if (InArgumentCount < 2 || InArguments[1] == nullptr ||
         InArguments[1][0] == L'\0') {
         return PrintFailure("missing-production-binary");
+    }
+    if (InArgumentCount != 3 || InArguments[2] == nullptr ||
+        std::wcscmp(InArguments[2], L"--test-cancel-ack") != 0) {
+        return PrintFailure("missing-test-cancel-ack");
     }
 
     ScopedHandle consoleInput;
@@ -168,6 +173,12 @@ auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
     DWORD failureError = ERROR_SUCCESS;
     if (!OpenConsoleDevices(consoleInput, consoleOutput, failureError)) {
         return PrintWin32Failure("console-device-open-before-launch", failureError);
+    }
+    if (SetEnvironmentVariableW(L"KOG_TEST_MODE", L"1") == 0 ||
+        SetEnvironmentVariableW(
+            L"KOG_TUI_TEST_STARTUP_CANCEL_ACK", L"1") == 0) {
+        return PrintWin32Failure(
+            "production-test-environment-unavailable", GetLastError());
     }
 
     ConsoleState before{};

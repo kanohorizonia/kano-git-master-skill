@@ -3762,6 +3762,9 @@ auto RunFtxuiDashboard(CLI::App& app, const std::string_view InThemeName) -> int
                         std::string_view(testMode) == "1" &&
                         terminalHarness != nullptr &&
                         std::string_view(terminalHarness) == "1") {
+                        std::cerr
+                            << "[tui-test] startup cancellation harness armed\n"
+                            << std::flush;
                         const auto deadline =
                             std::chrono::steady_clock::now() +
                             std::chrono::seconds(10);
