@@ -7,6 +7,7 @@ target_sources(kano_git_command_runtime
     private/audit_cmd.cpp
     private/audit_verification.cpp
     private/audit_evidence_directory.cpp
+    private/audit_run_catalog.cpp
     private/audit_run_reader.cpp
     private/operation_audit.cpp
     private/ai_utils.cpp
@@ -18,6 +19,7 @@ target_sources(kano_git_command_runtime
     public/command_executor.hpp
     public/operation_audit.hpp
     public/audit_run_reader.hpp
+    public/audit_run_catalog.hpp
     public/audit_verification.hpp
     public/ai_utils.hpp
     public/runtime_path_layout.hpp

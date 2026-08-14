@@ -281,6 +281,7 @@ auto RequiredAuditSchemaPaths() -> const std::vector<std::filesystem::path>& {
         "assets/audit/schemas/kog.runReceipt.v1.schema.json",
         "assets/audit/schemas/kog.auditCapability.v1.schema.json",
         "assets/audit/schemas/kog.auditVerification.v1.schema.json",
+        "assets/audit/schemas/kog.auditRunCatalog.v1.schema.json",
     };
     return required;
 }
