@@ -168,11 +168,18 @@ TEST_CASE("[KG-TSK-0135] no-Git null-source fallback publishes at the workspace 
     // exercises the explicit workspace audit fallback without touching PATH.
     const auto root = Root(); auto spec = Spec(root, "catalog-null-source", 1);
     spec.sourcePath.reset();
+    std::string publicationFailure;
+    AuditRunCatalogTestHooks hooks;
+    hooks.publicationFailure = [&](const std::string_view diagnostic) {
+        publicationFailure = diagnostic;
+    };
+    const ScopedCatalogTestHooks scopedHooks(std::move(hooks));
     Finalize(spec);
     std::string error; const auto paths = ResolveOperationAuditPaths(spec, spec.correlation.runId, spec.correlation.attempt, &error);
     INFO(error); REQUIRE(paths);
     REQUIRE(paths->auditRoot == root / ".kano" / "tmp" / "git" / "audit" /
         ("plan-" + kano::git::audit::Sha256Hex(spec.inputIdentity)));
+    INFO(publicationFailure);
     REQUIRE(std::filesystem::is_regular_file(CatalogRoot(root) / "current.json"));
     const auto query = QueryOperationAuditCatalog(spec);
     INFO(query.diagnostic); REQUIRE(query.ready()); REQUIRE(query.rows.size() == 1);
@@ -802,12 +809,20 @@ TEST_CASE("[KG-TSK-0135] catalog held OS writer lock rejects publication without
 TEST_CASE("[KG-TSK-0135] held OS writer lock leaves Reserve nonblocking and Finalize reconciles", "[audit][catalog][KG-TSK-0135]") {
     const auto root = Root(); const auto seed = Spec(root, "catalog-held-os-lock-seed", 1); Finalize(seed);
     const auto contended = Spec(root, "catalog-held-os-lock-reserve", 1);
+    std::string publicationFailure;
+    AuditRunCatalogTestHooks hooks;
+    hooks.publicationFailure = [&](const std::string_view diagnostic) {
+        publicationFailure = diagnostic;
+    };
+    const ScopedCatalogTestHooks scopedHooks(std::move(hooks));
     std::unique_ptr<OperationAuditContext> context;
     {
         ScopedHeldCatalogOsWriterLock lock(CatalogRoot(root) / "writer.lock");
         std::string error; context = OperationAuditContext::Reserve(contended, &error);
         INFO(error); REQUIRE(context);
     }
+    INFO(publicationFailure);
+    REQUIRE(publicationFailure.starts_with("audit catalog writer is busy"));
     std::string error; const auto before = context->Capture(contended.workspaceRoot);
     REQUIRE(context->Append("catalog.held-lock", contended.workspaceRoot, before, NowUtc(), 0, &error));
     REQUIRE(context->Finalize(0, &error)); context.reset();

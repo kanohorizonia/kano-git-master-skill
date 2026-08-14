@@ -38,25 +38,45 @@ constexpr std::size_t kCatalogEntryCeiling = 4096;
 std::atomic_uint64_t gCatalogTemporarySequence = 0;
 std::mutex gCatalogHooksMutex;
 AuditRunCatalogTestHooks gCatalogHooks;
+std::atomic_bool gCatalogPublicationFailureHookEnabled = false;
 auto Hooks() -> AuditRunCatalogTestHooks { std::lock_guard lock(gCatalogHooksMutex); return gCatalogHooks; }
 auto SystemNow() -> std::chrono::system_clock::time_point { const auto hooks = Hooks(); return hooks.systemNow ? hooks.systemNow() : std::chrono::system_clock::now(); }
 auto MonotonicNow() -> std::chrono::steady_clock::time_point { const auto hooks = Hooks(); return hooks.monotonicNow ? hooks.monotonicNow() : std::chrono::steady_clock::now(); }
 auto Stage(const std::string_view name) -> bool { const auto hooks = Hooks(); if (hooks.publicationStage) hooks.publicationStage(name); return hooks.failStage && hooks.failStage(name); }
 
 #if defined(_WIN32)
+struct CatalogNativeFailure {
+    const char* operation = nullptr;
+    DWORD error = ERROR_SUCCESS;
+    const char* secondaryOperation = nullptr;
+    DWORD secondaryError = ERROR_SUCCESS;
+};
+thread_local CatalogNativeFailure gCatalogNativeFailure;
+void SetCatalogNativeFailure(const char* operation, const DWORD error) noexcept {
+    gCatalogNativeFailure = {.operation = operation, .error = error};
+}
+void ClearCatalogNativeFailure() noexcept { gCatalogNativeFailure = {}; }
 auto NtCreateRelative(const HANDLE parent, const std::string& name,
                       const ACCESS_MASK access, const ULONG disposition,
                       const ULONG options) -> HANDLE {
     std::wstring storage=std::filesystem::path(name).wstring();
     const auto byteCount=storage.size()*sizeof(wchar_t);
-    if (storage.empty() || byteCount>std::numeric_limits<USHORT>::max()) return INVALID_HANDLE_VALUE;
+    if (storage.empty() || byteCount>std::numeric_limits<USHORT>::max()) {
+        SetCatalogNativeFailure("NtCreateFile-name", ERROR_INVALID_NAME);
+        return INVALID_HANDLE_VALUE;
+    }
     UNICODE_STRING unicode{static_cast<USHORT>(byteCount),static_cast<USHORT>(byteCount),storage.data()};
     OBJECT_ATTRIBUTES attributes{}; InitializeObjectAttributes(&attributes,&unicode,OBJ_CASE_INSENSITIVE,parent,nullptr);
     IO_STATUS_BLOCK statusBlock{}; HANDLE handle=INVALID_HANDLE_VALUE;
     const auto status=NtCreateFile(&handle,access,&attributes,&statusBlock,nullptr,
         FILE_ATTRIBUTE_NORMAL,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
         disposition,options,nullptr,0);
-    return status>=0 ? handle : INVALID_HANDLE_VALUE;
+    if (status < 0) {
+        SetCatalogNativeFailure("NtCreateFile", RtlNtStatusToDosError(status));
+        return INVALID_HANDLE_VALUE;
+    }
+    ClearCatalogNativeFailure();
+    return handle;
 }
 auto SafeWindowsDirectoryHandle(const HANDLE handle) -> bool {
     BY_HANDLE_FILE_INFORMATION info{};
@@ -191,7 +211,11 @@ public:
         HANDLE current = CreateFileW(anchor.c_str(), anchorAccess,
                                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                                         OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
-        if (!SafeWindowsDirectoryHandle(current)) { if(current!=INVALID_HANDLE_VALUE)CloseHandle(current); return std::nullopt; }
+        if (!SafeWindowsDirectoryHandle(current)) {
+            SetCatalogNativeFailure("catalog-anchor", current == INVALID_HANDLE_VALUE ? GetLastError() : ERROR_INVALID_DATA);
+            if(current!=INVALID_HANDLE_VALUE)CloseHandle(current); return std::nullopt;
+        }
+        ClearCatalogNativeFailure();
         const auto normalizedRoot=root.lexically_normal(); const auto normalizedAnchor=anchor.lexically_normal();
         auto it=normalizedRoot.begin(); for(auto anchorIt=normalizedAnchor.begin();anchorIt!=normalizedAnchor.end();++anchorIt,++it){}
         for(;it!=normalizedRoot.end();++it){
@@ -214,12 +238,25 @@ public:
                 next=NtCreateRelative(current,it->string(),access,FILE_CREATE,
                     FILE_DIRECTORY_FILE|FILE_SYNCHRONOUS_IO_NONALERT);
                 if (next == INVALID_HANDLE_VALUE) {
+                    const auto createFailure = gCatalogNativeFailure;
                     next=NtCreateRelative(current,it->string(),access,FILE_OPEN,
                         FILE_OPEN_REPARSE_POINT|FILE_SYNCHRONOUS_IO_NONALERT);
+                    if (next == INVALID_HANDLE_VALUE && createFailure.operation) {
+                        const auto retryFailure = gCatalogNativeFailure;
+                        gCatalogNativeFailure = createFailure;
+                        gCatalogNativeFailure.secondaryOperation = retryFailure.operation;
+                        gCatalogNativeFailure.secondaryError = retryFailure.error;
+                    }
                 }
             }
             CloseHandle(current);
-            if(!SafeWindowsDirectoryHandle(next)){if(next!=INVALID_HANDLE_VALUE)CloseHandle(next);return std::nullopt;}
+            if(!SafeWindowsDirectoryHandle(next)){
+                if(next!=INVALID_HANDLE_VALUE) {
+                    SetCatalogNativeFailure("catalog-component", ERROR_INVALID_DATA);
+                    CloseHandle(next);
+                }
+                return std::nullopt;
+            }
             current=next;
         }
         return PinnedCatalogRoot(current);
@@ -265,10 +302,17 @@ public:
         BY_HANDLE_FILE_INFORMATION info{};
         if (mHandle == INVALID_HANDLE_VALUE || !GetFileInformationByHandle(mHandle, &info) ||
             (info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY))) {
-            if (mHandle != INVALID_HANDLE_VALUE) CloseHandle(mHandle);
+            if (mHandle != INVALID_HANDLE_VALUE) {
+                SetCatalogNativeFailure("catalog-writer-lock-admission", ERROR_INVALID_DATA);
+                CloseHandle(mHandle);
+            }
             mHandle=INVALID_HANDLE_VALUE; return;
         }
-        OVERLAPPED overlap{}; mOwned=LockFileEx(mHandle,LOCKFILE_EXCLUSIVE_LOCK|LOCKFILE_FAIL_IMMEDIATELY,0,MAXDWORD,MAXDWORD,&overlap)!=FALSE;
+        OVERLAPPED overlap{};
+        mOwned=LockFileEx(mHandle,LOCKFILE_EXCLUSIVE_LOCK|LOCKFILE_FAIL_IMMEDIATELY,
+                          0,MAXDWORD,MAXDWORD,&overlap)!=FALSE;
+        if (!mOwned) SetCatalogNativeFailure("LockFileEx", GetLastError());
+        else ClearCatalogNativeFailure();
 #endif
     }
     ~ScopedCatalogWriterLock() {
@@ -363,9 +407,22 @@ auto WriteDurableNewAt(const PinnedCatalogRoot& rootHandle, const std::filesyste
 #else
     const auto handle=NtCreateRelative(rootHandle.get(),name,GENERIC_WRITE|FILE_READ_ATTRIBUTES|SYNCHRONIZE,
         FILE_CREATE,FILE_NON_DIRECTORY_FILE|FILE_OPEN_REPARSE_POINT|FILE_SYNCHRONOUS_IO_NONALERT);
-    if(!SafeWindowsRegularHandle(handle)||bytes.size()>MAXDWORD){if(handle!=INVALID_HANDLE_VALUE)CloseHandle(handle);return false;}
-    DWORD written=0; const bool ok=(bytes.empty()||(WriteFile(handle,bytes.data(),static_cast<DWORD>(bytes.size()),&written,nullptr)&&written==bytes.size()))&&FlushFileBuffers(handle);
-    CloseHandle(handle); return ok;
+    if(!SafeWindowsRegularHandle(handle)||bytes.size()>MAXDWORD){
+        if(handle!=INVALID_HANDLE_VALUE){SetCatalogNativeFailure("catalog-write-admission",ERROR_INVALID_DATA);CloseHandle(handle);}
+        return false;
+    }
+    DWORD written=0;
+    if (!bytes.empty()) {
+        const bool wrote = WriteFile(handle,bytes.data(),static_cast<DWORD>(bytes.size()),&written,nullptr)!=FALSE;
+        if (!wrote || written!=bytes.size()) {
+            SetCatalogNativeFailure("WriteFile", wrote ? ERROR_WRITE_FAULT : GetLastError());
+            CloseHandle(handle); return false;
+        }
+    }
+    if (!FlushFileBuffers(handle)) {
+        SetCatalogNativeFailure("FlushFileBuffers", GetLastError()); CloseHandle(handle); return false;
+    }
+    ClearCatalogNativeFailure(); CloseHandle(handle); return true;
 #endif
 }
 #if defined(_WIN32)
@@ -374,7 +431,10 @@ auto RenameWindowsAt(const PinnedCatalogRoot& rootHandle, const std::string& fro
     if(outAlreadyExists)*outAlreadyExists=false;
     const auto source=NtCreateRelative(rootHandle.get(),from,DELETE|FILE_READ_ATTRIBUTES|SYNCHRONIZE,FILE_OPEN,
         FILE_NON_DIRECTORY_FILE|FILE_OPEN_REPARSE_POINT|FILE_SYNCHRONOUS_IO_NONALERT);
-    if(!SafeWindowsRegularHandle(source)){if(source!=INVALID_HANDLE_VALUE)CloseHandle(source);return false;}
+    if(!SafeWindowsRegularHandle(source)){
+        if(source!=INVALID_HANDLE_VALUE){SetCatalogNativeFailure("catalog-rename-source",ERROR_INVALID_DATA);CloseHandle(source);}
+        return false;
+    }
     const auto target=std::filesystem::path(to).wstring();
     const auto targetBytes=target.size()*sizeof(wchar_t);
     std::vector<unsigned char> storage(sizeof(FILE_RENAME_INFO)+targetBytes);
@@ -384,13 +444,20 @@ auto RenameWindowsAt(const PinnedCatalogRoot& rootHandle, const std::string& fro
     std::memcpy(info->FileName,target.data(),targetBytes);
     const bool renamed=SetFileInformationByHandle(source,FileRenameInfo,info,static_cast<DWORD>(storage.size()))!=FALSE;
     const auto renameError=renamed?ERROR_SUCCESS:GetLastError();
+    if (!renamed) SetCatalogNativeFailure("SetFileInformationByHandle(FileRenameInfo)", renameError);
     if(outAlreadyExists)*outAlreadyExists=renameError==ERROR_ALREADY_EXISTS||renameError==ERROR_FILE_EXISTS;
     if(!renamed){FILE_DISPOSITION_INFO dispose{TRUE};(void)SetFileInformationByHandle(source,FileDispositionInfo,&dispose,sizeof(dispose));}
     CloseHandle(source); if(!renamed)return false;
     const auto installed=NtCreateRelative(rootHandle.get(),to,GENERIC_READ|GENERIC_WRITE|SYNCHRONIZE,FILE_OPEN,
         FILE_NON_DIRECTORY_FILE|FILE_OPEN_REPARSE_POINT|FILE_SYNCHRONOUS_IO_NONALERT);
-    const bool durable=SafeWindowsRegularHandle(installed)&&FlushFileBuffers(installed);
-    if(installed!=INVALID_HANDLE_VALUE)CloseHandle(installed); return durable;
+    if (!SafeWindowsRegularHandle(installed)) {
+        if(installed!=INVALID_HANDLE_VALUE){SetCatalogNativeFailure("catalog-rename-target",ERROR_INVALID_DATA);CloseHandle(installed);}
+        return false;
+    }
+    const bool durable=FlushFileBuffers(installed)!=FALSE;
+    if (!durable) SetCatalogNativeFailure("FlushFileBuffers(rename-target)",GetLastError());
+    else ClearCatalogNativeFailure();
+    CloseHandle(installed); return durable;
 }
 #endif
 enum class InstallResult { Installed, AlreadyExists, Error };
@@ -572,14 +639,43 @@ auto FilterFingerprint(const OperationAuditCatalogFilter& InFilter) -> std::stri
 } // namespace
 
 void SetAuditRunCatalogTestHooks(AuditRunCatalogTestHooks InHooks) {
-    std::lock_guard lock(gCatalogHooksMutex); gCatalogHooks = std::move(InHooks);
+    std::lock_guard lock(gCatalogHooksMutex);
+    gCatalogHooks = std::move(InHooks);
+    gCatalogPublicationFailureHookEnabled.store(
+        static_cast<bool>(gCatalogHooks.publicationFailure), std::memory_order_release);
 }
 void ResetAuditRunCatalogTestHooks() {
-    std::lock_guard lock(gCatalogHooksMutex); gCatalogHooks = {};
+    std::lock_guard lock(gCatalogHooksMutex);
+    gCatalogHooks = {};
+    gCatalogPublicationFailureHookEnabled.store(false, std::memory_order_release);
+}
+void ReportAuditRunCatalogPublicationFailureForTest(const std::string_view InDiagnostic) {
+    if (!gCatalogPublicationFailureHookEnabled.load(std::memory_order_acquire)) return;
+    const auto hooks = Hooks();
+    if (!hooks.publicationFailure) return;
+    std::string diagnostic(InDiagnostic.substr(0, 256));
+#if defined(_WIN32)
+    if (gCatalogNativeFailure.operation) {
+        diagnostic += "; ";
+        diagnostic += gCatalogNativeFailure.operation;
+        diagnostic += " win32=";
+        diagnostic += std::to_string(gCatalogNativeFailure.error);
+        if (gCatalogNativeFailure.secondaryOperation) {
+            diagnostic += "; retry ";
+            diagnostic += gCatalogNativeFailure.secondaryOperation;
+            diagnostic += " win32=";
+            diagnostic += std::to_string(gCatalogNativeFailure.secondaryError);
+        }
+    }
+#endif
+    hooks.publicationFailure(diagnostic.substr(0, 512));
 }
 
 auto PublishOperationAuditCatalogEntry(const OperationAuditSpec& InSpec, const OperationAuditPaths& InPaths,
                                        OperationAuditCatalogEntry InEntry, std::string* OutError) -> bool {
+#if defined(_WIN32)
+    ClearCatalogNativeFailure();
+#endif
     const auto checkedEntry = ParseEntry(EntryJson(InEntry));
     if (!checkedEntry || *checkedEntry != InEntry) { if (OutError) *OutError = "catalog publication row violates closed schema"; return false; }
     const auto publishedIdentity = std::pair{InEntry.runId, InEntry.attempt};
@@ -594,7 +690,17 @@ auto PublishOperationAuditCatalogEntry(const OperationAuditSpec& InSpec, const O
     const bool loaded = LoadGeneration(*pinnedRoot, root, kCatalogStorageByteCeiling, &priorGeneration, &entries, true);
     // Absent starts an index; an existing unreadable/torn pointer is never
     // overwritten because repair is a separate writer-owned operation.
-    if (!loaded && ChildExistsAt(*pinnedRoot, "current.json")) { if (OutError) *OutError = "audit catalog current generation is corrupt"; return false; }
+    if (!loaded) {
+        if (ChildExistsAt(*pinnedRoot, "current.json")) {
+            if (OutError) *OutError = "audit catalog current generation is corrupt";
+            return false;
+        }
+#if defined(_WIN32)
+        // Missing current.json is the expected first-publication state, not a
+        // native failure to attach to a later in-memory validation error.
+        ClearCatalogNativeFailure();
+#endif
+    }
     const auto same = std::find_if(entries.begin(), entries.end(), [&](const auto& entry) { return entry.runId == InEntry.runId && entry.attempt == InEntry.attempt; });
     if (same == entries.end()) {
         entries.push_back(std::move(InEntry));
