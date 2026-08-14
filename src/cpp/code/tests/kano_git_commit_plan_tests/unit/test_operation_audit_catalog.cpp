@@ -862,7 +862,9 @@ TEST_CASE("[KG-TSK-0135] only writer repair may visit exactly the retained previ
 
 TEST_CASE("[KG-TSK-0135] only final catalog rows can enter pinned revalidation", "[audit][catalog][KG-TSK-0135]") {
     const auto root = Root(); const auto spec = Spec(root, "catalog-final-only", 1); Finalize(spec);
-    auto row = QueryOperationAuditCatalog(spec).rows.front();
+    const auto query = QueryOperationAuditCatalog(spec);
+    INFO(query.diagnostic); REQUIRE(query.ready()); REQUIRE_FALSE(query.rows.empty());
+    auto row = query.rows.front();
     row.state = OperationAuditCatalogState::Incomplete;
     row.outcome.reset(); row.receiptSha256.reset();
     row.finishedAtUtc = "2026-01-01T00:00:00Z";

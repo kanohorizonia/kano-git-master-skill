@@ -185,17 +185,38 @@ public:
         }
         return PinnedCatalogRoot(current);
 #else
-        HANDLE current = CreateFileW(anchor.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
+        const auto anchorAccess = FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE |
+            (create ? FILE_ADD_SUBDIRECTORY : 0);
+        HANDLE current = CreateFileW(anchor.c_str(), anchorAccess,
                                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                                         OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
         if (!SafeWindowsDirectoryHandle(current)) { if(current!=INVALID_HANDLE_VALUE)CloseHandle(current); return std::nullopt; }
         const auto normalizedRoot=root.lexically_normal(); const auto normalizedAnchor=anchor.lexically_normal();
         auto it=normalizedRoot.begin(); for(auto anchorIt=normalizedAnchor.begin();anchorIt!=normalizedAnchor.end();++anchorIt,++it){}
         for(;it!=normalizedRoot.end();++it){
-            const auto disposition=create ? FILE_OPEN_IF : FILE_OPEN;
-            HANDLE next=NtCreateRelative(current,it->string(),FILE_LIST_DIRECTORY|FILE_READ_ATTRIBUTES|SYNCHRONIZE,
-                                         disposition,FILE_DIRECTORY_FILE|FILE_OPEN_REPARSE_POINT|FILE_SYNCHRONOUS_IO_NONALERT);
-            CloseHandle(current); if(!SafeWindowsDirectoryHandle(next)){if(next!=INVALID_HANDLE_VALUE)CloseHandle(next);return std::nullopt;} current=next;
+            auto nextIt = it; ++nextIt;
+            const auto finalComponent = nextIt == normalizedRoot.end();
+            const auto access = FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE |
+                (create ? (finalComponent ? FILE_ADD_FILE | FILE_DELETE_CHILD : FILE_ADD_SUBDIRECTORY) : 0);
+            // FILE_DIRECTORY_FILE cannot be combined with FILE_OPEN_REPARSE_POINT.
+            // First admit an existing component as the reparse point itself so a
+            // junction/symlink is observed and rejected instead of traversed.
+            HANDLE next=NtCreateRelative(current,it->string(),access,FILE_OPEN,
+                FILE_OPEN_REPARSE_POINT|FILE_SYNCHRONOUS_IO_NONALERT);
+            if (next == INVALID_HANDLE_VALUE && create) {
+                // Creation needs FILE_DIRECTORY_FILE, which intentionally omits
+                // FILE_OPEN_REPARSE_POINT.  A racing creator is admitted only by
+                // retrying the secure existing-component open above.
+                next=NtCreateRelative(current,it->string(),access,FILE_CREATE,
+                    FILE_DIRECTORY_FILE|FILE_SYNCHRONOUS_IO_NONALERT);
+                if (next == INVALID_HANDLE_VALUE) {
+                    next=NtCreateRelative(current,it->string(),access,FILE_OPEN,
+                        FILE_OPEN_REPARSE_POINT|FILE_SYNCHRONOUS_IO_NONALERT);
+                }
+            }
+            CloseHandle(current);
+            if(!SafeWindowsDirectoryHandle(next)){if(next!=INVALID_HANDLE_VALUE)CloseHandle(next);return std::nullopt;}
+            current=next;
         }
         return PinnedCatalogRoot(current);
 #endif
