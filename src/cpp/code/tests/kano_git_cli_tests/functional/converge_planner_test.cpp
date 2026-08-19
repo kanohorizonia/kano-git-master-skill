@@ -3031,6 +3031,26 @@ TEST_CASE("converge planner gitlink only uses deterministic pointer commit", "[t
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge planner blocks pointer to unpublished child head", "[tdd][unit][feature:converge-state][feature:dirty-kind][functional][converge][planner][KG-BUG-0118]") {
+    const auto ctx = CreateRemoteWithSubmoduleClone("converge-planner-unpublished-child-head");
+    const auto beforeRootStatus = GitStatusShort(ctx.cloneRootRepo);
+    RequireSuccess(RunGit({"checkout", "-b", "local-only-unpublished"}, ctx.cloneChildRepo), "create unpublished child branch");
+    WriteTextFile(ctx.cloneChildRepo / "child.txt", "unpublished child change");
+    RequireSuccess(RunGit({"commit", "-am", "unpublished child change"}, ctx.cloneChildRepo), "commit unpublished child change");
+    const auto dirtyRootStatus = GitStatusShort(ctx.cloneRootRepo);
+    REQUIRE(dirtyRootStatus != beforeRootStatus);
+    const auto result = RunConvergeDryRun(ctx.cloneRootRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode != 0);
+    RequireContains(result.stdoutText, "GITLINK_DIRTY_ONLY");
+    RequireContains(result.stdoutText, "PARENT_POINTER_UNSAFE: affected gitlink " + ctx.submodulePath);
+    RequireContains(result.stdoutText, "dirtyKind=MISSING_REMOTE");
+    RequireNotContains(result.stdoutText, "deterministic pointer commit");
+    REQUIRE(GitStatusShort(ctx.cloneRootRepo) == dirtyRootStatus);
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("converge scoped freshness hashes retain leading zeroes", "[architecture][converge][freshness][KG-BUG-0072]") {
     const auto cppRoot =
         std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path().parent_path();

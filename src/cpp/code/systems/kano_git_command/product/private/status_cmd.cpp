@@ -1290,6 +1290,7 @@ auto BuildRecursiveRepoStatus(const workspace::RepoRecord& InRepo,
         if (isManagedGitlinkPath) {
             hasGitlinkDirty = true;
             PushUnique(&out.submoduleFacts, "ParentGitlinkDirty");
+            PushUnique(&out.submoduleFacts, "ParentGitlinkDirty:" + path);
         } else if (isGitlinkPath) {
             unregisteredGitlinkPaths.push_back(path);
         } else {

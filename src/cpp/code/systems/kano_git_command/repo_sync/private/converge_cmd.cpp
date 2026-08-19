@@ -821,6 +821,9 @@ std::string PointerMessage(const RepoStatus& repo) {
     return std::max<std::size_t>(repo.childRepos.size(), 1) == 1 ? kPointerSingleMessage : kPointerMultipleMessage;
 }
 
+std::string NormalizeGitPath(std::string path);
+std::string RepoRelativeChildPath(const std::string& parentRepo, const std::string& childRepo);
+
 std::vector<std::string> ExtractUnregisteredGitlinkPaths(const RepoStatus& repo) {
     constexpr std::string_view kPrefix = "UnregisteredGitlinkSkipped:";
     std::vector<std::string> out;
@@ -830,6 +833,27 @@ std::vector<std::string> ExtractUnregisteredGitlinkPaths(const RepoStatus& repo)
             if (!path.empty()) {
                 out.push_back(path);
             }
+        }
+    }
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
+}
+
+std::vector<std::string> ExtractManagedGitlinkPaths(const RepoStatus& repo) {
+    constexpr std::string_view kPrefix = "ParentGitlinkDirty:";
+    std::vector<std::string> out;
+    for (const auto& fact : repo.submoduleFacts) {
+        if (fact.rfind(kPrefix, 0) == 0) {
+            const auto path = NormalizeGitPath(Trim(fact.substr(kPrefix.size())));
+            if (!path.empty()) {
+                out.push_back(path);
+            }
+        }
+    }
+    if (out.empty() && Contains(repo.submoduleFacts, "ParentGitlinkDirty")) {
+        for (const auto& child : repo.childRepos) {
+            out.push_back(RepoRelativeChildPath(repo.id, child));
         }
     }
     std::sort(out.begin(), out.end());
@@ -869,6 +893,48 @@ bool IsCleanNestedPreflightOnlyBlocker(const RepoStatus& repo) {
 
 bool CanPublishLocalMutation(const RepoStatus& repo) {
     return Allows(repo, "commit") && Allows(repo, "push") && (repo.behind == 0 || Allows(repo, "sync")) && !repo.remote.empty();
+}
+
+std::optional<std::string> ParentGitlinkPublicationBlocker(
+    const RepoStatus& repo,
+    const std::unordered_map<std::string, RepoStatus>& byId) {
+    for (const auto& path : ExtractManagedGitlinkPaths(repo)) {
+        const RepoStatus* childRepo = nullptr;
+        for (const auto& child : repo.childRepos) {
+            if (RepoRelativeChildPath(repo.id, child) != path) {
+                continue;
+            }
+            const auto it = byId.find(child);
+            if (it != byId.end()) {
+                childRepo = &it->second;
+            }
+            break;
+        }
+        if (childRepo == nullptr) {
+            return std::format(
+                "PARENT_POINTER_UNSAFE: affected gitlink {} has no managed child status",
+                path);
+        }
+
+        const bool remotelyReachable =
+            !childRepo->head.empty() &&
+            !childRepo->remote.empty() &&
+            childRepo->ahead == 0 &&
+            childRepo->branch != "(detached)" &&
+            (childRepo->dirtyKind == "CLEAN" || childRepo->dirtyKind == "BEHIND_ONLY") &&
+            !childRepo->blocksConverge;
+        if (!remotelyReachable) {
+            return std::format(
+                "PARENT_POINTER_UNSAFE: affected gitlink {} -> {} child head {} is not remotely reachable (dirtyKind={}, remote={}, upstream={})",
+                path,
+                childRepo->id,
+                childRepo->head.empty() ? std::string{"<unknown>"} : childRepo->head,
+                childRepo->dirtyKind,
+                childRepo->remote.empty() ? std::string{"<none>"} : childRepo->remote,
+                childRepo->upstream.empty() ? std::string{"<none>"} : childRepo->upstream);
+        }
+    }
+    return std::nullopt;
 }
 
 bool CanRepoConvergeBeforeParent(const RepoStatus& repo,
@@ -927,7 +993,7 @@ bool CanRepoConvergeBeforeParent(const RepoStatus& repo,
         return finish(Allows(repo, "push") && !repo.remote.empty());
     }
     if (repo.dirtyKind == "GITLINK_DIRTY_ONLY") {
-        return finish(CanPublishLocalMutation(repo));
+        return finish(CanPublishLocalMutation(repo) && !ParentGitlinkPublicationBlocker(repo, byId).has_value());
     }
     if (repo.dirtyKind == "GITLINK_DIRTY_UNSAFE") {
         return finish(CanPublishLocalMutation(repo) && ChildrenCanConvergeBeforeParent(repo, byId, visiting));
@@ -1026,6 +1092,11 @@ Plan BuildPlan(const Snapshot& snapshot) {
         if (repo.dirtyKind == "CLEAN") { Add(plan.skipped, repo.id, "commit skipped: CLEAN"); continue; }
         if (repo.dirtyKind == "AHEAD_ONLY") { Add(plan.skipped, repo.id, "commit skipped: AHEAD_ONLY"); Allows(repo, "push") ? Add(plan.push, repo.id, "kog push --repos " + repo.id) : Add(plan.skipped, repo.id, "push skipped by commandPolicy.push=false"); continue; }
         if (repo.dirtyKind == "GITLINK_DIRTY_ONLY") {
+            if (const auto blocker = ParentGitlinkPublicationBlocker(repo, byId); blocker.has_value()) {
+                Add(plan.blocked, repo.id, *blocker);
+                Add(plan.skipped, repo.id, "pointer commit waits for affected child publication");
+                continue;
+            }
             Add(plan.skipped, repo.id, "kog commit -ai skipped: GITLINK_DIRTY_ONLY");
             if (Allows(repo, "commit")) {
                 Add(plan.commit, repo.id, "deterministic pointer commit: " + PointerMessage(repo));
@@ -1039,6 +1110,8 @@ Plan BuildPlan(const Snapshot& snapshot) {
         if (repo.dirtyKind == "GITLINK_DIRTY_UNSAFE") {
             if (UnsafeParentCanWaitForChildConverge(repo, byId)) {
                 Add(plan.skipped, repo.id, "parent pointer commit waits for child worktree converge");
+            } else if (const auto blocker = ParentGitlinkPublicationBlocker(repo, byId); blocker.has_value()) {
+                Add(plan.blocked, repo.id, *blocker);
             } else {
                 Add(plan.blocked, repo.id, "PARENT_POINTER_UNSAFE: child worktree/commit state is not safe for deterministic pointer-only commit");
             }
@@ -1063,6 +1136,11 @@ Plan BuildPlan(const Snapshot& snapshot) {
             continue;
         }
         if (repo.dirtyKind == "CONTENT_AND_GITLINK_DIRTY") {
+            if (const auto blocker = ParentGitlinkPublicationBlocker(repo, byId); blocker.has_value()) {
+                Add(plan.blocked, repo.id, *blocker);
+                Add(plan.skipped, repo.id, "combined content/pointer commit waits for affected child publication");
+                continue;
+            }
             if (Allows(repo, "commit")) {
                 Add(plan.commit, repo.id, "kog commit -ai --repos " + repo.id + " (combined content/pointer context)");
                 AddPushAfterCommit(plan, repo, "commit");
