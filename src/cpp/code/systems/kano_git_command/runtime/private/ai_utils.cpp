@@ -175,7 +175,7 @@ auto IsAgentModeEnabled() -> bool {
 }
 
 auto ReadFileText(const std::filesystem::path& InPath) -> std::optional<std::string> {
-    std::ifstream in(InPath, std::ios::in | std::ios::binary);
+    std::ifstream in(runtime_path::NativeIoPath(InPath), std::ios::in | std::ios::binary);
     if (!in) return std::nullopt;
     std::ostringstream ss;
     ss << in.rdbuf();
@@ -192,7 +192,7 @@ auto WriteFileText(const std::filesystem::path& InPath, const std::string& InTex
             return false;
         }
     }
-    std::ofstream out(InPath, std::ios::out | std::ios::binary | std::ios::trunc);
+    std::ofstream out(runtime_path::NativeIoPath(InPath), std::ios::out | std::ios::binary | std::ios::trunc);
     if (!out) {
         if (OutError) *OutError = "Failed to open file for writing";
         return false;

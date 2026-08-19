@@ -60,5 +60,6 @@ auto ResolveSkillRoot(const std::filesystem::path& InWorkspaceRoot) -> std::file
 auto ResolveSkillRootFromBinaryPath(const std::filesystem::path& InBinaryPath)
     -> std::filesystem::path;
 auto GlobalCacheRoot(const std::filesystem::path& InHomeDirectory) -> std::filesystem::path;
+auto NativeIoPath(const std::filesystem::path& InPath) -> std::filesystem::path;
 
 } // namespace kano::git::commands::runtime_path

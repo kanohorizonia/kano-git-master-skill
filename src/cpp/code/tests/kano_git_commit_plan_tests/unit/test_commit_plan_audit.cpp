@@ -861,6 +861,7 @@ TEST_CASE("KG-BUG-0101 operation audit reserves long paths in an absorbed submod
     auto audit = OperationAuditContext::Reserve(spec, &error);
     INFO(error);
     REQUIRE(audit);
+    REQUIRE(ReadFileText(paths->publicationPending).has_value());
     const auto before = audit->Capture(workspace);
     REQUIRE(audit->Append("converge.branches.apply.fast-forward", workspace,
                           before, CurrentUtcIso8601(), 0, &error));

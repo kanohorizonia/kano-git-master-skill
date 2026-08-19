@@ -388,4 +388,25 @@ auto GlobalCacheRoot(const std::filesystem::path& InHomeDirectory) -> std::files
     return (InHomeDirectory / ".kano" / "cache" / "git").lexically_normal();
 }
 
+auto NativeIoPath(const std::filesystem::path& InPath) -> std::filesystem::path {
+#if defined(_WIN32)
+    auto normalized = InPath.lexically_normal();
+    normalized.make_preferred();
+    const auto& native = normalized.native();
+    constexpr std::size_t legacyWin32DirectoryPathLimit = 248;
+    if (native.starts_with(LR"(\\?\)") ||
+        native.starts_with(LR"(\\.\)") || !normalized.is_absolute() ||
+        native.size() < legacyWin32DirectoryPathLimit) {
+        return normalized;
+    }
+    if (native.starts_with(LR"(\\)")) {
+        return std::filesystem::path(
+            std::wstring(LR"(\\?\UNC\)") + native.substr(2));
+    }
+    return std::filesystem::path(std::wstring(LR"(\\?\)") + native);
+#else
+    return InPath;
+#endif
+}
+
 } // namespace kano::git::commands::runtime_path
