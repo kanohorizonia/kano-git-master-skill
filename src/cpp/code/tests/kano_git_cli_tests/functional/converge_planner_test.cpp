@@ -1153,7 +1153,7 @@ TEST_CASE("converge branches apply reports guarded recovery when target push fai
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
-TEST_CASE("converge branches recovery abort requires exact pending head", "[tdd][functional][converge][branches][apply][recovery][KG-BUG-0078]") {
+TEST_CASE("converge branches recovery abort requires exact pending head", "[tdd][functional][converge][branches][apply][recovery][KG-BUG-0078][KG-BUG-0120]") {
     const auto ctx = CreateRemoteWithClone("converge-branches-target-push-abort");
     const auto targetHeadBefore = TrimCopy(RunGit({"rev-parse", ctx.branch}, ctx.cloneRepo).stdoutText);
     const std::string featureBranch = "feature/push-rejected-abort";
@@ -1174,25 +1174,36 @@ TEST_CASE("converge branches recovery abort requires exact pending head", "[tdd]
     REQUIRE(integratedHead != targetHeadBefore);
 
     const std::string wrongHead(40, '0');
-    const auto guarded = RunKog({
+    const auto guarded = RunKogWithEnv({
         "converge", "branches", "recover", "--abort", "--target", ctx.branch,
         "--expected-head", wrongHead, "--restore-head", targetHeadBefore,
-        "--remote", "origin", "--json"}, ctx.cloneRepo);
+        "--remote", "origin"}, ctx.cloneRepo,
+        {{"KANO_AGENT_MODE", "1"}, {"KOG_DEBUG", "1"}});
     INFO(guarded.stdoutText);
+    INFO(guarded.stderrText);
     REQUIRE(guarded.exitCode == 1);
-    RequireContains(guarded.stdoutText, "RECOVERY_HEAD_MISMATCH");
+    const auto guardedPayload = nlohmann::json::parse(guarded.stdoutText);
+    REQUIRE(guardedPayload.at("schemaName") == "kog.convergeBranchesRecoveryResult");
+    REQUIRE(guardedPayload.at("blocked").at(0).at("blockers").at(0) == "RECOVERY_HEAD_MISMATCH");
+    RequireNotContains(guarded.stdoutText, "[run] git");
+    RequireNotContains(guarded.stdoutText, "[TIMING]");
     REQUIRE(TrimCopy(RunGit({"rev-parse", ctx.branch}, ctx.cloneRepo).stdoutText) == integratedHead);
 
-    const auto recovery = RunKog({
+    const auto recovery = RunKogWithEnv({
         "converge", "branches", "recover", "--abort", "--target", ctx.branch,
         "--expected-head", integratedHead, "--restore-head", targetHeadBefore,
         "--remote", "origin", "--json", "--correlation-file",
         WriteKoaCorrelationFile(ctx.cloneRepo, "converge.branches.recover",
-                                "run-branches-recover").string()}, ctx.cloneRepo);
+                                "run-branches-recover").string()}, ctx.cloneRepo,
+        {{"KOG_DEBUG", "1"}});
     INFO(recovery.stdoutText);
     INFO(recovery.stderrText);
     REQUIRE(recovery.exitCode == 0);
-    RequireContains(recovery.stdoutText, "\"action\": \"abort-target-integration\"");
+    const auto recoveryPayload = nlohmann::json::parse(recovery.stdoutText);
+    REQUIRE(recoveryPayload.at("schemaName") == "kog.convergeBranchesRecoveryResult");
+    REQUIRE(recoveryPayload.at("applied").at(0).at("action") == "abort-target-integration");
+    RequireNotContains(recovery.stdoutText, "[run] git");
+    RequireNotContains(recovery.stdoutText, "[TIMING]");
     REQUIRE(TrimCopy(RunGit({"rev-parse", ctx.branch}, ctx.cloneRepo).stdoutText) == targetHeadBefore);
     REQUIRE(TrimCopy(RunGit({"rev-parse", "origin/" + ctx.branch}, ctx.cloneRepo).stdoutText) == targetHeadBefore);
     REQUIRE_FALSE(std::filesystem::exists(ctx.cloneRepo / "abort.txt"));
@@ -1614,7 +1625,7 @@ TEST_CASE("cherry-pick continue reports a following sequenced conflict as pendin
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
-TEST_CASE("converge branches retire keeps a target already ahead of upstream", "[tdd][functional][feature:converge][converge][branches][retire][KG-BUG-0102]") {
+TEST_CASE("converge branches retire keeps a target already ahead of upstream", "[tdd][functional][feature:converge][converge][branches][retire][KG-BUG-0102][KG-BUG-0120]") {
     const auto ctx = CreateRemoteWithClone("converge-branches-retire");
     const std::string featureBranch = "feature/retire-merged";
     RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout retire feature branch");
@@ -1631,28 +1642,42 @@ TEST_CASE("converge branches retire keeps a target already ahead of upstream", "
     const auto worktreePath = (ctx.sandbox.root / "retire-worktree").lexically_normal();
     RequireSuccess(RunGit({"worktree", "add", worktreePath.string(), featureBranch}, ctx.cloneRepo), "add clean feature worktree");
 
-    const auto preview = RunKog({"converge", "branches", "retire", "--target", ctx.branch, "--remove-worktrees", "--json", "--jobs", "1"}, ctx.cloneRepo);
+    const auto preview = RunKogWithEnv(
+        {"converge", "branches", "retire", "--target", ctx.branch,
+         "--remove-worktrees", "--jobs", "1"},
+        ctx.cloneRepo,
+        {{"KANO_AGENT_MODE", "1"}, {"KOG_DEBUG", "1"}});
     INFO(preview.stdoutText);
     INFO(preview.stderrText);
     REQUIRE(preview.exitCode == 0);
-    RequireContains(preview.stdoutText, "\"schemaName\": \"kog.convergeBranchesRetireResult\"");
-    RequireContains(preview.stdoutText, "\"mutationPerformed\": false");
-    RequireContains(preview.stdoutText, "\"planned\"");
+    const auto previewPayload = nlohmann::json::parse(preview.stdoutText);
+    REQUIRE(previewPayload.at("schemaName") == "kog.convergeBranchesRetireResult");
+    REQUIRE_FALSE(previewPayload.at("mutationPerformed").get<bool>());
+    REQUIRE_FALSE(previewPayload.at("planned").empty());
+    RequireNotContains(preview.stdoutText, "[run] git");
+    RequireNotContains(preview.stdoutText, "[TIMING]");
     RequireNotContains(preview.stdoutText, "DIRTY_WORKTREE:AHEAD_ONLY");
     REQUIRE(std::filesystem::exists(worktreePath));
 
     const auto retireCorrelation = WriteKoaCorrelationFile(
         ctx.cloneRepo, "converge.branches.retire", "run-branches-retire");
-    const auto result = RunKog({"converge", "branches", "retire", "--target", ctx.branch, "--remove-worktrees", "--confirm", "--json", "--jobs", "1",
-                                "--correlation-file", retireCorrelation.string()}, ctx.cloneRepo);
+    const auto result = RunKogWithEnv(
+        {"converge", "branches", "retire", "--target", ctx.branch,
+         "--remove-worktrees", "--confirm", "--json", "--jobs", "1",
+         "--correlation-file", retireCorrelation.string()},
+        ctx.cloneRepo,
+        {{"KOG_DEBUG", "1"}});
     INFO(result.stdoutText);
     INFO(result.stderrText);
     REQUIRE(result.exitCode == 0);
 
-    RequireContains(result.stdoutText, "\"schemaName\": \"kog.convergeBranchesRetireResult\"");
-    RequireContains(result.stdoutText, "\"mutationPerformed\": true");
-    RequireContains(result.stdoutText, "\"branch\": \"" + featureBranch + "\"");
-    RequireContains(result.stdoutText, "\"action\": \"delete-local\"");
+    const auto resultPayload = nlohmann::json::parse(result.stdoutText);
+    REQUIRE(resultPayload.at("schemaName") == "kog.convergeBranchesRetireResult");
+    REQUIRE(resultPayload.at("mutationPerformed").get<bool>());
+    REQUIRE(resultPayload.at("retired").at(0).at("branch") == featureBranch);
+    REQUIRE(resultPayload.at("retired").at(0).at("action") == "delete-local");
+    RequireNotContains(result.stdoutText, "[run] git");
+    RequireNotContains(result.stdoutText, "[TIMING]");
     RequireNotContains(result.stdoutText, "DIRTY_WORKTREE:AHEAD_ONLY");
     REQUIRE(RunGit({"show-ref", "--verify", "--quiet", "refs/heads/" + featureBranch}, ctx.cloneRepo).exitCode != 0);
     REQUIRE(!std::filesystem::exists(worktreePath));

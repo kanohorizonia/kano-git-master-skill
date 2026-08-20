@@ -717,6 +717,49 @@
           "mapping_state": "source-linked"
         }
       ]
+    },
+    {
+      "incident_id": "KG-BUG-0120",
+      "incident_date": "2026-08-20",
+      "root_cause": "The recover route was omitted from top-level machine-JSON timing suppression, while recover and retire callbacks ran selector validation and correlated audit capture and finalization outside their workflows' inner command-log suppression, so machine-mode stdout could contain non-JSON prefixes and suffixes.",
+      "backlog_ref": "KG-BUG-0120",
+      "change_ref": "KG-BUG-0120",
+      "workflow_contracts": [
+        "agent-mode-branch-convergence",
+        "branch-recovery-json-output",
+        "branch-retire-json-output",
+        "correlated-operation-audit"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KG-BUG-0120/blocked-recover-whole-stdout-json",
+          "test_name": "converge branches recovery abort requires exact pending head",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/converge_planner_test.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-BUG-0120/confirmed-recover-whole-stdout-json",
+          "test_name": "converge branches recovery abort requires exact pending head",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/converge_planner_test.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-BUG-0120/preview-retire-whole-stdout-json",
+          "test_name": "converge branches retire keeps a target already ahead of upstream",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/converge_planner_test.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-BUG-0120/confirmed-retire-whole-stdout-json",
+          "test_name": "converge branches retire keeps a target already ahead of upstream",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/converge_planner_test.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        }
+      ]
     }
   ]
 }

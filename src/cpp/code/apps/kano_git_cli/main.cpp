@@ -677,6 +677,7 @@ bool ShouldSuppressMainTimingForMachineJson(const std::vector<std::string>& InAr
         subcommand != "inventory" &&
         subcommand != "status" &&
         subcommand != "apply" &&
+        subcommand != "recover" &&
         subcommand != "retire") {
         return false;
     }

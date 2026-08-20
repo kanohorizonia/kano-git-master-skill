@@ -385,13 +385,23 @@ TEST_CASE("audit runtime script is tracked executable in the Git index",
 
 TEST_CASE("dogfood incident manifest maps stable source cases without execution claims",
           "[unit][regression][coverage][KG-TSK-0052]") {
+  constexpr std::size_t kExpectedIncidentCount = 24;
+  constexpr std::size_t kExpectedLinkedCaseCount = 62;
   const auto manifest = RepoRoot() / "assets" / "regression" / "incidents.json";
   const auto loaded = LoadCoverageManifest(manifest);
 
   INFO(loaded.error);
   REQUIRE(loaded.ok);
-  REQUIRE(loaded.report.incidents.size() == 22);
+  REQUIRE(loaded.report.incidents.size() == kExpectedIncidentCount);
   REQUIRE(loaded.report.gaps.empty());
+
+  const auto machineJsonIncident = std::find_if(
+      loaded.report.incidents.begin(), loaded.report.incidents.end(),
+      [](const Incident &InIncident) {
+        return InIncident.incidentId == "KG-BUG-0120";
+      });
+  REQUIRE(machineJsonIncident != loaded.report.incidents.end());
+  REQUIRE(machineJsonIncident->regressionCases.size() == 4);
 
   const auto auditIncident = std::find_if(
       loaded.report.incidents.begin(), loaded.report.incidents.end(),
@@ -487,18 +497,22 @@ TEST_CASE("dogfood incident manifest maps stable source cases without execution 
   for (const auto &incident : loaded.report.incidents) {
     linkedCaseCount += incident.regressionCases.size();
   }
-  REQUIRE(linkedCaseCount == 56);
+  REQUIRE(linkedCaseCount == kExpectedLinkedCaseCount);
 
   const auto text = RenderCoverageText(loaded.report);
   REQUIRE(text.find("execution_evidence=not-evaluated") != std::string::npos);
-  REQUIRE(text.find("linked_cases=56") != std::string::npos);
+  REQUIRE(text.find("linked_cases=" +
+                    std::to_string(kExpectedLinkedCaseCount)) !=
+          std::string::npos);
   REQUIRE_FALSE(HasExactLine(text, "execution_evidence=passed"));
   REQUIRE_FALSE(HasExactLine(text, "execution_evidence=executed"));
 
   const auto json = RenderCoverageJson(loaded.report);
   REQUIRE(json.find("\"execution_evidence\": \"not-evaluated\"") !=
           std::string::npos);
-  REQUIRE(json.find("\"linked_cases\": 56") != std::string::npos);
+  REQUIRE(json.find("\"linked_cases\": " +
+                    std::to_string(kExpectedLinkedCaseCount)) !=
+          std::string::npos);
 }
 
 TEST_CASE("default registry paths and exact test names resolve to source",

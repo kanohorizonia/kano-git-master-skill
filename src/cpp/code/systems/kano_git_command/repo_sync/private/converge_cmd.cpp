@@ -6780,6 +6780,10 @@ void RegisterConverge(CLI::App& InApp) {
             std::cerr << "Error: invalid branch recovery options\n";
             std::exit(2);
         }
+        std::optional<shell::ScopedConsoleWriteSuppression> suppressCallbackCommandLogs;
+        if (*branchesRecoverJson || IsConvergeAgentModeEnabled()) {
+            suppressCallbackCommandLogs.emplace();
+        }
         const auto root = std::filesystem::current_path().lexically_normal();
         std::string selectorError;
         if (!ValidateMutationBranchSelector(
@@ -6828,6 +6832,10 @@ void RegisterConverge(CLI::App& InApp) {
         if (target.empty()) {
             std::cerr << "Error: --target must not be empty\n";
             std::exit(2);
+        }
+        std::optional<shell::ScopedConsoleWriteSuppression> suppressCallbackCommandLogs;
+        if (*branchesJson || IsConvergeAgentModeEnabled()) {
+            suppressCallbackCommandLogs.emplace();
         }
         const auto root = std::filesystem::current_path().lexically_normal();
         std::string selectorError;
