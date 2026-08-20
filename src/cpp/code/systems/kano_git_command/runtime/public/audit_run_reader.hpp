@@ -85,6 +85,13 @@ struct OperationAuditRunProjection {
     std::string planSha256;
     std::string frozenInputSha256;
     std::string eventStreamSha256;
+    std::string finishedAtUtc;
+    // Receipt-derived summaries, intentionally independent of preview limits.
+    std::string repositoryIdentityHeadSha256;
+    // Canonical sorted first 64 ID/after-head pairs for catalog projections.
+    std::string catalogRepositoryPreviewIdentityHeadSha256;
+    std::uint64_t redactedEvidenceCount = 0;
+    std::uint64_t withheldEvidenceCount = 0;
     audit::CorrelationRefs correlation;
     audit::Outcome terminalOutcome;
     std::uint64_t totalEventRecords = 0;

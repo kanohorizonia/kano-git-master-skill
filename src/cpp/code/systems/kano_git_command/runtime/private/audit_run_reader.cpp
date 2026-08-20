@@ -192,6 +192,7 @@ auto Project(const audit::RunReceipt& InReceipt, const std::vector<audit::AuditE
     out.parentRunId = InReceipt.parentRunId; out.attempt = InReceipt.attempt;
     out.planId = InReceipt.planId; out.planSha256 = InReceipt.planSha256;
     out.frozenInputSha256 = InFrozenSha; out.eventStreamSha256 = InReceipt.eventStreamSha256;
+    out.finishedAtUtc = InReceipt.finishedAtUtc;
     out.correlation = InReceipt.correlation; out.terminalOutcome = InReceipt.terminalOutcome;
     out.totalEventRecords = InEvents.size(); out.totalRepositories = InReceipt.repositories.size();
     out.totalEvidenceReferences = InReceipt.policyRefs.size() + InReceipt.approvalRefs.size() + InReceipt.artifacts.size();
@@ -210,6 +211,15 @@ auto Project(const audit::RunReceipt& InReceipt, const std::vector<audit::AuditE
     std::sort(repositories.begin(), repositories.end(), [](const auto& left, const auto& right) {
         return left.repositoryId < right.repositoryId;
     });
+    std::string repositorySummary;
+    std::string catalogRepositorySummary;
+    for (std::size_t index = 0; index < repositories.size(); ++index) {
+        const auto& repository = repositories[index];
+        repositorySummary += repository.repositoryId + "\n" + repository.after.headSha.value_or("") + "\n";
+        if (index < 64) catalogRepositorySummary += repository.repositoryId + "\n" + repository.after.headSha.value_or("") + "\n";
+    }
+    out.repositoryIdentityHeadSha256 = audit::Sha256Hex(repositorySummary);
+    out.catalogRepositoryPreviewIdentityHeadSha256 = audit::Sha256Hex(catalogRepositorySummary);
     for (const auto& repository : repositories) {
         if (out.repositories.size() == InLimits.maxRepositories) { out.repositoriesTruncated = true; break; }
         const auto bytes = payloadBytes({repository.repositoryId,
@@ -241,6 +251,8 @@ auto Project(const audit::RunReceipt& InReceipt, const std::vector<audit::AuditE
                             item.redactionStatus});
         out.hasRedactedEvidence = out.hasRedactedEvidence || item.redactionStatus == audit::RedactionStatus::Redacted;
         out.hasWithheldEvidence = out.hasWithheldEvidence || item.redactionStatus == audit::RedactionStatus::Withheld;
+        out.redactedEvidenceCount += item.redactionStatus == audit::RedactionStatus::Redacted;
+        out.withheldEvidenceCount += item.redactionStatus == audit::RedactionStatus::Withheld;
     }
     std::sort(evidence.begin(), evidence.end(), [](const auto& left, const auto& right) {
         return std::tie(left.category, left.id, left.kind, left.sha) < std::tie(right.category, right.id, right.kind, right.sha);

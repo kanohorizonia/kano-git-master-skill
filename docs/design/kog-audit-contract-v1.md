@@ -17,10 +17,143 @@ types without private cross-module includes.
 | One semantic action event | `schemaName=kog.auditEvent`, `schemaVersion=1` | `assets/audit/schemas/kog.auditEvent.v1.schema.json` |
 | One terminal run receipt | `schemaName=kog.runReceipt`, `schemaVersion=1` | `assets/audit/schemas/kog.runReceipt.v1.schema.json` |
 | Path-free verification result | `schemaName=kog.auditVerification`, `schemaVersion=1` | `assets/audit/schemas/kog.auditVerification.v1.schema.json` |
+| Discovery-only run catalog | `schemaName=kog.auditRunCatalog`, `schemaVersion=1` | `assets/audit/schemas/kog.auditRunCatalog.v1.schema.json` |
 
 The combined names `kog.auditEvent.v1` and `kog.runReceipt.v1` identify the
 frozen v1 contracts. Name and numeric version are separate JSON fields so
 version negotiation remains explicit.
+
+## Run catalog
+
+`catalog-v1` is a workspace-local discovery index beside the audit anchor. It
+publishes immutable, hash-named generations and a single atomically replaced
+`current.json` pointer. Catalog rows may report `pending`, `incomplete`, or
+`final`, but they are not receipts and grant no verification authority. A
+cursor binds the immutable generation hash, its typed filter fingerprint, and
+an expiry; it never silently advances to a newer generation. Selection always
+calls the separate pinned run reader with the catalog receipt hash as an
+expected identity. Writers never enumerate audit roots; publication is rebuilt
+from the prior generation plus one supplied row, and a catalog fault cannot
+change the durable truth of a receipt.
+
+### Catalog row and lifecycle contract
+
+Each closed row has the run/parent/attempt identity, closed `inputKind` and
+route pair, plan hash, source SHA-256 and source byte count (at most 4 MiB),
+lifecycle state, nullable terminal outcome and receipt hash, bounded
+repository-after-commit projections, a correlation-envelope SHA-256, observed
+and nullable finish UTC times, and count-only redaction/truncation summaries.
+Final rows additionally carry `repositoryIdentityHeadSha256`, the SHA-256 of
+the complete sorted `(repositoryId, afterHeadSha)` receipt projection before
+the catalog's 64-row repository cap. It is required for `final` and exactly
+the empty string for `pending` and `incomplete`; it therefore binds both the
+retained repository prefix and any omitted repository identities/heads.
+`afterHeadSha` is a Git object ID: it is lowercase 40-hex for SHA-1
+repositories or lowercase 64-hex for SHA-256 repositories. It is deliberately
+not a SHA-256 digest of catalog content. All other fields whose names end in
+`Sha256` are exactly lowercase 64-hex SHA-256 digests.
+The `commit-plan` kind permits only the three plan routes;
+`operation-descriptor` permits only the four converge routes. It also
+contains an opaque confined audit-root selector: exactly `plan-` or
+`operation-` followed by the lowercase 64-hex input-identity digest. This is
+a leaf name, not a location, and its prefix must match `inputKind`. The reader
+resolves it only below the trusted audit-anchor directory derived from the
+query spec, then binds the resolved
+trusted absolute root with `auditRootSha256`. A slash, backslash, `..`, or
+selector/anchor digest mismatch fails closed. Rows never expose a repository
+location, input location, command, argv, evidence body, raw correlation
+identifier, diagnostic body, or another locator.
+
+The non-Git audit-location fallback changes only the trusted anchor derived
+from the selected spec. It does not introduce a fallback selector form:
+`auditRootSelector` remains exactly the kind-bound `plan-` or `operation-`
+leaf above, and a fallback path, absolute path, or relative path is never an
+accepted selector.
+
+`pending` means reservation was observed but no terminal publication is
+claimed. `incomplete` means a bounded incomplete marker was observed; it has
+no terminal outcome or receipt identity (both are explicitly `null`) but does
+retain the non-null UTC time at which incomplete publication was observed.
+`pending` alone has all three terminal fields explicitly `null`. `final` means a receipt publication was observed and
+therefore requires non-null outcome, receipt SHA-256, and finalization time.
+The row is a discoverability assertion only: it cannot verify anything by
+itself. Selection requires both a trusted catalog-anchor spec and a caller-
+supplied selected-run spec containing the actual source and frozen bytes. It
+derives the trusted anchor, resolves the confined selector, checks workspace,
+run/attempt, kind/route, plan, source hash/size, frozen-plan hash,
+correlation, selector, and root binding, then pins the named run/attempt once
+through the unchanged public reader. Any mismatch is a typed, data-less
+binding failure. A missing, changed, or mismatched receipt fails closed and
+never promotes the row to verified data.
+
+The document, every row, and both summary objects are closed. A reader rejects
+unknown fields, duplicate `(runId, attempt)` rows, a conflicting receipt or
+identity binding, unsupported schema/version, malformed hashes/times, torn
+pointers, missing generations, or nonregular/link-like catalog files. It
+returns no partial rows or cursor for these failures.
+Nested repository and summary objects are closed as well; duplicate logical
+repository IDs within one row are invalid. UTC syntax is only the schema's
+first gate: catalog UTC fields are exactly 20-byte whole-second
+`YYYY-MM-DDTHH:MM:SSZ` values (fractional seconds are not admitted), and the
+native validator checks real calendar values. Route, input kind,
+and selector prefix are one closed matrix, so a `commit-plan` row must use a
+`plan-<inputIdentitySha256>` selector and an `operation-descriptor` row an
+`operation-<inputIdentitySha256>` selector.
+
+### Query, cursor, and bounded recovery contract
+
+Queries require positive caller caps for rows, serialized result bytes, and
+deadline. A limit/deadline result is data-less: it returns neither rows nor a
+cursor. Results are newest-first by `observedAtUtc`, then `runId`, then
+positive `attempt`, all descending. The only admitted filters are typed
+`state`, terminal `outcome`, logical `repositoryId`, correlation SHA-256,
+run/plan identity, and half-open observation-time bounds. Filters neither
+accept raw KOA values nor trigger audit-root discovery. Repository filtering
+never treats a truncated repository preview as a complete membership set: if
+the requested ID is absent from a row with omitted repositories, the query is
+data-less with the typed `Unsupported` code rather than returning a false
+negative.
+
+An opaque cursor contains the catalog schema/version, immutable generation
+name and digest, filter fingerprint, issued time, immutable expiry, and next
+offset. The cursor's expiry is selected at issuance from a positive lifetime
+no greater than the fixed ten-minute maximum, and is integrity-bound with its
+generation/filter/offset; later-page requests ignore their supplied lifetime
+and therefore cannot extend an unchanged cursor. The cursor is an opaque
+pass-through token, not an authentication boundary: its SHA-256 `integrity`
+field detects malformed or accidental mutation but does not stop a caller
+that can deliberately recompute it. It is bound
+to its original filter and generation: appended generations do not alter later
+pages. Cursor parsing, field type/schema, filter binding, generation digest,
+offset, and expiry are all fail-closed; an expired cursor is distinct from a
+malformed cursor and returns no rows. Each admitted generation has the fixed
+per-generation entry and byte bounds. Physical immutable-generation retention
+and garbage collection are outside this v1 contract; bounded recovery may
+consult only the named `current.json` and `previous.json` pointers.
+
+Publication uses an exclusive writer lock, writes a new hash-named generation,
+then atomically replaces only the small pointer. Repeated publication of the
+same row is idempotent; a state/content/receipt conflict is rejected. A writer
+may reconcile only the current generation plus its supplied row and a bounded
+known-generation retention list. It must never scan the audit root or infer
+legacy rows. Missing/corrupt/torn catalog state therefore remains unknown
+until an explicitly bounded repair path can prove a replacement; it never
+causes root enumeration.
+
+Writer-lock contention is one-shot best effort: Reserve or Finalize never
+waits for a catalog publisher. A contended lifecycle row may remain unindexed
+until a later lifecycle publication reconciles it; the durable attempt receipt
+remains the source of truth.
+
+Cursor schema v2 adds the integrity-bound `expiresAtEpoch`; exact legacy v1
+cursor shapes are rejected as `InvalidCursor` and callers restart pagination.
+
+Publication has deterministic test seams at `before-generation`,
+`before-pointer`, and `after-pointer`. A restart observes either the old
+pointer or a fully hash-checked new pointer; it never treats an orphaned
+generation as current. Repair may read only `current.json` and the single
+retained `previous.json` pointer, with a bounded visit counter. It never lists
+the catalog directory, audit-root directory, or workspace root.
 
 ## Identity and correlation
 
@@ -262,6 +395,13 @@ the writer cannot perturb the worktree it is measuring:
 
 For a non-Git workspace (including contract tests), the fallback is
 `<plan>.audit/run-<sha256(runId)>/attempt-<attempt>/`.
+
+This source-adjacent fallback remains the compatible physical evidence
+location for a non-Git `sourcePath`. It is distinct from discovery metadata:
+every catalog, regardless of the physical evidence location, is rooted at
+`<workspace>/.kano/tmp/git/catalog-v1`, and its row selector is still only the
+canonical kind plus input-identity hash (`plan-…` or `operation-…`), never a
+physical-path fallback selector.
 
 The directory contains `frozen-plan.json`, and every plan-driven safety or
 mutation phase reads that snapshot. Source and frozen SHA-256 values are bound
