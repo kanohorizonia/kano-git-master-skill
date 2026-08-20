@@ -1010,7 +1010,7 @@ TEST_CASE("converge mutation selectors reject option and path shapes before audi
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
-TEST_CASE("converge branches apply fast-forwards target without git merge and pushes", "[tdd][functional][feature:converge][converge][branches][apply][KG-BUG-0102]") {
+TEST_CASE("converge branches apply fast-forwards target without git merge and pushes", "[tdd][functional][feature:converge][converge][branches][apply][KG-BUG-0102][KG-BUG-0119]") {
     const auto ctx = CreateRemoteWithClone("converge-branches-apply");
     const std::string featureBranch = "feature/apply-fast-forward";
     WriteTextFile(ctx.seedRepo / "target-sync.txt", "remote target advance\n");
@@ -1029,6 +1029,27 @@ TEST_CASE("converge branches apply fast-forwards target without git merge and pu
     RequireSuccess(RunGit({"push", "-u", "origin", featureBranch}, ctx.cloneRepo), "push apply feature");
     const auto featureHead = TrimCopy(RunGit({"rev-parse", featureBranch}, ctx.cloneRepo).stdoutText);
     RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target before apply");
+    RequireSuccess(RunGit({"reset", "--keep", remoteTargetHead}, ctx.cloneRepo),
+                   "prepare confirmation-only apply preview");
+
+    const auto previewCorrelation = WriteKoaCorrelationFile(
+        ctx.cloneRepo, "converge.branches.apply", "run-branches-apply-preview");
+    const auto preview = RunKogWithEnv(
+        {"converge", "branches", "apply", "--target", ctx.branch,
+         "--strategy", "rebase", "--branch", featureBranch,
+         "--json", "--jobs", "1", "--correlation-file", previewCorrelation.string()},
+        ctx.cloneRepo,
+        {{"KANO_AGENT_MODE", "1"}});
+    RequireSuccess(RunGit({"reset", "--keep", staleTargetHead}, ctx.cloneRepo),
+                   "restore stale target after apply preview");
+    INFO(preview.stdoutText);
+    INFO(preview.stderrText);
+    REQUIRE(preview.exitCode == 1);
+    const auto previewPayload = nlohmann::json::parse(preview.stdoutText);
+    REQUIRE(previewPayload.at("schemaName") == "kog.convergeBranchesApplyResult");
+    REQUIRE_FALSE(previewPayload.at("mutationPerformed").get<bool>());
+    REQUIRE(previewPayload.at("blocked").at(0).at("blockers").at(0) == "CONFIRM_REQUIRED");
+    RequireNotContains(preview.stdoutText, "[run] git");
 
     const auto correlation = WriteKoaCorrelationFile(
         ctx.cloneRepo, "converge.branches.apply", "run-branches-apply");
@@ -1044,10 +1065,12 @@ TEST_CASE("converge branches apply fast-forwards target without git merge and pu
     INFO(result.stderrText);
     REQUIRE(result.exitCode == 0);
 
-    RequireContains(result.stdoutText, "\"schemaName\": \"kog.convergeBranchesApplyResult\"");
-    RequireContains(result.stdoutText, "\"mutationPerformed\": true");
-    RequireContains(result.stdoutText, "\"branch\": \"" + featureBranch + "\"");
-    RequireContains(result.stdoutText, "\"action\": \"fast-forward\"");
+    const auto payload = nlohmann::json::parse(result.stdoutText);
+    REQUIRE(payload.at("schemaName") == "kog.convergeBranchesApplyResult");
+    REQUIRE(payload.at("mutationPerformed").get<bool>());
+    REQUIRE(payload.at("applied").at(0).at("branch") == featureBranch);
+    REQUIRE(payload.at("applied").at(0).at("action") == "fast-forward");
+    RequireNotContains(result.stdoutText, "[run] git");
     REQUIRE(TrimCopy(RunGit({"rev-parse", ctx.branch}, ctx.cloneRepo).stdoutText) == featureHead);
     REQUIRE(TrimCopy(RunGit({"rev-parse", "origin/" + ctx.branch}, ctx.cloneRepo).stdoutText) == featureHead);
     REQUIRE(GitStatusShort(ctx.cloneRepo).empty());

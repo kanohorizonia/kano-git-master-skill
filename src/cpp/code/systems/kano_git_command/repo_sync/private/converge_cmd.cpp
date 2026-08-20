@@ -6722,6 +6722,10 @@ void RegisterConverge(CLI::App& InApp) {
             std::cerr << "Error: invalid branch apply options\n";
             std::exit(2);
         }
+        std::optional<shell::ScopedConsoleWriteSuppression> suppressCallbackCommandLogs;
+        if (*branchesJson || IsConvergeAgentModeEnabled()) {
+            suppressCallbackCommandLogs.emplace();
+        }
         const auto root = std::filesystem::current_path().lexically_normal();
         std::string selectorError;
         if (!ValidateMutationBranchSelector(

@@ -689,6 +689,34 @@
           "mapping_state": "source-linked"
         }
       ]
+    },
+    {
+      "incident_id": "KG-BUG-0119",
+      "incident_date": "2026-08-20",
+      "root_cause": "The branch-apply callback emitted logged Git commands during selector validation and correlated audit capture outside the workflow's inner console suppression, so agent-mode JSON stdout contained command-log prefixes and suffixes around the result document.",
+      "backlog_ref": "KG-BUG-0119",
+      "change_ref": "KG-BUG-0119",
+      "workflow_contracts": [
+        "agent-mode-branch-convergence",
+        "branch-apply-json-output",
+        "correlated-operation-audit"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KG-BUG-0119/blocked-apply-whole-stdout-json",
+          "test_name": "converge branches apply fast-forwards target without git merge and pushes",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/converge_planner_test.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-BUG-0119/confirmed-apply-whole-stdout-json",
+          "test_name": "converge branches apply fast-forwards target without git merge and pushes",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/converge_planner_test.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        }
+      ]
     }
   ]
 }
