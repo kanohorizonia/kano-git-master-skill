@@ -56,6 +56,12 @@ public:
         std::error_code ignored;
         std::filesystem::remove_all(runtime_path::NativeIoPath(mRoot), ignored);
     }
+    auto RemoveNow() -> std::error_code {
+        std::error_code error;
+        std::filesystem::remove_all(runtime_path::NativeIoPath(mRoot), error);
+        if (!error) mRoot.clear();
+        return error;
+    }
     ScopedNativeTreeCleanup(const ScopedNativeTreeCleanup&) = delete;
     auto operator=(const ScopedNativeTreeCleanup&) -> ScopedNativeTreeCleanup& = delete;
 
@@ -186,30 +192,31 @@ TEST_CASE("[KG-TSK-0135] Windows long paths publish query and revalidate through
           "[audit][catalog][KG-TSK-0135]") {
 #if defined(_WIN32)
     const auto cleanupRoot = Root();
-    const ScopedNativeTreeCleanup cleanup(cleanupRoot);
-    auto root = cleanupRoot;
-    while (root.native().size() < 248) {
-        root /= "catalog-long-path-segment-0123456789";
+    ScopedNativeTreeCleanup cleanup(cleanupRoot);
+    {
+        auto root = cleanupRoot;
+        while (root.native().size() < 248) {
+            root /= "catalog-long-path-segment-0123456789";
+        }
+        const auto ioRoot = runtime_path::NativeIoPath(root);
+        REQUIRE(ioRoot.native().starts_with(LR"(\\?\)"));
+
+        const auto spec = Spec(root, "catalog-windows-long-path", 1);
+        Finalize(spec);
+        const auto query = QueryOperationAuditCatalog(spec);
+        INFO(query.diagnostic);
+        REQUIRE(query.ready());
+        REQUIRE(query.rows.size() == 1);
+        REQUIRE(query.rows.front().state == OperationAuditCatalogState::Final);
+
+        const auto verified = RevalidateOperationAuditCatalogEntry(spec, spec, query.rows.front());
+        INFO(verified.diagnostic);
+        REQUIRE(verified.verified());
+        REQUIRE(verified.run);
+        REQUIRE(verified.run->runId == "catalog-windows-long-path");
     }
-    const auto ioRoot = runtime_path::NativeIoPath(root);
-    REQUIRE(ioRoot.native().starts_with(LR"(\\?\)"));
 
-    const auto spec = Spec(root, "catalog-windows-long-path", 1);
-    Finalize(spec);
-    const auto query = QueryOperationAuditCatalog(spec);
-    INFO(query.diagnostic);
-    REQUIRE(query.ready());
-    REQUIRE(query.rows.size() == 1);
-    REQUIRE(query.rows.front().state == OperationAuditCatalogState::Final);
-
-    const auto verified = RevalidateOperationAuditCatalogEntry(spec, spec, query.rows.front());
-    INFO(verified.diagnostic);
-    REQUIRE(verified.verified());
-    REQUIRE(verified.run);
-    REQUIRE(verified.run->runId == "catalog-windows-long-path");
-
-    std::error_code ec;
-    std::filesystem::remove_all(runtime_path::NativeIoPath(cleanupRoot), ec);
+    const auto ec = cleanup.RemoveNow();
     INFO(ec.message());
     REQUIRE_FALSE(ec);
 #else
