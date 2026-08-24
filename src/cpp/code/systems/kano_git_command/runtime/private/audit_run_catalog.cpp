@@ -1,5 +1,6 @@
 #include "audit_run_catalog.hpp"
 #include "audit_run_catalog_private.hpp"
+#include "runtime_path_layout.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -213,7 +214,8 @@ public:
         const auto anchorAccess = FILE_LIST_DIRECTORY | FILE_TRAVERSE |
             FILE_READ_ATTRIBUTES | SYNCHRONIZE |
             (create ? FILE_ADD_SUBDIRECTORY : 0);
-        HANDLE current = CreateFileW(anchor.c_str(), anchorAccess,
+        const auto ioAnchor = runtime_path::NativeIoPath(anchor);
+        HANDLE current = CreateFileW(ioAnchor.c_str(), anchorAccess,
                                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                                         OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
         if (!SafeWindowsDirectoryHandle(current)) {

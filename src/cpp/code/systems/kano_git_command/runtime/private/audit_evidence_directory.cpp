@@ -1,6 +1,7 @@
 #include "audit_evidence_directory.hpp"
 
 #include "operation_audit.hpp"
+#include "runtime_path_layout.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -274,8 +275,9 @@ auto AuditEvidenceDirectory::Open(const OperationAuditPaths& InPaths,
         return std::nullopt;
     }
 #if defined(_WIN32)
+    const auto ioAuditRoot = runtime_path::NativeIoPath(InPaths.auditRoot);
     ScopedHandle anchor(CreateFileW(
-        InPaths.auditRoot.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        ioAuditRoot.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
         FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
     if (!anchor.valid()) {

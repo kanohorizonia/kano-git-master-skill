@@ -2,6 +2,7 @@
 
 #include "audit_run_catalog.hpp"
 #include "audit_run_catalog_private.hpp"
+#include "runtime_path_layout.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -47,6 +48,21 @@ public:
     auto operator=(const ScopedCatalogTestHooks&) -> ScopedCatalogTestHooks& = delete;
 };
 
+class ScopedNativeTreeCleanup {
+public:
+    explicit ScopedNativeTreeCleanup(std::filesystem::path InRoot)
+        : mRoot(std::move(InRoot)) {}
+    ~ScopedNativeTreeCleanup() {
+        std::error_code ignored;
+        std::filesystem::remove_all(runtime_path::NativeIoPath(mRoot), ignored);
+    }
+    ScopedNativeTreeCleanup(const ScopedNativeTreeCleanup&) = delete;
+    auto operator=(const ScopedNativeTreeCleanup&) -> ScopedNativeTreeCleanup& = delete;
+
+private:
+    std::filesystem::path mRoot;
+};
+
 auto Root() -> std::filesystem::path {
     static std::atomic_uint64_t sequence = 0;
     const auto nonce = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) +
@@ -55,11 +71,14 @@ auto Root() -> std::filesystem::path {
         ("kog-audit-catalog-" + kano::git::audit::Sha256Hex(nonce).substr(0, 20));
 }
 auto Write(const std::filesystem::path& InPath, const std::string& InBytes) -> void {
-    std::ofstream output(InPath, std::ios::binary | std::ios::trunc); REQUIRE(output.good()); output << InBytes;
+    std::ofstream output(runtime_path::NativeIoPath(InPath), std::ios::binary | std::ios::trunc);
+    REQUIRE(output.good()); output << InBytes;
 }
 auto Spec(const std::filesystem::path& InRoot, const std::string& InRun, const std::uint32_t InAttempt) -> OperationAuditSpec {
     std::error_code ec;
-    REQUIRE((std::filesystem::create_directories(InRoot, ec) || (!ec && std::filesystem::is_directory(InRoot))));
+    const auto ioRoot = runtime_path::NativeIoPath(InRoot);
+    REQUIRE((std::filesystem::create_directories(ioRoot, ec) ||
+        (!ec && std::filesystem::is_directory(ioRoot))));
     const auto source = InRoot / "plan.json";
     const auto correlation = nlohmann::json({{"mode", "koa"}, {"product_id", "product"}, {"topic_id", "topic"}, {"item_id", "item"}, {"work_order_id", "work"}, {"request_id", "request"}, {"run_id", InRun}, {"parent_run_id", "parent"}, {"producer_id", "producer"}, {"route_id", "route"}, {"attempt", InAttempt}});
     const auto bytes = nlohmann::json({{"meta", {{"plan_id", "catalog-plan"}, {"correlation", correlation}}}}).dump() + '\n'; Write(source, bytes);
@@ -90,7 +109,7 @@ auto CatalogRoot(const std::filesystem::path& InRoot) -> std::filesystem::path {
     return InRoot / ".kano" / "tmp" / "git" / "catalog-v1";
 }
 auto Read(const std::filesystem::path& InPath) -> std::string {
-    std::ifstream input(InPath, std::ios::binary);
+    std::ifstream input(runtime_path::NativeIoPath(InPath), std::ios::binary);
     REQUIRE(input.good());
     return {std::istreambuf_iterator<char>(input), {}};
 }
@@ -161,6 +180,41 @@ TEST_CASE("[KG-TSK-0135] audit catalog is discoverable but requires pinned reval
     const auto verified = RevalidateOperationAuditCatalogEntry(spec, spec, query.rows.front());
     INFO(verified.diagnostic); REQUIRE(verified.verified()); REQUIRE(verified.run); REQUIRE(verified.run->runId == "catalog-run");
     std::error_code ec; std::filesystem::remove_all(root, ec);
+}
+
+TEST_CASE("[KG-TSK-0135] Windows long paths publish query and revalidate through pinned catalog roots",
+          "[audit][catalog][KG-TSK-0135]") {
+#if defined(_WIN32)
+    const auto cleanupRoot = Root();
+    const ScopedNativeTreeCleanup cleanup(cleanupRoot);
+    auto root = cleanupRoot;
+    while (root.native().size() < 248) {
+        root /= "catalog-long-path-segment-0123456789";
+    }
+    const auto ioRoot = runtime_path::NativeIoPath(root);
+    REQUIRE(ioRoot.native().starts_with(LR"(\\?\)"));
+
+    const auto spec = Spec(root, "catalog-windows-long-path", 1);
+    Finalize(spec);
+    const auto query = QueryOperationAuditCatalog(spec);
+    INFO(query.diagnostic);
+    REQUIRE(query.ready());
+    REQUIRE(query.rows.size() == 1);
+    REQUIRE(query.rows.front().state == OperationAuditCatalogState::Final);
+
+    const auto verified = RevalidateOperationAuditCatalogEntry(spec, spec, query.rows.front());
+    INFO(verified.diagnostic);
+    REQUIRE(verified.verified());
+    REQUIRE(verified.run);
+    REQUIRE(verified.run->runId == "catalog-windows-long-path");
+
+    std::error_code ec;
+    std::filesystem::remove_all(runtime_path::NativeIoPath(cleanupRoot), ec);
+    INFO(ec.message());
+    REQUIRE_FALSE(ec);
+#else
+    SUCCEED("Windows extended-length path coverage runs in the hosted Windows catalog lane.");
+#endif
 }
 
 TEST_CASE("[KG-TSK-0135] no-Git null-source fallback publishes at the workspace catalog root", "[audit][catalog][KG-TSK-0135]") {

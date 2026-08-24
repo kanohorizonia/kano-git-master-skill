@@ -160,6 +160,7 @@ jobs:
               --required-catalog-test "[KG-TSK-0135] catalog held OS writer lock rejects publication without blocking"
               --required-catalog-test "[KG-TSK-0135] held OS writer lock leaves Reserve nonblocking and Finalize reconciles"
               --required-catalog-test "[KG-TSK-0135] only final catalog rows can enter pinned revalidation"
+              --required-catalog-test "[KG-TSK-0135] Windows long paths publish query and revalidate through pinned catalog roots"
             )
           elif [[ "${{ github.event_name }}" != "workflow_dispatch" || -z "${{ inputs.source_ref }}" ]]; then
             echo "current TUI PR focus runner lacks required audit-catalog support" >&2
