@@ -191,13 +191,18 @@ TEST_CASE("[KG-TSK-0135] audit catalog is discoverable but requires pinned reval
 TEST_CASE("[KG-TSK-0135] Windows long paths publish query and revalidate through pinned catalog roots",
           "[audit][catalog][KG-TSK-0135]") {
 #if defined(_WIN32)
-    const auto cleanupRoot = Root();
-    ScopedNativeTreeCleanup cleanup(cleanupRoot);
+    const auto baseRoot = Root();
+    ScopedNativeTreeCleanup baseCleanup(baseRoot);
+    auto root = baseRoot;
+    while (root.native().size() < 248) {
+        root /= "catalog-long-path-segment-0123456789";
+    }
+    // The deep root itself is long enough for NativeIoPath to add the
+    // extended-length prefix. Remove it first, then prune the now-short empty
+    // ancestor chain from baseRoot. Starting one recursive removal at the
+    // short base would encounter over-limit descendants without that prefix.
+    ScopedNativeTreeCleanup longCleanup(root);
     {
-        auto root = cleanupRoot;
-        while (root.native().size() < 248) {
-            root /= "catalog-long-path-segment-0123456789";
-        }
         const auto ioRoot = runtime_path::NativeIoPath(root);
         REQUIRE(ioRoot.native().starts_with(LR"(\\?\)"));
 
@@ -216,9 +221,12 @@ TEST_CASE("[KG-TSK-0135] Windows long paths publish query and revalidate through
         REQUIRE(verified.run->runId == "catalog-windows-long-path");
     }
 
-    const auto ec = cleanup.RemoveNow();
-    INFO(ec.message());
-    REQUIRE_FALSE(ec);
+    const auto longCleanupError = longCleanup.RemoveNow();
+    INFO(longCleanupError.message());
+    REQUIRE_FALSE(longCleanupError);
+    const auto baseCleanupError = baseCleanup.RemoveNow();
+    INFO(baseCleanupError.message());
+    REQUIRE_FALSE(baseCleanupError);
 #else
     SUCCEED("Windows extended-length path coverage runs in the hosted Windows catalog lane.");
 #endif
