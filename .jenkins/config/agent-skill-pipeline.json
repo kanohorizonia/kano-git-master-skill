@@ -43,8 +43,8 @@
   "bCloudBuildMacosArm64": true,
   "platformSharedWorkspaceRoots": {
     "windows": "C:/Mount/s/jenkins_ws/KanoAgentSkills",
-    "linux": "/Volumes/KanoJenkins/jenkins-agent/jenkins_ws/KanoAgentSkills",
-    "mac": "/Volumes/Sandisk2TB/jenkins-agent/jenkins_ws/KanoAgentSkills"
+    "linux": "/Users/Shared/KanoHorizonia/Jenkins/workspaces/KanoAgentSkills",
+    "mac": "/Users/Shared/KanoHorizonia/Jenkins/workspaces/KanoAgentSkills"
   },
   "bRunReleasePhase": false,
   "bDefaultPublishGitHubPages": true,
