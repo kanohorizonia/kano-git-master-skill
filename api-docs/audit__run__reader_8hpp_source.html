@@ -194,60 +194,67 @@ $(document).ready(function(){initNavTree('audit__run__reader_8hpp_source.html','
 <div class="line"><a id="l00085" name="l00085"></a><span class="lineno">   85</span>    std::string planSha256;</div>
 <div class="line"><a id="l00086" name="l00086"></a><span class="lineno">   86</span>    std::string frozenInputSha256;</div>
 <div class="line"><a id="l00087" name="l00087"></a><span class="lineno">   87</span>    std::string eventStreamSha256;</div>
-<div class="line"><a id="l00088" name="l00088"></a><span class="lineno">   88</span>    audit::CorrelationRefs correlation;</div>
-<div class="line"><a id="l00089" name="l00089"></a><span class="lineno">   89</span>    audit::Outcome terminalOutcome;</div>
-<div class="line"><a id="l00090" name="l00090"></a><span class="lineno">   90</span>    std::uint64_t totalEventRecords = 0;</div>
-<div class="line"><a id="l00091" name="l00091"></a><span class="lineno">   91</span>    std::uint64_t retainedEventRecords = 0;</div>
-<div class="line"><a id="l00092" name="l00092"></a><span class="lineno">   92</span>    std::uint64_t totalRepositories = 0;</div>
-<div class="line"><a id="l00093" name="l00093"></a><span class="lineno">   93</span>    std::uint64_t retainedRepositories = 0;</div>
-<div class="line"><a id="l00094" name="l00094"></a><span class="lineno">   94</span>    std::uint64_t totalEvidenceReferences = 0;</div>
-<div class="line"><a id="l00095" name="l00095"></a><span class="lineno">   95</span>    std::uint64_t retainedEvidenceReferences = 0;</div>
-<div class="line"><a id="l00096" name="l00096"></a><span class="lineno">   96</span>    <span class="comment">// Uses the same retained UTF-8 string-payload metric as maxPreviewBytes.</span></div>
-<div class="line"><a id="l00097" name="l00097"></a><span class="lineno">   97</span>    std::size_t retainedPreviewBytes = 0;</div>
-<div class="line"><a id="l00098" name="l00098"></a><span class="lineno">   98</span>    <span class="keywordtype">bool</span> previewTruncated = <span class="keyword">false</span>;</div>
-<div class="line"><a id="l00099" name="l00099"></a><span class="lineno">   99</span>    <span class="keywordtype">bool</span> eventsTruncated = <span class="keyword">false</span>;</div>
-<div class="line"><a id="l00100" name="l00100"></a><span class="lineno">  100</span>    <span class="keywordtype">bool</span> repositoriesTruncated = <span class="keyword">false</span>;</div>
-<div class="line"><a id="l00101" name="l00101"></a><span class="lineno">  101</span>    <span class="keywordtype">bool</span> evidenceTruncated = <span class="keyword">false</span>;</div>
-<div class="line"><a id="l00102" name="l00102"></a><span class="lineno">  102</span>    <span class="keywordtype">bool</span> hasRedactedEvidence = <span class="keyword">false</span>;</div>
-<div class="line"><a id="l00103" name="l00103"></a><span class="lineno">  103</span>    <span class="keywordtype">bool</span> hasWithheldEvidence = <span class="keyword">false</span>;</div>
-<div class="line"><a id="l00104" name="l00104"></a><span class="lineno">  104</span>    std::vector&lt;OperationAuditEventPreview&gt; events;</div>
-<div class="line"><a id="l00105" name="l00105"></a><span class="lineno">  105</span>    std::vector&lt;audit::RepositoryTransition&gt; repositories;</div>
-<div class="line"><a id="l00106" name="l00106"></a><span class="lineno">  106</span>    std::vector&lt;OperationAuditEvidencePreview&gt; evidence;</div>
-<div class="line"><a id="l00107" name="l00107"></a><span class="lineno">  107</span>};</div>
+<div class="line"><a id="l00088" name="l00088"></a><span class="lineno">   88</span>    std::string finishedAtUtc;</div>
+<div class="line"><a id="l00089" name="l00089"></a><span class="lineno">   89</span>    <span class="comment">// Receipt-derived summaries, intentionally independent of preview limits.</span></div>
+<div class="line"><a id="l00090" name="l00090"></a><span class="lineno">   90</span>    std::string repositoryIdentityHeadSha256;</div>
+<div class="line"><a id="l00091" name="l00091"></a><span class="lineno">   91</span>    <span class="comment">// Canonical sorted first 64 ID/after-head pairs for catalog projections.</span></div>
+<div class="line"><a id="l00092" name="l00092"></a><span class="lineno">   92</span>    std::string catalogRepositoryPreviewIdentityHeadSha256;</div>
+<div class="line"><a id="l00093" name="l00093"></a><span class="lineno">   93</span>    std::uint64_t redactedEvidenceCount = 0;</div>
+<div class="line"><a id="l00094" name="l00094"></a><span class="lineno">   94</span>    std::uint64_t withheldEvidenceCount = 0;</div>
+<div class="line"><a id="l00095" name="l00095"></a><span class="lineno">   95</span>    audit::CorrelationRefs correlation;</div>
+<div class="line"><a id="l00096" name="l00096"></a><span class="lineno">   96</span>    audit::Outcome terminalOutcome;</div>
+<div class="line"><a id="l00097" name="l00097"></a><span class="lineno">   97</span>    std::uint64_t totalEventRecords = 0;</div>
+<div class="line"><a id="l00098" name="l00098"></a><span class="lineno">   98</span>    std::uint64_t retainedEventRecords = 0;</div>
+<div class="line"><a id="l00099" name="l00099"></a><span class="lineno">   99</span>    std::uint64_t totalRepositories = 0;</div>
+<div class="line"><a id="l00100" name="l00100"></a><span class="lineno">  100</span>    std::uint64_t retainedRepositories = 0;</div>
+<div class="line"><a id="l00101" name="l00101"></a><span class="lineno">  101</span>    std::uint64_t totalEvidenceReferences = 0;</div>
+<div class="line"><a id="l00102" name="l00102"></a><span class="lineno">  102</span>    std::uint64_t retainedEvidenceReferences = 0;</div>
+<div class="line"><a id="l00103" name="l00103"></a><span class="lineno">  103</span>    <span class="comment">// Uses the same retained UTF-8 string-payload metric as maxPreviewBytes.</span></div>
+<div class="line"><a id="l00104" name="l00104"></a><span class="lineno">  104</span>    std::size_t retainedPreviewBytes = 0;</div>
+<div class="line"><a id="l00105" name="l00105"></a><span class="lineno">  105</span>    <span class="keywordtype">bool</span> previewTruncated = <span class="keyword">false</span>;</div>
+<div class="line"><a id="l00106" name="l00106"></a><span class="lineno">  106</span>    <span class="keywordtype">bool</span> eventsTruncated = <span class="keyword">false</span>;</div>
+<div class="line"><a id="l00107" name="l00107"></a><span class="lineno">  107</span>    <span class="keywordtype">bool</span> repositoriesTruncated = <span class="keyword">false</span>;</div>
+<div class="line"><a id="l00108" name="l00108"></a><span class="lineno">  108</span>    <span class="keywordtype">bool</span> evidenceTruncated = <span class="keyword">false</span>;</div>
+<div class="line"><a id="l00109" name="l00109"></a><span class="lineno">  109</span>    <span class="keywordtype">bool</span> hasRedactedEvidence = <span class="keyword">false</span>;</div>
+<div class="line"><a id="l00110" name="l00110"></a><span class="lineno">  110</span>    <span class="keywordtype">bool</span> hasWithheldEvidence = <span class="keyword">false</span>;</div>
+<div class="line"><a id="l00111" name="l00111"></a><span class="lineno">  111</span>    std::vector&lt;OperationAuditEventPreview&gt; events;</div>
+<div class="line"><a id="l00112" name="l00112"></a><span class="lineno">  112</span>    std::vector&lt;audit::RepositoryTransition&gt; repositories;</div>
+<div class="line"><a id="l00113" name="l00113"></a><span class="lineno">  113</span>    std::vector&lt;OperationAuditEvidencePreview&gt; evidence;</div>
+<div class="line"><a id="l00114" name="l00114"></a><span class="lineno">  114</span>};</div>
 </div>
-<div class="foldopen" id="foldopen00108" data-start="{" data-end="};">
-<div class="line"><a id="l00108" name="l00108"></a><span class="lineno"><a class="line" href="structkano_1_1git_1_1commands_1_1OperationAuditRunReadResult.html">  108</a></span><span class="keyword">struct </span><a class="code hl_struct" href="structkano_1_1git_1_1commands_1_1OperationAuditRunReadResult.html">OperationAuditRunReadResult</a> {</div>
-<div class="line"><a id="l00109" name="l00109"></a><span class="lineno">  109</span>    OperationAuditRunReadState state = OperationAuditRunReadState::Invalid;</div>
-<div class="line"><a id="l00110" name="l00110"></a><span class="lineno">  110</span>    OperationAuditRunReadCode code = OperationAuditRunReadCode::InvalidConfiguration;</div>
-<div class="line"><a id="l00111" name="l00111"></a><span class="lineno">  111</span>    std::optional&lt;OperationAuditRunProjection&gt; run;</div>
-<div class="line"><a id="l00112" name="l00112"></a><span class="lineno">  112</span>    std::string diagnostic;</div>
-<div class="line"><a id="l00113" name="l00113"></a><span class="lineno">  113</span>    <span class="keywordtype">bool</span> diagnosticTruncated = <span class="keyword">false</span>;</div>
-<div class="line"><a id="l00114" name="l00114"></a><span class="lineno">  114</span>    [[nodiscard]] <span class="keyword">auto</span> verified() <span class="keyword">const</span> <span class="keyword">noexcept</span> -&gt; <span class="keywordtype">bool</span> {</div>
-<div class="line"><a id="l00115" name="l00115"></a><span class="lineno">  115</span>        <span class="keywordflow">return</span> (state == OperationAuditRunReadState::Ready ||</div>
-<div class="line"><a id="l00116" name="l00116"></a><span class="lineno">  116</span>                state == OperationAuditRunReadState::Truncated) &amp;&amp; run.has_value();</div>
-<div class="line"><a id="l00117" name="l00117"></a><span class="lineno">  117</span>    }</div>
-<div class="line"><a id="l00118" name="l00118"></a><span class="lineno">  118</span>};</div>
+<div class="foldopen" id="foldopen00115" data-start="{" data-end="};">
+<div class="line"><a id="l00115" name="l00115"></a><span class="lineno"><a class="line" href="structkano_1_1git_1_1commands_1_1OperationAuditRunReadResult.html">  115</a></span><span class="keyword">struct </span><a class="code hl_struct" href="structkano_1_1git_1_1commands_1_1OperationAuditRunReadResult.html">OperationAuditRunReadResult</a> {</div>
+<div class="line"><a id="l00116" name="l00116"></a><span class="lineno">  116</span>    OperationAuditRunReadState state = OperationAuditRunReadState::Invalid;</div>
+<div class="line"><a id="l00117" name="l00117"></a><span class="lineno">  117</span>    OperationAuditRunReadCode code = OperationAuditRunReadCode::InvalidConfiguration;</div>
+<div class="line"><a id="l00118" name="l00118"></a><span class="lineno">  118</span>    std::optional&lt;OperationAuditRunProjection&gt; run;</div>
+<div class="line"><a id="l00119" name="l00119"></a><span class="lineno">  119</span>    std::string diagnostic;</div>
+<div class="line"><a id="l00120" name="l00120"></a><span class="lineno">  120</span>    <span class="keywordtype">bool</span> diagnosticTruncated = <span class="keyword">false</span>;</div>
+<div class="line"><a id="l00121" name="l00121"></a><span class="lineno">  121</span>    [[nodiscard]] <span class="keyword">auto</span> verified() <span class="keyword">const</span> <span class="keyword">noexcept</span> -&gt; <span class="keywordtype">bool</span> {</div>
+<div class="line"><a id="l00122" name="l00122"></a><span class="lineno">  122</span>        <span class="keywordflow">return</span> (state == OperationAuditRunReadState::Ready ||</div>
+<div class="line"><a id="l00123" name="l00123"></a><span class="lineno">  123</span>                state == OperationAuditRunReadState::Truncated) &amp;&amp; run.has_value();</div>
+<div class="line"><a id="l00124" name="l00124"></a><span class="lineno">  124</span>    }</div>
+<div class="line"><a id="l00125" name="l00125"></a><span class="lineno">  125</span>};</div>
 </div>
-<div class="line"><a id="l00119" name="l00119"></a><span class="lineno">  119</span><span class="comment">// Security boundary: auditRoot and its ancestors are the explicit trusted,</span></div>
-<div class="line"><a id="l00120" name="l00120"></a><span class="lineno">  120</span><span class="comment">// writer-owned anchor. runRoot and attemptRoot are pinned by native directory</span></div>
-<div class="line"><a id="l00121" name="l00121"></a><span class="lineno">  121</span><span class="comment">// handle (POSIX openat; Windows NtOpenFile RootDirectory), and every child is</span></div>
-<div class="line"><a id="l00122" name="l00122"></a><span class="lineno">  122</span><span class="comment">// opened relative to the same attempt identity. Child handles reject links,</span></div>
-<div class="line"><a id="l00123" name="l00123"></a><span class="lineno">  123</span><span class="comment">// reparse points and non-regular files, enforce byte ceilings, and retain</span></div>
-<div class="line"><a id="l00124" name="l00124"></a><span class="lineno">  124</span><span class="comment">// stable device/volume, file id, size, mtime and ctime/creation-time identity.</span></div>
-<div class="line"><a id="l00125" name="l00125"></a><span class="lineno">  125</span>[[nodiscard]] <span class="keyword">auto</span> ReadOperationAuditRun(<span class="keyword">const</span> <a class="code hl_struct" href="structkano_1_1git_1_1commands_1_1OperationAuditSpec.html">OperationAuditSpec</a>&amp; InSpec,</div>
-<div class="line"><a id="l00126" name="l00126"></a><span class="lineno">  126</span>                                         std::string_view InRunId,</div>
-<div class="line"><a id="l00127" name="l00127"></a><span class="lineno">  127</span>                                         std::uint32_t InAttempt,</div>
-<div class="line"><a id="l00128" name="l00128"></a><span class="lineno">  128</span>                                         <a class="code hl_struct" href="structkano_1_1git_1_1commands_1_1OperationAuditRunReadLimits.html">OperationAuditRunReadLimits</a> InLimits = {},</div>
-<div class="line"><a id="l00129" name="l00129"></a><span class="lineno">  129</span>                                         std::optional&lt;std::string_view&gt; InExpectedReceiptId = std::nullopt,</div>
-<div class="line"><a id="l00130" name="l00130"></a><span class="lineno">  130</span>                                         OperationAuditRunReadPolicy InPolicy = {})</div>
-<div class="line"><a id="l00131" name="l00131"></a><span class="lineno">  131</span>    -&gt; OperationAuditRunReadResult;</div>
-<div class="line"><a id="l00132" name="l00132"></a><span class="lineno">  132</span>} <span class="comment">// namespace kano::git::commands</span></div>
+<div class="line"><a id="l00126" name="l00126"></a><span class="lineno">  126</span><span class="comment">// Security boundary: auditRoot and its ancestors are the explicit trusted,</span></div>
+<div class="line"><a id="l00127" name="l00127"></a><span class="lineno">  127</span><span class="comment">// writer-owned anchor. runRoot and attemptRoot are pinned by native directory</span></div>
+<div class="line"><a id="l00128" name="l00128"></a><span class="lineno">  128</span><span class="comment">// handle (POSIX openat; Windows NtOpenFile RootDirectory), and every child is</span></div>
+<div class="line"><a id="l00129" name="l00129"></a><span class="lineno">  129</span><span class="comment">// opened relative to the same attempt identity. Child handles reject links,</span></div>
+<div class="line"><a id="l00130" name="l00130"></a><span class="lineno">  130</span><span class="comment">// reparse points and non-regular files, enforce byte ceilings, and retain</span></div>
+<div class="line"><a id="l00131" name="l00131"></a><span class="lineno">  131</span><span class="comment">// stable device/volume, file id, size, mtime and ctime/creation-time identity.</span></div>
+<div class="line"><a id="l00132" name="l00132"></a><span class="lineno">  132</span>[[nodiscard]] <span class="keyword">auto</span> ReadOperationAuditRun(<span class="keyword">const</span> <a class="code hl_struct" href="structkano_1_1git_1_1commands_1_1OperationAuditSpec.html">OperationAuditSpec</a>&amp; InSpec,</div>
+<div class="line"><a id="l00133" name="l00133"></a><span class="lineno">  133</span>                                         std::string_view InRunId,</div>
+<div class="line"><a id="l00134" name="l00134"></a><span class="lineno">  134</span>                                         std::uint32_t InAttempt,</div>
+<div class="line"><a id="l00135" name="l00135"></a><span class="lineno">  135</span>                                         <a class="code hl_struct" href="structkano_1_1git_1_1commands_1_1OperationAuditRunReadLimits.html">OperationAuditRunReadLimits</a> InLimits = {},</div>
+<div class="line"><a id="l00136" name="l00136"></a><span class="lineno">  136</span>                                         std::optional&lt;std::string_view&gt; InExpectedReceiptId = std::nullopt,</div>
+<div class="line"><a id="l00137" name="l00137"></a><span class="lineno">  137</span>                                         OperationAuditRunReadPolicy InPolicy = {})</div>
+<div class="line"><a id="l00138" name="l00138"></a><span class="lineno">  138</span>    -&gt; OperationAuditRunReadResult;</div>
+<div class="line"><a id="l00139" name="l00139"></a><span class="lineno">  139</span>} <span class="comment">// namespace kano::git::commands</span></div>
 <div class="ttc" id="astructkano_1_1git_1_1commands_1_1OperationAuditEventPreview_html"><div class="ttname"><a href="structkano_1_1git_1_1commands_1_1OperationAuditEventPreview.html">kano::git::commands::OperationAuditEventPreview</a></div><div class="ttdef"><b>Definition</b> audit_run_reader.hpp:60</div></div>
 <div class="ttc" id="astructkano_1_1git_1_1commands_1_1OperationAuditEvidencePreview_html"><div class="ttname"><a href="structkano_1_1git_1_1commands_1_1OperationAuditEvidencePreview.html">kano::git::commands::OperationAuditEvidencePreview</a></div><div class="ttdef"><b>Definition</b> audit_run_reader.hpp:70</div></div>
 <div class="ttc" id="astructkano_1_1git_1_1commands_1_1OperationAuditRunProjection_html"><div class="ttname"><a href="structkano_1_1git_1_1commands_1_1OperationAuditRunProjection.html">kano::git::commands::OperationAuditRunProjection</a></div><div class="ttdef"><b>Definition</b> audit_run_reader.hpp:79</div></div>
 <div class="ttc" id="astructkano_1_1git_1_1commands_1_1OperationAuditRunReadLimits_html"><div class="ttname"><a href="structkano_1_1git_1_1commands_1_1OperationAuditRunReadLimits.html">kano::git::commands::OperationAuditRunReadLimits</a></div><div class="ttdef"><b>Definition</b> audit_run_reader.hpp:47</div></div>
 <div class="ttc" id="astructkano_1_1git_1_1commands_1_1OperationAuditRunReadPolicy_html"><div class="ttname"><a href="structkano_1_1git_1_1commands_1_1OperationAuditRunReadPolicy.html">kano::git::commands::OperationAuditRunReadPolicy</a></div><div class="ttdef"><b>Definition</b> audit_run_reader.hpp:26</div></div>
-<div class="ttc" id="astructkano_1_1git_1_1commands_1_1OperationAuditRunReadResult_html"><div class="ttname"><a href="structkano_1_1git_1_1commands_1_1OperationAuditRunReadResult.html">kano::git::commands::OperationAuditRunReadResult</a></div><div class="ttdef"><b>Definition</b> audit_run_reader.hpp:108</div></div>
+<div class="ttc" id="astructkano_1_1git_1_1commands_1_1OperationAuditRunReadResult_html"><div class="ttname"><a href="structkano_1_1git_1_1commands_1_1OperationAuditRunReadResult.html">kano::git::commands::OperationAuditRunReadResult</a></div><div class="ttdef"><b>Definition</b> audit_run_reader.hpp:115</div></div>
 <div class="ttc" id="astructkano_1_1git_1_1commands_1_1OperationAuditSpec_html"><div class="ttname"><a href="structkano_1_1git_1_1commands_1_1OperationAuditSpec.html">kano::git::commands::OperationAuditSpec</a></div><div class="ttdef"><b>Definition</b> operation_audit.hpp:37</div></div>
 </div><!-- fragment --></div><!-- contents -->
 </div><!-- doc-content -->
