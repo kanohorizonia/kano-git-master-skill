@@ -7114,6 +7114,7 @@ void RegisterConverge(CLI::App& InApp) {
         const auto convergeSyncTimeoutMs = ResolveConvergeSyncTimeoutMs();
 
         bool settlePreviewHasPlannedActions = false;
+        int deferredSettleExitCode = 0;
         int passIndex = 0;
         while (true) {
             bool runAnotherPass = false;
@@ -7485,6 +7486,7 @@ void RegisterConverge(CLI::App& InApp) {
                             summary.succeeded.push_back(".");
                         } else if (mutationPerformed) {
                             summary.succeeded.push_back(".");
+                            deferredSettleExitCode = settleCode;
                             state.commandLinesUsed[phase].push_back(
                                 "branch settle applied eligible mutations while preserving per-branch blockers");
                             std::cerr << "Warning: branch settle applied eligible mutations; unresolved branch/worktree blockers were preserved for diagnostics\n";
@@ -7636,6 +7638,7 @@ void RegisterConverge(CLI::App& InApp) {
                         if (settleCode == 0 || mutationPerformed) {
                             settleSummary.succeeded.push_back(".");
                             if (mutationPerformed && settleCode != 0) {
+                                deferredSettleExitCode = settleCode;
                                 state.commandLinesUsed["settle-worktrees"].push_back(
                                     "branch settle applied eligible mutations while preserving per-branch blockers");
                                 std::cerr << "Warning: branch settle applied eligible mutations; unresolved branch/worktree blockers were preserved for diagnostics\n";
@@ -7732,8 +7735,9 @@ void RegisterConverge(CLI::App& InApp) {
             finishConverge(1);
         }
         const bool hasFailures = !state.failedRepos.empty() || !state.blockedRepoSet.empty();
+        const auto finalExitCode = hasFailures ? 1 : deferredSettleExitCode;
         std::cout << "[converge] completed\n";
-        finishConverge(hasFailures ? 1 : 0);
+        finishConverge(finalExitCode);
     });
 }
 

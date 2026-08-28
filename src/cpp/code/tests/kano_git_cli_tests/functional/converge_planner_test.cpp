@@ -158,7 +158,10 @@ auto RequireCorrelatedOperationAudit(
     const std::string& InRoute,
     const std::vector<std::string>& InRequiredActions,
     const bool InRequireObservedMutation = true,
-    const std::vector<std::string>& InForbiddenFrozenSelectors = {}) -> void {
+    const std::vector<std::string>& InForbiddenFrozenSelectors = {},
+    const kano::git::audit::OutcomeState InExpectedTerminalOutcome =
+        kano::git::audit::OutcomeState::Succeeded,
+    const int InExpectedTerminalExitCode = 0) -> void {
     const auto gitDirectory = RunGit(
         {"rev-parse", "--path-format=absolute", "--git-common-dir"}, InRepo);
     RequireSuccess(gitDirectory, "resolve branch operation audit directory");
@@ -220,8 +223,9 @@ auto RequireCorrelatedOperationAudit(
         ReadTextFile(PathForTestNativeIo(attemptRoot / "receipt.json")));
     REQUIRE(events.ok());
     REQUIRE(receipt.ok());
-    REQUIRE(receipt.value->terminalOutcome.status ==
-            kano::git::audit::OutcomeState::Succeeded);
+    REQUIRE(receipt.value->terminalOutcome.status == InExpectedTerminalOutcome);
+    REQUIRE(receipt.value->terminalOutcome.exitCode ==
+            InExpectedTerminalExitCode);
     REQUIRE(kano::git::audit::ValidateRunTrace(*receipt.value, events.values).ok());
     const auto frozenDescriptor =
         ReadTextFile(PathForTestNativeIo(
@@ -2602,6 +2606,9 @@ TEST_CASE("converge runtime settles eligible branch despite blocked candidate", 
     WriteTextFile(blockedWorktree / "runtime-settle-blocked.txt", "uncommitted blocked content\n");
     RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to target before partial settle");
 
+    const std::string runId = "run-converge-runtime-settle-partial-branch-blocker";
+    const auto correlation = WriteKoaCorrelationFile(
+        ctx.cloneRepo, "converge.repos", runId);
     const auto result = RunKog({
         "converge",
         "--settle-worktrees",
@@ -2609,10 +2616,11 @@ TEST_CASE("converge runtime settles eligible branch despite blocked candidate", 
         "--harvest-branch-worktrees",
         "--target", ctx.branch,
         "--jobs", "1",
+        "--correlation-file", correlation.string(),
     }, ctx.cloneRepo);
     INFO(result.stdoutText);
     INFO(result.stderrText);
-    REQUIRE(result.exitCode == 0);
+    REQUIRE(result.exitCode == 1);
     RequireContains(result.stdoutText, "[converge] phase=settle-worktrees");
     RequireContains(result.stdoutText, "[converge] completed");
     RequireContains(result.stdoutText, "DIRTY_BRANCH_WORKTREE_NOT_INTEGRATED");
@@ -2622,6 +2630,11 @@ TEST_CASE("converge runtime settles eligible branch despite blocked candidate", 
     REQUIRE(RunGit({"show-ref", "--verify", "--quiet", "refs/heads/" + eligibleBranch}, ctx.cloneRepo).exitCode != 0);
     REQUIRE(RunGit({"show-ref", "--verify", "--quiet", "refs/heads/" + blockedBranch}, ctx.cloneRepo).exitCode == 0);
     REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
+    RequireCorrelatedOperationAudit(
+        ctx.cloneRepo, runId, "converge.repos",
+        {"converge.branches.retire.repository",
+         "converge.repos.state.delete"},
+        true, {}, kano::git::audit::OutcomeState::Failed, 1);
 
     RemoveSandboxWorkspace(ctx.sandbox);
 }
