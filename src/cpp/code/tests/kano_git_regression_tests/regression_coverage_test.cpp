@@ -315,6 +315,9 @@ auto HasExactLine(const std::string &InText, const std::string &InExpectedLine)
     -> bool {
   std::istringstream lines(InText);
   for (std::string line; std::getline(lines, line);) {
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
     if (line == InExpectedLine) {
       return true;
     }
@@ -345,6 +348,14 @@ auto StrictFixture() -> nlohmann::json {
 }
 
 } // namespace
+
+TEST_CASE("exact line matching accepts LF and CRLF framing only",
+          "[unit][regression][coverage][line-endings][KG-TSK-0052][KOG-BUG-0092]") {
+  REQUIRE(HasExactLine("!/SKILL.md\n", "!/SKILL.md"));
+  REQUIRE(HasExactLine("!/SKILL.md\r\n", "!/SKILL.md"));
+  REQUIRE_FALSE(HasExactLine("!/SKILL.md\r\r\n", "!/SKILL.md"));
+  REQUIRE_FALSE(HasExactLine("prefix!/SKILL.md\r\n", "!/SKILL.md"));
+}
 
 TEST_CASE("audit runtime script is tracked executable in the Git index",
           "[integration][regression][git-index-hygiene][KG-BUG-0110]") {
