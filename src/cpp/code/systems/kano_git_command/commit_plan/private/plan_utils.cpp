@@ -4576,9 +4576,12 @@ auto RunPlanApply(const std::filesystem::path& InWorkspaceRoot,
         return 2;
     }
 
+    const auto inputPlanPath = InPlanPath.lexically_normal();
+    const auto planPath = ResolvePath(
+        std::filesystem::current_path(), inputPlanPath.generic_string());
     std::string auditError;
     auto auditSink = PlanAuditSink::Reserve(
-        InWorkspaceRoot, InPlanPath, &auditError, "plan.apply");
+        InWorkspaceRoot, planPath, &auditError, "plan.apply");
     if (!auditSink) {
         std::cerr << "Error: cannot reserve plan-apply audit evidence";
         if (!auditError.empty()) std::cerr << " (" << auditError << ")";
@@ -4596,7 +4599,7 @@ auto RunPlanApply(const std::filesystem::path& InWorkspaceRoot,
         return InExitCode;
     };
     auto planAdmission = AcquireAuditedPlanExecutionAdmission(
-        *auditSink, InWorkspaceRoot, InPlanPath, &auditError);
+        *auditSink, InWorkspaceRoot, planPath, &auditError);
     if (!planAdmission) {
         std::cerr << "Error: failed audited plan execution lock/source admission";
         if (!auditError.empty()) std::cerr << " (" << auditError << ")";
@@ -4679,7 +4682,7 @@ auto RunPlanApply(const std::filesystem::path& InWorkspaceRoot,
         const auto stampBefore = auditSink->Capture(InWorkspaceRoot);
         const auto stampStartedAtUtc = CurrentUtcIso8601();
         if (!RewriteAuditedPlanSourceConditionally(
-                *auditSink, InWorkspaceRoot, InPlanPath,
+                *auditSink, InWorkspaceRoot, planPath,
                 planAdmission->AdmittedSourceBytes(), sourcePayload,
                 PlanSourceRewritePhase::WriteCompletionStamp,
                 &auditError)) {
@@ -4697,12 +4700,12 @@ auto RunPlanApply(const std::filesystem::path& InWorkspaceRoot,
         }
         std::cout << kano::terminal::PlanPrefix() << "[ignore] apply complete\n";
         std::cout << "Next:\n";
-        std::cout << "  kog plan verify pre-apply --stage ignore --plan-file \"" << InPlanPath.generic_string() << "\"\n";
+        std::cout << "  kog plan verify pre-apply --stage ignore --plan-file \"" << inputPlanPath.generic_string() << "\"\n";
         std::cout << "  kog plan verify ignore --context plan\n";
         if (stage == "ignore") {
             const auto verifyBefore = auditSink->Capture(InWorkspaceRoot);
             const auto verifyStartedAtUtc = CurrentUtcIso8601();
-            const auto verifyCode = RunPostApplyVerify(InPlanPath, "ignore");
+            const auto verifyCode = RunPostApplyVerify(planPath, "ignore");
             if (!auditSink->Append("plan.verify", InWorkspaceRoot,
                                    verifyBefore, verifyStartedAtUtc, verifyCode,
                                    &auditError)) {
@@ -4714,14 +4717,15 @@ auto RunPlanApply(const std::filesystem::path& InWorkspaceRoot,
         }
     }
 
-    const auto commitPushCode = RunCommitPushPlanFilePipeline(InWorkspaceRoot, InPlanPath.generic_string(), InExtraArgs);
+    const auto commitPushCode = RunCommitPushPlanFilePipeline(
+        InWorkspaceRoot, inputPlanPath.generic_string(), InExtraArgs);
     if (commitPushCode != 0) {
         return finishAudit(commitPushCode);
     }
     const auto verifyBefore = auditSink->Capture(InWorkspaceRoot);
     const auto verifyStartedAtUtc = CurrentUtcIso8601();
     const auto verifyCode = RunPostApplyVerify(
-        InPlanPath, stage == "all" ? "all" : "commit");
+        planPath, stage == "all" ? "all" : "commit");
     if (!auditSink->Append("plan.verify", InWorkspaceRoot,
                            verifyBefore, verifyStartedAtUtc, verifyCode,
                            &auditError)) {

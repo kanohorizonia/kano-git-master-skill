@@ -20,6 +20,8 @@ struct SandboxContext {
 
 auto CreateSandboxWorkspace(const std::string& InName) -> SandboxContext;
 auto RemoveSandboxWorkspace(const SandboxContext& InSandbox) -> void;
+auto PathForTestNativeIo(const std::filesystem::path& InPath)
+    -> std::filesystem::path;
 auto ResolveKogBinaryPath() -> std::filesystem::path;
 auto RunCommand(const std::string& InProgram,
                 const std::vector<std::string>& InArgs,

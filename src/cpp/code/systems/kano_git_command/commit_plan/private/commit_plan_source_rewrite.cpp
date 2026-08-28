@@ -203,8 +203,9 @@ auto OpenMatchingWindowsPathHandle(
     const std::filesystem::path& InPlanPath,
     const FILE_ID_INFO& InExpectedIdentity,
     std::string* OutError) -> HANDLE {
+    const auto ioPlanPath = runtime_path::NativeIoPath(InPlanPath);
     const auto pathHandle = CreateFileW(
-        InPlanPath.c_str(), FILE_READ_ATTRIBUTES,
+        ioPlanPath.c_str(), FILE_READ_ATTRIBUTES,
         FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
     if (pathHandle == INVALID_HANDLE_VALUE) {
@@ -275,8 +276,9 @@ auto RewriteConditionally(PlanAuditSink* InAudit,
                           const std::string& InReplacementBytes,
                           const bool InAllowTestFault,
                           std::string* OutError) -> bool {
+    const auto ioPlanPath = runtime_path::NativeIoPath(InPlanPath);
     const auto handle = CreateFileW(
-        InPlanPath.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ,
+        ioPlanPath.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ,
         nullptr, OPEN_EXISTING,
         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT |
             FILE_FLAG_WRITE_THROUGH,

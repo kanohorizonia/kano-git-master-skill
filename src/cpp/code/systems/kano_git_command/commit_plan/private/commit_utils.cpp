@@ -3310,7 +3310,11 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
     }
     preflightMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - preflightStart).count();
 
-    const auto normalizedCommitPlanPath = NormalizeInputPathForCurrentPlatform(InPlanFile);
+    const auto inputPlanPath = std::filesystem::path(
+        NormalizeInputPathForCurrentPlatform(InPlanFile)).lexically_normal();
+    const auto planPath = inputPlanPath.is_absolute()
+        ? inputPlanPath
+        : (std::filesystem::current_path() / inputPlanPath).lexically_normal();
     const auto stage = ParseCommitPlanStage(InPlanStage);
     if (!stage.has_value()) {
         std::cerr << "Error: invalid --plan-stage value: " << InPlanStage
@@ -3320,10 +3324,10 @@ auto RunCommitNativePlanStage(const std::filesystem::path& InWorkspaceRoot,
 
     std::string auditError;
     auto auditSink = ReserveCommitPlanAuditOrReport(
-        workspaceRoot, std::filesystem::path(normalizedCommitPlanPath),
-        &auditError);
+        workspaceRoot, planPath, &auditError);
     if (!auditSink) return 2;
-    auto planAdmission = AcquireAuditedPlanExecutionAdmission(*auditSink, workspaceRoot, normalizedCommitPlanPath, &auditError);
+    auto planAdmission = AcquireAuditedPlanExecutionAdmission(
+        *auditSink, workspaceRoot, planPath, &auditError);
     if (!planAdmission) {
         std::cerr << "Error: failed audited plan execution lock/source admission (" << auditError << ")\n";
         return FinalizeCommitPlanAuditOrReport(*auditSink, 2);
@@ -4346,7 +4350,10 @@ void ConfigureCommitCommand(CLI::App& InApp) {
         }
 
         const auto defaultSharedPlanPath = DefaultSharedPlanPath(workspaceRoot).lexically_normal();
-        const auto currentPlanPath = commitPlanFile->empty() ? std::filesystem::path{} : std::filesystem::path(*commitPlanFile).lexically_normal();
+        const auto inputPlanPath = commitPlanFile->empty() ? std::filesystem::path{} : std::filesystem::path(*commitPlanFile).lexically_normal();
+        const auto currentPlanPath = inputPlanPath.empty() || inputPlanPath.is_absolute()
+            ? inputPlanPath
+            : (std::filesystem::current_path() / inputPlanPath).lexically_normal();
         const bool usingDefaultSharedPlanPath = !commitPlanFile->empty() && currentPlanPath == defaultSharedPlanPath;
         const bool explicitPlanFileRequested = !commitPlanFile->empty() && !usingDefaultSharedPlanPath;
         if (IsKogDebugEnabled()) {
@@ -4358,7 +4365,8 @@ void ConfigureCommitCommand(CLI::App& InApp) {
                 std::cerr << "[DEBUG] AI auto mode ignoring cached default shared plan path" << std::endl;
             }
             commitPlanFile->clear();
-        } else if (explicitPlanFileRequested && !std::filesystem::exists(currentPlanPath)) {
+        } else if (explicitPlanFileRequested &&
+                   !std::filesystem::exists(runtime_path::NativeIoPath(currentPlanPath))) {
             std::cerr << "Error: explicit --plan-file does not exist\n";
             std::exit(2);
         }

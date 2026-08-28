@@ -622,7 +622,7 @@ auto FindAuditAttemptRoots(const std::filesystem::path& InPlanPath,
     const auto attemptName = "attempt-" + std::to_string(InAttempt);
     std::vector<std::filesystem::path> matches;
     std::error_code ec;
-    for (std::filesystem::recursive_directory_iterator it(auditRoot, ec), end; !ec && it != end; it.increment(ec)) {
+    for (std::filesystem::recursive_directory_iterator it(PathForTestNativeIo(auditRoot), ec), end; !ec && it != end; it.increment(ec)) {
         if (it->is_directory(ec) && it->path().filename() == attemptName) matches.push_back(it->path());
     }
     REQUIRE_FALSE(ec);
@@ -672,7 +672,7 @@ auto RunKogWithPostReserveSameInodeRewrite(
             std::error_code ec;
             if (std::filesystem::exists(auditRoot, ec) && !ec) {
                 for (std::filesystem::recursive_directory_iterator it(
-                         auditRoot, ec), end;
+                         PathForTestNativeIo(auditRoot), ec), end;
                      !ec && it != end; it.increment(ec)) {
                     if (it->path().filename() != "publication-pending.json")
                         continue;
@@ -776,7 +776,7 @@ auto FindOnlyOperationAuditAttempt(const std::filesystem::path& InRepo)
         "kog" / "audit";
     std::vector<std::filesystem::path> matches;
     std::error_code ec;
-    for (std::filesystem::recursive_directory_iterator it(auditRoot, ec), end;
+    for (std::filesystem::recursive_directory_iterator it(PathForTestNativeIo(auditRoot), ec), end;
          !ec && it != end; it.increment(ec)) {
         if (it->is_regular_file(ec) && it->path().filename() == "receipt.json" &&
             it->path().parent_path().filename().string().rfind("attempt-", 0) == 0 &&
@@ -1393,7 +1393,7 @@ TEST_CASE("converge operation descriptor persists only opaque remote selectors",
         "kog" / "audit";
     std::size_t descriptors = 0;
     std::error_code ec;
-    for (std::filesystem::recursive_directory_iterator it(auditRoot, ec), end;
+    for (std::filesystem::recursive_directory_iterator it(PathForTestNativeIo(auditRoot), ec), end;
          !ec && it != end; it.increment(ec)) {
         if (!it->is_regular_file(ec) ||
             it->path().filename() != "frozen-operation.json") {
@@ -1942,7 +1942,7 @@ TEST_CASE("both commit-push plan routes reject source changes after reservation"
                 std::error_code ec;
                 if (std::filesystem::exists(auditRoot, ec) && !ec) {
                     for (std::filesystem::recursive_directory_iterator it(
-                             auditRoot, ec), end;
+                             PathForTestNativeIo(auditRoot), ec), end;
                          !ec && it != end; it.increment(ec)) {
                         if (it->path().filename() != "publication-pending.json")
                             continue;
@@ -1998,6 +1998,91 @@ TEST_CASE("both commit-push plan routes reject source changes after reservation"
             }));
         RemoveSandboxWorkspace(ctx.sandbox);
     }
+}
+
+TEST_CASE("profiled commit-push resolves a relative long plan basename before general-route I/O",
+          "[functional][commit-push][plan-file][profile][relative][long-path][KG-TSK-0125]") {
+    const auto ctx = CreateRemoteWithClone(
+        "commit-push-profiled-relative-long-plan");
+    struct SandboxCleanupGuard {
+        const SandboxContext& sandbox;
+        ~SandboxCleanupGuard() { RemoveSandboxWorkspace(sandbox); }
+    };
+    [[maybe_unused]] const SandboxCleanupGuard cleanupGuard{ctx.sandbox};
+
+    WriteTextFile(ctx.cloneRepo / "README.md",
+                  "seed\nprofiled relative long plan\n");
+    const std::string planFileName =
+        "kog-tsk-0125-profiled-relative-plan-" +
+        std::string(205, 'x') + ".json";
+    REQUIRE(planFileName.size() < 255);
+    const std::filesystem::path planArgument(planFileName);
+    REQUIRE(planArgument.is_relative());
+    REQUIRE(planArgument.parent_path().empty());
+    const auto planPath = (ctx.cloneRepo / planArgument).lexically_normal();
+    REQUIRE(planPath.is_absolute());
+    REQUIRE(planPath.string().size() >= 260);
+    WriteTextFile(ctx.cloneRepo / ".git/info/exclude",
+                  "/" + planFileName + "\n");
+
+    RequireSuccess(
+        RunKog({"plan", "new", "--force", "--output", planPath.string()},
+               ctx.cloneRepo),
+        "create profiled relative long plan");
+    RequireSuccess(
+        RunKog({
+            "plan", "prepare", "add-commit-entry", "--plan-file",
+            planPath.string(), "--repo", ".", "--commit-message",
+            "test(functional): profiled relative long plan",
+            "--commit-include", "README.md", "--commit-review-verdict",
+            "pass", "--commit-review-reason",
+            "general commit-push route must resolve relative long plan paths"},
+            ctx.cloneRepo),
+        "prepare profiled relative long plan");
+
+    const auto planNativePath = PathForTestNativeIo(planPath);
+    const std::string seededExecutedAt = "2026-08-28T00:00:00Z";
+    WriteTextFile(
+        planNativePath,
+        ReplaceJsonStringField(
+            ReadTextFile(planNativePath), "executed_at_utc", seededExecutedAt));
+    REQUIRE(ExtractJsonStringField(
+                ReadTextFile(planNativePath), "executed_at_utc") ==
+            seededExecutedAt);
+
+    const auto headBefore = CurrentHeadSha(ctx.cloneRepo);
+    const auto result = RunKog(
+        {"commit-push", "--profile", "--plan-file", planFileName},
+        ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireContainsText(result.stdoutText, "=== commit-push stage: push ===");
+    RequireNotContainsText(
+        result.stdoutText,
+        "[commit-push][plan-pipeline] stage=push start");
+
+    const auto headAfter = CurrentHeadSha(ctx.cloneRepo);
+    REQUIRE(headAfter != headBefore);
+    REQUIRE(RefSha(ctx.bareRemote, "refs/heads/" + ctx.branch) == headAfter);
+    REQUIRE(StatusPorcelain(ctx.cloneRepo).empty());
+    const auto executedAt = ExtractJsonStringField(
+        ReadTextFile(planNativePath), "executed_at_utc");
+    REQUIRE_FALSE(executedAt.empty());
+    REQUIRE(executedAt != seededExecutedAt);
+    const std::regex utcTimestampPattern(
+        R"(^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$)");
+    REQUIRE(std::regex_match(executedAt, utcTimestampPattern));
+    RequireAuditAttempt(
+        planPath, 1, kano::git::audit::OutcomeState::Succeeded,
+        {"audit.reserve", "plan.execution-lock", "plan.stamp.clear",
+         "commit.apply", "push", "plan.stamp"});
+    RequireContainsText(result.stdoutText, "[plan] file: " + planFileName);
+    RequireNotContainsText(
+        result.stdoutText, "[plan] file: " + planPath.generic_string());
+    RequireNotContainsText(
+        result.stdoutText + "\n" + result.stderrText,
+        "executed plan summary unavailable");
 }
 
 TEST_CASE("both commit-push plan routes preserve a final pre-stamp source rewrite",
@@ -2438,8 +2523,14 @@ TEST_CASE("plan apply commit and all reuse execution admission",
         if (stage == "all")
             WriteTextFile(ctx.cloneRepo / "GeneratedProject.slnx",
                           "generated\n");
-        const auto planPath = ctx.cloneRepo /
-            (".kano/cache/git/plans/reentrant-" + stage + "-plan.json");
+        const std::string planFileName =
+            "kog-tsk-0125-relative-plan-apply-" + stage + "-" +
+            std::string(205, 'x') + ".json";
+        REQUIRE(planFileName.size() < 255);
+        const auto planPath = ctx.cloneRepo / planFileName;
+        REQUIRE(planPath.string().size() >= 260);
+        WriteTextFile(ctx.cloneRepo / ".git/info/exclude",
+                      "/" + planFileName + "\n");
         RequireSuccess(
             RunKog({"plan", "new", "--force", "--output",
                     planPath.string()},
@@ -2471,7 +2562,7 @@ TEST_CASE("plan apply commit and all reuse execution admission",
         const auto headBefore = CurrentHeadSha(ctx.cloneRepo);
         const auto result = RunKog(
             {"plan", "apply", "--stage", stage, "--plan-file",
-             planPath.string()},
+             planFileName},
             ctx.cloneRepo);
         INFO(result.stdoutText);
         INFO(result.stderrText);
@@ -2498,7 +2589,9 @@ TEST_CASE("plan apply commit and all reuse execution admission",
         REQUIRE_FALSE(std::filesystem::exists(
             ctx.cloneRepo / ".kano/tmp/git/plan-execution-locks"));
         const auto executedAt =
-            ExtractJsonStringField(ReadTextFile(planPath), "executed_at_utc");
+            ExtractJsonStringField(
+                ReadTextFile(PathForTestNativeIo(planPath)),
+                "executed_at_utc");
         REQUIRE_FALSE(executedAt.empty());
 
         const auto attemptRoots = FindAuditAttemptRoots(planPath, 1);
@@ -3034,8 +3127,14 @@ TEST_CASE("direct plan commit is auditable and native verify rejects same-path r
           "[functional][commit][plan-file][audit][verify][KG-TSK-0125]") {
     const auto ctx = CreateRemoteWithClone("direct-commit-native-audit-verify");
     WriteTextFile(ctx.cloneRepo / "README.md", "seed\ndirect audited commit\n");
-    const auto planPath =
-        ctx.cloneRepo / ".kano/cache/git/plans/direct-audit-verify.json";
+    const std::string planFileName =
+        "kog-tsk-0125-relative-direct-plan-commit-" +
+        std::string(205, 'x') + ".json";
+    REQUIRE(planFileName.size() < 255);
+    const auto planPath = ctx.cloneRepo / planFileName;
+    REQUIRE(planPath.string().size() >= 260);
+    WriteTextFile(ctx.cloneRepo / ".git/info/exclude",
+                  "/" + planFileName + "\n");
     RequireSuccess(
         RunKog({"plan", "new", "--force", "--output", planPath.string()},
                ctx.cloneRepo),
@@ -3047,7 +3146,8 @@ TEST_CASE("direct plan commit is auditable and native verify rejects same-path r
         "--commit-include", "README.md", "--commit-review-verdict", "pass",
         "--commit-review-reason", "native verification binding regression"
     }, ctx.cloneRepo), "prepare direct audited commit");
-    auto plan = nlohmann::json::parse(ReadTextFile(planPath));
+    const auto planNativePath = PathForTestNativeIo(planPath);
+    auto plan = nlohmann::json::parse(ReadTextFile(planNativePath));
     plan["meta"]["correlation"] = {
         {"mode", "koa"}, {"product_id", "product-demo"},
         {"topic_id", "topic-demo"}, {"item_id", "item-demo"},
@@ -3057,16 +3157,16 @@ TEST_CASE("direct plan commit is auditable and native verify rejects same-path r
         {"parent_run_id", "run-parent"}, {"producer_id", "koa"},
         {"route_id", "commit.plan"}, {"attempt", 1},
     };
-    WriteTextFile(planPath, plan.dump(2) + "\n");
-    const auto admittedBytes = ReadTextFile(planPath);
+    WriteTextFile(planNativePath, plan.dump(2) + "\n");
+    const auto admittedBytes = ReadTextFile(planNativePath);
 
     const auto commit = RunKog(
-        {"commit", "--plan-file", planPath.string(), "--plan-stage", "commit"},
+        {"commit", "--plan-file", planFileName, "--plan-stage", "commit"},
         ctx.cloneRepo);
     INFO(commit.stdoutText);
     INFO(commit.stderrText);
     REQUIRE(commit.exitCode == 0);
-    REQUIRE(ReadTextFile(planPath) == admittedBytes);
+    REQUIRE(ReadTextFile(planNativePath) == admittedBytes);
     RequireAuditAttempt(
         planPath, 1, kano::git::audit::OutcomeState::Succeeded,
         {"audit.reserve", "plan.safety", "commit.apply"});
@@ -3101,7 +3201,7 @@ TEST_CASE("direct plan commit is auditable and native verify rejects same-path r
 
     auto replaced = nlohmann::json::parse(admittedBytes);
     replaced["unbound"] = true;
-    WriteTextFile(planPath, replaced.dump(2) + "\n");
+    WriteTextFile(planNativePath, replaced.dump(2) + "\n");
     const auto contentRejected = RunKog({
         "audit", "verify", "--plan-file", planPath.string(),
         "--run-id", "run-native-verify", "--attempt", "1", "--json"
@@ -3111,7 +3211,7 @@ TEST_CASE("direct plan commit is auditable and native verify rejects same-path r
 
     replaced = nlohmann::json::parse(admittedBytes);
     replaced["meta"]["plan_id"] = "different-plan";
-    WriteTextFile(planPath, replaced.dump(2) + "\n");
+    WriteTextFile(planNativePath, replaced.dump(2) + "\n");
     const auto identityRejected = RunKog({
         "audit", "verify", "--plan-file", planPath.string(),
         "--run-id", "run-native-verify", "--attempt", "1", "--json"

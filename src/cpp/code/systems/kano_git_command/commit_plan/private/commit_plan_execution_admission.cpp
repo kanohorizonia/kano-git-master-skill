@@ -83,8 +83,9 @@ auto PlanExecutionLockKey(const std::filesystem::path& InPlanPath,
                           std::string* OutError)
     -> std::optional<std::string> {
 #if defined(_WIN32)
+    const auto ioPlanPath = runtime_path::NativeIoPath(InPlanPath);
     const auto sourceHandle = CreateFileW(
-        InPlanPath.wstring().c_str(), FILE_READ_ATTRIBUTES,
+        ioPlanPath.c_str(), FILE_READ_ATTRIBUTES,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
         OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
     if (sourceHandle == INVALID_HANDLE_VALUE) {
@@ -253,8 +254,9 @@ auto ResolvePlanExecutionLockRoot(
 #if defined(_WIN32)
 auto OpenVerifiedDirectoryHandle(const std::filesystem::path& InPath,
                                  std::string* OutError) -> HANDLE {
+    const auto ioPath = runtime_path::NativeIoPath(InPath);
     const auto handle = CreateFileW(
-        InPath.wstring().c_str(), FILE_READ_ATTRIBUTES,
+        ioPath.c_str(), FILE_READ_ATTRIBUTES,
         FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
         FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
     if (handle == INVALID_HANDLE_VALUE) {
@@ -278,7 +280,8 @@ auto OpenVerifiedDirectoryHandle(const std::filesystem::path& InPath,
 
 auto EnsureAndOpenDirectoryHandle(const std::filesystem::path& InPath,
                                   std::string* OutError) -> HANDLE {
-    if (CreateDirectoryW(InPath.wstring().c_str(), nullptr) == 0) {
+    const auto ioPath = runtime_path::NativeIoPath(InPath);
+    if (CreateDirectoryW(ioPath.c_str(), nullptr) == 0) {
         const auto createError = GetLastError();
         if (createError != ERROR_ALREADY_EXISTS) {
             if (OutError)
@@ -319,8 +322,9 @@ auto OpenAnchoredLockFile(const PlanExecutionLockLocation& InLocation,
     }
 
     const auto lockPath = currentPath / InFileName;
+    const auto ioLockPath = runtime_path::NativeIoPath(lockPath);
     const auto lockHandle = CreateFileW(
-        lockPath.wstring().c_str(), GENERIC_READ | GENERIC_WRITE,
+        ioLockPath.c_str(), GENERIC_READ | GENERIC_WRITE,
         FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
     closeDirectoryHandles();
