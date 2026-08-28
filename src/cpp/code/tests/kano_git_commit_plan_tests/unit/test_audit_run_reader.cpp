@@ -3,6 +3,7 @@
 #include "audit_run_reader.hpp"
 #include "audit_verification.hpp"
 #include "audit_evidence_directory.hpp"
+#include "runtime_path_layout.hpp"
 #include "shell_executor.hpp"
 
 #include <nlohmann/json.hpp>
@@ -63,12 +64,13 @@ auto CurrentUtc() -> std::string {
 }
 
 auto ReadText(const std::filesystem::path& path) -> std::string {
-    std::ifstream input(path, std::ios::binary);
+    std::ifstream input(runtime_path::NativeIoPath(path), std::ios::binary);
     return {std::istreambuf_iterator<char>(input), {}};
 }
 
 auto WriteText(const std::filesystem::path& path, const std::string& bytes) -> void {
-    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    std::ofstream output(
+        runtime_path::NativeIoPath(path), std::ios::binary | std::ios::trunc);
     REQUIRE(output.good());
     output << bytes;
     REQUIRE(output.good());
@@ -280,7 +282,10 @@ struct Fixture {
         const auto resolved = ResolveOperationAuditPaths(spec, "reader-run", 3, &error);
         INFO(error); REQUIRE(resolved); paths = *resolved;
     }
-    ~Fixture() { std::error_code ec; std::filesystem::remove_all(root, ec); }
+    ~Fixture() {
+        std::error_code ec;
+        std::filesystem::remove_all(runtime_path::NativeIoPath(root), ec);
+    }
 
     auto Finalize(const int exitCode = 0, const int appended = 2,
                   const bool supplemental = true) -> void {
