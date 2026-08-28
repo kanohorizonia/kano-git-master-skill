@@ -463,18 +463,26 @@ TEST_CASE("auth doctor fix removes stale manager-core helper", "[functional][aut
 }
 
 TEST_CASE("auth doctor diagnoses and fixes credential interaction disabled across local and global config",
-          "[functional][auth][doctor][gcm][interactive][fix][KG-BUG-0094]") {
+          "[functional][auth][doctor][gcm][interactive][fix][KG-BUG-0094][KOG-BUG-0123]") {
     const auto sandbox = CreateSandboxWorkspace("auth-doctor-disabled-interaction");
     const auto repo = (sandbox.root / "repo").lexically_normal();
     InitRepo(repo);
     RequireSuccess(RunGit({"remote", "add", "origin", "https://example.invalid/org/repo.git"}, repo), "add https remote");
     RequireSuccess(RunGit({"config", "--local", "--add", "credential.helper", "manager"}, repo), "config local GCM helper");
+
+    auto env = IsolatedGitConfigEnv(sandbox);
+    env.push_back({"KOG_GIT_INTERACTIVE", "0"});
+
+    const auto initiallyUnset = RunKogWithEnv({"auth", "doctor", "--repo", repo.string()}, repo, env);
+    const auto initiallyUnsetOutput = initiallyUnset.stdoutText + "\n" + initiallyUnset.stderrText;
+    RequireSuccess(initiallyUnset, "auth doctor should succeed when persistent credential interaction is unset");
+    RequireContains(initiallyUnsetOutput, "credential.interactive is unset");
+
     RequireSuccess(RunGit({"config", "--local", "--add", "credential.interactive", "false"}, repo), "disable local credential interaction");
     WriteTextFile(
         sandbox.root / "global.gitconfig",
         "[credential]\n\tinteractive = never\n");
 
-    const auto env = IsolatedGitConfigEnv(sandbox);
     const auto diagnosed = RunKogWithEnv({"auth", "doctor", "--repo", repo.string()}, repo, env);
     const auto diagnosedOutput = diagnosed.stdoutText + "\n" + diagnosed.stderrText;
     RequireFailure(diagnosed, "auth doctor should fail when credential interaction is disabled");
@@ -488,6 +496,7 @@ TEST_CASE("auth doctor diagnoses and fixes credential interaction disabled acros
     RequireSuccess(fixed, "auth doctor --fix should remove disabled interaction values");
     RequireContains(fixedOutput, "removing disabled credential.interactive entries from local/global config");
     RequireNotContains(fixedOutput, "credential.interactive disables credential-manager prompts");
+    RequireContains(fixedOutput, "credential.interactive is unset");
 
     const auto localInteractive = RunGit({"config", "--local", "--get-all", "credential.interactive"}, repo);
     REQUIRE(localInteractive.exitCode != 0);

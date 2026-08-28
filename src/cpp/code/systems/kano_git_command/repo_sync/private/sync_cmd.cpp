@@ -954,7 +954,13 @@ auto CollectAuthTargets(const AuthTargetSelectionOptions& InOptions) -> std::vec
 
 auto GitConfigGetAllWithOrigin(const std::filesystem::path& InRepo, const std::string& InKey) -> std::vector<std::string> {
     std::vector<std::string> values;
-    const auto result = GitCapture(InRepo, {"config", "--show-origin", "--get-all", InKey});
+    const auto result = shell::ExecuteCommandWithPolicy(
+        "git",
+        {"-c", "submodule.recurse=false", "-c", "checkout.recurseSubmodules=false",
+         "config", "--show-origin", "--get-all", InKey},
+        shell::CommandExecutionPolicy::PersistentGitConfigInspection,
+        shell::ExecMode::Capture,
+        InRepo);
     if (result.exitCode != 0) {
         return values;
     }
@@ -971,6 +977,23 @@ auto GitConfigGetAllWithOrigin(const std::filesystem::path& InRepo, const std::s
 
 auto GitConfigGetValue(const std::filesystem::path& InRepo, const std::string& InKey) -> std::optional<std::string> {
     const auto result = GitCapture(InRepo, {"config", "--get", InKey});
+    if (result.exitCode != 0) {
+        return std::nullopt;
+    }
+    const auto value = Trim(result.stdoutStr);
+    if (value.empty()) {
+        return std::nullopt;
+    }
+    return value;
+}
+
+auto PersistentGitConfigGetValue(const std::filesystem::path& InRepo, const std::string& InKey) -> std::optional<std::string> {
+    const auto result = shell::ExecuteCommandWithPolicy(
+        "git",
+        {"config", "--get", InKey},
+        shell::CommandExecutionPolicy::PersistentGitConfigInspection,
+        shell::ExecMode::Capture,
+        InRepo);
     if (result.exitCode != 0) {
         return std::nullopt;
     }
@@ -4045,7 +4068,7 @@ auto MakeAuthDoctorCommandCallback(const std::shared_ptr<AuthCommandOptions>& In
 
         auto helperLines = GitConfigGetAllWithOrigin(repoRoot, "credential.helper");
         auto helperEntries = ParseCredentialHelperEntries(helperLines);
-        auto credentialInteractive = GitConfigGetValue(repoRoot, "credential.interactive");
+        auto credentialInteractive = PersistentGitConfigGetValue(repoRoot, "credential.interactive");
         auto disabledCredentialInteraction = DisabledCredentialInteractionEntries(repoRoot);
         const auto useHttpPath = GitConfigGetValue(repoRoot, "credential.useHttpPath");
         auto gcmVersion = ProbeGitCredentialManagerVersion(repoRoot);
@@ -4073,7 +4096,7 @@ auto MakeAuthDoctorCommandCallback(const std::shared_ptr<AuthCommandOptions>& In
                           << " removing disabled credential.interactive entries from local/global config\n";
                 RemoveDisabledCredentialInteractionEntries(repoRoot, disabledCredentialInteraction);
                 disabledCredentialInteraction = DisabledCredentialInteractionEntries(repoRoot);
-                credentialInteractive = GitConfigGetValue(repoRoot, "credential.interactive");
+                credentialInteractive = PersistentGitConfigGetValue(repoRoot, "credential.interactive");
             }
 
             if (hasStaleManagerCoreHelper) {

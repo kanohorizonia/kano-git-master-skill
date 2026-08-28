@@ -1416,6 +1416,19 @@ auto ExecuteCommand(
     return ExecuteCommand(InCommand, InArgs, InMode, InWorkingDir, ProgressCallback{});
 }
 
+auto ExecuteCommandWithPolicy(
+    const std::string& InCommand,
+    const std::vector<std::string>& InArgs,
+    CommandExecutionPolicy InPolicy,
+    ExecMode InMode,
+    std::optional<std::filesystem::path> InWorkingDir
+) -> ExecResult
+{
+    return ExecuteCommand(
+        InCommand, InArgs, InMode, InWorkingDir, ProgressCallback{},
+        std::nullopt, {}, InPolicy);
+}
+
 auto ExecuteCommand(
     const std::string& InCommand,
     const std::vector<std::string>& InArgs,
@@ -1423,10 +1436,14 @@ auto ExecuteCommand(
     std::optional<std::filesystem::path> InWorkingDir,
     ProgressCallback InProgressCallback,
     std::optional<unsigned int> InTimeoutOverrideMs,
-    CaptureLimits InCaptureLimits
+    CaptureLimits InCaptureLimits,
+    CommandExecutionPolicy InPolicy
 ) -> ExecResult
 {
-    const auto nonInteractiveArgs = WithGitNonInteractiveDefaults(InCommand, InArgs);
+    const auto nonInteractiveArgs =
+        InPolicy == CommandExecutionPolicy::PersistentGitConfigInspection
+            ? InArgs
+            : WithGitNonInteractiveDefaults(InCommand, InArgs);
     const auto effectiveArgs = WithGitSafeDirectoryDefaults(InCommand, nonInteractiveArgs, InWorkingDir);
     const bool processDiagEnabled = IsProcessDiagnosticsEnabled();
     const auto processDiagStartTs = processDiagEnabled ? CurrentUtcTimestamp() : std::string{};

@@ -9,6 +9,7 @@
 namespace kano::git::shell {
 
 enum class ExecMode { Capture, PassThrough };
+enum class CommandExecutionPolicy { Standard, PersistentGitConfigInspection };
 
 struct ExecResult {
     int exitCode = 0;
@@ -70,6 +71,14 @@ auto ExecuteCommand(
     std::optional<std::filesystem::path> InWorkingDir = std::nullopt
 ) -> ExecResult;
 
+auto ExecuteCommandWithPolicy(
+    const std::string& InCommand,
+    const std::vector<std::string>& InArgs,
+    CommandExecutionPolicy InPolicy,
+    ExecMode InMode = ExecMode::PassThrough,
+    std::optional<std::filesystem::path> InWorkingDir = std::nullopt
+) -> ExecResult;
+
 auto ExecuteCommand(
     const std::string& InCommand,
     const std::vector<std::string>& InArgs,
@@ -77,7 +86,8 @@ auto ExecuteCommand(
     std::optional<std::filesystem::path> InWorkingDir,
     ProgressCallback InProgressCallback,
     std::optional<unsigned int> InTimeoutOverrideMs = std::nullopt,
-    CaptureLimits InCaptureLimits = {}
+    CaptureLimits InCaptureLimits = {},
+    CommandExecutionPolicy InPolicy = CommandExecutionPolicy::Standard
 ) -> ExecResult;
 
 }
