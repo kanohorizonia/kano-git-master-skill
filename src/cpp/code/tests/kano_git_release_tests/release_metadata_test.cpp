@@ -197,6 +197,10 @@ void WriteRequiredWindowsPackageSource(const std::filesystem::path& repoRoot) {
         repoRoot / "assets" / "audit" / "schemas" /
             "kog.auditVerification.v1.schema.json",
         "{}\n");
+    WriteFixtureFile(
+        repoRoot / "assets" / "audit" / "schemas" /
+            "kog.auditRunCatalog.v1.schema.json",
+        "{}\n");
 }
 
 } // namespace
@@ -276,7 +280,7 @@ TEST_CASE("skill install plan protects developer namespace by default", "[releas
 }
 
 TEST_CASE("Windows package stages canonical ignore assets without submodule git metadata",
-          "[release][windows][package]") {
+          "[release][windows][package][KOG-TSK-0135]") {
     TempDirectory fixture("windows_package_assets");
     const auto repoRoot = fixture.path / "repo";
     const auto outputRoot = fixture.path / "out";
@@ -335,6 +339,9 @@ TEST_CASE("Windows package stages canonical ignore assets without submodule git 
     REQUIRE(std::filesystem::is_regular_file(
         skillRoot / "assets" / "audit" / "schemas" /
         "kog.runReceipt.v1.schema.json"));
+    REQUIRE(std::filesystem::is_regular_file(
+        skillRoot / "assets" / "audit" / "schemas" /
+        "kog.auditRunCatalog.v1.schema.json"));
     REQUIRE_FALSE(std::filesystem::exists(
         skillRoot / "assets" / "ignore-sources" / "private-machine-path.txt"));
     REQUIRE_FALSE(std::filesystem::exists(
