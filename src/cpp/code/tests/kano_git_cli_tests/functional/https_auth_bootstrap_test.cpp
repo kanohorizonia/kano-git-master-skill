@@ -20,6 +20,48 @@ auto ReadTextFile(const std::filesystem::path& InPath) -> std::string {
     return buffer.str();
 }
 
+auto TrimConfigText(const std::string& InText) -> std::string {
+    const auto first = InText.find_first_not_of(" \t");
+    if (first == std::string::npos) {
+        return {};
+    }
+    const auto last = InText.find_last_not_of(" \t");
+    return InText.substr(first, last - first + 1);
+}
+
+auto ConfiguredCredentialHelpers(const std::string& InConfig)
+    -> std::vector<std::filesystem::path> {
+    std::istringstream lines(InConfig);
+    std::vector<std::filesystem::path> helpers;
+    std::string line;
+    bool inCredentialSection = false;
+    while (std::getline(lines, line)) {
+        const auto trimmed = TrimConfigText(line);
+        if (trimmed.empty() || trimmed.front() == '#' || trimmed.front() == ';') {
+            continue;
+        }
+        if (trimmed.front() == '[' && trimmed.back() == ']') {
+            inCredentialSection = TrimConfigText(trimmed.substr(1, trimmed.size() - 2)) ==
+                                   "credential";
+            continue;
+        }
+        if (!inCredentialSection) {
+            continue;
+        }
+        const auto separator = trimmed.find('=');
+        if (separator == std::string::npos ||
+            TrimConfigText(trimmed.substr(0, separator)) != "helper") {
+            continue;
+        }
+        auto value = TrimConfigText(trimmed.substr(separator + 1));
+        if (value.size() >= 2 && value.front() == '"' && value.back() == '"') {
+            value = value.substr(1, value.size() - 2);
+        }
+        helpers.emplace_back(value);
+    }
+    return helpers;
+}
+
 auto CreateFakeGcm(const std::filesystem::path& InPath) -> void {
 #if defined(_WIN32)
     std::error_code ec;
@@ -136,7 +178,7 @@ TEST_CASE("https auth install dry-run identifies the pinned release and checksum
 #endif
 
 TEST_CASE("https auth setup is confirm-gated idempotent and doctor-verifiable",
-          "[functional][auth][https]") {
+          "[functional][auth][https][KOG-BUG-0125]") {
     const auto sandbox = CreateSandboxWorkspace("https-auth-setup");
     const auto home = sandbox.root / "home";
     const auto fakeGcm = FakeGcmPath(sandbox.root);
@@ -167,7 +209,11 @@ TEST_CASE("https auth setup is confirm-gated idempotent and doctor-verifiable",
     REQUIRE(second.exitCode == 0);
 
     const auto config = ReadTextFile(home / "global.gitconfig");
-    REQUIRE(config.find("helper = " + fakeGcm.string()) != std::string::npos);
+    const auto configuredHelpers = ConfiguredCredentialHelpers(config);
+    REQUIRE(configuredHelpers.size() == 1);
+    REQUIRE(configuredHelpers.front().is_absolute());
+    REQUIRE(configuredHelpers.front().lexically_normal() ==
+            std::filesystem::absolute(fakeGcm).lexically_normal());
     REQUIRE(config.find("provider = gitlab") != std::string::npos);
     REQUIRE(config.find("gitLabAuthModes = pat") != std::string::npos);
     REQUIRE(config.find("username = kano-user") != std::string::npos);
