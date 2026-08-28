@@ -123,6 +123,13 @@ TEST_CASE(
     const auto receiptBytes =
         ReadBinary(FixturePath("golden/run-receipt.v1.json"));
 
+    REQUIRE_FALSE(eventBytes.empty());
+    REQUIRE(eventBytes.back() == '\n');
+    REQUIRE(eventBytes.find('\r') == std::string::npos);
+    REQUIRE_FALSE(receiptBytes.empty());
+    REQUIRE(receiptBytes.back() == '\n');
+    REQUIRE(receiptBytes.find('\r') == std::string::npos);
+
     auto events = kano::git::audit::ParseAuditEventsJsonl(eventBytes);
     auto receipt = kano::git::audit::ParseRunReceiptJson(receiptBytes);
     REQUIRE(events.ok());
