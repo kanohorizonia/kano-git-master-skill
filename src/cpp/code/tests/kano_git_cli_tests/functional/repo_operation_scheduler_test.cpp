@@ -20,6 +20,7 @@ using kano::git::workspace::RepoOperationMode;
 using kano::git::workspace::RepoOperationSchedulerOptions;
 using kano::git::workspace::RepoOperationStatus;
 using kano::git::workspace::RepoOperationWorkerResult;
+using kano::git::workspace::RepoRecord;
 
 auto MakeRepo(std::string InId, std::string InPath, std::string InLockKey = {}) -> RepoOperationInput {
     RepoOperationInput out;
@@ -37,6 +38,34 @@ auto Success(std::string InStdout = {}) -> RepoOperationWorkerResult {
 }
 
 } // namespace
+
+TEST_CASE(
+    "repo operation scheduler preserves UTF-8 path keys",
+    "[tdd][unit][feature:repo-operation-scheduler][functional][scheduler][unicode][KOG-BUG-0109]") {
+    const std::string utf8 = "\xE6\xB8\xAC\xE8\xA9\xA6-a\xCC\x84-\xF0\x9F\xAA\x90";
+    RepoRecord repo;
+    repo.path = std::filesystem::path("workspace") / std::filesystem::u8path(utf8);
+
+    auto inputs = kano::git::workspace::MakeRepoOperationInputs({repo});
+    REQUIRE(inputs.size() == 1);
+    REQUIRE(inputs[0].id.find(utf8) != std::string::npos);
+
+    RepoOperationSchedulerOptions options;
+    options.operationName = "unicode-path-key";
+    options.mode = RepoOperationMode::ReadOnlyParallel;
+    options.jobs = 1;
+    options.resolveGitCommonDirLocks = false;
+
+    const auto aggregate = kano::git::workspace::RunRepoOperationScheduler(
+        inputs,
+        options,
+        [](const RepoOperationInput&) { return Success(); });
+
+    REQUIRE(aggregate.succeeded == 1);
+    REQUIRE(aggregate.failed == 0);
+    REQUIRE(aggregate.results.size() == 1);
+    REQUIRE(aggregate.results[0].repoId == inputs[0].id);
+}
 
 TEST_CASE("repo operation scheduler serializes identical common-dir locks", "[tdd][unit][feature:repo-operation-scheduler][functional][scheduler]") {
     std::vector<RepoOperationInput> repos{

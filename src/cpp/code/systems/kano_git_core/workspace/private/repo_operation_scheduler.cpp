@@ -48,7 +48,13 @@ auto NormalizePathForKey(const std::filesystem::path& InPath) -> std::string {
     if (ec) {
         path = InPath;
     }
-    auto key = path.lexically_normal().generic_string();
+    const auto normalized = path.lexically_normal();
+#if defined(_WIN32)
+    const auto utf8Path = normalized.generic_u8string();
+    std::string key(utf8Path.begin(), utf8Path.end());
+#else
+    auto key = normalized.generic_string();
+#endif
     while (key.size() > 1 && key.back() == '/') {
         key.pop_back();
     }
