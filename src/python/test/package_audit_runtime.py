@@ -90,6 +90,7 @@ def main() -> int:
             "arm64" if "arm64" in preset else "x64"
         )
         environment["KANO_WINDOWS_BUILD_TARGET"] = "kog_runtime_artifact"
+        reuse_configure_cache = False
         cache_path = artifact.parent / "CMakeCache.txt"
         if cache_path.is_file():
             prefix = "CMAKE_HOME_DIRECTORY:INTERNAL="
@@ -103,10 +104,23 @@ def main() -> int:
                 ),
                 "",
             )
-            if len(cache_source) >= 2 and cache_source[1] == ":":
-                cache_drive = cache_source[:2]
-                if cache_drive.casefold() != CPP_ROOT.drive.casefold():
-                    environment["KANO_WINDOWS_SUBST_DRIVE"] = cache_drive
+            cache_source_normalized = os.path.normcase(
+                os.path.normpath(cache_source)
+            )
+            cpp_root_normalized = os.path.normcase(
+                os.path.normpath(str(CPP_ROOT))
+            )
+            if cache_source_normalized == cpp_root_normalized:
+                reuse_configure_cache = True
+            else:
+                cache_source_root = cache_source.replace("\\", "/").rstrip("/")
+                if len(cache_source_root) == 2 and cache_source_root[1] == ":":
+                    cache_drive = cache_source_root
+                    if cache_drive.casefold() != CPP_ROOT.drive.casefold():
+                        environment["KANO_WINDOWS_SUBST_DRIVE"] = cache_drive
+                        reuse_configure_cache = True
+        if reuse_configure_cache:
+            environment["KANO_WINDOWS_SKIP_CONFIGURE"] = "1"
         wrapper = (
             CPP_ROOT
             / "shared"
