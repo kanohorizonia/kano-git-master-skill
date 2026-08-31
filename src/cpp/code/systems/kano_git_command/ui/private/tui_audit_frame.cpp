@@ -1,5 +1,6 @@
 #include "tui_audit_frame.hpp"
 
+#include "tui_display_cells.hpp"
 #include "tui_keymap.hpp"
 
 #include <ftxui/dom/node.hpp>
@@ -107,10 +108,9 @@ auto ExitAffordance(const TuiAuditView InView) -> std::string_view {
 
 auto BoundedText(const std::string_view InValue,
                  const std::size_t InMaximum = 192U) -> std::string {
-    if (InValue.size() <= InMaximum) {
-        return std::string(InValue);
-    }
-    return std::string(InValue.substr(0U, InMaximum - 3U)) + "...";
+    return TuiDisplayTruncateEnd(
+        InValue,
+        static_cast<int>(InMaximum));
 }
 
 auto CorrelationText(const audit::CorrelationRefs& InCorrelation) -> std::string {
@@ -392,22 +392,7 @@ auto ReceiptStateLabel(const TuiAuditReceiptState InState) -> std::string_view {
 }
 
 auto FitLine(const std::string_view InText, const int InWidth) -> std::string {
-    const auto maximum = std::max(1, InWidth);
-    if (ftxui::string_width(std::string(InText)) <= maximum) {
-        return std::string(InText);
-    }
-    if (maximum <= 3) {
-        return std::string(static_cast<std::size_t>(maximum), '.');
-    }
-    std::string clipped;
-    for (const auto& glyph : ftxui::Utf8ToGlyphs(std::string(InText))) {
-        if (glyph.empty() ||
-            ftxui::string_width(clipped) + ftxui::string_width(glyph) > maximum - 3) {
-            break;
-        }
-        clipped += glyph;
-    }
-    return clipped + "...";
+    return TuiDisplayTruncateEnd(InText, std::max(1, InWidth));
 }
 
 auto CompactGuidanceForView(const TuiAuditView InView) -> std::string_view {
@@ -435,14 +420,13 @@ auto CompactAuditIdentity(const std::string_view InIdentity) -> std::string {
     if (InIdentity.empty()) {
         return "unknown";
     }
-    if (InIdentity.size() <= kMaximum) {
-        return std::string(InIdentity);
-    }
     // Run IDs and receipt hashes are protocol-constrained ASCII identities.
     // Retain both ends so a narrow frame stays useful for audit correlation
     // instead of clipping the receipt label entirely.
-    return std::string(InIdentity.substr(0U, 5U)) + ".." +
-        std::string(InIdentity.substr(InIdentity.size() - 3U));
+    return TuiDisplayTruncateMiddle(
+        InIdentity,
+        static_cast<int>(kMaximum),
+        "..");
 }
 
 } // namespace
@@ -542,23 +526,44 @@ auto ComputeTuiAuditFrameGeometry(const int InTerminalWidth,
                                   const bool bInMono) -> TuiAuditFrameGeometry {
     (void)bInMono;
     return {
-        .width = std::max(20, InTerminalWidth / 2),
-        .height = InTerminalHeight <= 24
-            ? 11
-            : std::max(11, std::min(14, InTerminalHeight / 2)),
+        .width = std::max(22, InTerminalWidth / 2),
+        .height = InTerminalHeight <= 12
+            ? 10
+            : (InTerminalHeight <= 24
+                   ? 11
+                   : std::max(11, std::min(14, InTerminalHeight / 2))),
     };
 }
 
 auto ComputeTuiAuditDashboardGeometry(const int InTerminalWidth,
-                                      const int InTerminalHeight,
-                                      const bool bInCommandMode,
-                                      const bool bInMono)
+                                       const int InTerminalHeight,
+                                       const bool bInCommandMode,
+                                       const bool bInMono,
+                                       const int InRepositoryPaneWidth)
     -> TuiAuditDashboardGeometry {
     const bool compactRoot = InTerminalHeight <= 24;
-    const auto frame = ComputeTuiAuditFrameGeometry(
-        InTerminalWidth,
-        InTerminalHeight,
-        bInMono);
+    // This is a visual-only projection: it must not influence repository
+    // selection, history cursor state, receipt identity, or async work.
+    constexpr int kMinimumFrameWidth = 22;
+    const int usableWidth = std::max(1, InTerminalWidth - 2);
+    const int requestedRepositoryPaneWidth = std::clamp(
+        InRepositoryPaneWidth,
+        0,
+        usableWidth);
+    const int splitRightPanelWidth = usableWidth -
+        requestedRepositoryPaneWidth - 1;
+    const bool repositoryPaneCollapsed = splitRightPanelWidth <
+        kMinimumFrameWidth;
+    const int repositoryPaneWidth = repositoryPaneCollapsed
+        ? 0
+        : requestedRepositoryPaneWidth;
+    // The bordered menu reserves two edges and FTXUI vscroll_indicator reserves
+    // one cell by incrementing min_x and decrementing the child box x_max.
+    const int repositoryMenuContentWidth = std::max(
+        0, repositoryPaneWidth - 3);
+    const int rightPanelWidth = repositoryPaneCollapsed
+        ? usableWidth
+        : splitRightPanelWidth;
     // Compact production composition keeps only the outer border (two rows)
     // and, in command mode, the bordered input (three rows).  This arithmetic
     // is shared with the runner and contract tests so the frame cannot claim
@@ -566,11 +571,23 @@ auto ComputeTuiAuditDashboardGeometry(const int InTerminalWidth,
     const int rootBorderRows = compactRoot ? 2 : 0;
     const int commandRows = compactRoot && bInCommandMode ? 3 : 0;
     const int mainHeight = compactRoot
-        ? std::max(0, InTerminalHeight - rootBorderRows - commandRows)
+        ? std::max(1, InTerminalHeight - rootBorderRows - commandRows)
         : 0;
+    auto frame = ComputeTuiAuditFrameGeometry(
+        rightPanelWidth,
+        InTerminalHeight,
+        bInMono);
+    frame.width = rightPanelWidth;
+    frame.height = std::min(
+        frame.height,
+        compactRoot ? mainHeight : std::max(1, InTerminalHeight));
     return {
         .frame = frame,
         .compactRoot = compactRoot,
+        .repositoryPaneCollapsed = repositoryPaneCollapsed,
+        .repositoryPaneWidth = repositoryPaneWidth,
+        .repositoryMenuContentWidth = repositoryMenuContentWidth,
+        .rightPanelWidth = rightPanelWidth,
         .mainHeight = mainHeight,
         .rightPanelContentHeight = compactRoot
             ? std::max(0, mainHeight - frame.height)
@@ -584,42 +601,96 @@ auto RenderTuiAuditFrame(const TuiAuditFrameModel& InModel,
     -> ftxui::Element {
     using namespace ftxui;
 
-    const auto width = std::max(20, InGeometry.width);
-    const auto height = std::max(8, InGeometry.height);
+    const auto width = std::max(1, InGeometry.width);
+    const auto height = std::max(1, InGeometry.height);
     const bool narrow = width < 80;
 
     Elements rows;
     if (narrow) {
-        const auto contentWidth = width - 2;
+        const auto contentWidth = std::max(1, width - 2);
+        const auto contentRows = std::max(1, height - 2);
+        const bool minimumWidth = contentWidth <= 20;
+        const auto append = [&rows, contentWidth, contentRows](std::string value) {
+            if (static_cast<int>(rows.size()) < contentRows) {
+                rows.push_back(text(FitLine(value, contentWidth)));
+            }
+        };
+        if (minimumWidth) {
+            const bool verified =
+                InModel.receiptState == TuiAuditReceiptState::Linked;
+            rows.push_back(text(FitLine(
+                verified
+                    ? "AUDIT verified"
+                    : "AUDIT " + std::string(LoadLabel(InModel.load)),
+                contentWidth)) | bold);
+            append("receipt=" +
+                   std::string(ReceiptStateLabel(InModel.receiptState)));
+            if (verified) {
+                append("scope=" + InModel.scope);
+                append("repo=" + InModel.repository);
+                append("run=" + CompactAuditIdentity(InModel.runId));
+                append("id=" + CompactAuditIdentity(InModel.receiptId));
+                append(CompactEvidenceLine(InModel));
+                append("keys=" +
+                       std::string(CompactGuidanceForView(InModel.view)));
+            } else {
+                append("reason=" + InModel.receiptAbsenceReason);
+                append("next=" + InModel.nextAction);
+                append("status=" + InModel.footer);
+                append("exit: " + std::string(ExitAffordance(InModel.view)));
+                append("keys=" +
+                       std::string(CompactGuidanceForView(InModel.view)));
+            }
+            return vbox(std::move(rows)) |
+                border |
+                size(WIDTH, EQUAL, width) |
+                size(HEIGHT, EQUAL, height);
+        }
         rows.push_back(text(FitLine(
             "AUDIT " + std::string(LoadLabel(InModel.load)) +
                 " receipt=" +
                 std::string(ReceiptStateLabel(InModel.receiptState)),
             contentWidth)) | bold);
-        rows.push_back(text(FitLine(
-            "scope=" + InModel.scope + " repo=" + InModel.repository,
-            contentWidth)));
-        rows.push_back(text(FitLine(
-            "source=" + InModel.provenanceSource +
-            " fresh=" + InModel.provenanceFreshness,
-            contentWidth)));
-        if (InModel.receiptState == TuiAuditReceiptState::Linked) {
-            rows.push_back(text(FitLine(
-                "run=" + CompactAuditIdentity(InModel.runId) +
-                    " receipt=" + CompactAuditIdentity(InModel.receiptId),
-                contentWidth)));
-            rows.push_back(text(FitLine("corr=" + InModel.correlation, contentWidth)));
-        } else {
-            rows.push_back(text(FitLine(
-                "receipt=" + std::string(ReceiptStateLabel(InModel.receiptState)) +
-                " reason=" + InModel.receiptAbsenceReason,
-                contentWidth)));
+        const bool actionableLoad = InModel.load == TuiAuditLoad::Loading ||
+            InModel.load == TuiAuditLoad::Failed;
+        if (actionableLoad && contentRows <= 8) {
+            append("diagnostic=" + (InModel.diagnostic.empty()
+                ? InModel.receiptAbsenceReason
+                : InModel.diagnostic));
+            append("receipt=" + std::string(ReceiptStateLabel(InModel.receiptState)) +
+                " reason=" + InModel.receiptAbsenceReason);
+            append("next=" + InModel.nextAction);
+            append("status=" + InModel.footer);
+            append("exit: " + std::string(ExitAffordance(InModel.view)));
+            if (contentRows > 5) {
+                append(CompactEvidenceLine(InModel));
+            }
+            append("keys=" + std::string(CompactGuidanceForView(InModel.view)));
+            return vbox(std::move(rows)) |
+                border |
+                size(WIDTH, EQUAL, width) |
+                size(HEIGHT, EQUAL, height);
         }
-        rows.push_back(text(FitLine(CompactEvidenceLine(InModel), contentWidth)));
-        rows.push_back(text(FitLine("next=" + InModel.nextAction, contentWidth)));
-        rows.push_back(text(FitLine(
-            "keys=" + std::string(CompactGuidanceForView(InModel.view)),
-            contentWidth)));
+        append("scope=" + InModel.scope + " repo=" + InModel.repository);
+        append("source=" + InModel.provenanceSource +
+               " fresh=" + InModel.provenanceFreshness);
+        if (InModel.receiptState == TuiAuditReceiptState::Linked) {
+            append(
+                "run=" + CompactAuditIdentity(InModel.runId) +
+                    " receipt=" + CompactAuditIdentity(InModel.receiptId));
+            append("corr=" + InModel.correlation);
+        } else {
+            append(
+                "receipt=" + std::string(ReceiptStateLabel(InModel.receiptState)) +
+                " reason=" + InModel.receiptAbsenceReason);
+        }
+        append(CompactEvidenceLine(InModel));
+        append("next=" + InModel.nextAction);
+        append("status=" + InModel.footer);
+        append("keys=" + std::string(CompactGuidanceForView(InModel.view)));
+        if (!InModel.diagnostic.empty()) {
+            append("diagnostic=" + InModel.diagnostic);
+        }
         return vbox(std::move(rows)) |
             border |
             size(WIDTH, EQUAL, width) |
@@ -633,13 +704,13 @@ auto RenderTuiAuditFrame(const TuiAuditFrameModel& InModel,
             LoadDecorator(InModel.load, InTheme),
     }));
     rows.push_back(separator());
-    rows.push_back(paragraph(
-        "scope: " + InModel.scope + " | repo: " + InModel.repository));
-    rows.push_back(paragraph(
+    rows.push_back(paragraph(TuiDisplaySanitize(
+        "scope: " + InModel.scope + " | repo: " + InModel.repository)));
+    rows.push_back(paragraph(TuiDisplaySanitize(
         "inventory: source=" + InModel.provenanceSource +
         " | freshness=" + InModel.provenanceFreshness +
-        " | observed=" + InModel.observedAtUtc));
-    rows.push_back(paragraph(AuditEvidenceLine(InModel)));
+        " | observed=" + InModel.observedAtUtc)));
+    rows.push_back(paragraph(TuiDisplaySanitize(AuditEvidenceLine(InModel))));
 
     std::string evidence = "evidence: " +
         std::string(EvidenceAvailabilityLabel(InModel.evidenceAvailability));
@@ -652,11 +723,11 @@ auto RenderTuiAuditFrame(const TuiAuditFrameModel& InModel,
     if (InModel.evidenceTruncated) {
         evidence += " | truncated";
     }
-    rows.push_back(paragraph(evidence));
+    rows.push_back(paragraph(TuiDisplaySanitize(evidence)));
 
     // Exit affordances remain above diagnostics so a short/narrow frame never
     // hides the safe way back from an error or loading state.
-    rows.push_back(paragraph("next: " + InModel.nextAction));
+    rows.push_back(paragraph(TuiDisplaySanitize("next: " + InModel.nextAction)));
     rows.push_back(paragraph("exit: " + std::string(ExitAffordance(InModel.view))));
     if (InModel.view == TuiAuditView::Help) {
         for (const auto& guidance : GetAllTuiKeyGuidance()) {
@@ -669,13 +740,14 @@ auto RenderTuiAuditFrame(const TuiAuditFrameModel& InModel,
     }
 
     if (!InModel.diagnostic.empty()) {
-        rows.push_back(paragraph("diagnostic: " + InModel.diagnostic));
+        rows.push_back(paragraph(TuiDisplaySanitize(
+            "diagnostic: " + InModel.diagnostic)));
     }
     if (!InModel.hint.empty()) {
-        rows.push_back(paragraph("hint: " + InModel.hint));
+        rows.push_back(paragraph(TuiDisplaySanitize("hint: " + InModel.hint)));
     }
     if (!InModel.footer.empty()) {
-        rows.push_back(paragraph("status: " + InModel.footer));
+        rows.push_back(paragraph(TuiDisplaySanitize("status: " + InModel.footer)));
     }
 
     return vbox(std::move(rows)) |

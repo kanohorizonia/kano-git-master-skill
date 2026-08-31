@@ -6,9 +6,10 @@ add_executable(kano_git_tui_tests
   unit/test_command_executor.cpp
   unit/test_tui_state.cpp
   unit/test_shell_executor.cpp
-  unit/test_tui_async_lifecycle.cpp
-  unit/test_tui_audit_frame.cpp
-  unit/test_tui_audit_surface.cpp
+    unit/test_tui_async_lifecycle.cpp
+    unit/test_tui_audit_frame.cpp
+    unit/test_tui_display_cells.cpp
+    unit/test_tui_audit_surface.cpp
   unit/test_tui_command_scope.cpp
   unit/test_tui_history_lifecycle.cpp
   unit/test_tui_history_patch.cpp

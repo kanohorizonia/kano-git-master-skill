@@ -361,10 +361,10 @@ TEST_CASE("audit frame remains bounded in narrow mono mode",
 }
 
 TEST_CASE("audit dashboard reserves achievable compact production geometry",
-          "[unit][tui_audit_frame][KG-TSK-0132]") {
+           "[unit][tui_audit_frame][KG-TSK-0132]") {
     const auto normal = ComputeTuiAuditDashboardGeometry(72, 22, false, true);
     REQUIRE(normal.compactRoot);
-    REQUIRE(normal.frame.width == 36);
+    REQUIRE(normal.frame.width == 47);
     REQUIRE(normal.frame.height == 11);
     REQUIRE(normal.mainHeight == 20);
     REQUIRE(normal.rightPanelContentHeight == 9);
@@ -375,6 +375,55 @@ TEST_CASE("audit dashboard reserves achievable compact production geometry",
     REQUIRE(command.frame.height == normal.frame.height);
     REQUIRE(command.mainHeight == 17);
     REQUIRE(command.rightPanelContentHeight == 6);
+}
+
+TEST_CASE("audit dashboard derives the frame from the reserved repository pane",
+          "[unit][tui_audit_frame][KOG-BUG-0109]") {
+    const auto wide = ComputeTuiAuditDashboardGeometry(120, 36, false, true, 60);
+    REQUIRE_FALSE(wide.repositoryPaneCollapsed);
+    REQUIRE(wide.repositoryPaneWidth == 60);
+    REQUIRE(wide.repositoryMenuContentWidth == 57);
+    REQUIRE(wide.rightPanelWidth == 57);
+    REQUIRE(wide.frame.width == wide.rightPanelWidth);
+
+    const auto compact = ComputeTuiAuditDashboardGeometry(72, 22, false, true, 60);
+    REQUIRE(compact.repositoryPaneCollapsed);
+    REQUIRE(compact.repositoryPaneWidth == 0);
+    REQUIRE(compact.repositoryMenuContentWidth == 0);
+    REQUIRE(compact.rightPanelWidth == 70);
+    REQUIRE(compact.frame.width <= compact.rightPanelWidth);
+
+    const auto minimum = ComputeTuiAuditDashboardGeometry(24, 12, true, true, 22);
+    REQUIRE(minimum.repositoryPaneCollapsed);
+    REQUIRE(minimum.repositoryMenuContentWidth == 0);
+    REQUIRE(minimum.rightPanelWidth == 22);
+    REQUIRE(minimum.frame.width <= minimum.rightPanelWidth);
+    REQUIRE(minimum.frame.height <= minimum.mainHeight);
+}
+
+TEST_CASE("minimum audit frame keeps verified receipt linkage readable",
+          "[unit][tui_audit_frame][KOG-BUG-0109]") {
+    auto model = ApplyTuiAuditRunReadResult(
+        BaseModel(),
+        VerifiedReadResult(OperationAuditRunReadState::Ready));
+    model.view = TuiAuditView::Receipt;
+    const auto geometry = ComputeTuiAuditDashboardGeometry(
+        24,
+        12,
+        false,
+        true,
+        22).frame;
+    const auto rendered = RenderTuiAuditFrameText(
+        model,
+        geometry,
+        TuiAuditSemanticTheme{true});
+
+    REQUIRE(rendered.find("AUDIT verified") != std::string::npos);
+    REQUIRE(rendered.find("receipt=linked") != std::string::npos);
+    REQUIRE(rendered.find("run=run-token") != std::string::npos);
+    REQUIRE(rendered.find("id=recei..ken") != std::string::npos);
+    REQUIRE(rendered.find("keys=Esc/q close") != std::string::npos);
+    RequireBoundedFrame(rendered, geometry);
 }
 
 TEST_CASE("compact production composition keeps frame controls and content visible",

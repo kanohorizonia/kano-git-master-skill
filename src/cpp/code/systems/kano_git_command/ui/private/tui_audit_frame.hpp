@@ -56,13 +56,34 @@ enum class TuiAuditEvidenceAvailability {
 struct TuiAuditFrameGeometry {
     int width = 120;
     int height = 36;
+
+    [[nodiscard]] auto operator==(
+        const TuiAuditFrameGeometry& InOther) const -> bool {
+        return width == InOther.width && height == InOther.height;
+    }
 };
 
 struct TuiAuditDashboardGeometry {
     TuiAuditFrameGeometry frame;
     bool compactRoot = false;
+    bool repositoryPaneCollapsed = false;
+    int repositoryPaneWidth = 0;
+    int repositoryMenuContentWidth = 0;
+    int rightPanelWidth = 0;
     int mainHeight = 0;
     int rightPanelContentHeight = 0;
+
+    [[nodiscard]] auto operator==(
+        const TuiAuditDashboardGeometry& InOther) const -> bool {
+        return frame == InOther.frame &&
+            compactRoot == InOther.compactRoot &&
+            repositoryPaneCollapsed == InOther.repositoryPaneCollapsed &&
+            repositoryPaneWidth == InOther.repositoryPaneWidth &&
+            repositoryMenuContentWidth == InOther.repositoryMenuContentWidth &&
+            rightPanelWidth == InOther.rightPanelWidth &&
+            mainHeight == InOther.mainHeight &&
+            rightPanelContentHeight == InOther.rightPanelContentHeight;
+    }
 };
 
 // A UI-safe receipt projection. The runner supplies a result it has already
@@ -95,7 +116,8 @@ struct TuiAuditReceiptTruth {
     int InTerminalWidth,
     int InTerminalHeight,
     bool bInCommandMode,
-    bool bInMono = false) -> TuiAuditDashboardGeometry;
+    bool bInMono = false,
+    int InRepositoryPaneWidth = 22) -> TuiAuditDashboardGeometry;
 
 // The audit frame consumes the dashboard's resolved semantic palette. Mono
 // selects emphasis-only decorators, so readability never depends on ANSI
