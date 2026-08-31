@@ -1,0 +1,31 @@
+diff --git a/src/ftxui/screen/screen.cpp b/src/ftxui/screen/screen.cpp
+--- a/src/ftxui/screen/screen.cpp
++++ b/src/ftxui/screen/screen.cpp
+@@ -433,8 +433,12 @@ std::string Screen::ToString() const {
+       if (!previous_fullwidth) {
+         UpdatePixelStyle(this, ss, *previous_pixel_ref, pixel);
+         previous_pixel_ref = &pixel;
+-        ss << pixel.character;
++        if (pixel.character.empty()) {
++          ss << ' ';
++        } else {
++          ss << pixel.character;
++        }
+       }
+       previous_fullwidth = (string_width(pixel.character) == 2);
+     }
+   }
+diff --git a/src/ftxui/screen/string.cpp b/src/ftxui/screen/string.cpp
+--- a/src/ftxui/screen/string.cpp
++++ b/src/ftxui/screen/string.cpp
+@@ -1281,2 +1281,9 @@ bool IsCombining(uint32_t ucs) {
+ bool IsCombining(uint32_t ucs) {
++#if defined(KOG_FTXUI_WINDOWS_CONPTY_COMBINING_MACRON_FALLBACK)
++  // Legacy ConPTY assigns U+0304 one console cell. Keep FTXUI's layout in
++  // sync with that backend while preserving normal combining behavior.
++  if (ucs == 0x0304) {
++    return false;
++  }
++#endif
+   return Bisearch(ucs, g_extend_characters);
+ }

@@ -27,6 +27,7 @@ VERSION text eol=lf
 *.ini text eol=lf
 *.cs text eol=lf
 *.uproject text eol=lf
+*.patch text eol=lf
 *.rules text eol=lf
 *.txt text eol=lf
 

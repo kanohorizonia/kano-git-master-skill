@@ -653,16 +653,44 @@ set(KOG_FTXUI_BINARY_DIR "${CMAKE_BINARY_DIR}/thirdparty/ftxui-build")
 set(KOG_FTXUI_SOURCE_MODE "fetch" CACHE STRING "FTXUI source mode: fetch|submodule")
 set_property(CACHE KOG_FTXUI_SOURCE_MODE PROPERTY STRINGS fetch submodule)
 
+# FTXUI v5 does not export a Windows DLL ABI. Keep it static even when another
+# fetched dependency publishes BUILD_SHARED_LIBS in the global cache.
+if(DEFINED BUILD_SHARED_LIBS)
+    set(_kog_ftxui_build_shared_libs_was_defined TRUE)
+    set(_kog_ftxui_saved_build_shared_libs "${BUILD_SHARED_LIBS}")
+else()
+    set(_kog_ftxui_build_shared_libs_was_defined FALSE)
+endif()
+set(BUILD_SHARED_LIBS OFF)
+
+find_package(Git REQUIRED)
+
 if(KOG_FTXUI_SOURCE_MODE STREQUAL "fetch")
     kog_fetchcontent_declare_git(
         ftxui
         REPOSITORY https://github.com/ArthurSonzogni/FTXUI.git
         TAG v5.0.0
+        EXTRA_ARGS
+            PATCH_COMMAND
+                "${CMAKE_COMMAND}"
+                "-DKOG_PATCH_SOURCE_DIR=<SOURCE_DIR>"
+                "-DKOG_PATCH_FILE=${CMAKE_CURRENT_SOURCE_DIR}/patches/ftxui-v5-screen-empty-cells.patch"
+                "-DKOG_GIT_EXECUTABLE=${GIT_EXECUTABLE}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/apply-git-patch.cmake"
     )
     FetchContent_MakeAvailable(ftxui)
     message(STATUS "FTXUI fetched into CMake _deps: enabling full tui")
 elseif(KOG_FTXUI_SOURCE_MODE STREQUAL "submodule")
     if(EXISTS "${KOG_FTXUI_SUBMODULE_SOURCE_DIR}/CMakeLists.txt")
+        execute_process(
+            COMMAND
+                "${CMAKE_COMMAND}"
+                "-DKOG_PATCH_SOURCE_DIR=${KOG_FTXUI_SUBMODULE_SOURCE_DIR}"
+                "-DKOG_PATCH_FILE=${CMAKE_CURRENT_SOURCE_DIR}/patches/ftxui-v5-screen-empty-cells.patch"
+                "-DKOG_GIT_EXECUTABLE=${GIT_EXECUTABLE}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/apply-git-patch.cmake"
+            COMMAND_ERROR_IS_FATAL ANY
+        )
         add_subdirectory("${KOG_FTXUI_SUBMODULE_SOURCE_DIR}" "${KOG_FTXUI_BINARY_DIR}" EXCLUDE_FROM_ALL)
         message(STATUS "FTXUI submodule found: enabling full tui")
     else()
@@ -671,6 +699,24 @@ elseif(KOG_FTXUI_SOURCE_MODE STREQUAL "submodule")
 else()
     message(FATAL_ERROR "Unsupported KOG_FTXUI_SOURCE_MODE: ${KOG_FTXUI_SOURCE_MODE} (expected fetch|submodule)")
 endif()
+
+# Legacy Windows ConPTY assigns a console cell to U+0304. Publish the matching
+# width contract to FTXUI and its consumers only when its Microsoft fallback is
+# active; other terminals retain the upstream Unicode combining behavior.
+if(WIN32 AND FTXUI_MICROSOFT_TERMINAL_FALLBACK)
+    target_compile_definitions(
+        screen
+        PUBLIC KOG_FTXUI_WINDOWS_CONPTY_COMBINING_MACRON_FALLBACK=1
+    )
+endif()
+
+if(_kog_ftxui_build_shared_libs_was_defined)
+    set(BUILD_SHARED_LIBS "${_kog_ftxui_saved_build_shared_libs}")
+else()
+    unset(BUILD_SHARED_LIBS)
+endif()
+unset(_kog_ftxui_build_shared_libs_was_defined)
+unset(_kog_ftxui_saved_build_shared_libs)
 
 # Resolve toml++ source strategy
 #   submodule: use code/thirdparty/tomlplusplus from git submodule
