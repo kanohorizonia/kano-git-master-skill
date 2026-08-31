@@ -841,13 +841,14 @@
     {
       "incident_id": "KG-BUG-0129",
       "incident_date": "2026-08-31",
-      "root_cause": "The Windows long-path wrapper configured KOG entirely through an ephemeral SUBST source root, so test repository paths and runtime output identities retained the temporary drive and standalone binaries could not find repository assets after cleanup.",
+      "root_cause": "The Windows long-path wrapper configured KOG entirely through an ephemeral SUBST source root, so test repository paths and runtime output identities retained the temporary drive and standalone binaries could not find repository assets after cleanup; runtime packaging also reconfigured a valid cache and could stall in an unnecessary FetchContent network clone.",
       "backlog_ref": "KG-BUG-0129",
-      "change_ref": "30e785130e51d7ac03588e5487e20cd117a3f319",
+      "change_ref": "b6d5150673d8c306f030ef4e8ebda4d85f73e1dd",
       "workflow_contracts": [
         "windows-self-build",
         "ephemeral-path-shortening",
-        "post-build-artifact-runnability"
+        "post-build-artifact-runnability",
+        "configure-cache-reuse"
       ],
       "regression_cases": [
         {
@@ -862,6 +863,13 @@
           "test_name": "audit runtime artifact rebuild survives SUBST cleanup",
           "test_file": "src/python/test/package_audit_runtime.py",
           "test_kind": "integration",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-BUG-0129/validated-configure-cache-reuse",
+          "test_name": "Windows preset wrapper does not replay failed actions",
+          "test_file": "src/cpp/shared/infra/scripts/tests/windows_preset_build_contract.sh",
+          "test_kind": "contract",
           "mapping_state": "source-linked"
         }
       ]
@@ -980,6 +988,55 @@
           "case_id": "KG-BUG-0134/exact-script-marker-crlf",
           "test_name": "script contract registration matching is exact and CRLF-safe",
           "test_file": "src/cpp/code/tests/kano_git_regression_tests/regression_coverage_test.cpp",
+          "test_kind": "unit",
+          "mapping_state": "source-linked"
+        }
+      ]
+    },
+    {
+      "incident_id": "KG-BUG-0006",
+      "incident_date": "2026-09-01",
+      "root_cause": "Recursive cherry-pick inventory deferred patch-equivalence proofs for dirty repos but still removed dirty blockers before cherry-pick no-op proof admission, causing unfiltered inventory to materialize a 7,559-file temporary worktree under a 5-second probe timeout and exhaust the shared planning deadline.",
+      "backlog_ref": "KG-BUG-0006",
+      "change_ref": "05c55079921ab9e0a57d17355a8b2de541c40d92",
+      "workflow_contracts": [
+        "bounded-command-latency",
+        "branch-inventory",
+        "dirty-repo-proof-deferral"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KG-BUG-0006/defer-unfiltered-dirty-noop-proof",
+          "test_name": "converge branches inventory defers cherry-pick no-op probes for dirty repos",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/converge_planner_test.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        }
+      ]
+    },
+    {
+      "incident_id": "KG-BUG-0135",
+      "incident_date": "2026-09-01",
+      "root_cause": "Generic Windows argv escaping rewrote nested quotes inside cmd.exe /s /c payloads using CRT backslash rules, but cmd parses command payloads with its own quote grammar, causing valid spaced-path batch scripts to exit 1 before timeout and argv contracts could run.",
+      "backlog_ref": "KG-BUG-0135",
+      "change_ref": "cca1d2a555b79e918bebbb88222c86aad821ea35",
+      "workflow_contracts": [
+        "cmd-payload-quoting",
+        "timeout-provenance",
+        "windows-process-launch"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KG-BUG-0135/kog-timeout-batch-payload",
+          "test_name": "ShellExecutor KOG capture timeout reports provenance and safe action",
+          "test_file": "src/cpp/code/tests/kano_git_tui_tests/unit/test_shell_executor.cpp",
+          "test_kind": "unit",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-BUG-0135/spaced-batch-path-argv",
+          "test_name": "ShellExecutor executes cmd scripts with spaced paths and preserved args",
+          "test_file": "src/cpp/code/tests/kano_git_tui_tests/unit/test_shell_executor.cpp",
           "test_kind": "unit",
           "mapping_state": "source-linked"
         }
