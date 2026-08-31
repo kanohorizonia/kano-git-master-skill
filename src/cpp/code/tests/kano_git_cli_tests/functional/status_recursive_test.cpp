@@ -236,6 +236,30 @@ TEST_CASE("status recursive json emits Task 4A schema and deterministic schedule
     RemoveSandboxWorkspace(sandbox);
 }
 
+TEST_CASE("status recursive probes an unregistered Unicode nested repository",
+          "[tdd][functional][status][recursive][unicode][windows][cross-platform][KOG-BUG-0109]") {
+    const auto sandbox = CreateSandboxWorkspace("status-unicode-nested-repository");
+    const auto root = (sandbox.root / "root").lexically_normal();
+    const std::string childRelativeUtf8 =
+        std::string{"repos/\xE6\xB8\xAC\xE8\xA9\xA6-a\xCC\x84-\xF0\x9F\xAA\x90"};
+    const auto child = root / std::filesystem::u8path(childRelativeUtf8);
+    const auto templateRepo = root / "ascii-repo-template";
+
+    InitRepo(root);
+    InitRepo(templateRepo);
+    std::filesystem::create_directories(child);
+    std::filesystem::copy(templateRepo / ".git", child / ".git",
+                          std::filesystem::copy_options::recursive);
+    WriteTextFile(child / "README.md", "unicode child\n");
+    std::filesystem::remove_all(templateRepo);
+
+    RunDiscover(root);
+    const auto json = ExtractStatusJsonPayload(RunRecursiveJson(root, 1));
+    RequireContains(json, childRelativeUtf8);
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
 TEST_CASE("status recursive bounded scan reports newly discovered nested unregistered repo as blocking", "[tdd][unit][feature:status-policy][feature:dirty-kind][functional][status][recursive]") {
     const auto sandbox = CreateSandboxWorkspace("status-recursive-untrusted");
     const auto root = (sandbox.root / "root").lexically_normal();

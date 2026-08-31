@@ -13,6 +13,23 @@
 namespace kano::git::workspace {
 namespace {
 
+auto Utf8PathText(const std::filesystem::path& InPath) -> std::string {
+#if defined(_WIN32)
+    const auto value = InPath.generic_u8string();
+    return {value.begin(), value.end()};
+#else
+    return InPath.generic_string();
+#endif
+}
+
+auto Utf8Path(const std::string_view InPath) -> std::filesystem::path {
+#if defined(_WIN32)
+    return std::filesystem::u8path(InPath);
+#else
+    return std::filesystem::path(InPath);
+#endif
+}
+
 auto Trim(std::string InValue) -> std::string {
     while (!InValue.empty() && (InValue.back() == '\n' || InValue.back() == '\r' || InValue.back() == ' ' || InValue.back() == '\t')) {
         InValue.pop_back();
@@ -50,7 +67,7 @@ auto RepoPathKey(const std::filesystem::path& InPath) -> std::string {
     if (ec) {
         path = InPath;
     }
-    auto out = path.lexically_normal().generic_string();
+    auto out = Utf8PathText(path.lexically_normal());
     while (out.size() > 1 && out.back() == '/') {
         out.pop_back();
     }
@@ -97,7 +114,7 @@ auto HasGitPath(const std::filesystem::path& InRepo, const std::string& InGitPat
     if (value.empty()) {
         return false;
     }
-    return std::filesystem::exists(std::filesystem::path(value));
+    return std::filesystem::exists(Utf8Path(value));
 }
 
 auto ParseStatusFlag(const std::string& InLine) -> std::string {
@@ -470,7 +487,7 @@ auto ScanRepoHealth(const std::filesystem::path& InRepo,
                 continue;
             }
 
-            const auto childRepo = (InRepo / std::filesystem::path(entry.path)).lexically_normal();
+            const auto childRepo = (InRepo / Utf8Path(entry.path)).lexically_normal();
             if (!std::filesystem::exists(childRepo)) {
                 AddBlocker(&out, RepoBlockerKind::GitlinkUnreachable,
                            "submodule path missing locally for gitlink reachability: " + entry.path);
@@ -483,7 +500,7 @@ auto ScanRepoHealth(const std::filesystem::path& InRepo,
                 // Skip reachability checks here; they will be validated once initialized.
                 continue;
             }
-            if (RepoPathKey(Trim(childTopOut.stdoutStr)) != RepoPathKey(childRepo)) {
+            if (RepoPathKey(Utf8Path(Trim(childTopOut.stdoutStr))) != RepoPathKey(childRepo)) {
                 // Git command resolved to an ancestor repository (common when nested submodule
                 // worktree is not initialized). Treat as not initialized and skip.
                 continue;

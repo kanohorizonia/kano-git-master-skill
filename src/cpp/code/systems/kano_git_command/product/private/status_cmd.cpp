@@ -38,6 +38,23 @@
 namespace kano::git::commands {
 namespace {
 
+auto Utf8PathText(const std::filesystem::path& InPath) -> std::string {
+#if defined(_WIN32)
+    const auto value = InPath.generic_u8string();
+    return {value.begin(), value.end()};
+#else
+    return InPath.generic_string();
+#endif
+}
+
+auto Utf8Path(const std::string_view InPath) -> std::filesystem::path {
+#if defined(_WIN32)
+    return std::filesystem::u8path(InPath);
+#else
+    return std::filesystem::path(InPath);
+#endif
+}
+
 struct RepoView {
     std::filesystem::path path;
     std::string group;
@@ -171,7 +188,7 @@ auto EscapeJson(std::string InValue) -> std::string {
 }
 
 auto PathKey(const std::filesystem::path& InPath) -> std::string {
-    auto key = InPath.lexically_normal().generic_string();
+    auto key = Utf8PathText(InPath.lexically_normal());
     while (key.size() > 1 && key.back() == '/') {
         key.pop_back();
     }
@@ -551,7 +568,7 @@ auto HasUnpushedCommit(const std::filesystem::path& InRepo, const std::string& I
 }
 
 auto ParentGitlinkHead(const std::filesystem::path& InParent, const std::filesystem::path& InChild) -> std::string {
-    const auto rel = InChild.lexically_normal().lexically_relative(InParent.lexically_normal()).generic_string();
+    const auto rel = Utf8PathText(InChild.lexically_normal().lexically_relative(InParent.lexically_normal()));
     if (rel.empty() || rel.starts_with("..")) {
         return {};
     }
@@ -602,7 +619,7 @@ auto ManagedSubmodulePathsFromGitmodules(const std::filesystem::path& InRepoRoot
 }
 
 auto IsIgnoredByContainingRepo(const std::filesystem::path& InParent, const std::filesystem::path& InChild) -> bool {
-    const auto rel = InChild.lexically_normal().lexically_relative(InParent.lexically_normal()).generic_string();
+    const auto rel = Utf8PathText(InChild.lexically_normal().lexically_relative(InParent.lexically_normal()));
     if (rel.empty() || rel.starts_with("..")) {
         return false;
     }
@@ -665,10 +682,10 @@ auto RelativeId(const std::filesystem::path& InWorkspaceRoot, const std::filesys
         return ".";
     }
     const auto relative = path.lexically_relative(root);
-    if (!relative.empty() && !relative.generic_string().starts_with("..")) {
-        return relative.generic_string();
+    if (!relative.empty() && !Utf8PathText(relative).starts_with("..")) {
+        return Utf8PathText(relative);
     }
-    return path.generic_string();
+    return Utf8PathText(path);
 }
 
 auto PathDepth(const std::string& InRelativePath) -> int {
@@ -741,7 +758,7 @@ auto RelativeDisplayPath(const std::filesystem::path& InRoot, const std::filesys
 }
 
 auto GroupFromRelativePath(const std::filesystem::path& InRelativePath) -> std::string {
-    const auto parent = InRelativePath.parent_path().generic_string();
+    const auto parent = Utf8PathText(InRelativePath.parent_path());
     if (parent.empty() || parent == ".") {
         return ".";
     }
@@ -749,11 +766,11 @@ auto GroupFromRelativePath(const std::filesystem::path& InRelativePath) -> std::
 }
 
 auto RepoNameFromPath(const std::filesystem::path& InPath) -> std::string {
-    const auto name = InPath.filename().generic_string();
+    const auto name = Utf8PathText(InPath.filename());
     if (!name.empty()) {
         return name;
     }
-    return InPath.lexically_normal().generic_string();
+    return Utf8PathText(InPath.lexically_normal());
 }
 
 auto IsAttentionDirty(const RepoView& InRow) -> bool {
@@ -856,7 +873,7 @@ auto ResolveRepoFromSpec(const std::filesystem::path& InRoot,
         return std::filesystem::current_path().lexically_normal();
     }
 
-    const std::filesystem::path asPath(InSpec);
+    const auto asPath = Utf8Path(InSpec);
     const auto candidate = (asPath.is_absolute() ? asPath : (InRoot / asPath)).lexically_normal();
     if (std::filesystem::exists(candidate) && GitCapture(candidate, {"rev-parse", "--git-dir"}).exitCode == 0) {
         return candidate;
@@ -876,8 +893,8 @@ auto ResolveRepoFromSpec(const std::filesystem::path& InRoot,
     for (const auto& repo : discovery.repos) {
         const auto repoPath = repo.path.lexically_normal();
         const auto repoName = RepoNameFromPath(repoPath);
-        const auto repoKey = repoPath.generic_string();
-        const auto relativeKey = RelativeDisplayPath(InRoot, repoPath).generic_string();
+        const auto repoKey = Utf8PathText(repoPath);
+        const auto relativeKey = Utf8PathText(RelativeDisplayPath(InRoot, repoPath));
 
         if (repoName == InSpec || repoKey == InSpec || relativeKey == InSpec) {
             exactMatches.push_back(repoPath);
@@ -890,10 +907,10 @@ auto ResolveRepoFromSpec(const std::filesystem::path& InRoot,
 
     auto matches = exactMatches.empty() ? fuzzyMatches : exactMatches;
     std::sort(matches.begin(), matches.end(), [](const auto& A, const auto& B) {
-        return A.generic_string() < B.generic_string();
+        return Utf8PathText(A) < Utf8PathText(B);
     });
     matches.erase(std::unique(matches.begin(), matches.end(), [](const auto& A, const auto& B) {
-        return A.generic_string() == B.generic_string();
+        return Utf8PathText(A) == Utf8PathText(B);
     }), matches.end());
 
     if (matches.empty()) {
@@ -903,7 +920,7 @@ auto ResolveRepoFromSpec(const std::filesystem::path& InRoot,
         std::ostringstream oss;
         oss << "repo spec is ambiguous: " << InSpec << "\nMatches:\n";
         for (const auto& match : matches) {
-            oss << "  - " << match.generic_string() << "\n";
+            oss << "  - " << Utf8PathText(match) << "\n";
         }
         throw std::runtime_error(oss.str());
     }
@@ -1046,9 +1063,9 @@ auto FormatJson(
             }
             out << "\""
                 << EscapeJson(
-                       InMetadata.allowedExternalRoots[index]
-                           .lexically_normal()
-                           .generic_string())
+                       Utf8PathText(
+                           InMetadata.allowedExternalRoots[index]
+                               .lexically_normal()))
                 << "\"";
         }
         out << "],";
@@ -1063,7 +1080,7 @@ auto FormatJson(
         const auto& row = InRows[i];
         out << "{";
         out << std::format("\"index\":{},", i + 1);
-        out << std::format("\"path\":\"{}\",", EscapeJson(row.path.lexically_normal().generic_string()));
+        out << std::format("\"path\":\"{}\",", EscapeJson(Utf8PathText(row.path.lexically_normal())));
         out << std::format("\"group\":\"{}\",", EscapeJson(row.group));
         out << std::format("\"repo_name\":\"{}\",", EscapeJson(row.repoName));
         out << std::format("\"type\":\"{}\",", EscapeJson(row.type));
@@ -1105,7 +1122,7 @@ auto FormatMarkdown(const std::vector<RepoView>& InRows) -> std::string {
     oss << "| --- | --- | --- | --- | --- | --- | --- | --- |\n";
     for (const auto& row : InRows) {
         oss << "| "
-            << row.path.lexically_normal().generic_string() << " | "
+            << Utf8PathText(row.path.lexically_normal()) << " | "
             << row.branch << " | "
             << row.remote << " | "
             << row.tracking << " | "
@@ -1176,7 +1193,7 @@ auto BuildRecursiveRepoStatus(const workspace::RepoRecord& InRepo,
     out.repo = InRepo;
     out.id = RelativeId(InWorkspaceRoot, InRepo.path);
     out.relativePath = out.id;
-    out.absolutePath = InRepo.path.lexically_normal().generic_string();
+    out.absolutePath = Utf8PathText(InRepo.path.lexically_normal());
     out.depth = PathDepth(out.relativePath);
     out.isWorkspaceRoot = InRepo.type == "root" || PathKey(InRepo.path) == PathKey(InWorkspaceRoot);
     out.registrationRelativeTo = InRepo.registrationRelativeTo.empty()
@@ -1262,7 +1279,7 @@ auto BuildRecursiveRepoStatus(const workspace::RepoRecord& InRepo,
         if (childIt->second.type != "registered") {
             continue;
         }
-        const auto rel = childIt->second.path.lexically_normal().lexically_relative(InRepo.path.lexically_normal()).generic_string();
+        const auto rel = Utf8PathText(childIt->second.path.lexically_normal().lexically_relative(InRepo.path.lexically_normal()));
         if (!rel.empty() && !rel.starts_with("..")) {
             managedGitlinkPaths.insert(rel);
         }
@@ -1510,7 +1527,7 @@ auto MakeRecursiveStatusFailure(const workspace::RepoRecord& InRepo,
     out.repo = InRepo;
     out.id = RelativeId(InWorkspaceRoot, InRepo.path);
     out.relativePath = out.id;
-    out.absolutePath = InRepo.path.lexically_normal().generic_string();
+    out.absolutePath = Utf8PathText(InRepo.path.lexically_normal());
     out.depth = PathDepth(out.relativePath);
     out.isWorkspaceRoot = InRepo.type == "root" || PathKey(InRepo.path) == PathKey(InWorkspaceRoot);
     out.registrationRelativeTo = InRepo.registrationRelativeTo.empty()
@@ -1692,7 +1709,7 @@ auto FormatRecursiveStatusJson(const RecursiveStatusSnapshot& InSnapshot) -> std
     out << "{";
     out << "\"schemaName\":\"kog.recursiveStatusSnapshot\",";
     out << "\"schemaVersion\":1,";
-    out << "\"workspaceRoot\":\"" << EscapeJson(InSnapshot.workspaceRoot.generic_string()) << "\",";
+    out << "\"workspaceRoot\":\"" << EscapeJson(Utf8PathText(InSnapshot.workspaceRoot)) << "\",";
     out << "\"repos\":[";
     for (std::size_t i = 0; i < InSnapshot.repos.size(); ++i) {
         if (i > 0) {
@@ -1791,7 +1808,7 @@ auto FormatRecursiveStatusSummary(const RecursiveStatusSnapshot& InSnapshot) -> 
         conflicted += repo.conflicted ? 1 : 0;
     }
     out << "Recursive status summary\n";
-    out << "workspaceRoot=" << InSnapshot.workspaceRoot.generic_string() << "\n";
+    out << "workspaceRoot=" << Utf8PathText(InSnapshot.workspaceRoot) << "\n";
     out << "repos=" << InSnapshot.repos.size() << " dirty=" << dirty << " conflicted=" << conflicted << " blocksConverge=" << blocked << "\n";
     for (const auto& repo : InSnapshot.repos) {
         if (repo.conflicted) {
@@ -1849,7 +1866,7 @@ auto BuildRepoViews(const std::vector<workspace::RepoRecord>& InRepos, const std
         if (A.repoName != B.repoName) {
             return A.repoName < B.repoName;
         }
-        return A.path.lexically_normal().generic_string() < B.path.lexically_normal().generic_string();
+        return Utf8PathText(A.path.lexically_normal()) < Utf8PathText(B.path.lexically_normal());
     });
     return rows;
 }
@@ -1873,7 +1890,7 @@ auto BuildCachedRepoViews(
         if (A.repoName != B.repoName) {
             return A.repoName < B.repoName;
         }
-        return A.path.lexically_normal().generic_string() < B.path.lexically_normal().generic_string();
+        return Utf8PathText(A.path.lexically_normal()) < Utf8PathText(B.path.lexically_normal());
     });
     return rows;
 }
@@ -1890,11 +1907,11 @@ auto RunSelfScopedCommand(const std::string& InCommand,
                           const std::vector<std::string>& InExtraArgs) -> int {
     std::vector<std::string> args;
     if (InCommand == "push" || InCommand == "commit" || InCommand == "commit-push") {
-        args = {InCommand, "--repos", InResolvedRepo.generic_string(), "--no-recursive"};
+        args = {InCommand, "--repos", Utf8PathText(InResolvedRepo), "--no-recursive"};
     } else if (InCommand == "log" || InCommand == "slog") {
-        args = {InCommand, "--repo", InResolvedRepo.generic_string(), "--no-recursive"};
+        args = {InCommand, "--repo", Utf8PathText(InResolvedRepo), "--no-recursive"};
     } else if (InCommand == "update") {
-        args = {InCommand, "--repo", InResolvedRepo.generic_string()};
+        args = {InCommand, "--repo", Utf8PathText(InResolvedRepo)};
     } else {
         std::cerr << "Error: unsupported repo-scoped command: " << InCommand << "\n";
         return 2;
@@ -1993,7 +2010,7 @@ void RegisterStatus(CLI::App& InApp) {
             std::exit(1);
         }
 
-        auto root = repoRoot->empty() ? std::filesystem::current_path() : std::filesystem::path(*repoRoot);
+        auto root = repoRoot->empty() ? std::filesystem::current_path() : Utf8Path(*repoRoot);
         root = std::filesystem::absolute(root).lexically_normal();
         if (!target->empty()) {
             try {
@@ -2062,7 +2079,7 @@ void RegisterStatus(CLI::App& InApp) {
             std::exit(1);
         }
 
-        auto root = repoRoot->empty() ? std::filesystem::current_path() : std::filesystem::path(*repoRoot);
+        auto root = repoRoot->empty() ? std::filesystem::current_path() : Utf8Path(*repoRoot);
         root = std::filesystem::absolute(root).lexically_normal();
         if (*rootFallback && !*inventoryOnly) {
             std::cerr << "Error: --root-fallback requires --inventory-only\n";
@@ -2146,7 +2163,7 @@ void RegisterRepo(CLI::App& InApp) {
             std::exit(1);
         }
 
-        auto root = repoRoot->empty() ? std::filesystem::current_path() : std::filesystem::path(*repoRoot);
+        auto root = repoRoot->empty() ? std::filesystem::current_path() : Utf8Path(*repoRoot);
         root = std::filesystem::absolute(root).lexically_normal();
 
         std::filesystem::path repoPath;
@@ -2192,7 +2209,7 @@ void RegisterRepo(CLI::App& InApp) {
         sub->add_option("--count,-n", *count, "Number of commits to show");
         sub->add_option("--repo-root", *repoRoot, "Workspace root/start path used for repo-name lookup");
         sub->callback([targetArg, count, repoRoot, InShort]() {
-            auto root = repoRoot->empty() ? std::filesystem::current_path() : std::filesystem::path(*repoRoot);
+            auto root = repoRoot->empty() ? std::filesystem::current_path() : Utf8Path(*repoRoot);
             root = std::filesystem::absolute(root).lexically_normal();
             try {
                 const auto repoPath = ResolveRepoFromSpec(root, *targetArg, 8, true);
