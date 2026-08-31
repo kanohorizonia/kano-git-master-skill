@@ -2443,7 +2443,7 @@ auto MakeCommitPushCommandCallback(CLI::App& InCommand,
         }
         auto repoList = ResolveRepoList(workspaceRoot, ParseReposCsv(*repos));
         bool effectiveNoRecursive = *noRecursive;
-        if (!effectiveNoRecursive && repoList.empty() && !target->empty()) {
+        if (!effectiveNoRecursive && repoList.empty()) {
             const auto scopedRepos = DiscoverWorkspaceRepos(workspaceRoot);
             if (scopedRepos.size() <= 1) {
                 effectiveNoRecursive = true;

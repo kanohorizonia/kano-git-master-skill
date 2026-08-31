@@ -238,8 +238,28 @@ auto RefSha(const std::filesystem::path& InRepo, const std::string& InRef) -> st
     return sha;
 }
 
+auto PathForTestNativeIo(const std::filesystem::path& InPath)
+    -> std::filesystem::path {
+#if defined(_WIN32)
+    auto normalized = InPath.lexically_normal();
+    normalized.make_preferred();
+    const auto& native = normalized.native();
+    if (native.starts_with(LR"(\\?\)") ||
+        native.starts_with(LR"(\\.\)") || !normalized.is_absolute()) {
+        return normalized;
+    }
+    if (native.starts_with(LR"(\\)")) {
+        return std::filesystem::path(
+            std::wstring(LR"(\\?\UNC\)") + native.substr(2));
+    }
+    return std::filesystem::path(std::wstring(LR"(\\?\)") + native);
+#else
+    return InPath;
+#endif
+}
+
 auto ReadTextFile(const std::filesystem::path& InPath) -> std::string {
-    std::ifstream in(InPath, std::ios::binary);
+    std::ifstream in(PathForTestNativeIo(InPath), std::ios::binary);
     REQUIRE(in.good());
     std::ostringstream buffer;
     buffer << in.rdbuf();
@@ -622,7 +642,8 @@ auto FindAuditAttemptRoots(const std::filesystem::path& InPlanPath,
     const auto attemptName = "attempt-" + std::to_string(InAttempt);
     std::vector<std::filesystem::path> matches;
     std::error_code ec;
-    for (std::filesystem::recursive_directory_iterator it(auditRoot, ec), end; !ec && it != end; it.increment(ec)) {
+    for (std::filesystem::recursive_directory_iterator it(
+             PathForTestNativeIo(auditRoot), ec), end; !ec && it != end; it.increment(ec)) {
         if (it->is_directory(ec) && it->path().filename() == attemptName) matches.push_back(it->path());
     }
     REQUIRE_FALSE(ec);
@@ -5632,6 +5653,18 @@ TEST_CASE("commit_push_success_path_does_not_emit_checkout_chatter", "[functiona
     INFO(result.stderrText);
     REQUIRE(result.exitCode == 0);
     REQUIRE_FALSE(ContainsRawCheckoutChatter(result.stdoutText + "\n" + result.stderrText));
+    const auto diagnostics = ReadTextFile(
+        ctx.cloneRepo / ".kano" / "tmp" / "functional-process-diag.log");
+    constexpr std::string_view cachePathProbe =
+        "config --path --get kano.cache.local-dir";
+    std::size_t cachePathProbeCount = 0;
+    for (std::size_t offset = 0;
+         (offset = diagnostics.find(cachePathProbe, offset)) != std::string::npos;
+         offset += cachePathProbe.size()) {
+        ++cachePathProbeCount;
+    }
+    INFO(cachePathProbeCount);
+    REQUIRE(cachePathProbeCount <= 12);
     const auto [behind, ahead] = AheadBehindCounts(ctx.cloneRepo);
     REQUIRE(behind == 0);
     REQUIRE(ahead == 0);

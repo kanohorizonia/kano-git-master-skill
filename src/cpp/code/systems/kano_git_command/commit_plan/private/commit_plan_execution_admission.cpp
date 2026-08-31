@@ -83,8 +83,9 @@ auto PlanExecutionLockKey(const std::filesystem::path& InPlanPath,
                           std::string* OutError)
     -> std::optional<std::string> {
 #if defined(_WIN32)
+    const auto ioPlanPath = runtime_path::NativeIoPath(InPlanPath);
     const auto sourceHandle = CreateFileW(
-        InPlanPath.wstring().c_str(), FILE_READ_ATTRIBUTES,
+        ioPlanPath.c_str(), FILE_READ_ATTRIBUTES,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
         OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
     if (sourceHandle == INVALID_HANDLE_VALUE) {
