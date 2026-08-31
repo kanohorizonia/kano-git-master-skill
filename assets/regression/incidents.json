@@ -760,6 +760,230 @@
           "mapping_state": "source-linked"
         }
       ]
+    },
+    {
+      "incident_id": "KG-BUG-0126",
+      "incident_date": "2026-08-31",
+      "root_cause": "Branch retirement treated all tracked or staged target content as target identity drift even when branch, HEAD, ref, and upstream relation proved no target mutation was needed; when synchronization did produce a real blocker, the retire caller still continued into branch deletion instead of stopping fail-closed.",
+      "backlog_ref": "KG-BUG-0126",
+      "change_ref": "9a7eaf3011fb1f9c179ebc3d9500a4e8a9684c60",
+      "workflow_contracts": [
+        "agent-mode-branch-convergence",
+        "safe-branch-retirement",
+        "unrelated-stage-preservation"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KG-BUG-0126/preserve-unrelated-tracked-target-dirt",
+          "test_name": "converge branches retire preserves unrelated tracked target dirt",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/converge_planner_test.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-BUG-0126/block-dirty-target-when-upstream-must-move",
+          "test_name": "converge branches retire blocks dirty target when upstream must move",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/converge_planner_test.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-BUG-0126/apply-remains-strict",
+          "test_name": "converge branches apply remains strict with tracked target dirt",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/converge_planner_test.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        }
+      ]
+    },
+    {
+      "incident_id": "KG-BUG-0127",
+      "incident_date": "2026-08-31",
+      "root_cause": "The canonical Windows preset wrapper passed an unbounded inherited PATH into vcvarsall and had lost the guarded temporary SUBST lifecycle present in the legacy wrapper, causing cmd.exe input-line overflow and MSVC generated-object path failures in long worktrees.",
+      "backlog_ref": "KG-BUG-0127",
+      "change_ref": "0df0338165d2996a80617c7abe5b76cc8c286f0f",
+      "workflow_contracts": [
+        "windows-self-build",
+        "bounded-command-environment",
+        "ephemeral-path-shortening"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KG-BUG-0127/bounded-path-and-ephemeral-subst",
+          "test_name": "Windows preset helper contracts",
+          "test_file": "src/cpp/shared/infra/scripts/tests/windows_preset_helper_contract.ps1",
+          "test_kind": "contract",
+          "mapping_state": "source-linked"
+        }
+      ]
+    },
+    {
+      "incident_id": "KG-BUG-0128",
+      "incident_date": "2026-08-31",
+      "root_cause": "The canonical shell wrapper interpreted every nonzero PowerShell helper action as an execution-policy rejection and replayed the same action through its scriptblock fallback, doubling failed build work and obscuring timeout diagnosis.",
+      "backlog_ref": "KG-BUG-0128",
+      "change_ref": "0df0338165d2996a80617c7abe5b76cc8c286f0f",
+      "workflow_contracts": [
+        "windows-self-build",
+        "single-action-execution",
+        "powershell-policy-fallback"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KG-BUG-0128/no-failed-action-replay",
+          "test_name": "Windows preset wrapper does not replay failed actions",
+          "test_file": "src/cpp/shared/infra/scripts/tests/windows_preset_build_contract.sh",
+          "test_kind": "contract",
+          "mapping_state": "source-linked"
+        }
+      ]
+    },
+    {
+      "incident_id": "KG-BUG-0129",
+      "incident_date": "2026-08-31",
+      "root_cause": "The Windows long-path wrapper configured KOG entirely through an ephemeral SUBST source root, so test repository paths and runtime output identities retained the temporary drive and standalone binaries could not find repository assets after cleanup.",
+      "backlog_ref": "KG-BUG-0129",
+      "change_ref": "30e785130e51d7ac03588e5487e20cd117a3f319",
+      "workflow_contracts": [
+        "windows-self-build",
+        "ephemeral-path-shortening",
+        "post-build-artifact-runnability"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KG-BUG-0129/physical-source-root-survives-subst-cleanup",
+          "test_name": "Windows preset helper contracts",
+          "test_file": "src/cpp/shared/infra/scripts/tests/windows_preset_helper_contract.ps1",
+          "test_kind": "contract",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-BUG-0129/runtime-artifact-rebuild-after-subst-cleanup",
+          "test_name": "audit runtime artifact rebuild survives SUBST cleanup",
+          "test_file": "src/python/test/package_audit_runtime.py",
+          "test_kind": "integration",
+          "mapping_state": "source-linked"
+        }
+      ]
+    },
+    {
+      "incident_id": "KG-BUG-0130",
+      "incident_date": "2026-08-31",
+      "root_cause": "The repository applied text=auto to JSONL without an LF override, so core.autocrlf Windows worktrees converted canonical audit fixtures to CRLF even though the closed JSONL parser correctly rejects carriage-return framing.",
+      "backlog_ref": "KG-BUG-0130",
+      "change_ref": "30e785130e51d7ac03588e5487e20cd117a3f319",
+      "workflow_contracts": [
+        "audit-jsonl-framing",
+        "cross-platform-checkout",
+        "git-index-hygiene"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KG-BUG-0130/audit-jsonl-lf-checkout",
+          "test_name": "audit JSONL fixtures are checked out LF-only",
+          "test_file": "src/cpp/code/tests/kano_git_regression_tests/regression_coverage_test.cpp",
+          "test_kind": "integration",
+          "mapping_state": "source-linked"
+        }
+      ]
+    },
+    {
+      "incident_id": "KG-BUG-0131",
+      "incident_date": "2026-08-31",
+      "root_cause": "Plan-file commit-push recursively admitted its immutable audit snapshot, but the Windows execution-lock identity probe passed the long frozen-plan path directly to CreateFileW instead of the shared extended-length NativeIoPath adapter, failing before the intended commit and push stages.",
+      "backlog_ref": "KG-BUG-0131",
+      "change_ref": "0765ceaba7d314090ba31dfdbc7011c83c66c688",
+      "workflow_contracts": [
+        "commit-plan-execution-lock",
+        "long-path-native-io",
+        "retry-idempotency"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KG-BUG-0131/basename-plan-frozen-lock",
+          "test_name": "plan_file_push_failure_leaves_execution_unstamped_and_retry_stamps_after_convergence",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/functional_test_main.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-BUG-0131/profile-plan-frozen-lock",
+          "test_name": "plan_file_profile_path_push_failure_leaves_execution_unstamped_and_retry_stamps_after_convergence",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/functional_test_main.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        }
+      ]
+    },
+    {
+      "incident_id": "KG-BUG-0132",
+      "incident_date": "2026-08-31",
+      "root_cause": "The root-only commit-push fast path was gated on a positional target, so an ordinary bare invocation repeated fresh recursive workspace discovery at safety, commit, sync, post-sync, and push stages until suite load could exhaust the command timeout.",
+      "backlog_ref": "KG-BUG-0132",
+      "change_ref": "0765ceaba7d314090ba31dfdbc7011c83c66c688",
+      "workflow_contracts": [
+        "bounded-command-latency",
+        "commit-push",
+        "single-repository-fast-path"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KG-BUG-0132/root-only-single-inventory",
+          "test_name": "commit_push_success_path_does_not_emit_checkout_chatter",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/functional_test_main.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        }
+      ]
+    },
+    {
+      "incident_id": "KG-BUG-0133",
+      "incident_date": "2026-08-31",
+      "root_cause": "Two filesystem-backed TUI history-patch tests used tab, newline, and double-quote bytes in fixture filenames on every platform, but Win32 rejects those filename characters before the production exact-path behavior can run.",
+      "backlog_ref": "KG-BUG-0133",
+      "change_ref": "ae61dcd3ac2331dbcfabf3f2ece2671028c06ee0",
+      "workflow_contracts": [
+        "cross-platform-test-fixtures",
+        "nul-safe-path-identity",
+        "windows-quick-test"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KG-BUG-0133/windows-valid-working-tree-paths",
+          "test_name": "TUI working-tree status preserves exact NUL-delimited path identities",
+          "test_file": "src/cpp/code/tests/kano_git_tui_tests/unit/test_tui_history_patch.cpp",
+          "test_kind": "unit",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KG-BUG-0133/windows-valid-committed-rename-paths",
+          "test_name": "TUI history patch supports both paths of a committed rename",
+          "test_file": "src/cpp/code/tests/kano_git_tui_tests/unit/test_tui_history_patch.cpp",
+          "test_kind": "unit",
+          "mapping_state": "source-linked"
+        }
+      ]
+    },
+    {
+      "incident_id": "KG-BUG-0134",
+      "incident_date": "2026-08-31",
+      "root_cause": "The regression registry source-link gate assumed every case used a Catch2 TEST_CASE registration, and its exact-line helper retained carriage returns from CRLF files, rejecting explicit script contracts and semantically present Docker ignore rules on Windows.",
+      "backlog_ref": "KG-BUG-0134",
+      "change_ref": "ae61dcd3ac2331dbcfabf3f2ece2671028c06ee0",
+      "workflow_contracts": [
+        "cross-platform-line-endings",
+        "dogfood-regression-registry",
+        "script-contract-source-linkage"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KG-BUG-0134/exact-script-marker-crlf",
+          "test_name": "script contract registration matching is exact and CRLF-safe",
+          "test_file": "src/cpp/code/tests/kano_git_regression_tests/regression_coverage_test.cpp",
+          "test_kind": "unit",
+          "mapping_state": "source-linked"
+        }
+      ]
     }
   ]
 }
