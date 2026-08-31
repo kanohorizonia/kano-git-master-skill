@@ -10,6 +10,23 @@
 namespace kano::git::commands {
 namespace {
 
+auto Utf8PathText(const std::filesystem::path& InPath) -> std::string {
+#if defined(_WIN32)
+    const auto value = InPath.generic_u8string();
+    return {value.begin(), value.end()};
+#else
+    return InPath.generic_string();
+#endif
+}
+
+auto Utf8Path(const std::string_view InPath) -> std::filesystem::path {
+#if defined(_WIN32)
+    return std::filesystem::u8path(InPath);
+#else
+    return std::filesystem::path(InPath);
+#endif
+}
+
 constexpr std::array<std::string_view, 9> kTargetScopedCommands{
     "commit",
     "ca",
@@ -125,7 +142,7 @@ auto ParseTuiAuditVerificationCommand(
         return std::nullopt;
     }
     return TuiScopedCommand::AuditVerification{
-        .planFile = std::filesystem::path(InArguments[3]),
+        .planFile = Utf8Path(InArguments[3]),
         .runId = InArguments[5],
         .attempt = attempt,
     };
@@ -172,8 +189,7 @@ auto BuildTuiCommandScopeLabel(
     if (InScope.mode == TuiCommandScopeMode::SelectedRepo) {
         return "selected: " + InScope.selectedRepoDisplay;
     }
-    return "workspace: " +
-        InScope.workspaceRoot.generic_string();
+    return "workspace: " + Utf8PathText(InScope.workspaceRoot);
 }
 
 auto BuildTuiScopedCommand(
@@ -189,8 +205,7 @@ auto BuildTuiScopedCommand(
         SupportsTargetScope(arguments.front()) &&
         !HasExplicitTarget(arguments)) {
         arguments.push_back("--repo-root");
-        arguments.push_back(
-            InScope.workspaceRoot.generic_string());
+        arguments.push_back(Utf8PathText(InScope.workspaceRoot));
         arguments.push_back(InScope.selectedRepoDisplay);
     }
 
@@ -226,8 +241,7 @@ auto BuildTuiAuditCommand(
         // workspace so selection cannot turn a valid receipt into a false
         // Missing result.
         command->workingDirectory = InScope.workspaceRoot;
-        command->scopeLabel = "workspace: " +
-            InScope.workspaceRoot.generic_string();
+        command->scopeLabel = "workspace: " + Utf8PathText(InScope.workspaceRoot);
         return command;
     }
     const auto& name = command->arguments.front();

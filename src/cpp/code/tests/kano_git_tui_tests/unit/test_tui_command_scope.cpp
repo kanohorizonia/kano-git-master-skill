@@ -19,6 +19,15 @@ using kano::git::commands::ParseTuiCommandLine;
 using kano::git::commands::TuiCommandScopeMode;
 using kano::git::commands::TuiCommandScopeSnapshot;
 
+auto Utf8PathTextForTest(const std::filesystem::path& InPath) -> std::string {
+#if defined(_WIN32)
+    const auto value = InPath.generic_u8string();
+    return {value.begin(), value.end()};
+#else
+    return InPath.generic_string();
+#endif
+}
+
 auto WorkspaceScope() -> TuiCommandScopeSnapshot {
     return {
         .mode = TuiCommandScopeMode::Workspace,
@@ -208,6 +217,44 @@ TEST_CASE(
     REQUIRE(
         BuildTuiCommandScopeLabel(scope) ==
         command->scopeLabel);
+}
+
+TEST_CASE(
+    "KOG-BUG-0109 TUI command scope preserves Unicode workspace paths",
+    "[unit][tui_command_scope][unicode][windows][cross-platform][KOG-BUG-0109]") {
+    const std::string repositoryToken =
+        std::string{"\xE6\xB8\xAC\xE8\xA9\xA6"} + "-a" +
+        std::string{"\xCC\x84"} + "-" +
+        std::string{"\xF0\x9F\xAA\x90"};
+#if defined(_WIN32)
+    const auto root =
+        std::filesystem::path{"C:/workspace"} /
+        std::filesystem::u8path(repositoryToken);
+#else
+    const auto root =
+        std::filesystem::path{"/workspace"} /
+        std::filesystem::u8path(repositoryToken);
+#endif
+    TuiCommandScopeSnapshot scope{
+        .mode = TuiCommandScopeMode::Workspace,
+        .workspaceRoot = root,
+        .selectedRepoPath = root / "child",
+        .selectedRepoDisplay = repositoryToken,
+    };
+    const auto rootText = Utf8PathTextForTest(root);
+    REQUIRE(BuildTuiCommandScopeLabel(scope) == "workspace: " + rootText);
+
+    scope.mode = TuiCommandScopeMode::SelectedRepo;
+    const auto scoped = BuildTuiScopedCommand("log", scope);
+    REQUIRE(scoped.has_value());
+    REQUIRE(scoped->arguments == std::vector<std::string>{
+        "log", "--repo-root", rootText, repositoryToken});
+    const auto verification = BuildTuiAuditCommand(
+        "audit verify --plan-file plan.json --run-id run-0109 "
+        "--attempt 1 --json",
+        scope);
+    REQUIRE(verification.has_value());
+    REQUIRE(verification->scopeLabel == "workspace: " + rootText);
 }
 
 TEST_CASE(
