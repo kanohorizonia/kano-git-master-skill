@@ -4757,9 +4757,13 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
         std::sort(blockers.begin(), blockers.end());
         blockers.erase(std::unique(blockers.begin(), blockers.end()), blockers.end());
 
+        const bool cherryPickNoopProofSkippedByDirtyRepo =
+            allowNoopProof && !isTarget && !merged && !patchEquivalent && strategy == "cherry-pick" &&
+            proofBranchFilter.empty() && DirtyKindBlocksBranchPlan(repo.dirtyKind);
         bool cherryPickNoop = false;
         bool cherryPickNoopProbePerformed = false;
-        if (allowNoopProof && !isTarget && !merged && !patchEquivalent && strategy == "cherry-pick" && BlockersForNoopProof(blockers).empty()) {
+        if (allowNoopProof && !cherryPickNoopProofSkippedByDirtyRepo && !isTarget && !merged &&
+            !patchEquivalent && strategy == "cherry-pick" && BlockersForNoopProof(blockers).empty()) {
             cherryPickNoopProbePerformed = true;
             cherryPickNoop = BranchCherryPickNoopIntoTarget(repoPath, targetBranch, branchRef);
         }
@@ -4796,6 +4800,7 @@ nlohmann::json BranchPlanJsonForRepo(const Snapshot& snapshot,
             {"strategy", strategy},
             {"proofSkippedByBranchFilter", false},
             {"patchEquivalentProofSkippedByDirtyRepo", patchEquivalentProofSkippedByDirtyRepo},
+            {"cherryPickNoopProofSkippedByDirtyRepo", cherryPickNoopProofSkippedByDirtyRepo},
             {"checkedOutWorktrees", checkedOut},
             {"activeLeaseBlocker", !isTarget && !checkedOut.empty()},
             {"worktreeInventory", branchWorktreeInventory},

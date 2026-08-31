@@ -737,6 +737,34 @@ TEST_CASE("converge branches inventory defers patch-equivalence probes for dirty
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge branches inventory defers cherry-pick no-op probes for dirty repos", "[functional][converge][branches][inventory][KG-BUG-0006]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-inventory-dirty-noop-proof-budget");
+    const std::string featureBranch = "feature/dirty-noop-proof-budget";
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout dirty no-op proof feature");
+    WriteTextFile(ctx.cloneRepo / "feature.txt", "feature\n");
+    RequireSuccess(RunGit({"add", "feature.txt"}, ctx.cloneRepo), "add dirty no-op proof feature");
+    RequireSuccess(RunGit({"commit", "-m", "dirty no-op proof feature"}, ctx.cloneRepo), "commit dirty no-op proof feature");
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to dirty no-op proof target");
+    WriteTextFile(ctx.cloneRepo / "untracked.txt", "dirty\n");
+
+    const auto result = RunKog(
+        {"converge", "branches", "inventory", "--target", ctx.branch, "--strategy", "cherry-pick", "--json", "--jobs", "1", "--no-recursive"},
+        ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+
+    RequireContains(result.stdoutText, "\"name\": \"" + featureBranch + "\"");
+    RequireContains(result.stdoutText, "\"patchEquivalentProofSkippedByDirtyRepo\": true");
+    RequireContains(result.stdoutText, "\"cherryPickNoopProofSkippedByDirtyRepo\": true");
+    RequireContains(result.stdoutText, "\"cherryPickNoopProbePerformed\": false");
+    RequireContains(result.stdoutText, "DIRTY_WORKTREE:UNTRACKED_ONLY");
+    RequireContains(result.stdoutText, "UNPUSHED_COMMITS");
+    REQUIRE(std::filesystem::exists(ctx.cloneRepo / "untracked.txt"));
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("converge branches inventory reuses a clean primary snapshot", "[functional][converge][branches][inventory][KG-BUG-0006]") {
     const auto ctx = CreateRemoteWithClone("converge-branches-inventory-clean-primary-snapshot");
 
