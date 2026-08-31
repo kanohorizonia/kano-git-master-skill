@@ -315,11 +315,23 @@ auto HasExactLine(const std::string &InText, const std::string &InExpectedLine)
     -> bool {
   std::istringstream lines(InText);
   for (std::string line; std::getline(lines, line);) {
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
     if (line == InExpectedLine) {
       return true;
     }
   }
   return false;
+}
+
+auto HasExactSourceTestRegistration(const std::filesystem::path &InSourcePath,
+                                    const std::string &InSource,
+                                    const std::string &InTestName) -> bool {
+  if (InSourcePath.extension() == ".cpp") {
+    return HasExactCatchTestRegistration(InSource, InTestName);
+  }
+  return HasExactLine(InSource, "# KOG_CONTRACT_TEST: " + InTestName);
 }
 
 auto StrictFixture() -> nlohmann::json {
@@ -383,10 +395,28 @@ TEST_CASE("audit runtime script is tracked executable in the Git index",
   REQUIRE(stage == "0");
 }
 
+TEST_CASE("audit JSONL fixtures are checked out LF-only",
+          "[integration][regression][git-index-hygiene][KG-BUG-0130]") {
+  constexpr std::string_view kFixturePath =
+      "assets/audit/fixtures/golden/audit-events.v1.jsonl";
+  const auto result = kano::git::shell::ExecuteCommand(
+      "git", {"check-attr", "eol", "--", std::string(kFixturePath)},
+      kano::git::shell::ExecMode::Capture, RepoRoot());
+
+  INFO(result.stderrStr);
+  REQUIRE(result.exitCode == 0);
+  REQUIRE(HasExactLine(result.stdoutStr,
+                       std::string(kFixturePath) + ": eol: lf"));
+
+  const auto bytes = ReadText(RepoRoot() / kFixturePath);
+  REQUIRE_FALSE(bytes.empty());
+  REQUIRE(bytes.find('\r') == std::string::npos);
+}
+
 TEST_CASE("dogfood incident manifest maps stable source cases without execution claims",
           "[unit][regression][coverage][KG-TSK-0052]") {
-  constexpr std::size_t kExpectedIncidentCount = 24;
-  constexpr std::size_t kExpectedLinkedCaseCount = 62;
+  constexpr std::size_t kExpectedIncidentCount = 33;
+  constexpr std::size_t kExpectedLinkedCaseCount = 76;
   const auto manifest = RepoRoot() / "assets" / "regression" / "incidents.json";
   const auto loaded = LoadCoverageManifest(manifest);
 
@@ -528,8 +558,8 @@ TEST_CASE("default registry paths and exact test names resolve to source",
       INFO(regressionCase.caseId);
       INFO(sourcePath);
       REQUIRE(std::filesystem::is_regular_file(sourcePath));
-      REQUIRE(HasExactCatchTestRegistration(ReadText(sourcePath),
-                                            regressionCase.testName));
+      REQUIRE(HasExactSourceTestRegistration(
+          sourcePath, ReadText(sourcePath), regressionCase.testName));
     }
   }
 }
@@ -570,6 +600,22 @@ TEST_CASE(
   REQUIRE_FALSE(HasExactCatchTestRegistration(source, "normal string decoy"));
   REQUIRE_FALSE(HasExactCatchTestRegistration(source, "raw string decoy"));
   REQUIRE(HasExactCatchTestRegistration(source, "real registered case"));
+}
+
+TEST_CASE("script contract registration matching is exact and CRLF-safe",
+          "[unit][regression][coverage][registry][KG-BUG-0134]") {
+  const std::string source =
+      "# KOG_CONTRACT_TEST: Windows preset helper contracts\r\n"
+      "# KOG_CONTRACT_TEST: Windows preset helper contracts extra\r\n";
+  const std::filesystem::path sourcePath = "contract.ps1";
+
+  REQUIRE(HasExactSourceTestRegistration(
+      sourcePath, source, "Windows preset helper contracts"));
+  REQUIRE_FALSE(HasExactSourceTestRegistration(
+      sourcePath, source, "preset helper contracts"));
+  REQUIRE_FALSE(HasExactSourceTestRegistration(
+      sourcePath, source, "Windows preset helper contracts extra suffix"));
+  REQUIRE(HasExactLine("!/SKILL.md\r\n", "!/SKILL.md"));
 }
 
 TEST_CASE(

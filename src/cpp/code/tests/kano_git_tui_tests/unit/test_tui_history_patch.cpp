@@ -237,15 +237,22 @@ TEST_CASE(
 
 TEST_CASE(
     "TUI working-tree status preserves exact NUL-delimited path identities",
-    "[unit][tui_history_patch][KG-BUG-0088]") {
+    "[unit][tui_history_patch][KG-BUG-0088][KG-BUG-0133]") {
     using namespace kano::git::commands;
 
     TempRepo repo;
     InitializeRepo(repo.Path());
+#if defined(_WIN32)
+    const std::string modifiedPath = "literal arrow - 'quoted'.txt";
+    const std::string oldPath = "old name - 'quoted'.txt";
+    const std::string newPath = "new name - 'quoted'.txt";
+    const std::string untrackedPath = "untracked name 'quoted' - literal.txt";
+#else
     const std::string modifiedPath = "literal -> arrow\t\"quoted\".txt";
     const std::string oldPath = "old\tname -> \"quoted\".txt";
     const std::string newPath = "new\nname -> \"quoted\".txt";
     const std::string untrackedPath = "untracked\nname\t\"quoted\" -> literal.txt";
+#endif
 
     WriteFile(repo.Path() / modifiedPath, "baseline\n");
     WriteFile(repo.Path() / oldPath, "rename fixture\n");
@@ -345,13 +352,18 @@ TEST_CASE("TUI history patch falls back to a no-index diff for an untracked file
 }
 
 TEST_CASE("TUI history patch supports both paths of a committed rename",
-          "[tdd][unit][feature:tui-history-patch][KG-TSK-0070]") {
+          "[tdd][unit][feature:tui-history-patch][KG-TSK-0070][KG-BUG-0133]") {
     using namespace kano::git::commands;
 
     TempRepo repo;
     InitializeRepo(repo.Path());
+#if defined(_WIN32)
+    const std::string oldPath = "old name.txt";
+    const std::string newPath = "new name.txt";
+#else
     const std::string oldPath = "old\nname.txt";
     const std::string newPath = "new\tname.txt";
+#endif
     WriteFile(repo.Path() / oldPath, "rename fixture\n");
     CommitAll(repo.Path(), "add old path");
     RequireGitSuccess(repo.Path(), {"mv", oldPath, newPath}, "rename fixture file");
@@ -362,8 +374,13 @@ TEST_CASE("TUI history patch supports both paths of a committed rename",
     REQUIRE(patch.find("similarity index") != std::string::npos);
     REQUIRE(patch.find("rename from") != std::string::npos);
     REQUIRE(patch.find("rename to") != std::string::npos);
+#if defined(_WIN32)
+    REQUIRE(EscapeTuiPathForDisplay(oldPath) == oldPath);
+    REQUIRE(EscapeTuiPathForDisplay(newPath) == newPath);
+#else
     REQUIRE(EscapeTuiPathForDisplay(oldPath) == "old\\nname.txt");
     REQUIRE(EscapeTuiPathForDisplay(newPath) == "new\\tname.txt");
+#endif
 }
 
 TEST_CASE(
