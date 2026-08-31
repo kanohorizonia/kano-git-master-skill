@@ -15,6 +15,32 @@
 namespace kano::git::commands::kog_config {
 namespace {
 
+auto Utf8PathText(const std::filesystem::path& InPath) -> std::string {
+#if defined(_WIN32)
+    const auto value = InPath.generic_u8string();
+    return {value.begin(), value.end()};
+#else
+    return InPath.generic_string();
+#endif
+}
+
+auto Utf8Path(const std::string_view InPath) -> std::filesystem::path {
+#if defined(_WIN32)
+    return std::filesystem::u8path(InPath);
+#else
+    return std::filesystem::path(InPath);
+#endif
+}
+
+auto ParseTomlFile(const std::filesystem::path& InPath) -> toml::table {
+    std::ifstream input(InPath, std::ios::binary);
+    if (!input) {
+        throw std::runtime_error(
+            "cannot open TOML file: " + Utf8PathText(InPath));
+    }
+    return toml::parse(input, Utf8PathText(InPath));
+}
+
 auto Trim(std::string InValue) -> std::string {
     while (!InValue.empty() &&
            (InValue.back() == '\n' || InValue.back() == '\r' || InValue.back() == ' ' || InValue.back() == '\t')) {
@@ -35,12 +61,12 @@ auto ToLower(std::string InValue) -> std::string {
 }
 
 auto ExpandHomePath(const std::filesystem::path& InPath) -> std::filesystem::path {
-    const auto raw = InPath.generic_string();
+    const auto raw = Utf8PathText(InPath);
     if (raw == "~") {
         return HomeDirectory();
     }
     if (raw.rfind("~/", 0) == 0) {
-        return (HomeDirectory() / raw.substr(2)).lexically_normal();
+        return (HomeDirectory() / Utf8Path(raw.substr(2))).lexically_normal();
     }
     return InPath.lexically_normal();
 }
@@ -160,16 +186,16 @@ auto ExtractModelsFromHelp(const std::string& InText) -> std::vector<std::string
 
 auto HomeDirectory() -> std::filesystem::path {
     if (const char* home = std::getenv("HOME"); home != nullptr && *home != '\0') {
-        return std::filesystem::path(home).lexically_normal();
+        return Utf8Path(home).lexically_normal();
     }
 #if defined(_WIN32)
     if (const char* userProfile = std::getenv("USERPROFILE"); userProfile != nullptr && *userProfile != '\0') {
-        return std::filesystem::path(userProfile).lexically_normal();
+        return Utf8Path(userProfile).lexically_normal();
     }
     const char* homeDrive = std::getenv("HOMEDRIVE");
     const char* homePath = std::getenv("HOMEPATH");
     if (homeDrive != nullptr && *homeDrive != '\0' && homePath != nullptr && *homePath != '\0') {
-        return (std::filesystem::path(homeDrive) / homePath).lexically_normal();
+        return (Utf8Path(homeDrive) / Utf8Path(homePath)).lexically_normal();
     }
 #endif
     return {};
@@ -184,7 +210,7 @@ auto ResolveConfigSearchPaths(const std::filesystem::path& InWorkspaceRoot,
             return;
         }
         const auto normalized = InPath.lexically_normal();
-        const auto key = normalized.generic_string();
+        const auto key = Utf8PathText(normalized);
         if (key.empty() || seen.contains(key)) {
             return;
         }
@@ -244,7 +270,7 @@ auto ResolveDefaultAiModelSelection(const std::string& InProvider,
         }
 
         try {
-            const auto parsed = toml::parse_file(configPath.string());
+            const auto parsed = ParseTomlFile(configPath);
             const toml::table* section = nullptr;
             if (const auto* ai = parsed["ai"].as_table(); ai != nullptr) {
                 if (const auto* model = (*ai)["model"].as_table(); model != nullptr) {
@@ -341,7 +367,7 @@ auto ResolvePlanCommitGenerationMode(const std::filesystem::path& InWorkspaceRoo
         }
 
         try {
-            const auto parsed = toml::parse_file(configPath.string());
+            const auto parsed = ParseTomlFile(configPath);
             const toml::table* section = nullptr;
             if (const auto* planAi = parsed["plan_ai"].as_table(); planAi != nullptr) {
                 section = planAi;
@@ -464,7 +490,7 @@ auto ReadTomlValue(const std::filesystem::path& InConfigPath,
         return {};
     }
     try {
-        const auto parsed = toml::parse_file(InConfigPath.string());
+        const auto parsed = ParseTomlFile(InConfigPath);
         const auto parts = SplitDottedKey(InDottedKey);
         if (parts.empty()) {
             return {};
@@ -527,7 +553,7 @@ auto ResolveWorkspaceExternalRoots(const std::filesystem::path& InWorkspaceRoot,
         }
 
         try {
-            const auto parsed = toml::parse_file(configPath.string());
+            const auto parsed = ParseTomlFile(configPath);
             const auto* workspace = parsed["workspace"].as_table();
             if (workspace == nullptr) {
                 continue;
@@ -555,7 +581,7 @@ auto ResolveWorkspaceExternalRoots(const std::filesystem::path& InWorkspaceRoot,
 
             if (const auto* rootsNode = (*external).get("roots"); rootsNode != nullptr) {
                 for (const auto& root : ParseStringArray(*rootsNode)) {
-                    const auto expanded = ExpandHomePath(std::filesystem::path(root));
+                    const auto expanded = ExpandHomePath(Utf8Path(root));
                     if (!expanded.empty()) {
                         mergedRoots.push_back(expanded.lexically_normal());
                     }
@@ -571,7 +597,7 @@ auto ResolveWorkspaceExternalRoots(const std::filesystem::path& InWorkspaceRoot,
     deduped.reserve(mergedRoots.size());
     for (const auto& root : mergedRoots) {
         const auto normalized = ExpandHomePath(root).lexically_normal();
-        const auto key = normalized.generic_string();
+        const auto key = Utf8PathText(normalized);
         if (key.empty() || seen.contains(key)) {
             continue;
         }
@@ -603,7 +629,7 @@ auto WriteTomlValue(const std::filesystem::path& InConfigPath,
             std::error_code ec;
             if (std::filesystem::exists(InConfigPath, ec) && !ec) {
                 try {
-                    root = toml::parse_file(InConfigPath.string());
+                    root = ParseTomlFile(InConfigPath);
                 } catch (const toml::parse_error&) {
                     // If parsing fails, start fresh
                     root = toml::table{};
@@ -653,7 +679,7 @@ auto UnsetTomlKey(const std::filesystem::path& InConfigPath,
         return true; // Nothing to unset
     }
     try {
-        auto root = toml::parse_file(InConfigPath.string());
+        auto root = ParseTomlFile(InConfigPath);
         const auto parts = SplitDottedKey(InDottedKey);
         if (parts.empty()) {
             return false;
@@ -695,7 +721,7 @@ auto ListTomlKeys(const std::filesystem::path& InConfigPath)
         return entries;
     }
     try {
-        const auto parsed = toml::parse_file(InConfigPath.string());
+        const auto parsed = ParseTomlFile(InConfigPath);
         FlattenTable(parsed, "", entries);
     } catch (const toml::parse_error&) {
     } catch (const std::exception&) {
