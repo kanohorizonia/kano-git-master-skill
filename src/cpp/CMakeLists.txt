@@ -35,7 +35,13 @@ else()
     set(KOG_UNITY_BUILD_MODE_EFFECTIVE "off")
 endif()
 
-set(KOG_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../..")
+set(KOG_CANONICAL_SOURCE_ROOT "${CMAKE_SOURCE_DIR}")
+if(DEFINED KANO_CPP_INFRA_CANONICAL_SOURCE_ROOT AND
+   NOT KANO_CPP_INFRA_CANONICAL_SOURCE_ROOT STREQUAL "")
+    set(KOG_CANONICAL_SOURCE_ROOT "${KANO_CPP_INFRA_CANONICAL_SOURCE_ROOT}")
+endif()
+get_filename_component(KOG_CANONICAL_SOURCE_ROOT "${KOG_CANONICAL_SOURCE_ROOT}" ABSOLUTE)
+get_filename_component(KOG_REPO_ROOT "${KOG_CANONICAL_SOURCE_ROOT}/../.." ABSOLUTE)
 set(KOG_RUNTIME_SOURCE_FINGERPRINT "unknown" CACHE STRING "Source fingerprint recorded in the minimal KOG runtime artifact")
 
 function(kog_normalize_repo_relative_path input_path output_var)
@@ -714,7 +720,7 @@ else()
 endif()
 
 # Output directories
-set(KOG_BUILD_ROOT "${CMAKE_SOURCE_DIR}/out")
+set(KOG_BUILD_ROOT "${KOG_CANONICAL_SOURCE_ROOT}/out")
 set(KOG_PRESET_NAME "unknown-preset" CACHE STRING "CMake preset name for artifact layout")
 
 set(KOG_BIN_ROOT "${KOG_BUILD_ROOT}/bin/${KOG_PRESET_NAME}")

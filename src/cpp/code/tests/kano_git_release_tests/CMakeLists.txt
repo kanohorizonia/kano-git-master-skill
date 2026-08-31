@@ -12,7 +12,7 @@ target_include_directories(kano_git_release_tests
 )
 
 target_compile_definitions(kano_git_release_tests
-  PRIVATE KANO_GIT_TEST_REPO_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/../../../../.."
+  PRIVATE KANO_GIT_TEST_REPO_ROOT="${KOG_REPO_ROOT}"
   PRIVATE KANO_GIT_TEST_CLI_BINARY="$<TARGET_FILE:kano_git_cli>"
 )
 
