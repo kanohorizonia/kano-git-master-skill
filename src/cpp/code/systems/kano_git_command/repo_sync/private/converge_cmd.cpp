@@ -4037,9 +4037,14 @@ bool SyncTargetBranch(const std::filesystem::path& repoPath,
                       const std::string& repoId,
                       const std::string& targetBranch,
                       nlohmann::json& result,
-                      bool allowUntrackedOnly = false) {
+                      bool allowDirtyWhenTargetNeedNotMove = false) {
     std::string cleanMessage;
-    if (!WorktreeIsClean(repoPath, cleanMessage, allowUntrackedOnly)) {
+    const auto readyForTargetMutation =
+        WorktreeIsClean(repoPath, cleanMessage, allowDirtyWhenTargetNeedNotMove);
+    const auto mayPreserveTrackedDirt =
+        !readyForTargetMutation && allowDirtyWhenTargetNeedNotMove &&
+        cleanMessage == "worktree has uncommitted or untracked changes";
+    if (!readyForTargetMutation && !mayPreserveTrackedDirt) {
         AppendBranchBlocked(result, repoId, targetBranch, {"DIRTY_TARGET_WORKTREE"}, cleanMessage);
         return false;
     }
@@ -4050,19 +4055,79 @@ bool SyncTargetBranch(const std::filesystem::path& repoPath,
         return false;
     }
 
-    if (!CheckoutTargetBranch(repoPath, repoId, targetBranch, result)) {
-        return false;
-    }
-
     auto upstream = UpstreamForBranch(repoPath, targetBranch);
     if (upstream.empty() && GitCapture(repoPath, {"rev-parse", "--verify", "--quiet", ("origin/" + targetBranch) + "^{commit}"}).exitCode == 0) {
         upstream = "origin/" + targetBranch;
     }
-    if (upstream.empty()) {
+    if (readyForTargetMutation && !CheckoutTargetBranch(repoPath, repoId, targetBranch, result)) {
+        return false;
+    }
+
+    if (upstream.empty() && !mayPreserveTrackedDirt) {
         result["targetSync"].push_back({
             {"repo", repoId},
             {"branch", targetBranch},
             {"status", "no-upstream"},
+        });
+        return true;
+    }
+
+    if (mayPreserveTrackedDirt) {
+        const auto checkedOutBranch = GitCapture(repoPath, {"branch", "--show-current"});
+        const auto worktreeHead = GitCapture(repoPath, {"rev-parse", "--verify", "HEAD^{commit}"});
+        const auto targetHead = GitCapture(
+            repoPath, {"rev-parse", "--verify", targetBranch + "^{commit}"});
+        if (checkedOutBranch.exitCode != 0 || Trim(checkedOutBranch.stdoutStr) != targetBranch ||
+            worktreeHead.exitCode != 0 || targetHead.exitCode != 0 ||
+            Trim(worktreeHead.stdoutStr) != Trim(targetHead.stdoutStr)) {
+            std::string message = "dirty target worktree branch or HEAD does not match the target ref";
+            if (checkedOutBranch.exitCode != 0) {
+                message = CombinedGitError(checkedOutBranch);
+            } else if (worktreeHead.exitCode != 0) {
+                message = CombinedGitError(worktreeHead);
+            } else if (targetHead.exitCode != 0) {
+                message = CombinedGitError(targetHead);
+            }
+            AppendBranchBlocked(result, repoId, targetBranch, {"DIRTY_TARGET_WORKTREE"}, message);
+            return false;
+        }
+
+        if (upstream.empty()) {
+            result["targetSync"].push_back({
+                {"repo", repoId},
+                {"branch", targetBranch},
+                {"status", "no-upstream"},
+                {"preservedDirtyTarget", true},
+            });
+            return true;
+        }
+
+        const auto upstreamHead = GitCapture(
+            repoPath, {"rev-parse", "--verify", upstream + "^{commit}"});
+        if (upstreamHead.exitCode != 0) {
+            AppendBranchBlocked(
+                result, repoId, targetBranch, {"DIRTY_TARGET_WORKTREE"},
+                CombinedGitError(upstreamHead));
+            return false;
+        }
+        const auto upstreamAlreadyContained = GitCapture(
+            repoPath,
+            {"merge-base", "--is-ancestor",
+             Trim(upstreamHead.stdoutStr), Trim(targetHead.stdoutStr)});
+        if (upstreamAlreadyContained.exitCode != 0) {
+            const auto message = upstreamAlreadyContained.exitCode == 1
+                ? "dirty target worktree must remain unchanged, but its target ref must advance or resolve divergence"
+                : CombinedGitError(upstreamAlreadyContained);
+            AppendBranchBlocked(
+                result, repoId, targetBranch, {"DIRTY_TARGET_WORKTREE"}, message);
+            return false;
+        }
+
+        result["targetSync"].push_back({
+            {"repo", repoId},
+            {"branch", targetBranch},
+            {"status", "unchanged-dirty-target"},
+            {"upstream", upstream},
         });
         return true;
     }
@@ -5753,9 +5818,21 @@ int RunBranchRetire(const std::filesystem::path& root,
                     return 2;
                 }
             }
-            if (!BranchActionResultHasBlocked(result)) {
-                snapshot = LoadConvergeSnapshot(root, jobs, false, recursive);
+            if (BranchActionResultHasBlocked(result)) {
+                result["requestedClosureComplete"] = false;
+                result["status"] = "blocked";
+                if (resultOut != nullptr) {
+                    *resultOut = result;
+                }
+                suppressCommandLogs.reset();
+                if (jsonOutput) {
+                    std::cout << result.dump(2) << "\n";
+                } else {
+                    PrintBranchActionResultText("Converge Branches Retire", result);
+                }
+                return 1;
             }
+            snapshot = LoadConvergeSnapshot(root, jobs, false, recursive);
         }
 
         const auto plan = BuildBranchPlanJson(snapshot, root, targetBranch, "cherry-pick", recursive, true, true, branchFilter);
@@ -6049,30 +6126,25 @@ int RunBranchRetire(const std::filesystem::path& root,
                     }
                     if (!targetWorktreesNow.empty()) {
                         const auto& targetWorktree = targetWorktreesNow.front();
-                        std::string targetCleanMessage;
                         const auto targetBranchNow = GitCapture(targetWorktree.absolutePath, {"branch", "--show-current"});
                         const auto targetHeadNow = GitCapture(targetWorktree.absolutePath, {"rev-parse", "HEAD"});
                         const auto targetRefNow = GitCapture(repoPath, {"rev-parse", "--verify", targetRef + "^{commit}"});
-                        if (!WorktreeIsClean(targetWorktree.absolutePath, targetCleanMessage, true) ||
-                            targetBranchNow.exitCode != 0 || Trim(targetBranchNow.stdoutStr) != targetBranch ||
+                        if (targetBranchNow.exitCode != 0 || Trim(targetBranchNow.stdoutStr) != targetBranch ||
                             targetHeadNow.exitCode != 0 || targetRefNow.exitCode != 0 ||
                             Trim(targetHeadNow.stdoutStr) != targetWorktree.head ||
                             Trim(targetHeadNow.stdoutStr) != Trim(targetRefNow.stdoutStr)) {
-                            AppendBranchBlocked(result, repoId, branch, {"TARGET_WORKTREE_CHANGED"}, targetCleanMessage.empty() ? "target worktree branch or HEAD changed after planning" : targetCleanMessage);
+                            AppendBranchBlocked(result, repoId, branch, {"TARGET_WORKTREE_CHANGED"}, "target worktree branch or HEAD changed after planning");
                             continue;
                         }
                         targetCheckoutPath = targetWorktree.absolutePath;
-                    }
-                    if (!CheckoutTargetBranch(targetCheckoutPath, repoId, targetBranch, result)) {
-                        continue;
-                    }
-                    if (!SamePath(targetCheckoutPath, repoPath)) {
                         result["targetSync"].push_back({
                             {"repo", repoId},
                             {"branch", targetBranch},
                             {"status", "existing-linked-target"},
                             {"worktree", targetCheckoutPath.generic_string()},
                         });
+                    } else if (!CheckoutTargetBranch(targetCheckoutPath, repoId, targetBranch, result)) {
+                        continue;
                     }
                 }
 

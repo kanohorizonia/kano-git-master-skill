@@ -2801,6 +2801,120 @@ TEST_CASE("converge branches retire proves empty no-op branch with untracked tar
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge branches retire preserves unrelated tracked target dirt", "[tdd][functional][feature:converge][converge][branches][retire][equivalent][dirty][KG-BUG-0126]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-retire-tracked-target-dirt");
+    const std::string featureBranch = "feature/retire-with-tracked-target-dirt";
+    WriteTextFile(ctx.cloneRepo / "target-state.txt", "published target state\n");
+    RequireSuccess(RunGit({"add", "target-state.txt"}, ctx.cloneRepo), "add published target state");
+    RequireSuccess(RunGit({"commit", "-m", "publish target state"}, ctx.cloneRepo), "commit published target state");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.cloneRepo), "push published target state");
+
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout tracked-dirt no-op feature branch");
+    RequireSuccess(RunGit({"commit", "--allow-empty", "-m", "empty feature already equivalent to target"}, ctx.cloneRepo), "commit tracked-dirt no-op feature");
+    RequireSuccess(RunGit({"push", "-u", "origin", featureBranch}, ctx.cloneRepo), "push tracked-dirt no-op feature");
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to tracked-dirt target branch");
+
+    const auto sourceWorktree = ctx.sandbox.root / "tracked-dirt-source-worktree";
+    RequireSuccess(RunGit({"worktree", "add", sourceWorktree.string(), featureBranch}, ctx.cloneRepo), "create clean source worktree");
+    REQUIRE(GitStatusShort(sourceWorktree).empty());
+
+    WriteTextFile(ctx.cloneRepo / "target-state.txt", "unrelated local target state\n");
+    SECTION("unstaged tracked target dirt") {
+    }
+    SECTION("staged tracked target dirt") {
+        RequireSuccess(RunGit({"add", "target-state.txt"}, ctx.cloneRepo), "stage unrelated target state");
+    }
+    const auto targetStatusBefore = GitStatusShort(ctx.cloneRepo);
+    const auto targetContentBefore = ReadTextFile(ctx.cloneRepo / "target-state.txt");
+    REQUIRE_FALSE(targetStatusBefore.empty());
+
+    const auto result = RunKog(
+        {"converge", "branches", "retire", "--target", ctx.branch, "--branch", featureBranch,
+         "--remove-worktrees", "--confirm", "--json", "--jobs", "1", "--no-recursive"},
+        ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 0);
+    RequireNotContains(result.stdoutText, "DIRTY_TARGET_WORKTREE");
+    RequireNotContains(result.stdoutText, "TARGET_WORKTREE_CHANGED");
+    RequireContains(result.stdoutText, "\"branch\": \"" + featureBranch + "\"");
+    RequireContains(result.stdoutText, "\"action\": \"delete-local\"");
+    REQUIRE(RunGit({"show-ref", "--verify", "--quiet", "refs/heads/" + featureBranch}, ctx.cloneRepo).exitCode != 0);
+    REQUIRE_FALSE(std::filesystem::exists(sourceWorktree));
+    REQUIRE(GitStatusShort(ctx.cloneRepo) == targetStatusBefore);
+    REQUIRE(ReadTextFile(ctx.cloneRepo / "target-state.txt") == targetContentBefore);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge branches retire blocks dirty target when upstream must move", "[tdd][functional][feature:converge][converge][branches][retire][dirty][guard][KG-BUG-0126]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-retire-dirty-target-must-move");
+    const std::string featureBranch = "feature/retire-dirty-target-must-move";
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout guarded dirty-target feature");
+    RequireSuccess(RunGit({"commit", "--allow-empty", "-m", "empty feature before target advance"}, ctx.cloneRepo), "commit guarded dirty-target feature");
+    RequireSuccess(RunGit({"push", "-u", "origin", featureBranch}, ctx.cloneRepo), "push guarded dirty-target feature");
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to guarded dirty target");
+
+    const auto sourceWorktree = ctx.sandbox.root / "dirty-target-must-move-source";
+    RequireSuccess(RunGit({"worktree", "add", sourceWorktree.string(), featureBranch}, ctx.cloneRepo), "create guarded feature worktree");
+    CommitAndPushFile(ctx.seedRepo, ctx.branch, "remote-target.txt", "remote target advance\n", "advance target beyond dirty checkout");
+
+    const auto targetHeadBefore = TrimCopy(RunGit({"rev-parse", "HEAD"}, ctx.cloneRepo).stdoutText);
+    WriteTextFile(ctx.cloneRepo / "README.md", "unrelated dirty target state\n");
+    const auto targetStatusBefore = GitStatusShort(ctx.cloneRepo);
+    const auto targetContentBefore = ReadTextFile(ctx.cloneRepo / "README.md");
+
+    const auto result = RunKog(
+        {"converge", "branches", "retire", "--target", ctx.branch, "--branch", featureBranch,
+         "--remove-worktrees", "--confirm", "--json", "--jobs", "1", "--no-recursive"},
+        ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 1);
+    RequireContains(result.stdoutText, "\"mutationPerformed\": false");
+    RequireContains(result.stdoutText, "DIRTY_TARGET_WORKTREE");
+    RequireContains(result.stdoutText, "must remain unchanged");
+    REQUIRE(TrimCopy(RunGit({"rev-parse", "HEAD"}, ctx.cloneRepo).stdoutText) == targetHeadBefore);
+    REQUIRE(GitStatusShort(ctx.cloneRepo) == targetStatusBefore);
+    REQUIRE(ReadTextFile(ctx.cloneRepo / "README.md") == targetContentBefore);
+    REQUIRE(RunGit({"show-ref", "--verify", "--quiet", "refs/heads/" + featureBranch}, ctx.cloneRepo).exitCode == 0);
+    REQUIRE(std::filesystem::exists(sourceWorktree));
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge branches apply remains strict with tracked target dirt", "[tdd][functional][feature:converge][converge][branches][apply][dirty][guard][KG-BUG-0126]") {
+    const auto ctx = CreateRemoteWithClone("converge-branches-apply-tracked-target-dirt");
+    const std::string featureBranch = "feature/apply-with-tracked-target-dirt";
+    RequireSuccess(RunGit({"checkout", "-b", featureBranch}, ctx.cloneRepo), "checkout strict apply feature");
+    WriteTextFile(ctx.cloneRepo / "feature.txt", "feature payload\n");
+    RequireSuccess(RunGit({"add", "feature.txt"}, ctx.cloneRepo), "add strict apply feature");
+    RequireSuccess(RunGit({"commit", "-m", "feature must not apply onto dirt"}, ctx.cloneRepo), "commit strict apply feature");
+    RequireSuccess(RunGit({"push", "-u", "origin", featureBranch}, ctx.cloneRepo), "push strict apply feature");
+    RequireSuccess(RunGit({"checkout", ctx.branch}, ctx.cloneRepo), "return to strict dirty target");
+
+    const auto targetHeadBefore = TrimCopy(RunGit({"rev-parse", "HEAD"}, ctx.cloneRepo).stdoutText);
+    WriteTextFile(ctx.cloneRepo / "README.md", "strict apply target dirt\n");
+    const auto targetStatusBefore = GitStatusShort(ctx.cloneRepo);
+    const auto targetContentBefore = ReadTextFile(ctx.cloneRepo / "README.md");
+
+    const auto result = RunKog(
+        {"converge", "branches", "apply", "--target", ctx.branch, "--strategy", "cherry-pick",
+         "--branch", featureBranch, "--confirm", "--json", "--jobs", "1", "--no-recursive"},
+        ctx.cloneRepo);
+    INFO(result.stdoutText);
+    INFO(result.stderrText);
+    REQUIRE(result.exitCode == 1);
+    RequireContains(result.stdoutText, "DIRTY_TARGET_WORKTREE");
+    REQUIRE_FALSE(std::filesystem::exists(ctx.cloneRepo / "feature.txt"));
+    REQUIRE(TrimCopy(RunGit({"rev-parse", "HEAD"}, ctx.cloneRepo).stdoutText) == targetHeadBefore);
+    REQUIRE(GitStatusShort(ctx.cloneRepo) == targetStatusBefore);
+    REQUIRE(ReadTextFile(ctx.cloneRepo / "README.md") == targetContentBefore);
+    REQUIRE(RunGit({"show-ref", "--verify", "--quiet", "refs/heads/" + featureBranch}, ctx.cloneRepo).exitCode == 0);
+
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("converge branches planner records explicit merge override in agent JSON", "[tdd][functional][feature:converge][converge][branches][planner][agent-mode]") {
     const auto ctx = CreateRemoteWithClone("converge-branches-plan-merge");
     RequireSuccess(RunGit({"checkout", "-b", "feature/merge-plan"}, ctx.cloneRepo), "checkout feature branch");
