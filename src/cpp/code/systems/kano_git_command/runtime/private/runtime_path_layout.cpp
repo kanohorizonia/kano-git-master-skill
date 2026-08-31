@@ -84,7 +84,11 @@ auto EnvPath(const char* InName) -> std::filesystem::path {
     if (raw == nullptr || *raw == '\0') {
         return {};
     }
+#if defined(_WIN32)
+    return Normalize(std::filesystem::u8path(raw));
+#else
     return Normalize(std::filesystem::path(raw));
+#endif
 }
 
 auto ExistingSkillCandidate(const std::filesystem::path& InCandidate) -> std::filesystem::path {
