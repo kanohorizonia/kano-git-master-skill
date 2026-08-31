@@ -183,6 +183,35 @@ TEST_CASE("discover keeps registered recursion separate from bounded unregistere
     RemoveSandboxWorkspace(sandbox);
 }
 
+TEST_CASE("discover full scan preserves an unregistered Unicode nested repository",
+          "[tdd][functional][discover][inventory][unicode][windows][cross-platform][KOG-BUG-0109]") {
+    const auto sandbox = CreateSandboxWorkspace("discover-unicode-nested-repository");
+    const auto root = (sandbox.root / "root").lexically_normal();
+    const std::string childRelativeUtf8 =
+        std::string{"repos/\xE6\xB8\xAC\xE8\xA9\xA6-a\xCC\x84-\xF0\x9F\xAA\x90"};
+    const auto child = root / std::filesystem::u8path(childRelativeUtf8);
+
+    InitRepo(root);
+    const auto childU8 = child.generic_u8string();
+    const std::string childUtf8Path(childU8.begin(), childU8.end());
+    RequireSuccess(RunGit({"init", childUtf8Path}, root), "init Unicode child repo");
+    RequireSuccess(RunGit({"-C", childUtf8Path, "config", "user.name", "Kano Test"}, root),
+                   "config Unicode child user.name");
+    RequireSuccess(RunGit({"-C", childUtf8Path, "config", "user.email", "kano-test@example.invalid"}, root),
+                   "config Unicode child user.email");
+    WriteTextFile(child / "README.md", "repo\n");
+    RequireSuccess(RunGit({"-C", childUtf8Path, "add", "README.md"}, root), "add Unicode child readme");
+    RequireSuccess(RunGit({"-C", childUtf8Path, "commit", "-m", "seed repo"}, root),
+                   "commit Unicode child readme");
+
+    const auto json = RunDiscoverJson(root, {"--full", "--unregistered-depth", "3"});
+    RequireContains(json, childRelativeUtf8);
+    const auto trustedManifest = RunDiscoverJson(root, {"--no-unregistered-scan"});
+    RequireContains(trustedManifest, childRelativeUtf8);
+
+    RemoveSandboxWorkspace(sandbox);
+}
+
 TEST_CASE("discover no-unregistered-scan keeps trusted unregistered manifest entries", "[tdd][unit][feature:discovery][functional][discover][inventory]") {
     const auto sandbox = CreateSandboxWorkspace("discover-no-unregistered-scan");
     const auto root = (sandbox.root / "root").lexically_normal();

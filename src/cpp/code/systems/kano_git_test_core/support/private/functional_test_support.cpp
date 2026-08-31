@@ -23,6 +23,15 @@ auto UniqueSuffix() -> std::string {
     return std::to_string(now);
 }
 
+auto Utf8PathText(const std::filesystem::path& InPath) -> std::string {
+#if defined(_WIN32)
+    const auto value = InPath.generic_u8string();
+    return {value.begin(), value.end()};
+#else
+    return InPath.generic_string();
+#endif
+}
+
 auto CurrentExecutablePath() -> std::filesystem::path {
 #if defined(_WIN32)
     std::string buffer(MAX_PATH, '\0');
@@ -234,7 +243,7 @@ auto RunKogWithEnv(const std::vector<std::string>& InArgs,
         const auto diagPath = (InWorkingDir / ".kano" / "tmp" / "functional-process-diag.log").lexically_normal();
         std::error_code ec;
         std::filesystem::create_directories(diagPath.parent_path(), ec);
-        env.emplace_back("KOG_PROCESS_DIAGNOSTICS_LOG", diagPath.string());
+        env.emplace_back("KOG_PROCESS_DIAGNOSTICS_LOG", Utf8PathText(diagPath));
     }
 
     const auto hasExplicitSkillRoot = std::any_of(env.begin(), env.end(), [](const auto& entry) {
@@ -242,7 +251,7 @@ auto RunKogWithEnv(const std::vector<std::string>& InArgs,
     });
     const auto skillRoot = ResolveSkillRootFromKogBinary();
     if (!hasExplicitSkillRoot && !skillRoot.empty()) {
-        env.emplace_back("KANO_GIT_SKILL_ROOT", skillRoot.string());
+        env.emplace_back("KANO_GIT_SKILL_ROOT", Utf8PathText(skillRoot));
     }
 #if defined(_WIN32)
     std::vector<std::pair<std::string, std::optional<std::string>>> previousValues;
@@ -255,7 +264,8 @@ auto RunKogWithEnv(const std::vector<std::string>& InArgs,
         }
         _putenv_s(key.c_str(), value.c_str());
     }
-    const auto result = RunCommand(ResolveKogBinaryPath().string(), InArgs, InWorkingDir);
+    const auto result = RunCommand(
+        Utf8PathText(ResolveKogBinaryPath()), InArgs, InWorkingDir);
     for (const auto& [key, value] : previousValues) {
         if (value.has_value()) {
             _putenv_s(key.c_str(), value->c_str());

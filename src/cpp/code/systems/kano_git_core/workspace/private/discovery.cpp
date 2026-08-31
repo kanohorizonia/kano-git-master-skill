@@ -73,8 +73,25 @@ auto Normalize(const std::filesystem::path& InPath) -> std::filesystem::path {
     return normalized;
 }
 
+auto Utf8PathText(const std::filesystem::path& InPath) -> std::string {
+#if defined(_WIN32)
+    const auto value = InPath.generic_u8string();
+    return {value.begin(), value.end()};
+#else
+    return InPath.generic_string();
+#endif
+}
+
+auto Utf8Path(const std::string_view InPath) -> std::filesystem::path {
+#if defined(_WIN32)
+    return std::filesystem::u8path(InPath);
+#else
+    return std::filesystem::path(InPath);
+#endif
+}
+
 auto PathKey(const std::filesystem::path& InPath) -> std::string {
-    auto key = Normalize(InPath).generic_string();
+    auto key = Utf8PathText(Normalize(InPath));
     while (key.size() > 1 && key.back() == '/') {
         key.pop_back();
     }
@@ -167,7 +184,7 @@ auto CurrentProcessCommand() -> std::string {
 }
 
 auto LockPathFor(const std::filesystem::path& InFile) -> std::filesystem::path {
-    return std::filesystem::path(InFile.generic_string() + ".lock").lexically_normal();
+    return Utf8Path(Utf8PathText(InFile) + ".lock").lexically_normal();
 }
 
 auto LockOwnerMetadataPath(const std::filesystem::path& InLockPath) -> std::filesystem::path {
@@ -236,7 +253,7 @@ auto ParseOwnerMetadata(const std::filesystem::path& InLockPath) -> CacheLockInf
         } else if (key == "command") {
             out.ownerCommand = value;
         } else if (key == "target") {
-            out.targetPath = std::filesystem::path(value).lexically_normal();
+            out.targetPath = Utf8Path(value).lexically_normal();
         }
     }
     out.ageSeconds = FileAgeSeconds(InLockPath);
@@ -253,7 +270,7 @@ auto WriteOwnerMetadata(const std::filesystem::path& InLockPath, const std::file
     }
     out << "pid=" << CurrentProcessId() << "\n";
     out << "command=" << CurrentProcessCommand() << "\n";
-    out << "target=" << InTargetPath.lexically_normal().generic_string() << "\n";
+    out << "target=" << Utf8PathText(InTargetPath.lexically_normal()) << "\n";
     out << "created_at=" << ToUtcIsoString(std::chrono::system_clock::now()) << "\n";
     return out.good();
 }
@@ -326,7 +343,7 @@ class ScopedCacheFileLock {
             if (std::chrono::steady_clock::now() >= deadline) {
                 if (OutError != nullptr) {
                     *OutError = std::format("cache lock busy: {} (pid={} age={}s command={})",
-                                            out.lockPath_.generic_string(),
+                                             Utf8PathText(out.lockPath_),
                                             info.ownerPid,
                                             info.ageSeconds,
                                             info.ownerCommand.empty() ? "-" : info.ownerCommand);
@@ -361,7 +378,7 @@ auto WriteFileTextUnlocked(const std::filesystem::path& InFile, const std::strin
     }
     const auto temp = InFile.parent_path() /
                       std::format("{}.tmp.{}.{}",
-                                  InFile.filename().generic_string(),
+                                   Utf8PathText(InFile.filename()),
                                   CurrentProcessId(),
                                   std::chrono::duration_cast<std::chrono::microseconds>(
                                       std::chrono::steady_clock::now().time_since_epoch()).count());
@@ -710,7 +727,7 @@ auto GitExcludesPath(const std::filesystem::path& InRoot,
     if (topLevel.exitCode != 0) {
         return std::nullopt;
     }
-    const auto owner = Normalize(std::filesystem::path(Trim(topLevel.stdoutStr)));
+    const auto owner = Normalize(Utf8Path(Trim(topLevel.stdoutStr)));
     const auto ownerKey = PathKey(owner);
     const auto rootKey = PathKey(InRoot);
     if (ownerKey != rootKey && !ownerKey.starts_with(rootKey + "/")) {
@@ -817,7 +834,7 @@ auto ShouldPrePrune(const std::filesystem::path& InRoot, const std::filesystem::
     if (ShouldExcludePath(InRoot, InPath, InRules)) {
         return true;
     }
-    const auto base = InPath.filename().generic_string();
+    const auto base = Utf8PathText(InPath.filename());
     for (const auto& name : InPrePrune) {
         if (base == name) {
             return !HasDescendantIncludeRule(InRoot, InPath, InRules);
@@ -882,7 +899,7 @@ auto IsGitRepo(const std::filesystem::path& InRepoPath) -> bool {
         return false;
     }
 
-    return PathKey(InRepoPath) == PathKey(std::filesystem::path(Trim(topLevel.stdoutStr)));
+    return PathKey(InRepoPath) == PathKey(Utf8Path(Trim(topLevel.stdoutStr)));
 }
 
 auto CurrentBranch(const std::filesystem::path& InRepoPath) -> std::string {
@@ -947,7 +964,7 @@ auto CollectRegisteredSubmodulesRecursive(const std::filesystem::path& InRepoPat
     }
 
     for (const auto& subPathRaw : ParseGitConfigPaths(config.stdoutStr)) {
-        const auto fullPath = Normalize(InRepoPath / subPathRaw);
+        const auto fullPath = Normalize(InRepoPath / Utf8Path(subPathRaw));
         const auto fullKey = PathKey(fullPath);
         const auto inserted = IoPaths.insert(fullKey).second;
         if (inserted && IsGitRepo(fullPath)) {
@@ -969,7 +986,7 @@ auto CollectRegisteredSubmodulePaths(const std::filesystem::path& InRepoPath) ->
     }
 
     for (const auto& subPathRaw : ParseGitConfigPaths(config.stdoutStr)) {
-        out.push_back(Normalize(InRepoPath / subPathRaw));
+        out.push_back(Normalize(InRepoPath / Utf8Path(subPathRaw)));
     }
     std::sort(out.begin(), out.end(), [](const auto& A, const auto& B) {
         return PathKey(A) < PathKey(B);
@@ -1044,7 +1061,7 @@ auto DiscoverGitRepos(const std::filesystem::path& InRoot, const int InMaxDepth,
     }
 
     for (const auto& key : unique) {
-        repos.emplace_back(key);
+        repos.push_back(Utf8Path(key));
     }
     return repos;
 }
@@ -1055,7 +1072,7 @@ auto CacheDirFor(const std::filesystem::path& InRoot) -> std::filesystem::path {
         if (configured.exitCode == 0) {
             const auto value = Trim(configured.stdoutStr);
             if (!value.empty()) {
-                const std::filesystem::path configuredPath(value);
+                const auto configuredPath = Utf8Path(value);
                 if (configuredPath.is_absolute()) {
                     return (configuredPath / "discover-repos").lexically_normal();
                 }
@@ -1072,7 +1089,7 @@ auto WorkspaceCacheDirFor(const std::filesystem::path& InRoot) -> std::filesyste
         if (configured.exitCode == 0) {
             const auto value = Trim(configured.stdoutStr);
             if (!value.empty()) {
-                const std::filesystem::path configuredPath(value);
+                const auto configuredPath = Utf8Path(value);
                 if (configuredPath.is_absolute()) {
                     return configuredPath.lexically_normal();
                 }
@@ -1245,9 +1262,10 @@ auto ParseReposArray(const std::string& InRawArray) -> std::vector<RepoRecord> {
             idx = objEnd + 1;
             continue;
         }
-        record.path = Normalize(std::filesystem::path(*path));
+        record.path = Normalize(Utf8Path(*path));
         record.type = ExtractStringField(obj, "type").value_or("unregistered");
-        record.registrationRelativeTo = ExtractStringField(obj, "registration_relative_to").value_or("");
+        record.registrationRelativeTo = Utf8Path(
+            ExtractStringField(obj, "registration_relative_to").value_or(""));
         record.kogSyncPolicy = ExtractStringField(obj, "kog_sync").value_or("");
         record.kogCommitPolicy = ExtractStringField(obj, "kog_commit").value_or("");
         record.kogPushPolicy = ExtractStringField(obj, "kog_push").value_or("");
@@ -1261,7 +1279,7 @@ auto ParseReposArray(const std::string& InRawArray) -> std::vector<RepoRecord> {
         }
 
         for (const auto& dep : ParseStringArrayField(obj, "dependencies")) {
-            record.dependencies.push_back(std::filesystem::path(dep));
+            record.dependencies.push_back(Utf8Path(dep));
         }
 
         repos.push_back(std::move(record));
@@ -1565,7 +1583,7 @@ auto ParseWorkspaceManifest(const std::string& InPayload, const std::filesystem:
     }
 
     WorkspaceManifest out;
-    out.workspaceRoot = Normalize(std::filesystem::path(*workspaceRoot));
+    out.workspaceRoot = Normalize(Utf8Path(*workspaceRoot));
     out.manifestFile = InManifestFile;
     // Older flat combined documents did not couple provenance to one repo
     // list.  Do not infer it from generated_at or a top-level observation.
@@ -1599,7 +1617,7 @@ auto ParseDiscoveryCacheSnapshot(const std::string& InPayload) -> std::optional<
     out.gitmodulesMtime = ExtractIntField(cachePayload, "gitmodules_mtime").value_or(0);
     out.marker = ExtractStringField(cachePayload, "marker").value_or("none");
     out.repos = ParseReposArray(*reposRaw);
-    AbsolutizeRepoRecords(Normalize(std::filesystem::path(*workspaceRoot)), &out.repos);
+    AbsolutizeRepoRecords(Normalize(Utf8Path(*workspaceRoot)), &out.repos);
     return out;
 }
 
@@ -1618,14 +1636,14 @@ auto IsWorkspaceManifestTrustedImpl(const WorkspaceManifest& InManifest,
         std::error_code ec;
         if (!std::filesystem::exists(repo.path, ec) || !std::filesystem::is_directory(repo.path, ec)) {
             if (OutReason != nullptr) {
-                *OutReason = std::format("repo path missing: {}", repo.path.generic_string());
+                *OutReason = std::format("repo path missing: {}", Utf8PathText(repo.path));
             }
             return false;
         }
     }
 
     for (const auto& [relPath, stored] : InManifest.gitmodulesFingerprints) {
-        const auto repoPath = (rootAbs / std::filesystem::path(relPath)).lexically_normal();
+        const auto repoPath = (rootAbs / Utf8Path(relPath)).lexically_normal();
         const auto current = GitmodulesFingerprint(repoPath);
         if (current != stored) {
             if (OutReason != nullptr) {
@@ -1750,7 +1768,7 @@ auto IsSameOrNestedPath(const std::filesystem::path& InParent, const std::filesy
 
 auto ResolveSkillRoot(const std::filesystem::path& InWorkspaceRoot) -> std::filesystem::path {
     if (const char* raw = std::getenv("KANO_GIT_SKILL_ROOT"); raw != nullptr && *raw != '\0') {
-        return Normalize(std::filesystem::path(raw));
+        return Normalize(Utf8Path(raw));
     }
 
     const auto workspaceRoot = Normalize(std::filesystem::absolute(InWorkspaceRoot));
@@ -1764,7 +1782,7 @@ auto ResolveSkillRoot(const std::filesystem::path& InWorkspaceRoot) -> std::file
         if (baseRaw == nullptr || *baseRaw == '\0') {
             return {};
         }
-        const auto candidate = Normalize(std::filesystem::path(baseRaw)
+        const auto candidate = Normalize(Utf8Path(baseRaw)
             / ".agents" / "skills" / "kano" / "kano-git-master-skill");
         const auto skillMarker = (candidate / "SKILL.md").lexically_normal();
         std::error_code candidateEc;
@@ -1787,9 +1805,9 @@ auto ResolveSkillRoot(const std::filesystem::path& InWorkspaceRoot) -> std::file
 }
 
 auto RepoIdentityName(const std::filesystem::path& InRepoPath) -> std::string {
-    auto name = Normalize(InRepoPath).filename().generic_string();
+    auto name = Utf8PathText(Normalize(InRepoPath).filename());
     if (name.empty()) {
-        name = Normalize(InRepoPath).generic_string();
+        name = Utf8PathText(Normalize(InRepoPath));
     }
     return name;
 }
@@ -1850,7 +1868,7 @@ auto CollectRegisteredSubmodulesRecursiveWithMetadata(const std::filesystem::pat
         }
         const auto prefix = key.substr(0, key.size() - 5);
         const auto subPathRaw = line.substr(sp + 1);
-        const auto fullPath = Normalize(InRepoPath / subPathRaw);
+        const auto fullPath = Normalize(InRepoPath / Utf8Path(subPathRaw));
         const auto fullKey = PathKey(fullPath);
         const auto inserted = IoPaths.insert(fullKey).second;
         if (IoMetadata != nullptr) {
@@ -2020,7 +2038,7 @@ auto AttachNearestParentDependencies(std::vector<RepoRecord>* IoRepos) -> void {
             if (!IsPrefixPath((*IoRepos)[cand].path, (*IoRepos)[idx].path)) {
                 continue;
             }
-            if (!nearestParent || (*IoRepos)[cand].path.generic_string().size() > (*IoRepos)[*nearestParent].path.generic_string().size()) {
+            if (!nearestParent || Utf8PathText((*IoRepos)[cand].path).size() > Utf8PathText((*IoRepos)[*nearestParent].path).size()) {
                 nearestParent = cand;
             }
         }
@@ -2113,7 +2131,7 @@ auto BuildRepoRecords(
         if (discoveredKeys.contains(registeredKey)) {
             continue;
         }
-        const std::filesystem::path registeredPath(registeredKey);
+        const auto registeredPath = Utf8Path(registeredKey);
         if (IsGitRepo(registeredPath)) {
             initializedRegistered.push_back(registeredPath);
         } else {
@@ -2258,7 +2276,7 @@ auto DiscoverRegisteredPathsRecursive(
                 continue;
             }
             const auto relPath = line.substr(sp + 1);
-            const auto full = Normalize(std::filesystem::weakly_canonical(current / relPath));
+            const auto full = Normalize(std::filesystem::weakly_canonical(current / Utf8Path(relPath)));
             if (std::find_if(out.begin(), out.end(), [&](const auto& candidate) {
                     return PathKey(candidate) == PathKey(full);
                 }) == out.end()) {
@@ -2528,12 +2546,12 @@ auto InspectCacheLocks(const std::filesystem::path& InCacheRoot) -> std::vector<
             continue;
         }
         const auto path = it->path().lexically_normal();
-        if (!path.filename().generic_string().ends_with(".lock")) {
+        if (!Utf8PathText(path.filename()).ends_with(".lock")) {
             continue;
         }
         auto info = ParseOwnerMetadata(path);
         if (PathKey(info.targetPath) == PathKey(path)) {
-            const auto stem = path.filename().generic_string();
+            const auto stem = Utf8PathText(path.filename());
             info.targetPath = path.parent_path() / stem.substr(0, stem.size() - std::string(".lock").size());
         }
         out.push_back(std::move(info));
@@ -2592,7 +2610,7 @@ auto DiscoverRepos(const DiscoverOptions& InOptions) -> DiscoveryResult {
     const auto externalRoots =
         ResolveConfiguredWorkspaceExternalRoots(rootAbs);
 
-    reportProgress(std::format("discover: preparing scan root={} depth={}", rootAbs.generic_string(), options.maxDepth));
+    reportProgress(std::format("discover: preparing scan root={} depth={}", Utf8PathText(rootAbs), options.maxDepth));
 
     const auto marker = options.incremental ? ComputeMarker(rootAbs, options.maxDepth, ignoreRules) : std::string{};
     const auto cacheFile = CacheFilePath(options, rootAbs);
@@ -2676,7 +2694,7 @@ auto DiscoverRepos(const DiscoverOptions& InOptions) -> DiscoveryResult {
         discovered.reserve(registered.size() + 1);
         discovered.push_back(rootAbs);
         for (const auto& pathKey : registered) {
-            discovered.push_back(std::filesystem::path(pathKey));
+            discovered.push_back(Utf8Path(pathKey));
         }
         SortUniquePaths(&discovered);
         result.mode = "registered-only-scan";
@@ -2817,7 +2835,7 @@ auto GetSubmoduleConfig(const std::filesystem::path& InRoot, const std::filesyst
         return {};
     }
 
-    const auto relPathStr = relPath.generic_string();
+    const auto relPathStr = Utf8PathText(relPath);
     const auto config = RunGitCapture(normalizedRoot, {"config", "-f", ".gitmodules", "--get-regexp", "submodule\\..*\\.path", "^" + relPathStr + "$"});
     if (config.exitCode != 0) {
         return {};

@@ -18,6 +18,23 @@
 namespace kano::git::commands {
 namespace {
 
+auto Utf8PathText(const std::filesystem::path& InPath) -> std::string {
+#if defined(_WIN32)
+    const auto value = InPath.generic_u8string();
+    return {value.begin(), value.end()};
+#else
+    return InPath.generic_string();
+#endif
+}
+
+auto Utf8Path(const std::string_view InPath) -> std::filesystem::path {
+#if defined(_WIN32)
+    return std::filesystem::u8path(InPath);
+#else
+    return std::filesystem::path(InPath);
+#endif
+}
+
 auto EscapeJson(std::string InValue) -> std::string {
     std::string out;
     out.reserve(InValue.size() + 8);
@@ -61,7 +78,7 @@ auto RelativeDisplayPath(const std::filesystem::path& InRoot, const std::filesys
 }
 
 auto GroupFromRelativePath(const std::filesystem::path& InRelativePath) -> std::string {
-    const auto parent = InRelativePath.parent_path().generic_string();
+    const auto parent = Utf8PathText(InRelativePath.parent_path());
     if (parent.empty() || parent == ".") {
         return ".";
     }
@@ -70,14 +87,14 @@ auto GroupFromRelativePath(const std::filesystem::path& InRelativePath) -> std::
 
 auto RepoNameFromPath(const std::filesystem::path& InPath) -> std::string {
     const auto normalized = InPath.lexically_normal();
-    auto name = normalized.filename().generic_string();
+    auto name = Utf8PathText(normalized.filename());
     if (name.empty()) {
-        name = normalized.parent_path().filename().generic_string();
+        name = Utf8PathText(normalized.parent_path().filename());
     }
     if (!name.empty()) {
         return name;
     }
-    return normalized.generic_string();
+    return Utf8PathText(normalized);
 }
 
 auto FitCell(const std::string& InValue, std::size_t InWidth) -> std::string {
@@ -159,7 +176,7 @@ void RunDiscoverCommand(const std::string& InFormat,
     }
 
     workspace::DiscoverOptions options;
-    options.rootDir = InRoot.empty() ? std::filesystem::current_path() : std::filesystem::path(InRoot);
+    options.rootDir = InRoot.empty() ? std::filesystem::current_path() : Utf8Path(InRoot);
     options.maxDepth = InScope == workspace::DiscoverScope::Full ? InUnregisteredDepth : InMaxDepth;
     options.excludePatterns = InExclude;
     options.useCache = !InNoCache;
@@ -175,7 +192,7 @@ void RunDiscoverCommand(const std::string& InFormat,
     };
 
     std::cerr << kano::terminal::Wrap("[discover]", kano::terminal::Color::Dim) << " " 
-              << kano::terminal::Wrap("start", kano::terminal::Color::BoldWhite) << " root=" << options.rootDir.lexically_normal().generic_string()
+               << kano::terminal::Wrap("start", kano::terminal::Color::BoldWhite) << " root=" << Utf8PathText(options.rootDir.lexically_normal())
               << " cache=" << (options.useCache ? kano::terminal::Wrap("on", kano::terminal::Color::BoldGreen) : kano::terminal::Wrap("off", kano::terminal::Color::BoldRed))
               << " refresh=" << (options.refreshCache ? kano::terminal::Wrap("on", kano::terminal::Color::BoldGreen) : kano::terminal::Wrap("off", kano::terminal::Color::BoldRed))
               << " metadata=" << kano::terminal::Wrap(options.metadataLevel, kano::terminal::Color::BoldWhite)
@@ -190,16 +207,16 @@ void RunDiscoverCommand(const std::string& InFormat,
 
     auto repos = discovery.repos;
     std::sort(repos.begin(), repos.end(), [](const workspace::RepoRecord& A, const workspace::RepoRecord& B) {
-        return A.path.lexically_normal().generic_string() < B.path.lexically_normal().generic_string();
+        return Utf8PathText(A.path.lexically_normal()) < Utf8PathText(B.path.lexically_normal());
     });
 
     const auto manifestStart = std::chrono::steady_clock::now();
     const auto manifest = workspace::BuildWorkspaceManifest(options.rootDir, repos);
     std::cerr << kano::terminal::Wrap("[discover]", kano::terminal::Color::Dim) << " writing workspace manifest -> "
-              << kano::terminal::Wrap(manifest.manifestFile.lexically_normal().generic_string(), kano::terminal::Color::BoldCyan) << "\n";
+              << kano::terminal::Wrap(Utf8PathText(manifest.manifestFile.lexically_normal()), kano::terminal::Color::BoldCyan) << "\n";
     if (!workspace::SaveWorkspaceManifest(manifest)) {
         std::cerr << kano::terminal::Wrap("Error:", kano::terminal::Color::BoldRed) << " failed to write workspace manifest: "
-                  << manifest.manifestFile.lexically_normal().generic_string() << "\n";
+                  << Utf8PathText(manifest.manifestFile.lexically_normal()) << "\n";
         std::exit(1);
     }
     const auto manifestEnd = std::chrono::steady_clock::now();
@@ -220,8 +237,8 @@ void RunDiscoverCommand(const std::string& InFormat,
     } else {
         std::cout << kano::terminal::Wrap("Discovery mode: ", kano::terminal::Color::BoldWhite) << discovery.mode << "\n";
         std::cout << kano::terminal::Wrap("Discovery scope: ", kano::terminal::Color::BoldWhite) << (options.scope == workspace::DiscoverScope::Full ? "full" : "registered-only") << "\n";
-        std::cout << kano::terminal::Wrap("Discovery cache: ", kano::terminal::Color::BoldWhite) << kano::terminal::Wrap(discovery.cacheFile.lexically_normal().generic_string(), kano::terminal::Color::BoldCyan) << "\n";
-        std::cout << kano::terminal::Wrap("Workspace manifest: ", kano::terminal::Color::BoldWhite) << kano::terminal::Wrap(manifest.manifestFile.lexically_normal().generic_string(), kano::terminal::Color::BoldCyan) << "\n";
+        std::cout << kano::terminal::Wrap("Discovery cache: ", kano::terminal::Color::BoldWhite) << kano::terminal::Wrap(Utf8PathText(discovery.cacheFile.lexically_normal()), kano::terminal::Color::BoldCyan) << "\n";
+        std::cout << kano::terminal::Wrap("Workspace manifest: ", kano::terminal::Color::BoldWhite) << kano::terminal::Wrap(Utf8PathText(manifest.manifestFile.lexically_normal()), kano::terminal::Color::BoldCyan) << "\n";
         std::cout << kano::terminal::Wrap("Repos discovered: ", kano::terminal::Color::BoldWhite) << kano::terminal::Wrap(std::to_string(repos.size()), kano::terminal::Color::BoldGreen) << "\n";
         std::cout << kano::terminal::Wrap("Discovery elapsed: ", kano::terminal::Color::BoldWhite) << discoverElapsedText << "\n";
         std::cout << kano::terminal::Wrap("Manifest write elapsed: ", kano::terminal::Color::BoldWhite) << manifestElapsedText << "\n";
@@ -242,9 +259,9 @@ auto FormatNativeStatusJson(const std::vector<workspace::RepoRecord>& InRepos) -
         }
         const auto& repo = InRepos[i];
         out += "{";
-        out += "\"path\":\"" + EscapeJson(repo.path.lexically_normal().generic_string()) + "\",";
+        out += "\"path\":\"" + EscapeJson(Utf8PathText(repo.path.lexically_normal())) + "\",";
         out += "\"type\":\"" + EscapeJson(repo.type) + "\",";
-        out += "\"registrationRelativeTo\":\"" + EscapeJson(repo.registrationRelativeTo.lexically_normal().generic_string()) + "\",";
+        out += "\"registrationRelativeTo\":\"" + EscapeJson(Utf8PathText(repo.registrationRelativeTo.lexically_normal())) + "\",";
         out += "\"kogSync\":\"" + EscapeJson(repo.kogSyncPolicy) + "\",";
         out += "\"kogCommit\":\"" + EscapeJson(repo.kogCommitPolicy) + "\",";
         out += "\"kogPush\":\"" + EscapeJson(repo.kogPushPolicy) + "\",";
