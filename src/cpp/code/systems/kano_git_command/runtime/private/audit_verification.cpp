@@ -10,6 +10,15 @@
 namespace kano::git::commands {
 namespace {
 
+auto Utf8PathText(const std::filesystem::path& InPath) -> std::string {
+#if defined(_WIN32)
+    const auto value = InPath.generic_u8string();
+    return {value.begin(), value.end()};
+#else
+    return InPath.generic_string();
+#endif
+}
+
 auto InvalidVerificationRead(std::string InDiagnostic,
                              const std::size_t InMaximumBytes)
     -> OperationAuditRunReadResult {
@@ -96,7 +105,7 @@ auto MakeOperationAuditVerificationSpec(
     OperationAuditSpec spec;
     spec.workspaceRoot = workspace.lexically_normal();
     spec.sourcePath = canonicalPlan;
-    spec.inputIdentity = canonicalPlan.generic_string();
+    spec.inputIdentity = Utf8PathText(canonicalPlan);
     spec.inputKind = "commit-plan";
     spec.route = "commit-push.plan";
     spec.planId = std::move(planId);

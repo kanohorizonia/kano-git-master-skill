@@ -38,6 +38,8 @@ namespace {
 
 thread_local OperationAuditContext* gActiveAudit = nullptr;
 auto CurrentUtc() -> std::string;
+auto Utf8PathText(const std::filesystem::path& InPath) -> std::string;
+auto Utf8Path(const std::string_view InPath) -> std::filesystem::path;
 
 auto CatalogEntryFor(const OperationAuditContext& InContext,
                      const OperationAuditCatalogState InState,
@@ -54,7 +56,7 @@ auto CatalogEntryFor(const OperationAuditContext& InContext,
     entry.sourceSizeBytes = InContext.Spec().sourceBytes.size();
     entry.auditRootSelector = (InContext.InputKind() == "commit-plan" ? "plan-" : "operation-") +
         audit::Sha256Hex(InContext.Spec().inputIdentity);
-    entry.auditRootSha256 = audit::Sha256Hex(paths.auditRoot.generic_string());
+    entry.auditRootSha256 = audit::Sha256Hex(Utf8PathText(paths.auditRoot));
     entry.state = InState; entry.receiptSha256 = std::move(InReceiptSha256);
     entry.correlationSha256 = audit::Sha256Hex(SerializeOperationCorrelationEnvelope(InContext.Correlation()));
     entry.observedAtUtc = CurrentUtc();
@@ -595,13 +597,37 @@ auto PhaseForAction(const std::string& InAction) -> std::string {
     return "mutation";
 }
 
+auto Utf8PathText(const std::filesystem::path& InPath) -> std::string {
+#if defined(_WIN32)
+    const auto value = InPath.generic_u8string();
+    return {value.begin(), value.end()};
+#else
+    return InPath.generic_string();
+#endif
+}
+
+auto Utf8Path(const std::string_view InPath) -> std::filesystem::path {
+#if defined(_WIN32)
+    return std::filesystem::u8path(InPath);
+#else
+    return std::filesystem::path(InPath);
+#endif
+}
+
 auto RepositoryIdFor(const std::filesystem::path& InWorkspaceRoot,
                      const std::filesystem::path& InRepo) -> std::string {
-    auto relative = InRepo.lexically_normal().lexically_relative(InWorkspaceRoot).generic_string();
+    auto relative = Utf8PathText(
+        InRepo.lexically_normal().lexically_relative(InWorkspaceRoot));
     if (relative.empty() || relative == ".") return "workspace";
-    if (relative.starts_with("../") || relative == ".." ||
-        (!relative.empty() && relative.front() == '/'))
-        return "repository-" + audit::Sha256Hex(InRepo.lexically_normal().generic_string()).substr(0, 32);
+    const bool logicalAscii = std::all_of(
+        relative.begin(), relative.end(), [](const unsigned char InByte) {
+            return InByte >= 0x21U && InByte <= 0x7eU;
+        });
+    if (!logicalAscii || relative.starts_with("../") || relative == ".." ||
+        (!relative.empty() && relative.front() == '/')) {
+        return "repository-" + audit::Sha256Hex(
+            Utf8PathText(InRepo.lexically_normal())).substr(0, 32);
+    }
     return relative;
 }
 
@@ -1076,14 +1102,16 @@ auto ResolveOperationAuditPaths(const OperationAuditSpec& InSpec,
         {"rev-parse", "--path-format=absolute", "--git-common-dir"});
     const auto gitDirectoryText = Trim(gitDirResult.stdoutStr);
     if (gitDirResult.exitCode == 0 && !gitDirectoryText.empty()) {
-        const auto gitDirectory = std::filesystem::path(gitDirectoryText).lexically_normal();
+        const auto gitDirectory = Utf8Path(gitDirectoryText).lexically_normal();
         if (!IsSafeDirectory(gitDirectory, OutError)) return std::nullopt;
         const auto prefix = InSpec.inputKind == "commit-plan" ? "plan-" : "operation-";
         paths.auditRoot = gitDirectory / "kog" / "audit" /
             (prefix + audit::Sha256Hex(InSpec.inputIdentity));
     } else if (InSpec.sourcePath.has_value()) {
-        paths.auditRoot = InSpec.sourcePath->parent_path() /
-            (InSpec.sourcePath->filename().string() + ".audit");
+        auto auditFileName = InSpec.sourcePath->filename();
+        auditFileName += ".audit";
+        paths.auditRoot =
+            InSpec.sourcePath->parent_path() / auditFileName;
     } else {
         paths.auditRoot = InSpec.workspaceRoot / ".kano" / "tmp" / "git" /
             "audit" / ((InSpec.inputKind == "commit-plan" ? "plan-" : "operation-") +
@@ -1139,7 +1167,7 @@ auto OperationAuditContext::Reserve(OperationAuditSpec InSpec, std::string* OutE
         {"rev-parse", "--path-format=absolute", "--git-common-dir"});
     const auto gitDirectoryText = Trim(gitDirResult.stdoutStr);
     if (gitDirResult.exitCode == 0 && !gitDirectoryText.empty()) {
-        const auto gitDirectory = std::filesystem::path(gitDirectoryText).lexically_normal();
+        const auto gitDirectory = Utf8Path(gitDirectoryText).lexically_normal();
         hierarchy = {gitDirectory, gitDirectory / "kog", gitDirectory / "kog" / "audit",
                      sink->mPaths.auditRoot, sink->mPaths.runRoot};
     } else if (sink->mSpec.sourcePath.has_value()) {
@@ -1185,7 +1213,9 @@ auto OperationAuditContext::Reserve(OperationAuditSpec InSpec, std::string* OutE
     CloseHandleValue(frozenHandle);
     sink->mEventsHandle = OpenExclusiveFile(sink->mPaths.events, OutError);
     if (sink->mEventsHandle < 0 || !WriteAndSync(sink->mEventsHandle, {}, OutError)) return nullptr;
-    sink->mReceiptHandle = OpenExclusiveFile(sink->mPaths.receipt.string() + ".tmp", OutError);
+    auto temporaryReceipt = sink->mPaths.receipt;
+    temporaryReceipt += ".tmp";
+    sink->mReceiptHandle = OpenExclusiveFile(temporaryReceipt, OutError);
     if (sink->mReceiptHandle < 0 || !WriteAndSync(sink->mReceiptHandle, {}, OutError)) return nullptr;
     if (!SyncDirectory(sink->mPaths.attemptRoot, OutError)) return nullptr;
 
@@ -1452,7 +1482,9 @@ auto OperationAuditContext::PublishReceipt(const int InExitCode, std::string* Ou
     CloseHandleValue(mEventsHandle);
     CloseHandleValue(mReceiptHandle);
     bool receiptPublished = false;
-    if (!PublishNoReplace(mPaths.receipt.string() + ".tmp", mPaths.receipt,
+    auto temporaryReceipt = mPaths.receipt;
+    temporaryReceipt += ".tmp";
+    if (!PublishNoReplace(temporaryReceipt, mPaths.receipt,
                           &receiptPublished, OutError)) {
         std::string ignored;
         PublishIncompleteMarker(

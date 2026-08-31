@@ -6,6 +6,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <fstream>
@@ -23,6 +24,15 @@ namespace {
 auto ReadText(const std::filesystem::path& InPath) -> std::string {
     std::ifstream input(InPath, std::ios::binary);
     return std::string(std::istreambuf_iterator<char>(input), {});
+}
+
+auto Utf8PathTextForTest(const std::filesystem::path& InPath) -> std::string {
+#if defined(_WIN32)
+    const auto value = InPath.generic_u8string();
+    return {value.begin(), value.end()};
+#else
+    return InPath.generic_string();
+#endif
 }
 
 auto RunRoot(const std::filesystem::path& InPlanPath,
@@ -140,7 +150,7 @@ auto BuildVerifySpec(const std::filesystem::path& InRoot,
     OperationAuditSpec spec;
     spec.workspaceRoot = InRoot;
     spec.sourcePath = InPlanPath;
-    spec.inputIdentity = InPlanPath.generic_string();
+    spec.inputIdentity = Utf8PathTextForTest(InPlanPath);
     spec.inputKind = "commit-plan";
     spec.route = "commit-push.plan";
     spec.planId = InPlan.meta.planId;
@@ -268,6 +278,65 @@ TEST_CASE("KG-TSK-0125 capability is an exact seven-pair closed reservation set"
         std::error_code ec;
         std::filesystem::remove_all(root, ec);
     }
+}
+
+TEST_CASE("KOG-BUG-0109 operation audit hashes non-ASCII repository paths",
+          "[Unit][CommitPlan][Audit][Unicode][KOG-BUG-0109]") {
+    const std::string repositoryToken =
+        std::string{"\xE6\xB8\xAC\xE8\xA9\xA6"} + "-a" +
+        std::string{"\xCC\x84"} + "-" +
+        std::string{"\xF0\x9F\xAA\x90"};
+    const auto container = UniqueRoot("unicode-repository");
+    const auto root =
+        (container / std::filesystem::u8path(repositoryToken)).lexically_normal();
+    std::error_code ec;
+    std::filesystem::remove_all(container, ec);
+    REQUIRE(std::filesystem::create_directories(root));
+    const auto planPath = root /
+        std::filesystem::u8path("plan-" + repositoryToken + ".json");
+    const auto plan = KoaPlan("run-unicode-repository", 1);
+    WritePlan(planPath, plan);
+
+    const auto repository =
+        (root / std::filesystem::u8path("nested-" + repositoryToken)).lexically_normal();
+    REQUIRE(std::filesystem::create_directories(repository));
+
+    auto spec = BuildVerifySpec(root, planPath, plan);
+    std::string error;
+    auto audit = OperationAuditContext::Reserve(spec, &error);
+    INFO(error);
+    REQUIRE(audit);
+    const auto before = audit->Capture(repository);
+    REQUIRE(audit->Append("commit.apply", repository, before,
+                          CurrentUtcIso8601(), 0, &error));
+    const auto attemptRoot = audit->Paths().attemptRoot;
+    REQUIRE(audit->Finalize(0, &error));
+    audit.reset();
+
+    REQUIRE(Utf8PathTextForTest(attemptRoot).find(repositoryToken) !=
+            std::string::npos);
+    const auto events = kano::git::audit::ParseAuditEventsJsonl(
+        ReadText(attemptRoot / "events.jsonl"));
+    const auto receipt = kano::git::audit::ParseRunReceiptJson(
+        ReadText(attemptRoot / "receipt.json"));
+    REQUIRE(events.ok());
+    REQUIRE(receipt.ok());
+    const auto expectedRepositoryId = "repository-" +
+        kano::git::audit::Sha256Hex(Utf8PathTextForTest(repository)).substr(0, 32);
+    REQUIRE(events.values.back().repository.repositoryId == expectedRepositoryId);
+    REQUIRE(expectedRepositoryId.size() == 43U);
+    REQUIRE(expectedRepositoryId.substr(11).find_first_not_of("0123456789abcdef") ==
+            std::string::npos);
+    REQUIRE(expectedRepositoryId.find(repositoryToken) == std::string::npos);
+    REQUIRE(std::any_of(
+        receipt.value->repositories.begin(), receipt.value->repositories.end(),
+        [&expectedRepositoryId](const auto& InRepository) {
+            return InRepository.repositoryId == expectedRepositoryId;
+        }));
+    REQUIRE(kano::git::audit::ValidateRunTrace(
+        *receipt.value, events.values).ok());
+
+    std::filesystem::remove_all(container, ec);
 }
 
 TEST_CASE("KG-TSK-0125 observed audit phases join to one receipt",

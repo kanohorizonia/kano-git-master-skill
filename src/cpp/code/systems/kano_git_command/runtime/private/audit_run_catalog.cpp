@@ -34,6 +34,15 @@ extern "C" NTSYSAPI NTSTATUS NTAPI NtSetInformationFile(
 
 namespace kano::git::commands {
 namespace {
+auto Utf8PathText(const std::filesystem::path& InPath) -> std::string {
+#if defined(_WIN32)
+    const auto value = InPath.generic_u8string();
+    return {value.begin(), value.end()};
+#else
+    return InPath.generic_string();
+#endif
+}
+
 constexpr std::string_view kCatalogSchema = "kog.auditRunCatalog";
 constexpr std::string_view kPointerSchema = "kog.auditRunCatalogPointer";
 constexpr std::uint64_t kCatalogCursorSchemaVersion = 2;
@@ -152,8 +161,9 @@ auto CatalogAnchor(const OperationAuditSpec& spec, const OperationAuditPaths& pa
     const auto workspace = spec.workspaceRoot.lexically_normal();
     const auto normalizedAuditRoot = paths.auditRoot.lexically_normal();
     if (spec.sourcePath) {
-        const auto sourceAdjacent = (spec.sourcePath->parent_path() /
-            (spec.sourcePath->filename().string() + ".audit")).lexically_normal();
+        auto auditFileName = spec.sourcePath->filename();
+        auditFileName += ".audit";
+        const auto sourceAdjacent = (spec.sourcePath->parent_path() / auditFileName).lexically_normal();
         if (normalizedAuditRoot == sourceAdjacent) return workspace;
     }
     const auto selector = (spec.inputKind == "commit-plan" ? "plan-" : "operation-") + audit::Sha256Hex(spec.inputIdentity);
@@ -941,7 +951,7 @@ auto RevalidateOperationAuditCatalogEntry(const OperationAuditSpec& InCatalogAnc
         InSelectedSpec.sourceBytes.size() != InEntry.sourceSizeBytes || audit::Sha256Hex(InSelectedSpec.frozenBytes) != InEntry.planSha256 ||
         selectedCorrelation != InEntry.correlationSha256 ||
         ((InSelectedSpec.inputKind == "commit-plan" ? "plan-" : "operation-") + audit::Sha256Hex(InSelectedSpec.inputIdentity)) != InEntry.auditRootSelector ||
-        audit::Sha256Hex(selectedPaths->auditRoot.generic_string()) != InEntry.auditRootSha256)
+        audit::Sha256Hex(Utf8PathText(selectedPaths->auditRoot)) != InEntry.auditRootSha256)
         return bindingFailure("selected audit spec does not match catalog row binding");
     auto result = ReadOperationAuditRun(InSelectedSpec, InEntry.runId, InEntry.attempt, InLimits,
                                         InEntry.receiptSha256 ? std::optional<std::string_view>(*InEntry.receiptSha256) : std::nullopt);
