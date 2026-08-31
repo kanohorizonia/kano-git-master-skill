@@ -29,6 +29,23 @@ using namespace kano::git;
 
 namespace {
 
+auto Utf8PathText(const std::filesystem::path& InPath) -> std::string {
+#if defined(_WIN32)
+    const auto value = InPath.generic_u8string();
+    return {value.begin(), value.end()};
+#else
+    return InPath.generic_string();
+#endif
+}
+
+auto Utf8Path(const std::string_view InPath) -> std::filesystem::path {
+#if defined(_WIN32)
+    return std::filesystem::u8path(InPath);
+#else
+    return std::filesystem::path(InPath);
+#endif
+}
+
 auto ToLower(std::string InValue) -> std::string {
     std::transform(InValue.begin(), InValue.end(), InValue.begin(), [](unsigned char InChar) {
         return static_cast<char>(std::tolower(InChar));
@@ -401,7 +418,7 @@ void SetSelfBinaryPathEnv(char* InArgv0) {
         return;
     }
 
-    const auto normalized = binaryPath.lexically_normal().string();
+    const auto normalized = Utf8PathText(binaryPath.lexically_normal());
     if (normalized.empty()) {
         return;
     }
@@ -423,22 +440,22 @@ void SetSkillRootEnvFromBinaryPath() {
     }
 
     const auto skillRoot =
-        commands::runtime_path::ResolveSkillRootFromBinaryPath(std::filesystem::path(binaryRaw));
+        commands::runtime_path::ResolveSkillRootFromBinaryPath(Utf8Path(binaryRaw));
     if (skillRoot.empty()) {
         return;
     }
 
 #if defined(_WIN32)
-    _putenv_s("KANO_GIT_SKILL_ROOT", skillRoot.string().c_str());
+    _putenv_s("KANO_GIT_SKILL_ROOT", Utf8PathText(skillRoot).c_str());
 #else
     setenv("KANO_GIT_SKILL_ROOT", skillRoot.string().c_str(), 1);
 #endif
 }
 
 std::string DefaultPlanPath() {
-    return commands::runtime_path::Layout::Resolve(std::filesystem::current_path())
-        .SharedPlanPath()
-        .generic_string();
+    return Utf8PathText(
+        commands::runtime_path::Layout::Resolve(std::filesystem::current_path())
+            .SharedPlanPath());
 }
 
 bool RewriteSlogShorthand(std::vector<std::string>& InOutArgs, std::string& OutError) {
