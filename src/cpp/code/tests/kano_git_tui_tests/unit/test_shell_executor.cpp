@@ -126,6 +126,63 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "ShellExecutor preserves UTF-8 arguments and working directories",
+    "[Unit][shell-executor][unicode][windows][KOG-BUG-0109]") {
+    const ScopedTempDirectory temp;
+    const std::string utf8 = "\xE6\xB8\xAC\xE8\xA9\xA6-a\xCC\x84-\xF0\x9F\xAA\x90";
+    const auto workingDir = temp.Path() / std::filesystem::u8path(utf8);
+    std::filesystem::create_directories(workingDir);
+
+#if defined(_WIN32)
+    const auto result = ExecuteCommand(
+        "powershell",
+        {"-NoProfile", "-Command",
+         "& { param([string]$value) "
+         "$bytes=[Text.Encoding]::UTF8.GetBytes($value);"
+         "$out=[Console]::OpenStandardOutput();"
+         "$out.Write($bytes,0,$bytes.Length) }", utf8},
+        ExecMode::Capture,
+        workingDir);
+    REQUIRE(result.exitCode == 0);
+    REQUIRE(result.stdoutStr == utf8);
+
+    const char* args[] = {"cmd", "/c", "exit 0", nullptr};
+    const auto workingDirUtf8 = workingDir.generic_u8string();
+    const std::string workingDirBytes(workingDirUtf8.begin(), workingDirUtf8.end());
+    KanoProcessOptions valid{};
+    valid.executable = "cmd";
+    valid.working_dir = workingDirBytes.c_str();
+    valid.argv = args;
+    valid.argv_count = 3;
+    valid.mode = KANO_PROCESS_MODE_CAPTURE;
+    KanoProcessResultV2 validResult{};
+    REQUIRE(kano_process_run_ex_v2(&valid, nullptr, &validResult));
+    REQUIRE(validResult.exit_code == 0);
+    kano_process_free_result_v2(&validResult);
+
+    KanoProcessOptions invalid{};
+    invalid.executable = "\xFF";
+    invalid.argv = args;
+    invalid.argv_count = 3;
+    invalid.mode = KANO_PROCESS_MODE_CAPTURE;
+    KanoProcessResultV2 invalidResult{};
+    REQUIRE_FALSE(kano_process_run_ex_v2(&invalid, nullptr, &invalidResult));
+    REQUIRE(invalidResult.exit_code == 0);
+    REQUIRE(invalidResult.stdout_data == nullptr);
+    REQUIRE(invalidResult.stdout_size == 0);
+    REQUIRE_FALSE(invalidResult.stdout_truncated);
+    REQUIRE(invalidResult.stderr_data == nullptr);
+    REQUIRE(invalidResult.stderr_size == 0);
+    REQUIRE_FALSE(invalidResult.stderr_truncated);
+    REQUIRE_FALSE(invalidResult.timed_out);
+#else
+    const auto result = ExecuteCommand("pwd", {}, ExecMode::Capture, workingDir);
+    REQUIRE(result.exitCode == 0);
+    REQUIRE(result.stdoutStr.find(utf8) != std::string::npos);
+#endif
+}
+
+TEST_CASE(
     "Kano process legacy result ABI remains bounded to the V1 object",
     "[Unit][shell-executor][binary-capture][abi][KG-BUG-0088]") {
     struct LegacyCallerStorage {

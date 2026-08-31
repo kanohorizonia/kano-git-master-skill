@@ -125,7 +125,20 @@ auto GetEnvPath(const char* InKey) -> std::optional<std::filesystem::path> {
     if (raw == nullptr || raw[0] == '\0') {
         return std::nullopt;
     }
+#ifdef KOG_PLATFORM_WINDOWS
+    return std::filesystem::u8path(raw);
+#else
     return std::filesystem::path(raw);
+#endif
+}
+
+auto Utf8PathText(const std::filesystem::path& InPath) -> std::string {
+#ifdef KOG_PLATFORM_WINDOWS
+    const auto utf8Path = InPath.generic_u8string();
+    return {utf8Path.begin(), utf8Path.end()};
+#else
+    return InPath.generic_string();
+#endif
 }
 
 auto GetEnvTimeoutMs(const char* InKey) -> std::optional<unsigned int> {
@@ -416,7 +429,7 @@ auto BuildProcessDiagBlock(const std::string& InStartTs,
     const auto commandLine = InArgv.empty() ? InExecutable : (InExecutable + " " + JoinArgs(InArgv));
     const auto pathRaw = std::getenv("PATH");
 
-    oss << "[process-diag] cwd=" << InCwd.generic_string() << "\n";
+    oss << "[process-diag] cwd=" << Utf8PathText(InCwd) << "\n";
     oss << "[process-diag] executable=" << InExecutable << "\n";
     oss << "[process-diag] argv=" << JoinArgs(InArgv) << "\n";
     oss << "[process-diag] selected_PATH=" << (pathRaw != nullptr ? pathRaw : "") << "\n";
@@ -530,7 +543,7 @@ auto RunProcess(const std::string& cmdLine, ExecMode InMode,
     if (InWorkingDir.has_value()) {
         auto preferred = InWorkingDir->lexically_normal();
         preferred.make_preferred();
-        workingDirStorage = preferred.string();
+        workingDirStorage = Utf8PathText(preferred);
     }
 
     KanoProcessOptions opts{};
@@ -847,7 +860,7 @@ auto BuildProcessDiagBlock(const std::string& InStartTs,
     const auto commandLine = InArgv.empty() ? InExecutable : (InExecutable + " " + JoinArgs(InArgv));
     const auto pathRaw = std::getenv("PATH");
 
-    oss << "[process-diag] cwd=" << InCwd.generic_string() << "\n";
+    oss << "[process-diag] cwd=" << Utf8PathText(InCwd) << "\n";
     oss << "[process-diag] executable=" << InExecutable << "\n";
     oss << "[process-diag] argv=" << JoinArgs(InArgv) << "\n";
     oss << "[process-diag] selected_PATH=" << (pathRaw != nullptr ? pathRaw : "") << "\n";
@@ -1279,7 +1292,7 @@ auto WithGitSafeDirectoryDefaults(const std::string& InCommand,
     std::vector<std::string> prefixed;
     prefixed.reserve(InArgs.size() + 2);
     prefixed.push_back("-c");
-    prefixed.push_back("safe.directory=" + start.lexically_normal().generic_string());
+    prefixed.push_back("safe.directory=" + Utf8PathText(start.lexically_normal()));
     prefixed.insert(prefixed.end(), InArgs.begin(), InArgs.end());
     return prefixed;
 }
@@ -1468,7 +1481,7 @@ auto ExecuteCommand(
         if (verbose || !isNoisy) {
             std::string logLine = "[run] " + BuildCommandLine(InCommand, InArgs);
             if (InWorkingDir) {
-                logLine += " (cwd: " + InWorkingDir->generic_string() + ")";
+                logLine += " (cwd: " + Utf8PathText(*InWorkingDir) + ")";
             }
             
             // Console output
@@ -1507,10 +1520,10 @@ auto ExecuteCommand(
                     
                     std::ofstream ofs(logPath, std::ios::app);
                     if (ofs) {
-                        ofs << "--- Session Started: " << std::filesystem::current_path().string() << " ---\n";
+                        ofs << "--- Session Started: " << Utf8PathText(std::filesystem::current_path()) << " ---\n";
                     }
                     
-                    EmitStdoutLine("[debug] commands logged to: " + logPath.generic_string() + "\n");
+                    EmitStdoutLine("[debug] commands logged to: " + Utf8PathText(logPath) + "\n");
                 });
 
                 if (!logPath.empty()) {
