@@ -3650,6 +3650,57 @@ TEST_CASE("converge agent mode classifies root VERSION as release metadata", "[f
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge agent mode keeps filter-equivalent index paths in freshness scope", "[functional][converge][agent-mode][intent-commits][KOG-BUG-0123]") {
+    const auto ctx = CreateRemoteWithClone("converge-filter-equivalent-intent");
+    RequireSuccess(RunGit({"config", "core.autocrlf", "true"}, ctx.cloneRepo), "enable CRLF fixture");
+    WriteTextFile(ctx.cloneRepo / "config/equivalent.toml", "value = 1\r\n");
+    RequireSuccess(RunGit({"add", "config/equivalent.toml"}, ctx.cloneRepo), "stage normalized fixture");
+    RequireSuccess(RunGit({"commit", "-m", "seed normalized config"}, ctx.cloneRepo), "commit normalized fixture");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.cloneRepo), "push normalized fixture");
+    WriteTextFile(ctx.cloneRepo / "config/equivalent.toml", "value = 1\n");
+    WriteTextFile(ctx.cloneRepo / "config/changed.toml", "value = 2\n");
+    RequireContains(GitStatusShort(ctx.cloneRepo), " M config/equivalent.toml");
+    const auto diff = RunGit({"diff", "--name-only"}, ctx.cloneRepo);
+    RequireSuccess(diff, "read filtered diff");
+    REQUIRE(TrimCopy(diff.stdoutText).empty());
+    const auto result = RunKogWithEnv(
+        {"converge", "--no-recursive", "--jobs", "1"}, ctx.cloneRepo,
+        {{"KANO_AGENT_MODE", "1"}});
+    RequireSuccess(result, "commit raw index scope consistently");
+    REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
+    const auto published = RunGit({"show", ctx.branch + ":config/changed.toml"}, ctx.bareRemote);
+    RequireSuccess(published, "read published changed config");
+    REQUIRE(published.stdoutText == "value = 2\n");
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge agent mode converts existing evidence to LFS pointers", "[functional][converge][agent-mode][intent-commits][lfs][KOG-BUG-0123]") {
+    const auto ctx = CreateRemoteWithClone("converge-lfs-renormalization");
+    if (RunGit({"lfs", "version"}, ctx.cloneRepo).exitCode != 0) {
+        RemoveSandboxWorkspace(ctx.sandbox);
+        SKIP("Git LFS is required for the existing-asset migration fixture");
+    }
+    const auto asset = std::filesystem::path("_shared/artifacts/KOG-TSK-0001/evidence.png");
+    WriteTextFile(ctx.cloneRepo / asset, "original binary evidence\n");
+    RequireSuccess(RunGit({"add", asset.generic_string()}, ctx.cloneRepo), "stage original ordinary Git asset");
+    RequireSuccess(RunGit({"commit", "-m", "seed ordinary Git asset"}, ctx.cloneRepo), "commit original asset");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.cloneRepo), "push original asset");
+    RequireSuccess(RunGit({"lfs", "install", "--local"}, ctx.cloneRepo), "install local LFS filter and hook");
+    WriteTextFile(ctx.cloneRepo / ".gitattributes", "*.png filter=lfs diff=lfs merge=lfs -text\n");
+    RequireContains(GitStatusShort(ctx.cloneRepo), " M " + asset.generic_string());
+    const auto result = RunKogWithEnv(
+        {"converge", "--no-recursive", "--jobs", "1"}, ctx.cloneRepo,
+        {{"KANO_AGENT_MODE", "1"}});
+    RequireSuccess(result, "converge existing LFS migration");
+    REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
+    REQUIRE(ReadTextFile(ctx.cloneRepo / asset) == "original binary evidence\n");
+    const auto published = RunGit({"show", ctx.branch + ":" + asset.generic_string()}, ctx.bareRemote);
+    RequireSuccess(published, "read committed LFS pointer from remote");
+    RequireContains(published.stdoutText, "version https://git-lfs.github.com/spec/v1\noid sha256:");
+    RequireContains(published.stdoutText, "\nsize 25\n");
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("converge agent mode coalesces classified pre-staged paths before remaining intent groups", "[functional][converge][agent-mode][intent-commits][index][KG-BUG-0024]") {
     const auto ctx = CreateRemoteWithClone("converge-agent-pre-staged-intents");
     const auto documentation = std::filesystem::path("docs/operator-staged.md");

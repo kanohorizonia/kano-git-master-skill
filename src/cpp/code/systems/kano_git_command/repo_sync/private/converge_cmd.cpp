@@ -1977,7 +1977,9 @@ bool IsRegisteredChildRepoStatusPath(const Snapshot& snapshot, const std::string
     return false;
 }
 
-std::vector<DirtyPathEntry> CollectDirtyEntries(const std::filesystem::path& repoPath, std::string* outError) {
+std::vector<DirtyPathEntry> CollectDirtyEntries(const std::filesystem::path& repoPath,
+                                               std::string* outError,
+                                               bool filterEquivalentUnstagedPaths = true) {
     const auto result = shell::ExecuteCommand(
         "git",
         {"status", "--porcelain=v1", "-z", "--untracked-files=all"},
@@ -2036,7 +2038,7 @@ std::vector<DirtyPathEntry> CollectDirtyEntries(const std::filesystem::path& rep
     const bool hasUnstagedOnlyEntries = std::any_of(entries.begin(), entries.end(), [](const auto& entry) {
         return entry.rawStatus.size() == 2 && entry.rawStatus[0] == ' ' && entry.rawStatus[1] != ' ';
     });
-    if (hasUnstagedOnlyEntries) {
+    if (filterEquivalentUnstagedPaths && hasUnstagedOnlyEntries) {
         const auto diff = shell::ExecuteCommand(
             "git",
             {"diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", "--"},
@@ -2390,7 +2392,9 @@ IntentCommitPlan BuildIntentCommitPlan(const std::filesystem::path& workspaceRoo
     IntentCommitPlan plan;
     const auto repoPath = ResolveRepoPath(workspaceRoot, repo);
     std::string statusError;
-    auto dirtyEntries = CollectDirtyEntries(repoPath, &statusError);
+    // Commits must preserve raw index changes (including LFS renormalization).
+    // Filter equivalence is useful for branch harvesting, not plan freshness.
+    auto dirtyEntries = CollectDirtyEntries(repoPath, &statusError, false);
     if (!statusError.empty()) {
         plan.error = statusError;
         return plan;
@@ -2407,7 +2411,7 @@ IntentCommitPlan BuildIntentCommitPlan(const std::filesystem::path& workspaceRoo
         return plan;
     }
     if (!plan.addedIgnoreRules.empty()) {
-        dirtyEntries = CollectDirtyEntries(repoPath, &statusError);
+        dirtyEntries = CollectDirtyEntries(repoPath, &statusError, false);
         if (!statusError.empty()) {
             plan.error = statusError;
             return plan;
