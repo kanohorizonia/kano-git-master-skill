@@ -990,7 +990,7 @@
       "incident_date": "2026-09-05",
       "root_cause": "Agent intent planning omitted SUBTSK from work-item extraction and root VERSION from metadata classification. Its line-oriented porcelain parser retained Git path quoting and split rename arrows, while its line-oriented diff filter could discard modified paths containing spaces. The commit-plan freshness verifier independently parsed quoted status paths and consequently disagreed with exact planner fingerprints. Real backlog evidence and release version files were consequently rejected or misidentified. The pinned shared runtime also quoted cmd.exe payloads as ordinary argv values; infra cca1d2a fixes batch execution in spaced paths and is adopted through 8956d09. Intent planning also reused branch-harvest filter-equivalence suppression, dropping existing LFS migrations and CRLF-equivalent raw index entries from the freshness scope.",
       "backlog_ref": "KOG-BUG-0123",
-      "change_ref": "KOG-BUG-0123",
+      "change_ref": "9ada280dba14b7d12f74e57339f0b4389ef44038",
       "workflow_contracts": [
         "agent-mode-plan",
         "nul-safe-path-identity",
