@@ -415,8 +415,8 @@ TEST_CASE("audit JSONL fixtures are checked out LF-only",
 
 TEST_CASE("dogfood incident manifest maps stable source cases without execution claims",
           "[unit][regression][coverage][KG-TSK-0052]") {
-  constexpr std::size_t kExpectedIncidentCount = 33;
-  constexpr std::size_t kExpectedLinkedCaseCount = 76;
+  constexpr std::size_t kExpectedIncidentCount = 34;
+  constexpr std::size_t kExpectedLinkedCaseCount = 81;
   const auto manifest = RepoRoot() / "assets" / "regression" / "incidents.json";
   const auto loaded = LoadCoverageManifest(manifest);
 

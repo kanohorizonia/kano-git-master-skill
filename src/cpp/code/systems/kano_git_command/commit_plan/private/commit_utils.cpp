@@ -1784,12 +1784,6 @@ auto ComputeRepoScopedBaseHeadSha(const std::filesystem::path& InWorkspaceRoot,
     return "scope-head-v1-" + Fnv1a64Hex(key + "\t" + sha + "\n");
 }
 
-auto NormalizeScopedStatusPath(std::string InPath) -> std::string {
-    auto path = Trim(std::move(InPath));
-    std::replace(path.begin(), path.end(), '\\', '/');
-    return path;
-}
-
 auto ScopedDirtyStatusKind(std::string_view InRawStatus) -> std::string {
     if (InRawStatus == "??") return "untracked";
     if (InRawStatus == "!!") return "ignored";
@@ -1814,24 +1808,23 @@ auto ComputeRepoScopedDirtyFingerprint(const std::filesystem::path& InWorkspaceR
         lines.push_back("head=" + Trim(head.stdoutStr));
     }
 
-    const auto status = GitCapture(repoPath, {"status", "--porcelain=v1", "--untracked-files=all"});
+    const auto status = GitCapture(repoPath, {"status", "--porcelain=v1", "-z", "--untracked-files=all"});
     if (status.exitCode == 0) {
         std::istringstream stream(status.stdoutStr);
         std::string line;
-        while (std::getline(stream, line)) {
-            if (!line.empty() && line.back() == '\r') {
-                line.pop_back();
-            }
-            if (line.size() < 4) {
-                continue;
+        while (std::getline(stream, line, '\0')) {
+            if (stream.eof() || line.size() < 4 || line[2] != ' ') {
+                return {};
             }
             const auto rawStatus = line.substr(0, 2);
-            auto path = NormalizeScopedStatusPath(line.substr(3));
+            // Match the converge planner's literal -z destination/source order.
+            const auto path = line.substr(3);
             std::string originalPath;
-            const auto arrow = path.find(" -> ");
-            if (arrow != std::string::npos) {
-                originalPath = NormalizeScopedStatusPath(path.substr(0, arrow));
-                path = NormalizeScopedStatusPath(path.substr(arrow + 4));
+            if (rawStatus.find_first_of("RC") != std::string::npos) {
+                if (!std::getline(stream, originalPath, '\0') ||
+                    stream.eof() || originalPath.empty()) {
+                    return {};
+                }
             }
             if (path.empty() || IsInternalPipelineArtifactPath(path)) {
                 continue;

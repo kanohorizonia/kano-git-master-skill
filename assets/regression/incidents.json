@@ -984,6 +984,57 @@
           "mapping_state": "source-linked"
         }
       ]
+    },
+    {
+      "incident_id": "KOG-BUG-0123",
+      "incident_date": "2026-09-05",
+      "root_cause": "Agent intent planning omitted SUBTSK from work-item extraction and root VERSION from metadata classification. Its line-oriented porcelain parser retained Git path quoting and split rename arrows, while its line-oriented diff filter could discard modified paths containing spaces. The commit-plan freshness verifier independently parsed quoted status paths and consequently disagreed with exact planner fingerprints. Real backlog evidence and release version files were consequently rejected or misidentified. The pinned shared runtime also quoted cmd.exe payloads as ordinary argv values; infra cca1d2a fixes batch execution in spaced paths and is adopted through 8956d09.",
+      "backlog_ref": "KOG-BUG-0123",
+      "change_ref": "KOG-BUG-0123",
+      "workflow_contracts": [
+        "agent-mode-plan",
+        "nul-safe-path-identity",
+        "plan-scope",
+        "windows-command-quoting",
+        "bounded-command-latency"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KOG-BUG-0123/subtask-evidence",
+          "test_name": "converge agent mode publishes SUBTSK shared and product evidence",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/converge_planner_test.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KOG-BUG-0123/spaced-status-paths",
+          "test_name": "converge agent mode preserves spaced modified deleted and renamed paths",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/converge_planner_test.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KOG-BUG-0123/release-version",
+          "test_name": "converge agent mode classifies root VERSION as release metadata",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/converge_planner_test.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KOG-BUG-0123/spaced-batch-arguments",
+          "test_name": "ShellExecutor executes cmd scripts with spaced paths and preserved args",
+          "test_file": "src/cpp/code/tests/kano_git_tui_tests/unit/test_shell_executor.cpp",
+          "test_kind": "unit",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KOG-BUG-0123/spaced-batch-timeout",
+          "test_name": "ShellExecutor KOG capture timeout reports provenance and safe action",
+          "test_file": "src/cpp/code/tests/kano_git_tui_tests/unit/test_shell_executor.cpp",
+          "test_kind": "unit",
+          "mapping_state": "source-linked"
+        }
+      ]
     }
   ]
 }

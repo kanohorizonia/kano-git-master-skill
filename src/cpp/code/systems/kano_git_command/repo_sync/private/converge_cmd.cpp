@@ -1430,7 +1430,7 @@ std::string UpperAscii(std::string value) {
 
 std::optional<std::string> ExtractWorkItemId(const std::string& text) {
     static const std::regex kWorkItemPattern(
-        R"(([A-Z][A-Z0-9]*-(BUG|TSK|FTR|USR|EPIC|ISS|ADR)-[0-9]+))",
+        R"(([A-Z][A-Z0-9]*-(BUG|TSK|SUBTSK|FTR|USR|EPIC|ISS|ADR)-[0-9]+))",
         std::regex_constants::icase);
     std::smatch match;
     if (!std::regex_search(text, match, kWorkItemPattern)) {
@@ -1447,6 +1447,7 @@ std::string WorkItemKind(const std::string& itemId) {
     const auto raw = ToLower(itemId.substr(first + 1, second - first - 1));
     if (raw == "bug") return "bug";
     if (raw == "tsk") return "task";
+    if (raw == "subtsk") return "subtask";
     if (raw == "ftr") return "feature";
     if (raw == "usr") return "story";
     if (raw == "epic") return "epic";
@@ -1651,6 +1652,14 @@ std::optional<IntentCommitGroup> ClassifyKogSourceIntentPath(const std::string& 
             "kog-docs",
             KccSubject("KOG", "Docs", "Update documentation"),
             "native classifier matched documentation path",
+            path);
+    }
+
+    if (lowered == "version") {
+        return MakeGroup(
+            "release-metadata",
+            KccSubject("Release", "Chore", "Update release version"),
+            "native classifier matched root release version metadata",
             path);
     }
 
@@ -1971,7 +1980,7 @@ bool IsRegisteredChildRepoStatusPath(const Snapshot& snapshot, const std::string
 std::vector<DirtyPathEntry> CollectDirtyEntries(const std::filesystem::path& repoPath, std::string* outError) {
     const auto result = shell::ExecuteCommand(
         "git",
-        {"status", "--porcelain=v1", "--untracked-files=all"},
+        {"status", "--porcelain=v1", "-z", "--untracked-files=all"},
         shell::ExecMode::Capture,
         repoPath);
     if (result.exitCode != 0) {
@@ -1984,20 +1993,26 @@ std::vector<DirtyPathEntry> CollectDirtyEntries(const std::filesystem::path& rep
     std::vector<DirtyPathEntry> entries;
     std::istringstream stream(result.stdoutStr);
     std::string line;
-    while (std::getline(stream, line)) {
-        if (!line.empty() && line.back() == '\r') {
-            line.pop_back();
-        }
-        if (line.size() < 4) {
-            continue;
+    while (std::getline(stream, line, '\0')) {
+        if (stream.eof() || line.size() < 4 || line[2] != ' ') {
+            if (outError != nullptr) {
+                *outError = "git status returned an invalid NUL-delimited record";
+            }
+            return {};
         }
         DirtyPathEntry entry;
         entry.rawStatus = line.substr(0, 2);
-        auto path = NormalizeGitPath(Trim(line.substr(3)));
-        const auto arrow = path.find(" -> ");
-        if (arrow != std::string::npos) {
-            entry.originalPath = NormalizeGitPath(Trim(path.substr(0, arrow)));
-            path = NormalizeGitPath(Trim(path.substr(arrow + 4)));
+        // Porcelain -z emits literal destination then source for renames/copies.
+        // Git paths already use '/', so neither trim nor unescape their bytes.
+        auto path = line.substr(3);
+        if (entry.rawStatus.find_first_of("RC") != std::string::npos) {
+            if (!std::getline(stream, entry.originalPath, '\0') ||
+                stream.eof() || entry.originalPath.empty()) {
+                if (outError != nullptr) {
+                    *outError = "git status returned an invalid NUL-delimited rename source";
+                }
+                return {};
+            }
         }
         if (!path.empty()) {
             entry.path = std::move(path);
@@ -2024,20 +2039,16 @@ std::vector<DirtyPathEntry> CollectDirtyEntries(const std::filesystem::path& rep
     if (hasUnstagedOnlyEntries) {
         const auto diff = shell::ExecuteCommand(
             "git",
-            {"-c", "core.quotepath=false", "diff", "--name-only", "--no-renames", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", "--"},
+            {"diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", "--"},
             shell::ExecMode::Capture,
             repoPath);
         if (diff.exitCode == 0) {
             std::unordered_set<std::string> actualUnstagedPaths;
             std::istringstream diffStream(diff.stdoutStr);
             std::string diffLine;
-            while (std::getline(diffStream, diffLine)) {
-                if (!diffLine.empty() && diffLine.back() == '\r') {
-                    diffLine.pop_back();
-                }
-                const auto path = NormalizeGitPath(Trim(diffLine));
-                if (!path.empty()) {
-                    actualUnstagedPaths.insert(path);
+            while (std::getline(diffStream, diffLine, '\0')) {
+                if (!diffLine.empty()) {
+                    actualUnstagedPaths.insert(diffLine);
                 }
             }
             entries.erase(std::remove_if(entries.begin(), entries.end(), [&](const auto& entry) {

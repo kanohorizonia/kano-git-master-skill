@@ -3574,6 +3574,82 @@ TEST_CASE("converge agent mode commits backlog changes by inferred intent", "[td
     RemoveSandboxWorkspace(ctx.sandbox);
 }
 
+TEST_CASE("converge agent mode publishes SUBTSK shared and product evidence", "[functional][converge][agent-mode][intent-commits][KOG-BUG-0123]") {
+    const auto ctx = CreateRemoteWithClone("converge-subtask-evidence");
+    const auto item = std::filesystem::path("products/character/items/subtask/0000/KOCP-SUBTSK-0015_review.md");
+    const auto shared = std::filesystem::path("_shared/artifacts/KOCP-SUBTSK-0015/front.png");
+    const auto product = std::filesystem::path("products/character/artifacts/KOCP-SUBTSK-0015/Side Image.png");
+    WriteTextFile(ctx.cloneRepo / item, "id: KOCP-SUBTSK-0015\nstate: InProgress\n");
+    WriteTextFile(ctx.cloneRepo / shared, "shared evidence bytes\n");
+    WriteTextFile(ctx.cloneRepo / product, "product evidence bytes\n");
+
+    const auto result = RunKogWithEnv(
+        {"converge", "--no-recursive", "--jobs", "1"}, ctx.cloneRepo,
+        {{"KANO_AGENT_MODE", "1"}});
+    RequireSuccess(result, "converge subtask evidence");
+    RequireContains(result.stdoutText, "Update KOCP-SUBTSK-0015 subtask item");
+    RequireContains(result.stdoutText, "Add KOCP-SUBTSK-0015 shared evidence");
+    RequireContains(result.stdoutText, "Add KOCP-SUBTSK-0015 evidence");
+    REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
+    for (const auto& path : {item, shared, product}) {
+        const auto published = RunGit({"show", ctx.branch + ":" + path.generic_string()}, ctx.bareRemote);
+        RequireSuccess(published, "read exact published subtask path");
+        REQUIRE(published.stdoutText == ReadTextFile(ctx.cloneRepo / path));
+    }
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge agent mode preserves spaced modified deleted and renamed paths", "[functional][converge][agent-mode][intent-commits][KOG-BUG-0123]") {
+    const auto ctx = CreateRemoteWithClone("converge-spaced-paths");
+    // This fixture compares raw bytes; make it independent of host CRLF policy.
+    RequireSuccess(RunGit({"config", "core.autocrlf", "false"}, ctx.seedRepo), "disable seed CRLF conversion");
+    RequireSuccess(RunGit({"config", "core.autocrlf", "false"}, ctx.cloneRepo), "disable clone CRLF conversion");
+    const auto modified = std::filesystem::path("docs/Side Image.md");
+    const auto removed = std::filesystem::path("docs/old image.md");
+    const auto renameOld = std::filesystem::path("docs/ old note.md");
+    const auto renameNew = std::filesystem::path("docs/new note.md");
+    for (const auto& path : {modified, removed, renameOld}) {
+        WriteTextFile(ctx.seedRepo / path, "original " + path.generic_string() + "\n");
+    }
+    RequireSuccess(RunGit({"add", "docs"}, ctx.seedRepo), "stage spaced fixtures");
+    RequireSuccess(RunGit({"commit", "-m", "seed spaced paths"}, ctx.seedRepo), "commit spaced fixtures");
+    RequireSuccess(RunGit({"push", "origin", ctx.branch}, ctx.seedRepo), "push spaced fixtures");
+    RequireSuccess(RunGit({"pull", "--ff-only", "origin", ctx.branch}, ctx.cloneRepo), "pull spaced fixtures");
+    WriteTextFile(ctx.cloneRepo / modified, "modified evidence\n");
+    REQUIRE(std::filesystem::remove(ctx.cloneRepo / removed));
+    RequireSuccess(RunGit({"mv", renameOld.generic_string(), renameNew.generic_string()}, ctx.cloneRepo), "rename spaced file");
+
+    const auto result = RunKogWithEnv(
+        {"converge", "--no-recursive", "--jobs", "1"}, ctx.cloneRepo,
+        {{"KANO_AGENT_MODE", "1"}});
+    RequireSuccess(result, "converge exact spaced paths");
+    REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
+    for (const auto& path : {modified, renameNew}) {
+        const auto published = RunGit({"show", ctx.branch + ":" + path.generic_string()}, ctx.bareRemote);
+        RequireSuccess(published, "read exact published spaced path");
+        REQUIRE(published.stdoutText == ReadTextFile(ctx.cloneRepo / path));
+    }
+    for (const auto& path : {removed, renameOld}) {
+        REQUIRE(RunGit({"cat-file", "-e", ctx.branch + ":" + path.generic_string()}, ctx.bareRemote).exitCode != 0);
+    }
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
+TEST_CASE("converge agent mode classifies root VERSION as release metadata", "[functional][converge][agent-mode][intent-commits][KOG-BUG-0123]") {
+    const auto ctx = CreateRemoteWithClone("converge-release-version");
+    WriteTextFile(ctx.cloneRepo / "VERSION", "0.0.2\n");
+    const auto result = RunKogWithEnv(
+        {"converge", "--no-recursive", "--jobs", "1"}, ctx.cloneRepo,
+        {{"KANO_AGENT_MODE", "1"}});
+    RequireSuccess(result, "converge root release version");
+    RequireContains(result.stdoutText, "[Release][Chore] Update release version (NO-TICKET)");
+    REQUIRE(GitStatusShort(ctx.cloneRepo).empty());
+    const auto published = RunGit({"show", ctx.branch + ":VERSION"}, ctx.bareRemote);
+    RequireSuccess(published, "read published release version");
+    REQUIRE(published.stdoutText == "0.0.2\n");
+    RemoveSandboxWorkspace(ctx.sandbox);
+}
+
 TEST_CASE("converge agent mode coalesces classified pre-staged paths before remaining intent groups", "[functional][converge][agent-mode][intent-commits][index][KG-BUG-0024]") {
     const auto ctx = CreateRemoteWithClone("converge-agent-pre-staged-intents");
     const auto documentation = std::filesystem::path("docs/operator-staged.md");
