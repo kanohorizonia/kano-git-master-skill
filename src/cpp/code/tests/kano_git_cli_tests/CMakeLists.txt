@@ -1,4 +1,5 @@
 add_executable(kano_git_cli_tests
+  functional/agent_mode_environment_contract_test.cpp
   functional/auth_module_boundary_test.cpp
   functional/audit_contract_test.cpp
   functional/cloudflare_ssh_bootstrap_test.cpp

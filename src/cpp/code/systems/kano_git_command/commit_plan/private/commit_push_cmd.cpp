@@ -557,15 +557,11 @@ auto ScanFileForSecretRules(const std::filesystem::path& InRepo,
 }
 
 auto IsAgentModeEnabledLocal() -> bool {
-    const char* raw = std::getenv("KANO_AGENT_MODE");
-    if (raw == nullptr) {
-        return false;
-    }
-    const auto value = Trim(raw);
-    if (value.empty() || value == "0" || value == "false" || value == "FALSE") {
-        return false;
-    }
-    return true;
+    // Kept as a thin wrapper to satisfy any external callers during the
+    // migration window. Delegates to the canonical resolver from
+    // ai_utils so the agent-mode environment contract stays uniform across
+    // KOG command paths (see KOG-BUG-0137).
+    return IsAgentModeEnabled();
 }
 
 auto CaptureHeadShortSha(const std::filesystem::path& InWorkingDir) -> std::string {
@@ -745,7 +741,7 @@ auto RunCommitPlanRunbookViaSelf(const std::filesystem::path& InWorkspaceRoot,
     out.exitCode = exitCode;
     if (exitCode != 0) {
         std::cerr << "Error: AI commit runbook failed via native binary (exit=" << exitCode << ").\n";
-        if (ToLower(Trim(InFillMode)) == "single" && std::getenv("KANO_AGENT_MODE") == nullptr) {
+        if (ToLower(Trim(InFillMode)) == "single" && !IsAgentModeEnabled()) {
             std::cerr << "Hint: human-mode single CPA forbids deterministic commit fallback; resolve the AI fill failure and rerun.\n";
         }
     }

@@ -1316,6 +1316,19 @@ auto WithGitNonInteractiveDefaults(const std::string& InCommand,
     // - KOG_GIT_INTERACTIVE=1|true   => interactive
     // - KOG_GIT_INTERACTIVE=0|false  => non-interactive
     // - KOG_GIT_INTERACTIVE=auto/unset => agent mode non-interactive, human mode interactive
+    //
+    // The agent-mode truthy check mirrors the canonical contract defined in
+    // kano_git_command/runtime/ai_utils.cpp::IsAgentModeEnabled so all KOG
+    // command paths stay consistent. We re-declare it locally because this
+    // shell layer must not depend on the command layer.
+    auto isAgentModeTruthy = [](const char* name) -> bool {
+        const char* raw = std::getenv(name);
+        if (raw == nullptr) {
+            return false;
+        }
+        const auto value = ToLower(std::string(raw));
+        return value == "1" || value == "true" || value == "yes" || value == "on";
+    };
     bool forceNonInteractive = false;
     if (const auto* interactive = std::getenv("KOG_GIT_INTERACTIVE"); interactive != nullptr) {
         const auto value = ToLower(std::string(interactive));
@@ -1325,18 +1338,13 @@ auto WithGitNonInteractiveDefaults(const std::string& InCommand,
         if (value == "0" || value == "false") {
             forceNonInteractive = true;
         } else {
-            const auto* agent = std::getenv("KANO_AGENT_MODE");
-            if (agent != nullptr) {
-                const auto agentValue = ToLower(std::string(agent));
-                forceNonInteractive = (agentValue == "1" || agentValue == "true");
-            }
+            // Consult both accepted env names (canonical contract).
+            forceNonInteractive = isAgentModeTruthy("KANO_AGENT_MODE") ||
+                                  isAgentModeTruthy("AGENT_MODE");
         }
     } else {
-        const auto* agent = std::getenv("KANO_AGENT_MODE");
-        if (agent != nullptr) {
-            const auto agentValue = ToLower(std::string(agent));
-            forceNonInteractive = (agentValue == "1" || agentValue == "true");
-        }
+        forceNonInteractive = isAgentModeTruthy("KANO_AGENT_MODE") ||
+                              isAgentModeTruthy("AGENT_MODE");
     }
 
     if (!forceNonInteractive) {

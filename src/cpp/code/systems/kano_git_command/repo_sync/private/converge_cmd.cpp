@@ -41,6 +41,13 @@
 #endif
 
 namespace kano::git::commands {
+
+// Forward declaration to avoid pulling in the entire ai_utils.hpp header
+// (which also declares Trim) — that would collide with the anonymous-
+// namespace Trim below. The full definition lives in ai_utils.cpp and
+// links from this translation unit. See KOG-BUG-0137.
+auto IsAgentModeEnabled() -> bool;
+
 namespace {
 
 auto AuditSelectorSha256(const std::string_view InValue) -> nlohmann::json {
@@ -535,15 +542,9 @@ std::string SelfBinaryPath() {
     return "kano-git";
 }
 
-bool IsTruthyEnvValue(const char* value) {
-    if (value == nullptr) return false;
-    const auto normalized = ToLower(Trim(std::string(value)));
-    return normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on";
-}
-
-bool IsConvergeAgentModeEnabled() {
-    return IsTruthyEnvValue(std::getenv("KANO_AGENT_MODE")) || IsTruthyEnvValue(std::getenv("AGENT_MODE"));
-}
+// IsConvergeAgentModeEnabled removed; use the canonical
+// IsAgentModeEnabled() from ai_utils.hpp so all KOG command paths share
+// one agent-mode environment contract. See KOG-BUG-0137.
 
 std::vector<std::string> JsonStringArray(const nlohmann::json& item, const char* key) {
     std::vector<std::string> out;
@@ -5138,7 +5139,7 @@ int RunBranchInventory(const std::filesystem::path& root,
             std::cerr << "Error: --strategy must be rebase, merge, or cherry-pick\n";
             return 2;
         }
-        const bool jsonOutput = emitJson || IsConvergeAgentModeEnabled();
+        const bool jsonOutput = emitJson || IsAgentModeEnabled();
         std::optional<shell::ScopedConsoleWriteSuppression> suppressCommandLogs;
         if (jsonOutput) {
             suppressCommandLogs.emplace();
@@ -5224,7 +5225,7 @@ int RunBranchRecovery(const std::filesystem::path& repoPath,
         return 2;
     }
 
-    const bool jsonOutput = emitJson || IsConvergeAgentModeEnabled();
+    const bool jsonOutput = emitJson || IsAgentModeEnabled();
     auto result = MakeBranchActionResult(
         "kog.convergeBranchesRecoveryResult", targetBranch, "recovery", false, true);
     result["recoveryAction"] = continueRecovery ? "continue" : "abort";
@@ -5475,7 +5476,7 @@ int RunBranchApply(const std::filesystem::path& root,
             std::cerr << "Error: reviewed integration options require --record-reviewed-integration\n";
             return 2;
         }
-        const bool jsonOutput = emitJson || IsConvergeAgentModeEnabled();
+        const bool jsonOutput = emitJson || IsAgentModeEnabled();
         auto result = MakeBranchActionResult("kog.convergeBranchesApplyResult", targetBranch, strategy, recursive, confirm);
         result["recordReviewedIntegration"] = recordReviewedIntegration;
 
@@ -5791,7 +5792,7 @@ int RunBranchRetire(const std::filesystem::path& root,
             std::cerr << "Error: --target must not be empty\n";
             return 2;
         }
-        const bool jsonOutput = emitJson || IsConvergeAgentModeEnabled();
+        const bool jsonOutput = emitJson || IsAgentModeEnabled();
         auto result = MakeBranchActionResult("kog.convergeBranchesRetireResult", targetBranch, "retire", recursive, confirm);
         result["removeWorktrees"] = removeWorktrees;
         result["deleteRemote"] = deleteRemote;
@@ -6459,7 +6460,7 @@ int RunBranchPlanner(const std::filesystem::path& root,
                      const std::string& targetBranch,
                      const std::string& strategy,
                      bool emitJson) {
-    const bool jsonOutput = emitJson || IsConvergeAgentModeEnabled();
+    const bool jsonOutput = emitJson || IsAgentModeEnabled();
     try {
         if (targetBranch.empty()) {
             std::cerr << "Error: --target must not be empty\n";
@@ -6810,7 +6811,7 @@ void RegisterConverge(CLI::App& InApp) {
             std::exit(2);
         }
         std::optional<shell::ScopedConsoleWriteSuppression> suppressCallbackCommandLogs;
-        if (*branchesJson || IsConvergeAgentModeEnabled()) {
+        if (*branchesJson || IsAgentModeEnabled()) {
             suppressCallbackCommandLogs.emplace();
         }
         const auto root = std::filesystem::current_path().lexically_normal();
@@ -6868,7 +6869,7 @@ void RegisterConverge(CLI::App& InApp) {
             std::exit(2);
         }
         std::optional<shell::ScopedConsoleWriteSuppression> suppressCallbackCommandLogs;
-        if (*branchesRecoverJson || IsConvergeAgentModeEnabled()) {
+        if (*branchesRecoverJson || IsAgentModeEnabled()) {
             suppressCallbackCommandLogs.emplace();
         }
         const auto root = std::filesystem::current_path().lexically_normal();
@@ -6921,7 +6922,7 @@ void RegisterConverge(CLI::App& InApp) {
             std::exit(2);
         }
         std::optional<shell::ScopedConsoleWriteSuppression> suppressCallbackCommandLogs;
-        if (*branchesJson || IsConvergeAgentModeEnabled()) {
+        if (*branchesJson || IsAgentModeEnabled()) {
             suppressCallbackCommandLogs.emplace();
         }
         const auto root = std::filesystem::current_path().lexically_normal();
@@ -6977,7 +6978,7 @@ void RegisterConverge(CLI::App& InApp) {
         }
         const auto workspaceRoot = std::filesystem::current_path().lexically_normal();
         const auto recursive = !*noRecursive;
-        const auto agentIntentCommitMode = *aiCompat || IsConvergeAgentModeEnabled();
+        const auto agentIntentCommitMode = *aiCompat || IsAgentModeEnabled();
         const auto worktreeSettleRequested =
             *settleWorktrees ||
             *settleRemoveWorktrees ||

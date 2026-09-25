@@ -29,7 +29,16 @@ auto ToLower(std::string InValue) -> std::string;
 auto ReplaceAll(std::string InText, const std::string& InFrom, const std::string& InTo) -> std::string;
 auto Fnv1a64Hex(const std::string& InValue) -> std::string;
 auto CurrentUtcCompact() -> std::string;
+// Canonical agent-mode environment contract: returns true when either
+// KANO_AGENT_MODE or AGENT_MODE is set to a truthy value (1/true/yes/on,
+// case-insensitive, trimmed). All KOG command paths must use this resolver
+// rather than reimplementing env detection inline. See ai_utils.cpp for the
+// single source of truth and KOG-BUG-0137 for context.
 auto IsAgentModeEnabled() -> bool;
+// Returns the env var name ("KANO_AGENT_MODE" or "AGENT_MODE") that
+// resolved to a truthy value, or std::nullopt if neither is set or both
+// are non-truthy. Useful for diagnostics and human review surfaces.
+auto ResolveAgentModeEnvironment() -> std::optional<std::string>;
 auto AIResolveConflicts(const std::filesystem::path& InWorkspaceRoot,
                         const std::string& InProvider = "auto",
                         const std::string& InModel = "auto") -> bool;

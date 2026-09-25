@@ -43,6 +43,13 @@
 #endif
 
 namespace kano::git::commands {
+
+// Forward declaration to avoid pulling in the entire ai_utils.hpp header
+// (which also declares Trim) — that would collide with the anonymous-
+// namespace Trim below. The full definition lives in ai_utils.cpp and
+// links from this translation unit. See KOG-BUG-0137.
+auto IsAgentModeEnabled() -> bool;
+
 namespace {
 
 struct SyncPlan {
@@ -1592,14 +1599,9 @@ auto ParseBranchMode(const std::string& InValue) -> std::optional<BranchMode> {
     return std::nullopt;
 }
 
-auto IsAgentModeEnabled() -> bool {
-    const char* value = std::getenv("KANO_AGENT_MODE");
-    if (value == nullptr) {
-        return false;
-    }
-    const std::string normalized = Trim(value);
-    return normalized == "1" || normalized == "true" || normalized == "TRUE";
-}
+// Local IsAgentModeEnabled removed; use the canonical
+// IsAgentModeEnabled() from ai_utils.hpp so all KOG command paths share
+// one agent-mode environment contract. See KOG-BUG-0137.
 
 auto IsInteractiveTerminal() -> bool {
 #if defined(_WIN32)

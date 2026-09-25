@@ -5,6 +5,7 @@
 
 #include <CLI/CLI.hpp>
 #include "command_registry.hpp"
+#include "ai_utils.hpp"
 #include "runtime_path_layout.hpp"
 #include <algorithm>
 #include <cctype>
@@ -26,6 +27,7 @@
 #include <kano_timing.h>
 
 using namespace kano::git;
+using kano::git::commands::IsAgentModeEnabled;
 
 namespace {
 
@@ -590,10 +592,10 @@ void RewriteCommandAliases(std::vector<std::string>& InOutArgs) {
                    InArg == "--plan-file" ||
                    InArg.starts_with("--plan-file=");
         });
-        if (IsTruthyEnv("KANO_AGENT_MODE") && !hasExplicitAgentInput) {
+        if (IsAgentModeEnabled() && !hasExplicitAgentInput) {
             rewritten.push_back("--plan-file");
             rewritten.push_back(DefaultPlanPath());
-        } else if (!IsTruthyEnv("KANO_AGENT_MODE")) {
+        } else if (!IsAgentModeEnabled()) {
             rewritten.push_back("--ai-auto");
         }
         for (std::size_t i = 2; i < InOutArgs.size(); ++i) {
@@ -681,7 +683,7 @@ bool ShouldSuppressMainTimingForMachineJson(const std::vector<std::string>& InAr
         subcommand != "retire") {
         return false;
     }
-    if (IsTruthyEnv("KANO_AGENT_MODE") || IsTruthyEnv("AGENT_MODE")) {
+    if (IsAgentModeEnabled()) {
         return true;
     }
     return std::find(InArgs.begin() + 4, InArgs.end(), "--json") != InArgs.end();

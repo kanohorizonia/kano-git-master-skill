@@ -31,6 +31,13 @@
 #endif
 
 namespace kano::git::commands {
+
+// Forward declaration to avoid pulling in the entire ai_utils.hpp
+// header (which also declares Trim) — that would collide with the
+// anonymous-namespace Trim below. The full definition lives in
+// ai_utils.cpp and links from this translation unit. See KOG-BUG-0137.
+auto IsAgentModeEnabled() -> bool;
+
 namespace {
 
 // ============================================================================
@@ -992,8 +999,9 @@ void RegisterSelf(CLI::App& InApp) {
         if (autoCheck != "1") {
             std::exit(0);
         }
-        const auto agentMode = std::string(std::getenv("KANO_AGENT_MODE") != nullptr ? std::getenv("KANO_AGENT_MODE") : "0");
-        if (agentMode == "1") {
+        // Use the canonical agent-mode resolver (KANO_AGENT_MODE or AGENT_MODE,
+// truthy {1,true,yes,on}, case-insensitive). See KOG-BUG-0137.
+        if (IsAgentModeEnabled()) {
             std::exit(0);
         }
         const auto command = Trim(*maybeCommand);

@@ -1049,6 +1049,48 @@
           "mapping_state": "source-linked"
         }
       ]
+    },
+    {
+      "incident_id": "KOG-BUG-0137",
+      "incident_date": "2026-09-07",
+      "root_cause": "KOG command paths diverged on agent-mode detection: converge accepted KANO_AGENT_MODE or AGENT_MODE (case-insensitive 1/true/yes/on), bare cpa alias in main.cpp only checked KANO_AGENT_MODE, sync_cmd accepted only KANO_AGENT_MODE with case-sensitive 1/true/TRUE, commit_push_cmd treated empty/whitespace as truthy via IsAgentModeEnabledLocal, push_cmd and self_cmd each implemented inline raw-string compares. The introducing commit 376076b (Sisyphus 2026-06-19, fix(kog-converge): update intent-scoped agent commits) added AGENT_MODE only to converge_cmd without unifying the other call sites, so AGENT_MODE alone silently fell back to --ai-auto on bare cpa and was case-sensitive on sync.",
+      "backlog_ref": "KOG-BUG-0137",
+      "change_ref": "kettle-0137-canonical-agent-mode-resolver",
+      "workflow_contracts": [
+        "agent-mode-contract",
+        "cpa-routing",
+        "sync-non-interactive"
+      ],
+      "regression_cases": [
+        {
+          "case_id": "KOG-BUG-0137/resolver-table-driven",
+          "test_name": "IsAgentModeEnabled matches the canonical contract table",
+          "test_file": "src/cpp/code/tests/kano_git_commit_plan_tests/unit/test_agent_mode_resolver.cpp",
+          "test_kind": "unit",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KOG-BUG-0137/resolver-precedence",
+          "test_name": "ResolveAgentModeEnvironment prefers KANO_AGENT_MODE over AGENT_MODE",
+          "test_file": "src/cpp/code/tests/kano_git_commit_plan_tests/unit/test_agent_mode_resolver.cpp",
+          "test_kind": "unit",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KOG-BUG-0137/cli-help-survives-all-envs",
+          "test_name": "kog_help_exits_zero_under_any_agent_mode_environment",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/agent_mode_environment_contract_test.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        },
+        {
+          "case_id": "KOG-BUG-0137/cpa-bare-plan-file-path",
+          "test_name": "kog_cpa_bare_routes_into_plan_file_path_under_agent_mode",
+          "test_file": "src/cpp/code/tests/kano_git_cli_tests/functional/agent_mode_environment_contract_test.cpp",
+          "test_kind": "functional",
+          "mapping_state": "source-linked"
+        }
+      ]
     }
   ]
 }

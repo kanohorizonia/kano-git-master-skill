@@ -168,10 +168,27 @@ auto CurrentUtcCompact() -> std::string {
 }
 
 auto IsAgentModeEnabled() -> bool {
-    const char* value = std::getenv("KANO_AGENT_MODE");
-    if (!value) return false;
-    const auto v = ToLower(Trim(std::string(value)));
-    return v == "1" || v == "true" || v == "yes" || v == "on";
+    // Canonical agent-mode environment contract for all KOG command paths.
+    // Truthy when either KANO_AGENT_MODE or AGENT_MODE is set to one of
+    // {1, true, yes, on} (case-insensitive, trimmed). Anything else (unset,
+    // empty, "0", "false", "no", "off", garbage) is false.
+    //
+    // Do not reimplement this check inline elsewhere. Call sites must use
+    // this resolver so agent-mode semantics stay consistent across KOG.
+    return ResolveAgentModeEnvironment().has_value();
+}
+
+auto ResolveAgentModeEnvironment() -> std::optional<std::string> {
+    for (const char* name : {"KANO_AGENT_MODE", "AGENT_MODE"}) {
+        if (const char* raw = std::getenv(name); raw != nullptr) {
+            const auto normalized = ToLower(Trim(std::string(raw)));
+            if (normalized == "1" || normalized == "true" ||
+                normalized == "yes" || normalized == "on") {
+                return std::string{name};
+            }
+        }
+    }
+    return std::nullopt;
 }
 
 auto ReadFileText(const std::filesystem::path& InPath) -> std::optional<std::string> {
