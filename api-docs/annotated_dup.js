@@ -10,6 +10,8 @@ var annotated_dup =
             [ "Layout", "classkano_1_1git_1_1commands_1_1runtime__path_1_1Layout.html", null ]
           ] ],
           [ "AiInvocationDiagnostics", "structkano_1_1git_1_1commands_1_1AiInvocationDiagnostics.html", null ],
+          [ "AuditHandoffLimits", "structkano_1_1git_1_1commands_1_1AuditHandoffLimits.html", null ],
+          [ "AuditHandoffResult", "structkano_1_1git_1_1commands_1_1AuditHandoffResult.html", null ],
           [ "AutocompleteEngine", "classkano_1_1git_1_1commands_1_1AutocompleteEngine.html", "classkano_1_1git_1_1commands_1_1AutocompleteEngine" ],
           [ "CandidateItem", "structkano_1_1git_1_1commands_1_1CandidateItem.html", "structkano_1_1git_1_1commands_1_1CandidateItem" ],
           [ "CandidateSelection", "structkano_1_1git_1_1commands_1_1CandidateSelection.html", "structkano_1_1git_1_1commands_1_1CandidateSelection" ],
