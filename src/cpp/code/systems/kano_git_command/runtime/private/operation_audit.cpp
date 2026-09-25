@@ -1596,6 +1596,7 @@ auto OperationAuditCapabilityJson() -> std::string {
         {"protocolVersion", kOperationAuditProtocolVersion},
         {"correlationEnvelopeVersions", {1}}, {"auditEventVersions", {1}},
         {"runReceiptVersions", {1}}, {"auditVerificationVersions", {1}},
+        {"auditHandoffVersions", {1}},
         {"supportedInputs", nlohmann::json::array({
             {{"route", "commit.plan"}, {"inputKind", "commit-plan"}},
             {{"route", "commit-push.plan"}, {"inputKind", "commit-plan"}},

@@ -60,7 +60,6 @@ add_executable(kano_git_commit_plan_tests
   unit/test_ai_working_copy_flow.cpp
   unit/test_agent_mode_resolver.cpp
   unit/test_audit_handoff.cpp
-  unit/test_audit_handoff_publish.cpp
   unit/test_commit_auto_plan_pipeline.cpp
   unit/test_commit_scope_dirty_nested_repo.cpp
   unit/test_commit_plan_payload.cpp
@@ -86,6 +85,7 @@ add_dependencies(kano_git_commit_plan_tests
 
 target_compile_definitions(kano_git_commit_plan_tests
   PRIVATE KOG_TEST_FAKE_SELF_BINARY="$<TARGET_FILE:kano_git_commit_auto_plan_fake_self>"
+  PRIVATE KOG_GIT_TEST_REPO_ROOT="${KOG_REPO_ROOT}"
 )
 
 target_link_libraries(kano_git_commit_plan_tests

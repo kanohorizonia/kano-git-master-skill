@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include "audit_handoff.hpp"
 #include "audit_run_reader.hpp"
 #include "audit_verification.hpp"
 #include "audit_evidence_directory.hpp"
@@ -300,6 +301,16 @@ struct Fixture {
         context.reset();
     }
 };
+
+auto HandoffRequest(const Fixture& InFixture, const std::uint32_t InAttempt = 3)
+    -> OperationAuditVerificationRequest {
+    return OperationAuditVerificationRequest{
+        .workspaceRoot = InFixture.root,
+        .planFile = InFixture.spec.sourcePath->filename(),
+        .runId = "reader-run",
+        .attempt = InAttempt,
+    };
+}
 
 struct PinnedAttemptControl {
     std::mutex mutex;
@@ -718,6 +729,124 @@ auto RewriteZeroEventCrash(const Fixture& fixture) -> void {
 }
 
 } // namespace
+
+TEST_CASE("KOG-TSK-0137 handoff comes from one pinned verified attempt across replacement",
+          "[audit][handoff][KOG-TSK-0137][pinned][concurrency]") {
+    Fixture fixture;
+    fixture.Finalize();
+    const OperationAuditVerificationRequest request{
+        .workspaceRoot = fixture.root,
+        .planFile = fixture.spec.sourcePath->filename(),
+        .runId = "reader-run",
+        .attempt = 3,
+    };
+    const auto expected = BuildAuditHandoffJson(request);
+    REQUIRE(expected.code == AuditHandoffResultCode::None);
+    const auto expectedDocument = nlohmann::json::parse(expected.serialized);
+
+    PinnedAttemptControl control;
+    AuditHandoffResult actual;
+    auto exporter = std::async(std::launch::async, [&] {
+        const ScopedAuditEvidencePinnedTestHook hook({
+            .onAttemptPinned = PinnedAttemptControl::OnAttemptPinned,
+            .context = &control,
+        });
+        actual = BuildAuditHandoffJson(request);
+    });
+    ScopedPinnedAttemptRelease releaseOnFailure{control};
+    {
+        std::unique_lock lock(control.mutex);
+        REQUIRE(control.condition.wait_for(lock, std::chrono::seconds(5),
+                                           [&] { return control.ready; }));
+    }
+    const auto displaced = fixture.paths.attemptRoot.parent_path() / "attempt-handoff-original";
+    std::filesystem::rename(fixture.paths.attemptRoot, displaced);
+    REQUIRE(std::filesystem::create_directories(fixture.paths.attemptRoot));
+    // The replacement namespace contains deliberately incompatible decoy
+    // bytes. A reader that reopens by path instead of reusing its pinned
+    // attempt handle cannot produce the expected handoff.
+    WriteText(fixture.paths.receipt, R"({"schemaName":"kog.runReceipt","schemaVersion":999})");
+    WriteText(fixture.paths.events, "decoy event stream\n");
+    WriteText(fixture.paths.publicationPending, R"({"schemaName":"kog.auditPublicationPending","schemaVersion":1,"runId":"reader-run","attempt":3})");
+    control.Release();
+    exporter.get();
+
+    REQUIRE(control.pinCount == 1);
+    REQUIRE_FALSE(control.waitTimedOut);
+    REQUIRE(actual.code == AuditHandoffResultCode::None);
+    REQUIRE(actual.readState == OperationAuditRunReadState::Ready);
+    REQUIRE(actual.serialized == expected.serialized);
+    const auto document = nlohmann::json::parse(actual.serialized);
+    REQUIRE(document["runId"] == "reader-run");
+    REQUIRE(document["attempt"] == 3);
+    REQUIRE(document["receiptSha256"] == expectedDocument["receiptSha256"]);
+    REQUIRE(document["eventStreamSha256"] == expectedDocument["eventStreamSha256"]);
+}
+
+TEST_CASE("KOG-TSK-0137 handoff isolates attempts and reports pinned redaction truth",
+          "[audit][handoff][KOG-TSK-0137][attempt][redaction]") {
+    Fixture fixture;
+    fixture.Finalize();
+    const auto attemptThree = HandoffRequest(fixture, 3);
+    auto wrongAttempt = HandoffRequest(fixture, 4);
+    auto wrongRun = HandoffRequest(fixture, 3);
+    wrongRun.runId = "other-run";
+
+    const auto sourceRead = ReadOperationAuditVerification(attemptThree);
+    REQUIRE(sourceRead.verified());
+    REQUIRE(sourceRead.run);
+    const auto handoff = BuildAuditHandoffJson(attemptThree);
+    REQUIRE(handoff.code == AuditHandoffResultCode::None);
+    const auto document = nlohmann::json::parse(handoff.serialized);
+    REQUIRE(document["attempt"] == 3);
+    REQUIRE(document["runId"] == "reader-run");
+    REQUIRE(document["redaction"]["withheldEvidenceCount"] ==
+            sourceRead.run->withheldEvidenceCount);
+    REQUIRE(handoff.serialized.find("withheld receipt evidence") == std::string::npos);
+
+    const auto otherAttemptResult = BuildAuditHandoffJson(wrongAttempt);
+    REQUIRE(otherAttemptResult.code == AuditHandoffResultCode::ReadNotVerified);
+    REQUIRE(otherAttemptResult.readState == OperationAuditRunReadState::Missing);
+    REQUIRE(otherAttemptResult.serialized.empty());
+
+    const auto otherRunResult = BuildAuditHandoffJson(wrongRun);
+    REQUIRE(otherRunResult.code == AuditHandoffResultCode::ReadNotVerified);
+    REQUIRE(otherRunResult.readState == OperationAuditRunReadState::Missing);
+    REQUIRE(otherRunResult.serialized.empty());
+}
+
+TEST_CASE("KOG-TSK-0137 handoff fails closed for missing corrupt and incompatible reads",
+          "[audit][handoff][KOG-TSK-0137][read-failure]") {
+    SECTION("missing attempt") {
+        Fixture fixture;
+        const auto result = BuildAuditHandoffJson(HandoffRequest(fixture));
+        REQUIRE(result.code == AuditHandoffResultCode::ReadNotVerified);
+        REQUIRE(result.readState == OperationAuditRunReadState::Missing);
+        REQUIRE(result.readCode == OperationAuditRunReadCode::AttemptMissing);
+        REQUIRE(result.serialized.empty());
+    }
+    SECTION("corrupt receipt") {
+        Fixture fixture;
+        fixture.Finalize();
+        WriteText(fixture.paths.receipt, "{invalid-json");
+        const auto result = BuildAuditHandoffJson(HandoffRequest(fixture));
+        REQUIRE(result.code == AuditHandoffResultCode::ReadNotVerified);
+        REQUIRE(result.readState == OperationAuditRunReadState::Corrupt);
+        REQUIRE(result.serialized.empty());
+    }
+    SECTION("incompatible receipt schema") {
+        Fixture fixture;
+        fixture.Finalize();
+        auto receipt = nlohmann::json::parse(ReadText(fixture.paths.receipt));
+        receipt["schemaVersion"] = 999;
+        WriteText(fixture.paths.receipt, receipt.dump());
+        const auto result = BuildAuditHandoffJson(HandoffRequest(fixture));
+        REQUIRE(result.code == AuditHandoffResultCode::ReadNotVerified);
+        REQUIRE(result.readState == OperationAuditRunReadState::Incompatible);
+        REQUIRE(result.readCode == OperationAuditRunReadCode::UnsupportedSchema);
+        REQUIRE(result.serialized.empty());
+    }
+}
 
 TEST_CASE("KG-TSK-0132 structured verification request returns the typed audit run",
           "[Unit][Audit][Reader][KG-TSK-0132]") {

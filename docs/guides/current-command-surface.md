@@ -80,8 +80,14 @@ flags). It also accepts one closed receipt lookup shape:
 `audit verify --plan-file <plan> --run-id <run> --attempt <n> --json`. That
 request is parsed structurally and the background worker passes the resulting
 typed audit-reader state to the renderer; the renderer never scrapes command
-text or opens evidence itself. Receipt lookup is always anchored to the
-workspace audit store, regardless of the currently selected repository. No
+text or opens evidence itself. `audit export --plan-file <plan> --run-id <run>
+--attempt <n> --json` emits one bounded `kog.auditHandoff` v1 JSON document to
+stdout from the same pinned verified reader. Export accepts optional row/byte
+caps, includes source hashes and explicit reader/handoff omitted counts, and
+never emits evidence bodies, branch/path text, opaque event IDs, or evidence
+reference IDs. There is no file-output option. Receipt lookup/export is always
+anchored to the workspace audit store, regardless of the currently selected
+repository. No
 other user-supplied options or positionals are accepted: read-oriented
 commands can otherwise expose write options such
 as output files, cache refreshes, or configuration repair. The TUI injects only

@@ -1094,10 +1094,13 @@ TEST_CASE(
   REQUIRE(std::filesystem::is_regular_file(RepoRoot() / "assets" / "audit" /
                                            "schemas" /
                                            "kog.runReceipt.v1.schema.json"));
+  REQUIRE(std::filesystem::is_regular_file(RepoRoot() / "assets" / "audit" /
+                                           "schemas" /
+                                           "kog.auditHandoff.v1.schema.json"));
 }
 
-TEST_CASE("runtime artifact declares and packages both versioned audit schemas",
-          "[unit][regression][coverage][packaging][audit][KG-TSK-0124]") {
+TEST_CASE("runtime artifact declares and packages versioned audit schemas",
+          "[unit][regression][coverage][packaging][audit][KOG-TSK-0137]") {
   const auto manifest = nlohmann::json::parse(
       ReadText(RepoRoot() / "src" / "cpp" / "code" / "apps" / "kano_git_cli" /
                "runtime-manifest.json.in"));
@@ -1108,12 +1111,16 @@ TEST_CASE("runtime artifact declares and packages both versioned audit schemas",
   REQUIRE(std::find(assets.begin(), assets.end(),
                     "assets/audit/schemas/kog.runReceipt.v1.schema.json") !=
           assets.end());
+  REQUIRE(std::find(assets.begin(), assets.end(),
+                    "assets/audit/schemas/kog.auditHandoff.v1.schema.json") !=
+          assets.end());
 
   const auto packager = ReadText(RepoRoot() / "src" / "cpp" / "code" / "apps" /
                                  "kano_git_cli" / "package-runtime.cmake");
   REQUIRE(packager.find("KOG_RUNTIME_AUDIT_SCHEMA_ROOT") != std::string::npos);
   REQUIRE(packager.find("kog.auditEvent.v1.schema.json") != std::string::npos);
   REQUIRE(packager.find("kog.runReceipt.v1.schema.json") != std::string::npos);
+  REQUIRE(packager.find("kog.auditHandoff.v1.schema.json") != std::string::npos);
   REQUIRE(packager.find("assets/audit/schemas/${audit_schema}") !=
           std::string::npos);
 }

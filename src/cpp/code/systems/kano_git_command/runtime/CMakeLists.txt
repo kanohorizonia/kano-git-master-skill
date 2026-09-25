@@ -8,6 +8,7 @@ target_sources(kano_git_command_runtime
     private/audit_verification.cpp
     private/audit_evidence_directory.cpp
     private/audit_handoff.cpp
+    private/audit_handoff_private.hpp
     private/audit_run_catalog.cpp
     private/audit_run_reader.cpp
     private/operation_audit.cpp

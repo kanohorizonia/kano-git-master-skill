@@ -4,6 +4,7 @@
 #include <CLI/CLI.hpp>
 
 #include "operation_audit.hpp"
+#include "audit_handoff.hpp"
 #include "audit_verification.hpp"
 #include "audit_verification_internal.hpp"
 #include "shell_executor.hpp"
@@ -91,6 +92,62 @@ void RegisterAudit(CLI::App& InApp) {
             std::filesystem::path(*planFile), *runId, *attempt);
         std::cout << result.json;
         if (result.exitCode != 0) std::exit(result.exitCode);
+    });
+
+    auto* exportHandoff = command->add_subcommand(
+        "export", "Export one verified audit handoff as bounded JSON on stdout");
+    auto* exportPlanFile = new std::string{};
+    auto* exportRunId = new std::string{};
+    auto* exportAttempt = new std::uint32_t{0};
+    auto* exportJson = new bool{false};
+    auto* maxSerializedBytes = new std::uint64_t{256U << 10U};
+    auto* maxEvents = new std::size_t{64};
+    auto* maxRepositories = new std::size_t{64};
+    auto* maxEvidenceReferences = new std::size_t{64};
+    exportHandoff->add_option("--plan-file", *exportPlanFile,
+                              "Plan identity for the pinned audit reader")->required();
+    exportHandoff->add_option("--run-id", *exportRunId,
+                              "Stable run identity to read")->required();
+    exportHandoff->add_option("--attempt", *exportAttempt,
+                              "Positive attempt identity")->required();
+    exportHandoff->add_flag("--json", *exportJson,
+                             "Emit versioned handoff JSON to stdout")->required();
+    exportHandoff->add_option("--max-bytes", *maxSerializedBytes,
+                              "Maximum serialized handoff bytes (256..4194304)");
+    exportHandoff->add_option("--max-events", *maxEvents,
+                              "Maximum event rows in the handoff (1..4096)");
+    exportHandoff->add_option("--max-repositories", *maxRepositories,
+                              "Maximum repository rows in the handoff (1..4096)");
+    exportHandoff->add_option("--max-evidence-references", *maxEvidenceReferences,
+                              "Maximum evidence metadata rows (1..4096)");
+    exportHandoff->callback([=]() {
+        if (!*exportJson) {
+            std::cerr << "audit export requires --json\n";
+            std::exit(2);
+        }
+        shell::ScopedCommandLogCapture suppressCommandLogs({
+            [](const std::string&) {}, [](const std::string&) {}});
+        AuditHandoffLimits limits;
+        limits.maxSerializedBytes = *maxSerializedBytes;
+        limits.maxEvents = *maxEvents;
+        limits.maxRepositories = *maxRepositories;
+        limits.maxEvidenceReferences = *maxEvidenceReferences;
+        const OperationAuditVerificationRequest request{
+            .workspaceRoot = std::filesystem::current_path(),
+            .planFile = std::filesystem::path(*exportPlanFile),
+            .runId = *exportRunId,
+            .attempt = *exportAttempt,
+        };
+        const auto result = BuildAuditHandoffJson(request, limits);
+        if (result.code != AuditHandoffResultCode::None) {
+            std::cerr << "audit handoff unavailable: "
+                      << AuditHandoffResultCodeName(result.code)
+                      << " (reader_state=" << static_cast<int>(result.readState)
+                      << ", reader_code=" << static_cast<int>(result.readCode)
+                      << ")\n";
+            std::exit(result.code == AuditHandoffResultCode::InvalidConfiguration ? 2 : 1);
+        }
+        std::cout << result.serialized << '\n';
     });
 }
 

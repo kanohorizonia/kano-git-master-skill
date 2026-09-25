@@ -1313,7 +1313,7 @@ TEST_CASE("audit capability CLI publishes the exact closed route and input pairs
     const std::set<std::string> exactKeys = {
         "schemaName", "schemaVersion", "protocolVersion",
         "correlationEnvelopeVersions", "auditEventVersions",
-        "runReceiptVersions", "auditVerificationVersions",
+        "runReceiptVersions", "auditVerificationVersions", "auditHandoffVersions",
         "supportedInputs", "provenanceGrantsAuthority", "durability",
     };
     std::set<std::string> actualKeys;
@@ -1322,6 +1322,7 @@ TEST_CASE("audit capability CLI publishes the exact closed route and input pairs
         actualKeys.insert(key);
     }
     REQUIRE(actualKeys == exactKeys);
+    REQUIRE(capability.at("auditHandoffVersions") == nlohmann::json::array({1}));
     REQUIRE(capability.at("provenanceGrantsAuthority") == false);
     const nlohmann::json expectedPairs = nlohmann::json::array({
         {{"route", "commit.plan"}, {"inputKind", "commit-plan"}},

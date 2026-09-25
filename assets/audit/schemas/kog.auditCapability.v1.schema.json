@@ -4,7 +4,7 @@
   "title": "KOG Audit Capability v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaName", "schemaVersion", "protocolVersion", "correlationEnvelopeVersions", "auditEventVersions", "runReceiptVersions", "auditVerificationVersions", "supportedInputs", "provenanceGrantsAuthority", "durability"],
+  "required": ["schemaName", "schemaVersion", "protocolVersion", "correlationEnvelopeVersions", "auditEventVersions", "runReceiptVersions", "auditVerificationVersions", "auditHandoffVersions", "supportedInputs", "provenanceGrantsAuthority", "durability"],
   "properties": {
     "schemaName": {"const": "kog.auditCapability"},
     "schemaVersion": {"const": 1},
@@ -13,6 +13,7 @@
     "auditEventVersions": {"const": [1]},
     "runReceiptVersions": {"const": [1]},
     "auditVerificationVersions": {"const": [1]},
+    "auditHandoffVersions": {"const": [1]},
     "supportedInputs": {
       "type": "array", "minItems": 7, "maxItems": 7, "uniqueItems": true,
       "items": {

@@ -116,8 +116,22 @@ auto BashQuote(const std::string& InValue) -> std::string {
 
 } // namespace
 
+auto SandboxBaseRoot() -> std::filesystem::path {
+    // Sandboxes default to the system temp directory but the
+    // kog-run-quick-test / DSH harness cannot create directories under
+    // %TEMP%. Allow an explicit override rooted in the workspace test area
+    // so the same fixture path remains exercisable in non-sandboxed hosts.
+    if (const auto* override = std::getenv("KOG_TEST_SANDBOX_ROOT");
+        override != nullptr && *override != '\0') {
+        std::error_code ec;
+        const auto resolved = std::filesystem::weakly_canonical(override, ec);
+        if (!ec && !resolved.empty()) return resolved;
+    }
+    return std::filesystem::temp_directory_path() / "kano-git-functional";
+}
+
 auto CreateSandboxWorkspace(const std::string& InName) -> SandboxContext {
-    auto base = std::filesystem::temp_directory_path() / "kano-git-functional";
+    auto base = SandboxBaseRoot();
     std::filesystem::create_directories(base);
     auto root = (base / (InName + "-" + UniqueSuffix())).lexically_normal();
     std::filesystem::create_directories(root);

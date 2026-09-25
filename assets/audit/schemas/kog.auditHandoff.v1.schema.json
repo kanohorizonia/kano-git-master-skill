@@ -1,0 +1,141 @@
+{
+  "$id": "https://schemas.kanohorizonia.dev/kog/kog.auditHandoff.v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "KOG Audit Handoff v1",
+  "description": "Closed bounded handoff projected from exactly one successful pinned audit read. Contains no evidence bodies, arbitrary paths, or raw command/environment values.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaName", "schemaVersion", "runId", "parentRunId", "attempt",
+    "planId", "planSha256", "frozenInputSha256", "receiptSha256",
+    "eventStreamSha256", "finishedAtUtc", "correlation", "terminalOutcome",
+    "repositoryTransitions", "events", "evidenceReferences", "redaction",
+    "truncation", "generationLimits", "identityHashes"
+  ],
+  "properties": {
+    "schemaName": {"const": "kog.auditHandoff"},
+    "schemaVersion": {"const": 1},
+    "runId": {"$ref": "#/$defs/stableId"},
+    "parentRunId": {"$ref": "#/$defs/nullableStableId"},
+    "attempt": {"type": "integer", "minimum": 1, "maximum": 4294967295},
+    "planId": {"$ref": "#/$defs/stableId"},
+    "planSha256": {"$ref": "#/$defs/sha256"},
+    "frozenInputSha256": {"$ref": "#/$defs/sha256"},
+    "receiptSha256": {"$ref": "#/$defs/sha256"},
+    "eventStreamSha256": {"$ref": "#/$defs/sha256"},
+    "finishedAtUtc": {"$ref": "#/$defs/utc"},
+    "correlation": {"$ref": "https://schemas.kanohorizonia.dev/kog/kog.auditEvent.v1.schema.json#/$defs/correlation"},
+    "terminalOutcome": {"$ref": "#/$defs/outcome"},
+    "repositoryTransitions": {
+      "type": "array", "maxItems": 4096,
+      "items": {"$ref": "#/$defs/repositoryTransition"}
+    },
+    "events": {"type": "array", "maxItems": 4096, "items": {"$ref": "#/$defs/event"}},
+    "evidenceReferences": {"type": "array", "maxItems": 4096, "items": {"$ref": "#/$defs/evidenceReference"}},
+    "redaction": {"$ref": "#/$defs/redaction"},
+    "truncation": {"$ref": "#/$defs/truncation"},
+    "generationLimits": {"$ref": "#/$defs/generationLimits"},
+    "identityHashes": {"$ref": "#/$defs/identityHashes"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$(?![\\s\\S])"},
+    "gitOid": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$(?![\\s\\S])"},
+    "stableId": {
+      "type": "string", "minLength": 1, "maxLength": 128,
+      "pattern": "^(?!.*\\.\\.)(?![sS][kK]-)(?![gG][hH][pP]_)(?![gG][iI][tT][hH][uU][bB]_[pP][aA][tT]_)(?![gG][lL][pP][aA][tT]-)(?![bB][eE][aA][rR][eE][rR])(?!(?:[aA][kK][iI][aA]))[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$(?![\\s\\S])"
+    },
+    "nullableStableId": {"oneOf": [{"$ref": "#/$defs/stableId"}, {"type": "null"}]},
+    "utc": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$(?![\\s\\S])"},
+    "safeInteger": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "outcome": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "exitCode", "retryable"],
+      "properties": {
+        "status": {"enum": ["succeeded", "failed", "partial", "blocked", "cancelled", "timed-out", "unknown"]},
+        "exitCode": {"oneOf": [{"type": "integer", "minimum": -2147483648, "maximum": 2147483647}, {"type": "null"}]},
+        "retryable": {"type": "boolean"}
+      }
+    },
+    "repositoryId": {
+      "type": "string", "minLength": 1, "maxLength": 256,
+      "pattern": "^(?!/)(?![A-Za-z]:)(?!.*\\\\)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*(?:^|/)\\.(?:/|$))(?!.*//)(?!.*\\/$)[!-~]+$(?![\\s\\S])"
+    },
+    "repositoryTransition": {
+      "type": "object", "additionalProperties": false,
+      "required": ["repositoryId", "beforeHeadSha", "afterHeadSha"],
+      "properties": {
+        "repositoryId": {"$ref": "#/$defs/repositoryId"},
+        "beforeHeadSha": {"oneOf": [{"$ref": "#/$defs/gitOid"}, {"type": "null"}]},
+        "afterHeadSha": {"oneOf": [{"$ref": "#/$defs/gitOid"}, {"type": "null"}]}
+      }
+    },
+    "event": {
+      "type": "object", "additionalProperties": false,
+      "required": ["eventIdentitySha256", "sequence", "repositoryId", "beforeHeadSha", "afterHeadSha", "phase", "action", "outcome"],
+      "properties": {
+        "eventIdentitySha256": {"$ref": "#/$defs/sha256"},
+        "sequence": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "repositoryId": {"$ref": "#/$defs/repositoryId"},
+        "beforeHeadSha": {"oneOf": [{"$ref": "#/$defs/gitOid"}, {"type": "null"}]},
+        "afterHeadSha": {"oneOf": [{"$ref": "#/$defs/gitOid"}, {"type": "null"}]},
+        "phase": {"$ref": "https://schemas.kanohorizonia.dev/kog/kog.auditEvent.v1.schema.json#/$defs/semanticToken"},
+        "action": {"$ref": "https://schemas.kanohorizonia.dev/kog/kog.auditEvent.v1.schema.json#/$defs/semanticToken"},
+        "outcome": {"$ref": "#/$defs/outcome"}
+      }
+    },
+    "evidenceReference": {
+      "type": "object", "additionalProperties": false,
+      "required": ["category", "referenceIdentitySha256", "kind", "sha256", "sizeBytes", "contentType", "redactionStatus"],
+      "properties": {
+        "category": {"enum": ["policy", "approval", "artifact"]},
+        "referenceIdentitySha256": {"$ref": "#/$defs/sha256"},
+        "kind": {"type": "string", "maxLength": 96, "pattern": "^(?:[a-z][a-z0-9._-]*)?$(?![\\s\\S])"},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "sizeBytes": {"$ref": "#/$defs/safeInteger"},
+        "contentType": {"type": "string", "maxLength": 128, "pattern": "^(?:[a-z0-9][a-z0-9.+-]*/[a-z0-9][a-z0-9.+-]*)?$(?![\\s\\S])"},
+        "redactionStatus": {"enum": ["not-required", "redacted", "withheld"]}
+      }
+    },
+    "redaction": {
+      "type": "object", "additionalProperties": false,
+      "required": ["redactedEvidenceCount", "withheldEvidenceCount", "hasRedactedEvidence", "hasWithheldEvidence"],
+      "properties": {
+        "redactedEvidenceCount": {"$ref": "#/$defs/safeInteger"},
+        "withheldEvidenceCount": {"$ref": "#/$defs/safeInteger"},
+        "hasRedactedEvidence": {"type": "boolean"},
+        "hasWithheldEvidence": {"type": "boolean"}
+      }
+    },
+    "truncation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["totalEvents", "readerRetainedEvents", "retainedEvents", "readerOmittedEvents", "handoffOmittedEvents", "omittedEvents", "truncatedEvents", "totalRepositories", "readerRetainedRepositories", "retainedRepositories", "readerOmittedRepositories", "handoffOmittedRepositories", "omittedRepositories", "truncatedRepositories", "totalEvidenceReferences", "readerRetainedEvidenceReferences", "retainedEvidenceReferences", "readerOmittedEvidenceReferences", "handoffOmittedEvidenceReferences", "omittedEvidenceReferences", "truncatedEvidenceReferences", "retainedPreviewBytes", "readerTruncated", "truncated"],
+      "properties": {
+        "totalEvents": {"$ref": "#/$defs/safeInteger"}, "readerRetainedEvents": {"$ref": "#/$defs/safeInteger"}, "retainedEvents": {"$ref": "#/$defs/safeInteger"}, "readerOmittedEvents": {"$ref": "#/$defs/safeInteger"}, "handoffOmittedEvents": {"$ref": "#/$defs/safeInteger"}, "omittedEvents": {"$ref": "#/$defs/safeInteger"}, "truncatedEvents": {"$ref": "#/$defs/safeInteger"},
+        "totalRepositories": {"$ref": "#/$defs/safeInteger"}, "readerRetainedRepositories": {"$ref": "#/$defs/safeInteger"}, "retainedRepositories": {"$ref": "#/$defs/safeInteger"}, "readerOmittedRepositories": {"$ref": "#/$defs/safeInteger"}, "handoffOmittedRepositories": {"$ref": "#/$defs/safeInteger"}, "omittedRepositories": {"$ref": "#/$defs/safeInteger"}, "truncatedRepositories": {"$ref": "#/$defs/safeInteger"},
+        "totalEvidenceReferences": {"$ref": "#/$defs/safeInteger"}, "readerRetainedEvidenceReferences": {"$ref": "#/$defs/safeInteger"}, "retainedEvidenceReferences": {"$ref": "#/$defs/safeInteger"}, "readerOmittedEvidenceReferences": {"$ref": "#/$defs/safeInteger"}, "handoffOmittedEvidenceReferences": {"$ref": "#/$defs/safeInteger"}, "omittedEvidenceReferences": {"$ref": "#/$defs/safeInteger"}, "truncatedEvidenceReferences": {"$ref": "#/$defs/safeInteger"},
+        "retainedPreviewBytes": {"$ref": "#/$defs/safeInteger"}, "readerTruncated": {"type": "boolean"}, "truncated": {"type": "boolean"}
+      }
+    },
+    "generationLimits": {
+      "type": "object", "additionalProperties": false,
+      "required": ["maxSerializedBytes", "maxEvents", "maxRepositories", "maxEvidenceReferences", "readerMaxEventStreamBytes", "readerMaxInputBytes", "readerMaxPreviewBytes", "readerMaxEventRecords", "readerMaxRepositories", "readerMaxEvidenceReferences"],
+      "properties": {
+        "maxSerializedBytes": {"type": "integer", "minimum": 256, "maximum": 4194304},
+        "maxEvents": {"type": "integer", "minimum": 1, "maximum": 4096},
+        "maxRepositories": {"type": "integer", "minimum": 1, "maximum": 4096},
+        "maxEvidenceReferences": {"type": "integer", "minimum": 1, "maximum": 4096},
+        "readerMaxEventStreamBytes": {"type": "integer", "minimum": 1, "maximum": 67108864},
+        "readerMaxInputBytes": {"type": "integer", "minimum": 1, "maximum": 4194304},
+        "readerMaxPreviewBytes": {"type": "integer", "minimum": 1, "maximum": 16384},
+        "readerMaxEventRecords": {"type": "integer", "minimum": 1, "maximum": 4096},
+        "readerMaxRepositories": {"type": "integer", "minimum": 1, "maximum": 4096},
+        "readerMaxEvidenceReferences": {"type": "integer", "minimum": 1, "maximum": 4096}
+      }
+    },
+    "identityHashes": {
+      "type": "object", "additionalProperties": false,
+      "required": ["repositoryIdentityHeadSha256", "catalogRepositoryPreviewIdentityHeadSha256"],
+      "properties": {"repositoryIdentityHeadSha256": {"$ref": "#/$defs/sha256"}, "catalogRepositoryPreviewIdentityHeadSha256": {"$ref": "#/$defs/sha256"}}
+    }
+  }
+}

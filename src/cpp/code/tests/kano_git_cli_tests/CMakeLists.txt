@@ -2,6 +2,7 @@ add_executable(kano_git_cli_tests
   functional/agent_mode_environment_contract_test.cpp
   functional/auth_module_boundary_test.cpp
   functional/audit_contract_test.cpp
+  functional/audit_handoff_cli_test.cpp
   functional/cloudflare_ssh_bootstrap_test.cpp
   functional/https_auth_bootstrap_test.cpp
   functional/functional_test_main.cpp
@@ -34,6 +35,7 @@ target_link_libraries(kano_git_cli_tests
   PRIVATE Catch2::Catch2WithMain
   PRIVATE kano_git_test_core
   PRIVATE kano_git_core
+  PRIVATE kano_git_command_runtime
   PRIVATE kano::git_audit
   PRIVATE nlohmann_json::nlohmann_json
 )

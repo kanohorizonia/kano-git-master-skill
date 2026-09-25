@@ -355,6 +355,27 @@ admitted plan ID must also equal the receipt plan ID.
 Missing, malformed, contradictory, tampered, overflowed, or incomplete
 evidence produces a closed failure result and non-zero exit.
 
+`kog audit export --plan-file P --run-id R --attempt N --json` emits one
+`kog.auditHandoff` v1 document to stdout. Optional `--max-bytes`, `--max-events`,
+`--max-repositories`, and `--max-evidence-references` arguments set the outer
+output limits. It invokes this same pinned reader exactly once; callers cannot
+supply a projection or catalog row. The handoff includes bounded run/attempt/
+receipt/correlation identity, source integrity hashes, repository HEAD
+transitions, event previews, hashed event/evidence-reference identities,
+redaction/withheld counts, exact total/reader-retained/handoff-retained/omitted
+counts, and all reader/output generation limits. Reader-omitted and
+handoff-omitted counts are reported separately and summed exactly. It excludes
+repository branch text, raw/opaque event and evidence IDs, reason-code free
+text, evidence bodies, and all filesystem paths. The result API's SHA-256 is
+computed over the exact serialized stdout bytes.
+
+There is deliberately no file-output option: the existing runtime has no shared
+confined writer contract for a handoff destination, and stdout avoids inventing
+a filesystem publication framework or exposing an arbitrary path surface.
+Consumers that persist stdout own that destination policy. See
+`assets/audit/schemas/kog.auditHandoff.v1.schema.json` for the closed Draft
+2020-12 wire schema.
+
 ## Commit-plan correlation handoff
 
 `kog plan new --correlation-file <closed-envelope.json>` snapshots explicit

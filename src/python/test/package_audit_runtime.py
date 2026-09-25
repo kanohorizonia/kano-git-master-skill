@@ -21,6 +21,7 @@ EXPECTED_SCHEMAS = (
     "kog.runReceipt.v1.schema.json",
     "kog.auditCapability.v1.schema.json",
     "kog.auditVerification.v1.schema.json",
+    "kog.auditHandoff.v1.schema.json",
 )
 
 

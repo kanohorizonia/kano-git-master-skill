@@ -197,6 +197,10 @@ void WriteRequiredWindowsPackageSource(const std::filesystem::path& repoRoot) {
         repoRoot / "assets" / "audit" / "schemas" /
             "kog.auditVerification.v1.schema.json",
         "{}\n");
+    WriteFixtureFile(
+        repoRoot / "assets" / "audit" / "schemas" /
+            "kog.auditHandoff.v1.schema.json",
+        "{}\n");
 }
 
 } // namespace
@@ -335,6 +339,9 @@ TEST_CASE("Windows package stages canonical ignore assets without submodule git 
     REQUIRE(std::filesystem::is_regular_file(
         skillRoot / "assets" / "audit" / "schemas" /
         "kog.runReceipt.v1.schema.json"));
+    REQUIRE(std::filesystem::is_regular_file(
+        skillRoot / "assets" / "audit" / "schemas" /
+        "kog.auditHandoff.v1.schema.json"));
     REQUIRE_FALSE(std::filesystem::exists(
         skillRoot / "assets" / "ignore-sources" / "private-machine-path.txt"));
     REQUIRE_FALSE(std::filesystem::exists(

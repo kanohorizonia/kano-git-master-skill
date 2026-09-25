@@ -78,12 +78,14 @@ auto LoadGoldenEvents() -> AuditEventsParseResult {
 
 } // namespace
 
-TEST_CASE("KG-TSK-0124 publishes parseable closed-core v1 schemas",
-          "[infrastructure][audit][output][KG-TSK-0124]") {
+TEST_CASE("KOG-TSK-0137 publishes the closed versioned handoff schema",
+          "[infrastructure][audit][output][KOG-TSK-0137]") {
     const auto eventSchema = nlohmann::json::parse(
         ReadBinary(SchemaPath("kog.auditEvent.v1.schema.json")));
     const auto receiptSchema = nlohmann::json::parse(
         ReadBinary(SchemaPath("kog.runReceipt.v1.schema.json")));
+    const auto handoffSchema = nlohmann::json::parse(
+        ReadBinary(SchemaPath("kog.auditHandoff.v1.schema.json")));
 
     REQUIRE(eventSchema.at("$schema") ==
             "https://json-schema.org/draft/2020-12/schema");
@@ -113,6 +115,14 @@ TEST_CASE("KG-TSK-0124 publishes parseable closed-core v1 schemas",
     REQUIRE(receiptSchema.at("additionalProperties") == false);
     REQUIRE(receiptSchema.at("properties").at("repositories").at("maxItems") ==
             256);
+    REQUIRE(handoffSchema.at("$id") ==
+            "https://schemas.kanohorizonia.dev/kog/kog.auditHandoff.v1.schema.json");
+    REQUIRE(handoffSchema.at("properties").at("schemaName").at("const") ==
+            "kog.auditHandoff");
+    REQUIRE(handoffSchema.at("properties").at("schemaVersion").at("const") == 1);
+    REQUIRE(handoffSchema.at("additionalProperties") == false);
+    REQUIRE(handoffSchema.at("properties").contains("truncation"));
+    REQUIRE(handoffSchema.at("properties").contains("generationLimits"));
 }
 
 TEST_CASE(

@@ -183,7 +183,7 @@ TEST_CASE("KG-TSK-0125 new KOA correlation envelopes reject legacy opaque IDs",
     REQUIRE(error.find("stable-ID grammar") != std::string::npos);
 }
 
-TEST_CASE("KG-TSK-0125 capability is an exact seven-pair closed reservation set",
+TEST_CASE("KOG-TSK-0137 handoff capability and route pairs are closed", 
           "[Unit][CommitPlan][Audit][Capability]") {
     const std::vector<std::pair<std::string, std::string>> supported = {
         {"commit.plan", "commit-plan"},
@@ -195,7 +195,8 @@ TEST_CASE("KG-TSK-0125 capability is an exact seven-pair closed reservation set"
         {"converge.branches.retire", "operation-descriptor"},
     };
     const auto capability = nlohmann::json::parse(OperationAuditCapabilityJson());
-    REQUIRE(capability.size() == 10);
+    REQUIRE(capability.size() == 11);
+    REQUIRE(capability.at("auditHandoffVersions") == nlohmann::json::array({1}));
     REQUIRE(capability.at("provenanceGrantsAuthority") == false);
     REQUIRE(capability.at("supportedInputs").size() == supported.size());
     for (std::size_t index = 0; index < supported.size(); ++index) {

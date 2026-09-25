@@ -51,10 +51,12 @@ def main() -> int:
     receipt_schema = load_json(SCHEMA_ROOT / "kog.runReceipt.v1.schema.json")
     capability_schema = load_json(SCHEMA_ROOT / "kog.auditCapability.v1.schema.json")
     verification_schema = load_json(SCHEMA_ROOT / "kog.auditVerification.v1.schema.json")
+    handoff_schema = load_json(SCHEMA_ROOT / "kog.auditHandoff.v1.schema.json")
     Draft202012Validator.check_schema(event_schema)
     Draft202012Validator.check_schema(receipt_schema)
     Draft202012Validator.check_schema(capability_schema)
     Draft202012Validator.check_schema(verification_schema)
+    Draft202012Validator.check_schema(handoff_schema)
 
     registry = (
         Registry()
@@ -67,12 +69,16 @@ def main() -> int:
     verification_validator = Draft202012Validator(
         verification_schema, registry=registry
     )
+    handoff_validator = Draft202012Validator(
+        handoff_schema, registry=registry
+    )
 
     capability = {
         "schemaName": "kog.auditCapability", "schemaVersion": 1,
         "protocolVersion": 1, "correlationEnvelopeVersions": [1],
         "auditEventVersions": [1], "runReceiptVersions": [1],
-        "auditVerificationVersions": [1], "provenanceGrantsAuthority": False,
+        "auditVerificationVersions": [1], "auditHandoffVersions": [1],
+        "provenanceGrantsAuthority": False,
         "durability": {"fileFlush": "required", "directorySync": "required-posix-best-effort-windows"},
         "supportedInputs": [
             {"route": "commit.plan", "inputKind": "commit-plan"},
@@ -118,6 +124,83 @@ def main() -> int:
         "legacy printable opaque ID event",
     )
     assert_valid(receipt_validator, golden_receipt, "golden receipt")
+
+    handoff = {
+        "schemaName": "kog.auditHandoff", "schemaVersion": 1,
+        "runId": "koa-run-001", "parentRunId": None, "attempt": 1,
+        "planId": "plan-001", "planSha256": "c" * 64,
+        "frozenInputSha256": "c" * 64, "receiptSha256": "5" * 64,
+        "eventStreamSha256": golden_receipt["eventStreamSha256"],
+        "finishedAtUtc": golden_receipt["finishedAtUtc"],
+        "correlation": golden_receipt["correlation"],
+        "terminalOutcome": {
+            "status": "succeeded", "exitCode": 0, "retryable": False,
+        },
+        "repositoryTransitions": [{
+            "repositoryId": "repos/kog",
+            "beforeHeadSha": "a" * 40,
+            "afterHeadSha": "b" * 40,
+        }],
+        "events": [{
+            "eventIdentitySha256": "6" * 64, "sequence": 1,
+            "repositoryId": "repos/kog", "beforeHeadSha": "a" * 40,
+            "afterHeadSha": "b" * 40, "phase": "commit",
+            "action": "plan-commit",
+            "outcome": {"status": "succeeded", "exitCode": 0,
+                         "retryable": False},
+        }],
+        "evidenceReferences": [{
+            "category": "artifact", "referenceIdentitySha256": "7" * 64,
+            "kind": "diff", "sha256": "3" * 64, "sizeBytes": 120,
+            "contentType": "text/x-diff", "redactionStatus": "redacted",
+        }],
+        "redaction": {
+            "redactedEvidenceCount": 1, "withheldEvidenceCount": 0,
+            "hasRedactedEvidence": True, "hasWithheldEvidence": False,
+        },
+        "truncation": {
+            "totalEvents": 1, "readerRetainedEvents": 1,
+            "retainedEvents": 1, "readerOmittedEvents": 0,
+            "handoffOmittedEvents": 0, "omittedEvents": 0,
+            "truncatedEvents": 0,
+            "totalRepositories": 1, "readerRetainedRepositories": 1,
+            "retainedRepositories": 1, "readerOmittedRepositories": 0,
+            "handoffOmittedRepositories": 0, "omittedRepositories": 0,
+            "truncatedRepositories": 0,
+            "totalEvidenceReferences": 1,
+            "readerRetainedEvidenceReferences": 1,
+            "retainedEvidenceReferences": 1,
+            "readerOmittedEvidenceReferences": 0,
+            "handoffOmittedEvidenceReferences": 0,
+            "omittedEvidenceReferences": 0,
+            "truncatedEvidenceReferences": 0,
+            "retainedPreviewBytes": 512, "readerTruncated": False,
+            "truncated": False,
+        },
+        "generationLimits": {
+            "maxSerializedBytes": 262144, "maxEvents": 64,
+            "maxRepositories": 64, "maxEvidenceReferences": 64,
+            "readerMaxEventStreamBytes": 67108864,
+            "readerMaxInputBytes": 4194304, "readerMaxPreviewBytes": 16384,
+            "readerMaxEventRecords": 64, "readerMaxRepositories": 64,
+            "readerMaxEvidenceReferences": 64,
+        },
+        "identityHashes": {
+            "repositoryIdentityHeadSha256": "8" * 64,
+            "catalogRepositoryPreviewIdentityHeadSha256": "9" * 64,
+        },
+    }
+    assert_valid(handoff_validator, handoff, "versioned audit handoff")
+    for forbidden in ("command", "body", "path", "environment"):
+        leaked = copy.deepcopy(handoff)
+        leaked[forbidden] = "must-not-serialize"
+        assert_invalid(handoff_validator, leaked, f"handoff rejects {forbidden}")
+    leaked_body = copy.deepcopy(handoff)
+    leaked_body["evidenceReferences"][0]["body"] = "secret evidence"
+    assert_invalid(handoff_validator, leaked_body, "handoff evidence body rejection")
+    unsafe_repo = copy.deepcopy(handoff)
+    unsafe_repo["repositoryTransitions"][0]["repositoryId"] = "../../private"
+    assert_invalid(handoff_validator, unsafe_repo, "handoff traversal repository ID")
 
     verification_success = {
         "schemaName": "kog.auditVerification", "schemaVersion": 1,
@@ -334,7 +417,7 @@ def main() -> int:
 
     print(
         "audit-schema-test: Draft 2020-12 schemas, offline refs, "
-        "goldens, and parity mutations passed"
+        "goldens, handoff caps/redaction, and parity mutations passed"
     )
     return 0
 
