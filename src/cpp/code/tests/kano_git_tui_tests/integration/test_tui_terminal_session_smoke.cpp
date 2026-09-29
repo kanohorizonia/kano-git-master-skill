@@ -1499,7 +1499,8 @@ TEST_CASE(
     char originalPath[32767]{};
     const DWORD pathLength = GetEnvironmentVariableA(
         "PATH", originalPath, sizeof(originalPath));
-    REQUIRE(pathLength > 0U && pathLength < sizeof(originalPath));
+    REQUIRE(pathLength > 0U);
+    REQUIRE(pathLength < sizeof(originalPath));
     const std::string newPath = fakeBinDir.string() + ";" +
         std::string(originalPath);
     const ScopedWindowsEnvironment fakeGitPath("PATH", newPath.c_str());
@@ -1569,7 +1570,8 @@ TEST_CASE(
     char originalPath[32767]{};
     const DWORD pathLength = GetEnvironmentVariableA(
         "PATH", originalPath, sizeof(originalPath));
-    REQUIRE(pathLength > 0U && pathLength < sizeof(originalPath));
+    REQUIRE(pathLength > 0U);
+    REQUIRE(pathLength < sizeof(originalPath));
     const std::string newPath = fakeBinDir.string() + ";" +
         std::string(originalPath);
     const ScopedWindowsEnvironment fakeGitPath("PATH", newPath.c_str());
