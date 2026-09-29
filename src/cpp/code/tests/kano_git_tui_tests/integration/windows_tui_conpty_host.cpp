@@ -41,6 +41,11 @@ constexpr DWORD kExitOutputEof = 21;
 constexpr DWORD kExitInternal = 22;
 constexpr DWORD kExitCleanupEvidence = 23;
 constexpr DWORD kExitCancellationHarness = 24;
+constexpr DWORD kExitMarkerNotFound = 25;
+constexpr DWORD kExitAfterMarkerInput = 26;
+constexpr DWORD kExitAfterMarkerAck = 27;
+constexpr DWORD kExitAfterMarkerChildWait = 28;
+constexpr DWORD kExitAfterMarkerChildStatus = 29;
 constexpr DWORD kNoFailure = MAXDWORD;
 constexpr short kResizeColumns = 121;
 constexpr short kResizeRows = 37;
@@ -48,6 +53,11 @@ constexpr std::size_t kHorizontalBorderGlyphs =
     static_cast<std::size_t>(kResizeColumns) - 2U;
 constexpr std::size_t kUtf8BoxGlyphBytes = 3U;
 constexpr auto kHostDeadline = std::chrono::milliseconds(6'500);
+// KOG-BUG-0107 q-after-marker mode is bounded by the fake-git sleep budget
+// (30s) plus the KOG_TUI cancellation polling latency (~50ms on Windows).
+// Allow a generous 8 s ceiling so a passing test is well below the budget
+// and a stuck test still fails fast.
+constexpr auto kQAfterMarkerDeadline = std::chrono::milliseconds(8'000);
 static_assert(kHorizontalBorderGlyphs == 119U);
 
 class Handle final {
@@ -202,23 +212,44 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
     DWORD childExit = STILL_ACTIVE;
     bool outputEof = false;
     bool closeReturned = false;
-    if (InArgumentCount != 4 && InArgumentCount != 5) {
+    if (InArgumentCount != 4 && InArgumentCount != 5 && InArgumentCount != 6) {
         return PrintResult(false, code, win32, childExit, outputEof);
     }
     const bool sendEscape = std::wcscmp(InArguments[1], L"escape") == 0;
     if (!sendEscape && std::wcscmp(InArguments[1], L"q") != 0) {
         return PrintResult(false, code, win32, childExit, outputEof);
     }
-    const bool stallBeforeClose = InArgumentCount == 5 &&
+    // KOG-BUG-0107: allow a "q-after-marker" mode that bypasses the
+    // startup-cancel-ack harness.  This mode waits for a marker file
+    // (e.g. written by a fake git that blocks for the rest of the test)
+    // before sending q, proving that q/Esc cancels an already-running
+    // owned subprocess tree.
+    bool qAfterMarkerMode = false;
+    std::wstring qAfterMarkerFile;
+    if (InArgumentCount == 6) {
+        if (std::wcscmp(InArguments[4], L"--test-q-after-marker") != 0) {
+            return PrintResult(false, code, win32, childExit, outputEof);
+        }
+        if (InArguments[5] == nullptr || InArguments[5][0] == L'\0') {
+            return PrintResult(false, code, win32, childExit, outputEof);
+        }
+        qAfterMarkerFile = InArguments[5];
+        qAfterMarkerMode = true;
+    }
+    const bool stallBeforeClose = !qAfterMarkerMode && InArgumentCount == 5 &&
         std::wcscmp(InArguments[4], L"--test-stall-before-close") == 0;
-    if (InArgumentCount == 5 && !stallBeforeClose) {
+    if (!qAfterMarkerMode && InArgumentCount == 5 && !stallBeforeClose) {
         return PrintResult(false, code, win32, childExit, outputEof);
     }
     // This helper's causal exit proof depends on the deterministic production
     // cancellation acknowledgement.  Fail closed outside the explicit test
     // harness instead of weakening cleanup ordering to timing assumptions.
+    // The q-after-marker mode is for KOG-BUG-0107 only and intentionally runs
+    // without the startup harness because the in-flight subprocess is the
+    // actual cancellation target.
     if (!TestModeEnabled() ||
-        !EnvironmentIsOne("KOG_TUI_TEST_STARTUP_CANCEL_ACK")) {
+        (!qAfterMarkerMode &&
+            !EnvironmentIsOne("KOG_TUI_TEST_STARTUP_CANCEL_ACK"))) {
         return PrintResult(false, code, ERROR_BAD_ENVIRONMENT,
             childExit, outputEof);
     }
@@ -321,13 +352,17 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
     std::wstring command = Quote(InArguments[2]);
     command += L" ";
     command += Quote(InArguments[3]);
-    command += L" --test-cancel-ack";
-    command += L" ";
-    command += std::to_wstring(
-        reinterpret_cast<std::uintptr_t>(cancellationArmed.Get()));
-    command += L" ";
-    command += std::to_wstring(
-        reinterpret_cast<std::uintptr_t>(cancellationAcknowledged.Get()));
+    if (qAfterMarkerMode) {
+        command += L" --test-skip-startup-harness";
+    } else {
+        command += L" --test-cancel-ack";
+        command += L" ";
+        command += std::to_wstring(
+            reinterpret_cast<std::uintptr_t>(cancellationArmed.Get()));
+        command += L" ";
+        command += std::to_wstring(
+            reinterpret_cast<std::uintptr_t>(cancellationAcknowledged.Get()));
+    }
     STARTUPINFOEXW startup{};
     startup.StartupInfo.cb = sizeof(startup);
     startup.lpAttributeList = list;
@@ -421,7 +456,7 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
                 : (outputError == ERROR_SUCCESS ? ERROR_HANDLE_EOF : outputError);
         }
     }
-    if (code == kNoFailure) {
+    if (code == kNoFailure && !qAfterMarkerMode) {
         {
             std::scoped_lock lock(mutex);
             resizedFrame = Needle(resizedNeedle);
@@ -441,7 +476,7 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
             win32 = Win32FromHresult(resized);
         }
     }
-    if (code == kNoFailure) {
+    if (code == kNoFailure && !qAfterMarkerMode) {
         std::unique_lock lock(mutex);
         const bool observed = changed.wait_until(lock, deadline, [&] {
             return (resizeCommitted && resizedFrame.Found()) || outputComplete;
@@ -453,7 +488,84 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
                 : (outputError == ERROR_SUCCESS ? ERROR_HANDLE_EOF : outputError);
         }
     }
-    if (code == kNoFailure) {
+    if (code == kNoFailure && qAfterMarkerMode) {
+        // KOG-BUG-0107: poll for a marker file (typically written by a
+        // fake git that blocks for the rest of the test) to confirm an
+        // owned git subprocess is actually running.  Then send q/Esc and
+        // wait for the production TUI to exit under a bounded deadline.
+        // If the fake git is still blocked at the deadline, the test
+        // fails: the q/Esc path did not cancel the running subprocess.
+        const auto markerDeadline = std::chrono::steady_clock::now() +
+            kQAfterMarkerDeadline;
+        bool markerFound = false;
+        bool inputWrittenAfterMarker = false;
+        bool pumpFinished = false;
+        while (std::chrono::steady_clock::now() < markerDeadline) {
+            const DWORD attrs = GetFileAttributesW(qAfterMarkerFile.c_str());
+            if (attrs != INVALID_FILE_ATTRIBUTES) {
+                markerFound = true;
+                break;
+            }
+            {
+                std::scoped_lock lock(mutex);
+                pumpFinished = outputComplete;
+            }
+            if (pumpFinished) break;
+            Sleep(10U);
+        }
+        if (!markerFound) {
+            code = kExitMarkerNotFound;
+            win32 = ERROR_TIMEOUT;
+        } else {
+            const char input = sendEscape ? '\x1b' : 'q';
+            DWORD written = 0;
+            BOOL wrote = FALSE;
+            DWORD inputError = ERROR_SUCCESS;
+            {
+                std::scoped_lock lock(mutex);
+                altScreenExit = Needle("\x1b[?1049l");
+                terminalStateRestored = Needle(
+                    "KOG_TUI_TERMINAL_STATE_RESTORED");
+                inputPending = false;
+                inputCommitted = false;
+                wrote = WriteFile(
+                    inputWrite.Get(), &input, 1, &written, nullptr);
+                if (wrote && written == 1U) {
+                    inputPending = true;
+                    inputCommitted = true;
+                    inputWrittenAfterMarker = true;
+                } else {
+                    inputError = wrote ? ERROR_WRITE_FAULT : GetLastError();
+                }
+            }
+            changed.notify_all();
+            if (!wrote || written != 1U) {
+                code = kExitAfterMarkerInput;
+                win32 = inputError;
+            }
+        }
+        if (code == kNoFailure && markerFound && inputWrittenAfterMarker) {
+            // Wait for child exit under the marker deadline.  This is the
+            // bounded-latency assertion: q/Esc must terminate the running
+            // fake git before the deadline.  If the fake git is still
+            // blocked, the deadline fires and the test fails.
+            const auto childDeadline = std::chrono::steady_clock::now() +
+                kQAfterMarkerDeadline;
+            const DWORD waited = WaitForSingleObject(
+                child.Get(),
+                RemainingDeadlineMilliseconds(childDeadline));
+            if (waited != WAIT_OBJECT_0) {
+                code = kExitAfterMarkerChildWait;
+                win32 = waited == WAIT_TIMEOUT ? ERROR_TIMEOUT : GetLastError();
+            } else if (!GetExitCodeProcess(child.Get(), &childExit)) {
+                code = kExitAfterMarkerChildStatus;
+                win32 = GetLastError();
+            } else if (childExit != 0U) {
+                code = kExitAfterMarkerChildStatus;
+            }
+        }
+    }
+    if (code == kNoFailure && !qAfterMarkerMode) {
         const DWORD armed = WaitForSingleObject(cancellationArmed.Get(),
             RemainingDeadlineMilliseconds(deadline));
         if (armed != WAIT_OBJECT_0) {
@@ -461,7 +573,7 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
             win32 = armed == WAIT_TIMEOUT ? ERROR_TIMEOUT : GetLastError();
         }
     }
-    if (code == kNoFailure) {
+    if (code == kNoFailure && !qAfterMarkerMode) {
         const char input = sendEscape ? '\x1b' : 'q';
         DWORD written = 0;
         BOOL wrote = FALSE;
@@ -491,7 +603,7 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
             win32 = inputError;
         }
     }
-    if (code == kNoFailure) {
+    if (code == kNoFailure && !qAfterMarkerMode) {
         const DWORD acknowledged = WaitForSingleObject(cancellationAcknowledged.Get(),
             RemainingDeadlineMilliseconds(deadline));
         if (acknowledged != WAIT_OBJECT_0) {
@@ -499,7 +611,7 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
             win32 = acknowledged == WAIT_TIMEOUT ? ERROR_TIMEOUT : GetLastError();
         }
     }
-    if (code == kNoFailure) {
+    if (code == kNoFailure && !qAfterMarkerMode) {
         const DWORD waited = WaitForSingleObject(
             child.Get(), RemainingDeadlineMilliseconds(deadline));
         if (waited != WAIT_OBJECT_0) {
@@ -507,7 +619,7 @@ auto wmain(const int InArgumentCount, wchar_t** InArguments) -> int {
             win32 = waited == WAIT_TIMEOUT ? ERROR_TIMEOUT : GetLastError();
         }
     }
-    if (code == kNoFailure) {
+    if (code == kNoFailure && !qAfterMarkerMode) {
         if (!GetExitCodeProcess(child.Get(), &childExit)) {
             code = kExitChildStatus;
             win32 = GetLastError();

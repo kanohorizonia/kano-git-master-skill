@@ -1002,7 +1002,9 @@ class WindowsConPtyHostController final {
         const std::filesystem::path& InWrapper,
         const std::filesystem::path& InProduction,
         const bool bInEscape,
-        const bool bInStallBeforeClose)
+        const bool bInStallBeforeClose,
+        const bool bInQAfterMarkerMode = false,
+        const std::wstring& InQAfterMarkerFile = {})
         : deadline_(std::chrono::steady_clock::now() + kTerminalDeadline) {
         WindowsHostLaunchResources resources;
         resources.deadline = deadline_;
@@ -1060,6 +1062,11 @@ class WindowsConPtyHostController final {
             QuoteWindowsArgument(InWrapper.wstring()) + L" " +
             QuoteWindowsArgument(InProduction.wstring());
         if (bInStallBeforeClose) command += L" --test-stall-before-close";
+        if (bInQAfterMarkerMode) {
+            REQUIRE_FALSE(InQAfterMarkerFile.empty());
+            command += L" --test-q-after-marker ";
+            command += QuoteWindowsArgument(InQAfterMarkerFile);
+        }
         PROCESS_INFORMATION process{};
         REQUIRE(CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE,
             CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT,
@@ -1330,6 +1337,165 @@ TEST_CASE(
     CHECK(outcome == WindowsHostOutcome::KilledAtBeforeClose);
     CHECK_FALSE(controller.Status().find(kWindowsHostSuccess) != std::string::npos);
     CHECK(controller.JobIsEmpty());
+}
+
+// KOG-BUG-0107: the production TUI's startup-cancel-ack harness proves that
+// q/Esc is processed BEFORE git is launched.  This test proves the
+// remaining half of the contract: that q/Esc cancels an owned subprocess
+// tree that is ALREADY RUNNING when q/Esc arrives.
+//
+// Mechanism:
+//   1.  A real workspace is created so the production TUI's startup
+//       inventory has work to do.
+//   2.  A fake `git` (git.cmd on Windows) is created in a sandbox
+//       bin directory.  When invoked it writes a marker file the host
+//       polls for, then blocks for 30 s.
+//   3.  The fake bin directory is prepended to PATH so the production
+//       TUI's git subprocess finds the fake git before the real git.
+//   4.  The ConPTY host is launched in --test-q-after-marker mode with
+//       the marker path as the q-trigger.  --test-q-after-marker
+//       bypasses the startup cancel-ack harness so the production TUI
+//       proceeds to launch git and the fake git blocks.
+//   5.  The host polls the marker file.  When present, the host sends
+//       q/Esc.  The production TUI's q/Esc handler triggers
+//       asyncCancelRequested and the shell-layer cancellation observer
+//       terminates the owned fake-git subprocess tree via the existing
+//       Job Object path.
+//   6.  The bounded deadline proves cancellation latency: q/Esc must
+//       terminate the still-running fake git well before its 30 s
+//       sleep completes.  JobIsEmpty proves the Job Object owned the
+//       fake git and the Job Object cleanup emptied the tree.
+TEST_CASE(
+    "q cancels an in-flight owned git subprocess and restores terminal",
+    "[integration][tui_terminal_session][production-path][KOG-BUG-0107]") {
+    const ScopedWindowsSandbox sandbox("kog-bug-0107-q-cancel-active-git");
+
+    // Real workspace so the production TUI has something to discover.
+    const auto workspace = (sandbox.Root() / "ws").lexically_normal();
+    InitializeWindowsFixtureRepository(workspace);
+
+    // Fake git that signals via a marker file then blocks for 30 s.
+    const auto fakeBinDir = sandbox.Root() / "fake-bin";
+    std::filesystem::create_directories(fakeBinDir);
+    const auto fakeGit = fakeBinDir / "git.cmd";
+    const std::string markerPath = (sandbox.Root() / "fake-git-marker")
+        .lexically_normal().generic_string();
+    std::ofstream fakeScript(fakeGit, std::ios::binary | std::ios::trunc);
+    REQUIRE(fakeScript.good());
+    fakeScript <<
+        "@echo off\r\n"
+        "echo KOG_FAKE_GIT_READY > \"" << markerPath << "\"\r\n"
+        "ping -n 30 127.0.0.1 > nul\r\n";
+    fakeScript.close();
+    REQUIRE(std::filesystem::exists(fakeGit));
+
+    // Prepend the fake bin directory to PATH so the production TUI's
+    // git subprocess picks up our fake.  ScopedWindowsEnvironment
+    // restores the original on destruction.
+    char originalPath[32767]{};
+    const DWORD pathLength = GetEnvironmentVariableA(
+        "PATH", originalPath, sizeof(originalPath));
+    REQUIRE(pathLength > 0U && pathLength < sizeof(originalPath));
+    const std::string newPath = fakeBinDir.string() + ";" +
+        std::string(originalPath);
+    const ScopedWindowsEnvironment fakeGitPath("PATH", newPath.c_str());
+    const ScopedWindowsEnvironment testMode("KOG_TEST_MODE", "1");
+    // Deliberately do NOT set KOG_TUI_TEST_STARTUP_CANCEL_ACK: the
+    // production TUI must proceed past the startup harness and into
+    // the actual git launch.
+
+    // Ensure the marker file does not exist before the test runs.
+    std::error_code removeError;
+    std::filesystem::remove(markerPath, removeError);
+
+    const auto binaries =
+        kano::git::tests::functional::ResolveKogBinaryPath().parent_path();
+    // Wide-string form for the conpty host argument list.
+    const std::wstring wideMarker = std::wstring(
+        markerPath.begin(), markerPath.end());
+    WindowsConPtyHostController controller(
+        binaries / "kano_git_tui_conpty_host.exe",
+        binaries / "kano_git_tui_terminal_state_wrapper.exe",
+        StandaloneTuiBinary(),
+        /* bInEscape = */ false,
+        /* bInStallBeforeClose = */ false,
+        /* qAfterMarkerMode = */ true,
+        wideMarker);
+    const auto outcome = controller.Run(false);
+    const auto transcript = controller.Transcript();
+    INFO("bounded ConPTY transcript: total=" << controller.TranscriptTotalBytes()
+         << "; omitted=" << controller.TranscriptOmittedBytes()
+         << "\n" << transcript
+         << "\nhost status:\n" << controller.Status());
+    REQUIRE(outcome == WindowsHostOutcome::Success);
+    CHECK(controller.JobIsEmpty());
+    // The fake git must have been invoked: marker file must exist on
+    // disk.  It was either deleted by the Job Object cleanup or
+    // survives; either way, existence proves the production TUI did
+    // actually spawn the fake git and the test wasn't a no-op.
+    CHECK(std::filesystem::exists(markerPath));
+    // The fake git must have been killed by q/Esc, not by waiting for
+    // its own 30 s sleep to elapse.  The host enforces a bounded
+    // deadline; if cancellation had not propagated, the controller
+    // would have failed with a deadline exit, not Success.
+    CHECK(controller.Status().find(kWindowsHostSuccess) != std::string::npos);
+}
+
+TEST_CASE(
+    "Escape cancels an in-flight owned git subprocess and restores terminal",
+    "[integration][tui_terminal_session][production-path][KOG-BUG-0107]") {
+    const ScopedWindowsSandbox sandbox(
+        "kog-bug-0107-escape-cancel-active-git");
+    const auto workspace = (sandbox.Root() / "ws").lexically_normal();
+    InitializeWindowsFixtureRepository(workspace);
+
+    const auto fakeBinDir = sandbox.Root() / "fake-bin";
+    std::filesystem::create_directories(fakeBinDir);
+    const auto fakeGit = fakeBinDir / "git.cmd";
+    const std::string markerPath = (sandbox.Root() / "fake-git-marker")
+        .lexically_normal().generic_string();
+    std::ofstream fakeScript(fakeGit, std::ios::binary | std::ios::trunc);
+    REQUIRE(fakeScript.good());
+    fakeScript <<
+        "@echo off\r\n"
+        "echo KOG_FAKE_GIT_READY > \"" << markerPath << "\"\r\n"
+        "ping -n 30 127.0.0.1 > nul\r\n";
+    fakeScript.close();
+
+    char originalPath[32767]{};
+    const DWORD pathLength = GetEnvironmentVariableA(
+        "PATH", originalPath, sizeof(originalPath));
+    REQUIRE(pathLength > 0U && pathLength < sizeof(originalPath));
+    const std::string newPath = fakeBinDir.string() + ";" +
+        std::string(originalPath);
+    const ScopedWindowsEnvironment fakeGitPath("PATH", newPath.c_str());
+    const ScopedWindowsEnvironment testMode("KOG_TEST_MODE", "1");
+
+    std::error_code removeError;
+    std::filesystem::remove(markerPath, removeError);
+
+    const auto binaries =
+        kano::git::tests::functional::ResolveKogBinaryPath().parent_path();
+    const std::wstring wideMarker = std::wstring(
+        markerPath.begin(), markerPath.end());
+    WindowsConPtyHostController controller(
+        binaries / "kano_git_tui_conpty_host.exe",
+        binaries / "kano_git_tui_terminal_state_wrapper.exe",
+        StandaloneTuiBinary(),
+        /* bInEscape = */ true,
+        /* bInStallBeforeClose = */ false,
+        /* qAfterMarkerMode = */ true,
+        wideMarker);
+    const auto outcome = controller.Run(false);
+    const auto transcript = controller.Transcript();
+    INFO("bounded ConPTY transcript: total=" << controller.TranscriptTotalBytes()
+         << "; omitted=" << controller.TranscriptOmittedBytes()
+         << "\n" << transcript
+         << "\nhost status:\n" << controller.Status());
+    REQUIRE(outcome == WindowsHostOutcome::Success);
+    CHECK(controller.JobIsEmpty());
+    CHECK(std::filesystem::exists(markerPath));
+    CHECK(controller.Status().find(kWindowsHostSuccess) != std::string::npos);
 }
 
 #endif

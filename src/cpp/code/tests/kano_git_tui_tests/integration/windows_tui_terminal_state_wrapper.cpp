@@ -213,16 +213,27 @@ auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
         InArguments[1][0] == L'\0') {
         return PrintFailure("missing-production-binary");
     }
-    if (InArgumentCount != 5 || InArguments[2] == nullptr ||
-        std::wcscmp(InArguments[2], L"--test-cancel-ack") != 0) {
-        return PrintFailure("missing-test-cancel-ack");
+    // KOG-BUG-0107: in --test-skip-startup-harness mode the wrapper still
+    // sets KOG_TEST_MODE=1 (other test infrastructure needs it) but does
+    // not set the startup cancel-ack env vars; the production TUI then
+    // proceeds without the harness, so an owned subprocess is already
+    // running when q/Esc arrives.
+    const bool harnessMode = InArgumentCount == 5 &&
+        InArguments[2] != nullptr &&
+        std::wcscmp(InArguments[2], L"--test-cancel-ack") == 0;
+    const bool skipHarnessMode = InArgumentCount == 3 &&
+        InArguments[2] != nullptr &&
+        std::wcscmp(InArguments[2], L"--test-skip-startup-harness") == 0;
+    if (!harnessMode && !skipHarnessMode) {
+        return PrintFailure("missing-test-mode-flag");
     }
     HANDLE armedEvent = nullptr;
     HANDLE acknowledgementEvent = nullptr;
     DWORD failureError = ERROR_SUCCESS;
-    if (!ParseInheritedEventHandle(InArguments[3], armedEvent, failureError) ||
-        !ParseInheritedEventHandle(InArguments[4], acknowledgementEvent, failureError) ||
-        armedEvent == acknowledgementEvent) {
+    if (harnessMode &&
+        (!ParseInheritedEventHandle(InArguments[3], armedEvent, failureError) ||
+         !ParseInheritedEventHandle(InArguments[4], acknowledgementEvent, failureError) ||
+         armedEvent == acknowledgementEvent)) {
         return PrintWin32Failure("invalid-cancellation-event-handle", failureError);
     }
 
@@ -231,13 +242,17 @@ auto wmain(int InArgumentCount, wchar_t** InArguments) -> int {
     if (!OpenConsoleDevices(consoleInput, consoleOutput, failureError)) {
         return PrintWin32Failure("console-device-open-before-launch", failureError);
     }
-    if (SetEnvironmentVariableW(L"KOG_TEST_MODE", L"1") == 0 ||
-        SetEnvironmentVariableW(
-            L"KOG_TUI_TEST_STARTUP_CANCEL_ACK", L"1") == 0 ||
-        SetEnvironmentVariableW(L"KOG_TUI_TEST_STARTUP_CANCEL_ARMED_HANDLE",
-            std::to_wstring(reinterpret_cast<std::uintptr_t>(armedEvent)).c_str()) == 0 ||
-        SetEnvironmentVariableW(L"KOG_TUI_TEST_STARTUP_CANCEL_ACK_HANDLE",
-            std::to_wstring(reinterpret_cast<std::uintptr_t>(acknowledgementEvent)).c_str()) == 0) {
+    if (SetEnvironmentVariableW(L"KOG_TEST_MODE", L"1") == 0) {
+        return PrintWin32Failure(
+            "production-test-environment-unavailable", GetLastError());
+    }
+    if (harnessMode &&
+        (SetEnvironmentVariableW(
+             L"KOG_TUI_TEST_STARTUP_CANCEL_ACK", L"1") == 0 ||
+         SetEnvironmentVariableW(L"KOG_TUI_TEST_STARTUP_CANCEL_ARMED_HANDLE",
+             std::to_wstring(reinterpret_cast<std::uintptr_t>(armedEvent)).c_str()) == 0 ||
+         SetEnvironmentVariableW(L"KOG_TUI_TEST_STARTUP_CANCEL_ACK_HANDLE",
+             std::to_wstring(reinterpret_cast<std::uintptr_t>(acknowledgementEvent)).c_str()) == 0)) {
         return PrintWin32Failure(
             "production-test-environment-unavailable", GetLastError());
     }
