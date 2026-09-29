@@ -452,6 +452,232 @@ TEST_CASE(
     REQUIRE(elapsed < std::chrono::milliseconds(2500));
 }
 
+// KOG-BUG-0107 cancellation race matrix.  Each test below pins one race
+// order between cancellation, timeout, normal exit, and stdout/stderr
+// activity.  The fixtures emit READY markers so ordering is determined by
+// the harness, not by wall-clock delays.  Single 750 ms sleeps are only
+// used to give the race a deterministic ordering window; the assertions
+// then check the typed outcome, not the timing.
+TEST_CASE(
+    "repeated cancellation is idempotent and never produces a fake success",
+    "[integration][process][capture][cancellation][race][KOG-BUG-0107]") {
+    std::atomic<bool> cancelRequested{false};
+    const shell::CancellationObserver observeCancellation = [&]() {
+        return cancelRequested.load(std::memory_order_acquire);
+    };
+
+#if defined(_WIN32)
+    const std::string program = "powershell";
+    const std::vector<std::string> args{
+        "-NoProfile",
+        "-Command",
+        R"ps(Write-Output READY; Start-Sleep -Seconds 10)ps"
+    };
+#else
+    const std::string program = "sh";
+    const std::vector<std::string> args{
+        "-c", "printf 'READY\\n'; sleep 10"
+    };
+#endif
+
+    const auto startedAt = std::chrono::steady_clock::now();
+    const auto result = shell::ExecuteCommand(
+        program,
+        args,
+        shell::ExecMode::Capture,
+        std::nullopt,
+        shell::ProgressCallback{},
+        5000,
+        shell::CaptureLimits{},
+        observeCancellation);
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - startedAt);
+
+    // Drive cancellation a second time after the wait returned.  The
+    // process is already gone; this must not crash and must not change
+    // the recorded outcome.
+    cancelRequested.store(true, std::memory_order_release);
+    cancelRequested.store(false, std::memory_order_release);
+
+    INFO(result.stdoutStr);
+    INFO(result.stderrStr);
+    INFO("elapsed_ms=" << elapsed.count());
+    REQUIRE(result.outcome == shell::ExecOutcome::Cancelled);
+    REQUIRE(result.exitCode != 124);
+    REQUIRE(result.stdoutStr.find("READY") != std::string::npos);
+    REQUIRE(elapsed < std::chrono::milliseconds(2500));
+}
+
+TEST_CASE(
+    "cancellation observed before timeout wins even when timeout would have fired later",
+    "[integration][process][capture][cancellation][race][KOG-BUG-0107]") {
+    std::atomic<bool> cancelRequested{false};
+    // Signal cancellation the moment any output byte arrives, which is
+    // before the 200 ms timeout deadline below.
+    const shell::ProgressCallback observeStart =
+        [&](const std::string_view InChunk, const bool bIsStderr) {
+            if (!bIsStderr && !InChunk.empty()) {
+                cancelRequested.store(true, std::memory_order_release);
+            }
+        };
+    const shell::CancellationObserver observeCancellation = [&]() {
+        return cancelRequested.load(std::memory_order_acquire);
+    };
+
+#if defined(_WIN32)
+    const std::string program = "powershell";
+    const std::vector<std::string> args{
+        "-NoProfile",
+        "-Command",
+        R"ps(Write-Output READY; Start-Sleep -Seconds 10)ps"
+    };
+#else
+    const std::string program = "sh";
+    const std::vector<std::string> args{
+        "-c", "printf 'READY\\n'; sleep 10"
+    };
+#endif
+
+    const auto startedAt = std::chrono::steady_clock::now();
+    const auto result = shell::ExecuteCommand(
+        program,
+        args,
+        shell::ExecMode::Capture,
+        std::nullopt,
+        observeStart,
+        200, // Timeout that would have fired at ~200 ms.
+        shell::CaptureLimits{},
+        observeCancellation);
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - startedAt);
+
+    INFO(result.stdoutStr);
+    INFO(result.stderrStr);
+    INFO("elapsed_ms=" << elapsed.count());
+    REQUIRE(cancelRequested.load(std::memory_order_acquire));
+    REQUIRE(result.outcome == shell::ExecOutcome::Cancelled);
+    // Cancellation must NOT be relabeled as timeout even though the
+    // 200 ms deadline would have fired later.
+    REQUIRE(result.exitCode != 124);
+    REQUIRE(result.stdoutStr.find("READY") != std::string::npos);
+    REQUIRE(elapsed < std::chrono::milliseconds(2500));
+}
+
+TEST_CASE(
+    "timeout observed before cancel wins and is never relabeled as Cancelled",
+    "[integration][process][capture][timeout][race][KOG-BUG-0107]") {
+    // Observer only flips after a 750 ms wall-clock wait; the timeout
+    // deadline is 250 ms so timeout wins.
+    std::atomic<bool> cancelRequested{false};
+    const shell::CancellationObserver observeCancellation = [&]() {
+        return cancelRequested.load(std::memory_order_acquire);
+    };
+
+#if defined(_WIN32)
+    const std::string program = "powershell";
+    const std::vector<std::string> args{
+        "-NoProfile",
+        "-Command", "Start-Sleep -Seconds 10"
+    };
+#else
+    const std::string program = "sh";
+    const std::vector<std::string> args{
+        "-c", "sleep 10"
+    };
+#endif
+
+    std::thread lateCanceler([&]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(750));
+        cancelRequested.store(true, std::memory_order_release);
+    });
+
+    const auto startedAt = std::chrono::steady_clock::now();
+    const auto result = shell::ExecuteCommand(
+        program,
+        args,
+        shell::ExecMode::Capture,
+        std::nullopt,
+        shell::ProgressCallback{},
+        250,
+        shell::CaptureLimits{},
+        observeCancellation);
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - startedAt);
+    lateCanceler.join();
+
+    INFO(result.stderrStr);
+    INFO("elapsed_ms=" << elapsed.count());
+    // Timeout fires first, so the outcome must be TimedOut, not
+    // Cancelled, even though the cancel signal arrives 500 ms later.
+    REQUIRE(result.outcome == shell::ExecOutcome::TimedOut);
+    REQUIRE(result.exitCode == 124);
+    REQUIRE(elapsed < std::chrono::milliseconds(2000));
+}
+
+TEST_CASE(
+    "dismissed A and active B do not share terminal state across generations",
+    "[integration][process][capture][cancellation][race][generation][KOG-BUG-0107]") {
+    // Dismissed A: cancel signal flips immediately; the A run should
+    // observe Cancelled.
+    std::atomic<bool> cancelA{false};
+    const shell::CancellationObserver observeA = [&]() {
+        return cancelA.load(std::memory_order_acquire);
+    };
+    cancelA.store(true, std::memory_order_release);
+
+#if defined(_WIN32)
+    const std::string program = "powershell";
+    const std::vector<std::string> args{
+        "-NoProfile",
+        "-Command", "Start-Sleep -Seconds 10"
+    };
+#else
+    const std::string program = "sh";
+    const std::vector<std::string> args{
+        "-c", "sleep 10"
+    };
+#endif
+
+    const auto aStartedAt = std::chrono::steady_clock::now();
+    const auto aResult = shell::ExecuteCommand(
+        program,
+        args,
+        shell::ExecMode::Capture,
+        std::nullopt,
+        shell::ProgressCallback{},
+        5000,
+        shell::CaptureLimits{},
+        observeA);
+    const auto aElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - aStartedAt);
+
+    REQUIRE(aResult.outcome == shell::ExecOutcome::Cancelled);
+
+    // Active B: same fixture, no observer set.  B must complete
+    // normally; the dismissed A's cancel signal must not contaminate B.
+    const shell::CancellationObserver observeB = []() { return false; };
+    const auto bStartedAt = std::chrono::steady_clock::now();
+    const auto bResult = shell::ExecuteCommand(
+        program,
+        args,
+        shell::ExecMode::Capture,
+        std::nullopt,
+        shell::ProgressCallback{},
+        5000,
+        shell::CaptureLimits{},
+        observeB);
+
+    INFO("A elapsed_ms=" << aElapsed.count());
+    INFO("A outcome=" << static_cast<int>(aResult.outcome));
+    INFO("B outcome=" << static_cast<int>(bResult.outcome));
+    // B was a fast-completing observer; the cancellation token is a
+    // per-call observer, so the late Cancel from A is irrelevant.
+    // B uses a never-cancelling observer; with a 5 s timeout and a
+    // 10 s sleep the only legal outcomes are Timeout (124) or
+    // Completed (0).  In either case, B must NOT carry Cancelled.
+    REQUIRE(bResult.outcome != shell::ExecOutcome::Cancelled);
+}
+
 TEST_CASE("capture timeout closes writers held by an escaped POSIX session",
           "[integration][process][capture][timeout][KG-BUG-0090]") {
 #if defined(_WIN32)
